@@ -5,7 +5,7 @@
 
 ## 背景
 
-CUDA 当前有两个结构性性能限制：
+决策提出时，CUDA 有两个结构性性能限制：
 
 1. **执行不重叠。** `CudaBackend::execute` 在 `submit` 内执行到结算，`poll` 只消费已完成的 ticket；runtime 的设备 compute depth 为 1。GPU 执行期间，CPU 不能准备下一批请求、处理输出或规划后续批次，launch、拷贝和调度间隙无法被隐藏。
 2. **kernel 覆盖率不足。** 通用 cuTile 算子通过 `tileiras` 在加载/首次使用时 JIT；FA4、oxide 等只有部分 AOT 制品。结果是部署依赖 JIT 工具链，冷启动有编译成本，产物也不是完全自包含。
@@ -30,6 +30,20 @@ vLLM v0.31 的生成路径默认开启异步调度：`EngineCore` 用 `execute_m
 - 不用无界队列、后台线程包装阻塞调用或增加 stream 数量冒充异步。
 - 不照搬 vLLM 的 Python 进程模型；只采用其 future + batch queue + 占位回填的契约。
 - 不在本决策内重写 runtime/SPI 或推进 DFlash2、组合推测等独立路线。
+
+## 实施状态
+
+截至 main `6e0859c`（PR #47，包含 PR #57），CUDA compute 已默认采用非阻塞
+submit/poll，覆盖 prefill、decode、私有程序及 MTP draft/verify/rollback。设备完成通知、
+固定 readback 和资源释放随飞行 owner 管理，CPU 返回不代表设备完成。
+
+这完成了 P0 的 provider 非阻塞部分。runtime 仍只有一个 compute flight，深度 2 的 batch queue、
+scheduler 占位 token/KV 延迟回填和额外在途状态预算仍待实现；不能把单 flight 非阻塞等同于
+完整的双批执行重叠。现有 cuTile 路径仍依赖运行时 JIT，完整 AOT 覆盖也尚未交付。
+
+本阶段的质量与设备验收见[默认服务收尾记录](../archive/research/artifacts/default-serving-closeout-2026-10-25.json)，
+当前能力边界见[backend 架构](../architecture/backends.md)。具体负载的复测不替代本 ADR
+要求的逐场景性能与资源验收。
 
 ## 后果
 
