@@ -6,27 +6,17 @@ use crate::constants::CONV_KERNEL_SIZE;
 use crate::constants::CONV_KERNEL_TILE;
 use cutile::prelude::*;
 use infer_ir::{TensorNode, TensorOp};
-use std::env::var;
 
-/// Value-dimension blocks per head for the per-lane Delta, requested by
-/// `INFER_CUDA_RECURRENT_VALUE_SPLIT`.
+/// Width of one value-dimension block for the per-lane Delta.
 ///
-/// One is the established behaviour: one block per value head, each moving the whole state. The
-/// split is read once at capture time, so a run's graphs and its report agree.
-fn value_split() -> usize {
-    var("INFER_CUDA_RECURRENT_VALUE_SPLIT")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(1)
-}
-
-/// Width of one value-dimension block, rejecting a split that does not divide the dimension.
+/// One block per value head is the established product path; a diagnostic environment switch
+/// is deliberately not a serving control.
 pub(super) fn value_block(value_dim: usize) -> Result<usize, DeviceError> {
-    let split = value_split();
-    if split == 0 || !value_dim.is_multiple_of(split) {
-        return Err(error("recurrent value split"));
+    if value_dim == 0 {
+        Err(error("recurrent value split"))
+    } else {
+        Ok(value_dim)
     }
-    Ok(value_dim / split)
 }
 
 impl Capture<'_> {

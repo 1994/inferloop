@@ -336,14 +336,8 @@ impl LoadedModel {
             return Ok(None);
         }
         let block_bytes = full.total_bytes.saturating_sub(fixed) / blocks as u64;
-        let Some(tokens) = funded_kv_tokens(
-            width,
-            capacity,
-            maximum_kv_tokens,
-            block_bytes,
-            fixed,
-            envelope,
-        )?
+        let Some(tokens) =
+            funded_kv_tokens(width, maximum_kv_tokens, block_bytes, fixed, envelope)?
         else {
             return Ok(None);
         };
@@ -387,7 +381,6 @@ impl LoadedModel {
 /// of funding many unusable state handles with only a handful of physical KV blocks.
 fn funded_kv_tokens(
     width: usize,
-    capacity: usize,
     maximum: usize,
     block_bytes: u64,
     fixed: u64,
@@ -396,7 +389,10 @@ fn funded_kv_tokens(
     if block_bytes == 0 || fixed >= envelope {
         return Ok(None);
     }
-    let per_slot = (capacity / 2 / KV_BLOCK_TOKENS + 1) * KV_BLOCK_TOKENS;
+    // Fund only one physical page per resident handle. Admission leases the pages an incoming
+    // request actually needs (prompt + requested generation); a fixed half-capacity floor made
+    // short concurrent requests look unable to fit while retaining most of the pool idle.
+    let per_slot = KV_BLOCK_TOKENS;
     let minimum = width
         .checked_mul(per_slot)
         .ok_or_else(|| Error::invalid("pooled minimum KV overflow"))?;

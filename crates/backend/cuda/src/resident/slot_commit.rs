@@ -2,7 +2,9 @@
 use super::{
     batch::States,
     capture::error,
-    slot_recurrent::{LANES, Staging, covers, fused, fused_block, value_split},
+    slot_recurrent::{
+        LANES, Staging, covered_geometry_nodes, covers, fused, fused_block, value_split,
+    },
     slot_states::RecurrentParameters,
 };
 use crate::{
@@ -77,7 +79,12 @@ impl CapturedCommit {
             metadata,
             counts: &counts,
             slots,
-            value_split: value_split(device.profile()?.multiprocessors),
+            value_split: value_split(
+                device.profile()?.multiprocessors,
+                covered_geometry_nodes(nodes).map_or(1, |(heads, _)| heads),
+                slots,
+                covered_geometry_nodes(nodes).map_or(1, |(_, dim)| dim),
+            ),
         };
         let graph = CudaGraph::scope(&device.stream, |scope| {
             for (index, node) in nodes.iter().enumerate().filter(|(_, node)| covers(node)) {

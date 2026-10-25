@@ -25,6 +25,14 @@ impl BackendProvider for CudaBackend {
     fn execution_profile(&self) -> Option<infer_ir::ExecutionProfileInspection> {
         Some(self.view.profile.clone())
     }
+    fn scheduling_recommendation(
+        &self,
+        step_tokens: usize,
+    ) -> Option<infer_spi::SchedulingRecommendation> {
+        self.ready
+            .as_deref()
+            .and_then(|executor| executor.scheduling_recommendation(step_tokens).ok())
+    }
     fn control_ready(&self) -> bool {
         !self.busy && self.fatal.is_none()
     }

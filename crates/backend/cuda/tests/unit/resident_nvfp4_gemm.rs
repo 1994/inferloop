@@ -663,3 +663,62 @@ fn fused_gate_up_swiglu_performance() -> Result<(), Box<dyn StdError>> {
     }
     Ok(())
 }
+
+#[test]
+fn swiglu_tile_candidates_keep_the_qualified_fallback() {
+    use crate::resident::nvfp4_gemm::workspace::{
+        SwigluTile, select_swiglu_tile, swiglu_candidates,
+    };
+    let candidates = swiglu_candidates(1024, 5120, 17408);
+    assert!(candidates.contains(&SwigluTile::FALLBACK));
+    assert!(candidates.contains(&SwigluTile {
+        rows: 128,
+        columns: 64
+    }));
+    assert!(candidates.contains(&SwigluTile {
+        rows: 128,
+        columns: 128
+    }));
+    assert_eq!(select_swiglu_tile(1024, 5120, 17408), SwigluTile::FALLBACK);
+
+    // A shape that the fallback cannot tile is not silently claimed as a candidate.
+    assert_eq!(select_swiglu_tile(96, 5120, 17408).rows, 0);
+    assert_eq!(swiglu_candidates(96, 5120, 17408), Vec::new());
+    // The quantization group width is part of the legality check.
+    assert_eq!(swiglu_candidates(128, 5137, 17408), Vec::new());
+}
+
+#[test]
+fn swiglu_candidate_tiles_compile_without_a_device() -> Result<(), Box<dyn StdError>> {
+    use cutile::cutile_compiler::compile_api::KernelCompiler;
+    let columns = 5120i32;
+    let hidden = 17408i32;
+    for (tile_rows, tile_columns) in [(64i32, 64i32), (128, 64), (128, 128)] {
+        KernelCompiler::new(kernels::__module_ast_self, "kernels", "packed_swiglu")
+            .target("sm_120")
+            .generics(
+                [
+                    columns,
+                    tile_rows,
+                    tile_columns,
+                    tile_columns / 2,
+                    tile_columns / 16,
+                ]
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            )
+            .strides(&[
+                ("codes", &[hidden / 2, 1]),
+                ("code_scales", &[hidden / 16, 1]),
+                ("input", &[columns / 2, 1]),
+                ("input_scales", &[columns / 16, 1]),
+                ("gate", &[columns / 2, 1]),
+                ("gate_scales", &[columns / 16, 1]),
+                ("up", &[columns / 2, 1]),
+                ("up_scales", &[columns / 16, 1]),
+            ])
+            .compile()?;
+    }
+    Ok(())
+}

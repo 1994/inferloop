@@ -13,6 +13,7 @@ pub mod prefix;
 mod prefix_state;
 mod profiling;
 mod provider;
+use crate::constants::KV_BLOCK_TOKENS;
 use crate::registry::CudaKernels;
 pub use pool::PoolInspection;
 mod state;
@@ -20,6 +21,33 @@ mod validation;
 use crate::{loading::LoadedModel, resident::DeviceProgram, resident::slot_batch::SlotPool};
 use infer_core::{Error, Result, StateId};
 use infer_ir::{DeviceCapabilities, ExecutionProgram, ModelOutput, OutputReadout};
+
+/// Upper bound on concurrent sequences accepted by the submission ABI.
+const MAX_RECOMMENDED_SEQUENCES: usize = 64;
+
+/// Automatic concurrency is the smallest of the memory, step-width and explicit state bounds.
+pub(super) const fn bound_concurrency(
+    memory_bound: usize,
+    step_bound: usize,
+    maximum_states: usize,
+) -> usize {
+    let value = if memory_bound < step_bound {
+        memory_bound
+    } else {
+        step_bound
+    };
+    let value = if value < maximum_states {
+        value
+    } else {
+        maximum_states
+    };
+    let value = if value < MAX_RECOMMENDED_SEQUENCES {
+        value
+    } else {
+        MAX_RECOMMENDED_SEQUENCES
+    };
+    if value == 0 { 1 } else { value }
+}
 use infer_state::cache::SnapshotScan;
 use std::collections::BTreeMap;
 use std::mem::{forget, take};
@@ -221,6 +249,26 @@ impl CudaExecutor {
         };
         backend.warm_slot_pool();
         Ok(backend)
+    }
+    /// Price the loaded model's minimum per-sequence state and bound concurrency by the
+    /// actual state budget and the configured decode step width.
+    pub(super) fn scheduling_recommendation(
+        &self,
+        step_tokens: usize,
+    ) -> Result<infer_spi::SchedulingRecommendation> {
+        let per_sequence =
+            self.loaded
+                .sequence_budget(KV_BLOCK_TOKENS, OutputReadout::Logits, true)?;
+        let memory_bound = usize::try_from(self.budget / per_sequence.max(1))
+            .unwrap_or(usize::MAX)
+            .max(1);
+        let step_bound = step_tokens.max(1);
+        let max_sequences = bound_concurrency(memory_bound, step_bound, self.maximum_states);
+        Ok(infer_spi::SchedulingRecommendation {
+            max_sequences,
+            memory_bound,
+            step_bound,
+        })
     }
     #[must_use]
     pub const fn model(&self) -> &infer_ir::ModelIr {

@@ -16,7 +16,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 26
+      "tests": 29
     },
     "compiler": {
       "benches": 0,
@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 321
+      "tests": 324
     },
     "frontdoor": {
       "benches": 0,
@@ -1162,6 +1162,11 @@
     },
     {
       "crate": "cli",
+      "file": "src/support/engine.rs",
+      "mount": "../../tests/unit/support_engine.rs"
+    },
+    {
+      "crate": "cli",
       "file": "src/support/logging.rs",
       "mount": "../../tests/unit/support_logging.rs"
     },
@@ -1232,11 +1237,11 @@
     }
   ],
   "totals": {
-    "all": 860,
+    "all": 866,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 860
+    "tests": 866
   }
 }

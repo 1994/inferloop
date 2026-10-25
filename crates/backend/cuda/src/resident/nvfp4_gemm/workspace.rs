@@ -43,6 +43,66 @@ type Quantized = (Tensor<f4e2m1fnx2>, Tensor<f8e4m3fn>);
 /// against 0.45 ms for the separate projections and quantizer).
 const SWIGLU_TILE_ROWS: usize = 64;
 const SWIGLU_TILE_COLUMNS: usize = 64;
+/// Candidate row tiling measured as one alternative to the conservative tile.
+const SWIGLU_WIDE_ROWS: usize = 128;
+/// Candidate column tiling retained only when its quantization layout is legal.
+const SWIGLU_WIDE_COLUMNS: usize = 128;
+
+/// One legal fused-SwiGLU loading-time tile candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwigluTile {
+    pub rows: usize,
+    pub columns: usize,
+}
+
+impl SwigluTile {
+    /// Conservative 64x64 tile qualified by the existing measurements.
+    pub const FALLBACK: Self = Self {
+        rows: SWIGLU_TILE_ROWS,
+        columns: SWIGLU_TILE_COLUMNS,
+    };
+}
+
+/// Shape-specific candidates in conservative-first order.
+///
+/// The 128-row candidate is retained only when every row/column extent and the quantization
+/// group layout are legal. It is a candidate, not a default: the 64x64 fallback stays qualified
+/// until full-output and paired quantization-inclusive evidence selects otherwise.
+pub fn swiglu_candidates(rows: usize, columns: usize, hidden: usize) -> Vec<SwigluTile> {
+    let mut candidates = Vec::new();
+    for tile in [
+        SwigluTile::FALLBACK,
+        SwigluTile {
+            rows: SWIGLU_WIDE_ROWS,
+            columns: SWIGLU_TILE_COLUMNS,
+        },
+        SwigluTile {
+            rows: SWIGLU_WIDE_ROWS,
+            columns: SWIGLU_WIDE_COLUMNS,
+        },
+    ] {
+        if rows.is_multiple_of(tile.rows)
+            && hidden.is_multiple_of(tile.columns)
+            && columns.is_multiple_of(NVFP4_GROUP_SIZE)
+        {
+            candidates.push(tile);
+        }
+    }
+    candidates
+}
+
+/// Select the qualified default; candidate search may choose another tile only after its own
+/// exact-output and paired evidence exists.
+pub fn select_swiglu_tile(rows: usize, columns: usize, hidden: usize) -> SwigluTile {
+    if swiglu_candidates(rows, columns, hidden).contains(&SwigluTile::FALLBACK) {
+        SwigluTile::FALLBACK
+    } else {
+        SwigluTile {
+            rows: 0,
+            columns: 0,
+        }
+    }
+}
 /// Keyed by `(rows, columns, activation-scale columns)`.
 type Fp8Key = (usize, usize, usize);
 type StrategyKey = (ResidentGemmWeightKey, usize, usize, usize);
@@ -513,9 +573,11 @@ impl Workspace {
 
     /// Whether [`Self::record_gate_up_swiglu`] can run for this prompt width and MLP geometry.
     pub(crate) fn gate_up_swiglu_ready(&self, rows: usize, columns: usize, hidden: usize) -> bool {
-        rows.is_multiple_of(SWIGLU_TILE_ROWS)
+        let tile = select_swiglu_tile(rows, columns, hidden);
+        tile.rows > 0
+            && rows.is_multiple_of(tile.rows)
             && rows.is_multiple_of(QUANTIZATION_ROWS)
-            && hidden.is_multiple_of(SWIGLU_TILE_COLUMNS)
+            && hidden.is_multiple_of(tile.columns)
             && self.buffers.contains_key(&(rows, columns))
             && self.buffers.contains_key(&(rows, hidden))
     }

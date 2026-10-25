@@ -1,4 +1,5 @@
 use super::private_funding;
+use crate::executor::bound_concurrency;
 
 #[test]
 fn private_request_cannot_be_admitted_without_its_shared_workspace() {
@@ -83,4 +84,12 @@ fn quotes_do_not_recapture_a_retired_pool_and_reservation_restores_it() -> infer
     assert!(!backend.slots_disabled);
     backend.release_state(StateId::ONE)?;
     Ok(())
+}
+
+#[test]
+fn automatic_concurrency_is_the_smallest_real_bound() {
+    assert_eq!(bound_concurrency(4, 64, 64), 4);
+    assert_eq!(bound_concurrency(64, 7, 64), 7);
+    assert_eq!(bound_concurrency(64, 64, 5), 5);
+    assert_eq!(bound_concurrency(0, 0, 0), 1);
 }

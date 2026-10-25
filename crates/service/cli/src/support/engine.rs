@@ -5,6 +5,7 @@ use crate::backend::SelectedBackend;
 use infer_core::{Error, Result};
 use infer_ir::PrecisionPlan;
 use infer_runtime::{Engine, RuntimeConfig};
+use infer_spi::{BackendProvider as _, SchedulingRecommendation};
 use std::path::Path;
 
 pub fn selected_engine(
@@ -36,6 +37,7 @@ pub fn configured_engine(
     if let Some(tokens) = choice.max_output_tokens {
         config.max_output_tokens = Some(tokens);
     }
+    let explicit_sequences = choice.max_num_seqs.is_some();
     if let Some(sequences) = choice.max_num_seqs {
         config.max_num_seqs = sequences;
     }
@@ -56,6 +58,12 @@ pub fn configured_engine(
             .scope(|| backend::load(package, memory_mib, &choice))?;
         let ir = backend.model_ir().clone();
         let registry = backend.registry()?;
+        let recommendation = automatic
+            .then(|| backend.scheduling_recommendation(config.max_num_batched_tokens))
+            .flatten();
+        if automatic {
+            apply_recommendation(&mut config, explicit_sequences, recommendation);
+        }
         if automatic {
             super::serving::derive_config(&mut config, &backend, &ir, &registry)?;
         }
@@ -74,8 +82,33 @@ pub fn configured_engine(
         Err(Error::invalid("a device backend requires --package"))
     }
 }
+fn apply_recommendation(
+    config: &mut RuntimeConfig,
+    explicit: bool,
+    recommendation: Option<SchedulingRecommendation>,
+) {
+    if explicit {
+        return;
+    }
+    let Some(recommendation) = recommendation else {
+        return;
+    };
+    config.max_num_seqs = recommendation.max_sequences;
+    tracing::info!(
+        target: "infer::load",
+        max_num_seqs = recommendation.max_sequences,
+        memory_bound = recommendation.memory_bound,
+        step_bound = recommendation.step_bound,
+        "automatic scheduling bound selected"
+    );
+}
+
 pub fn config(path: Option<&Path>) -> Result<RuntimeConfig> {
     path.map(read_json)
         .transpose()
         .map(Option::unwrap_or_default)
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/support_engine.rs"]
+mod tests;

@@ -3,10 +3,15 @@ use crate::constants::CONV_KERNEL_TILE;
 use std::error::Error;
 
 #[test]
-fn value_split_follows_the_device_sm_budget() {
-    assert_eq!(super::value_split(32), 1);
-    assert_eq!(super::value_split(80), 2);
-    assert_eq!(super::value_split(170), 4);
+fn value_split_follows_sm_heads_slots_and_legal_value_divisors() {
+    assert_eq!(super::value_split(32, 12, 4, 128), 1);
+    assert_eq!(super::value_split(80, 12, 4, 128), 2);
+    assert_eq!(super::value_split(170, 12, 4, 128), 4);
+    // A tail value width only accepts legal divisors.
+    assert_eq!(super::value_split(170, 12, 4, 96), 4);
+    assert_eq!(super::value_split(170, 12, 4, 100), 4);
+    assert_eq!(super::value_split(170, 12, 4, 72), 4);
+    assert_eq!(super::value_split(170, 12, 4, 6), 2);
 }
 
 // Tile IR is only specialized at launch; compile the snapshot-free kernels on header-only CI.

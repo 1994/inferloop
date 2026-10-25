@@ -159,6 +159,17 @@ pub(super) fn fused_recurrent(graph: &infer_ir::DataflowGraph, verify: usize) ->
 }
 
 impl BatchBuilder<'_> {
+    fn value_split(&self, slots: usize) -> Result<usize> {
+        let (heads, value_dim) = super::slot_recurrent::covered_geometry(self.graph)
+            .ok_or_else(|| Error::invalid("slot recurrent geometry"))?;
+        Ok(super::slot_recurrent::value_split(
+            self.device.profile()?.multiprocessors,
+            heads,
+            slots,
+            value_dim,
+        ))
+    }
+
     /// Per slot, one graph per committed lane count that applies the accepted prefix of the
     /// snapshot-free recurrent verification to the slot's state.
     fn capture_commits(
@@ -169,8 +180,7 @@ impl BatchBuilder<'_> {
         (verify, staging): (usize, &super::slot_recurrent::Staging),
     ) -> Result<Vec<Vec<CudaGraph<()>>>> {
         let mut commits = Vec::with_capacity(lane_states.len());
-        let value_split =
-            super::slot_recurrent::value_split(self.device.profile()?.multiprocessors);
+        let value_split = self.value_split(lane_states.len())?;
         for (slot, states) in lane_states.iter_mut().enumerate() {
             let lanes = slot_lanes(slot, metadata).map_err(device_error)?;
             let mut graphs = Vec::with_capacity(verify);
@@ -344,8 +354,7 @@ impl BatchBuilder<'_> {
     ) -> Result<CudaGraph<()>> {
         let (verify, metadata, batch) = geometry;
         let fused = fused_recurrent(self.graph, verify);
-        let value_split =
-            super::slot_recurrent::value_split(self.device.profile()?.multiprocessors);
+        let value_split = self.value_split(lane_states.len())?;
         CudaGraph::scope(&self.device.stream, |scope| {
             let mut no_fusion = None;
             for (index, node) in self.graph.nodes.iter().enumerate() {
