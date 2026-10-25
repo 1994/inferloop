@@ -23,7 +23,7 @@ OpenAI chat 的 `image_url` / `video_url` 内容部分现在进入真实 serving
 - 同一 prompt 暂只支持一种媒体模态；混合 image/video 会返回显式 unsupported。
 - `--limit-mm-per-prompt '{"image":N,"video":M}'` 是每 prompt 上限。全零配置只服务文本并跳过视觉塔；非零配置在加载时绑定并使用视觉权重。默认上限为 2 张图、1 段视频。
 - 文本部署收到媒体时返回结构化 `unsupported_feature`，不消费 request identity。
-- `data:`/`file://`/绝对路径的 PNG 由进程内解码；JPEG/WebP、视频以及 `http(s)` 下载依赖宿主 `ffmpeg`/`ffprobe`/`curl`，缺失时返回显式 unsupported。所有读取、帧数、尺寸和时间都有上限。
+- `data:`/`http(s)` 的 PNG/JPEG/WebP/GIF 由进程内 codec 解码；视频以及 `http(s)` 下载依赖宿主 `ffmpeg`/`ffprobe`/`curl`，缺失时返回显式 unsupported。公开 HTTP 输入拒绝 `file://` 与服务端绝对路径；所有读取、帧数、尺寸、解码维度和子进程墙钟时间都有上限。
 - media 请求不参与 prefix reuse，也不支持 MTP speculation；这两条都是显式错误而不是静默降级。
 - media payload 与请求生命周期绑定，until backend prefill completes；checkpoint 在 media 状态存活时拒绝，避免恢复后丢失像素或设备 embedding。
 
@@ -31,7 +31,15 @@ OpenAI chat 的 `image_url` / `video_url` 内容部分现在进入真实 serving
 
 ## Head-width padding
 
-视觉投影 kernel 以 64 列 tile 读取权重和激活。真实 head width 不是 64 的倍数时，必须先补齐到下一个 64 边界：Qwen3.8-27B 的 72 宽 head 因此使用 `half=64`、`width=128`。Host-only audit 对 24 层 attention 权重的实测为 real `254,803,968` bytes、padded `452,984,832` bytes、overhead `198,180,864` bytes（BF16，不含 runtime activation/scratch）。16 的倍数布局（例如 96 宽）需要新的 32/16 列 kernel 变体，并重新做数值、尾块和性能验收；本轮 CPU 阶段没有把未经 GPU 验证的布局设为默认，也没有删除 64 列约束。可复现审计见 `crates/backend/cuda/tests/unit/vision_padding.rs`。
+视觉投影仍以 64 列 tile 读取权重；**整个投影宽度**保持 64 的倍数即可，per-head 的 split-half tile 可以按 16 的倍数压缩。Qwen3.8-27B 的 72 宽 head 现在使用 `half=48`、`width=96`，16 个 head 的总投影宽度 `1536` 仍是 64 的倍数，原有 64 列投影 kernel 与 split-half/RoPE 顺序不变。24 层 attention 权重的 host-only 实测为：
+
+```text
+real     254,803,968 bytes
+padded   339,738,624 bytes
+overhead  84,934,656 bytes   (BF16, weights only)
+```
+
+相对旧的 `half=64/width=128` 布局，overhead 减少 `113,246,208` bytes（约 56.9%）。compact half 布局的映射测试见 `crates/backend/cuda/tests/unit/vision_padding.rs`，保留每半 real lanes 在前、padding lanes 在后的顺序。该布局的 GPU 数值、尾块和性能验收仍 pending；在设备验收前不声称已完成 #59 的 padding 项。
 
 
 ## 独立参考与回归
@@ -45,6 +53,7 @@ OpenAI chat 的 `image_url` / `video_url` 内容部分现在进入真实 serving
 | `tools/vision/qwen3vl_2b_parity_reference.py` / `cuda-parity-2b` | 本仓库预处理到完整生成序列的对照 |
 | `tools/vision/qwen3vl_video_golden.py` | 官方 video processor 的抽帧、缩放、时间 patch 与归一化 golden |
 | `cuda-multimodal-media` | 单 prompt 双图与多帧视频：正/反顺序的 logits 位移与融合分块 prefill |
+| `tools/vision/serve_media_fixtures.py` | 冻结 serving 图像/视频 fixture：逐帧 sha256、FFV1 无损 roundtrip、fps/尺寸/prompt metadata |
 
 ```sh
 bash tools/bench/safe-run.sh --memory-gib 8 \

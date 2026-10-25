@@ -187,7 +187,7 @@ fn text_content_parts_are_joined_and_other_parts_are_refused() {
         json!([{"role": "user", "content": [{"type": "image_url", "image_url": {}}]}]);
     assert!(chat(&missing_url, &json!({})).chat_messages().is_err());
     let video = json!([{"role": "user", "content": [
-        {"type": "video_url", "video_url": {"url": "file:///tmp/clip.mp4"}}
+        {"type": "video_url", "video_url": {"url": "https://example.invalid/clip.mp4"}}
     ]}]);
     let (messages, media) = chat(&video, &json!({})).chat_messages().unwrap();
     assert_eq!(
@@ -196,7 +196,7 @@ fn text_content_parts_are_joined_and_other_parts_are_refused() {
     );
     assert_eq!(media[0].modality, Modality::Video);
     let assistant_media = json!([{"role": "assistant", "content": [
-        {"type": "image_url", "image_url": {"url": "file:///tmp/a.png"}}
+        {"type": "image_url", "image_url": {"url": "https://example.invalid/a.png"}}
     ]}]);
     assert!(chat(&assistant_media, &json!({})).chat_messages().is_err());
 }

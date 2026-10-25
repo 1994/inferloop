@@ -185,6 +185,38 @@ pub trait BackendProvider {
     fn reserve_state(&mut self, _state: StateId, _capacity_tokens: usize) -> Result<()> {
         Ok(())
     }
+    /// Prepare media-specific state pricing without speculative draft state.
+    /// # Errors
+    /// Returns invalid input or physical capacity errors.
+    fn prepare_state_reservation_for_media(
+        &mut self,
+        capacity: usize,
+        readout: infer_ir::OutputReadout,
+    ) -> Result<()> {
+        self.prepare_state_reservation(capacity, readout)
+    }
+    /// Media-specific state reservation size without speculative draft state.
+    /// # Errors
+    /// Returns invalid input or physical capacity errors.
+    fn state_reservation_bytes_for_media(
+        &self,
+        capacity: usize,
+        readout: infer_ir::OutputReadout,
+    ) -> Result<Option<u64>> {
+        self.state_reservation_bytes_for(capacity, readout)
+    }
+    /// Reserve state for a media request without creating speculative draft state.
+    /// # Errors
+    /// Returns invalid input, ownership or physical capacity errors.
+    fn reserve_state_for_media(
+        &mut self,
+        state: StateId,
+        capacity: usize,
+        readout: infer_ir::OutputReadout,
+    ) -> Result<()> {
+        self.reserve_state_for(state, capacity, readout)
+    }
+
     /// Reserve persistent state matching the readout contract.
     /// # Errors
     /// Returns invalid input, ownership or physical capacity errors.

@@ -83,8 +83,13 @@ impl CudaExecutor {
     /// Resident homes use prepaid pool storage or wait for a home. Every private
     /// sequence needs a funded verification graph: it can lose the slot/block race
     /// and must remain executable without capturing unquoted storage in decode.
-    pub(super) fn private_verification_for(&self, capacity: usize, readout: OutputReadout) -> bool {
-        !self.home_eligible(capacity, readout)
+    pub(super) fn private_verification_for(
+        &self,
+        capacity: usize,
+        readout: OutputReadout,
+        allow_speculation: bool,
+    ) -> bool {
+        !self.home_eligible(capacity, readout, allow_speculation)
     }
 
     /// Release a prewarmed pool only when no live sequence relies on it, the request
@@ -176,6 +181,7 @@ impl CudaExecutor {
         id: StateId,
         capacity: usize,
         readout: OutputReadout,
+        allow_speculation: bool,
     ) -> Result<()> {
         self.idle()?;
         if self.states.contains_key(&id) {
@@ -186,10 +192,11 @@ impl CudaExecutor {
         }
         self.restore_slot_pool_for(capacity, readout)?;
         self.prepare_reservation_for(capacity, readout)?;
-        if self.reserve_home(id, capacity, readout)? {
+        if self.reserve_home(id, capacity, readout, allow_speculation)? {
             return Ok(());
         }
-        let private_verification = self.private_verification_for(capacity, readout);
+        let private_verification =
+            self.private_verification_for(capacity, readout, allow_speculation);
         let budget = self.reservation_budget(capacity, readout, private_verification)?;
         if self.states.len() >= self.maximum_states
             || self
@@ -219,16 +226,20 @@ impl CudaExecutor {
                 return Err(error);
             }
         };
-        let speculation = match self.loaded.draft(capacity) {
-            Ok(draft) => {
-                draft.map(|program| super::Speculation::new(program, self.loaded.mtp_depth()))
-            }
-            Err(error) => {
-                if let Err(drain_error) = self.loaded.device().reclaim_barrier() {
-                    self.fatal = Some(drain_error);
+        let speculation = if allow_speculation {
+            match self.loaded.draft(capacity) {
+                Ok(draft) => {
+                    draft.map(|program| super::Speculation::new(program, self.loaded.mtp_depth()))
                 }
-                return Err(error);
+                Err(error) => {
+                    if let Err(drain_error) = self.loaded.device().reclaim_barrier() {
+                        self.fatal = Some(drain_error);
+                    }
+                    return Err(error);
+                }
             }
+        } else {
+            None
         };
         self.pool.allocations = self.pool.allocations.saturating_add(1);
         self.states.insert(
@@ -417,7 +428,12 @@ impl CudaExecutor {
         Ok(())
     }
     /// Whether a request is served by slot-resident programs when one is free.
-    fn home_eligible(&self, capacity: usize, readout: OutputReadout) -> bool {
+    fn home_eligible(
+        &self,
+        capacity: usize,
+        readout: OutputReadout,
+        allow_speculation: bool,
+    ) -> bool {
         readout == OutputReadout::Logits
             && self
                 .slots
@@ -425,11 +441,11 @@ impl CudaExecutor {
                 .is_some_and(|pool| capacity <= pool.capacity())
             && self.worker.is_some()
             && (self.states.values().any(|state| state.home.is_some())
-                || self
-                    .homes
-                    .iter()
-                    .flatten()
-                    .any(|home| home.draft.is_some() || self.loaded.mtp_depth() == 0))
+                || self.homes.iter().flatten().any(|home| {
+                    home.draft.is_none() && !allow_speculation
+                        || home.draft.is_some() && allow_speculation
+                        || self.loaded.mtp_depth() == 0
+                }))
     }
 
     /// Admit a pooled request onto a free slot's resident programs: it prefills straight into
@@ -440,10 +456,11 @@ impl CudaExecutor {
         id: StateId,
         capacity: usize,
         readout: OutputReadout,
+        allow_speculation: bool,
     ) -> Result<bool> {
         // A request that fits a slot waits for one rather than capturing a private program:
         // that capture holds the engine thread for seconds, and the slot is faster once free.
-        let busy = if self.home_eligible(capacity, readout) {
+        let busy = if self.home_eligible(capacity, readout, allow_speculation) {
             Err(Error::new(
                 ErrorCode::Capacity,
                 "every slot-resident program is in use",
@@ -461,9 +478,11 @@ impl CudaExecutor {
             return Ok(false);
         }
         let Some(slot) = (0..self.homes.len()).find(|&slot| {
-            self.homes[slot]
-                .as_ref()
-                .is_some_and(|home| home.draft.is_some() || self.loaded.mtp_depth() == 0)
+            self.homes[slot].as_ref().is_some_and(|home| {
+                home.draft.is_none() && !allow_speculation
+                    || home.draft.is_some() && allow_speculation
+                    || self.loaded.mtp_depth() == 0
+            })
         }) else {
             return busy;
         };

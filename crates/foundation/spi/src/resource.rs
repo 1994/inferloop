@@ -33,6 +33,12 @@ pub enum ResourceCommand {
         capacity: usize,
         readout: OutputReadout,
     },
+    /// Reserve state for a media request, which must not create speculative state.
+    ReserveMedia {
+        state: StateId,
+        capacity: usize,
+        readout: OutputReadout,
+    },
     Reset {
         state: StateId,
     },
@@ -187,6 +193,13 @@ pub fn execute_resource<B: BackendProvider + ?Sized>(
             readout,
         } => backend
             .reserve_state_for(state, capacity, readout)
+            .map(|()| ResourceReply::Reserved),
+        ResourceCommand::ReserveMedia {
+            state,
+            capacity,
+            readout,
+        } => backend
+            .reserve_state_for_media(state, capacity, readout)
             .map(|()| ResourceReply::Reserved),
         ResourceCommand::Reset { state } => {
             backend.reset_state(state).map(|()| ResourceReply::Reset)

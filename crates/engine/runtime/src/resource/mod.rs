@@ -171,11 +171,23 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 .state
                 .ok_or_else(|| Error::invariant("resource state lost"))?;
             let command = match pending.phase {
-                ResourcePhase::Reserve => ResourceCommand::Reserve {
-                    state,
-                    capacity: record.plan.reserved_tokens,
-                    readout: retained_readout(&record.request.workload),
-                },
+                ResourcePhase::Reserve => {
+                    let capacity = record.plan.reserved_tokens;
+                    let readout = retained_readout(&record.request.workload);
+                    if record.media.is_some() {
+                        ResourceCommand::ReserveMedia {
+                            state,
+                            capacity,
+                            readout,
+                        }
+                    } else {
+                        ResourceCommand::Reserve {
+                            state,
+                            capacity,
+                            readout,
+                        }
+                    }
+                }
                 ResourcePhase::Reset => ResourceCommand::Reset { state },
                 ResourcePhase::Prefix => {
                     return Err(Error::invariant("prefix intent has no ticket"));

@@ -32,7 +32,9 @@ where
         command: infer_spi::ResourceCommand,
     ) -> Result<infer_spi::ResourceTicket> {
         let (ticket, reply) = self.resources.channel()?;
-        let reserve = if let infer_spi::ResourceCommand::Reserve { state, .. } = &command {
+        let reserve = if let infer_spi::ResourceCommand::Reserve { state, .. }
+        | infer_spi::ResourceCommand::ReserveMedia { state, .. } = &command
+        {
             Some(*state)
         } else {
             None

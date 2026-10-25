@@ -141,6 +141,8 @@ pub struct ProtocolBackend {
     host_sampling_draft_depth: usize,
     multimodal: bool,
     media_tasks: Arc<AtomicUsize>,
+    media_reservations: Arc<AtomicUsize>,
+    media_quotes: Arc<AtomicUsize>,
     identity: String,
     states: BoundedMap<StateId, State>,
     template: ModelOutput,
@@ -216,6 +218,8 @@ impl ProtocolBackend {
             host_sampling_draft_depth: 0,
             multimodal: false,
             media_tasks: Arc::new(AtomicUsize::new(0)),
+            media_reservations: Arc::new(AtomicUsize::new(0)),
+            media_quotes: Arc::new(AtomicUsize::new(0)),
             identity: tag.to_owned(),
             states: BoundedMap::new(requests)?,
             template: ModelOutput {
@@ -244,6 +248,16 @@ impl ProtocolBackend {
     pub fn media_tasks(&self) -> Arc<AtomicUsize> {
         self.media_tasks.clone()
     }
+    /// Number of media-specific reservations that suppressed speculative state.
+    #[must_use]
+    pub fn media_reservations(&self) -> Arc<AtomicUsize> {
+        self.media_reservations.clone()
+    }
+    /// Number of media-specific byte quotes requested by admission.
+    #[must_use]
+    pub fn media_quotes(&self) -> Arc<AtomicUsize> {
+        self.media_quotes.clone()
+    }
     /// Advertise a loaded draft while rejecting any task that permits backend sampling.
     pub const fn requiring_engine_sampling(mut self, draft_depth: usize) -> Self {
         self.host_sampling_draft_depth = draft_depth;
@@ -258,6 +272,31 @@ impl BackendProvider for ProtocolBackend {
     }
     fn supports_multimodal(&self) -> bool {
         self.multimodal
+    }
+    fn reserve_state_for_media(
+        &mut self,
+        state: StateId,
+        capacity: usize,
+        readout: OutputReadout,
+    ) -> Result<()> {
+        self.media_reservations.fetch_add(1, Ordering::Relaxed);
+        self.reserve_state_for(state, capacity, readout)
+    }
+    fn state_reservation_bytes_for_media(
+        &self,
+        capacity: usize,
+        readout: OutputReadout,
+    ) -> Result<Option<u64>> {
+        self.media_quotes.fetch_add(1, Ordering::Relaxed);
+        self.state_reservation_bytes_for(capacity, readout)
+    }
+    fn prepare_state_reservation_for_media(
+        &mut self,
+        capacity: usize,
+        readout: OutputReadout,
+    ) -> Result<()> {
+        self.media_quotes.fetch_add(1, Ordering::Relaxed);
+        self.prepare_state_reservation(capacity, readout)
     }
     fn capabilities(&self) -> DeviceCapabilities {
         DeviceCapabilities {
@@ -402,7 +441,9 @@ impl BackendProvider for ProtocolBackend {
             if task.media.is_some() {
                 self.media_tasks.fetch_add(1, Ordering::Relaxed);
             }
-            if self.host_sampling_draft_depth > 0 && (task.plain_greedy || task.sampling.is_some())
+            if task.media.is_none()
+                && self.host_sampling_draft_depth > 0
+                && (task.plain_greedy || task.sampling.is_some())
             {
                 return Err(Error::invariant(
                     "constrained request allowed backend token selection",

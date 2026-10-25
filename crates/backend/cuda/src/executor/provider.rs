@@ -11,6 +11,14 @@ impl CudaExecutor {
         self.prepare_reservation_for(capacity, readout)
     }
 
+    pub(super) fn prepare_state_reservation_for_media(
+        &mut self,
+        capacity: usize,
+        readout: OutputReadout,
+    ) -> Result<()> {
+        self.prepare_reservation_for(capacity, readout)
+    }
+
     pub(super) fn state_reservation_bytes_for(
         &self,
         capacity: usize,
@@ -18,7 +26,17 @@ impl CudaExecutor {
     ) -> Result<Option<u64>> {
         // Prefill still needs the sequence's own program even when decode will lease a slot.
         // Capture and cached-shell accounting must use the same price as reserve().
-        let private = self.private_verification_for(capacity, readout);
+        let private = self.private_verification_for(capacity, readout, true);
+        self.reservation_budget(capacity, readout, private)
+            .map(Some)
+    }
+
+    pub(super) fn state_reservation_bytes_for_media(
+        &self,
+        capacity: usize,
+        readout: OutputReadout,
+    ) -> Result<Option<u64>> {
+        let private = self.private_verification_for(capacity, readout, false);
         self.reservation_budget(capacity, readout, private)
             .map(Some)
     }
@@ -99,7 +117,7 @@ impl CudaExecutor {
         capacity: usize,
         readout: OutputReadout,
     ) -> Result<()> {
-        self.reserve(state, capacity, readout)
+        self.reserve(state, capacity, readout, true)
     }
 
     /// Restore a cached prompt prefix into `state` and report how many tokens it covered.

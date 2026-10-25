@@ -26,15 +26,16 @@ fn encoder() -> ModalityEncoder {
 }
 
 #[test]
-fn head_width_72_is_padded_to_the_64_column_tile() {
+fn head_width_72_uses_a_compact_16_multiple_half_tile() {
     let encoder = encoder();
     let head = encoder.hidden_size / encoder.heads;
     assert_eq!(head, 72);
     let half = super::weights::half_tile(&encoder).expect("half tile");
     let width = half * 2;
-    assert_eq!(half, 64);
-    assert_eq!(width, 128);
-    assert_eq!(head.next_multiple_of(super::program::column_tile()), 128);
+    assert_eq!(half, 48);
+    assert_eq!(width, 96);
+    assert_eq!(width % 16, 0);
+    assert_eq!((encoder.heads * width) % super::program::column_tile(), 0);
 
     let real_rows = u64::try_from(encoder.heads * head).expect("rows");
     let padded_rows = u64::try_from(encoder.heads * width).expect("padded rows");
@@ -44,9 +45,11 @@ fn head_width_72_is_padded_to_the_64_column_tile() {
     let real = (3 * real_rows * hidden + hidden * real_rows) * bytes * depth;
     let padded = (3 * padded_rows * hidden + hidden * padded_rows) * bytes * depth;
     let overhead = padded - real;
-    assert!(overhead > 100 * 1024 * 1024, "overhead {overhead}");
+    assert_eq!(real, 254_803_968);
+    assert_eq!(padded, 339_738_624);
+    assert_eq!(overhead, 84_934_656);
     eprintln!(
-        "vision head padding: real={real} padded={padded} overhead={overhead} bytes (depth={depth})"
+        "vision head padding: real={real} padded={padded} overhead={overhead} bytes (depth={depth}, width={width})"
     );
 }
 
@@ -57,4 +60,18 @@ fn a_64_multiple_head_has_no_padding() {
     let half = super::weights::half_tile(&encoder).expect("half tile");
     assert_eq!(half * 2, 64);
     assert_eq!(encoder.hidden_size / encoder.heads, 64);
+}
+
+#[test]
+fn compact_half_layout_preserves_split_half_order_and_padding() {
+    let layout = super::weights::half_layout(72, 48);
+    assert_eq!(layout.len(), 96);
+    for (index, lane) in layout.iter().enumerate() {
+        match index {
+            0..36 => assert_eq!(*lane, Some(index)),
+            36..48 | 84..96 => assert_eq!(*lane, None),
+            48..84 => assert_eq!(*lane, Some(index - 12)),
+            _ => unreachable!(),
+        }
+    }
 }

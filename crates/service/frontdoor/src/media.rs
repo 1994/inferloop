@@ -12,13 +12,18 @@ use infer_models::{
     MediaLimits, MultimodalAssets, PreparedPrompt, RawImage, RawVideo, RgbImage, TextAssets,
 };
 use std::env::temp_dir;
-use std::fs::{metadata, read, remove_file, write};
-use std::io::{Cursor, Read};
+use std::fs::{File, OpenOptions, metadata, read, remove_file};
+use std::io::{self, Cursor, Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio, id};
+use std::process::{Command, ExitStatus, Stdio, id};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Largest accepted image payload after decoding or download.
 const MAX_IMAGE_BYTES: usize = 24 * 1024 * 1024;
@@ -33,9 +38,7 @@ const MAX_VIDEO_BYTES: usize = 24 * 1024 * 1024;
 /// Host staging credit reserved for one media item before decode.
 pub const MEDIA_STAGING_BYTES: usize = MAX_VIDEO_BYTES + 1024 * 1024;
 /// Largest accepted frame count decoded from one clip.
-const MAX_VIDEO_FRAMES: usize = 64;
-/// Longest accepted clip duration handed to ffmpeg.
-const MAX_VIDEO_SECONDS: u32 = 10;
+const MAX_VIDEO_FRAMES: usize = 768;
 /// Chunk size for bounded decoder output draining.
 const READ_CHUNK_BYTES: usize = 64 * 1024;
 /// Largest accepted URL or data-URI text.
@@ -54,14 +57,32 @@ const GRID_AXES: usize = 3;
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 /// FNV-1a 64-bit prime for the content digest.
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-/// Lowest accepted source frame rate.
-const MIN_FPS: f64 = 1.0;
-/// Highest accepted source frame rate.
-const MAX_FPS: f64 = 240.0;
+/// Highest accepted source frame rate; lower rates such as 0.5 are preserved.
+const MAX_SOURCE_FPS: f64 = 1000.0;
 /// HTTP fetch timeout.
 const HTTP_TIMEOUT_SECONDS: u32 = 20;
+/// Bound for one subprocess stream that is not already media-sized.
+const SUBPROCESS_STREAM_BYTES: usize = 1 << 20;
+/// Wall-clock bound for one ffprobe invocation.
+const PROBE_TIMEOUT_SECONDS: u64 = 5;
+/// Wall-clock bound for one ffmpeg decode invocation.
+const DECODE_TIMEOUT_SECONDS: u64 = 15;
+/// Poll interval while waiting for a bounded subprocess.
+const PROCESS_POLL_MILLIS: u64 = 10;
+/// Owner-only mode for temporary media files.
+#[cfg(unix)]
+const TEMP_FILE_MODE: u32 = 0o600;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+/// Where a media URL may be read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourcePolicy {
+    /// Public HTTP input: data and remote URLs only.
+    Public,
+    /// Trusted local fixture/debug input: also accepts file:// and absolute paths.
+    TrustedLocal,
+}
 
 /// One media reference parsed from an `OpenAI` content part.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,11 +95,16 @@ pub struct MediaRequest {
 pub struct MediaService {
     assets: Arc<MultimodalAssets>,
     limits: MediaLimits,
+    source: SourcePolicy,
 }
 impl MediaService {
     #[must_use]
     pub const fn new(assets: Arc<MultimodalAssets>, limits: MediaLimits) -> Self {
-        Self { assets, limits }
+        Self {
+            assets,
+            limits,
+            source: SourcePolicy::Public,
+        }
     }
     #[must_use]
     pub const fn limits(&self) -> MediaLimits {
@@ -113,14 +139,14 @@ impl MediaService {
             Modality::Image => {
                 let images = requests
                     .iter()
-                    .map(|request| load_image(&request.url))
+                    .map(|request| load_image_with(&request.url, self.source))
                     .collect::<Result<Vec<_>>>()?;
                 self.assets.prepare_images(assets, prompt, &images)?
             }
             Modality::Video => {
                 let videos = requests
                     .iter()
-                    .map(|request| load_video(&request.url))
+                    .map(|request| load_video_with(&request.url, self.source))
                     .collect::<Result<Vec<_>>>()?;
                 self.assets.prepare_video(assets, prompt, &videos)?
             }
@@ -176,41 +202,73 @@ fn digest(item: &MediaItem) -> String {
 /// Decode one image URL/data URI into bounded RGB8.
 /// # Errors
 /// Rejects unsupported schemes, over-limit payloads, malformed bytes and decode failures.
+#[cfg(test)]
 pub fn load_image(url: &str) -> Result<RawImage> {
-    let bytes = read_url(url, MAX_IMAGE_BYTES)?;
-    if let Ok(rgb) = decode_png(&bytes) {
-        return rgb_image(rgb.width(), rgb.height(), rgb.into_raw());
+    load_image_with(url, SourcePolicy::Public)
+}
+
+fn load_image_with(url: &str, source: SourcePolicy) -> Result<RawImage> {
+    let bytes = read_url(url, MAX_IMAGE_BYTES, source)?;
+    match decode_png(&bytes) {
+        Ok(rgb) => return rgb_image(rgb.width(), rgb.height(), rgb.into_raw()),
+        Err(error) if error.code == ErrorCode::Capacity => return Err(error),
+        Err(_) => {}
     }
-    // JPEG/WebP may not be enabled in the host image crate; ffmpeg covers those formats.
+    // A format the in-process decoder cannot identify (or a corrupted stream) is an explicit
+    // decode failure; ffmpeg is retained only for the video container path.
     let temp = materialize(&bytes, "image")?;
-    let (width, height, _) = probe(&temp.path)?;
-    let raw = decode_frames(&temp.path, width, height, 1)?;
+    let probe = probe(&temp.path)?;
+    let raw = decode_frames(&temp.path, probe.width, probe.height, 1)?;
     let frame = raw
         .into_iter()
         .next()
         .ok_or_else(|| Error::invalid("image decoder produced no frame"))?;
-    rgb_image(width, height, frame)
+    rgb_image(probe.width, probe.height, frame)
 }
 
 /// Decode one video URL/data URI into source-rate RGB frames.
 /// # Errors
 /// Rejects unsupported schemes, over-limit payloads/geometry, missing ffmpeg and decode failures.
-pub fn load_video(url: &str) -> Result<RawVideo> {
-    let bytes = read_url(url, MAX_VIDEO_BYTES)?;
+fn load_video_with(url: &str, source: SourcePolicy) -> Result<RawVideo> {
+    let bytes = read_url(url, MAX_VIDEO_BYTES, source)?;
     let temp = materialize(&bytes, "video")?;
-    let (width, height, fps) = probe(&temp.path)?;
-    let frames = decode_frames(&temp.path, width, height, MAX_VIDEO_FRAMES)?;
+    let probe = probe(&temp.path)?;
+    check_video_frame_limit(probe.total_frames)?;
+    let frames = decode_frames(&temp.path, probe.width, probe.height, MAX_VIDEO_FRAMES)?;
     if frames.is_empty() {
         return Err(Error::invalid("video decoder produced no frames"));
     }
     let frames = frames
         .into_iter()
-        .map(|pixels| rgb_frame(width, height, pixels))
+        .map(|pixels| rgb_frame(probe.width, probe.height, pixels))
         .collect::<Result<Vec<_>>>()?;
-    Ok(RawVideo { fps, frames })
+    Ok(RawVideo {
+        fps: probe.fps,
+        frames,
+    })
+}
+
+fn check_image_dimensions(width: u32, height: u32) -> Result<()> {
+    let pixels = u64::from(width).saturating_mul(u64::from(height));
+    if width == 0 || height == 0 || pixels > MAX_IMAGE_PIXELS as u64 {
+        return Err(Error::new(
+            ErrorCode::Capacity,
+            "image dimensions exceed the bounded media limit",
+        ));
+    }
+    Ok(())
 }
 
 fn decode_png(bytes: &[u8]) -> Result<image::RgbImage> {
+    // Read the header before materializing the full image. A compressed high-dimension file
+    // then fails here rather than allocating the claimed dimensions.
+    let probe = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| Error::invalid(format!("image format: {error}")))?;
+    let (width, height) = probe
+        .into_dimensions()
+        .map_err(|error| Error::invalid(format!("image dimensions: {error}")))?;
+    check_image_dimensions(width, height)?;
     let mut reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|error| Error::invalid(format!("image format: {error}")))?;
@@ -232,12 +290,10 @@ fn rgb_image(width: u32, height: u32, pixels: Vec<u8>) -> Result<RawImage> {
         .checked_mul(height)
         .and_then(|n| n.checked_mul(RGB_CHANNELS))
         .ok_or_else(|| Error::invalid("image dimensions overflow"))?;
-    if width == 0 || height == 0 || width.saturating_mul(height) > MAX_IMAGE_PIXELS {
-        return Err(Error::new(
-            ErrorCode::Capacity,
-            "image dimensions exceed the bounded media limit",
-        ));
-    }
+    check_image_dimensions(
+        u32::try_from(width).unwrap_or(u32::MAX),
+        u32::try_from(height).unwrap_or(u32::MAX),
+    )?;
     if pixels.len() != expected {
         return Err(Error::invalid("decoded image buffer has the wrong size"));
     }
@@ -257,7 +313,7 @@ fn rgb_frame(width: u32, height: u32, pixels: Vec<u8>) -> Result<RgbImage> {
     })
 }
 
-fn read_url(url: &str, limit: usize) -> Result<Vec<u8>> {
+fn read_url(url: &str, limit: usize, source: SourcePolicy) -> Result<Vec<u8>> {
     if url.is_empty() {
         return Err(Error::invalid("media URL is empty"));
     }
@@ -277,17 +333,29 @@ fn read_url(url: &str, limit: usize) -> Result<Vec<u8>> {
         return Err(Error::invalid("media URL is too long"));
     }
     if let Some(path) = url.strip_prefix("file://") {
+        require_local(source, url)?;
         return read_file(Path::new(path), limit);
     }
     if url.starts_with("http://") || url.starts_with("https://") {
         return fetch_http(url, limit);
     }
     if Path::new(url).is_absolute() {
+        require_local(source, url)?;
         return read_file(Path::new(url), limit);
     }
     Err(Error::unsupported(
         "media URL must be data:, file://, absolute path, http:// or https://",
     ))
+}
+
+fn require_local(source: SourcePolicy, url: &str) -> Result<()> {
+    if source == SourcePolicy::TrustedLocal {
+        Ok(())
+    } else {
+        Err(Error::unsupported(format!(
+            "public media input cannot reference server-local path {url:?}"
+        )))
+    }
 }
 
 fn read_data_uri(url: &str, limit: usize) -> Result<Vec<u8>> {
@@ -320,54 +388,193 @@ fn read_file(path: &Path, limit: usize) -> Result<Vec<u8>> {
     read(path).map_err(|e| Error::invalid(e.to_string()))
 }
 
+/// A bounded subprocess result with both streams drained.
+#[derive(Debug)]
+struct BoundedOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+/// Run one external decoder with a wall-clock deadline and bounded both-stream draining.
+///
+/// The command owns its process group so a timeout can terminate any children it started. The
+/// two reader threads are bounded by the caller's item budget and are joined before returning;
+/// no child or reader survives an error path.
+fn run_bounded(
+    command: &mut Command,
+    stdout_limit: usize,
+    stderr_limit: usize,
+    timeout: Duration,
+) -> Result<BoundedOutput> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command
+        .spawn()
+        .map_err(|error| Error::unsupported(format!("media subprocess unavailable: {error}")))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::invariant("media subprocess stdout missing"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| Error::invariant("media subprocess stderr missing"))?;
+    let out_reader = read_capped(stdout, stdout_limit);
+    let err_reader = read_capped(stderr, stderr_limit);
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() >= deadline => {
+                kill_group(child.id());
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = out_reader.join();
+                let _ = err_reader.join();
+                return Err(Error::new(ErrorCode::Backend, "media subprocess timed out"));
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(PROCESS_POLL_MILLIS)),
+            Err(error) => {
+                kill_group(child.id());
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = out_reader.join();
+                let _ = err_reader.join();
+                return Err(Error::invalid(error.to_string()));
+            }
+        }
+    };
+    let (stdout, stdout_overflow) = join_reader(out_reader)?;
+    let (stderr, stderr_overflow) = join_reader(err_reader)?;
+    if stdout_overflow || stderr_overflow {
+        return Err(Error::new(
+            ErrorCode::Capacity,
+            "media subprocess output exceeds the bounded limit",
+        ));
+    }
+    Ok(BoundedOutput {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn join_reader(handle: thread::JoinHandle<io::Result<(Vec<u8>, bool)>>) -> Result<(Vec<u8>, bool)> {
+    handle
+        .join()
+        .map_err(|_| Error::invariant("media reader thread panicked"))?
+        .map_err(|error| Error::invalid(error.to_string()))
+}
+
+fn read_capped(
+    mut pipe: impl Read + Send + 'static,
+    limit: usize,
+) -> thread::JoinHandle<io::Result<(Vec<u8>, bool)>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut overflow = false;
+        let mut chunk = vec![0u8; READ_CHUNK_BYTES];
+        loop {
+            let read = pipe.read(&mut chunk)?;
+            if read == 0 {
+                break;
+            }
+            if bytes.len().saturating_add(read) > limit {
+                overflow = true;
+            } else {
+                bytes.extend_from_slice(&chunk[..read]);
+            }
+        }
+        Ok((bytes, overflow))
+    })
+}
+
+fn kill_group(process_group: u32) {
+    #[cfg(unix)]
+    {
+        let _ = Command::new("/bin/kill")
+            .args(["-KILL", "--", &format!("-{process_group}")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = process_group;
+    }
+}
+
 fn fetch_http(url: &str, limit: usize) -> Result<Vec<u8>> {
-    let temp = TempPath::new("download", "media")?;
-    let status = Command::new("curl")
-        .args([
-            "--fail",
-            "--location",
-            "--silent",
-            "--show-error",
-            "--max-time",
-            &HTTP_TIMEOUT_SECONDS.to_string(),
-            "--max-filesize",
-            &limit.to_string(),
-            "--output",
-            &temp.path.to_string_lossy(),
-            url,
-        ])
-        .status()
-        .map_err(|error| Error::unsupported(format!("curl is required for media URLs: {error}")))?;
-    if !status.success() {
+    let (temp, file) = TempPath::create("download", "media")?;
+    drop(file);
+    let mut command = Command::new("curl");
+    command.args([
+        "--fail",
+        "--location",
+        "--silent",
+        "--show-error",
+        "--max-time",
+        &HTTP_TIMEOUT_SECONDS.to_string(),
+        "--max-filesize",
+        &limit.to_string(),
+        "--output",
+        &temp.path.to_string_lossy(),
+        url,
+    ]);
+    let output = run_bounded(
+        &mut command,
+        SUBPROCESS_STREAM_BYTES,
+        SUBPROCESS_STREAM_BYTES,
+        Duration::from_secs(u64::from(HTTP_TIMEOUT_SECONDS) + PROBE_TIMEOUT_SECONDS),
+    )?;
+    if !output.status.success() {
         return Err(Error::invalid(format!(
-            "media download failed with {status}"
+            "media download failed; {}",
+            String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
     read_file(&temp.path, limit)
 }
 
 fn materialize(bytes: &[u8], kind: &str) -> Result<TempPath> {
-    let temp = TempPath::new(kind, "media")?;
-    write(&temp.path, bytes).map_err(|e| Error::invalid(e.to_string()))?;
+    let (temp, mut file) = TempPath::create(kind, "media")?;
+    file.write_all(bytes)
+        .map_err(|e| Error::invalid(e.to_string()))?;
     Ok(temp)
 }
 
-/// Probe stream geometry with ffprobe.
-fn probe(path: &Path) -> Result<(u32, u32, f64)> {
-    let output = Command::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=width,height,avg_frame_rate",
-            "-of",
-            "json",
-            &path.to_string_lossy(),
-        ])
-        .output()
-        .map_err(|error| Error::unsupported(format!("ffprobe is required for media: {error}")))?;
+/// Probe stream geometry and source frame metadata with ffprobe.
+struct Probe {
+    width: u32,
+    height: u32,
+    fps: f64,
+    total_frames: Option<usize>,
+}
+
+fn probe(path: &Path) -> Result<Probe> {
+    let mut command = Command::new("ffprobe");
+    command.args([
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height,avg_frame_rate,nb_frames,duration",
+        "-of",
+        "json",
+        &path.to_string_lossy(),
+    ]);
+    let output = run_bounded(
+        &mut command,
+        SUBPROCESS_STREAM_BYTES,
+        SUBPROCESS_STREAM_BYTES,
+        Duration::from_secs(PROBE_TIMEOUT_SECONDS),
+    )?;
     if !output.status.success() {
         return Err(Error::invalid(format!(
             "media probe failed: {}",
@@ -401,7 +608,48 @@ fn probe(path: &Path) -> Result<(u32, u32, f64)> {
         .and_then(serde_json::Value::as_str)
         .unwrap_or("30/1");
     let fps = parse_rate(rate)?;
-    Ok((width, height, fps))
+    let total_frames = stream
+        .get("nb_frames")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| value.parse::<usize>().ok())
+        .or_else(|| {
+            let duration = stream
+                .get("duration")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|value| value.parse::<f64>().ok())?;
+            let estimate = (duration * fps).ceil();
+            (estimate.is_finite() && estimate >= 0.0).then(|| usize_from_frames(estimate))
+        });
+    Ok(Probe {
+        width,
+        height,
+        fps,
+        total_frames,
+    })
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "The estimate is finite, nonnegative and bounded by the frame limit check"
+)]
+fn usize_from_frames(value: f64) -> usize {
+    if value > usize::MAX as f64 {
+        usize::MAX
+    } else {
+        value as usize
+    }
+}
+
+fn check_video_frame_limit(total_frames: Option<usize>) -> Result<()> {
+    if total_frames.is_some_and(|frames| frames > MAX_VIDEO_FRAMES) {
+        return Err(Error::new(
+            ErrorCode::Capacity,
+            "video frame count exceeds the bounded decoder limit",
+        ));
+    }
+    Ok(())
 }
 
 fn parse_rate(rate: &str) -> Result<f64> {
@@ -415,7 +663,13 @@ fn parse_rate(rate: &str) -> Result<f64> {
     if !num.is_finite() || !den.is_finite() || num <= 0.0 || den <= 0.0 {
         return Err(Error::invalid("media frame rate must be positive"));
     }
-    Ok((num / den).clamp(MIN_FPS, MAX_FPS))
+    let fps = num / den;
+    if !fps.is_finite() || fps <= 0.0 || fps > MAX_SOURCE_FPS {
+        return Err(Error::invalid(
+            "media frame rate is outside the supported range",
+        ));
+    }
+    Ok(fps)
 }
 
 /// Decode bounded RGB24 frames through ffmpeg.
@@ -431,71 +685,64 @@ fn decode_frames(path: &Path, width: u32, height: u32, frames: usize) -> Result<
             "decoded media exceeds the bounded limit",
         ));
     }
-    let mut child = Command::new("ffmpeg")
-        .args([
-            "-v",
-            "error",
-            "-nostdin",
-            "-i",
-            &path.to_string_lossy(),
-            "-map",
-            "0:v:0",
-            "-an",
-            "-vsync",
-            "0",
-            "-frames:v",
-            &frames.to_string(),
-            "-t",
-            &MAX_VIDEO_SECONDS.to_string(),
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgb24",
-            "pipe:1",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| Error::unsupported(format!("ffmpeg is required for media: {error}")))?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| Error::invariant("ffmpeg stdout missing"))?;
-    let mut bytes = Vec::new();
-    let mut chunk = vec![0u8; READ_CHUNK_BYTES];
-    loop {
-        let read = stdout
-            .read(&mut chunk)
-            .map_err(|e| Error::invalid(e.to_string()))?;
-        if read == 0 {
-            break;
-        }
-        if bytes.len().saturating_add(read) > MAX_VIDEO_BYTES {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(Error::new(
-                ErrorCode::Capacity,
-                "decoded media exceeds the bounded limit",
-            ));
-        }
-        bytes.extend_from_slice(&chunk[..read]);
-    }
-    let output = child
-        .wait_with_output()
-        .map_err(|e| Error::invalid(e.to_string()))?;
+    let requested = frames.saturating_add(1);
+    let mut command = Command::new("ffmpeg");
+    command.args([
+        "-v",
+        "error",
+        "-nostdin",
+        "-i",
+        &path.to_string_lossy(),
+        "-map",
+        "0:v:0",
+        "-an",
+        "-fps_mode",
+        "passthrough",
+        "-frames:v",
+        &requested.to_string(),
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "pipe:1",
+    ]);
+    let output = run_bounded(
+        &mut command,
+        MAX_VIDEO_BYTES,
+        SUBPROCESS_STREAM_BYTES,
+        Duration::from_secs(DECODE_TIMEOUT_SECONDS),
+    )?;
     if !output.status.success() {
         return Err(Error::invalid(format!(
             "media decode failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
-    if bytes.len() > MAX_VIDEO_BYTES || !bytes.len().is_multiple_of(frame_bytes) {
+    if !output.stdout.len().is_multiple_of(frame_bytes) {
         return Err(Error::invalid("decoded media byte count is inconsistent"));
     }
-    Ok(bytes
+    let count = output.stdout.len() / frame_bytes;
+    if count > frames {
+        return Err(Error::new(
+            ErrorCode::Capacity,
+            "video exceeds the bounded decoder frame limit",
+        ));
+    }
+    Ok(output
+        .stdout
         .chunks_exact(frame_bytes)
         .map(<[u8]>::to_vec)
         .collect())
+}
+
+fn create_exclusive(path: &Path) -> Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(TEMP_FILE_MODE);
+    options
+        .open(path)
+        .map_err(|e| Error::invalid(e.to_string()))
 }
 
 /// Temporary path removed on drop.
@@ -503,7 +750,13 @@ struct TempPath {
     path: PathBuf,
 }
 impl TempPath {
-    fn new(kind: &str, extension: &str) -> Result<Self> {
+    #[cfg(test)]
+    fn create_at(path: PathBuf) -> Result<(Self, File)> {
+        let file = create_exclusive(&path)?;
+        Ok((Self { path }, file))
+    }
+
+    fn create(kind: &str, extension: &str) -> Result<(Self, File)> {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -513,7 +766,8 @@ impl TempPath {
             "inferloop-{kind}-{}-{nanos}-{sequence}.{extension}",
             id()
         ));
-        Ok(Self { path })
+        let file = create_exclusive(&path)?;
+        Ok((Self { path }, file))
     }
 }
 impl Drop for TempPath {

@@ -32,10 +32,16 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         request: &CanonicalRequest,
         plan: &WorkloadPlan,
     ) -> Result<AdmissionDecision> {
-        let bytes = self.backend.state_reservation_bytes_for(
-            plan.reserved_tokens,
-            retained_readout(&request.workload),
-        )?;
+        let media =
+            matches!(&request.input, RequestInput::Sequence { media, .. } if !media.is_empty());
+        let readout = retained_readout(&request.workload);
+        let bytes = if media {
+            self.backend
+                .state_reservation_bytes_for_media(plan.reserved_tokens, readout)?
+        } else {
+            self.backend
+                .state_reservation_bytes_for(plan.reserved_tokens, readout)?
+        };
         self.check_admission_with_bytes(request, plan, bytes)
     }
     pub(crate) fn check_admission_with_bytes(

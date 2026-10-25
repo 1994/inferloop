@@ -462,6 +462,16 @@ fn wire_part(part: &Value, index: usize) -> Result<WirePart<'_>> {
     }
 }
 
+fn validate_public_media_url(url: &str) -> Result<()> {
+    if url.starts_with("data:") || url.starts_with("http://") || url.starts_with("https://") {
+        Ok(())
+    } else {
+        Err(Error::unsupported(
+            "public media URLs must be data:, http:// or https://; server-local paths are not allowed",
+        ))
+    }
+}
+
 fn image_request(object: &serde_json::Map<String, Value>, index: usize) -> Result<MediaRequest> {
     let url = if let Some(value) = object.get("image_url") {
         let detail = value
@@ -488,9 +498,7 @@ fn image_request(object: &serde_json::Map<String, Value>, index: usize) -> Resul
     let url = url
         .and_then(Value::as_str)
         .ok_or_else(|| Error::invalid(format!("image_url part {index} requires a URL")))?;
-    if url.is_empty() {
-        return Err(Error::invalid("image_url must not be empty"));
-    }
+    validate_public_media_url(url)?;
     Ok(MediaRequest {
         modality: Modality::Image,
         url: url.to_owned(),
@@ -512,6 +520,7 @@ fn video_request(object: &serde_json::Map<String, Value>, index: usize) -> Resul
         .and_then(Value::as_str)
         .filter(|url| !url.is_empty())
         .ok_or_else(|| Error::invalid(format!("video_url part {index} requires a URL")))?;
+    validate_public_media_url(url)?;
     Ok(MediaRequest {
         modality: Modality::Video,
         url: url.to_owned(),

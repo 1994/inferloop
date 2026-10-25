@@ -359,10 +359,14 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 self.check_admission_with_bytes(&request, &plan, bytes)?
             }
             ReservationQuote::Query => {
-                self.backend.prepare_state_reservation(
-                    plan.reserved_tokens,
-                    retained_readout(&request.workload),
-                )?;
+                let readout = retained_readout(&request.workload);
+                if media.is_some() {
+                    self.backend
+                        .prepare_state_reservation_for_media(plan.reserved_tokens, readout)?;
+                } else {
+                    self.backend
+                        .prepare_state_reservation(plan.reserved_tokens, readout)?;
+                }
                 self.check_admission(&request, &plan)?
             }
         };
@@ -432,40 +436,49 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             StateKind::AttentionKv,
             prepared.plan.reserved_tokens,
         )?;
-        let pending = self
-            .backend
-            .begin_resource(infer_spi::ResourceCommand::Reserve {
+        let command = if prepared.media.is_some() {
+            infer_spi::ResourceCommand::ReserveMedia {
                 state,
                 capacity: prepared.plan.reserved_tokens,
                 readout: retained_readout(&prepared.request.workload),
-            })
-            .and_then(|mut ticket| match ticket.poll() {
-                Ok(Some(infer_spi::ResourceReply::Reserved)) => Ok(None),
-                Ok(Some(_)) => Err(Error::invariant(
-                    "reservation acknowledgement type mismatch",
-                )),
-                // The device owner can acknowledge before the engine's first poll.
-                // A busy resident budget is backpressure, not a failed submission:
-                // keep the host state and retry only after ownership progresses.
-                Err(error)
-                    if error.code == ErrorCode::Capacity
-                        && self.backend.tracks_reservation_intent() =>
-                {
-                    Ok(Some(PendingResource {
-                        ticket: None,
+            }
+        } else {
+            infer_spi::ResourceCommand::Reserve {
+                state,
+                capacity: prepared.plan.reserved_tokens,
+                readout: retained_readout(&prepared.request.workload),
+            }
+        };
+        let pending =
+            self.backend
+                .begin_resource(command)
+                .and_then(|mut ticket| match ticket.poll() {
+                    Ok(Some(infer_spi::ResourceReply::Reserved)) => Ok(None),
+                    Ok(Some(_)) => Err(Error::invariant(
+                        "reservation acknowledgement type mismatch",
+                    )),
+                    // The device owner can acknowledge before the engine's first poll.
+                    // A busy resident budget is backpressure, not a failed submission:
+                    // keep the host state and retry only after ownership progresses.
+                    Err(error)
+                        if error.code == ErrorCode::Capacity
+                            && self.backend.tracks_reservation_intent() =>
+                    {
+                        Ok(Some(PendingResource {
+                            ticket: None,
+                            phase: ResourcePhase::Reserve,
+                            retry_epoch: Some(self.resource_epoch),
+                            started: self.now_us,
+                        }))
+                    }
+                    Err(error) => Err(error),
+                    Ok(None) => Ok(Some(PendingResource {
+                        ticket: Some(ticket),
                         phase: ResourcePhase::Reserve,
                         retry_epoch: Some(self.resource_epoch),
                         started: self.now_us,
-                    }))
-                }
-                Err(error) => Err(error),
-                Ok(None) => Ok(Some(PendingResource {
-                    ticket: Some(ticket),
-                    phase: ResourcePhase::Reserve,
-                    retry_epoch: Some(self.resource_epoch),
-                    started: self.now_us,
-                })),
-            });
+                    })),
+                });
         let pending = match pending {
             Ok(pending) => pending,
             Err(error) => {
