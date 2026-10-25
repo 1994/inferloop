@@ -4,6 +4,7 @@
 //! patch payloads plus their prompt spans. Every read is size-bounded and every external command
 //! gets a hard time/frame bound. A malformed or over-limit input is an explicit error, never a
 //! text-only fallback.
+use crate::cpu::CpuContext;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use infer_core::{Error, ErrorCode, MediaId, Result};
@@ -120,6 +121,7 @@ impl MediaService {
         assets: &TextAssets,
         prompt: &str,
         requests: &[MediaRequest],
+        context: &CpuContext,
     ) -> Result<(PreparedPrompt, Vec<MediaInput>)> {
         if requests.is_empty() {
             return Err(Error::invalid("media preparation needs at least one item"));
@@ -139,14 +141,14 @@ impl MediaService {
             Modality::Image => {
                 let images = requests
                     .iter()
-                    .map(|request| load_image_with(&request.url, self.source))
+                    .map(|request| load_image_with(&request.url, self.source, Some(context)))
                     .collect::<Result<Vec<_>>>()?;
                 self.assets.prepare_images(assets, prompt, &images)?
             }
             Modality::Video => {
                 let videos = requests
                     .iter()
-                    .map(|request| load_video_with(&request.url, self.source))
+                    .map(|request| load_video_with(&request.url, self.source, Some(context)))
                     .collect::<Result<Vec<_>>>()?;
                 self.assets.prepare_video(assets, prompt, &videos)?
             }
@@ -204,11 +206,15 @@ fn digest(item: &MediaItem) -> String {
 /// Rejects unsupported schemes, over-limit payloads, malformed bytes and decode failures.
 #[cfg(test)]
 pub fn load_image(url: &str) -> Result<RawImage> {
-    load_image_with(url, SourcePolicy::Public)
+    load_image_with(url, SourcePolicy::Public, None)
 }
 
-fn load_image_with(url: &str, source: SourcePolicy) -> Result<RawImage> {
-    let bytes = read_url(url, MAX_IMAGE_BYTES, source)?;
+fn load_image_with(
+    url: &str,
+    source: SourcePolicy,
+    context: Option<&CpuContext>,
+) -> Result<RawImage> {
+    let bytes = read_url(url, MAX_IMAGE_BYTES, source, context)?;
     match decode_png(&bytes) {
         Ok(rgb) => return rgb_image(rgb.width(), rgb.height(), rgb.into_raw()),
         Err(error) if error.code == ErrorCode::Capacity => return Err(error),
@@ -217,8 +223,8 @@ fn load_image_with(url: &str, source: SourcePolicy) -> Result<RawImage> {
     // A format the in-process decoder cannot identify (or a corrupted stream) is an explicit
     // decode failure; ffmpeg is retained only for the video container path.
     let temp = materialize(&bytes, "image")?;
-    let probe = probe(&temp.path)?;
-    let raw = decode_frames(&temp.path, probe.width, probe.height, 1)?;
+    let probe = probe(&temp.path, context)?;
+    let raw = decode_frames(&temp.path, probe.width, probe.height, 1, context)?;
     let frame = raw
         .into_iter()
         .next()
@@ -229,12 +235,22 @@ fn load_image_with(url: &str, source: SourcePolicy) -> Result<RawImage> {
 /// Decode one video URL/data URI into source-rate RGB frames.
 /// # Errors
 /// Rejects unsupported schemes, over-limit payloads/geometry, missing ffmpeg and decode failures.
-fn load_video_with(url: &str, source: SourcePolicy) -> Result<RawVideo> {
-    let bytes = read_url(url, MAX_VIDEO_BYTES, source)?;
+fn load_video_with(
+    url: &str,
+    source: SourcePolicy,
+    context: Option<&CpuContext>,
+) -> Result<RawVideo> {
+    let bytes = read_url(url, MAX_VIDEO_BYTES, source, context)?;
     let temp = materialize(&bytes, "video")?;
-    let probe = probe(&temp.path)?;
+    let probe = probe(&temp.path, context)?;
     check_video_frame_limit(probe.total_frames)?;
-    let frames = decode_frames(&temp.path, probe.width, probe.height, MAX_VIDEO_FRAMES)?;
+    let frames = decode_frames(
+        &temp.path,
+        probe.width,
+        probe.height,
+        MAX_VIDEO_FRAMES,
+        context,
+    )?;
     if frames.is_empty() {
         return Err(Error::invalid("video decoder produced no frames"));
     }
@@ -313,7 +329,12 @@ fn rgb_frame(width: u32, height: u32, pixels: Vec<u8>) -> Result<RgbImage> {
     })
 }
 
-fn read_url(url: &str, limit: usize, source: SourcePolicy) -> Result<Vec<u8>> {
+fn read_url(
+    url: &str,
+    limit: usize,
+    source: SourcePolicy,
+    context: Option<&CpuContext>,
+) -> Result<Vec<u8>> {
     if url.is_empty() {
         return Err(Error::invalid("media URL is empty"));
     }
@@ -337,7 +358,7 @@ fn read_url(url: &str, limit: usize, source: SourcePolicy) -> Result<Vec<u8>> {
         return read_file(Path::new(path), limit);
     }
     if url.starts_with("http://") || url.starts_with("https://") {
-        return fetch_http(url, limit);
+        return fetch_http(url, limit, context);
     }
     if Path::new(url).is_absolute() {
         require_local(source, url)?;
@@ -406,7 +427,11 @@ fn run_bounded(
     stdout_limit: usize,
     stderr_limit: usize,
     timeout: Duration,
+    context: Option<&CpuContext>,
 ) -> Result<BoundedOutput> {
+    if let Some(context) = context {
+        context.check()?;
+    }
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -428,6 +453,16 @@ fn run_bounded(
     let err_reader = read_capped(stderr, stderr_limit);
     let deadline = Instant::now() + timeout;
     let status = loop {
+        if let Some(context) = context
+            && let Err(error) = context.check()
+        {
+            kill_group(child.id());
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = out_reader.join();
+            let _ = err_reader.join();
+            return Err(error);
+        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() >= deadline => {
@@ -509,7 +544,7 @@ fn kill_group(process_group: u32) {
     }
 }
 
-fn fetch_http(url: &str, limit: usize) -> Result<Vec<u8>> {
+fn fetch_http(url: &str, limit: usize, context: Option<&CpuContext>) -> Result<Vec<u8>> {
     let (temp, file) = TempPath::create("download", "media")?;
     drop(file);
     let mut command = Command::new("curl");
@@ -531,6 +566,7 @@ fn fetch_http(url: &str, limit: usize) -> Result<Vec<u8>> {
         SUBPROCESS_STREAM_BYTES,
         SUBPROCESS_STREAM_BYTES,
         Duration::from_secs(u64::from(HTTP_TIMEOUT_SECONDS) + PROBE_TIMEOUT_SECONDS),
+        context,
     )?;
     if !output.status.success() {
         return Err(Error::invalid(format!(
@@ -556,7 +592,7 @@ struct Probe {
     total_frames: Option<usize>,
 }
 
-fn probe(path: &Path) -> Result<Probe> {
+fn probe(path: &Path, context: Option<&CpuContext>) -> Result<Probe> {
     let mut command = Command::new("ffprobe");
     command.args([
         "-v",
@@ -574,6 +610,7 @@ fn probe(path: &Path) -> Result<Probe> {
         SUBPROCESS_STREAM_BYTES,
         SUBPROCESS_STREAM_BYTES,
         Duration::from_secs(PROBE_TIMEOUT_SECONDS),
+        context,
     )?;
     if !output.status.success() {
         return Err(Error::invalid(format!(
@@ -673,7 +710,13 @@ fn parse_rate(rate: &str) -> Result<f64> {
 }
 
 /// Decode bounded RGB24 frames through ffmpeg.
-fn decode_frames(path: &Path, width: u32, height: u32, frames: usize) -> Result<Vec<Vec<u8>>> {
+fn decode_frames(
+    path: &Path,
+    width: u32,
+    height: u32,
+    frames: usize,
+    context: Option<&CpuContext>,
+) -> Result<Vec<Vec<u8>>> {
     let frame_bytes = usize::try_from(width)
         .ok()
         .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)))
@@ -711,6 +754,7 @@ fn decode_frames(path: &Path, width: u32, height: u32, frames: usize) -> Result<
         MAX_VIDEO_BYTES,
         SUBPROCESS_STREAM_BYTES,
         Duration::from_secs(DECODE_TIMEOUT_SECONDS),
+        context,
     )?;
     if !output.status.success() {
         return Err(Error::invalid(format!(

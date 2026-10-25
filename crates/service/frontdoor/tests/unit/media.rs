@@ -2,6 +2,7 @@ use super::{
     MEDIA_STAGING_BYTES, SourcePolicy, TempPath, check_video_frame_limit, load_image,
     load_video_with, parse_rate, read_url, run_bounded,
 };
+use crate::cpu::cancelled_context;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use infer_models::MediaLimits;
@@ -86,17 +87,25 @@ fn malformed_and_oversized_data_uris_are_rejected_before_decode() {
     let oversized = "A".repeat(MEDIA_STAGING_BYTES + 1);
     assert!(load_image(&format!("data:image/png;base64,{oversized}")).is_err());
     let encoded_over_limit = format!("data:image/png;base64,{}", "A".repeat(5000));
-    assert!(read_url(&encoded_over_limit, 1, SourcePolicy::Public).is_err());
+    assert!(read_url(&encoded_over_limit, 1, SourcePolicy::Public, None).is_err());
     assert!(load_image("ftp://example.invalid/a.png").is_err());
 }
 
 #[test]
 fn public_source_policy_rejects_server_local_paths() {
     for url in ["file:///etc/passwd", "/etc/passwd"] {
-        let error = read_url(url, 1024, SourcePolicy::Public).expect_err("local path");
+        let error = read_url(url, 1024, SourcePolicy::Public, None).expect_err("local path");
         assert_eq!(error.code, infer_core::ErrorCode::Unsupported);
     }
-    assert!(read_url("data:image/png;base64,AAAA", 1024, SourcePolicy::Public).is_ok());
+    assert!(
+        read_url(
+            "data:image/png;base64,AAAA",
+            1024,
+            SourcePolicy::Public,
+            None
+        )
+        .is_ok()
+    );
 }
 
 #[test]
@@ -130,7 +139,7 @@ fn stuck_subprocess_is_killed_reaped_and_bounded() {
     let mut command = Command::new("/bin/sh");
     command.args(["-c", "sleep 30"]);
     let started = Instant::now();
-    let error = run_bounded(&mut command, 1024, 1024, Duration::from_millis(100))
+    let error = run_bounded(&mut command, 1024, 1024, Duration::from_millis(100), None)
         .expect_err("stuck subprocess");
     assert_eq!(error.code, infer_core::ErrorCode::Backend);
     assert!(started.elapsed() < Duration::from_secs(2));
@@ -143,7 +152,7 @@ fn failing_subprocess_drains_stderr_and_reaps() {
     use std::time::Duration;
     let mut command = Command::new("/bin/sh");
     command.args(["-c", "echo boom >&2; exit 7"]);
-    let output = run_bounded(&mut command, 1024, 1024, Duration::from_secs(2))
+    let output = run_bounded(&mut command, 1024, 1024, Duration::from_secs(2), None)
         .expect("failing subprocess ran");
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("boom"));
@@ -156,8 +165,8 @@ fn subprocess_stdout_cap_is_enforced() {
     use std::time::Duration;
     let mut command = Command::new("/bin/sh");
     command.args(["-c", "yes x | head -c 4096"]);
-    let error =
-        run_bounded(&mut command, 16, 1024, Duration::from_secs(2)).expect_err("capped output");
+    let error = run_bounded(&mut command, 16, 1024, Duration::from_secs(2), None)
+        .expect_err("capped output");
     assert_eq!(error.code, infer_core::ErrorCode::Capacity);
 }
 
@@ -241,11 +250,15 @@ fn lossless_video_roundtrip_preserves_frames_and_fps() {
         "-an",
         &clip.path.to_string_lossy(),
     ]);
-    let encoded =
-        run_bounded(&mut encode, 1 << 20, 1 << 20, Duration::from_secs(10)).expect("ffmpeg encode");
+    let encoded = run_bounded(&mut encode, 1 << 20, 1 << 20, Duration::from_secs(10), None)
+        .expect("ffmpeg encode");
     assert!(encoded.status.success(), "{:?}", encoded.stderr);
-    let video = load_video_with(&clip.path.to_string_lossy(), SourcePolicy::TrustedLocal)
-        .expect("lossless video");
+    let video = load_video_with(
+        &clip.path.to_string_lossy(),
+        SourcePolicy::TrustedLocal,
+        None,
+    )
+    .expect("lossless video");
     assert!((video.fps - 30.0).abs() < f64::EPSILON);
     assert_eq!(video.frames.len(), 4);
     for (loaded, expected) in video.frames.iter().zip(&frames) {
@@ -253,4 +266,25 @@ fn lossless_video_roundtrip_preserves_frames_and_fps() {
         assert_eq!(loaded.height, height as usize);
         assert_eq!(&loaded.pixels, expected);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn cancellation_guard_kills_and_reaps_a_subprocess() {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+    let context = cancelled_context();
+    let mut command = Command::new("/bin/sh");
+    command.args(["-c", "sleep 30"]);
+    let started = Instant::now();
+    let error = run_bounded(
+        &mut command,
+        1024,
+        1024,
+        Duration::from_secs(5),
+        Some(&context),
+    )
+    .expect_err("cancelled subprocess");
+    assert_eq!(error.code, infer_core::ErrorCode::Capacity);
+    assert!(started.elapsed() < Duration::from_secs(2));
 }
