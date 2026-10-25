@@ -349,37 +349,31 @@ fn relative_gap(direct: &[f32], split: &[f32]) -> f32 {
 }
 
 #[test]
-fn fp8_verify_split_tiled_kernels_compile_for_forty_eight_rows() {
+fn fp8_verify_split_tiled_kernels_compile_with_legal_tiles_and_actual_strides() {
     use crate::resident::fp8_gemm::kernels;
     use cutile::cutile_compiler::compile_api::KernelCompiler;
-    let (m, n, k) = (48usize, 5120usize, 5120usize);
-    let code_columns = i32::try_from(k).unwrap();
-    let output_columns = i32::try_from(n).unwrap();
+    let (rows, outputs, k) = (48i32, 5120i32, 5120i32);
+    let (tile_m, tile_n) = (16i32, 64i32);
+    let row_stride = rows * outputs;
     KernelCompiler::new(kernels::__module_ast_self, "kernels", "matmul_split_tiled")
         .target("sm_120")
-        .generics(vec![k.to_string(), m.to_string(), n.to_string()])
+        .generics(vec![k.to_string(), tile_m.to_string(), tile_n.to_string()])
         .strides(&[
-            (
-                "output",
-                &[i32::try_from(m * n).unwrap(), output_columns, 1],
-            ),
-            ("input", &[code_columns, 1]),
-            ("weight", &[code_columns, 1]),
+            ("output", &[row_stride, outputs, 1]),
+            ("input", &[k, 1]),
+            ("weight", &[k, 1]),
         ])
         .compile()
-        .expect("matmul_split_tiled compiles");
+        .expect("matmul_split_tiled legal tile compiles");
     KernelCompiler::new(kernels::__module_ast_self, "kernels", "reduce_split_tiled")
         .target("sm_120")
-        .generics(vec![m.to_string(), n.to_string()])
+        .generics(vec![tile_m.to_string(), tile_n.to_string()])
         .strides(&[
-            ("output", &[output_columns, 1]),
-            (
-                "partials",
-                &[i32::try_from(m * n).unwrap(), output_columns, 1],
-            ),
+            ("output", &[outputs, 1]),
+            ("partials", &[row_stride, outputs, 1]),
             ("input_scale", &[1, 1]),
             ("weight_scale", &[1]),
         ])
         .compile()
-        .expect("reduce_split_tiled compiles");
+        .expect("reduce_split_tiled legal tile compiles");
 }
