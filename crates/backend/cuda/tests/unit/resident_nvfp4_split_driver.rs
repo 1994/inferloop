@@ -1,6 +1,6 @@
 //! Actual-checkpoint down-projection split candidate driver (device-only, ignored).
 
-use super::{down_split_candidate, kernels, split_scratch_bytes};
+use super::{kernels, projection_split_policy, split_scratch_bytes};
 use crate::device::CudaDevice;
 use crate::loading::{LoadOptions, LoadedModel};
 use crate::mlp::ProjectionWeight;
@@ -17,7 +17,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const ROWS: usize = 48;
-const SPLITS: usize = 4;
 
 struct Down {
     codes: Arc<Tensor<f4e2m1fnx2>>,
@@ -81,9 +80,10 @@ fn record(
     input_bytes: &[u8],
     sms: usize,
 ) -> Result<Graphs, Box<dyn StdError>> {
-    let candidate = down_split_candidate(ROWS, down.outputs, down.columns, sms)?
-        .ok_or_else(|| Error::invalid("down split candidate rejected"))?;
-    if candidate.scratch_bytes != split_scratch_bytes(ROWS, down.outputs, SPLITS)? {
+    let candidate =
+        projection_split_policy(ROWS, down.outputs, down.columns, sms, 256, 32 * 1024 * 1024)?
+            .ok_or_else(|| Error::invalid("down split candidate rejected"))?;
+    if candidate.scratch_bytes != split_scratch_bytes(ROWS, down.outputs, candidate.splits)? {
         return Err("split scratch quote mismatch".into());
     }
     let code_bytes = down.columns / 2;
@@ -109,7 +109,8 @@ fn record(
     )?;
     let mut exact = api::zeros::<f32>(&[ROWS, down.outputs]).sync_on(&device.stream)?;
     let mut split = api::zeros::<f32>(&[ROWS, down.outputs]).sync_on(&device.stream)?;
-    let mut partials = api::zeros::<f32>(&[SPLITS, ROWS, down.outputs]).sync_on(&device.stream)?;
+    let mut partials =
+        api::zeros::<f32>(&[candidate.splits, ROWS, down.outputs]).sync_on(&device.stream)?;
     let exact_graph = CudaGraph::scope(&device.stream, |scope| {
         scope.record(
             kernels::packed(
@@ -141,7 +142,7 @@ fn record(
                 down.columns.to_string(),
                 ROWS.to_string(),
                 down.outputs.to_string(),
-                SPLITS.to_string(),
+                candidate.splits.to_string(),
             ]),
         )?;
         scope.record(
@@ -153,7 +154,7 @@ fn record(
             .generics(vec![
                 ROWS.to_string(),
                 down.outputs.to_string(),
-                SPLITS.to_string(),
+                candidate.splits.to_string(),
             ]),
         )?;
         Ok(())

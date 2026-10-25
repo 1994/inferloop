@@ -285,6 +285,20 @@ pub struct TuningEntry {
     pub tile_columns: usize,
 }
 
+/// Measured, quality-verified verify-projection split decision. Absence keeps exact.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifySplitEntry {
+    pub hardware: String,
+    pub mode: String,
+    pub rows: usize,
+    pub outputs: usize,
+    pub columns: usize,
+    pub splits: usize,
+    pub scratch_bytes: u64,
+    pub speedup: f32,
+    pub reference: String,
+}
+
 /// Machine-local GEMV tiling decisions, scoped to each measured device identity.
 ///
 /// Old single-device tables are migrated on read. Entries without a device identity are discarded:
@@ -299,6 +313,9 @@ pub struct TilingTable {
     pub resident_gemm: Vec<resident_gemm::ResidentGemmEntry>,
     #[serde(default)]
     pub resident_fp8_gemm: Vec<fp8_gemm::Entry>,
+    /// Measured verify projection splits; absence keeps exact.
+    #[serde(default)]
+    pub verify_split: Vec<VerifySplitEntry>,
     /// Device/driver/kernel/geometry scoped exact greedy reduction decisions.
     #[serde(default)]
     pub greedy: Vec<greedy::Entry>,
@@ -347,6 +364,8 @@ struct StoredTilingTable {
     #[serde(default)]
     resident_fp8_gemm: Vec<fp8_gemm::Entry>,
     #[serde(default)]
+    verify_split: Vec<VerifySplitEntry>,
+    #[serde(default)]
     greedy: Vec<greedy::Entry>,
     #[serde(default)]
     resident_gated_norm: Vec<gated_norm::NormEntry>,
@@ -391,6 +410,7 @@ impl From<StoredTilingTable> for TilingTable {
             devices,
             resident_gemm: stored.resident_gemm,
             resident_fp8_gemm: stored.resident_fp8_gemm,
+            verify_split: stored.verify_split,
             greedy: stored.greedy,
             resident_gated_norm: stored.resident_gated_norm,
             resident_recurrent: stored.resident_recurrent,
@@ -509,6 +529,29 @@ pub(crate) fn shipped_table() -> Result<&'static TilingTable> {
     let table: TilingTable = serde_json::from_str(SHIPPED_BASELINE)
         .map_err(|error| Error::invalid(format!("shipped CUDA tuning baseline: {error}")))?;
     Ok(SHIPPED.get_or_init(|| table))
+}
+
+pub(crate) fn verify_split_qualified(
+    device: &CudaDevice,
+    (mode, rows, outputs, columns, splits, scratch): (&str, usize, usize, usize, usize, u64),
+) -> Result<bool> {
+    let identity = device.profile()?.identity();
+    let local = resolve_table(table_path().as_deref())?;
+    let shipped = shipped_table().ok();
+    let matches = |table: &TilingTable| {
+        table.verify_split.iter().any(|entry| {
+            entry.hardware == identity
+                && entry.mode == mode
+                && entry.rows == rows
+                && entry.outputs == outputs
+                && entry.columns == columns
+                && entry.splits == splits
+                && entry.scratch_bytes == scratch
+                && entry.speedup > 1.0
+                && !entry.reference.is_empty()
+        })
+    };
+    Ok(local.as_ref().is_some_and(matches) || shipped.is_some_and(matches))
 }
 
 /// Where tile decisions come from for one model load.

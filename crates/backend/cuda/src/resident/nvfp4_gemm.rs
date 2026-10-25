@@ -2,16 +2,12 @@
 mod quant_reuse;
 mod workspace;
 
-/// Four contiguous K windows were the measured down-projection candidate.
-#[cfg(test)]
-const SPLIT_CANDIDATE_PARTS: usize = 4;
-/// Below this driver-reported SM count the four-way candidate is not offered.
-#[cfg(test)]
-const MIN_SPLIT_SMS: usize = 64;
-#[cfg(test)]
 use crate::constants::F32_BYTES;
-#[cfg(test)]
 use crate::constants::PREFILL_GEMM_TILE_N;
+const VERIFY_SPLIT_SCRATCH_BUDGET: u64 = 32 * 1024 * 1024;
+const VERIFY_SPLIT_MAX_ROWS: usize = PREFILL_GEMM_TILE_N;
+const VERIFY_SPLIT_MAX_PARTS: usize = 4;
+const VERIFY_SPLIT_WAVE_TARGET: usize = 2;
 use crate::mlp::ProjectionWeight as MlpProjectionWeight;
 use cutile::prelude::DeviceError;
 use cutile::prelude::Scope;
@@ -402,9 +398,8 @@ pub(crate) mod kernels {
     }
 }
 
-/// Down-projection split-K candidate derived from the actual shapes and device SM count.
-/// It is deliberately not selected by production; this type is the qualification handoff.
-#[cfg(test)]
+/// Shape-derived verification split proposal; production selection still requires a
+/// measured quality-verified table entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SplitCandidate {
     pub rows: usize,
@@ -415,46 +410,61 @@ struct SplitCandidate {
     pub scratch_bytes: u64,
 }
 
-/// The measured screen only supports a down-shaped (`outputs < columns`) 48-row-class
-/// projection with a 64x64 output tile and four K windows. Gate/up is rejected by shape.
-#[cfg(test)]
-fn down_split_candidate(
+/// Derive split count from SM/output-CTA coverage, legal K groups and scratch budget.
+fn projection_split_policy(
     rows: usize,
     outputs: usize,
     columns: usize,
     multiprocessors: usize,
+    k_step: usize,
+    max_scratch: u64,
 ) -> infer_core::Result<Option<SplitCandidate>> {
     if rows == 0
-        || rows > PREFILL_GEMM_TILE_N
+        || rows > VERIFY_SPLIT_MAX_ROWS
         || outputs == 0
         || columns == 0
-        || outputs >= columns
-        || multiprocessors < MIN_SPLIT_SMS
+        || k_step == 0
+        || multiprocessors == 0
     {
         return Ok(None);
     }
-    let splits = SPLIT_CANDIDATE_PARTS;
+    let tile = [PREFILL_GEMM_TILE_N, PREFILL_GEMM_TILE_N];
+    let ctas = rows
+        .div_ceil(tile[0])
+        .checked_mul(outputs.div_ceil(tile[1]))
+        .ok_or_else(|| infer_core::Error::invalid("verify split CTA overflow"))?;
+    let wave = multiprocessors
+        .checked_mul(VERIFY_SPLIT_WAVE_TARGET)
+        .ok_or_else(|| infer_core::Error::invalid("verify split wave overflow"))?;
+    let splits = wave
+        .div_ceil(ctas)
+        .clamp(1, VERIFY_SPLIT_MAX_PARTS)
+        .min(columns.div_ceil(k_step));
+    if splits <= 1 {
+        return Ok(None);
+    }
     let scratch_bytes = split_scratch_bytes(rows, outputs, splits)?;
+    if scratch_bytes > max_scratch {
+        return Ok(None);
+    }
     Ok(Some(SplitCandidate {
         rows,
         outputs,
         columns,
         splits,
-        tile: [PREFILL_GEMM_TILE_N, PREFILL_GEMM_TILE_N],
+        tile,
         scratch_bytes,
     }))
 }
 
-/// Device bytes of the `[splits, rows, outputs]` F32 partial owner.
-#[cfg(test)]
 fn split_scratch_bytes(rows: usize, outputs: usize, splits: usize) -> infer_core::Result<u64> {
     let elements = rows
         .checked_mul(outputs)
-        .and_then(|value| value.checked_mul(splits))
+        .and_then(|v| v.checked_mul(splits))
         .ok_or_else(|| infer_core::Error::invalid("split-K scratch element overflow"))?;
     u64::try_from(elements)
         .ok()
-        .and_then(|value| value.checked_mul(F32_BYTES as u64))
+        .and_then(|v| v.checked_mul(F32_BYTES as u64))
         .ok_or_else(|| infer_core::Error::invalid("split-K scratch byte overflow"))
 }
 

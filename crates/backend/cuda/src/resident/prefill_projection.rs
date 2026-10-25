@@ -258,7 +258,7 @@ fn record_fused_down(
     node: &TensorNode,
     arena: &mut super::ActivationArena,
     weights: &ProgramWeights,
-    nvfp4: &super::nvfp4_gemm::Workspace,
+    nvfp4: &mut super::nvfp4_gemm::Workspace,
 ) -> Result<(), DeviceError> {
     let Some(super::program::ActivationQuantization::Fp4(scale)) =
         weights.activation_quantization(node.inputs[1])

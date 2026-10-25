@@ -36,21 +36,24 @@ fn nearest(value: f32, table: &[f32]) -> usize {
 }
 
 #[test]
-fn down_split_candidate_is_down_only_and_quotes_exact_scratch() {
-    let candidate = super::down_split_candidate(48, 5120, 17408, 170)
-        .expect("shape candidate")
-        .expect("down candidate");
-    assert_eq!(candidate.splits, 4);
+fn split_policy_derives_from_sm_cta_k_and_scratch() {
+    let candidate = super::projection_split_policy(48, 5120, 17408, 170, 256, 32 * 1024 * 1024)
+        .expect("shape policy")
+        .expect("split candidate");
+    assert!(candidate.splits > 1 && candidate.splits <= 4);
     assert_eq!(candidate.tile, [64, 64]);
-    assert_eq!(candidate.scratch_bytes, (48 * 5120 * 4 * 4) as u64);
+    assert_eq!(
+        candidate.scratch_bytes,
+        (48 * 5120 * candidate.splits * 4) as u64
+    );
     assert!(
-        super::down_split_candidate(48, 17408, 5120, 170)
-            .expect("gate shape")
+        super::projection_split_policy(48, 5120, 17408, 1, 256, 32 * 1024 * 1024)
+            .expect("single SM")
             .is_none()
     );
     assert!(
-        super::down_split_candidate(48, 5120, 17408, 1)
-            .expect("small device")
+        super::projection_split_policy(48, 5120, 17408, 170, 256, 1)
+            .expect("tiny budget")
             .is_none()
     );
     assert!(super::split_scratch_bytes(usize::MAX, 5120, 4).is_err());
