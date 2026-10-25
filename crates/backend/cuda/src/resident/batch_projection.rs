@@ -74,8 +74,8 @@ pub(super) fn allocate(
         if weights.activation_quantization(node.inputs[1]).is_some() {
             continue;
         }
-        let columns = sizes[&node.inputs[0]] / width;
-        let outputs = sizes[&node.outputs[0]] / width;
+        let columns = sizes[&node.inputs[0]];
+        let outputs = sizes[&node.outputs[0]];
         if columns < super::pool_gemv::MIN_SMALL_COLUMNS
             || outputs > super::pool_gemv::MAX_SMALL_OUTPUTS
         {

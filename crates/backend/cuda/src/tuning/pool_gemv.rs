@@ -75,6 +75,8 @@ impl Entry {
             && self.columns == columns
             && self.outputs == outputs
             && self.weight_proof == proof
+            && (self.choice == "gemv" || self.choice == "blocked")
+            && self.gemv_faster == (self.choice == "gemv")
             && self.cold_gemv_us.is_finite()
             && self.cold_blocked_us.is_finite()
             && self.warm_gemv_us.is_finite()
