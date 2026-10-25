@@ -530,8 +530,8 @@ fn pool_storage_bytes(
             .ok_or_else(|| Error::invalid("pooled control byte overflow"))?,
     )?;
     if verify > 1 {
-        // One bounded shared allowance for the pooled program's verify split owners;
-        // Workspace tracks unique retained usage and falls back when exhausted.
+        // Pooled target program's Workspace can retain verify split owners even though
+        // its projection quote uses verification=0. Charge the same bounded allowance.
         bytes = add(bytes, VERIFY_SPLIT_SCRATCH_BUDGET)?;
     }
     Ok(bytes)
@@ -858,6 +858,11 @@ fn projection_workspace(
                 mul(rows, (PREFILL_SPLIT_K * PREFILL_LANES) as u64 * F32)?,
             )?;
         }
+    }
+    if geometry.verification > 0 {
+        // Every captured program's Workspace may retain unique verify split owners;
+        // charge its bounded allowance before admission and track usage inside Workspace.
+        bytes = add(bytes, VERIFY_SPLIT_SCRATCH_BUDGET)?;
     }
     Ok(bytes)
 }

@@ -87,19 +87,19 @@ fn admission_charges_shared_projection_geometry_once() -> Result<()> {
     // Repeated layers share one [3, K] / [3, N] pair. Prefill has zero-copy views.
     assert_eq!(
         projection_workspace(&graph, &weights, ProgramGeometry::new(&weights, true))?,
-        (128 + 256) * 3 * F32
+        (128 + 256) * 3 * F32 + VERIFY_SPLIT_SCRATCH_BUDGET
     );
     weights.input_scales.insert(TensorId::new(10)?, 1.0);
     weights.input_scales.insert(TensorId::new(11)?, 1.0);
     assert_eq!(
         projection_workspace(&graph, &weights, ProgramGeometry::new(&weights, true))?,
-        (128 + 256) * 3 * F32 + (128 / 2 + 128 / 16) * (1 + 3 + 32)
+        (128 + 256) * 3 * F32 + (128 / 2 + 128 / 16) * (1 + 3 + 32) + VERIFY_SPLIT_SCRATCH_BUDGET
     );
     // Wider verification batches also share one pack/unpack pair per geometry.
     weights.batch_width = 5;
     assert_eq!(
         projection_workspace(&graph, &weights, ProgramGeometry::new(&weights, true))?,
-        (128 + 256) * 5 * F32 + (128 / 2 + 128 / 16) * (1 + 5 + 32)
+        (128 + 256) * 5 * F32 + (128 / 2 + 128 / 16) * (1 + 5 + 32) + VERIFY_SPLIT_SCRATCH_BUDGET
     );
     // Without a private verification graph its pack/unpack pairs and staging rows vanish.
     assert_eq!(
@@ -181,7 +181,10 @@ fn pooled_admission_excludes_uncaptured_wide_prompt_and_private_readback() -> Re
     // Private capture adds the wide external rows, verification arena and readback rows.
     assert_eq!(
         quote(true)? - quote(false)?,
-        (256 - 64) * 48 * F32 + 3 * (2 * 48) * F32 + 3 * (48 + 48) * F32
+        (256 - 64) * 48 * F32
+            + 3 * (2 * 48) * F32
+            + 3 * (48 + 48) * F32
+            + VERIFY_SPLIT_SCRATCH_BUDGET
     );
     // The shared scratch covers both prompt widths once.
     assert_eq!(
@@ -215,7 +218,10 @@ fn pooled_admission_keeps_verification_required_by_prompt_fallback() -> Result<(
     };
     // Without a prompt graph, prefill uses the private verification graph even when the
     // caller requests pooled decode; its activations and readback must remain charged.
-    let expected = (1 + 3) * (2 * 48) * F32 + (1 + 3) * 48 * F32 + (1 + 3) * (48 + 48) * F32;
+    let expected = (1 + 3) * (2 * 48) * F32
+        + (1 + 3) * 48 * F32
+        + (1 + 3) * (48 + 48) * F32
+        + VERIFY_SPLIT_SCRATCH_BUDGET;
     assert_eq!(quote(false)?, expected);
     assert_eq!(quote(true)?, expected);
     Ok(())
@@ -649,16 +655,25 @@ fn funded_kv_rounds_down_without_changing_logical_capacity() -> Result<()> {
 }
 
 #[test]
-fn pooled_quote_charges_the_shared_verify_split_allowance() -> Result<()> {
+fn projection_quote_charges_the_shared_verify_split_allowance() -> Result<()> {
     let weights = fixture_weights();
     let graph = fixture_graph(48)?;
-    let profile = fixture_profile();
-    let quote = |verify| pool_storage_bytes(&graph, &weights, (4, 128, 0), verify, 48, &profile);
-    let one = quote(1)?;
-    let two = quote(2)?;
-    assert!(
-        two.saturating_sub(one) >= VERIFY_SPLIT_SCRATCH_BUDGET,
-        "verification pool must carry the shared split allowance"
-    );
+    let none = projection_workspace(
+        &graph,
+        &weights,
+        ProgramGeometry {
+            verification: 0,
+            prompts: [0, 0],
+        },
+    )?;
+    let one = projection_workspace(
+        &graph,
+        &weights,
+        ProgramGeometry {
+            verification: 1,
+            prompts: [0, 0],
+        },
+    )?;
+    assert!(one >= none + VERIFY_SPLIT_SCRATCH_BUDGET);
     Ok(())
 }
