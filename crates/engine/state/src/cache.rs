@@ -33,6 +33,9 @@ pub struct PrefixCache<V, M = BlockHash> {
     clock: u64,
     bytes: u64,
     cached_tokens: usize,
+    // A conservative lower bound for resident prefix lengths. Eviction may make it stale
+    // downward, which only loses a shortcut; reset it when the store becomes empty.
+    minimum_tokens_hint: usize,
     /// Reuse queries submitted to this cache, including misses and backend failures.
     pub lookups: u64,
     pub hits: u64,
@@ -75,6 +78,7 @@ impl<V, M: PrefixMatcher> PrefixCache<V, M> {
             clock: 0,
             bytes: 0,
             cached_tokens: 0,
+            minimum_tokens_hint: usize::MAX,
             lookups: 0,
             hits: 0,
             reused_tokens: 0,
@@ -161,6 +165,9 @@ impl<V, M: PrefixMatcher> PrefixCache<V, M> {
         maximum: usize,
         compatible: impl Fn(&[u32], &V) -> bool,
     ) -> (usize, Fingerprint) {
+        if tokens.len().min(maximum) < self.minimum_tokens_hint {
+            return (0, [0; FINGERPRINT_LANES]);
+        }
         self.matcher
             .longest(PrefixSearch {
                 entries: &self.entries,
@@ -249,6 +256,9 @@ impl<V, M: PrefixMatcher> PrefixCache<V, M> {
         let e = self.entries.remove(&key)?;
         self.bytes -= e.bytes;
         self.cached_tokens -= e.tokens.len();
+        if self.entries.is_empty() {
+            self.minimum_tokens_hint = usize::MAX;
+        }
         self.evictions = self.evictions.saturating_add(1);
         Some(e.value)
     }
@@ -267,6 +277,9 @@ impl<V, M: PrefixMatcher> PrefixCache<V, M> {
             self.cached_tokens -= old.tokens.len();
             removed.push(old.value);
         }
+        if self.entries.is_empty() {
+            self.minimum_tokens_hint = usize::MAX;
+        }
         while self.entries.len() >= self.max_entries || self.bytes > self.budget - bytes {
             removed.push(
                 self.evict_oldest().ok_or_else(|| {
@@ -277,6 +290,7 @@ impl<V, M: PrefixMatcher> PrefixCache<V, M> {
         let touched = self.tick();
         self.bytes += bytes;
         self.cached_tokens += tokens.len();
+        self.minimum_tokens_hint = self.minimum_tokens_hint.min(tokens.len());
         self.entries.insert(
             key,
             Entry {

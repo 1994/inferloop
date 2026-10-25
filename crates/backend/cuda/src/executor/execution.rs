@@ -115,7 +115,7 @@ impl CudaBackend {
         let published = snapshots
             .into_iter()
             .try_for_each(|snapshot| self.prefix.publish(snapshot).map(drop));
-        let result = published.and(result);
+        let result = result.and_then(|outputs| published.map(|()| outputs));
         if result.is_err() {
             for task in tasks {
                 if let Some(state) = self.states.get_mut(&task.state) {

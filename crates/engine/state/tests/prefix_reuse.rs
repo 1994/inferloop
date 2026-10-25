@@ -240,3 +240,18 @@ fn scan_and_block_index_share_matching_budget_and_lru_semantics_through_churn() 
     }
     assert!(scanned.is_empty());
 }
+
+#[test]
+fn length_shortcut_keeps_remaining_and_republished_prefixes_reachable() {
+    let mut cache = PrefixCache::new(b"lengths", 2, 100, 4).unwrap();
+    cache.insert(vec![1, 2], 2, 4).unwrap();
+    cache.insert(vec![1, 2, 3, 4], 4, 4).unwrap();
+    assert_eq!(cache.evict_oldest(), Some(2));
+    assert_eq!(cache.lookup(&[1, 2, 3, 4], 4), Some(4));
+    assert_eq!(cache.evict_oldest(), Some(4));
+    cache.insert(vec![1, 2, 3, 4, 5, 6], 6, 4).unwrap();
+    assert_eq!(cache.lookup(&[1, 2, 3, 4, 5, 6], 5), None);
+    assert_eq!(cache.lookup(&[1, 2, 3, 4, 5, 6], 6), Some(6));
+    cache.insert(vec![1, 2], 2, 4).unwrap();
+    assert_eq!(cache.lookup(&[1, 2, 7, 8], 4), Some(2));
+}
