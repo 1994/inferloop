@@ -81,13 +81,13 @@ impl TokenReadout {
         Ok(Some(Self {
             graph,
             tokens: Arc::new(tokens),
-            readbacks: Readbacks::default(),
+            readbacks: Readbacks::allocated(device, rows * 2)?,
             _selectors: selectors,
             vocabulary,
         }))
     }
 
-    pub(super) fn run(
+    pub(super) async fn run_async(
         &mut self,
         device: &CudaDevice,
         graph: &CudaGraph<()>,
@@ -98,12 +98,24 @@ impl TokenReadout {
         if active.iter().any(|&row| row >= self.tokens.size() / 2) {
             return Err(Error::invalid("token readout active row"));
         }
-        let (rows, pairs) = readbacks.run_with_tokens(
-            device,
-            graph,
-            sources,
-            (&self.graph, &mut self.readbacks, Arc::clone(&self.tokens)),
-        )?;
+        let (rows, pairs) = readbacks
+            .run_with_tokens_async(
+                device,
+                graph,
+                sources,
+                (&self.graph, &mut self.readbacks, Arc::clone(&self.tokens)),
+            )
+            .await?;
+        self.decode(rows, &pairs, active, sources.len() / 2)
+    }
+
+    fn decode(
+        &self,
+        rows: Vec<Vec<f32>>,
+        pairs: &[Vec<i32>],
+        active: &[usize],
+        count: usize,
+    ) -> Result<(super::batch::BatchOutput, Vec<u32>)> {
         let pairs = pairs
             .first()
             .ok_or_else(|| Error::invariant("token readout pairs"))?;
@@ -112,7 +124,7 @@ impl TokenReadout {
             .map(|&row| Greedy::decode(&pairs[row * 2..row * 2 + 2], self.vocabulary))
             .collect::<Result<Vec<_>>>()?;
         let mut rows = rows.into_iter();
-        let output = (0..sources.len() / 2)
+        let output = (0..count)
             .map(|_| {
                 Ok((
                     rows.next()

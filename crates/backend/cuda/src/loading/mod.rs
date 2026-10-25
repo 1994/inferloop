@@ -1,4 +1,5 @@
 //! Native model loading independent of diagnostic runners and CPU reference execution.
+use crate::attention_profile::precise_prefix_positions;
 use crate::constants::EXTRA_WIDE_PREFILL_LANES;
 use crate::constants::WIDER_PREFILL_LANES;
 use crate::constants::WIDEST_PREFILL_LANES;
@@ -28,6 +29,7 @@ use infer_models::vision::position_taps;
 pub use kv_scales::load as load_kv_scales;
 mod bindings;
 mod budget;
+pub(crate) use budget::PooledServingQuote;
 mod experts;
 mod phase;
 use crate::{
@@ -240,6 +242,7 @@ impl LoadedModel {
             automatic_prefill: self.automatic_prefill,
             arena_budget_bytes: self.profile.arena_budget_bytes(),
             attention_profile: self.weights.attention_profile.name().to_owned(),
+            precise_prefix_positions: Some(precise_prefix_positions()),
         }
     }
     /// # Errors
@@ -717,6 +720,10 @@ fn bind_vision(
 mod support;
 
 #[cfg(test)]
+#[path = "../../tests/unit/loading_shape_ab.rs"]
+mod shape_ab_tests;
+
+#[cfg(test)]
 #[path = "../../tests/unit/loading_prefill_width.rs"]
 mod prefill_width_tests;
 
@@ -775,11 +782,3 @@ mod prompt_width_bucket_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/resident_norm_maximum_model.rs"]
 mod norm_maximum_model_tests;
-
-#[cfg(test)]
-#[path = "../../tests/unit/loading_canonical_verification.rs"]
-mod canonical_verification_tests;
-
-#[cfg(test)]
-#[path = "../../tests/unit/loading_pooled_reference_verification.rs"]
-mod pooled_reference_verification_tests;

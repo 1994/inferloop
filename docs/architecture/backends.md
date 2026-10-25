@@ -35,6 +35,14 @@ cached shell 按 capacity/readout 与实际 take 路径匹配。转入 slot pool
 
 图几何使用加载时由设备能力/tuning 得出的宽度，不按设备名称选择。报价是已知分配加 driver headroom 的保守上界，不能称作实测增量显存。实测收益与并发延迟取舍见[图几何准入实验](../archive/research/cuda-pooled-admission-geometry-2026-10-12.md)。
 
+## CUDA 执行契约
+
+CUDA compute 默认采用非阻塞 submit/poll，无需环境变量。prefill、首次 slot 绑定、普通 decode、私有程序以及 MTP draft/verify/rollback 共用一个有所有权的执行 future；每次 poll 仅推进已经就绪的阶段，设备完成通知唤醒既有 device-owner 线程。加载、分配与 graph capture 在加载或资源准入阶段完成，不进入 compute flight。
+
+一个 backend 同时拥有一个 compute flight。ticket 绑定 owner 与不复用的 generation，重复或跨 owner 消费会失败。完成结果、游标与资源视图在最终 stream fence 成功且 ticket 被消费后发布；ticket 丢弃、取消和 CPU 返回均不释放仍在使用的设备或 pinned 缓冲。无法确认 fence 时保留所有物理 owner，并使 backend 进入故障隔离，禁止复用状态。
+
+readback 使用有界、可复用的 pinned 缓冲；MTP host hidden 上传复用预分配的 pinned staging，不逐 token 分配设备上传张量。图回放、D2D 绑定、draft catch-up 和状态恢复保持同一 stream 的顺序。独立诊断 API 的同步兼容包装不参与 provider 的 compute 路径。上述完成协议不代表多个 compute flight 的重叠执行或生产 SLO 达标，性能结论以配对 release 测量为准。
+
 ## Metal 执行契约
 
 Metal 在加载期上传 F32 / BF16 / F16 权重、编译 MSL pipeline，预绑定节点并按 lifetime 分配 scratch。计算与状态使用 F32；每个 compute flight 独占共享 scratch，深度为 1。ticket 绑定 executor owner，完成后才能读取 shared output。
@@ -52,12 +60,12 @@ shared storage 用于 CPU / device 可见数据，private storage 用于设备�
 
 ## CUDA 与支持限制
 
-CUDA provider 已接入 CLI/HTTP，执行设备驻留图、状态/图复用、受限连续解码批处理与贪心 MTP。provider 当前同步执行；批处理受 slot、KV 容量和请求兼容性约束，不能视作任意模型或批次均可融合。模型提供 topology、draft 和精度策略；设备侧选择 kernel 与融合，调度不依赖具体实现。
+CUDA provider 已接入 CLI/HTTP，执行设备驻留图、状态/图复用、受限连续解码批处理与贪心 MTP。批处理受 slot、KV 容量和请求兼容性约束，不能视作任意模型或批次均可融合。模型提供 topology、draft 和精度策略；设备侧选择 kernel 与融合，调度不依赖具体实现。
 
 | 范围 | 当前限制 |
 |---|---|
 | Attention | 通用 dense F32、padded head ≤256；paged/量化 KV、MLA 与稀疏/线性 attention 不属于该 provider 的覆盖范围。Candle 性能门禁未放行，见 [测量指南](../guides/cuda-performance.md) |
-| CUDA 执行 | 同步 provider；尚无通用异步多 compute flight、全设备采样或完整生产 SLO 验收。cuTile 运行时 JIT 需要相应工具链，非完整 AOT 制品 |
+| CUDA 执行 | compute 全路径默认采用非阻塞 submit/poll；尚无通用异步多 compute flight、全设备采样或完整生产 SLO 验收。cuTile 运行时 JIT 需要相应工具链，非完整 AOT 制品 |
 | 精度与设备 | 按能力及 `PrecisionPolicy` 选择；Hopper 的 NVFP4→BF16 转换不代表 H200 实机已验收。`test-cuda`（别名 `check-cuda`）含 Blackwell FP4 检查，不能作为所有 CUDA 设备统一通过的证明 |
 | 模型与模态 | 内置 provider 与算子覆盖有限，不保证任意 HF 包可运行。图像与视频使用专用示例（多图与视频走融合 media prefill），Engine/Scheduler 多模态调度、音频及完整 DeepStack 路径未覆盖 |
 | 状态与扩展 | 物理分配/淘汰 owner 仍在 backend；跨 GPU、远程 PD、offload 和动态 C ABI/WASM 加载不属于当前支持范围 |

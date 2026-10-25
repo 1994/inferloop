@@ -128,6 +128,18 @@ class CheckRunTest(unittest.TestCase):
         report["identity"]["engine_version"] = "0.30.0"
         self.assertTrue(module.check_run(checklist(), report))
 
+    def test_declared_vision_and_reference_token_cap_are_verified(self):
+        profile = checklist()
+        profile["resources"].update(vision=True, max_num_batched_tokens=2048)
+        report = reference_report()
+        report["vision_enabled"] = True
+        self.assertEqual(module.check_run(profile, report), [])
+        report["vision_enabled"] = False
+        self.assertTrue(module.check_run(profile, report))
+        report["vision_enabled"] = True
+        report["identity"]["limits"]["max_num_batched_tokens"] = 1024
+        self.assertTrue(module.check_run(profile, report))
+
 
 class ComparisonTableTest(unittest.TestCase):
     def test_aligned_engines_produce_an_aligned_table(self):
@@ -180,6 +192,105 @@ class GateChecklistTest(unittest.TestCase):
         old["checklist"] = {"sha256": "c1", "compliant": True}
         new["checklist"] = {"sha256": "c1", "compliant": True}
         self.assertTrue(gate.module.compare(old, new)["passed"])
+
+
+class ProcessContractTest(unittest.TestCase):
+    def contract(self):
+        profile = checklist()
+        profile["measurement"].update(
+            fresh_process_pairs=5,
+            paired_confidence=0.95,
+            primary={
+                "case": "hot_long",
+                "metric": "wall_seconds",
+                "minimum_improvement_percent": 2,
+            },
+            guards=[
+                {
+                    "case": "hot_long",
+                    "metric": "tpot_seconds",
+                    "max_regression_percent": 2,
+                }
+            ],
+        )
+        return profile
+
+    def test_a_frozen_process_contract_is_accepted(self):
+        module.load_document(self.contract())
+
+    def test_process_count_and_matrix_membership_are_enforced(self):
+        profile = self.contract()
+        profile["measurement"]["fresh_process_pairs"] = 4
+        with self.assertRaisesRegex(ValueError, "at least five"):
+            module.load_document(profile)
+        profile = self.contract()
+        profile["measurement"]["primary"]["case"] = "c16"
+        with self.assertRaisesRegex(ValueError, "absent from the workload matrix"):
+            module.load_document(profile)
+
+    def test_frozen_orders_must_cover_each_pair_once_per_side(self):
+        for orders in (
+            None,
+            "AB/BA/AB/BA/AB",
+            [["baseline", "candidate"]] * 4,
+            [["baseline", "baseline"]] * 5,
+            [["candidate", "unknown"]] * 5,
+        ):
+            profile = self.contract()
+            profile["measurement"]["process_pair_orders"] = orders
+            with (
+                self.subTest(orders=orders),
+                self.assertRaisesRegex(ValueError, "process_pair_orders"),
+            ):
+                module.load_document(profile)
+
+    def test_frozen_orders_balance_which_side_runs_first(self):
+        for count, baseline_first in ((5, 5), (5, 4), (6, 4)):
+            profile = self.contract()
+            profile["measurement"].update(
+                fresh_process_pairs=count,
+                process_pair_orders=[["baseline", "candidate"]] * baseline_first
+                + [["candidate", "baseline"]] * (count - baseline_first),
+            )
+            with (
+                self.subTest(count=count, baseline_first=baseline_first),
+                self.assertRaisesRegex(ValueError, "balanced"),
+            ):
+                module.load_document(profile)
+        for count, baseline_first in ((5, 3), (5, 2), (6, 3)):
+            profile = self.contract()
+            profile["measurement"].update(
+                fresh_process_pairs=count,
+                process_pair_orders=[["baseline", "candidate"]] * baseline_first
+                + [["candidate", "baseline"]] * (count - baseline_first),
+            )
+            module.load_document(profile)
+
+    def test_resource_alignment_switch_is_not_truthy_text(self):
+        for value in (None, "false", 0, 1):
+            profile = self.contract()
+            profile["measurement"]["require_identical_resources"] = value
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(ValueError, "require_identical_resources must be a boolean"),
+            ):
+                module.load_document(profile)
+        for value in (False, True):
+            profile = self.contract()
+            profile["measurement"]["require_identical_resources"] = value
+            module.load_document(profile)
+
+    def test_orders_without_a_sample_count_are_rejected(self):
+        profile = checklist()
+        profile["measurement"]["process_pair_orders"] = [["baseline", "candidate"]] * 5
+        with self.assertRaisesRegex(ValueError, "requires fresh_process_pairs"):
+            module.load_document(profile)
+
+    def test_invalid_guard_threshold_is_rejected(self):
+        profile = self.contract()
+        del profile["measurement"]["guards"][0]["max_regression_percent"]
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            module.load_document(profile)
 
 
 class NumericContractTest(unittest.TestCase):

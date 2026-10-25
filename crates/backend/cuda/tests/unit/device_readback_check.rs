@@ -1,8 +1,111 @@
 use super::*;
 use std::hint::black_box;
-use std::time::Instant;
+use std::thread::yield_now;
+use std::time::{Duration, Instant};
 
 type Tensors = Vec<Tensor<f32>>;
+
+#[test]
+#[ignore = "requires NVIDIA GPU; run under tools/bench/safe-run.sh"]
+fn tensor_readback_poll_does_not_wait_for_prior_stream_work() -> Result<()> {
+    use std::future::{Future, poll_fn};
+    use std::pin::pin;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::Poll;
+
+    let device = CudaDevice::new(0)?;
+    let source = device.upload(vec![1.0_f32, 2.0], &[2])?;
+    let mut readbacks = Readbacks::allocated(&device, source.size())?;
+    let released = Arc::new(AtomicBool::new(false));
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let (gate, expired) = (released.clone(), timed_out.clone());
+    queue_test_gate(&device, move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !gate.load(Ordering::Acquire) {
+            if Instant::now() >= deadline {
+                expired.store(true, Ordering::Release);
+                break;
+            }
+            yield_now();
+        }
+    })?;
+    let mut future = pin!(device.read_async(&source, &mut readbacks));
+    let first = super::super::asynchronous::block_on(poll_fn(|context| {
+        Poll::Ready(future.as_mut().poll(context))
+    }));
+    released.store(true, Ordering::Release);
+    assert!(
+        !timed_out.load(Ordering::Acquire),
+        "readback poll waited for GPU"
+    );
+    assert!(first.is_pending());
+    let result = super::super::asynchronous::block_on(future)?;
+    assert_eq!(result, vec![1.0, 2.0]);
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires NVIDIA GPU; run under tools/bench/safe-run.sh"]
+fn large_logit_geometry_preserves_hidden_only_readback() -> Result<()> {
+    let device = CudaDevice::new(0)?;
+    let hidden = device.upload(vec![1.0_f32; 2], &[2])?;
+    let count = MAX_READBACK_STAGING_BYTES / size_of::<f32>();
+    let logits = Arc::new(
+        api::zeros::<f32>(&[count])
+            .sync_on(&device.stream)
+            .map_err(device_error)?,
+    );
+    let mut readbacks = Readbacks::contiguous(&device, &hidden, &logits, 2)?;
+    let mut destination = api::zeros::<f32>(&[2])
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    let graph = CudaGraph::scope(&device.stream, |scope| {
+        scope.record(api::memcpy(&mut destination, &hidden))?;
+        Ok(())
+    })
+    .map_err(device_error)?;
+    let sources = [
+        Some(ReadbackSource {
+            tensor: hidden.clone(),
+            skip: 0,
+            len: 1,
+        }),
+        None,
+        Some(ReadbackSource {
+            tensor: hidden,
+            skip: 1,
+            len: 1,
+        }),
+        None,
+    ];
+    let rows = readbacks.run(&device, &graph, &sources)?;
+    assert_eq!(rows, vec![vec![1.0], vec![], vec![1.0], vec![]]);
+    let arena = readbacks.arena.clone().unwrap();
+    for lane in [1, 3, 1, 3] {
+        let mut selected = sources.clone();
+        selected[lane] = Some(ReadbackSource {
+            tensor: logits.clone(),
+            skip: 0,
+            len: count / 2,
+        });
+        let rows = readbacks.run(&device, &graph, &selected)?;
+        assert_eq!(rows[lane].len(), count / 2);
+        assert!(rows[lane].iter().all(|&value| value == 0.0));
+        assert!(Arc::ptr_eq(&arena, readbacks.arena.as_ref().unwrap()));
+        assert!(readbacks.buffers.is_empty());
+    }
+    assert_eq!(
+        readbacks
+            .prepare(
+                &device,
+                &[sources[0].clone(), Some(ReadbackSource::whole(logits)),]
+            )
+            .err()
+            .map(|error| error.code),
+        Some(ErrorCode::Capacity)
+    );
+    Ok(())
+}
 
 fn fixtures(device: &CudaDevice) -> Result<(Tensors, Tensors)> {
     let mut inputs = Vec::new();
@@ -210,6 +313,10 @@ fn pinned_float_and_integer_graphs_complete_in_order_and_reuse_buffers() -> Resu
     let mut float_reads = Readbacks::default();
     let mut token_reads = Readbacks::<i32>::default();
     for round in 0..8 {
+        if round == 4 {
+            float_reads =
+                Readbacks::bounded_arena(&device, integer_output.size() * size_of::<i32>())?;
+        }
         let expected = vec![round, 0, i32::MAX - round, 1, -round, 0];
         let input = device.upload(expected.clone(), &[6])?;
         graph
@@ -221,6 +328,15 @@ fn pinned_float_and_integer_graphs_complete_in_order_and_reuse_buffers() -> Resu
             &floats,
             (&tail, &mut token_reads, Arc::clone(&integer_output)),
         )?;
+        assert_eq!(rows, vec![vec![3.5; 5], Vec::new()]);
+        assert_eq!(tokens, vec![expected.clone()]);
+        float_reads.submit_with_tokens(
+            &device,
+            &graph,
+            &floats,
+            (&tail, &mut token_reads, Arc::clone(&integer_output)),
+        )?;
+        let (rows, tokens) = poll_pair(&mut float_reads, &mut token_reads)?;
         assert_eq!(rows, vec![vec![3.5; 5], Vec::new()]);
         assert_eq!(tokens, vec![expected]);
     }
@@ -264,4 +380,81 @@ fn pinned_float_and_integer_graphs_complete_in_order_and_reuse_buffers() -> Resu
             .is_err()
     );
     Ok(())
+}
+
+#[test]
+#[ignore = "requires NVIDIA GPU; run under tools/bench/safe-run.sh"]
+fn split_readback_is_pending_until_stream_completion_and_rejects_reuse() -> Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread::yield_now;
+    use std::time::Duration;
+
+    let device = CudaDevice::new(0)?;
+    let input = device.upload(vec![1.0_f32, 2.0, 3.0, 4.0], &[4])?;
+    let mut output = api::zeros::<f32>(&[4])
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    let graph = CudaGraph::scope(&device.stream, |scope| {
+        scope.record(api::memcpy(&mut output, &input))?;
+        Ok(())
+    })
+    .map_err(device_error)?;
+    let sources = [Some(ReadbackSource::whole(Arc::new(output))), None];
+    let mut reads = Readbacks::default();
+    // Allocate before gating: pinned allocation is allowed to synchronize at startup.
+    reads.prepare(&device, &sources)?;
+    let released = Arc::new(AtomicBool::new(false));
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let gate = Arc::clone(&released);
+    let expired = Arc::clone(&timed_out);
+    queue_test_gate(&device, move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !gate.load(Ordering::Acquire) {
+            if Instant::now() >= deadline {
+                expired.store(true, Ordering::Release);
+                break;
+            }
+            yield_now();
+        }
+    })?;
+    reads.submit(&device, &graph, &sources)?;
+    assert!(
+        !timed_out.load(Ordering::Acquire),
+        "submit waited for GPU completion"
+    );
+    assert!(reads.poll()?.is_none());
+    assert!(reads.submit(&device, &graph, &sources).is_err());
+    assert!(reads.run(&device, &graph, &sources).is_err());
+    released.store(true, Ordering::Release);
+    // The submission must retain captured resources after the public graph is dropped.
+    drop(graph);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let rows = loop {
+        if let Some(rows) = reads.poll()? {
+            break rows;
+        }
+        assert!(Instant::now() < deadline, "readback failed to complete");
+        yield_now();
+    };
+    assert_eq!(rows, vec![vec![1.0, 2.0, 3.0, 4.0], Vec::new()]);
+    assert!(reads.poll().is_err());
+    assert!(!reads.poisoned);
+    Ok(())
+}
+
+fn poll_pair(
+    float_reads: &mut Readbacks,
+    token_reads: &mut Readbacks<i32>,
+) -> Result<(Rows<f32>, Rows<i32>)> {
+    let mut foreign = Readbacks::<i32>::default();
+    assert!(float_reads.poll_with_tokens(&mut foreign).is_err());
+    assert!(float_reads.poll().is_err());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(output) = float_reads.poll_with_tokens(token_reads)? {
+            return Ok(output);
+        }
+        assert!(Instant::now() < deadline);
+        yield_now();
+    }
 }

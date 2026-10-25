@@ -38,6 +38,11 @@ use std::env::var;
 use std::result::Result as StdResult;
 
 type Quantized = (Tensor<f4e2m1fnx2>, Tensor<f8e4m3fn>);
+/// Fused gate/up tile. Two F32 accumulators plus the grouped quantization epilogue fit at 64 by
+/// 64; a 128-row tile spills (2.5 ms instead of 0.40 ms at 1024 x 17408 x 5120 on RTX 5090,
+/// against 0.45 ms for the separate projections and quantizer).
+const SWIGLU_TILE_ROWS: usize = 64;
+const SWIGLU_TILE_COLUMNS: usize = 64;
 /// Keyed by `(rows, columns, activation-scale columns)`.
 type Fp8Key = (usize, usize, usize);
 type StrategyKey = (ResidentGemmWeightKey, usize, usize, usize);
@@ -501,6 +506,118 @@ impl Workspace {
             weight,
             scale,
             (&*q, &*qs),
+            output,
+            (rows, columns),
+        )
+    }
+
+    /// Whether [`Self::record_gate_up_swiglu`] can run for this prompt width and MLP geometry.
+    pub(crate) fn gate_up_swiglu_ready(&self, rows: usize, columns: usize, hidden: usize) -> bool {
+        rows.is_multiple_of(SWIGLU_TILE_ROWS)
+            && rows.is_multiple_of(QUANTIZATION_ROWS)
+            && hidden.is_multiple_of(SWIGLU_TILE_COLUMNS)
+            && self.buffers.contains_key(&(rows, columns))
+            && self.buffers.contains_key(&(rows, hidden))
+    }
+
+    /// Gate and up projections of a gated MLP fused with the down projection's quantizer:
+    /// quantize the shared input, then write the `silu(gate) * up` codes straight into the down
+    /// projection's buffer for [`Self::record_prequantized`]. Neither F32 projection is written.
+    pub(crate) fn record_gate_up_swiglu(
+        &mut self,
+        scope: &Scope,
+        (gate, up): (&ProjectionWeight, &ProjectionWeight),
+        (input_scale, down_scale): (f32, f32),
+        input: &TensorView<'_, f32>,
+        (rows, columns, hidden): (usize, usize, usize),
+    ) -> StdResult<(), DeviceError> {
+        let (
+            ProjectionWeight::Fp4(gate_codes, gate_scales, gate_global),
+            ProjectionWeight::Fp4(up_codes, up_scales, up_global),
+        ) = (gate, up)
+        else {
+            return Err(super::super::capture::error("fused SwiGLU weights"));
+        };
+        if !self.gate_up_swiglu_ready(rows, columns, hidden) {
+            return Err(super::super::capture::error("fused SwiGLU geometry"));
+        }
+        // Both writes replace shared quantization buffers; no reuse permit may span them.
+        self.quant_reuse.clear();
+        let (mut q, mut qs) = self
+            .buffers
+            .remove(&(rows, columns))
+            .ok_or_else(|| super::super::capture::error("FP4 quantization workspace missing"))?;
+        let quantized = scope
+            .record(
+                kernels::quantize_rows(
+                    (&mut q).partition([QUANTIZATION_ROWS, NVFP4_QUANT_CODES_TILE[1]]),
+                    (&mut qs).partition([QUANTIZATION_ROWS, NVFP4_QUANT_SCALES_TILE[1]]),
+                    input,
+                    input_scale,
+                )
+                .generics(vec![columns.to_string()]),
+            )
+            .map(drop);
+        let recorded = quantized.and_then(|()| {
+            let (codes, code_scales) = self.buffers.get_mut(&(rows, hidden)).ok_or_else(|| {
+                super::super::capture::error("FP4 quantization workspace missing")
+            })?;
+            scope
+                .record(
+                    kernels::packed_swiglu(
+                        codes.partition([SWIGLU_TILE_ROWS, SWIGLU_TILE_COLUMNS / 2]),
+                        code_scales
+                            .partition([SWIGLU_TILE_ROWS, SWIGLU_TILE_COLUMNS / NVFP4_GROUP_SIZE]),
+                        &q,
+                        &qs,
+                        gate_codes,
+                        gate_scales,
+                        up_codes,
+                        up_scales,
+                        1.0 / (gate_global * input_scale),
+                        1.0 / (up_global * input_scale),
+                        down_scale,
+                    )
+                    .generics(
+                        [
+                            columns,
+                            SWIGLU_TILE_ROWS,
+                            SWIGLU_TILE_COLUMNS,
+                            SWIGLU_TILE_COLUMNS / 2,
+                            SWIGLU_TILE_COLUMNS / NVFP4_GROUP_SIZE,
+                        ]
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
+                    ),
+                )
+                .map(drop)
+        });
+        self.buffers.insert((rows, columns), (q, qs));
+        recorded
+    }
+
+    /// Down projection whose activation codes [`Self::record_gate_up_swiglu`] already wrote.
+    pub(crate) fn record_prequantized(
+        &self,
+        scope: &Scope,
+        weight: &ProjectionWeight,
+        scale: f32,
+        output: &mut Tensor<f32>,
+        columns: usize,
+    ) -> StdResult<(), DeviceError> {
+        let rows = output.size()
+            / usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
+        let (q, qs) = self
+            .buffers
+            .get(&(rows, columns))
+            .ok_or_else(|| super::super::capture::error("FP4 quantization workspace missing"))?;
+        Self::record_quantized_gemm(
+            &self.strategies,
+            scope,
+            weight,
+            scale,
+            (q, qs),
             output,
             (rows, columns),
         )

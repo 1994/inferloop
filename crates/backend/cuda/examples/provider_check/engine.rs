@@ -4,7 +4,14 @@ use infer_core::{Error, ModelId, RequestId, Result};
 use infer_ir::{CanonicalRequest, PrecisionPlan, Qos, RequestInput, Sampling, Workload};
 use infer_kernel_api::KernelRegistry;
 use infer_runtime::{Engine, RuntimeConfig};
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    thread::yield_now,
+    time::{Duration, Instant},
+};
+
+/// Wall-clock budget for the bounded runtime acceptance workload.
+const ENGINE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn run(
     backend: CudaBackend,
@@ -46,12 +53,14 @@ pub fn run(
             extensions: BTreeMap::new(),
         })?;
     }
-    for tick in 0..1000 {
-        engine.tick(tick)?;
+    let start = Instant::now();
+    while start.elapsed() < ENGINE_TIMEOUT {
+        engine.tick(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX))?;
         engine.check_invariants()?;
         if engine.is_idle() {
             break;
         }
+        yield_now();
     }
     if !engine.is_idle() {
         return Err(Error::invariant("CUDA runtime did not settle"));

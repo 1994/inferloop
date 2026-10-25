@@ -10,7 +10,7 @@ use crate::tuning::resident_gemm::ResidentTuningSession;
 use crate::{mlp::ProjectionWeight, resident::FusionWeights};
 use cutile::half::bf16;
 use infer_core::TensorId;
-use infer_ir::Sampling;
+use infer_ir::{DType, Sampling, StateKind, TensorSpec, TensorStorage};
 use std::collections::{BTreeMap, BTreeSet};
 
 fn fixture_weights(device: &CudaDevice, width: usize) -> Result<ProgramWeights> {
@@ -52,6 +52,89 @@ fn fixture_weights(device: &CudaDevice, width: usize) -> Result<ProgramWeights> 
             device.upload(embedding_values, &[width, width])?,
         )]),
     })
+}
+
+#[test]
+#[ignore = "requires CUDA hardware; run under safe-run"]
+fn worker_copy_moves_committed_kv_rows_and_whole_recurrent_state() -> Result<()> {
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    let hidden = 48;
+    let kv = TensorId::new(4)?;
+    let recurrent = TensorId::new(5)?;
+    let mut graph = fixture_graph(hidden)?;
+    graph.tensors.extend([
+        TensorSpec {
+            id: kv,
+            shape: vec![2, 24],
+            dtype: DType::F32,
+            storage: TensorStorage::State {
+                layer: 0,
+                kind: StateKind::AttentionKv,
+            },
+        },
+        TensorSpec {
+            id: recurrent,
+            shape: vec![2, 3],
+            dtype: DType::F32,
+            storage: TensorStorage::State {
+                layer: 0,
+                kind: StateKind::LinearAttention,
+            },
+        },
+    ]);
+    let mut weights = fixture_weights(&device, hidden)?;
+    weights.fusion = None;
+    let mut source = DeviceProgram::new(&device, &graph, &weights, 64, hidden, hidden)?;
+    let mut target = DeviceProgram::new(&device, &graph, &weights, 64, hidden, hidden)?;
+    let (heads, capacity, dim) = (3, source.capacity, 8);
+    let elements = heads * capacity * dim;
+    let data: Vec<_> = (0..elements)
+        .map(|i| f32::from(i16::try_from(i).unwrap()))
+        .collect();
+    let source_kv = api::copy_host_vec_to_device(&Arc::new(data.clone()))
+        .sync_on(&device.stream)
+        .map_err(device_error)?
+        .reshape(&[heads, capacity, dim])
+        .map_err(device_error)?;
+    source.states.insert(kv, vec![source_kv]);
+    source.states.insert(
+        recurrent,
+        vec![
+            api::copy_host_vec_to_device(&Arc::new(vec![5.0_f32; 6]))
+                .sync_on(&device.stream)
+                .map_err(device_error)?
+                .reshape(&[2, 3])
+                .map_err(device_error)?,
+        ],
+    );
+    for covered in [0, 17, capacity] {
+        let destination = api::copy_host_vec_to_device(&Arc::new(vec![-1.0_f32; elements]))
+            .sync_on(&device.stream)
+            .map_err(device_error)?
+            .reshape(&[heads, capacity, dim])
+            .map_err(device_error)?;
+        target.states.insert(kv, vec![destination]);
+        target.copy_state_from(&source, covered)?;
+        let actual = device.read_borrowed(&target.states[&kv][0])?;
+        for head in 0..heads {
+            for row in 0..capacity {
+                for column in 0..dim {
+                    let index = (head * capacity + row) * dim + column;
+                    assert_eq!(
+                        actual[index],
+                        if row < covered { data[index] } else { -1.0 }
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            device.read_borrowed(&target.states[&recurrent][0])?,
+            vec![5.0; 6]
+        );
+        assert_eq!(target.position(), covered);
+    }
+    Ok(())
 }
 
 #[test]

@@ -157,6 +157,13 @@ For lifetime changes, follow [request lifecycle](docs/architecture/request-lifec
 
 Use the [performance baseline contract](docs/plans/performance/baseline.md) for comparisons.
 
+When bringing up new hardware or a new model, or tuning the default path, follow
+[tuning new hardware and models](docs/guides/tuning-new-hardware-and-models.md): what
+load-time autotuning already measures, the checklists, the fixed-work and profile tools,
+and the hardcoded constants that should become derivations. Prefer a derivation from
+device and model properties, then load-time measurement; never ship a tuning knob as an
+environment variable.
+
 ## Tests and delivery
 
 - Reproduce bugs with failing tests before fixing them. Test observable behavior,

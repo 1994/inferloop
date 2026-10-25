@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "profile_id": "27b-mtp2-private-decode-async-execution",
+  "model": {
+    "path": "/home/r/models/Qwen3.8-27B-NVFP4",
+    "files": {
+      "config.json": "1b3c71868d1299e52df6fc907deb202d5132b1ef0f72aae0ef6d15185dd53a5c",
+      "generation_config.json": "d0d0ed2e37cdfafef4a5067d5ea2407b05f4fb50526e47c008a5b235d50240fb",
+      "tokenizer.json": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+      "tokenizer_config.json": "529f30018c36dca5387c99b5edf368287f386f2c32d3790aa7141956bc5119fa",
+      "model.safetensors.index.json": "429430e1b9e65b2cb98eff8cd10a06e70a09cee89c48487a3914684aeb6df57f",
+      "chat_template.jinja": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+    }
+  },
+  "numeric": {
+    "weights": "checkpoint storage format, re-quantization recorded per profile",
+    "activation": "model default",
+    "kv": "model default"
+  },
+  "quality": {
+    "gate": "task quality gate is separate",
+    "required": false
+  },
+  "resources": {
+    "gpu_memory_utilization": 0.88,
+    "max_model_len": 32768,
+    "max_num_seqs": 16,
+    "note": "The MTP profile carries draft weights, so the KV budget is smaller: at 0.88 GPU memory utilization vLLM needs 2.75 GiB of KV for 65536 and has 2.58 GiB, and it estimates 59200 as the device maximum. The profile pins 32768 so both engines serve the same window with headroom for the batch4 slots."
+  },
+  "cache": {
+    "prefix_cache": true
+  },
+  "workload": {
+    "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+    "max_new_tokens": 64,
+    "temperature": 0,
+    "mtp_depth": 2,
+    "eos_tokens": [
+      248046,
+      248044
+    ],
+    "matrix": {
+      "hot_long": {
+        "concurrency": 1,
+        "repeats": 3
+      }
+    },
+    "note": "Supplemental private-decode-only experiment, registered before measurement. Four basic cases are covered by the original five/ten-pair matrix. A fresh process receives the 8192-token newline-padded original question; natural EOS is preserved. No preceding short/batch trials; one warmup fills the prefix cache."
+  },
+  "engines": {
+    "native": {
+      "version": null
+    },
+    "vllm": {
+      "version": "0.31.0"
+    },
+    "sglang": {
+      "version": null
+    }
+  },
+  "measurement": {
+    "repeats": 3,
+    "max_ratio": 1.1,
+    "require_identical_tokens": false
+  }
+}

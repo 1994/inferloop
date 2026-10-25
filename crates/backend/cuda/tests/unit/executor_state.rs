@@ -35,12 +35,11 @@ fn quotes_do_not_recapture_a_retired_pool_and_reservation_restores_it() -> infer
         AttentionProfile,
         constants::{CB_DECODE_SLOTS, CB_SLOT_TOKENS},
         device::CudaDevice,
-        executor::CudaBackend,
+        executor::CudaExecutor,
         loading::{LoadOptions, LoadedModel},
     };
     use infer_core::{Error, ModelId, StateId};
     use infer_ir::OutputReadout;
-    use infer_spi::BackendProvider;
     use std::env::var;
 
     CudaDevice::enable_kernel_cache()?;
@@ -62,7 +61,7 @@ fn quotes_do_not_recapture_a_retired_pool_and_reservation_restores_it() -> infer
         .allocatable_memory_bytes()?
         .saturating_sub(loaded.device().profile()?.device_headroom_bytes())
         .saturating_sub(loaded.shared_scratch_bytes()?);
-    let mut backend = CudaBackend::new(loaded, budget, CB_DECODE_SLOTS)?;
+    let mut backend = CudaExecutor::new(loaded, budget, CB_DECODE_SLOTS)?;
     assert!(backend.slots.is_some());
     backend.prepare_state_reservation(CB_SLOT_TOKENS + 1, OutputReadout::Logits)?;
     assert!(backend.slots.is_none());

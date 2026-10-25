@@ -24,6 +24,9 @@ const QKV: usize = 3;
 /// Vision GEMM column tile; padded widths are multiples of it.
 const COLUMN_MULTIPLE: usize = 64;
 
+/// Each prepared attention, MLP or merger group replaces two weight/bias pairs in the inventory.
+const PREPARED_SLOTS: usize = 4;
+
 /// Half-head tile width: the real half head (36) rounded up to a power of two.
 pub fn half_tile(encoder: &ModalityEncoder) -> Result<usize> {
     let head = head_dim(encoder)?;
@@ -41,6 +44,21 @@ pub fn half_tile(encoder: &ModalityEncoder) -> Result<usize> {
 /// power-of-two tile, so a tile kernel can address either half through a partition axis; the
 /// padding lanes are zero and the projections carry matching zero rows/columns.
 pub type Prepared = (Arc<Tensor<bf16>>, Arc<Tensor<bf16>>);
+
+/// Encoder slots the prepare passes upload in their own padded layout: block attention and
+/// MLP projections and the merger projections. Runtime kernels read only the prepared copies.
+#[must_use]
+fn prepared_slot(slot: &str) -> bool {
+    const BLOCK: [&str; 4] = [
+        ".attn.qkv.",
+        ".attn.proj.",
+        ".mlp.linear_fc1.",
+        ".mlp.linear_fc2.",
+    ];
+    (slot.starts_with("blocks.") && BLOCK.iter().any(|part| slot.contains(part)))
+        || slot.starts_with("merger.linear_fc1.")
+        || slot.starts_with("merger.linear_fc2.")
+}
 
 pub struct AttentionLayer {
     pub q: Prepared,
@@ -84,6 +102,7 @@ impl VisionWeights {
         encoder: &ModalityEncoder,
     ) -> Result<Self> {
         let slots = vision_slots(encoder)?;
+        let prepares = encoder.heads > 0 && encoder.depth > 0;
         let mut tensors = BTreeMap::new();
         let mut positions = Vec::new();
         for slot in slots {
@@ -124,6 +143,11 @@ impl VisionWeights {
             };
             if slot.slot == "pos_embed.weight" {
                 positions = values.iter().map(|value| value.to_f32()).collect();
+            }
+            // The prepare passes reread these from the package into their padded layout; a raw
+            // device copy would only duplicate the encoder's largest weights.
+            if prepares && prepared_slot(&slot.slot) {
+                continue;
             }
             tensors.insert(slot.slot, device.upload(values, &shape)?);
         }
@@ -373,19 +397,23 @@ impl VisionWeights {
             .collect())
     }
 
-    /// One bound tensor by canonical slot.
+    /// One raw bound tensor by canonical slot. Prepared projections are available through
+    /// [`Self::attention`], [`Self::mlp`] and [`Self::merger`], without duplicate raw storage.
     /// # Errors
-    /// Rejects a slot the encoder did not declare.
+    /// Rejects an unknown slot or a projection retained only in its prepared layout.
     pub fn get(&self, slot: &str) -> Result<&Arc<Tensor<bf16>>> {
         self.tensors
             .get(slot)
             .ok_or_else(|| Error::invalid(format!("unbound vision tensor {slot}")))
     }
 
-    /// Bound tensor count, equal to `infer_models::vision::slots(encoder).len()`.
+    /// Bound checkpoint slot count, including projections retained only in prepared layouts.
+    /// This is the declared inventory size, not the number of physical device tensors.
     #[must_use]
     pub fn len(&self) -> usize {
         self.tensors.len()
+            + PREPARED_SLOTS
+                * (self.attention.len() + self.mlp.len() + usize::from(self.merger.is_some()))
     }
 
     /// Whether no tensor was bound.

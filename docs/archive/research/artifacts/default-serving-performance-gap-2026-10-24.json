@@ -1,0 +1,462 @@
+{
+  "status": "Open performance investigation; documentation only; no fix or fresh vLLM parity claim",
+  "baseline_main": "94fde9606d421ef53eb752e663b87ff78834813d",
+  "baseline_binary_sha256": "8913cd905927ec5c740bbc8b4deb11b4084f10f6b062d54037991a27ed38b6ee",
+  "host": "192.168.1.45",
+  "hardware": "RTX5090 sm120 32GiB",
+  "model": "/home/r/models/Qwen3.8-27B-NVFP4",
+  "source_evidence": {
+    "historical_comparison": {
+      "path": "/home/r/benchmarks/inference.rs/norm-quant-2026-10-20/packing-v2-fresh-vllm-summary.json",
+      "sha256": "0eda2719aeb6c01a11e0177f8e304e138ad3cab4be942fade99aa36aa186096a"
+    },
+    "historical_native": {
+      "path": "/home/r/benchmarks/inference.rs/norm-quant-2026-10-20/native-packing-fresh-a1/Qwen3.8-27B-NVFP4-mtp2-native-stage3-native-packing-fresh-a1.json",
+      "sha256": "72360ad7ad6d05045fcb7228289a17a7120557a68c74cf71ded22b1045c5fa05"
+    },
+    "historical_native_log": {
+      "path": "/home/r/benchmarks/inference.rs/norm-quant-2026-10-20/native-packing-fresh-a1/Qwen3.8-27B-NVFP4-mtp2-native-stage3-native-packing-fresh-a1.server.log",
+      "sha256": "afc1dcc05bdc67a0482549aaf1bb41723123209d998cbd3a025bb24ce7e718e5"
+    },
+    "historical_vllm": {
+      "path": "/home/r/benchmarks/inference.rs/norm-quant-2026-10-20/vllm-packing-fresh-b1/Qwen3.8-27B-NVFP4-mtp2-vllm-packing-fresh-b1.json",
+      "sha256": "7876687f9ac521433135f92ce0a6910dd64b3059fa524653010cdf764d26adb4"
+    },
+    "current_fixed_performance": {
+      "path": "/home/r/benchmarks/inference.rs/default-fast-combination-2026-10-24/single-default-fixed-performance-v2/analysis.json",
+      "sha256": "8881af4f499a031c8dba3a501f1d7219028312f435bac568ca16411845bfba96"
+    },
+    "current_c1": {
+      "path": "/home/r/benchmarks/inference.rs/default-fast-combination-2026-10-24/single-default-fixed-performance-v2/c1/report.json",
+      "sha256": "c1a487bf4367cbb778460c8e669b52597720853ea67f6bbde88b1b8e0a87c8c2"
+    },
+    "current_c2": {
+      "path": "/home/r/benchmarks/inference.rs/default-fast-combination-2026-10-24/single-default-fixed-performance-v2/c2/report.json",
+      "sha256": "49365075ce0a44b756fa86d2bb48fa0f30da3993667fa5119c668d74d0bc81cb"
+    },
+    "current_quality": {
+      "path": "/home/r/benchmarks/inference.rs/default-fast-combination-2026-10-24/single-default-quality-v6/analysis.json",
+      "sha256": "a32813e82dafba35ec31975f566afd3b298896cfcaf825117c41eae226985e5b"
+    },
+    "scope_correction": {
+      "path": "/home/r/benchmarks/inference.rs/default-fast-combination-2026-10-24/single-default-fixed-performance-v2/metadata-correction.json",
+      "sha256": "a56a56c250ae4a75997a498656054769746262d1e726825ef7e0dd35a0d36836"
+    },
+    "zero_option_preview": {
+      "path": "/home/r/benchmarks/inference.rs/default-fast-combination-2026-10-24/automatic-default-preview-v12/c0/report.json",
+      "sha256": "529bb2e01de9f5e01c2982fbe18869d3f67db88174152ed63c11c828a8dfe338"
+    },
+    "vllm_v2_failed": {
+      "path": "/home/r/benchmarks/inference.rs/default-fast-combination-2026-10-24/fresh-vllm-reference-v2/vllm/report.json",
+      "sha256": "537a99d4fbe06f2133f6e326e598f9203bb30d4f2351e078ce96e9365ad050ac"
+    },
+    "vllm_v3_failed": {
+      "path": "/home/r/benchmarks/inference.rs/default-fast-combination-2026-10-24/fresh-vllm-reference-v3/vllm/report.json",
+      "sha256": "dbb8f1fc03b973ca9a2cdb81d1469bbded0e66636a7bf3b11dcb6fe408f0f16a"
+    }
+  },
+  "historical": {
+    "native": {
+      "walls": [
+        12.271221894,
+        12.289686303,
+        12.279456661,
+        12.229535349,
+        12.240655405,
+        12.273206144
+      ],
+      "wall_median": 12.272214019,
+      "wall_mean": 12.263960292666667,
+      "request_ttft_median": 5.194387472001836,
+      "gpu_peak_mib": 30203.0,
+      "clock_mean_mhz": 2638.156959438447,
+      "model_identity": {
+        "path": "/home/r/models/Qwen3.8-27B-NVFP4",
+        "files": {
+          "config.json": "1b3c71868d1299e52df6fc907deb202d5132b1ef0f72aae0ef6d15185dd53a5c",
+          "generation_config.json": "d0d0ed2e37cdfafef4a5067d5ea2407b05f4fb50526e47c008a5b235d50240fb",
+          "tokenizer.json": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+          "tokenizer_config.json": "529f30018c36dca5387c99b5edf368287f386f2c32d3790aa7141956bc5119fa",
+          "model.safetensors.index.json": "429430e1b9e65b2cb98eff8cd10a06e70a09cee89c48487a3914684aeb6df57f",
+          "chat_template.jinja": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+        },
+        "shards": {
+          "model.safetensors": 22568192096,
+          "model_mtp.safetensors": 849400392
+        }
+      },
+      "hardware_identity": {
+        "devices": [
+          {
+            "uuid": "GPU-4114fe32-3d08-a8be-93b6-dee187c64f0d",
+            "name": "NVIDIA GeForce RTX 5090",
+            "driver_version": "615.78.08"
+          }
+        ]
+      },
+      "inputs_sha256": "6a19beea55766865b0b6f718bfaf4fdd7d57f896137e4f72cea247f6173883e8",
+      "reports": [
+        {
+          "path": "/home/r/benchmarks/inference.rs/norm-quant-2026-10-20/native-packing-fresh-a1/Qwen3.8-27B-NVFP4-mtp2-native-stage3-native-packing-fresh-a1.json",
+          "sha256": "72360ad7ad6d05045fcb7228289a17a7120557a68c74cf71ded22b1045c5fa05"
+        },
+        {
+          "path": "/home/r/benchmarks/inference.rs/norm-quant-2026-10-20/native-packing-fresh-a2/Qwen3.8-27B-NVFP4-mtp2-native-stage3-native-packing-fresh-a2.json",
+          "sha256": "9f1661f3b0c7cb55ba2e53226f6f7479313297ac2b01302d9d5b04961f36741c"
+        }
+      ]
+    },
+    "vllm": {
+      "walls": [
+        12.308433512,
+        12.065835036,
+        12.021168171,
+        12.037312497,
+        11.846459086,
+        12.025510415
+      ],
+      "wall_median": 12.031411456,
+      "wall_mean": 12.050786452833332,
+      "request_ttft_median": 5.380056074005552,
+      "gpu_peak_mib": 31189.0,
+      "clock_mean_mhz": 2736.7434321844094,
+      "model_identity": {
+        "path": "/home/r/models/Qwen3.8-27B-NVFP4",
+        "files": {
+          "config.json": "1b3c71868d1299e52df6fc907deb202d5132b1ef0f72aae0ef6d15185dd53a5c",
+          "generation_config.json": "d0d0ed2e37cdfafef4a5067d5ea2407b05f4fb50526e47c008a5b235d50240fb",
+          "tokenizer.json": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+          "tokenizer_config.json": "529f30018c36dca5387c99b5edf368287f386f2c32d3790aa7141956bc5119fa",
+          "model.safetensors.index.json": "429430e1b9e65b2cb98eff8cd10a06e70a09cee89c48487a3914684aeb6df57f",
+          "chat_template.jinja": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+        },
+        "shards": {
+          "model.safetensors": 22568192096,
+          "model_mtp.safetensors": 849400392
+        }
+      },
+      "hardware_identity": {
+        "devices": [
+          {
+            "uuid": "GPU-4114fe32-3d08-a8be-93b6-dee187c64f0d",
+            "name": "NVIDIA GeForce RTX 5090",
+            "driver_version": "615.78.08"
+          }
+        ]
+      },
+      "inputs_sha256": "6a19beea55766865b0b6f718bfaf4fdd7d57f896137e4f72cea247f6173883e8",
+      "reports": [
+        {
+          "path": "/home/r/benchmarks/inference.rs/norm-quant-2026-10-20/vllm-packing-fresh-b1/Qwen3.8-27B-NVFP4-mtp2-vllm-packing-fresh-b1.json",
+          "sha256": "7876687f9ac521433135f92ce0a6910dd64b3059fa524653010cdf764d26adb4"
+        },
+        {
+          "path": "/home/r/benchmarks/inference.rs/norm-quant-2026-10-20/vllm-packing-fresh-b2/Qwen3.8-27B-NVFP4-mtp2-vllm-packing-fresh-b2.json",
+          "sha256": "8beebe99b64c591016a943fe119f2e6b2e68fa04f52051687e385b029fa8e19c"
+        }
+      ]
+    },
+    "native_wall_increase_percent": 2.00144898942769,
+    "configuration": {
+      "token_budget": 2048,
+      "max_model_len": 32768,
+      "max_num_seqs": 16,
+      "prompt_tokens": 4096,
+      "output_tokens": 256,
+      "mtp": 2,
+      "gpu_memory_utilization": 0.88,
+      "warmups_per_restart": 1,
+      "measured_trials_per_restart": 3,
+      "restart_order": [
+        "vllm",
+        "native",
+        "native",
+        "vllm"
+      ],
+      "native_attention": "bf16",
+      "native_kv": "fp8"
+    }
+  },
+  "current_fixed_resource": {
+    "scope": "One automatic BF16/MTP2 execution path versus qualified old default. Two FRESH process pairs, balancedA1C1C2A2; same model/vision/context262144/maxseq16/normalautotune, only --gpu-memory-utilization0.85 used for BOTH to make share the limiting budget on the shared desktop GPU. This is a fixed-resource execution-performance comparison, not zero-option capacity parity. All actual zero-option V11quality/postperformance outputs retained separately. Require exact recorded engine budget equality and all C16wall/short1wall/32KTTFT process medians improve in BOTHpairs; keep all raw outcomes; no95%confidenceclaim with only2pairs. Warm+3 C16 andshort1;warm+1long. Allfixedtokens/EOSempty performance-only; original taskquality untouched.",
+    "pairs": [
+      {
+        "control": "a1",
+        "candidate": "c1",
+        "control_budget_gib": 26.7,
+        "candidate_budget_gib": 26.7,
+        "resources_equal": true,
+        "comparisons": {
+          "c16": {
+            "metric": "wall",
+            "control_seconds": 22.89864699402824,
+            "candidate_seconds": 18.533626816119067,
+            "change_pct": -19.06234974951808
+          },
+          "short1": {
+            "metric": "wall",
+            "control_seconds": 4.966852889,
+            "candidate_seconds": 2.642322015,
+            "change_pct": -46.800880274672465
+          },
+          "long": {
+            "metric": "ttft",
+            "control_seconds": 20.575680539943278,
+            "candidate_seconds": 5.1192359970882535,
+            "change_pct": -75.11996754056153
+          }
+        },
+        "same_hardware": true,
+        "complete_telemetry": true,
+        "passes": true
+      },
+      {
+        "control": "a2",
+        "candidate": "c2",
+        "control_budget_gib": 26.7,
+        "candidate_budget_gib": 26.7,
+        "resources_equal": true,
+        "comparisons": {
+          "c16": {
+            "metric": "wall",
+            "control_seconds": 23.009518300998025,
+            "candidate_seconds": 18.582092880969867,
+            "change_pct": -19.241712764739283
+          },
+          "short1": {
+            "metric": "wall",
+            "control_seconds": 4.967196096,
+            "candidate_seconds": 2.642620291,
+            "change_pct": -46.79855113575931
+          },
+          "long": {
+            "metric": "ttft",
+            "control_seconds": 20.595135694020428,
+            "candidate_seconds": 5.102664233068936,
+            "change_pct": -75.22393487045372
+          }
+        },
+        "same_hardware": true,
+        "complete_telemetry": true,
+        "passes": true
+      }
+    ],
+    "passes": true,
+    "contract_sha256": "e64651b06f51e91c23fa43310515eecf28709fb28f007cb50825169e17eaaae2",
+    "raw_sha256": {
+      "a1": "e6b6a0ae5d45b6661fd057fd5fd0614211e04bf5ddba9dd7fd2c804e68553a42",
+      "c1": "c1a487bf4367cbb778460c8e669b52597720853ea67f6bbde88b1b8e0a87c8c2",
+      "c2": "49365075ce0a44b756fa86d2bb48fa0f30da3993667fa5119c668d74d0bc81cb",
+      "a2": "8d9972ab66bee700bddae0d4e66c5d5c25efbc553d40cd63667c676f9f6cc886"
+    }
+  },
+  "current_quality": {
+    "overall": {
+      "n": 1024,
+      "control_correct": 968,
+      "candidate_correct": 968,
+      "regressions": 2,
+      "gains": 2,
+      "gross_regression_rate": 0.001953125,
+      "cp95_upper": 0.00613535239623017,
+      "passes_2pct": true
+    },
+    "zero_shot": {
+      "n": 512,
+      "control_correct": 479,
+      "candidate_correct": 478,
+      "regressions": 2,
+      "gains": 1,
+      "gross_regression_rate": 0.00390625,
+      "cp95_upper": 0.01224498839614846,
+      "passes_2pct": true
+    },
+    "eight_shot": {
+      "n": 512,
+      "control_correct": 489,
+      "candidate_correct": 490,
+      "regressions": 0,
+      "gains": 1,
+      "gross_regression_rate": 0.0,
+      "cp95_upper": 0.005833955600555739,
+      "passes_2pct": true
+    }
+  },
+  "comparability_limits": [
+    "Historical text-only and0.88memoryshare vs current vision-enabled and0.85fixed-study share; current true default is0.9.",
+    "Historical simultaneous barrier vs current10msordered arrivals; input artifact SHA differs.",
+    "Historical32Kcontext and2048stepbudget vs current262Kcontext and1024budget.",
+    "Historical native --no-autotune/explicit execution vs current normal tuning/automatic; F32 initial2K is current quality guard.",
+    "Cross-study54percent wall increase is a descriptive arithmetic ratio, not a matched current-vLLM gap. Context ceiling is not evidence of eager262Kallocation.",
+    "7slots is the fixed0.85study observation, not a hardcoded default or5090hardware limit."
+  ],
+  "investigation_priority": [
+    "Measure complete allocation components and funded pool width on unchanged true default.",
+    "Reduce duplicated or oversized request state, worker scratch, graph/workspace storage while preserving ownership/quality/budget.",
+    "Profile prefill, draft, verify and commit GPU costs plus achieved batch/acceptance; GPU utilization alone is not efficiency.",
+    "Fresh controlled native-vLLM comparison after harness thread/capacity repair, with explicit protocol and no sweep."
+  ],
+  "runtime_code_changed": false,
+  "initial_allocation_diagnostic": {
+    "scope": "One unchanged main binary; zero execution/resource flags, opt-in synchronous JSONL host instrumentation, 1warm+1measured C16; allocation diagnosis, NOT qualified performance or a fresh comparison.",
+    "completed": true,
+    "command": [
+      "/home/r/benchmarks/inference.rs/default-fast-combination-2026-10-24/infer-default-bf16-mtp-v12",
+      "/home/r/models/Qwen3.8-27B-NVFP4",
+      "--listen",
+      "127.0.0.1:53893"
+    ],
+    "binary_sha256": "8913cd905927ec5c740bbc8b4deb11b4084f10f6b062d54037991a27ed38b6ee",
+    "engine_budget_gib": 28.2,
+    "storage_plan": {
+      "planned_width": 11,
+      "prompt_width": 1024,
+      "capacity": 8192,
+      "kv_tokens": 46048
+    },
+    "accepted_capture": "2026-10-24T16:34:12.543316Z  INFO infer::executor: CUDA slot pool captured within serving envelope width=11 capacity=8192 quoted_bytes=5695114836 allocated_bytes=5757296852 envelope_bytes=6070947360",
+    "memory_stages": [
+      {
+        "memory_stage": "before_pool",
+        "width": 11,
+        "driver_free_bytes": 6647382016,
+        "pool_unused_bytes": 432819744,
+        "allocatable_bytes": 7080201760
+      },
+      {
+        "memory_stage": "target_pool",
+        "width": 11,
+        "driver_free_bytes": 3073310720,
+        "pool_unused_bytes": 45597488,
+        "allocatable_bytes": 3118908208,
+        "incremental_allocatable_decrease_bytes": 3961293552
+      },
+      {
+        "memory_stage": "draft_pool",
+        "width": 11,
+        "driver_free_bytes": 2983133184,
+        "pool_unused_bytes": 32337496,
+        "allocatable_bytes": 3015470680,
+        "incremental_allocatable_decrease_bytes": 103437528
+      },
+      {
+        "memory_stage": "worker",
+        "width": 11,
+        "driver_free_bytes": 1334771712,
+        "pool_unused_bytes": 3628904,
+        "allocatable_bytes": 1338400616,
+        "incremental_allocatable_decrease_bytes": 1677070064
+      },
+      {
+        "memory_stage": "homes",
+        "width": 11,
+        "driver_free_bytes": 1154416640,
+        "pool_unused_bytes": 2092364,
+        "allocatable_bytes": 1156509004,
+        "incremental_allocatable_decrease_bytes": 181891612
+      },
+      {
+        "memory_stage": "before_pool",
+        "width": 12,
+        "driver_free_bytes": 7114522624,
+        "pool_unused_bytes": 30166560,
+        "allocatable_bytes": 7144689184
+      },
+      {
+        "memory_stage": "target_pool",
+        "width": 12,
+        "driver_free_bytes": 3181838336,
+        "pool_unused_bytes": 17970308,
+        "allocatable_bytes": 3199808644,
+        "incremental_allocatable_decrease_bytes": 3944880540
+      },
+      {
+        "memory_stage": "draft_pool",
+        "width": 12,
+        "driver_free_bytes": 2944860160,
+        "pool_unused_bytes": 19914184,
+        "allocatable_bytes": 2964774344,
+        "incremental_allocatable_decrease_bytes": 235034300
+      },
+      {
+        "memory_stage": "worker",
+        "width": 12,
+        "driver_free_bytes": 1162739712,
+        "pool_unused_bytes": 24760024,
+        "allocatable_bytes": 1187499736,
+        "incremental_allocatable_decrease_bytes": 1777274608
+      },
+      {
+        "memory_stage": "homes",
+        "width": 12,
+        "driver_free_bytes": 982384640,
+        "pool_unused_bytes": 7831784,
+        "allocatable_bytes": 990216424,
+        "incremental_allocatable_decrease_bytes": 197283312
+      },
+      {
+        "memory_stage": "before_pool",
+        "width": 11,
+        "driver_free_bytes": 6686638080,
+        "pool_unused_bytes": 63720984,
+        "allocatable_bytes": 6750359064
+      },
+      {
+        "memory_stage": "target_pool",
+        "width": 11,
+        "driver_free_bytes": 3257925632,
+        "pool_unused_bytes": 53986088,
+        "allocatable_bytes": 3311911720,
+        "incremental_allocatable_decrease_bytes": 3438447344
+      },
+      {
+        "memory_stage": "draft_pool",
+        "width": 11,
+        "driver_free_bytes": 3056599040,
+        "pool_unused_bytes": 40726096,
+        "allocatable_bytes": 3097325136,
+        "incremental_allocatable_decrease_bytes": 214586584
+      },
+      {
+        "memory_stage": "worker",
+        "width": 11,
+        "driver_free_bytes": 1544683520,
+        "pool_unused_bytes": 12017512,
+        "allocatable_bytes": 1556701032,
+        "incremental_allocatable_decrease_bytes": 1540624104
+      },
+      {
+        "memory_stage": "homes",
+        "width": 11,
+        "driver_free_bytes": 1376911360,
+        "pool_unused_bytes": 10480972,
+        "allocatable_bytes": 1387392332,
+        "incremental_allocatable_decrease_bytes": 169308700
+      }
+    ],
+    "instrumented_groups": [
+      {
+        "repeat": -1,
+        "wall_seconds": 19.14539480500389,
+        "output_tokens": 4096,
+        "requests": 16
+      },
+      {
+        "repeat": 0,
+        "wall_seconds": 19.00945856596809,
+        "output_tokens": 4096,
+        "requests": 16
+      }
+    ],
+    "raw_files": {
+      "/home/r/benchmarks/inference.rs/default-competitiveness-2026-10-24/baseline-v1/contract.json": "6446c1933bc2268f2d06821e12463038eb957804f8b100546defe17bd0fba069",
+      "/home/r/benchmarks/inference.rs/default-competitiveness-2026-10-24/baseline-v1/worker.py": "262d14a2d742e2fb9e33de4c3e3a17a99f53246ec203fe275a2012062362125b",
+      "/home/r/benchmarks/inference.rs/default-competitiveness-2026-10-24/baseline-v1/progress.log": "8f4e69c134ac364bb5f75f4c8a063f1d090a02a1eabe4aa2c0efa7fe07dbefed",
+      "/home/r/benchmarks/inference.rs/default-competitiveness-2026-10-24/baseline-v1/c1/report.json": "b181812f8f017fb6517895a43d9d145594f7b66d79439218d0c1ca3ef644a82c",
+      "/home/r/benchmarks/inference.rs/default-competitiveness-2026-10-24/baseline-v1/c1/execution.jsonl": "f3ea3147ed674d7da945ef697ae675d33e9b7d1aae66486d8ddc4c1879c1b1c0",
+      "/home/r/benchmarks/inference.rs/default-competitiveness-2026-10-24/baseline-v1/c1/server.log": "64a17891a1c6555c50af6fa066f7d3b4c1e37bff947c6d6c7ee1984c41e863e3",
+      "/home/r/benchmarks/inference.rs/default-competitiveness-2026-10-24/baseline-v1/c1/telemetry.jsonl": "12b8909eb3445711b338dff89e9254b609c7c04ee344694365363948d80f5267"
+    },
+    "interpretation": "All startup attempts retained. Initial width11 capture succeeded; a subsequent width12 capture exceeded the unchanged envelope and was rejected; final width11 capture succeeded. Table in the note uses the final accepted capture. Host profiling timings are descriptive only."
+  }
+}

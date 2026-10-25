@@ -215,6 +215,40 @@ impl StageErrors {
     }
 }
 
+/// Compare the prepared projections actually used by attention with the unpadded QKV golden.
+#[cfg(cuda_backend)]
+fn prepared_qkv(
+    device: &DeviceCudaDevice,
+    weights: &VisionVisionWeights,
+    encoder: &infer_spi::ModalityEncoder,
+    input: &[f32],
+    rows: usize,
+) -> infer_core::Result<Vec<f32>> {
+    use infer_backend_cuda::vision::project_with;
+    use infer_models::vision::head_dim;
+
+    let head = head_dim(encoder)?;
+    let half = head / 2;
+    let padded_half = half.next_power_of_two();
+    let padded_width = encoder.heads * padded_half * 2;
+    let layer = weights.attention(0)?;
+    let mut output = vec![0.0; rows * encoder.hidden_size * 3];
+    for (which, (weight, bias)) in [&layer.q, &layer.k, &layer.v].into_iter().enumerate() {
+        let projected = project_with(device, weight, bias, input, rows, padded_width)?;
+        for row in 0..rows {
+            for h in 0..encoder.heads {
+                for side in 0..2 {
+                    let source = row * padded_width + (h * 2 + side) * padded_half;
+                    let target = (row * 3 + which) * encoder.hidden_size + h * head + side * half;
+                    output[target..target + half]
+                        .copy_from_slice(&projected[source..source + half]);
+                }
+            }
+        }
+    }
+    Ok(output)
+}
+
 /// Run patch embed, position add, `LayerNorm`, `QKV` and attention against the reference.
 #[cfg(cuda_backend)]
 fn run_stages(
@@ -247,15 +281,7 @@ fn run_stages(
         &posed,
         case.patches,
     )?;
-    let qkv = vision::project(
-        device,
-        weights,
-        "blocks.0.attn.qkv.weight",
-        "blocks.0.attn.qkv.bias",
-        &normalised,
-        case.patches,
-        encoder.hidden_size * 3,
-    )?;
+    let qkv = prepared_qkv(device, weights, encoder, &normalised, case.patches)?;
     let mode = vision::AttentionMode::from_environment();
     let attended = vision::attention_with(
         device,

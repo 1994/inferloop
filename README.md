@@ -14,7 +14,7 @@ inferloop is built around a general request loop rather than a single model fami
 
 - **Workload-agnostic runtime** for generation, embedding, ranking, and decision requests.
 - **Pluggable model providers** so new model families do not require runtime branches.
-- **CUDA and Metal backends** with device-resident execution graphs.
+- **CUDA and Metal backends** with device-resident execution graphs; CUDA compute uses nonblocking submit/poll by default, including prefill and speculative decoding.
 - **Bounded request batching**, admission control, backpressure, and cancellation.
 - **Serving** through native token APIs and an OpenAI-compatible subset with SSE.
 - **Operational tooling** for health, events, traces, checkpoints, and diagnostics.

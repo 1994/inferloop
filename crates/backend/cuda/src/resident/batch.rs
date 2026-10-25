@@ -8,8 +8,9 @@ use super::{
     profile,
     prompt_scratch::PromptScratch,
 };
-use crate::attention_profile::PRECISE_PREFIX_POSITIONS;
+use crate::attention_profile::precise_prefix_positions;
 use crate::constants::ATTENTION_SPLIT_THRESHOLD;
+use crate::constants::AUX_KERNEL_TILE;
 use crate::constants::CB_DECODE_SLOTS;
 use crate::constants::EXTRA_WIDE_PREFILL_LANES;
 use crate::constants::F32_BYTES;
@@ -24,18 +25,19 @@ use crate::constants::PREFILL_SPLIT_K;
 use crate::constants::WIDE_PREFILL_LANES;
 use crate::constants::WIDER_PREFILL_LANES;
 use crate::constants::WIDEST_PREFILL_LANES;
-use crate::device::Readbacks;
 use crate::device::cublaslt::Support;
 use crate::device::{CudaDevice, ReadbackSource, device_error};
+use crate::device::{PinnedUpload, Readbacks};
 use crate::mlp::ProjectionWeight;
 use cutile::prelude::*;
-use infer_core::{Error, Result, TensorId};
+use infer_core::{Error, ErrorCode, Result, TensorId};
 use infer_ir::{DataflowGraph, StateKind, TensorNode, TensorOp, TensorStorage};
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
+use std::future::Future;
 use std::mem::take;
 use std::result::Result as StdResult;
+use std::slice::from_ref;
 use std::sync::Mutex;
 
 pub type States = BTreeMap<TensorId, Vec<Tensor<f32>>>;
@@ -125,12 +127,10 @@ pub(super) struct BatchGraph {
     metadata: Vec<Tensor<i32>>,
     /// Owner of the batched metadata rows when the prompt graph uses one allocation.
     metadata_owner: Option<Tensor<i32>>,
-    /// Host staging for one prompt chunk's metadata; the device copy is ordered before replay.
-    ///
-    /// This must stay a pageable `Vec`: `copy_host_slice` stages pageable host memory before
-    /// returning, so the next chunk can overwrite it without draining the stream. Do not switch
-    /// to a pinned ring without an explicit completion barrier before the next reuse.
+    /// Prompt replay is awaited before either pinned staging owner is reused.
     metadata_upload: Vec<i32>,
+    metadata_staging: PinnedUpload<i32>,
+    rotary_staging: PinnedUpload<i32>,
     prefill_info: Option<Tensor<i32>>,
     /// Per-lane `(t, h, w)` rotary coordinates for prompt chunks; absent below prefill width 32.
     prefill_rotary: Option<Tensor<i32>>,
@@ -185,6 +185,7 @@ pub(super) struct SlotDecodeGraph {
     token_readout: Option<super::token_readout::TokenReadout>,
     metadata_owner: Tensor<i32>,
     metadata_upload: Vec<i32>,
+    metadata_staging: PinnedUpload<i32>,
     // Batched hidden rows stay allocated for the graph's writes but are never read back.
     hidden: Arc<Tensor<f32>>,
     pub(super) external_hidden: bool,
@@ -310,9 +311,10 @@ impl BatchBuilder<'_> {
             token_readout,
             graph,
             state_only,
-            readbacks: Readbacks::default(),
+            readbacks: Readbacks::contiguous(self.device, &hidden, &logits, width)?,
             metadata_owner,
             metadata_upload: Vec::with_capacity(width * METADATA_FIELDS),
+            metadata_staging: PinnedUpload::chain(self.device, width * METADATA_FIELDS)?,
             hidden,
             external_hidden: self.weights.fusion.is_some(),
             logits,
@@ -549,7 +551,7 @@ impl BatchBuilder<'_> {
             token_readout,
             graph,
             state_offset: Self::state_offset(self.weights),
-            readbacks: Readbacks::default(),
+            readbacks: Readbacks::pairs(self.device, &hidden, &logits)?,
             prefill,
             prefill_last,
             precise: None,
@@ -565,7 +567,9 @@ impl BatchBuilder<'_> {
             prefill_rotary: None,
             metadata,
             metadata_owner: None,
-            metadata_upload: Vec::new(),
+            metadata_upload: Vec::with_capacity(self.width * METADATA_FIELDS),
+            metadata_staging: PinnedUpload::single(self.device, self.width * METADATA_FIELDS)?,
+            rotary_staging: PinnedUpload::single(self.device, self.width * ROTARY_AXES)?,
             hidden,
             logits,
             width,
@@ -643,7 +647,7 @@ impl BatchBuilder<'_> {
             token_readout: None,
             graph: None,
             state_offset: Self::state_offset(self.weights),
-            readbacks: Readbacks::default(),
+            readbacks: Readbacks::pairs(self.device, &hidden, &logits)?,
             prefill: captures.regular.prefill,
             prefill_last: captures.regular.prefill_last,
             precise: captures.precise,
@@ -659,7 +663,9 @@ impl BatchBuilder<'_> {
             prefill_rotary,
             metadata,
             metadata_owner: Some(metadata_owner),
-            metadata_upload: Vec::new(),
+            metadata_upload: Vec::with_capacity(self.width * METADATA_FIELDS),
+            metadata_staging: PinnedUpload::single(self.device, self.width * METADATA_FIELDS)?,
+            rotary_staging: PinnedUpload::single(self.device, self.width * ROTARY_AXES)?,
             hidden,
             logits,
             width: self.width,
@@ -689,9 +695,12 @@ impl BatchBuilder<'_> {
             scratch,
             prompt_row.as_deref_mut(),
         )?;
-        // Both variants retain the same arenas, state and metadata. The target's
-        // first context block preserves canonical attention before BF16 bulk prefill.
-        let precise = if self.weights.fusion.is_none() && self.weights.attention_profile.is_bf16() {
+        // Both variants retain the same arenas, state and metadata. A configured canonical
+        // prefix needs its own graphs; without one the variant is never replayed.
+        let precise = if self.weights.fusion.is_none()
+            && self.weights.attention_profile.is_bf16()
+            && precise_prefix_positions() > 0
+        {
             self.attention.precise_prefill(true);
             let result =
                 self.capture_prompt_graphs(arena, metadata, precise_profile, scratch, prompt_row);
@@ -954,7 +963,6 @@ impl BatchBuilder<'_> {
                 (query_heads, kv_heads, head_dim),
                 i32::try_from(window.unwrap_or(0)).map_err(error)?,
                 self.weights.kv_scales[&id],
-                self.weights.fusion.is_none(),
             )
         };
         self.fp8_states.insert(id, (keys, values));
@@ -1081,17 +1089,17 @@ impl BatchBuilder<'_> {
             .then(|| super::prefill_demand::StateDemand::new(self.graph));
         let quant_plan = super::nvfp4_gemm::QuantPairPlan::new(self.graph, self.weights);
         let pairs = gdn_ba_pairs(self.graph, self.weights);
-        let swiglu = super::prefill_projection::swiglu_plan(self.graph, self.weights);
-        let absorbed: BTreeSet<usize> = swiglu
-            .values()
-            .flat_map(|&(silu, multiply, ..)| [silu, multiply])
-            .collect();
+        let mlp = super::prefill_projection::MlpPlan::new(
+            self.graph,
+            self.weights,
+            (arena.lanes(), &*self.nvfp4),
+        );
         self.nvfp4.begin_quant_capture();
         let result = CudaGraph::scope(&self.device.stream, |scope| {
             let mut boundaries = profile.map(|profile| profile.graph(last));
             let mut fused_second = None;
             for (index, node) in self.graph.nodes.iter().enumerate() {
-                if fused_second == Some(index) || absorbed.contains(&index) {
+                if fused_second == Some(index) || mlp.absorbs(index) {
                     continue;
                 }
                 let logits = node.outputs.iter().any(|id| Some(*id) == self.graph.logits);
@@ -1145,17 +1153,13 @@ impl BatchBuilder<'_> {
                     )?;
                     continue;
                 }
-                if let Some(&(.., gate, up)) = swiglu.get(&index) {
-                    if !super::prefill_projection::record_swiglu(
-                        scope,
-                        node,
-                        (gate, up),
-                        arena,
-                        self.weights,
-                        self.nvfp4,
-                    )? {
-                        return Err(error("fused SwiGLU projection"));
-                    }
+                if mlp.record(
+                    scope,
+                    (index, &self.graph.nodes),
+                    arena,
+                    self.weights,
+                    self.nvfp4,
+                )? {
                     continue;
                 }
                 self.record_prompt_node(
@@ -1175,6 +1179,58 @@ impl BatchBuilder<'_> {
         result.map_err(device_error)
     }
 
+    /// Gather every lane of a target prompt chunk in one launch instead of one per lane.
+    /// False leaves draft programs and geometries without contiguous external rows to the
+    /// per-lane kernel.
+    fn record_prompt_embedding(
+        &self,
+        scope: &Scope,
+        node: &TensorNode,
+        arena: &mut ActivationArena,
+        metadata_batch: &Tensor<i32>,
+    ) -> StdResult<bool, DeviceError> {
+        let lanes = arena.lanes();
+        let (TensorOp::Embedding, None, Some(external)) =
+            (&node.op, &self.weights.fusion, self.lane_external_owner)
+        else {
+            return Ok(false);
+        };
+        let Some(weight) = self.weights.embeddings.get(&node.inputs[0]) else {
+            return Ok(false);
+        };
+        let slot = arena.slot(node.outputs[0]).map_err(error)?;
+        let size = arena.get(node.outputs[0]).map_err(error)?.size();
+        let dimension = size / lanes;
+        if size != lanes * dimension
+            || !dimension.is_multiple_of(AUX_KERNEL_TILE)
+            || external.size() < size
+            || metadata_batch.size() < lanes * METADATA_FIELDS
+        {
+            return Ok(false);
+        }
+        let output = arena.buffers[slot]
+            .take()
+            .ok_or_else(|| error("prompt embedding output"))?;
+        let mut rows = output.reshape(&[lanes, dimension])?;
+        // The owner holds rows for the widest prompt graph; this chunk reads its first lanes.
+        let range = 0..size;
+        let external = external.slice(from_ref(&range)).map_err(error)?;
+        let external = external.view(&[lanes, dimension]).map_err(error)?;
+        let recorded = scope
+            .record(
+                super::attention::attention::embedding_rows(
+                    (&mut rows).partition([1, AUX_KERNEL_TILE]),
+                    weight,
+                    &external,
+                    metadata_batch,
+                )
+                .generics(vec![dimension.to_string(), METADATA_FIELDS.to_string()]),
+            )
+            .map(drop);
+        arena.buffers[slot] = Some(rows.reshape(&[size])?);
+        recorded.map(|()| true)
+    }
+
     fn record_prompt_node(
         &mut self,
         scope: &Scope,
@@ -1189,6 +1245,9 @@ impl BatchBuilder<'_> {
     ) -> StdResult<(), DeviceError> {
         let (metadata, metadata_batch, prefill_info, prefill_rotary) = metadata;
         let (partials, recurrent, fusion) = workspaces;
+        if self.record_prompt_embedding(scope, node, arena, metadata_batch)? {
+            return Ok(());
+        }
         if let Some(workspace) = fusion.as_mut()
             && super::fusion_batch::record(
                 self,
@@ -1454,20 +1513,7 @@ pub(super) fn dispatch32(node: &TensorNode, weights: &ProgramWeights) -> Dispatc
     }
 }
 
-/// Enqueue a prompt replay with nothing to read back: the host stages the next chunk while this
-/// one runs instead of idling the GPU for a sync per chunk.
-#[expect(
-    unsafe_code,
-    reason = "Audited detached replay of a readback-free prompt chunk on the single engine stream"
-)]
-fn launch_detached(device: &CudaDevice, graph: &CudaGraph<()>) -> Result<()> {
-    // SAFETY: single engine stream; this replay follows its staged metadata and uploads
-    // (pageable copies and graph updates, both stream-ordered and host-safe on return) and
-    // precedes every later replay. The graph owns every buffer it touches, and the next
-    // readback, device read or drain on this device waits for it.
-    unsafe { graph.launch().async_on(&device.stream) }.map_err(device_error)
-}
-
+/// Move one captured output out of the activation arena.
 pub(super) fn take_result(
     arena: &mut ActivationArena,
     id: Option<TensorId>,
@@ -1486,7 +1532,7 @@ impl BatchGraph {
         Arc::clone(&self.hidden[0])
     }
 
-    pub fn run(
+    pub(crate) async fn run_async(
         &mut self,
         device: &CudaDevice,
         tokens: &[u32],
@@ -1495,11 +1541,12 @@ impl BatchGraph {
         read_hidden: bool,
     ) -> Result<BatchOutput> {
         Ok(self
-            .run_readout(device, tokens, position, prefill, read_hidden, false)?
+            .run_readout_async(device, tokens, position, prefill, read_hidden, false)
+            .await?
             .rows)
     }
 
-    pub(crate) fn run_readout(
+    pub(crate) async fn run_readout_async(
         &mut self,
         device: &CudaDevice,
         tokens: &[u32],
@@ -1510,7 +1557,7 @@ impl BatchGraph {
     ) -> Result<BatchReadout> {
         if self.width >= PREFILL_LANES {
             return self
-                .run32(
+                .run32_async(
                     device,
                     tokens,
                     position,
@@ -1521,6 +1568,7 @@ impl BatchGraph {
                         rotary: None,
                     },
                 )
+                .await
                 .map(BatchReadout::host);
         }
         let device_tokens = plain_greedy && prefill.is_none() && self.token_readout.is_some();
@@ -1550,22 +1598,7 @@ impl BatchGraph {
             // rather than from the per-lane metadata. run32 writes it; this narrow path replayed
             // the same graphs without writing it, so they read the previous chunk's base - which
             // silently placed KV rows outside the chunk and, with a block table, out of the arena.
-            let last_row = i64::try_from(position).map_err(device_error)?
-                + i64::try_from(tokens.len()).map_err(device_error)?
-                - 1
-                + i64::from(self.state_offset);
-            if last_row >= i64::try_from(self.capacity).map_err(device_error)? {
-                return Err(Error::new(
-                    infer_core::ErrorCode::Capacity,
-                    format!(
-                        "prompt state rows end at {last_row} (base {position}, {} tokens, offset {}), \
-                         past the {}-token KV arena",
-                        tokens.len(),
-                        self.state_offset,
-                        self.capacity
-                    ),
-                ));
-            }
+            Self::validate_prefill_state(tokens.len(), position, self.state_offset, self.capacity)?;
             super::metadata::update(
                 graph,
                 self.prefill_info
@@ -1593,13 +1626,18 @@ impl BatchGraph {
                 .token_readout
                 .as_mut()
                 .ok_or_else(|| Error::invariant("batch token readout"))?
-                .run(device, graph, &mut self.readbacks, &sources, &active)?;
+                .run_async(device, graph, &mut self.readbacks, &sources, &active)
+                .await?;
             return Ok(BatchReadout {
                 rows,
                 tokens: Some(tokens.into_iter().map(Some).collect()),
             });
         }
-        let mut rows = self.readbacks.run(device, graph, &sources)?.into_iter();
+        let mut rows = self
+            .readbacks
+            .run_async(device, graph, &sources)
+            .await?
+            .into_iter();
         (0..tokens.len())
             .map(|_| {
                 Ok((
@@ -1614,6 +1652,26 @@ impl BatchGraph {
     }
 
     /// State positions this graph lags its `RoPE` position by.
+    fn validate_prefill_state(
+        count: usize,
+        position: usize,
+        state_offset: i32,
+        capacity: usize,
+    ) -> Result<()> {
+        let last_row = i64::try_from(position).map_err(device_error)?
+            + i64::try_from(count).map_err(device_error)?
+            - 1
+            + i64::from(state_offset);
+        if last_row >= i64::try_from(capacity).map_err(device_error)? {
+            return Err(Error::new(
+                ErrorCode::Capacity,
+                format!(
+                    "prompt state rows end at {last_row} (base {position}, {count} tokens, offset {state_offset}), past the {capacity}-token KV arena"
+                ),
+            ));
+        }
+        Ok(())
+    }
     #[must_use]
     pub const fn state_offset(&self) -> i32 {
         self.state_offset
@@ -1645,7 +1703,7 @@ impl BatchGraph {
             // the arena depth, would address a row the state kernels do not check on store.
             if state_pos < -1 || state_pos >= i32::try_from(capacity).map_err(device_error)? {
                 return Err(Error::new(
-                    infer_core::ErrorCode::Capacity,
+                    ErrorCode::Capacity,
                     format!(
                         "state position {state_pos} (base {position}, lane {lane}, offset {state_offset}) \
                          exceeds the {capacity}-token KV arena"
@@ -1700,7 +1758,7 @@ impl BatchGraph {
         stage_metadata_batch(
             device,
             owner,
-            &mut self.metadata_upload,
+            (&mut self.metadata_upload, &mut self.metadata_staging),
             self.width,
             self.capacity,
             tokens,
@@ -1720,7 +1778,7 @@ impl BatchGraph {
             + i64::from(self.state_offset);
         if last_row >= i64::try_from(self.capacity).map_err(device_error)? {
             return Err(Error::new(
-                infer_core::ErrorCode::Capacity,
+                ErrorCode::Capacity,
                 format!(
                     "prompt state rows end at {last_row} (base {position}, {} tokens, offset {}), \
                      past the {}-token KV arena",
@@ -1757,7 +1815,7 @@ impl BatchGraph {
     }
 
     /// Batched slots read back in one copy each; per-lane rows are split on host.
-    fn run32(
+    async fn run32_async(
         &mut self,
         device: &CudaDevice,
         tokens: &[u32],
@@ -1777,7 +1835,7 @@ impl BatchGraph {
         let precise = self.precise.is_some()
             && position
                 .checked_add(tokens.len())
-                .is_some_and(|end| end <= PRECISE_PREFIX_POSITIONS);
+                .is_some_and(|end| end <= precise_prefix_positions());
         #[cfg(test)]
         let state = self.state_prefill.as_ref();
         #[cfg(not(test))]
@@ -1839,10 +1897,10 @@ impl BatchGraph {
             &self.profile
         };
         if sources.iter().all(Option::is_none) && profile.is_none() {
-            launch_detached(device, graph)?;
+            device.run_op(graph.launch()).await?;
             return Ok(vec![(Vec::new(), Vec::new()); tokens.len()]);
         }
-        let rows = self.readbacks.run(device, graph, &sources);
+        let rows = self.readbacks.run_async(device, graph, &sources).await;
         if rows.is_ok()
             && let Some(profile) = profile
         {
@@ -1906,14 +1964,14 @@ impl BatchGraph {
             values[base + 1] = i32::try_from(axes[1]).map_err(device_error)?;
             values[base + 2] = i32::try_from(axes[2]).map_err(device_error)?;
         }
-        device.copy_host_slice(table, &values)
+        self.rotary_staging.copy(device, table, &values)
     }
 
     /// Replay one prompt chunk whose media lanes carry precomputed embeddings.
     ///
     /// The caller has already copied each media row into its lane's external slot on the device
     /// stream; `overrides[lane]` selects that slot in the embedding kernel.
-    pub(crate) fn run_media(
+    pub(crate) async fn run_media_async(
         &mut self,
         device: &CudaDevice,
         tokens: &[u32],
@@ -1924,7 +1982,7 @@ impl BatchGraph {
         if overrides.lanes.len() != tokens.len() {
             return Err(Error::invalid("media prefill overrides"));
         }
-        self.run32(
+        self.run32_async(
             device,
             tokens,
             position,
@@ -1932,6 +1990,7 @@ impl BatchGraph {
             false,
             overrides,
         )
+        .await
     }
 
     #[cfg(test)]
@@ -1982,22 +2041,24 @@ impl BatchGraph {
             .collect())
     }
 
-    pub fn restore(&self, device: &CudaDevice, count: usize) -> Result<()> {
-        self.restore
+    pub(crate) fn restore_async<'a>(
+        &self,
+        device: &'a CudaDevice,
+        count: usize,
+    ) -> impl Future<Output = Result<()>> + Send + 'a {
+        let launch = self
+            .restore
             .get(count - 1)
-            .ok_or_else(|| Error::invalid("batch commit count"))?
-            .launch()
-            .sync_on(&device.stream)
-            .map_err(device_error)
+            .map(CudaGraph::launch)
+            .ok_or_else(|| Error::invalid("batch commit count"));
+        async move { device.run_op(launch?).await }
     }
 }
 
 /// Stage one prompt chunk's batched metadata rows into their existing owner.
 ///
-/// The transfer deliberately has no drain or readback: `metadata_upload` is pageable, and
-/// `copy_host_slice` stages a pageable source before returning, so the next chunk may reuse
-/// the same host buffer on the same stream. A pinned source would need a completion barrier
-/// here before `upload` could be overwritten.
+/// The pinned source remains owned by the graph. The caller awaits replay completion
+/// before the next prompt chunk can overwrite this staging storage.
 #[expect(
     clippy::too_many_arguments,
     reason = "The staging contract names each launch scalar explicitly instead of hiding them"
@@ -2005,7 +2066,7 @@ impl BatchGraph {
 fn stage_metadata_batch(
     device: &CudaDevice,
     owner: &mut Tensor<i32>,
-    upload: &mut Vec<i32>,
+    (upload, staging): (&mut Vec<i32>, &mut PinnedUpload<i32>),
     width: usize,
     capacity: usize,
     tokens: &[u32],
@@ -2019,11 +2080,11 @@ fn stage_metadata_batch(
     for row in rows {
         upload.extend_from_slice(&row);
     }
-    device.copy_host_slice(owner, upload)
+    staging.copy(device, owner, upload)
 }
 
 /// One active lane of a slot decode replay: slot index, token, `RoPE` position, state position.
-pub(super) type SlotLane = (usize, u32, usize, usize);
+pub type SlotLane = (usize, u32, usize, usize);
 
 impl SlotDecodeGraph {
     #[cfg(test)]
@@ -2094,7 +2155,7 @@ impl SlotDecodeGraph {
     /// # Errors
     /// Rejects empty/oversized lane sets, duplicate or unknown slots, out-of-vocabulary
     /// tokens, out-of-capacity state positions, stale cursors and CUDA replay failures.
-    pub fn run_lanes(
+    pub(crate) async fn run_lanes_async(
         &mut self,
         device: &CudaDevice,
         lanes: &[SlotLane],
@@ -2103,11 +2164,12 @@ impl SlotDecodeGraph {
         read_logits: bool,
     ) -> Result<BatchOutput> {
         Ok(self
-            .run_lanes_readout(device, lanes, capacity, vocabulary, read_logits, false)?
+            .run_lanes_readout_async(device, lanes, capacity, vocabulary, read_logits, false)
+            .await?
             .rows)
     }
 
-    pub(crate) fn run_lanes_readout(
+    pub(crate) async fn run_lanes_readout_async(
         &mut self,
         device: &CudaDevice,
         lanes: &[SlotLane],
@@ -2133,7 +2195,8 @@ impl SlotDecodeGraph {
             capacity,
             vocabulary,
         )?;
-        device.copy_host_slice(&mut self.metadata_owner, &self.metadata_upload)?;
+        self.metadata_staging
+            .copy(device, &mut self.metadata_owner, &self.metadata_upload)?;
         let vocabulary = self.logits.size() / self.width;
         let mut sources = Vec::with_capacity(2 * lanes.len());
         for &(slot, ..) in lanes {
@@ -2156,13 +2219,14 @@ impl SlotDecodeGraph {
                 .token_readout
                 .as_mut()
                 .ok_or_else(|| Error::invariant("slot token readout"))?
-                .run(device, graph, &mut self.readbacks, &sources, &active)?;
+                .run_async(device, graph, &mut self.readbacks, &sources, &active)
+                .await?;
             (Some(rows), Some(tokens.into_iter().map(Some).collect()))
         } else {
             (None, None)
         };
         let rows = if output.is_none() {
-            self.readbacks.run(device, graph, &sources)?
+            self.readbacks.run_async(device, graph, &sources).await?
         } else {
             Vec::new()
         };
@@ -2224,7 +2288,8 @@ impl SlotDecodeGraph {
             capacity,
             vocabulary,
         )?;
-        device.copy_host_slice(&mut self.metadata_owner, &self.metadata_upload)?;
+        self.metadata_staging
+            .copy(device, &mut self.metadata_owner, &self.metadata_upload)?;
         // SAFETY: the engine is single-stream, so this replay is ordered after the staged
         // metadata and uploads and before any later replay; every buffer it touches is
         // pool-owned, and the pool's drop barrier drains the stream before anything frees.

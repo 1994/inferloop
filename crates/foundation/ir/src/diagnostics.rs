@@ -68,6 +68,9 @@ pub struct ExecutionProfileInspection {
     /// leave this empty.
     #[serde(default)]
     pub attention_profile: String,
+    /// Canonical prompt positions retained before bulk attention; zero means the opt-in full-FA4 path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub precise_prefix_positions: Option<usize>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KvCacheInspection {

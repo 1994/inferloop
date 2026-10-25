@@ -72,6 +72,23 @@ impl Default for SequencePrices {
     }
 }
 
+/// Immutable component quote captured before a pooled serving plan allocates device storage.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct PooledServingQuote {
+    pub width: usize,
+    pub capacity: usize,
+    pub kv_tokens: usize,
+    pub prompt_width: usize,
+    pub target_pool_bytes: u64,
+    pub draft_pool_bytes: u64,
+    pub target_worker_bytes: u64,
+    pub draft_worker_bytes: u64,
+    pub target_homes_bytes: u64,
+    pub draft_homes_bytes: u64,
+    pub graph_headroom_bytes: u64,
+    pub total_bytes: u64,
+}
+
 impl LoadedModel {
     pub(super) fn validate_capacity(&self, capacity: usize) -> Result<usize> {
         for_model(capacity, self.model.max_sequence)
@@ -185,13 +202,13 @@ impl LoadedModel {
 /// The shared scratch is charged at the worker's geometry, rather than the private
 /// sequence's maximum prompt width. No graph is captured while evaluating a plan.
 impl LoadedModel {
-    pub(crate) fn pooled_serving_bytes(
+    pub(crate) fn pooled_serving_quote(
         &self,
         width: usize,
         capacity: usize,
         kv_tokens: usize,
         prompt_width: usize,
-    ) -> Result<u64> {
+    ) -> Result<PooledServingQuote> {
         let capacity = self.validate_capacity(capacity)?;
         let profile = self.device.profile()?;
         let hidden = self.model.hidden_size;
@@ -201,7 +218,7 @@ impl LoadedModel {
         } else {
             self.mtp_depth + 1
         };
-        let mut bytes = pool_storage_bytes(
+        let target_pool_bytes = pool_storage_bytes(
             &self.graph,
             &self.weights,
             (width, capacity, kv_tokens),
@@ -222,62 +239,77 @@ impl LoadedModel {
                 profile,
             )?,
         )?;
-        bytes = add(bytes, mul(target_home, width as u64)?)?;
-        bytes = add(
-            bytes,
-            worker_storage_bytes(
-                &self.graph,
-                &self.weights,
-                (capacity, hidden, vocabulary),
-                prompt_width,
-                true,
-                profile,
-            )?,
+        let target_homes_bytes = mul(target_home, width as u64)?;
+        let target_worker_bytes = worker_storage_bytes(
+            &self.graph,
+            &self.weights,
+            (capacity, hidden, vocabulary),
+            prompt_width,
+            true,
+            profile,
         )?;
-        if let Some(draft) = &self.draft {
-            bytes = add(
-                bytes,
-                pool_storage_bytes(
+        let (draft_pool_bytes, draft_homes_bytes, draft_worker_bytes) =
+            if let Some(draft) = &self.draft {
+                let pool = pool_storage_bytes(
                     &draft.graph,
                     &draft.weights,
                     (width, capacity, width * capacity),
                     1,
                     hidden,
                     profile,
-                )?,
-            )?;
-            let geometry = ProgramGeometry {
-                verification: 0,
-                prompts: [0, 0],
-            };
-            let home = program_price(
-                &draft.graph,
-                &draft.weights,
-                hidden,
-                vocabulary,
-                OutputReadout::Logits,
-                geometry,
-                profile,
-            )?;
-            // Slot homes alias the pool's recurrent and KV state, but own their workspaces.
-            let home_fixed = home
-                .fixed
-                .saturating_sub(recurrent_state_bytes(&draft.graph)?);
-            bytes = add(bytes, mul(home_fixed, width as u64)?)?;
-            bytes = add(
-                bytes,
-                worker_storage_bytes(
+                )?;
+                let geometry = ProgramGeometry {
+                    verification: 0,
+                    prompts: [0, 0],
+                };
+                let home = program_price(
+                    &draft.graph,
+                    &draft.weights,
+                    hidden,
+                    vocabulary,
+                    OutputReadout::Logits,
+                    geometry,
+                    profile,
+                )?;
+                // Slot homes alias the pool's recurrent and KV state, but own their workspaces.
+                let home_fixed = home
+                    .fixed
+                    .saturating_sub(recurrent_state_bytes(&draft.graph)?);
+                let homes = mul(home_fixed, width as u64)?;
+                let worker = worker_storage_bytes(
                     &draft.graph,
                     &draft.weights,
                     (capacity, hidden, vocabulary),
                     prompt_width,
                     false,
                     profile,
-                )?,
-            )?;
-        }
+                )?;
+                (pool, homes, worker)
+            } else {
+                (0, 0, 0)
+            };
+        let graph_headroom_bytes = profile.graph_headroom_bytes();
+        let mut total_bytes = add(target_pool_bytes, target_homes_bytes)?;
+        total_bytes = add(total_bytes, target_worker_bytes)?;
+        total_bytes = add(total_bytes, draft_pool_bytes)?;
+        total_bytes = add(total_bytes, draft_homes_bytes)?;
+        total_bytes = add(total_bytes, draft_worker_bytes)?;
         // Captures and allocator metadata are not tensor storage.
-        add(bytes, profile.graph_headroom_bytes())
+        total_bytes = add(total_bytes, graph_headroom_bytes)?;
+        Ok(PooledServingQuote {
+            width,
+            capacity,
+            kv_tokens,
+            prompt_width,
+            target_pool_bytes,
+            draft_pool_bytes,
+            target_worker_bytes,
+            draft_worker_bytes,
+            target_homes_bytes,
+            draft_homes_bytes,
+            graph_headroom_bytes,
+            total_bytes,
+        })
     }
 
     /// Fund physical KV pages from the remaining whole-serving budget. Logical slot
@@ -289,19 +321,21 @@ impl LoadedModel {
         maximum_kv_tokens: usize,
         prompt_width: usize,
         envelope: u64,
-    ) -> Result<Option<(usize, u64)>> {
+    ) -> Result<Option<PooledServingQuote>> {
         let capacity = self.validate_capacity(capacity)?;
         let maximum_kv_tokens = maximum_kv_tokens / KV_BLOCK_TOKENS * KV_BLOCK_TOKENS;
-        let full = self.pooled_serving_bytes(width, capacity, maximum_kv_tokens, prompt_width)?;
-        if full <= envelope {
-            return Ok(Some((maximum_kv_tokens, full)));
+        let full = self.pooled_serving_quote(width, capacity, maximum_kv_tokens, prompt_width)?;
+        if full.total_bytes <= envelope {
+            return Ok(Some(full));
         }
-        let fixed = self.pooled_serving_bytes(width, capacity, 0, prompt_width)?;
+        let fixed = self
+            .pooled_serving_quote(width, capacity, 0, prompt_width)?
+            .total_bytes;
         let blocks = maximum_kv_tokens / KV_BLOCK_TOKENS;
         if fixed >= envelope || blocks == 0 {
             return Ok(None);
         }
-        let block_bytes = full.saturating_sub(fixed) / blocks as u64;
+        let block_bytes = full.total_bytes.saturating_sub(fixed) / blocks as u64;
         let Some(tokens) = funded_kv_tokens(
             width,
             capacity,
@@ -314,7 +348,9 @@ impl LoadedModel {
             return Ok(None);
         };
         let bytes = add(fixed, mul((tokens / KV_BLOCK_TOKENS) as u64, block_bytes)?)?;
-        Ok(Some((tokens, bytes)))
+        let quote = self.pooled_serving_quote(width, capacity, tokens, prompt_width)?;
+        debug_assert_eq!(quote.total_bytes, bytes);
+        Ok(Some(quote))
     }
 
     /// Physical scratch a new private program still needs, beyond its affine state quote.

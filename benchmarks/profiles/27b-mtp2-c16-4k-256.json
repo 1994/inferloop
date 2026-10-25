@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "profile_id": "27b-mtp2-c16-4k-256-v1",
+  "scope": "C16 fixed-work token diagnostic only. Sixteen requests with 4096 input and 256 output tokens. This profile is independent of the 32K profile; their resource and context differences must not be merged into one strict comparison. The C16 capacity floor of 69632 is workload evidence, never a generic planner constant.",
+  "model": {
+    "path": "/home/r/models/Qwen3.8-27B-NVFP4",
+    "files": {
+      "config.json": "1b3c71868d1299e52df6fc907deb202d5132b1ef0f72aae0ef6d15185dd53a5c",
+      "generation_config.json": "d0d0ed2e37cdfafef4a5067d5ea2407b05f4fb50526e47c008a5b235d50240fb",
+      "tokenizer.json": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+      "tokenizer_config.json": "529f30018c36dca5387c99b5edf368287f386f2c32d3790aa7141956bc5119fa",
+      "model.safetensors.index.json": "429430e1b9e65b2cb98eff8cd10a06e70a09cee89c48487a3914684aeb6df57f",
+      "chat_template.jinja": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+    }
+  },
+  "numeric": {
+    "weights": "Qwen3.8-27B-NVFP4 target and MTP draft artifacts; record any reference re-quantization instead of hiding it",
+    "activation": "native BF16 bulk attention with canonical F32 through the first 2048 prompt positions; record reference BF16 rules separately",
+    "kv": "FP8 E4M3 target KV with F32 recurrent state; capacity work must not silently reduce precision"
+  },
+  "quality": {
+    "gate": "original 1024-case scorer with overall, zero-shot and eight-shot one-sided CP95 gross regression below 2 percent",
+    "required": true
+  },
+  "resources": {
+    "gpu_memory_utilization": 0.85,
+    "max_model_len": 4352,
+    "max_num_seqs": 16,
+    "max_num_batched_tokens": 2048,
+    "vision": true,
+    "note": "Both engines receive the same share and 4352-token ceiling with vision available. The reference per-step cap is 2048 while native derives its own cap; this is a declared implementation difference, not an equal-prefill claim. Actual byte budgets and funded KV must be reported; failed startup produces no throughput."
+  },
+  "cache": {
+    "prefix_cache": true
+  },
+  "workload": {
+    "inputs_sha256": "7e571edb5f3e8b88b08ead6ce84069f6a75007c96f26237db068283a6626e04f",
+    "max_new_tokens": 256,
+    "temperature": 0,
+    "mtp_depth": 2,
+    "eos_tokens": [],
+    "matrix": {
+      "c16": {
+        "concurrency": 16,
+        "repeats": 3
+      }
+    }
+  },
+  "engines": {
+    "native": {
+      "version": null
+    },
+    "vllm": {
+      "version": "0.31.0"
+    }
+  },
+  "measurement": {
+    "repeats": 3,
+    "max_ratio": 1.1,
+    "require_identical_tokens": false,
+    "fresh_process_pairs": 5,
+    "paired_confidence": 0.95,
+    "primary": {
+      "case": "c16",
+      "metric": "wall_seconds",
+      "minimum_improvement_percent": 2
+    },
+    "guards": [
+      {
+        "case": "c16",
+        "metric": "tpot_seconds",
+        "max_regression_percent": 2
+      }
+    ]
+  }
+}
