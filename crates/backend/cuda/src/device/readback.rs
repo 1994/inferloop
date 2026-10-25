@@ -18,6 +18,8 @@ const MAX_READBACK_STAGING_BYTES: usize = 64 * MIB;
 #[path = "../../tests/unit/device_readback_check.rs"]
 mod check;
 
+mod flight;
+
 type Buffer<T> = Arc<Mutex<PinnedHostBuffer<T>>>;
 type Rows<T> = Vec<Vec<T>>;
 
@@ -46,6 +48,8 @@ pub struct Readbacks<T: DType + DeviceCopy = f32> {
     context: Option<Arc<CudaContext>>,
     buffers: Vec<Option<Buffer<T>>>,
     poisoned: bool,
+    flight: Option<flight::Flight<T>>,
+    owner: Arc<()>,
 }
 
 impl<T: DType + DeviceCopy> Readbacks<T> {
@@ -319,4 +323,16 @@ impl<T: DType + DeviceCopy> IntoFuture for PinnedCopy<T> {
             Ok(Err(error)) | Err(error) => Self::IntoFuture::failed(error),
         }
     }
+}
+
+/// Queue a bounded host gate for device-completion tests.
+#[cfg(test)]
+#[expect(
+    unsafe_code,
+    reason = "Test-only stream callback: closure owns its data, is bounded and calls no CUDA APIs"
+)]
+fn queue_test_gate(device: &CudaDevice, gate: impl FnOnce() + Send + 'static) -> Result<()> {
+    // SAFETY: callers supply a bounded, CUDA-free closure with owned state; the stream
+    // and every captured resource remain alive through the test's completion drain.
+    unsafe { device.stream.launch_host_function(gate) }.map_err(device_error)
 }

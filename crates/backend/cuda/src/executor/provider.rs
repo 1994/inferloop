@@ -153,6 +153,7 @@ impl BackendProvider for CudaBackend {
         tokens: infer_ir::TokenBuffer,
         maximum: usize,
     ) -> Result<usize> {
+        self.idle()?;
         let Some(sequence) = self.states.get_mut(&state) else {
             return Ok(0);
         };

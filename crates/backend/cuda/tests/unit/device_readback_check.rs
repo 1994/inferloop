@@ -1,6 +1,7 @@
 use super::*;
 use std::hint::black_box;
-use std::time::Instant;
+use std::thread::yield_now;
+use std::time::{Duration, Instant};
 
 type Tensors = Vec<Tensor<f32>>;
 
@@ -222,6 +223,15 @@ fn pinned_float_and_integer_graphs_complete_in_order_and_reuse_buffers() -> Resu
             (&tail, &mut token_reads, Arc::clone(&integer_output)),
         )?;
         assert_eq!(rows, vec![vec![3.5; 5], Vec::new()]);
+        assert_eq!(tokens, vec![expected.clone()]);
+        float_reads.submit_with_tokens(
+            &device,
+            &graph,
+            &floats,
+            (&tail, &mut token_reads, Arc::clone(&integer_output)),
+        )?;
+        let (rows, tokens) = poll_pair(&mut float_reads, &mut token_reads)?;
+        assert_eq!(rows, vec![vec![3.5; 5], Vec::new()]);
         assert_eq!(tokens, vec![expected]);
     }
     let retained = Arc::clone(
@@ -264,4 +274,81 @@ fn pinned_float_and_integer_graphs_complete_in_order_and_reuse_buffers() -> Resu
             .is_err()
     );
     Ok(())
+}
+
+#[test]
+#[ignore = "requires NVIDIA GPU; run under tools/bench/safe-run.sh"]
+fn split_readback_is_pending_until_stream_completion_and_rejects_reuse() -> Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread::yield_now;
+    use std::time::Duration;
+
+    let device = CudaDevice::new(0)?;
+    let input = device.upload(vec![1.0_f32, 2.0, 3.0, 4.0], &[4])?;
+    let mut output = api::zeros::<f32>(&[4])
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    let graph = CudaGraph::scope(&device.stream, |scope| {
+        scope.record(api::memcpy(&mut output, &input))?;
+        Ok(())
+    })
+    .map_err(device_error)?;
+    let sources = [Some(ReadbackSource::whole(Arc::new(output))), None];
+    let mut reads = Readbacks::default();
+    // Allocate before gating: pinned allocation is allowed to synchronize at startup.
+    reads.prepare(&device, &sources)?;
+    let released = Arc::new(AtomicBool::new(false));
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let gate = Arc::clone(&released);
+    let expired = Arc::clone(&timed_out);
+    queue_test_gate(&device, move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !gate.load(Ordering::Acquire) {
+            if Instant::now() >= deadline {
+                expired.store(true, Ordering::Release);
+                break;
+            }
+            yield_now();
+        }
+    })?;
+    reads.submit(&device, &graph, &sources)?;
+    assert!(
+        !timed_out.load(Ordering::Acquire),
+        "submit waited for GPU completion"
+    );
+    assert!(reads.poll()?.is_none());
+    assert!(reads.submit(&device, &graph, &sources).is_err());
+    assert!(reads.run(&device, &graph, &sources).is_err());
+    released.store(true, Ordering::Release);
+    // The submission must retain captured resources after the public graph is dropped.
+    drop(graph);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let rows = loop {
+        if let Some(rows) = reads.poll()? {
+            break rows;
+        }
+        assert!(Instant::now() < deadline, "readback failed to complete");
+        yield_now();
+    };
+    assert_eq!(rows, vec![vec![1.0, 2.0, 3.0, 4.0], Vec::new()]);
+    assert!(reads.poll().is_err());
+    assert!(!reads.poisoned);
+    Ok(())
+}
+
+fn poll_pair(
+    float_reads: &mut Readbacks,
+    token_reads: &mut Readbacks<i32>,
+) -> Result<(Rows<f32>, Rows<i32>)> {
+    let mut foreign = Readbacks::<i32>::default();
+    assert!(float_reads.poll_with_tokens(&mut foreign).is_err());
+    assert!(float_reads.poll().is_err());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(output) = float_reads.poll_with_tokens(token_reads)? {
+            return Ok(output);
+        }
+        assert!(Instant::now() < deadline);
+        yield_now();
+    }
 }

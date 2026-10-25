@@ -819,6 +819,25 @@ impl SlotPool {
         Ok(self.run_lanes_readout(device, lanes, false)?.rows)
     }
 
+    pub(crate) fn submit_lanes(
+        &mut self,
+        device: &CudaDevice,
+        lanes: &[SlotLane],
+        plain_greedy: bool,
+    ) -> Result<()> {
+        self.decode
+            .as_mut()
+            .ok_or_else(|| Error::invalid("slot pool has no decode graph"))?
+            .submit_lanes(device, lanes, self.capacity, self.vocabulary, plain_greedy)
+    }
+
+    pub(crate) fn poll_lanes(&mut self) -> Result<Option<super::batch::BatchReadout>> {
+        self.decode
+            .as_mut()
+            .ok_or_else(|| Error::invalid("slot pool has no decode graph"))?
+            .poll_lanes()
+    }
+
     pub(crate) fn run_lanes_readout(
         &mut self,
         device: &CudaDevice,

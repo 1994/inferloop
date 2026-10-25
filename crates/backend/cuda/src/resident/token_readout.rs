@@ -104,6 +104,46 @@ impl TokenReadout {
             sources,
             (&self.graph, &mut self.readbacks, Arc::clone(&self.tokens)),
         )?;
+        self.decode(rows, &pairs, active, sources.len() / 2)
+    }
+
+    pub(super) fn submit(
+        &mut self,
+        device: &CudaDevice,
+        graph: &CudaGraph<()>,
+        readbacks: &mut Readbacks,
+        sources: &[Option<ReadbackSource>],
+        active: &[usize],
+    ) -> Result<()> {
+        if active.iter().any(|&row| row >= self.tokens.size() / 2) {
+            return Err(Error::invalid("token readout active row"));
+        }
+        readbacks.submit_with_tokens(
+            device,
+            graph,
+            sources,
+            (&self.graph, &mut self.readbacks, Arc::clone(&self.tokens)),
+        )
+    }
+
+    pub(super) fn poll(
+        &mut self,
+        readbacks: &mut Readbacks,
+        active: &[usize],
+    ) -> Result<Option<(super::batch::BatchOutput, Vec<u32>)>> {
+        let Some((rows, pairs)) = readbacks.poll_with_tokens(&mut self.readbacks)? else {
+            return Ok(None);
+        };
+        self.decode(rows, &pairs, active, active.len()).map(Some)
+    }
+
+    fn decode(
+        &self,
+        rows: Vec<Vec<f32>>,
+        pairs: &[Vec<i32>],
+        active: &[usize],
+        count: usize,
+    ) -> Result<(super::batch::BatchOutput, Vec<u32>)> {
         let pairs = pairs
             .first()
             .ok_or_else(|| Error::invariant("token readout pairs"))?;
@@ -112,7 +152,7 @@ impl TokenReadout {
             .map(|&row| Greedy::decode(&pairs[row * 2..row * 2 + 2], self.vocabulary))
             .collect::<Result<Vec<_>>>()?;
         let mut rows = rows.into_iter();
-        let output = (0..sources.len() / 2)
+        let output = (0..count)
             .map(|_| {
                 Ok((
                     rows.next()

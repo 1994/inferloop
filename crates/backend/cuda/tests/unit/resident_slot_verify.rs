@@ -339,3 +339,73 @@ fn commit_batch_rejects_duplicate_and_non_pending_slots() {
         assert!(validate_commits(&pending, &batch).is_err());
     }
 }
+
+#[test]
+#[ignore = "requires CUDA hardware; run inside safe-run"]
+fn split_decode_preserves_outputs_cursors_and_inactive_slots() -> Result<()> {
+    use std::thread::yield_now;
+    use std::time::{Duration, Instant};
+
+    enable_default().map_err(device_error)?;
+    let device = CudaDevice::new(0)?;
+    let (graph, mut weights) = fixture(&device)?;
+    weights.prefill_width = 1;
+    let mut synchronous = SlotPool::new(&device, &graph, &weights, 3, 512, 32, (32, 1), None)?;
+    let mut candidate = SlotPool::new(&device, &graph, &weights, 3, 512, 32, (32, 1), None)?;
+    let mut sync_us = Vec::new();
+    let mut submit_us = Vec::new();
+    let mut total_us = Vec::new();
+    for round in 0..128 {
+        let lanes: Vec<_> = [2, 0, 1]
+            .into_iter()
+            .filter(|slot| (round + slot) % 3 != 0)
+            .map(|slot| {
+                (
+                    slot,
+                    u32::try_from((round + slot) % 32).unwrap(),
+                    synchronous.cursors()[slot],
+                    synchronous.cursors()[slot],
+                )
+            })
+            .collect();
+        let greedy = round % 2 == 0;
+        let before = candidate.cursors().to_vec();
+        let start = Instant::now();
+        let expected = synchronous.run_lanes_readout(&device, &lanes, greedy)?;
+        let synchronous_us = start.elapsed().as_secs_f64() * 1e6;
+        let start = Instant::now();
+        candidate.submit_lanes(&device, &lanes, greedy)?;
+        let submitted_us = start.elapsed().as_secs_f64() * 1e6;
+        assert_eq!(candidate.cursors(), before);
+        assert!(candidate.submit_lanes(&device, &lanes, greedy).is_err());
+        assert!(
+            candidate
+                .run_lanes_readout(&device, &lanes, greedy)
+                .is_err()
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let actual = loop {
+            if let Some(rows) = candidate.poll_lanes()? {
+                break rows;
+            }
+            assert!(Instant::now() < deadline);
+            yield_now();
+        };
+        let elapsed_us = start.elapsed().as_secs_f64() * 1e6;
+        assert_eq!(actual.rows, expected.rows);
+        assert_eq!(actual.tokens, expected.tokens);
+        assert_eq!(candidate.cursors(), synchronous.cursors());
+        assert!(candidate.poll_lanes().is_err());
+        if round >= 8 {
+            sync_us.push(synchronous_us);
+            submit_us.push(submitted_us);
+            total_us.push(elapsed_us);
+        }
+    }
+    println!(
+        "{}",
+        serde_json::json!({"scope":"synthetic pooled decode; interleaved greedy/logits, lifecycle assertions included; not serving throughput",
+        "sync_us":sync_us, "submit_us":submit_us, "total_us":total_us})
+    );
+    Ok(())
+}

@@ -1,8 +1,11 @@
 //! Engine adapter for shared weights and isolated resident CUDA graphs.
-//! Execution currently settles synchronously; tickets preserve the engine ownership protocol.
+//!
+//! Steady-state pooled decode separates submission from completion; other paths settle
+//! synchronously. Tickets preserve the engine ownership protocol in both cases.
 mod capabilities;
 mod drafting;
 mod execution;
+mod flight;
 mod pool;
 pub mod prefix;
 mod prefix_state;
@@ -16,6 +19,7 @@ use crate::{loading::LoadedModel, resident::DeviceProgram, resident::slot_batch:
 use infer_core::{Error, Result, StateId};
 use infer_ir::{DeviceCapabilities, ExecutionProgram, ModelOutput, OutputReadout, TaskOutput};
 use infer_state::cache::SnapshotScan;
+use std::mem::{forget, take};
 use std::{collections::BTreeMap, sync::Arc};
 
 pub struct CudaBackend {
@@ -50,6 +54,7 @@ pub struct CudaBackend {
     deferred_pool_plan: Option<(usize, u64)>,
     /// Reason the last pool attempt failed, reported when batching is given up for good.
     pool_failure_reason: Option<String>,
+    decode: flight::DecodeFlight,
     busy: bool,
     fatal: Option<Error>,
 }
@@ -123,8 +128,14 @@ impl Speculation {
 /// A completion can be consumed exactly once by its originating backend.
 pub struct CudaTicket {
     owner: Arc<()>,
-    result: Option<Result<Vec<TaskOutput>>>,
+    completion: Completion,
     drain_required: bool,
+}
+enum Completion {
+    PendingDecode,
+    FailedDecode(Error),
+    Ready(Result<Vec<TaskOutput>>),
+    Consumed,
 }
 /// Prefix-cache capacity derived from the state budget: default on, a quarter of the budget,
 /// with a floor so small devices still cache one prefix and a disabled cache when nothing fits.
@@ -217,6 +228,7 @@ impl CudaBackend {
             slots_disabled: false,
             deferred_pool_plan: None,
             pool_failure_reason: None,
+            decode: flight::DecodeFlight::default(),
             busy: false,
             fatal: None,
         };
@@ -262,3 +274,26 @@ mod prefix_capacity_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/resident_mtp_fusion_model.rs"]
 mod mtp_fusion_model_tests;
+
+impl Drop for CudaBackend {
+    #[expect(
+        clippy::mem_forget,
+        reason = "Unknown CUDA completion requires retaining physical pool owners: graph row aliases do not own their allocations"
+    )]
+    fn drop(&mut self) {
+        if self.busy
+            && let Err(error) = self.loaded.device().drain()
+        {
+            tracing::error!(target: "infer::cuda", %error, "retaining CUDA flight storage after failed drop drain");
+            // Graphs can retain non-owning row aliases. Keep their physical pools,
+            // homes and sequence programs together if the driver cannot fence them.
+            forget((
+                self.slots.take(),
+                self.draft_slots.take(),
+                self.worker.take(),
+                take(&mut self.homes),
+                take(&mut self.states),
+            ));
+        }
+    }
+}

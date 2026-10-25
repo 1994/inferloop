@@ -2,6 +2,7 @@
 pub(crate) mod arena;
 mod batch;
 pub use batch::BatchOutput;
+pub(crate) use batch::SlotLane;
 mod attention;
 mod attention_decode;
 pub(crate) mod attention_mma;

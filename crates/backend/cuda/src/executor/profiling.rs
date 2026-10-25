@@ -1,6 +1,7 @@
 //! Opt-in host-side execution evidence; no token contents are recorded.
 use super::CudaBackend;
 use crate::device::CudaDevice;
+use infer_core::StateId;
 use infer_ir::{ExecutionInput, ExecutionTask};
 use std::collections::BTreeMap;
 use std::env::var_os;
@@ -69,6 +70,7 @@ pub(super) struct StepProfile {
     path: &'static PathBuf,
     started: Instant,
     inputs: Vec<serde_json::Value>,
+    states: Vec<StateId>,
 }
 
 impl StepProfile {
@@ -99,13 +101,13 @@ impl StepProfile {
             path,
             started: Instant::now(),
             inputs,
+            states: tasks.iter().map(|task| task.state).collect(),
         })
     }
 
     pub(super) fn finish(
         self,
         backend: &CudaBackend,
-        tasks: &[ExecutionTask],
         outputs: Option<&[infer_ir::TaskOutput]>,
         phases: Vec<(&'static str, Duration)>,
     ) {
@@ -114,12 +116,13 @@ impl StepProfile {
         for (name, elapsed) in phases {
             *by_phase.entry(name).or_default() += u64::try_from(elapsed.as_micros()).unwrap_or(0);
         }
-        let slots: Vec<_> = tasks
+        let slots: Vec<_> = self
+            .states
             .iter()
-            .map(|task| {
+            .map(|state| {
                 backend
                     .states
-                    .get(&task.state)
+                    .get(state)
                     .and_then(|state| state.slot.as_ref().map(|lease| lease.slot))
             })
             .collect();

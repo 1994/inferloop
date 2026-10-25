@@ -1,4 +1,6 @@
-use super::{CudaBackend, CudaTicket, ModelOutput, Sequence, SlotLease, Speculation, prefix};
+use super::{
+    Completion, CudaBackend, CudaTicket, ModelOutput, Sequence, SlotLease, Speculation, prefix,
+};
 use crate::constants::CB_DECODE_SLOTS;
 use crate::constants::CB_SLOT_TOKENS;
 use crate::constants::MIB;
@@ -13,8 +15,8 @@ use infer_ir::{
     ExecutionInput, ExecutionProgram, ExecutionTask, OutputReadout, StepPlan, TaskOutput,
 };
 use std::collections::BTreeMap;
-use std::mem::swap;
 use std::mem::take;
+use std::mem::{replace, swap};
 use std::ops::Range;
 use std::sync::Arc;
 /// Bound capture/replan work while adapting tensor quotes to observed driver storage.
@@ -95,6 +97,13 @@ impl CudaBackend {
         tasks: &[ExecutionTask],
     ) -> Result<CudaTicket> {
         self.check_tasks(program, step, tasks)?;
+        if self.can_submit_decode(tasks) {
+            return self.submit_decode(tasks);
+        }
+        Ok(self.execute_ready(tasks))
+    }
+
+    fn execute_ready(&mut self, tasks: &[ExecutionTask]) -> CudaTicket {
         let profile = super::profiling::StepProfile::start(self, tasks);
         let phases = super::profiling::PhaseScope::install(profile.is_some());
         self.busy = true;
@@ -107,7 +116,6 @@ impl CudaBackend {
             let recorded = phases.map(super::profiling::PhaseScope::finish);
             profile.finish(
                 self,
-                tasks,
                 result.as_ref().ok().map(Vec::as_slice),
                 recorded.unwrap_or_default(),
             );
@@ -123,11 +131,11 @@ impl CudaBackend {
                 }
             }
         }
-        Ok(CudaTicket {
+        CudaTicket {
             owner: Arc::clone(&self.owner),
             drain_required: result.is_err(),
-            result: Some(result),
-        })
+            completion: Completion::Ready(result),
+        }
     }
 
     /// Execute one step's tasks in order, replaying each consecutive run of eligible
@@ -705,8 +713,22 @@ impl CudaBackend {
         Ok(())
     }
     pub(super) fn complete(&mut self, ticket: &mut CudaTicket) -> Result<Option<Vec<TaskOutput>>> {
-        if !Arc::ptr_eq(&self.owner, &ticket.owner) || ticket.result.is_none() || !self.busy {
+        if !Arc::ptr_eq(&self.owner, &ticket.owner)
+            || matches!(ticket.completion, Completion::Consumed)
+            || !self.busy
+        {
             return Err(Error::invalid("foreign or consumed CUDA completion"));
+        }
+        if matches!(ticket.completion, Completion::PendingDecode) {
+            match self.poll_decode() {
+                Ok(None) => return Ok(None),
+                Ok(Some(output)) => ticket.completion = Completion::Ready(Ok(output)),
+                Err(error) => {
+                    self.poison_decode();
+                    ticket.completion = Completion::FailedDecode(error);
+                    ticket.drain_required = true;
+                }
+            }
         }
         if ticket.drain_required {
             if let Err(error) = self.loaded.device().drain() {
@@ -717,11 +739,16 @@ impl CudaBackend {
             ticket.drain_required = false;
         }
         self.busy = false;
-        ticket
-            .result
-            .take()
-            .ok_or_else(|| Error::invariant("CUDA completion missing"))?
-            .map(Some)
+        match replace(&mut ticket.completion, Completion::Consumed) {
+            Completion::Ready(result) => result.map(Some),
+            Completion::FailedDecode(error) => {
+                self.fatal = Some(error.clone());
+                Err(error)
+            }
+            Completion::PendingDecode | Completion::Consumed => {
+                Err(Error::invariant("CUDA completion missing"))
+            }
+        }
     }
 }
 

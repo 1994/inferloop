@@ -57,7 +57,7 @@ CUDA provider 已接入 CLI/HTTP，执行设备驻留图、状态/图复用、�
 | 范围 | 当前限制 |
 |---|---|
 | Attention | 通用 dense F32、padded head ≤256；paged/量化 KV、MLA 与稀疏/线性 attention 不属于该 provider 的覆盖范围。Candle 性能门禁未放行，见 [测量指南](../guides/cuda-performance.md) |
-| CUDA 执行 | 同步 provider；尚无通用异步多 compute flight、全设备采样或完整生产 SLO 验收。cuTile 运行时 JIT 需要相应工具链，非完整 AOT 制品 |
+| CUDA 执行 | 已绑定普通 pooled decode 默认采用非阻塞 submit/poll；prefill、首次绑定与 MTP 保留同步。尚无通用异步多 compute flight、全设备采样或完整生产 SLO 验收。cuTile 运行时 JIT 需要相应工具链，非完整 AOT 制品 |
 | 精度与设备 | 按能力及 `PrecisionPolicy` 选择；Hopper 的 NVFP4→BF16 转换不代表 H200 实机已验收。`test-cuda`（别名 `check-cuda`）含 Blackwell FP4 检查，不能作为所有 CUDA 设备统一通过的证明 |
 | 模型与模态 | 内置 provider 与算子覆盖有限，不保证任意 HF 包可运行。图像与视频使用专用示例（多图与视频走融合 media prefill），Engine/Scheduler 多模态调度、音频及完整 DeepStack 路径未覆盖 |
 | 状态与扩展 | 物理分配/淘汰 owner 仍在 backend；跨 GPU、远程 PD、offload 和动态 C ABI/WASM 加载不属于当前支持范围 |

@@ -112,3 +112,19 @@ kernel 的 K 累积顺序相同。
 ## 职责
 
 模型包负责权重格式、scale、shape 和执行图；`LinearStrategy` 提供合法候选；设备层管理 CUDA 生命周期与 typed buffer；kernel 负责计算，executor 负责提交、完成、状态和回滚。所有权与 checkpoint 遵守 `BackendProvider` / `KvCacheManager` 契约，prefill GEMM 与 decode GEMV 独立调优。
+
+### 非阻塞 pooled decode
+
+普通、已绑定 slot 的 decode 默认采用提交/完成拆分，无需配置开关。
+`submit` 入队 graph 与 pinned D2H 后返回；`poll` 未完成时返回 `None`，完成后才提交
+history 和 slot 游标。保留设备端 greedy token readout，也支持完整 logits。
+在途 ticket 未消费前禁止 reset、release、再次 submit 与 prefix/control 操作；丢弃 ticket
+不会使 backend 空闲。graph、DMA source、pinned destination 的寿命由设备 submission 保持，
+设备错误毒化 backend，完成路径在释放状态前 drain。
+
+prefill、首次 slot 绑定、MTP、混合批次和私有 program 保留同步路径；
+这不是 ADR-0004 的完整深度 2 队列或 token/KV 延迟回填实现。尚无服务吞吐、TTFT/TPOT
+与显存峰值收益结论；性能证据按 baseline 合同记录。相关设备用例为
+`split_readback_is_pending_until_stream_completion_and_rejects_reuse`、
+`split_decode_preserves_outputs_cursors_and_inactive_slots` 和
+`async_decode_commits_only_on_poll_and_matches_synchronous_output`（最后一项需要 `INFER_TEST_MODEL`）。

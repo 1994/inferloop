@@ -178,7 +178,10 @@ pub(super) struct BatchBuilder<'a> {
 ///
 /// Inactive lanes are masked with a `-1` state position (the state kernels gate writes on
 /// it); slot tenants never rewind, so no rollback checkpoints are captured.
+mod flight;
+
 pub(super) struct SlotDecodeGraph {
+    pending: Option<flight::DecodeFlight>,
     graph: CudaGraph<()>,
     state_only: Option<CudaGraph<()>>,
     readbacks: Readbacks,
@@ -318,6 +321,7 @@ impl BatchBuilder<'_> {
             logits,
             width,
             cursors: vec![0; width],
+            pending: None,
             profile,
             _fusion: fusion,
             _arena: arena,
@@ -2023,7 +2027,7 @@ fn stage_metadata_batch(
 }
 
 /// One active lane of a slot decode replay: slot index, token, `RoPE` position, state position.
-pub(super) type SlotLane = (usize, u32, usize, usize);
+pub type SlotLane = (usize, u32, usize, usize);
 
 impl SlotDecodeGraph {
     #[cfg(test)]
@@ -2116,6 +2120,9 @@ impl SlotDecodeGraph {
         read_logits: bool,
         plain_greedy: bool,
     ) -> Result<BatchReadout> {
+        if self.pending.is_some() {
+            return Err(Error::invalid("decode completion must be consumed first"));
+        }
         let device_tokens = read_logits && plain_greedy && self.token_readout.is_some();
         let graph = if read_logits {
             &self.graph
@@ -2211,6 +2218,9 @@ impl SlotDecodeGraph {
         capacity: usize,
         vocabulary: usize,
     ) -> Result<()> {
+        if self.pending.is_some() {
+            return Err(Error::invalid("decode completion must be consumed first"));
+        }
         let graph = self
             .state_only
             .as_ref()
@@ -2258,6 +2268,9 @@ impl SlotDecodeGraph {
     /// # Errors
     /// Rejects unknown slot indices.
     pub fn set_cursor(&mut self, slot: usize, position: usize) -> Result<()> {
+        if self.pending.is_some() {
+            return Err(Error::invalid("decode completion must be consumed first"));
+        }
         let cursor = self
             .cursors
             .get_mut(slot)
