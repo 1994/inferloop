@@ -1,3 +1,4 @@
+use super::nvfp4_gemm::Workspace as Nvfp4Workspace;
 use super::{ProgramWeights, capture::error, prefill_gemm::gemm};
 use crate::constants::PREFILL_GEMM_TILE_K;
 use crate::constants::PREFILL_GEMM_TILE_N;
@@ -90,7 +91,10 @@ impl MlpPlan {
         geometry: (usize, &super::nvfp4_gemm::Workspace),
     ) -> Self {
         let swiglu = swiglu_plan(graph, weights);
-        let fused = fused_mlp_plan(graph, weights, &swiglu, geometry);
+        let (rows, workspace) = geometry;
+        let fused = fused_mlp_plan(graph, weights, &swiglu, |columns, hidden| {
+            workspace.gate_up_swiglu_ready(rows, columns, hidden)
+        });
         let fused_downs = fused.values().map(|&(.., down)| down).collect();
         let absorbed = swiglu
             .values()
@@ -173,7 +177,7 @@ fn fused_mlp_plan(
     graph: &infer_ir::DataflowGraph,
     weights: &ProgramWeights,
     swiglu: &BTreeMap<usize, Swiglu>,
-    (rows, nvfp4): (usize, &super::nvfp4_gemm::Workspace),
+    ready: impl Fn(usize, usize) -> bool,
 ) -> BTreeMap<usize, FusedMlp> {
     use infer_ir::TensorOp;
     let (producer, readers) = dataflow(graph);
@@ -213,13 +217,29 @@ fn fused_mlp_plan(
             || !sole(gate_output, silu)
             || !sole(up_output, multiply)
             || sizes.get(&up_output) != Some(&hidden)
-            || !nvfp4.gate_up_swiglu_ready(rows, columns, hidden)
+            || !ready(columns, hidden)
         {
             continue;
         }
         plan.insert(gate.min(up), (gate, up, down));
     }
     plan
+}
+
+/// Projection nodes replaced by the prompt fusion at this width. Workspace preparation uses
+/// the same graph/geometry checks as capture, before the quantization buffers are allocated.
+pub(super) fn fused_projections(
+    graph: &infer_ir::DataflowGraph,
+    weights: &ProgramWeights,
+    rows: usize,
+) -> BTreeSet<usize> {
+    let swiglu = swiglu_plan(graph, weights);
+    fused_mlp_plan(graph, weights, &swiglu, |_, hidden| {
+        Nvfp4Workspace::gate_up_swiglu_geometry(rows, hidden)
+    })
+    .into_values()
+    .flat_map(|(gate, up, _)| [gate, up])
+    .collect()
 }
 
 /// Record a [`fused_mlp_plan`] gate/up pass into the down projection's activation codes.

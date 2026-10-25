@@ -30,7 +30,7 @@
 | prompt 宽度 | `loading/mod.rs`：按 arena 预算在若干档宽度中选择 | `prompt width rung width=...` |
 
 **新硬件上要检查的日志：**
-- 没有出现 `resident GEMM model search budget exhausted`。如果出现，说明 30 s 的搜索预算不够，剩余形状会回退到默认配置。
+- 没有出现 `GEMM shape search budget exhausted`。每个 resident GEMM shape 的 allowance 由候选数和 paired measurement 上限推导，先前 shape 不消耗后续 shape；若出现，日志列出未完成的 family/shape。非 GEMM 类别仍有各自独立的有限额度。
 - 没有出现 `conservative fallback`。
 - 槽数和 KV token 数与显存相符。
 
@@ -92,7 +92,7 @@
 | `SWIGLU_TILE_ROWS/COLUMNS = 64` | `resident/nvfp4_gemm/workspace.rs` | 在 RTX 5090 上实测得出（128 行时寄存器溢出） | 纳入 resident GEMM 调优器，作为候选按形状实测 |
 | `GDN_BA_SHAPE = [48, 5120]` | `resident/prefill_projection.rs` | 按形状识别 b/a 投影对 | 按图结构识别（同输入、相邻、同为稠密小投影），不依赖具体形状 |
 | `MAX_POOL_ROWS = CB_DECODE_SLOTS` | `resident/pool_gemv.rs` | 行数不超过 16 时走 GEMV | 由 GEMV 与分块 GEMM 的实测交叉点决定，纳入调优 |
-| `MODEL_SEARCH_BUDGET = 30 s` | `tuning/resident_gemm.rs` | 加载期搜索的总时长上限 | 按形状数和单次测量时长估算；预算耗尽时在日志中给出缺失形状 |
+| `CATEGORY_SEARCH_BUDGET = 30 s` | `tuning/resident_gemm.rs` | 非 GEMM 类别的独立有限额度 | Resident GEMM 已改为按 family/shape 的候选数与测量时长推导；其余类别保留独立限制并在日志中记录未完成项 |
 | 每槽保底 KV = 单槽容量 ÷ 2 | `loading/budget.rs` 的 `funded_kv_tokens` | 槽数 = KV token ÷ 4128 | 按实际请求长度分布接纳请求，而不是按固定半容量保底 |
 
 ## 参考：一次完整调优的记录
