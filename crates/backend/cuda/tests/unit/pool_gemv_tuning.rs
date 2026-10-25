@@ -73,6 +73,11 @@ fn legacy_fallback_remains_the_slot_width_bound() {
 fn pool_entry_rejects_stale_or_nonfinite_evidence() {
     let entry = entry();
     assert!(matches(&entry));
+    assert!(entry.geometry_matches(&key()));
+    assert!(entry.geometry_matches(&Key {
+        proof: "other",
+        ..key()
+    }));
     for key in [
         Key {
             device: "other",

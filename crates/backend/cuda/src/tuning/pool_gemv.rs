@@ -161,6 +161,20 @@ impl Entry {
             .all(|(base, trial)| base / trial >= f64::from(MIN_CONFIRM_SPEEDUP));
         qualified == (self.choice == "gemv") && self.gemv_faster == qualified
     }
+
+    fn geometry_matches(&self, key: &Key<'_>) -> bool {
+        self.device == key.device
+            && self.driver == key.driver
+            && !self.driver_build.is_empty()
+            && !self.hardware.is_empty()
+            && self.kernel == KERNEL_ID
+            && self.kernel_fingerprint == key.fingerprint
+            && self.rows == key.rows
+            && self.columns == key.columns
+            && self.outputs == key.outputs
+            && (self.choice == "gemv" || self.choice == "blocked")
+            && self.valid_evidence()
+    }
 }
 
 /// Select GEMV or the existing blocked fallback from actual-weight paired evidence.
@@ -208,6 +222,11 @@ pub(crate) fn select(
             CACHE_STATES.len() * 2,
         )?;
         session.complete_gemm_search(SearchFamily::PoolDense, [rows, columns, outputs])?;
+        return Ok(choice);
+    }
+    if let Some(choice) =
+        reuse_geometry(device, dense, (rows, columns, outputs), tile, &key, session)?
+    {
         return Ok(choice);
     }
     if !autotune
@@ -291,6 +310,79 @@ fn cached(key: &Key<'_>) -> Result<Option<Choice>> {
                 Choice::Blocked
             })
     }))
+}
+
+fn cached_geometry(key: &Key<'_>) -> Result<Option<Choice>> {
+    let Some(path) = super::table_path() else {
+        return Ok(None);
+    };
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let table = super::TilingTable::load(&path)?;
+    Ok(table.pool_gemv.iter().find_map(|entry| {
+        (entry.geometry_matches(key)
+            && entry.driver_build == key.driver_build
+            && entry.hardware == key.hardware)
+            .then_some(if entry.choice == "gemv" {
+                Choice::Gemv
+            } else {
+                Choice::Blocked
+            })
+    }))
+}
+
+fn reuse_geometry(
+    device: &CudaDevice,
+    weight: &Arc<Tensor<bf16>>,
+    shape: (usize, usize, usize),
+    tile: LinearTiling,
+    key: &Key<'_>,
+    session: &ResidentTuningSession,
+) -> Result<Option<Choice>> {
+    let (rows, columns, outputs) = shape;
+    let Some(choice) = cached_geometry(key)? else {
+        return Ok(None);
+    };
+    if choice != Choice::Blocked
+        && !verify_choice(device, weight, rows, columns, outputs, tile, choice)?
+    {
+        return Ok(None);
+    }
+    session.plan_gemm_search(
+        SearchFamily::PoolDense,
+        &[[rows, columns, outputs]],
+        CACHE_STATES.len() * 2,
+    )?;
+    session.complete_gemm_search(SearchFamily::PoolDense, [rows, columns, outputs])?;
+    Ok(Some(choice))
+}
+
+fn verify_choice(
+    device: &CudaDevice,
+    weight: &Arc<Tensor<bf16>>,
+    rows: usize,
+    columns: usize,
+    outputs: usize,
+    tile: LinearTiling,
+    choice: Choice,
+) -> Result<bool> {
+    let chosen = run_choice(device, weight, rows, columns, outputs, tile, choice)?;
+    let baseline = run_choice(
+        device,
+        weight,
+        rows,
+        columns,
+        outputs,
+        tile,
+        Choice::Blocked,
+    )?;
+    Ok(chosen.host.len() == baseline.host.len()
+        && chosen
+            .host
+            .iter()
+            .zip(&baseline.host)
+            .all(|(a, b)| close(*a, *b)))
 }
 
 fn kernel_fingerprint(
