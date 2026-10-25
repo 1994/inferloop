@@ -47,8 +47,52 @@ pub(super) fn add_norm_prefix(
         && norm.inputs.first() == Some(&add.outputs[0])
 }
 
-/// Record add+norm or norm+max, returning the immediately consumed Norm index when the
-/// fused path took an Add (so the caller skips that Norm node).
+/// Three outcomes of attempting a prompt norm fusion. `Handled` must still skip the
+/// current Norm node; only `NotHandled` falls through to ordinary recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PromptRecord {
+    NotHandled,
+    Handled,
+    HandledSkip(usize),
+}
+
+/// What the capture loop must do after a norm-fusion attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PromptControl {
+    Ordinary,
+    Continue,
+    Skip(usize),
+}
+
+const fn prompt_record(add: bool, recorded: bool, index: usize) -> PromptRecord {
+    match (add, recorded) {
+        (_, false) => PromptRecord::NotHandled,
+        (true, true) => PromptRecord::HandledSkip(index + 1),
+        (false, true) => PromptRecord::Handled,
+    }
+}
+
+pub(super) const fn apply_control(control: PromptControl, skip: &mut Option<usize>) -> bool {
+    match control {
+        PromptControl::Ordinary => false,
+        PromptControl::Continue => true,
+        PromptControl::Skip(next) => {
+            *skip = Some(next);
+            true
+        }
+    }
+}
+
+pub(super) const fn prompt_control(record: PromptRecord) -> PromptControl {
+    match record {
+        PromptRecord::NotHandled => PromptControl::Ordinary,
+        PromptRecord::Handled => PromptControl::Continue,
+        PromptRecord::HandledSkip(next) => PromptControl::Skip(next),
+    }
+}
+
+/// Record add+norm, norm+max, or nothing. `HandledSkip(next)` means the caller also
+/// consumes the following Norm node; `Handled` means only the current Norm is consumed.
 pub(super) fn record_prompt(
     scope: &Scope,
     index: usize,
@@ -57,12 +101,10 @@ pub(super) fn record_prompt(
     weights: &ProgramWeights,
     workspace: &mut Workspace,
     protected: [Option<TensorId>; 2],
-) -> Result<Option<usize>, DeviceError> {
+) -> Result<PromptRecord, DeviceError> {
     let add = add_norm_prefix(nodes, index, protected);
-    if !record(scope, index, nodes, arena, weights, workspace, protected)? {
-        return Ok(None);
-    }
-    Ok(add.then_some(index + 1))
+    let recorded = record(scope, index, nodes, arena, weights, workspace, protected)?;
+    Ok(prompt_record(add, recorded, index))
 }
 
 fn prefix(
