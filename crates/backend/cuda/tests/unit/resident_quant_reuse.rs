@@ -19,6 +19,7 @@ use infer_models::{DeviceWeight, QuantizedPackage, WeightEncoding};
 use std::env::var;
 use std::error::Error;
 use std::process::Command;
+use std::sync::Mutex;
 use std::thread::sleep;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -140,6 +141,7 @@ fn fixture_weights() -> ProgramWeights {
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,
         resident_tuning: Arc::new(ResidentTuningSession::default()),
+        pool_gemv: Arc::new(Mutex::new(BTreeMap::new())),
         batch_width: 4,
         prefill_width: 256,
         narrow_prefill_width: 64,

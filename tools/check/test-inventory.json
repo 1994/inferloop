@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 338
+      "tests": 341
     },
     "frontdoor": {
       "benches": 0,
@@ -758,6 +758,11 @@
     },
     {
       "crate": "cuda",
+      "file": "src/tuning/pool_gemv.rs",
+      "mount": "../../tests/unit/pool_gemv_tuning.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/tuning/recurrent/exact.rs",
       "mount": "../../../tests/unit/tuning_recurrent_exact.rs"
     },
@@ -1248,11 +1253,11 @@
     }
   ],
   "totals": {
-    "all": 882,
+    "all": 885,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 882
+    "tests": 885
   }
 }

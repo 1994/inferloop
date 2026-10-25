@@ -4,11 +4,13 @@ use crate::device::asynchronous::block_on;
 use crate::device::cublaslt::Support;
 use crate::device::{PinnedUpload, Readbacks};
 use crate::tuning::gated_norm::prepare;
+use crate::tuning::pool_gemv::Choice as PoolChoice;
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::slice::from_ref;
+use std::sync::{Arc, Mutex};
 mod geometry;
 mod greedy;
 use crate::{
@@ -95,6 +97,8 @@ pub struct ProgramWeights {
     /// Non-GEMM tuning allowances shared by this model and its draft; resident GEMM uses a
     /// per-family, per-shape work-derived search schedule.
     pub resident_tuning: Arc<ResidentTuningSession>,
+    /// Load-time measured Dense row-GEMV versus blocked-GEMM choices by (weight, rows).
+    pub pool_gemv: Arc<Mutex<BTreeMap<(TensorId, usize), PoolChoice>>>,
     pub batch_width: usize,
     /// Widest captured prompt graph.
     pub prefill_width: usize,

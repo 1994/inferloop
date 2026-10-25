@@ -4,6 +4,7 @@ pub mod fp8_gemm;
 pub mod gated_norm;
 pub mod greedy;
 pub(crate) mod memory;
+pub mod pool_gemv;
 pub(crate) mod prefill;
 pub mod recurrent;
 pub mod resident_gemm;
@@ -335,6 +336,9 @@ pub struct TilingTable {
     /// Shape-specific fused `SwiGLU` tile decisions with exact-output evidence.
     #[serde(default)]
     pub swiglu: Vec<swiglu::Entry>,
+    /// Measured row-GEMV versus blocked Dense GEMM crossover decisions.
+    #[serde(default)]
+    pub pool_gemv: Vec<pool_gemv::Entry>,
 }
 
 /// Read both the current per-device table and the former top-level `device`/`entries` format.
@@ -374,6 +378,8 @@ struct StoredTilingTable {
     resident_exact_recurrent: Vec<recurrent::exact::Entry>,
     #[serde(default)]
     swiglu: Vec<swiglu::Entry>,
+    #[serde(default)]
+    pool_gemv: Vec<pool_gemv::Entry>,
 }
 
 impl From<StoredTilingTable> for TilingTable {
@@ -409,6 +415,7 @@ impl From<StoredTilingTable> for TilingTable {
             resident_mma_f32_attention: stored.resident_mma_f32_attention,
             resident_exact_recurrent: stored.resident_exact_recurrent,
             swiglu: stored.swiglu,
+            pool_gemv: stored.pool_gemv,
         }
     }
 }

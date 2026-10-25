@@ -341,6 +341,8 @@ impl BatchBuilder<'_> {
         let (metadata, metadata_owner, fusion) = metadata;
         let (lane_states, lane_fp8) = states;
         let width = lane_states.len();
+        let _pool =
+            super::batch_projection::allocate(self.device, self.graph, width, self.weights)?;
         let quant_plan = super::nvfp4_gemm::QuantPairPlan::new(self.graph, self.weights);
         self.nvfp4.begin_quant_capture();
         let result = CudaGraph::scope(&self.device.stream, |scope| {
@@ -510,7 +512,8 @@ impl BatchBuilder<'_> {
             usize::try_from(self.device.profile()?.arena_budget_bytes()).map_err(device_error)?,
         )?);
         let mut lanes = self.allocate_lanes(width, shared.as_ref())?;
-        let mut projections = super::batch_projection::allocate(self.device, self.graph, width)?;
+        let mut projections =
+            super::batch_projection::allocate(self.device, self.graph, width, self.weights)?;
         let graph = Some(self.capture(&mut lanes, &mut projections, None, shared.as_mut())?);
         let prefill = self.capture(&mut lanes, &mut projections, Some(false), None)?;
         let prefill_last = self.capture(&mut lanes, &mut projections, Some(true), None)?;

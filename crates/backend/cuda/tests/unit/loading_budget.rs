@@ -15,7 +15,7 @@ use infer_core::{OpId, TensorId};
 use infer_ir::{DType, TensorNode, TensorSpec};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 fn fixture_weights() -> ProgramWeights {
     ProgramWeights {
@@ -23,6 +23,7 @@ fn fixture_weights() -> ProgramWeights {
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,
         resident_tuning: Arc::new(ResidentTuningSession::default()),
+        pool_gemv: Arc::new(Mutex::new(BTreeMap::new())),
         chunked_recurrent: false,
         batch_width: 3,
         prefill_width: 32,

@@ -11,6 +11,7 @@ use crate::constants::NVFP4_GROUP_SIZE;
 use crate::constants::SMALL_GEMM_TILE;
 use crate::constants::SMALL_GEMV_MAX_ROWS;
 use crate::strategy::LinearTiling;
+use crate::tuning::pool_gemv::select as select_pool_gemv;
 use crate::{
     device::{CudaDevice, device_error},
     mlp::ProjectionWeight,
@@ -46,6 +47,7 @@ pub(super) fn allocate(
     device: &CudaDevice,
     graph: &DataflowGraph,
     width: usize,
+    weights: &ProgramWeights,
 ) -> Result<Workspace> {
     let mut buffers = Workspace {
         nodes: BTreeMap::new(),
@@ -59,6 +61,45 @@ pub(super) fn allocate(
         .iter()
         .map(|t| Ok((t.id, t.elements()?)))
         .collect::<Result<_>>()?;
+    for node in &graph.nodes {
+        if node.op != TensorOp::Linear || width == 0 {
+            continue;
+        }
+        let Some(weight) = weights.projections.get(&node.inputs[1]) else {
+            continue;
+        };
+        let ProjectionWeight::Dense(_) = weight else {
+            continue;
+        };
+        if weights.activation_quantization(node.inputs[1]).is_some() {
+            continue;
+        }
+        let columns = sizes[&node.inputs[0]] / width;
+        let outputs = sizes[&node.outputs[0]] / width;
+        if columns < super::pool_gemv::MIN_SMALL_COLUMNS
+            || outputs > super::pool_gemv::MAX_SMALL_OUTPUTS
+        {
+            continue;
+        }
+        let tile = weights
+            .tiling
+            .get(&node.inputs[1])
+            .copied()
+            .unwrap_or(LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS)?);
+        let choice = select_pool_gemv(
+            device,
+            weight,
+            (width, columns, outputs),
+            tile,
+            weights.autotune,
+            &weights.resident_tuning,
+        )?;
+        weights
+            .pool_gemv
+            .lock()
+            .map_err(|_| Error::invariant("pool GEMV choice map poisoned"))?
+            .insert((node.inputs[1], width), choice);
+    }
     let mut bytes = 0usize;
     for node in &graph.nodes {
         if node.op != TensorOp::Linear {
@@ -226,7 +267,7 @@ pub(super) fn record_slots(
             weights.tiling.get(&node.inputs[1]).copied().unwrap_or(
                 LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS).map_err(error)?,
             );
-        if super::pool_gemv::record(scope, weight, &input, &mut output, columns, tile)? {
+        if super::pool_gemv::record(scope, node, &input, &mut output, columns, tile, weights)? {
             nvfp4.clear_quant_reuse();
             arena.buffers[slot] = Some(output.reshape(&[flat]).map_err(error)?);
             return Ok(());

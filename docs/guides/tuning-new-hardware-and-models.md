@@ -92,7 +92,7 @@
 | `SWIGLU_TILE_ROWS/COLUMNS = 64` | `resident/nvfp4_gemm/workspace.rs`、`tuning/swiglu.rs` | 加载期真实权重 tuner：合法候选 64x64/128x64/128x128，完整 codes/scales 逐字节对照 baseline，量化-inclusive AB+BA 配对与持久 device/kernel/geometry/weight 证明；64x64 为无证据 fallback | 128 行只有在 exact proof 和两种顺序都超过确认阈值时才被选中；搜索失败/缓存损坏回退并记录缺口 |
 | `GDN_BA_SHAPE = [48, 5120]` | `resident/prefill_projection.rs` | 按形状识别 b/a 投影对 | 按图结构识别（同输入、相邻、同为稠密小投影），不依赖具体形状 |
 | narrow dense N16 exact `(64,48,5120)` | `resident/prefill_projection.rs`、`tuning/prefill.rs` | 原按完整 shape 硬匹配 | 已改为 48-row、64-multiple reduction 的小投影结构契约，prompt width 不参与匹配；GPU 性能/数值仍需设备 |
-| `MAX_POOL_ROWS = CB_DECODE_SLOTS` | `resident/pool_gemv.rs` | 行数不超过 16 时走 GEMV | 由 GEMV 与分块 GEMM 的实测交叉点决定，纳入调优 |
+| `MAX_POOL_ROWS = CB_DECODE_SLOTS` | `resident/pool_gemv.rs`、`tuning/pool_gemv.rs` | 16 仍是未测量/失败时的 legacy fallback；加载期已按实际 Dense BF16 权重和 F32 输入测量 GEMV vs blocked GEMM | 按实际 rows/columns/outputs/权重证明持久化选择；cold+warm AB+BA，数值仅允许既有 F32 边界并保留最终 1024 门禁 |
 | `CATEGORY_SEARCH_BUDGET = 30 s` | `tuning/resident_gemm.rs` | 非 GEMM 类别的独立有限额度 | Resident GEMM 已改为按 family/shape 的候选数与测量时长推导；其余类别保留独立限制并在日志中记录未完成项 |
 | 每槽保底 KV = 单槽容量 ÷ 2 | `loading/budget.rs` 的 `funded_kv_tokens` | 已删除；每槽只保留一个物理页，实际 prompt+generation 页由 admission 按请求租用 | 保留 fixed recurrent/draft state 和 pooled backpressure；长短请求、取消/退款与 prefix 复用仍需设备矩阵 |
 
