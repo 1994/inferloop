@@ -21,7 +21,7 @@ RTX 5090 上 Qwen3-VL-2B 的实测（prefill 阶段，含同一视觉编码）�
 OpenAI chat 的 `image_url` / `video_url` 内容部分现在进入真实 serving 路径：输入层解析 URL（`data:`、`file://`、绝对路径、`http(s)`），按上限下载/解码并调用 provider 的 `ImageProcessor` / `VideoProcessor` 生成 prompt 对齐的 patch 载荷；每个 media item 作为 `infer_ir::MediaItem` 随 `MediaPlan` 经过 admission、scheduler 和 `ExecutionTask`，由 CUDA backend 在 prompt prefill 时编码并写入 lane 外部 embedding 槽。媒体 span、旋转位置和 token 计数在编码前校验；占位符、编码器或 patch grid 不匹配时报错，不会回退成纯文本。
 
 - 同一 prompt 暂只支持一种媒体模态；混合 image/video 会返回显式 unsupported。
-- `--limit-mm-per-prompt '{"image":N,"video":M}'` 是每 prompt 上限。全零配置只服务文本并跳过视觉塔；非零配置在加载时绑定并使用视觉权重。默认上限为 4 张图、1 段视频。
+- `--limit-mm-per-prompt '{"image":N,"video":M}'` 是每 prompt 上限。全零配置只服务文本并跳过视觉塔；非零配置在加载时绑定并使用视觉权重。默认上限为 2 张图、1 段视频。
 - 文本部署收到媒体时返回结构化 `unsupported_feature`，不消费 request identity。
 - `data:`/`file://`/绝对路径的 PNG 由进程内解码；JPEG/WebP、视频以及 `http(s)` 下载依赖宿主 `ffmpeg`/`ffprobe`/`curl`，缺失时返回显式 unsupported。所有读取、帧数、尺寸和时间都有上限。
 - media 请求不参与 prefix reuse，也不支持 MTP speculation；这两条都是显式错误而不是静默降级。

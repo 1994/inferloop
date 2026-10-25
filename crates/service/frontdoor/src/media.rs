@@ -21,11 +21,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Largest accepted image payload after decoding or download.
-const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_IMAGE_BYTES: usize = 24 * 1024 * 1024;
 /// Largest accepted raw RGB image pixel count.
 const MAX_IMAGE_PIXELS: usize = 16 * 1024 * 1024;
 /// Largest accepted video download/decoded raw output.
-const MAX_VIDEO_BYTES: usize = 96 * 1024 * 1024;
+const MAX_VIDEO_BYTES: usize = 24 * 1024 * 1024;
 /// Host staging credit reserved for one media item before decode.
 pub const MEDIA_STAGING_BYTES: usize = MAX_VIDEO_BYTES + 1024 * 1024;
 /// Largest accepted frame count decoded from one clip.

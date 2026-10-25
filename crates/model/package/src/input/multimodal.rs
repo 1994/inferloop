@@ -18,7 +18,7 @@ use std::sync::Arc;
 /// Largest accepted package metadata file.
 const METADATA_MAX_BYTES: u64 = 16 * 1024 * 1024;
 /// Default per-prompt image limit.
-const DEFAULT_IMAGE_LIMIT: usize = 4;
+const DEFAULT_IMAGE_LIMIT: usize = 2;
 /// Default per-prompt video limit.
 const DEFAULT_VIDEO_LIMIT: usize = 1;
 
