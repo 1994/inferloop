@@ -218,17 +218,9 @@ async fn copy_state<T: DType>(
     {
         return Err(Error::invariant("prefix KV stride mismatch"));
     }
-    for head in 0..d[0] {
-        if let Err(error) = device.copy_d2d_at(
-            dst,
-            src,
-            head * d[1] * d[2],
-            head * s[1] * s[2],
-            covered * d[2],
-        ) {
-            device.fence().await?;
-            return Err(error);
-        }
+    if let Err(error) = device.copy_head_prefix(dst, src, covered) {
+        device.fence().await?;
+        return Err(error);
     }
     Ok(())
 }

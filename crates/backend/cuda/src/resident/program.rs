@@ -372,19 +372,7 @@ fn copy_prefix<T: DType>(
         if shape.len() != KV_CACHE_RANK || usize::try_from(shape[1]).ok() != Some(capacity) {
             return Err(Error::invariant("program KV copy layout"));
         }
-        if rows > capacity {
-            return Err(Error::invalid("program KV copy exceeds capacity"));
-        }
-        if rows == 0 {
-            return Ok(());
-        }
-        let heads = usize::try_from(shape[0]).map_err(device_error)?;
-        let dim = usize::try_from(shape[2]).map_err(device_error)?;
-        for head in 0..heads {
-            let offset = head * capacity * dim;
-            device.copy_d2d_at(dst, src, offset, offset, rows * dim)?;
-        }
-        return Ok(());
+        return device.copy_head_prefix(dst, src, rows);
     }
     device.copy_d2d(dst, src, src.size())
 }

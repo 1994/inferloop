@@ -1,4 +1,5 @@
 //! Safe CUDA memory and kernel launch boundary.
+use crate::constants::KV_CACHE_RANK;
 use crate::constants::MATVEC_TILE_COLUMNS;
 use crate::constants::MATVEC_TILE_ROWS;
 use crate::kernels::linear::dense;
@@ -14,6 +15,7 @@ use cuda_core::sys::cuMemcpyDtoDAsync_v2;
 use cuda_core::sys::cuMemcpyDtoH_v2;
 use cuda_core::sys::cuMemcpyHtoDAsync_v2;
 use cuda_core::sys::cudaError_enum_CUDA_SUCCESS;
+use cuda_core::sys::{CUDA_MEMCPY3D, CUmemorytype_enum_CU_MEMORYTYPE_DEVICE, cuMemcpy3DAsync_v2};
 use cuda_core::{DeviceCopy, PinnedHostBuffer};
 use cutile::cuda_async::device_context::with_default_device_policy;
 use cutile::cuda_async::device_future::DeviceFuture;
@@ -22,6 +24,7 @@ use cutile::prelude::*;
 use infer_core::{Error as InferError, ErrorCode, Result};
 use serde::Serialize;
 use std::fmt::Display;
+use std::ptr::{null, null_mut};
 use std::result::Result as StdResult;
 use std::sync::{Arc, OnceLock};
 
@@ -372,6 +375,25 @@ fn query_target(device: &Device) -> Result<CudaTarget> {
     Ok(CudaTarget::from_sm_name(&name))
 }
 
+fn head_copy_shape<T: DType>(tensor: &Tensor<T>) -> Result<[usize; KV_CACHE_RANK]> {
+    let [heads, capacity, dim] = tensor.shape() else {
+        return Err(InferError::invalid("head copy requires rank-three tensors"));
+    };
+    let [heads, capacity, dim] =
+        [*heads, *capacity, *dim].map(|n| usize::try_from(n).map_err(device_error));
+    let shape = [heads?, capacity?, dim?];
+    let size = shape
+        .iter()
+        .try_fold(1usize, |count, &n| count.checked_mul(n))
+        .ok_or_else(|| InferError::invalid("head copy shape overflow"))?;
+    if size != tensor.size() {
+        return Err(InferError::invalid("head copy tensor extent"));
+    }
+    size.checked_mul(size_of::<T>())
+        .ok_or_else(|| InferError::invalid("head copy byte overflow"))?;
+    Ok(shape)
+}
+
 fn dimensions<T: DType>(x: &Tensor<f32>, w: &Tensor<T>) -> Result<(usize, usize)> {
     if w.shape().len() != 2 || x.shape().len() != 1 || x.shape()[0] != w.shape()[1] {
         return Err(InferError::invalid("CUDA matrix-vector dimensions"));
@@ -460,6 +482,80 @@ impl CudaDevice {
         elements: usize,
     ) -> Result<()> {
         self.copy_d2d_at(dst, src, 0, 0, elements)
+    }
+
+    /// Copy the first `rows` positions of head-major `[heads, capacity, dim]` tensors.
+    /// Owners retain both buffers through the next stream fence. Capacities may differ;
+    /// the active prefix moves in one asynchronous driver submission without touching tails.
+    /// # Errors
+    /// Rejects incompatible layouts, ranges, devices, size overflow or driver failures.
+    pub(crate) fn copy_head_prefix<T: DType>(
+        &self,
+        dst: &mut Tensor<T>,
+        src: &Tensor<T>,
+        rows: usize,
+    ) -> Result<()> {
+        let d = head_copy_shape(dst)?;
+        let s = head_copy_shape(src)?;
+        if d[0] != s[0]
+            || d[2] != s[2]
+            || rows > d[1]
+            || rows > s[1]
+            || src.device_id() != self.ordinal
+            || dst.device_id() != self.ordinal
+        {
+            return Err(InferError::invalid("head prefix copy layout or range"));
+        }
+        if rows == 0 || s[0] == 0 || s[2] == 0 {
+            return Ok(());
+        }
+        if dst.device_pointer().cu_deviceptr() == src.device_pointer().cu_deviceptr() {
+            return if d == s {
+                Ok(())
+            } else {
+                Err(InferError::invalid("aliased head copy layout"))
+            };
+        }
+        if rows == s[1] && d == s {
+            return self.copy_d2d(dst, src, src.size());
+        }
+        let pitch = s[2]
+            .checked_mul(size_of::<T>())
+            .ok_or_else(|| InferError::invalid("head copy pitch overflow"))?;
+        let copy = CUDA_MEMCPY3D {
+            srcXInBytes: 0,
+            srcY: 0,
+            srcZ: 0,
+            srcLOD: 0,
+            srcMemoryType: CUmemorytype_enum_CU_MEMORYTYPE_DEVICE,
+            srcHost: null(),
+            srcDevice: src.device_pointer().cu_deviceptr(),
+            srcArray: null_mut(),
+            reserved0: null_mut(),
+            srcPitch: pitch,
+            srcHeight: s[1],
+            dstXInBytes: 0,
+            dstY: 0,
+            dstZ: 0,
+            dstLOD: 0,
+            dstMemoryType: CUmemorytype_enum_CU_MEMORYTYPE_DEVICE,
+            dstHost: null_mut(),
+            dstDevice: dst.device_pointer().cu_deviceptr(),
+            dstArray: null_mut(),
+            reserved1: null_mut(),
+            dstPitch: pitch,
+            dstHeight: d[1],
+            WidthInBytes: pitch,
+            Height: rows,
+            Depth: s[0],
+        };
+        // SAFETY: checked shapes bound every [head, row, column] to the owned tensors.
+        // The fully initialized descriptor uses typed, aligned device storage and NULL unused
+        // host/array/reserved fields. Independent programs/snapshots own disjoint buffers;
+        // identical aliases returned above. Callers keep both owners through the stream fence,
+        // and the owned stream retains the current device context through this enqueue.
+        let status = unsafe { cuMemcpy3DAsync_v2(&raw const copy, self.stream.cu_stream()) };
+        driver_status(status)
     }
 
     /// Ranged variant: snapshots copy only the token rows a prefix actually covers.
