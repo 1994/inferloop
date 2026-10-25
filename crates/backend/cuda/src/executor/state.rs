@@ -80,32 +80,11 @@ impl CudaExecutor {
             .ok_or_else(|| Error::invalid("unknown CUDA state"))
     }
 
-    /// Whether a sequence must carry admission for its own verification graph. A sequence
-    /// that fits the slot pool verifies through the pool's shared graph instead — but only
-    /// up to the pool's width: past it, a resident sequence can lose the slot race and fall
-    /// back to serial execution, which lazily recaptures the private graph and must have
-    /// been charged for it.
+    /// Resident homes use prepaid pool storage or wait for a home. Every private
+    /// sequence needs a funded verification graph: it can lose the slot/block race
+    /// and must remain executable without capturing unquoted storage in decode.
     pub(super) fn private_verification_for(&self, capacity: usize, readout: OutputReadout) -> bool {
-        let Some(pool) = &self.slots else {
-            return true;
-        };
-        if self.loaded.mtp_depth() == 0
-            || readout != OutputReadout::Logits
-            || capacity > pool.capacity()
-            || pool.verify().is_none()
-        {
-            return true;
-        }
-        let pooled = self
-            .states
-            .values()
-            .filter(|state| {
-                state.speculation.is_some()
-                    && state.readout == OutputReadout::Logits
-                    && state.capacity <= pool.capacity()
-            })
-            .count();
-        pooled >= pool.width()
+        !self.home_eligible(capacity, readout)
     }
 
     /// Release a prewarmed pool only when no live sequence relies on it, the request
@@ -379,6 +358,9 @@ impl CudaExecutor {
                 pool.release(lease.slot);
             }
         }
+        // Reset has restored the original private charge and retired the slot lease.
+        // Prepare before returning to compute; decode must never capture a graph.
+        state.prepare_verification(&self.loaded)?;
         state.history.clear();
         state.hidden.clear();
         state.poisoned = false;

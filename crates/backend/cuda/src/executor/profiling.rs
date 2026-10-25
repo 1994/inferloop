@@ -1,4 +1,5 @@
-//! Opt-in host-side execution evidence; no token contents are recorded.
+//! Opt-in execution wall-time evidence; async phases include suspension and device waits.
+//! No token contents are recorded. These durations are not thread CPU time.
 use super::CudaExecutor;
 use crate::device::CudaDevice;
 use infer_core::StateId;
@@ -143,7 +144,7 @@ impl StepProfile {
             .collect();
         let line = serde_json::json!({
             "execution_wall_us": elapsed_us,
-            "host_phases_us": by_phase,
+            "phase_wall_us": by_phase,
             "tasks": self.inputs,
             "slots_after": slots,
             "pool_width": backend.slots.as_ref().map(super::SlotPool::width),

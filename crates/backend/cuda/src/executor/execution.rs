@@ -106,12 +106,10 @@ impl CudaExecutor {
     }
 
     pub(super) fn prepare_execution(&mut self) -> Result<()> {
-        if self.states.len() > 1 {
-            self.ensure_slot_pool(&[true, true]);
-        }
+        self.ensure_slot_pool();
         for state in self.states.values_mut() {
-            if state.home.is_none() && state.speculation.is_some() {
-                self.loaded.ensure_verification(&mut state.program)?;
+            if !state.poisoned {
+                state.prepare_verification(&self.loaded)?;
             }
         }
         Ok(())
@@ -177,30 +175,25 @@ impl CudaExecutor {
         )
     }
 
-    /// Capture the slot pool on the first step that could batch two decodes; any failure
-    /// disables batching permanently rather than affecting the request that triggered it.
+    /// Capture during admission only when two live requests can use pooled decode.
+    /// Temporary funding failures remain retryable after reservation accounting changes.
     /// With a draft loaded the pool captures the pooled speculation graph instead: every
     /// sequence speculates from its first decode step, so a decode-only pool would sit
     /// unused while squeezing admission memory.
-    fn ensure_slot_pool(&mut self, eligible: &[bool]) {
-        if self.slots.is_some()
-            || self.slots_disabled
-            || !eligible.windows(2).any(|pair| pair[0] && pair[1])
-        {
+    fn ensure_slot_pool(&mut self) {
+        if self.slots.is_some() || self.slots_disabled {
             return;
         }
         // Size shared KV storage from admitted requests, not the maximum context.
         // Long contexts outside this pool retain their private execution graph.
-        let capacity = self
-            .states
-            .values()
-            .filter(|state| {
-                state.readout == OutputReadout::Logits && state.capacity <= CB_SLOT_TOKENS
-            })
-            .map(|state| state.capacity)
-            .max()
-            .unwrap_or(1)
-            .next_power_of_two();
+        let Some(capacity) = candidate_pool_capacity(
+            self.states
+                .values()
+                .filter(|state| !state.poisoned)
+                .map(|state| (state.capacity, state.readout)),
+        ) else {
+            return;
+        };
         // Reserve the configured capture bucket, not the transient number of arrivals seen on
         // this tick. Otherwise a two-request first tick fixes the pool at two slots forever.
         let active = match self.active_budget() {
@@ -958,6 +951,19 @@ impl Sampler<'_> {
     }
 }
 impl Sequence {
+    pub(super) fn prepare_verification(&mut self, loaded: &LoadedModel) -> Result<()> {
+        // A slot lease already credited the released private storage. Only an
+        // unbound private reservation funds this graph; homes use prepaid pool storage.
+        if self.home.is_none()
+            && self.slot.is_none()
+            && self.verification_priced
+            && self.speculation.is_some()
+        {
+            loaded.ensure_verification(&mut self.program)?;
+        }
+        Ok(())
+    }
+
     /// Keep the draft cursor aligned even on non-greedy or capacity-limited steps.
     async fn slot_candidates(&mut self, task: &ExecutionTask, width: usize) -> Result<Vec<u32>> {
         let ExecutionInput::Decode { position, token } = task.tokens else {
@@ -1326,9 +1332,11 @@ impl Sequence {
         let ExecutionInput::Decode { position, .. } = task.tokens else {
             return Ok(None);
         };
-        let width = self.program.batch_width();
-        if self.speculation.is_none()
-            || readout != OutputReadout::Logits
+        let Some(speculation) = &self.speculation else {
+            return Ok(None);
+        };
+        let width = speculation.depth + 1;
+        if readout != OutputReadout::Logits
             // Rejection under a non-zero temperature needs residual sampling the engine sampler
             // cannot reproduce from plain target logits, so speculation stays greedy-only.
             || sampling.temperature != 0.0
@@ -1338,6 +1346,12 @@ impl Sequence {
             || position.saturating_add(width) > self.capacity
         {
             return Ok(None);
+        }
+        if self.program.batch_width() != width {
+            return Err(Error::new(
+                ErrorCode::Capacity,
+                "MTP decode requires its reserved shared slot or prepared private verification graph",
+            ));
         }
         // Use the same accept/rollback contract as pooled verification. On rejection
         // return the target logits at the accepted prefix; the output stage samples
@@ -1429,6 +1443,18 @@ async fn propose(
         token = candidate;
     }
     Ok(proposals)
+}
+
+/// Plan only for requests that fit the pool and request its logits readout.
+fn candidate_pool_capacity(states: impl Iterator<Item = (usize, OutputReadout)>) -> Option<usize> {
+    let (count, capacity) = states
+        .filter(|&(capacity, readout)| {
+            readout == OutputReadout::Logits && capacity <= CB_SLOT_TOKENS
+        })
+        .fold((0, 1), |(count, maximum), (capacity, _)| {
+            (count + 1, maximum.max(capacity))
+        });
+    (count >= 2).then(|| capacity.next_power_of_two())
 }
 
 // Private programs keep their reservation and shared prompt scratch while a lazy

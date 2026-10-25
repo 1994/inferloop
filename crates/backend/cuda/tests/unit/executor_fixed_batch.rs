@@ -35,13 +35,13 @@ fn measured_step(
     let mut ticket = backend.submit_borrowed(program, &plan, tasks)?;
     let submitted = started.elapsed();
     let mut polls = 0;
-    let mut poll_cpu = Duration::ZERO;
+    let mut poll_wall = Duration::ZERO;
     let mut interval = 25_u64;
     let deadline = started + Duration::from_secs(30);
     let outputs = loop {
         let polling = Instant::now();
         let output = backend.poll(&mut ticket)?;
-        poll_cpu += polling.elapsed();
+        poll_wall += polling.elapsed();
         polls += 1;
         if let Some(outputs) = output {
             break outputs;
@@ -57,8 +57,8 @@ fn measured_step(
     Ok(serde_json::json!({
         "tasks": tasks.len(),
         "prefills": tasks.iter().filter(|t| !matches!(t.tokens, ExecutionInput::Decode { .. })).count(),
-        "wall_us": elapsed.as_micros(), "submit_cpu_us": submitted.as_micros(),
-        "poll_calls": polls, "poll_cpu_us": poll_cpu.as_micros(),
+        "wall_us": elapsed.as_micros(), "submit_wall_us": submitted.as_micros(),
+        "poll_calls": polls, "poll_wall_us": poll_wall.as_micros(),
         "output_digest": digest(&outputs),
         "accepted_tokens": outputs.iter().map(|row| row.output.tokens.len()).collect::<Vec<_>>(),
     }))

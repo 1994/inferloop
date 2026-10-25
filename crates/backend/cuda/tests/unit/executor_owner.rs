@@ -62,6 +62,8 @@ fn fixture_with_width(
 
 #[path = "executor_fixed_batch.rs"]
 mod fixed_batch;
+#[path = "executor_preparation.rs"]
+mod preparation;
 
 fn tasks(
     backend: &CudaBackend,

@@ -129,6 +129,16 @@ future 推进。`submit` 入队首段工作后返回，`poll` 在等待设备时
 设备端 token/KV 延迟回填。同步诊断 API 通过同一 async 实现的兼容包装运行，
 provider 不调用该包装。吞吐、TTFT/TPOT 和内存成本按性能 baseline 合同单独验收。
 
+共享 slot 的状态不会因其他请求准入而重建私有验证图；私有验证只使用已报价的
+存储，并在 reset 解绑恢复计账后准备。缺少 resident home、需要私有 fallback 的
+请求从准入报价起覆盖私有验证存储，不能仅因当前 slot 空闲而少计；这可能使此前
+漏计显存的请求更早等待资源。延迟创建共享池要求至少两个健康、Logits
+readout 且容量适配的状态；Full readout 和超长私有请求不触发无用池捕获。
+
+内部 execution profile 的 `phase_wall_us` 包含异步挂起和设备等待。固定批次诊断的
+`submit_wall_us`、`poll_wall_us` 是调用期间经过的时间，包含线程被调度出去的时间，
+均不代表线程 CPU 用时；历史证据保留其原始字段与对应源码版本。
+
 设备验收包含 `async_prefill_first_binding_decode_and_mixed_readouts_match_serial`、
 `async_mtp_pooled_and_private_match_serial`、
 `async_invalid_mtp_sampling_fences_before_failure` 和
