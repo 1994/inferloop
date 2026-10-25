@@ -27,7 +27,7 @@ use crate::tuning::resident_gemm::GemmConfig;
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use crate::tuning::resident_gemm::WeightKey as ResidentGemmWeightKey;
 use crate::tuning::resident_gemm::select as resident_gemm_select;
-use crate::tuning::swiglu::select as select_swiglu_tuned;
+use crate::tuning::swiglu::{Contract as SwigluContract, select as select_swiglu_tuned};
 use crate::{
     device::{CudaDevice, device_error, vendor_fp8},
     mlp::ProjectionWeight,
@@ -701,9 +701,12 @@ impl Workspace {
                     profile,
                     gate_weight,
                     up_weight,
-                    (rows, columns, hidden),
-                    (input_scale, down_scale),
+                    SwigluContract {
+                        shape: (rows, columns, hidden),
+                        scales: (input_scale, down_scale),
+                    },
                     search,
+                    &weights.resident_tuning,
                 )?;
                 if search {
                     weights

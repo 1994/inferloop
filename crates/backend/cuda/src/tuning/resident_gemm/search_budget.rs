@@ -14,6 +14,8 @@ const CACHE_STATES: u32 = 2;
 pub enum Family {
     Nvfp4,
     Fp8Channel,
+    PoolDense,
+    FusedSwiGLU,
 }
 
 type Key = (Family, [usize; GEMM_RANK]);

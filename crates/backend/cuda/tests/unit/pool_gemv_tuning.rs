@@ -1,4 +1,4 @@
-use super::{Entry, legacy_choice};
+use super::{Entry, Key, legacy_choice};
 use crate::constants::CB_DECODE_SLOTS;
 use crate::resident::pool_gemv::kernels;
 use crate::resident::small_gemm::kernels as blocked_kernels;
@@ -7,6 +7,60 @@ use cutile::DType;
 use cutile::cutile_compiler::compile_api::KernelCompiler;
 use cutile::half::bf16;
 use std::error::Error;
+
+const DEVICE: &str = "dev|sm_120|24576MiB";
+const DRIVER_BUILD: &str = "NVRM version: test";
+const HARDWARE: &str = "hardware";
+const FINGERPRINT: &str = "fp";
+const PROOF: &str = "abc";
+
+fn key() -> Key<'static> {
+    Key {
+        device: DEVICE,
+        driver: 12_000,
+        driver_build: DRIVER_BUILD,
+        hardware: HARDWARE,
+        fingerprint: FINGERPRINT,
+        rows: 16,
+        columns: 5120,
+        outputs: 128,
+        proof: PROOF,
+    }
+}
+
+fn entry() -> Entry {
+    Entry {
+        device: DEVICE.into(),
+        driver: 12_000,
+        driver_build: DRIVER_BUILD.into(),
+        hardware: HARDWARE.into(),
+        kernel: concat!("pool-gemv-vs-blocked-v1/", env!("CARGO_PKG_VERSION")).into(),
+        kernel_fingerprint: FINGERPRINT.into(),
+        rows: 16,
+        columns: 5120,
+        outputs: 128,
+        weight_proof: PROOF.into(),
+        choice: "gemv".into(),
+        exact: false,
+        cold_gemv_us: 10.0,
+        cold_blocked_us: 12.0,
+        warm_gemv_us: 8.0,
+        warm_blocked_us: 10.0,
+        cold_ab_blocked_samples: vec![12.0],
+        cold_ab_gemv_samples: vec![10.0],
+        cold_ba_blocked_samples: vec![12.0],
+        cold_ba_gemv_samples: vec![10.0],
+        warm_ab_blocked_samples: vec![10.0],
+        warm_ab_gemv_samples: vec![8.0],
+        warm_ba_blocked_samples: vec![10.0],
+        warm_ba_gemv_samples: vec![8.0],
+        gemv_faster: true,
+    }
+}
+
+fn matches(entry: &Entry) -> bool {
+    entry.matches(&key()) && entry.driver_build == DRIVER_BUILD && entry.hardware == HARDWARE
+}
 
 #[test]
 fn legacy_fallback_remains_the_slot_width_bound() {
@@ -17,30 +71,41 @@ fn legacy_fallback_remains_the_slot_width_bound() {
 
 #[test]
 fn pool_entry_rejects_stale_or_nonfinite_evidence() {
-    let entry = Entry {
-        device: "dev|sm_120|24576MiB".into(),
-        driver: 12_000,
-        kernel: concat!("pool-gemv-vs-blocked-v1/", env!("CARGO_PKG_VERSION")).into(),
-        rows: 16,
-        columns: 5120,
-        outputs: 128,
-        weight_proof: "abc".into(),
-        choice: "gemv".into(),
-        exact: false,
-        cold_gemv_us: 10.0,
-        cold_blocked_us: 12.0,
-        warm_gemv_us: 8.0,
-        warm_blocked_us: 10.0,
-        gemv_faster: true,
-    };
-    assert!(entry.matches("dev|sm_120|24576MiB", 12_000, 16, 5120, 128, "abc"));
-    assert!(!entry.matches("other", 12_000, 16, 5120, 128, "abc"));
-    assert!(!entry.matches("dev|sm_120|24576MiB", 12_001, 16, 5120, 128, "abc"));
-    assert!(!entry.matches("dev|sm_120|24576MiB", 12_000, 16, 5120, 128, "other"));
-    assert!(!entry.matches("dev|sm_120|24576MiB", 12_000, 17, 5120, 128, "abc"));
+    let entry = entry();
+    assert!(matches(&entry));
+    for key in [
+        Key {
+            device: "other",
+            ..key()
+        },
+        Key {
+            driver: 12_001,
+            ..key()
+        },
+        Key {
+            proof: "other",
+            ..key()
+        },
+        Key { rows: 17, ..key() },
+        Key {
+            fingerprint: "other",
+            ..key()
+        },
+    ] {
+        assert!(!entry.matches(&key));
+    }
+    let mut bad = entry.clone();
+    bad.driver_build.clear();
+    assert!(!matches(&bad));
+    let mut bad = entry.clone();
+    bad.hardware.clear();
+    assert!(!matches(&bad));
+    let mut bad = entry.clone();
+    bad.choice = "other".into();
+    assert!(!matches(&bad));
     let mut bad = entry;
     bad.cold_gemv_us = f64::NAN;
-    assert!(!bad.matches("dev|sm_120|24576MiB", 12_000, 16, 5120, 128, "abc"));
+    assert!(!matches(&bad));
 }
 
 #[test]

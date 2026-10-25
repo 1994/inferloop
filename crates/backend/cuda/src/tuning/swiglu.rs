@@ -13,18 +13,18 @@ use crate::mlp::ProjectionWeight;
 use crate::resident::nvfp4_gemm::kernels;
 use crate::resident::nvfp4_gemm::workspace::{SwigluTile, swiglu_candidates};
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
+use crate::tuning::resident_gemm::{ResidentTuningSession, SearchFamily};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::error::tensor_error;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Kernel identity in the persistent table. Change when the packed kernel's arithmetic changes.
 const KERNEL_ID: &str = concat!("packed-swiglu-v1/", env!("CARGO_PKG_VERSION"));
 /// Fixed overhead for one shape's bookkeeping and launch setup.
-const BUDGET_SLACK_MS: u64 = 250;
 /// Deterministic activation fixture bounds.
 const INPUT_MODULUS: usize = 251;
 const INPUT_SCALE: f32 = 97.0;
@@ -45,6 +45,9 @@ pub struct Entry {
     pub hidden: usize,
     #[serde(default)]
     pub weight_proof: String,
+    pub driver_build: String,
+    pub hardware: String,
+    pub kernel_fingerprint: String,
     pub input_scale: f32,
     pub down_scale: f32,
     pub tile_rows: usize,
@@ -53,6 +56,26 @@ pub struct Entry {
     pub real_weights: bool,
     pub baseline_us: f64,
     pub candidate_us: f64,
+    pub cold_base_us: f64,
+    pub cold_trial_us: f64,
+    pub warm_base_us: f64,
+    pub warm_trial_us: f64,
+    #[serde(default)]
+    pub cold_ab_base_samples: Vec<f32>,
+    #[serde(default)]
+    pub cold_ab_trial_samples: Vec<f32>,
+    #[serde(default)]
+    pub cold_ba_base_samples: Vec<f32>,
+    #[serde(default)]
+    pub cold_ba_trial_samples: Vec<f32>,
+    #[serde(default)]
+    pub warm_ab_base_samples: Vec<f32>,
+    #[serde(default)]
+    pub warm_ab_trial_samples: Vec<f32>,
+    #[serde(default)]
+    pub warm_ba_base_samples: Vec<f32>,
+    #[serde(default)]
+    pub warm_ba_trial_samples: Vec<f32>,
     pub ab_base_us: f64,
     pub ab_trial_us: f64,
     pub ba_base_us: f64,
@@ -60,25 +83,39 @@ pub struct Entry {
     pub speedup: f64,
 }
 
+fn samples_ok(samples: &[f32]) -> bool {
+    !samples.is_empty()
+        && samples
+            .iter()
+            .all(|sample| sample.is_finite() && *sample > 0.0)
+}
+
+pub(crate) struct EntryKey<'a> {
+    pub(crate) device: &'a str,
+    pub(crate) weight_proof: &'a str,
+    pub(crate) driver_build: &'a str,
+    pub(crate) hardware: &'a str,
+    pub(crate) kernel_fingerprint: &'a str,
+    pub(crate) scales: (f32, f32),
+    pub(crate) rows: usize,
+    pub(crate) columns: usize,
+    pub(crate) hidden: usize,
+}
+
 impl Entry {
-    pub(crate) fn matches(
-        &self,
-        device: &str,
-        proof: &str,
-        scales: (f32, f32),
-        rows: usize,
-        columns: usize,
-        hidden: usize,
-    ) -> bool {
-        self.device == device
+    pub(crate) fn matches(&self, key: &EntryKey<'_>) -> bool {
+        self.device == key.device
             && self.kernel == KERNEL_ID
-            && !proof.is_empty()
-            && self.weight_proof == proof
-            && self.input_scale.to_bits() == scales.0.to_bits()
-            && self.down_scale.to_bits() == scales.1.to_bits()
-            && self.rows == rows
-            && self.columns == columns
-            && self.hidden == hidden
+            && !key.weight_proof.is_empty()
+            && self.weight_proof == key.weight_proof
+            && self.driver_build == key.driver_build
+            && self.hardware == key.hardware
+            && self.kernel_fingerprint == key.kernel_fingerprint
+            && self.input_scale.to_bits() == key.scales.0.to_bits()
+            && self.down_scale.to_bits() == key.scales.1.to_bits()
+            && self.rows == key.rows
+            && self.columns == key.columns
+            && self.hidden == key.hidden
             && self.exact
             && self.real_weights
             && self.speedup >= 1.0
@@ -90,6 +127,22 @@ impl Entry {
             && self.ba_trial_us.is_finite()
             && self.baseline_us > 0.0
             && self.candidate_us > 0.0
+            && self.cold_base_us.is_finite()
+            && self.cold_trial_us.is_finite()
+            && self.warm_base_us.is_finite()
+            && self.warm_trial_us.is_finite()
+            && self.cold_base_us > 0.0
+            && self.cold_trial_us > 0.0
+            && self.warm_base_us > 0.0
+            && self.warm_trial_us > 0.0
+            && samples_ok(&self.cold_ab_base_samples)
+            && samples_ok(&self.cold_ab_trial_samples)
+            && samples_ok(&self.cold_ba_base_samples)
+            && samples_ok(&self.cold_ba_trial_samples)
+            && samples_ok(&self.warm_ab_base_samples)
+            && samples_ok(&self.warm_ab_trial_samples)
+            && samples_ok(&self.warm_ba_base_samples)
+            && samples_ok(&self.warm_ba_trial_samples)
             && self.ab_base_us > 0.0
             && self.ab_trial_us > 0.0
             && self.ba_base_us > 0.0
@@ -110,11 +163,12 @@ pub(crate) fn select(
     profile: &DeviceProfile,
     gate: &ProjectionWeight,
     up: &ProjectionWeight,
-    shape: (usize, usize, usize),
-    scales: (f32, f32),
+    contract: Contract,
     autotune: bool,
+    session: &ResidentTuningSession,
 ) -> Result<SwigluTile> {
-    let (rows, columns, hidden) = shape;
+    let (rows, columns, hidden) = contract.shape;
+    let scales = contract.scales;
     let candidates = swiglu_candidates(rows, columns, hidden);
     let Some(fallback) = candidates.first().copied() else {
         return Err(Error::invalid("no legal fused SwiGLU tile"));
@@ -124,21 +178,52 @@ pub(crate) fn select(
         profile.identity(),
         CudaDevice::driver_version()?
     );
+    let driver_build = super::driver_build().unwrap_or_default();
+    let hardware = serde_json::to_string(profile).map_err(device_error)?;
+    let fingerprint = format!(
+        "{}:gen={}x{}x{}:candidates={:?}",
+        super::compiler_fingerprint(),
+        rows,
+        columns,
+        hidden,
+        candidates
+    );
     let proof = weight_proof(device, gate, up, scales)?;
     let cached_context = CachedContext {
         identity: &identity,
-        proof: &proof,
+        weight_proof: &proof,
+        driver_build: &driver_build,
+        hardware: &hardware,
+        fingerprint: &fingerprint,
+        shape: contract.shape,
+        scales,
         candidates: &candidates,
     };
-    if let Some(tile) = verified_cached(device, gate, up, shape, scales, fallback, cached_context) {
+    if let Some(tile) = verified_cached(
+        device,
+        gate,
+        up,
+        contract.shape,
+        scales,
+        fallback,
+        cached_context,
+    ) {
         return Ok(tile);
     }
     if !autotune {
         return Ok(fallback);
     }
-    match measure(device, gate, up, Contract { shape, scales }, &candidates) {
+    if !session.permits_gemm_search(
+        SearchFamily::FusedSwiGLU,
+        [rows, columns, hidden],
+        candidates.len() * 4,
+    )? {
+        return Ok(fallback);
+    }
+    match measure(device, gate, up, contract, &candidates) {
         Ok(selected) if selected.complete => {
-            persist(&identity, &proof, scales, shape, &selected);
+            session.complete_gemm_search(SearchFamily::FusedSwiGLU, [rows, columns, hidden])?;
+            persist(&cached_context, &selected);
             Ok(selected.tile)
         }
         Ok(_) => {
@@ -160,15 +245,7 @@ pub(crate) fn select(
     }
 }
 
-fn cached(
-    identity: &str,
-    proof: &str,
-    scales: (f32, f32),
-    rows: usize,
-    columns: usize,
-    hidden: usize,
-    candidates: &[SwigluTile],
-) -> Result<Option<SwigluTile>> {
+fn cached(context: &CachedContext<'_>) -> Result<Option<SwigluTile>> {
     let Some(path) = super::table_path() else {
         return Ok(None);
     };
@@ -181,41 +258,61 @@ fn cached(
         .iter()
         .find_map(|entry| {
             entry
-                .matches(identity, proof, scales, rows, columns, hidden)
+                .matches(&EntryKey {
+                    device: context.identity,
+                    weight_proof: context.weight_proof,
+                    driver_build: context.driver_build,
+                    hardware: context.hardware,
+                    kernel_fingerprint: context.fingerprint,
+                    scales: context.scales,
+                    rows: context.shape.0,
+                    columns: context.shape.1,
+                    hidden: context.shape.2,
+                })
                 .then_some(SwigluTile {
                     rows: entry.tile_rows,
                     columns: entry.tile_columns,
                 })
         })
-        .filter(|tile| candidates.contains(tile)))
+        .filter(|tile| context.candidates.contains(tile)))
 }
 
-fn persist(
-    identity: &str,
-    proof: &str,
-    scales: (f32, f32),
-    (rows, columns, hidden): (usize, usize, usize),
-    selected: &Candidate,
-) {
+fn persist(context: &CachedContext<'_>, selected: &Candidate) {
+    let (rows, columns, hidden) = context.shape;
     let entry = Entry {
-        device: identity.to_owned(),
+        device: context.identity.to_owned(),
         kernel: KERNEL_ID.to_owned(),
         rows,
         columns,
         hidden,
-        weight_proof: proof.to_owned(),
-        input_scale: scales.0,
-        down_scale: scales.1,
+        weight_proof: context.weight_proof.to_owned(),
+        driver_build: context.driver_build.to_owned(),
+        hardware: context.hardware.to_owned(),
+        kernel_fingerprint: context.fingerprint.to_owned(),
+        input_scale: context.scales.0,
+        down_scale: context.scales.1,
         tile_rows: selected.tile.rows,
         tile_columns: selected.tile.columns,
         exact: true,
         real_weights: true,
-        baseline_us: f64::from(selected.evidence.base),
-        candidate_us: f64::from(selected.evidence.trial),
-        ab_base_us: f64::from(selected.evidence.ab_base),
-        ab_trial_us: f64::from(selected.evidence.ab_trial),
-        ba_base_us: f64::from(selected.evidence.ba_base),
-        ba_trial_us: f64::from(selected.evidence.ba_trial),
+        baseline_us: f64::from(selected.warm.base),
+        candidate_us: f64::from(selected.warm.trial),
+        cold_base_us: f64::from(selected.cold.base),
+        cold_trial_us: f64::from(selected.cold.trial),
+        warm_base_us: f64::from(selected.warm.base),
+        warm_trial_us: f64::from(selected.warm.trial),
+        cold_ab_base_samples: selected.cold.ab_base_samples.clone(),
+        cold_ab_trial_samples: selected.cold.ab_trial_samples.clone(),
+        cold_ba_base_samples: selected.cold.ba_base_samples.clone(),
+        cold_ba_trial_samples: selected.cold.ba_trial_samples.clone(),
+        warm_ab_base_samples: selected.warm.ab_base_samples.clone(),
+        warm_ab_trial_samples: selected.warm.ab_trial_samples.clone(),
+        warm_ba_base_samples: selected.warm.ba_base_samples.clone(),
+        warm_ba_trial_samples: selected.warm.ba_trial_samples.clone(),
+        ab_base_us: f64::from(selected.warm.ab_base),
+        ab_trial_us: f64::from(selected.warm.ab_trial),
+        ba_base_us: f64::from(selected.warm.ba_base),
+        ba_trial_us: f64::from(selected.warm.ba_trial),
         speedup: f64::from(selected.speedup),
     };
     update_table(super::table_path().as_deref(), |table| {
@@ -224,7 +321,13 @@ fn persist(
                 && old.kernel == entry.kernel
                 && old.rows == entry.rows
                 && old.columns == entry.columns
-                && old.hidden == entry.hidden)
+                && old.hidden == entry.hidden
+                && old.weight_proof == entry.weight_proof
+                && old.driver_build == entry.driver_build
+                && old.hardware == entry.hardware
+                && old.kernel_fingerprint == entry.kernel_fingerprint
+                && old.input_scale.to_bits() == entry.input_scale.to_bits()
+                && old.down_scale.to_bits() == entry.down_scale.to_bits())
         });
         table.swiglu.push(entry);
     });
@@ -233,7 +336,12 @@ fn persist(
 #[derive(Clone, Copy)]
 struct CachedContext<'a> {
     identity: &'a str,
-    proof: &'a str,
+    weight_proof: &'a str,
+    driver_build: &'a str,
+    hardware: &'a str,
+    fingerprint: &'a str,
+    shape: (usize, usize, usize),
+    scales: (f32, f32),
     candidates: &'a [SwigluTile],
 }
 
@@ -247,15 +355,7 @@ fn verified_cached(
     context: CachedContext<'_>,
 ) -> Option<SwigluTile> {
     let (rows, columns, hidden) = shape;
-    let tile = match cached(
-        context.identity,
-        context.proof,
-        scales,
-        rows,
-        columns,
-        hidden,
-        context.candidates,
-    ) {
+    let tile = match cached(&context) {
         Ok(tile) => tile?,
         Err(error) => {
             tracing::warn!(target: "infer::tuning", %error, "invalid SwiGLU tuning cache; remeasuring");
@@ -336,11 +436,6 @@ fn weight_proof(
     Ok(format!("{hash:016x}"))
 }
 
-pub(crate) fn budget_for(candidates: usize) -> Duration {
-    let arms = u64::try_from(candidates.max(1)).unwrap_or(u64::MAX);
-    Duration::from_millis((WARMUP_MS + REP_MS) * 2 * arms + BUDGET_SLACK_MS)
-}
-
 struct Evidence {
     base: f32,
     trial: f32,
@@ -348,17 +443,22 @@ struct Evidence {
     ab_trial: f32,
     ba_base: f32,
     ba_trial: f32,
+    ab_base_samples: Vec<f32>,
+    ab_trial_samples: Vec<f32>,
+    ba_base_samples: Vec<f32>,
+    ba_trial_samples: Vec<f32>,
 }
 
 #[derive(Clone, Copy)]
-struct Contract {
-    shape: (usize, usize, usize),
-    scales: (f32, f32),
+pub(crate) struct Contract {
+    pub(crate) shape: (usize, usize, usize),
+    pub(crate) scales: (f32, f32),
 }
 
 struct Candidate {
     tile: SwigluTile,
-    evidence: Evidence,
+    cold: Evidence,
+    warm: Evidence,
     speedup: f32,
     complete: bool,
 }
@@ -373,58 +473,97 @@ fn measure(
     let (rows, columns, hidden) = contract.shape;
     let fallback = candidates[0];
     let baseline = run_for(device, gate, up, contract, fallback)?;
-    let options = BenchOptions {
-        warmup: Duration::from_millis(WARMUP_MS),
-        rep: Duration::from_millis(REP_MS),
-        min_reps: super::MIN_REPS,
-        max_reps: super::MAX_REPS,
-        clear_l2: true,
-    };
-    let deadline = Instant::now() + budget_for(candidates.len());
     let mut best = Candidate {
         tile: fallback,
-        evidence: Evidence {
+        cold: Evidence {
             base: 0.0,
             trial: 0.0,
             ab_base: 0.0,
             ab_trial: 0.0,
             ba_base: 0.0,
             ba_trial: 0.0,
+            ab_base_samples: Vec::new(),
+            ab_trial_samples: Vec::new(),
+            ba_base_samples: Vec::new(),
+            ba_trial_samples: Vec::new(),
+        },
+        warm: Evidence {
+            base: 0.0,
+            trial: 0.0,
+            ab_base: 0.0,
+            ab_trial: 0.0,
+            ba_base: 0.0,
+            ba_trial: 0.0,
+            ab_base_samples: Vec::new(),
+            ab_trial_samples: Vec::new(),
+            ba_base_samples: Vec::new(),
+            ba_trial_samples: Vec::new(),
         },
         speedup: 1.0,
         complete: false,
     };
     let mut inspected = 0;
+    let mut failed = false;
     for &tile in candidates {
-        if Instant::now() >= deadline {
-            break;
-        }
         inspected += 1;
-        match evaluate_tile(device, &baseline, gate, up, contract, &options, tile) {
-            Ok((evidence, speedup)) => {
-                if tile == fallback {
-                    best.evidence = evidence;
-                } else if speedup >= MIN_CONFIRM_SPEEDUP && speedup > best.speedup {
-                    best = Candidate {
-                        tile,
-                        evidence,
-                        speedup,
-                        complete: false,
-                    };
-                }
+        let mut cold = None;
+        let mut warm = None;
+        let mut speedup = f32::INFINITY;
+        let mut accepted = true;
+        for cache in [true, false] {
+            let options = BenchOptions {
+                warmup: Duration::from_millis(WARMUP_MS),
+                rep: Duration::from_millis(REP_MS),
+                min_reps: super::MIN_REPS,
+                max_reps: super::MAX_REPS,
+                clear_l2: cache,
+            };
+            let (evidence, _) =
+                match evaluate_tile(device, &baseline, gate, up, contract, &options, tile) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        tracing::warn!(target:"infer::tuning", rows, columns, hidden, ?tile, %error,
+                            "fused SwiGLU candidate rejected");
+                        accepted = false;
+                        failed = true;
+                        break;
+                    }
+                };
+            let ab = evidence.ab_base / evidence.ab_trial;
+            let ba = evidence.ba_base / evidence.ba_trial;
+            if ab < MIN_CONFIRM_SPEEDUP || ba < MIN_CONFIRM_SPEEDUP {
+                accepted = false;
+                break;
             }
-            Err(error) => {
-                tracing::warn!(target:"infer::tuning", rows, columns, hidden, ?tile, %error,
-                    "fused SwiGLU candidate rejected");
+            speedup = speedup.min(ab.min(ba));
+            if cache {
+                cold = Some(evidence);
+            } else {
+                warm = Some(evidence);
             }
+        }
+        if !accepted {
+            continue;
+        }
+        let (Some(cold), Some(warm)) = (cold, warm) else {
+            continue;
+        };
+        if tile == fallback {
+            best.cold = cold;
+            best.warm = warm;
+        } else if speedup > best.speedup {
+            best = Candidate {
+                tile,
+                cold,
+                warm,
+                speedup,
+                complete: false,
+            };
         }
     }
-    best.complete = inspected == candidates.len();
-    if best.evidence.base == 0.0 {
-        // Even a no-win shape must keep the measured baseline identity for audits.
-        let (base, cand) = bench_pair(device, &baseline.graph, &baseline.graph, &options)?;
-        best.evidence.base = base * MICROSECONDS_PER_MILLISECOND;
-        best.evidence.trial = cand * MICROSECONDS_PER_MILLISECOND;
+    best.complete = inspected == candidates.len() && !failed;
+    if best.cold.base == 0.0 || best.warm.base == 0.0 {
+        return Err(Error::invariant("fused SwiGLU baseline evidence missing"));
     }
     Ok(best)
 }
@@ -444,8 +583,10 @@ fn evaluate_tile(
             "fused SwiGLU candidate failed exact-output proof",
         ));
     }
-    let (base_ab, cand_ab) = bench_pair(device, &baseline.graph, &candidate.graph, options)?;
-    let (cand_ba, base_ba) = bench_pair(device, &candidate.graph, &baseline.graph, options)?;
+    let (base_ab, base_ab_samples, cand_ab, cand_ab_samples) =
+        bench_pair(device, &baseline.graph, &candidate.graph, options)?;
+    let (cand_ba, cand_ba_samples, base_ba, base_ba_samples) =
+        bench_pair(device, &candidate.graph, &baseline.graph, options)?;
     let base = f32::midpoint(base_ab, base_ba);
     let candidate = f32::midpoint(cand_ab, cand_ba);
     let evidence = Evidence {
@@ -455,6 +596,10 @@ fn evaluate_tile(
         ab_trial: cand_ab * MICROSECONDS_PER_MILLISECOND,
         ba_base: base_ba * MICROSECONDS_PER_MILLISECOND,
         ba_trial: cand_ba * MICROSECONDS_PER_MILLISECOND,
+        ab_base_samples: base_ab_samples,
+        ab_trial_samples: cand_ab_samples,
+        ba_base_samples: base_ba_samples,
+        ba_trial_samples: cand_ba_samples,
     };
     Ok((evidence, base / candidate))
 }
@@ -464,7 +609,7 @@ fn bench_pair(
     first: &CudaGraph<()>,
     second: &CudaGraph<()>,
     options: &BenchOptions,
-) -> Result<(f32, f32)> {
+) -> Result<(f32, Vec<f32>, f32, Vec<f32>)> {
     do_bench_paired(
         &device.stream,
         options,
@@ -481,7 +626,14 @@ fn bench_pair(
                 .map_err(|e| tensor_error(&e.to_string()))
         },
     )
-    .map(|(a, b)| (a.median_ms(), b.median_ms()))
+    .map(|(a, b)| {
+        (
+            a.median_ms(),
+            a.times_ms().to_vec(),
+            b.median_ms(),
+            b.times_ms().to_vec(),
+        )
+    })
     .map_err(|e| device_error(e.to_string()))
 }
 

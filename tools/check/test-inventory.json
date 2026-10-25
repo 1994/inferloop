@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 342
+      "tests": 343
     },
     "frontdoor": {
       "benches": 0,
@@ -794,6 +794,11 @@
     },
     {
       "crate": "cuda",
+      "file": "src/tuning.rs",
+      "mount": "../tests/unit/tuning_families.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/vision/mod.rs",
       "mount": "../../tests/unit/vision_attention_bench_check.rs"
     },
@@ -1254,11 +1259,11 @@
     }
   ],
   "totals": {
-    "all": 886,
+    "all": 887,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 886
+    "tests": 887
   }
 }
