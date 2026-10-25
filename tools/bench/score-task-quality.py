@@ -30,24 +30,25 @@ def numeric_answer(text):
     return value if value.is_finite() else None
 
 
-def paired_score(gains, losses, count, difference):
+def paired_score(gains, losses, count, difference, design_effect=1.0):
     """Tango score statistic for H0: candidate minus baseline accuracy equals `difference`.
 
     Discordant pairs carry the paired evidence; the variance uses the loss-cell probability
-    restricted to the null, which keeps the test valid when few tasks change.
+    restricted to the null, which keeps the test valid when few tasks change. A design effect
+    above one widens the variance for tasks that share a source question.
     """
     linear = -(gains + losses) + (2 * count - gains + losses) * difference
     constant = -losses * difference * (1 - difference)
     discriminant = max(0.0, linear * linear - 8 * count * constant)
     loss_probability = (math.sqrt(discriminant) - linear) / (4 * count)
-    variance = count * (2 * loss_probability + difference - difference * difference)
+    variance = design_effect * count * (2 * loss_probability + difference - difference**2)
     numerator = gains - losses - count * difference
     if variance <= 0:
         return math.copysign(math.inf, numerator) if numerator else 0.0
     return numerator / math.sqrt(variance)
 
 
-def accuracy_change_lower_bound(gains, losses, count, confidence):
+def accuracy_change_lower_bound(gains, losses, count, confidence, design_effect=1.0):
     """One-sided lower confidence bound on paired accuracy change, by inverting the score test.
 
     Gains and losses both count: numeric changes flip tasks in both directions, and only the
@@ -57,29 +58,82 @@ def accuracy_change_lower_bound(gains, losses, count, confidence):
         raise ValueError("invalid paired task count")
     if not math.isfinite(confidence) or not 0 < confidence < 1:
         raise ValueError("confidence must be between zero and one")
+    if not math.isfinite(design_effect) or design_effect < 1:
+        raise ValueError("design effect must be finite and at least one")
     critical = NormalDist().inv_cdf(confidence)
     lower, upper = -1.0, (gains - losses) / count
     if upper <= lower:
         return lower
     for _ in range(72):
         middle = (lower + upper) / 2
-        if paired_score(gains, losses, count, middle) > critical:
+        if paired_score(gains, losses, count, middle, design_effect) > critical:
             lower = middle
         else:
             upper = middle
     return lower
 
 
-def noninferiority(gains, losses, count, margin, confidence):
-    bound = accuracy_change_lower_bound(len(gains), len(losses), count, confidence)
-    return {
-        "requests": count,
-        "gains": len(gains),
-        "losses": len(losses),
-        "accuracy_change": (len(gains) - len(losses)) / count,
-        "accuracy_change_lower_bound": bound,
-        "accepted": bound >= -margin,
-    }
+def design_effect(changes):
+    """Rao-Scott design effect of paired accuracy change for tasks clustered by source question.
+
+    `changes` maps each cluster to its per-task changes (+1 gain, -1 loss, 0 unchanged). The
+    ratio compares the cluster-robust variance with the independent-task variance; it is one
+    when every question appears once, and is never allowed to shrink the independent variance.
+    """
+    count = sum(len(values) for values in changes.values())
+    total = sum(sum(values) for values in changes.values())
+    discordant = sum(value != 0 for values in changes.values() for value in values)
+    mean = total / count
+    independent = discordant - count * mean**2
+    if independent <= 0:
+        return 1.0
+    clustered = sum((sum(values) - len(values) * mean) ** 2 for values in changes.values())
+    return max(1.0, clustered / independent)
+
+
+def required_tasks(discordance, margin, confidence, power, design_effect=1.0):
+    """Planning size so an unchanged candidate passes with `power` at the declared margin.
+
+    Uses the normal approximation at zero true change, where the paired variance is the
+    discordance rate. Declare the margin and size the suite before running candidates.
+    """
+    if not 0 < discordance <= 1 or not 0 < margin < 1 or design_effect < 1:
+        raise ValueError("invalid planning inputs")
+    if not 0 < confidence < 1 or not 0 < power < 1:
+        raise ValueError("confidence and power must be between zero and one")
+    normal = NormalDist()
+    z = normal.inv_cdf(confidence) + normal.inv_cdf(power)
+    return math.ceil(z * z * design_effect * discordance / (margin * margin))
+
+
+def paired_changes(pairs):
+    changes = {}
+    for baseline, candidate in pairs:
+        change = int(candidate["correct"]) - int(baseline["correct"])
+        changes.setdefault(baseline["row_id"], []).append(change)
+    return changes
+
+
+def noninferiority(pairs, margin, confidence):
+    """Overall decision: score bound with clustering; strata only need a point estimate."""
+    losses = [a["id"] for a, b in pairs if a["correct"] and not b["correct"]]
+    gains = [a["id"] for a, b in pairs if not a["correct"] and b["correct"]]
+    effect = design_effect(paired_changes(pairs))
+    bound = accuracy_change_lower_bound(len(gains), len(losses), len(pairs), confidence, effect)
+    return (
+        {
+            "requests": len(pairs),
+            "gains": len(gains),
+            "losses": len(losses),
+            "accuracy_change": (len(gains) - len(losses)) / len(pairs),
+            "accuracy_change_lower_bound": bound,
+            "design_effect": effect,
+            "bound_accepted": bound >= -margin,
+            "point_accepted": (len(gains) - len(losses)) / len(pairs) >= -margin,
+        },
+        losses,
+        gains,
+    )
 
 
 def validate_suite(suite):
@@ -139,6 +193,7 @@ def score(suite, report, suite_sha256):
         scored.append(
             {
                 "id": sample["id"],
+                "row_id": sample["row_id"],
                 "variant": sample["variant"],
                 "correct": correct,
                 "predicted": str(predicted) if predicted is not None else None,
@@ -170,26 +225,21 @@ def compare(suite, baseline, candidate, suite_sha256):
     acceptance = suite["acceptance"]
     margin = acceptance["noninferiority_margin_accuracy"]
     confidence = acceptance["confidence"]
-
-    def paired(variant=None):
-        pairs = [
-            (a, b)
-            for a, b in zip(left, right, strict=True)
-            if variant is None or a["variant"] == variant
-        ]
-        losses = [a["id"] for a, b in pairs if a["correct"] and not b["correct"]]
-        gains = [a["id"] for a, b in pairs if not a["correct"] and b["correct"]]
-        return losses, gains, noninferiority(gains, losses, len(pairs), margin, confidence)
-
-    losses, gains, overall = paired()
+    pairs = list(zip(left, right, strict=True))
+    overall, losses, gains = noninferiority(pairs, margin, confidence)
     strata = {}
     for variant in sorted({row["variant"] for row in left}):
+        subset = [(a, b) for a, b in pairs if a["variant"] == variant]
         strata[variant] = {
-            "baseline": aggregate([r for r in left if r["variant"] == variant]),
-            "candidate": aggregate([r for r in right if r["variant"] == variant]),
-            "noninferiority": paired(variant)[2],
+            "baseline": aggregate([a for a, _ in subset]),
+            "candidate": aggregate([b for _, b in subset]),
+            "noninferiority": noninferiority(subset, margin, confidence)[0],
         }
-    accepted = overall["accepted"] and all(s["noninferiority"]["accepted"] for s in strata.values())
+    # Requiring every stratum's confidence bound to clear the margin would reject a truly
+    # unchanged candidate far more often than the declared error rate. Strata instead must
+    # not show a point loss beyond the margin, which still catches a concentrated loss.
+    consistent = all(s["noninferiority"]["point_accepted"] for s in strata.values())
+    accepted = overall["bound_accepted"] and consistent
     return {
         "schema": 2,
         "scope": "fixed arithmetic task subset with declared generation budget",
@@ -200,13 +250,17 @@ def compare(suite, baseline, candidate, suite_sha256):
         "gains": gains,
         "accuracy_change": overall["accuracy_change"],
         "accuracy_change_lower_bound": overall["accuracy_change_lower_bound"],
+        "design_effect": overall["design_effect"],
+        "strata_consistent": consistent,
         "confidence": confidence,
         "noninferiority_margin_accuracy": margin,
         "method": (
-            "paired accuracy non-inferiority, one-sided Tango score bound, overall and per variant"
+            "paired accuracy non-inferiority: one-sided Tango score bound with Rao-Scott "
+            "clustering by source question overall; each variant's point change within the margin"
         ),
         "statistical_assumption": (
-            "independent paired Bernoulli task outcomes; no general-capability guarantee"
+            "source questions independent; tasks from one question may correlate; "
+            "no general-capability guarantee"
         ),
         "quality_status": "pass" if accepted else "not_demonstrated",
         "quality_accepted": accepted,

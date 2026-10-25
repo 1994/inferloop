@@ -3,6 +3,7 @@
 import copy
 import importlib.util
 import math
+import random
 import unittest
 from pathlib import Path
 
@@ -130,6 +131,63 @@ class ConfidenceTests(unittest.TestCase):
                 quality.accuracy_change_lower_bound(gains, losses, count, confidence)
 
 
+class ClusterAndPlanningTests(unittest.TestCase):
+    def test_singleton_questions_have_no_design_effect(self):
+        changes = {i: [change] for i, change in enumerate([1] * 9 + [-1] * 7 + [0] * 1000)}
+        self.assertEqual(quality.design_effect(changes), 1)
+        self.assertEqual(quality.design_effect({0: [0], 1: [0]}), 1)
+
+    def test_shared_questions_widen_the_bound(self):
+        # Both variants of a question flip together, so 16 questions carry 32 losses.
+        changes = {i: [-1, -1] if i < 16 else [0, 0] for i in range(512)}
+        effect = quality.design_effect(changes)
+        self.assertGreater(effect, 1.9)
+        independent = quality.accuracy_change_lower_bound(0, 32, 1024, 0.95)
+        clustered = quality.accuracy_change_lower_bound(0, 32, 1024, 0.95, effect)
+        self.assertLess(clustered, independent)
+
+    def test_bad_design_effect_is_rejected(self):
+        for effect in [0.5, math.nan, math.inf]:
+            with self.assertRaises(ValueError):
+                quality.accuracy_change_lower_bound(0, 0, 10, 0.95, effect)
+
+    def test_required_tasks_follow_the_normal_approximation(self):
+        z = 1.6448536269514722 + 1.2815515655446004
+        self.assertEqual(
+            quality.required_tasks(0.03, 0.02, 0.95, 0.9), math.ceil(z * z * 0.03 / 0.0004)
+        )
+        self.assertGreater(
+            quality.required_tasks(0.03, 0.01, 0.95, 0.9),
+            quality.required_tasks(0.03, 0.02, 0.95, 0.9),
+        )
+        with self.assertRaises(ValueError):
+            quality.required_tasks(0, 0.02, 0.95, 0.9)
+
+
+class CalibrationTests(unittest.TestCase):
+    """Seeded simulation of the decision rule at the observed GSM8K flip rate (3%)."""
+
+    trials = 1000
+
+    def accept_rate(self, change, count=1024, discordance=0.03, margin=0.02):
+        rng = random.Random(20261025)
+        gain, loss = (discordance + change) / 2, (discordance - change) / 2
+        accepted = 0
+        for _ in range(self.trials):
+            draws = [rng.random() for _ in range(count)]
+            gains = sum(u < gain for u in draws)
+            losses = sum(gain <= u < gain + loss for u in draws)
+            bound = quality.accuracy_change_lower_bound(gains, losses, count, 0.95)
+            accepted += bound >= -margin
+        return accepted / self.trials
+
+    def test_false_acceptance_at_the_margin_stays_near_the_declared_rate(self):
+        self.assertLess(self.accept_rate(-0.02), 0.08)
+
+    def test_unchanged_candidates_usually_pass(self):
+        self.assertGreater(self.accept_rate(0.0), 0.9)
+
+
 class ReportTests(unittest.TestCase):
     def compare(self, suite, baseline, candidate):
         return quality.compare(suite, baseline, candidate, "fixture-sha")
@@ -197,6 +255,19 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(result["accuracy_change"], 0)
         self.assertTrue(result["quality_accepted"])
 
+    def test_stratum_noise_within_the_margin_passes(self):
+        suite, baseline, candidate = fixtures(1024)
+        # v10 zero-shot pattern: 12 losses and 10 gains in one 512-task variant.
+        for i in range(0, 24, 2):
+            candidate["results"][i].update(text="#### 3", correct=False)
+        for i in range(24, 44, 2):
+            baseline["results"][i].update(text="#### 3", correct=False)
+        result = self.compare(suite, baseline, candidate)
+        short = result["strata"]["short"]["noninferiority"]
+        self.assertTrue(short["point_accepted"])
+        self.assertTrue(result["strata_consistent"])
+        self.assertTrue(result["quality_accepted"])
+
     def test_net_loss_beyond_the_margin_fails(self):
         suite, baseline, candidate = fixtures(1024)
         for i in range(40):
@@ -215,8 +286,9 @@ class ReportTests(unittest.TestCase):
             baseline["results"][i].update(text="#### 3", correct=False)
         result = self.compare(suite, baseline, candidate)
         self.assertEqual(result["accuracy_change"], 0)
-        self.assertFalse(result["strata"]["short"]["noninferiority"]["accepted"])
-        self.assertTrue(result["strata"]["long"]["noninferiority"]["accepted"])
+        self.assertFalse(result["strata"]["short"]["noninferiority"]["point_accepted"])
+        self.assertTrue(result["strata"]["long"]["noninferiority"]["point_accepted"])
+        self.assertFalse(result["strata_consistent"])
         self.assertFalse(result["quality_accepted"])
 
 

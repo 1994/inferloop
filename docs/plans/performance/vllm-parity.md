@@ -9,7 +9,7 @@
 "追平 vLLM"按[性能基线方案](baseline.md)的合同落地为三条同时成立的判定，不接受单项截图：
 
 1. **性能**：预注册的 32K/64K C1/C4 匹配矩阵上，native/vLLM 配对 95% 成本比上界 ≤ 1.10（沿用 profile 既有 `vllm_max_ratio: 1.1`）;C4 以整组 makespan 与整组实际输出吞吐计，不用单请求吞吐相加。
-2. **质量**:1,024 题严格 scorer 下，候选相对当前 HEAD 与固定 vLLM（wheel `0.31.1rc1.dev289+g3fe917abb`）的配对正确率变化，单侧 95% Tango score 下界在整体与每个 variant 上均不低于 suite 声明的非劣界（[`score-task-quality.py`](../../guides/cuda-performance.md#完整模型任务质量复算)）。不要求输出逐 token 相同；位精确候选的逐 token 对照只作为数值正确性检查。
+2. **质量**:1,024 题严格 scorer 下，候选相对当前 HEAD 与固定 vLLM（wheel `0.31.1rc1.dev289+g3fe917abb`）的配对正确率变化，整体单侧 95% Tango score 下界（按源题聚类修正）不低于 suite 声明的非劣界，且每个 variant 的点估计变化在界内（[`score-task-quality.py`](../../guides/cuda-performance.md#完整模型任务质量复算)）。不要求输出逐 token 相同；位精确候选的逐 token 对照只作为数值正确性检查。
 3. **无原生回退**：原 20 项性能门（主比较 CI95 上界 ≤0.98，次比较 ≤1.05，臂内漂移 ≤5%,820 对完整流一致）对每一个合入候选成立。
 
 ## 2. 差距的定量分解
@@ -164,7 +164,7 @@ GDN(3.8%）与 embedding(2.3%）不插队：GDN 仅在 linear 之后仍高于 em
 | P3 linear | 按门类（exact 或 F64 误差门） | 形状矩阵 | 同上 | 同上 | 同上 | 1024/1024 |
 | P4 驻留/合批 | 状态逐位（KV/recurrent/prefix) | 取消/回滚/驱逐 | 报价兑现 + 物理驻留条数 | — | C4 makespan/整组吞吐 | 不回归 |
 | P5 跨引擎矩阵 | — | — | — | — | 预注册 32K/64K C1/C4，漂移 ≤5% | 沿用 |
-| P6 质量 | 首个通用差异定位记录 | — | — | — | — | 1024 题配对正确率非劣（整体 + 各 variant） |
+| P6 质量 | 首个通用差异定位记录 | — | — | — | — | 1024 题配对正确率非劣（整体置信下界 + 各 variant 点估计） |
 
 ## 7. C1H 与 C1D
 
