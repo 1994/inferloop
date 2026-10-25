@@ -1,6 +1,6 @@
 //! Named CLI defaults, byte-size units and device limits shared across subcommands.
 
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 use std::time::Duration;
 /// One mebibyte in bytes, for budgets held as `usize`.
 pub const MIB: usize = 1024 * 1024;
@@ -33,20 +33,20 @@ pub const DEFAULT_TPOT_SLO_US: u64 = 100_000;
 /// Default tolerated p99 latency regression fraction for `compare`.
 pub const DEFAULT_MAX_P99_REGRESSION: f64 = 0.05;
 /// Engine ticks a CLI owner loop waits for its submitted workload to go idle.
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 pub const MAX_IDLE_TICKS: u64 = 1_000_000;
 /// Default context length in tokens for the model memory estimate.
 pub const DEFAULT_CONTEXT_TOKENS: usize = 4096;
 /// Default device memory in GiB for the model memory estimate.
 pub const DEFAULT_DEVICE_MEMORY_GIB: u64 = 32;
 /// Default KV page size in tokens when a caller does not override it.
-#[cfg(target_os = "macos")]
+#[cfg(metal_backend)]
 pub const DEFAULT_KV_PAGE_TOKENS: usize = 16;
 /// Default maximum token rows in one native device prefill chunk.
-#[cfg(target_os = "macos")]
+#[cfg(metal_backend)]
 pub const DEFAULT_PREFILL_CHUNK_TOKENS: usize = 32;
 /// Pause between polls while a device step is still in flight.
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 pub const DEVICE_POLL_INTERVAL: Duration = Duration::from_micros(100);
 
 /// Default port for the local inference HTTP server.

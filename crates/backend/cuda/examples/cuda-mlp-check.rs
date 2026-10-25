@@ -1,7 +1,7 @@
 //! Small numerical test only: no model load and no throughput measurement.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::env::args;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn main() -> infer_core::Result<()> {
     use cuda_core::{f4e2m1fnx2, f8e4m3fn};
     use cutile::half::bf16;
@@ -77,8 +77,10 @@ fn main() -> infer_core::Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(cuda_backend))]
 fn main() {
+    use std::process::exit;
+
     eprintln!("CUDA correctness checks require Linux");
-    std::process::exit(1);
+    exit(1);
 }

@@ -1,11 +1,11 @@
 //! Capability/accuracy probe, deliberately not a performance benchmark.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use cutile::jit_cache::enable_default;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use infer_backend_cuda::device::CudaDevice;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::error::Error;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 #[cutile::module]
 mod probe {
     use cutile::core::{
@@ -37,7 +37,7 @@ mod probe {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn main() -> Result<(), Box<dyn Error>> {
     use cutile::prelude::*;
     enable_default()?;
@@ -106,7 +106,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn operand(
     rows: usize,
     k: usize,
@@ -140,8 +140,10 @@ fn operand(
     (packed, values, scales)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(cuda_backend))]
 fn main() {
+    use std::process::exit;
+
     eprintln!("CUDA capability probe requires Linux");
-    std::process::exit(1);
+    exit(1);
 }

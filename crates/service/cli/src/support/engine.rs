@@ -1,16 +1,12 @@
 //! Engine CLI support.
 use super::read_json;
 use crate::backend;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 use crate::backend::SelectedBackend;
 use infer_core::{Error, Result};
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 use infer_ir::PrecisionPlan;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 use infer_runtime::{Engine, RuntimeConfig};
 use std::path::Path;
 
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 pub fn selected_engine(
     config: RuntimeConfig,
     model: Option<&Path>,
@@ -78,7 +74,6 @@ pub fn configured_engine(
         Err(Error::invalid("a device backend requires --package"))
     }
 }
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 pub fn config(path: Option<&Path>) -> Result<RuntimeConfig> {
     path.map(read_json)
         .transpose()

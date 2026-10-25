@@ -4,23 +4,23 @@
 //! the bound vision tower, the encodings are placed at the media tokens, and the resident program
 //! decodes greedily. Two different images are generated from to show the media actually reaches the
 //! language model rather than being silently dropped.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use cutile::jit_cache::enable_default;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use infer_backend_cuda::loading::LoadedModel as LoadingLoadedModel;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use infer_backend_cuda::resident::DeviceProgram;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::env::args as env_args;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::error::Error as StdError;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::fs::read;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::ops::Range;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::path::Path;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn main() -> Result<(), Box<dyn StdError>> {
     use infer_backend_cuda::{
         device::CudaDevice,
@@ -110,18 +110,18 @@ fn main() -> Result<(), Box<dyn StdError>> {
 }
 
 /// Smallest logit shift that counts as the media reaching the model.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 const MINIMUM_SHIFT: f32 = 1e-3;
 
 /// One image's prompt, encodings, final prompt logits and generated continuation.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 struct Case {
     summary: serde_json::Value,
     logits: Vec<f32>,
 }
 
 /// Assemble the prompt for one image, encode it and generate a continuation.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 #[expect(
     clippy::too_many_arguments,
     reason = "The example threads the loaded model, its assets and the generation settings through"
@@ -183,7 +183,7 @@ fn run_case(
 }
 
 /// Deterministic RGB8 test images: a smooth gradient plus a second, differently ordered gradient.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn synthetic_image(kind: u8) -> infer_models::RawImage {
     /// Height of the synthetic test image, above the processor's 32-pixel floor.
     const HEIGHT: usize = 60;
@@ -212,8 +212,10 @@ fn synthetic_image(kind: u8) -> infer_models::RawImage {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(cuda_backend))]
 fn main() {
+    use std::process::exit;
+
     eprintln!("CUDA multimodal generation requires Linux");
-    std::process::exit(1);
+    exit(1);
 }

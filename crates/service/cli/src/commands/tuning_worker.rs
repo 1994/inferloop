@@ -1,10 +1,10 @@
 //! Keep preparation-only CUDA modules out of the serving process's memory budget.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(cuda_backend)]
 use crate::backend::{self, BackendChoice, Selection};
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(cuda_backend)]
 use infer_backend_cuda::tuning::table_path;
 use infer_core::{Error, ErrorCode, Result};
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(cuda_backend)]
 use std::env::{args_os, current_exe, var_os};
 use std::ffi::OsStr;
 use std::fs::{OpenOptions, create_dir_all, remove_file};
@@ -20,7 +20,7 @@ const WORKER_VALUE: &str = "prepare";
 const PREPARATION_TIMEOUT: Duration = Duration::from_secs(600);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(cuda_backend)]
 pub(super) fn prepare(mut selection: Selection) -> Result<(Selection, bool)> {
     let mode = var_os(WORKER_ENV);
     let worker = worker_mode(mode.as_deref())?;

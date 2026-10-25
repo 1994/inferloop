@@ -1,13 +1,13 @@
-#[cfg(target_os = "macos")]
+#[cfg(metal_backend)]
 use super::metal;
 use super::{BackendChoice, Selection, cuda, cuda_available, metal_available, resolve};
 use crate::constants::MIB_U64;
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(cuda_backend)]
 use infer_backend_cuda::{
     executor::{CudaBackend, CudaTicket},
     registry::CudaKernels,
 };
-#[cfg(target_os = "macos")]
+#[cfg(metal_backend)]
 use infer_backend_metal::{MetalBackend, MetalKernels, MetalTicket};
 use infer_core::{Error, Result, StateId};
 use infer_ir::{
@@ -20,63 +20,63 @@ use std::path::Path;
 use std::sync::Arc;
 
 pub enum SelectedBackend {
-    #[cfg(all(target_os = "linux", feature = "cuda"))]
+    #[cfg(cuda_backend)]
     Cuda(Box<CudaBackend>),
-    #[cfg(target_os = "macos")]
+    #[cfg(metal_backend)]
     Metal(Box<MetalBackend>),
 }
 pub enum SelectedTicket {
-    #[cfg(all(target_os = "linux", feature = "cuda"))]
+    #[cfg(cuda_backend)]
     Cuda(CudaTicket),
-    #[cfg(target_os = "macos")]
+    #[cfg(metal_backend)]
     Metal(MetalTicket),
 }
 macro_rules! forward {
     ($s:expr,$method:ident $(,$arg:expr)*) => {match $s {
-        #[cfg(all(target_os = "linux", feature = "cuda"))]
+        #[cfg(cuda_backend)]
         Self::Cuda(b)=>b.$method($($arg),*),
-        #[cfg(target_os="macos")]
+        #[cfg(metal_backend)]
         Self::Metal(b)=>b.$method($($arg),*),
     }};
 }
 impl SelectedBackend {
     pub fn model_ir(&self) -> &ModelIr {
         match self {
-            #[cfg(target_os = "macos")]
+            #[cfg(metal_backend)]
             Self::Metal(b) => b.model(),
-            #[cfg(all(target_os = "linux", feature = "cuda"))]
+            #[cfg(cuda_backend)]
             Self::Cuda(b) => b.model(),
         }
     }
     pub fn registry(&self) -> Result<KernelRegistry> {
         let mut registry = KernelRegistry::default();
         match self {
-            #[cfg(target_os = "macos")]
+            #[cfg(metal_backend)]
             Self::Metal(_) => registry.register(&MetalKernels)?,
-            #[cfg(all(target_os = "linux", feature = "cuda"))]
+            #[cfg(cuda_backend)]
             Self::Cuda(_) => registry.register(&CudaKernels)?,
         }
         Ok(registry)
     }
     pub fn fresh(&self) -> Result<Self> {
         match self {
-            #[cfg(target_os = "macos")]
+            #[cfg(metal_backend)]
             Self::Metal(b) => Ok(Self::Metal(Box::new(b.fresh()?))),
-            #[cfg(all(target_os = "linux", feature = "cuda"))]
+            #[cfg(cuda_backend)]
             Self::Cuda(_) => Err(Error::unsupported(
                 "CUDA diagnostic fork requires independent state admission; not yet installed",
             )),
         }
     }
     #[cfg_attr(
-        all(target_os = "macos"),
+        metal_backend,
         expect(
             clippy::unnecessary_wraps,
             reason = "The shared interface supports the test reference executor, which has no per-operation execution statistics"
         )
     )]
     #[cfg_attr(
-        all(target_os = "linux", feature = "cuda"),
+        cuda_backend,
         expect(
             clippy::missing_const_for_fn,
             reason = "The shared backend interface invokes non-const mutable Metal/host diagnostics in other builds"
@@ -84,26 +84,26 @@ impl SelectedBackend {
     )]
     pub fn execution_stats(&self) -> Option<ExecutionStats> {
         match self {
-            #[cfg(target_os = "macos")]
+            #[cfg(metal_backend)]
             Self::Metal(b) => Some(b.inspect()),
-            #[cfg(all(target_os = "linux", feature = "cuda"))]
+            #[cfg(cuda_backend)]
             Self::Cuda(_) => None,
         }
     }
     pub fn inspection(&self) -> serde_json::Value {
         match self {
-            #[cfg(target_os = "macos")]
+            #[cfg(metal_backend)]
             Self::Metal(b) => {
                 serde_json::json!({"kind":"metal-dataflow","device":b.device_name(),"state":b.inspect(),"capabilities":b.capabilities(),"weight_load":b.load_plan()})
             }
-            #[cfg(all(target_os = "linux", feature = "cuda"))]
+            #[cfg(cuda_backend)]
             Self::Cuda(b) => {
                 serde_json::json!({"kind":"cuda-resident", "execution":"synchronous", "capabilities":b.capabilities(), "state_pool":b.pool_inspection(), "profile":b.execution_profile()})
             }
         }
     }
     #[cfg_attr(
-        all(target_os = "linux", feature = "cuda"),
+        cuda_backend,
         expect(
             clippy::missing_const_for_fn,
             reason = "The shared backend interface invokes non-const mutable Metal/host diagnostics in other builds"
@@ -111,14 +111,14 @@ impl SelectedBackend {
     )]
     pub fn trace(&self) -> serde_json::Value {
         match self {
-            #[cfg(target_os = "macos")]
+            #[cfg(metal_backend)]
             Self::Metal(b) => serde_json::json!(b.traces()),
-            #[cfg(all(target_os = "linux", feature = "cuda"))]
+            #[cfg(cuda_backend)]
             Self::Cuda(_) => serde_json::json!([]),
         }
     }
     #[cfg_attr(
-        all(target_os = "linux", feature = "cuda"),
+        cuda_backend,
         expect(
             clippy::missing_const_for_fn,
             clippy::needless_pass_by_ref_mut,
@@ -127,14 +127,14 @@ impl SelectedBackend {
     )]
     pub fn drain_layer_probes(&mut self) -> Vec<LayerProbe> {
         match self {
-            #[cfg(target_os = "macos")]
+            #[cfg(metal_backend)]
             Self::Metal(b) => b.drain_layer_probes(),
-            #[cfg(all(target_os = "linux", feature = "cuda"))]
+            #[cfg(cuda_backend)]
             Self::Cuda(_) => vec![],
         }
     }
     #[cfg_attr(
-        all(target_os = "linux", feature = "cuda"),
+        cuda_backend,
         expect(
             clippy::needless_pass_by_ref_mut,
             reason = "The shared backend interface invokes non-const mutable Metal/host diagnostics in other builds"
@@ -142,9 +142,9 @@ impl SelectedBackend {
     )]
     pub fn enable_layer_probes(&mut self, bytes: u64) -> Result<()> {
         match self {
-            #[cfg(target_os = "macos")]
+            #[cfg(metal_backend)]
             Self::Metal(b) => b.enable_layer_probes(bytes),
-            #[cfg(all(target_os = "linux", feature = "cuda"))]
+            #[cfg(cuda_backend)]
             Self::Cuda(_) => {
                 if bytes == 0 {
                     Ok(())
@@ -156,9 +156,9 @@ impl SelectedBackend {
     }
     pub fn profile(&self) -> serde_json::Value {
         match self {
-            #[cfg(target_os = "macos")]
+            #[cfg(metal_backend)]
             Self::Metal(b) => b.profile(),
-            #[cfg(all(target_os = "linux", feature = "cuda"))]
+            #[cfg(cuda_backend)]
             Self::Cuda(_) => {
                 serde_json::json!({"scope":"CUDA per-operation profiling unavailable", "traceEvents":[]})
             }
@@ -177,25 +177,25 @@ impl infer_agent::AgentBackend for SelectedBackend {
     }
     fn traces(&self) -> Vec<OpTrace> {
         match self {
-            #[cfg(target_os = "macos")]
+            #[cfg(metal_backend)]
             Self::Metal(b) => b.traces().iter().cloned().collect(),
-            #[cfg(all(target_os = "linux", feature = "cuda"))]
+            #[cfg(cuda_backend)]
             Self::Cuda(_) => vec![],
         }
     }
     fn probes(&self) -> Vec<LayerProbe> {
         match self {
-            #[cfg(target_os = "macos")]
+            #[cfg(metal_backend)]
             Self::Metal(b) => b.layer_probes().iter().cloned().collect(),
-            #[cfg(all(target_os = "linux", feature = "cuda"))]
+            #[cfg(cuda_backend)]
             Self::Cuda(_) => vec![],
         }
     }
     fn trace_timing_scope(&self) -> &'static str {
         match self {
-            #[cfg(target_os = "macos")]
+            #[cfg(metal_backend)]
             Self::Metal(_) => "cpu_encoding",
-            #[cfg(all(target_os = "linux", feature = "cuda"))]
+            #[cfg(cuda_backend)]
             Self::Cuda(_) => "unavailable",
         }
     }
@@ -238,9 +238,9 @@ impl BackendProvider for SelectedBackend {
     }
     fn execution_profile(&self) -> Option<infer_ir::ExecutionProfileInspection> {
         match self {
-            #[cfg(all(target_os = "linux", feature = "cuda"))]
+            #[cfg(cuda_backend)]
             Self::Cuda(b) => Some(b.execution_profile()),
-            #[cfg(target_os = "macos")]
+            #[cfg(metal_backend)]
             Self::Metal(_) => None,
         }
     }
@@ -336,9 +336,9 @@ impl BackendProvider for SelectedBackend {
     }
     fn completion_timing(&self, t: &SelectedTicket) -> Option<ExecutionTiming> {
         match (self, t) {
-            #[cfg(target_os = "macos")]
+            #[cfg(metal_backend)]
             (Self::Metal(b), SelectedTicket::Metal(t)) => b.completion_timing(t),
-            #[cfg(all(target_os = "linux", feature = "cuda"))]
+            #[cfg(cuda_backend)]
             (Self::Cuda(b), SelectedTicket::Cuda(t)) => b.completion_timing(t),
         }
     }
@@ -384,9 +384,9 @@ impl BackendProvider for SelectedBackend {
         t: Vec<ExecutionTask>,
     ) -> Result<SelectedTicket> {
         match self {
-            #[cfg(target_os = "macos")]
+            #[cfg(metal_backend)]
             Self::Metal(b) => Ok(SelectedTicket::Metal(b.submit(p, s, t)?)),
-            #[cfg(all(target_os = "linux", feature = "cuda"))]
+            #[cfg(cuda_backend)]
             Self::Cuda(b) => Ok(SelectedTicket::Cuda(b.submit(p, s, t)?)),
         }
     }
@@ -397,17 +397,17 @@ impl BackendProvider for SelectedBackend {
         t: &[ExecutionTask],
     ) -> Result<SelectedTicket> {
         match self {
-            #[cfg(target_os = "macos")]
+            #[cfg(metal_backend)]
             Self::Metal(b) => Ok(SelectedTicket::Metal(b.submit_borrowed(p, s, t)?)),
-            #[cfg(all(target_os = "linux", feature = "cuda"))]
+            #[cfg(cuda_backend)]
             Self::Cuda(b) => Ok(SelectedTicket::Cuda(b.submit_borrowed(p, s, t)?)),
         }
     }
     fn poll(&mut self, t: &mut SelectedTicket) -> Result<Option<Vec<TaskOutput>>> {
         match (self, t) {
-            #[cfg(target_os = "macos")]
+            #[cfg(metal_backend)]
             (Self::Metal(b), SelectedTicket::Metal(t)) => b.poll(t),
-            #[cfg(all(target_os = "linux", feature = "cuda"))]
+            #[cfg(cuda_backend)]
             (Self::Cuda(b), SelectedTicket::Cuda(t)) => b.poll(t),
         }
     }
@@ -424,7 +424,7 @@ pub fn load(path: &Path, memory_mib: u64, selection: &Selection) -> Result<Selec
     };
     match choice {
         BackendChoice::Cuda => cuda::load(path, memory_bytes, selection),
-        #[cfg(target_os = "macos")]
+        #[cfg(metal_backend)]
         BackendChoice::Metal => metal::load(path, memory_bytes, selection),
         _ => Err(Error::unsupported(
             "Metal backend requires macOS and a supported Metal device",
@@ -432,6 +432,6 @@ pub fn load(path: &Path, memory_mib: u64, selection: &Selection) -> Result<Selec
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, metal_backend))]
 #[path = "../../tests/unit/backend_selected.rs"]
 mod readout_tests;
