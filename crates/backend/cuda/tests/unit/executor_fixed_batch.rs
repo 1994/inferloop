@@ -90,6 +90,9 @@ fn fixed_groups_measure_host_polling_and_device_graphs() -> TestResult {
                 let mut tasks = tasks(&backend, active, round)?;
                 for task in &mut tasks {
                     task.plain_greedy = true;
+                    if let ExecutionInput::Prefill { readout, .. } = &mut task.tokens {
+                        *readout = OutputReadout::Logits;
+                    }
                 }
                 let mut record = measured_step(&mut backend, &program, &tasks)?;
                 let key = (mixed, round);
