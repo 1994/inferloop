@@ -4,7 +4,9 @@
 //! not a multiple of 64 must be padded to the next 64 boundary before any tile kernel can read
 //! it. This test records the exact retained weight bytes for the 27B vision geometry so a future
 //! compact-layout change has a concrete baseline; it does not claim a GPU result.
+use crate::attention::kernels::sdpa;
 use infer_spi::{HiddenActivation, ModalityEncoder};
+use std::error::Error;
 
 fn encoder() -> ModalityEncoder {
     ModalityEncoder {
@@ -74,4 +76,106 @@ fn compact_half_layout_preserves_split_half_order_and_padding() {
             _ => unreachable!(),
         }
     }
+}
+
+#[test]
+fn compact_projection_rope_attention_and_merge_compile_without_a_device()
+-> Result<(), Box<dyn Error>> {
+    use cutile::cutile_compiler::compile_api::KernelCompiler;
+
+    // Real compact geometry: 16 heads, real head 72, half 48, width 96, projection 1536.
+    let (heads, half, width) = (16usize, 48i32, 96i32);
+    assert_eq!(half * 2, width);
+    let projection = heads * usize::try_from(width)?;
+    assert_eq!(projection, 1536);
+    eprintln!(
+        "cuTile compact compile: head=72 heads={heads} half={half} width={width} projection={projection}"
+    );
+    for k in [1152i32, 1536, 4608] {
+        KernelCompiler::new(
+            super::kernels::encoder::__module_ast_self,
+            "encoder",
+            "dense_bias",
+        )
+        .target("sm_120")
+        .generics(vec![k.to_string()])
+        .strides(&[
+            ("out", &[64, 1]),
+            ("input", &[k, 1]),
+            ("weight", &[k, 1]),
+            ("bias", &[1]),
+        ])
+        .compile()?;
+    }
+    for hd in [half, 32] {
+        KernelCompiler::new(
+            super::kernels::encoder::__module_ast_self,
+            "encoder",
+            "rope",
+        )
+        .target("sm_120")
+        .generics(vec![hd.to_string()])
+        .strides(&[
+            ("out", &[hd, 1]),
+            ("input", &[2 * hd, 1]),
+            ("cos", &[hd, 1]),
+            ("sin", &[hd, 1]),
+        ])
+        .compile()?;
+    }
+    // Exact vision launch shape, plus smaller tail tiles and the masked video path.
+    for (width, q, k, pipe, mask) in [
+        (96, 32, 32, 0, 3),
+        (96, 16, 16, 0, 3),
+        (96, 32, 16, 1, 3),
+        (96, 16, 32, 1, 1),
+        (64, 32, 32, 0, 3),
+        (64, 16, 16, 0, 0),
+    ] {
+        KernelCompiler::new(sdpa::__module_ast_self, "sdpa", "attention")
+            .target("sm_120")
+            .generics(
+                [width, 1, q, k, pipe, 1, width, mask]
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            )
+            .strides(&[
+                ("out", &[width, 1]),
+                ("query", &[width, 1]),
+                ("key", &[width, 1]),
+                ("value", &[width, 1]),
+            ])
+            .compile()?;
+    }
+    // Merge/block elementwise pieces used by the compact pipeline.
+    for n in [1152i32, 4608] {
+        for entry in ["gelu_tanh", "gelu_erf"] {
+            KernelCompiler::new(super::kernels::encoder::__module_ast_self, "encoder", entry)
+                .target("sm_120")
+                .generics(vec![n.to_string()])
+                .strides(&[("out", &[64, 1]), ("x", &[n, 1])])
+                .compile()?;
+        }
+        KernelCompiler::new(super::kernels::encoder::__module_ast_self, "encoder", "add")
+            .target("sm_120")
+            .generics(vec![n.to_string()])
+            .strides(&[("out", &[64, 1]), ("left", &[n, 1]), ("right", &[n, 1])])
+            .compile()?;
+    }
+    KernelCompiler::new(
+        super::kernels::encoder::__module_ast_self,
+        "encoder",
+        "layernorm",
+    )
+    .target("sm_120")
+    .generics(vec![1152.to_string(), 2048.to_string()])
+    .strides(&[
+        ("out", &[1]),
+        ("x", &[2048, 1]),
+        ("weight", &[1]),
+        ("bias", &[1]),
+    ])
+    .compile()?;
+    Ok(())
 }
