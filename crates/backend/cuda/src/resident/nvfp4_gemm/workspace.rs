@@ -28,6 +28,9 @@ use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use crate::tuning::resident_gemm::WeightKey as ResidentGemmWeightKey;
 use crate::tuning::resident_gemm::select as resident_gemm_select;
 use crate::tuning::swiglu::{Contract as SwigluContract, select as select_swiglu_tuned};
+
+/// Two cache states times the baseline/candidate arms.
+const SWIGLU_TRIAL_FACTOR: usize = 4;
 use crate::{
     device::{CudaDevice, device_error, vendor_fp8},
     mlp::ProjectionWeight,
@@ -689,10 +692,11 @@ impl Workspace {
                     continue;
                 }
                 let shape = [rows, columns, hidden];
-                let trials = swiglu_candidates(rows, columns, hidden).len().max(1) * 2;
+                let trials =
+                    swiglu_candidates(rows, columns, hidden).len().max(1) * SWIGLU_TRIAL_FACTOR;
                 let search = weights.autotune
                     && weights.resident_tuning.permits_gemm_search(
-                        SearchFamily::Nvfp4,
+                        SearchFamily::FusedSwiGLU,
                         shape,
                         trials,
                     )?;
@@ -708,11 +712,6 @@ impl Workspace {
                     search,
                     &weights.resident_tuning,
                 )?;
-                if search {
-                    weights
-                        .resident_tuning
-                        .complete_gemm_search(SearchFamily::Nvfp4, shape)?;
-                }
                 self.swiglu_tiles
                     .insert((gate, up, rows, columns, hidden), tile);
             }

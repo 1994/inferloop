@@ -46,14 +46,14 @@ fn entry() -> Entry {
         cold_blocked_us: 12.0,
         warm_gemv_us: 8.0,
         warm_blocked_us: 10.0,
-        cold_ab_blocked_samples: vec![12.0],
-        cold_ab_gemv_samples: vec![10.0],
-        cold_ba_blocked_samples: vec![12.0],
-        cold_ba_gemv_samples: vec![10.0],
-        warm_ab_blocked_samples: vec![10.0],
-        warm_ab_gemv_samples: vec![8.0],
-        warm_ba_blocked_samples: vec![10.0],
-        warm_ba_gemv_samples: vec![8.0],
+        cold_ab_blocked_samples: vec![0.012, 0.012],
+        cold_ab_gemv_samples: vec![0.010, 0.010],
+        cold_ba_blocked_samples: vec![0.012, 0.012],
+        cold_ba_gemv_samples: vec![0.010, 0.010],
+        warm_ab_blocked_samples: vec![0.010, 0.010],
+        warm_ab_gemv_samples: vec![0.008, 0.008],
+        warm_ba_blocked_samples: vec![0.010, 0.010],
+        warm_ba_gemv_samples: vec![0.008, 0.008],
         gemv_faster: true,
     }
 }
@@ -103,8 +103,15 @@ fn pool_entry_rejects_stale_or_nonfinite_evidence() {
     let mut bad = entry.clone();
     bad.choice = "other".into();
     assert!(!matches(&bad));
-    let mut bad = entry;
+    let mut bad = entry.clone();
     bad.cold_gemv_us = f64::NAN;
+    assert!(!matches(&bad));
+    let mut bad = entry.clone();
+    bad.cold_ab_gemv_samples = vec![0.020, 0.020];
+    assert!(!matches(&bad));
+    let mut bad = entry;
+    bad.choice = "blocked".into();
+    bad.gemv_faster = false;
     assert!(!matches(&bad));
 }
 

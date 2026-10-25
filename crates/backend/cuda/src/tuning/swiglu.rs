@@ -22,6 +22,8 @@ use infer_core::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+const REL_TOLERANCE: f64 = 1.0e-3;
+const ABS_TOLERANCE: f64 = 1.0e-9;
 const CACHE_STATES: usize = 2;
 const MEASUREMENT_ARMS: usize = 2;
 
@@ -84,6 +86,35 @@ pub struct Entry {
     pub ba_base_us: f64,
     pub ba_trial_us: f64,
     pub speedup: f64,
+}
+
+fn pair_medians(base: &[f32], trial: &[f32]) -> Option<(f64, f64)> {
+    if base.len() < 2 || trial.len() < 2 {
+        return None;
+    }
+    let mut base = base.to_vec();
+    let mut trial = trial.to_vec();
+    if !base.iter().all(|v| v.is_finite() && *v > 0.0)
+        || !trial.iter().all(|v| v.is_finite() && *v > 0.0)
+    {
+        return None;
+    }
+    base.sort_by(f32::total_cmp);
+    trial.sort_by(f32::total_cmp);
+    Some((f64::from(median(&base)), f64::from(median(&trial))))
+}
+
+const fn median(sorted: &[f32]) -> f32 {
+    let middle = sorted.len() / 2;
+    if sorted.len().is_multiple_of(2) {
+        f32::midpoint(sorted[middle - 1], sorted[middle])
+    } else {
+        sorted[middle]
+    }
+}
+
+fn close64(a: f64, b: f64) -> bool {
+    (a - b).abs() <= b.abs().mul_add(REL_TOLERANCE, ABS_TOLERANCE)
 }
 
 fn samples_ok(samples: &[f32]) -> bool {
@@ -150,6 +181,61 @@ impl Entry {
             && self.ab_trial_us > 0.0
             && self.ba_base_us > 0.0
             && self.ba_trial_us > 0.0
+            && self.valid_evidence()
+    }
+
+    fn valid_evidence(&self) -> bool {
+        let Some(cold_ab) = pair_medians(&self.cold_ab_base_samples, &self.cold_ab_trial_samples)
+        else {
+            return false;
+        };
+        let Some(cold_ba) = pair_medians(&self.cold_ba_base_samples, &self.cold_ba_trial_samples)
+        else {
+            return false;
+        };
+        let Some(warm_ab) = pair_medians(&self.warm_ab_base_samples, &self.warm_ab_trial_samples)
+        else {
+            return false;
+        };
+        let Some(warm_ba) = pair_medians(&self.warm_ba_base_samples, &self.warm_ba_trial_samples)
+        else {
+            return false;
+        };
+        let scale = f64::from(MICROSECONDS_PER_MILLISECOND);
+        let cold_base = f64::midpoint(cold_ab.0, cold_ba.0) * scale;
+        let cold_trial = f64::midpoint(cold_ab.1, cold_ba.1) * scale;
+        let warm_base = f64::midpoint(warm_ab.0, warm_ba.0) * scale;
+        let warm_trial = f64::midpoint(warm_ab.1, warm_ba.1) * scale;
+        if !close64(cold_base, self.cold_base_us)
+            || !close64(cold_trial, self.cold_trial_us)
+            || !close64(warm_base, self.warm_base_us)
+            || !close64(warm_trial, self.warm_trial_us)
+            || !close64(warm_base, self.baseline_us)
+            || !close64(warm_trial, self.candidate_us)
+            || !close64(warm_ab.0 * scale, self.ab_base_us)
+            || !close64(warm_ab.1 * scale, self.ab_trial_us)
+            || !close64(warm_ba.0 * scale, self.ba_base_us)
+            || !close64(warm_ba.1 * scale, self.ba_trial_us)
+        {
+            return false;
+        }
+        if self.tile_rows == SwigluTile::FALLBACK.rows
+            && self.tile_columns == SwigluTile::FALLBACK.columns
+        {
+            return true;
+        }
+        let ratios: Vec<f64> = [cold_ab, cold_ba, warm_ab, warm_ba]
+            .into_iter()
+            .map(|(base, trial)| base / trial)
+            .collect();
+        if !ratios
+            .iter()
+            .all(|ratio| *ratio >= f64::from(MIN_CONFIRM_SPEEDUP))
+        {
+            return false;
+        }
+        let min = ratios.into_iter().fold(f64::INFINITY, f64::min);
+        close64(min, self.speedup)
     }
 }
 
@@ -184,12 +270,9 @@ pub(crate) fn select(
     let driver_build = super::driver_build().unwrap_or_default();
     let hardware = serde_json::to_string(profile).map_err(device_error)?;
     let fingerprint = format!(
-        "{}:gen={}x{}x{}:candidates={:?}",
+        "{}:kernel={}",
         super::compiler_fingerprint(),
-        rows,
-        columns,
-        hidden,
-        candidates
+        kernel_fingerprint(device, gate, up, rows, columns, hidden)?
     );
     let proof = weight_proof(device, gate, up, scales)?;
     let cached_context = CachedContext {
@@ -211,6 +294,12 @@ pub(crate) fn select(
         fallback,
         cached_context,
     ) {
+        session.plan_gemm_search(
+            SearchFamily::FusedSwiGLU,
+            &[[rows, columns, hidden]],
+            candidates.len() * CACHE_STATES * MEASUREMENT_ARMS,
+        )?;
+        session.complete_gemm_search(SearchFamily::FusedSwiGLU, [rows, columns, hidden])?;
         return Ok(tile);
     }
     if !autotune {
@@ -399,6 +488,81 @@ fn verify_cached(
     Ok(baseline.bytes == candidate.bytes)
 }
 
+fn kernel_fingerprint(
+    device: &CudaDevice,
+    gate: &ProjectionWeight,
+    up: &ProjectionWeight,
+    rows: usize,
+    columns: usize,
+    hidden: usize,
+) -> Result<String> {
+    let (
+        ProjectionWeight::Fp4(gate_codes, gate_scales, _),
+        ProjectionWeight::Fp4(up_codes, up_scales, _),
+    ) = (gate, up)
+    else {
+        return Err(Error::invalid("fused SwiGLU requires FP4 gate/up weights"));
+    };
+    let input = api::meta::<f32>(&[rows, columns])
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    let mut q = api::meta::<f4e2m1fnx2>(&[rows, columns / 2])
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    let mut qs = api::meta::<f8e4m3fn>(&[rows, columns / NVFP4_GROUP_SIZE])
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    let mut identities = vec![
+        kernels::quantize_rows(
+            (&mut q).partition([QUANTIZATION_ROWS, NVFP4_QUANT_CODES_TILE[1]]),
+            (&mut qs).partition([QUANTIZATION_ROWS, NVFP4_QUANT_SCALES_TILE[1]]),
+            &input,
+            1.0,
+        )
+        .generics(vec![columns.to_string()])
+        .l2_cache_key_on(&device.stream)
+        .map_err(device_error)?,
+    ];
+    for tile in swiglu_candidates(rows, columns, hidden) {
+        let mut codes = api::meta::<f4e2m1fnx2>(&[rows, hidden / 2])
+            .sync_on(&device.stream)
+            .map_err(device_error)?;
+        let mut scales = api::meta::<f8e4m3fn>(&[rows, hidden / NVFP4_GROUP_SIZE])
+            .sync_on(&device.stream)
+            .map_err(device_error)?;
+        identities.push(
+            kernels::packed_swiglu(
+                (&mut codes).partition([tile.rows, tile.columns / 2]),
+                (&mut scales).partition([tile.rows, tile.columns / NVFP4_GROUP_SIZE]),
+                &q,
+                &qs,
+                gate_codes,
+                gate_scales,
+                up_codes,
+                up_scales,
+                1.0,
+                1.0,
+                1.0,
+            )
+            .generics(
+                [
+                    columns,
+                    tile.rows,
+                    tile.columns,
+                    tile.columns / 2,
+                    tile.columns / NVFP4_GROUP_SIZE,
+                ]
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            )
+            .l2_cache_key_on(&device.stream)
+            .map_err(device_error)?,
+        );
+    }
+    serde_json::to_string(&identities).map_err(device_error)
+}
+
 fn weight_proof(
     device: &CudaDevice,
     gate: &ProjectionWeight,
@@ -534,11 +698,13 @@ fn measure(
                 };
             let ab = evidence.ab_base / evidence.ab_trial;
             let ba = evidence.ba_base / evidence.ba_trial;
-            if ab < MIN_CONFIRM_SPEEDUP || ba < MIN_CONFIRM_SPEEDUP {
+            if tile != fallback && (ab < MIN_CONFIRM_SPEEDUP || ba < MIN_CONFIRM_SPEEDUP) {
                 accepted = false;
                 break;
             }
-            speedup = speedup.min(ab.min(ba));
+            if tile != fallback {
+                speedup = speedup.min(ab.min(ba));
+            }
             if cache {
                 cold = Some(evidence);
             } else {

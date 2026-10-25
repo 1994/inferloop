@@ -30,6 +30,8 @@ const INPUT_MODULUS: usize = 251;
 const MATCH_TOLERANCE: f32 = 5e-4;
 /// Microseconds per millisecond for the benchmark medians.
 const MICROSECONDS_PER_MILLISECOND: f32 = 1000.0;
+const REL_TOLERANCE: f64 = 1.0e-3;
+const ABS_TOLERANCE: f64 = 1.0e-9;
 const CACHE_STATES: [bool; 2] = [true, false];
 
 /// The qualified dispatch choice for one Dense projection geometry.
@@ -110,6 +112,8 @@ impl Entry {
             && self.cold_gemv_us > 0.0
             && self.cold_blocked_us > 0.0
             && self.warm_gemv_us > 0.0
+            && self.warm_blocked_us > 0.0
+            && self.valid_evidence()
             && samples_ok(&self.cold_ab_blocked_samples)
             && samples_ok(&self.cold_ab_gemv_samples)
             && samples_ok(&self.cold_ba_blocked_samples)
@@ -118,6 +122,44 @@ impl Entry {
             && samples_ok(&self.warm_ab_gemv_samples)
             && samples_ok(&self.warm_ba_blocked_samples)
             && samples_ok(&self.warm_ba_gemv_samples)
+    }
+
+    fn valid_evidence(&self) -> bool {
+        let Some(cold_ab) = pair_medians(&self.cold_ab_blocked_samples, &self.cold_ab_gemv_samples)
+        else {
+            return false;
+        };
+        let Some(cold_ba) = pair_medians(&self.cold_ba_blocked_samples, &self.cold_ba_gemv_samples)
+        else {
+            return false;
+        };
+        let Some(warm_ab) = pair_medians(&self.warm_ab_blocked_samples, &self.warm_ab_gemv_samples)
+        else {
+            return false;
+        };
+        let Some(warm_ba) = pair_medians(&self.warm_ba_blocked_samples, &self.warm_ba_gemv_samples)
+        else {
+            return false;
+        };
+        let cold_base =
+            f64::midpoint(cold_ab.0, cold_ba.0) * f64::from(MICROSECONDS_PER_MILLISECOND);
+        let cold_trial =
+            f64::midpoint(cold_ab.1, cold_ba.1) * f64::from(MICROSECONDS_PER_MILLISECOND);
+        let warm_base =
+            f64::midpoint(warm_ab.0, warm_ba.0) * f64::from(MICROSECONDS_PER_MILLISECOND);
+        let warm_trial =
+            f64::midpoint(warm_ab.1, warm_ba.1) * f64::from(MICROSECONDS_PER_MILLISECOND);
+        if !close64(cold_base, self.cold_blocked_us)
+            || !close64(cold_trial, self.cold_gemv_us)
+            || !close64(warm_base, self.warm_blocked_us)
+            || !close64(warm_trial, self.warm_gemv_us)
+        {
+            return false;
+        }
+        let qualified = [cold_ab, cold_ba, warm_ab, warm_ba]
+            .into_iter()
+            .all(|(base, trial)| base / trial >= f64::from(MIN_CONFIRM_SPEEDUP));
+        qualified == (self.choice == "gemv") && self.gemv_faster == qualified
     }
 }
 
@@ -144,15 +186,11 @@ pub(crate) fn select(
     let driver_build = super::driver_build().unwrap_or_default();
     let hardware = serde_json::to_string(profile).map_err(device_error)?;
     let fingerprint = format!(
-        "{}:gembn={}:gemk={}:blockedk={}:stride={}:k={}",
+        "{}:kernel={}:geometry={rows}x{columns}x{outputs}",
         super::compiler_fingerprint(),
-        tile.rows(),
-        tile.columns(),
-        SMALL_GEMM_TILE[1],
-        columns,
-        columns
+        kernel_fingerprint(device, rows, columns, outputs, tile)?
     );
-    if let Some(choice) = cached(&Key {
+    let key = Key {
         device: &identity,
         driver,
         driver_build: &driver_build,
@@ -162,7 +200,14 @@ pub(crate) fn select(
         columns,
         outputs,
         proof: &proof,
-    })? {
+    };
+    if let Some(choice) = cached(&key)? {
+        session.plan_gemm_search(
+            SearchFamily::PoolDense,
+            &[[rows, columns, outputs]],
+            CACHE_STATES.len() * 2,
+        )?;
+        session.complete_gemm_search(SearchFamily::PoolDense, [rows, columns, outputs])?;
         return Ok(choice);
     }
     if !autotune
@@ -188,7 +233,6 @@ pub(crate) fn select(
         &hardware,
         &fingerprint,
     );
-    let _ = session.complete_gemm_search(SearchFamily::Nvfp4, [rows, columns, outputs]);
     match result {
         Ok(entry) => {
             session.complete_gemm_search(SearchFamily::PoolDense, [rows, columns, outputs])?;
@@ -247,6 +291,38 @@ fn cached(key: &Key<'_>) -> Result<Option<Choice>> {
                 Choice::Blocked
             })
     }))
+}
+
+fn kernel_fingerprint(
+    device: &CudaDevice,
+    rows: usize,
+    columns: usize,
+    outputs: usize,
+    tile: LinearTiling,
+) -> Result<String> {
+    let input = api::meta::<f32>(&[rows, columns])
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    let weight = api::meta::<bf16>(&[outputs, columns])
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    let mut output = api::meta::<f32>(&[rows, outputs])
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    let gemv = gemv_kernels::dense((&mut output).partition([1, tile.rows()]), &input, &weight)
+        .generics(vec![
+            bf16::DTYPE.as_str().into(),
+            tile.rows().to_string(),
+            tile.columns().to_string(),
+            columns.to_string(),
+        ])
+        .l2_cache_key_on(&device.stream)
+        .map_err(device_error)?;
+    let blocked = blocked_kernels::dense((&mut output).partition(SMALL_GEMM_TILE), &input, &weight)
+        .generics(vec![bf16::DTYPE.as_str().into(), columns.to_string()])
+        .l2_cache_key_on(&device.stream)
+        .map_err(device_error)?;
+    Ok(format!("{gemv}|{blocked}"))
 }
 
 fn weight_proof(device: &CudaDevice, weight: &Arc<Tensor<bf16>>) -> Result<String> {
@@ -377,6 +453,7 @@ fn measure(
         warm_ba_gemv_samples: Vec::new(),
         gemv_faster: false,
     };
+    let mut qualified = true;
     for cache in CACHE_STATES {
         let options = BenchOptions {
             warmup: Duration::from_millis(WARMUP_MS),
@@ -411,17 +488,11 @@ fn measure(
         let ab_ratio = base_ab / cand_ab;
         let ba_ratio = base_ba / cand_ba;
         if ab_ratio < MIN_CONFIRM_SPEEDUP || ba_ratio < MIN_CONFIRM_SPEEDUP {
-            entry.choice = "blocked".into();
-            entry.gemv_faster = false;
-            return Ok(entry);
+            qualified = false;
         }
     }
-    if entry.cold_blocked_us / entry.cold_gemv_us >= f64::from(MIN_CONFIRM_SPEEDUP)
-        && entry.warm_blocked_us / entry.warm_gemv_us >= f64::from(MIN_CONFIRM_SPEEDUP)
-    {
-        entry.choice = "gemv".into();
-        entry.gemv_faster = true;
-    }
+    entry.choice = if qualified { "gemv" } else { "blocked" }.into();
+    entry.gemv_faster = qualified;
     Ok(entry)
 }
 
@@ -456,6 +527,35 @@ fn bench_pair(
         )
     })
     .map_err(|e| device_error(e.to_string()))
+}
+
+fn pair_medians(base: &[f32], trial: &[f32]) -> Option<(f64, f64)> {
+    if base.len() < 2 || trial.len() < 2 {
+        return None;
+    }
+    let mut base = base.to_vec();
+    let mut trial = trial.to_vec();
+    if !base.iter().all(|v| v.is_finite() && *v > 0.0)
+        || !trial.iter().all(|v| v.is_finite() && *v > 0.0)
+    {
+        return None;
+    }
+    base.sort_by(f32::total_cmp);
+    trial.sort_by(f32::total_cmp);
+    Some((f64::from(median(&base)), f64::from(median(&trial))))
+}
+
+const fn median(sorted: &[f32]) -> f32 {
+    let middle = sorted.len() / 2;
+    if sorted.len().is_multiple_of(2) {
+        f32::midpoint(sorted[middle - 1], sorted[middle])
+    } else {
+        sorted[middle]
+    }
+}
+
+fn close64(a: f64, b: f64) -> bool {
+    (a - b).abs() <= b.abs().mul_add(REL_TOLERANCE, ABS_TOLERANCE)
 }
 
 fn samples_ok(samples: &[f32]) -> bool {

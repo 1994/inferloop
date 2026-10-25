@@ -38,22 +38,22 @@ fn entry() -> Entry {
         tile_columns: 64,
         exact: true,
         real_weights: true,
-        baseline_us: 400.0,
-        candidate_us: 390.0,
+        baseline_us: 399.0,
+        candidate_us: 389.0,
         cold_base_us: 401.0,
         cold_trial_us: 391.0,
         warm_base_us: 399.0,
         warm_trial_us: 389.0,
-        cold_ab_base_samples: vec![401.0],
-        cold_ab_trial_samples: vec![391.0],
-        cold_ba_base_samples: vec![401.0],
-        cold_ba_trial_samples: vec![391.0],
-        warm_ab_base_samples: vec![399.0],
-        warm_ab_trial_samples: vec![389.0],
-        warm_ba_base_samples: vec![399.0],
-        warm_ba_trial_samples: vec![389.0],
-        ab_base_us: 401.0,
-        ab_trial_us: 391.0,
+        cold_ab_base_samples: vec![0.401, 0.401],
+        cold_ab_trial_samples: vec![0.391, 0.391],
+        cold_ba_base_samples: vec![0.401, 0.401],
+        cold_ba_trial_samples: vec![0.391, 0.391],
+        warm_ab_base_samples: vec![0.399, 0.399],
+        warm_ab_trial_samples: vec![0.389, 0.389],
+        warm_ba_base_samples: vec![0.399, 0.399],
+        warm_ba_trial_samples: vec![0.389, 0.389],
+        ab_base_us: 399.0,
+        ab_trial_us: 389.0,
         ba_base_us: 399.0,
         ba_trial_us: 389.0,
         speedup: 1.025,
@@ -121,7 +121,10 @@ fn swiglu_table_entry_requires_device_kernel_geometry_and_real_proof() {
     let mut bad = entry.clone();
     bad.real_weights = false;
     assert!(!bad.matches(&key()));
-    let mut bad = entry;
+    let mut bad = entry.clone();
     bad.cold_trial_us = f64::NAN;
+    assert!(!bad.matches(&key()));
+    let mut bad = entry;
+    bad.cold_ab_trial_samples = vec![0.500, 0.500];
     assert!(!bad.matches(&key()));
 }
