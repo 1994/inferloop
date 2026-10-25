@@ -14,9 +14,9 @@ pub use workspace::Workspace;
 pub(crate) mod kernels {
     use cutile::core::{
         BroadcastScalar, PackF4e2m1fnx2Tile, Reshape, Shape_2, Shape_3, StoreTileAtCurrentBlock,
-        Tensor_2, Tile_2, Tile_3, UnpackF4e2m1fnx2Tile, absf, constant, convert_tile, eq_tile, exp,
-        f4e2m1fn, f4e2m1fnx2, f8e4m3fn, get_tile_block_id, max_tile, min_tile, mmaf_scaled,
-        reduce_max, select,
+        Tensor_2, Tensor_3, Tile_2, Tile_3, UnpackF4e2m1fnx2Tile, absf, constant, convert_tile,
+        eq_tile, exp, f4e2m1fn, f4e2m1fnx2, f8e4m3fn, get_tile_block_id, max_tile, min_tile,
+        mmaf_scaled, reduce_max, select,
     };
 
     /// Fused activation quantization, kept at a fixed 16-row tile. The production W4A4 path
@@ -232,6 +232,67 @@ pub(crate) mod kernels {
                 xs.load_pipelined::<8>([pid.0, k]),
                 sp.load_pipelined::<8>([pid.1, k]).transpose(),
             );
+        }
+        out.store(acc * alpha.broadcast(shape![M, N]));
+    }
+
+    /// K-split twin of `packed` for bandwidth-bound narrow GEMMs: CTA `pid.2` accumulates its
+    /// contiguous share of the 256-element K steps into partial `pid.2`, and `sum_splits` adds the
+    /// partials in split order before applying `alpha`. `S` must divide the K step count.
+    #[cutile::entry()]
+    fn packed_split<
+        const K: i32,
+        const M: i32,
+        const N: i32,
+        const S: i32,
+        const R: i32,
+        const C: i32,
+    >(
+        partials: &mut Tensor<f32, { [S, R, C] }>,
+        input: &Tensor<f4e2m1fnx2, { [-1, -1] }>,
+        input_scales: &Tensor<f8e4m3fn, { [-1, -1] }>,
+        weight: &Tensor<f4e2m1fnx2, { [-1, -1] }>,
+        scales: &Tensor<f8e4m3fn, { [-1, -1] }>,
+    ) {
+        let pid = get_tile_block_id();
+        let xp = input.partition(shape![M, 128]);
+        let xs = input_scales.partition(shape![M, 16]);
+        let wp = weight.partition(shape![N, 128]);
+        let sp = scales.partition(shape![N, 16]);
+        let mut acc: Tile<f32, { [M, N] }> = constant(0.0f32, shape![M, N]);
+        for step in 0i32..((K + 255) / 256 / S) {
+            let k = pid.2 * ((K + 255) / 256 / S) + step;
+            let x = xp.load_pipelined::<8>([pid.0, k]).unpack(shape![M, 256]);
+            let w = wp
+                .load_pipelined::<8>([pid.1, k])
+                .unpack(shape![N, 256])
+                .transpose();
+            acc = mmaf_scaled(
+                x,
+                w,
+                acc,
+                xs.load_pipelined::<8>([pid.0, k]),
+                sp.load_pipelined::<8>([pid.1, k]).transpose(),
+            );
+        }
+        partials
+            .partition_mut(shape![1, M, N])
+            .store(acc.reshape(shape![1, M, N]), [pid.2, pid.0, pid.1]);
+    }
+
+    /// Ordered sum of `packed_split` partials, scaled once like the unsplit epilogue.
+    #[cutile::entry()]
+    fn sum_splits<const M: i32, const N: i32, const S: i32>(
+        out: &mut Tensor<f32, { [M, N] }>,
+        partials: &Tensor<f32, { [-1, -1, -1] }>,
+        alpha: f32,
+    ) {
+        let pid = get_tile_block_id();
+        let pp = partials.partition(shape![1, M, N]);
+        let mut acc: Tile<f32, { [M, N] }> = constant(0.0f32, shape![M, N]);
+        for split in 0i32..S {
+            let part: Tile<f32, { [M, N] }> = pp.load([split, pid.0, pid.1]).reshape(shape![M, N]);
+            acc = acc + part;
         }
         out.store(acc * alpha.broadcast(shape![M, N]));
     }

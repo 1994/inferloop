@@ -663,3 +663,157 @@ fn fused_gate_up_swiglu_performance() -> Result<(), Box<dyn StdError>> {
     }
     Ok(())
 }
+
+/// Narrow verification shapes of the 27B MLP: rows (16 slots x 3 lanes), outputs, reduction,
+/// and the production tile.
+const SPLIT_SHAPES: [(usize, usize, usize, [usize; 2]); 2] =
+    [(48, 17408, 5120, [64, 128]), (48, 5120, 17408, [64, 64])];
+
+fn split_graph(
+    device: &CudaDevice,
+    operands: (&Tensor<f4e2m1fnx2>, &Tensor<f8e4m3fn>, &Fp4Weight),
+    (out, partials): (&mut Tensor<f32>, &mut Tensor<f32>),
+    (reduction, tile, splits): (usize, [usize; 2], usize),
+) -> Result<CudaGraph<()>, Box<dyn StdError>> {
+    let (codes, code_scales, (weight, weight_scales)) = operands;
+    let rows = usize::try_from(out.shape()[0])?;
+    let columns = usize::try_from(out.shape()[1])?;
+    let padded = rows.div_ceil(tile[0]) * tile[0];
+    let grid = |value: usize| u32::try_from(value).map_err(|e| tensor_error(&e.to_string()));
+    Ok(CudaGraph::scope(&device.stream, |scope| {
+        if splits == 1 {
+            scope.record(
+                kernels::packed(
+                    out.partition(tile),
+                    codes,
+                    code_scales,
+                    weight,
+                    weight_scales,
+                    1.0e-6,
+                )
+                .generics(vec![
+                    reduction.to_string(),
+                    tile[0].to_string(),
+                    tile[1].to_string(),
+                ]),
+            )?;
+            return Ok(());
+        }
+        scope.record(
+            kernels::packed_split(
+                (&mut *partials).partition([splits, padded, columns]),
+                codes,
+                code_scales,
+                weight,
+                weight_scales,
+            )
+            .generics(
+                [reduction, tile[0], tile[1], splits, padded, columns]
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            )
+            .grid((
+                grid(padded / tile[0])?,
+                grid(columns / tile[1])?,
+                grid(splits)?,
+            )),
+        )?;
+        scope.record(
+            kernels::sum_splits(out.partition(tile), &*partials, 1.0e-6).generics(
+                [tile[0], tile[1], splits]
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            ),
+        )?;
+        Ok(())
+    })?)
+}
+
+#[test]
+#[ignore = "requires a CUDA device; run inside safe-run"]
+fn narrow_split_k_performance() -> Result<(), Box<dyn StdError>> {
+    use cutile::bench::{BenchOptions, do_bench_paired};
+    use std::time::Duration;
+    if cfg!(debug_assertions) {
+        return Err("performance measurements require cargo test --release".into());
+    }
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    let options = BenchOptions {
+        warmup: Duration::from_millis(50),
+        rep: Duration::from_millis(200),
+        min_reps: 10,
+        max_reps: 200,
+        clear_l2: true,
+    };
+    for (rows, columns, reduction, tile) in SPLIT_SHAPES {
+        let weight: Fp4Weight = (
+            device.upload(
+                vec![f4e2m1fnx2::from_bits(0x21); columns * reduction / 2],
+                &[columns, reduction / 2],
+            )?,
+            device.upload(
+                vec![f8e4m3fn(56); columns * reduction / 16],
+                &[columns, reduction / 16],
+            )?,
+        );
+        let codes = device.upload(
+            vec![f4e2m1fnx2::from_bits(0x13); rows * reduction / 2],
+            &[rows, reduction / 2],
+        )?;
+        let code_scales = device.upload(
+            vec![f8e4m3fn(56); rows * reduction / 16],
+            &[rows, reduction / 16],
+        )?;
+        let operands = (&*codes, &*code_scales, &weight);
+        let padded = rows.div_ceil(tile[0]) * tile[0];
+        let mut base_out = api::zeros::<f32>(&[rows, columns]).sync_on(&device.stream)?;
+        let mut split_out = api::zeros::<f32>(&[rows, columns]).sync_on(&device.stream)?;
+        let mut unused = api::zeros::<f32>(&[1]).sync_on(&device.stream)?;
+        let base = split_graph(
+            &device,
+            operands,
+            (&mut base_out, &mut unused),
+            (reduction, tile, 1),
+        )?;
+        for splits in [2, 4, 8] {
+            if !(reduction / 256).is_multiple_of(splits) {
+                continue;
+            }
+            let mut partials =
+                api::zeros::<f32>(&[splits, padded, columns]).sync_on(&device.stream)?;
+            let split = split_graph(
+                &device,
+                operands,
+                (&mut split_out, &mut partials),
+                (reduction, tile, splits),
+            )?;
+            let (split_time, base_time) = do_bench_paired(
+                &device.stream,
+                &options,
+                |_| {
+                    split
+                        .launch()
+                        .sync_on(&device.stream)
+                        .map_err(|e| tensor_error(&e.to_string()))
+                },
+                |_| {
+                    base.launch()
+                        .sync_on(&device.stream)
+                        .map_err(|e| tensor_error(&e.to_string()))
+                },
+            )?;
+            let bytes = f64::from(u32::try_from(columns * reduction)?) * 0.5625;
+            println!(
+                "{rows}x{columns}x{reduction} tile={tile:?} splits={splits}: split_ms={} ({:.2} TB/s) base_ms={} ({:.2} TB/s)",
+                split_time.median_ms(),
+                bytes / (f64::from(split_time.median_ms()) * 1e9),
+                base_time.median_ms(),
+                bytes / (f64::from(base_time.median_ms()) * 1e9),
+            );
+        }
+    }
+    Ok(())
+}
