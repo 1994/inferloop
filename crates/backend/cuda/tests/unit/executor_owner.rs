@@ -65,11 +65,11 @@ fn tasks(
             Ok(ExecutionTask {
                 request: RequestId::new(u64::try_from(index)? + 1)?,
                 state,
-                tokens: if round == 0 {
+                tokens: if view.cursor == 0 {
                     let prompt = TokenBuffer::from(vec![u32::try_from(index)? + 1; 64]);
                     ExecutionInput::Prefill {
                         span: prompt.span(0..prompt.len())?,
-                        readout: if index == 0 && states.len() > 2 {
+                        readout: if state == StateId::ONE && backend.view.states.len() > 2 {
                             OutputReadout::Full
                         } else {
                             OutputReadout::Logits
@@ -225,7 +225,14 @@ fn compare(depth: usize, readouts: &[OutputReadout]) -> TestResult {
             backend.reset_state(state)?;
         }
         for round in 0..5 {
-            let tasks = tasks(&backend, &states, round)?;
+            // Leave the other states unprimed in round zero. The next flight mixes
+            // one decode with two prefills, then all three continue through decode.
+            let active = if states.len() > 2 && round == 0 {
+                &states[..1]
+            } else {
+                &states
+            };
+            let tasks = tasks(&backend, active, round)?;
             let (actual, ticket) =
                 drive(&mut backend, &program, &tasks, serial, previous.as_mut())?;
             if ticket.is_some() {
