@@ -1,0 +1,185 @@
+{
+  "schema": 1,
+  "scope": "PR 47 vision-weight deduplication and slot-derived pooled attention partition count; RTX 5090 and Qwen3.8-27B-NVFP4 only",
+  "source_base": "a8a13f949ac13ff596ad3427931ab2cb61d48d33",
+  "quality": {
+    "schema": 2,
+    "scope": "fixed arithmetic task subset with declared generation budget",
+    "baseline": {
+      "requests": 1024,
+      "correct": 966,
+      "accuracy": 0.943359375,
+      "format_missing": 40,
+      "length_limited": 38
+    },
+    "candidate": {
+      "requests": 1024,
+      "correct": 966,
+      "accuracy": 0.943359375,
+      "format_missing": 40,
+      "length_limited": 41
+    },
+    "strata": {
+      "eight_shot": {
+        "baseline": {
+          "requests": 512,
+          "correct": 487,
+          "accuracy": 0.951171875,
+          "format_missing": 17,
+          "length_limited": 16
+        },
+        "candidate": {
+          "requests": 512,
+          "correct": 489,
+          "accuracy": 0.955078125,
+          "format_missing": 16,
+          "length_limited": 16
+        },
+        "noninferiority": {
+          "requests": 512,
+          "gains": 5,
+          "losses": 3,
+          "accuracy_change": 0.00390625,
+          "accuracy_change_lower_bound": -0.006044476572883725,
+          "design_effect": 1.0,
+          "bound_accepted": true,
+          "point_accepted": true
+        }
+      },
+      "zero_shot": {
+        "baseline": {
+          "requests": 512,
+          "correct": 479,
+          "accuracy": 0.935546875,
+          "format_missing": 23,
+          "length_limited": 22
+        },
+        "candidate": {
+          "requests": 512,
+          "correct": 477,
+          "accuracy": 0.931640625,
+          "format_missing": 24,
+          "length_limited": 25
+        },
+        "noninferiority": {
+          "requests": 512,
+          "gains": 5,
+          "losses": 7,
+          "accuracy_change": -0.00390625,
+          "accuracy_change_lower_bound": -0.01647269984283281,
+          "design_effect": 1.0,
+          "bound_accepted": true,
+          "point_accepted": true
+        }
+      }
+    },
+    "regressions": [
+      "gsm8k-independent-v1:1202:zero_shot",
+      "gsm8k-independent-v1:635:zero_shot",
+      "gsm8k-independent-v1:926:eight_shot",
+      "gsm8k-independent-v1:768:zero_shot",
+      "gsm8k-independent-v1:777:zero_shot",
+      "gsm8k-independent-v1:102:eight_shot",
+      "gsm8k-independent-v1:187:zero_shot",
+      "gsm8k-independent-v1:306:eight_shot",
+      "gsm8k-independent-v1:1077:zero_shot",
+      "gsm8k-independent-v1:62:zero_shot"
+    ],
+    "gains": [
+      "gsm8k-independent-v1:298:eight_shot",
+      "gsm8k-independent-v1:894:zero_shot",
+      "gsm8k-independent-v1:953:eight_shot",
+      "gsm8k-independent-v1:830:zero_shot",
+      "gsm8k-independent-v1:526:zero_shot",
+      "gsm8k-independent-v1:534:eight_shot",
+      "gsm8k-independent-v1:115:eight_shot",
+      "gsm8k-independent-v1:14:zero_shot",
+      "gsm8k-independent-v1:428:eight_shot",
+      "gsm8k-independent-v1:1079:zero_shot"
+    ],
+    "accuracy_change": 0.0,
+    "accuracy_change_lower_bound": -0.00763391465699619,
+    "design_effect": 1.0,
+    "strata_consistent": true,
+    "confidence": 0.95,
+    "noninferiority_margin_accuracy": 0.02,
+    "method": "paired accuracy non-inferiority: one-sided Tango score bound with Rao-Scott clustering by source question overall; each variant's point change within the margin",
+    "statistical_assumption": "source questions independent; tasks from one question may correlate; no general-capability guarantee",
+    "quality_status": "pass",
+    "quality_accepted": true,
+    "performance_accepted": false,
+    "evidence": {
+      "suite": {
+        "path": "/home/r/benchmarks/inference.rs/exact-shared-attention-2026-10-16/quality-fa4-confirmation-v2/tokenization-v1/tokenized-suite.json",
+        "sha256": "0f961033fc51f032f33b4948081d8f7b8cea78337a55b633cb052ae03f7b500f"
+      },
+      "baseline": {
+        "path": "/home/r/benchmarks/inference.rs/pr47-dedup-parts-quality-2026-10-26/verified-yrlrnt1w/baseline.json",
+        "sha256": "ce4b967d21ce8a3cf4b53fc2de0b5f1a9cd06165cc3f3e82786f45587d8b509f"
+      },
+      "candidate": {
+        "path": "/home/r/benchmarks/inference.rs/pr47-dedup-parts-quality-2026-10-26/verified-yrlrnt1w/candidate.json",
+        "sha256": "d581a890ce25a8f89abe38cf05e795e73e5bd7c6ea52112cf31f417bf7dc16ee"
+      }
+    }
+  },
+  "raw_halves": {
+    "baseline-h0.json": {
+      "path": "/home/r/benchmarks/inference.rs/pr47-dedup-parts-quality-2026-10-26/baseline-h0.json",
+      "sha256": "ca0eb1435bb9f0160af24aefdd27317b0c2693a491572ac4f90d46bf811197e9",
+      "binary_sha256": "dc706a2291c0ab8d6b0d9daaae1661550fedd0d182ca1b2986d4749e5a5c42b5",
+      "completed": true,
+      "requests": 512,
+      "correct": 487
+    },
+    "baseline-h1.json": {
+      "path": "/home/r/benchmarks/inference.rs/pr47-dedup-parts-quality-2026-10-26/baseline-h1.json",
+      "sha256": "e6ea3c6277dbdf12275b1bb8837ffba4e0a42e72074132c2227788ca78a09a5a",
+      "binary_sha256": "dc706a2291c0ab8d6b0d9daaae1661550fedd0d182ca1b2986d4749e5a5c42b5",
+      "completed": true,
+      "requests": 512,
+      "correct": 479
+    },
+    "candidate-h0.json": {
+      "path": "/home/r/benchmarks/inference.rs/pr47-dedup-parts-quality-2026-10-26/candidate-h0.json",
+      "sha256": "eccefbc9cbf36d58969a111c8d2c085c59ec845cff7b86cb8a42ce2bc37e5345",
+      "binary_sha256": "de84f1e01b3204b20b24085f284dffc208dc97f7c48278ac34d4042293dff8ad",
+      "completed": true,
+      "requests": 512,
+      "correct": 485
+    },
+    "candidate-h1.json": {
+      "path": "/home/r/benchmarks/inference.rs/pr47-dedup-parts-quality-2026-10-26/candidate-h1.json",
+      "sha256": "140ab5787bc511d240ded78813b8a24d4cdf5024ce84153879f3f2e54adfc874",
+      "binary_sha256": "de84f1e01b3204b20b24085f284dffc208dc97f7c48278ac34d4042293dff8ad",
+      "completed": true,
+      "requests": 512,
+      "correct": 481
+    }
+  },
+  "validation": {
+    "host": {
+      "fmt": 0,
+      "rust": 0,
+      "tools": 0,
+      "linux": 0,
+      "cuda-hosted": 0
+    },
+    "device": {
+      "build-vision": 0,
+      "cuda-gate": 0,
+      "batched_prompt_embedding_matches_per_lane_rows": 0,
+      "fused_gate_up_swiglu_matches_separate_projections": 0,
+      "pooled_verify_preserves_independent_prefixes_and_reuse": 0,
+      "split_decode_preserves_outputs_cursors_and_inactive_slots": 0,
+      "pinned_float_and_integer_graphs_complete_in_order_and_reuse": 0,
+      "vision-golden": 1,
+      "multimodal-media": 0,
+      "vision-golden-correct-fixture": 0
+    },
+    "device_log_directory": "/home/r/benchmarks/inference.rs/pr47-closeout-8mqof39a",
+    "vision_fixture_note": "The first file lacked c0/pixel_values. Repeated with qwen3vl-2b-f32-trace.safetensors; passed without changing tolerance.",
+    "quality_scope_note": "Final code review changes preserve checkpoint-slot counting and use prepared QKV projections in the diagnostic example; they do not change text inference arithmetic."
+  },
+  "scorer_sha256": "5cecdf73dc8140cb51245c28558baaa44548077a1a7ff57e63f89fbb0e312165"
+}

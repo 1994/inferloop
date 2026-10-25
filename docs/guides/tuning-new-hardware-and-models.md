@@ -2,7 +2,7 @@
 
 本文面向 coding agent 和开发者。换一块 GPU，或者接入一个新模型时，按这里的顺序检查、测量、调优，并把结果落成**自动默认行为**。用户不需要也不应该配置任何调优开关。
 
-本文依据 2026-10-26 前后的 `main` 与 PR #47 的实际代码整理。代码与本文不一致时以代码为准，并顺手更新本文。
+本文依据 2026-10-25（America/Los_Angeles）的 `main` 与 PR #47 的实际代码整理。代码与本文不一致时以代码为准，并顺手更新本文。
 
 ## 原则
 
@@ -11,7 +11,7 @@
 3. **数值不变的优化，用逐位证据放行；数值改变的优化，用质量门禁放行。**
    - 逐位不变的改动：要求 GPU 单元测试比较新旧内核的输出字节，并要求端到端运行的 token 摘要完全一致（`fixed-work-serving.py` 会记录）。这类改动不需要跑 1,024 题。
    - 改变数值的改动（精度、累加顺序、批宽导致的数值差异）：必须通过 [任务质量门禁](cuda-performance.md#完整模型任务质量复算)，即配对正确率非劣。
-4. **性能结论只来自同机、新进程、交替顺序的测量。** 每一臂至少两个新进程，按 BAAB 交替，每个进程丢弃 1 组 warmup，再取 3 组的中位数。profile 运行会扰动计时，只能用来定位瓶颈。
+4. **性能结论只来自同机、新进程、交替顺序的测量。** 方向筛查可用每臂两个新进程、BAAB 交替，每个进程丢弃 1 组 warmup，再取 3 组的中位数；这不构成正式性能放行。正式资格按[基线契约](../plans/performance/baseline.md)预先冻结至少五对新进程、运行顺序、指标和停止规则，由 `process-pair-gate.py` 判定；不能把筛查结果或单算子提速当成跨负载保证。profile 运行会扰动计时，只能用来定位瓶颈。
 
 ## 加载期已经自动完成的部分
 
@@ -76,7 +76,7 @@
 | `tools/bench/fixed-work-serving.py` | 单进程固定输出量计时：零参数或指定参数启动，两种引擎都忽略 EOS，记录 token 摘要，`--profile` 采逐节点事件 |
 | `tools/bench/graph-profile-summary.py` | 汇总逐节点事件，按图（prefill、slot_verify、slot_decode……）和算子类型排序 |
 | `tools/bench/score-task-quality.py` | 配对正确率非劣质量门禁 |
-| `tools/bench/safe-run.sh` | 带显存、内存与时长保护地运行 GPU 进程（每个进程最长 30 分钟） |
+| `tools/bench/safe-run.sh` | 带主机内存上限、并发互斥与时长保护地运行 GPU 进程（每个进程最长 30 分钟） |
 | `INFER_CUDA_PREFILL_PROFILE` / `INFER_CUDA_EXECUTION_PROFILE` | 逐节点 CUDA 事件 / host 阶段记录（由 `--profile` 设置） |
 | `INFER_CUDA_TUNING_TABLE` | 指定调优缓存文件，用于冷启动调优和隔离实验 |
 
@@ -88,7 +88,7 @@
 |---|---|---|---|
 | `DEFAULT_MAX_BATCH = 16` | `engine/runtime/src/config.rs` | 最大并发序列数固定为 16 | `min(N_mem, N_knee)`：N_mem = 状态预算 ÷ (每序列状态 + 保底 KV)；N_knee = (峰值算力 ÷ 带宽) × (权重字节 ÷ 参数量) ÷ 2 ÷ 每序列每步 token 数。由 backend 计算后经接口交给 runtime |
 | `VALUE_SPLIT_*`（按 SM 数 63/127 分档） | `resident/slot_recurrent.rs` | GDN verify 的 value 切分按 SM 数分档 | 由 `ceil(目标 wave 数 × SM 数 ÷ (层头数 × 槽数))` 推出，并按 value 维的整除约束取值 |
-| pooled attention `MAX_BATCH = 4`、切分数上限 64 | `resident/attention_decode/pooled.rs`、`tuning/attention/decode.rs` | 每组 4 个槽串行；切分数只看 SM 数，与上下文长度无关 | 切分数按上下文长度推导（每份至少若干 KV 块），部分和 workspace 随之缩小，从而一次启动处理全部槽 |
+| pooled attention `MAX_BATCH = 4`、切分数上限 64 | `resident/attention_decode/pooled.rs`、`tuning/attention/decode.rs` | 每组 4 个槽串行；切分数已按 SM 数、KV 头数与每组槽数推导，尚未结合上下文长度 | 切分数按上下文长度推导（每份至少若干 KV 块），部分和 workspace 随之缩小，从而一次启动处理全部槽 |
 | `SWIGLU_TILE_ROWS/COLUMNS = 64` | `resident/nvfp4_gemm/workspace.rs` | 在 RTX 5090 上实测得出（128 行时寄存器溢出） | 纳入 resident GEMM 调优器，作为候选按形状实测 |
 | `GDN_BA_SHAPE = [48, 5120]` | `resident/prefill_projection.rs` | 按形状识别 b/a 投影对 | 按图结构识别（同输入、相邻、同为稠密小投影），不依赖具体形状 |
 | `MAX_POOL_ROWS = CB_DECODE_SLOTS` | `resident/pool_gemv.rs` | 行数不超过 16 时走 GEMV | 由 GEMV 与分块 GEMM 的实测交叉点决定，纳入调优 |
