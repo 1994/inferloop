@@ -1,5 +1,6 @@
 use super::kernels;
 use crate::device::CudaDevice;
+use crate::resident::nvfp4_gemm::workspace::{forced_split, with_forced_split};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::bench::BenchOptions as CutileBenchOptions;
 use cutile::cutile_compiler::compile_api::KernelCompiler;
@@ -726,4 +727,13 @@ fn fused_gate_up_swiglu_performance() -> Result<(), Box<dyn StdError>> {
         );
     }
     Ok(())
+}
+
+#[test]
+fn forced_split_scope_is_private_and_restores() {
+    assert!(!forced_split());
+    with_forced_split(|| {
+        assert!(forced_split());
+    });
+    assert!(!forced_split());
 }

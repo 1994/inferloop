@@ -38,6 +38,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::env::var;
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::result::Result as StdResult;
 
 type Quantized = (Tensor<f4e2m1fnx2>, Tensor<f8e4m3fn>);
@@ -219,6 +221,17 @@ impl Workspace {
         Ok(workspace)
     }
 
+    fn split_allowed(
+        device: &CudaDevice,
+        key: (&str, usize, usize, usize, usize, u64),
+    ) -> Result<bool> {
+        #[cfg(test)]
+        if FORCE_SPLIT.with(Cell::get) {
+            return Ok(true);
+        }
+        verify_split_qualified(device, key)
+    }
+
     fn ensure_nvfp4_split(&mut self, device: &CudaDevice, key: StrategyKey) -> Result<()> {
         let (_, rows, outputs, columns) = key;
         let shape = (rows, outputs, columns);
@@ -236,7 +249,7 @@ impl Workspace {
         else {
             return Ok(());
         };
-        if !verify_split_qualified(
+        if !Self::split_allowed(
             device,
             (
                 "nvfp4",
@@ -296,7 +309,7 @@ impl Workspace {
         else {
             return Ok(());
         };
-        if !verify_split_qualified(
+        if !Self::split_allowed(
             device,
             (
                 "fp8-channel",
@@ -1160,4 +1173,24 @@ const fn vendor_diagnostic_enabled() -> bool {
 #[cfg(test)]
 fn vendor_diagnostic_enabled() -> bool {
     var("INFER_CUDA_VENDOR_FP8").is_ok_and(|value| value == "1" || value == "true")
+}
+
+#[cfg(test)]
+thread_local! {
+    static FORCE_SPLIT: Cell<bool> = const { Cell::new(false) };
+}
+#[cfg(test)]
+pub(super) fn forced_split() -> bool {
+    FORCE_SPLIT.with(Cell::get)
+}
+#[cfg(test)]
+pub(super) fn with_forced_split<T>(run: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FORCE_SPLIT.set(self.0);
+        }
+    }
+    let _restore = Restore(FORCE_SPLIT.replace(true));
+    run()
 }
