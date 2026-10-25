@@ -1,4 +1,5 @@
 //! Provider ownership stays outside the suspended device execution state.
+mod notification;
 mod provider;
 mod view;
 use super::{
@@ -8,7 +9,8 @@ use super::{
 use crate::loading::LoadedModel;
 use infer_core::{Error, ErrorCode, ProgramId, Result, StateId};
 use infer_ir::{ExecutionProfileInspection, ExecutionProgram, ExecutionTask, ModelIr};
-use std::{sync::Arc, task::Waker};
+use notification::Notification;
+use std::sync::Arc;
 use view::View;
 
 pub struct CudaBackend {
@@ -19,7 +21,7 @@ pub struct CudaBackend {
     generation: u64,
     busy: bool,
     fatal: Option<Error>,
-    wake: Option<Waker>,
+    notification: Notification,
     recycled_tasks: Vec<ExecutionTask>,
 }
 impl CudaBackend {
@@ -36,7 +38,7 @@ impl CudaBackend {
             generation: 0,
             busy: false,
             fatal: None,
-            wake: None,
+            notification: Notification::new(),
             recycled_tasks: Vec::new(),
         })
     }
@@ -120,6 +122,7 @@ impl CudaBackend {
         self.running = Some(Submission::new(executor, tasks));
         self.generation = generation;
         self.busy = true;
+        self.notification.arm();
         // Poll once to enqueue the first graph before returning ownership to the caller.
         self.progress()?;
         Ok(CudaTicket {
@@ -132,7 +135,10 @@ impl CudaBackend {
         let Some(running) = self.running.as_mut() else {
             return Ok(());
         };
-        let completed = match running.poll(self.wake.as_ref().unwrap_or(Waker::noop())) {
+        if !self.notification.should_poll() {
+            return Ok(());
+        }
+        let completed = match running.poll(self.notification.waker()) {
             Ok(Some(completed)) => completed,
             Ok(None) => return Ok(()),
             Err(error) => {

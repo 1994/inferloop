@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 310
+      "tests": 313
     },
     "frontdoor": {
       "benches": 0,
@@ -300,6 +300,11 @@
       "crate": "cuda",
       "file": "src/executor/mod.rs",
       "mount": "../../tests/unit/resident_mtp_fusion_model.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/executor/owner/notification.rs",
+      "mount": "../../../tests/unit/executor_notification.rs"
     },
     {
       "crate": "cuda",
@@ -1218,11 +1223,11 @@
     }
   ],
   "totals": {
-    "all": 849,
+    "all": 852,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 849
+    "tests": 852
   }
 }

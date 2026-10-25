@@ -7,21 +7,7 @@ use infer_ir::{
 };
 use infer_spi::BackendProvider;
 use std::collections::BTreeSet;
-use std::{
-    mem::take,
-    sync::Arc,
-    task::{Wake, Waker},
-};
-
-struct Notify(Arc<dyn Fn() + Send + Sync>);
-impl Wake for Notify {
-    fn wake(self: Arc<Self>) {
-        (self.0)();
-    }
-    fn wake_by_ref(self: &Arc<Self>) {
-        (self.0)();
-    }
-}
+use std::{mem::take, sync::Arc};
 impl BackendProvider for CudaBackend {
     type Ticket = CudaTicket;
     fn identity(&self) -> &str {
@@ -48,7 +34,7 @@ impl BackendProvider for CudaBackend {
             .map_or(Ok(()), |error| Err(error.clone()))
     }
     fn set_waker(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
-        self.wake = Some(Waker::from(Arc::new(Notify(wake))));
+        self.notification.set_waker(wake);
     }
     fn execution_graph(&self, model: &ModelIr) -> Result<infer_ir::DataflowGraph> {
         if model != self.model() {
