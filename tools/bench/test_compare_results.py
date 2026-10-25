@@ -136,6 +136,7 @@ class GateTests(unittest.TestCase):
             ("mtp_depth", 0),
             ("completed", False),
             ("hot_prefix_tokens_reused", 0),
+            ("vision_enabled", True),
         ]:
             with self.subTest(field=field):
                 old, new = report(), report()
@@ -330,6 +331,149 @@ class OrientationTest(unittest.TestCase):
         result = module.compare(old, new)
         self.assertEqual(result["ratio_orientation"], "native/baseline")
         self.assertAlmostEqual(result["metrics"][0]["ratio"], 1.3)
+
+
+def native_resources():
+    # Startup inspection: pool_bytes is the backend slot pool's block-vocabulary
+    # capacity, not a measurement of physical device allocation.
+    return {
+        "source": "native runtime inspection",
+        "readback": {
+            "scheduler": {"prefill_chunk_tokens": 1024, "forward_chunk_tokens": 64},
+            "execution_profile": {
+                "prefill_width": 1024,
+                "pooled_prefill_width": 1024,
+                "batch_width": 3,
+                "draft_depth": 2,
+                "arena_budget_bytes": 1054928896,
+                "attention_profile": "bf16",
+                "precise_prefix_positions": 2048,
+            },
+            "serving_plan": {
+                "source": "native server log",
+                "width": 4,
+                "capacity": 8192,
+                "kv_tokens": 20512,
+                "prompt_width": 1024,
+                "quoted_bytes": 3384849456,
+                "envelope_bytes": 4493738323,
+                "allocated_bytes": 4184529176,
+            },
+            "kv_cache": {
+                "block_size": 32,
+                "total_blocks": 8192,
+                "available_blocks": 1024,
+                "pool_bytes": 1073741824,
+                "bytes_per_block": 1048576,
+            },
+        },
+    }
+
+
+class ResourceAlignmentTest(unittest.TestCase):
+    @staticmethod
+    def pair():
+        old, new = report(), report()
+        old["config_readback"] = native_resources()
+        new["config_readback"] = native_resources()
+        new["config_readback"]["readback"]["execution_profile"]["precise_prefix_positions"] = 0
+        return old, new
+
+    def test_fixed_resource_pair_rejects_observed_capture_replan(self):
+        old, new = self.pair()
+        # PR47 pair00: identical declared limits, but 4 versus 7 captured slots.
+        kv = new["config_readback"]["readback"]["kv_cache"]
+        kv.update(pool_bytes=1879048192, available_blocks=1792)
+        with self.assertRaisesRegex(ValueError, "native resource.*pool_bytes"):
+            module.compare(old, new, require_identical_resources=True)
+
+    def test_a_numeric_candidate_can_keep_the_same_resource_plan(self):
+        old, new = self.pair()
+        self.assertTrue(module.compare(old, new, require_identical_resources=True)["passed"])
+
+    def test_each_execution_geometry_and_capacity_difference_is_rejected(self):
+        for section, fields in (
+            (
+                "execution_profile",
+                (
+                    "prefill_width",
+                    "pooled_prefill_width",
+                    "batch_width",
+                    "draft_depth",
+                    "arena_budget_bytes",
+                ),
+            ),
+            ("kv_cache", ("block_size", "total_blocks", "pool_bytes", "bytes_per_block")),
+            (
+                "serving_plan",
+                (
+                    "width",
+                    "capacity",
+                    "kv_tokens",
+                    "prompt_width",
+                    "quoted_bytes",
+                    "envelope_bytes",
+                ),
+            ),
+        ):
+            for field in fields:
+                with self.subTest(section=section, field=field):
+                    old, new = self.pair()
+                    new["config_readback"]["readback"][section][field] *= 2
+                    with self.assertRaisesRegex(ValueError, "native resource.*" + field):
+                        module.compare(old, new, require_identical_resources=True)
+
+    def test_a_scheduler_change_is_a_different_fixed_resource_experiment(self):
+        old, new = self.pair()
+        new["config_readback"]["readback"]["scheduler"]["forward_chunk_tokens"] = 128
+        with self.assertRaisesRegex(ValueError, "native resource.*scheduler"):
+            module.compare(old, new, require_identical_resources=True)
+
+    def test_strict_resources_require_complete_valid_readback(self):
+        for mutate in (
+            lambda report: report.pop("config_readback"),
+            lambda report: report.update(config_readback=["invalid"]),
+            lambda report: report["config_readback"].update(readback=None),
+            lambda report: report["config_readback"]["readback"].pop("scheduler"),
+            lambda report: report["config_readback"]["readback"]["execution_profile"].pop(
+                "batch_width"
+            ),
+            lambda report: report["config_readback"]["readback"]["kv_cache"].update(
+                pool_bytes=None
+            ),
+            lambda report: report["config_readback"]["readback"]["kv_cache"].update(
+                pool_bytes=True
+            ),
+        ):
+            with self.subTest(mutate=mutate):
+                old, new = self.pair()
+                mutate(new)
+                with self.assertRaisesRegex(ValueError, "native resource"):
+                    module.compare(old, new, require_identical_resources=True)
+
+    def test_resource_changing_experiments_and_historical_pairs_remain_available(self):
+        old, new = self.pair()
+        new["config_readback"]["readback"]["kv_cache"]["pool_bytes"] *= 2
+        self.assertTrue(module.compare(old, new)["passed"])
+        self.assertTrue(module.compare(report(), report())["passed"])
+
+    def test_dynamic_cache_activity_is_not_a_capacity_change(self):
+        old, new = self.pair()
+        new["config_readback"]["readback"]["kv_cache"].update(
+            available_blocks=512, active_blocks=512, reused_tokens=256
+        )
+        self.assertTrue(module.compare(old, new, require_identical_resources=True)["passed"])
+
+    def test_physical_measurement_noise_does_not_change_the_resource_contract(self):
+        old, new = self.pair()
+        new["config_readback"]["readback"]["serving_plan"]["allocated_bytes"] += 1024
+        self.assertTrue(module.compare(old, new, require_identical_resources=True)["passed"])
+
+    def test_cross_engine_comparison_keeps_distinct_resource_implementations(self):
+        native, reference = OrientationTest.pair()
+        native["config_readback"] = native_resources()
+        reference["config_readback"] = {"source": "command line", "readback": None}
+        self.assertTrue(module.compare(native, reference)["passed"])
 
 
 class IdentityAlignmentTest(unittest.TestCase):

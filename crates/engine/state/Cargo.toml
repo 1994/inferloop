@@ -17,14 +17,18 @@ path = "tests/cache.rs"
 name = "kv_manager"
 path = "tests/kv_manager.rs"
 
+[[test]]
+name = "prefix_reuse"
+path = "tests/prefix_reuse.rs"
+
 [lints]
 workspace = true
 
 [dependencies]
+ahash.workspace = true
 infer-core.workspace = true
 infer-ir.workspace = true
 serde.workspace = true
-sha2.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

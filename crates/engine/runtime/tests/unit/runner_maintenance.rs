@@ -30,6 +30,7 @@ struct Observed {
     wrong_thread: AtomicUsize,
     owner: Mutex<Option<ThreadId>>,
     cleanup_ready: Mutex<Option<Weak<AtomicBool>>>,
+    wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 impl Observed {
     fn record_owner(&self, caller: ThreadId) -> Result<()> {
@@ -86,6 +87,15 @@ impl BackendProvider for MaintainedBackend {
     }
     fn execution_graph(&self, model: &ModelIr) -> Result<infer_ir::DataflowGraph> {
         self.inner.execution_graph(model)
+    }
+    fn set_waker(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
+        if self.observed.record_owner(self.caller).is_err() {
+            self.observed.failure.store(true, Ordering::Release);
+        }
+        match self.observed.wake.lock() {
+            Ok(mut slot) => *slot = Some(wake),
+            Err(_) => self.observed.failure.store(true, Ordering::Release),
+        }
     }
     fn maintenance(&mut self) -> Result<()> {
         self.observed.record_owner(self.caller)?;
@@ -245,6 +255,24 @@ fn wait(deadline: Instant) -> Result<()> {
         return Err(Error::invariant("maintenance owner did not drain"));
     }
     thread::sleep(Duration::from_micros(100));
+    Ok(())
+}
+
+#[test]
+fn backend_notification_wakes_the_parked_device_owner() -> Result<()> {
+    let mut fixture = Fixture::new(false)?;
+    fixture.reserve(Instant::now() + Duration::from_secs(3))?;
+    // Resource completion lets the idle owner reach its one-second park. The device
+    // notification must resume maintenance without another command or compute batch.
+    thread::sleep(Duration::from_millis(20));
+    let before = fixture.observed.maintenance_calls.load(Ordering::Acquire);
+    let wake = fixture.observed.wake.lock().unwrap().clone().unwrap();
+    wake();
+    let deadline = Instant::now() + Duration::from_millis(200);
+    while fixture.observed.maintenance_calls.load(Ordering::Acquire) == before {
+        wait(deadline)?;
+    }
+    assert_eq!(fixture.observed.wrong_thread.load(Ordering::Acquire), 0);
     Ok(())
 }
 

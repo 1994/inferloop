@@ -4,6 +4,7 @@
 
 | 目录 | 入口 | 用途 |
 |---|---|---|
+| `build` | [backend_cfg.rs](build/backend_cfg.rs) | CLI 与 CUDA crate 共用的后端编译能力条件 |
 | `cuda` | [kernels.py](cuda/kernels.py) | CUDA AOT 制品统一清单、完整性校验和固定工具链重建，见 [Kernel 工程](../crates/backend/cuda/kernels/README.md) |
 | `check` | [gate.sh](check/gate.sh) | 本地与 CI 共用的 fail-fast 门禁 |
 | `check` | [layout.py](check/layout.py)、[policy.py](check/policy.py) | 目录与依赖边界、文档链接、lint/feature 与闲置依赖规则 |
@@ -15,6 +16,7 @@
 | `fixtures` | [export-qwen-golden.py](fixtures/export-qwen-golden.py)、[export-text-golden.py](fixtures/export-text-golden.py) | 独立参考的模型与文本 golden 导出 |
 | `fixtures` | [export-moe-golden.py](fixtures/export-moe-golden.py)、[export-moe-operators.py](fixtures/export-moe-operators.py) | [MoE 单卡验证](../docs/guides/moe-validation.md)的模型与 FP8 独立参考 |
 | `fixtures` | [requirements.txt](fixtures/requirements.txt) | 参考导出环境的固定依赖 |
+| `bench/containers` | [README.md](bench/containers/README.md) | 排序索引、摘要查找与实际 PrefixCache 的候选容器对比，独立依赖图 |
 | `bench/cpu` | [Cargo.toml](bench/cpu/Cargo.toml) | 隔离的 release 分配计数与协议测量，通过 `make check-cpu` 运行 |
 | `bench` | [cuda-baseline.sh](bench/cuda-baseline.sh) | CUDA 投影基线采集，用法见 [CUDA 性能指南](../docs/guides/cuda-performance.md) |
 | `bench` / `attention` | [attention.sh](bench/attention.sh) | 原生 attention 与 Candle 的独立数值、性能门禁 |
@@ -24,6 +26,8 @@
 | `bench` | [serve-compare.py](bench/serve-compare.py) | 服务采集：记录 release 构建身份、模型制品指纹、生效配置回读、逐请求计时与逐轮 GPU/进程遥测；每次运行用唯一 `--run-id` 且拒绝覆盖。必须在 [safe-run.sh](bench/safe-run.sh) 内运行，否则拒绝采集 |
 | `bench` | [freeze-baseline.py](bench/freeze-baseline.py) | 把已过门禁的配对冻结成不可覆盖的基线目录，可用 `--verify` 复核哈希 |
 | `bench` | [compare-results.py](bench/compare-results.py) | 报告门禁：先校验身份、矩阵、缓存复用与计时可用性，再分别给出性能与数值结论；debug 构建、未生效开关和不完整矩阵判为无效而非通过 |
+| `bench` | [process-pair-gate.py](bench/process-pair-gate.py) | 按 profile 核验固定数量（至少五对）与预声明顺序的 fresh native 进程对，重算主指标改善与守护退化的配对区间 |
+| `bench` | [fixed-work-serving.py](bench/fixed-work-serving.py)、[graph-profile-summary.py](bench/graph-profile-summary.py) | 单进程固定输出量计时（零参数或指定参数启动，记录 token 摘要证明输出一致）与逐节点 GPU 事件汇总，用法见[新硬件与新模型的调优流程](../docs/guides/tuning-new-hardware-and-models.md) |
 | `bench` | [hardware-monitor.py](bench/hardware-monitor.py) | 保存 NVIDIA/主机遥测，供独立核查实验环境 |
 | `bench` | [safe-run.sh](bench/safe-run.sh) | GPU 验证任务的内存限额与互斥保护 |
 | `vision` | [图像指南](../docs/guides/vision.md) | 官方参考导出、预处理、视觉塔与端到端 parity |

@@ -1,15 +1,15 @@
 //! Full reduced-model parity against independent Transformers prefix goldens.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use cutile::jit_cache::enable_default;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::env::args;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::error::Error as StdError;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::fs::read;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::path::Path;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn main() -> Result<(), Box<dyn StdError>> {
     use infer_backend_cuda::{
         device::CudaDevice,
@@ -110,12 +110,12 @@ fn main() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 #[derive(serde::Deserialize)]
 struct Golden {
     prefixes: Vec<Prefix>,
 }
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 #[derive(serde::Deserialize)]
 struct Prefix {
     tokens: Vec<u32>,
@@ -123,7 +123,7 @@ struct Prefix {
     hidden: Vec<Vec<f32>>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn compare(actual: &[f32], expected: &[f32]) -> infer_core::Result<f32> {
     if actual.len() != expected.len() {
         return Err(infer_core::Error::invalid("parity output shape"));
@@ -141,7 +141,7 @@ fn compare(actual: &[f32], expected: &[f32]) -> infer_core::Result<f32> {
     Ok(maximum)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn reference_graph(root: &str, golden: &Golden) -> infer_core::Result<()> {
     use infer_ir::{StateKind, TensorOp, TensorStorage};
     use infer_state::physical::{PagedRows, PhysicalTensor};
@@ -228,8 +228,10 @@ fn reference_graph(root: &str, golden: &Golden) -> infer_core::Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(cuda_backend))]
 fn main() {
+    use std::process::exit;
+
     eprintln!("CUDA MoE check requires Linux");
-    std::process::exit(1);
+    exit(1);
 }

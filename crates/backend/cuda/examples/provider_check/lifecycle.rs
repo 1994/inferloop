@@ -2,6 +2,13 @@ use infer_backend_cuda::executor::CudaBackend;
 use infer_core::{DecisionId, Error, KernelId, Result, StateId, StepId};
 use infer_ir::{ExecutionProgram, ExecutionRole, ExecutionTask, PlannedWork, StepPlan, TaskOutput};
 use infer_spi::BackendProvider;
+use std::{
+    thread::yield_now,
+    time::{Duration, Instant},
+};
+
+/// Wall-clock budget for an actual-model provider completion.
+const COMPLETION_TIMEOUT: Duration = Duration::from_secs(30);
 fn step(program: &ExecutionProgram, tasks: &[ExecutionTask], count: usize) -> StepPlan {
     StepPlan {
         id: StepId::ONE,
@@ -39,9 +46,16 @@ pub fn submit(
             "CUDA pending completion did not retain state ownership",
         ));
     }
-    let outputs = backend
-        .poll(&mut ticket)?
-        .ok_or_else(|| Error::invariant("CUDA completion not ready"))?;
+    let deadline = Instant::now() + COMPLETION_TIMEOUT;
+    let outputs = loop {
+        if let Some(outputs) = backend.poll(&mut ticket)? {
+            break outputs;
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::invariant("CUDA completion timed out"));
+        }
+        yield_now();
+    };
     if backend.poll(&mut ticket).is_ok() {
         return Err(Error::invariant("CUDA completion consumed twice"));
     }

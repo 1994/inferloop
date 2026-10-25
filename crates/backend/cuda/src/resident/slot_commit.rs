@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     constants::{CONV_KERNEL_TILE, CONV_STATE_TENSORS, METADATA_FIELDS},
-    device::{CudaDevice, device_error},
+    device::{CudaDevice, PinnedUpload, device_error},
 };
 use cutile::prelude::*;
 use infer_core::{Error, Result};
@@ -17,6 +17,7 @@ pub(super) struct CapturedCommit {
     graph: CudaGraph<()>,
     counts: Tensor<i32>,
     upload: Vec<i32>,
+    staging: PinnedUpload<i32>,
 }
 
 struct Inputs<'a> {
@@ -89,6 +90,7 @@ impl CapturedCommit {
             graph,
             counts,
             upload: vec![0; slots],
+            staging: PinnedUpload::single(device, slots)?,
         })
     }
 
@@ -101,7 +103,7 @@ impl CapturedCommit {
                 .ok_or_else(|| Error::invalid("commit slot"))?;
             *count = i32::try_from(accepted + 1).map_err(device_error)?;
         }
-        device.copy_host_slice(&mut self.counts, &self.upload)
+        self.staging.copy(device, &mut self.counts, &self.upload)
     }
 
     pub(super) const fn graph(&self) -> &CudaGraph<()> {

@@ -339,3 +339,63 @@ fn commit_batch_rejects_duplicate_and_non_pending_slots() {
         assert!(validate_commits(&pending, &batch).is_err());
     }
 }
+
+#[test]
+#[ignore = "requires CUDA hardware; run inside safe-run"]
+fn split_decode_preserves_outputs_cursors_and_inactive_slots() -> Result<()> {
+    use crate::device::asynchronous::block_on;
+    enable_default().map_err(device_error)?;
+    let device = CudaDevice::new(0)?;
+    let (graph, mut weights) = fixture(&device)?;
+    weights.prefill_width = 1;
+    let mut serial = (0..3)
+        .map(|_| DeviceProgram::new(&device, &graph, &weights, 512, 32, 32))
+        .collect::<Result<Vec<_>>>()?;
+    let mut candidate = SlotPool::new(&device, &graph, &weights, 3, 512, 32, (32, 1), None)?;
+    for round in 0..128 {
+        let lanes: Vec<_> = [2, 0, 1]
+            .into_iter()
+            .filter(|slot| (round + slot) % 3 != 0)
+            .map(|slot| {
+                (
+                    slot,
+                    u32::try_from((round + slot) % 32).unwrap(),
+                    serial[slot].position(),
+                    serial[slot].position(),
+                )
+            })
+            .collect();
+        let greedy = round % 2 == 0;
+        let mut expected = Vec::new();
+        for &(slot, token, position, _) in &lanes {
+            expected.push(serial[slot].step(token, position, position, None, true)?.1);
+        }
+        let actual = block_on(candidate.run_lanes_readout_async(&device, &lanes, greedy))?;
+        for (index, (_, logits)) in actual.rows.iter().enumerate() {
+            if greedy {
+                let token = expected[index]
+                    .iter()
+                    .enumerate()
+                    .max_by(|(a, x), (b, y)| x.total_cmp(y).then_with(|| b.cmp(a)))
+                    .unwrap()
+                    .0;
+                assert_eq!(
+                    actual.tokens.as_ref().unwrap()[index],
+                    Some(u32::try_from(token).unwrap())
+                );
+                assert_eq!(logits.as_slice(), &[0.0_f32; 0]);
+            } else {
+                assert_eq!(logits.len(), expected[index].len());
+                assert!(logits.iter().all(|value| value.is_finite()));
+                compare(
+                    &[(Vec::new(), logits.clone())],
+                    &[(Vec::new(), expected[index].clone())],
+                );
+            }
+        }
+        for (slot, state) in serial.iter().enumerate() {
+            assert_eq!(candidate.cursors()[slot], state.position());
+        }
+    }
+    Ok(())
+}

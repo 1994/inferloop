@@ -113,6 +113,70 @@ def declared_mtp_layers(model_path):
     return 0
 
 
+def process_pair_orders(measurement):
+    """Resolve the frozen per-pair order; old profiles retain alternating AB/BA."""
+    pairs = measurement["fresh_process_pairs"]
+    if isinstance(pairs, bool) or not isinstance(pairs, int) or pairs < 5:
+        raise ValueError("fresh_process_pairs must be an integer of at least five")
+    if "process_pair_orders" not in measurement:
+        return [
+            ["baseline", "candidate"] if index % 2 == 0 else ["candidate", "baseline"]
+            for index in range(pairs)
+        ]
+    orders = measurement["process_pair_orders"]
+    if not isinstance(orders, list) or len(orders) != pairs:
+        raise ValueError("process_pair_orders must declare one order for every frozen process pair")
+    for order in orders:
+        if order not in (["baseline", "candidate"], ["candidate", "baseline"]):
+            raise ValueError(
+                "each process_pair_orders entry must contain baseline and candidate once"
+            )
+    baseline_first = sum(order[0] == "baseline" for order in orders)
+    if abs(2 * baseline_first - pairs) > 1:
+        raise ValueError("process_pair_orders must be balanced: AB and BA counts may differ by one")
+    return orders
+
+
+def require_process_contract(checklist):
+    """Validate an optional fresh-process A/B contract without embedding workload constants."""
+    measurement = checklist["measurement"]
+    if "require_identical_resources" in measurement and not isinstance(
+        measurement["require_identical_resources"], bool
+    ):
+        raise ValueError("require_identical_resources must be a boolean")
+    if "fresh_process_pairs" not in measurement:
+        if "process_pair_orders" in measurement:
+            raise ValueError("process_pair_orders requires fresh_process_pairs")
+        return
+    process_pair_orders(measurement)
+    confidence = measurement.get("paired_confidence")
+    if not isinstance(confidence, (int, float)) or not 0 < confidence < 1:
+        raise ValueError("paired_confidence must be between zero and one")
+    matrix = checklist["workload"]["matrix"]
+    primary = measurement.get("primary")
+    if not isinstance(primary, dict):
+        raise ValueError("process contract needs a primary metric")
+    if primary.get("case") not in matrix:
+        raise ValueError("primary case is absent from the workload matrix")
+    for field in ("metric", "minimum_improvement_percent"):
+        if field not in primary:
+            raise ValueError(f"primary metric is missing {field}")
+    if primary["metric"] not in ("wall_seconds", "ttft_seconds", "tpot_seconds"):
+        raise ValueError("unsupported primary metric")
+    if primary["minimum_improvement_percent"] <= 0:
+        raise ValueError("minimum improvement must be positive")
+    guards = measurement.get("guards")
+    if not isinstance(guards, list):
+        raise ValueError("process contract guards must be a list")
+    for guard in guards:
+        if guard.get("case") not in matrix:
+            raise ValueError("guard case is absent from the workload matrix")
+        if guard.get("metric") not in ("wall_seconds", "ttft_seconds", "tpot_seconds"):
+            raise ValueError("unsupported guard metric")
+        if guard.get("max_regression_percent", -1) < 0:
+            raise ValueError("guard regression limit must be non-negative")
+
+
 def load_document(checklist):
     """Structurally validate a checklist document."""
     if checklist.get("schema") != 1:
@@ -157,6 +221,7 @@ def load_document(checklist):
                 f"checklist asks for MTP depth {depth}, but {checklist['model']['path']} declares "
                 "no MTP head, so this would measure a plain-decode fallback"
             )
+    require_process_contract(checklist)
     return checklist
 
 
@@ -185,6 +250,13 @@ def check_run(checklist, report):
         checklist["resources"]["gpu_memory_utilization"],
         report.get("gpu_memory_utilization"),
     )
+    if "vision" in checklist["resources"]:
+        _mismatch(
+            mismatches,
+            "vision availability",
+            checklist["resources"]["vision"],
+            report.get("vision_enabled"),
+        )
     _mismatch(
         mismatches,
         "prefix cache",
@@ -234,6 +306,13 @@ def check_run(checklist, report):
             checklist["resources"]["max_num_seqs"],
             limits.get("max_num_seqs"),
         )
+        if "max_num_batched_tokens" in checklist["resources"]:
+            _mismatch(
+                mismatches,
+                "max_num_batched_tokens",
+                checklist["resources"]["max_num_batched_tokens"],
+                limits.get("max_num_batched_tokens"),
+            )
     expected_version = (checklist["engines"].get(engine) or {}).get("version")
     if expected_version is not None:
         _mismatch(

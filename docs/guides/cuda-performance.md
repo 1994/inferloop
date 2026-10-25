@@ -6,6 +6,8 @@ CUDA 执行器使用原生 Rust/cuTile kernel 和设备驻留图。测量按算�
 
 ## 默认优化策略
 
+换硬件、换模型或继续调优默认路径时，按 [新硬件与新模型的调优流程](tuning-new-hardware-and-models.md) 执行。
+
 通过独立数值、完整模型质量与服务性能验收的优化进入默认执行路径；设备/shape 的合法 tile
 由内部测量自动选择。用户不需要判断某个优化算法应开还是关。
 尚未通过验收的算术与库候选保留在内部测试或独立诊断程序中，生产用户不能通过算法开关启用它们。
@@ -15,34 +17,29 @@ profiling、冻结缓存和测试的 A/B 控制是开发诊断工具，不能用
 或 `INFER_CUBLAS_PROJECTIONS` 切换算术。Chunk 与 BF16 Lt 委派由独立诊断程序显式构造，
 完成资格后才纳入默认策略。历史实验命令须使用其冻结制品，不能当成当前用户配置建议。
 
-### MTP 按能力选择（显式启用）
+### 自动执行 profile：MTP2 与目标 attention BF16
 
-默认和显式 `--num-speculative-tokens 0` 都关闭推测解码。显式
-`--num-speculative-tokens auto` 才检查 CUDA provider 的单层 dense MTP head、fusion
-和 draft graph 绑定；完整且支持时选深度 2，缺失、不完整、不支持、Metal 或显式
-prefill cap 为 1 / 2 时选 0。数字深度继续走现有 loader 校验，不静默降级。
+不传 `--num-speculative-tokens` 与 `--cuda-attention-profile` 时，CLI 在 package 与设备都支持
+时自动选 MTP 深度 2 和目标 attention `bf16`；加载时容量或显存不足，会以 canonical attention、
+无 MTP 重新加载一次，并在日志中给出原因。显式数值继续走 loader 校验，不静默降级；
+`--num-speculative-tokens auto` 只按 MTP head、fusion 与 draft graph 绑定选择 2 或 0。
 
-这是能力选择，不是质量或吞吐保证。原 1024 题质量门未通过，MTP2 在该 RTX 5090
-配置中还使 pooled KV token 容量从 98,304 降至 72,992（约 25.8%）；因此保留显式
-启用，默认 attention 仍为 canonical。原失败证据见
-[固定质量合同](../archive/research/artifacts/automatic-fast-profile-quality-2026-10-22.json)。
+- `canonical`：既有 F32 精确 attention 路径。
+- `bf16`：目标图的 **FP8-KV prefill** 使用 FA4 BF16 QKV / F32 累加 / BF16 输出核，覆盖整段
+  prompt。目标 F32-KV、不支持的几何以及没有可用调参/回退证据的路径仍走原有路径；混合图按
+  节点级资格回退，不会因某个 FP8 节点存在 MMA workspace 就把整个图送进 BF16 路径。
+- draft/MTP proposal 的既有 BF16 行为不受该开关影响。
 
-### 实验数值 profile：目标 attention BF16（未获准入）
+整段 prompt 走 FA4 已通过[配对正确率非劣门](#完整模型任务质量复算)：1,024 题、零参数默认服务，
+前 2048 位置保留 F32 的对照 965 题正确，整段 FA4 968 题，正确率变化 +0.29%，单侧 95% 下界
+−0.65%（界 −2%），zero-shot 与 eight-shot 点估计均为正。旧的逐题回归上界门不计答错变答对，
+会否决这类双向翻转，已被替换。
 
-当前 `main` 已提供 `--cuda-attention-profile canonical|bf16|fp16`；接口可用不代表实验
-profile 已获默认准入。固定任务质量门的结论仍是未通过，默认保持 canonical。
-
-- 默认 `canonical`：保持既有精确 attention 路径；目标图的执行与结果不变。
-- 显式 `bf16`：只允许目标图的 **FP8-KV prefill** 使用已有 FA4 BF16 QKV / F32 累加 /
-  BF16 输出核。目标 F32-KV、不支持的几何、以及没有可用调参/回退证据的路径仍走原有路径。
-  混合图中即使某个 FP8 节点使 MMA workspace 存在，目标 F32-KV 节点也按节点级资格回退，
-  不会把整个图按 `any` 资格错误地送进 BF16 路径。
-- draft/MTP proposal 的既有 BF16 行为不受该开关影响；它不是自动启用 target BF16 的入口。
-
-该 profile 是实验数值选择，**尚未通过固定任务质量门**，不自动启用，也不表示已获质量或
-生产准入。目标 BF16 调参使用独立的 `fa4-bf16` schema 与 `resident_mma_attention` 缓存区，
-不与 canonical FP8-KV 的 `resident_attention` 缓存混用；加载期 tuning、workspace 定价与
-admission 共用同一纯 eligibility 判断。
+`INFER_CUDA_ATTENTION_PRECISE_PREFIX=<positions>` 仅作诊断：恢复前若干 prompt 位置的
+canonical attention，并为此额外捕获一套 prompt 图；默认值为 0，不捕获这套图。目标 BF16
+调参使用独立的 `fa4-bf16` schema 与 `resident_mma_attention` 缓存区，不与 canonical FP8-KV
+的 `resident_attention` 缓存混用；加载期 tuning、workspace 定价与 admission 共用同一纯
+eligibility 判断。
 
 ### 实验数值 profile：目标 attention FP16（仅 SM120，未获准入）
 
@@ -209,8 +206,34 @@ python3 tools/bench/score-task-quality.py \
 
 工具从原始文本的最终 `#### number` 行重新提取 Decimal 答案，验证逐题 ID、输入、完成原因、零前缀复用、
 profile 与模型/设备身份；缺题、重排或手填分数与文本不符均失败。长度上限样本保留在分母，并单列截断及
-格式缺失数量。置信水平和允许的正确率下降来自 suite，采用单侧 Clopper–Pearson 回归率上界；
-新增答对不能掩盖原先答对而候选答错的题。报告为 `pass` 或 `not_demonstrated`，后者非零退出。
+格式缺失数量。报告逐题列出 regressions 与 gains，结果为 `pass` 或 `not_demonstrated`，后者非零退出。
+
+判定是配对正确率的非劣检验，置信水平与非劣界 `noninferiority_margin_accuracy` 都由 suite 声明：
+
+- **主判定**：候选减基线的正确率变化，取单侧 Tango score 置信下界，必须不低于 `-margin`。
+  改变数值路径（BF16/FP8 attention、累加顺序、批宽）会让贪心解码在两个方向翻转少量题目；
+  答对变答错和答错变答对都计入，衡量的是正确率是否下降，不要求逐题或逐 token 相同。
+- **题目聚类**：同一道源题（`row_id`）的多个 variant 结果相关，用 Rao–Scott 设计效应放大方差；
+  每道源题只出现一次时设计效应为 1。
+- **variant 一致性**：每个 variant 的点估计变化不得低于 `-margin`，防止某类提示的集中损失被
+  另一类收益抵消。这里有意不要求每个 variant 的置信下界都过线：在 512 题的分组上，那样会让
+  真实不变的候选约四成被拒（按约 3% 的翻转率模拟），远高于声明的错误率。
+
+`test_score_task_quality.py` 用固定种子模拟检验校准：翻转率 3%、1024 题、界 2% 时，真实下降恰为
+2% 的候选通过率约 5%（等于单侧 α），真实不变的候选通过率约 98%。
+
+非劣界和题量必须在运行候选前一起确定。`required_tasks(discordance, margin, confidence, power)`
+按零真实变化处的正态近似给出所需题量。以既有 GSM8K 对照约 3% 的翻转率、单侧 95% 和 90% 检验力计：
+
+| 非劣界 | 所需题量 |
+|---:|---:|
+| 2.0% | 643 |
+| 1.5% | 1,142 |
+| 1.0% | 2,570 |
+
+现有 1,024 题 suite 足以支撑 2% 的界；收紧到 1% 需要约 2,600 题，例如每道 GSM8K 测试题同时取
+zero-shot 与 eight-shot 两个 variant；此时聚类修正计入两者的相关性，设计效应大于 1 时所需题量按它同比放大。同一候选的每次质量运行都要保留，
+不能反复重跑或调整候选直到通过；该语料已被多轮候选使用，属于回归集而非未见过的 holdout。
 
 这项判定适用于声明的算术任务子集与生成预算。它独立于 kernel 数值、构建身份和服务性能门禁；
 `quality_accepted` 不证明全面模型能力或性能目标已达到。`tools/check/gate.sh` 自动收集其反例与统计参考测试。

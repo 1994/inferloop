@@ -12,7 +12,7 @@ use cutile::prelude::*;
 use infer_ir::TensorNode;
 #[cfg(test)]
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::tuning::prefill::narrow_dense_layout;
 const NARROW_DENSE_TILE: [usize; 2] = [PREFILL_LANES, 16];
@@ -21,11 +21,11 @@ pub(super) const GDN_BA_SHAPE: [i32; 2] = [48, 5120];
 
 /// Down projection absorbing `silu(gate) * up`: node indices of the `SiLU` and multiply it
 /// replaces, then the gate and up tensors it reads.
-pub(super) type Swiglu = (usize, usize, infer_core::TensorId, infer_core::TensorId);
+type Swiglu = (usize, usize, infer_core::TensorId, infer_core::TensorId);
 
 /// Target-graph NVFP4 down projections whose input is `silu(gate) * up` with no other reader of
 /// the `SiLU` or product rows. Their prompt capture quantizes straight from gate and up.
-pub(super) fn swiglu_plan(
+fn swiglu_plan(
     graph: &infer_ir::DataflowGraph,
     weights: &ProgramWeights,
 ) -> BTreeMap<usize, Swiglu> {
@@ -34,16 +34,7 @@ pub(super) fn swiglu_plan(
     if weights.fusion.is_some() {
         return plan;
     }
-    let mut producer = BTreeMap::new();
-    let mut readers: BTreeMap<_, Vec<usize>> = BTreeMap::new();
-    for (index, node) in graph.nodes.iter().enumerate() {
-        for id in &node.outputs {
-            producer.insert(*id, index);
-        }
-        for id in &node.inputs {
-            readers.entry(*id).or_default().push(index);
-        }
-    }
+    let (producer, readers) = dataflow(graph);
     let results = [graph.hidden, graph.logits];
     let sole = |id, reader: usize| {
         !results.contains(&Some(id)) && readers.get(&id).is_some_and(|r| r[..] == [reader])
@@ -83,8 +74,218 @@ pub(super) fn swiglu_plan(
     plan
 }
 
+/// Gated-MLP capture plan of one prompt graph: the `SiLU` and multiply nodes absorbed into
+/// their down projection, and the gate/up pairs that run as one fused pass at this width.
+pub(super) struct MlpPlan {
+    swiglu: BTreeMap<usize, Swiglu>,
+    fused: BTreeMap<usize, FusedMlp>,
+    fused_downs: BTreeSet<usize>,
+    absorbed: BTreeSet<usize>,
+}
+
+impl MlpPlan {
+    pub(super) fn new(
+        graph: &infer_ir::DataflowGraph,
+        weights: &ProgramWeights,
+        geometry: (usize, &super::nvfp4_gemm::Workspace),
+    ) -> Self {
+        let swiglu = swiglu_plan(graph, weights);
+        let fused = fused_mlp_plan(graph, weights, &swiglu, geometry);
+        let fused_downs = fused.values().map(|&(.., down)| down).collect();
+        let absorbed = swiglu
+            .values()
+            .flat_map(|&(silu, multiply, ..)| [silu, multiply])
+            .chain(
+                fused
+                    .iter()
+                    .map(|(&first, &(gate, up, _))| if first == gate { up } else { gate }),
+            )
+            .collect();
+        Self {
+            swiglu,
+            fused,
+            fused_downs,
+            absorbed,
+        }
+    }
+
+    /// Nodes another node of the plan records; the capture skips them.
+    pub(super) fn absorbs(&self, index: usize) -> bool {
+        self.absorbed.contains(&index)
+    }
+
+    /// Record node `index` when the plan owns it. False leaves it to the ordinary dispatch.
+    pub(super) fn record(
+        &self,
+        scope: &Scope,
+        (index, nodes): (usize, &[TensorNode]),
+        arena: &mut super::ActivationArena,
+        weights: &ProgramWeights,
+        nvfp4: &mut super::nvfp4_gemm::Workspace,
+    ) -> Result<bool, DeviceError> {
+        if let Some(&(gate, up, down)) = self.fused.get(&index) {
+            let projections = (&nodes[gate], &nodes[up], &nodes[down]);
+            record_fused_mlp(scope, projections, arena, weights, nvfp4)?;
+            return Ok(true);
+        }
+        let node = &nodes[index];
+        if self.fused_downs.contains(&index) {
+            record_fused_down(scope, node, arena, weights, nvfp4)?;
+            return Ok(true);
+        }
+        let Some(&(.., gate, up)) = self.swiglu.get(&index) else {
+            return Ok(false);
+        };
+        if !record_swiglu(scope, node, (gate, up), arena, weights, nvfp4)? {
+            return Err(error("fused SwiGLU projection"));
+        }
+        Ok(true)
+    }
+}
+
+/// Producing node and reading nodes of every tensor.
+type Dataflow = (
+    BTreeMap<infer_core::TensorId, usize>,
+    BTreeMap<infer_core::TensorId, Vec<usize>>,
+);
+
+fn dataflow(graph: &infer_ir::DataflowGraph) -> Dataflow {
+    let mut producer = BTreeMap::new();
+    let mut readers: BTreeMap<_, Vec<usize>> = BTreeMap::new();
+    for (index, node) in graph.nodes.iter().enumerate() {
+        for id in &node.outputs {
+            producer.insert(*id, index);
+        }
+        for id in &node.inputs {
+            readers.entry(*id).or_default().push(index);
+        }
+    }
+    (producer, readers)
+}
+
+/// Gate, up and down node indices of a gated MLP recorded as one fused gate/up pass.
+type FusedMlp = (usize, usize, usize);
+
+/// [`swiglu_plan`] entries whose gate and up projections can also run as one pass at `rows`
+/// prompt lanes, keyed by whichever projection comes first. Both projections must read the same
+/// input with the same FP4 activation scale and feed only the absorbed `SiLU` and multiply.
+fn fused_mlp_plan(
+    graph: &infer_ir::DataflowGraph,
+    weights: &ProgramWeights,
+    swiglu: &BTreeMap<usize, Swiglu>,
+    (rows, nvfp4): (usize, &super::nvfp4_gemm::Workspace),
+) -> BTreeMap<usize, FusedMlp> {
+    use infer_ir::TensorOp;
+    let (producer, readers) = dataflow(graph);
+    let fp4_scale = |node: &TensorNode| match (
+        weights.projections.get(&node.inputs[1]),
+        weights.activation_quantization(node.inputs[1]),
+    ) {
+        (
+            Some(ProjectionWeight::Fp4(..)),
+            Some(super::program::ActivationQuantization::Fp4(scale)),
+        ) => Some(scale.to_bits()),
+        _ => None,
+    };
+    let sizes: BTreeMap<_, _> = graph
+        .tensors
+        .iter()
+        .filter_map(|tensor| Some((tensor.id, tensor.elements().ok()?)))
+        .collect();
+    let mut plan = BTreeMap::new();
+    for (&down, &(silu, multiply, gate_output, up_output)) in swiglu {
+        let (Some(&gate), Some(&up)) = (producer.get(&gate_output), producer.get(&up_output))
+        else {
+            continue;
+        };
+        let [gate_node, up_node] = [&graph.nodes[gate], &graph.nodes[up]];
+        let sole = |id, reader: usize| readers.get(&id).is_some_and(|r| r[..] == [reader]);
+        let (Some(&columns), Some(&hidden)) =
+            (sizes.get(&gate_node.inputs[0]), sizes.get(&gate_output))
+        else {
+            continue;
+        };
+        if gate_node.op != TensorOp::Linear
+            || up_node.op != TensorOp::Linear
+            || gate_node.inputs[0] != up_node.inputs[0]
+            || fp4_scale(gate_node).is_none()
+            || fp4_scale(gate_node) != fp4_scale(up_node)
+            || !sole(gate_output, silu)
+            || !sole(up_output, multiply)
+            || sizes.get(&up_output) != Some(&hidden)
+            || !nvfp4.gate_up_swiglu_ready(rows, columns, hidden)
+        {
+            continue;
+        }
+        plan.insert(gate.min(up), (gate, up, down));
+    }
+    plan
+}
+
+/// Record a [`fused_mlp_plan`] gate/up pass into the down projection's activation codes.
+fn record_fused_mlp(
+    scope: &Scope,
+    (gate, up, down): (&TensorNode, &TensorNode, &TensorNode),
+    arena: &super::ActivationArena,
+    weights: &ProgramWeights,
+    nvfp4: &mut super::nvfp4_gemm::Workspace,
+) -> Result<(), DeviceError> {
+    let scale = |node: &TensorNode| match weights.activation_quantization(node.inputs[1]) {
+        Some(super::program::ActivationQuantization::Fp4(scale)) => Ok(scale),
+        _ => Err(error("fused SwiGLU activation scale")),
+    };
+    let weight = |node: &TensorNode| {
+        weights
+            .projections
+            .get(&node.inputs[1])
+            .ok_or_else(|| error("fused SwiGLU projection"))
+    };
+    let width = arena.lanes();
+    let input = arena.get(gate.inputs[0]).map_err(error)?;
+    let columns = input.size() / width;
+    let input = input.view(&[width, columns]).map_err(error)?;
+    let hidden = arena.get(gate.outputs[0]).map_err(error)?.size() / width;
+    nvfp4.record_gate_up_swiglu(
+        scope,
+        (weight(gate)?, weight(up)?),
+        (scale(gate)?, scale(down)?),
+        &input,
+        (width, columns, hidden),
+    )
+}
+
+/// Record the down projection of a [`fused_mlp_plan`] entry from its prepared codes.
+fn record_fused_down(
+    scope: &Scope,
+    node: &TensorNode,
+    arena: &mut super::ActivationArena,
+    weights: &ProgramWeights,
+    nvfp4: &super::nvfp4_gemm::Workspace,
+) -> Result<(), DeviceError> {
+    let Some(super::program::ActivationQuantization::Fp4(scale)) =
+        weights.activation_quantization(node.inputs[1])
+    else {
+        return Err(error("fused SwiGLU down scale"));
+    };
+    let weight = weights
+        .projections
+        .get(&node.inputs[1])
+        .ok_or_else(|| error("prefill projection"))?;
+    let width = arena.lanes();
+    let columns = arena.get(node.inputs[0]).map_err(error)?.size() / width;
+    let slot = arena.slot(node.outputs[0]).map_err(error)?;
+    let output = arena.buffers[slot]
+        .take()
+        .ok_or_else(|| error("prefill output"))?;
+    let flat = output.size();
+    let mut output = output.reshape(&[width, flat / width])?;
+    nvfp4.record_prequantized(scope, weight, scale, &mut output, columns)?;
+    arena.buffers[slot] = Some(output.reshape(&[flat])?);
+    Ok(())
+}
+
 /// Record a [`swiglu_plan`] down projection. False leaves nothing recorded.
-pub(super) fn record_swiglu(
+fn record_swiglu(
     scope: &Scope,
     node: &TensorNode,
     (gate, up): (infer_core::TensorId, infer_core::TensorId),

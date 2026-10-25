@@ -5,7 +5,7 @@ use infer_core::{Error, Result, StateId};
 use infer_ir::{ExecutionInput, ExecutionTask};
 use std::collections::BTreeMap;
 
-pub(super) fn propose(
+pub(super) async fn propose(
     pool: &mut SlotPool,
     states: &mut BTreeMap<StateId, Sequence>,
     device: &CudaDevice,
@@ -52,13 +52,7 @@ pub(super) fn propose(
     let plain_greedy = participants
         .iter()
         .all(|&(index, _)| tasks[index].plain_greedy);
-    for &(index, _) in participants {
-        tasks[index]
-            .sampling
-            .as_ref()
-            .ok_or_else(|| Error::invariant("draft sampling"))?
-            .validate()?;
-    }
+    validate_sampling(tasks, participants)?;
     for step in 0..counts.iter().copied().max().unwrap_or(0) {
         let active: Vec<_> = (0..participants.len())
             .filter(|&i| step < counts[i])
@@ -72,7 +66,9 @@ pub(super) fn propose(
             })
             .collect();
         let external: Vec<_> = active.iter().map(|&i| hidden[i].as_slice()).collect();
-        let readout = pool.run_external_selected(device, &lanes, &external, plain_greedy)?;
+        let readout = pool
+            .run_external_selected_async(device, &lanes, &external, plain_greedy)
+            .await?;
         for (row, (&i, (next_hidden, logits))) in active.iter().zip(readout.rows).enumerate() {
             let (index, _) = participants[i];
             let task = &tasks[index];
@@ -189,6 +185,17 @@ pub(super) fn catch_up(
             .and_then(|state| state.speculation.as_mut())
             .ok_or_else(|| Error::invariant("draft catch-up state"))?;
         pool.export_attention(slot, &mut spec.program, device)?;
+    }
+    Ok(())
+}
+
+fn validate_sampling(tasks: &[ExecutionTask], participants: &[(usize, usize)]) -> Result<()> {
+    for &(index, _) in participants {
+        tasks[index]
+            .sampling
+            .as_ref()
+            .ok_or_else(|| Error::invariant("draft sampling"))?
+            .validate()?;
     }
     Ok(())
 }

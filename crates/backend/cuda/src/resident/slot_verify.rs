@@ -13,6 +13,7 @@ use crate::constants::INACTIVE_LANE_STATE_POSITION;
 use crate::constants::MAX_VERIFICATION_WIDTH;
 use crate::constants::METADATA_FIELDS;
 use crate::constants::MIB;
+use crate::device::PinnedUpload;
 use crate::device::Readbacks;
 use crate::device::{CudaDevice, ReadbackSource, device_error};
 use cutile::prelude::*;
@@ -44,6 +45,7 @@ pub(super) struct SlotVerifyGraph {
     token_readout: Option<super::token_readout::TokenReadout>,
     metadata_owner: Tensor<i32>,
     metadata_upload: Vec<i32>,
+    metadata_staging: PinnedUpload<i32>,
     hidden: Arc<Tensor<f32>>,
     logits: Arc<Tensor<f32>>,
     /// Slot state sets the graph interleaves.
@@ -67,7 +69,6 @@ pub(super) struct SlotVerifyGraph {
 struct RecurrentCapture {
     staging: super::slot_recurrent::Staging,
     parameters: super::slot_states::RecurrentParameters,
-    canonical: super::canonical_recurrent::Workspace,
 }
 impl RecurrentCapture {
     fn new(
@@ -95,15 +96,9 @@ impl RecurrentCapture {
         } else {
             super::slot_states::RecurrentParameters::new()
         };
-        let canonical = super::canonical_recurrent::Workspace::new(
-            builder.device,
-            builder.graph,
-            fused && builder.weights.fusion.is_none(),
-        )?;
         Ok(Self {
             staging,
             parameters,
-            canonical,
         })
     }
 }
@@ -172,7 +167,6 @@ impl BatchBuilder<'_> {
         arena: &ActivationArena,
         metadata: &[Tensor<i32>],
         (verify, staging): (usize, &super::slot_recurrent::Staging),
-        canonical: &mut super::canonical_recurrent::Workspace,
     ) -> Result<Vec<Vec<CudaGraph<()>>>> {
         let mut commits = Vec::with_capacity(lane_states.len());
         let value_split =
@@ -188,25 +182,16 @@ impl BatchBuilder<'_> {
                                 let staged = staging
                                     .get(&(slot, index))
                                     .ok_or_else(|| error("slot commit staging"))?;
-                                if !canonical.record_commit(
+                                super::slot_recurrent::record_commit(
                                     scope,
                                     node,
-                                    (arena, self.weights),
+                                    arena,
                                     states,
                                     &lanes,
+                                    self.weights,
+                                    value_split,
                                     (staged, count),
-                                )? {
-                                    super::slot_recurrent::record_commit(
-                                        scope,
-                                        node,
-                                        arena,
-                                        states,
-                                        &lanes,
-                                        self.weights,
-                                        value_split,
-                                        (staged, count),
-                                    )?;
-                                }
+                                )?;
                             }
                         }
                         Ok(())
@@ -320,18 +305,14 @@ impl BatchBuilder<'_> {
         node: &TensorNode,
         arena: &mut ActivationArena,
         (states, metadata): (&[States], &[Tensor<i32>]),
-        (staging, index, value_split, batch, canonical): (
+        (staging, index, value_split, batch): (
             &mut super::slot_recurrent::Staging,
             usize,
             usize,
             &super::slot_states::VerifyBatch<'_>,
-            &mut super::canonical_recurrent::Workspace,
         ),
     ) -> StdResult<(), DeviceError> {
         staging.record_node(scope, node, arena, index)?;
-        if canonical.record_verify(scope, node, arena, states, metadata, self.weights)? {
-            return Ok(());
-        }
         if super::slot_convolution::record(scope, node, arena, batch, self.weights)?
             || super::slot_states::record_batch(scope, node, arena, batch, value_split)?
         {
@@ -358,11 +339,7 @@ impl BatchBuilder<'_> {
         lane_fp8: &mut [Fp8Caches],
         geometry: (usize, &[Tensor<i32>], &super::slot_states::VerifyBatch<'_>),
         arena: &mut ActivationArena,
-        (checkpoints, staging, canonical): (
-            &mut [Vec<States>],
-            &mut super::slot_recurrent::Staging,
-            &mut super::canonical_recurrent::Workspace,
-        ),
+        (checkpoints, staging): (&mut [Vec<States>], &mut super::slot_recurrent::Staging),
         profile: &mut Option<profile::SlotProfile>,
     ) -> Result<CudaGraph<()>> {
         let (verify, metadata, batch) = geometry;
@@ -412,7 +389,7 @@ impl BatchBuilder<'_> {
                         external: self.external,
                         capacity: self.capacity,
                         fusion: &mut no_fusion,
-                        mode: CaptureMode::verification(self.weights.fusion.is_none(), verify),
+                        mode: CaptureMode::Batched,
                     }
                     .record(node)?,
                     Dispatch32::Row if fused && super::slot_recurrent::covers(node) => {
@@ -421,7 +398,7 @@ impl BatchBuilder<'_> {
                             node,
                             arena,
                             (lane_states, metadata),
-                            (staging, index, value_split, batch, canonical),
+                            (staging, index, value_split, batch),
                         )?;
                     }
                     Dispatch32::Row => {
@@ -522,15 +499,10 @@ impl BatchBuilder<'_> {
             lane_fp8,
             (verify, &metadata, &batch),
             &mut arena,
-            (
-                &mut checkpoints,
-                &mut recurrent.staging,
-                &mut recurrent.canonical,
-            ),
+            (&mut checkpoints, &mut recurrent.staging),
             &mut profile,
         )?;
         let batched_commit = if fused
-            && !recurrent.canonical.enabled()
             && CapturedCommit::supported(&self.graph.nodes, &recurrent.parameters, roots, slots)
         {
             Some(CapturedCommit::new(
@@ -544,13 +516,7 @@ impl BatchBuilder<'_> {
             None
         };
         let restore = if fused {
-            self.capture_commits(
-                lane_states,
-                &arena,
-                &metadata,
-                (verify, &recurrent.staging),
-                &mut recurrent.canonical,
-            )?
+            self.capture_commits(lane_states, &arena, &metadata, (verify, &recurrent.staging))?
         } else {
             self.capture_restores(lane_states, &checkpoints)?
         };
@@ -569,9 +535,10 @@ impl BatchBuilder<'_> {
             restore,
             batched_commit,
             fused,
-            readbacks: Readbacks::default(),
+            readbacks: Readbacks::contiguous(self.device, &hidden, &logits, lanes)?,
             metadata_owner,
             metadata_upload: Vec::with_capacity(lanes * METADATA_FIELDS),
+            metadata_staging: PinnedUpload::single(self.device, lanes * METADATA_FIELDS)?,
             hidden,
             logits,
             slots,
@@ -592,7 +559,7 @@ impl SlotVerifyGraph {
     /// # Errors
     /// Rejects unknown slots, duplicate lanes, out-of-vocabulary tokens, cursors without
     /// room for the whole chain, positions out of capacity and CUDA replay failures.
-    pub(crate) fn run_verify_readout(
+    pub(crate) async fn run_verify_readout_async(
         &mut self,
         device: &CudaDevice,
         lanes: &[SlotVerifyLane],
@@ -619,7 +586,8 @@ impl SlotVerifyGraph {
             };
             self.metadata_upload.extend_from_slice(&values);
         }
-        device.copy_host_slice(&mut self.metadata_owner, &self.metadata_upload)?;
+        self.metadata_staging
+            .copy(device, &mut self.metadata_owner, &self.metadata_upload)?;
         let hidden_size = self.hidden.size() / total;
         let vocabulary = self.logits.size() / total;
         let mut sources = Vec::with_capacity(2 * total);
@@ -646,7 +614,8 @@ impl SlotVerifyGraph {
                 .token_readout
                 .as_mut()
                 .ok_or_else(|| Error::invariant("slot verify token readout"))?
-                .run(device, &self.graph, &mut self.readbacks, &sources, &active)?;
+                .run_async(device, &self.graph, &mut self.readbacks, &sources, &active)
+                .await?;
             let mut tokens = vec![None; total];
             for (&row, token) in active.iter().zip(selected) {
                 tokens[row] = Some(token);
@@ -656,7 +625,9 @@ impl SlotVerifyGraph {
             (None, None)
         };
         let rows = if output.is_none() {
-            self.readbacks.run(device, &self.graph, &sources)?
+            self.readbacks
+                .run_async(device, &self.graph, &sources)
+                .await?
         } else {
             Vec::new()
         };
@@ -819,16 +790,3 @@ fn verify_lanes(
 #[cfg(test)]
 #[path = "../../tests/unit/resident_slot_verify.rs"]
 mod tests;
-
-#[cfg(test)]
-impl SlotVerifyGraph {
-    pub(crate) fn test_logit_rows(&self, device: &CudaDevice) -> Result<Vec<Vec<f32>>> {
-        let total = self.slots * self.verify;
-        let cols = self.logits.size() / total;
-        Ok(device
-            .read_borrowed(&self.logits)?
-            .chunks_exact(cols)
-            .map(<[f32]>::to_vec)
-            .collect())
-    }
-}

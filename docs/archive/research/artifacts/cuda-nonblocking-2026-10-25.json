@@ -1,0 +1,3565 @@
+{
+  "schema": 1,
+  "status": "performance_acceptance_inconclusive_keep_pr_draft",
+  "pull_request": "https://github.com/1994/inferloop/pull/57",
+  "baseline_revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+  "measured_candidate_revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+  "later_error_handling_revision": "f6527dd4f2d1fe893c9eca887177209cfa7f645a",
+  "source_scope": "All candidate serving measurements use clean212ebac. f6527dd only adds fatal-poll error observation/consumption plus regression tests; the full serving matrix has not been repeated on f6527dd. Do not infer final-head performance acceptance.",
+  "hardware": "RTX5090 32GiB on45; GPU UUID, driver, compiler, effective release flags, model fingerprints and effective settings are in each hashed raw report.",
+  "raw_root": "45:/home/r/benchmarks/inferloop/cuda-nonblocking-v1",
+  "method": "Process pairs are independent clusters. Exact empirical median-ratio bootstrap for N<=5; 100000 deterministic draws (seed 20261025) for larger N. Pointwise 95% intervals, not a simultaneous SLO guarantee.",
+  "declared_latency_ratio_bound": 1.1,
+  "declared_max_drift": 0.1,
+  "stable_baseline_certified": false,
+  "stability_note": "Some observed process-pair ratios exceed the declared drift tolerance; no new stable baseline is issued and historical baseline IDs are unchanged.",
+  "independent_process_pairs": 30,
+  "requests_per_side": {
+    "baseline": 600,
+    "candidate": 600
+  },
+  "warmup_requests_per_side": {
+    "baseline": 150,
+    "candidate": 150
+  },
+  "complete_outputs_identical": true,
+  "effective_configurations_identical_within_pairs": true,
+  "per_trial_prefix_reuse_identical_within_pairs": true,
+  "independent_comparison_recomputation": "All30 saved comparisons recomputed using tools/bench/compare-results.py; metrics, numeric result, token mismatches and point-estimate gate decision match exactly.",
+  "all_primary_latency_intervals_pass": false,
+  "metrics": [
+    {
+      "profile": "2b-mtp0",
+      "case": "batch4",
+      "metric": "tpot_seconds",
+      "paired_units": 5,
+      "baseline_median": 0.006987956619028294,
+      "candidate_median": 0.0069429078412790585,
+      "ratios": [
+        0.9995467376054402,
+        0.995481078055933,
+        0.9792643571692929,
+        1.0003364472621874,
+        0.9850395203881508
+      ],
+      "paired_median_ratio": 0.995481078055933,
+      "bootstrap_95_percent_ci": [
+        0.9792643571692929,
+        1.0003364472621874
+      ],
+      "observed_ratio_drift_from_first_pair": 0.020291577845310882,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "batch4",
+      "metric": "ttft_seconds",
+      "paired_units": 5,
+      "baseline_median": 0.04915316850201634,
+      "candidate_median": 0.03735297000093851,
+      "ratios": [
+        0.7100688597945666,
+        0.7532190341007547,
+        0.7448122780085923,
+        0.6784276332334395,
+        0.8114711160222831
+      ],
+      "paired_median_ratio": 0.7448122780085923,
+      "bootstrap_95_percent_ci": [
+        0.6784276332334395,
+        0.8114711160222831
+      ],
+      "observed_ratio_drift_from_first_pair": 0.14280622904242501,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "batch4",
+      "metric": "wall_seconds",
+      "paired_units": 5,
+      "baseline_median": 0.497474937,
+      "candidate_median": 0.480998541,
+      "ratios": [
+        0.945661463480366,
+        0.9675783045322724,
+        0.9626577340747595,
+        0.975662766938872,
+        0.9682263812216936
+      ],
+      "paired_median_ratio": 0.9675783045322724,
+      "bootstrap_95_percent_ci": [
+        0.945661463480366,
+        0.975662766938872
+      ],
+      "observed_ratio_drift_from_first_pair": 0.03172520464997142,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "batch4",
+      "metric": "output_tokens_per_second_ratio",
+      "paired_units": 5,
+      "ratios": [
+        1.0574608764532385,
+        1.0335080843750422,
+        1.0387908023832908,
+        1.0249443085109067,
+        1.032816311757809
+      ],
+      "paired_median_ratio": 1.0335080843750422,
+      "bootstrap_95_percent_ci": [
+        1.0249443085109067,
+        1.0574608764532385
+      ]
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "hot_long",
+      "metric": "tpot_seconds",
+      "paired_units": 5,
+      "baseline_median": 0.004507846285710074,
+      "candidate_median": 0.004420244682507242,
+      "ratios": [
+        0.9787681888227514,
+        0.9945812076466468,
+        0.9780822379284421,
+        0.9760208545926815,
+        0.9811570726509812
+      ],
+      "paired_median_ratio": 0.9787681888227514,
+      "bootstrap_95_percent_ci": [
+        0.9760208545926815,
+        0.9945812076466468
+      ],
+      "observed_ratio_drift_from_first_pair": 0.016156040832217,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "hot_long",
+      "metric": "ttft_seconds",
+      "paired_units": 5,
+      "baseline_median": 2.6442755099997157,
+      "candidate_median": 2.624479590002011,
+      "ratios": [
+        0.9948745268981727,
+        0.9963782684064463,
+        0.990620375518912,
+        1.0020424556139667,
+        0.9993449476810204
+      ],
+      "paired_median_ratio": 0.9963782684064463,
+      "bootstrap_95_percent_ci": [
+        0.990620375518912,
+        1.0020424556139667
+      ],
+      "observed_ratio_drift_from_first_pair": 0.007204857016635202,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "hot_long",
+      "metric": "wall_seconds",
+      "paired_units": 5,
+      "baseline_median": 2.9306565,
+      "candidate_median": 2.901027665,
+      "ratios": [
+        0.9932941909091018,
+        0.9965721921391307,
+        0.9887189932543553,
+        0.9991468630266043,
+        0.9962140186126374
+      ],
+      "paired_median_ratio": 0.9962140186126374,
+      "bootstrap_95_percent_ci": [
+        0.9887189932543553,
+        0.9991468630266043
+      ],
+      "observed_ratio_drift_from_first_pair": 0.0058921839783900865,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "hot_long",
+      "metric": "output_tokens_per_second_ratio",
+      "paired_units": 5,
+      "ratios": [
+        1.0067510805482118,
+        1.00343959814242,
+        1.0114097198724923,
+        1.000853865437571,
+        1.003800369515614
+      ],
+      "paired_median_ratio": 1.003800369515614,
+      "bootstrap_95_percent_ci": [
+        1.000853865437571,
+        1.0114097198724923
+      ]
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "long",
+      "metric": "tpot_seconds",
+      "paired_units": 5,
+      "baseline_median": 0.006769778698418079,
+      "candidate_median": 0.0067419554920528,
+      "ratios": [
+        0.9895392913557105,
+        1.0101316134654332,
+        0.9872856055690168,
+        0.9900082916787983,
+        1.004748024351258
+      ],
+      "paired_median_ratio": 0.9900082916787983,
+      "bootstrap_95_percent_ci": [
+        0.9872856055690168,
+        1.0101316134654332
+      ],
+      "observed_ratio_drift_from_first_pair": 0.02081000955657908,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "long",
+      "metric": "ttft_seconds",
+      "paired_units": 5,
+      "baseline_median": 0.05864159499833477,
+      "candidate_median": 0.04377868099982152,
+      "ratios": [
+        0.7386292109347928,
+        0.7507934781536231,
+        0.7242700443362546,
+        0.720647929172845,
+        0.7930671024503418
+      ],
+      "paired_median_ratio": 0.7386292109347928,
+      "bootstrap_95_percent_ci": [
+        0.720647929172845,
+        0.7930671024503418
+      ],
+      "observed_ratio_drift_from_first_pair": 0.07370124374942288,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "long",
+      "metric": "wall_seconds",
+      "paired_units": 5,
+      "baseline_median": 0.484805929,
+      "candidate_median": 0.467398516,
+      "ratios": [
+        0.9640940591714586,
+        0.9761348703925125,
+        0.9566018073878625,
+        0.9584796155232,
+        0.9788741495794813
+      ],
+      "paired_median_ratio": 0.9640940591714586,
+      "bootstrap_95_percent_ci": [
+        0.9566018073878625,
+        0.9788741495794813
+      ],
+      "observed_ratio_drift_from_first_pair": 0.015330548163241087,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "long",
+      "metric": "output_tokens_per_second_ratio",
+      "paired_units": 5,
+      "ratios": [
+        1.037243192701964,
+        1.024448598581353,
+        1.0453670401592094,
+        1.0433190062723823,
+        1.0215817839602714
+      ],
+      "paired_median_ratio": 1.037243192701964,
+      "bootstrap_95_percent_ci": [
+        1.0215817839602714,
+        1.0453670401592094
+      ]
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "short",
+      "metric": "tpot_seconds",
+      "paired_units": 5,
+      "baseline_median": 0.0067302026825292694,
+      "candidate_median": 0.006630291571445201,
+      "ratios": [
+        1.00089749021015,
+        0.9934861958389971,
+        0.9809110986632948,
+        0.9841207727007114,
+        0.9985177897139684
+      ],
+      "paired_median_ratio": 0.9934861958389971,
+      "bootstrap_95_percent_ci": [
+        0.9809110986632948,
+        1.00089749021015
+      ],
+      "observed_ratio_drift_from_first_pair": 0.019968470040482078,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "short",
+      "metric": "ttft_seconds",
+      "paired_units": 5,
+      "baseline_median": 0.014172606002830435,
+      "candidate_median": 0.011340068998833885,
+      "ratios": [
+        0.7664492076764972,
+        0.8485639569264585,
+        0.7753601833228241,
+        0.774594312284292,
+        0.91347107778326
+      ],
+      "paired_median_ratio": 0.7753601833228241,
+      "bootstrap_95_percent_ci": [
+        0.7664492076764972,
+        0.91347107778326
+      ],
+      "observed_ratio_drift_from_first_pair": 0.1918220654861944,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "short",
+      "metric": "wall_seconds",
+      "paired_units": 5,
+      "baseline_median": 0.437202876,
+      "candidate_median": 0.42982144,
+      "ratios": [
+        0.9899330523781875,
+        0.9919326422729204,
+        0.9758058722698724,
+        0.9807995571822925,
+        0.9983466921313979
+      ],
+      "paired_median_ratio": 0.9899330523781875,
+      "bootstrap_95_percent_ci": [
+        0.9758058722698724,
+        0.9983466921313979
+      ],
+      "observed_ratio_drift_from_first_pair": 0.014270843946847078,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "short",
+      "metric": "output_tokens_per_second_ratio",
+      "paired_units": 5,
+      "ratios": [
+        1.0101693216502146,
+        1.0081329692998044,
+        1.024793996857027,
+        1.0195763167684004,
+        1.0016560458221906
+      ],
+      "paired_median_ratio": 1.0101693216502146,
+      "bootstrap_95_percent_ci": [
+        1.0016560458221906,
+        1.024793996857027
+      ]
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "batch4",
+      "metric": "finite_sample_ttft_tail",
+      "baseline": {
+        "requests": 60,
+        "observed_p95_ttft_seconds": 0.07392847200026154,
+        "max_ttft_seconds": 0.0777772850015026
+      },
+      "candidate": {
+        "requests": 60,
+        "observed_p95_ttft_seconds": 0.0574526460004563,
+        "max_ttft_seconds": 0.06017343700295896
+      }
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "hot_long",
+      "metric": "finite_sample_ttft_tail",
+      "baseline": {
+        "requests": 15,
+        "observed_p95_ttft_seconds": 2.6571981080014666,
+        "max_ttft_seconds": 2.6571981080014666
+      },
+      "candidate": {
+        "requests": 15,
+        "observed_p95_ttft_seconds": 2.6505814219999593,
+        "max_ttft_seconds": 2.6505814219999593
+      }
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "long",
+      "metric": "finite_sample_ttft_tail",
+      "baseline": {
+        "requests": 15,
+        "observed_p95_ttft_seconds": 0.0617910849978216,
+        "max_ttft_seconds": 0.0617910849978216
+      },
+      "candidate": {
+        "requests": 15,
+        "observed_p95_ttft_seconds": 0.04619427399666165,
+        "max_ttft_seconds": 0.04619427399666165
+      }
+    },
+    {
+      "profile": "2b-mtp0",
+      "case": "short",
+      "metric": "finite_sample_ttft_tail",
+      "baseline": {
+        "requests": 15,
+        "observed_p95_ttft_seconds": 0.016642759001115337,
+        "max_ttft_seconds": 0.016642759001115337
+      },
+      "candidate": {
+        "requests": 15,
+        "observed_p95_ttft_seconds": 0.013408208000328159,
+        "max_ttft_seconds": 0.013408208000328159
+      }
+    },
+    {
+      "profile": "2b-mtp0",
+      "metric": "startup_seconds",
+      "baseline": [
+        5.712021723997168,
+        5.412932465998892,
+        5.410073883998848,
+        5.411036437002622,
+        5.415691737001907
+      ],
+      "candidate": [
+        5.411353068000608,
+        5.418938686998445,
+        5.41771854399849,
+        5.41331240299769,
+        5.416572867001378
+      ]
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "batch4",
+      "metric": "tpot_seconds",
+      "paired_units": 5,
+      "baseline_median": 0.021460556380978754,
+      "candidate_median": 0.021474014412657227,
+      "ratios": [
+        0.9703729976427702,
+        1.0011935036262294,
+        1.0021798278660403,
+        0.9948873381038033,
+        1.001060229320051
+      ],
+      "paired_median_ratio": 1.001060229320051,
+      "bootstrap_95_percent_ci": [
+        0.9703729976427702,
+        1.0021798278660403
+      ],
+      "observed_ratio_drift_from_first_pair": 0.03277794240002074,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "batch4",
+      "metric": "ttft_seconds",
+      "paired_units": 5,
+      "baseline_median": 0.11612445349965128,
+      "candidate_median": 0.11564284800260793,
+      "ratios": [
+        0.979753284982707,
+        0.9958526780318084,
+        0.9923054798025247,
+        1.0065708928720307,
+        1.0044934268122296
+      ],
+      "paired_median_ratio": 0.9958526780318084,
+      "bootstrap_95_percent_ci": [
+        0.979753284982707,
+        1.0065708928720307
+      ],
+      "observed_ratio_drift_from_first_pair": 0.02737179685985658,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "batch4",
+      "metric": "wall_seconds",
+      "paired_units": 5,
+      "baseline_median": 1.485574058,
+      "candidate_median": 1.46770507,
+      "ratios": [
+        0.9672160968592054,
+        0.9891422646261637,
+        1.0038102332417524,
+        0.9874379867330736,
+        0.9874424297974168
+      ],
+      "paired_median_ratio": 0.9874424297974168,
+      "bootstrap_95_percent_ci": [
+        0.9672160968592054,
+        1.0038102332417524
+      ],
+      "observed_ratio_drift_from_first_pair": 0.037834498930877425,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "batch4",
+      "metric": "output_tokens_per_second_ratio",
+      "paired_units": 5,
+      "ratios": [
+        1.0338951173861273,
+        1.0109769198649496,
+        0.996204229529074,
+        1.0127218250013732,
+        1.0127172681906726
+      ],
+      "paired_median_ratio": 1.0127172681906726,
+      "bootstrap_95_percent_ci": [
+        0.996204229529074,
+        1.0338951173861273
+      ]
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "hot_long",
+      "metric": "ttft_seconds",
+      "paired_units": 5,
+      "baseline_median": 1.244052070996986,
+      "candidate_median": 1.2461717080004746,
+      "ratios": [
+        0.981748996018762,
+        0.9957023120011264,
+        1.0000949293086274,
+        1.001787857309251,
+        1.0050925176012753
+      ],
+      "paired_median_ratio": 1.0000949293086274,
+      "bootstrap_95_percent_ci": [
+        0.981748996018762,
+        1.0050925176012753
+      ],
+      "observed_ratio_drift_from_first_pair": 0.02377748454765638,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "hot_long",
+      "metric": "wall_seconds",
+      "paired_units": 5,
+      "baseline_median": 1.244104146,
+      "candidate_median": 1.246241499,
+      "ratios": [
+        0.9817491338740933,
+        0.9956934174463448,
+        1.0001116707153872,
+        1.0018016153370846,
+        1.0051116033934486
+      ],
+      "paired_median_ratio": 1.0001116707153872,
+      "bootstrap_95_percent_ci": [
+        0.9817491338740933,
+        1.0051116033934486
+      ],
+      "observed_ratio_drift_from_first_pair": 0.023796781390745148,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "hot_long",
+      "metric": "output_tokens_per_second_ratio",
+      "paired_units": 5,
+      "ratios": [
+        1.0185901525106384,
+        1.0043252094251063,
+        0.9998883417535691,
+        0.9982016246435395,
+        0.994914392216555
+      ],
+      "paired_median_ratio": 0.9998883417535691,
+      "bootstrap_95_percent_ci": [
+        0.994914392216555,
+        1.0185901525106384
+      ]
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "long",
+      "metric": "tpot_seconds",
+      "paired_units": 5,
+      "baseline_median": 0.020560815539716885,
+      "candidate_median": 0.020573266428578388,
+      "ratios": [
+        0.9841438964279368,
+        0.9997310279003766,
+        1.0033447397830735,
+        1.0017559701999237,
+        0.9971745551976636
+      ],
+      "paired_median_ratio": 0.9997310279003766,
+      "bootstrap_95_percent_ci": [
+        0.9841438964279368,
+        1.0033447397830735
+      ],
+      "observed_ratio_drift_from_first_pair": 0.019510199092661606,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "long",
+      "metric": "ttft_seconds",
+      "paired_units": 5,
+      "baseline_median": 0.21318855800200254,
+      "candidate_median": 0.21179992499673972,
+      "ratios": [
+        0.9687659899961865,
+        0.9909621504540597,
+        1.0074255963075234,
+        0.9906620558686574,
+        0.9980392709357145
+      ],
+      "paired_median_ratio": 0.9909621504540597,
+      "bootstrap_95_percent_ci": [
+        0.9687659899961865,
+        1.0074255963075234
+      ],
+      "observed_ratio_drift_from_first_pair": 0.03990603170481766,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "long",
+      "metric": "wall_seconds",
+      "paired_units": 5,
+      "baseline_median": 1.508212985,
+      "candidate_median": 1.508253933,
+      "ratios": [
+        0.9820263625403339,
+        0.9990831651912987,
+        1.0037027902463795,
+        1.000027150011575,
+        0.9992781190849693
+      ],
+      "paired_median_ratio": 0.9992781190849693,
+      "bootstrap_95_percent_ci": [
+        0.9820263625403339,
+        1.0037027902463795
+      ],
+      "observed_ratio_drift_from_first_pair": 0.02207316273055282,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "long",
+      "metric": "output_tokens_per_second_ratio",
+      "paired_units": 5,
+      "ratios": [
+        1.0183026017887864,
+        1.0009176761661536,
+        0.9963108698288359,
+        0.9999728507255282,
+        1.0007224024035388
+      ],
+      "paired_median_ratio": 1.0007224024035388,
+      "bootstrap_95_percent_ci": [
+        0.9963108698288359,
+        1.0183026017887864
+      ]
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "short",
+      "metric": "tpot_seconds",
+      "paired_units": 5,
+      "baseline_median": 0.020558816174588938,
+      "candidate_median": 0.020589485714264725,
+      "ratios": [
+        1.0041052895591343,
+        1.0011923338640913,
+        1.001317632816796,
+        1.0010605872291967,
+        1.0015983294763913
+      ],
+      "paired_median_ratio": 1.001317632816796,
+      "bootstrap_95_percent_ci": [
+        1.0010605872291967,
+        1.0041052895591343
+      ],
+      "observed_ratio_drift_from_first_pair": 0.0030322540490493877,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "short",
+      "metric": "ttft_seconds",
+      "paired_units": 5,
+      "baseline_median": 0.025008070999319898,
+      "candidate_median": 0.02668433800135972,
+      "ratios": [
+        0.9851284330677613,
+        1.0914854525537152,
+        1.0639534513360154,
+        1.0731914626449452,
+        1.0579304977012198
+      ],
+      "paired_median_ratio": 1.0639534513360154,
+      "bootstrap_95_percent_ci": [
+        0.9851284330677613,
+        1.0914854525537152
+      ],
+      "observed_ratio_drift_from_first_pair": 0.10796259240508399,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "short",
+      "metric": "wall_seconds",
+      "paired_units": 5,
+      "baseline_median": 1.320936387,
+      "candidate_median": 1.322614377,
+      "ratios": [
+        1.0029876927206152,
+        1.0011796674148181,
+        1.002411971561504,
+        1.0017382241441726,
+        1.0004287294784568
+      ],
+      "paired_median_ratio": 1.0017382241441726,
+      "bootstrap_95_percent_ci": [
+        1.0004287294784568,
+        1.0029876927206152
+      ],
+      "observed_ratio_drift_from_first_pair": 0.0025513406203591105,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "short",
+      "metric": "output_tokens_per_second_ratio",
+      "paired_units": 5,
+      "ratios": [
+        0.9970212069975545,
+        0.9988217225606827,
+        0.9975938320471703,
+        0.9982647920362052,
+        0.9995714542517383
+      ],
+      "paired_median_ratio": 0.9982647920362052,
+      "bootstrap_95_percent_ci": [
+        0.9970212069975545,
+        0.9995714542517383
+      ]
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "batch4",
+      "metric": "finite_sample_ttft_tail",
+      "baseline": {
+        "requests": 60,
+        "observed_p95_ttft_seconds": 0.12047080200136406,
+        "max_ttft_seconds": 0.123455778000789
+      },
+      "candidate": {
+        "requests": 60,
+        "observed_p95_ttft_seconds": 0.12121641200064914,
+        "max_ttft_seconds": 0.13522979900153587
+      }
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "hot_long",
+      "metric": "finite_sample_ttft_tail",
+      "baseline": {
+        "requests": 15,
+        "observed_p95_ttft_seconds": 1.2709969310017186,
+        "max_ttft_seconds": 1.2709969310017186
+      },
+      "candidate": {
+        "requests": 15,
+        "observed_p95_ttft_seconds": 1.2505986830001348,
+        "max_ttft_seconds": 1.2505986830001348
+      }
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "long",
+      "metric": "finite_sample_ttft_tail",
+      "baseline": {
+        "requests": 15,
+        "observed_p95_ttft_seconds": 0.219019803997071,
+        "max_ttft_seconds": 0.219019803997071
+      },
+      "candidate": {
+        "requests": 15,
+        "observed_p95_ttft_seconds": 0.2131734040012816,
+        "max_ttft_seconds": 0.2131734040012816
+      }
+    },
+    {
+      "profile": "27b-mtp0",
+      "case": "short",
+      "metric": "finite_sample_ttft_tail",
+      "baseline": {
+        "requests": 15,
+        "observed_p95_ttft_seconds": 0.028549311999086058,
+        "max_ttft_seconds": 0.028549311999086058
+      },
+      "candidate": {
+        "requests": 15,
+        "observed_p95_ttft_seconds": 0.02800901599766803,
+        "max_ttft_seconds": 0.02800901599766803
+      }
+    },
+    {
+      "profile": "27b-mtp0",
+      "metric": "startup_seconds",
+      "baseline": [
+        21.630735741000535,
+        20.129971076999936,
+        20.427222935002646,
+        20.429179834001843,
+        20.72967231399889
+      ],
+      "candidate": [
+        21.328491948999726,
+        20.131752155997674,
+        21.027484235000884,
+        20.42918436999753,
+        20.72907872900032
+      ]
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "batch4",
+      "metric": "tpot_seconds",
+      "paired_units": 10,
+      "baseline_median": 0.018429993007942805,
+      "candidate_median": 0.018575195638862042,
+      "ratios": [
+        1.0031022014244422,
+        0.9923775047742056,
+        1.0278419452582575,
+        1.0154985351625887,
+        1.0421612447064303,
+        1.0059470524033998,
+        1.0343843905331598,
+        0.9716979608890567,
+        1.0090217919530715,
+        1.0226355213323475
+      ],
+      "paired_median_ratio": 1.01226016355783,
+      "bootstrap_95_percent_ci": [
+        0.9991622785888027,
+        1.0285099559327535
+      ],
+      "observed_ratio_drift_from_first_pair": 0.038938248990504576,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "batch4",
+      "metric": "ttft_seconds",
+      "paired_units": 10,
+      "baseline_median": 0.1395339997498013,
+      "candidate_median": 0.1408229910002774,
+      "ratios": [
+        1.1198087738194396,
+        1.1335311711069085,
+        1.0183037842104488,
+        1.0228413966945544,
+        1.1400247056023134,
+        1.0424533810385017,
+        1.0148462517320647,
+        1.0061705139044388,
+        1.002123436672085,
+        1.0094548921694493
+      ],
+      "paired_median_ratio": 1.0205725904525016,
+      "bootstrap_95_percent_ci": [
+        1.0094548921694493,
+        1.1198087738194396
+      ],
+      "observed_ratio_drift_from_first_pair": 0.10509413740879514,
+      "regression_decision": "inconclusive"
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "batch4",
+      "metric": "wall_seconds",
+      "paired_units": 10,
+      "baseline_median": 1.363350837,
+      "candidate_median": 1.3817991985,
+      "ratios": [
+        0.9985670507754025,
+        1.0372322485518966,
+        1.0347107670319402,
+        1.0006719740928487,
+        1.036547702807692,
+        1.0175301968479815,
+        1.0154101370133681,
+        0.9715751602989022,
+        1.0139200341850334,
+        1.0189832352248867
+      ],
+      "paired_median_ratio": 1.0164701669306748,
+      "bootstrap_95_percent_ci": [
+        1.0006719740928487,
+        1.0347107670319402
+      ],
+      "observed_ratio_drift_from_first_pair": 0.038720682548527785,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "batch4",
+      "metric": "output_tokens_per_second_ratio",
+      "paired_units": 10,
+      "ratios": [
+        1.001435005514637,
+        0.9641042316184467,
+        0.9664536524235582,
+        0.9993284771531071,
+        0.9647409350204574,
+        0.982771816598382,
+        0.984823731365639,
+        1.0292564495909435,
+        0.9862710729488425,
+        0.981370414577334
+      ],
+      "paired_median_ratio": 0.9837977739820105,
+      "bootstrap_95_percent_ci": [
+        0.9664536524235582,
+        0.9993284771531071
+      ]
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "hot_long",
+      "metric": "ttft_seconds",
+      "paired_units": 10,
+      "baseline_median": 1.2716380985002615,
+      "candidate_median": 1.267864407500383,
+      "ratios": [
+        1.0011572113836467,
+        1.0004920302922726,
+        0.992461694003328,
+        1.0079964913825972,
+        0.9955040669601163,
+        1.0027729816079847,
+        0.9967329938978373,
+        0.9796256828287561,
+        0.9972826786531739,
+        0.9941301532994309
+      ],
+      "paired_median_ratio": 0.9970078362755056,
+      "bootstrap_95_percent_ci": [
+        0.9939828804817221,
+        1.0016325059501288
+      ],
+      "observed_ratio_drift_from_first_pair": 0.021506640825303514,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "hot_long",
+      "metric": "wall_seconds",
+      "paired_units": 10,
+      "baseline_median": 1.2716967885,
+      "candidate_median": 1.2679573315,
+      "ratios": [
+        1.0010795329009843,
+        1.000493199351756,
+        0.9924790135151009,
+        1.0080140846682157,
+        0.9954927378232493,
+        1.0027758970782257,
+        0.9967471602609226,
+        0.9796419316992707,
+        0.9972943742502078,
+        0.9941357563531905
+      ],
+      "paired_median_ratio": 0.9970207672555652,
+      "bootstrap_95_percent_ci": [
+        0.9939858756691751,
+        1.0016345482149909
+      ],
+      "observed_ratio_drift_from_first_pair": 0.021414483562150588,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "hot_long",
+      "metric": "output_tokens_per_second_ratio",
+      "paired_units": 10,
+      "ratios": [
+        0.9989216312335785,
+        0.9995070437739351,
+        1.0075779803728662,
+        0.9920496302679604,
+        1.004527669570555,
+        0.9972317871956099,
+        1.0032634552359556,
+        1.020781132005463,
+        1.0027129660205156,
+        1.0058988358575105
+      ],
+      "paired_median_ratio": 1.0029882106282355,
+      "bootstrap_95_percent_ci": [
+        0.9983681191729021,
+        1.0060505128674753
+      ]
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "long",
+      "metric": "tpot_seconds",
+      "paired_units": 10,
+      "baseline_median": 0.014916847817446632,
+      "candidate_median": 0.0151813941507816,
+      "ratios": [
+        1.0147069682114391,
+        1.0139648377687318,
+        1.0059017962399266,
+        1.0238839530657597,
+        1.0214874043303834,
+        1.0305893555647843,
+        1.0161393381932096,
+        1.0168243012920812,
+        1.012455288408424,
+        1.0134105900315442
+      ],
+      "paired_median_ratio": 1.0154231532023243,
+      "bootstrap_95_percent_ci": [
+        1.0132100630885779,
+        1.0214874043303834
+      ],
+      "observed_ratio_drift_from_first_pair": 0.015652191076740207,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "long",
+      "metric": "ttft_seconds",
+      "paired_units": 10,
+      "baseline_median": 0.11830394699973112,
+      "candidate_median": 0.11998427649996302,
+      "ratios": [
+        0.992346465682231,
+        0.9995272299723845,
+        0.9941070282246975,
+        1.0161844891006573,
+        1.0258192432455586,
+        0.9972330014480147,
+        1.022841297584953,
+        0.9741189566802994,
+        1.007471084784598,
+        1.0041393620708028
+      ],
+      "paired_median_ratio": 1.0018332960215937,
+      "bootstrap_95_percent_ci": [
+        0.9941070282246975,
+        1.0161844891006573
+      ],
+      "observed_ratio_drift_from_first_pair": 0.03373093845838948,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "long",
+      "metric": "wall_seconds",
+      "paired_units": 10,
+      "baseline_median": 1.0597797995,
+      "candidate_median": 1.076327183,
+      "ratios": [
+        1.014550437771112,
+        1.0179811343641552,
+        1.0019175653277035,
+        1.021420519153053,
+        1.0251426135441128,
+        1.0288843510353205,
+        1.0174954002509224,
+        1.0085623176944087,
+        1.0111208306615298,
+        1.0128282840208889
+      ],
+      "paired_median_ratio": 1.0160229190110173,
+      "bootstrap_95_percent_ci": [
+        1.0106953008576487,
+        1.0215618739541341
+      ],
+      "observed_ratio_drift_from_first_pair": 0.01412833973606964,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "long",
+      "metric": "output_tokens_per_second_ratio",
+      "paired_units": 10,
+      "ratios": [
+        0.9856582410993008,
+        0.9823364758371613,
+        0.9980861046915808,
+        0.9790286970435893,
+        0.9754740333569882,
+        0.9719265328447697,
+        0.9828054257084524,
+        0.9915103731874672,
+        0.9890014819947346,
+        0.9873341965037142
+      ],
+      "paired_median_ratio": 0.9842318334038767,
+      "bootstrap_95_percent_ci": [
+        0.9788932276116814,
+        0.9894178781195747
+      ]
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "short",
+      "metric": "tpot_seconds",
+      "paired_units": 10,
+      "baseline_median": 0.014322606539656316,
+      "candidate_median": 0.014592298222216039,
+      "ratios": [
+        1.0104041115027647,
+        1.0264574897302168,
+        1.000323375908597,
+        1.0274199941886344,
+        1.042338119846108,
+        1.0095974015609093,
+        1.004485948801139,
+        1.0138476620000985,
+        1.0120020040276247,
+        1.013588848016453
+      ],
+      "paired_median_ratio": 1.0127954260220389,
+      "bootstrap_95_percent_ci": [
+        1.0074450301519517,
+        1.0264574897302168
+      ],
+      "observed_ratio_drift_from_first_pair": 0.031605184479948534,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "short",
+      "metric": "ttft_seconds",
+      "paired_units": 10,
+      "baseline_median": 0.028794104500775575,
+      "candidate_median": 0.029736579499513027,
+      "ratios": [
+        0.9844967665284423,
+        0.9191684337061682,
+        1.0459635665459803,
+        0.9974333985092749,
+        1.0522985085319088,
+        1.071594067809596,
+        1.0888962022297966,
+        1.0876449161394364,
+        0.9897495893187642,
+        1.0272561890895053
+      ],
+      "paired_median_ratio": 1.0366098778177428,
+      "bootstrap_95_percent_ci": [
+        0.9897495893187642,
+        1.071594067809596
+      ],
+      "observed_ratio_drift_from_first_pair": 0.10604345209734944,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "short",
+      "metric": "wall_seconds",
+      "paired_units": 10,
+      "baseline_median": 0.9307268609999999,
+      "candidate_median": 0.948532333,
+      "ratios": [
+        1.0089857844494683,
+        1.0289730017284024,
+        1.0034657131481006,
+        1.022784419832626,
+        1.04403512491576,
+        1.0122439276248805,
+        1.0058089980731602,
+        1.016042309390787,
+        1.0107778430742964,
+        1.0140081913500225
+      ],
+      "paired_median_ratio": 1.0131260594874516,
+      "bootstrap_95_percent_ci": [
+        1.0082934205737284,
+        1.022784419832626
+      ],
+      "observed_ratio_drift_from_first_pair": 0.03473719947939169,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "short",
+      "metric": "output_tokens_per_second_ratio",
+      "paired_units": 10,
+      "ratios": [
+        0.9910942407832126,
+        0.9718427969638315,
+        0.9965462565360326,
+        0.9777231453756848,
+        0.9578221806289199,
+        0.9879041728078236,
+        0.9942245514960708,
+        0.9842109829064047,
+        0.9893370802020003,
+        0.9861853272295834
+      ],
+      "paired_median_ratio": 0.9870447500187035,
+      "bootstrap_95_percent_ci": [
+        0.9777231453756848,
+        0.9917747945146668
+      ]
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "batch4",
+      "metric": "finite_sample_ttft_tail",
+      "baseline": {
+        "requests": 120,
+        "observed_p95_ttft_seconds": 0.17638248200091766,
+        "max_ttft_seconds": 0.18088197999895783
+      },
+      "candidate": {
+        "requests": 120,
+        "observed_p95_ttft_seconds": 0.18142892600008054,
+        "max_ttft_seconds": 0.21051283899942064
+      }
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "hot_long",
+      "metric": "finite_sample_ttft_tail",
+      "baseline": {
+        "requests": 30,
+        "observed_p95_ttft_seconds": 1.301886616001866,
+        "max_ttft_seconds": 1.313602425998397
+      },
+      "candidate": {
+        "requests": 30,
+        "observed_p95_ttft_seconds": 1.2919927619986993,
+        "max_ttft_seconds": 1.2952797409998311
+      }
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "long",
+      "metric": "finite_sample_ttft_tail",
+      "baseline": {
+        "requests": 30,
+        "observed_p95_ttft_seconds": 0.12463546200160636,
+        "max_ttft_seconds": 0.12472180999975535
+      },
+      "candidate": {
+        "requests": 30,
+        "observed_p95_ttft_seconds": 0.12398561500231153,
+        "max_ttft_seconds": 0.12512177000098745
+      }
+    },
+    {
+      "profile": "27b-mtp2",
+      "case": "short",
+      "metric": "finite_sample_ttft_tail",
+      "baseline": {
+        "requests": 30,
+        "observed_p95_ttft_seconds": 0.03117570700123906,
+        "max_ttft_seconds": 0.03263333599898033
+      },
+      "candidate": {
+        "requests": 30,
+        "observed_p95_ttft_seconds": 0.03246805299932021,
+        "max_ttft_seconds": 0.03251385899784509
+      }
+    },
+    {
+      "profile": "27b-mtp2",
+      "metric": "startup_seconds",
+      "baseline": [
+        30.338451211002393,
+        30.935032118999516,
+        31.53930552699967,
+        28.2339168360013,
+        28.236241185000836,
+        30.037413699999888,
+        29.435212098000193,
+        29.737297971998487,
+        28.833919780998258,
+        27.939078064999194
+      ],
+      "candidate": [
+        30.634416671997315,
+        30.640256856000633,
+        29.141157581001607,
+        29.434388981000666,
+        29.1352015880002,
+        29.43957118599792,
+        29.140678825002396,
+        28.838655038998695,
+        27.936588494998432,
+        27.935714433999237
+      ]
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "case": "hot_long",
+      "metric": "tpot_seconds",
+      "paired_units": 5,
+      "baseline_median": 0.015311797253941353,
+      "candidate_median": 0.0152356858730306,
+      "ratios": [
+        0.9942318394598445,
+        1.0057844579484465,
+        0.996050909430205,
+        0.9959780507540493,
+        0.9838090909444883
+      ],
+      "paired_median_ratio": 0.9959780507540493,
+      "bootstrap_95_percent_ci": [
+        0.9838090909444883,
+        1.0057844579484465
+      ],
+      "observed_ratio_drift_from_first_pair": 0.011619642451682566,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "case": "hot_long",
+      "metric": "ttft_seconds",
+      "paired_units": 5,
+      "baseline_median": 1.2245725869979651,
+      "candidate_median": 1.2265891450006166,
+      "ratios": [
+        1.004511789767594,
+        1.0091639047774654,
+        0.9985654586632541,
+        1.0011463684446826,
+        0.9920057224964616
+      ],
+      "paired_median_ratio": 1.0011463684446826,
+      "bootstrap_95_percent_ci": [
+        0.9920057224964616,
+        1.0091639047774654
+      ],
+      "observed_ratio_drift_from_first_pair": 0.012449895957941659,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "case": "hot_long",
+      "metric": "wall_seconds",
+      "paired_units": 5,
+      "baseline_median": 2.188548619,
+      "candidate_median": 2.185410925,
+      "ratios": [
+        1.0001011524879242,
+        1.0078443132818518,
+        0.997887481345659,
+        0.9983667858145577,
+        0.9886517753492456
+      ],
+      "paired_median_ratio": 0.9983667858145577,
+      "bootstrap_95_percent_ci": [
+        0.9886517753492456,
+        1.0078443132818518
+      ],
+      "observed_ratio_drift_from_first_pair": 0.011448219122832004,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "case": "hot_long",
+      "metric": "output_tokens_per_second_ratio",
+      "paired_units": 5,
+      "ratios": [
+        0.9998988577428668,
+        0.992216741039786,
+        1.0021169908369751,
+        1.0016358859375614,
+        1.0114784850780707
+      ],
+      "paired_median_ratio": 1.0016358859375614,
+      "bootstrap_95_percent_ci": [
+        0.992216741039786,
+        1.0114784850780707
+      ]
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "case": "hot_long",
+      "metric": "finite_sample_ttft_tail",
+      "baseline": {
+        "requests": 15,
+        "observed_p95_ttft_seconds": 1.2384044400023413,
+        "max_ttft_seconds": 1.2384044400023413
+      },
+      "candidate": {
+        "requests": 15,
+        "observed_p95_ttft_seconds": 1.2368001969989564,
+        "max_ttft_seconds": 1.2368001969989564
+      }
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "metric": "startup_seconds",
+      "baseline": [
+        20.129258660999767,
+        19.828858886998205,
+        20.129172051998466,
+        19.830003562001366,
+        20.430521926999063
+      ],
+      "candidate": [
+        19.827341476000583,
+        20.725799390002067,
+        19.83164882800338,
+        19.82996933600225,
+        20.434766474001663
+      ]
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "case": "hot_long",
+      "metric": "tpot_seconds",
+      "paired_units": 5,
+      "baseline_median": 0.0076814187777927145,
+      "candidate_median": 0.0076593270476598896,
+      "ratios": [
+        0.9804606302535849,
+        0.9977032572626321,
+        0.995513277010233,
+        1.004249433139413,
+        0.9950423696373396
+      ],
+      "paired_median_ratio": 0.995513277010233,
+      "bootstrap_95_percent_ci": [
+        0.9804606302535849,
+        1.004249433139413
+      ],
+      "observed_ratio_drift_from_first_pair": 0.024262884354341985,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "case": "hot_long",
+      "metric": "ttft_seconds",
+      "paired_units": 5,
+      "baseline_median": 1.237790944000153,
+      "candidate_median": 1.2399236439996457,
+      "ratios": [
+        0.992845251857803,
+        1.0000122796366808,
+        1.0013405995641786,
+        1.0086509706837565,
+        1.011110673162567
+      ],
+      "paired_median_ratio": 1.0013405995641786,
+      "bootstrap_95_percent_ci": [
+        0.992845251857803,
+        1.011110673162567
+      ],
+      "observed_ratio_drift_from_first_pair": 0.018397047546519385,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "case": "hot_long",
+      "metric": "wall_seconds",
+      "paired_units": 5,
+      "baseline_median": 1.721460783,
+      "candidate_median": 1.721611498,
+      "ratios": [
+        0.9884966883431836,
+        0.9985107678490511,
+        0.9997035506094362,
+        1.007867469597071,
+        1.01214882019612
+      ],
+      "paired_median_ratio": 0.9997035506094362,
+      "bootstrap_95_percent_ci": [
+        0.9884966883431836,
+        1.01214882019612
+      ],
+      "observed_ratio_drift_from_first_pair": 0.023927375915218985,
+      "regression_decision": "pass"
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "case": "hot_long",
+      "metric": "output_tokens_per_second_ratio",
+      "paired_units": 5,
+      "ratios": [
+        1.0116371777391557,
+        1.0014914532711119,
+        1.0002965372988655,
+        0.9921939443087529,
+        0.9879970020675755
+      ],
+      "paired_median_ratio": 1.0002965372988655,
+      "bootstrap_95_percent_ci": [
+        0.9879970020675755,
+        1.0116371777391557
+      ]
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "case": "hot_long",
+      "metric": "finite_sample_ttft_tail",
+      "baseline": {
+        "requests": 15,
+        "observed_p95_ttft_seconds": 1.2511480339999252,
+        "max_ttft_seconds": 1.2511480339999252
+      },
+      "candidate": {
+        "requests": 15,
+        "observed_p95_ttft_seconds": 1.2586255690002872,
+        "max_ttft_seconds": 1.2586255690002872
+      }
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "metric": "startup_seconds",
+      "baseline": [
+        28.538857639003254,
+        28.237314063000667,
+        28.540108779998263,
+        29.140217978998407,
+        27.93464499699985
+      ],
+      "candidate": [
+        28.536522225997032,
+        28.23844386899873,
+        28.53958383799909,
+        28.23524497299877,
+        28.23558194400175
+      ]
+    }
+  ],
+  "unavailable": [
+    {
+      "profile": "27b-mtp0",
+      "pair": 0,
+      "case": "hot_long",
+      "metric": "tpot_seconds",
+      "available": false,
+      "note": "no measured request exposed this metric"
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 1,
+      "case": "hot_long",
+      "metric": "tpot_seconds",
+      "available": false,
+      "note": "no measured request exposed this metric"
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 2,
+      "case": "hot_long",
+      "metric": "tpot_seconds",
+      "available": false,
+      "note": "no measured request exposed this metric"
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 3,
+      "case": "hot_long",
+      "metric": "tpot_seconds",
+      "available": false,
+      "note": "no measured request exposed this metric"
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 4,
+      "case": "hot_long",
+      "metric": "tpot_seconds",
+      "available": false,
+      "note": "no measured request exposed this metric"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 0,
+      "case": "hot_long",
+      "metric": "tpot_seconds",
+      "available": false,
+      "note": "no measured request exposed this metric"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 1,
+      "case": "hot_long",
+      "metric": "tpot_seconds",
+      "available": false,
+      "note": "no measured request exposed this metric"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 2,
+      "case": "hot_long",
+      "metric": "tpot_seconds",
+      "available": false,
+      "note": "no measured request exposed this metric"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 3,
+      "case": "hot_long",
+      "metric": "tpot_seconds",
+      "available": false,
+      "note": "no measured request exposed this metric"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 4,
+      "case": "hot_long",
+      "metric": "tpot_seconds",
+      "available": false,
+      "note": "no measured request exposed this metric"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 5,
+      "case": "hot_long",
+      "metric": "tpot_seconds",
+      "available": false,
+      "note": "no measured request exposed this metric"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 6,
+      "case": "hot_long",
+      "metric": "tpot_seconds",
+      "available": false,
+      "note": "no measured request exposed this metric"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 7,
+      "case": "hot_long",
+      "metric": "tpot_seconds",
+      "available": false,
+      "note": "no measured request exposed this metric"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 8,
+      "case": "hot_long",
+      "metric": "tpot_seconds",
+      "available": false,
+      "note": "no measured request exposed this metric"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 9,
+      "case": "hot_long",
+      "metric": "tpot_seconds",
+      "available": false,
+      "note": "no measured request exposed this metric"
+    }
+  ],
+  "pair_decisions": [
+    {
+      "profile": "2b-mtp0",
+      "pair": 0,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/2b-mtp0-v3-p0-comparison.json",
+      "comparison_sha256": "18dc2e5b9fc9fec654b8fb33fb40cb9cfdade24372663dbaa205a94b23377e0c"
+    },
+    {
+      "profile": "2b-mtp0",
+      "pair": 1,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/2b-mtp0-v3-p1-comparison.json",
+      "comparison_sha256": "c9d7b0f6a53e0d33dcb1f943ca32f958c1902885c154799d2a1327d64b50cc78"
+    },
+    {
+      "profile": "2b-mtp0",
+      "pair": 2,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/2b-mtp0-v3-p2-comparison.json",
+      "comparison_sha256": "34ea35450df9163c5bc5601bb2d9a2bf03291888792e5d5dd84a7cb834606ee6"
+    },
+    {
+      "profile": "2b-mtp0",
+      "pair": 3,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/2b-mtp0-v3-p3-comparison.json",
+      "comparison_sha256": "29e9e750bb212d52681e37249382a4ec3dc554aa575eeb0c7cd42537e73fad77"
+    },
+    {
+      "profile": "2b-mtp0",
+      "pair": 4,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/2b-mtp0-v3-p4-comparison.json",
+      "comparison_sha256": "6bd9e95375da1b3919d992ca5a11b4d97d03db62b45f07dd6f0ebddd8d77536f"
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 0,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp0-v3-p0-comparison.json",
+      "comparison_sha256": "62358ee2986c08522815c3251ef03d31396752d7e86504bb86a70e590e899b6e"
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 1,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp0-v3-p1-comparison.json",
+      "comparison_sha256": "c64827d2f8f7a0726b5d02b4fd54d9c276f4531ff901cc12e01939b02cb47552"
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 2,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp0-v3-p2-comparison.json",
+      "comparison_sha256": "d5de3ad96f7383412a3c0a0566adcff19e383023bf490e64104773c746e0bcf0"
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 3,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp0-v3-p3-comparison.json",
+      "comparison_sha256": "4f25913e72423a4bcde46394993f46c8c822a6ab30e3443ea2c6286e963fe57f"
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 4,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp0-v3-p4-comparison.json",
+      "comparison_sha256": "fb5876196b3f3a87eee40210fa94464c3339529006ed51873dbe6471fd39889d"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 0,
+      "point_estimate_gate_passed": false,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp2-v3-p0-comparison.json",
+      "comparison_sha256": "266d297d1be7d059a8966ad34541b18b3b48396a2f509df0ee92080081236f80"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 1,
+      "point_estimate_gate_passed": false,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp2-v3-p1-comparison.json",
+      "comparison_sha256": "134c39f14739103672447b49f57b49071ee33a868f0653933f08afe387030b4d"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 2,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp2-v3-p2-comparison.json",
+      "comparison_sha256": "9d560005ac4bc93c83762c07522477d3c1c83b7a86a19f1e8992b718420f804f"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 3,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp2-v3-p3-comparison.json",
+      "comparison_sha256": "071cfc815fd11a9f061c837703fb16c388338d1e7f38fa6fed6cffb04f41715d"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 4,
+      "point_estimate_gate_passed": false,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp2-v3-p4-comparison.json",
+      "comparison_sha256": "6db7dab0ef2cd98f875558755c7adc819ade5c96634c6ba810fb0b1655b9048b"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 5,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp2-v3-p5-comparison.json",
+      "comparison_sha256": "2ea1a5bd60f0a9d643cb156b78b224676d7b28b5bd5eb70cc6a9a96aed37c183"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 6,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp2-v3-p6-comparison.json",
+      "comparison_sha256": "649acb4152a6d5f2983aa74e1010a8b1367adaa1e0aa9c8baf22d06bb7ea19cf"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 7,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp2-v3-p7-comparison.json",
+      "comparison_sha256": "c0ea8fedbb683c0f5ec6da85e078ca330ba112cef4394744289e989d13878e7b"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 8,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp2-v3-p8-comparison.json",
+      "comparison_sha256": "7ae387295f775ac75ab3bcfe5cc5b209e6bbcb49133ea7f9483f35dd718a393f"
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 9,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp2-v3-p9-comparison.json",
+      "comparison_sha256": "413c42c41d20da80c14c89d3e206d924a515b695d1cfc09414aec01633901e9a"
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "pair": 0,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp0-private-decode-v3-private-decode-p0-comparison.json",
+      "comparison_sha256": "b54cd582295c1196d7dac0a247e3a60c43059b9d33c7f5ec314451fb8ee23599"
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "pair": 1,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp0-private-decode-v3-private-decode-p1-comparison.json",
+      "comparison_sha256": "18a236469f57d6cc68420b1e977c6b996094e1d1474bf5a117d16c80ecfc1f1f"
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "pair": 2,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp0-private-decode-v3-private-decode-p2-comparison.json",
+      "comparison_sha256": "f6c786653fa5a437a24cae4f4b190853ddb86466eaac5fe72eb0bd35d519032c"
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "pair": 3,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp0-private-decode-v3-private-decode-p3-comparison.json",
+      "comparison_sha256": "c299318efe7cf501a47778562ce7ac0cb4deceb7093e8c9915a2ad04be0ea1ee"
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "pair": 4,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp0-private-decode-v3-private-decode-p4-comparison.json",
+      "comparison_sha256": "d632f070c1194e0cff9f7cdbd6e54986ff289cc9d687a9905ee8c3c1b0128cca"
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "pair": 0,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp2-private-decode-v3-private-decode-p0-comparison.json",
+      "comparison_sha256": "2880cef3dc31933874bc201be6a6dc3f2671083f108d36390203b76ee0e6256b"
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "pair": 1,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp2-private-decode-v3-private-decode-p1-comparison.json",
+      "comparison_sha256": "174f8228bf4e9c0bafa52ffc0875d2e4bc37e101e7c3b4e8d0a9c61bd3ff3d9d"
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "pair": 2,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp2-private-decode-v3-private-decode-p2-comparison.json",
+      "comparison_sha256": "193ee6ab04b98a57ab6dcb445e63a2d554f81e4d0ca327af7a9daecf9522fdb8"
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "pair": 3,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp2-private-decode-v3-private-decode-p3-comparison.json",
+      "comparison_sha256": "a566dd1e5062ea36b9acd6e163b8a2339a7fcd282c8aa0c5501a3630966f7fda"
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "pair": 4,
+      "point_estimate_gate_passed": true,
+      "comparison_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/27b-mtp2-private-decode-v3-private-decode-p4-comparison.json",
+      "comparison_sha256": "6bfa92c278f19d9eb8d54a3084ec5af7de0dbcdb2c2955c53daf56aeacb5b40a"
+    }
+  ],
+  "raw_reports": [
+    {
+      "profile": "2b-mtp0",
+      "pair": 0,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p0-baseline.json",
+      "sha256": "be04dab6644e2c573d610c82471225a4f4af904bccdc2bca3aa084a37fac0325",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p0-baseline.telemetry.jsonl",
+      "telemetry_sha256": "c71393a82bde9a232d75ce258088d02177f37494a7802ece984be736f2a1cdac",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "2dfefa84f29f4e2ef96839096d9fb785a454f070efc5fb5b1070787bd3a66586",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-2b-async.json",
+        "sha256": "ce14d347ca8f23823b2b1543edd56963755a3fc96274a703f913d4f10823bb62",
+        "profile_id": "2b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 5.712021723997168,
+      "sampled_server_tree_rss_peak_bytes": 977960960,
+      "sampled_server_cpu_mean_percent_one_core": 51.53768099218654,
+      "cgroup_peak_bytes": 3255988224,
+      "device_wide_gpu_peak_mib": 29420.0
+    },
+    {
+      "profile": "2b-mtp0",
+      "pair": 0,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p0-candidate.json",
+      "sha256": "688e3e52e8d8b66bf5c3cc13bc375b56609c78ce9e1f6534ec7743662ae3d89d",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p0-candidate.telemetry.jsonl",
+      "telemetry_sha256": "bfc51070ebb65430e4c7162b4b241ddfbfa23a34035b352cf486ea81a4441d45",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "2dfefa84f29f4e2ef96839096d9fb785a454f070efc5fb5b1070787bd3a66586",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-2b-async.json",
+        "sha256": "ce14d347ca8f23823b2b1543edd56963755a3fc96274a703f913d4f10823bb62",
+        "profile_id": "2b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 5.411353068000608,
+      "sampled_server_tree_rss_peak_bytes": 1063706624,
+      "sampled_server_cpu_mean_percent_one_core": 51.468299127831614,
+      "cgroup_peak_bytes": 3258617856,
+      "device_wide_gpu_peak_mib": 29421.0
+    },
+    {
+      "profile": "2b-mtp0",
+      "pair": 1,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p1-baseline.json",
+      "sha256": "78b62ddb3dbd160dcf8075c96ef98aaaad365b2edcc187efde5909dd6a48e689",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p1-baseline.telemetry.jsonl",
+      "telemetry_sha256": "613a82cedc77218eef05eb24249b159ead51b02feacd36bb18c56874c7cd30ef",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "2dfefa84f29f4e2ef96839096d9fb785a454f070efc5fb5b1070787bd3a66586",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-2b-async.json",
+        "sha256": "ce14d347ca8f23823b2b1543edd56963755a3fc96274a703f913d4f10823bb62",
+        "profile_id": "2b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 5.412932465998892,
+      "sampled_server_tree_rss_peak_bytes": 980041728,
+      "sampled_server_cpu_mean_percent_one_core": 51.73637462178721,
+      "cgroup_peak_bytes": 3256332288,
+      "device_wide_gpu_peak_mib": 29413.0
+    },
+    {
+      "profile": "2b-mtp0",
+      "pair": 1,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p1-candidate.json",
+      "sha256": "8462f3ff9d847d4e0d0f4d666b9d23978d327c9e7c1986807d5d91a4f3e7825a",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p1-candidate.telemetry.jsonl",
+      "telemetry_sha256": "b52c4f35b448db3d64e55096688be1b1b73ac3443d10860f6c7dff7585840dca",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "2dfefa84f29f4e2ef96839096d9fb785a454f070efc5fb5b1070787bd3a66586",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-2b-async.json",
+        "sha256": "ce14d347ca8f23823b2b1543edd56963755a3fc96274a703f913d4f10823bb62",
+        "profile_id": "2b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 5.418938686998445,
+      "sampled_server_tree_rss_peak_bytes": 1051213824,
+      "sampled_server_cpu_mean_percent_one_core": 51.464674792797126,
+      "cgroup_peak_bytes": 3256135680,
+      "device_wide_gpu_peak_mib": 29421.0
+    },
+    {
+      "profile": "2b-mtp0",
+      "pair": 2,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p2-baseline.json",
+      "sha256": "8b12dce0618623ca75f8dab97b4a0a06ef6a39c59e395bb13067787729d6eb82",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p2-baseline.telemetry.jsonl",
+      "telemetry_sha256": "ae7ee2ef7a98201f46c2a3ee23cd1cdb94e843bae647a17e8bf1a1df4cce1e81",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "2dfefa84f29f4e2ef96839096d9fb785a454f070efc5fb5b1070787bd3a66586",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-2b-async.json",
+        "sha256": "ce14d347ca8f23823b2b1543edd56963755a3fc96274a703f913d4f10823bb62",
+        "profile_id": "2b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 5.410073883998848,
+      "sampled_server_tree_rss_peak_bytes": 983404544,
+      "sampled_server_cpu_mean_percent_one_core": 51.78875244030052,
+      "cgroup_peak_bytes": 3254800384,
+      "device_wide_gpu_peak_mib": 29415.0
+    },
+    {
+      "profile": "2b-mtp0",
+      "pair": 2,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p2-candidate.json",
+      "sha256": "f753547d7ab00c2b66a141c0c6cadfea5aba94aae5bc4eeb82fdc09e59a2ae05",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p2-candidate.telemetry.jsonl",
+      "telemetry_sha256": "9f842c8b85cb960d69c9ce3a604efc4abe8850b4ca6e9df91ad8edb7d50c9d86",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "2dfefa84f29f4e2ef96839096d9fb785a454f070efc5fb5b1070787bd3a66586",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-2b-async.json",
+        "sha256": "ce14d347ca8f23823b2b1543edd56963755a3fc96274a703f913d4f10823bb62",
+        "profile_id": "2b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 5.41771854399849,
+      "sampled_server_tree_rss_peak_bytes": 1051451392,
+      "sampled_server_cpu_mean_percent_one_core": 51.52990152601563,
+      "cgroup_peak_bytes": 3256885248,
+      "device_wide_gpu_peak_mib": 29413.0
+    },
+    {
+      "profile": "2b-mtp0",
+      "pair": 3,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p3-baseline.json",
+      "sha256": "51132e758d729f3965ab150b4edc8b146f3dc9cdf4b4d641804095a7e8ea18a2",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p3-baseline.telemetry.jsonl",
+      "telemetry_sha256": "e201270499eddbe55597a476a1cd56e5dc6974e3f19d51e4eb0f9bd11432797c",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "2dfefa84f29f4e2ef96839096d9fb785a454f070efc5fb5b1070787bd3a66586",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-2b-async.json",
+        "sha256": "ce14d347ca8f23823b2b1543edd56963755a3fc96274a703f913d4f10823bb62",
+        "profile_id": "2b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 5.411036437002622,
+      "sampled_server_tree_rss_peak_bytes": 986841088,
+      "sampled_server_cpu_mean_percent_one_core": 51.411031912600286,
+      "cgroup_peak_bytes": 3256770560,
+      "device_wide_gpu_peak_mib": 29415.0
+    },
+    {
+      "profile": "2b-mtp0",
+      "pair": 3,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p3-candidate.json",
+      "sha256": "5ffaa3a5f0b9be5b712d4d00efe36e40e9da1fbfac4f3dfd25a367528d340266",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p3-candidate.telemetry.jsonl",
+      "telemetry_sha256": "c0ac0d640e297c34ae6e5323918e8929a0e1eeb755da757392acc26fad552de6",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "2dfefa84f29f4e2ef96839096d9fb785a454f070efc5fb5b1070787bd3a66586",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-2b-async.json",
+        "sha256": "ce14d347ca8f23823b2b1543edd56963755a3fc96274a703f913d4f10823bb62",
+        "profile_id": "2b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 5.41331240299769,
+      "sampled_server_tree_rss_peak_bytes": 1042345984,
+      "sampled_server_cpu_mean_percent_one_core": 51.5272324983948,
+      "cgroup_peak_bytes": 3257176064,
+      "device_wide_gpu_peak_mib": 29415.0
+    },
+    {
+      "profile": "2b-mtp0",
+      "pair": 4,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p4-baseline.json",
+      "sha256": "b99f17bb971cd61c0f939d8aa70ef20b668cd81e918bd6777379525d724653e9",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p4-baseline.telemetry.jsonl",
+      "telemetry_sha256": "3fa6d2733b5c598fdb79d50eced876a742f80542ee6da6c15d2acaf069b808c2",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "2dfefa84f29f4e2ef96839096d9fb785a454f070efc5fb5b1070787bd3a66586",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-2b-async.json",
+        "sha256": "ce14d347ca8f23823b2b1543edd56963755a3fc96274a703f913d4f10823bb62",
+        "profile_id": "2b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 5.415691737001907,
+      "sampled_server_tree_rss_peak_bytes": 974663680,
+      "sampled_server_cpu_mean_percent_one_core": 51.40852158272752,
+      "cgroup_peak_bytes": 3254349824,
+      "device_wide_gpu_peak_mib": 29413.0
+    },
+    {
+      "profile": "2b-mtp0",
+      "pair": 4,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p4-candidate.json",
+      "sha256": "d237e38463714caa55ca40fd50df771d70ecf2595eeddf34468c2c3a76739156",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/qwen3vl-2b-mtp0-native-v3-p4-candidate.telemetry.jsonl",
+      "telemetry_sha256": "c945fb88e28373006a4f8230f6bee3db324151bfa2f5b58bd922a6f7159723e3",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "2dfefa84f29f4e2ef96839096d9fb785a454f070efc5fb5b1070787bd3a66586",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-2b-async.json",
+        "sha256": "ce14d347ca8f23823b2b1543edd56963755a3fc96274a703f913d4f10823bb62",
+        "profile_id": "2b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 5.416572867001378,
+      "sampled_server_tree_rss_peak_bytes": 1060130816,
+      "sampled_server_cpu_mean_percent_one_core": 51.307451816427914,
+      "cgroup_peak_bytes": 3255054336,
+      "device_wide_gpu_peak_mib": 29415.0
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 0,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p0-baseline.json",
+      "sha256": "2b5569d0f42ddf80f66fb422dcea2058d471b852192d0423d3d0d2eafc7225f1",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p0-baseline.telemetry.jsonl",
+      "telemetry_sha256": "4e7968658059974c5f88cf97eef76e22f25d8e3770ecabaf2f93fcd0b0fcf7e3",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-async.json",
+        "sha256": "9499be789d4c41b22177698ac22c4da543f65addd210849c3821bc2a75b44838",
+        "profile_id": "27b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 21.630735741000535,
+      "sampled_server_tree_rss_peak_bytes": 1362337792,
+      "sampled_server_cpu_mean_percent_one_core": 58.27104362401667,
+      "cgroup_peak_bytes": 5207343104,
+      "device_wide_gpu_peak_mib": 30295.0
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 0,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p0-candidate.json",
+      "sha256": "9f4f2ff1e294f8f4d809995548228e776e79babac0a703952b721a51d76da567",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p0-candidate.telemetry.jsonl",
+      "telemetry_sha256": "3a88997945db84a56269d9211c3ffcd27d720202d4a74cc69fdae201a675917b",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-async.json",
+        "sha256": "9499be789d4c41b22177698ac22c4da543f65addd210849c3821bc2a75b44838",
+        "profile_id": "27b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 21.328491948999726,
+      "sampled_server_tree_rss_peak_bytes": 1502924800,
+      "sampled_server_cpu_mean_percent_one_core": 57.98614653677024,
+      "cgroup_peak_bytes": 5206831104,
+      "device_wide_gpu_peak_mib": 31649.0
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 1,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p1-baseline.json",
+      "sha256": "31d990d4bfcabe563e309485221af2173344ad872731f3a1bc97ee4a75752d49",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p1-baseline.telemetry.jsonl",
+      "telemetry_sha256": "64b6be7f6037e0f686c57c67be11b6503b86d0809861ea581658ded4d50adb68",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-async.json",
+        "sha256": "9499be789d4c41b22177698ac22c4da543f65addd210849c3821bc2a75b44838",
+        "profile_id": "27b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 20.129971076999936,
+      "sampled_server_tree_rss_peak_bytes": 1358491648,
+      "sampled_server_cpu_mean_percent_one_core": 57.71070457462712,
+      "cgroup_peak_bytes": 5205880832,
+      "device_wide_gpu_peak_mib": 31635.0
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 1,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p1-candidate.json",
+      "sha256": "12b1e09e49419cbdd357418831a2cf6e56fa7cce0f5435360efcd382f9470c0f",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p1-candidate.telemetry.jsonl",
+      "telemetry_sha256": "00d8a8173ae492d435d70701adc2575385af78250acf8c1c4166b21d334433c3",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-async.json",
+        "sha256": "9499be789d4c41b22177698ac22c4da543f65addd210849c3821bc2a75b44838",
+        "profile_id": "27b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 20.131752155997674,
+      "sampled_server_tree_rss_peak_bytes": 1488248832,
+      "sampled_server_cpu_mean_percent_one_core": 57.741859604756954,
+      "cgroup_peak_bytes": 5206618112,
+      "device_wide_gpu_peak_mib": 31633.0
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 2,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p2-baseline.json",
+      "sha256": "ddacf7608c6b055167c128d6206f2547cd4f64007a5d5bfa8768bedb4772b041",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p2-baseline.telemetry.jsonl",
+      "telemetry_sha256": "4dcf863233ec0435a364164b68562f668b6c9a1ff0a3ccb598d4f3fbf44c81f6",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-async.json",
+        "sha256": "9499be789d4c41b22177698ac22c4da543f65addd210849c3821bc2a75b44838",
+        "profile_id": "27b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 20.427222935002646,
+      "sampled_server_tree_rss_peak_bytes": 1367977984,
+      "sampled_server_cpu_mean_percent_one_core": 57.71040680305658,
+      "cgroup_peak_bytes": 5207932928,
+      "device_wide_gpu_peak_mib": 31633.0
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 2,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p2-candidate.json",
+      "sha256": "64b857458da9063325160bac5cf8604a886cbd54e6651777301fd5ef7bfada5c",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p2-candidate.telemetry.jsonl",
+      "telemetry_sha256": "b9b38231bdc52d8f0603c066494fe30b0111067bcfecaa3dc58316aa9fc31d44",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-async.json",
+        "sha256": "9499be789d4c41b22177698ac22c4da543f65addd210849c3821bc2a75b44838",
+        "profile_id": "27b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 21.027484235000884,
+      "sampled_server_tree_rss_peak_bytes": 1497047040,
+      "sampled_server_cpu_mean_percent_one_core": 57.90672863324898,
+      "cgroup_peak_bytes": 5206622208,
+      "device_wide_gpu_peak_mib": 31635.0
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 3,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p3-baseline.json",
+      "sha256": "1cedb97ca229ff9a4b5682e9627f2bba279f9bfe32fef541711c2d886931d805",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p3-baseline.telemetry.jsonl",
+      "telemetry_sha256": "492c171f4e72757cbdc7b561c4a26e3866675dcc4fe99c4c599bd9a97bee4d83",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-async.json",
+        "sha256": "9499be789d4c41b22177698ac22c4da543f65addd210849c3821bc2a75b44838",
+        "profile_id": "27b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 20.429179834001843,
+      "sampled_server_tree_rss_peak_bytes": 1347903488,
+      "sampled_server_cpu_mean_percent_one_core": 57.69193940982256,
+      "cgroup_peak_bytes": 5205528576,
+      "device_wide_gpu_peak_mib": 31577.0
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 3,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p3-candidate.json",
+      "sha256": "e56cc1d7a37372121752b48831bbe41612ab0649dacd3480b8f830a7433c3c91",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p3-candidate.telemetry.jsonl",
+      "telemetry_sha256": "7eb2c2ba53c36e3fdabeb6ef115a499c92b770ec0f225c15437ac429fd6cad0c",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-async.json",
+        "sha256": "9499be789d4c41b22177698ac22c4da543f65addd210849c3821bc2a75b44838",
+        "profile_id": "27b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 20.42918436999753,
+      "sampled_server_tree_rss_peak_bytes": 1503526912,
+      "sampled_server_cpu_mean_percent_one_core": 57.761721603509116,
+      "cgroup_peak_bytes": 5206953984,
+      "device_wide_gpu_peak_mib": 31634.0
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 4,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p4-baseline.json",
+      "sha256": "8b8f9f759a741f230d939808ea7f22ec0dbede114d81c55e860a72a8a683b2d6",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p4-baseline.telemetry.jsonl",
+      "telemetry_sha256": "e1f494584dffd598b3344346d7b9d7992eff9a9dbb98f8f126038c2434f40efa",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-async.json",
+        "sha256": "9499be789d4c41b22177698ac22c4da543f65addd210849c3821bc2a75b44838",
+        "profile_id": "27b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 20.72967231399889,
+      "sampled_server_tree_rss_peak_bytes": 1364983808,
+      "sampled_server_cpu_mean_percent_one_core": 57.759954694710366,
+      "cgroup_peak_bytes": 5207212032,
+      "device_wide_gpu_peak_mib": 31579.0
+    },
+    {
+      "profile": "27b-mtp0",
+      "pair": 4,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p4-candidate.json",
+      "sha256": "8b3db6e32f2969bae1950a0bd6a1665eb3dd2deaca36c66dda02f346e8963738",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-p4-candidate.telemetry.jsonl",
+      "telemetry_sha256": "8eb7ad81e11fb9c280b92866dcab44d789578afa93c79fea9235720a8e2ee20c",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-async.json",
+        "sha256": "9499be789d4c41b22177698ac22c4da543f65addd210849c3821bc2a75b44838",
+        "profile_id": "27b-mtp0-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 20.72907872900032,
+      "sampled_server_tree_rss_peak_bytes": 1492525056,
+      "sampled_server_cpu_mean_percent_one_core": 57.813898304858576,
+      "cgroup_peak_bytes": 5206192128,
+      "device_wide_gpu_peak_mib": 31577.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 0,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p0-baseline.json",
+      "sha256": "5229661f2e0ab7b3b77074ce9456ce4a1637f203189dabd7841f99dc5a49db33",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p0-baseline.telemetry.jsonl",
+      "telemetry_sha256": "a78134b7e4fdec58453270c297cfe262f0482ee4fddc2806d2daef55c77d0591",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 30.338451211002393,
+      "sampled_server_tree_rss_peak_bytes": 1641467904,
+      "sampled_server_cpu_mean_percent_one_core": 59.88783491891207,
+      "cgroup_peak_bytes": 5208068096,
+      "device_wide_gpu_peak_mib": 30177.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 0,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p0-candidate.json",
+      "sha256": "11d2e736d2302032b3206c43a9a4dbd7023fc96b2811a080c09d3aa7e10ac04f",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p0-candidate.telemetry.jsonl",
+      "telemetry_sha256": "23af6d357e6bacfb1c7d8ae86e797b407e95e983eea5d319e8013817742c692f",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 30.634416671997315,
+      "sampled_server_tree_rss_peak_bytes": 1768804352,
+      "sampled_server_cpu_mean_percent_one_core": 60.164454606922085,
+      "cgroup_peak_bytes": 5206478848,
+      "device_wide_gpu_peak_mib": 30177.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 1,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p1-baseline.json",
+      "sha256": "cf7f71c3323a8330ca681b9887e130bacf12ac7d628f14ab399eafeea064559c",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p1-baseline.telemetry.jsonl",
+      "telemetry_sha256": "42252c7b4bd790dd9defb99c5871df5d27f86ad359e76fb0e4617911c08406a0",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 30.935032118999516,
+      "sampled_server_tree_rss_peak_bytes": 1646809088,
+      "sampled_server_cpu_mean_percent_one_core": 60.59096898549647,
+      "cgroup_peak_bytes": 5207060480,
+      "device_wide_gpu_peak_mib": 30882.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 1,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p1-candidate.json",
+      "sha256": "d988bb3894f1293b5e962001dbb9829a4cdf4f133be9c566070f8186e35d4995",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p1-candidate.telemetry.jsonl",
+      "telemetry_sha256": "34827b01f0c565e644536ecb6ceb295393bcff464a14192fb55410b0763ec45d",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 30.640256856000633,
+      "sampled_server_tree_rss_peak_bytes": 1705226240,
+      "sampled_server_cpu_mean_percent_one_core": 60.949234954280364,
+      "cgroup_peak_bytes": 5206618112,
+      "device_wide_gpu_peak_mib": 30971.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 2,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p2-baseline.json",
+      "sha256": "00b78c8eb70c4acc388254310df1b59abad35ffa02d6d1e91d6acd0f54c80ac9",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p2-baseline.telemetry.jsonl",
+      "telemetry_sha256": "019167350d57fbefbef7440db81598eb1e0bb2680370e29d96e2b06a3593c1fc",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 31.53930552699967,
+      "sampled_server_tree_rss_peak_bytes": 1626157056,
+      "sampled_server_cpu_mean_percent_one_core": 60.834113174343706,
+      "cgroup_peak_bytes": 5208436736,
+      "device_wide_gpu_peak_mib": 30989.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 2,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p2-candidate.json",
+      "sha256": "b7404179b630d30136bdf4c1c9eecd2145fed1c203255955bd6a086bc6fc30cf",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p2-candidate.telemetry.jsonl",
+      "telemetry_sha256": "2880ece8307e3921505d7f38e7ad9304b8aeb9282b24abc0906bae1658e178f0",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 29.141157581001607,
+      "sampled_server_tree_rss_peak_bytes": 1772077056,
+      "sampled_server_cpu_mean_percent_one_core": 60.626199783348376,
+      "cgroup_peak_bytes": 5206859776,
+      "device_wide_gpu_peak_mib": 30594.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 3,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p3-baseline.json",
+      "sha256": "2f0d464f7c51b649c3bc4b26c537bd14e353473163f738ccdd530c12e5036bf7",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p3-baseline.telemetry.jsonl",
+      "telemetry_sha256": "2149b629dddb6fcb5f99df4dce65465c1dca8d8b3049f01209b3105565d6e7ea",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 28.2339168360013,
+      "sampled_server_tree_rss_peak_bytes": 1615556608,
+      "sampled_server_cpu_mean_percent_one_core": 59.817544602084205,
+      "cgroup_peak_bytes": 5206908928,
+      "device_wide_gpu_peak_mib": 29935.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 3,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p3-candidate.json",
+      "sha256": "e71922fb98c230b10866d28a4682d26c2ef8fe60e80ec4537fa70ac46217ea7c",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p3-candidate.telemetry.jsonl",
+      "telemetry_sha256": "8990297962ae3270d33c4bafeb1974ee096aa1b7ef4e18e916eb41227ae05b24",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 29.434388981000666,
+      "sampled_server_tree_rss_peak_bytes": 1773223936,
+      "sampled_server_cpu_mean_percent_one_core": 60.30016777428605,
+      "cgroup_peak_bytes": 5206917120,
+      "device_wide_gpu_peak_mib": 29935.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 4,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p4-baseline.json",
+      "sha256": "ee7c001dd8c29a62f041b4f06f6ce85b1c4eb2d004a92daafeff2bd67a0a1a3a",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p4-baseline.telemetry.jsonl",
+      "telemetry_sha256": "4226ebc301c9fc6dad88da2ea3de845bcb46e0941e40312233de6891dc9b88b3",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 28.236241185000836,
+      "sampled_server_tree_rss_peak_bytes": 1647226880,
+      "sampled_server_cpu_mean_percent_one_core": 60.23036401630301,
+      "cgroup_peak_bytes": 5206675456,
+      "device_wide_gpu_peak_mib": 30624.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 4,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p4-candidate.json",
+      "sha256": "8388f7753e08d6477913587785a486c63fbfd1ae143040fbbf30a8ec89ecdbda",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p4-candidate.telemetry.jsonl",
+      "telemetry_sha256": "117982f7fd614db8a981a1d75111d22efc92db68181ac74d1f2c4ba7edb65df4",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 29.1352015880002,
+      "sampled_server_tree_rss_peak_bytes": 1775538176,
+      "sampled_server_cpu_mean_percent_one_core": 60.76486651984262,
+      "cgroup_peak_bytes": 5207482368,
+      "device_wide_gpu_peak_mib": 30852.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 5,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p5-baseline.json",
+      "sha256": "3086f1bf5d586f4079013cff909510317c39fd7492407f84a40acbe29db22660",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p5-baseline.telemetry.jsonl",
+      "telemetry_sha256": "1085eaddb8dfb2eb2b38573821374d509cf196c63b9863a393324c3f69a91167",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 30.037413699999888,
+      "sampled_server_tree_rss_peak_bytes": 1638948864,
+      "sampled_server_cpu_mean_percent_one_core": 60.38304963254627,
+      "cgroup_peak_bytes": 5207031808,
+      "device_wide_gpu_peak_mib": 30616.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 5,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p5-candidate.json",
+      "sha256": "707af00de4f997dbeda8f69159bbb4d061ec52a42de783a3d05dfd1aa2b0ef33",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p5-candidate.telemetry.jsonl",
+      "telemetry_sha256": "cde39286e4e308c67c8dd5a0f437dff148d9450d9514b32953643d39c721f6e6",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 29.43957118599792,
+      "sampled_server_tree_rss_peak_bytes": 1748480000,
+      "sampled_server_cpu_mean_percent_one_core": 60.54045666529445,
+      "cgroup_peak_bytes": 5206593536,
+      "device_wide_gpu_peak_mib": 30612.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 6,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p6-baseline.json",
+      "sha256": "b60b04a6855d2827d83e1695e32243ec2ed021d1724f0534a94fb1560aa54127",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p6-baseline.telemetry.jsonl",
+      "telemetry_sha256": "d548f0a93ca630deeac64a6e1f0165a92a753b01811a299bd69b7e9e7ff4d598",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 29.435212098000193,
+      "sampled_server_tree_rss_peak_bytes": 1642520576,
+      "sampled_server_cpu_mean_percent_one_core": 60.068061404372976,
+      "cgroup_peak_bytes": 5207199744,
+      "device_wide_gpu_peak_mib": 30584.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 6,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p6-candidate.json",
+      "sha256": "b2cfe2e8c3acc8e5c18f7e540d09060baede2f7939837d989f68ceb34faa7329",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p6-candidate.telemetry.jsonl",
+      "telemetry_sha256": "04c488c18d6cf50c1d8f1514661e96fcd05b5d3043b77380922e6d251ac0e95e",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 29.140678825002396,
+      "sampled_server_tree_rss_peak_bytes": 1772081152,
+      "sampled_server_cpu_mean_percent_one_core": 60.31896240624608,
+      "cgroup_peak_bytes": 5207474176,
+      "device_wide_gpu_peak_mib": 30649.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 7,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p7-baseline.json",
+      "sha256": "d3540a58d1d81578966310e5d3898480bdba20d8985a9e635b0b4efb8c322211",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p7-baseline.telemetry.jsonl",
+      "telemetry_sha256": "4c1a30b0425b19dd32d044e5641c01de923b17c42aa105a5ff8dda86846dbb8f",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 29.737297971998487,
+      "sampled_server_tree_rss_peak_bytes": 1612177408,
+      "sampled_server_cpu_mean_percent_one_core": 60.49976824711179,
+      "cgroup_peak_bytes": 5208354816,
+      "device_wide_gpu_peak_mib": 30725.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 7,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p7-candidate.json",
+      "sha256": "7511fb56ac3469434c07b44b78cff935c0686064e7bd90c9ed1ca5ca841e9066",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p7-candidate.telemetry.jsonl",
+      "telemetry_sha256": "9a313b5863dc82af071a2bad13bc76c3e35e83cc2a8980fe12f29be0b379c3d6",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 28.838655038998695,
+      "sampled_server_tree_rss_peak_bytes": 1753649152,
+      "sampled_server_cpu_mean_percent_one_core": 60.323668224416394,
+      "cgroup_peak_bytes": 5207429120,
+      "device_wide_gpu_peak_mib": 30648.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 8,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p8-baseline.json",
+      "sha256": "16c5e3d238fd731124d2797a9985aba61440b72115e888658f267e3314ff5838",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p8-baseline.telemetry.jsonl",
+      "telemetry_sha256": "01e5823b6a6fb367e653b73922f707274a46e4223dc3c36c9f6c2a4cbc757908",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 28.833919780998258,
+      "sampled_server_tree_rss_peak_bytes": 1646665728,
+      "sampled_server_cpu_mean_percent_one_core": 59.909577194186916,
+      "cgroup_peak_bytes": 5207367680,
+      "device_wide_gpu_peak_mib": 30034.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 8,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p8-candidate.json",
+      "sha256": "d6403866ac8512e7f3a77b61665286c1b383a88fab6ed05192b5bf0ac5e1653e",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p8-candidate.telemetry.jsonl",
+      "telemetry_sha256": "7569cc1ff522cdb5f46d755b1b26fda185a86bd1f8fe27e2014d836081f6c26c",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 27.936588494998432,
+      "sampled_server_tree_rss_peak_bytes": 1771003904,
+      "sampled_server_cpu_mean_percent_one_core": 59.88803247528611,
+      "cgroup_peak_bytes": 5207007232,
+      "device_wide_gpu_peak_mib": 29775.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 9,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p9-baseline.json",
+      "sha256": "bf82fbd85668276bd0a5ca1a5cc64d24eb7bd1868ab0441a5412077d232901ab",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p9-baseline.telemetry.jsonl",
+      "telemetry_sha256": "196ec08293793888295f91684d4d7ad4fa138420666c6ad1c74e1440d39ade80",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 27.939078064999194,
+      "sampled_server_tree_rss_peak_bytes": 1661018112,
+      "sampled_server_cpu_mean_percent_one_core": 59.65422013102575,
+      "cgroup_peak_bytes": 5206822912,
+      "device_wide_gpu_peak_mib": 29775.0
+    },
+    {
+      "profile": "27b-mtp2",
+      "pair": 9,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p9-candidate.json",
+      "sha256": "93fb7df259d22d85faeeac85d91955dbdb8e4e07c5a02d94ee0a25ba44c82882",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-p9-candidate.telemetry.jsonl",
+      "telemetry_sha256": "9979a489481b41a4b1a18eb67f5a5d0b9a670fa940b16c870886e8cb68f438b2",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "c6286d9e72e55ed252e2f05983f2424745d56d26ea51ea7789cb64ac38d76bf6",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-async.json",
+        "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419",
+        "profile_id": "27b-mtp2-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 27.935714433999237,
+      "sampled_server_tree_rss_peak_bytes": 1767424000,
+      "sampled_server_cpu_mean_percent_one_core": 59.8626594264944,
+      "cgroup_peak_bytes": 5207031808,
+      "device_wide_gpu_peak_mib": 29775.0
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "pair": 0,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p0-baseline.json",
+      "sha256": "a70506af0c56d9efc4542b6ca300131bf1e941182551b615164404b1615e55ca",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p0-baseline.telemetry.jsonl",
+      "telemetry_sha256": "4df93c5bcb45c60cf79c9b94e042aeea141b70ccf28aaba313d318d43532660b",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-private-decode-async.json",
+        "sha256": "5b3a20a8cf87267eed7793f9bda2135c193217c004ee754967f3ba19f1d73bd4",
+        "profile_id": "27b-mtp0-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 20.129258660999767,
+      "sampled_server_tree_rss_peak_bytes": 1379876864,
+      "sampled_server_cpu_mean_percent_one_core": 70.61403147578649,
+      "cgroup_peak_bytes": 5206241280,
+      "device_wide_gpu_peak_mib": 31248.0
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "pair": 0,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p0-candidate.json",
+      "sha256": "8825877e71770ebb0923af118ecb87d69c4bddfab750c08cddaf118619bfd3f3",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p0-candidate.telemetry.jsonl",
+      "telemetry_sha256": "d31fca28ef10bb9dd4524ca42747436f4c4832062d2d954d43bb79b4284612f7",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-private-decode-async.json",
+        "sha256": "5b3a20a8cf87267eed7793f9bda2135c193217c004ee754967f3ba19f1d73bd4",
+        "profile_id": "27b-mtp0-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 19.827341476000583,
+      "sampled_server_tree_rss_peak_bytes": 1515167744,
+      "sampled_server_cpu_mean_percent_one_core": 70.61255721855548,
+      "cgroup_peak_bytes": 5208092672,
+      "device_wide_gpu_peak_mib": 31248.0
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "pair": 1,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p1-baseline.json",
+      "sha256": "ad81a5758b40ff59818e4dd3664e4f67233afd9cb6bf113c9c111099a8122a99",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p1-baseline.telemetry.jsonl",
+      "telemetry_sha256": "c96b1d57c0771e3e23ca488a476f872d7e441e8a059af482771fd3af4686e245",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-private-decode-async.json",
+        "sha256": "5b3a20a8cf87267eed7793f9bda2135c193217c004ee754967f3ba19f1d73bd4",
+        "profile_id": "27b-mtp0-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 19.828858886998205,
+      "sampled_server_tree_rss_peak_bytes": 1388371968,
+      "sampled_server_cpu_mean_percent_one_core": 70.60802821769812,
+      "cgroup_peak_bytes": 5206757376,
+      "device_wide_gpu_peak_mib": 31248.0
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "pair": 1,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p1-candidate.json",
+      "sha256": "a76f2de012316a72f82323b856107697baf113dedc7eb6c215e44776ec697888",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p1-candidate.telemetry.jsonl",
+      "telemetry_sha256": "ce0a50530ae5bbf6412f603adcbfb9874e9ff57a0ea03b10fc42ce1d8dfcb0f4",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-private-decode-async.json",
+        "sha256": "5b3a20a8cf87267eed7793f9bda2135c193217c004ee754967f3ba19f1d73bd4",
+        "profile_id": "27b-mtp0-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 20.725799390002067,
+      "sampled_server_tree_rss_peak_bytes": 1521922048,
+      "sampled_server_cpu_mean_percent_one_core": 70.67538280325931,
+      "cgroup_peak_bytes": 5206847488,
+      "device_wide_gpu_peak_mib": 31248.0
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "pair": 2,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p2-baseline.json",
+      "sha256": "8a452de893da77b2dee4301fa5c1988ca3bfbfc97866d703119d9efd46db848d",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p2-baseline.telemetry.jsonl",
+      "telemetry_sha256": "3bef8042e6995c1845feb50e0a419fe0f172ce1af485095e42e2b96642fc9c61",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-private-decode-async.json",
+        "sha256": "5b3a20a8cf87267eed7793f9bda2135c193217c004ee754967f3ba19f1d73bd4",
+        "profile_id": "27b-mtp0-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 20.129172051998466,
+      "sampled_server_tree_rss_peak_bytes": 1397575680,
+      "sampled_server_cpu_mean_percent_one_core": 70.3335674926239,
+      "cgroup_peak_bytes": 5205925888,
+      "device_wide_gpu_peak_mib": 31246.0
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "pair": 2,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p2-candidate.json",
+      "sha256": "bd86affd6f03544c109307ba2c4d0b3aeed40e535da337572a9e7f965da25d75",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p2-candidate.telemetry.jsonl",
+      "telemetry_sha256": "1ce60e6dd0b4cbdfea5529669772d2f3e66d57c285c242f5e18dd45438e30b3a",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-private-decode-async.json",
+        "sha256": "5b3a20a8cf87267eed7793f9bda2135c193217c004ee754967f3ba19f1d73bd4",
+        "profile_id": "27b-mtp0-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 19.83164882800338,
+      "sampled_server_tree_rss_peak_bytes": 1512259584,
+      "sampled_server_cpu_mean_percent_one_core": 70.4732636872051,
+      "cgroup_peak_bytes": 5206421504,
+      "device_wide_gpu_peak_mib": 31246.0
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "pair": 3,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p3-baseline.json",
+      "sha256": "2babb276b18c5a7d332c51526886cd2648f9eb7c5d75d1c4ff65e7b90d03d08e",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p3-baseline.telemetry.jsonl",
+      "telemetry_sha256": "51f6244cfa3dd1ff00fac2018f60aef5f67cad93dd46d42b8d3cc71d037f979e",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-private-decode-async.json",
+        "sha256": "5b3a20a8cf87267eed7793f9bda2135c193217c004ee754967f3ba19f1d73bd4",
+        "profile_id": "27b-mtp0-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 19.830003562001366,
+      "sampled_server_tree_rss_peak_bytes": 1390018560,
+      "sampled_server_cpu_mean_percent_one_core": 70.46773740565786,
+      "cgroup_peak_bytes": 5207519232,
+      "device_wide_gpu_peak_mib": 31246.0
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "pair": 3,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p3-candidate.json",
+      "sha256": "9a995109228ef435e6d83d50324e243684f7a00b8aab28af5f9c622c74c4a40a",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p3-candidate.telemetry.jsonl",
+      "telemetry_sha256": "6e535d1a999ed55449a7031829275b85a16f0a9406cde805878216fe96e45e3c",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-private-decode-async.json",
+        "sha256": "5b3a20a8cf87267eed7793f9bda2135c193217c004ee754967f3ba19f1d73bd4",
+        "profile_id": "27b-mtp0-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 19.82996933600225,
+      "sampled_server_tree_rss_peak_bytes": 1521340416,
+      "sampled_server_cpu_mean_percent_one_core": 70.4040021695783,
+      "cgroup_peak_bytes": 5206650880,
+      "device_wide_gpu_peak_mib": 31246.0
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "pair": 4,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p4-baseline.json",
+      "sha256": "00762cbd00dbf44d5e2caf17ae3400e953fef0d2e52777675d99e3a2d14fa961",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p4-baseline.telemetry.jsonl",
+      "telemetry_sha256": "b56a92018d2b77723664c492c292ff78bbc05e0d9e389553fd296a2c0e358d64",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-private-decode-async.json",
+        "sha256": "5b3a20a8cf87267eed7793f9bda2135c193217c004ee754967f3ba19f1d73bd4",
+        "profile_id": "27b-mtp0-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 20.430521926999063,
+      "sampled_server_tree_rss_peak_bytes": 1403142144,
+      "sampled_server_cpu_mean_percent_one_core": 70.52788820015175,
+      "cgroup_peak_bytes": 5206589440,
+      "device_wide_gpu_peak_mib": 31248.0
+    },
+    {
+      "profile": "27b-mtp0-private-decode",
+      "pair": 4,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p4-candidate.json",
+      "sha256": "c9655c3dec383483c2bb54b44eb7002a32f9a76121f6b3bb66da14144a2eda1b",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp0-native-v3-private-decode-p4-candidate.telemetry.jsonl",
+      "telemetry_sha256": "835b2e332b592c98a37e37fa23afdbaa8d636f198a2b8c38e55a8d541d324e6e",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp0-private-decode-async.json",
+        "sha256": "5b3a20a8cf87267eed7793f9bda2135c193217c004ee754967f3ba19f1d73bd4",
+        "profile_id": "27b-mtp0-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 20.434766474001663,
+      "sampled_server_tree_rss_peak_bytes": 1529032704,
+      "sampled_server_cpu_mean_percent_one_core": 70.680286350967,
+      "cgroup_peak_bytes": 5206458368,
+      "device_wide_gpu_peak_mib": 31248.0
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "pair": 0,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p0-baseline.json",
+      "sha256": "22466037d62c43e8b18791fa029a1dae0b510a019ef7f27c3ca0227fdb40a6c3",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p0-baseline.telemetry.jsonl",
+      "telemetry_sha256": "1bc3829c316615e8b3ecf8d8d8ac8ba93221807143f9917573f08cc94afa4fa7",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-private-decode-async.json",
+        "sha256": "2c48838d5ff1e008cc404dfad80f6b287d1be742271aac5b03a7ff4197511650",
+        "profile_id": "27b-mtp2-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 28.538857639003254,
+      "sampled_server_tree_rss_peak_bytes": 1647796224,
+      "sampled_server_cpu_mean_percent_one_core": 77.548878854826,
+      "cgroup_peak_bytes": 5206413312,
+      "device_wide_gpu_peak_mib": 27638.0
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "pair": 0,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p0-candidate.json",
+      "sha256": "19511356506307a951f435ea98c9381c9e57204d190ebf118191206dc4f4152f",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p0-candidate.telemetry.jsonl",
+      "telemetry_sha256": "3d8259eaca6465386bb3fe3dde275808f4be900b42ed8ab80b919d4cc3e53ada",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-private-decode-async.json",
+        "sha256": "2c48838d5ff1e008cc404dfad80f6b287d1be742271aac5b03a7ff4197511650",
+        "profile_id": "27b-mtp2-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 28.536522225997032,
+      "sampled_server_tree_rss_peak_bytes": 1769512960,
+      "sampled_server_cpu_mean_percent_one_core": 77.15774588957792,
+      "cgroup_peak_bytes": 5206761472,
+      "device_wide_gpu_peak_mib": 29142.0
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "pair": 1,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p1-baseline.json",
+      "sha256": "1c57e4efd70141f921896466f766ed800f062f98470cc76256a907652ab03aa1",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p1-baseline.telemetry.jsonl",
+      "telemetry_sha256": "08d9ac353ad5a7e9b0622dba7087d7687b67ba21c3117924a84e8385cdf6eb8f",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-private-decode-async.json",
+        "sha256": "2c48838d5ff1e008cc404dfad80f6b287d1be742271aac5b03a7ff4197511650",
+        "profile_id": "27b-mtp2-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 28.237314063000667,
+      "sampled_server_tree_rss_peak_bytes": 1623498752,
+      "sampled_server_cpu_mean_percent_one_core": 77.55769191163061,
+      "cgroup_peak_bytes": 5206556672,
+      "device_wide_gpu_peak_mib": 27576.0
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "pair": 1,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p1-candidate.json",
+      "sha256": "f5576b699ddbc2f10d9da50a51dfac8383525c1b07d9fae307f4a4e6ffbe6b1a",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p1-candidate.telemetry.jsonl",
+      "telemetry_sha256": "c793881c8fe30d20bb632e1d280eedf42cd5ed2ac9e0114cbb759aaf9c9895aa",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-private-decode-async.json",
+        "sha256": "2c48838d5ff1e008cc404dfad80f6b287d1be742271aac5b03a7ff4197511650",
+        "profile_id": "27b-mtp2-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 28.23844386899873,
+      "sampled_server_tree_rss_peak_bytes": 1760473088,
+      "sampled_server_cpu_mean_percent_one_core": 77.25111893593701,
+      "cgroup_peak_bytes": 5206614016,
+      "device_wide_gpu_peak_mib": 29142.0
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "pair": 2,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p2-baseline.json",
+      "sha256": "f8dd17220e1b5d264a7514de8f833f9f29f96c09e299093de150e00d708b46fe",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p2-baseline.telemetry.jsonl",
+      "telemetry_sha256": "8b8eded214f8a2248bbe538b28bf9f9aa4660870fbb59e5360e26e67325e56ee",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-private-decode-async.json",
+        "sha256": "2c48838d5ff1e008cc404dfad80f6b287d1be742271aac5b03a7ff4197511650",
+        "profile_id": "27b-mtp2-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 28.540108779998263,
+      "sampled_server_tree_rss_peak_bytes": 1634910208,
+      "sampled_server_cpu_mean_percent_one_core": 77.30343556826735,
+      "cgroup_peak_bytes": 5207425024,
+      "device_wide_gpu_peak_mib": 29142.0
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "pair": 2,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p2-candidate.json",
+      "sha256": "0ffbe7d45e61822af15eaeccc79bbfada37f9c33d69c235158825653d34eeced",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p2-candidate.telemetry.jsonl",
+      "telemetry_sha256": "54fbb55f8d9ea57f7f1708330020bd044d1794a8d020d88b2285e0341a33d7db",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-private-decode-async.json",
+        "sha256": "2c48838d5ff1e008cc404dfad80f6b287d1be742271aac5b03a7ff4197511650",
+        "profile_id": "27b-mtp2-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 28.53958383799909,
+      "sampled_server_tree_rss_peak_bytes": 1769553920,
+      "sampled_server_cpu_mean_percent_one_core": 77.61486866647098,
+      "cgroup_peak_bytes": 5206102016,
+      "device_wide_gpu_peak_mib": 29142.0
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "pair": 3,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p3-baseline.json",
+      "sha256": "635459c4344d8ad1737b48d8098c9034118bcbb7d2374b859ef243a952b23ef8",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p3-baseline.telemetry.jsonl",
+      "telemetry_sha256": "30a0cd41459f8627a175338a375eb1fe474ee4603a5315c988f8b7854f6165cf",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-private-decode-async.json",
+        "sha256": "2c48838d5ff1e008cc404dfad80f6b287d1be742271aac5b03a7ff4197511650",
+        "profile_id": "27b-mtp2-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 29.140217978998407,
+      "sampled_server_tree_rss_peak_bytes": 1629220864,
+      "sampled_server_cpu_mean_percent_one_core": 77.2739722565423,
+      "cgroup_peak_bytes": 5207101440,
+      "device_wide_gpu_peak_mib": 29078.0
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "pair": 3,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p3-candidate.json",
+      "sha256": "0ed4a1928906ce32508c7461245462d0ca57098377aaeda5e5da3c24a8fe3279",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p3-candidate.telemetry.jsonl",
+      "telemetry_sha256": "46676eec4ff5ed3a210f2c7b52209609f71b36e615788230390abfd60cc40109",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-private-decode-async.json",
+        "sha256": "2c48838d5ff1e008cc404dfad80f6b287d1be742271aac5b03a7ff4197511650",
+        "profile_id": "27b-mtp2-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 28.23524497299877,
+      "sampled_server_tree_rss_peak_bytes": 1768099840,
+      "sampled_server_cpu_mean_percent_one_core": 77.37688915121856,
+      "cgroup_peak_bytes": 5206192128,
+      "device_wide_gpu_peak_mib": 29142.0
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "pair": 4,
+      "side": "baseline",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p4-baseline.json",
+      "sha256": "10745b317e92a79a2718f4bf2d598e2211a6f3aee79772d3810aec99a9ee40bb",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p4-baseline.telemetry.jsonl",
+      "telemetry_sha256": "5ccec4f8e8c923df7476d164ca510d624d6e5e8db385d37f860a737244c35bbb",
+      "source": {
+        "revision": "4746d89a24260e799dcd437cdb2f72e6d8070f84",
+        "dirty": false
+      },
+      "binary_sha256": "7aa13782ba720983c3cf4ec9b0a9d3c96aa573c2eb066612f12807f14326880e",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-private-decode-async.json",
+        "sha256": "2c48838d5ff1e008cc404dfad80f6b287d1be742271aac5b03a7ff4197511650",
+        "profile_id": "27b-mtp2-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 27.93464499699985,
+      "sampled_server_tree_rss_peak_bytes": 1624506368,
+      "sampled_server_cpu_mean_percent_one_core": 77.39774267404826,
+      "cgroup_peak_bytes": 5207760896,
+      "device_wide_gpu_peak_mib": 29046.0
+    },
+    {
+      "profile": "27b-mtp2-private-decode",
+      "pair": 4,
+      "side": "candidate",
+      "file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p4-candidate.json",
+      "sha256": "27054ddede020046ec69ec817ccd63d19fe1ad34239934d499a79e7b1377fd92",
+      "telemetry_file": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/reports/Qwen3.8-27B-NVFP4-mtp2-native-v3-private-decode-p4-candidate.telemetry.jsonl",
+      "telemetry_sha256": "2db7658a9fd993262a993ef703db0be756cc0f2622bc1f412cd2f9ff456a2cfd",
+      "source": {
+        "revision": "212ebac6b23b5387ef34fb9547d311a4f14f1bf1",
+        "dirty": false
+      },
+      "binary_sha256": "deb1f08bcd9b71cfc24191592733fc36fbdfa2aef212ffd1c6eb1fe6ab02a07d",
+      "inputs_sha256": "d7cb673e15745e0099aba9cb4205d90cec5d5bc9ce74ee2dd3bbe424b684a5e5",
+      "checklist": {
+        "path": "/home/r/benchmarks/inferloop/cuda-nonblocking-v1/inputs/profile-27b-mtp2-private-decode-async.json",
+        "sha256": "2c48838d5ff1e008cc404dfad80f6b287d1be742271aac5b03a7ff4197511650",
+        "profile_id": "27b-mtp2-private-decode-async-execution",
+        "compliant": true,
+        "mismatches": []
+      },
+      "startup_seconds": 28.23558194400175,
+      "sampled_server_tree_rss_peak_bytes": 1774063616,
+      "sampled_server_cpu_mean_percent_one_core": 77.73205914131876,
+      "cgroup_peak_bytes": 5205942272,
+      "device_wide_gpu_peak_mib": 29142.0
+    }
+  ],
+  "committed_reproduction_files": [
+    {
+      "file": "cuda-nonblocking-2026-10-25/README.md",
+      "sha256": "62cd1235f03bf97f5aca3e436ca03c547b43b1d308ccd5b7b4591f24efc4fb39"
+    },
+    {
+      "file": "cuda-nonblocking-2026-10-25/inputs-27b-mtp0-async.json",
+      "sha256": "d85e5fc5ed3f238e9a2c84cd246c0e4a802af23b8b0521604e9e027d3331c2cd"
+    },
+    {
+      "file": "cuda-nonblocking-2026-10-25/inputs-27b-mtp0-private-decode-async.json",
+      "sha256": "b16eedff28c1137fe0a1f6f263434fa26ee250b106db1b3479a3527efeec048f"
+    },
+    {
+      "file": "cuda-nonblocking-2026-10-25/inputs-27b-mtp2-async.json",
+      "sha256": "d85e5fc5ed3f238e9a2c84cd246c0e4a802af23b8b0521604e9e027d3331c2cd"
+    },
+    {
+      "file": "cuda-nonblocking-2026-10-25/inputs-27b-mtp2-private-decode-async.json",
+      "sha256": "b16eedff28c1137fe0a1f6f263434fa26ee250b106db1b3479a3527efeec048f"
+    },
+    {
+      "file": "cuda-nonblocking-2026-10-25/inputs-2b-async.json",
+      "sha256": "9331f3217b9d0c966535b3746aacf47ea1d0c1f2c7a8e4bb25ce0cd8cd402433"
+    },
+    {
+      "file": "cuda-nonblocking-2026-10-25/paired-plan.json",
+      "sha256": "56e6786a83bad0f7594de90756c6f49d836bc66d2bf9dcd6b99b76667cb1471b"
+    },
+    {
+      "file": "cuda-nonblocking-2026-10-25/profile-27b-mtp0-async.json",
+      "sha256": "9499be789d4c41b22177698ac22c4da543f65addd210849c3821bc2a75b44838"
+    },
+    {
+      "file": "cuda-nonblocking-2026-10-25/profile-27b-mtp0-private-decode-async.json",
+      "sha256": "5b3a20a8cf87267eed7793f9bda2135c193217c004ee754967f3ba19f1d73bd4"
+    },
+    {
+      "file": "cuda-nonblocking-2026-10-25/profile-27b-mtp2-async.json",
+      "sha256": "37ecd5e5c022637537840f3cf1de0b514927a2e308bd923961fdc2ef5a6ca419"
+    },
+    {
+      "file": "cuda-nonblocking-2026-10-25/profile-27b-mtp2-private-decode-async.json",
+      "sha256": "2c48838d5ff1e008cc404dfad80f6b287d1be742271aac5b03a7ff4197511650"
+    },
+    {
+      "file": "cuda-nonblocking-2026-10-25/profile-2b-async.json",
+      "sha256": "ce14d347ca8f23823b2b1543edd56963755a3fc96274a703f913d4f10823bb62"
+    },
+    {
+      "file": "cuda-nonblocking-2026-10-25/reproduce-pairs.py",
+      "sha256": "5c723c366ec1964e70303ef775f68007f1ae4a8ee469c94463843598f37a6309"
+    },
+    {
+      "file": "cuda-nonblocking-2026-10-25/summarize.py",
+      "sha256": "2e2a3150ff2dc257fbcbae8d61453faa32f596d7c35a9d92d16e4ee1c4772267"
+    }
+  ],
+  "memory_scope": "RSS/CPU are sampled server-tree observations; cgroup peak also includes the harness and startup. GPU peak is device-wide and includes desktop background processes. These are not isolated allocator/pinned byte counters or proof of full16-sequence capacity.",
+  "validation_scope": "This artifact records performance evidence. Final-head CI and device-suite results are reported in the PR; older full-CUDA and targeted212 test logs remain in the durable raw root."
+}

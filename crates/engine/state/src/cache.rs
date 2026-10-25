@@ -1,67 +1,105 @@
-//! Hash-chain block index and deterministic LRU. Values own device/host state;
+//! Shared prefix publication, matching and deterministic LRU. Values own device/host state;
 //! callers release their page leases when entries are evicted.
-use infer_core::{Error, Result};
-use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, collections::BTreeSet};
+mod index;
+mod recency;
+mod reuse;
+use ahash::{AHashMap, AHasher, RandomState};
+pub use index::{
+    BlockHash, PrefixCandidate, PrefixIdentity, PrefixPolicy, PrefixSearch, SnapshotScan,
+};
+use infer_core::{Error, ErrorCode, Result};
+pub use recency::{PrefixId, PrefixRecency, SnapshotRecency, TreeRecency};
+use reuse::CloneReuse;
+pub use reuse::{PrefixReuse, PrefixSnapshot, RetiredPrefixes};
+use std::array::from_fn;
+use std::hash::{BuildHasher, Hash, Hasher};
+use std::result::Result as StdResult;
 
-/// Byte length of the SHA-256 digest that chains cached token blocks.
-const SHA256_DIGEST_BYTES: usize = 32;
-type Hash = [u8; SHA256_DIGEST_BYTES];
+/// Independently seeded hash lanes keep the process-local prefix index at 128 bits.
+const FINGERPRINT_LANES: usize = 2;
+type Fingerprint = [u64; FINGERPRINT_LANES];
 struct Entry<V> {
     tokens: Vec<u32>,
     value: V,
     bytes: u64,
     touched: u64,
 }
-pub struct PrefixCache<V> {
-    root: Hash,
+pub struct PrefixCache<V, M: PrefixPolicy = BlockHash> {
+    policy: M,
+    root: [AHasher; FINGERPRINT_LANES],
+    next_id: Fingerprint,
     block_size: usize,
     budget: u64,
     max_entries: usize,
-    entries: BTreeMap<Hash, Entry<V>>,
-    lru: BTreeSet<(u64, Hash)>,
+    // Cache-local identities select candidates; full token equality establishes identity on every hit.
+    entries: AHashMap<Fingerprint, Entry<V>>,
+    lru: M::Recency,
     clock: u64,
     bytes: u64,
+    cached_tokens: usize,
+    // A conservative lower bound for resident prefix lengths. Eviction may make it stale
+    // downward, which only loses a shortcut; reset it when the store becomes empty.
+    minimum_tokens_hint: usize,
+    /// Reuse queries submitted to this cache, including misses and backend failures.
+    pub lookups: u64,
     pub hits: u64,
     pub reused_tokens: u64,
     pub evictions: u64,
 }
 impl<V> PrefixCache<V> {
     /// # Errors
-    /// Returns an invalid-input error for an empty namespace, zero page size, or zero entry limit.
+    /// Rejects an empty namespace, zero block size or zero entry limit.
     pub fn new(binding: &[u8], block_size: usize, budget: u64, max_entries: usize) -> Result<Self> {
+        Self::with_policy(binding, block_size, budget, max_entries, BlockHash)
+    }
+}
+impl<V, M: PrefixPolicy> PrefixCache<V, M> {
+    /// Select matching and recency indexes without duplicating lifecycle or resource policy.
+    /// # Errors
+    /// Rejects an empty namespace, zero block size or zero entry limit.
+    pub fn with_policy(
+        binding: &[u8],
+        block_size: usize,
+        budget: u64,
+        max_entries: usize,
+        policy: M,
+    ) -> Result<Self> {
         if binding.is_empty() || block_size == 0 || max_entries == 0 {
             return Err(Error::invalid("invalid prefix cache namespace/budget"));
         }
-        let mut digest = Sha256::new();
-        digest.update(b"kv-block-chain-v1");
-        digest.update(binding);
-        digest.update((block_size as u64).to_le_bytes());
+        let mut root: [AHasher; FINGERPRINT_LANES] = from_fn(|_| RandomState::new().build_hasher());
+        for hasher in &mut root {
+            ("kv-prefix-local-v1", binding, block_size).hash(hasher);
+        }
+        let next_id = root.each_ref().map(Hasher::finish);
         Ok(Self {
-            root: digest.finalize().into(),
+            policy,
+            next_id,
+            root,
             block_size,
             budget,
             max_entries,
-            entries: BTreeMap::new(),
-            lru: BTreeSet::new(),
+            entries: AHashMap::new(),
+            lru: M::Recency::default(),
             clock: 0,
             bytes: 0,
+            cached_tokens: 0,
+            minimum_tokens_hint: usize::MAX,
+            lookups: 0,
             hits: 0,
             reused_tokens: 0,
             evictions: 0,
         })
     }
-    fn key(&self, tokens: &[u32]) -> Hash {
-        let mut parent = self.root;
-        for block in tokens.chunks(self.block_size) {
-            let mut hash = Sha256::new();
-            hash.update(parent);
-            for token in block {
-                hash.update(token.to_le_bytes());
-            }
-            parent = hash.finalize().into();
-        }
-        parent
+    // Both publication and lookup hash the same block boundaries. The state stays local to this
+    // instance: fingerprints are neither persisted nor used as proof of token identity.
+    fn keys(&self, tokens: &[u32]) -> impl Iterator<Item = (usize, Fingerprint)> {
+        index::keys(self.root.clone(), self.block_size, tokens)
+    }
+    fn key(&self, tokens: &[u32]) -> Fingerprint {
+        self.keys(tokens)
+            .last()
+            .map_or([0; FINGERPRINT_LANES], |(_, key)| key)
     }
     fn tick(&mut self) -> u64 {
         if self.clock == u64::MAX {
@@ -72,7 +110,7 @@ impl<V> PrefixCache<V> {
                 let t = i as u64;
                 if let Some(entry) = self.entries.get_mut(&key) {
                     entry.touched = t;
-                    self.lru.insert((t, key));
+                    self.lru.insert(PrefixId(key), t);
                 }
             }
             self.clock = self.entries.len() as u64;
@@ -92,20 +130,58 @@ impl<V> PrefixCache<V> {
     pub const fn bytes(&self) -> u64 {
         self.bytes
     }
+    #[must_use]
+    pub const fn cached_tokens(&self) -> usize {
+        self.cached_tokens
+    }
+    /// Cached values in arbitrary order; eviction order is maintained by the LRU index.
     pub fn values(&self) -> impl Iterator<Item = &V> {
         self.entries.values().map(|e| &e.value)
     }
+    fn exact_entry(&self, tokens: &[u32]) -> Option<(Fingerprint, &Entry<V>)> {
+        match M::IDENTITY {
+            PrefixIdentity::ContentHash => {
+                let key = self.key(tokens);
+                self.entries
+                    .get(&key)
+                    .filter(|e| e.tokens == tokens)
+                    .map(|e| (key, e))
+            }
+            PrefixIdentity::LocalId => self
+                .entries
+                .iter()
+                .find(|(_, entry)| entry.tokens == tokens)
+                .map(|(key, entry)| (*key, entry)),
+        }
+    }
+    fn publication_key(&mut self, tokens: &[u32]) -> Result<Fingerprint> {
+        if matches!(M::IDENTITY, PrefixIdentity::ContentHash) {
+            return Ok(self.key(tokens));
+        }
+        if let Some((key, _)) = self.exact_entry(tokens) {
+            return Ok(key);
+        }
+        let key = self.next_id;
+        self.next_id = if let Some(low) = key[0].checked_add(1) {
+            [low, key[1]]
+        } else {
+            [
+                0,
+                key[1].checked_add(1).ok_or_else(|| {
+                    Error::new(ErrorCode::Capacity, "prefix identities exhausted")
+                })?,
+            ]
+        };
+        Ok(key)
+    }
     #[must_use]
     pub fn contains(&self, tokens: &[u32]) -> bool {
-        self.entries
-            .get(&self.key(tokens))
-            .is_some_and(|e| e.tokens == tokens)
+        self.exact_entry(tokens).is_some()
     }
     #[must_use]
     pub fn contains_where(&self, tokens: &[u32], compatible: impl Fn(&V) -> bool) -> bool {
-        self.entries
-            .get(&self.key(tokens))
-            .is_some_and(|entry| entry.tokens == tokens && compatible(&entry.value))
+        self.exact_entry(tokens)
+            .is_some_and(|(_, entry)| compatible(&entry.value))
     }
     #[must_use]
     pub fn matched_tokens(&self, tokens: &[u32], maximum: usize) -> usize {
@@ -117,41 +193,28 @@ impl<V> PrefixCache<V> {
         maximum: usize,
         compatible: impl Fn(&V) -> bool,
     ) -> usize {
-        self.matched_prefix(tokens, maximum, compatible).0
+        self.matched_prefix(tokens, maximum, |_, value| compatible(value))
+            .map_or(0, |candidate| candidate.tokens.len())
     }
-    /// Longest cached block-aligned prefix of `tokens` bounded by `maximum`, paired with the
-    /// chained key that addresses it. Returning the key keeps the SHA-256 chain single-pass:
-    /// callers such as [`Self::lookup_where`] would otherwise rehash the matched prefix.
-    fn matched_prefix(
-        &self,
-        tokens: &[u32],
+    /// Select the longest compatible complete prefix through the configured matcher.
+    /// Shared candidate access guards maximum, exact token identity and compatibility.
+    fn matched_prefix<'a>(
+        &'a self,
+        tokens: &'a [u32],
         maximum: usize,
-        compatible: impl Fn(&V) -> bool,
-    ) -> (usize, Hash) {
-        let mut parent = self.root;
-        let mut matched = 0;
-        let mut matched_key = self.root;
-        for (i, block) in tokens.chunks_exact(self.block_size).enumerate() {
-            let length = (i + 1) * self.block_size;
-            if length > maximum {
-                break;
-            }
-            let mut hash = Sha256::new();
-            hash.update(parent);
-            for t in block {
-                hash.update(t.to_le_bytes());
-            }
-            parent = hash.finalize().into();
-            if self
-                .entries
-                .get(&parent)
-                .is_some_and(|e| e.tokens == tokens[..length] && compatible(&e.value))
-            {
-                matched = length;
-                matched_key = parent;
-            }
+        compatible: impl Fn(&[u32], &V) -> bool,
+    ) -> Option<PrefixCandidate<'a, V>> {
+        if tokens.len().min(maximum) < self.minimum_tokens_hint {
+            return None;
         }
-        (matched, matched_key)
+        self.policy.longest(PrefixSearch {
+            entries: &self.entries,
+            root: self.root.clone(),
+            block_size: self.block_size,
+            tokens,
+            maximum,
+            compatible,
+        })
     }
     pub fn lookup(&mut self, tokens: &[u32], maximum: usize) -> Option<V>
     where
@@ -168,44 +231,95 @@ impl<V> PrefixCache<V> {
     where
         V: Clone,
     {
-        let (length, key) = self.matched_prefix(tokens, maximum, compatible);
-        if length == 0 {
-            return None;
+        match self.reuse(tokens, maximum, &mut CloneReuse(compatible)) {
+            Ok(value) => value,
+            Err(never) => match never {},
         }
+    }
+    /// Match the longest compatible complete prefix and let the backend acquire or restore it.
+    /// A failed hook does not count as a hit, touch the LRU, or remove the source snapshot.
+    /// # Errors
+    /// Propagates the backend error after its rollback/poison handling.
+    pub fn reuse<R: PrefixReuse<V>>(
+        &mut self,
+        tokens: &[u32],
+        maximum: usize,
+        backend: &mut R,
+    ) -> StdResult<Option<R::Output>, R::Error> {
+        self.lookups = self.lookups.saturating_add(1);
+        let Some(candidate) = self.matched_prefix(tokens, maximum, |prefix, value| {
+            backend.compatible(prefix, value)
+        }) else {
+            return Ok(None);
+        };
+        let length = candidate.tokens.len();
+        let key = candidate.key;
+        let output = backend.reuse(candidate.tokens, candidate.value)?;
         let tick = self.tick();
-        let e = self.entries.get_mut(&key)?;
-        self.lru.remove(&(e.touched, key));
-        e.touched = tick;
-        self.lru.insert((tick, key));
+        // Only an immutable payload was lent to the hook; it cannot remove this entry.
+        if let Some(entry) = self.entries.get_mut(&key) {
+            self.lru.touch(PrefixId(key), entry.touched, tick);
+            entry.touched = tick;
+        }
         self.hits = self.hits.saturating_add(1);
         self.reused_tokens = self.reused_tokens.saturating_add(length as u64);
-        Some(e.value.clone())
+        Ok(Some(output))
+    }
+    /// Check publication policy before a backend acquires any additional resource references.
+    /// # Errors
+    /// Rejects empty or incomplete prefixes.
+    pub fn can_publish(&self, tokens: &[u32], bytes: u64) -> Result<bool> {
+        if tokens.is_empty() || !tokens.len().is_multiple_of(self.block_size) {
+            return Err(Error::invalid(
+                "only complete token blocks may be published",
+            ));
+        }
+        Ok(self.budget != 0 && bytes <= self.budget)
+    }
+    /// Publish a backend's completed snapshot through the same budget and eviction policy.
+    /// Returned values own the rejected/replaced/evicted backend storage for caller cleanup.
+    /// # Errors
+    /// Rejects empty or incomplete prefixes, exhausted local identities, or inconsistent eviction metadata.
+    pub fn publish(&mut self, snapshot: PrefixSnapshot<V>) -> Result<RetiredPrefixes<V>> {
+        self.insert_owned(snapshot.tokens, snapshot.value, snapshot.bytes)
     }
     pub fn evict_oldest(&mut self) -> Option<V> {
-        let (_, key) = self.lru.pop_first()?;
+        let PrefixId(key) = self.lru.pop_oldest()?;
         let e = self.entries.remove(&key)?;
         self.bytes -= e.bytes;
+        self.cached_tokens -= e.tokens.len();
+        if self.entries.is_empty() {
+            self.minimum_tokens_hint = usize::MAX;
+        }
         self.evictions = self.evictions.saturating_add(1);
         Some(e.value)
     }
     /// # Errors
     /// Returns an invalid-input error for empty or partial token blocks, or an invariant error if eviction metadata is inconsistent.
     pub fn insert(&mut self, tokens: Vec<u32>, value: V, bytes: u64) -> Result<Vec<V>> {
-        if tokens.is_empty() || !tokens.len().is_multiple_of(self.block_size) {
-            return Err(Error::invalid(
-                "only complete token blocks may be published",
-            ));
-        }
-        let mut removed = vec![];
-        if bytes > self.budget || self.budget == 0 {
+        self.insert_owned(tokens, value, bytes)
+            .map(|retired| retired.into_iter().collect())
+    }
+    fn insert_owned(
+        &mut self,
+        tokens: Vec<u32>,
+        value: V,
+        bytes: u64,
+    ) -> Result<RetiredPrefixes<V>> {
+        let mut removed = RetiredPrefixes::new();
+        if !self.can_publish(&tokens, bytes)? {
             removed.push(value);
             return Ok(removed);
         }
-        let key = self.key(&tokens);
+        let key = self.publication_key(&tokens)?;
         if let Some(old) = self.entries.remove(&key) {
-            self.lru.remove(&(old.touched, key));
+            self.lru.remove(PrefixId(key), old.touched);
             self.bytes -= old.bytes;
+            self.cached_tokens -= old.tokens.len();
             removed.push(old.value);
+        }
+        if self.entries.is_empty() {
+            self.minimum_tokens_hint = usize::MAX;
         }
         while self.entries.len() >= self.max_entries || self.bytes > self.budget - bytes {
             removed.push(
@@ -216,6 +330,8 @@ impl<V> PrefixCache<V> {
         }
         let touched = self.tick();
         self.bytes += bytes;
+        self.cached_tokens += tokens.len();
+        self.minimum_tokens_hint = self.minimum_tokens_hint.min(tokens.len());
         self.entries.insert(
             key,
             Entry {
@@ -225,7 +341,11 @@ impl<V> PrefixCache<V> {
                 touched,
             },
         );
-        self.lru.insert((touched, key));
+        self.lru.insert(PrefixId(key), touched);
         Ok(removed)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/cache.rs"]
+mod tests;

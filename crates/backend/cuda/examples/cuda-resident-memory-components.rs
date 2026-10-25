@@ -1,7 +1,7 @@
 //! Read-only memory accounting diagnosis with the production (non-test) CUDA library.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(cuda_backend)]
 use std::error::Error as StdError;
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(cuda_backend)]
 mod profile {
     use cuda_core::Device;
     use infer_backend_cuda::{
@@ -288,12 +288,12 @@ mod profile {
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(cuda_backend)]
 fn main() -> Result<(), Box<dyn StdError>> {
     profile::run()
 }
 
-#[cfg(not(all(target_os = "linux", feature = "cuda")))]
+#[cfg(not(cuda_backend))]
 fn main() {
     eprintln!("This diagnostic requires Linux and the cuda feature.");
 }

@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "profile_id": "2b-mtp0-async-execution",
+  "model": {
+    "path": "/home/r/models/qwen3vl-2b",
+    "files": {
+      "config.json": "bec4b3d446efa05807365c9e1cec03ac590836879d02f3a6da879971154bdd3b",
+      "generation_config.json": "1e241830b48b397cb0900101421df5450baddc7adf01e5fc86b5615865f3bae4",
+      "tokenizer.json": "a5d85b6dcc535e6b93115a9ef287e6132fdbf30270da6218194ba742261173c7",
+      "tokenizer_config.json": "c2da771801886ad9ae98181793ffd3dfb7f1af30f6f7c6a4e15d7dbba52e2399"
+    }
+  },
+  "numeric": {
+    "weights": "checkpoint storage format, re-quantization recorded per profile",
+    "activation": "model default",
+    "kv": "model default"
+  },
+  "quality": {
+    "gate": "task quality gate is separate",
+    "required": false
+  },
+  "resources": {
+    "gpu_memory_utilization": 0.88,
+    "max_model_len": 131072,
+    "max_num_seqs": 16,
+    "note": "131072 is the largest context both engines serve on this device: at 0.88 GPU memory utilization vLLM needs 28.0 GiB of KV cache for the model's 262144 ceiling but has 23.17 GiB available, so the profile pins the attainable window instead of a declared one."
+  },
+  "cache": {
+    "prefix_cache": true
+  },
+  "workload": {
+    "inputs_sha256": "2dfefa84f29f4e2ef96839096d9fb785a454f070efc5fb5b1070787bd3a66586",
+    "max_new_tokens": 64,
+    "temperature": 0,
+    "mtp_depth": 0,
+    "eos_tokens": [
+      151645,
+      151643
+    ],
+    "matrix": {
+      "short": {
+        "concurrency": 1,
+        "repeats": 3
+      },
+      "long": {
+        "concurrency": 1,
+        "repeats": 3
+      },
+      "batch4": {
+        "concurrency": 4,
+        "repeats": 3
+      },
+      "hot_long": {
+        "concurrency": 1,
+        "repeats": 3
+      }
+    },
+    "note": "Source-paired async execution experiment. Hot-prefix input has exactly 8192 tokens so current main uses a private state and publishes a cacheable prefix. Historical 3643-token hot case is not cacheable on the current pooled path; its failed report is retained separately."
+  },
+  "engines": {
+    "native": {
+      "version": null
+    },
+    "vllm": {
+      "version": "0.31.0"
+    },
+    "sglang": {
+      "version": null
+    }
+  },
+  "measurement": {
+    "repeats": 3,
+    "max_ratio": 1.1,
+    "require_identical_tokens": false
+  }
+}

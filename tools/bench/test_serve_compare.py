@@ -48,6 +48,75 @@ def complete_rows(repeats=3):
     ]
 
 
+class ServingPlanReadbackTest(unittest.TestCase):
+    @staticmethod
+    def planned(width=7, tokens=35072, quote=4493453156):
+        return (
+            "INFO infer::executor: planned pooled CUDA serving storage "
+            f"planned_width={width} prompt_width=1024 quoted_bytes={quote} "
+            f"capacity=8192 kv_tokens={tokens}\n"
+        )
+
+    @staticmethod
+    def accepted(width=7, quote=4493453156):
+        return (
+            "INFO infer::executor: CUDA slot pool captured within serving envelope "
+            f"width={width} capacity=8192 quoted_bytes={quote} "
+            "allocated_bytes=4184529176 envelope_bytes=4493738323\n"
+        )
+
+    def test_last_server_capture_after_replan_is_the_effective_plan(self):
+        text = (
+            "INFO infer::load: device budget 26.7 GiB\n"
+            + self.planned()
+            + self.accepted()
+            + "INFO infer::load: device budget 26.7 GiB\n"
+            + self.planned()
+            + "WARN pooled CUDA capture exceeded budget; replanning before publication\n"
+            + self.planned(4, 20512, 3384849456)
+            + self.accepted(4, 3384849456)
+        )
+        self.assertEqual(
+            module.serving_plan_readback(text),
+            {
+                "source": "native server log",
+                "width": 4,
+                "capacity": 8192,
+                "kv_tokens": 20512,
+                "prompt_width": 1024,
+                "quoted_bytes": 3384849456,
+                "allocated_bytes": 4184529176,
+                "envelope_bytes": 4493738323,
+            },
+        )
+
+    def test_previous_probe_capture_is_not_the_final_server_plan(self):
+        text = self.planned() + self.accepted() + "INFO infer::load: device budget 26.7 GiB\n"
+        self.assertIsNone(module.serving_plan_readback(text))
+        self.assertIsNone(module.serving_plan_readback(text + self.planned()))
+
+    def test_an_unaccepted_or_unmatched_plan_is_unavailable(self):
+        for text in (
+            self.planned(),
+            self.accepted(),
+            self.planned() + self.accepted(4),
+            self.planned() + self.accepted(7, 1234),
+            self.planned() + self.accepted().replace("allocated_bytes=4184529176 ", ""),
+            self.planned()
+            + self.accepted().replace("allocated_bytes=4184529176", "allocated_bytes=4493738324"),
+            self.planned()
+            + self.accepted()
+            + "WARN CUDA slot pool disabled; reclaiming cached prefixes failed\n",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(module.serving_plan_readback(text))
+
+    def test_colored_tracing_and_activity_logs_preserve_accepted_plan(self):
+        text = "\x1b[32m" + self.planned() + self.accepted() + "\x1b[0m"
+        text += "INFO infer::http: request path=runtime status=200\n"
+        self.assertEqual(module.serving_plan_readback(text)["width"], 7)
+
+
 class LoadWorkloadTest(unittest.TestCase):
     def test_complete_workload_passes(self):
         path = write(complete_rows())
@@ -179,6 +248,14 @@ class CommandTest(unittest.TestCase):
         self.assertIn("--speculative-algorithm", command)
         self.assertIn("NEXTN", command)
 
+    def test_vision_is_explicit_instead_of_silently_disabled(self):
+        for engine in ("native", "vllm"):
+            with self.subTest(engine=engine):
+                text_only = module.build_command(self.arguments(engine=engine), 1234)
+                self.assertIn("--limit-mm-per-prompt", text_only)
+                vision = module.build_command(self.arguments(engine=engine, vision=True), 1234)
+                self.assertNotIn("--limit-mm-per-prompt", vision)
+
     def test_vllm_command_disables_prefix_caching_when_asked(self):
         arguments = self.arguments(
             engine="vllm", executable=Path("/venv/bin/python"), prefix_cache=False
@@ -192,6 +269,42 @@ class CommandTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             module.require_cache_switch(arguments)
         module.require_cache_switch(self.arguments(prefix_cache=True))
+
+
+class ResourcePreflightTest(unittest.TestCase):
+    def arguments(self):
+        return SimpleNamespace(tokens=256, max_model_len=4352, max_num_seqs=16)
+
+    def row(self, **overrides):
+        row = {
+            "case": "c16",
+            "repeat": 0,
+            "slot": 0,
+            "concurrency": 16,
+            "tokens": [1] * 4096,
+        }
+        row.update(overrides)
+        return row
+
+    def test_c16_exact_context_and_custom_case_pass_preflight(self):
+        rows = [self.row()]
+        module.validate_workload_resources(self.arguments(), rows)
+        self.assertEqual(module.workload_matrix(rows, 3)["c16"]["concurrency"], 16)
+
+    def test_impossible_workload_is_rejected_before_server_startup(self):
+        with self.assertRaisesRegex(RuntimeError, "needs 4353 context tokens"):
+            module.validate_workload_resources(self.arguments(), [self.row(tokens=[1] * 4097)])
+        with self.assertRaisesRegex(RuntimeError, "concurrency 17"):
+            module.validate_workload_resources(self.arguments(), [self.row(concurrency=17)])
+
+    def test_reference_thread_defaults_are_bounded_and_explicit_values_survive(self):
+        with mock.patch.dict(module.os.environ, {}, clear=True):
+            environment = module.process_environment("vllm")
+            self.assertEqual(environment["OMP_NUM_THREADS"], "1")
+            self.assertEqual(environment["TOKENIZERS_PARALLELISM"], "false")
+            self.assertNotIn("OMP_NUM_THREADS", module.process_environment("native"))
+        with mock.patch.dict(module.os.environ, {"OMP_NUM_THREADS": "8"}, clear=True):
+            self.assertEqual(module.process_environment("vllm")["OMP_NUM_THREADS"], "8")
 
 
 def elf(section_names):

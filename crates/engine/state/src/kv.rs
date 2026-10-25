@@ -3,6 +3,7 @@ use crate::{blocks::BlockLease, blocks::BlockPool, cache::PrefixCache};
 use infer_core::{Error, ErrorCode, Result};
 use infer_ir::{KvCacheInspection, PageGrowth};
 use std::collections::BTreeSet;
+mod prefix;
 
 #[derive(Debug, Clone)]
 pub struct KvCacheConfig {
@@ -101,21 +102,6 @@ impl<P: KvPrefix> KvCacheManager<P> {
     ) -> usize {
         self.prefixes
             .matched_tokens_where(tokens, maximum, compatible)
-    }
-    /// Acquire only snapshots compatible with the consumer's recurrent/readout layout.
-    /// # Errors
-    /// Returns stale-lease or reference overflow errors.
-    pub fn attach_prefix_where(
-        &mut self,
-        tokens: &[u32],
-        maximum: usize,
-        compatible: impl Fn(&P) -> bool,
-    ) -> Result<Option<P>> {
-        let Some(prefix) = self.prefixes.lookup_where(tokens, maximum, compatible) else {
-            return Ok(None);
-        };
-        self.pool.retain(prefix.blocks())?;
-        Ok(Some(prefix))
     }
     /// # Errors
     /// Returns stale-lease, reference overflow, or duplicate-table errors.
@@ -280,48 +266,6 @@ impl<P: KvPrefix> KvCacheManager<P> {
         };
         table.extend(allocated);
         Ok(copy)
-    }
-    /// Acquire active ownership before returning a cached prefix to a sequence.
-    /// # Errors
-    /// Returns stale-cache or reference overflow errors; a miss returns None.
-    pub fn attach_prefix(&mut self, tokens: &[u32], maximum: usize) -> Result<Option<P>> {
-        let Some(prefix) = self.prefixes.lookup(tokens, maximum) else {
-            return Ok(None);
-        };
-        self.pool.retain(prefix.blocks())?;
-        Ok(Some(prefix))
-    }
-    /// Publish a completed device snapshot and acquire its cache page references atomically.
-    /// # Errors
-    /// Returns invalid-prefix or ownership errors. A prefix exceeding the cache budget is declined.
-    pub fn publish_prefix(&mut self, prefix: P) -> Result<bool> {
-        let tokens = prefix.tokens();
-        if tokens.is_empty()
-            || !tokens.len().is_multiple_of(self.config.block_size)
-            || prefix.blocks().len() != tokens.len() / self.config.block_size
-        {
-            return Err(Error::invalid(
-                "KV prefix must own exactly its complete pages",
-            ));
-        }
-        if prefix.bytes() > self.config.prefix_bytes || self.config.prefix_bytes == 0 {
-            return Ok(false);
-        }
-        let tokens = tokens.to_vec();
-        let bytes = prefix.bytes();
-        let leases = prefix.blocks().to_vec();
-        self.pool.retain(&leases)?;
-        let removed = match self.prefixes.insert(tokens, prefix, bytes) {
-            Ok(removed) => removed,
-            Err(error) => {
-                self.pool.release(&leases)?;
-                return Err(error);
-            }
-        };
-        for entry in removed {
-            self.pool.release(entry.blocks())?;
-        }
-        Ok(true)
     }
     /// Validate all active and cached owners against the physical page ledger.
     /// # Errors

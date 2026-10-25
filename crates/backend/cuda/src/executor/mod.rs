@@ -1,8 +1,13 @@
 //! Engine adapter for shared weights and isolated resident CUDA graphs.
-//! Execution currently settles synchronously; tickets preserve the engine ownership protocol.
+//!
+//! An owned execution future separates submission from completion across every compute path.
+//! Tickets publish committed state only after the complete device flight has fenced.
 mod capabilities;
 mod drafting;
 mod execution;
+mod owner;
+mod submission;
+pub use owner::CudaBackend;
 mod pool;
 pub mod prefix;
 mod prefix_state;
@@ -14,16 +19,17 @@ mod state;
 mod validation;
 use crate::{loading::LoadedModel, resident::DeviceProgram, resident::slot_batch::SlotPool};
 use infer_core::{Error, Result, StateId};
-use infer_ir::{DeviceCapabilities, ExecutionProgram, ModelOutput, OutputReadout, TaskOutput};
-use std::{collections::BTreeMap, sync::Arc};
+use infer_ir::{DeviceCapabilities, ExecutionProgram, ModelOutput, OutputReadout};
+use infer_state::cache::SnapshotScan;
+use std::collections::BTreeMap;
+use std::mem::{forget, take};
 
-pub struct CudaBackend {
+pub(super) struct CudaExecutor {
     loaded: LoadedModel,
     capabilities: DeviceCapabilities,
     operations: Vec<infer_ir::CompiledOp>,
     workspace_bytes: u64,
     identity: String,
-    owner: Arc<()>,
     states: BTreeMap<StateId, Sequence>,
     budget: u64,
     maximum_states: usize,
@@ -32,8 +38,6 @@ pub struct CudaBackend {
     /// KV bytes one 32-token block of the target graph occupies; the physical page price the
     /// engine's block accounting is reported in. Load-time constant of the graph and scales.
     kv_block_bytes: u64,
-    /// Prompt tokens restored from the prefix cache instead of recomputed, for observability.
-    reused_tokens: u64,
     /// Wide prompt programs slot-resident sequences prompt through; see [`Worker`].
     worker: Option<Worker>,
     /// Per slot, the target and draft programs that prefill straight into that slot while no
@@ -121,12 +125,7 @@ impl Speculation {
         Ok(())
     }
 }
-/// A completion can be consumed exactly once by its originating backend.
-pub struct CudaTicket {
-    owner: Arc<()>,
-    result: Option<Result<Vec<TaskOutput>>>,
-    drain_required: bool,
-}
+pub use submission::CudaTicket;
 /// Prefix-cache capacity derived from the state budget: default on, a quarter of the budget,
 /// with a floor so small devices still cache one prefix and a disabled cache when nothing fits.
 const fn prefix_cache_bytes(state_budget: u64) -> u64 {
@@ -136,7 +135,7 @@ const fn prefix_cache_bytes(state_budget: u64) -> u64 {
     if share < FLOOR { 0 } else { share }
 }
 
-impl CudaBackend {
+impl CudaExecutor {
     /// Prefix cache occupancy and hit counters, for observability.
     #[must_use]
     pub fn prefix_inspection(&self) -> (u64, u64, u64, usize) {
@@ -189,20 +188,26 @@ impl CudaBackend {
         )?;
         let identity = format!("cuda-resident/{}", loaded.device().name()?);
         let kv_block_bytes = loaded.kv_block_bytes()?;
+        // A cache belongs to this immutable loaded backend; snapshots never cross instances.
+        let prefix = prefix::PrefixCache::with_policy(
+            identity.as_bytes(),
+            prefix::PREFIX_GRANULARITY,
+            prefix_cache_bytes(state_budget),
+            usize::MAX,
+            SnapshotScan,
+        )?;
         let mut backend = Self {
             loaded,
             capabilities,
             operations: program.operations,
             workspace_bytes: program.workspace_bytes,
             identity,
-            owner: Arc::new(()),
             states: BTreeMap::new(),
             budget: state_budget,
             maximum_states,
             pool: pool::StatePool::default(),
-            prefix: prefix::PrefixCache::new(prefix_cache_bytes(state_budget)),
+            prefix,
             kv_block_bytes,
-            reused_tokens: 0,
             worker: None,
             homes: Vec::new(),
             slots: None,
@@ -256,3 +261,26 @@ mod prefix_capacity_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/resident_mtp_fusion_model.rs"]
 mod mtp_fusion_model_tests;
+
+impl Drop for CudaExecutor {
+    #[expect(
+        clippy::mem_forget,
+        reason = "Unknown CUDA completion requires retaining physical pool owners: graph row aliases do not own their allocations"
+    )]
+    fn drop(&mut self) {
+        if self.busy
+            && let Err(error) = self.loaded.device().drain()
+        {
+            tracing::error!(target: "infer::cuda", %error, "retaining CUDA flight storage after failed drop drain");
+            // Graphs can retain non-owning row aliases. Keep their physical pools,
+            // homes and sequence programs together if the driver cannot fence them.
+            forget((
+                self.slots.take(),
+                self.draft_slots.take(),
+                self.worker.take(),
+                take(&mut self.homes),
+                take(&mut self.states),
+            ));
+        }
+    }
+}

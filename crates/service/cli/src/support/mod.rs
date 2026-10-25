@@ -1,32 +1,32 @@
 //! Shared CLI facilities, grouped by responsibility.
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 mod engine;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 pub mod memory;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 mod serving;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 pub use engine::*;
 mod json;
 pub use json::*;
 mod logging;
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(cuda_backend)]
 pub use logging::human_bytes;
 pub use logging::{flush as flush_logs, init as init_logging};
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 mod fixtures;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 pub use fixtures::*;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 mod execution;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 pub use execution::*;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 mod server;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 pub use server::*;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 mod agent;
 
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 pub use agent::agent;

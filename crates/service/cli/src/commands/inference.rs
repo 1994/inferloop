@@ -4,10 +4,8 @@ use super::{
     write_json,
 };
 use infer_core::Result;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 use infer_ir::CanonicalRequest;
 
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 pub fn run(options: RunOptions, backend_choice: backend::Selection) -> Result<()> {
     let RunOptions {
         requests,

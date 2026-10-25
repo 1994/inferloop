@@ -17,7 +17,7 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     }
     serde_json::from_reader(file).map_err(|e| Error::invalid(format!("{}: {e}", path.display())))
 }
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 pub fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     let file = File::create(path).map_err(|e| Error::invalid(e.to_string()))?;
     serde_json::to_writer_pretty(file, value).map_err(|e| Error::invalid(e.to_string()))

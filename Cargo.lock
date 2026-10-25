@@ -1369,11 +1369,11 @@ dependencies = [
 name = "infer-state"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "infer-core",
  "infer-ir",
  "serde",
  "serde_json",
- "sha2",
 ]
 
 [[package]]

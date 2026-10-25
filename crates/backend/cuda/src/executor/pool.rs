@@ -1,5 +1,5 @@
 //! Bounded idle graph/state retention. Live request IDs never enter this cache.
-use super::{CudaBackend, Sequence};
+use super::{CudaExecutor, Sequence};
 use infer_core::{Error, Result};
 use infer_ir::OutputReadout;
 use std::collections::VecDeque;
@@ -14,7 +14,7 @@ pub(super) struct StatePool {
     evictions: u64,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PoolInspection {
     pub active_sequences: usize,
     pub cached_sequences: usize,
@@ -70,7 +70,7 @@ impl StatePool {
     }
 }
 
-impl CudaBackend {
+impl CudaExecutor {
     /// Cached programs can retain wider prompt graphs than a newly captured pooled program.
     /// Reuse keeps their original charge; a requested private recapture must also be covered.
     pub(super) fn reservation_budget(
@@ -115,7 +115,7 @@ impl CudaBackend {
             || self.states.len() + self.pool.entries.len() >= self.maximum_states
             || physical_needed > self.physical_available()?
         {
-            if !self.pool.evict() && !self.prefix.evict() {
+            if !self.pool.evict() && self.prefix.evict_oldest().is_none() {
                 let physical_available = self.physical_available()?;
                 let (pool_slots, pool_free_slots) = self
                     .slots

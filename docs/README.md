@@ -30,6 +30,7 @@ Agent 接入、tool parser、文本流式、max length 与严格工具约束的�
 | [质量门禁](guides/quality-gates.md) | 本地/CI 检查、Attention 对照与验收要求 |
 | [CPU 性能测量](guides/cpu-performance.md) | 分配计数、延迟与测量范围 |
 | [CUDA 性能测量](guides/cuda-performance.md) | 现有算子/模型/服务工具、能力探针与测量边界 |
+| [新硬件与新模型调优](guides/tuning-new-hardware-and-models.md) | 加载期自动调优、检查表、诊断工具与待改为推导的常数 |
 | [性能基线与 vLLM 对齐方案](plans/performance/baseline.md) | 统一测试条件、比较与验收契约；已签发基线见文内 |
 | [Serving 稳定性](guides/serving-stability.md) | 故障半径、排队与过载行为、生产差距 |
 | [工具导航](../tools/README.md) | 门禁、参考导出与基准入口 |
@@ -52,6 +53,8 @@ Agent 接入、tool parser、文本流式、max length 与严格工具约束的�
 
 | 文档 | 内容 |
 |---|---|
+| [前缀指纹优化](research/prefix-fingerprint-2026-10-24.md) | SHA-256 的必要性、增量内存指纹、碰撞校验与 45 配对实测 |
+| [容器性能评估](research/container-performance-2026-10-24.md) | 45 实测：bbtree、哈希索引、固定容量与其他容器的保留依据 |
 | [近期 CUDA 提交审查](reviews/cuda-commits-2026-10-09.md) | 2026-10-09 基点的源码缺陷、优化判断与验证范围 |
 | [vLLM 对比测试审查](reviews/vllm-benchmark-methodology-2026-10-09.md) | 配置、计时、数值与统计缺口；历史差距的可信范围 |
 | [Infernix 性能调研](research/infernix-performance.md) | 参考机制、精度变化与收益估算 |

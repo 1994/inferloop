@@ -1,5 +1,6 @@
 //! Prefix snapshots preserve head-major KV strides and whole recurrent state.
 use crate::constants::KV_CACHE_RANK;
+use crate::device::asynchronous::block_on;
 use crate::{
     device::{CudaDevice, device_error},
     resident::DeviceProgram,
@@ -9,6 +10,8 @@ use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
+use std::mem::forget;
 
 #[derive(Default)]
 pub struct ProgramSnapshot {
@@ -20,98 +23,132 @@ pub struct ProgramSnapshot {
 }
 
 impl ProgramSnapshot {
+    #[cfg(test)]
     pub(super) fn capture(
         device: &CudaDevice,
         program: &DeviceProgram,
         graph: &DataflowGraph,
         covered: usize,
     ) -> Result<Self> {
-        let kv: BTreeSet<_> = graph
-            .tensors
-            .iter()
-            .filter_map(|t| {
-                matches!(
-                    t.storage,
-                    TensorStorage::State {
-                        kind: StateKind::AttentionKv,
-                        ..
+        block_on(Self::capture_async(device, program, graph, covered))
+    }
+
+    #[expect(
+        clippy::mem_forget,
+        reason = "Unknown prefix-copy completion must retain unpublished destination allocations"
+    )]
+    pub(super) fn capture_async<'a>(
+        device: &'a CudaDevice,
+        program: &'a DeviceProgram,
+        graph: &'a DataflowGraph,
+        covered: usize,
+    ) -> impl Future<Output = Result<Self>> + Send + 'a {
+        let live_states = program.states();
+        let live_fp8 = program.fp8_states();
+        let position = program.position();
+        async move {
+            let kv: BTreeSet<_> = graph
+                .tensors
+                .iter()
+                .filter_map(|t| {
+                    matches!(
+                        t.storage,
+                        TensorStorage::State {
+                            kind: StateKind::AttentionKv,
+                            ..
+                        }
+                    )
+                    .then_some(t.id)
+                })
+                .collect();
+            let mut states = BTreeMap::new();
+            let mut bytes = 0_u64;
+            for (id, tensors) in live_states {
+                let mut copies = Vec::with_capacity(tensors.len());
+                for tensor in tensors {
+                    let mut shape = dimensions(tensor)?;
+                    if kv.contains(id) {
+                        if shape.len() != KV_CACHE_RANK || shape[1] < covered {
+                            return Err(Error::invariant("prefix KV shape"));
+                        }
+                        shape[1] = covered;
                     }
-                )
-                .then_some(t.id)
-            })
-            .collect();
-        let mut states = BTreeMap::new();
-        let mut bytes = 0_u64;
-        for (id, tensors) in program.states() {
-            let mut copies = Vec::with_capacity(tensors.len());
-            for tensor in tensors {
-                let mut shape = dimensions(tensor)?;
-                if kv.contains(id) {
+                    let copy = device.run_op(api::zeros::<f32>(&shape)).await?;
+                    bytes = bytes
+                        .checked_add((copy.size() * size_of::<f32>()) as u64)
+                        .ok_or_else(|| Error::invalid("prefix byte overflow"))?;
+                    copies.push(copy);
+                }
+                states.insert(*id, copies);
+            }
+            let mut fp8 = BTreeMap::new();
+            for (id, (keys, values)) in live_fp8 {
+                let allocate = async |source: &Tensor<f8e4m3fn>| -> Result<Tensor<f8e4m3fn>> {
+                    let mut shape = dimensions(source)?;
                     if shape.len() != KV_CACHE_RANK || shape[1] < covered {
-                        return Err(Error::invariant("prefix KV shape"));
+                        return Err(Error::invariant("prefix FP8 KV shape"));
                     }
                     shape[1] = covered;
-                }
-                let copy = api::zeros::<f32>(&shape)
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?;
+                    device.run_op(api::zeros::<f8e4m3fn>(&shape)).await
+                };
+                let keys = allocate(keys).await?;
+                let values = allocate(values).await?;
                 bytes = bytes
-                    .checked_add((copy.size() * size_of::<f32>()) as u64)
+                    .checked_add((keys.size() + values.size()) as u64)
                     .ok_or_else(|| Error::invalid("prefix byte overflow"))?;
-                copies.push(copy);
+                fp8.insert(*id, (keys, values));
             }
-            states.insert(*id, copies);
-        }
-        let mut fp8 = BTreeMap::new();
-        for (id, (keys, values)) in program.fp8_states() {
-            let allocate = |source: &Tensor<f8e4m3fn>| -> Result<Tensor<f8e4m3fn>> {
-                let mut shape = dimensions(source)?;
-                if shape.len() != KV_CACHE_RANK || shape[1] < covered {
-                    return Err(Error::invariant("prefix FP8 KV shape"));
+            // Allocate and validate every destination before queuing copies. Keep the whole
+            // destination set alive through the drain even when a later copy fails.
+            let mut copied = Ok(());
+            'copies: {
+                for (id, copies) in &mut states {
+                    for (dst, src) in copies.iter_mut().zip(&live_states[id]) {
+                        if let Err(error) =
+                            copy_state(device, dst, src, kv.contains(id), covered).await
+                        {
+                            copied = Err(error);
+                            break 'copies;
+                        }
+                    }
                 }
-                shape[1] = covered;
-                api::zeros::<f8e4m3fn>(&shape)
-                    .sync_on(&device.stream)
-                    .map_err(device_error)
-            };
-            let keys = allocate(keys)?;
-            let values = allocate(values)?;
-            bytes = bytes
-                .checked_add((keys.size() + values.size()) as u64)
-                .ok_or_else(|| Error::invalid("prefix byte overflow"))?;
-            fp8.insert(*id, (keys, values));
-        }
-        // Allocate and validate every destination before queuing copies. Keep the whole
-        // destination set alive through the drain even when a later copy fails.
-        let copied = states
-            .iter_mut()
-            .try_for_each(|(id, copies)| {
-                copies
-                    .iter_mut()
-                    .zip(&program.states()[id])
-                    .try_for_each(|(dst, src)| {
-                        copy_state(device, dst, src, kv.contains(id), covered)
-                    })
+                for (id, (keys, values)) in &mut fp8 {
+                    let (source_keys, source_values) = &live_fp8[id];
+                    for (dst, src) in [(keys, source_keys), (values, source_values)] {
+                        if let Err(error) = copy_state(device, dst, src, true, covered).await {
+                            copied = Err(error);
+                            break 'copies;
+                        }
+                    }
+                }
+            }
+            if let Err(error) = device.fence().await {
+                // These temporary destinations have not entered the cache yet. Unknown
+                // completion must retain them, just as it retains the source executor.
+                forget((states, fp8));
+                return Err(error);
+            }
+            copied?;
+            Ok(Self {
+                states,
+                kv,
+                fp8,
+                position,
+                bytes,
             })
-            .and_then(|()| {
-                fp8.iter_mut().try_for_each(|(id, (keys, values))| {
-                    let (source_keys, source_values) = &program.fp8_states()[id];
-                    copy_state(device, keys, source_keys, true, covered)?;
-                    copy_state(device, values, source_values, true, covered)
-                })
-            });
-        device.drain()?;
-        copied?;
-        Ok(Self {
-            states,
-            kv,
-            fp8,
-            position: program.position(),
-            bytes,
-        })
+        }
     }
 
     pub(super) fn restore(
+        &self,
+        device: &CudaDevice,
+        program: &mut DeviceProgram,
+        covered: usize,
+    ) -> Result<()> {
+        block_on(self.restore_async(device, program, covered))
+    }
+
+    pub(super) async fn restore_async(
         &self,
         device: &CudaDevice,
         program: &mut DeviceProgram,
@@ -129,7 +166,7 @@ impl ProgramSnapshot {
                 return Err(Error::invariant("prefix state arity"));
             }
             for (dst, src) in tensors.iter_mut().zip(cached) {
-                copy_state(device, dst, src, self.kv.contains(id), covered)?;
+                copy_state(device, dst, src, self.kv.contains(id), covered).await?;
             }
         }
         let live = program.fp8_states_mut();
@@ -140,10 +177,10 @@ impl ProgramSnapshot {
             let (dst_keys, dst_values) = live
                 .get_mut(id)
                 .ok_or_else(|| Error::invariant("prefix FP8 state missing"))?;
-            copy_state(device, dst_keys, keys, true, covered)?;
-            copy_state(device, dst_values, values, true, covered)?;
+            copy_state(device, dst_keys, keys, true, covered).await?;
+            copy_state(device, dst_values, values, true, covered).await?;
         }
-        device.drain()?;
+        device.fence().await?;
         program.set_position(self.position);
         Ok(())
     }
@@ -157,7 +194,7 @@ fn dimensions<T: DType>(tensor: &Tensor<T>) -> Result<Vec<usize>> {
         .collect()
 }
 
-fn copy_state<T: DType>(
+async fn copy_state<T: DType>(
     device: &CudaDevice,
     dst: &mut Tensor<T>,
     src: &Tensor<T>,
@@ -181,17 +218,9 @@ fn copy_state<T: DType>(
     {
         return Err(Error::invariant("prefix KV stride mismatch"));
     }
-    for head in 0..d[0] {
-        if let Err(error) = device.copy_d2d_at(
-            dst,
-            src,
-            head * d[1] * d[2],
-            head * s[1] * s[2],
-            covered * d[2],
-        ) {
-            device.drain()?;
-            return Err(error);
-        }
+    if let Err(error) = device.copy_head_prefix(dst, src, covered) {
+        device.fence().await?;
+        return Err(error);
     }
     Ok(())
 }

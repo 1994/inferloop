@@ -15,6 +15,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 REGISTERED = {
+    "tools/bench/containers/Cargo.toml": (
+        "candidate containers: bbtree/Verus and hashbrown comparisons stay outside the "
+        "production lock and dependency graph; benchmarks use actual production wrappers"
+    ),
     "crates/backend/cuda/kernels/oxide-attention/Cargo.toml": (
         "device-only Rust SIMT artifact: pins nightly-2026-10-11 and the NVIDIA cuda-oxide "
         "Git SDK; host builds remain stable and consume the verified embedded PTX"

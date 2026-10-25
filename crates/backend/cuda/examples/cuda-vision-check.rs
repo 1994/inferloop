@@ -2,23 +2,23 @@
 //!
 //! Every stage is compared against the official `transformers` implementation's output for the
 //! same input, so a wrong op is localized instead of surfacing as a wrong final embedding.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use cutile::jit_cache::enable_default;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use infer_backend_cuda::device::CudaDevice as DeviceCudaDevice;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use infer_backend_cuda::vision::VisionWeights as VisionVisionWeights;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::env::args as env_args;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::env::var;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::env::var_os;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::error::Error as StdError;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::fs::read;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn main() -> Result<(), Box<dyn StdError>> {
     use cutile::half::bf16;
     use infer_backend_cuda::{device::CudaDevice, vision::VisionWeights};
@@ -118,7 +118,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
 }
 
 /// Compare each block with the same reference input, separately from accumulated drift.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn trace_blocks(
     device: &DeviceCudaDevice,
     weights: &VisionVisionWeights,
@@ -167,15 +167,15 @@ fn trace_blocks(
 ///
 /// Hidden-state magnitudes grow through the tower, so agreement is judged against each
 /// reference's own scale; the absolute maxima are reported alongside.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 const TOLERANCE: f32 = 1e-2;
 
 /// Maximum absolute and reference-relative error of one stage.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 type StageError = (f32, f32);
 
 /// Per-stage errors of the stages that are wired so far.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 struct StageErrors {
     patch_embed: StageError,
     post_pos: StageError,
@@ -192,7 +192,7 @@ struct StageErrors {
     tower_rms: f32,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 impl StageErrors {
     fn worst(&self) -> f32 {
         self.stages()
@@ -215,8 +215,42 @@ impl StageErrors {
     }
 }
 
+/// Compare the prepared projections actually used by attention with the unpadded QKV golden.
+#[cfg(cuda_backend)]
+fn prepared_qkv(
+    device: &DeviceCudaDevice,
+    weights: &VisionVisionWeights,
+    encoder: &infer_spi::ModalityEncoder,
+    input: &[f32],
+    rows: usize,
+) -> infer_core::Result<Vec<f32>> {
+    use infer_backend_cuda::vision::project_with;
+    use infer_models::vision::head_dim;
+
+    let head = head_dim(encoder)?;
+    let half = head / 2;
+    let padded_half = half.next_power_of_two();
+    let padded_width = encoder.heads * padded_half * 2;
+    let layer = weights.attention(0)?;
+    let mut output = vec![0.0; rows * encoder.hidden_size * 3];
+    for (which, (weight, bias)) in [&layer.q, &layer.k, &layer.v].into_iter().enumerate() {
+        let projected = project_with(device, weight, bias, input, rows, padded_width)?;
+        for row in 0..rows {
+            for h in 0..encoder.heads {
+                for side in 0..2 {
+                    let source = row * padded_width + (h * 2 + side) * padded_half;
+                    let target = (row * 3 + which) * encoder.hidden_size + h * head + side * half;
+                    output[target..target + half]
+                        .copy_from_slice(&projected[source..source + half]);
+                }
+            }
+        }
+    }
+    Ok(output)
+}
+
 /// Run patch embed, position add, `LayerNorm`, `QKV` and attention against the reference.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn run_stages(
     device: &DeviceCudaDevice,
     weights: &VisionVisionWeights,
@@ -247,15 +281,7 @@ fn run_stages(
         &posed,
         case.patches,
     )?;
-    let qkv = vision::project(
-        device,
-        weights,
-        "blocks.0.attn.qkv.weight",
-        "blocks.0.attn.qkv.bias",
-        &normalised,
-        case.patches,
-        encoder.hidden_size * 3,
-    )?;
+    let qkv = prepared_qkv(device, weights, encoder, &normalised, case.patches)?;
     let mode = vision::AttentionMode::from_environment();
     let attended = vision::attention_with(
         device,
@@ -294,7 +320,7 @@ fn run_stages(
 }
 
 /// Golden case-0 inputs and the stage references.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 struct GoldenCase {
     pixels: Vec<f32>,
     patch_embed: Vec<f32>,
@@ -310,7 +336,7 @@ struct GoldenCase {
 }
 
 /// Load golden case 0.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn golden_case(golden: &str, index: usize) -> infer_core::Result<GoldenCase> {
     use infer_core::Error;
     use infer_models::SafetensorsFile;
@@ -358,7 +384,7 @@ fn golden_case(golden: &str, index: usize) -> infer_core::Result<GoldenCase> {
 }
 
 /// Learned position table of the checkpoint, as F32.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn position_table(
     root: &str,
     encoder: &infer_spi::ModalityEncoder,
@@ -387,7 +413,7 @@ fn position_table(
 }
 
 /// Relative error over the 32-token row block `index` of a `[rows, width]` activation.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn block_error(actual: &[f32], reference: &[f32], width: usize, index: usize) -> StageError {
     let (start, end) = (index * 32 * width, (index + 1) * 32 * width);
     if end > actual.len().min(reference.len()) {
@@ -397,7 +423,7 @@ fn block_error(actual: &[f32], reference: &[f32], width: usize, index: usize) ->
 }
 
 /// Root-mean-square error, which separates broad drift from a few outliers.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn rms_error(actual: &[f32], reference: &[f32]) -> f32 {
     let sum: f32 = actual
         .iter()
@@ -409,7 +435,7 @@ fn rms_error(actual: &[f32], reference: &[f32]) -> f32 {
 }
 
 /// Absolute and reference-relative maximum error.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn max_error(actual: &[f32], reference: &[f32]) -> StageError {
     if actual.len() != reference.len() || actual.is_empty() {
         return (f32::INFINITY, f32::INFINITY);
@@ -434,13 +460,15 @@ fn max_error(actual: &[f32], reference: &[f32]) -> StageError {
     )
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(cuda_backend))]
 fn main() {
+    use std::process::exit;
+
     eprintln!("CUDA vision checks require Linux");
-    std::process::exit(1);
+    exit(1);
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, cuda_backend))]
 mod tests {
     use super::{max_error, rms_error};
 

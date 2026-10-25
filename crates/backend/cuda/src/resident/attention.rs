@@ -49,6 +49,32 @@ pub(crate) mod attention {
         out.store(value);
     }
 
+    /// Target twin of `embedding_batch`: row `pid.0` copies its token's 256-wide weight slice at
+    /// column tile `pid.1`, or that lane's external hidden row when its metadata marks an
+    /// override. Bit-identical to the per-lane `embedding` kernel with `OVERRIDE = 1`.
+    #[cutile::entry()]
+    fn embedding_rows<const D: i32, const FIELDS: i32>(
+        out: &mut Tensor<f32, { [1, 256] }>,
+        weight: &Tensor<bf16, { [-1, D] }>,
+        external: &Tensor<f32, { [-1, D] }>,
+        metadata: &Tensor<i32, { [-1] }>,
+    ) {
+        let pid = get_tile_block_id();
+        let fields = metadata.partition(shape![1]);
+        let override_input: i32 =
+            tile_to_scalar(fields.load([pid.0 * FIELDS + 3i32]).reshape(shape![]));
+        if override_input == 1 {
+            let row: Tile<f32, { [1, 256] }> =
+                external.partition(shape![1, 256]).load([pid.0, pid.1]);
+            out.store(row);
+        } else {
+            let token: i32 = tile_to_scalar(fields.load([pid.0 * FIELDS + 1i32]).reshape(shape![]));
+            let w = weight.partition(shape![1, 256]).load([token, pid.1]);
+            let value: Tile<f32, { [1, 256] }> = convert_tile(w);
+            out.store(value);
+        }
+    }
+
     #[cutile::entry()]
     fn append<E: ElementType, const D: i32, const CAP: i32, const QUANT: i32>(
         keys: &mut Tensor<E, { [1, CAP, D] }>,
@@ -188,3 +214,7 @@ pub(crate) mod attention {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/resident_embedding_rows.rs"]
+mod embedding_rows_tests;

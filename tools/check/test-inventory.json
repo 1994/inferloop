@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 299
+      "tests": 321
     },
     "frontdoor": {
       "benches": 0,
@@ -70,7 +70,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 147
+      "tests": 148
     },
     "quality": {
       "benches": 0,
@@ -82,7 +82,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 82
+      "tests": 83
     },
     "scheduler": {
       "benches": 0,
@@ -100,13 +100,13 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 20
+      "tests": 33
     },
     "workloads": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 23
+      "tests": 28
     }
   },
   "executor_consumers": [
@@ -152,14 +152,16 @@
     "target_os = \"macos\"": 1
   },
   "ignored_reasons": {
-    "CUDA/checkpoint/actual regression580/safe-run; diagnostic only": 1,
-    "CUDA/checkpoint/frozen tokens/safe-run; exact logits, partial commits and live state in actual speculation pools": 1,
-    "CUDA/checkpoint/frozen tokens/safe-run; ordinary-pool versus speculative-pool full target arithmetic": 2,
-    "CUDA/checkpoint/frozen tokens/safe-run; private M1 versus M3 full target outputs and state": 1,
-    "CUDA/checkpoint/frozen511tokens/safe-run; canonical2K prefix and subsequent decode bits": 1,
+    "CUDA/checkpoint/frozen511tokens/safe-run; INFER_CUDA_ATTENTION_PRECISE_PREFIX=2048": 1,
+    "opt-in projection-only shape A/B with real checkpoint and CUDA; run inside safe-run": 1,
+    "real 2B checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 3,
     "real CUDA/MTP checkpoint; reserve graphs only after quote acknowledgement": 1,
     "real MTP2 checkpoint and CUDA; run inside safe-run": 1,
+    "real MTP2 checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 2,
     "real MTP2 checkpoint, CUDA, frozen table/tokens and protected serial runner required": 1,
+    "real MTP2 checkpoint/CUDA; fixed-batch diagnostic under safe-run with profile paths": 1,
+    "real MTP2 checkpoint/CUDA; validates pooled quotes without resident home programs": 1,
+    "real MTP2 checkpoint/CUDA; validates private slot binding, admission and reset accounting": 1,
     "release CUDA performance diagnostic; run inside safe-run": 1,
     "requires CUDA and INFER_TEST_MODEL; run release inside safe-run": 3,
     "requires CUDA and INFER_TEST_MODEL; run release serially inside safe-run": 1,
@@ -175,9 +177,9 @@
     "requires CUDA hardware; new F32-state/F64-reference contract": 1,
     "requires CUDA hardware; root runs release serially": 3,
     "requires CUDA hardware; run explicitly inside tools/bench/safe-run.sh": 5,
-    "requires CUDA hardware; run inside safe-run": 25,
+    "requires CUDA hardware; run inside safe-run": 26,
     "requires CUDA hardware; run release inside safe-run": 1,
-    "requires CUDA hardware; run under safe-run": 28,
+    "requires CUDA hardware; run under safe-run": 29,
     "requires CUDA hardware; run under safe-run in release": 1,
     "requires CUDA hardware; weak decay and correlated K expose unstable inverse construction": 1,
     "requires CUDA, INFER_TEST_MODEL and INFER_TEST_TOKENS (JSON token array)": 1,
@@ -229,8 +231,8 @@
     "requires GPU and INFER_ATTENTION_BENCH fixtures; run under tools/bench/safe-run.sh": 1,
     "requires GPU and INFER_ATTENTION_GATE; use make check-attention": 1,
     "requires Linux NUMA policy and move_pages query permission; make check-linux-numa": 1,
-    "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 3,
-    "requires a CUDA device; run inside safe-run": 2,
+    "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 6,
+    "requires a CUDA device; run inside safe-run": 5,
     "requires a Linux production host with get/set_mempolicy permitted; make check-linux-numa": 1,
     "requires an NVIDIA GPU; run under tools/bench/safe-run.sh": 7,
     "requires real checkpoint and CUDA; run release serially inside safe-run": 1,
@@ -300,6 +302,16 @@
     },
     {
       "crate": "cuda",
+      "file": "src/executor/owner/notification.rs",
+      "mount": "../../../tests/unit/executor_notification.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/executor/owner.rs",
+      "mount": "../../tests/unit/executor_owner.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/executor/prefix.rs",
       "mount": "../../tests/unit/executor_prefix.rs"
     },
@@ -307,6 +319,11 @@
       "crate": "cuda",
       "file": "src/executor/prefix_state.rs",
       "mount": "../../tests/unit/executor_prefix_state.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/executor/profiling.rs",
+      "mount": "../../tests/unit/executor_profiling.rs"
     },
     {
       "crate": "cuda",
@@ -332,6 +349,11 @@
       "crate": "cuda",
       "file": "src/loading/mod.rs",
       "mount": "../../tests/unit/loading_support.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/loading/mod.rs",
+      "mount": "../../tests/unit/loading_shape_ab.rs"
     },
     {
       "crate": "cuda",
@@ -410,18 +432,13 @@
     },
     {
       "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/loading_canonical_verification.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/loading/mod.rs",
-      "mount": "../../tests/unit/loading_pooled_reference_verification.rs"
-    },
-    {
-      "crate": "cuda",
       "file": "src/nvfp4.rs",
       "mount": "../tests/unit/nvfp4.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/resident/attention.rs",
+      "mount": "../../tests/unit/resident_embedding_rows.rs"
     },
     {
       "crate": "cuda",
@@ -775,6 +792,16 @@
     },
     {
       "crate": "cuda",
+      "file": "tests/unit/executor_owner.rs",
+      "mount": "executor_fixed_batch.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "tests/unit/executor_owner.rs",
+      "mount": "executor_preparation.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "tests/unit/loading_budget.rs",
       "mount": "loading_budget_recurrent.rs"
     },
@@ -900,6 +927,16 @@
     },
     {
       "crate": "state",
+      "file": "src/cache.rs",
+      "mount": "../tests/unit/cache.rs"
+    },
+    {
+      "crate": "state",
+      "file": "src/kv/prefix.rs",
+      "mount": "../../tests/unit/prefix_pages.rs"
+    },
+    {
+      "crate": "state",
       "file": "src/logical/mod.rs",
       "mount": "../../tests/unit/logical.rs"
     },
@@ -922,6 +959,11 @@
       "crate": "workloads",
       "file": "src/lib.rs",
       "mount": "../tests/unit/cases.rs"
+    },
+    {
+      "crate": "workloads",
+      "file": "src/readouts.rs",
+      "mount": "../tests/unit/readouts.rs"
     },
     {
       "crate": "workloads",
@@ -1096,6 +1138,11 @@
     {
       "crate": "cli",
       "file": "src/backend/mod.rs",
+      "mount": "cuda_unavailable.rs"
+    },
+    {
+      "crate": "cli",
+      "file": "src/backend/mod.rs",
       "mount": "../../tests/unit/backend_mod.rs"
     },
     {
@@ -1185,11 +1232,11 @@
     }
   ],
   "totals": {
-    "all": 818,
+    "all": 860,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 818
+    "tests": 860
   }
 }

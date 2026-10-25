@@ -41,7 +41,9 @@ make check-linux      # Linux 原生放置测试
 make check-linux-numa # Linux NUMA 硬件验收，见 Linux 指南
 ```
 
-`check-rust` 只构建 CUDA crate 的无 feature 版本。需要 Toolkit 的部分分成两半：`test-cuda-hosted` 用 CUDA 13.2 开发头文件编译、lint 全部 target 并运行 CPU 侧测试，因此托管 CI 可以运行，也是唯一会编译 cuda-gated `#[cfg(test)]` 模块的门禁；`test-cuda` 追加设备验收（`cuda-kernels` 示例与需 GPU 的用例）。缺少 GPU 或相应 syscall 权限时，硬件门禁明确失败，不会跳过。
+`check-rust` 对 CUDA crate 的无 feature 版本只检查编译隔离：整个库被排除，
+该入口报告 `compiled`，不声称执行了 CUDA 测试。纯主机用例也随 CUDA 库启用，
+在 `test-cuda-hosted` 中执行。需要 Toolkit 的部分分成两半：`test-cuda-hosted` 用 CUDA 13.2 开发头文件编译、lint 全部 target 并运行 CPU 侧测试，因此托管 CI 可以运行，也是唯一会编译 cuda-gated `#[cfg(test)]` 模块的门禁；`test-cuda` 追加设备验收（`cuda-kernels` 示例与需 GPU 的用例）。缺少 GPU 或相应 syscall 权限时，硬件门禁明确失败，不会跳过。
 
 ## 通用 Attention 门禁
 

@@ -88,5 +88,3 @@ pub(crate) use norm_maximum::{
     captures as norm_maximum_captures, consumptions as norm_maximum_consumptions,
     with_separate as with_separate_norm_maximum,
 };
-
-mod canonical_recurrent;
