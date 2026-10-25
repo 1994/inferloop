@@ -569,7 +569,7 @@ impl BatchBuilder<'_> {
             restore,
             batched_commit,
             fused,
-            readbacks: Readbacks::default(),
+            readbacks: Readbacks::contiguous(self.device, &hidden, &logits, lanes)?,
             metadata_owner,
             metadata_upload: Vec::with_capacity(lanes * METADATA_FIELDS),
             hidden,
@@ -592,7 +592,7 @@ impl SlotVerifyGraph {
     /// # Errors
     /// Rejects unknown slots, duplicate lanes, out-of-vocabulary tokens, cursors without
     /// room for the whole chain, positions out of capacity and CUDA replay failures.
-    pub(crate) fn run_verify_readout(
+    pub(crate) async fn run_verify_readout_async(
         &mut self,
         device: &CudaDevice,
         lanes: &[SlotVerifyLane],
@@ -646,7 +646,8 @@ impl SlotVerifyGraph {
                 .token_readout
                 .as_mut()
                 .ok_or_else(|| Error::invariant("slot verify token readout"))?
-                .run(device, &self.graph, &mut self.readbacks, &sources, &active)?;
+                .run_async(device, &self.graph, &mut self.readbacks, &sources, &active)
+                .await?;
             let mut tokens = vec![None; total];
             for (&row, token) in active.iter().zip(selected) {
                 tokens[row] = Some(token);
@@ -656,7 +657,9 @@ impl SlotVerifyGraph {
             (None, None)
         };
         let rows = if output.is_none() {
-            self.readbacks.run(device, &self.graph, &sources)?
+            self.readbacks
+                .run_async(device, &self.graph, &sources)
+                .await?
         } else {
             Vec::new()
         };

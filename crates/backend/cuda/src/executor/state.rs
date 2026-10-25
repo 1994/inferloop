@@ -1,9 +1,9 @@
-use super::{CudaBackend, Sequence};
+use super::{CudaExecutor, Sequence};
 use crate::resident::DeviceProgram;
 use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::OutputReadout;
 use std::collections::BTreeSet;
-impl CudaBackend {
+impl CudaExecutor {
     pub(super) fn available(&self) -> Result<u64> {
         self.state_funding().map(|(free, _)| free)
     }

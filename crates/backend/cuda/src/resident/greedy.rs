@@ -1,4 +1,5 @@
 //! Exact finite F32 greedy selection; only token IDs and validation flags leave the GPU.
+use crate::device::asynchronous::block_on;
 use crate::device::{CudaDevice, device_error};
 use cutile::error::tensor_error;
 use cutile::prelude::*;
@@ -145,7 +146,11 @@ impl Greedy {
     }
 
     pub fn read(&self, device: &CudaDevice) -> Result<Vec<u32>> {
-        let values = device.read_borrowed(&self.tokens).map_err(device_error)?;
+        block_on(self.read_async(device))
+    }
+
+    pub(crate) async fn read_async(&self, device: &CudaDevice) -> Result<Vec<u32>> {
+        let values = device.read_async(&self.tokens).await?;
         values
             .as_chunks::<2>()
             .0

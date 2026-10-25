@@ -81,13 +81,13 @@ impl TokenReadout {
         Ok(Some(Self {
             graph,
             tokens: Arc::new(tokens),
-            readbacks: Readbacks::default(),
+            readbacks: Readbacks::allocated(device, rows * 2)?,
             _selectors: selectors,
             vocabulary,
         }))
     }
 
-    pub(super) fn run(
+    pub(super) async fn run_async(
         &mut self,
         device: &CudaDevice,
         graph: &CudaGraph<()>,
@@ -98,43 +98,15 @@ impl TokenReadout {
         if active.iter().any(|&row| row >= self.tokens.size() / 2) {
             return Err(Error::invalid("token readout active row"));
         }
-        let (rows, pairs) = readbacks.run_with_tokens(
-            device,
-            graph,
-            sources,
-            (&self.graph, &mut self.readbacks, Arc::clone(&self.tokens)),
-        )?;
+        let (rows, pairs) = readbacks
+            .run_with_tokens_async(
+                device,
+                graph,
+                sources,
+                (&self.graph, &mut self.readbacks, Arc::clone(&self.tokens)),
+            )
+            .await?;
         self.decode(rows, &pairs, active, sources.len() / 2)
-    }
-
-    pub(super) fn submit(
-        &mut self,
-        device: &CudaDevice,
-        graph: &CudaGraph<()>,
-        readbacks: &mut Readbacks,
-        sources: &[Option<ReadbackSource>],
-        active: &[usize],
-    ) -> Result<()> {
-        if active.iter().any(|&row| row >= self.tokens.size() / 2) {
-            return Err(Error::invalid("token readout active row"));
-        }
-        readbacks.submit_with_tokens(
-            device,
-            graph,
-            sources,
-            (&self.graph, &mut self.readbacks, Arc::clone(&self.tokens)),
-        )
-    }
-
-    pub(super) fn poll(
-        &mut self,
-        readbacks: &mut Readbacks,
-        active: &[usize],
-    ) -> Result<Option<(super::batch::BatchOutput, Vec<u32>)>> {
-        let Some((rows, pairs)) = readbacks.poll_with_tokens(&mut self.readbacks)? else {
-            return Ok(None);
-        };
-        self.decode(rows, &pairs, active, active.len()).map(Some)
     }
 
     fn decode(

@@ -113,18 +113,24 @@ kernel 的 K 累积顺序相同。
 
 模型包负责权重格式、scale、shape 和执行图；`LinearStrategy` 提供合法候选；设备层管理 CUDA 生命周期与 typed buffer；kernel 负责计算，executor 负责提交、完成、状态和回滚。所有权与 checkpoint 遵守 `BackendProvider` / `KvCacheManager` 契约，prefill GEMM 与 decode GEMV 独立调优。
 
-### 非阻塞 pooled decode
+### 非阻塞执行
 
-普通、已绑定 slot 的 decode 默认采用提交/完成拆分，无需配置开关。
-`submit` 入队 graph 与 pinned D2H 后返回；`poll` 未完成时返回 `None`，完成后才提交
-history 和 slot 游标。保留设备端 greedy token readout，也支持完整 logits。
-在途 ticket 未消费前禁止 reset、release、再次 submit 与 prefix/control 操作；丢弃 ticket
-不会使 backend 空闲。graph、DMA source、pinned destination 的寿命由设备 submission 保持，
-设备错误毒化 backend，完成路径在释放状态前 drain。
+CUDA compute 默认采用提交/完成拆分，无需配置开关。prefill、首次 slot 绑定、
+普通 decode、混合批次、私有 program 及 MTP draft/verify/rollback 都由有所有权的
+future 推进。`submit` 入队首段工作后返回，`poll` 在等待设备时返回 `None`；
+最终 stream fence 完成且 ticket 被消费后才发布结果、history 与 slot 游标。
 
-prefill、首次 slot 绑定、MTP、混合批次和私有 program 保留同步路径；
-这不是 ADR-0004 的完整深度 2 队列或 token/KV 延迟回填实现。尚无服务吞吐、TTFT/TPOT
-与显存峰值收益结论；性能证据按 baseline 合同记录。相关设备用例为
-`split_readback_is_pending_until_stream_completion_and_rejects_reuse`、
-`split_decode_preserves_outputs_cursors_and_inactive_slots` 和
-`async_decode_commits_only_on_poll_and_matches_synchronous_output`（最后一项需要 `INFER_TEST_MODEL`）。
+在途 ticket 未消费前禁止 reset、release、再次 submit 与 prefix/control 操作；
+丢弃 ticket 不会使 backend 空闲。graph、DMA source、pinned destination 和物理 pool
+保持到设备完成；无法确认完成时隔离 backend 并保留 owner，禁止提前复用。
+加载、分配与 graph capture 属于加载或资源准入，不在 compute flight 中执行。
+
+当前每个 backend 仍只有一个 compute flight，未实现 ADR-0004 的深度 2 队列或
+设备端 token/KV 延迟回填。同步诊断 API 通过同一 async 实现的兼容包装运行，
+provider 不调用该包装。吞吐、TTFT/TPOT 和内存成本按性能 baseline 合同单独验收。
+
+设备验收包含 `async_prefill_first_binding_decode_and_mixed_readouts_match_serial`、
+`async_mtp_pooled_and_private_match_serial`、
+`async_invalid_mtp_sampling_fences_before_failure` 和
+`async_abandoned_ticket_keeps_state_owned_until_backend_drop`；通过 `INFER_TEST_MODEL`
+指定对应的 2B 或 MTP2 实机 checkpoint，缺少模型或设备会失败。

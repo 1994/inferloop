@@ -343,18 +343,15 @@ fn commit_batch_rejects_duplicate_and_non_pending_slots() {
 #[test]
 #[ignore = "requires CUDA hardware; run inside safe-run"]
 fn split_decode_preserves_outputs_cursors_and_inactive_slots() -> Result<()> {
-    use std::thread::yield_now;
-    use std::time::{Duration, Instant};
-
+    use crate::device::asynchronous::block_on;
     enable_default().map_err(device_error)?;
     let device = CudaDevice::new(0)?;
     let (graph, mut weights) = fixture(&device)?;
     weights.prefill_width = 1;
-    let mut synchronous = SlotPool::new(&device, &graph, &weights, 3, 512, 32, (32, 1), None)?;
+    let mut serial = (0..3)
+        .map(|_| DeviceProgram::new(&device, &graph, &weights, 512, 32, 32))
+        .collect::<Result<Vec<_>>>()?;
     let mut candidate = SlotPool::new(&device, &graph, &weights, 3, 512, 32, (32, 1), None)?;
-    let mut sync_us = Vec::new();
-    let mut submit_us = Vec::new();
-    let mut total_us = Vec::new();
     for round in 0..128 {
         let lanes: Vec<_> = [2, 0, 1]
             .into_iter()
@@ -363,49 +360,42 @@ fn split_decode_preserves_outputs_cursors_and_inactive_slots() -> Result<()> {
                 (
                     slot,
                     u32::try_from((round + slot) % 32).unwrap(),
-                    synchronous.cursors()[slot],
-                    synchronous.cursors()[slot],
+                    serial[slot].position(),
+                    serial[slot].position(),
                 )
             })
             .collect();
         let greedy = round % 2 == 0;
-        let before = candidate.cursors().to_vec();
-        let start = Instant::now();
-        let expected = synchronous.run_lanes_readout(&device, &lanes, greedy)?;
-        let synchronous_us = start.elapsed().as_secs_f64() * 1e6;
-        let start = Instant::now();
-        candidate.submit_lanes(&device, &lanes, greedy)?;
-        let submitted_us = start.elapsed().as_secs_f64() * 1e6;
-        assert_eq!(candidate.cursors(), before);
-        assert!(candidate.submit_lanes(&device, &lanes, greedy).is_err());
-        assert!(
-            candidate
-                .run_lanes_readout(&device, &lanes, greedy)
-                .is_err()
-        );
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let actual = loop {
-            if let Some(rows) = candidate.poll_lanes()? {
-                break rows;
+        let mut expected = Vec::new();
+        for &(slot, token, position, _) in &lanes {
+            expected.push(serial[slot].step(token, position, position, None, true)?.1);
+        }
+        let actual = block_on(candidate.run_lanes_readout_async(&device, &lanes, greedy))?;
+        for (index, (_, logits)) in actual.rows.iter().enumerate() {
+            if greedy {
+                let token = expected[index]
+                    .iter()
+                    .enumerate()
+                    .max_by(|(a, x), (b, y)| x.total_cmp(y).then_with(|| b.cmp(a)))
+                    .unwrap()
+                    .0;
+                assert_eq!(
+                    actual.tokens.as_ref().unwrap()[index],
+                    Some(u32::try_from(token).unwrap())
+                );
+                assert_eq!(logits.as_slice(), &[0.0_f32; 0]);
+            } else {
+                assert_eq!(logits.len(), expected[index].len());
+                assert!(logits.iter().all(|value| value.is_finite()));
+                compare(
+                    &[(Vec::new(), logits.clone())],
+                    &[(Vec::new(), expected[index].clone())],
+                );
             }
-            assert!(Instant::now() < deadline);
-            yield_now();
-        };
-        let elapsed_us = start.elapsed().as_secs_f64() * 1e6;
-        assert_eq!(actual.rows, expected.rows);
-        assert_eq!(actual.tokens, expected.tokens);
-        assert_eq!(candidate.cursors(), synchronous.cursors());
-        assert!(candidate.poll_lanes().is_err());
-        if round >= 8 {
-            sync_us.push(synchronous_us);
-            submit_us.push(submitted_us);
-            total_us.push(elapsed_us);
+        }
+        for (slot, state) in serial.iter().enumerate() {
+            assert_eq!(candidate.cursors()[slot], state.position());
         }
     }
-    println!(
-        "{}",
-        serde_json::json!({"scope":"synthetic pooled decode; interleaved greedy/logits, lifecycle assertions included; not serving throughput",
-        "sync_us":sync_us, "submit_us":submit_us, "total_us":total_us})
-    );
     Ok(())
 }

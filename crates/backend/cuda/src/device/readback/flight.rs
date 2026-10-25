@@ -6,7 +6,7 @@ use cutile::cuda_async::device_future::DeviceFuture;
 use cutile::cuda_async::device_operation::BoxedDeviceOp;
 use cutile::prelude::*;
 use infer_core::{Error, ErrorCode, Result};
-use std::future::Future;
+use std::future::{Future, poll_fn};
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
@@ -70,6 +70,9 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
     }
 
     fn progress(&mut self) -> Result<bool> {
+        self.progress_with(&mut Context::from_waker(Waker::noop()))
+    }
+    fn progress_with(&mut self, context: &mut Context<'_>) -> Result<bool> {
         let flight = self
             .flight
             .as_mut()
@@ -78,8 +81,7 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
             return Err(error.clone());
         }
         if !flight.ready {
-            let mut context = Context::from_waker(Waker::noop());
-            match Pin::new(&mut flight.completion).poll(&mut context) {
+            match Pin::new(&mut flight.completion).poll(context) {
                 Poll::Pending => return Ok(false),
                 Poll::Ready(result) => {
                     if let Err(error) = result {
@@ -95,6 +97,9 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
     }
 
     pub(crate) fn poll(&mut self) -> Result<Option<Rows<T>>> {
+        self.poll_with(&mut Context::from_waker(Waker::noop()))
+    }
+    fn poll_with(&mut self, context: &mut Context<'_>) -> Result<Option<Rows<T>>> {
         if self
             .flight
             .as_ref()
@@ -102,7 +107,7 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
         {
             return Err(Error::invalid("paired readback requires its token owner"));
         }
-        if !self.progress()? {
+        if !self.progress_with(context)? {
             return Ok(None);
         }
         let flight = self
@@ -161,9 +166,17 @@ impl Readbacks<f32> {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn poll_with_tokens(
         &mut self,
         tokens: &mut Readbacks<i32>,
+    ) -> Result<Option<(Rows<f32>, Rows<i32>)>> {
+        self.poll_tokens_with(tokens, &mut Context::from_waker(Waker::noop()))
+    }
+    fn poll_tokens_with(
+        &mut self,
+        tokens: &mut Readbacks<i32>,
+        context: &mut Context<'_>,
     ) -> Result<Option<(Rows<f32>, Rows<i32>)>> {
         if !self
             .flight
@@ -173,7 +186,7 @@ impl Readbacks<f32> {
         {
             return Err(Error::invalid("foreign token readback owner"));
         }
-        if !self.progress()? {
+        if !self.progress_with(context)? {
             return Ok(None);
         }
         let integers = tokens
@@ -195,5 +208,40 @@ impl Readbacks<f32> {
             .ok_or_else(|| Error::invariant("completed readback"))?;
         tokens.poisoned = false;
         Ok(Some((rows, integers)))
+    }
+}
+
+impl<T: DType + DeviceCopy> Readbacks<T> {
+    pub(crate) async fn run_async(
+        &mut self,
+        device: &CudaDevice,
+        graph: &CudaGraph<()>,
+        sources: &[Option<ReadbackSource<T>>],
+    ) -> Result<Rows<T>> {
+        self.submit(device, graph, sources)?;
+        poll_fn(|context| match self.poll_with(context) {
+            Ok(Some(rows)) => Poll::Ready(Ok(rows)),
+            Ok(None) => Poll::Pending,
+            Err(error) => Poll::Ready(Err(error)),
+        })
+        .await
+    }
+}
+impl Readbacks<f32> {
+    pub(crate) async fn run_with_tokens_async(
+        &mut self,
+        device: &CudaDevice,
+        graph: &CudaGraph<()>,
+        sources: &[Option<ReadbackSource>],
+        tail: (&CudaGraph<()>, &mut Readbacks<i32>, Arc<Tensor<i32>>),
+    ) -> Result<(Rows<f32>, Rows<i32>)> {
+        let (selector, tokens, tensor) = tail;
+        self.submit_with_tokens(device, graph, sources, (selector, tokens, tensor))?;
+        poll_fn(|context| match self.poll_tokens_with(tokens, context) {
+            Ok(Some(rows)) => Poll::Ready(Ok(rows)),
+            Ok(None) => Poll::Pending,
+            Err(error) => Poll::Ready(Err(error)),
+        })
+        .await
     }
 }

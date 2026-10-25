@@ -5,6 +5,7 @@ use crate::kernels::linear::dense;
 use crate::strategy::LinearTiling;
 use crate::target::CudaTarget;
 use crate::tuning::memory::arena_budget;
+use cuda_core::DeviceCopy;
 use cuda_core::sys::CUdevice_attribute;
 use cuda_core::sys::CUresult;
 use cuda_core::sys::cuDeviceGetAttribute;
@@ -152,7 +153,10 @@ fn resident_states(total_memory_bytes: u64) -> usize {
         .unwrap_or(MAX_RESIDENT_STATES)
         .clamp(MIN_RESIDENT_STATES, MAX_RESIDENT_STATES)
 }
+pub(crate) mod asynchronous;
 mod readback;
+#[cfg(test)]
+pub(crate) use readback::queue_test_gate;
 // Exercised by its own device test today; the projection path adopts it in a following change.
 #[cfg_attr(
     not(test),
@@ -271,6 +275,20 @@ impl CudaDevice {
             .to_host_vec()
             .sync_on(&self.stream)
             .map_err(device_error)
+    }
+
+    #[expect(
+        unsafe_code,
+        reason = "Read-only shared storage alias held across the device future; the immutable source borrow excludes host mutation"
+    )]
+    pub(crate) async fn read_async<T: DType + DeviceCopy>(
+        &self,
+        tensor: &Tensor<T>,
+    ) -> Result<Vec<T>> {
+        // SAFETY: the immutable borrow lasts through the read; the alias owns shared storage,
+        // registered device leases retain it until the future fences the ordered D2H.
+        let source = unsafe { tensor.into_shared_alias() };
+        self.run_op(source.to_host_vec()).await
     }
 
     /// Enqueue a host slice into an existing device tensor on the device stream.

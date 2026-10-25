@@ -4,7 +4,7 @@ use infer_core::{Error, Result, StateId};
 use infer_gpu_api::BatchLease;
 use infer_ir::ExecutionProgram;
 use infer_spi::BackendProvider;
-use std::thread::park_timeout;
+use std::thread::{current, park_timeout};
 use std::{sync::Arc, sync::atomic::Ordering, sync::mpsc, time::Duration};
 
 /// Control commands serviced before a pending compute submission is allowed to launch.
@@ -258,6 +258,8 @@ impl<B: BackendProvider> Worker<B> {
         }
     }
     pub fn run(mut self) {
+        let owner = current();
+        self.backend.set_waker(Arc::new(move || owner.unpark()));
         let mut disconnected = false;
         let mut poll_us = self.config.poll_min_us;
         let mut controls = 0usize;

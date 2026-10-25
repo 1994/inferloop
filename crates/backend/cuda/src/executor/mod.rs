@@ -5,7 +5,9 @@
 mod capabilities;
 mod drafting;
 mod execution;
-mod flight;
+mod owner;
+mod submission;
+pub use owner::CudaBackend;
 mod pool;
 pub mod prefix;
 mod prefix_state;
@@ -17,18 +19,17 @@ mod state;
 mod validation;
 use crate::{loading::LoadedModel, resident::DeviceProgram, resident::slot_batch::SlotPool};
 use infer_core::{Error, Result, StateId};
-use infer_ir::{DeviceCapabilities, ExecutionProgram, ModelOutput, OutputReadout, TaskOutput};
+use infer_ir::{DeviceCapabilities, ExecutionProgram, ModelOutput, OutputReadout};
 use infer_state::cache::SnapshotScan;
+use std::collections::BTreeMap;
 use std::mem::{forget, take};
-use std::{collections::BTreeMap, sync::Arc};
 
-pub struct CudaBackend {
+pub(super) struct CudaExecutor {
     loaded: LoadedModel,
     capabilities: DeviceCapabilities,
     operations: Vec<infer_ir::CompiledOp>,
     workspace_bytes: u64,
     identity: String,
-    owner: Arc<()>,
     states: BTreeMap<StateId, Sequence>,
     budget: u64,
     maximum_states: usize,
@@ -54,7 +55,6 @@ pub struct CudaBackend {
     deferred_pool_plan: Option<(usize, u64)>,
     /// Reason the last pool attempt failed, reported when batching is given up for good.
     pool_failure_reason: Option<String>,
-    decode: flight::DecodeFlight,
     busy: bool,
     fatal: Option<Error>,
 }
@@ -125,18 +125,7 @@ impl Speculation {
         Ok(())
     }
 }
-/// A completion can be consumed exactly once by its originating backend.
-pub struct CudaTicket {
-    owner: Arc<()>,
-    completion: Completion,
-    drain_required: bool,
-}
-enum Completion {
-    PendingDecode,
-    FailedDecode(Error),
-    Ready(Result<Vec<TaskOutput>>),
-    Consumed,
-}
+pub use submission::CudaTicket;
 /// Prefix-cache capacity derived from the state budget: default on, a quarter of the budget,
 /// with a floor so small devices still cache one prefix and a disabled cache when nothing fits.
 const fn prefix_cache_bytes(state_budget: u64) -> u64 {
@@ -146,7 +135,7 @@ const fn prefix_cache_bytes(state_budget: u64) -> u64 {
     if share < FLOOR { 0 } else { share }
 }
 
-impl CudaBackend {
+impl CudaExecutor {
     /// Prefix cache occupancy and hit counters, for observability.
     #[must_use]
     pub fn prefix_inspection(&self) -> (u64, u64, u64, usize) {
@@ -213,7 +202,6 @@ impl CudaBackend {
             operations: program.operations,
             workspace_bytes: program.workspace_bytes,
             identity,
-            owner: Arc::new(()),
             states: BTreeMap::new(),
             budget: state_budget,
             maximum_states,
@@ -228,7 +216,6 @@ impl CudaBackend {
             slots_disabled: false,
             deferred_pool_plan: None,
             pool_failure_reason: None,
-            decode: flight::DecodeFlight::default(),
             busy: false,
             fatal: None,
         };
@@ -275,7 +262,7 @@ mod prefix_capacity_tests;
 #[path = "../../tests/unit/resident_mtp_fusion_model.rs"]
 mod mtp_fusion_model_tests;
 
-impl Drop for CudaBackend {
+impl Drop for CudaExecutor {
     #[expect(
         clippy::mem_forget,
         reason = "Unknown CUDA completion requires retaining physical pool owners: graph row aliases do not own their allocations"

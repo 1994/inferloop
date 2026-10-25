@@ -1,52 +1,17 @@
-use super::{CudaBackend, CudaTicket, prefix::Restore};
+use super::{CudaExecutor, prefix::Restore};
 use crate::constants::KV_BLOCK_TOKENS;
 use infer_core::{Result, StateId};
-use infer_ir::{
-    DeviceCapabilities, ExecutionProgram, ExecutionTask, KvCacheInspection, ModelIr, OutputReadout,
-    PageGrowth, StepPlan, TaskOutput,
-};
-use infer_spi::BackendProvider;
-impl BackendProvider for CudaBackend {
-    type Ticket = CudaTicket;
-    fn identity(&self) -> &str {
-        &self.identity
-    }
-    fn weight_backed_dataflow(&self) -> bool {
-        true
-    }
-    fn execution_profile(&self) -> Option<infer_ir::ExecutionProfileInspection> {
-        Some(self.loaded.execution_profile())
-    }
-    fn capabilities(&self) -> DeviceCapabilities {
-        self.capabilities.clone()
-    }
-    fn speculation_capability(&self) -> infer_ir::SpeculationCapability {
-        self.capabilities.speculation
-    }
-    fn control_ready(&self) -> bool {
-        !self.busy && self.fatal.is_none()
-    }
-    fn maintenance(&mut self) -> Result<()> {
-        self.fatal
-            .as_ref()
-            .map_or(Ok(()), |error| Err(error.clone()))
-    }
-    fn execution_graph(&self, model: &ModelIr) -> Result<infer_ir::DataflowGraph> {
-        if model != self.model() {
-            return Err(infer_core::Error::invalid("execution graph model mismatch"));
-        }
-        Ok(self.loaded.graph().clone())
-    }
-    fn validate_program(&self, model: &ModelIr, program: &ExecutionProgram) -> Result<()> {
-        self.check_program(model, program)
-    }
-    fn prepare_state_reservation(&mut self, capacity: usize, readout: OutputReadout) -> Result<()> {
+use infer_ir::{KvCacheInspection, OutputReadout, PageGrowth};
+impl CudaExecutor {
+    pub(super) fn prepare_state_reservation(
+        &mut self,
+        capacity: usize,
+        readout: OutputReadout,
+    ) -> Result<()> {
         self.prepare_reservation_for(capacity, readout)
     }
-    fn state_reservation_bytes(&self, capacity: usize) -> Result<Option<u64>> {
-        self.state_reservation_bytes_for(capacity, OutputReadout::Full)
-    }
-    fn state_reservation_bytes_for(
+
+    pub(super) fn state_reservation_bytes_for(
         &self,
         capacity: usize,
         readout: OutputReadout,
@@ -57,10 +22,10 @@ impl BackendProvider for CudaBackend {
         self.reservation_budget(capacity, readout, private)
             .map(Some)
     }
-    fn state_capacity_bytes(&self) -> Result<Option<u64>> {
+    pub(super) fn state_capacity_bytes(&self) -> Result<Option<u64>> {
         self.capacity_budget().map(Some)
     }
-    fn free_state_bytes(&self) -> Result<Option<u64>> {
+    pub(super) fn free_state_bytes(&self) -> Result<Option<u64>> {
         self.available().map(Some)
     }
     /// Report the slot pool in the engine's block vocabulary. The pool is slot-granular and
@@ -71,7 +36,7 @@ impl BackendProvider for CudaBackend {
     /// floored at the private path's single-sequence ceiling: a sequence too long for the
     /// pool still gets a private reservation up to the model context, and the admission
     /// isolation check compares against this field.
-    fn kv_cache(&self) -> Option<KvCacheInspection> {
+    pub(super) fn kv_cache(&self) -> Option<KvCacheInspection> {
         let pool = self.slots.as_ref()?;
         let block = KV_BLOCK_TOKENS;
         let per_slot = pool.capacity().div_ceil(block);
@@ -108,7 +73,7 @@ impl BackendProvider for CudaBackend {
     /// sequence reserved its whole capacity at admission and never grows at all. The draft
     /// pool lags the target by one token and crosses the same 32-token boundaries, so it is
     /// not separately reported.
-    fn state_page_growth(&self, state: StateId) -> Result<Option<PageGrowth>> {
+    pub(super) fn state_page_growth(&self, state: StateId) -> Result<Option<PageGrowth>> {
         let sequence = self
             .states
             .get(&state)
@@ -126,13 +91,9 @@ impl BackendProvider for CudaBackend {
             cow_tail: false,
         }))
     }
-    fn state_prefill_geometry(&self, state: StateId) -> Result<Option<infer_ir::PrefillGeometry>> {
-        self.prefill_geometry_for(state).map(Some)
-    }
-    fn reserve_state(&mut self, state: StateId, capacity: usize) -> Result<()> {
-        self.reserve(state, capacity, OutputReadout::Full)
-    }
-    fn reserve_state_for(
+
+    #[cfg(test)]
+    pub(super) fn reserve_state_for(
         &mut self,
         state: StateId,
         capacity: usize,
@@ -140,17 +101,15 @@ impl BackendProvider for CudaBackend {
     ) -> Result<()> {
         self.reserve(state, capacity, readout)
     }
-    fn reset_state(&mut self, state: StateId) -> Result<()> {
-        self.reset(state)
-    }
+
     /// Restore a cached prompt prefix into `state` and report how many tokens it covered.
     ///
     /// Returns zero whenever the snapshot cannot be used verbatim (no match, non-logits readout,
     /// unknown state), which makes the engine fall back to a full prefill.
-    fn reuse_prefix_shared(
+    pub(super) fn reuse_prefix_shared(
         &mut self,
         state: StateId,
-        tokens: infer_ir::TokenBuffer,
+        tokens: &infer_ir::TokenBuffer,
         maximum: usize,
     ) -> Result<usize> {
         self.idle()?;
@@ -163,7 +122,7 @@ impl BackendProvider for CudaBackend {
         let maximum = maximum.min(sequence.capacity);
         self.prefix
             .reuse(
-                &tokens,
+                tokens,
                 maximum,
                 &mut Restore {
                     device: self.loaded.device(),
@@ -173,29 +132,8 @@ impl BackendProvider for CudaBackend {
             .map(|matched| matched.unwrap_or(0))
     }
 
-    fn release_state(&mut self, state: StateId) -> Result<()> {
+    #[cfg(test)]
+    pub(super) fn release_state(&mut self, state: StateId) -> Result<()> {
         self.release(state)
-    }
-    fn validate_state_ownership(&self, states: &[(StateId, usize, usize)]) -> Result<()> {
-        self.ownership(states)
-    }
-    fn submit(
-        &mut self,
-        program: &ExecutionProgram,
-        step: &StepPlan,
-        tasks: Vec<ExecutionTask>,
-    ) -> Result<CudaTicket> {
-        self.execute(program, step, &tasks)
-    }
-    fn submit_borrowed(
-        &mut self,
-        program: &ExecutionProgram,
-        step: &StepPlan,
-        tasks: &[ExecutionTask],
-    ) -> Result<CudaTicket> {
-        self.execute(program, step, tasks)
-    }
-    fn poll(&mut self, ticket: &mut CudaTicket) -> Result<Option<Vec<TaskOutput>>> {
-        self.complete(ticket)
     }
 }

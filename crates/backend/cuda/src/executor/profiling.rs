@@ -1,11 +1,14 @@
 //! Opt-in host-side execution evidence; no token contents are recorded.
-use super::CudaBackend;
+use super::CudaExecutor;
 use crate::device::CudaDevice;
 use infer_core::StateId;
 use infer_ir::{ExecutionInput, ExecutionTask};
 use std::collections::BTreeMap;
 use std::env::var_os;
 use std::fs::OpenOptions;
+use std::future::Future;
+use std::mem::take;
+use std::sync::{Arc, Mutex};
 use std::{
     cell::RefCell,
     io::Write,
@@ -18,52 +21,64 @@ use std::{
 const PROFILE_ENV: &str = "INFER_CUDA_EXECUTION_PROFILE";
 static OUTPUT: OnceLock<Option<PathBuf>> = OnceLock::new();
 
+pub(super) type PhaseRecords = Arc<Mutex<Vec<(&'static str, Duration)>>>;
 thread_local! {
-    /// Host wall time accumulated per named phase while a step is in flight. Only written
-    /// when the execution profile is enabled, so the steady path pays one `Option` check.
-    static PHASES: RefCell<Option<Vec<(&'static str, Duration)>>> = const { RefCell::new(None) };
+    static PHASES: RefCell<Option<PhaseRecords>> = const { RefCell::new(None) };
 }
-
-/// Scratch phase accumulator bound to the calling thread for one step.
-pub(super) struct PhaseScope;
-
+/// A poll-local binding; no thread-local borrow or lock survives a suspension.
+pub(super) struct PhaseScope {
+    previous: Option<PhaseRecords>,
+}
 impl PhaseScope {
-    /// Install the accumulator; the caller must hold the guard for the whole step.
-    pub(super) fn install(enabled: bool) -> Option<Self> {
-        if !enabled {
-            return None;
-        }
-        PHASES.with(|phases| *phases.borrow_mut() = Some(Vec::new()));
-        Some(Self)
+    pub(super) fn records() -> PhaseRecords {
+        Arc::default()
     }
-
-    /// Take the accumulated phases, ending the scope.
-    #[expect(
-        clippy::unused_self,
-        reason = "the guard marks scope lifetime; taking the accumulator is a side effect"
-    )]
-    pub(super) fn finish(self) -> Vec<(&'static str, Duration)> {
-        PHASES.with(|phases| phases.borrow_mut().take().unwrap_or_default())
+    pub(super) fn bind(records: Option<PhaseRecords>) -> Self {
+        Self {
+            previous: PHASES.with(|slot| slot.replace(records)),
+        }
+    }
+    pub(super) fn take_records(records: Option<PhaseRecords>) -> Vec<(&'static str, Duration)> {
+        let Some(records) = records else {
+            return Vec::new();
+        };
+        match records.lock() {
+            Ok(mut rows) => take(&mut *rows),
+            Err(error) => {
+                tracing::error!(target: "infer::profile", %error, "execution phase recorder poisoned");
+                Vec::new()
+            }
+        }
     }
 }
-
-/// Time one host-side phase. A no-op unless a [`PhaseScope`] is installed.
-///
-/// Phases must not nest: the accumulator is a `RefCell` borrowed for the duration of the
-/// body, so an inner `phase` re-enters the same thread-local and panics. Time the finest
-/// granularity needed and leave the enclosing region unmeasured.
+impl Drop for PhaseScope {
+    fn drop(&mut self) {
+        PHASES.with(|slot| slot.replace(self.previous.take()));
+    }
+}
+fn record(records: Option<PhaseRecords>, name: &'static str, started: Option<Instant>) {
+    if let (Some(records), Some(started)) = (records, started) {
+        match records.lock() {
+            Ok(mut rows) => rows.push((name, started.elapsed())),
+            Err(error) => {
+                tracing::error!(target: "infer::profile", %error, "execution phase recorder poisoned");
+            }
+        }
+    }
+}
 pub(super) fn phase<T>(name: &'static str, body: impl FnOnce() -> T) -> T {
-    PHASES.with(|phases| {
-        let mut phases = phases.borrow_mut();
-        let Some(recorded) = phases.as_mut() else {
-            drop(phases);
-            return body();
-        };
-        let started = Instant::now();
-        let value = body();
-        recorded.push((name, started.elapsed()));
-        value
-    })
+    let records = PHASES.with(|slot| slot.borrow().clone());
+    let started = records.as_ref().map(|_| Instant::now());
+    let result = body();
+    record(records, name, started);
+    result
+}
+pub(super) async fn phase_async<T>(name: &'static str, body: impl Future<Output = T>) -> T {
+    let records = PHASES.with(|slot| slot.borrow().clone());
+    let started = records.as_ref().map(|_| Instant::now());
+    let result = body.await;
+    record(records, name, started);
+    result
 }
 
 pub(super) struct StepProfile {
@@ -74,7 +89,7 @@ pub(super) struct StepProfile {
 }
 
 impl StepProfile {
-    pub(super) fn start(backend: &CudaBackend, tasks: &[ExecutionTask]) -> Option<Self> {
+    pub(super) fn start(backend: &CudaExecutor, tasks: &[ExecutionTask]) -> Option<Self> {
         let path = output_path()?;
         let inputs = tasks
             .iter()
@@ -107,7 +122,7 @@ impl StepProfile {
 
     pub(super) fn finish(
         self,
-        backend: &CudaBackend,
+        backend: &CudaExecutor,
         outputs: Option<&[infer_ir::TaskOutput]>,
         phases: Vec<(&'static str, Duration)>,
     ) {

@@ -13,6 +13,8 @@ use crate::constants::CB_DECODE_SLOTS;
 use crate::constants::F32_BYTES;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::MAX_VERIFICATION_WIDTH;
+#[cfg(test)]
+use crate::device::asynchronous::block_on;
 use crate::device::{CudaDevice, DeviceProfile, device_error};
 use cuda_core::{CudaContext, PinnedHostBuffer, f8e4m3fn};
 use cutile::prelude::*;
@@ -819,26 +821,17 @@ impl SlotPool {
         Ok(self.run_lanes_readout(device, lanes, false)?.rows)
     }
 
-    pub(crate) fn submit_lanes(
+    #[cfg(test)]
+    pub(crate) fn run_lanes_readout(
         &mut self,
         device: &CudaDevice,
         lanes: &[SlotLane],
         plain_greedy: bool,
-    ) -> Result<()> {
-        self.decode
-            .as_mut()
-            .ok_or_else(|| Error::invalid("slot pool has no decode graph"))?
-            .submit_lanes(device, lanes, self.capacity, self.vocabulary, plain_greedy)
+    ) -> Result<super::batch::BatchReadout> {
+        block_on(self.run_lanes_readout_async(device, lanes, plain_greedy))
     }
 
-    pub(crate) fn poll_lanes(&mut self) -> Result<Option<super::batch::BatchReadout>> {
-        self.decode
-            .as_mut()
-            .ok_or_else(|| Error::invalid("slot pool has no decode graph"))?
-            .poll_lanes()
-    }
-
-    pub(crate) fn run_lanes_readout(
+    pub(crate) async fn run_lanes_readout_async(
         &mut self,
         device: &CudaDevice,
         lanes: &[SlotLane],
@@ -857,7 +850,7 @@ impl SlotPool {
         self.decode
             .as_mut()
             .ok_or_else(|| Error::invalid("slot pool has no decode graph"))?
-            .run_lanes_readout(
+            .run_lanes_readout_async(
                 device,
                 lanes,
                 self.capacity,
@@ -865,6 +858,7 @@ impl SlotPool {
                 true,
                 plain_greedy,
             )
+            .await
     }
 
     /// Replay one pooled speculation step; see [`SlotVerifyGraph::run_verify_readout`].
@@ -876,10 +870,32 @@ impl SlotPool {
         device: &CudaDevice,
         lanes: &[SlotVerifyLane],
     ) -> Result<BatchOutput> {
-        Ok(self.run_verify_readout(device, lanes, false)?.rows)
+        block_on(self.run_verify_async(device, lanes))
     }
 
+    #[cfg(test)]
+    pub(crate) async fn run_verify_async(
+        &mut self,
+        device: &CudaDevice,
+        lanes: &[SlotVerifyLane],
+    ) -> Result<BatchOutput> {
+        Ok(self
+            .run_verify_readout_async(device, lanes, false)
+            .await?
+            .rows)
+    }
+
+    #[cfg(test)]
     pub(crate) fn run_verify_readout(
+        &mut self,
+        device: &CudaDevice,
+        lanes: &[SlotVerifyLane],
+        plain_greedy: bool,
+    ) -> Result<super::batch::BatchReadout> {
+        block_on(self.run_verify_readout_async(device, lanes, plain_greedy))
+    }
+
+    pub(crate) async fn run_verify_readout_async(
         &mut self,
         device: &CudaDevice,
         lanes: &[SlotVerifyLane],
@@ -888,7 +904,8 @@ impl SlotPool {
         self.verify
             .as_mut()
             .ok_or_else(|| Error::invalid("slot pool has no verify graph"))?
-            .run_verify_readout(device, lanes, self.capacity, self.vocabulary, plain_greedy)
+            .run_verify_readout_async(device, lanes, self.capacity, self.vocabulary, plain_greedy)
+            .await
     }
 
     /// Commit one slot's accepted candidates; see [`SlotVerifyGraph::commit`].

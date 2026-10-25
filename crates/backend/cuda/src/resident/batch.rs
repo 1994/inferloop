@@ -29,11 +29,12 @@ use crate::device::cublaslt::Support;
 use crate::device::{CudaDevice, ReadbackSource, device_error};
 use crate::mlp::ProjectionWeight;
 use cutile::prelude::*;
-use infer_core::{Error, Result, TensorId};
+use infer_core::{Error, ErrorCode, Result, TensorId};
 use infer_ir::{DataflowGraph, StateKind, TensorNode, TensorOp, TensorStorage};
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::mem::take;
 use std::result::Result as StdResult;
 use std::sync::Mutex;
@@ -178,10 +179,7 @@ pub(super) struct BatchBuilder<'a> {
 ///
 /// Inactive lanes are masked with a `-1` state position (the state kernels gate writes on
 /// it); slot tenants never rewind, so no rollback checkpoints are captured.
-mod flight;
-
 pub(super) struct SlotDecodeGraph {
-    pending: Option<flight::DecodeFlight>,
     graph: CudaGraph<()>,
     state_only: Option<CudaGraph<()>>,
     readbacks: Readbacks,
@@ -313,7 +311,7 @@ impl BatchBuilder<'_> {
             token_readout,
             graph,
             state_only,
-            readbacks: Readbacks::default(),
+            readbacks: Readbacks::contiguous(self.device, &hidden, &logits, width)?,
             metadata_owner,
             metadata_upload: Vec::with_capacity(width * METADATA_FIELDS),
             hidden,
@@ -321,7 +319,6 @@ impl BatchBuilder<'_> {
             logits,
             width,
             cursors: vec![0; width],
-            pending: None,
             profile,
             _fusion: fusion,
             _arena: arena,
@@ -553,7 +550,7 @@ impl BatchBuilder<'_> {
             token_readout,
             graph,
             state_offset: Self::state_offset(self.weights),
-            readbacks: Readbacks::default(),
+            readbacks: Readbacks::pairs(self.device, &hidden, &logits)?,
             prefill,
             prefill_last,
             precise: None,
@@ -647,7 +644,7 @@ impl BatchBuilder<'_> {
             token_readout: None,
             graph: None,
             state_offset: Self::state_offset(self.weights),
-            readbacks: Readbacks::default(),
+            readbacks: Readbacks::pairs(self.device, &hidden, &logits)?,
             prefill: captures.regular.prefill,
             prefill_last: captures.regular.prefill_last,
             precise: captures.precise,
@@ -1458,20 +1455,7 @@ pub(super) fn dispatch32(node: &TensorNode, weights: &ProgramWeights) -> Dispatc
     }
 }
 
-/// Enqueue a prompt replay with nothing to read back: the host stages the next chunk while this
-/// one runs instead of idling the GPU for a sync per chunk.
-#[expect(
-    unsafe_code,
-    reason = "Audited detached replay of a readback-free prompt chunk on the single engine stream"
-)]
-fn launch_detached(device: &CudaDevice, graph: &CudaGraph<()>) -> Result<()> {
-    // SAFETY: single engine stream; this replay follows its staged metadata and uploads
-    // (pageable copies and graph updates, both stream-ordered and host-safe on return) and
-    // precedes every later replay. The graph owns every buffer it touches, and the next
-    // readback, device read or drain on this device waits for it.
-    unsafe { graph.launch().async_on(&device.stream) }.map_err(device_error)
-}
-
+/// Move one captured output out of the activation arena.
 pub(super) fn take_result(
     arena: &mut ActivationArena,
     id: Option<TensorId>,
@@ -1490,7 +1474,7 @@ impl BatchGraph {
         Arc::clone(&self.hidden[0])
     }
 
-    pub fn run(
+    pub(crate) async fn run_async(
         &mut self,
         device: &CudaDevice,
         tokens: &[u32],
@@ -1499,11 +1483,12 @@ impl BatchGraph {
         read_hidden: bool,
     ) -> Result<BatchOutput> {
         Ok(self
-            .run_readout(device, tokens, position, prefill, read_hidden, false)?
+            .run_readout_async(device, tokens, position, prefill, read_hidden, false)
+            .await?
             .rows)
     }
 
-    pub(crate) fn run_readout(
+    pub(crate) async fn run_readout_async(
         &mut self,
         device: &CudaDevice,
         tokens: &[u32],
@@ -1514,7 +1499,7 @@ impl BatchGraph {
     ) -> Result<BatchReadout> {
         if self.width >= PREFILL_LANES {
             return self
-                .run32(
+                .run32_async(
                     device,
                     tokens,
                     position,
@@ -1525,6 +1510,7 @@ impl BatchGraph {
                         rotary: None,
                     },
                 )
+                .await
                 .map(BatchReadout::host);
         }
         let device_tokens = plain_greedy && prefill.is_none() && self.token_readout.is_some();
@@ -1554,22 +1540,7 @@ impl BatchGraph {
             // rather than from the per-lane metadata. run32 writes it; this narrow path replayed
             // the same graphs without writing it, so they read the previous chunk's base - which
             // silently placed KV rows outside the chunk and, with a block table, out of the arena.
-            let last_row = i64::try_from(position).map_err(device_error)?
-                + i64::try_from(tokens.len()).map_err(device_error)?
-                - 1
-                + i64::from(self.state_offset);
-            if last_row >= i64::try_from(self.capacity).map_err(device_error)? {
-                return Err(Error::new(
-                    infer_core::ErrorCode::Capacity,
-                    format!(
-                        "prompt state rows end at {last_row} (base {position}, {} tokens, offset {}), \
-                         past the {}-token KV arena",
-                        tokens.len(),
-                        self.state_offset,
-                        self.capacity
-                    ),
-                ));
-            }
+            Self::validate_prefill_state(tokens.len(), position, self.state_offset, self.capacity)?;
             super::metadata::update(
                 graph,
                 self.prefill_info
@@ -1597,13 +1568,18 @@ impl BatchGraph {
                 .token_readout
                 .as_mut()
                 .ok_or_else(|| Error::invariant("batch token readout"))?
-                .run(device, graph, &mut self.readbacks, &sources, &active)?;
+                .run_async(device, graph, &mut self.readbacks, &sources, &active)
+                .await?;
             return Ok(BatchReadout {
                 rows,
                 tokens: Some(tokens.into_iter().map(Some).collect()),
             });
         }
-        let mut rows = self.readbacks.run(device, graph, &sources)?.into_iter();
+        let mut rows = self
+            .readbacks
+            .run_async(device, graph, &sources)
+            .await?
+            .into_iter();
         (0..tokens.len())
             .map(|_| {
                 Ok((
@@ -1618,6 +1594,26 @@ impl BatchGraph {
     }
 
     /// State positions this graph lags its `RoPE` position by.
+    fn validate_prefill_state(
+        count: usize,
+        position: usize,
+        state_offset: i32,
+        capacity: usize,
+    ) -> Result<()> {
+        let last_row = i64::try_from(position).map_err(device_error)?
+            + i64::try_from(count).map_err(device_error)?
+            - 1
+            + i64::from(state_offset);
+        if last_row >= i64::try_from(capacity).map_err(device_error)? {
+            return Err(Error::new(
+                ErrorCode::Capacity,
+                format!(
+                    "prompt state rows end at {last_row} (base {position}, {count} tokens, offset {state_offset}), past the {capacity}-token KV arena"
+                ),
+            ));
+        }
+        Ok(())
+    }
     #[must_use]
     pub const fn state_offset(&self) -> i32 {
         self.state_offset
@@ -1649,7 +1645,7 @@ impl BatchGraph {
             // the arena depth, would address a row the state kernels do not check on store.
             if state_pos < -1 || state_pos >= i32::try_from(capacity).map_err(device_error)? {
                 return Err(Error::new(
-                    infer_core::ErrorCode::Capacity,
+                    ErrorCode::Capacity,
                     format!(
                         "state position {state_pos} (base {position}, lane {lane}, offset {state_offset}) \
                          exceeds the {capacity}-token KV arena"
@@ -1724,7 +1720,7 @@ impl BatchGraph {
             + i64::from(self.state_offset);
         if last_row >= i64::try_from(self.capacity).map_err(device_error)? {
             return Err(Error::new(
-                infer_core::ErrorCode::Capacity,
+                ErrorCode::Capacity,
                 format!(
                     "prompt state rows end at {last_row} (base {position}, {} tokens, offset {}), \
                      past the {}-token KV arena",
@@ -1761,7 +1757,7 @@ impl BatchGraph {
     }
 
     /// Batched slots read back in one copy each; per-lane rows are split on host.
-    fn run32(
+    async fn run32_async(
         &mut self,
         device: &CudaDevice,
         tokens: &[u32],
@@ -1843,10 +1839,10 @@ impl BatchGraph {
             &self.profile
         };
         if sources.iter().all(Option::is_none) && profile.is_none() {
-            launch_detached(device, graph)?;
+            device.run_op(graph.launch()).await?;
             return Ok(vec![(Vec::new(), Vec::new()); tokens.len()]);
         }
-        let rows = self.readbacks.run(device, graph, &sources);
+        let rows = self.readbacks.run_async(device, graph, &sources).await;
         if rows.is_ok()
             && let Some(profile) = profile
         {
@@ -1917,7 +1913,7 @@ impl BatchGraph {
     ///
     /// The caller has already copied each media row into its lane's external slot on the device
     /// stream; `overrides[lane]` selects that slot in the embedding kernel.
-    pub(crate) fn run_media(
+    pub(crate) async fn run_media_async(
         &mut self,
         device: &CudaDevice,
         tokens: &[u32],
@@ -1928,7 +1924,7 @@ impl BatchGraph {
         if overrides.lanes.len() != tokens.len() {
             return Err(Error::invalid("media prefill overrides"));
         }
-        self.run32(
+        self.run32_async(
             device,
             tokens,
             position,
@@ -1936,6 +1932,7 @@ impl BatchGraph {
             false,
             overrides,
         )
+        .await
     }
 
     #[cfg(test)]
@@ -1986,13 +1983,17 @@ impl BatchGraph {
             .collect())
     }
 
-    pub fn restore(&self, device: &CudaDevice, count: usize) -> Result<()> {
-        self.restore
+    pub(crate) fn restore_async<'a>(
+        &self,
+        device: &'a CudaDevice,
+        count: usize,
+    ) -> impl Future<Output = Result<()>> + Send + 'a {
+        let launch = self
+            .restore
             .get(count - 1)
-            .ok_or_else(|| Error::invalid("batch commit count"))?
-            .launch()
-            .sync_on(&device.stream)
-            .map_err(device_error)
+            .map(CudaGraph::launch)
+            .ok_or_else(|| Error::invalid("batch commit count"));
+        async move { device.run_op(launch?).await }
     }
 }
 
@@ -2098,7 +2099,7 @@ impl SlotDecodeGraph {
     /// # Errors
     /// Rejects empty/oversized lane sets, duplicate or unknown slots, out-of-vocabulary
     /// tokens, out-of-capacity state positions, stale cursors and CUDA replay failures.
-    pub fn run_lanes(
+    pub(crate) async fn run_lanes_async(
         &mut self,
         device: &CudaDevice,
         lanes: &[SlotLane],
@@ -2107,11 +2108,12 @@ impl SlotDecodeGraph {
         read_logits: bool,
     ) -> Result<BatchOutput> {
         Ok(self
-            .run_lanes_readout(device, lanes, capacity, vocabulary, read_logits, false)?
+            .run_lanes_readout_async(device, lanes, capacity, vocabulary, read_logits, false)
+            .await?
             .rows)
     }
 
-    pub(crate) fn run_lanes_readout(
+    pub(crate) async fn run_lanes_readout_async(
         &mut self,
         device: &CudaDevice,
         lanes: &[SlotLane],
@@ -2120,9 +2122,6 @@ impl SlotDecodeGraph {
         read_logits: bool,
         plain_greedy: bool,
     ) -> Result<BatchReadout> {
-        if self.pending.is_some() {
-            return Err(Error::invalid("decode completion must be consumed first"));
-        }
         let device_tokens = read_logits && plain_greedy && self.token_readout.is_some();
         let graph = if read_logits {
             &self.graph
@@ -2163,13 +2162,14 @@ impl SlotDecodeGraph {
                 .token_readout
                 .as_mut()
                 .ok_or_else(|| Error::invariant("slot token readout"))?
-                .run(device, graph, &mut self.readbacks, &sources, &active)?;
+                .run_async(device, graph, &mut self.readbacks, &sources, &active)
+                .await?;
             (Some(rows), Some(tokens.into_iter().map(Some).collect()))
         } else {
             (None, None)
         };
         let rows = if output.is_none() {
-            self.readbacks.run(device, graph, &sources)?
+            self.readbacks.run_async(device, graph, &sources).await?
         } else {
             Vec::new()
         };
@@ -2218,9 +2218,6 @@ impl SlotDecodeGraph {
         capacity: usize,
         vocabulary: usize,
     ) -> Result<()> {
-        if self.pending.is_some() {
-            return Err(Error::invalid("decode completion must be consumed first"));
-        }
         let graph = self
             .state_only
             .as_ref()
@@ -2268,9 +2265,6 @@ impl SlotDecodeGraph {
     /// # Errors
     /// Rejects unknown slot indices.
     pub fn set_cursor(&mut self, slot: usize, position: usize) -> Result<()> {
-        if self.pending.is_some() {
-            return Err(Error::invalid("decode completion must be consumed first"));
-        }
         let cursor = self
             .cursors
             .get_mut(slot)

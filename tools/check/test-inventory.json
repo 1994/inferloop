@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 303
+      "tests": 306
     },
     "frontdoor": {
       "benches": 0,
@@ -82,7 +82,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 82
+      "tests": 83
     },
     "scheduler": {
       "benches": 0,
@@ -157,10 +157,11 @@
     "CUDA/checkpoint/frozen tokens/safe-run; ordinary-pool versus speculative-pool full target arithmetic": 2,
     "CUDA/checkpoint/frozen tokens/safe-run; private M1 versus M3 full target outputs and state": 1,
     "CUDA/checkpoint/frozen511tokens/safe-run; canonical2K prefix and subsequent decode bits": 1,
+    "real 2B checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 2,
     "real CUDA/MTP checkpoint; reserve graphs only after quote acknowledgement": 1,
     "real MTP2 checkpoint and CUDA; run inside safe-run": 1,
+    "real MTP2 checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 2,
     "real MTP2 checkpoint, CUDA, frozen table/tokens and protected serial runner required": 1,
-    "real checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 2,
     "release CUDA performance diagnostic; run inside safe-run": 1,
     "requires CUDA and INFER_TEST_MODEL; run release inside safe-run": 3,
     "requires CUDA and INFER_TEST_MODEL; run release serially inside safe-run": 1,
@@ -230,7 +231,7 @@
     "requires GPU and INFER_ATTENTION_BENCH fixtures; run under tools/bench/safe-run.sh": 1,
     "requires GPU and INFER_ATTENTION_GATE; use make check-attention": 1,
     "requires Linux NUMA policy and move_pages query permission; make check-linux-numa": 1,
-    "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 4,
+    "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 5,
     "requires a CUDA device; run inside safe-run": 2,
     "requires a Linux production host with get/set_mempolicy permitted; make check-linux-numa": 1,
     "requires an NVIDIA GPU; run under tools/bench/safe-run.sh": 7,
@@ -298,6 +299,11 @@
       "crate": "cuda",
       "file": "src/executor/mod.rs",
       "mount": "../../tests/unit/resident_mtp_fusion_model.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/executor/owner.rs",
+      "mount": "../../tests/unit/executor_owner.rs"
     },
     {
       "crate": "cuda",
@@ -1206,11 +1212,11 @@
     }
   ],
   "totals": {
-    "all": 841,
+    "all": 845,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 841
+    "tests": 845
   }
 }

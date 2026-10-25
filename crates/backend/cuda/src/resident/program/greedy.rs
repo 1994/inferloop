@@ -1,5 +1,7 @@
 //! Draft readout and external-hidden reuse on the program's owned CUDA stream.
 use super::{CudaDevice, DeviceProgram, ExternalInput, ProgramWeights, device_error};
+#[cfg(test)]
+use crate::device::asynchronous::block_on;
 use crate::resident::ActivationArena;
 use crate::resident::batch::take_result;
 use crate::resident::greedy::Greedy;
@@ -87,7 +89,18 @@ impl DeviceProgram {
         self.greedy.is_some()
     }
     /// The first draft consumes a target hidden row; later drafts reuse their own resident output.
+    #[cfg(test)]
     pub(crate) fn step_greedy(
+        &mut self,
+        token: u32,
+        position: usize,
+        kv_position: usize,
+        external: Option<&[f32]>,
+    ) -> Result<u32> {
+        block_on(self.step_greedy_async(token, position, kv_position, external))
+    }
+
+    pub(crate) async fn step_greedy_async(
         &mut self,
         token: u32,
         position: usize,
@@ -100,23 +113,22 @@ impl DeviceProgram {
         let previous = Arc::clone(&self.hidden);
         let external =
             external.map_or_else(|| ExternalInput::Device(&previous), ExternalInput::Host);
-        self.prepare_step(
+        self.prepare_step_async(
             token,
             [position; ROTARY_AXES],
             kv_position,
             Some(external),
             true,
-        )?;
+        )
+        .await?;
         let greedy = self
             .greedy
             .as_ref()
             .ok_or_else(|| Error::invariant("device greedy readout"))?;
-        self.graph
-            .launch()
-            .then(|()| greedy.graph.launch())
-            .sync_on(&self.device.stream)
-            .map_err(device_error)?;
-        let tokens = greedy.selector.read(&self.device)?;
+        self.device
+            .run_op(self.graph.launch().then(|()| greedy.graph.launch()))
+            .await?;
+        let tokens = greedy.selector.read_async(&self.device).await?;
         let token = *tokens
             .first()
             .ok_or_else(|| Error::invariant("device greedy token readback"))?;

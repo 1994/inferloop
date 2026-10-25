@@ -5,6 +5,55 @@ use std::time::{Duration, Instant};
 
 type Tensors = Vec<Tensor<f32>>;
 
+#[test]
+#[ignore = "requires NVIDIA GPU; run under tools/bench/safe-run.sh"]
+fn large_logit_geometry_preserves_hidden_only_readback() -> Result<()> {
+    let device = CudaDevice::new(0)?;
+    let hidden = device.upload(vec![1.0_f32; 2], &[2])?;
+    let count = MAX_READBACK_STAGING_BYTES / size_of::<f32>();
+    let logits = Arc::new(
+        api::zeros::<f32>(&[count])
+            .sync_on(&device.stream)
+            .map_err(device_error)?,
+    );
+    let mut readbacks = Readbacks::contiguous(&device, &hidden, &logits, 2)?;
+    let mut destination = api::zeros::<f32>(&[2])
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    let graph = CudaGraph::scope(&device.stream, |scope| {
+        scope.record(api::memcpy(&mut destination, &hidden))?;
+        Ok(())
+    })
+    .map_err(device_error)?;
+    let sources = [
+        Some(ReadbackSource {
+            tensor: hidden.clone(),
+            skip: 0,
+            len: 1,
+        }),
+        None,
+        Some(ReadbackSource {
+            tensor: hidden,
+            skip: 1,
+            len: 1,
+        }),
+        None,
+    ];
+    let rows = readbacks.run(&device, &graph, &sources)?;
+    assert_eq!(rows, vec![vec![1.0], vec![], vec![1.0], vec![]]);
+    assert_eq!(
+        readbacks
+            .prepare(
+                &device,
+                &[sources[0].clone(), Some(ReadbackSource::whole(logits)),]
+            )
+            .err()
+            .map(|error| error.code),
+        Some(ErrorCode::Capacity)
+    );
+    Ok(())
+}
+
 fn fixtures(device: &CudaDevice) -> Result<(Tensors, Tensors)> {
     let mut inputs = Vec::new();
     let mut outputs = Vec::new();

@@ -1,6 +1,8 @@
 //! Batched external-hidden execution and attention state transfer.
 use super::{BatchOutput, SlotCopy, SlotLane, SlotPool};
 use crate::device::CudaDevice;
+#[cfg(test)]
+use crate::device::asynchronous::block_on;
 use crate::resident::batch::BatchReadout;
 use infer_core::{Error, Result};
 
@@ -80,16 +82,38 @@ impl SlotPool {
 
     /// Supply one external hidden row per active lane, retaining upload owners for every
     /// graph update (including inactive slots on later replays).
+    #[cfg(test)]
     pub(crate) fn run_external(
         &mut self,
         device: &CudaDevice,
         lanes: &[SlotLane],
         hidden: &[&[f32]],
     ) -> Result<BatchOutput> {
-        self.run_external_readout(device, lanes, hidden, true)
+        block_on(self.run_external_async(device, lanes, hidden))
     }
 
+    pub(crate) async fn run_external_async(
+        &mut self,
+        device: &CudaDevice,
+        lanes: &[SlotLane],
+        hidden: &[&[f32]],
+    ) -> Result<BatchOutput> {
+        self.run_external_readout_async(device, lanes, hidden, true)
+            .await
+    }
+
+    #[cfg(test)]
     pub(crate) fn run_external_readout(
+        &mut self,
+        device: &CudaDevice,
+        lanes: &[SlotLane],
+        hidden: &[&[f32]],
+        read_logits: bool,
+    ) -> Result<BatchOutput> {
+        block_on(self.run_external_readout_async(device, lanes, hidden, read_logits))
+    }
+
+    pub(crate) async fn run_external_readout_async(
         &mut self,
         device: &CudaDevice,
         lanes: &[SlotLane],
@@ -100,10 +124,11 @@ impl SlotPool {
         self.decode
             .as_mut()
             .ok_or_else(|| Error::invariant("external decode graph"))?
-            .run_lanes(device, lanes, self.capacity, self.vocabulary, read_logits)
+            .run_lanes_async(device, lanes, self.capacity, self.vocabulary, read_logits)
+            .await
     }
 
-    pub(crate) fn run_external_selected(
+    pub(crate) async fn run_external_selected_async(
         &mut self,
         device: &CudaDevice,
         lanes: &[SlotLane],
@@ -112,14 +137,15 @@ impl SlotPool {
     ) -> Result<BatchReadout> {
         if !plain_greedy {
             return self
-                .run_external(device, lanes, hidden)
+                .run_external_async(device, lanes, hidden)
+                .await
                 .map(BatchReadout::host);
         }
         self.upload_lanes(device, lanes, hidden)?;
         self.decode
             .as_mut()
             .ok_or_else(|| Error::invariant("external decode graph"))?
-            .run_lanes_readout(
+            .run_lanes_readout_async(
                 device,
                 lanes,
                 self.capacity,
@@ -127,6 +153,7 @@ impl SlotPool {
                 true,
                 plain_greedy,
             )
+            .await
     }
 
     /// Draft catch-up replay: the state-only graph's outputs are never read, so the

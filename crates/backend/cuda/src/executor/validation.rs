@@ -1,11 +1,11 @@
-use super::CudaBackend;
+use super::CudaExecutor;
 use infer_core::{Error, Result};
 use infer_ir::{
     BackendKind, ExecutionProgram, ExecutionRole, ExecutionTask, ModelIr, OutputReadout,
     PrecisionPlan, StepPlan,
 };
 use std::collections::BTreeSet;
-impl CudaBackend {
+impl CudaExecutor {
     pub(super) fn check_program(&self, model: &ModelIr, p: &ExecutionProgram) -> Result<()> {
         if model != self.model()
             || p.backend != BackendKind::Cuda

@@ -1,11 +1,14 @@
 use super::ActivationArena;
 use crate::device::ReadbackSource;
 use crate::device::Readbacks;
+use crate::device::asynchronous::block_on;
 use crate::device::cublaslt::Support;
 use crate::tuning::gated_norm::prepare;
 use crate::tuning::resident_gemm::ResidentTuningSession;
+use cuda_core::{CudaContext, PinnedHostBuffer};
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::slice::from_ref;
 mod geometry;
 mod greedy;
@@ -183,6 +186,7 @@ pub struct DeviceProgram {
     delegated: Support,
     attention: super::attention_decode::Workspace,
     external: Tensor<f32>,
+    external_staging: Option<PinnedHostBuffer<f32>>,
     // Declared after the graphs: the state tensors outlive every capture that references them,
     // and prefix caching reads them back for snapshots.
     states: super::batch::States,
@@ -224,23 +228,24 @@ impl ExternalInput<'_> {
     fn update(
         self,
         device: &CudaDevice,
-        graph: &CudaGraph<()>,
         destination: &mut Tensor<f32>,
+        staging: Option<&mut PinnedHostBuffer<f32>>,
     ) -> Result<()> {
         match self {
             Self::Host(values) => {
-                let uploaded = device.upload(values.to_vec(), &[values.len()])?;
-                graph
-                    .update(api::memcpy(destination, &uploaded))
-                    .map_err(device_error)
+                let staging =
+                    staging.ok_or_else(|| Error::invariant("external hidden pinned staging"))?;
+                if values.len() != staging.len() {
+                    return Err(Error::invalid("external hidden shape"));
+                }
+                staging.as_mut_slice().copy_from_slice(values);
+                device.copy_h2d_pinned(destination, staging, values.len())
             }
             Self::Device(tensor) => {
                 if tensor.device_id() != device.stream.device().ordinal() {
                     return Err(Error::invalid("external hidden device mismatch"));
                 }
-                graph
-                    .update(api::memcpy(destination, tensor))
-                    .map_err(device_error)
+                device.copy_d2d(destination, tensor, tensor.size())
             }
         }
     }
@@ -794,9 +799,10 @@ impl DeviceProgram {
             graph: captures.forward,
             greedy: readouts.greedy,
             token_readout: readouts.token_readout,
-            readbacks: Readbacks::default(),
+            readbacks: Readbacks::pair(device, &readouts.hidden, &readouts.logits)?,
             prefill: captures.prefill,
             metadata,
+            external_staging: external_staging(device, external.size(), weights.fusion.as_ref())?,
             external,
             lane_external,
             lane_external_owner,
@@ -829,10 +835,22 @@ impl DeviceProgram {
         external: Option<&[f32]>,
         read_logits: bool,
     ) -> Result<(Vec<f32>, Vec<f32>)> {
-        self.step_readout(token, position, kv_position, external, read_logits, true)
+        block_on(self.step_async(token, position, kv_position, external, read_logits))
     }
 
-    pub(crate) fn step_readout(
+    pub(crate) async fn step_async(
+        &mut self,
+        token: u32,
+        position: usize,
+        kv_position: usize,
+        external: Option<&[f32]>,
+        read_logits: bool,
+    ) -> Result<(Vec<f32>, Vec<f32>)> {
+        self.step_readout_async(token, position, kv_position, external, read_logits, true)
+            .await
+    }
+
+    pub(crate) async fn step_readout_async(
         &mut self,
         token: u32,
         position: usize,
@@ -841,7 +859,7 @@ impl DeviceProgram {
         read_logits: bool,
         read_hidden: bool,
     ) -> Result<(Vec<f32>, Vec<f32>)> {
-        self.execute_step(
+        self.execute_step_async(
             token,
             [position; ROTARY_AXES],
             kv_position,
@@ -849,9 +867,20 @@ impl DeviceProgram {
             read_logits,
             read_hidden,
         )
+        .await
     }
 
+    #[cfg(test)]
     pub(crate) fn step_selected(
+        &mut self,
+        token: u32,
+        position: usize,
+        read_hidden: bool,
+    ) -> Result<super::batch::BatchReadout> {
+        block_on(self.step_selected_async(token, position, read_hidden))
+    }
+
+    pub(crate) async fn step_selected_async(
         &mut self,
         token: u32,
         position: usize,
@@ -859,10 +888,12 @@ impl DeviceProgram {
     ) -> Result<super::batch::BatchReadout> {
         if self.token_readout.is_none() {
             return self
-                .step_readout(token, position, position, None, true, read_hidden)
+                .step_readout_async(token, position, position, None, true, read_hidden)
+                .await
                 .map(|row| super::batch::BatchReadout::host(vec![row]));
         }
-        self.prepare_step(token, [position; ROTARY_AXES], position, None, true)?;
+        self.prepare_step_async(token, [position; ROTARY_AXES], position, None, true)
+            .await?;
         let sources = [
             read_hidden.then(|| ReadbackSource::whole(Arc::clone(&self.hidden))),
             None,
@@ -871,13 +902,14 @@ impl DeviceProgram {
             .token_readout
             .as_mut()
             .ok_or_else(|| Error::invariant("program token readout"))?
-            .run(
+            .run_async(
                 &self.device,
                 &self.graph,
                 &mut self.readbacks,
                 &sources,
                 &[0],
-            )?;
+            )
+            .await?;
         self.last_batch = None;
         self.next_position = position + 1;
         Ok(super::batch::BatchReadout {
@@ -897,10 +929,22 @@ impl DeviceProgram {
         external: Option<&[f32]>,
         read_logits: bool,
     ) -> Result<(Vec<f32>, Vec<f32>)> {
-        self.execute_step(token, position, kv_position, external, read_logits, true)
+        block_on(self.step_positioned_async(token, position, kv_position, external, read_logits))
     }
 
-    fn execute_step(
+    pub(crate) async fn step_positioned_async(
+        &mut self,
+        token: u32,
+        position: [usize; ROTARY_AXES],
+        kv_position: usize,
+        external: Option<&[f32]>,
+        read_logits: bool,
+    ) -> Result<(Vec<f32>, Vec<f32>)> {
+        self.execute_step_async(token, position, kv_position, external, read_logits, true)
+            .await
+    }
+
+    async fn execute_step_async(
         &mut self,
         token: u32,
         position: [usize; ROTARY_AXES],
@@ -909,13 +953,14 @@ impl DeviceProgram {
         read_logits: bool,
         read_hidden: bool,
     ) -> Result<(Vec<f32>, Vec<f32>)> {
-        self.prepare_step(
+        self.prepare_step_async(
             token,
             position,
             kv_position,
             external.map(ExternalInput::Host),
             read_logits,
-        )?;
+        )
+        .await?;
         let graph = if read_logits {
             &self.graph
         } else {
@@ -923,14 +968,15 @@ impl DeviceProgram {
         };
         let mut rows = self
             .readbacks
-            .run(
+            .run_async(
                 &self.device,
                 graph,
                 &[
                     read_hidden.then(|| ReadbackSource::whole(Arc::clone(&self.hidden))),
                     read_logits.then(|| ReadbackSource::whole(Arc::clone(&self.logits))),
                 ],
-            )?
+            )
+            .await?
             .into_iter();
         let result = (
             rows.next()
@@ -943,7 +989,7 @@ impl DeviceProgram {
         Ok(result)
     }
 
-    fn prepare_step(
+    async fn prepare_step_async(
         &mut self,
         token: u32,
         position: [usize; ROTARY_AXES],
@@ -973,7 +1019,7 @@ impl DeviceProgram {
             return Err(Error::invalid("external hidden dimensions"));
         }
         if kv_position == 0 {
-            self.reset()?;
+            self.reset_async().await?;
         }
         if kv_position != self.next_position {
             return Err(Error::invalid("nonsequential device state position"));
@@ -991,7 +1037,11 @@ impl DeviceProgram {
         };
         super::metadata::update_rotary(graph, &mut self.metadata, metadata, position)?;
         if let Some(external) = external {
-            external.update(&self.device, graph, &mut self.external)?;
+            external.update(
+                &self.device,
+                &mut self.external,
+                self.external_staging.as_mut(),
+            )?;
         }
         Ok(())
     }
@@ -1005,10 +1055,31 @@ impl DeviceProgram {
     /// # Errors
     /// Rejects invalid positions, unsupported widths or failed device execution.
     pub fn step_batch(&mut self, tokens: &[u32], position: usize) -> Result<super::BatchOutput> {
-        Ok(self.step_batch_readout(tokens, position, false)?.rows)
+        block_on(self.step_batch_async(tokens, position))
     }
 
+    pub(crate) async fn step_batch_async(
+        &mut self,
+        tokens: &[u32],
+        position: usize,
+    ) -> Result<super::BatchOutput> {
+        Ok(self
+            .step_batch_readout_async(tokens, position, false)
+            .await?
+            .rows)
+    }
+
+    #[cfg(test)]
     pub(crate) fn step_batch_readout(
+        &mut self,
+        tokens: &[u32],
+        position: usize,
+        plain_greedy: bool,
+    ) -> Result<super::batch::BatchReadout> {
+        block_on(self.step_batch_readout_async(tokens, position, plain_greedy))
+    }
+
+    pub(crate) async fn step_batch_readout_async(
         &mut self,
         tokens: &[u32],
         position: usize,
@@ -1028,7 +1099,7 @@ impl DeviceProgram {
             return Err(Error::invalid("verification tokens, width or capacity"));
         }
         if position == 0 {
-            self.reset()?;
+            self.reset_async().await?;
         }
         if position != self.next_position {
             return Err(Error::invalid("verification state position"));
@@ -1037,10 +1108,11 @@ impl DeviceProgram {
             .batch
             .as_mut()
             .ok_or_else(|| Error::invariant("batch graph"))?
-            .run_readout(&self.device, tokens, position, None, true, plain_greedy)?;
+            .run_readout_async(&self.device, tokens, position, None, true, plain_greedy)
+            .await?;
         self.next_position = position + width;
         self.last_batch = Some((position, tokens.len()));
-        self.commit_batch(tokens.len())?;
+        self.commit_batch_async(tokens.len()).await?;
         Ok(output)
     }
 
@@ -1192,7 +1264,7 @@ impl DeviceProgram {
     /// replays are ordered on the shared device stream ahead of the target's next chunk.
     /// # Errors
     /// Rejects short row tensors or a missing prompt graph, then reports CUDA failures.
-    pub(crate) fn prime_from_target(
+    pub(crate) async fn prime_from_target_async(
         &mut self,
         tokens: &[u32],
         position: usize,
@@ -1208,7 +1280,6 @@ impl DeviceProgram {
         }
         if let Some(row) = previous {
             self.device.copy_host_slice(&mut self.prime_previous, row)?;
-            self.device.drain()?;
         } else if position == 0 {
             self.device
                 .copy_d2d_at(&mut self.prime_previous, rows, 0, 0, hidden)?;
@@ -1243,12 +1314,13 @@ impl DeviceProgram {
                     (count - 1) * hidden,
                 )?;
             }
-            self.prefill_batch_readout(
+            self.prefill_batch_readout_async(
                 &tokens[start..start + count],
                 position + start,
                 false,
                 false,
-            )?;
+            )
+            .await?;
             start += count;
         }
         self.device.copy_d2d_at(
@@ -1263,14 +1335,24 @@ impl DeviceProgram {
     /// Host copy of the hidden row the next device-primed chunk would start from.
     /// # Errors
     /// Reports CUDA readback failures.
-    pub(crate) fn primed_hidden(&self) -> Result<Vec<f32>> {
-        self.device.read_borrowed(&self.prime_previous)
+    pub(crate) fn primed_hidden_async(&self) -> impl Future<Output = Result<Vec<f32>>> + Send + '_ {
+        self.device.read_async(&self.prime_previous)
     }
 
     /// Ingest a prompt chunk with one external hidden per lane, as a fused draft needs.
     /// # Errors
     /// Rejects a short hidden slice or a missing prompt graph, then reports CUDA failures.
+    #[cfg(test)]
     pub(crate) fn prime_batch(
+        &mut self,
+        tokens: &[u32],
+        position: usize,
+        externals: &[f32],
+    ) -> Result<()> {
+        block_on(self.prime_batch_async(tokens, position, externals))
+    }
+
+    pub(crate) async fn prime_batch_async(
         &mut self,
         tokens: &[u32],
         position: usize,
@@ -1293,7 +1375,6 @@ impl DeviceProgram {
             .copy_host_slice(&mut self.lane_external_owner, externals)?;
         // The source slice is only borrowed for this call. Drain the same stream before
         // returning so no pageable host range can outlive its backing allocation.
-        self.device.drain()?;
         let narrow_fits = self.prefers_narrow_prompt(tokens.len());
         let batch = if narrow_fits {
             self.prompt_narrow.take()
@@ -1306,7 +1387,8 @@ impl DeviceProgram {
         } else {
             self.prompt_batch = Some(batch);
         }
-        self.prefill_batch_readout(tokens, position, false, false)?;
+        self.prefill_batch_readout_async(tokens, position, false, false)
+            .await?;
         Ok(())
     }
 
@@ -1319,10 +1401,31 @@ impl DeviceProgram {
         position: usize,
         read_logits: bool,
     ) -> Result<super::BatchOutput> {
-        self.prefill_batch_readout(tokens, position, read_logits, true)
+        block_on(self.prefill_batch_async(tokens, position, read_logits))
     }
 
+    pub(crate) async fn prefill_batch_async(
+        &mut self,
+        tokens: &[u32],
+        position: usize,
+        read_logits: bool,
+    ) -> Result<super::BatchOutput> {
+        self.prefill_batch_readout_async(tokens, position, read_logits, true)
+            .await
+    }
+
+    #[cfg(test)]
     pub(crate) fn prefill_batch_readout(
+        &mut self,
+        tokens: &[u32],
+        position: usize,
+        read_logits: bool,
+        read_hidden: bool,
+    ) -> Result<super::BatchOutput> {
+        block_on(self.prefill_batch_readout_async(tokens, position, read_logits, read_hidden))
+    }
+
+    pub(crate) async fn prefill_batch_readout_async(
         &mut self,
         tokens: &[u32],
         position: usize,
@@ -1345,7 +1448,7 @@ impl DeviceProgram {
         }
         let lag = self.batch_state_lag()?;
         if position == 0 {
-            self.reset()?;
+            self.reset_async().await?;
         }
         if position.saturating_sub(lag) != self.next_position {
             return Err(Error::invalid("prefill state position"));
@@ -1359,13 +1462,14 @@ impl DeviceProgram {
         let output = prompt
             .or(self.batch.as_mut())
             .ok_or_else(|| Error::invariant("prefill batch graph"))?
-            .run(
+            .run_async(
                 &self.device,
                 tokens,
                 position,
                 Some(read_logits),
                 read_hidden,
-            )?;
+            )
+            .await?;
         let end = position
             .checked_add(tokens.len())
             .ok_or_else(|| Error::invalid("prefill position overflow"))?;
@@ -1393,6 +1497,31 @@ impl DeviceProgram {
         rotary: Option<&[[usize; ROTARY_AXES]]>,
         read_logits: bool,
     ) -> Result<super::BatchOutput> {
+        block_on(self.prefill_media_chunk_async(
+            tokens,
+            position,
+            media,
+            rows,
+            hidden,
+            rotary,
+            read_logits,
+        ))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The existing media chunk API names its tensor, row map, rotary coordinates and readout explicitly"
+    )]
+    pub(crate) async fn prefill_media_chunk_async(
+        &mut self,
+        tokens: &[u32],
+        position: usize,
+        media: &Tensor<f32>,
+        rows: &[(usize, usize)],
+        hidden: usize,
+        rotary: Option<&[[usize; ROTARY_AXES]]>,
+        read_logits: bool,
+    ) -> Result<super::BatchOutput> {
         let width = self.prefill_width();
         if (self.prompt_batch.is_none() && self.batch.is_none())
             || tokens.is_empty()
@@ -1411,7 +1540,7 @@ impl DeviceProgram {
         }
         let lag = self.batch_state_lag()?;
         if position == 0 {
-            self.reset()?;
+            self.reset_async().await?;
         }
         if position.saturating_sub(lag) != self.next_position {
             return Err(Error::invalid("media prefill state position"));
@@ -1438,16 +1567,18 @@ impl DeviceProgram {
             .prompt_batch
             .as_mut()
             .ok_or_else(|| Error::invariant("media prefill requires a prompt graph"))?;
-        let output = prompt.run_media(
-            &self.device,
-            tokens,
-            position,
-            read_logits,
-            super::batch::PromptOverrides {
-                lanes: &overrides,
-                rotary,
-            },
-        )?;
+        let output = prompt
+            .run_media_async(
+                &self.device,
+                tokens,
+                position,
+                read_logits,
+                super::batch::PromptOverrides {
+                    lanes: &overrides,
+                    rotary,
+                },
+            )
+            .await?;
         let end = position
             .checked_add(tokens.len())
             .ok_or_else(|| Error::invalid("media prefill position overflow"))?;
@@ -1460,6 +1591,10 @@ impl DeviceProgram {
     /// # Errors
     /// Rejects forward commits, stale checkpoints or failed state restoration.
     pub fn commit_batch(&mut self, count: usize) -> Result<()> {
+        block_on(self.commit_batch_async(count))
+    }
+
+    pub(crate) async fn commit_batch_async(&mut self, count: usize) -> Result<()> {
         let (start, available) = self
             .last_batch
             .ok_or_else(|| Error::invalid("no pending verification batch"))?;
@@ -1468,9 +1603,10 @@ impl DeviceProgram {
         }
         if self.next_position != start + count {
             self.batch
-                .as_ref()
+                .as_mut()
                 .ok_or_else(|| Error::invariant("batch graph"))?
-                .restore(&self.device, count)?;
+                .restore_async(&self.device, count)
+                .await?;
         }
         self.next_position = start + count;
         self.last_batch = Some((start, count));
@@ -1511,12 +1647,12 @@ impl DeviceProgram {
     /// # Errors
     /// Returns failed CUDA state resets; graph addresses remain unchanged.
     pub fn reset(&mut self) -> Result<()> {
+        block_on(self.reset_async())
+    }
+    pub(crate) async fn reset_async(&mut self) -> Result<()> {
+        self.device.run_op(self.reset_graph.launch()).await?;
         self.next_position = 0;
         self.last_batch = None;
-        self.reset_graph
-            .launch()
-            .sync_on(&self.device.stream)
-            .map_err(device_error)?;
         Ok(())
     }
 }
@@ -1655,4 +1791,18 @@ fn warm_delegated(delegated: &mut Support, weights: &ProgramWeights, geometry: P
             let _ = delegated.warm(width, dense, rows, columns);
         }
     }
+}
+
+fn external_staging(
+    device: &CudaDevice,
+    hidden: usize,
+    fusion: Option<&FusionWeights>,
+) -> Result<Option<PinnedHostBuffer<f32>>> {
+    if fusion.is_none() {
+        return Ok(None);
+    }
+    let context = CudaContext::new(device.stream.device().ordinal()).map_err(device_error)?;
+    PinnedHostBuffer::zeroed(&context, hidden)
+        .map(Some)
+        .map_err(device_error)
 }
