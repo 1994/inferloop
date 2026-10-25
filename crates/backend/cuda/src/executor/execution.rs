@@ -1206,21 +1206,11 @@ impl Sequence {
                     .transpose()?;
                 selected.rows
             } else {
-                vec![
-                    super::profiling::phase_async("prefill_step", async {
-                        let rotary = self.rotary_at(position);
-                        self.program
-                            .step_positioned_async(
-                                tokens[offset],
-                                [rotary; ROTARY_AXES],
-                                position,
-                                None,
-                                read_logits,
-                            )
-                            .await
-                    })
-                    .await?,
-                ]
+                super::profiling::phase_async("prefill_step", async {
+                    self.decode_step(tokens[offset], position, read_logits, read_hidden)
+                        .await
+                })
+                .await?
             };
             if device_prime {
                 self.prime_chunk(&tokens[offset..offset + count], position)
@@ -1389,6 +1379,27 @@ impl Sequence {
             bases,
         });
         Ok(())
+    }
+
+    async fn decode_step(
+        &mut self,
+        token: u32,
+        position: usize,
+        read_logits: bool,
+        read_hidden: bool,
+    ) -> Result<Vec<(Vec<f32>, Vec<f32>)>> {
+        if self.media_prompt_len == 0 {
+            self.program
+                .step_readout_async(token, position, position, None, read_logits, read_hidden)
+                .await
+                .map(|row| vec![row])
+        } else {
+            let rotary = self.rotary_at(position);
+            self.program
+                .step_positioned_async(token, [rotary; ROTARY_AXES], position, None, read_logits)
+                .await
+                .map(|row| vec![row])
+        }
     }
 
     const fn rotary_at(&self, position: usize) -> usize {
