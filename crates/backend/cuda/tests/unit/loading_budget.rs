@@ -10,6 +10,7 @@ use crate::resident::attention_mma::eligible_with_role;
 use crate::resident::attention_mma::node_eligible;
 use crate::test_support::fixture_graph;
 use crate::tuning::resident_gemm::ResidentTuningSession;
+use VERIFY_SPLIT_SCRATCH_BUDGET;
 use cutile::half::bf16;
 use infer_core::{OpId, TensorId};
 use infer_ir::{DType, TensorNode, TensorSpec};
@@ -643,6 +644,21 @@ fn funded_kv_rounds_down_without_changing_logical_capacity() -> Result<()> {
     assert_eq!(
         funded_kv_tokens(width, capacity, maximum, block_bytes, fixed, fixed)?,
         None
+    );
+    Ok(())
+}
+
+#[test]
+fn pooled_quote_charges_the_shared_verify_split_allowance() -> Result<()> {
+    let weights = fixture_weights();
+    let graph = fixture_graph(48)?;
+    let profile = fixture_profile();
+    let quote = |verify| pool_storage_bytes(&graph, &weights, (4, 128, 0), verify, 48, &profile);
+    let one = quote(1)?;
+    let two = quote(2)?;
+    assert!(
+        two.saturating_sub(one) >= VERIFY_SPLIT_SCRATCH_BUDGET,
+        "verification pool must carry the shared split allowance"
     );
     Ok(())
 }

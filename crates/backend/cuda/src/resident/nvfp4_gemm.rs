@@ -4,7 +4,6 @@ mod workspace;
 
 use crate::constants::F32_BYTES;
 use crate::constants::PREFILL_GEMM_TILE_N;
-const VERIFY_SPLIT_SCRATCH_BUDGET: u64 = 32 * 1024 * 1024;
 const VERIFY_SPLIT_MAX_ROWS: usize = PREFILL_GEMM_TILE_N;
 const VERIFY_SPLIT_MAX_PARTS: usize = 4;
 const VERIFY_SPLIT_WAVE_TARGET: usize = 2;

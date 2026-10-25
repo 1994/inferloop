@@ -7,6 +7,7 @@ use crate::constants::MTP_FUSION_ROWS;
 use crate::constants::NVFP4_GROUP_SIZE;
 use crate::constants::PREFILL_LANES;
 use crate::constants::PREFILL_SPLIT_K;
+use crate::constants::VERIFY_SPLIT_SCRATCH_BUDGET;
 use crate::mlp::ProjectionWeight;
 use crate::resident::arena::ActivationArena;
 use crate::resident::attention_mma::catalog::DIM;
@@ -528,6 +529,11 @@ fn pool_storage_bytes(
             .and_then(|words| words.checked_mul(F32))
             .ok_or_else(|| Error::invalid("pooled control byte overflow"))?,
     )?;
+    if verify > 1 {
+        // One bounded shared allowance for the pooled program's verify split owners;
+        // Workspace tracks unique retained usage and falls back when exhausted.
+        bytes = add(bytes, VERIFY_SPLIT_SCRATCH_BUDGET)?;
+    }
     Ok(bytes)
 }
 

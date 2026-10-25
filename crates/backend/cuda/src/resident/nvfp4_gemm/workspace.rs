@@ -10,7 +10,8 @@ use crate::constants::NVFP4_QUANT_SCALES_TILE;
 use crate::constants::PREFILL_LANES;
 use crate::tuning::fp8_gemm::prefill_choice;
 
-use super::{SplitCandidate, VERIFY_SPLIT_SCRATCH_BUDGET, projection_split_policy};
+use super::{SplitCandidate, projection_split_policy};
+use crate::constants::VERIFY_SPLIT_SCRATCH_BUDGET;
 use crate::resident::program::ProgramGeometry;
 use crate::tuning::fp8_gemm::Choice;
 use crate::tuning::fp8_gemm::WeightKey;
@@ -33,7 +34,7 @@ use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_ir::{DataflowGraph, TensorOp};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::env::var;
 
@@ -45,8 +46,6 @@ type Quantized = (Tensor<f4e2m1fnx2>, Tensor<f8e4m3fn>);
 /// against 0.45 ms for the separate projections and quantizer).
 const SWIGLU_TILE_ROWS: usize = 64;
 const SWIGLU_TILE_COLUMNS: usize = 64;
-/// Split scratch may use at most this fraction of currently allocatable device bytes.
-const SPLIT_BUDGET_DIVISOR: u64 = 4;
 /// Native W4A4 K step used by split windows.
 const NVFP4_K_STEP: usize = 256;
 const NVFP4_SPLIT_TILE: [usize; 2] = [64, 64];
@@ -57,6 +56,8 @@ type Fp8Key = (usize, usize, usize);
 type StrategyKey = (ResidentGemmWeightKey, usize, usize, usize);
 /// Quantized activation and its per-token scales.
 type Fp8Buffers = (Tensor<f8e4m3fn>, Tensor<f32>);
+type Fp8SplitShape = (usize, usize, usize, usize, usize);
+type Fp8StrategyKey = (WeightKey, Fp8SplitShape);
 
 struct SplitBuffer {
     plan: SplitCandidate,
@@ -78,7 +79,9 @@ pub struct Workspace {
     /// whichever projection is visited first decide the layout for the other.
     fp8: BTreeMap<Fp8Key, Fp8Buffers>,
     split_nvfp4: BTreeMap<(usize, usize, usize), SplitBuffer>,
-    split_fp8: BTreeMap<(usize, usize, usize, usize, usize), SplitBuffer>,
+    split_nvfp4_enabled: BTreeSet<StrategyKey>,
+    split_fp8: BTreeMap<Fp8SplitShape, SplitBuffer>,
+    split_fp8_enabled: BTreeSet<Fp8StrategyKey>,
     split_scratch_bytes: u64,
 }
 
@@ -205,7 +208,9 @@ impl Workspace {
             fp8: BTreeMap::new(),
             fp8_strategies: BTreeMap::new(),
             split_nvfp4: BTreeMap::new(),
+            split_nvfp4_enabled: BTreeSet::new(),
             split_fp8: BTreeMap::new(),
+            split_fp8_enabled: BTreeSet::new(),
             split_scratch_bytes: 0,
             vendor_fp8: vendor_fp8::Support::new_with(device, true),
             vendor_diagnostic: vendor_diagnostic_enabled(),
@@ -217,16 +222,8 @@ impl Workspace {
     fn ensure_nvfp4_split(&mut self, device: &CudaDevice, key: StrategyKey) -> Result<()> {
         let (_, rows, outputs, columns) = key;
         let shape = (rows, outputs, columns);
-        if self.split_nvfp4.contains_key(&shape) {
-            return Ok(());
-        }
         let sms = usize::try_from(device.profile()?.multiprocessors)
             .map_err(|_| Error::invariant("SM count"))?;
-        let limit = device
-            .allocatable_memory_bytes()?
-            .checked_div(SPLIT_BUDGET_DIVISOR)
-            .unwrap_or(0)
-            .min(VERIFY_SPLIT_SCRATCH_BUDGET);
         let Some(plan) = projection_split_policy(
             rows,
             outputs,
@@ -234,7 +231,7 @@ impl Workspace {
             sms,
             NVFP4_SPLIT_TILE,
             NVFP4_K_STEP,
-            limit,
+            VERIFY_SPLIT_SCRATCH_BUDGET,
         )?
         else {
             return Ok(());
@@ -252,11 +249,15 @@ impl Workspace {
         )? {
             return Ok(());
         }
+        if self.split_nvfp4.contains_key(&shape) {
+            self.split_nvfp4_enabled.insert(key);
+            return Ok(());
+        }
         let total = self
             .split_scratch_bytes
             .checked_add(plan.scratch_bytes)
             .ok_or_else(|| Error::invalid("retained verify split scratch overflow"))?;
-        if total > limit {
+        if total > VERIFY_SPLIT_SCRATCH_BUDGET {
             return Ok(());
         }
         let partials = api::zeros::<f32>(&[plan.splits, rows, outputs])
@@ -265,6 +266,7 @@ impl Workspace {
         self.split_scratch_bytes = total;
         self.split_nvfp4
             .insert(shape, SplitBuffer { plan, partials });
+        self.split_nvfp4_enabled.insert(key);
         Ok(())
     }
 
@@ -274,23 +276,23 @@ impl Workspace {
         key: (WeightKey, usize, usize, usize),
         choice: Choice,
     ) -> Result<()> {
-        let (_, rows, outputs, columns) = key;
+        let (weight_key, rows, outputs, columns) = key;
         let Some(tile) = choice.native_tile() else {
             return Ok(());
         };
         let shape = (rows, outputs, columns, tile[0], tile[1]);
-        if self.split_fp8.contains_key(&shape) {
-            return Ok(());
-        }
+        let strategy = (weight_key, shape);
         let sms = usize::try_from(device.profile()?.multiprocessors)
             .map_err(|_| Error::invariant("SM count"))?;
-        let limit = device
-            .allocatable_memory_bytes()?
-            .checked_div(SPLIT_BUDGET_DIVISOR)
-            .unwrap_or(0)
-            .min(VERIFY_SPLIT_SCRATCH_BUDGET);
-        let Some(plan) =
-            projection_split_policy(rows, outputs, columns, sms, tile, FP8_K_STEP, limit)?
+        let Some(plan) = projection_split_policy(
+            rows,
+            outputs,
+            columns,
+            sms,
+            tile,
+            FP8_K_STEP,
+            VERIFY_SPLIT_SCRATCH_BUDGET,
+        )?
         else {
             return Ok(());
         };
@@ -307,11 +309,15 @@ impl Workspace {
         )? {
             return Ok(());
         }
+        if self.split_fp8.contains_key(&shape) {
+            self.split_fp8_enabled.insert(strategy);
+            return Ok(());
+        }
         let total = self
             .split_scratch_bytes
             .checked_add(plan.scratch_bytes)
             .ok_or_else(|| Error::invalid("retained verify split scratch overflow"))?;
-        if total > limit {
+        if total > VERIFY_SPLIT_SCRATCH_BUDGET {
             return Ok(());
         }
         let partials = api::zeros::<f32>(&[plan.splits, rows, outputs])
@@ -319,6 +325,7 @@ impl Workspace {
             .map_err(device_error)?;
         self.split_scratch_bytes = total;
         self.split_fp8.insert(shape, SplitBuffer { plan, partials });
+        self.split_fp8_enabled.insert(strategy);
         Ok(())
     }
 
@@ -539,7 +546,17 @@ impl Workspace {
         let outputs = usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
         let rows = output.size() / outputs;
         let shape = (rows, outputs, columns);
-        let mut split = self.split_nvfp4.remove(&shape);
+        let strategy = (
+            ResidentGemmWeightKey::new(weight, scale).map_err(super::super::capture::error)?,
+            rows,
+            outputs,
+            columns,
+        );
+        let mut split = self
+            .split_nvfp4_enabled
+            .contains(&strategy)
+            .then(|| self.split_nvfp4.remove(&shape))
+            .flatten();
         let strategies = &self.strategies;
         let (q, qs) = self
             .buffers
@@ -618,7 +635,17 @@ impl Workspace {
         let outputs = usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
         let rows = output.size() / outputs;
         let shape = (rows, outputs, columns);
-        let mut split = self.split_nvfp4.remove(&shape);
+        let strategy = (
+            ResidentGemmWeightKey::new(weight, scale).map_err(super::super::capture::error)?,
+            rows,
+            outputs,
+            columns,
+        );
+        let mut split = self
+            .split_nvfp4_enabled
+            .contains(&strategy)
+            .then(|| self.split_nvfp4.remove(&shape))
+            .flatten();
         let strategies = &self.strategies;
         // The fused codes overwrite the shared quantization buffers; no reuse permit may span it.
         self.quant_reuse.clear();
@@ -753,7 +780,17 @@ impl Workspace {
         let outputs = usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
         let rows = output.size() / outputs;
         let shape = (rows, outputs, columns);
-        let mut split = self.split_nvfp4.remove(&shape);
+        let strategy = (
+            ResidentGemmWeightKey::new(weight, scale).map_err(super::super::capture::error)?,
+            rows,
+            outputs,
+            columns,
+        );
+        let mut split = self
+            .split_nvfp4_enabled
+            .contains(&strategy)
+            .then(|| self.split_nvfp4.remove(&shape))
+            .flatten();
         let strategies = &self.strategies;
         let (q, qs) = self
             .buffers
@@ -879,6 +916,17 @@ impl Workspace {
         Ok(true)
     }
 
+    fn take_enabled_fp8(
+        &mut self,
+        weight_key: WeightKey,
+        shape: Fp8SplitShape,
+    ) -> Option<SplitBuffer> {
+        self.split_fp8_enabled
+            .contains(&(weight_key, shape))
+            .then(|| self.split_fp8.remove(&shape))
+            .flatten()
+    }
+
     pub(super) fn record_fp8_input(
         &mut self,
         scope: &Scope,
@@ -913,10 +961,11 @@ impl Workspace {
             ))
             .copied()
             .unwrap_or_else(|| Choice::baseline(rows));
+        let weight_key = WeightKey::new(weight).map_err(error)?;
         let split_shape = choice
             .native_tile()
             .map(|tile| (rows, outputs, columns, tile[0], tile[1]));
-        let mut split = split_shape.and_then(|shape| self.split_fp8.remove(&shape));
+        let mut split = split_shape.and_then(|shape| self.take_enabled_fp8(weight_key, shape));
         let (q, qs) = self
             .fp8
             .get_mut(&(rows, columns, scale_columns))
