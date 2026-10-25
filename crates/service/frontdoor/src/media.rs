@@ -128,8 +128,10 @@ impl MediaService {
                 return Err(Error::unsupported("unsupported media modality"));
             }
         };
-        if prepared.images.len() != prepared.spans.len() {
-            return Err(Error::invalid("prepared media spans are inconsistent"));
+        if prepared.images.is_empty() || prepared.images.len() != prepared.spans.len() {
+            return Err(Error::invalid(
+                "prepared media is empty or has inconsistent spans",
+            ));
         }
         let mut media = Vec::with_capacity(prepared.images.len());
         for (index, (image, span)) in prepared.images.iter().zip(&prepared.spans).enumerate() {
