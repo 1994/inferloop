@@ -8,7 +8,7 @@ use super::{
     profile,
     prompt_scratch::PromptScratch,
 };
-use crate::attention_profile::PRECISE_PREFIX_POSITIONS;
+use crate::attention_profile::precise_prefix_positions;
 use crate::constants::ATTENTION_SPLIT_THRESHOLD;
 use crate::constants::CB_DECODE_SLOTS;
 use crate::constants::EXTRA_WIDE_PREFILL_LANES;
@@ -1777,7 +1777,7 @@ impl BatchGraph {
         let precise = self.precise.is_some()
             && position
                 .checked_add(tokens.len())
-                .is_some_and(|end| end <= PRECISE_PREFIX_POSITIONS);
+                .is_some_and(|end| end <= precise_prefix_positions());
         #[cfg(test)]
         let state = self.state_prefill.as_ref();
         #[cfg(not(test))]

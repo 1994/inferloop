@@ -1,4 +1,11 @@
-use super::AttentionProfile;
+use super::{AttentionProfile, precise_prefix_from_opt_out};
+
+#[test]
+fn precise_prefix_opt_out_is_explicit_and_preserves_the_default() {
+    assert_eq!(precise_prefix_from_opt_out(false), 2048);
+    assert_eq!(precise_prefix_from_opt_out(true), 0);
+}
+
 use infer_core::{OpId, TensorId};
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 

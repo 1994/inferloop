@@ -1,4 +1,5 @@
 //! Native model loading independent of diagnostic runners and CPU reference execution.
+use crate::attention_profile::precise_prefix_positions;
 use crate::constants::EXTRA_WIDE_PREFILL_LANES;
 use crate::constants::WIDER_PREFILL_LANES;
 use crate::constants::WIDEST_PREFILL_LANES;
@@ -241,6 +242,7 @@ impl LoadedModel {
             automatic_prefill: self.automatic_prefill,
             arena_budget_bytes: self.profile.arena_budget_bytes(),
             attention_profile: self.weights.attention_profile.name().to_owned(),
+            precise_prefix_positions: Some(precise_prefix_positions()),
         }
     }
     /// # Errors

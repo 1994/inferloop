@@ -3,10 +3,25 @@
 //! The profile is resolved once when the model loads and is immutable for every sequence the
 //! loaded model creates. It never changes weights, KV storage or the draft proposal path.
 use serde::Serialize;
+#[cfg(all(target_os = "linux", feature = "cuda"))]
+use std::env::var;
 
 /// Initial context kept on F32 before the target BF16 bulk path.
 #[cfg(all(target_os = "linux", feature = "cuda"))]
 pub const PRECISE_PREFIX_POSITIONS: usize = 2048;
+
+/// Zero is an explicit experiment opt-out through `INFER_CUDA_ATTENTION_PRECISE_PREFIX=0`.
+#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[must_use]
+pub fn precise_prefix_positions() -> usize {
+    let opt_out = var("INFER_CUDA_ATTENTION_PRECISE_PREFIX").is_ok_and(|v| v == "0");
+    precise_prefix_from_opt_out(opt_out)
+}
+
+#[cfg(all(target_os = "linux", feature = "cuda"))]
+const fn precise_prefix_from_opt_out(opt_out: bool) -> usize {
+    if opt_out { 0 } else { PRECISE_PREFIX_POSITIONS }
+}
 
 /// Target prefill attention arithmetic selected by the operator.
 ///

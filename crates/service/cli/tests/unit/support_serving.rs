@@ -38,6 +38,7 @@ fn pooled_worker_reporting_does_not_reduce_private_prompt_chunks() {
         automatic_prefill: true,
         arena_budget_bytes: 0,
         attention_profile: "bf16".into(),
+        precise_prefix_positions: Some(2048),
     };
     let mut config = RuntimeConfig {
         max_num_seqs: 16,
