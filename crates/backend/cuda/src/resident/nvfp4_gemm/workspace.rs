@@ -74,7 +74,8 @@ pub struct Workspace {
     /// operand geometry but need different activation-scale extents, so geometry alone would let
     /// whichever projection is visited first decide the layout for the other.
     fp8: BTreeMap<Fp8Key, Fp8Buffers>,
-    split_nvfp4: BTreeMap<StrategyKey, SplitBuffer>,
+    split_nvfp4: BTreeMap<(usize, usize, usize), SplitBuffer>,
+    split_scratch_bytes: u64,
 }
 
 impl Workspace {
@@ -200,6 +201,7 @@ impl Workspace {
             fp8: BTreeMap::new(),
             fp8_strategies: BTreeMap::new(),
             split_nvfp4: BTreeMap::new(),
+            split_scratch_bytes: 0,
             vendor_fp8: vendor_fp8::Support::new_with(device, true),
             vendor_diagnostic: vendor_diagnostic_enabled(),
         };
@@ -208,10 +210,11 @@ impl Workspace {
     }
 
     fn ensure_nvfp4_split(&mut self, device: &CudaDevice, key: StrategyKey) -> Result<()> {
-        if self.split_nvfp4.contains_key(&key) {
+        let (_, rows, outputs, columns) = key;
+        let shape = (rows, outputs, columns);
+        if self.split_nvfp4.contains_key(&shape) {
             return Ok(());
         }
-        let (_, rows, outputs, columns) = key;
         let sms = usize::try_from(device.profile()?.multiprocessors)
             .map_err(|_| Error::invariant("SM count"))?;
         let limit = device
@@ -236,10 +239,19 @@ impl Workspace {
         )? {
             return Ok(());
         }
+        let total = self
+            .split_scratch_bytes
+            .checked_add(plan.scratch_bytes)
+            .ok_or_else(|| Error::invalid("retained verify split scratch overflow"))?;
+        if total > limit {
+            return Ok(());
+        }
         let partials = api::zeros::<f32>(&[plan.splits, rows, outputs])
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        self.split_nvfp4.insert(key, SplitBuffer { plan, partials });
+        self.split_scratch_bytes = total;
+        self.split_nvfp4
+            .insert(shape, SplitBuffer { plan, partials });
         Ok(())
     }
 
@@ -458,13 +470,8 @@ impl Workspace {
         };
         let outputs = usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
         let rows = output.size() / outputs;
-        let strategy = (
-            ResidentGemmWeightKey::new(weight, scale).map_err(super::super::capture::error)?,
-            rows,
-            outputs,
-            columns,
-        );
-        let mut split = self.split_nvfp4.remove(&strategy);
+        let shape = (rows, outputs, columns);
+        let mut split = self.split_nvfp4.remove(&shape);
         let strategies = &self.strategies;
         let (q, qs) = self
             .buffers
@@ -515,7 +522,7 @@ impl Workspace {
         };
         let result = record();
         if let Some(split) = split {
-            self.split_nvfp4.insert(strategy, split);
+            self.split_nvfp4.insert(shape, split);
         }
         self.quant_reuse.finish(ticket, result.is_ok());
         result
@@ -542,13 +549,8 @@ impl Workspace {
         };
         let outputs = usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
         let rows = output.size() / outputs;
-        let strategy = (
-            ResidentGemmWeightKey::new(weight, scale).map_err(super::super::capture::error)?,
-            rows,
-            outputs,
-            columns,
-        );
-        let mut split = self.split_nvfp4.remove(&strategy);
+        let shape = (rows, outputs, columns);
+        let mut split = self.split_nvfp4.remove(&shape);
         let strategies = &self.strategies;
         // The fused codes overwrite the shared quantization buffers; no reuse permit may span it.
         self.quant_reuse.clear();
@@ -580,7 +582,7 @@ impl Workspace {
             (rows, columns),
         );
         if let Some(split) = split {
-            self.split_nvfp4.insert(strategy, split);
+            self.split_nvfp4.insert(shape, split);
         }
         result
     }
@@ -682,13 +684,8 @@ impl Workspace {
     ) -> StdResult<(), DeviceError> {
         let outputs = usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
         let rows = output.size() / outputs;
-        let strategy = (
-            ResidentGemmWeightKey::new(weight, scale).map_err(super::super::capture::error)?,
-            rows,
-            outputs,
-            columns,
-        );
-        let mut split = self.split_nvfp4.remove(&strategy);
+        let shape = (rows, outputs, columns);
+        let mut split = self.split_nvfp4.remove(&shape);
         let strategies = &self.strategies;
         let (q, qs) = self
             .buffers
@@ -705,7 +702,7 @@ impl Workspace {
             (rows, columns),
         );
         if let Some(split) = split {
-            self.split_nvfp4.insert(strategy, split);
+            self.split_nvfp4.insert(shape, split);
         }
         result
     }
@@ -748,8 +745,8 @@ impl Workspace {
                     )
                     .generics(vec![
                         columns.to_string(),
-                        rows.to_string(),
-                        outputs.to_string(),
+                        tile[0].to_string(),
+                        tile[1].to_string(),
                         split.plan.splits.to_string(),
                     ]),
                 )?;
@@ -760,8 +757,8 @@ impl Workspace {
                         1.0 / (global * scale),
                     )
                     .generics(vec![
-                        rows.to_string(),
-                        outputs.to_string(),
+                        tile[0].to_string(),
+                        tile[1].to_string(),
                         split.plan.splits.to_string(),
                     ]),
                 )?;

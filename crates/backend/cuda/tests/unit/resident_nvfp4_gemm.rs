@@ -60,28 +60,40 @@ fn split_policy_derives_from_sm_cta_k_and_scratch() {
 }
 
 #[test]
-fn split_k_candidate_kernels_compile_with_k_and_tile_tails() {
-    for (m, n, k, splits) in [(48, 5120, 17408, 4), (17, 129, 512, 3)] {
-        let code_columns = k / 2;
-        let scale_columns = k / 16;
+fn split_k_candidate_kernels_compile_with_legal_tiles_and_actual_strides() {
+    let tile = 64usize;
+    for (rows, outputs, k, splits) in [(48usize, 5120usize, 17408usize, 4usize), (17, 129, 512, 3)]
+    {
+        let code_columns = i32::try_from(k / 2).expect("code columns");
+        let scale_columns = i32::try_from(k / 16).expect("scale columns");
+        let row_stride = i32::try_from(rows * outputs).expect("row stride");
+        let output_stride = i32::try_from(outputs).expect("output stride");
         KernelCompiler::new(kernels::__module_ast_self, "kernels", "packed_split")
             .target("sm_120")
-            .generics([k, m, n, splits].iter().map(ToString::to_string).collect())
+            .generics(vec![
+                k.to_string(),
+                tile.to_string(),
+                tile.to_string(),
+                splits.to_string(),
+            ])
             .strides(&[
-                ("partials", &[m * n, n, 1]),
+                ("partials", &[row_stride, output_stride, 1]),
                 ("input", &[code_columns, 1]),
                 ("input_scales", &[scale_columns, 1]),
                 ("weight", &[code_columns, 1]),
                 ("scales", &[scale_columns, 1]),
             ])
             .compile()
-            .expect("packed_split compiles");
+            .expect("packed_split legal tile compiles");
         KernelCompiler::new(kernels::__module_ast_self, "kernels", "sum_splits")
             .target("sm_120")
-            .generics(vec![m.to_string(), n.to_string(), splits.to_string()])
-            .strides(&[("out", &[n, 1]), ("partials", &[m * n, n, 1])])
+            .generics(vec![tile.to_string(), tile.to_string(), splits.to_string()])
+            .strides(&[
+                ("out", &[output_stride, 1]),
+                ("partials", &[row_stride, output_stride, 1]),
+            ])
             .compile()
-            .expect("sum_splits compiles");
+            .expect("sum_splits legal tile compiles");
     }
 }
 

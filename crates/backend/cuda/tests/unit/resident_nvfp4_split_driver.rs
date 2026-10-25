@@ -4,6 +4,7 @@ use super::{kernels, projection_split_policy, split_scratch_bytes};
 use crate::device::CudaDevice;
 use crate::loading::{LoadOptions, LoadedModel};
 use crate::mlp::ProjectionWeight;
+use crate::tuning::{VerifySplitEntry, resolve_table, table_path};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::error::tensor_error;
@@ -140,8 +141,8 @@ fn record(
             )
             .generics(vec![
                 down.columns.to_string(),
-                ROWS.to_string(),
-                down.outputs.to_string(),
+                candidate.tile[0].to_string(),
+                candidate.tile[1].to_string(),
                 candidate.splits.to_string(),
             ]),
         )?;
@@ -152,8 +153,8 @@ fn record(
                 down.global.recip(),
             )
             .generics(vec![
-                ROWS.to_string(),
-                down.outputs.to_string(),
+                candidate.tile[0].to_string(),
+                candidate.tile[1].to_string(),
                 candidate.splits.to_string(),
             ]),
         )?;
@@ -284,6 +285,7 @@ fn validate(device: &CudaDevice, m: Measurement) -> Result<(), Box<dyn StdError>
     if speedup <= 1.0 {
         return Err("down split candidate was not faster than exact".into());
     }
+    publish_entry(device, &down, &candidate, speedup, &weight_bits)?;
     let binary = env::current_exe()?;
     println!(
         "{}",
@@ -313,6 +315,47 @@ fn validate(device: &CudaDevice, m: Measurement) -> Result<(), Box<dyn StdError>
     if !subset_reference_max_abs.is_finite() || subset_reference_max_abs > 1.0e-4 {
         return Err("split candidate subset reference exceeded 1e-4".into());
     }
+    Ok(())
+}
+
+fn publish_entry(
+    device: &CudaDevice,
+    down: &Down,
+    candidate: &super::SplitCandidate,
+    speedup: f32,
+    weight_bits: &[u8],
+) -> Result<(), Box<dyn StdError>> {
+    let path = table_path().ok_or_else(|| Error::invalid("verify split table path"))?;
+    let mut table = resolve_table(Some(&path))?.unwrap_or_default();
+    let hardware = device.profile()?.identity();
+    table.verify_split.retain(|old| {
+        old.hardware != hardware
+            || old.mode != "nvfp4"
+            || old.rows != ROWS
+            || old.outputs != down.outputs
+            || old.columns != down.columns
+    });
+    table.verify_split.push(VerifySplitEntry {
+        hardware,
+        mode: "nvfp4".to_owned(),
+        rows: ROWS,
+        outputs: down.outputs,
+        columns: down.columns,
+        splits: candidate.splits,
+        scratch_bytes: candidate.scratch_bytes,
+        kernel_schema: "nvfp4-packed-split-v1".to_owned(),
+        speedup,
+        reference: format!(
+            "real_checkpoint_down_split_candidate_measurement:{:x}",
+            Sha256::digest(weight_bits)
+        ),
+    });
+    fs::write(
+        &path,
+        serde_json::to_string_pretty(&table)
+            .map_err(|e| Error::invalid(format!("verify split table: {e}")))?,
+    )
+    .map_err(|e| Error::invalid(format!("verify split table write: {e}")))?;
     Ok(())
 }
 

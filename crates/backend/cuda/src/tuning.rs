@@ -295,6 +295,7 @@ pub struct VerifySplitEntry {
     pub columns: usize,
     pub splits: usize,
     pub scratch_bytes: u64,
+    pub kernel_schema: String,
     pub speedup: f32,
     pub reference: String,
 }
@@ -547,6 +548,7 @@ pub(crate) fn verify_split_qualified(
                 && entry.columns == columns
                 && entry.splits == splits
                 && entry.scratch_bytes == scratch
+                && entry.kernel_schema == "nvfp4-packed-split-v1"
                 && entry.speedup > 1.0
                 && !entry.reference.is_empty()
         })
