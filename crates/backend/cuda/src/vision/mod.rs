@@ -6,6 +6,9 @@ pub(crate) mod attention_bench;
 #[path = "../../tests/unit/vision_attention_check.rs"]
 mod attention_check;
 pub(crate) mod kernels;
+#[cfg(test)]
+#[path = "../../tests/unit/vision_padding.rs"]
+mod padding_check;
 pub(crate) mod program;
 mod session;
 mod weights;

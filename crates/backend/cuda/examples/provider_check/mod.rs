@@ -88,6 +88,8 @@ pub fn run() -> Result<(), Box<dyn StdError>> {
             tokens: prompt.clone().into(),
 
             sampling: None,
+
+            media: None,
         }],
         prompt.len(),
     )?;
@@ -130,6 +132,8 @@ fn prefill_tasks(prompt: &[u32], states: [StateId; 2]) -> Result<Vec<ExecutionTa
             state: states[0],
             tokens: prompt.to_vec().into(),
             sampling: None,
+
+            media: None,
         },
         ExecutionTask {
             plain_greedy: false,
@@ -140,6 +144,8 @@ fn prefill_tasks(prompt: &[u32], states: [StateId; 2]) -> Result<Vec<ExecutionTa
                 readout: OutputReadout::Logits,
             },
             sampling: None,
+
+            media: None,
         },
     ])
 }
@@ -175,6 +181,8 @@ fn generate(
                     },
 
                     sampling: None,
+
+                    media: None,
                 }],
                 1,
             )?

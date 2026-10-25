@@ -30,6 +30,10 @@ pub trait BackendProvider {
     fn weight_backed_dataflow(&self) -> bool {
         false
     }
+    /// Whether this backend has a bound multimodal encoder and can execute media prefill.
+    fn supports_multimodal(&self) -> bool {
+        false
+    }
     /// True only if control checkpoints can reconstruct all execution state.
     /// A proxy captures execution state via its owner lane; direct drivers can capture synchronously.
     fn requires_async_checkpoint(&self) -> bool {

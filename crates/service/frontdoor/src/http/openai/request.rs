@@ -1,7 +1,9 @@
 use crate::constants::GENERATED_TOKEN_STAGING_BYTES;
 use crate::constants::TEXT_STAGING_EXPANSION;
 use crate::constants::TEXT_STAGING_OVERHEAD_BYTES;
+use crate::media::MediaRequest;
 use infer_core::{Error, Result};
+use infer_ir::Modality;
 use infer_models::{ChatMessage, ToolCall};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -255,12 +257,18 @@ impl GenerationRequest {
     /// # Errors
     /// Rejects unsupported content parts, an assistant call without an identifier, a duplicated
     /// call identifier, and a `tool` result that does not answer an earlier assistant call.
-    pub(super) fn chat_messages(&self) -> Result<Vec<ChatMessage>> {
+    pub(super) fn chat_messages(&self) -> Result<(Vec<ChatMessage>, Vec<MediaRequest>)> {
         let wire = self.messages.as_deref().unwrap_or_default();
         let mut call_ids = BTreeSet::new();
         let mut out = Vec::with_capacity(wire.len());
+        let mut media_requests = Vec::new();
         for message in wire {
-            let mut history = ChatMessage::new(message.role.as_str(), message.text()?);
+            let (text, media) = message.rendered()?;
+            if !media.is_empty() && message.role != "user" {
+                return Err(Error::invalid("only a user message may carry media"));
+            }
+            media_requests.extend(media);
+            let mut history = ChatMessage::new(message.role.as_str(), text);
             if !message.tool_calls.is_empty() && message.role != "assistant" {
                 return Err(Error::invalid(
                     "only an assistant message may carry tool_calls",
@@ -305,7 +313,7 @@ impl GenerationRequest {
         if out.is_empty() {
             return Err(Error::invalid("chat requires nonempty messages"));
         }
-        Ok(out)
+        Ok((out, media_requests))
     }
 
     pub(super) fn preparation_bytes(&self, generated: usize) -> Result<usize> {
@@ -359,70 +367,154 @@ where
 }
 
 impl WireMessage {
-    /// The message text parts in order, validating each one.
-    fn parts(&self) -> Result<Vec<&str>> {
+    /// The message parts in order, validating each one.
+    fn parts(&self) -> Result<Vec<WirePart<'_>>> {
         match &self.content {
             None | Some(Value::Null) => Ok(Vec::new()),
-            Some(Value::String(text)) => Ok(vec![text.as_str()]),
+            Some(Value::String(text)) => Ok(vec![WirePart::Text(text.as_str())]),
             Some(Value::Array(parts)) => parts
                 .iter()
                 .enumerate()
-                .map(|(index, part)| text_part(part, index))
+                .map(|(index, part)| wire_part(part, index))
                 .collect(),
             Some(_) => Err(Error::invalid(
                 "message content must be a string, null, or a list of text parts",
             )),
         }
     }
-    /// Total text and call bytes charged to the staging budget.
+    /// Total text, URL and call bytes charged to the staging budget.
     fn text_len(&self) -> usize {
-        let content = self
-            .parts()
-            .map_or(0, |parts| parts.iter().map(|text| text.len()).sum());
+        let content = self.parts().map_or(0, |parts| {
+            parts.iter().fold(0usize, |sum, part| match part {
+                WirePart::Text(text) => sum.saturating_add(text.len()),
+                WirePart::Media(media) => sum.saturating_add(media.url.len()),
+            })
+        });
         self.tool_calls.iter().fold(content, |sum, call| {
             sum.saturating_add(call.id.len())
                 .saturating_add(call.function.name.len())
                 .saturating_add(call.function.arguments.len())
         })
     }
-    /// The message text. `null` and absent both mean no text.
-    fn text(&self) -> Result<String> {
-        Ok(self.parts()?.concat())
+    /// Rendered text with media placeholders plus the media requests in content order.
+    fn rendered(&self) -> Result<(String, Vec<MediaRequest>)> {
+        let mut text = String::new();
+        let mut media = Vec::new();
+        for part in self.parts()? {
+            match part {
+                WirePart::Text(value) => text.push_str(value),
+                WirePart::Media(request) => {
+                    text.push_str(placeholder(&request.modality));
+                    media.push(request);
+                }
+            }
+        }
+        Ok((text, media))
     }
 }
 
-/// Validate one content part and return its text.
-fn text_part(part: &Value, index: usize) -> Result<&str> {
+/// One accepted content part.
+enum WirePart<'a> {
+    Text(&'a str),
+    Media(MediaRequest),
+}
+
+const fn placeholder(modality: &Modality) -> &'static str {
+    match modality {
+        Modality::Image => "<|vision_start|><|image_pad|><|vision_end|>",
+        Modality::Video => "<|vision_start|><|video_pad|><|vision_end|>",
+        Modality::Text | Modality::Audio | Modality::Extension(_) => "",
+    }
+}
+
+/// Validate one content part and return its text or media reference.
+fn wire_part(part: &Value, index: usize) -> Result<WirePart<'_>> {
     let object = part
         .as_object()
         .ok_or_else(|| Error::invalid(format!("message content part {index} must be an object")))?;
-    // The part kind is checked before its fields so an image or audio part reports the missing
-    // capability rather than an incidental unknown field.
-    match object.get("type").and_then(Value::as_str) {
-        Some("text") => {}
-        Some(_) => {
-            return Err(Error::unsupported(
-                "only text message content parts are supported",
-            ));
+    let kind = object
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::invalid(format!("message content part {index} requires a type")))?;
+    match kind {
+        "text" => {
+            if let Some(key) = object
+                .keys()
+                .find(|key| !["type", "text"].contains(&key.as_str()))
+            {
+                return Err(Error::invalid(format!(
+                    "unknown message content part field {key:?}"
+                )));
+            }
+            let text = object.get("text").and_then(Value::as_str).ok_or_else(|| {
+                Error::invalid(format!(
+                    "text content part {index} requires a string text field"
+                ))
+            })?;
+            Ok(WirePart::Text(text))
         }
-        None => {
-            return Err(Error::invalid(format!(
-                "message content part {index} requires a type"
-            )));
+        "image_url" | "input_image" => Ok(WirePart::Media(image_request(object, index)?)),
+        "video_url" | "input_video" => Ok(WirePart::Media(video_request(object, index)?)),
+        "audio" | "input_audio" => Err(Error::unsupported("audio input is not supported")),
+        _ => Err(Error::unsupported(
+            "only text, image_url and video_url message content parts are supported",
+        )),
+    }
+}
+
+fn image_request(object: &serde_json::Map<String, Value>, index: usize) -> Result<MediaRequest> {
+    let url = if let Some(value) = object.get("image_url") {
+        let detail = value
+            .as_object()
+            .ok_or_else(|| Error::invalid(format!("image_url part {index} must be an object")))?;
+        if let Some(key) = detail
+            .keys()
+            .find(|key| !["url", "detail"].contains(&key.as_str()))
+        {
+            return Err(Error::invalid(format!("unknown image_url field {key:?}")));
         }
+        if let Some(detail) = detail.get("detail") {
+            let detail = detail
+                .as_str()
+                .ok_or_else(|| Error::invalid("image detail must be a string"))?;
+            if !["auto", "low", "high"].contains(&detail) {
+                return Err(Error::invalid("image detail must be auto, low or high"));
+            }
+        }
+        detail.get("url")
+    } else {
+        object.get("image_url")
+    };
+    let url = url
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::invalid(format!("image_url part {index} requires a URL")))?;
+    if url.is_empty() {
+        return Err(Error::invalid("image_url must not be empty"));
     }
-    if let Some(key) = object
-        .keys()
-        .find(|key| !["type", "text"].contains(&key.as_str()))
-    {
-        return Err(Error::invalid(format!(
-            "unknown message content part field {key:?}"
-        )));
+    Ok(MediaRequest {
+        modality: Modality::Image,
+        url: url.to_owned(),
+    })
+}
+
+fn video_request(object: &serde_json::Map<String, Value>, index: usize) -> Result<MediaRequest> {
+    let value = object
+        .get("video_url")
+        .ok_or_else(|| Error::invalid(format!("video_url part {index} requires a video_url")))?;
+    let detail = value
+        .as_object()
+        .ok_or_else(|| Error::invalid(format!("video_url part {index} must be an object")))?;
+    if let Some(key) = detail.keys().find(|key| !["url"].contains(&key.as_str())) {
+        return Err(Error::invalid(format!("unknown video_url field {key:?}")));
     }
-    object.get("text").and_then(Value::as_str).ok_or_else(|| {
-        Error::invalid(format!(
-            "text content part {index} requires a string text field"
-        ))
+    let url = detail
+        .get("url")
+        .and_then(Value::as_str)
+        .filter(|url| !url.is_empty())
+        .ok_or_else(|| Error::invalid(format!("video_url part {index} requires a URL")))?;
+    Ok(MediaRequest {
+        modality: Modality::Video,
+        url: url.to_owned(),
     })
 }
 

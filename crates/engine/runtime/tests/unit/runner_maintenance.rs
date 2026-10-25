@@ -248,6 +248,7 @@ fn tasks() -> Vec<ExecutionTask> {
         state: StateId::ONE,
         tokens: vec![1, 2, 3].into(),
         sampling: None,
+        media: None,
     }]
 }
 fn wait(deadline: Instant) -> Result<()> {

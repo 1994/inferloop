@@ -27,6 +27,8 @@ fn fixture() -> (Arc<StepPlan>, Vec<ExecutionTask>) {
         tokens: vec![1, 2, 3].into(),
 
         sampling: None,
+
+        media: None,
     }];
     (step, tasks)
 }

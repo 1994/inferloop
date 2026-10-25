@@ -1,6 +1,7 @@
 use super::{ApiResult, GenerationRequest, TextState, ToolPolicy};
 use crate::constants::TOKEN_STAGING_BYTES;
 use crate::cpu::CpuContext;
+use crate::media::{MEDIA_STAGING_BYTES, MediaRequest, MediaService};
 use axum::http::HeaderMap;
 use infer_core::{Error, ErrorCode, FinishReason, RequestId};
 use infer_ir::{CanonicalRequest, RequestInput, Workload, WorkloadOutput};
@@ -36,6 +37,8 @@ struct Encoding {
     vocabulary: usize,
     assets: Arc<infer_models::TextAssets>,
     messages: Option<Vec<infer_models::ChatMessage>>,
+    media_requests: Vec<MediaRequest>,
+    media: Option<Arc<MediaService>>,
     prompt: Option<String>,
     tools: Option<Value>,
     enable_thinking: bool,
@@ -54,7 +57,7 @@ impl Encoding {
         context: &CpuContext,
     ) -> infer_core::Result<(CanonicalRequest, Option<infer_spi::ConstraintHandle>)> {
         context.check()?;
-        let tokens = if let Some(messages) = self.messages {
+        let (tokens, media) = if let Some(messages) = self.messages {
             let rendered = self.assets.render_chat(
                 &messages,
                 &infer_models::ChatOptions {
@@ -68,10 +71,23 @@ impl Encoding {
                     && infer_models::OutputStreamParser::prompt_opens_reasoning(&rendered),
                 Ordering::Release,
             );
-            self.assets.encode(&rendered, false)?
+            if self.media_requests.is_empty() {
+                (self.assets.encode(&rendered, false)?, Vec::new())
+            } else {
+                let media = self
+                    .media
+                    .as_ref()
+                    .ok_or_else(|| Error::unsupported("this deployment is text-only"))?;
+                let (prepared, inputs) =
+                    media.prepare(&self.assets, &rendered, &self.media_requests)?;
+                (prepared.tokens, inputs)
+            }
         } else {
-            self.assets
-                .encode(self.prompt.as_deref().unwrap_or_default(), true)?
+            (
+                self.assets
+                    .encode(self.prompt.as_deref().unwrap_or_default(), true)?,
+                Vec::new(),
+            )
         };
         self.count.store(tokens.len(), Ordering::Relaxed);
         let constraint = self
@@ -95,7 +111,7 @@ impl Encoding {
                 session: None,
                 input: RequestInput::Sequence {
                     tokens: tokens.into(),
-                    media: vec![],
+                    media,
                 },
                 workload: Workload::Generate {
                     max_new_tokens: self.max_new_tokens,
@@ -107,6 +123,29 @@ impl Encoding {
             constraint,
         ))
     }
+}
+
+/// Parse chat media and reserve its bounded staging budget before an identity is consumed.
+fn chat_media(
+    state: &TextState,
+    request: &GenerationRequest,
+    chat: bool,
+) -> infer_core::Result<(
+    Option<Vec<infer_models::ChatMessage>>,
+    Vec<MediaRequest>,
+    usize,
+)> {
+    let (messages, media) = if chat {
+        let (messages, media) = request.chat_messages()?;
+        (Some(messages), media)
+    } else {
+        (None, Vec::new())
+    };
+    if !media.is_empty() && state.media.is_none() {
+        return Err(Error::unsupported("this deployment is text-only"));
+    }
+    let bytes = media.len().saturating_mul(MEDIA_STAGING_BYTES);
+    Ok((messages, media, bytes))
 }
 
 /// Validate, price and submit one generation.
@@ -134,8 +173,13 @@ pub(super) async fn prepare(
         .into());
     }
     let max_new_tokens = requested.tokens.min(limits.output_cap);
+    // Convert the wire history before consuming a request identity, so a malformed tool or
+    // media part is a parameter error rather than a failed request.
+    let (messages, media_requests, media_bytes) = chat_media(state, &request, chat)?;
     let bytes = request
         .preparation_bytes(max_new_tokens)?
+        .checked_add(media_bytes)
+        .ok_or_else(|| Error::invalid("media preparation budget overflow"))?
         .checked_add(if policy.constraint().is_some() {
             infer_models::CONSTRAINT_REQUEST_BYTES
         } else {
@@ -146,13 +190,6 @@ pub(super) async fn prepare(
         return Err(Error::new(ErrorCode::NotFound, "model is not served; see /v1/models").into());
     }
     let model = inspection.model;
-    // Convert the wire history before consuming a request identity, so a malformed tool round
-    // is a parameter error rather than a failed request.
-    let messages = if chat {
-        Some(request.chat_messages()?)
-    } else {
-        None
-    };
     let prompt = request.prompt.take();
     let tools = policy.template();
     let created = SystemTime::now()
@@ -191,6 +228,8 @@ pub(super) async fn prepare(
         vocabulary: state.handle.vocabulary(),
         assets,
         messages,
+        media_requests,
+        media: state.media.clone(),
         prompt,
         tools,
         enable_thinking,

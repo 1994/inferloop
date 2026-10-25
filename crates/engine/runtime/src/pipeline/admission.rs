@@ -29,12 +29,14 @@ type PreparedParts = (
     infer_ir::TokenBuffer,
     Arc<str>,
     Option<infer_spi::ConstraintHandle>,
+    Option<Arc<infer_ir::MediaPlan>>,
 );
 
 struct PreparedAdmission {
     constraint: Option<infer_spi::ConstraintHandle>,
     request: Arc<CanonicalRequest>,
     tenant: Arc<str>,
+    media: Option<Arc<infer_ir::MediaPlan>>,
     plan: WorkloadPlan,
     admission: AdmissionDecision,
     context: infer_ir::TokenBuffer,
@@ -59,6 +61,7 @@ impl PreparedAdmission {
             constraint: self.constraint,
             request: self.request,
             tenant: self.tenant,
+            media: self.media,
             host_lease: Some(credit),
             byte_lease: Some(byte_credit),
             plan: self.plan,
@@ -138,6 +141,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 prepared.generated,
                 prepared.tenant,
                 prepared.constraint,
+                prepared.media,
             )),
         );
         self.record_admission_result(id, parent, &result);
@@ -186,6 +190,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 prepared.generated,
                 prepared.tenant,
                 prepared.constraint,
+                prepared.media,
             )),
             ReservationQuote::Acknowledged(bytes),
         );
@@ -323,7 +328,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
     ) -> Result<PreparedAdmission> {
         self.apply_cost_feedback()?;
         self.validate_request_admission(&request)?;
-        let (plan, generated, tenant, constraint) = if let Some(plan) = plan {
+        let (plan, generated, tenant, constraint, media) = if let Some(plan) = plan {
             plan
         } else {
             request.validate()?;
@@ -335,11 +340,18 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 .workloads
                 .plan(&request, &self.model, self.program.id)?;
             self.validate_workload_plan(&request, &plan)?;
+            let media = match &request.input {
+                RequestInput::Sequence { tokens, media } => {
+                    infer_ir::MediaPlan::from_sequence(tokens, media)?.map(Arc::new)
+                }
+                RequestInput::Pairs { .. } => None,
+            };
             (
                 plan,
                 generation_storage(&request)?,
                 Arc::from(request.qos.tenant.as_str()),
                 None,
+                media,
             )
         };
         let admission = match quote {
@@ -363,6 +375,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             constraint,
             request,
             tenant,
+            media,
             plan,
             admission,
             context,

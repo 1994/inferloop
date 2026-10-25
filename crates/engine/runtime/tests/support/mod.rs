@@ -24,6 +24,8 @@ use infer_ir::{
 use infer_model_recipes::decoder::lower;
 use infer_spi::{BackendProvider, KernelProvider, KernelRegistration, SourceLocation};
 use std::num::NonZeroU64;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A small decoder descriptor: two attention layers, hidden 8, intermediate 16, vocabulary 32.
 #[must_use]
@@ -137,6 +139,8 @@ struct State {
 
 pub struct ProtocolBackend {
     host_sampling_draft_depth: usize,
+    multimodal: bool,
+    media_tasks: Arc<AtomicUsize>,
     identity: String,
     states: BoundedMap<StateId, State>,
     template: ModelOutput,
@@ -210,6 +214,8 @@ impl ProtocolBackend {
         }
         Ok(Self {
             host_sampling_draft_depth: 0,
+            multimodal: false,
+            media_tasks: Arc::new(AtomicUsize::new(0)),
             identity: tag.to_owned(),
             states: BoundedMap::new(requests)?,
             template: ModelOutput {
@@ -227,6 +233,17 @@ impl ProtocolBackend {
 }
 
 impl ProtocolBackend {
+    /// Advertise a bound multimodal encoder to admission and scheduler scenes.
+    #[must_use]
+    pub const fn multimodal(mut self) -> Self {
+        self.multimodal = true;
+        self
+    }
+    /// Number of submitted tasks that carried a prepared media plan.
+    #[must_use]
+    pub fn media_tasks(&self) -> Arc<AtomicUsize> {
+        self.media_tasks.clone()
+    }
     /// Advertise a loaded draft while rejecting any task that permits backend sampling.
     pub const fn requiring_engine_sampling(mut self, draft_depth: usize) -> Self {
         self.host_sampling_draft_depth = draft_depth;
@@ -238,6 +255,9 @@ impl BackendProvider for ProtocolBackend {
     type Ticket = Option<Vec<TaskOutput>>;
     fn identity(&self) -> &str {
         &self.identity
+    }
+    fn supports_multimodal(&self) -> bool {
+        self.multimodal
     }
     fn capabilities(&self) -> DeviceCapabilities {
         DeviceCapabilities {
@@ -379,6 +399,9 @@ impl BackendProvider for ProtocolBackend {
         // tolerate anyway.
         let mut batch = Vec::with_capacity(tasks.len());
         for task in tasks {
+            if task.media.is_some() {
+                self.media_tasks.fetch_add(1, Ordering::Relaxed);
+            }
             if self.host_sampling_draft_depth > 0 && (task.plain_greedy || task.sampling.is_some())
             {
                 return Err(Error::invariant(

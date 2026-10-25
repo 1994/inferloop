@@ -332,6 +332,8 @@ fn metal_rejects_foreign_program_and_aliased_submission_before_mutating_state() 
             tokens: vec![1].into(),
 
             sampling: None,
+
+            media: None,
         })
         .to_vec();
     assert!(backend.submit(&program, &step, tasks).is_err());
@@ -372,6 +374,8 @@ fn metal_completion_ticket_cannot_cross_executor_instances_with_same_step_id() {
         tokens: vec![1].into(),
 
         sampling: None,
+
+        media: None,
     }];
     let a = first.backend_mut();
     let b = second.backend_mut();

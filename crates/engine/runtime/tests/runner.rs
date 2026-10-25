@@ -16,7 +16,7 @@ use infer_ir::{
 };
 use infer_kernel_api::KernelRegistry;
 use infer_runtime::{Engine, RuntimeConfig, runner::ThreadedBackend};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::thread::sleep;
 
 use infer_spi::{BackendProvider, ResourceCommand, ResourceReply, ResourceTicket};
@@ -399,8 +399,8 @@ fn batch_metadata_is_shared_across_the_device_owner_handoff() -> Result<()> {
             request: infer_core::RequestId::ONE,
             state: StateId::ONE,
             tokens: vec![1, 2, 3].into(),
-
             sampling: None,
+            media: None,
         }],
     )?;
     while fixture.engine.backend_mut().poll(&mut ticket)?.is_none() {
@@ -455,8 +455,8 @@ fn dropped_compute_ticket_waits_for_fence_then_allows_next_submission() -> Resul
         request: infer_core::RequestId::ONE,
         state: StateId::ONE,
         tokens: vec![1, 2, 3].into(),
-
         sampling: None,
+        media: None,
     }];
     let ticket =
         fixture
@@ -934,4 +934,101 @@ fn busy_rejection_observed_after_execution_progress_is_retried_once() -> Result<
         deadline(limit)?;
     }
     engine.check_invariants()
+}
+
+#[test]
+fn media_request_requires_a_multimodal_backend() -> Result<()> {
+    use infer_ir::{MediaInput, MediaItem, Modality};
+    use std::sync::Arc;
+
+    let ir = support::model(ModelId::ONE);
+    let mut kernels = KernelRegistry::default();
+    kernels.register(&support::DeclaredKernels)?;
+    let mut engine = Engine::new(
+        ProtocolBackend::new(16, 8, &ir)?,
+        ir,
+        PrecisionPlan::f32(),
+        &kernels,
+        RuntimeConfig::default(),
+    )?;
+    let media = MediaInput {
+        id: infer_core::MediaId::ONE,
+        modality: Modality::Image,
+        content_digest: "fixture".into(),
+        item: Some(MediaItem {
+            modality: Modality::Image,
+            pixels: Arc::from([0.0f32, 1.0, 2.0, 3.0]),
+            grid: (1, 1, 1),
+            span: 0..1,
+        }),
+    };
+    let request = CanonicalRequest {
+        id: infer_core::RequestId::new(7)?,
+        model: ModelId::ONE,
+        session: None,
+        input: infer_ir::RequestInput::Sequence {
+            tokens: vec![1, 2].into(),
+            media: vec![media],
+        },
+        workload: infer_ir::Workload::Generate { max_new_tokens: 1 },
+        qos: infer_ir::Qos::default(),
+        sampling: infer_ir::Sampling::default(),
+        extensions: BTreeMap::new(),
+    };
+    let error = engine.submit(request).unwrap_err();
+    assert_eq!(error.code, infer_core::ErrorCode::Unsupported);
+    Ok(())
+}
+
+#[test]
+fn prepared_media_reaches_the_scheduler_and_backend() -> Result<()> {
+    use infer_ir::{MediaInput, MediaItem, Modality};
+    use std::sync::Arc;
+
+    let ir = support::model(ModelId::ONE);
+    let mut kernels = KernelRegistry::default();
+    kernels.register(&support::DeclaredKernels)?;
+    let backend = ProtocolBackend::new(16, 8, &ir)?.multimodal();
+    let media_tasks = backend.media_tasks();
+    let mut engine = Engine::new(
+        backend,
+        ir,
+        PrecisionPlan::f32(),
+        &kernels,
+        RuntimeConfig::default(),
+    )?;
+    let media = MediaInput {
+        id: infer_core::MediaId::ONE,
+        modality: Modality::Image,
+        content_digest: "fixture".into(),
+        item: Some(MediaItem {
+            modality: Modality::Image,
+            pixels: Arc::from([0.0f32, 1.0, 2.0, 3.0]),
+            grid: (1, 1, 1),
+            span: 0..1,
+        }),
+    };
+    let request = CanonicalRequest {
+        id: infer_core::RequestId::new(8)?,
+        model: ModelId::ONE,
+        session: None,
+        input: infer_ir::RequestInput::Sequence {
+            tokens: vec![1, 2].into(),
+            media: vec![media],
+        },
+        workload: infer_ir::Workload::Generate { max_new_tokens: 1 },
+        qos: infer_ir::Qos::default(),
+        sampling: infer_ir::Sampling::default(),
+        extensions: BTreeMap::new(),
+    };
+    engine.submit(request)?;
+    for now in 0..64 {
+        if engine.is_idle() {
+            break;
+        }
+        engine.tick(now)?;
+    }
+    assert!(engine.is_idle());
+    assert!(media_tasks.load(Ordering::Relaxed) > 0);
+    Ok(())
 }

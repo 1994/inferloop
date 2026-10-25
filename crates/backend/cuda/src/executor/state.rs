@@ -197,36 +197,7 @@ impl CudaExecutor {
                 .checked_add(budget)
                 .is_none_or(|n| n > self.budget)
         {
-            let active = self.active_budget()?;
-            let (pool_slots, pool_free_slots) = self
-                .slots
-                .as_ref()
-                .map_or((0, 0), |pool| (pool.width(), pool.free_slots()));
-            tracing::debug!(
-                target: "infer::cuda_admission",
-                phase = "reservation_accounting",
-                state = id.get(),
-                capacity,
-                private_verification,
-                needed_bytes = budget,
-                active_bytes = active,
-                budget_bytes = self.budget,
-                active_states = self.states.len(),
-                maximum_states = self.maximum_states,
-                pool_slots,
-                pool_free_slots,
-                "CUDA resident reservation rejected"
-            );
-            return Err(Error::new(
-                ErrorCode::Capacity,
-                format!(
-                    "CUDA resident state admission budget exhausted: needed={budget}, active={}, budget={}, states={}, maximum={}",
-                    active,
-                    self.budget,
-                    self.states.len(),
-                    self.maximum_states
-                ),
-            ));
+            return Err(self.reservation_rejection(id, capacity, private_verification, budget)?);
         }
         if let Some(state) = self.pool.take(capacity, readout) {
             return self.reuse_pooled(id, state, capacity, budget, private_verification);
@@ -271,12 +242,54 @@ impl CudaExecutor {
                 budget,
                 history: Vec::new(),
                 hidden: Vec::new(),
+                media: None,
+                rotary_base: 0,
+                media_prompt_len: 0,
                 poisoned: false,
                 slot: None,
                 verification_priced: private_verification,
             },
         );
         Ok(())
+    }
+
+    fn reservation_rejection(
+        &self,
+        id: StateId,
+        capacity: usize,
+        private_verification: bool,
+        budget: u64,
+    ) -> Result<Error> {
+        let active = self.active_budget()?;
+        let (pool_slots, pool_free_slots) = self
+            .slots
+            .as_ref()
+            .map_or((0, 0), |pool| (pool.width(), pool.free_slots()));
+        tracing::debug!(
+            target: "infer::cuda_admission",
+            phase = "reservation_accounting",
+            state = id.get(),
+            capacity,
+            private_verification,
+            needed_bytes = budget,
+            active_bytes = active,
+            budget_bytes = self.budget,
+            active_states = self.states.len(),
+            maximum_states = self.maximum_states,
+            pool_slots,
+            pool_free_slots,
+            "CUDA resident reservation rejected"
+        );
+        Ok(Error::new(
+            ErrorCode::Capacity,
+            format!(
+                "CUDA resident state admission budget exhausted: needed={budget}, active={}, budget={}, states={}, maximum={}",
+                active,
+                self.budget,
+                self.states.len(),
+                self.maximum_states
+            ),
+        ))
     }
 
     /// Re-admit a pooled sequence shell under a freshly charged budget: reset program and
@@ -319,6 +332,9 @@ impl CudaExecutor {
         state.budget = budget;
         state.history.clear();
         state.hidden.clear();
+        state.media = None;
+        state.rotary_base = 0;
+        state.media_prompt_len = 0;
         state.poisoned = false;
         self.pool.reuses = self.pool.reuses.saturating_add(1);
         self.states.insert(id, state);
@@ -363,6 +379,9 @@ impl CudaExecutor {
         state.prepare_verification(&self.loaded)?;
         state.history.clear();
         state.hidden.clear();
+        state.media = None;
+        state.rotary_base = 0;
+        state.media_prompt_len = 0;
         state.poisoned = false;
         Ok(())
     }
@@ -489,6 +508,9 @@ impl CudaExecutor {
                 budget: 0,
                 history: Vec::new(),
                 hidden: Vec::new(),
+                media: None,
+                rotary_base: 0,
+                media_prompt_len: 0,
                 poisoned: false,
                 slot: None,
                 verification_priced: false,

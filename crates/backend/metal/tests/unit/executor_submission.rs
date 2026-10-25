@@ -77,6 +77,8 @@ fn encoding_failure_rolls_back_a_batch_and_shared_cow_tails() -> Result<()> {
             tokens: vec![1, 2, 3].into(),
 
             sampling: None,
+
+            media: None,
         }],
     )?;
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -103,6 +105,8 @@ fn encoding_failure_rolls_back_a_batch_and_shared_cow_tails() -> Result<()> {
             tokens: vec![1, 2, 3, 5].into(),
 
             sampling: None,
+
+            media: None,
         },
         ExecutionTask {
             plain_greedy: false,
@@ -111,6 +115,8 @@ fn encoding_failure_rolls_back_a_batch_and_shared_cow_tails() -> Result<()> {
             tokens: vec![1, 2, 3, 8].into(),
 
             sampling: None,
+
+            media: None,
         },
     ];
     let error = backend
@@ -140,6 +146,8 @@ fn encoding_failure_rolls_back_a_batch_and_shared_cow_tails() -> Result<()> {
             tokens: vec![1, 2, 3, 8].into(),
 
             sampling: None,
+
+            media: None,
         }],
     )?;
     assert_eq!(backend.inflight_pins.len(), 1);

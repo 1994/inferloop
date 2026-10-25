@@ -16,6 +16,9 @@ impl BackendProvider for CudaBackend {
     fn weight_backed_dataflow(&self) -> bool {
         true
     }
+    fn supports_multimodal(&self) -> bool {
+        self.view.multimodal
+    }
     fn capabilities(&self) -> DeviceCapabilities {
         self.view.capabilities.clone()
     }

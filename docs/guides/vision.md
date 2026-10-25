@@ -16,7 +16,23 @@ CUDA 提供 patch embed、LayerNorm、QKV/MLP/merger 投影、轴向 RoPE、按�
 
 RTX 5090 上 Qwen3-VL-2B 的实测（prefill 阶段，含同一视觉编码）：172 token 双图 prompt 融合分块 60 ms，逐 token 回退 543 ms；45 token 视频（2 个 temporal group）9.7 ms 对 128 ms。数字只说明两条路径的相对差，不作为发布性能门槛。
 
-当前完整图像与视频生成由 `cuda-multimodal-generate` / `cuda-multimodal-media` / `cuda-parity-2b` 示例驱动，尚未接入 Engine/Scheduler 的多模态服务调度。音频与完整 DeepStack 路径不在此验收范围：Qwen3-VL 没有音频模态，Qwen Omni 也未被 provider 导入；带 `deepstack_visual_indexes` 的权重仍按共享路径验收（双方关闭 DeepStack）。缺少编码器、占位符数量或位置不匹配时必须报错，不回退成纯文本执行。
+## 服务路径
+
+OpenAI chat 的 `image_url` / `video_url` 内容部分现在进入真实 serving 路径：输入层解析 URL（`data:`、`file://`、绝对路径、`http(s)`），按上限下载/解码并调用 provider 的 `ImageProcessor` / `VideoProcessor` 生成 prompt 对齐的 patch 载荷；每个 media item 作为 `infer_ir::MediaItem` 随 `MediaPlan` 经过 admission、scheduler 和 `ExecutionTask`，由 CUDA backend 在 prompt prefill 时编码并写入 lane 外部 embedding 槽。媒体 span、旋转位置和 token 计数在编码前校验；占位符、编码器或 patch grid 不匹配时报错，不会回退成纯文本。
+
+- 同一 prompt 暂只支持一种媒体模态；混合 image/video 会返回显式 unsupported。
+- `--limit-mm-per-prompt '{"image":N,"video":M}'` 是每 prompt 上限。全零配置只服务文本并跳过视觉塔；非零配置在加载时绑定并使用视觉权重。默认上限为 4 张图、1 段视频。
+- 文本部署收到媒体时返回结构化 `unsupported_feature`，不消费 request identity。
+- `data:`/`file://`/绝对路径的 PNG 由进程内解码；JPEG/WebP、视频以及 `http(s)` 下载依赖宿主 `ffmpeg`/`ffprobe`/`curl`，缺失时返回显式 unsupported。所有读取、帧数、尺寸和时间都有上限。
+- media 请求不参与 prefix reuse，也不支持 MTP speculation；这两条都是显式错误而不是静默降级。
+- media payload 与请求生命周期绑定，until backend prefill completes；checkpoint 在 media 状态存活时拒绝，避免恢复后丢失像素或设备 embedding。
+
+`cuda-multimodal-generate` / `cuda-multimodal-media` / `cuda-parity-2b` 仍是独立数值/示例入口。音频与完整 DeepStack 路径不在此验收范围：Qwen3-VL 没有音频模态，Qwen Omni 也未被 provider 导入；带 `deepstack_visual_indexes` 的权重仍按共享路径验收（双方关闭 DeepStack）。
+
+## Head-width padding
+
+视觉投影 kernel 以 64 列 tile 读取权重和激活。真实 head width 不是 64 的倍数时，必须先补齐到下一个 64 边界：Qwen3.8-27B 的 72 宽 head 因此使用 `half=64`、`width=128`。Host-only audit 对 24 层 attention 权重的实测为 real `254,803,968` bytes、padded `452,984,832` bytes、overhead `198,180,864` bytes（BF16，不含 runtime activation/scratch）。16 的倍数布局（例如 96 宽）需要新的 32/16 列 kernel 变体，并重新做数值、尾块和性能验收；本轮 CPU 阶段没有把未经 GPU 验证的布局设为默认，也没有删除 64 列约束。可复现审计见 `crates/backend/cuda/tests/unit/vision_padding.rs`。
+
 
 ## 独立参考与回归
 

@@ -16,7 +16,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 26
+      "tests": 27
     },
     "compiler": {
       "benches": 0,
@@ -34,13 +34,13 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 321
+      "tests": 323
     },
     "frontdoor": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 73
+      "tests": 77
     },
     "ir": {
       "benches": 0,
@@ -82,7 +82,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 83
+      "tests": 87
     },
     "scheduler": {
       "benches": 0,
@@ -787,6 +787,11 @@
     },
     {
       "crate": "cuda",
+      "file": "src/vision/mod.rs",
+      "mount": "../../tests/unit/vision_padding.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/vision/session.rs",
       "mount": "../../tests/unit/vision_session.rs"
     },
@@ -864,6 +869,11 @@
       "crate": "runtime",
       "file": "src/observation/mod.rs",
       "mount": "../../tests/unit/observation.rs"
+    },
+    {
+      "crate": "runtime",
+      "file": "src/preparation/mod.rs",
+      "mount": "../../tests/unit/media_plan.rs"
     },
     {
       "crate": "runtime",
@@ -1207,6 +1217,11 @@
     },
     {
       "crate": "frontdoor",
+      "file": "src/media.rs",
+      "mount": "../tests/unit/media.rs"
+    },
+    {
+      "crate": "frontdoor",
       "file": "tests/isolation.rs",
       "mount": "../../../engine/runtime/tests/support/mod.rs"
     },
@@ -1232,11 +1247,11 @@
     }
   ],
   "totals": {
-    "all": 860,
+    "all": 871,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 860
+    "tests": 871
   }
 }

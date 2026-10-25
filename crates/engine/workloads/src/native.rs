@@ -44,14 +44,7 @@ impl WorkloadProvider for NativeWorkloads {
             return Err(Error::unsupported("workload/head is not installed"));
         }
         let units = match &request.input {
-            RequestInput::Sequence { tokens, media } => {
-                if !media.is_empty() {
-                    return Err(Error::unsupported(
-                        "media must be prepared by a modality provider before admission",
-                    ));
-                }
-                vec![tokens.clone()]
-            }
+            RequestInput::Sequence { tokens, .. } => vec![tokens.clone()],
             RequestInput::Pairs { query, documents } => documents
                 .iter()
                 .map(|doc| query.iter().chain(doc.iter()).copied().collect())

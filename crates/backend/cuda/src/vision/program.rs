@@ -24,6 +24,13 @@ use std::sync::Arc;
 const TOKEN_TILE: usize = 32;
 /// Column tile of every vision projection, matching the prompt GEMM.
 const COLUMN_TILE: usize = 64;
+
+/// Column tile of every vision projection; test-only audit hook.
+#[cfg(test)]
+#[must_use]
+pub(super) const fn column_tile() -> usize {
+    COLUMN_TILE
+}
 const ATTENTION_CONFIG_FIELDS: usize = 3;
 
 /// Flattened width of one patch: `channels × temporal × patch × patch`.

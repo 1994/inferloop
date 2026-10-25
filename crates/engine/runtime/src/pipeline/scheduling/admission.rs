@@ -92,8 +92,15 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             .min_by_key(|(t, c)| i128::from(*t) - i128::from(self.now_us) - i128::from(*c));
         let (active, tokens, pages) = self.tenant_usage(&request.qos.tenant);
         let resources_ready = match &request.input {
-            RequestInput::Sequence { media, .. } => media.is_empty(),
-            RequestInput::Pairs { .. } => true,
+            RequestInput::Sequence { media, .. } if !media.is_empty() => {
+                if !self.backend.supports_multimodal() {
+                    return Err(Error::unsupported(
+                        "backend has no bound multimodal encoder for media input",
+                    ));
+                }
+                true
+            }
+            RequestInput::Sequence { .. } | RequestInput::Pairs { .. } => true,
         };
         let decision = self.admission_policy.check(&AdmissionInput {
             tenant: &request.qos.tenant,

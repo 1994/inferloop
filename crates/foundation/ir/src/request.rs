@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 /// Longest accepted `QoS` tenant identifier, in bytes.
 const MAX_TENANT_ID_BYTES: usize = 256;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RequestInput {
     Sequence {
         tokens: crate::TokenBuffer,
