@@ -401,7 +401,7 @@ pub(crate) mod kernels {
 /// Shape-derived verification split proposal; production selection still requires a
 /// measured quality-verified table entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SplitCandidate {
+pub(super) struct SplitCandidate {
     pub rows: usize,
     pub outputs: usize,
     pub columns: usize,
@@ -411,11 +411,12 @@ struct SplitCandidate {
 }
 
 /// Derive split count from SM/output-CTA coverage, legal K groups and scratch budget.
-fn projection_split_policy(
+pub(super) fn projection_split_policy(
     rows: usize,
     outputs: usize,
     columns: usize,
     multiprocessors: usize,
+    tile: [usize; 2],
     k_step: usize,
     max_scratch: u64,
 ) -> infer_core::Result<Option<SplitCandidate>> {
@@ -428,7 +429,9 @@ fn projection_split_policy(
     {
         return Ok(None);
     }
-    let tile = [PREFILL_GEMM_TILE_N, PREFILL_GEMM_TILE_N];
+    if tile[0] == 0 || tile[1] == 0 {
+        return Ok(None);
+    }
     let ctas = rows
         .div_ceil(tile[0])
         .checked_mul(outputs.div_ceil(tile[1]))

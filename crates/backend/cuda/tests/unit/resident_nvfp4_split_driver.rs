@@ -81,9 +81,16 @@ fn record(
     input_bytes: &[u8],
     sms: usize,
 ) -> Result<Graphs, Box<dyn StdError>> {
-    let candidate =
-        projection_split_policy(ROWS, down.outputs, down.columns, sms, 256, 32 * 1024 * 1024)?
-            .ok_or_else(|| Error::invalid("down split candidate rejected"))?;
+    let candidate = projection_split_policy(
+        ROWS,
+        down.outputs,
+        down.columns,
+        sms,
+        [64, 64],
+        256,
+        32 * 1024 * 1024,
+    )?
+    .ok_or_else(|| Error::invalid("down split candidate rejected"))?;
     if candidate.scratch_bytes != split_scratch_bytes(ROWS, down.outputs, candidate.splits)? {
         return Err("split scratch quote mismatch".into());
     }

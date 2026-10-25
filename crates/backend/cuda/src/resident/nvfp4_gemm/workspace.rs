@@ -49,6 +49,9 @@ const SWIGLU_TILE_COLUMNS: usize = 64;
 const SPLIT_BUDGET_DIVISOR: u64 = 4;
 /// Native W4A4 K step used by split windows.
 const NVFP4_K_STEP: usize = 256;
+const NVFP4_SPLIT_TILE: [usize; 2] = [64, 64];
+/// FP8 native K step.
+const FP8_K_STEP: usize = 128;
 /// Keyed by `(rows, columns, activation-scale columns)`.
 type Fp8Key = (usize, usize, usize);
 type StrategyKey = (ResidentGemmWeightKey, usize, usize, usize);
@@ -75,6 +78,7 @@ pub struct Workspace {
     /// whichever projection is visited first decide the layout for the other.
     fp8: BTreeMap<Fp8Key, Fp8Buffers>,
     split_nvfp4: BTreeMap<(usize, usize, usize), SplitBuffer>,
+    split_fp8: BTreeMap<(usize, usize, usize, usize, usize), SplitBuffer>,
     split_scratch_bytes: u64,
 }
 
@@ -201,6 +205,7 @@ impl Workspace {
             fp8: BTreeMap::new(),
             fp8_strategies: BTreeMap::new(),
             split_nvfp4: BTreeMap::new(),
+            split_fp8: BTreeMap::new(),
             split_scratch_bytes: 0,
             vendor_fp8: vendor_fp8::Support::new_with(device, true),
             vendor_diagnostic: vendor_diagnostic_enabled(),
@@ -222,7 +227,15 @@ impl Workspace {
             .checked_div(SPLIT_BUDGET_DIVISOR)
             .unwrap_or(0)
             .min(VERIFY_SPLIT_SCRATCH_BUDGET);
-        let Some(plan) = projection_split_policy(rows, outputs, columns, sms, NVFP4_K_STEP, limit)?
+        let Some(plan) = projection_split_policy(
+            rows,
+            outputs,
+            columns,
+            sms,
+            NVFP4_SPLIT_TILE,
+            NVFP4_K_STEP,
+            limit,
+        )?
         else {
             return Ok(());
         };
@@ -252,6 +265,60 @@ impl Workspace {
         self.split_scratch_bytes = total;
         self.split_nvfp4
             .insert(shape, SplitBuffer { plan, partials });
+        Ok(())
+    }
+
+    fn ensure_fp8_split(
+        &mut self,
+        device: &CudaDevice,
+        key: (WeightKey, usize, usize, usize),
+        choice: Choice,
+    ) -> Result<()> {
+        let (_, rows, outputs, columns) = key;
+        let Some(tile) = choice.native_tile() else {
+            return Ok(());
+        };
+        let shape = (rows, outputs, columns, tile[0], tile[1]);
+        if self.split_fp8.contains_key(&shape) {
+            return Ok(());
+        }
+        let sms = usize::try_from(device.profile()?.multiprocessors)
+            .map_err(|_| Error::invariant("SM count"))?;
+        let limit = device
+            .allocatable_memory_bytes()?
+            .checked_div(SPLIT_BUDGET_DIVISOR)
+            .unwrap_or(0)
+            .min(VERIFY_SPLIT_SCRATCH_BUDGET);
+        let Some(plan) =
+            projection_split_policy(rows, outputs, columns, sms, tile, FP8_K_STEP, limit)?
+        else {
+            return Ok(());
+        };
+        if !verify_split_qualified(
+            device,
+            (
+                "fp8-channel",
+                rows,
+                outputs,
+                columns,
+                plan.splits,
+                plan.scratch_bytes,
+            ),
+        )? {
+            return Ok(());
+        }
+        let total = self
+            .split_scratch_bytes
+            .checked_add(plan.scratch_bytes)
+            .ok_or_else(|| Error::invalid("retained verify split scratch overflow"))?;
+        if total > limit {
+            return Ok(());
+        }
+        let partials = api::zeros::<f32>(&[plan.splits, rows, outputs])
+            .sync_on(&device.stream)
+            .map_err(device_error)?;
+        self.split_scratch_bytes = total;
+        self.split_fp8.insert(shape, SplitBuffer { plan, partials });
         Ok(())
     }
 
@@ -446,6 +513,7 @@ impl Workspace {
                     )
                 };
                 self.fp8_strategies.insert(key, choice);
+                self.ensure_fp8_split(device, key, choice)?;
             }
         }
         Ok(())
@@ -820,7 +888,7 @@ impl Workspace {
         columns: usize,
         input_pointer: Option<u64>,
     ) -> StdResult<(), DeviceError> {
-        use super::super::{capture::error, fp8_gemm::kernels};
+        use super::super::capture::error;
         if !matches!(
             weight,
             ProjectionWeight::Fp8(..) | ProjectionWeight::Fp8Block(..)
@@ -834,6 +902,21 @@ impl Workspace {
             matches!(weight, ProjectionWeight::Fp8(..))
                 && pending.matches(input_pointer, rows, columns)
         });
+        let outputs = usize::try_from(output.shape()[1]).map_err(error)?;
+        let choice = self
+            .fp8_strategies
+            .get(&(
+                WeightKey::new(weight).map_err(error)?,
+                rows,
+                outputs,
+                columns,
+            ))
+            .copied()
+            .unwrap_or_else(|| Choice::baseline(rows));
+        let split_shape = choice
+            .native_tile()
+            .map(|tile| (rows, outputs, columns, tile[0], tile[1]));
+        let mut split = split_shape.and_then(|shape| self.split_fp8.remove(&shape));
         let (q, qs) = self
             .fp8
             .get_mut(&(rows, columns, scale_columns))
@@ -852,24 +935,9 @@ impl Workspace {
         });
         let (reuse, ticket) = self.quant_reuse.prepare(key);
         let mut record = || {
-            let tile = native_tile(rows);
-            let generics = [columns, tile[0], tile[1]]
-                .map(|value| value.to_string())
-                .to_vec();
             match weight {
                 ProjectionWeight::Fp8Block(w, block_scale) => {
-                    scope.record(
-                        kernels::quantize_block(
-                            (&mut *q).partition([1, FP8_BLOCK_COLUMNS]),
-                            (&mut *qs).partition([1, 1]),
-                            input,
-                        )
-                        .generics(vec![columns.to_string(), FP8_BLOCK_COLUMNS.to_string()]),
-                    )?;
-                    scope.record(
-                        kernels::matmul_block(output.partition(tile), &*q, w, &*qs, block_scale)
-                            .generics(generics),
-                    )?;
+                    record_fp8_block(scope, q, qs, w, block_scale, input, output)?;
                 }
                 ProjectionWeight::Fp8(w, channel_scale) => {
                     if !reuse {
@@ -884,6 +952,10 @@ impl Workspace {
                         #[cfg(test)]
                         super::super::norm_maximum::record_consumption(maximum_ready);
                     }
+                    if let Some(split) = split.as_mut() {
+                        record_fp8_split(scope, split, &*q, w, output, &*qs, channel_scale)?;
+                        return Ok(());
+                    }
                     if self.vendor_diagnostic
                         && self
                             .vendor_fp8
@@ -891,17 +963,6 @@ impl Workspace {
                     {
                         return Ok(());
                     }
-                    let outputs = usize::try_from(output.shape()[1]).map_err(error)?;
-                    let choice = self
-                        .fp8_strategies
-                        .get(&(
-                            WeightKey::new(weight).map_err(error)?,
-                            rows,
-                            outputs,
-                            columns,
-                        ))
-                        .copied()
-                        .unwrap_or_else(|| Choice::baseline(rows));
                     choice.record(
                         scope,
                         &self.vendor_fp8,
@@ -918,9 +979,83 @@ impl Workspace {
             Ok(())
         };
         let result = record();
+        if let (Some(split), Some(shape)) = (split, split_shape) {
+            self.split_fp8.insert(shape, split);
+        }
         self.quant_reuse.finish(ticket, result.is_ok());
         result
     }
+}
+
+fn record_fp8_block(
+    scope: &Scope,
+    q: &mut Tensor<f8e4m3fn>,
+    qs: &mut Tensor<f32>,
+    w: &Tensor<f8e4m3fn>,
+    block_scale: &Tensor<f32>,
+    input: &TensorView<'_, f32>,
+    output: &mut Tensor<f32>,
+) -> StdResult<(), DeviceError> {
+    use super::super::fp8_gemm::kernels;
+    let rows = usize::try_from(output.shape()[0]).map_err(super::super::capture::error)?;
+    let columns = usize::try_from(input.shape()[1]).map_err(super::super::capture::error)?;
+    let tile = native_tile(rows);
+    let generics = [columns, tile[0], tile[1]]
+        .map(|value| value.to_string())
+        .to_vec();
+    scope.record(
+        kernels::quantize_block(
+            (&mut *q).partition([1, FP8_BLOCK_COLUMNS]),
+            (&mut *qs).partition([1, 1]),
+            input,
+        )
+        .generics(vec![columns.to_string(), FP8_BLOCK_COLUMNS.to_string()]),
+    )?;
+    scope.record(
+        kernels::matmul_block(output.partition(tile), &*q, w, &*qs, block_scale).generics(generics),
+    )?;
+    Ok(())
+}
+
+fn record_fp8_split(
+    scope: &Scope,
+    split: &mut SplitBuffer,
+    q: &Tensor<f8e4m3fn>,
+    w: &Tensor<f8e4m3fn>,
+    output: &mut Tensor<f32>,
+    qs: &Tensor<f32>,
+    weight_scale: &Tensor<f32>,
+) -> StdResult<(), DeviceError> {
+    let columns = usize::try_from(q.shape()[1])
+        .map_err(|_| super::super::capture::error("FP8 split columns"))?;
+    let tile = split.plan.tile;
+    let k_tiles = i32::try_from(columns.div_ceil(FP8_K_STEP))
+        .map_err(|_| super::super::capture::error("FP8 split K tiles"))?;
+    scope.record(
+        super::super::fp8_gemm::kernels::matmul_split_tiled(
+            (&mut split.partials).partition([1, tile[0], tile[1]]),
+            q,
+            w,
+            k_tiles,
+        )
+        .generics(vec![
+            columns.to_string(),
+            tile[0].to_string(),
+            tile[1].to_string(),
+        ]),
+    )?;
+    scope.record(
+        super::super::fp8_gemm::kernels::reduce_split_tiled(
+            output.partition(tile),
+            &split.partials,
+            qs,
+            weight_scale,
+            i32::try_from(split.plan.splits)
+                .map_err(|_| super::super::capture::error("FP8 split count"))?,
+        )
+        .generics(vec![tile[0].to_string(), tile[1].to_string()]),
+    )?;
+    Ok(())
 }
 
 const fn fp8_scale_columns(weight: &ProjectionWeight, columns: usize) -> usize {

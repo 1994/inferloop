@@ -37,9 +37,10 @@ fn nearest(value: f32, table: &[f32]) -> usize {
 
 #[test]
 fn split_policy_derives_from_sm_cta_k_and_scratch() {
-    let candidate = super::projection_split_policy(48, 5120, 17408, 170, 256, 32 * 1024 * 1024)
-        .expect("shape policy")
-        .expect("split candidate");
+    let candidate =
+        super::projection_split_policy(48, 5120, 17408, 170, [64, 64], 256, 32 * 1024 * 1024)
+            .expect("shape policy")
+            .expect("split candidate");
     assert!(candidate.splits > 1 && candidate.splits <= 4);
     assert_eq!(candidate.tile, [64, 64]);
     assert_eq!(
@@ -47,12 +48,12 @@ fn split_policy_derives_from_sm_cta_k_and_scratch() {
         (48 * 5120 * candidate.splits * 4) as u64
     );
     assert!(
-        super::projection_split_policy(48, 5120, 17408, 1, 256, 32 * 1024 * 1024)
+        super::projection_split_policy(48, 5120, 17408, 1, [64, 64], 256, 32 * 1024 * 1024)
             .expect("single SM")
             .is_none()
     );
     assert!(
-        super::projection_split_policy(48, 5120, 17408, 170, 256, 1)
+        super::projection_split_policy(48, 5120, 17408, 170, [64, 64], 256, 1)
             .expect("tiny budget")
             .is_none()
     );

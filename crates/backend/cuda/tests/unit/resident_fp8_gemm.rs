@@ -1,5 +1,6 @@
 use super::kernels;
 use crate::device::CudaDevice;
+use crate::resident::nvfp4_gemm::projection_split_policy;
 use cuda_core::f8e4m3fn;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
@@ -376,4 +377,22 @@ fn fp8_verify_split_tiled_kernels_compile_with_legal_tiles_and_actual_strides() 
         ])
         .compile()
         .expect("reduce_split_tiled legal tile compiles");
+}
+
+#[test]
+fn fp8_split_policy_uses_native_cta_tile_and_checked_windows() {
+    let candidate = projection_split_policy(48, 5120, 5120, 170, [16, 64], 128, 32 * 1024 * 1024)
+        .expect("policy")
+        .expect("candidate");
+    assert_eq!(candidate.tile, [16, 64]);
+    assert!(candidate.splits > 1 && candidate.splits <= 4);
+    assert_eq!(
+        candidate.scratch_bytes,
+        (48 * 5120 * candidate.splits * 4) as u64
+    );
+    assert!(
+        projection_split_policy(48, 5120, 5120, 170, [16, 64], 128, 1,)
+            .expect("tiny budget")
+            .is_none()
+    );
 }
