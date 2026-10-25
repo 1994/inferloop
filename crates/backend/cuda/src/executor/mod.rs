@@ -13,6 +13,7 @@ pub mod prefix;
 mod prefix_state;
 mod profiling;
 mod provider;
+use crate::constants::CB_DECODE_SLOTS;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::registry::CudaKernels;
 pub use pool::PoolInspection;
@@ -43,6 +44,13 @@ pub(super) fn bound_concurrency(
         value
     } else {
         infer_gpu_api::MAX_SUBMISSION_BATCH
+    };
+    // The current pooled serving graph validates a batch width of 2..=CB_DECODE_SLOTS.
+    // Do not recommend slots the backend cannot actually execute.
+    let value = if value < CB_DECODE_SLOTS {
+        value
+    } else {
+        CB_DECODE_SLOTS
     };
     if value == 0 { 1 } else { value }
 }

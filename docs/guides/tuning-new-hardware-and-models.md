@@ -91,6 +91,7 @@
 | pooled attention `MAX_BATCH = 4`、切分数上限 64 | `resident/attention_decode/pooled.rs`、`tuning/attention/decode.rs` | 每组 4 个槽串行；切分数已按 SM 数、KV 头数与每组槽数推导，尚未结合上下文长度 | 切分数按上下文长度推导（每份至少若干 KV 块），部分和 workspace 随之缩小，从而一次启动处理全部槽 |
 | `SWIGLU_TILE_ROWS/COLUMNS = 64` | `resident/nvfp4_gemm/workspace.rs` | 已加入 shape-specific `swiglu_candidates`（64x64 fallback、128x64、128x128）；64 fallback 仍是默认 | 128 行候选只在几何和量化布局合法时列出；需要完整输出与量化-inclusive paired A/B 才能成为默认 |
 | `GDN_BA_SHAPE = [48, 5120]` | `resident/prefill_projection.rs` | 按形状识别 b/a 投影对 | 按图结构识别（同输入、相邻、同为稠密小投影），不依赖具体形状 |
+| narrow dense N16 exact `(64,48,5120)` | `resident/prefill_projection.rs`、`tuning/prefill.rs` | 原按完整 shape 硬匹配 | 已改为 48-row、64-multiple reduction 的小投影结构契约，prompt width 不参与匹配；GPU 性能/数值仍需设备 |
 | `MAX_POOL_ROWS = CB_DECODE_SLOTS` | `resident/pool_gemv.rs` | 行数不超过 16 时走 GEMV | 由 GEMV 与分块 GEMM 的实测交叉点决定，纳入调优 |
 | `MODEL_SEARCH_BUDGET = 30 s` | `tuning/resident_gemm.rs` | 加载期搜索的总时长上限 | 按形状数和单次测量时长估算；预算耗尽时在日志中给出缺失形状 |
 | 每槽保底 KV = 单槽容量 ÷ 2 | `loading/budget.rs` 的 `funded_kv_tokens` | 已删除；每槽只保留一个物理页，实际 prompt+generation 页由 admission 按请求租用 | 保留 fixed recurrent/draft state 和 pooled backpressure；长短请求、取消/退款与 prefix 复用仍需设备矩阵 |

@@ -471,11 +471,8 @@ pub(super) fn record_pair(
         || arena.get(second.outputs[0]).map_err(error)?.size() != expected
         || narrow_dense_layout(
             &profile.architecture,
-            (
-                width,
-                usize::try_from(GDN_BA_SHAPE[0]).map_err(error)?,
-                columns,
-            ),
+            usize::try_from(GDN_BA_SHAPE[0]).map_err(error)?,
+            columns,
         )
     {
         return Ok(false);
@@ -601,7 +598,7 @@ fn records_narrow_dense(
     if DENSE_REFERENCE.get() {
         return Ok(false);
     }
-    if !narrow_dense_layout(&profile.architecture, shape) {
+    if !narrow_dense_layout(&profile.architecture, shape.1, shape.2) {
         return Ok(false);
     }
     scope.record(

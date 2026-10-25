@@ -2,23 +2,15 @@ use super::{DENSE_REFERENCE, narrow_dense_layout, with_dense_reference};
 use std::panic::catch_unwind;
 
 #[test]
-fn narrow_dense_scope_matches_only_measured_profile() {
-    assert!(narrow_dense_layout("sm_120", (64, 48, 5120)));
-    for architecture in ["sm_100", "sm_90", "sm_121", ""] {
-        assert!(!narrow_dense_layout(architecture, (64, 48, 5120)));
+fn narrow_dense_scope_matches_the_small_projection_structure() {
+    for (rows, columns) in [(48, 5120), (48, 4096), (48, 8192)] {
+        assert!(narrow_dense_layout("sm_120", rows, columns));
     }
-    for shape in [
-        (1, 48, 5120),
-        (3, 48, 5120),
-        (4, 48, 5120),
-        (32, 48, 5120),
-        (128, 48, 5120),
-        (256, 48, 5120),
-        (64, 32, 5120),
-        (64, 64, 5120),
-        (64, 48, 4096),
-    ] {
-        assert!(!narrow_dense_layout("sm_120", shape));
+    for architecture in ["sm_100", "sm_90", "sm_121", ""] {
+        assert!(!narrow_dense_layout(architecture, 48, 5120));
+    }
+    for (rows, columns) in [(32, 5120), (64, 5120), (48, 5121), (48, 4095)] {
+        assert!(!narrow_dense_layout("sm_120", rows, columns));
     }
 }
 
