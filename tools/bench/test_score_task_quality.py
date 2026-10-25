@@ -76,29 +76,58 @@ class AnswerTests(unittest.TestCase):
 
 
 class ConfidenceTests(unittest.TestCase):
-    def test_zero_failures_matches_closed_form(self):
-        self.assertAlmostEqual(quality.regression_upper_bound(0, 256, 0.95), 1 - 0.05 ** (1 / 256))
+    def test_score_is_zero_at_the_observed_change(self):
+        self.assertAlmostEqual(quality.paired_score(18, 15, 1024, 3 / 1024), 0, places=12)
 
-    def test_one_failure_inverts_known_binomial_probability(self):
-        bound = quality.regression_upper_bound(1, 256, 0.95)
-        probability = (1 - bound) ** 256 + 256 * bound * (1 - bound) ** 255
-        self.assertAlmostEqual(probability, 0.05, places=11)
-        self.assertLess(bound, 0.02)
+    def test_restricted_loss_probability_maximizes_the_null_likelihood(self):
+        gains, losses, count, difference = 5, 12, 200, -0.02
 
-    def test_two_failures_do_not_prove_two_percent_margin(self):
-        self.assertGreater(quality.regression_upper_bound(2, 256, 0.95), 0.02)
+        def likelihood(loss):
+            gain = loss + difference
+            return (
+                gains * math.log(gain)
+                + losses * math.log(loss)
+                + (count - gains - losses) * math.log(1 - gain - loss)
+            )
 
-    def test_large_counts_and_all_failures_are_finite(self):
-        expected = sum(math.comb(2000, j) for j in range(801)) / (1 << 2000)
-        self.assertAlmostEqual(
-            math.exp(quality.log_binomial_cdf(800, 2000, 0.5)), expected, delta=1e-30
+        grid = [i / 100000 for i in range(2001, 40000)]
+        best = max(grid, key=likelihood)
+        score = quality.paired_score(gains, losses, count, difference)
+        variance = (gains - losses - count * difference) ** 2 / score**2 / count
+        self.assertAlmostEqual((variance - difference + difference**2) / 2, best, places=4)
+
+    def test_large_counts_agree_with_the_wald_bound(self):
+        gains, losses, count = 400, 500, 100000
+        change = (gains - losses) / count
+        wald = change - 1.6448536269514722 * math.sqrt(
+            ((gains + losses) / count - change**2) / count
         )
-        self.assertEqual(quality.regression_upper_bound(256, 256, 0.95), 1)
+        bound = quality.accuracy_change_lower_bound(gains, losses, count, 0.95)
+        self.assertAlmostEqual(bound, wald, delta=2e-5)
+
+    def test_symmetric_flips_are_noninferior_but_net_losses_are_not(self):
+        # 16 losses and 16 gains of 1,024 is numeric flip noise around an unchanged score.
+        self.assertGreater(quality.accuracy_change_lower_bound(16, 16, 1024, 0.95), -0.02)
+        self.assertLess(quality.accuracy_change_lower_bound(0, 30, 1024, 0.95), -0.02)
+
+    def test_more_evidence_tightens_the_bound(self):
+        small = quality.accuracy_change_lower_bound(0, 0, 50, 0.95)
+        large = quality.accuracy_change_lower_bound(0, 0, 1024, 0.95)
+        self.assertLess(small, large)
+        self.assertLess(large, 0)
+        self.assertEqual(quality.accuracy_change_lower_bound(0, 10, 10, 0.95), -1)
 
     def test_bad_counts_and_confidence_are_rejected(self):
-        for k, n, c in [(0, 0, 0.95), (-1, 2, 0.95), (3, 2, 0.95), (0, 2, 1), (0, 2, math.nan)]:
+        for gains, losses, count, confidence in [
+            (0, 0, 0, 0.95),
+            (-1, 0, 2, 0.95),
+            (0, -1, 2, 0.95),
+            (2, 1, 2, 0.95),
+            (0, 0, 2, 1),
+            (0, 0, 2, math.nan),
+        ]:
             with self.assertRaises(ValueError):
-                quality.regression_upper_bound(k, n, c)
+                quality.accuracy_change_lower_bound(gains, losses, count, confidence)
 
 
 class ReportTests(unittest.TestCase):
@@ -106,7 +135,7 @@ class ReportTests(unittest.TestCase):
         return quality.compare(suite, baseline, candidate, "fixture-sha")
 
     def test_identical_successes_pass_without_a_performance_claim(self):
-        result = self.compare(*fixtures())
+        result = self.compare(*fixtures(1024))
         self.assertTrue(result["quality_accepted"])
         self.assertFalse(result["performance_accepted"])
 
@@ -157,14 +186,37 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(result["candidate"]["format_missing"], 1)
         self.assertEqual(result["regressions"], ["0"])
 
-    def test_gains_do_not_hide_two_new_losses(self):
-        suite, baseline, candidate = fixtures()
-        for i in range(20):
+    def test_balanced_flips_pass_with_their_counts_reported(self):
+        suite, baseline, candidate = fixtures(1024)
+        for i in range(8):
             baseline["results"][i].update(text="#### 3", correct=False)
-        for i in [20, 21]:
+            candidate["results"][100 + i].update(text="#### 3", correct=False)
+        result = self.compare(suite, baseline, candidate)
+        self.assertEqual(len(result["regressions"]), 8)
+        self.assertEqual(len(result["gains"]), 8)
+        self.assertEqual(result["accuracy_change"], 0)
+        self.assertTrue(result["quality_accepted"])
+
+    def test_net_loss_beyond_the_margin_fails(self):
+        suite, baseline, candidate = fixtures(1024)
+        for i in range(40):
             candidate["results"][i].update(text="#### 3", correct=False)
         result = self.compare(suite, baseline, candidate)
-        self.assertGreater(result["accuracy_change"], 0)
+        self.assertLess(result["accuracy_change_lower_bound"], -0.02)
+        self.assertFalse(result["quality_accepted"])
+        self.assertEqual(result["quality_status"], "not_demonstrated")
+
+    def test_loss_concentrated_in_one_variant_fails(self):
+        suite, baseline, candidate = fixtures(1024)
+        # Twenty losses in "short" are hidden by twenty gains in "long" overall.
+        for i in range(0, 40, 2):
+            candidate["results"][i].update(text="#### 3", correct=False)
+        for i in range(1, 41, 2):
+            baseline["results"][i].update(text="#### 3", correct=False)
+        result = self.compare(suite, baseline, candidate)
+        self.assertEqual(result["accuracy_change"], 0)
+        self.assertFalse(result["strata"]["short"]["noninferiority"]["accepted"])
+        self.assertTrue(result["strata"]["long"]["noninferiority"]["accepted"])
         self.assertFalse(result["quality_accepted"])
 
 

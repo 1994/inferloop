@@ -12,6 +12,7 @@ import math
 import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from statistics import NormalDist
 
 FINAL_ANSWER = re.compile(r"(?m)^\s*####\s*([-+]?(?:\d[\d,]*(?:\.\d+)?|\.\d+))\s*(?:\$|%)?\s*$")
 FINISH_REASONS = {"Eos", "Length", "stop", "length"}
@@ -29,43 +30,56 @@ def numeric_answer(text):
     return value if value.is_finite() else None
 
 
-def log_binomial_cdf(k, n, probability):
-    """Log P[X <= k] for binomial X; remains useful when ordinary probabilities underflow."""
-    if probability <= 0:
-        return 0.0
-    if probability >= 1:
-        return 0.0 if k == n else -math.inf
-    terms = [
-        math.lgamma(n + 1)
-        - math.lgamma(j + 1)
-        - math.lgamma(n - j + 1)
-        + j * math.log(probability)
-        + (n - j) * math.log1p(-probability)
-        for j in range(k + 1)
-    ]
-    largest = max(terms)
-    return min(0.0, largest + math.log(sum(math.exp(t - largest) for t in terms)))
+def paired_score(gains, losses, count, difference):
+    """Tango score statistic for H0: candidate minus baseline accuracy equals `difference`.
+
+    Discordant pairs carry the paired evidence; the variance uses the loss-cell probability
+    restricted to the null, which keeps the test valid when few tasks change.
+    """
+    linear = -(gains + losses) + (2 * count - gains + losses) * difference
+    constant = -losses * difference * (1 - difference)
+    discriminant = max(0.0, linear * linear - 8 * count * constant)
+    loss_probability = (math.sqrt(discriminant) - linear) / (4 * count)
+    variance = count * (2 * loss_probability + difference - difference * difference)
+    numerator = gains - losses - count * difference
+    if variance <= 0:
+        return math.copysign(math.inf, numerator) if numerator else 0.0
+    return numerator / math.sqrt(variance)
 
 
-def regression_upper_bound(regressions, count, confidence):
-    """One-sided Clopper-Pearson bound; ignoring gains bounds net accuracy loss conservatively."""
-    if count < 1 or not 0 <= regressions <= count:
+def accuracy_change_lower_bound(gains, losses, count, confidence):
+    """One-sided lower confidence bound on paired accuracy change, by inverting the score test.
+
+    Gains and losses both count: numeric changes flip tasks in both directions, and only the
+    net accuracy change is a quality loss.
+    """
+    if count < 1 or gains < 0 or losses < 0 or gains + losses > count:
         raise ValueError("invalid paired task count")
     if not math.isfinite(confidence) or not 0 < confidence < 1:
         raise ValueError("confidence must be between zero and one")
-    if regressions == count:
-        return 1.0
-    if regressions == 0:
-        return -math.expm1(math.log1p(-confidence) / count)
-    lower, upper = regressions / count, 1.0
-    target = math.log1p(-confidence)
+    critical = NormalDist().inv_cdf(confidence)
+    lower, upper = -1.0, (gains - losses) / count
+    if upper <= lower:
+        return lower
     for _ in range(72):
         middle = (lower + upper) / 2
-        if log_binomial_cdf(regressions, count, middle) > target:
+        if paired_score(gains, losses, count, middle) > critical:
             lower = middle
         else:
             upper = middle
-    return upper
+    return lower
+
+
+def noninferiority(gains, losses, count, margin, confidence):
+    bound = accuracy_change_lower_bound(len(gains), len(losses), count, confidence)
+    return {
+        "requests": count,
+        "gains": len(gains),
+        "losses": len(losses),
+        "accuracy_change": (len(gains) - len(losses)) / count,
+        "accuracy_change_lower_bound": bound,
+        "accepted": bound >= -margin,
+    }
 
 
 def validate_suite(suite):
@@ -86,7 +100,7 @@ def validate_suite(suite):
     confidence = acceptance["confidence"]
     if not math.isfinite(margin) or not 0 <= margin <= 1:
         raise ValueError("invalid accuracy margin")
-    regression_upper_bound(0, len(samples), confidence)
+    accuracy_change_lower_bound(0, 0, len(samples), confidence)
     return samples
 
 
@@ -153,38 +167,49 @@ def compare(suite, baseline, candidate, suite_sha256):
     for field in ("model", "hardware", "numeric_contract"):
         if not baseline.get(field) or baseline[field] != candidate.get(field):
             raise ValueError(f"quality identity differs or is missing: {field}")
-    losses = [
-        a["id"] for a, b in zip(left, right, strict=True) if a["correct"] and not b["correct"]
-    ]
-    gains = [a["id"] for a, b in zip(left, right, strict=True) if not a["correct"] and b["correct"]]
     acceptance = suite["acceptance"]
-    upper = regression_upper_bound(len(losses), len(left), acceptance["confidence"])
     margin = acceptance["noninferiority_margin_accuracy"]
-    variants = sorted({row["variant"] for row in left})
+    confidence = acceptance["confidence"]
+
+    def paired(variant=None):
+        pairs = [
+            (a, b)
+            for a, b in zip(left, right, strict=True)
+            if variant is None or a["variant"] == variant
+        ]
+        losses = [a["id"] for a, b in pairs if a["correct"] and not b["correct"]]
+        gains = [a["id"] for a, b in pairs if not a["correct"] and b["correct"]]
+        return losses, gains, noninferiority(gains, losses, len(pairs), margin, confidence)
+
+    losses, gains, overall = paired()
+    strata = {}
+    for variant in sorted({row["variant"] for row in left}):
+        strata[variant] = {
+            "baseline": aggregate([r for r in left if r["variant"] == variant]),
+            "candidate": aggregate([r for r in right if r["variant"] == variant]),
+            "noninferiority": paired(variant)[2],
+        }
+    accepted = overall["accepted"] and all(s["noninferiority"]["accepted"] for s in strata.values())
     return {
-        "schema": 1,
+        "schema": 2,
         "scope": "fixed arithmetic task subset with declared generation budget",
         "baseline": aggregate(left),
         "candidate": aggregate(right),
-        "strata": {
-            variant: {
-                "baseline": aggregate([r for r in left if r["variant"] == variant]),
-                "candidate": aggregate([r for r in right if r["variant"] == variant]),
-            }
-            for variant in variants
-        },
+        "strata": strata,
         "regressions": losses,
         "gains": gains,
-        "accuracy_change": (len(gains) - len(losses)) / len(left),
-        "confidence": acceptance["confidence"],
+        "accuracy_change": overall["accuracy_change"],
+        "accuracy_change_lower_bound": overall["accuracy_change_lower_bound"],
+        "confidence": confidence,
         "noninferiority_margin_accuracy": margin,
-        "regression_rate_upper_bound": upper,
-        "method": "one-sided Clopper-Pearson regression bound; gains cannot hide regressions",
-        "statistical_assumption": (
-            "Bernoulli task regression model; no general-capability guarantee"
+        "method": (
+            "paired accuracy non-inferiority, one-sided Tango score bound, overall and per variant"
         ),
-        "quality_status": "pass" if upper <= margin else "not_demonstrated",
-        "quality_accepted": upper <= margin,
+        "statistical_assumption": (
+            "independent paired Bernoulli task outcomes; no general-capability guarantee"
+        ),
+        "quality_status": "pass" if accepted else "not_demonstrated",
+        "quality_accepted": accepted,
         "performance_accepted": False,
     }
 

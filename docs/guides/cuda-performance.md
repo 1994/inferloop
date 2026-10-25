@@ -209,8 +209,12 @@ python3 tools/bench/score-task-quality.py \
 
 工具从原始文本的最终 `#### number` 行重新提取 Decimal 答案，验证逐题 ID、输入、完成原因、零前缀复用、
 profile 与模型/设备身份；缺题、重排或手填分数与文本不符均失败。长度上限样本保留在分母，并单列截断及
-格式缺失数量。置信水平和允许的正确率下降来自 suite，采用单侧 Clopper–Pearson 回归率上界；
-新增答对不能掩盖原先答对而候选答错的题。报告为 `pass` 或 `not_demonstrated`，后者非零退出。
+格式缺失数量。置信水平和允许的正确率下降（`noninferiority_margin_accuracy`）来自 suite：
+对配对正确率变化取单侧 Tango score 置信下界，整体与每个 variant 的下界都不低于 `-margin` 才通过。
+改变数值路径（BF16/FP8 attention、累加顺序、批宽）会让贪心解码在两个方向翻转少量题目，
+答错变答对与答对变答错同样计入；门槛衡量正确率是否下降，不要求逐题或逐 token 相同。
+分 variant 判定防止某一类提示的损失被另一类的收益抵消。报告逐题列出 regressions 与 gains，
+结果为 `pass` 或 `not_demonstrated`，后者非零退出。
 
 这项判定适用于声明的算术任务子集与生成预算。它独立于 kernel 数值、构建身份和服务性能门禁；
 `quality_accepted` 不证明全面模型能力或性能目标已达到。`tools/check/gate.sh` 自动收集其反例与统计参考测试。
