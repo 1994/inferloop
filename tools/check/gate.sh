@@ -54,8 +54,10 @@ test_checks() {
         cargo test --locked -p infer-cli --no-default-features
     python3 tools/check/test-report.py --entry ir -- \
         cargo test --locked -p infer-ir --no-default-features
+    # The entire CUDA library is gated off here; this checks isolation, not test execution.
+    # Its pure host cases run with the rest of the suite in cuda_hosted_checks.
     python3 tools/check/test-report.py --entry cuda-no-default -- \
-        cargo test --locked -p infer-backend-cuda --no-default-features
+        cargo check --locked -p infer-backend-cuda --no-default-features --all-targets
     python3 tools/check/test-report.py --entry workspace -- \
         cargo test --locked --workspace --exclude infer-backend-cuda
 }

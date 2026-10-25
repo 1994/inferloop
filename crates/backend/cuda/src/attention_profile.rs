@@ -5,7 +5,6 @@
 use serde::Serialize;
 
 /// Initial context kept on F32 before the target BF16 bulk path.
-#[cfg(cuda_backend)]
 pub const PRECISE_PREFIX_POSITIONS: usize = 2048;
 
 /// Target prefill attention arithmetic selected by the operator.
@@ -29,7 +28,6 @@ impl AttentionProfile {
     /// This is an allocation-free geometry/artifact check; the CLI separately requires a
     /// native FP4 package, declared FP8 KV and a complete supported optional head.
     /// A zero width denotes the loader's automatic, lane-aligned prompt geometry.
-    #[cfg(cuda_backend)]
     #[must_use]
     pub fn supports_bf16_prefill(
         architecture: &str,
@@ -98,6 +96,6 @@ impl AttentionProfile {
     }
 }
 
-#[cfg(all(test, cuda_backend))]
+#[cfg(test)]
 #[path = "../tests/unit/attention_profile_capabilities.rs"]
 mod capability_tests;
