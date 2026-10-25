@@ -10,6 +10,7 @@ use super::{
 };
 use crate::attention_profile::precise_prefix_positions;
 use crate::constants::ATTENTION_SPLIT_THRESHOLD;
+use crate::constants::AUX_KERNEL_TILE;
 use crate::constants::CB_DECODE_SLOTS;
 use crate::constants::EXTRA_WIDE_PREFILL_LANES;
 use crate::constants::F32_BYTES;
@@ -36,6 +37,7 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::mem::take;
 use std::result::Result as StdResult;
+use std::slice::from_ref;
 use std::sync::Mutex;
 
 pub type States = BTreeMap<TensorId, Vec<Tensor<f32>>>;
@@ -1177,6 +1179,58 @@ impl BatchBuilder<'_> {
         result.map_err(device_error)
     }
 
+    /// Gather every lane of a target prompt chunk in one launch instead of one per lane.
+    /// False leaves draft programs and geometries without contiguous external rows to the
+    /// per-lane kernel.
+    fn record_prompt_embedding(
+        &self,
+        scope: &Scope,
+        node: &TensorNode,
+        arena: &mut ActivationArena,
+        metadata_batch: &Tensor<i32>,
+    ) -> StdResult<bool, DeviceError> {
+        let lanes = arena.lanes();
+        let (TensorOp::Embedding, None, Some(external)) =
+            (&node.op, &self.weights.fusion, self.lane_external_owner)
+        else {
+            return Ok(false);
+        };
+        let Some(weight) = self.weights.embeddings.get(&node.inputs[0]) else {
+            return Ok(false);
+        };
+        let slot = arena.slot(node.outputs[0]).map_err(error)?;
+        let size = arena.get(node.outputs[0]).map_err(error)?.size();
+        let dimension = size / lanes;
+        if size != lanes * dimension
+            || !dimension.is_multiple_of(AUX_KERNEL_TILE)
+            || external.size() < size
+            || metadata_batch.size() < lanes * METADATA_FIELDS
+        {
+            return Ok(false);
+        }
+        let output = arena.buffers[slot]
+            .take()
+            .ok_or_else(|| error("prompt embedding output"))?;
+        let mut rows = output.reshape(&[lanes, dimension])?;
+        // The owner holds rows for the widest prompt graph; this chunk reads its first lanes.
+        let range = 0..size;
+        let external = external.slice(from_ref(&range)).map_err(error)?;
+        let external = external.view(&[lanes, dimension]).map_err(error)?;
+        let recorded = scope
+            .record(
+                super::attention::attention::embedding_rows(
+                    (&mut rows).partition([1, AUX_KERNEL_TILE]),
+                    weight,
+                    &external,
+                    metadata_batch,
+                )
+                .generics(vec![dimension.to_string(), METADATA_FIELDS.to_string()]),
+            )
+            .map(drop);
+        arena.buffers[slot] = Some(rows.reshape(&[size])?);
+        recorded.map(|()| true)
+    }
+
     fn record_prompt_node(
         &mut self,
         scope: &Scope,
@@ -1191,6 +1245,9 @@ impl BatchBuilder<'_> {
     ) -> StdResult<(), DeviceError> {
         let (metadata, metadata_batch, prefill_info, prefill_rotary) = metadata;
         let (partials, recurrent, fusion) = workspaces;
+        if self.record_prompt_embedding(scope, node, arena, metadata_batch)? {
+            return Ok(());
+        }
         if let Some(workspace) = fusion.as_mut()
             && super::fusion_batch::record(
                 self,
