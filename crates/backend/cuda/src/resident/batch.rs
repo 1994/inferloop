@@ -33,7 +33,6 @@ use infer_core::{Error, ErrorCode, Result, TensorId};
 use infer_ir::{DataflowGraph, StateKind, TensorNode, TensorOp, TensorStorage};
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 use std::future::Future;
 use std::mem::take;
 use std::result::Result as StdResult;
@@ -1088,17 +1087,17 @@ impl BatchBuilder<'_> {
             .then(|| super::prefill_demand::StateDemand::new(self.graph));
         let quant_plan = super::nvfp4_gemm::QuantPairPlan::new(self.graph, self.weights);
         let pairs = gdn_ba_pairs(self.graph, self.weights);
-        let swiglu = super::prefill_projection::swiglu_plan(self.graph, self.weights);
-        let absorbed: BTreeSet<usize> = swiglu
-            .values()
-            .flat_map(|&(silu, multiply, ..)| [silu, multiply])
-            .collect();
+        let mlp = super::prefill_projection::MlpPlan::new(
+            self.graph,
+            self.weights,
+            (arena.lanes(), &*self.nvfp4),
+        );
         self.nvfp4.begin_quant_capture();
         let result = CudaGraph::scope(&self.device.stream, |scope| {
             let mut boundaries = profile.map(|profile| profile.graph(last));
             let mut fused_second = None;
             for (index, node) in self.graph.nodes.iter().enumerate() {
-                if fused_second == Some(index) || absorbed.contains(&index) {
+                if fused_second == Some(index) || mlp.absorbs(index) {
                     continue;
                 }
                 let logits = node.outputs.iter().any(|id| Some(*id) == self.graph.logits);
@@ -1152,17 +1151,13 @@ impl BatchBuilder<'_> {
                     )?;
                     continue;
                 }
-                if let Some(&(.., gate, up)) = swiglu.get(&index) {
-                    if !super::prefill_projection::record_swiglu(
-                        scope,
-                        node,
-                        (gate, up),
-                        arena,
-                        self.weights,
-                        self.nvfp4,
-                    )? {
-                        return Err(error("fused SwiGLU projection"));
-                    }
+                if mlp.record(
+                    scope,
+                    (index, &self.graph.nodes),
+                    arena,
+                    self.weights,
+                    self.nvfp4,
+                )? {
                     continue;
                 }
                 self.record_prompt_node(
