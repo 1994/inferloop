@@ -516,6 +516,9 @@ fn run_for(
     )
 }
 
+/// The captured graph owns the recorded tensor storage: cutile's `Storage::retain(recording)`
+/// installs a lease and cuda-async's graph retains it across replays. The host tensor handles may
+/// therefore drop; this is the installed dependency contract, not an assumption about `()` output.
 struct Run {
     graph: CudaGraph<()>,
     bytes: (Vec<u8>, Vec<u8>),
