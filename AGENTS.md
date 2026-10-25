@@ -3,6 +3,25 @@
 These instructions apply throughout inferloop. Read any narrower `AGENTS.md` before
 editing its directory. Preserve unrelated work in the checkout.
 
+## Performance first
+
+- Performance is a primary acceptance criterion for every change, including features,
+  refactors, fixes, dependencies, build settings, and defaults. Assess regression risk
+  before implementation; preserving behavior alone does not establish performance safety.
+  Correctness, numerical contracts, and memory safety remain mandatory.
+- Consider end-to-end throughput, TTFT/TPOT and tail latency, host/device memory peaks,
+  allocations, copies, transfers, synchronization, and startup cost as applicable.
+  Include indirect effects on batching, concurrency, graph replay, and resource capacity.
+- For changes that may affect execution cost, compare representative release workloads
+  against the baseline on the affected paths and configurations. Report regressions per
+  case; an aggregate speedup must not hide a slower workload or reduced concurrency.
+- Address unexpected regressions before merging. Any intentional trade-off must quantify
+  the cost, identify affected workloads, and explain the benefit. If measurement is
+  unavailable, report the risk and missing evidence rather than claim no regression.
+- Every PR must state its performance impact and the evidence or reasoning behind it.
+  Changes with no execution effect, such as prose-only edits, may give a brief explanation
+  instead of running benchmarks. Use the existing performance gates and baseline contract.
+
 ## Architecture
 
 - inferloop is a GPU inference engine for CUDA and Metal. CPU operators are independent
@@ -165,7 +184,8 @@ Use the [performance baseline contract](docs/plans/performance/baseline.md) for 
 | Metal | `make test-metal` for device behavior |
 | Attention numerics / performance | `make check-attention` with the required reference assets and hardware |
 
-Report what changed, what ran, and the observed results. Distinguish compiled, executed,
-ignored, and unavailable checks. Keep credentials, full models, generated build output,
+Report what changed, its performance impact, what ran, and the observed results.
+Distinguish measured outcomes from assumptions, and compiled, executed, ignored, and
+unavailable checks. Keep credentials, full models, generated build output,
 and temporary runs out of commits; retain reproducible accepted benchmark evidence in
 its established location.
