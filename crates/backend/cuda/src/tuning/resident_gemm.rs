@@ -30,6 +30,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod search_budget;
+pub(crate) use search_budget::Family as SearchFamily;
+use search_budget::Schedule;
+
 /// Bump when quantization, arithmetic or the paired measurement protocol changes.
 const KERNEL_SCHEMA: &str = "cutile0.4-nvfp4-v3:search-ab:confirm-ba:block16-e4m3:quant512:mma-k256:f32:full-output:alpha1/(wg*xs):tile-m128";
 const ACTIVATION_MODE: &str = "nvfp4-w4a4-block16";
@@ -82,34 +86,40 @@ const SAMPLE_DIVISOR: f32 = 37.0;
 /// CUDA JIT optimization level required for representative timing.
 const JIT_OPT_LEVEL: u8 = 3;
 
-/// Default elapsed allowance for new-shape searches in one model load.
-/// A JIT or measurement already in progress is not interruptible; this is not a hard time cap.
-const MODEL_SEARCH_BUDGET: Duration = Duration::from_secs(30);
+/// Paired measurements for the non-baseline candidates plus up to two confirmations.
+pub(crate) const fn nvfp4_search_trials() -> usize {
+    TILE_M_SEARCH.len() * TILE_N_SEARCH.len() * LOOP_SEARCH.len() - 1 + 2
+}
+
+/// Separate finite allowances for non-GEMM tuning categories.
+/// Resident GEMM searches use work-derived per-shape allowances in `search_budget`.
+const CATEGORY_SEARCH_BUDGET: Duration = Duration::from_secs(30);
 #[cfg(test)]
 const HARDWARE_VALIDATION_BUDGET: Duration = Duration::from_secs(600);
 
 /// Shared by target/draft weights and every program created from one loaded model.
 ///
-/// The allowance starts at the first new resident search, after weight binding.
-/// Cache identities and mandatory real-weight proofs remain available after it expires.
+/// Non-GEMM categories keep their separate finite allowances. Resident GEMM work is scheduled
+/// per family and shape; each shape's timer starts only on its own search. Cache identities and
+/// mandatory real-weight proofs remain available after an allowance expires.
 pub struct ResidentTuningSession {
-    started: OnceLock<Instant>,
     greedy_started: OnceLock<Instant>,
     norm_started: OnceLock<Instant>,
     recurrent_started: OnceLock<Instant>,
     attention_started: OnceLock<Instant>,
     budget: Duration,
+    gemm: Schedule,
 }
 
 impl Default for ResidentTuningSession {
     fn default() -> Self {
         Self {
-            started: OnceLock::new(),
             greedy_started: OnceLock::new(),
             norm_started: OnceLock::new(),
             recurrent_started: OnceLock::new(),
             attention_started: OnceLock::new(),
-            budget: MODEL_SEARCH_BUDGET,
+            budget: CATEGORY_SEARCH_BUDGET,
+            gemm: Schedule::default(),
         }
     }
 }
@@ -119,6 +129,7 @@ impl ResidentTuningSession {
     pub(crate) fn for_hardware_validation() -> Self {
         Self {
             budget: HARDWARE_VALIDATION_BUDGET,
+            gemm: Schedule::with_limit(HARDWARE_VALIDATION_BUDGET),
             ..Self::default()
         }
     }
@@ -126,6 +137,7 @@ impl ResidentTuningSession {
     pub(crate) fn without_search_budget() -> Self {
         Self {
             budget: Duration::ZERO,
+            gemm: Schedule::with_limit(Duration::ZERO),
             ..Self::default()
         }
     }
@@ -150,19 +162,38 @@ impl ResidentTuningSession {
         self.norm_started.get_or_init(Instant::now).elapsed() < self.budget
     }
 
-    pub(crate) fn permits_search(&self) -> bool {
-        self.started.get_or_init(Instant::now).elapsed() < self.budget
+    pub(crate) fn plan_gemm_search(
+        &self,
+        family: SearchFamily,
+        shapes: &[[usize; GEMM_RANK]],
+        trials: usize,
+    ) -> Result<()> {
+        self.gemm.plan(family, shapes, trials)
     }
 
-    fn exhausted(&self, key: &ResidentGemmKey) -> bool {
-        if self.permits_search() {
-            return false;
-        }
-        tracing::info!(target: "infer::tuning", ?key,
-            elapsed_ms=self.started.get_or_init(Instant::now).elapsed().as_millis(),
-            budget_ms=self.budget.as_millis(),
-            "resident GEMM model search budget exhausted: incomplete evidence discarded");
-        true
+    pub(crate) fn permits_gemm_search(
+        &self,
+        family: SearchFamily,
+        shape: [usize; GEMM_RANK],
+        trials: usize,
+    ) -> Result<bool> {
+        self.gemm.permits(family, shape, trials)
+    }
+
+    pub(crate) fn complete_gemm_search(
+        &self,
+        family: SearchFamily,
+        shape: [usize; GEMM_RANK],
+    ) -> Result<()> {
+        self.gemm.complete(family, shape)
+    }
+
+    pub(crate) fn gemm_search_exhausted(
+        &self,
+        family: SearchFamily,
+        shape: [usize; GEMM_RANK],
+    ) -> Result<bool> {
+        self.gemm.is_exhausted(family, shape)
     }
 }
 
@@ -1053,10 +1084,11 @@ fn tune(
             "resident tuning requires release and CUDA JIT O3",
         ));
     }
-    if session.exhausted(&key) {
+    let shape = [key.m, key.n, key.k];
+    let allowance_trials = nvfp4_search_trials();
+    if !session.permits_gemm_search(SearchFamily::Nvfp4, shape, allowance_trials)? {
         return Ok(None);
     }
-    let shape = [key.m, key.n, key.k];
     let baseline = GemmConfig::baseline(key.m);
     let base = Captured::new(device, weight, scale, shape, baseline)?;
     base.run(device)?;
@@ -1084,7 +1116,7 @@ fn tune(
                 if config == baseline {
                     continue;
                 }
-                if session.exhausted(&key) {
+                if !session.permits_gemm_search(SearchFamily::Nvfp4, shape, allowance_trials)? {
                     return Ok(None);
                 }
                 match search.trial(config, MeasurementOrder::BaselineFirst) {
@@ -1107,12 +1139,12 @@ fn tune(
         }
     }
     // A new capture measures candidate first to confirm both cache states in reverse order.
-    if session.exhausted(&key) {
+    if !session.permits_gemm_search(SearchFamily::Nvfp4, shape, allowance_trials)? {
         return Ok(None);
     }
     let mut confirmation = search.trial(selected, MeasurementOrder::CandidateFirst)?;
     if selected != baseline && !confirmed(&confirmation) {
-        if session.exhausted(&key) {
+        if !session.permits_gemm_search(SearchFamily::Nvfp4, shape, allowance_trials)? {
             return Ok(None);
         }
         selected = baseline;
@@ -1128,6 +1160,7 @@ fn tune(
     if !entry.valid() {
         return Err(Error::invalid("invalid resident GEMM confirmation timings"));
     }
+    session.complete_gemm_search(SearchFamily::Nvfp4, shape)?;
     Ok(Some(entry))
 }
 

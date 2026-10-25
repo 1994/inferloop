@@ -148,17 +148,18 @@ fn autotune_disabled_never_requests_measurement_but_keeps_valid_cached_choices()
     ));
     table.resident_gemm[0].bitwise_verified = false;
     assert!(decision(Some(&table), &key, true).is_err());
-    let expired = ResidentTuningSession {
-        started: OnceLock::new(),
-        greedy_started: OnceLock::new(),
-        norm_started: OnceLock::new(),
-        recurrent_started: OnceLock::new(),
-        attention_started: OnceLock::new(),
-        budget: Duration::ZERO,
-    };
+    let expired = ResidentTuningSession::without_search_budget();
     let fresh = ResidentTuningSession::default();
-    assert!(!expired.permits_search());
-    assert!(fresh.permits_search());
+    assert!(!expired.permits_gemm_search(
+        SearchFamily::Nvfp4,
+        [64, 128, 256],
+        nvfp4_search_trials()
+    )?);
+    assert!(fresh.permits_gemm_search(
+        SearchFamily::Nvfp4,
+        [64, 128, 256],
+        nvfp4_search_trials()
+    )?);
     assert!(!expired.permits_norm_search());
     assert!(fresh.permits_norm_search());
     assert_eq!(
@@ -378,7 +379,7 @@ fn resident_gemm_candidates_preserve_quantization_and_output_bits_on_tails() -> 
             .map_err(|_| Error::invariant("GPU test tuning memo poisoned"))?
             .insert(key.clone(), choice);
         let expired = ResidentTuningSession::without_search_budget();
-        assert!(!expired.permits_search());
+        assert!(!expired.permits_gemm_search(SearchFamily::Nvfp4, shape, nvfp4_search_trials())?);
         // Resolving a cached choice must still prove this previously unseen weight after
         // another projection has consumed the entire new-search allowance.
         assert_eq!(

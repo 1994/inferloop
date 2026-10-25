@@ -8,14 +8,19 @@ use crate::constants::NVFP4_GROUP_SIZE;
 use crate::constants::NVFP4_QUANT_CODES_TILE;
 use crate::constants::NVFP4_QUANT_SCALES_TILE;
 use crate::constants::PREFILL_LANES;
+use crate::tuning::fp8_gemm::native_search_trials;
 use crate::tuning::fp8_gemm::prefill_choice;
 
+use crate::resident::prefill_projection::fused_projections;
 use crate::resident::program::ProgramGeometry;
 use crate::tuning::fp8_gemm::Choice;
 use crate::tuning::fp8_gemm::WeightKey;
 use crate::tuning::fp8_gemm::probe_inputs::Scope as ProbeInputsScope;
 use crate::tuning::fp8_gemm::select;
+use crate::tuning::resident_gemm::ResidentTuningSession;
+use crate::tuning::resident_gemm::SearchFamily;
 use crate::tuning::resident_gemm::native_tile;
+use crate::tuning::resident_gemm::nvfp4_search_trials;
 
 use crate::tuning::resident_gemm::GemmConfig;
 
@@ -31,7 +36,7 @@ use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_ir::{DataflowGraph, TensorOp};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::env::var;
 
@@ -161,7 +166,17 @@ impl Workspace {
         geometry: ProgramGeometry,
     ) -> Result<Self> {
         let widths = geometry.widths();
-        Self::new(device, graph, weights, &widths)
+        let skipped: BTreeSet<_> = geometry
+            .prompts
+            .into_iter()
+            .filter(|&rows| rows > 1 && rows != geometry.verification)
+            .flat_map(|rows| {
+                fused_projections(graph, weights, rows)
+                    .into_iter()
+                    .map(move |index| (index, rows))
+            })
+            .collect();
+        Self::new_planned(device, graph, weights, &widths, &skipped)
     }
 
     pub(crate) fn ensure_width(
@@ -171,7 +186,7 @@ impl Workspace {
         weights: &ProgramWeights,
         width: usize,
     ) -> Result<()> {
-        self.extend(device, graph, weights, &[width])
+        self.extend(device, graph, weights, &[width], &BTreeSet::new())
     }
 
     pub(crate) fn new(
@@ -179,6 +194,16 @@ impl Workspace {
         graph: &DataflowGraph,
         weights: &ProgramWeights,
         widths: &[usize],
+    ) -> Result<Self> {
+        Self::new_planned(device, graph, weights, widths, &BTreeSet::new())
+    }
+
+    fn new_planned(
+        device: &CudaDevice,
+        graph: &DataflowGraph,
+        weights: &ProgramWeights,
+        widths: &[usize],
+        skipped: &BTreeSet<(usize, usize)>,
     ) -> Result<Self> {
         let mut workspace = Self {
             quant_reuse: CaptureQuantReuse::default(),
@@ -190,8 +215,69 @@ impl Workspace {
             vendor_fp8: vendor_fp8::Support::new_with(device, true),
             vendor_diagnostic: vendor_diagnostic_enabled(),
         };
-        workspace.extend(device, graph, weights, widths)?;
+        workspace.extend(device, graph, weights, widths, skipped)?;
         Ok(workspace)
+    }
+
+    /// Register every geometry this workspace may search before the first measurement. This
+    /// lets an exhausted shape report all still-unstarted shapes, not only the current one.
+    fn plan_search_shapes(
+        session: &ResidentTuningSession,
+        graph: &DataflowGraph,
+        weights: &ProgramWeights,
+        widths: &[usize],
+        skipped: &BTreeSet<(usize, usize)>,
+    ) -> Result<()> {
+        let mut fp8 = BTreeSet::new();
+        let mut nvfp4 = BTreeSet::new();
+        for (index, node) in graph.nodes.iter().enumerate() {
+            if node.op != TensorOp::Linear {
+                continue;
+            }
+            let Some(input) = graph.tensors.iter().find(|t| t.id == node.inputs[0]) else {
+                continue;
+            };
+            let Some(output) = graph.tensors.iter().find(|t| t.id == node.outputs[0]) else {
+                continue;
+            };
+            let columns = input.elements()?;
+            let outputs = output.elements()?;
+            let weight_id = node.inputs[1];
+            if weights.fp8_inputs.contains(&weight_id) {
+                if matches!(
+                    weights.projections.get(&weight_id),
+                    Some(ProjectionWeight::Fp8(..))
+                ) {
+                    for &rows in widths {
+                        if rows == 0
+                            || (rows >= PREFILL_LANES && Some(node.outputs[0]) == graph.logits)
+                        {
+                            continue;
+                        }
+                        fp8.insert([rows, outputs, columns]);
+                    }
+                }
+                continue;
+            }
+            if !weights.input_scales.contains_key(&weight_id)
+                || !matches!(
+                    weights.projections.get(&weight_id),
+                    Some(ProjectionWeight::Fp4(..))
+                )
+            {
+                continue;
+            }
+            for &rows in widths {
+                if rows > 0 && !skipped.contains(&(index, rows)) {
+                    nvfp4.insert([rows, outputs, columns]);
+                }
+            }
+        }
+        let fp8: Vec<_> = fp8.into_iter().collect();
+        let nvfp4: Vec<_> = nvfp4.into_iter().collect();
+        session.plan_gemm_search(SearchFamily::Fp8Channel, &fp8, native_search_trials())?;
+        session.plan_gemm_search(SearchFamily::Nvfp4, &nvfp4, nvfp4_search_trials())?;
+        Ok(())
     }
 
     fn extend(
@@ -200,9 +286,11 @@ impl Workspace {
         graph: &DataflowGraph,
         weights: &ProgramWeights,
         widths: &[usize],
+        skipped: &BTreeSet<(usize, usize)>,
     ) -> Result<()> {
+        Self::plan_search_shapes(&weights.resident_tuning, graph, weights, widths, skipped)?;
         let _probe_inputs = ProbeInputsScope::new(device)?;
-        for node in &graph.nodes {
+        for (index, node) in graph.nodes.iter().enumerate() {
             if node.op != TensorOp::Linear
                 || (!weights.input_scales.contains_key(&node.inputs[1])
                     && !weights.fp8_inputs.contains(&node.inputs[1]))
@@ -245,7 +333,7 @@ impl Workspace {
                     .elements()?;
                 let weight_key = ResidentGemmWeightKey::new(weight, scale)?;
                 for &rows in widths {
-                    if rows > 0 {
+                    if rows > 0 && !skipped.contains(&(index, rows)) {
                         self.strategies
                             .entry((weight_key, rows, outputs, columns))
                             .or_insert_with(|| {
@@ -511,11 +599,17 @@ impl Workspace {
         )
     }
 
-    /// Whether [`Self::record_gate_up_swiglu`] can run for this prompt width and MLP geometry.
-    pub(crate) fn gate_up_swiglu_ready(&self, rows: usize, columns: usize, hidden: usize) -> bool {
-        rows.is_multiple_of(SWIGLU_TILE_ROWS)
+    /// Geometry accepted by the fused prompt kernel, independent of allocation state.
+    pub(crate) const fn gate_up_swiglu_geometry(rows: usize, hidden: usize) -> bool {
+        rows > 0
+            && rows.is_multiple_of(SWIGLU_TILE_ROWS)
             && rows.is_multiple_of(QUANTIZATION_ROWS)
             && hidden.is_multiple_of(SWIGLU_TILE_COLUMNS)
+    }
+
+    /// Whether [`Self::record_gate_up_swiglu`] can run for this prompt width and MLP geometry.
+    pub(crate) fn gate_up_swiglu_ready(&self, rows: usize, columns: usize, hidden: usize) -> bool {
+        Self::gate_up_swiglu_geometry(rows, hidden)
             && self.buffers.contains_key(&(rows, columns))
             && self.buffers.contains_key(&(rows, hidden))
     }
