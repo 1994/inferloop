@@ -28,6 +28,11 @@ pub enum ResourceCommand {
         capacity: usize,
         readout: OutputReadout,
     },
+    /// Price media prefill without speculative draft state.
+    ReservationBytesMedia {
+        capacity: usize,
+        readout: OutputReadout,
+    },
     Reserve {
         state: StateId,
         capacity: usize,
@@ -185,6 +190,12 @@ pub fn execute_resource<B: BackendProvider + ?Sized>(
             backend.prepare_state_reservation(capacity, readout)?;
             backend
                 .state_reservation_bytes_for(capacity, readout)
+                .map(ResourceReply::ReservationBytes)
+        }
+        ResourceCommand::ReservationBytesMedia { capacity, readout } => {
+            backend.prepare_state_reservation_for_media(capacity, readout)?;
+            backend
+                .state_reservation_bytes_for_media(capacity, readout)
                 .map(ResourceReply::ReservationBytes)
         }
         ResourceCommand::Reserve {

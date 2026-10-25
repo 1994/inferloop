@@ -1091,3 +1091,74 @@ fn automatic_mtp_is_disabled_for_media_instead_of_rejecting_it() -> Result<()> {
     assert!(media_tasks.load(Ordering::Relaxed) > 0);
     Ok(())
 }
+
+#[test]
+fn threaded_media_request_uses_the_media_quote_command() -> Result<()> {
+    use infer_ir::{MediaInput, MediaItem, Modality};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    // Failure-first regression: before the typed media quote command, the threaded admission
+    // path always sent ReservationBytes and priced draft state; this counter stayed zero.
+    let ir = support::model(ModelId::ONE);
+    let mut kernels = KernelRegistry::default();
+    kernels.register(&support::DeclaredKernels)?;
+    let backend = ProtocolBackend::new(16, 8, &ir)?
+        .multimodal()
+        .requiring_engine_sampling(2);
+    let media_quotes = backend.media_quotes();
+    let mut engine = Engine::new(
+        backend,
+        ir,
+        PrecisionPlan::f32(),
+        &kernels,
+        RuntimeConfig::default(),
+    )?
+    .into_threaded(4, Duration::from_secs(5))?;
+    let media = MediaInput {
+        id: infer_core::MediaId::ONE,
+        modality: Modality::Image,
+        content_digest: "fixture".into(),
+        item: Some(MediaItem {
+            modality: Modality::Image,
+            pixels: Arc::from([0.0f32, 1.0, 2.0, 3.0]),
+            grid: (1, 1, 1),
+            span: 0..1,
+        }),
+    };
+    let request = CanonicalRequest {
+        id: infer_core::RequestId::new(10)?,
+        model: ModelId::ONE,
+        session: None,
+        input: infer_ir::RequestInput::Sequence {
+            tokens: vec![1, 2].into(),
+            media: vec![media],
+        },
+        workload: infer_ir::Workload::Generate { max_new_tokens: 1 },
+        qos: infer_ir::Qos::default(),
+        sampling: infer_ir::Sampling::default(),
+        extensions: BTreeMap::new(),
+    };
+    let prepared = engine.request_preparer()?.prepare(request)?;
+    let mut quote = engine.admission_quote(&prepared)?;
+    let bytes = loop {
+        if let Some(ResourceReply::ReservationBytes(bytes)) = quote.poll()? {
+            break bytes;
+        }
+        sleep(Duration::from_millis(1));
+    };
+    engine.submit_quoted_with_trace(prepared, bytes, None)?;
+    let limit = Instant::now() + Duration::from_secs(3);
+    while !engine.is_idle() {
+        engine.tick(engine.now_us() + 1)?;
+        if Instant::now() >= limit {
+            return Err(Error::invariant("threaded media request did not drain"));
+        }
+        sleep(Duration::from_millis(1));
+    }
+    assert!(
+        media_quotes.load(Ordering::Acquire) > 0,
+        "threaded media admission did not use the media quote command"
+    );
+    Ok(())
+}
