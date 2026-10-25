@@ -1,108 +1,171 @@
-# Agent 工作指南
+# Engineering rules
 
-本文件是 inferloop 的统一 agent 入口，适用于整个仓库。修改或审查 Rust、Cargo、测试与性能代码前先读本文件；更具体的目录指引若存在，也要一并阅读。无需安装个人插件。
+These instructions apply throughout inferloop. Read any narrower `AGENTS.md` before
+editing its directory. Preserve unrelated work in the checkout.
 
-Rust 实践提炼自 [BeautifulRust](https://github.com/morganlinton/BeautifulRust/tree/4f1c0d1602bf75c9718ccea42879defb8bfe89f4)，按本项目的推理引擎约束做了取舍。**项目的架构契约、Cargo 配置和门禁优先于上游通用建议**。这里只维护 agent 工作规则，使用与架构细节仍查现有文档，不复制另一套。
+## Architecture
 
-## 开始工作
+- inferloop is a GPU inference engine for CUDA and Metal. CPU operators are independent
+  test references, not a production execution backend. Unsupported capabilities must
+  return an explicit error rather than silently select a fallback.
+- Keep crates under their existing responsibility groups. Put implementation in focused
+  modules; keep `lib.rs` a small facade with explicit exports. Do not introduce cycles,
+  service dependencies in implementation crates, or concrete backend dependencies in runtime.
+- Model providers and `model/recipes` own topology, weight semantics, position encoding,
+  and draft graphs. The compiler validates and lowers the supplied graph; runtime uses
+  the backend's bound execution graph instead of reconstructing it from `ModelIr`.
+- Scheduler owns queueing, fairness, and packing policy; state owns logical allocation,
+  KV, and prefix lifetimes; runtime coordinates admission, dispatch, completion, and
+  cancellation; backends own physical buffers, kernel selection, and device execution.
+- Extend shared IR/SPI and kernel contracts at their owning layer. Keep model names,
+  GPU marketing names, and algorithm-specific branches out of common scheduling code.
+  Select kernels by declared capabilities, shapes, layouts, and numeric requirements.
+- Reuse existing contracts and tools. Add a trait, crate, feature, or dependency only
+  for a concrete need; do not create parallel implementations of existing ownership or policy.
 
-- 先检查工作区改动与目标模块，保留其他任务尚未提交的内容；只修改当前任务需要的文件。
-- 确认代码属于 foundation、backend、model、engine、diagnostics、service 或 testing 哪一层，再决定落点。边界见[代码布局](docs/architecture/layout.md)。
-- 新功能先明确输入、输出、错误、资源所有权与验收方式；重构保留公开行为、错误语义和输出格式。发现可疑旧行为先核实，不夹带无关修正。
-- 优先复用已有类型、错误、工具和测试入口；不为未来可能出现的需求增加 trait、builder、crate 或依赖。
+For changes across layers, check [code layout](docs/architecture/layout.md) and
+[backend contracts](docs/architecture/backends.md).
 
-## Rust 编写与审查
+## Rust and API design
 
-### 所有权与资源
+- Encode distinct IDs, units, modes, and valid states in types. Use newtypes and enums
+  where plain integers or boolean mode arguments hide meaning. Validate invariants at
+  construction; do not expose fields that let callers bypass them.
+- Borrow read-only inputs as `&str`, `&[T]`, or `&T`; use `&mut T` for mutation and owned
+  `T` for retention or consumption. Avoid `&String`, `&Vec<T>`, and borrowed inputs that
+  are immediately cloned into storage.
+- Resolve borrow conflicts by shortening borrows, splitting fields, or moving values
+  with `mem::take`, `mem::replace`, or `Option::take`. Clone only for an intentional
+  copy, snapshot, or shared lifetime; keep `Arc` and locks tied to real sharing needs.
+- Keep visibility minimal and exports explicit. Prefer concrete types; introduce
+  generics or `dyn Trait` for actual substitution or heterogeneous storage. Do not add
+  public APIs or product features solely to reach private code from tests.
+- Derive common traits when their semantics fit. Equality, ordering, and hashing must
+  agree; float ordering and tie-breaking must be explicit and deterministic. Keep
+  secrets out of `Debug`, `Display`, and logs.
+- Use standard conversion traits and `as_` / `to_` / `into_` naming. Use checked
+  arithmetic and fallible conversions for external dimensions, offsets, byte counts,
+  and capacities; validate before indexing or allocating.
+- Use `Option` for expected absence and the project's existing `Result`/error types
+  for actionable failures. Preserve error codes, causes, and useful context; do not
+  introduce another application error framework or flatten typed errors into strings.
+- Do not add production `unwrap`, `expect`, `panic!`, `todo!`, `unimplemented!`,
+  `dbg!`, or ignored fallible results, including in `main`. Review existing narrowly
+  justified invariant exceptions before changing their recovery or cleanup semantics.
+- Use clear loops or short iterator chains. Import item paths with `use`; paths of
+  three or more segments must not be embedded in expressions or signatures. Avoid
+  glob exports, speculative abstractions, and macros where ordinary Rust suffices.
+- Inherit workspace versions, MSRV, edition, and lints. Keep intentional version pins
+  and `Cargo.lock`. Follow the numeric-literal policy: non-exempt values become named,
+  documented constants. Keep function length at most 100 and cognitive complexity at
+  most 25; fix the design instead of raising thresholds or broadly suppressing lints.
+- Document public contracts: ownership, preconditions, errors, side effects, and safety
+  obligations. Rustdoc examples should run and propagate errors with `?`. Comments
+  explain non-obvious reasons; source files are not design journals or progress logs.
+- Use existing structured `tracing` events for operational logs. Preserve CLI and
+  protocol stdout; do not replace structured diagnostics with `println!` or `dbg!`.
 
-- 读取参数优先用 `&str`、`&[T]`、`&T`，修改用 `&mut T`，只有需要保存或消费时才接收所有权。避免 `&String`、`&Vec<T>`、`&Box<T>`。
-- 遇到借用冲突，先缩短借用、拆表达式、拆字段或使用 `mem::take` / `Option::take`；不要只为通过编译添加深拷贝。确有快照或共享所有权需求时，明确复制语义和成本。
-- 优先单一所有者；`Arc`、锁和内部可变性必须对应真实的共享需求。设备 buffer、lease、fence、KV 页的释放时点要跟随实际使用完成，不能只跟随主机函数返回。
-- 通过 RAII 保证提前返回与取消时清理资源；guard 绑定到具名变量，避免 `let _ = acquire_guard()` 立即释放返回值。可失败的关闭操作提供显式返回错误的接口，`Drop` 不 panic。
+## Resource and request safety
 
-### 类型与 API
+- Every buffer, page, credit, ticket, and reader must have a clear owner, handoff, and
+  release condition. Bind RAII guards to named variables; provide explicit fallible
+  close operations when needed, and keep destructors non-panicking.
+- Validate identities, ranges, capacity, duplicate states, and cursor transitions
+  before publishing a batch. Stage fallible work before mutating ownership; failed
+  reservations must leave allocator cursors and logical/physical state consistent.
+- CPU return, cancellation, timeout, disconnect, and ticket drop do not prove device
+  completion. Retain buffers, pinned memory, scratch, page leases, and credits until
+  the relevant device fences, resource acknowledgements, and CPU readers finish.
+- Check owner, index, and generation on handles. Reject stale, foreign, or duplicate
+  acknowledgements; retire exhausted generations instead of reusing an identity.
+- Share only committed full prefix blocks; use copy-on-write for shared mutable tails.
+  Prefix reuse must match model, revision, precision, layout, and readout compatibility.
+  Cache eviction releases its own references, not active requests' ownership.
+- Keep preparation, admission, resource waits, GPU flight, CPU output, and delivery
+  separately accounted. A slow reader must not stall unrelated requests; cancellation
+  and shutdown must remain serviceable when bulk queues are full.
+- Quiesce admission and dispatch, drain device work, resource commands, and readers,
+  then checkpoint. Restore only after validating schema, weights, program, backend,
+  provider identities, cursors, and payload; never restore native tickets. If resources
+  cannot safely drain, isolate the engine instead of reporting idle or reusing memory.
 
-- 用 newtype 区分 ID、单位和语义，用 enum 表示模式与状态，用可失败构造函数维护不变量。模式选择参数避免含义不清的 `bool`；不要为风格统一破坏现有 API。
-- 保持最窄可见性；公开字段意味着调用方可以绕过构造约束。不要为测试开放产品内部 API。
-- 优先具体类型；需要替换实现或泛型算法时才引入 trait。泛型与 `dyn Trait` 按分发、异构集合、编译成本和现有 SPI 选择，不机械改写。
-- 适用时派生 `Debug`、`Default`、比较和转换 trait；秘密或大块数据的调试输出要控制。手写排序时保证与相等关系一致，实现 `Hash` 时也须满足相等值同哈希。
-- 命名遵循标准库的 `as_` / `to_` / `into_` 语义；显式导出 API，不增加 glob re-export 或无必要的 prelude。兼容性变化说明修改前后行为和迁移影响。
+For lifetime changes, follow [request lifecycle](docs/architecture/request-lifecycle.md),
+[CPU ownership](docs/architecture/cpu-runtime.md), and [KV ownership](docs/architecture/kv-manager.md).
 
-### 错误与日常写法
+## Concurrency, unsafe, and device boundaries
 
-- 正常缺失用 `Option`，需要解释失败用 `Result`；复用项目已有错误类型与错误码，不因上游偏好引入 `anyhow` / `eyre` 或重做公共错误协议。
-- 生产代码禁止以 `unwrap`、`expect`、`panic`、`todo`、`unimplemented`、`dbg` 或忽略 `Result` 处理问题；`main` 也不例外。不变量失败走现有错误/故障处理路径。已有经门禁认可的局部不变量例外，先审查其安全理由与回收语义，不做机械替换。
-- 锁中毒不可用 `expect` 绕过，也不可未经证明通过 `into_inner` 继续使用可能损坏的状态；按所属组件的错误、隔离和退出协议处理。
-- 短且清楚的转换适合迭代器与 combinator；多步骤、提前退出或涉及状态的逻辑保留清晰循环，不为“函数式”制造复杂链。
-- 项路径用 `use` 引入；三段及以上的项路径不直接写在表达式或签名中，遵循 `clippy::absolute_paths`。导出按项列出。
-- 数值常量遵循项目门禁：生产代码中的非豁免数字提取为带 `///` 说明的具名常量。不要靠调高长度、复杂度阈值或放宽 lint 过关。
-- 运行日志使用现有结构化 `tracing`；CLI 的正式 stdout 输出按协议保留。避免在内层循环格式化字符串或逐 token 打日志。
+- Preserve actor and device-owner boundaries. Use existing bounded worker pools;
+  do not add a runtime, a thread per request, unbounded queues, or unbounded task spawning.
+  Keep blocking work off asynchronous service threads and propagate cancellation.
+- Keep locks short; do not hold them across `.await` or external callbacks. Treat lock
+  poisoning through the component's failure protocol, not unchecked `into_inner` recovery.
+  Require `Send`/`Sync` where the real thread contract needs them.
+- Prevent lost wakeups: arm notification, recheck work/epochs, then park. Polling and
+  spinning need a budget. Callbacks should publish reserved state and wake the owner,
+  not allocate or run scheduling logic.
+- `unsafe_code` is denied by default. Keep necessary platform/device FFI in approved,
+  minimal boundaries behind safe APIs. Each unsafe block/impl needs a concrete `SAFETY:`
+  argument covering bounds, initialization, aliasing, lifetime, and synchronization.
+- Check FFI ABI, alignment, nullability, allocation/free ownership, and thread/stream
+  affinity. Do not bypass lifetimes with `transmute`, add `unsafe impl Send` to silence
+  an error, or let a panic unwind through an incompatible FFI boundary.
+- Host Release/Acquire ordering does not replace DMA or device synchronization. Metal
+  shared storage still needs completion/reader discipline. Keep isolated device-build
+  workspaces and their toolchains outside the stable host dependency graph.
 
-### 并发、异步与 unsafe
+## Performance and numerical correctness
 
-- 保持现有 actor / 单所有者边界；跨线程类型与 future 按实际契约满足 `Send` / `Sync`，不能靠 `unsafe impl` 消除编译错误。
-- 锁作用域保持短小，不跨 `.await`，不持锁调用外部回调；通道和队列必须考虑容量、背压、取消与关闭。
-- 长 CPU 工作使用现有工作线程或有界阻塞执行机制，不能阻塞异步服务线程；不机械插入固定频率的 yield，也不任意新建 runtime 或无界任务。
-- `unsafe_code` 默认禁止；沿用已隔离的 OS/设备 FFI 边界。新增例外必须有必要性、安全不变量和最小作用域，不能只凭“可能更快”开放。
-- 每个 unsafe block / impl 写明 `SAFETY:`，unsafe API 写明调用方义务；核实指针范围、对齐、初始化、别名、生命周期、线程/stream 所属与异步完成时点。
-- FFI 明确 ABI、分配/释放所属方与错误转换；不能让 unwind 穿过不允许它的边界。Miri 适用于可运行的主机安全抽象，不能代替设备侧验证。
+- Profile the actual bottleneck before changing a hot path. Reuse prepared buffers,
+  reserve known capacity, batch work, and keep per-tick/per-token allocation, deep
+  copies, formatting, serialization, and lock traffic out of steady-state execution.
+- Preserve device residency and graph replay where applicable. New host readbacks,
+  stream synchronization, graph recapture, or allocation in decode need a demonstrated
+  reason and measured whole-path cost. Do not mechanically change allocators, hashers,
+  container types, or cache policy.
+- Resource quotes must cover the execution path actually selected, including temporary
+  workspace, retention, host mirrors, and recapture. Reusing a cached shell does not
+  make its retained memory free; verify peak and concurrent ownership, not just tensor size.
+- Preserve dtype, accumulation, rounding, masking, tie-breaking, seed, and output
+  semantics unless changing them is explicitly in scope. Do not loosen numeric
+  tolerances to make an optimization pass or substitute another head's output.
+- Validate optimized kernels against an independent reference, including tails, padding,
+  masks, empty/all-masked cases where supported, finite outputs, and state transitions.
+  Validate full requested output and resource cleanup, not just an initial token prefix.
+- Performance evidence requires comparable release builds, actual effective settings,
+  identical workload/model/hardware conditions, warmup, repeated samples, and declared
+  statistics. Separate operator, model, and serving results; report regressions per case.
+  A faster microbenchmark is not proof of a faster service.
 
-## 项目适配：这些约束不能套用通用建议
+Use the [performance baseline contract](docs/plans/performance/baseline.md) for comparisons.
 
-| 主题 | 本项目规则 |
+## Tests and delivery
+
+- Reproduce bugs with failing tests before fixing them. Test observable behavior,
+  properties, and failure/cleanup paths rather than mirrored branches or constants.
+  Preserve API, wire format, checkpoint, and error compatibility unless the task changes them.
+- Put test bodies in the owning crate's `tests/`; mount private unit tests through the
+  existing `#[cfg(test)]`/`#[path]` pattern. Register targets and update the test inventory
+  when collection changes. Do not put new test bodies in `src/` or silently lose cases.
+- Cover relevant feature/target combinations. Use deterministic inputs, bounded waits,
+  isolated ports, and reliable cleanup. A selected hardware suite must fail for missing
+  devices/fixtures; zero collected or fully ignored tests are not successful acceptance.
+- Use independent scalar references for numeric checks. Host tests and CUDA compilation
+  without devices cannot establish GPU support or throughput. Use Miri for applicable
+  host unsafe abstractions; it does not validate device execution.
+- Use repository entry points instead of blanket `--all-features`, which can pull CUDA
+  Toolkit requirements into host checks. Toolchain and command details live in
+  [quality gates](docs/guides/quality-gates.md) and the [Makefile](Makefile).
+
+| Change | Required validation |
 |---|---|
-| 目录 | 保留 `crates/<职责>/<crate>` 分组；`lib.rs` 是小型 facade，实现放职责模块。不改为上游建议的扁平目录。 |
-| 架构 | runtime 通过合约驱动 backend，不依赖具体 CUDA/Metal 实现；backend 不依赖 service。模型拓扑归 provider/recipes，compiler 校验与降低图，scheduler 管策略，state 管逻辑状态所有权。 |
-| 工具链与依赖 | 按 `rust-toolchain.toml`、workspace 的 edition/MSRV、依赖版本与 lint 配置执行。保留有意的精确版本和 `Cargo.lock`；不因通用指南推荐版本范围而改动。 |
-| Feature 与构建 | 使用项目门禁的 feature/target 矩阵；不要直接照抄上游 `--all-features`。CUDA 及其独立设备构建 workspace 有工具链与依赖隔离要求。 |
-| Lint 例外 | 优先修正代码；确有局部例外时写明理由并满足门禁已有规则，不能新增大范围 `allow` / `expect` 或调整阈值逃避检查。 |
-| 测试布局 | 正文放所属 crate 的 `tests/`，私有单测沿用 `#[cfg(test)]` / `#[path]` 挂载；不向 `src/` 增加测试正文，不增加产品测试 feature。 |
-| CPU 与 GPU | CPU 参考实现只作独立数值对照；CPU 通过或 CUDA 无 feature 编译通过不代表设备支持。选定设备验收后，缺硬件、fixture、零用例或全 ignored 不能冒充成功。 |
+| Rust | `cargo fmt --all --check` and `make check-rust` |
+| Documentation only | Local links, `git diff --check`, and `python3 tools/check/layout.py` |
+| Tooling / dependencies / MSRV / Linux | Corresponding `make check-tools`, `check-security`, `check-msrv`, or `check-linux` |
+| CUDA | `make test-cuda-hosted`; `make test-cuda` for device behavior |
+| Metal | `make test-metal` for device behavior |
+| Attention numerics / performance | `make check-attention` with the required reference assets and hardware |
 
-## 测试、文档与性能
-
-- Bug 修复先用失败用例复现；行为变化覆盖边界输入、错误、取消和资源回收。测可观察行为、性质与状态转换，不写复述常量或复制实现分支的测试。
-- 测试放到既有 suite 并确认被收集、执行；不把“编译成功”当成“测试通过”。涉及时间、网络和随机性的用例要有确定输入、有界等待和可靠清理。
-- 公共 API 文档说明签名不能表达的约束、所有权、失败与副作用；按需提供 `# Errors`、`# Safety` 和可测试的 `?` 示例。注释解释原因，不记会话过程。
-- 推理热路径先测量再优化；复用 buffer、预分配、批处理，关注每 tick/token 的分配、锁、拷贝和同步成本。不机械调用 `shrink_to_fit`、更换 allocator/hasher 或增加缓存。
-- 性能结论必须来自相同条件下的 release 测量，记录源码/构建身份、模型、输入、设备、精度、warmup、样本与统计；按[基线契约](docs/plans/performance/baseline.md)验收，不把单算子收益直接等同服务收益。
-- 数值优化同时检查独立参考、容差、有限值、完整输出和资源生命周期；不能放宽精度来掩盖回归，也不能把单机结果外推到所有 GPU。
-
-## 交付前
-
-- Rust 改动至少执行 `cargo fmt --all --check` 与 `make check-rust`；按改动追加工具、安全、MSRV、Linux、Metal 或 CUDA 门禁。具体入口以 [Makefile](Makefile)、[统一门禁](tools/check/gate.sh)与[质量门禁说明](docs/guides/quality-gates.md)为准。
-- 仅修改本文或文档时检查本地链接、`git diff --check`，并运行 `python3 tools/check/layout.py`；不为纯文档改动启动整套硬件验收。
-- 无法运行的检查明确写出原因；分别报告已运行、仅编译、未运行和设备验收范围，不声明超出证据的支持或性能收益。
-- 核对 diff 的任务范围、兼容性与依赖变化；保留 lockfile、微型 fixture 和可复算的正式证据，不提交模型、凭证或临时运行产物。
-
-## 来源与维护
-
-提炼基点：BeautifulRust commit [`4f1c0d1602bf75c9718ccea42879defb8bfe89f4`](https://github.com/morganlinton/BeautifulRust/commit/4f1c0d1602bf75c9718ccea42879defb8bfe89f4)，阅读日期 2026-10-24（America/Los_Angeles）。依据其 `rust-best-practices` skill 与五份摘要整理，未导入插件、eval 或自动安装脚本。
-
-需要深入判断时查原始来源：[Google Rust Style Guide](https://google.github.io/styleguide/rustguide.html)、[Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)、[Effective Rust](https://www.lurklurk.org/effective-rust/)、[Rust Design Patterns](https://rust-unofficial.github.io/patterns/)、[Microsoft Pragmatic Rust Guidelines](https://microsoft.github.io/rust-guidelines/)。这些来源各自的许可见原站；BeautifulRust 的摘要与 skill 使用 MIT 许可。
-
-后续更新只维护本文件：核对上游指定 commit 的差异，重新审查项目适配，再更新基点；不自动同步上游规则，也不把本指南拆散进现有项目文档。以下保留上游许可声明，仅适用于来自 BeautifulRust 的内容；项目代码仍遵循仓库原有许可。
-
-```text
-MIT License
-
-Copyright (c) 2026 Morgan Linton
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
+Report what changed, what ran, and the observed results. Distinguish compiled, executed,
+ignored, and unavailable checks. Keep credentials, full models, generated build output,
+and temporary runs out of commits; retain reproducible accepted benchmark evidence in
+its established location.
