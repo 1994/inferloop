@@ -10,8 +10,8 @@ KV 管理分为 scheduler 的逻辑页预算和 backend owner 的物理页 / 私
 PrefixCache<V, M>
   publication / exact-token guards / compatibility / byte & entry budget / LRU / counters
   M: PrefixPolicy
-    BlockHash      块指纹查找 + 树形 recency（共享页默认）
-    SnapshotScan   快照扫描 + 可复用容量的 recency 队列（CUDA）
+    BlockHash      块指纹身份/查找 + 树形 recency（共享页默认）
+    SnapshotScan   实例内 ID / 快照扫描 + 可复用容量的 recency 队列（CUDA）
   PrefixReuse<V>
     PageReuse      clone 快照句柄并原子 retain 共享页
     CUDA Restore   恢复 target/draft/FP8/hidden，settle 设备复制
@@ -31,6 +31,8 @@ PrefixCache<V, M>
 - 不兼容的长快照不阻止选取较短的兼容快照。CUDA 不再 take/reinsert，也不在兼容性检查前增加 hit。
   两种策略使用相同 publication、资源 hook、统计和 LRU 语义。`PrefixRecency` 只定制
   最近使用索引的表示，不参与预算、资源释放或 hit 提交；CUDA 的成功查询不新增树节点分配。
+  扫描策略发布时按完整 tokens 去重，使用不复用的实例内 ID，不计算长 token 指纹。
+  被淘汰 payload 由 `RetiredPrefixes` 返回，单个退休项内联，避免 CUDA 单项替换的临时 Vec 分配。
 
 ## 所有权与操作
 

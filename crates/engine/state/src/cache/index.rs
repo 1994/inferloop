@@ -49,9 +49,16 @@ impl<'a, V, F: Fn(&[u32], &V) -> bool> PrefixSearch<'a, V, F> {
         })
     }
 }
+/// Cache-local identity used by an index, independent of device/page identities.
+#[derive(Clone, Copy)]
+pub enum PrefixIdentity {
+    ContentHash,
+    LocalId,
+}
 /// Select the longest compatible candidate. Policies customize search, while publication,
 /// equality/compatibility guards, resource reuse, accounting and LRU stay in the shared cache.
 pub trait PrefixPolicy {
+    const IDENTITY: PrefixIdentity;
     type Recency: PrefixRecency;
     fn longest<'a, V: 'a, F: Fn(&[u32], &V) -> bool>(
         &self,
@@ -62,6 +69,7 @@ pub trait PrefixPolicy {
 #[derive(Clone, Copy, Default)]
 pub struct BlockHash;
 impl PrefixPolicy for BlockHash {
+    const IDENTITY: PrefixIdentity = PrefixIdentity::ContentHash;
     type Recency = TreeRecency;
     fn longest<'a, V: 'a, F: Fn(&[u32], &V) -> bool>(
         &self,
@@ -74,6 +82,7 @@ impl PrefixPolicy for BlockHash {
 #[derive(Clone, Copy, Default)]
 pub struct SnapshotScan;
 impl PrefixPolicy for SnapshotScan {
+    const IDENTITY: PrefixIdentity = PrefixIdentity::LocalId;
     type Recency = SnapshotRecency;
     fn longest<'a, V: 'a, F: Fn(&[u32], &V) -> bool>(
         &self,

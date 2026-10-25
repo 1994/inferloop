@@ -255,3 +255,32 @@ fn length_shortcut_keeps_remaining_and_republished_prefixes_reachable() {
     cache.insert(vec![1, 2], 2, 4).unwrap();
     assert_eq!(cache.lookup(&[1, 2, 7, 8], 4), Some(2));
 }
+
+#[test]
+fn publication_transfers_every_retirement_to_the_cleanup_owner() {
+    let drops = Rc::new(Cell::new(0));
+    let mut cache = PrefixCache::new(b"batch", 2, 12, 3).unwrap();
+    for tokens in [[1, 2], [3, 4], [5, 6]] {
+        publish(&mut cache, &tokens, 0, &drops).unwrap();
+    }
+    let retired = cache
+        .publish(PrefixSnapshot {
+            tokens: vec![7, 8],
+            value: OwnedSnapshot {
+                layout: 1,
+                drops: drops.clone(),
+            },
+            bytes: 12,
+        })
+        .unwrap();
+    assert_eq!(retired.len(), 3);
+    assert!(!retired.is_empty());
+    assert_eq!((cache.len(), cache.bytes(), drops.get()), (1, 12, 0));
+    let mut cleanup = retired.into_iter();
+    drop(cleanup.next());
+    assert_eq!(drops.get(), 1);
+    drop(cleanup);
+    assert_eq!(drops.get(), 3);
+    drop(cache);
+    assert_eq!(drops.get(), 4);
+}

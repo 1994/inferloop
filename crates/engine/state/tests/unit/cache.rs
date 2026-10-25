@@ -85,3 +85,19 @@ fn snapshot_queue_keeps_lru_order_across_clock_rollover() {
     }
     assert!(cache.is_empty());
 }
+
+#[test]
+fn exhausted_snapshot_ids_preserve_live_entries_and_allow_replacement() {
+    use super::SnapshotScan;
+    let mut cache = PrefixCache::with_policy(b"ids", 2, 8, 2, SnapshotScan).unwrap();
+    cache.insert(vec![1, 2], 10, 4).unwrap();
+    cache.next_id = [u64::MAX; 2];
+    assert!(cache.insert(vec![3, 4], 20, 4).is_err());
+    assert_eq!(
+        (cache.len(), cache.bytes(), cache.cached_tokens()),
+        (1, 4, 2)
+    );
+    assert_eq!(cache.lookup(&[1, 2], 2), Some(10));
+    assert_eq!(cache.insert(vec![1, 2], 30, 4).unwrap(), vec![10]);
+    assert_eq!(cache.evict_oldest(), Some(30));
+}

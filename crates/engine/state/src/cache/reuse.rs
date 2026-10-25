@@ -1,6 +1,9 @@
 //! Typed publication and backend reuse hooks; no device calls in the shared cache.
 use std::convert::Infallible;
+use std::iter::Chain;
+use std::option::IntoIter as One;
 use std::result::Result;
+use std::vec::IntoIter as Many;
 
 /// A completed snapshot ready for publication. Device storage stays opaque to the cache.
 pub struct PrefixSnapshot<V> {
@@ -33,5 +36,46 @@ impl<V: Clone, F: Fn(&V) -> bool> PrefixReuse<V> for CloneReuse<F> {
     }
     fn reuse(&mut self, _: &[u32], value: &V) -> Result<V, Infallible> {
         Ok(value.clone())
+    }
+}
+
+/// Rejected/replaced/evicted payloads for backend cleanup. The common single-retirement case
+/// stays inline; larger eviction batches allocate only their overflow list.
+pub struct RetiredPrefixes<V> {
+    first: Option<V>,
+    rest: Vec<V>,
+}
+impl<V> RetiredPrefixes<V> {
+    pub(super) const fn new() -> Self {
+        Self {
+            first: None,
+            rest: Vec::new(),
+        }
+    }
+    pub(super) fn push(&mut self, value: V) {
+        if self.first.is_none() {
+            self.first = Some(value);
+        } else {
+            self.rest.push(value);
+        }
+    }
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        if self.first.is_some() {
+            self.rest.len() + 1
+        } else {
+            self.rest.len()
+        }
+    }
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.first.is_none() && self.rest.is_empty()
+    }
+}
+impl<V> IntoIterator for RetiredPrefixes<V> {
+    type Item = V;
+    type IntoIter = Chain<One<V>, Many<V>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.first.into_iter().chain(self.rest)
     }
 }
