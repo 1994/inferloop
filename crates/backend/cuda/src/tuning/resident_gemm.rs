@@ -712,7 +712,18 @@ fn remember_verification(
     Ok(())
 }
 
-type Memo = Mutex<BTreeMap<ResidentGemmKey, GemmConfig>>;
+#[derive(Clone, Copy)]
+struct MemoDecision {
+    config: GemmConfig,
+    covered: bool,
+}
+
+fn memo_covers(rows: usize, decision: MemoDecision, verified: GemmConfig) -> bool {
+    let baseline = GemmConfig::baseline(rows);
+    decision.covered && (decision.config == baseline || verified == decision.config)
+}
+
+type Memo = Mutex<BTreeMap<ResidentGemmKey, MemoDecision>>;
 fn memo() -> &'static Memo {
     static MEMO: OnceLock<Memo> = OnceLock::new();
     MEMO.get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -759,9 +770,21 @@ fn resolve(
         .map_err(|_| Error::invariant("resident tuning cache poisoned"))?
         .get(&key)
         .copied();
-    if let Some(config) = cached {
-        tracing::info!(target: "infer::tuning", ?key, ?config, source="process-cache", "resident GEMM selected");
-        return verified_config(device, weight, scale, &key, config);
+    if let Some(decision) = cached {
+        let config = verified_config(device, weight, scale, &key, decision.config)?;
+        let source = if decision.covered {
+            "process-cache"
+        } else {
+            "process-cache-fallback"
+        };
+        tracing::info!(target: "infer::tuning", ?key, ?config, source, "resident GEMM selected");
+        // A measurement fallback is deliberately not coverage. A non-baseline cache entry still
+        // needs this weight's exact proof; only an accepted proof (or a legal baseline choice)
+        // completes the planned shape.
+        if memo_covers(shape[0], decision, config) {
+            session.complete_gemm_search(SearchFamily::Nvfp4, shape)?;
+        }
+        return Ok(config);
     }
     let path = super::table_path();
     let table = if key.driver_build.is_some() {
@@ -785,9 +808,28 @@ fn resolve(
     memo()
         .lock()
         .map_err(|_| Error::invariant("resident tuning cache poisoned"))?
-        .insert(key.clone(), config);
-    tracing::info!(target: "infer::tuning", ?key, ?config, source, "resident GEMM selected");
-    verified_config(device, weight, scale, &key, config)
+        .insert(
+            key.clone(),
+            MemoDecision {
+                config,
+                covered: true,
+            },
+        );
+    let verified = verified_config(device, weight, scale, &key, config)?;
+    tracing::info!(target: "infer::tuning", ?key, ?verified, source, "resident GEMM selected");
+    // Table/measured evidence is valid, but a non-baseline entry still completes coverage only
+    // after this weight's exact proof accepts the same choice.
+    if memo_covers(
+        shape[0],
+        MemoDecision {
+            config,
+            covered: true,
+        },
+        verified,
+    ) {
+        session.complete_gemm_search(SearchFamily::Nvfp4, shape)?;
+    }
+    Ok(verified)
 }
 
 fn selected_config(
@@ -846,7 +888,13 @@ fn measured_config(
             memo()
                 .lock()
                 .map_err(|_| Error::invariant("resident tuning cache poisoned"))?
-                .insert(key.clone(), baseline);
+                .insert(
+                    key.clone(),
+                    MemoDecision {
+                        config: baseline,
+                        covered: false,
+                    },
+                );
             return Ok(None);
         }
     };

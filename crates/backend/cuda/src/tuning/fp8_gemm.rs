@@ -433,7 +433,18 @@ fn fingerprint(device: &CudaDevice, shape: [usize; GEMM_RANK]) -> Result<String>
         .insert((environment, shape), value.clone());
     Ok(value)
 }
-type Memo = Mutex<BTreeMap<Key, Choice>>;
+#[derive(Clone, Copy)]
+struct MemoChoice {
+    choice: Choice,
+    covered: bool,
+}
+
+fn memo_covers(rows: usize, remembered: MemoChoice, gated: Choice) -> bool {
+    let baseline = Choice::baseline(rows);
+    remembered.covered && (remembered.choice == baseline || gated == remembered.choice)
+}
+
+type Memo = Mutex<BTreeMap<Key, MemoChoice>>;
 fn memo() -> &'static Memo {
     static MEMO: OnceLock<Memo> = OnceLock::new();
     MEMO.get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -1116,8 +1127,14 @@ fn resolve(
         .map_err(|_| Error::invariant("FP8 tuning cache poisoned"))?
         .get(&key)
         .copied();
-    if let Some(choice) = remembered {
-        return cached_gate(device, support, weight, &key, choice);
+    if let Some(remembered) = remembered {
+        let choice = cached_gate(device, support, weight, &key, remembered.choice)?;
+        // Cached evidence is not coverage until this weight's exact proof accepts it. A legal
+        // baseline choice is conservative coverage; a rejected non-baseline choice is not.
+        if memo_covers(shape[0], remembered, choice) {
+            session.complete_gemm_search(SearchFamily::Fp8Channel, shape)?;
+        }
+        return Ok(choice);
     }
     let path = super::table_path();
     let table = if key.persistent() {
@@ -1131,11 +1148,13 @@ fn resolve(
             .iter()
             .find(|entry| entry.key == key)
     });
+    let mut table_evidence = false;
     let choice = if let Some(entry) = cached {
         if !entry.valid() {
             return Err(Error::invalid("FP8 invalid persistent evidence"));
         }
         tracing::info!(target:"infer::tuning",?key,?entry.selected,source="table-cache","FP8 GEMM choice");
+        table_evidence = true;
         entry.selected
     } else {
         if !autotune {
@@ -1157,8 +1176,29 @@ fn resolve(
     memo()
         .lock()
         .map_err(|_| Error::invariant("FP8 tuning cache poisoned"))?
-        .insert(key.clone(), choice);
-    cached_gate(device, support, weight, &key, choice)
+        .insert(
+            key.clone(),
+            MemoChoice {
+                choice,
+                covered: true,
+            },
+        );
+    let gated = cached_gate(device, support, weight, &key, choice)?;
+    // Table evidence becomes coverage only when this weight's proof accepts it (or the evidence
+    // itself is the legal baseline). A miss/error baseline is not a serving-cache hit.
+    if table_evidence
+        && memo_covers(
+            shape[0],
+            MemoChoice {
+                choice,
+                covered: true,
+            },
+            gated,
+        )
+    {
+        session.complete_gemm_search(SearchFamily::Fp8Channel, shape)?;
+    }
+    Ok(gated)
 }
 /// Lt's reduction order lacks a full model qualification. Only internal tests may search it;
 /// production automatically tunes the qualified native geometry candidates.

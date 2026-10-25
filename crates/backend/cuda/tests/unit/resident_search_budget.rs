@@ -74,3 +74,34 @@ fn completed_shape_does_not_restart_its_allowance() -> Result<()> {
     assert!(schedule.permits_at(Family::Nvfp4, later, 2, now + Duration::from_millis(1))?);
     Ok(())
 }
+
+#[test]
+fn valid_cached_shape_is_covered_but_fallback_and_unstarted_remain_missing() -> Result<()> {
+    let schedule = Schedule::default();
+    let cached = [64, 5120, 17408];
+    let expired = [1024, 5120, 17408];
+    let fallback = [128, 5120, 17408];
+    let unstarted = [1, 5120, 17408];
+    let now = Instant::now();
+    schedule.plan(Family::Nvfp4, &[cached, expired, fallback, unstarted], 1)?;
+    // Cached evidence that passed its real-weight proof is covered.
+    assert!(schedule.permits_at(Family::Nvfp4, cached, 1, now)?);
+    schedule.complete(Family::Nvfp4, cached)?;
+    // A measurement fallback is deliberately not completed; it must stay visible.
+    assert!(schedule.permits_at(Family::Nvfp4, fallback, 1, now)?);
+    assert!(schedule.permits_at(Family::Nvfp4, expired, 1, now)?);
+    let later = now + measurement_budget(1)? + Duration::from_millis(1);
+    assert!(!schedule.permits_at(Family::Nvfp4, expired, 1, later)?);
+    let state = schedule
+        .shapes
+        .lock()
+        .map_err(|_| Error::invariant("test schedule"))?;
+    let missing = unfinished(&state);
+    drop(state);
+    assert_eq!(missing.len(), 3);
+    assert!(!missing.contains(&(Family::Nvfp4, cached)));
+    assert!(missing.contains(&(Family::Nvfp4, fallback)));
+    assert!(missing.contains(&(Family::Nvfp4, expired)));
+    assert!(missing.contains(&(Family::Nvfp4, unstarted)));
+    Ok(())
+}
