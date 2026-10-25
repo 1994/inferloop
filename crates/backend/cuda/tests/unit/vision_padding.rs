@@ -1,9 +1,9 @@
-//! Host-only audit of the vision head-width padding contract.
+//! Host audit and pure cuTile compile regression for the vision head-width contract.
 //!
-//! The projection kernel partitions columns in fixed 64-wide tiles. A head whose real width is
-//! not a multiple of 64 must be padded to the next 64 boundary before any tile kernel can read
-//! it. This test records the exact retained weight bytes for the 27B vision geometry so a future
-//! compact-layout change has a concrete baseline; it does not claim a GPU result.
+//! The projection kernel still partitions output columns in 64-wide tiles; the per-head
+//! split-half tile is aligned to 16 lanes. This test records the exact retained weight bytes for
+//! the 27B compact geometry and compiles the real projection/RoPE/attention/merge kernels through
+//! the cuTile compiler without a device. It does not claim a GPU numeric or performance result.
 use crate::attention::kernels::sdpa;
 use infer_spi::{HiddenActivation, ModalityEncoder};
 use std::error::Error;
