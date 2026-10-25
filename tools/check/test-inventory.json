@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 343
+      "tests": 344
     },
     "frontdoor": {
       "benches": 0,
@@ -208,6 +208,7 @@
     "requires CUDA/checkpoint/safe-run; actual pool inactive/reactivate/rebind full states": 1,
     "requires CUDA/checkpoint/safe-run; all96 real small weights, original private GEMV bits": 1,
     "requires CUDA/checkpoint/safe-run; full states/logits/hidden before service timing": 1,
+    "requires CUDA/checkpoint; actual full-model pool preparation drives the crossover dispatch": 1,
     "requires CUDA/safe-run and a private frozen tuning table; seeds measured profile": 1,
     "requires CUDA/safe-run; actual automatic tuning, full proofs and persisted cache": 1,
     "requires CUDA/safe-run; bit equality before same-address AB/BA cold/warm discovery": 1,
@@ -1259,11 +1260,11 @@
     }
   ],
   "totals": {
-    "all": 887,
+    "all": 888,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 887
+    "tests": 888
   }
 }

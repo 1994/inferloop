@@ -163,3 +163,34 @@ fn checkpoint_pool_gemv_private_model_bits() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+#[ignore = "requires CUDA/checkpoint; actual full-model pool preparation drives the crossover dispatch"]
+fn checkpoint_pool_gemv_crossover_full_model_dispatch() -> Result<()> {
+    CudaDevice::enable_kernel_cache()?;
+    let path = var("INFER_TEST_MODEL").map_err(|e| Error::invalid(e.to_string()))?;
+    let loaded = LoadedModel::open(
+        CudaDevice::new(0)?,
+        path,
+        ModelId::ONE,
+        LoadOptions {
+            prefill_width: 64,
+            autotune: true,
+            mtp_depth: 0,
+            ..LoadOptions::default()
+        },
+    )?;
+    let pool = loaded.slot_pool(2, 128, None)?;
+    let choices = loaded
+        .weights
+        .pool_gemv
+        .lock()
+        .map_err(|_| Error::invalid("pool GEMV choice map poisoned"))?;
+    assert!(
+        !choices.is_empty(),
+        "production slot preparation measured no eligible Dense projection"
+    );
+    drop(choices);
+    drop(pool);
+    Ok(())
+}
