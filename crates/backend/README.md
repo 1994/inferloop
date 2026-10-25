@@ -27,7 +27,10 @@ crate 名称（`infer-backend-cuda`、`infer-backend-metal`）不因目录组织
 
 执行器实现 `BackendProvider` 的状态生命周期、submit/poll、身份、成本计时与 checkpoint，模型和调度只通过统一合约调用。`KernelProvider` 只注册本后端可执行的 kernel。设备 buffer、ticket 与 unsafe FFI 留在本组。
 
-共享 `KvCacheManager` 统一管理页 ledger、prefix acquire/publish/evict、COW/append/rollback、copy pin 与容量证据，内部复用 `BlockPool` / `PrefixCache`，实际设备复制由 backend 执行。
+共享 `PrefixCache<V, M>` 统一管理 prefix publication、匹配、预算、LRU 与复用统计；
+`PrefixMatcher` 可选择块指纹或快照扫描，`PrefixReuse<V>` 接入后端资源操作。
+`KvCacheManager` 在此之上管理页 ledger、COW/append/rollback 与 copy pin；Metal 获取共享 lease，
+CUDA 使用同一缓存核心恢复其独占设备快照，实际设备复制与 fence 保留在 backend。
 
 ## 新增 backend
 

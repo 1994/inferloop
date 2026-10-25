@@ -182,6 +182,7 @@ fn cache_churn_matches_lru_oracle_across_hash_iteration_orders() {
         }
         assert_eq!(cache.len(), order.len());
         assert_eq!(cache.bytes(), order.len() as u64 * 4);
+        assert_eq!(cache.cached_tokens(), order.len() * 2);
         for key in 0..19 {
             assert_eq!(
                 cache.contains(&[key, key]),

@@ -1,6 +1,35 @@
 # KV Cache Manager 与页缓存
 
-KV 管理分为 scheduler 的逻辑页预算和 backend owner 的物理页 / 私有状态。共享实现 `KvCacheManager<P>` 组合 BlockPool 与 PrefixCache，设备通过 copy plan 与 lease 接入；manager 本身不调用 CUDA / Metal API。
+KV 管理分为 scheduler 的逻辑页预算和 backend owner 的物理页 / 私有状态。共享前缀生命周期由 `PrefixCache<V, M>` 管理，`M: PrefixMatcher` 选择索引策略，
+`PrefixReuse<V>` 实现后端的获取/恢复操作。`KvCacheManager<P>` 在此之上组合 BlockPool，
+为共享页提供 lease 适配；CUDA 则提供连续设备快照适配。公共层不调用 CUDA / Metal API。
+
+## 共享前缀生命周期与扩展
+
+```text
+PrefixCache<V, M>
+  publication / exact-token guards / compatibility / byte & entry budget / LRU / counters
+  M: PrefixMatcher
+    BlockHash      多个块边界前缀的增量指纹索引（共享页默认）
+    SnapshotScan   少量大快照的扫描匹配（CUDA）
+  PrefixReuse<V>
+    PageReuse      clone 快照句柄并原子 retain 共享页
+    CUDA Restore   恢复 target/draft/FP8/hidden，settle 设备复制
+```
+
+- `PrefixSnapshot<V>` 只包含 tokens、字节报价和后端 payload；`V` 不要求 Clone 或页 lease。
+  发布必须已越过设备完成边界。被拒绝、替换或淘汰的 payload 返回给 owner：页适配器 release
+  cache 自己的引用，独占设备快照由 CUDA 正常销毁。CUDA 保持每 4096 tokens 的发布粒度。
+- matcher 从只读 `PrefixSearch` 取得候选；公共候选迭代器先检查 maximum、完整 token 前缀相等
+  和后端兼容性，再交给策略选择最长候选。CUDA 不需要为了共用生命周期而逐块哈希长 query。
+- 复用按“匹配兼容候选 → 后端获取/恢复 → 成功提交 hit/reused_tokens/LRU”执行。
+  后端返回错误或没有兼容项时，源快照仍在缓存，预算与 LRU 不改变；lookups 记录实际查询尝试。
+  CUDA 的 unknown/poisoned/slot/home/非 logits 状态在查询前排除。
+- hook 的成功边界由后端资源协议定义：共享页是获取有效 lease 后返回句柄，Metal 随后在 command
+  buffer 编码复制；CUDA 当前同步恢复并 drain 后返回。失败时后端须回滚自己的引用/排队工作，
+  或将部分恢复的 destination 标为 poisoned 并 settle 复制，公共层不虚构 GPU fence 完成。
+- 不兼容的长快照不阻止选取较短的兼容快照。CUDA 不再 take/reinsert，也不在兼容性检查前增加 hit。
+  两种 matcher 使用相同 publication、资源 hook、统计和 LRU，扩展策略无需重写整套缓存。
 
 ## 所有权与操作
 
@@ -31,7 +60,7 @@ active 与 cache 可以共享同一块，容量按 unique block 统计；pinned 
 
 - 每层 K/V plane 形状为 `[blocks, block_size, kv_width]`，sequence 用持久页表定位块；conv / delta / hidden / logits 为私有设备 buffer。attention 的 KV 写入与读取分 pass。
 - 写入共享尾页时用 GPU blit 复制各层 K/V，保留源页 pin，然后原子切换写入方页表。失败时恢复旧页表与新增 lease；host 侧发布顺序不能替代 GPU 复制依赖。
-- Prefix namespace 绑定精确 weights、backend、precision、layout 与 token hash-chain。只发布完成 GPU 边界的完整块，并保存对应 conv / delta / readout 状态；命中时共享 KV，并在 GPU 内恢复私有状态，普通路径不读回完整张量。最后 prompt token 需要重算以取得最终 logits。
+- Prefix namespace 绑定精确 weights、backend、precision、layout 与实例内 token 指纹。只发布完成 GPU 边界的完整块，并保存对应 conv / delta / readout 状态；命中时共享 KV，并在 GPU 内恢复私有状态，普通路径不读回完整张量。最后 prompt token 需要重算以取得最终 logits。
 - 缓存受条数 / 字节与 LRU 约束。Full snapshot 可用于 compact Generate，compact snapshot 不支持 Full readout。取消与淘汰独立于活动引用，不能释放仍被 flight 或 CPU reader 使用的状态。
 
 ## Checkpoint 与扩展边界

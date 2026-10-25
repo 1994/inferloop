@@ -17,6 +17,10 @@ path = "tests/cache.rs"
 name = "kv_manager"
 path = "tests/kv_manager.rs"
 
+[[test]]
+name = "prefix_reuse"
+path = "tests/prefix_reuse.rs"
+
 [lints]
 workspace = true
 
