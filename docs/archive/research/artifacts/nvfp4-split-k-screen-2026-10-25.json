@@ -1,0 +1,1458 @@
+{
+  "schema_version": 1,
+  "status": "screen_only_not_production_qualified",
+  "hardware": "NVIDIA GeForce RTX 5090",
+  "driver": "615.78.08",
+  "baseline_source": "6e0859c79d0472edf154316558ba21209cb81200",
+  "experiment_source_commit": "804676374b2e151f5766efc3ff89235406bfb260",
+  "experiment_source_patch_sha256": "0cffa402d143517c9c08625fbe9f6e258e8f637dd96ae1d7343b492b4813f014",
+  "binary_sha256": "72e86887268a5dc85175652b64068626b910725c8c0020abae2edf51a92bb392",
+  "build_command": "BINDGEN_EXTRA_CLANG_ARGS=\"-isystem $(gcc -print-file-name=include)\" cargo test --locked --release -p infer-backend-cuda --features cuda --lib --no-run --message-format=json",
+  "protocol": {
+    "fresh_processes": 3,
+    "warmup_ms": 50,
+    "measurement_ms": 200,
+    "min_repetitions": 10,
+    "max_repetitions": 200,
+    "clear_l2": true,
+    "inputs": "Synthetic packed FP4 activation codes 0x13 and weight codes 0x21, E4M3 scale code 56, alpha 1e-6. Not actual checkpoint weights.",
+    "timing": "CUDA paired event measurements of packed baseline versus packed_split plus sum_splits; activation quantization is excluded equally."
+  },
+  "correctness": {
+    "test": "split_k_matches_independent_reference_with_tails",
+    "result": "1 passed; 0 failed; explicitly selected ignored device test",
+    "shapes": [
+      [
+        3,
+        65,
+        784
+      ],
+      [
+        17,
+        129,
+        512
+      ]
+    ],
+    "splits": [
+      2,
+      3,
+      4,
+      8
+    ],
+    "reference": "Independent signed FP4/E4M3 decode and f64 scalar dot products; existing 1e-4 relative/absolute tolerance; full outputs including row/column/K tails and empty split windows.",
+    "log_sha256": "580a5748b9d95071293c9d543f59df4d002fabc5d6038d62c15868b256a12b27"
+  },
+  "runs": [
+    {
+      "log": "/home/r/benchmarks/inference.rs/pr63-split-k-hsfmwb6l/final-narrow_split_k_performance-0.log",
+      "sha256": "9303adef3f925d01e77888dfa926ae43050ef95e0958e2bee7675315ccc358c7",
+      "samples": [
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            64,
+            128
+          ],
+          "splits": 2,
+          "candidate_ms": 0.048112,
+          "baseline_ms": 0.04144,
+          "latency_ratio": 1.161003861003861
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            64,
+            128
+          ],
+          "splits": 4,
+          "candidate_ms": 0.057776,
+          "baseline_ms": 0.04144,
+          "latency_ratio": 1.3942084942084942
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            64,
+            128
+          ],
+          "splits": 8,
+          "candidate_ms": 0.06944,
+          "baseline_ms": 0.041248,
+          "latency_ratio": 1.6834755624515128
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            16,
+            64
+          ],
+          "splits": 2,
+          "candidate_ms": 0.058096,
+          "baseline_ms": 0.041696,
+          "latency_ratio": 1.393323100537222
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            16,
+            64
+          ],
+          "splits": 4,
+          "candidate_ms": 0.066752,
+          "baseline_ms": 0.041312,
+          "latency_ratio": 1.6158017041053447
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            16,
+            64
+          ],
+          "splits": 8,
+          "candidate_ms": 0.084976,
+          "baseline_ms": 0.041392,
+          "latency_ratio": 2.0529570931580983
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            32,
+            64
+          ],
+          "splits": 2,
+          "candidate_ms": 0.053024,
+          "baseline_ms": 0.041327998,
+          "latency_ratio": 1.2830043207028805
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            32,
+            64
+          ],
+          "splits": 4,
+          "candidate_ms": 0.060816,
+          "baseline_ms": 0.041312,
+          "latency_ratio": 1.4721146398140976
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            32,
+            64
+          ],
+          "splits": 8,
+          "candidate_ms": 0.07904,
+          "baseline_ms": 0.041312,
+          "latency_ratio": 1.9132455460883036
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            64,
+            64
+          ],
+          "splits": 2,
+          "candidate_ms": 0.046048,
+          "baseline_ms": 0.051264,
+          "latency_ratio": 0.8982521847690387
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            64,
+            64
+          ],
+          "splits": 4,
+          "candidate_ms": 0.045408,
+          "baseline_ms": 0.051216,
+          "latency_ratio": 0.8865979381443299
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            64,
+            64
+          ],
+          "splits": 8,
+          "candidate_ms": 0.05168,
+          "baseline_ms": 0.05056,
+          "latency_ratio": 1.0221518987341771
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            16,
+            64
+          ],
+          "splits": 2,
+          "candidate_ms": 0.053168,
+          "baseline_ms": 0.050832,
+          "latency_ratio": 1.045955303745672
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            16,
+            64
+          ],
+          "splits": 4,
+          "candidate_ms": 0.05456,
+          "baseline_ms": 0.050928,
+          "latency_ratio": 1.0713163682060949
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            16,
+            64
+          ],
+          "splits": 8,
+          "candidate_ms": 0.056832,
+          "baseline_ms": 0.052032,
+          "latency_ratio": 1.0922509225092252
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            32,
+            64
+          ],
+          "splits": 2,
+          "candidate_ms": 0.045968,
+          "baseline_ms": 0.05136,
+          "latency_ratio": 0.8950155763239875
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            32,
+            64
+          ],
+          "splits": 4,
+          "candidate_ms": 0.048992,
+          "baseline_ms": 0.051536,
+          "latency_ratio": 0.9506364483079789
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            32,
+            64
+          ],
+          "splits": 8,
+          "candidate_ms": 0.054416,
+          "baseline_ms": 0.051968,
+          "latency_ratio": 1.0471059113300492
+        }
+      ]
+    },
+    {
+      "log": "/home/r/benchmarks/inference.rs/pr63-split-k-hsfmwb6l/final-narrow_split_k_performance-1.log",
+      "sha256": "28c29e9e6ca911c222ea71d1d96441e5f46d30fc69c6aa6f3f857aa1edf69322",
+      "samples": [
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            64,
+            128
+          ],
+          "splits": 2,
+          "candidate_ms": 0.048288,
+          "baseline_ms": 0.041728,
+          "latency_ratio": 1.1572085889570551
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            64,
+            128
+          ],
+          "splits": 4,
+          "candidate_ms": 0.058048,
+          "baseline_ms": 0.041712,
+          "latency_ratio": 1.3916378979670119
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            64,
+            128
+          ],
+          "splits": 8,
+          "candidate_ms": 0.0696,
+          "baseline_ms": 0.041504,
+          "latency_ratio": 1.6769468003084038
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            16,
+            64
+          ],
+          "splits": 2,
+          "candidate_ms": 0.058144,
+          "baseline_ms": 0.0416,
+          "latency_ratio": 1.3976923076923078
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            16,
+            64
+          ],
+          "splits": 4,
+          "candidate_ms": 0.066928,
+          "baseline_ms": 0.04152,
+          "latency_ratio": 1.6119460500963392
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            16,
+            64
+          ],
+          "splits": 8,
+          "candidate_ms": 0.085168004,
+          "baseline_ms": 0.0416,
+          "latency_ratio": 2.0473077884615387
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            32,
+            64
+          ],
+          "splits": 2,
+          "candidate_ms": 0.053216,
+          "baseline_ms": 0.041568,
+          "latency_ratio": 1.2802155504234025
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            32,
+            64
+          ],
+          "splits": 4,
+          "candidate_ms": 0.06104,
+          "baseline_ms": 0.041408,
+          "latency_ratio": 1.474111282843895
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            32,
+            64
+          ],
+          "splits": 8,
+          "candidate_ms": 0.079119995,
+          "baseline_ms": 0.041408,
+          "latency_ratio": 1.9107417648763523
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            64,
+            64
+          ],
+          "splits": 2,
+          "candidate_ms": 0.04608,
+          "baseline_ms": 0.051872,
+          "latency_ratio": 0.8883405305367058
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            64,
+            64
+          ],
+          "splits": 4,
+          "candidate_ms": 0.045568,
+          "baseline_ms": 0.051392,
+          "latency_ratio": 0.8866749688667497
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            64,
+            64
+          ],
+          "splits": 8,
+          "candidate_ms": 0.051776,
+          "baseline_ms": 0.050768,
+          "latency_ratio": 1.0198550267885282
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            16,
+            64
+          ],
+          "splits": 2,
+          "candidate_ms": 0.053312,
+          "baseline_ms": 0.05096,
+          "latency_ratio": 1.0461538461538462
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            16,
+            64
+          ],
+          "splits": 4,
+          "candidate_ms": 0.054656,
+          "baseline_ms": 0.051088,
+          "latency_ratio": 1.0698402756028813
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            16,
+            64
+          ],
+          "splits": 8,
+          "candidate_ms": 0.05696,
+          "baseline_ms": 0.052352,
+          "latency_ratio": 1.0880195599022005
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            32,
+            64
+          ],
+          "splits": 2,
+          "candidate_ms": 0.046112,
+          "baseline_ms": 0.052192,
+          "latency_ratio": 0.8835070508890251
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            32,
+            64
+          ],
+          "splits": 4,
+          "candidate_ms": 0.049104,
+          "baseline_ms": 0.051744,
+          "latency_ratio": 0.9489795918367347
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            32,
+            64
+          ],
+          "splits": 8,
+          "candidate_ms": 0.054528,
+          "baseline_ms": 0.051904,
+          "latency_ratio": 1.0505548705302097
+        }
+      ]
+    },
+    {
+      "log": "/home/r/benchmarks/inference.rs/pr63-split-k-hsfmwb6l/final-narrow_split_k_performance-2.log",
+      "sha256": "e153a0bcb8c084b1ea6a1cc6113d117f57d6d8cb7dfbca90cf9f3625f88d87f1",
+      "samples": [
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            64,
+            128
+          ],
+          "splits": 2,
+          "candidate_ms": 0.048032,
+          "baseline_ms": 0.04144,
+          "latency_ratio": 1.159073359073359
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            64,
+            128
+          ],
+          "splits": 4,
+          "candidate_ms": 0.057664,
+          "baseline_ms": 0.041568,
+          "latency_ratio": 1.3872209391839876
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            64,
+            128
+          ],
+          "splits": 8,
+          "candidate_ms": 0.069408,
+          "baseline_ms": 0.04128,
+          "latency_ratio": 1.6813953488372093
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            16,
+            64
+          ],
+          "splits": 2,
+          "candidate_ms": 0.058048,
+          "baseline_ms": 0.041472,
+          "latency_ratio": 1.3996913580246912
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            16,
+            64
+          ],
+          "splits": 4,
+          "candidate_ms": 0.066752,
+          "baseline_ms": 0.041248,
+          "latency_ratio": 1.618308766485648
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            16,
+            64
+          ],
+          "splits": 8,
+          "candidate_ms": 0.085024,
+          "baseline_ms": 0.041376,
+          "latency_ratio": 2.0549110595514306
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            32,
+            64
+          ],
+          "splits": 2,
+          "candidate_ms": 0.053056,
+          "baseline_ms": 0.04128,
+          "latency_ratio": 1.2852713178294575
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            32,
+            64
+          ],
+          "splits": 4,
+          "candidate_ms": 0.0608,
+          "baseline_ms": 0.04128,
+          "latency_ratio": 1.4728682170542637
+        },
+        {
+          "shape": [
+            48,
+            17408,
+            5120
+          ],
+          "baseline_tile": [
+            64,
+            128
+          ],
+          "candidate_tile": [
+            32,
+            64
+          ],
+          "splits": 8,
+          "candidate_ms": 0.078976,
+          "baseline_ms": 0.041344,
+          "latency_ratio": 1.910216718266254
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            64,
+            64
+          ],
+          "splits": 2,
+          "candidate_ms": 0.046144,
+          "baseline_ms": 0.051424,
+          "latency_ratio": 0.8973242065961419
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            64,
+            64
+          ],
+          "splits": 4,
+          "candidate_ms": 0.04544,
+          "baseline_ms": 0.051119998,
+          "latency_ratio": 0.8888889236654509
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            64,
+            64
+          ],
+          "splits": 8,
+          "candidate_ms": 0.051712,
+          "baseline_ms": 0.050784,
+          "latency_ratio": 1.0182734719596722
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            16,
+            64
+          ],
+          "splits": 2,
+          "candidate_ms": 0.053088,
+          "baseline_ms": 0.051344,
+          "latency_ratio": 1.0339669679027734
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            16,
+            64
+          ],
+          "splits": 4,
+          "candidate_ms": 0.054576,
+          "baseline_ms": 0.051312,
+          "latency_ratio": 1.0636108512628624
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            16,
+            64
+          ],
+          "splits": 8,
+          "candidate_ms": 0.056768,
+          "baseline_ms": 0.052432,
+          "latency_ratio": 1.082697589258468
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            32,
+            64
+          ],
+          "splits": 2,
+          "candidate_ms": 0.046144,
+          "baseline_ms": 0.051584,
+          "latency_ratio": 0.8945409429280397
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            32,
+            64
+          ],
+          "splits": 4,
+          "candidate_ms": 0.049104,
+          "baseline_ms": 0.051744,
+          "latency_ratio": 0.9489795918367347
+        },
+        {
+          "shape": [
+            48,
+            5120,
+            17408
+          ],
+          "baseline_tile": [
+            64,
+            64
+          ],
+          "candidate_tile": [
+            32,
+            64
+          ],
+          "splits": 8,
+          "candidate_ms": 0.054528,
+          "baseline_ms": 0.051904,
+          "latency_ratio": 1.0505548705302097
+        }
+      ]
+    }
+  ],
+  "summary": [
+    {
+      "shape": [
+        48,
+        17408,
+        5120
+      ],
+      "baseline_tile": [
+        64,
+        128
+      ],
+      "candidate_tile": [
+        64,
+        128
+      ],
+      "splits": 2,
+      "mean_paired_latency_ratio": 1.1590952696780918,
+      "min_paired_latency_ratio": 1.1572085889570551,
+      "max_paired_latency_ratio": 1.161003861003861
+    },
+    {
+      "shape": [
+        48,
+        17408,
+        5120
+      ],
+      "baseline_tile": [
+        64,
+        128
+      ],
+      "candidate_tile": [
+        64,
+        128
+      ],
+      "splits": 4,
+      "mean_paired_latency_ratio": 1.391022443786498,
+      "min_paired_latency_ratio": 1.3872209391839876,
+      "max_paired_latency_ratio": 1.3942084942084942
+    },
+    {
+      "shape": [
+        48,
+        17408,
+        5120
+      ],
+      "baseline_tile": [
+        64,
+        128
+      ],
+      "candidate_tile": [
+        64,
+        128
+      ],
+      "splits": 8,
+      "mean_paired_latency_ratio": 1.6806059038657086,
+      "min_paired_latency_ratio": 1.6769468003084038,
+      "max_paired_latency_ratio": 1.6834755624515128
+    },
+    {
+      "shape": [
+        48,
+        17408,
+        5120
+      ],
+      "baseline_tile": [
+        64,
+        128
+      ],
+      "candidate_tile": [
+        16,
+        64
+      ],
+      "splits": 2,
+      "mean_paired_latency_ratio": 1.3969022554180737,
+      "min_paired_latency_ratio": 1.393323100537222,
+      "max_paired_latency_ratio": 1.3996913580246912
+    },
+    {
+      "shape": [
+        48,
+        17408,
+        5120
+      ],
+      "baseline_tile": [
+        64,
+        128
+      ],
+      "candidate_tile": [
+        16,
+        64
+      ],
+      "splits": 4,
+      "mean_paired_latency_ratio": 1.6153521735624439,
+      "min_paired_latency_ratio": 1.6119460500963392,
+      "max_paired_latency_ratio": 1.618308766485648
+    },
+    {
+      "shape": [
+        48,
+        17408,
+        5120
+      ],
+      "baseline_tile": [
+        64,
+        128
+      ],
+      "candidate_tile": [
+        16,
+        64
+      ],
+      "splits": 8,
+      "mean_paired_latency_ratio": 2.051725313723689,
+      "min_paired_latency_ratio": 2.0473077884615387,
+      "max_paired_latency_ratio": 2.0549110595514306
+    },
+    {
+      "shape": [
+        48,
+        17408,
+        5120
+      ],
+      "baseline_tile": [
+        64,
+        128
+      ],
+      "candidate_tile": [
+        32,
+        64
+      ],
+      "splits": 2,
+      "mean_paired_latency_ratio": 1.28283039631858,
+      "min_paired_latency_ratio": 1.2802155504234025,
+      "max_paired_latency_ratio": 1.2852713178294575
+    },
+    {
+      "shape": [
+        48,
+        17408,
+        5120
+      ],
+      "baseline_tile": [
+        64,
+        128
+      ],
+      "candidate_tile": [
+        32,
+        64
+      ],
+      "splits": 4,
+      "mean_paired_latency_ratio": 1.4730313799040855,
+      "min_paired_latency_ratio": 1.4721146398140976,
+      "max_paired_latency_ratio": 1.474111282843895
+    },
+    {
+      "shape": [
+        48,
+        17408,
+        5120
+      ],
+      "baseline_tile": [
+        64,
+        128
+      ],
+      "candidate_tile": [
+        32,
+        64
+      ],
+      "splits": 8,
+      "mean_paired_latency_ratio": 1.9114013430769698,
+      "min_paired_latency_ratio": 1.910216718266254,
+      "max_paired_latency_ratio": 1.9132455460883036
+    },
+    {
+      "shape": [
+        48,
+        5120,
+        17408
+      ],
+      "baseline_tile": [
+        64,
+        64
+      ],
+      "candidate_tile": [
+        64,
+        64
+      ],
+      "splits": 2,
+      "mean_paired_latency_ratio": 0.8946389739672954,
+      "min_paired_latency_ratio": 0.8883405305367058,
+      "max_paired_latency_ratio": 0.8982521847690387
+    },
+    {
+      "shape": [
+        48,
+        5120,
+        17408
+      ],
+      "baseline_tile": [
+        64,
+        64
+      ],
+      "candidate_tile": [
+        64,
+        64
+      ],
+      "splits": 4,
+      "mean_paired_latency_ratio": 0.8873872768921768,
+      "min_paired_latency_ratio": 0.8865979381443299,
+      "max_paired_latency_ratio": 0.8888889236654509
+    },
+    {
+      "shape": [
+        48,
+        5120,
+        17408
+      ],
+      "baseline_tile": [
+        64,
+        64
+      ],
+      "candidate_tile": [
+        64,
+        64
+      ],
+      "splits": 8,
+      "mean_paired_latency_ratio": 1.0200934658274592,
+      "min_paired_latency_ratio": 1.0182734719596722,
+      "max_paired_latency_ratio": 1.0221518987341771
+    },
+    {
+      "shape": [
+        48,
+        5120,
+        17408
+      ],
+      "baseline_tile": [
+        64,
+        64
+      ],
+      "candidate_tile": [
+        16,
+        64
+      ],
+      "splits": 2,
+      "mean_paired_latency_ratio": 1.0420253726007638,
+      "min_paired_latency_ratio": 1.0339669679027734,
+      "max_paired_latency_ratio": 1.0461538461538462
+    },
+    {
+      "shape": [
+        48,
+        5120,
+        17408
+      ],
+      "baseline_tile": [
+        64,
+        64
+      ],
+      "candidate_tile": [
+        16,
+        64
+      ],
+      "splits": 4,
+      "mean_paired_latency_ratio": 1.0682558316906128,
+      "min_paired_latency_ratio": 1.0636108512628624,
+      "max_paired_latency_ratio": 1.0713163682060949
+    },
+    {
+      "shape": [
+        48,
+        5120,
+        17408
+      ],
+      "baseline_tile": [
+        64,
+        64
+      ],
+      "candidate_tile": [
+        16,
+        64
+      ],
+      "splits": 8,
+      "mean_paired_latency_ratio": 1.0876560238899646,
+      "min_paired_latency_ratio": 1.082697589258468,
+      "max_paired_latency_ratio": 1.0922509225092252
+    },
+    {
+      "shape": [
+        48,
+        5120,
+        17408
+      ],
+      "baseline_tile": [
+        64,
+        64
+      ],
+      "candidate_tile": [
+        32,
+        64
+      ],
+      "splits": 2,
+      "mean_paired_latency_ratio": 0.8910211900470174,
+      "min_paired_latency_ratio": 0.8835070508890251,
+      "max_paired_latency_ratio": 0.8950155763239875
+    },
+    {
+      "shape": [
+        48,
+        5120,
+        17408
+      ],
+      "baseline_tile": [
+        64,
+        64
+      ],
+      "candidate_tile": [
+        32,
+        64
+      ],
+      "splits": 4,
+      "mean_paired_latency_ratio": 0.9495318773271495,
+      "min_paired_latency_ratio": 0.9489795918367347,
+      "max_paired_latency_ratio": 0.9506364483079789
+    },
+    {
+      "shape": [
+        48,
+        5120,
+        17408
+      ],
+      "baseline_tile": [
+        64,
+        64
+      ],
+      "candidate_tile": [
+        32,
+        64
+      ],
+      "splits": 8,
+      "mean_paired_latency_ratio": 1.0494052174634896,
+      "min_paired_latency_ratio": 1.0471059113300492,
+      "max_paired_latency_ratio": 1.0505548705302097
+    }
+  ],
+  "decision": "Do not enable a general split-K default. Gate projection regresses across every tested candidate. Down-only candidates are promising microbenchmarks; require actual-weight selection, resource accounting, serving measurement, and task quality validation before production.",
+  "limitations": [
+    "Three process screening, not the baseline contract five-pair formal qualification.",
+    "No serving performance or task quality claim; production graph remains unchanged.",
+    "Earlier failed attempts retained in remote evidence directory; final runs all passed."
+  ],
+  "remote_evidence_root": "/home/r/benchmarks/inference.rs/pr63-split-k-hsfmwb6l",
+  "archive_scope": "Evidence only. Experimental kernel/test changes are retained at experiment_source_commit in this PR history; the final production tree matches main.",
+  "validation": {
+    "fmt": {
+      "exit_code": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "rust": {
+      "exit_code": 0,
+      "sha256": "60db45643667beba4180f67b38a5095d4b33836d82fc04497dc146cfd5b45580"
+    },
+    "cuda-hosted": {
+      "exit_code": 0,
+      "sha256": "19c255bd1538d5cb0c8d6686776e78833b411cde58af48e3a9a02d28cd88b16d"
+    },
+    "full_cuda_device_gate": "Not rerun for this evidence-only final diff; selected independent-reference GPU test and three microbenchmark processes ran successfully."
+  }
+}
