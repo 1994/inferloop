@@ -351,3 +351,30 @@ fn async_abandoned_ticket_keeps_state_owned_until_backend_drop() -> TestResult {
     block_on(device.fence())?;
     Ok(())
 }
+
+#[test]
+#[ignore = "real 2B checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL"]
+fn async_fatal_completion_reports_error_and_retains_flight() -> TestResult {
+    let (mut backend, program, states) = fixture(0, &[OutputReadout::Logits])?;
+    let tasks = tasks(&backend, &states, 0)?;
+    let plan = plan(&backend, &program, &tasks)?;
+    let device = backend.ready.as_ref().unwrap().loaded.device().clone();
+    let gate = Gate::new(&device)?;
+    let mut ticket = backend.submit_borrowed(&program, &plan, &tasks)?;
+    // Simulate the owner observing a driver/fence failure while DMA is still pending.
+    backend.fatal = Some(Error::new(ErrorCode::Backend, "test completion failure"));
+    let error = backend.poll(&mut ticket).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Backend);
+    assert_eq!(
+        backend.poll(&mut ticket).unwrap_err().code,
+        ErrorCode::InvalidInput
+    );
+    assert!(!backend.control_ready());
+    assert!(backend.running.is_some());
+    assert!(backend.release_state(states[0]).is_err());
+    assert!(backend.reset_state(states[0]).is_err());
+    gate.open();
+    drop(backend);
+    block_on(device.fence())?;
+    Ok(())
+}

@@ -181,6 +181,10 @@ impl BackendProvider for CudaBackend {
             return Err(Error::invalid("foreign or consumed CUDA completion"));
         }
         self.progress()?;
+        if let Some(error) = &self.fatal {
+            ticket.state = TicketState::Consumed;
+            return Err(error.clone());
+        }
         let Some(result) = self.view.result.take() else {
             return Ok(None);
         };
