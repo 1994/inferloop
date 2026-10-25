@@ -22,6 +22,9 @@ use infer_core::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+const CACHE_STATES: usize = 2;
+const MEASUREMENT_ARMS: usize = 2;
+
 /// Kernel identity in the persistent table. Change when the packed kernel's arithmetic changes.
 const KERNEL_ID: &str = concat!("packed-swiglu-v1/", env!("CARGO_PKG_VERSION"));
 /// Fixed overhead for one shape's bookkeeping and launch setup.
