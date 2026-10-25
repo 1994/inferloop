@@ -13,6 +13,7 @@ use crate::constants::INACTIVE_LANE_STATE_POSITION;
 use crate::constants::MAX_VERIFICATION_WIDTH;
 use crate::constants::METADATA_FIELDS;
 use crate::constants::MIB;
+use crate::device::PinnedUpload;
 use crate::device::Readbacks;
 use crate::device::{CudaDevice, ReadbackSource, device_error};
 use cutile::prelude::*;
@@ -44,6 +45,7 @@ pub(super) struct SlotVerifyGraph {
     token_readout: Option<super::token_readout::TokenReadout>,
     metadata_owner: Tensor<i32>,
     metadata_upload: Vec<i32>,
+    metadata_staging: PinnedUpload<i32>,
     hidden: Arc<Tensor<f32>>,
     logits: Arc<Tensor<f32>>,
     /// Slot state sets the graph interleaves.
@@ -572,6 +574,7 @@ impl BatchBuilder<'_> {
             readbacks: Readbacks::contiguous(self.device, &hidden, &logits, lanes)?,
             metadata_owner,
             metadata_upload: Vec::with_capacity(lanes * METADATA_FIELDS),
+            metadata_staging: PinnedUpload::single(self.device, lanes * METADATA_FIELDS)?,
             hidden,
             logits,
             slots,
@@ -619,7 +622,8 @@ impl SlotVerifyGraph {
             };
             self.metadata_upload.extend_from_slice(&values);
         }
-        device.copy_host_slice(&mut self.metadata_owner, &self.metadata_upload)?;
+        self.metadata_staging
+            .copy(device, &mut self.metadata_owner, &self.metadata_upload)?;
         let hidden_size = self.hidden.size() / total;
         let vocabulary = self.logits.size() / total;
         let mut sources = Vec::with_capacity(2 * total);

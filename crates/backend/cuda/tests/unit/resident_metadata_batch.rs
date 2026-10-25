@@ -2,7 +2,7 @@ use super::{PromptOverrides, stage_metadata_batch};
 use crate::resident::arena::batch_rows;
 use crate::{
     constants::{METADATA_FIELDS, PREFILL_LANES},
-    device::{CudaDevice, device_error},
+    device::{CudaDevice, PinnedUpload, device_error},
 };
 use cutile::prelude::*;
 use infer_core::Result;
@@ -19,7 +19,7 @@ fn allocate_owner(device: &CudaDevice) -> Result<Tensor<i32>> {
 fn stage(
     device: &CudaDevice,
     owner: &mut Tensor<i32>,
-    upload: &mut Vec<i32>,
+    upload: &mut (Vec<i32>, PinnedUpload<i32>),
     tokens: &[u32],
     position: usize,
     flags: &[bool],
@@ -27,7 +27,7 @@ fn stage(
     stage_metadata_batch(
         device,
         owner,
-        upload,
+        (&mut upload.0, &mut upload.1),
         PREFILL_LANES,
         CAPACITY,
         tokens,
@@ -81,7 +81,7 @@ fn metadata_batch_full_tail_and_media_flags_round_trip() -> Result<()> {
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
     let mut owner = allocate_owner(&device)?;
-    let mut upload = Vec::new();
+    let mut upload = (Vec::new(), PinnedUpload::chain(&device, owner.size())?);
 
     // Full media chunk: sparse external-embedding lanes and every metadata field distinct.
     let media_tokens: Vec<u32> = (1000..1032).collect();
@@ -104,7 +104,7 @@ fn metadata_batch_full_tail_and_media_flags_round_trip() -> Result<()> {
     )?;
 
     // Phase 2: a full text chunk followed immediately by a 5-token tail. Neither transfer is
-    // drained or read back before the next one, so the pageable staging buffer is reused.
+    // drained before the next one; distinct pinned ring cells retain both sources.
     let full_tokens: Vec<u32> = (2000..2032).collect();
     let no_flags = vec![false; PREFILL_LANES];
     stage(
@@ -115,6 +115,8 @@ fn metadata_batch_full_tail_and_media_flags_round_trip() -> Result<()> {
         132,
         &no_flags,
     )?;
+    let mut first = allocate_owner(&device)?;
+    device.copy_d2d(&mut first, &owner, owner.size())?;
     let tail_tokens: Vec<u32> = (3000..3005).collect();
     let mut tail_flags = vec![false; PREFILL_LANES];
     tail_flags[2] = true;
@@ -127,6 +129,7 @@ fn metadata_batch_full_tail_and_media_flags_round_trip() -> Result<()> {
         164,
         &tail_flags,
     )?;
+    assert_metadata_rows(&device.read_borrowed(&first)?, 132, &full_tokens, &no_flags)?;
     assert_metadata_rows(
         &device.read_borrowed(&owner)?,
         164,

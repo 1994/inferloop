@@ -1,11 +1,10 @@
 use super::ActivationArena;
 use crate::device::ReadbackSource;
-use crate::device::Readbacks;
 use crate::device::asynchronous::block_on;
 use crate::device::cublaslt::Support;
+use crate::device::{PinnedUpload, Readbacks};
 use crate::tuning::gated_norm::prepare;
 use crate::tuning::resident_gemm::ResidentTuningSession;
-use cuda_core::{CudaContext, PinnedHostBuffer};
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -31,6 +30,11 @@ type SlotState = (
     super::batch::States,
     super::fp8_cache::Fp8Caches,
     Tensor<i32>,
+);
+type InitialState = (
+    super::batch::States,
+    super::fp8_cache::Fp8Caches,
+    Option<Tensor<i32>>,
 );
 
 pub struct FusionWeights {
@@ -186,11 +190,11 @@ pub struct DeviceProgram {
     delegated: Support,
     attention: super::attention_decode::Workspace,
     external: Tensor<f32>,
-    external_staging: Option<PinnedHostBuffer<f32>>,
-    prime_readbacks: Readbacks,
+    uploads: ProgramUploads,
     // Declared after the graphs: the state tensors outlive every capture that references them,
     // and prefix caching reads them back for snapshots.
     states: super::batch::States,
+    kv_states: BTreeSet<TensorId>,
     fp8_states: super::fp8_cache::Fp8Caches,
     lane_external: Vec<Tensor<f32>>,
     // Mutable upload handle for one contiguous external hidden per prompt lane. Every row in
@@ -230,17 +234,16 @@ impl ExternalInput<'_> {
         self,
         device: &CudaDevice,
         destination: &mut Tensor<f32>,
-        staging: Option<&mut PinnedHostBuffer<f32>>,
+        staging: Option<&mut PinnedUpload<f32>>,
     ) -> Result<()> {
         match self {
             Self::Host(values) => {
                 let staging =
                     staging.ok_or_else(|| Error::invariant("external hidden pinned staging"))?;
-                if values.len() != staging.len() {
+                if values.len() != destination.size() {
                     return Err(Error::invalid("external hidden shape"));
                 }
-                staging.as_mut_slice().copy_from_slice(values);
-                device.copy_h2d_pinned(destination, staging, values.len())
+                staging.copy(device, destination, values)
             }
             Self::Device(tensor) => {
                 if tensor.device_id() != device.stream.device().ordinal() {
@@ -368,6 +371,12 @@ fn copy_prefix<T: DType>(
     if let Some((rows, capacity)) = kv {
         if shape.len() != KV_CACHE_RANK || usize::try_from(shape[1]).ok() != Some(capacity) {
             return Err(Error::invariant("program KV copy layout"));
+        }
+        if rows > capacity {
+            return Err(Error::invalid("program KV copy exceeds capacity"));
+        }
+        if rows == 0 {
+            return Ok(());
         }
         let heads = usize::try_from(shape[0]).map_err(device_error)?;
         let dim = usize::try_from(shape[2]).map_err(device_error)?;
@@ -585,9 +594,11 @@ impl DeviceProgram {
             if from.len() != tensors.len() {
                 return Err(Error::invariant("program state copy layout"));
             }
-            // Recurrent and unscaled caches move whole: only FP8 caches are known to be KV.
+            // StateKind supplies the layout contract for unscaled KV as well as FP8.
+            // Recurrent state moves whole; untouched KV tails are never read by attention.
+            let kv = self.kv_states.contains(id).then_some((rows, self.capacity));
             for (dst, src) in tensors.iter_mut().zip(from) {
-                copy_prefix(device, dst, src, None)?;
+                copy_prefix(device, dst, src, kv)?;
             }
         }
         for (id, (keys, values)) in &mut self.fp8_states {
@@ -734,14 +745,8 @@ impl DeviceProgram {
         let activation_bytes = arena.bytes();
         let (mut nvfp4, mut delegated, mut attention) =
             Self::program_workspaces(device, graph, weights, geometry, capacity, forward_captured)?;
-        let (mut states, mut fp8_states, slot_table) = match slot {
-            Some((states, fp8, table)) => (states, fp8, Some(table)),
-            None => (
-                allocate_states(device, graph, capacity, weights)?,
-                super::fp8_cache::allocate(device, graph, capacity, &weights.kv_scales)?,
-                None,
-            ),
-        };
+        let (mut states, mut fp8_states, slot_table) =
+            initial_state(device, graph, weights, capacity, slot)?;
         let (metadata, external, identity) = Self::constant_inputs(device, hidden, capacity)?;
         // A slot program addresses its slot's KV blocks through the slot's own table.
         let table = slot_table.unwrap_or(identity);
@@ -803,13 +808,18 @@ impl DeviceProgram {
             readbacks: Readbacks::pair(device, &readouts.hidden, &readouts.logits)?,
             prefill: captures.prefill,
             metadata,
-            external_staging: external_staging(device, external.size(), weights.fusion.as_ref())?,
+            uploads: ProgramUploads::new(
+                device,
+                external.size(),
+                lane_external_owner.size(),
+                weights.fusion.as_ref(),
+            )?,
             external,
             lane_external,
             lane_external_owner,
-            prime_readbacks: Readbacks::allocated(device, prime_previous.size())?,
             prime_previous,
             states,
+            kv_states: attention_states(graph),
             fp8_states,
             lane_fusion,
             reset_graph,
@@ -1042,7 +1052,7 @@ impl DeviceProgram {
             external.update(
                 &self.device,
                 &mut self.external,
-                self.external_staging.as_mut(),
+                self.uploads.external.as_mut(),
             )?;
         }
         Ok(())
@@ -1281,7 +1291,11 @@ impl DeviceProgram {
             return Err(Error::invalid("draft priming rows"));
         }
         if let Some(row) = previous {
-            self.device.copy_host_slice(&mut self.prime_previous, row)?;
+            ExternalInput::Host(row).update(
+                &self.device,
+                &mut self.prime_previous,
+                self.uploads.external.as_mut(),
+            )?;
         } else if position == 0 {
             self.device
                 .copy_d2d_at(&mut self.prime_previous, rows, 0, 0, hidden)?;
@@ -1341,7 +1355,7 @@ impl DeviceProgram {
         &mut self,
     ) -> impl Future<Output = Result<Vec<f32>>> + Send + '_ {
         self.device
-            .read_async(&self.prime_previous, &mut self.prime_readbacks)
+            .read_async(&self.prime_previous, &mut self.uploads.prime)
     }
 
     /// Ingest a prompt chunk with one external hidden per lane, as a fused draft needs.
@@ -1376,10 +1390,12 @@ impl DeviceProgram {
         // graph rebinds per chunk; row order and draft state order are unchanged. `&mut self`
         // excludes concurrent uploads/replays, and the copy stays on the device stream ahead of
         // the prompt replay, so the shared owner obeys the same exclusivity contract as before.
-        self.device
-            .copy_host_slice(&mut self.lane_external_owner, externals)?;
-        // The source slice is only borrowed for this call. Drain the same stream before
-        // returning so no pageable host range can outlive its backing allocation.
+        self.uploads
+            .lanes
+            .as_mut()
+            .ok_or_else(|| Error::invariant("draft prompt pinned staging"))?
+            .copy(&self.device, &mut self.lane_external_owner, externals)?;
+        // Replay completion fences this pinned source before the next prompt upload.
         let narrow_fits = self.prefers_narrow_prompt(tokens.len());
         let batch = if narrow_fits {
             self.prompt_narrow.take()
@@ -1802,12 +1818,62 @@ fn external_staging(
     device: &CudaDevice,
     hidden: usize,
     fusion: Option<&FusionWeights>,
-) -> Result<Option<PinnedHostBuffer<f32>>> {
+) -> Result<Option<PinnedUpload<f32>>> {
     if fusion.is_none() {
         return Ok(None);
     }
-    let context = CudaContext::new(device.stream.device().ordinal()).map_err(device_error)?;
-    PinnedHostBuffer::zeroed(&context, hidden)
-        .map(Some)
-        .map_err(device_error)
+    PinnedUpload::single(device, hidden).map(Some)
+}
+
+fn initial_state(
+    device: &CudaDevice,
+    graph: &DataflowGraph,
+    weights: &ProgramWeights,
+    capacity: usize,
+    slot: Option<SlotState>,
+) -> Result<InitialState> {
+    match slot {
+        Some((states, fp8, table)) => Ok((states, fp8, Some(table))),
+        None => Ok((
+            allocate_states(device, graph, capacity, weights)?,
+            super::fp8_cache::allocate(device, graph, capacity, &weights.kv_scales)?,
+            None,
+        )),
+    }
+}
+
+struct ProgramUploads {
+    external: Option<PinnedUpload<f32>>,
+    lanes: Option<PinnedUpload<f32>>,
+    prime: Readbacks,
+}
+impl ProgramUploads {
+    fn new(
+        device: &CudaDevice,
+        hidden: usize,
+        lanes: usize,
+        fusion: Option<&FusionWeights>,
+    ) -> Result<Self> {
+        Ok(Self {
+            external: external_staging(device, hidden, fusion)?,
+            lanes: external_staging(device, lanes, fusion)?,
+            prime: Readbacks::allocated(device, hidden)?,
+        })
+    }
+}
+fn attention_states(graph: &DataflowGraph) -> BTreeSet<TensorId> {
+    graph
+        .tensors
+        .iter()
+        .filter_map(|spec| {
+            matches!(
+                spec.storage,
+                TensorStorage::State {
+                    kind: StateKind::AttentionKv,
+                    ..
+                }
+            )
+            .then_some(spec.id)
+        })
+        .collect()
 }

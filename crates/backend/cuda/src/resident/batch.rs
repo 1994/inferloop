@@ -24,9 +24,9 @@ use crate::constants::PREFILL_SPLIT_K;
 use crate::constants::WIDE_PREFILL_LANES;
 use crate::constants::WIDER_PREFILL_LANES;
 use crate::constants::WIDEST_PREFILL_LANES;
-use crate::device::Readbacks;
 use crate::device::cublaslt::Support;
 use crate::device::{CudaDevice, ReadbackSource, device_error};
+use crate::device::{PinnedUpload, Readbacks};
 use crate::mlp::ProjectionWeight;
 use cutile::prelude::*;
 use infer_core::{Error, ErrorCode, Result, TensorId};
@@ -126,12 +126,10 @@ pub(super) struct BatchGraph {
     metadata: Vec<Tensor<i32>>,
     /// Owner of the batched metadata rows when the prompt graph uses one allocation.
     metadata_owner: Option<Tensor<i32>>,
-    /// Host staging for one prompt chunk's metadata; the device copy is ordered before replay.
-    ///
-    /// This must stay a pageable `Vec`: `copy_host_slice` stages pageable host memory before
-    /// returning, so the next chunk can overwrite it without draining the stream. Do not switch
-    /// to a pinned ring without an explicit completion barrier before the next reuse.
+    /// Prompt replay is awaited before either pinned staging owner is reused.
     metadata_upload: Vec<i32>,
+    metadata_staging: PinnedUpload<i32>,
+    rotary_staging: PinnedUpload<i32>,
     prefill_info: Option<Tensor<i32>>,
     /// Per-lane `(t, h, w)` rotary coordinates for prompt chunks; absent below prefill width 32.
     prefill_rotary: Option<Tensor<i32>>,
@@ -186,6 +184,7 @@ pub(super) struct SlotDecodeGraph {
     token_readout: Option<super::token_readout::TokenReadout>,
     metadata_owner: Tensor<i32>,
     metadata_upload: Vec<i32>,
+    metadata_staging: PinnedUpload<i32>,
     // Batched hidden rows stay allocated for the graph's writes but are never read back.
     hidden: Arc<Tensor<f32>>,
     pub(super) external_hidden: bool,
@@ -314,6 +313,7 @@ impl BatchBuilder<'_> {
             readbacks: Readbacks::contiguous(self.device, &hidden, &logits, width)?,
             metadata_owner,
             metadata_upload: Vec::with_capacity(width * METADATA_FIELDS),
+            metadata_staging: PinnedUpload::chain(self.device, width * METADATA_FIELDS)?,
             hidden,
             external_hidden: self.weights.fusion.is_some(),
             logits,
@@ -566,7 +566,9 @@ impl BatchBuilder<'_> {
             prefill_rotary: None,
             metadata,
             metadata_owner: None,
-            metadata_upload: Vec::new(),
+            metadata_upload: Vec::with_capacity(self.width * METADATA_FIELDS),
+            metadata_staging: PinnedUpload::single(self.device, self.width * METADATA_FIELDS)?,
+            rotary_staging: PinnedUpload::single(self.device, self.width * ROTARY_AXES)?,
             hidden,
             logits,
             width,
@@ -660,7 +662,9 @@ impl BatchBuilder<'_> {
             prefill_rotary,
             metadata,
             metadata_owner: Some(metadata_owner),
-            metadata_upload: Vec::new(),
+            metadata_upload: Vec::with_capacity(self.width * METADATA_FIELDS),
+            metadata_staging: PinnedUpload::single(self.device, self.width * METADATA_FIELDS)?,
+            rotary_staging: PinnedUpload::single(self.device, self.width * ROTARY_AXES)?,
             hidden,
             logits,
             width: self.width,
@@ -1700,7 +1704,7 @@ impl BatchGraph {
         stage_metadata_batch(
             device,
             owner,
-            &mut self.metadata_upload,
+            (&mut self.metadata_upload, &mut self.metadata_staging),
             self.width,
             self.capacity,
             tokens,
@@ -1906,7 +1910,7 @@ impl BatchGraph {
             values[base + 1] = i32::try_from(axes[1]).map_err(device_error)?;
             values[base + 2] = i32::try_from(axes[2]).map_err(device_error)?;
         }
-        device.copy_host_slice(table, &values)
+        self.rotary_staging.copy(device, table, &values)
     }
 
     /// Replay one prompt chunk whose media lanes carry precomputed embeddings.
@@ -1999,10 +2003,8 @@ impl BatchGraph {
 
 /// Stage one prompt chunk's batched metadata rows into their existing owner.
 ///
-/// The transfer deliberately has no drain or readback: `metadata_upload` is pageable, and
-/// `copy_host_slice` stages a pageable source before returning, so the next chunk may reuse
-/// the same host buffer on the same stream. A pinned source would need a completion barrier
-/// here before `upload` could be overwritten.
+/// The pinned source remains owned by the graph. The caller awaits replay completion
+/// before the next prompt chunk can overwrite this staging storage.
 #[expect(
     clippy::too_many_arguments,
     reason = "The staging contract names each launch scalar explicitly instead of hiding them"
@@ -2010,7 +2012,7 @@ impl BatchGraph {
 fn stage_metadata_batch(
     device: &CudaDevice,
     owner: &mut Tensor<i32>,
-    upload: &mut Vec<i32>,
+    (upload, staging): (&mut Vec<i32>, &mut PinnedUpload<i32>),
     width: usize,
     capacity: usize,
     tokens: &[u32],
@@ -2024,7 +2026,7 @@ fn stage_metadata_batch(
     for row in rows {
         upload.extend_from_slice(&row);
     }
-    device.copy_host_slice(owner, upload)
+    staging.copy(device, owner, upload)
 }
 
 /// One active lane of a slot decode replay: slot index, token, `RoPE` position, state position.
@@ -2139,7 +2141,8 @@ impl SlotDecodeGraph {
             capacity,
             vocabulary,
         )?;
-        device.copy_host_slice(&mut self.metadata_owner, &self.metadata_upload)?;
+        self.metadata_staging
+            .copy(device, &mut self.metadata_owner, &self.metadata_upload)?;
         let vocabulary = self.logits.size() / self.width;
         let mut sources = Vec::with_capacity(2 * lanes.len());
         for &(slot, ..) in lanes {
@@ -2231,7 +2234,8 @@ impl SlotDecodeGraph {
             capacity,
             vocabulary,
         )?;
-        device.copy_host_slice(&mut self.metadata_owner, &self.metadata_upload)?;
+        self.metadata_staging
+            .copy(device, &mut self.metadata_owner, &self.metadata_upload)?;
         // SAFETY: the engine is single-stream, so this replay is ordered after the staged
         // metadata and uploads and before any later replay; every buffer it touches is
         // pool-owned, and the pool's drop barrier drains the stream before anything frees.

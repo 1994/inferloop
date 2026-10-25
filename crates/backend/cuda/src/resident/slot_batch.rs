@@ -13,6 +13,7 @@ use crate::constants::CB_DECODE_SLOTS;
 use crate::constants::F32_BYTES;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::MAX_VERIFICATION_WIDTH;
+use crate::device::PinnedUpload;
 #[cfg(test)]
 use crate::device::asynchronous::block_on;
 use crate::device::{CudaDevice, DeviceProfile, device_error};
@@ -186,6 +187,7 @@ pub struct SlotPool {
     fp8: Vec<Fp8Caches>,
     /// Per-slot identity block tables; declared with the states so they outlive the captures.
     tables: Vec<Tensor<i32>>,
+    table_staging: PinnedUpload<i32>,
     plan: Vec<(TensorId, SlotCopy)>,
     /// Shared physical KV blocks behind every slot's table, when the pool pages its KV.
     paging: Option<Paging>,
@@ -385,6 +387,7 @@ impl SlotPool {
             states,
             fp8,
             tables,
+            table_staging: PinnedUpload::slots(device, capacity.div_ceil(KV_BLOCK_TOKENS))?,
             plan,
             paging,
             leases: SlotLedger::new(width),
@@ -681,7 +684,7 @@ impl SlotPool {
         // Positions past the request's reach never resolve; point them at its first block.
         let mut entries = owned.clone();
         entries.resize(table.size(), owned[0]);
-        device.copy_host_slice(table, &entries)?;
+        self.table_staging.copy(device, table, &entries)?;
         Ok(true)
     }
 

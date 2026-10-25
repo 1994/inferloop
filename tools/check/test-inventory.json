@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 307
+      "tests": 308
     },
     "frontdoor": {
       "benches": 0,
@@ -179,7 +179,7 @@
     "requires CUDA hardware; run explicitly inside tools/bench/safe-run.sh": 5,
     "requires CUDA hardware; run inside safe-run": 26,
     "requires CUDA hardware; run release inside safe-run": 1,
-    "requires CUDA hardware; run under safe-run": 28,
+    "requires CUDA hardware; run under safe-run": 29,
     "requires CUDA hardware; run under safe-run in release": 1,
     "requires CUDA hardware; weak decay and correlated K expose unstable inverse construction": 1,
     "requires CUDA, INFER_TEST_MODEL and INFER_TEST_TOKENS (JSON token array)": 1,
@@ -1212,11 +1212,11 @@
     }
   ],
   "totals": {
-    "all": 846,
+    "all": 847,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 846
+    "tests": 847
   }
 }
