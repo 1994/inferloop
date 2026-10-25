@@ -1,4 +1,4 @@
-use super::{CudaBackend, CudaTicket, ModelOutput, Sequence, SlotLease, Speculation, prefix};
+use super::{CudaExecutor, ModelOutput, Sequence, SlotLease, Speculation, prefix};
 use crate::constants::CB_DECODE_SLOTS;
 use crate::constants::CB_SLOT_TOKENS;
 use crate::constants::MIB;
@@ -9,14 +9,11 @@ use crate::device::CudaDevice;
 use crate::loading::{LoadedModel, PooledServingQuote};
 use crate::resident::slot_batch::SlotPool;
 use infer_core::{Error, ErrorCode, Result, StateId};
-use infer_ir::{
-    ExecutionInput, ExecutionProgram, ExecutionTask, OutputReadout, StepPlan, TaskOutput,
-};
+use infer_ir::{ExecutionInput, ExecutionTask, OutputReadout, TaskOutput};
 use std::collections::BTreeMap;
 use std::mem::swap;
 use std::mem::take;
 use std::ops::Range;
-use std::sync::Arc;
 /// Bound capture/replan work while adapting tensor quotes to observed driver storage.
 const POOL_CAPTURE_ATTEMPTS: usize = 3;
 
@@ -25,10 +22,10 @@ const POOL_CAPTURE_ATTEMPTS: usize = 3;
 /// Returns `None` unless the sequence is a logits-readout generation that just consumed prefill
 /// tokens at a cacheable granularity. Capture head-major KV rows and complete recurrent
 /// and draft state so restoration resumes the same inference trajectory.
-fn cacheable_prefix(
+async fn cacheable_prefix(
     device: &CudaDevice,
     loaded: &LoadedModel,
-    state: &Sequence,
+    state: &mut Sequence,
     task: &ExecutionTask,
 ) -> Option<prefix::CachedPrefix> {
     if state.poisoned
@@ -48,21 +45,23 @@ fn cacheable_prefix(
     {
         return None;
     }
-    let target = super::prefix_state::ProgramSnapshot::capture(
+    let target = super::prefix_state::ProgramSnapshot::capture_async(
         device,
         &state.program,
         loaded.graph(),
         covered,
     )
+    .await
     .ok()?;
-    let draft = if let Some(spec) = &state.speculation {
+    let draft = if let Some(spec) = &mut state.speculation {
         Some(super::prefix_state::DraftSnapshot {
-            program: super::prefix_state::ProgramSnapshot::capture(
+            program: super::prefix_state::ProgramSnapshot::capture_async(
                 device,
                 &spec.program,
                 loaded.draft_graph()?,
                 covered.saturating_sub(MTP_KV_OFFSET),
             )
+            .await
             .ok()?,
             hidden: spec.last_hidden.clone(),
         })
@@ -84,31 +83,11 @@ struct PoolPlan {
     quote: PooledServingQuote,
 }
 
-impl CudaBackend {
-    pub(super) fn execute(
-        &mut self,
-        program: &ExecutionProgram,
-        step: &StepPlan,
-        tasks: &[ExecutionTask],
-    ) -> Result<CudaTicket> {
-        self.check_tasks(program, step, tasks)?;
-        let profile = super::profiling::StepProfile::start(self, tasks);
-        let phases = super::profiling::PhaseScope::install(profile.is_some());
+impl CudaExecutor {
+    pub(super) async fn execute(&mut self, tasks: &[ExecutionTask]) -> Result<Vec<TaskOutput>> {
         self.busy = true;
-        // Snapshots are collected while a sequence is mutably borrowed and inserted afterwards,
-        // so the cache borrow never overlaps the state borrow.
         let mut snapshots: Vec<prefix::CachedPrefix> = Vec::new();
-        // From here every failure belongs to the ticket, including partially executed batches.
-        let result = self.run_grouped(tasks, &mut snapshots);
-        if let Some(profile) = profile {
-            let recorded = phases.map(super::profiling::PhaseScope::finish);
-            profile.finish(
-                self,
-                tasks,
-                result.as_ref().ok().map(Vec::as_slice),
-                recorded.unwrap_or_default(),
-            );
-        }
+        let result = self.run_grouped(tasks, &mut snapshots).await;
         let published = snapshots
             .into_iter()
             .try_for_each(|snapshot| self.prefix.publish(snapshot).map(drop));
@@ -120,16 +99,22 @@ impl CudaBackend {
                 }
             }
         }
-        Ok(CudaTicket {
-            owner: Arc::clone(&self.owner),
-            drain_required: result.is_err(),
-            result: Some(result),
-        })
+        result
+    }
+
+    pub(super) fn prepare_execution(&mut self) -> Result<()> {
+        self.ensure_slot_pool();
+        for state in self.states.values_mut() {
+            if !state.poisoned {
+                state.prepare_verification(&self.loaded)?;
+            }
+        }
+        Ok(())
     }
 
     /// Execute one step's tasks in order, replaying each consecutive run of eligible
     /// decode tasks through the shared slot graph and everything else serially.
-    fn run_grouped(
+    async fn run_grouped(
         &mut self,
         tasks: &[ExecutionTask],
         snapshots: &mut Vec<prefix::CachedPrefix>,
@@ -139,11 +124,12 @@ impl CudaBackend {
             .iter()
             .map(|task| self.decode_eligible(task))
             .collect();
-        self.ensure_slot_pool(&eligible);
+        // Pool capture belongs to admission; submission only replays prepared graphs.
         let mut index = 0;
         while index < tasks.len() {
             if !eligible[index] {
-                self.run_serial(tasks, index, &mut outputs, snapshots)?;
+                self.run_serial(tasks, index, &mut outputs, snapshots)
+                    .await?;
                 index += 1;
                 continue;
             }
@@ -151,7 +137,8 @@ impl CudaBackend {
             while end < tasks.len() && eligible[end] {
                 end += 1;
             }
-            self.run_segment(tasks, index..end, &mut outputs, snapshots)?;
+            self.run_segment(tasks, index..end, &mut outputs, snapshots)
+                .await?;
             index = end;
         }
         outputs
@@ -185,30 +172,25 @@ impl CudaBackend {
         )
     }
 
-    /// Capture the slot pool on the first step that could batch two decodes; any failure
-    /// disables batching permanently rather than affecting the request that triggered it.
+    /// Capture during admission only when two live requests can use pooled decode.
+    /// Temporary funding failures remain retryable after reservation accounting changes.
     /// With a draft loaded the pool captures the pooled speculation graph instead: every
     /// sequence speculates from its first decode step, so a decode-only pool would sit
     /// unused while squeezing admission memory.
-    fn ensure_slot_pool(&mut self, eligible: &[bool]) {
-        if self.slots.is_some()
-            || self.slots_disabled
-            || !eligible.windows(2).any(|pair| pair[0] && pair[1])
-        {
+    fn ensure_slot_pool(&mut self) {
+        if self.slots.is_some() || self.slots_disabled {
             return;
         }
         // Size shared KV storage from admitted requests, not the maximum context.
         // Long contexts outside this pool retain their private execution graph.
-        let capacity = self
-            .states
-            .values()
-            .filter(|state| {
-                state.readout == OutputReadout::Logits && state.capacity <= CB_SLOT_TOKENS
-            })
-            .map(|state| state.capacity)
-            .max()
-            .unwrap_or(1)
-            .next_power_of_two();
+        let Some(capacity) = candidate_pool_capacity(
+            self.states
+                .values()
+                .filter(|state| !state.poisoned)
+                .map(|state| (state.capacity, state.readout)),
+        ) else {
+            return;
+        };
         // Reserve the configured capture bucket, not the transient number of arrivals seen on
         // this tick. Otherwise a two-request first tick fixes the pool at two slots forever.
         let active = match self.active_budget() {
@@ -600,7 +582,7 @@ impl CudaBackend {
 
     /// One consecutive run of eligible decode tasks: batched through the slot pool when
     /// one exists, serial otherwise.
-    fn run_segment(
+    async fn run_segment(
         &mut self,
         tasks: &[ExecutionTask],
         segment: Range<usize>,
@@ -609,14 +591,16 @@ impl CudaBackend {
     ) -> Result<()> {
         if self.slots.is_none() {
             for index in segment {
-                self.run_serial(tasks, index, outputs, snapshots)?;
+                self.run_serial(tasks, index, outputs, snapshots).await?;
             }
             return Ok(());
         }
-        let batched = self.execute_slot_segment(tasks, segment.clone(), outputs)?;
+        let batched = self
+            .execute_slot_segment(tasks, segment.clone(), outputs)
+            .await?;
         for index in segment {
             if !batched.contains(&index) {
-                self.run_serial(tasks, index, outputs, snapshots)?;
+                self.run_serial(tasks, index, outputs, snapshots).await?;
             }
         }
         Ok(())
@@ -627,7 +611,7 @@ impl CudaBackend {
     /// Bound sequences always batch (their state lives in the slot), while unbound ones
     /// only bind when at least two lanes share a plain decode replay. An existing
     /// verification pool can accept one lane without recreating private checkpoints.
-    fn execute_slot_segment(
+    async fn execute_slot_segment(
         &mut self,
         tasks: &[ExecutionTask],
         segment: Range<usize>,
@@ -694,7 +678,9 @@ impl CudaBackend {
             &participants,
             &newly,
             outputs,
-        ) {
+        )
+        .await
+        {
             // A failed replay poisons the participating sequences, never the pool.
             for &(index, slot) in &participants {
                 let Some(state) = self.states.get_mut(&tasks[index].state) else {
@@ -716,7 +702,7 @@ impl CudaBackend {
 
     /// Serial execution for one task; a slot-leased sequence has stale private state and
     /// must never reach here.
-    fn run_serial(
+    async fn run_serial(
         &mut self,
         tasks: &[ExecutionTask],
         index: usize,
@@ -733,21 +719,16 @@ impl CudaBackend {
                 "slot-leased CUDA sequence cannot run serially",
             ));
         }
-        if state.home.is_none()
-            && state.speculation.is_some()
-            && (matches!(task.tokens, ExecutionInput::Decode { .. })
-                || state.program.prefill_width() < PREFILL_LANES)
-        {
-            self.loaded.ensure_verification(&mut state.program)?;
-        }
         // A slot-resident sequence's programs capture no prompt graph: every prompt chunk runs
         // on the worker.
         let wide = state.home.is_some() && !matches!(task.tokens, ExecutionInput::Decode { .. });
         let output = match self.worker.as_mut() {
-            Some(worker) if wide => run_on_worker(state, worker, task)?,
-            _ => state.run(task)?,
+            Some(worker) if wide => run_on_worker(state, worker, task).await?,
+            _ => state.run(task).await?,
         };
-        if let Some(snapshot) = cacheable_prefix(self.loaded.device(), &self.loaded, state, task) {
+        if let Some(snapshot) =
+            cacheable_prefix(self.loaded.device(), &self.loaded, state, task).await
+        {
             snapshots.push(snapshot);
         }
         outputs[index] = Some(TaskOutput {
@@ -756,32 +737,13 @@ impl CudaBackend {
         });
         Ok(())
     }
-    pub(super) fn complete(&mut self, ticket: &mut CudaTicket) -> Result<Option<Vec<TaskOutput>>> {
-        if !Arc::ptr_eq(&self.owner, &ticket.owner) || ticket.result.is_none() || !self.busy {
-            return Err(Error::invalid("foreign or consumed CUDA completion"));
-        }
-        if ticket.drain_required {
-            if let Err(error) = self.loaded.device().drain() {
-                // Retain all state ownership when the driver cannot establish completion.
-                self.fatal = Some(error);
-                return Ok(None);
-            }
-            ticket.drain_required = false;
-        }
-        self.busy = false;
-        ticket
-            .result
-            .take()
-            .ok_or_else(|| Error::invariant("CUDA completion missing"))?
-            .map(Some)
-    }
 }
 
 /// Bind newly assigned sequences into their slots, replay one decode step for every
 /// participant and commit each lane's token, logits and cursor in task order.
 /// Run a slot-resident sequence's prompt chunk on the wide worker: move its target and draft
 /// state in, replay, and move the advanced state back into the slot.
-fn run_on_worker(
+async fn run_on_worker(
     state: &mut Sequence,
     worker: &mut super::Worker,
     task: &ExecutionTask,
@@ -796,7 +758,7 @@ fn run_on_worker(
         Ok(())
     })?;
     swap_worker(state, worker);
-    let output = state.run(task);
+    let output = state.run(task).await;
     swap_worker(state, worker);
     let output = output?;
     super::profiling::phase("worker_store", || -> Result<()> {
@@ -830,7 +792,7 @@ const fn paged_tokens(width: usize, capacity: usize) -> usize {
     width * capacity * PAGED_KV_SHARE_NUMERATOR / PAGED_KV_SHARE_DENOMINATOR
 }
 
-fn slot_replay(
+async fn slot_replay(
     pools: (&mut SlotPool, Option<&mut SlotPool>),
     states: &mut BTreeMap<StateId, Sequence>,
     device: &CudaDevice,
@@ -879,7 +841,8 @@ fn slot_replay(
             participants,
             outputs,
             width,
-        );
+        )
+        .await;
     }
     let mut lanes = Vec::with_capacity(participants.len());
     for &(index, slot) in participants {
@@ -895,7 +858,9 @@ fn slot_replay(
     let plain_greedy = participants
         .iter()
         .all(|&(index, _)| tasks[index].plain_greedy);
-    let readout = pool.run_lanes_readout(device, &lanes, plain_greedy)?;
+    let readout = pool
+        .run_lanes_readout_async(device, &lanes, plain_greedy)
+        .await?;
     for (row, ((_, logits), &(index, _))) in readout.rows.into_iter().zip(participants).enumerate()
     {
         let next_token = match readout.tokens.as_ref() {
@@ -925,7 +890,7 @@ fn slot_replay(
 }
 
 /// Batch compatible drafts, then verify all candidate chains in one target replay.
-fn slot_speculate(
+async fn slot_speculate(
     pools: (&mut SlotPool, Option<&mut SlotPool>),
     states: &mut BTreeMap<StateId, Sequence>,
     device: &CudaDevice,
@@ -936,23 +901,26 @@ fn slot_speculate(
 ) -> Result<()> {
     let (pool, mut draft) = pools;
     let batched = match draft.as_deref_mut() {
-        Some(draft) => super::profiling::phase("draft_propose", || {
-            super::drafting::propose(draft, states, device, tasks, participants, width)
-        })?,
+        Some(draft) => {
+            super::profiling::phase_async("draft_propose", async {
+                super::drafting::propose(draft, states, device, tasks, participants, width).await
+            })
+            .await?
+        }
         None => None,
     };
     let defer_draft = batched.is_some();
-    let candidates = match batched {
-        Some(candidates) => candidates,
-        None => participants
-            .iter()
-            .map(|&(index, _)| {
-                states
-                    .get_mut(&tasks[index].state)
-                    .ok_or_else(|| Error::invariant("slot speculation state"))?
-                    .slot_candidates(&tasks[index], width)
-            })
-            .collect::<Result<Vec<_>>>()?,
+    let candidates = if let Some(candidates) = batched {
+        candidates
+    } else {
+        let mut candidates = Vec::with_capacity(participants.len());
+        for &(index, _) in participants {
+            let state = states
+                .get_mut(&tasks[index].state)
+                .ok_or_else(|| Error::invariant("slot speculation state"))?;
+            candidates.push(state.slot_candidates(&tasks[index], width).await?);
+        }
+        candidates
     };
     let mut lanes = Vec::new();
     for (&(index, slot), chain) in participants.iter().zip(&candidates) {
@@ -964,25 +932,29 @@ fn slot_speculate(
     let plain_greedy = participants
         .iter()
         .all(|&(index, _)| tasks[index].plain_greedy);
-    let mut readout = super::profiling::phase("verify", || {
-        pool.run_verify_readout(device, &lanes, plain_greedy)
-    })?;
+    let mut readout = super::profiling::phase_async("verify", async {
+        pool.run_verify_readout_async(device, &lanes, plain_greedy)
+            .await
+    })
+    .await?;
     let rows = &mut readout.rows;
     let mut commits = Vec::with_capacity(participants.len());
     for (&(index, slot), chain) in participants.iter().zip(candidates) {
         let state = states
             .get_mut(&tasks[index].state)
             .ok_or_else(|| Error::invariant("slot speculation state"))?;
-        let output = state.slot_decide(
-            &tasks[index],
-            &chain,
-            &mut rows[slot * width..][..chain.len()],
-            readout
-                .tokens
-                .as_ref()
-                .map(|tokens| &tokens[slot * width..][..chain.len()]),
-            defer_draft,
-        )?;
+        let output = state
+            .slot_decide(
+                &tasks[index],
+                &chain,
+                &mut rows[slot * width..][..chain.len()],
+                readout
+                    .tokens
+                    .as_ref()
+                    .map(|tokens| &tokens[slot * width..][..chain.len()]),
+                defer_draft,
+            )
+            .await?;
         commits.push((slot, output.tokens.len()));
         if let Some(lease) = &mut state.slot {
             lease.position = state.history.len();
@@ -1031,8 +1003,21 @@ impl Sampler<'_> {
     }
 }
 impl Sequence {
+    pub(super) fn prepare_verification(&mut self, loaded: &LoadedModel) -> Result<()> {
+        // A slot lease already credited the released private storage. Only an
+        // unbound private reservation funds this graph; homes use prepaid pool storage.
+        if self.home.is_none()
+            && self.slot.is_none()
+            && self.verification_priced
+            && self.speculation.is_some()
+        {
+            loaded.ensure_verification(&mut self.program)?;
+        }
+        Ok(())
+    }
+
     /// Keep the draft cursor aligned even on non-greedy or capacity-limited steps.
-    fn slot_candidates(&mut self, task: &ExecutionTask, width: usize) -> Result<Vec<u32>> {
+    async fn slot_candidates(&mut self, task: &ExecutionTask, width: usize) -> Result<Vec<u32>> {
         let ExecutionInput::Decode { position, token } = task.tokens else {
             return Err(Error::invariant("slot speculation decode"));
         };
@@ -1054,29 +1039,34 @@ impl Sequence {
                 prompt: &self.history[..prompt_len],
                 scratch: &mut spec.scratch,
             };
-            chain.extend(propose(
-                &mut spec.program,
-                &mut sampler,
-                &mut generated,
-                (token, position),
-                &spec.last_hidden,
-                count,
-            )?);
+            chain.extend(
+                propose(
+                    &mut spec.program,
+                    &mut sampler,
+                    &mut generated,
+                    (token, position),
+                    &spec.last_hidden,
+                    count,
+                )
+                .await?,
+            );
         } else if position > 0 {
-            spec.program.step(
-                token,
-                position,
-                position - MTP_KV_OFFSET,
-                Some(&spec.last_hidden),
-                false,
-            )?;
+            spec.program
+                .step_async(
+                    token,
+                    position,
+                    position - MTP_KV_OFFSET,
+                    Some(&spec.last_hidden),
+                    false,
+                )
+                .await?;
         }
         Ok(chain)
     }
 
     /// Return only accepted proposals. On rejection the engine samples the replacement
     /// from the last accepted row and submits it next tick, avoiding an extra target pass.
-    fn slot_decide(
+    async fn slot_decide(
         &mut self,
         task: &ExecutionTask,
         chain: &[u32],
@@ -1136,7 +1126,7 @@ impl Sequence {
                 // Even fully accepted proposals used draft hidden rows during drafting.
                 // Replace their KV with target-conditioned rows before the next proposal.
                 let hidden: Vec<_> = rows[..accepted.len()].iter().map(|r| r.0.clone()).collect();
-                spec.replay(&accepted, &hidden, position + 1)?;
+                spec.replay(&accepted, &hidden, position + 1).await?;
             }
             spec.last_hidden.clone_from(&rows[accepted.len()].0);
         }
@@ -1154,10 +1144,10 @@ impl Sequence {
         })
     }
 
-    fn run(&mut self, task: &ExecutionTask) -> Result<ModelOutput> {
+    async fn run(&mut self, task: &ExecutionTask) -> Result<ModelOutput> {
         let tokens = task.tokens.delta(self.history.len())?;
         let readout = task.tokens.readout();
-        if let Some(output) = self.speculate(task, readout)? {
+        if let Some(output) = self.speculate(task, readout).await? {
             return Ok(output);
         }
         let speculate = self.speculation.is_some();
@@ -1170,35 +1160,35 @@ impl Sequence {
         let mut priming = Vec::new();
         let mut device_primed = false;
         while offset < tokens.len() {
-            let width = self.program.prefill_width();
-            let count = if width >= PREFILL_LANES || width > 1 && tokens.len() - offset >= width {
-                width.min(tokens.len() - offset)
-            } else {
-                1
-            };
+            let count = self.chunk_len(tokens.len() - offset);
             let position = self.history.len() + offset;
             let last = offset + count == tokens.len();
             let read_logits = last && readout != OutputReadout::None;
             let device_prime = speculate && count > 1 && self.readout != OutputReadout::Full;
             let read_hidden = self.readout == OutputReadout::Full || (speculate && !device_prime);
             let results = if count > 1 {
-                super::profiling::phase("prefill_chunk", || {
-                    self.program.prefill_batch_readout(
-                        &tokens[offset..offset + count],
-                        position,
-                        read_logits,
-                        read_hidden,
-                    )
-                })?
+                super::profiling::phase_async("prefill_chunk", async {
+                    self.program
+                        .prefill_batch_readout_async(
+                            &tokens[offset..offset + count],
+                            position,
+                            read_logits,
+                            read_hidden,
+                        )
+                        .await
+                })
+                .await?
             } else if read_logits
                 && task.plain_greedy
                 && readout == OutputReadout::Logits
                 && self.readout != OutputReadout::Full
             {
-                let selected = super::profiling::phase("selected_step", || {
+                let selected = super::profiling::phase_async("selected_step", async {
                     self.program
-                        .step_selected(tokens[offset], position, read_hidden)
-                })?;
+                        .step_selected_async(tokens[offset], position, read_hidden)
+                        .await
+                })
+                .await?;
                 next_token = selected
                     .tokens
                     .as_ref()
@@ -1208,19 +1198,25 @@ impl Sequence {
                     .transpose()?;
                 selected.rows
             } else {
-                vec![super::profiling::phase("prefill_step", || {
-                    self.program.step_readout(
-                        tokens[offset],
-                        position,
-                        position,
-                        None,
-                        read_logits,
-                        read_hidden,
-                    )
-                })?]
+                vec![
+                    super::profiling::phase_async("prefill_step", async {
+                        self.program
+                            .step_readout_async(
+                                tokens[offset],
+                                position,
+                                position,
+                                None,
+                                read_logits,
+                                read_hidden,
+                            )
+                            .await
+                    })
+                    .await?,
+                ]
             };
             if device_prime {
-                self.prime_chunk(&tokens[offset..offset + count], position)?;
+                self.prime_chunk(&tokens[offset..offset + count], position)
+                    .await?;
                 device_primed = true;
             }
             for (lane, (hidden, row_logits)) in results.into_iter().enumerate() {
@@ -1238,26 +1234,45 @@ impl Sequence {
         }
         if device_primed && let Some(spec) = self.speculation.as_mut() {
             spec.last_hidden =
-                super::profiling::phase("prime_readback", || spec.program.primed_hidden())?;
+                super::profiling::phase_async("prime_readback", spec.program.primed_hidden_async())
+                    .await?;
         }
         if !matches!(task.tokens, ExecutionInput::Decode { .. }) {
-            self.prime_draft(&priming)?;
+            self.prime_draft(&priming).await?;
         }
         task.tokens.commit(&mut self.history)?;
-        Ok(ModelOutput {
+        Ok(self.output(readout, next_token, logits))
+    }
+
+    fn chunk_len(&self, remaining: usize) -> usize {
+        let width = self.program.prefill_width();
+        if width >= PREFILL_LANES || width > 1 && remaining >= width {
+            width.min(remaining)
+        } else {
+            1
+        }
+    }
+
+    fn output(
+        &self,
+        readout: OutputReadout,
+        next_token: Option<u32>,
+        logits: Vec<f32>,
+    ) -> ModelOutput {
+        ModelOutput {
             next_token,
             logits,
             hidden: if readout == OutputReadout::Full {
                 self.hidden.clone()
             } else {
-                vec![]
+                Vec::new()
             },
             tokens: Vec::new(),
-        })
+        }
     }
 
     /// Prime the draft with the device hidden rows the target's prompt chunk just wrote.
-    fn prime_chunk(&mut self, tokens: &[u32], position: usize) -> Result<()> {
+    async fn prime_chunk(&mut self, tokens: &[u32], position: usize) -> Result<()> {
         let rows = self
             .program
             .prompt_hidden(tokens.len())
@@ -1269,19 +1284,22 @@ impl Sequence {
         // A host-held row (from decode or a previous host-primed chunk) seeds the draft once;
         // afterwards the draft keeps the previous row on the device.
         let previous = take(&mut spec.last_hidden);
-        super::profiling::phase("prime_draft", || {
-            spec.program.prime_from_target(
-                tokens,
-                position,
-                &rows,
-                (!previous.is_empty()).then_some(previous.as_slice()),
-            )
+        super::profiling::phase_async("prime_draft", async {
+            spec.program
+                .prime_from_target_async(
+                    tokens,
+                    position,
+                    &rows,
+                    (!previous.is_empty()).then_some(previous.as_slice()),
+                )
+                .await
         })
+        .await
     }
 
     /// Feed a prompt timeline through the draft: its KV mirrors the target from index one onward.
-    fn prime_draft(&mut self, rows: &[(usize, u32, Vec<f32>)]) -> Result<()> {
-        let Some(mut spec) = self.speculation.take() else {
+    async fn prime_draft(&mut self, rows: &[(usize, u32, Vec<f32>)]) -> Result<()> {
+        let Some(spec) = self.speculation.as_mut() else {
             return Ok(());
         };
         let mut previous = take(&mut spec.last_hidden);
@@ -1317,7 +1335,11 @@ impl Sequence {
                         hidden
                     });
                 }
-                if let Err(error) = spec.program.prime_batch(&tokens, position, &externals) {
+                if let Err(error) = spec
+                    .program
+                    .prime_batch_async(&tokens, position, &externals)
+                    .await
+                {
                     result = Err(error);
                     break;
                 }
@@ -1327,13 +1349,16 @@ impl Sequence {
             }
             let (index, token, hidden) = &rows[start];
             if *index > 0
-                && let Err(error) = spec.program.step(
-                    *token,
-                    *index,
-                    *index - MTP_KV_OFFSET,
-                    Some(&previous),
-                    false,
-                )
+                && let Err(error) = spec
+                    .program
+                    .step_async(
+                        *token,
+                        *index,
+                        *index - MTP_KV_OFFSET,
+                        Some(&previous),
+                        false,
+                    )
+                    .await
             {
                 result = Err(error);
                 break;
@@ -1344,12 +1369,11 @@ impl Sequence {
         if result.is_ok() {
             spec.last_hidden = previous;
         }
-        self.speculation = Some(spec);
         result
     }
 
     /// Greedy MTP speculation. `None` keeps the ordinary single-step path.
-    fn speculate(
+    async fn speculate(
         &mut self,
         task: &ExecutionTask,
         readout: OutputReadout,
@@ -1360,9 +1384,11 @@ impl Sequence {
         let ExecutionInput::Decode { position, .. } = task.tokens else {
             return Ok(None);
         };
-        let width = self.program.batch_width();
-        if self.speculation.is_none()
-            || readout != OutputReadout::Logits
+        let Some(speculation) = &self.speculation else {
+            return Ok(None);
+        };
+        let width = speculation.depth + 1;
+        if readout != OutputReadout::Logits
             // Rejection under a non-zero temperature needs residual sampling the engine sampler
             // cannot reproduce from plain target logits, so speculation stays greedy-only.
             || sampling.temperature != 0.0
@@ -1373,46 +1399,64 @@ impl Sequence {
         {
             return Ok(None);
         }
+        if self.program.batch_width() != width {
+            return Err(Error::new(
+                ErrorCode::Capacity,
+                "MTP decode requires its reserved shared slot or prepared private verification graph",
+            ));
+        }
         // Use the same accept/rollback contract as pooled verification. On rejection
         // return the target logits at the accepted prefix; the output stage samples
         // the replacement and submits it on the next step. An extra scalar target
         // forward here repeats the rejected work and defeats weight sharing.
-        let chain = self.slot_candidates(task, width)?;
+        let chain = self.slot_candidates(task, width).await?;
         let mut readout = self
             .program
-            .step_batch_readout(&chain, position, task.plain_greedy)?;
-        let output = self.slot_decide(
-            task,
-            &chain,
-            &mut readout.rows,
-            readout.tokens.as_deref(),
-            false,
-        )?;
-        self.program.commit_batch(output.tokens.len() + 1)?;
+            .step_batch_readout_async(&chain, position, task.plain_greedy)
+            .await?;
+        let output = self
+            .slot_decide(
+                task,
+                &chain,
+                &mut readout.rows,
+                readout.tokens.as_deref(),
+                false,
+            )
+            .await?;
+        self.program
+            .commit_batch_async(output.tokens.len() + 1)
+            .await?;
         Ok(Some(output))
     }
 }
 
 impl Speculation {
     /// Rebuild the draft timeline after speculation: rewind, then replay the accepted prefix.
-    fn replay(&mut self, decided: &[u32], hidden_of: &[Vec<f32>], start: usize) -> Result<()> {
+    async fn replay(
+        &mut self,
+        decided: &[u32],
+        hidden_of: &[Vec<f32>],
+        start: usize,
+    ) -> Result<()> {
         self.program.rewind_attention(start - 1)?;
         for (offset, token) in decided.iter().enumerate() {
             let index = start + offset;
-            self.program.step(
-                *token,
-                index,
-                index - MTP_KV_OFFSET,
-                Some(&hidden_of[offset]),
-                false,
-            )?;
+            self.program
+                .step_async(
+                    *token,
+                    index,
+                    index - MTP_KV_OFFSET,
+                    Some(&hidden_of[offset]),
+                    false,
+                )
+                .await?;
         }
         Ok(())
     }
 }
 /// Draft proposals for the positions after the submitted token. The first step consumes that
 /// token itself, so it doubles as the draft's catch-up and proposes `position + 1`.
-fn propose(
+async fn propose(
     draft: &mut super::super::resident::DeviceProgram,
     sampler: &mut Sampler<'_>,
     proposed: &mut Vec<u32>,
@@ -1431,15 +1475,18 @@ fn propose(
     };
     for index in (start..).take(count) {
         let candidate = if device_greedy {
-            draft.step_greedy(
-                token,
-                index,
-                index - MTP_KV_OFFSET,
-                (index == start).then_some(previous),
-            )?
+            draft
+                .step_greedy_async(
+                    token,
+                    index,
+                    index - MTP_KV_OFFSET,
+                    (index == start).then_some(previous),
+                )
+                .await?
         } else {
-            let (next_hidden, logits) =
-                draft.step(token, index, index - MTP_KV_OFFSET, Some(&hidden), true)?;
+            let (next_hidden, logits) = draft
+                .step_async(token, index, index - MTP_KV_OFFSET, Some(&hidden), true)
+                .await?;
             hidden = next_hidden;
             sampler.pick(&logits, index + 1, proposed)?
         };
@@ -1448,6 +1495,18 @@ fn propose(
         token = candidate;
     }
     Ok(proposals)
+}
+
+/// Plan only for requests that fit the pool and request its logits readout.
+fn candidate_pool_capacity(states: impl Iterator<Item = (usize, OutputReadout)>) -> Option<usize> {
+    let (count, capacity) = states
+        .filter(|&(capacity, readout)| {
+            readout == OutputReadout::Logits && capacity <= CB_SLOT_TOKENS
+        })
+        .fold((0, 1), |(count, maximum), (capacity, _)| {
+            (count + 1, maximum.max(capacity))
+        });
+    (count >= 2).then(|| capacity.next_power_of_two())
 }
 
 // Private programs keep their reservation and shared prompt scratch while a lazy

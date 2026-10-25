@@ -1,5 +1,36 @@
-use super::{pool_retry_budget, pooled_envelope};
+use super::{candidate_pool_capacity, pool_retry_budget, pooled_envelope};
+use crate::constants::CB_SLOT_TOKENS;
+use infer_ir::OutputReadout;
 use std::{env::var, error::Error};
+
+#[test]
+fn incompatible_requests_cannot_create_or_enlarge_a_decode_pool() {
+    let full = (128, OutputReadout::Full);
+    let long = (CB_SLOT_TOKENS + 1, OutputReadout::Logits);
+    let compact = (128, OutputReadout::Logits);
+    for states in [
+        [full, full],
+        [long, long],
+        [full, long],
+        [compact, full],
+        [long, compact],
+    ] {
+        assert_eq!(candidate_pool_capacity(states.into_iter()), None);
+    }
+}
+
+#[test]
+fn compatible_pool_geometry_is_independent_of_unrelated_request_order() {
+    let short = (128, OutputReadout::Logits);
+    let tail = (129, OutputReadout::Logits);
+    let full = (CB_SLOT_TOKENS, OutputReadout::Full);
+    let long = (CB_SLOT_TOKENS + 1, OutputReadout::Logits);
+    for states in [[short, full, tail, long], [long, tail, full, short]] {
+        assert_eq!(candidate_pool_capacity(states.into_iter()), Some(256));
+    }
+    assert_eq!(candidate_pool_capacity([short].into_iter()), None);
+    assert_eq!(candidate_pool_capacity([].into_iter()), None);
+}
 
 #[test]
 fn lazy_pool_preserves_live_private_reservations_and_scratch() {
@@ -24,7 +55,7 @@ fn pool_envelope_is_capped_by_physical_storage_and_saturates() {
 fn lazy_pool_retries_after_a_live_private_reservation_is_released() -> Result<(), Box<dyn Error>> {
     use crate::{
         device::CudaDevice,
-        executor::CudaBackend,
+        executor::CudaExecutor,
         loading::{LoadOptions, LoadedModel},
     };
     use infer_core::{ModelId, StateId};
@@ -45,7 +76,7 @@ fn lazy_pool_retries_after_a_live_private_reservation_is_released() -> Result<()
     assert!(loaded.model().max_sequence >= 32768);
     let budget = loaded.device().allocatable_memory_bytes()?;
     // Start without a pool, then admit one long and two short private programs.
-    let mut backend = CudaBackend::new(loaded, budget, 1)?;
+    let mut backend = CudaExecutor::new(loaded, budget, 1)?;
     backend.maximum_states = 16;
     let long = StateId::new(1)?;
     backend.reserve(long, 32768, OutputReadout::Logits)?;
@@ -65,16 +96,16 @@ fn lazy_pool_retries_after_a_live_private_reservation_is_released() -> Result<()
     // Existing reservations are legal; the additional pool is one byte short.
     let active = backend.active_budget()?;
     backend.budget = active.checked_add(lower - 1).ok_or("budget overflow")?;
-    backend.ensure_slot_pool(&[true, true]);
+    backend.ensure_slot_pool();
     assert!(backend.slots.is_none());
     assert!(!backend.slots_disabled);
     assert_eq!(backend.deferred_pool_plan, Some((512, active)));
-    backend.ensure_slot_pool(&[true, true]);
+    backend.ensure_slot_pool();
     assert_eq!(backend.deferred_pool_plan, Some((512, active)));
 
     backend.release(long)?;
     while backend.pool.evict() {}
-    backend.ensure_slot_pool(&[true, true]);
+    backend.ensure_slot_pool();
     assert!(backend.slots.is_some(), "{:?}", backend.pool_failure_reason);
     assert!(backend.worker.is_some());
     assert!(!backend.slots_disabled);

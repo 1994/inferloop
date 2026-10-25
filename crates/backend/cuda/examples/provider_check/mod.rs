@@ -114,7 +114,7 @@ pub fn run() -> Result<(), Box<dyn StdError>> {
             "draft_prime": draft_prime.map(|(steps, micros)| serde_json::json!({"steps": steps, "micros": micros})),
             "pool_budget_pressure": env_args().any(|arg| arg == "--pool-budget-pressure"),
             "checks": ["readout", "state isolation", "cursor rejection", "kernel rejection", "duplicate reservation", "capacity rejection", "completion ownership", "one-shot poll", "reset replay", "release", "Engine two-request scheduling"],
-            "scope": "synchronous BackendProvider actual-model acceptance, greedy functional check; not throughput baseline or continuous batching"
+            "scope": "BackendProvider actual-model acceptance with completion polling, greedy functional check; not throughput baseline or continuous batching"
         }))?
     );
     Ok(())

@@ -1,4 +1,5 @@
 use super::*;
+use crate::device::asynchronous::block_on;
 
 #[test]
 #[ignore = "requires CUDA hardware; run inside safe-run"]
@@ -16,14 +17,14 @@ fn fp8_prefix_copy_preserves_head_strides_and_untouched_tails() -> Result<()> {
     let mut cached = api::zeros::<f8e4m3fn>(&[heads, covered, dim])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    copy_state(&device, &mut cached, &source, true, covered)?;
+    block_on(copy_state(&device, &mut cached, &source, true, covered))?;
     let initial = vec![f8e4m3fn(3); heads * target_capacity * dim];
     let mut restored = api::copy_host_vec_to_device(&Arc::new(initial))
         .sync_on(&device.stream)
         .map_err(device_error)?
         .reshape(&[heads, target_capacity, dim])
         .map_err(device_error)?;
-    copy_state(&device, &mut restored, &cached, true, covered)?;
+    block_on(copy_state(&device, &mut restored, &cached, true, covered))?;
     let restored = restored
         .to_host_vec()
         .sync_on(&device.stream)
@@ -43,6 +44,6 @@ fn fp8_prefix_copy_preserves_head_strides_and_untouched_tails() -> Result<()> {
             }
         }
     }
-    assert!(copy_state(&device, &mut cached, &source, true, covered + 1).is_err());
+    assert!(block_on(copy_state(&device, &mut cached, &source, true, covered + 1)).is_err());
     Ok(())
 }

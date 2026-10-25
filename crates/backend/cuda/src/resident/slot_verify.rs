@@ -13,6 +13,7 @@ use crate::constants::INACTIVE_LANE_STATE_POSITION;
 use crate::constants::MAX_VERIFICATION_WIDTH;
 use crate::constants::METADATA_FIELDS;
 use crate::constants::MIB;
+use crate::device::PinnedUpload;
 use crate::device::Readbacks;
 use crate::device::{CudaDevice, ReadbackSource, device_error};
 use cutile::prelude::*;
@@ -44,6 +45,7 @@ pub(super) struct SlotVerifyGraph {
     token_readout: Option<super::token_readout::TokenReadout>,
     metadata_owner: Tensor<i32>,
     metadata_upload: Vec<i32>,
+    metadata_staging: PinnedUpload<i32>,
     hidden: Arc<Tensor<f32>>,
     logits: Arc<Tensor<f32>>,
     /// Slot state sets the graph interleaves.
@@ -533,9 +535,10 @@ impl BatchBuilder<'_> {
             restore,
             batched_commit,
             fused,
-            readbacks: Readbacks::default(),
+            readbacks: Readbacks::contiguous(self.device, &hidden, &logits, lanes)?,
             metadata_owner,
             metadata_upload: Vec::with_capacity(lanes * METADATA_FIELDS),
+            metadata_staging: PinnedUpload::single(self.device, lanes * METADATA_FIELDS)?,
             hidden,
             logits,
             slots,
@@ -556,7 +559,7 @@ impl SlotVerifyGraph {
     /// # Errors
     /// Rejects unknown slots, duplicate lanes, out-of-vocabulary tokens, cursors without
     /// room for the whole chain, positions out of capacity and CUDA replay failures.
-    pub(crate) fn run_verify_readout(
+    pub(crate) async fn run_verify_readout_async(
         &mut self,
         device: &CudaDevice,
         lanes: &[SlotVerifyLane],
@@ -583,7 +586,8 @@ impl SlotVerifyGraph {
             };
             self.metadata_upload.extend_from_slice(&values);
         }
-        device.copy_host_slice(&mut self.metadata_owner, &self.metadata_upload)?;
+        self.metadata_staging
+            .copy(device, &mut self.metadata_owner, &self.metadata_upload)?;
         let hidden_size = self.hidden.size() / total;
         let vocabulary = self.logits.size() / total;
         let mut sources = Vec::with_capacity(2 * total);
@@ -610,7 +614,8 @@ impl SlotVerifyGraph {
                 .token_readout
                 .as_mut()
                 .ok_or_else(|| Error::invariant("slot verify token readout"))?
-                .run(device, &self.graph, &mut self.readbacks, &sources, &active)?;
+                .run_async(device, &self.graph, &mut self.readbacks, &sources, &active)
+                .await?;
             let mut tokens = vec![None; total];
             for (&row, token) in active.iter().zip(selected) {
                 tokens[row] = Some(token);
@@ -620,7 +625,9 @@ impl SlotVerifyGraph {
             (None, None)
         };
         let rows = if output.is_none() {
-            self.readbacks.run(device, &self.graph, &sources)?
+            self.readbacks
+                .run_async(device, &self.graph, &sources)
+                .await?
         } else {
             Vec::new()
         };

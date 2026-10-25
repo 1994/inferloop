@@ -13,6 +13,9 @@ use crate::constants::CB_DECODE_SLOTS;
 use crate::constants::F32_BYTES;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::MAX_VERIFICATION_WIDTH;
+use crate::device::PinnedUpload;
+#[cfg(test)]
+use crate::device::asynchronous::block_on;
 use crate::device::{CudaDevice, DeviceProfile, device_error};
 use cuda_core::{CudaContext, PinnedHostBuffer, f8e4m3fn};
 use cutile::prelude::*;
@@ -184,6 +187,7 @@ pub struct SlotPool {
     fp8: Vec<Fp8Caches>,
     /// Per-slot identity block tables; declared with the states so they outlive the captures.
     tables: Vec<Tensor<i32>>,
+    table_staging: PinnedUpload<i32>,
     plan: Vec<(TensorId, SlotCopy)>,
     /// Shared physical KV blocks behind every slot's table, when the pool pages its KV.
     paging: Option<Paging>,
@@ -376,6 +380,7 @@ impl SlotPool {
             states,
             fp8,
             tables,
+            table_staging: PinnedUpload::slots(device, capacity.div_ceil(KV_BLOCK_TOKENS))?,
             plan,
             paging,
             leases: SlotLedger::new(width),
@@ -667,7 +672,7 @@ impl SlotPool {
         // Positions past the request's reach never resolve; point them at its first block.
         let mut entries = owned.clone();
         entries.resize(table.size(), owned[0]);
-        device.copy_host_slice(table, &entries)?;
+        self.table_staging.copy(device, table, &entries)?;
         Ok(true)
     }
 
@@ -807,7 +812,17 @@ impl SlotPool {
         Ok(self.run_lanes_readout(device, lanes, false)?.rows)
     }
 
+    #[cfg(test)]
     pub(crate) fn run_lanes_readout(
+        &mut self,
+        device: &CudaDevice,
+        lanes: &[SlotLane],
+        plain_greedy: bool,
+    ) -> Result<super::batch::BatchReadout> {
+        block_on(self.run_lanes_readout_async(device, lanes, plain_greedy))
+    }
+
+    pub(crate) async fn run_lanes_readout_async(
         &mut self,
         device: &CudaDevice,
         lanes: &[SlotLane],
@@ -826,7 +841,7 @@ impl SlotPool {
         self.decode
             .as_mut()
             .ok_or_else(|| Error::invalid("slot pool has no decode graph"))?
-            .run_lanes_readout(
+            .run_lanes_readout_async(
                 device,
                 lanes,
                 self.capacity,
@@ -834,6 +849,7 @@ impl SlotPool {
                 true,
                 plain_greedy,
             )
+            .await
     }
 
     /// Replay one pooled speculation step; see [`SlotVerifyGraph::run_verify_readout`].
@@ -845,10 +861,32 @@ impl SlotPool {
         device: &CudaDevice,
         lanes: &[SlotVerifyLane],
     ) -> Result<BatchOutput> {
-        Ok(self.run_verify_readout(device, lanes, false)?.rows)
+        block_on(self.run_verify_async(device, lanes))
     }
 
+    #[cfg(test)]
+    pub(crate) async fn run_verify_async(
+        &mut self,
+        device: &CudaDevice,
+        lanes: &[SlotVerifyLane],
+    ) -> Result<BatchOutput> {
+        Ok(self
+            .run_verify_readout_async(device, lanes, false)
+            .await?
+            .rows)
+    }
+
+    #[cfg(test)]
     pub(crate) fn run_verify_readout(
+        &mut self,
+        device: &CudaDevice,
+        lanes: &[SlotVerifyLane],
+        plain_greedy: bool,
+    ) -> Result<super::batch::BatchReadout> {
+        block_on(self.run_verify_readout_async(device, lanes, plain_greedy))
+    }
+
+    pub(crate) async fn run_verify_readout_async(
         &mut self,
         device: &CudaDevice,
         lanes: &[SlotVerifyLane],
@@ -857,7 +895,8 @@ impl SlotPool {
         self.verify
             .as_mut()
             .ok_or_else(|| Error::invalid("slot pool has no verify graph"))?
-            .run_verify_readout(device, lanes, self.capacity, self.vocabulary, plain_greedy)
+            .run_verify_readout_async(device, lanes, self.capacity, self.vocabulary, plain_greedy)
+            .await
     }
 
     /// Commit one slot's accepted candidates; see [`SlotVerifyGraph::commit`].
