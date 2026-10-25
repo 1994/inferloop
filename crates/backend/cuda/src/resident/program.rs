@@ -92,7 +92,8 @@ impl FusionWorkspace {
 pub struct ProgramWeights {
     /// Measure uncovered resident GEMM geometries before graph capture.
     pub autotune: bool,
-    /// One finite new-shape tuning allowance for this loaded model, shared with its draft.
+    /// Non-GEMM tuning allowances shared by this model and its draft; resident GEMM uses a
+    /// per-family, per-shape work-derived search schedule.
     pub resident_tuning: Arc<ResidentTuningSession>,
     pub batch_width: usize,
     /// Widest captured prompt graph.

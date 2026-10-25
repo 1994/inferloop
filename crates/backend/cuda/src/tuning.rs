@@ -7,6 +7,7 @@ pub(crate) mod memory;
 pub(crate) mod prefill;
 pub mod recurrent;
 pub mod resident_gemm;
+pub mod swiglu;
 
 use crate::device::DeviceProfile;
 use crate::strategy::default_tiling;
@@ -331,6 +332,9 @@ pub struct TilingTable {
     pub resident_mma_f32_attention: Vec<attention::mma_f32::Entry>,
     #[serde(default)]
     pub resident_exact_recurrent: Vec<recurrent::exact::Entry>,
+    /// Shape-specific fused `SwiGLU` tile decisions with exact-output evidence.
+    #[serde(default)]
+    pub swiglu: Vec<swiglu::Entry>,
 }
 
 /// Read both the current per-device table and the former top-level `device`/`entries` format.
@@ -368,6 +372,8 @@ struct StoredTilingTable {
     resident_mma_f32_attention: Vec<attention::mma_f32::Entry>,
     #[serde(default)]
     resident_exact_recurrent: Vec<recurrent::exact::Entry>,
+    #[serde(default)]
+    swiglu: Vec<swiglu::Entry>,
 }
 
 impl From<StoredTilingTable> for TilingTable {
@@ -402,6 +408,7 @@ impl From<StoredTilingTable> for TilingTable {
             resident_mma_attention: stored.resident_mma_attention,
             resident_mma_f32_attention: stored.resident_mma_f32_attention,
             resident_exact_recurrent: stored.resident_exact_recurrent,
+            swiglu: stored.swiglu,
         }
     }
 }
@@ -679,3 +686,7 @@ pub(crate) fn select_tiling(
 #[cfg(test)]
 #[path = "../tests/unit/tuning.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/swiglu_tuning.rs"]
+mod swiglu_tests;

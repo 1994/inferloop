@@ -1,6 +1,6 @@
 //! Model-declared W4A4 projection with block-16 E4M3 activation scales.
 mod quant_reuse;
-mod workspace;
+pub mod workspace;
 use crate::mlp::ProjectionWeight as MlpProjectionWeight;
 use cutile::prelude::DeviceError;
 use cutile::prelude::Scope;

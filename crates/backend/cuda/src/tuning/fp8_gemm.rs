@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 use super::TilingTable;
-use super::resident_gemm::{PairedTimes, ResidentTuningSession};
+use super::resident_gemm::{PairedTimes, ResidentTuningSession, SearchFamily};
 use super::{MAX_REPS, MIN_CONFIRM_SPEEDUP, MIN_REPS, REP_MS, WARMUP_MS};
 use crate::constants::AUX_KERNEL_TILE;
 use crate::constants::PROMPT_GEMM_TILE_ROWS;
@@ -47,6 +47,15 @@ const ROW_TILES: [usize; 3] = [
     WIDE_PROMPT_GEMM_TILE_ROWS,
 ];
 const COLUMN_TILES: [usize; 2] = [QUANT_GEMM_TILE[1], QUANT_GEMM_TILE[1] * 2];
+
+/// Non-baseline candidates plus the worst-case ranked/baseline confirmation sequence.
+pub(crate) const fn search_trials(candidates: usize) -> usize {
+    candidates.saturating_mul(2).saturating_sub(1)
+}
+
+pub(crate) const fn native_search_trials() -> usize {
+    search_trials(ROW_TILES.len() * COLUMN_TILES.len())
+}
 const PERIOD: usize = 131;
 const STRIDE: usize = 17;
 const CENTER: f32 = 65.0;
@@ -322,13 +331,12 @@ fn remember(weight: &ProjectionWeight, key: &Key, choice: Choice, accepted: bool
     drop(cache);
     Ok(())
 }
-fn permits(session: &ResidentTuningSession, shape: [usize; GEMM_RANK]) -> bool {
-    if session.permits_search() {
-        true
-    } else {
-        tracing::info!(target:"infer::tuning", ?shape, "FP8 model tuning budget exhausted: unmeasured choice stays native");
-        false
-    }
+fn permits(
+    session: &ResidentTuningSession,
+    shape: [usize; GEMM_RANK],
+    trials: usize,
+) -> Result<bool> {
+    session.permits_gemm_search(SearchFamily::Fp8Channel, shape, trials)
 }
 fn driver_build() -> Option<String> {
     read_to_string("/proc/driver/nvidia/version")
@@ -425,7 +433,18 @@ fn fingerprint(device: &CudaDevice, shape: [usize; GEMM_RANK]) -> Result<String>
         .insert((environment, shape), value.clone());
     Ok(value)
 }
-type Memo = Mutex<BTreeMap<Key, Choice>>;
+#[derive(Clone, Copy)]
+struct MemoChoice {
+    choice: Choice,
+    covered: bool,
+}
+
+fn memo_covers(rows: usize, remembered: MemoChoice, gated: Choice) -> bool {
+    let baseline = Choice::baseline(rows);
+    remembered.covered && (remembered.choice == baseline || gated == remembered.choice)
+}
+
+type Memo = Mutex<BTreeMap<Key, MemoChoice>>;
 fn memo() -> &'static Memo {
     static MEMO: OnceLock<Memo> = OnceLock::new();
     MEMO.get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -622,10 +641,32 @@ fn verify(
     choice: Choice,
     search: Option<&ResidentTuningSession>,
 ) -> Result<Option<bool>> {
+    verify_with_trials(
+        device,
+        support,
+        weight,
+        shape,
+        choice,
+        search,
+        native_search_trials(),
+    )
+}
+
+fn verify_with_trials(
+    device: &CudaDevice,
+    support: &mut vendor_fp8::Support,
+    weight: &ProjectionWeight,
+    shape: [usize; GEMM_RANK],
+    choice: Choice,
+    search: Option<&ResidentTuningSession>,
+    trials: usize,
+) -> Result<Option<bool>> {
     for fixture in 0..FIXTURES {
         // Cached choices always finish their current-weight proof. New candidates retain the
         // search allowance, including the numerical checks before their first measurement.
-        if search.is_some_and(|session| !permits(session, shape)) {
+        if let Some(session) = search
+            && !permits(session, shape, trials)?
+        {
             return Ok(None);
         }
         let base = Captured::new(
@@ -763,10 +804,11 @@ fn finite_baseline_fixtures(
     weight: &ProjectionWeight,
     shape: [usize; GEMM_RANK],
     session: &ResidentTuningSession,
+    trials: usize,
 ) -> Result<bool> {
     // Both numerical fixtures must be finite even when every non-baseline candidate is rejected.
     for fixture in 1..FIXTURES {
-        if !permits(session, shape) {
+        if !permits(session, shape, trials)? {
             return Ok(false);
         }
         let finite = Captured::new(
@@ -790,7 +832,8 @@ fn candidates(
     base: &Captured,
     session: &ResidentTuningSession,
     vendor_candidates: bool,
-) -> Option<Vec<Choice>> {
+    trials: usize,
+) -> Result<Option<Vec<Choice>>> {
     let mut choices = Vec::new();
     for tile_m in ROW_TILES {
         for tile_n in COLUMN_TILES {
@@ -798,7 +841,7 @@ fn candidates(
         }
     }
     if vendor_candidates && let ProjectionWeight::Fp8(w, _) = weight {
-        if permits(session, shape) {
+        if permits(session, shape, trials)? {
             match support.prepare_candidates(&base.codes, w, &base.output) {
                 Ok(configs) => choices.extend(configs.into_iter().map(Choice::Lt)),
                 Err(error) => {
@@ -806,12 +849,16 @@ fn candidates(
                 }
             }
         } else {
-            return None;
+            return Ok(None);
         }
     }
-    Some(choices)
+    Ok(Some(choices))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The search boundary names the exact weight, support, geometry, allowance and paired trials"
+)]
 fn confirm_best(
     device: &CudaDevice,
     support: &mut vendor_fp8::Support,
@@ -820,6 +867,7 @@ fn confirm_best(
     session: &ResidentTuningSession,
     base: &Captured,
     trials: &[Trial],
+    allowance_trials: usize,
 ) -> Result<Option<Trial>> {
     let shape = [key.m, key.n, key.k];
     let mut ranked: Vec<&Trial> = trials.iter().filter(|trial| confirmed(trial)).collect();
@@ -835,7 +883,7 @@ fn confirm_best(
         .map(|trial| trial.choice)
         .chain(once(baseline))
     {
-        if !permits(session, shape) {
+        if !permits(session, shape, allowance_trials)? {
             return Ok(None);
         }
         let measured = (|| {
@@ -874,6 +922,10 @@ enum SearchTrial {
     Measured(Trial),
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The search boundary names the exact weight, support, geometry, allowance and paired trials"
+)]
 fn search_trial(
     device: &CudaDevice,
     support: &mut vendor_fp8::Support,
@@ -882,9 +934,18 @@ fn search_trial(
     choice: Choice,
     session: &ResidentTuningSession,
     (base, expected): (&Captured, &[f32]),
+    trials: usize,
 ) -> Result<SearchTrial> {
     let shape = [key.m, key.n, key.k];
-    let valid = match verify(device, support, weight, shape, choice, Some(session)) {
+    let valid = match verify_with_trials(
+        device,
+        support,
+        weight,
+        shape,
+        choice,
+        Some(session),
+        trials,
+    ) {
         Ok(Some(valid)) => valid,
         Ok(None) => return Ok(SearchTrial::BudgetExhausted),
         Err(error) => {
@@ -945,7 +1006,8 @@ fn tune(
     session: &ResidentTuningSession,
 ) -> Result<Option<Entry>> {
     let shape = [key.m, key.n, key.k];
-    if !permits(session, shape) {
+    let native_trials = native_search_trials();
+    if !permits(session, shape, native_trials)? {
         return Ok(None);
     }
     let compile = CompileOptions::default();
@@ -962,7 +1024,7 @@ fn tune(
     base.run(device)?;
     let expected = device.read_borrowed(&base.output)?;
     bitwise(&expected, &expected)?;
-    if !finite_baseline_fixtures(device, support, weight, shape, session)? {
+    if !finite_baseline_fixtures(device, support, weight, shape, session, native_trials)? {
         return Ok(None);
     }
     let Some(choices) = candidates(
@@ -972,15 +1034,23 @@ fn tune(
         &base,
         session,
         key.vendor_candidates,
-    ) else {
+        native_trials,
+    )?
+    else {
         return Ok(None);
     };
+    // Vendor enumeration can expand the work. Expand the same shape's allowance without
+    // resetting its elapsed clock; the schedule keeps the maximum declared work.
+    let allowance_trials = search_trials(choices.len());
+    if !permits(session, shape, allowance_trials)? {
+        return Ok(None);
+    }
     let mut trials = Vec::new();
     for choice in choices {
         if choice == baseline {
             continue;
         }
-        if !permits(session, shape) {
+        if !permits(session, shape, allowance_trials)? {
             return Ok(None);
         }
         match search_trial(
@@ -991,14 +1061,27 @@ fn tune(
             choice,
             session,
             (&base, &expected),
+            allowance_trials,
         )? {
             SearchTrial::BudgetExhausted => return Ok(None),
             SearchTrial::Rejected => {}
             SearchTrial::Measured(measured) => trials.push(measured),
         }
     }
-    let Some(confirmation) = confirm_best(device, support, weight, &key, session, &base, &trials)?
+    let Some(confirmation) = confirm_best(
+        device,
+        support,
+        weight,
+        &key,
+        session,
+        &base,
+        &trials,
+        allowance_trials,
+    )?
     else {
+        if !session.gemm_search_exhausted(SearchFamily::Fp8Channel, shape)? {
+            session.complete_gemm_search(SearchFamily::Fp8Channel, shape)?;
+        }
         return Ok(None);
     };
     let selected = confirmation.choice;
@@ -1014,6 +1097,7 @@ fn tune(
         return Err(Error::invalid("FP8 invalid confirmation evidence"));
     }
     remember(weight, &entry.key, selected, true)?;
+    session.complete_gemm_search(SearchFamily::Fp8Channel, shape)?;
     Ok(Some(entry))
 }
 fn resolve(
@@ -1043,8 +1127,14 @@ fn resolve(
         .map_err(|_| Error::invariant("FP8 tuning cache poisoned"))?
         .get(&key)
         .copied();
-    if let Some(choice) = remembered {
-        return cached_gate(device, support, weight, &key, choice);
+    if let Some(remembered) = remembered {
+        let choice = cached_gate(device, support, weight, &key, remembered.choice)?;
+        // Cached evidence is not coverage until this weight's exact proof accepts it. A legal
+        // baseline choice is conservative coverage; a rejected non-baseline choice is not.
+        if memo_covers(shape[0], remembered, choice) {
+            session.complete_gemm_search(SearchFamily::Fp8Channel, shape)?;
+        }
+        return Ok(choice);
     }
     let path = super::table_path();
     let table = if key.persistent() {
@@ -1058,11 +1148,13 @@ fn resolve(
             .iter()
             .find(|entry| entry.key == key)
     });
+    let mut table_evidence = false;
     let choice = if let Some(entry) = cached {
         if !entry.valid() {
             return Err(Error::invalid("FP8 invalid persistent evidence"));
         }
         tracing::info!(target:"infer::tuning",?key,?entry.selected,source="table-cache","FP8 GEMM choice");
+        table_evidence = true;
         entry.selected
     } else {
         if !autotune {
@@ -1084,8 +1176,29 @@ fn resolve(
     memo()
         .lock()
         .map_err(|_| Error::invariant("FP8 tuning cache poisoned"))?
-        .insert(key.clone(), choice);
-    cached_gate(device, support, weight, &key, choice)
+        .insert(
+            key.clone(),
+            MemoChoice {
+                choice,
+                covered: true,
+            },
+        );
+    let gated = cached_gate(device, support, weight, &key, choice)?;
+    // Table evidence becomes coverage only when this weight's proof accepts it (or the evidence
+    // itself is the legal baseline). A miss/error baseline is not a serving-cache hit.
+    if table_evidence
+        && memo_covers(
+            shape[0],
+            MemoChoice {
+                choice,
+                covered: true,
+            },
+            gated,
+        )
+    {
+        session.complete_gemm_search(SearchFamily::Fp8Channel, shape)?;
+    }
+    Ok(gated)
 }
 /// Lt's reduction order lacks a full model qualification. Only internal tests may search it;
 /// production automatically tunes the qualified native geometry candidates.

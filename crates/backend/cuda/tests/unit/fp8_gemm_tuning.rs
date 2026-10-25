@@ -367,3 +367,45 @@ fn fp8_row_tile_128_is_accepted_and_enumerated_after_the_contract_bump() {
     assert_eq!(NativeConfig::baseline(256).tile_m, 128);
     assert_eq!(NativeConfig::baseline(64).tile_m, 64);
 }
+
+#[test]
+fn fp8_cache_memo_coverage_requires_proof_or_a_legal_baseline() {
+    let rows = 64;
+    let baseline = Choice::baseline(rows);
+    let candidate = Choice::Native(NativeConfig {
+        tile_m: 64,
+        tile_n: 128,
+    });
+    assert!(memo_covers(
+        rows,
+        MemoChoice {
+            choice: candidate,
+            covered: true
+        },
+        candidate
+    ));
+    assert!(!memo_covers(
+        rows,
+        MemoChoice {
+            choice: candidate,
+            covered: true
+        },
+        baseline
+    ));
+    assert!(memo_covers(
+        rows,
+        MemoChoice {
+            choice: baseline,
+            covered: true
+        },
+        baseline
+    ));
+    assert!(!memo_covers(
+        rows,
+        MemoChoice {
+            choice: baseline,
+            covered: false
+        },
+        baseline
+    ));
+}

@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 324
+      "tests": 338
     },
     "frontdoor": {
       "benches": 0,
@@ -165,6 +165,7 @@
     "release CUDA performance diagnostic; run inside safe-run": 1,
     "requires CUDA and INFER_TEST_MODEL; run release inside safe-run": 3,
     "requires CUDA and INFER_TEST_MODEL; run release serially inside safe-run": 1,
+    "requires CUDA and real 27B gate/up shape; run inside safe-run": 1,
     "requires CUDA and safe-run; AOT ABI, full BF16-profile F64 sanity and measured architecture/cluster selection": 1,
     "requires CUDA and safe-run; F32 paged KV, complete short F64 outputs, long F64 rows, paired cold/warm and cache reuse": 1,
     "requires CUDA and safe-run; exact full-output/KV and cold/warm AB/BA tuning": 1,
@@ -177,7 +178,7 @@
     "requires CUDA hardware; new F32-state/F64-reference contract": 1,
     "requires CUDA hardware; root runs release serially": 3,
     "requires CUDA hardware; run explicitly inside tools/bench/safe-run.sh": 5,
-    "requires CUDA hardware; run inside safe-run": 26,
+    "requires CUDA hardware; run inside safe-run": 27,
     "requires CUDA hardware; run release inside safe-run": 1,
     "requires CUDA hardware; run under safe-run": 29,
     "requires CUDA hardware; run under safe-run in release": 1,
@@ -767,6 +768,11 @@
     },
     {
       "crate": "cuda",
+      "file": "src/tuning/resident_gemm/search_budget.rs",
+      "mount": "../../../tests/unit/resident_search_budget.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/tuning/resident_gemm.rs",
       "mount": "../../tests/unit/resident_gemm_tuning.rs"
     },
@@ -774,6 +780,11 @@
       "crate": "cuda",
       "file": "src/tuning.rs",
       "mount": "../tests/unit/tuning.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/tuning.rs",
+      "mount": "../tests/unit/swiglu_tuning.rs"
     },
     {
       "crate": "cuda",
@@ -1237,11 +1248,11 @@
     }
   ],
   "totals": {
-    "all": 868,
+    "all": 882,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 868
+    "tests": 882
   }
 }

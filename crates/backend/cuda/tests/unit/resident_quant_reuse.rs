@@ -794,3 +794,83 @@ fn quant_reuse_checkpoint_full_bitwise() -> TestResult {
 fn quant_reuse_checkpoint_pair_cost() -> TestResult {
     run(true)
 }
+
+#[test]
+#[ignore = "requires CUDA hardware; run inside safe-run"]
+fn prompt_tuning_skips_fused_projections_but_keeps_verification() -> TestResult {
+    use crate::resident::ProgramGeometry;
+    use cuda_core::{f4e2m1fnx2, f8e4m3fn};
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    let mut graph = pair_graph(128, 256)?;
+    graph.tensors.push(TensorSpec {
+        id: TensorId::new(6)?,
+        shape: vec![128],
+        dtype: IrDType::F32,
+        storage: TensorStorage::Activation,
+    });
+    graph.nodes.push(TensorNode {
+        id: OpId::new(5)?,
+        layer: None,
+        op: TensorOp::Linear,
+        inputs: vec![TensorId::new(5)?, TensorId::new(12)?],
+        outputs: vec![TensorId::new(6)?],
+        states: vec![],
+    });
+    graph.hidden = Some(TensorId::new(6)?);
+    let mut weights = fixture_weights();
+    for (id, outputs, columns) in [(10, 256, 128), (11, 256, 128), (12, 128, 256)] {
+        let id = TensorId::new(id)?;
+        weights.projections.insert(
+            id,
+            ProjectionWeight::Fp4(
+                device.upload(
+                    vec![f4e2m1fnx2::from_bits(0x21); outputs * columns / 2],
+                    &[outputs, columns / 2],
+                )?,
+                device.upload(
+                    vec![f8e4m3fn(56); outputs * columns / 16],
+                    &[outputs, columns / 16],
+                )?,
+                1.0,
+            ),
+        );
+        weights.input_scales.insert(id, 1.0);
+    }
+    for verification in [4, 64] {
+        let geometry = ProgramGeometry::from_flags(verification, 64, 0, true, true);
+        let mut workspace = Workspace::program(&device, &graph, &weights, geometry)?;
+        let configs = workspace.prepared_configs();
+        let entries = configs.as_array().ok_or("prepared configuration array")?;
+        let present = |rows, outputs, columns| {
+            entries
+                .iter()
+                .any(|entry| entry["m"] == rows && entry["n"] == outputs && entry["k"] == columns)
+        };
+        assert_eq!(
+            present(64, 256, 128),
+            verification == 64,
+            "fused prompt gate/up must be omitted unless the same width also verifies"
+        );
+        assert!(present(64, 128, 256), "down projection remains executable");
+        assert!(
+            present(verification, 256, 128),
+            "verification still needs gate/up"
+        );
+        assert!(
+            present(1, 256, 128),
+            "single-row capture still needs gate/up"
+        );
+        workspace.ensure_width(&device, &graph, &weights, 64)?;
+        assert!(
+            workspace
+                .prepared_configs()
+                .as_array()
+                .ok_or("configuration array")?
+                .iter()
+                .any(|entry| entry["m"] == 64 && entry["n"] == 256 && entry["k"] == 128),
+            "late verification restores its ordinary projection strategies"
+        );
+    }
+    Ok(())
+}

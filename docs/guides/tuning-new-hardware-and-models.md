@@ -30,7 +30,7 @@
 | prompt 宽度 | `loading/mod.rs`：按 arena 预算在若干档宽度中选择 | `prompt width rung width=...` |
 
 **新硬件上要检查的日志：**
-- 没有出现 `resident GEMM model search budget exhausted`。如果出现，说明 30 s 的搜索预算不够，剩余形状会回退到默认配置。
+- 没有出现 `GEMM shape search budget exhausted`。每个 resident GEMM shape 的 allowance 由候选数和 paired measurement 上限推导，先前 shape 不消耗后续 shape；若出现，日志列出未完成的 family/shape。非 GEMM 类别仍有各自独立的有限额度。
 - 没有出现 `conservative fallback`。
 - 槽数和 KV token 数与显存相符。
 
@@ -89,11 +89,11 @@
 | `DEFAULT_MAX_BATCH = 16` | `engine/runtime/src/config.rs`、`spi::SchedulingRecommendation` | CLI 自动路径从 backend 取得实际建议；直接构造 `RuntimeConfig` 的可移植默认仍为 16。自动路径在 runtime 构造时消费 `SchedulingRecommendation`：`min(状态预算 / 每序列最小状态, 已标定的算力 knee(若有), 显式 max_num_seqs, 提交 ABI 上限)`。峰值算力未标定时 `knee_bound=None`，不会用 64 或 decode step 冒充 N_knee；设备标定是后续门禁。 | backend 提供 `SchedulingRecommendation`；显式 `--max-num-seqs` 始终优先，缺失建议时保留可移植默认 |
 | `VALUE_SPLIT_*`（按 SM 数 63/127 分档） | `resident/slot_recurrent.rs` | 已删除 SM 分档 | 由实际 SM、covered value heads、槽数和 value 维合法除数推出；目标是一波 CTA，尾宽只接受可整除的 split |
 | pooled attention `MAX_BATCH = 4`、切分数上限 64 | `resident/attention_decode/pooled.rs`、`tuning/attention/decode.rs` | 每组 4 个槽串行；切分数已按 SM 数、KV 头数与每组槽数推导，尚未结合上下文长度 | 切分数按上下文长度推导（每份至少若干 KV 块），部分和 workspace 随之缩小，从而一次启动处理全部槽 |
-| `SWIGLU_TILE_ROWS/COLUMNS = 64` | `resident/nvfp4_gemm/workspace.rs` | 已加入 shape-specific `swiglu_candidates`（64x64 fallback、128x64、128x128）；64 fallback 仍是默认 | 128 行候选只在几何和量化布局合法时列出；需要完整输出与量化-inclusive paired A/B 才能成为默认 |
+| `SWIGLU_TILE_ROWS/COLUMNS = 64` | `resident/nvfp4_gemm/workspace.rs`、`tuning/swiglu.rs` | 加载期真实权重 tuner：合法候选 64x64/128x64/128x128，完整 codes/scales 逐字节对照 baseline，量化-inclusive AB+BA 配对与持久 device/kernel/geometry/weight 证明；64x64 为无证据 fallback | 128 行只有在 exact proof 和两种顺序都超过确认阈值时才被选中；搜索失败/缓存损坏回退并记录缺口 |
 | `GDN_BA_SHAPE = [48, 5120]` | `resident/prefill_projection.rs` | 按形状识别 b/a 投影对 | 按图结构识别（同输入、相邻、同为稠密小投影），不依赖具体形状 |
 | narrow dense N16 exact `(64,48,5120)` | `resident/prefill_projection.rs`、`tuning/prefill.rs` | 原按完整 shape 硬匹配 | 已改为 48-row、64-multiple reduction 的小投影结构契约，prompt width 不参与匹配；GPU 性能/数值仍需设备 |
 | `MAX_POOL_ROWS = CB_DECODE_SLOTS` | `resident/pool_gemv.rs` | 行数不超过 16 时走 GEMV | 由 GEMV 与分块 GEMM 的实测交叉点决定，纳入调优 |
-| `MODEL_SEARCH_BUDGET = 30 s` | `tuning/resident_gemm.rs` | 加载期搜索的总时长上限 | 按形状数和单次测量时长估算；预算耗尽时在日志中给出缺失形状 |
+| `CATEGORY_SEARCH_BUDGET = 30 s` | `tuning/resident_gemm.rs` | 非 GEMM 类别的独立有限额度 | Resident GEMM 已改为按 family/shape 的候选数与测量时长推导；其余类别保留独立限制并在日志中记录未完成项 |
 | 每槽保底 KV = 单槽容量 ÷ 2 | `loading/budget.rs` 的 `funded_kv_tokens` | 已删除；每槽只保留一个物理页，实际 prompt+generation 页由 admission 按请求租用 | 保留 fixed recurrent/draft state 和 pooled backpressure；长短请求、取消/退款与 prefix 复用仍需设备矩阵 |
 
 ## 参考：一次完整调优的记录

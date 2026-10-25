@@ -725,3 +725,22 @@ fn swiglu_candidate_tiles_compile_without_a_device() -> Result<(), Box<dyn StdEr
     }
     Ok(())
 }
+
+#[test]
+#[ignore = "requires CUDA and real 27B gate/up shape; run inside safe-run"]
+fn swiglu_real_27b_shape_tuner_compiles_compares_and_selects() -> Result<(), Box<dyn StdError>> {
+    use crate::mlp::ProjectionWeight;
+    use crate::tuning::swiglu::select;
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    let profile = device.profile()?;
+    let (rows, columns, hidden) = SWIGLU_PERF_SHAPE;
+    let gate = swiglu_weight(&device, 1)?;
+    let up = swiglu_weight(&device, 5)?;
+    let gate = ProjectionWeight::Fp4(gate.0, gate.1, 161.0);
+    let up = ProjectionWeight::Fp4(up.0, up.1, 161.0);
+    let tile = select(&device, profile, &gate, &up, (rows, columns, hidden), true)?;
+    assert!(tile.rows == 64 || tile.rows == 128);
+    assert!(tile.columns == 64 || tile.columns == 128);
+    Ok(())
+}
