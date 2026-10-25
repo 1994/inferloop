@@ -217,23 +217,20 @@ impl ConvGeometry {
         if base.len() != self.history_len() {
             return Err(Error::invalid("convolution base window"));
         }
+        if self.channels > 0 && accepted.iter().any(|row| row.len() != self.channels) {
+            return Err(Error::invalid("accepted activation width"));
+        }
         let window = self.kernel - 1;
+        let retained = window.saturating_sub(accepted.len());
+        let suffix = &accepted[accepted.len().saturating_sub(window)..];
         let mut folded = vec![0.0_f32; self.history_len()];
         for channel in 0..self.channels {
-            let mut values: Vec<f32> = base[channel * window..(channel + 1) * window].to_vec();
-            for activation in accepted {
-                if activation.len() != self.channels {
-                    return Err(Error::invalid("accepted activation width"));
-                }
-                if window > 0 {
-                    values.push(activation[channel]);
-                    let excess = values.len() - window;
-                    values.drain(0..excess);
-                } else {
-                    values.clear();
-                }
+            let start = channel * window;
+            let row = &mut folded[start..start + window];
+            row[..retained].copy_from_slice(&base[start + window - retained..start + window]);
+            for (value, activation) in row[retained..].iter_mut().zip(suffix) {
+                *value = activation[channel];
             }
-            folded[channel * window..(channel + 1) * window].copy_from_slice(&values);
         }
         Ok(folded)
     }
