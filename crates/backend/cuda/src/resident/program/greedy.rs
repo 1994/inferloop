@@ -123,7 +123,7 @@ impl DeviceProgram {
         .await?;
         let greedy = self
             .greedy
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| Error::invariant("device greedy readout"))?;
         self.device
             .run_op(self.graph.launch().then(|()| greedy.graph.launch()))

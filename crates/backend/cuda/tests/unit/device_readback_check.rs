@@ -7,6 +7,45 @@ type Tensors = Vec<Tensor<f32>>;
 
 #[test]
 #[ignore = "requires NVIDIA GPU; run under tools/bench/safe-run.sh"]
+fn tensor_readback_poll_does_not_wait_for_prior_stream_work() -> Result<()> {
+    use std::future::{Future, poll_fn};
+    use std::pin::pin;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::Poll;
+
+    let device = CudaDevice::new(0)?;
+    let source = device.upload(vec![1.0_f32, 2.0], &[2])?;
+    let mut readbacks = Readbacks::allocated(&device, source.size())?;
+    let released = Arc::new(AtomicBool::new(false));
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let (gate, expired) = (released.clone(), timed_out.clone());
+    queue_test_gate(&device, move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !gate.load(Ordering::Acquire) {
+            if Instant::now() >= deadline {
+                expired.store(true, Ordering::Release);
+                break;
+            }
+            yield_now();
+        }
+    })?;
+    let mut future = pin!(device.read_async(&source, &mut readbacks));
+    let first = super::super::asynchronous::block_on(poll_fn(|context| {
+        Poll::Ready(future.as_mut().poll(context))
+    }));
+    released.store(true, Ordering::Release);
+    assert!(
+        !timed_out.load(Ordering::Acquire),
+        "readback poll waited for GPU"
+    );
+    assert!(first.is_pending());
+    let result = super::super::asynchronous::block_on(future)?;
+    assert_eq!(result, vec![1.0, 2.0]);
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires NVIDIA GPU; run under tools/bench/safe-run.sh"]
 fn large_logit_geometry_preserves_hidden_only_readback() -> Result<()> {
     let device = CudaDevice::new(0)?;
     let hidden = device.upload(vec![1.0_f32; 2], &[2])?;

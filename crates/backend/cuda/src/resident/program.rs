@@ -187,6 +187,7 @@ pub struct DeviceProgram {
     attention: super::attention_decode::Workspace,
     external: Tensor<f32>,
     external_staging: Option<PinnedHostBuffer<f32>>,
+    prime_readbacks: Readbacks,
     // Declared after the graphs: the state tensors outlive every capture that references them,
     // and prefix caching reads them back for snapshots.
     states: super::batch::States,
@@ -806,6 +807,7 @@ impl DeviceProgram {
             external,
             lane_external,
             lane_external_owner,
+            prime_readbacks: Readbacks::allocated(device, prime_previous.size())?,
             prime_previous,
             states,
             fp8_states,
@@ -1335,8 +1337,11 @@ impl DeviceProgram {
     /// Host copy of the hidden row the next device-primed chunk would start from.
     /// # Errors
     /// Reports CUDA readback failures.
-    pub(crate) fn primed_hidden_async(&self) -> impl Future<Output = Result<Vec<f32>>> + Send + '_ {
-        self.device.read_async(&self.prime_previous)
+    pub(crate) fn primed_hidden_async(
+        &mut self,
+    ) -> impl Future<Output = Result<Vec<f32>>> + Send + '_ {
+        self.device
+            .read_async(&self.prime_previous, &mut self.prime_readbacks)
     }
 
     /// Ingest a prompt chunk with one external hidden per lane, as a fused draft needs.

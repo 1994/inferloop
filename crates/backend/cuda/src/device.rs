@@ -284,11 +284,12 @@ impl CudaDevice {
     pub(crate) async fn read_async<T: DType + DeviceCopy>(
         &self,
         tensor: &Tensor<T>,
+        readbacks: &mut Readbacks<T>,
     ) -> Result<Vec<T>> {
         // SAFETY: the immutable borrow lasts through the read; the alias owns shared storage,
         // registered device leases retain it until the future fences the ordered D2H.
         let source = unsafe { tensor.into_shared_alias() };
-        self.run_op(source.to_host_vec()).await
+        readbacks.read_async(self, source).await
     }
 
     /// Enqueue a host slice into an existing device tensor on the device stream.

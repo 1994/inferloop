@@ -21,6 +21,28 @@ pub(super) struct Flight<T: DType + DeviceCopy> {
 }
 
 impl<T: DType + DeviceCopy> Readbacks<T> {
+    pub(crate) async fn read_async(
+        &mut self,
+        device: &CudaDevice,
+        source: Arc<Tensor<T>>,
+    ) -> Result<Vec<T>> {
+        if self.poisoned || self.flight.is_some() {
+            return Err(Error::invalid("busy or poisoned tensor readback"));
+        }
+        let sources = [Some(ReadbackSource::whole(source))];
+        self.prepare(device, &sources)?;
+        let copies = self.copies(&sources)?;
+        self.start(device, copies.boxed(), &sources)?;
+        let mut rows = poll_fn(|context| match self.poll_with(context) {
+            Ok(Some(rows)) => Poll::Ready(Ok(rows)),
+            Ok(None) => Poll::Pending,
+            Err(error) => Poll::Ready(Err(error)),
+        })
+        .await?;
+        rows.pop()
+            .ok_or_else(|| Error::invariant("tensor readback row"))
+    }
+
     /// Enqueue replay and D2H without waiting. This owner cannot be reused until poll succeeds.
     pub(crate) fn submit(
         &mut self,

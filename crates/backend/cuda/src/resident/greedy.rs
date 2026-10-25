@@ -1,5 +1,5 @@
 //! Exact finite F32 greedy selection; only token IDs and validation flags leave the GPU.
-use crate::device::asynchronous::block_on;
+use crate::device::Readbacks;
 use crate::device::{CudaDevice, device_error};
 use cutile::error::tensor_error;
 use cutile::prelude::*;
@@ -18,6 +18,7 @@ pub struct Greedy {
     indices: Tensor<i32>,
     invalid: Tensor<i32>,
     pub tokens: Tensor<i32>,
+    readbacks: Readbacks<i32>,
 }
 impl Greedy {
     pub fn new(device: &CudaDevice, rows: usize, vocabulary: usize, tile: usize) -> Result<Self> {
@@ -28,6 +29,7 @@ impl Greedy {
         let blocks = vocabulary.div_ceil(tile);
         i32::try_from(blocks.next_power_of_two()).map_err(device_error)?;
         Ok(Self {
+            readbacks: Readbacks::allocated(device, rows * 2)?,
             rows,
             vocabulary,
             tile,
@@ -146,11 +148,15 @@ impl Greedy {
     }
 
     pub fn read(&self, device: &CudaDevice) -> Result<Vec<u32>> {
-        block_on(self.read_async(device))
+        self.decode_values(&device.read_borrowed(&self.tokens)?)
     }
 
-    pub(crate) async fn read_async(&self, device: &CudaDevice) -> Result<Vec<u32>> {
-        let values = device.read_async(&self.tokens).await?;
+    pub(crate) async fn read_async(&mut self, device: &CudaDevice) -> Result<Vec<u32>> {
+        let values = device.read_async(&self.tokens, &mut self.readbacks).await?;
+        self.decode_values(&values)
+    }
+
+    fn decode_values(&self, values: &[i32]) -> Result<Vec<u32>> {
         values
             .as_chunks::<2>()
             .0
