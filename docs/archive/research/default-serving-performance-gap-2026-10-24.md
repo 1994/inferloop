@@ -226,6 +226,77 @@ remain scoped to their original source. The
 records both binary identities, the recoverable patch, all timings, limitations
 and hashes of 68 archived evidence files on host 45. This step changes no serving code.
 
+## Handoff — investigation stopped at the user's request
+
+The delivered result is main integration, corrected measurement tooling and
+reproducible diagnostic evidence. No faster automatic default has been
+demonstrated. The current native/vLLM gap has **not** been causally decomposed;
+the work must not be reported as completed performance optimization.
+
+The latest native diagnostic shows twelve slots and 54,464 physical KV tokens.
+For the sixteen-request workload, requests 12–15 first enter recorded execution
+after approximately 10.90–13.07 seconds of prior engine work. Target prefill and
+verify dominate recorded GPU time. These are observations, not proof that slot
+capacity or a particular kernel explains the unmatched historical vLLM gap.
+A fresh same-input vLLM comparison was proposed but has not been prepared or run.
+
+The handoff workspace is on host 192.168.1.45:
+`/home/r/code/inference.rs/target/pr47-phase2`, branch
+`codex/default-performance-gap-phase2`, pushed to PR branch
+`codex/default-performance-gap`. Main `62417eb` was merged by `19b7df7`.
+All candidate Rust residency edits were removed; the tracked checkout contains
+the submitted PR state, not an uncommitted optimization.
+
+Use the preserved baseline executable
+`artifacts/pr47-first-principles-20261025/draft-resident-probe/baseline-infer`
+(SHA256 `38f189fa5b189a42e8dd1973766879526aa061ed2d0f747d031f1ce430cf9f03`).
+Its source revision is `0827d67550223dfc77294f1aea838a2c7f6a9617`.
+Later commits up to the residency evidence only change documentation.
+**Do not assume `target/release/infer` is this baseline**: its last build is the
+withdrawn candidate, SHA256
+`65f37a06c7083c7ca6ccbdc51f9874cf94b0666ddc77e6be9de20c07fd551094`.
+The immutable completed archive preserves both executables and the exact patch.
+
+Useful continuation entries:
+
+- Original current inputs:
+  `artifacts/pr47-prefix0-v1/inputs-c16.json`; sixteen 4096-token prompts,
+  256 fixed output tokens, EOS disabled, 10 ms ordered arrivals. Preserve these
+  details when comparing engines; historical simultaneous arrivals differ.
+- Existing engine comparison harness: `tools/bench/serve-compare.py`.
+- Current native graph records and request times:
+  `artifacts/pr47-first-principles-20261025/current-c16-diagnostic/`.
+- Completed unprofiled residency A/B and independently recalculated latency:
+  `artifacts/pr47-first-principles-20261025/draft-resident-probe/`.
+- Durable complete evidence:
+  `/home/r/benchmarks/inference.rs/default-serving-draft-resident-2026-10-25`;
+  its manifest has 68 verified evidence entries, including both binaries.
+- Representative quality evidence:
+  `/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25`.
+  Formal task quality remains unqualified; do not promote the selected
+  counterexample screen or 64-case diagnosis to a population conclusion.
+
+An unbuilt, unexecuted M1024 NVFP4 gate probe is preserved in
+`/home/r/benchmarks/inference.rs/default-serving-handoff-2026-10-25/lt-prefill-gate-probe`.
+It compares the current 128x128 Prefetch8 native configuration with up to eight
+zero-workspace cuBLASLt candidates, using independent numerical references.
+It has a known unresolved diagnostic bug: unexpected SDK query/preference and
+AlgoCheck errors can be reported as normal unavailable candidates. Fix and
+re-review that behavior before execution. Its preparation is not a GPU result,
+a quality pass or a recommended next step ahead of direct gap attribution.
+
+No task-owned experiment remains running. At handoff, host 45 has a separate
+Qwen3-VL-2B baseline benchmark from another checkout; it was not stopped or
+modified. Desktop programs were preserved. Confirm the host's current workload
+before any new measurement.
+
+Verification remains scoped: source `0827d67` passed the recorded full Rust and
+tool checks; CUDA hosted/device full qualification and current matched vLLM
+qualification remain incomplete. Withdrawn residency code passed two specific
+GPU tests and the release CLI build, then was removed for lack of a consistent
+service benefit. The handoff documentation passes layout, local-link and diff
+checks. CI results must be read against the final PR revision.
+
 ## Recorded measurements
 
 RTX 5090 on 192.168.1.45, Qwen3.8-27B-NVFP4. C16 means sixteen requests, each
