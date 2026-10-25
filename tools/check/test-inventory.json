@@ -70,7 +70,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 147
+      "tests": 148
     },
     "quality": {
       "benches": 0,
@@ -106,7 +106,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 23
+      "tests": 28
     }
   },
   "executor_consumers": [
@@ -925,6 +925,11 @@
     },
     {
       "crate": "workloads",
+      "file": "src/readouts.rs",
+      "mount": "../tests/unit/readouts.rs"
+    },
+    {
+      "crate": "workloads",
       "file": "src/sampling.rs",
       "mount": "../tests/unit/sampling.rs"
     },
@@ -1185,11 +1190,11 @@
     }
   ],
   "totals": {
-    "all": 818,
+    "all": 824,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 818
+    "tests": 824
   }
 }

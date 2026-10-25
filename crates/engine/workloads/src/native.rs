@@ -90,16 +90,7 @@ impl WorkloadProvider for NativeWorkloads {
         }
         if let Workload::Decision(schema) = &request.workload {
             for q in &schema.questions {
-                let tokens = match q {
-                    DecisionQuestion::Binary {
-                        negative_token,
-                        positive_token,
-                    } => vec![*negative_token, *positive_token],
-                    DecisionQuestion::Categorical { options }
-                    | DecisionQuestion::Ordinal { options, .. } => options.clone(),
-                    DecisionQuestion::Continuous { token, .. } => vec![*token],
-                };
-                if tokens.iter().any(|t| *t as usize >= model.vocab_size) {
+                if !decision_tokens_fit(q, model.vocab_size) {
                     return Err(Error::invalid("decision option exceeds vocabulary"));
                 }
             }
@@ -147,5 +138,19 @@ impl WorkloadProvider for NativeWorkloads {
                 "postprocessor unavailable for this workload",
             )),
         }
+    }
+}
+
+pub fn decision_tokens_fit(question: &DecisionQuestion, limit: usize) -> bool {
+    let fits = |token: u32| (token as usize) < limit;
+    match question {
+        DecisionQuestion::Binary {
+            negative_token,
+            positive_token,
+        } => fits(*negative_token) && fits(*positive_token),
+        DecisionQuestion::Categorical { options } | DecisionQuestion::Ordinal { options, .. } => {
+            options.iter().copied().all(fits)
+        }
+        DecisionQuestion::Continuous { token, .. } => fits(*token),
     }
 }

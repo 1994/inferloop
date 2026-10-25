@@ -251,3 +251,66 @@ fn a_conv_commit_covers_zero_partial_and_full_prefixes() {
         close(&folded, &expected, 1e-6, "conv prefix commit");
     }
 }
+
+#[test]
+fn convolution_fold_matches_repeated_steps_across_window_boundaries() {
+    let accepted = [
+        vec![1.0, 11.0],
+        vec![2.0, 12.0],
+        vec![3.0, 13.0],
+        vec![4.0, 14.0],
+        vec![5.0, 15.0],
+    ];
+    for kernel in 2..=6 {
+        let geometry = ConvGeometry {
+            channels: 2,
+            kernel,
+        };
+        let base: Vec<f32> = (0..geometry.history_len())
+            .map(|i| f32::from(u16::try_from(i).unwrap()))
+            .collect();
+        let weights = vec![0.0; geometry.channels * kernel];
+        let mut stepped = base.clone();
+        for taken in 0..=accepted.len() {
+            assert_eq!(
+                geometry.fold(&base, &accepted[..taken]).unwrap(),
+                stepped,
+                "kernel {kernel}, accepted {taken}"
+            );
+            if let Some(activation) = accepted.get(taken) {
+                geometry.step(&mut stepped, activation, &weights).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn convolution_fold_checks_discarded_rows_and_retains_zero_width_window_behavior() {
+    let geometry = ConvGeometry {
+        channels: 2,
+        kernel: 2,
+    };
+    assert!(
+        geometry
+            .fold(&[0.0, 0.0], &[vec![1.0], vec![2.0, 3.0]])
+            .is_err()
+    );
+    assert!(geometry.fold(&[], &[]).is_err());
+    let empty = ConvGeometry {
+        channels: 2,
+        kernel: 1,
+    };
+    assert_eq!(
+        empty.fold(&[], &[vec![1.0, 2.0]]).unwrap(),
+        Vec::<f32>::new()
+    );
+    assert!(empty.fold(&[], &[vec![1.0]]).is_err());
+    let no_channels = ConvGeometry {
+        channels: 0,
+        kernel: 2,
+    };
+    assert_eq!(
+        no_channels.fold(&[], &[vec![1.0]]).unwrap(),
+        Vec::<f32>::new()
+    );
+}
