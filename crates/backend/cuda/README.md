@@ -22,6 +22,17 @@ make test-cuda          # 追加 GPU kernel 验收
 
 bindgen 找不到 C 标准头时，将实际主机 include 路径传给 `BINDGEN_EXTRA_CLANG_ARGS`，例如 `-isystem /path/to/gcc/include`；该路径不能照搬其他机器。默认 CLI 不启用 CUDA feature，普通 hosted Rust 门禁不需要 Toolkit；需要 Toolkit 的固定检查集中在 `make test-cuda-hosted`。
 
+## 条件编译边界
+
+CLI 与 CUDA crate 的 build script 共用 [backend_cfg.rs](../../../tools/build/backend_cfg.rs)，
+按 Cargo 目标平台和当前 crate 的 `cuda` feature 生成 `cuda_backend`、`metal_backend` 与
+`native_backend` 条件。CUDA 当前仍只在 Linux 启用；无 feature 的元数据与数值工具保持可编译。
+CLI 在模块入口选择完整 CUDA 加载实现或不可用实现，已受父模块保护的代码不再重复条件。
+
+新增平台时先补齐依赖与平台适配，再更新共享能力条件和 Cargo 的 target 依赖。
+FA4 内嵌 ELF、动态库名称、FFI 与进程管理等真实 OS/ABI 限制仍留在各自边界，
+不能仅扩大 `cuda_backend` 条件就声明支持 Windows。
+
 ## 执行边界
 
 - BF16/FP8/NVFP4 投影、设备驻留 prefill/decode、状态/图复用与受限连续解码批处理。

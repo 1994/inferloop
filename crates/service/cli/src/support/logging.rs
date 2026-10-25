@@ -28,15 +28,15 @@ pub fn flush() {
 }
 
 /// MiB in one GiB, for sizes that round below a GiB.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(cuda_backend)]
 const MIB_PER_GIB: f64 = 1024.0;
 
 /// GiB as a floating-point divisor for human-readable sizes.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(cuda_backend)]
 const GIB: f64 = MIB_PER_GIB * MIB_PER_GIB * MIB_PER_GIB;
 
 /// Human-readable size, rounded to one decimal place above a GiB.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(cuda_backend)]
 #[must_use]
 pub fn human_bytes(bytes: u64) -> String {
     #[expect(
@@ -56,6 +56,6 @@ pub fn human_bytes(bytes: u64) -> String {
     }
 }
 
-#[cfg(all(test, target_os = "linux", feature = "cuda"))]
+#[cfg(all(test, cuda_backend))]
 #[path = "../../tests/unit/support_logging.rs"]
 mod tests;

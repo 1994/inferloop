@@ -17,6 +17,15 @@ fn cuda_remains_primary_and_explicit_unavailable_backend_does_not_fallback() {
         serde_json::json!(["cuda", "metal"])
     );
     assert!(report["backends"].get("host").is_none());
+    // Check the built binary against target/feature facts, independently of its cfg aliases.
+    assert_eq!(
+        report["backends"]["cuda"]["implemented"],
+        cfg!(all(target_os = "linux", feature = "cuda"))
+    );
+    assert_eq!(
+        report["backends"]["metal"]["implemented"],
+        cfg!(target_os = "macos")
+    );
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples");
     let output = Command::new(binary)
         // Make the unavailable-device case deterministic even on GPU hosts.
@@ -35,6 +44,12 @@ fn cuda_remains_primary_and_explicit_unavailable_backend_does_not_fallback() {
         "Unsupported"
     };
     assert_eq!(error["code"], expected_code, "{error}");
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            error["message"],
+            "CUDA execution requires Linux and a build with --features cuda"
+        );
+    }
     assert!(
         output.stdout.is_empty(),
         "failed backend must not emit results"

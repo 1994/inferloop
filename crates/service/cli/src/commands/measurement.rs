@@ -1,25 +1,25 @@
 //! Measurement commands.
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 use super::{
     BenchmarkOptions, ProfileOptions, backend, config, example, results, run_to_idle,
     selected_engine, write_json,
 };
 use super::{CompareOptions, print, read_json};
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 use crate::constants::MAX_IDLE_TICKS;
 use infer_core::{Error, Result};
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 use infer_ir::{RequestInput, Workload};
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 use infer_runtime::{ReplayAction, RuntimeConfig};
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 use std::time::Instant;
 
 /// Maximum request count one benchmark run admits.
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 const MAX_BENCHMARK_REQUESTS: usize = 256;
 
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 pub fn profile(options: ProfileOptions, backend_choice: backend::Selection) -> Result<()> {
     let ProfileOptions {
         journal,
@@ -57,7 +57,7 @@ pub fn profile(options: ProfileOptions, backend_choice: backend::Selection) -> R
 
     Ok(())
 }
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 pub fn benchmark(options: BenchmarkOptions, backend_choice: backend::Selection) -> Result<()> {
     let BenchmarkOptions {
         requests,

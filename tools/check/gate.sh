@@ -108,10 +108,13 @@ cuda_hosted_checks() {
     cuda_bindgen_env
     python3 tools/cuda/kernels.py verify
     cargo clippy --locked -p infer-backend-cuda --features cuda --all-targets -- -D warnings
+    cargo clippy --locked -p infer-cli --features cuda --all-targets -- -D warnings
     # Release profile the baseline contract requires, reporting what it collected. The suite
     # branches on `cfg!(debug_assertions)` where the two differ.
     python3 tools/check/test-report.py --entry cuda -- \
         cargo test --locked --release -p infer-backend-cuda --features cuda
+    python3 tools/check/test-report.py --entry cli-cuda -- \
+        cargo test --locked -p infer-cli --features cuda
     RUSTDOCFLAGS="-D warnings" cargo doc --locked -p infer-backend-cuda --features cuda --no-deps
     # Compile the device example without running it: the kernels need a GPU on the next step.
     cargo build --locked --release -p infer-backend-cuda --features cuda --example cuda-kernels

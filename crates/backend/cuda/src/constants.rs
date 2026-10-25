@@ -8,7 +8,7 @@ pub const DEFAULT_TILE_ROWS: usize = 16;
 pub const DEFAULT_TILE_COLUMNS: usize = 256;
 
 /// Device-only geometry and budget constants; empty without the `cuda` feature.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(cuda_backend)]
 mod device {
 
     /// Middle prompt capture bucket, including quantized recurrent models.
@@ -143,5 +143,5 @@ mod device {
     pub const INACTIVE_LANE_STATE_POSITION: i32 = -1;
 }
 
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(cuda_backend)]
 pub use device::*;

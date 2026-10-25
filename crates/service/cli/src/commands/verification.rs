@@ -1,5 +1,5 @@
 //! Verification commands.
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 use super::host_quality;
 use super::{VerifyOptions, backend, print, read_json};
 use infer_core::{Error, Result};
@@ -30,7 +30,7 @@ pub fn verify(options: VerifyOptions, backend_choice: &backend::Selection) -> Re
             Err(Error::invariant("verification failed"))
         };
     }
-    #[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+    #[cfg(native_backend)]
     {
         if let Some(package) = package {
             let report = host_quality::verify_package(
@@ -56,7 +56,7 @@ pub fn verify(options: VerifyOptions, backend_choice: &backend::Selection) -> Re
             ))
         }
     }
-    #[cfg(not(any(target_os = "macos", all(target_os = "linux", feature = "cuda"))))]
+    #[cfg(not(native_backend))]
     {
         if package.is_none() {
             return Err(Error::invalid(
