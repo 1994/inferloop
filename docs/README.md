@@ -30,6 +30,7 @@ Agent 接入、tool parser、文本流式、max length 与严格工具约束的�
 | [质量门禁](guides/quality-gates.md) | 本地/CI 检查、Attention 对照与验收要求 |
 | [CPU 性能测量](guides/cpu-performance.md) | 分配计数、延迟与测量范围 |
 | [CUDA 性能测量](guides/cuda-performance.md) | 现有算子/模型/服务工具、能力探针与测量边界 |
+| [新硬件与新模型调优](guides/tuning-new-hardware-and-models.md) | 加载期自动调优、检查表、诊断工具与待改为推导的常数 |
 | [性能基线与 vLLM 对齐方案](plans/performance/baseline.md) | 统一测试条件、比较与验收契约；已签发基线见文内 |
 | [Serving 稳定性](guides/serving-stability.md) | 故障半径、排队与过载行为、生产差距 |
 | [工具导航](../tools/README.md) | 门禁、参考导出与基准入口 |
