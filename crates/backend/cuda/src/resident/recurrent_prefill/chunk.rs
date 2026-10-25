@@ -263,30 +263,35 @@ pub(super) mod kernels {
         let pp = p.partition(shape![1, 64, 64]);
         let gp = cumulative.partition(shape![1, 64]);
         for chunk in 0i32..((count + 63i32) / 64i32) {
-            let g: Tile<f32, { [64] }> = gp.load([head, chunk]).reshape(shape![64]);
+            let g: Tile<f32, { [64] }> = gp.load_pipelined::<2>([head, chunk]).reshape(shape![64]);
             let g_last: Tile<f32, { [1] }> = extract(g, [63i32.broadcast(shape![])]);
-            let wb: Tile<bf16, { [64, 128] }> =
-                wp.load([head, chunk, 0i32]).reshape(shape![64, 128]);
+            let wb: Tile<bf16, { [64, 128] }> = wp
+                .load_pipelined::<2>([head, chunk, 0i32])
+                .reshape(shape![64, 128]);
             let wc: Tile<f32, { [64, 128] }> = convert_tile(wb);
             let predicted: Tile<f32, { [64, 32] }> = bf16_product(wc, old, zero_block);
             let target: Tile<bf16, { [64, 32] }> = u
                 .partition(shape![1, 64, 32])
-                .load([head, chunk, pid.2])
+                .load_pipelined::<2>([head, chunk, pid.2])
                 .reshape(shape![64, 32]);
             let target: Tile<f32, { [64, 32] }> = convert_tile(target);
             let updates = target - predicted;
-            let qb: Tile<bf16, { [64, 128] }> =
-                qp.load([key, chunk, 0i32]).reshape(shape![64, 128]);
+            let qb: Tile<bf16, { [64, 128] }> = qp
+                .load_pipelined::<2>([key, chunk, 0i32])
+                .reshape(shape![64, 128]);
             let qf: Tile<f32, { [64, 128] }> = convert_tile(qb);
             let qc = qf * exp(g).reshape(shape![64, 1]).broadcast(shape![64, 128]);
-            let pb: Tile<bf16, { [64, 64] }> = pp.load([head, chunk, 0i32]).reshape(shape![64, 64]);
+            let pb: Tile<bf16, { [64, 64] }> = pp
+                .load_pipelined::<2>([head, chunk, 0i32])
+                .reshape(shape![64, 64]);
             let pc: Tile<f32, { [64, 64] }> = convert_tile(pb);
             let carried: Tile<f32, { [64, 32] }> = bf16_product(qc, old, zero_block);
             let output: Tile<f32, { [64, 32] }> = bf16_product(pc, updates, carried);
             out.partition_mut(shape![1, 64, 32])
                 .store(output.reshape(shape![1, 64, 32]), [0i32, chunk, 0i32]);
-            let kb: Tile<bf16, { [64, 128] }> =
-                kp.load([key, chunk, 0i32]).reshape(shape![64, 128]);
+            let kb: Tile<bf16, { [64, 128] }> = kp
+                .load_pipelined::<2>([key, chunk, 0i32])
+                .reshape(shape![64, 128]);
             let kf: Tile<f32, { [64, 128] }> = convert_tile(kb);
             let remaining = exp(g_last.broadcast(shape![64]) - g);
             let kc = kf * remaining.reshape(shape![64, 1]).broadcast(shape![64, 128]);

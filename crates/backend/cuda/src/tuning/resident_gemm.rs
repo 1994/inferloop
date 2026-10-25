@@ -70,7 +70,7 @@ const TILE_M_SEARCH: [usize; 3] = [
 /// Supported output-column tile variants; the first is the conservative baseline.
 const TILE_N_SEARCH: [usize; 2] = [QUANT_GEMM_TILE[1], QUANT_GEMM_TILE[1] * 2];
 /// The existing native K loop has plain and eight-stage compiler-prefetch variants.
-const LOOP_SEARCH: [MainLoop; 2] = [MainLoop::Plain, MainLoop::Prefetch8];
+const LOOP_SEARCH: [MainLoop; 3] = [MainLoop::Plain, MainLoop::Prefetch8, MainLoop::Prefetch16];
 /// Deterministic signed activation pattern used with the real loaded checkpoint weights.
 const SAMPLE_PERIOD: usize = 131;
 /// Coprime stride visits every sampled activation magnitude.
@@ -214,6 +214,8 @@ impl ResidentGemmKey {
 pub enum MainLoop {
     Plain,
     Prefetch8,
+    /// Deeper prefetch for long-K down GEMMs; same K order and arithmetic.
+    Prefetch16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -284,6 +286,17 @@ impl GemmConfig {
             )?,
             MainLoop::Prefetch8 => scope.record(
                 kernels::packed_prefill(
+                    out.partition(self.tile()),
+                    q,
+                    qs,
+                    w,
+                    s,
+                    1.0 / (global * scale),
+                )
+                .generics(generics),
+            )?,
+            MainLoop::Prefetch16 => scope.record(
+                kernels::packed_prefill16(
                     out.partition(self.tile()),
                     q,
                     qs,
@@ -568,6 +581,16 @@ fn kernel_fingerprint(device: &CudaDevice, shape: [usize; GEMM_RANK]) -> Result<
                     .generics(generics)
                     .l2_cache_key_on(&device.stream),
                     MainLoop::Prefetch8 => kernels::packed_prefill(
+                        (&mut output).partition(tile),
+                        &packed,
+                        &scales,
+                        &weight,
+                        &weight_scales,
+                        1.0,
+                    )
+                    .generics(generics)
+                    .l2_cache_key_on(&device.stream),
+                    MainLoop::Prefetch16 => kernels::packed_prefill16(
                         (&mut output).partition(tile),
                         &packed,
                         &scales,
