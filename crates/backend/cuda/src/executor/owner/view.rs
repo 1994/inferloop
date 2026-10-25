@@ -1,8 +1,8 @@
 //! Committed host inspection remains available while the executor is suspended.
 use super::super::{CudaExecutor, PoolInspection};
-use infer_core::{Error, Result, StateId};
+use infer_core::{Error, ProgramId, Result, StateId};
 use infer_ir::{
-    DataflowGraph, DeviceCapabilities, ExecutionProfileInspection, KvCacheInspection, ModelIr,
+    DeviceCapabilities, ExecutionProfileInspection, ExecutionProgram, KvCacheInspection, ModelIr,
     PageGrowth, PrefillGeometry, TaskOutput,
 };
 use std::collections::BTreeMap;
@@ -17,7 +17,7 @@ pub(super) struct StateView {
 }
 pub(super) struct View {
     pub model: ModelIr,
-    pub graph: DataflowGraph,
+    pub program: ExecutionProgram,
     pub identity: String,
     pub capabilities: DeviceCapabilities,
     pub profile: ExecutionProfileInspection,
@@ -33,7 +33,7 @@ impl View {
     pub(super) fn new(executor: &CudaExecutor) -> Result<Self> {
         let mut view = Self {
             model: executor.model().clone(),
-            graph: executor.loaded.graph().clone(),
+            program: executor.compile(ProgramId::ONE)?,
             identity: executor.identity.clone(),
             capabilities: executor.capabilities.clone(),
             profile: executor.execution_profile(),

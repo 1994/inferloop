@@ -80,6 +80,20 @@ fn large_logit_geometry_preserves_hidden_only_readback() -> Result<()> {
     ];
     let rows = readbacks.run(&device, &graph, &sources)?;
     assert_eq!(rows, vec![vec![1.0], vec![], vec![1.0], vec![]]);
+    let arena = readbacks.arena.clone().unwrap();
+    for lane in [1, 3, 1, 3] {
+        let mut selected = sources.clone();
+        selected[lane] = Some(ReadbackSource {
+            tensor: logits.clone(),
+            skip: 0,
+            len: count / 2,
+        });
+        let rows = readbacks.run(&device, &graph, &selected)?;
+        assert_eq!(rows[lane].len(), count / 2);
+        assert!(rows[lane].iter().all(|&value| value == 0.0));
+        assert!(Arc::ptr_eq(&arena, readbacks.arena.as_ref().unwrap()));
+        assert!(readbacks.buffers.is_empty());
+    }
     assert_eq!(
         readbacks
             .prepare(
@@ -299,6 +313,10 @@ fn pinned_float_and_integer_graphs_complete_in_order_and_reuse_buffers() -> Resu
     let mut float_reads = Readbacks::default();
     let mut token_reads = Readbacks::<i32>::default();
     for round in 0..8 {
+        if round == 4 {
+            float_reads =
+                Readbacks::bounded_arena(&device, integer_output.size() * size_of::<i32>())?;
+        }
         let expected = vec![round, 0, i32::MAX - round, 1, -round, 0];
         let input = device.upload(expected.clone(), &[6])?;
         graph

@@ -1,24 +1,24 @@
 use super::CudaExecutor;
 use infer_core::{Error, Result};
 use infer_ir::{
-    BackendKind, ExecutionProgram, ExecutionRole, ExecutionTask, ModelIr, OutputReadout,
-    PrecisionPlan, StepPlan,
+    BackendKind, CompiledOp, DataflowGraph, ExecutionProgram, ExecutionRole, ExecutionTask,
+    ModelIr, OutputReadout, PrecisionPlan, StepPlan,
 };
 use std::collections::BTreeSet;
 impl CudaExecutor {
     pub(super) fn check_program(&self, model: &ModelIr, p: &ExecutionProgram) -> Result<()> {
-        if model != self.model()
-            || p.backend != BackendKind::Cuda
-            || p.model != model.id
-            || p.precision != PrecisionPlan::f32()
-            || p.dataflow != *self.loaded.graph()
-            || p.operations != self.operations
-            || p.workspace_bytes != self.workspace_bytes
-        {
-            return Err(Error::invalid("CUDA program/model/kernel mismatch"));
-        }
-        Ok(())
+        check_program(
+            (
+                self.model(),
+                self.loaded.graph(),
+                &self.operations,
+                self.workspace_bytes,
+            ),
+            model,
+            p,
+        )
     }
+
     pub(super) fn check_tasks(
         &self,
         program: &ExecutionProgram,
@@ -73,4 +73,22 @@ impl CudaExecutor {
         }
         Ok(())
     }
+}
+
+pub(super) fn check_program(
+    (bound_model, graph, operations, workspace): (&ModelIr, &DataflowGraph, &[CompiledOp], u64),
+    model: &ModelIr,
+    program: &ExecutionProgram,
+) -> Result<()> {
+    if model != bound_model
+        || program.backend != BackendKind::Cuda
+        || program.model != model.id
+        || program.precision != PrecisionPlan::f32()
+        || program.dataflow != *graph
+        || program.operations != operations
+        || program.workspace_bytes != workspace
+    {
+        return Err(Error::invalid("CUDA program/model/kernel mismatch"));
+    }
+    Ok(())
 }

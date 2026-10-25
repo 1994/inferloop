@@ -1,7 +1,7 @@
 //! Engine adapter for shared weights and isolated resident CUDA graphs.
 //!
-//! Steady-state pooled decode separates submission from completion; other paths settle
-//! synchronously. Tickets preserve the engine ownership protocol in both cases.
+//! An owned execution future separates submission from completion across every compute path.
+//! Tickets publish committed state only after the complete device flight has fenced.
 mod capabilities;
 mod drafting;
 mod execution;

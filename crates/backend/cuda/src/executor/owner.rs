@@ -45,9 +45,11 @@ impl CudaBackend {
         &self.view.model
     }
     /// # Errors
-    /// Rejects compilation while execution owns the mutable device state.
+    /// This cached lookup is infallible; the result type preserves API compatibility.
     pub fn compile(&self, id: ProgramId) -> Result<ExecutionProgram> {
-        self.idle()?.compile(id)
+        let mut program = self.view.program.clone();
+        program.id = id;
+        Ok(program)
     }
     #[must_use]
     pub fn execution_profile(&self) -> ExecutionProfileInspection {

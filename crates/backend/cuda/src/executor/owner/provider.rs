@@ -1,5 +1,5 @@
 use super::CudaBackend;
-use crate::executor::{CudaTicket, submission::TicketState};
+use crate::executor::{CudaTicket, submission::TicketState, validation::check_program};
 use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::{
     DeviceCapabilities, ExecutionProgram, ExecutionTask, ModelIr, OutputReadout, PageGrowth,
@@ -54,10 +54,20 @@ impl BackendProvider for CudaBackend {
         if model != self.model() {
             return Err(Error::invalid("execution graph model mismatch"));
         }
-        Ok(self.view.graph.clone())
+        Ok(self.view.program.dataflow.clone())
     }
     fn validate_program(&self, model: &ModelIr, program: &ExecutionProgram) -> Result<()> {
-        self.idle()?.check_program(model, program)
+        let expected = &self.view.program;
+        check_program(
+            (
+                &self.view.model,
+                &expected.dataflow,
+                &expected.operations,
+                expected.workspace_bytes,
+            ),
+            model,
+            program,
+        )
     }
     fn prepare_state_reservation(&mut self, capacity: usize, readout: OutputReadout) -> Result<()> {
         self.control(|executor| executor.prepare_state_reservation(capacity, readout))

@@ -46,6 +46,7 @@ impl<T: DType + DeviceCopy> ReadbackSource<T> {
 pub struct Readbacks<T: DType + DeviceCopy = f32> {
     context: Option<Arc<CudaContext>>,
     buffers: Vec<Option<Buffer<T>>>,
+    arena: Option<Buffer<T>>,
     poisoned: bool,
     flight: Option<flight::Flight<T>>,
     owner: Arc<()>,
@@ -56,6 +57,7 @@ impl<T: DType + DeviceCopy> Default for Readbacks<T> {
         Self {
             context: None,
             buffers: Vec::new(),
+            arena: None,
             poisoned: false,
             flight: None,
             owner: Arc::new(()),
@@ -95,41 +97,51 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
 
     fn copies(&self, sources: &[Option<ReadbackSource<T>>]) -> Result<DeviceOpVec<()>> {
         let mut copies = DeviceOpVec::with_capacity(sources.len());
-        for (source, buffer) in sources.iter().zip(&self.buffers) {
+        let mut offset = 0;
+        for (index, source) in sources.iter().enumerate() {
             if let Some(source) = source {
+                let (buffer, destination_skip) = self.destination(index, offset)?;
                 copies.push(PinnedCopy {
                     source: Arc::clone(&source.tensor),
                     skip: source.skip,
                     len: source.len,
-                    destination: Arc::clone(
-                        buffer
-                            .as_ref()
-                            .ok_or_else(|| Error::invariant("pinned slot"))?,
-                    ),
+                    destination: Arc::clone(buffer),
+                    destination_skip,
                 });
+                offset += source.len;
             }
         }
         Ok(copies)
     }
 
     fn results(&self, sources: &[Option<ReadbackSource<T>>]) -> Result<Rows<T>> {
+        let mut offset = 0;
         sources
             .iter()
-            .zip(&self.buffers)
-            .map(|(source, buffer)| {
-                if source.is_none() {
+            .enumerate()
+            .map(|(index, source)| {
+                let Some(source) = source else {
                     return Ok(Vec::new());
-                }
-                let buffer = buffer
-                    .as_ref()
-                    .ok_or_else(|| Error::invariant("pinned result"))?;
-                let len = source
-                    .as_ref()
-                    .ok_or_else(|| Error::invariant("pinned source"))?
-                    .len;
-                Ok(buffer.lock().map_err(device_error)?.as_slice()[..len].to_vec())
+                };
+                let (buffer, start) = self.destination(index, offset)?;
+                let result = buffer.lock().map_err(device_error)?.as_slice()
+                    [start..start + source.len]
+                    .to_vec();
+                offset += source.len;
+                Ok(result)
             })
             .collect()
+    }
+
+    fn destination(&self, index: usize, offset: usize) -> Result<(&Buffer<T>, usize)> {
+        if let Some(arena) = &self.arena {
+            return Ok((arena, offset));
+        }
+        self.buffers
+            .get(index)
+            .and_then(Option::as_ref)
+            .map(|buffer| (buffer, 0))
+            .ok_or_else(|| Error::invariant("pinned slot"))
     }
 
     fn staging_bytes(
@@ -137,6 +149,20 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
         device: &CudaDevice,
         sources: &[Option<ReadbackSource<T>>],
     ) -> Result<usize> {
+        if let Some(arena) = &self.arena {
+            let capacity = arena.lock().map_err(device_error)?.num_bytes();
+            let requested = sources.iter().flatten().try_fold(0usize, |sum, source| {
+                sum.checked_add(source_bytes(device, source)?)
+                    .ok_or_else(|| Error::invalid("pinned size overflow"))
+            })?;
+            if requested > capacity {
+                return Err(Error::new(
+                    ErrorCode::Capacity,
+                    "pinned readbacks exceed prepared arena",
+                ));
+            }
+            return Ok(capacity);
+        }
         let mut bytes = 0usize;
         for index in 0..sources.len().max(self.buffers.len()) {
             let retained = self
@@ -152,20 +178,7 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
                 .transpose()?
                 .unwrap_or(0);
             let requested = if let Some(Some(source)) = sources.get(index) {
-                if source.tensor.device_id() != device.stream.device().ordinal() {
-                    return Err(Error::invalid("pinned readback device mismatch"));
-                }
-                if source
-                    .skip
-                    .checked_add(source.len)
-                    .is_none_or(|end| end > source.tensor.size())
-                {
-                    return Err(Error::invalid("pinned readback range out of bounds"));
-                }
-                source
-                    .len
-                    .checked_mul(size_of::<T>())
-                    .ok_or_else(|| Error::invalid("pinned size overflow"))?
+                source_bytes(device, source)?
             } else {
                 0
             };
@@ -188,6 +201,9 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
         sources: &[Option<ReadbackSource<T>>],
     ) -> Result<usize> {
         let bytes = self.staging_bytes(device, sources)?;
+        if self.arena.is_some() {
+            return Ok(bytes);
+        }
         if self.buffers.len() < sources.len() {
             self.buffers.resize_with(sources.len(), || None);
         }
@@ -236,6 +252,7 @@ struct PinnedCopy<T: DType + DeviceCopy> {
     skip: usize,
     len: usize,
     destination: Buffer<T>,
+    destination_skip: usize,
 }
 
 #[expect(
@@ -264,7 +281,11 @@ impl<T: DType + DeviceCopy> DeviceOp for PinnedCopy<T> {
             .destination
             .lock()
             .map_err(|e| DeviceError::Internal(e.to_string()))?;
-        if destination.len() < self.len {
+        if self
+            .destination_skip
+            .checked_add(self.len)
+            .is_none_or(|end| end > destination.len())
+        {
             return Err(DeviceError::Internal("pinned copy size mismatch".into()));
         }
         if self.len == 0 {
@@ -276,13 +297,16 @@ impl<T: DType + DeviceCopy> DeviceOp for PinnedCopy<T> {
             .checked_mul(size_of::<T>())
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or_else(|| DeviceError::Internal("pinned copy offset overflow".into()))?;
-        // SAFETY: owned, initialized destination has at least self.len elements; the
+        // SAFETY: the checked destination range has self.len initialized elements; the
         // checked source range keeps the offset read inside the source tensor.
         // Both allocations outlive the submission. Host reads happen only after
         // device completion; failures poison the owner and submission retains work.
         let status = unsafe {
             cuMemcpyDtoHAsync_v2(
-                destination.as_mut_ptr().cast(),
+                destination
+                    .as_mut_ptr()
+                    .wrapping_add(self.destination_skip)
+                    .cast(),
                 self.source.device_pointer().cu_deviceptr() + offset,
                 bytes,
                 context.get_cuda_stream().cu_stream(),
@@ -320,34 +344,59 @@ pub fn queue_test_gate(device: &CudaDevice, gate: impl FnOnce() + Send + 'static
     unsafe { device.stream.launch_host_function(gate) }.map_err(device_error)
 }
 
+fn source_bytes<T: DType + DeviceCopy>(
+    device: &CudaDevice,
+    source: &ReadbackSource<T>,
+) -> Result<usize> {
+    if source.tensor.device_id() != device.stream.device().ordinal() {
+        return Err(Error::invalid("pinned readback device mismatch"));
+    }
+    if source
+        .skip
+        .checked_add(source.len)
+        .is_none_or(|end| end > source.tensor.size())
+    {
+        return Err(Error::invalid("pinned readback range out of bounds"));
+    }
+    source
+        .len
+        .checked_mul(size_of::<T>())
+        .ok_or_else(|| Error::invalid("pinned size overflow"))
+}
+
 impl Readbacks {
-    fn prepared_rows(
-        device: &CudaDevice,
-        mut sources: Vec<Option<ReadbackSource>>,
-    ) -> Result<Self> {
+    fn prepared_rows(device: &CudaDevice, sources: &[Option<ReadbackSource>]) -> Result<Self> {
         let mut owner = Self::default();
-        let token_bytes = (sources.len() / 2)
+        let token_bytes = sources
+            .len()
             .checked_mul(size_of::<i32>())
             .ok_or_else(|| Error::invalid("token staging overflow"))?;
-        match owner.staging_bytes(device, &sources) {
+        match owner.staging_bytes(device, sources) {
             Ok(bytes) if bytes <= MAX_READBACK_STAGING_BYTES.saturating_sub(token_bytes) => {}
-            Ok(_) => sources
-                .iter_mut()
-                .skip(1)
-                .step_by(2)
-                .for_each(|s| *s = None),
+            Ok(_) => return Self::bounded_arena(device, token_bytes),
             Err(error) if error.code == ErrorCode::Capacity => {
-                // Large verify geometries can still return hidden + device tokens within
-                // the bound. Full-logit requests keep their existing runtime capacity check.
-                sources
-                    .iter_mut()
-                    .skip(1)
-                    .step_by(2)
-                    .for_each(|s| *s = None);
+                return Self::bounded_arena(device, token_bytes);
             }
             Err(error) => return Err(error),
         }
-        owner.prepare(device, &sources)?;
+        owner.prepare(device, sources)?;
+        Ok(owner)
+    }
+
+    fn bounded_arena(device: &CudaDevice, token_bytes: usize) -> Result<Self> {
+        // Large verify graphs cannot retain every possible logit row within the bound.
+        // A compact arena admits any active subset without allocating on lane changes.
+        let bytes = MAX_READBACK_STAGING_BYTES
+            .checked_sub(token_bytes)
+            .ok_or_else(|| Error::invalid("token staging exceeds readback budget"))?;
+        let mut owner = Self::allocated(device, bytes / size_of::<f32>())?;
+        owner.arena = Some(
+            owner
+                .buffers
+                .pop()
+                .flatten()
+                .ok_or_else(|| Error::invariant("prepared pinned arena"))?,
+        );
         Ok(owner)
     }
 
@@ -358,7 +407,7 @@ impl Readbacks {
     ) -> Result<Self> {
         Self::prepared_rows(
             device,
-            vec![
+            &[
                 Some(ReadbackSource::whole(Arc::clone(hidden))),
                 Some(ReadbackSource::whole(Arc::clone(logits))),
             ],
@@ -379,7 +428,7 @@ impl Readbacks {
                 ]
             })
             .collect::<Vec<_>>();
-        Self::prepared_rows(device, sources)
+        Self::prepared_rows(device, &sources)
     }
     pub(crate) fn contiguous(
         device: &CudaDevice,
@@ -403,6 +452,6 @@ impl Readbacks {
                 ]
             })
             .collect::<Vec<_>>();
-        Self::prepared_rows(device, sources)
+        Self::prepared_rows(device, &sources)
     }
 }

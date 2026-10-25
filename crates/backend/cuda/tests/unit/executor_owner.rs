@@ -184,6 +184,9 @@ fn drive(
     let mut ticket = backend.submit_borrowed(program, &plan, tasks)?;
     assert!(!gate.expired.load(Ordering::Acquire));
     assert!(backend.poll(&mut ticket)?.is_none());
+    let compiled = backend.compile(program.id)?;
+    assert_eq!(&compiled, program);
+    backend.validate_program(backend.model(), &compiled)?;
     backend.validate_state_ownership(&before)?;
     assert!(!backend.control_ready());
     assert!(backend.reset_state(tasks[0].state).is_err());
