@@ -52,6 +52,8 @@ Agent 接入、tool parser、文本流式、max length 与严格工具约束的�
 
 | 文档 | 内容 |
 |---|---|
+| [前缀指纹优化](research/prefix-fingerprint-2026-10-24.md) | SHA-256 的必要性、增量内存指纹、碰撞校验与 45 配对实测 |
+| [容器性能评估](research/container-performance-2026-10-24.md) | 45 实测：bbtree、哈希索引、固定容量与其他容器的保留依据 |
 | [近期 CUDA 提交审查](reviews/cuda-commits-2026-10-09.md) | 2026-10-09 基点的源码缺陷、优化判断与验证范围 |
 | [vLLM 对比测试审查](reviews/vllm-benchmark-methodology-2026-10-09.md) | 配置、计时、数值与统计缺口；历史差距的可信范围 |
 | [Infernix 性能调研](research/infernix-performance.md) | 参考机制、精度变化与收益估算 |
