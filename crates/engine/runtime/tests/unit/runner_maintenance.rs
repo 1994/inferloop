@@ -89,8 +89,13 @@ impl BackendProvider for MaintainedBackend {
         self.inner.execution_graph(model)
     }
     fn set_waker(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
-        self.observed.record_owner(self.caller).unwrap();
-        *self.observed.wake.lock().unwrap() = Some(wake);
+        if self.observed.record_owner(self.caller).is_err() {
+            self.observed.failure.store(true, Ordering::Release);
+        }
+        match self.observed.wake.lock() {
+            Ok(mut slot) => *slot = Some(wake),
+            Err(_) => self.observed.failure.store(true, Ordering::Release),
+        }
     }
     fn maintenance(&mut self) -> Result<()> {
         self.observed.record_owner(self.caller)?;
