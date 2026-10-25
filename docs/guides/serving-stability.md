@@ -1,10 +1,12 @@
 # Serving 稳定性现状与生产差距
 
-**定位**：与 [CUDA Serving 历史记录](../research/cuda-serving-baseline.md)、[CUDA 性能实验记录](../research/cuda-performance-experiments.md) 分别描述性能和稳定性；后续工作以 [路线图](../plans/README.md) 的范围和顺序为准，正式性能验收按 [基线方案](../plans/performance/baseline.md) 执行。本文档结论全部来自逐行代码调查，标记【确证】（代码确证）
+调查日期：2026-10-10；2026-10-25 复核并更新 OpenAI 流式与错误映射。其余结论和行号基于调查时源码，引用前以当前代码为准。
+
+**定位**：性能背景见 [CUDA 性能实验记录](../archive/research/cuda-performance-experiments.md)；后续工作以 [路线图](../plans/README.md) 的范围和顺序为准，正式性能验收按 [基线方案](../plans/performance/baseline.md) 执行。本文档结论来自逐行代码调查，标记【确证】（代码确证）
 /【推断】。
 
 **总评**：稳定性骨架是生产级的 —— 全链路有界队列、防饥饿、断连干净、无 panic 路径、
-无 hang 路径。短板集中在三处：OpenAI 兼容面（流式/超时缺失）、过载段的客户端体验
+无 hang 路径。短板集中在三处：OpenAI 超时与 QoS 旋钮、过载段的客户端体验
 （语义与可见性）、fail-closed 隔离策略需要编排层兜底。
 
 ## 一、故障爆炸半径
@@ -63,7 +65,7 @@ Failed 并通知客户端）；`ttft_slo_us`/`tpot_slo_us` **只参与排序、�
 | quote 等 GPU 超 5s | **503**（语义错误：过载应报 429 + Retry-After） |
 | 已准入、排队等资源 | TTFT 线性增长，**客户端零排队可见性**，最长 30s → Failed |
 | 设备卡死 | 30s watchdog → 在飞全部失败 + 整机隔离 → 全站 503 |
-| OpenAI 面 | 所有失败统一映射 503（`openai/execution.rs:141-146`） |
+| OpenAI 面 | 容量 429、模型 404、未实现 501、backend 503；尚无请求级 timeout 旋钮（`openai/error.rs`） |
 
 ## 四、hang 风险排查结果（均无 hang 路径）【确证】
 
@@ -77,8 +79,8 @@ Failed 并通知客户端）；`ttft_slo_us`/`tpot_slo_us` **只参与排序、�
 
 | # | 项 | 落点 | 优先级 |
 |---|---|---|---|
-| 1 | **OpenAI 流式缺失**：`stream=true` 直接 501 —— 生产门票 | `openai/request.rs:76-79` + SSE 通道（native.rs:92-110 已有原生 SSE 可复用） | **P0** |
-| 2 | **OpenAI 无超时/deadline 旋钮**（QoS 全 None） | `openai/execution.rs:71`；映射到 `qos.deadline_us`（执行机制已有） | P0 |
+| 1 | ~~OpenAI 流式缺失~~ **已交付**：`stream=true` 返回 SSE，含 usage 与 tool deltas | 见 [OpenAI 接口指南](openai-api.md) | 已完成 |
+| 2 | **OpenAI 无超时/deadline 旋钮**（QoS 全 None） | `openai/execution.rs` 的 `Qos::default()`；映射到 `qos.deadline_us`（执行机制已有） | P0 |
 | 3 | 过载信号语义：quote 超时 503 → 429 + Retry-After | `actor/handle.rs:57-69`、`openai/error.rs` | P1 |
 | 4 | 排队 early rejection：开 `reject_infeasible_slo`；按排队深度预测 TTFT 必超则拒入 | `ir/src/scheduling.rs:220-227`（默认关）、`scheduler/src/admission.rs:99-108` | P1 |
 | 5 | TTFT/TPOT SLO 强制执行（现仅排序） | `ready.rs:131-143` 的 latency_deadline 消费方 | P2 |

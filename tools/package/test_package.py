@@ -115,6 +115,56 @@ class PackageTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(b"backend/features mismatch", result.stderr)
 
+    def test_backend_cfgs_follow_target_and_feature_for_both_build_scripts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cuda = str(Path(temporary) / "cuda-build")
+            package.run(["rustc", "--edition", "2024", "crates/backend/cuda/build.rs", "-o", cuda])
+            targets = [
+                ("x86_64-unknown-linux-gnu", "linux"),
+                ("aarch64-unknown-linux-gnu", "linux"),
+                ("x86_64-apple-darwin", "macos"),
+                ("aarch64-apple-darwin", "macos"),
+                ("x86_64-pc-windows-msvc", "windows"),
+            ]
+            for binary in [str(package.planner()), cuda]:
+                for target, target_os in targets:
+                    # The packaging contract still rejects Windows production packages.
+                    if binary != cuda and target_os == "windows":
+                        continue
+                    for feature in [False, True]:
+                        with self.subTest(binary=binary, target=target, feature=feature):
+                            env = {
+                                **os.environ,
+                                "TARGET": target,
+                                "CARGO_CFG_TARGET_OS": target_os,
+                                "OUT_DIR": temporary,
+                            }
+                            for key in [
+                                "INFER_PACKAGE_BUILD",
+                                "INFER_PACKAGE_TARGET",
+                                "CARGO_FEATURE_CUDA",
+                            ]:
+                                env.pop(key, None)
+                            if feature:
+                                env["CARGO_FEATURE_CUDA"] = "1"
+                            result = subprocess.run(
+                                [binary], env=env, capture_output=True, text=True, check=True
+                            )
+                            flags = set(result.stdout.splitlines())
+                            expected = set()
+                            if target_os == "linux" and feature:
+                                expected = {"cuda_backend", "native_backend"}
+                            elif target_os == "macos":
+                                expected = {"metal_backend", "native_backend"}
+                            emitted = {
+                                line.removeprefix("cargo:rustc-cfg=")
+                                for line in flags
+                                if line.startswith("cargo:rustc-cfg=")
+                            }
+                            self.assertEqual(emitted, expected)
+                            for name in ["cuda_backend", "metal_backend", "native_backend"]:
+                                self.assertIn(f"cargo:rustc-check-cfg=cfg({name})", flags)
+
     def archive(self, directory, *, corrupt=False, extra=None, arch="x86_64"):
         stage = directory / "stage"
         (stage / "bin").mkdir(parents=True)

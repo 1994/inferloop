@@ -1,6 +1,6 @@
 # Backend 能力与扩展
 
-正式设备架构为 NVIDIA CUDA 与 Metal；CPU Host / Reference 位于 `testing/cpu`，只在 `test-backends` feature 下启用。具体路径的限制见下文。
+正式设备架构为 NVIDIA CUDA 与 Metal；CPU 标量参考算子位于 `testing/cpu`，只用于测试与数值对照，不注册 backend。具体路径的限制见下文。
 
 ## 能力与目录
 
@@ -17,7 +17,7 @@
 
 ## 选择与隔离
 
-发布版提供 `--backend auto|cuda|metal`：`auto` 按 CUDA → Metal 选择已实现且可用的设备，无可用设备时返回 Unsupported。CUDA 需要显式启用 `cuda` feature，并通过设备与模型能力检查。测试 CPU 不进入 `auto` 与 supported catalog。
+发布版提供 `--backend auto|cuda|metal`：`auto` 按 CUDA → Metal 选择已实现且可用的设备，无可用设备时返回 Unsupported。CUDA 需要显式启用 `cuda` feature，并通过设备与模型能力检查。产品不提供 CPU 执行 backend。
 
 `ModelIr` / `DataflowGraph` 描述共有语义，`KernelRegistration` / `ExecutionProgram` 绑定 backend。编译与执行都会校验能力、精度、kernel 与 program target；更换 backend 需要重新编译，checkpoint 不能直接跨 backend 恢复。
 

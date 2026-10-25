@@ -14,7 +14,7 @@ BF16 cuBLAS 投影和量化模型的 chunked recurrent 继续保留显式实验�
 
 审查范围为 `f7b3ab0..7c79d99`，共 25 个提交、54 个文件，新增 3353 行、删除 384 行，包含文档和测试。提交时间从 2026 年 10 月 8 日 23:26 至 10 月 9 日 10:16，均为北京时间。重点检查 CUDA 图捕获、投影与量化 workspace、prompt 调度、MTP priming 和资源回退。
 
-源码问题来自该范围的 diff 与当前调用链检查。下文性能数值引用仓库的 [性能实验记录](../research/cuda-performance-experiments.md)，本轮没有在 CUDA 设备上独立复测。不同优化记录使用不同阶段的基线，其百分比不能相加。
+源码问题来自该范围的 diff 与当前调用链检查。下文性能数值引用仓库的 [性能实验记录](../archive/research/cuda-performance-experiments.md)，本轮没有在 CUDA 设备上独立复测。不同优化记录使用不同阶段的基线，其百分比不能相加。
 
 ## P1 cuBLAS context 绑定首次设备和 stream
 
@@ -56,7 +56,7 @@ FP8 workspace 只以 `(rows, columns)` 为 key，但 per-channel 与 block-scale
 
 ## 各项性能改动的判断
 
-下表的测量依据均来自 [性能实验记录](../research/cuda-performance-experiments.md)，保留审查所需的代表性结果。原始配置、样本和完整矩阵由该记录维护。
+下表的测量依据均来自 [性能实验记录](../archive/research/cuda-performance-experiments.md)，保留审查所需的代表性结果。原始配置、样本和完整矩阵由该记录维护。
 
 | 改动与提交 | 判断依据 | 审查意见 |
 |---|---|---|

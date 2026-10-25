@@ -1,11 +1,11 @@
 //! Exercise Hopper's weight conversion on an actual model matrix without loading the full model.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use infer_backend_cuda::nvfp4::to_bf16;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::env::args;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::error::Error as StdError;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn main() -> Result<(), Box<dyn StdError>> {
     use cutile::half::bf16;
     use infer_backend_cuda::{device::CudaDevice, strategy::LinearTiling};
@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn compare(weights: &[u16], input: &[f32], actual: &[f32]) -> infer_core::Result<f64> {
     if weights.len() / input.len() != actual.len() {
         return Err(infer_core::Error::invariant("output shape"));
@@ -94,8 +94,10 @@ fn compare(weights: &[u16], input: &[f32], actual: &[f32]) -> infer_core::Result
     Ok(maximum)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(cuda_backend))]
 fn main() {
+    use std::process::exit;
+
     eprintln!("CUDA conversion check requires Linux and an NVIDIA device");
-    std::process::exit(1);
+    exit(1);
 }

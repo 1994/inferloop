@@ -169,7 +169,7 @@ conv 输入：     10240 × 4           = 40960 bytes
 
 ### 用阶段成本约束加速预期
 
-本项目 [已有阶段记录](cuda-performance-experiments.md) 中，27B、batch4、MTP 深度 2 的 target verify 约 27 ms，其中 linear 19.9 ms、Delta 4.2 ms、conv 2.3 ms，另外两轮 draft 各约 1.6 ms。这是历史配置的测量，不是 DFlash2 的新基线。
+本项目 [已有阶段记录](../archive/research/cuda-performance-experiments.md) 中，27B、batch4、MTP 深度 2 的 target verify 约 27 ms，其中 linear 19.9 ms、Delta 4.2 ms、conv 2.3 ms，另外两轮 draft 各约 1.6 ms。这是历史配置的测量，不是 DFlash2 的新基线。
 
 即使把 Delta 的 4.2 ms 降为 2.1 ms，verify 延迟也只下降约 `2.1 / 27 = 7.8%`；计入两轮 draft 后，已知 GPU 阶段时间下降上限约 `2.1 / 30.2 = 7.0%`，还未扣除新 Fold 与其余成本。同样，若 linear 耗时下降 20%，该 verify 约省 4.0 ms、延迟下降约 14.7%，已知 GPU 阶段下降上限约 13.2%。这些是固定其余成本、固定接受长度的条件推算，不是落地后的实测结果。
 

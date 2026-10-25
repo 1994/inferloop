@@ -6,7 +6,7 @@
 
 先读 [工程整理与推理优化路线图](plans/README.md)。该页统一维护 P0–P3 优先级、任务编号、启动条件、并行范围与完成标准；按任务进入详细方案，不必逐份阅读历史研究。工程基础、Agent 服务、推测解码与 CUDA 性能方案归档在 `plans/` 的对应分组。
 
-Agent 接入、tool parser、文本流式、max length 和实用配置的缺口与设计见 [Agent 工具调用与服务配置方案](plans/serving/agent-api.md)。该方案按实际使用场景取舍，借鉴 vLLM/SGLang 的机制；当前接口范围仍以使用文档与源码为准。
+Agent 接入、tool parser、文本流式、max length 与严格工具约束的实现边界和后续设计见 [Agent 工具调用与服务配置方案](plans/serving/agent-api.md)。该方案按实际使用场景取舍，借鉴 vLLM/SGLang 的机制；当前接口范围仍以使用文档与源码为准。
 
 准备测试或性能对比时，先读 [性能基线与 vLLM 对齐方案](plans/performance/baseline.md)。release、当前配置对齐、矩阵、计时统计和证据规则只在该文维护；模块方案补充自己的接口与数值/资源验收。基线验收完成前，历史矩阵只用于调查线索。
 
@@ -30,8 +30,8 @@ Agent 接入、tool parser、文本流式、max length 和实用配置的缺口�
 | [质量门禁](guides/quality-gates.md) | 本地/CI 检查、Attention 对照与验收要求 |
 | [CPU 性能测量](guides/cpu-performance.md) | 分配计数、延迟与测量范围 |
 | [CUDA 性能测量](guides/cuda-performance.md) | 现有算子/模型/服务工具、能力探针与测量边界 |
-| [性能基线与 vLLM 对齐方案](plans/performance/baseline.md) | 待实施的统一测试条件、比较与验收契约 |
-| [Serving 稳定性调查](guides/serving-stability.md) | 稳定性机制、接口和生产差距调查 |
+| [性能基线与 vLLM 对齐方案](plans/performance/baseline.md) | 统一测试条件、比较与验收契约；已签发基线见文内 |
+| [Serving 稳定性](guides/serving-stability.md) | 故障半径、排队与过载行为、生产差距 |
 | [工具导航](../tools/README.md) | 门禁、参考导出与基准入口 |
 
 ## 架构
@@ -52,15 +52,15 @@ Agent 接入、tool parser、文本流式、max length 和实用配置的缺口�
 
 | 文档 | 内容 |
 |---|---|
+| [前缀指纹优化](research/prefix-fingerprint-2026-10-24.md) | SHA-256 的必要性、增量内存指纹、碰撞校验与 45 配对实测 |
+| [容器性能评估](research/container-performance-2026-10-24.md) | 45 实测：bbtree、哈希索引、固定容量与其他容器的保留依据 |
 | [近期 CUDA 提交审查](reviews/cuda-commits-2026-10-09.md) | 2026-10-09 基点的源码缺陷、优化判断与验证范围 |
 | [vLLM 对比测试审查](reviews/vllm-benchmark-methodology-2026-10-09.md) | 配置、计时、数值与统计缺口；历史差距的可信范围 |
 | [Infernix 性能调研](research/infernix-performance.md) | 参考机制、精度变化与收益估算 |
-| [CUDA Serving 历史记录](research/cuda-serving-baseline.md) | 既有服务矩阵与瓶颈调查；不作为当前已验收基线 |
-| [CUDA 性能实验记录](research/cuda-performance-experiments.md) | 历史 A/B、失败实验与测量条件 |
 | [CUDA 长上下文性能结论与任务交接](research/cuda-vllm-performance-handoff-2026-10-17.md) | 已合并 PR #10、五组正式收益、当前 attention 瓶颈、失败方案、质量边界与可拆任务 |
-| [当前默认路径与 vLLM 的性能画像](research/cuda-vllm-current-profile-2026-10-13.md) | 同输入 trace：GDN 110/8 ms、attention 与分组差距；profiler 干扰和完整输出边界 |
+| [CUDA kernel 工程整理与 45 重建记录](research/cuda-kernel-engineering-2026-10-23.md) | AOT 制品清单、统一校验/重建入口与固定工具链 |
 
-2026-10-09 至 10-14 的逐轮调查、实验记录和证据工件已移入[历史归档](archive/README.md)。归档保留源码基点、测量条件与失败结论供复核，不代表当前状态，也不进入日常排期。
+过期的服务矩阵、10-13 性能画像和测试迁移清单已删除；2026-10-09 至 10-14 的完整 A/B 与逐轮调查记录移入[历史归档](archive/README.md)，保留源码基点与测量条件供复核，不代表当前状态，也不进入日常排期。
 
 ## 维护约定
 

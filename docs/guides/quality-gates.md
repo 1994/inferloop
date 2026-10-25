@@ -2,7 +2,7 @@
 
 所有检查共用统一入口 `make check`，任一步失败即退出。CI 与本地使用同一脚本，`quality-gate` job 汇总 Rust、工具、MSRV、依赖安全、CUDA（无 GPU 的头文件门禁）与四平台打包结果，见 [打包指南](packaging.md)。
 
-本文描述现有门禁。正式测试与服务对比的共同要求见 [性能基线方案](../plans/performance/baseline.md)；release 构建身份、当前 native/vLLM 配置和证据校验仍待接入，现有 gate 成功退出不代表已通过该契约。入口与测试收集的调整见 [工程方案](../plans/engineering/build-and-dependencies.md)。
+本文描述现有门禁。正式测试与服务对比的共同要求见 [性能基线方案](../plans/performance/baseline.md)；release 构建身份、当前 native/vLLM 配置和证据校验已由基线方案的门禁覆盖，但现有 gate 成功退出不代表对应 profile 已通过性能判定。入口与测试收集的约定见 [构建与依赖方案](../plans/engineering/build-and-dependencies.md)。
 
 ## 检查项
 
@@ -14,7 +14,7 @@
 | 数值常量 | `crates/*/*/src` 生产代码里的数字字面量必须写成带 `///` 说明的具名常量；白名单 `0`/`1`/`2`、数组下标、`const`/`static` 定义、字符串与字符字面量、注释、`#[cfg(test)]`/`#[cutile::module]` 段以及测试文件除外 |
 | 错误路径 | 生产代码禁止 `unwrap` / `expect` / `panic` / `todo` / `unimplemented` / `dbg` 与忽略 `Result` |
 | unsafe | 默认 `deny`；仅经局部安全证明的 OS/设备 FFI、CUDA PDL 与隔离的 benchmark allocator 开放，并说明安全条件 |
-| Feature 隔离 | 默认 CLI / IR / workspace 与显式 `infer-cli/test-backends` 分别构建；CUDA 在打包和硬件门禁单独启用，生产依赖图不含 CPU 执行器 |
+| Feature 隔离 | 默认 CLI / IR / workspace 与 CUDA feature 分别构建；CUDA 在打包和硬件门禁单独启用，生产依赖图不含 CPU 执行器 |
 | 编译与文档 | release 构建、unit / integration / doctest、独立 golden、Rustdoc 警告失败 |
 | CPU | release 协议、KV primitives、Engine tick 分配门禁，范围见 [CPU 性能测量](cpu-performance.md) |
 | MSRV | Rust 1.90 检查 workspace（不含 CUDA）与隔离的 CPU benchmark |
@@ -41,7 +41,9 @@ make check-linux      # Linux 原生放置测试
 make check-linux-numa # Linux NUMA 硬件验收，见 Linux 指南
 ```
 
-`check-rust` 只构建 CUDA crate 的无 feature 版本。需要 Toolkit 的部分分成两半：`test-cuda-hosted` 用 CUDA 13.2 开发头文件编译、lint 全部 target 并运行 CPU 侧测试，因此托管 CI 可以运行，也是唯一会编译 cuda-gated `#[cfg(test)]` 模块的门禁；`test-cuda` 追加设备验收（`cuda-kernels` 示例与需 GPU 的用例）。缺少 GPU 或相应 syscall 权限时，硬件门禁明确失败，不会跳过。
+`check-rust` 对 CUDA crate 的无 feature 版本只检查编译隔离：整个库被排除，
+该入口报告 `compiled`，不声称执行了 CUDA 测试。纯主机用例也随 CUDA 库启用，
+在 `test-cuda-hosted` 中执行。需要 Toolkit 的部分分成两半：`test-cuda-hosted` 用 CUDA 13.2 开发头文件编译、lint 全部 target 并运行 CPU 侧测试，因此托管 CI 可以运行，也是唯一会编译 cuda-gated `#[cfg(test)]` 模块的门禁；`test-cuda` 追加设备验收（`cuda-kernels` 示例与需 GPU 的用例）。缺少 GPU 或相应 syscall 权限时，硬件门禁明确失败，不会跳过。
 
 ## 通用 Attention 门禁
 

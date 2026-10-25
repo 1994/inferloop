@@ -7,7 +7,6 @@ use serde::Serialize;
 use std::env::var;
 
 /// Initial context kept on F32 before the target BF16 bulk path.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 pub const PRECISE_PREFIX_POSITIONS: usize = 2048;
 
 /// Zero is an explicit experiment opt-out through `INFER_CUDA_ATTENTION_PRECISE_PREFIX=0`.
@@ -44,7 +43,6 @@ impl AttentionProfile {
     /// This is an allocation-free geometry/artifact check; the CLI separately requires a
     /// native FP4 package, declared FP8 KV and a complete supported optional head.
     /// A zero width denotes the loader's automatic, lane-aligned prompt geometry.
-    #[cfg(all(target_os = "linux", feature = "cuda"))]
     #[must_use]
     pub fn supports_bf16_prefill(
         architecture: &str,
@@ -113,6 +111,6 @@ impl AttentionProfile {
     }
 }
 
-#[cfg(all(test, target_os = "linux", feature = "cuda"))]
+#[cfg(test)]
 #[path = "../tests/unit/attention_profile_capabilities.rs"]
 mod capability_tests;

@@ -1,9 +1,7 @@
 use crate::constants::F32_BYTES_U64;
+use crate::native::decision_tokens_fit;
 use infer_core::{Error, ProgramId, Result};
-use infer_ir::{
-    CanonicalRequest, DecisionQuestion, ModelIr, ModelOutput, Workload, WorkloadOutput,
-    WorkloadPlan,
-};
+use infer_ir::{CanonicalRequest, ModelIr, ModelOutput, Workload, WorkloadOutput, WorkloadPlan};
 use infer_models::{HostTensor, SafetensorsFile, package_path};
 use infer_spi::WorkloadProvider;
 use sha2::{Digest, Sha256};
@@ -165,16 +163,7 @@ impl WorkloadProvider for ProjectionWorkloads {
         if let Workload::Decision(schema) = &r.workload {
             let limit = self.weights["decision.weight"].shape[0];
             for q in &schema.questions {
-                let options: Vec<_> = match q {
-                    DecisionQuestion::Binary {
-                        negative_token,
-                        positive_token,
-                    } => vec![*negative_token, *positive_token],
-                    DecisionQuestion::Categorical { options }
-                    | DecisionQuestion::Ordinal { options, .. } => options.clone(),
-                    DecisionQuestion::Continuous { token, .. } => vec![*token],
-                };
-                if options.iter().any(|i| *i as usize >= limit) {
+                if !decision_tokens_fit(q, limit) {
                     return Err(Error::invalid(
                         "decision option exceeds installed readout channels",
                     ));
@@ -187,17 +176,24 @@ impl WorkloadProvider for ProjectionWorkloads {
         let transformed = outputs
             .iter()
             .map(|o| {
-                let mut o = o.clone();
+                // Native postprocessing consumes only the selected readout. Keep the borrowed
+                // backbone buffers intact without copying fields the selected head never reads.
+                let mut projected = ModelOutput {
+                    next_token: o.next_token,
+                    logits: Vec::new(),
+                    hidden: Vec::new(),
+                    tokens: Vec::new(),
+                };
                 match r.workload {
                     Workload::Embed { .. } => {
-                        o.hidden = o
+                        projected.hidden = o
                             .hidden
                             .iter()
                             .map(|x| self.project("embedding", x))
                             .collect::<Result<_>>()?;
                     }
                     Workload::Rerank { .. } => {
-                        o.logits = self.project(
+                        projected.logits = self.project(
                             "rank",
                             o.hidden
                                 .last()
@@ -205,18 +201,22 @@ impl WorkloadProvider for ProjectionWorkloads {
                         )?;
                     }
                     Workload::Decision(_) => {
-                        o.logits = self.project(
+                        projected.logits = self.project(
                             "decision",
                             o.hidden
                                 .last()
                                 .ok_or_else(|| Error::invalid("readout has no hidden row"))?,
                         )?;
                     }
-                    _ => {}
+                    _ => return Ok(o.clone()),
                 }
-                Ok(o)
+                Ok(projected)
             })
             .collect::<Result<Vec<_>>>()?;
         crate::NativeWorkloads.postprocess(r, &transformed)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/readouts.rs"]
+mod tests;

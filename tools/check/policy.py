@@ -31,14 +31,13 @@ def check_manifests():
         config.get("cognitive-complexity-threshold", 25) <= 25,
         "Cognitive complexity limit must stay at 25 or below",
     )
-    # The attention comparison keeps its own workspace, so its lint table is a copy that this
-    # verifies against the root. The CPU harness is a workspace member: it inherits the root table,
-    # which the member loop below enforces, and copying it back would be the drift this avoids.
-    benchmark = tomllib.loads((ROOT / "tools/bench/attention/Cargo.toml").read_text())
-    require(
-        benchmark["lints"] == WORKSPACE["lints"],
-        "attention harness must keep all strict lint gates",
-    )
+    # Reference candidates keep independent resolution graphs and the same strict lints.
+    for harness in ("attention", "containers"):
+        benchmark = tomllib.loads((ROOT / f"tools/bench/{harness}/Cargo.toml").read_text())
+        require(
+            benchmark["lints"] == WORKSPACE["lints"],
+            f"{harness} harness must keep all strict lint gates",
+        )
     inherited = set()
     for member in WORKSPACE["members"]:
         manifest = tomllib.loads((ROOT / member / "Cargo.toml").read_text())
@@ -112,6 +111,7 @@ def check_exceptions():
         *(ROOT / "crates").rglob("*.rs"),
         *(ROOT / "tools/bench/cpu/src").rglob("*.rs"),
         *(ROOT / "tools/bench/attention/src").rglob("*.rs"),
+        *(ROOT / "tools/bench/containers/src").rglob("*.rs"),
     ]
     for path in paths:
         for attribute in pattern.finditer(path.read_text()):
@@ -163,6 +163,7 @@ def check_exceptions():
                         ROOT / "crates/backend/cuda/src/resident/slot_verify.rs",
                         ROOT / "crates/foundation/core/src/placement/mod.rs",
                         ROOT / "tools/bench/cpu/src/main.rs",
+                        ROOT / "tools/bench/containers/src/main.rs",
                     ),
                     f"{path}: unsafe code belongs only at audited device, "
                     "file mapping or measurement boundaries",

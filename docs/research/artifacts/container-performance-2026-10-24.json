@@ -1,0 +1,1812 @@
+{
+  "metadata": {
+    "date": "2026-10-24 America/Los_Angeles",
+    "host": "45 / archlinux",
+    "cpu": "Intel Core i9-13900KF",
+    "cpu_affinity": "8",
+    "smt_siblings": "8-9",
+    "governor": "powersave; turbo and desktop tasks left enabled",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.0\nLLVM version: 23.1.1\n",
+    "base_commit": "2bec30a92510d5a4b913a5a92b3112e3b0cc52ad",
+    "profile": "release, thin LTO, codegen-units=1; no target-cpu override",
+    "rustflags": "",
+    "method": "5 paired serial process runs, alternating baseline/candidate order; 7 rounds each; 100000 composite operations per round; median of per-run medians",
+    "baseline_definition": "Only cache.rs restored from base for the baseline build; the candidate manifest retains the already-existing ahash dependency edge, unused by baseline cache code. Same harness and lockfile for both binaries.",
+    "baseline_cache_sha256": "d3a4fbcc7c9698aac5aa51eafe9d6f81516fc5a2fb0bcb24b75b42a080068494",
+    "candidate_cache_sha256": "de2fb22b3ec2ef57939563d76c81622f8a5dc8b1db9bf665ab98f5be1e48523d",
+    "binary_sha256": {"baseline": "5d416678e70f50892adc32d77915ea73df890085d20b6a7792b3643d23e5af39", "candidate": "da32083ef39df29ab2ff4259a1b86cc6f682455d418bce5ede6a961b97064cad"},
+    "source_sha256": {"tools/bench/containers/src/lookup.rs": "89f24e1a083794514c43119d8ac1220257cf9cd2e4c00ec786c693e2b5d38f50", "tools/bench/containers/src/main.rs": "f9f67650e9f2abf6603cf596871c96d14f6a877d96eae9938fb51ea5c979658a", "tools/bench/containers/src/ordered.rs": "16d9fcacae51af53f618abfb6b71218a3451d1e0f9db747f234e760cd36087e1", "tools/bench/containers/src/prefix.rs": "d39299d49c22f36da9cec5e53911c4b4ed08e37f183b898f1c86a6864314487e"},
+    "shared_source_sha256": {"tools/bench/cpu/src/allocator.rs": "fa65718870afc7cdb38309ca5235d53e1bdd52aa71ec9a378add50260ac4e3db", "crates/engine/scheduler/src/queue/ordered.rs": "8938f524e63bed407034a095e5d55de34ee397bf892d55ae1d21d02acb3e0881", "tools/bench/containers/Cargo.lock": "8d3471773f137e993f94d096ee729eeb9c58f1ba9e7ec56ecc1034a09e8e0cc3"},
+    "raw_directory_on_45": "/home/r/code/inference-container-performance/artifacts/containers",
+    "scope": "CPU microbenchmarks with allocation bookkeeping; no model/GPU/service throughput or tail-latency acceptance"
+  },
+  "prefix": [
+    {
+      "case": "prefix_contains_b16_t128",
+      "capacity": 16,
+      "baseline": [
+        {
+          "pair": 0,
+          "ns_per_operation": [589.95478, 615.27122, 596.64224, 585.73696, 612.20983, 591.5567, 588.58299],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [606.06867, 605.67157, 605.69189, 605.6097, 605.42836, 605.74327, 606.27164],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [621.40515, 611.90951, 611.92829, 611.99436, 611.89011, 611.86604, 611.80131],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [619.80023, 620.84425, 620.22416, 620.02745, 619.9369, 620.03, 619.9697],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [615.60177, 618.7973, 618.80198, 622.07631, 619.78652, 615.51152, 614.90373],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        }
+      ],
+      "baseline_median_ns": 611.90951,
+      "candidate": [
+        {
+          "pair": 0,
+          "ns_per_operation": [613.35626, 606.77453, 608.84497, 609.22512, 609.36625, 608.34748, 606.98069],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [602.87881, 602.8225, 602.98716, 597.5325, 603.24679, 603.94215, 603.1133],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [606.7279, 606.66942, 606.81904, 607.09169, 606.56398, 606.7234, 606.4944],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [606.56061, 606.46246, 607.18597, 606.53362, 606.71422, 606.71633, 606.6138],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [603.88772, 602.75319, 603.07269, 602.83912, 602.97836, 603.49874, 602.8442],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        }
+      ],
+      "candidate_median_ns": 606.6138,
+      "candidate_over_baseline": 0.9913455994498271
+    },
+    {
+      "case": "prefix_contains_b16_t128",
+      "capacity": 64,
+      "baseline": [
+        {
+          "pair": 0,
+          "ns_per_operation": [600.15934, 622.10134, 615.31541, 624.91177, 624.737, 626.21899, 624.72847],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [614.57798, 614.46565, 626.73792, 637.87082, 614.31934, 614.36324, 615.70983],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [621.44707, 621.19741, 595.72267, 614.0653, 621.13759, 608.66866, 603.23158],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [633.42961, 633.21167, 629.7826500000001, 630.02578, 629.70035, 630.16779, 629.95472],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [624.31541, 624.46377, 625.45565, 624.61018, 623.85487, 624.23121, 624.39468],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        }
+      ],
+      "baseline_median_ns": 624.39468,
+      "candidate": [
+        {
+          "pair": 0,
+          "ns_per_operation": [622.81994, 614.23501, 608.58943, 598.15898, 608.3952, 611.34526, 612.55806],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [602.50979, 596.51374, 607.75673, 604.83652, 607.61809, 607.82579, 607.62512],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [611.38304, 611.08187, 611.35792, 611.45009, 611.59216, 611.73172, 611.19608],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [611.64472, 611.37158, 610.966, 611.48617, 611.63022, 611.32801, 611.65855],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [607.78646, 611.08886, 611.23893, 612.9446, 607.75481, 611.37146, 607.57359],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        }
+      ],
+      "candidate_median_ns": 611.34526,
+      "candidate_over_baseline": 0.9791006867643396
+    },
+    {
+      "case": "prefix_contains_b16_t128",
+      "capacity": 1024,
+      "baseline": [
+        {
+          "pair": 0,
+          "ns_per_operation": [647.9094000000001, 657.8956199999999, 655.7497099999999, 655.44668, 662.7250799999999, 663.99638, 665.7583],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [658.6220299999999, 643.6452400000001, 640.83333, 641.14069, 639.58115, 617.53456, 641.30702],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [644.6416, 649.37692, 648.3837100000001, 648.33852, 648.82776, 648.33522, 652.73595],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [656.76941, 652.95721, 656.9084799999999, 657.94377, 657.72062, 656.9349500000001, 656.32231],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [650.83522, 650.87034, 650.93018, 651.19869, 650.7666300000001, 650.713, 652.0867900000001],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        }
+      ],
+      "baseline_median_ns": 650.87034,
+      "candidate": [
+        {
+          "pair": 0,
+          "ns_per_operation": [615.46461, 615.42487, 614.66341, 614.03062, 591.93528, 603.62702, 620.06737],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [609.2256, 609.83313, 611.3123, 610.35999, 612.83807, 607.89872, 611.77658],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [615.03721, 617.0037, 615.21374, 616.8376, 615.00335, 615.78228, 615.40904],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [615.34955, 619.18188, 614.90083, 614.63232, 616.19657, 616.4027, 618.19559],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [614.52838, 612.13247, 612.10539, 612.17438, 610.85485, 615.53004, 629.10195],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        }
+      ],
+      "candidate_median_ns": 614.66341,
+      "candidate_over_baseline": 0.9443715164528774
+    },
+    {
+      "case": "prefix_contains_b16_t128",
+      "capacity": 8192,
+      "baseline": [
+        {
+          "pair": 0,
+          "ns_per_operation": [721.11526, 723.14624, 728.24605, 726.6985, 732.05187, 726.51789, 735.05945],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [688.54354, 688.79976, 680.98407, 685.18453, 684.07637, 693.12286, 730.01259],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [695.9202, 688.00042, 692.00217, 689.21462, 730.06961, 707.98462, 713.01281],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [698.41174, 696.58208, 690.5577, 697.49763, 704.96503, 706.88545, 747.88989],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [733.13655, 717.50672, 730.64038, 715.40436, 699.93454, 707.47178, 690.85475],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        }
+      ],
+      "baseline_median_ns": 698.41174,
+      "candidate": [
+        {
+          "pair": 0,
+          "ns_per_operation": [695.27643, 681.93175, 703.01774, 684.29208, 720.92432, 717.12418, 658.09597],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [643.14897, 642.2393, 649.23556, 638.72526, 656.28534, 654.27341, 641.6134800000001],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [648.75903, 644.57456, 667.19225, 660.09343, 680.73126, 645.19121, 645.2931100000001],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [644.6444, 669.8557099999999, 649.9443000000001, 645.12474, 650.88752, 651.58175, 658.8865400000001],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [684.19752, 664.17292, 651.77897, 685.65844, 673.405, 687.60907, 647.5584299999999],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        }
+      ],
+      "candidate_median_ns": 650.88752,
+      "candidate_over_baseline": 0.9319538643494165
+    },
+    {
+      "case": "prefix_contains_b2_t2",
+      "capacity": 16,
+      "baseline": [
+        {
+          "pair": 0,
+          "ns_per_operation": [53.25369, 53.18649, 53.19589, 53.14885, 50.80363, 51.05319, 53.17496],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [53.04235, 52.9896, 53.03193, 53.00509, 52.99264, 53.03093, 53.0287],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [53.43012, 53.60766, 53.39994, 53.41212, 53.81685, 53.63026, 53.39252],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [54.40798, 54.4152, 54.56362, 54.44314, 54.40414, 54.41979, 54.39322],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [55.23174, 55.60852, 53.19989, 53.19553, 53.2075, 53.19541, 53.21648],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        }
+      ],
+      "baseline_median_ns": 53.2075,
+      "candidate": [
+        {
+          "pair": 0,
+          "ns_per_operation": [53.87921, 53.77155, 53.79677, 53.87027, 54.04333, 53.43134, 53.77109],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [53.74881, 53.65288, 53.6167, 53.61045, 53.49944, 53.66773, 53.61253],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [52.9868, 53.06926, 53.05003, 53.08065, 53.01667, 53.2078, 53.08222],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [53.40573, 53.01934, 53.12754, 53.0061, 53.01312, 52.99969, 52.9624],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [53.75346, 53.57894, 53.59421, 53.61292, 53.52433, 53.5624, 53.47139],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        }
+      ],
+      "candidate_median_ns": 53.57894,
+      "candidate_over_baseline": 1.006980970727811
+    },
+    {
+      "case": "prefix_contains_b2_t2",
+      "capacity": 64,
+      "baseline": [
+        {
+          "pair": 0,
+          "ns_per_operation": [52.59003, 53.44001, 53.60107, 53.62913, 55.86521, 55.65966, 56.19077],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [55.55915, 55.31753, 55.71605, 55.56407, 55.38765, 55.37892, 56.21312],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [56.77352, 55.75425, 57.25155, 57.05438, 56.92918, 56.42832, 56.29411],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [56.83446, 56.7481, 57.48188, 57.09332, 57.91156, 56.79243, 57.36849],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [58.30886, 57.3055, 55.83173, 55.75049, 55.5243, 55.48161, 55.78244],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        }
+      ],
+      "baseline_median_ns": 55.78244,
+      "candidate": [
+        {
+          "pair": 0,
+          "ns_per_operation": [53.3035, 53.70201, 53.71916, 53.51154, 53.88159, 53.17565, 54.40898],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [53.91046, 53.80136, 54.13259, 54.18519, 54.3142, 53.99281, 54.68791],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [53.2402, 53.62364, 53.80381, 53.32643, 53.99279, 53.64146, 54.18493],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [53.33124, 53.70842, 53.84794, 53.4522, 53.8739, 53.82699, 53.92718],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [53.81727, 54.12415, 54.60048, 53.93056, 54.20732, 54.08252, 54.50423],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        }
+      ],
+      "candidate_median_ns": 53.82699,
+      "candidate_over_baseline": 0.9649450615641768
+    },
+    {
+      "case": "prefix_contains_b2_t2",
+      "capacity": 1024,
+      "baseline": [
+        {
+          "pair": 0,
+          "ns_per_operation": [89.68607, 90.78798, 90.07606, 91.16816, 89.76295, 91.57942, 90.65068],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [89.57524, 90.51003, 89.94313, 90.91235, 90.12272, 91.57257, 96.63769],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [91.27798, 92.05829, 91.90675, 92.47011, 91.46175, 93.02983, 91.72861],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [92.26929, 92.96483, 92.7256, 94.27984, 92.49463, 93.92549, 93.2459],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [91.62692, 92.69756, 90.21306, 91.73372, 89.57971, 91.32746, 90.24334],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        }
+      ],
+      "baseline_median_ns": 91.32746,
+      "candidate": [
+        {
+          "pair": 0,
+          "ns_per_operation": [56.50827, 57.6254, 57.86301, 57.71516, 58.1209, 57.55122, 57.78016],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [57.15452, 58.56232, 58.74937, 58.5033, 58.33737, 58.24905, 58.36097],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [56.57393, 57.73733, 57.74708, 57.39783, 58.08217, 57.59999, 58.5566],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [56.93248, 57.75398, 57.74671, 57.64046, 57.81141, 57.81112, 58.00137],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [57.30123, 58.12061, 58.37255, 58.21149, 58.16529, 58.3118, 58.2921],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        }
+      ],
+      "candidate_median_ns": 57.75398,
+      "candidate_over_baseline": 0.6323835131295669
+    },
+    {
+      "case": "prefix_contains_b2_t2",
+      "capacity": 8192,
+      "baseline": [
+        {
+          "pair": 0,
+          "ns_per_operation": [112.98329, 112.18535, 113.93164, 113.73829, 114.05386, 113.39489, 113.07491],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [110.37512, 113.69709, 112.5878, 110.93738, 110.18757, 105.11932, 112.87884],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [113.12196, 114.94957, 113.84138, 113.36203, 113.25116, 114.59651, 113.11439],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [114.16558, 115.5958, 114.51625, 114.3305, 116.35073, 114.52533, 114.58027],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [110.09105, 110.97991, 110.6559, 110.63496, 113.00565, 111.01133, 110.62741],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        }
+      ],
+      "baseline_median_ns": 113.36203,
+      "candidate": [
+        {
+          "pair": 0,
+          "ns_per_operation": [61.00314, 61.0728, 60.8183, 61.65558, 60.73443, 61.10311, 62.34805],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [60.62139, 60.74632, 60.05164, 62.97426, 60.81523, 60.53153, 60.97197],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [60.39451, 60.20783, 60.47342, 60.32793, 60.34621, 60.29745, 62.45148],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [59.83155, 60.18387, 60.52209, 60.88639, 60.51256, 60.64238, 59.96361],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [60.39646, 60.50181, 60.63313, 65.32288, 60.60624, 60.55691, 60.87386],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [100000, 100000, 100000, 100000, 100000, 100000, 100000]
+        }
+      ],
+      "candidate_median_ns": 60.60624,
+      "candidate_over_baseline": 0.5346255708370783
+    },
+    {
+      "case": "prefix_lookup_touch_b16_t128",
+      "capacity": 16,
+      "baseline": [
+        {
+          "pair": 0,
+          "ns_per_operation": [707.78537, 724.32117, 699.33528, 722.23602, 706.25937, 701.49484, 689.27916],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [738.84252, 737.77782, 738.42553, 738.76719, 738.18757, 741.47832, 738.52728],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [720.03639, 719.57443, 720.42023, 720.44468, 720.31603, 719.28794, 718.22012],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [719.19766, 719.13241, 717.86546, 718.63445, 717.90947, 718.36109, 717.80719],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [730.10359, 730.58004, 723.55254, 735.14475, 730.32311, 728.51426, 729.64151],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        }
+      ],
+      "baseline_median_ns": 720.03639,
+      "candidate": [
+        {
+          "pair": 0,
+          "ns_per_operation": [701.56556, 691.18836, 693.80639, 690.66997, 695.91056, 704.29955, 693.33847],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [683.03452, 681.4462, 682.42631, 679.38608, 684.15605, 681.72296, 680.75518],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [688.80192, 692.14882, 690.74878, 687.48578, 690.4769, 690.25743, 687.11473],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [688.92442, 690.5696, 688.24803, 689.25473, 688.03428, 690.65699, 690.53141],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [685.96268, 684.13279, 682.43203, 680.44504, 681.52386, 682.59652, 682.65353],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        }
+      ],
+      "candidate_median_ns": 689.25473,
+      "candidate_over_baseline": 0.9572498551080175
+    },
+    {
+      "case": "prefix_lookup_touch_b16_t128",
+      "capacity": 64,
+      "baseline": [
+        {
+          "pair": 0,
+          "ns_per_operation": [808.17998, 811.13965, 801.19925, 810.78597, 805.94679, 806.50138, 805.64921],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [830.20154, 825.04007, 820.3698, 834.54924, 821.66627, 833.37755, 819.92738],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [799.50865, 810.78744, 808.77892, 808.20192, 807.99195, 805.59036, 792.90052],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [808.98503, 809.05276, 805.51276, 806.28777, 804.58065, 804.70441, 807.78911],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [819.57228, 811.13869, 814.32615, 814.14156, 817.34828, 812.29211, 812.21293],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        }
+      ],
+      "baseline_median_ns": 807.99195,
+      "candidate": [
+        {
+          "pair": 0,
+          "ns_per_operation": [702.44615, 700.76268, 700.47474, 698.24853, 696.45432, 701.71236, 701.87793],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [686.62766, 695.06753, 697.12615, 687.66729, 697.20237, 696.23263, 694.17921],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [701.04946, 702.38585, 701.92802, 701.45112, 700.7857, 701.9746, 700.00421],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [702.69586, 701.33174, 700.26509, 699.93541, 700.83256, 701.78563, 701.98061],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [697.97414, 699.0933, 694.31834, 696.37594, 699.75775, 699.88007, 696.07791],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        }
+      ],
+      "candidate_median_ns": 700.76268,
+      "candidate_over_baseline": 0.8672891852449769
+    },
+    {
+      "case": "prefix_lookup_touch_b16_t128",
+      "capacity": 1024,
+      "baseline": [
+        {
+          "pair": 0,
+          "ns_per_operation": [1141.06808, 1148.89135, 1146.13154, 1145.57357, 1158.35651, 1175.7314, 1167.15963],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [1181.37797, 1181.1235, 1159.33854, 1158.97006, 1159.45122, 1165.26244, 1158.66442],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [1139.53331, 1135.85375, 1137.37752, 1111.39072, 1110.55508, 1139.14664, 1135.78796],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [1137.55665, 1138.56914, 1141.03726, 1139.48684, 1134.13663, 1138.18262, 1139.98822],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [1135.59133, 1134.78514, 1138.11885, 1136.16109, 1138.51913, 1136.75433, 1135.73984],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        }
+      ],
+      "baseline_median_ns": 1138.56914,
+      "candidate": [
+        {
+          "pair": 0,
+          "ns_per_operation": [734.11594, 713.89384, 726.61299, 710.87115, 715.29732, 720.81463, 729.98676],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [721.38593, 713.56453, 723.16259, 722.2106, 724.14123, 721.84819, 723.19993],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [729.7076, 729.55127, 728.03255, 729.11488, 727.4023, 728.93036, 727.41287],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [730.60793, 727.81642, 726.35497, 727.78229, 729.136, 729.10254, 728.69461],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [721.55345, 721.80725, 721.37185, 721.87252, 729.99587, 720.8306, 727.20734],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        }
+      ],
+      "candidate_median_ns": 722.2106,
+      "candidate_over_baseline": 0.6343142235525547
+    },
+    {
+      "case": "prefix_lookup_touch_b16_t128",
+      "capacity": 8192,
+      "baseline": [
+        {
+          "pair": 0,
+          "ns_per_operation": [1422.99779, 1407.22929, 1430.24535, 1421.4967, 1421.75387, 1413.15204, 1432.22849],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [1412.22242, 1397.38718, 1394.99576, 1379.19325, 1387.28974, 1398.15466, 1403.19605],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [1376.51089, 1365.09072, 1366.04536, 1369.02204, 1407.37166, 1394.93236, 1395.67342],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [1360.88912, 1359.87928, 1361.68413, 1362.38248, 1344.94934, 1412.10637, 1416.91265],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [1375.85925, 1411.45989, 1404.73452, 1372.71057, 1361.59412, 1407.13506, 1397.21464],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        }
+      ],
+      "baseline_median_ns": 1397.21464,
+      "candidate": [
+        {
+          "pair": 0,
+          "ns_per_operation": [868.10733, 821.35406, 785.13022, 843.93807, 882.25862, 886.30686, 812.84207],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [769.82106, 779.12439, 781.4044, 763.69782, 774.07577, 766.01425, 765.32896],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [777.11627, 786.03782, 817.59088, 784.89062, 777.85076, 785.3052, 776.00425],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [798.87729, 790.58236, 774.29868, 768.13842, 780.30794, 773.39317, 781.62579],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [810.38668, 816.82483, 814.17991, 788.94193, 833.15517, 827.27322, 809.56184],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        }
+      ],
+      "candidate_median_ns": 784.89062,
+      "candidate_over_baseline": 0.5617537903839885
+    },
+    {
+      "case": "prefix_lookup_touch_b2_t2",
+      "capacity": 16,
+      "baseline": [
+        {
+          "pair": 0,
+          "ns_per_operation": [88.4527, 87.82905, 87.82134, 88.23478, 87.03404, 84.99471, 87.80404],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [88.60049, 88.29118, 88.46157, 88.36967, 88.57052, 88.37736, 88.28006],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [88.89218, 87.96877, 88.31786, 88.13507, 88.1296, 88.88889, 88.07991],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [88.23409, 87.92141, 87.96534, 88.36392, 88.16887, 88.10869, 87.96034],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [87.95003, 87.96459, 88.17025, 87.95935, 88.00233, 88.28897, 87.99347],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        }
+      ],
+      "baseline_median_ns": 88.10869,
+      "candidate": [
+        {
+          "pair": 0,
+          "ns_per_operation": [82.95168, 82.30520999999999, 82.08471, 81.92786000000001, 83.80195, 82.34857999999998, 82.33936000000001],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [79.77205, 79.94080000000001, 79.66002, 79.44387, 79.51784, 79.40989, 79.4796],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [80.61745, 80.51229, 80.72487999999998, 80.44438, 80.37716, 80.98217, 80.46104],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [79.47147999999999, 80.58038, 80.60809, 80.40217000000001, 80.61232, 80.68604, 80.48599999999999],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [79.62633, 79.69487000000001, 79.43609000000001, 79.52835, 79.52377999999999, 79.54927, 79.62317],
+          "allocator": {
+            "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+          },
+          "checksums": [750000, 750000, 750000, 750000, 750000, 750000, 750000]
+        }
+      ],
+      "candidate_median_ns": 80.51229,
+      "candidate_over_baseline": 0.9137837595814896
+    },
+    {
+      "case": "prefix_lookup_touch_b2_t2",
+      "capacity": 64,
+      "baseline": [
+        {
+          "pair": 0,
+          "ns_per_operation": [97.98268, 97.41552, 97.3553, 100.36767, 100.6375, 100.9421, 101.57342],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [103.66869, 102.73607, 102.70858, 102.08761, 101.90153, 102.12865, 103.04226],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [103.32517, 102.57051, 101.79782, 102.21939, 100.56979, 101.12913, 102.00125],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [108.47289, 102.27597, 101.67645, 102.29348, 101.85395, 102.41379, 102.80105],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [106.77424, 104.14192, 102.60153, 102.59774, 100.41792, 101.0745, 101.78966],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        }
+      ],
+      "baseline_median_ns": 102.29348,
+      "candidate": [
+        {
+          "pair": 0,
+          "ns_per_operation": [78.53715000000001, 78.43122, 78.99754, 78.59361000000001, 79.44593, 78.06244, 84.00588],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [77.55489, 77.78279, 78.37612000000001, 78.30375000000001, 78.61095, 77.87116, 80.5664],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [78.28519000000001, 78.50925, 79.25025000000001, 78.72797000000001, 79.36296000000002, 78.73688, 84.39312],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [78.40244999999999, 79.12307, 79.32588000000001, 78.44597999999999, 79.09136000000001, 79.11419, 83.32706],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [77.68223, 78.26527999999999, 78.54354, 77.74609, 78.27811000000001, 78.09449, 82.3897],
+          "allocator": {
+            "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 6514416}
+          },
+          "checksums": [3150000, 3150000, 3150000, 3150000, 3150000, 3150000, 3150000]
+        }
+      ],
+      "candidate_median_ns": 78.59361000000001,
+      "candidate_over_baseline": 0.7683149502783561
+    },
+    {
+      "case": "prefix_lookup_touch_b2_t2",
+      "capacity": 1024,
+      "baseline": [
+        {
+          "pair": 0,
+          "ns_per_operation": [205.81625, 205.77132, 205.47004, 205.43565, 206.54911, 206.02918, 206.06465],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [207.16059, 207.33997, 210.4907, 208.1283, 211.47913, 212.24567, 221.56141],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [206.68344, 206.54471, 208.72961, 206.78868, 209.51727, 203.66814, 206.23806],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [206.9727, 206.99464, 208.71038, 207.48984, 208.40446, 208.11949, 209.75451],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [203.25848, 206.26784, 208.16061, 206.02292, 205.86692, 205.28742, 206.66707],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        }
+      ],
+      "baseline_median_ns": 206.68344,
+      "candidate": [
+        {
+          "pair": 0,
+          "ns_per_operation": [97.28656, 100.52318, 102.52508, 100.62258, 104.46843, 102.24628, 101.67101],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [96.55119, 99.16874, 101.47255, 100.86298, 101.02991, 101.00921, 101.19737],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [97.79496, 100.57513, 102.46676, 100.47347, 101.74506, 101.36848, 101.90987],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [97.7378, 101.91355, 102.76132, 101.13691, 101.2871, 102.09235, 102.73243],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [97.82841, 99.74908, 100.77835, 100.7107, 100.37959, 100.78323, 101.12655],
+          "allocator": {
+            "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 7801128}
+          },
+          "checksums": [51146160, 51146160, 51146160, 51146160, 51146160, 51146160, 51146160]
+        }
+      ],
+      "candidate_median_ns": 101.36848,
+      "candidate_over_baseline": 0.49045283937600426
+    },
+    {
+      "case": "prefix_lookup_touch_b2_t2",
+      "capacity": 8192,
+      "baseline": [
+        {
+          "pair": 0,
+          "ns_per_operation": [255.05158, 255.50229, 252.24533, 252.27692, 255.02323, 253.11899, 251.84244],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [246.69411, 249.73562, 249.0658, 248.91151, 248.47586, 247.33305, 250.71306],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [247.85341, 249.46503, 251.61092, 248.73629, 248.75374, 249.77745, 247.8517],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [250.06057, 250.49076, 250.72153, 251.56797, 252.65054, 248.93399, 249.72622],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [244.28408, 246.48188, 245.82288, 245.40469, 246.20287, 245.85347, 244.94909],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        }
+      ],
+      "baseline_median_ns": 248.91151,
+      "candidate": [
+        {
+          "pair": 0,
+          "ns_per_operation": [125.50011, 125.6572, 125.28895, 126.6972, 125.28418, 124.9008, 129.55146],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        },
+        {
+          "pair": 1,
+          "ns_per_operation": [122.80013, 122.29352, 123.51492, 125.53582, 123.28129, 123.75705, 123.3764],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        },
+        {
+          "pair": 2,
+          "ns_per_operation": [123.60863, 124.14126, 122.68893, 125.37642, 124.37933, 123.93268, 123.25186],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        },
+        {
+          "pair": 3,
+          "ns_per_operation": [124.88834, 122.97774, 123.80238, 126.4699, 124.40996, 124.05705, 123.56346],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        },
+        {
+          "pair": 4,
+          "ns_per_operation": [123.13955, 123.3833, 123.11, 123.64856, 123.18741, 124.06586, 123.57046],
+          "allocator": {
+            "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 7824312}
+          },
+          "checksums": [409049520, 409049520, 409049520, 409049520, 409049520, 409049520, 409049520]
+        }
+      ],
+      "candidate_median_ns": 123.93268,
+      "candidate_over_baseline": 0.49789855037237934
+    }
+  ],
+  "containers": [
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 16,
+      "implementation": "bbtree",
+      "ns_per_operation": [63.17023, 63.56559, 63.71363, 63.49115, 63.33538, 63.38422, 63.35522],
+      "allocator": {
+        "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+      },
+      "checksums": [9996700512, 9996700512, 9996700512, 9996700512, 9996700512, 9996700512, 9996700512]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 16,
+      "implementation": "bounded",
+      "ns_per_operation": [36.00828, 35.92499, 36.05526, 36.25063, 35.67639, 36.14448, 35.95735],
+      "allocator": {
+        "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+      },
+      "checksums": [9996700512, 9996700512, 9996700512, 9996700512, 9996700512, 9996700512, 9996700512]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 16,
+      "implementation": "hashbrown-ahash",
+      "ns_per_operation": [17.48522, 20.97677, 17.41671, 17.77579, 20.59629, 21.14403, 17.39742],
+      "allocator": {
+        "each_round": {"allocations": 1, "deallocations": 1, "reallocations": 0, "requested_bytes": 2640}
+      },
+      "checksums": [9996700512, 9996700512, 9996700512, 9996700512, 9996700512, 9996700512, 9996700512]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 16,
+      "implementation": "std-ahash",
+      "ns_per_operation": [20.77438, 17.49449, 21.06323, 20.618350000000003, 17.94025, 19.3644, 20.50437],
+      "allocator": {
+        "each_round": {"allocations": 1, "deallocations": 1, "reallocations": 0, "requested_bytes": 2640}
+      },
+      "checksums": [9996700512, 9996700512, 9996700512, 9996700512, 9996700512, 9996700512, 9996700512]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 16,
+      "implementation": "std-btree",
+      "ns_per_operation": [50.22694, 50.26324, 50.19221, 49.80021, 49.80152, 50.1795, 49.92069],
+      "allocator": {
+        "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+      },
+      "checksums": [9996700512, 9996700512, 9996700512, 9996700512, 9996700512, 9996700512, 9996700512]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 64,
+      "implementation": "bbtree",
+      "ns_per_operation": [93.8656, 93.36065, 94.01679, 94.01379, 93.63511, 94.05336, 93.43527],
+      "allocator": {
+        "each_round": {"allocations": 178, "deallocations": 177, "reallocations": 0, "requested_bytes": 182272}
+      },
+      "checksums": [9987108192, 9987108192, 9987108192, 9987108192, 9987108192, 9987108192, 9987108192]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 64,
+      "implementation": "bounded",
+      "ns_per_operation": [37.44312, 37.062, 36.87648, 37.33557, 36.64144, 36.99926, 37.0324],
+      "allocator": {
+        "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+      },
+      "checksums": [9987108192, 9987108192, 9987108192, 9987108192, 9987108192, 9987108192, 9987108192]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 64,
+      "implementation": "hashbrown-ahash",
+      "ns_per_operation": [19.02037, 18.82539, 16.67985, 17.65461, 19.75174, 17.57537, 18.10501],
+      "allocator": {
+        "each_round": {"allocations": 1, "deallocations": 1, "reallocations": 0, "requested_bytes": 10512}
+      },
+      "checksums": [9987108192, 9987108192, 9987108192, 9987108192, 9987108192, 9987108192, 9987108192]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 64,
+      "implementation": "std-ahash",
+      "ns_per_operation": [19.14254, 19.93983, 18.87531, 18.7543, 16.68501, 17.75533, 17.67959],
+      "allocator": {
+        "each_round": {"allocations": 1, "deallocations": 1, "reallocations": 0, "requested_bytes": 10512}
+      },
+      "checksums": [9987108192, 9987108192, 9987108192, 9987108192, 9987108192, 9987108192, 9987108192]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 64,
+      "implementation": "std-btree",
+      "ns_per_operation": [67.7028, 67.34821, 67.03356, 67.29924, 66.89263, 67.12731, 67.19635],
+      "allocator": {
+        "each_round": {"allocations": 2739, "deallocations": 2738, "reallocations": 0, "requested_bytes": 1248984}
+      },
+      "checksums": [9987108192, 9987108192, 9987108192, 9987108192, 9987108192, 9987108192, 9987108192]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 1024,
+      "implementation": "bbtree",
+      "ns_per_operation": [135.34566, 136.52392, 135.00404, 136.73632, 135.5818, 135.36835, 135.51684],
+      "allocator": {
+        "each_round": {"allocations": 26, "deallocations": 17, "reallocations": 0, "requested_bytes": 26112}
+      },
+      "checksums": [9797197152, 9797197152, 9797197152, 9797197152, 9797197152, 9797197152, 9797197152]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 1024,
+      "implementation": "bounded",
+      "ns_per_operation": [39.97549000000001, 39.75324, 39.79787999999999, 39.630100000000006, 39.579460000000005, 39.5967, 39.949],
+      "allocator": {
+        "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+      },
+      "checksums": [9797197152, 9797197152, 9797197152, 9797197152, 9797197152, 9797197152, 9797197152]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 1024,
+      "implementation": "hashbrown-ahash",
+      "ns_per_operation": [18.59294, 18.37302, 18.17578, 18.19577, 18.87668, 18.38716, 18.79457],
+      "allocator": {
+        "each_round": {"allocations": 1, "deallocations": 1, "reallocations": 0, "requested_bytes": 167952}
+      },
+      "checksums": [9797197152, 9797197152, 9797197152, 9797197152, 9797197152, 9797197152, 9797197152]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 1024,
+      "implementation": "std-ahash",
+      "ns_per_operation": [18.47655, 18.36505, 18.55521, 18.5472, 18.56139, 18.654, 18.22701],
+      "allocator": {
+        "each_round": {"allocations": 1, "deallocations": 1, "reallocations": 0, "requested_bytes": 167952}
+      },
+      "checksums": [9797197152, 9797197152, 9797197152, 9797197152, 9797197152, 9797197152, 9797197152]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 1024,
+      "implementation": "std-btree",
+      "ns_per_operation": [223.72163, 224.17267, 223.76852, 227.65971, 223.96143, 224.61413, 225.59083],
+      "allocator": {
+        "each_round": {"allocations": 7587, "deallocations": 7563, "reallocations": 0, "requested_bytes": 3470232}
+      },
+      "checksums": [9797197152, 9797197152, 9797197152, 9797197152, 9797197152, 9797197152, 9797197152]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 8192,
+      "implementation": "bbtree",
+      "ns_per_operation": [146.54542, 149.23275, 144.37604, 144.23621, 145.14502, 144.16165, 144.2175],
+      "allocator": {
+        "each_round": {"allocations": 76, "deallocations": 6, "reallocations": 0, "requested_bytes": 77824}
+      },
+      "checksums": [8495717728, 8495717728, 8495717728, 8495717728, 8495717728, 8495717728, 8495717728]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 8192,
+      "implementation": "bounded",
+      "ns_per_operation": [42.43471, 43.93842, 42.11114, 41.971, 41.89058, 42.16394, 42.30488],
+      "allocator": {
+        "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+      },
+      "checksums": [8495717728, 8495717728, 8495717728, 8495717728, 8495717728, 8495717728, 8495717728]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 8192,
+      "implementation": "hashbrown-ahash",
+      "ns_per_operation": [26.31009, 28.15268, 25.63988, 26.67154, 26.42444, 25.43055, 26.80351],
+      "allocator": {
+        "each_round": {"allocations": 1, "deallocations": 1, "reallocations": 0, "requested_bytes": 1343504}
+      },
+      "checksums": [8495717728, 8495717728, 8495717728, 8495717728, 8495717728, 8495717728, 8495717728]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 8192,
+      "implementation": "std-ahash",
+      "ns_per_operation": [26.62796, 27.54052, 26.50146, 25.95261, 26.83369, 26.51672, 25.66247],
+      "allocator": {
+        "each_round": {"allocations": 1, "deallocations": 1, "reallocations": 0, "requested_bytes": 1343504}
+      },
+      "checksums": [8495717728, 8495717728, 8495717728, 8495717728, 8495717728, 8495717728, 8495717728]
+    },
+    {
+      "case": "digest_lookup_churn",
+      "capacity": 8192,
+      "implementation": "std-btree",
+      "ns_per_operation": [283.43363, 296.45059, 286.45878, 284.39358, 284.16536, 283.16741, 284.79707],
+      "allocator": {
+        "each_round": {"allocations": 1901, "deallocations": 1842, "reallocations": 0, "requested_bytes": 874728}
+      },
+      "checksums": [8495717728, 8495717728, 8495717728, 8495717728, 8495717728, 8495717728, 8495717728]
+    },
+    {
+      "case": "ordered_churn_first_range",
+      "capacity": 16,
+      "implementation": "bbtree",
+      "ns_per_operation": [48.68108, 48.58721, 48.47956, 48.62592, 48.52327, 48.53592, 48.51477],
+      "allocator": {
+        "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+      },
+      "checksums": [10000100000, 10000100000, 10000100000, 10000100000, 10000100000, 10000100000, 10000100000]
+    },
+    {
+      "case": "ordered_churn_first_range",
+      "capacity": 16,
+      "implementation": "btree-slab",
+      "ns_per_operation": [42.49744, 42.16322, 41.8939, 42.02269, 41.69689, 41.95676, 41.76152],
+      "allocator": {
+        "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+      },
+      "checksums": [10000100000, 10000100000, 10000100000, 10000100000, 10000100000, 10000100000, 10000100000]
+    },
+    {
+      "case": "ordered_churn_first_range",
+      "capacity": 16,
+      "implementation": "std",
+      "ns_per_operation": [31.1827, 31.02051, 31.00206, 31.03213, 31.00357, 30.94913, 30.86574],
+      "allocator": {
+        "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+      },
+      "checksums": [10000100000, 10000100000, 10000100000, 10000100000, 10000100000, 10000100000, 10000100000]
+    },
+    {
+      "case": "ordered_churn_first_range",
+      "capacity": 64,
+      "implementation": "bbtree",
+      "ns_per_operation": [54.69447, 54.88562, 54.2409, 54.33105, 54.0368, 54.59446, 54.09658],
+      "allocator": {
+        "each_round": {"allocations": 4166, "deallocations": 4166, "reallocations": 0, "requested_bytes": 4265984}
+      },
+      "checksums": [10000098234, 10000098234, 10000098234, 10000098234, 10000098234, 10000098234, 10000098234]
+    },
+    {
+      "case": "ordered_churn_first_range",
+      "capacity": 64,
+      "implementation": "btree-slab",
+      "ns_per_operation": [53.68439, 53.28585, 52.90168, 52.73148, 52.57281, 52.94597, 52.7836],
+      "allocator": {
+        "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+      },
+      "checksums": [10000098234, 10000098234, 10000098234, 10000098234, 10000098234, 10000098234, 10000098234]
+    },
+    {
+      "case": "ordered_churn_first_range",
+      "capacity": 64,
+      "implementation": "std",
+      "ns_per_operation": [36.22157, 33.49116, 32.75677, 32.87129, 32.85139, 32.93887, 32.72778],
+      "allocator": {
+        "each_round": {"allocations": 14286, "deallocations": 14286, "reallocations": 0, "requested_bytes": 5257248}
+      },
+      "checksums": [10000098234, 10000098234, 10000098234, 10000098234, 10000098234, 10000098234, 10000098234]
+    },
+    {
+      "case": "ordered_churn_first_range",
+      "capacity": 1024,
+      "implementation": "bbtree",
+      "ns_per_operation": [69.52357, 69.88591, 69.67707, 69.49403, 69.43597, 69.71215, 69.44822],
+      "allocator": {
+        "each_round": {"allocations": 4399, "deallocations": 4397, "reallocations": 0, "requested_bytes": 4504576}
+      },
+      "checksums": [9999609480, 9999609480, 9999609480, 9999609480, 9999609480, 9999609480, 9999609480]
+    },
+    {
+      "case": "ordered_churn_first_range",
+      "capacity": 1024,
+      "implementation": "btree-slab",
+      "ns_per_operation": [66.2784, 66.2055, 66.48199, 66.24241, 66.54871, 65.86648, 64.84487],
+      "allocator": {
+        "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+      },
+      "checksums": [9999609480, 9999609480, 9999609480, 9999609480, 9999609480, 9999609480, 9999609480]
+    },
+    {
+      "case": "ordered_churn_first_range",
+      "capacity": 1024,
+      "implementation": "std",
+      "ns_per_operation": [58.36192, 58.36987, 58.1176, 58.33724, 58.07309, 55.34296, 58.16005],
+      "allocator": {
+        "each_round": {"allocations": 16617, "deallocations": 16618, "reallocations": 0, "requested_bytes": 6338832}
+      },
+      "checksums": [9999609480, 9999609480, 9999609480, 9999609480, 9999609480, 9999609480, 9999609480]
+    },
+    {
+      "case": "ordered_churn_first_range",
+      "capacity": 8192,
+      "implementation": "bbtree",
+      "ns_per_operation": [85.49784, 82.76957, 83.60390000000001, 83.93224, 82.8476, 83.92407, 83.45903],
+      "allocator": {
+        "each_round": {"allocations": 4399, "deallocations": 4399, "reallocations": 0, "requested_bytes": 4504576}
+      },
+      "checksums": [9968561127, 9968561127, 9968561127, 9968561127, 9968561127, 9968561127, 9968561127]
+    },
+    {
+      "case": "ordered_churn_first_range",
+      "capacity": 8192,
+      "implementation": "btree-slab",
+      "ns_per_operation": [81.69111, 81.47148999999999, 81.93674999999999, 81.94349, 81.74448000000001, 81.64723000000001, 83.21982],
+      "allocator": {
+        "each_round": {"allocations": 0, "deallocations": 0, "reallocations": 0, "requested_bytes": 0}
+      },
+      "checksums": [9968561127, 9968561127, 9968561127, 9968561127, 9968561127, 9968561127, 9968561127]
+    },
+    {
+      "case": "ordered_churn_first_range",
+      "capacity": 8192,
+      "implementation": "std",
+      "ns_per_operation": [74.33097, 75.04667, 74.31928, 74.49075, 74.89786, 74.28852, 74.31044],
+      "allocator": {
+        "each_round": {"allocations": 16659, "deallocations": 16660, "reallocations": 0, "requested_bytes": 6358320}
+      },
+      "checksums": [9968561127, 9968561127, 9968561127, 9968561127, 9968561127, 9968561127, 9968561127]
+    }
+  ],
+  "validation": {
+    "rust_tests": {"passed": 170, "failed": 0, "ignored": 2, "ignored_scope": "Existing NUMA permission-specific tests"},
+    "cpu_allocation_records": 49,
+    "cpu_allocation_sha256": "193f21f0b645722cea395016e0f057f1ab0c309e8f76f476157c1f04f3e69c15",
+    "cpu_allocation_raw_on_45": "/home/r/code/inference-container-performance/artifacts/containers/cpu-allocation.json",
+    "msrv": "1.90.0 production four crates all-targets and standalone container benchmark passed",
+    "clippy": "four affected crates all-targets and standalone benchmark passed",
+    "scope": "No full make check, GPU service, or Metal device acceptance"
+  }
+}

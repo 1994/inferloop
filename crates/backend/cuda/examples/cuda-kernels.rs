@@ -1,6 +1,6 @@
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use infer_backend_cuda::device::CudaDevice;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn main() -> infer_core::Result<()> {
     let device = CudaDevice::new(0)?;
     let x = device.upload(vec![1.0f32, 2.0, 3.0, 4.0], &[4])?;
@@ -17,7 +17,7 @@ fn main() -> infer_core::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn quantized(device: &CudaDevice) -> infer_core::Result<()> {
     use cuda_core::{f4e2m1fnx2, f8e4m3fn};
     use infer_backend_cuda::strategy::{DecodeSearch, LinearStrategy};
@@ -39,8 +39,10 @@ fn quantized(device: &CudaDevice) -> infer_core::Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(cuda_backend))]
 fn main() {
+    use std::process::exit;
+
     eprintln!("CUDA kernels require Linux");
-    std::process::exit(1);
+    exit(1);
 }

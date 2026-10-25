@@ -46,7 +46,7 @@ Release 编译成功，实验 binary SHA256 `3c335f2b979ff3061148fb6ef164e5112cd
 ## 后续实施约束
 
 1. 先定位 GDN chunk 的首个不同计算阶段，保持原数值门槛。既有 WY/Neumann 和编译等级扫描的失败记录仍有效，不能重新当作已验收方案。
-2. Prompt 宽度需根据 workload 与硬件选择，并按实际保留的 graph/arena 计预算。历史显式 256 试验改善 long 的部分工作，但 short TTFT 明显退化，见[16.14](../../research/cuda-performance-experiments.md#1614-图宽的无插桩反例与真实模型数值门禁2026-10-11)，不全局固定到最大宽度。
+2. Prompt 宽度需根据 workload 与硬件选择，并按实际保留的 graph/arena 计预算。历史显式 256 试验改善 long 的部分工作，但 short TTFT 明显退化，见[16.14](cuda-performance-experiments.md#1614-图宽的无插桩反例与真实模型数值门禁2026-10-11)，不全局固定到最大宽度。
 3. 小投影的候选须先获得适用数值契约，再测真实权重和完整模型。确认的硬件选择接入现有 tuning，并保留保守 fallback；不按 5090 型号写死参数。
 4. 推测解码的接受轨迹与执行批宽必须同时记录；降低一个验证循环的成本不等于相同输出吞吐提高。
 

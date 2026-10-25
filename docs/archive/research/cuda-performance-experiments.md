@@ -1,10 +1,10 @@
 # CUDA 性能实验记录
 
-**定位**：保留既有 A/B、失败实验、源码调查和已落地改动。本文包含历史假设与早期待办，当前任务状态和执行顺序统一见 [路线图](../plans/README.md)，设计与验收见对应详细方案；正式性能实验统一执行 [性能基线方案](../plans/performance/baseline.md)。引用 [CUDA Serving 历史记录](cuda-serving-baseline.md) 处仍记为 RM§x。
+**定位**：保留既有 A/B、失败实验、源码调查和已落地改动。本文包含历史假设与早期待办，当前任务状态和执行顺序统一见 [路线图](../../plans/README.md)，设计与验收见对应详细方案；正式性能实验统一执行 [性能基线方案](../../plans/performance/baseline.md)。文中 `RM§x` 来自已删除的 Serving 历史记录，仅保留作原始笔记编号。
 
 **历史探索目标**：第一阶段 8 格全矩阵 ≤1.10x；第二阶段 TPOT 类指标稳定领先 vLLM 20–30%。这些是目标，不能作为已取得或可直接承诺的收益。
 
-当前拟议的 recurrent 回滚方案采用保留实际 F32 输入的 Record/Fold，尚未实现；资源与精度边界见 [状态重放方案](../plans/speculation/state-replay.md)、[Infernix 调研](infernix-performance.md)。下文的早期 BF16 记录容量、草稿压缩目标及探索性建议以这些方案的完整报价与验收为准。
+当前拟议的 recurrent 回滚方案采用保留实际 F32 输入的 Record/Fold，尚未实现；资源与精度边界见 [状态重放方案](../../plans/speculation/state-replay.md)、[Infernix 调研](../../research/infernix-performance.md)。下文的早期 BF16 记录容量、草稿压缩目标及探索性建议以这些方案的完整报价与验收为准。
 
 **置信度标记**：【确证】= 代码或实测确认；【推断】= 有依据的推理；【待测】= 依赖尚
 未做的实验。推算收益一律以绝对锚点给出，方便下一轮 bench 后用实测替换。
@@ -340,7 +340,7 @@ bound，SM 分区；现 worker 严格单流）；device-side graph launch 零 ho
 | 2 | 全矩阵重测（perf-r41），实测替换 §一 推算表 | 已赢格子（2B short/decode、27B hot_long）零回退 |
 | 3 | 杠杆 A + B | TPOT 格 ×0.7；MTP 接受长度不降 |
 | 4 | ②C lane prefill、③′ 宽度分档（大改动，视阶段 2 结果排期；图资产经 §六 瀑布资助） | ② 的 TPOT ≤5% 回退门槛 |
-| 5 | 调度中程项、杠杆 C、E | p99 与饱和负载 soak（过载面见 [serving-stability.md](../guides/serving-stability.md) §五.8） |
+| 5 | 调度中程项、杠杆 C、E | p99 与饱和负载 soak（过载面见 [serving-stability.md](../../guides/serving-stability.md) §五.8） |
 | 6 | §七 profile 自适应（auto 默认档） | 同一配置双负载矩阵复测，两侧 ≤5% 差距 |
 | 7 | §八 不变量收口（不建 TP，只收口假设） | 8 条不变量逐项过 review；engine 无直接设备引用、动态决策只经 SignalSnapshot |
 | 8 | §九 H200 接入与 FP8 三制度（与阶段 2–5 可并行，依赖 H200 机型到位） | mma-probe 证据落盘 + wgmma lowering 数值门 + H200 全矩阵基线 |
@@ -510,7 +510,7 @@ EP 等 MoE 落地后再谈。
   加深收益要打同步折扣。
 - 杠杆 B 的图内接受判定天然 rank 一致（logits all-gather 后同 seed 确定性），
   不冲突。
-- 单 rank 故障 = 全组 hang（NCCL 超时）：[serving-stability.md](../guides/serving-stability.md)
+- 单 rank 故障 = 全组 hang（NCCL 超时）：[serving-stability.md](../../guides/serving-stability.md)
   需补分布式故障章。
 
 **现在不做**：不建 NCCL、不建 rank shell、不写分片实现 —— 只收口假设。
@@ -804,7 +804,7 @@ sm_90 Hopper，**无 FP4 Tensor Core：NVFP4 在 H200 上没有硬件路径，FP
    权重相对 Frobenius 变化均值 **2.67%**、最大 2.73%，单权重变化中位数 **2.19%**
    —— 即 vLLM 评估的是"同一份权重的另一种量化"，多一次 e4m3 舍入 + 2 的幂
    scale 约束；native 的加载路径保留 checkpoint 的权重与 scale。
-   **2026 年 10 月 9 日审查补充**：保留权重不能证明整模型算术误差为零，抽样权重变化也不能证明所有 token 差异均由再量化导致。本轮未取得原始报告复核历史 dispatch；仍需固定上下文的独立 logits/state 对照与任务质量验收，不能仅据该差异排除实现问题。具体边界见 [对比方法审查](../reviews/vllm-benchmark-methodology-2026-10-09.md)。
+   **2026 年 10 月 9 日审查补充**：保留权重不能证明整模型算术误差为零，抽样权重变化也不能证明所有 token 差异均由再量化导致。本轮未取得原始报告复核历史 dispatch；仍需固定上下文的独立 logits/state 对照与任务质量验收，不能仅据该差异排除实现问题。具体边界见 [对比方法审查](../../reviews/vllm-benchmark-methodology-2026-10-09.md)。
 4. **委托赛跑扩到 FP8**：cuBLASLt FP8 在 Hopper 极成熟，杠杆 A 的成对测量在
    H200 上预期更多形状判给 cuBLASLt —— 这不丢脸，是赛跑机制按设计工作。
 5. **§六 瀑布按 141GB 重算**：27B FP8 权重 ~27GB，KV/并发余量与 5090 完全不同
@@ -2745,7 +2745,7 @@ acknowledgement timed out")`（§13.30/§13.31）。
 
 ## 十五、P0a/P1/P2：CUDA 闭环 SPI 分页契约（2026-10-11）
 
-按 [KV 分页方案](../plans/performance/kv-cache-paged-attention.md) §五 的 P0a/P1/P2 落地，
+按 [KV 分页方案](../../plans/performance/kv-cache-paged-attention.md) §五 的 P0a/P1/P2 落地，
 本节记录实现口径与全部实测。改动已提交：`220699c`（P0a 工具与 manifest 修复）、
 `87ca6d0`（P1/P2 实现）；
 二进制指纹：before `b5058da5…`、after `e4d7f398…`（`target/release/infer`）。

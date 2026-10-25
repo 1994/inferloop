@@ -1,15 +1,11 @@
 # 贡献指南
 
-感谢参与 inference.rs。开始之前，请先阅读 [README](README.md)、[代码布局](docs/architecture/layout.md) 与 [能力边界](docs/architecture/backends.md)，了解模块边界和当前能力范围。
+感谢参与 inferloop。开始之前，请先阅读 [README](README.md)、[代码布局](docs/architecture/layout.md) 与 [能力边界](docs/architecture/backends.md)，了解模块边界和当前能力范围。
 
 ## 环境准备
 
 1. 安装 `rust-toolchain.toml` 指定的 Rust 1.99.0（最低支持 1.90）与 C 编译器。
-2. 克隆仓库，构建本机 CPU 对照：
-
-   ```sh
-   cargo build --locked -p infer-cli --features test-backends
-   ```
+2. 克隆仓库。无 GPU 环境运行 `make test` 做协议与单元检查；需要本机模型执行时使用 `make local-build`（Linux 启用 CUDA，macOS 使用 Metal）。
 
 3. 完整门禁还需要 Python 3.12+、`uv`、Go、`cargo-deny`、`cargo-audit` 等工具，版本与安装命令见[质量门禁](docs/guides/quality-gates.md)。
 

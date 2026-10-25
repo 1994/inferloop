@@ -1,13 +1,13 @@
 //! Native library loader and independent request state, using an actual model package.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use cutile::jit_cache::enable_default;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use infer_backend_cuda::resident::DeviceProgram;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::env::args;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::error::Error as StdError;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn main() -> Result<(), Box<dyn StdError>> {
     use infer_backend_cuda::{
         device::CudaDevice,
@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn prefill(program: &mut DeviceProgram, tokens: &[u32]) -> infer_core::Result<Vec<f32>> {
     let mut logits = Vec::new();
     for (index, chunk) in tokens.chunks(32).enumerate() {
@@ -93,7 +93,7 @@ fn prefill(program: &mut DeviceProgram, tokens: &[u32]) -> infer_core::Result<Ve
     Ok(logits)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn generate(
     program: &mut DeviceProgram,
     prompt: &[u32],
@@ -121,8 +121,10 @@ fn generate(
     Ok(result)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(cuda_backend))]
 fn main() {
+    use std::process::exit;
+
     eprintln!("CUDA model check requires Linux and an NVIDIA device");
-    std::process::exit(1);
+    exit(1);
 }

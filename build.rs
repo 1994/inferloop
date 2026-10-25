@@ -1,5 +1,8 @@
 //! Shared build contract: Cargo build script and standalone packaging planner.
 //! Never recursively invokes Cargo: archive assembly runs after compilation.
+#[path = "tools/build/backend_cfg.rs"]
+mod backend_cfg;
+
 use std::result::Result as StdResult;
 use std::{env, error::Error, fs, path::PathBuf};
 
@@ -82,6 +85,7 @@ impl<'a> Plan<'a> {
 
 fn cargo_build() -> Result<()> {
     println!("cargo:rerun-if-changed=../../../build.rs");
+    println!("cargo:rerun-if-changed=../../../tools/build/backend_cfg.rs");
     for name in [
         "INFER_PACKAGE_TARGET",
         "INFER_PACKAGE_BUILD",
@@ -105,6 +109,10 @@ fn cargo_build() -> Result<()> {
         }
         plan.preflight(&env::var("HOST")?)?;
     }
+    backend_cfg::emit(
+        &env::var("CARGO_CFG_TARGET_OS")?,
+        env::var_os("CARGO_FEATURE_CUDA").is_some(),
+    );
     let output = PathBuf::from(env::var("OUT_DIR")?).join("infer-build.json");
     fs::write(output, plan.json())?;
     println!("cargo:rustc-env=INFER_BUILD_TARGET={target}");

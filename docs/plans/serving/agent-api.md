@@ -1,8 +1,8 @@
 # Agent 工具调用与服务配置方案
 
-状态：基础工具协议、增量 parser 与非推测生成约束已实施，HTTP 严格工具模式按支持子集开放。初始调研源码基点为 `7c79d99`，日期为 2026 年 10 月 9 日；本次实现基于 `3a188f4`。当前公开能力以 [OpenAI 接口指南](../../guides/openai-api.md) 为准，推测组合仍属设计范围。
+状态：S1/S2 已交付：基础工具协议、增量 parser、总上下文与有效配置、非推测生成约束均已实施，HTTP 严格工具模式按支持子集开放；真实模型与 GPU 严格工具验收、推测组合仍属后续工作。初始调研源码基点为 `7c79d99`，日期为 2026 年 10 月 9 日；基础实现基于 `3a188f4`，严格工具约束随 `a1a11fa` 交付。当前公开能力以 [OpenAI 接口指南](../../guides/openai-api.md) 为准。
 
-整体排期与任务状态见 [路线图](../README.md) 的 S1、S2；生成约束按实际需求另行启动。本文维护本项设计与验收。性能对比的 release、配置、统计和证据规则沿用 [统一基线方案](../performance/baseline.md)，不另设一套门槛。
+整体排期与任务状态见 [路线图](../README.md) 的 S1、S2。本文维护本项设计与验收。性能对比的 release、配置、统计和证据规则沿用 [统一基线方案](../performance/baseline.md)，不另设一套门槛。
 
 当前已实现 typed 工具历史、结果关联、`none/auto`、文本 SSE，以及 JSON 与 function/parameter 两种方言的增量输出。`--max-model-len`、输出与序列 cap 及有效配置读回已有共同解析路径。`infer-agent` 继续负责引擎诊断；外部工具由调用方执行。`required`、指定工具、`strict` schema 与禁止并行调用使用 llguidance 1.9.1；不支持的 schema 与推测组合显式拒绝。编译 grammar 和 tokenizer trie 按模型缓存，请求独占 matcher 随 CPU 输出任务移交，正常逐 token 路径不加共享锁；未请求约束时保留 backend greedy 快速路径。
 

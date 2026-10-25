@@ -6,13 +6,15 @@
 
 | 路径 | 内容 |
 |---|---|
-| `research/` | 2026-10-12/13 的 CUDA、GDN、projection、attention 与 vLLM 对照实验记录 |
+| `research/cuda-performance-experiments.md` | 2026-10-09 至 10-11 的完整 A/B、失败实验、源码调查与已落地改动记录；不再承担当前排期 |
+| `research/*-2026-10-12/13/14/15.md` | 各轮 CUDA、GDN、projection、attention 与 vLLM 对照的一次性调查记录 |
 | `research/artifacts/` | 上述记录与已合入改动的机器可读证据：profile JSON、失败样本、原型 patch |
 
-当前仍在使用的调研与基线记录保留在 `docs/research/`；使用、架构与方案文档分别见 `docs/guides/`、`docs/architecture/`、`docs/plans/`。
+当前仍在使用的调研记录保留在 `docs/research/`；使用、架构与方案文档分别见 `docs/guides/`、`docs/architecture/`、`docs/plans/`。
 
 ## 约定
 
 - 归档只改变位置，不改变证据：引用时使用归档路径，不再把这些逐轮日志放回导航表。
 - 只有结论被后续工作取代、且不再承担当前排期的一次性记录才移入这里；移动时修复全部本地链接并运行 `python3 tools/check/layout.py`。
+- 已被取代且没有引用价值或独立证据内容的记录直接删除，不进入归档；删除后同步清理引用。
 - 这里不存放待实施工作。归档中的逐轮实验结论不作为当前能力、接口或性能结论的依据；已合入改动的机器可读证据仍由引用它的当前文档按归档路径使用。

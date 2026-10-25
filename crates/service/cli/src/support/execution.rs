@@ -1,29 +1,18 @@
 //! Execution CLI support.
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 use crate::backend::SelectedBackend;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 use crate::constants::DEVICE_POLL_INTERVAL;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 use crate::constants::MAX_IDLE_TICKS;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 use infer_core::event::SemanticEvent;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 use infer_core::{Error, RequestId, Result};
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 use infer_ir::CanonicalRequest;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 use infer_runtime::Engine;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 use std::thread::sleep;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 use std::time::Instant;
 
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 pub fn run_to_idle(engine: &mut Engine<SelectedBackend>) -> Result<Vec<SemanticEvent>> {
     run_to_idle_started(engine, engine.now_us(), Instant::now())
 }
 
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 fn run_to_idle_started(
     engine: &mut Engine<SelectedBackend>,
     clock: u64,
@@ -55,7 +44,6 @@ fn run_to_idle_started(
         "runtime exceeded tick limit; initial progress epoch {start}"
     )))
 }
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 pub fn results(
     engine: &Engine<SelectedBackend>,
     ids: &[RequestId],
@@ -70,7 +58,6 @@ pub fn results(
         })
         .collect()
 }
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 pub fn run_requests(
     engine: &mut Engine<SelectedBackend>,
     requests: Vec<CanonicalRequest>,

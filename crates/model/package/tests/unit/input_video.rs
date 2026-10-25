@@ -99,6 +99,36 @@ fn temporal_taps_keep_adjacent_frames_distinct() -> Result<()> {
 }
 
 #[test]
+fn frame_resize_matches_serial_pixels_and_order_across_worker_chunks() -> Result<()> {
+    for count in [
+        0,
+        1,
+        PARALLEL_FRAMES - 1,
+        PARALLEL_FRAMES,
+        PARALLEL_FRAMES + 3,
+    ] {
+        let frames: Vec<_> = (0..count)
+            .map(|index| {
+                let mut image = frame(2, 3);
+                image.pixels.fill(u8::try_from(index * 17).unwrap());
+                image
+            })
+            .collect();
+        let borrowed: Vec<_> = frames.iter().collect();
+        let expected: Vec<_> = frames
+            .iter()
+            .map(|frame| ImageProcessor::resize(frame, 4, 5))
+            .collect();
+        assert_eq!(
+            resize_frames(&borrowed, 4, 5)?,
+            expected,
+            "frame count {count}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn odd_clips_pad_their_last_frame_into_a_whole_temporal_patch() -> Result<()> {
     let mut processor = processor();
     processor.fps = 10.0;

@@ -2,7 +2,7 @@
 
 CUDA 执行器使用原生 Rust/cuTile kernel 和设备驻留图。测量按算子、执行图、模型和服务分层；算子加速不能替代完整模型数值、状态与服务验收。构建要求见 [CUDA 后端](../../crates/backend/cuda/README.md)。
 
-本文说明现有工具和测量边界。正式测试与性能工作的 release、当前 native/vLLM 配置对齐和基线验收统一按 [性能基线方案](../plans/performance/baseline.md) 执行；自动校验仍待实施。现有服务对比有 [已审查缺口](../reviews/vllm-benchmark-methodology-2026-10-09.md)，历史矩阵不作为当前已验收 baseline。
+本文说明现有工具和测量边界。正式测试与性能工作的 release、当前 native/vLLM 配置对齐和基线验收统一按 [性能基线方案](../plans/performance/baseline.md) 执行；采集与比较门禁已实施，B3 的复测样本与持续/混合负载仍待补。现有服务对比有 [已审查缺口](../reviews/vllm-benchmark-methodology-2026-10-09.md)，历史矩阵不作为当前已验收 baseline。
 
 ## 默认优化策略
 

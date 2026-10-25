@@ -1,10 +1,8 @@
 //! Replay commands.
 use super::{ReplayOptions, backend, config, print, read_json, run_to_idle, selected_engine};
 use infer_core::{Error, Result};
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 use infer_runtime::{Engine, ReplayAction, RuntimeSnapshot};
 
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
 pub fn replay(options: ReplayOptions, backend_choice: backend::Selection) -> Result<()> {
     let ReplayOptions {
         journal,

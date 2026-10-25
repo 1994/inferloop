@@ -66,7 +66,7 @@ native 测 `/native/v1/stream`，输入与输出均为 token ID，不生成响�
 
 ## P2：TPOT 公式基本合理，但文档把它当吞吐与逐 token 延迟
 
-位置：[serve-compare.py](../../tools/bench/serve-compare.py) 第 241–263 行；[compare-results.py](../../tools/bench/compare-results.py) 第 81–90 行；[历史基线](../research/cuda-serving-baseline.md) 的矩阵解读。
+位置：[serve-compare.py](../../tools/bench/serve-compare.py) 第 241–263 行；[compare-results.py](../../tools/bench/compare-results.py) 第 81–90 行；原历史服务矩阵已删除，不能再作为复核依据。
 
 现有公式为 `(最后可见 token 到达时间 − 首个可见 token 到达时间) / (可见 token 数 − 1)`。vLLM 官方 benchmark 也按每请求计算 TPOT；其 completions 客户端使用最后有效输出时刻结束 token 延迟。MTP 一次返回多个 token，并不使这个平均值天然错误。[指标说明](https://docs.vllm.ai/en/latest/benchmarking/cli/#understanding-the-latency-metrics)、[v0.31.0 benchmark 客户端](https://github.com/vllm-project/vllm/blob/v0.31.0/vllm/benchmarks/lib/endpoint_request_func.py#L236)
 
@@ -94,7 +94,7 @@ batch4 通过逐个提交线程发出请求，没有共同开始屏障或实际�
 
 ## P2：性能通过不代表数值或质量通过，历史 FP8 结论过强
 
-位置：[compare-results.py](../../tools/bench/compare-results.py) 第 75、101–105 行；[FP8 历史记录](../research/cuda-performance-experiments.md) 的 block-scaled FP8 实验。
+位置：[compare-results.py](../../tools/bench/compare-results.py) 第 75、101–105 行；[FP8 历史记录](../archive/research/cuda-performance-experiments.md) 的 block-scaled FP8 实验。
 
 默认仅统计 token mismatch，不使性能门禁失败。两边输出相同长度、不同内容可以通过；对质量已独立验收的产品对照，这可以接受，对“保持同一 target 数值”的改动则不够。不同生成轨迹也会改变 MTP 接受长度和计算量。
 

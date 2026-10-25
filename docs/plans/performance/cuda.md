@@ -10,7 +10,7 @@ CUDA 后续工作分为两条线：一条修正测量与资源管理，降低推
 
 KV cache 的分页重构（PagedAttention 的分层与落地）单独立项，见 [KV cache 分页重构方案](kv-cache-paged-attention.md)。
 
-共同接口见 [SPI 方案](../speculation/spi.md)，模型接入见 [DFlash2 方案](../speculation/dflash2.md)，叠加语义见 [组合方案](../speculation/composition.md)。已有性能实验继续由 [性能实验记录](../../research/cuda-performance-experiments.md) 维护，本方案定义后续工作和验收。
+共同接口见 [SPI 方案](../speculation/spi.md)，模型接入见 [DFlash2 方案](../speculation/dflash2.md)，叠加语义见 [组合方案](../speculation/composition.md)。已有性能实验继续由 [性能实验记录](../../archive/research/cuda-performance-experiments.md) 维护，本方案定义后续工作和验收。
 
 [Infernix 调研](../../research/infernix-performance.md) 给出了已接线的 ReplaySSM、草稿量化、shortlist head 和 prefix cache 参考。采用其中的执行机制时保持本项目 target 权重与数值身份；target 重新量化另做制品和质量验收。
 
@@ -42,7 +42,7 @@ KV cache 的分页重构（PagedAttention 的分层与落地）单独立项，�
 | 4 slots，verify 4 | 约 1.81 GB |
 | 4 slots，verify 8 | 约 4.23 GB |
 
-现有记录中 BF16 DFlash2 草稿权重约 3.85 GB；与 verify 8 的快照合计约 8.08 GB，即 7.53 GiB。对比该记录约 4.8 GiB 的剩余预算，两项合计已经超出，还未计入额外 slot 状态、feature、arena 和 graph。这里的 MB/GB 为十进制，GiB 为二进制；原始模型与设备记录见 [性能实验记录](../../research/cuda-performance-experiments.md)。
+现有记录中 BF16 DFlash2 草稿权重约 3.85 GB；与 verify 8 的快照合计约 8.08 GB，即 7.53 GiB。对比该记录约 4.8 GiB 的剩余预算，两项合计已经超出，还未计入额外 slot 状态、feature、arena 和 graph。这里的 MB/GB 为十进制，GiB 为二进制；原始模型与设备记录见 [性能实验记录](../../archive/research/cuda-performance-experiments.md)。
 
 ### 基点加接受前缀重放
 

@@ -48,7 +48,7 @@ norm 和 cache 操作；prefill 和 decode 的有效行数也不同。
 还可能省掉该 attention 层的非最后 query readout，但不省全部 K/V 工作；
 这是数学预算，没有按比例预测 TTFT。
 
-[之前单行 logits 实验](../../research/cuda-performance-experiments.md#167-单行-logits-的服务对照吞吐与首-token-中位数出现权衡)
+[之前单行 logits 实验](cuda-performance-experiments.md#167-单行-logits-的服务对照吞吐与首-token-中位数出现权衡)
 已有正确性证据，却出现服务中位数回退并撤回；同批数据还显示驻留/排队和整组吞吐变化。
 新的实验必须先保持旧 arena/admission，仅改变需要执行的行，单独对照计算效果，
 随后再评估存储收缩。单行 dispatch 必须和原有效行保持同一量化与累加口径，不能直接用

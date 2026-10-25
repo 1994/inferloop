@@ -9,6 +9,8 @@ rust_checks() {
     # Collect every bench module: the review found one of them was collected nowhere.
     python3 -m unittest discover -s tools/bench -p 'test_*.py'
     cargo fmt --manifest-path tools/bench/attention/Cargo.toml --check
+    cargo fmt --manifest-path tools/bench/containers/Cargo.toml --check
+    cargo clippy --locked --manifest-path tools/bench/containers/Cargo.toml --all-targets -- -D warnings
     # Collect every check module rather than naming one, for the same reason as tools/bench.
     python3 -m unittest discover -s tools/check -p 'test_*.py'
     python3 tools/check/layout.py
@@ -54,8 +56,10 @@ test_checks() {
         cargo test --locked -p infer-cli --no-default-features
     python3 tools/check/test-report.py --entry ir -- \
         cargo test --locked -p infer-ir --no-default-features
+    # The entire CUDA library is gated off here; this checks isolation, not test execution.
+    # Its pure host cases run with the rest of the suite in cuda_hosted_checks.
     python3 tools/check/test-report.py --entry cuda-no-default -- \
-        cargo test --locked -p infer-backend-cuda --no-default-features
+        cargo check --locked -p infer-backend-cuda --no-default-features --all-targets
     python3 tools/check/test-report.py --entry workspace -- \
         cargo test --locked --workspace --exclude infer-backend-cuda
 }
@@ -108,10 +112,13 @@ cuda_hosted_checks() {
     cuda_bindgen_env
     python3 tools/cuda/kernels.py verify
     cargo clippy --locked -p infer-backend-cuda --features cuda --all-targets -- -D warnings
+    cargo clippy --locked -p infer-cli --features cuda --all-targets -- -D warnings
     # Release profile the baseline contract requires, reporting what it collected. The suite
     # branches on `cfg!(debug_assertions)` where the two differ.
     python3 tools/check/test-report.py --entry cuda -- \
         cargo test --locked --release -p infer-backend-cuda --features cuda
+    python3 tools/check/test-report.py --entry cli-cuda -- \
+        cargo test --locked -p infer-cli --features cuda
     RUSTDOCFLAGS="-D warnings" cargo doc --locked -p infer-backend-cuda --features cuda --no-deps
     # Compile the device example without running it: the kernels need a GPU on the next step.
     cargo build --locked --release -p infer-backend-cuda --features cuda --example cuda-kernels

@@ -7,27 +7,27 @@
 //!
 //! Both sides run with deepstack disabled, so this measures the shared path rather than the
 //! released checkpoint's feature set.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use cutile::jit_cache::enable_default;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use infer_backend_cuda::device::CudaDevice;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use infer_backend_cuda::loading::LoadOptions;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::env::args as env_args;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::env::var_os;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::error::Error as StdError;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::fs::read;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::ops::Range;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::path::Path;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::slice::from_ref;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn main() -> Result<(), Box<dyn StdError>> {
     use infer_backend_cuda::{loading::LoadedModel, vision};
     use infer_core::{Error, ModelId};
@@ -135,17 +135,17 @@ fn main() -> Result<(), Box<dyn StdError>> {
 }
 
 /// Match the per-stage vision golden gate; never accept a matching first token alone.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 const VISION_TOLERANCE: f32 = 1e-2;
 
 /// Open the device that runs the parity check.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn device_of(_root: &str) -> Result<CudaDevice, Box<dyn StdError>> {
     Ok(CudaDevice::new(0)?)
 }
 
 /// Loading options for a parity run: autotuning would add measurement noise to the comparison.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn load_options() -> LoadOptions {
     LoadOptions {
         // Fused prompt chunks: the media prefill must exercise the path the engine uses.
@@ -156,7 +156,7 @@ fn load_options() -> LoadOptions {
 }
 
 /// Decode the reference `(temporal, height, width)` patch grid.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn decode_grid(bytes: &[u8]) -> Result<(usize, usize, usize), Box<dyn StdError>> {
     use infer_core::Error;
     let values: Vec<i64> = bytes
@@ -172,7 +172,7 @@ fn decode_grid(bytes: &[u8]) -> Result<(usize, usize, usize), Box<dyn StdError>>
 }
 
 /// Absolute and reference-relative difference of the encoded media.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn compare_media(mine: &[f32], theirs: &[f32]) -> (f32, f32) {
     if mine.len() != theirs.len() || mine.is_empty() {
         return (f32::INFINITY, f32::INFINITY);
@@ -198,7 +198,7 @@ fn compare_media(mine: &[f32], theirs: &[f32]) -> (f32, f32) {
 }
 
 /// Largest absolute logits difference and the reference's greedy token.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn compare_logits(mine: &[f32], theirs: &[f32]) -> (f32, u32) {
     let mut max_abs = 0f32;
     let mut best = 0usize;
@@ -214,7 +214,7 @@ fn compare_logits(mine: &[f32], theirs: &[f32]) -> (f32, u32) {
 }
 
 /// Everything the reference run dumped for one image and prompt.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 struct Reference {
     image: infer_models::RawImage,
     text: String,
@@ -227,7 +227,7 @@ struct Reference {
 }
 
 /// Read the reference dump written by the Python reference runner.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn load_reference(path: &str) -> Result<Reference, Box<dyn StdError>> {
     use infer_core::Error;
     use infer_models::SafetensorsFile;
@@ -276,20 +276,22 @@ fn load_reference(path: &str) -> Result<Reference, Box<dyn StdError>> {
     })
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(cuda_backend))]
 fn main() {
+    use std::process::exit;
+
     eprintln!("CUDA parity checks require Linux");
-    std::process::exit(1);
+    exit(1);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn image_processor(root: &str) -> Result<infer_models::ImageProcessor, Box<dyn StdError>> {
     Ok(infer_models::ImageProcessor::from_json(&read(
         Path::new(root).join("preprocessor_config.json"),
     )?)?)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn paths() -> Result<(String, String), Box<dyn StdError>> {
     use infer_core::Error;
     let mut args = env_args().skip(1);

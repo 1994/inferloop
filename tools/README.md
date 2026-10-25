@@ -4,6 +4,7 @@
 
 | 目录 | 入口 | 用途 |
 |---|---|---|
+| `build` | [backend_cfg.rs](build/backend_cfg.rs) | CLI 与 CUDA crate 共用的后端编译能力条件 |
 | `cuda` | [kernels.py](cuda/kernels.py) | CUDA AOT 制品统一清单、完整性校验和固定工具链重建，见 [Kernel 工程](../crates/backend/cuda/kernels/README.md) |
 | `check` | [gate.sh](check/gate.sh) | 本地与 CI 共用的 fail-fast 门禁 |
 | `check` | [layout.py](check/layout.py)、[policy.py](check/policy.py) | 目录与依赖边界、文档链接、lint/feature 与闲置依赖规则 |
@@ -15,6 +16,7 @@
 | `fixtures` | [export-qwen-golden.py](fixtures/export-qwen-golden.py)、[export-text-golden.py](fixtures/export-text-golden.py) | 独立参考的模型与文本 golden 导出 |
 | `fixtures` | [export-moe-golden.py](fixtures/export-moe-golden.py)、[export-moe-operators.py](fixtures/export-moe-operators.py) | [MoE 单卡验证](../docs/guides/moe-validation.md)的模型与 FP8 独立参考 |
 | `fixtures` | [requirements.txt](fixtures/requirements.txt) | 参考导出环境的固定依赖 |
+| `bench/containers` | [README.md](bench/containers/README.md) | 排序索引、摘要查找与实际 PrefixCache 的候选容器对比，独立依赖图 |
 | `bench/cpu` | [Cargo.toml](bench/cpu/Cargo.toml) | 隔离的 release 分配计数与协议测量，通过 `make check-cpu` 运行 |
 | `bench` | [cuda-baseline.sh](bench/cuda-baseline.sh) | CUDA 投影基线采集，用法见 [CUDA 性能指南](../docs/guides/cuda-performance.md) |
 | `bench` / `attention` | [attention.sh](bench/attention.sh) | 原生 attention 与 Candle 的独立数值、性能门禁 |

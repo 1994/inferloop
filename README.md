@@ -1,157 +1,137 @@
-# inference.rs
+# inferloop
 
-[![Quality](https://github.com/1994/inference.rs/actions/workflows/ci.yml/badge.svg)](https://github.com/1994/inference.rs/actions/workflows/ci.yml)
+[![Quality](https://github.com/1994/inferloop/actions/workflows/ci.yml/badge.svg)](https://github.com/1994/inferloop/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-1.90%2B-orange?logo=rust)](rust-toolchain.toml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
-A native Rust inference engine for CUDA and Metal. Load supported Hugging Face Safetensors model packages, run inference, serve requests, and inspect execution from a single binary.
+A native Rust execution engine for NVIDIA CUDA and Apple Metal. It loads Safetensors model packages, compiles them into device-resident graphs, and serves native and OpenAI-compatible HTTP/SSE APIs from one `infer` binary.
+
+inferloop is built around a general request loop rather than a single model family or workload. **Generate, Embed, Rerank, and Decision** requests share scheduling, admission, state/KV lifecycle, and observability; model providers and device kernels are extensions, not forks of the runtime.
+
+> **Status: active development.** Built-in model coverage is limited and production performance is not yet certified. There is no CPU execution backend.
+
+## Highlights
+
+- **Workload-agnostic runtime** for generation, embedding, ranking, and decision requests.
+- **Pluggable model providers** so new model families do not require runtime branches.
+- **CUDA and Metal backends** with device-resident execution graphs.
+- **Bounded request batching**, admission control, backpressure, and cancellation.
+- **Serving** through native token APIs and an OpenAI-compatible subset with SSE.
+- **Operational tooling** for health, events, traces, checkpoints, and diagnostics.
 
 ## Architecture
 
-The engine separates model semantics, kernel implementation, and request scheduling:
-
 ```text
-Model provider   → execution graph, weights, precision, and draft topology
-Compiler         → graph validation, memory lifetimes, and kernel selection
-Backend          → device kernels, fusion, execution, and resource operations
-Runtime          → request scheduling, budgets, KV lifecycle, and completion
-Service          → CLI, HTTP/SSE, and diagnostic agent
+Service   CLI, native HTTP/SSE, OpenAI subset, diagnostic agent
+Runtime   admission, scheduling, state/KV lifecycle, completion, observability
+Model     package loading, provider registry, execution graph, compiler
+Backend   CUDA (cuTile / SIMT) and Metal (MSL) kernels
 ```
 
-Model providers own architecture-specific behavior. Shared kernel APIs describe operations independently of model names and GPU models. CUDA and Metal backends implement acceleration and fusion, while the scheduler works with execution contracts and resource budgets.
+Model providers own model semantics. Shared IR and kernel APIs keep model names out of the scheduler and device code, so adding a provider or workload does not require a separate engine.
 
-The runtime provides bounded queues, backpressure, cancellation, prefix caching, checkpoint/replay, and observability. Generate, Embed, Rerank, and Decision workloads share the execution pipeline; each requires a compatible model and backend.
+See [code layout](docs/architecture/layout.md), [backend capabilities](docs/architecture/backends.md), and the [runtime design](docs/architecture/runtime.md).
 
-See the [code layout](docs/architecture/layout.md) for module boundaries and extension points.
+## Workloads
 
-## Current support
-
-**Under active development. Production performance validation is incomplete.**
-
-| Backend | Scope |
+| Workload | Purpose |
 |---|---|
-| CUDA on Linux | Native Rust/cuTile kernels, resident execution graphs, CLI/HTTP serving, constrained continuous decode batching, and greedy multi-token prediction (MTP) |
-| Metal on macOS | Prefill/decode, KV and prefix caching, and service validation using the repository's small model fixtures |
-| CPU reference | Numerical verification through the explicit `test-backends` feature |
+| **Generate** | Token generation with batching, optional speculative decoding, and streaming |
+| **Embed** | Embedding extraction from a compatible model head |
+| **Rerank** | Candidate ranking from a compatible model head |
+| **Decision** | Structured decisions from a declared schema |
 
-CUDA currently uses a synchronous provider and runtime JIT compilation through the CUDA Toolkit / `tileiras`. Model and operator coverage is limited; an arbitrary Hugging Face package is not guaranteed to run.
+Workload support depends on the model provider, head, and backend. The built-in provider set is intentionally small; an arbitrary Hugging Face package is not guaranteed to load or run. See [model execution](docs/guides/model-execution.md) and [adding a model](docs/guides/adding-a-model.md).
 
-The generic attention implementation has **not passed its Candle performance gate**. Candle is an isolated benchmark baseline, outside the production runtime. Image and video generation are validated through dedicated examples and are not yet integrated into multimodal service scheduling.
+## Requirements
 
-Support and measurements apply to their tested configurations. See [backend capabilities](docs/architecture/backends.md), [quality gates](docs/guides/quality-gates.md), and [image model validation](docs/guides/vision.md) for details.
+| Component | Requirement |
+|---|---|
+| Rust | `1.99.0` pinned by `rust-toolchain.toml`; MSRV `1.90` |
+| Linux / CUDA | NVIDIA GPU, CUDA Toolkit, `tileiras`, C compiler, and libclang |
+| macOS / Metal | A Metal-capable Apple GPU and Xcode command-line tools |
+| Model | A supported local Safetensors package; tokenizer assets are required for text and OpenAI routes |
+
+`auto` selects CUDA or Metal and fails if no supported GPU is available. CPU-only hosts can run tests and lint checks, but cannot execute a model.
 
 ## Quick start
 
-Install Rust and a C compiler. The repository pins Rust **1.99.0**; the portable workspace has an MSRV of **1.90**. GPU backends require their platform SDKs and runtime dependencies.
-
 ```sh
-git clone https://github.com/1994/inference.rs.git
-cd inference.rs
-```
-
-### Verify without a GPU
-
-Build the CPU reference backend and compare the included model against independent golden outputs:
-
-```sh
-cargo build --locked -p infer-cli --features test-backends
-target/debug/infer --backend test-cpu verify \
-  --package examples/qwen-hybrid-tiny \
-  --golden examples/qwen-hybrid-tiny/golden.json \
-  --atol 0.000002 --rtol 0.00002
-```
-
-### Serve with Metal
-
-On a Mac with a supported Metal device:
-
-```sh
-cargo build --locked --release -p infer-cli
-target/release/infer examples/qwen-hybrid-tiny
-```
-
-### Serve with CUDA
-
-Configure the [CUDA build environment](crates/backend/cuda/README.md), then build with the `cuda` feature. Replace `/path/to/model` with a supported local model package:
-
-```sh
-cargo build --locked --release -p infer-cli --features cuda
+git clone https://github.com/1994/inferloop.git
+cd inferloop
+make local-build
 target/release/infer /path/to/model
 ```
 
-For a native developer build that selects the production backend from the host platform, use `make local-build` (Linux enables CUDA and adds GCC's standard-header include directory for bindgen; macOS uses Metal). Direct Cargo builds keep explicit feature selection because Cargo features are compile-time options.
-
-Once `infer` is on your `PATH`, the default entry point is simply:
+`make local-build` builds the native release CLI with the platform backend: CUDA on Linux, Metal on macOS. For explicit Cargo builds:
 
 ```sh
-infer /path/to/model
+cargo build --locked --release -p infer-cli --features cuda  # Linux CUDA
+cargo build --locked --release -p infer-cli                 # macOS Metal
 ```
 
-This starts the server at `http://127.0.0.1:8080`. The backend is selected automatically in CUDA → Metal order; a missing GPU produces an error. Workspace, input limits and CUDA memory admission are derived from the loaded model and device. Projection autotuning is enabled by default and reuses validated cached measurements.
+CUDA builds need the environment in [crates/backend/cuda/README.md](crates/backend/cuda/README.md).
 
-For supported CUDA FP4 checkpoints with FP8 KV and a complete MTP head, the server automatically pairs two draft tokens with the BF16 bulk-prefill path. Prompt chunks ending within the first 2048 positions retain canonical F32 attention. Unsupported packages and devices retain canonical attention without MTP. Vision support stays enabled. `--num-speculative-tokens 0` selects the conservative canonical configuration.
+The server listens on `http://127.0.0.1:8080`. On supported CUDA checkpoints, the default profile may enable BF16 prefill attention and multi-token prediction (MTP); `--num-speculative-tokens 0` keeps the canonical path.
 
-Optional flags override these choices, for example `infer /path/to/model --listen 127.0.0.1:9000`. An explicit `--config` preserves the supplied runtime budgets; the original `infer serve --package ...` syntax remains supported. CPU execution requires explicit selection.
+```sh
+target/release/infer /path/to/model --served-model-name model
+```
 
-Explicit execution overrides remain available for diagnostics; users do not need them to select the automatic fast path. The startup log reports the effective attention profile, draft depth and admitted pool geometry.
+```sh
+curl -s http://127.0.0.1:8080/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"model","messages":[{"role":"user","content":"Hello"}],"max_tokens":64}'
+```
 
-### Logs
+OpenAI routes require a package tokenizer; chat completions also require a chat template. See the [OpenAI API guide](docs/guides/openai-api.md) for streaming, tools, and parameter support.
 
-Startup and request logs go to stderr through `tracing`, so a command's JSON result on stdout stays parseable. At the default `info` level the log reports the device and derived budget, the parameters in effect, the identified model and its payload, every load phase with its duration, and one line per HTTP request with status and latency. Engine events cover the request lifecycle (`request accepted`, `request finished` with token count, TTFT and end-to-end time), so a request can be followed without a profiler.
+## Backends
 
-Set `INFER_LOG` (or `RUST_LOG`) to change the level or filter by target, for example `INFER_LOG=infer=debug` adds per-weight load progress and finer engine detail, and `INFER_LOG=infer::load=debug` keeps it to loading.
-
-The server exposes native HTTP/SSE routes and a subset of the OpenAI API. See the [development guide](docs/guides/development.md) for CLI commands and memory budgets, and the [OpenAI API guide](docs/guides/openai-api.md) for supported routes and parameters.
+| Backend | Scope |
+|---|---|
+| **CUDA on Linux** | Native Rust/cuTile and SIMT kernels, device graphs, serving, bounded batching, optional MTP |
+| **Metal on macOS** | Prefill/decode, KV and prefix caching, service validation with repository fixtures |
+| **Host (no GPU)** | Tests, lint, and scalar reference operators; no model execution |
 
 ## Testing and packaging
 
 ```sh
-make check-rust        # Lint, tests, Rustdoc, CPU allocation checks, and golden verification
-make check-tools       # Python lint and GitHub Actions validation
-make test-cuda-hosted  # CUDA compile, lint and CPU-side tests; requires the Toolkit, not a GPU
-make check-cuda        # CUDA device checks; requires the Toolkit and a GPU
-make check-metal       # Metal device checks; requires macOS and a GPU
-make check-attention   # Numerical and performance comparison against Candle
+make test              # Host tests; no GPU required
+make check-rust        # Lint, tests, docs, CPU allocation, golden checks
+make test-cuda-hosted  # CUDA compile/lint/tests; Toolkit only
+make test-cuda         # CUDA device checks
+make test-metal        # macOS Metal checks
 ```
 
-Build platform packages with Zig and `cargo-zigbuild`:
+`make check` is the full host gate. Device gates are separate because they need a specific GPU and driver.
 
 ```sh
-make setup-build      # Install the pinned cargo-zigbuild; requires Zig already installed
+make setup-build
 make package TARGET=x86_64-unknown-linux-gnu.2.28
 ```
 
-Packaging supports Linux CUDA and macOS Metal on x86_64 and AArch64. Install the Rust target and required platform headers or SDK before cross-compiling. GitHub CI runs quality checks before building, verifying, and uploading the four target packages. Cross-compilation and CLI smoke tests do not establish GPU correctness or performance.
+Packaging supports Linux CUDA and macOS Metal on x86_64 and AArch64. See the [packaging guide](docs/guides/packaging.md).
 
-See the [packaging guide](docs/guides/packaging.md) for prerequisites, artifact verification, and device acceptance.
+## Limitations
 
-## Repository layout
+- Built-in model coverage is narrow; validate each package before relying on it.
+- No CPU execution backend.
+- CUDA uses a synchronous provider and runtime-compiled kernels.
+- Multimodal execution is limited to examples, not the serving scheduler.
+- Performance and production SLO validation are incomplete.
 
-```text
-crates/
-  foundation/   Core types, IR, and provider contracts
-  backend/      Shared kernel APIs, CUDA, and Metal
-  model/        Model packages, execution recipes, and compiler
-  engine/       State, scheduler, workloads, and runtime
-  diagnostics/  Observability and correctness tooling
-  service/      HTTP frontdoor, diagnostic agent, and CLI
-  testing/      CPU reference backends
-docs/           Guides, architecture, and accepted design decisions
-examples/       Small model fixtures and request examples
-tools/          Checks, packaging, validation, and benchmarks
-benchmarks/     Dataset manifests and machine-readable baselines
-```
+## Documentation
 
-## Documentation and contributing
+Start with the [documentation index](docs/README.md). In-depth guides are currently in Chinese.
 
-Start with the [documentation index](docs/README.md). Detailed guides are currently in Chinese.
-
-- [Add a model](docs/guides/adding-a-model.md)
-- [Model loading and execution](docs/guides/model-execution.md)
-- [CPU performance measurement](docs/guides/cpu-performance.md)
-- [CUDA benchmarking and tuning](docs/guides/cuda-performance.md)
-- [Contribution guidelines](CONTRIBUTING.md)
-- [Security policy](SECURITY.md)
+- [Development](docs/guides/development.md)
+- [Adding a model](docs/guides/adding-a-model.md)
+- [Model execution](docs/guides/model-execution.md)
+- [OpenAI-compatible API](docs/guides/openai-api.md)
+- [CUDA performance](docs/guides/cuda-performance.md)
+- [Roadmap](docs/plans/README.md)
+- [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 ## License
 

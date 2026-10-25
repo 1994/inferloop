@@ -352,7 +352,6 @@ fn resize_frames(frames: &[&RgbImage], height: usize, width: usize) -> Result<Ve
         let handles: Vec<_> = frames
             .chunks(chunk)
             .map(|part| {
-                let part: Vec<&RgbImage> = part.to_vec();
                 scope.spawn(move || {
                     part.iter()
                         .map(|frame| ImageProcessor::resize(frame, height, width))

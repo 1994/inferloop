@@ -10,7 +10,7 @@ DFlash2 作为独立草稿 provider 接入，共用 [推测解码 SPI 与状态�
 
 官方 [config.json](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2/blob/main/config.json) 声明 `DFlash2DraftModel`、5 个草稿层、hidden size 5120、32 个 attention heads、8 个 KV heads、head dim 128。原生 block size 为 8，块内非因果；target taps 为 `[5, 19, 33, 47, 61]`，草稿 attention 使用长度 2048 的滑动窗口，selector rank 为 256、top-k 为 16。
 
-权重结构与单卡约束的现有记录见 [性能实验记录](../../research/cuda-performance-experiments.md)。接入时将其中的双抽头动态卷积、特征融合和 candidate selector 分别落实为模型配方与算子能力，不把它们解释为通用 Qwen decoder 的默认行为。
+权重结构与单卡约束的现有记录见 [性能实验记录](../../archive/research/cuda-performance-experiments.md)。接入时将其中的双抽头动态卷积、特征融合和 candidate selector 分别落实为模型配方与算子能力，不把它们解释为通用 Qwen decoder 的默认行为。
 
 第一版只开放 greedy 和线性候选链。完整随机推测采样依赖实际 proposal 分布的推导与导出，不能把 selector 分数直接当成归一化的 `q`。草稿内部的候选 lattice 与 target 的树形验证是两个独立能力。
 

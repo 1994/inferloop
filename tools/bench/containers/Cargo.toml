@@ -1,0 +1,67 @@
+[package]
+name = "infer-container-bench"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "Apache-2.0"
+publish = false
+
+# Candidate containers and proof dependencies must not enter the production graph.
+[workspace]
+
+[dependencies]
+ahash = "=0.8.12"
+bbtree = "=0.1.5"
+btree-slab = "=0.6.1"
+hashbrown = { version = "=0.17.1", default-features = false }
+infer-core = { path = "../../../crates/foundation/core" }
+infer-state = { path = "../../../crates/engine/state" }
+mimalloc = { version = "=0.1.52", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints.rust]
+warnings = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
+future_incompatible = { level = "deny", priority = -1 }
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+unfulfilled_lint_expectations = "deny"
+unused_lifetimes = "deny"
+unused_qualifications = "deny"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "deny"
+invalid_html_tags = "deny"
+bare_urls = "deny"
+invalid_codeblock_attributes = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+allow_attributes_without_reason = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+mem_forget = "deny"
+multiple_unsafe_ops_per_block = "deny"
+unused_result_ok = "deny"
+get_unwrap = "deny"
+# Fully-qualified item paths are imports: keep one style across every crate. The threshold
+# (clippy.toml `absolute-paths-max-segments`) leaves `crate::Error`-style two-segment paths alone;
+# anything deeper must be brought into scope with `use`.
+absolute_paths = "deny"
+rc_mutex = "deny"
+too_many_lines = "deny"
+cognitive_complexity = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -1,17 +1,9 @@
 use super::{SelectedBackend, Selection};
-#[cfg(all(target_os = "linux", feature = "cuda"))]
-use crate::constants::GIB_U64;
-#[cfg(all(target_os = "linux", feature = "cuda"))]
-use crate::constants::MIB_U64;
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+use crate::constants::{GIB_U64, MIB_U64};
 use crate::support::memory::utilization_bytes;
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 use infer_backend_cuda::device::{CudaDevice, DeviceProfile};
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 use infer_backend_cuda::target::CudaTarget;
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 use infer_backend_cuda::tuning::TuningReport;
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 use infer_backend_cuda::{
     executor::CudaBackend,
     loading::{LoadOptions, LoadedModel},
@@ -19,38 +11,29 @@ use infer_backend_cuda::{
 use infer_core::{Error, Result};
 use std::path::Path;
 
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 use crate::support::human_bytes;
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 use std::time::Instant;
 
 pub fn load(path: &Path, memory_bytes: u64, selection: &Selection) -> Result<SelectedBackend> {
-    #[cfg(all(target_os = "linux", feature = "cuda"))]
+    let mut automatic_fast = false;
+    let result = load_once(path, memory_bytes, selection, &mut automatic_fast);
+    if automatic_fast
+        && let Err(error) = &result
+        && (error.code == infer_core::ErrorCode::Capacity || out_of_memory(&error.message))
     {
-        let mut automatic_fast = false;
-        let result = load_once(path, memory_bytes, selection, &mut automatic_fast);
-        if automatic_fast
-            && let Err(error) = &result
-            && (error.code == infer_core::ErrorCode::Capacity || out_of_memory(&error.message))
-        {
-            tracing::warn!(target: "infer::load", %error,
-                "automatic execution profile did not fit; retrying canonical attention without MTP");
-            let recovery = CudaDevice::new(0)?;
-            recovery.synchronize()?;
-            drop(recovery);
-            let conservative = Selection {
-                num_speculative_tokens: Some(super::SpeculativeTokens::Depth(0)),
-                attention_profile: Some(super::CudaAttentionProfile::Canonical),
-                ..selection.clone()
-            };
-            return load_once(path, memory_bytes, &conservative, &mut automatic_fast);
-        }
-        result
+        tracing::warn!(target: "infer::load", %error,
+            "automatic execution profile did not fit; retrying canonical attention without MTP");
+        let recovery = CudaDevice::new(0)?;
+        recovery.synchronize()?;
+        drop(recovery);
+        let conservative = Selection {
+            num_speculative_tokens: Some(super::SpeculativeTokens::Depth(0)),
+            attention_profile: Some(super::CudaAttentionProfile::Canonical),
+            ..selection.clone()
+        };
+        return load_once(path, memory_bytes, &conservative, &mut automatic_fast);
     }
-    #[cfg(not(all(target_os = "linux", feature = "cuda")))]
-    {
-        load_once(path, memory_bytes, selection, &mut false)
-    }
+    result
 }
 
 fn load_once(
@@ -59,101 +42,90 @@ fn load_once(
     selection: &Selection,
     automatic_fast: &mut bool,
 ) -> Result<SelectedBackend> {
-    #[cfg(all(target_os = "linux", feature = "cuda"))]
-    {
-        if selection.num_gpu_blocks_override.is_some() || selection.upload_staging_mib.is_some() {
-            return Err(Error::unsupported(
-                "CUDA physical KV blocks/upload staging overrides are not implemented",
-            ));
-        }
-        let started = Instant::now();
-        CudaDevice::enable_kernel_cache()?;
-        let device = CudaDevice::new(0)?;
-        let (_, total) = device.memory_info()?;
-        // A retry may reuse freed blocks still reserved in this context's pool.
-        let free = device.allocatable_memory_bytes()?;
-        // vLLM semantics: the utilization fraction bounds the whole engine, weights included.
-        let share = utilization_bytes(total, selection.gpu_memory_utilization)?;
-        let requested = share.min(if memory_bytes == 0 {
-            total
-        } else {
-            memory_bytes
-        });
-        let limit = requested.min(free.saturating_sub(GIB_U64));
-        let budget = LoadBudget { limit, free, total };
-        let summary = preflight(
-            path,
-            device.target(),
-            &device.profile()?.architecture,
-            limit,
-            selection,
-        )
-        .map_err(|error| load_failure(&error, budget, selection))?;
-        *automatic_fast = selection.num_speculative_tokens.is_none()
-            && selection.attention_profile.is_none()
-            && summary.mtp_depth == 2
-            && summary.attention_profile == super::CudaAttentionProfile::Bf16;
-        report_environment(device.profile()?, budget, selection, memory_bytes, &summary);
-        report_model(path, &summary);
-        let loaded = LoadedModel::open(
-            device,
-            path,
-            infer_core::ModelId::ONE,
-            LoadOptions {
-                prefill_width: selection.max_num_batched_tokens.unwrap_or(0),
-                mtp_depth: summary.mtp_depth,
-                autotune: selection.autotune,
-                attention_profile: summary.attention_profile.into(),
-                vision: !selection.text_only,
-                ..LoadOptions::default()
-            },
-        )
-        .map_err(|error| load_failure(&error, budget, selection))?;
-        report_tuning(loaded.tuning());
-        // Prompt scratch is allocated with the first sequence and shared by all of them.
-        let used = free
-            .saturating_sub(loaded.device().allocatable_memory_bytes()?)
-            .saturating_add(loaded.shared_scratch_bytes()?);
-        let Some(state_budget) = limit.checked_sub(used).filter(|bytes| *bytes > 0) else {
-            let error = Error::new(
-                infer_core::ErrorCode::Capacity,
-                format!(
-                    "weights used {} of the {} budget, leaving no room for request state",
-                    human_bytes(used),
-                    human_bytes(limit)
-                ),
-            );
-            return Err(load_failure(&error, budget, selection));
-        };
-        let device_states = loaded.profile().resident_states();
-        let maximum_states = selection
-            .max_num_seqs
-            .unwrap_or(device_states)
-            .min(device_states);
-        tracing::info!(
-            target: "infer::load",
-            resident = %human_bytes(used),
-            state_budget = %human_bytes(state_budget),
-            max_resident_states = maximum_states,
-            prefill_width = loaded.execution_profile().prefill_width,
-            elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            "model loaded"
+    if selection.num_gpu_blocks_override.is_some() || selection.upload_staging_mib.is_some() {
+        return Err(Error::unsupported(
+            "CUDA physical KV blocks/upload staging overrides are not implemented",
+        ));
+    }
+    let started = Instant::now();
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    let (_, total) = device.memory_info()?;
+    // A retry may reuse freed blocks still reserved in this context's pool.
+    let free = device.allocatable_memory_bytes()?;
+    // vLLM semantics: the utilization fraction bounds the whole engine, weights included.
+    let share = utilization_bytes(total, selection.gpu_memory_utilization)?;
+    let requested = share.min(if memory_bytes == 0 {
+        total
+    } else {
+        memory_bytes
+    });
+    let limit = requested.min(free.saturating_sub(GIB_U64));
+    let budget = LoadBudget { limit, free, total };
+    let summary = preflight(
+        path,
+        device.target(),
+        &device.profile()?.architecture,
+        limit,
+        selection,
+    )
+    .map_err(|error| load_failure(&error, budget, selection))?;
+    *automatic_fast = selection.num_speculative_tokens.is_none()
+        && selection.attention_profile.is_none()
+        && summary.mtp_depth == 2
+        && summary.attention_profile == super::CudaAttentionProfile::Bf16;
+    report_environment(device.profile()?, budget, selection, memory_bytes, &summary);
+    report_model(path, &summary);
+    let loaded = LoadedModel::open(
+        device,
+        path,
+        infer_core::ModelId::ONE,
+        LoadOptions {
+            prefill_width: selection.max_num_batched_tokens.unwrap_or(0),
+            mtp_depth: summary.mtp_depth,
+            autotune: selection.autotune,
+            attention_profile: summary.attention_profile.into(),
+            vision: !selection.text_only,
+            ..LoadOptions::default()
+        },
+    )
+    .map_err(|error| load_failure(&error, budget, selection))?;
+    report_tuning(loaded.tuning());
+    // Prompt scratch is allocated with the first sequence and shared by all of them.
+    let used = free
+        .saturating_sub(loaded.device().allocatable_memory_bytes()?)
+        .saturating_add(loaded.shared_scratch_bytes()?);
+    let Some(state_budget) = limit.checked_sub(used).filter(|bytes| *bytes > 0) else {
+        let error = Error::new(
+            infer_core::ErrorCode::Capacity,
+            format!(
+                "weights used {} of the {} budget, leaving no room for request state",
+                human_bytes(used),
+                human_bytes(limit)
+            ),
         );
-        let backend = resident_backend(loaded, state_budget, maximum_states, *automatic_fast)
-            .map_err(|error| load_failure(&error, budget, selection))?;
-        Ok(SelectedBackend::Cuda(Box::new(backend)))
-    }
-    #[cfg(not(all(target_os = "linux", feature = "cuda")))]
-    {
-        let _ = (path, memory_bytes, selection, automatic_fast);
-        Err(Error::unsupported(
-            "CUDA execution requires Linux and a build with --features cuda",
-        ))
-    }
+        return Err(load_failure(&error, budget, selection));
+    };
+    let device_states = loaded.profile().resident_states();
+    let maximum_states = selection
+        .max_num_seqs
+        .unwrap_or(device_states)
+        .min(device_states);
+    tracing::info!(
+        target: "infer::load",
+        resident = %human_bytes(used),
+        state_budget = %human_bytes(state_budget),
+        max_resident_states = maximum_states,
+        prefill_width = loaded.execution_profile().prefill_width,
+        elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        "model loaded"
+    );
+    let backend = resident_backend(loaded, state_budget, maximum_states, *automatic_fast)
+        .map_err(|error| load_failure(&error, budget, selection))?;
+    Ok(SelectedBackend::Cuda(Box::new(backend)))
 }
 
 /// Automatic fast execution requires the complete batching resources it was selected for.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 fn resident_backend(
     loaded: LoadedModel,
     budget: u64,
@@ -171,7 +143,6 @@ fn resident_backend(
 }
 
 /// Device budget a load was admitted against, reported when the load cannot fit.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 #[derive(Debug, Clone, Copy)]
 struct LoadBudget {
     /// Usable byte budget the load was admitted against.
@@ -184,7 +155,6 @@ struct LoadBudget {
 
 /// Report an operator hint for a capacity failure and attach the budget to the error, so the
 /// final JSON failure says what bound the load instead of only that it ran out.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 fn load_failure(error: &Error, budget: LoadBudget, selection: &Selection) -> Error {
     if error.code == infer_core::ErrorCode::Capacity || out_of_memory(&error.message) {
         tracing::warn!(
@@ -207,14 +177,12 @@ fn load_failure(error: &Error, budget: LoadBudget, selection: &Selection) -> Err
 }
 
 /// Whether a driver message reports an allocation failure.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 fn out_of_memory(message: &str) -> bool {
     message.contains("out of memory") || message.contains("OUT_OF_MEMORY")
 }
 
 /// Announce the device, the budget derived from it and the operator's effective options, so the
 /// log starts with everything that decided the outcome.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 fn report_environment(
     profile: &DeviceProfile,
     budget: LoadBudget,
@@ -254,7 +222,6 @@ fn report_environment(
 }
 
 /// Announce which model was identified and how much payload it declares.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 fn report_model(path: &Path, summary: &PackageSummary) {
     tracing::info!(
         target: "infer::load",
@@ -278,13 +245,11 @@ fn report_model(path: &Path, summary: &PackageSummary) {
 }
 
 /// Render an optional operator override, so a log line never leaves a parameter unstated.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 fn optional(value: Option<usize>) -> String {
     value.map_or_else(|| "auto".to_owned(), |value| value.to_string())
 }
 
 /// Render an optional host-memory budget in MiB.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 fn optional_mib(bytes: u64) -> String {
     if bytes == 0 {
         "auto".to_owned()
@@ -293,7 +258,6 @@ fn optional_mib(bytes: u64) -> String {
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 fn report_tuning(report: &TuningReport) {
     for decision in &report.measured {
         tracing::info!(
@@ -324,7 +288,6 @@ fn report_tuning(report: &TuningReport) {
 /// Checkpoint facts a load reports before binding a byte: what the package claims to be and how
 /// much payload it declares. Returned by [`preflight`] so the identity and the budget check come
 /// from one read of the metadata.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 struct PackageSummary {
     provider: String,
     layers: usize,
@@ -340,7 +303,6 @@ struct PackageSummary {
     kv_cache: &'static str,
 }
 
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 fn preflight(
     path: &Path,
     target: &CudaTarget,
@@ -421,7 +383,6 @@ fn preflight(
 }
 
 /// KV storage the checkpoint declares, in operator terms.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
 const fn kv_cache_label(package: &infer_models::QuantizedPackage) -> &'static str {
     match package.kv_cache_dtype {
         Some(infer_models::TensorDtype::F8E4m3) => "fp8",

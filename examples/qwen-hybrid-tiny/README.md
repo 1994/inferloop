@@ -1,6 +1,6 @@
-# qwen-hybrid-tiny：CPU 对照样例包
+# qwen-hybrid-tiny：数值对照样例包
 
-这是一个未训练的小型测试包，由官方 Transformers `Qwen3_5ForCausalLM`（Transformers 5.18.0、Torch 2.14.1、seed 20261004、F32 CPU eager attention）导出，用于在不依赖 GPU 的情况下验证数值。
+这是一个未训练的小型测试包，由官方 Transformers `Qwen3_5ForCausalLM`（Transformers 5.18.0、Torch 2.14.1、seed 20261004、F32 CPU eager attention）导出；`golden.json` 由该 CPU 参考实现生成，Rust 执行路径在 CUDA/Metal 上对照这些 golden。
 
 模型包含一个 linear-attention 层和一个带 GQA、QK normalization、partial RoPE 与 output gating 的 full-attention 层；norm、decay 与 gate 参数被刻意设为非平凡值。
 
@@ -19,16 +19,16 @@
 ## 使用
 
 ```sh
-# 数值验证
-target/debug/infer --backend test-cpu verify --package examples/qwen-hybrid-tiny \
+# 数值验证（CUDA 或 Metal）
+target/release/infer verify --package examples/qwen-hybrid-tiny \
   --golden examples/qwen-hybrid-tiny/golden.json --atol 0.000002 --rtol 0.00002
 
 # 执行样例请求
-target/debug/infer --backend test-cpu run --package examples/qwen-hybrid-tiny \
+target/release/infer run --package examples/qwen-hybrid-tiny \
   --requests examples/requests.json --config examples/runtime.json
 ```
 
-CPU 对照需要 `--features test-backends` 构建，见[开发指南](../../docs/guides/development.md)。
+模型执行需要 CUDA 或 Metal；无 GPU 的 `make test` 覆盖标量参考算子、协议与不依赖设备的测试。构建见[开发指南](../../docs/guides/development.md)。
 
 ## 重新导出
 

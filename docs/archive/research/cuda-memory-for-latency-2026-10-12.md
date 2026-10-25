@@ -53,7 +53,7 @@ RAM 预算与 GPU budget 分开计价，RAM bytes 不可计入 GPU reclaimable b
 ActivationArena、projection workspace、recurrent scratch 和 readout。pooled 状态当前用窄图保留并发；
 之前直接增加每序列宽图使第 4 个请求无法同时准入，并放大短提示填充工作，详见
 [准入证据](cuda-pooled-admission-geometry-2026-10-12.md)和
-[性能实验](../../research/cuda-performance-experiments.md)。
+[性能实验](cuda-performance-experiments.md)。
 
 宽 chunk 可以增加 GEMM 并行度，并减少整套权重被重复遍历的次数。
 更合适的空间用途是一份可复用宽工作区，再为不同 slot 的状态捕获或绑定各自图；
