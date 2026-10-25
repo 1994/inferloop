@@ -155,31 +155,27 @@ impl<V, M: PrefixMatcher> PrefixCache<V, M> {
         compatible: impl Fn(&V) -> bool,
     ) -> usize {
         self.matched_prefix(tokens, maximum, |_, value| compatible(value))
-            .0
+            .map_or(0, |candidate| candidate.tokens.len())
     }
     /// Select the longest compatible complete prefix through the configured matcher.
     /// Shared candidate access guards maximum, exact token identity and compatibility.
-    fn matched_prefix(
-        &self,
-        tokens: &[u32],
+    fn matched_prefix<'a>(
+        &'a self,
+        tokens: &'a [u32],
         maximum: usize,
         compatible: impl Fn(&[u32], &V) -> bool,
-    ) -> (usize, Fingerprint) {
+    ) -> Option<PrefixCandidate<'a, V>> {
         if tokens.len().min(maximum) < self.minimum_tokens_hint {
-            return (0, [0; FINGERPRINT_LANES]);
+            return None;
         }
-        self.matcher
-            .longest(PrefixSearch {
-                entries: &self.entries,
-                root: self.root.clone(),
-                block_size: self.block_size,
-                tokens,
-                maximum,
-                compatible,
-            })
-            .map_or((0, [0; FINGERPRINT_LANES]), |candidate| {
-                (candidate.tokens.len(), candidate.key)
-            })
+        self.matcher.longest(PrefixSearch {
+            entries: &self.entries,
+            root: self.root.clone(),
+            block_size: self.block_size,
+            tokens,
+            maximum,
+            compatible,
+        })
     }
     pub fn lookup(&mut self, tokens: &[u32], maximum: usize) -> Option<V>
     where
@@ -212,16 +208,14 @@ impl<V, M: PrefixMatcher> PrefixCache<V, M> {
         backend: &mut R,
     ) -> StdResult<Option<R::Output>, R::Error> {
         self.lookups = self.lookups.saturating_add(1);
-        let (length, key) = self.matched_prefix(tokens, maximum, |prefix, value| {
+        let Some(candidate) = self.matched_prefix(tokens, maximum, |prefix, value| {
             backend.compatible(prefix, value)
-        });
-        if length == 0 {
-            return Ok(None);
-        }
-        let Some(entry) = self.entries.get(&key) else {
+        }) else {
             return Ok(None);
         };
-        let output = backend.reuse(&entry.tokens, &entry.value)?;
+        let length = candidate.tokens.len();
+        let key = candidate.key;
+        let output = backend.reuse(candidate.tokens, candidate.value)?;
         let tick = self.tick();
         // Only an immutable payload was lent to the hook; it cannot remove this entry.
         if let Some(entry) = self.entries.get_mut(&key) {
