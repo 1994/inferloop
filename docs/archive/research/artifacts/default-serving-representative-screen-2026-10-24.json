@@ -1,0 +1,1683 @@
+{
+  "schema_version": 1,
+  "scope": "Outcome-independent stratified 64-case task-quality diagnostic; no quality or performance qualification.",
+  "status": "diagnostic_only_not_qualified",
+  "binary": {
+    "path": "/home/r/code/inference.rs/target/pr47-phase2/target/release/infer",
+    "sha256": "38f189fa5b189a42e8dd1973766879526aa061ed2d0f747d031f1ce430cf9f03"
+  },
+  "binary_build_revision": "0827d67550223dfc77294f1aea838a2c7f6a9617",
+  "current_head_revision": "1a2860152215d59ff6d40a27b5de6bafe0092f72",
+  "build_to_current_diff": {
+    "paths": [
+      "docs/archive/research/artifacts/default-serving-prefix0-screen-2026-10-24.json",
+      "docs/archive/research/default-serving-performance-gap-2026-10-24.md"
+    ],
+    "sha256": "a28e63212193bea20cab7589a94ac5b9fe164f7bd0174896f191195e316065c2",
+    "documentation_only": true
+  },
+  "protocol": {
+    "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/protocol.json",
+    "sha256": "7eee62bab3f24c88d44e5f4800a40859442cdaa66d48e86920491fdfc2392663"
+  },
+  "selection": {
+    "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/selection.json",
+    "sha256": "b1a0e45a4ebb3b594ecf23a6fd4fd77e664cb6aaec2323626ad56e7193982b0b",
+    "algorithm": "Within each zero_shot/eight_shot stratum sort ascending by SHA256 UTF-8(seed + id), tie-break by id; take the first 32 each; execute selected IDs in original suite order.",
+    "seed": "pr47-task-quality-screen-v1:",
+    "strata": {
+      "eight_shot": 32,
+      "zero_shot": 32
+    },
+    "batch_sizes": [
+      16,
+      16,
+      16,
+      16
+    ],
+    "source_inputs": [
+      {
+        "path": "/home/r/benchmarks/inference.rs/exact-shared-attention-2026-10-16/quality-fa4-confirmation-v2/tokenization-v1/tokenized-suite.json",
+        "sha256": "0f961033fc51f032f33b4948081d8f7b8cea78337a55b633cb052ae03f7b500f"
+      },
+      {
+        "path": "/home/r/benchmarks/inference.rs/exact-shared-attention-2026-10-16/quality-preparation-v1/score-task-quality.py",
+        "sha256": "29cbde60bb2e0537f7553143a728a2e82eecdbd6878e744352cf9e82a4b1b2af"
+      },
+      {
+        "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/quality-screen/baseline.tuning.json",
+        "sha256": "1f07084995f83b70d2ca9c4fa4ccdcf290618e6d1624d41439b2e48728c9371f"
+      },
+      {
+        "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/quality-screen/protocol.json",
+        "sha256": "1713eca6156e4b779a791202e4250c0891bd011973f3f3ca2fd43d2154dc7970"
+      }
+    ]
+  },
+  "experiment_conditions": {
+    "model": {
+      "path": "/home/r/models/Qwen3.8-27B-NVFP4",
+      "files": {
+        "config.json": "1b3c71868d1299e52df6fc907deb202d5132b1ef0f72aae0ef6d15185dd53a5c",
+        "generation_config.json": "d0d0ed2e37cdfafef4a5067d5ea2407b05f4fb50526e47c008a5b235d50240fb",
+        "tokenizer.json": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+        "tokenizer_config.json": "529f30018c36dca5387c99b5edf368287f386f2c32d3790aa7141956bc5119fa",
+        "model.safetensors.index.json": "429430e1b9e65b2cb98eff8cd10a06e70a09cee89c48487a3914684aeb6df57f",
+        "chat_template.jinja": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+      },
+      "shards": {
+        "model.safetensors": 22568192096,
+        "model_mtp.safetensors": 849400392
+      }
+    },
+    "generation": "Original greedy, original EOS, 512 token cap, exact frozen prompt tokens and original numeric-answer scorer; fresh processes, identical existing binary and four fixed ordered batches of 16 per arm.",
+    "configuration": "Only model path and listen port are passed. Vision enabled, normal automatic execution/resources and tuning. Both arms copy the completed prior baseline tuning cache; resulting caches are retained. No profiler.",
+    "environment": "External 1-second global GPU and compute PID/executable/memory samples begin before model startup and span both arms. Existing desktop tenants remain; no exclusivity claim. These are task-quality outputs, not timing samples. No unrelated processes are stopped.",
+    "stopping": "Complete all 64 cases in each arm regardless of gross losses or gains. Only execution or environment failures can interrupt the run. Retain partial outputs on failure; no retries or replacement cases.",
+    "prefix_positions": {
+      "baseline": 2048,
+      "candidate": 0
+    }
+  },
+  "summary": {
+    "overall": {
+      "baseline": {
+        "count": 64,
+        "correct": 59,
+        "accuracy": 0.921875,
+        "length_limited": 3,
+        "missing_final_answer": 4,
+        "output_tokens": {
+          "total": 14796,
+          "mean": 231.1875,
+          "median": 209.5,
+          "minimum": 71,
+          "maximum": 512
+        }
+      },
+      "candidate": {
+        "count": 64,
+        "correct": 58,
+        "accuracy": 0.90625,
+        "length_limited": 3,
+        "missing_final_answer": 4,
+        "output_tokens": {
+          "total": 14390,
+          "mean": 224.84375,
+          "median": 191.5,
+          "minimum": 54,
+          "maximum": 512
+        }
+      },
+      "gross_losses": 2,
+      "gross_gains": 1,
+      "loss_ids": [
+        "gsm8k-independent-v1:102:eight_shot",
+        "gsm8k-independent-v1:1199:eight_shot"
+      ],
+      "gain_ids": [
+        "gsm8k-independent-v1:982:zero_shot"
+      ],
+      "net_correct_change": -1,
+      "net_accuracy_change": -0.015625
+    },
+    "strata": {
+      "zero_shot": {
+        "baseline": {
+          "count": 32,
+          "correct": 29,
+          "accuracy": 0.90625,
+          "length_limited": 3,
+          "missing_final_answer": 3,
+          "output_tokens": {
+            "total": 9305,
+            "mean": 290.78125,
+            "median": 278.0,
+            "minimum": 115,
+            "maximum": 512
+          }
+        },
+        "candidate": {
+          "count": 32,
+          "correct": 30,
+          "accuracy": 0.9375,
+          "length_limited": 2,
+          "missing_final_answer": 2,
+          "output_tokens": {
+            "total": 8636,
+            "mean": 269.875,
+            "median": 248.5,
+            "minimum": 115,
+            "maximum": 512
+          }
+        },
+        "gross_losses": 0,
+        "gross_gains": 1,
+        "loss_ids": [],
+        "gain_ids": [
+          "gsm8k-independent-v1:982:zero_shot"
+        ],
+        "net_correct_change": 1,
+        "net_accuracy_change": 0.03125
+      },
+      "eight_shot": {
+        "baseline": {
+          "count": 32,
+          "correct": 30,
+          "accuracy": 0.9375,
+          "length_limited": 0,
+          "missing_final_answer": 1,
+          "output_tokens": {
+            "total": 5491,
+            "mean": 171.59375,
+            "median": 167.5,
+            "minimum": 71,
+            "maximum": 343
+          }
+        },
+        "candidate": {
+          "count": 32,
+          "correct": 28,
+          "accuracy": 0.875,
+          "length_limited": 1,
+          "missing_final_answer": 2,
+          "output_tokens": {
+            "total": 5754,
+            "mean": 179.8125,
+            "median": 161.5,
+            "minimum": 54,
+            "maximum": 512
+          }
+        },
+        "gross_losses": 2,
+        "gross_gains": 0,
+        "loss_ids": [
+          "gsm8k-independent-v1:102:eight_shot",
+          "gsm8k-independent-v1:1199:eight_shot"
+        ],
+        "gain_ids": [],
+        "net_correct_change": -2,
+        "net_accuracy_change": -0.0625
+      }
+    },
+    "full_quality_passed": false,
+    "performance_measured": false,
+    "environment": {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/environment.jsonl",
+      "complete": true,
+      "samples": 220,
+      "errors": [],
+      "sha256": "cbfeb32adfbfa2278d873014bfbac88226b36e19cb6e3b1c270f59646ba1b9b0"
+    }
+  },
+  "serving_plans": {
+    "baseline": {
+      "readback_before": {
+        "source": "native server log",
+        "width": 12,
+        "capacity": 8192,
+        "quoted_bytes": 6181388816,
+        "allocated_bytes": 6166990136,
+        "envelope_bytes": 6181624556,
+        "kv_tokens": 54464,
+        "prompt_width": 1024
+      },
+      "readback_after": {
+        "source": "native server log",
+        "width": 12,
+        "capacity": 8192,
+        "quoted_bytes": 6181388816,
+        "allocated_bytes": 6166990136,
+        "envelope_bytes": 6181624556,
+        "kv_tokens": 54464,
+        "prompt_width": 1024
+      }
+    },
+    "candidate": {
+      "readback_before": {
+        "source": "native server log",
+        "width": 12,
+        "capacity": 8192,
+        "quoted_bytes": 6181388816,
+        "allocated_bytes": 6166990136,
+        "envelope_bytes": 6181624556,
+        "kv_tokens": 54464,
+        "prompt_width": 1024
+      },
+      "readback_after": {
+        "source": "native server log",
+        "width": 12,
+        "capacity": 8192,
+        "quoted_bytes": 6181388816,
+        "allocated_bytes": 6166990136,
+        "envelope_bytes": 6181624556,
+        "kv_tokens": 54464,
+        "prompt_width": 1024
+      }
+    }
+  },
+  "all_serving_plans_identical": true,
+  "tuning_sha256": {
+    "baseline": "1f07084995f83b70d2ca9c4fa4ccdcf290618e6d1624d41439b2e48728c9371f",
+    "candidate": "1f07084995f83b70d2ca9c4fa4ccdcf290618e6d1624d41439b2e48728c9371f"
+  },
+  "cases": [
+    {
+      "id": "gsm8k-independent-v1:933:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "ca711545e66a6c218c37260c505b44723bdfb92ef377b3767c5e93eabf512e73",
+      "baseline": {
+        "correct": true,
+        "prediction": "15",
+        "expected": "15",
+        "tokens": 154,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "15",
+        "expected": "15",
+        "tokens": 154,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1009:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "bd243a42e13fc06494eb0257964c14a710518ffb8bee51827926443af1fc6191",
+      "baseline": {
+        "correct": true,
+        "prediction": "1875",
+        "expected": "1875",
+        "tokens": 506,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "1875",
+        "expected": "1875",
+        "tokens": 446,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:225:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "d97bf1215b2b2ef0c6b14b842003011f2fcd68dd7e9b58eb416ce4b601db83aa",
+      "baseline": {
+        "correct": true,
+        "prediction": "9",
+        "expected": "9",
+        "tokens": 250,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "9",
+        "expected": "9",
+        "tokens": 184,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1062:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "3c993fff23f8c9390246141c1da3f93b0fbb37ba5ffaab4053393e33de228e6f",
+      "baseline": {
+        "correct": true,
+        "prediction": "482",
+        "expected": "482",
+        "tokens": 181,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "482",
+        "expected": "482",
+        "tokens": 181,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:671:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "c05be515ee406ce5c8c729344126d3400cdf6b011d04eba883300abdb96fe151",
+      "baseline": {
+        "correct": true,
+        "prediction": "4",
+        "expected": "4",
+        "tokens": 287,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "4",
+        "expected": "4",
+        "tokens": 284,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1302:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "96af0d7f6fc68d53fee48b1b9812d3ee363d6c76982841c4adc3d7c6ed556479",
+      "baseline": {
+        "correct": true,
+        "prediction": "72",
+        "expected": "72",
+        "tokens": 122,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "72",
+        "expected": "72",
+        "tokens": 114,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:910:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "fd54ff39a3ee220263947337395c29e6a040dd391e143338ca91c02b35b5310d",
+      "baseline": {
+        "correct": true,
+        "prediction": "700",
+        "expected": "700",
+        "tokens": 146,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "700",
+        "expected": "700",
+        "tokens": 146,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:454:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "e7c54c4aced3c11fddcc157364d4146da1d9c3862acf80d82d8aaf8795e2315a",
+      "baseline": {
+        "correct": false,
+        "prediction": "240",
+        "expected": "150",
+        "tokens": 72,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": false,
+        "prediction": "240",
+        "expected": "150",
+        "tokens": 72,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1246:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "df73cb2ae210566b97614ac86d2196edc173fc0b329db2ed804b7d2a1d3242b8",
+      "baseline": {
+        "correct": true,
+        "prediction": "3360",
+        "expected": "3360",
+        "tokens": 227,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "3360",
+        "expected": "3360",
+        "tokens": 292,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:167:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "7f5a39fe2155932dc12b4649ec9200fd175fe62e415caf43a0092c041c96ee44",
+      "baseline": {
+        "correct": true,
+        "prediction": "16",
+        "expected": "16",
+        "tokens": 265,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "16",
+        "expected": "16",
+        "tokens": 214,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:606:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "41f4a097e6acd960fa925ad553a0734b6bb437142c9c621510d9aee3f02b8aef",
+      "baseline": {
+        "correct": true,
+        "prediction": "6",
+        "expected": "6",
+        "tokens": 213,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "6",
+        "expected": "6",
+        "tokens": 207,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:866:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "7de43c919e5100ef47eea3a5ee2ce1789bf70d83b66582759b952352b0d23fff",
+      "baseline": {
+        "correct": true,
+        "prediction": "28",
+        "expected": "28",
+        "tokens": 248,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "28",
+        "expected": "28",
+        "tokens": 183,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:103:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "aa923333e9cf10eff7ac4578b1c4f74ac91e3dfbb6e141f7119e37d5f85ce3de",
+      "baseline": {
+        "correct": true,
+        "prediction": "140",
+        "expected": "140",
+        "tokens": 128,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "140",
+        "expected": "140",
+        "tokens": 128,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:917:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "9952155764452e937698b50c077156f07e006b6d1a76bdfac4cdabdfc0a52f4d",
+      "baseline": {
+        "correct": true,
+        "prediction": "12",
+        "expected": "12",
+        "tokens": 71,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "12",
+        "expected": "12",
+        "tokens": 54,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:896:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "9e5d51ab1bc55c2b5ad28967497e9401e8cb84fae7bb1738be6cb86933993649",
+      "baseline": {
+        "correct": true,
+        "prediction": "250",
+        "expected": "250",
+        "tokens": 103,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "250",
+        "expected": "250",
+        "tokens": 135,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1191:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "18598bb1b830b89a78e4010d3b54a7ebcf0a24b2eb0786aff72eaf56262593fd",
+      "baseline": {
+        "correct": true,
+        "prediction": "100",
+        "expected": "100",
+        "tokens": 190,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "100",
+        "expected": "100",
+        "tokens": 180,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:674:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "9600556ebbc4e4aa8f1a4003c3180d9331bb150ee3659fe3d3d20e957102e211",
+      "baseline": {
+        "correct": true,
+        "prediction": "12",
+        "expected": "12",
+        "tokens": 156,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "12",
+        "expected": "12",
+        "tokens": 162,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:574:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "a0e3140bd63ecc5fc54d2a8c3085aadd90711ffeffd7e82946079ff92bfe9bc4",
+      "baseline": {
+        "correct": true,
+        "prediction": "37",
+        "expected": "37",
+        "tokens": 257,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "37",
+        "expected": "37",
+        "tokens": 162,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:314:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "269dbce2fcfa6d1f917adaaf636d97e4c268820815317ec78d3a3cb5db49db3f",
+      "baseline": {
+        "correct": true,
+        "prediction": "30",
+        "expected": "30",
+        "tokens": 257,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "30",
+        "expected": "30",
+        "tokens": 338,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1200:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "8dd1c88ffd34dce98c8ed46b6a99889517523c0bc2fc64cbdee64c113b7253ec",
+      "baseline": {
+        "correct": true,
+        "prediction": "8",
+        "expected": "8",
+        "tokens": 154,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "8",
+        "expected": "8",
+        "tokens": 151,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1114:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "a33c122b7369e22fd545c8fb4814833c9758b493098fadaa4af6210425873e07",
+      "baseline": {
+        "correct": true,
+        "prediction": "8",
+        "expected": "8",
+        "tokens": 233,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "8",
+        "expected": "8",
+        "tokens": 170,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1001:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "cacfd329b56d76c0a3858db4f97bf319adac57b656b946fe6a20730779dc71e2",
+      "baseline": {
+        "correct": false,
+        "prediction": null,
+        "expected": "2",
+        "tokens": 194,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": false,
+        "prediction": null,
+        "expected": "2",
+        "tokens": 261,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:842:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "6e01e4ea98fc95c8dc18c6faed746fe2aae9403163d7db084b6a8334e2594b2a",
+      "baseline": {
+        "correct": true,
+        "prediction": "10",
+        "expected": "10",
+        "tokens": 115,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "10",
+        "expected": "10",
+        "tokens": 115,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:698:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "9161d8679a5ab8b8d32956c814f4d6e9bf3acd47a0fc1085287d4fa4e61b10ab",
+      "baseline": {
+        "correct": true,
+        "prediction": "720",
+        "expected": "720",
+        "tokens": 344,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "720",
+        "expected": "720",
+        "tokens": 330,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:974:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "d86bf294d0b66b049fd5b2319200476c3ef1c674e3a2637290967f86f059b414",
+      "baseline": {
+        "correct": true,
+        "prediction": "5",
+        "expected": "5",
+        "tokens": 105,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "5",
+        "expected": "5",
+        "tokens": 105,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1027:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "595f397a38f80c407b74ca573e9d1225569ee508a8679d1524736075c63eacc6",
+      "baseline": {
+        "correct": true,
+        "prediction": "12",
+        "expected": "12",
+        "tokens": 250,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "12",
+        "expected": "12",
+        "tokens": 249,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1216:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "aabc70e33f546dc110e3a901da3e96d56ec6657d0c7d68c3379220ee7f3fe7a0",
+      "baseline": {
+        "correct": true,
+        "prediction": "20",
+        "expected": "20",
+        "tokens": 211,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "20",
+        "expected": "20",
+        "tokens": 264,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1236:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "1c07f0f57f045c33125545166e34febdfc57a00e6250ff3603befda2135f8d9f",
+      "baseline": {
+        "correct": true,
+        "prediction": "84",
+        "expected": "84",
+        "tokens": 256,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "84",
+        "expected": "84",
+        "tokens": 216,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:621:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "c1783b28b550246f31e1a9fb219bd891719edf8b0caac9db21b441215e33e594",
+      "baseline": {
+        "correct": true,
+        "prediction": "3000",
+        "expected": "3000",
+        "tokens": 132,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "3000",
+        "expected": "3000",
+        "tokens": 126,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:102:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "63a5e737d309f25ea72ae1b780a14acf1fd3ce1e2d65049feaa431f5708103b8",
+      "baseline": {
+        "correct": true,
+        "prediction": "26",
+        "expected": "26",
+        "tokens": 215,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": false,
+        "prediction": "19",
+        "expected": "26",
+        "tokens": 153,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1253:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "84403f3106ec9cb9ebf19a7983e0934633f95d6ccb3930c5784ab56a24619486",
+      "baseline": {
+        "correct": true,
+        "prediction": "120",
+        "expected": "120",
+        "tokens": 207,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "120",
+        "expected": "120",
+        "tokens": 152,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:729:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "5ff0d178e0f56a9c35aa879fd679674785e5dea1d41046580f79f4993f38cda1",
+      "baseline": {
+        "correct": true,
+        "prediction": "1000",
+        "expected": "1000",
+        "tokens": 416,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "1000",
+        "expected": "1000",
+        "tokens": 409,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:761:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "b1df031053152887004cbea6425b665fadcdb82bde76884682d5001c04f71f15",
+      "baseline": {
+        "correct": true,
+        "prediction": "27",
+        "expected": "27",
+        "tokens": 286,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "27",
+        "expected": "27",
+        "tokens": 298,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:310:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "bae02f1a943b8fe239c05b56ae8b2dcfc72f5c5887a9710b7075cfe55734806d",
+      "baseline": {
+        "correct": true,
+        "prediction": "2050",
+        "expected": "2050",
+        "tokens": 343,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "2050",
+        "expected": "2050",
+        "tokens": 448,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:95:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "f4b2660975d54a095663a35874dbc3dc342f1d95f4e7329d9ba51608fd8debc8",
+      "baseline": {
+        "correct": true,
+        "prediction": "40",
+        "expected": "40",
+        "tokens": 330,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "40",
+        "expected": "40",
+        "tokens": 330,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:991:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "fd7473d76d7832399254524c1e82ef8ecb0b26590727841aa517b5e3fba112d2",
+      "baseline": {
+        "correct": true,
+        "prediction": "15",
+        "expected": "15",
+        "tokens": 271,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "15",
+        "expected": "15",
+        "tokens": 259,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:471:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "b23da21f1e3d3fff24529c4e884c6e680fdf507d644931beedcf9d8408ed4af2",
+      "baseline": {
+        "correct": true,
+        "prediction": "80",
+        "expected": "80",
+        "tokens": 270,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "80",
+        "expected": "80",
+        "tokens": 248,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:978:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "855ba287248de2086e81fa4e0c099108ec1d85d645ebaefb9c3afea782775081",
+      "baseline": {
+        "correct": true,
+        "prediction": "160",
+        "expected": "160",
+        "tokens": 174,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "160",
+        "expected": "160",
+        "tokens": 177,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1038:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "ce601389d49a4d8e121a471c414eaa87ef2ee0301125dc7dd13d2a486dcf216f",
+      "baseline": {
+        "correct": true,
+        "prediction": "4",
+        "expected": "4",
+        "tokens": 367,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "4",
+        "expected": "4",
+        "tokens": 464,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:982:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "2ef972aa8241f46591301d7570e047021d8db70ed75f9538fac91ef2855b995d",
+      "baseline": {
+        "correct": false,
+        "prediction": null,
+        "expected": "12",
+        "tokens": 512,
+        "finish_reason": "Length"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "12",
+        "expected": "12",
+        "tokens": 212,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:784:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "93adfa941c4834c32c46ee0d3c2e56807b2283e7b557f9037c15df619c01ce6d",
+      "baseline": {
+        "correct": true,
+        "prediction": "15",
+        "expected": "15",
+        "tokens": 161,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "15",
+        "expected": "15",
+        "tokens": 162,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:207:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "6d02f2e4c4e49f9154afbc4a6e91e0db05cc516b235bb6aac33e6d5d0255a66a",
+      "baseline": {
+        "correct": true,
+        "prediction": "2600",
+        "expected": "2600",
+        "tokens": 161,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "2600",
+        "expected": "2600",
+        "tokens": 161,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:183:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "9bef3b0ce319579a02f53a9629fccbf5438e87f91911f3499e4be089d292c950",
+      "baseline": {
+        "correct": true,
+        "prediction": "2",
+        "expected": "2",
+        "tokens": 351,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "2",
+        "expected": "2",
+        "tokens": 344,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1199:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "7406d81205c67d458b641b0441c42379dc229278767f2ff02f2230adbbddb221",
+      "baseline": {
+        "correct": true,
+        "prediction": "2",
+        "expected": "2",
+        "tokens": 199,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": false,
+        "prediction": null,
+        "expected": "2",
+        "tokens": 512,
+        "finish_reason": "Length"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:305:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "974f69ddaef8016ad5f7bb02c0eba036c550552c8f72eb3447ccbac2bd91fe75",
+      "baseline": {
+        "correct": true,
+        "prediction": "4",
+        "expected": "4",
+        "tokens": 208,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "4",
+        "expected": "4",
+        "tokens": 228,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:860:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "1d6ec4457119aedc67f407c8c0fa0e7ca8682d9f979e0cd747e1613ca57802a8",
+      "baseline": {
+        "correct": true,
+        "prediction": "3",
+        "expected": "3",
+        "tokens": 99,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "3",
+        "expected": "3",
+        "tokens": 99,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:975:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "4e256844bc6180850c80958c59a7283c16a998d03311e043466666e893bc3ac4",
+      "baseline": {
+        "correct": true,
+        "prediction": "20",
+        "expected": "20",
+        "tokens": 180,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "20",
+        "expected": "20",
+        "tokens": 162,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1051:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "192fc3d47cee0a198dc0cff8e42a9cb77decb302701f8eea93106b68a2ac9613",
+      "baseline": {
+        "correct": true,
+        "prediction": "15",
+        "expected": "15",
+        "tokens": 93,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "15",
+        "expected": "15",
+        "tokens": 91,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:919:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "3d61cfee365c41dbdd8cc8717f30ae9e424bdbec0f9c82ce71b76d7197581b25",
+      "baseline": {
+        "correct": true,
+        "prediction": "90",
+        "expected": "90",
+        "tokens": 207,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "90",
+        "expected": "90",
+        "tokens": 166,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:780:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "4b85c89fc732daa9bfc97bd247c27c082693058329bb3b6c1abca949dc7c20db",
+      "baseline": {
+        "correct": false,
+        "prediction": null,
+        "expected": "25",
+        "tokens": 512,
+        "finish_reason": "Length"
+      },
+      "candidate": {
+        "correct": false,
+        "prediction": null,
+        "expected": "25",
+        "tokens": 512,
+        "finish_reason": "Length"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1292:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "df7276f9a340840e8c10d8730a0b5b77827cda1759a5ac9f66e9c08ced1a0861",
+      "baseline": {
+        "correct": true,
+        "prediction": "67",
+        "expected": "67",
+        "tokens": 334,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "67",
+        "expected": "67",
+        "tokens": 199,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:137:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "45a15528c3a667134b6387c2cdc5e33fabdf1349f05a584e660c48948801455a",
+      "baseline": {
+        "correct": true,
+        "prediction": "29",
+        "expected": "29",
+        "tokens": 285,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "29",
+        "expected": "29",
+        "tokens": 271,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1127:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "ed39d1132fbc9acb573017699226027bbe1dafa89711a5f73de80ffad0abafd4",
+      "baseline": {
+        "correct": true,
+        "prediction": "750",
+        "expected": "750",
+        "tokens": 292,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "750",
+        "expected": "750",
+        "tokens": 237,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:812:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "4d71bcdd21f36efd7adc13c8a7f57ff1039d77d1ebfd2985fe0462fed4074544",
+      "baseline": {
+        "correct": false,
+        "prediction": null,
+        "expected": "79",
+        "tokens": 512,
+        "finish_reason": "Length"
+      },
+      "candidate": {
+        "correct": false,
+        "prediction": null,
+        "expected": "79",
+        "tokens": 512,
+        "finish_reason": "Length"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1117:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "7b1388920b3ade0520ac796a3154dddf9e9e53a31df09ae40231011efe4cb694",
+      "baseline": {
+        "correct": true,
+        "prediction": "9",
+        "expected": "9",
+        "tokens": 331,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "9",
+        "expected": "9",
+        "tokens": 201,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:473:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "c796e2077116f2b3011ba8e586df934fcb38974bbd6c088e8009683bb45f3b5d",
+      "baseline": {
+        "correct": true,
+        "prediction": "10",
+        "expected": "10",
+        "tokens": 174,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "10",
+        "expected": "10",
+        "tokens": 166,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:825:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "b1a8650fa54c401e0d1461c1fbc3a72e7a05296342b92b876c5fd8702dd6bfdc",
+      "baseline": {
+        "correct": true,
+        "prediction": "153",
+        "expected": "153",
+        "tokens": 293,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "153",
+        "expected": "153",
+        "tokens": 363,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:300:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "544fdcb70ede64fe64579694e72c4d65e07a8bb4c046e7dd0cc385b6ba8c9329",
+      "baseline": {
+        "correct": true,
+        "prediction": "78",
+        "expected": "78",
+        "tokens": 98,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "78",
+        "expected": "78",
+        "tokens": 98,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:288:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "160f6f54cae5b674e8cc1e35bf8ed67db442208e74a5e8f18b233658f023fa36",
+      "baseline": {
+        "correct": true,
+        "prediction": "3",
+        "expected": "3",
+        "tokens": 104,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "3",
+        "expected": "3",
+        "tokens": 115,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:35:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "4cfe846880f9a97a17d153f251b200c0526efa71f4d831d8d045a83bc0ca3466",
+      "baseline": {
+        "correct": true,
+        "prediction": "9",
+        "expected": "9",
+        "tokens": 203,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "9",
+        "expected": "9",
+        "tokens": 200,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1213:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "ac1c5f09e72d693c476326e3db1e1ace662c7b3687eea9ad61adfbbad66b24bc",
+      "baseline": {
+        "correct": true,
+        "prediction": "31",
+        "expected": "31",
+        "tokens": 188,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "31",
+        "expected": "31",
+        "tokens": 227,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1150:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "0c9b48d719b0f3961366b50b7ccb0ba9f15d63889cd38118ca9ccf23fa178006",
+      "baseline": {
+        "correct": true,
+        "prediction": "21",
+        "expected": "21",
+        "tokens": 128,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "21",
+        "expected": "21",
+        "tokens": 128,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:1305:eight_shot",
+      "variant": "eight_shot",
+      "input_token_ids_sha256": "af012083921a7f8e13f7a4edc3599b362f62309543ff68ba6272b54c88383ef8",
+      "baseline": {
+        "correct": true,
+        "prediction": "2325",
+        "expected": "2325",
+        "tokens": 157,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "2325",
+        "expected": "2325",
+        "tokens": 157,
+        "finish_reason": "Eos"
+      }
+    },
+    {
+      "id": "gsm8k-independent-v1:78:zero_shot",
+      "variant": "zero_shot",
+      "input_token_ids_sha256": "ae917081212f62b6bbbf05e0b19d33a14a2c8c674e47e31e2e062cb1e0174b1d",
+      "baseline": {
+        "correct": true,
+        "prediction": "6",
+        "expected": "6",
+        "tokens": 308,
+        "finish_reason": "Eos"
+      },
+      "candidate": {
+        "correct": true,
+        "prediction": "6",
+        "expected": "6",
+        "tokens": 306,
+        "finish_reason": "Eos"
+      }
+    }
+  ],
+  "raw_files": [
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/baseline.batch-0.json",
+      "sha256": "b0982edaba7496b6fc40c964c7e47c0057a514b9174fe30aacd9550b512e219a"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/baseline.batch-1.json",
+      "sha256": "58b9be8ec7c7bf205677febf7407f326d04056c0dcfed0af0772957e4bca3103"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/baseline.batch-2.json",
+      "sha256": "957f5e0af104ce43e1bd165998dee535a8c41cf8643f5ea6b683d46e80bdeb33"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/baseline.batch-3.json",
+      "sha256": "c867d766f392fafcb0418fb52f5de6c1d865d0f1342cb9ac7589b25c50a2ca63"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/baseline.json",
+      "sha256": "560f9d9167774b323bb78a6b63c54b21632199295fa78da9799c16bceb97237b"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/baseline.server.log",
+      "sha256": "83d27ad9ca321ec8638c1e66c2a680d3a5ed0a691e6b5098da57bad02870bdc2"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/baseline.tuning.json",
+      "sha256": "1f07084995f83b70d2ca9c4fa4ccdcf290618e6d1624d41439b2e48728c9371f"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/candidate.batch-0.json",
+      "sha256": "898a155b7a05b1b668a0d7de0c5d23459065354cafefcf1d6330d5e25254280a"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/candidate.batch-1.json",
+      "sha256": "f713deae0db27571a9f90c3e79bcba6b07d2b83651060d130beb720fef00db30"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/candidate.batch-2.json",
+      "sha256": "5ae10fd3459fd5144c44c6dc10ee32be7d9f5cd2abee3047dfb5c7325ecd2d3f"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/candidate.batch-3.json",
+      "sha256": "3605382c075b3f21aa0d9d54d0b906230162946942818c48e546d257be017aed"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/candidate.json",
+      "sha256": "a88b3b8f2fc9cdb10ae73958118243993e870cd64e782694f0338706c5e01e12"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/candidate.server.log",
+      "sha256": "630ec554b0d833a32fec659c96dd4ae81804be60954a97be8e9a92c9c911e787"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/candidate.tuning.json",
+      "sha256": "1f07084995f83b70d2ca9c4fa4ccdcf290618e6d1624d41439b2e48728c9371f"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/environment-status.json",
+      "sha256": "ee00c9ef8d424c1bd6a18a3aab05687300a94699a3ad6df8dbaffb6a5292096d"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/environment.jsonl",
+      "sha256": "cbfeb32adfbfa2278d873014bfbac88226b36e19cb6e3b1c270f59646ba1b9b0"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/protected-limits.json",
+      "sha256": "81c57bfb4335b7196ace1b6641b54a3a5392c40e645bfe950935cab6754f6cb4"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/protocol.json",
+      "sha256": "7eee62bab3f24c88d44e5f4800a40859442cdaa66d48e86920491fdfc2392663"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/run_screen.py",
+      "sha256": "a02f9e07c8ac954285e3f693be23b2138452415141d724e8b5851bbdcb101a19"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/selection.json",
+      "sha256": "b1a0e45a4ebb3b594ecf23a6fd4fd77e664cb6aaec2323626ad56e7193982b0b"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/representative-screen/static-validation.json",
+      "sha256": "2614bc9d800100d9f1440dacadeba734e6e1d35b6c9ee546215c942506d37b41"
+    }
+  ],
+  "limitations": [
+    "The source 1024-case corpus was used in earlier investigations. Selection is independent of outcomes, but this is not an unseen holdout.",
+    "Only 64 cases, 32 in each stratum, and one process per arm. One case is 1.5625 percentage points overall; this does not establish a small non-inferiority margin.",
+    "The net observed change is minus one correct answer, with two losses and one gain. Neither equivalent task quality nor a population decline is established.",
+    "All length-limited and missing-answer outcomes remain in the denominator. No cases were replaced, retried or excluded.",
+    "Read-only environment monitoring retained desktop programs. No exclusive-GPU or performance claim.",
+    "The formal gross-regression gate and default 2048-position precision guard are unchanged."
+  ],
+  "persistent_raw_directory": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25",
+  "independent_audit": {
+    "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/audit-verification.json",
+    "sha256": "7a46be47422f3cf83f317413f7e375a1271e9199ae6c9b568dfba8a31b170bc9"
+  },
+  "summary_file": {
+    "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/summary.json",
+    "sha256": "6e26b6587910df2cf2ffa46342b671c376ba38e0968d37e5692f258bd42a8876"
+  },
+  "archive_files": [
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/audit-verification.json",
+      "sha256": "7a46be47422f3cf83f317413f7e375a1271e9199ae6c9b568dfba8a31b170bc9"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/baseline.batch-0.json",
+      "sha256": "b0982edaba7496b6fc40c964c7e47c0057a514b9174fe30aacd9550b512e219a"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/baseline.batch-1.json",
+      "sha256": "58b9be8ec7c7bf205677febf7407f326d04056c0dcfed0af0772957e4bca3103"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/baseline.batch-2.json",
+      "sha256": "957f5e0af104ce43e1bd165998dee535a8c41cf8643f5ea6b683d46e80bdeb33"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/baseline.batch-3.json",
+      "sha256": "c867d766f392fafcb0418fb52f5de6c1d865d0f1342cb9ac7589b25c50a2ca63"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/baseline.json",
+      "sha256": "560f9d9167774b323bb78a6b63c54b21632199295fa78da9799c16bceb97237b"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/baseline.server.log",
+      "sha256": "83d27ad9ca321ec8638c1e66c2a680d3a5ed0a691e6b5098da57bad02870bdc2"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/baseline.tuning.json",
+      "sha256": "1f07084995f83b70d2ca9c4fa4ccdcf290618e6d1624d41439b2e48728c9371f"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/candidate.batch-0.json",
+      "sha256": "898a155b7a05b1b668a0d7de0c5d23459065354cafefcf1d6330d5e25254280a"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/candidate.batch-1.json",
+      "sha256": "f713deae0db27571a9f90c3e79bcba6b07d2b83651060d130beb720fef00db30"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/candidate.batch-2.json",
+      "sha256": "5ae10fd3459fd5144c44c6dc10ee32be7d9f5cd2abee3047dfb5c7325ecd2d3f"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/candidate.batch-3.json",
+      "sha256": "3605382c075b3f21aa0d9d54d0b906230162946942818c48e546d257be017aed"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/candidate.json",
+      "sha256": "a88b3b8f2fc9cdb10ae73958118243993e870cd64e782694f0338706c5e01e12"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/candidate.server.log",
+      "sha256": "630ec554b0d833a32fec659c96dd4ae81804be60954a97be8e9a92c9c911e787"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/candidate.tuning.json",
+      "sha256": "1f07084995f83b70d2ca9c4fa4ccdcf290618e6d1624d41439b2e48728c9371f"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/environment-status.json",
+      "sha256": "ee00c9ef8d424c1bd6a18a3aab05687300a94699a3ad6df8dbaffb6a5292096d"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/environment.jsonl",
+      "sha256": "cbfeb32adfbfa2278d873014bfbac88226b36e19cb6e3b1c270f59646ba1b9b0"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/protected-limits.json",
+      "sha256": "81c57bfb4335b7196ace1b6641b54a3a5392c40e645bfe950935cab6754f6cb4"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/protocol.json",
+      "sha256": "7eee62bab3f24c88d44e5f4800a40859442cdaa66d48e86920491fdfc2392663"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/run.log",
+      "sha256": "0a1c1a7d9696b7a1050d3afe49aa2c53c89851c63237d442163ad0ede522c34a"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/run_screen.py",
+      "sha256": "a02f9e07c8ac954285e3f693be23b2138452415141d724e8b5851bbdcb101a19"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/selection.json",
+      "sha256": "b1a0e45a4ebb3b594ecf23a6fd4fd77e664cb6aaec2323626ad56e7193982b0b"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/static-validation.json",
+      "sha256": "2614bc9d800100d9f1440dacadeba734e6e1d35b6c9ee546215c942506d37b41"
+    },
+    {
+      "path": "/home/r/benchmarks/inference.rs/default-serving-representative-screen-2026-10-25/summary.json",
+      "sha256": "6e26b6587910df2cf2ffa46342b671c376ba38e0968d37e5692f258bd42a8876"
+    }
+  ]
+}

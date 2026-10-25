@@ -133,6 +133,47 @@ A future task-quality non-inferiority contract would need its margin and
 statistics frozen before qualification; it must not rewrite the rejected
 counterexample result or select a threshold after observing candidate scores.
 
+## Representative task-quality diagnosis
+
+A separate outcome-independent sample selected 32 zero-shot and 32 eight-shot
+cases by a frozen SHA256 ordering of IDs, then retained the original suite order
+in four batches of sixteen. Both arms completed all 64 cases without a
+score-dependent stopping rule. This is sampled from the previously used corpus,
+not an unseen holdout.
+
+| Stratum | Baseline correct | Prefix0 correct | Losses | Gains |
+| --- | --- | --- | --- | --- |
+| Zero-shot | 29 / 32 | 30 / 32 | 0 | 1 |
+| Eight-shot | 30 / 32 | 28 / 32 | 2 | 0 |
+| Overall | 59 / 64 | 58 / 64 | 2 | 1 |
+
+The net observed change is minus one correct answer, or -1.5625 percentage
+points. Both arms have three length-limited outputs and four missing final
+answers; all remain counted. The eight-shot losses include a completed wrong
+answer and a new 512-token truncation. The zero-shot gain avoids a baseline
+truncation. Output length therefore remains part of task quality, not a reason
+to exclude an unfavorable result.
+
+The same release binary, original prompt tokens, scorer, EOS and 512-token cap
+were used. Both arms copied the same completed tuning seed and ended with the
+same tuning hash. Before/after serving plans were identical: twelve slots,
+54,464 target KV tokens, prompt width 1024 and capacity 8192. Both preparation
+and serving captures succeeded without replanning. External environment
+sampling completed without errors while desktop programs remained open.
+
+This small diagnostic neither proves task-quality equivalence nor establishes a
+population-level decline. It does show why the historical-counterexample screen
+must not be used as an aggregate accuracy estimate. A formal non-inferiority
+margin needs a separate, prospectively specified contract and enough evidence;
+the existing gross-regression gate and 2048-position default guard remain
+unchanged. Do not expand immediately to the full suite just to seek a passing
+score. First establish a worthwhile service-performance effect or diagnose the
+specific numerical/output changes.
+
+The [representative-screen evidence](artifacts/default-serving-representative-screen-2026-10-24.json)
+retains all 64 paired outcomes, source/build and selection identities, complete
+serving-plan readbacks and raw evidence hashes. No performance result is claimed.
+
 ## Recorded measurements
 
 RTX 5090 on 192.168.1.45, Qwen3.8-27B-NVFP4. C16 means sixteen requests, each
