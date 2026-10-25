@@ -557,8 +557,8 @@ impl Workspace {
             .is_some_and(|work| work.grouped.is_some() && work.verify.is_some())
     }
 
-    /// Target verification retains the single-step attention reduction and launch geometry.
-    /// Proposal-only graphs may stack queries because their outputs do not commit target tokens.
+    /// Decode attention of the three lanes of one verification step: one grouped launch reads
+    /// each KV block once, then each lane merges its own splits.
     #[expect(
         clippy::too_many_arguments,
         reason = "Attention binding includes three lanes, shared KV, metadata and scale tensors"
@@ -573,17 +573,7 @@ impl Workspace {
         (heads, kv_heads, dim): (usize, usize, usize),
         window: i32,
         scales: [f32; 2],
-        canonical_target: bool,
     ) -> StdResult<(), DeviceError> {
-        if canonical_target {
-            for ((output, query), metadata) in outputs.into_iter().zip(queries).zip(metadata) {
-                self.record(
-                    scope, output, query, keys, values, metadata, table, heads, kv_heads, dim,
-                    window, scales,
-                )?;
-            }
-            return Ok(());
-        }
         let work = self
             .buffers
             .get_mut(&(heads, dim))

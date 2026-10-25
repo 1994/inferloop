@@ -67,7 +67,6 @@ pub(super) struct SlotVerifyGraph {
 struct RecurrentCapture {
     staging: super::slot_recurrent::Staging,
     parameters: super::slot_states::RecurrentParameters,
-    canonical: super::canonical_recurrent::Workspace,
 }
 impl RecurrentCapture {
     fn new(
@@ -95,15 +94,9 @@ impl RecurrentCapture {
         } else {
             super::slot_states::RecurrentParameters::new()
         };
-        let canonical = super::canonical_recurrent::Workspace::new(
-            builder.device,
-            builder.graph,
-            fused && builder.weights.fusion.is_none(),
-        )?;
         Ok(Self {
             staging,
             parameters,
-            canonical,
         })
     }
 }
@@ -172,7 +165,6 @@ impl BatchBuilder<'_> {
         arena: &ActivationArena,
         metadata: &[Tensor<i32>],
         (verify, staging): (usize, &super::slot_recurrent::Staging),
-        canonical: &mut super::canonical_recurrent::Workspace,
     ) -> Result<Vec<Vec<CudaGraph<()>>>> {
         let mut commits = Vec::with_capacity(lane_states.len());
         let value_split =
@@ -188,25 +180,16 @@ impl BatchBuilder<'_> {
                                 let staged = staging
                                     .get(&(slot, index))
                                     .ok_or_else(|| error("slot commit staging"))?;
-                                if !canonical.record_commit(
+                                super::slot_recurrent::record_commit(
                                     scope,
                                     node,
-                                    (arena, self.weights),
+                                    arena,
                                     states,
                                     &lanes,
+                                    self.weights,
+                                    value_split,
                                     (staged, count),
-                                )? {
-                                    super::slot_recurrent::record_commit(
-                                        scope,
-                                        node,
-                                        arena,
-                                        states,
-                                        &lanes,
-                                        self.weights,
-                                        value_split,
-                                        (staged, count),
-                                    )?;
-                                }
+                                )?;
                             }
                         }
                         Ok(())
@@ -320,18 +303,14 @@ impl BatchBuilder<'_> {
         node: &TensorNode,
         arena: &mut ActivationArena,
         (states, metadata): (&[States], &[Tensor<i32>]),
-        (staging, index, value_split, batch, canonical): (
+        (staging, index, value_split, batch): (
             &mut super::slot_recurrent::Staging,
             usize,
             usize,
             &super::slot_states::VerifyBatch<'_>,
-            &mut super::canonical_recurrent::Workspace,
         ),
     ) -> StdResult<(), DeviceError> {
         staging.record_node(scope, node, arena, index)?;
-        if canonical.record_verify(scope, node, arena, states, metadata, self.weights)? {
-            return Ok(());
-        }
         if super::slot_convolution::record(scope, node, arena, batch, self.weights)?
             || super::slot_states::record_batch(scope, node, arena, batch, value_split)?
         {
@@ -358,11 +337,7 @@ impl BatchBuilder<'_> {
         lane_fp8: &mut [Fp8Caches],
         geometry: (usize, &[Tensor<i32>], &super::slot_states::VerifyBatch<'_>),
         arena: &mut ActivationArena,
-        (checkpoints, staging, canonical): (
-            &mut [Vec<States>],
-            &mut super::slot_recurrent::Staging,
-            &mut super::canonical_recurrent::Workspace,
-        ),
+        (checkpoints, staging): (&mut [Vec<States>], &mut super::slot_recurrent::Staging),
         profile: &mut Option<profile::SlotProfile>,
     ) -> Result<CudaGraph<()>> {
         let (verify, metadata, batch) = geometry;
@@ -412,7 +387,7 @@ impl BatchBuilder<'_> {
                         external: self.external,
                         capacity: self.capacity,
                         fusion: &mut no_fusion,
-                        mode: CaptureMode::verification(self.weights.fusion.is_none(), verify),
+                        mode: CaptureMode::Batched,
                     }
                     .record(node)?,
                     Dispatch32::Row if fused && super::slot_recurrent::covers(node) => {
@@ -421,7 +396,7 @@ impl BatchBuilder<'_> {
                             node,
                             arena,
                             (lane_states, metadata),
-                            (staging, index, value_split, batch, canonical),
+                            (staging, index, value_split, batch),
                         )?;
                     }
                     Dispatch32::Row => {
@@ -522,15 +497,10 @@ impl BatchBuilder<'_> {
             lane_fp8,
             (verify, &metadata, &batch),
             &mut arena,
-            (
-                &mut checkpoints,
-                &mut recurrent.staging,
-                &mut recurrent.canonical,
-            ),
+            (&mut checkpoints, &mut recurrent.staging),
             &mut profile,
         )?;
         let batched_commit = if fused
-            && !recurrent.canonical.enabled()
             && CapturedCommit::supported(&self.graph.nodes, &recurrent.parameters, roots, slots)
         {
             Some(CapturedCommit::new(
@@ -544,13 +514,7 @@ impl BatchBuilder<'_> {
             None
         };
         let restore = if fused {
-            self.capture_commits(
-                lane_states,
-                &arena,
-                &metadata,
-                (verify, &recurrent.staging),
-                &mut recurrent.canonical,
-            )?
+            self.capture_commits(lane_states, &arena, &metadata, (verify, &recurrent.staging))?
         } else {
             self.capture_restores(lane_states, &checkpoints)?
         };
@@ -819,16 +783,3 @@ fn verify_lanes(
 #[cfg(test)]
 #[path = "../../tests/unit/resident_slot_verify.rs"]
 mod tests;
-
-#[cfg(test)]
-impl SlotVerifyGraph {
-    pub(crate) fn test_logit_rows(&self, device: &CudaDevice) -> Result<Vec<Vec<f32>>> {
-        let total = self.slots * self.verify;
-        let cols = self.logits.size() / total;
-        Ok(device
-            .read_borrowed(&self.logits)?
-            .chunks_exact(cols)
-            .map(<[f32]>::to_vec)
-            .collect())
-    }
-}

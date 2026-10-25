@@ -30,8 +30,6 @@ pub(super) enum CaptureMode {
     Batched,
     /// Serving slots retain one normalization policy when physical funding narrows the pool.
     Pooled,
-    /// Verification preserves the ordinary pool's policy for its logical slots.
-    Verification(usize),
     /// Contiguous prompt rows with [position, active rows, state offset, unused] metadata.
     Prefill,
     /// Prefill width 32 with a per-lane `(t, h, w)` rotary table instead of one base position.
@@ -39,16 +37,6 @@ pub(super) enum CaptureMode {
     /// Prefill width 32, one lane at a time: slots stay `[32, size]`, kernels
     /// with per-lane metadata or ordered state read and write single rows.
     Row(usize),
-}
-
-impl CaptureMode {
-    pub(super) const fn verification(canonical: bool, candidates: usize) -> Self {
-        if canonical {
-            Self::Verification(candidates)
-        } else {
-            Self::Batched
-        }
-    }
 }
 
 pub(super) struct Capture<'a> {
@@ -95,7 +83,6 @@ impl Capture<'_> {
             CaptureMode::Flat => identity(tensor),
             CaptureMode::Batched
             | CaptureMode::Pooled
-            | CaptureMode::Verification(_)
             | CaptureMode::Prefill
             | CaptureMode::PrefillRotary => tensor.view(&[tensor.size()]).map_err(error),
             CaptureMode::Row(lane) => self.arena.row(id, lane).map_err(error),
@@ -500,35 +487,20 @@ impl Capture<'_> {
         };
         #[cfg(test)]
         let options = super::gated_norm_discovery::model_options(dimension, gated, heads, options);
-        let logical_heads = match self.mode {
-            CaptureMode::Verification(candidates) => {
-                if candidates == 0 || !heads.is_multiple_of(candidates) {
-                    return Err(error("verification normalization geometry"));
-                }
-                heads / candidates
-            }
-            _ => heads,
-        };
         // Physical funding must not change the automatic target's arithmetic.
-        // Match the established full serving pool even when fewer slots fit; candidate
-        // lanes are not serving slots. The row kernel masks its final partial tile.
+        // Match the established full serving pool even when fewer slots fit.
+        // The row kernel masks its final partial tile.
         let normalization_heads = if self.weights.fusion.is_none()
             && self.weights.attention_profile.is_bf16()
-            && matches!(
-                self.mode,
-                CaptureMode::Pooled | CaptureMode::Verification(_)
-            ) {
-            let candidates = match self.mode {
-                CaptureMode::Verification(candidates) => candidates,
-                _ => 1,
-            };
-            let slots = self.arena.lanes() / candidates;
-            if slots == 0 || !logical_heads.is_multiple_of(slots) {
+            && self.mode == CaptureMode::Pooled
+        {
+            let slots = self.arena.lanes();
+            if slots == 0 || !heads.is_multiple_of(slots) {
                 return Err(error("pooled normalization geometry"));
             }
-            (logical_heads / slots) * CB_DECODE_SLOTS
+            (heads / slots) * CB_DECODE_SLOTS
         } else {
-            logical_heads
+            heads
         };
         if dimension.is_power_of_two()
             && dimension <= NORM_ROWS_MAX_DIMENSION
