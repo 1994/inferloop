@@ -1,6 +1,6 @@
 # Agent 工作指南
 
-本文件是 inference.rs 的统一 agent 入口，适用于整个仓库。修改或审查 Rust、Cargo、测试与性能代码前先读本文件；更具体的目录指引若存在，也要一并阅读。无需安装个人插件。
+本文件是 inferloop 的统一 agent 入口，适用于整个仓库。修改或审查 Rust、Cargo、测试与性能代码前先读本文件；更具体的目录指引若存在，也要一并阅读。无需安装个人插件。
 
 Rust 实践提炼自 [BeautifulRust](https://github.com/morganlinton/BeautifulRust/tree/4f1c0d1602bf75c9718ccea42879defb8bfe89f4)，按本项目的推理引擎约束做了取舍。**项目的架构契约、Cargo 配置和门禁优先于上游通用建议**。这里只维护 agent 工作规则，使用与架构细节仍查现有文档，不复制另一套。
 
