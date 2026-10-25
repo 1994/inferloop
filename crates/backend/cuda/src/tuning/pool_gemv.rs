@@ -129,9 +129,12 @@ pub(crate) fn select(
             update_table(super::table_path().as_deref(), |table| {
                 table.pool_gemv.retain(|old| {
                     !(old.device == entry.device
+                        && old.driver == entry.driver
+                        && old.kernel == entry.kernel
                         && old.rows == entry.rows
                         && old.columns == entry.columns
-                        && old.outputs == entry.outputs)
+                        && old.outputs == entry.outputs
+                        && old.weight_proof == entry.weight_proof)
                 });
                 table.pool_gemv.push(entry.clone());
             });
