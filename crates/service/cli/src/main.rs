@@ -4,7 +4,7 @@ mod backend;
 mod commands;
 mod constants;
 mod dispatch;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 mod host_quality;
 mod support;
 

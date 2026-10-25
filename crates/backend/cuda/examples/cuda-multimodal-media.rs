@@ -5,29 +5,29 @@
 //! pair, so a logit shift proves the extra media actually reaches the language model: the pair
 //! checks that both images occupy their own spans, the clip pair checks that timestamped
 //! temporal groups carry real motion instead of a repeated still.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use cutile::jit_cache::enable_default;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use infer_backend_cuda::loading::LoadedModel as LoadingLoadedModel;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use infer_backend_cuda::resident::DeviceProgram;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::env::args as env_args;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::env::var;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::error::Error as StdError;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::fs::read;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::ops::Range;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::path::Path;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::slice::from_ref;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::time::Instant;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn main() -> Result<(), Box<dyn StdError>> {
     use infer_backend_cuda::{
         device::CudaDevice,
@@ -90,11 +90,11 @@ fn main() -> Result<(), Box<dyn StdError>> {
 }
 
 /// Smallest logit shift that counts as the media reaching the model.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 const MINIMUM_SHIFT: f32 = 1e-3;
 
 /// Model package path and greedy budget from the command line.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn arguments() -> Result<(String, usize), Box<dyn StdError>> {
     use infer_core::Error;
 
@@ -112,7 +112,7 @@ fn arguments() -> Result<(String, usize), Box<dyn StdError>> {
 }
 
 /// Two images in one prompt, then the same images in the opposite order.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn multi_image_case(
     program: &mut DeviceProgram,
     loaded: &LoadingLoadedModel,
@@ -172,7 +172,7 @@ fn multi_image_case(
 }
 
 /// One clip forwards and backwards: identical tokens, different motion.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn video_case(
     program: &mut DeviceProgram,
     loaded: &LoadingLoadedModel,
@@ -236,7 +236,7 @@ fn video_case(
 }
 
 /// One completed run: its prompt, logits, greedy tokens and prefill time.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 struct Run {
     prepared: infer_models::PreparedPrompt,
     logits: Vec<f32>,
@@ -245,7 +245,7 @@ struct Run {
 }
 
 /// Encode every prepared media item, prefill once and decode greedily.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn run(
     program: &mut DeviceProgram,
     loaded: &LoadingLoadedModel,
@@ -286,13 +286,13 @@ fn run(
 }
 
 /// Number of prompt positions the prepared media occupies.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn media_tokens(prepared: &infer_models::PreparedPrompt) -> usize {
     prepared.spans.iter().map(Range::len).sum()
 }
 
 /// Largest absolute logit difference between two runs of the same token stream.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn logit_shift(left: &[f32], right: &[f32]) -> Result<f32, Box<dyn StdError>> {
     use infer_core::Error;
 
@@ -307,7 +307,7 @@ fn logit_shift(left: &[f32], right: &[f32]) -> Result<f32, Box<dyn StdError>> {
 }
 
 /// Deterministic RGB8 test image: a vertical or horizontal gradient.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn synthetic_image(kind: u8) -> infer_models::RawImage {
     /// Height of the synthetic test image, above the processor's patch floor.
     const HEIGHT: usize = 60;
@@ -337,7 +337,7 @@ fn synthetic_image(kind: u8) -> infer_models::RawImage {
 }
 
 /// A moving stripe: the frame index changes the stripe position and the background.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn synthetic_video() -> infer_models::RawVideo {
     /// Frames decoded from the synthetic clip.
     const FRAMES: usize = 8;
@@ -374,8 +374,10 @@ fn synthetic_video() -> infer_models::RawVideo {
     infer_models::RawVideo { fps: FPS, frames }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(cuda_backend))]
 fn main() {
+    use std::process::exit;
+
     eprintln!("CUDA multimodal checks require Linux");
-    std::process::exit(1);
+    exit(1);
 }

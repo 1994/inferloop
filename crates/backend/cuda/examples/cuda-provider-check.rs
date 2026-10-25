@@ -1,15 +1,17 @@
 //! Actual-model acceptance through the engine SPI, including request ownership checks.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::error::Error;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 #[path = "provider_check/mod.rs"]
 mod check;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn main() -> Result<(), Box<dyn Error>> {
     check::run()
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(cuda_backend))]
 fn main() {
+    use std::process::exit;
+
     eprintln!("CUDA provider check requires Linux");
-    std::process::exit(1);
+    exit(1);
 }

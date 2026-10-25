@@ -31,7 +31,11 @@ def rust_host():
 def planner():
     # Same build.rs is both Cargo's build script and the packaging contract.
     source = ROOT / "build.rs"
-    key = hashlib.sha256(source.read_bytes() + output(["rustc", "-vV"]).encode()).hexdigest()[:16]
+    key = hashlib.sha256(
+        source.read_bytes()
+        + (ROOT / "tools/build/backend_cfg.rs").read_bytes()
+        + output(["rustc", "-vV"]).encode()
+    ).hexdigest()[:16]
     binary = ROOT / "target/package" / f"build-contract-{key}"
     if not binary.exists():
         binary.parent.mkdir(parents=True, exist_ok=True)

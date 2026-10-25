@@ -2,13 +2,13 @@
 //!
 //! The text model is loaded alongside the tower, so this exercises the real binding path rather
 //! than a standalone weight map.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use cutile::jit_cache::enable_default;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::env::args as env_args;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::error::Error as StdError;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn main() -> Result<(), Box<dyn StdError>> {
     use infer_backend_cuda::{
         device::CudaDevice,
@@ -80,8 +80,10 @@ fn main() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(cuda_backend))]
 fn main() {
+    use std::process::exit;
+
     eprintln!("CUDA vision checks require Linux");
-    std::process::exit(1);
+    exit(1);
 }

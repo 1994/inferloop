@@ -1,19 +1,22 @@
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(cuda_backend)]
 mod cuda;
-#[cfg(target_os = "macos")]
+#[cfg(all(native_backend, not(cuda_backend)))]
+#[path = "cuda_unavailable.rs"]
+mod cuda;
+#[cfg(metal_backend)]
 mod metal;
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 mod selected;
-#[cfg(any(test, all(target_os = "linux", feature = "cuda")))]
+#[cfg(any(test, cuda_backend))]
 mod speculation;
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(cuda_backend)]
 use infer_backend_cuda::device::CudaDevice;
-#[cfg(any(test, target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(any(test, native_backend))]
 use infer_core::{Error, Result};
 use std::result::Result as ParseResult;
 use std::str::FromStr;
 
-#[cfg(any(target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(native_backend)]
 pub use selected::{SelectedBackend, load};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum BackendChoice {
@@ -56,7 +59,7 @@ pub enum CudaAttentionProfile {
 }
 impl CudaAttentionProfile {
     /// Stable startup-log name.
-    #[cfg(all(target_os = "linux", feature = "cuda"))]
+    #[cfg(cuda_backend)]
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -66,7 +69,7 @@ impl CudaAttentionProfile {
         }
     }
 }
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(cuda_backend)]
 impl From<CudaAttentionProfile> for infer_backend_cuda::AttentionProfile {
     fn from(value: CudaAttentionProfile) -> Self {
         match value {
@@ -76,31 +79,31 @@ impl From<CudaAttentionProfile> for infer_backend_cuda::AttentionProfile {
         }
     }
 }
-#[cfg(target_os = "macos")]
+#[cfg(metal_backend)]
 pub fn metal_available() -> bool {
     metal::available()
 }
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(metal_backend))]
 pub const fn metal_available() -> bool {
     false
 }
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(cuda_backend)]
 pub fn cuda_available() -> bool {
     CudaDevice::new(0).is_ok()
 }
-#[cfg(not(all(target_os = "linux", feature = "cuda")))]
+#[cfg(not(cuda_backend))]
 pub const fn cuda_available() -> bool {
     false
 }
 pub fn catalog() -> serde_json::Value {
     serde_json::json!({"primary_target":"cuda","supported":["cuda","metal"],"auto_priority":["cuda","metal"],
-        "cuda":{"implemented":cfg!(all(target_os="linux", feature="cuda")),"available":cuda_available(),"execution":"resident CUDA graphs, synchronous provider", "build_feature":"cuda"},
-        "metal":{"implemented":cfg!(target_os="macos"),"available":metal_available()},
+        "cuda":{"implemented":cfg!(cuda_backend),"available":cuda_available(),"execution":"resident CUDA graphs, synchronous provider", "build_feature":"cuda"},
+        "metal":{"implemented":cfg!(metal_backend),"available":metal_available()},
         "testing_backends":{"enabled":false,"supported_for_deployment":false}})
 }
 #[derive(Debug, Clone)]
 #[cfg_attr(
-    not(any(target_os = "macos", all(target_os = "linux", feature = "cuda"))),
+    not(native_backend),
     allow(
         dead_code,
         reason = "The portable CLI parses GPU allocation options even when no native execution backend is compiled"
@@ -123,7 +126,7 @@ pub struct Selection {
     /// Omitted execution options select a qualified pair or fall back to canonical/depth0.
     pub num_speculative_tokens: Option<SpeculativeTokens>,
     /// Explicit target attention profile; absence allows paired automatic selection.
-    #[cfg(all(target_os = "linux", feature = "cuda"))]
+    #[cfg(cuda_backend)]
     pub attention_profile: Option<CudaAttentionProfile>,
     pub gpu_memory_utilization: f64,
     /// Measure uncovered geometries; both modes reuse validated cached choices.
@@ -131,7 +134,7 @@ pub struct Selection {
     /// Serve text only (`--limit-mm-per-prompt` with every limit zero): skip the vision tower.
     pub text_only: bool,
 }
-#[cfg(any(test, target_os = "macos", all(target_os = "linux", feature = "cuda")))]
+#[cfg(any(test, native_backend))]
 fn resolve(
     choice: BackendChoice,
     cuda_available: bool,
@@ -154,5 +157,5 @@ fn resolve(
 #[path = "../../tests/unit/backend_mod.rs"]
 mod tests;
 
-#[cfg(any(test, all(target_os = "linux", feature = "cuda")))]
+#[cfg(any(test, cuda_backend))]
 mod defaults;

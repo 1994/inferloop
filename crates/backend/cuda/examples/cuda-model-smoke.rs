@@ -1,11 +1,11 @@
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use cutile::jit_cache::enable_default;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 use std::error::Error;
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 mod model_smoke;
 
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn main() -> Result<(), Box<dyn Error>> {
     use clap::Parser;
     use infer_models::{ChatMessage, ChatOptions, TextAssets};
@@ -75,8 +75,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(cuda_backend))]
 fn main() {
+    use std::process::exit;
+
     eprintln!("CUDA model diagnostics require Linux");
-    std::process::exit(1);
+    exit(1);
 }

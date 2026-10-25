@@ -1,15 +1,17 @@
 //! GPU numerical checks require Linux and an NVIDIA device.
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 #[path = "resident_checks/mod.rs"]
 mod checks;
 
-#[cfg(target_os = "linux")]
+#[cfg(cuda_backend)]
 fn main() -> infer_core::Result<()> {
     checks::run()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(cuda_backend))]
 fn main() {
+    use std::process::exit;
+
     eprintln!("CUDA resident checks require Linux");
-    std::process::exit(1);
+    exit(1);
 }
