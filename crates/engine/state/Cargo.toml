@@ -21,6 +21,7 @@ path = "tests/kv_manager.rs"
 workspace = true
 
 [dependencies]
+ahash.workspace = true
 infer-core.workspace = true
 infer-ir.workspace = true
 serde.workspace = true

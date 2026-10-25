@@ -9,6 +9,8 @@ rust_checks() {
     # Collect every bench module: the review found one of them was collected nowhere.
     python3 -m unittest discover -s tools/bench -p 'test_*.py'
     cargo fmt --manifest-path tools/bench/attention/Cargo.toml --check
+    cargo fmt --manifest-path tools/bench/containers/Cargo.toml --check
+    cargo clippy --locked --manifest-path tools/bench/containers/Cargo.toml --all-targets -- -D warnings
     # Collect every check module rather than naming one, for the same reason as tools/bench.
     python3 -m unittest discover -s tools/check -p 'test_*.py'
     python3 tools/check/layout.py

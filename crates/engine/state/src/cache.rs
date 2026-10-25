@@ -1,8 +1,9 @@
 //! Hash-chain block index and deterministic LRU. Values own device/host state;
 //! callers release their page leases when entries are evicted.
+use ahash::AHashMap;
 use infer_core::{Error, Result};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, collections::BTreeSet};
+use std::collections::BTreeSet;
 
 /// Byte length of the SHA-256 digest that chains cached token blocks.
 const SHA256_DIGEST_BYTES: usize = 32;
@@ -18,7 +19,8 @@ pub struct PrefixCache<V> {
     block_size: usize,
     budget: u64,
     max_entries: usize,
-    entries: BTreeMap<Hash, Entry<V>>,
+    // Chained digests need exact lookup only; the separate LRU index defines eviction order.
+    entries: AHashMap<Hash, Entry<V>>,
     lru: BTreeSet<(u64, Hash)>,
     clock: u64,
     bytes: u64,
@@ -42,7 +44,7 @@ impl<V> PrefixCache<V> {
             block_size,
             budget,
             max_entries,
-            entries: BTreeMap::new(),
+            entries: AHashMap::new(),
             lru: BTreeSet::new(),
             clock: 0,
             bytes: 0,
@@ -92,6 +94,7 @@ impl<V> PrefixCache<V> {
     pub const fn bytes(&self) -> u64 {
         self.bytes
     }
+    /// Cached values in arbitrary order; eviction order is maintained by the LRU index.
     pub fn values(&self) -> impl Iterator<Item = &V> {
         self.entries.values().map(|e| &e.value)
     }
@@ -229,3 +232,7 @@ impl<V> PrefixCache<V> {
         Ok(removed)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/cache.rs"]
+mod tests;

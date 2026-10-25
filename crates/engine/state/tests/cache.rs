@@ -148,3 +148,54 @@ fn independent_physical_pools_reject_matching_foreign_page_generations() -> Resu
     second.release(&right)?;
     Ok(())
 }
+
+#[test]
+fn cache_churn_matches_lru_oracle_across_hash_iteration_orders() {
+    use std::collections::VecDeque;
+    let mut cache = PrefixCache::new(b"churn", 2, 28, 7).unwrap();
+    let mut order = VecDeque::<(u32, u64)>::new();
+    let mut random = 42_u64;
+    for i in 0..10_000_u64 {
+        random = random
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        let key = u32::try_from(random % 19).unwrap();
+        let tokens = [key, key];
+        let position = order.iter().position(|(k, _)| *k == key);
+        if random & 128 == 0 {
+            let expected = position.map(|p| {
+                let entry = order.remove(p).unwrap();
+                order.push_back(entry);
+                entry.1
+            });
+            assert_eq!(cache.lookup(&tokens, 2), expected);
+        } else {
+            let mut expected = Vec::new();
+            if let Some(p) = position {
+                expected.push(order.remove(p).unwrap().1);
+            }
+            if order.len() == 7 {
+                expected.push(order.pop_front().unwrap().1);
+            }
+            order.push_back((key, i));
+            assert_eq!(cache.insert(tokens.to_vec(), i, 4).unwrap(), expected);
+        }
+        assert_eq!(cache.len(), order.len());
+        assert_eq!(cache.bytes(), order.len() as u64 * 4);
+        for key in 0..19 {
+            assert_eq!(
+                cache.contains(&[key, key]),
+                order.iter().any(|(k, _)| *k == key)
+            );
+        }
+        let mut values: Vec<_> = cache.values().copied().collect();
+        let mut expected: Vec<_> = order.iter().map(|(_, v)| *v).collect();
+        values.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(values, expected);
+    }
+    while let Some((_, value)) = order.pop_front() {
+        assert_eq!(cache.evict_oldest(), Some(value));
+    }
+    assert!(cache.evict_oldest().is_none());
+}
