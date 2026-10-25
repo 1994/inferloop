@@ -16,8 +16,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::tuning::prefill::narrow_dense_layout;
 const NARROW_DENSE_TILE: [usize; 2] = [PREFILL_LANES, 16];
-/// Output columns and reduction width of the GDN `in_proj_b`/`in_proj_a` pair.
-pub(super) const GDN_BA_SHAPE: [i32; 2] = [48, 5120];
 
 /// Down projection absorbing `silu(gate) * up`: node indices of the `SiLU` and multiply it
 /// replaces, then the gate and up tensors it reads.
@@ -425,13 +423,16 @@ pub(super) fn record(
     Ok(())
 }
 
-/// Record GDN `in_proj_b` + `in_proj_a` as one launch: both are Dense BF16 N48
-/// projections of the same normalized input. The pair kernel keeps each output's
-/// independent K accumulation order; only the launch (and the shared `x` load) is fused.
+/// Record a GDN `in_proj_b` + `in_proj_a` pair as one launch: both are dense BF16
+/// projections of the same input with equal output width. The caller establishes the
+/// semantic pair from the graph (the beta and alpha inputs of one `Delta` node); this
+/// function only validates projection/layout compatibility. The pair kernel keeps each
+/// output's independent K accumulation order; only the launch (and the shared `x` load)
+/// is fused.
 ///
 /// Returns false when either node would take a different path (narrow N16 layout,
-/// sparse experts, vendor GEMM, or unexpected shape). A 48x5120 weight is below
-/// the tuning policy's vendor threshold, so the vendor path is impossible for this shape.
+/// sparse experts, vendor GEMM, output width above one 64-column tile, or mismatched
+/// input/weight geometry).
 pub(super) fn record_pair(
     scope: &Scope,
     first: &TensorNode,
@@ -454,11 +455,19 @@ pub(super) fn record_pair(
     ) else {
         return Ok(false);
     };
-    if weight_b.shape() != GDN_BA_SHAPE || weight_a.shape() != weight_b.shape() {
+    let rows_b = usize::try_from(weight_b.shape()[0]).map_err(error)?;
+    let rows_a = usize::try_from(weight_a.shape()[0]).map_err(error)?;
+    let weight_columns = usize::try_from(weight_b.shape()[1]).map_err(error)?;
+    if rows_b == 0
+        || rows_b != rows_a
+        || rows_b > PREFILL_GEMM_TILE_N
+        || weight_columns == 0
+        || weight_a.shape()[1] != weight_b.shape()[1]
+    {
         return Ok(false);
     }
     let width = arena.lanes();
-    let expected = usize::try_from(GDN_BA_SHAPE[0]).map_err(error)? * width;
+    let expected = rows_b * width;
     let input_slot = arena.slot(first.inputs[0]).map_err(error)?;
     let input_elements = arena.buffers[input_slot]
         .as_ref()
@@ -466,17 +475,10 @@ pub(super) fn record_pair(
         .size();
     let columns = input_elements / width;
     if columns * width != input_elements
-        || columns != usize::try_from(GDN_BA_SHAPE[1]).map_err(error)?
+        || columns != weight_columns
         || arena.get(first.outputs[0]).map_err(error)?.size() != expected
         || arena.get(second.outputs[0]).map_err(error)?.size() != expected
-        || narrow_dense_layout(
-            &profile.architecture,
-            (
-                width,
-                usize::try_from(GDN_BA_SHAPE[0]).map_err(error)?,
-                columns,
-            ),
-        )
+        || narrow_dense_layout(&profile.architecture, (width, rows_b, columns))
     {
         return Ok(false);
     }
@@ -491,9 +493,8 @@ pub(super) fn record_pair(
     let output_a = arena.buffers[slot_a]
         .take()
         .ok_or_else(|| error("paired projection a output"))?;
-    let rows = usize::try_from(GDN_BA_SHAPE[0]).map_err(error)?;
-    let mut output_b = output_b.reshape(&[width, rows])?;
-    let mut output_a = output_a.reshape(&[width, rows])?;
+    let mut output_b = output_b.reshape(&[width, rows_b])?;
+    let mut output_a = output_a.reshape(&[width, rows_a])?;
     let flat_input = arena.buffers[input_slot]
         .as_ref()
         .ok_or_else(|| error("paired projection input"))?;

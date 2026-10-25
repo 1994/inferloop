@@ -466,6 +466,7 @@ impl DeviceProgram {
             lane_external_owner: Some(&self.lane_external_owner),
             lane_fusion: &mut self.lane_fusion,
             tables: from_ref(&self.table),
+            table_batch: None,
             capacity: self.capacity,
             width: weights.batch_width,
         };
@@ -758,6 +759,7 @@ impl DeviceProgram {
             lane_external_owner: Some(&lane_external_owner),
             lane_fusion: &mut lane_fusion,
             tables: from_ref(&table),
+            table_batch: None,
             capacity,
             width: weights.batch_width,
         };
