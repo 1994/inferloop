@@ -22,7 +22,7 @@ cargo clippy --locked --manifest-path tools/bench/containers/Cargo.toml --all-ta
   比较 std BTreeMap、bbtree、std HashMap + ahash、hashbrown + 同一 ahash、生产 BoundedMap。
   键生成、初始填充与 live-key 缓冲均在计时外。
 - PrefixCache 直接编译生产代码，覆盖单个 2-token block 与 128 tokens / 16-token block。
-  每次实际 lookup + LRU touch 或 contains，保留 SHA 链和 token 比较成本。
+  每次实际 lookup + LRU touch 或 contains，保留所测版本的指纹计算和 token 比较成本。
 - 相同场景比较 checksum，排序索引额外和标准库核对完整遍历与缺失键范围。
   分配、重分配、释放均包含在计时中；退出前的容器销毁不计入。
 - 构建与计时应串行。比较改动前后时使用同一工具源码、锁文件、编译器、profile 与 CPU，
@@ -33,4 +33,5 @@ cargo clippy --locked --manifest-path tools/bench/containers/Cargo.toml --all-ta
 默认编译选项不加 target-cpu=native；仅绑定逻辑 CPU，不关闭 SMT、睿频或桌面任务。
 测量噪声与硬件范围必须随结果说明，不能把 README 的宣传倍数当作项目实测。
 
-45 机器的结果、保留决策与证据见[容器评估](../../../docs/research/container-performance-2026-10-24.md)。
+45 机器的结果、保留决策与证据见[容器评估](../../../docs/research/container-performance-2026-10-24.md)
+与[前缀指纹评估](../../../docs/research/prefix-fingerprint-2026-10-24.md)。

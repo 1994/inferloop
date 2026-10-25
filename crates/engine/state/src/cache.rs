@@ -1,13 +1,14 @@
 //! Hash-chain block index and deterministic LRU. Values own device/host state;
 //! callers release their page leases when entries are evicted.
-use ahash::AHashMap;
+use ahash::{AHashMap, AHasher, RandomState};
 use infer_core::{Error, Result};
-use sha2::{Digest, Sha256};
+use std::array::from_fn;
 use std::collections::BTreeSet;
+use std::hash::{BuildHasher, Hash, Hasher};
 
-/// Byte length of the SHA-256 digest that chains cached token blocks.
-const SHA256_DIGEST_BYTES: usize = 32;
-type Hash = [u8; SHA256_DIGEST_BYTES];
+/// Independently seeded hash lanes keep the process-local prefix index at 128 bits.
+const FINGERPRINT_LANES: usize = 2;
+type Fingerprint = [u64; FINGERPRINT_LANES];
 struct Entry<V> {
     tokens: Vec<u32>,
     value: V,
@@ -15,13 +16,13 @@ struct Entry<V> {
     touched: u64,
 }
 pub struct PrefixCache<V> {
-    root: Hash,
+    root: [AHasher; FINGERPRINT_LANES],
     block_size: usize,
     budget: u64,
     max_entries: usize,
-    // Chained digests need exact lookup only; the separate LRU index defines eviction order.
-    entries: AHashMap<Hash, Entry<V>>,
-    lru: BTreeSet<(u64, Hash)>,
+    // Fingerprints select candidates; full token equality establishes identity on every hit.
+    entries: AHashMap<Fingerprint, Entry<V>>,
+    lru: BTreeSet<(u64, Fingerprint)>,
     clock: u64,
     bytes: u64,
     pub hits: u64,
@@ -35,12 +36,12 @@ impl<V> PrefixCache<V> {
         if binding.is_empty() || block_size == 0 || max_entries == 0 {
             return Err(Error::invalid("invalid prefix cache namespace/budget"));
         }
-        let mut digest = Sha256::new();
-        digest.update(b"kv-block-chain-v1");
-        digest.update(binding);
-        digest.update((block_size as u64).to_le_bytes());
+        let mut root: [AHasher; FINGERPRINT_LANES] = from_fn(|_| RandomState::new().build_hasher());
+        for hasher in &mut root {
+            ("kv-prefix-local-v1", binding, block_size).hash(hasher);
+        }
         Ok(Self {
-            root: digest.finalize().into(),
+            root,
             block_size,
             budget,
             max_entries,
@@ -53,17 +54,23 @@ impl<V> PrefixCache<V> {
             evictions: 0,
         })
     }
-    fn key(&self, tokens: &[u32]) -> Hash {
-        let mut parent = self.root;
-        for block in tokens.chunks(self.block_size) {
-            let mut hash = Sha256::new();
-            hash.update(parent);
-            for token in block {
-                hash.update(token.to_le_bytes());
+    // Both publication and lookup hash the same block boundaries. The state stays local to this
+    // instance: fingerprints are neither persisted nor used as proof of token identity.
+    fn keys(&self, tokens: &[u32]) -> impl Iterator<Item = (usize, Fingerprint)> {
+        let mut hashers = self.root.clone();
+        let mut length = 0;
+        tokens.chunks(self.block_size).map(move |block| {
+            length += block.len();
+            for hasher in &mut hashers {
+                block.hash(hasher);
             }
-            parent = hash.finalize().into();
-        }
-        parent
+            (length, hashers.each_ref().map(Hasher::finish))
+        })
+    }
+    fn key(&self, tokens: &[u32]) -> Fingerprint {
+        self.keys(tokens)
+            .last()
+            .map_or([0; FINGERPRINT_LANES], |(_, key)| key)
     }
     fn tick(&mut self) -> u64 {
         if self.clock == u64::MAX {
@@ -122,39 +129,26 @@ impl<V> PrefixCache<V> {
     ) -> usize {
         self.matched_prefix(tokens, maximum, compatible).0
     }
-    /// Longest cached block-aligned prefix of `tokens` bounded by `maximum`, paired with the
-    /// chained key that addresses it. Returning the key keeps the SHA-256 chain single-pass:
-    /// callers such as [`Self::lookup_where`] would otherwise rehash the matched prefix.
+    /// Longest cached block-aligned prefix paired with its process-local fingerprint. Hash
+    /// states advance once per block; exact token comparison guards every candidate hit.
     fn matched_prefix(
         &self,
         tokens: &[u32],
         maximum: usize,
         compatible: impl Fn(&V) -> bool,
-    ) -> (usize, Hash) {
-        let mut parent = self.root;
-        let mut matched = 0;
-        let mut matched_key = self.root;
-        for (i, block) in tokens.chunks_exact(self.block_size).enumerate() {
-            let length = (i + 1) * self.block_size;
-            if length > maximum {
-                break;
-            }
-            let mut hash = Sha256::new();
-            hash.update(parent);
-            for t in block {
-                hash.update(t.to_le_bytes());
-            }
-            parent = hash.finalize().into();
+    ) -> (usize, Fingerprint) {
+        let end = tokens.len().min(maximum) / self.block_size * self.block_size;
+        let mut matched = (0, [0; FINGERPRINT_LANES]);
+        for (length, key) in self.keys(&tokens[..end]) {
             if self
                 .entries
-                .get(&parent)
+                .get(&key)
                 .is_some_and(|e| e.tokens == tokens[..length] && compatible(&e.value))
             {
-                matched = length;
-                matched_key = parent;
+                matched = (length, key);
             }
         }
-        (matched, matched_key)
+        matched
     }
     pub fn lookup(&mut self, tokens: &[u32], maximum: usize) -> Option<V>
     where
