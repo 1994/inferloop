@@ -20,26 +20,23 @@ const STAGING_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Query, key and value packed into one checkpoint projection.
 const QKV: usize = 3;
-/// Alignment of the compact per-head half tile.
-const HALF_TILE_MULTIPLE: usize = 16;
-
 /// Vision GEMM column tile; padded widths are multiples of it.
 const COLUMN_MULTIPLE: usize = 64;
 
 /// Each prepared attention, MLP or merger group replaces two weight/bias pairs in the inventory.
 const PREPARED_SLOTS: usize = 4;
 
-/// Half-head tile width: the real half head rounded up to a 16-lane tile.
+/// Half-head tile width: the real half head rounded up to a power-of-two tile.
 ///
-/// Projection matrices are addressed by the 64-column GEMM tile over the whole projection,
-/// which stays a multiple of 64; the per-head split can therefore use a 16-multiple half tile.
+/// The installed cuTile attention/RoPE partition views require power-of-two tile extents. A
+/// 72-wide head therefore uses 64/128 until a compact 48/96 kernel is device-validated.
 pub fn half_tile(encoder: &ModalityEncoder) -> Result<usize> {
     let head = head_dim(encoder)?;
     if head < 2 || !head.is_multiple_of(2) {
         return Err(Error::invalid("encoder head width must be even"));
     }
     (head / 2)
-        .checked_next_multiple_of(HALF_TILE_MULTIPLE)
+        .checked_next_power_of_two()
         .ok_or_else(|| Error::invalid("encoder half-head overflow"))
 }
 

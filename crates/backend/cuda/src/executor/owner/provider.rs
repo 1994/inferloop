@@ -126,7 +126,7 @@ impl BackendProvider for CudaBackend {
         readout: OutputReadout,
     ) -> Result<()> {
         self.control(|executor| {
-            executor.reserve(state, capacity, readout, false)?;
+            executor.reserve_media(state, capacity, readout)?;
             if let Err(error) = executor.prepare_execution() {
                 executor.release(state)?;
                 return Err(error);

@@ -36,7 +36,8 @@ impl CudaExecutor {
         capacity: usize,
         readout: OutputReadout,
     ) -> Result<Option<u64>> {
-        let private = self.private_verification_for(capacity, readout, false);
+        // Media prefill bypasses slot/home programs, so its quote is the private path.
+        let private = true;
         self.reservation_budget(capacity, readout, private)
             .map(Some)
     }

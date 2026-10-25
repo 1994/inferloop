@@ -156,6 +156,9 @@ impl MediaService {
                 return Err(Error::unsupported("unsupported media modality"));
             }
         };
+        tracing::debug!(target: "infer::media", prompt_tokens = prepared.tokens.len(), tokens = ?prepared.tokens,
+            spans = ?prepared.spans, grids = ?prepared.images.iter().map(|image| image.grid).collect::<Vec<_>>(),
+            "prepared HTTP media");
         if prepared.images.is_empty() || prepared.images.len() != prepared.spans.len() {
             return Err(Error::invalid(
                 "prepared media is empty or has inconsistent spans",

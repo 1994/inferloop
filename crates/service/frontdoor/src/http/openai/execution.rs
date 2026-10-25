@@ -144,6 +144,16 @@ fn chat_media(
     if !media.is_empty() && state.media.is_none() {
         return Err(Error::unsupported("this deployment is text-only"));
     }
+    if let Some(service) = &state.media
+        && let Some(first) = media.first()
+        && media
+            .iter()
+            .all(|request| request.modality == first.modality)
+    {
+        // Reject an over-limit item count before reserving one staging credit per item; the
+        // normal ingress budget error would otherwise mask the actual media-limit violation.
+        service.limits().check(&first.modality, media.len())?;
+    }
     let bytes = media.len().saturating_mul(MEDIA_STAGING_BYTES);
     Ok((messages, media, bytes))
 }
@@ -315,6 +325,7 @@ async fn response(
         return Err(Error::invariant("generation completed without tokens").into());
     };
     let completion_tokens = tokens.len();
+    tracing::debug!(target: "infer::openai", request = result.request.get(), ?tokens, "generated completion token ids");
     let assets = state.assets.clone();
     let text = state
         .delivery

@@ -1289,13 +1289,16 @@ impl Sequence {
             ));
         }
         let hidden = loaded.model().hidden_size;
+        tracing::debug!(target: "infer::executor", prompt_len, tokens = tokens.len(), width,
+            bases = ?media.bases, spans = ?plan.items.iter().map(|item| item.span.clone()).collect::<Vec<_>>(),
+            "running CUDA media prefill");
         let mut offset = 0usize;
         let mut logits = Vec::new();
         while offset < tokens.len() {
             let count = width.min(tokens.len() - offset);
             let position = self.history.len() + offset;
-            let last = offset + count == tokens.len();
             let chunk = &tokens[offset..offset + count];
+            let last = self.history.len() + offset + count == prompt_len;
             let mut rows = Vec::new();
             for (index, item) in plan.items.iter().enumerate() {
                 let start = item.span.start.max(position);
@@ -1324,6 +1327,8 @@ impl Sequence {
                     last,
                 )
                 .await?;
+            tracing::debug!(target: "infer::executor", last, position, count, rows = output.len(),
+                last_logits = output.last().map(|(_, row)| row.len()), "media chunk output");
             if last {
                 logits = output
                     .into_iter()
@@ -1372,6 +1377,9 @@ impl Sequence {
             data.extend(encoded);
         }
         let rows = data.len() / hidden;
+        tracing::debug!(target: "infer::executor", rows, bases = ?bases,
+            spans = ?layout.spans, positions = layout.positions.as_ref().map(Vec::len),
+            "prepared CUDA media embeddings");
         let tensor = loaded.device().upload(data, &[rows, hidden])?;
         self.media = Some(CachedMedia {
             tensor,

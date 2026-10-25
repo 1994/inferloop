@@ -29,51 +29,12 @@ OpenAI chat 的 `image_url` / `video_url` 内容部分现在进入真实 serving
 
 `cuda-multimodal-generate` / `cuda-multimodal-media` / `cuda-parity-2b` 仍是独立数值/示例入口。音频与完整 DeepStack 路径不在此验收范围：Qwen3-VL 没有音频模态，Qwen Omni 也未被 provider 导入；带 `deepstack_visual_indexes` 的权重仍按共享路径验收（双方关闭 DeepStack）。
 
-## Head-width padding
+## Head-width padding (OPEN)
 
-视觉投影仍以 64 列 tile 读取权重；**整个投影宽度**保持 64 的倍数即可，per-head 的 split-half tile 可以按 16 的倍数压缩。Qwen3.8-27B 的 72 宽 head 现在使用 `half=48`、`width=96`，16 个 head 的总投影宽度 `1536` 仍是 64 的倍数，原有 64 列投影 kernel 与 split-half/RoPE 顺序不变。24 层 attention 权重的 host-only 实测为：
+视觉投影以 64 列 tile 读取权重。Qwen3.8-27B 的真实 head 宽为 72，vision depth 为 27。曾尝试 `half=48` / `width=96` 的 compact 布局；host 布局与 cuTile `KernelCompiler` 编译通过，但实际 27B CUDA 运行在
+`cuda_tile.make_partition_view` 处拒绝非 2 次幂 tile，compact 路径不能用于生产。当前生产回退到已验证的
+`half=64` / `width=128`，因此**实际 retained 减少为 0**，不能声称 113,246,208 bytes 的减少。
 
-```text
-real     254,803,968 bytes
-padded   339,738,624 bytes
-overhead  84,934,656 bytes   (BF16, weights only)
-```
-
-相对旧的 `half=64/width=128` 布局，overhead 减少 `113,246,208` bytes（约 56.9%）。compact half 布局的映射测试见 `crates/backend/cuda/tests/unit/vision_padding.rs`，保留每半 real lanes 在前、padding lanes 在后的顺序。该布局的 GPU 数值、尾块和性能验收仍 pending；在设备验收前不声称已完成 #59 的 padding 项。
-
-
-## 独立参考与回归
-
-| 入口 | 用途 |
-|---|---|
-| `tools/vision/qwen3vl_vision_reference.py` | 官方模型逐层视觉 golden；默认 CPU/F32，GPU F32 禁用 TF32 |
-| `cuda-vision-check` | tower / merger 数值、形状与有限值校验 |
-| `cuda-loaded-vision-check` | 加载真实权重后的视觉编码 |
-| `vision::attention_check` | 独立 F32 oracle、尾块、帧隔离与投影残差 |
-| `tools/vision/qwen3vl_2b_parity_reference.py` / `cuda-parity-2b` | 本仓库预处理到完整生成序列的对照 |
-| `tools/vision/qwen3vl_video_golden.py` | 官方 video processor 的抽帧、缩放、时间 patch 与归一化 golden |
-| `cuda-multimodal-media` | 单 prompt 双图与多帧视频：正/反顺序的 logits 位移与融合分块 prefill |
-| `tools/vision/serve_media_fixtures.py` | 冻结 serving 图像/视频 fixture：逐帧 sha256、FFV1 无损 roundtrip、fps/尺寸/prompt metadata |
-
-```sh
-bash tools/bench/safe-run.sh --memory-gib 8 \
-  cargo test --locked -p infer-backend-cuda --features cuda --lib \
-  vision::attention_check -- --ignored
-bash tools/bench/safe-run.sh cargo run --locked --release \
-  -p infer-backend-cuda --features cuda --example cuda-multimodal-media -- \
-  /path/to/model 6
-```
-
-端到端参考先通过 `safe-run.sh` 运行 Python 工具，传入 `--package /path/to/model --dtype float32 --max-new-tokens 32 --out /path/to/reference.safetensors`，再运行：
-
-```sh
-bash tools/bench/safe-run.sh cargo run --locked --release \
-  -p infer-backend-cuda --features cuda --example cuda-parity-2b -- \
-  /path/to/model /path/to/reference.safetensors
-```
-
-2B 对照要求双方关闭 DeepStack：参考端同时清空 config 和已构造视觉模块的 `deepstack_visual_indexes`，并断言无 DeepStack features。贪心验证要求完整参考序列匹配、视觉误差 ≤1%；`INFER_PARITY_OFFICIAL_PIXELS=1` 只用于隔离内核诊断，正式验收使用本仓库预处理。
-
-已记录的共享路径样本为 95 个 prompt tokens、16/16 生成 tokens（含 EOS）匹配，视觉相对误差 3.232e-4。这不等于完整发布版模型或所有输入通过。复测应包含非方形、多帧、长图像、MRoPE decode 和 EOS。
-
-单层数值、完整视觉塔和端到端生成分别验收。Attention 性能使用 [Candle 门禁](quality-gates.md#通用-attention-门禁)，不把自动选择的 SDPA 后端当作固定实现基线。
+按 27 层 attention 权重的 host 记账，compact96 的潜在减少是 `127,401,984` bytes（`113,246,208`
+是 24 层数字，不适用于该 checkpoint）。要关闭 #59 padding，需要实现并设备验证非 2 次幂
+RoPE/attention tiling（含 48/96 tail），保持现有 split-half/RoPE 顺序和数值门禁；当前 item 仍 OPEN。

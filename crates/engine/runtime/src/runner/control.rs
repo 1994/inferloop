@@ -60,6 +60,9 @@ where
     fn weight_backed_dataflow(&self) -> bool {
         self.weight_backed
     }
+    fn supports_multimodal(&self) -> bool {
+        self.multimodal.supported()
+    }
     fn capabilities(&self) -> DeviceCapabilities {
         self.capabilities.clone()
     }

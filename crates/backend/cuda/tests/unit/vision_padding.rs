@@ -30,31 +30,16 @@ fn encoder() -> ModalityEncoder {
 }
 
 #[test]
-fn head_width_72_uses_a_compact_16_multiple_half_tile() {
+fn head_width_72_uses_the_device_valid_power_of_two_half_tile() {
     let encoder = encoder();
     let head = encoder.hidden_size / encoder.heads;
     assert_eq!(head, 72);
     let half = super::weights::half_tile(&encoder).expect("half tile");
     let width = half * 2;
-    assert_eq!(half, 48);
-    assert_eq!(width, 96);
-    assert_eq!(width % 16, 0);
+    assert_eq!(half, 64);
+    assert_eq!(width, 128);
+    assert_eq!(width.next_power_of_two(), width);
     assert_eq!((encoder.heads * width) % super::program::column_tile(), 0);
-
-    let real_rows = u64::try_from(encoder.heads * head).expect("rows");
-    let padded_rows = u64::try_from(encoder.heads * width).expect("padded rows");
-    let hidden = u64::try_from(encoder.hidden_size).expect("hidden");
-    let depth = u64::try_from(encoder.depth).expect("depth");
-    let bytes = 2u64;
-    let real = (3 * real_rows * hidden + hidden * real_rows) * bytes * depth;
-    let padded = (3 * padded_rows * hidden + hidden * padded_rows) * bytes * depth;
-    let overhead = padded - real;
-    assert_eq!(real, 254_803_968);
-    assert_eq!(padded, 339_738_624);
-    assert_eq!(overhead, 84_934_656);
-    eprintln!(
-        "vision head padding: real={real} padded={padded} overhead={overhead} bytes (depth={depth}, width={width})"
-    );
 }
 
 #[test]

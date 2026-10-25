@@ -183,6 +183,28 @@ impl CudaExecutor {
         readout: OutputReadout,
         allow_speculation: bool,
     ) -> Result<()> {
+        self.reserve_inner(id, capacity, readout, allow_speculation, true)
+    }
+
+    /// Media prefill owns external per-lane embeddings; a slot/home program is not a valid
+    /// substitute for the private prompt program. Reserve the private path directly.
+    pub(super) fn reserve_media(
+        &mut self,
+        id: StateId,
+        capacity: usize,
+        readout: OutputReadout,
+    ) -> Result<()> {
+        self.reserve_inner(id, capacity, readout, false, false)
+    }
+
+    fn reserve_inner(
+        &mut self,
+        id: StateId,
+        capacity: usize,
+        readout: OutputReadout,
+        allow_speculation: bool,
+        allow_home: bool,
+    ) -> Result<()> {
         self.idle()?;
         if self.states.contains_key(&id) {
             return Err(Error::new(
@@ -192,11 +214,14 @@ impl CudaExecutor {
         }
         self.restore_slot_pool_for(capacity, readout)?;
         self.prepare_reservation_for(capacity, readout)?;
-        if self.reserve_home(id, capacity, readout, allow_speculation)? {
+        if allow_home && self.reserve_home(id, capacity, readout, allow_speculation)? {
             return Ok(());
         }
-        let private_verification =
-            self.private_verification_for(capacity, readout, allow_speculation);
+        let private_verification = if allow_home {
+            self.private_verification_for(capacity, readout, allow_speculation)
+        } else {
+            true
+        };
         let budget = self.reservation_budget(capacity, readout, private_verification)?;
         if self.states.len() >= self.maximum_states
             || self
