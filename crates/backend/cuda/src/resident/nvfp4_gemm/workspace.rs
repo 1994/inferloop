@@ -234,6 +234,10 @@ impl Workspace {
         key: (&str, usize, usize, usize, usize, u64),
     ) -> Result<bool> {
         #[cfg(test)]
+        if DISABLE_SPLIT.with(Cell::get) {
+            return Ok(false);
+        }
+        #[cfg(test)]
         if FORCE_SPLIT.with(Cell::get) {
             return Ok(true);
         }
@@ -888,6 +892,8 @@ impl Workspace {
                         split.plan.splits.to_string(),
                     ]),
                 )?;
+                #[cfg(test)]
+                SPLIT_RECORDS.set(SPLIT_RECORDS.get() + 1);
                 return Ok(());
             }
             let config = strategies
@@ -1186,6 +1192,8 @@ fn vendor_diagnostic_enabled() -> bool {
 #[cfg(test)]
 thread_local! {
     static FORCE_SPLIT: Cell<bool> = const { Cell::new(false) };
+    static DISABLE_SPLIT: Cell<bool> = const { Cell::new(false) };
+    static SPLIT_RECORDS: Cell<usize> = const { Cell::new(0) };
 }
 #[cfg(test)]
 pub(super) fn forced_split() -> bool {
@@ -1201,4 +1209,24 @@ pub(super) fn with_forced_split<T>(run: impl FnOnce() -> T) -> T {
     }
     let _restore = Restore(FORCE_SPLIT.replace(true));
     run()
+}
+
+#[cfg(test)]
+pub(super) fn with_disabled_split<T>(run: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            DISABLE_SPLIT.set(self.0);
+        }
+    }
+    let _restore = Restore(DISABLE_SPLIT.replace(true));
+    run()
+}
+#[cfg(test)]
+pub(super) fn reset_split_records() {
+    SPLIT_RECORDS.set(0);
+}
+#[cfg(test)]
+pub(super) fn split_records() -> usize {
+    SPLIT_RECORDS.get()
 }

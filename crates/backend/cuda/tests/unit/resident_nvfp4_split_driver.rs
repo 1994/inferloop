@@ -504,7 +504,9 @@ fn real_checkpoint_down_split_candidate_measurement() -> Result<(), Box<dyn StdE
 #[ignore = "real 27B checkpoint, CUDA, release and protected runner required"]
 fn captured_workspace_nvfp4_real_weight_split() -> Result<(), Box<dyn StdError>> {
     use super::Workspace;
-    use super::workspace::with_forced_split;
+    use super::workspace::{
+        reset_split_records, split_records, with_disabled_split, with_forced_split,
+    };
     use crate::resident::ProgramGeometry;
 
     if cfg!(debug_assertions) {
@@ -524,12 +526,6 @@ fn captured_workspace_nvfp4_real_weight_split() -> Result<(), Box<dyn StdError>>
         },
     )?;
     let down = choose_down(&loaded)?;
-    let node = loaded
-        .graph()
-        .nodes
-        .iter()
-        .find(|node| node.inputs.get(1) == Some(&down.weight_id))
-        .ok_or_else(|| Error::invalid("down node missing"))?;
     let scale = *loaded
         .weights()
         .input_scales
@@ -539,14 +535,16 @@ fn captured_workspace_nvfp4_real_weight_split() -> Result<(), Box<dyn StdError>>
         verification: ROWS,
         prompts: [0, 0],
     };
-    let mut exact_workspace =
-        Workspace::program(&device, loaded.graph(), loaded.weights(), geometry)?;
+    let mut exact_workspace = with_disabled_split(|| {
+        Workspace::program(&device, loaded.graph(), loaded.weights(), geometry)
+    })?;
     let mut split_workspace = with_forced_split(|| {
         Workspace::program(&device, loaded.graph(), loaded.weights(), geometry)
     })?;
     if exact_workspace.split_plan_count() != 0 {
         return Err("exact workspace unexpectedly retained a split".into());
     }
+    reset_split_records();
     if split_workspace.split_plan_count() == 0 {
         return Err("forced workspace did not retain a split".into());
     }
@@ -577,7 +575,14 @@ fn captured_workspace_nvfp4_real_weight_split() -> Result<(), Box<dyn StdError>>
         graph
     };
     let exact_graph = capture(&mut exact_workspace, &mut exact)?;
+    if split_records() != 0 {
+        return Err("exact capture recorded a split dispatch".into());
+    }
+    reset_split_records();
     let split_graph = capture(&mut split_workspace, &mut split)?;
+    if split_records() == 0 {
+        return Err("candidate capture did not dispatch a split".into());
+    }
     exact_graph.launch().sync_on(&device.stream)?;
     split_graph.launch().sync_on(&device.stream)?;
     measure_captured(
@@ -593,6 +598,5 @@ fn captured_workspace_nvfp4_real_weight_split() -> Result<(), Box<dyn StdError>>
             split_plans: split_workspace.split_plan_count(),
         },
     )?;
-    let _ = node;
     Ok(())
 }
