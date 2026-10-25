@@ -3505,27 +3505,27 @@
   "committed_reproduction_files": [
     {
       "file": "cuda-nonblocking-2026-10-25/README.md",
-      "sha256": "75614b48e441e34e2535463fb425147b39983a2d281f991951312a1c7d55c4cb"
+      "sha256": "62cd1235f03bf97f5aca3e436ca03c547b43b1d308ccd5b7b4591f24efc4fb39"
     },
     {
       "file": "cuda-nonblocking-2026-10-25/inputs-27b-mtp0-async.json",
-      "sha256": "adce2fd0345e8a4180e605f2cde3f5cf8360897e3d7b8a32237bbebe90301566"
+      "sha256": "d85e5fc5ed3f238e9a2c84cd246c0e4a802af23b8b0521604e9e027d3331c2cd"
     },
     {
       "file": "cuda-nonblocking-2026-10-25/inputs-27b-mtp0-private-decode-async.json",
-      "sha256": "9e0f2944e97e7b5e5008f43d5e11b7742bef0eee40d6e341409dde0bdfe09725"
+      "sha256": "b16eedff28c1137fe0a1f6f263434fa26ee250b106db1b3479a3527efeec048f"
     },
     {
       "file": "cuda-nonblocking-2026-10-25/inputs-27b-mtp2-async.json",
-      "sha256": "adce2fd0345e8a4180e605f2cde3f5cf8360897e3d7b8a32237bbebe90301566"
+      "sha256": "d85e5fc5ed3f238e9a2c84cd246c0e4a802af23b8b0521604e9e027d3331c2cd"
     },
     {
       "file": "cuda-nonblocking-2026-10-25/inputs-27b-mtp2-private-decode-async.json",
-      "sha256": "9e0f2944e97e7b5e5008f43d5e11b7742bef0eee40d6e341409dde0bdfe09725"
+      "sha256": "b16eedff28c1137fe0a1f6f263434fa26ee250b106db1b3479a3527efeec048f"
     },
     {
       "file": "cuda-nonblocking-2026-10-25/inputs-2b-async.json",
-      "sha256": "73a805d12342aba70b8535778304e106b9591e573b91ef6690795bbfd1c05bd6"
+      "sha256": "9331f3217b9d0c966535b3746aacf47ea1d0c1f2c7a8e4bb25ce0cd8cd402433"
     },
     {
       "file": "cuda-nonblocking-2026-10-25/paired-plan.json",

@@ -6,8 +6,7 @@ This is comparison evidence, not a certified stable serving baseline. See the [r
 all ten permitted pairs. Do not discard slow pairs or treat missing EOS TPOT as zero.
 
 The runners are snapshots of the experiment scripts. They use the persistent directory
-`/home/r/benchmarks/inferloop/cuda-nonblocking-v1` on host `45`. Its `inputs/` contains these
-byte-identical profile/input files and the frozen `tuning.json` (SHA256
+`/home/r/benchmarks/inferloop/cuda-nonblocking-v1` on host `45`. Its `inputs/` contains the original profile/input files and the frozen `tuning.json` (SHA256
 `9d89a4e2333ad5903789eb06bf3e8a86f3276b189888fa5f85a6a59fbbd7e2f6`).
 The table is retained there, rather than copied into this source archive. Its existing
 environment selector fixes tuning for comparison; it does not activate async execution.
@@ -49,6 +48,6 @@ python3 summarize.py --root /home/r/benchmarks/inferloop/cuda-nonblocking-v1 --t
 The sibling JSON indexes every raw report/telemetry hash and all per-case ratios,
 intervals, unavailable metrics, finite-sample p95 counts, startup and sampled memory.
 Raw reports contain the full requested output and effective build/model/hardware identity.
-The committed input/profile files preserve the experiment; the old historical baseline
+Committed input JSON uses compact whitespace; normalized workload hashes and all token values match the original files. Profile bytes are unchanged. The committed input/profile files preserve the experiment; the old historical baseline
 profiles were not modified. These samples do not establish continuous-load SLOs, production
 P99, cross-GPU performance or full configured sixteen-sequence memory capacity.
