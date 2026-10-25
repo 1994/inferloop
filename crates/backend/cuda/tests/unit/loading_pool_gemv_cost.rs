@@ -2,6 +2,7 @@ use super::{LoadOptions, LoadedModel};
 use crate::constants::SMALL_GEMM_TILE;
 use crate::kernels::linear::dense;
 use crate::strategy::LinearTiling;
+use crate::tuning::pool_gemv::select as select_pool_gemv;
 use crate::{
     device::CudaDevice,
     mlp::ProjectionWeight,
@@ -278,5 +279,56 @@ fn checkpoint_row_gemv_bits_and_cost() -> TestResult {
     for rows in [1, 2, 3, 4, 8, 16, 18, 36, 48, 144] {
         run_group(&loaded, rows)?;
     }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires CUDA/checkpoint/safe-run; actual Dense weights drive the production crossover tuner"]
+fn checkpoint_pool_gemv_tuner_uses_actual_weights() -> TestResult {
+    CudaDevice::enable_kernel_cache()?;
+    let model = var("INFER_TEST_MODEL").map_err(|e| Error::invalid(e.to_string()))?;
+    let loaded = LoadedModel::open(
+        CudaDevice::new(0)?,
+        model,
+        ModelId::ONE,
+        LoadOptions {
+            autotune: true,
+            mtp_depth: 0,
+            prefill_width: 64,
+            ..LoadOptions::default()
+        },
+    )?;
+    let mut seen = 0usize;
+    for rows in [1, 3, 16, 18] {
+        for (id, projection) in &loaded.weights.projections {
+            let ProjectionWeight::Dense(weight) = projection else {
+                continue;
+            };
+            let n = usize::try_from(weight.shape()[0])?;
+            let k = usize::try_from(weight.shape()[1])?;
+            if n > 128 || k < 4096 {
+                continue;
+            }
+            let tile = loaded
+                .weights
+                .tiling
+                .get(id)
+                .copied()
+                .ok_or("private tiling")?;
+            let _choice = select_pool_gemv(
+                loaded.device(),
+                projection,
+                (rows, k, n),
+                tile,
+                true,
+                &loaded.weights.resident_tuning,
+            )?;
+            seen += 1;
+        }
+    }
+    assert!(
+        seen > 0,
+        "real checkpoint exposed no eligible Dense projections"
+    );
     Ok(())
 }

@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 341
+      "tests": 342
     },
     "frontdoor": {
       "benches": 0,
@@ -204,6 +204,7 @@
     "requires CUDA/checkpoint/frozen511tokens/safe-run; complete model output and state equivalence": 2,
     "requires CUDA/checkpoint/frozen511tokens/safe-run; original private versus default pool full-model bits": 1,
     "requires CUDA/checkpoint/release/safe-run; CI first, original frozen tile; projection-only cost diagnostic": 1,
+    "requires CUDA/checkpoint/safe-run; actual Dense weights drive the production crossover tuner": 1,
     "requires CUDA/checkpoint/safe-run; actual pool inactive/reactivate/rebind full states": 1,
     "requires CUDA/checkpoint/safe-run; all96 real small weights, original private GEMV bits": 1,
     "requires CUDA/checkpoint/safe-run; full states/logits/hidden before service timing": 1,
@@ -1253,11 +1254,11 @@
     }
   ],
   "totals": {
-    "all": 885,
+    "all": 886,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 885
+    "tests": 886
   }
 }
