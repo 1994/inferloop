@@ -1,0 +1,476 @@
+{
+  "schema": 1,
+  "scope": "Read-only audit of every original five-pair prefix0 report; no new timing samples, no dropped pairs, no revised original gate.",
+  "source_revision": "a582e6004a2d2f3d11f12319a1fb3e6d029e70fc",
+  "integration_revision": "19b7df7",
+  "findings": [
+    "The first three process pairs have different accepted slot widths and physical KV token capacities.",
+    "runtime kv_cache.pool_bytes represents logical slot capacity, not measured physical GPU allocation.",
+    "Take the last accepted capture: logs include preparation/tuning and actual serving model loads.",
+    "The final two resource-matched pairs are descriptive only; selecting them cannot qualify the candidate.",
+    "Original statistical gate remains not_demonstrated; its five-pair effects cannot isolate attention arithmetic under a fixed-resource claim."
+  ],
+  "pairs": [
+    {
+      "pair": 0,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "baseline": {
+        "final_serving_capture": {
+          "width": 4,
+          "capacity": 8192,
+          "quoted_bytes": 3384849456,
+          "allocated_bytes": 4184529176,
+          "envelope_bytes": 4493738323,
+          "kv_tokens": 20512,
+          "prompt_width": 1024
+        },
+        "successful_captures_in_log": 2,
+        "logical_pool_bytes": 1073741824
+      },
+      "candidate": {
+        "final_serving_capture": {
+          "width": 7,
+          "capacity": 8192,
+          "quoted_bytes": 4515473252,
+          "allocated_bytes": 4376008516,
+          "envelope_bytes": 4515955027,
+          "kv_tokens": 35744,
+          "prompt_width": 1024
+        },
+        "successful_captures_in_log": 2,
+        "logical_pool_bytes": 1879048192
+      },
+      "same_final_plan": false,
+      "original_metrics": [
+        {
+          "case": "c16",
+          "metric": "wall_seconds",
+          "available": true,
+          "samples": [
+            3,
+            3
+          ],
+          "baseline": 20.892925576,
+          "candidate": 18.15483176,
+          "ratio": 0.8689463662692942,
+          "passed": true
+        },
+        {
+          "case": "c16",
+          "metric": "ttft_seconds",
+          "available": true,
+          "samples": [
+            48,
+            48
+          ],
+          "baseline": 9.360332649000156,
+          "candidate": 7.851498970499961,
+          "ratio": 0.8388055494308352,
+          "passed": true
+        },
+        {
+          "case": "c16",
+          "metric": "tpot_seconds",
+          "available": true,
+          "samples": [
+            48,
+            48
+          ],
+          "baseline": 0.014972783950980003,
+          "candidate": 0.022806709223530064,
+          "ratio": 1.5232110005859874,
+          "passed": false
+        }
+      ]
+    },
+    {
+      "pair": 1,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "baseline": {
+        "final_serving_capture": {
+          "width": 7,
+          "capacity": 8192,
+          "quoted_bytes": 4608796516,
+          "allocated_bytes": 4572115012,
+          "envelope_bytes": 4609343827,
+          "kv_tokens": 38592,
+          "prompt_width": 1024
+        },
+        "successful_captures_in_log": 2,
+        "logical_pool_bytes": 1879048192
+      },
+      "candidate": {
+        "final_serving_capture": {
+          "width": 4,
+          "capacity": 8192,
+          "quoted_bytes": 3518018608,
+          "allocated_bytes": 3996768536,
+          "envelope_bytes": 4492689747,
+          "kv_tokens": 24576,
+          "prompt_width": 1024
+        },
+        "successful_captures_in_log": 2,
+        "logical_pool_bytes": 1073741824
+      },
+      "same_final_plan": false,
+      "original_metrics": [
+        {
+          "case": "c16",
+          "metric": "wall_seconds",
+          "available": true,
+          "samples": [
+            3,
+            3
+          ],
+          "baseline": 20.691872631,
+          "candidate": 19.668768162,
+          "ratio": 0.9505552500131277,
+          "passed": true
+        },
+        {
+          "case": "c16",
+          "metric": "ttft_seconds",
+          "available": true,
+          "samples": [
+            48,
+            48
+          ],
+          "baseline": 9.254132401500101,
+          "candidate": 8.750402817000122,
+          "ratio": 0.9455670653233442,
+          "passed": true
+        },
+        {
+          "case": "c16",
+          "metric": "tpot_seconds",
+          "available": true,
+          "samples": [
+            48,
+            48
+          ],
+          "baseline": 0.024758211645097186,
+          "candidate": 0.014616972613724584,
+          "ratio": 0.5903888707009721,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "pair": 2,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "baseline": {
+        "final_serving_capture": {
+          "width": 4,
+          "capacity": 8192,
+          "quoted_bytes": 3518018608,
+          "allocated_bytes": 3979008280,
+          "envelope_bytes": 4491116883,
+          "kv_tokens": 24576,
+          "prompt_width": 1024
+        },
+        "successful_captures_in_log": 2,
+        "logical_pool_bytes": 1073741824
+      },
+      "candidate": {
+        "final_serving_capture": {
+          "width": 8,
+          "capacity": 8192,
+          "quoted_bytes": 4871723808,
+          "allocated_bytes": 4853990312,
+          "envelope_bytes": 4871749971,
+          "kv_tokens": 40192,
+          "prompt_width": 1024
+        },
+        "successful_captures_in_log": 2,
+        "logical_pool_bytes": 2147483648
+      },
+      "same_final_plan": false,
+      "original_metrics": [
+        {
+          "case": "c16",
+          "metric": "wall_seconds",
+          "available": true,
+          "samples": [
+            3,
+            3
+          ],
+          "baseline": 20.861874045,
+          "candidate": 16.485053662,
+          "ratio": 0.7902000379467825,
+          "passed": true
+        },
+        {
+          "case": "c16",
+          "metric": "ttft_seconds",
+          "available": true,
+          "samples": [
+            48,
+            48
+          ],
+          "baseline": 9.354574943499983,
+          "candidate": 6.710385556000119,
+          "ratio": 0.7173373024995459,
+          "passed": true
+        },
+        {
+          "case": "c16",
+          "metric": "tpot_seconds",
+          "available": true,
+          "samples": [
+            48,
+            48
+          ],
+          "baseline": 0.0153333722823542,
+          "candidate": 0.025692151496078248,
+          "ratio": 1.675570841363125,
+          "passed": false
+        }
+      ]
+    },
+    {
+      "pair": 3,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "baseline": {
+        "final_serving_capture": {
+          "width": 7,
+          "capacity": 8192,
+          "quoted_bytes": 4493453156,
+          "allocated_bytes": 4474443588,
+          "envelope_bytes": 4493738323,
+          "kv_tokens": 35072,
+          "prompt_width": 1024
+        },
+        "successful_captures_in_log": 2,
+        "logical_pool_bytes": 1879048192
+      },
+      "candidate": {
+        "final_serving_capture": {
+          "width": 7,
+          "capacity": 8192,
+          "quoted_bytes": 4493453156,
+          "allocated_bytes": 4474967876,
+          "envelope_bytes": 4493738323,
+          "kv_tokens": 35072,
+          "prompt_width": 1024
+        },
+        "successful_captures_in_log": 2,
+        "logical_pool_bytes": 1879048192
+      },
+      "same_final_plan": true,
+      "original_metrics": [
+        {
+          "case": "c16",
+          "metric": "wall_seconds",
+          "available": true,
+          "samples": [
+            3,
+            3
+          ],
+          "baseline": 19.365119312,
+          "candidate": 18.234420467,
+          "ratio": 0.9416115735316261,
+          "passed": true
+        },
+        {
+          "case": "c16",
+          "metric": "ttft_seconds",
+          "available": true,
+          "samples": [
+            48,
+            48
+          ],
+          "baseline": 8.544997491000004,
+          "candidate": 8.206965800500257,
+          "ratio": 0.9604409842301559,
+          "passed": true
+        },
+        {
+          "case": "c16",
+          "metric": "tpot_seconds",
+          "available": true,
+          "samples": [
+            48,
+            48
+          ],
+          "baseline": 0.023452781488235725,
+          "candidate": 0.021930127827450706,
+          "ratio": 0.9350757750611028,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "pair": 4,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "baseline": {
+        "final_serving_capture": {
+          "width": 7,
+          "capacity": 8192,
+          "quoted_bytes": 4493453156,
+          "allocated_bytes": 4474967876,
+          "envelope_bytes": 4493738323,
+          "kv_tokens": 35072,
+          "prompt_width": 1024
+        },
+        "successful_captures_in_log": 2,
+        "logical_pool_bytes": 1879048192
+      },
+      "candidate": {
+        "final_serving_capture": {
+          "width": 7,
+          "capacity": 8192,
+          "quoted_bytes": 4493453156,
+          "allocated_bytes": 4474967876,
+          "envelope_bytes": 4493738323,
+          "kv_tokens": 35072,
+          "prompt_width": 1024
+        },
+        "successful_captures_in_log": 2,
+        "logical_pool_bytes": 1879048192
+      },
+      "same_final_plan": true,
+      "original_metrics": [
+        {
+          "case": "c16",
+          "metric": "wall_seconds",
+          "available": true,
+          "samples": [
+            3,
+            3
+          ],
+          "baseline": 19.540037804,
+          "candidate": 18.397971944,
+          "ratio": 0.9415525255654207,
+          "passed": true
+        },
+        {
+          "case": "c16",
+          "metric": "ttft_seconds",
+          "available": true,
+          "samples": [
+            48,
+            48
+          ],
+          "baseline": 8.699011125999732,
+          "candidate": 8.178983697499916,
+          "ratio": 0.9402199375345607,
+          "passed": true
+        },
+        {
+          "case": "c16",
+          "metric": "tpot_seconds",
+          "available": true,
+          "samples": [
+            48,
+            48
+          ],
+          "baseline": 0.023396929245097686,
+          "candidate": 0.02233594694901994,
+          "ratio": 0.9546529253919058,
+          "passed": true
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair00-baseline.json",
+      "sha256": "ba4c4f9950f283da620fea5af82215e22156e1290fe9c331bc38241ec94a7c4a"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair00-baseline.server.log",
+      "sha256": "e8abed12f72a9a44da6e6b79c86d00f2f8a83dfbb257794e178953384fc26976"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair00-candidate.json",
+      "sha256": "d584f4d3c2476ea6cb57adfe4688217ec4418dbdfdce0277d50a291da9cef557"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair00-candidate.server.log",
+      "sha256": "9c66dd2a583dd1762e65d095108475bc5608fa24e1423d86bdb807feebb42767"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair01-baseline.json",
+      "sha256": "74b90a759e8be8670015ef29d5d9492fd2d322aafe7b943623e107a049be2c49"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair01-baseline.server.log",
+      "sha256": "00f5258acd64e64976bfa3fbebbd008ca79ba3fd46125bf4a58e2115e6c6834f"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair01-candidate.json",
+      "sha256": "958caf14450ef54b3a9a190288d8917de1104e73b4aae4f1159280b823717517"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair01-candidate.server.log",
+      "sha256": "ec34ca564eda58389f8810f26598d8cbfe048f89bb7808d40e526a5895d09def"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair02-baseline.json",
+      "sha256": "44e1db73507102927d3eb19409423e7a76dbbbb8f1bd01fefc2b818db630e391"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair02-baseline.server.log",
+      "sha256": "b1da5656070fe1f238dda78dca8a198af93907bf088be9548efac08cdf66c127"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair02-candidate.json",
+      "sha256": "a6ef5b7903a6f0f9fea96fe393e70f6466f2f5e50930a905338a668afa85e51d"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair02-candidate.server.log",
+      "sha256": "9cc8b02edce4a88a6fccd68b4940e6d64b7b2e1aa67b2a4018393dc53561cb4b"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair03-baseline.json",
+      "sha256": "699a5b59beb1e456d38e2903fd6d9b24359498b1a31760a37cd51231a3748575"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair03-baseline.server.log",
+      "sha256": "abcb595e213b3de8b71b28b9fd6f8116ddc0d7a8936085b48c3ea99829b97eb0"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair03-candidate.json",
+      "sha256": "185db2e4bcf9f051931814d12d0d919f563f6e5f4f55ff81ee0964f10f80f901"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair03-candidate.server.log",
+      "sha256": "d6a93336f1974b9167163bc67c7a6594eeeeb1a612fdb801be47f6938cfcf4d9"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair04-baseline.json",
+      "sha256": "ffff1ac6ac22e7b8935e4f8886f227a2112b9a19354ad9467ba83624a2956331"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair04-baseline.server.log",
+      "sha256": "60a22fd91fe9d08c72343d51100d8d77d14269cc190ced718c0ab10b9dbc16bf"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair04-candidate.json",
+      "sha256": "e7a59575d96860d839035f67b25ed4ccb8e5bdda6f5c9831ee8d99a368911747"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/Qwen3.8-27B-NVFP4-mtp2-native-pr47p7-pair04-candidate.server.log",
+      "sha256": "ad59e7bce784a663b08684c6bf61520caa7c4c566f9f79d166c0391588460267"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-prefix0-v1/formal/gate.json",
+      "sha256": "ef41505b2b6c82403d15a1cff61a67fff3f833b2476229c1c4eb2463718a5c08"
+    }
+  ]
+}

@@ -1,12 +1,67 @@
 # Default serving performance gap — 2026-10-24
 
-Status: open investigation, based on main `94fde96` after PR #46. This change
-records the problem and the acceptance criteria; it contains no runtime fix.
+Status: open investigation. The initial snapshot below is based on main
+`94fde96` after PR #46. Follow-up work adds opt-in diagnostics and experiment
+validation; no faster automatic default has been qualified.
 
 The default path improved over the previous default, but it has not demonstrated
 competitive performance against vLLM. The objective is one fast automatic default:
 users should not need to choose an execution profile, disable vision, shrink
 context, or search a configuration matrix to obtain reasonable throughput.
+
+## Continuation audit after integrating main
+
+PR #47 now includes main `62417eb` (merge `19b7df7`). Main changed prefix
+fingerprinting and output handling as well as CUDA build boundaries; new
+experiments must bind the new release binary rather than reuse old timings.
+
+The [resource audit](artifacts/default-serving-resource-audit-2026-10-24.json)
+recomputes the final accepted serving plan from every original prefix0 report
+and server log. The first preparation/tuning model load is not the serving load.
+
+| Original pair | Baseline slots / physical KV tokens | Candidate slots / physical KV tokens |
+| --- | --- | --- |
+| 0 | 4 / 20,512 | 7 / 35,744 |
+| 1 | 7 / 38,592 | 4 / 24,576 |
+| 2 | 4 / 24,576 | 8 / 40,192 |
+| 3 | 7 / 35,072 | 7 / 35,072 |
+| 4 | 7 / 35,072 | 7 / 35,072 |
+
+The first three pairs do not isolate attention arithmetic at fixed resources.
+The service's `kv_cache.pool_bytes` represents logical slot capacity, not
+measured physical GPU allocation. Matching CLI memory fractions and context
+limits did not prevent different capture/replan outcomes. The old five-pair
+statistical result remains `not_demonstrated`; neither dropping the mismatched
+pairs nor attributing their TPOT changes to FA4 is valid.
+
+The benchmark tools now retain the final accepted plan and can require identical
+scheduler settings, execution geometry, logical KV capacity, physical KV tokens,
+quote and envelope for a declared native experiment. Actual allocation is retained
+but not required to match byte for byte. Frozen pair counts are exact, and a
+predeclared balanced sequence can use AB/BA/BA/AB/AB/BA instead of the old gate's
+hardcoded alternating order. These are measurement changes, not serving
+optimizations; old profiles and evidence are unchanged.
+
+The optimization order also needs correction. The historical
+[qualification evidence](artifacts/canonical-target-verification-2026-10-24.json)
+records that precise-prefix protection recovered 14 of 15 selected known
+counterexamples, compared with 2 of 15 before the protection. Removing that
+protection must first survive a reject-only counterexample screen. Such a
+selected screen cannot qualify quality, even when it finds no regression.
+The original complete 1,024-case quality gate remains required for a retained
+candidate.
+
+Canonical-prefix attention accounted for about 1.202 of 17.876 seconds of
+instrumented GPU graph time. Making only that component four times faster would
+save about 0.902 seconds (5.0% of graph time), assuming other work stays fixed.
+This is an opportunity estimate, not a serving speedup claim. Token trajectories,
+MTP acceptance, admission and batching can change the end-to-end result.
+
+An existing desktop GPU context alone does not establish active interference.
+Future experiments on the user's idle desktop must record its known background
+processes and activity, keep the resource plan comparable, and stop on environment
+or resource-contract failure. The old zero-other-process confirmation remains
+blocked with zero samples; it cannot be relabeled as this new experiment.
 
 ## Recorded measurements
 

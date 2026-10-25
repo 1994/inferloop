@@ -48,6 +48,75 @@ def complete_rows(repeats=3):
     ]
 
 
+class ServingPlanReadbackTest(unittest.TestCase):
+    @staticmethod
+    def planned(width=7, tokens=35072, quote=4493453156):
+        return (
+            "INFO infer::executor: planned pooled CUDA serving storage "
+            f"planned_width={width} prompt_width=1024 quoted_bytes={quote} "
+            f"capacity=8192 kv_tokens={tokens}\n"
+        )
+
+    @staticmethod
+    def accepted(width=7, quote=4493453156):
+        return (
+            "INFO infer::executor: CUDA slot pool captured within serving envelope "
+            f"width={width} capacity=8192 quoted_bytes={quote} "
+            "allocated_bytes=4184529176 envelope_bytes=4493738323\n"
+        )
+
+    def test_last_server_capture_after_replan_is_the_effective_plan(self):
+        text = (
+            "INFO infer::load: device budget 26.7 GiB\n"
+            + self.planned()
+            + self.accepted()
+            + "INFO infer::load: device budget 26.7 GiB\n"
+            + self.planned()
+            + "WARN pooled CUDA capture exceeded budget; replanning before publication\n"
+            + self.planned(4, 20512, 3384849456)
+            + self.accepted(4, 3384849456)
+        )
+        self.assertEqual(
+            module.serving_plan_readback(text),
+            {
+                "source": "native server log",
+                "width": 4,
+                "capacity": 8192,
+                "kv_tokens": 20512,
+                "prompt_width": 1024,
+                "quoted_bytes": 3384849456,
+                "allocated_bytes": 4184529176,
+                "envelope_bytes": 4493738323,
+            },
+        )
+
+    def test_previous_probe_capture_is_not_the_final_server_plan(self):
+        text = self.planned() + self.accepted() + "INFO infer::load: device budget 26.7 GiB\n"
+        self.assertIsNone(module.serving_plan_readback(text))
+        self.assertIsNone(module.serving_plan_readback(text + self.planned()))
+
+    def test_an_unaccepted_or_unmatched_plan_is_unavailable(self):
+        for text in (
+            self.planned(),
+            self.accepted(),
+            self.planned() + self.accepted(4),
+            self.planned() + self.accepted(7, 1234),
+            self.planned() + self.accepted().replace("allocated_bytes=4184529176 ", ""),
+            self.planned()
+            + self.accepted().replace("allocated_bytes=4184529176", "allocated_bytes=4493738324"),
+            self.planned()
+            + self.accepted()
+            + "WARN CUDA slot pool disabled; reclaiming cached prefixes failed\n",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(module.serving_plan_readback(text))
+
+    def test_colored_tracing_and_activity_logs_preserve_accepted_plan(self):
+        text = "\x1b[32m" + self.planned() + self.accepted() + "\x1b[0m"
+        text += "INFO infer::http: request path=runtime status=200\n"
+        self.assertEqual(module.serving_plan_readback(text)["width"], 7)
+
+
 class LoadWorkloadTest(unittest.TestCase):
     def test_complete_workload_passes(self):
         path = write(complete_rows())

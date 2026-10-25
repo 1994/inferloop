@@ -113,14 +113,42 @@ def declared_mtp_layers(model_path):
     return 0
 
 
-def require_process_contract(checklist):
-    """Validate an optional fresh-process A/B contract without embedding workload constants."""
-    measurement = checklist["measurement"]
-    if "fresh_process_pairs" not in measurement:
-        return
+def process_pair_orders(measurement):
+    """Resolve the frozen per-pair order; old profiles retain alternating AB/BA."""
     pairs = measurement["fresh_process_pairs"]
     if isinstance(pairs, bool) or not isinstance(pairs, int) or pairs < 5:
         raise ValueError("fresh_process_pairs must be an integer of at least five")
+    if "process_pair_orders" not in measurement:
+        return [
+            ["baseline", "candidate"] if index % 2 == 0 else ["candidate", "baseline"]
+            for index in range(pairs)
+        ]
+    orders = measurement["process_pair_orders"]
+    if not isinstance(orders, list) or len(orders) != pairs:
+        raise ValueError("process_pair_orders must declare one order for every frozen process pair")
+    for order in orders:
+        if order not in (["baseline", "candidate"], ["candidate", "baseline"]):
+            raise ValueError(
+                "each process_pair_orders entry must contain baseline and candidate once"
+            )
+    baseline_first = sum(order[0] == "baseline" for order in orders)
+    if abs(2 * baseline_first - pairs) > 1:
+        raise ValueError("process_pair_orders must be balanced: AB and BA counts may differ by one")
+    return orders
+
+
+def require_process_contract(checklist):
+    """Validate an optional fresh-process A/B contract without embedding workload constants."""
+    measurement = checklist["measurement"]
+    if "require_identical_resources" in measurement and not isinstance(
+        measurement["require_identical_resources"], bool
+    ):
+        raise ValueError("require_identical_resources must be a boolean")
+    if "fresh_process_pairs" not in measurement:
+        if "process_pair_orders" in measurement:
+            raise ValueError("process_pair_orders requires fresh_process_pairs")
+        return
+    process_pair_orders(measurement)
     confidence = measurement.get("paired_confidence")
     if not isinstance(confidence, (int, float)) or not 0 < confidence < 1:
         raise ValueError("paired_confidence must be between zero and one")

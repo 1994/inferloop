@@ -228,6 +228,64 @@ class ProcessContractTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "absent from the workload matrix"):
             module.load_document(profile)
 
+    def test_frozen_orders_must_cover_each_pair_once_per_side(self):
+        for orders in (
+            None,
+            "AB/BA/AB/BA/AB",
+            [["baseline", "candidate"]] * 4,
+            [["baseline", "baseline"]] * 5,
+            [["candidate", "unknown"]] * 5,
+        ):
+            profile = self.contract()
+            profile["measurement"]["process_pair_orders"] = orders
+            with (
+                self.subTest(orders=orders),
+                self.assertRaisesRegex(ValueError, "process_pair_orders"),
+            ):
+                module.load_document(profile)
+
+    def test_frozen_orders_balance_which_side_runs_first(self):
+        for count, baseline_first in ((5, 5), (5, 4), (6, 4)):
+            profile = self.contract()
+            profile["measurement"].update(
+                fresh_process_pairs=count,
+                process_pair_orders=[["baseline", "candidate"]] * baseline_first
+                + [["candidate", "baseline"]] * (count - baseline_first),
+            )
+            with (
+                self.subTest(count=count, baseline_first=baseline_first),
+                self.assertRaisesRegex(ValueError, "balanced"),
+            ):
+                module.load_document(profile)
+        for count, baseline_first in ((5, 3), (5, 2), (6, 3)):
+            profile = self.contract()
+            profile["measurement"].update(
+                fresh_process_pairs=count,
+                process_pair_orders=[["baseline", "candidate"]] * baseline_first
+                + [["candidate", "baseline"]] * (count - baseline_first),
+            )
+            module.load_document(profile)
+
+    def test_resource_alignment_switch_is_not_truthy_text(self):
+        for value in (None, "false", 0, 1):
+            profile = self.contract()
+            profile["measurement"]["require_identical_resources"] = value
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(ValueError, "require_identical_resources must be a boolean"),
+            ):
+                module.load_document(profile)
+        for value in (False, True):
+            profile = self.contract()
+            profile["measurement"]["require_identical_resources"] = value
+            module.load_document(profile)
+
+    def test_orders_without_a_sample_count_are_rejected(self):
+        profile = checklist()
+        profile["measurement"]["process_pair_orders"] = [["baseline", "candidate"]] * 5
+        with self.assertRaisesRegex(ValueError, "requires fresh_process_pairs"):
+            module.load_document(profile)
+
     def test_invalid_guard_threshold_is_rejected(self):
         profile = self.contract()
         del profile["measurement"]["guards"][0]["max_regression_percent"]

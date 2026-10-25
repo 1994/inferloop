@@ -318,7 +318,52 @@ def model_identity(model):
     }
 
 
-def runtime_readback(args, base):
+def serving_plan_readback(text):
+    """Recover only the final server's accepted CUDA pool, never a preparation probe.
+
+    The startup log is part of the retained benchmark evidence. A new load, replan,
+    or incomplete capture invalidates earlier evidence instead of guessing a plan.
+    """
+    pending = accepted = None
+    for raw in text.splitlines():
+        line = re.sub(r"\x1b\[[0-9;]*m", "", raw)
+        if "infer::load: device budget " in line:
+            pending = accepted = None
+        fields = {key: int(value) for key, value in re.findall(r"\b([a-z_]+)=(\d+)\b", line)}
+        if "planned pooled CUDA serving storage" in line:
+            accepted = None
+            required = ("planned_width", "prompt_width", "quoted_bytes", "capacity", "kv_tokens")
+            pending = fields if all(field in fields for field in required) else None
+        elif "CUDA slot pool captured within serving envelope" in line:
+            required = ("width", "capacity", "quoted_bytes", "allocated_bytes", "envelope_bytes")
+            accepted = None
+            if pending and all(field in fields for field in required):
+                matches = (
+                    fields["width"] == pending["planned_width"]
+                    and fields["capacity"] == pending["capacity"]
+                    and fields["quoted_bytes"] == pending["quoted_bytes"]
+                    and fields["allocated_bytes"] <= fields["envelope_bytes"]
+                )
+                if matches:
+                    accepted = {
+                        "source": "native server log",
+                        **{field: fields[field] for field in required},
+                        "kv_tokens": pending["kv_tokens"],
+                        "prompt_width": pending["prompt_width"],
+                    }
+        elif any(
+            message in line
+            for message in (
+                "pooled CUDA capture exceeded budget",
+                "CUDA slot pool disabled",
+                "CUDA slot pool deferred",
+            )
+        ):
+            pending = accepted = None
+    return accepted
+
+
+def runtime_readback(args, base, log_path=None):
     """Read the configuration the native server actually applied."""
     if args.engine != "native":
         return {"source": "command line", "readback": None}
@@ -327,13 +372,13 @@ def runtime_readback(args, base):
             inspection = json.loads(response.read())
     except (OSError, ValueError, urllib.error.HTTPError) as error:
         return {"source": "unavailable", "error": repr(error)}
-    return {
-        "source": "native runtime inspection",
-        "readback": {
-            key: inspection.get(key)
-            for key in ("model_name", "lengths", "scheduler", "execution_profile", "kv_cache")
-        },
+    readback = {
+        key: inspection.get(key)
+        for key in ("model_name", "lengths", "scheduler", "execution_profile", "kv_cache")
     }
+    if log_path is not None:
+        readback["serving_plan"] = serving_plan_readback(log_path.read_text())
+    return {"source": "native runtime inspection", "readback": readback}
 
 
 def native_command(args, port):
@@ -1103,7 +1148,7 @@ def run(args):
                 args, process, base, log_path, args.startup_timeout
             )
             print(f"ready after {report['startup_seconds']:.1f}s", flush=True)
-            report["config_readback"] = runtime_readback(args, base)
+            report["config_readback"] = runtime_readback(args, base, log_path)
             if args.engine == "native":
                 readback = (report["config_readback"] or {}).get("readback") or {}
                 lengths = readback.get("lengths") or {}

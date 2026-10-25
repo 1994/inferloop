@@ -48,11 +48,11 @@ def report(run_id, wall=1.0, tpot=1.0):
     return result
 
 
-def pairs(wall=None, tpot=None):
-    wall = wall or [0.95] * 5
-    tpot = tpot or [1.0] * 5
+def pairs(wall=None, tpot=None, count=5):
+    wall = wall or [0.95] * count
+    tpot = tpot or [1.0] * count
     result = []
-    for index in range(5):
+    for index in range(count):
         order = ["baseline", "candidate"] if index % 2 == 0 else ["candidate", "baseline"]
         result.append(
             {
@@ -67,7 +67,7 @@ def pairs(wall=None, tpot=None):
             wall[index] if name.startswith("c") else 1.0,
             tpot[index] if name.startswith("c") else 1.0,
         )
-        for index in range(5)
+        for index in range(count)
         for name in (f"a{index}", f"c{index}")
     }
 
@@ -103,16 +103,55 @@ class StatisticsTest(unittest.TestCase):
 
     def test_pair_count_order_and_identity_are_enforced(self):
         manifest, reports = pairs()
-        with self.assertRaisesRegex(ValueError, "required 5"):
+        with self.assertRaisesRegex(ValueError, "exactly 5"):
             evaluate(manifest[:4], reports)
         manifest, reports = pairs()
         manifest[1]["order"] = ["baseline", "candidate"]
-        with self.assertRaisesRegex(ValueError, "alternating"):
+        with self.assertRaisesRegex(ValueError, "frozen process order"):
             evaluate(manifest, reports)
         manifest, reports = pairs()
         reports["c0"]["identity"]["run_id"] = "a0"
         with self.assertRaisesRegex(ValueError, "duplicate run id"):
             evaluate(manifest, reports)
+
+    def test_frozen_non_alternating_order_is_used(self):
+        manifest, reports = pairs(count=6)
+        orders = [
+            ["baseline", "candidate"],
+            ["candidate", "baseline"],
+            ["candidate", "baseline"],
+            ["baseline", "candidate"],
+            ["baseline", "candidate"],
+            ["candidate", "baseline"],
+        ]
+        contract = profile()
+        contract["measurement"].update(fresh_process_pairs=6, process_pair_orders=orders)
+        for pair, order in zip(manifest, orders, strict=True):
+            pair["order"] = order
+        result = module.evaluate(contract, PROFILE_HASH, manifest, reports.__getitem__)
+        self.assertTrue(result["passed"])
+        self.assertEqual([pair["order"] for pair in result["pairs"]], orders)
+        manifest[2]["order"] = ["baseline", "candidate"]
+        with self.assertRaisesRegex(ValueError, "frozen process order"):
+            module.evaluate(contract, PROFILE_HASH, manifest, reports.__getitem__)
+
+    def test_extra_pairs_cannot_extend_the_frozen_sample(self):
+        manifest, reports = pairs(count=6)
+        with self.assertRaisesRegex(ValueError, "exactly 5"):
+            evaluate(manifest, reports)
+
+    def test_frozen_resource_contract_reaches_pair_comparison(self):
+        manifest, reports = pairs()
+        contract = profile()
+        contract["measurement"]["require_identical_resources"] = True
+        for item in reports.values():
+            item["config_readback"] = fixture.native_resources()
+        self.assertTrue(
+            module.evaluate(contract, PROFILE_HASH, manifest, reports.__getitem__)["passed"]
+        )
+        reports["c0"]["config_readback"]["readback"]["kv_cache"]["pool_bytes"] *= 2
+        with self.assertRaisesRegex(ValueError, "unaligned native resource.*pool_bytes"):
+            module.evaluate(contract, PROFILE_HASH, manifest, reports.__getitem__)
 
     def test_a_different_checklist_is_rejected(self):
         manifest, reports = pairs()

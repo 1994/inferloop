@@ -74,6 +74,61 @@ def require_release_identity(report):
         raise ValueError("report records no model artifact fingerprint")
 
 
+def native_resource_signature(report):
+    """Read fixed startup geometry and capacity, excluding activity counters and numerics.
+
+    CUDA's pool_bytes is the slot pool expressed in the runtime's block vocabulary,
+    not measured physical GPU bytes. It still distinguishes capture replans that
+    leave identical command-line limits but different admitted concurrency.
+    """
+    block = report.get("config_readback")
+    if not isinstance(block, dict):
+        raise ValueError("native resource comparison needs runtime readback")
+    readback = block.get("readback")
+    if not isinstance(readback, dict):
+        raise ValueError("native resource comparison needs runtime readback")
+    scheduler = readback.get("scheduler")
+    if not isinstance(scheduler, dict) or not scheduler:
+        raise ValueError("native resource comparison needs scheduler readback")
+    signature = {"scheduler": scheduler}
+    for section, fields in (
+        (
+            "execution_profile",
+            (
+                "prefill_width",
+                "pooled_prefill_width",
+                "batch_width",
+                "draft_depth",
+                "arena_budget_bytes",
+            ),
+        ),
+        ("kv_cache", ("block_size", "total_blocks", "pool_bytes", "bytes_per_block")),
+        (
+            "serving_plan",
+            ("width", "capacity", "kv_tokens", "prompt_width", "quoted_bytes", "envelope_bytes"),
+        ),
+    ):
+        values = readback.get(section)
+        if not isinstance(values, dict):
+            raise ValueError(f"native resource comparison needs {section} readback")
+        for field in fields:
+            value = values.get(field)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"native resource comparison needs valid {section}.{field}")
+            signature[f"{section}.{field}"] = value
+    return signature
+
+
+def align_native_resources(baseline, candidate):
+    """Require a declared fixed-resource native A/B to retain its effective plan."""
+    if any(report["identity"]["engine"] != "native" for report in (baseline, candidate)):
+        raise ValueError("identical native resources can only be required for native A/B")
+    left, right = native_resource_signature(baseline), native_resource_signature(candidate)
+    for field, value in left.items():
+        if value != right[field]:
+            raise ValueError(f"unaligned native resource: {field} ({value!r} != {right[field]!r})")
+
+
 def align(baseline, candidate):
     """Require the two reports to describe the same experiment conditions."""
     for field in ("model", "hardware"):
@@ -226,6 +281,7 @@ def compare(
     identical=False,
     reference="vllm",
     allow_legacy_baseline=False,
+    require_identical_resources=False,
 ):
     for field in ("max_new_tokens", "temperature", "mtp_depth", "eos_tokens"):
         if field not in baseline or baseline[field] != candidate.get(field):
@@ -249,6 +305,8 @@ def compare(
             " --allow-legacy-baseline to treat this as a historical comparison"
         )
     align(baseline, candidate)
+    if require_identical_resources:
+        align_native_resources(baseline, candidate)
     tested_report, fixed_report, label = orientation(baseline, candidate, reference)
     old, new = measured(fixed_report), measured(tested_report)
     if old.keys() != new.keys():
@@ -396,6 +454,11 @@ def main():
     parser.add_argument("--max-ratio", type=float, default=1.1)
     parser.add_argument("--require-identical-tokens", action="store_true")
     parser.add_argument(
+        "--require-identical-resources",
+        action="store_true",
+        help="require equal native startup execution geometry, scheduler and KV capacity",
+    )
+    parser.add_argument(
         "--allow-legacy-baseline",
         action="store_true",
         help="accept a frozen baseline whose release profile predates the effective-profile rule",
@@ -416,6 +479,7 @@ def main():
             args.require_identical_tokens,
             args.reference_engine,
             args.allow_legacy_baseline,
+            require_identical_resources=args.require_identical_resources,
         )
     except (ValueError, KeyError, TypeError) as error:
         parser.error(str(error))

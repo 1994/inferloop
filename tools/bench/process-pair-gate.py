@@ -78,9 +78,13 @@ def metric_ratios(comparison):
 def evaluate(checklist, checklist_sha256, pairs, load_report):
     """Evaluate all declared pairs; no sample is dropped or retried by this gate."""
     measurement = checklist["measurement"]
-    required = measurement["fresh_process_pairs"]
-    if len(pairs) < required:
-        raise ValueError(f"only {len(pairs)} process pairs, required {required}")
+    contract = load_module(
+        "experiment_checklist", Path(__file__).with_name("experiment-checklist.py")
+    )
+    orders = contract.process_pair_orders(measurement)
+    required = len(orders)
+    if len(pairs) != required:
+        raise ValueError(f"expected exactly {required} frozen process pairs, found {len(pairs)}")
     compare = load_module("compare_results", Path(__file__).with_name("compare-results.py"))
     primary = measurement["primary"]
     primary_key = (primary["case"], primary["metric"])
@@ -89,9 +93,9 @@ def evaluate(checklist, checklist_sha256, pairs, load_report):
     run_ids = set()
     evidence = []
     for index, pair in enumerate(pairs):
-        expected = ["baseline", "candidate"] if index % 2 == 0 else ["candidate", "baseline"]
+        expected = orders[index]
         if pair.get("order") != expected:
-            raise ValueError(f"pair {index} must execute in alternating AB/BA order: {expected}")
+            raise ValueError(f"pair {index} must execute in the frozen process order: {expected}")
         reports = {side: load_report(pair[side]) for side in ("baseline", "candidate")}
         for side, report in reports.items():
             identity = report.get("identity") or {}
@@ -103,7 +107,11 @@ def evaluate(checklist, checklist_sha256, pairs, load_report):
             run_ids.add(run_id)
             if (report.get("checklist") or {}).get("sha256") != checklist_sha256:
                 raise ValueError(f"pair {index} {side} used a different experiment checklist")
-        comparison = compare.compare(reports["baseline"], reports["candidate"])
+        comparison = compare.compare(
+            reports["baseline"],
+            reports["candidate"],
+            require_identical_resources=measurement.get("require_identical_resources", False),
+        )
         ratios = metric_ratios(comparison)
         if primary_key not in ratios:
             raise ValueError(f"pair {index} has no primary metric {primary_key}")
