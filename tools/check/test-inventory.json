@@ -100,7 +100,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 20
+      "tests": 33
     },
     "workloads": {
       "benches": 0,
@@ -900,6 +900,16 @@
     },
     {
       "crate": "state",
+      "file": "src/cache.rs",
+      "mount": "../tests/unit/cache.rs"
+    },
+    {
+      "crate": "state",
+      "file": "src/kv/prefix.rs",
+      "mount": "../../tests/unit/prefix_pages.rs"
+    },
+    {
+      "crate": "state",
       "file": "src/logical/mod.rs",
       "mount": "../../tests/unit/logical.rs"
     },
@@ -1101,6 +1111,11 @@
     {
       "crate": "cli",
       "file": "src/backend/mod.rs",
+      "mount": "cuda_unavailable.rs"
+    },
+    {
+      "crate": "cli",
+      "file": "src/backend/mod.rs",
       "mount": "../../tests/unit/backend_mod.rs"
     },
     {
@@ -1190,11 +1205,11 @@
     }
   ],
   "totals": {
-    "all": 824,
+    "all": 837,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 824
+    "tests": 837
   }
 }
