@@ -1,0 +1,240 @@
+{
+  "schema": 1,
+  "status": "rejected_known_regressions",
+  "scope": "Reject-only known-counterexample diagnosis; no performance conclusion and no full quality qualification.",
+  "source_revision": "0827d67550223dfc77294f1aea838a2c7f6a9617",
+  "binary": {
+    "path": "/home/r/code/inference.rs/target/pr47-phase2/target/release/infer",
+    "sha256": "38f189fa5b189a42e8dd1973766879526aa061ed2d0f747d031f1ce430cf9f03"
+  },
+  "selection": {
+    "scope": "All 15 original precise-prefix counterexamples plus all 8 V11 regression IDs, deduplicated; 21 cases in frozen full-suite order. Selected diagnostic corpus, not a holdout or qualification.",
+    "inputs": [
+      {
+        "path": "/home/r/benchmarks/inference.rs/exact-shared-attention-2026-10-16/quality-fa4-confirmation-v2/tokenization-v1/tokenized-suite.json",
+        "sha256": "0f961033fc51f032f33b4948081d8f7b8cea78337a55b633cb052ae03f7b500f"
+      },
+      {
+        "path": "/home/r/benchmarks/inference.rs/exact-shared-attention-2026-10-16/quality-preparation-v1/score-task-quality.py",
+        "sha256": "29cbde60bb2e0537f7553143a728a2e82eecdbd6878e744352cf9e82a4b1b2af"
+      },
+      {
+        "path": "/home/r/benchmarks/inference.rs/default-fast-combination-2026-10-24/default-candidate-diagnostic-v3/after-tuning.json",
+        "sha256": "e5f0a34b03324734c004f7548695bfce9b8f5bf6f42407add3ba8da843830bfb"
+      },
+      {
+        "path": "/home/r/benchmarks/inference.rs/default-fast-combination-2026-10-24/precise-prefix-counterexamples-v1/case-ids.json",
+        "sha256": "0d9512b7cd0f93aeceb30a574525360d7e1731141466de7de5bd5365e3ec2ad3"
+      },
+      {
+        "path": "/home/r/benchmarks/inference.rs/default-fast-combination-2026-10-24/automatic-default-preview-v12/diagnostic-case-ids.json",
+        "sha256": "0eb554fb001e51eeb495e636561a1dabcd4fa62ce8e549d2c8f183ac313696f6"
+      }
+    ],
+    "selection_counts": [
+      15,
+      8
+    ],
+    "case_ids": [
+      "gsm8k-independent-v1:1035:eight_shot",
+      "gsm8k-independent-v1:580:zero_shot",
+      "gsm8k-independent-v1:422:zero_shot",
+      "gsm8k-independent-v1:1052:zero_shot",
+      "gsm8k-independent-v1:926:eight_shot",
+      "gsm8k-independent-v1:724:zero_shot",
+      "gsm8k-independent-v1:858:eight_shot",
+      "gsm8k-independent-v1:209:zero_shot",
+      "gsm8k-independent-v1:102:eight_shot",
+      "gsm8k-independent-v1:1199:eight_shot",
+      "gsm8k-independent-v1:85:zero_shot",
+      "gsm8k-independent-v1:852:eight_shot",
+      "gsm8k-independent-v1:1059:eight_shot",
+      "gsm8k-independent-v1:780:zero_shot",
+      "gsm8k-independent-v1:14:zero_shot",
+      "gsm8k-independent-v1:523:zero_shot",
+      "gsm8k-independent-v1:1079:zero_shot",
+      "gsm8k-independent-v1:1077:zero_shot",
+      "gsm8k-independent-v1:413:eight_shot",
+      "gsm8k-independent-v1:231:eight_shot",
+      "gsm8k-independent-v1:590:zero_shot"
+    ],
+    "strata": {
+      "eight_shot": 9,
+      "zero_shot": 12
+    },
+    "batch_sizes": [
+      16,
+      5
+    ],
+    "original_stratum_size": 512,
+    "reject_loss_count_per_stratum": 5,
+    "five_loss_cp95_upper": 0.020422882686691735,
+    "gate_cp95_upper_strictly_less_than": 0.02,
+    "interpretation": "A selected subset can reject but never approve. Five retained gross-loss observations in either 512-case stratum already exceed the original CP95 bound even if all remaining cases have zero losses. This does not assert that different batching in a future full-suite run has identical outputs."
+  },
+  "execution": {
+    "baseline_attempted": 21,
+    "baseline_correct": 19,
+    "paired_baseline_correct": 14,
+    "candidate_attempted": 16,
+    "candidate_correct": 7,
+    "candidate_complete": false,
+    "unattempted_selected_cases": [
+      "gsm8k-independent-v1:1079:zero_shot",
+      "gsm8k-independent-v1:1077:zero_shot",
+      "gsm8k-independent-v1:413:eight_shot",
+      "gsm8k-independent-v1:231:eight_shot",
+      "gsm8k-independent-v1:590:zero_shot"
+    ],
+    "stop": "Predeclared batch-boundary rejection after five zero-shot gross losses; no retries or replacement samples.",
+    "gross_losses": {
+      "zero_shot": 5,
+      "eight_shot": 2
+    },
+    "gains": 0,
+    "regressions": [
+      {
+        "id": "gsm8k-independent-v1:1052:zero_shot",
+        "variant": "zero_shot",
+        "candidate_tokens": 252,
+        "finish_reason": "Eos",
+        "expected": "110",
+        "candidate_prediction": "111"
+      },
+      {
+        "id": "gsm8k-independent-v1:724:zero_shot",
+        "variant": "zero_shot",
+        "candidate_tokens": 512,
+        "finish_reason": "Length",
+        "expected": "18",
+        "candidate_prediction": null
+      },
+      {
+        "id": "gsm8k-independent-v1:209:zero_shot",
+        "variant": "zero_shot",
+        "candidate_tokens": 512,
+        "finish_reason": "Length",
+        "expected": "145",
+        "candidate_prediction": null
+      },
+      {
+        "id": "gsm8k-independent-v1:102:eight_shot",
+        "variant": "eight_shot",
+        "candidate_tokens": 153,
+        "finish_reason": "Eos",
+        "expected": "26",
+        "candidate_prediction": "19"
+      },
+      {
+        "id": "gsm8k-independent-v1:1199:eight_shot",
+        "variant": "eight_shot",
+        "candidate_tokens": 512,
+        "finish_reason": "Length",
+        "expected": "2",
+        "candidate_prediction": null
+      },
+      {
+        "id": "gsm8k-independent-v1:85:zero_shot",
+        "variant": "zero_shot",
+        "candidate_tokens": 512,
+        "finish_reason": "Length",
+        "expected": "44",
+        "candidate_prediction": null
+      },
+      {
+        "id": "gsm8k-independent-v1:523:zero_shot",
+        "variant": "zero_shot",
+        "candidate_tokens": 283,
+        "finish_reason": "Eos",
+        "expected": "74",
+        "candidate_prediction": "62"
+      }
+    ]
+  },
+  "same_model": true,
+  "same_serving_plan": {
+    "source": "native server log",
+    "width": 12,
+    "capacity": 8192,
+    "quoted_bytes": 6181388816,
+    "allocated_bytes": 6166990136,
+    "envelope_bytes": 6181624556,
+    "kv_tokens": 54464,
+    "prompt_width": 1024
+  },
+  "environment": {
+    "description": "User-authorized idle desktop retained; no exclusivity claim. Four preparation/serving captures accepted without replan.",
+    "samples": 238,
+    "complete": true,
+    "errors": []
+  },
+  "decision": "Under the frozen per-item gross-regression contract, keep the 2048-position guard and do not promote prefix0. This selected screen is not representative task accuracy and cannot alone reject FA4 under a different, prospectively specified task-quality contract. No existing gate or default is changed.",
+  "full_quality_passed": false,
+  "performance_measured": false,
+  "evidence": [
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/quality-screen/baseline.batch-0.json",
+      "sha256": "515003caa61c3dec0181e53bf6cbafba45210de9a3dadb8c8923972ca112959f"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/quality-screen/baseline.batch-1.json",
+      "sha256": "6a8e3430b1847498aa274aa32bc876bc2b5bd30192f7a9b26ce983fb123a2b2a"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/quality-screen/baseline.json",
+      "sha256": "842965f6ea5c32b46689c3ed97271e852542477873f8eb545ae1cb9c1e5bb972"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/quality-screen/baseline.server.log",
+      "sha256": "23bb0adb08c4b448cf7c00373cd1e5fa8e9777ea4ddb423a4a9d66b48bc74517"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/quality-screen/baseline.tuning.json",
+      "sha256": "1f07084995f83b70d2ca9c4fa4ccdcf290618e6d1624d41439b2e48728c9371f"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/quality-screen/candidate.batch-0.json",
+      "sha256": "d05a579f7cb8f1d2c035c1e428b728c4d1262e74e17ec3ce8ac160bbc1e9d4d1"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/quality-screen/candidate.json",
+      "sha256": "3a2372b92ea5312fc0bc16cdbbbac0b946f701d946aec8af0f50c83253e8028a"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/quality-screen/candidate.server.log",
+      "sha256": "b20963f90a9dd92d58bd1cff076ce4717449b767beedc37078950afe17f448f2"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/quality-screen/candidate.tuning.json",
+      "sha256": "5005085041a062032eb51f95933c51a4e0188be2f80e9e4a9f86f3096965d884"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/quality-screen/environment-status.json",
+      "sha256": "82244fce87327ec1f9038a1b91f5ead180c97aab3a4554c734200ad3c6c5cf9a"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/quality-screen/environment.jsonl",
+      "sha256": "013eda550a6a94e71897a17eb8a3efe8049966e3459b8c1f0cc2af0bbf60961b"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/quality-screen/protected-limits.json",
+      "sha256": "65bef5a646fdd44b2667386fce3293c4b7bef8f10a9006b9f5685f9a974e6788"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/quality-screen/protocol.json",
+      "sha256": "1713eca6156e4b779a791202e4250c0891bd011973f3f3ca2fd43d2154dc7970"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/quality-screen/run_screen.py",
+      "sha256": "4bf203a3d74a8348dde74d1f1562c70c60a04acf853050181ddb0390e079ee3c"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/quality-screen/selection.json",
+      "sha256": "5afe4a5ecc9982173db27cf030e4e6436f55e38c37e9a0fcaa752a93e8cef847"
+    },
+    {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/quality-screen/summary.json",
+      "sha256": "c0ef597013d9904033cff5dda531745948f830f5bafc16f07afe6a9310c73605"
+    }
+  ]
+}

@@ -63,6 +63,76 @@ processes and activity, keep the resource plan comparable, and stop on environme
 or resource-contract failure. The old zero-other-process confirmation remains
 blocked with zero samples; it cannot be relabeled as this new experiment.
 
+## Small counterexample screen: prefix0 rejected
+
+A fresh screen on integrated source `0827d67` used one release binary and the
+union of all 15 original prefix counterexamples and eight later V11 regressions:
+21 unique cases in their original suite order, with fixed batches of 16 then 5.
+The original prompt tokens, scorer, EOS and 512-token cap were retained. Both
+arms used normal automatic execution/resources with vision enabled.
+
+Baseline completed all 21 cases with 19 correct. On the same first 16 cases,
+baseline was correct on 14 and prefix0 on seven: five zero-shot and two eight-shot
+gross regressions, no gains. The candidate stopped at that batch boundary under
+the preregistered reject-only rule; the last five selected cases were not run.
+Four failures reached the 512-token cap without a final answer; three ended at
+EOS with a wrong numeric answer. Independent decoding and scoring reproduced
+all results.
+
+The two serving captures had exactly the same plan: 12 slots, 54,464 physical KV
+tokens, capacity 8192, prompt width 1024, quote 6,181,388,816 bytes, allocated
+6,166,990,136 bytes and envelope 6,181,624,556 bytes. All four preparation/serving
+captures succeeded on their first attempt. Thus different resident plans do not
+explain these observed quality regressions. The idle desktop remained present;
+238 startup/execution environment samples were retained without telemetry errors.
+
+Under the frozen gross-regression contract, retain the 2048-position guard and
+do not promote prefix0 or launch its six-pair confirmation. This selected screen
+is not a representative accuracy estimate, a full 1,024-case result, or a
+performance measurement. It shows specific failures and rejects the old
+per-item compatibility contract; it cannot by itself rule out FA4 under a
+different, prospectively specified task-quality contract.
+
+The [screen evidence](artifacts/default-serving-prefix0-screen-2026-10-24.json)
+binds source, binary, selection, all attempted outcomes, raw file hashes and the
+unattempted cases. No prior result or gate was overwritten.
+
+## Task accuracy and per-item compatibility are different contracts
+
+The current gate limits old-correct/new-wrong outcomes without offsetting
+old-wrong/new-correct gains. Its one-sided CP95 upper bound must stay below 2%
+overall and in each 512-case stratum. Five losses in a stratum exceed that bound
+even if more than five other answers improve. This tests preservation of the
+previous success set as well as task quality. The historical V10 result, for
+example, had 968 correct in both arms and 16 losses/16 gains, yet failed the
+gross-regression contract.
+
+Upstream projects separate these concerns rather than define one universal
+accuracy tolerance:
+
+- [vLLM v0.31.0 GSM8K tests](https://github.com/vllm-project/vllm/blob/v0.31.0/tests/evals/gsm8k/test_gsm8k_correctness.py)
+  check aggregate accuracy against a model-specific threshold minus tolerance.
+  Its [Qwen3.5 NVFP4/MTP configuration](https://github.com/vllm-project/vllm/blob/v0.31.0/tests/evals/gsm8k/configs/Qwen3.5-397B-A17B-NVFP4-DEP2-MTP.yaml)
+  uses 0.88 minus 0.03, with 1,319 questions and a 12,000-token cap. These settings
+  cannot be transferred to our model or 512-token contract.
+- [SGLang's contribution guide](https://docs.sglang.io/docs/developer_guide/contribution_guide)
+  describes its 200-example GSM8K command as a sanity check and warns of
+  batching/non-determinism variation. Its
+  [decode-cache regression test](https://github.com/sgl-project/sglang/blob/main/test/registered/disaggregation/test_disaggregation_decode_radix_cache.py)
+  uses a task-score floor and a net score-drop bound; this is a particular
+  feature test, not a project-wide accuracy allowance.
+- This does not remove numeric checks:
+  [SGLang's nightly precision suite](https://docs.sglang.io/docs/references/nightly_precision_regression)
+  also compares intermediate tensors against a baseline, using a default
+  relative-difference threshold of 1e-3 in that suite.
+
+Before changing policy, use a small representative selection made independently
+of model outcomes and report net accuracy, losses, gains, truncation and output
+length separately. Keep the current formal gates and defaults unchanged.
+A future task-quality non-inferiority contract would need its margin and
+statistics frozen before qualification; it must not rewrite the rejected
+counterexample result or select a threshold after observing candidate scores.
+
 ## Recorded measurements
 
 RTX 5090 on 192.168.1.45, Qwen3.8-27B-NVFP4. C16 means sixteen requests, each
