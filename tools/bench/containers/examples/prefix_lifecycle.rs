@@ -9,8 +9,10 @@
 )]
 #[path = "../../cpu/src/allocator.rs"]
 mod allocator;
+#[path = "prefix_lifecycle/publication.rs"]
+mod publication;
 use infer_state::cache::{
-    BlockHash, PrefixCache, PrefixMatcher, PrefixReuse, PrefixSnapshot, SnapshotScan,
+    BlockHash, PrefixCache, PrefixPolicy, PrefixReuse, PrefixSnapshot, SnapshotScan,
 };
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -121,7 +123,7 @@ impl PrefixReuse<u64> for CopyHistory<'_> {
         Ok(tokens.len())
     }
 }
-impl<M: PrefixMatcher> Reuse for PrefixCache<u64, M> {
+impl<M: PrefixPolicy> Reuse for PrefixCache<u64, M> {
     fn run(&mut self, tokens: &[u32], maximum: usize, history: &mut Vec<u32>) -> usize {
         match self.reuse(tokens, maximum, &mut CopyHistory(history)) {
             Ok(value) => value.unwrap_or(0),
@@ -129,11 +131,11 @@ impl<M: PrefixMatcher> Reuse for PrefixCache<u64, M> {
         }
     }
 }
-fn shared<M: PrefixMatcher>(
+fn shared<M: PrefixPolicy>(
     tokens: &[Vec<u32>],
     matcher: M,
 ) -> Result<PrefixCache<u64, M>, Box<dyn Error>> {
-    let mut cache = PrefixCache::with_matcher(
+    let mut cache = PrefixCache::with_policy(
         b"snapshot-policy",
         BLOCK,
         u64::try_from(tokens.len())?,
@@ -152,6 +154,7 @@ struct Sample {
     case: &'static str,
     implementation: &'static str,
     round: usize,
+    iterations: u32,
     ns_per_operation: f64,
     checksum: usize,
     allocator: allocator::Counts,
@@ -186,6 +189,16 @@ fn measure(
     }
     let elapsed = start.elapsed();
     let counts = allocator::stop();
+    if name == "shared-scan" {
+        assert_eq!(
+            (
+                counts.allocations,
+                counts.reallocations,
+                counts.deallocations
+            ),
+            (0, 0, 0)
+        );
+    }
     black_box(&history);
     black_box(&cache);
     Ok(Sample {
@@ -194,6 +207,7 @@ fn measure(
         case: w.case,
         implementation: name,
         round,
+        iterations: ITERATIONS,
         ns_per_operation: elapsed.as_secs_f64() * 1e9 / f64::from(ITERATIONS),
         checksum,
         allocator: counts,
@@ -254,11 +268,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     }
+    publication::run(&mut samples)?;
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
             "scope":"CPU metadata policy and host history copy; synthetic u64 payload, no GPU copies or model/service latency",
-            "iterations":ITERATIONS, "rounds":ROUNDS, "warmup":WARMUP, "samples":samples
+            "iterations":ITERATIONS, "publication_iterations":publication::ITERATIONS, "rounds":ROUNDS, "warmup":WARMUP, "samples":samples
         }))?
     );
     Ok(())

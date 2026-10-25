@@ -1,14 +1,15 @@
 //! Shared prefix publication, matching and deterministic LRU. Values own device/host state;
 //! callers release their page leases when entries are evicted.
 mod index;
+mod recency;
 mod reuse;
 use ahash::{AHashMap, AHasher, RandomState};
-pub use index::{BlockHash, PrefixCandidate, PrefixMatcher, PrefixSearch, SnapshotScan};
+pub use index::{BlockHash, PrefixCandidate, PrefixPolicy, PrefixSearch, SnapshotScan};
 use infer_core::{Error, Result};
+pub use recency::{PrefixId, PrefixRecency, SnapshotRecency, TreeRecency};
 use reuse::CloneReuse;
 pub use reuse::{PrefixReuse, PrefixSnapshot};
 use std::array::from_fn;
-use std::collections::BTreeSet;
 use std::hash::{BuildHasher, Hash};
 use std::result::Result as StdResult;
 
@@ -21,15 +22,15 @@ struct Entry<V> {
     bytes: u64,
     touched: u64,
 }
-pub struct PrefixCache<V, M = BlockHash> {
-    matcher: M,
+pub struct PrefixCache<V, M: PrefixPolicy = BlockHash> {
+    policy: M,
     root: [AHasher; FINGERPRINT_LANES],
     block_size: usize,
     budget: u64,
     max_entries: usize,
     // Fingerprints select candidates; full token equality establishes identity on every hit.
     entries: AHashMap<Fingerprint, Entry<V>>,
-    lru: BTreeSet<(u64, Fingerprint)>,
+    lru: M::Recency,
     clock: u64,
     bytes: u64,
     cached_tokens: usize,
@@ -46,19 +47,19 @@ impl<V> PrefixCache<V> {
     /// # Errors
     /// Rejects an empty namespace, zero block size or zero entry limit.
     pub fn new(binding: &[u8], block_size: usize, budget: u64, max_entries: usize) -> Result<Self> {
-        Self::with_matcher(binding, block_size, budget, max_entries, BlockHash)
+        Self::with_policy(binding, block_size, budget, max_entries, BlockHash)
     }
 }
-impl<V, M: PrefixMatcher> PrefixCache<V, M> {
-    /// Select a lookup strategy without duplicating the cache's lifecycle or resource policy.
+impl<V, M: PrefixPolicy> PrefixCache<V, M> {
+    /// Select matching and recency indexes without duplicating lifecycle or resource policy.
     /// # Errors
     /// Rejects an empty namespace, zero block size or zero entry limit.
-    pub fn with_matcher(
+    pub fn with_policy(
         binding: &[u8],
         block_size: usize,
         budget: u64,
         max_entries: usize,
-        matcher: M,
+        policy: M,
     ) -> Result<Self> {
         if binding.is_empty() || block_size == 0 || max_entries == 0 {
             return Err(Error::invalid("invalid prefix cache namespace/budget"));
@@ -68,13 +69,13 @@ impl<V, M: PrefixMatcher> PrefixCache<V, M> {
             ("kv-prefix-local-v1", binding, block_size).hash(hasher);
         }
         Ok(Self {
-            matcher,
+            policy,
             root,
             block_size,
             budget,
             max_entries,
             entries: AHashMap::new(),
-            lru: BTreeSet::new(),
+            lru: M::Recency::default(),
             clock: 0,
             bytes: 0,
             cached_tokens: 0,
@@ -104,7 +105,7 @@ impl<V, M: PrefixMatcher> PrefixCache<V, M> {
                 let t = i as u64;
                 if let Some(entry) = self.entries.get_mut(&key) {
                     entry.touched = t;
-                    self.lru.insert((t, key));
+                    self.lru.insert(PrefixId(key), t);
                 }
             }
             self.clock = self.entries.len() as u64;
@@ -168,7 +169,7 @@ impl<V, M: PrefixMatcher> PrefixCache<V, M> {
         if tokens.len().min(maximum) < self.minimum_tokens_hint {
             return None;
         }
-        self.matcher.longest(PrefixSearch {
+        self.policy.longest(PrefixSearch {
             entries: &self.entries,
             root: self.root.clone(),
             block_size: self.block_size,
@@ -219,9 +220,8 @@ impl<V, M: PrefixMatcher> PrefixCache<V, M> {
         let tick = self.tick();
         // Only an immutable payload was lent to the hook; it cannot remove this entry.
         if let Some(entry) = self.entries.get_mut(&key) {
-            self.lru.remove(&(entry.touched, key));
+            self.lru.touch(PrefixId(key), entry.touched, tick);
             entry.touched = tick;
-            self.lru.insert((tick, key));
         }
         self.hits = self.hits.saturating_add(1);
         self.reused_tokens = self.reused_tokens.saturating_add(length as u64);
@@ -246,7 +246,7 @@ impl<V, M: PrefixMatcher> PrefixCache<V, M> {
         self.insert(snapshot.tokens, snapshot.value, snapshot.bytes)
     }
     pub fn evict_oldest(&mut self) -> Option<V> {
-        let (_, key) = self.lru.pop_first()?;
+        let PrefixId(key) = self.lru.pop_oldest()?;
         let e = self.entries.remove(&key)?;
         self.bytes -= e.bytes;
         self.cached_tokens -= e.tokens.len();
@@ -266,7 +266,7 @@ impl<V, M: PrefixMatcher> PrefixCache<V, M> {
         }
         let key = self.key(&tokens);
         if let Some(old) = self.entries.remove(&key) {
-            self.lru.remove(&(old.touched, key));
+            self.lru.remove(PrefixId(key), old.touched);
             self.bytes -= old.bytes;
             self.cached_tokens -= old.tokens.len();
             removed.push(old.value);
@@ -294,7 +294,7 @@ impl<V, M: PrefixMatcher> PrefixCache<V, M> {
                 touched,
             },
         );
-        self.lru.insert((touched, key));
+        self.lru.insert(PrefixId(key), touched);
         Ok(removed)
     }
 }

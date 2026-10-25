@@ -14,7 +14,7 @@ fn entry(tokens: &[u32], bytes: u64) -> CachedPrefix {
 }
 fn cache(bytes: u64) -> Result<PrefixCache> {
     // Small fixture boundaries; production uses PREFIX_GRANULARITY.
-    PrefixCache::with_matcher(b"cuda-fixture", 1, bytes, usize::MAX, SnapshotScan)
+    PrefixCache::with_policy(b"cuda-fixture", 1, bytes, usize::MAX, SnapshotScan)
 }
 struct ReadTokens;
 impl PrefixReuse<Snapshot> for ReadTokens {

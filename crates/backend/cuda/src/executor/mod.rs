@@ -189,7 +189,7 @@ impl CudaBackend {
         let identity = format!("cuda-resident/{}", loaded.device().name()?);
         let kv_block_bytes = loaded.kv_block_bytes()?;
         // A cache belongs to this immutable loaded backend; snapshots never cross instances.
-        let prefix = prefix::PrefixCache::with_matcher(
+        let prefix = prefix::PrefixCache::with_policy(
             identity.as_bytes(),
             prefix::PREFIX_GRANULARITY,
             prefix_cache_bytes(state_budget),

@@ -1,5 +1,5 @@
 //! Interchangeable lookup strategies over the same validated snapshots and lifecycle.
-use super::{Entry, FINGERPRINT_LANES, Fingerprint};
+use super::{Entry, FINGERPRINT_LANES, Fingerprint, PrefixRecency, SnapshotRecency, TreeRecency};
 use ahash::{AHashMap, AHasher};
 use std::hash::{Hash, Hasher};
 
@@ -51,7 +51,8 @@ impl<'a, V, F: Fn(&[u32], &V) -> bool> PrefixSearch<'a, V, F> {
 }
 /// Select the longest compatible candidate. Policies customize search, while publication,
 /// equality/compatibility guards, resource reuse, accounting and LRU stay in the shared cache.
-pub trait PrefixMatcher {
+pub trait PrefixPolicy {
+    type Recency: PrefixRecency;
     fn longest<'a, V: 'a, F: Fn(&[u32], &V) -> bool>(
         &self,
         search: PrefixSearch<'a, V, F>,
@@ -60,7 +61,8 @@ pub trait PrefixMatcher {
 /// Incremental fingerprint lookup for a cache containing many block-aligned prefixes.
 #[derive(Clone, Copy, Default)]
 pub struct BlockHash;
-impl PrefixMatcher for BlockHash {
+impl PrefixPolicy for BlockHash {
+    type Recency = TreeRecency;
     fn longest<'a, V: 'a, F: Fn(&[u32], &V) -> bool>(
         &self,
         search: PrefixSearch<'a, V, F>,
@@ -71,7 +73,8 @@ impl PrefixMatcher for BlockHash {
 /// Scan the small snapshot set directly, avoiding a full query hash on an early-token miss.
 #[derive(Clone, Copy, Default)]
 pub struct SnapshotScan;
-impl PrefixMatcher for SnapshotScan {
+impl PrefixPolicy for SnapshotScan {
+    type Recency = SnapshotRecency;
     fn longest<'a, V: 'a, F: Fn(&[u32], &V) -> bool>(
         &self,
         search: PrefixSearch<'a, V, F>,

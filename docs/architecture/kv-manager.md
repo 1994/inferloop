@@ -1,6 +1,6 @@
 # KV Cache Manager 与页缓存
 
-KV 管理分为 scheduler 的逻辑页预算和 backend owner 的物理页 / 私有状态。共享前缀生命周期由 `PrefixCache<V, M>` 管理，`M: PrefixMatcher` 选择索引策略，
+KV 管理分为 scheduler 的逻辑页预算和 backend owner 的物理页 / 私有状态。共享前缀生命周期由 `PrefixCache<V, M>` 管理，`M: PrefixPolicy` 选择匹配与最近使用索引表示，
 `PrefixReuse<V>` 实现后端的获取/恢复操作。`KvCacheManager<P>` 在此之上组合 BlockPool，
 为共享页提供 lease 适配；CUDA 则提供连续设备快照适配。公共层不调用 CUDA / Metal API。
 
@@ -9,9 +9,9 @@ KV 管理分为 scheduler 的逻辑页预算和 backend owner 的物理页 / 私
 ```text
 PrefixCache<V, M>
   publication / exact-token guards / compatibility / byte & entry budget / LRU / counters
-  M: PrefixMatcher
-    BlockHash      多个块边界前缀的增量指纹索引（共享页默认）
-    SnapshotScan   少量大快照的扫描匹配（CUDA）
+  M: PrefixPolicy
+    BlockHash      块指纹查找 + 树形 recency（共享页默认）
+    SnapshotScan   快照扫描 + 可复用容量的 recency 队列（CUDA）
   PrefixReuse<V>
     PageReuse      clone 快照句柄并原子 retain 共享页
     CUDA Restore   恢复 target/draft/FP8/hidden，settle 设备复制
@@ -29,7 +29,8 @@ PrefixCache<V, M>
   buffer 编码复制；CUDA 当前同步恢复并 drain 后返回。失败时后端须回滚自己的引用/排队工作，
   或将部分恢复的 destination 标为 poisoned 并 settle 复制，公共层不虚构 GPU fence 完成。
 - 不兼容的长快照不阻止选取较短的兼容快照。CUDA 不再 take/reinsert，也不在兼容性检查前增加 hit。
-  两种 matcher 使用相同 publication、资源 hook、统计和 LRU，扩展策略无需重写整套缓存。
+  两种策略使用相同 publication、资源 hook、统计和 LRU 语义。`PrefixRecency` 只定制
+  最近使用索引的表示，不参与预算、资源释放或 hit 提交；CUDA 的成功查询不新增树节点分配。
 
 ## 所有权与操作
 

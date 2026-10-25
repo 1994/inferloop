@@ -1,4 +1,4 @@
-use super::PrefixCache;
+use super::{PrefixCache, PrefixId, PrefixRecency};
 #[test]
 fn clock_rollover_keeps_eviction_order_independent_of_hash_iteration() {
     let mut cache = PrefixCache::new(b"rollover", 2, 100, 16).unwrap();
@@ -24,8 +24,8 @@ fn forced_fingerprint_collision_cannot_restore_different_tokens() {
     let collision = cache.key(&[9, 8]);
     // Put a real entry under the other tokens' fingerprint to force the index collision.
     let entry = cache.entries.remove(&original).unwrap();
-    cache.lru.remove(&(entry.touched, original));
-    cache.lru.insert((entry.touched, collision));
+    cache.lru.remove(PrefixId(original), entry.touched);
+    cache.lru.insert(PrefixId(collision), entry.touched);
     cache.entries.insert(collision, entry);
     assert!(!cache.contains(&[9, 8]));
     assert!(!cache.contains_where(&[9, 8], |_| panic!("token mismatch must short-circuit")));
@@ -68,4 +68,20 @@ fn incremental_boundaries_match_publication_for_partial_and_long_prefixes() {
     let mut changed = tokens;
     changed[16] = 99;
     assert_eq!(cache.lookup(&changed, 257), Some(16));
+}
+
+#[test]
+fn snapshot_queue_keeps_lru_order_across_clock_rollover() {
+    use super::SnapshotScan;
+    let mut cache = PrefixCache::with_policy(b"rollover-scan", 2, 100, 16, SnapshotScan).unwrap();
+    for value in 0..16_u32 {
+        cache.insert(vec![value, value], value, 4).unwrap();
+    }
+    assert_eq!(cache.lookup(&[0, 0], 2), Some(0));
+    cache.clock = u64::MAX;
+    assert_eq!(cache.lookup(&[2, 2], 2), Some(2));
+    for value in [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0, 2] {
+        assert_eq!(cache.evict_oldest(), Some(value));
+    }
+    assert!(cache.is_empty());
 }

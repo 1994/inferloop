@@ -193,8 +193,8 @@ fn publication_returns_rejected_and_replaced_resources_and_tracks_coverage() {
 #[test]
 fn scan_and_block_index_share_matching_budget_and_lru_semantics_through_churn() {
     use infer_state::cache::{BlockHash, SnapshotScan};
-    let mut indexed = PrefixCache::with_matcher(b"index", 2, 12, 3, BlockHash).unwrap();
-    let mut scanned = PrefixCache::with_matcher(b"scan", 2, 12, 3, SnapshotScan).unwrap();
+    let mut indexed = PrefixCache::with_policy(b"index", 2, 12, 3, BlockHash).unwrap();
+    let mut scanned = PrefixCache::with_policy(b"scan", 2, 12, 3, SnapshotScan).unwrap();
     let mut random = 42_u64;
     for value in 0..3000_u64 {
         random = random
