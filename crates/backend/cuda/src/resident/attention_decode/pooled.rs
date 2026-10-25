@@ -62,8 +62,11 @@ impl Layout {
             return Err(Error::invalid("empty pooled attention"));
         }
         let metadata = product(&[slots, VERIFY_LANES, METADATA_FIELDS])?;
-        let columns = capacity
-            .div_ceil(KV_BLOCK_TOKENS)
+        let blocks = capacity
+            .checked_add(KV_BLOCK_TOKENS - 1)
+            .ok_or_else(|| Error::invalid("pooled attention table block overflow"))?
+            / KV_BLOCK_TOKENS;
+        let columns = blocks
             .max(metadata)
             .max(CONTROL_TILE)
             .checked_next_power_of_two()

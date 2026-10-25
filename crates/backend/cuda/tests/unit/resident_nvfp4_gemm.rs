@@ -36,6 +36,27 @@ fn nearest(value: f32, table: &[f32]) -> usize {
 }
 
 #[test]
+fn down_split_candidate_is_down_only_and_quotes_exact_scratch() {
+    let candidate = super::down_split_candidate(48, 5120, 17408, 170)
+        .expect("shape candidate")
+        .expect("down candidate");
+    assert_eq!(candidate.splits, 4);
+    assert_eq!(candidate.tile, [64, 64]);
+    assert_eq!(candidate.scratch_bytes, (48 * 5120 * 4 * 4) as u64);
+    assert!(
+        super::down_split_candidate(48, 17408, 5120, 170)
+            .expect("gate shape")
+            .is_none()
+    );
+    assert!(
+        super::down_split_candidate(48, 5120, 17408, 1)
+            .expect("small device")
+            .is_none()
+    );
+    assert!(super::split_scratch_bytes(usize::MAX, 5120, 4).is_err());
+}
+
+#[test]
 fn split_k_candidate_kernels_compile_with_k_and_tile_tails() {
     for (m, n, k, splits) in [(48, 5120, 17408, 4), (17, 129, 512, 3)] {
         let code_columns = k / 2;

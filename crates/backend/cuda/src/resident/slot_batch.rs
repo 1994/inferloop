@@ -219,7 +219,37 @@ pub struct SlotPool {
     _lane_fusion: Vec<Option<super::program::FusionWorkspace>>,
 }
 
+fn table_columns(capacity: usize, width: usize) -> Result<usize> {
+    let blocks = capacity
+        .checked_add(KV_BLOCK_TOKENS - 1)
+        .ok_or_else(|| Error::invalid("slot table block overflow"))?
+        / KV_BLOCK_TOKENS;
+    let blocks = blocks.max(1);
+    let metadata = width
+        .checked_mul(VERIFY_LANES)
+        .and_then(|rows| rows.checked_mul(METADATA_FIELDS))
+        .ok_or_else(|| Error::invalid("slot table metadata overflow"))?;
+    blocks
+        .max(metadata)
+        .max(MIN_TABLE_COLUMNS)
+        .checked_next_power_of_two()
+        .ok_or_else(|| Error::invalid("slot table width overflow"))
+}
+
 impl SlotPool {
+    /// Device bytes of the padded stacked page-table owner. The control pack reads a full
+    /// power-of-two row, so this is deliberately larger than one block per capacity block.
+    pub(crate) fn table_bytes(width: usize, capacity: usize) -> Result<u64> {
+        let columns = table_columns(capacity, width)?;
+        let elements = width
+            .checked_mul(columns)
+            .ok_or_else(|| Error::invalid("slot table element overflow"))?;
+        u64::try_from(elements)
+            .ok()
+            .and_then(|elements| elements.checked_mul(F32_BYTES as u64))
+            .ok_or_else(|| Error::invalid("slot table byte overflow"))
+    }
+
     pub(crate) fn parameter_bytes(graph: &DataflowGraph, verify: usize) -> Result<u64> {
         if super::slot_verify::fused_recurrent(graph, verify) {
             super::slot_states::parameter_bytes(&graph.nodes)
@@ -432,24 +462,26 @@ impl SlotPool {
         )?;
         let mut fp8 = Vec::with_capacity(width);
         let mut bytes = paging.map_or(0, |paging| state_bytes(&States::new(), &paging.shared));
-        let table_blocks = capacity.div_ceil(KV_BLOCK_TOKENS).max(1);
-        let table_columns = table_blocks
-            .max(
-                width
-                    .saturating_mul(VERIFY_LANES)
-                    .saturating_mul(METADATA_FIELDS),
-            )
-            .max(MIN_TABLE_COLUMNS)
-            .next_power_of_two();
-        let mut table_values = Vec::with_capacity(width * table_columns);
+        let table_columns = table_columns(capacity, width)?;
+        let table_blocks = capacity
+            .checked_add(KV_BLOCK_TOKENS - 1)
+            .ok_or_else(|| Error::invalid("slot table block overflow"))?
+            / KV_BLOCK_TOKENS;
+        let table_elements = width
+            .checked_mul(table_columns)
+            .ok_or_else(|| Error::invalid("slot table element overflow"))?;
+        let mut table_values = Vec::new();
+        table_values
+            .try_reserve_exact(table_elements)
+            .map_err(|_| Error::invalid("slot table allocation"))?;
         for _ in 0..width {
-            table_values.extend((0..table_columns).map(|block| {
-                if block < table_blocks {
-                    i32::try_from(block).unwrap_or(i32::MAX)
+            for block in 0..table_columns {
+                table_values.push(if block < table_blocks {
+                    i32::try_from(block).map_err(|_| Error::invalid("slot table entry"))?
                 } else {
                     0
-                }
-            }));
+                });
+            }
         }
         let table_owner = device
             .upload(table_values, &[width, table_columns])

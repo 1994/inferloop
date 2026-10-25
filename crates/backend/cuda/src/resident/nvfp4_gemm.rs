@@ -1,6 +1,17 @@
 //! Model-declared W4A4 projection with block-16 E4M3 activation scales.
 mod quant_reuse;
 mod workspace;
+
+/// Four contiguous K windows were the measured down-projection candidate.
+#[cfg(test)]
+const SPLIT_CANDIDATE_PARTS: usize = 4;
+/// Below this driver-reported SM count the four-way candidate is not offered.
+#[cfg(test)]
+const MIN_SPLIT_SMS: usize = 64;
+#[cfg(test)]
+use crate::constants::F32_BYTES;
+#[cfg(test)]
+use crate::constants::PREFILL_GEMM_TILE_N;
 use crate::mlp::ProjectionWeight as MlpProjectionWeight;
 use cutile::prelude::DeviceError;
 use cutile::prelude::Scope;
@@ -391,6 +402,62 @@ pub(crate) mod kernels {
     }
 }
 
+/// Down-projection split-K candidate derived from the actual shapes and device SM count.
+/// It is deliberately not selected by production; this type is the qualification handoff.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SplitCandidate {
+    pub rows: usize,
+    pub outputs: usize,
+    pub columns: usize,
+    pub splits: usize,
+    pub tile: [usize; 2],
+    pub scratch_bytes: u64,
+}
+
+/// The measured screen only supports a down-shaped (`outputs < columns`) 48-row-class
+/// projection with a 64x64 output tile and four K windows. Gate/up is rejected by shape.
+#[cfg(test)]
+fn down_split_candidate(
+    rows: usize,
+    outputs: usize,
+    columns: usize,
+    multiprocessors: usize,
+) -> infer_core::Result<Option<SplitCandidate>> {
+    if rows == 0
+        || rows > PREFILL_GEMM_TILE_N
+        || outputs == 0
+        || columns == 0
+        || outputs >= columns
+        || multiprocessors < MIN_SPLIT_SMS
+    {
+        return Ok(None);
+    }
+    let splits = SPLIT_CANDIDATE_PARTS;
+    let scratch_bytes = split_scratch_bytes(rows, outputs, splits)?;
+    Ok(Some(SplitCandidate {
+        rows,
+        outputs,
+        columns,
+        splits,
+        tile: [PREFILL_GEMM_TILE_N, PREFILL_GEMM_TILE_N],
+        scratch_bytes,
+    }))
+}
+
+/// Device bytes of the `[splits, rows, outputs]` F32 partial owner.
+#[cfg(test)]
+fn split_scratch_bytes(rows: usize, outputs: usize, splits: usize) -> infer_core::Result<u64> {
+    let elements = rows
+        .checked_mul(outputs)
+        .and_then(|value| value.checked_mul(splits))
+        .ok_or_else(|| infer_core::Error::invalid("split-K scratch element overflow"))?;
+    u64::try_from(elements)
+        .ok()
+        .and_then(|value| value.checked_mul(F32_BYTES as u64))
+        .ok_or_else(|| infer_core::Error::invalid("split-K scratch byte overflow"))
+}
+
 /// Record only when the checkpoint declares an activation scale for packed FP4 weights.
 pub(super) fn record(
     scope: &Scope,
@@ -475,6 +542,9 @@ fn record_input(
     Ok(true)
 }
 
+#[cfg(test)]
+#[path = "../../tests/unit/resident_nvfp4_split_driver.rs"]
+mod split_driver_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/resident_nvfp4_gemm.rs"]
 mod tests;
