@@ -143,6 +143,8 @@ pub struct ProtocolBackend {
     media_tasks: Arc<AtomicUsize>,
     media_reservations: Arc<AtomicUsize>,
     media_quotes: Arc<AtomicUsize>,
+    normal_quotes: Arc<AtomicUsize>,
+    quote_prices: Option<(u64, u64)>,
     identity: String,
     states: BoundedMap<StateId, State>,
     template: ModelOutput,
@@ -220,6 +222,8 @@ impl ProtocolBackend {
             media_tasks: Arc::new(AtomicUsize::new(0)),
             media_reservations: Arc::new(AtomicUsize::new(0)),
             media_quotes: Arc::new(AtomicUsize::new(0)),
+            normal_quotes: Arc::new(AtomicUsize::new(0)),
+            quote_prices: None,
             identity: tag.to_owned(),
             states: BoundedMap::new(requests)?,
             template: ModelOutput {
@@ -258,6 +262,17 @@ impl ProtocolBackend {
     pub fn media_quotes(&self) -> Arc<AtomicUsize> {
         self.media_quotes.clone()
     }
+    /// Number of normal reservation-byte quotes requested by admission.
+    #[must_use]
+    pub fn normal_quotes(&self) -> Arc<AtomicUsize> {
+        self.normal_quotes.clone()
+    }
+    /// Return distinct normal and media byte prices for quote-path scenes.
+    #[must_use]
+    pub const fn priced_quotes(mut self, normal: u64, media: u64) -> Self {
+        self.quote_prices = Some((normal, media));
+        self
+    }
     /// Advertise a loaded draft while rejecting any task that permits backend sampling.
     pub const fn requiring_engine_sampling(mut self, draft_depth: usize) -> Self {
         self.host_sampling_draft_depth = draft_depth;
@@ -282,12 +297,26 @@ impl BackendProvider for ProtocolBackend {
         self.media_reservations.fetch_add(1, Ordering::Relaxed);
         self.reserve_state_for(state, capacity, readout)
     }
+    fn state_reservation_bytes_for(
+        &self,
+        capacity: usize,
+        _readout: OutputReadout,
+    ) -> Result<Option<u64>> {
+        if let Some((normal, _)) = self.quote_prices {
+            self.normal_quotes.fetch_add(1, Ordering::Relaxed);
+            return Ok(Some(normal));
+        }
+        self.state_reservation_bytes(capacity)
+    }
     fn state_reservation_bytes_for_media(
         &self,
         capacity: usize,
         readout: OutputReadout,
     ) -> Result<Option<u64>> {
-        self.media_quotes.fetch_add(1, Ordering::Relaxed);
+        if let Some((_, media)) = self.quote_prices {
+            self.media_quotes.fetch_add(1, Ordering::Relaxed);
+            return Ok(Some(media));
+        }
         self.state_reservation_bytes_for(capacity, readout)
     }
     fn prepare_state_reservation_for_media(

@@ -36,9 +36,11 @@ impl CudaExecutor {
         capacity: usize,
         readout: OutputReadout,
     ) -> Result<Option<u64>> {
-        // Media prefill bypasses slot/home programs, so its quote is the private path.
+        // Media prefill bypasses slot/home programs and additionally retains encoded rows plus
+        // the bounded encoder transient peak; price the same allowance reserve_media charges.
         let private = true;
         self.reservation_budget(capacity, readout, private)
+            .map(|bytes| bytes.saturating_add(super::state::MEDIA_RESERVATION_BYTES))
             .map(Some)
     }
     pub(super) fn state_capacity_bytes(&self) -> Result<Option<u64>> {

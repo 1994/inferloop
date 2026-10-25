@@ -3,6 +3,12 @@ use crate::resident::DeviceProgram;
 use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::OutputReadout;
 use std::collections::BTreeSet;
+
+/// Conservative device footprint for media prefill: retained encoded rows plus bounded decoder
+/// uploads and the encoder's transient peak for one item. The input layer caps a media item at
+/// 24 MiB decoded/encoded payload; 256 MiB covers one active item plus the encoded row tensor.
+pub(super) const MEDIA_RESERVATION_BYTES: u64 = 256 * 1024 * 1024;
+
 impl CudaExecutor {
     pub(super) fn available(&self) -> Result<u64> {
         self.state_funding().map(|(free, _)| free)
@@ -222,7 +228,13 @@ impl CudaExecutor {
         } else {
             true
         };
-        let budget = self.reservation_budget(capacity, readout, private_verification)?;
+        let budget = self
+            .reservation_budget(capacity, readout, private_verification)?
+            .saturating_add(if allow_home {
+                0
+            } else {
+                MEDIA_RESERVATION_BYTES
+            });
         if self.states.len() >= self.maximum_states
             || self
                 .active_budget()?

@@ -254,6 +254,18 @@ impl Fixture {
         self.engine.check_invariants()
     }
 }
+fn poll_quote(ticket: &mut ResourceTicket) -> Result<Option<u64>> {
+    let limit = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Some(ResourceReply::ReservationBytes(bytes)) = ticket.poll()? {
+            return Ok(bytes);
+        }
+        if Instant::now() >= limit {
+            return Err(Error::invariant("threaded quote did not acknowledge"));
+        }
+        sleep(Duration::from_millis(1));
+    }
+}
 fn deadline(limit: Instant) -> Result<()> {
     if Instant::now() >= limit {
         return Err(Error::invariant("resource owner did not drain"));
@@ -1105,8 +1117,10 @@ fn threaded_media_request_uses_the_media_quote_command() -> Result<()> {
     kernels.register(&support::DeclaredKernels)?;
     let backend = ProtocolBackend::new(16, 8, &ir)?
         .multimodal()
-        .requiring_engine_sampling(2);
+        .requiring_engine_sampling(2)
+        .priced_quotes(1024, 4096);
     let media_quotes = backend.media_quotes();
+    let normal_quotes = backend.normal_quotes();
     let mut engine = Engine::new(
         backend,
         ir,
@@ -1126,7 +1140,7 @@ fn threaded_media_request_uses_the_media_quote_command() -> Result<()> {
             span: 0..1,
         }),
     };
-    let request = CanonicalRequest {
+    let media_request = CanonicalRequest {
         id: infer_core::RequestId::new(10)?,
         model: ModelId::ONE,
         session: None,
@@ -1139,14 +1153,21 @@ fn threaded_media_request_uses_the_media_quote_command() -> Result<()> {
         sampling: infer_ir::Sampling::default(),
         extensions: BTreeMap::new(),
     };
-    let prepared = engine.request_preparer()?.prepare(request)?;
+    // The normal path must still quote its own price; only the media request uses 4096.
+    let text = request(11)?;
+    let prepared_text = engine.request_preparer()?.prepare(text)?;
+    let mut text_quote = engine.admission_quote(&prepared_text)?;
+    let text_bytes = poll_quote(&mut text_quote)?;
+    assert_eq!(text_bytes, Some(1024));
+    assert!(normal_quotes.load(Ordering::Acquire) > 0);
+    assert_eq!(media_quotes.load(Ordering::Acquire), 0);
+    drop(text_quote);
+
+    let prepared = engine.request_preparer()?.prepare(media_request)?;
     let mut quote = engine.admission_quote(&prepared)?;
-    let bytes = loop {
-        if let Some(ResourceReply::ReservationBytes(bytes)) = quote.poll()? {
-            break bytes;
-        }
-        sleep(Duration::from_millis(1));
-    };
+    let bytes = poll_quote(&mut quote)?;
+    assert_eq!(bytes, Some(4096), "media quote must use the media price");
+    assert!(media_quotes.load(Ordering::Acquire) > 0);
     engine.submit_quoted_with_trace(prepared, bytes, None)?;
     let limit = Instant::now() + Duration::from_secs(3);
     while !engine.is_idle() {
