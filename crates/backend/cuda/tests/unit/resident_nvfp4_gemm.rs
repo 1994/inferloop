@@ -679,10 +679,13 @@ fn swiglu_tile_candidates_keep_the_qualified_fallback() {
         rows: 128,
         columns: 128
     }));
-    assert_eq!(select_swiglu_tile(1024, 5120, 17408), SwigluTile::FALLBACK);
+    assert_eq!(
+        select_swiglu_tile(1024, 5120, 17408),
+        Some(SwigluTile::FALLBACK)
+    );
 
     // A shape that the fallback cannot tile is not silently claimed as a candidate.
-    assert_eq!(select_swiglu_tile(96, 5120, 17408).rows, 0);
+    assert_eq!(select_swiglu_tile(96, 5120, 17408), None);
     assert_eq!(swiglu_candidates(96, 5120, 17408), Vec::new());
     // The quantization group width is part of the legality check.
     assert_eq!(swiglu_candidates(128, 5137, 17408), Vec::new());

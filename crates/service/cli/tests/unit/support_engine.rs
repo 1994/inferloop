@@ -6,7 +6,7 @@ fn recommendation(max_sequences: usize) -> SchedulingRecommendation {
     SchedulingRecommendation {
         max_sequences,
         memory_bound: 3,
-        step_bound: 11,
+        knee_bound: None,
     }
 }
 

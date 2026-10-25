@@ -2,9 +2,7 @@
 use super::{
     batch::States,
     capture::error,
-    slot_recurrent::{
-        LANES, Staging, covered_geometry_nodes, covers, fused, fused_block, value_split,
-    },
+    slot_recurrent::{LANES, Staging, covers, fused, fused_block, value_split},
     slot_states::RecurrentParameters,
 };
 use crate::{
@@ -28,7 +26,7 @@ struct Inputs<'a> {
     metadata: &'a Tensor<i32>,
     counts: &'a Tensor<i32>,
     slots: usize,
-    value_split: usize,
+    multiprocessors: u32,
 }
 
 impl CapturedCommit {
@@ -79,12 +77,7 @@ impl CapturedCommit {
             metadata,
             counts: &counts,
             slots,
-            value_split: value_split(
-                device.profile()?.multiprocessors,
-                covered_geometry_nodes(nodes).map_or(1, |(heads, _)| heads),
-                slots,
-                covered_geometry_nodes(nodes).map_or(1, |(_, dim)| dim),
-            ),
+            multiprocessors: device.profile()?.multiprocessors,
         };
         let graph = CudaGraph::scope(&device.stream, |scope| {
             for (index, node) in nodes.iter().enumerate().filter(|(_, node)| covers(node)) {
@@ -168,7 +161,12 @@ fn record_node(
                 .parameters
                 .get(&node.id)
                 .ok_or_else(|| Error::invariant("commit delta parameters"))?;
-            let block = fused_block(value_dim, inputs.value_split);
+            let heads = match node.op {
+                TensorOp::Delta { value_heads, .. } => value_heads,
+                _ => 1,
+            };
+            let split = value_split(inputs.multiprocessors, heads, inputs.slots, value_dim);
+            let block = fused_block(value_dim, split);
             scope
                 .record(
                     fused::delta_commit_batch(

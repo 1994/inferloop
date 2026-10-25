@@ -86,7 +86,7 @@
 
 | 常数 | 位置 | 现状 | 应改为 |
 |---|---|---|---|
-| `DEFAULT_MAX_BATCH = 16` | `engine/runtime/src/config.rs`、`spi::SchedulingRecommendation` | CLI 自动路径从 backend 取得实际建议；直接构造 `RuntimeConfig` 的可移植默认仍为 16。当前建议取 `min(状态预算 / 每序列最小状态, 配置的 decode step 宽度, 显式 max_num_seqs)`。峰值算力不可用时不做架构常数猜测；算力 knee 仍需设备标定。 | backend 提供 `SchedulingRecommendation`；显式 `--max-num-seqs` 始终优先，缺失建议时保留可移植默认 |
+| `DEFAULT_MAX_BATCH = 16` | `engine/runtime/src/config.rs`、`spi::SchedulingRecommendation` | CLI 自动路径从 backend 取得实际建议；直接构造 `RuntimeConfig` 的可移植默认仍为 16。自动路径在 runtime 构造时消费 `SchedulingRecommendation`：`min(状态预算 / 每序列最小状态, 已标定的算力 knee(若有), 显式 max_num_seqs, 提交 ABI 上限)`。峰值算力未标定时 `knee_bound=None`，不会用 64 或 decode step 冒充 N_knee；设备标定是后续门禁。 | backend 提供 `SchedulingRecommendation`；显式 `--max-num-seqs` 始终优先，缺失建议时保留可移植默认 |
 | `VALUE_SPLIT_*`（按 SM 数 63/127 分档） | `resident/slot_recurrent.rs` | 已删除 SM 分档 | 由实际 SM、covered value heads、槽数和 value 维合法除数推出；目标是一波 CTA，尾宽只接受可整除的 split |
 | pooled attention `MAX_BATCH = 4`、切分数上限 64 | `resident/attention_decode/pooled.rs`、`tuning/attention/decode.rs` | 每组 4 个槽串行；切分数已按 SM 数、KV 头数与每组槽数推导，尚未结合上下文长度 | 切分数按上下文长度推导（每份至少若干 KV 块），部分和 workspace 随之缩小，从而一次启动处理全部槽 |
 | `SWIGLU_TILE_ROWS/COLUMNS = 64` | `resident/nvfp4_gemm/workspace.rs` | 已加入 shape-specific `swiglu_candidates`（64x64 fallback、128x64、128x128）；64 fallback 仍是默认 | 128 行候选只在几何和量化布局合法时列出；需要完整输出与量化-inclusive paired A/B 才能成为默认 |

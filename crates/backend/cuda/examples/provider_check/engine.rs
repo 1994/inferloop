@@ -25,6 +25,7 @@ pub fn run(
     let config = RuntimeConfig {
         max_requests: 2,
         max_num_seqs: 2,
+        max_num_seqs_explicit: true,
         candidate_limit: 2,
         max_request_units: 2,
         max_num_batched_tokens: 128,

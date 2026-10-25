@@ -14,8 +14,8 @@ pub struct SchedulingRecommendation {
     pub max_sequences: usize,
     /// State/KV memory bound from the loaded model and state budget.
     pub memory_bound: usize,
-    /// Bound from the configured decode step width.
-    pub step_bound: usize,
+    /// Calibrated compute/bandwidth knee when the backend has measured one.
+    pub knee_bound: Option<usize>,
 }
 
 /// Owned work crosses the submission boundary; a future CUDA implementation uses
@@ -54,8 +54,10 @@ pub trait BackendProvider {
     ///
     /// Backends that cannot price state return `None`; callers then keep their explicit or
     /// portable default rather than inventing a device tier.
-    fn scheduling_recommendation(&self, _step_tokens: usize) -> Option<SchedulingRecommendation> {
-        None
+    /// # Errors
+    /// Returns a storage/pricing error when the backend cannot compute a valid recommendation.
+    fn scheduling_recommendation(&self) -> Result<Option<SchedulingRecommendation>> {
+        Ok(None)
     }
     /// Speculative decode support, queried on hot paths where cloning capabilities would allocate.
     fn speculation_capability(&self) -> infer_ir::SpeculationCapability {

@@ -88,8 +88,8 @@ fn quotes_do_not_recapture_a_retired_pool_and_reservation_restores_it() -> infer
 
 #[test]
 fn automatic_concurrency_is_the_smallest_real_bound() {
-    assert_eq!(bound_concurrency(4, 64, 64), 4);
-    assert_eq!(bound_concurrency(64, 7, 64), 7);
-    assert_eq!(bound_concurrency(64, 64, 5), 5);
-    assert_eq!(bound_concurrency(0, 0, 0), 1);
+    assert_eq!(bound_concurrency(4, None, 64), 4);
+    assert_eq!(bound_concurrency(64, Some(7), 64), 7);
+    assert_eq!(bound_concurrency(64, None, 5), 5);
+    assert_eq!(bound_concurrency(0, None, 0), 1);
 }

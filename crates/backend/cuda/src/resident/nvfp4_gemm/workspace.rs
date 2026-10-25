@@ -93,15 +93,10 @@ pub fn swiglu_candidates(rows: usize, columns: usize, hidden: usize) -> Vec<Swig
 
 /// Select the qualified default; candidate search may choose another tile only after its own
 /// exact-output and paired evidence exists.
-pub fn select_swiglu_tile(rows: usize, columns: usize, hidden: usize) -> SwigluTile {
-    if swiglu_candidates(rows, columns, hidden).contains(&SwigluTile::FALLBACK) {
-        SwigluTile::FALLBACK
-    } else {
-        SwigluTile {
-            rows: 0,
-            columns: 0,
-        }
-    }
+pub fn select_swiglu_tile(rows: usize, columns: usize, hidden: usize) -> Option<SwigluTile> {
+    swiglu_candidates(rows, columns, hidden)
+        .contains(&SwigluTile::FALLBACK)
+        .then_some(SwigluTile::FALLBACK)
 }
 /// Keyed by `(rows, columns, activation-scale columns)`.
 type Fp8Key = (usize, usize, usize);
@@ -573,13 +568,13 @@ impl Workspace {
 
     /// Whether [`Self::record_gate_up_swiglu`] can run for this prompt width and MLP geometry.
     pub(crate) fn gate_up_swiglu_ready(&self, rows: usize, columns: usize, hidden: usize) -> bool {
-        let tile = select_swiglu_tile(rows, columns, hidden);
-        tile.rows > 0
-            && rows.is_multiple_of(tile.rows)
-            && rows.is_multiple_of(QUANTIZATION_ROWS)
-            && hidden.is_multiple_of(tile.columns)
-            && self.buffers.contains_key(&(rows, columns))
-            && self.buffers.contains_key(&(rows, hidden))
+        select_swiglu_tile(rows, columns, hidden).is_some_and(|tile| {
+            rows.is_multiple_of(tile.rows)
+                && rows.is_multiple_of(QUANTIZATION_ROWS)
+                && hidden.is_multiple_of(tile.columns)
+                && self.buffers.contains_key(&(rows, columns))
+                && self.buffers.contains_key(&(rows, hidden))
+        })
     }
 
     /// Gate and up projections of a gated MLP fused with the down projection's quantizer:

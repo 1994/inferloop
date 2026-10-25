@@ -38,6 +38,7 @@ pub fn configured_engine(
         config.max_output_tokens = Some(tokens);
     }
     let explicit_sequences = choice.max_num_seqs.is_some();
+    config.max_num_seqs_explicit = explicit_sequences;
     if let Some(sequences) = choice.max_num_seqs {
         config.max_num_seqs = sequences;
     }
@@ -58,10 +59,8 @@ pub fn configured_engine(
             .scope(|| backend::load(package, memory_mib, &choice))?;
         let ir = backend.model_ir().clone();
         let registry = backend.registry()?;
-        let recommendation = automatic
-            .then(|| backend.scheduling_recommendation(config.max_num_batched_tokens))
-            .flatten();
         if automatic {
+            let recommendation = backend.scheduling_recommendation()?;
             apply_recommendation(&mut config, explicit_sequences, recommendation);
         }
         if automatic {
@@ -94,11 +93,12 @@ fn apply_recommendation(
         return;
     };
     config.max_num_seqs = recommendation.max_sequences;
+    config.max_num_seqs_explicit = false;
     tracing::info!(
         target: "infer::load",
         max_num_seqs = recommendation.max_sequences,
         memory_bound = recommendation.memory_bound,
-        step_bound = recommendation.step_bound,
+        knee_bound = ?recommendation.knee_bound,
         "automatic scheduling bound selected"
     );
 }

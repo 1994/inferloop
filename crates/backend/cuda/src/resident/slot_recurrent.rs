@@ -604,7 +604,7 @@ use crate::constants::{CONV_KERNEL_SIZE, CONV_KERNEL_TILE, GDN_PROJECTED_INPUTS}
 use crate::device::{CudaDevice, device_error};
 use cutile::prelude::*;
 use infer_core::{Error, TensorId};
-use infer_ir::{DataflowGraph, TensorNode, TensorOp};
+use infer_ir::{TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -755,30 +755,6 @@ pub(super) fn value_split(
         .filter(|split| value_dim.is_multiple_of(*split))
         .min_by_key(|split| split.abs_diff(desired))
         .unwrap_or(1)
-}
-
-/// The first covered recurrent geometry, used to derive one graph-wide split.
-pub(super) fn covered_geometry(graph: &DataflowGraph) -> Option<(usize, usize)> {
-    graph.nodes.iter().find_map(geometry_of)
-}
-
-/// As [`covered_geometry`], for a node slice used while building a commit graph.
-pub(super) fn covered_geometry_nodes(nodes: &[TensorNode]) -> Option<(usize, usize)> {
-    nodes.iter().find_map(geometry_of)
-}
-
-const fn geometry_of(node: &TensorNode) -> Option<(usize, usize)> {
-    if !covers(node) {
-        return None;
-    }
-    match node.op {
-        TensorOp::Delta {
-            value_heads,
-            value_dim,
-            ..
-        } => Some((value_heads, value_dim)),
-        _ => None,
-    }
 }
 
 /// Whether `node` is a recurrent state writer the fused verify/commit pair covers.
