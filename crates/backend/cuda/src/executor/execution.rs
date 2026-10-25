@@ -17,11 +17,6 @@ use std::mem::swap;
 use std::mem::take;
 use std::ops::Range;
 use std::sync::Arc;
-/// Prompt positions between prefix-cache snapshots, where a prefill state becomes a reusable
-/// prompt prefix. Each snapshot copies the covered KV and
-/// the recurrent state and synchronizes, so snapshotting every 2048-token chunk cost 0.12 s
-/// of a 32K prompt's TTFT; at 4096 a later turn recomputes at most one interval.
-const PREFIX_GRANULARITY: usize = 4096;
 /// Bound capture/replan work while adapting tensor quotes to observed driver storage.
 const POOL_CAPTURE_ATTEMPTS: usize = 3;
 
@@ -47,7 +42,10 @@ fn cacheable_prefix(
         return None;
     }
     let covered = state.history.len();
-    if covered == 0 || covered > state.capacity || !covered.is_multiple_of(PREFIX_GRANULARITY) {
+    if covered == 0
+        || covered > state.capacity
+        || !covered.is_multiple_of(prefix::PREFIX_GRANULARITY)
+    {
         return None;
     }
     let target = super::prefix_state::ProgramSnapshot::capture(
@@ -76,8 +74,7 @@ fn cacheable_prefix(
         .saturating_add(draft.as_ref().map_or(0, |d| d.program.bytes));
     Some(prefix::CachedPrefix {
         tokens: state.history.clone(),
-        target,
-        draft,
+        value: prefix::Snapshot { target, draft },
         bytes,
     })
 }
@@ -112,9 +109,10 @@ impl CudaBackend {
                 recorded.unwrap_or_default(),
             );
         }
-        for snapshot in snapshots {
-            self.prefix.insert(snapshot);
-        }
+        let published = snapshots
+            .into_iter()
+            .try_for_each(|snapshot| self.prefix.publish(snapshot).map(drop));
+        let result = result.and_then(|outputs| published.map(|()| outputs));
         if result.is_err() {
             for task in tasks {
                 if let Some(state) = self.states.get_mut(&task.state) {
@@ -596,7 +594,7 @@ impl CudaBackend {
     /// only consumer that scales with the verification width.
     fn reclaim_cached_for_pool(&mut self, error: &Error) -> bool {
         matches!(error.code, ErrorCode::Capacity | ErrorCode::Backend)
-            && (self.pool.evict() || self.prefix.evict())
+            && (self.pool.evict() || self.prefix.evict_oldest().is_some())
             && self.loaded.device().reclaim_barrier().is_ok()
     }
 

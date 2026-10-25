@@ -15,6 +15,7 @@ mod validation;
 use crate::{loading::LoadedModel, resident::DeviceProgram, resident::slot_batch::SlotPool};
 use infer_core::{Error, Result, StateId};
 use infer_ir::{DeviceCapabilities, ExecutionProgram, ModelOutput, OutputReadout, TaskOutput};
+use infer_state::cache::SnapshotScan;
 use std::{collections::BTreeMap, sync::Arc};
 
 pub struct CudaBackend {
@@ -32,8 +33,6 @@ pub struct CudaBackend {
     /// KV bytes one 32-token block of the target graph occupies; the physical page price the
     /// engine's block accounting is reported in. Load-time constant of the graph and scales.
     kv_block_bytes: u64,
-    /// Prompt tokens restored from the prefix cache instead of recomputed, for observability.
-    reused_tokens: u64,
     /// Wide prompt programs slot-resident sequences prompt through; see [`Worker`].
     worker: Option<Worker>,
     /// Per slot, the target and draft programs that prefill straight into that slot while no
@@ -189,6 +188,14 @@ impl CudaBackend {
         )?;
         let identity = format!("cuda-resident/{}", loaded.device().name()?);
         let kv_block_bytes = loaded.kv_block_bytes()?;
+        // A cache belongs to this immutable loaded backend; snapshots never cross instances.
+        let prefix = prefix::PrefixCache::with_policy(
+            identity.as_bytes(),
+            prefix::PREFIX_GRANULARITY,
+            prefix_cache_bytes(state_budget),
+            usize::MAX,
+            SnapshotScan,
+        )?;
         let mut backend = Self {
             loaded,
             capabilities,
@@ -200,9 +207,8 @@ impl CudaBackend {
             budget: state_budget,
             maximum_states,
             pool: pool::StatePool::default(),
-            prefix: prefix::PrefixCache::new(prefix_cache_bytes(state_budget)),
+            prefix,
             kv_block_bytes,
-            reused_tokens: 0,
             worker: None,
             homes: Vec::new(),
             slots: None,

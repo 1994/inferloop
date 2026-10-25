@@ -23,6 +23,10 @@
 
 Runtime 通过静态 BackendProvider 协调资源与 ticket。具体设备 buffer / handle 留在 backend，公共 trace / probe / stats 留在 IR；Metal 不依赖 CPU executor。
 
+前缀缓存的匹配、预算、LRU 和统计统一在 `PrefixCache<V, M>`。backend 通过 `PrefixPolicy`
+选择索引，并实现 `PrefixReuse<V>` 获取 lease 或恢复设备快照；无需复制公共流程。
+CUDA 的连续/FP8/target/draft 快照与 Metal 的共享页保留各自布局和完成协议，见 [KV 合约](kv-manager.md)。
+
 ## CUDA resident 准入
 
 CUDA capture、projection workspace 与新建序列报价共用 ProgramGeometry：verification 和 wide/narrow prompt 各自记录实际捕获行数。省略宽 prompt 图的 pooled 程序只计入窄图的 activation arena；external/fusion 配置缓冲仍按实际分配上界计费。prefill 需要 verification fallback 时保留相应报价。

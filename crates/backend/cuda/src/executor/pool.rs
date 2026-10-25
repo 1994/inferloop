@@ -115,7 +115,7 @@ impl CudaBackend {
             || self.states.len() + self.pool.entries.len() >= self.maximum_states
             || physical_needed > self.physical_available()?
         {
-            if !self.pool.evict() && !self.prefix.evict() {
+            if !self.pool.evict() && self.prefix.evict_oldest().is_none() {
                 let physical_available = self.physical_available()?;
                 let (pool_slots, pool_free_slots) = self
                     .slots

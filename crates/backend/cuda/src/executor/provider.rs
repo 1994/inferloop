@@ -1,6 +1,5 @@
-use super::{CudaBackend, CudaTicket};
+use super::{CudaBackend, CudaTicket, prefix::Restore};
 use crate::constants::KV_BLOCK_TOKENS;
-use crate::constants::MTP_KV_OFFSET;
 use infer_core::{Result, StateId};
 use infer_ir::{
     DeviceCapabilities, ExecutionProgram, ExecutionTask, KvCacheInspection, ModelIr, OutputReadout,
@@ -101,7 +100,7 @@ impl BackendProvider for CudaBackend {
             releases,
             cow_copies: 0,
             cache_evictions: self.prefix.evictions,
-            reused_tokens: self.reused_tokens,
+            reused_tokens: self.prefix.reused_tokens,
         })
     }
     /// Physical page demand of a sequence's next step. A slot-leased sequence grows into its
@@ -154,57 +153,23 @@ impl BackendProvider for CudaBackend {
         tokens: infer_ir::TokenBuffer,
         maximum: usize,
     ) -> Result<usize> {
-        let Some(entry) = self.prefix.take_match(&tokens, maximum) else {
-            return Ok(0);
-        };
         let Some(sequence) = self.states.get_mut(&state) else {
-            self.prefix.insert(entry);
             return Ok(0);
         };
-        // A slot-leased sequence decodes through the shared pool graph; restoring a prefix
-        // into its private program state would desync the slot, so decline to reuse.
-        // A slot-resident sequence's KV lives in shared pool blocks that a contiguous snapshot
-        // cannot describe.
-        if sequence.readout != OutputReadout::Logits
-            || sequence.slot.is_some()
-            || sequence.home.is_some()
-        {
-            self.prefix.insert(entry);
+        if !Restore::supports(sequence) {
             return Ok(0);
         }
-        let matched = entry.tokens.len();
-        if matched > maximum
-            || matched > sequence.capacity
-            || sequence.speculation.is_some() != entry.draft.is_some()
-        {
-            self.prefix.insert(entry);
-            return Ok(0);
-        }
-        let device = self.loaded.device();
-        let restored = (|| {
-            entry
-                .target
-                .restore(device, &mut sequence.program, matched)?;
-            if let (Some(spec), Some(draft)) = (&mut sequence.speculation, &entry.draft) {
-                draft.program.restore(
-                    device,
-                    &mut spec.program,
-                    matched.saturating_sub(MTP_KV_OFFSET),
-                )?;
-                spec.last_hidden.clone_from(&draft.hidden);
-                spec.prompt_len = None;
-            }
-            Ok(())
-        })();
-        self.prefix.insert(entry);
-        if let Err(error) = restored {
-            sequence.poisoned = true;
-            return Err(error);
-        }
-        sequence.history.clear();
-        sequence.history.extend_from_slice(&tokens[..matched]);
-        self.reused_tokens = self.reused_tokens.saturating_add(matched as u64);
-        Ok(matched)
+        let maximum = maximum.min(sequence.capacity);
+        self.prefix
+            .reuse(
+                &tokens,
+                maximum,
+                &mut Restore {
+                    device: self.loaded.device(),
+                    sequence,
+                },
+            )
+            .map(|matched| matched.unwrap_or(0))
     }
 
     fn release_state(&mut self, state: StateId) -> Result<()> {

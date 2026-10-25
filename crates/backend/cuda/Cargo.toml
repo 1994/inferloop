@@ -14,7 +14,7 @@ workspace = true
 
 [features]
 default = []
-cuda = ["dep:cutile", "dep:cuda-core", "dep:sha2"]
+cuda = ["dep:cutile", "dep:cuda-core", "dep:sha2", "dep:infer-state"]
 
 [dependencies]
 infer-core.workspace = true
@@ -29,6 +29,7 @@ tracing.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+infer-state = { workspace = true, optional = true }
 cutile = { workspace = true, optional = true }
 cuda-core = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }

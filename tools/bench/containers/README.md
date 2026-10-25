@@ -35,3 +35,22 @@ cargo clippy --locked --manifest-path tools/bench/containers/Cargo.toml --all-ta
 
 45 机器的结果、保留决策与证据见[容器评估](../../../docs/research/container-performance-2026-10-24.md)
 与[前缀指纹评估](../../../docs/research/prefix-fingerprint-2026-10-24.md)。
+
+
+## 共享前缀生命周期
+
+```sh
+cargo build --locked --release --manifest-path tools/bench/containers/Cargo.toml --example prefix_lifecycle
+taskset -c 8 tools/bench/containers/target/release/examples/prefix_lifecycle > lifecycle.json
+```
+
+该 example 冻结旧 CUDA VecDeque 策略，并与实际共享管理器的 SnapshotScan、BlockHash 比较。
+覆盖 4096/32768 tokens、1/8/32 条目、命中加 history 复制、首 token 未命中、maximum 截断，
+以及预分配 token 输入后的去重替换/发布淘汰。查询每轮 4096 次，发布每轮 256 次；
+64 次预热、7 轮轮换顺序。至少运行 5 个串行进程，使用进程中位数的中位数。
+新策略查询断言不发生分配；输出包含每轮分配、释放和 checksum。
+两种实现均使用 u64 payload，不能代表真实 CUDA Tensor 布局、设备复制或完整服务路径。
+退役 token buffer 释放计入发布时间，输入分配与设备快照捕获不计入。
+
+[评估与全部退化场景](../../../docs/research/shared-prefix-lifecycle-2026-10-24.md)
+包含默认页缓存的独立基线对比与缺失证据。
