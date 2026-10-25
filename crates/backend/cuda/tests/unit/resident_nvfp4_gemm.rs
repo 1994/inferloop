@@ -739,7 +739,15 @@ fn swiglu_real_27b_shape_tuner_compiles_compares_and_selects() -> Result<(), Box
     let up = swiglu_weight(&device, 5)?;
     let gate = ProjectionWeight::Fp4(gate.0, gate.1, 161.0);
     let up = ProjectionWeight::Fp4(up.0, up.1, 161.0);
-    let tile = select(&device, profile, &gate, &up, (rows, columns, hidden), true)?;
+    let tile = select(
+        &device,
+        profile,
+        &gate,
+        &up,
+        (rows, columns, hidden),
+        (1.0, 1.0),
+        true,
+    )?;
     assert!(tile.rows == 64 || tile.rows == 128);
     assert!(tile.columns == 64 || tile.columns == 128);
     Ok(())

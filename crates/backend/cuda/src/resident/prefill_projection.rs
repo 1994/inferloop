@@ -79,10 +79,21 @@ fn swiglu_plan(
 pub fn swiglu_tuning_pairs(
     graph: &infer_ir::DataflowGraph,
     weights: &ProgramWeights,
-) -> Vec<(infer_core::TensorId, infer_core::TensorId, usize, usize)> {
+) -> Vec<(
+    infer_core::TensorId,
+    infer_core::TensorId,
+    usize,
+    usize,
+    f32,
+    f32,
+)> {
+    let scale = |weight| match weights.activation_quantization(weight) {
+        Some(super::program::ActivationQuantization::Fp4(scale)) => Some(scale),
+        _ => None,
+    };
     swiglu_plan(graph, weights)
-        .into_values()
-        .filter_map(|(_, _, gate, up)| {
+        .into_iter()
+        .filter_map(|(down, (_, _, gate, up))| {
             let (
                 Some(ProjectionWeight::Fp4(gate_weight, ..)),
                 Some(ProjectionWeight::Fp4(up_weight, ..)),
@@ -93,11 +104,20 @@ pub fn swiglu_tuning_pairs(
             if gate_weight.shape() != up_weight.shape() {
                 return None;
             }
+            let gate_node = graph
+                .nodes
+                .iter()
+                .find(|node| node.outputs.contains(&gate))?;
+            let down_node = graph.nodes.get(down)?;
+            let input_scale = scale(gate_node.inputs[1])?;
+            let down_scale = scale(down_node.inputs[1])?;
             Some((
                 gate,
                 up,
                 usize::try_from(gate_weight.shape()[0]).ok()?,
                 usize::try_from(gate_weight.shape()[1]).ok()? * 2,
+                input_scale,
+                down_scale,
             ))
         })
         .collect()
@@ -120,8 +140,8 @@ impl MlpPlan {
     ) -> Self {
         let swiglu = swiglu_plan(graph, weights);
         let (rows, workspace) = geometry;
-        let fused = fused_mlp_plan(graph, weights, &swiglu, |columns, hidden| {
-            workspace.gate_up_swiglu_ready(rows, columns, hidden)
+        let fused = fused_mlp_plan(graph, weights, &swiglu, |gate, up, columns, hidden| {
+            workspace.gate_up_swiglu_ready(gate, up, rows, columns, hidden)
         });
         let fused_downs = fused.values().map(|&(.., down)| down).collect();
         let absorbed = swiglu
@@ -205,7 +225,7 @@ fn fused_mlp_plan(
     graph: &infer_ir::DataflowGraph,
     weights: &ProgramWeights,
     swiglu: &BTreeMap<usize, Swiglu>,
-    ready: impl Fn(usize, usize) -> bool,
+    ready: impl Fn(infer_core::TensorId, infer_core::TensorId, usize, usize) -> bool,
 ) -> BTreeMap<usize, FusedMlp> {
     use infer_ir::TensorOp;
     let (producer, readers) = dataflow(graph);
@@ -245,7 +265,7 @@ fn fused_mlp_plan(
             || !sole(gate_output, silu)
             || !sole(up_output, multiply)
             || sizes.get(&up_output) != Some(&hidden)
-            || !ready(columns, hidden)
+            || !ready(gate_node.inputs[1], up_node.inputs[1], columns, hidden)
         {
             continue;
         }
@@ -262,7 +282,7 @@ pub(super) fn fused_projections(
     rows: usize,
 ) -> BTreeSet<usize> {
     let swiglu = swiglu_plan(graph, weights);
-    fused_mlp_plan(graph, weights, &swiglu, |_, hidden| {
+    fused_mlp_plan(graph, weights, &swiglu, |_, _, _, hidden| {
         Nvfp4Workspace::gate_up_swiglu_geometry(rows, hidden)
     })
     .into_values()
@@ -295,6 +315,7 @@ fn record_fused_mlp(
     let hidden = arena.get(gate.outputs[0]).map_err(error)?.size() / width;
     nvfp4.record_gate_up_swiglu(
         scope,
+        (gate.inputs[1], up.inputs[1]),
         (weight(gate)?, weight(up)?),
         (scale(gate)?, scale(down)?),
         &input,

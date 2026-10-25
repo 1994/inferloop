@@ -29,28 +29,79 @@ fn swiglu_candidates_are_legal_and_conservative() {
 fn swiglu_table_entry_requires_device_kernel_geometry_and_real_proof() {
     let entry = Entry {
         device: "dev|sm_120|24576MiB".into(),
-        kernel: "packed-swiglu-v1".into(),
+        kernel: concat!("packed-swiglu-v1/", env!("CARGO_PKG_VERSION")).into(),
         rows: 1024,
         columns: 5120,
         hidden: 17408,
         weight_proof: "proof".into(),
+        input_scale: 1.0,
+        down_scale: 2.0,
         tile_rows: 64,
         tile_columns: 64,
         exact: true,
         real_weights: true,
         baseline_us: 400.0,
         candidate_us: 390.0,
+        ab_base_us: 401.0,
+        ab_trial_us: 391.0,
+        ba_base_us: 399.0,
+        ba_trial_us: 389.0,
         speedup: 1.025,
     };
-    assert!(entry.matches("dev|sm_120|24576MiB", "proof", 1024, 5120, 17408));
-    assert!(!entry.matches("other", "proof", 1024, 5120, 17408));
-    assert!(!entry.matches("dev|sm_120|24576MiB", "proof", 128, 5120, 17408));
+    assert!(entry.matches(
+        "dev|sm_120|24576MiB",
+        "proof",
+        (1.0, 2.0),
+        1024,
+        5120,
+        17408
+    ));
+    assert!(!entry.matches("other", "proof", (1.0, 2.0), 1024, 5120, 17408));
+    assert!(!entry.matches(
+        "dev|sm_120|24576MiB",
+        "other-proof",
+        (1.0, 2.0),
+        1024,
+        5120,
+        17408
+    ));
+    assert!(!entry.matches(
+        "dev|sm_120|24576MiB|driver=1",
+        "proof",
+        (1.0, 2.0),
+        1024,
+        5120,
+        17408
+    ));
+    assert!(!entry.matches(
+        "dev|sm_120|24576MiB",
+        "proof",
+        (1.0, 3.0),
+        1024,
+        5120,
+        17408
+    ));
+    assert!(!entry.matches("dev|sm_120|24576MiB", "proof", (1.0, 2.0), 128, 5120, 17408));
     let mut bad = entry.clone();
     bad.exact = false;
-    assert!(!bad.matches("dev|sm_120|24576MiB", "proof", 1024, 5120, 17408));
+    assert!(!bad.matches(
+        "dev|sm_120|24576MiB",
+        "proof",
+        (1.0, 2.0),
+        1024,
+        5120,
+        17408
+    ));
     let mut bad = entry;
     bad.real_weights = false;
-    assert!(!bad.matches("dev|sm_120|24576MiB", "proof", 1024, 5120, 17408));
+    assert!(!bad.matches(
+        "dev|sm_120|24576MiB",
+        "proof",
+        (1.0, 2.0),
+        1024,
+        5120,
+        17408
+    ));
 }
 
 #[test]

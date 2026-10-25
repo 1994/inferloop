@@ -125,7 +125,16 @@ pub struct Workspace {
     /// whichever projection is visited first decide the layout for the other.
     fp8: BTreeMap<Fp8Key, Fp8Buffers>,
     /// Proven/selected fused `SwiGLU` tiles by `(rows, columns, hidden)`.
-    swiglu_tiles: BTreeMap<(usize, usize, usize), SwigluTile>,
+    swiglu_tiles: BTreeMap<
+        (
+            infer_core::TensorId,
+            infer_core::TensorId,
+            usize,
+            usize,
+            usize,
+        ),
+        SwigluTile,
+    >,
 }
 
 impl Workspace {
@@ -667,7 +676,7 @@ impl Workspace {
         widths: &[usize],
     ) -> Result<()> {
         let profile = device.profile()?;
-        for (gate, up, hidden, columns) in
+        for (gate, up, hidden, columns, input_scale, down_scale) in
             super::super::prefill_projection::swiglu_tuning_pairs(graph, weights)
         {
             let (Some(gate_weight), Some(up_weight)) =
@@ -679,23 +688,45 @@ impl Workspace {
                 if rows < PREFILL_LANES {
                     continue;
                 }
+                let shape = [rows, columns, hidden];
+                let trials = swiglu_candidates(rows, columns, hidden).len().max(1) * 2;
+                let search = weights.autotune
+                    && weights.resident_tuning.permits_gemm_search(
+                        SearchFamily::Nvfp4,
+                        shape,
+                        trials,
+                    )?;
                 let tile = select_swiglu_tuned(
                     device,
                     profile,
                     gate_weight,
                     up_weight,
                     (rows, columns, hidden),
-                    weights.autotune,
+                    (input_scale, down_scale),
+                    search,
                 )?;
-                self.swiglu_tiles.insert((rows, columns, hidden), tile);
+                if search {
+                    weights
+                        .resident_tuning
+                        .complete_gemm_search(SearchFamily::Nvfp4, shape)?;
+                }
+                self.swiglu_tiles
+                    .insert((gate, up, rows, columns, hidden), tile);
             }
         }
         Ok(())
     }
 
-    fn selected_swiglu(&self, rows: usize, columns: usize, hidden: usize) -> Option<SwigluTile> {
+    fn selected_swiglu(
+        &self,
+        gate: infer_core::TensorId,
+        up: infer_core::TensorId,
+        rows: usize,
+        columns: usize,
+        hidden: usize,
+    ) -> Option<SwigluTile> {
         self.swiglu_tiles
-            .get(&(rows, columns, hidden))
+            .get(&(gate, up, rows, columns, hidden))
             .copied()
             .or_else(|| select_swiglu_tile(rows, columns, hidden))
     }
@@ -709,8 +740,15 @@ impl Workspace {
     }
 
     /// Whether [`Self::record_gate_up_swiglu`] can run for this prompt width and MLP geometry.
-    pub(crate) fn gate_up_swiglu_ready(&self, rows: usize, columns: usize, hidden: usize) -> bool {
-        self.selected_swiglu(rows, columns, hidden)
+    pub(crate) fn gate_up_swiglu_ready(
+        &self,
+        gate: infer_core::TensorId,
+        up: infer_core::TensorId,
+        rows: usize,
+        columns: usize,
+        hidden: usize,
+    ) -> bool {
+        self.selected_swiglu(gate, up, rows, columns, hidden)
             .is_some_and(|tile| {
                 rows > 0
                     && rows.is_multiple_of(tile.rows)
@@ -727,6 +765,7 @@ impl Workspace {
     pub(crate) fn record_gate_up_swiglu(
         &mut self,
         scope: &Scope,
+        (gate_id, up_id): (infer_core::TensorId, infer_core::TensorId),
         (gate, up): (&ProjectionWeight, &ProjectionWeight),
         (input_scale, down_scale): (f32, f32),
         input: &TensorView<'_, f32>,
@@ -739,13 +778,13 @@ impl Workspace {
         else {
             return Err(super::super::capture::error("fused SwiGLU weights"));
         };
-        if !self.gate_up_swiglu_ready(rows, columns, hidden) {
+        if !self.gate_up_swiglu_ready(gate_id, up_id, rows, columns, hidden) {
             return Err(super::super::capture::error("fused SwiGLU geometry"));
         }
         // Both writes replace shared quantization buffers; no reuse permit may span them.
         self.quant_reuse.clear();
         let tile = self
-            .selected_swiglu(rows, columns, hidden)
+            .selected_swiglu(gate_id, up_id, rows, columns, hidden)
             .ok_or_else(|| super::super::capture::error("fused SwiGLU tile missing"))?;
         let (mut q, mut qs) = self
             .buffers
