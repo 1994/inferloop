@@ -26,7 +26,6 @@ pub(crate) mod kernels {
 }
 
 use crate::constants::CB_DECODE_SLOTS;
-use crate::constants::MAX_VERIFICATION_WIDTH;
 use crate::{mlp::ProjectionWeight, strategy::LinearTiling};
 use cutile::half::bf16;
 use cutile::prelude::*;
@@ -34,8 +33,7 @@ use cutile::prelude::*;
 use std::cell::Cell;
 const MAX_SMALL_OUTPUTS: usize = 128;
 const MIN_SMALL_COLUMNS: usize = 4096;
-/// Flattened verification includes up to one candidate group per resident slot.
-const MAX_POOL_ROWS: usize = CB_DECODE_SLOTS * MAX_VERIFICATION_WIDTH;
+const MAX_POOL_ROWS: usize = CB_DECODE_SLOTS;
 pub(super) fn record(
     scope: &Scope,
     weight: &ProjectionWeight,
