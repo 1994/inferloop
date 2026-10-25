@@ -1,0 +1,347 @@
+{
+  "schema": 1,
+  "status": "directional_probe_withdrawn",
+  "scope": "One current-default graph-boundary diagnostic followed by one unprofiled AB pair. No qualified performance or quality result.",
+  "archive": {
+    "host": "192.168.1.45",
+    "path": "/home/r/benchmarks/inference.rs/default-serving-draft-resident-2026-10-25",
+    "manifest_sha256": "a9da78e09e1b0c8c4306d6b13a578b115cf49197f9f6ae7b4d60e5913d8e6b85",
+    "files": 68
+  },
+  "source": {
+    "baseline": {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/draft-resident-probe/baseline-infer",
+      "sha256": "38f189fa5b189a42e8dd1973766879526aa061ed2d0f747d031f1ce430cf9f03"
+    },
+    "candidate": {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/draft-resident-probe/comparison/candidate-infer",
+      "sha256": "65f37a06c7083c7ca6ccbdc51f9874cf94b0666ddc77e6be9de20c07fd551094"
+    },
+    "candidate_diff": {
+      "path": "/home/r/code/inference.rs/target/pr47-phase2/artifacts/pr47-first-principles-20261025/draft-resident-probe/comparison/candidate-source.diff",
+      "sha256": "f058d89cd40813e561953e521aa1f3d6d44e13c90f78cad0286f184c534717ce"
+    },
+    "protocol_sha256": "8116ed6fcdf5977c8b286f303fe51764076e248358ea77403dba677e633cd5d2",
+    "all_candidate_rust_edits_restored": true,
+    "candidate_base_revision": "782db63f1a4ff1f8039d8dde7534af4607b701c4",
+    "baseline_build_source_revision": "0827d67550223dfc77294f1aea838a2c7f6a9617",
+    "base_difference": "Only documentation changed between baseline build revision and candidate patch base; serving source is identical before applying the candidate patch."
+  },
+  "default_diagnostic": {
+    "protocol_sha256": "cc5b8abb3a6215078161201b18df443e1259e2ca48d14cc3419b3282b1cef97e",
+    "workload": {
+      "requests": 16,
+      "input_tokens_each": 4096,
+      "output_tokens_each": 256,
+      "complete_output_tokens": 4096,
+      "eos_tokens": [],
+      "ordered_arrival_interval_seconds": 0.01
+    },
+    "client": {
+      "wall_seconds": 17.612547784,
+      "ttft_seconds": {
+        "count": 16,
+        "min": 0.5485220379996463,
+        "median": 5.711942001500574,
+        "mean": 6.425387757312706,
+        "max": 13.757824424999853
+      },
+      "tpot_seconds": {
+        "count": 16,
+        "min": 0.014527613937253573,
+        "median": 0.03394788774313544,
+        "mean": 0.030792395845587545,
+        "max": 0.04090363587843147
+      },
+      "request_wall_seconds": {
+        "count": 16,
+        "min": 10.872432211,
+        "median": 14.3638514115,
+        "mean": 14.27766412,
+        "max": 17.462416387
+      },
+      "output_throughput_tokens_per_second": 232.5614698244273,
+      "scheduled_send_lateness_ms": {
+        "count": 16,
+        "min": 0.060949,
+        "median": 0.132305,
+        "mean": 0.1323060625,
+        "max": 0.182559
+      }
+    },
+    "timing": {
+      "host_steps": 215,
+      "graph_records": 733,
+      "host_execution_seconds": 17.430287,
+      "host_named_phases_seconds": {
+        "prefill_chunk": 8.793677,
+        "prime_draft": 0.195966,
+        "prime_readback": 0.00135,
+        "worker_load": 0.019655,
+        "worker_store": 0.018744,
+        "verify": 6.796679,
+        "draft_propose": 1.481618
+      },
+      "host_unnamed_residual_seconds": 0.12259799999999998,
+      "recorded_graph_seconds": {
+        "target_prefill": 8.386059349060059,
+        "draft_prefill": 0.1900831048488616,
+        "target_verify": 6.71293940162659,
+        "draft_propose": 0.5755920014381412
+      },
+      "recorded_graph_counts": {
+        "target_prefill": 64,
+        "draft_prefill": 64,
+        "target_verify": 211,
+        "draft_propose": 394
+      },
+      "recorded_graph_total_seconds": 15.864673856973651,
+      "host_minus_recorded_graph_seconds": 1.565613143026349,
+      "draft_propose_host_minus_recorded_graph_seconds": 0.906025998561859,
+      "catch_up_host_seconds": null,
+      "catch_up_gpu_seconds": null,
+      "missing_work": "Detached draft catch-up has no standalone host phase and replay_detached emits no graph profile record. Commit, staging, readback, token selection and asynchronous catch-up waits are not isolated. A following host phase can pay for previously enqueued catch-up work."
+    },
+    "previous_label_correction": {
+      "path": "artifacts/pr47-gpu-v2/analysis.json",
+      "affected_labels": [
+        "draft_propose_device",
+        "draft_catch_up_device"
+      ],
+      "decision": "Do not use the old 114/326 slot_decode split or purported catch-up GPU costs for optimization decisions. Current source emits slot_decode only for readout-bearing draft proposal graphs; detached catch-up emits none. The old timing-stage labels require source-specific revalidation; old raw files are preserved.",
+      "current_proof": "394 slot_decode graphs align exactly as 2 graphs per each of 197 multi-request decode steps. Fourteen singleton decode steps take fallback; 211 total decode steps. Never classify a graph after one verify as that verify catch-up: it can belong to the next execution step.",
+      "independent_old_trace_review": "Old gpu-v2 has 226 decode steps: 220 multi-request and 6 singleton. All 440 slot_decode records align as two proposal graphs per multi-request step (1498 first-step rows, 1494 second-step rows), totaling 0.639994 seconds; the old 114/326 propose/catch-up split is invalid."
+    },
+    "hidden_residency_candidate": {
+      "hypothesis": "Remove intermediate proposal hidden host round trips while preserving token decisions, target verification and catch-up semantics. This is an opportunity estimate, not measured speedup.",
+      "hidden_row_bytes": 20480,
+      "multi_request_propose_steps": 197,
+      "observed_proposal_hidden_rows": 2976,
+      "observed_second_step_rows": 1486,
+      "potential_d2h_bytes_removed": 60948480,
+      "potential_h2d_bytes_removed": 30433280,
+      "potential_host_copy_bytes_removed": 91381760,
+      "potential_host_hidden_vectors_removed": 2976,
+      "additional_d2d_bytes": 30433280,
+      "nominal_twelve_slot_tick": {
+        "d2h_removed_kib": 480,
+        "h2d_removed_kib": 240,
+        "host_copy_removed_kib": 720,
+        "host_vectors_removed": 24,
+        "d2d_added_kib": 240
+      },
+      "wide_opportunity_envelope_seconds": 0.906025998561859,
+      "wide_envelope_percent_of_wall": 5.1442074688645105,
+      "limits": "The envelope includes unavailable catch-up GPU work, metadata, token selection/readback, synchronization and profiler overhead; it is not a copy-cost measurement or achievable prediction. Small transfers and allocation/launch/sync latency, not total bulk bandwidth, are the mechanism to test. One fixed-resource unprofiled A/B is warranted; no claim before measurement."
+    },
+    "limitations": [
+      "One process and one measured trial; no repeatability, CI, or speedup claim.",
+      "Graph-boundary profiling is lighter than per-node profiling but still changes graph/events, readback/reporting and host I/O; overhead is unmeasured.",
+      "Recorded graph total omits detached catch-up and non-profiled copies/token selection.",
+      "Current twelve-slot source/workload/arrivals differ from historical nine-slot profile; direct timing subtraction is not a causal optimization result.",
+      "No pure admission queue timestamps exist in this host trace; cumulative execution before first task is descriptive, not exact queue wait."
+    ]
+  },
+  "probe": {
+    "decision": "Archive and withdraw the candidate; this small probe provides no consistent service benefit that justifies full qualification. It does not establish equivalence, no benefit, or a statistically significant regression.",
+    "validation": {
+      "all_jsonl_responses_match_group_reports": true,
+      "all_96_requests_complete_at_256_tokens": true,
+      "all_24576_generated_tokens_observed": true,
+      "all_12288_paired_output_tokens_equal": true,
+      "all_warmup_and_measured_groups_equal": {
+        "warmup": true,
+        "measured-0": true,
+        "measured-1": true
+      },
+      "all_64_measured_requests_retained": true,
+      "raw_arrival_ttft_tpot_and_monotonic_wall_recomputed": true,
+      "profiles_disabled": true,
+      "same_actual_resource_plan_before_and_after_every_group": true,
+      "same_runtime_length_policy": true,
+      "same_tuning_hash_ready_before_after_and_final": "1f07084995f83b70d2ca9c4fa4ccdcf290618e6d1624d41439b2e48728c9371f"
+    },
+    "actual_resources": {
+      "lengths": {
+        "model_limit": 262144,
+        "total": 262144,
+        "input_cap": 262144,
+        "output_cap": 262144,
+        "sources": {
+          "total": "model",
+          "input_cap": "model",
+          "output_cap": "default"
+        }
+      },
+      "scheduler": {
+        "prefill_chunk_tokens": 1024,
+        "forward_chunk_tokens": 64,
+        "fair_quantum_tokens": 8,
+        "max_wait_us": 20000,
+        "urgent_budget_percent": 75,
+        "max_singleton_gpu_us": 1000000,
+        "max_planning_probes": 4096
+      },
+      "execution_profile": {
+        "prefill_width": 1024,
+        "pooled_prefill_width": 1024,
+        "batch_width": 3,
+        "draft_depth": 2,
+        "automatic_prefill": true,
+        "arena_budget_bytes": 1054928896,
+        "attention_profile": "bf16",
+        "precise_prefix_positions": 2048
+      },
+      "serving_plan": {
+        "source": "native server log",
+        "width": 12,
+        "capacity": 8192,
+        "quoted_bytes": 6181388816,
+        "allocated_bytes": 6166990136,
+        "envelope_bytes": 6181624556,
+        "kv_tokens": 54464,
+        "prompt_width": 1024
+      },
+      "kv_cache": {
+        "block_size": 32,
+        "total_blocks": 8192,
+        "pool_bytes": 3221225472,
+        "bytes_per_block": 1048576
+      }
+    },
+    "measured_summary": {
+      "baseline_wall_seconds": [
+        17.610084856,
+        17.394281396
+      ],
+      "candidate_wall_seconds": [
+        17.506582409,
+        17.528055365
+      ],
+      "mean_wall_seconds": {
+        "baseline": 17.502183126,
+        "candidate": 17.517318887000002
+      },
+      "candidate_minus_baseline_mean_seconds": 0.015135761000003356,
+      "candidate_wall_change_percent_ratio_of_means": 0.08647927456271187,
+      "same_index_group_wall_change_percent": [
+        -0.5877453052972381,
+        0.7690686723670126
+      ],
+      "pooled_request_latency_descriptive_only": {
+        "baseline": {
+          "request_count": 32,
+          "ttft_seconds": {
+            "mean": 6.425590387593843,
+            "median": 5.724967941500836,
+            "min": 0.5523697850003373,
+            "max": 13.765117704000659
+          },
+          "tpot_milliseconds": {
+            "mean": 30.844632812010573,
+            "median": 33.70630007254886,
+            "min": 13.48474765490049,
+            "max": 40.91929385098161
+          }
+        },
+        "candidate": {
+          "request_count": 32,
+          "ttft_seconds": {
+            "mean": 6.393463045843816,
+            "median": 5.69168974799959,
+            "min": 0.5464572100008809,
+            "max": 13.696843739000542
+          },
+          "tpot_milliseconds": {
+            "mean": 30.816610882719736,
+            "median": 33.623773498038645,
+            "min": 13.450127403919787,
+            "max": 41.25975300000088
+          }
+        }
+      }
+    },
+    "limitations": [
+      "Only one process per arm, fixed baseline-to-candidate order, and two repeated measured groups inside each process; groups and requests are not independent process-pair replicates. No confidence interval or statistical equivalence claim.",
+      "Individual measured makespan changes have opposite signs. Ratio of means is a descriptive summary, not a qualified performance estimate.",
+      "Baseline startup observed kwin PID1287 activity. All fully-contained warmup/measured samples show stable background PID/start/exe/FB/cgroup and no observed activity, but some executables and process utilization are unavailable; unknown values are not zero and GPU exclusivity is not established.",
+      "Batch makespan starts at the scheduled first arrival and ends at the last completed response. Request TTFT includes admission/queueing and scheduling. TPOT is (last token arrival minus first token arrival)/255, not a pure kernel/decode-step latency.",
+      "Full token equality is checked only for these fixed 4096-input/256-output C16 fixtures, with EOS disabled; it is not a general quality or numerical equivalence gate.",
+      "Profiling is off in this A/B, so the result cannot isolate copy, synchronization, host allocation or detached catch-up costs. The earlier host-minus-graph gap is not measured savings."
+    ],
+    "environment_summary": {
+      "measured_fully_contained_samples": {
+        "baseline": [
+          16,
+          17
+        ],
+        "candidate": [
+          16,
+          16
+        ]
+      },
+      "measured_observed_background_changes": [],
+      "baseline_startup_kwin_activity_observed": true,
+      "desktop_programs_retained": true,
+      "gpu_exclusive": false,
+      "unresolved_desktop_executables_and_process_utilization": true
+    }
+  },
+  "checks": {
+    "fmt_diff": true,
+    "cuda_bitwise_default": 1,
+    "cuda_bitwise_greedy_disabled": 1,
+    "release_cli_build": true,
+    "full_rust_and_cuda_gate": "not run for withdrawn candidate"
+  },
+  "raw_evidence": [
+    {
+      "archive_relative_path": "current-c16-diagnostic/analysis.json",
+      "sha256": "b7c97f30f4a3de7e9ddbc7a6037a0d8642e0ad123e932c1fac9592bc03491b0b"
+    },
+    {
+      "archive_relative_path": "current-c16-diagnostic/report.json",
+      "sha256": "5119b72b25712123a8dad490a8e0fdc245c656a9bccc508f4ba40ee777bfe35d"
+    },
+    {
+      "archive_relative_path": "current-c16-diagnostic/execution.jsonl",
+      "sha256": "1d7a7203ffc1355f9f0e3ffa88dd77d9e0205a8a6f908b4dc51541b6d5aa31c2"
+    },
+    {
+      "archive_relative_path": "current-c16-diagnostic/events.jsonl",
+      "sha256": "a841fcfd3e412ad1737a5773d0c0660fa025c77669522fc5e718b6681aecdda1"
+    },
+    {
+      "archive_relative_path": "draft-resident-probe/analysis.json",
+      "sha256": "298b07ec0de718f53d09d7978d513572c642948957a87d3ae867d5c77bcb39cc"
+    },
+    {
+      "archive_relative_path": "draft-resident-probe/comparison/protocol.json",
+      "sha256": "8116ed6fcdf5977c8b286f303fe51764076e248358ea77403dba677e633cd5d2"
+    },
+    {
+      "archive_relative_path": "draft-resident-probe/comparison/comparison.json",
+      "sha256": "11c9c7d5219883686c4010dd8c3030b1f886533c5b095e53eb3f96491f4a1a19"
+    },
+    {
+      "archive_relative_path": "draft-resident-probe/comparison/evidence-manifest.json",
+      "sha256": "763d644370926b7f5825df9910829010858db32cc92a5879e18ba57f8ac4bc9c"
+    },
+    {
+      "archive_relative_path": "draft-resident-probe/test-resident.log",
+      "sha256": "23f8a16a6368e8c60017c56d5f90c07ead943f2bd8ad33949c46967fb9f856b1"
+    },
+    {
+      "archive_relative_path": "draft-resident-probe/test-resident-fallback.log",
+      "sha256": "543d48504ab697d1f9b1a93a5101b020dabe54e50866c9507d19f25c58b016a3"
+    },
+    {
+      "archive_relative_path": "draft-resident-probe/build-candidate.log",
+      "sha256": "dfc051beeaf8190c72658d80d397d89611c10b9d369e7a1908e312e69423491f"
+    },
+    {
+      "archive_relative_path": "draft-resident-probe/build-candidate-fixed.log",
+      "sha256": "ab83c699a071b46465b45d70d8e754bfb68c2c25f913c89386d193ebae9c4b77"
+    }
+  ]
+}

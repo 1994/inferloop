@@ -174,6 +174,58 @@ The [representative-screen evidence](artifacts/default-serving-representative-sc
 retains all 64 paired outcomes, source/build and selection identities, complete
 serving-plan readbacks and raw evidence hashes. No performance result is claimed.
 
+## Current default diagnostic and withdrawn residency probe
+
+A new graph-boundary diagnostic on the integrated release binary used the actual
+twelve-slot plan, 54,464 physical KV tokens, capacity 8192 and prompt width 1024.
+Its one measured C16 trial completed all 4096 output tokens in 17.613 seconds.
+Recorded target-prefill and target-verify graphs took 8.386 and 6.713 seconds.
+These instrumented values locate work; they are not a new performance baseline.
+
+The old GPU-v2 analysis incorrectly split 440 slot-decode graphs into 114
+proposal and 326 catch-up records. Independent event-order reconstruction shows
+two proposal graphs per each of 220 multi-request steps; the six singleton steps
+have no pooled proposal graphs. Current source and the new trace agree:
+detached catch-up emits no graph-profile record. Its device cost and separate
+host cost remain unknown. Preserve the old raw data, but do not use that split
+to attribute bottlenecks.
+
+The new draft host time exceeds its recorded graph time by 0.906 seconds, about
+5.14% of the measured wall time. The gap can include synchronization, unrecorded device
+work, sampling/readback and profiling overhead; it is not measured copy cost.
+A candidate therefore tested only intermediate draft hidden residency, retaining
+the original precision, sampling and verification behavior. Default and
+device-greedy-disabled GPU tests each executed one test successfully, including
+full hidden/logits/state comparisons and slot reuse/error transitions. The
+release CLI built after fixing one test-only import.
+
+A frozen short A/B then disabled all profilers and ran one warmup plus two
+measured C16 groups in each fresh process. Both sides retained the same complete
+resource signature and tuning seed throughout. All 96 requests completed 256
+tokens; all 12,288 paired output token positions matched, including warmup.
+
+| Measured group | Baseline seconds | Candidate seconds | Wall change |
+| --- | ---: | ---: | ---: |
+| 0 | 17.6101 | 17.5066 | -0.588% |
+| 1 | 17.3943 | 17.5281 | +0.769% |
+| Mean | 17.5022 | 17.5173 | +0.086% |
+
+This single fixed-order process pair shows no consistent service benefit worth
+expanding into full qualification. It does not prove equivalence, no possible
+benefit, or a statistically significant regression. The two within-process
+samples are not independent process pairs. Desktop programs stayed open;
+measurement-window samples showed no observed background changes, but some
+process activity was unavailable and baseline startup included desktop activity.
+GPU exclusivity is not claimed.
+
+The candidate was archived and removed from the branch. Full Rust/CUDA suites,
+the 1024-case quality gate and formal performance confirmation were deliberately
+not started for this withdrawn candidate. The existing validated branch checks
+remain scoped to their original source. The
+[diagnostic and residency evidence](artifacts/default-serving-draft-residency-2026-10-24.json)
+records both binary identities, the recoverable patch, all timings, limitations
+and hashes of 68 archived evidence files on host 45. This step changes no serving code.
+
 ## Recorded measurements
 
 RTX 5090 on 192.168.1.45, Qwen3.8-27B-NVFP4. C16 means sixteen requests, each
