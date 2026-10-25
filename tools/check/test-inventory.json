@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 309
+      "tests": 310
     },
     "frontdoor": {
       "benches": 0,
@@ -162,6 +162,7 @@
     "real MTP2 checkpoint and CUDA; run inside safe-run": 1,
     "real MTP2 checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 2,
     "real MTP2 checkpoint, CUDA, frozen table/tokens and protected serial runner required": 1,
+    "real MTP2 checkpoint/CUDA; fixed-batch diagnostic under safe-run with profile paths": 1,
     "release CUDA performance diagnostic; run inside safe-run": 1,
     "requires CUDA and INFER_TEST_MODEL; run release inside safe-run": 3,
     "requires CUDA and INFER_TEST_MODEL; run release serially inside safe-run": 1,
@@ -782,6 +783,11 @@
     },
     {
       "crate": "cuda",
+      "file": "tests/unit/executor_owner.rs",
+      "mount": "executor_fixed_batch.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "tests/unit/loading_budget.rs",
       "mount": "loading_budget_recurrent.rs"
     },
@@ -1212,11 +1218,11 @@
     }
   ],
   "totals": {
-    "all": 848,
+    "all": 849,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 848
+    "tests": 849
   }
 }

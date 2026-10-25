@@ -22,13 +22,21 @@ fn fixture(
     depth: usize,
     readouts: &[OutputReadout],
 ) -> TestResult<(CudaBackend, ExecutionProgram, Vec<StateId>)> {
+    fixture_with_width(depth, readouts, 32)
+}
+
+fn fixture_with_width(
+    depth: usize,
+    readouts: &[OutputReadout],
+    prefill_width: usize,
+) -> TestResult<(CudaBackend, ExecutionProgram, Vec<StateId>)> {
     CudaDevice::enable_kernel_cache()?;
     let loaded = LoadedModel::open(
         CudaDevice::new(0)?,
         var("INFER_TEST_MODEL")?,
         ModelId::ONE,
         LoadOptions {
-            prefill_width: 32,
+            prefill_width,
             mtp_depth: depth,
             autotune: false,
             vision: false,
@@ -51,6 +59,9 @@ fn fixture(
     }
     Ok((backend, program, states))
 }
+
+#[path = "executor_fixed_batch.rs"]
+mod fixed_batch;
 
 fn tasks(
     backend: &CudaBackend,
