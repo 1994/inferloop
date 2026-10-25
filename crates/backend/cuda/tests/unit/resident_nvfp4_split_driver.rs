@@ -9,7 +9,7 @@ use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::error::tensor_error;
 use cutile::prelude::*;
-use infer_core::{Error, ModelId};
+use infer_core::{Error, ModelId, TensorId};
 use sha2::{Digest, Sha256};
 use std::env::{self, var};
 use std::error::Error as StdError;
@@ -20,6 +20,7 @@ use std::time::Duration;
 const ROWS: usize = 48;
 
 struct Down {
+    weight_id: TensorId,
     codes: Arc<Tensor<f4e2m1fnx2>>,
     scales: Arc<Tensor<f8e4m3fn>>,
     global: f32,
@@ -29,7 +30,7 @@ struct Down {
 
 fn choose_down(loaded: &LoadedModel) -> Result<Down, Box<dyn StdError>> {
     let mut chosen = None;
-    for weight in loaded.weights().projections.values() {
+    for (&weight_id, weight) in &loaded.weights().projections {
         let ProjectionWeight::Fp4(codes, scales, global) = weight else {
             continue;
         };
@@ -42,9 +43,10 @@ fn choose_down(loaded: &LoadedModel) -> Result<Down, Box<dyn StdError>> {
             let elements = outputs.saturating_mul(columns);
             if chosen
                 .as_ref()
-                .is_none_or(|(_, _, _, _, _, best)| elements > *best)
+                .is_none_or(|(_, _, _, _, _, _, best)| elements > *best)
             {
                 chosen = Some((
+                    weight_id,
                     codes.clone(),
                     scales.clone(),
                     *global,
@@ -55,10 +57,11 @@ fn choose_down(loaded: &LoadedModel) -> Result<Down, Box<dyn StdError>> {
             }
         }
     }
-    let Some((codes, scales, global, outputs, columns, _)) = chosen else {
+    let Some((weight_id, codes, scales, global, outputs, columns, _)) = chosen else {
         return Err("no down-shaped FP4 projection".into());
     };
     Ok(Down {
+        weight_id,
         codes,
         scales,
         global,
@@ -366,6 +369,71 @@ fn publish_entry(
     Ok(())
 }
 
+struct Measure<'a> {
+    exact_graph: CudaGraph<()>,
+    split_graph: CudaGraph<()>,
+    exact: Tensor<f32>,
+    split: Tensor<f32>,
+    path: &'a str,
+    down: &'a Down,
+    scratch_bytes: u64,
+    split_plans: usize,
+}
+
+fn measure_captured(device: &CudaDevice, m: Measure<'_>) -> Result<(), Box<dyn StdError>> {
+    let exact_host = m.exact.to_host_vec().sync_on(&device.stream)?;
+    let split_host = m.split.to_host_vec().sync_on(&device.stream)?;
+    let mut diff = 0.0_f64;
+    let mut base = 0.0_f64;
+    for (&a, &b) in exact_host.iter().zip(&split_host) {
+        let a = f64::from(a);
+        let b = f64::from(b);
+        diff = f64::mul_add(a - b, a - b, diff);
+        base = f64::mul_add(a, a, base);
+    }
+    let relative_l2 = (diff / base.max(1.0e-30)).sqrt();
+    if !relative_l2.is_finite() || relative_l2 > 1.0e-4 {
+        return Err(format!("split output relative L2 {relative_l2}").into());
+    }
+    let options = BenchOptions {
+        warmup: Duration::from_millis(50),
+        rep: Duration::from_millis(200),
+        min_reps: 10,
+        max_reps: 100,
+        clear_l2: true,
+    };
+    let (baseline, candidate) = do_bench_paired(
+        &device.stream,
+        &options,
+        |_| {
+            m.exact_graph
+                .launch()
+                .sync_on(&device.stream)
+                .map_err(|e| tensor_error(&e.to_string()))
+        },
+        |_| {
+            m.split_graph
+                .launch()
+                .sync_on(&device.stream)
+                .map_err(|e| tensor_error(&e.to_string()))
+        },
+    )?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "kind":"captured_workspace_nvfp4_candidate", "model":m.path,
+            "weight":format!("{:?}", m.down.weight_id),
+            "shape":[ROWS, m.down.outputs, m.down.columns],
+            "scratch_bytes":m.scratch_bytes, "split_plan_count":m.split_plans,
+            "relative_l2_vs_exact":relative_l2,
+            "exact_ms":baseline.median_ms(), "split_ms":candidate.median_ms(),
+            "speedup":baseline.median_ms()/candidate.median_ms(),
+            "qualification":"CANDIDATE_NOT_PRODUCTION"
+        })
+    );
+    Ok(())
+}
+
 #[test]
 #[ignore = "real 27B checkpoint, CUDA, release and protected runner required"]
 fn real_checkpoint_down_split_candidate_measurement() -> Result<(), Box<dyn StdError>> {
@@ -430,4 +498,101 @@ fn real_checkpoint_down_split_candidate_measurement() -> Result<(), Box<dyn StdE
             candidate_ms: candidate.median_ms(),
         },
     )
+}
+
+#[test]
+#[ignore = "real 27B checkpoint, CUDA, release and protected runner required"]
+fn captured_workspace_nvfp4_real_weight_split() -> Result<(), Box<dyn StdError>> {
+    use super::Workspace;
+    use super::workspace::with_forced_split;
+    use crate::resident::ProgramGeometry;
+
+    if cfg!(debug_assertions) {
+        return Err("requires cargo test --release".into());
+    }
+    let path = var("INFER_TEST_MODEL").map_err(|e| Error::invalid(e.to_string()))?;
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    let loaded = LoadedModel::open(
+        device.clone(),
+        &path,
+        ModelId::new(1)?,
+        LoadOptions {
+            autotune: false,
+            vision: false,
+            ..LoadOptions::default()
+        },
+    )?;
+    let down = choose_down(&loaded)?;
+    let node = loaded
+        .graph()
+        .nodes
+        .iter()
+        .find(|node| node.inputs.get(1) == Some(&down.weight_id))
+        .ok_or_else(|| Error::invalid("down node missing"))?;
+    let scale = *loaded
+        .weights()
+        .input_scales
+        .get(&down.weight_id)
+        .ok_or_else(|| Error::invalid("down activation scale missing"))?;
+    let geometry = ProgramGeometry {
+        verification: ROWS,
+        prompts: [0, 0],
+    };
+    let mut exact_workspace =
+        Workspace::program(&device, loaded.graph(), loaded.weights(), geometry)?;
+    let mut split_workspace = with_forced_split(|| {
+        Workspace::program(&device, loaded.graph(), loaded.weights(), geometry)
+    })?;
+    if exact_workspace.split_plan_count() != 0 {
+        return Err("exact workspace unexpectedly retained a split".into());
+    }
+    if split_workspace.split_plan_count() == 0 {
+        return Err("forced workspace did not retain a split".into());
+    }
+    let input = device.upload(
+        (0..ROWS * down.columns)
+            .map(|i| (f32::from(u16::try_from(i % 211).unwrap()) - 105.0) / 37.0)
+            .collect::<Vec<_>>(),
+        &[ROWS, down.columns],
+    )?;
+    let mut exact = api::zeros::<f32>(&[ROWS, down.outputs]).sync_on(&device.stream)?;
+    let mut split = api::zeros::<f32>(&[ROWS, down.outputs]).sync_on(&device.stream)?;
+    let capture = |workspace: &mut Workspace, output: &mut Tensor<f32>| {
+        let view = input.view(&[ROWS, down.columns])?;
+        workspace.begin_quant_capture();
+        let graph = CudaGraph::scope(&device.stream, |scope| {
+            workspace.record_input(
+                scope,
+                &ProjectionWeight::Fp4(down.codes.clone(), down.scales.clone(), down.global),
+                scale,
+                &view,
+                output,
+                down.columns,
+                Some(input.device_pointer().cu_deviceptr()),
+            )?;
+            Ok(())
+        });
+        workspace.end_quant_capture();
+        graph
+    };
+    let exact_graph = capture(&mut exact_workspace, &mut exact)?;
+    let split_graph = capture(&mut split_workspace, &mut split)?;
+    exact_graph.launch().sync_on(&device.stream)?;
+    split_graph.launch().sync_on(&device.stream)?;
+    measure_captured(
+        &device,
+        Measure {
+            exact_graph,
+            split_graph,
+            exact,
+            split,
+            path: &path,
+            down: &down,
+            scratch_bytes: split_workspace.split_scratch_bytes(),
+            split_plans: split_workspace.split_plan_count(),
+        },
+    )?;
+    let _ = node;
+    Ok(())
 }

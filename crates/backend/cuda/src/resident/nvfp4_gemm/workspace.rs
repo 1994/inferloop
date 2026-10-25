@@ -135,6 +135,14 @@ impl Workspace {
             .map(|(codes, scales)| (codes, scales))
     }
     #[cfg(test)]
+    pub(super) fn split_plan_count(&self) -> usize {
+        self.split_nvfp4.len()
+    }
+    #[cfg(test)]
+    pub(super) const fn split_scratch_bytes(&self) -> u64 {
+        self.split_scratch_bytes
+    }
+    #[cfg(test)]
     pub(crate) fn quantized_fp4(
         &self,
         rows: usize,
