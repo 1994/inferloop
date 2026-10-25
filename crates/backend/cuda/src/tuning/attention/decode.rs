@@ -26,7 +26,20 @@ pub fn partitions(heads: usize, window: Option<usize>, multiprocessors: usize) -
 /// Target about 1.5 waves of KV-head CTAs, keeping the scratch bound independent of hardware.
 /// On 170 SMs and four KV heads this retains the measured 64-way split.
 pub fn grouped_parts(heads: usize, kv_heads: usize, multiprocessors: usize) -> Option<usize> {
-    if heads == 0
+    grouped_parts_for(heads, kv_heads, multiprocessors, 1)
+}
+
+/// [`grouped_parts`] for a launch covering `slots` sequences: their KV-head CTAs already share
+/// the wave target, so each slot splits its context fewer times. Over-splitting short contexts
+/// writes and merges more partial rows than the KV it reads.
+pub fn grouped_parts_for(
+    heads: usize,
+    kv_heads: usize,
+    multiprocessors: usize,
+    slots: usize,
+) -> Option<usize> {
+    if slots == 0
+        || heads == 0
         || kv_heads == 0
         || !heads.is_multiple_of(kv_heads)
         || heads / kv_heads > GROUPED_ROWS
@@ -36,7 +49,9 @@ pub fn grouped_parts(heads: usize, kv_heads: usize, multiprocessors: usize) -> O
     let blocks = multiprocessors
         .saturating_mul(WAVE_NUMERATOR)
         .div_ceil(WAVE_DENOMINATOR);
-    let limit = blocks.div_ceil(kv_heads).clamp(1, MAX_GROUPED_PARTS);
+    let limit = blocks
+        .div_ceil(kv_heads.saturating_mul(slots))
+        .clamp(1, MAX_GROUPED_PARTS);
     Some(limit.next_power_of_two())
 }
 

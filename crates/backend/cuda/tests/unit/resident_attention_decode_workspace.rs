@@ -1,4 +1,4 @@
-use super::{grouped_parts, partitions};
+use super::{grouped_parts, grouped_parts_for, partitions};
 #[test]
 fn partition_tree_obeys_hardware_and_window_without_storage_capacity() {
     assert_eq!(partitions(16, Some(512), 170), 1);
@@ -30,4 +30,13 @@ fn grouped_partitions_reject_invalid_or_unrepresentable_head_groups() {
     for (heads, kv_heads) in [(0, 4), (32, 0), (31, 4), (68, 4)] {
         assert_eq!(grouped_parts(heads, kv_heads, 170), None);
     }
+}
+
+#[test]
+fn pooled_launch_shares_the_wave_target_across_slots() {
+    // 170 SMs: 255 CTAs over 4 KV heads; four slots per launch need a quarter of the parts.
+    assert_eq!(grouped_parts_for(24, 4, 170, 1), grouped_parts(24, 4, 170));
+    assert_eq!(grouped_parts_for(24, 4, 170, 4), Some(16));
+    assert_eq!(grouped_parts_for(24, 4, 170, 64), Some(1));
+    assert_eq!(grouped_parts_for(24, 4, 170, 0), None);
 }
