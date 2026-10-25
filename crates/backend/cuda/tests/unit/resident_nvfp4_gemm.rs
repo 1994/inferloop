@@ -673,13 +673,9 @@ fn split_graph(
     device: &CudaDevice,
     operands: (&Tensor<f4e2m1fnx2>, &Tensor<f8e4m3fn>, &Fp4Weight),
     (out, partials): (&mut Tensor<f32>, &mut Tensor<f32>),
-    (reduction, tile, splits): (usize, [usize; 2], usize),
+    (reduction, tile, splits, alpha): (usize, [usize; 2], usize, f32),
 ) -> Result<CudaGraph<()>, Box<dyn StdError>> {
     let (codes, code_scales, (weight, weight_scales)) = operands;
-    let rows = usize::try_from(out.shape()[0])?;
-    let columns = usize::try_from(out.shape()[1])?;
-    let padded = rows.div_ceil(tile[0]) * tile[0];
-    let grid = |value: usize| u32::try_from(value).map_err(|e| tensor_error(&e.to_string()));
     Ok(CudaGraph::scope(&device.stream, |scope| {
         if splits == 1 {
             scope.record(
@@ -689,7 +685,7 @@ fn split_graph(
                     code_scales,
                     weight,
                     weight_scales,
-                    1.0e-6,
+                    alpha,
                 )
                 .generics(vec![
                     reduction.to_string(),
@@ -701,26 +697,21 @@ fn split_graph(
         }
         scope.record(
             kernels::packed_split(
-                (&mut *partials).partition([splits, padded, columns]),
+                (&mut *partials).partition([1, tile[0], tile[1]]),
                 codes,
                 code_scales,
                 weight,
                 weight_scales,
             )
             .generics(
-                [reduction, tile[0], tile[1], splits, padded, columns]
+                [reduction, tile[0], tile[1], splits]
                     .iter()
                     .map(ToString::to_string)
                     .collect(),
-            )
-            .grid((
-                grid(padded / tile[0])?,
-                grid(columns / tile[1])?,
-                grid(splits)?,
-            )),
+            ),
         )?;
         scope.record(
-            kernels::sum_splits(out.partition(tile), &*partials, 1.0e-6).generics(
+            kernels::sum_splits(out.partition(tile), &*partials, alpha).generics(
                 [tile[0], tile[1], splits]
                     .iter()
                     .map(ToString::to_string)
@@ -768,7 +759,6 @@ fn narrow_split_k_performance() -> Result<(), Box<dyn StdError>> {
             &[rows, reduction / 16],
         )?;
         let operands = (&*codes, &*code_scales, &weight);
-        let padded = rows.div_ceil(tile[0]) * tile[0];
         let mut base_out = api::zeros::<f32>(&[rows, columns]).sync_on(&device.stream)?;
         let mut split_out = api::zeros::<f32>(&[rows, columns]).sync_on(&device.stream)?;
         let mut unused = api::zeros::<f32>(&[1]).sync_on(&device.stream)?;
@@ -776,19 +766,19 @@ fn narrow_split_k_performance() -> Result<(), Box<dyn StdError>> {
             &device,
             operands,
             (&mut base_out, &mut unused),
-            (reduction, tile, 1),
+            (reduction, tile, 1, 1.0e-6),
         )?;
-        for splits in [2, 4, 8] {
-            if !(reduction / 256).is_multiple_of(splits) {
-                continue;
-            }
+        for (split_tile, splits) in [tile, [16, 64], [32, 64]]
+            .into_iter()
+            .flat_map(|t| [2, 4, 8].map(|s| (t, s)))
+        {
             let mut partials =
-                api::zeros::<f32>(&[splits, padded, columns]).sync_on(&device.stream)?;
+                api::zeros::<f32>(&[splits, rows, columns]).sync_on(&device.stream)?;
             let split = split_graph(
                 &device,
                 operands,
                 (&mut split_out, &mut partials),
-                (reduction, tile, splits),
+                (reduction, split_tile, splits, 1.0e-6),
             )?;
             let (split_time, base_time) = do_bench_paired(
                 &device.stream,
@@ -807,11 +797,80 @@ fn narrow_split_k_performance() -> Result<(), Box<dyn StdError>> {
             )?;
             let bytes = f64::from(u32::try_from(columns * reduction)?) * 0.5625;
             println!(
-                "{rows}x{columns}x{reduction} tile={tile:?} splits={splits}: split_ms={} ({:.2} TB/s) base_ms={} ({:.2} TB/s)",
+                "{rows}x{columns}x{reduction} base_tile={tile:?} split_tile={split_tile:?} splits={splits}: split_ms={} ({:.2} TB/s) base_ms={} ({:.2} TB/s)",
                 split_time.median_ms(),
                 bytes / (f64::from(split_time.median_ms()) * 1e9),
                 base_time.median_ms(),
                 bytes / (f64::from(base_time.median_ms()) * 1e9),
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires a CUDA device; run inside safe-run"]
+fn split_k_matches_independent_reference_with_tails() -> Result<(), Box<dyn StdError>> {
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    let values = [0.0_f32, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0];
+    let decode = |code: u8| values[usize::from(code & 7)] * if code & 8 == 0 { 1.0 } else { -1.0 };
+    for (rows, columns, reduction) in [(3, 65, 784), (17, 129, 512)] {
+        let packed = |codes: &[u8]| {
+            codes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| f4e2m1fnx2::from_bits(c[0] | c[1] << 4))
+                .collect::<Vec<_>>()
+        };
+        let input_codes: Vec<_> = (0..rows * reduction)
+            .map(|i| u8::try_from((i * 5 + i / 7) % 16).expect("FP4 code"))
+            .collect();
+        let weight_codes: Vec<_> = (0..columns * reduction)
+            .map(|i| u8::try_from((i * 3 + i / 11) % 16).expect("FP4 code"))
+            .collect();
+        let input_scales: Vec<_> = (0..rows * reduction / 16)
+            .map(|i| u8::try_from(48 + i % 16).expect("FP8 code"))
+            .collect();
+        let weight_scales: Vec<_> = (0..columns * reduction / 16)
+            .map(|i| u8::try_from(48 + i % 16).expect("FP8 code"))
+            .collect();
+        let codes = device.upload(packed(&input_codes), &[rows, reduction / 2])?;
+        let scales = device.upload(
+            input_scales.iter().copied().map(f8e4m3fn).collect(),
+            &[rows, reduction / 16],
+        )?;
+        let weight = (
+            device.upload(packed(&weight_codes), &[columns, reduction / 2])?,
+            device.upload(
+                weight_scales.iter().copied().map(f8e4m3fn).collect(),
+                &[columns, reduction / 16],
+            )?,
+        );
+        let quantized: Vec<_> = input_codes
+            .iter()
+            .enumerate()
+            .map(|(i, &code)| decode(code) * fp8(input_scales[i / 16]) * 0.25)
+            .collect();
+        for splits in [2, 3, 4, 8] {
+            let mut out = api::zeros::<f32>(&[rows, columns]).sync_on(&device.stream)?;
+            let mut partials =
+                api::zeros::<f32>(&[splits, rows, columns]).sync_on(&device.stream)?;
+            let graph = split_graph(
+                &device,
+                (&codes, &scales, &weight),
+                (&mut out, &mut partials),
+                (reduction, [16, 64], splits, 0.25),
+            )?;
+            graph.launch().sync_on(&device.stream)?;
+            let actual = out.to_host_vec().sync_on(&device.stream)?;
+            check_product(
+                (rows, columns, reduction),
+                &weight_codes,
+                &weight_scales,
+                &quantized,
+                &actual,
             );
         }
     }

@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 321
+      "tests": 323
     },
     "frontdoor": {
       "benches": 0,
@@ -232,7 +232,7 @@
     "requires GPU and INFER_ATTENTION_GATE; use make check-attention": 1,
     "requires Linux NUMA policy and move_pages query permission; make check-linux-numa": 1,
     "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 6,
-    "requires a CUDA device; run inside safe-run": 5,
+    "requires a CUDA device; run inside safe-run": 7,
     "requires a Linux production host with get/set_mempolicy permitted; make check-linux-numa": 1,
     "requires an NVIDIA GPU; run under tools/bench/safe-run.sh": 7,
     "requires real checkpoint and CUDA; run release serially inside safe-run": 1,
@@ -1232,11 +1232,11 @@
     }
   ],
   "totals": {
-    "all": 860,
+    "all": 862,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 860
+    "tests": 862
   }
 }
