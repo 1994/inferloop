@@ -232,6 +232,8 @@ fn compare(depth: usize, readouts: &[OutputReadout]) -> TestResult {
     backend.set_waker(Arc::new(move || {
         wake_count.fetch_add(1, Ordering::Release);
     }));
+    // Registration may wake a parked replacement owner; count device notifications below.
+    wakes.store(0, Ordering::Release);
     let mut reference: Vec<Vec<TaskOutput>> = Vec::new();
     let mut previous = None;
     for serial in [true, false] {
