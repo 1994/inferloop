@@ -689,9 +689,12 @@ impl BatchBuilder<'_> {
             scratch,
             prompt_row.as_deref_mut(),
         )?;
-        // Both variants retain the same arenas, state and metadata. The target's
-        // first context block preserves canonical attention before BF16 bulk prefill.
-        let precise = if self.weights.fusion.is_none() && self.weights.attention_profile.is_bf16() {
+        // Both variants retain the same arenas, state and metadata. A configured canonical
+        // prefix needs its own graphs; without one the variant is never replayed.
+        let precise = if self.weights.fusion.is_none()
+            && self.weights.attention_profile.is_bf16()
+            && precise_prefix_positions() > 0
+        {
             self.attention.precise_prefill(true);
             let result =
                 self.capture_prompt_graphs(arena, metadata, precise_profile, scratch, prompt_row);

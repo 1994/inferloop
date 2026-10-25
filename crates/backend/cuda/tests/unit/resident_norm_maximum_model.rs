@@ -6,6 +6,7 @@ use super::{
 use crate::resident::DeviceProgram;
 use crate::{
     AttentionProfile,
+    attention_profile::precise_prefix_positions,
     device::CudaDevice,
     resident::{norm_maximum_captures, norm_maximum_consumptions, with_separate_norm_maximum},
 };
@@ -131,8 +132,13 @@ fn precise_prefix_checkpoint(
     Ok(())
 }
 #[test]
-#[ignore = "CUDA/checkpoint/frozen511tokens/safe-run; canonical2K prefix and subsequent decode bits"]
+#[ignore = "CUDA/checkpoint/frozen511tokens/safe-run; INFER_CUDA_ATTENTION_PRECISE_PREFIX=2048"]
 fn bf16_precise_prefix_matches_canonical_checkpoint_bits() -> Result<()> {
+    if precise_prefix_positions() != 2048 {
+        return Err(Error::invalid(
+            "set INFER_CUDA_ATTENTION_PRECISE_PREFIX=2048 for the canonical prefix check",
+        ));
+    }
     CudaDevice::enable_kernel_cache()?;
     let path = var("INFER_TEST_MODEL").map_err(|e| Error::invalid(e.to_string()))?;
     let tokens: Vec<_> = super::quant_reuse_model_tests::prompt()?

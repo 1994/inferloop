@@ -1,9 +1,15 @@
-use super::{AttentionProfile, precise_prefix_from_opt_out};
+use super::{AttentionProfile, PRECISE_PREFIX_POSITIONS, precise_prefix_from};
 
 #[test]
-fn precise_prefix_opt_out_is_explicit_and_preserves_the_default() {
-    assert_eq!(precise_prefix_from_opt_out(false), 2048);
-    assert_eq!(precise_prefix_from_opt_out(true), 0);
+fn precise_prefix_defaults_to_full_bf16_and_restores_explicit_positions() {
+    assert_eq!(PRECISE_PREFIX_POSITIONS, 0);
+    assert_eq!(precise_prefix_from(None), 0);
+    assert_eq!(precise_prefix_from(Some("2048")), 2048);
+    assert_eq!(precise_prefix_from(Some(" 1024 ")), 1024);
+    assert_eq!(precise_prefix_from(Some("0")), 0);
+    for invalid in ["", "on", "-1", "2k"] {
+        assert_eq!(precise_prefix_from(Some(invalid)), PRECISE_PREFIX_POSITIONS);
+    }
 }
 
 use infer_core::{OpId, TensorId};

@@ -4,28 +4,41 @@
 //! loaded model creates. It never changes weights, KV storage or the draft proposal path.
 use serde::Serialize;
 #[cfg(all(target_os = "linux", feature = "cuda"))]
-use std::env::var;
+use std::{env::var, sync::OnceLock};
 
-/// Initial context kept on F32 before the target BF16 bulk path.
-pub const PRECISE_PREFIX_POSITIONS: usize = 2048;
+/// Initial context kept on F32 before the target BF16 bulk path, by default none.
+///
+/// Full-prompt FA4 passes the paired task-accuracy non-inferiority gate; the F32 prefix
+/// remains a diagnostic that `INFER_CUDA_ATTENTION_PRECISE_PREFIX=<positions>` restores.
+pub const PRECISE_PREFIX_POSITIONS: usize = 0;
 
-/// Zero is an explicit experiment opt-out through `INFER_CUDA_ATTENTION_PRECISE_PREFIX=0`.
+/// Resolved once per process: the prompt path consults it for every chunk.
 #[cfg(all(target_os = "linux", feature = "cuda"))]
 #[must_use]
 pub fn precise_prefix_positions() -> usize {
-    let opt_out = var("INFER_CUDA_ATTENTION_PRECISE_PREFIX").is_ok_and(|v| v == "0");
-    precise_prefix_from_opt_out(opt_out)
+    static POSITIONS: OnceLock<usize> = OnceLock::new();
+    *POSITIONS.get_or_init(|| {
+        let value = var("INFER_CUDA_ATTENTION_PRECISE_PREFIX").ok();
+        let positions = precise_prefix_from(value.as_deref());
+        if value.is_some() {
+            tracing::info!(target: "infer::load", positions, "CUDA precise attention prefix");
+        }
+        positions
+    })
 }
 
+/// Unset or unparsable values keep the default rather than guessing an operator intent.
 #[cfg(all(target_os = "linux", feature = "cuda"))]
-const fn precise_prefix_from_opt_out(opt_out: bool) -> usize {
-    if opt_out { 0 } else { PRECISE_PREFIX_POSITIONS }
+fn precise_prefix_from(value: Option<&str>) -> usize {
+    value
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(PRECISE_PREFIX_POSITIONS)
 }
 
 /// Target prefill attention arithmetic selected by the operator.
 ///
-/// `Canonical` keeps the established F32 path. `Bf16` keeps initial context through 2048
-/// positions on that path and uses FA4 BF16-QKV/F32 accumulation for bulk prefill afterwards.
+/// `Canonical` keeps the established F32 path. `Bf16` uses FA4 BF16-QKV/F32 accumulation for
+/// target prefill, after an optional F32 prefix (`INFER_CUDA_ATTENTION_PRECISE_PREFIX`).
 /// The CLI pairs it with MTP only when the package and device support both; library callers
 /// retain the canonical default. `Fp16` remains an explicit experimental SM120 profile.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -33,7 +46,7 @@ pub enum AttentionProfile {
     /// Existing canonical attention, unchanged.
     #[default]
     Canonical,
-    /// Canonical initial context followed by FA4 BF16 target FP8-KV bulk prefill.
+    /// FA4 BF16 target FP8-KV prefill, after any configured canonical prefix.
     Bf16,
     /// FA4 plain-FP16 attention for validated SM120 target FP8-KV prefill; not quality-approved.
     Fp16,
