@@ -216,7 +216,7 @@ pub(crate) fn select(
     if !session.permits_gemm_search(
         SearchFamily::FusedSwiGLU,
         [rows, columns, hidden],
-        candidates.len() * 4,
+        candidates.len() * CACHE_STATES * MEASUREMENT_ARMS,
     )? {
         return Ok(fallback);
     }
