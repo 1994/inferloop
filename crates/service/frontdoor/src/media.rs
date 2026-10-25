@@ -13,7 +13,7 @@ use infer_models::{
 };
 use std::env::temp_dir;
 use std::fs::{metadata, read, remove_file, write};
-use std::io::Read;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio, id};
 use std::sync::Arc;
@@ -24,6 +24,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MAX_IMAGE_BYTES: usize = 24 * 1024 * 1024;
 /// Largest accepted raw RGB image pixel count.
 const MAX_IMAGE_PIXELS: usize = 16 * 1024 * 1024;
+/// Largest accepted image edge during in-process decode.
+const MAX_IMAGE_EDGE: u32 = 8192;
+/// Largest accepted decoder allocation during in-process decode.
+const MAX_IMAGE_ALLOC_BYTES: u64 = 64 << 20;
 /// Largest accepted video download/decoded raw output.
 const MAX_VIDEO_BYTES: usize = 24 * 1024 * 1024;
 /// Host staging credit reserved for one media item before decode.
@@ -32,6 +36,8 @@ pub const MEDIA_STAGING_BYTES: usize = MAX_VIDEO_BYTES + 1024 * 1024;
 const MAX_VIDEO_FRAMES: usize = 64;
 /// Longest accepted clip duration handed to ffmpeg.
 const MAX_VIDEO_SECONDS: u32 = 10;
+/// Chunk size for bounded decoder output draining.
+const READ_CHUNK_BYTES: usize = 64 * 1024;
 /// Largest accepted URL or data-URI text.
 const MAX_URL_BYTES: usize = 8192;
 /// Base64 expansion numerator for a bounded data-URI text length.
@@ -170,8 +176,7 @@ fn digest(item: &MediaItem) -> String {
 /// Rejects unsupported schemes, over-limit payloads, malformed bytes and decode failures.
 pub fn load_image(url: &str) -> Result<RawImage> {
     let bytes = read_url(url, MAX_IMAGE_BYTES)?;
-    if let Ok(image) = image::load_from_memory(&bytes) {
-        let rgb = image.to_rgb8();
+    if let Ok(rgb) = decode_png(&bytes) {
         return rgb_image(rgb.width(), rgb.height(), rgb.into_raw());
     }
     // JPEG/WebP may not be enabled in the host image crate; ffmpeg covers those formats.
@@ -201,6 +206,21 @@ pub fn load_video(url: &str) -> Result<RawVideo> {
         .map(|pixels| rgb_frame(width, height, pixels))
         .collect::<Result<Vec<_>>>()?;
     Ok(RawVideo { fps, frames })
+}
+
+fn decode_png(bytes: &[u8]) -> Result<image::RgbImage> {
+    let mut reader = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| Error::invalid(format!("image format: {error}")))?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_EDGE);
+    limits.max_image_height = Some(MAX_IMAGE_EDGE);
+    limits.max_alloc = Some(MAX_IMAGE_ALLOC_BYTES);
+    reader.limits(limits);
+    let image = reader
+        .decode()
+        .map_err(|error| Error::invalid(format!("image decode: {error}")))?;
+    Ok(image.to_rgb8())
 }
 
 fn rgb_image(width: u32, height: u32, pixels: Vec<u8>) -> Result<RawImage> {
@@ -440,11 +460,24 @@ fn decode_frames(path: &Path, width: u32, height: u32, frames: usize) -> Result<
         .take()
         .ok_or_else(|| Error::invariant("ffmpeg stdout missing"))?;
     let mut bytes = Vec::new();
-    stdout
-        .by_ref()
-        .take((MAX_VIDEO_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|e| Error::invalid(e.to_string()))?;
+    let mut chunk = vec![0u8; READ_CHUNK_BYTES];
+    loop {
+        let read = stdout
+            .read(&mut chunk)
+            .map_err(|e| Error::invalid(e.to_string()))?;
+        if read == 0 {
+            break;
+        }
+        if bytes.len().saturating_add(read) > MAX_VIDEO_BYTES {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Error::new(
+                ErrorCode::Capacity,
+                "decoded media exceeds the bounded limit",
+            ));
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    }
     let output = child
         .wait_with_output()
         .map_err(|e| Error::invalid(e.to_string()))?;
