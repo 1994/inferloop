@@ -1,5 +1,5 @@
 use super::add_norm_prefix;
-use super::{PromptControl, PromptRecord, apply_control, prompt_control, prompt_record};
+use super::{apply_control, prompt_record};
 use infer_core::{OpId, TensorId};
 use infer_ir::{TensorNode, TensorOp};
 
@@ -22,30 +22,30 @@ fn node(op: TensorOp, inputs: &[u64], outputs: &[u64]) -> TensorNode {
 
 #[test]
 fn ordinary_norm_fusion_continues_and_add_norm_skips_the_consumed_norm() {
+    let mut skip = Some(42);
+    assert!(!apply_control(prompt_record(false, false, 7), &mut skip));
     assert_eq!(
-        prompt_control(prompt_record(false, false, 7)),
-        PromptControl::Ordinary
+        skip,
+        Some(42),
+        "unhandled preserves an unrelated pending skip"
     );
+
+    assert!(apply_control(prompt_record(false, true, 7), &mut skip));
     assert_eq!(
-        prompt_control(prompt_record(false, true, 7)),
-        PromptControl::Continue
+        skip,
+        Some(42),
+        "ordinary handled norm must not invent a skip"
     );
+
+    assert!(apply_control(prompt_record(true, true, 7), &mut skip));
+    assert_eq!(skip, Some(8), "Add+Norm consumes the following Norm");
+
+    assert!(!apply_control(prompt_record(true, false, 7), &mut skip));
     assert_eq!(
-        prompt_control(prompt_record(true, true, 7)),
-        PromptControl::Skip(8)
+        skip,
+        Some(8),
+        "unsupported preserves the prior pending skip"
     );
-    assert_eq!(
-        prompt_control(prompt_record(true, false, 7)),
-        PromptControl::Ordinary
-    );
-    let mut skip = None;
-    assert!(!apply_control(PromptControl::Ordinary, &mut skip));
-    assert_eq!(skip, None);
-    assert!(apply_control(PromptControl::Continue, &mut skip));
-    assert_eq!(skip, None);
-    assert!(apply_control(PromptControl::Skip(8), &mut skip));
-    assert_eq!(skip, Some(8));
-    assert_eq!(PromptRecord::HandledSkip(8), PromptRecord::HandledSkip(8));
 }
 
 #[test]

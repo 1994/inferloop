@@ -56,14 +56,6 @@ pub(super) enum PromptRecord {
     HandledSkip(usize),
 }
 
-/// What the capture loop must do after a norm-fusion attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PromptControl {
-    Ordinary,
-    Continue,
-    Skip(usize),
-}
-
 const fn prompt_record(add: bool, recorded: bool, index: usize) -> PromptRecord {
     match (add, recorded) {
         (_, false) => PromptRecord::NotHandled,
@@ -72,22 +64,14 @@ const fn prompt_record(add: bool, recorded: bool, index: usize) -> PromptRecord 
     }
 }
 
-pub(super) const fn apply_control(control: PromptControl, skip: &mut Option<usize>) -> bool {
-    match control {
-        PromptControl::Ordinary => false,
-        PromptControl::Continue => true,
-        PromptControl::Skip(next) => {
+pub(super) const fn apply_control(record: PromptRecord, skip: &mut Option<usize>) -> bool {
+    match record {
+        PromptRecord::NotHandled => false,
+        PromptRecord::Handled => true,
+        PromptRecord::HandledSkip(next) => {
             *skip = Some(next);
             true
         }
-    }
-}
-
-pub(super) const fn prompt_control(record: PromptRecord) -> PromptControl {
-    match record {
-        PromptRecord::NotHandled => PromptControl::Ordinary,
-        PromptRecord::Handled => PromptControl::Continue,
-        PromptRecord::HandledSkip(next) => PromptControl::Skip(next),
     }
 }
 
