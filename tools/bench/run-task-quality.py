@@ -87,12 +87,14 @@ def stop(process):
     except ProcessLookupError:
         return
     try:
-        process.wait(timeout=30)
+        code = process.wait(timeout=30)
     except subprocess.TimeoutExpired as error:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
         process.wait(timeout=10)
         raise RuntimeError("server did not stop gracefully") from error
+    if code != 0:
+        raise RuntimeError(f"server shutdown failed: {code}")
 
 
 def result_row(sample, response, decode):

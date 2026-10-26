@@ -300,6 +300,16 @@ class CollectionTests(unittest.TestCase):
             self.run_collection()
         self.popen.assert_not_called()
 
+    def test_failed_server_shutdown_invalidates_otherwise_complete_outputs(self):
+        self.process.wait = mock.Mock(return_value=1)
+        with self.assertRaisesRegex(RuntimeError, "shutdown failed"):
+            self.run_collection()
+        report = json.loads((self.args.output / "report.json").read_text())
+        self.assertEqual(report["count"], 256)
+        self.assertFalse(report["completed"])
+        self.assertIn("shutdown failed", report["error"])
+        self.assertFalse((self.args.output / "gate.json").exists())
+
     def test_non_greedy_contract_is_rejected_before_startup(self):
         self.suite["generation"]["temperature"] = 0.5
         self.suite_path.write_text(json.dumps(self.suite))
