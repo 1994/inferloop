@@ -144,6 +144,7 @@ pub struct ProtocolBackend {
     hidden: usize,
     capacity: usize,
     script: Vec<usize>,
+    recommendation: Option<usize>,
 }
 
 impl ProtocolBackend {
@@ -151,6 +152,13 @@ impl ProtocolBackend {
     /// Returns an invalid-input error when the configured request bound cannot be reserved.
     pub fn new(requests: usize, batch: usize, ir: &ModelIr) -> Result<Self> {
         Self::tagged("declared-protocol-double", requests, batch, ir)
+    }
+
+    /// Recommend an automatic maximum sequence count for runtime-contract tests.
+    #[must_use]
+    pub const fn with_recommendation(mut self, sequences: usize) -> Self {
+        self.recommendation = Some(sequences);
+        self
     }
 
     /// The same double with a declared ramp that peaks at `token`.
@@ -222,6 +230,7 @@ impl ProtocolBackend {
             hidden: ir.hidden_size,
             capacity: requests,
             script: Vec::new(),
+            recommendation: None,
         })
     }
 }
@@ -238,6 +247,15 @@ impl BackendProvider for ProtocolBackend {
     type Ticket = Option<Vec<TaskOutput>>;
     fn identity(&self) -> &str {
         &self.identity
+    }
+    fn scheduling_recommendation(&self) -> Result<Option<infer_spi::SchedulingRecommendation>> {
+        Ok(self
+            .recommendation
+            .map(|max_sequences| infer_spi::SchedulingRecommendation {
+                max_sequences,
+                memory_bound: max_sequences,
+                knee_bound: None,
+            }))
     }
     fn capabilities(&self) -> DeviceCapabilities {
         DeviceCapabilities {

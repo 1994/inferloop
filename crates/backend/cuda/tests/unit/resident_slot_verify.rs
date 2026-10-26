@@ -8,8 +8,35 @@ use cutile::half::bf16;
 use cutile::jit_cache::enable_default;
 use infer_core::{OpId, TensorId};
 use infer_ir::{DType, DataflowGraph, TensorNode, TensorSpec};
-use std::collections::BTreeMap;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Mutex;
+
+fn fixture_weights(device: &CudaDevice, embedding: Arc<Tensor<bf16>>) -> Result<ProgramWeights> {
+    let weights = ProgramWeights {
+        mrope: false,
+        prompt_scratch: PromptScratchRegistry::default(),
+        autotune: false,
+        resident_tuning: Arc::new(ResidentTuningSession::default()),
+        pool_gemv: Arc::new(Mutex::new(BTreeMap::new())),
+        chunked_recurrent: false,
+        batch_width: 3,
+        prefill_width: 3,
+        narrow_prefill_width: 0,
+        attention_profile: crate::AttentionProfile::Canonical,
+        fusion: None,
+        kv_scales: BTreeMap::new(),
+        tiling: BTreeMap::new(),
+        embeddings: BTreeMap::from([(TensorId::ONE, Arc::clone(&embedding))]),
+        fp8_inputs: BTreeSet::new(),
+        input_scales: BTreeMap::new(),
+        projections: BTreeMap::from([(TensorId::new(6)?, ProjectionWeight::Dense(embedding))]),
+        expert_banks: BTreeMap::new(),
+        constants: BTreeMap::from([(TensorId::new(3)?, device.upload(vec![0.25; 128], &[32, 4])?)]),
+        rope_axes: BTreeMap::new(),
+        rope_frequencies: BTreeMap::new(),
+    };
+    Ok(weights)
+}
 
 fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
     let mut graph = DataflowGraph::default();
@@ -89,28 +116,7 @@ fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
         .map(|i| bf16::from_f32(f32::from(i % 29) / 29.0 - 0.5))
         .collect();
     let embedding = device.upload(dense, &[32, 32])?;
-    let weights = ProgramWeights {
-        mrope: false,
-        prompt_scratch: PromptScratchRegistry::default(),
-        autotune: false,
-        resident_tuning: Arc::new(ResidentTuningSession::default()),
-        chunked_recurrent: false,
-        batch_width: 3,
-        prefill_width: 3,
-        narrow_prefill_width: 0,
-        attention_profile: crate::AttentionProfile::Canonical,
-        fusion: None,
-        kv_scales: BTreeMap::new(),
-        tiling: BTreeMap::new(),
-        embeddings: BTreeMap::from([(TensorId::ONE, Arc::clone(&embedding))]),
-        fp8_inputs: BTreeSet::new(),
-        input_scales: BTreeMap::new(),
-        projections: BTreeMap::from([(TensorId::new(6)?, ProjectionWeight::Dense(embedding))]),
-        expert_banks: BTreeMap::new(),
-        constants: BTreeMap::from([(TensorId::new(3)?, device.upload(vec![0.25; 128], &[32, 4])?)]),
-        rope_axes: BTreeMap::new(),
-        rope_frequencies: BTreeMap::new(),
-    };
+    let weights = fixture_weights(device, embedding)?;
     Ok((graph, weights))
 }
 

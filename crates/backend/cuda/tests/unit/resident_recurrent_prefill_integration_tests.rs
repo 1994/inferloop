@@ -8,7 +8,7 @@ use cutile::half::bf16;
 use infer_core::{OpId, Result, TensorId};
 use infer_ir::{DType, DataflowGraph, StateKind, TensorNode, TensorOp, TensorSpec, TensorStorage};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Delta geometry for [`fixture`]: key heads, value heads, head dimension.
 type DeltaGeometry = (usize, usize, usize);
@@ -51,6 +51,7 @@ fn fixture_at(
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,
         resident_tuning: Arc::new(ResidentTuningSession::default()),
+        pool_gemv: Arc::new(Mutex::new(BTreeMap::new())),
         chunked_recurrent: false,
         batch_width: 3,
         prefill_width: 1,

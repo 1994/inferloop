@@ -8,20 +8,29 @@ use crate::constants::NVFP4_GROUP_SIZE;
 use crate::constants::NVFP4_QUANT_CODES_TILE;
 use crate::constants::NVFP4_QUANT_SCALES_TILE;
 use crate::constants::PREFILL_LANES;
+use crate::tuning::fp8_gemm::native_search_trials;
 use crate::tuning::fp8_gemm::prefill_choice;
 
+use crate::resident::prefill_projection::fused_projections;
 use crate::resident::program::ProgramGeometry;
 use crate::tuning::fp8_gemm::Choice;
 use crate::tuning::fp8_gemm::WeightKey;
 use crate::tuning::fp8_gemm::probe_inputs::Scope as ProbeInputsScope;
 use crate::tuning::fp8_gemm::select;
+use crate::tuning::resident_gemm::ResidentTuningSession;
+use crate::tuning::resident_gemm::SearchFamily;
 use crate::tuning::resident_gemm::native_tile;
+use crate::tuning::resident_gemm::nvfp4_search_trials;
 
 use crate::tuning::resident_gemm::GemmConfig;
 
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use crate::tuning::resident_gemm::WeightKey as ResidentGemmWeightKey;
 use crate::tuning::resident_gemm::select as resident_gemm_select;
+use crate::tuning::swiglu::{Contract as SwigluContract, select as select_swiglu_tuned};
+
+/// Two cache states times the baseline/candidate arms.
+const SWIGLU_TRIAL_FACTOR: usize = 4;
 use crate::{
     device::{CudaDevice, device_error, vendor_fp8},
     mlp::ProjectionWeight,
@@ -31,7 +40,7 @@ use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_ir::{DataflowGraph, TensorOp};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::env::var;
 
@@ -43,6 +52,61 @@ type Quantized = (Tensor<f4e2m1fnx2>, Tensor<f8e4m3fn>);
 /// against 0.45 ms for the separate projections and quantizer).
 const SWIGLU_TILE_ROWS: usize = 64;
 const SWIGLU_TILE_COLUMNS: usize = 64;
+/// Candidate row tiling measured as one alternative to the conservative tile.
+const SWIGLU_WIDE_ROWS: usize = 128;
+/// Candidate column tiling retained only when its quantization layout is legal.
+const SWIGLU_WIDE_COLUMNS: usize = 128;
+
+/// One legal fused-SwiGLU loading-time tile candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SwigluTile {
+    pub rows: usize,
+    pub columns: usize,
+}
+
+impl SwigluTile {
+    /// Conservative 64x64 tile qualified by the existing measurements.
+    pub const FALLBACK: Self = Self {
+        rows: SWIGLU_TILE_ROWS,
+        columns: SWIGLU_TILE_COLUMNS,
+    };
+}
+
+/// Shape-specific candidates in conservative-first order.
+///
+/// The 128-row candidate is retained only when every row/column extent and the quantization
+/// group layout are legal. It is a candidate, not a default: the 64x64 fallback stays qualified
+/// until full-output and paired quantization-inclusive evidence selects otherwise.
+pub fn swiglu_candidates(rows: usize, columns: usize, hidden: usize) -> Vec<SwigluTile> {
+    let mut candidates = Vec::new();
+    for tile in [
+        SwigluTile::FALLBACK,
+        SwigluTile {
+            rows: SWIGLU_WIDE_ROWS,
+            columns: SWIGLU_TILE_COLUMNS,
+        },
+        SwigluTile {
+            rows: SWIGLU_WIDE_ROWS,
+            columns: SWIGLU_WIDE_COLUMNS,
+        },
+    ] {
+        if rows.is_multiple_of(tile.rows)
+            && hidden.is_multiple_of(tile.columns)
+            && columns.is_multiple_of(NVFP4_GROUP_SIZE)
+        {
+            candidates.push(tile);
+        }
+    }
+    candidates
+}
+
+/// Select the qualified default; candidate search may choose another tile only after its own
+/// exact-output and paired evidence exists.
+pub fn select_swiglu_tile(rows: usize, columns: usize, hidden: usize) -> Option<SwigluTile> {
+    swiglu_candidates(rows, columns, hidden)
+        .contains(&SwigluTile::FALLBACK)
+        .then_some(SwigluTile::FALLBACK)
+}
 /// Keyed by `(rows, columns, activation-scale columns)`.
 type Fp8Key = (usize, usize, usize);
 type StrategyKey = (ResidentGemmWeightKey, usize, usize, usize);
@@ -63,6 +127,17 @@ pub struct Workspace {
     /// operand geometry but need different activation-scale extents, so geometry alone would let
     /// whichever projection is visited first decide the layout for the other.
     fp8: BTreeMap<Fp8Key, Fp8Buffers>,
+    /// Proven/selected fused `SwiGLU` tiles by `(rows, columns, hidden)`.
+    swiglu_tiles: BTreeMap<
+        (
+            infer_core::TensorId,
+            infer_core::TensorId,
+            usize,
+            usize,
+            usize,
+        ),
+        SwigluTile,
+    >,
 }
 
 impl Workspace {
@@ -161,7 +236,17 @@ impl Workspace {
         geometry: ProgramGeometry,
     ) -> Result<Self> {
         let widths = geometry.widths();
-        Self::new(device, graph, weights, &widths)
+        let skipped: BTreeSet<_> = geometry
+            .prompts
+            .into_iter()
+            .filter(|&rows| rows > 1 && rows != geometry.verification)
+            .flat_map(|rows| {
+                fused_projections(graph, weights, rows)
+                    .into_iter()
+                    .map(move |index| (index, rows))
+            })
+            .collect();
+        Self::new_planned(device, graph, weights, &widths, &skipped)
     }
 
     pub(crate) fn ensure_width(
@@ -171,7 +256,7 @@ impl Workspace {
         weights: &ProgramWeights,
         width: usize,
     ) -> Result<()> {
-        self.extend(device, graph, weights, &[width])
+        self.extend(device, graph, weights, &[width], &BTreeSet::new())
     }
 
     pub(crate) fn new(
@@ -179,6 +264,16 @@ impl Workspace {
         graph: &DataflowGraph,
         weights: &ProgramWeights,
         widths: &[usize],
+    ) -> Result<Self> {
+        Self::new_planned(device, graph, weights, widths, &BTreeSet::new())
+    }
+
+    fn new_planned(
+        device: &CudaDevice,
+        graph: &DataflowGraph,
+        weights: &ProgramWeights,
+        widths: &[usize],
+        skipped: &BTreeSet<(usize, usize)>,
     ) -> Result<Self> {
         let mut workspace = Self {
             quant_reuse: CaptureQuantReuse::default(),
@@ -189,9 +284,72 @@ impl Workspace {
             fp8_strategies: BTreeMap::new(),
             vendor_fp8: vendor_fp8::Support::new_with(device, true),
             vendor_diagnostic: vendor_diagnostic_enabled(),
+            swiglu_tiles: BTreeMap::new(),
         };
-        workspace.extend(device, graph, weights, widths)?;
+        workspace.extend(device, graph, weights, widths, skipped)?;
+        workspace.tune_swiglu(device, graph, weights, widths)?;
         Ok(workspace)
+    }
+
+    /// Register every geometry this workspace may search before the first measurement. This
+    /// lets an exhausted shape report all still-unstarted shapes, not only the current one.
+    fn plan_search_shapes(
+        session: &ResidentTuningSession,
+        graph: &DataflowGraph,
+        weights: &ProgramWeights,
+        widths: &[usize],
+        skipped: &BTreeSet<(usize, usize)>,
+    ) -> Result<()> {
+        let mut fp8 = BTreeSet::new();
+        let mut nvfp4 = BTreeSet::new();
+        for (index, node) in graph.nodes.iter().enumerate() {
+            if node.op != TensorOp::Linear {
+                continue;
+            }
+            let Some(input) = graph.tensors.iter().find(|t| t.id == node.inputs[0]) else {
+                continue;
+            };
+            let Some(output) = graph.tensors.iter().find(|t| t.id == node.outputs[0]) else {
+                continue;
+            };
+            let columns = input.elements()?;
+            let outputs = output.elements()?;
+            let weight_id = node.inputs[1];
+            if weights.fp8_inputs.contains(&weight_id) {
+                if matches!(
+                    weights.projections.get(&weight_id),
+                    Some(ProjectionWeight::Fp8(..))
+                ) {
+                    for &rows in widths {
+                        if rows == 0
+                            || (rows >= PREFILL_LANES && Some(node.outputs[0]) == graph.logits)
+                        {
+                            continue;
+                        }
+                        fp8.insert([rows, outputs, columns]);
+                    }
+                }
+                continue;
+            }
+            if !weights.input_scales.contains_key(&weight_id)
+                || !matches!(
+                    weights.projections.get(&weight_id),
+                    Some(ProjectionWeight::Fp4(..))
+                )
+            {
+                continue;
+            }
+            for &rows in widths {
+                if rows > 0 && !skipped.contains(&(index, rows)) {
+                    nvfp4.insert([rows, outputs, columns]);
+                }
+            }
+        }
+        let fp8: Vec<_> = fp8.into_iter().collect();
+        let nvfp4: Vec<_> = nvfp4.into_iter().collect();
+        session.plan_gemm_search(SearchFamily::Fp8Channel, &fp8, native_search_trials())?;
+        session.plan_gemm_search(SearchFamily::Nvfp4, &nvfp4, nvfp4_search_trials())?;
+        Ok(())
     }
 
     fn extend(
@@ -200,9 +358,11 @@ impl Workspace {
         graph: &DataflowGraph,
         weights: &ProgramWeights,
         widths: &[usize],
+        skipped: &BTreeSet<(usize, usize)>,
     ) -> Result<()> {
+        Self::plan_search_shapes(&weights.resident_tuning, graph, weights, widths, skipped)?;
         let _probe_inputs = ProbeInputsScope::new(device)?;
-        for node in &graph.nodes {
+        for (index, node) in graph.nodes.iter().enumerate() {
             if node.op != TensorOp::Linear
                 || (!weights.input_scales.contains_key(&node.inputs[1])
                     && !weights.fp8_inputs.contains(&node.inputs[1]))
@@ -245,7 +405,7 @@ impl Workspace {
                     .elements()?;
                 let weight_key = ResidentGemmWeightKey::new(weight, scale)?;
                 for &rows in widths {
-                    if rows > 0 {
+                    if rows > 0 && !skipped.contains(&(index, rows)) {
                         self.strategies
                             .entry((weight_key, rows, outputs, columns))
                             .or_insert_with(|| {
@@ -511,13 +671,94 @@ impl Workspace {
         )
     }
 
-    /// Whether [`Self::record_gate_up_swiglu`] can run for this prompt width and MLP geometry.
-    pub(crate) fn gate_up_swiglu_ready(&self, rows: usize, columns: usize, hidden: usize) -> bool {
-        rows.is_multiple_of(SWIGLU_TILE_ROWS)
+    fn tune_swiglu(
+        &mut self,
+        device: &CudaDevice,
+        graph: &DataflowGraph,
+        weights: &ProgramWeights,
+        widths: &[usize],
+    ) -> Result<()> {
+        let profile = device.profile()?;
+        for (gate, up, hidden, columns, input_scale, down_scale) in
+            super::super::prefill_projection::swiglu_tuning_pairs(graph, weights)
+        {
+            let (Some(gate_weight), Some(up_weight)) =
+                (weights.projections.get(&gate), weights.projections.get(&up))
+            else {
+                continue;
+            };
+            for &rows in widths {
+                if rows < PREFILL_LANES {
+                    continue;
+                }
+                let shape = [rows, columns, hidden];
+                let trials =
+                    swiglu_candidates(rows, columns, hidden).len().max(1) * SWIGLU_TRIAL_FACTOR;
+                let search = weights.autotune
+                    && weights.resident_tuning.permits_gemm_search(
+                        SearchFamily::FusedSwiGLU,
+                        shape,
+                        trials,
+                    )?;
+                let tile = select_swiglu_tuned(
+                    device,
+                    profile,
+                    gate_weight,
+                    up_weight,
+                    SwigluContract {
+                        shape: (rows, columns, hidden),
+                        scales: (input_scale, down_scale),
+                    },
+                    search,
+                    &weights.resident_tuning,
+                )?;
+                self.swiglu_tiles
+                    .insert((gate, up, rows, columns, hidden), tile);
+            }
+        }
+        Ok(())
+    }
+
+    fn selected_swiglu(
+        &self,
+        gate: infer_core::TensorId,
+        up: infer_core::TensorId,
+        rows: usize,
+        columns: usize,
+        hidden: usize,
+    ) -> Option<SwigluTile> {
+        self.swiglu_tiles
+            .get(&(gate, up, rows, columns, hidden))
+            .copied()
+            .or_else(|| select_swiglu_tile(rows, columns, hidden))
+    }
+
+    /// Geometry accepted by a legal fused prompt `SwiGLU` tile.
+    pub(crate) const fn gate_up_swiglu_geometry(rows: usize, hidden: usize) -> bool {
+        rows > 0
+            && rows.is_multiple_of(SWIGLU_TILE_ROWS)
             && rows.is_multiple_of(QUANTIZATION_ROWS)
             && hidden.is_multiple_of(SWIGLU_TILE_COLUMNS)
-            && self.buffers.contains_key(&(rows, columns))
-            && self.buffers.contains_key(&(rows, hidden))
+    }
+
+    /// Whether [`Self::record_gate_up_swiglu`] can run for this prompt width and MLP geometry.
+    pub(crate) fn gate_up_swiglu_ready(
+        &self,
+        gate: infer_core::TensorId,
+        up: infer_core::TensorId,
+        rows: usize,
+        columns: usize,
+        hidden: usize,
+    ) -> bool {
+        self.selected_swiglu(gate, up, rows, columns, hidden)
+            .is_some_and(|tile| {
+                rows > 0
+                    && rows.is_multiple_of(tile.rows)
+                    && rows.is_multiple_of(QUANTIZATION_ROWS)
+                    && hidden.is_multiple_of(tile.columns)
+                    && self.buffers.contains_key(&(rows, columns))
+                    && self.buffers.contains_key(&(rows, hidden))
+            })
     }
 
     /// Gate and up projections of a gated MLP fused with the down projection's quantizer:
@@ -526,6 +767,7 @@ impl Workspace {
     pub(crate) fn record_gate_up_swiglu(
         &mut self,
         scope: &Scope,
+        (gate_id, up_id): (infer_core::TensorId, infer_core::TensorId),
         (gate, up): (&ProjectionWeight, &ProjectionWeight),
         (input_scale, down_scale): (f32, f32),
         input: &TensorView<'_, f32>,
@@ -538,11 +780,14 @@ impl Workspace {
         else {
             return Err(super::super::capture::error("fused SwiGLU weights"));
         };
-        if !self.gate_up_swiglu_ready(rows, columns, hidden) {
+        if !self.gate_up_swiglu_ready(gate_id, up_id, rows, columns, hidden) {
             return Err(super::super::capture::error("fused SwiGLU geometry"));
         }
         // Both writes replace shared quantization buffers; no reuse permit may span them.
         self.quant_reuse.clear();
+        let tile = self
+            .selected_swiglu(gate_id, up_id, rows, columns, hidden)
+            .ok_or_else(|| super::super::capture::error("fused SwiGLU tile missing"))?;
         let (mut q, mut qs) = self
             .buffers
             .remove(&(rows, columns))
@@ -565,9 +810,8 @@ impl Workspace {
             scope
                 .record(
                     kernels::packed_swiglu(
-                        codes.partition([SWIGLU_TILE_ROWS, SWIGLU_TILE_COLUMNS / 2]),
-                        code_scales
-                            .partition([SWIGLU_TILE_ROWS, SWIGLU_TILE_COLUMNS / NVFP4_GROUP_SIZE]),
+                        codes.partition([tile.rows, tile.columns / 2]),
+                        code_scales.partition([tile.rows, tile.columns / NVFP4_GROUP_SIZE]),
                         &q,
                         &qs,
                         gate_codes,
@@ -581,10 +825,10 @@ impl Workspace {
                     .generics(
                         [
                             columns,
-                            SWIGLU_TILE_ROWS,
-                            SWIGLU_TILE_COLUMNS,
-                            SWIGLU_TILE_COLUMNS / 2,
-                            SWIGLU_TILE_COLUMNS / NVFP4_GROUP_SIZE,
+                            tile.rows,
+                            tile.columns,
+                            tile.columns / 2,
+                            tile.columns / NVFP4_GROUP_SIZE,
                         ]
                         .iter()
                         .map(ToString::to_string)

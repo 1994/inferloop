@@ -10,7 +10,6 @@ use crate::tuning::greedy::select;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_models::mrope::ROTARY_AXES;
-use std::env::var;
 
 pub(super) struct ProgramReadouts {
     pub greedy: Option<DeviceGreedy>,
@@ -64,10 +63,6 @@ impl DeviceGreedy {
         weights: &ProgramWeights,
     ) -> Result<Option<Self>> {
         if weights.fusion.is_none() || logits.size() != vocabulary {
-            return Ok(None);
-        }
-        // A diagnostic switch permits matched baseline/candidate runs with one binary.
-        if var("INFER_CUDA_DEVICE_GREEDY").is_ok_and(|v| v == "0") {
             return Ok(None);
         }
         let tile = select(

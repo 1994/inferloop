@@ -1111,6 +1111,7 @@ dependencies = [
  "cutile",
  "infer-compiler",
  "infer-core",
+ "infer-gpu-api",
  "infer-ir",
  "infer-kernel-api",
  "infer-models",

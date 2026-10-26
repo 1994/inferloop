@@ -935,3 +935,36 @@ fn busy_rejection_observed_after_execution_progress_is_retried_once() -> Result<
     }
     engine.check_invariants()
 }
+
+#[test]
+fn runtime_applies_backend_recommendation_without_cli() -> Result<()> {
+    let ir = support::model(ModelId::ONE);
+    let mut kernels = KernelRegistry::default();
+    kernels.register(&support::DeclaredKernels)?;
+    let backend = ProtocolBackend::new(16, 8, &ir)?.with_recommendation(3);
+    let engine = Engine::new(
+        backend,
+        ir,
+        PrecisionPlan::f32(),
+        &kernels,
+        RuntimeConfig::default(),
+    )?;
+    assert_eq!(engine.config().max_num_seqs, 3);
+    Ok(())
+}
+
+#[test]
+fn runtime_preserves_explicit_max_num_seqs() -> Result<()> {
+    let ir = support::model(ModelId::ONE);
+    let mut kernels = KernelRegistry::default();
+    kernels.register(&support::DeclaredKernels)?;
+    let backend = ProtocolBackend::new(16, 8, &ir)?.with_recommendation(3);
+    let config = RuntimeConfig {
+        max_num_seqs: 7,
+        max_num_seqs_explicit: true,
+        ..RuntimeConfig::default()
+    };
+    let engine = Engine::new(backend, ir, PrecisionPlan::f32(), &kernels, config)?;
+    assert_eq!(engine.config().max_num_seqs, 7);
+    Ok(())
+}

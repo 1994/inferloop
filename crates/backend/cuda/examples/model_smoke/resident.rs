@@ -16,6 +16,7 @@ use infer_ir::TensorOp;
 use infer_models::TensorDtype;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::sync::Mutex;
 
 pub type Embeddings = BTreeMap<infer_core::TensorId, Arc<Tensor<bf16>>>;
 
@@ -34,6 +35,7 @@ pub fn prepare(
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,
         resident_tuning: Arc::new(ResidentTuningSession::default()),
+        pool_gemv: Arc::new(Mutex::new(BTreeMap::new())),
         chunked_recurrent: false,
         batch_width: model.verify_width,
         prefill_width: model.prefill_width,

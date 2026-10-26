@@ -159,6 +159,24 @@ pub(super) fn fused_recurrent(graph: &infer_ir::DataflowGraph, verify: usize) ->
 }
 
 impl BatchBuilder<'_> {
+    fn value_split_for(&self, node: &TensorNode, slots: usize) -> StdResult<usize, DeviceError> {
+        let (heads, value_dim) = match node.op {
+            TensorOp::Delta {
+                value_heads,
+                value_dim,
+                ..
+            } => (value_heads, value_dim),
+            _ => (1, 1),
+        };
+        let multiprocessors = self.device.profile().map_err(error)?.multiprocessors;
+        Ok(super::slot_recurrent::value_split(
+            multiprocessors,
+            heads,
+            slots,
+            value_dim,
+        ))
+    }
+
     /// Per slot, one graph per committed lane count that applies the accepted prefix of the
     /// snapshot-free recurrent verification to the slot's state.
     fn capture_commits(
@@ -169,8 +187,7 @@ impl BatchBuilder<'_> {
         (verify, staging): (usize, &super::slot_recurrent::Staging),
     ) -> Result<Vec<Vec<CudaGraph<()>>>> {
         let mut commits = Vec::with_capacity(lane_states.len());
-        let value_split =
-            super::slot_recurrent::value_split(self.device.profile()?.multiprocessors);
+        let slots = lane_states.len();
         for (slot, states) in lane_states.iter_mut().enumerate() {
             let lanes = slot_lanes(slot, metadata).map_err(device_error)?;
             let mut graphs = Vec::with_capacity(verify);
@@ -189,7 +206,7 @@ impl BatchBuilder<'_> {
                                     states,
                                     &lanes,
                                     self.weights,
-                                    value_split,
+                                    self.value_split_for(node, slots)?,
                                     (staged, count),
                                 )?;
                             }
@@ -344,8 +361,7 @@ impl BatchBuilder<'_> {
     ) -> Result<CudaGraph<()>> {
         let (verify, metadata, batch) = geometry;
         let fused = fused_recurrent(self.graph, verify);
-        let value_split =
-            super::slot_recurrent::value_split(self.device.profile()?.multiprocessors);
+        let slots = lane_states.len();
         CudaGraph::scope(&self.device.stream, |scope| {
             let mut no_fusion = None;
             for (index, node) in self.graph.nodes.iter().enumerate() {
@@ -398,7 +414,7 @@ impl BatchBuilder<'_> {
                             node,
                             arena,
                             (lane_states, metadata),
-                            (staging, index, value_split, batch),
+                            (staging, index, self.value_split_for(node, slots)?, batch),
                         )?;
                     }
                     Dispatch32::Row => {

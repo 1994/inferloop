@@ -15,7 +15,7 @@ use infer_core::{OpId, TensorId};
 use infer_ir::{DType, TensorNode, TensorSpec};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 fn fixture_weights() -> ProgramWeights {
     ProgramWeights {
@@ -23,6 +23,7 @@ fn fixture_weights() -> ProgramWeights {
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,
         resident_tuning: Arc::new(ResidentTuningSession::default()),
+        pool_gemv: Arc::new(Mutex::new(BTreeMap::new())),
         chunked_recurrent: false,
         batch_width: 3,
         prefill_width: 32,
@@ -593,36 +594,27 @@ fn pending_prompt_scratch_prices_only_uncached_captured_widths() -> Result<()> {
 #[test]
 fn funded_kv_rounds_down_without_changing_logical_capacity() -> Result<()> {
     let width = 16;
-    let capacity = 8192;
     let maximum = width * 6144;
     let fixed = 5_200_689_152;
     let block_bytes = 1_048_576;
     let envelope = 7_569_557_647;
-    let tokens = funded_kv_tokens(width, capacity, maximum, block_bytes, fixed, envelope)?
+    let tokens = funded_kv_tokens(width, maximum, block_bytes, fixed, envelope)?
         .ok_or_else(|| Error::invariant("funded fixture"))?;
     assert_eq!(tokens, 72_288);
     assert_eq!(tokens % KV_BLOCK_TOKENS, 0);
     assert!(fixed + (tokens / KV_BLOCK_TOKENS) as u64 * block_bytes <= envelope);
     assert!(fixed + (tokens / KV_BLOCK_TOKENS + 1) as u64 * block_bytes > envelope);
-    assert!(tokens >= width * (capacity / 2 + KV_BLOCK_TOKENS));
-    // A budget that cannot admit one minimum-bucket request per slot is not useful.
+    // Each resident handle needs only one physical page to make short concurrent requests
+    // admissible; the old half-capacity floor is not a planning requirement.
+    assert!(tokens >= width * KV_BLOCK_TOKENS);
+    // A budget with no page at all cannot admit even one short request.
     assert_eq!(
-        funded_kv_tokens(
-            width,
-            capacity,
-            maximum,
-            block_bytes,
-            fixed,
-            fixed + (width * capacity / 2 / KV_BLOCK_TOKENS) as u64 * block_bytes
-        )?,
+        funded_kv_tokens(width, maximum, block_bytes, fixed, fixed)?,
         None
     );
+    assert_eq!(funded_kv_tokens(width, maximum, 0, fixed, envelope)?, None);
     assert_eq!(
-        funded_kv_tokens(width, capacity, maximum, 0, fixed, envelope)?,
-        None
-    );
-    assert_eq!(
-        funded_kv_tokens(width, capacity, maximum, block_bytes, fixed, fixed)?,
+        funded_kv_tokens(width, maximum, block_bytes, fixed, fixed)?,
         None
     );
     Ok(())
