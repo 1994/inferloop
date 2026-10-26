@@ -251,7 +251,9 @@ def collect_batches(args, suite, samples, base, report, decode, baseline=None):
                         )
 
 
-def collect(args, suite, suite_sha, model, hardware, decode, baseline=None):
+def collect(args, suite, suite_sha, model, hardware, decode, baseline=None, sample_limit=None):
+    if sample_limit is not None and not 0 < sample_limit <= len(suite["samples"]):
+        raise ValueError("sample limit must select a nonempty subset of the original suite")
     port = harness.free_port()
     base = f"http://127.0.0.1:{port}"
     command = [str(args.executable), str(args.model), "--listen", f"127.0.0.1:{port}"]
@@ -261,6 +263,9 @@ def collect(args, suite, suite_sha, model, hardware, decode, baseline=None):
     report = {
         "schema": 1,
         "completed": False,
+        "collection_completed": False,
+        "planned_tasks": sample_limit or len(suite["samples"]),
+        "suite_tasks": len(suite["samples"]),
         "profile_id": suite["profile_id"],
         "suite_sha256": suite_sha,
         "model": model,
@@ -295,11 +300,13 @@ def collect(args, suite, suite_sha, model, hardware, decode, baseline=None):
                 args, process, base, log_path, args.startup_timeout
             )
             report["initial_readback"] = harness.runtime_readback(args, base, log_path)
-            collect_batches(args, suite, suite["samples"], base, report, decode, baseline)
+            samples = suite["samples"][:sample_limit]
+            collect_batches(args, suite, samples, base, report, decode, baseline)
             report["final_readback"] = harness.runtime_readback(args, base, log_path)
             if harness.sha256_file(args.executable) != binary["sha256"]:
                 raise ValueError("executable changed during collection")
-            report["completed"] = True
+            report["collection_completed"] = True
+            report["completed"] = len(samples) == len(suite["samples"])
         except Exception as error:
             report["error"] = repr(error)
             raise
@@ -314,7 +321,8 @@ def collect(args, suite, suite_sha, model, hardware, decode, baseline=None):
                 report["count"] = len(report["results"])
                 report["correct"] = sum(row["correct"] for row in report["results"])
                 (args.output / "report.json").write_text(json.dumps(report, indent=1) + "\n")
-    scorer.score(suite, report, suite_sha)
+    if report["completed"]:
+        scorer.score(suite, report, suite_sha)
     return report
 
 

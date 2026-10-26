@@ -21,6 +21,7 @@ help:
 	@echo '  make accept PACKAGE_FILE=... MODEL=... GOLDEN=...'
 	@echo '  DIST_DIR=artifacts/packages overrides the artifact directory.'
 	@echo 'CUDA artifacts: make check-cuda-artifacts | list-cuda-kernels'
+	@echo 'Iteration: check-iteration (performance + 64 tasks, <=10min); release: check-release'
 	@echo 'Quality gates: check, check-rust, check-tools, check-security,'
 	@echo '  test-cuda, test-cuda-hosted (CUDA compile/lint/tests, no GPU), test-metal, bench'
 	@echo '  (aliases: check-cuda, check-metal, check-cpu),'
@@ -101,3 +102,16 @@ check-cuda-artifacts:
 
 list-cuda-kernels:
 	$(PYTHON) tools/cuda/kernels.py list
+
+# Iteration snapshots use prebuilt binaries and never start formal release measurement.
+ITERATION_ARGS ?=
+RELEASE_ARGS ?=
+.PHONY: check-iteration check-release
+check-iteration:
+	@test -n "$(ITERATION_ARGS)" || { echo 'Set ITERATION_ARGS; see docs/guides/quality-gates.md'; exit 2; }
+	bash tools/bench/safe-run.sh --memory-gib 24 --time-limit-seconds 600 $(PYTHON) tools/bench/iteration-gate.py $(ITERATION_ARGS)
+
+# Full frozen process-pair evidence and the complete quality suite belong here.
+check-release:
+	@test -n "$(RELEASE_ARGS)" || { echo 'Set RELEASE_ARGS; see docs/guides/quality-gates.md'; exit 2; }
+	bash tools/bench/safe-run.sh --memory-gib 24 $(PYTHON) tools/bench/release-gate.py $(RELEASE_ARGS)

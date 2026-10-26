@@ -45,6 +45,47 @@ make check-linux-numa # Linux NUMA 硬件验收，见 Linux 指南
 该入口报告 `compiled`，不声称执行了 CUDA 测试。纯主机用例也随 CUDA 库启用，
 在 `test-cuda-hosted` 中执行。需要 Toolkit 的部分分成两半：`test-cuda-hosted` 用 CUDA 13.2 开发头文件编译、lint 全部 target 并运行 CPU 侧测试，因此托管 CI 可以运行，也是唯一会编译 cuda-gated `#[cfg(test)]` 模块的门禁；`test-cuda` 追加设备验收（`cuda-kernels` 示例与需 GPU 的用例）。缺少 GPU 或相应 syscall 权限时，硬件门禁明确失败，不会跳过。
 
+## 小迭代与大版本分级
+
+小迭代默认使用 `make check-iteration`：一个真实 native 新进程配对，
+每边各做一次 C16 和短请求预热、一次计时，再跑候选的 64 题质量抽检。
+性能与质量共用 600 秒总预算（包含启动和最多 10 秒清理），运行锁忙时立即退出，
+不排队、不重试、不扩样。入口使用已有 release 二进制；编译与针对改动的回归单独执行。
+
+`summary.json` 同时给出基线/候选的耗时、TTFT、TPOT、相对变化、正确题数、
+质量变化百分点、实际执行配置和资源配额。任一性能指标退化超过默认 10% 即快速失败；
+质量沿用原任务集、原始答案、EOS、512 cap 和 16/64 拒绝检查点。
+成功只表示迭代筛查通过（`iteration_accepted: true`），不签发完整质量或发布证书。
+64 题报告保持 `completed: false`，不能作为后续完整质量基线。
+
+```sh
+make check-iteration PYTHON=/path/to/python ITERATION_ARGS='\
+  --model /path/to/model --baseline-executable /path/to/base/infer \
+  --executable /path/to/candidate/infer --suite /path/to/full-suite.json \
+  --baseline /path/to/full-baseline/report.json --tuning-seed /path/to/tuning.json \
+  --workload /path/to/c16.json --short-workload /path/to/short1.json \
+  --output artifacts/iteration-unique'
+```
+
+五对以上独立进程的完整性能矩阵、长上下文、长短混跑、受限显存，以及完整 1,024 题质量，
+属于大版本发布验收，不串入小迭代入口。
+`make check-release` 先按冻结 checklist 校验所有已采集的正式进程配对，
+全部通过才启动完整质量采集。按发布矩阵逐项重复 `--performance CHECKLIST PAIRS`；
+缺少、失败、重复或来源不同的样本不能放行。长测采集沿用既有 `serve-compare.py`、
+`experiment-checklist.py` 和[性能基线方案](../plans/performance/baseline.md)，只在发布验收显式安排。
+发布前仍需通过代码、依赖、目标平台与设备门禁。
+
+```sh
+make check-release PYTHON=/path/to/python RELEASE_ARGS='\
+  --performance /path/to/default-checklist.json /path/to/default-pairs.json \
+  --performance /path/to/constrained-checklist.json /path/to/constrained-pairs.json \
+  --suite /path/to/full-suite.json --model /path/to/model \
+  --executable /path/to/candidate/infer --baseline /path/to/full-baseline/report.json \
+  --output artifacts/release-quality-unique'
+```
+
+原始完整采集入口仍用于建立基线与发布验收；日常使用上面的迭代入口。
+
 ## 通用 Attention 门禁
 
 生产运行时与 kernel 保持 Rust/cuTile 路线；Candle 0.11.0 仅作为独立 benchmark 基线。
