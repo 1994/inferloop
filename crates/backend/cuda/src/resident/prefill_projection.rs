@@ -114,6 +114,23 @@ impl MlpPlan {
         self.absorbed.contains(&index)
     }
 
+    /// Fuse normalization only when this plan actually records the following FP4 consumer.
+    pub(super) fn record_norm(
+        &self,
+        scope: &Scope,
+        (index, nodes): (usize, &[TensorNode]),
+        arena: &mut super::ActivationArena,
+        weights: &ProgramWeights,
+        nvfp4: &mut super::nvfp4_gemm::Workspace,
+    ) -> Result<bool, DeviceError> {
+        if self.fused.contains_key(&(index + 1))
+            && super::norm_fp4::record(scope, (index, nodes), arena, weights, nvfp4)?
+        {
+            return Ok(true);
+        }
+        super::norm_maximum::record(scope, index, nodes, arena, weights, nvfp4)
+    }
+
     /// Record node `index` when the plan owns it. False leaves it to the ordinary dispatch.
     pub(super) fn record(
         &self,
@@ -243,13 +260,14 @@ fn record_fused_mlp(
     let width = arena.lanes();
     let input = arena.get(gate.inputs[0]).map_err(error)?;
     let columns = input.size() / width;
+    let pointer = input.device_pointer().cu_deviceptr();
     let input = input.view(&[width, columns]).map_err(error)?;
     let hidden = arena.get(gate.outputs[0]).map_err(error)?.size() / width;
     nvfp4.record_gate_up_swiglu(
         scope,
         (weight(gate)?, weight(up)?),
         (scale(gate)?, scale(down)?),
-        &input,
+        (&input, pointer),
         (width, columns, hidden),
     )
 }

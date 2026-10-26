@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 332
+      "tests": 338
     },
     "frontdoor": {
       "benches": 0,
@@ -152,8 +152,10 @@
     "target_os = \"macos\"": 1
   },
   "ignored_reasons": {
+    "CUDA release and protected runner": 2,
     "CUDA release, protected runner; GDN complete output/state and original-tile performance comparison": 1,
     "CUDA/checkpoint/frozen511tokens/safe-run; INFER_CUDA_ATTENTION_PRECISE_PREFIX=2048": 1,
+    "actual 27B checkpoint, CUDA release and protected runner": 1,
     "opt-in projection-only shape A/B with real checkpoint and CUDA; run inside safe-run": 1,
     "real 2B checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 3,
     "real CUDA/MTP checkpoint; reserve graphs only after quote acknowledgement": 1,
@@ -185,7 +187,7 @@
     "requires CUDA hardware; weak decay and correlated K expose unstable inverse construction": 1,
     "requires CUDA, INFER_TEST_MODEL and INFER_TEST_TOKENS (JSON token array)": 1,
     "requires CUDA, INFER_TEST_MODEL and INFER_TEST_TOKENS; run under safe-run": 1,
-    "requires CUDA, INFER_TEST_MODEL and frozen 1025-token INFER_TEST_TOKENS; safe-run": 3,
+    "requires CUDA, INFER_TEST_MODEL and frozen 1025-token INFER_TEST_TOKENS; safe-run": 6,
     "requires CUDA, INFER_TEST_MODEL and frozen 511-token INFER_TEST_TOKENS": 1,
     "requires CUDA, INFER_TEST_MODEL and frozen 511-token INFER_TEST_TOKENS; safe-run": 1,
     "requires CUDA, INFER_TEST_MODEL, frozen 511-token INFER_TEST_TOKENS; safe-run": 1,
@@ -433,6 +435,16 @@
     },
     {
       "crate": "cuda",
+      "file": "src/loading/mod.rs",
+      "mount": "../../tests/unit/resident_norm_fp4_quant.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/loading/mod.rs",
+      "mount": "../../tests/unit/resident_norm_fp4_model.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/nvfp4.rs",
       "mount": "../tests/unit/nvfp4.rs"
     },
@@ -555,6 +567,11 @@
       "crate": "cuda",
       "file": "src/resident/nvfp4_gemm/quant_reuse.rs",
       "mount": "../../../tests/unit/resident_quant_reuse_plan.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/resident/nvfp4_gemm/workspace.rs",
+      "mount": "../../../tests/unit/resident_norm_fp4_permissions.rs"
     },
     {
       "crate": "cuda",
@@ -1253,11 +1270,11 @@
     }
   ],
   "totals": {
-    "all": 897,
+    "all": 903,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 897
+    "tests": 903
   }
 }

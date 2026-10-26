@@ -88,3 +88,18 @@ pub(crate) use norm_maximum::{
     captures as norm_maximum_captures, consumptions as norm_maximum_consumptions,
     with_separate as with_separate_norm_maximum,
 };
+
+mod norm_fp4;
+mod norm_fp4_kernel;
+
+#[cfg(test)]
+pub(crate) use norm_fp4::{
+    captures as norm_fp4_captures, consumptions as norm_fp4_consumptions,
+    with_separate as with_separate_norm_fp4,
+};
+
+#[cfg(test)]
+pub(crate) use norm_fp4_kernel::kernels::norm_fp4 as norm_fp4_kernel_entry;
+
+#[cfg(test)]
+pub(crate) use norm_fp4::eligible_columns as norm_fp4_columns;
