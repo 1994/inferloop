@@ -7,6 +7,7 @@ use crate::constants::MTP_FUSION_ROWS;
 use crate::constants::NVFP4_GROUP_SIZE;
 use crate::constants::PREFILL_LANES;
 use crate::constants::PREFILL_SPLIT_K;
+use crate::constants::VERIFY_SPLIT_SCRATCH_BUDGET;
 use crate::mlp::ProjectionWeight;
 use crate::resident::arena::ActivationArena;
 use crate::resident::attention_mma::catalog::DIM;
@@ -647,7 +648,9 @@ fn pool_storage_bytes(
     hidden: usize,
     profile: &DeviceProfile,
 ) -> Result<u64> {
-    let lanes = width * verify;
+    let lanes = width
+        .checked_mul(verify)
+        .ok_or_else(|| Error::invalid("pooled lane count overflow"))?;
     let mut bytes = mul(recurrent_state_bytes(graph)?, width as u64)?;
     for spec in &graph.tensors {
         if !matches!(
@@ -699,9 +702,25 @@ fn pool_storage_bytes(
             1
         };
     bytes = add(bytes, mul(mul(hidden as u64, external_rows)?, F32)?)?;
-    // A block table per slot, plus scalar and per-lane control words.
-    let controls = width * capacity.div_ceil(KV_BLOCK_TOKENS) + (1 + lanes) * POOLED_CONTROL_WORDS;
-    bytes = add(bytes, mul(controls as u64, F32)?)?;
+    // The stacked page-table owner is padded to the control row width; quote exactly that
+    // retained allocation, not one unpadded table block per slot.
+    bytes = add(bytes, SlotPool::table_bytes(width, capacity)?)?;
+    let control_words = (1usize)
+        .checked_add(lanes)
+        .and_then(|words| words.checked_mul(POOLED_CONTROL_WORDS))
+        .ok_or_else(|| Error::invalid("pooled control word overflow"))?;
+    bytes = add(
+        bytes,
+        u64::try_from(control_words)
+            .ok()
+            .and_then(|words| words.checked_mul(F32))
+            .ok_or_else(|| Error::invalid("pooled control byte overflow"))?,
+    )?;
+    if verify > 1 {
+        // Pooled target program's Workspace can retain verify split owners even though
+        // its projection quote uses verification=0. Charge the same bounded allowance.
+        bytes = add(bytes, VERIFY_SPLIT_SCRATCH_BUDGET)?;
+    }
     Ok(bytes)
 }
 
@@ -1026,6 +1045,11 @@ fn projection_workspace(
                 mul(rows, (PREFILL_SPLIT_K * PREFILL_LANES) as u64 * F32)?,
             )?;
         }
+    }
+    if geometry.verification > 0 {
+        // Every captured program's Workspace may retain unique verify split owners;
+        // charge its bounded allowance before admission and track usage inside Workspace.
+        bytes = add(bytes, VERIFY_SPLIT_SCRATCH_BUDGET)?;
     }
     Ok(bytes)
 }

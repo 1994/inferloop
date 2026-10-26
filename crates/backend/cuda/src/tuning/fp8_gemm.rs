@@ -99,6 +99,12 @@ impl Choice {
     pub(crate) const fn baseline(m: usize) -> Self {
         Self::Native(NativeConfig::baseline(m))
     }
+    pub(crate) const fn native_tile(self) -> Option<[usize; 2]> {
+        match self {
+            Self::Native(config) => Some(config.tile()),
+            Self::Lt(_) => None,
+        }
+    }
     fn valid(self) -> bool {
         match self {
             Self::Native(config) => config.valid(),

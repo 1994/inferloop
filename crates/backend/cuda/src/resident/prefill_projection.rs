@@ -25,6 +25,16 @@ pub(super) enum GdnRole {
     Alpha,
 }
 
+/// Capture context for GDN beta/alpha pairing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GdnPairContext {
+    /// Ordinary verification lanes: paired Dense is the existing BF16-MMA verify contract.
+    Verify,
+    /// Prompt chunk: the N16 prompt-only narrow layout must remain excluded so the
+    /// role-selected N16 kernel, not the pair kernel, handles eligible beta/alpha rows.
+    Prompt,
+}
+
 /// Down projection absorbing `silu(gate) * up`: node indices of the `SiLU` and multiply it
 /// replaces, then the gate and up tensors it reads.
 type Swiglu = (usize, usize, infer_core::TensorId, infer_core::TensorId);
@@ -334,7 +344,7 @@ fn record_fused_down(
     node: &TensorNode,
     arena: &mut super::ActivationArena,
     weights: &ProgramWeights,
-    nvfp4: &super::nvfp4_gemm::Workspace,
+    nvfp4: &mut super::nvfp4_gemm::Workspace,
 ) -> Result<(), DeviceError> {
     let Some(super::program::ActivationQuantization::Fp4(scale)) =
         weights.activation_quantization(node.inputs[1])
@@ -499,18 +509,27 @@ pub(super) fn record(
     Ok(())
 }
 
-/// Record GDN `in_proj_b` + `in_proj_a` as one launch: the semantic beta/alpha
-/// projections of one `Delta` node, sharing the normalized input. The pair kernel keeps each output's
-/// independent K accumulation order; only the launch (and the shared `x` load) is fused.
+/// Record a GDN `in_proj_b` + `in_proj_a` pair as one launch: both are dense BF16
+/// projections of the same input with equal output width. The caller establishes the
+/// semantic pair from the graph (the beta and alpha inputs of one `Delta` node); this
+/// function validates projection/layout compatibility and the capture context.
 ///
-/// Returns false when either node would take a different path (narrow N16 layout,
-/// sparse experts, vendor GEMM, or unexpected shape).
+/// The pair kernel keeps each output's independent K accumulation order; only the
+/// launch (and the shared `x` load) is fused. In prompt context the prompt-only N16
+/// narrow layout stays excluded, so role-selected N16 wins; verification context is
+/// not subject to that prompt-tile exclusion because its ordinary Dense path already
+/// uses the same BF16 MMA contract.
+///
+/// Returns false when either node would take a different path (prompt N16 layout,
+/// sparse experts, vendor GEMM, output width above one 64-column tile, or mismatched
+/// input/weight geometry).
 pub(super) fn record_pair(
     scope: &Scope,
     first: &TensorNode,
     second: &TensorNode,
     arena: &mut super::ActivationArena,
     (weights, profile): (&ProgramWeights, &DeviceProfile),
+    context: GdnPairContext,
 ) -> Result<bool, DeviceError> {
     if first.inputs.len() != 2
         || second.inputs.len() != 2
@@ -551,7 +570,8 @@ pub(super) fn record_pair(
         || columns != weight_columns
         || arena.get(first.outputs[0]).map_err(error)?.size() != expected
         || arena.get(second.outputs[0]).map_err(error)?.size() != expected
-        || narrow_dense_layout(&profile.architecture, rows, columns)
+        || (context == GdnPairContext::Prompt
+            && narrow_dense_layout(&profile.architecture, rows, columns))
     {
         return Ok(false);
     }

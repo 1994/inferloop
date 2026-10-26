@@ -11,16 +11,21 @@ use crate::constants::PREFILL_LANES;
 use crate::tuning::fp8_gemm::native_search_trials;
 use crate::tuning::fp8_gemm::prefill_choice;
 
+use super::{SplitCandidate, projection_split_policy};
+use crate::constants::VERIFY_SPLIT_SCRATCH_BUDGET;
 use crate::resident::prefill_projection::fused_projections;
 use crate::resident::program::ProgramGeometry;
 use crate::tuning::fp8_gemm::Choice;
 use crate::tuning::fp8_gemm::WeightKey;
 use crate::tuning::fp8_gemm::probe_inputs::Scope as ProbeInputsScope;
 use crate::tuning::fp8_gemm::select;
+#[cfg(test)]
+use crate::tuning::resident_gemm::MainLoop;
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use crate::tuning::resident_gemm::SearchFamily;
 use crate::tuning::resident_gemm::native_tile;
 use crate::tuning::resident_gemm::nvfp4_search_trials;
+use crate::tuning::verify_split_qualified;
 
 use crate::tuning::resident_gemm::GemmConfig;
 
@@ -44,6 +49,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::env::var;
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::result::Result as StdResult;
 
 type Quantized = (Tensor<f4e2m1fnx2>, Tensor<f8e4m3fn>);
@@ -107,11 +114,24 @@ pub fn select_swiglu_tile(rows: usize, columns: usize, hidden: usize) -> Option<
         .contains(&SwigluTile::FALLBACK)
         .then_some(SwigluTile::FALLBACK)
 }
+
+/// Native W4A4 K step used by split windows.
+const NVFP4_K_STEP: usize = 256;
+const NVFP4_SPLIT_TILE: [usize; 2] = [64, 64];
+/// FP8 native K step.
+const FP8_K_STEP: usize = 128;
 /// Keyed by `(rows, columns, activation-scale columns)`.
 type Fp8Key = (usize, usize, usize);
 type StrategyKey = (ResidentGemmWeightKey, usize, usize, usize);
 /// Quantized activation and its per-token scales.
 type Fp8Buffers = (Tensor<f8e4m3fn>, Tensor<f32>);
+type Fp8SplitShape = (usize, usize, usize, usize, usize);
+type Fp8StrategyKey = (WeightKey, Fp8SplitShape);
+
+struct SplitBuffer {
+    plan: SplitCandidate,
+    partials: Tensor<f32>,
+}
 
 pub struct Workspace {
     quant_reuse: CaptureQuantReuse,
@@ -138,6 +158,11 @@ pub struct Workspace {
         ),
         SwigluTile,
     >,
+    split_nvfp4: BTreeMap<(usize, usize, usize), SplitBuffer>,
+    split_nvfp4_enabled: BTreeSet<StrategyKey>,
+    split_fp8: BTreeMap<Fp8SplitShape, SplitBuffer>,
+    split_fp8_enabled: BTreeSet<Fp8StrategyKey>,
+    split_scratch_bytes: u64,
 }
 
 impl Workspace {
@@ -186,6 +211,14 @@ impl Workspace {
         self.fp8
             .get(&(rows, columns, 1))
             .map(|(codes, scales)| (codes, scales))
+    }
+    #[cfg(test)]
+    pub(super) fn split_plan_count(&self) -> usize {
+        self.split_nvfp4.len()
+    }
+    #[cfg(test)]
+    pub(super) const fn split_scratch_bytes(&self) -> u64 {
+        self.split_scratch_bytes
     }
     #[cfg(test)]
     pub(crate) fn quantized_fp4(
@@ -282,6 +315,11 @@ impl Workspace {
             buffers: BTreeMap::new(),
             fp8: BTreeMap::new(),
             fp8_strategies: BTreeMap::new(),
+            split_nvfp4: BTreeMap::new(),
+            split_nvfp4_enabled: BTreeSet::new(),
+            split_fp8: BTreeMap::new(),
+            split_fp8_enabled: BTreeSet::new(),
+            split_scratch_bytes: 0,
             vendor_fp8: vendor_fp8::Support::new_with(device, true),
             vendor_diagnostic: vendor_diagnostic_enabled(),
             swiglu_tiles: BTreeMap::new(),
@@ -352,6 +390,157 @@ impl Workspace {
         Ok(())
     }
 
+    fn split_allowed(
+        device: &CudaDevice,
+        key: (&str, usize, usize, usize, usize, u64),
+    ) -> Result<bool> {
+        #[cfg(test)]
+        if DISABLE_SPLIT.with(Cell::get) {
+            return Ok(false);
+        }
+        #[cfg(test)]
+        if FORCE_SPLIT.with(Cell::get) {
+            return Ok(true);
+        }
+        verify_split_qualified(device, key)
+    }
+
+    fn take_nvfp4_split(
+        &mut self,
+        strategy: StrategyKey,
+        shape: (usize, usize, usize),
+    ) -> Option<SplitBuffer> {
+        #[cfg(test)]
+        let enabled = FORCE_SPLIT.with(Cell::get) || self.split_nvfp4_enabled.contains(&strategy);
+        #[cfg(not(test))]
+        let enabled = self.split_nvfp4_enabled.contains(&strategy);
+        enabled.then(|| self.split_nvfp4.remove(&shape)).flatten()
+    }
+
+    fn ensure_nvfp4_split(&mut self, device: &CudaDevice, key: StrategyKey) -> Result<()> {
+        let (_, rows, outputs, columns) = key;
+        let shape = (rows, outputs, columns);
+        let sms = usize::try_from(device.profile()?.multiprocessors)
+            .map_err(|_| Error::invariant("SM count"))?;
+        #[cfg_attr(
+            not(test),
+            allow(unused_mut, reason = "mutation is test-only split override")
+        )]
+        let Some(mut plan) = projection_split_policy(
+            rows,
+            outputs,
+            columns,
+            sms,
+            NVFP4_SPLIT_TILE,
+            NVFP4_K_STEP,
+            VERIFY_SPLIT_SCRATCH_BUDGET,
+        )?
+        else {
+            return Ok(());
+        };
+        #[cfg(test)]
+        let forced = FORCED_SPLITS.with(Cell::get);
+        #[cfg(test)]
+        if forced > 0 {
+            if forced > columns.div_ceil(NVFP4_K_STEP) {
+                return Ok(());
+            }
+            plan.splits = forced;
+            plan.scratch_bytes = super::split_scratch_bytes(rows, outputs, forced)?;
+        }
+        if !Self::split_allowed(
+            device,
+            (
+                "nvfp4",
+                rows,
+                outputs,
+                columns,
+                plan.splits,
+                plan.scratch_bytes,
+            ),
+        )? {
+            return Ok(());
+        }
+        if self.split_nvfp4.contains_key(&shape) {
+            self.split_nvfp4_enabled.insert(key);
+            return Ok(());
+        }
+        let total = self
+            .split_scratch_bytes
+            .checked_add(plan.scratch_bytes)
+            .ok_or_else(|| Error::invalid("retained verify split scratch overflow"))?;
+        if total > VERIFY_SPLIT_SCRATCH_BUDGET {
+            return Ok(());
+        }
+        let partials = api::zeros::<f32>(&[plan.splits, rows, outputs])
+            .sync_on(&device.stream)
+            .map_err(device_error)?;
+        self.split_scratch_bytes = total;
+        self.split_nvfp4
+            .insert(shape, SplitBuffer { plan, partials });
+        self.split_nvfp4_enabled.insert(key);
+        Ok(())
+    }
+
+    fn ensure_fp8_split(
+        &mut self,
+        device: &CudaDevice,
+        key: (WeightKey, usize, usize, usize),
+        choice: Choice,
+    ) -> Result<()> {
+        let (weight_key, rows, outputs, columns) = key;
+        let Some(tile) = choice.native_tile() else {
+            return Ok(());
+        };
+        let shape = (rows, outputs, columns, tile[0], tile[1]);
+        let strategy = (weight_key, shape);
+        let sms = usize::try_from(device.profile()?.multiprocessors)
+            .map_err(|_| Error::invariant("SM count"))?;
+        let Some(plan) = projection_split_policy(
+            rows,
+            outputs,
+            columns,
+            sms,
+            tile,
+            FP8_K_STEP,
+            VERIFY_SPLIT_SCRATCH_BUDGET,
+        )?
+        else {
+            return Ok(());
+        };
+        if !Self::split_allowed(
+            device,
+            (
+                "fp8-channel",
+                rows,
+                outputs,
+                columns,
+                plan.splits,
+                plan.scratch_bytes,
+            ),
+        )? {
+            return Ok(());
+        }
+        if self.split_fp8.contains_key(&shape) {
+            self.split_fp8_enabled.insert(strategy);
+            return Ok(());
+        }
+        let total = self
+            .split_scratch_bytes
+            .checked_add(plan.scratch_bytes)
+            .ok_or_else(|| Error::invalid("retained verify split scratch overflow"))?;
+        if total > VERIFY_SPLIT_SCRATCH_BUDGET {
+            return Ok(());
+        }
+        let partials = api::zeros::<f32>(&[plan.splits, rows, outputs])
+            .sync_on(&device.stream)
+            .map_err(device_error)?;
+        self.split_scratch_bytes = total;
+        self.split_fp8.insert(shape, SplitBuffer { plan, partials });
+        self.split_fp8_enabled.insert(strategy);
+        Ok(())
+    }
+
     fn extend(
         &mut self,
         device: &CudaDevice,
@@ -406,18 +595,27 @@ impl Workspace {
                 let weight_key = ResidentGemmWeightKey::new(weight, scale)?;
                 for &rows in widths {
                     if rows > 0 && !skipped.contains(&(index, rows)) {
-                        self.strategies
-                            .entry((weight_key, rows, outputs, columns))
-                            .or_insert_with(|| {
-                                resident_gemm_select(
-                                    device,
-                                    weight,
-                                    scale,
-                                    [rows, outputs, columns],
-                                    weights.autotune,
-                                    &weights.resident_tuning,
-                                )
-                            });
+                        let key = (weight_key, rows, outputs, columns);
+                        self.strategies.entry(key).or_insert_with(|| {
+                            resident_gemm_select(
+                                device,
+                                weight,
+                                scale,
+                                [rows, outputs, columns],
+                                weights.autotune,
+                                &weights.resident_tuning,
+                            )
+                        });
+                        #[cfg(test)]
+                        if FORCED_LOOP.with(Cell::get) > 0
+                            && let Some(config) = self.strategies.get_mut(&key)
+                        {
+                            config.main_loop = match FORCED_LOOP.with(Cell::get) {
+                                1 => MainLoop::Plain,
+                                _ => MainLoop::Prefetch8,
+                            };
+                        }
+                        self.ensure_nvfp4_split(device, key)?;
                     }
                 }
             }
@@ -545,6 +743,7 @@ impl Workspace {
                     )
                 };
                 self.fp8_strategies.insert(key, choice);
+                self.ensure_fp8_split(device, key, choice)?;
             }
         }
         Ok(())
@@ -567,8 +766,17 @@ impl Workspace {
         let ProjectionWeight::Fp4(..) = weight else {
             return Err(super::super::capture::error("FP4 workspace weight"));
         };
-        let rows = output.size()
-            / usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
+        let outputs = usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
+        let rows = output.size() / outputs;
+        let shape = (rows, outputs, columns);
+        let strategy = (
+            ResidentGemmWeightKey::new(weight, scale).map_err(super::super::capture::error)?,
+            rows,
+            outputs,
+            columns,
+        );
+        let mut split = self.take_nvfp4_split(strategy, shape);
+        let strategies = &self.strategies;
         let (q, qs) = self
             .buffers
             .get_mut(&(rows, columns))
@@ -606,7 +814,8 @@ impl Workspace {
                 )?;
             }
             Self::record_quantized_gemm(
-                &self.strategies,
+                strategies,
+                split.as_mut(),
                 scope,
                 weight,
                 scale,
@@ -616,6 +825,9 @@ impl Workspace {
             )
         };
         let result = record();
+        if let Some(split) = split {
+            self.split_nvfp4.insert(shape, split);
+        }
         self.quant_reuse.finish(ticket, result.is_ok());
         result
     }
@@ -639,8 +851,17 @@ impl Workspace {
         let ProjectionWeight::Fp4(..) = weight else {
             return Err(super::super::capture::error("FP4 workspace weight"));
         };
-        let rows = output.size()
-            / usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
+        let outputs = usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
+        let rows = output.size() / outputs;
+        let shape = (rows, outputs, columns);
+        let strategy = (
+            ResidentGemmWeightKey::new(weight, scale).map_err(super::super::capture::error)?,
+            rows,
+            outputs,
+            columns,
+        );
+        let mut split = self.take_nvfp4_split(strategy, shape);
+        let strategies = &self.strategies;
         // The fused codes overwrite the shared quantization buffers; no reuse permit may span it.
         self.quant_reuse.clear();
         let (q, qs) = self
@@ -660,15 +881,20 @@ impl Workspace {
             )
             .generics(vec![columns.to_string()]),
         )?;
-        Self::record_quantized_gemm(
-            &self.strategies,
+        let result = Self::record_quantized_gemm(
+            strategies,
+            split.as_mut(),
             scope,
             weight,
             scale,
             (&*q, &*qs),
             output,
             (rows, columns),
-        )
+        );
+        if let Some(split) = split {
+            self.split_nvfp4.insert(shape, split);
+        }
+        result
     }
 
     fn tune_swiglu(
@@ -843,32 +1069,51 @@ impl Workspace {
 
     /// Down projection whose activation codes [`Self::record_gate_up_swiglu`] already wrote.
     pub(crate) fn record_prequantized(
-        &self,
+        &mut self,
         scope: &Scope,
         weight: &ProjectionWeight,
         scale: f32,
         output: &mut Tensor<f32>,
         columns: usize,
     ) -> StdResult<(), DeviceError> {
-        let rows = output.size()
-            / usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
+        let outputs = usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
+        let rows = output.size() / outputs;
+        let shape = (rows, outputs, columns);
+        let strategy = (
+            ResidentGemmWeightKey::new(weight, scale).map_err(super::super::capture::error)?,
+            rows,
+            outputs,
+            columns,
+        );
+        let mut split = self.take_nvfp4_split(strategy, shape);
+        let strategies = &self.strategies;
         let (q, qs) = self
             .buffers
             .get(&(rows, columns))
             .ok_or_else(|| super::super::capture::error("FP4 quantization workspace missing"))?;
-        Self::record_quantized_gemm(
-            &self.strategies,
+        let result = Self::record_quantized_gemm(
+            strategies,
+            split.as_mut(),
             scope,
             weight,
             scale,
             (q, qs),
             output,
             (rows, columns),
-        )
+        );
+        if let Some(split) = split {
+            self.split_nvfp4.insert(shape, split);
+        }
+        result
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit GEMM operands and split owner"
+    )]
     fn record_quantized_gemm(
         strategies: &BTreeMap<StrategyKey, GemmConfig>,
+        split: Option<&mut SplitBuffer>,
         scope: &Scope,
         weight: &ProjectionWeight,
         scale: f32,
@@ -879,14 +1124,50 @@ impl Workspace {
         {
             let outputs =
                 usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
+            let key = (
+                ResidentGemmWeightKey::new(weight, scale).map_err(super::super::capture::error)?,
+                rows,
+                outputs,
+                columns,
+            );
+            if let Some(split) = split {
+                let ProjectionWeight::Fp4(codes, scales, global) = weight else {
+                    return Err(super::super::capture::error("FP4 split weight"));
+                };
+                let tile = split.plan.tile;
+                scope.record(
+                    kernels::packed_split(
+                        (&mut split.partials).partition([1, tile[0], tile[1]]),
+                        q,
+                        qs,
+                        codes,
+                        scales,
+                    )
+                    .generics(vec![
+                        columns.to_string(),
+                        tile[0].to_string(),
+                        tile[1].to_string(),
+                        split.plan.splits.to_string(),
+                    ]),
+                )?;
+                scope.record(
+                    kernels::sum_splits(
+                        output.partition(tile),
+                        &split.partials,
+                        1.0 / (global * scale),
+                    )
+                    .generics(vec![
+                        tile[0].to_string(),
+                        tile[1].to_string(),
+                        split.plan.splits.to_string(),
+                    ]),
+                )?;
+                #[cfg(test)]
+                SPLIT_RECORDS.set(SPLIT_RECORDS.get() + 1);
+                return Ok(());
+            }
             let config = strategies
-                .get(&(
-                    ResidentGemmWeightKey::new(weight, scale)
-                        .map_err(super::super::capture::error)?,
-                    rows,
-                    outputs,
-                    columns,
-                ))
+                .get(&key)
                 .copied()
                 .unwrap_or_else(|| GemmConfig::baseline(rows));
             config.record(scope, weight, scale, q, qs, output, columns)?;
@@ -932,6 +1213,19 @@ impl Workspace {
         Ok(true)
     }
 
+    fn take_enabled_fp8(
+        &mut self,
+        weight_key: WeightKey,
+        shape: Fp8SplitShape,
+    ) -> Option<SplitBuffer> {
+        #[cfg(test)]
+        let enabled =
+            FORCE_SPLIT.with(Cell::get) || self.split_fp8_enabled.contains(&(weight_key, shape));
+        #[cfg(not(test))]
+        let enabled = self.split_fp8_enabled.contains(&(weight_key, shape));
+        enabled.then(|| self.split_fp8.remove(&shape)).flatten()
+    }
+
     pub(super) fn record_fp8_input(
         &mut self,
         scope: &Scope,
@@ -941,7 +1235,7 @@ impl Workspace {
         columns: usize,
         input_pointer: Option<u64>,
     ) -> StdResult<(), DeviceError> {
-        use super::super::{capture::error, fp8_gemm::kernels};
+        use super::super::capture::error;
         if !matches!(
             weight,
             ProjectionWeight::Fp8(..) | ProjectionWeight::Fp8Block(..)
@@ -955,6 +1249,22 @@ impl Workspace {
             matches!(weight, ProjectionWeight::Fp8(..))
                 && pending.matches(input_pointer, rows, columns)
         });
+        let outputs = usize::try_from(output.shape()[1]).map_err(error)?;
+        let choice = self
+            .fp8_strategies
+            .get(&(
+                WeightKey::new(weight).map_err(error)?,
+                rows,
+                outputs,
+                columns,
+            ))
+            .copied()
+            .unwrap_or_else(|| Choice::baseline(rows));
+        let weight_key = WeightKey::new(weight).map_err(error)?;
+        let split_shape = choice
+            .native_tile()
+            .map(|tile| (rows, outputs, columns, tile[0], tile[1]));
+        let mut split = split_shape.and_then(|shape| self.take_enabled_fp8(weight_key, shape));
         let (q, qs) = self
             .fp8
             .get_mut(&(rows, columns, scale_columns))
@@ -973,24 +1283,9 @@ impl Workspace {
         });
         let (reuse, ticket) = self.quant_reuse.prepare(key);
         let mut record = || {
-            let tile = native_tile(rows);
-            let generics = [columns, tile[0], tile[1]]
-                .map(|value| value.to_string())
-                .to_vec();
             match weight {
                 ProjectionWeight::Fp8Block(w, block_scale) => {
-                    scope.record(
-                        kernels::quantize_block(
-                            (&mut *q).partition([1, FP8_BLOCK_COLUMNS]),
-                            (&mut *qs).partition([1, 1]),
-                            input,
-                        )
-                        .generics(vec![columns.to_string(), FP8_BLOCK_COLUMNS.to_string()]),
-                    )?;
-                    scope.record(
-                        kernels::matmul_block(output.partition(tile), &*q, w, &*qs, block_scale)
-                            .generics(generics),
-                    )?;
+                    record_fp8_block(scope, q, qs, w, block_scale, input, output)?;
                 }
                 ProjectionWeight::Fp8(w, channel_scale) => {
                     if !reuse {
@@ -1005,6 +1300,10 @@ impl Workspace {
                         #[cfg(test)]
                         super::super::norm_maximum::record_consumption(maximum_ready);
                     }
+                    if let Some(split) = split.as_mut() {
+                        record_fp8_split(scope, split, &*q, w, output, &*qs, channel_scale)?;
+                        return Ok(());
+                    }
                     if self.vendor_diagnostic
                         && self
                             .vendor_fp8
@@ -1012,17 +1311,6 @@ impl Workspace {
                     {
                         return Ok(());
                     }
-                    let outputs = usize::try_from(output.shape()[1]).map_err(error)?;
-                    let choice = self
-                        .fp8_strategies
-                        .get(&(
-                            WeightKey::new(weight).map_err(error)?,
-                            rows,
-                            outputs,
-                            columns,
-                        ))
-                        .copied()
-                        .unwrap_or_else(|| Choice::baseline(rows));
                     choice.record(
                         scope,
                         &self.vendor_fp8,
@@ -1039,9 +1327,85 @@ impl Workspace {
             Ok(())
         };
         let result = record();
+        if let (Some(split), Some(shape)) = (split, split_shape) {
+            self.split_fp8.insert(shape, split);
+        }
         self.quant_reuse.finish(ticket, result.is_ok());
         result
     }
+}
+
+fn record_fp8_block(
+    scope: &Scope,
+    q: &mut Tensor<f8e4m3fn>,
+    qs: &mut Tensor<f32>,
+    w: &Tensor<f8e4m3fn>,
+    block_scale: &Tensor<f32>,
+    input: &TensorView<'_, f32>,
+    output: &mut Tensor<f32>,
+) -> StdResult<(), DeviceError> {
+    use super::super::fp8_gemm::kernels;
+    let rows = usize::try_from(output.shape()[0]).map_err(super::super::capture::error)?;
+    let columns = usize::try_from(input.shape()[1]).map_err(super::super::capture::error)?;
+    let tile = native_tile(rows);
+    let generics = [columns, tile[0], tile[1]]
+        .map(|value| value.to_string())
+        .to_vec();
+    scope.record(
+        kernels::quantize_block(
+            (&mut *q).partition([1, FP8_BLOCK_COLUMNS]),
+            (&mut *qs).partition([1, 1]),
+            input,
+        )
+        .generics(vec![columns.to_string(), FP8_BLOCK_COLUMNS.to_string()]),
+    )?;
+    scope.record(
+        kernels::matmul_block(output.partition(tile), &*q, w, &*qs, block_scale).generics(generics),
+    )?;
+    Ok(())
+}
+
+fn record_fp8_split(
+    scope: &Scope,
+    split: &mut SplitBuffer,
+    q: &Tensor<f8e4m3fn>,
+    w: &Tensor<f8e4m3fn>,
+    output: &mut Tensor<f32>,
+    qs: &Tensor<f32>,
+    weight_scale: &Tensor<f32>,
+) -> StdResult<(), DeviceError> {
+    let columns = usize::try_from(q.shape()[1])
+        .map_err(|_| super::super::capture::error("FP8 split columns"))?;
+    let tile = split.plan.tile;
+    let k_tiles = i32::try_from(columns.div_ceil(FP8_K_STEP))
+        .map_err(|_| super::super::capture::error("FP8 split K tiles"))?;
+    scope.record(
+        super::super::fp8_gemm::kernels::matmul_split_tiled(
+            (&mut split.partials).partition([1, tile[0], tile[1]]),
+            q,
+            w,
+            k_tiles,
+        )
+        .generics(vec![
+            columns.to_string(),
+            tile[0].to_string(),
+            tile[1].to_string(),
+        ]),
+    )?;
+    scope.record(
+        super::super::fp8_gemm::kernels::reduce_split_tiled(
+            output.partition(tile),
+            &split.partials,
+            qs,
+            weight_scale,
+            i32::try_from(split.plan.splits)
+                .map_err(|_| super::super::capture::error("FP8 split count"))?,
+        )
+        .generics(vec![tile[0].to_string(), tile[1].to_string()]),
+    )?;
+    #[cfg(test)]
+    SPLIT_RECORDS.set(SPLIT_RECORDS.get() + 1);
+    Ok(())
 }
 
 const fn fp8_scale_columns(weight: &ProjectionWeight, columns: usize) -> usize {
@@ -1097,4 +1461,72 @@ const fn vendor_diagnostic_enabled() -> bool {
 #[cfg(test)]
 fn vendor_diagnostic_enabled() -> bool {
     var("INFER_CUDA_VENDOR_FP8").is_ok_and(|value| value == "1" || value == "true")
+}
+
+#[cfg(test)]
+thread_local! {
+    static FORCE_SPLIT: Cell<bool> = const { Cell::new(false) };
+    static DISABLE_SPLIT: Cell<bool> = const { Cell::new(false) };
+    static SPLIT_RECORDS: Cell<usize> = const { Cell::new(0) };
+    static FORCED_SPLITS: Cell<usize> = const { Cell::new(0) };
+    static FORCED_LOOP: Cell<u8> = const { Cell::new(0) };
+}
+#[cfg(test)]
+pub(super) fn forced_split() -> bool {
+    FORCE_SPLIT.with(Cell::get)
+}
+#[cfg(test)]
+pub(super) fn with_forced_split<T>(run: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FORCE_SPLIT.set(self.0);
+        }
+    }
+    let _restore = Restore(FORCE_SPLIT.replace(true));
+    run()
+}
+
+#[cfg(test)]
+pub(super) fn with_disabled_split<T>(run: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            DISABLE_SPLIT.set(self.0);
+        }
+    }
+    let _restore = Restore(DISABLE_SPLIT.replace(true));
+    run()
+}
+#[cfg(test)]
+pub(super) fn reset_split_records() {
+    SPLIT_RECORDS.set(0);
+}
+#[cfg(test)]
+pub(super) fn split_records() -> usize {
+    SPLIT_RECORDS.get()
+}
+
+#[cfg(test)]
+pub(super) fn with_forced_splits<T>(splits: usize, run: impl FnOnce() -> T) -> T {
+    struct Restore(usize);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FORCED_SPLITS.set(self.0);
+        }
+    }
+    let _restore = Restore(FORCED_SPLITS.replace(splits));
+    run()
+}
+
+#[cfg(test)]
+pub(super) fn with_forced_loop<T>(mode: u8, run: impl FnOnce() -> T) -> T {
+    struct Restore(u8);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FORCED_LOOP.set(self.0);
+        }
+    }
+    let _restore = Restore(FORCED_LOOP.replace(mode));
+    run()
 }

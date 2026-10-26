@@ -1,7 +1,9 @@
 use super::kernels;
 use crate::device::CudaDevice;
+use crate::resident::nvfp4_gemm::workspace::{forced_split, with_forced_split};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::bench::BenchOptions as CutileBenchOptions;
+use cutile::cutile_compiler::compile_api::KernelCompiler;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
@@ -32,6 +34,69 @@ fn nearest(value: f32, table: &[f32]) -> usize {
                 .then((a % 2).cmp(&(b % 2)))
         })
         .expect("nonempty codebook")
+}
+
+#[test]
+fn split_policy_derives_from_sm_cta_k_and_scratch() {
+    let candidate =
+        super::projection_split_policy(48, 5120, 17408, 170, [64, 64], 256, 32 * 1024 * 1024)
+            .expect("shape policy")
+            .expect("split candidate");
+    assert!(candidate.splits > 1 && candidate.splits <= 4);
+    assert_eq!(candidate.tile, [64, 64]);
+    assert_eq!(
+        candidate.scratch_bytes,
+        (48 * 5120 * candidate.splits * 4) as u64
+    );
+    assert!(
+        super::projection_split_policy(48, 5120, 17408, 1, [64, 64], 256, 32 * 1024 * 1024)
+            .expect("single SM")
+            .is_none()
+    );
+    assert!(
+        super::projection_split_policy(48, 5120, 17408, 170, [64, 64], 256, 1)
+            .expect("tiny budget")
+            .is_none()
+    );
+    assert!(super::split_scratch_bytes(usize::MAX, 5120, 4).is_err());
+}
+
+#[test]
+fn split_k_candidate_kernels_compile_with_legal_tiles_and_actual_strides() {
+    let tile = 64usize;
+    for (rows, outputs, k, splits) in [(48usize, 5120usize, 17408usize, 4usize), (17, 129, 512, 3)]
+    {
+        let code_columns = i32::try_from(k / 2).expect("code columns");
+        let scale_columns = i32::try_from(k / 16).expect("scale columns");
+        let row_stride = i32::try_from(rows * outputs).expect("row stride");
+        let output_stride = i32::try_from(outputs).expect("output stride");
+        KernelCompiler::new(kernels::__module_ast_self, "kernels", "packed_split")
+            .target("sm_120")
+            .generics(vec![
+                k.to_string(),
+                tile.to_string(),
+                tile.to_string(),
+                splits.to_string(),
+            ])
+            .strides(&[
+                ("partials", &[row_stride, output_stride, 1]),
+                ("input", &[code_columns, 1]),
+                ("input_scales", &[scale_columns, 1]),
+                ("weight", &[code_columns, 1]),
+                ("scales", &[scale_columns, 1]),
+            ])
+            .compile()
+            .expect("packed_split legal tile compiles");
+        KernelCompiler::new(kernels::__module_ast_self, "kernels", "sum_splits")
+            .target("sm_120")
+            .generics(vec![tile.to_string(), tile.to_string(), splits.to_string()])
+            .strides(&[
+                ("out", &[output_stride, 1]),
+                ("partials", &[row_stride, output_stride, 1]),
+            ])
+            .compile()
+            .expect("sum_splits legal tile compiles");
+    }
 }
 
 #[test]
@@ -756,4 +821,13 @@ fn swiglu_real_27b_shape_tuner_compiles_compares_and_selects() -> Result<(), Box
     assert!(tile.rows == 64 || tile.rows == 128);
     assert!(tile.columns == 64 || tile.columns == 128);
     Ok(())
+}
+
+#[test]
+fn forced_split_scope_is_private_and_restores() {
+    assert!(!forced_split());
+    with_forced_split(|| {
+        assert!(forced_split());
+    });
+    assert!(!forced_split());
 }

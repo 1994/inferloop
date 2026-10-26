@@ -169,6 +169,9 @@ pub(super) struct BatchBuilder<'a> {
     /// One block table per lane, indexed exactly like `lane_external`; batched and prefill
     /// captures use entry 0 because their operators do not resolve KV positions.
     pub tables: &'a [Tensor<i32>],
+    /// Current slot tables stacked as `[slots, table_columns]`; pooled append packs all
+    /// control rows in one metadata launch. `None` for prompt captures.
+    pub table_batch: Option<&'a Tensor<i32>>,
     pub capacity: usize,
     pub width: usize,
 }
@@ -986,16 +989,35 @@ impl BatchBuilder<'_> {
         let width = lanes.len();
         let device = self.device;
         self.nvfp4.end_quant_capture();
+        let pairs = gdn_ba_pairs(self.graph, self.weights);
         let result = CudaGraph::scope(&device.stream, |scope| {
-            for node in &self.graph.nodes {
+            let mut fused_second = None;
+            for (index, node) in self.graph.nodes.iter().enumerate() {
+                if fused_second == Some(index) {
+                    continue;
+                }
                 let logits = node.outputs.iter().any(|id| Some(*id) == self.graph.logits);
                 if logits && prefill == Some(false) {
                     continue;
                 }
-                if let Some(arena) = shared.as_deref_mut()
-                    && self.record_shared(scope, node, arena, &lanes[0].metadata)?
-                {
-                    continue;
+                if let Some(arena) = shared.as_deref_mut() {
+                    if let Some(&second) = pairs.get(&index) {
+                        let profile = self.device.profile().map_err(error)?;
+                        if super::prefill_projection::record_pair(
+                            scope,
+                            node,
+                            &self.graph.nodes[second],
+                            arena,
+                            (self.weights, profile),
+                            super::prefill_projection::GdnPairContext::Verify,
+                        )? {
+                            fused_second = Some(second);
+                            continue;
+                        }
+                    }
+                    if self.record_shared(scope, node, arena, &lanes[0].metadata)? {
+                        continue;
+                    }
                 }
                 if width > 1 && node.op == TensorOp::Linear && !(logits && prefill.is_some()) {
                     super::batch_projection::record(
@@ -1068,7 +1090,14 @@ impl BatchBuilder<'_> {
         arena: &mut ActivationArena,
     ) -> StdResult<bool, DeviceError> {
         let profile = self.device.profile().map_err(error)?;
-        super::prefill_projection::record_pair(scope, first, second, arena, (self.weights, profile))
+        super::prefill_projection::record_pair(
+            scope,
+            first,
+            second,
+            arena,
+            (self.weights, profile),
+            super::prefill_projection::GdnPairContext::Prompt,
+        )
     }
 
     fn capture32(
@@ -2392,7 +2421,10 @@ fn gdn_ba_roles_by(
         let (Some(beta_shape), Some(alpha_shape)) = (shape(weight_b), shape(weight_a)) else {
             continue;
         };
-        if !gdn_ba_weight_compatible(beta_shape, alpha_shape) {
+        if beta_shape != alpha_shape
+            || !(1..=GDN_BA_MAX_ROWS).contains(&beta_shape.0)
+            || beta_shape.1 == 0
+        {
             continue;
         }
         roles.insert(first, super::prefill_projection::GdnRole::Beta);
@@ -2418,6 +2450,9 @@ fn gdn_ba_pairs(graph: &DataflowGraph, weights: &ProgramWeights) -> BTreeMap<usi
     pairs
 }
 
+/// Structural order check for a pair: beta producer immediately before alpha producer,
+/// both before the `Delta`, both single-output plain linears of the Delta's layer, reading
+/// the same input and producing exactly the Delta's beta/alpha tensors.
 fn gdn_ba_ordered(graph: &DataflowGraph, first: usize, second: usize, delta: usize) -> bool {
     if second != first + 1 || second >= delta {
         return false;
@@ -2435,6 +2470,8 @@ fn gdn_ba_ordered(graph: &DataflowGraph, first: usize, second: usize, delta: usi
         && gdn_ba_nodes(first_node, second_node)
 }
 
+/// Structural half of the pair test: same layer, same single activation input, both
+/// are plain `Linear` nodes. Weight identity/shape is checked separately.
 fn gdn_ba_nodes(first: &TensorNode, second: &TensorNode) -> bool {
     first.layer == second.layer
         && first.op == TensorOp::Linear
@@ -2446,8 +2483,11 @@ fn gdn_ba_nodes(first: &TensorNode, second: &TensorNode) -> bool {
         && second.outputs.len() == 1
 }
 
-fn gdn_ba_weight_compatible(beta: (usize, usize), alpha: (usize, usize)) -> bool {
-    beta == alpha && (1..=GDN_BA_MAX_ROWS).contains(&beta.0) && beta.1 > 0
+fn gdn_ba_weight_compatible(shape_b: &[i32], shape_a: &[i32]) -> bool {
+    shape_b == shape_a
+        && shape_b.len() == 2
+        && usize::try_from(shape_b[0]).is_ok_and(|rows| rows > 0 && rows <= GDN_BA_MAX_ROWS)
+        && usize::try_from(shape_b[1]).is_ok_and(|columns| columns > 0)
 }
 
 /// One allocation for every prompt lane's metadata, with a non-owning row view per lane.

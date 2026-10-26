@@ -24,6 +24,16 @@ fn pooled_attention_kernels_compile_without_a_device() -> TestResult {
                 ("metadata", &[1]),
             ])
             .compile()?;
+        KernelCompiler::new(kernels::__module_ast_self, "kernels", "pack_control_batch")
+            .target("sm_120")
+            .generics(vec![columns.to_string()])
+            .strides(&[
+                ("out", &[columns, 1]),
+                ("tables", &[columns, 1]),
+                ("parameters", &[1]),
+                ("metadata", &[1]),
+            ])
+            .compile()?;
         KernelCompiler::new(kernels::__module_ast_self, "kernels", "append_pages")
             .target("sm_120")
             .generics(
@@ -78,6 +88,27 @@ fn pooled_attention_kernels_compile_without_a_device() -> TestResult {
 }
 
 #[test]
+fn pooled_layout_covers_every_slot_with_bounded_partials() -> TestResult {
+    let geometry = Geometry {
+        heads: HEADS,
+        kv_heads: KV,
+        dim: DIM,
+    };
+    let four = grouped_parts_for(HEADS, KV, 170, 4).ok_or("four-slot parts")?;
+    let sixteen = grouped_parts_for(HEADS, KV, 170, 16).ok_or("sixteen-slot parts")?;
+    assert!(sixteen < four, "more slots must reduce per-slot splits");
+    let layout = Layout::new(geometry, 16, CAPACITY, sixteen)?;
+    assert_eq!(layout.slots, 16);
+    assert_eq!(layout.blocks, 16 * KV * sixteen);
+    assert!(
+        layout.blocks <= 2 * 170,
+        "one launch stays near the wave target"
+    );
+    assert!(layout.bytes(1)? > layout.bytes(0)?);
+    Ok(())
+}
+
+#[test]
 #[ignore = "requires CUDA hardware; run inside safe-run"]
 fn pooled_attention_preserves_output_bits_and_cache_bytes() -> TestResult {
     CudaDevice::enable_kernel_cache()?;
@@ -112,6 +143,7 @@ fn upload<T: DType>(device: &CudaDevice, values: Vec<T>, shape: &[usize]) -> Tes
 struct Fixture {
     slots: usize,
     tables: Vec<Tensor<i32>>,
+    table_batch: Tensor<i32>,
     queries: Arc<Tensor<f32>>,
     inputs: [Arc<Tensor<f32>>; 2],
     original: [Tensor<f8e4m3fn>; 2],
@@ -121,20 +153,24 @@ struct Fixture {
 impl Fixture {
     fn new(device: &CudaDevice, slots: usize) -> TestResult<Self> {
         let blocks = CAPACITY / KV_BLOCK_TOKENS;
-        let tables = (0..slots)
+        let table_values = (0..slots)
             .map(|slot| {
-                upload(
-                    device,
-                    (0..blocks)
-                        .map(|block| {
-                            i32::try_from(((slot * blocks + block) * 3 + 7) % (slots * blocks))
-                                .unwrap()
-                        })
-                        .collect(),
-                    &[blocks],
-                )
+                (0..blocks)
+                    .map(|block| {
+                        i32::try_from(((slot * blocks + block) * 3 + 7) % (slots * blocks)).unwrap()
+                    })
+                    .collect::<Vec<_>>()
             })
+            .collect::<Vec<_>>();
+        let tables = table_values
+            .iter()
+            .map(|values| upload(device, values.clone(), &[blocks]))
             .collect::<TestResult<Vec<_>>>()?;
+        let table_batch = upload(
+            device,
+            table_values.into_iter().flatten().collect(),
+            &[slots, blocks],
+        )?;
         let queries = device.upload(
             (0..slots * VERIFY_LANES * HEADS * DIM)
                 .map(|i| (f32::from(u16::try_from(i % 131).unwrap()) - 65.0) / 37.0)
@@ -172,6 +208,7 @@ impl Fixture {
         Ok(Self {
             slots,
             tables,
+            table_batch,
             queries,
             inputs: [input(0)?, input(13)?],
             original: [cache(0)?, cache(11)?],
@@ -236,6 +273,7 @@ impl Fixture {
                     inputs: [&self.inputs[0], &self.inputs[1]],
                     metadata: &metadata,
                     tables: &self.tables,
+                    table_batch: &self.table_batch,
                 },
             )?;
             work.attend(
