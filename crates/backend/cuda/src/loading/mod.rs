@@ -810,3 +810,11 @@ mod prompt_width_bucket_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/resident_norm_maximum_model.rs"]
 mod norm_maximum_model_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/resident_norm_fp4_quant.rs"]
+mod norm_fp4_quant_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/resident_norm_fp4_model.rs"]
+mod norm_fp4_model_tests;

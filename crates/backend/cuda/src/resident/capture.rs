@@ -541,4 +541,4 @@ impl Capture<'_> {
 
 /// Rows per block of the batched norm (fixed in its kernel), and the widest row it takes.
 const NORM_ROWS: usize = 16;
-const NORM_ROWS_MAX_DIMENSION: usize = 256;
+pub(super) const NORM_ROWS_MAX_DIMENSION: usize = 256;

@@ -1112,10 +1112,9 @@ impl BatchBuilder<'_> {
                 if let Some(boundaries) = boundaries.as_mut() {
                     boundaries.boundary(scope, index, node)?;
                 }
-                if super::norm_maximum::record(
+                if mlp.record_norm(
                     scope,
-                    index,
-                    &self.graph.nodes,
+                    (index, &self.graph.nodes),
                     arena,
                     self.weights,
                     self.nvfp4,

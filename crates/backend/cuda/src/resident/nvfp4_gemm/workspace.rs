@@ -8,6 +8,7 @@ use crate::constants::NVFP4_GROUP_SIZE;
 use crate::constants::NVFP4_QUANT_CODES_TILE;
 use crate::constants::NVFP4_QUANT_SCALES_TILE;
 use crate::constants::PREFILL_LANES;
+use crate::resident::{norm_fp4, norm_fp4_kernel};
 use crate::tuning::fp8_gemm::prefill_choice;
 
 use crate::resident::program::ProgramGeometry;
@@ -52,6 +53,7 @@ type Fp8Buffers = (Tensor<f8e4m3fn>, Tensor<f32>);
 pub struct Workspace {
     quant_reuse: CaptureQuantReuse,
     norm_maximum: Option<super::super::norm_maximum::Pending>,
+    norm_fp4: Option<norm_fp4::Pending>,
     strategies: BTreeMap<StrategyKey, GemmConfig>,
     buffers: BTreeMap<(usize, usize), Quantized>,
     fp8_strategies: BTreeMap<(WeightKey, usize, usize, usize), Choice>,
@@ -69,6 +71,7 @@ impl Workspace {
     /// Start a fresh graph-local permission epoch; no device memory is changed.
     pub(crate) const fn begin_quant_capture(&mut self) {
         self.norm_maximum = None;
+        self.norm_fp4 = None;
         self.quant_reuse.begin();
     }
     pub(crate) fn enter_quant_node(&mut self, index: usize, role: Option<QuantPairRole>) {
@@ -78,14 +81,19 @@ impl Workspace {
         {
             self.norm_maximum = None;
         }
+        if self.norm_fp4.is_some_and(|pending| pending.next != index) {
+            self.norm_fp4 = None;
+        }
         self.quant_reuse.enter(index, role);
     }
     pub(crate) const fn end_quant_capture(&mut self) {
         self.norm_maximum = None;
+        self.norm_fp4 = None;
         self.quant_reuse.end();
     }
     pub(crate) const fn clear_quant_reuse(&mut self) {
         self.norm_maximum = None;
+        self.norm_fp4 = None;
         self.quant_reuse.clear();
     }
     #[cfg(test)]
@@ -183,6 +191,7 @@ impl Workspace {
         let mut workspace = Self {
             quant_reuse: CaptureQuantReuse::default(),
             norm_maximum: None,
+            norm_fp4: None,
             strategies: BTreeMap::new(),
             buffers: BTreeMap::new(),
             fp8: BTreeMap::new(),
@@ -528,9 +537,10 @@ impl Workspace {
         scope: &Scope,
         (gate, up): (&ProjectionWeight, &ProjectionWeight),
         (input_scale, down_scale): (f32, f32),
-        input: &TensorView<'_, f32>,
+        (input, pointer): (&TensorView<'_, f32>, u64),
         (rows, columns, hidden): (usize, usize, usize),
     ) -> StdResult<(), DeviceError> {
+        let pending = self.norm_fp4.take();
         let (
             ProjectionWeight::Fp4(gate_codes, gate_scales, gate_global),
             ProjectionWeight::Fp4(up_codes, up_scales, up_global),
@@ -547,17 +557,34 @@ impl Workspace {
             .buffers
             .remove(&(rows, columns))
             .ok_or_else(|| super::super::capture::error("FP4 quantization workspace missing"))?;
-        let quantized = scope
-            .record(
-                kernels::quantize_rows(
-                    (&mut q).partition([QUANTIZATION_ROWS, NVFP4_QUANT_CODES_TILE[1]]),
-                    (&mut qs).partition([QUANTIZATION_ROWS, NVFP4_QUANT_SCALES_TILE[1]]),
-                    input,
-                    input_scale,
+        let ready = pending.is_some_and(|pending| {
+            pending.binding
+                == norm_fp4::Binding {
+                    pointer,
+                    rows,
+                    columns,
+                    scale_bits: input_scale.to_bits(),
+                    codes: q.device_pointer().cu_deviceptr(),
+                    scales: qs.device_pointer().cu_deviceptr(),
+                }
+        });
+        #[cfg(test)]
+        norm_fp4::record_consumption(ready);
+        let quantized = if ready {
+            Ok(())
+        } else {
+            scope
+                .record(
+                    kernels::quantize_rows(
+                        (&mut q).partition([QUANTIZATION_ROWS, NVFP4_QUANT_CODES_TILE[1]]),
+                        (&mut qs).partition([QUANTIZATION_ROWS, NVFP4_QUANT_SCALES_TILE[1]]),
+                        input,
+                        input_scale,
+                    )
+                    .generics(vec![columns.to_string()]),
                 )
-                .generics(vec![columns.to_string()]),
-            )
-            .map(drop);
+                .map(drop)
+        };
         let recorded = quantized.and_then(|()| {
             let (codes, code_scales) = self.buffers.get_mut(&(rows, hidden)).ok_or_else(|| {
                 super::super::capture::error("FP4 quantization workspace missing")
@@ -649,6 +676,53 @@ impl Workspace {
             Ok(())
         }
     }
+    /// Write existing dense and FP4 buffers in one RMS pass; permission is capture-local.
+    pub(crate) fn record_norm_fp4(
+        &mut self,
+        scope: &Scope,
+        next: usize,
+        input: &TensorView<'_, f32>,
+        weight: &Tensor<f32>,
+        output: &mut Tensor<f32>,
+        (epsilon, offset, scale): (f32, f32, f32),
+    ) -> StdResult<bool, DeviceError> {
+        self.norm_fp4 = None;
+        let rows = usize::try_from(output.shape()[0]).map_err(super::super::capture::error)?;
+        let columns = usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
+        let Some((codes, scales)) = self.buffers.get_mut(&(rows, columns)) else {
+            return Ok(false);
+        };
+        let binding = norm_fp4::Binding {
+            pointer: output.device_pointer().cu_deviceptr(),
+            rows,
+            columns,
+            scale_bits: scale.to_bits(),
+            codes: codes.device_pointer().cu_deviceptr(),
+            scales: scales.device_pointer().cu_deviceptr(),
+        };
+        let block = columns.next_power_of_two();
+        scope.record(
+            norm_fp4_kernel::kernels::norm_fp4(
+                output.partition([1, block]),
+                codes.partition([1, block / 2]),
+                scales.partition([1, block / NVFP4_GROUP_SIZE]),
+                input,
+                weight,
+                epsilon,
+                offset,
+                scale,
+            )
+            .generics(
+                [columns, block, block / NVFP4_GROUP_SIZE, block / 2]
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            ),
+        )?;
+        self.norm_fp4 = Some(norm_fp4::Pending { next, binding });
+        Ok(true)
+    }
+
     /// Keep the existing scale allocation; its permission lasts exactly one graph node.
     pub(crate) fn record_norm_maximum(
         &mut self,
@@ -854,3 +928,7 @@ const fn vendor_diagnostic_enabled() -> bool {
 fn vendor_diagnostic_enabled() -> bool {
     var("INFER_CUDA_VENDOR_FP8").is_ok_and(|value| value == "1" || value == "true")
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/resident_norm_fp4_permissions.rs"]
+mod norm_fp4_permission_tests;
