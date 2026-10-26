@@ -7,6 +7,7 @@ use cutile::half::bf16;
 use infer_core::OpId;
 use infer_ir::{DType, TensorNode, TensorOp, TensorSpec};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Mutex;
 
 fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
     let mut graph = DataflowGraph::default();
@@ -80,6 +81,7 @@ fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,
         resident_tuning: Arc::new(ResidentTuningSession::default()),
+        pool_gemv: Arc::new(Mutex::new(BTreeMap::new())),
         chunked_recurrent: false,
         batch_width: 0,
         prefill_width: 1,

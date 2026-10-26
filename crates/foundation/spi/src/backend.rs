@@ -7,6 +7,17 @@ use infer_ir::{
 };
 use std::sync::Arc;
 
+/// Backend-selected concurrency for automatic serving configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SchedulingRecommendation {
+    /// Selected concurrent decode sequences.
+    pub max_sequences: usize,
+    /// State/KV memory bound from the loaded model and state budget.
+    pub memory_bound: usize,
+    /// Calibrated compute/bandwidth knee when the backend has measured one.
+    pub knee_bound: Option<usize>,
+}
+
 /// Owned work crosses the submission boundary; a future CUDA implementation uses
 /// persistent buffers and a bounded SPSC descriptor ring behind this contract.
 pub trait BackendProvider {
@@ -39,6 +50,15 @@ pub trait BackendProvider {
         false
     }
     fn capabilities(&self) -> DeviceCapabilities;
+    /// Automatic concurrency recommendation for the loaded model and device.
+    ///
+    /// Backends that cannot price state return `None`; callers then keep their explicit or
+    /// portable default rather than inventing a device tier.
+    /// # Errors
+    /// Returns a storage/pricing error when the backend cannot compute a valid recommendation.
+    fn scheduling_recommendation(&self) -> Result<Option<SchedulingRecommendation>> {
+        Ok(None)
+    }
     /// Speculative decode support, queried on hot paths where cloning capabilities would allocate.
     fn speculation_capability(&self) -> infer_ir::SpeculationCapability {
         infer_ir::SpeculationCapability::default()

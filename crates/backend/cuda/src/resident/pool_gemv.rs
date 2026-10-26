@@ -26,39 +26,53 @@ pub(crate) mod kernels {
 }
 
 use crate::constants::CB_DECODE_SLOTS;
+use crate::tuning::pool_gemv::Choice;
 use crate::{mlp::ProjectionWeight, strategy::LinearTiling};
 use cutile::half::bf16;
 use cutile::prelude::*;
 #[cfg(test)]
 use std::cell::Cell;
-const MAX_SMALL_OUTPUTS: usize = 128;
-const MIN_SMALL_COLUMNS: usize = 4096;
+pub const MAX_SMALL_OUTPUTS: usize = 128;
+pub const MIN_SMALL_COLUMNS: usize = 4096;
 const MAX_POOL_ROWS: usize = CB_DECODE_SLOTS;
 pub(super) fn record(
     scope: &Scope,
-    weight: &ProjectionWeight,
+    node: &infer_ir::TensorNode,
     input: &TensorView<'_, f32>,
     output: &mut Tensor<f32>,
     columns: usize,
     tile: LinearTiling,
+    weights: &super::ProgramWeights,
 ) -> Result<bool, DeviceError> {
     let rows =
         usize::try_from(input.shape()[0]).map_err(|e| DeviceError::Internal(e.to_string()))?;
     let outputs =
         usize::try_from(output.shape()[1]).map_err(|e| DeviceError::Internal(e.to_string()))?;
-    if rows == 0
-        || rows > MAX_POOL_ROWS
-        || outputs > MAX_SMALL_OUTPUTS
-        || columns < MIN_SMALL_COLUMNS
-        || !enabled()
-    {
+    if rows == 0 || outputs > MAX_SMALL_OUTPUTS || columns < MIN_SMALL_COLUMNS || !enabled() {
         return Ok(false);
     }
-    let ProjectionWeight::Dense(weight) = weight else {
+    let Some(weight) = weights.projections.get(&node.inputs[1]) else {
         return Ok(false);
     };
+    let ProjectionWeight::Dense(dense) = weight else {
+        return Ok(false);
+    };
+    let choice = weights
+        .pool_gemv
+        .lock()
+        .map_err(|_| DeviceError::Internal("pool GEMV choice map poisoned".into()))?
+        .get(&(node.inputs[1], rows))
+        .copied()
+        .unwrap_or(if rows <= MAX_POOL_ROWS {
+            Choice::Gemv
+        } else {
+            Choice::Blocked
+        });
+    if choice == Choice::Blocked {
+        return Ok(false);
+    }
     scope.record(
-        kernels::dense(output.partition([1, tile.rows()]), input, weight).generics(vec![
+        kernels::dense(output.partition([1, tile.rows()]), input, dense).generics(vec![
             bf16::DTYPE.as_str().into(),
             tile.rows().to_string(),
             tile.columns().to_string(),

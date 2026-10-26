@@ -40,7 +40,7 @@ mod slot_rope;
 mod slot_states;
 mod slot_verify;
 mod slot_verify_attention;
-mod small_gemm;
+pub(crate) mod small_gemm;
 mod validation;
 pub use arena::ActivationArena;
 pub(crate) use program::ProgramGeometry;

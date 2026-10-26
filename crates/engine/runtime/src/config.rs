@@ -70,6 +70,9 @@ pub struct RuntimeConfig {
     pub num_gpu_blocks: usize,
     pub block_size: usize,
     pub max_num_seqs: usize,
+    /// True when the caller set `max_num_seqs`; automatic configurations may use a backend recommendation.
+    #[serde(default)]
+    pub max_num_seqs_explicit: bool,
     /// Name clients address this deployment by (`--served-model-name`). `None` uses the model
     /// identity, which is what `/v1/models` and the request `model` field then report.
     #[serde(default)]
@@ -106,6 +109,7 @@ impl Default for RuntimeConfig {
             num_gpu_blocks: DEFAULT_STATE_PAGES,
             block_size: DEFAULT_PAGE_TOKENS,
             max_num_seqs: DEFAULT_MAX_BATCH,
+            max_num_seqs_explicit: false,
             served_model_name: None,
             max_num_batched_tokens: DEFAULT_TOKEN_BUDGET,
             gpu_budget_us: DEFAULT_GPU_BUDGET_US,

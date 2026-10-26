@@ -30,9 +30,22 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod search_budget;
+pub(crate) use search_budget::Family as SearchFamily;
+use search_budget::Schedule;
+
 /// Bump when quantization, arithmetic or the paired measurement protocol changes.
+pub(crate) fn current_kernel_schema() -> String {
+    use cutile::cutile_compiler::hints::CompileOptions;
+    let compile = CompileOptions::default();
+    format!(
+        "{KERNEL_SCHEMA}:jit-opt{:?}:debug{}",
+        compile.opt_level, compile.device_debug
+    )
+}
+
 const KERNEL_SCHEMA: &str = "cutile0.4-nvfp4-v3:search-ab:confirm-ba:block16-e4m3:quant512:mma-k256:f32:full-output:alpha1/(wg*xs):tile-m128";
-const ACTIVATION_MODE: &str = "nvfp4-w4a4-block16";
+pub(crate) const ACTIVATION_MODE: &str = "nvfp4-w4a4-block16";
 /// Resident projection geometry is (activation rows, output columns, reduction columns).
 const GEMM_RANK: usize = 3;
 /// Linear interpolation weight of both central samples for an even-sized median.
@@ -82,34 +95,40 @@ const SAMPLE_DIVISOR: f32 = 37.0;
 /// CUDA JIT optimization level required for representative timing.
 const JIT_OPT_LEVEL: u8 = 3;
 
-/// Default elapsed allowance for new-shape searches in one model load.
-/// A JIT or measurement already in progress is not interruptible; this is not a hard time cap.
-const MODEL_SEARCH_BUDGET: Duration = Duration::from_secs(30);
+/// Paired measurements for the non-baseline candidates plus up to two confirmations.
+pub(crate) const fn nvfp4_search_trials() -> usize {
+    TILE_M_SEARCH.len() * TILE_N_SEARCH.len() * LOOP_SEARCH.len() - 1 + 2
+}
+
+/// Separate finite allowances for non-GEMM tuning categories.
+/// Resident GEMM searches use work-derived per-shape allowances in `search_budget`.
+const CATEGORY_SEARCH_BUDGET: Duration = Duration::from_secs(30);
 #[cfg(test)]
 const HARDWARE_VALIDATION_BUDGET: Duration = Duration::from_secs(600);
 
 /// Shared by target/draft weights and every program created from one loaded model.
 ///
-/// The allowance starts at the first new resident search, after weight binding.
-/// Cache identities and mandatory real-weight proofs remain available after it expires.
+/// Non-GEMM categories keep their separate finite allowances. Resident GEMM work is scheduled
+/// per family and shape; each shape's timer starts only on its own search. Cache identities and
+/// mandatory real-weight proofs remain available after an allowance expires.
 pub struct ResidentTuningSession {
-    started: OnceLock<Instant>,
     greedy_started: OnceLock<Instant>,
     norm_started: OnceLock<Instant>,
     recurrent_started: OnceLock<Instant>,
     attention_started: OnceLock<Instant>,
     budget: Duration,
+    gemm: Schedule,
 }
 
 impl Default for ResidentTuningSession {
     fn default() -> Self {
         Self {
-            started: OnceLock::new(),
             greedy_started: OnceLock::new(),
             norm_started: OnceLock::new(),
             recurrent_started: OnceLock::new(),
             attention_started: OnceLock::new(),
-            budget: MODEL_SEARCH_BUDGET,
+            budget: CATEGORY_SEARCH_BUDGET,
+            gemm: Schedule::default(),
         }
     }
 }
@@ -119,6 +138,7 @@ impl ResidentTuningSession {
     pub(crate) fn for_hardware_validation() -> Self {
         Self {
             budget: HARDWARE_VALIDATION_BUDGET,
+            gemm: Schedule::with_limit(HARDWARE_VALIDATION_BUDGET),
             ..Self::default()
         }
     }
@@ -126,6 +146,7 @@ impl ResidentTuningSession {
     pub(crate) fn without_search_budget() -> Self {
         Self {
             budget: Duration::ZERO,
+            gemm: Schedule::with_limit(Duration::ZERO),
             ..Self::default()
         }
     }
@@ -150,19 +171,38 @@ impl ResidentTuningSession {
         self.norm_started.get_or_init(Instant::now).elapsed() < self.budget
     }
 
-    pub(crate) fn permits_search(&self) -> bool {
-        self.started.get_or_init(Instant::now).elapsed() < self.budget
+    pub(crate) fn plan_gemm_search(
+        &self,
+        family: SearchFamily,
+        shapes: &[[usize; GEMM_RANK]],
+        trials: usize,
+    ) -> Result<()> {
+        self.gemm.plan(family, shapes, trials)
     }
 
-    fn exhausted(&self, key: &ResidentGemmKey) -> bool {
-        if self.permits_search() {
-            return false;
-        }
-        tracing::info!(target: "infer::tuning", ?key,
-            elapsed_ms=self.started.get_or_init(Instant::now).elapsed().as_millis(),
-            budget_ms=self.budget.as_millis(),
-            "resident GEMM model search budget exhausted: incomplete evidence discarded");
-        true
+    pub(crate) fn permits_gemm_search(
+        &self,
+        family: SearchFamily,
+        shape: [usize; GEMM_RANK],
+        trials: usize,
+    ) -> Result<bool> {
+        self.gemm.permits(family, shape, trials)
+    }
+
+    pub(crate) fn complete_gemm_search(
+        &self,
+        family: SearchFamily,
+        shape: [usize; GEMM_RANK],
+    ) -> Result<()> {
+        self.gemm.complete(family, shape)
+    }
+
+    pub(crate) fn gemm_search_exhausted(
+        &self,
+        family: SearchFamily,
+        shape: [usize; GEMM_RANK],
+    ) -> Result<bool> {
+        self.gemm.is_exhausted(family, shape)
     }
 }
 
@@ -681,7 +721,18 @@ fn remember_verification(
     Ok(())
 }
 
-type Memo = Mutex<BTreeMap<ResidentGemmKey, GemmConfig>>;
+#[derive(Clone, Copy)]
+struct MemoDecision {
+    config: GemmConfig,
+    covered: bool,
+}
+
+fn memo_covers(rows: usize, decision: MemoDecision, verified: GemmConfig) -> bool {
+    let baseline = GemmConfig::baseline(rows);
+    decision.covered && (decision.config == baseline || verified == decision.config)
+}
+
+type Memo = Mutex<BTreeMap<ResidentGemmKey, MemoDecision>>;
 fn memo() -> &'static Memo {
     static MEMO: OnceLock<Memo> = OnceLock::new();
     MEMO.get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -728,9 +779,21 @@ fn resolve(
         .map_err(|_| Error::invariant("resident tuning cache poisoned"))?
         .get(&key)
         .copied();
-    if let Some(config) = cached {
-        tracing::info!(target: "infer::tuning", ?key, ?config, source="process-cache", "resident GEMM selected");
-        return verified_config(device, weight, scale, &key, config);
+    if let Some(decision) = cached {
+        let config = verified_config(device, weight, scale, &key, decision.config)?;
+        let source = if decision.covered {
+            "process-cache"
+        } else {
+            "process-cache-fallback"
+        };
+        tracing::info!(target: "infer::tuning", ?key, ?config, source, "resident GEMM selected");
+        // A measurement fallback is deliberately not coverage. A non-baseline cache entry still
+        // needs this weight's exact proof; only an accepted proof (or a legal baseline choice)
+        // completes the planned shape.
+        if memo_covers(shape[0], decision, config) {
+            session.complete_gemm_search(SearchFamily::Nvfp4, shape)?;
+        }
+        return Ok(config);
     }
     let path = super::table_path();
     let table = if key.driver_build.is_some() {
@@ -754,9 +817,28 @@ fn resolve(
     memo()
         .lock()
         .map_err(|_| Error::invariant("resident tuning cache poisoned"))?
-        .insert(key.clone(), config);
-    tracing::info!(target: "infer::tuning", ?key, ?config, source, "resident GEMM selected");
-    verified_config(device, weight, scale, &key, config)
+        .insert(
+            key.clone(),
+            MemoDecision {
+                config,
+                covered: true,
+            },
+        );
+    let verified = verified_config(device, weight, scale, &key, config)?;
+    tracing::info!(target: "infer::tuning", ?key, ?verified, source, "resident GEMM selected");
+    // Table/measured evidence is valid, but a non-baseline entry still completes coverage only
+    // after this weight's exact proof accepts the same choice.
+    if memo_covers(
+        shape[0],
+        MemoDecision {
+            config,
+            covered: true,
+        },
+        verified,
+    ) {
+        session.complete_gemm_search(SearchFamily::Nvfp4, shape)?;
+    }
+    Ok(verified)
 }
 
 fn selected_config(
@@ -815,7 +897,13 @@ fn measured_config(
             memo()
                 .lock()
                 .map_err(|_| Error::invariant("resident tuning cache poisoned"))?
-                .insert(key.clone(), baseline);
+                .insert(
+                    key.clone(),
+                    MemoDecision {
+                        config: baseline,
+                        covered: false,
+                    },
+                );
             return Ok(None);
         }
     };
@@ -1053,10 +1141,11 @@ fn tune(
             "resident tuning requires release and CUDA JIT O3",
         ));
     }
-    if session.exhausted(&key) {
+    let shape = [key.m, key.n, key.k];
+    let allowance_trials = nvfp4_search_trials();
+    if !session.permits_gemm_search(SearchFamily::Nvfp4, shape, allowance_trials)? {
         return Ok(None);
     }
-    let shape = [key.m, key.n, key.k];
     let baseline = GemmConfig::baseline(key.m);
     let base = Captured::new(device, weight, scale, shape, baseline)?;
     base.run(device)?;
@@ -1084,7 +1173,7 @@ fn tune(
                 if config == baseline {
                     continue;
                 }
-                if session.exhausted(&key) {
+                if !session.permits_gemm_search(SearchFamily::Nvfp4, shape, allowance_trials)? {
                     return Ok(None);
                 }
                 match search.trial(config, MeasurementOrder::BaselineFirst) {
@@ -1107,12 +1196,12 @@ fn tune(
         }
     }
     // A new capture measures candidate first to confirm both cache states in reverse order.
-    if session.exhausted(&key) {
+    if !session.permits_gemm_search(SearchFamily::Nvfp4, shape, allowance_trials)? {
         return Ok(None);
     }
     let mut confirmation = search.trial(selected, MeasurementOrder::CandidateFirst)?;
     if selected != baseline && !confirmed(&confirmation) {
-        if session.exhausted(&key) {
+        if !session.permits_gemm_search(SearchFamily::Nvfp4, shape, allowance_trials)? {
             return Ok(None);
         }
         selected = baseline;
@@ -1128,9 +1217,113 @@ fn tune(
     if !entry.valid() {
         return Err(Error::invalid("invalid resident GEMM confirmation timings"));
     }
+    session.complete_gemm_search(SearchFamily::Nvfp4, shape)?;
     Ok(Some(entry))
 }
 
 #[cfg(test)]
 #[path = "../../tests/unit/resident_gemm_tuning.rs"]
 mod tests;
+
+/// Measured compute evidence from an actual large resident-GEMM trial.
+#[derive(Debug, Clone)]
+pub(crate) struct ComputeEvidence {
+    pub flops_per_second: u64,
+    pub mode: String,
+    pub kernel_fingerprint: String,
+    pub rows: usize,
+    pub columns: usize,
+    pub reduction: usize,
+    pub milliseconds: f32,
+}
+
+const NANOS_PER_SECOND: u128 = 1_000_000_000;
+const MILLISECONDS_PER_SECOND: f64 = 1000.0;
+const MIN_COMPUTE_ROWS: usize = 512;
+const MIN_COMPUTE_COLUMNS: usize = 512;
+const MIN_COMPUTE_REDUCTION: usize = 512;
+
+fn measured_flops(rows: usize, columns: usize, reduction: usize, milliseconds: f32) -> Result<u64> {
+    if !milliseconds.is_finite() || milliseconds <= 0.0 {
+        return Err(Error::invalid("measured compute duration is invalid"));
+    }
+    let work = u128::from(rows as u64)
+        .checked_mul(u128::from(columns as u64))
+        .and_then(|value| value.checked_mul(u128::from(reduction as u64)))
+        .and_then(|value| value.checked_mul(2))
+        .and_then(|value| value.checked_mul(NANOS_PER_SECOND))
+        .ok_or_else(|| Error::invalid("measured compute work overflow"))?;
+    let duration = Duration::try_from_secs_f64(f64::from(milliseconds) / MILLISECONDS_PER_SECOND)
+        .map_err(|_| Error::invalid("measured compute duration is invalid"))?;
+    let nanoseconds = duration.as_nanos();
+    if nanoseconds == 0 {
+        return Err(Error::invalid("measured compute duration is too small"));
+    }
+    let flops = work / nanoseconds;
+    u64::try_from(flops).map_err(|_| Error::invalid("measured compute FLOP/s overflow"))
+}
+
+/// Reuse the strongest measured large, compute-bound resident-GEMM sample for this exact
+/// device/driver/compiler/kernel identity. Quantization and full-output evidence are already
+/// part of the resident-GEMM entry; no new calibration graph or user control is introduced.
+pub(crate) fn measured_compute(
+    device: &CudaDevice,
+    profile: &DeviceProfile,
+    driver: u32,
+    driver_build: Option<&str>,
+    deployed_mode: Option<&str>,
+) -> Result<Option<ComputeEvidence>> {
+    if deployed_mode != Some(ACTIVATION_MODE) {
+        return Ok(None);
+    }
+    let Some(path) = super::table_path() else {
+        return Ok(None);
+    };
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let table = TilingTable::load(&path)?;
+    let hardware = serde_json::to_string(profile).map_err(device_error)?;
+    let mut best: Option<ComputeEvidence> = None;
+    for entry in &table.resident_gemm {
+        if !entry.valid()
+            || entry.key.kernel_schema != current_kernel_schema()
+            || entry.key.activation_mode != ACTIVATION_MODE
+            || entry.key.hardware != hardware
+            || entry.key.driver_version != driver
+            || entry.key.driver_build.as_deref() != driver_build
+            || entry.key.m < MIN_COMPUTE_ROWS
+            || entry.key.n < MIN_COMPUTE_COLUMNS
+            || entry.key.k < MIN_COMPUTE_REDUCTION
+        {
+            continue;
+        }
+        let milliseconds = entry.confirmation.warm.candidate_median_ms;
+        if !milliseconds.is_finite() || milliseconds <= 0.0 {
+            continue;
+        }
+        if kernel_fingerprint(device, [entry.key.m, entry.key.n, entry.key.k])?
+            != entry.key.kernel_fingerprint
+        {
+            continue;
+        }
+        let Ok(flops) = measured_flops(entry.key.m, entry.key.n, entry.key.k, milliseconds) else {
+            continue;
+        };
+        if best
+            .as_ref()
+            .is_none_or(|current| flops > current.flops_per_second)
+        {
+            best = Some(ComputeEvidence {
+                flops_per_second: flops,
+                mode: entry.key.activation_mode.clone(),
+                kernel_fingerprint: entry.key.kernel_fingerprint.clone(),
+                rows: entry.key.m,
+                columns: entry.key.n,
+                reduction: entry.key.k,
+                milliseconds,
+            });
+        }
+    }
+    Ok(best)
+}

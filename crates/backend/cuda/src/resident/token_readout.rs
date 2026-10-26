@@ -4,7 +4,6 @@ use crate::device::{CudaDevice, ReadbackSource, Readbacks, device_error};
 use crate::tuning::greedy::select;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
-use std::env::var;
 use std::slice::from_ref;
 
 pub(super) struct TokenReadout {
@@ -41,9 +40,6 @@ impl TokenReadout {
         vocabulary: usize,
         weights: &ProgramWeights,
     ) -> Result<Option<Self>> {
-        if var("INFER_CUDA_DEVICE_GREEDY").is_ok_and(|value| value == "0") {
-            return Ok(None);
-        }
         if rows == 0 || vocabulary == 0 || logits.is_empty() {
             return Err(Error::invalid("token readout geometry"));
         }

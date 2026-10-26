@@ -12,6 +12,7 @@ use cutile::half::bf16;
 use infer_core::TensorId;
 use infer_ir::{DType, Sampling, StateKind, TensorSpec, TensorStorage};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Mutex;
 
 fn fixture_weights(device: &CudaDevice, width: usize) -> Result<ProgramWeights> {
     let embedding = TensorId::ONE;
@@ -26,6 +27,7 @@ fn fixture_weights(device: &CudaDevice, width: usize) -> Result<ProgramWeights> 
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,
         resident_tuning: Arc::new(ResidentTuningSession::default()),
+        pool_gemv: Arc::new(Mutex::new(BTreeMap::new())),
         chunked_recurrent: false,
         batch_width: 0,
         prefill_width: 1,

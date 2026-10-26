@@ -42,7 +42,7 @@
      "2.0.21"
     ]
    },
-   "edges": 738,
+   "edges": 739,
    "features": [
     "cuda"
    ],
@@ -68,6 +68,6 @@
    "target": "aarch64-apple-darwin"
   }
  ],
- "lockfile_sha256": "c589036d275c1f05289b3420bf3369be93a084fcc5bc9f2d71004cfb34cfe2ee",
+ "lockfile_sha256": "752b9991c54d00790b02c0337276c84d834fb9ae20547c7b0b55684b5797307d",
  "schema": 1
 }

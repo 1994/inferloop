@@ -733,27 +733,29 @@ pub(super) const fn fused_block(value_dim: usize, split: usize) -> usize {
     }
 }
 
-/// Value-dimension split of the fused verify and commit kernels for a device's SM count.
+/// Value-dimension split of the fused verify and commit kernels for one covered geometry.
 ///
-/// Four splits are the measured optimum on the 170-SM RTX 5090 (192 CTAs per layer rather than
-/// 48). Smaller devices keep fewer splits: the goal is roughly one wave of CTAs, and many tiny
-/// blocks lose more to launch and reduction overhead than they gain in occupancy.
-pub(super) const fn value_split(multiprocessors: u32) -> usize {
-    match multiprocessors {
-        0..=VALUE_SPLIT_ONE_MAX_SM => VALUE_SPLIT_ONE,
-        VALUE_SPLIT_TWO_MIN_SM..=VALUE_SPLIT_TWO_MAX_SM => VALUE_SPLIT_TWO,
-        _ => VALUE_SPLIT_FOUR,
-    }
+/// The target is one wave of CTAs: `head_count × slots × split` should cover the SM count.
+/// Only splits that divide the actual value width and stay within the supported small set are
+/// legal; the lower divisor wins ties so a small device never over-partitions a tail.
+pub(super) fn value_split(
+    multiprocessors: u32,
+    heads: usize,
+    slots: usize,
+    value_dim: usize,
+) -> usize {
+    const LEGAL: [usize; 4] = [1, 2, 4, 8];
+    let lanes = heads.max(1).saturating_mul(slots.max(1));
+    let target = usize::try_from(multiprocessors)
+        .unwrap_or(usize::MAX)
+        .max(1);
+    let desired = target.div_ceil(lanes).max(1);
+    LEGAL
+        .into_iter()
+        .filter(|split| value_dim.is_multiple_of(*split))
+        .min_by_key(|split| split.abs_diff(desired))
+        .unwrap_or(1)
 }
-
-/// SM counts at which the fused split grows. The 170-SM class takes four; smaller devices
-/// take one or two so each layer still has enough CTAs to fill them.
-const VALUE_SPLIT_ONE_MAX_SM: u32 = 63;
-const VALUE_SPLIT_TWO_MIN_SM: u32 = 64;
-const VALUE_SPLIT_TWO_MAX_SM: u32 = 127;
-const VALUE_SPLIT_ONE: usize = 1;
-const VALUE_SPLIT_TWO: usize = 2;
-const VALUE_SPLIT_FOUR: usize = 4;
 
 /// Whether `node` is a recurrent state writer the fused verify/commit pair covers.
 pub(super) const fn covers(node: &TensorNode) -> bool {

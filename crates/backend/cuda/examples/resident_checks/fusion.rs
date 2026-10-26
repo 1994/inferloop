@@ -10,7 +10,7 @@ use infer_core::{Error, OpId, Result, TensorId};
 use infer_ir::{DType, DataflowGraph, TensorNode, TensorOp, TensorSpec, TensorStorage};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub fn run(device: &CudaDevice) -> Result<()> {
     let d = 48;
@@ -97,6 +97,7 @@ fn weights(device: &CudaDevice, d: usize, id: TensorId) -> Result<ProgramWeights
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,
         resident_tuning: Arc::new(ResidentTuningSession::default()),
+        pool_gemv: Arc::new(Mutex::new(BTreeMap::new())),
         chunked_recurrent: false,
         batch_width: 0,
         prefill_width: 1,

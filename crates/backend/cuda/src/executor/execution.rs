@@ -788,7 +788,7 @@ const PAGED_KV_SHARE_NUMERATOR: usize = 3;
 const PAGED_KV_SHARE_DENOMINATOR: usize = 4;
 
 /// Physical KV positions a pool of `width` slots of `capacity` tokens shares.
-const fn paged_tokens(width: usize, capacity: usize) -> usize {
+pub(super) const fn paged_tokens(width: usize, capacity: usize) -> usize {
     width * capacity * PAGED_KV_SHARE_NUMERATOR / PAGED_KV_SHARE_DENOMINATOR
 }
 

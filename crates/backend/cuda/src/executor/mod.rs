@@ -13,13 +13,181 @@ pub mod prefix;
 mod prefix_state;
 mod profiling;
 mod provider;
+use crate::constants::CB_DECODE_SLOTS;
+use crate::constants::CB_SLOT_TOKENS;
+use crate::device::CudaDevice;
 use crate::registry::CudaKernels;
+use crate::tuning::driver_build;
+use crate::tuning::resident_gemm::measured_compute;
+use execution::paged_tokens;
 pub use pool::PoolInspection;
 mod state;
 mod validation;
 use crate::{loading::LoadedModel, resident::DeviceProgram, resident::slot_batch::SlotPool};
 use infer_core::{Error, Result, StateId};
 use infer_ir::{DeviceCapabilities, ExecutionProgram, ModelOutput, OutputReadout};
+
+/// Automatic concurrency is the smallest of the memory, measured knee and explicit state bounds.
+pub(super) fn bound_concurrency(
+    memory_bound: usize,
+    knee_bound: Option<usize>,
+    maximum_states: usize,
+) -> usize {
+    let knee = knee_bound.unwrap_or(usize::MAX);
+    let value = if memory_bound < knee {
+        memory_bound
+    } else {
+        knee
+    };
+    let value = if value < maximum_states {
+        value
+    } else {
+        maximum_states
+    };
+    let value = if value < infer_gpu_api::MAX_SUBMISSION_BATCH {
+        value
+    } else {
+        infer_gpu_api::MAX_SUBMISSION_BATCH
+    };
+    // The current pooled serving graph validates a batch width of 2..=CB_DECODE_SLOTS.
+    // Do not recommend slots the backend cannot actually execute.
+    if value < CB_DECODE_SLOTS {
+        value
+    } else {
+        CB_DECODE_SLOTS
+    }
+}
+/// Highest width whose exact funded quote fits. The closure is the actual pooled
+/// `funded_pooled_serving` ledger, so nonlinear table/prompt/control padding is validated at
+/// every legal width rather than extrapolated from widths 1 and 2.
+pub(super) fn funded_width(
+    maximum: usize,
+    mut quote: impl FnMut(usize) -> Result<Option<u64>>,
+) -> Result<usize> {
+    for width in (1..=maximum).rev() {
+        if quote(width)?.is_some() {
+            return Ok(width);
+        }
+    }
+    Ok(0)
+}
+
+/// Formula `N_knee = (compute / bandwidth) * (weight bytes / parameters) / 2 / tokens`
+/// per sequence per step. All inputs are checked; zero/missing inputs return `None`.
+pub(super) fn knee_concurrency(
+    compute_flops: u64,
+    bandwidth_bytes_per_second: u64,
+    weight_bytes: u64,
+    parameters: u64,
+    tokens_per_step: u64,
+) -> Result<Option<usize>> {
+    if compute_flops == 0
+        || bandwidth_bytes_per_second == 0
+        || weight_bytes == 0
+        || parameters == 0
+        || tokens_per_step == 0
+    {
+        return Ok(None);
+    }
+    let numerator = u128::from(compute_flops)
+        .checked_mul(u128::from(weight_bytes))
+        .ok_or_else(|| Error::invalid("knee numerator overflow"))?;
+    let denominator = u128::from(bandwidth_bytes_per_second)
+        .checked_mul(u128::from(parameters))
+        .and_then(|value| value.checked_mul(2))
+        .and_then(|value| value.checked_mul(u128::from(tokens_per_step)))
+        .ok_or_else(|| Error::invalid("knee denominator overflow"))?;
+    let value = numerator / denominator;
+    usize::try_from(value)
+        .map(Some)
+        .map_err(|_| Error::invalid("knee concurrency exceeds usize"))
+}
+
+pub(super) fn recommendation(
+    loaded: &LoadedModel,
+    budget: u64,
+    maximum_states: usize,
+) -> Result<infer_spi::SchedulingRecommendation> {
+    let prompt_width = loaded.pooled_prompt_width().max(1);
+    let capacity = CB_SLOT_TOKENS.min(loaded.model().max_sequence);
+    let envelope = budget
+        .checked_add(loaded.shared_scratch_bytes()?)
+        .ok_or_else(|| Error::invalid("pooled recommendation envelope overflow"))?;
+    let legal_cap = CB_DECODE_SLOTS.min(infer_gpu_api::MAX_SUBMISSION_BATCH);
+    let maximum = maximum_states.min(legal_cap);
+    let memory_bound = funded_width(maximum, |width| {
+        loaded
+            .funded_pooled_serving(
+                width,
+                capacity,
+                paged_tokens(width, capacity),
+                prompt_width,
+                envelope,
+            )
+            .map(|quote| quote.map(|quote| quote.total_bytes))
+    })?;
+    let minimum_kv_bytes = loaded.kv_block_bytes()?;
+    let profile = loaded.device().profile()?;
+    let metrics = loaded.weight_metrics()?;
+    let driver = CudaDevice::driver_version()?;
+    let driver_build = driver_build();
+    let deployed_mode = loaded.dominant_linear_mode()?;
+    let compute = measured_compute(
+        loaded.device(),
+        profile,
+        driver,
+        driver_build.as_deref(),
+        deployed_mode,
+    )?;
+    let tokens_per_step = u64::try_from(loaded.mtp_depth() + 1)
+        .map_err(|_| Error::invalid("MTP token count overflow"))?;
+    let knee_bound = compute
+        .as_ref()
+        .map(|compute| {
+            knee_concurrency(
+                compute.flops_per_second,
+                profile.memory_bandwidth_bytes_per_second(),
+                metrics.bytes,
+                metrics.parameters,
+                tokens_per_step,
+            )
+        })
+        .transpose()?
+        .flatten();
+    let max_sequences = bound_concurrency(memory_bound, knee_bound, maximum_states);
+    tracing::info!(
+        target: "infer::load",
+        state_budget_bytes = budget,
+        pool_capacity = capacity,
+        pool_prompt_width = prompt_width,
+        pooled_envelope_bytes = envelope,
+        minimum_kv_bytes,
+        memory_bound,
+        compute_flops = ?compute.as_ref().map(|value| value.flops_per_second),
+        compute_mode = ?compute.as_ref().map(|value| value.mode.as_str()),
+        compute_kernel = ?compute.as_ref().map(|value| value.kernel_fingerprint.as_str()),
+        compute_shape = ?compute.as_ref().map(|value| (value.rows, value.columns, value.reduction)),
+        compute_ms = ?compute.as_ref().map(|value| value.milliseconds),
+        compute_device = profile.identity(),
+        driver_api = driver,
+        driver_build = ?driver_build,
+        dram_bytes_per_second = profile.memory_bandwidth_bytes_per_second(),
+        weight_bytes = metrics.bytes,
+        parameters = metrics.parameters,
+        tokens_per_step,
+        knee_bound = ?knee_bound,
+        legal_cap,
+        maximum_states = maximum_states,
+        max_sequences,
+        "roofline concurrency inputs"
+    );
+    Ok(infer_spi::SchedulingRecommendation {
+        max_sequences,
+        memory_bound,
+        knee_bound,
+    })
+}
+
 use infer_state::cache::SnapshotScan;
 use std::collections::BTreeMap;
 use std::mem::{forget, take};
@@ -221,6 +389,11 @@ impl CudaExecutor {
         };
         backend.warm_slot_pool();
         Ok(backend)
+    }
+    /// Price the loaded model's minimum per-sequence state and bound concurrency by the
+    /// actual state budget and the configured decode step width.
+    pub(super) fn scheduling_recommendation(&self) -> Result<infer_spi::SchedulingRecommendation> {
+        recommendation(&self.loaded, self.budget, self.maximum_states)
     }
     #[must_use]
     pub const fn model(&self) -> &infer_ir::ModelIr {

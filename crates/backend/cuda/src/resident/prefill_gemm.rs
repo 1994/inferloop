@@ -27,7 +27,7 @@ pub(crate) mod gemm {
         out.store(acc);
     }
 
-    /// N48 prompt projections use three exact N16 tiles without padded columns.
+    /// Delta beta/alpha prompt projections use exact N16 tiles without padded columns.
     #[cutile::entry()]
     fn dense_n16<const K: i32>(
         out: &mut Tensor<f32, { [32, 16] }>,
@@ -45,7 +45,7 @@ pub(crate) mod gemm {
         out.store(acc);
     }
 
-    /// Two same-input N48 projections (GDN `in_proj_b` and `in_proj_a`) in one launch.
+    /// Two same-input Delta beta/alpha projections in one launch.
     /// Both outputs keep their own `acc` chain and the exact same K order as `dense`:
     /// the fused block computes the two BF16 MMA accumulators from the same `x` tile.
     #[cutile::entry()]
