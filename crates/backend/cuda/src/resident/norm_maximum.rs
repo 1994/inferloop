@@ -30,6 +30,10 @@ pub(super) fn add_norm_prefix(
     index: usize,
     protected: [Option<TensorId>; 2],
 ) -> bool {
+    #[cfg(test)]
+    if DISABLED.get() {
+        return false;
+    }
     let Some([add, norm, _linear]) = nodes.get(index..index + ADD_NORM_NODES) else {
         return false;
     };
@@ -112,12 +116,30 @@ fn prefix(
     }
 }
 
+fn dense_add_supported(norm: &TensorNode, linear: &TensorNode, weights: &ProgramWeights) -> bool {
+    norm.inputs.len() == 2
+        && norm.outputs.len() == 1
+        && norm.states.is_empty()
+        && linear.states.is_empty()
+        && linear.op == TensorOp::Linear
+        && linear.inputs.len() == 2
+        && linear.outputs.len() == 1
+        && linear.inputs[0] == norm.outputs[0]
+        && weights.attention_profile.is_bf16()
+        && weights.fusion.is_none()
+        && weights.projections.contains_key(&linear.inputs[1])
+}
+
 fn supported(
     norm: &TensorNode,
     linear: &TensorNode,
     weights: &ProgramWeights,
     head_dim: usize,
 ) -> bool {
+    #[cfg(test)]
+    if DISABLED.get() {
+        return false;
+    }
     weights.attention_profile.is_bf16()
         && weights.fusion.is_none()
         && norm.inputs.len() == 2
@@ -145,10 +167,6 @@ pub(super) fn record(
     workspace: &mut Workspace,
     protected: [Option<TensorId>; 2],
 ) -> Result<bool, DeviceError> {
-    #[cfg(test)]
-    if DISABLED.get() {
-        return Ok(false);
-    }
     let Some((norm_index, linear, add)) = prefix(nodes, index, protected) else {
         return Ok(false);
     };
@@ -161,7 +179,9 @@ pub(super) fn record(
     else {
         return Ok(false);
     };
-    if !supported(norm, linear, weights, head_dim) {
+    let fp8 = supported(norm, linear, weights, head_dim);
+    let dense_add = add.is_some() && dense_add_supported(norm, linear, weights);
+    if !fp8 && !dense_add {
         return Ok(false);
     }
     let Some(weight) = weights.constants.get(&norm.inputs[1]) else {

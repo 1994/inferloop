@@ -63,6 +63,8 @@ pub struct Workspace {
     /// operand geometry but need different activation-scale extents, so geometry alone would let
     /// whichever projection is visited first decide the layout for the other.
     fp8: BTreeMap<Fp8Key, Fp8Buffers>,
+    /// Norm maximum scratch for Add+Norm sites whose following projection is not FP8.
+    add_norm_scale: Arc<Tensor<f32>>,
 }
 
 impl Workspace {
@@ -186,6 +188,7 @@ impl Workspace {
             strategies: BTreeMap::new(),
             buffers: BTreeMap::new(),
             fp8: BTreeMap::new(),
+            add_norm_scale: device.upload(vec![1.0f32], &[1])?,
             fp8_strategies: BTreeMap::new(),
             vendor_fp8: vendor_fp8::Support::new_with(device, true),
             vendor_diagnostic: vendor_diagnostic_enabled(),
@@ -702,8 +705,11 @@ impl Workspace {
     ) -> StdResult<bool, DeviceError> {
         let rows = usize::try_from(output.shape()[0]).map_err(super::super::capture::error)?;
         let columns = usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
-        let Some((_, scales)) = self.fp8.get_mut(&(rows, columns, 1)) else {
-            return Ok(false);
+        let scales = if let Some((_, scales)) = self.fp8.get_mut(&(rows, columns, 1)) {
+            scales
+        } else {
+            Arc::get_mut(&mut self.add_norm_scale)
+                .ok_or_else(|| super::super::capture::error("add norm scale alias"))?
         };
         let pointer = output.device_pointer().cu_deviceptr();
         scope.record(
