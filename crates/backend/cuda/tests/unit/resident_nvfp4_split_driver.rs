@@ -929,3 +929,175 @@ fn prefetch8_autotune_production_selection() -> Result<(), Box<dyn StdError>> {
     );
     Ok(())
 }
+
+struct Fp8Layer {
+    codes: Arc<Tensor<f8e4m3fn>>,
+    scales: Arc<Tensor<f32>>,
+}
+
+fn fp8_layers(loaded: &LoadedModel) -> Result<(Vec<Fp8Layer>, usize, usize), Box<dyn StdError>> {
+    let mut seen = BTreeSet::new();
+    let mut layers = Vec::new();
+    let mut total = 0usize;
+    for node in &loaded.graph().nodes {
+        if node.op != TensorOp::Linear {
+            continue;
+        }
+        let Some(weight) = loaded.weights().projections.get(&node.inputs[1]) else {
+            continue;
+        };
+        let ProjectionWeight::Fp8(codes, scales) = weight else {
+            continue;
+        };
+        let [outputs, columns] = codes.shape() else {
+            continue;
+        };
+        if usize::try_from(*columns)? != 5120 {
+            continue;
+        }
+        let address = codes.device_pointer().cu_deviceptr();
+        if !seen.insert(address) {
+            continue;
+        }
+        let outputs = usize::try_from(*outputs)?;
+        total = total
+            .checked_add(
+                outputs
+                    .checked_mul(5120)
+                    .ok_or_else(|| Error::invalid("fp8 bytes"))?,
+            )
+            .ok_or_else(|| Error::invalid("fp8 total"))?;
+        layers.push(Fp8Layer {
+            codes: codes.clone(),
+            scales: scales.clone(),
+        });
+    }
+    Ok((layers, total, 5120))
+}
+
+fn compare_fp8_outputs(
+    device: &CudaDevice,
+    layers: &[Fp8Layer],
+    exact: Vec<Tensor<f32>>,
+    fast: Vec<Tensor<f32>>,
+) -> Result<(), Box<dyn StdError>> {
+    for (layer, (a, b)) in layers.iter().zip(exact.into_iter().zip(fast)) {
+        let a = a.to_host_vec().sync_on(&device.stream)?;
+        let b = b.to_host_vec().sync_on(&device.stream)?;
+        let mut diff = 0.0_f64;
+        let mut base = 0.0_f64;
+        for (&x, &y) in a.iter().zip(&b) {
+            let x = f64::from(x);
+            let y = f64::from(y);
+            diff = f64::mul_add(x - y, x - y, diff);
+            base = f64::mul_add(x, x, base);
+        }
+        let rel = (diff / base.max(1.0e-30)).sqrt();
+        if !rel.is_finite() || rel > 1.0e-4 {
+            return Err(format!("FP8 layer {:?} relative L2 {rel}", layer.codes.shape()).into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "real 27B checkpoint, CUDA, release and protected runner required"]
+fn captured_workspace_fp8_real_weight_split() -> Result<(), Box<dyn StdError>> {
+    use super::Workspace;
+    use super::workspace::{
+        reset_split_records, split_records, with_disabled_split, with_forced_split,
+    };
+    use crate::resident::ProgramGeometry;
+
+    let path = var("INFER_TEST_MODEL").map_err(|e| Error::invalid(e.to_string()))?;
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    let loaded = LoadedModel::open(
+        device.clone(),
+        &path,
+        ModelId::new(1)?,
+        LoadOptions {
+            autotune: true,
+            vision: false,
+            ..LoadOptions::default()
+        },
+    )?;
+    let (layers, weight_bytes, columns) = fp8_layers(&loaded)?;
+    let geometry = ProgramGeometry {
+        verification: ROWS,
+        prompts: [0, 0],
+    };
+    let mut exact_ws = with_disabled_split(|| {
+        Workspace::program(&device, loaded.graph(), loaded.weights(), geometry)
+    })?;
+    let mut split_ws = with_forced_split(|| {
+        Workspace::program(&device, loaded.graph(), loaded.weights(), geometry)
+    })?;
+    assert_eq!(exact_ws.split_plan_count(), 0);
+    assert!(split_ws.split_plan_count() > 0);
+    let l2 = usize::try_from(device.profile()?.l2_cache_bytes).unwrap_or(0);
+    if weight_bytes <= l2 {
+        return Err(format!("FP8 working set {weight_bytes} <= L2 {l2}").into());
+    }
+    let input = device.upload(
+        (0..ROWS * columns)
+            .map(|i| (f32::from(u16::try_from(i % 211).unwrap()) - 105.0) / 37.0)
+            .collect::<Vec<_>>(),
+        &[ROWS, columns],
+    )?;
+    let mut exact = Vec::new();
+    let mut fast = Vec::new();
+    for layer in &layers {
+        let n = usize::try_from(layer.codes.shape()[0])?;
+        exact.push(api::zeros::<f32>(&[ROWS, n]).sync_on(&device.stream)?);
+        fast.push(api::zeros::<f32>(&[ROWS, n]).sync_on(&device.stream)?);
+    }
+    let capture = |workspace: &mut Workspace, outputs: &mut [Tensor<f32>]| {
+        let view = input.view(&[ROWS, columns])?;
+        workspace.begin_quant_capture();
+        let graph = CudaGraph::scope(&device.stream, |scope| {
+            for (layer, output) in layers.iter().zip(outputs) {
+                workspace.record_fp8_input(
+                    scope,
+                    &ProjectionWeight::Fp8(layer.codes.clone(), layer.scales.clone()),
+                    &view,
+                    output,
+                    columns,
+                    Some(input.device_pointer().cu_deviceptr()),
+                )?;
+            }
+            Ok(())
+        });
+        workspace.end_quant_capture();
+        graph
+    };
+    reset_split_records();
+    let exact_graph = capture(&mut exact_ws, &mut exact)?;
+    assert_eq!(split_records(), 0);
+    reset_split_records();
+    let split_graph = with_forced_split(|| capture(&mut split_ws, &mut fast))?;
+    assert!(split_records() > 0);
+    exact_graph.launch().sync_on(&device.stream)?;
+    split_graph.launch().sync_on(&device.stream)?;
+    compare_fp8_outputs(&device, &layers, exact, fast)?;
+    let mut best = 0.0_f32;
+    for (phase, clear) in [("cold", true), ("warm", false)] {
+        best = best.max(measure_phase(
+            &device,
+            &exact_graph,
+            &split_graph,
+            phase,
+            clear,
+            layers.len(),
+        )?);
+    }
+    println!(
+        "{}",
+        serde_json::json!({
+            "kind":"captured_workspace_fp8_candidate", "layers":layers.len(),
+            "weight_bytes":weight_bytes, "l2_bytes":l2, "best_phase_speedup":best,
+            "qualification":"CANDIDATE_NOT_PRODUCTION"
+        })
+    );
+    Ok(())
+}

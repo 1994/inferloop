@@ -973,10 +973,12 @@ impl Workspace {
         weight_key: WeightKey,
         shape: Fp8SplitShape,
     ) -> Option<SplitBuffer> {
-        self.split_fp8_enabled
-            .contains(&(weight_key, shape))
-            .then(|| self.split_fp8.remove(&shape))
-            .flatten()
+        #[cfg(test)]
+        let enabled =
+            FORCE_SPLIT.with(Cell::get) || self.split_fp8_enabled.contains(&(weight_key, shape));
+        #[cfg(not(test))]
+        let enabled = self.split_fp8_enabled.contains(&(weight_key, shape));
+        enabled.then(|| self.split_fp8.remove(&shape)).flatten()
     }
 
     pub(super) fn record_fp8_input(
@@ -1156,6 +1158,8 @@ fn record_fp8_split(
         )
         .generics(vec![tile[0].to_string(), tile[1].to_string()]),
     )?;
+    #[cfg(test)]
+    SPLIT_RECORDS.set(SPLIT_RECORDS.get() + 1);
     Ok(())
 }
 
