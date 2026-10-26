@@ -17,6 +17,8 @@ use crate::tuning::fp8_gemm::Choice;
 use crate::tuning::fp8_gemm::WeightKey;
 use crate::tuning::fp8_gemm::probe_inputs::Scope as ProbeInputsScope;
 use crate::tuning::fp8_gemm::select;
+#[cfg(test)]
+use crate::tuning::resident_gemm::MainLoop;
 use crate::tuning::resident_gemm::native_tile;
 use crate::tuning::verify_split_qualified;
 
@@ -443,6 +445,15 @@ impl Workspace {
                                 &weights.resident_tuning,
                             )
                         });
+                        #[cfg(test)]
+                        if FORCED_LOOP.with(Cell::get) > 0
+                            && let Some(config) = self.strategies.get_mut(&key)
+                        {
+                            config.main_loop = match FORCED_LOOP.with(Cell::get) {
+                                1 => MainLoop::Plain,
+                                _ => MainLoop::Prefetch8,
+                            };
+                        }
                         self.ensure_nvfp4_split(device, key)?;
                     }
                 }
@@ -1209,6 +1220,7 @@ thread_local! {
     static DISABLE_SPLIT: Cell<bool> = const { Cell::new(false) };
     static SPLIT_RECORDS: Cell<usize> = const { Cell::new(0) };
     static FORCED_SPLITS: Cell<usize> = const { Cell::new(0) };
+    static FORCED_LOOP: Cell<u8> = const { Cell::new(0) };
 }
 #[cfg(test)]
 pub(super) fn forced_split() -> bool {
@@ -1255,5 +1267,17 @@ pub(super) fn with_forced_splits<T>(splits: usize, run: impl FnOnce() -> T) -> T
         }
     }
     let _restore = Restore(FORCED_SPLITS.replace(splits));
+    run()
+}
+
+#[cfg(test)]
+pub(super) fn with_forced_loop<T>(mode: u8, run: impl FnOnce() -> T) -> T {
+    struct Restore(u8);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FORCED_LOOP.set(self.0);
+        }
+    }
+    let _restore = Restore(FORCED_LOOP.replace(mode));
     run()
 }

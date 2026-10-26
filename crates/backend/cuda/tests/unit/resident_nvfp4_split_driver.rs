@@ -77,7 +77,7 @@ fn target_layers(
             input_scale,
         });
     }
-    let bytes = layers.len() * (down.outputs * (down.columns / 2 + down.columns / 16));
+    let bytes = down.outputs * (down.columns / 2 + down.columns / 16);
     Ok((layers, bytes))
 }
 
@@ -782,5 +782,94 @@ fn captured_workspace_nvfp4_real_weight_split() -> Result<(), Box<dyn StdError>>
                 .collect(),
         },
     )?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "real 27B checkpoint, CUDA, release and protected runner required"]
+fn captured_workspace_nvfp4_real_weight_prefetch_probe() -> Result<(), Box<dyn StdError>> {
+    use super::Workspace;
+    use super::workspace::{with_disabled_split, with_forced_loop};
+    use crate::resident::ProgramGeometry;
+
+    let path = var("INFER_TEST_MODEL").map_err(|e| Error::invalid(e.to_string()))?;
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    let loaded = LoadedModel::open(
+        device.clone(),
+        &path,
+        ModelId::new(1)?,
+        LoadOptions {
+            autotune: false,
+            vision: false,
+            ..LoadOptions::default()
+        },
+    )?;
+    let down = choose_down(&loaded)?;
+    let (layers, weight_bytes) = target_layers(&loaded, &down)?;
+    let geometry = ProgramGeometry {
+        verification: ROWS,
+        prompts: [0, 0],
+    };
+    let mut plain = with_disabled_split(|| {
+        Workspace::program(&device, loaded.graph(), loaded.weights(), geometry)
+    })?;
+    let mut prefetch = with_disabled_split(|| {
+        with_forced_loop(2, || {
+            Workspace::program(&device, loaded.graph(), loaded.weights(), geometry)
+        })
+    })?;
+    let copies = layers.len();
+    let l2 = usize::try_from(device.profile()?.l2_cache_bytes).unwrap_or(0);
+    let (input, mut plain_out, mut fast_out) = rotation_buffers(&device, &down, copies)?;
+    let plain_graph = capture_rotation(
+        &device,
+        &mut plain,
+        &layers,
+        &input,
+        &mut plain_out,
+        down.columns,
+    )?;
+    let fast_graph = capture_rotation(
+        &device,
+        &mut prefetch,
+        &layers,
+        &input,
+        &mut fast_out,
+        down.columns,
+    )?;
+    plain_graph.launch().sync_on(&device.stream)?;
+    fast_graph.launch().sync_on(&device.stream)?;
+    let plain_host = plain_out
+        .into_iter()
+        .map(|tensor| tensor.to_host_vec().sync_on(&device.stream))
+        .collect::<Result<Vec<_>, _>>()?;
+    let fast_host = fast_out
+        .into_iter()
+        .map(|tensor| tensor.to_host_vec().sync_on(&device.stream))
+        .collect::<Result<Vec<_>, _>>()?;
+    if plain_host != fast_host {
+        return Err("prefetch changed output bits".into());
+    }
+    let mut best = 0.0_f32;
+    for (phase, clear) in [("cold", true), ("warm", false)] {
+        best = best.max(measure_phase(
+            &device,
+            &plain_graph,
+            &fast_graph,
+            phase,
+            clear,
+            copies,
+        )?);
+    }
+    println!(
+        "{}",
+        serde_json::json!({
+            "kind":"captured_workspace_nvfp4_prefetch", "layers":copies,
+            "working_set_bytes":copies*weight_bytes, "l2_bytes":l2,
+            "bitwise_equal":true, "best_phase_speedup":best,
+            "qualification":"CANDIDATE_NOT_PRODUCTION"
+        })
+    );
     Ok(())
 }
