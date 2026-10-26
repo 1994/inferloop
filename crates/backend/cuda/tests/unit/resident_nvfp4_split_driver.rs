@@ -873,3 +873,44 @@ fn captured_workspace_nvfp4_real_weight_prefetch_probe() -> Result<(), Box<dyn S
     );
     Ok(())
 }
+
+#[test]
+#[ignore = "real 27B checkpoint, CUDA, release and protected runner required"]
+fn prefetch8_autotune_production_selection() -> Result<(), Box<dyn StdError>> {
+    use super::Workspace;
+    use crate::resident::ProgramGeometry;
+    let path = var("INFER_TEST_MODEL").map_err(|e| Error::invalid(e.to_string()))?;
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    let loaded = LoadedModel::open(
+        device.clone(),
+        &path,
+        ModelId::new(1)?,
+        LoadOptions {
+            autotune: true,
+            vision: false,
+            ..LoadOptions::default()
+        },
+    )?;
+    let workspace = Workspace::program(
+        &device,
+        loaded.graph(),
+        loaded.weights(),
+        ProgramGeometry {
+            verification: ROWS,
+            prompts: [0, 0],
+        },
+    )?;
+    let prepared = workspace.prepared_configs().to_string();
+    if !prepared.contains("\"m\":48") || !prepared.contains("Prefetch8") {
+        return Err(format!("autotune did not select Prefetch8: {prepared}").into());
+    }
+    println!(
+        "{}",
+        serde_json::json!({
+            "kind":"prefetch8_autotune_selected", "prepared":prepared,
+            "qualification":"production_loader_selected_candidate"
+        })
+    );
+    Ok(())
+}
