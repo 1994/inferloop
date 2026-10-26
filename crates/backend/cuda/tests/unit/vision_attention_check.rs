@@ -5,7 +5,7 @@
 //! blocks, one of them partially masked. The device result is compared against an independent
 //! host implementation in F32. Both streaming state and operand precision are checked: the
 //! multi-layer tower amplifies errors from simply rounding every MMA input to BF16.
-use super::program::{AttentionMode, attention_kernel};
+use super::program::{AttentionMode, attention_kernel, attention_tiles, compact_attention};
 use crate::device::CudaDevice;
 use infer_core::{Error, Result};
 
@@ -244,7 +244,7 @@ fn indexed_rope_compact_half48_matches_host_reference_on_sm120() -> Result<()> {
     let device = CudaDevice::new(0)?;
     let heads = 4usize;
     let tokens = 37usize;
-    for (half, real) in [(48usize, 36usize), (64, 64), (32, 32)] {
+    for (half, real) in [(48usize, 36usize), (64, 36), (64, 64), (32, 32)] {
         let width = half * 2;
         let projections = heads * width;
         let mut query = vec![0.0f32; tokens * projections];
@@ -288,6 +288,243 @@ fn indexed_rope_compact_half48_matches_host_reference_on_sm120() -> Result<()> {
             error <= 1e-5,
             "half={half} real={real} tokens={tokens}: max abs error {error}"
         );
+    }
+    Ok(())
+}
+
+/// Physical compact head layout helpers for the attention stage.
+const COMPACT_WIDTH: usize = 96;
+const WIDE_WIDTH: usize = 128;
+const COMPACT_HALF: usize = 48;
+const WIDE_HALF: usize = 64;
+const REAL_HALF: usize = 36;
+const REAL_HEAD: usize = 72;
+
+fn compact_to_wide(values: &[f32], tokens: usize, heads: usize, per_head: bool) -> Vec<f32> {
+    let width = if per_head {
+        heads * WIDE_WIDTH
+    } else {
+        WIDE_WIDTH
+    };
+    let compact_head = if per_head {
+        heads * COMPACT_WIDTH
+    } else {
+        COMPACT_WIDTH
+    };
+    let source_head = if per_head {
+        heads * COMPACT_WIDTH
+    } else {
+        COMPACT_WIDTH
+    };
+    let _ = compact_head;
+    let mut wide = vec![0.0f32; tokens * width];
+    for token in 0..tokens {
+        let source_base = token * source_head;
+        let target_base = token * width;
+        let heads_to_copy = if per_head { heads } else { 1 };
+        for head in 0..heads_to_copy {
+            for half in 0..2 {
+                for lane in 0..REAL_HALF {
+                    let src = source_base + head * COMPACT_WIDTH + half * COMPACT_HALF + lane;
+                    let dst = target_base + head * WIDE_WIDTH + half * WIDE_HALF + lane;
+                    wide[dst] = values[src];
+                }
+            }
+        }
+    }
+    wide
+}
+
+fn wide_to_compact(values: &[f32], tokens: usize, heads: usize) -> Vec<f32> {
+    let mut compact = vec![0.0f32; tokens * heads * COMPACT_WIDTH];
+    for token in 0..tokens {
+        for head in 0..heads {
+            for half in 0..2 {
+                for lane in 0..REAL_HALF {
+                    let src = (token * heads + head) * WIDE_WIDTH + half * WIDE_HALF + lane;
+                    let dst = (token * heads + head) * COMPACT_WIDTH + half * COMPACT_HALF + lane;
+                    compact[dst] = values[src];
+                }
+            }
+        }
+    }
+    compact
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The host oracle receives the full compact fixture explicitly"
+)]
+fn compact_oracle(
+    query: &[f32],
+    key: &[f32],
+    value: &[f32],
+    cos: &[f32],
+    sin: &[f32],
+    tokens: usize,
+    heads: usize,
+    frame_tokens: usize,
+) -> Vec<f32> {
+    let mut output = vec![0.0f32; tokens * heads * COMPACT_WIDTH];
+    let scale = 1.0 / 72.0f32.sqrt();
+    for head in 0..heads {
+        let rotated = |source: &[f32], token: usize, half: usize, lane: usize| {
+            let base = (token * heads + head) * COMPACT_WIDTH + half * COMPACT_HALF + lane;
+            let lo = source[(token * heads + head) * COMPACT_WIDTH + lane];
+            let hi = source[(token * heads + head) * COMPACT_WIDTH + COMPACT_HALF + lane];
+            let c = cos[token * COMPACT_WIDTH + lane];
+            let s = sin[token * COMPACT_WIDTH + lane];
+            let _ = base;
+            if half == 0 {
+                lo.mul_add(c, -(hi * s))
+            } else {
+                hi.mul_add(c, lo * s)
+            }
+        };
+        for token in 0..tokens {
+            let mut scores = vec![f32::NEG_INFINITY; tokens];
+            let mut maximum = f32::NEG_INFINITY;
+            for (other, score) in scores.iter_mut().enumerate() {
+                if token / frame_tokens != other / frame_tokens {
+                    continue;
+                }
+                let mut dot = 0.0f32;
+                for lane in 0..REAL_HALF {
+                    dot = rotated(query, token, 0, lane).mul_add(rotated(key, other, 0, lane), dot);
+                    dot = rotated(query, token, 1, lane).mul_add(rotated(key, other, 1, lane), dot);
+                }
+                *score = dot * scale;
+                maximum = maximum.max(*score);
+            }
+            let mut denominator = 0.0f32;
+            for score in &mut scores {
+                if score.is_finite() {
+                    *score = (*score - maximum).exp();
+                    denominator += *score;
+                } else {
+                    *score = 0.0;
+                }
+            }
+            for (other, score) in scores.iter().enumerate() {
+                if *score == 0.0 {
+                    continue;
+                }
+                let weight = *score / denominator;
+                for half in 0..2 {
+                    for lane in 0..REAL_HALF {
+                        let src =
+                            (other * heads + head) * COMPACT_WIDTH + half * COMPACT_HALF + lane;
+                        let dst =
+                            (token * heads + head) * COMPACT_WIDTH + half * COMPACT_HALF + lane;
+                        output[dst] = value[src].mul_add(weight, output[dst]);
+                    }
+                }
+            }
+        }
+    }
+    output
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Fixture indices are small exact integers"
+)]
+fn compact_attention_case(device: &CudaDevice, tokens: usize, frame_tokens: usize) -> Result<()> {
+    let heads = 4usize;
+    let compact_len = tokens * heads * COMPACT_WIDTH;
+    let mut q = vec![0.0f32; compact_len];
+    let mut k = vec![0.0f32; compact_len];
+    let mut v = vec![0.0f32; compact_len];
+    for i in 0..compact_len {
+        q[i] = ((i * 29 % 97) as f32 - 48.0) / 23.0;
+        k[i] = ((i * 31 % 89) as f32 - 44.0) / 19.0;
+        v[i] = ((i * 37 % 83) as f32 - 41.0) / 17.0;
+    }
+    let mut cos = vec![0.0f32; tokens * COMPACT_WIDTH];
+    let mut sin = vec![0.0f32; tokens * COMPACT_WIDTH];
+    for token in 0..tokens {
+        for lane in 0..COMPACT_HALF {
+            let angle = (token as f32 + 1.0) * 0.011 * (lane as f32 + 1.0);
+            for half in 0..2 {
+                cos[token * COMPACT_WIDTH + half * COMPACT_HALF + lane] = angle.cos();
+                sin[token * COMPACT_WIDTH + half * COMPACT_HALF + lane] = angle.sin();
+            }
+        }
+    }
+    let tiles = attention_tiles(tokens);
+    let compact = compact_attention(
+        device,
+        (&q, &k, &v),
+        &cos,
+        &sin,
+        tokens,
+        heads,
+        frame_tokens,
+        tiles,
+    )?;
+    let wide_q = compact_to_wide(&q, tokens, heads, true);
+    let wide_k = compact_to_wide(&k, tokens, heads, true);
+    let wide_v = compact_to_wide(&v, tokens, heads, true);
+    let wide_cos = compact_to_wide(&cos, tokens, heads, false);
+    let wide_sin = compact_to_wide(&sin, tokens, heads, false);
+    let old = attention_kernel(
+        device,
+        &wide_q,
+        &wide_k,
+        &wide_v,
+        &wide_cos,
+        &wide_sin,
+        tokens,
+        heads,
+        WIDE_HALF,
+        AttentionMode::Online,
+        frame_tokens,
+        REAL_HEAD,
+        tiles,
+        false,
+    )?;
+    let old_compact = wide_to_compact(&old, tokens, heads);
+    let expected = compact_oracle(&q, &k, &v, &cos, &sin, tokens, heads, frame_tokens);
+    assert_eq!(compact.len(), expected.len());
+    assert_eq!(old_compact.len(), expected.len());
+    assert!(compact.iter().all(|value| value.is_finite()));
+    assert!(old_compact.iter().all(|value| value.is_finite()));
+    assert!(expected.iter().all(|value| value.is_finite()));
+    let scale = expected
+        .iter()
+        .fold(0.0f32, |scale, value| scale.max(value.abs()))
+        .max(1.0);
+    let compact_error = compact
+        .iter()
+        .zip(&expected)
+        .fold(0.0f32, |error, (left, right)| {
+            error.max((left - right).abs())
+        });
+    let old_error = old_compact
+        .iter()
+        .zip(&expected)
+        .fold(0.0f32, |error, (left, right)| {
+            error.max((left - right).abs())
+        });
+    assert!(
+        compact_error / scale <= TOLERANCE,
+        "tokens={tokens} compact: relative error {}",
+        compact_error / scale
+    );
+    assert!(
+        old_error / scale <= TOLERANCE,
+        "tokens={tokens} old128: relative error {}",
+        old_error / scale
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires an NVIDIA GPU; run under tools/bench/safe-run.sh"]
+fn compact_attention_head72_matches_host_and_old128_on_sm120() -> Result<()> {
+    let device = CudaDevice::new(0)?;
+    for (tokens, frame_tokens) in [(37usize, 8usize), (65, 16)] {
+        compact_attention_case(&device, tokens, frame_tokens)?;
     }
     Ok(())
 }

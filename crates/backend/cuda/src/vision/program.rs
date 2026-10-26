@@ -32,6 +32,8 @@ pub(super) const fn column_tile() -> usize {
     COLUMN_TILE
 }
 const ATTENTION_CONFIG_FIELDS: usize = 3;
+/// Power-of-two pack segment in the compact attention boundary.
+const PACK_SEGMENT: usize = 16;
 
 /// Flattened width of one patch: `channels × temporal × patch × patch`.
 /// # Errors
@@ -899,7 +901,6 @@ pub fn attention_kernel(
 }
 
 /// Attention scaling of one padded head width: the real head is `head_dim`, not the padded one.
-#[cfg(test)]
 #[expect(
     clippy::cast_precision_loss,
     reason = "Head widths are tiny exact integers"
@@ -990,5 +991,136 @@ pub fn rope_compact_kernel(
         .sync_on(&device.stream)
         .map_err(device_error)?;
     let values = device.read(&Arc::new(output))?;
+    Ok(values[..query.len()].to_vec())
+}
+
+/// Compact attention path: physical 96-wide heads -> power-of-two 128 pack -> existing
+/// qualified SDPA with the true 72-wide scale -> pack back to 96.
+///
+/// The path is production-capable but not selected by [`attention_with`] until the full compact
+/// encoder is enabled. The caller owns the intermediate wide buffers; their footprint is part of
+/// the media reservation.
+///
+/// # Errors
+/// Rejects invalid fixture geometry or failed CUDA execution.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The compact attention block is staged until the full compact encoder selects it"
+    )
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The staged path exposes Q/K/V, RoPE tables, geometry and launch tiles explicitly"
+)]
+pub fn compact_attention(
+    device: &CudaDevice,
+    qkv: (&[f32], &[f32], &[f32]),
+    cos: &[f32],
+    sin: &[f32],
+    tokens: usize,
+    heads: usize,
+    frame_tokens: usize,
+    tiles: [usize; ATTENTION_CONFIG_FIELDS],
+) -> Result<Vec<f32>> {
+    const COMPACT_WIDTH: usize = 96;
+    const WIDE_WIDTH: usize = 128;
+    const HALF: usize = 48;
+    const REAL_HALF: usize = 36;
+    const REAL_HEAD: usize = 72;
+    let (query, key, value) = qkv;
+    if tokens == 0
+        || heads == 0
+        || frame_tokens == 0
+        || frame_tokens > tokens
+        || query.len() != tokens * heads * COMPACT_WIDTH
+        || key.len() != query.len()
+        || value.len() != query.len()
+        || cos.len() != tokens * COMPACT_WIDTH
+        || sin.len() != tokens * COMPACT_WIDTH
+    {
+        return Err(Error::invalid("compact attention fixture geometry"));
+    }
+    let align = TOKEN_TILE.max(tiles[0]).max(tiles[1]);
+    let padded = tokens.div_ceil(align) * align;
+    let compact_projection = heads * COMPACT_WIDTH;
+    let wide_projection = heads * WIDE_WIDTH;
+    let pad = |values: &[f32], width: usize| -> Result<Arc<Tensor<f32>>> {
+        let projection = heads * width;
+        let mut padded_values = vec![0.0f32; padded * projection];
+        padded_values[..values.len()].copy_from_slice(values);
+        device.upload(padded_values, &[padded, projection])
+    };
+    let table = |values: &[f32]| -> Result<Arc<Tensor<f32>>> {
+        let mut padded_values = vec![0.0f32; padded * COMPACT_WIDTH];
+        padded_values[..values.len()].copy_from_slice(values);
+        device.upload(padded_values, &[padded, COMPACT_WIDTH])
+    };
+    let q = pad(query, COMPACT_WIDTH)?;
+    let k = pad(key, COMPACT_WIDTH)?;
+    let v = pad(value, COMPACT_WIDTH)?;
+    let cos = table(cos)?;
+    let sin = table(sin)?;
+    let mut q_rot = activation(device, padded, compact_projection)?;
+    let mut k_rot = activation(device, padded, compact_projection)?;
+    let mut q_wide = activation(device, padded, wide_projection)?;
+    let mut k_wide = activation(device, padded, wide_projection)?;
+    let mut v_wide = activation(device, padded, wide_projection)?;
+    let mut attended = activation(device, padded, wide_projection)?;
+    let mut compact_out = activation(device, padded, compact_projection)?;
+    let tokens_i = i32::try_from(tokens).map_err(device_error)?;
+    let frame_i = i32::try_from(frame_tokens).map_err(device_error)?;
+    let scale = attention_scale_from_width(REAL_HEAD);
+    let graph = CudaGraph::scope(&device.stream, |scope| {
+        for (input, output) in [(&q, &mut q_rot), (&k, &mut k_rot)] {
+            scope.record(
+                kernels::encoder::rope_indexed(
+                    output.partition([TOKEN_TILE, PACK_SEGMENT]),
+                    input,
+                    &cos,
+                    &sin,
+                )
+                .generics(vec![HALF.to_string(), REAL_HALF.to_string()]),
+            )?;
+        }
+        for (input, output) in [
+            (&q_rot, &mut q_wide),
+            (&k_rot, &mut k_wide),
+            (&v, &mut v_wide),
+        ] {
+            scope.record(kernels::encoder::pack_wide(
+                output.partition([TOKEN_TILE, PACK_SEGMENT]),
+                input,
+            ))?;
+        }
+        scope.record(
+            sdpa_attention(
+                (&mut attended).partition([tiles[0], WIDE_WIDTH]),
+                &q_wide,
+                &k_wide,
+                &v_wide,
+                tokens_i,
+                scale,
+                frame_i,
+                tokens_i,
+                0,
+                0,
+                0,
+            )
+            .generics(attention_generics(WIDE_WIDTH, AttentionMode::Online, tiles)),
+        )?;
+        scope.record(kernels::encoder::pack_compact(
+            (&mut compact_out).partition([TOKEN_TILE, PACK_SEGMENT]),
+            &attended,
+        ))?;
+        Ok(())
+    })
+    .map_err(device_error)?;
+    graph
+        .launch()
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    let values = device.read(&Arc::new(compact_out))?;
     Ok(values[..query.len()].to_vec())
 }

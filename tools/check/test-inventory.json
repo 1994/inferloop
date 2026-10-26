@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 329
+      "tests": 330
     },
     "frontdoor": {
       "benches": 0,
@@ -234,7 +234,7 @@
     "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 6,
     "requires a CUDA device; run inside safe-run": 5,
     "requires a Linux production host with get/set_mempolicy permitted; make check-linux-numa": 1,
-    "requires an NVIDIA GPU; run under tools/bench/safe-run.sh": 8,
+    "requires an NVIDIA GPU; run under tools/bench/safe-run.sh": 9,
     "requires real checkpoint and CUDA; run release serially inside safe-run": 1,
     "requires real checkpoint and CUDA; run serially inside safe-run": 1,
     "requires release CUDA O3, completed CI and complete bitwise gate; safe-run; internal paired prefill cost only": 1
@@ -1247,11 +1247,11 @@
     }
   ],
   "totals": {
-    "all": 892,
+    "all": 893,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 892
+    "tests": 893
   }
 }

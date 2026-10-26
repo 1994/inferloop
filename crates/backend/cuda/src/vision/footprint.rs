@@ -13,6 +13,10 @@ use infer_spi::ModalityEncoder;
 
 const F32_BYTES: u64 = 4;
 const TOKEN_TILE: usize = 32;
+/// Qualified wide attention head width after packing compact 96-wide heads.
+const WIDE_HEAD_WIDTH: usize = 128;
+/// Q, K, V and attended temporary wide buffers.
+const COMPACT_PACK_BUFFERS: usize = 4;
 /// Patch embeddings, gathered positions and the added output each hold one hidden matrix.
 const PATCH_EMBED_HIDDEN_COPIES: usize = 3;
 /// Q, K, V, rotated Q, rotated K and the attended output each hold one projection matrix.
@@ -110,13 +114,33 @@ fn one_item_peak(encoder: &ModalityEncoder, grid: (usize, usize, usize)) -> Resu
             .and_then(|n| n.checked_mul(RESIDUAL_ACTIVATIONS))
             .ok_or_else(|| Error::invalid("vision residual footprint overflow"))?,
     )?;
-    let block = [attention, layernorm, fc1, fc2, gelu, residual]
+    let compact_pack = compact_pack_bytes(encoder, attention_rows)?;
+    let attention_pack = attention
+        .checked_add(compact_pack)
+        .ok_or_else(|| Error::invalid("vision attention pack footprint overflow"))?;
+    let block = [attention_pack, layernorm, fc1, fc2, gelu, residual]
         .into_iter()
         .max()
         .ok_or_else(|| Error::invalid("vision block footprint empty"))?;
 
     let merger_peak = merger_peak(encoder, patches, hidden)?;
     Ok(patch_embed.max(block).max(merger_peak))
+}
+
+fn compact_pack_bytes(encoder: &ModalityEncoder, attention_rows: usize) -> Result<u64> {
+    // Compact attention packs Q/K/V into 128-wide temporary buffers and keeps the attended
+    // output wide before packing back. Price those four buffers explicitly; this is
+    // deliberately conservative for the 128 fallback.
+    let wide_projection = encoder
+        .heads
+        .checked_mul(WIDE_HEAD_WIDTH)
+        .ok_or_else(|| Error::invalid("vision wide projection overflow"))?;
+    bytes(
+        attention_rows
+            .checked_mul(wide_projection)
+            .and_then(|n| n.checked_mul(COMPACT_PACK_BUFFERS))
+            .ok_or_else(|| Error::invalid("vision compact pack overflow"))?,
+    )
 }
 
 fn merger_peak(encoder: &ModalityEncoder, patches: usize, hidden: usize) -> Result<u64> {

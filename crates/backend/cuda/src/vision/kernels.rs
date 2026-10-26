@@ -145,6 +145,64 @@ pub(crate) mod encoder {
         ));
     }
 
+    /// Pack physical 96-wide compact heads into the qualified 128-wide attention layout.
+    ///
+    /// Each tile is a power-of-two 16-lane segment. Compact half0 segments 0..2 map to wide
+    /// segments 0..2, and compact half1 segments 3..5 map to wide segments 4..6; wide segments 3
+    /// and 7 (the extra padding half lanes) are zero.
+    #[cutile::entry()]
+    fn pack_wide(out: &mut Tensor<f32, { [32, 16] }>, input: &Tensor<f32, { [-1, -1] }>) {
+        let pid = get_tile_block_id();
+        let local = pid.1 % 8i32;
+        let head = pid.1 / 8i32;
+        let source_local = if local < 3i32 {
+            local
+        } else if local < 7i32 {
+            local - 1i32
+        } else {
+            0i32
+        };
+        let source = input
+            .partition(shape![32, 16])
+            .load([pid.0, head * 6i32 + source_local]);
+        let lane: Tile<i32, { [16] }> = iota(shape![16]);
+        let real_limit = if local == 2i32 || local == 6i32 {
+            4i32
+        } else {
+            16i32
+        };
+        let lane_valid = lt_tile(lane, real_limit.broadcast(shape![16]));
+        let valid = (local != 3i32 && local != 7i32).broadcast(shape![32, 16])
+            & lane_valid.reshape(shape![1, 16]).broadcast(shape![32, 16]);
+        let zero: Tile<f32, { [32, 16] }> = 0.0f32.broadcast(shape![32, 16]);
+        out.store(select(valid, source, zero));
+    }
+
+    /// Pack the qualified 128-wide attention result back into physical 96-wide compact heads.
+    #[cutile::entry()]
+    fn pack_compact(out: &mut Tensor<f32, { [32, 16] }>, input: &Tensor<f32, { [-1, -1] }>) {
+        let pid = get_tile_block_id();
+        let local = pid.1 % 6i32;
+        let head = pid.1 / 6i32;
+        let source_local = if local < 3i32 { local } else { local + 1i32 };
+        let source = input
+            .partition(shape![32, 16])
+            .load([pid.0, head * 8i32 + source_local]);
+        let lane: Tile<i32, { [16] }> = iota(shape![16]);
+        let real_limit = if local == 2i32 || local == 5i32 {
+            4i32
+        } else {
+            16i32
+        };
+        let lane_valid = lt_tile(lane, real_limit.broadcast(shape![16]));
+        let zero: Tile<f32, { [32, 16] }> = 0.0f32.broadcast(shape![32, 16]);
+        out.store(select(
+            lane_valid.reshape(shape![1, 16]).broadcast(shape![32, 16]),
+            source,
+            zero,
+        ));
+    }
+
     /// `gelu_pytorch_tanh`, the activation of every vision block.
     #[cutile::entry()]
     fn gelu_tanh<const N: i32>(out: &mut Tensor<f32, { [32, 64] }>, x: &Tensor<f32, { [-1, N] }>) {
