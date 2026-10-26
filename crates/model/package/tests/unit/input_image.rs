@@ -158,6 +158,10 @@ fn fused_normalization_preserves_reference_bits() {
 }
 
 #[test]
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "The independent scalar reference keeps the processor's operation order"
+)]
 fn custom_rescale_reciprocals_are_not_rounded() {
     for rescale in [0.3f32, 0.7] {
         let norm = Normalization {
