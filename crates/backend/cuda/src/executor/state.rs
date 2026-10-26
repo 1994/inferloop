@@ -3,6 +3,7 @@ use crate::resident::DeviceProgram;
 use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::OutputReadout;
 use std::collections::BTreeSet;
+
 impl CudaExecutor {
     pub(super) fn available(&self) -> Result<u64> {
         self.state_funding().map(|(free, _)| free)
@@ -83,8 +84,13 @@ impl CudaExecutor {
     /// Resident homes use prepaid pool storage or wait for a home. Every private
     /// sequence needs a funded verification graph: it can lose the slot/block race
     /// and must remain executable without capturing unquoted storage in decode.
-    pub(super) fn private_verification_for(&self, capacity: usize, readout: OutputReadout) -> bool {
-        !self.home_eligible(capacity, readout)
+    pub(super) fn private_verification_for(
+        &self,
+        capacity: usize,
+        readout: OutputReadout,
+        allow_speculation: bool,
+    ) -> bool {
+        !self.home_eligible(capacity, readout, allow_speculation)
     }
 
     /// Release a prewarmed pool only when no live sequence relies on it, the request
@@ -176,6 +182,31 @@ impl CudaExecutor {
         id: StateId,
         capacity: usize,
         readout: OutputReadout,
+        allow_speculation: bool,
+    ) -> Result<()> {
+        self.reserve_inner(id, capacity, readout, allow_speculation, true, None)
+    }
+
+    /// Media prefill owns external per-lane embeddings; a slot/home program is not a valid
+    /// substitute for the private prompt program. Reserve the private path directly.
+    pub(super) fn reserve_media(
+        &mut self,
+        id: StateId,
+        capacity: usize,
+        readout: OutputReadout,
+        media: &infer_ir::MediaPlan,
+    ) -> Result<()> {
+        self.reserve_inner(id, capacity, readout, false, false, Some(media))
+    }
+
+    fn reserve_inner(
+        &mut self,
+        id: StateId,
+        capacity: usize,
+        readout: OutputReadout,
+        allow_speculation: bool,
+        allow_home: bool,
+        media: Option<&infer_ir::MediaPlan>,
     ) -> Result<()> {
         self.idle()?;
         if self.states.contains_key(&id) {
@@ -186,47 +217,30 @@ impl CudaExecutor {
         }
         self.restore_slot_pool_for(capacity, readout)?;
         self.prepare_reservation_for(capacity, readout)?;
-        if self.reserve_home(id, capacity, readout)? {
+        if allow_home && self.reserve_home(id, capacity, readout, allow_speculation)? {
             return Ok(());
         }
-        let private_verification = self.private_verification_for(capacity, readout);
-        let budget = self.reservation_budget(capacity, readout, private_verification)?;
+        let private_verification = if allow_home {
+            self.private_verification_for(capacity, readout, allow_speculation)
+        } else {
+            true
+        };
+        let media_bytes = media.map_or(Ok(0), |plan| {
+            self.loaded
+                .vision()
+                .map_or(Ok(0), |vision| vision.footprint(plan))
+        })?;
+        let budget = self
+            .reservation_budget(capacity, readout, private_verification)?
+            .checked_add(media_bytes)
+            .ok_or_else(|| Error::invalid("media reservation footprint overflow"))?;
         if self.states.len() >= self.maximum_states
             || self
                 .active_budget()?
                 .checked_add(budget)
                 .is_none_or(|n| n > self.budget)
         {
-            let active = self.active_budget()?;
-            let (pool_slots, pool_free_slots) = self
-                .slots
-                .as_ref()
-                .map_or((0, 0), |pool| (pool.width(), pool.free_slots()));
-            tracing::debug!(
-                target: "infer::cuda_admission",
-                phase = "reservation_accounting",
-                state = id.get(),
-                capacity,
-                private_verification,
-                needed_bytes = budget,
-                active_bytes = active,
-                budget_bytes = self.budget,
-                active_states = self.states.len(),
-                maximum_states = self.maximum_states,
-                pool_slots,
-                pool_free_slots,
-                "CUDA resident reservation rejected"
-            );
-            return Err(Error::new(
-                ErrorCode::Capacity,
-                format!(
-                    "CUDA resident state admission budget exhausted: needed={budget}, active={}, budget={}, states={}, maximum={}",
-                    active,
-                    self.budget,
-                    self.states.len(),
-                    self.maximum_states
-                ),
-            ));
+            return Err(self.reservation_rejection(id, capacity, private_verification, budget)?);
         }
         if let Some(state) = self.pool.take(capacity, readout) {
             return self.reuse_pooled(id, state, capacity, budget, private_verification);
@@ -248,16 +262,20 @@ impl CudaExecutor {
                 return Err(error);
             }
         };
-        let speculation = match self.loaded.draft(capacity) {
-            Ok(draft) => {
-                draft.map(|program| super::Speculation::new(program, self.loaded.mtp_depth()))
-            }
-            Err(error) => {
-                if let Err(drain_error) = self.loaded.device().reclaim_barrier() {
-                    self.fatal = Some(drain_error);
+        let speculation = if allow_speculation {
+            match self.loaded.draft(capacity) {
+                Ok(draft) => {
+                    draft.map(|program| super::Speculation::new(program, self.loaded.mtp_depth()))
                 }
-                return Err(error);
+                Err(error) => {
+                    if let Err(drain_error) = self.loaded.device().reclaim_barrier() {
+                        self.fatal = Some(drain_error);
+                    }
+                    return Err(error);
+                }
             }
+        } else {
+            None
         };
         self.pool.allocations = self.pool.allocations.saturating_add(1);
         self.states.insert(
@@ -271,12 +289,54 @@ impl CudaExecutor {
                 budget,
                 history: Vec::new(),
                 hidden: Vec::new(),
+                media: None,
+                rotary_base: 0,
+                media_prompt_len: 0,
                 poisoned: false,
                 slot: None,
                 verification_priced: private_verification,
             },
         );
         Ok(())
+    }
+
+    fn reservation_rejection(
+        &self,
+        id: StateId,
+        capacity: usize,
+        private_verification: bool,
+        budget: u64,
+    ) -> Result<Error> {
+        let active = self.active_budget()?;
+        let (pool_slots, pool_free_slots) = self
+            .slots
+            .as_ref()
+            .map_or((0, 0), |pool| (pool.width(), pool.free_slots()));
+        tracing::debug!(
+            target: "infer::cuda_admission",
+            phase = "reservation_accounting",
+            state = id.get(),
+            capacity,
+            private_verification,
+            needed_bytes = budget,
+            active_bytes = active,
+            budget_bytes = self.budget,
+            active_states = self.states.len(),
+            maximum_states = self.maximum_states,
+            pool_slots,
+            pool_free_slots,
+            "CUDA resident reservation rejected"
+        );
+        Ok(Error::new(
+            ErrorCode::Capacity,
+            format!(
+                "CUDA resident state admission budget exhausted: needed={budget}, active={}, budget={}, states={}, maximum={}",
+                active,
+                self.budget,
+                self.states.len(),
+                self.maximum_states
+            ),
+        ))
     }
 
     /// Re-admit a pooled sequence shell under a freshly charged budget: reset program and
@@ -319,6 +379,9 @@ impl CudaExecutor {
         state.budget = budget;
         state.history.clear();
         state.hidden.clear();
+        state.media = None;
+        state.rotary_base = 0;
+        state.media_prompt_len = 0;
         state.poisoned = false;
         self.pool.reuses = self.pool.reuses.saturating_add(1);
         self.states.insert(id, state);
@@ -363,6 +426,9 @@ impl CudaExecutor {
         state.prepare_verification(&self.loaded)?;
         state.history.clear();
         state.hidden.clear();
+        state.media = None;
+        state.rotary_base = 0;
+        state.media_prompt_len = 0;
         state.poisoned = false;
         Ok(())
     }
@@ -398,7 +464,12 @@ impl CudaExecutor {
         Ok(())
     }
     /// Whether a request is served by slot-resident programs when one is free.
-    fn home_eligible(&self, capacity: usize, readout: OutputReadout) -> bool {
+    fn home_eligible(
+        &self,
+        capacity: usize,
+        readout: OutputReadout,
+        allow_speculation: bool,
+    ) -> bool {
         readout == OutputReadout::Logits
             && self
                 .slots
@@ -406,11 +477,11 @@ impl CudaExecutor {
                 .is_some_and(|pool| capacity <= pool.capacity())
             && self.worker.is_some()
             && (self.states.values().any(|state| state.home.is_some())
-                || self
-                    .homes
-                    .iter()
-                    .flatten()
-                    .any(|home| home.draft.is_some() || self.loaded.mtp_depth() == 0))
+                || self.homes.iter().flatten().any(|home| {
+                    home.draft.is_none() && !allow_speculation
+                        || home.draft.is_some() && allow_speculation
+                        || self.loaded.mtp_depth() == 0
+                }))
     }
 
     /// Admit a pooled request onto a free slot's resident programs: it prefills straight into
@@ -421,10 +492,11 @@ impl CudaExecutor {
         id: StateId,
         capacity: usize,
         readout: OutputReadout,
+        allow_speculation: bool,
     ) -> Result<bool> {
         // A request that fits a slot waits for one rather than capturing a private program:
         // that capture holds the engine thread for seconds, and the slot is faster once free.
-        let busy = if self.home_eligible(capacity, readout) {
+        let busy = if self.home_eligible(capacity, readout, allow_speculation) {
             Err(Error::new(
                 ErrorCode::Capacity,
                 "every slot-resident program is in use",
@@ -442,9 +514,11 @@ impl CudaExecutor {
             return Ok(false);
         }
         let Some(slot) = (0..self.homes.len()).find(|&slot| {
-            self.homes[slot]
-                .as_ref()
-                .is_some_and(|home| home.draft.is_some() || self.loaded.mtp_depth() == 0)
+            self.homes[slot].as_ref().is_some_and(|home| {
+                home.draft.is_none() && !allow_speculation
+                    || home.draft.is_some() && allow_speculation
+                    || self.loaded.mtp_depth() == 0
+            })
         }) else {
             return busy;
         };
@@ -489,6 +563,9 @@ impl CudaExecutor {
                 budget: 0,
                 history: Vec::new(),
                 hidden: Vec::new(),
+                media: None,
+                rotary_base: 0,
+                media_prompt_len: 0,
                 poisoned: false,
                 slot: None,
                 verification_priced: false,

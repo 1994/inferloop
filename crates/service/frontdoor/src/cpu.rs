@@ -128,6 +128,14 @@ impl CpuContext {
         Ok(())
     }
 }
+#[cfg(test)]
+pub(crate) fn cancelled_context() -> CpuContext {
+    CpuContext {
+        cancelled: Arc::new(AtomicBool::new(true)),
+        deadline: Instant::now() + Duration::from_secs(1),
+    }
+}
+
 struct CancelOnDrop(Arc<AtomicBool>);
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {

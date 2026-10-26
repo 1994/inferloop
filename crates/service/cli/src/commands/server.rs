@@ -18,6 +18,8 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
         package,
         host_memory_mib,
     } = options;
+    let media_limits = backend_choice.media_limits;
+    let text_only = backend_choice.text_only;
     let engine = configured_engine(
         config_path.as_deref().map(read_json).transpose()?,
         None,
@@ -37,6 +39,16 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
         .map(|p| infer_models::TextAssets::open(p, engine.model().max_sequence))
         .transpose()?
         .map(Arc::new);
+    let media = if text_only {
+        None
+    } else {
+        package
+            .as_deref()
+            .map(infer_models::MultimodalAssets::open)
+            .transpose()?
+            .flatten()
+            .map(|assets| Arc::new(infer_frontdoor::MediaService::new(assets, media_limits)))
+    };
     Runtime::new()
         .map_err(|e| Error::new(ErrorCode::Backend, e.to_string()))?
         .block_on(async move {
@@ -46,7 +58,7 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
             let handle = infer_frontdoor::RuntimeHandle::start(engine)?;
             let shutdown = handle.clone();
             tracing::info!(target: "infer::serve", listen = %listen, "listening for requests");
-            axum_serve(listener, handle, shutdown, assets).await
+            axum_serve(listener, handle, shutdown, assets, media).await
         })?;
 
     Ok(())

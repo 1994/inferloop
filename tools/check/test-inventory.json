@@ -40,7 +40,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 73
+      "tests": 90
     },
     "ir": {
       "benches": 0,
@@ -70,7 +70,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 148
+      "tests": 149
     },
     "quality": {
       "benches": 0,
@@ -241,7 +241,7 @@
     "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 6,
     "requires a CUDA device; run inside safe-run": 5,
     "requires a Linux production host with get/set_mempolicy permitted; make check-linux-numa": 1,
-    "requires an NVIDIA GPU; run under tools/bench/safe-run.sh": 7,
+    "requires an NVIDIA GPU; run under tools/bench/safe-run.sh": 9,
     "requires real checkpoint and CUDA; run release serially inside safe-run": 1,
     "requires real checkpoint and CUDA; run serially inside safe-run": 1,
     "requires release CUDA O3, completed CI and complete bitwise gate; safe-run; internal paired prefill cost only": 1
@@ -814,6 +814,11 @@
     },
     {
       "crate": "cuda",
+      "file": "src/vision/mod.rs",
+      "mount": "../../tests/unit/vision_padding.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/vision/session.rs",
       "mount": "../../tests/unit/vision_session.rs"
     },
@@ -891,6 +896,11 @@
       "crate": "runtime",
       "file": "src/observation/mod.rs",
       "mount": "../../tests/unit/observation.rs"
+    },
+    {
+      "crate": "runtime",
+      "file": "src/preparation/mod.rs",
+      "mount": "../../tests/unit/media_plan.rs"
     },
     {
       "crate": "runtime",
@@ -1236,6 +1246,11 @@
       "crate": "frontdoor",
       "file": "src/http/openai/stream.rs",
       "mount": "../../../tests/unit/http_openai_stream.rs"
+    },
+    {
+      "crate": "frontdoor",
+      "file": "src/media.rs",
+      "mount": "../tests/unit/media.rs"
     },
     {
       "crate": "frontdoor",

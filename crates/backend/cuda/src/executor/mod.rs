@@ -24,6 +24,7 @@ pub use pool::PoolInspection;
 mod state;
 mod validation;
 use crate::{loading::LoadedModel, resident::DeviceProgram, resident::slot_batch::SlotPool};
+use cutile::prelude::Tensor;
 use infer_core::{Error, Result, StateId};
 use infer_ir::{DeviceCapabilities, ExecutionProgram, ModelOutput, OutputReadout};
 
@@ -188,9 +189,11 @@ pub(super) fn recommendation(
     })
 }
 
+use infer_models::MediaLayout;
 use infer_state::cache::SnapshotScan;
 use std::collections::BTreeMap;
 use std::mem::{forget, take};
+use std::sync::Arc;
 
 pub(super) struct CudaExecutor {
     loaded: LoadedModel,
@@ -249,12 +252,22 @@ struct Sequence {
     readout: OutputReadout,
     history: Vec<u32>,
     hidden: Vec<Vec<f32>>,
+    media: Option<CachedMedia>,
+    /// Rotary coordinate of the first decoded token and the prompt length it starts after.
+    rotary_base: usize,
+    media_prompt_len: usize,
     budget: u64,
     poisoned: bool,
     slot: Option<SlotLease>,
     /// Whether `budget` included private verification storage; a slot-lease credit and a
     /// reset restore only apply to bytes admission actually charged.
     verification_priced: bool,
+}
+/// Device-resident encoded media for one prompt, reused across every prefill chunk.
+pub(super) struct CachedMedia {
+    pub tensor: Arc<Tensor<f32>>,
+    pub layout: MediaLayout,
+    pub bases: Vec<usize>,
 }
 /// A sequence's lease on one continuous-batching decode slot. `batched` is the sticky
 /// mode: a leased sequence always decodes through the shared slot graph and never

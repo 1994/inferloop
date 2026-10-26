@@ -257,6 +257,8 @@ fn execute(
                 tokens: tokens.into(),
 
                 sampling: None,
+
+                media: None,
             }],
         )
         .unwrap();

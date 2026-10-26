@@ -41,6 +41,10 @@ pub trait BackendProvider {
     fn weight_backed_dataflow(&self) -> bool {
         false
     }
+    /// Whether this backend has a bound multimodal encoder and can execute media prefill.
+    fn supports_multimodal(&self) -> bool {
+        false
+    }
     /// True only if control checkpoints can reconstruct all execution state.
     /// A proxy captures execution state via its owner lane; direct drivers can capture synchronously.
     fn requires_async_checkpoint(&self) -> bool {
@@ -201,6 +205,40 @@ pub trait BackendProvider {
     fn reserve_state(&mut self, _state: StateId, _capacity_tokens: usize) -> Result<()> {
         Ok(())
     }
+    /// Prepare media-specific state pricing without speculative draft state.
+    /// # Errors
+    /// Returns invalid input or physical capacity errors.
+    fn prepare_state_reservation_for_media(
+        &mut self,
+        capacity: usize,
+        readout: infer_ir::OutputReadout,
+    ) -> Result<()> {
+        self.prepare_state_reservation(capacity, readout)
+    }
+    /// Media-specific state reservation size without speculative draft state.
+    /// # Errors
+    /// Returns invalid input or physical capacity errors.
+    fn state_reservation_bytes_for_media(
+        &self,
+        capacity: usize,
+        readout: infer_ir::OutputReadout,
+        _media: &infer_ir::MediaPlan,
+    ) -> Result<Option<u64>> {
+        self.state_reservation_bytes_for(capacity, readout)
+    }
+    /// Reserve state for a media request without creating speculative draft state.
+    /// # Errors
+    /// Returns invalid input, ownership or physical capacity errors.
+    fn reserve_state_for_media(
+        &mut self,
+        state: StateId,
+        capacity: usize,
+        readout: infer_ir::OutputReadout,
+        _media: &infer_ir::MediaPlan,
+    ) -> Result<()> {
+        self.reserve_state_for(state, capacity, readout)
+    }
+
     /// Reserve persistent state matching the readout contract.
     /// # Errors
     /// Returns invalid input, ownership or physical capacity errors.

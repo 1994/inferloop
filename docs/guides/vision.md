@@ -16,39 +16,25 @@ CUDA 提供 patch embed、LayerNorm、QKV/MLP/merger 投影、轴向 RoPE、按�
 
 RTX 5090 上 Qwen3-VL-2B 的实测（prefill 阶段，含同一视觉编码）：172 token 双图 prompt 融合分块 60 ms，逐 token 回退 543 ms；45 token 视频（2 个 temporal group）9.7 ms 对 128 ms。数字只说明两条路径的相对差，不作为发布性能门槛。
 
-当前完整图像与视频生成由 `cuda-multimodal-generate` / `cuda-multimodal-media` / `cuda-parity-2b` 示例驱动，尚未接入 Engine/Scheduler 的多模态服务调度。音频与完整 DeepStack 路径不在此验收范围：Qwen3-VL 没有音频模态，Qwen Omni 也未被 provider 导入；带 `deepstack_visual_indexes` 的权重仍按共享路径验收（双方关闭 DeepStack）。缺少编码器、占位符数量或位置不匹配时必须报错，不回退成纯文本执行。
+## 服务路径
 
-## 独立参考与回归
+OpenAI chat 的 `image_url` / `video_url` 内容部分现在进入真实 serving 路径：输入层解析 URL（`data:`、`file://`、绝对路径、`http(s)`），按上限下载/解码并调用 provider 的 `ImageProcessor` / `VideoProcessor` 生成 prompt 对齐的 patch 载荷；每个 media item 作为 `infer_ir::MediaItem` 随 `MediaPlan` 经过 admission、scheduler 和 `ExecutionTask`，由 CUDA backend 在 prompt prefill 时编码并写入 lane 外部 embedding 槽。媒体 span、旋转位置和 token 计数在编码前校验；占位符、编码器或 patch grid 不匹配时报错，不会回退成纯文本。
 
-| 入口 | 用途 |
-|---|---|
-| `tools/vision/qwen3vl_vision_reference.py` | 官方模型逐层视觉 golden；默认 CPU/F32，GPU F32 禁用 TF32 |
-| `cuda-vision-check` | tower / merger 数值、形状与有限值校验 |
-| `cuda-loaded-vision-check` | 加载真实权重后的视觉编码 |
-| `vision::attention_check` | 独立 F32 oracle、尾块、帧隔离与投影残差 |
-| `tools/vision/qwen3vl_2b_parity_reference.py` / `cuda-parity-2b` | 本仓库预处理到完整生成序列的对照 |
-| `tools/vision/qwen3vl_video_golden.py` | 官方 video processor 的抽帧、缩放、时间 patch 与归一化 golden |
-| `cuda-multimodal-media` | 单 prompt 双图与多帧视频：正/反顺序的 logits 位移与融合分块 prefill |
+- 同一 prompt 暂只支持一种媒体模态；混合 image/video 会返回显式 unsupported。
+- `--limit-mm-per-prompt '{"image":N,"video":M}'` 是每 prompt 上限。全零配置只服务文本并跳过视觉塔；非零配置在加载时绑定并使用视觉权重。默认上限为 2 张图、1 段视频。
+- 文本部署收到媒体时返回结构化 `unsupported_feature`，不消费 request identity。
+- `data:`/`http(s)` 的 PNG/JPEG/WebP/GIF 由进程内 codec 解码；视频以及 `http(s)` 下载依赖宿主 `ffmpeg`/`ffprobe`/`curl`，缺失时返回显式 unsupported。公开 HTTP 输入拒绝 `file://` 与服务端绝对路径；所有读取、帧数、尺寸、解码维度和子进程墙钟时间都有上限。
+- media 请求不参与 prefix reuse，也不支持 MTP speculation；这两条都是显式错误而不是静默降级。
+- media payload 与请求生命周期绑定，until backend prefill completes；checkpoint 在 media 状态存活时拒绝，避免恢复后丢失像素或设备 embedding。
 
-```sh
-bash tools/bench/safe-run.sh --memory-gib 8 \
-  cargo test --locked -p infer-backend-cuda --features cuda --lib \
-  vision::attention_check -- --ignored
-bash tools/bench/safe-run.sh cargo run --locked --release \
-  -p infer-backend-cuda --features cuda --example cuda-multimodal-media -- \
-  /path/to/model 6
-```
+`cuda-multimodal-generate` / `cuda-multimodal-media` / `cuda-parity-2b` 仍是独立数值/示例入口。音频与完整 DeepStack 路径不在此验收范围：Qwen3-VL 没有音频模态，Qwen Omni 也未被 provider 导入；带 `deepstack_visual_indexes` 的权重仍按共享路径验收（双方关闭 DeepStack）。
 
-端到端参考先通过 `safe-run.sh` 运行 Python 工具，传入 `--package /path/to/model --dtype float32 --max-new-tokens 32 --out /path/to/reference.safetensors`，再运行：
+## Head-width padding (OPEN)
 
-```sh
-bash tools/bench/safe-run.sh cargo run --locked --release \
-  -p infer-backend-cuda --features cuda --example cuda-parity-2b -- \
-  /path/to/model /path/to/reference.safetensors
-```
+视觉投影以 64 列 tile 读取权重。Qwen3.8-27B 的真实 head 宽为 72，vision depth 为 27。曾尝试 `half=48` / `width=96` 的 compact 布局；host 布局与 cuTile `KernelCompiler` 编译通过，但实际 27B CUDA 运行在
+`cuda_tile.make_partition_view` 处拒绝非 2 次幂 tile，compact 路径不能用于生产。当前生产回退到已验证的
+`half=64` / `width=128`，因此**实际 retained 减少为 0**，不能声称 113,246,208 bytes 的减少。
 
-2B 对照要求双方关闭 DeepStack：参考端同时清空 config 和已构造视觉模块的 `deepstack_visual_indexes`，并断言无 DeepStack features。贪心验证要求完整参考序列匹配、视觉误差 ≤1%；`INFER_PARITY_OFFICIAL_PIXELS=1` 只用于隔离内核诊断，正式验收使用本仓库预处理。
-
-已记录的共享路径样本为 95 个 prompt tokens、16/16 生成 tokens（含 EOS）匹配，视觉相对误差 3.232e-4。这不等于完整发布版模型或所有输入通过。复测应包含非方形、多帧、长图像、MRoPE decode 和 EOS。
-
-单层数值、完整视觉塔和端到端生成分别验收。Attention 性能使用 [Candle 门禁](quality-gates.md#通用-attention-门禁)，不把自动选择的 SDPA 后端当作固定实现基线。
+按 27 层 attention 权重的 host 记账，compact96 的潜在减少是 `127,401,984` bytes（`113,246,208`
+是 24 层数字，不适用于该 checkpoint）。要关闭 #59 padding，需要实现并设备验证非 2 次幂
+RoPE/attention tiling（含 48/96 tail），保持现有 split-half/RoPE 顺序和数值门禁；当前 item 仍 OPEN。

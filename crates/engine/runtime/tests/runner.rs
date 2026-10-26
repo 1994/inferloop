@@ -16,7 +16,7 @@ use infer_ir::{
 };
 use infer_kernel_api::KernelRegistry;
 use infer_runtime::{Engine, RuntimeConfig, runner::ThreadedBackend};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::thread::sleep;
 
 use infer_spi::{BackendProvider, ResourceCommand, ResourceReply, ResourceTicket};
@@ -254,6 +254,18 @@ impl Fixture {
         self.engine.check_invariants()
     }
 }
+fn poll_quote(ticket: &mut ResourceTicket) -> Result<Option<u64>> {
+    let limit = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Some(ResourceReply::ReservationBytes(bytes)) = ticket.poll()? {
+            return Ok(bytes);
+        }
+        if Instant::now() >= limit {
+            return Err(Error::invariant("threaded quote did not acknowledge"));
+        }
+        sleep(Duration::from_millis(1));
+    }
+}
 fn deadline(limit: Instant) -> Result<()> {
     if Instant::now() >= limit {
         return Err(Error::invariant("resource owner did not drain"));
@@ -399,8 +411,8 @@ fn batch_metadata_is_shared_across_the_device_owner_handoff() -> Result<()> {
             request: infer_core::RequestId::ONE,
             state: StateId::ONE,
             tokens: vec![1, 2, 3].into(),
-
             sampling: None,
+            media: None,
         }],
     )?;
     while fixture.engine.backend_mut().poll(&mut ticket)?.is_none() {
@@ -455,8 +467,8 @@ fn dropped_compute_ticket_waits_for_fence_then_allows_next_submission() -> Resul
         request: infer_core::RequestId::ONE,
         state: StateId::ONE,
         tokens: vec![1, 2, 3].into(),
-
         sampling: None,
+        media: None,
     }];
     let ticket =
         fixture
@@ -966,5 +978,241 @@ fn runtime_preserves_explicit_max_num_seqs() -> Result<()> {
     };
     let engine = Engine::new(backend, ir, PrecisionPlan::f32(), &kernels, config)?;
     assert_eq!(engine.config().max_num_seqs, 7);
+    Ok(())
+}
+
+#[test]
+fn media_request_requires_a_multimodal_backend() -> Result<()> {
+    use infer_ir::{MediaInput, MediaItem, Modality};
+    use std::sync::Arc;
+
+    let ir = support::model(ModelId::ONE);
+    let mut kernels = KernelRegistry::default();
+    kernels.register(&support::DeclaredKernels)?;
+    let mut engine = Engine::new(
+        ProtocolBackend::new(16, 8, &ir)?,
+        ir,
+        PrecisionPlan::f32(),
+        &kernels,
+        RuntimeConfig::default(),
+    )?;
+    let media = MediaInput {
+        id: infer_core::MediaId::ONE,
+        modality: Modality::Image,
+        content_digest: "fixture".into(),
+        item: Some(MediaItem {
+            modality: Modality::Image,
+            pixels: Arc::from([0.0f32, 1.0, 2.0, 3.0]),
+            grid: (1, 1, 1),
+            span: 0..1,
+        }),
+    };
+    let request = CanonicalRequest {
+        id: infer_core::RequestId::new(7)?,
+        model: ModelId::ONE,
+        session: None,
+        input: infer_ir::RequestInput::Sequence {
+            tokens: vec![1, 2].into(),
+            media: vec![media],
+        },
+        workload: infer_ir::Workload::Generate { max_new_tokens: 1 },
+        qos: infer_ir::Qos::default(),
+        sampling: infer_ir::Sampling::default(),
+        extensions: BTreeMap::new(),
+    };
+    let error = engine.submit(request).unwrap_err();
+    assert_eq!(error.code, infer_core::ErrorCode::Unsupported);
+    Ok(())
+}
+
+#[test]
+fn prepared_media_reaches_the_scheduler_and_backend() -> Result<()> {
+    use infer_ir::{MediaInput, MediaItem, Modality};
+    use std::sync::Arc;
+
+    let ir = support::model(ModelId::ONE);
+    let mut kernels = KernelRegistry::default();
+    kernels.register(&support::DeclaredKernels)?;
+    let backend = ProtocolBackend::new(16, 8, &ir)?.multimodal();
+    let media_tasks = backend.media_tasks();
+    let mut engine = Engine::new(
+        backend,
+        ir,
+        PrecisionPlan::f32(),
+        &kernels,
+        RuntimeConfig::default(),
+    )?;
+    let media = MediaInput {
+        id: infer_core::MediaId::ONE,
+        modality: Modality::Image,
+        content_digest: "fixture".into(),
+        item: Some(MediaItem {
+            modality: Modality::Image,
+            pixels: Arc::from([0.0f32, 1.0, 2.0, 3.0]),
+            grid: (1, 1, 1),
+            span: 0..1,
+        }),
+    };
+    let request = CanonicalRequest {
+        id: infer_core::RequestId::new(8)?,
+        model: ModelId::ONE,
+        session: None,
+        input: infer_ir::RequestInput::Sequence {
+            tokens: vec![1, 2].into(),
+            media: vec![media],
+        },
+        workload: infer_ir::Workload::Generate { max_new_tokens: 1 },
+        qos: infer_ir::Qos::default(),
+        sampling: infer_ir::Sampling::default(),
+        extensions: BTreeMap::new(),
+    };
+    engine.submit(request)?;
+    for now in 0..64 {
+        if engine.is_idle() {
+            break;
+        }
+        engine.tick(now)?;
+    }
+    assert!(engine.is_idle());
+    assert!(media_tasks.load(Ordering::Relaxed) > 0);
+    Ok(())
+}
+
+#[test]
+fn automatic_mtp_is_disabled_for_media_instead_of_rejecting_it() -> Result<()> {
+    use infer_ir::{MediaInput, MediaItem, Modality};
+    use std::sync::Arc;
+
+    let ir = support::model(ModelId::ONE);
+    let mut kernels = KernelRegistry::default();
+    kernels.register(&support::DeclaredKernels)?;
+    let backend = ProtocolBackend::new(16, 8, &ir)?
+        .multimodal()
+        .requiring_engine_sampling(2);
+    let media_reservations = backend.media_reservations();
+    let media_quotes = backend.media_quotes();
+    let media_tasks = backend.media_tasks();
+    let mut engine = Engine::new(
+        backend,
+        ir,
+        PrecisionPlan::f32(),
+        &kernels,
+        RuntimeConfig::default(),
+    )?;
+    let media = MediaInput {
+        id: infer_core::MediaId::ONE,
+        modality: Modality::Image,
+        content_digest: "fixture".into(),
+        item: Some(MediaItem {
+            modality: Modality::Image,
+            pixels: Arc::from([0.0f32, 1.0, 2.0, 3.0]),
+            grid: (1, 1, 1),
+            span: 0..1,
+        }),
+    };
+    let request = CanonicalRequest {
+        id: infer_core::RequestId::new(9)?,
+        model: ModelId::ONE,
+        session: None,
+        input: infer_ir::RequestInput::Sequence {
+            tokens: vec![1, 2].into(),
+            media: vec![media],
+        },
+        workload: infer_ir::Workload::Generate { max_new_tokens: 1 },
+        qos: infer_ir::Qos::default(),
+        sampling: infer_ir::Sampling::default(),
+        extensions: BTreeMap::new(),
+    };
+    engine.submit(request)?;
+    for now in 0..64 {
+        if engine.is_idle() {
+            break;
+        }
+        engine.tick(now)?;
+    }
+    assert!(engine.is_idle());
+    assert_eq!(media_reservations.load(Ordering::Relaxed), 1);
+    assert!(media_quotes.load(Ordering::Relaxed) > 0);
+    assert!(media_tasks.load(Ordering::Relaxed) > 0);
+    Ok(())
+}
+
+#[test]
+fn threaded_media_request_uses_the_media_quote_command() -> Result<()> {
+    use infer_ir::{MediaInput, MediaItem, Modality};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    // Failure-first regression: before the typed media quote command, the threaded admission
+    // path always sent ReservationBytes and priced draft state; this counter stayed zero.
+    let ir = support::model(ModelId::ONE);
+    let mut kernels = KernelRegistry::default();
+    kernels.register(&support::DeclaredKernels)?;
+    let backend = ProtocolBackend::new(16, 8, &ir)?
+        .multimodal()
+        .requiring_engine_sampling(2)
+        .priced_quotes(1024, 4096);
+    let media_quotes = backend.media_quotes();
+    let normal_quotes = backend.normal_quotes();
+    let mut engine = Engine::new(
+        backend,
+        ir,
+        PrecisionPlan::f32(),
+        &kernels,
+        RuntimeConfig::default(),
+    )?
+    .into_threaded(4, Duration::from_secs(5))?;
+    let media = MediaInput {
+        id: infer_core::MediaId::ONE,
+        modality: Modality::Image,
+        content_digest: "fixture".into(),
+        item: Some(MediaItem {
+            modality: Modality::Image,
+            pixels: Arc::from([0.0f32, 1.0, 2.0, 3.0]),
+            grid: (1, 1, 1),
+            span: 0..1,
+        }),
+    };
+    let media_request = CanonicalRequest {
+        id: infer_core::RequestId::new(10)?,
+        model: ModelId::ONE,
+        session: None,
+        input: infer_ir::RequestInput::Sequence {
+            tokens: vec![1, 2].into(),
+            media: vec![media],
+        },
+        workload: infer_ir::Workload::Generate { max_new_tokens: 1 },
+        qos: infer_ir::Qos::default(),
+        sampling: infer_ir::Sampling::default(),
+        extensions: BTreeMap::new(),
+    };
+    // The normal path must still quote its own price; only the media request uses 4096.
+    let text = request(11)?;
+    let prepared_text = engine.request_preparer()?.prepare(text)?;
+    let mut text_quote = engine.admission_quote(&prepared_text)?;
+    let text_bytes = poll_quote(&mut text_quote)?;
+    assert_eq!(text_bytes, Some(1024));
+    assert!(normal_quotes.load(Ordering::Acquire) > 0);
+    assert_eq!(media_quotes.load(Ordering::Acquire), 0);
+    drop(text_quote);
+
+    let prepared = engine.request_preparer()?.prepare(media_request)?;
+    let mut quote = engine.admission_quote(&prepared)?;
+    let bytes = poll_quote(&mut quote)?;
+    assert_eq!(bytes, Some(4096), "media quote must use the media price");
+    assert!(media_quotes.load(Ordering::Acquire) > 0);
+    engine.submit_quoted_with_trace(prepared, bytes, None)?;
+    let limit = Instant::now() + Duration::from_secs(3);
+    while !engine.is_idle() {
+        engine.tick(engine.now_us() + 1)?;
+        if Instant::now() >= limit {
+            return Err(Error::invariant("threaded media request did not drain"));
+        }
+        sleep(Duration::from_millis(1));
+    }
+    assert!(
+        media_quotes.load(Ordering::Acquire) > 0,
+        "threaded media admission did not use the media quote command"
+    );
     Ok(())
 }

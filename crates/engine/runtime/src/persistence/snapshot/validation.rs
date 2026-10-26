@@ -2,6 +2,7 @@
 use super::{Engine, RequestRecord, RuntimeSnapshot, validate_active_record};
 use crate::preparation::validate_plan;
 use infer_core::{Error, RequestId, RequestStatus, Result};
+use infer_ir::RequestInput;
 use infer_scheduler::CostAwarePolicy;
 use infer_spi::{
     AdmissionPolicy, BackendProvider, CostModelProvider, SchedulingPolicy, WorkloadProvider,
@@ -105,6 +106,13 @@ impl<B: BackendProvider> Engine<B, CostAwarePolicy> {
         record: &RequestRecord,
         snapshot: &RuntimeSnapshot,
     ) -> Result<()> {
+        if !matches!(&record.request.input, RequestInput::Sequence { media, .. } if media.is_empty())
+            || record.media.is_some()
+        {
+            return Err(Error::unsupported(
+                "multimodal requests cannot be checkpointed while media state is live",
+            ));
+        }
         let expected =
             self.workloads
                 .plan(&record.request, &snapshot.model, snapshot.program.id)?;

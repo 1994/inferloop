@@ -1,6 +1,7 @@
-use crate::{CapabilityRequirements, PrecisionPlan};
+use crate::{CapabilityRequirements, MediaPlan, PrecisionPlan};
 use infer_core::{DecisionId, KernelId, ModelId, OpId, ProgramId, RequestId, StateId, StepId};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Stable event code for `DeferReason::BatchLimit`.
 const DEFER_CODE_BATCH_LIMIT: u32 = 3;
@@ -253,6 +254,9 @@ pub struct ExecutionTask {
     /// Sampling parameters for backends that decide tokens themselves (speculative decode);
     /// `None` leaves sampling to the engine output stage.
     pub sampling: Option<crate::Sampling>,
+    /// Prepared media for a prompt-prefill step. Retained by the request until the backend
+    /// completes the media prefill; `None` for text and decode steps.
+    pub media: Option<Arc<MediaPlan>>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelOutput {

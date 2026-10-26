@@ -20,5 +20,5 @@ mod text;
 pub use error::HttpError;
 pub use native::router;
 pub use protocol::NativeJsonAdapter;
-pub use server::{serve, serve_with_text};
-pub use text::{NativeTextRequest, router_with_text};
+pub use server::{serve, serve_with_text, serve_with_text_and_media};
+pub use text::{NativeTextRequest, router_with_text, router_with_text_and_media};
