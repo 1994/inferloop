@@ -60,7 +60,7 @@ jobs:
             exit 0
           fi
           # Bound dependency setup separately from compilation; use the signed primary mirror.
-          for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+          for source_file in /etc/apt/sources.list /etc/apt/*mirrors*.txt /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
             if [[ -f "$source_file" ]]; then
               sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$source_file"
             fi
@@ -132,7 +132,7 @@ jobs:
       - name: Install CUDA build headers (no GPU required)
         timeout-minutes: 5
         run: |
-          for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+          for source_file in /etc/apt/sources.list /etc/apt/*mirrors*.txt /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
             if [[ -f "$source_file" ]]; then
               sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$source_file"
             fi
@@ -193,7 +193,7 @@ jobs:
         if: runner.os == 'Linux'
         timeout-minutes: 5
         run: |
-          for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+          for source_file in /etc/apt/sources.list /etc/apt/*mirrors*.txt /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
             if [[ -f "$source_file" ]]; then
               sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$source_file"
             fi
