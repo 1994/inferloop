@@ -156,7 +156,7 @@ fn actual_model_recommendation_reports_raw_knee_inputs() -> infer_core::Result<(
         infer_core::ModelId::ONE,
         LoadOptions {
             prefill_width: 0,
-            mtp_depth: 0,
+            mtp_depth: 2,
             ..LoadOptions::default()
         },
     )?;
@@ -177,15 +177,13 @@ fn actual_model_recommendation_reports_raw_knee_inputs() -> infer_core::Result<(
             "device": profile.name,
             "architecture": profile.architecture,
             "multiprocessors": profile.multiprocessors,
-            "compute_clock_khz": profile.compute_clock_khz,
             "memory_clock_khz": profile.memory_clock_khz,
             "memory_bus_width_bits": profile.memory_bus_width_bits,
             "memory_bandwidth_bytes_per_second": profile.memory_bandwidth_bytes_per_second(),
-            "peak_fp32_flops": profile.peak_fp32_flops(),
             "state_budget": budget,
             "weight_bytes": metrics.bytes,
             "parameters": metrics.parameters,
-            "tokens_per_step": 1,
+            "tokens_per_step": 3,
             "memory_bound": recommendation.memory_bound,
             "knee_bound": recommendation.knee_bound,
             "max_sequences": recommendation.max_sequences,

@@ -38,9 +38,6 @@ const MIN_DEVICE_HEADROOM: u64 = 256 * MIB;
 const MAX_DEVICE_HEADROOM: u64 = 1024 * MIB;
 /// Hertz per kilohertz, for the driver's kHz clock attributes.
 const HERTZ_PER_KILOHERTZ: u64 = 1000;
-/// FP32 lanes per SM for the documented architectures in [`DeviceProfile::peak_fp32_flops`].
-const FP32_LANES_PER_SM: u64 = 128;
-const TURING_FP32_LANES_PER_SM: u64 = 64;
 /// Bits per byte, for the driver's bit-width attributes.
 const BITS_PER_BYTE: u32 = 8;
 /// Double data rate: two transfers per memory clock.
@@ -62,8 +59,6 @@ pub struct DeviceProfile {
     pub total_memory_bytes: u64,
     /// Memory clock in kHz.
     pub memory_clock_khz: u32,
-    /// Driver-reported graphics/compute clock in kHz.
-    pub compute_clock_khz: u32,
     /// Global memory bus width in bits.
     pub memory_bus_width_bits: u32,
     /// L2 cache size in bytes.
@@ -81,23 +76,6 @@ impl DeviceProfile {
             self.total_memory_bytes / MIB
         )
     }
-    /// Peak FP32 FLOP/s derived from the driver clock, SM count and the architecture's
-    /// documented 128 (or 64 for Turing) FP32 lanes per SM. Unknown architectures return
-    /// `None` rather than inventing a peak.
-    #[must_use]
-    pub fn peak_fp32_flops(&self) -> Option<u64> {
-        let lanes = match self.architecture.as_str() {
-            "sm_120" | "sm_100" | "sm_90" | "sm_89" | "sm_86" | "sm_80" => FP32_LANES_PER_SM,
-            "sm_75" => TURING_FP32_LANES_PER_SM,
-            _ => return None,
-        };
-        u64::from(self.compute_clock_khz)
-            .checked_mul(HERTZ_PER_KILOHERTZ)?
-            .checked_mul(2)?
-            .checked_mul(u64::from(self.multiprocessors))?
-            .checked_mul(lanes)
-    }
-
     /// Theoretical DRAM bandwidth, the roofline denominator for bandwidth-bound decode steps.
     #[must_use]
     pub fn memory_bandwidth_bytes_per_second(&self) -> u64 {
@@ -473,7 +451,6 @@ impl CudaDevice {
     /// Returns a driver error if any device attribute or memory size cannot be queried.
     fn query_profile(&self) -> Result<DeviceProfile> {
         use cuda_core::sys::{
-            CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_CLOCK_RATE as CLOCK,
             CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR as MAJOR,
             CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR as MINOR,
             CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_GLOBAL_MEMORY_BUS_WIDTH as BUS,
@@ -487,7 +464,6 @@ impl CudaDevice {
             multiprocessors: self.attribute(SMS)?,
             total_memory_bytes: self.memory_info()?.1,
             memory_clock_khz: self.attribute(MEMORY_CLOCK)?,
-            compute_clock_khz: self.attribute(CLOCK)?,
             memory_bus_width_bits: self.attribute(BUS)?,
             l2_cache_bytes: self.attribute(L2)?,
         })

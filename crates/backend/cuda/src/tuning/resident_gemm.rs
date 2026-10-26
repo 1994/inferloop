@@ -1215,3 +1215,96 @@ fn tune(
 #[cfg(test)]
 #[path = "../../tests/unit/resident_gemm_tuning.rs"]
 mod tests;
+
+/// Measured compute evidence from an actual large resident-GEMM trial.
+#[derive(Debug, Clone)]
+pub(crate) struct ComputeEvidence {
+    pub flops_per_second: u64,
+    pub mode: String,
+    pub kernel_fingerprint: String,
+    pub rows: usize,
+    pub columns: usize,
+    pub reduction: usize,
+    pub milliseconds: f32,
+}
+
+const NANOS_PER_SECOND: u128 = 1_000_000_000;
+const MILLISECONDS_PER_SECOND: f64 = 1000.0;
+const MIN_COMPUTE_ROWS: usize = 512;
+const MIN_COMPUTE_COLUMNS: usize = 512;
+const MIN_COMPUTE_REDUCTION: usize = 512;
+
+fn measured_flops(rows: usize, columns: usize, reduction: usize, milliseconds: f32) -> Result<u64> {
+    if !milliseconds.is_finite() || milliseconds <= 0.0 {
+        return Err(Error::invalid("measured compute duration is invalid"));
+    }
+    let work = u128::from(rows as u64)
+        .checked_mul(u128::from(columns as u64))
+        .and_then(|value| value.checked_mul(u128::from(reduction as u64)))
+        .and_then(|value| value.checked_mul(2))
+        .and_then(|value| value.checked_mul(NANOS_PER_SECOND))
+        .ok_or_else(|| Error::invalid("measured compute work overflow"))?;
+    let duration = Duration::try_from_secs_f64(f64::from(milliseconds) / MILLISECONDS_PER_SECOND)
+        .map_err(|_| Error::invalid("measured compute duration is invalid"))?;
+    let nanoseconds = duration.as_nanos();
+    if nanoseconds == 0 {
+        return Err(Error::invalid("measured compute duration is too small"));
+    }
+    let flops = work / nanoseconds;
+    u64::try_from(flops).map_err(|_| Error::invalid("measured compute FLOP/s overflow"))
+}
+
+/// Reuse the strongest measured large, compute-bound resident-GEMM sample for this exact
+/// device/driver/compiler/kernel identity. Quantization and full-output evidence are already
+/// part of the resident-GEMM entry; no new calibration graph or user control is introduced.
+pub(crate) fn measured_compute(
+    profile: &DeviceProfile,
+    driver: u32,
+    driver_build: Option<&str>,
+) -> Result<Option<ComputeEvidence>> {
+    let Some(path) = super::table_path() else {
+        return Ok(None);
+    };
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let table = TilingTable::load(&path)?;
+    let hardware = serde_json::to_string(profile).map_err(device_error)?;
+    let mut best: Option<ComputeEvidence> = None;
+    for entry in &table.resident_gemm {
+        if !entry.valid()
+            || !entry.key.kernel_schema.starts_with(KERNEL_SCHEMA)
+            || entry.key.activation_mode != ACTIVATION_MODE
+            || entry.key.hardware != hardware
+            || entry.key.driver_version != driver
+            || entry.key.driver_build.as_deref() != driver_build
+            || entry.key.m < MIN_COMPUTE_ROWS
+            || entry.key.n < MIN_COMPUTE_COLUMNS
+            || entry.key.k < MIN_COMPUTE_REDUCTION
+        {
+            continue;
+        }
+        let milliseconds = entry.confirmation.cold.candidate_median_ms;
+        if !milliseconds.is_finite() || milliseconds <= 0.0 {
+            continue;
+        }
+        let Ok(flops) = measured_flops(entry.key.m, entry.key.n, entry.key.k, milliseconds) else {
+            continue;
+        };
+        if best
+            .as_ref()
+            .is_none_or(|current| flops > current.flops_per_second)
+        {
+            best = Some(ComputeEvidence {
+                flops_per_second: flops,
+                mode: entry.key.activation_mode.clone(),
+                kernel_fingerprint: entry.key.kernel_fingerprint.clone(),
+                rows: entry.key.m,
+                columns: entry.key.n,
+                reduction: entry.key.k,
+                milliseconds,
+            });
+        }
+    }
+    Ok(best)
+}

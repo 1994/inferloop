@@ -15,7 +15,6 @@ fn profile() -> DeviceProfile {
         architecture: "sm_test".into(),
         multiprocessors: 12,
         total_memory_bytes: 8 << 30,
-        compute_clock_khz: 2_400_000,
         memory_clock_khz: 1000,
         memory_bus_width_bits: 128,
         l2_cache_bytes: 1 << 20,
@@ -490,4 +489,12 @@ fn cache_memo_coverage_requires_proof_or_a_legal_baseline() {
         },
         baseline
     ));
+}
+
+#[test]
+fn measured_compute_flops_uses_full_gemm_work() -> Result<()> {
+    assert_eq!(measured_flops(1024, 5120, 5120, 2.0)?, 26_843_545_600_000);
+    assert!(measured_flops(1, 1, 1, 0.0).is_err());
+    assert!(measured_flops(usize::MAX, usize::MAX, usize::MAX, 1.0).is_err());
+    Ok(())
 }

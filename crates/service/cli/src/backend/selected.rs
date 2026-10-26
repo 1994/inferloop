@@ -233,6 +233,9 @@ impl BackendProvider for SelectedBackend {
     fn identity(&self) -> &str {
         forward!(self, identity)
     }
+    fn scheduling_recommendation(&self) -> Result<Option<infer_spi::SchedulingRecommendation>> {
+        forward!(self, scheduling_recommendation)
+    }
     fn weight_backed_dataflow(&self) -> bool {
         forward!(self, weight_backed_dataflow)
     }

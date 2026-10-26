@@ -15,7 +15,10 @@ mod profiling;
 mod provider;
 use crate::constants::CB_DECODE_SLOTS;
 use crate::constants::CB_SLOT_TOKENS;
+use crate::device::CudaDevice;
 use crate::registry::CudaKernels;
+use crate::tuning::driver_build;
+use crate::tuning::resident_gemm::measured_compute;
 use execution::paged_tokens;
 pub use pool::PoolInspection;
 mod state;
@@ -72,13 +75,13 @@ pub(super) fn funded_width(
 /// Formula `N_knee = (compute / bandwidth) * (weight bytes / parameters) / 2 / tokens`
 /// per sequence per step. All inputs are checked; zero/missing inputs return `None`.
 pub(super) fn knee_concurrency(
-    peak_compute_flops: u64,
+    compute_flops: u64,
     bandwidth_bytes_per_second: u64,
     weight_bytes: u64,
     parameters: u64,
     tokens_per_step: u64,
 ) -> Result<Option<usize>> {
-    if peak_compute_flops == 0
+    if compute_flops == 0
         || bandwidth_bytes_per_second == 0
         || weight_bytes == 0
         || parameters == 0
@@ -86,7 +89,7 @@ pub(super) fn knee_concurrency(
     {
         return Ok(None);
     }
-    let numerator = u128::from(peak_compute_flops)
+    let numerator = u128::from(compute_flops)
         .checked_mul(u128::from(weight_bytes))
         .ok_or_else(|| Error::invalid("knee numerator overflow"))?;
     let denominator = u128::from(bandwidth_bytes_per_second)
@@ -126,13 +129,16 @@ pub(super) fn recommendation(
     let minimum_kv_bytes = loaded.kv_block_bytes()?;
     let profile = loaded.device().profile()?;
     let metrics = loaded.weight_metrics()?;
-    let peak = profile.peak_fp32_flops();
+    let driver = CudaDevice::driver_version()?;
+    let driver_build = driver_build();
+    let compute = measured_compute(profile, driver, driver_build.as_deref())?;
     let tokens_per_step = u64::try_from(loaded.mtp_depth() + 1)
         .map_err(|_| Error::invalid("MTP token count overflow"))?;
-    let knee_bound = peak
-        .map(|peak| {
+    let knee_bound = compute
+        .as_ref()
+        .map(|compute| {
             knee_concurrency(
-                peak,
+                compute.flops_per_second,
                 profile.memory_bandwidth_bytes_per_second(),
                 metrics.bytes,
                 metrics.parameters,
@@ -150,7 +156,14 @@ pub(super) fn recommendation(
         pooled_envelope_bytes = envelope,
         minimum_kv_bytes,
         memory_bound,
-        peak_compute_flops = ?peak,
+        compute_flops = ?compute.as_ref().map(|value| value.flops_per_second),
+        compute_mode = ?compute.as_ref().map(|value| value.mode.as_str()),
+        compute_kernel = ?compute.as_ref().map(|value| value.kernel_fingerprint.as_str()),
+        compute_shape = ?compute.as_ref().map(|value| (value.rows, value.columns, value.reduction)),
+        compute_ms = ?compute.as_ref().map(|value| value.milliseconds),
+        compute_device = profile.identity(),
+        driver_api = driver,
+        driver_build = ?driver_build,
         dram_bytes_per_second = profile.memory_bandwidth_bytes_per_second(),
         weight_bytes = metrics.bytes,
         parameters = metrics.parameters,
