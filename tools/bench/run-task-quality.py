@@ -13,6 +13,7 @@ import json
 import os
 import signal
 import subprocess
+import time
 from pathlib import Path
 
 
@@ -25,6 +26,9 @@ def module(name, filename):
 
 harness = module("quality_serving", "serve-compare.py")
 scorer = module("quality_scoring", "score-task-quality.py")
+
+# Only rejection is allowed at these looks; complete-suite acceptance stays unchanged.
+SCREEN_SIZES = (16, 64, 256)
 
 
 def document(path):
@@ -52,7 +56,7 @@ def generation(suite):
 
 def validate_baseline(suite, report, suite_sha, model, hardware):
     # Recompute raw answers and require the entire aligned suite; never trust a cached pass flag.
-    scorer.score(suite, report, suite_sha)
+    scored = scorer.score(suite, report, suite_sha)
     for key, value in (
         ("model", model),
         ("hardware", hardware),
@@ -67,6 +71,7 @@ def validate_baseline(suite, report, suite_sha, model, hardware):
         bytes.fromhex(digest)
     except ValueError as error:
         raise ValueError("invalid baseline executable SHA256") from error
+    return scored
 
 
 def prefix_count(args, base):
@@ -130,11 +135,75 @@ def result_row(sample, response, decode):
     }
 
 
-def collect_batches(args, suite, samples, base, report, decode):
+def screening_sizes(suite):
+    return [size for size in SCREEN_SIZES if size < len(suite["samples"])]
+
+
+def batch_ranges(count, concurrency, checkpoints):
+    start = 0
+    while start < count:
+        boundary = next((size for size in checkpoints if size > start), count)
+        end = min(start + concurrency, boundary, count)
+        yield start, end
+        start = end
+
+
+def screen_progress(suite, baseline, rows):
+    """Reject clear paired regressions; lack of a small-sample pass is never a rejection.
+
+    Invert the existing score bound with the pair direction reversed to obtain an upper
+    bound. Bonferroni allocates the declared error budget across all fixed looks and the
+    overall/variant checks. Source-question clustering is retained. This is a diagnostic
+    rejection screen, not a complete-suite quality certificate.
+    """
+    if len(rows) not in screening_sizes(suite):
+        return None
+    variants = sorted({sample["variant"] for sample in suite["samples"]})
+    checks = len(screening_sizes(suite)) * (1 + len(variants))
+    confidence = 1 - (1 - suite["acceptance"]["confidence"]) / checks
+    margin = suite["acceptance"]["noninferiority_margin_accuracy"]
+    pairs = list(zip(baseline[: len(rows)], rows, strict=True))
+    groups = [("overall", pairs)] + [
+        (variant, [(a, b) for a, b in pairs if a["variant"] == variant]) for variant in variants
+    ]
+    results = []
+    for name, subset in groups:
+        if not subset:
+            continue
+        gains = sum(not a["correct"] and b["correct"] for a, b in subset)
+        losses = sum(a["correct"] and not b["correct"] for a, b in subset)
+        effect = scorer.design_effect(scorer.paired_changes(subset))
+        upper = -scorer.accuracy_change_lower_bound(losses, gains, len(subset), confidence, effect)
+        results.append(
+            {
+                "group": name,
+                "tasks": len(subset),
+                "gains": gains,
+                "losses": losses,
+                "accuracy_change": (gains - losses) / len(subset),
+                "accuracy_change_upper_bound": upper,
+                "design_effect": effect,
+                "rejected": upper < -margin,
+            }
+        )
+    return {
+        "completed_tasks": len(rows),
+        "decision": "reject" if any(row["rejected"] for row in results) else "continue",
+        "final_acceptance": False,
+        "per_check_confidence": confidence,
+        "planned_checks": checks,
+        "noninferiority_margin_accuracy": margin,
+        "groups": results,
+    }
+
+
+def collect_batches(args, suite, samples, base, report, decode, baseline=None):
     counter = itertools.count(800000)
     with (args.output / "results.jsonl").open("x") as journal:
-        for start in range(0, len(samples), args.concurrency):
-            batch = samples[start : start + args.concurrency]
+        checkpoints = screening_sizes(suite) if baseline is not None else []
+        for start, end in batch_ranges(len(samples), args.concurrency, checkpoints):
+            batch = samples[start:end]
+            batch_start = time.monotonic()
             group = [
                 {"case": row["id"], "repeat": 0, "slot": slot, "tokens": row["tokens"]}
                 for slot, row in enumerate(batch)
@@ -160,6 +229,7 @@ def collect_batches(args, suite, samples, base, report, decode):
                 {
                     "start": start,
                     "count": len(rows),
+                    "wall_seconds": time.monotonic() - batch_start,
                     "prefix_counter_before": before,
                     "prefix_counter_after": after,
                 }
@@ -167,9 +237,21 @@ def collect_batches(args, suite, samples, base, report, decode):
             progress = {"completed_tasks": len(report["results"]), "total_tasks": len(samples)}
             (args.output / "progress.json").write_text(json.dumps(progress) + "\n")
             print(json.dumps(progress), flush=True)
+            if baseline is not None:
+                screen = screen_progress(suite, baseline, report["results"])
+                if screen is not None:
+                    report["screening"].append(screen)
+                    (args.output / "screening.json").write_text(
+                        json.dumps(report["screening"], indent=2) + "\n"
+                    )
+                    print(json.dumps({"quality_screen": screen}), flush=True)
+                    if screen["decision"] == "reject":
+                        raise RuntimeError(
+                            f"early quality regression at {len(report['results'])} tasks"
+                        )
 
 
-def collect(args, suite, suite_sha, model, hardware, decode):
+def collect(args, suite, suite_sha, model, hardware, decode, baseline=None):
     port = harness.free_port()
     base = f"http://127.0.0.1:{port}"
     command = [str(args.executable), str(args.model), "--listen", f"127.0.0.1:{port}"]
@@ -191,6 +273,12 @@ def collect(args, suite, suite_sha, model, hardware, decode):
         "collection": {"concurrency": args.concurrency, "tokens": args.tokens},
         "results": [],
         "batches": [],
+        "screening": [],
+        "screening_policy": {
+            "checkpoints": screening_sizes(suite) if baseline is not None else [],
+            "scope": "rejection only; all planned tasks required for acceptance",
+            "method": "reversed paired Tango upper bound, Rao-Scott clusters, Bonferroni",
+        },
     }
     (args.output / "run.json").write_text(json.dumps(report, indent=2) + "\n")
     log_path = args.output / "server.log"
@@ -207,7 +295,7 @@ def collect(args, suite, suite_sha, model, hardware, decode):
                 args, process, base, log_path, args.startup_timeout
             )
             report["initial_readback"] = harness.runtime_readback(args, base, log_path)
-            collect_batches(args, suite, suite["samples"], base, report, decode)
+            collect_batches(args, suite, suite["samples"], base, report, decode, baseline)
             report["final_readback"] = harness.runtime_readback(args, base, log_path)
             if harness.sha256_file(args.executable) != binary["sha256"]:
                 raise ValueError("executable changed during collection")
@@ -248,10 +336,10 @@ def run(args, decode=None):
         harness.eos_tokens(args.model)
     ):
         raise ValueError("suite EOS tokens differ from the model")
-    baseline = baseline_sha = None
+    baseline = baseline_sha = baseline_rows = None
     if args.baseline:
         baseline, baseline_sha = document(args.baseline)
-        validate_baseline(suite, baseline, suite_sha, model, hardware)
+        baseline_rows = validate_baseline(suite, baseline, suite_sha, model, hardware)
         previous = baseline.get("collection")
         if previous and previous != {"concurrency": args.concurrency, "tokens": args.tokens}:
             raise ValueError("baseline collection settings differ")
@@ -266,7 +354,7 @@ def run(args, decode=None):
             return tokenizer.decode(ids, skip_special_tokens=True)
 
     args.output.mkdir(parents=True)
-    report = collect(args, suite, suite_sha, model, hardware, decode)
+    report = collect(args, suite, suite_sha, model, hardware, decode, baseline_rows)
     if baseline is None:
         return {"collection_status": "complete", "quality_status": "not_evaluated"}
     if harness.sha256_file(args.baseline) != baseline_sha:

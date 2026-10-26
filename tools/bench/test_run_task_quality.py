@@ -167,6 +167,123 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(len(report["batches"]), 16)
         self.assertEqual(len((self.args.output / "results.jsonl").read_text().splitlines()), 256)
 
+    def test_clear_regression_stops_after_first_small_batch_and_reaps_server(self):
+        self.baseline()
+        with self.assertRaisesRegex(RuntimeError, "early quality regression"):
+            self.run_collection(lambda ids: "#### 3")
+        self.assertEqual(self.groups.call_count, 1)
+        report = json.loads((self.args.output / "report.json").read_text())
+        self.assertFalse(report["completed"])
+        self.assertEqual(report["count"], 16)
+        self.assertEqual(len((self.args.output / "results.jsonl").read_text().splitlines()), 16)
+        self.assertEqual(self.process.returncode, 0)
+        self.assertFalse((self.args.output / "gate.json").exists())
+
+    def test_wide_concurrency_still_checks_first_sixteen_tasks(self):
+        self.args.concurrency = 32
+        self.baseline()
+        with self.assertRaisesRegex(RuntimeError, "at 16 tasks"):
+            self.run_collection(lambda ids: "#### 3")
+        self.assertEqual(self.groups.call_count, 1)
+        self.assertEqual(len(self.groups.call_args.args[-1]), 16)
+
+    def test_uncertain_first_loss_continues_and_requires_full_final_decision(self):
+        self.baseline()
+        calls = iter(range(256))
+        result = self.run_collection(lambda ids: "#### 3" if next(calls) == 0 else "#### 2")
+        self.assertEqual(self.groups.call_count, 16)
+        self.assertTrue(result["quality_accepted"])
+        screens = json.loads((self.args.output / "screening.json").read_text())
+        self.assertEqual([row["completed_tasks"] for row in screens], [16, 64])
+        self.assertTrue(all(row["decision"] == "continue" for row in screens))
+        self.assertTrue(all(row["final_acceptance"] is False for row in screens))
+        self.assertEqual(result["candidate"]["requests"], 256)
+
+    def test_later_clear_regression_stops_at_sixty_four(self):
+        self.baseline()
+        calls = iter(range(256))
+        with self.assertRaisesRegex(RuntimeError, "at 64 tasks"):
+            self.run_collection(lambda ids: "#### 2" if next(calls) < 16 else "#### 3")
+        self.assertEqual(self.groups.call_count, 4)
+        screens = json.loads((self.args.output / "screening.json").read_text())
+        self.assertEqual([row["decision"] for row in screens], ["continue", "reject"])
+        report = json.loads((self.args.output / "report.json").read_text())
+        self.assertFalse(report["completed"])
+        self.assertEqual(report["count"], 64)
+        self.assertTrue(all(batch["wall_seconds"] >= 0 for batch in report["batches"]))
+
+    def test_concentrated_variant_loss_is_not_hidden_by_opposite_gains(self):
+        baseline = self.baseline()["results"]
+        for row in baseline:
+            row["correct"] = row["variant"] == "long"
+        candidate = [dict(row, correct=not row["correct"]) for row in baseline[:16]]
+        screen = runner.screen_progress(self.suite, baseline, candidate)
+        groups = {row["group"]: row for row in screen["groups"]}
+        self.assertFalse(groups["overall"]["rejected"])
+        self.assertTrue(groups["long"]["rejected"])
+        self.assertEqual(screen["decision"], "reject")
+
+    def test_shared_source_questions_widen_the_screen_bound(self):
+        baseline = self.baseline()["results"][:16]
+        candidate = copy.deepcopy(baseline)
+        for i, (left, right) in enumerate(zip(baseline, candidate, strict=True)):
+            left["row_id"] = right["row_id"] = i // 2
+            right["correct"] = i >= 8
+        clustered = runner.screen_progress(self.suite, baseline, candidate)["groups"][0]
+        for i, (left, right) in enumerate(zip(baseline, candidate, strict=True)):
+            left["row_id"] = right["row_id"] = i
+        independent = runner.screen_progress(self.suite, baseline, candidate)["groups"][0]
+        self.assertGreater(clustered["design_effect"], independent["design_effect"])
+        self.assertGreater(
+            clustered["accuracy_change_upper_bound"],
+            independent["accuracy_change_upper_bound"],
+        )
+
+    def test_error_budget_covers_all_predeclared_looks_and_variants(self):
+        baseline = self.baseline()["results"]
+        screen = runner.screen_progress(self.suite, baseline, baseline[:16])
+        self.assertEqual(screen["planned_checks"], 6)
+        self.assertAlmostEqual(
+            6 * (1 - screen["per_check_confidence"]),
+            1 - self.suite["acceptance"]["confidence"],
+        )
+        self.assertIsNone(runner.screen_progress(self.suite, baseline, baseline[:32]))
+        self.assertIsNone(runner.screen_progress(self.suite, baseline, baseline))
+
+    def test_full_1024_collection_requires_all_tasks_after_three_continue_screens(self):
+        initial = self.suite["samples"]
+        self.suite["samples"] = [dict(initial[i % 256], id=str(i), row_id=i) for i in range(1024)]
+        self.suite_path.write_text(json.dumps(self.suite))
+        self.suite_sha = hashlib.sha256(self.suite_path.read_bytes()).hexdigest()
+        self.baseline()
+        result = self.run_collection()
+        self.assertTrue(result["quality_accepted"])
+        self.assertEqual(result["candidate"]["requests"], 1024)
+        self.assertEqual(self.groups.call_count, 64)
+        screens = json.loads((self.args.output / "screening.json").read_text())
+        self.assertEqual([row["completed_tasks"] for row in screens], [16, 64, 256])
+        self.assertTrue(all(row["planned_checks"] == 9 for row in screens))
+
+    def test_late_regression_stops_at_256_without_finishing_the_1024_suite(self):
+        initial = self.suite["samples"]
+        self.suite["samples"] = [dict(initial[i % 256], id=str(i), row_id=i) for i in range(1024)]
+        self.suite_path.write_text(json.dumps(self.suite))
+        self.suite_sha = hashlib.sha256(self.suite_path.read_bytes()).hexdigest()
+        self.baseline()
+        calls = iter(range(1024))
+        with self.assertRaisesRegex(RuntimeError, "at 256 tasks"):
+            self.run_collection(lambda ids: "#### 2" if next(calls) < 64 else "#### 3")
+        self.assertEqual(self.groups.call_count, 16)
+        self.assertEqual(self.process.returncode, 0)
+        self.assertFalse((self.args.output / "gate.json").exists())
+
+    def test_uncompared_collection_never_invents_a_quality_rejection(self):
+        result = self.run_collection(lambda ids: "#### 3")
+        self.assertEqual(result["quality_status"], "not_evaluated")
+        report = json.loads((self.args.output / "report.json").read_text())
+        self.assertTrue(report["completed"])
+        self.assertEqual(report["screening"], [])
+
     def test_collection_without_baseline_does_not_claim_quality_pass(self):
         result = self.run_collection()
         self.assertEqual(result["quality_status"], "not_evaluated")
@@ -248,10 +365,13 @@ class CollectionTests(unittest.TestCase):
         self.assertFalse((self.args.output / "gate.json").exists())
 
     def test_actual_regression_keeps_original_noninferiority_failure(self):
+        self.suite["samples"] = self.suite["samples"][:16]
+        self.suite_path.write_text(json.dumps(self.suite))
+        self.suite_sha = hashlib.sha256(self.suite_path.read_bytes()).hexdigest()
         self.baseline()
         result = self.run_collection(lambda ids: "#### 3")
         self.assertFalse(result["quality_accepted"])
-        self.assertEqual(len(result["regressions"]), 256)
+        self.assertEqual(len(result["regressions"]), 16)
         self.assertEqual(result["noninferiority_margin_accuracy"], 0.02)
         self.assertEqual(self.popen.call_count, 1)
 
