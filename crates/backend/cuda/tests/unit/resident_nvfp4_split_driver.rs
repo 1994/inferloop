@@ -758,6 +758,10 @@ fn captured_workspace_nvfp4_real_weight_split() -> Result<(), Box<dyn StdError>>
     assert_eq!(split_records(), copies);
     exact_graph.launch().sync_on(&device.stream)?;
     split_graph.launch().sync_on(&device.stream)?;
+    println!(
+        "{}",
+        serde_json::json!({"kind":"captured_workspace_prepared","prepared":exact_workspace.prepared_configs()})
+    );
     measure_captured(
         &device,
         Measure {
