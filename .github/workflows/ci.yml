@@ -52,9 +52,24 @@ jobs:
           cache-workspace-crates: true
       - name: Install media subprocesses (ffmpeg, ffprobe)
         if: runner.os == 'Linux'
+        timeout-minutes: 5
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends ffmpeg
+          if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null && \
+             ffmpeg -version >/dev/null 2>&1 && ffprobe -version >/dev/null 2>&1; then
+            echo 'Using installed FFmpeg and FFprobe'
+            exit 0
+          fi
+          # Bound dependency setup separately from compilation; use the signed primary mirror.
+          for source_file in /etc/apt/sources.list /etc/apt/*mirrors*.txt /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+            if [[ -f "$source_file" ]]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$source_file"
+            fi
+          done
+          apt_options=(-o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o DPkg::Lock::Timeout=60)
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install --yes --no-install-recommends ffmpeg
+          ffmpeg -version >/dev/null
+          ffprobe -version >/dev/null
       - name: Install media subprocesses (ffmpeg, ffprobe)
         if: runner.os == 'macOS'
         run: brew install ffmpeg
@@ -115,13 +130,20 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install CUDA build headers (no GPU required)
+        timeout-minutes: 5
         run: |
-          curl --fail --silent --show-error --location \
+          for source_file in /etc/apt/sources.list /etc/apt/*mirrors*.txt /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+            if [[ -f "$source_file" ]]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$source_file"
+            fi
+          done
+          apt_options=(-o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o DPkg::Lock::Timeout=60)
+          curl --fail --silent --show-error --location --connect-timeout 20 --max-time 60 --retry 1 \
             https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb \
             --output "$RUNNER_TEMP/cuda-keyring.deb"
           sudo dpkg -i "$RUNNER_TEMP/cuda-keyring.deb"
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install --yes --no-install-recommends \
             libclang-dev cuda-cudart-dev-13-2 cuda-crt-13-2 cuda-driver-dev-13-2 libcurand-dev-13-2
           test -f /usr/local/cuda-13.2/include/crt/host_config.h
           echo 'CUDA_HOME=/usr/local/cuda-13.2' >> "$GITHUB_ENV"
@@ -169,13 +191,20 @@ jobs:
           python-version: '3.12'
       - name: Install CUDA build headers (no GPU required)
         if: runner.os == 'Linux'
+        timeout-minutes: 5
         run: |
-          curl --fail --silent --show-error --location \
+          for source_file in /etc/apt/sources.list /etc/apt/*mirrors*.txt /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+            if [[ -f "$source_file" ]]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$source_file"
+            fi
+          done
+          apt_options=(-o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o DPkg::Lock::Timeout=60)
+          curl --fail --silent --show-error --location --connect-timeout 20 --max-time 60 --retry 1 \
             https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb \
             --output "$RUNNER_TEMP/cuda-keyring.deb"
           sudo dpkg -i "$RUNNER_TEMP/cuda-keyring.deb"
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install --yes --no-install-recommends \
             libclang-dev cuda-cudart-dev-13-2 cuda-crt-13-2 cuda-driver-dev-13-2 libcurand-dev-13-2
           test -f /usr/local/cuda-13.2/include/crt/host_config.h
           echo 'CUDA_HOME=/usr/local/cuda-13.2' >> "$GITHUB_ENV"
