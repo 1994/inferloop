@@ -10,7 +10,9 @@ use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::error::tensor_error;
 use cutile::prelude::*;
 use infer_core::{Error, ModelId, TensorId};
+use infer_ir::TensorOp;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::env::{self, var};
 use std::error::Error as StdError;
 use std::fs;
@@ -26,6 +28,57 @@ struct Down {
     global: f32,
     outputs: usize,
     columns: usize,
+}
+
+struct Layer {
+    codes: Arc<Tensor<f4e2m1fnx2>>,
+    scales: Arc<Tensor<f8e4m3fn>>,
+    global: f32,
+    input_scale: f32,
+}
+
+fn target_layers(
+    loaded: &LoadedModel,
+    down: &Down,
+) -> Result<(Vec<Layer>, usize), Box<dyn StdError>> {
+    let mut seen = BTreeSet::new();
+    let mut layers = Vec::new();
+    for node in &loaded.graph().nodes {
+        if node.op != TensorOp::Linear {
+            continue;
+        }
+        let Some(weight) = loaded.weights().projections.get(&node.inputs[1]) else {
+            continue;
+        };
+        let ProjectionWeight::Fp4(codes, scales, global) = weight else {
+            continue;
+        };
+        if codes.shape()
+            != [
+                i32::try_from(down.outputs)?,
+                i32::try_from(down.columns / 2)?,
+            ]
+        {
+            continue;
+        }
+        let address = codes.device_pointer().cu_deviceptr();
+        if !seen.insert(address) {
+            continue;
+        }
+        let input_scale = *loaded
+            .weights()
+            .input_scales
+            .get(&node.inputs[1])
+            .ok_or_else(|| Error::invalid("layer activation scale missing"))?;
+        layers.push(Layer {
+            codes: codes.clone(),
+            scales: scales.clone(),
+            global: *global,
+            input_scale,
+        });
+    }
+    let bytes = layers.len() * (down.outputs * (down.columns / 2 + down.columns / 16));
+    Ok((layers, bytes))
 }
 
 fn choose_down(loaded: &LoadedModel) -> Result<Down, Box<dyn StdError>> {
@@ -433,7 +486,7 @@ fn measure_captured(device: &CudaDevice, m: Measure<'_>) -> Result<(), Box<dyn S
             "weight":format!("{:?}", down.weight_id),
             "shape":[ROWS, down.outputs, down.columns],
             "scratch_bytes":scratch_bytes, "split_plan_count":split_plans,
-            "copies":copies, "weight_bytes_each":weight_bytes,
+            "layers":copies, "weight_bytes_each":weight_bytes,
             "working_set_bytes":copies*weight_bytes, "l2_bytes":l2_bytes,
             "distinct_weight_addresses":addresses,
             "relative_l2_vs_exact":relative_l2,
@@ -504,7 +557,7 @@ fn measure_phase(
             "{}",
             serde_json::json!({
                 "kind":"captured_workspace_nvfp4_phase", "phase":phase, "order":order,
-                "unit":"3_copy_cycle", "copies":copies,
+                "unit":"layer_set_cycle", "layers":copies,
                 "baseline_ms":baseline.median_ms(), "candidate_ms":candidate.median_ms(),
                 "speedup":speedup, "baseline_raw_ms":baseline.times_ms(),
                 "candidate_raw_ms":candidate.times_ms(), "reps":baseline.reps(),
@@ -517,49 +570,22 @@ fn measure_phase(
     Ok(best)
 }
 
-type RotatedWeights = (Vec<ProjectionWeight>, usize, usize, usize);
-
-fn rotate_weights(device: &CudaDevice, down: &Down) -> Result<RotatedWeights, Box<dyn StdError>> {
-    let weight_bytes = down
-        .outputs
-        .checked_mul(down.columns / 2 + down.columns / 16)
-        .ok_or_else(|| Error::invalid("weight byte overflow"))?;
-    let l2 = usize::try_from(device.profile()?.l2_cache_bytes).unwrap_or(0);
-    let copies = l2.saturating_div(weight_bytes).saturating_add(1).max(2);
-    let mut weights = Vec::with_capacity(copies);
-    for _ in 0..copies {
-        let mut codes =
-            api::zeros::<f4e2m1fnx2>(&[down.outputs, down.columns / 2]).sync_on(&device.stream)?;
-        let mut scales =
-            api::zeros::<f8e4m3fn>(&[down.outputs, down.columns / 16]).sync_on(&device.stream)?;
-        api::memcpy(&mut codes, &down.codes).sync_on(&device.stream)?;
-        api::memcpy(&mut scales, &down.scales).sync_on(&device.stream)?;
-        weights.push(ProjectionWeight::Fp4(
-            Arc::new(codes),
-            Arc::new(scales),
-            down.global,
-        ));
-    }
-    Ok((weights, copies, l2, weight_bytes))
-}
-
 fn capture_rotation(
     device: &CudaDevice,
-    scale: f32,
     workspace: &mut super::Workspace,
-    weights: &[ProjectionWeight],
+    layers: &[Layer],
     input: &Tensor<f32>,
     outputs: &mut [Tensor<f32>],
-    (rows, columns): (usize, usize),
+    columns: usize,
 ) -> Result<CudaGraph<()>, Box<dyn StdError>> {
-    let view = input.view(&[rows, columns])?;
+    let view = input.view(&[ROWS, columns])?;
     workspace.begin_quant_capture();
     let graph = CudaGraph::scope(&device.stream, |scope| {
-        for (weight, output) in weights.iter().zip(outputs) {
+        for (layer, output) in layers.iter().zip(outputs) {
             workspace.record_input(
                 scope,
-                weight,
-                scale,
+                &ProjectionWeight::Fp4(layer.codes.clone(), layer.scales.clone(), layer.global),
+                layer.input_scale,
                 &view,
                 output,
                 columns,
@@ -681,11 +707,6 @@ fn captured_workspace_nvfp4_real_weight_split() -> Result<(), Box<dyn StdError>>
         },
     )?;
     let down = choose_down(&loaded)?;
-    let scale = *loaded
-        .weights()
-        .input_scales
-        .get(&down.weight_id)
-        .ok_or_else(|| Error::invalid("down activation scale missing"))?;
     let geometry = ProgramGeometry {
         verification: ROWS,
         prompts: [0, 0],
@@ -709,32 +730,32 @@ fn captured_workspace_nvfp4_real_weight_split() -> Result<(), Box<dyn StdError>>
     assert_eq!(exact_workspace.split_plan_count(), 0);
     reset_split_records();
     assert!(split_workspace.split_plan_count() > 0);
-    let (weights, copies, l2, weight_bytes) = rotate_weights(&device, &down)?;
+    let (layers, weight_bytes) = target_layers(&loaded, &down)?;
+    let copies = layers.len();
+    let l2 = usize::try_from(device.profile()?.l2_cache_bytes).unwrap_or(0);
     let (input, mut exact, mut split) = rotation_buffers(&device, &down, copies)?;
     reset_split_records();
     let exact_graph = capture_rotation(
         &device,
-        scale,
         &mut exact_workspace,
-        &weights,
+        &layers,
         &input,
         &mut exact,
-        (ROWS, down.columns),
+        down.columns,
     )?;
     assert_eq!(split_records(), 0);
     reset_split_records();
     let split_graph = with_forced_split(|| {
         capture_rotation(
             &device,
-            scale,
             &mut split_workspace,
-            &weights,
+            &layers,
             &input,
             &mut split,
-            (ROWS, down.columns),
+            down.columns,
         )
     })?;
-    assert!(split_records() > 0);
+    assert_eq!(split_records(), copies);
     exact_graph.launch().sync_on(&device.stream)?;
     split_graph.launch().sync_on(&device.stream)?;
     measure_captured(
@@ -751,12 +772,9 @@ fn captured_workspace_nvfp4_real_weight_split() -> Result<(), Box<dyn StdError>>
             copies,
             l2_bytes: l2,
             weight_bytes,
-            addresses: weights
+            addresses: layers
                 .iter()
-                .map(|w| match w {
-                    ProjectionWeight::Fp4(codes, _, _) => codes.device_pointer().cu_deviceptr(),
-                    _ => 0,
-                })
+                .map(|layer| layer.codes.device_pointer().cu_deviceptr())
                 .collect(),
         },
     )?;
