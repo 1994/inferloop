@@ -299,7 +299,7 @@ fn checkpoint_pool_gemv_tuner_uses_actual_weights() -> TestResult {
         },
     )?;
     let mut seen = 0usize;
-    for rows in [1, 3, 16, 18] {
+    for rows in [1, 3, 16, 18, 32, 48, 64] {
         for (id, projection) in &loaded.weights.projections {
             let ProjectionWeight::Dense(weight) = projection else {
                 continue;

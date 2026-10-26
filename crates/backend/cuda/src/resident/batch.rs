@@ -2485,6 +2485,7 @@ fn gdn_ba_nodes(first: &TensorNode, second: &TensorNode) -> bool {
         && second.outputs.len() == 1
 }
 
+#[cfg(test)]
 fn gdn_ba_weight_compatible(shape_b: &[i32], shape_a: &[i32]) -> bool {
     shape_b == shape_a
         && shape_b.len() == 2

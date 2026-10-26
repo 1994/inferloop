@@ -14,6 +14,8 @@ use infer_ir::TensorNode;
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use std::thread::LocalKey;
 
 use crate::tuning::prefill::narrow_dense_layout;
 const NARROW_DENSE_TILE: [usize; 2] = [PREFILL_LANES, 16];
@@ -27,12 +29,54 @@ pub(super) enum GdnRole {
 
 /// Capture context for GDN beta/alpha pairing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum GdnPairContext {
-    /// Ordinary verification lanes: paired Dense is the existing BF16-MMA verify contract.
+pub enum GdnPairContext {
+    /// Ordinary verification lanes: the existing Dense path keeps its two-component
+    /// BF16 decomposition, so the single-component pair declines this context.
     Verify,
     /// Prompt chunk: the N16 prompt-only narrow layout must remain excluded so the
     /// role-selected N16 kernel, not the pair kernel, handles eligible beta/alpha rows.
     Prompt,
+}
+
+#[cfg(test)]
+thread_local! {
+    static PAIR_VERIFY: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    static PAIR_PROMPT: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+}
+
+#[cfg(test)]
+const fn pair_cell(context: GdnPairContext) -> &'static LocalKey<Cell<(usize, usize)>> {
+    match context {
+        GdnPairContext::Verify => &PAIR_VERIFY,
+        GdnPairContext::Prompt => &PAIR_PROMPT,
+    }
+}
+
+#[cfg(test)]
+pub fn reset_pair_counts() {
+    PAIR_VERIFY.with(|cell| cell.set((0, 0)));
+    PAIR_PROMPT.with(|cell| cell.set((0, 0)));
+}
+
+#[cfg(test)]
+pub fn pair_counts(context: GdnPairContext) -> (usize, usize) {
+    pair_cell(context).with(Cell::get)
+}
+
+#[cfg(test)]
+fn note_pair_attempt(context: GdnPairContext) {
+    pair_cell(context).with(|cell| {
+        let (attempts, records) = cell.get();
+        cell.set((attempts + 1, records));
+    });
+}
+
+#[cfg(test)]
+fn note_pair_record(context: GdnPairContext) {
+    pair_cell(context).with(|cell| {
+        let (attempts, records) = cell.get();
+        cell.set((attempts, records + 1));
+    });
 }
 
 /// Down projection absorbing `silu(gate) * up`: node indices of the `SiLU` and multiply it
@@ -531,6 +575,15 @@ pub(super) fn record_pair(
     (weights, profile): (&ProgramWeights, &DeviceProfile),
     context: GdnPairContext,
 ) -> Result<bool, DeviceError> {
+    #[cfg(test)]
+    note_pair_attempt(context);
+    // Verify Dense uses the two-component BF16 decomposition in `small_gemm`
+    // (high plus residual low), while `dense_pair` converts only the high component.
+    // Keep verification on its existing F32 contract; prompt Dense already uses the
+    // single-conversion kernel this pair matches.
+    if context == GdnPairContext::Verify {
+        return Ok(false);
+    }
     if first.inputs.len() != 2
         || second.inputs.len() != 2
         || first.inputs[0] != second.inputs[0]
@@ -604,6 +657,8 @@ pub(super) fn record_pair(
     )?;
     arena.buffers[slot_b] = Some(output_b.reshape(&[expected])?);
     arena.buffers[slot_a] = Some(output_a.reshape(&[expected])?);
+    #[cfg(test)]
+    note_pair_record(context);
     Ok(true)
 }
 

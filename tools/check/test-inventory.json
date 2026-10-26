@@ -16,7 +16,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 32
+      "tests": 33
     },
     "compiler": {
       "benches": 0,
@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 357
+      "tests": 391
     },
     "frontdoor": {
       "benches": 0,
@@ -70,7 +70,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 149
+      "tests": 150
     },
     "quality": {
       "benches": 0,
@@ -82,7 +82,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 85
+      "tests": 91
     },
     "scheduler": {
       "benches": 0,
@@ -154,6 +154,7 @@
   "ignored_reasons": {
     "CUDA/checkpoint/frozen511tokens/safe-run; INFER_CUDA_ATTENTION_PRECISE_PREFIX=2048": 1,
     "opt-in projection-only shape A/B with real checkpoint and CUDA; run inside safe-run": 1,
+    "real 27B checkpoint, CUDA, release and protected runner required": 5,
     "real 2B checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 3,
     "real CUDA/MTP checkpoint; reserve graphs only after quote acknowledgement": 1,
     "real MTP2 checkpoint and CUDA; run inside safe-run": 1,
@@ -174,13 +175,15 @@
     "requires CUDA hardware and a real FP8 channel checkpoint; root runs release serially": 1,
     "requires CUDA hardware and a writable tuning cache; run under safe-run": 1,
     "requires CUDA hardware and cuBLAS; run under safe-run": 1,
+    "requires CUDA hardware; actual 16-slot pooled launch versus four groups, safe-run": 1,
     "requires CUDA hardware; actual 27B GDN geometry and wave-derived split, safe-run": 1,
     "requires CUDA hardware; actual captured prompt graph widths": 1,
     "requires CUDA hardware; finite hardware tuning with independent F64 references": 1,
     "requires CUDA hardware; new F32-state/F64-reference contract": 1,
     "requires CUDA hardware; root runs release serially": 3,
     "requires CUDA hardware; run explicitly inside tools/bench/safe-run.sh": 5,
-    "requires CUDA hardware; run inside safe-run": 27,
+    "requires CUDA hardware; run inside safe-run": 28,
+    "requires CUDA hardware; run inside safe-run with real weights": 1,
     "requires CUDA hardware; run release inside safe-run": 1,
     "requires CUDA hardware; run under safe-run": 29,
     "requires CUDA hardware; run under safe-run in release": 1,
@@ -200,6 +203,7 @@
     "requires CUDA, frozen INFER_TEST_MODEL/TOKENS/table; safe-run; complete F32/FP8 state and vocabulary comparisons": 1,
     "requires CUDA, release, safe-run; validates actual probe input bits and temporary ownership": 1,
     "requires CUDA/checkpoint/failing52token inputs/safe-run; GPUselected versus full logits/crosscapacity join": 1,
+    "requires CUDA/checkpoint/frozen tokens; actual verify pair dispatch and full output": 1,
     "requires CUDA/checkpoint/frozen1025tokens/safe-run; default-width full chunks and state bits": 1,
     "requires CUDA/checkpoint/frozen1025tokens/safe-run; pooled physical KV stride and complete bits": 1,
     "requires CUDA/checkpoint/frozen511tokens/safe-run; actual parallel quantization and complete state equivalence": 1,
@@ -211,6 +215,7 @@
     "requires CUDA/checkpoint/safe-run; all96 real small weights, original private GEMV bits": 1,
     "requires CUDA/checkpoint/safe-run; full states/logits/hidden before service timing": 1,
     "requires CUDA/checkpoint; actual 27B gate/up weights and quantization-inclusive SwiGLU tuner": 1,
+    "requires CUDA/checkpoint; actual Dense verify baseline versus BF16 pair, rows 32/48/64": 1,
     "requires CUDA/checkpoint; actual full-model pool preparation drives the crossover dispatch": 1,
     "requires CUDA/safe-run and a private frozen tuning table; seeds measured profile": 1,
     "requires CUDA/safe-run; actual automatic tuning, full proofs and persisted cache": 1,
@@ -410,6 +415,11 @@
     {
       "crate": "cuda",
       "file": "src/loading/mod.rs",
+      "mount": "../../tests/unit/loading_verify_pair_model.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/loading/mod.rs",
       "mount": "../../tests/unit/loading_pool_greedy_lifecycle.rs"
     },
     {
@@ -559,8 +569,23 @@
     },
     {
       "crate": "cuda",
+      "file": "src/resident/norm_maximum.rs",
+      "mount": "../../tests/unit/resident_norm_maximum_fusion.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/resident/nvfp4_gemm/quant_reuse.rs",
       "mount": "../../../tests/unit/resident_quant_reuse_plan.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/resident/nvfp4_gemm.rs",
+      "mount": "../../tests/unit/resident_nvfp4_split_driver.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/resident/nvfp4_gemm.rs",
+      "mount": "../../tests/unit/resident_prefill_prefetch16.rs"
     },
     {
       "crate": "cuda",
@@ -1279,11 +1304,11 @@
     }
   ],
   "totals": {
-    "all": 904,
+    "all": 964,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 904
+    "tests": 964
   }
 }

@@ -794,6 +794,10 @@ mod pool_gemv_cost_tests;
 mod pool_gemv_model_tests;
 
 #[cfg(test)]
+#[path = "../../tests/unit/loading_verify_pair_model.rs"]
+mod verify_pair_model_tests;
+
+#[cfg(test)]
 #[path = "../../tests/unit/loading_pool_greedy_lifecycle.rs"]
 mod pool_greedy_lifecycle_tests;
 
