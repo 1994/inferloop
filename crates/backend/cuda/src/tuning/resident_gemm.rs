@@ -70,7 +70,7 @@ const TILE_M_SEARCH: [usize; 3] = [
 /// Supported output-column tile variants; the first is the conservative baseline.
 const TILE_N_SEARCH: [usize; 2] = [QUANT_GEMM_TILE[1], QUANT_GEMM_TILE[1] * 2];
 /// The existing native K loop has plain and eight-stage compiler-prefetch variants.
-const LOOP_SEARCH: [MainLoop; 3] = [MainLoop::Plain, MainLoop::Prefetch8, MainLoop::Prefetch16];
+const LOOP_SEARCH: [MainLoop; 2] = [MainLoop::Plain, MainLoop::Prefetch8];
 /// Deterministic signed activation pattern used with the real loaded checkpoint weights.
 const SAMPLE_PERIOD: usize = 131;
 /// Coprime stride visits every sampled activation magnitude.

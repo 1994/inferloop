@@ -62,13 +62,14 @@ fn bench_case(
         );
         metadata.push(device.upload(vec![i32::try_from(lane)?, 0, i32::try_from(lane)?, 0], &[4])?);
     }
+    let qkv_flat = qkv.view(&[lanes * cols])?;
     let baseline = CudaGraph::scope(&device.stream, |scope| {
         for (lane, output) in old_outputs.iter_mut().enumerate() {
             scope.record(
                 super::super::recurrent::recurrent::delta(
                     output.partition([1, 1, dim]),
                     (&mut state).partition([1, dim, dim]),
-                    &qkv.slice(from_ref(&(lane * cols..(lane + 1) * cols)))?,
+                    &qkv_flat.slice(from_ref(&(lane * cols..(lane + 1) * cols)))?,
                     &beta
                         .view(&[lanes * vh])?
                         .slice(from_ref(&(lane * vh..(lane + 1) * vh)))?,

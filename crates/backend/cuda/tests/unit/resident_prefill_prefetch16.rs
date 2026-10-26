@@ -38,7 +38,11 @@ fn prefetch16_long_k_down_preserves_bits_and_measures_paired_time() -> Result<()
     let mut shallow = api::zeros::<f32>(&[rows, outputs]).sync_on(&device.stream)?;
     let mut deep = api::zeros::<f32>(&[rows, outputs]).sync_on(&device.stream)?;
     let tile = [128usize, 128usize];
-    let generics = vec![columns.to_string(), rows.to_string(), outputs.to_string()];
+    let generics = vec![
+        columns.to_string(),
+        tile[0].to_string(),
+        tile[1].to_string(),
+    ];
     let shallow_graph = CudaGraph::scope(&device.stream, |scope| {
         scope.record(
             kernels::packed_prefill(
