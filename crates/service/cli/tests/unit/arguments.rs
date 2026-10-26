@@ -200,3 +200,43 @@ fn capacity_and_identity_overrides_are_parsed() {
     assert!(default.max_num_seqs.is_none());
     assert!(default.served_model_name.is_none());
 }
+
+#[test]
+fn multimodal_limits_are_parsed_and_all_zero_means_text_only() {
+    let cli = Cli::try_parse_from([
+        "infer",
+        "/models/example",
+        "--limit-mm-per-prompt",
+        r#"{"image":2,"video":1}"#,
+    ])
+    .unwrap();
+    assert_eq!(
+        cli.limit_mm_per_prompt,
+        Some(infer_models::MediaLimits {
+            images: 2,
+            videos: 1
+        })
+    );
+    let text_only = Cli::try_parse_from([
+        "infer",
+        "/models/example",
+        "--limit-mm-per-prompt",
+        r#"{"image":0,"video":0}"#,
+    ])
+    .unwrap();
+    assert!(text_only.limit_mm_per_prompt.unwrap().text_only());
+    for invalid in [
+        r#"{"audio":1}"#,
+        r#"{"image":1,"video":1,"audio":0}"#,
+        r#"{"image":-1}"#,
+        r#"{"image":"one"}"#,
+        "{}",
+        "not-json",
+    ] {
+        assert!(
+            Cli::try_parse_from(["infer", "/models/example", "--limit-mm-per-prompt", invalid])
+                .is_err(),
+            "{invalid}"
+        );
+    }
+}

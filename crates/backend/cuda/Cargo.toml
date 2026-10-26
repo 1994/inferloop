@@ -18,6 +18,7 @@ cuda = ["dep:cutile", "dep:cuda-core", "dep:sha2", "dep:infer-state"]
 
 [dependencies]
 infer-core.workspace = true
+infer-gpu-api.workspace = true
 infer-ir.workspace = true
 infer-models.workspace = true
 infer-spi.workspace = true

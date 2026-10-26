@@ -26,7 +26,7 @@ fn a_plain_chat_request_declares_no_tools() {
     let request = chat(&json!([{"role": "user", "content": "hi"}]), &json!({}));
     request.validate(true).unwrap();
     assert!(!request.tool_policy(true).unwrap().parses());
-    let messages = request.chat_messages().unwrap();
+    let messages = request.chat_messages().unwrap().0;
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].content, "hi");
     assert_eq!(messages[0].tool_calls.len(), 0);
@@ -116,7 +116,7 @@ fn a_tool_round_trips_into_internal_history() {
         &json!({"tools": weather_tool()}),
     );
     request.validate(true).unwrap();
-    let messages = request.chat_messages().unwrap();
+    let messages = request.chat_messages().unwrap().0;
     assert_eq!(messages.len(), 3);
     // A null assistant content is stored as empty text, not rejected.
     assert_eq!(messages[1].content, "");
@@ -170,12 +170,35 @@ fn text_content_parts_are_joined_and_other_parts_are_refused() {
         {"type": "text", "text": "hello "}, {"type": "text", "text": "world"}
     ]}]);
     assert_eq!(
-        chat(&parts, &json!({})).chat_messages().unwrap()[0].content,
+        chat(&parts, &json!({})).chat_messages().unwrap().0[0].content,
         "hello world"
     );
-    let image = json!([{"role": "user", "content": [{"type": "image_url", "image_url": {}}]}]);
-    let error = chat(&image, &json!({})).chat_messages().unwrap_err();
-    assert_eq!(error.code, infer_core::ErrorCode::Unsupported);
+    let image = json!([{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    ]}]);
+    let (messages, media) = chat(&image, &json!({})).chat_messages().unwrap();
+    assert_eq!(
+        messages[0].content,
+        "<|vision_start|><|image_pad|><|vision_end|>"
+    );
+    assert_eq!(media.len(), 1);
+    assert_eq!(media[0].modality, Modality::Image);
+    let missing_url =
+        json!([{"role": "user", "content": [{"type": "image_url", "image_url": {}}]}]);
+    assert!(chat(&missing_url, &json!({})).chat_messages().is_err());
+    let video = json!([{"role": "user", "content": [
+        {"type": "video_url", "video_url": {"url": "https://example.invalid/clip.mp4"}}
+    ]}]);
+    let (messages, media) = chat(&video, &json!({})).chat_messages().unwrap();
+    assert_eq!(
+        messages[0].content,
+        "<|vision_start|><|video_pad|><|vision_end|>"
+    );
+    assert_eq!(media[0].modality, Modality::Video);
+    let assistant_media = json!([{"role": "assistant", "content": [
+        {"type": "image_url", "image_url": {"url": "https://example.invalid/a.png"}}
+    ]}]);
+    assert!(chat(&assistant_media, &json!({})).chat_messages().is_err());
 }
 
 #[test]
@@ -203,7 +226,7 @@ fn nullable_tool_calls_from_sdk_history_are_accepted() {
         &json!({}),
     );
     request.validate(true).unwrap();
-    let messages = request.chat_messages().unwrap();
+    let messages = request.chat_messages().unwrap().0;
     assert_eq!(messages[1].tool_calls.len(), 0);
     assert_eq!(messages[1].content, "hi");
 }

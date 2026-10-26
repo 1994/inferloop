@@ -2,6 +2,8 @@
 
 /// FP4 values sharing one E4M3 block scale.
 pub const NVFP4_GROUP_SIZE: usize = 16;
+/// Bounded shared scratch allowance one captured program may retain for verify splits.
+pub const VERIFY_SPLIT_SCRATCH_BUDGET: u64 = 32 * 1024 * 1024;
 /// Fallback decode GEMV tile when no measurement applies.
 pub const DEFAULT_TILE_ROWS: usize = 16;
 /// Fallback decode GEMV tile when no measurement applies.

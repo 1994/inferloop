@@ -1,7 +1,9 @@
 use super::kernels;
 use crate::device::CudaDevice;
+use crate::resident::nvfp4_gemm::workspace::{forced_split, with_forced_split};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::bench::BenchOptions as CutileBenchOptions;
+use cutile::cutile_compiler::compile_api::KernelCompiler;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
@@ -32,6 +34,69 @@ fn nearest(value: f32, table: &[f32]) -> usize {
                 .then((a % 2).cmp(&(b % 2)))
         })
         .expect("nonempty codebook")
+}
+
+#[test]
+fn split_policy_derives_from_sm_cta_k_and_scratch() {
+    let candidate =
+        super::projection_split_policy(48, 5120, 17408, 170, [64, 64], 256, 32 * 1024 * 1024)
+            .expect("shape policy")
+            .expect("split candidate");
+    assert!(candidate.splits > 1 && candidate.splits <= 4);
+    assert_eq!(candidate.tile, [64, 64]);
+    assert_eq!(
+        candidate.scratch_bytes,
+        (48 * 5120 * candidate.splits * 4) as u64
+    );
+    assert!(
+        super::projection_split_policy(48, 5120, 17408, 1, [64, 64], 256, 32 * 1024 * 1024)
+            .expect("single SM")
+            .is_none()
+    );
+    assert!(
+        super::projection_split_policy(48, 5120, 17408, 170, [64, 64], 256, 1)
+            .expect("tiny budget")
+            .is_none()
+    );
+    assert!(super::split_scratch_bytes(usize::MAX, 5120, 4).is_err());
+}
+
+#[test]
+fn split_k_candidate_kernels_compile_with_legal_tiles_and_actual_strides() {
+    let tile = 64usize;
+    for (rows, outputs, k, splits) in [(48usize, 5120usize, 17408usize, 4usize), (17, 129, 512, 3)]
+    {
+        let code_columns = i32::try_from(k / 2).expect("code columns");
+        let scale_columns = i32::try_from(k / 16).expect("scale columns");
+        let row_stride = i32::try_from(rows * outputs).expect("row stride");
+        let output_stride = i32::try_from(outputs).expect("output stride");
+        KernelCompiler::new(kernels::__module_ast_self, "kernels", "packed_split")
+            .target("sm_120")
+            .generics(vec![
+                k.to_string(),
+                tile.to_string(),
+                tile.to_string(),
+                splits.to_string(),
+            ])
+            .strides(&[
+                ("partials", &[row_stride, output_stride, 1]),
+                ("input", &[code_columns, 1]),
+                ("input_scales", &[scale_columns, 1]),
+                ("weight", &[code_columns, 1]),
+                ("scales", &[scale_columns, 1]),
+            ])
+            .compile()
+            .expect("packed_split legal tile compiles");
+        KernelCompiler::new(kernels::__module_ast_self, "kernels", "sum_splits")
+            .target("sm_120")
+            .generics(vec![tile.to_string(), tile.to_string(), splits.to_string()])
+            .strides(&[
+                ("out", &[output_stride, 1]),
+                ("partials", &[row_stride, output_stride, 1]),
+            ])
+            .compile()
+            .expect("sum_splits legal tile compiles");
+    }
 }
 
 #[test]
@@ -662,4 +727,127 @@ fn fused_gate_up_swiglu_performance() -> Result<(), Box<dyn StdError>> {
         );
     }
     Ok(())
+}
+
+#[test]
+fn swiglu_tile_candidates_keep_the_qualified_fallback() {
+    use crate::resident::nvfp4_gemm::workspace::{
+        SwigluTile, select_swiglu_tile, swiglu_candidates,
+    };
+    let candidates = swiglu_candidates(1024, 5120, 17408);
+    assert!(candidates.contains(&SwigluTile::FALLBACK));
+    assert!(candidates.contains(&SwigluTile {
+        rows: 128,
+        columns: 64
+    }));
+    assert!(candidates.contains(&SwigluTile {
+        rows: 128,
+        columns: 128
+    }));
+    assert_eq!(
+        select_swiglu_tile(1024, 5120, 17408),
+        Some(SwigluTile::FALLBACK)
+    );
+
+    // A shape that the fallback cannot tile is not silently claimed as a candidate.
+    assert_eq!(select_swiglu_tile(96, 5120, 17408), None);
+    assert_eq!(swiglu_candidates(96, 5120, 17408), Vec::new());
+    // The quantization group width is part of the legality check.
+    assert_eq!(swiglu_candidates(128, 5137, 17408), Vec::new());
+}
+
+#[test]
+fn swiglu_candidate_tiles_compile_without_a_device() -> Result<(), Box<dyn StdError>> {
+    use cutile::cutile_compiler::compile_api::KernelCompiler;
+    let columns = 5120i32;
+    let hidden = 17408i32;
+    for (tile_rows, tile_columns) in [(64i32, 64i32), (128, 64), (128, 128)] {
+        KernelCompiler::new(kernels::__module_ast_self, "kernels", "packed_swiglu")
+            .target("sm_120")
+            .generics(
+                [
+                    columns,
+                    tile_rows,
+                    tile_columns,
+                    tile_columns / 2,
+                    tile_columns / 16,
+                ]
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            )
+            .strides(&[
+                ("codes", &[hidden / 2, 1]),
+                ("code_scales", &[hidden / 16, 1]),
+                ("input", &[columns / 2, 1]),
+                ("input_scales", &[columns / 16, 1]),
+                ("gate", &[columns / 2, 1]),
+                ("gate_scales", &[columns / 16, 1]),
+                ("up", &[columns / 2, 1]),
+                ("up_scales", &[columns / 16, 1]),
+            ])
+            .compile()?;
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires CUDA and real 27B gate/up shape; run inside safe-run"]
+fn swiglu_real_27b_shape_tuner_compiles_compares_and_selects() -> Result<(), Box<dyn StdError>> {
+    use crate::mlp::ProjectionWeight;
+    use crate::tuning::resident_gemm::ResidentTuningSession;
+    use crate::tuning::swiglu::Contract as SwigluContract;
+    use crate::tuning::swiglu::select;
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    let profile = device.profile()?;
+    let (rows, columns, hidden) = SWIGLU_PERF_SHAPE;
+    let gate = swiglu_weight(&device, 1)?;
+    let up = swiglu_weight(&device, 5)?;
+    let gate = ProjectionWeight::Fp4(gate.0, gate.1, 161.0);
+    let up = ProjectionWeight::Fp4(up.0, up.1, 161.0);
+    let tile = select(
+        &device,
+        profile,
+        &gate,
+        &up,
+        SwigluContract {
+            shape: (rows, columns, hidden),
+            scales: (1.0, 1.0),
+        },
+        true,
+        &ResidentTuningSession::default(),
+    )?;
+    assert!(tile.rows == 64 || tile.rows == 128);
+    assert!(tile.columns == 64 || tile.columns == 128);
+    Ok(())
+}
+
+#[test]
+fn forced_split_scope_is_private_and_restores() {
+    assert!(!forced_split());
+    with_forced_split(|| {
+        assert!(forced_split());
+    });
+    assert!(!forced_split());
+}
+
+#[test]
+fn prefetch16_prefill_kernel_compiles_for_the_long_k_down_geometry() {
+    let (m, n, k) = (128usize, 128usize, 17408usize);
+    let code_columns = i32::try_from(k / 2).expect("code columns");
+    let scale_columns = i32::try_from(k / 16).expect("scale columns");
+    let output_columns = i32::try_from(n).expect("output columns");
+    KernelCompiler::new(kernels::__module_ast_self, "kernels", "packed_prefill16")
+        .target("sm_120")
+        .generics(vec![k.to_string(), m.to_string(), n.to_string()])
+        .strides(&[
+            ("out", &[output_columns, 1]),
+            ("input", &[code_columns, 1]),
+            ("input_scales", &[scale_columns, 1]),
+            ("weight", &[code_columns, 1]),
+            ("scales", &[scale_columns, 1]),
+        ])
+        .compile()
+        .expect("packed_prefill16 compiles");
 }

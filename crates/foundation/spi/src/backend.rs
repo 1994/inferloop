@@ -7,6 +7,17 @@ use infer_ir::{
 };
 use std::sync::Arc;
 
+/// Backend-selected concurrency for automatic serving configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SchedulingRecommendation {
+    /// Selected concurrent decode sequences.
+    pub max_sequences: usize,
+    /// State/KV memory bound from the loaded model and state budget.
+    pub memory_bound: usize,
+    /// Calibrated compute/bandwidth knee when the backend has measured one.
+    pub knee_bound: Option<usize>,
+}
+
 /// Owned work crosses the submission boundary; a future CUDA implementation uses
 /// persistent buffers and a bounded SPSC descriptor ring behind this contract.
 pub trait BackendProvider {
@@ -30,6 +41,10 @@ pub trait BackendProvider {
     fn weight_backed_dataflow(&self) -> bool {
         false
     }
+    /// Whether this backend has a bound multimodal encoder and can execute media prefill.
+    fn supports_multimodal(&self) -> bool {
+        false
+    }
     /// True only if control checkpoints can reconstruct all execution state.
     /// A proxy captures execution state via its owner lane; direct drivers can capture synchronously.
     fn requires_async_checkpoint(&self) -> bool {
@@ -39,6 +54,15 @@ pub trait BackendProvider {
         false
     }
     fn capabilities(&self) -> DeviceCapabilities;
+    /// Automatic concurrency recommendation for the loaded model and device.
+    ///
+    /// Backends that cannot price state return `None`; callers then keep their explicit or
+    /// portable default rather than inventing a device tier.
+    /// # Errors
+    /// Returns a storage/pricing error when the backend cannot compute a valid recommendation.
+    fn scheduling_recommendation(&self) -> Result<Option<SchedulingRecommendation>> {
+        Ok(None)
+    }
     /// Speculative decode support, queried on hot paths where cloning capabilities would allocate.
     fn speculation_capability(&self) -> infer_ir::SpeculationCapability {
         infer_ir::SpeculationCapability::default()
@@ -181,6 +205,40 @@ pub trait BackendProvider {
     fn reserve_state(&mut self, _state: StateId, _capacity_tokens: usize) -> Result<()> {
         Ok(())
     }
+    /// Prepare media-specific state pricing without speculative draft state.
+    /// # Errors
+    /// Returns invalid input or physical capacity errors.
+    fn prepare_state_reservation_for_media(
+        &mut self,
+        capacity: usize,
+        readout: infer_ir::OutputReadout,
+    ) -> Result<()> {
+        self.prepare_state_reservation(capacity, readout)
+    }
+    /// Media-specific state reservation size without speculative draft state.
+    /// # Errors
+    /// Returns invalid input or physical capacity errors.
+    fn state_reservation_bytes_for_media(
+        &self,
+        capacity: usize,
+        readout: infer_ir::OutputReadout,
+        _media: &infer_ir::MediaPlan,
+    ) -> Result<Option<u64>> {
+        self.state_reservation_bytes_for(capacity, readout)
+    }
+    /// Reserve state for a media request without creating speculative draft state.
+    /// # Errors
+    /// Returns invalid input, ownership or physical capacity errors.
+    fn reserve_state_for_media(
+        &mut self,
+        state: StateId,
+        capacity: usize,
+        readout: infer_ir::OutputReadout,
+        _media: &infer_ir::MediaPlan,
+    ) -> Result<()> {
+        self.reserve_state_for(state, capacity, readout)
+    }
+
     /// Reserve persistent state matching the readout contract.
     /// # Errors
     /// Returns invalid input, ownership or physical capacity errors.

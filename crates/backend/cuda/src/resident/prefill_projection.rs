@@ -1,3 +1,4 @@
+use super::nvfp4_gemm::Workspace as Nvfp4Workspace;
 use super::{ProgramWeights, capture::error, prefill_gemm::gemm};
 use crate::constants::PREFILL_GEMM_TILE_K;
 use crate::constants::PREFILL_GEMM_TILE_N;
@@ -13,11 +14,70 @@ use infer_ir::TensorNode;
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use std::thread::LocalKey;
 
 use crate::tuning::prefill::narrow_dense_layout;
 const NARROW_DENSE_TILE: [usize; 2] = [PREFILL_LANES, 16];
-/// Output columns and reduction width of the GDN `in_proj_b`/`in_proj_a` pair.
-pub(super) const GDN_BA_SHAPE: [i32; 2] = [48, 5120];
+
+/// Semantic Delta input role, established once from graph dataflow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GdnRole {
+    Beta,
+    Alpha,
+}
+
+/// Capture context for GDN beta/alpha pairing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GdnPairContext {
+    /// Ordinary verification lanes: the existing Dense path keeps its two-component
+    /// BF16 decomposition, so the single-component pair declines this context.
+    Verify,
+    /// Prompt chunk: the N16 prompt-only narrow layout must remain excluded so the
+    /// role-selected N16 kernel, not the pair kernel, handles eligible beta/alpha rows.
+    Prompt,
+}
+
+#[cfg(test)]
+thread_local! {
+    static PAIR_VERIFY: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    static PAIR_PROMPT: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+}
+
+#[cfg(test)]
+const fn pair_cell(context: GdnPairContext) -> &'static LocalKey<Cell<(usize, usize)>> {
+    match context {
+        GdnPairContext::Verify => &PAIR_VERIFY,
+        GdnPairContext::Prompt => &PAIR_PROMPT,
+    }
+}
+
+#[cfg(test)]
+pub fn reset_pair_counts() {
+    PAIR_VERIFY.with(|cell| cell.set((0, 0)));
+    PAIR_PROMPT.with(|cell| cell.set((0, 0)));
+}
+
+#[cfg(test)]
+pub fn pair_counts(context: GdnPairContext) -> (usize, usize) {
+    pair_cell(context).with(Cell::get)
+}
+
+#[cfg(test)]
+fn note_pair_attempt(context: GdnPairContext) {
+    pair_cell(context).with(|cell| {
+        let (attempts, records) = cell.get();
+        cell.set((attempts + 1, records));
+    });
+}
+
+#[cfg(test)]
+fn note_pair_record(context: GdnPairContext) {
+    pair_cell(context).with(|cell| {
+        let (attempts, records) = cell.get();
+        cell.set((attempts, records + 1));
+    });
+}
 
 /// Down projection absorbing `silu(gate) * up`: node indices of the `SiLU` and multiply it
 /// replaces, then the gate and up tensors it reads.
@@ -74,6 +134,54 @@ fn swiglu_plan(
     plan
 }
 
+/// Gate/up projection pairs and their logical hidden/reduction widths for `SwiGLU` tuning.
+pub fn swiglu_tuning_pairs(
+    graph: &infer_ir::DataflowGraph,
+    weights: &ProgramWeights,
+) -> Vec<(
+    infer_core::TensorId,
+    infer_core::TensorId,
+    usize,
+    usize,
+    f32,
+    f32,
+)> {
+    let scale = |weight| match weights.activation_quantization(weight) {
+        Some(super::program::ActivationQuantization::Fp4(scale)) => Some(scale),
+        _ => None,
+    };
+    swiglu_plan(graph, weights)
+        .into_iter()
+        .filter_map(|(down, (_, _, gate, up))| {
+            let (
+                Some(ProjectionWeight::Fp4(gate_weight, ..)),
+                Some(ProjectionWeight::Fp4(up_weight, ..)),
+            ) = (weights.projections.get(&gate), weights.projections.get(&up))
+            else {
+                return None;
+            };
+            if gate_weight.shape() != up_weight.shape() {
+                return None;
+            }
+            let gate_node = graph
+                .nodes
+                .iter()
+                .find(|node| node.outputs.contains(&gate))?;
+            let down_node = graph.nodes.get(down)?;
+            let input_scale = scale(gate_node.inputs[1])?;
+            let down_scale = scale(down_node.inputs[1])?;
+            Some((
+                gate,
+                up,
+                usize::try_from(gate_weight.shape()[0]).ok()?,
+                usize::try_from(gate_weight.shape()[1]).ok()? * 2,
+                input_scale,
+                down_scale,
+            ))
+        })
+        .collect()
+}
+
 /// Gated-MLP capture plan of one prompt graph: the `SiLU` and multiply nodes absorbed into
 /// their down projection, and the gate/up pairs that run as one fused pass at this width.
 pub(super) struct MlpPlan {
@@ -90,7 +198,10 @@ impl MlpPlan {
         geometry: (usize, &super::nvfp4_gemm::Workspace),
     ) -> Self {
         let swiglu = swiglu_plan(graph, weights);
-        let fused = fused_mlp_plan(graph, weights, &swiglu, geometry);
+        let (rows, workspace) = geometry;
+        let fused = fused_mlp_plan(graph, weights, &swiglu, |gate, up, columns, hidden| {
+            workspace.gate_up_swiglu_ready(gate, up, rows, columns, hidden)
+        });
         let fused_downs = fused.values().map(|&(.., down)| down).collect();
         let absorbed = swiglu
             .values()
@@ -173,7 +284,7 @@ fn fused_mlp_plan(
     graph: &infer_ir::DataflowGraph,
     weights: &ProgramWeights,
     swiglu: &BTreeMap<usize, Swiglu>,
-    (rows, nvfp4): (usize, &super::nvfp4_gemm::Workspace),
+    ready: impl Fn(infer_core::TensorId, infer_core::TensorId, usize, usize) -> bool,
 ) -> BTreeMap<usize, FusedMlp> {
     use infer_ir::TensorOp;
     let (producer, readers) = dataflow(graph);
@@ -213,13 +324,29 @@ fn fused_mlp_plan(
             || !sole(gate_output, silu)
             || !sole(up_output, multiply)
             || sizes.get(&up_output) != Some(&hidden)
-            || !nvfp4.gate_up_swiglu_ready(rows, columns, hidden)
+            || !ready(gate_node.inputs[1], up_node.inputs[1], columns, hidden)
         {
             continue;
         }
         plan.insert(gate.min(up), (gate, up, down));
     }
     plan
+}
+
+/// Projection nodes replaced by the prompt fusion at this width. Workspace preparation uses
+/// the same graph/geometry checks as capture, before the quantization buffers are allocated.
+pub(super) fn fused_projections(
+    graph: &infer_ir::DataflowGraph,
+    weights: &ProgramWeights,
+    rows: usize,
+) -> BTreeSet<usize> {
+    let swiglu = swiglu_plan(graph, weights);
+    fused_mlp_plan(graph, weights, &swiglu, |_, _, _, hidden| {
+        Nvfp4Workspace::gate_up_swiglu_geometry(rows, hidden)
+    })
+    .into_values()
+    .flat_map(|(gate, up, _)| [gate, up])
+    .collect()
 }
 
 /// Record a [`fused_mlp_plan`] gate/up pass into the down projection's activation codes.
@@ -247,6 +374,7 @@ fn record_fused_mlp(
     let hidden = arena.get(gate.outputs[0]).map_err(error)?.size() / width;
     nvfp4.record_gate_up_swiglu(
         scope,
+        (gate.inputs[1], up.inputs[1]),
         (weight(gate)?, weight(up)?),
         (scale(gate)?, scale(down)?),
         &input,
@@ -260,7 +388,7 @@ fn record_fused_down(
     node: &TensorNode,
     arena: &mut super::ActivationArena,
     weights: &ProgramWeights,
-    nvfp4: &super::nvfp4_gemm::Workspace,
+    nvfp4: &mut super::nvfp4_gemm::Workspace,
 ) -> Result<(), DeviceError> {
     let Some(super::program::ActivationQuantization::Fp4(scale)) =
         weights.activation_quantization(node.inputs[1])
@@ -329,7 +457,7 @@ fn record_swiglu(
 /// the prompt GEMM is latency-bound at one wave, so wider grids hide DRAM latency.
 pub(super) fn record(
     scope: &Scope,
-    node: &TensorNode,
+    (node, role): (&TensorNode, Option<GdnRole>),
     arena: &mut super::ActivationArena,
     (weights, profile): (&ProgramWeights, &DeviceProfile),
     partials: &mut BTreeMap<usize, Tensor<f32>>,
@@ -385,7 +513,7 @@ pub(super) fn record(
                 arena.buffers[slot] = Some(output.reshape(&[flat])?);
                 return Ok(());
             }
-            if records_narrow_dense(scope, profile, &input, w, &mut output, dims)? {
+            if records_narrow_dense(scope, profile, role, &input, w, &mut output, dims)? {
                 arena.buffers[slot] = Some(output.reshape(&[flat])?);
                 return Ok(());
             }
@@ -425,20 +553,37 @@ pub(super) fn record(
     Ok(())
 }
 
-/// Record GDN `in_proj_b` + `in_proj_a` as one launch: both are Dense BF16 N48
-/// projections of the same normalized input. The pair kernel keeps each output's
-/// independent K accumulation order; only the launch (and the shared `x` load) is fused.
+/// Record a GDN `in_proj_b` + `in_proj_a` pair as one launch: both are dense BF16
+/// projections of the same input with equal output width. The caller establishes the
+/// semantic pair from the graph (the beta and alpha inputs of one `Delta` node); this
+/// function validates projection/layout compatibility and the capture context.
 ///
-/// Returns false when either node would take a different path (narrow N16 layout,
-/// sparse experts, vendor GEMM, or unexpected shape). A 48x5120 weight is below
-/// the tuning policy's vendor threshold, so the vendor path is impossible for this shape.
+/// The pair kernel keeps each output's independent K accumulation order; only the
+/// launch (and the shared `x` load) is fused. In prompt context the prompt-only N16
+/// narrow layout stays excluded, so role-selected N16 wins; verification context is
+/// not subject to that prompt-tile exclusion because its ordinary Dense path already
+/// uses the same BF16 MMA contract.
+///
+/// Returns false when either node would take a different path (prompt N16 layout,
+/// sparse experts, vendor GEMM, output width above one 64-column tile, or mismatched
+/// input/weight geometry).
 pub(super) fn record_pair(
     scope: &Scope,
     first: &TensorNode,
     second: &TensorNode,
     arena: &mut super::ActivationArena,
     (weights, profile): (&ProgramWeights, &DeviceProfile),
+    context: GdnPairContext,
 ) -> Result<bool, DeviceError> {
+    #[cfg(test)]
+    note_pair_attempt(context);
+    // Verify Dense uses the two-component BF16 decomposition in `small_gemm`
+    // (high plus residual low), while `dense_pair` converts only the high component.
+    // Keep verification on its existing F32 contract; prompt Dense already uses the
+    // single-conversion kernel this pair matches.
+    if context == GdnPairContext::Verify {
+        return Ok(false);
+    }
     if first.inputs.len() != 2
         || second.inputs.len() != 2
         || first.inputs[0] != second.inputs[0]
@@ -454,11 +599,20 @@ pub(super) fn record_pair(
     ) else {
         return Ok(false);
     };
-    if weight_b.shape() != GDN_BA_SHAPE || weight_a.shape() != weight_b.shape() {
+    if weight_b.shape() != weight_a.shape() || weight_b.shape().len() != 2 {
+        return Ok(false);
+    }
+    let rows = usize::try_from(weight_b.shape()[0]).map_err(error)?;
+    let weight_columns = usize::try_from(weight_b.shape()[1]).map_err(error)?;
+    if rows == 0
+        || rows > PREFILL_GEMM_TILE_N
+        || weight_columns == 0
+        || weight_a.shape()[1] != weight_b.shape()[1]
+    {
         return Ok(false);
     }
     let width = arena.lanes();
-    let expected = usize::try_from(GDN_BA_SHAPE[0]).map_err(error)? * width;
+    let expected = rows * width;
     let input_slot = arena.slot(first.inputs[0]).map_err(error)?;
     let input_elements = arena.buffers[input_slot]
         .as_ref()
@@ -466,17 +620,11 @@ pub(super) fn record_pair(
         .size();
     let columns = input_elements / width;
     if columns * width != input_elements
-        || columns != usize::try_from(GDN_BA_SHAPE[1]).map_err(error)?
+        || columns != weight_columns
         || arena.get(first.outputs[0]).map_err(error)?.size() != expected
         || arena.get(second.outputs[0]).map_err(error)?.size() != expected
-        || narrow_dense_layout(
-            &profile.architecture,
-            (
-                width,
-                usize::try_from(GDN_BA_SHAPE[0]).map_err(error)?,
-                columns,
-            ),
-        )
+        || (context == GdnPairContext::Prompt
+            && narrow_dense_layout(&profile.architecture, rows, columns))
     {
         return Ok(false);
     }
@@ -491,7 +639,6 @@ pub(super) fn record_pair(
     let output_a = arena.buffers[slot_a]
         .take()
         .ok_or_else(|| error("paired projection a output"))?;
-    let rows = usize::try_from(GDN_BA_SHAPE[0]).map_err(error)?;
     let mut output_b = output_b.reshape(&[width, rows])?;
     let mut output_a = output_a.reshape(&[width, rows])?;
     let flat_input = arena.buffers[input_slot]
@@ -510,6 +657,8 @@ pub(super) fn record_pair(
     )?;
     arena.buffers[slot_b] = Some(output_b.reshape(&[expected])?);
     arena.buffers[slot_a] = Some(output_a.reshape(&[expected])?);
+    #[cfg(test)]
+    note_pair_record(context);
     Ok(true)
 }
 
@@ -592,6 +741,7 @@ fn records_precise_sparse(
 fn records_narrow_dense(
     scope: &Scope,
     profile: &DeviceProfile,
+    role: Option<GdnRole>,
     input: &TensorView<'_, f32>,
     weight: &Tensor<bf16>,
     output: &mut Tensor<f32>,
@@ -601,7 +751,7 @@ fn records_narrow_dense(
     if DENSE_REFERENCE.get() {
         return Ok(false);
     }
-    if !narrow_dense_layout(&profile.architecture, shape) {
+    if role.is_none() || !narrow_dense_layout(&profile.architecture, shape.1, shape.2) {
         return Ok(false);
     }
     scope.record(

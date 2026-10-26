@@ -16,6 +16,9 @@ impl BackendProvider for CudaBackend {
     fn weight_backed_dataflow(&self) -> bool {
         true
     }
+    fn supports_multimodal(&self) -> bool {
+        self.view.multimodal
+    }
     fn capabilities(&self) -> DeviceCapabilities {
         self.view.capabilities.clone()
     }
@@ -24,6 +27,12 @@ impl BackendProvider for CudaBackend {
     }
     fn execution_profile(&self) -> Option<infer_ir::ExecutionProfileInspection> {
         Some(self.view.profile.clone())
+    }
+    fn scheduling_recommendation(&self) -> Result<Option<infer_spi::SchedulingRecommendation>> {
+        self.ready
+            .as_deref()
+            .map(super::super::CudaExecutor::scheduling_recommendation)
+            .transpose()
     }
     fn control_ready(&self) -> bool {
         !self.busy && self.fatal.is_none()
@@ -68,6 +77,22 @@ impl BackendProvider for CudaBackend {
     ) -> Result<Option<u64>> {
         self.idle()?.state_reservation_bytes_for(capacity, readout)
     }
+    fn prepare_state_reservation_for_media(
+        &mut self,
+        capacity: usize,
+        readout: OutputReadout,
+    ) -> Result<()> {
+        self.control(|executor| executor.prepare_state_reservation_for_media(capacity, readout))
+    }
+    fn state_reservation_bytes_for_media(
+        &self,
+        capacity: usize,
+        readout: OutputReadout,
+        media: &infer_ir::MediaPlan,
+    ) -> Result<Option<u64>> {
+        self.idle()?
+            .state_reservation_bytes_for_media(capacity, readout, media)
+    }
     fn state_capacity_bytes(&self) -> Result<Option<u64>> {
         Ok(self.view.capacity)
     }
@@ -93,7 +118,23 @@ impl BackendProvider for CudaBackend {
         readout: OutputReadout,
     ) -> Result<()> {
         self.control(|executor| {
-            executor.reserve(state, capacity, readout)?;
+            executor.reserve(state, capacity, readout, true)?;
+            if let Err(error) = executor.prepare_execution() {
+                executor.release(state)?;
+                return Err(error);
+            }
+            Ok(())
+        })
+    }
+    fn reserve_state_for_media(
+        &mut self,
+        state: StateId,
+        capacity: usize,
+        readout: OutputReadout,
+        media: &infer_ir::MediaPlan,
+    ) -> Result<()> {
+        self.control(|executor| {
+            executor.reserve_media(state, capacity, readout, media)?;
             if let Err(error) = executor.prepare_execution() {
                 executor.release(state)?;
                 return Err(error);

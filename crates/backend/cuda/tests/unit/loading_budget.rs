@@ -10,12 +10,13 @@ use crate::resident::attention_mma::eligible_with_role;
 use crate::resident::attention_mma::node_eligible;
 use crate::test_support::fixture_graph;
 use crate::tuning::resident_gemm::ResidentTuningSession;
+use VERIFY_SPLIT_SCRATCH_BUDGET;
 use cutile::half::bf16;
 use infer_core::{OpId, TensorId};
 use infer_ir::{DType, TensorNode, TensorSpec};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 fn fixture_weights() -> ProgramWeights {
     ProgramWeights {
@@ -23,6 +24,7 @@ fn fixture_weights() -> ProgramWeights {
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,
         resident_tuning: Arc::new(ResidentTuningSession::default()),
+        pool_gemv: Arc::new(Mutex::new(BTreeMap::new())),
         chunked_recurrent: false,
         batch_width: 3,
         prefill_width: 32,
@@ -40,6 +42,25 @@ fn fixture_weights() -> ProgramWeights {
         rope_axes: BTreeMap::new(),
         rope_frequencies: BTreeMap::new(),
     }
+}
+
+#[test]
+fn pooled_quote_covers_padded_stacked_table_owner_for_short_capacity() -> Result<()> {
+    for (width, capacity) in [(16usize, 128usize), (16, 8192), (32, 4096)] {
+        let blocks = capacity.div_ceil(KV_BLOCK_TOKENS).max(1);
+        let table = SlotPool::table_bytes(width, capacity)?;
+        assert!(
+            table
+                >= u64::try_from(width * blocks * F32_BYTES)
+                    .map_err(|_| Error::invalid("test table bound"))?
+        );
+        assert!(table.is_multiple_of(F32_BYTES as u64));
+    }
+    // Short capacity still needs a 256-column row for 16 slots x 3 lanes x 3 metadata words.
+    assert_eq!(SlotPool::table_bytes(16, 128)?, 16 * 256 * F32_BYTES as u64);
+    assert!(SlotPool::table_bytes(usize::MAX, 128).is_err());
+    assert!(SlotPool::table_bytes(16, usize::MAX).is_err());
+    Ok(())
 }
 
 #[test]
@@ -67,19 +88,19 @@ fn admission_charges_shared_projection_geometry_once() -> Result<()> {
     // Repeated layers share one [3, K] / [3, N] pair. Prefill has zero-copy views.
     assert_eq!(
         projection_workspace(&graph, &weights, ProgramGeometry::new(&weights, true))?,
-        (128 + 256) * 3 * F32
+        (128 + 256) * 3 * F32 + VERIFY_SPLIT_SCRATCH_BUDGET
     );
     weights.input_scales.insert(TensorId::new(10)?, 1.0);
     weights.input_scales.insert(TensorId::new(11)?, 1.0);
     assert_eq!(
         projection_workspace(&graph, &weights, ProgramGeometry::new(&weights, true))?,
-        (128 + 256) * 3 * F32 + (128 / 2 + 128 / 16) * (1 + 3 + 32)
+        (128 + 256) * 3 * F32 + (128 / 2 + 128 / 16) * (1 + 3 + 32) + VERIFY_SPLIT_SCRATCH_BUDGET
     );
     // Wider verification batches also share one pack/unpack pair per geometry.
     weights.batch_width = 5;
     assert_eq!(
         projection_workspace(&graph, &weights, ProgramGeometry::new(&weights, true))?,
-        (128 + 256) * 5 * F32 + (128 / 2 + 128 / 16) * (1 + 5 + 32)
+        (128 + 256) * 5 * F32 + (128 / 2 + 128 / 16) * (1 + 5 + 32) + VERIFY_SPLIT_SCRATCH_BUDGET
     );
     // Without a private verification graph its pack/unpack pairs and staging rows vanish.
     assert_eq!(
@@ -161,7 +182,10 @@ fn pooled_admission_excludes_uncaptured_wide_prompt_and_private_readback() -> Re
     // Private capture adds the wide external rows, verification arena and readback rows.
     assert_eq!(
         quote(true)? - quote(false)?,
-        (256 - 64) * 48 * F32 + 3 * (2 * 48) * F32 + 3 * (48 + 48) * F32
+        (256 - 64) * 48 * F32
+            + 3 * (2 * 48) * F32
+            + 3 * (48 + 48) * F32
+            + VERIFY_SPLIT_SCRATCH_BUDGET
     );
     // The shared scratch covers both prompt widths once.
     assert_eq!(
@@ -195,7 +219,10 @@ fn pooled_admission_keeps_verification_required_by_prompt_fallback() -> Result<(
     };
     // Without a prompt graph, prefill uses the private verification graph even when the
     // caller requests pooled decode; its activations and readback must remain charged.
-    let expected = (1 + 3) * (2 * 48) * F32 + (1 + 3) * 48 * F32 + (1 + 3) * (48 + 48) * F32;
+    let expected = (1 + 3) * (2 * 48) * F32
+        + (1 + 3) * 48 * F32
+        + (1 + 3) * (48 + 48) * F32
+        + VERIFY_SPLIT_SCRATCH_BUDGET;
     assert_eq!(quote(false)?, expected);
     assert_eq!(quote(true)?, expected);
     Ok(())
@@ -593,37 +620,52 @@ fn pending_prompt_scratch_prices_only_uncached_captured_widths() -> Result<()> {
 #[test]
 fn funded_kv_rounds_down_without_changing_logical_capacity() -> Result<()> {
     let width = 16;
-    let capacity = 8192;
     let maximum = width * 6144;
     let fixed = 5_200_689_152;
     let block_bytes = 1_048_576;
     let envelope = 7_569_557_647;
-    let tokens = funded_kv_tokens(width, capacity, maximum, block_bytes, fixed, envelope)?
+    let tokens = funded_kv_tokens(width, maximum, block_bytes, fixed, envelope)?
         .ok_or_else(|| Error::invariant("funded fixture"))?;
     assert_eq!(tokens, 72_288);
     assert_eq!(tokens % KV_BLOCK_TOKENS, 0);
     assert!(fixed + (tokens / KV_BLOCK_TOKENS) as u64 * block_bytes <= envelope);
     assert!(fixed + (tokens / KV_BLOCK_TOKENS + 1) as u64 * block_bytes > envelope);
-    assert!(tokens >= width * (capacity / 2 + KV_BLOCK_TOKENS));
-    // A budget that cannot admit one minimum-bucket request per slot is not useful.
+    // Each resident handle needs only one physical page to make short concurrent requests
+    // admissible; the old half-capacity floor is not a planning requirement.
+    assert!(tokens >= width * KV_BLOCK_TOKENS);
+    // A budget with no page at all cannot admit even one short request.
     assert_eq!(
-        funded_kv_tokens(
-            width,
-            capacity,
-            maximum,
-            block_bytes,
-            fixed,
-            fixed + (width * capacity / 2 / KV_BLOCK_TOKENS) as u64 * block_bytes
-        )?,
+        funded_kv_tokens(width, maximum, block_bytes, fixed, fixed)?,
         None
     );
+    assert_eq!(funded_kv_tokens(width, maximum, 0, fixed, envelope)?, None);
     assert_eq!(
-        funded_kv_tokens(width, capacity, maximum, 0, fixed, envelope)?,
+        funded_kv_tokens(width, maximum, block_bytes, fixed, fixed)?,
         None
     );
-    assert_eq!(
-        funded_kv_tokens(width, capacity, maximum, block_bytes, fixed, fixed)?,
-        None
-    );
+    Ok(())
+}
+
+#[test]
+fn projection_quote_charges_the_shared_verify_split_allowance() -> Result<()> {
+    let weights = fixture_weights();
+    let graph = fixture_graph(48)?;
+    let none = projection_workspace(
+        &graph,
+        &weights,
+        ProgramGeometry {
+            verification: 0,
+            prompts: [0, 0],
+        },
+    )?;
+    let one = projection_workspace(
+        &graph,
+        &weights,
+        ProgramGeometry {
+            verification: 1,
+            prompts: [0, 0],
+        },
+    )?;
+    assert!(one >= none + VERIFY_SPLIT_SCRATCH_BUDGET);
     Ok(())
 }

@@ -2,6 +2,7 @@ use super::*;
 use crate::resident::attention::attention;
 use cutile::cutile_compiler::compile_api::KernelCompiler;
 use std::error::Error;
+use std::time::{Duration, Instant};
 
 type TestResult<T = ()> = StdResult<T, Box<dyn Error>>;
 
@@ -20,6 +21,16 @@ fn pooled_attention_kernels_compile_without_a_device() -> TestResult {
                 ("t1", &[1]),
                 ("t2", &[1]),
                 ("t3", &[1]),
+                ("parameters", &[1]),
+                ("metadata", &[1]),
+            ])
+            .compile()?;
+        KernelCompiler::new(kernels::__module_ast_self, "kernels", "pack_control_batch")
+            .target("sm_120")
+            .generics(vec![columns.to_string()])
+            .strides(&[
+                ("out", &[columns, 1]),
+                ("tables", &[columns, 1]),
                 ("parameters", &[1]),
                 ("metadata", &[1]),
             ])
@@ -78,12 +89,33 @@ fn pooled_attention_kernels_compile_without_a_device() -> TestResult {
 }
 
 #[test]
+fn pooled_layout_covers_every_slot_with_bounded_partials() -> TestResult {
+    let geometry = Geometry {
+        heads: HEADS,
+        kv_heads: KV,
+        dim: DIM,
+    };
+    let four = grouped_parts_for(HEADS, KV, 170, 4).ok_or("four-slot parts")?;
+    let sixteen = grouped_parts_for(HEADS, KV, 170, 16).ok_or("sixteen-slot parts")?;
+    assert!(sixteen < four, "more slots must reduce per-slot splits");
+    let layout = Layout::new(geometry, 16, CAPACITY, sixteen)?;
+    assert_eq!(layout.slots, 16);
+    assert_eq!(layout.blocks, 16 * KV * sixteen);
+    assert!(
+        layout.blocks <= 2 * 170,
+        "one launch stays near the wave target"
+    );
+    assert!(layout.bytes(1)? > layout.bytes(0)?);
+    Ok(())
+}
+
+#[test]
 #[ignore = "requires CUDA hardware; run inside safe-run"]
 fn pooled_attention_preserves_output_bits_and_cache_bytes() -> TestResult {
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
     for slots in [2, 5, 16] {
-        let mut fixture = Fixture::new(&device, slots)?;
+        let mut fixture = Fixture::new(&device, slots, PARTS)?;
         for (position, window) in [
             (0, 0),
             (30, 0),
@@ -94,6 +126,31 @@ fn pooled_attention_preserves_output_bits_and_cache_bytes() -> TestResult {
         ] {
             fixture.check(&device, position, window)?;
         }
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires CUDA hardware; actual 16-slot pooled launch versus four groups, safe-run"]
+fn pooled_all_slots_versus_four_groups_raw_latency() -> TestResult {
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    let four = grouped_parts_for(HEADS, KV, 170, 4).ok_or("four-slot parts")?;
+    let derived = grouped_parts_for(HEADS, KV, 170, 16).ok_or("sixteen-slot parts")?;
+    assert!(derived < four, "all-slot layout does not reduce groups");
+    for parts in [four, derived] {
+        let mut fixture = Fixture::new(&device, 16, parts)?;
+        fixture.check(&device, 8189, 1024)?;
+        let mut samples = Vec::new();
+        for _ in 0..5 {
+            let elapsed = fixture.check(&device, 8189, 1024)?;
+            samples.push(elapsed.as_secs_f64() * 1e6);
+        }
+        samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "POOLED_RAW parts={parts} slots=16 samples_us={samples:?} median_us={}",
+            samples[samples.len() / 2]
+        );
     }
     Ok(())
 }
@@ -111,7 +168,9 @@ fn upload<T: DType>(device: &CudaDevice, values: Vec<T>, shape: &[usize]) -> Tes
 
 struct Fixture {
     slots: usize,
+    parts: usize,
     tables: Vec<Tensor<i32>>,
+    table_batch: Tensor<i32>,
     queries: Arc<Tensor<f32>>,
     inputs: [Arc<Tensor<f32>>; 2],
     original: [Tensor<f8e4m3fn>; 2],
@@ -119,22 +178,26 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(device: &CudaDevice, slots: usize) -> TestResult<Self> {
+    fn new(device: &CudaDevice, slots: usize, parts: usize) -> TestResult<Self> {
         let blocks = CAPACITY / KV_BLOCK_TOKENS;
-        let tables = (0..slots)
+        let table_values = (0..slots)
             .map(|slot| {
-                upload(
-                    device,
-                    (0..blocks)
-                        .map(|block| {
-                            i32::try_from(((slot * blocks + block) * 3 + 7) % (slots * blocks))
-                                .unwrap()
-                        })
-                        .collect(),
-                    &[blocks],
-                )
+                (0..blocks)
+                    .map(|block| {
+                        i32::try_from(((slot * blocks + block) * 3 + 7) % (slots * blocks)).unwrap()
+                    })
+                    .collect::<Vec<_>>()
             })
+            .collect::<Vec<_>>();
+        let tables = table_values
+            .iter()
+            .map(|values| upload(device, values.clone(), &[blocks]))
             .collect::<TestResult<Vec<_>>>()?;
+        let table_batch = upload(
+            device,
+            table_values.into_iter().flatten().collect(),
+            &[slots, blocks],
+        )?;
         let queries = device.upload(
             (0..slots * VERIFY_LANES * HEADS * DIM)
                 .map(|i| (f32::from(u16::try_from(i % 131).unwrap()) - 65.0) / 37.0)
@@ -171,7 +234,9 @@ impl Fixture {
         };
         Ok(Self {
             slots,
+            parts,
             tables,
+            table_batch,
             queries,
             inputs: [input(0)?, input(13)?],
             original: [cache(0)?, cache(11)?],
@@ -179,7 +244,7 @@ impl Fixture {
         })
     }
 
-    fn check(&mut self, device: &CudaDevice, position: i32, window: i32) -> TestResult {
+    fn check(&mut self, device: &CudaDevice, position: i32, window: i32) -> TestResult<Duration> {
         let lanes = self.slots * VERIFY_LANES;
         // Mix active, fully inactive and partial slots; field zero deliberately differs from
         // the cache position, which is field two.
@@ -212,7 +277,7 @@ impl Fixture {
         let buffer = Buffers::new(
             device,
             Blueprint {
-                layout: Layout::new(geometry, self.slots, CAPACITY, PARTS)?,
+                layout: Layout::new(geometry, self.slots, CAPACITY, self.parts)?,
                 parameters: BTreeMap::from([(node, header)]),
             },
         )?;
@@ -236,6 +301,7 @@ impl Fixture {
                     inputs: [&self.inputs[0], &self.inputs[1]],
                     metadata: &metadata,
                     tables: &self.tables,
+                    table_batch: &self.table_batch,
                 },
             )?;
             work.attend(
@@ -250,7 +316,9 @@ impl Fixture {
             )?;
             Ok(())
         })?;
+        let started = Instant::now();
         candidate.launch().sync_on(&device.stream)?;
+        let elapsed = started.elapsed();
         let actual = device.read_borrowed(&actual)?;
         for (lane, expected) in expected.iter().enumerate() {
             let expected = device.read_borrowed(expected)?;
@@ -268,6 +336,11 @@ impl Fixture {
                 );
             }
         }
+        self.verify_cache(device, position, window)?;
+        Ok(elapsed)
+    }
+
+    fn verify_cache(&self, device: &CudaDevice, position: i32, window: i32) -> TestResult {
         for (actual, expected) in self.candidate.iter().zip(&self.original) {
             let actual = device.read_borrowed(actual)?;
             let expected = device.read_borrowed(expected)?;
@@ -281,6 +354,7 @@ impl Fixture {
         }
         Ok(())
     }
+
     fn reference(
         &mut self,
         device: &CudaDevice,
@@ -289,9 +363,11 @@ impl Fixture {
         expected: &mut [Tensor<f32>],
     ) -> TestResult {
         let mut numerator =
-            api::zeros::<f32>(&[KV * PARTS, STACKED_ROWS, DIM]).sync_on(&device.stream)?;
-        let mut maxima = api::zeros::<f32>(&[KV * PARTS, STACKED_ROWS]).sync_on(&device.stream)?;
-        let mut sums = api::zeros::<f32>(&[KV * PARTS, STACKED_ROWS]).sync_on(&device.stream)?;
+            api::zeros::<f32>(&[KV * self.parts, STACKED_ROWS, DIM]).sync_on(&device.stream)?;
+        let mut maxima =
+            api::zeros::<f32>(&[KV * self.parts, STACKED_ROWS]).sync_on(&device.stream)?;
+        let mut sums =
+            api::zeros::<f32>(&[KV * self.parts, STACKED_ROWS]).sync_on(&device.stream)?;
         let [keys, values] = &mut self.original;
         let physical = self.slots * CAPACITY;
         let reference = CudaGraph::scope(&device.stream, |scope| {
@@ -345,7 +421,7 @@ impl Fixture {
                     .generics(vec![
                         f8e4m3fn::DTYPE.as_str().into(),
                         DIM.to_string(),
-                        PARTS.to_string(),
+                        self.parts.to_string(),
                         KV_BLOCK_TOKENS.to_string(),
                     ])
                     .compile_options(grouped_options()),
@@ -354,13 +430,13 @@ impl Fixture {
                     scope.record(
                         super::super::kernels::merge_gqa(
                             output.partition([1, DIM]),
-                            &numerator.view(&[KV, PARTS, STACKED_ROWS, DIM])?,
-                            &maxima.view(&[KV, PARTS, STACKED_ROWS])?,
-                            &sums.view(&[KV, PARTS, STACKED_ROWS])?,
+                            &numerator.view(&[KV, self.parts, STACKED_ROWS, DIM])?,
+                            &maxima.view(&[KV, self.parts, STACKED_ROWS])?,
+                            &sums.view(&[KV, self.parts, STACKED_ROWS])?,
                             i32::try_from(lane * STACKED_LANE_ROWS).map_err(error)?,
                         )
                         .generics(
-                            [DIM, PARTS, HEADS / KV, STACKED_ROWS]
+                            [DIM, self.parts, HEADS / KV, STACKED_ROWS]
                                 .iter()
                                 .map(ToString::to_string)
                                 .collect(),

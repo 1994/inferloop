@@ -4,9 +4,11 @@ pub mod fp8_gemm;
 pub mod gated_norm;
 pub mod greedy;
 pub(crate) mod memory;
+pub mod pool_gemv;
 pub(crate) mod prefill;
 pub mod recurrent;
 pub mod resident_gemm;
+pub mod swiglu;
 
 use crate::device::DeviceProfile;
 use crate::strategy::default_tiling;
@@ -267,6 +269,31 @@ fn verify(actual: &[f32], expected: &[f32]) -> Result<()> {
     Ok(())
 }
 
+/// Full driver build string, when the NVIDIA procfs interface is available.
+pub(crate) fn driver_build() -> Option<String> {
+    read_to_string("/proc/driver/nvidia/version")
+        .ok()?
+        .lines()
+        .find(|line| line.starts_with("NVRM version:"))
+        .map(str::trim)
+        .map(str::to_owned)
+}
+
+/// Compiler/JIT context for a production kernel family. The caller adds its exact generics,
+/// strides and weight contract; this function captures the installed compiler bytecode identity
+/// and compile options so a source/toolchain change invalidates cached measurements.
+pub(crate) fn compiler_fingerprint() -> String {
+    use cutile::cutile_compiler::{cuda_tile_runtime_utils as compiler, hints::CompileOptions};
+    format!(
+        "{}:{:?}:{:?}:{:?}:{:?}",
+        compiler::tileiras_fingerprint(),
+        compiler::bytecode_override(),
+        CompileOptions::default(),
+        var_os("CUTILE_DISABLE_CHECK_HOISTING"),
+        var_os("CUTILE_FORCE_DEVICE_CHECKS")
+    )
+}
+
 /// Environment override for the machine-local tuning table path.
 const TUNING_TABLE_ENV: &str = "INFER_CUDA_TUNING_TABLE";
 
@@ -285,6 +312,21 @@ pub struct TuningEntry {
     pub tile_columns: usize,
 }
 
+/// Measured, quality-verified verify-projection split decision. Absence keeps exact.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifySplitEntry {
+    pub hardware: String,
+    pub mode: String,
+    pub rows: usize,
+    pub outputs: usize,
+    pub columns: usize,
+    pub splits: usize,
+    pub scratch_bytes: u64,
+    pub kernel_schema: String,
+    pub speedup: f32,
+    pub reference: String,
+}
+
 /// Machine-local GEMV tiling decisions, scoped to each measured device identity.
 ///
 /// Old single-device tables are migrated on read. Entries without a device identity are discarded:
@@ -299,6 +341,9 @@ pub struct TilingTable {
     pub resident_gemm: Vec<resident_gemm::ResidentGemmEntry>,
     #[serde(default)]
     pub resident_fp8_gemm: Vec<fp8_gemm::Entry>,
+    /// Measured verify projection splits; absence keeps exact.
+    #[serde(default)]
+    pub verify_split: Vec<VerifySplitEntry>,
     /// Device/driver/kernel/geometry scoped exact greedy reduction decisions.
     #[serde(default)]
     pub greedy: Vec<greedy::Entry>,
@@ -331,6 +376,12 @@ pub struct TilingTable {
     pub resident_mma_f32_attention: Vec<attention::mma_f32::Entry>,
     #[serde(default)]
     pub resident_exact_recurrent: Vec<recurrent::exact::Entry>,
+    /// Shape-specific fused `SwiGLU` tile decisions with exact-output evidence.
+    #[serde(default)]
+    pub swiglu: Vec<swiglu::Entry>,
+    /// Measured row-GEMV versus blocked Dense GEMM crossover decisions.
+    #[serde(default)]
+    pub pool_gemv: Vec<pool_gemv::Entry>,
 }
 
 /// Read both the current per-device table and the former top-level `device`/`entries` format.
@@ -346,6 +397,8 @@ struct StoredTilingTable {
     resident_gemm: Vec<resident_gemm::ResidentGemmEntry>,
     #[serde(default)]
     resident_fp8_gemm: Vec<fp8_gemm::Entry>,
+    #[serde(default)]
+    verify_split: Vec<VerifySplitEntry>,
     #[serde(default)]
     greedy: Vec<greedy::Entry>,
     #[serde(default)]
@@ -368,6 +421,10 @@ struct StoredTilingTable {
     resident_mma_f32_attention: Vec<attention::mma_f32::Entry>,
     #[serde(default)]
     resident_exact_recurrent: Vec<recurrent::exact::Entry>,
+    #[serde(default)]
+    swiglu: Vec<swiglu::Entry>,
+    #[serde(default)]
+    pool_gemv: Vec<pool_gemv::Entry>,
 }
 
 impl From<StoredTilingTable> for TilingTable {
@@ -391,6 +448,7 @@ impl From<StoredTilingTable> for TilingTable {
             devices,
             resident_gemm: stored.resident_gemm,
             resident_fp8_gemm: stored.resident_fp8_gemm,
+            verify_split: stored.verify_split,
             greedy: stored.greedy,
             resident_gated_norm: stored.resident_gated_norm,
             resident_recurrent: stored.resident_recurrent,
@@ -402,6 +460,8 @@ impl From<StoredTilingTable> for TilingTable {
             resident_mma_attention: stored.resident_mma_attention,
             resident_mma_f32_attention: stored.resident_mma_f32_attention,
             resident_exact_recurrent: stored.resident_exact_recurrent,
+            swiglu: stored.swiglu,
+            pool_gemv: stored.pool_gemv,
         }
     }
 }
@@ -509,6 +569,30 @@ pub(crate) fn shipped_table() -> Result<&'static TilingTable> {
     let table: TilingTable = serde_json::from_str(SHIPPED_BASELINE)
         .map_err(|error| Error::invalid(format!("shipped CUDA tuning baseline: {error}")))?;
     Ok(SHIPPED.get_or_init(|| table))
+}
+
+pub(crate) fn verify_split_qualified(
+    device: &CudaDevice,
+    (mode, rows, outputs, columns, splits, scratch): (&str, usize, usize, usize, usize, u64),
+) -> Result<bool> {
+    let identity = device.profile()?.identity();
+    let local = resolve_table(table_path().as_deref())?;
+    let shipped = shipped_table().ok();
+    let matches = |table: &TilingTable| {
+        table.verify_split.iter().any(|entry| {
+            entry.hardware == identity
+                && entry.mode == mode
+                && entry.rows == rows
+                && entry.outputs == outputs
+                && entry.columns == columns
+                && entry.splits == splits
+                && entry.scratch_bytes == scratch
+                && entry.kernel_schema == "nvfp4-packed-split-v1"
+                && entry.speedup > 1.0
+                && !entry.reference.is_empty()
+        })
+    };
+    Ok(local.as_ref().is_some_and(matches) || shipped.is_some_and(matches))
 }
 
 /// Where tile decisions come from for one model load.
@@ -679,3 +763,11 @@ pub(crate) fn select_tiling(
 #[cfg(test)]
 #[path = "../tests/unit/tuning.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/swiglu_tuning.rs"]
+mod swiglu_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/tuning_families.rs"]
+mod tuning_family_tests;

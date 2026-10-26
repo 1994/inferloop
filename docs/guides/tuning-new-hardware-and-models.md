@@ -30,7 +30,7 @@
 | prompt 宽度 | `loading/mod.rs`：按 arena 预算在若干档宽度中选择 | `prompt width rung width=...` |
 
 **新硬件上要检查的日志：**
-- 没有出现 `resident GEMM model search budget exhausted`。如果出现，说明 30 s 的搜索预算不够，剩余形状会回退到默认配置。
+- 没有出现 `GEMM shape search budget exhausted`。每个 resident GEMM shape 的 allowance 由候选数和 paired measurement 上限推导，先前 shape 不消耗后续 shape；若出现，日志列出未完成的 family/shape。非 GEMM 类别仍有各自独立的有限额度。
 - 没有出现 `conservative fallback`。
 - 槽数和 KV token 数与显存相符。
 
@@ -60,7 +60,7 @@
    - recurrent 状态精度：例如 Qwen3.5 系列 config 中 `mamba_ssm_dtype: float32`，vLLM 也按 F32 存储。
 2. **按图结构匹配的融合是否生效。** 以下融合都通过识别图中的特定模式来触发，新模型的结构稍有不同就可能不再生效：
    - gate/up 加 SwiGLU 加 FP4 量化融合（`prefill_projection.rs` 的 `MlpPlan`）：要求 gate 与 up 读同一输入、激活缩放相同，输出只被 SiLU 和 multiply 读取；
-   - GDN `in_proj_b`/`in_proj_a` 合并（`batch.rs` 的 `gdn_ba_pairs`）：目前按形状 `[48, 5120]` 硬匹配，见待改清单；
+   - GDN `in_proj_b`/`in_proj_a` 合并（`batch.rs` 的 `gdn_ba_pairs`）：按图结构识别同一 `Delta` 节点的 beta/alpha 生产者，再核对同层、同输入和投影形状；prefill 与 verify 的批处理共用同一对 kernel；
    - norm 与 FP8 行最大值融合（`norm_maximum.rs`）、同输入的量化复用（`nvfp4_gemm/quant_reuse.rs`）。
 
    检查方法：用 profile 的节点数和各算子耗时，对比融合生效与不生效时的预期。也可以在对应的计划函数里打印命中数。
@@ -78,7 +78,11 @@
 | `tools/bench/score-task-quality.py` | 配对正确率非劣质量门禁 |
 | `tools/bench/safe-run.sh` | 带主机内存上限、并发互斥与时长保护地运行 GPU 进程（每个进程最长 30 分钟） |
 | `INFER_CUDA_PREFILL_PROFILE` / `INFER_CUDA_EXECUTION_PROFILE` | 逐节点 CUDA 事件 / host 阶段记录（由 `--profile` 设置） |
+| `INFER_CUDA_PROFILE_GRAPH_ONLY` | 仅在图边界记录事件，配合 prefill profile；不改变算法 |
+| `INFER_CUDA_ATTENTION_PRECISE_PREFIX` | 恢复前若干位置的精确 attention 诊断；不改变默认数值路径 |
 | `INFER_CUDA_TUNING_TABLE` | 指定调优缓存文件，用于冷启动调优和隔离实验 |
+| `INFER_CUDA_VENDOR_FP8` / `INFER_CUDA_FP8_LT_AUTOTUNE` / `INFER_CUDA_TILED_ATTENTION` | **仅测试构建**可读；生产 `cfg(not(test))` 不读取，不是产品开关 |
+| `INFER_CUDA_CHUNKED_RECURRENT` | 已撤下；生产不读取，chunk 候选只在独立诊断 loader 中 |
 
 ## 待改为推导的常数
 
@@ -86,14 +90,15 @@
 
 | 常数 | 位置 | 现状 | 应改为 |
 |---|---|---|---|
-| `DEFAULT_MAX_BATCH = 16` | `engine/runtime/src/config.rs` | 最大并发序列数固定为 16 | `min(N_mem, N_knee)`：N_mem = 状态预算 ÷ (每序列状态 + 保底 KV)；N_knee = (峰值算力 ÷ 带宽) × (权重字节 ÷ 参数量) ÷ 2 ÷ 每序列每步 token 数。由 backend 计算后经接口交给 runtime |
-| `VALUE_SPLIT_*`（按 SM 数 63/127 分档） | `resident/slot_recurrent.rs` | GDN verify 的 value 切分按 SM 数分档 | 由 `ceil(目标 wave 数 × SM 数 ÷ (层头数 × 槽数))` 推出，并按 value 维的整除约束取值 |
+| `DEFAULT_MAX_BATCH = 16` | `engine/runtime/src/config.rs`、`spi::SchedulingRecommendation`、`executor/mod.rs` | CLI 自动路径从 backend 取得实际建议；直接构造 `RuntimeConfig` 的可移植默认仍为 16。自动路径消费 `SchedulingRecommendation = min(N_mem, N_knee, 显式 max_num_seqs, CB16/提交 ABI)`。`N_mem` 用实际 pooled quote 的固定 shared owners + 每序列 state + 最小 KV block 推导，不重复计入私有验证图；`N_knee=(实测部署模式 compute FLOP/s / DRAM B/s) × (实际权重字节 / 实际逻辑参数量) / 2 / 每步 token 数`。compute 输入复用 resident GEMM 调优器中已实测的最大 compute-bound NVFP4/W4A4 样本（含实际 kernel identity、mode、shape、时间与 FLOPs）；未知/无实测模式返回 `None`，不伪造成标量 FP32 峰值。 | backend 提供 `SchedulingRecommendation` 并记录 compute mode/kernel/shape/ms 与全部 raw inputs；显式 `--max-num-seqs` 始终优先，未知硬件保留诚实 fallback |
+| `VALUE_SPLIT_*`（按 SM 数 63/127 分档） | `resident/slot_recurrent.rs` | 已删除 SM 分档 | 由实际 SM、covered value heads、槽数和 value 维合法除数推出；目标是一波 CTA，尾宽只接受可整除的 split |
 | pooled attention `MAX_BATCH = 4`、切分数上限 64 | `resident/attention_decode/pooled.rs`、`tuning/attention/decode.rs` | 每组 4 个槽串行；切分数已按 SM 数、KV 头数与每组槽数推导，尚未结合上下文长度 | 切分数按上下文长度推导（每份至少若干 KV 块），部分和 workspace 随之缩小，从而一次启动处理全部槽 |
-| `SWIGLU_TILE_ROWS/COLUMNS = 64` | `resident/nvfp4_gemm/workspace.rs` | 在 RTX 5090 上实测得出（128 行时寄存器溢出） | 纳入 resident GEMM 调优器，作为候选按形状实测 |
+| `SWIGLU_TILE_ROWS/COLUMNS = 64` | `resident/nvfp4_gemm/workspace.rs`、`tuning/swiglu.rs` | 加载期真实权重 tuner：合法候选 64x64/128x64/128x128，完整 codes/scales 逐字节对照 baseline，量化-inclusive AB+BA 配对与持久 device/kernel/geometry/weight 证明；64x64 为无证据 fallback | 128 行只有在 exact proof 和两种顺序都超过确认阈值时才被选中；搜索失败/缓存损坏回退并记录缺口 |
 | `GDN_BA_SHAPE = [48, 5120]` | `resident/prefill_projection.rs` | 按形状识别 b/a 投影对 | 按图结构识别（同输入、相邻、同为稠密小投影），不依赖具体形状 |
-| `MAX_POOL_ROWS = CB_DECODE_SLOTS` | `resident/pool_gemv.rs` | 行数不超过 16 时走 GEMV | 由 GEMV 与分块 GEMM 的实测交叉点决定，纳入调优 |
-| `MODEL_SEARCH_BUDGET = 30 s` | `tuning/resident_gemm.rs` | 加载期搜索的总时长上限 | 按形状数和单次测量时长估算；预算耗尽时在日志中给出缺失形状 |
-| 每槽保底 KV = 单槽容量 ÷ 2 | `loading/budget.rs` 的 `funded_kv_tokens` | 槽数 = KV token ÷ 4128 | 按实际请求长度分布接纳请求，而不是按固定半容量保底 |
+| narrow dense N16 exact `(64,48,5120)` | `resident/prefill_projection.rs`、`tuning/prefill.rs` | 原按完整 shape 硬匹配 | 已改为 48-row、64-multiple reduction 的小投影结构契约，prompt width 不参与匹配；GPU 性能/数值仍需设备 |
+| `MAX_POOL_ROWS = CB_DECODE_SLOTS` | `resident/pool_gemv.rs`、`tuning/pool_gemv.rs` | 16 仍是未测量/失败时的 legacy fallback；加载期已按实际 Dense BF16 权重和 F32 输入测量 GEMV vs blocked GEMM | 按实际 rows/columns/outputs/权重证明持久化选择；cold+warm AB+BA，数值仅允许既有 F32 边界并保留最终 1024 门禁 |
+| `CATEGORY_SEARCH_BUDGET = 30 s` | `tuning/resident_gemm.rs` | 非 GEMM 类别的独立有限额度 | Resident GEMM 已改为按 family/shape 的候选数与测量时长推导；其余类别保留独立限制并在日志中记录未完成项 |
+| 每槽保底 KV = 单槽容量 ÷ 2 | `loading/budget.rs` 的 `funded_kv_tokens` | 已删除；每槽只保留一个物理页，实际 prompt+generation 页由 admission 按请求租用 | 保留 fixed recurrent/draft state 和 pooled backpressure；长短请求、取消/退款与 prefix 复用仍需设备矩阵 |
 
 ## 参考：一次完整调优的记录
 

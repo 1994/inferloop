@@ -13,7 +13,8 @@ pub fn request_bytes(request: &CanonicalRequest) -> usize {
                 media
                     .capacity()
                     .saturating_mul(size_of::<infer_ir::MediaInput>()),
-            ),
+            )
+            .saturating_add(media.iter().map(infer_ir::MediaInput::retained_bytes).sum()),
         RequestInput::Pairs { query, documents } => documents.iter().fold(
             query
                 .capacity()

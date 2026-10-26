@@ -4,8 +4,10 @@ mod constants;
 pub mod cpu;
 mod http;
 mod ingress;
+mod media;
 pub use actor::RuntimeHandle;
 pub use http::{
-    HttpError, NativeJsonAdapter, NativeTextRequest, router, router_with_text, serve,
-    serve_with_text,
+    HttpError, NativeJsonAdapter, NativeTextRequest, router, router_with_text,
+    router_with_text_and_media, serve, serve_with_text, serve_with_text_and_media,
 };
+pub use media::{MediaRequest, MediaService};

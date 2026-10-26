@@ -46,6 +46,35 @@ pub(super) mod kernels {
         }
     }
 
+    /// One launch packs every slot's control row: row 0 header, row 1 metadata,
+    /// rows 2..2+slots the stacked page tables. Grid rows come from the output partition.
+    #[cutile::entry()]
+    fn pack_control_batch<const C: i32>(
+        out: &mut Tensor<i32, { [1, C] }>,
+        tables: &Tensor<i32, { [-1, C] }>,
+        parameters: &Tensor<i32, { [32] }>,
+        metadata: &Tensor<i32, { [-1] }>,
+    ) {
+        let pid = get_tile_block_id();
+        if pid.0 == 0 {
+            out.store(
+                parameters
+                    .partition(shape![C])
+                    .load([0i32])
+                    .reshape(shape![1, C]),
+            );
+        } else if pid.0 == 1 {
+            out.store(
+                metadata
+                    .partition(shape![C])
+                    .load([0i32])
+                    .reshape(shape![1, C]),
+            );
+        } else {
+            out.store(tables.partition(shape![1, C]).load([pid.0 - 2i32, 0i32]));
+        }
+    }
+
     fn word(control: &Tensor<i32, { [-1, -1] }>, row: i32, column: i32) -> i32 {
         tile_to_scalar(
             control

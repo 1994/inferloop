@@ -4,11 +4,13 @@ use crate::device::asynchronous::block_on;
 use crate::device::cublaslt::Support;
 use crate::device::{PinnedUpload, Readbacks};
 use crate::tuning::gated_norm::prepare;
+use crate::tuning::pool_gemv::Choice as PoolChoice;
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::slice::from_ref;
+use std::sync::{Arc, Mutex};
 mod geometry;
 mod greedy;
 use crate::{
@@ -92,8 +94,11 @@ impl FusionWorkspace {
 pub struct ProgramWeights {
     /// Measure uncovered resident GEMM geometries before graph capture.
     pub autotune: bool,
-    /// One finite new-shape tuning allowance for this loaded model, shared with its draft.
+    /// Non-GEMM tuning allowances shared by this model and its draft; resident GEMM uses a
+    /// per-family, per-shape work-derived search schedule.
     pub resident_tuning: Arc<ResidentTuningSession>,
+    /// Load-time measured Dense row-GEMV versus blocked-GEMM choices by (weight, rows).
+    pub pool_gemv: Arc<Mutex<BTreeMap<(TensorId, usize), PoolChoice>>>,
     pub batch_width: usize,
     /// Widest captured prompt graph.
     pub prefill_width: usize,
@@ -466,6 +471,7 @@ impl DeviceProgram {
             lane_external_owner: Some(&self.lane_external_owner),
             lane_fusion: &mut self.lane_fusion,
             tables: from_ref(&self.table),
+            table_batch: None,
             capacity: self.capacity,
             width: weights.batch_width,
         };
@@ -758,6 +764,7 @@ impl DeviceProgram {
             lane_external_owner: Some(&lane_external_owner),
             lane_fusion: &mut lane_fusion,
             tables: from_ref(&table),
+            table_batch: None,
             capacity,
             width: weights.batch_width,
         };

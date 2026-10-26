@@ -26,6 +26,7 @@ pub(super) struct View {
     pub kv: Option<KvCacheInspection>,
     pub pool: PoolInspection,
     pub prefix: (u64, u64, u64, usize),
+    pub multimodal: bool,
     pub states: BTreeMap<StateId, StateView>,
     pub result: Option<Result<Vec<TaskOutput>>>,
 }
@@ -42,6 +43,7 @@ impl View {
             kv: None,
             pool: executor.pool_inspection(),
             prefix: executor.prefix_inspection(),
+            multimodal: executor.loaded.vision().is_some(),
             states: BTreeMap::new(),
             result: None,
         };
@@ -59,6 +61,7 @@ impl View {
         self.kv = executor.kv_cache();
         self.pool = executor.pool_inspection();
         self.prefix = executor.prefix_inspection();
+        self.multimodal = executor.loaded.vision().is_some();
         self.profile = executor.execution_profile();
         self.states.retain(|id, _| executor.states.contains_key(id));
         for (id, state) in &executor.states {

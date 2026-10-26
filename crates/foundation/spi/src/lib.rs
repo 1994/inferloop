@@ -21,7 +21,7 @@ pub mod provider;
 pub mod scheduling;
 pub mod state;
 pub mod workload;
-pub use backend::BackendProvider;
+pub use backend::{BackendProvider, SchedulingRecommendation};
 pub use cost::{BatchCostSummary, CostModelProvider};
 pub use extensions::{
     FeatureProvider, FusionProvider, ModalityProvider, PrecisionProvider, PreparedMedia,

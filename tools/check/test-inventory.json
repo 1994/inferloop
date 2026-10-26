@@ -16,7 +16,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 26
+      "tests": 33
     },
     "compiler": {
       "benches": 0,
@@ -34,13 +34,13 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 321
+      "tests": 391
     },
     "frontdoor": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 73
+      "tests": 90
     },
     "ir": {
       "benches": 0,
@@ -70,7 +70,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 148
+      "tests": 150
     },
     "quality": {
       "benches": 0,
@@ -82,7 +82,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 83
+      "tests": 91
     },
     "scheduler": {
       "benches": 0,
@@ -154,6 +154,7 @@
   "ignored_reasons": {
     "CUDA/checkpoint/frozen511tokens/safe-run; INFER_CUDA_ATTENTION_PRECISE_PREFIX=2048": 1,
     "opt-in projection-only shape A/B with real checkpoint and CUDA; run inside safe-run": 1,
+    "real 27B checkpoint, CUDA, release and protected runner required": 5,
     "real 2B checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 3,
     "real CUDA/MTP checkpoint; reserve graphs only after quote acknowledgement": 1,
     "real MTP2 checkpoint and CUDA; run inside safe-run": 1,
@@ -163,8 +164,10 @@
     "real MTP2 checkpoint/CUDA; validates pooled quotes without resident home programs": 1,
     "real MTP2 checkpoint/CUDA; validates private slot binding, admission and reset accounting": 1,
     "release CUDA performance diagnostic; run inside safe-run": 1,
+    "requires CUDA and INFER_TEST_MODEL; real 27B concurrency calibration, safe-run": 1,
     "requires CUDA and INFER_TEST_MODEL; run release inside safe-run": 3,
     "requires CUDA and INFER_TEST_MODEL; run release serially inside safe-run": 1,
+    "requires CUDA and real 27B gate/up shape; run inside safe-run": 1,
     "requires CUDA and safe-run; AOT ABI, full BF16-profile F64 sanity and measured architecture/cluster selection": 1,
     "requires CUDA and safe-run; F32 paged KV, complete short F64 outputs, long F64 rows, paired cold/warm and cache reuse": 1,
     "requires CUDA and safe-run; exact full-output/KV and cold/warm AB/BA tuning": 1,
@@ -172,12 +175,15 @@
     "requires CUDA hardware and a real FP8 channel checkpoint; root runs release serially": 1,
     "requires CUDA hardware and a writable tuning cache; run under safe-run": 1,
     "requires CUDA hardware and cuBLAS; run under safe-run": 1,
+    "requires CUDA hardware; actual 16-slot pooled launch versus four groups, safe-run": 1,
+    "requires CUDA hardware; actual 27B GDN geometry and wave-derived split, safe-run": 1,
     "requires CUDA hardware; actual captured prompt graph widths": 1,
     "requires CUDA hardware; finite hardware tuning with independent F64 references": 1,
     "requires CUDA hardware; new F32-state/F64-reference contract": 1,
     "requires CUDA hardware; root runs release serially": 3,
     "requires CUDA hardware; run explicitly inside tools/bench/safe-run.sh": 5,
-    "requires CUDA hardware; run inside safe-run": 26,
+    "requires CUDA hardware; run inside safe-run": 28,
+    "requires CUDA hardware; run inside safe-run with real weights": 1,
     "requires CUDA hardware; run release inside safe-run": 1,
     "requires CUDA hardware; run under safe-run": 29,
     "requires CUDA hardware; run under safe-run in release": 1,
@@ -197,15 +203,20 @@
     "requires CUDA, frozen INFER_TEST_MODEL/TOKENS/table; safe-run; complete F32/FP8 state and vocabulary comparisons": 1,
     "requires CUDA, release, safe-run; validates actual probe input bits and temporary ownership": 1,
     "requires CUDA/checkpoint/failing52token inputs/safe-run; GPUselected versus full logits/crosscapacity join": 1,
+    "requires CUDA/checkpoint/frozen tokens; actual verify pair dispatch and full output": 1,
     "requires CUDA/checkpoint/frozen1025tokens/safe-run; default-width full chunks and state bits": 1,
     "requires CUDA/checkpoint/frozen1025tokens/safe-run; pooled physical KV stride and complete bits": 1,
     "requires CUDA/checkpoint/frozen511tokens/safe-run; actual parallel quantization and complete state equivalence": 1,
     "requires CUDA/checkpoint/frozen511tokens/safe-run; complete model output and state equivalence": 2,
     "requires CUDA/checkpoint/frozen511tokens/safe-run; original private versus default pool full-model bits": 1,
     "requires CUDA/checkpoint/release/safe-run; CI first, original frozen tile; projection-only cost diagnostic": 1,
+    "requires CUDA/checkpoint/safe-run; actual Dense weights drive the production crossover tuner": 1,
     "requires CUDA/checkpoint/safe-run; actual pool inactive/reactivate/rebind full states": 1,
     "requires CUDA/checkpoint/safe-run; all96 real small weights, original private GEMV bits": 1,
     "requires CUDA/checkpoint/safe-run; full states/logits/hidden before service timing": 1,
+    "requires CUDA/checkpoint; actual 27B gate/up weights and quantization-inclusive SwiGLU tuner": 1,
+    "requires CUDA/checkpoint; actual Dense verify baseline versus BF16 pair, rows 32/48/64": 1,
+    "requires CUDA/checkpoint; actual full-model pool preparation drives the crossover dispatch": 1,
     "requires CUDA/safe-run and a private frozen tuning table; seeds measured profile": 1,
     "requires CUDA/safe-run; actual automatic tuning, full proofs and persisted cache": 1,
     "requires CUDA/safe-run; bit equality before same-address AB/BA cold/warm discovery": 1,
@@ -223,6 +234,7 @@
     "requires CUDA; exact ordered recurrence at captured prompt widths": 1,
     "requires CUDA; full F64/cache numerical gate and hardware AB/BA tuning": 1,
     "requires CUDA; only after complete numerical gate; diagnostic costs, no service claim": 1,
+    "requires CUDA; role-selected N16 numeric check, run inside safe-run": 1,
     "requires CUDA; run inside safe-run": 1,
     "requires CUDA; run inside safe-run with --test-threads 1": 2,
     "requires CUDA; run release serially inside safe-run": 1,
@@ -234,7 +246,7 @@
     "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 6,
     "requires a CUDA device; run inside safe-run": 5,
     "requires a Linux production host with get/set_mempolicy permitted; make check-linux-numa": 1,
-    "requires an NVIDIA GPU; run under tools/bench/safe-run.sh": 7,
+    "requires an NVIDIA GPU; run under tools/bench/safe-run.sh": 9,
     "requires real checkpoint and CUDA; run release serially inside safe-run": 1,
     "requires real checkpoint and CUDA; run serially inside safe-run": 1,
     "requires release CUDA O3, completed CI and complete bitwise gate; safe-run; internal paired prefill cost only": 1
@@ -403,6 +415,11 @@
     {
       "crate": "cuda",
       "file": "src/loading/mod.rs",
+      "mount": "../../tests/unit/loading_verify_pair_model.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/loading/mod.rs",
       "mount": "../../tests/unit/loading_pool_greedy_lifecycle.rs"
     },
     {
@@ -552,8 +569,23 @@
     },
     {
       "crate": "cuda",
+      "file": "src/resident/norm_maximum.rs",
+      "mount": "../../tests/unit/resident_norm_maximum_fusion.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/resident/nvfp4_gemm/quant_reuse.rs",
       "mount": "../../../tests/unit/resident_quant_reuse_plan.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/resident/nvfp4_gemm.rs",
+      "mount": "../../tests/unit/resident_nvfp4_split_driver.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/resident/nvfp4_gemm.rs",
+      "mount": "../../tests/unit/resident_prefill_prefetch16.rs"
     },
     {
       "crate": "cuda",
@@ -757,6 +789,11 @@
     },
     {
       "crate": "cuda",
+      "file": "src/tuning/pool_gemv.rs",
+      "mount": "../../tests/unit/pool_gemv_tuning.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/tuning/recurrent/exact.rs",
       "mount": "../../../tests/unit/tuning_recurrent_exact.rs"
     },
@@ -764,6 +801,11 @@
       "crate": "cuda",
       "file": "src/tuning/recurrent.rs",
       "mount": "../../tests/unit/tuning_recurrent.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/tuning/resident_gemm/search_budget.rs",
+      "mount": "../../../tests/unit/resident_search_budget.rs"
     },
     {
       "crate": "cuda",
@@ -777,6 +819,16 @@
     },
     {
       "crate": "cuda",
+      "file": "src/tuning.rs",
+      "mount": "../tests/unit/swiglu_tuning.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/tuning.rs",
+      "mount": "../tests/unit/tuning_families.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/vision/mod.rs",
       "mount": "../../tests/unit/vision_attention_bench_check.rs"
     },
@@ -784,6 +836,11 @@
       "crate": "cuda",
       "file": "src/vision/mod.rs",
       "mount": "../../tests/unit/vision_attention_check.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/vision/mod.rs",
+      "mount": "../../tests/unit/vision_padding.rs"
     },
     {
       "crate": "cuda",
@@ -864,6 +921,11 @@
       "crate": "runtime",
       "file": "src/observation/mod.rs",
       "mount": "../../tests/unit/observation.rs"
+    },
+    {
+      "crate": "runtime",
+      "file": "src/preparation/mod.rs",
+      "mount": "../../tests/unit/media_plan.rs"
     },
     {
       "crate": "runtime",
@@ -1162,6 +1224,11 @@
     },
     {
       "crate": "cli",
+      "file": "src/support/engine.rs",
+      "mount": "../../tests/unit/support_engine.rs"
+    },
+    {
+      "crate": "cli",
       "file": "src/support/logging.rs",
       "mount": "../../tests/unit/support_logging.rs"
     },
@@ -1207,6 +1274,11 @@
     },
     {
       "crate": "frontdoor",
+      "file": "src/media.rs",
+      "mount": "../tests/unit/media.rs"
+    },
+    {
+      "crate": "frontdoor",
       "file": "tests/isolation.rs",
       "mount": "../../../engine/runtime/tests/support/mod.rs"
     },
@@ -1232,11 +1304,11 @@
     }
   ],
   "totals": {
-    "all": 860,
+    "all": 964,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 860
+    "tests": 964
   }
 }

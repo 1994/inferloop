@@ -17,7 +17,7 @@ use infer_ir::{DataflowGraph, TensorOp, TensorStorage};
 use infer_models::mrope::axes as mrope_axes;
 use infer_models::{QuantizedPackage, TensorDtype};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Read budget for one BF16 embedding tensor.
 const MAX_EMBEDDING_READ_BYTES: u64 = 4 * GIB as u64;
@@ -95,6 +95,7 @@ fn empty_weights(options: &LoadOptions) -> ProgramWeights {
     ProgramWeights {
         autotune: options.autotune,
         resident_tuning: Arc::new(ResidentTuningSession::default()),
+        pool_gemv: Arc::new(Mutex::new(BTreeMap::new())),
         batch_width: options.verification_width.max(
             if options.prefill_width == FUSED_VERIFY_LANES {
                 FUSED_VERIFY_LANES
@@ -282,6 +283,15 @@ fn draft_kv_scales(graph: &DataflowGraph) -> BTreeMap<TensorId, [f32; 2]> {
         .collect()
 }
 
+fn draft_linear_inputs(graph: &DataflowGraph) -> BTreeSet<TensorId> {
+    graph
+        .nodes
+        .iter()
+        .filter(|node| node.op == TensorOp::Linear)
+        .map(|node| node.inputs[1])
+        .collect()
+}
+
 /// Bind draft weights, sharing the target embedding and vocabulary projection by slot.
 fn draft_weights(
     device: &CudaDevice,
@@ -297,19 +307,11 @@ fn draft_weights(
         .speculation
         .clone()
         .ok_or_else(|| Error::unsupported("MTP draft head is not declared"))?;
-    let linear_inputs: BTreeSet<_> = graph
-        .nodes
-        .iter()
-        .filter(|n| n.op == TensorOp::Linear)
-        .map(|n| n.inputs[1])
-        .collect();
+    let linear_inputs = draft_linear_inputs(graph);
     let mut weights = ProgramWeights {
         autotune: target.autotune,
         resident_tuning: Arc::clone(&target.resident_tuning),
-        // The draft captures the widest prompt graph so priming runs one pass per chunk instead
-        // of one single-token pass per prompt token; a 32-lane graph turned a 511-token prompt
-        // into sixteen replays. It has no verify batch: the target verifies, the draft only
-        // proposes.
+        pool_gemv: Arc::new(Mutex::new(BTreeMap::new())),
         batch_width: 0,
         prefill_width: MAX_PREFILL_LANES,
         narrow_prefill_width: 0,

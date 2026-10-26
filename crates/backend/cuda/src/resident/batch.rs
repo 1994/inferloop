@@ -169,6 +169,9 @@ pub(super) struct BatchBuilder<'a> {
     /// One block table per lane, indexed exactly like `lane_external`; batched and prefill
     /// captures use entry 0 because their operators do not resolve KV positions.
     pub tables: &'a [Tensor<i32>],
+    /// Current slot tables stacked as `[slots, table_columns]`; pooled append packs all
+    /// control rows in one metadata launch. `None` for prompt captures.
+    pub table_batch: Option<&'a Tensor<i32>>,
     pub capacity: usize,
     pub width: usize,
 }
@@ -341,6 +344,8 @@ impl BatchBuilder<'_> {
         let (metadata, metadata_owner, fusion) = metadata;
         let (lane_states, lane_fp8) = states;
         let width = lane_states.len();
+        let _pool =
+            super::batch_projection::allocate(self.device, self.graph, width, self.weights)?;
         let quant_plan = super::nvfp4_gemm::QuantPairPlan::new(self.graph, self.weights);
         self.nvfp4.begin_quant_capture();
         let result = CudaGraph::scope(&self.device.stream, |scope| {
@@ -510,7 +515,8 @@ impl BatchBuilder<'_> {
             usize::try_from(self.device.profile()?.arena_budget_bytes()).map_err(device_error)?,
         )?);
         let mut lanes = self.allocate_lanes(width, shared.as_ref())?;
-        let mut projections = super::batch_projection::allocate(self.device, self.graph, width)?;
+        let mut projections =
+            super::batch_projection::allocate(self.device, self.graph, width, self.weights)?;
         let graph = Some(self.capture(&mut lanes, &mut projections, None, shared.as_mut())?);
         let prefill = self.capture(&mut lanes, &mut projections, Some(false), None)?;
         let prefill_last = self.capture(&mut lanes, &mut projections, Some(true), None)?;
@@ -983,16 +989,35 @@ impl BatchBuilder<'_> {
         let width = lanes.len();
         let device = self.device;
         self.nvfp4.end_quant_capture();
+        let pairs = gdn_ba_pairs(self.graph, self.weights);
         let result = CudaGraph::scope(&device.stream, |scope| {
-            for node in &self.graph.nodes {
+            let mut fused_second = None;
+            for (index, node) in self.graph.nodes.iter().enumerate() {
+                if fused_second == Some(index) {
+                    continue;
+                }
                 let logits = node.outputs.iter().any(|id| Some(*id) == self.graph.logits);
                 if logits && prefill == Some(false) {
                     continue;
                 }
-                if let Some(arena) = shared.as_deref_mut()
-                    && self.record_shared(scope, node, arena, &lanes[0].metadata)?
-                {
-                    continue;
+                if let Some(arena) = shared.as_deref_mut() {
+                    if let Some(&second) = pairs.get(&index) {
+                        let profile = self.device.profile().map_err(error)?;
+                        if super::prefill_projection::record_pair(
+                            scope,
+                            node,
+                            &self.graph.nodes[second],
+                            arena,
+                            (self.weights, profile),
+                            super::prefill_projection::GdnPairContext::Verify,
+                        )? {
+                            fused_second = Some(second);
+                            continue;
+                        }
+                    }
+                    if self.record_shared(scope, node, arena, &lanes[0].metadata)? {
+                        continue;
+                    }
                 }
                 if width > 1 && node.op == TensorOp::Linear && !(logits && prefill.is_some()) {
                     super::batch_projection::record(
@@ -1065,7 +1090,14 @@ impl BatchBuilder<'_> {
         arena: &mut ActivationArena,
     ) -> StdResult<bool, DeviceError> {
         let profile = self.device.profile().map_err(error)?;
-        super::prefill_projection::record_pair(scope, first, second, arena, (self.weights, profile))
+        super::prefill_projection::record_pair(
+            scope,
+            first,
+            second,
+            arena,
+            (self.weights, profile),
+            super::prefill_projection::GdnPairContext::Prompt,
+        )
     }
 
     fn capture32(
@@ -1088,6 +1120,7 @@ impl BatchBuilder<'_> {
         let demand = (readout == PromptReadout::StateOnly)
             .then(|| super::prefill_demand::StateDemand::new(self.graph));
         let quant_plan = super::nvfp4_gemm::QuantPairPlan::new(self.graph, self.weights);
+        let gdn_roles = gdn_ba_roles(self.graph, self.weights);
         let pairs = gdn_ba_pairs(self.graph, self.weights);
         let mlp = super::prefill_projection::MlpPlan::new(
             self.graph,
@@ -1112,14 +1145,16 @@ impl BatchBuilder<'_> {
                 if let Some(boundaries) = boundaries.as_mut() {
                     boundaries.boundary(scope, index, node)?;
                 }
-                if super::norm_maximum::record(
+                let record = super::norm_maximum::record_prompt(
                     scope,
                     index,
                     &self.graph.nodes,
                     arena,
                     self.weights,
                     self.nvfp4,
-                )? {
+                    [self.graph.logits, self.graph.hidden],
+                )?;
+                if super::norm_maximum::apply_control(record, &mut fused_second) {
                     continue;
                 }
                 if !skip && let Some(&second) = pairs.get(&index) {
@@ -1165,6 +1200,7 @@ impl BatchBuilder<'_> {
                 self.record_prompt_node(
                     scope,
                     node,
+                    gdn_roles.get(&index).copied(),
                     arena,
                     (metadata, metadata_batch, prefill_info, prefill_rotary),
                     (partials, recurrent, fusion),
@@ -1235,6 +1271,7 @@ impl BatchBuilder<'_> {
         &mut self,
         scope: &Scope,
         node: &TensorNode,
+        role: Option<super::prefill_projection::GdnRole>,
         arena: &mut ActivationArena,
         metadata: PromptMetadata<'_>,
         workspaces: (
@@ -1267,7 +1304,7 @@ impl BatchBuilder<'_> {
         if self.record_prompt_dynamic(scope, node, arena, prefill_info, prefill_rotary)? {
             return Ok(());
         }
-        self.record_prompt_dispatch(scope, node, arena, metadata, partials)
+        self.record_prompt_dispatch(scope, node, role, arena, metadata, partials)
     }
 
     /// Record the width-32 dispatch for a node whose special prefill cases did not apply.
@@ -1275,6 +1312,7 @@ impl BatchBuilder<'_> {
         &mut self,
         scope: &Scope,
         node: &TensorNode,
+        role: Option<super::prefill_projection::GdnRole>,
         arena: &mut ActivationArena,
         metadata: &[Tensor<i32>],
         partials: &mut BTreeMap<usize, Tensor<f32>>,
@@ -1284,7 +1322,7 @@ impl BatchBuilder<'_> {
             Dispatch32::Linear => {
                 super::prefill_projection::record(
                     scope,
-                    node,
+                    (node, role),
                     arena,
                     (self.weights, self.device.profile().map_err(error)?),
                     partials,
@@ -2332,25 +2370,106 @@ impl SlotDecodeGraph {
     }
 }
 
-/// Adjacent GDN `in_proj_b`/`in_proj_a` Dense projections of the same input.
-/// The pair is the only two consecutive N48 K5120 linears in the decoder graph.
-fn gdn_ba_pairs(graph: &DataflowGraph, weights: &ProgramWeights) -> BTreeMap<usize, usize> {
-    let mut pairs = BTreeMap::new();
-    let mut index = 0;
-    while index + 1 < graph.nodes.len() {
-        let first = &graph.nodes[index];
-        let second = &graph.nodes[index + 1];
-        if gdn_ba_nodes(first, second)
-            && gdn_ba_projection(first, weights)
-            && gdn_ba_projection(second, weights)
+/// Beta and alpha input positions of a GDN `Delta` node.
+const GDN_BETA_INPUT: usize = 1;
+const GDN_ALPHA_INPUT: usize = 2;
+/// Pair output width must fit one prefill 64-column tile.
+const GDN_BA_MAX_ROWS: usize = 64;
+
+/// GDN beta/alpha producer roles from one `Delta` node's semantic inputs.
+fn gdn_ba_roles(
+    graph: &DataflowGraph,
+    weights: &ProgramWeights,
+) -> BTreeMap<usize, super::prefill_projection::GdnRole> {
+    gdn_ba_roles_by(graph, |id| {
+        let Some(ProjectionWeight::Dense(weight)) = weights.projections.get(&id) else {
+            return None;
+        };
+        Some((
+            usize::try_from(weight.shape()[0]).ok()?,
+            usize::try_from(weight.shape()[1]).ok()?,
+        ))
+    })
+}
+
+fn gdn_ba_roles_by(
+    graph: &DataflowGraph,
+    shape: impl Fn(TensorId) -> Option<(usize, usize)>,
+) -> BTreeMap<usize, super::prefill_projection::GdnRole> {
+    let mut producer = BTreeMap::new();
+    for (index, node) in graph.nodes.iter().enumerate() {
+        for id in &node.outputs {
+            producer.insert(*id, index);
+        }
+    }
+    let mut roles = BTreeMap::new();
+    for (delta, node) in graph.nodes.iter().enumerate() {
+        if !matches!(&node.op, TensorOp::Delta { .. }) || node.inputs.len() <= GDN_ALPHA_INPUT {
+            continue;
+        }
+        let (beta, alpha) = (node.inputs[GDN_BETA_INPUT], node.inputs[GDN_ALPHA_INPUT]);
+        let (Some(&first), Some(&second)) = (producer.get(&beta), producer.get(&alpha)) else {
+            continue;
+        };
+        if !gdn_ba_ordered(graph, first, second, delta) {
+            continue;
+        }
+        let (Some(&weight_b), Some(&weight_a)) = (
+            graph.nodes[first].inputs.get(1),
+            graph.nodes[second].inputs.get(1),
+        ) else {
+            continue;
+        };
+        let (Some(beta_shape), Some(alpha_shape)) = (shape(weight_b), shape(weight_a)) else {
+            continue;
+        };
+        if beta_shape != alpha_shape
+            || !(1..=GDN_BA_MAX_ROWS).contains(&beta_shape.0)
+            || beta_shape.1 == 0
         {
-            pairs.insert(index, index + 1);
-            index += 2;
-        } else {
-            index += 1;
+            continue;
+        }
+        roles.insert(first, super::prefill_projection::GdnRole::Beta);
+        roles.insert(second, super::prefill_projection::GdnRole::Alpha);
+    }
+    roles
+}
+
+fn gdn_ba_pairs(graph: &DataflowGraph, weights: &ProgramWeights) -> BTreeMap<usize, usize> {
+    let roles = gdn_ba_roles(graph, weights);
+    let mut pairs = BTreeMap::new();
+    let mut iter = roles.iter().peekable();
+    while let Some((&first, &role)) = iter.next() {
+        if role != super::prefill_projection::GdnRole::Beta {
+            continue;
+        }
+        if let Some(&(&second, _)) = iter.peek()
+            && roles.get(&second) == Some(&super::prefill_projection::GdnRole::Alpha)
+        {
+            pairs.insert(first, second);
         }
     }
     pairs
+}
+
+/// Structural order check for a pair: beta producer immediately before alpha producer,
+/// both before the `Delta`, both single-output plain linears of the Delta's layer, reading
+/// the same input and producing exactly the Delta's beta/alpha tensors.
+fn gdn_ba_ordered(graph: &DataflowGraph, first: usize, second: usize, delta: usize) -> bool {
+    if second != first + 1 || second >= delta {
+        return false;
+    }
+    let node = &graph.nodes[delta];
+    if !matches!(&node.op, TensorOp::Delta { .. }) || node.inputs.len() <= GDN_ALPHA_INPUT {
+        return false;
+    }
+    let (beta, alpha) = (node.inputs[GDN_BETA_INPUT], node.inputs[GDN_ALPHA_INPUT]);
+    let (first_node, second_node) = (&graph.nodes[first], &graph.nodes[second]);
+    first_node.outputs.as_slice() == [beta]
+        && second_node.outputs.as_slice() == [alpha]
+        && first_node.layer == node.layer
+        && second_node.layer == node.layer
+        && gdn_ba_nodes(first_node, second_node)
 }
 
 /// Structural half of the pair test: same layer, same single activation input, both
@@ -2366,12 +2485,12 @@ fn gdn_ba_nodes(first: &TensorNode, second: &TensorNode) -> bool {
         && second.outputs.len() == 1
 }
 
-fn gdn_ba_projection(node: &TensorNode, weights: &ProgramWeights) -> bool {
-    matches!(
-        weights.projections.get(&node.inputs[1]),
-        Some(ProjectionWeight::Dense(weight))
-            if weight.shape() == super::prefill_projection::GDN_BA_SHAPE
-    )
+#[cfg(test)]
+fn gdn_ba_weight_compatible(shape_b: &[i32], shape_a: &[i32]) -> bool {
+    shape_b == shape_a
+        && shape_b.len() == 2
+        && usize::try_from(shape_b[0]).is_ok_and(|rows| rows > 0 && rows <= GDN_BA_MAX_ROWS)
+        && usize::try_from(shape_b[1]).is_ok_and(|columns| columns > 0)
 }
 
 /// One allocation for every prompt lane's metadata, with a non-owning row view per lane.

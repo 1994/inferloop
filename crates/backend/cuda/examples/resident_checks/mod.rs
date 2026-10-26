@@ -18,7 +18,7 @@ use infer_ir::{DType, DataflowGraph, StateKind, TensorNode, TensorOp, TensorSpec
 use infer_state::physical::{PagedRows, PhysicalTensor};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 #[expect(
     clippy::cast_precision_loss,
@@ -68,6 +68,7 @@ fn check_projection(
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,
         resident_tuning: Arc::new(ResidentTuningSession::default()),
+        pool_gemv: Arc::new(Mutex::new(BTreeMap::new())),
         chunked_recurrent: false,
         batch_width: 3,
         prefill_width: 3,

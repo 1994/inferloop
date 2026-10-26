@@ -94,6 +94,9 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                     && record.constraint.is_none()
                     && self.backend.speculation_capability().draft_depth > 0)
                     .then(|| record.request.sampling.clone()),
+                media: (work.role == ExecutionRole::Prefill)
+                    .then(|| record.media.clone())
+                    .flatten(),
             });
         }
         Ok(())

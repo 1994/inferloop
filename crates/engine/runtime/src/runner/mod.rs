@@ -164,6 +164,16 @@ pub struct RunnerTicket {
     done: bool,
 }
 /// The service uses this adapter; direct CLI/quality execution can retain a synchronous backend.
+#[derive(Clone, Copy)]
+enum Multimodal {
+    Enabled,
+    Disabled,
+}
+impl Multimodal {
+    const fn supported(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+}
 pub struct ThreadedBackend<B: BackendProvider> {
     recycled: infer_gpu_api::Producer<Recycled>,
     recipe: Option<infer_ir::StateRecipe>,
@@ -180,6 +190,7 @@ pub struct ThreadedBackend<B: BackendProvider> {
     model: ModelIr,
     program: Arc<ExecutionProgram>,
     weight_backed: bool,
+    multimodal: Multimodal,
     recompute: bool,
     checkpoint: bool,
     active: Option<StepId>,
@@ -319,6 +330,11 @@ where
             capabilities: backend.capabilities(),
             speculation: backend.speculation_capability(),
             weight_backed: backend.weight_backed_dataflow(),
+            multimodal: if backend.supports_multimodal() {
+                Multimodal::Enabled
+            } else {
+                Multimodal::Disabled
+            },
             recompute: backend.supports_recompute_preemption(),
             checkpoint: backend.supports_control_checkpoint(),
             jobs,

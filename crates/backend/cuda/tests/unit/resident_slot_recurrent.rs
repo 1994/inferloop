@@ -1,12 +1,18 @@
 use super::fused;
 use crate::constants::CONV_KERNEL_TILE;
 use std::error::Error;
+use std::time::Instant;
 
 #[test]
-fn value_split_follows_the_device_sm_budget() {
-    assert_eq!(super::value_split(32), 1);
-    assert_eq!(super::value_split(80), 2);
-    assert_eq!(super::value_split(170), 4);
+fn value_split_follows_sm_heads_slots_and_legal_value_divisors() {
+    assert_eq!(super::value_split(32, 12, 4, 128), 1);
+    assert_eq!(super::value_split(80, 12, 4, 128), 2);
+    assert_eq!(super::value_split(170, 12, 4, 128), 4);
+    // A tail value width only accepts legal divisors.
+    assert_eq!(super::value_split(170, 12, 4, 96), 4);
+    assert_eq!(super::value_split(170, 12, 4, 100), 4);
+    assert_eq!(super::value_split(170, 12, 4, 72), 4);
+    assert_eq!(super::value_split(170, 12, 4, 6), 2);
 }
 
 // Tile IR is only specialized at launch; compile the snapshot-free kernels on header-only CI.
@@ -177,15 +183,15 @@ fn delta_reference(
     bias: &Tensor<f32>,
     metadata: &[Arc<Tensor<i32>>],
     count: usize,
-    shape: [usize; 3],
+    geometry: ([usize; 3], usize),
 ) -> Result<Reference<Vec<f32>>, Box<dyn Error>> {
-    let [key_heads, value_heads, dim] = shape;
+    let ([key_heads, value_heads, dim], block) = geometry;
     let state_len = value_heads * dim * dim;
     let generics = vec![
         key_heads.to_string(),
         value_heads.to_string(),
         dim.to_string(),
-        dim.to_string(),
+        block.to_string(),
     ];
     let mut state = upload(device, values(state_len, 23), &[value_heads, dim, dim])?;
     let mut expected_out = Vec::new();
@@ -193,8 +199,8 @@ fn delta_reference(
     for (lane, (qkv, beta, alpha)) in lanes.iter().enumerate() {
         let mut out = upload(device, vec![0.0; value_heads * dim], &[value_heads, 1, dim])?;
         recurrent::delta(
-            (&mut out).partition([1, 1, dim]),
-            (&mut state).partition([1, dim, dim]),
+            (&mut out).partition([1, 1, block]),
+            (&mut state).partition([1, dim, block]),
             qkv,
             beta,
             alpha,
@@ -303,6 +309,7 @@ struct DeltaFixture {
     a_log: Tensor<f32>,
     bias: Tensor<f32>,
     dim: usize,
+    block: usize,
     generics: Vec<String>,
 }
 
@@ -314,12 +321,11 @@ impl DeltaFixture {
         outs: &mut [Tensor<f32>],
         metadata: &[Arc<Tensor<i32>>],
     ) -> TestResult {
-        let dim = self.dim;
         let [o0, o1, o2] = outs else { unreachable!() };
         fused::delta_verify3(
-            o0.partition([1, 1, dim]),
-            o1.partition([1, 1, dim]),
-            o2.partition([1, 1, dim]),
+            o0.partition([1, 1, self.block]),
+            o1.partition([1, 1, self.block]),
+            o2.partition([1, 1, self.block]),
             state,
             &self.lanes[0].0,
             &self.lanes[1].0,
@@ -350,7 +356,7 @@ impl DeltaFixture {
     ) -> TestResult {
         let dim = self.dim;
         fused::delta_commit3(
-            state.partition([1, dim, dim]),
+            state.partition([1, dim, self.block]),
             &self.lanes[0].0,
             &self.lanes[1].0,
             &self.lanes[2].0,
@@ -403,6 +409,7 @@ fn delta_verify_and_commit_match_sequential_lanes() -> TestResult {
         a_log,
         bias,
         dim,
+        block: dim,
         generics,
     };
     for positions in PATTERNS {
@@ -418,7 +425,7 @@ fn delta_verify_and_commit_match_sequential_lanes() -> TestResult {
                 &fixture.bias,
                 &metadata,
                 count,
-                [key_heads, value_heads, dim],
+                ([key_heads, value_heads, dim], fixture.block),
             )?;
             let mut fused_state = upload(&device, values(state_len, 23), &[value_heads, dim, dim])?;
             let mut outs = (0..3)
@@ -517,6 +524,94 @@ fn batched_commit_kernels_compile_without_a_device() -> Result<(), Box<dyn Error
             .generics(vec!["4".into()])
             .strides(&strides)
             .compile()?;
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires CUDA hardware; actual 27B GDN geometry and wave-derived split, safe-run"]
+fn wave_split_delta_matches_reference_at_27b_geometry() -> TestResult {
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    let (key_heads, value_heads, dim) = (16usize, 48usize, 128usize);
+    let slots = 3usize;
+    let split = super::value_split(170, key_heads, slots, dim);
+    let block = super::fused_block(dim, split);
+    assert_eq!(split, 4, "27B wave split");
+    assert_eq!(block, 32, "27B fused block");
+    let generics = vec![
+        key_heads.to_string(),
+        value_heads.to_string(),
+        dim.to_string(),
+        block.to_string(),
+    ];
+    let qkv_len = (2 * key_heads + value_heads) * dim;
+    let state_len = value_heads * dim * dim;
+    let lanes = (0..3)
+        .map(|lane| {
+            Ok((
+                upload(&device, values(qkv_len, lane + 17), &[qkv_len])?,
+                upload(&device, values(value_heads, lane + 13), &[value_heads])?,
+                upload(&device, values(value_heads, lane + 7), &[value_heads])?,
+            ))
+        })
+        .collect::<infer_core::Result<Vec<_>>>()?;
+    let fixture = DeltaFixture {
+        lanes,
+        a_log: upload(&device, values(value_heads, 3), &[value_heads])?,
+        bias: upload(&device, values(value_heads, 5), &[value_heads])?,
+        dim,
+        block,
+
+        generics,
+    };
+    for positions in PATTERNS {
+        let metadata = positions
+            .iter()
+            .map(|&p| device.upload(vec![p, 0, p, 0], &[4]))
+            .collect::<infer_core::Result<Vec<_>>>()?;
+        for count in 1..=3usize {
+            let (expected_out, expected_state) = delta_reference(
+                &device,
+                &fixture.lanes,
+                &fixture.a_log,
+                &fixture.bias,
+                &metadata,
+                count,
+                ([key_heads, value_heads, dim], fixture.block),
+            )?;
+            let mut fused_state = upload(&device, values(state_len, 23), &[value_heads, dim, dim])?;
+            let mut outs = (0..3)
+                .map(|_| {
+                    upload(
+                        &device,
+                        vec![0.0; value_heads * dim],
+                        &[value_heads, 1, dim],
+                    )
+                })
+                .collect::<infer_core::Result<Vec<_>>>()?;
+            let started = Instant::now();
+            fixture.verify(&device, &fused_state, &mut outs, &metadata)?;
+            let verify_us = started.elapsed().as_micros();
+            for (lane, out) in outs.iter().enumerate() {
+                assert_close(
+                    &format!("{positions:?} split{split} delta out {lane}"),
+                    &device.read_borrowed(out)?,
+                    &expected_out[lane],
+                );
+            }
+            let started = Instant::now();
+            fixture.commit(&device, &mut fused_state, &metadata, count)?;
+            let commit_us = started.elapsed().as_micros();
+            assert_close(
+                &format!("{positions:?} split{split} count {count} delta state"),
+                &device.read_borrowed(&fused_state)?,
+                &expected_state,
+            );
+            eprintln!(
+                "VALUE_SPLIT_REAL sm=170 key_heads={key_heads} value_heads={value_heads} dim={dim} slots={slots} split={split} block={block} count={count} verify_us={verify_us} commit_us={commit_us}"
+            );
+        }
     }
     Ok(())
 }

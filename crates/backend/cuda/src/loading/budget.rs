@@ -7,6 +7,7 @@ use crate::constants::MTP_FUSION_ROWS;
 use crate::constants::NVFP4_GROUP_SIZE;
 use crate::constants::PREFILL_LANES;
 use crate::constants::PREFILL_SPLIT_K;
+use crate::constants::VERIFY_SPLIT_SCRATCH_BUDGET;
 use crate::mlp::ProjectionWeight;
 use crate::resident::arena::ActivationArena;
 use crate::resident::attention_mma::catalog::DIM;
@@ -21,16 +22,19 @@ use crate::resident::recurrent_prefill::required_bytes as recurrent_prefill_requ
 use crate::resident::slot_batch::SlotPool;
 use crate::tuning::attention::decode::GROUPED_ROWS;
 use crate::tuning::attention::decode::MAX_GROUPED_PARTS;
+use crate::tuning::resident_gemm::ACTIVATION_MODE;
 use crate::{
     device::DeviceProfile,
     resident::{ProgramGeometry, ProgramWeights},
 };
 use cutile::half::bf16;
+use cutile::prelude::Tensor;
 use infer_core::{Error, Result};
 use infer_ir::{DataflowGraph, OutputReadout, StateKind, TensorOp, TensorStorage};
 use std::array::from_fn;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::sync::OnceLock;
 
 /// Bytes per F32 element in u64 budget arithmetic.
@@ -198,6 +202,194 @@ impl LoadedModel {
     }
 }
 
+fn projection_mode(weight: &ProjectionWeight) -> Result<(&'static str, u64)> {
+    Ok(match weight {
+        ProjectionWeight::Dense(tensor) => ("bf16", tensor_elements(tensor)?),
+        ProjectionWeight::Fp8(tensor, _) => ("fp8", tensor_elements(tensor)?),
+        ProjectionWeight::Fp8Block(tensor, _) => ("fp8-block", tensor_elements(tensor)?),
+        ProjectionWeight::Fp4(codes, _, _) => (
+            ACTIVATION_MODE,
+            tensor_elements(codes)?
+                .checked_mul(2)
+                .ok_or_else(|| Error::invalid("fp4 parameter count overflow"))?,
+        ),
+    })
+}
+
+fn add_program_modes(
+    weights: &ProgramWeights,
+    modes: &mut BTreeMap<&'static str, u64>,
+) -> Result<()> {
+    for weight in weights.projections.values() {
+        let (mode, parameters) = projection_mode(weight)?;
+        *modes.entry(mode).or_default() = modes
+            .get(mode)
+            .copied()
+            .unwrap_or_default()
+            .checked_add(parameters)
+            .ok_or_else(|| Error::invalid("linear mode parameter overflow"))?;
+    }
+    for bank in weights.expert_banks.values() {
+        let (mode, parameters) = projection_mode(&bank.projection)?;
+        *modes.entry(mode).or_default() = modes
+            .get(mode)
+            .copied()
+            .unwrap_or_default()
+            .checked_add(parameters)
+            .ok_or_else(|| Error::invalid("expert mode parameter overflow"))?;
+    }
+    Ok(())
+}
+
+/// Checked model-weight totals used by the compute-knee formula.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WeightMetrics {
+    pub parameters: u64,
+    pub bytes: u64,
+}
+
+impl WeightMetrics {
+    fn add(&mut self, parameters: u64, bytes: u64) -> Result<()> {
+        self.parameters = self
+            .parameters
+            .checked_add(parameters)
+            .ok_or_else(|| Error::invalid("model parameter count overflow"))?;
+        self.bytes = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or_else(|| Error::invalid("model weight bytes overflow"))?;
+        Ok(())
+    }
+}
+
+impl LoadedModel {
+    /// Dominant actual linear-projection compute mode, weighted by logical parameters.
+    /// Used to gate measured compute evidence so a BF16/FP8 model cannot inherit an NVFP4 rate.
+    /// # Errors
+    /// Rejects malformed shapes or arithmetic overflow.
+    pub(crate) fn dominant_linear_mode(&self) -> Result<Option<&'static str>> {
+        let mut modes = BTreeMap::new();
+        add_program_modes(&self.weights, &mut modes)?;
+        if let Some(draft) = &self.draft {
+            add_program_modes(&draft.weights, &mut modes)?;
+        }
+        Ok(modes
+            .into_iter()
+            .max_by_key(|(_, parameters)| *parameters)
+            .map(|(mode, _)| mode))
+    }
+
+    /// Actual logical parameters and stored weight bytes across the target and draft graphs.
+    /// Shared embedding/lm-head tensors are deduplicated by allocation identity, so MTP does
+    /// not double-count the target's vocabulary.
+    /// # Errors
+    /// Rejects malformed shapes or arithmetic overflow.
+    pub(crate) fn weight_metrics(&self) -> Result<WeightMetrics> {
+        let mut metrics = WeightMetrics::default();
+        let mut seen = BTreeSet::new();
+        program_weight_metrics(&self.weights, &mut metrics, &mut seen)?;
+        if let Some(draft) = &self.draft {
+            program_weight_metrics(&draft.weights, &mut metrics, &mut seen)?;
+        }
+        Ok(metrics)
+    }
+}
+
+fn mark<T: cutile::DType>(tensor: &Arc<Tensor<T>>, seen: &mut BTreeSet<usize>) -> bool {
+    seen.insert(Arc::as_ptr(tensor) as usize)
+}
+
+fn tensor_elements<T: cutile::DType>(tensor: &Tensor<T>) -> Result<u64> {
+    u64::try_from(tensor.size()).map_err(|_| Error::invalid("weight tensor element overflow"))
+}
+
+fn projection_weight_metrics(
+    weight: &ProjectionWeight,
+    metrics: &mut WeightMetrics,
+    seen: &mut BTreeSet<usize>,
+) -> Result<()> {
+    match weight {
+        ProjectionWeight::Dense(tensor) => {
+            if mark(tensor, seen) {
+                let elements = tensor_elements(tensor)?;
+                let bytes = elements
+                    .checked_mul(2)
+                    .ok_or_else(|| Error::invalid("dense weight bytes overflow"))?;
+                metrics.add(elements, bytes)?;
+            }
+        }
+        ProjectionWeight::Fp8(tensor, scales) | ProjectionWeight::Fp8Block(tensor, scales) => {
+            if mark(tensor, seen) {
+                let elements = tensor_elements(tensor)?;
+                let scale_bytes = tensor_elements(scales)?
+                    .checked_mul(F32)
+                    .ok_or_else(|| Error::invalid("fp8 scale bytes overflow"))?;
+                let bytes = elements
+                    .checked_add(scale_bytes)
+                    .ok_or_else(|| Error::invalid("fp8 weight bytes overflow"))?;
+                metrics.add(elements, bytes)?;
+            }
+        }
+        ProjectionWeight::Fp4(codes, scales, _) => {
+            if mark(codes, seen) {
+                let packed = tensor_elements(codes)?;
+                let parameters = packed
+                    .checked_mul(2)
+                    .ok_or_else(|| Error::invalid("fp4 parameter count overflow"))?;
+                let scale_bytes = tensor_elements(scales)?;
+                let bytes = packed
+                    .checked_add(scale_bytes)
+                    .and_then(|bytes| bytes.checked_add(F32))
+                    .ok_or_else(|| Error::invalid("fp4 weight bytes overflow"))?;
+                metrics.add(parameters, bytes)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn program_weight_metrics(
+    weights: &ProgramWeights,
+    metrics: &mut WeightMetrics,
+    seen: &mut BTreeSet<usize>,
+) -> Result<()> {
+    for weight in weights.projections.values() {
+        projection_weight_metrics(weight, metrics, seen)?;
+    }
+    for bank in weights.expert_banks.values() {
+        projection_weight_metrics(&bank.projection, metrics, seen)?;
+    }
+    for tensor in weights.embeddings.values() {
+        if mark(tensor, seen) {
+            let elements = tensor_elements(tensor)?;
+            let bytes = elements
+                .checked_mul(2)
+                .ok_or_else(|| Error::invalid("embedding bytes overflow"))?;
+            metrics.add(elements, bytes)?;
+        }
+    }
+    if let Some(fusion) = &weights.fusion {
+        projection_weight_metrics(&fusion.projection, metrics, seen)?;
+        if mark(&fusion.norms, seen) {
+            let elements = tensor_elements(&fusion.norms)?;
+            let bytes = elements
+                .checked_mul(F32)
+                .ok_or_else(|| Error::invalid("fusion norm bytes overflow"))?;
+            metrics.add(elements, bytes)?;
+        }
+    }
+    for tensor in weights.constants.values() {
+        if mark(tensor, seen) {
+            let elements = tensor_elements(tensor)?;
+            let bytes = elements
+                .checked_mul(F32)
+                .ok_or_else(|| Error::invalid("constant bytes overflow"))?;
+            metrics.add(elements, bytes)?;
+        }
+    }
+    Ok(())
+}
+
 /// Joint quote for the pooled target, draft, prompt worker and resident slot homes.
 /// The shared scratch is charged at the worker's geometry, rather than the private
 /// sequence's maximum prompt width. No graph is captured while evaluating a plan.
@@ -336,14 +528,8 @@ impl LoadedModel {
             return Ok(None);
         }
         let block_bytes = full.total_bytes.saturating_sub(fixed) / blocks as u64;
-        let Some(tokens) = funded_kv_tokens(
-            width,
-            capacity,
-            maximum_kv_tokens,
-            block_bytes,
-            fixed,
-            envelope,
-        )?
+        let Some(tokens) =
+            funded_kv_tokens(width, maximum_kv_tokens, block_bytes, fixed, envelope)?
         else {
             return Ok(None);
         };
@@ -387,7 +573,6 @@ impl LoadedModel {
 /// of funding many unusable state handles with only a handful of physical KV blocks.
 fn funded_kv_tokens(
     width: usize,
-    capacity: usize,
     maximum: usize,
     block_bytes: u64,
     fixed: u64,
@@ -396,7 +581,10 @@ fn funded_kv_tokens(
     if block_bytes == 0 || fixed >= envelope {
         return Ok(None);
     }
-    let per_slot = (capacity / 2 / KV_BLOCK_TOKENS + 1) * KV_BLOCK_TOKENS;
+    // Fund only one physical page per resident handle. Admission leases the pages an incoming
+    // request actually needs (prompt + requested generation); a fixed half-capacity floor made
+    // short concurrent requests look unable to fit while retaining most of the pool idle.
+    let per_slot = KV_BLOCK_TOKENS;
     let minimum = width
         .checked_mul(per_slot)
         .ok_or_else(|| Error::invalid("pooled minimum KV overflow"))?;
@@ -460,7 +648,9 @@ fn pool_storage_bytes(
     hidden: usize,
     profile: &DeviceProfile,
 ) -> Result<u64> {
-    let lanes = width * verify;
+    let lanes = width
+        .checked_mul(verify)
+        .ok_or_else(|| Error::invalid("pooled lane count overflow"))?;
     let mut bytes = mul(recurrent_state_bytes(graph)?, width as u64)?;
     for spec in &graph.tensors {
         if !matches!(
@@ -512,9 +702,25 @@ fn pool_storage_bytes(
             1
         };
     bytes = add(bytes, mul(mul(hidden as u64, external_rows)?, F32)?)?;
-    // A block table per slot, plus scalar and per-lane control words.
-    let controls = width * capacity.div_ceil(KV_BLOCK_TOKENS) + (1 + lanes) * POOLED_CONTROL_WORDS;
-    bytes = add(bytes, mul(controls as u64, F32)?)?;
+    // The stacked page-table owner is padded to the control row width; quote exactly that
+    // retained allocation, not one unpadded table block per slot.
+    bytes = add(bytes, SlotPool::table_bytes(width, capacity)?)?;
+    let control_words = (1usize)
+        .checked_add(lanes)
+        .and_then(|words| words.checked_mul(POOLED_CONTROL_WORDS))
+        .ok_or_else(|| Error::invalid("pooled control word overflow"))?;
+    bytes = add(
+        bytes,
+        u64::try_from(control_words)
+            .ok()
+            .and_then(|words| words.checked_mul(F32))
+            .ok_or_else(|| Error::invalid("pooled control byte overflow"))?,
+    )?;
+    if verify > 1 {
+        // Pooled target program's Workspace can retain verify split owners even though
+        // its projection quote uses verification=0. Charge the same bounded allowance.
+        bytes = add(bytes, VERIFY_SPLIT_SCRATCH_BUDGET)?;
+    }
     Ok(bytes)
 }
 
@@ -839,6 +1045,11 @@ fn projection_workspace(
                 mul(rows, (PREFILL_SPLIT_K * PREFILL_LANES) as u64 * F32)?,
             )?;
         }
+    }
+    if geometry.verification > 0 {
+        // Every captured program's Workspace may retain unique verify split owners;
+        // charge its bounded allowance before admission and track usage inside Workspace.
+        bytes = add(bytes, VERIFY_SPLIT_SCRATCH_BUDGET)?;
     }
     Ok(bytes)
 }

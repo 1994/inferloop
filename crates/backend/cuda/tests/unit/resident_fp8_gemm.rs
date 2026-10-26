@@ -1,5 +1,6 @@
 use super::kernels;
 use crate::device::CudaDevice;
+use crate::resident::nvfp4_gemm::projection_split_policy;
 use cuda_core::f8e4m3fn;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
@@ -346,4 +347,52 @@ fn relative_gap(direct: &[f32], split: &[f32]) -> f32 {
         .zip(split)
         .map(|(a, b)| (a - b).abs() / b.abs().max(1.0))
         .fold(0.0_f32, f32::max)
+}
+
+#[test]
+fn fp8_verify_split_tiled_kernels_compile_with_legal_tiles_and_actual_strides() {
+    use crate::resident::fp8_gemm::kernels;
+    use cutile::cutile_compiler::compile_api::KernelCompiler;
+    let (rows, outputs, k) = (48i32, 5120i32, 5120i32);
+    let (tile_m, tile_n) = (16i32, 64i32);
+    let row_stride = rows * outputs;
+    KernelCompiler::new(kernels::__module_ast_self, "kernels", "matmul_split_tiled")
+        .target("sm_120")
+        .generics(vec![k.to_string(), tile_m.to_string(), tile_n.to_string()])
+        .strides(&[
+            ("output", &[row_stride, outputs, 1]),
+            ("input", &[k, 1]),
+            ("weight", &[k, 1]),
+        ])
+        .compile()
+        .expect("matmul_split_tiled legal tile compiles");
+    KernelCompiler::new(kernels::__module_ast_self, "kernels", "reduce_split_tiled")
+        .target("sm_120")
+        .generics(vec![tile_m.to_string(), tile_n.to_string()])
+        .strides(&[
+            ("output", &[outputs, 1]),
+            ("partials", &[row_stride, outputs, 1]),
+            ("input_scale", &[1, 1]),
+            ("weight_scale", &[1]),
+        ])
+        .compile()
+        .expect("reduce_split_tiled legal tile compiles");
+}
+
+#[test]
+fn fp8_split_policy_uses_native_cta_tile_and_checked_windows() {
+    let candidate = projection_split_policy(48, 5120, 5120, 170, [16, 64], 128, 32 * 1024 * 1024)
+        .expect("policy")
+        .expect("candidate");
+    assert_eq!(candidate.tile, [16, 64]);
+    assert!(candidate.splits > 1 && candidate.splits <= 4);
+    assert_eq!(
+        candidate.scratch_bytes,
+        (48 * 5120 * candidate.splits * 4) as u64
+    );
+    assert!(
+        projection_split_policy(48, 5120, 5120, 170, [16, 64], 128, 1,)
+            .expect("tiny budget")
+            .is_none()
+    );
 }
