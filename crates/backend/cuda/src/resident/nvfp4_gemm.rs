@@ -1,12 +1,6 @@
 //! Model-declared W4A4 projection with block-16 E4M3 activation scales.
 mod quant_reuse;
 mod workspace;
-
-use crate::constants::F32_BYTES;
-use crate::constants::PREFILL_GEMM_TILE_N;
-const VERIFY_SPLIT_MAX_ROWS: usize = PREFILL_GEMM_TILE_N;
-const VERIFY_SPLIT_MAX_PARTS: usize = 4;
-const VERIFY_SPLIT_WAVE_TARGET: usize = 2;
 use crate::mlp::ProjectionWeight as MlpProjectionWeight;
 use cutile::prelude::DeviceError;
 use cutile::prelude::Scope;
@@ -20,9 +14,9 @@ pub use workspace::Workspace;
 pub(crate) mod kernels {
     use cutile::core::{
         BroadcastScalar, PackF4e2m1fnx2Tile, Reshape, Shape_2, Shape_3, StoreTileAtCurrentBlock,
-        Tensor_2, Tensor_3, Tile_2, Tile_3, UnpackF4e2m1fnx2Tile, absf, constant, convert_tile,
-        eq_tile, exp, f4e2m1fn, f4e2m1fnx2, f8e4m3fn, get_tile_block_id, max_tile, min_tile,
-        mmaf_scaled, reduce_max, select,
+        Tensor_2, Tile_2, Tile_3, UnpackF4e2m1fnx2Tile, absf, constant, convert_tile, eq_tile, exp,
+        f4e2m1fn, f4e2m1fnx2, f8e4m3fn, get_tile_block_id, max_tile, min_tile, mmaf_scaled,
+        reduce_max, select,
     };
 
     /// Fused activation quantization, kept at a fixed 16-row tile. The production W4A4 path
@@ -207,65 +201,6 @@ pub(crate) mod kernels {
         out.store(acc * alpha.broadcast(shape![M, N]));
     }
 
-    /// K-split twin of `packed` for a measured down-projection candidate. The output
-    /// partition maps grid axes to split, row, and column tiles. Each split owns a
-    /// contiguous K window, including a masked final step. This kernel is not selected
-    /// without a quality-verified real-weight entry.
-    #[cutile::entry()]
-    fn packed_split<const K: i32, const M: i32, const N: i32, const S: i32>(
-        partials: &mut Tensor<f32, { [1, M, N] }>,
-        input: &Tensor<f4e2m1fnx2, { [-1, -1] }>,
-        input_scales: &Tensor<f8e4m3fn, { [-1, -1] }>,
-        weight: &Tensor<f4e2m1fnx2, { [-1, -1] }>,
-        scales: &Tensor<f8e4m3fn, { [-1, -1] }>,
-    ) {
-        let pid = get_tile_block_id();
-        let xp = input.partition(shape![M, 128]);
-        let xs = input_scales.partition(shape![M, 16]);
-        let wp = weight.partition(shape![N, 128]);
-        let sp = scales.partition(shape![N, 16]);
-        let total = (K + 255) / 256;
-        let window = (total + S - 1) / S;
-        let start = pid.0 * window;
-        let mut end = start + window;
-        if end > total {
-            end = total;
-        }
-        let mut acc: Tile<f32, { [M, N] }> = constant(0.0f32, shape![M, N]);
-        for k in start..end {
-            let x = xp.load_pipelined::<8>([pid.1, k]).unpack(shape![M, 256]);
-            let w = wp
-                .load_pipelined::<8>([pid.2, k])
-                .unpack(shape![N, 256])
-                .transpose();
-            acc = mmaf_scaled(
-                x,
-                w,
-                acc,
-                xs.load_pipelined::<8>([pid.1, k]),
-                sp.load_pipelined::<8>([pid.2, k]).transpose(),
-            );
-        }
-        partials.store(acc.reshape(shape![1, M, N]));
-    }
-
-    /// Ordered sum of `packed_split` partials, scaled once like the unsplit epilogue.
-    #[cutile::entry()]
-    fn sum_splits<const M: i32, const N: i32, const S: i32>(
-        out: &mut Tensor<f32, { [M, N] }>,
-        partials: &Tensor<f32, { [-1, -1, -1] }>,
-        alpha: f32,
-    ) {
-        let pid = get_tile_block_id();
-        let pp = partials.partition(shape![1, M, N]);
-        let mut acc: Tile<f32, { [M, N] }> = constant(0.0f32, shape![M, N]);
-        for split in 0i32..S {
-            let part: Tile<f32, { [M, N] }> = pp.load([split, pid.0, pid.1]).reshape(shape![M, N]);
-            acc = acc + part;
-        }
-        out.store(acc * alpha.broadcast(shape![M, N]));
-    }
-
     /// Prefill main loop with compiler-scheduled operand and scale prefetching.
     /// Keep the native 256-element K step and block-16 scale arithmetic unchanged.
     /// Output geometry is chosen from shape and driver-reported parallelism at capture time.
@@ -397,79 +332,6 @@ pub(crate) mod kernels {
     }
 }
 
-/// Shape-derived verification split proposal; production selection still requires a
-/// measured quality-verified table entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct SplitCandidate {
-    pub rows: usize,
-    pub outputs: usize,
-    pub columns: usize,
-    pub splits: usize,
-    pub tile: [usize; 2],
-    pub scratch_bytes: u64,
-}
-
-/// Derive split count from SM/output-CTA coverage, legal K groups and scratch budget.
-pub(super) fn projection_split_policy(
-    rows: usize,
-    outputs: usize,
-    columns: usize,
-    multiprocessors: usize,
-    tile: [usize; 2],
-    k_step: usize,
-    max_scratch: u64,
-) -> infer_core::Result<Option<SplitCandidate>> {
-    if rows == 0
-        || rows > VERIFY_SPLIT_MAX_ROWS
-        || outputs == 0
-        || columns == 0
-        || k_step == 0
-        || multiprocessors == 0
-    {
-        return Ok(None);
-    }
-    if tile[0] == 0 || tile[1] == 0 {
-        return Ok(None);
-    }
-    let ctas = rows
-        .div_ceil(tile[0])
-        .checked_mul(outputs.div_ceil(tile[1]))
-        .ok_or_else(|| infer_core::Error::invalid("verify split CTA overflow"))?;
-    let wave = multiprocessors
-        .checked_mul(VERIFY_SPLIT_WAVE_TARGET)
-        .ok_or_else(|| infer_core::Error::invalid("verify split wave overflow"))?;
-    let splits = wave
-        .div_ceil(ctas)
-        .clamp(1, VERIFY_SPLIT_MAX_PARTS)
-        .min(columns.div_ceil(k_step));
-    if splits <= 1 {
-        return Ok(None);
-    }
-    let scratch_bytes = split_scratch_bytes(rows, outputs, splits)?;
-    if scratch_bytes > max_scratch {
-        return Ok(None);
-    }
-    Ok(Some(SplitCandidate {
-        rows,
-        outputs,
-        columns,
-        splits,
-        tile,
-        scratch_bytes,
-    }))
-}
-
-fn split_scratch_bytes(rows: usize, outputs: usize, splits: usize) -> infer_core::Result<u64> {
-    let elements = rows
-        .checked_mul(outputs)
-        .and_then(|v| v.checked_mul(splits))
-        .ok_or_else(|| infer_core::Error::invalid("split-K scratch element overflow"))?;
-    u64::try_from(elements)
-        .ok()
-        .and_then(|v| v.checked_mul(F32_BYTES as u64))
-        .ok_or_else(|| infer_core::Error::invalid("split-K scratch byte overflow"))
-}
-
 /// Record only when the checkpoint declares an activation scale for packed FP4 weights.
 pub(super) fn record(
     scope: &Scope,
@@ -554,9 +416,6 @@ fn record_input(
     Ok(true)
 }
 
-#[cfg(test)]
-#[path = "../../tests/unit/resident_nvfp4_split_driver.rs"]
-mod split_driver_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/resident_nvfp4_gemm.rs"]
 mod tests;

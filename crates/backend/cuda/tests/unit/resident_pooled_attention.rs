@@ -412,3 +412,6 @@ impl Fixture {
         Ok(())
     }
 }
+
+#[path = "resident_pooled_attention_latency.rs"]
+mod latency;

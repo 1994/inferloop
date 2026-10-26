@@ -60,7 +60,7 @@
    - recurrent 状态精度：例如 Qwen3.5 系列 config 中 `mamba_ssm_dtype: float32`，vLLM 也按 F32 存储。
 2. **按图结构匹配的融合是否生效。** 以下融合都通过识别图中的特定模式来触发，新模型的结构稍有不同就可能不再生效：
    - gate/up 加 SwiGLU 加 FP4 量化融合（`prefill_projection.rs` 的 `MlpPlan`）：要求 gate 与 up 读同一输入、激活缩放相同，输出只被 SiLU 和 multiply 读取；
-   - GDN `in_proj_b`/`in_proj_a` 合并（`batch.rs` 的 `gdn_ba_pairs`）：按图结构识别同一 `Delta` 节点的 beta/alpha 生产者，再核对同层、同输入和投影形状；prefill 与 verify 的批处理共用同一对 kernel；
+   - GDN `in_proj_b`/`in_proj_a` 合并（`batch.rs` 的 `gdn_ba_pairs`）：按图结构识别同一 `Delta` 节点的 beta/alpha 生产者，再核对同层、同输入和投影形状；prefill 与 verify 分别保留原有投影累加精度；小批量 verify 继续使用原 GEMV 路径；
    - norm 与 FP8 行最大值融合（`norm_maximum.rs`）、同输入的量化复用（`nvfp4_gemm/quant_reuse.rs`）。
 
    检查方法：用 profile 的节点数和各算子耗时，对比融合生效与不生效时的预期。也可以在对应的计划函数里打印命中数。

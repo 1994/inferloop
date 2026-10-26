@@ -536,3 +536,7 @@ pub fn with_row_reference<T>(run: impl FnOnce() -> T) -> T {
 pub fn builds() -> usize {
     BUILDS.get()
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/resident_pooled_grouped_baseline.rs"]
+mod grouped_baseline;

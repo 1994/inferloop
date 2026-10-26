@@ -137,57 +137,6 @@ pub(crate) mod kernels {
         output.store(acc.reshape(shape![1, 16, 64]));
     }
 
-    /// General-M/N split twin of `matmul`; grid is split, row tile, column tile.
-    #[cutile::entry()]
-    fn matmul_split_tiled<const K: i32, const M: i32, const N: i32>(
-        output: &mut Tensor<f32, { [1, M, N] }>,
-        input: &Tensor<f8e4m3fn, { [-1, K] }>,
-        weight: &Tensor<f8e4m3fn, { [-1, K] }>,
-        k_tiles: i32,
-    ) {
-        let pid = get_tile_block_id();
-        let xp = input.partition(shape![M, 128]);
-        let wp = weight.partition(shape![N, 128]);
-        let total = (K + 127) / 128;
-        let k0 = pid.0 * k_tiles;
-        let mut k1 = k0 + k_tiles;
-        if k1 > total {
-            k1 = total;
-        }
-        let mut acc: Tile<f32, { [M, N] }> = constant(0.0f32, shape![M, N]);
-        for k in k0..k1 {
-            acc = mmaf(xp.load([pid.1, k]), wp.load([pid.2, k]).transpose(), acc);
-        }
-        output.store(acc.reshape(shape![1, M, N]));
-    }
-
-    /// Sums `[splits, M, N]` partial windows and applies both uniform scales once.
-    #[cutile::entry()]
-    fn reduce_split_tiled<const M: i32, const N: i32>(
-        output: &mut Tensor<f32, { [M, N] }>,
-        partials: &Tensor<f32, { [-1, -1, -1] }>,
-        input_scale: &Tensor<f32, { [-1, 1] }>,
-        weight_scale: &Tensor<f32, { [-1] }>,
-        splits: i32,
-    ) {
-        let pid = get_tile_block_id();
-        let pp = partials.partition(shape![1, M, N]);
-        let mut acc: Tile<f32, { [M, N] }> = constant(0.0f32, shape![M, N]);
-        for s in 0i32..splits {
-            acc = acc + pp.load([s, pid.0, pid.1]).reshape(shape![M, N]);
-        }
-        let xs = input_scale
-            .partition(shape![M, 1])
-            .load([pid.0, 0i32])
-            .broadcast(shape![M, N]);
-        let ws = weight_scale
-            .partition(shape![N])
-            .load([pid.1])
-            .reshape(shape![1, N])
-            .broadcast(shape![M, N]);
-        output.store(acc * xs * ws);
-    }
-
     /// Sums `[splits, 16, N]` partial windows in split order and applies both scales.
     #[cutile::entry()]
     fn reduce_split(
