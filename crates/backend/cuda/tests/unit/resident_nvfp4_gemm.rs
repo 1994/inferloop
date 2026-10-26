@@ -831,3 +831,23 @@ fn forced_split_scope_is_private_and_restores() {
     });
     assert!(!forced_split());
 }
+
+#[test]
+fn prefetch16_prefill_kernel_compiles_for_the_long_k_down_geometry() {
+    let (m, n, k) = (128usize, 128usize, 17408usize);
+    let code_columns = i32::try_from(k / 2).expect("code columns");
+    let scale_columns = i32::try_from(k / 16).expect("scale columns");
+    let output_columns = i32::try_from(n).expect("output columns");
+    KernelCompiler::new(kernels::__module_ast_self, "kernels", "packed_prefill16")
+        .target("sm_120")
+        .generics(vec![k.to_string(), m.to_string(), n.to_string()])
+        .strides(&[
+            ("out", &[output_columns, 1]),
+            ("input", &[code_columns, 1]),
+            ("input_scales", &[scale_columns, 1]),
+            ("weight", &[code_columns, 1]),
+            ("scales", &[scale_columns, 1]),
+        ])
+        .compile()
+        .expect("packed_prefill16 compiles");
+}

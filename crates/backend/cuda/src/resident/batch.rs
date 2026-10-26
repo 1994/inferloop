@@ -1145,14 +1145,16 @@ impl BatchBuilder<'_> {
                 if let Some(boundaries) = boundaries.as_mut() {
                     boundaries.boundary(scope, index, node)?;
                 }
-                if super::norm_maximum::record(
+                let record = super::norm_maximum::record_prompt(
                     scope,
                     index,
                     &self.graph.nodes,
                     arena,
                     self.weights,
                     self.nvfp4,
-                )? {
+                    [self.graph.logits, self.graph.hidden],
+                )?;
+                if super::norm_maximum::apply_control(record, &mut fused_second) {
                     continue;
                 }
                 if !skip && let Some(&second) = pairs.get(&index) {

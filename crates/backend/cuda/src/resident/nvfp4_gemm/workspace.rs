@@ -1226,6 +1226,49 @@ impl Workspace {
         enabled.then(|| self.split_fp8.remove(&shape)).flatten()
     }
 
+    #[expect(clippy::too_many_arguments, reason = "explicit CUDA tensor bindings")]
+    pub(crate) fn record_add_norm_maximum(
+        &mut self,
+        scope: &Scope,
+        next: usize,
+        input: &TensorView<'_, f32>,
+        residual: &TensorView<'_, f32>,
+        weight: &Tensor<f32>,
+        sum_output: &mut Tensor<f32>,
+        output: &mut Tensor<f32>,
+        (epsilon, offset): (f32, f32),
+    ) -> StdResult<bool, DeviceError> {
+        let rows = usize::try_from(output.shape()[0]).map_err(super::super::capture::error)?;
+        let columns = usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
+        let Some((_, scales)) = self.fp8.get_mut(&(rows, columns, 1)) else {
+            return Ok(false);
+        };
+        let pointer = output.device_pointer().cu_deviceptr();
+        scope.record(
+            super::super::norm_maximum_kernel::kernels::add_norm_max(
+                sum_output.partition([1, columns.next_power_of_two()]),
+                output.partition([1, columns.next_power_of_two()]),
+                scales.partition([1, 1]),
+                input,
+                residual,
+                weight,
+                epsilon,
+                offset,
+            )
+            .generics(vec![
+                columns.to_string(),
+                columns.next_power_of_two().to_string(),
+            ]),
+        )?;
+        self.norm_maximum = Some(super::super::norm_maximum::Pending {
+            next,
+            pointer,
+            rows,
+            columns,
+        });
+        Ok(true)
+    }
+
     pub(super) fn record_fp8_input(
         &mut self,
         scope: &Scope,
