@@ -901,9 +901,24 @@ fn prefetch8_autotune_production_selection() -> Result<(), Box<dyn StdError>> {
             prompts: [0, 0],
         },
     )?;
-    let prepared = workspace.prepared_configs().to_string();
-    if !prepared.contains("\"m\":48") || !prepared.contains("Prefetch8") {
-        return Err(format!("autotune did not select Prefetch8: {prepared}").into());
+    let prepared = workspace.prepared_configs();
+    let entries = prepared
+        .as_array()
+        .ok_or_else(|| Error::invalid("prepared config array"))?;
+    let exact = entries
+        .iter()
+        .find(|entry| {
+            entry["mode"] == "nvfp4"
+                && entry["m"] == 48
+                && entry["n"] == 5120
+                && entry["k"] == 17408
+        })
+        .ok_or_else(|| Error::invalid("missing exact prepared geometry"))?;
+    let config = exact["prepared_config"]
+        .as_str()
+        .ok_or_else(|| Error::invalid("prepared config string"))?;
+    if exact["weight_count"] != 56 || !config.contains("Prefetch8") {
+        return Err(format!("autotune did not select exact Prefetch8: {prepared}").into());
     }
     println!(
         "{}",
