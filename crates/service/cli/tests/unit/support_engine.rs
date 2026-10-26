@@ -51,3 +51,23 @@ fn automatic_knee_bound_is_consumed_but_explicit_override_wins() {
     apply_recommendation(&mut explicit, true, Some(rec));
     assert_eq!(explicit.max_num_seqs, 7);
 }
+
+#[test]
+fn zero_memory_recommendation_does_not_create_a_fake_positive_config() {
+    let mut config = RuntimeConfig::default();
+    apply_recommendation(&mut config, false, Some(recommendation(0)));
+    assert_eq!(config.max_num_seqs, 0);
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn explicit_override_survives_a_zero_automatic_recommendation() {
+    let mut config = RuntimeConfig {
+        max_num_seqs: 4,
+        max_num_seqs_explicit: true,
+        ..RuntimeConfig::default()
+    };
+    apply_recommendation(&mut config, true, Some(recommendation(0)));
+    assert_eq!(config.max_num_seqs, 4);
+    assert!(config.validate().is_ok());
+}

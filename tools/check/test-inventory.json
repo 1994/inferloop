@@ -16,7 +16,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 30
+      "tests": 32
     },
     "compiler": {
       "benches": 0,
@@ -1261,11 +1261,11 @@
     }
   ],
   "totals": {
-    "all": 896,
+    "all": 898,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 896
+    "tests": 898
   }
 }
