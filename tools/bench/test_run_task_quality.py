@@ -300,6 +300,15 @@ class CollectionTests(unittest.TestCase):
             self.run_collection()
         self.popen.assert_not_called()
 
+    def test_exit_during_shutdown_signal_is_reaped_and_rejected(self):
+        self.process.send_signal = mock.Mock(side_effect=ProcessLookupError())
+        self.process.wait = mock.Mock(return_value=1)
+        with self.assertRaisesRegex(RuntimeError, "exited before shutdown"):
+            self.run_collection()
+        self.process.wait.assert_called_once_with(timeout=10)
+        report = json.loads((self.args.output / "report.json").read_text())
+        self.assertFalse(report["completed"])
+
     def test_failed_server_shutdown_invalidates_otherwise_complete_outputs(self):
         self.process.wait = mock.Mock(return_value=1)
         with self.assertRaisesRegex(RuntimeError, "shutdown failed"):

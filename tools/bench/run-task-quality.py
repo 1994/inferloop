@@ -84,8 +84,9 @@ def stop(process):
         raise RuntimeError(f"server exited before shutdown: {code}")
     try:
         process.send_signal(signal.SIGINT)
-    except ProcessLookupError:
-        return
+    except ProcessLookupError as error:
+        process.wait(timeout=10)
+        raise RuntimeError("server exited before shutdown") from error
     try:
         code = process.wait(timeout=30)
     except subprocess.TimeoutExpired as error:
