@@ -50,6 +50,14 @@ jobs:
         with:
           shared-key: ${{ matrix.os }}
           cache-workspace-crates: true
+      - name: Install media subprocesses (ffmpeg, ffprobe)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+      - name: Install media subprocesses (ffmpeg, ffprobe)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
       - run: make check-rust
       - name: Linux placement acceptance
         if: runner.os == 'Linux'
