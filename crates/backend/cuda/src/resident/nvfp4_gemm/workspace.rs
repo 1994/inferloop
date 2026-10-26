@@ -244,6 +244,18 @@ impl Workspace {
         verify_split_qualified(device, key)
     }
 
+    fn take_nvfp4_split(
+        &mut self,
+        strategy: StrategyKey,
+        shape: (usize, usize, usize),
+    ) -> Option<SplitBuffer> {
+        #[cfg(test)]
+        let enabled = FORCE_SPLIT.with(Cell::get) || self.split_nvfp4_enabled.contains(&strategy);
+        #[cfg(not(test))]
+        let enabled = self.split_nvfp4_enabled.contains(&strategy);
+        enabled.then(|| self.split_nvfp4.remove(&shape)).flatten()
+    }
+
     fn ensure_nvfp4_split(&mut self, device: &CudaDevice, key: StrategyKey) -> Result<()> {
         let (_, rows, outputs, columns) = key;
         let shape = (rows, outputs, columns);
@@ -591,11 +603,7 @@ impl Workspace {
             outputs,
             columns,
         );
-        let mut split = self
-            .split_nvfp4_enabled
-            .contains(&strategy)
-            .then(|| self.split_nvfp4.remove(&shape))
-            .flatten();
+        let mut split = self.take_nvfp4_split(strategy, shape);
         let strategies = &self.strategies;
         let (q, qs) = self
             .buffers
@@ -680,11 +688,7 @@ impl Workspace {
             outputs,
             columns,
         );
-        let mut split = self
-            .split_nvfp4_enabled
-            .contains(&strategy)
-            .then(|| self.split_nvfp4.remove(&shape))
-            .flatten();
+        let mut split = self.take_nvfp4_split(strategy, shape);
         let strategies = &self.strategies;
         // The fused codes overwrite the shared quantization buffers; no reuse permit may span it.
         self.quant_reuse.clear();
@@ -825,11 +829,7 @@ impl Workspace {
             outputs,
             columns,
         );
-        let mut split = self
-            .split_nvfp4_enabled
-            .contains(&strategy)
-            .then(|| self.split_nvfp4.remove(&shape))
-            .flatten();
+        let mut split = self.take_nvfp4_split(strategy, shape);
         let strategies = &self.strategies;
         let (q, qs) = self
             .buffers

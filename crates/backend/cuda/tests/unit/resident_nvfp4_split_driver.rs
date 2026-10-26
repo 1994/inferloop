@@ -372,24 +372,44 @@ fn publish_entry(
 struct Measure<'a> {
     exact_graph: CudaGraph<()>,
     split_graph: CudaGraph<()>,
-    exact: Tensor<f32>,
-    split: Tensor<f32>,
+    exact: Vec<Tensor<f32>>,
+    split: Vec<Tensor<f32>>,
     path: &'a str,
     down: &'a Down,
     scratch_bytes: u64,
     split_plans: usize,
+    copies: usize,
+    l2_bytes: usize,
+    weight_bytes: usize,
+    addresses: Vec<u64>,
 }
 
 fn measure_captured(device: &CudaDevice, m: Measure<'_>) -> Result<(), Box<dyn StdError>> {
-    let exact_host = m.exact.to_host_vec().sync_on(&device.stream)?;
-    let split_host = m.split.to_host_vec().sync_on(&device.stream)?;
+    let Measure {
+        exact_graph,
+        split_graph,
+        exact,
+        split,
+        path,
+        down,
+        scratch_bytes,
+        split_plans,
+        copies,
+        l2_bytes,
+        weight_bytes,
+        addresses,
+    } = m;
     let mut diff = 0.0_f64;
     let mut base = 0.0_f64;
-    for (&a, &b) in exact_host.iter().zip(&split_host) {
-        let a = f64::from(a);
-        let b = f64::from(b);
-        diff = f64::mul_add(a - b, a - b, diff);
-        base = f64::mul_add(a, a, base);
+    for (exact, split) in exact.into_iter().zip(split) {
+        let exact_host = exact.to_host_vec().sync_on(&device.stream)?;
+        let split_host = split.to_host_vec().sync_on(&device.stream)?;
+        for (&a, &b) in exact_host.iter().zip(&split_host) {
+            let a = f64::from(a);
+            let b = f64::from(b);
+            diff = f64::mul_add(a - b, a - b, diff);
+            base = f64::mul_add(a, a, base);
+        }
     }
     let relative_l2 = (diff / base.max(1.0e-30)).sqrt();
     if !relative_l2.is_finite() || relative_l2 > 1.0e-4 {
@@ -406,13 +426,13 @@ fn measure_captured(device: &CudaDevice, m: Measure<'_>) -> Result<(), Box<dyn S
         &device.stream,
         &options,
         |_| {
-            m.exact_graph
+            exact_graph
                 .launch()
                 .sync_on(&device.stream)
                 .map_err(|e| tensor_error(&e.to_string()))
         },
         |_| {
-            m.split_graph
+            split_graph
                 .launch()
                 .sync_on(&device.stream)
                 .map_err(|e| tensor_error(&e.to_string()))
@@ -421,10 +441,13 @@ fn measure_captured(device: &CudaDevice, m: Measure<'_>) -> Result<(), Box<dyn S
     println!(
         "{}",
         serde_json::json!({
-            "kind":"captured_workspace_nvfp4_candidate", "model":m.path,
-            "weight":format!("{:?}", m.down.weight_id),
-            "shape":[ROWS, m.down.outputs, m.down.columns],
-            "scratch_bytes":m.scratch_bytes, "split_plan_count":m.split_plans,
+            "kind":"captured_workspace_nvfp4_candidate", "model":path,
+            "weight":format!("{:?}", down.weight_id),
+            "shape":[ROWS, down.outputs, down.columns],
+            "scratch_bytes":scratch_bytes, "split_plan_count":split_plans,
+            "copies":copies, "weight_bytes_each":weight_bytes,
+            "working_set_bytes":copies*weight_bytes, "l2_bytes":l2_bytes,
+            "distinct_weight_addresses":addresses,
             "relative_l2_vs_exact":relative_l2,
             "exact_ms":baseline.median_ms(), "split_ms":candidate.median_ms(),
             "speedup":baseline.median_ms()/candidate.median_ms(),
@@ -434,12 +457,86 @@ fn measure_captured(device: &CudaDevice, m: Measure<'_>) -> Result<(), Box<dyn S
     Ok(())
 }
 
+type RotatedWeights = (Vec<ProjectionWeight>, usize, usize, usize);
+
+fn rotate_weights(device: &CudaDevice, down: &Down) -> Result<RotatedWeights, Box<dyn StdError>> {
+    let weight_bytes = down
+        .outputs
+        .checked_mul(down.columns / 2 + down.columns / 16)
+        .ok_or_else(|| Error::invalid("weight byte overflow"))?;
+    let l2 = usize::try_from(device.profile()?.l2_cache_bytes).unwrap_or(0);
+    let copies = l2.saturating_div(weight_bytes).saturating_add(1).max(2);
+    let mut weights = Vec::with_capacity(copies);
+    for _ in 0..copies {
+        let mut codes =
+            api::zeros::<f4e2m1fnx2>(&[down.outputs, down.columns / 2]).sync_on(&device.stream)?;
+        let mut scales =
+            api::zeros::<f8e4m3fn>(&[down.outputs, down.columns / 16]).sync_on(&device.stream)?;
+        api::memcpy(&mut codes, &down.codes).sync_on(&device.stream)?;
+        api::memcpy(&mut scales, &down.scales).sync_on(&device.stream)?;
+        weights.push(ProjectionWeight::Fp4(
+            Arc::new(codes),
+            Arc::new(scales),
+            down.global,
+        ));
+    }
+    Ok((weights, copies, l2, weight_bytes))
+}
+
+fn capture_rotation(
+    device: &CudaDevice,
+    scale: f32,
+    workspace: &mut super::Workspace,
+    weights: &[ProjectionWeight],
+    input: &Tensor<f32>,
+    outputs: &mut [Tensor<f32>],
+    (rows, columns): (usize, usize),
+) -> Result<CudaGraph<()>, Box<dyn StdError>> {
+    let view = input.view(&[rows, columns])?;
+    workspace.begin_quant_capture();
+    let graph = CudaGraph::scope(&device.stream, |scope| {
+        for (weight, output) in weights.iter().zip(outputs) {
+            workspace.record_input(
+                scope,
+                weight,
+                scale,
+                &view,
+                output,
+                columns,
+                Some(input.device_pointer().cu_deviceptr()),
+            )?;
+        }
+        Ok(())
+    });
+    workspace.end_quant_capture();
+    Ok(graph?)
+}
+
+type RotationBuffers = (Arc<Tensor<f32>>, Vec<Tensor<f32>>, Vec<Tensor<f32>>);
+
+fn rotation_buffers(
+    device: &CudaDevice,
+    down: &Down,
+    copies: usize,
+) -> Result<RotationBuffers, Box<dyn StdError>> {
+    let input = device.upload(
+        (0..ROWS * down.columns)
+            .map(|i| (f32::from(u16::try_from(i % 211).unwrap()) - 105.0) / 37.0)
+            .collect::<Vec<_>>(),
+        &[ROWS, down.columns],
+    )?;
+    let mut exact = Vec::with_capacity(copies);
+    let mut split = Vec::with_capacity(copies);
+    for _ in 0..copies {
+        exact.push(api::zeros::<f32>(&[ROWS, down.outputs]).sync_on(&device.stream)?);
+        split.push(api::zeros::<f32>(&[ROWS, down.outputs]).sync_on(&device.stream)?);
+    }
+    Ok((input, exact, split))
+}
+
 #[test]
 #[ignore = "real 27B checkpoint, CUDA, release and protected runner required"]
 fn real_checkpoint_down_split_candidate_measurement() -> Result<(), Box<dyn StdError>> {
-    if cfg!(debug_assertions) {
-        return Err("requires cargo test --release".into());
-    }
     let path = var("INFER_TEST_MODEL").map_err(|e| Error::invalid(e.to_string()))?;
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
@@ -510,9 +607,6 @@ fn captured_workspace_nvfp4_real_weight_split() -> Result<(), Box<dyn StdError>>
     };
     use crate::resident::ProgramGeometry;
 
-    if cfg!(debug_assertions) {
-        return Err("requires cargo test --release".into());
-    }
     let path = var("INFER_TEST_MODEL").map_err(|e| Error::invalid(e.to_string()))?;
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
@@ -555,39 +649,32 @@ fn captured_workspace_nvfp4_real_weight_split() -> Result<(), Box<dyn StdError>>
     assert_eq!(exact_workspace.split_plan_count(), 0);
     reset_split_records();
     assert!(split_workspace.split_plan_count() > 0);
-    let input = device.upload(
-        (0..ROWS * down.columns)
-            .map(|i| (f32::from(u16::try_from(i % 211).unwrap()) - 105.0) / 37.0)
-            .collect::<Vec<_>>(),
-        &[ROWS, down.columns],
+    let (weights, copies, l2, weight_bytes) = rotate_weights(&device, &down)?;
+    let (input, mut exact, mut split) = rotation_buffers(&device, &down, copies)?;
+    reset_split_records();
+    let exact_graph = capture_rotation(
+        &device,
+        scale,
+        &mut exact_workspace,
+        &weights,
+        &input,
+        &mut exact,
+        (ROWS, down.columns),
     )?;
-    let mut exact = api::zeros::<f32>(&[ROWS, down.outputs]).sync_on(&device.stream)?;
-    let mut split = api::zeros::<f32>(&[ROWS, down.outputs]).sync_on(&device.stream)?;
-    let capture = |workspace: &mut Workspace, output: &mut Tensor<f32>| {
-        let view = input.view(&[ROWS, down.columns])?;
-        workspace.begin_quant_capture();
-        let graph = CudaGraph::scope(&device.stream, |scope| {
-            workspace.record_input(
-                scope,
-                &ProjectionWeight::Fp4(down.codes.clone(), down.scales.clone(), down.global),
-                scale,
-                &view,
-                output,
-                down.columns,
-                Some(input.device_pointer().cu_deviceptr()),
-            )?;
-            Ok(())
-        });
-        workspace.end_quant_capture();
-        graph
-    };
-    let exact_graph = capture(&mut exact_workspace, &mut exact)?;
     assert_eq!(split_records(), 0);
     reset_split_records();
-    let split_graph = capture(&mut split_workspace, &mut split)?;
-    if split_records() == 0 {
-        return Err("candidate capture did not dispatch a split".into());
-    }
+    let split_graph = with_forced_split(|| {
+        capture_rotation(
+            &device,
+            scale,
+            &mut split_workspace,
+            &weights,
+            &input,
+            &mut split,
+            (ROWS, down.columns),
+        )
+    })?;
+    assert!(split_records() > 0);
     exact_graph.launch().sync_on(&device.stream)?;
     split_graph.launch().sync_on(&device.stream)?;
     measure_captured(
@@ -601,6 +688,16 @@ fn captured_workspace_nvfp4_real_weight_split() -> Result<(), Box<dyn StdError>>
             down: &down,
             scratch_bytes: split_workspace.split_scratch_bytes(),
             split_plans: split_workspace.split_plan_count(),
+            copies,
+            l2_bytes: l2,
+            weight_bytes,
+            addresses: weights
+                .iter()
+                .map(|w| match w {
+                    ProjectionWeight::Fp4(codes, _, _) => codes.device_pointer().cu_deviceptr(),
+                    _ => 0,
+                })
+                .collect(),
         },
     )?;
     Ok(())
