@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
     // 2. Encoded media and 3. final prompt logits.
     let official_pixels = var_os("INFER_PARITY_OFFICIAL_PIXELS").is_some();
     let official = infer_models::PromptImage {
-        pixels: reference.pixels,
+        pixels: reference.pixels.clone(),
         grid: reference.grid,
     };
     let image = if official_pixels {
@@ -71,6 +71,12 @@ fn main() -> Result<(), Box<dyn StdError>> {
     };
     let encoded = vision.encode(loaded.device(), image)?;
     let (vision_abs, vision_rel) = compare_media(&encoded, &reference.vision);
+    let own_pixels = &prepared.images[0].pixels;
+    let (pixel_abs, pixel_rel) = if own_pixels.len() == reference.pixels.len() {
+        compare_media(own_pixels, &reference.pixels)
+    } else {
+        (f32::INFINITY, f32::INFINITY)
+    };
     let encodings = [encoded];
     let mut program = loaded.sequence(4096)?;
     let prefilled = vision::prefill(
@@ -114,6 +120,8 @@ fn main() -> Result<(), Box<dyn StdError>> {
             "first_token": mine,
             "reference_first_token": theirs,
             "vision_max_abs": vision_abs,
+            "pixel_max_abs": pixel_abs,
+            "pixel_max_rel": pixel_rel,
             "vision_max_rel": vision_rel,
             "logits_max_abs": max_abs,
             "generated": generated,

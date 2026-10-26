@@ -135,3 +135,20 @@ fn preprocessing_matches_the_reference_processor() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn fused_normalization_preserves_reference_bits() {
+    let norm = Normalization {
+        mean: [0.5; 3],
+        std: [0.5; 3],
+        rescale: RESCALE,
+    };
+    for (value, bits) in [
+        (223.0f32, 0x3f3f_bfc0u32),
+        (192.0, 0x3f01_8182u32),
+        (255.0, 0x3f80_0000u32),
+        (0.0, 0xbf80_0000u32),
+    ] {
+        assert_eq!(norm.apply(value, 0).to_bits(), bits, "value {value}");
+    }
+}

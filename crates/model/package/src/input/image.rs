@@ -84,8 +84,19 @@ pub(crate) struct Normalization {
 }
 
 impl Normalization {
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "Sequential operations are required to match the processor's fused-bit result"
+    )]
     fn apply(self, value: f32, channel: usize) -> f32 {
-        value.mul_add(self.rescale, -self.mean[channel]) / self.std[channel]
+        // The fast processor fuses rescale into normalization: mean/rescale and std/rescale are
+        // applied to the uint8 value. Reproduce that order so the preprocessed bits match.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "The processor computes this scalar in float64 then stores f32"
+        )]
+        let inverse = (1.0f64 / f64::from(self.rescale)).round() as f32;
+        (value - self.mean[channel] * inverse) / (self.std[channel] * inverse)
     }
 }
 
