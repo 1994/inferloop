@@ -21,10 +21,6 @@
      "0.12.1",
      "0.14.0"
     ],
-    "miniz_oxide": [
-     "0.8.9",
-     "0.9.1"
-    ],
     "object": [
      "0.36.7",
      "0.39.1"
@@ -50,7 +46,7 @@
      "2.0.21"
     ]
    },
-   "edges": 770,
+   "edges": 768,
    "features": [
     "cuda"
    ],
@@ -69,21 +65,17 @@
      "1.3.2",
      "2.13.2"
     ],
-    "miniz_oxide": [
-     "0.8.9",
-     "0.9.1"
-    ],
     "syn": [
      "2.0.119",
      "3.0.6"
     ]
    },
-   "edges": 504,
+   "edges": 502,
    "features": [],
    "name": "macos-metal",
    "target": "aarch64-apple-darwin"
   }
  ],
- "lockfile_sha256": "4800bf8e75752bdd81f21786acea968d0faab931f3ef6699e7cc8b81c5f79858",
+ "lockfile_sha256": "16a10bab167d7f79dcecbcff5672a886eda86c5872192cf388d4f145ae9e9a63",
  "schema": 1
 }

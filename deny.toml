@@ -27,6 +27,7 @@ allow-wildcard-paths = true
 highlight = "all"
 multiple-versions-include-dev = true
 skip = [
+    { crate = "base64@0.13.1", reason = "tokenizers 0.23 pulls spm_precompiled 0.1.4, which requires base64 0.13; frontdoor decodes media data URIs with 0.22. Remove when spm_precompiled ships a base64 >= 0.21 range." },
     { crate = "getrandom@0.3.4", reason = "ahash/rand/tokenizers require 0.3; CUDA compiler uuid uses 0.4. Remove when their supported ranges converge." },
     { crate = "hashbrown@0.14.5", reason = "CUDA dashmap 6 requires 0.14; indexmap uses 0.17. Remove after dashmap migrates." },
     { crate = "itertools@0.12.1", reason = "cuda-bindings uses bindgen 0.69, which requires 0.12; tokenizers uses 0.14. Remove after the upstream bindgen upgrade." },
