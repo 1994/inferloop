@@ -200,6 +200,45 @@ impl LoadedModel {
     }
 }
 
+fn projection_mode(weight: &ProjectionWeight) -> Result<(&'static str, u64)> {
+    Ok(match weight {
+        ProjectionWeight::Dense(tensor) => ("bf16", tensor_elements(tensor)?),
+        ProjectionWeight::Fp8(tensor, _) => ("fp8", tensor_elements(tensor)?),
+        ProjectionWeight::Fp8Block(tensor, _) => ("fp8-block", tensor_elements(tensor)?),
+        ProjectionWeight::Fp4(codes, _, _) => (
+            crate::tuning::resident_gemm::ACTIVATION_MODE,
+            tensor_elements(codes)?
+                .checked_mul(2)
+                .ok_or_else(|| Error::invalid("fp4 parameter count overflow"))?,
+        ),
+    })
+}
+
+fn add_program_modes(
+    weights: &ProgramWeights,
+    modes: &mut BTreeMap<&'static str, u64>,
+) -> Result<()> {
+    for weight in weights.projections.values() {
+        let (mode, parameters) = projection_mode(weight)?;
+        *modes.entry(mode).or_default() = modes
+            .get(mode)
+            .copied()
+            .unwrap_or_default()
+            .checked_add(parameters)
+            .ok_or_else(|| Error::invalid("linear mode parameter overflow"))?;
+    }
+    for bank in weights.expert_banks.values() {
+        let (mode, parameters) = projection_mode(&bank.projection)?;
+        *modes.entry(mode).or_default() = modes
+            .get(mode)
+            .copied()
+            .unwrap_or_default()
+            .checked_add(parameters)
+            .ok_or_else(|| Error::invalid("expert mode parameter overflow"))?;
+    }
+    Ok(())
+}
+
 /// Checked model-weight totals used by the compute-knee formula.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WeightMetrics {
@@ -222,6 +261,22 @@ impl WeightMetrics {
 }
 
 impl LoadedModel {
+    /// Dominant actual linear-projection compute mode, weighted by logical parameters.
+    /// Used to gate measured compute evidence so a BF16/FP8 model cannot inherit an NVFP4 rate.
+    /// # Errors
+    /// Rejects malformed shapes or arithmetic overflow.
+    pub(crate) fn dominant_linear_mode(&self) -> Result<Option<&'static str>> {
+        let mut modes = BTreeMap::new();
+        add_program_modes(&self.weights, &mut modes)?;
+        if let Some(draft) = &self.draft {
+            add_program_modes(&draft.weights, &mut modes)?;
+        }
+        Ok(modes
+            .into_iter()
+            .max_by_key(|(_, parameters)| *parameters)
+            .map(|(mode, _)| mode))
+    }
+
     /// Actual logical parameters and stored weight bytes across the target and draft graphs.
     /// Shared embedding/lm-head tensors are deduplicated by allocation identity, so MTP does
     /// not double-count the target's vocabulary.

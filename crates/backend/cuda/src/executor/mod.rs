@@ -131,7 +131,14 @@ pub(super) fn recommendation(
     let metrics = loaded.weight_metrics()?;
     let driver = CudaDevice::driver_version()?;
     let driver_build = driver_build();
-    let compute = measured_compute(profile, driver, driver_build.as_deref())?;
+    let deployed_mode = loaded.dominant_linear_mode()?;
+    let compute = measured_compute(
+        loaded.device(),
+        profile,
+        driver,
+        driver_build.as_deref(),
+        deployed_mode,
+    )?;
     let tokens_per_step = u64::try_from(loaded.mtp_depth() + 1)
         .map_err(|_| Error::invalid("MTP token count overflow"))?;
     let knee_bound = compute

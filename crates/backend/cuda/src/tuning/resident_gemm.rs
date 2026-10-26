@@ -35,8 +35,17 @@ pub(crate) use search_budget::Family as SearchFamily;
 use search_budget::Schedule;
 
 /// Bump when quantization, arithmetic or the paired measurement protocol changes.
+pub(crate) fn current_kernel_schema() -> String {
+    use cutile::cutile_compiler::hints::CompileOptions;
+    let compile = CompileOptions::default();
+    format!(
+        "{KERNEL_SCHEMA}:jit-opt{:?}:debug{}",
+        compile.opt_level, compile.device_debug
+    )
+}
+
 const KERNEL_SCHEMA: &str = "cutile0.4-nvfp4-v3:search-ab:confirm-ba:block16-e4m3:quant512:mma-k256:f32:full-output:alpha1/(wg*xs):tile-m128";
-const ACTIVATION_MODE: &str = "nvfp4-w4a4-block16";
+pub(crate) const ACTIVATION_MODE: &str = "nvfp4-w4a4-block16";
 /// Resident projection geometry is (activation rows, output columns, reduction columns).
 const GEMM_RANK: usize = 3;
 /// Linear interpolation weight of both central samples for an even-sized median.
@@ -1258,10 +1267,15 @@ fn measured_flops(rows: usize, columns: usize, reduction: usize, milliseconds: f
 /// device/driver/compiler/kernel identity. Quantization and full-output evidence are already
 /// part of the resident-GEMM entry; no new calibration graph or user control is introduced.
 pub(crate) fn measured_compute(
+    device: &CudaDevice,
     profile: &DeviceProfile,
     driver: u32,
     driver_build: Option<&str>,
+    deployed_mode: Option<&str>,
 ) -> Result<Option<ComputeEvidence>> {
+    if deployed_mode != Some(ACTIVATION_MODE) {
+        return Ok(None);
+    }
     let Some(path) = super::table_path() else {
         return Ok(None);
     };
@@ -1273,7 +1287,7 @@ pub(crate) fn measured_compute(
     let mut best: Option<ComputeEvidence> = None;
     for entry in &table.resident_gemm {
         if !entry.valid()
-            || !entry.key.kernel_schema.starts_with(KERNEL_SCHEMA)
+            || entry.key.kernel_schema != current_kernel_schema()
             || entry.key.activation_mode != ACTIVATION_MODE
             || entry.key.hardware != hardware
             || entry.key.driver_version != driver
@@ -1284,8 +1298,13 @@ pub(crate) fn measured_compute(
         {
             continue;
         }
-        let milliseconds = entry.confirmation.cold.candidate_median_ms;
+        let milliseconds = entry.confirmation.warm.candidate_median_ms;
         if !milliseconds.is_finite() || milliseconds <= 0.0 {
+            continue;
+        }
+        if kernel_fingerprint(device, [entry.key.m, entry.key.n, entry.key.k])?
+            != entry.key.kernel_fingerprint
+        {
             continue;
         }
         let Ok(flops) = measured_flops(entry.key.m, entry.key.n, entry.key.k, milliseconds) else {

@@ -494,7 +494,12 @@ fn cache_memo_coverage_requires_proof_or_a_legal_baseline() {
 #[test]
 fn measured_compute_flops_uses_full_gemm_work() -> Result<()> {
     assert_eq!(measured_flops(1024, 5120, 5120, 2.0)?, 26_843_545_600_000);
+    assert_eq!(measured_flops(1, 1, 1, 0.25)?, 8_000);
+    assert_eq!(measured_flops(1, 1, 1, 0.125)?, 16_000);
+    assert_eq!(measured_flops(1, 1, 1, 1.5)?, 1_333);
     assert!(measured_flops(1, 1, 1, 0.0).is_err());
+    assert!(measured_flops(1, 1, 1, f32::NAN).is_err());
+    assert!(measured_flops(1, 1, 1, f32::INFINITY).is_err());
     assert!(measured_flops(usize::MAX, usize::MAX, usize::MAX, 1.0).is_err());
     Ok(())
 }
