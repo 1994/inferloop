@@ -49,7 +49,7 @@ fn ordinary_norm_fusion_continues_and_add_norm_skips_the_consumed_norm() {
 }
 
 #[test]
-fn add_norm_prefix_requires_one_consumer_and_the_immediate_norm() {
+fn add_norm_prefix_allows_materialized_extra_consumers_and_immediate_norm() {
     let add = node(TensorOp::Add, &[1, 2], &[3]);
     let norm = node(
         TensorOp::Norm {
@@ -71,7 +71,7 @@ fn add_norm_prefix_requires_one_consumer_and_the_immediate_norm() {
 
     let mut extra = nodes;
     extra.push(node(TensorOp::Silu, &[3], &[8]));
-    assert!(!add_norm_prefix(&extra, 0, [None, None]));
+    assert!(add_norm_prefix(&extra, 0, [None, None]));
 
     let not_immediate = vec![add, linear, norm];
     assert!(!add_norm_prefix(&not_immediate, 0, [None, None]));
@@ -85,6 +85,7 @@ fn add_norm_max_kernel_compiles_with_the_norm_tile() {
         .target("sm_120")
         .generics(vec!["128".to_string(), "128".to_string()])
         .strides(&[
+            ("sum_out", &[128, 1]),
             ("out", &[128, 1]),
             ("scale", &[1, 1]),
             ("x", &[128, 1]),

@@ -42,7 +42,7 @@ pub(super) fn add_norm_prefix(
             .iter()
             .filter(|node| node.inputs.contains(&add.outputs[0]))
             .count()
-            == 1
+            > 0
         && matches!(norm.op, TensorOp::Norm { .. })
         && norm.inputs.first() == Some(&add.outputs[0])
 }
@@ -161,11 +161,7 @@ pub(super) fn record(
     else {
         return Ok(false);
     };
-    // Preserve canonical normalization dispatch; fuse only in the resolved BF16 profile.
     if !supported(norm, linear, weights, head_dim) {
-        return Ok(false);
-    }
-    if weights.constants.contains_key(&norm.inputs[0]) {
         return Ok(false);
     }
     let Some(weight) = weights.constants.get(&norm.inputs[1]) else {
@@ -201,6 +197,7 @@ pub(super) fn record(
         .take()
         .ok_or_else(|| error("norm maximum output slot"))?;
     let mut output = output.reshape(&[rows, head_dim])?;
+    let (sum_slot, mut sum) = take_sum(arena, add, rows, head_dim)?;
     let result = (|| {
         let input = arena
             .get(input_id)
@@ -219,6 +216,8 @@ pub(super) fn record(
                 &input,
                 &residual,
                 weight,
+                sum.as_mut()
+                    .ok_or_else(|| error("materialized residual output"))?,
                 &mut output,
                 (epsilon, offset),
             )
@@ -234,11 +233,33 @@ pub(super) fn record(
         }
     })();
     arena.buffers[slot] = Some(output.reshape(&[flat])?);
+    if let (Some(slot), Some(sum)) = (sum_slot, sum) {
+        arena.buffers[slot] = Some(sum.reshape(&[flat])?);
+    }
     #[cfg(test)]
     if matches!(result, Ok(true)) {
         CAPTURES.set(CAPTURES.get() + 1);
+        if residual_id.is_some() {
+            ADD_CAPTURES.set(ADD_CAPTURES.get() + 1);
+        }
     }
     result
+}
+
+fn take_sum(
+    arena: &mut ActivationArena,
+    add: Option<&TensorNode>,
+    rows: usize,
+    head_dim: usize,
+) -> Result<(Option<usize>, Option<Tensor<f32>>), DeviceError> {
+    let Some(add) = add else {
+        return Ok((None, None));
+    };
+    let slot = arena.slot(add.outputs[0]).map_err(error)?;
+    let sum = arena.buffers[slot]
+        .take()
+        .ok_or_else(|| error("norm residual output slot"))?;
+    Ok((Some(slot), Some(sum.reshape(&[rows, head_dim])?)))
 }
 
 fn disjoint(a: &Tensor<f32>, b: &Tensor<f32>) -> bool {
@@ -257,6 +278,7 @@ thread_local! {
     static DISABLED: Cell<bool> = const { Cell::new(false) };
     static CAPTURES: Cell<usize> = const { Cell::new(0) };
     static CONSUMPTIONS: Cell<usize> = const { Cell::new(0) };
+    static ADD_CAPTURES: Cell<usize> = const { Cell::new(0) };
 }
 #[cfg(test)]
 pub fn captures() -> usize {
@@ -265,6 +287,10 @@ pub fn captures() -> usize {
 #[cfg(test)]
 pub fn consumptions() -> usize {
     CONSUMPTIONS.get()
+}
+#[cfg(test)]
+pub fn add_captures() -> usize {
+    ADD_CAPTURES.get()
 }
 #[cfg(test)]
 pub(super) fn record_consumption(ready: bool) {

@@ -696,6 +696,7 @@ impl Workspace {
         input: &TensorView<'_, f32>,
         residual: &TensorView<'_, f32>,
         weight: &Tensor<f32>,
+        sum_output: &mut Tensor<f32>,
         output: &mut Tensor<f32>,
         (epsilon, offset): (f32, f32),
     ) -> StdResult<bool, DeviceError> {
@@ -707,6 +708,7 @@ impl Workspace {
         let pointer = output.device_pointer().cu_deviceptr();
         scope.record(
             super::super::norm_maximum_kernel::kernels::add_norm_max(
+                sum_output.partition([1, columns.next_power_of_two()]),
                 output.partition([1, columns.next_power_of_two()]),
                 scales.partition([1, 1]),
                 input,

@@ -11,6 +11,7 @@ pub(super) mod kernels {
     /// weight/offset and row maximum as `norm_max`.
     #[cutile::entry()]
     fn add_norm_max<const D: i32, const B: i32>(
+        sum_out: &mut Tensor<f32, { [1, B] }>,
         out: &mut Tensor<f32, { [1, B] }>,
         scale: &mut Tensor<f32, { [1, 1] }>,
         x: &Tensor<f32, { [-1, D] }>,
@@ -20,6 +21,7 @@ pub(super) mod kernels {
         offset: f32,
     ) {
         let x = x.load_like(out) + residual.load_like(out);
+        sum_out.store(x);
         let square: Tile<f32, { [1] }> = reduce_sum(x * x, 1i32);
         let d: f32 = convert_scalar(D);
         let variance: Tile<f32, { [1] }> =

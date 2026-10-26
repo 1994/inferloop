@@ -85,6 +85,6 @@ mod norm_maximum;
 mod norm_maximum_kernel;
 #[cfg(test)]
 pub(crate) use norm_maximum::{
-    captures as norm_maximum_captures, consumptions as norm_maximum_consumptions,
-    with_separate as with_separate_norm_maximum,
+    add_captures as norm_maximum_add_captures, captures as norm_maximum_captures,
+    consumptions as norm_maximum_consumptions, with_separate as with_separate_norm_maximum,
 };
