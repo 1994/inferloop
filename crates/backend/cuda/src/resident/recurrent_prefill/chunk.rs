@@ -17,8 +17,12 @@ use std::result::Result as StdResult;
 
 /// Tokens per chunk.
 pub(super) const CHUNK: usize = 64;
-/// Value columns one scan block carries.
+/// Value columns in the general scan tile.
 const SCAN_COLUMNS: usize = 32;
+/// Wider tiles amortize factor loads for this measured value-head geometry.
+const WIDE_SCAN_COLUMNS: usize = 64;
+/// Value-head count whose prompt widths benefit from the wider tile.
+const WIDE_SCAN_VALUE_HEADS: usize = 48;
 
 #[cutile::module]
 pub(super) mod kernels {
@@ -297,6 +301,68 @@ pub(super) mod kernels {
         }
         state.store(old.reshape(shape![1, 128, 32]));
     }
+
+    /// Carry one 64-column block of the state across the active chunks.
+    #[expect(clippy::too_many_arguments, reason = "explicit CUDA tensor bindings")]
+    #[cutile::entry()]
+    fn chunk_scan_wide<const KH: i32, const VH: i32, const LANES: i32>(
+        state: &mut Tensor<f32, { [1, 128, 64] }>,
+        out: &mut Tensor<f32, { [1, LANES, 64] }>,
+        u: &Tensor<bf16, { [-1, -1, 128] }>,
+        w: &Tensor<bf16, { [-1, -1, 128] }>,
+        queries: &Tensor<bf16, { [-1, -1, 128] }>,
+        keys: &Tensor<bf16, { [-1, -1, 128] }>,
+        p: &Tensor<bf16, { [-1, -1, 64] }>,
+        cumulative: &Tensor<f32, { [-1, -1] }>,
+        metadata: &Tensor<i32, { [-1] }>,
+    ) {
+        let pid = get_tile_block_id();
+        let head = pid.0;
+        let key = head / (VH / KH);
+        let count: i32 =
+            tile_to_scalar(metadata.partition(shape![1]).load([1i32]).reshape(shape![]));
+        let mut old = state.load_like(state).reshape(shape![128, 64]);
+        let zero_block: Tile<f32, { [64, 64] }> = constant(0.0f32, shape![64, 64]);
+        let wp = w.partition(shape![1, 64, 128]);
+        let qp = queries.partition(shape![1, 64, 128]);
+        let kp = keys.partition(shape![1, 64, 128]);
+        let pp = p.partition(shape![1, 64, 64]);
+        let gp = cumulative.partition(shape![1, 64]);
+        for chunk in 0i32..((count + 63i32) / 64i32) {
+            let g: Tile<f32, { [64] }> = gp.load([head, chunk]).reshape(shape![64]);
+            let g_last: Tile<f32, { [1] }> = extract(g, [63i32.broadcast(shape![])]);
+            let wb: Tile<bf16, { [64, 128] }> =
+                wp.load([head, chunk, 0i32]).reshape(shape![64, 128]);
+            let wc: Tile<f32, { [64, 128] }> = convert_tile(wb);
+            let predicted: Tile<f32, { [64, 64] }> = bf16_product(wc, old, zero_block);
+            let target: Tile<bf16, { [64, 64] }> = u
+                .partition(shape![1, 64, 64])
+                .load([head, chunk, pid.2])
+                .reshape(shape![64, 64]);
+            let target: Tile<f32, { [64, 64] }> = convert_tile(target);
+            let updates = target - predicted;
+            let qb: Tile<bf16, { [64, 128] }> =
+                qp.load([key, chunk, 0i32]).reshape(shape![64, 128]);
+            let qf: Tile<f32, { [64, 128] }> = convert_tile(qb);
+            let qc = qf * exp(g).reshape(shape![64, 1]).broadcast(shape![64, 128]);
+            let pb: Tile<bf16, { [64, 64] }> = pp.load([head, chunk, 0i32]).reshape(shape![64, 64]);
+            let pc: Tile<f32, { [64, 64] }> = convert_tile(pb);
+            let carried: Tile<f32, { [64, 64] }> = bf16_product(qc, old, zero_block);
+            let output: Tile<f32, { [64, 64] }> = bf16_product(pc, updates, carried);
+            out.partition_mut(shape![1, 64, 64])
+                .store(output.reshape(shape![1, 64, 64]), [0i32, chunk, 0i32]);
+            let kb: Tile<bf16, { [64, 128] }> =
+                kp.load([key, chunk, 0i32]).reshape(shape![64, 128]);
+            let kf: Tile<f32, { [64, 128] }> = convert_tile(kb);
+            let remaining = exp(g_last.broadcast(shape![64]) - g);
+            let kc = kf * remaining.reshape(shape![64, 1]).broadcast(shape![64, 128]);
+            let decayed: Tile<f32, { [128, 64] }> =
+                old * exp(g_last).reshape(shape![1, 1]).broadcast(shape![128, 64]);
+            let transposed: Tile<f32, { [128, 64] }> = kc.transpose();
+            old = bf16_product(transposed, updates, decayed);
+        }
+        state.store(old.reshape(shape![1, 128, 64]));
+    }
 }
 
 /// Scratch for one prompt width.
@@ -378,19 +444,40 @@ pub(super) fn record(
         )
         .generics(vec![kh.to_string(), vh.to_string(), dim.to_string()]),
     )?;
-    scope.record(
-        kernels::chunk_scan(
-            state.partition([1, dim, SCAN_COLUMNS]),
-            output.partition([1, lanes, SCAN_COLUMNS]),
-            &scratch.u,
-            &scratch.w,
-            &scratch.queries,
-            &scratch.keys,
-            &scratch.p,
-            &scratch.cumulative,
-            metadata,
-        )
-        .generics(vec![kh.to_string(), vh.to_string(), lanes.to_string()]),
-    )?;
+    if vh == WIDE_SCAN_VALUE_HEADS {
+        scope.record(
+            kernels::chunk_scan_wide(
+                state.partition([1, dim, WIDE_SCAN_COLUMNS]),
+                output.partition([1, lanes, WIDE_SCAN_COLUMNS]),
+                &scratch.u,
+                &scratch.w,
+                &scratch.queries,
+                &scratch.keys,
+                &scratch.p,
+                &scratch.cumulative,
+                metadata,
+            )
+            .generics(vec![kh.to_string(), vh.to_string(), lanes.to_string()]),
+        )?;
+    } else {
+        scope.record(
+            kernels::chunk_scan(
+                state.partition([1, dim, SCAN_COLUMNS]),
+                output.partition([1, lanes, SCAN_COLUMNS]),
+                &scratch.u,
+                &scratch.w,
+                &scratch.queries,
+                &scratch.keys,
+                &scratch.p,
+                &scratch.cumulative,
+                metadata,
+            )
+            .generics(vec![kh.to_string(), vh.to_string(), lanes.to_string()]),
+        )?;
+    }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/resident_recurrent_scan_tiling.rs"]
+mod scan_tiling_tests;

@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 331
+      "tests": 332
     },
     "frontdoor": {
       "benches": 0,
@@ -70,7 +70,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 149
+      "tests": 150
     },
     "quality": {
       "benches": 0,
@@ -152,6 +152,7 @@
     "target_os = \"macos\"": 1
   },
   "ignored_reasons": {
+    "CUDA release, protected runner; GDN complete output/state and original-tile performance comparison": 1,
     "CUDA/checkpoint/frozen511tokens/safe-run; INFER_CUDA_ATTENTION_PRECISE_PREFIX=2048": 1,
     "opt-in projection-only shape A/B with real checkpoint and CUDA; run inside safe-run": 1,
     "real 2B checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 3,
@@ -604,6 +605,11 @@
       "crate": "cuda",
       "file": "src/resident/recurrent_checkpoint.rs",
       "mount": "../../tests/unit/resident_recurrent_checkpoint.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/resident/recurrent_prefill/chunk.rs",
+      "mount": "../../../tests/unit/resident_recurrent_scan_tiling.rs"
     },
     {
       "crate": "cuda",
@@ -1247,11 +1253,11 @@
     }
   ],
   "totals": {
-    "all": 895,
+    "all": 897,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 895
+    "tests": 897
   }
 }
