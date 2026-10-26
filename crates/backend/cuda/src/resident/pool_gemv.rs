@@ -34,6 +34,12 @@ use std::cell::Cell;
 const MAX_SMALL_OUTPUTS: usize = 128;
 const MIN_SMALL_COLUMNS: usize = 4096;
 const MAX_POOL_ROWS: usize = CB_DECODE_SLOTS;
+pub(super) const fn supports(rows: usize, outputs: usize, columns: usize) -> bool {
+    rows > 0
+        && rows <= MAX_POOL_ROWS
+        && outputs <= MAX_SMALL_OUTPUTS
+        && columns >= MIN_SMALL_COLUMNS
+}
 pub(super) fn record(
     scope: &Scope,
     weight: &ProjectionWeight,
@@ -46,12 +52,7 @@ pub(super) fn record(
         usize::try_from(input.shape()[0]).map_err(|e| DeviceError::Internal(e.to_string()))?;
     let outputs =
         usize::try_from(output.shape()[1]).map_err(|e| DeviceError::Internal(e.to_string()))?;
-    if rows == 0
-        || rows > MAX_POOL_ROWS
-        || outputs > MAX_SMALL_OUTPUTS
-        || columns < MIN_SMALL_COLUMNS
-        || !enabled()
-    {
+    if !supports(rows, outputs, columns) || !enabled() {
         return Ok(false);
     }
     let ProjectionWeight::Dense(weight) = weight else {

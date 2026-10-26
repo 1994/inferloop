@@ -1,6 +1,7 @@
 //! Node-major verification: consecutive projections reuse weights in cache.
 //! Recurrent checkpoints stay on the device; KV rollback is a logical prefix.
 //! Prefill width 32 keeps one batched arena: auxiliaries record once per node.
+use super::prefill_projection::PairContext;
 use super::{
     ActivationArena, ProgramWeights,
     capture::{Capture, CaptureMode, error},
@@ -1006,7 +1007,9 @@ impl BatchBuilder<'_> {
                             &self.graph.nodes[second],
                             arena,
                             (self.weights, profile),
+                            PairContext::Verify,
                         )? {
+                            self.nvfp4.clear_quant_reuse();
                             fused_second = Some(second);
                             continue;
                         }
@@ -1079,14 +1082,25 @@ impl BatchBuilder<'_> {
     /// One graph covering all 32 lanes: Linear reads batched slots directly,
     /// shape-agnostic auxiliaries record once, state/metadata kernels stay per-lane.
     fn record_prompt_pair(
-        &self,
+        &mut self,
         scope: &Scope,
         first: &TensorNode,
         second: &TensorNode,
         arena: &mut ActivationArena,
     ) -> StdResult<bool, DeviceError> {
         let profile = self.device.profile().map_err(error)?;
-        super::prefill_projection::record_pair(scope, first, second, arena, (self.weights, profile))
+        let recorded = super::prefill_projection::record_pair(
+            scope,
+            first,
+            second,
+            arena,
+            (self.weights, profile),
+            PairContext::Prompt,
+        )?;
+        if recorded {
+            self.nvfp4.clear_quant_reuse();
+        }
+        Ok(recorded)
     }
 
     fn capture32(
@@ -2363,7 +2377,10 @@ const GDN_BA_MAX_ROWS: usize = 64;
 /// producers of one `Delta` node's beta and alpha inputs. The pair is ordered beta then
 /// alpha, so semantic b/a ordering is preserved; same-layer/same-input/equal-shape checks
 /// reject unrelated adjacent linears.
-fn gdn_ba_pairs(graph: &DataflowGraph, weights: &ProgramWeights) -> BTreeMap<usize, usize> {
+pub(super) fn gdn_ba_pairs(
+    graph: &DataflowGraph,
+    weights: &ProgramWeights,
+) -> BTreeMap<usize, usize> {
     let mut producer = BTreeMap::new();
     for (index, node) in graph.nodes.iter().enumerate() {
         for id in &node.outputs {
@@ -2515,3 +2532,7 @@ mod tests;
 #[cfg(test)]
 #[path = "../../tests/unit/resident_metadata_batch.rs"]
 mod metadata_batch_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/resident_batch_gdn_checkpoint.rs"]
+mod gdn_checkpoint_tests;

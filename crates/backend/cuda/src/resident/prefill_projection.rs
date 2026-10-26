@@ -1,4 +1,5 @@
 use super::{ProgramWeights, capture::error, prefill_gemm::gemm};
+use super::{pool_gemv, small_gemm::kernels as verify_gemm};
 use crate::constants::PREFILL_GEMM_TILE_K;
 use crate::constants::PREFILL_GEMM_TILE_N;
 use crate::constants::PREFILL_LANES;
@@ -433,13 +434,49 @@ pub(super) fn record(
 /// Returns false when either node would take a different path (narrow N16 layout,
 /// sparse experts, vendor GEMM, output width above one 64-column tile, or mismatched
 /// input/weight geometry).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum PairContext {
+    Prompt,
+    Verify,
+}
+
+#[cfg(test)]
+thread_local! {
+    static VERIFY_PAIRS_ENABLED: Cell<bool> = const { Cell::new(true) };
+    static VERIFY_PAIR_CAPTURES: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn verify_pair_captures() -> usize {
+    VERIFY_PAIR_CAPTURES.with(Cell::get)
+}
+
+#[cfg(test)]
+pub(super) fn with_verify_pairs<T>(enabled: bool, run: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            VERIFY_PAIRS_ENABLED.with(|value| value.set(self.0));
+        }
+    }
+    let restore = Restore(VERIFY_PAIRS_ENABLED.with(|value| value.replace(enabled)));
+    let result = run();
+    drop(restore);
+    result
+}
+
 pub(super) fn record_pair(
     scope: &Scope,
     first: &TensorNode,
     second: &TensorNode,
     arena: &mut super::ActivationArena,
     (weights, profile): (&ProgramWeights, &DeviceProfile),
+    context: PairContext,
 ) -> Result<bool, DeviceError> {
+    #[cfg(test)]
+    if context == PairContext::Verify && !VERIFY_PAIRS_ENABLED.with(Cell::get) {
+        return Ok(false);
+    }
     if first.inputs.len() != 2
         || second.inputs.len() != 2
         || first.inputs[0] != second.inputs[0]
@@ -478,7 +515,11 @@ pub(super) fn record_pair(
         || columns != weight_columns
         || arena.get(first.outputs[0]).map_err(error)?.size() != expected
         || arena.get(second.outputs[0]).map_err(error)?.size() != expected
-        || narrow_dense_layout(&profile.architecture, (width, rows_b, columns))
+        || (context == PairContext::Prompt
+            && narrow_dense_layout(&profile.architecture, (width, rows_b, columns)))
+        // These rows use the existing F32 reduction, not the two-term MMA chain.
+        || (context == PairContext::Verify
+            && pool_gemv::supports(width, rows_b, columns))
     {
         return Ok(false);
     }
@@ -499,16 +540,34 @@ pub(super) fn record_pair(
         .as_ref()
         .ok_or_else(|| error("paired projection input"))?;
     let input = flat_input.view(&[width, columns]).map_err(error)?;
-    scope.record(
-        gemm::dense_pair(
-            (&mut output_b).partition([PREFILL_LANES, PREFILL_GEMM_TILE_N]),
-            (&mut output_a).partition([PREFILL_LANES, PREFILL_GEMM_TILE_N]),
-            &input,
-            weight_b,
-            weight_a,
-        )
-        .generics(vec![columns.to_string()]),
-    )?;
+    match context {
+        PairContext::Prompt => {
+            scope.record(
+                gemm::dense_pair(
+                    (&mut output_b).partition([PREFILL_LANES, PREFILL_GEMM_TILE_N]),
+                    (&mut output_a).partition([PREFILL_LANES, PREFILL_GEMM_TILE_N]),
+                    &input,
+                    weight_b,
+                    weight_a,
+                )
+                .generics(vec![columns.to_string()]),
+            )?;
+        }
+        PairContext::Verify => {
+            scope.record(
+                verify_gemm::dense_pair(
+                    (&mut output_b).partition(SMALL_GEMM_TILE),
+                    (&mut output_a).partition(SMALL_GEMM_TILE),
+                    &input,
+                    weight_b,
+                    weight_a,
+                )
+                .generics(vec![columns.to_string()]),
+            )?;
+            #[cfg(test)]
+            VERIFY_PAIR_CAPTURES.with(|count| count.set(count.get().saturating_add(1)));
+        }
+    }
     arena.buffers[slot_b] = Some(output_b.reshape(&[expected])?);
     arena.buffers[slot_a] = Some(output_a.reshape(&[expected])?);
     Ok(true)

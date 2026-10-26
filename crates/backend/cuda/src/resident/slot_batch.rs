@@ -824,12 +824,12 @@ impl SlotPool {
         // Step 1 of the KV refactor: the kernels resolve KV positions through this table, so it
         // must cover the slot's whole capacity. Step 2 replaces the identity contents with the
         // allocator's blocks and rewrites them here on every bind.
-        let blocks = i32::try_from(self.capacity.div_ceil(KV_BLOCK_TOKENS))
-            .map_err(|_| Error::invalid("slot block count"))?;
+        let columns = i32::try_from(table_columns(self.capacity, self.slots)?)
+            .map_err(|_| Error::invalid("slot table columns"))?;
         if self
             .tables
             .get(slot)
-            .is_none_or(|table| table.shape() != [blocks])
+            .is_none_or(|table| table.shape() != [columns])
         {
             return Err(Error::invariant("slot block table shape"));
         }

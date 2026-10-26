@@ -29,6 +29,37 @@ pub(crate) mod kernels {
         }
         out.store(acc);
     }
+    /// Share the input decomposition while preserving each verify accumulator chain.
+    #[cutile::entry()]
+    fn dense_pair<const K: i32>(
+        out_b: &mut Tensor<f32, { [16, 32] }>,
+        out_a: &mut Tensor<f32, { [16, 32] }>,
+        input: &Tensor<f32, { [-1, K] }>,
+        weight_b: &Tensor<bf16, { [-1, K] }>,
+        weight_a: &Tensor<bf16, { [-1, K] }>,
+    ) {
+        let pid = get_tile_block_id();
+        let xp = input.partition(shape![16, 128]);
+        let wp_b = weight_b.partition(shape![32, 128]);
+        let wp_a = weight_a.partition(shape![32, 128]);
+        let mut acc_b: Tile<f32, { [16, 32] }> = constant(0.0f32, shape![16, 32]);
+        let mut acc_a: Tile<f32, { [16, 32] }> = constant(0.0f32, shape![16, 32]);
+        for k in 0i32..((K + 127) / 128) {
+            let input = xp.load([pid.0, k]);
+            let high: Tile<bf16, { [16, 128] }> = convert_tile(input);
+            let rounded: Tile<f32, { [16, 128] }> = convert_tile(high);
+            let low: Tile<bf16, { [16, 128] }> = convert_tile(input - rounded);
+            let b: Tile<bf16, { [32, 128] }> = convert_tile(wp_b.load([pid.1, k]));
+            let a: Tile<bf16, { [32, 128] }> = convert_tile(wp_a.load([pid.1, k]));
+            acc_b = mmaf(low, b.transpose(), acc_b);
+            acc_b = mmaf(high, b.transpose(), acc_b);
+            acc_a = mmaf(low, a.transpose(), acc_a);
+            acc_a = mmaf(high, a.transpose(), acc_a);
+        }
+        out_b.store(acc_b);
+        out_a.store(acc_a);
+    }
+
     #[cutile::entry()]
     fn scaled<E: ElementType, const K: i32>(
         out: &mut Tensor<f32, { [16, 32] }>,
