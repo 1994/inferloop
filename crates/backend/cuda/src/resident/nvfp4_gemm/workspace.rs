@@ -63,6 +63,8 @@ pub struct Workspace {
     /// operand geometry but need different activation-scale extents, so geometry alone would let
     /// whichever projection is visited first decide the layout for the other.
     fp8: BTreeMap<Fp8Key, Fp8Buffers>,
+    /// Norm maximum scratch for Add+Norm sites whose following projection is not FP8.
+    add_norm_scale: Arc<Tensor<f32>>,
 }
 
 impl Workspace {
@@ -186,6 +188,7 @@ impl Workspace {
             strategies: BTreeMap::new(),
             buffers: BTreeMap::new(),
             fp8: BTreeMap::new(),
+            add_norm_scale: device.upload(vec![1.0f32], &[1])?,
             fp8_strategies: BTreeMap::new(),
             vendor_fp8: vendor_fp8::Support::new_with(device, true),
             vendor_diagnostic: vendor_diagnostic_enabled(),
@@ -670,6 +673,52 @@ impl Workspace {
                 output.partition([1, columns.next_power_of_two()]),
                 scales.partition([1, 1]),
                 input,
+                weight,
+                epsilon,
+                offset,
+            )
+            .generics(vec![
+                columns.to_string(),
+                columns.next_power_of_two().to_string(),
+            ]),
+        )?;
+        self.norm_maximum = Some(super::super::norm_maximum::Pending {
+            next,
+            pointer,
+            rows,
+            columns,
+        });
+        Ok(true)
+    }
+
+    #[expect(clippy::too_many_arguments, reason = "explicit CUDA tensor bindings")]
+    pub(crate) fn record_add_norm_maximum(
+        &mut self,
+        scope: &Scope,
+        next: usize,
+        input: &TensorView<'_, f32>,
+        residual: &TensorView<'_, f32>,
+        weight: &Tensor<f32>,
+        sum_output: &mut Tensor<f32>,
+        output: &mut Tensor<f32>,
+        (epsilon, offset): (f32, f32),
+    ) -> StdResult<bool, DeviceError> {
+        let rows = usize::try_from(output.shape()[0]).map_err(super::super::capture::error)?;
+        let columns = usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
+        let scales = if let Some((_, scales)) = self.fp8.get_mut(&(rows, columns, 1)) {
+            scales
+        } else {
+            Arc::get_mut(&mut self.add_norm_scale)
+                .ok_or_else(|| super::super::capture::error("add norm scale alias"))?
+        };
+        let pointer = output.device_pointer().cu_deviceptr();
+        scope.record(
+            super::super::norm_maximum_kernel::kernels::add_norm_max(
+                sum_output.partition([1, columns.next_power_of_two()]),
+                output.partition([1, columns.next_power_of_two()]),
+                scales.partition([1, 1]),
+                input,
+                residual,
                 weight,
                 epsilon,
                 offset,

@@ -236,6 +236,41 @@ pub(crate) mod kernels {
         out.store(acc * alpha.broadcast(shape![M, N]));
     }
 
+    /// Deeper prefetch variant for long-K down projections. The K step, arithmetic
+    /// order and epilogue are identical to `packed_prefill`; only the compiler
+    /// pipeline depth changes, so output bits must match.
+    #[cutile::entry()]
+    fn packed_prefill16<const K: i32, const M: i32, const N: i32>(
+        out: &mut Tensor<f32, { [M, N] }>,
+        input: &Tensor<f4e2m1fnx2, { [-1, -1] }>,
+        input_scales: &Tensor<f8e4m3fn, { [-1, -1] }>,
+        weight: &Tensor<f4e2m1fnx2, { [-1, -1] }>,
+        scales: &Tensor<f8e4m3fn, { [-1, -1] }>,
+        alpha: f32,
+    ) {
+        let pid = get_tile_block_id();
+        let xp = input.partition(shape![M, 128]);
+        let xs = input_scales.partition(shape![M, 16]);
+        let wp = weight.partition(shape![N, 128]);
+        let sp = scales.partition(shape![N, 16]);
+        let mut acc: Tile<f32, { [M, N] }> = constant(0.0f32, shape![M, N]);
+        for k in 0i32..((K + 255) / 256) {
+            let x = xp.load_pipelined::<16>([pid.0, k]).unpack(shape![M, 256]);
+            let w = wp
+                .load_pipelined::<16>([pid.1, k])
+                .unpack(shape![N, 256])
+                .transpose();
+            acc = mmaf_scaled(
+                x,
+                w,
+                acc,
+                xs.load_pipelined::<16>([pid.0, k]),
+                sp.load_pipelined::<16>([pid.1, k]).transpose(),
+            );
+        }
+        out.store(acc * alpha.broadcast(shape![M, N]));
+    }
+
     /// Gate and up projections of a gated MLP in one prefill pass. Each input block feeds both
     /// weights, and `silu(gate) * up` is quantized straight into the down projection's codes, so
     /// neither F32 projection output is written. The epilogue repeats `swiglu_quantize` on the
@@ -416,6 +451,9 @@ fn record_input(
     Ok(true)
 }
 
+#[cfg(test)]
+#[path = "../../tests/unit/resident_prefill_prefetch16.rs"]
+mod prefetch16_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/resident_nvfp4_gemm.rs"]
 mod tests;

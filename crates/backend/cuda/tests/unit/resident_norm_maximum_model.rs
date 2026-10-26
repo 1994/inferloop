@@ -8,7 +8,10 @@ use crate::{
     AttentionProfile,
     attention_profile::precise_prefix_positions,
     device::CudaDevice,
-    resident::{norm_maximum_captures, norm_maximum_consumptions, with_separate_norm_maximum},
+    resident::{
+        norm_maximum_add_captures, norm_maximum_captures, norm_maximum_consumptions,
+        with_separate_norm_maximum,
+    },
 };
 use infer_core::{Error, ModelId, Result};
 use std::{env::var, fs::read};
@@ -60,6 +63,7 @@ fn checkpoint_bits(profile: AttentionProfile, width: usize, narrow: usize) -> Re
     let mut fused = loaded.sequence(2048)?;
     let captured = norm_maximum_captures();
     let consumed = norm_maximum_consumptions();
+    let add = norm_maximum_add_captures();
     if profile.is_bf16() {
         assert!(captured > before, "must execute the fused model capture");
         assert!(consumed > before_consumed, "must skip the separate maximum");
@@ -94,9 +98,10 @@ fn checkpoint_bits(profile: AttentionProfile, width: usize, narrow: usize) -> Re
         }
         program_states(&loaded, &fused, &separate)?;
         println!(
-            "checkpoint bits passed: prompt={length}, fused captures={}, maximum skips={}",
+            "checkpoint bits passed: prompt={length}, fused captures={}, maximum skips={}, add captures={}",
             captured - before,
-            consumed - before_consumed
+            consumed - before_consumed,
+            add
         );
     }
     Ok(())
