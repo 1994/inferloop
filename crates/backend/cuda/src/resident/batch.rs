@@ -158,6 +158,7 @@ pub(super) struct BatchBuilder<'a> {
     pub graph: &'a DataflowGraph,
     pub weights: &'a ProgramWeights,
     pub nvfp4: &'a mut super::nvfp4_gemm::Workspace,
+    pub verify_pairs: Option<&'a mut super::verify_projection_pair::Workspace>,
     pub delegated: Option<&'a mut Support>,
     pub attention: &'a mut super::attention_decode::Workspace,
     pub states: &'a mut States,
@@ -1008,6 +1009,7 @@ impl BatchBuilder<'_> {
                             arena,
                             (self.weights, profile),
                             PairContext::Verify,
+                            None,
                         )? {
                             self.nvfp4.clear_quant_reuse();
                             fused_second = Some(second);
@@ -1096,6 +1098,7 @@ impl BatchBuilder<'_> {
             arena,
             (self.weights, profile),
             PairContext::Prompt,
+            None,
         )?;
         if recorded {
             self.nvfp4.clear_quant_reuse();

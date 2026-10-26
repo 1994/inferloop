@@ -15,6 +15,7 @@ use crate::constants::INACTIVE_LANE_STATE_POSITION;
 use crate::constants::MAX_VERIFICATION_WIDTH;
 use crate::constants::METADATA_FIELDS;
 use crate::constants::MIB;
+use crate::device::DeviceProfile;
 use crate::device::PinnedUpload;
 use crate::device::Readbacks;
 use crate::device::{CudaDevice, ReadbackSource, device_error};
@@ -381,6 +382,24 @@ impl BatchBuilder<'_> {
         Ok(())
     }
 
+    fn record_slot_pair(
+        &mut self,
+        scope: &Scope,
+        (first, second): (&TensorNode, &TensorNode),
+        arena: &mut ActivationArena,
+        profile: &DeviceProfile,
+    ) -> StdResult<bool, DeviceError> {
+        record_pair(
+            scope,
+            first,
+            second,
+            arena,
+            (self.weights, profile),
+            PairContext::Verify,
+            self.verify_pairs.as_deref_mut(),
+        )
+    }
+
     fn capture_slot_verify(
         &mut self,
         lane_states: &mut [States],
@@ -407,13 +426,11 @@ impl BatchBuilder<'_> {
                     profile.graph().boundary(scope, index, node)?;
                 }
                 if let Some(&second) = pairs.get(&index)
-                    && record_pair(
+                    && self.record_slot_pair(
                         scope,
-                        node,
-                        &self.graph.nodes[second],
+                        (node, &self.graph.nodes[second]),
                         arena,
-                        (self.weights, device_profile),
-                        PairContext::Verify,
+                        device_profile,
                     )?
                 {
                     if let Some(profile) = profile.as_mut() {

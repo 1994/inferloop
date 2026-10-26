@@ -42,6 +42,7 @@ mod slot_verify;
 mod slot_verify_attention;
 mod small_gemm;
 mod validation;
+pub(crate) mod verify_projection_pair;
 pub use arena::ActivationArena;
 pub(crate) use program::ProgramGeometry;
 pub use program::{DeviceProgram, FusionWeights, ProgramWeights};

@@ -22,6 +22,8 @@ mod device {
     pub const MTP_FUSION_ROWS: u64 = 4;
     /// MMA output tile used by dense and scaled verification projections.
     pub const SMALL_GEMM_TILE: [usize; 2] = [16, 32];
+    /// Input columns consumed by each dense verification MMA loop iteration.
+    pub const SMALL_GEMM_TILE_K: usize = 128;
     /// Maximum row count before MMA replaces the vocabulary GEMV path.
     pub const SMALL_GEMV_MAX_ROWS: usize = 4;
     /// Vocabulary-like expansion ratio where narrow-batch GEMV remains useful.

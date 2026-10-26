@@ -3,7 +3,9 @@ use super::workspace::{STACKED_LANE_ROWS, STACKED_ROWS, VERIFY_LANES, grouped_op
 use crate::constants::{F32_BYTES, KV_BLOCK_TOKENS, METADATA_FIELDS};
 use crate::device::{CudaDevice, DeviceProfile, device_error};
 use crate::resident::{ProgramWeights, capture::error};
-use crate::tuning::attention::decode::{grouped_parts_for, partitions};
+#[cfg(test)]
+use crate::tuning::attention::decode::grouped_parts_for;
+use crate::tuning::attention::decode::{partitions, pooled_parts_for};
 use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, OpId, Result};
@@ -152,7 +154,7 @@ fn blueprints(
         {
             continue;
         }
-        let Some(parts) = grouped_parts_for(query_heads, kv_heads, sms, slots) else {
+        let Some(parts) = pooled_parts_for(query_heads, kv_heads, sms, slots) else {
             continue;
         };
         if query_heads / kv_heads > STACKED_LANE_ROWS {

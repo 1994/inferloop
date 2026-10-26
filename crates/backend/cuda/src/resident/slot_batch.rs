@@ -3,6 +3,9 @@
 //! device-copying its covered state rows in, then every leased sequence advances
 //! through a single graph replay per step.
 use super::attention_decode::VERIFY_LANES;
+use super::attention_decode::Workspace as AttentionWorkspace;
+use super::nvfp4_gemm::Workspace as ProjectionWorkspace;
+use super::verify_projection_pair::Workspace as VerifyPairWorkspace;
 use super::{
     batch::{BatchOutput, SlotDecodeGraph, SlotLane, States},
     fp8_cache::{Fp8Caches, allocate},
@@ -37,6 +40,12 @@ const MIN_TABLE_COLUMNS: usize = 32;
 
 /// One pool's per-slot recurrent states, KV caches and KV position tables.
 type SlotStorage = (SlotStates, Vec<Fp8Caches>, Vec<Tensor<i32>>, Tensor<i32>);
+type PoolWorkspaces = (
+    usize,
+    AttentionWorkspace,
+    ProjectionWorkspace,
+    VerifyPairWorkspace,
+);
 
 /// How one state family moves into a slot at bind time: a token-row prefix of a
 /// capacity-sized KV cache (f32 or fp8), or the whole tensor (conv/delta state).
@@ -207,6 +216,7 @@ pub struct SlotPool {
     // graph drops before anything it references.
     _external: Tensor<f32>,
     _nvfp4: super::nvfp4_gemm::Workspace,
+    _verify_pairs: super::verify_projection_pair::Workspace,
     _attention: super::attention_decode::Workspace,
     lane_external: Vec<Tensor<f32>>,
     /// Whether a lane's external hidden row was uploaded at least once.
@@ -366,7 +376,13 @@ impl SlotPool {
         let external = api::zeros::<f32>(&[hidden])
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        let lanes = if verify >= 2 { width * verify } else { width };
+        let (lanes, mut attention, mut nvfp4, mut verify_pairs) = Self::workspaces(
+            device,
+            graph,
+            weights,
+            (width, verify, capacity),
+            paging.is_some(),
+        )?;
         let (mut lane_external, pinned_external) =
             Self::external_lanes(device, weights.fusion.is_some(), lanes, hidden)?;
         let mut lane_fusion: Vec<Option<super::program::FusionWorkspace>> = (0..lanes)
@@ -374,15 +390,6 @@ impl SlotPool {
                 super::program::FusionWorkspace::allocate(device, hidden, weights.fusion.is_some())
             })
             .collect::<Result<_>>()?;
-        let mut attention = super::attention_decode::Workspace::new(device, graph, capacity)?;
-        attention.prepare_pooled(
-            device,
-            graph,
-            weights,
-            (width, verify, capacity),
-            paging.is_some(),
-        )?;
-        let mut nvfp4 = super::nvfp4_gemm::Workspace::new(device, graph, weights, &[1, lanes])?;
         let mut placeholder_states = States::new();
         let mut placeholder_fp8 = Fp8Caches::new();
         let (decode, verify_graph) = {
@@ -391,6 +398,7 @@ impl SlotPool {
                 graph,
                 weights,
                 nvfp4: &mut nvfp4,
+                verify_pairs: Some(&mut verify_pairs),
                 delegated: None,
                 attention: &mut attention,
                 states: &mut placeholder_states,
@@ -429,6 +437,7 @@ impl SlotPool {
             vocabulary,
             _external: external,
             _nvfp4: nvfp4,
+            _verify_pairs: verify_pairs,
             _attention: attention,
             lane_external,
             external_uploaded: vec![false; lanes],
@@ -436,6 +445,24 @@ impl SlotPool {
             pinned_cursor: vec![0; lanes],
             _lane_fusion: lane_fusion,
         })
+    }
+
+    fn workspaces(
+        device: &CudaDevice,
+        graph: &DataflowGraph,
+        weights: &ProgramWeights,
+        (width, verify, capacity): (usize, usize, usize),
+        paged: bool,
+    ) -> Result<PoolWorkspaces> {
+        let lanes = width
+            .checked_mul(if verify >= 2 { verify } else { 1 })
+            .ok_or_else(|| Error::invalid("pooled verify lane overflow"))?;
+        let mut attention = AttentionWorkspace::new(device, graph, capacity)?;
+        attention.prepare_pooled(device, graph, weights, (width, verify, capacity), paged)?;
+        let projections = ProjectionWorkspace::new(device, graph, weights, &[1, lanes])?;
+        let pairs =
+            VerifyPairWorkspace::new(device, graph, weights, if verify >= 2 { lanes } else { 0 })?;
+        Ok((lanes, attention, projections, pairs))
     }
 
     /// Allocate each slot's recurrent states and KV cache, checking the running total against
@@ -579,6 +606,11 @@ impl SlotPool {
         self.verify
             .as_ref()
             .is_some_and(SlotVerifyGraph::has_batched_commit)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_table(&self, slot: usize) -> &Tensor<i32> {
+        &self.tables[slot]
     }
 
     #[cfg(test)]

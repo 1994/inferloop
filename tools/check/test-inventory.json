@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 340
+      "tests": 345
     },
     "frontdoor": {
       "benches": 0,
@@ -152,6 +152,10 @@
     "target_os = \"macos\"": 1
   },
   "ignored_reasons": {
+    "CUDA MTP checkpoint; split default vs independent accepted-prefix replay": 1,
+    "CUDA checkpoint, independent F64 on every actual GDN output": 1,
+    "CUDA real48pairs, production Workspace, fixed ABBA microbenchmark": 1,
+    "CUDA, row/column/K tails and distinct nonempty split windows": 1,
     "CUDA/checkpoint/frozen511tokens/safe-run; INFER_CUDA_ATTENTION_PRECISE_PREFIX=2048": 1,
     "opt-in projection-only shape A/B with real checkpoint and CUDA; run inside safe-run": 1,
     "real 2B checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 3,
@@ -826,6 +830,11 @@
     },
     {
       "crate": "cuda",
+      "file": "tests/unit/resident_batch_gdn_checkpoint.rs",
+      "mount": "resident_gdn_split_checkpoint.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "tests/unit/resident_pooled_attention.rs",
       "mount": "resident_pooled_attention_latency.rs"
     },
@@ -1266,11 +1275,11 @@
     }
   ],
   "totals": {
-    "all": 905,
+    "all": 910,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 905
+    "tests": 910
   }
 }

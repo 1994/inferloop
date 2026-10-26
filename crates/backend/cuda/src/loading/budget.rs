@@ -19,6 +19,7 @@ use crate::resident::fusion_batch::required_bytes;
 use crate::resident::prompt_logits;
 use crate::resident::recurrent_prefill::required_bytes as recurrent_prefill_required_bytes;
 use crate::resident::slot_batch::SlotPool;
+use crate::resident::verify_projection_pair::Workspace as VerifyPairWorkspace;
 use crate::tuning::attention::decode::GROUPED_ROWS;
 use crate::tuning::attention::decode::MAX_GROUPED_PARTS;
 use crate::{
@@ -505,6 +506,12 @@ fn pool_storage_bytes(
             },
         )?,
     )?;
+    if verify >= 2 {
+        bytes = add(
+            bytes,
+            VerifyPairWorkspace::storage_bytes(graph, weights, lanes, profile)?,
+        )?;
+    }
     bytes = add(bytes, attention_scratch(graph)?)?;
     bytes = add(bytes, required_bytes(weights, lanes, profile))?;
     let external_rows = 1 + lanes as u64

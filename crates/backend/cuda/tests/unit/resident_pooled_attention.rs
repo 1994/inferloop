@@ -113,7 +113,7 @@ fn pooled_layout_covers_every_slot_with_bounded_partials() -> TestResult {
 fn pooled_attention_preserves_output_bits_and_cache_bytes() -> TestResult {
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
-    for slots in [2, 5, 16] {
+    for slots in [2, 5, 15, 16] {
         let mut fixture = Fixture::new(&device, slots)?;
         for (position, window) in [
             (0, 0),
@@ -415,3 +415,33 @@ impl Fixture {
 
 #[path = "resident_pooled_attention_latency.rs"]
 mod latency;
+
+#[test]
+fn pooled_partial_storage_stays_within_one_rounded_wave_for_uneven_slots() {
+    for (heads, kv_heads, sms) in [(24, 4, 170), (32, 8, 80), (48, 6, 120)] {
+        let single = grouped_parts_for(heads, kv_heads, sms, 1).unwrap();
+        let budget = single * kv_heads;
+        for slots in [15, 2, 3, 5, 7, 16, 31]
+            .into_iter()
+            .filter(|n| *n <= single)
+        {
+            let parts = pooled_parts_for(heads, kv_heads, sms, slots).unwrap();
+            let layout = Layout::new(
+                Geometry {
+                    heads,
+                    kv_heads,
+                    dim: 256,
+                },
+                slots,
+                8192,
+                parts,
+            )
+            .unwrap();
+            assert!(
+                layout.blocks <= budget,
+                "slots={slots}, parts={parts}, partial blocks={}, budget={budget}",
+                layout.blocks
+            );
+        }
+    }
+}

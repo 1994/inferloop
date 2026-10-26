@@ -1,3 +1,4 @@
+use super::verify_projection_pair::Workspace as VerifyPairWorkspace;
 use super::{ProgramWeights, capture::error, prefill_gemm::gemm};
 use super::{pool_gemv, small_gemm::kernels as verify_gemm};
 use crate::constants::PREFILL_GEMM_TILE_K;
@@ -424,16 +425,7 @@ pub(super) fn record(
     Ok(())
 }
 
-/// Record a GDN `in_proj_b` + `in_proj_a` pair as one launch: both are dense BF16
-/// projections of the same input with equal output width. The caller establishes the
-/// semantic pair from the graph (the beta and alpha inputs of one `Delta` node); this
-/// function only validates projection/layout compatibility. The pair kernel keeps each
-/// output's independent K accumulation order; only the launch (and the shared `x` load)
-/// is fused.
-///
-/// Returns false when either node would take a different path (narrow N16 layout,
-/// sparse experts, vendor GEMM, output width above one 64-column tile, or mismatched
-/// input/weight geometry).
+/// Select the existing prompt arithmetic or two-term verification arithmetic.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum PairContext {
     Prompt,
@@ -465,6 +457,17 @@ pub(super) fn with_verify_pairs<T>(enabled: bool, run: impl FnOnce() -> T) -> T 
     result
 }
 
+/// Record the graph's beta/alpha pair from one shared input.
+///
+/// The unsplit path preserves each output's original K accumulation chain. A
+/// supplied pooled verify workspace retains the two-term decomposition and F32
+/// accumulation while changing the order of the partial reduction.
+///
+/// Returns false for narrow prompt layouts, sparse experts, small F32 verify
+/// projections, incompatible geometry, or outputs wider than one tile.
+///
+/// # Errors
+/// Propagates arena layout and CUDA capture errors.
 pub(super) fn record_pair(
     scope: &Scope,
     first: &TensorNode,
@@ -472,6 +475,7 @@ pub(super) fn record_pair(
     arena: &mut super::ActivationArena,
     (weights, profile): (&ProgramWeights, &DeviceProfile),
     context: PairContext,
+    scratch: Option<&mut VerifyPairWorkspace>,
 ) -> Result<bool, DeviceError> {
     #[cfg(test)]
     if context == PairContext::Verify && !VERIFY_PAIRS_ENABLED.with(Cell::get) {
@@ -554,15 +558,13 @@ pub(super) fn record_pair(
             )?;
         }
         PairContext::Verify => {
-            scope.record(
-                verify_gemm::dense_pair(
-                    (&mut output_b).partition(SMALL_GEMM_TILE),
-                    (&mut output_a).partition(SMALL_GEMM_TILE),
-                    &input,
-                    weight_b,
-                    weight_a,
-                )
-                .generics(vec![columns.to_string()]),
+            record_verify_pair(
+                scope,
+                &input,
+                (weight_b, weight_a),
+                (&mut output_b, &mut output_a),
+                columns,
+                scratch,
             )?;
             #[cfg(test)]
             VERIFY_PAIR_CAPTURES.with(|count| count.set(count.get().saturating_add(1)));
@@ -702,3 +704,29 @@ pub fn with_dense_reference<T>(run: impl FnOnce() -> T) -> T {
 #[cfg(test)]
 #[path = "../../tests/unit/resident_prefill_projection.rs"]
 mod tests;
+
+fn record_verify_pair(
+    scope: &Scope,
+    input: &TensorView<'_, f32>,
+    weights: (&Tensor<bf16>, &Tensor<bf16>),
+    (output_b, output_a): (&mut Tensor<f32>, &mut Tensor<f32>),
+    columns: usize,
+    scratch: Option<&mut VerifyPairWorkspace>,
+) -> Result<(), DeviceError> {
+    if let Some(scratch) = scratch
+        && scratch.record(scope, input, weights, (&mut *output_b, &mut *output_a))?
+    {
+        return Ok(());
+    }
+    scope.record(
+        verify_gemm::dense_pair(
+            output_b.partition(SMALL_GEMM_TILE),
+            output_a.partition(SMALL_GEMM_TILE),
+            input,
+            weights.0,
+            weights.1,
+        )
+        .generics(vec![columns.to_string()]),
+    )?;
+    Ok(())
+}

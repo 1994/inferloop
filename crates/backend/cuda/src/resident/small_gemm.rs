@@ -87,6 +87,67 @@ pub(crate) mod kernels {
             .broadcast(shape![16, 32]);
         out.store(acc * scale);
     }
+    #[cutile::entry()]
+    fn dense_pair_split<const K: i32>(
+        partial_b: &mut Tensor<f32, { [16, 32] }>,
+        partial_a: &mut Tensor<f32, { [16, 32] }>,
+        input: &Tensor<f32, { [-1, K] }>,
+        weight_b: &Tensor<bf16, { [-1, K] }>,
+        weight_a: &Tensor<bf16, { [-1, K] }>,
+        k_tiles: i32,
+        row_tiles: i32,
+    ) {
+        let pid = get_tile_block_id();
+        let split = pid.0 / row_tiles;
+        let row = pid.0 % row_tiles;
+        let xp = input.partition(shape![16, 128]);
+        let wp_b = weight_b.partition(shape![32, 128]);
+        let wp_a = weight_a.partition(shape![32, 128]);
+        let total = (K + 127) / 128;
+        let k0 = split * k_tiles;
+        let mut k1 = k0 + k_tiles;
+        if k1 > total {
+            k1 = total;
+        }
+        let mut acc_b: Tile<f32, { [16, 32] }> = constant(0.0f32, shape![16, 32]);
+        let mut acc_a: Tile<f32, { [16, 32] }> = constant(0.0f32, shape![16, 32]);
+        for k in k0..k1 {
+            let input = xp.load([row, k]);
+            let high: Tile<bf16, { [16, 128] }> = convert_tile(input);
+            let rounded: Tile<f32, { [16, 128] }> = convert_tile(high);
+            let low: Tile<bf16, { [16, 128] }> = convert_tile(input - rounded);
+            let b: Tile<bf16, { [32, 128] }> = convert_tile(wp_b.load([pid.1, k]));
+            let a: Tile<bf16, { [32, 128] }> = convert_tile(wp_a.load([pid.1, k]));
+            acc_b = mmaf(low, b.transpose(), acc_b);
+            acc_b = mmaf(high, b.transpose(), acc_b);
+            acc_a = mmaf(low, a.transpose(), acc_a);
+            acc_a = mmaf(high, a.transpose(), acc_a);
+        }
+        partial_b.store(acc_b);
+        partial_a.store(acc_a);
+    }
+
+    #[cutile::entry()]
+    fn reduce_pair_split(
+        out_b: &mut Tensor<f32, { [16, 32] }>,
+        out_a: &mut Tensor<f32, { [16, 32] }>,
+        partial_b: &Tensor<f32, { [-1, -1] }>,
+        partial_a: &Tensor<f32, { [-1, -1] }>,
+        splits: i32,
+        row_tiles: i32,
+    ) {
+        let pid = get_tile_block_id();
+        let bp = partial_b.partition(shape![16, 32]);
+        let ap = partial_a.partition(shape![16, 32]);
+        let mut acc_b: Tile<f32, { [16, 32] }> = constant(0.0f32, shape![16, 32]);
+        let mut acc_a: Tile<f32, { [16, 32] }> = constant(0.0f32, shape![16, 32]);
+        for s in 0i32..splits {
+            acc_b = acc_b + bp.load([s * row_tiles + pid.0, pid.1]);
+            acc_a = acc_a + ap.load([s * row_tiles + pid.0, pid.1]);
+        }
+        out_b.store(acc_b);
+        out_a.store(acc_a);
+    }
 }
 
 // Unqualified arithmetic candidates exist only in the CUDA test executable.

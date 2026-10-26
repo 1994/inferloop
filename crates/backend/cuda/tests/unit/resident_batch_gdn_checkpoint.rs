@@ -4,7 +4,8 @@ use crate::device::CudaDevice;
 use crate::loading::{LoadOptions, LoadedModel};
 use crate::mlp::ProjectionWeight;
 use crate::resident::capture::error;
-use crate::resident::{ActivationArena, prefill_projection, small_gemm};
+use crate::resident::verify_projection_pair::Workspace as VerifyPairWorkspace;
+use crate::resident::{ActivationArena, prefill_projection, small_gemm, verify_projection_pair};
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::ModelId;
@@ -61,6 +62,7 @@ fn check_pair(
                 arena,
                 (loaded.weights(), device.profile().map_err(error)?),
                 prefill_projection::PairContext::Verify,
+                None,
             )
         })?);
         assert!(prefill_projection::record_pair(
@@ -70,6 +72,7 @@ fn check_pair(
             arena,
             (loaded.weights(), device.profile().map_err(error)?),
             prefill_projection::PairContext::Verify,
+            None,
         )?);
         assert_eq!(prefill_projection::verify_pair_captures(), before + 1);
         Ok(())
@@ -149,18 +152,26 @@ use cutile::error::tensor_error;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PairMode {
+    Separate,
+    Paired,
+    Split,
+}
+
 struct PairWork {
     graph: CudaGraph<()>,
-    _outputs: Vec<(Tensor<f32>, Tensor<f32>)>,
-    _input: Arc<Tensor<f32>>,
+    outputs: Vec<(Tensor<f32>, Tensor<f32>)>,
+    input: Arc<Tensor<f32>>,
+    _split: Option<VerifyPairWorkspace>,
 }
 
 fn pair_work(
     loaded: &LoadedModel,
     pairs: &BTreeMap<usize, usize>,
-    paired: bool,
+    mode: PairMode,
+    rows: usize,
 ) -> Result<PairWork, Box<dyn Error>> {
-    let rows = 48;
     let device = loaded.device();
     let first = &loaded.graph().nodes[*pairs.keys().next().ok_or("no GDN pairs")?];
     let Some(ProjectionWeight::Dense(weight)) = loaded.weights().projections.get(&first.inputs[1])
@@ -189,6 +200,16 @@ fn pair_work(
             api::zeros::<f32>(&[rows, count]).sync_on(&device.stream)?,
         ));
     }
+    let mut split = if mode == PairMode::Split {
+        Some(VerifyPairWorkspace::new(
+            device,
+            loaded.graph(),
+            loaded.weights(),
+            rows,
+        )?)
+    } else {
+        None
+    };
     let graph = CudaGraph::scope(&device.stream, |scope| {
         for ((&first, &second), (out_b, out_a)) in pairs.iter().zip(&mut outputs) {
             let (first, second) = (&loaded.graph().nodes[first], &loaded.graph().nodes[second]);
@@ -198,7 +219,7 @@ fn pair_work(
             ) else {
                 return Err(tensor_error("GDN pair format changed").into());
             };
-            if paired {
+            if mode == PairMode::Paired {
                 scope.record(
                     small_gemm::kernels::dense_pair(
                         out_b.partition([16, 32]),
@@ -209,6 +230,9 @@ fn pair_work(
                     )
                     .generics(vec![columns.to_string()]),
                 )?;
+            } else if let Some(scratch) = split.as_mut() {
+                let view = input.view(&[rows, columns])?;
+                assert!(scratch.record(scope, &view, (wb, wa), (out_b, out_a))?);
             } else {
                 scope.record(
                     small_gemm::kernels::dense(out_b.partition([16, 32]), &input, wb)
@@ -224,8 +248,9 @@ fn pair_work(
     })?;
     Ok(PairWork {
         graph,
-        _outputs: outputs,
-        _input: input,
+        outputs,
+        input,
+        _split: split,
     })
 }
 
@@ -252,8 +277,8 @@ fn real_gdn_verify_pair_latency() -> Result<(), Box<dyn Error>> {
     )?;
     let pairs = gdn_ba_pairs(loaded.graph(), loaded.weights());
     assert_eq!(pairs.len(), 48);
-    let baseline = pair_work(&loaded, &pairs, false)?;
-    let candidate = pair_work(&loaded, &pairs, true)?;
+    let baseline = pair_work(&loaded, &pairs, PairMode::Separate, 48)?;
+    let candidate = pair_work(&loaded, &pairs, PairMode::Paired, 48)?;
     let device = loaded.device();
     for cold in [true, false] {
         let options = BenchOptions {
@@ -398,6 +423,10 @@ fn pool_round(
 #[test]
 #[ignore = "requires CUDA and MTP checkpoint; actual pooled dispatch, full outputs, rollback and states"]
 fn real_pooled_gdn_pair_dispatch_and_full_outputs() -> Result<(), Box<dyn Error>> {
+    verify_projection_pair::with_disabled(exact_pool_check)
+}
+
+fn exact_pool_check() -> Result<(), Box<dyn Error>> {
     CudaDevice::enable_kernel_cache()?;
     let loaded = LoadedModel::open(
         CudaDevice::new(0)?,
@@ -473,3 +502,6 @@ fn real_pooled_gdn_pair_dispatch_and_full_outputs() -> Result<(), Box<dyn Error>
     }
     Ok(())
 }
+
+#[path = "resident_gdn_split_checkpoint.rs"]
+mod split;
