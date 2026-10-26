@@ -1,4 +1,4 @@
-use super::{Entry, Key, legacy_choice};
+use super::{Entry, Key, complete_cache_coverage, complete_measurement, legacy_choice};
 use crate::constants::CB_DECODE_SLOTS;
 use crate::resident::pool_gemv::kernels;
 use crate::resident::small_gemm::kernels as blocked_kernels;
@@ -6,6 +6,7 @@ use crate::tuning::pool_gemv::Choice;
 use cutile::DType;
 use cutile::cutile_compiler::compile_api::KernelCompiler;
 use cutile::half::bf16;
+use infer_core::{Error as CoreError, Result as CoreResult};
 use std::error::Error;
 
 const DEVICE: &str = "dev|sm_120|24576MiB";
@@ -56,6 +57,25 @@ fn entry() -> Entry {
         warm_ba_gemv_samples: vec![0.008, 0.008],
         gemv_faster: true,
     }
+}
+
+fn blocked_entry() -> Entry {
+    let mut entry = entry();
+    entry.choice = "blocked".into();
+    entry.gemv_faster = false;
+    entry.cold_gemv_us = 12.0;
+    entry.cold_blocked_us = 10.0;
+    entry.warm_gemv_us = 10.0;
+    entry.warm_blocked_us = 8.0;
+    entry.cold_ab_blocked_samples = vec![0.010, 0.010];
+    entry.cold_ab_gemv_samples = vec![0.012, 0.012];
+    entry.cold_ba_blocked_samples = vec![0.010, 0.010];
+    entry.cold_ba_gemv_samples = vec![0.012, 0.012];
+    entry.warm_ab_blocked_samples = vec![0.008, 0.008];
+    entry.warm_ab_gemv_samples = vec![0.010, 0.010];
+    entry.warm_ba_blocked_samples = vec![0.008, 0.008];
+    entry.warm_ba_gemv_samples = vec![0.010, 0.010];
+    entry
 }
 
 fn matches(entry: &Entry) -> bool {
@@ -147,5 +167,36 @@ fn gemv_and_blocked_kernels_compile_with_legal_cta_strides() -> Result<(), Box<d
             ("weight", &[5120, 1]),
         ])
         .compile()?;
+    Ok(())
+}
+
+#[test]
+fn failed_pool_measurement_completes_neither_family_but_negative_evidence_completes_pool()
+-> CoreResult<()> {
+    use crate::tuning::resident_gemm::{ResidentTuningSession, SearchFamily};
+    let session = ResidentTuningSession::default();
+    let shape = [16, 5120, 128];
+    session.plan_gemm_search(SearchFamily::Nvfp4, &[shape], 4)?;
+    session.plan_gemm_search(SearchFamily::PoolDense, &[shape], 4)?;
+    assert!(blocked_entry().matches(&key()));
+    let failed: CoreResult<Entry> = Err(CoreError::invalid("synthetic launch failure"));
+    complete_measurement(&session, shape, &failed)?;
+    assert!(session.permits_gemm_search(SearchFamily::PoolDense, shape, 4)?);
+    assert!(session.permits_gemm_search(SearchFamily::Nvfp4, shape, 4)?);
+    assert!(!session.gemm_search_exhausted(SearchFamily::PoolDense, shape)?);
+    complete_measurement(&session, shape, &Ok(blocked_entry()))?;
+    assert!(!session.permits_gemm_search(SearchFamily::PoolDense, shape, 4)?);
+    assert!(session.permits_gemm_search(SearchFamily::Nvfp4, shape, 4)?);
+    Ok(())
+}
+
+#[test]
+fn valid_cache_coverage_completes_only_pool_family() -> CoreResult<()> {
+    use crate::tuning::resident_gemm::{ResidentTuningSession, SearchFamily};
+    let session = ResidentTuningSession::default();
+    let shape = [16, 5120, 128];
+    complete_cache_coverage(&session, shape)?;
+    assert!(!session.permits_gemm_search(SearchFamily::PoolDense, shape, 4)?);
+    assert!(session.permits_gemm_search(SearchFamily::Nvfp4, shape, 4)?);
     Ok(())
 }

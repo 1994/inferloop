@@ -1,4 +1,4 @@
-use super::swiglu::{Entry, EntryKey};
+use super::swiglu::{Entry, EntryKey, complete_cache};
 use crate::resident::nvfp4_gemm::workspace::{SwigluTile, select_swiglu_tile, swiglu_candidates};
 
 const DEVICE: &str = "dev|sm_120|24576MiB";
@@ -127,4 +127,15 @@ fn swiglu_table_entry_requires_device_kernel_geometry_and_real_proof() {
     let mut bad = entry;
     bad.cold_ab_trial_samples = vec![0.500, 0.500];
     assert!(!bad.matches(&key()));
+}
+
+#[test]
+fn valid_swiglu_cache_coverage_completes_only_its_family() -> infer_core::Result<()> {
+    use crate::tuning::resident_gemm::{ResidentTuningSession, SearchFamily};
+    let session = ResidentTuningSession::default();
+    let shape = [1024, 5120, 17408];
+    complete_cache(&session, shape, 3)?;
+    assert!(!session.permits_gemm_search(SearchFamily::FusedSwiGLU, shape, 12)?);
+    assert!(session.permits_gemm_search(SearchFamily::PoolDense, shape, 4)?);
+    Ok(())
 }

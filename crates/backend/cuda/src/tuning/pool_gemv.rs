@@ -32,6 +32,7 @@ const MATCH_TOLERANCE: f32 = 5e-4;
 const MICROSECONDS_PER_MILLISECOND: f32 = 1000.0;
 const REL_TOLERANCE: f64 = 1.0e-3;
 const ABS_TOLERANCE: f64 = 1.0e-9;
+const SEARCH_RANK: usize = 3;
 const CACHE_STATES: [bool; 2] = [true, false];
 
 /// The qualified dispatch choice for one Dense projection geometry.
@@ -177,6 +178,25 @@ impl Entry {
     }
 }
 
+fn complete_cache_coverage(
+    session: &ResidentTuningSession,
+    shape: [usize; SEARCH_RANK],
+) -> Result<()> {
+    session.plan_gemm_search(SearchFamily::PoolDense, &[shape], CACHE_STATES.len() * 2)?;
+    session.complete_gemm_search(SearchFamily::PoolDense, shape)
+}
+
+fn complete_measurement(
+    session: &ResidentTuningSession,
+    shape: [usize; SEARCH_RANK],
+    result: &Result<Entry>,
+) -> Result<()> {
+    if result.is_ok() {
+        session.complete_gemm_search(SearchFamily::PoolDense, shape)?;
+    }
+    Ok(())
+}
+
 /// Select GEMV or the existing blocked fallback from actual-weight paired evidence.
 pub(crate) fn select(
     device: &CudaDevice,
@@ -216,12 +236,7 @@ pub(crate) fn select(
         proof: &proof,
     };
     if let Some(choice) = cached(&key)? {
-        session.plan_gemm_search(
-            SearchFamily::PoolDense,
-            &[[rows, columns, outputs]],
-            CACHE_STATES.len() * 2,
-        )?;
-        session.complete_gemm_search(SearchFamily::PoolDense, [rows, columns, outputs])?;
+        complete_cache_coverage(session, [rows, columns, outputs])?;
         return Ok(choice);
     }
     if let Some(choice) =
@@ -254,7 +269,7 @@ pub(crate) fn select(
     );
     match result {
         Ok(entry) => {
-            session.complete_gemm_search(SearchFamily::PoolDense, [rows, columns, outputs])?;
+            complete_measurement(session, [rows, columns, outputs], &Ok(entry.clone()))?;
             update_table(super::table_path().as_deref(), |table| {
                 table.pool_gemv.retain(|old| {
                     !(old.device == entry.device
@@ -349,12 +364,7 @@ fn reuse_geometry(
     {
         return Ok(None);
     }
-    session.plan_gemm_search(
-        SearchFamily::PoolDense,
-        &[[rows, columns, outputs]],
-        CACHE_STATES.len() * 2,
-    )?;
-    session.complete_gemm_search(SearchFamily::PoolDense, [rows, columns, outputs])?;
+    complete_cache_coverage(session, [rows, columns, outputs])?;
     Ok(Some(choice))
 }
 

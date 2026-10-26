@@ -24,6 +24,7 @@ use std::time::Duration;
 
 const REL_TOLERANCE: f64 = 1.0e-3;
 const ABS_TOLERANCE: f64 = 1.0e-9;
+const SEARCH_RANK: usize = 3;
 const CACHE_STATES: usize = 2;
 const MEASUREMENT_ARMS: usize = 2;
 
@@ -239,6 +240,19 @@ impl Entry {
     }
 }
 
+pub(crate) fn complete_cache(
+    session: &ResidentTuningSession,
+    shape: [usize; SEARCH_RANK],
+    candidates: usize,
+) -> Result<()> {
+    session.plan_gemm_search(
+        SearchFamily::FusedSwiGLU,
+        &[shape],
+        candidates * CACHE_STATES * MEASUREMENT_ARMS,
+    )?;
+    session.complete_gemm_search(SearchFamily::FusedSwiGLU, shape)
+}
+
 /// Select a proven tile, or measure candidates with the loaded weights.
 /// # Errors
 /// Returns a pricing/load error when the weights cannot be identified or a candidate search
@@ -294,12 +308,7 @@ pub(crate) fn select(
         fallback,
         cached_context,
     ) {
-        session.plan_gemm_search(
-            SearchFamily::FusedSwiGLU,
-            &[[rows, columns, hidden]],
-            candidates.len() * CACHE_STATES * MEASUREMENT_ARMS,
-        )?;
-        session.complete_gemm_search(SearchFamily::FusedSwiGLU, [rows, columns, hidden])?;
+        complete_cache(session, [rows, columns, hidden], candidates.len())?;
         return Ok(tile);
     }
     if !autotune {
@@ -314,7 +323,7 @@ pub(crate) fn select(
     }
     match measure(device, gate, up, contract, &candidates) {
         Ok(selected) if selected.complete => {
-            session.complete_gemm_search(SearchFamily::FusedSwiGLU, [rows, columns, hidden])?;
+            complete_cache(session, [rows, columns, hidden], candidates.len())?;
             persist(&cached_context, &selected);
             Ok(selected.tile)
         }
