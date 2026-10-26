@@ -22,6 +22,19 @@ editing its directory. Preserve unrelated work in the checkout.
   Changes with no execution effect, such as prose-only edits, may give a brief explanation
   instead of running benchmarks. Use the existing performance gates and baseline contract.
 
+## Iteration and release gates
+
+- For ordinary iterations, use targeted regressions and `make check-iteration`: one native
+  performance pair plus 64 original quality tasks, with a ten-minute total runtime cap.
+  Report the actual latency and quality counts; a snapshot is not a release certificate.
+- Full quality suites, five-or-more frozen process pairs, long-context/mixed workloads and
+  constrained-memory validation belong to explicit major-release acceptance through
+  `make check-release`. Do not start these automatically after every small edit.
+- A busy gate, failed screen or timeout stops the run. Do not queue hour-long jobs,
+  replace failed samples, or keep restarting the full matrix while debugging.
+- Keep correctness, numerical and memory-safety regressions targeted to the changed path.
+  Preserve the existing code, lint, dependency and platform checks as applicable.
+
 ## Architecture
 
 - inferloop is a GPU inference engine for CUDA and Metal. CPU operators are independent

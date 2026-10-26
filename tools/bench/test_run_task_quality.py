@@ -167,6 +167,34 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(len(report["batches"]), 16)
         self.assertEqual(len((self.args.output / "results.jsonl").read_text().splitlines()), 256)
 
+    def test_iteration_subset_keeps_full_identity_and_cannot_be_reused_as_baseline(self):
+        baseline = self.baseline()
+        scored = runner.scorer.score(self.suite, baseline, self.suite_sha)
+        self.args.tokens = 8
+        self.args.engine = "native"
+        self.args.output.mkdir()
+        with contextlib.redirect_stdout(io.StringIO()):
+            report = runner.collect(
+                self.args,
+                self.suite,
+                self.suite_sha,
+                self.model,
+                self.hardware,
+                lambda ids: "#### 2",
+                scored,
+                sample_limit=64,
+            )
+        self.assertTrue(report["collection_completed"])
+        self.assertFalse(report["completed"])
+        self.assertEqual(report["planned_tasks"], 64)
+        self.assertEqual(report["suite_tasks"], 256)
+        self.assertEqual(report["suite_sha256"], self.suite_sha)
+        self.assertEqual(len(report["results"]), 64)
+        self.assertEqual(self.groups.call_count, 4)
+        with self.assertRaises(ValueError):
+            runner.validate_baseline(self.suite, report, self.suite_sha, self.model, self.hardware)
+        self.assertFalse((self.args.output / "gate.json").exists())
+
     def test_clear_regression_stops_after_first_small_batch_and_reaps_server(self):
         self.baseline()
         with self.assertRaisesRegex(RuntimeError, "early quality regression"):

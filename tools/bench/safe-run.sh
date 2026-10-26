@@ -3,12 +3,22 @@
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 memory_gib=${INFER_BENCH_MEMORY_GIB:-32}
-if [[ "${1:-}" == --memory-gib ]]; then
-    memory_gib=${2:-}
-    shift "$(( $# >= 2 ? 2 : 1 ))"
+time_limit_seconds=1800
+while (( $# )); do
+    case "$1" in
+        --memory-gib) memory_gib=${2:-}; shift "$(( $# >= 2 ? 2 : 1 ))" ;;
+        --time-limit-seconds) time_limit_seconds=${2:-}; shift "$(( $# >= 2 ? 2 : 1 ))" ;;
+        --) shift; break ;;
+        *) break ;;
+    esac
+done
+if [[ ! "$time_limit_seconds" =~ ^[1-9][0-9]{1,3}$ ]] || (( time_limit_seconds < 11 || time_limit_seconds > 1800 )); then
+    echo "Time limit must be 11..1800 seconds, including ten seconds for cleanup." >&2
+    exit 2
 fi
+runtime_seconds=$((time_limit_seconds - 10))
 if (( $# == 0 )); then
-    echo "Usage: bash tools/bench/safe-run.sh [--memory-gib 2..32] COMMAND [ARGS...]" >&2
+    echo "Usage: bash tools/bench/safe-run.sh [--memory-gib 2..32] [--time-limit-seconds 11..1800] COMMAND [ARGS...]" >&2
     exit 2
 fi
 # Smaller checks may opt into a lower ceiling; never exceed the default 32 GiB.
@@ -38,7 +48,7 @@ systemd-run --user --wait --pipe --collect --unit="$unit" \
     --property=MemoryMax="${memory_gib}G" --property=MemorySwapMax=0 \
     --property=OOMPolicy=kill \
     --property=KillMode=control-group --property=TimeoutStopSec=10s \
-    --property=RuntimeMaxSec=30min --property=TasksMax=256 \
+    --property=KillSignal=SIGINT --property=RuntimeMaxSec="${runtime_seconds}s" --property=TasksMax=256 \
     /usr/bin/env MAX_JOBS=1 NVCC_THREADS=1 FLASHINFER_NVCC_THREADS=1 \
     TORCHINDUCTOR_COMPILE_THREADS=1 CARGO_BUILD_JOBS=1 \
     /usr/bin/python3 tools/bench/check_limits.py -- "$@"
