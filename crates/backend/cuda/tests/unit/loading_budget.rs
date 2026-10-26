@@ -43,6 +43,25 @@ fn fixture_weights() -> ProgramWeights {
 }
 
 #[test]
+fn pooled_quote_covers_padded_stacked_table_owner_for_short_capacity() -> Result<()> {
+    for (width, capacity) in [(16usize, 128usize), (16, 8192), (32, 4096)] {
+        let blocks = capacity.div_ceil(KV_BLOCK_TOKENS).max(1);
+        let table = SlotPool::table_bytes(width, capacity)?;
+        assert!(
+            table
+                >= u64::try_from(width * blocks * F32_BYTES)
+                    .map_err(|_| Error::invalid("test table bound"))?
+        );
+        assert!(table.is_multiple_of(F32_BYTES as u64));
+    }
+    // Short capacity still needs a 256-column row for 16 slots x 3 lanes x 3 metadata words.
+    assert_eq!(SlotPool::table_bytes(16, 128)?, 16 * 256 * F32_BYTES as u64);
+    assert!(SlotPool::table_bytes(usize::MAX, 128).is_err());
+    assert!(SlotPool::table_bytes(16, usize::MAX).is_err());
+    Ok(())
+}
+
+#[test]
 fn admission_charges_shared_projection_geometry_once() -> Result<()> {
     let mut weights = fixture_weights();
     let mut graph = DataflowGraph::default();

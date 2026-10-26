@@ -60,7 +60,7 @@
    - recurrent 状态精度：例如 Qwen3.5 系列 config 中 `mamba_ssm_dtype: float32`，vLLM 也按 F32 存储。
 2. **按图结构匹配的融合是否生效。** 以下融合都通过识别图中的特定模式来触发，新模型的结构稍有不同就可能不再生效：
    - gate/up 加 SwiGLU 加 FP4 量化融合（`prefill_projection.rs` 的 `MlpPlan`）：要求 gate 与 up 读同一输入、激活缩放相同，输出只被 SiLU 和 multiply 读取；
-   - GDN `in_proj_b`/`in_proj_a` 合并（`batch.rs` 的 `gdn_ba_pairs`）：目前按形状 `[48, 5120]` 硬匹配，见待改清单；
+   - GDN `in_proj_b`/`in_proj_a` 合并（`batch.rs` 的 `gdn_ba_pairs`）：按图结构识别同一 `Delta` 节点的 beta/alpha 生产者，再核对同层、同输入和投影形状；prefill 与 verify 分别保留原有投影累加精度；小批量 verify 继续使用原 GEMV 路径；
    - norm 与 FP8 行最大值融合（`norm_maximum.rs`）、同输入的量化复用（`nvfp4_gemm/quant_reuse.rs`）。
 
    检查方法：用 profile 的节点数和各算子耗时，对比融合生效与不生效时的预期。也可以在对应的计划函数里打印命中数。
@@ -88,9 +88,9 @@
 |---|---|---|---|
 | `DEFAULT_MAX_BATCH = 16` | `engine/runtime/src/config.rs` | 最大并发序列数固定为 16 | `min(N_mem, N_knee)`：N_mem = 状态预算 ÷ (每序列状态 + 保底 KV)；N_knee = (峰值算力 ÷ 带宽) × (权重字节 ÷ 参数量) ÷ 2 ÷ 每序列每步 token 数。由 backend 计算后经接口交给 runtime |
 | `VALUE_SPLIT_*`（按 SM 数 63/127 分档） | `resident/slot_recurrent.rs` | GDN verify 的 value 切分按 SM 数分档 | 由 `ceil(目标 wave 数 × SM 数 ÷ (层头数 × 槽数))` 推出，并按 value 维的整除约束取值 |
-| pooled attention `MAX_BATCH = 4`、切分数上限 64 | `resident/attention_decode/pooled.rs`、`tuning/attention/decode.rs` | 每组 4 个槽串行；切分数已按 SM 数、KV 头数与每组槽数推导，尚未结合上下文长度 | 切分数按上下文长度推导（每份至少若干 KV 块），部分和 workspace 随之缩小，从而一次启动处理全部槽 |
+| pooled attention 切分数上限 64 | `resident/attention_decode/pooled.rs`、`tuning/attention/decode.rs` | 全部槽在一次 launch 中处理；切分数已按 SM 数、KV 头数与槽数推导，尚未结合上下文长度 | 切分数按上下文长度推导（每份至少若干 KV 块），部分和 workspace 随之缩小 |
 | `SWIGLU_TILE_ROWS/COLUMNS = 64` | `resident/nvfp4_gemm/workspace.rs` | 在 RTX 5090 上实测得出（128 行时寄存器溢出） | 纳入 resident GEMM 调优器，作为候选按形状实测 |
-| `GDN_BA_SHAPE = [48, 5120]` | `resident/prefill_projection.rs` | 按形状识别 b/a 投影对 | 按图结构识别（同输入、相邻、同为稠密小投影），不依赖具体形状 |
+| GDN b/a 投影对 | `resident/batch.rs`、`resident/prefill_projection.rs` | 已按 `Delta` 的 beta/alpha 数据流识别；kernel 仍要求两个稠密投影同输入、同形状且输出宽度不超过一个 64 列 tile | 若未来出现非相邻或不同输出宽度的 b/a 形式，再扩展 pair kernel 的 tile 与顺序契约 |
 | `MAX_POOL_ROWS = CB_DECODE_SLOTS` | `resident/pool_gemv.rs` | 行数不超过 16 时走 GEMV | 由 GEMV 与分块 GEMM 的实测交叉点决定，纳入调优 |
 | `MODEL_SEARCH_BUDGET = 30 s` | `tuning/resident_gemm.rs` | 加载期搜索的总时长上限 | 按形状数和单次测量时长估算；预算耗尽时在日志中给出缺失形状 |
 | 每槽保底 KV = 单槽容量 ÷ 2 | `loading/budget.rs` 的 `funded_kv_tokens` | 槽数 = KV token ÷ 4128 | 按实际请求长度分布接纳请求，而不是按固定半容量保底 |

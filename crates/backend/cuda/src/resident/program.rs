@@ -457,6 +457,7 @@ impl DeviceProgram {
             graph,
             weights,
             nvfp4: &mut self.nvfp4,
+            verify_pairs: None,
             delegated: Some(&mut self.delegated),
             attention: &mut self.attention,
             states: &mut self.states,
@@ -466,6 +467,7 @@ impl DeviceProgram {
             lane_external_owner: Some(&self.lane_external_owner),
             lane_fusion: &mut self.lane_fusion,
             tables: from_ref(&self.table),
+            table_batch: None,
             capacity: self.capacity,
             width: weights.batch_width,
         };
@@ -749,6 +751,7 @@ impl DeviceProgram {
             graph,
             weights,
             nvfp4: &mut nvfp4,
+            verify_pairs: None,
             delegated: Some(&mut delegated),
             attention: &mut attention,
             states: &mut states,
@@ -758,6 +761,7 @@ impl DeviceProgram {
             lane_external_owner: Some(&lane_external_owner),
             lane_fusion: &mut lane_fusion,
             tables: from_ref(&table),
+            table_batch: None,
             capacity,
             width: weights.batch_width,
         };

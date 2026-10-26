@@ -55,6 +55,19 @@ pub fn grouped_parts_for(
     Some(limit.next_power_of_two())
 }
 
+/// Share one rounded CTA budget across all pooled slots. Rounding each slot up
+/// can double the retained partial buffers at uneven slot counts and consume KV capacity.
+pub fn pooled_parts_for(
+    heads: usize,
+    kv_heads: usize,
+    multiprocessors: usize,
+    slots: usize,
+) -> Option<usize> {
+    let single_slot = grouped_parts_for(heads, kv_heads, multiprocessors, 1)?;
+    let limit = single_slot.checked_div(slots)?.max(1);
+    Some(1 << limit.ilog2())
+}
+
 #[cfg(test)]
 #[path = "../../../tests/unit/resident_attention_decode_workspace.rs"]
 mod tests;

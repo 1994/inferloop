@@ -1,4 +1,7 @@
+use super::nvfp4_gemm::GateUpMode;
+use super::verify_projection_pair::Workspace as VerifyPairWorkspace;
 use super::{ProgramWeights, capture::error, prefill_gemm::gemm};
+use super::{pool_gemv, small_gemm::kernels as verify_gemm};
 use crate::constants::PREFILL_GEMM_TILE_K;
 use crate::constants::PREFILL_GEMM_TILE_N;
 use crate::constants::PREFILL_LANES;
@@ -16,8 +19,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::tuning::prefill::narrow_dense_layout;
 const NARROW_DENSE_TILE: [usize; 2] = [PREFILL_LANES, 16];
-/// Output columns and reduction width of the GDN `in_proj_b`/`in_proj_a` pair.
-pub(super) const GDN_BA_SHAPE: [i32; 2] = [48, 5120];
 
 /// Down projection absorbing `silu(gate) * up`: node indices of the `SiLU` and multiply it
 /// replaces, then the gate and up tensors it reads.
@@ -77,6 +78,7 @@ fn swiglu_plan(
 /// Gated-MLP capture plan of one prompt graph: the `SiLU` and multiply nodes absorbed into
 /// their down projection, and the gate/up pairs that run as one fused pass at this width.
 pub(super) struct MlpPlan {
+    mode: GateUpMode,
     swiglu: BTreeMap<usize, Swiglu>,
     fused: BTreeMap<usize, FusedMlp>,
     fused_downs: BTreeSet<usize>,
@@ -89,19 +91,48 @@ impl MlpPlan {
         weights: &ProgramWeights,
         geometry: (usize, &super::nvfp4_gemm::Workspace),
     ) -> Self {
-        let swiglu = swiglu_plan(graph, weights);
-        let fused = fused_mlp_plan(graph, weights, &swiglu, geometry);
-        let fused_downs = fused.values().map(|&(.., down)| down).collect();
+        Self::build(graph, weights, geometry, GateUpMode::Prompt)
+    }
+
+    pub(super) fn for_verify(
+        graph: &infer_ir::DataflowGraph,
+        weights: &ProgramWeights,
+        geometry: (usize, &super::nvfp4_gemm::Workspace),
+    ) -> Self {
+        Self::build(graph, weights, geometry, GateUpMode::Verify)
+    }
+
+    fn build(
+        graph: &infer_ir::DataflowGraph,
+        weights: &ProgramWeights,
+        geometry: (usize, &super::nvfp4_gemm::Workspace),
+        mode: GateUpMode,
+    ) -> Self {
+        let mut swiglu = swiglu_plan(graph, weights);
+        let fused = fused_mlp_plan(graph, weights, &swiglu, geometry, mode);
+        #[cfg(test)]
+        let fused = if mode == GateUpMode::Verify && !VERIFY_MLP_ENABLED.with(Cell::get) {
+            BTreeMap::new()
+        } else {
+            fused
+        };
+        let fused_downs: BTreeSet<_> = fused.values().map(|&(.., down)| down).collect();
+        // Verify only absorbs complete packed passes; other row counts retain their original
+        // SiLU/multiply/quantizer sequence, including the one-row quantizer for partial tiles.
+        if mode == GateUpMode::Verify {
+            swiglu.retain(|down, _| fused_downs.contains(down));
+        }
         let absorbed = swiglu
             .values()
             .flat_map(|&(silu, multiply, ..)| [silu, multiply])
-            .chain(
-                fused
-                    .iter()
-                    .map(|(&first, &(gate, up, _))| if first == gate { up } else { gate }),
-            )
+            .chain(fused.iter().map(
+                |(&first, &(gate, up, _))| {
+                    if first == gate { up } else { gate }
+                },
+            ))
             .collect();
         Self {
+            mode,
             swiglu,
             fused,
             fused_downs,
@@ -125,7 +156,7 @@ impl MlpPlan {
     ) -> Result<bool, DeviceError> {
         if let Some(&(gate, up, down)) = self.fused.get(&index) {
             let projections = (&nodes[gate], &nodes[up], &nodes[down]);
-            record_fused_mlp(scope, projections, arena, weights, nvfp4)?;
+            record_fused_mlp(scope, projections, arena, weights, nvfp4, self.mode)?;
             return Ok(true);
         }
         let node = &nodes[index];
@@ -174,6 +205,7 @@ fn fused_mlp_plan(
     weights: &ProgramWeights,
     swiglu: &BTreeMap<usize, Swiglu>,
     (rows, nvfp4): (usize, &super::nvfp4_gemm::Workspace),
+    mode: GateUpMode,
 ) -> BTreeMap<usize, FusedMlp> {
     use infer_ir::TensorOp;
     let (producer, readers) = dataflow(graph);
@@ -213,11 +245,33 @@ fn fused_mlp_plan(
             || !sole(gate_output, silu)
             || !sole(up_output, multiply)
             || sizes.get(&up_output) != Some(&hidden)
-            || !nvfp4.gate_up_swiglu_ready(rows, columns, hidden)
         {
             continue;
         }
-        plan.insert(gate.min(up), (gate, up, down));
+        let ready = match mode {
+            GateUpMode::Prompt => nvfp4.gate_up_swiglu_ready(rows, columns, hidden),
+            GateUpMode::Verify => {
+                let (Some(gw), Some(uw), Some(scale)) = (
+                    weights.projections.get(&gate_node.inputs[1]),
+                    weights.projections.get(&up_node.inputs[1]),
+                    fp4_scale(gate_node),
+                ) else {
+                    continue;
+                };
+                // The prepared down codes must not cross another operation that can overwrite
+                // shared quantization storage. Prompt planning keeps its existing behavior.
+                down > gate.max(up)
+                    && (gate.min(up)..down).all(|i| [gate, up, silu, multiply].contains(&i))
+                    && nvfp4.verify_gate_up_ready(
+                        [rows, columns, hidden],
+                        (gw, uw),
+                        f32::from_bits(scale),
+                    )
+            }
+        };
+        if ready {
+            plan.insert(gate.min(up), (gate, up, down));
+        }
     }
     plan
 }
@@ -229,6 +283,7 @@ fn record_fused_mlp(
     arena: &super::ActivationArena,
     weights: &ProgramWeights,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
+    mode: GateUpMode,
 ) -> Result<(), DeviceError> {
     let scale = |node: &TensorNode| match weights.activation_quantization(node.inputs[1]) {
         Some(super::program::ActivationQuantization::Fp4(scale)) => Ok(scale),
@@ -250,8 +305,13 @@ fn record_fused_mlp(
         (weight(gate)?, weight(up)?),
         (scale(gate)?, scale(down)?),
         &input,
-        (width, columns, hidden),
-    )
+        (mode, width, columns, hidden),
+    )?;
+    #[cfg(test)]
+    if mode == GateUpMode::Verify {
+        VERIFY_MLP_CAPTURES.with(|count| count.set(count.get().saturating_add(1)));
+    }
+    Ok(())
 }
 
 /// Record the down projection of a [`fused_mlp_plan`] entry from its prepared codes.
@@ -425,20 +485,62 @@ pub(super) fn record(
     Ok(())
 }
 
-/// Record GDN `in_proj_b` + `in_proj_a` as one launch: both are Dense BF16 N48
-/// projections of the same normalized input. The pair kernel keeps each output's
-/// independent K accumulation order; only the launch (and the shared `x` load) is fused.
+/// Select the existing prompt arithmetic or two-term verification arithmetic.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum PairContext {
+    Prompt,
+    Verify,
+}
+
+#[cfg(test)]
+thread_local! {
+    static VERIFY_PAIRS_ENABLED: Cell<bool> = const { Cell::new(true) };
+    static VERIFY_PAIR_CAPTURES: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn verify_pair_captures() -> usize {
+    VERIFY_PAIR_CAPTURES.with(Cell::get)
+}
+
+#[cfg(test)]
+pub(super) fn with_verify_pairs<T>(enabled: bool, run: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            VERIFY_PAIRS_ENABLED.with(|value| value.set(self.0));
+        }
+    }
+    let restore = Restore(VERIFY_PAIRS_ENABLED.with(|value| value.replace(enabled)));
+    let result = run();
+    drop(restore);
+    result
+}
+
+/// Record the graph's beta/alpha pair from one shared input.
 ///
-/// Returns false when either node would take a different path (narrow N16 layout,
-/// sparse experts, vendor GEMM, or unexpected shape). A 48x5120 weight is below
-/// the tuning policy's vendor threshold, so the vendor path is impossible for this shape.
+/// The unsplit path preserves each output's original K accumulation chain. A
+/// supplied pooled verify workspace retains the two-term decomposition and F32
+/// accumulation while changing the order of the partial reduction.
+///
+/// Returns false for narrow prompt layouts, sparse experts, small F32 verify
+/// projections, incompatible geometry, or outputs wider than one tile.
+///
+/// # Errors
+/// Propagates arena layout and CUDA capture errors.
 pub(super) fn record_pair(
     scope: &Scope,
     first: &TensorNode,
     second: &TensorNode,
     arena: &mut super::ActivationArena,
     (weights, profile): (&ProgramWeights, &DeviceProfile),
+    context: PairContext,
+    scratch: Option<&mut VerifyPairWorkspace>,
 ) -> Result<bool, DeviceError> {
+    #[cfg(test)]
+    if context == PairContext::Verify && !VERIFY_PAIRS_ENABLED.with(Cell::get) {
+        return Ok(false);
+    }
     if first.inputs.len() != 2
         || second.inputs.len() != 2
         || first.inputs[0] != second.inputs[0]
@@ -454,11 +556,19 @@ pub(super) fn record_pair(
     ) else {
         return Ok(false);
     };
-    if weight_b.shape() != GDN_BA_SHAPE || weight_a.shape() != weight_b.shape() {
+    let rows_b = usize::try_from(weight_b.shape()[0]).map_err(error)?;
+    let rows_a = usize::try_from(weight_a.shape()[0]).map_err(error)?;
+    let weight_columns = usize::try_from(weight_b.shape()[1]).map_err(error)?;
+    if rows_b == 0
+        || rows_b != rows_a
+        || rows_b > PREFILL_GEMM_TILE_N
+        || weight_columns == 0
+        || weight_a.shape()[1] != weight_b.shape()[1]
+    {
         return Ok(false);
     }
     let width = arena.lanes();
-    let expected = usize::try_from(GDN_BA_SHAPE[0]).map_err(error)? * width;
+    let expected = rows_b * width;
     let input_slot = arena.slot(first.inputs[0]).map_err(error)?;
     let input_elements = arena.buffers[input_slot]
         .as_ref()
@@ -466,17 +576,14 @@ pub(super) fn record_pair(
         .size();
     let columns = input_elements / width;
     if columns * width != input_elements
-        || columns != usize::try_from(GDN_BA_SHAPE[1]).map_err(error)?
+        || columns != weight_columns
         || arena.get(first.outputs[0]).map_err(error)?.size() != expected
         || arena.get(second.outputs[0]).map_err(error)?.size() != expected
-        || narrow_dense_layout(
-            &profile.architecture,
-            (
-                width,
-                usize::try_from(GDN_BA_SHAPE[0]).map_err(error)?,
-                columns,
-            ),
-        )
+        || (context == PairContext::Prompt
+            && narrow_dense_layout(&profile.architecture, (width, rows_b, columns)))
+        // These rows use the existing F32 reduction, not the two-term MMA chain.
+        || (context == PairContext::Verify
+            && pool_gemv::supports(width, rows_b, columns))
     {
         return Ok(false);
     }
@@ -491,23 +598,38 @@ pub(super) fn record_pair(
     let output_a = arena.buffers[slot_a]
         .take()
         .ok_or_else(|| error("paired projection a output"))?;
-    let rows = usize::try_from(GDN_BA_SHAPE[0]).map_err(error)?;
-    let mut output_b = output_b.reshape(&[width, rows])?;
-    let mut output_a = output_a.reshape(&[width, rows])?;
+    let mut output_b = output_b.reshape(&[width, rows_b])?;
+    let mut output_a = output_a.reshape(&[width, rows_a])?;
     let flat_input = arena.buffers[input_slot]
         .as_ref()
         .ok_or_else(|| error("paired projection input"))?;
     let input = flat_input.view(&[width, columns]).map_err(error)?;
-    scope.record(
-        gemm::dense_pair(
-            (&mut output_b).partition([PREFILL_LANES, PREFILL_GEMM_TILE_N]),
-            (&mut output_a).partition([PREFILL_LANES, PREFILL_GEMM_TILE_N]),
-            &input,
-            weight_b,
-            weight_a,
-        )
-        .generics(vec![columns.to_string()]),
-    )?;
+    match context {
+        PairContext::Prompt => {
+            scope.record(
+                gemm::dense_pair(
+                    (&mut output_b).partition([PREFILL_LANES, PREFILL_GEMM_TILE_N]),
+                    (&mut output_a).partition([PREFILL_LANES, PREFILL_GEMM_TILE_N]),
+                    &input,
+                    weight_b,
+                    weight_a,
+                )
+                .generics(vec![columns.to_string()]),
+            )?;
+        }
+        PairContext::Verify => {
+            record_verify_pair(
+                scope,
+                &input,
+                (weight_b, weight_a),
+                (&mut output_b, &mut output_a),
+                columns,
+                scratch,
+            )?;
+            #[cfg(test)]
+            VERIFY_PAIR_CAPTURES.with(|count| count.set(count.get().saturating_add(1)));
+        }
+    }
     arena.buffers[slot_b] = Some(output_b.reshape(&[expected])?);
     arena.buffers[slot_a] = Some(output_a.reshape(&[expected])?);
     Ok(true)
@@ -642,3 +764,56 @@ pub fn with_dense_reference<T>(run: impl FnOnce() -> T) -> T {
 #[cfg(test)]
 #[path = "../../tests/unit/resident_prefill_projection.rs"]
 mod tests;
+
+fn record_verify_pair(
+    scope: &Scope,
+    input: &TensorView<'_, f32>,
+    weights: (&Tensor<bf16>, &Tensor<bf16>),
+    (output_b, output_a): (&mut Tensor<f32>, &mut Tensor<f32>),
+    columns: usize,
+    scratch: Option<&mut VerifyPairWorkspace>,
+) -> Result<(), DeviceError> {
+    if let Some(scratch) = scratch
+        && scratch.record(scope, input, weights, (&mut *output_b, &mut *output_a))?
+    {
+        return Ok(());
+    }
+    scope.record(
+        verify_gemm::dense_pair(
+            output_b.partition(SMALL_GEMM_TILE),
+            output_a.partition(SMALL_GEMM_TILE),
+            input,
+            weights.0,
+            weights.1,
+        )
+        .generics(vec![columns.to_string()]),
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    static VERIFY_MLP_ENABLED: Cell<bool> = const { Cell::new(true) };
+    static VERIFY_MLP_CAPTURES: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn verify_mlp_captures() -> usize {
+    VERIFY_MLP_CAPTURES.with(Cell::get)
+}
+
+#[cfg(test)]
+pub(super) fn with_verify_mlp_disabled<T>(run: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            VERIFY_MLP_ENABLED.with(|enabled| enabled.set(self.0));
+        }
+    }
+    let _restore = Restore(VERIFY_MLP_ENABLED.with(|enabled| enabled.replace(false)));
+    run()
+}
+
+#[cfg(test)]
+#[path = "../../tests/unit/resident_verify_mlp_checkpoint.rs"]
+mod verify_mlp_tests;

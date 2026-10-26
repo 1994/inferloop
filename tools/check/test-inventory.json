@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 331
+      "tests": 347
     },
     "frontdoor": {
       "benches": 0,
@@ -70,7 +70,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 149
+      "tests": 150
     },
     "quality": {
       "benches": 0,
@@ -152,9 +152,15 @@
     "target_os = \"macos\"": 1
   },
   "ignored_reasons": {
+    "CUDA MTP checkpoint; actual autotuned verify MLP vs original complete outputs and states": 1,
+    "CUDA MTP checkpoint; split default vs independent accepted-prefix replay": 1,
+    "CUDA checkpoint, independent F64 on every actual GDN output": 1,
+    "CUDA real48pairs, production Workspace, fixed ABBA microbenchmark": 1,
+    "CUDA, row/column/K tails and distinct nonempty split windows": 1,
     "CUDA/checkpoint/frozen511tokens/safe-run; INFER_CUDA_ATTENTION_PRECISE_PREFIX=2048": 1,
     "opt-in projection-only shape A/B with real checkpoint and CUDA; run inside safe-run": 1,
     "real 2B checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 3,
+    "real CUDA checkpoint; all eligible MLPs and partial row tile vs padded original": 1,
     "real CUDA/MTP checkpoint; reserve graphs only after quote acknowledgement": 1,
     "real MTP2 checkpoint and CUDA; run inside safe-run": 1,
     "real MTP2 checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 2,
@@ -165,6 +171,9 @@
     "release CUDA performance diagnostic; run inside safe-run": 1,
     "requires CUDA and INFER_TEST_MODEL; run release inside safe-run": 3,
     "requires CUDA and INFER_TEST_MODEL; run release serially inside safe-run": 1,
+    "requires CUDA and MTP checkpoint; actual pooled dispatch, full outputs, rollback and states": 1,
+    "requires CUDA and checkpoint; actual structural recorder and full verify outputs": 1,
+    "requires CUDA and checkpoint; all real GDN weights, paired ABBA cold/warm timing": 1,
     "requires CUDA and safe-run; AOT ABI, full BF16-profile F64 sanity and measured architecture/cluster selection": 1,
     "requires CUDA and safe-run; F32 paged KV, complete short F64 outputs, long F64 rows, paired cold/warm and cache reuse": 1,
     "requires CUDA and safe-run; exact full-output/KV and cold/warm AB/BA tuning": 1,
@@ -177,7 +186,7 @@
     "requires CUDA hardware; new F32-state/F64-reference contract": 1,
     "requires CUDA hardware; root runs release serially": 3,
     "requires CUDA hardware; run explicitly inside tools/bench/safe-run.sh": 5,
-    "requires CUDA hardware; run inside safe-run": 26,
+    "requires CUDA hardware; run inside safe-run": 27,
     "requires CUDA hardware; run release inside safe-run": 1,
     "requires CUDA hardware; run under safe-run": 29,
     "requires CUDA hardware; run under safe-run in release": 1,
@@ -223,6 +232,7 @@
     "requires CUDA; exact ordered recurrence at captured prompt widths": 1,
     "requires CUDA; full F64/cache numerical gate and hardware AB/BA tuning": 1,
     "requires CUDA; only after complete numerical gate; diagnostic costs, no service claim": 1,
+    "requires CUDA; original four-slot vs all-slot numerical and latency diagnostic": 1,
     "requires CUDA; run inside safe-run": 1,
     "requires CUDA; run inside safe-run with --test-threads 1": 2,
     "requires CUDA; run release serially inside safe-run": 1,
@@ -447,6 +457,11 @@
     },
     {
       "crate": "cuda",
+      "file": "src/resident/attention_decode/pooled.rs",
+      "mount": "../../../tests/unit/resident_pooled_grouped_baseline.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/resident/attention_decode/workspace.rs",
       "mount": "../../../tests/unit/resident_attention_prefill_taps.rs"
     },
@@ -489,6 +504,11 @@
       "crate": "cuda",
       "file": "src/resident/batch.rs",
       "mount": "../../tests/unit/resident_metadata_batch.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/resident/batch.rs",
+      "mount": "../../tests/unit/resident_batch_gdn_checkpoint.rs"
     },
     {
       "crate": "cuda",
@@ -589,6 +609,11 @@
       "crate": "cuda",
       "file": "src/resident/prefill_projection.rs",
       "mount": "../../tests/unit/resident_prefill_projection.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/resident/prefill_projection.rs",
+      "mount": "../../tests/unit/resident_verify_mlp_checkpoint.rs"
     },
     {
       "crate": "cuda",
@@ -809,6 +834,16 @@
       "crate": "cuda",
       "file": "tests/unit/loading_budget.rs",
       "mount": "loading_budget_recurrent.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "tests/unit/resident_batch_gdn_checkpoint.rs",
+      "mount": "resident_gdn_split_checkpoint.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "tests/unit/resident_pooled_attention.rs",
+      "mount": "resident_pooled_attention_latency.rs"
     },
     {
       "crate": "cuda",
@@ -1247,11 +1282,11 @@
     }
   ],
   "totals": {
-    "all": 895,
+    "all": 912,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 895
+    "tests": 912
   }
 }

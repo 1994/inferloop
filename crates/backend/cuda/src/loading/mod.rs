@@ -422,6 +422,12 @@ impl LoadedModel {
         &self.model
     }
     #[must_use]
+    /// Bound projection/state weights, for crate-internal qualification drivers.
+    #[cfg(test)]
+    pub(crate) const fn weights(&self) -> &ProgramWeights {
+        &self.weights
+    }
+
     pub const fn graph(&self) -> &DataflowGraph {
         &self.graph
     }

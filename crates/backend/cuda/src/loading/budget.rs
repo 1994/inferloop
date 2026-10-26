@@ -19,6 +19,7 @@ use crate::resident::fusion_batch::required_bytes;
 use crate::resident::prompt_logits;
 use crate::resident::recurrent_prefill::required_bytes as recurrent_prefill_required_bytes;
 use crate::resident::slot_batch::SlotPool;
+use crate::resident::verify_projection_pair::Workspace as VerifyPairWorkspace;
 use crate::tuning::attention::decode::GROUPED_ROWS;
 use crate::tuning::attention::decode::MAX_GROUPED_PARTS;
 use crate::{
@@ -460,7 +461,9 @@ fn pool_storage_bytes(
     hidden: usize,
     profile: &DeviceProfile,
 ) -> Result<u64> {
-    let lanes = width * verify;
+    let lanes = width
+        .checked_mul(verify)
+        .ok_or_else(|| Error::invalid("pooled lane count overflow"))?;
     let mut bytes = mul(recurrent_state_bytes(graph)?, width as u64)?;
     for spec in &graph.tensors {
         if !matches!(
@@ -503,6 +506,12 @@ fn pool_storage_bytes(
             },
         )?,
     )?;
+    if verify >= 2 {
+        bytes = add(
+            bytes,
+            VerifyPairWorkspace::storage_bytes(graph, weights, lanes, profile)?,
+        )?;
+    }
     bytes = add(bytes, attention_scratch(graph)?)?;
     bytes = add(bytes, required_bytes(weights, lanes, profile))?;
     let external_rows = 1 + lanes as u64
@@ -512,9 +521,20 @@ fn pool_storage_bytes(
             1
         };
     bytes = add(bytes, mul(mul(hidden as u64, external_rows)?, F32)?)?;
-    // A block table per slot, plus scalar and per-lane control words.
-    let controls = width * capacity.div_ceil(KV_BLOCK_TOKENS) + (1 + lanes) * POOLED_CONTROL_WORDS;
-    bytes = add(bytes, mul(controls as u64, F32)?)?;
+    // The stacked page-table owner is padded to the control row width; quote exactly that
+    // retained allocation, not one unpadded table block per slot.
+    bytes = add(bytes, SlotPool::table_bytes(width, capacity)?)?;
+    let control_words = (1usize)
+        .checked_add(lanes)
+        .and_then(|words| words.checked_mul(POOLED_CONTROL_WORDS))
+        .ok_or_else(|| Error::invalid("pooled control word overflow"))?;
+    bytes = add(
+        bytes,
+        u64::try_from(control_words)
+            .ok()
+            .and_then(|words| words.checked_mul(F32))
+            .ok_or_else(|| Error::invalid("pooled control byte overflow"))?,
+    )?;
     Ok(bytes)
 }
 

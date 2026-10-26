@@ -2,6 +2,10 @@
 //! decode graph whose lane `i` is baked onto slot `i`. A sequence binds a slot by
 //! device-copying its covered state rows in, then every leased sequence advances
 //! through a single graph replay per step.
+use super::attention_decode::VERIFY_LANES;
+use super::attention_decode::Workspace as AttentionWorkspace;
+use super::nvfp4_gemm::Workspace as ProjectionWorkspace;
+use super::verify_projection_pair::Workspace as VerifyPairWorkspace;
 use super::{
     batch::{BatchOutput, SlotDecodeGraph, SlotLane, States},
     fp8_cache::{Fp8Caches, allocate},
@@ -13,6 +17,7 @@ use crate::constants::CB_DECODE_SLOTS;
 use crate::constants::F32_BYTES;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::MAX_VERIFICATION_WIDTH;
+use crate::constants::METADATA_FIELDS;
 use crate::device::PinnedUpload;
 #[cfg(test)]
 use crate::device::asynchronous::block_on;
@@ -30,8 +35,17 @@ const EXTERNAL_UPLOAD_RING: usize = MAX_VERIFICATION_WIDTH + 1;
 /// Per-lane external hidden rows and their pinned upload rings.
 type ExternalLanes = (Vec<Tensor<f32>>, Vec<Vec<PinnedHostBuffer<f32>>>);
 
+/// Smallest table row accepted by the pooled attention control tile.
+const MIN_TABLE_COLUMNS: usize = 32;
+
 /// One pool's per-slot recurrent states, KV caches and KV position tables.
-type SlotStorage = (SlotStates, Vec<Fp8Caches>, Vec<Tensor<i32>>);
+type SlotStorage = (SlotStates, Vec<Fp8Caches>, Vec<Tensor<i32>>, Tensor<i32>);
+type PoolWorkspaces = (
+    usize,
+    AttentionWorkspace,
+    ProjectionWorkspace,
+    VerifyPairWorkspace,
+);
 
 /// How one state family moves into a slot at bind time: a token-row prefix of a
 /// capacity-sized KV cache (f32 or fp8), or the whole tensor (conv/delta state).
@@ -185,8 +199,11 @@ pub struct SlotPool {
     verify: Option<SlotVerifyGraph>,
     states: SlotStates,
     fp8: Vec<Fp8Caches>,
-    /// Per-slot identity block tables; declared with the states so they outlive the captures.
+    /// Per-slot rows of one identity block-table allocation; the owner stays beside them
+    /// so the rows can outlive graph capture without per-slot allocations.
     tables: Vec<Tensor<i32>>,
+    /// Retains the stacked table allocation behind `tables` for the pool lifetime.
+    _table_owner: Tensor<i32>,
     table_staging: PinnedUpload<i32>,
     plan: Vec<(TensorId, SlotCopy)>,
     /// Shared physical KV blocks behind every slot's table, when the pool pages its KV.
@@ -199,6 +216,7 @@ pub struct SlotPool {
     // graph drops before anything it references.
     _external: Tensor<f32>,
     _nvfp4: super::nvfp4_gemm::Workspace,
+    _verify_pairs: super::verify_projection_pair::Workspace,
     _attention: super::attention_decode::Workspace,
     lane_external: Vec<Tensor<f32>>,
     /// Whether a lane's external hidden row was uploaded at least once.
@@ -211,7 +229,37 @@ pub struct SlotPool {
     _lane_fusion: Vec<Option<super::program::FusionWorkspace>>,
 }
 
+fn table_columns(capacity: usize, width: usize) -> Result<usize> {
+    let blocks = capacity
+        .checked_add(KV_BLOCK_TOKENS - 1)
+        .ok_or_else(|| Error::invalid("slot table block overflow"))?
+        / KV_BLOCK_TOKENS;
+    let blocks = blocks.max(1);
+    let metadata = width
+        .checked_mul(VERIFY_LANES)
+        .and_then(|rows| rows.checked_mul(METADATA_FIELDS))
+        .ok_or_else(|| Error::invalid("slot table metadata overflow"))?;
+    blocks
+        .max(metadata)
+        .max(MIN_TABLE_COLUMNS)
+        .checked_next_power_of_two()
+        .ok_or_else(|| Error::invalid("slot table width overflow"))
+}
+
 impl SlotPool {
+    /// Device bytes of the padded stacked page-table owner. The control pack reads a full
+    /// power-of-two row, so this is deliberately larger than one block per capacity block.
+    pub(crate) fn table_bytes(width: usize, capacity: usize) -> Result<u64> {
+        let columns = table_columns(capacity, width)?;
+        let elements = width
+            .checked_mul(columns)
+            .ok_or_else(|| Error::invalid("slot table element overflow"))?;
+        u64::try_from(elements)
+            .ok()
+            .and_then(|elements| elements.checked_mul(F32_BYTES as u64))
+            .ok_or_else(|| Error::invalid("slot table byte overflow"))
+    }
+
     pub(crate) fn parameter_bytes(graph: &DataflowGraph, verify: usize) -> Result<u64> {
         if super::slot_verify::fused_recurrent(graph, verify) {
             super::slot_states::parameter_bytes(&graph.nodes)
@@ -317,7 +365,7 @@ impl SlotPool {
         let headroom = device.profile()?.device_headroom_bytes();
         let budget = device.allocatable_memory_bytes()?.saturating_sub(headroom);
         let paging = Self::paging(device, graph, weights, (width, capacity), kv_tokens)?;
-        let (mut states, mut fp8, tables) = Self::allocate_slots(
+        let (mut states, mut fp8, tables, table_owner) = Self::allocate_slots(
             device,
             graph,
             weights,
@@ -328,7 +376,13 @@ impl SlotPool {
         let external = api::zeros::<f32>(&[hidden])
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        let lanes = if verify >= 2 { width * verify } else { width };
+        let (lanes, mut attention, mut nvfp4, mut verify_pairs) = Self::workspaces(
+            device,
+            graph,
+            weights,
+            (width, verify, capacity),
+            paging.is_some(),
+        )?;
         let (mut lane_external, pinned_external) =
             Self::external_lanes(device, weights.fusion.is_some(), lanes, hidden)?;
         let mut lane_fusion: Vec<Option<super::program::FusionWorkspace>> = (0..lanes)
@@ -336,15 +390,6 @@ impl SlotPool {
                 super::program::FusionWorkspace::allocate(device, hidden, weights.fusion.is_some())
             })
             .collect::<Result<_>>()?;
-        let mut attention = super::attention_decode::Workspace::new(device, graph, capacity)?;
-        attention.prepare_pooled(
-            device,
-            graph,
-            weights,
-            (width, verify, capacity),
-            paging.is_some(),
-        )?;
-        let mut nvfp4 = super::nvfp4_gemm::Workspace::new(device, graph, weights, &[1, lanes])?;
         let mut placeholder_states = States::new();
         let mut placeholder_fp8 = Fp8Caches::new();
         let (decode, verify_graph) = {
@@ -353,6 +398,7 @@ impl SlotPool {
                 graph,
                 weights,
                 nvfp4: &mut nvfp4,
+                verify_pairs: Some(&mut verify_pairs),
                 delegated: None,
                 attention: &mut attention,
                 states: &mut placeholder_states,
@@ -362,6 +408,7 @@ impl SlotPool {
                 lane_external_owner: None,
                 lane_fusion: &mut lane_fusion,
                 tables: &tables,
+                table_batch: Some(&table_owner),
                 capacity,
                 width,
             };
@@ -380,6 +427,7 @@ impl SlotPool {
             states,
             fp8,
             tables,
+            _table_owner: table_owner,
             table_staging: PinnedUpload::slots(device, capacity.div_ceil(KV_BLOCK_TOKENS))?,
             plan,
             paging,
@@ -389,6 +437,7 @@ impl SlotPool {
             vocabulary,
             _external: external,
             _nvfp4: nvfp4,
+            _verify_pairs: verify_pairs,
             _attention: attention,
             lane_external,
             external_uploaded: vec![false; lanes],
@@ -398,8 +447,30 @@ impl SlotPool {
         })
     }
 
+    fn workspaces(
+        device: &CudaDevice,
+        graph: &DataflowGraph,
+        weights: &ProgramWeights,
+        (width, verify, capacity): (usize, usize, usize),
+        paged: bool,
+    ) -> Result<PoolWorkspaces> {
+        let lanes = width
+            .checked_mul(if verify >= 2 { verify } else { 1 })
+            .ok_or_else(|| Error::invalid("pooled verify lane overflow"))?;
+        let mut attention = AttentionWorkspace::new(device, graph, capacity)?;
+        attention.prepare_pooled(device, graph, weights, (width, verify, capacity), paged)?;
+        let projections = ProjectionWorkspace::new(device, graph, weights, &[1, lanes])?;
+        let pairs =
+            VerifyPairWorkspace::new(device, graph, weights, if verify >= 2 { lanes } else { 0 })?;
+        Ok((lanes, attention, projections, pairs))
+    }
+
     /// Allocate each slot's recurrent states and KV cache, checking the running total against
     /// the device budget before the pool captures any graph.
+    #[expect(
+        unsafe_code,
+        reason = "The stacked slot tables retain one owner; each row view addresses a disjoint slot and is used on the owner's stream"
+    )]
     fn allocate_slots(
         device: &CudaDevice,
         graph: &DataflowGraph,
@@ -417,8 +488,41 @@ impl SlotPool {
             budget.saturating_sub(paging_bytes),
         )?;
         let mut fp8 = Vec::with_capacity(width);
-        let mut tables = Vec::with_capacity(width);
         let mut bytes = paging.map_or(0, |paging| state_bytes(&States::new(), &paging.shared));
+        let table_columns = table_columns(capacity, width)?;
+        let table_blocks = capacity
+            .checked_add(KV_BLOCK_TOKENS - 1)
+            .ok_or_else(|| Error::invalid("slot table block overflow"))?
+            / KV_BLOCK_TOKENS;
+        let table_elements = width
+            .checked_mul(table_columns)
+            .ok_or_else(|| Error::invalid("slot table element overflow"))?;
+        let mut table_values = Vec::new();
+        table_values
+            .try_reserve_exact(table_elements)
+            .map_err(|_| Error::invalid("slot table allocation"))?;
+        for _ in 0..width {
+            for block in 0..table_columns {
+                table_values.push(if block < table_blocks {
+                    i32::try_from(block).map_err(|_| Error::invalid("slot table entry"))?
+                } else {
+                    0
+                });
+            }
+        }
+        let table_owner = device
+            .upload(table_values, &[width, table_columns])
+            .map_err(device_error)?;
+        let table_owner = Arc::try_unwrap(table_owner)
+            .map_err(|_| Error::invariant("unique block table batch"))?;
+        let mut tables = Vec::with_capacity(width);
+        for slot in 0..width {
+            // SAFETY: `table_owner` is retained in `SlotPool`; each row addresses a disjoint
+            // slot table and every view is used on the owner's stream.
+            tables.push(unsafe {
+                super::arena::row_view(&table_owner, width, slot).map_err(device_error)?
+            });
+        }
         for slot_states in states.iter() {
             let slot_fp8 = match paging {
                 Some(paging) => paging.slot_caches()?,
@@ -440,9 +544,8 @@ impl SlotPool {
             fp8.push(slot_fp8);
             // Step 1 of the KV refactor: a per-slot identity mapping over that slot's own cache.
             // A paged pool fills the table from its shared blocks when the slot is assigned.
-            tables.push(super::metadata::identity_table(device, capacity)?);
         }
-        Ok((states, fp8, tables))
+        Ok((states, fp8, tables, table_owner))
     }
 
     /// Per-lane external hidden rows plus, for an external-hidden pool, their pinned
@@ -503,6 +606,11 @@ impl SlotPool {
         self.verify
             .as_ref()
             .is_some_and(SlotVerifyGraph::has_batched_commit)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_table(&self, slot: usize) -> &Tensor<i32> {
+        &self.tables[slot]
     }
 
     #[cfg(test)]
@@ -670,8 +778,9 @@ impl SlotPool {
             .get_mut(slot)
             .ok_or_else(|| Error::invariant("slot block table"))?;
         // Positions past the request's reach never resolve; point them at its first block.
+        let table_blocks = self.capacity.div_ceil(KV_BLOCK_TOKENS).max(1);
         let mut entries = owned.clone();
-        entries.resize(table.size(), owned[0]);
+        entries.resize(table_blocks, owned[0]);
         self.table_staging.copy(device, table, &entries)?;
         Ok(true)
     }
@@ -747,12 +856,12 @@ impl SlotPool {
         // Step 1 of the KV refactor: the kernels resolve KV positions through this table, so it
         // must cover the slot's whole capacity. Step 2 replaces the identity contents with the
         // allocator's blocks and rewrites them here on every bind.
-        let blocks = i32::try_from(self.capacity.div_ceil(KV_BLOCK_TOKENS))
-            .map_err(|_| Error::invalid("slot block count"))?;
+        let columns = i32::try_from(table_columns(self.capacity, self.slots)?)
+            .map_err(|_| Error::invalid("slot table columns"))?;
         if self
             .tables
             .get(slot)
-            .is_none_or(|table| table.shape() != [blocks])
+            .is_none_or(|table| table.shape() != [columns])
         {
             return Err(Error::invariant("slot block table shape"));
         }

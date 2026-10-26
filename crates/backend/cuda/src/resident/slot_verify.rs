@@ -1,4 +1,7 @@
 //! Cross-sequence target verification with per-slot recurrent rollback.
+use super::batch::gdn_ba_pairs;
+use super::prefill_projection::MlpPlan;
+use super::prefill_projection::{PairContext, record_pair};
 use super::{
     ActivationArena,
     batch::{BatchBuilder, BatchReadout, Dispatch32, States, dispatch32, take_result},
@@ -13,6 +16,7 @@ use crate::constants::INACTIVE_LANE_STATE_POSITION;
 use crate::constants::MAX_VERIFICATION_WIDTH;
 use crate::constants::METADATA_FIELDS;
 use crate::constants::MIB;
+use crate::device::DeviceProfile;
 use crate::device::PinnedUpload;
 use crate::device::Readbacks;
 use crate::device::{CudaDevice, ReadbackSource, device_error};
@@ -333,6 +337,99 @@ impl BatchBuilder<'_> {
         Ok(())
     }
 
+    fn record_slot_verify_rows(
+        &mut self,
+        scope: &Scope,
+        node: &TensorNode,
+        arena: &mut ActivationArena,
+        (lane_states, lane_fp8): (&mut [States], &mut [Fp8Caches]),
+        (verify, metadata): (usize, &[Tensor<i32>]),
+        checkpoints: &mut [Vec<States>],
+    ) -> StdResult<(), DeviceError> {
+        for (lane, lane_metadata) in metadata.iter().enumerate() {
+            let slot = lane / verify;
+            let position = lane % verify;
+            let mut capture = Capture {
+                scope,
+                arena,
+                weights: self.weights,
+                nvfp4: self.nvfp4,
+                attention: self.attention,
+                states: &mut lane_states[slot],
+                fp8_states: &mut lane_fp8[slot],
+                metadata: lane_metadata,
+                // The candidate lanes of one slot share that slot's cache.
+                table: &self.tables[slot],
+                external: &self.lane_external[lane],
+                capacity: self.capacity,
+                fusion: &mut self.lane_fusion[lane],
+                mode: CaptureMode::Row(lane),
+            };
+            // The state's writer saves its computed value before the next
+            // candidate can modify it. Inactive lanes skip both stores.
+            // The last candidate has no rollback snapshot.
+            if position + 1 < verify
+                && let Some(id) = node.states.first()
+                && let Some(snapshot) = checkpoints
+                    .get_mut(slot)
+                    .and_then(|per_slot| per_slot.get_mut(position))
+                    .and_then(|snapshot| snapshot.get_mut(id))
+            {
+                capture.record_row_checkpoint(node, lane, snapshot)?;
+            } else {
+                capture.record_row(node, lane)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn record_slot_pair(
+        &mut self,
+        scope: &Scope,
+        (first, second): (usize, usize),
+        arena: &mut ActivationArena,
+        (device_profile, profile): (&DeviceProfile, &mut Option<profile::SlotProfile>),
+    ) -> StdResult<bool, DeviceError> {
+        let recorded = record_pair(
+            scope,
+            &self.graph.nodes[first],
+            &self.graph.nodes[second],
+            arena,
+            (self.weights, device_profile),
+            PairContext::Verify,
+            self.verify_pairs.as_deref_mut(),
+        )?;
+        if recorded {
+            if let Some(profile) = profile.as_mut() {
+                profile
+                    .graph()
+                    .boundary(scope, second, &self.graph.nodes[second])?;
+            }
+            self.nvfp4.clear_quant_reuse();
+        }
+        Ok(recorded)
+    }
+
+    fn record_slot_mlp(
+        &mut self,
+        scope: &Scope,
+        index: usize,
+        arena: &mut ActivationArena,
+        plan: &MlpPlan,
+    ) -> StdResult<bool, DeviceError> {
+        if !plan.record(
+            scope,
+            (index, &self.graph.nodes),
+            arena,
+            self.weights,
+            self.nvfp4,
+        )? {
+            return Ok(false);
+        }
+        self.nvfp4.clear_quant_reuse();
+        Ok(true)
+    }
+
     fn capture_slot_verify(
         &mut self,
         lane_states: &mut [States],
@@ -344,13 +441,34 @@ impl BatchBuilder<'_> {
     ) -> Result<CudaGraph<()>> {
         let (verify, metadata, batch) = geometry;
         let fused = fused_recurrent(self.graph, verify);
-        let value_split =
-            super::slot_recurrent::value_split(self.device.profile()?.multiprocessors);
-        CudaGraph::scope(&self.device.stream, |scope| {
+        let device = self.device;
+        let device_profile = device.profile()?;
+        let value_split = super::slot_recurrent::value_split(device_profile.multiprocessors);
+        let pairs = gdn_ba_pairs(self.graph, self.weights);
+        let mlp = MlpPlan::for_verify(self.graph, self.weights, (arena.lanes(), self.nvfp4));
+        CudaGraph::scope(&device.stream, |scope| {
             let mut no_fusion = None;
+            let mut fused_second = None;
             for (index, node) in self.graph.nodes.iter().enumerate() {
+                if fused_second == Some(index) || mlp.absorbs(index) {
+                    continue;
+                }
                 if let Some(profile) = profile.as_mut() {
                     profile.graph().boundary(scope, index, node)?;
+                }
+                if self.record_slot_mlp(scope, index, arena, &mlp)? {
+                    continue;
+                }
+                if let Some(&second) = pairs.get(&index)
+                    && self.record_slot_pair(
+                        scope,
+                        (index, second),
+                        arena,
+                        (device_profile, &mut *profile),
+                    )?
+                {
+                    fused_second = Some(second);
+                    continue;
                 }
                 if node.op == TensorOp::Linear {
                     super::batch_projection::record_slots(
@@ -401,42 +519,14 @@ impl BatchBuilder<'_> {
                             (staging, index, value_split, batch),
                         )?;
                     }
-                    Dispatch32::Row => {
-                        for (lane, lane_metadata) in metadata.iter().enumerate() {
-                            let slot = lane / verify;
-                            let position = lane % verify;
-                            let mut capture = Capture {
-                                scope,
-                                arena,
-                                weights: self.weights,
-                                nvfp4: self.nvfp4,
-                                attention: self.attention,
-                                states: &mut lane_states[slot],
-                                fp8_states: &mut lane_fp8[slot],
-                                metadata: lane_metadata,
-                                // The candidate lanes of one slot share that slot's cache.
-                                table: &self.tables[slot],
-                                external: &self.lane_external[lane],
-                                capacity: self.capacity,
-                                fusion: &mut self.lane_fusion[lane],
-                                mode: CaptureMode::Row(lane),
-                            };
-                            // The state's writer saves its computed value before the next
-                            // candidate can modify it. Inactive lanes skip both stores.
-                            // The last candidate has no rollback snapshot.
-                            if position + 1 < verify
-                                && let Some(id) = node.states.first()
-                                && let Some(snapshot) = checkpoints
-                                    .get_mut(slot)
-                                    .and_then(|per_slot| per_slot.get_mut(position))
-                                    .and_then(|snapshot| snapshot.get_mut(id))
-                            {
-                                capture.record_row_checkpoint(node, lane, snapshot)?;
-                            } else {
-                                capture.record_row(node, lane)?;
-                            }
-                        }
-                    }
+                    Dispatch32::Row => self.record_slot_verify_rows(
+                        scope,
+                        node,
+                        arena,
+                        (lane_states, lane_fp8),
+                        (verify, metadata),
+                        checkpoints,
+                    )?,
                 }
             }
             if let Some(profile) = profile.as_mut() {

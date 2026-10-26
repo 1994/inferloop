@@ -9,7 +9,7 @@ use cutile::prelude::TensorView;
 pub use quant_reuse::QuantPairPlan;
 #[cfg(test)]
 pub use quant_reuse::with_quant_reuse_disabled;
-pub use workspace::Workspace;
+pub use workspace::{GateUpMode, Workspace};
 #[cutile::module]
 pub(crate) mod kernels {
     use cutile::core::{

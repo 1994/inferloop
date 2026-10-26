@@ -178,6 +178,9 @@ impl BatchBuilder<'_> {
                     ],
                     metadata: metadata_owner,
                     tables: self.tables,
+                    table_batch: self
+                        .table_batch
+                        .ok_or_else(|| error("pooled table batch missing"))?,
                 },
             )?;
         }
