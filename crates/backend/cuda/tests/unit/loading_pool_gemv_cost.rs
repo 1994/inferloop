@@ -315,7 +315,7 @@ fn checkpoint_pool_gemv_tuner_uses_actual_weights() -> TestResult {
                 .get(id)
                 .copied()
                 .ok_or("private tiling")?;
-            let _choice = select_pool_gemv(
+            let choice = select_pool_gemv(
                 loaded.device(),
                 projection,
                 (rows, k, n),
@@ -323,6 +323,7 @@ fn checkpoint_pool_gemv_tuner_uses_actual_weights() -> TestResult {
                 true,
                 &loaded.weights.resident_tuning,
             )?;
+            eprintln!("POOL_REAL rows={rows} n={n} k={k} choice={choice:?}");
             seen += 1;
         }
     }

@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 355
+      "tests": 357
     },
     "frontdoor": {
       "benches": 0,
@@ -174,6 +174,7 @@
     "requires CUDA hardware and a real FP8 channel checkpoint; root runs release serially": 1,
     "requires CUDA hardware and a writable tuning cache; run under safe-run": 1,
     "requires CUDA hardware and cuBLAS; run under safe-run": 1,
+    "requires CUDA hardware; actual 27B GDN geometry and wave-derived split, safe-run": 1,
     "requires CUDA hardware; actual captured prompt graph widths": 1,
     "requires CUDA hardware; finite hardware tuning with independent F64 references": 1,
     "requires CUDA hardware; new F32-state/F64-reference contract": 1,
@@ -209,6 +210,7 @@
     "requires CUDA/checkpoint/safe-run; actual pool inactive/reactivate/rebind full states": 1,
     "requires CUDA/checkpoint/safe-run; all96 real small weights, original private GEMV bits": 1,
     "requires CUDA/checkpoint/safe-run; full states/logits/hidden before service timing": 1,
+    "requires CUDA/checkpoint; actual 27B gate/up weights and quantization-inclusive SwiGLU tuner": 1,
     "requires CUDA/checkpoint; actual full-model pool preparation drives the crossover dispatch": 1,
     "requires CUDA/safe-run and a private frozen tuning table; seeds measured profile": 1,
     "requires CUDA/safe-run; actual automatic tuning, full proofs and persisted cache": 1,
@@ -1262,11 +1264,11 @@
     }
   ],
   "totals": {
-    "all": 902,
+    "all": 904,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 902
+    "tests": 904
   }
 }

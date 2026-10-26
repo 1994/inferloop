@@ -1,5 +1,6 @@
 use super::support::{agreement, differences, seed_prefix, state_census_slot};
 use super::{LoadOptions, LoadedModel};
+use crate::mlp::ProjectionWeight;
 use crate::{
     device::CudaDevice,
     resident::{DeviceProgram, pool_gemv, slot_batch::SlotPool},
@@ -192,5 +193,86 @@ fn checkpoint_pool_gemv_crossover_full_model_dispatch() -> Result<()> {
     );
     drop(choices);
     drop(pool);
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires CUDA/checkpoint; actual 27B gate/up weights and quantization-inclusive SwiGLU tuner"]
+fn checkpoint_swiglu_real_weights_tune_selects_with_actual_scale_contract() -> Result<()> {
+    use crate::tuning::resident_gemm::ResidentTuningSession;
+    use crate::tuning::swiglu::{Contract as SwigluContract, select};
+    CudaDevice::enable_kernel_cache()?;
+    let path = var("INFER_TEST_MODEL").map_err(|e| Error::invalid(e.to_string()))?;
+    let loaded = LoadedModel::open(
+        CudaDevice::new(0)?,
+        path,
+        ModelId::ONE,
+        LoadOptions {
+            prefill_width: 1024,
+            autotune: true,
+            mtp_depth: 2,
+            ..LoadOptions::default()
+        },
+    )?;
+    let mut gate_ids = Vec::new();
+    let mut down_id = None;
+    for (id, projection) in &loaded.weights.projections {
+        let ProjectionWeight::Fp4(codes, _, _) = projection else {
+            continue;
+        };
+        let shape = codes.shape();
+        if shape == [17408, 2560] {
+            gate_ids.push(*id);
+        } else if shape == [5120, 8704] && down_id.is_none() {
+            down_id = Some(*id);
+        }
+    }
+    if gate_ids.len() < 2 {
+        return Err(Error::invalid("actual checkpoint lacks gate/up FP4 pair"));
+    }
+    let gate_id = gate_ids[0];
+    let up_id = gate_ids[1];
+    let down_id = down_id.ok_or_else(|| Error::invalid("actual checkpoint lacks down FP4"))?;
+    let hidden = 17408;
+    let columns = 5120;
+    let input_scale = loaded
+        .weights
+        .input_scales
+        .get(&gate_id)
+        .copied()
+        .unwrap_or(1.0);
+    let down_scale = loaded
+        .weights
+        .input_scales
+        .get(&down_id)
+        .copied()
+        .unwrap_or(1.0);
+    let gate = loaded
+        .weights
+        .projections
+        .get(&gate_id)
+        .ok_or_else(|| Error::invariant("gate weight"))?;
+    let up = loaded
+        .weights
+        .projections
+        .get(&up_id)
+        .ok_or_else(|| Error::invariant("up weight"))?;
+    let tile = select(
+        loaded.device(),
+        loaded.profile(),
+        gate,
+        up,
+        SwigluContract {
+            shape: (1024, columns, hidden),
+            scales: (input_scale, down_scale),
+        },
+        true,
+        &ResidentTuningSession::default(),
+    )?;
+    assert!(tile.rows == 64 || tile.rows == 128);
+    assert!(tile.columns == 64 || tile.columns == 128);
+    eprintln!(
+        "SWIGLU_REAL_WEIGHTS tile={tile:?} shape=(1024,{columns},{hidden}) input_scale={input_scale} down_scale={down_scale}"
+    );
     Ok(())
 }
