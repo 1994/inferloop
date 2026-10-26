@@ -129,7 +129,8 @@ fn merger_peak(encoder: &ModalityEncoder, patches: usize, hidden: usize) -> Resu
     let tile = row_tile(encoder)?;
     let merge_rows = padded(rows, TOKEN_TILE)?;
     let merger_norm = bytes(
-        rows.checked_mul(tile)
+        patches
+            .checked_mul(tile)
             .and_then(|n| n.checked_mul(2))
             .ok_or_else(|| Error::invalid("vision merger norm overflow"))?,
     )?;
@@ -138,6 +139,7 @@ fn merger_peak(encoder: &ModalityEncoder, patches: usize, hidden: usize) -> Resu
             .checked_mul(
                 hidden
                     .checked_add(merged)
+                    .and_then(|n| n.checked_add(merged))
                     .ok_or_else(|| Error::invalid("vision merger footprint overflow"))?,
             )
             .ok_or_else(|| Error::invalid("vision merger footprint overflow"))?,

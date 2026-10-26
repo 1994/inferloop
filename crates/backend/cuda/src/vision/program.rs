@@ -924,3 +924,71 @@ pub const fn attention_tiles(tokens: usize) -> [usize; ATTENTION_CONFIG_FIELDS] 
     let tile = tile_rows(tokens);
     [tile, tile, 0]
 }
+
+/// Test-only launch of the indexed compact `RoPE` kernel.
+///
+/// # Errors
+/// Rejects invalid half-width/row geometry or failed CUDA execution.
+#[cfg(test)]
+pub fn rope_compact_kernel(
+    device: &CudaDevice,
+    query: &[f32],
+    cos: &[f32],
+    sin: &[f32],
+    tokens: usize,
+    half: usize,
+    real: usize,
+) -> Result<Vec<f32>> {
+    if half < 16
+        || !half.is_multiple_of(16)
+        || real > half
+        || tokens == 0
+        || cos.len() != tokens * half * 2
+        || sin.len() != tokens * half * 2
+    {
+        return Err(Error::invalid("indexed RoPE fixture geometry"));
+    }
+    let width = half * 2;
+    let heads = query
+        .len()
+        .checked_div(
+            tokens
+                .checked_mul(width)
+                .ok_or_else(|| Error::invalid("indexed RoPE fixture geometry"))?,
+        )
+        .filter(|heads| *heads > 0 && query.len() == tokens * heads * width)
+        .ok_or_else(|| Error::invalid("indexed RoPE fixture geometry"))?;
+    let padded = tokens.div_ceil(TOKEN_TILE) * TOKEN_TILE;
+    let projections = heads * width;
+    let mut values = vec![0.0f32; padded * projections];
+    values[..query.len()].copy_from_slice(query);
+    let input = device.upload(values, &[padded, projections])?;
+    let mut cosines = vec![0.0f32; padded * width];
+    cosines[..cos.len()].copy_from_slice(cos);
+    let mut sines = vec![0.0f32; padded * width];
+    sines[..sin.len()].copy_from_slice(sin);
+    let cosines = device.upload(cosines, &[padded, width])?;
+    let sines = device.upload(sines, &[padded, width])?;
+    let mut output = api::zeros::<f32>(&[padded, projections])
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    let graph = CudaGraph::scope(&device.stream, |scope| {
+        scope.record(
+            kernels::encoder::rope_indexed(
+                (&mut output).partition([TOKEN_TILE, 16]),
+                &input,
+                &cosines,
+                &sines,
+            )
+            .generics(vec![half.to_string(), real.to_string()]),
+        )?;
+        Ok(())
+    })
+    .map_err(device_error)?;
+    graph
+        .launch()
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    let values = device.read(&Arc::new(output))?;
+    Ok(values[..query.len()].to_vec())
+}

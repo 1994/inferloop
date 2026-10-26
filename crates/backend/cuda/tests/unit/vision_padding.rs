@@ -253,9 +253,9 @@ fn media_plan(grid: (usize, usize, usize), count: usize) -> infer_ir::MediaPlan 
 fn media_footprint_exceeds_the_old_256_mib_constant_for_a_16_megapixel_image()
 -> Result<(), Box<dyn Error>> {
     let encoder = encoder();
-    // 4096x4096 RGB is 16,777,216 pixels; temporal taps make 131,072 patches and a 384 MiB
+    // 4096x4096 RGB is 16,777,216 pixels; temporal taps are already inside patch_width, so 65,536 patches and a 384 MiB
     // normalized patch payload before any encoder transient allocation.
-    let plan = media_plan((2, 256, 256), 1);
+    let plan = media_plan((1, 256, 256), 1);
     let footprint = super::footprint::footprint(&encoder, &plan)?;
     let patch_payload = 3_u64 * 2 * 16_777_216 * 4;
     assert_eq!(patch_payload, 384 * 1024 * 1024);

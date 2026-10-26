@@ -231,3 +231,63 @@ fn projection_preserves_sub_bf16_residuals() -> Result<()> {
     }
     Ok(())
 }
+
+/// Legal power-of-two indexed `RoPE` over compact physical half48/head96, with old128 and 2B
+/// controls. This is an F32 host/device comparison, not an attention-stage claim.
+#[test]
+#[ignore = "requires an NVIDIA GPU; run under tools/bench/safe-run.sh"]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Fixture indices are small exact integers"
+)]
+fn indexed_rope_compact_half48_matches_host_reference_on_sm120() -> Result<()> {
+    let device = CudaDevice::new(0)?;
+    let heads = 4usize;
+    let tokens = 37usize;
+    for (half, real) in [(48usize, 36usize), (64, 64), (32, 32)] {
+        let width = half * 2;
+        let projections = heads * width;
+        let mut query = vec![0.0f32; tokens * projections];
+        for (index, value) in query.iter_mut().enumerate() {
+            *value = ((index * 37 % 101) as f32 - 50.0) / 17.0;
+        }
+        let mut cos = vec![0.0f32; tokens * width];
+        let mut sin = vec![0.0f32; tokens * width];
+        for token in 0..tokens {
+            for lane in 0..half {
+                let angle = (token as f32 + 1.0) * 0.013 * (lane as f32 + 1.0);
+                for h in 0..2 {
+                    cos[token * width + h * half + lane] = angle.cos();
+                    sin[token * width + h * half + lane] = angle.sin();
+                }
+            }
+        }
+        let actual =
+            super::program::rope_compact_kernel(&device, &query, &cos, &sin, tokens, half, real)?;
+        let mut expected = vec![0.0f32; query.len()];
+        for token in 0..tokens {
+            for head in 0..heads {
+                for lane in 0..real {
+                    let lo = query[(token * heads + head) * width + lane];
+                    let hi = query[(token * heads + head) * width + half + lane];
+                    let c = cos[token * width + lane];
+                    let s = sin[token * width + lane];
+                    expected[(token * heads + head) * width + lane] = lo.mul_add(c, -(hi * s));
+                    expected[(token * heads + head) * width + half + lane] = hi.mul_add(c, lo * s);
+                }
+            }
+        }
+        let error = actual
+            .iter()
+            .zip(&expected)
+            .fold(0.0f32, |error, (left, right)| {
+                error.max((left - right).abs())
+            });
+        assert_eq!(actual.len(), expected.len());
+        assert!(
+            error <= 1e-5,
+            "half={half} real={real} tokens={tokens}: max abs error {error}"
+        );
+    }
+    Ok(())
+}

@@ -45,7 +45,11 @@ impl CudaExecutor {
             .vision()
             .map_or(Ok(0), |vision| vision.footprint(media))?;
         self.reservation_budget(capacity, readout, private)
-            .map(|bytes| bytes.saturating_add(encoded))
+            .and_then(|bytes| {
+                bytes
+                    .checked_add(encoded)
+                    .ok_or_else(|| infer_core::Error::invalid("media quote footprint overflow"))
+            })
             .map(Some)
     }
     pub(super) fn state_capacity_bytes(&self) -> Result<Option<u64>> {

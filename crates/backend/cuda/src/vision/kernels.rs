@@ -101,6 +101,50 @@ pub(crate) mod encoder {
         out.store(rotated);
     }
 
+    /// `RoPE` over a compact physical half-head with a power-of-two register tile.
+    ///
+    /// `HALF` is the physical (padded) half stride and need not be a power of two; each tile is a
+    /// 16-lane segment wholly inside one half. Head, half, sibling and cosine lane are derived
+    /// from the physical stride, and lanes beyond `REAL` are zeroed after the rotation.
+    #[cutile::entry()]
+    fn rope_indexed<const HALF: i32, const REAL: i32>(
+        out: &mut Tensor<f32, { [32, 16] }>,
+        input: &Tensor<f32, { [-1, -1] }>,
+        cos: &Tensor<f32, { [-1, -1] }>,
+        sin: &Tensor<f32, { [-1, -1] }>,
+    ) {
+        let pid = get_tile_block_id();
+        let segments = HALF / 16i32;
+        let head_segments = segments * 2i32;
+        let head = pid.1 / head_segments;
+        let segment = pid.1 - head * head_segments;
+        let half = segment / segments;
+        let lane_segment = segment - half * segments;
+        let sibling = head * head_segments + (1i32 - half) * segments + lane_segment;
+        let values = input.partition(shape![32, 16]);
+        let own: Tile<f32, { [32, 16] }> = values.load([pid.0, pid.1]);
+        let other: Tile<f32, { [32, 16] }> = values.load([pid.0, sibling]);
+        let table = cos.partition(shape![32, 16]);
+        let table_sin = sin.partition(shape![32, 16]);
+        let table_column = half * segments + lane_segment;
+        let cosine: Tile<f32, { [32, 16] }> = table.load([pid.0, table_column]);
+        let sine: Tile<f32, { [32, 16] }> = table_sin.load([pid.0, table_column]);
+        let rotated = if half == 0i32 {
+            own * cosine - other * sine
+        } else {
+            own * cosine + other * sine
+        };
+        let lane: Tile<i32, { [16] }> = iota(shape![16]);
+        let position = lane + (lane_segment * 16i32).broadcast(shape![16]);
+        let valid = lt_tile(position, REAL.broadcast(shape![16]));
+        let zero: Tile<f32, { [32, 16] }> = 0.0f32.broadcast(shape![32, 16]);
+        out.store(select(
+            valid.reshape(shape![1, 16]).broadcast(shape![32, 16]),
+            rotated,
+            zero,
+        ));
+    }
+
     /// `gelu_pytorch_tanh`, the activation of every vision block.
     #[cutile::entry()]
     fn gelu_tanh<const N: i32>(out: &mut Tensor<f32, { [32, 64] }>, x: &Tensor<f32, { [-1, N] }>) {
