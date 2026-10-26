@@ -2380,15 +2380,19 @@ fn gdn_ba_roles_by(
         let (Some(&first), Some(&second)) = (producer.get(&beta), producer.get(&alpha)) else {
             continue;
         };
-        let (Some(beta_shape), Some(alpha_shape)) = (
-            shape(graph.nodes[first].inputs[1]),
-            shape(graph.nodes[second].inputs[1]),
+        if !gdn_ba_ordered(graph, first, second, delta) {
+            continue;
+        }
+        let (Some(&weight_b), Some(&weight_a)) = (
+            graph.nodes[first].inputs.get(1),
+            graph.nodes[second].inputs.get(1),
         ) else {
             continue;
         };
-        if !gdn_ba_ordered(graph, first, second, delta)
-            || !gdn_ba_weight_compatible(beta_shape, alpha_shape)
-        {
+        let (Some(beta_shape), Some(alpha_shape)) = (shape(weight_b), shape(weight_a)) else {
+            continue;
+        };
+        if !gdn_ba_weight_compatible(beta_shape, alpha_shape) {
             continue;
         }
         roles.insert(first, super::prefill_projection::GdnRole::Beta);

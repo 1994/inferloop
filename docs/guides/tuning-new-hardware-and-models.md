@@ -78,7 +78,11 @@
 | `tools/bench/score-task-quality.py` | 配对正确率非劣质量门禁 |
 | `tools/bench/safe-run.sh` | 带主机内存上限、并发互斥与时长保护地运行 GPU 进程（每个进程最长 30 分钟） |
 | `INFER_CUDA_PREFILL_PROFILE` / `INFER_CUDA_EXECUTION_PROFILE` | 逐节点 CUDA 事件 / host 阶段记录（由 `--profile` 设置） |
+| `INFER_CUDA_PROFILE_GRAPH_ONLY` | 仅在图边界记录事件，配合 prefill profile；不改变算法 |
+| `INFER_CUDA_ATTENTION_PRECISE_PREFIX` | 恢复前若干位置的精确 attention 诊断；不改变默认数值路径 |
 | `INFER_CUDA_TUNING_TABLE` | 指定调优缓存文件，用于冷启动调优和隔离实验 |
+| `INFER_CUDA_VENDOR_FP8` / `INFER_CUDA_FP8_LT_AUTOTUNE` / `INFER_CUDA_TILED_ATTENTION` | **仅测试构建**可读；生产 `cfg(not(test))` 不读取，不是产品开关 |
+| `INFER_CUDA_CHUNKED_RECURRENT` | 已撤下；生产不读取，chunk 候选只在独立诊断 loader 中 |
 
 ## 待改为推导的常数
 

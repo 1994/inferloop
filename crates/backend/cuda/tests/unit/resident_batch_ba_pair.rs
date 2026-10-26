@@ -102,3 +102,16 @@ fn role_selector_accepts_alternate_beta_alpha_cardinalities_and_rejects_decoys()
     let swapped = graph(beta, alpha, make_delta(Some(3), 3, 2, 4));
     assert!(gdn_ba_roles_by(&swapped, |id| shapes.get(&id).copied()).is_empty());
 }
+
+#[test]
+fn role_selector_ignores_one_input_producer_without_indexing_panic() {
+    use super::gdn_ba_roles_by;
+    use crate::resident::prefill_projection::GdnRole;
+    let mut beta = linear(Some(3), 1, 10, 2);
+    beta.inputs.pop();
+    let alpha = linear(Some(3), 1, 11, 3);
+    let flow = graph(beta, alpha, make_delta(Some(3), 2, 3, 4));
+    let roles = gdn_ba_roles_by(&flow, |_| Some((48, 5120)));
+    assert!(roles.is_empty());
+    assert!(!roles.values().any(|role| *role == GdnRole::Beta));
+}
