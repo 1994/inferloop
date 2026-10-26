@@ -249,7 +249,11 @@ impl Workspace {
         let shape = (rows, outputs, columns);
         let sms = usize::try_from(device.profile()?.multiprocessors)
             .map_err(|_| Error::invariant("SM count"))?;
-        let Some(plan) = projection_split_policy(
+        #[cfg_attr(
+            not(test),
+            allow(unused_mut, reason = "mutation is test-only split override")
+        )]
+        let Some(mut plan) = projection_split_policy(
             rows,
             outputs,
             columns,
@@ -261,6 +265,16 @@ impl Workspace {
         else {
             return Ok(());
         };
+        #[cfg(test)]
+        let forced = FORCED_SPLITS.with(Cell::get);
+        #[cfg(test)]
+        if forced > 0 {
+            if forced > columns.div_ceil(NVFP4_K_STEP) {
+                return Ok(());
+            }
+            plan.splits = forced;
+            plan.scratch_bytes = super::split_scratch_bytes(rows, outputs, forced)?;
+        }
         if !Self::split_allowed(
             device,
             (
@@ -1194,6 +1208,7 @@ thread_local! {
     static FORCE_SPLIT: Cell<bool> = const { Cell::new(false) };
     static DISABLE_SPLIT: Cell<bool> = const { Cell::new(false) };
     static SPLIT_RECORDS: Cell<usize> = const { Cell::new(0) };
+    static FORCED_SPLITS: Cell<usize> = const { Cell::new(0) };
 }
 #[cfg(test)]
 pub(super) fn forced_split() -> bool {
@@ -1229,4 +1244,16 @@ pub(super) fn reset_split_records() {
 #[cfg(test)]
 pub(super) fn split_records() -> usize {
     SPLIT_RECORDS.get()
+}
+
+#[cfg(test)]
+pub(super) fn with_forced_splits<T>(splits: usize, run: impl FnOnce() -> T) -> T {
+    struct Restore(usize);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FORCED_SPLITS.set(self.0);
+        }
+    }
+    let _restore = Restore(FORCED_SPLITS.replace(splits));
+    run()
 }

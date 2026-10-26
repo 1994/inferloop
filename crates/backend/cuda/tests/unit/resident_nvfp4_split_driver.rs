@@ -506,6 +506,7 @@ fn captured_workspace_nvfp4_real_weight_split() -> Result<(), Box<dyn StdError>>
     use super::Workspace;
     use super::workspace::{
         reset_split_records, split_records, with_disabled_split, with_forced_split,
+        with_forced_splits,
     };
     use crate::resident::ProgramGeometry;
 
@@ -538,16 +539,22 @@ fn captured_workspace_nvfp4_real_weight_split() -> Result<(), Box<dyn StdError>>
     let mut exact_workspace = with_disabled_split(|| {
         Workspace::program(&device, loaded.graph(), loaded.weights(), geometry)
     })?;
+    let forced_s = var("INFER_CANDIDATE_S")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
     let mut split_workspace = with_forced_split(|| {
-        Workspace::program(&device, loaded.graph(), loaded.weights(), geometry)
+        if forced_s == 0 {
+            Workspace::program(&device, loaded.graph(), loaded.weights(), geometry)
+        } else {
+            with_forced_splits(forced_s, || {
+                Workspace::program(&device, loaded.graph(), loaded.weights(), geometry)
+            })
+        }
     })?;
-    if exact_workspace.split_plan_count() != 0 {
-        return Err("exact workspace unexpectedly retained a split".into());
-    }
+    assert_eq!(exact_workspace.split_plan_count(), 0);
     reset_split_records();
-    if split_workspace.split_plan_count() == 0 {
-        return Err("forced workspace did not retain a split".into());
-    }
+    assert!(split_workspace.split_plan_count() > 0);
     let input = device.upload(
         (0..ROWS * down.columns)
             .map(|i| (f32::from(u16::try_from(i % 211).unwrap()) - 105.0) / 37.0)
@@ -575,9 +582,7 @@ fn captured_workspace_nvfp4_real_weight_split() -> Result<(), Box<dyn StdError>>
         graph
     };
     let exact_graph = capture(&mut exact_workspace, &mut exact)?;
-    if split_records() != 0 {
-        return Err("exact capture recorded a split dispatch".into());
-    }
+    assert_eq!(split_records(), 0);
     reset_split_records();
     let split_graph = capture(&mut split_workspace, &mut split)?;
     if split_records() == 0 {
