@@ -26,11 +26,13 @@ use crate::{
     resident::{ProgramGeometry, ProgramWeights},
 };
 use cutile::half::bf16;
+use cutile::prelude::Tensor;
 use infer_core::{Error, Result};
 use infer_ir::{DataflowGraph, OutputReadout, StateKind, TensorOp, TensorStorage};
 use std::array::from_fn;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::sync::OnceLock;
 
 /// Bytes per F32 element in u64 budget arithmetic.
@@ -196,6 +198,139 @@ impl LoadedModel {
     pub fn kv_block_bytes(&self) -> Result<u64> {
         kv_block_bytes(&self.graph, &self.weights)
     }
+}
+
+/// Checked model-weight totals used by the compute-knee formula.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WeightMetrics {
+    pub parameters: u64,
+    pub bytes: u64,
+}
+
+impl WeightMetrics {
+    fn add(&mut self, parameters: u64, bytes: u64) -> Result<()> {
+        self.parameters = self
+            .parameters
+            .checked_add(parameters)
+            .ok_or_else(|| Error::invalid("model parameter count overflow"))?;
+        self.bytes = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or_else(|| Error::invalid("model weight bytes overflow"))?;
+        Ok(())
+    }
+}
+
+impl LoadedModel {
+    /// Actual logical parameters and stored weight bytes across the target and draft graphs.
+    /// Shared embedding/lm-head tensors are deduplicated by allocation identity, so MTP does
+    /// not double-count the target's vocabulary.
+    /// # Errors
+    /// Rejects malformed shapes or arithmetic overflow.
+    pub(crate) fn weight_metrics(&self) -> Result<WeightMetrics> {
+        let mut metrics = WeightMetrics::default();
+        let mut seen = BTreeSet::new();
+        program_weight_metrics(&self.weights, &mut metrics, &mut seen)?;
+        if let Some(draft) = &self.draft {
+            program_weight_metrics(&draft.weights, &mut metrics, &mut seen)?;
+        }
+        Ok(metrics)
+    }
+}
+
+fn mark<T: cutile::DType>(tensor: &Arc<Tensor<T>>, seen: &mut BTreeSet<usize>) -> bool {
+    seen.insert(Arc::as_ptr(tensor) as usize)
+}
+
+fn tensor_elements<T: cutile::DType>(tensor: &Tensor<T>) -> Result<u64> {
+    u64::try_from(tensor.size()).map_err(|_| Error::invalid("weight tensor element overflow"))
+}
+
+fn projection_weight_metrics(
+    weight: &ProjectionWeight,
+    metrics: &mut WeightMetrics,
+    seen: &mut BTreeSet<usize>,
+) -> Result<()> {
+    match weight {
+        ProjectionWeight::Dense(tensor) => {
+            if mark(tensor, seen) {
+                let elements = tensor_elements(tensor)?;
+                let bytes = elements
+                    .checked_mul(2)
+                    .ok_or_else(|| Error::invalid("dense weight bytes overflow"))?;
+                metrics.add(elements, bytes)?;
+            }
+        }
+        ProjectionWeight::Fp8(tensor, scales) | ProjectionWeight::Fp8Block(tensor, scales) => {
+            if mark(tensor, seen) {
+                let elements = tensor_elements(tensor)?;
+                let scale_bytes = tensor_elements(scales)?
+                    .checked_mul(F32)
+                    .ok_or_else(|| Error::invalid("fp8 scale bytes overflow"))?;
+                let bytes = elements
+                    .checked_add(scale_bytes)
+                    .ok_or_else(|| Error::invalid("fp8 weight bytes overflow"))?;
+                metrics.add(elements, bytes)?;
+            }
+        }
+        ProjectionWeight::Fp4(codes, scales, _) => {
+            if mark(codes, seen) {
+                let packed = tensor_elements(codes)?;
+                let parameters = packed
+                    .checked_mul(2)
+                    .ok_or_else(|| Error::invalid("fp4 parameter count overflow"))?;
+                let scale_bytes = tensor_elements(scales)?;
+                let bytes = packed
+                    .checked_add(scale_bytes)
+                    .and_then(|bytes| bytes.checked_add(F32))
+                    .ok_or_else(|| Error::invalid("fp4 weight bytes overflow"))?;
+                metrics.add(parameters, bytes)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn program_weight_metrics(
+    weights: &ProgramWeights,
+    metrics: &mut WeightMetrics,
+    seen: &mut BTreeSet<usize>,
+) -> Result<()> {
+    for weight in weights.projections.values() {
+        projection_weight_metrics(weight, metrics, seen)?;
+    }
+    for bank in weights.expert_banks.values() {
+        projection_weight_metrics(&bank.projection, metrics, seen)?;
+    }
+    for tensor in weights.embeddings.values() {
+        if mark(tensor, seen) {
+            let elements = tensor_elements(tensor)?;
+            let bytes = elements
+                .checked_mul(2)
+                .ok_or_else(|| Error::invalid("embedding bytes overflow"))?;
+            metrics.add(elements, bytes)?;
+        }
+    }
+    if let Some(fusion) = &weights.fusion {
+        projection_weight_metrics(&fusion.projection, metrics, seen)?;
+        if mark(&fusion.norms, seen) {
+            let elements = tensor_elements(&fusion.norms)?;
+            let bytes = elements
+                .checked_mul(F32)
+                .ok_or_else(|| Error::invalid("fusion norm bytes overflow"))?;
+            metrics.add(elements, bytes)?;
+        }
+    }
+    for tensor in weights.constants.values() {
+        if mark(tensor, seen) {
+            let elements = tensor_elements(tensor)?;
+            let bytes = elements
+                .checked_mul(F32)
+                .ok_or_else(|| Error::invalid("constant bytes overflow"))?;
+            metrics.add(elements, bytes)?;
+        }
+    }
+    Ok(())
 }
 
 /// Joint quote for the pooled target, draft, prompt worker and resident slot homes.

@@ -289,6 +289,7 @@ fn fixture_profile() -> DeviceProfile {
         architecture: "sm_120".into(),
         multiprocessors: 0,
         total_memory_bytes: 0,
+        compute_clock_khz: 2_400_000,
         memory_clock_khz: 0,
         memory_bus_width_bits: 0,
         l2_cache_bytes: 0,

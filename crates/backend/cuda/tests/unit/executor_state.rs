@@ -1,6 +1,8 @@
 use super::private_funding;
 use crate::constants::CB_DECODE_SLOTS;
-use crate::executor::bound_concurrency;
+use crate::device::CudaDevice;
+use crate::executor::{bound_concurrency, knee_concurrency, memory_concurrency, recommendation};
+use std::env;
 
 #[test]
 fn private_request_cannot_be_admitted_without_its_shared_workspace() {
@@ -94,4 +96,81 @@ fn automatic_concurrency_is_the_smallest_real_bound() {
     assert_eq!(bound_concurrency(64, None, 5), 5);
     assert_eq!(bound_concurrency(64, None, 64), CB_DECODE_SLOTS);
     assert_eq!(bound_concurrency(0, None, 0), 1);
+}
+
+#[test]
+fn memory_concurrency_charges_fixed_owners_once_and_keeps_a_legal_floor() -> infer_core::Result<()>
+{
+    assert_eq!(memory_concurrency(100, 20, 10)?, 9);
+    assert_eq!(memory_concurrency(20, 20, 10)?, 1);
+    assert_eq!(memory_concurrency(0, 50, 10)?, 1);
+    assert!(memory_concurrency(100, 0, 0).is_err());
+    Ok(())
+}
+
+#[test]
+fn knee_formula_uses_the_documented_roofline_units() -> infer_core::Result<()> {
+    // (100/10) * (50/10) / 2 / 1 = 25.
+    assert_eq!(knee_concurrency(100, 10, 50, 10, 1)?, Some(25));
+    assert_eq!(knee_concurrency(0, 10, 50, 10, 1)?, None);
+    assert_eq!(knee_concurrency(100, 0, 50, 10, 1)?, None);
+    assert_eq!(knee_concurrency(100, 10, 0, 10, 1)?, None);
+    assert_eq!(knee_concurrency(100, 10, 50, 0, 1)?, None);
+    assert_eq!(knee_concurrency(100, 10, 50, 10, 0)?, None);
+    assert!(knee_concurrency(u64::MAX, 1, u64::MAX, 1, 1).is_err());
+    assert!(knee_concurrency(1, u64::MAX, 1, u64::MAX, u64::MAX).is_err());
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires CUDA and INFER_TEST_MODEL; real 27B concurrency calibration, safe-run"]
+fn actual_model_recommendation_reports_raw_knee_inputs() -> infer_core::Result<()> {
+    use crate::loading::{LoadOptions, LoadedModel};
+    let path =
+        env::var("INFER_TEST_MODEL").map_err(|e| infer_core::Error::invalid(e.to_string()))?;
+    let device = CudaDevice::new(0)?;
+    let free = device.allocatable_memory_bytes()?;
+    let loaded = LoadedModel::open(
+        device,
+        path,
+        infer_core::ModelId::ONE,
+        LoadOptions {
+            prefill_width: 0,
+            mtp_depth: 0,
+            ..LoadOptions::default()
+        },
+    )?;
+    let used = free
+        .saturating_sub(loaded.device().allocatable_memory_bytes()?)
+        .saturating_add(loaded.shared_scratch_bytes()?);
+    let budget = free
+        .checked_sub(used)
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| infer_core::Error::invalid("model leaves no state budget"))?;
+    let metrics = loaded.weight_metrics()?;
+    let profile = loaded.profile().clone();
+    let maximum_states = profile.resident_states();
+    let recommendation = recommendation(&loaded, budget, maximum_states)?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "device": profile.name,
+            "architecture": profile.architecture,
+            "multiprocessors": profile.multiprocessors,
+            "compute_clock_khz": profile.compute_clock_khz,
+            "memory_clock_khz": profile.memory_clock_khz,
+            "memory_bus_width_bits": profile.memory_bus_width_bits,
+            "memory_bandwidth_bytes_per_second": profile.memory_bandwidth_bytes_per_second(),
+            "peak_fp32_flops": profile.peak_fp32_flops(),
+            "state_budget": budget,
+            "weight_bytes": metrics.bytes,
+            "parameters": metrics.parameters,
+            "tokens_per_step": 1,
+            "memory_bound": recommendation.memory_bound,
+            "knee_bound": recommendation.knee_bound,
+            "max_sequences": recommendation.max_sequences,
+            "legal_cap": CB_DECODE_SLOTS.min(infer_gpu_api::MAX_SUBMISSION_BATCH),
+        })
+    );
+    Ok(())
 }

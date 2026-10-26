@@ -15,6 +15,7 @@ fn profile() -> DeviceProfile {
         architecture: "sm_test".into(),
         multiprocessors: 12,
         total_memory_bytes: 8 << 30,
+        compute_clock_khz: 2_400_000,
         memory_clock_khz: 1000,
         memory_bus_width_bits: 128,
         l2_cache_bytes: 1 << 20,

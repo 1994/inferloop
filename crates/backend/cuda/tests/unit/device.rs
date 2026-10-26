@@ -6,6 +6,7 @@ fn profile(total_memory_bytes: u64) -> DeviceProfile {
         architecture: "sm_120".to_owned(),
         multiprocessors: 170,
         total_memory_bytes,
+        compute_clock_khz: 2_400_000,
         memory_clock_khz: 14_001_000,
         memory_bus_width_bits: 512,
         l2_cache_bytes: 128 * 1024 * 1024,
@@ -31,4 +32,18 @@ fn profile_derives_bandwidth_headroom_and_identity() {
     assert_eq!(device.identity(), "NVIDIA GeForce RTX 5090|sm_120|32768MiB");
     // Identities of different devices never collide.
     assert_ne!(device.identity(), profile(24 * 1024 * MIB).identity());
+}
+
+#[test]
+fn peak_fp32_is_derived_from_driver_clock_and_known_lanes() {
+    let mut p = profile(24 * 1024 * 1024 * 1024);
+    p.architecture = "sm_120".into();
+    p.multiprocessors = 170;
+    p.compute_clock_khz = 2_400_000;
+    assert_eq!(p.peak_fp32_flops(), Some(104_448_000_000_000));
+    p.architecture = "sm_999".into();
+    assert_eq!(p.peak_fp32_flops(), None);
+    p.architecture = "sm_120".into();
+    p.compute_clock_khz = 0;
+    assert_eq!(p.peak_fp32_flops(), Some(0));
 }

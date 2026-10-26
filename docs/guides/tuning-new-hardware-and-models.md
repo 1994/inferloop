@@ -86,7 +86,7 @@
 
 | 常数 | 位置 | 现状 | 应改为 |
 |---|---|---|---|
-| `DEFAULT_MAX_BATCH = 16` | `engine/runtime/src/config.rs`、`spi::SchedulingRecommendation` | CLI 自动路径从 backend 取得实际建议；直接构造 `RuntimeConfig` 的可移植默认仍为 16。自动路径在 runtime 构造时消费 `SchedulingRecommendation`：`min(状态预算 / 每序列最小状态, 已标定的算力 knee(若有), 显式 max_num_seqs, 提交 ABI 上限)`。峰值算力未标定时 `knee_bound=None`，不会用 64 或 decode step 冒充 N_knee；设备标定是后续门禁。 | backend 提供 `SchedulingRecommendation`；显式 `--max-num-seqs` 始终优先，缺失建议时保留可移植默认 |
+| `DEFAULT_MAX_BATCH = 16` | `engine/runtime/src/config.rs`、`spi::SchedulingRecommendation`、`executor/mod.rs` | CLI 自动路径从 backend 取得实际建议；直接构造 `RuntimeConfig` 的可移植默认仍为 16。自动路径消费 `SchedulingRecommendation = min(N_mem, N_knee, 显式 max_num_seqs, CB16/提交 ABI)`。`N_mem` 用实际 pooled quote 的固定 shared owners + 每序列 state + 最小 KV block 推导，不重复计入私有验证图；`N_knee=(峰值 FP32 FLOP/s / DRAM B/s) × (实际权重字节 / 实际逻辑参数量) / 2 / 每步 token 数`。峰值来自驱动 clock、SM 数和架构 FP32 lane 数；未知架构返回 `None`，不伪造数值。 | backend 提供 `SchedulingRecommendation` 并记录全部 raw inputs；显式 `--max-num-seqs` 始终优先，未知硬件保留诚实 fallback |
 | `VALUE_SPLIT_*`（按 SM 数 63/127 分档） | `resident/slot_recurrent.rs` | 已删除 SM 分档 | 由实际 SM、covered value heads、槽数和 value 维合法除数推出；目标是一波 CTA，尾宽只接受可整除的 split |
 | pooled attention `MAX_BATCH = 4`、切分数上限 64 | `resident/attention_decode/pooled.rs`、`tuning/attention/decode.rs` | 每组 4 个槽串行；切分数已按 SM 数、KV 头数与每组槽数推导，尚未结合上下文长度 | 切分数按上下文长度推导（每份至少若干 KV 块），部分和 workspace 随之缩小，从而一次启动处理全部槽 |
 | `SWIGLU_TILE_ROWS/COLUMNS = 64` | `resident/nvfp4_gemm/workspace.rs`、`tuning/swiglu.rs` | 加载期真实权重 tuner：合法候选 64x64/128x64/128x128，完整 codes/scales 逐字节对照 baseline，量化-inclusive AB+BA 配对与持久 device/kernel/geometry/weight 证明；64x64 为无证据 fallback | 128 行只有在 exact proof 和两种顺序都超过确认阈值时才被选中；搜索失败/缓存损坏回退并记录缺口 |

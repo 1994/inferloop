@@ -54,6 +54,112 @@ pub(super) fn bound_concurrency(
     };
     if value == 0 { 1 } else { value }
 }
+/// Raw memory concurrency from the funded fixed owners and the marginal per-sequence
+/// state-plus-minimum-KV price. `fixed` is charged once; no private verification graph is
+/// added to a pooled sequence.
+pub(super) fn memory_concurrency(budget: u64, fixed: u64, per_sequence: u64) -> Result<usize> {
+    if per_sequence == 0 {
+        return Err(Error::invalid("per-sequence state price is zero"));
+    }
+    if budget <= fixed {
+        return Ok(1);
+    }
+    let extra = (budget - fixed) / per_sequence;
+    let value = extra
+        .checked_add(1)
+        .ok_or_else(|| Error::invalid("memory concurrency overflow"))?;
+    usize::try_from(value).map_err(|_| Error::invalid("memory concurrency exceeds usize"))
+}
+
+/// Formula `N_knee = (compute / bandwidth) * (weight bytes / parameters) / 2 / tokens`
+/// per sequence per step. All inputs are checked; zero/missing inputs return `None`.
+pub(super) fn knee_concurrency(
+    peak_compute_flops: u64,
+    bandwidth_bytes_per_second: u64,
+    weight_bytes: u64,
+    parameters: u64,
+    tokens_per_step: u64,
+) -> Result<Option<usize>> {
+    if peak_compute_flops == 0
+        || bandwidth_bytes_per_second == 0
+        || weight_bytes == 0
+        || parameters == 0
+        || tokens_per_step == 0
+    {
+        return Ok(None);
+    }
+    let numerator = u128::from(peak_compute_flops)
+        .checked_mul(u128::from(weight_bytes))
+        .ok_or_else(|| Error::invalid("knee numerator overflow"))?;
+    let denominator = u128::from(bandwidth_bytes_per_second)
+        .checked_mul(u128::from(parameters))
+        .and_then(|value| value.checked_mul(2))
+        .and_then(|value| value.checked_mul(u128::from(tokens_per_step)))
+        .ok_or_else(|| Error::invalid("knee denominator overflow"))?;
+    let value = numerator / denominator;
+    usize::try_from(value)
+        .map(Some)
+        .map_err(|_| Error::invalid("knee concurrency exceeds usize"))
+}
+
+pub(super) fn recommendation(
+    loaded: &LoadedModel,
+    budget: u64,
+    maximum_states: usize,
+) -> Result<infer_spi::SchedulingRecommendation> {
+    let prompt_width = loaded.pooled_prompt_width().max(1);
+    let one = loaded.pooled_serving_quote(1, KV_BLOCK_TOKENS, KV_BLOCK_TOKENS, prompt_width)?;
+    let two = loaded.pooled_serving_quote(2, KV_BLOCK_TOKENS, 2 * KV_BLOCK_TOKENS, prompt_width)?;
+    let per_sequence = two
+        .total_bytes
+        .checked_sub(one.total_bytes)
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| Error::invalid("pooled per-sequence price is non-positive"))?;
+    let fixed = one.total_bytes.saturating_sub(per_sequence);
+    let memory_bound = memory_concurrency(budget, fixed, per_sequence)?;
+    let profile = loaded.device().profile()?;
+    let metrics = loaded.weight_metrics()?;
+    let peak = profile.peak_fp32_flops();
+    let tokens_per_step = u64::try_from(loaded.mtp_depth() + 1)
+        .map_err(|_| Error::invalid("MTP token count overflow"))?;
+    let knee_bound = peak
+        .map(|peak| {
+            knee_concurrency(
+                peak,
+                profile.memory_bandwidth_bytes_per_second(),
+                metrics.bytes,
+                metrics.parameters,
+                tokens_per_step,
+            )
+        })
+        .transpose()?
+        .flatten();
+    let legal_cap = CB_DECODE_SLOTS.min(infer_gpu_api::MAX_SUBMISSION_BATCH);
+    let max_sequences = bound_concurrency(memory_bound, knee_bound, maximum_states);
+    tracing::info!(
+        target: "infer::load",
+        state_budget_bytes = budget,
+        fixed_shared_bytes = fixed,
+        per_sequence_bytes = per_sequence,
+        memory_bound,
+        peak_compute_flops = ?peak,
+        dram_bytes_per_second = profile.memory_bandwidth_bytes_per_second(),
+        weight_bytes = metrics.bytes,
+        parameters = metrics.parameters,
+        tokens_per_step,
+        knee_bound = ?knee_bound,
+        legal_cap,
+        maximum_states = maximum_states,
+        max_sequences,
+        "roofline concurrency inputs"
+    );
+    Ok(infer_spi::SchedulingRecommendation {
+        max_sequences,
+        memory_bound,
+        knee_bound,
+    })
+}
+
 use infer_state::cache::SnapshotScan;
 use std::collections::BTreeMap;
 use std::mem::{forget, take};
@@ -259,19 +365,7 @@ impl CudaExecutor {
     /// Price the loaded model's minimum per-sequence state and bound concurrency by the
     /// actual state budget and the configured decode step width.
     pub(super) fn scheduling_recommendation(&self) -> Result<infer_spi::SchedulingRecommendation> {
-        let per_sequence =
-            self.loaded
-                .sequence_budget(KV_BLOCK_TOKENS, OutputReadout::Logits, true)?;
-        let memory_bound = usize::try_from(self.budget / per_sequence.max(1))
-            .unwrap_or(usize::MAX)
-            .max(1);
-        let knee_bound = None;
-        let max_sequences = bound_concurrency(memory_bound, knee_bound, self.maximum_states);
-        Ok(infer_spi::SchedulingRecommendation {
-            max_sequences,
-            memory_bound,
-            knee_bound,
-        })
+        recommendation(&self.loaded, self.budget, self.maximum_states)
     }
     #[must_use]
     pub const fn model(&self) -> &infer_ir::ModelIr {

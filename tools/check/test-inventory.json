@@ -16,7 +16,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 29
+      "tests": 30
     },
     "compiler": {
       "benches": 0,
@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 347
+      "tests": 351
     },
     "frontdoor": {
       "benches": 0,
@@ -163,6 +163,7 @@
     "real MTP2 checkpoint/CUDA; validates pooled quotes without resident home programs": 1,
     "real MTP2 checkpoint/CUDA; validates private slot binding, admission and reset accounting": 1,
     "release CUDA performance diagnostic; run inside safe-run": 1,
+    "requires CUDA and INFER_TEST_MODEL; real 27B concurrency calibration, safe-run": 1,
     "requires CUDA and INFER_TEST_MODEL; run release inside safe-run": 3,
     "requires CUDA and INFER_TEST_MODEL; run release serially inside safe-run": 1,
     "requires CUDA and real 27B gate/up shape; run inside safe-run": 1,
@@ -1260,11 +1261,11 @@
     }
   ],
   "totals": {
-    "all": 891,
+    "all": 896,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 891
+    "tests": 896
   }
 }
