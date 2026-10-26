@@ -31,16 +31,29 @@ fn encoder() -> ModalityEncoder {
 }
 
 #[test]
-fn head_width_72_uses_the_device_valid_power_of_two_half_tile() {
+fn head_width_72_uses_the_validated_compact_half_48_layout() {
     let encoder = encoder();
     let head = encoder.hidden_size / encoder.heads;
     assert_eq!(head, 72);
     let half = super::weights::half_tile(&encoder).expect("half tile");
-    let width = half * 2;
-    assert_eq!(half, 64);
-    assert_eq!(width, 128);
-    assert_eq!(width.next_power_of_two(), width);
-    assert_eq!((encoder.heads * width) % super::program::column_tile(), 0);
+    assert_eq!(half, 48);
+    assert_eq!(half * 2, 96);
+    assert_eq!((encoder.heads * 96) % super::program::column_tile(), 0);
+}
+
+#[test]
+fn other_real_heads_keep_the_power_of_two_fallback_without_truncation() {
+    for (head, expected_half) in [(64usize, 32usize), (80, 64), (96, 64), (128, 64)] {
+        let mut encoder = encoder();
+        encoder.hidden_size = encoder.heads * head;
+        let half = super::weights::half_tile(&encoder).expect("half tile");
+        assert_eq!(half, expected_half, "head {head}");
+        assert!(half * 2 >= head, "head {head} must not truncate");
+        let layout = super::weights::half_layout(head, half);
+        assert_eq!(layout.len(), 2 * half);
+        let real = layout.iter().filter(|lane| lane.is_some()).count();
+        assert_eq!(real, head, "head {head} real lanes");
+    }
 }
 
 #[test]

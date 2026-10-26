@@ -1,5 +1,5 @@
 //! Captured vision-encoder programs.
-use super::{VisionWeights, kernels, weights::half_tile};
+use super::{VisionWeights, kernels, weights::AttentionLayer, weights::half_tile};
 #[cfg(test)]
 use crate::attention::benchmark::REPEATS;
 #[cfg(test)]
@@ -34,6 +34,11 @@ pub(super) const fn column_tile() -> usize {
 const ATTENTION_CONFIG_FIELDS: usize = 3;
 /// Power-of-two pack segment in the compact attention boundary.
 const PACK_SEGMENT: usize = 16;
+/// Compact physical half/full head and qualified wide pack width.
+const COMPACT_HALF: usize = 48;
+const COMPACT_REAL_HALF: usize = 36;
+const COMPACT_WIDTH: usize = 96;
+const WIDE_WIDTH: usize = 128;
 
 /// Flattened width of one patch: `channels × temporal × patch × patch`.
 /// # Errors
@@ -533,6 +538,9 @@ pub fn attention_with(
     let hidden = encoder.hidden_size;
     let heads = encoder.heads;
     let half = half_tile(encoder)?;
+    if half == COMPACT_HALF {
+        return compact_attention_layer(device, weights, encoder, layer, input, grid, tokens, mode);
+    }
     let width = half
         .checked_mul(2)
         .ok_or_else(|| Error::invalid("padded head overflow"))?;
@@ -626,6 +634,209 @@ pub fn attention_with(
         .map_err(device_error)?;
     let values = device.read(&Arc::new(output))?;
     Ok(values[..input.len()].to_vec())
+}
+
+struct CompactBuffers {
+    q: Tensor<f32>,
+    k: Tensor<f32>,
+    v: Tensor<f32>,
+    q_rot: Tensor<f32>,
+    k_rot: Tensor<f32>,
+    q_wide: Tensor<f32>,
+    k_wide: Tensor<f32>,
+    v_wide: Tensor<f32>,
+    attended: Tensor<f32>,
+    compact_out: Tensor<f32>,
+    output: Option<Tensor<f32>>,
+}
+
+fn compact_buffers(
+    device: &CudaDevice,
+    padded: usize,
+    heads: usize,
+    hidden: usize,
+) -> Result<CompactBuffers> {
+    let projections = heads * COMPACT_WIDTH;
+    let wide = heads * WIDE_WIDTH;
+    Ok(CompactBuffers {
+        q: activation(device, padded, projections)?,
+        k: activation(device, padded, projections)?,
+        v: activation(device, padded, projections)?,
+        q_rot: activation(device, padded, projections)?,
+        k_rot: activation(device, padded, projections)?,
+        q_wide: activation(device, padded, wide)?,
+        k_wide: activation(device, padded, wide)?,
+        v_wide: activation(device, padded, wide)?,
+        attended: activation(device, padded, wide)?,
+        compact_out: activation(device, padded, projections)?,
+        output: Some(activation(device, padded, hidden)?),
+    })
+}
+
+/// Production compact head72 attention: projected Q/K/V stay 96-wide, pack to the qualified
+/// 128-wide SDPA, then pack back for the compact output projection.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The production layer owns the same explicit geometry as attention_with"
+)]
+fn compact_attention_layer(
+    device: &CudaDevice,
+    weights: &VisionWeights,
+    encoder: &ModalityEncoder,
+    layer: usize,
+    input: &[f32],
+    grid: (usize, usize, usize),
+    tokens: usize,
+    mode: AttentionMode,
+) -> Result<Vec<f32>> {
+    let frame_tokens = frame_token_count(grid, tokens)?;
+    let hidden = encoder.hidden_size;
+    let heads = encoder.heads;
+    let projections = heads
+        .checked_mul(COMPACT_WIDTH)
+        .ok_or_else(|| Error::invalid("compact projection overflow"))?;
+    if tokens == 0 || input.len() != tokens * hidden {
+        return Err(Error::invalid("vision attention input shape"));
+    }
+    if !hidden.is_multiple_of(COLUMN_TILE) || !projections.is_multiple_of(COLUMN_TILE) {
+        return Err(Error::unsupported(
+            "vision compact geometry must tile by 64",
+        ));
+    }
+    let tiles = attention_tiles(tokens);
+    let padded = tokens.div_ceil(tiles[0]) * tiles[0];
+    let mut values = vec![0.0f32; padded * hidden];
+    values[..input.len()].copy_from_slice(input);
+    let tensor = device.upload(values, &[padded, hidden])?;
+    let (cosines, sines) = rope_tables(encoder, grid, padded)?;
+    let cosines = device.upload(cosines, &[padded, COMPACT_WIDTH])?;
+    let sines = device.upload(sines, &[padded, COMPACT_WIDTH])?;
+    let layer_weights = weights.attention(layer)?;
+    let mut buffers = compact_buffers(device, padded, heads, hidden)?;
+    let tokens_i = i32::try_from(tokens).map_err(device_error)?;
+    let scale = attention_scale(encoder)?;
+    let values = compact_attention_launch(
+        device,
+        &mut buffers,
+        &tensor,
+        &cosines,
+        &sines,
+        layer_weights,
+        tokens_i,
+        frame_tokens,
+        scale,
+        tiles,
+        hidden,
+        projections,
+        mode,
+    )?;
+    Ok(values[..input.len()].to_vec())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The staged launch helper receives its explicit device buffers and geometry"
+)]
+fn compact_attention_launch(
+    device: &CudaDevice,
+    buffers: &mut CompactBuffers,
+    tensor: &Arc<Tensor<f32>>,
+    cosines: &Arc<Tensor<f32>>,
+    sines: &Arc<Tensor<f32>>,
+    layer_weights: &AttentionLayer,
+    tokens: i32,
+    frame_tokens: i32,
+    scale: f32,
+    tiles: [usize; ATTENTION_CONFIG_FIELDS],
+    hidden: usize,
+    projections: usize,
+    mode: AttentionMode,
+) -> Result<Vec<f32>> {
+    let mut output = buffers
+        .output
+        .take()
+        .ok_or_else(|| Error::invalid("compact attention output buffer"))?;
+    let graph = CudaGraph::scope(&device.stream, |scope| {
+        for (weight, bias, target) in [
+            (&layer_weights.q.0, &layer_weights.q.1, &mut buffers.q),
+            (&layer_weights.k.0, &layer_weights.k.1, &mut buffers.k),
+            (&layer_weights.v.0, &layer_weights.v.1, &mut buffers.v),
+        ] {
+            scope.record(
+                kernels::encoder::dense_bias(
+                    target.partition([TOKEN_TILE, COLUMN_TILE]),
+                    tensor,
+                    weight,
+                    bias,
+                )
+                .generics(vec![hidden.to_string()]),
+            )?;
+        }
+        for (input, output) in [
+            (&buffers.q, &mut buffers.q_rot),
+            (&buffers.k, &mut buffers.k_rot),
+        ] {
+            scope.record(
+                kernels::encoder::rope_indexed(
+                    output.partition([TOKEN_TILE, PACK_SEGMENT]),
+                    input,
+                    cosines,
+                    sines,
+                )
+                .generics(vec![
+                    COMPACT_HALF.to_string(),
+                    COMPACT_REAL_HALF.to_string(),
+                ]),
+            )?;
+        }
+        for (input, output) in [
+            (&buffers.q_rot, &mut buffers.q_wide),
+            (&buffers.k_rot, &mut buffers.k_wide),
+            (&buffers.v, &mut buffers.v_wide),
+        ] {
+            scope.record(kernels::encoder::pack_wide(
+                output.partition([TOKEN_TILE, PACK_SEGMENT]),
+                input,
+            ))?;
+        }
+        scope.record(
+            sdpa_attention(
+                (&mut buffers.attended).partition([tiles[0], WIDE_WIDTH]),
+                &buffers.q_wide,
+                &buffers.k_wide,
+                &buffers.v_wide,
+                tokens,
+                scale,
+                frame_tokens,
+                tokens,
+                0,
+                0,
+                0,
+            )
+            .generics(attention_generics(WIDE_WIDTH, mode, tiles)),
+        )?;
+        scope.record(kernels::encoder::pack_compact(
+            (&mut buffers.compact_out).partition([TOKEN_TILE, PACK_SEGMENT]),
+            &buffers.attended,
+        ))?;
+        scope.record(
+            kernels::encoder::dense_bias(
+                (&mut output).partition([TOKEN_TILE, COLUMN_TILE]),
+                &buffers.compact_out,
+                &layer_weights.proj.0,
+                &layer_weights.proj.1,
+            )
+            .generics(vec![projections.to_string()]),
+        )?;
+        Ok(())
+    })
+    .map_err(device_error)?;
+    graph
+        .launch()
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    let values = device.read(&Arc::new(output))?;
+    Ok(values)
 }
 
 fn frame_token_count(grid: (usize, usize, usize), tokens: usize) -> Result<i32> {

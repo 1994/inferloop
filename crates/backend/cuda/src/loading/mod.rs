@@ -190,6 +190,12 @@ impl LoadedVision {
         footprint(&self.encoder, media)
     }
 
+    /// Exact bytes of every retained raw and prepared vision owner.
+    #[must_use]
+    pub fn inventory_bytes(&self) -> u64 {
+        self.weights.inventory_bytes()
+    }
+
     /// Encode one preprocessed image into `merged_tokens × text_hidden` embeddings.
     /// # Errors
     /// Rejects a patch grid that disagrees with the pixel buffer or failed CUDA execution.

@@ -25,6 +25,10 @@ const COLUMN_MULTIPLE: usize = 64;
 
 /// Each prepared attention, MLP or merger group replaces two weight/bias pairs in the inventory.
 const PREPARED_SLOTS: usize = 4;
+/// Real head with a device-validated compact attention pack.
+const COMPACT_HEAD: usize = 72;
+/// Physical compact half-head for [`COMPACT_HEAD`].
+const COMPACT_HALF: usize = 48;
 
 /// Half-head tile width: the real half head rounded up to a power-of-two tile.
 ///
@@ -35,8 +39,14 @@ pub fn half_tile(encoder: &ModalityEncoder) -> Result<usize> {
     if head < 2 || !head.is_multiple_of(2) {
         return Err(Error::invalid("encoder head width must be even"));
     }
-    (head / 2)
-        .checked_next_power_of_two()
+    let half = head / 2;
+    // Head72 is the only compact geometry with a device-validated 48/96 attention pack. Other
+    // real heads (64/80/96/128) retain the power-of-two fallback; in particular head96 must not be
+    // rounded to 48 because its real half is 48, not 36.
+    if head == COMPACT_HEAD {
+        return Ok(COMPACT_HALF);
+    }
+    half.checked_next_power_of_two()
         .ok_or_else(|| Error::invalid("encoder half-head overflow"))
 }
 
@@ -428,6 +438,34 @@ impl VisionWeights {
         self.tensors.len()
             + PREPARED_SLOTS
                 * (self.attention.len() + self.mlp.len() + usize::from(self.merger.is_some()))
+    }
+
+    /// Exact bytes of every retained raw and prepared vision owner.
+    #[must_use]
+    pub fn inventory_bytes(&self) -> u64 {
+        let tensor =
+            |value: &Arc<Tensor<bf16>>| u64::try_from(value.num_bytes()).unwrap_or(u64::MAX);
+        let prepared = |value: &Prepared| tensor(&value.0) + tensor(&value.1);
+        self.tensors.values().map(tensor).sum::<u64>()
+            + self
+                .attention
+                .iter()
+                .map(|layer| {
+                    prepared(&layer.q)
+                        + prepared(&layer.k)
+                        + prepared(&layer.v)
+                        + prepared(&layer.proj)
+                })
+                .sum::<u64>()
+            + self
+                .mlp
+                .iter()
+                .map(|layer| prepared(&layer.fc1) + prepared(&layer.fc2))
+                .sum::<u64>()
+            + self
+                .merger
+                .as_ref()
+                .map_or(0, |layer| prepared(&layer.fc1) + prepared(&layer.fc2))
     }
 
     /// Whether no tensor was bound.
