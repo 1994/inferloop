@@ -84,18 +84,23 @@ pub(crate) struct Normalization {
 }
 
 impl Normalization {
+    /// The fast processor fuses rescale into normalization. The canonical RGB8 factor is exactly
+    /// 1/255 but its f32 field is rounded; recover the exact integer 255 for that one case only.
+    /// Other configured factors keep their unrounded reciprocal (0.3 -> 3.333..., 0.7 -> 1.428...).
+    fn inverse(self) -> f32 {
+        const CANONICAL_RESCALE: f32 = 1.0 / 255.0;
+        if self.rescale == CANONICAL_RESCALE {
+            255.0
+        } else {
+            1.0 / self.rescale
+        }
+    }
+
     #[expect(
         clippy::suboptimal_flops,
         reason = "Sequential operations are required to match the processor's fused-bit result"
     )]
-    fn apply(self, value: f32, channel: usize) -> f32 {
-        // The fast processor fuses rescale into normalization: mean/rescale and std/rescale are
-        // applied to the uint8 value. Reproduce that order so the preprocessed bits match.
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "The processor computes this scalar in float64 then stores f32"
-        )]
-        let inverse = (1.0f64 / f64::from(self.rescale)).round() as f32;
+    fn apply(self, value: f32, channel: usize, inverse: f32) -> f32 {
         (value - self.mean[channel] * inverse) / (self.std[channel] * inverse)
     }
 }
@@ -175,6 +180,7 @@ pub(crate) fn patchify(
         .checked_mul(grid.height)
         .and_then(|value| value.checked_mul(grid.width))
         .ok_or_else(|| Error::invalid("patch count overflow"))?;
+    let inverse = norm.inverse();
     let mut pixels = Vec::with_capacity(
         patches
             .checked_mul(patch_width)
@@ -196,7 +202,7 @@ pub(crate) fn patchify(
                                         let x = col * grid.patch + patch_col;
                                         let value =
                                             frame[(y * resized_width + x) * RGB_CHANNELS + channel];
-                                        pixels.push(norm.apply(value, channel));
+                                        pixels.push(norm.apply(value, channel, inverse));
                                     }
                                 }
                             }

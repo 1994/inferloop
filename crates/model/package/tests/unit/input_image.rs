@@ -149,6 +149,34 @@ fn fused_normalization_preserves_reference_bits() {
         (255.0, 0x3f80_0000u32),
         (0.0, 0xbf80_0000u32),
     ] {
-        assert_eq!(norm.apply(value, 0).to_bits(), bits, "value {value}");
+        assert_eq!(
+            norm.apply(value, 0, norm.inverse()).to_bits(),
+            bits,
+            "value {value}"
+        );
+    }
+}
+
+#[test]
+fn custom_rescale_reciprocals_are_not_rounded() {
+    for rescale in [0.3f32, 0.7] {
+        let norm = Normalization {
+            mean: [0.5; 3],
+            std: [0.5; 3],
+            rescale,
+        };
+        let inverse = 1.0f32 / rescale;
+        assert!(
+            (norm.inverse() - inverse).abs() <= f32::EPSILON,
+            "rescale {rescale}"
+        );
+        for value in [0.0f32, 64.0, 128.0, 255.0] {
+            let expected = (value - 0.5 * inverse) / (0.5 * inverse);
+            assert_eq!(
+                norm.apply(value, 0, norm.inverse()),
+                expected,
+                "rescale {rescale} value {value}"
+            );
+        }
     }
 }
