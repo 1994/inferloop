@@ -16,6 +16,9 @@ pub struct RequestRecord {
     pub host_lease: Option<CreditLease>,
     #[serde(skip)]
     pub byte_lease: Option<CreditLease>,
+    /// Prepared media is device-bound request state; it is never serialized into a checkpoint.
+    #[serde(skip)]
+    pub media: Option<Arc<infer_ir::MediaPlan>>,
     pub plan: WorkloadPlan,
     pub state: Option<StateId>,
     pub status: RequestStatus,

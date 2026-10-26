@@ -204,6 +204,7 @@ impl Cycle {
                     token: 1,
                 },
                 sampling: Some(infer_ir::Sampling::default()),
+                media: None,
             });
         }
         self.queue.dispatch(step.id, &self.members)?;

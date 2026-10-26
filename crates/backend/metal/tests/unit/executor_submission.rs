@@ -49,6 +49,17 @@ fn compile_fixture(backend: &MetalBackend) -> Result<ExecutionProgram> {
     )
 }
 
+fn plain_task(request: RequestId, state: StateId, tokens: Vec<u32>) -> ExecutionTask {
+    ExecutionTask {
+        plain_greedy: false,
+        request,
+        state,
+        tokens: tokens.into(),
+        sampling: None,
+        media: None,
+    }
+}
+
 #[test]
 fn encoding_failure_rolls_back_a_batch_and_shared_cow_tails() -> Result<()> {
     if !MetalBackend::available() {
@@ -70,14 +81,7 @@ fn encoding_failure_rolls_back_a_batch_and_shared_cow_tails() -> Result<()> {
     let mut ticket = backend.submit(
         &program,
         &step(&program, &[StateId::ONE], 3)?,
-        vec![ExecutionTask {
-            plain_greedy: false,
-            request: RequestId::ONE,
-            state: StateId::ONE,
-            tokens: vec![1, 2, 3].into(),
-
-            sampling: None,
-        }],
+        vec![plain_task(RequestId::ONE, StateId::ONE, vec![1, 2, 3])],
     )?;
     let deadline = Instant::now() + Duration::from_secs(10);
     while backend.poll(&mut ticket)?.is_none() {
@@ -96,22 +100,8 @@ fn encoding_failure_rolls_back_a_batch_and_shared_cow_tails() -> Result<()> {
         .probes
         .replace(backend.gpu.zeros(1)?);
     let tasks = vec![
-        ExecutionTask {
-            plain_greedy: false,
-            request: RequestId::ONE,
-            state: StateId::ONE,
-            tokens: vec![1, 2, 3, 5].into(),
-
-            sampling: None,
-        },
-        ExecutionTask {
-            plain_greedy: false,
-            request: RequestId::new(2)?,
-            state: second,
-            tokens: vec![1, 2, 3, 8].into(),
-
-            sampling: None,
-        },
+        plain_task(RequestId::ONE, StateId::ONE, vec![1, 2, 3, 5]),
+        plain_task(RequestId::new(2)?, second, vec![1, 2, 3, 8]),
     ];
     let error = backend
         .submit(
@@ -133,14 +123,7 @@ fn encoding_failure_rolls_back_a_batch_and_shared_cow_tails() -> Result<()> {
     let mut ticket = backend.submit(
         &program,
         &step(&program, &[second], 1)?,
-        vec![ExecutionTask {
-            plain_greedy: false,
-            request: RequestId::new(2)?,
-            state: second,
-            tokens: vec![1, 2, 3, 8].into(),
-
-            sampling: None,
-        }],
+        vec![plain_task(RequestId::new(2)?, second, vec![1, 2, 3, 8])],
     )?;
     assert_eq!(backend.inflight_pins.len(), 1);
     assert_eq!(backend.kv.references(backend.inflight_pins[0])?, 2);

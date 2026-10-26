@@ -37,8 +37,11 @@ serde_json.workspace = true
 axum.workspace = true
 tokio.workspace = true
 futures-util.workspace = true
+base64.workspace = true
+image.workspace = true
 
 [dev-dependencies]
+crc32fast.workspace = true
 infer-workloads.workspace = true
 tower.workspace = true
 infer-model-recipes.workspace = true

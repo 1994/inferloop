@@ -2,7 +2,7 @@ use crate::Engine;
 use crate::stages::prefill::retained_readout;
 use infer_core::{Error, ErrorCode, Result};
 use infer_ir::{
-    AdmissionDecision, AdmissionInput, AdmissionReason, CanonicalRequest, ExecutionRole,
+    AdmissionDecision, AdmissionInput, AdmissionReason, CanonicalRequest, ExecutionRole, MediaPlan,
     RequestInput, Workload, WorkloadPlan,
 };
 use infer_spi::{AdmissionPolicy, BackendProvider, SchedulingPolicy};
@@ -32,10 +32,21 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         request: &CanonicalRequest,
         plan: &WorkloadPlan,
     ) -> Result<AdmissionDecision> {
-        let bytes = self.backend.state_reservation_bytes_for(
-            plan.reserved_tokens,
-            retained_readout(&request.workload),
-        )?;
+        let media = match &request.input {
+            RequestInput::Sequence { tokens, media } if !media.is_empty() => Some(
+                MediaPlan::from_sequence(tokens, media)?
+                    .ok_or_else(|| Error::invariant("media request has no prepared media plan"))?,
+            ),
+            _ => None,
+        };
+        let readout = retained_readout(&request.workload);
+        let bytes = if let Some(media) = &media {
+            self.backend
+                .state_reservation_bytes_for_media(plan.reserved_tokens, readout, media)?
+        } else {
+            self.backend
+                .state_reservation_bytes_for(plan.reserved_tokens, readout)?
+        };
         self.check_admission_with_bytes(request, plan, bytes)
     }
     pub(crate) fn check_admission_with_bytes(
@@ -92,8 +103,15 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             .min_by_key(|(t, c)| i128::from(*t) - i128::from(self.now_us) - i128::from(*c));
         let (active, tokens, pages) = self.tenant_usage(&request.qos.tenant);
         let resources_ready = match &request.input {
-            RequestInput::Sequence { media, .. } => media.is_empty(),
-            RequestInput::Pairs { .. } => true,
+            RequestInput::Sequence { media, .. } if !media.is_empty() => {
+                if !self.backend.supports_multimodal() {
+                    return Err(Error::unsupported(
+                        "backend has no bound multimodal encoder for media input",
+                    ));
+                }
+                true
+            }
+            RequestInput::Sequence { .. } | RequestInput::Pairs { .. } => true,
         };
         let decision = self.admission_policy.check(&AdmissionInput {
             tenant: &request.qos.tenant,

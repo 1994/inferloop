@@ -62,6 +62,12 @@ libc = "0.2"
 libloading = "0.8"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
+base64 = "0.22"
+crc32fast = "1"
+# png 0.18 (image 0.25's codec release) still requires miniz_oxide ^0.8 while flate2 1.1.10
+# moved to ^0.9; the lockfile holds flate2 at 1.1.9 so both resolve to one miniz_oxide 0.8.9.
+# Revisit when png's miniz_oxide range converges with flate2's.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 rtrb = "0.4"

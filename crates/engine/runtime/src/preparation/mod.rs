@@ -8,6 +8,10 @@ use std::sync::Arc;
 
 pub use memory::request_bytes;
 
+#[cfg(test)]
+#[path = "../../tests/unit/media_plan.rs"]
+mod media_plan_tests;
+
 /// Fixed retained overhead beyond token, page and projection storage.
 const RETAINED_OVERHEAD_BYTES: usize = 4096;
 
@@ -17,6 +21,7 @@ pub struct PreparedRequest {
     pub(crate) plan: WorkloadPlan,
     pub(crate) tenant: Arc<str>,
     pub(crate) generated: infer_ir::TokenBuffer,
+    pub(crate) media: Option<Arc<infer_ir::MediaPlan>>,
     pub(crate) model: Arc<ModelIr>,
     pub(crate) provider: String,
 }
@@ -90,10 +95,17 @@ impl RequestPreparer {
             &self.limits,
         )?;
         let generated = generation_storage(&request)?;
+        let media = match &request.input {
+            RequestInput::Sequence { tokens, media } => {
+                infer_ir::MediaPlan::from_sequence(tokens, media)?.map(Arc::new)
+            }
+            RequestInput::Pairs { .. } => None,
+        };
         let tenant = Arc::from(request.qos.tenant.as_str());
         Ok(PreparedRequest {
             constraint: None,
             generated,
+            media,
             tenant,
             request: request.into(),
             plan,

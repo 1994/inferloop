@@ -29,12 +29,14 @@ type PreparedParts = (
     infer_ir::TokenBuffer,
     Arc<str>,
     Option<infer_spi::ConstraintHandle>,
+    Option<Arc<infer_ir::MediaPlan>>,
 );
 
 struct PreparedAdmission {
     constraint: Option<infer_spi::ConstraintHandle>,
     request: Arc<CanonicalRequest>,
     tenant: Arc<str>,
+    media: Option<Arc<infer_ir::MediaPlan>>,
     plan: WorkloadPlan,
     admission: AdmissionDecision,
     context: infer_ir::TokenBuffer,
@@ -59,6 +61,7 @@ impl PreparedAdmission {
             constraint: self.constraint,
             request: self.request,
             tenant: self.tenant,
+            media: self.media,
             host_lease: Some(credit),
             byte_lease: Some(byte_credit),
             plan: self.plan,
@@ -138,6 +141,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 prepared.generated,
                 prepared.tenant,
                 prepared.constraint,
+                prepared.media,
             )),
         );
         self.record_admission_result(id, parent, &result);
@@ -157,11 +161,17 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             return Err(Error::invalid("foreign request preparation context"));
         }
         self.validate_request_admission(&prepared.request)?;
-        self.backend
-            .begin_resource(infer_spi::ResourceCommand::ReservationBytes {
-                capacity: prepared.plan.reserved_tokens,
-                readout: retained_readout(&prepared.request.workload),
-            })
+        let capacity = prepared.plan.reserved_tokens;
+        let readout = retained_readout(&prepared.request.workload);
+        let command = prepared.media.clone().map_or_else(
+            || infer_spi::ResourceCommand::ReservationBytes { capacity, readout },
+            |media| infer_spi::ResourceCommand::ReservationBytesMedia {
+                capacity,
+                readout,
+                media,
+            },
+        );
+        self.backend.begin_resource(command)
     }
     /// Admit with the already acknowledged sizing quote, while rechecking live quotas/resources.
     /// # Errors
@@ -186,6 +196,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 prepared.generated,
                 prepared.tenant,
                 prepared.constraint,
+                prepared.media,
             )),
             ReservationQuote::Acknowledged(bytes),
         );
@@ -323,7 +334,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
     ) -> Result<PreparedAdmission> {
         self.apply_cost_feedback()?;
         self.validate_request_admission(&request)?;
-        let (plan, generated, tenant, constraint) = if let Some(plan) = plan {
+        let (plan, generated, tenant, constraint, media) = if let Some(plan) = plan {
             plan
         } else {
             request.validate()?;
@@ -335,11 +346,18 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 .workloads
                 .plan(&request, &self.model, self.program.id)?;
             self.validate_workload_plan(&request, &plan)?;
+            let media = match &request.input {
+                RequestInput::Sequence { tokens, media } => {
+                    infer_ir::MediaPlan::from_sequence(tokens, media)?.map(Arc::new)
+                }
+                RequestInput::Pairs { .. } => None,
+            };
             (
                 plan,
                 generation_storage(&request)?,
                 Arc::from(request.qos.tenant.as_str()),
                 None,
+                media,
             )
         };
         let admission = match quote {
@@ -347,10 +365,14 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 self.check_admission_with_bytes(&request, &plan, bytes)?
             }
             ReservationQuote::Query => {
-                self.backend.prepare_state_reservation(
-                    plan.reserved_tokens,
-                    retained_readout(&request.workload),
-                )?;
+                let readout = retained_readout(&request.workload);
+                if media.is_some() {
+                    self.backend
+                        .prepare_state_reservation_for_media(plan.reserved_tokens, readout)?;
+                } else {
+                    self.backend
+                        .prepare_state_reservation(plan.reserved_tokens, readout)?;
+                }
                 self.check_admission(&request, &plan)?
             }
         };
@@ -363,6 +385,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             constraint,
             request,
             tenant,
+            media,
             plan,
             admission,
             context,
@@ -419,40 +442,52 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             StateKind::AttentionKv,
             prepared.plan.reserved_tokens,
         )?;
-        let pending = self
-            .backend
-            .begin_resource(infer_spi::ResourceCommand::Reserve {
+        let command = if prepared.media.is_some() {
+            infer_spi::ResourceCommand::ReserveMedia {
                 state,
                 capacity: prepared.plan.reserved_tokens,
                 readout: retained_readout(&prepared.request.workload),
-            })
-            .and_then(|mut ticket| match ticket.poll() {
-                Ok(Some(infer_spi::ResourceReply::Reserved)) => Ok(None),
-                Ok(Some(_)) => Err(Error::invariant(
-                    "reservation acknowledgement type mismatch",
-                )),
-                // The device owner can acknowledge before the engine's first poll.
-                // A busy resident budget is backpressure, not a failed submission:
-                // keep the host state and retry only after ownership progresses.
-                Err(error)
-                    if error.code == ErrorCode::Capacity
-                        && self.backend.tracks_reservation_intent() =>
-                {
-                    Ok(Some(PendingResource {
-                        ticket: None,
+                media: prepared.media.clone().ok_or_else(|| {
+                    Error::invariant("media reserve without a prepared media plan")
+                })?,
+            }
+        } else {
+            infer_spi::ResourceCommand::Reserve {
+                state,
+                capacity: prepared.plan.reserved_tokens,
+                readout: retained_readout(&prepared.request.workload),
+            }
+        };
+        let pending =
+            self.backend
+                .begin_resource(command)
+                .and_then(|mut ticket| match ticket.poll() {
+                    Ok(Some(infer_spi::ResourceReply::Reserved)) => Ok(None),
+                    Ok(Some(_)) => Err(Error::invariant(
+                        "reservation acknowledgement type mismatch",
+                    )),
+                    // The device owner can acknowledge before the engine's first poll.
+                    // A busy resident budget is backpressure, not a failed submission:
+                    // keep the host state and retry only after ownership progresses.
+                    Err(error)
+                        if error.code == ErrorCode::Capacity
+                            && self.backend.tracks_reservation_intent() =>
+                    {
+                        Ok(Some(PendingResource {
+                            ticket: None,
+                            phase: ResourcePhase::Reserve,
+                            retry_epoch: Some(self.resource_epoch),
+                            started: self.now_us,
+                        }))
+                    }
+                    Err(error) => Err(error),
+                    Ok(None) => Ok(Some(PendingResource {
+                        ticket: Some(ticket),
                         phase: ResourcePhase::Reserve,
                         retry_epoch: Some(self.resource_epoch),
                         started: self.now_us,
-                    }))
-                }
-                Err(error) => Err(error),
-                Ok(None) => Ok(Some(PendingResource {
-                    ticket: Some(ticket),
-                    phase: ResourcePhase::Reserve,
-                    retry_epoch: Some(self.resource_epoch),
-                    started: self.now_us,
-                })),
-            });
+                    })),
+                });
         let pending = match pending {
             Ok(pending) => pending,
             Err(error) => {
