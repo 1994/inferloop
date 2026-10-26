@@ -11,6 +11,7 @@ Run:
 
     python3 tools/vision/serve_media_fixtures.py --out /tmp/issue59-fixtures
 """
+
 from __future__ import annotations
 
 import argparse
@@ -77,10 +78,21 @@ def run(arguments: list[str], stdin: bytes | None = None) -> bytes:
 def encode_png(raw: bytes, path: pathlib.Path) -> None:
     run(
         [
-            "ffmpeg", "-v", "error", "-y",
-            "-f", "rawvideo", "-pix_fmt", "rgb24",
-            "-s", f"{WIDTH}x{HEIGHT}", "-i", "pipe:0",
-            "-frames:v", "1", str(path),
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-s",
+            f"{WIDTH}x{HEIGHT}",
+            "-i",
+            "pipe:0",
+            "-frames:v",
+            "1",
+            str(path),
         ],
         raw,
     )
@@ -90,11 +102,28 @@ def encode_video(frames: list[bytes], path: pathlib.Path) -> None:
     raw = b"".join(frames)
     run(
         [
-            "ffmpeg", "-v", "error", "-y",
-            "-f", "rawvideo", "-pix_fmt", "rgb24",
-            "-s", f"{WIDTH}x{HEIGHT}", "-r", str(FPS), "-i", "pipe:0",
-            "-c:v", "ffv1", "-level", "3", "-pix_fmt", "gbrp",
-            "-an", str(path),
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-s",
+            f"{WIDTH}x{HEIGHT}",
+            "-r",
+            str(FPS),
+            "-i",
+            "pipe:0",
+            "-c:v",
+            "ffv1",
+            "-level",
+            "3",
+            "-pix_fmt",
+            "gbrp",
+            "-an",
+            str(path),
         ],
         raw,
     )
@@ -103,9 +132,24 @@ def encode_video(frames: list[bytes], path: pathlib.Path) -> None:
 def decode_frames(path: pathlib.Path, count: int) -> list[bytes]:
     raw = run(
         [
-            "ffmpeg", "-v", "error", "-nostdin",
-            "-i", str(path), "-map", "0:v:0", "-an", "-fps_mode", "passthrough",
-            "-frames:v", str(count), "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+            "ffmpeg",
+            "-v",
+            "error",
+            "-nostdin",
+            "-i",
+            str(path),
+            "-map",
+            "0:v:0",
+            "-an",
+            "-fps_mode",
+            "passthrough",
+            "-frames:v",
+            str(count),
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "pipe:1",
         ]
     )
     frame_bytes = WIDTH * HEIGHT * 3
@@ -117,9 +161,16 @@ def decode_frames(path: pathlib.Path, count: int) -> list[bytes]:
 def probe(path: pathlib.Path) -> dict:
     output = run(
         [
-            "ffprobe", "-v", "error", "-select_streams", "v:0",
-            "-show_entries", "stream=width,height,avg_frame_rate,nb_frames",
-            "-of", "json", str(path),
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height,avg_frame_rate,nb_frames",
+            "-of",
+            "json",
+            str(path),
         ]
     )
     stream = json.loads(output)["streams"][0]
@@ -145,8 +196,19 @@ def main() -> int:
         encode_png(raw, path)
         decoded = run(
             [
-                "ffmpeg", "-v", "error", "-nostdin", "-i", str(path),
-                "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+                "ffmpeg",
+                "-v",
+                "error",
+                "-nostdin",
+                "-i",
+                str(path),
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "pipe:1",
             ]
         )
         if decoded != raw:
@@ -183,10 +245,15 @@ def main() -> int:
 
     manifest = {
         "schema": "issue59-serving-media-fixtures-v1",
-        "source": "deterministic raw RGB matching cuda-multimodal-generate and cuda-multimodal-media",
+        "source": (
+            "deterministic raw RGB matching cuda-multimodal-generate and cuda-multimodal-media"
+        ),
         "images": images,
         "video": video_entry,
-        "note": "Lossless FFV1 is used instead of a lossy MP4; all decoded frames are byte-identical to the source frames.",
+        "note": (
+            "Lossless FFV1 is used instead of a lossy MP4; "
+            "all decoded frames are byte-identical to the source frames."
+        ),
     }
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(json.dumps({"out": str(root), "manifest": str(root / "manifest.json")}, indent=2))
