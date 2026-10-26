@@ -1,7 +1,7 @@
 use super::private_funding;
 use crate::constants::CB_DECODE_SLOTS;
 use crate::device::CudaDevice;
-use crate::executor::{bound_concurrency, knee_concurrency, memory_concurrency, recommendation};
+use crate::executor::{bound_concurrency, funded_width, knee_concurrency, recommendation};
 use std::env;
 
 #[test]
@@ -95,16 +95,36 @@ fn automatic_concurrency_is_the_smallest_real_bound() {
     assert_eq!(bound_concurrency(64, Some(7), 64), 7);
     assert_eq!(bound_concurrency(64, None, 5), 5);
     assert_eq!(bound_concurrency(64, None, 64), CB_DECODE_SLOTS);
-    assert_eq!(bound_concurrency(0, None, 0), 1);
+    assert_eq!(bound_concurrency(0, None, 0), 0);
 }
 
 #[test]
-fn memory_concurrency_charges_fixed_owners_once_and_keeps_a_legal_floor() -> infer_core::Result<()>
-{
-    assert_eq!(memory_concurrency(100, 20, 10)?, 9);
-    assert_eq!(memory_concurrency(20, 20, 10)?, 1);
-    assert_eq!(memory_concurrency(0, 50, 10)?, 1);
-    assert!(memory_concurrency(100, 0, 0).is_err());
+fn funded_width_never_pretends_an_unfunded_sequence() -> infer_core::Result<()> {
+    let fixed = 20_u64;
+    let per_sequence = 10_u64;
+    let budget = 100_u64;
+    let width = funded_width(16, |width| {
+        let bytes = fixed + (width as u64) * per_sequence;
+        Ok((bytes <= budget).then_some(bytes))
+    })?;
+    assert_eq!(width, 8);
+    assert!(fixed + (width as u64) * per_sequence <= budget);
+    assert!(fixed + ((width + 1) as u64) * per_sequence > budget);
+    assert_eq!(funded_width(16, |_| Ok(None))?, 0);
+    // Nonlinear retained tables: a padding step at width 5 changes the funded maximum.
+    assert_eq!(
+        funded_width(16, |width| {
+            let bytes = fixed + (width as u64) * per_sequence + u64::from(width >= 5) * 40;
+            Ok((bytes <= budget).then_some(bytes))
+        })?,
+        4
+    );
+    // Width 15/16 must be checked individually, not extrapolated from 1/2.
+    assert_eq!(funded_width(16, |width| Ok((width < 15).then_some(1)))?, 14);
+    assert_eq!(
+        funded_width(16, |width| Ok((width <= 16).then_some(1)))?,
+        16
+    );
     Ok(())
 }
 

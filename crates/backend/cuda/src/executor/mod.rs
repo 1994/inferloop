@@ -14,8 +14,9 @@ mod prefix_state;
 mod profiling;
 mod provider;
 use crate::constants::CB_DECODE_SLOTS;
-use crate::constants::KV_BLOCK_TOKENS;
+use crate::constants::CB_SLOT_TOKENS;
 use crate::registry::CudaKernels;
+use execution::paged_tokens;
 pub use pool::PoolInspection;
 mod state;
 mod validation;
@@ -47,28 +48,25 @@ pub(super) fn bound_concurrency(
     };
     // The current pooled serving graph validates a batch width of 2..=CB_DECODE_SLOTS.
     // Do not recommend slots the backend cannot actually execute.
-    let value = if value < CB_DECODE_SLOTS {
+    if value < CB_DECODE_SLOTS {
         value
     } else {
         CB_DECODE_SLOTS
-    };
-    if value == 0 { 1 } else { value }
+    }
 }
-/// Raw memory concurrency from the funded fixed owners and the marginal per-sequence
-/// state-plus-minimum-KV price. `fixed` is charged once; no private verification graph is
-/// added to a pooled sequence.
-pub(super) fn memory_concurrency(budget: u64, fixed: u64, per_sequence: u64) -> Result<usize> {
-    if per_sequence == 0 {
-        return Err(Error::invalid("per-sequence state price is zero"));
+/// Highest width whose exact funded quote fits. The closure is the actual pooled
+/// `funded_pooled_serving` ledger, so nonlinear table/prompt/control padding is validated at
+/// every legal width rather than extrapolated from widths 1 and 2.
+pub(super) fn funded_width(
+    maximum: usize,
+    mut quote: impl FnMut(usize) -> Result<Option<u64>>,
+) -> Result<usize> {
+    for width in (1..=maximum).rev() {
+        if quote(width)?.is_some() {
+            return Ok(width);
+        }
     }
-    if budget <= fixed {
-        return Ok(1);
-    }
-    let extra = (budget - fixed) / per_sequence;
-    let value = extra
-        .checked_add(1)
-        .ok_or_else(|| Error::invalid("memory concurrency overflow"))?;
-    usize::try_from(value).map_err(|_| Error::invalid("memory concurrency exceeds usize"))
+    Ok(0)
 }
 
 /// Formula `N_knee = (compute / bandwidth) * (weight bytes / parameters) / 2 / tokens`
@@ -108,15 +106,24 @@ pub(super) fn recommendation(
     maximum_states: usize,
 ) -> Result<infer_spi::SchedulingRecommendation> {
     let prompt_width = loaded.pooled_prompt_width().max(1);
-    let one = loaded.pooled_serving_quote(1, KV_BLOCK_TOKENS, KV_BLOCK_TOKENS, prompt_width)?;
-    let two = loaded.pooled_serving_quote(2, KV_BLOCK_TOKENS, 2 * KV_BLOCK_TOKENS, prompt_width)?;
-    let per_sequence = two
-        .total_bytes
-        .checked_sub(one.total_bytes)
-        .filter(|bytes| *bytes > 0)
-        .ok_or_else(|| Error::invalid("pooled per-sequence price is non-positive"))?;
-    let fixed = one.total_bytes.saturating_sub(per_sequence);
-    let memory_bound = memory_concurrency(budget, fixed, per_sequence)?;
+    let capacity = CB_SLOT_TOKENS.min(loaded.model().max_sequence);
+    let envelope = budget
+        .checked_add(loaded.shared_scratch_bytes()?)
+        .ok_or_else(|| Error::invalid("pooled recommendation envelope overflow"))?;
+    let legal_cap = CB_DECODE_SLOTS.min(infer_gpu_api::MAX_SUBMISSION_BATCH);
+    let maximum = maximum_states.min(legal_cap);
+    let memory_bound = funded_width(maximum, |width| {
+        loaded
+            .funded_pooled_serving(
+                width,
+                capacity,
+                paged_tokens(width, capacity),
+                prompt_width,
+                envelope,
+            )
+            .map(|quote| quote.map(|quote| quote.total_bytes))
+    })?;
+    let minimum_kv_bytes = loaded.kv_block_bytes()?;
     let profile = loaded.device().profile()?;
     let metrics = loaded.weight_metrics()?;
     let peak = profile.peak_fp32_flops();
@@ -134,13 +141,14 @@ pub(super) fn recommendation(
         })
         .transpose()?
         .flatten();
-    let legal_cap = CB_DECODE_SLOTS.min(infer_gpu_api::MAX_SUBMISSION_BATCH);
     let max_sequences = bound_concurrency(memory_bound, knee_bound, maximum_states);
     tracing::info!(
         target: "infer::load",
         state_budget_bytes = budget,
-        fixed_shared_bytes = fixed,
-        per_sequence_bytes = per_sequence,
+        pool_capacity = capacity,
+        pool_prompt_width = prompt_width,
+        pooled_envelope_bytes = envelope,
+        minimum_kv_bytes,
         memory_bound,
         peak_compute_flops = ?peak,
         dram_bytes_per_second = profile.memory_bandwidth_bytes_per_second(),
