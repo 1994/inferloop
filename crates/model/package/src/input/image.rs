@@ -89,8 +89,9 @@ impl Normalization {
     /// Other configured factors keep their unrounded reciprocal (0.3 -> 3.333..., 0.7 -> 1.428...).
     fn inverse(self) -> f32 {
         const CANONICAL_RESCALE: f32 = 1.0 / 255.0;
+        const CANONICAL_INVERSE: f32 = 255.0;
         if self.rescale == CANONICAL_RESCALE {
-            255.0
+            CANONICAL_INVERSE
         } else {
             1.0 / self.rescale
         }
