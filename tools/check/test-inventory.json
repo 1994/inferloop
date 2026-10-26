@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 351
+      "tests": 354
     },
     "frontdoor": {
       "benches": 0,
@@ -227,6 +227,7 @@
     "requires CUDA; exact ordered recurrence at captured prompt widths": 1,
     "requires CUDA; full F64/cache numerical gate and hardware AB/BA tuning": 1,
     "requires CUDA; only after complete numerical gate; diagnostic costs, no service claim": 1,
+    "requires CUDA; role-selected N16 numeric check, run inside safe-run": 1,
     "requires CUDA; run inside safe-run": 1,
     "requires CUDA; run inside safe-run with --test-threads 1": 2,
     "requires CUDA; run release serially inside safe-run": 1,
@@ -1261,11 +1262,11 @@
     }
   ],
   "totals": {
-    "all": 898,
+    "all": 901,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 898
+    "tests": 901
   }
 }
