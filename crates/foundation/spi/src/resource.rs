@@ -32,6 +32,7 @@ pub enum ResourceCommand {
     ReservationBytesMedia {
         capacity: usize,
         readout: OutputReadout,
+        media: Arc<infer_ir::MediaPlan>,
     },
     Reserve {
         state: StateId,
@@ -43,6 +44,7 @@ pub enum ResourceCommand {
         state: StateId,
         capacity: usize,
         readout: OutputReadout,
+        media: Arc<infer_ir::MediaPlan>,
     },
     Reset {
         state: StateId,
@@ -192,10 +194,14 @@ pub fn execute_resource<B: BackendProvider + ?Sized>(
                 .state_reservation_bytes_for(capacity, readout)
                 .map(ResourceReply::ReservationBytes)
         }
-        ResourceCommand::ReservationBytesMedia { capacity, readout } => {
+        ResourceCommand::ReservationBytesMedia {
+            capacity,
+            readout,
+            media,
+        } => {
             backend.prepare_state_reservation_for_media(capacity, readout)?;
             backend
-                .state_reservation_bytes_for_media(capacity, readout)
+                .state_reservation_bytes_for_media(capacity, readout, &media)
                 .map(ResourceReply::ReservationBytes)
         }
         ResourceCommand::Reserve {
@@ -209,8 +215,9 @@ pub fn execute_resource<B: BackendProvider + ?Sized>(
             state,
             capacity,
             readout,
+            media,
         } => backend
-            .reserve_state_for_media(state, capacity, readout)
+            .reserve_state_for_media(state, capacity, readout, &media)
             .map(|()| ResourceReply::Reserved),
         ResourceCommand::Reset { state } => {
             backend.reset_state(state).map(|()| ResourceReply::Reset)

@@ -305,8 +305,15 @@ impl BackendProvider for SelectedBackend {
         &self,
         capacity: usize,
         readout: infer_ir::OutputReadout,
+        media: &infer_ir::MediaPlan,
     ) -> Result<Option<u64>> {
-        forward!(self, state_reservation_bytes_for_media, capacity, readout)
+        forward!(
+            self,
+            state_reservation_bytes_for_media,
+            capacity,
+            readout,
+            media
+        )
     }
     fn state_capacity_bytes(&self) -> Result<Option<u64>> {
         forward!(self, state_capacity_bytes)
@@ -384,8 +391,16 @@ impl BackendProvider for SelectedBackend {
         state: StateId,
         capacity: usize,
         readout: infer_ir::OutputReadout,
+        media: &infer_ir::MediaPlan,
     ) -> Result<()> {
-        forward!(self, reserve_state_for_media, state, capacity, readout)
+        forward!(
+            self,
+            reserve_state_for_media,
+            state,
+            capacity,
+            readout,
+            media
+        )
     }
     fn reset_state(&mut self, id: StateId) -> Result<()> {
         forward!(self, reset_state, id)

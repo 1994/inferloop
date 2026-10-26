@@ -163,11 +163,14 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         self.validate_request_admission(&prepared.request)?;
         let capacity = prepared.plan.reserved_tokens;
         let readout = retained_readout(&prepared.request.workload);
-        let command = if prepared.media.is_some() {
-            infer_spi::ResourceCommand::ReservationBytesMedia { capacity, readout }
-        } else {
-            infer_spi::ResourceCommand::ReservationBytes { capacity, readout }
-        };
+        let command = prepared.media.clone().map_or_else(
+            || infer_spi::ResourceCommand::ReservationBytes { capacity, readout },
+            |media| infer_spi::ResourceCommand::ReservationBytesMedia {
+                capacity,
+                readout,
+                media,
+            },
+        );
         self.backend.begin_resource(command)
     }
     /// Admit with the already acknowledged sizing quote, while rechecking live quotas/resources.
@@ -444,6 +447,9 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 state,
                 capacity: prepared.plan.reserved_tokens,
                 readout: retained_readout(&prepared.request.workload),
+                media: prepared.media.clone().ok_or_else(|| {
+                    Error::invariant("media reserve without a prepared media plan")
+                })?,
             }
         } else {
             infer_spi::ResourceCommand::Reserve {

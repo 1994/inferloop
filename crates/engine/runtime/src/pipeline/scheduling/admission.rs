@@ -2,7 +2,7 @@ use crate::Engine;
 use crate::stages::prefill::retained_readout;
 use infer_core::{Error, ErrorCode, Result};
 use infer_ir::{
-    AdmissionDecision, AdmissionInput, AdmissionReason, CanonicalRequest, ExecutionRole,
+    AdmissionDecision, AdmissionInput, AdmissionReason, CanonicalRequest, ExecutionRole, MediaPlan,
     RequestInput, Workload, WorkloadPlan,
 };
 use infer_spi::{AdmissionPolicy, BackendProvider, SchedulingPolicy};
@@ -32,12 +32,17 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         request: &CanonicalRequest,
         plan: &WorkloadPlan,
     ) -> Result<AdmissionDecision> {
-        let media =
-            matches!(&request.input, RequestInput::Sequence { media, .. } if !media.is_empty());
+        let media = match &request.input {
+            RequestInput::Sequence { tokens, media } if !media.is_empty() => Some(
+                MediaPlan::from_sequence(tokens, media)?
+                    .ok_or_else(|| Error::invariant("media request has no prepared media plan"))?,
+            ),
+            _ => None,
+        };
         let readout = retained_readout(&request.workload);
-        let bytes = if media {
+        let bytes = if let Some(media) = &media {
             self.backend
-                .state_reservation_bytes_for_media(plan.reserved_tokens, readout)?
+                .state_reservation_bytes_for_media(plan.reserved_tokens, readout, media)?
         } else {
             self.backend
                 .state_reservation_bytes_for(plan.reserved_tokens, readout)?

@@ -202,6 +202,7 @@ pub trait BackendProvider {
         &self,
         capacity: usize,
         readout: infer_ir::OutputReadout,
+        _media: &infer_ir::MediaPlan,
     ) -> Result<Option<u64>> {
         self.state_reservation_bytes_for(capacity, readout)
     }
@@ -213,6 +214,7 @@ pub trait BackendProvider {
         state: StateId,
         capacity: usize,
         readout: infer_ir::OutputReadout,
+        _media: &infer_ir::MediaPlan,
     ) -> Result<()> {
         self.reserve_state_for(state, capacity, readout)
     }

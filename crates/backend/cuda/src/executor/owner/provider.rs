@@ -82,9 +82,10 @@ impl BackendProvider for CudaBackend {
         &self,
         capacity: usize,
         readout: OutputReadout,
+        media: &infer_ir::MediaPlan,
     ) -> Result<Option<u64>> {
         self.idle()?
-            .state_reservation_bytes_for_media(capacity, readout)
+            .state_reservation_bytes_for_media(capacity, readout, media)
     }
     fn state_capacity_bytes(&self) -> Result<Option<u64>> {
         Ok(self.view.capacity)
@@ -124,9 +125,10 @@ impl BackendProvider for CudaBackend {
         state: StateId,
         capacity: usize,
         readout: OutputReadout,
+        media: &infer_ir::MediaPlan,
     ) -> Result<()> {
         self.control(|executor| {
-            executor.reserve_media(state, capacity, readout)?;
+            executor.reserve_media(state, capacity, readout, media)?;
             if let Err(error) = executor.prepare_execution() {
                 executor.release(state)?;
                 return Err(error);

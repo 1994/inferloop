@@ -179,6 +179,9 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                             state,
                             capacity,
                             readout,
+                            media: record.media.clone().ok_or_else(|| {
+                                Error::invariant("media reserve without a prepared media plan")
+                            })?,
                         }
                     } else {
                         ResourceCommand::Reserve {

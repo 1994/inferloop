@@ -35,12 +35,17 @@ impl CudaExecutor {
         &self,
         capacity: usize,
         readout: OutputReadout,
+        media: &infer_ir::MediaPlan,
     ) -> Result<Option<u64>> {
         // Media prefill bypasses slot/home programs and additionally retains encoded rows plus
         // the bounded encoder transient peak; price the same allowance reserve_media charges.
         let private = true;
+        let encoded = self
+            .loaded
+            .vision()
+            .map_or(Ok(0), |vision| vision.footprint(media))?;
         self.reservation_budget(capacity, readout, private)
-            .map(|bytes| bytes.saturating_add(super::state::MEDIA_RESERVATION_BYTES))
+            .map(|bytes| bytes.saturating_add(encoded))
             .map(Some)
     }
     pub(super) fn state_capacity_bytes(&self) -> Result<Option<u64>> {

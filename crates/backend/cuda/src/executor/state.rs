@@ -4,11 +4,6 @@ use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::OutputReadout;
 use std::collections::BTreeSet;
 
-/// Conservative device footprint for media prefill: retained encoded rows plus bounded decoder
-/// uploads and the encoder's transient peak for one item. The input layer caps a media item at
-/// 24 MiB decoded/encoded payload; 256 MiB covers one active item plus the encoded row tensor.
-pub(super) const MEDIA_RESERVATION_BYTES: u64 = 256 * 1024 * 1024;
-
 impl CudaExecutor {
     pub(super) fn available(&self) -> Result<u64> {
         self.state_funding().map(|(free, _)| free)
@@ -189,7 +184,7 @@ impl CudaExecutor {
         readout: OutputReadout,
         allow_speculation: bool,
     ) -> Result<()> {
-        self.reserve_inner(id, capacity, readout, allow_speculation, true)
+        self.reserve_inner(id, capacity, readout, allow_speculation, true, None)
     }
 
     /// Media prefill owns external per-lane embeddings; a slot/home program is not a valid
@@ -199,8 +194,9 @@ impl CudaExecutor {
         id: StateId,
         capacity: usize,
         readout: OutputReadout,
+        media: &infer_ir::MediaPlan,
     ) -> Result<()> {
-        self.reserve_inner(id, capacity, readout, false, false)
+        self.reserve_inner(id, capacity, readout, false, false, Some(media))
     }
 
     fn reserve_inner(
@@ -210,6 +206,7 @@ impl CudaExecutor {
         readout: OutputReadout,
         allow_speculation: bool,
         allow_home: bool,
+        media: Option<&infer_ir::MediaPlan>,
     ) -> Result<()> {
         self.idle()?;
         if self.states.contains_key(&id) {
@@ -228,13 +225,15 @@ impl CudaExecutor {
         } else {
             true
         };
+        let media_bytes = media.map_or(Ok(0), |plan| {
+            self.loaded
+                .vision()
+                .map_or(Ok(0), |vision| vision.footprint(plan))
+        })?;
         let budget = self
             .reservation_budget(capacity, readout, private_verification)?
-            .saturating_add(if allow_home {
-                0
-            } else {
-                MEDIA_RESERVATION_BYTES
-            });
+            .checked_add(media_bytes)
+            .ok_or_else(|| Error::invalid("media reservation footprint overflow"))?;
         if self.states.len() >= self.maximum_states
             || self
                 .active_budget()?

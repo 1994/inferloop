@@ -9,6 +9,7 @@ use cutile::cutile_compiler::compile_api::KernelCompiler;
 use infer_models::vision::{merged_width, row_tile};
 use infer_spi::{HiddenActivation, ModalityEncoder};
 use std::error::Error;
+use std::sync::Arc;
 
 fn encoder() -> ModalityEncoder {
     ModalityEncoder {
@@ -232,4 +233,61 @@ fn compact_projection_rope_attention_and_merge_compile_without_a_device()
     compile_elementwise(hidden, mlp, merged)?;
     compile_layernorm(hidden, row_tile)?;
     Ok(())
+}
+
+fn media_plan(grid: (usize, usize, usize), count: usize) -> infer_ir::MediaPlan {
+    let item = infer_ir::MediaItem {
+        modality: infer_ir::Modality::Image,
+        pixels: Arc::from(Vec::<f32>::new()),
+        grid,
+        span: 0..1,
+    };
+    infer_ir::MediaPlan {
+        modality: infer_ir::Modality::Image,
+        prompt: vec![1].into(),
+        items: (0..count).map(|_| item.clone()).collect(),
+    }
+}
+
+#[test]
+fn media_footprint_exceeds_the_old_256_mib_constant_for_a_16_megapixel_image()
+-> Result<(), Box<dyn Error>> {
+    let encoder = encoder();
+    // 4096x4096 RGB is 16,777,216 pixels; temporal taps make 131,072 patches and a 384 MiB
+    // normalized patch payload before any encoder transient allocation.
+    let plan = media_plan((2, 256, 256), 1);
+    let footprint = super::footprint::footprint(&encoder, &plan)?;
+    let patch_payload = 3_u64 * 2 * 16_777_216 * 4;
+    assert_eq!(patch_payload, 384 * 1024 * 1024);
+    assert!(
+        footprint > 256 * 1024 * 1024,
+        "derived footprint {footprint} must exceed the old constant"
+    );
+    assert!(
+        footprint > patch_payload,
+        "encoder peak must include more than the normalized payload"
+    );
+    Ok(())
+}
+
+#[test]
+fn media_footprint_is_a_peak_not_a_sum_and_retains_all_encoded_rows() -> Result<(), Box<dyn Error>>
+{
+    let encoder = encoder();
+    let one = super::footprint::footprint(&encoder, &media_plan((1, 14, 22), 1))?;
+    let two = super::footprint::footprint(&encoder, &media_plan((1, 14, 22), 2))?;
+    // Two items encode sequentially; retained rows grow, but the single encoder peak is not paid
+    // twice. The two-item quote must be at least one item's encoded-row retention.
+    assert!(two >= one);
+    let retained_two = 2_u64 * 77 * 2048 * 4;
+    assert!(two >= retained_two);
+    Ok(())
+}
+
+#[test]
+fn media_footprint_rejects_overflowing_grids() {
+    let encoder = encoder();
+    let error =
+        super::footprint::footprint(&encoder, &media_plan((usize::MAX, 2, 2), 1)).unwrap_err();
+    assert_eq!(error.code, infer_core::ErrorCode::InvalidInput);
 }

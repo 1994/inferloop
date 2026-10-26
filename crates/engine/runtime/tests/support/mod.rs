@@ -293,6 +293,7 @@ impl BackendProvider for ProtocolBackend {
         state: StateId,
         capacity: usize,
         readout: OutputReadout,
+        _media: &infer_ir::MediaPlan,
     ) -> Result<()> {
         self.media_reservations.fetch_add(1, Ordering::Relaxed);
         self.reserve_state_for(state, capacity, readout)
@@ -312,6 +313,7 @@ impl BackendProvider for ProtocolBackend {
         &self,
         capacity: usize,
         readout: OutputReadout,
+        _media: &infer_ir::MediaPlan,
     ) -> Result<Option<u64>> {
         if let Some((_, media)) = self.quote_prices {
             self.media_quotes.fetch_add(1, Ordering::Relaxed);

@@ -20,6 +20,7 @@ use crate::resident::fp8_cache::Fp8Caches;
 use crate::resident::slot_batch::SlotPool;
 use crate::tuning::attention::mma::prepare;
 use crate::vision::VisionWeights;
+use crate::vision::footprint;
 use crate::vision::merger;
 use crate::vision::patch_embed;
 use crate::vision::patch_width;
@@ -180,6 +181,13 @@ impl LoadedVision {
     #[must_use]
     pub const fn encoder(&self) -> &infer_spi::ModalityEncoder {
         &self.encoder
+    }
+
+    /// Checked request-owned device bytes for a prepared media plan.
+    /// # Errors
+    /// Rejects empty/overflowing grids or encoder geometry mismatches.
+    pub fn footprint(&self, media: &infer_ir::MediaPlan) -> Result<u64> {
+        footprint(&self.encoder, media)
     }
 
     /// Encode one preprocessed image into `merged_tokens × text_hidden` embeddings.
