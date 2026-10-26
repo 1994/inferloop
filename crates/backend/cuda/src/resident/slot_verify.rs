@@ -1,5 +1,6 @@
 //! Cross-sequence target verification with per-slot recurrent rollback.
 use super::batch::gdn_ba_pairs;
+use super::prefill_projection::MlpPlan;
 use super::prefill_projection::{PairContext, record_pair};
 use super::{
     ActivationArena,
@@ -385,19 +386,48 @@ impl BatchBuilder<'_> {
     fn record_slot_pair(
         &mut self,
         scope: &Scope,
-        (first, second): (&TensorNode, &TensorNode),
+        (first, second): (usize, usize),
         arena: &mut ActivationArena,
-        profile: &DeviceProfile,
+        (device_profile, profile): (&DeviceProfile, &mut Option<profile::SlotProfile>),
     ) -> StdResult<bool, DeviceError> {
-        record_pair(
+        let recorded = record_pair(
             scope,
-            first,
-            second,
+            &self.graph.nodes[first],
+            &self.graph.nodes[second],
             arena,
-            (self.weights, profile),
+            (self.weights, device_profile),
             PairContext::Verify,
             self.verify_pairs.as_deref_mut(),
-        )
+        )?;
+        if recorded {
+            if let Some(profile) = profile.as_mut() {
+                profile
+                    .graph()
+                    .boundary(scope, second, &self.graph.nodes[second])?;
+            }
+            self.nvfp4.clear_quant_reuse();
+        }
+        Ok(recorded)
+    }
+
+    fn record_slot_mlp(
+        &mut self,
+        scope: &Scope,
+        index: usize,
+        arena: &mut ActivationArena,
+        plan: &MlpPlan,
+    ) -> StdResult<bool, DeviceError> {
+        if !plan.record(
+            scope,
+            (index, &self.graph.nodes),
+            arena,
+            self.weights,
+            self.nvfp4,
+        )? {
+            return Ok(false);
+        }
+        self.nvfp4.clear_quant_reuse();
+        Ok(true)
     }
 
     fn capture_slot_verify(
@@ -415,30 +445,28 @@ impl BatchBuilder<'_> {
         let device_profile = device.profile()?;
         let value_split = super::slot_recurrent::value_split(device_profile.multiprocessors);
         let pairs = gdn_ba_pairs(self.graph, self.weights);
+        let mlp = MlpPlan::for_verify(self.graph, self.weights, (arena.lanes(), self.nvfp4));
         CudaGraph::scope(&device.stream, |scope| {
             let mut no_fusion = None;
             let mut fused_second = None;
             for (index, node) in self.graph.nodes.iter().enumerate() {
-                if fused_second == Some(index) {
+                if fused_second == Some(index) || mlp.absorbs(index) {
                     continue;
                 }
                 if let Some(profile) = profile.as_mut() {
                     profile.graph().boundary(scope, index, node)?;
                 }
+                if self.record_slot_mlp(scope, index, arena, &mlp)? {
+                    continue;
+                }
                 if let Some(&second) = pairs.get(&index)
                     && self.record_slot_pair(
                         scope,
-                        (node, &self.graph.nodes[second]),
+                        (index, second),
                         arena,
-                        device_profile,
+                        (device_profile, &mut *profile),
                     )?
                 {
-                    if let Some(profile) = profile.as_mut() {
-                        profile
-                            .graph()
-                            .boundary(scope, second, &self.graph.nodes[second])?;
-                    }
-                    self.nvfp4.clear_quant_reuse();
                     fused_second = Some(second);
                     continue;
                 }

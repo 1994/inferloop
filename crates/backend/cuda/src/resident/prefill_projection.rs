@@ -1,3 +1,4 @@
+use super::nvfp4_gemm::GateUpMode;
 use super::verify_projection_pair::Workspace as VerifyPairWorkspace;
 use super::{ProgramWeights, capture::error, prefill_gemm::gemm};
 use super::{pool_gemv, small_gemm::kernels as verify_gemm};
@@ -77,6 +78,7 @@ fn swiglu_plan(
 /// Gated-MLP capture plan of one prompt graph: the `SiLU` and multiply nodes absorbed into
 /// their down projection, and the gate/up pairs that run as one fused pass at this width.
 pub(super) struct MlpPlan {
+    mode: GateUpMode,
     swiglu: BTreeMap<usize, Swiglu>,
     fused: BTreeMap<usize, FusedMlp>,
     fused_downs: BTreeSet<usize>,
@@ -89,19 +91,48 @@ impl MlpPlan {
         weights: &ProgramWeights,
         geometry: (usize, &super::nvfp4_gemm::Workspace),
     ) -> Self {
-        let swiglu = swiglu_plan(graph, weights);
-        let fused = fused_mlp_plan(graph, weights, &swiglu, geometry);
-        let fused_downs = fused.values().map(|&(.., down)| down).collect();
+        Self::build(graph, weights, geometry, GateUpMode::Prompt)
+    }
+
+    pub(super) fn for_verify(
+        graph: &infer_ir::DataflowGraph,
+        weights: &ProgramWeights,
+        geometry: (usize, &super::nvfp4_gemm::Workspace),
+    ) -> Self {
+        Self::build(graph, weights, geometry, GateUpMode::Verify)
+    }
+
+    fn build(
+        graph: &infer_ir::DataflowGraph,
+        weights: &ProgramWeights,
+        geometry: (usize, &super::nvfp4_gemm::Workspace),
+        mode: GateUpMode,
+    ) -> Self {
+        let mut swiglu = swiglu_plan(graph, weights);
+        let fused = fused_mlp_plan(graph, weights, &swiglu, geometry, mode);
+        #[cfg(test)]
+        let fused = if mode == GateUpMode::Verify && !VERIFY_MLP_ENABLED.with(Cell::get) {
+            BTreeMap::new()
+        } else {
+            fused
+        };
+        let fused_downs: BTreeSet<_> = fused.values().map(|&(.., down)| down).collect();
+        // Verify only absorbs complete packed passes; other row counts retain their original
+        // SiLU/multiply/quantizer sequence, including the one-row quantizer for partial tiles.
+        if mode == GateUpMode::Verify {
+            swiglu.retain(|down, _| fused_downs.contains(down));
+        }
         let absorbed = swiglu
             .values()
             .flat_map(|&(silu, multiply, ..)| [silu, multiply])
-            .chain(
-                fused
-                    .iter()
-                    .map(|(&first, &(gate, up, _))| if first == gate { up } else { gate }),
-            )
+            .chain(fused.iter().map(
+                |(&first, &(gate, up, _))| {
+                    if first == gate { up } else { gate }
+                },
+            ))
             .collect();
         Self {
+            mode,
             swiglu,
             fused,
             fused_downs,
@@ -125,7 +156,7 @@ impl MlpPlan {
     ) -> Result<bool, DeviceError> {
         if let Some(&(gate, up, down)) = self.fused.get(&index) {
             let projections = (&nodes[gate], &nodes[up], &nodes[down]);
-            record_fused_mlp(scope, projections, arena, weights, nvfp4)?;
+            record_fused_mlp(scope, projections, arena, weights, nvfp4, self.mode)?;
             return Ok(true);
         }
         let node = &nodes[index];
@@ -174,6 +205,7 @@ fn fused_mlp_plan(
     weights: &ProgramWeights,
     swiglu: &BTreeMap<usize, Swiglu>,
     (rows, nvfp4): (usize, &super::nvfp4_gemm::Workspace),
+    mode: GateUpMode,
 ) -> BTreeMap<usize, FusedMlp> {
     use infer_ir::TensorOp;
     let (producer, readers) = dataflow(graph);
@@ -213,11 +245,33 @@ fn fused_mlp_plan(
             || !sole(gate_output, silu)
             || !sole(up_output, multiply)
             || sizes.get(&up_output) != Some(&hidden)
-            || !nvfp4.gate_up_swiglu_ready(rows, columns, hidden)
         {
             continue;
         }
-        plan.insert(gate.min(up), (gate, up, down));
+        let ready = match mode {
+            GateUpMode::Prompt => nvfp4.gate_up_swiglu_ready(rows, columns, hidden),
+            GateUpMode::Verify => {
+                let (Some(gw), Some(uw), Some(scale)) = (
+                    weights.projections.get(&gate_node.inputs[1]),
+                    weights.projections.get(&up_node.inputs[1]),
+                    fp4_scale(gate_node),
+                ) else {
+                    continue;
+                };
+                // The prepared down codes must not cross another operation that can overwrite
+                // shared quantization storage. Prompt planning keeps its existing behavior.
+                down > gate.max(up)
+                    && (gate.min(up)..down).all(|i| [gate, up, silu, multiply].contains(&i))
+                    && nvfp4.verify_gate_up_ready(
+                        [rows, columns, hidden],
+                        (gw, uw),
+                        f32::from_bits(scale),
+                    )
+            }
+        };
+        if ready {
+            plan.insert(gate.min(up), (gate, up, down));
+        }
     }
     plan
 }
@@ -229,6 +283,7 @@ fn record_fused_mlp(
     arena: &super::ActivationArena,
     weights: &ProgramWeights,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
+    mode: GateUpMode,
 ) -> Result<(), DeviceError> {
     let scale = |node: &TensorNode| match weights.activation_quantization(node.inputs[1]) {
         Some(super::program::ActivationQuantization::Fp4(scale)) => Ok(scale),
@@ -250,8 +305,13 @@ fn record_fused_mlp(
         (weight(gate)?, weight(up)?),
         (scale(gate)?, scale(down)?),
         &input,
-        (width, columns, hidden),
-    )
+        (mode, width, columns, hidden),
+    )?;
+    #[cfg(test)]
+    if mode == GateUpMode::Verify {
+        VERIFY_MLP_CAPTURES.with(|count| count.set(count.get().saturating_add(1)));
+    }
+    Ok(())
 }
 
 /// Record the down projection of a [`fused_mlp_plan`] entry from its prepared codes.
@@ -730,3 +790,30 @@ fn record_verify_pair(
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+thread_local! {
+    static VERIFY_MLP_ENABLED: Cell<bool> = const { Cell::new(true) };
+    static VERIFY_MLP_CAPTURES: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn verify_mlp_captures() -> usize {
+    VERIFY_MLP_CAPTURES.with(Cell::get)
+}
+
+#[cfg(test)]
+pub(super) fn with_verify_mlp_disabled<T>(run: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            VERIFY_MLP_ENABLED.with(|enabled| enabled.set(self.0));
+        }
+    }
+    let _restore = Restore(VERIFY_MLP_ENABLED.with(|enabled| enabled.replace(false)));
+    run()
+}
+
+#[cfg(test)]
+#[path = "../../tests/unit/resident_verify_mlp_checkpoint.rs"]
+mod verify_mlp_tests;

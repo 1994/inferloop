@@ -365,12 +365,48 @@ fn prefix_round(
 #[test]
 #[ignore = "CUDA MTP checkpoint; split default vs independent accepted-prefix replay"]
 fn default_split_pool_preserves_commit_discard_and_reuse() -> Result<(), Box<dyn Error>> {
-    let loaded = load_checkpoint()?;
+    check_pool(&load_checkpoint()?, ReferenceMlp::Same)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReferenceMlp {
+    Same,
+    Original,
+}
+
+#[test]
+#[ignore = "CUDA MTP checkpoint; actual autotuned verify MLP vs original complete outputs and states"]
+fn verify_mlp_pool_preserves_full_outputs_and_reuse() -> Result<(), Box<dyn Error>> {
+    CudaDevice::enable_kernel_cache()?;
+    let loaded = LoadedModel::open(
+        CudaDevice::new(0)?,
+        var("INFER_TEST_MODEL")?,
+        ModelId::ONE,
+        LoadOptions {
+            prefill_width: 64,
+            verification_width: 3,
+            autotune: true,
+            mtp_depth: 2,
+            ..LoadOptions::default()
+        },
+    )?;
+    check_pool(&loaded, ReferenceMlp::Original)
+}
+
+fn check_pool(loaded: &LoadedModel, mlp_reference: ReferenceMlp) -> Result<(), Box<dyn Error>> {
     let seed = loaded.sequence_pooled(64)?;
     for (slots, paged) in [(15, false), (16, true)] {
         let before = verify_projection_pair::captures();
-        let mut reference = loaded.slot_pool(slots, 64, paged.then_some(slots * 64))?;
+        let mlp_before = prefill_projection::verify_mlp_captures();
+        let reference = || loaded.slot_pool(slots, 64, paged.then_some(slots * 64));
+        let mut reference = match mlp_reference {
+            ReferenceMlp::Same => reference(),
+            ReferenceMlp::Original => prefill_projection::with_verify_mlp_disabled(reference),
+        }?;
         let mut candidate = loaded.slot_pool(slots, 64, paged.then_some(slots * 64))?;
+        if mlp_reference == ReferenceMlp::Original {
+            assert_eq!(prefill_projection::verify_mlp_captures() - mlp_before, 56);
+        }
         assert_eq!(verify_projection_pair::captures() - before, 96);
         for slot in 0..slots {
             assert_eq!(reference.take_free(), Some(slot));
@@ -384,8 +420,8 @@ fn default_split_pool_preserves_commit_discard_and_reuse() -> Result<(), Box<dyn
         let mut elements = 0;
         let mut states = 0;
         for (round, active) in [all.clone(), vec![0, slots - 1], all].iter().enumerate() {
-            elements += prefix_round(&loaded, &mut reference, &mut candidate, active, round)?;
-            states += committed_states(&loaded, &reference, &candidate, slots)?;
+            elements += prefix_round(loaded, &mut reference, &mut candidate, active, round)?;
+            states += committed_states(loaded, &reference, &candidate, slots)?;
         }
         let position = candidate.cursors()[0];
         let cancelled: Vec<_> = (0..3)
@@ -407,12 +443,12 @@ fn default_split_pool_preserves_commit_discard_and_reuse() -> Result<(), Box<dyn
             pool.bind(slot, seed.states(), seed.fp8_states(), 0, loaded.device())?;
         }
         for round in [3, 4] {
-            elements += prefix_round(&loaded, &mut reference, &mut candidate, &[slot], round)?;
-            states += committed_states(&loaded, &reference, &candidate, slots)?;
+            elements += prefix_round(loaded, &mut reference, &mut candidate, &[slot], round)?;
+            states += committed_states(loaded, &reference, &candidate, slots)?;
         }
         eprintln!(
             "{}",
-            json!({"default_split_prefix_replay":true,"slots":slots,"paged":paged,
+            json!({"default_split_prefix_replay":true,"original_mlp_reference":mlp_reference==ReferenceMlp::Original,"slots":slots,"paged":paged,
             "full_finite_outputs":elements,"checked_state_and_committed_cache_elements":states,
             "sparse_active":true,"zero_partial_commit":true,"release_rebind_reuse":true})
         );

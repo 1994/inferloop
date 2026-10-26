@@ -43,11 +43,22 @@ type Quantized = (Tensor<f4e2m1fnx2>, Tensor<f8e4m3fn>);
 /// against 0.45 ms for the separate projections and quantizer).
 const SWIGLU_TILE_ROWS: usize = 64;
 const SWIGLU_TILE_COLUMNS: usize = 64;
+/// Row, input-column and output-column dimensions of one gate/up geometry.
+const GATE_UP_GEOMETRY_DIMENSIONS: usize = 3;
 /// Keyed by `(rows, columns, activation-scale columns)`.
 type Fp8Key = (usize, usize, usize);
 type StrategyKey = (ResidentGemmWeightKey, usize, usize, usize);
 /// Quantized activation and its per-token scales.
 type Fp8Buffers = (Tensor<f8e4m3fn>, Tensor<f32>);
+
+/// Row constraints of the existing exact gate/up and `SwiGLU` pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GateUpMode {
+    /// Prompt graphs keep the existing complete-row-tile constraint.
+    Prompt,
+    /// A pooled verify graph may use one partial measured row tile.
+    Verify,
+}
 
 pub struct Workspace {
     quant_reuse: CaptureQuantReuse,
@@ -520,6 +531,38 @@ impl Workspace {
             && self.buffers.contains_key(&(rows, hidden))
     }
 
+    /// A partial verify tile is eligible only when both measured strategies already use
+    /// the fused kernel's row width. Wider verify graphs keep their path.
+    pub(crate) fn verify_gate_up_ready(
+        &self,
+        [rows, columns, hidden]: [usize; GATE_UP_GEOMETRY_DIMENSIONS],
+        weights: (&ProjectionWeight, &ProjectionWeight),
+        scale: f32,
+    ) -> bool {
+        if rows == 0
+            || rows > SWIGLU_TILE_ROWS
+            || columns == hidden
+            || !hidden.is_multiple_of(SWIGLU_TILE_COLUMNS)
+            || !self.buffers.contains_key(&(rows, columns))
+            || !self.buffers.contains_key(&(rows, hidden))
+        {
+            return false;
+        }
+        let weights: [&ProjectionWeight; 2] = weights.into();
+        for weight in weights {
+            let Ok(key) = ResidentGemmWeightKey::new(weight, scale) else {
+                return false;
+            };
+            let Some(config) = self.strategies.get(&(key, rows, hidden, columns)) else {
+                return false;
+            };
+            if config.tile_m != SWIGLU_TILE_ROWS {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Gate and up projections of a gated MLP fused with the down projection's quantizer:
     /// quantize the shared input, then write the `silu(gate) * up` codes straight into the down
     /// projection's buffer for [`Self::record_prequantized`]. Neither F32 projection is written.
@@ -529,7 +572,7 @@ impl Workspace {
         (gate, up): (&ProjectionWeight, &ProjectionWeight),
         (input_scale, down_scale): (f32, f32),
         input: &TensorView<'_, f32>,
-        (rows, columns, hidden): (usize, usize, usize),
+        (mode, rows, columns, hidden): (GateUpMode, usize, usize, usize),
     ) -> StdResult<(), DeviceError> {
         let (
             ProjectionWeight::Fp4(gate_codes, gate_scales, gate_global),
@@ -538,7 +581,13 @@ impl Workspace {
         else {
             return Err(super::super::capture::error("fused SwiGLU weights"));
         };
-        if !self.gate_up_swiglu_ready(rows, columns, hidden) {
+        let ready = match mode {
+            GateUpMode::Prompt => self.gate_up_swiglu_ready(rows, columns, hidden),
+            GateUpMode::Verify => {
+                self.verify_gate_up_ready([rows, columns, hidden], (gate, up), input_scale)
+            }
+        };
+        if !ready {
             return Err(super::super::capture::error("fused SwiGLU geometry"));
         }
         // Both writes replace shared quantization buffers; no reuse permit may span them.
