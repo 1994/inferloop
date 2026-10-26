@@ -24,6 +24,7 @@ fn selected_backend_preserves_compact_generation_reservation() -> Result<()> {
             gpu_memory_utilization: 0.0,
             autotune: false,
             text_only: false,
+            media_limits: infer_models::MediaLimits::default(),
             // The exact per-token kernel; this fixture checks the Metal reservation, not prefill.
         },
     )?;

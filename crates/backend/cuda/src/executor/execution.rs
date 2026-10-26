@@ -1,4 +1,4 @@
-use super::{CudaExecutor, ModelOutput, Sequence, SlotLease, Speculation, prefix};
+use super::{CachedMedia, CudaExecutor, ModelOutput, Sequence, SlotLease, Speculation, prefix};
 use crate::constants::CB_DECODE_SLOTS;
 use crate::constants::CB_SLOT_TOKENS;
 use crate::constants::MIB;
@@ -9,7 +9,9 @@ use crate::device::CudaDevice;
 use crate::loading::{LoadedModel, PooledServingQuote};
 use crate::resident::slot_batch::SlotPool;
 use infer_core::{Error, ErrorCode, Result, StateId};
-use infer_ir::{ExecutionInput, ExecutionTask, OutputReadout, TaskOutput};
+use infer_ir::{ExecutionInput, ExecutionTask, MediaPlan, OutputReadout, TaskOutput};
+use infer_models::mrope::ROTARY_AXES;
+use infer_models::{PreparedPrompt, PromptImage, media_layout};
 use std::collections::BTreeMap;
 use std::mem::swap;
 use std::mem::take;
@@ -28,7 +30,8 @@ async fn cacheable_prefix(
     state: &mut Sequence,
     task: &ExecutionTask,
 ) -> Option<prefix::CachedPrefix> {
-    if state.poisoned
+    if task.media.is_some()
+        || state.poisoned
         || state.home.is_some()
         || state.readout != OutputReadout::Logits
         || !matches!(
@@ -723,8 +726,8 @@ impl CudaExecutor {
         // on the worker.
         let wide = state.home.is_some() && !matches!(task.tokens, ExecutionInput::Decode { .. });
         let output = match self.worker.as_mut() {
-            Some(worker) if wide => run_on_worker(state, worker, task).await?,
-            _ => state.run(task).await?,
+            Some(worker) if wide => run_on_worker(state, worker, task, &self.loaded).await?,
+            _ => state.run(task, &self.loaded).await?,
         };
         if let Some(snapshot) =
             cacheable_prefix(self.loaded.device(), &self.loaded, state, task).await
@@ -747,6 +750,7 @@ async fn run_on_worker(
     state: &mut Sequence,
     worker: &mut super::Worker,
     task: &ExecutionTask,
+    loaded: &LoadedModel,
 ) -> Result<ModelOutput> {
     super::profiling::phase("worker_load", || -> Result<()> {
         worker
@@ -758,7 +762,7 @@ async fn run_on_worker(
         Ok(())
     })?;
     swap_worker(state, worker);
-    let output = state.run(task).await;
+    let output = state.run(task, loaded).await;
     swap_worker(state, worker);
     let output = output?;
     super::profiling::phase("worker_store", || -> Result<()> {
@@ -1144,7 +1148,10 @@ impl Sequence {
         })
     }
 
-    async fn run(&mut self, task: &ExecutionTask) -> Result<ModelOutput> {
+    async fn run(&mut self, task: &ExecutionTask, loaded: &LoadedModel) -> Result<ModelOutput> {
+        if let Some(plan) = task.media.as_ref() {
+            return self.run_media(task, plan, loaded).await;
+        }
         let tokens = task.tokens.delta(self.history.len())?;
         let readout = task.tokens.readout();
         if let Some(output) = self.speculate(task, readout).await? {
@@ -1182,6 +1189,7 @@ impl Sequence {
                 && task.plain_greedy
                 && readout == OutputReadout::Logits
                 && self.readout != OutputReadout::Full
+                && self.media_prompt_len == 0
             {
                 let selected = super::profiling::phase_async("selected_step", async {
                     self.program
@@ -1198,21 +1206,11 @@ impl Sequence {
                     .transpose()?;
                 selected.rows
             } else {
-                vec![
-                    super::profiling::phase_async("prefill_step", async {
-                        self.program
-                            .step_readout_async(
-                                tokens[offset],
-                                position,
-                                position,
-                                None,
-                                read_logits,
-                                read_hidden,
-                            )
-                            .await
-                    })
-                    .await?,
-                ]
+                super::profiling::phase_async("prefill_step", async {
+                    self.decode_step(tokens[offset], position, read_logits, read_hidden)
+                        .await
+                })
+                .await?
             };
             if device_prime {
                 self.prime_chunk(&tokens[offset..offset + count], position)
@@ -1242,6 +1240,183 @@ impl Sequence {
         }
         task.tokens.commit(&mut self.history)?;
         Ok(self.output(readout, next_token, logits))
+    }
+
+    /// Prefill one media prompt chunk with embeddings cached for the whole prompt.
+    async fn run_media(
+        &mut self,
+        task: &ExecutionTask,
+        plan: &MediaPlan,
+        loaded: &LoadedModel,
+    ) -> Result<ModelOutput> {
+        if self.speculation.is_some() {
+            return Err(Error::unsupported(
+                "multimodal prefill with MTP speculation is not supported",
+            ));
+        }
+        let tokens = task.tokens.delta(self.history.len())?;
+        let readout = task.tokens.readout();
+        if readout == OutputReadout::Full {
+            return Err(Error::unsupported(
+                "multimodal full-hidden readout is not supported",
+            ));
+        }
+        let prompt_len = plan.prompt.len();
+        if tokens.is_empty()
+            || self
+                .history
+                .len()
+                .checked_add(tokens.len())
+                .is_none_or(|end| end > prompt_len)
+        {
+            return Err(Error::invalid("media prefill token range"));
+        }
+        if self.history.is_empty() && self.media.is_none() {
+            self.prepare_media(plan, loaded)?;
+        }
+        let media = self
+            .media
+            .take()
+            .ok_or_else(|| Error::invalid("media prefill did not start at position zero"))?;
+        if media.bases.len() != plan.items.len() {
+            self.media = Some(media);
+            return Err(Error::invariant("cached media does not match its plan"));
+        }
+        let width = self.program.prefill_width();
+        if width == 0 {
+            return Err(Error::unsupported(
+                "multimodal prefill requires a prompt graph",
+            ));
+        }
+        let hidden = loaded.model().hidden_size;
+        tracing::debug!(target: "infer::executor", prompt_len, tokens = tokens.len(), width,
+            bases = ?media.bases, spans = ?plan.items.iter().map(|item| item.span.clone()).collect::<Vec<_>>(),
+            "running CUDA media prefill");
+        let mut offset = 0usize;
+        let mut logits = Vec::new();
+        while offset < tokens.len() {
+            let count = width.min(tokens.len() - offset);
+            let position = self.history.len() + offset;
+            let chunk = &tokens[offset..offset + count];
+            let last = self.history.len() + offset + count == prompt_len;
+            let mut rows = Vec::new();
+            for (index, item) in plan.items.iter().enumerate() {
+                let start = item.span.start.max(position);
+                let stop = item.span.end.min(position + count);
+                for token in start..stop {
+                    rows.push((
+                        token - position,
+                        media.bases[index] + (token - item.span.start),
+                    ));
+                }
+            }
+            let rotary = media
+                .layout
+                .positions
+                .as_ref()
+                .map(|positions| &positions[position..position + count]);
+            let output = self
+                .program
+                .prefill_media_chunk_async(
+                    chunk,
+                    position,
+                    &media.tensor,
+                    &rows,
+                    hidden,
+                    rotary,
+                    last,
+                )
+                .await?;
+            tracing::debug!(target: "infer::executor", last, position, count, rows = output.len(),
+                last_logits = output.last().map(|(_, row)| row.len()), "media chunk output");
+            if last {
+                logits = output
+                    .into_iter()
+                    .next_back()
+                    .map(|(_, row)| row)
+                    .ok_or_else(|| Error::invariant("media prefill logits"))?;
+            }
+            offset += count;
+        }
+        if self.history.len() + tokens.len() == prompt_len {
+            self.rotary_base = media.layout.next_rotary;
+            self.media_prompt_len = prompt_len;
+        } else {
+            self.media = Some(media);
+        }
+        task.tokens.commit(&mut self.history)?;
+        Ok(self.output(readout, None, logits))
+    }
+
+    fn prepare_media(&mut self, plan: &MediaPlan, loaded: &LoadedModel) -> Result<()> {
+        let tower = loaded
+            .vision()
+            .ok_or_else(|| Error::unsupported("model has no bound vision encoder"))?;
+        let prepared = PreparedPrompt {
+            tokens: plan.prompt.to_vec(),
+            images: plan
+                .items
+                .iter()
+                .map(|item| PromptImage {
+                    pixels: item.pixels.to_vec(),
+                    grid: item.grid,
+                })
+                .collect(),
+            spans: plan.items.iter().map(|item| item.span.clone()).collect(),
+        };
+        let layout = media_layout(&prepared, loaded.imported(), &plan.modality)?;
+        if layout.spans.len() != plan.items.len() {
+            return Err(Error::invalid("media layout does not cover every item"));
+        }
+        let hidden = loaded.model().hidden_size;
+        let mut data = Vec::new();
+        let mut bases = Vec::with_capacity(prepared.images.len());
+        for image in &prepared.images {
+            let encoded = tower.encode(loaded.device(), image)?;
+            bases.push(data.len() / hidden);
+            data.extend(encoded);
+        }
+        let rows = data.len() / hidden;
+        tracing::debug!(target: "infer::executor", rows, bases = ?bases,
+            spans = ?layout.spans, positions = layout.positions.as_ref().map(Vec::len),
+            "prepared CUDA media embeddings");
+        let tensor = loaded.device().upload(data, &[rows, hidden])?;
+        self.media = Some(CachedMedia {
+            tensor,
+            layout,
+            bases,
+        });
+        Ok(())
+    }
+
+    async fn decode_step(
+        &mut self,
+        token: u32,
+        position: usize,
+        read_logits: bool,
+        read_hidden: bool,
+    ) -> Result<Vec<(Vec<f32>, Vec<f32>)>> {
+        if self.media_prompt_len == 0 {
+            self.program
+                .step_readout_async(token, position, position, None, read_logits, read_hidden)
+                .await
+                .map(|row| vec![row])
+        } else {
+            let rotary = self.rotary_at(position);
+            self.program
+                .step_positioned_async(token, [rotary; ROTARY_AXES], position, None, read_logits)
+                .await
+                .map(|row| vec![row])
+        }
+    }
+
+    const fn rotary_at(&self, position: usize) -> usize {
+        if self.media_prompt_len == 0 {
+            position
+        } else {
+            self.rotary_base
+                .saturating_add(position.saturating_sub(self.media_prompt_len))
+        }
     }
 
     fn chunk_len(&self, remaining: usize) -> usize {

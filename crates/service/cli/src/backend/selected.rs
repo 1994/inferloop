@@ -236,6 +236,9 @@ impl BackendProvider for SelectedBackend {
     fn weight_backed_dataflow(&self) -> bool {
         forward!(self, weight_backed_dataflow)
     }
+    fn supports_multimodal(&self) -> bool {
+        forward!(self, supports_multimodal)
+    }
     fn execution_profile(&self) -> Option<infer_ir::ExecutionProfileInspection> {
         match self {
             #[cfg(cuda_backend)]
@@ -281,6 +284,13 @@ impl BackendProvider for SelectedBackend {
     ) -> Result<()> {
         forward!(self, prepare_state_reservation, capacity, readout)
     }
+    fn prepare_state_reservation_for_media(
+        &mut self,
+        capacity: usize,
+        readout: infer_ir::OutputReadout,
+    ) -> Result<()> {
+        forward!(self, prepare_state_reservation_for_media, capacity, readout)
+    }
     fn state_reservation_bytes(&self, capacity: usize) -> Result<Option<u64>> {
         forward!(self, state_reservation_bytes, capacity)
     }
@@ -290,6 +300,20 @@ impl BackendProvider for SelectedBackend {
         readout: infer_ir::OutputReadout,
     ) -> Result<Option<u64>> {
         forward!(self, state_reservation_bytes_for, capacity, readout)
+    }
+    fn state_reservation_bytes_for_media(
+        &self,
+        capacity: usize,
+        readout: infer_ir::OutputReadout,
+        media: &infer_ir::MediaPlan,
+    ) -> Result<Option<u64>> {
+        forward!(
+            self,
+            state_reservation_bytes_for_media,
+            capacity,
+            readout,
+            media
+        )
     }
     fn state_capacity_bytes(&self) -> Result<Option<u64>> {
         forward!(self, state_capacity_bytes)
@@ -361,6 +385,22 @@ impl BackendProvider for SelectedBackend {
         readout: infer_ir::OutputReadout,
     ) -> Result<()> {
         forward!(self, reserve_state_for, state, capacity, readout)
+    }
+    fn reserve_state_for_media(
+        &mut self,
+        state: StateId,
+        capacity: usize,
+        readout: infer_ir::OutputReadout,
+        media: &infer_ir::MediaPlan,
+    ) -> Result<()> {
+        forward!(
+            self,
+            reserve_state_for_media,
+            state,
+            capacity,
+            readout,
+            media
+        )
     }
     fn reset_state(&mut self, id: StateId) -> Result<()> {
         forward!(self, reset_state, id)

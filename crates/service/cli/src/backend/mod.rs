@@ -133,6 +133,8 @@ pub struct Selection {
     pub autotune: bool,
     /// Serve text only (`--limit-mm-per-prompt` with every limit zero): skip the vision tower.
     pub text_only: bool,
+    /// Per-prompt media item limits; all-zero limits are equivalent to `text_only`.
+    pub media_limits: infer_models::MediaLimits,
 }
 #[cfg(any(test, native_backend))]
 fn resolve(

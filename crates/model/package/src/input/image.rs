@@ -84,8 +84,21 @@ pub(crate) struct Normalization {
 }
 
 impl Normalization {
+    /// Canonical RGB8 uses the fast processor's fused 255 normalization. Every other configured
+    /// factor keeps the original multiply-add/divide path, including zero and tiny positive scales.
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "Sequential operations are required to match the processor's fused-bit result"
+    )]
     fn apply(self, value: f32, channel: usize) -> f32 {
-        value.mul_add(self.rescale, -self.mean[channel]) / self.std[channel]
+        const CANONICAL_RESCALE: f32 = 1.0 / 255.0;
+        const CANONICAL_INVERSE: f32 = 255.0;
+        if self.rescale == CANONICAL_RESCALE {
+            (value - self.mean[channel] * CANONICAL_INVERSE)
+                / (self.std[channel] * CANONICAL_INVERSE)
+        } else {
+            value.mul_add(self.rescale, -self.mean[channel]) / self.std[channel]
+        }
     }
 }
 

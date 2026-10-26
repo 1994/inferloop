@@ -170,6 +170,8 @@ fn verify_prefixes(
                 tokens: prefix.tokens.clone().into(),
 
                 sampling: None,
+
+                media: None,
             }],
         )?;
         let deadline = Instant::now() + GOLDEN_STEP_TIMEOUT;

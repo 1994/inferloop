@@ -81,6 +81,46 @@ CPU 门禁判定测试已进入 `check-rust`。Candle 在 `tools/bench/attention
 默认通过 uv 运行 fixture generator。主机 bindgen 参数沿用 [CUDA 构建说明](../../crates/backend/cuda/README.md)。
 基准不按 GPU 型号选择算子；每台设备独立生成证据，单机结果不外推为所有硬件通过。
 
+## 任务质量采集与基线复用
+
+固定的、已分词任务集可用 [run-task-quality.py](../../tools/bench/run-task-quality.py)
+采集 CUDA native 输出。它复用现有服务工具和
+[score-task-quality.py](../../tools/bench/score-task-quality.py)，不改变题目、数值契约、
+评分公式、置信水平或通过阈值，也不代替独立的 kernel 数值与服务性能验收。
+
+使用已安装 Transformers 的 Python、预先构建的 release 二进制和本地模型：
+
+```sh
+# 基线只采集一次：一个服务进程按顺序跑完整任务集。
+bash tools/bench/safe-run.sh python3 tools/bench/run-task-quality.py \
+  --suite artifacts/task-suite.json --model /path/to/local-model \
+  --executable /path/to/baseline/infer --output artifacts/task-baseline
+
+# 后续候选复用明确指定的完整基线，只运行候选模型一次。
+bash tools/bench/safe-run.sh python3 tools/bench/run-task-quality.py \
+  --suite artifacts/task-suite.json --model /path/to/local-model \
+  --executable /path/to/candidate/infer --output artifacts/task-candidate \
+  --baseline artifacts/task-baseline/report.json
+```
+
+默认并发为 16，生成长度和 EOS 来自任务集；仅支持声明的 greedy 合约。
+每次采集启动一个服务，不再为任务集分片重复加载模型。
+复用前重新核对完整原始答案、任务集 SHA256、模型身份、设备与驱动、
+数值契约和已记录的采集设置；模型身份沿用现有工具的配置/tokenizer 哈希与权重分片大小，
+不是权重内容的完整哈希。改变模型包后必须重新建立基线。
+记录并校验基线文件与候选二进制 SHA256，不自动选择基线或沿用旧的通过标记。
+
+每批验证实际 prefix 复用计数没有增加、所有请求完整结束后，
+立即保存并同步 `results.jsonl`，同时更新 `progress.json`。
+中途失败会保留已验证的批次和不完整报告，不能用于放行；当前入口不自动恢复采集。
+输出目录必须不存在，避免覆盖旧证据。
+只有显式提供基线才生成 `gate.json`，质量未通过时返回非零；
+单独采集成功只表示输出收集完整，质量状态为 `not_evaluated`。
+
+减少的是重复加载和基线重跑，不是任务数量。具体耗时仍取决于模型、输入和硬件；
+不得据此宣称推理吞吐提升。仅修改采集工具时，执行 bench Python 测试、
+`make check-tools` 和文档检查；工具行为用小规模实机采集验证，无需为工具改动重跑整套模型质量集。
+
 ## 工具链与版本
 
 | 工具 | 版本 |

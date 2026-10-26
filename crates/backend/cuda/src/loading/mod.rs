@@ -20,6 +20,7 @@ use crate::resident::fp8_cache::Fp8Caches;
 use crate::resident::slot_batch::SlotPool;
 use crate::tuning::attention::mma::prepare;
 use crate::vision::VisionWeights;
+use crate::vision::footprint;
 use crate::vision::merger;
 use crate::vision::patch_embed;
 use crate::vision::patch_width;
@@ -180,6 +181,19 @@ impl LoadedVision {
     #[must_use]
     pub const fn encoder(&self) -> &infer_spi::ModalityEncoder {
         &self.encoder
+    }
+
+    /// Checked request-owned device bytes for a prepared media plan.
+    /// # Errors
+    /// Rejects empty/overflowing grids or encoder geometry mismatches.
+    pub fn footprint(&self, media: &infer_ir::MediaPlan) -> Result<u64> {
+        footprint(&self.encoder, media)
+    }
+
+    /// Exact bytes of every retained raw and prepared vision owner.
+    #[must_use]
+    pub fn inventory_bytes(&self) -> u64 {
+        self.weights.inventory_bytes()
     }
 
     /// Encode one preprocessed image into `merged_tokens × text_hidden` embeddings.
@@ -343,9 +357,7 @@ impl LoadedModel {
             );
         }
         let requirements = package.imported.requirements.clone();
-        let vision_phase = phase::Phase::start("vision", "binding the vision tower");
-        let vision = bind_vision(&device, &mut package, options.vision, &vision_phase)?;
-        vision_phase.finish();
+        let vision = bind_vision_phase(&device, &mut package, options.vision)?;
         let imported = package.imported.clone();
         let loaded = Self {
             device,
@@ -705,6 +717,22 @@ fn select_prompt_width(
         weights.prefill_width = selected;
     }
     Ok(())
+}
+
+/// Bind the optional tower with a single phase even when text-only serving skips it.
+fn bind_vision_phase(
+    device: &CudaDevice,
+    package: &mut QuantizedPackage,
+    enabled: bool,
+) -> Result<Option<LoadedVision>> {
+    if !enabled {
+        tracing::info!(target: "infer::load", "text-only serving: vision tower not loaded");
+        return Ok(None);
+    }
+    let phase = phase::Phase::start("vision", "binding the vision tower");
+    let vision = bind_vision(device, package, true, &phase)?;
+    phase.finish();
+    Ok(vision)
 }
 
 /// The vision tower, unless the service is text only.

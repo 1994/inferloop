@@ -146,6 +146,8 @@ fn execute(
             tokens: tokens.to_vec().into(),
 
             sampling: None,
+
+            media: None,
         }],
     )?;
     let limit = Instant::now() + Duration::from_secs(10);

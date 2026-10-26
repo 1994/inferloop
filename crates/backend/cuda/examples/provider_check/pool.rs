@@ -39,6 +39,8 @@ pub fn check(
             tokens: vec![0; capacity + 2].into(),
 
             sampling: None,
+
+            media: None,
         }],
         capacity + 2,
     )
@@ -113,6 +115,8 @@ fn verify(
             },
 
             sampling: None,
+
+            media: None,
         }],
         prompt.len(),
     )?;

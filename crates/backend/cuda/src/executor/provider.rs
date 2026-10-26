@@ -11,6 +11,14 @@ impl CudaExecutor {
         self.prepare_reservation_for(capacity, readout)
     }
 
+    pub(super) fn prepare_state_reservation_for_media(
+        &mut self,
+        capacity: usize,
+        readout: OutputReadout,
+    ) -> Result<()> {
+        self.prepare_reservation_for(capacity, readout)
+    }
+
     pub(super) fn state_reservation_bytes_for(
         &self,
         capacity: usize,
@@ -18,8 +26,30 @@ impl CudaExecutor {
     ) -> Result<Option<u64>> {
         // Prefill still needs the sequence's own program even when decode will lease a slot.
         // Capture and cached-shell accounting must use the same price as reserve().
-        let private = self.private_verification_for(capacity, readout);
+        let private = self.private_verification_for(capacity, readout, true);
         self.reservation_budget(capacity, readout, private)
+            .map(Some)
+    }
+
+    pub(super) fn state_reservation_bytes_for_media(
+        &self,
+        capacity: usize,
+        readout: OutputReadout,
+        media: &infer_ir::MediaPlan,
+    ) -> Result<Option<u64>> {
+        // Media prefill bypasses slot/home programs and additionally retains encoded rows plus
+        // the bounded encoder transient peak; price the same allowance reserve_media charges.
+        let private = true;
+        let encoded = self
+            .loaded
+            .vision()
+            .map_or(Ok(0), |vision| vision.footprint(media))?;
+        self.reservation_budget(capacity, readout, private)
+            .and_then(|bytes| {
+                bytes
+                    .checked_add(encoded)
+                    .ok_or_else(|| infer_core::Error::invalid("media quote footprint overflow"))
+            })
             .map(Some)
     }
     pub(super) fn state_capacity_bytes(&self) -> Result<Option<u64>> {
@@ -99,7 +129,7 @@ impl CudaExecutor {
         capacity: usize,
         readout: OutputReadout,
     ) -> Result<()> {
-        self.reserve(state, capacity, readout)
+        self.reserve(state, capacity, readout, true)
     }
 
     /// Restore a cached prompt prefix into `state` and report how many tokens it covered.
