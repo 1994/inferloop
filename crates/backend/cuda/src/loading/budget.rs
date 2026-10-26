@@ -21,6 +21,7 @@ use crate::resident::recurrent_prefill::required_bytes as recurrent_prefill_requ
 use crate::resident::slot_batch::SlotPool;
 use crate::tuning::attention::decode::GROUPED_ROWS;
 use crate::tuning::attention::decode::MAX_GROUPED_PARTS;
+use crate::tuning::resident_gemm::ACTIVATION_MODE;
 use crate::{
     device::DeviceProfile,
     resident::{ProgramGeometry, ProgramWeights},
@@ -206,7 +207,7 @@ fn projection_mode(weight: &ProjectionWeight) -> Result<(&'static str, u64)> {
         ProjectionWeight::Fp8(tensor, _) => ("fp8", tensor_elements(tensor)?),
         ProjectionWeight::Fp8Block(tensor, _) => ("fp8-block", tensor_elements(tensor)?),
         ProjectionWeight::Fp4(codes, _, _) => (
-            crate::tuning::resident_gemm::ACTIVATION_MODE,
+            ACTIVATION_MODE,
             tensor_elements(codes)?
                 .checked_mul(2)
                 .ok_or_else(|| Error::invalid("fp4 parameter count overflow"))?,
