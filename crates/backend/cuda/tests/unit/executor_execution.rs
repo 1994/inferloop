@@ -79,9 +79,9 @@ fn lazy_pool_retries_after_a_live_private_reservation_is_released() -> Result<()
     let mut backend = CudaExecutor::new(loaded, budget, 1)?;
     backend.maximum_states = 16;
     let long = StateId::new(1)?;
-    backend.reserve(long, 32768, OutputReadout::Logits)?;
-    backend.reserve(StateId::new(2)?, 512, OutputReadout::Logits)?;
-    backend.reserve(StateId::new(3)?, 512, OutputReadout::Logits)?;
+    backend.reserve(long, 32768, OutputReadout::Logits, true)?;
+    backend.reserve(StateId::new(2)?, 512, OutputReadout::Logits, true)?;
+    backend.reserve(StateId::new(3)?, 512, OutputReadout::Logits, true)?;
     let mut lower = 0;
     let mut upper = budget;
     assert!(backend.pooled_plan(512, 16, upper)?.is_some());

@@ -92,6 +92,8 @@ fn check_prefix(
             tokens: tokens.into(),
 
             sampling: None,
+
+            media: None,
         }],
     )?;
     let deadline = Instant::now() + Duration::from_secs(10);

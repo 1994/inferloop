@@ -174,6 +174,7 @@ fn run_case(
             "image": kind,
             "grid": [image.grid.0, image.grid.1, image.grid.2],
             "prompt_tokens": prepared.tokens.len(),
+            "prompt_token_ids": prepared.tokens,
             "media_tokens": media_tokens,
             "generated_tokens": generated,
             "generated_text": assets.decode(&generated, true)?,

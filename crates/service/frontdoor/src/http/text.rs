@@ -4,6 +4,7 @@ use crate::constants::MAX_REQUEST_BODY_BYTES;
 use crate::constants::TEXT_STAGING_EXPANSION;
 use crate::constants::TEXT_STAGING_OVERHEAD_BYTES;
 use crate::constants::TOKEN_STAGING_BYTES;
+use crate::media::MediaService;
 use axum::extract::rejection::JsonRejection;
 use axum::{
     Json, Router, extract::DefaultBodyLimit, extract::State, http::HeaderMap, routing::post,
@@ -19,6 +20,7 @@ use std::sync::Arc;
 pub(super) struct TextState {
     pub(super) handle: RuntimeHandle,
     pub(super) assets: Arc<infer_models::TextAssets>,
+    pub(super) media: Option<Arc<MediaService>>,
     pub(super) delivery: cpu::CpuPool,
 }
 #[derive(serde::Deserialize)]
@@ -37,9 +39,18 @@ pub struct NativeTextRequest {
     pub options: Option<infer_models::ChatOptions>,
 }
 pub fn router_with_text(handle: RuntimeHandle, assets: Arc<infer_models::TextAssets>) -> Router {
+    router_with_text_and_media(handle, assets, None)
+}
+
+pub fn router_with_text_and_media(
+    handle: RuntimeHandle,
+    assets: Arc<infer_models::TextAssets>,
+    media: Option<Arc<MediaService>>,
+) -> Router {
     let state = TextState {
         handle: handle.clone(),
         assets,
+        media,
         delivery: handle.delivery_pool(),
     };
     router(handle).merge(

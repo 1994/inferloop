@@ -634,3 +634,49 @@ async fn completion_stream_uses_sdk_choice_schema_and_reports_usage() {
 
 #[path = "http_strict_tools.rs"]
 mod strict_tools;
+
+#[tokio::test]
+async fn image_parts_are_rejected_on_a_text_only_deployment() {
+    let (handle, assets) = fixture();
+    let app = router_with_text(handle.clone(), assets);
+    let (status, body) = call(
+        app,
+        "/v1/chat/completions",
+        Some(json!({
+            "model":"1",
+            "messages":[{"role":"user","content":[
+                {"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}
+            ]}],
+            "max_tokens":2
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{body}");
+    assert_eq!(body["error"]["code"], "unsupported_feature");
+    assert_eq!(handle.inspect().await.unwrap().active_requests, 0);
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn public_chat_rejects_server_local_media_paths() {
+    let (handle, assets) = fixture();
+    let app = router_with_text(handle.clone(), assets);
+    for url in ["file:///etc/passwd", "/etc/passwd"] {
+        let (status, body) = call(
+            app.clone(),
+            "/v1/chat/completions",
+            Some(json!({
+                "model":"1",
+                "messages":[{"role":"user","content":[
+                    {"type":"image_url","image_url":{"url":url}}
+                ]}],
+                "max_tokens":2
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{url}: {body}");
+        assert_eq!(body["error"]["code"], "unsupported_feature");
+    }
+    assert_eq!(handle.inspect().await.unwrap().active_requests, 0);
+    handle.shutdown().await.unwrap();
+}

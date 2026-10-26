@@ -62,10 +62,10 @@ pub struct Cli {
     #[arg(long, global = true, value_enum)]
     pub(super) cuda_attention_profile: Option<backend::CudaAttentionProfile>,
     /// Per-prompt multimodal item limits as JSON, as in vLLM (for example
-    /// `{"image":0,"video":0}`). All-zero limits serve text only and skip loading the vision
-    /// tower; image inputs are then rejected.
-    #[arg(long, global = true, value_name = "JSON", value_parser = parse_text_only)]
-    pub(super) limit_mm_per_prompt: Option<bool>,
+    /// `{"image":1,"video":1}`). All-zero limits serve text only and skip loading the vision
+    /// tower; media inputs are then rejected.
+    #[arg(long, global = true, value_name = "JSON", value_parser = parse_media_limits)]
+    pub(super) limit_mm_per_prompt: Option<infer_models::MediaLimits>,
     /// Fraction of device memory the engine may use, as in vLLM (0 disables the cap).
     #[arg(long, global = true, default_value_t = crate::constants::DEFAULT_GPU_MEMORY_UTILIZATION)]
     pub(super) gpu_memory_utilization: f64,
@@ -127,25 +127,25 @@ impl Cli {
 #[path = "../tests/unit/arguments.rs"]
 mod tests;
 
-/// Whether `--limit-mm-per-prompt` limits every modality to zero items. This build only
-/// implements the text-only case, so reject a non-zero or unknown limit instead of accepting a
-/// flag whose promise it cannot keep.
-fn parse_text_only(value: &str) -> Result<bool, String> {
+/// Parse the vLLM-style per-prompt media limits.
+fn parse_media_limits(value: &str) -> Result<infer_models::MediaLimits, String> {
     let limits: BTreeMap<String, u64> =
         serde_json::from_str(value).map_err(|error| format!("modality limits: {error}"))?;
-    if limits.is_empty() {
-        return Ok(false);
+    let mut parsed = infer_models::MediaLimits::default();
+    let mut seen = false;
+    for (modality, limit) in limits {
+        let limit = usize::try_from(limit)
+            .map_err(|_| format!("modality limit for `{modality}` is too large"))?;
+        match modality.as_str() {
+            "image" => parsed.images = limit,
+            "video" => parsed.videos = limit,
+            _ => return Err(format!("unsupported modality limit `{modality}`")),
+        }
+        seen = true;
     }
-    if let Some(modality) = limits
-        .keys()
-        .find(|modality| !matches!(modality.as_str(), "image" | "video"))
-    {
-        return Err(format!("unsupported modality limit `{modality}`"));
+    if !seen {
+        return Err("modality limits must not be empty".into());
     }
-    if let Some((modality, _)) = limits.iter().find(|(_, limit)| **limit != 0) {
-        return Err(format!(
-            "non-zero limit for `{modality}` is not supported; this build serves text only"
-        ));
-    }
-    Ok(true)
+    parsed.validate().map_err(|error| error.to_string())?;
+    Ok(parsed)
 }

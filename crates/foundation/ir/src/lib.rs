@@ -31,7 +31,9 @@ pub use hardware::{
 pub use model::{
     BackboneKind, FeedForward, Head, Mixer, ModelIr, PositionSpec, StateKind, StateRequirement,
 };
-pub use multimodal::{MediaInput, MediaNode, MediaStage, Modality, MultimodalGraph};
+pub use multimodal::{
+    MediaInput, MediaItem, MediaNode, MediaPlan, MediaStage, Modality, MultimodalGraph,
+};
 pub use precision::{DType, PrecisionPlan, ScaleGranularity, ScaleSpec, TensorLayout};
 pub use request::{CanonicalRequest, Qos, RequestInput, Sampling};
 pub use scheduling::{

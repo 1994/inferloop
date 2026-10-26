@@ -135,3 +135,42 @@ fn preprocessing_matches_the_reference_processor() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn fused_normalization_preserves_reference_bits() {
+    let norm = Normalization {
+        mean: [0.5; 3],
+        std: [0.5; 3],
+        rescale: RESCALE,
+    };
+    for (value, bits) in [
+        (223.0f32, 0x3f3f_bfc0u32),
+        (192.0, 0x3f01_8182u32),
+        (255.0, 0x3f80_0000u32),
+        (0.0, 0xbf80_0000u32),
+    ] {
+        assert_eq!(norm.apply(value, 0).to_bits(), bits, "value {value}");
+    }
+}
+
+#[test]
+fn custom_rescale_preserves_original_float_semantics() {
+    for rescale in [0.3f32, 0.7, 0.0, 1.0e-30] {
+        let mean = [0.11f32, 0.22, 0.33];
+        let std = [0.5f32, 0.25, 0.125];
+        let norm = Normalization { mean, std, rescale };
+        for channel in 0..3 {
+            for value in [0.0f32, 1.0, 64.0, 128.0, 255.0] {
+                let expected = f64::from(value)
+                    .mul_add(f64::from(rescale), -f64::from(mean[channel]))
+                    / f64::from(std[channel]);
+                let actual = f64::from(norm.apply(value, channel));
+                assert!(actual.is_finite(), "rescale {rescale} value {value}");
+                assert!(
+                    (actual - expected).abs() <= 1e-6 * expected.abs().max(1.0),
+                    "rescale {rescale} channel {channel} value {value}: {actual} vs {expected}"
+                );
+            }
+        }
+    }
+}

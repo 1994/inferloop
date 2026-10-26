@@ -20,22 +20,48 @@ const STAGING_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Query, key and value packed into one checkpoint projection.
 const QKV: usize = 3;
-
 /// Vision GEMM column tile; padded widths are multiples of it.
 const COLUMN_MULTIPLE: usize = 64;
 
 /// Each prepared attention, MLP or merger group replaces two weight/bias pairs in the inventory.
 const PREPARED_SLOTS: usize = 4;
+/// Real head with a device-validated compact attention pack.
+const COMPACT_HEAD: usize = 72;
+/// Physical compact half-head for [`COMPACT_HEAD`].
+const COMPACT_HALF: usize = 48;
 
-/// Half-head tile width: the real half head (36) rounded up to a power of two.
+/// Half-head tile width: the real half head rounded up to a power-of-two tile.
+///
+/// The installed cuTile attention/RoPE partition views require power-of-two tile extents. A
+/// 72-wide head therefore uses 64/128 until a compact 48/96 kernel is device-validated.
 pub fn half_tile(encoder: &ModalityEncoder) -> Result<usize> {
     let head = head_dim(encoder)?;
     if head < 2 || !head.is_multiple_of(2) {
         return Err(Error::invalid("encoder head width must be even"));
     }
-    (head / 2)
-        .checked_next_power_of_two()
+    let half = head / 2;
+    // Head72 is the only compact geometry with a device-validated 48/96 attention pack. Other
+    // real heads (64/80/96/128) retain the power-of-two fallback; in particular head96 must not be
+    // rounded to 48 because its real half is 48, not 36.
+    if head == COMPACT_HEAD {
+        return Ok(COMPACT_HALF);
+    }
+    half.checked_next_power_of_two()
         .ok_or_else(|| Error::invalid("encoder half-head overflow"))
+}
+
+/// Padded half-head layout mapped back to real source lanes.
+///
+/// The two halves stay contiguous and in order; each real half is followed by zero lanes.
+pub(super) fn half_layout(real_head: usize, half: usize) -> Vec<Option<usize>> {
+    let half_head = real_head / 2;
+    let mut layout = Vec::with_capacity(2 * half);
+    for half_index in 0..2 {
+        for lane in 0..half {
+            layout.push((lane < half_head).then_some(half_index * half_head + lane));
+        }
+    }
+    layout
 }
 
 /// Prepared attention projections of one block.
@@ -196,37 +222,35 @@ impl VisionWeights {
             if qkv_weight.len() != QKV * heads * real_head * hidden {
                 return Err(Error::invalid(format!("{base}qkv.weight shape")));
             }
-            let half_head = real_head / 2;
             let zero_weight = || vec![bf16::from_bits(0); rows * hidden];
             let zero_bias = || vec![bf16::from_bits(0); rows];
             let mut packed: Vec<(Vec<bf16>, Vec<bf16>)> =
                 (0..QKV).map(|_| (zero_weight(), zero_bias())).collect();
+            let layout = half_layout(real_head, half);
             for (which, (weight, bias)) in packed.iter_mut().enumerate() {
                 for head_index in 0..heads {
-                    for half_index in 0..2 {
-                        for lane in 0..half_head {
-                            let target = (head_index * 2 + half_index) * half + lane;
-                            let source = (which * heads + head_index) * real_head
-                                + half_index * half_head
-                                + lane;
-                            weight[target * hidden..(target + 1) * hidden].copy_from_slice(
-                                &qkv_weight[source * hidden..(source + 1) * hidden],
-                            );
-                            bias[target] = qkv_bias[source];
-                        }
+                    for (local, source_lane) in layout.iter().enumerate() {
+                        let Some(source_lane) = source_lane else {
+                            continue;
+                        };
+                        let target = head_index * width + local;
+                        let source = (which * heads + head_index) * real_head + source_lane;
+                        weight[target * hidden..(target + 1) * hidden]
+                            .copy_from_slice(&qkv_weight[source * hidden..(source + 1) * hidden]);
+                        bias[target] = qkv_bias[source];
                     }
                 }
             }
             let mut proj = vec![bf16::from_bits(0); hidden * rows];
             for head_index in 0..heads {
-                for half_index in 0..2 {
-                    for lane in 0..half_head {
-                        let column = (head_index * 2 + half_index) * half + lane;
-                        let source = head_index * real_head + half_index * half_head + lane;
-                        for row in 0..hidden {
-                            proj[row * rows + column] =
-                                proj_weight[row * heads * real_head + source];
-                        }
+                for (local, source_lane) in layout.iter().enumerate() {
+                    let Some(source_lane) = source_lane else {
+                        continue;
+                    };
+                    let column = head_index * width + local;
+                    let source = head_index * real_head + source_lane;
+                    for row in 0..hidden {
+                        proj[row * rows + column] = proj_weight[row * heads * real_head + source];
                     }
                 }
             }
@@ -414,6 +438,34 @@ impl VisionWeights {
         self.tensors.len()
             + PREPARED_SLOTS
                 * (self.attention.len() + self.mlp.len() + usize::from(self.merger.is_some()))
+    }
+
+    /// Exact bytes of every retained raw and prepared vision owner.
+    #[must_use]
+    pub fn inventory_bytes(&self) -> u64 {
+        let tensor =
+            |value: &Arc<Tensor<bf16>>| u64::try_from(value.num_bytes()).unwrap_or(u64::MAX);
+        let prepared = |value: &Prepared| tensor(&value.0) + tensor(&value.1);
+        self.tensors.values().map(tensor).sum::<u64>()
+            + self
+                .attention
+                .iter()
+                .map(|layer| {
+                    prepared(&layer.q)
+                        + prepared(&layer.k)
+                        + prepared(&layer.v)
+                        + prepared(&layer.proj)
+                })
+                .sum::<u64>()
+            + self
+                .mlp
+                .iter()
+                .map(|layer| prepared(&layer.fc1) + prepared(&layer.fc2))
+                .sum::<u64>()
+            + self
+                .merger
+                .as_ref()
+                .map_or(0, |layer| prepared(&layer.fc1) + prepared(&layer.fc2))
     }
 
     /// Whether no tensor was bound.

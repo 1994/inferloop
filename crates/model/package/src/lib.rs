@@ -10,6 +10,7 @@ mod workload;
 pub use infer_spi::ImportedModel;
 pub use input::constraint::{CONSTRAINT_REQUEST_BYTES, ToolConstraints};
 pub use input::image::{ImageProcessor, PreprocessedImage, RgbImage};
+pub use input::multimodal::{MediaLimits, MultimodalAssets};
 pub use input::prompt::{
     ExpandedPrompt, MediaLayout, MediaSpan, PreparedPrompt, PromptImage, RawImage, VisualPlacement,
     expand_placeholders, image_token_counts, media_layout, place_visual_embeddings, placeholders,

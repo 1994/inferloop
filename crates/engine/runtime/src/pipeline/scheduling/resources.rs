@@ -43,6 +43,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         let record = self.host.requests.known(id)?;
         if record.prefill_done != 0
             || record.prefix_attempted
+            || record.media.is_some()
             || self.preemption_focus.is_some_and(|focus| focus != id)
         {
             return Ok(());

@@ -99,6 +99,8 @@ fn tasks(
                     ..Sampling::default()
                 }),
                 plain_greedy: round.is_multiple_of(2),
+
+                media: None,
             })
         })
         .collect()
