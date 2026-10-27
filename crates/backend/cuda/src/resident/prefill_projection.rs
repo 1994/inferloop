@@ -1,3 +1,4 @@
+mod dense;
 use super::{ProgramWeights, capture::error, prefill_gemm::gemm};
 use crate::constants::PREFILL_GEMM_TILE_K;
 use crate::constants::PREFILL_GEMM_TILE_N;
@@ -10,15 +11,14 @@ use crate::device::cublaslt::Support;
 use crate::{device::DeviceProfile, mlp::ProjectionWeight};
 use cutile::half::bf16;
 use cutile::prelude::*;
+pub(super) use dense::DensePlan;
 use infer_ir::TensorNode;
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::tuning::prefill::narrow_dense_layout;
+use crate::tuning::prefill::{delegate_dense, narrow_dense_layout};
 const NARROW_DENSE_TILE: [usize; 2] = [PREFILL_LANES, 16];
-/// Output columns and reduction width of the GDN `in_proj_b`/`in_proj_a` pair.
-pub(super) const GDN_BA_SHAPE: [i32; 2] = [48, 5120];
 
 /// Down projection absorbing `silu(gate) * up`: node indices of the `SiLU` and multiply it
 /// replaces, then the gate and up tensors it reads.
@@ -406,7 +406,7 @@ pub(super) fn record(
     scope: &Scope,
     node: &TensorNode,
     arena: &mut super::ActivationArena,
-    (weights, profile): (&ProgramWeights, &DeviceProfile),
+    weights: &ProgramWeights,
     partials: &mut BTreeMap<usize, Tensor<f32>>,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
     delegated: Option<&mut Support>,
@@ -460,10 +460,6 @@ pub(super) fn record(
                 arena.buffers[slot] = Some(output.reshape(&[flat])?);
                 return Ok(());
             }
-            if records_narrow_dense(scope, profile, &input, w, &mut output, dims)? {
-                arena.buffers[slot] = Some(output.reshape(&[flat])?);
-                return Ok(());
-            }
             scope.record(
                 gemm::dense(
                     (&mut output).partition([PREFILL_LANES, PREFILL_GEMM_TILE_N]),
@@ -500,13 +496,8 @@ pub(super) fn record(
     Ok(())
 }
 
-/// Record GDN `in_proj_b` + `in_proj_a` as one launch: both are Dense BF16 N48
-/// projections of the same normalized input. The pair kernel keeps each output's
-/// independent K accumulation order; only the launch (and the shared `x` load) is fused.
-///
-/// Returns false when either node would take a different path (narrow N16 layout,
-/// sparse experts, vendor GEMM, or unexpected shape). A 48x5120 weight is below
-/// the tuning policy's vendor threshold, so the vendor path is impossible for this shape.
+/// Record two graph-identified sibling projections in one launch, retaining each K accumulation chain.
+/// Dense weight/layout checks keep sparse, vendor and narrow-layout projections on their own paths.
 pub(super) fn record_pair(
     scope: &Scope,
     first: &TensorNode,
@@ -529,35 +520,41 @@ pub(super) fn record_pair(
     ) else {
         return Ok(false);
     };
-    if weight_b.shape() != GDN_BA_SHAPE || weight_a.shape() != weight_b.shape() {
+    let [rows, columns] = weight_b.shape() else {
+        return Ok(false);
+    };
+    if *rows <= 0 || *columns <= 0 || weight_a.shape() != weight_b.shape() {
         return Ok(false);
     }
+    let (rows, columns) = (
+        usize::try_from(*rows).map_err(error)?,
+        usize::try_from(*columns).map_err(error)?,
+    );
     let width = arena.lanes();
-    let expected = usize::try_from(GDN_BA_SHAPE[0]).map_err(error)? * width;
+    if width == 0
+        || delegate_dense(width, rows, columns)
+        || narrow_dense_layout(&profile.architecture, (width, rows, columns))
+    {
+        return Ok(false);
+    }
+    let expected = rows
+        .checked_mul(width)
+        .ok_or_else(|| error("paired projection extent overflow"))?;
     let input_slot = arena.slot(first.inputs[0]).map_err(error)?;
     let input_elements = arena.buffers[input_slot]
         .as_ref()
         .ok_or_else(|| error("paired projection input"))?
         .size();
-    let columns = input_elements / width;
-    if columns * width != input_elements
-        || columns != usize::try_from(GDN_BA_SHAPE[1]).map_err(error)?
+    if input_elements.checked_div(width) != Some(columns)
+        || !input_elements.is_multiple_of(width)
         || arena.get(first.outputs[0]).map_err(error)?.size() != expected
         || arena.get(second.outputs[0]).map_err(error)?.size() != expected
-        || narrow_dense_layout(
-            &profile.architecture,
-            (
-                width,
-                usize::try_from(GDN_BA_SHAPE[0]).map_err(error)?,
-                columns,
-            ),
-        )
     {
         return Ok(false);
     }
     let slot_b = arena.slot(first.outputs[0]).map_err(error)?;
     let slot_a = arena.slot(second.outputs[0]).map_err(error)?;
-    if slot_b == slot_a {
+    if slot_b == slot_a || slot_b == input_slot || slot_a == input_slot {
         return Ok(false);
     }
     let output_b = arena.buffers[slot_b]
@@ -566,7 +563,6 @@ pub(super) fn record_pair(
     let output_a = arena.buffers[slot_a]
         .take()
         .ok_or_else(|| error("paired projection a output"))?;
-    let rows = usize::try_from(GDN_BA_SHAPE[0]).map_err(error)?;
     let mut output_b = output_b.reshape(&[width, rows])?;
     let mut output_a = output_a.reshape(&[width, rows])?;
     let flat_input = arena.buffers[input_slot]
@@ -662,6 +658,68 @@ fn records_precise_sparse(
             .generics(vec![bf16::DTYPE.as_str().into(), columns.to_string()]),
     )?;
     Ok(true)
+}
+
+/// Record a graph-identified small dense projection on the qualified narrow prompt rung.
+pub(super) fn record_narrow(
+    scope: &Scope,
+    node: &TensorNode,
+    arena: &mut super::ActivationArena,
+    (weights, profile): (&ProgramWeights, &DeviceProfile),
+) -> Result<bool, DeviceError> {
+    let Some(ProjectionWeight::Dense(weight)) = weights.projections.get(&node.inputs[1]) else {
+        return Ok(false);
+    };
+    let [rows, columns] = weight.shape() else {
+        return Ok(false);
+    };
+    if *rows <= 0 || *columns <= 0 || !weights.expert_banks.is_empty() {
+        return Ok(false);
+    }
+    let (rows, columns) = (
+        usize::try_from(*rows).map_err(error)?,
+        usize::try_from(*columns).map_err(error)?,
+    );
+    let width = arena.lanes();
+    if !narrow_dense_layout(&profile.architecture, (width, rows, columns))
+        || delegate_dense(width, rows, columns)
+    {
+        return Ok(false);
+    }
+    let input_slot = arena.slot(node.inputs[0]).map_err(error)?;
+    let output_slot = arena.slot(node.outputs[0]).map_err(error)?;
+    if input_slot == output_slot {
+        return Ok(false);
+    }
+    let Some(expected) = width.checked_mul(rows) else {
+        return Err(error("control projection extent overflow"));
+    };
+    if arena.get(node.inputs[0]).map_err(error)?.size()
+        != width
+            .checked_mul(columns)
+            .ok_or_else(|| error("control input extent overflow"))?
+        || arena.get(node.outputs[0]).map_err(error)?.size() != expected
+    {
+        return Ok(false);
+    }
+    let output = arena.buffers[output_slot]
+        .take()
+        .ok_or_else(|| error("control projection output"))?;
+    let mut output = output.reshape(&[width, rows])?;
+    let input = arena.buffers[input_slot]
+        .as_ref()
+        .ok_or_else(|| error("control projection input"))?;
+    let input = input.view(&[width, columns]).map_err(error)?;
+    let recorded = records_narrow_dense(
+        scope,
+        profile,
+        &input,
+        weight,
+        &mut output,
+        (width, rows, columns),
+    );
+    arena.buffers[output_slot] = Some(output.reshape(&[expected])?);
+    recorded
 }
 
 fn records_narrow_dense(

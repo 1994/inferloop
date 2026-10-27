@@ -1,6 +1,7 @@
 //! Node-major verification: consecutive projections reuse weights in cache.
 //! Recurrent checkpoints stay on the device; KV rollback is a logical prefix.
 //! Prefill width 32 keeps one batched arena: auxiliaries record once per node.
+use super::prefill_projection::{DensePlan, record_narrow};
 use super::{
     ActivationArena, ProgramWeights,
     capture::{Capture, CaptureMode, error},
@@ -1068,6 +1069,16 @@ impl BatchBuilder<'_> {
         super::prefill_projection::record_pair(scope, first, second, arena, (self.weights, profile))
     }
 
+    fn record_prompt_narrow(
+        &self,
+        scope: &Scope,
+        node: &TensorNode,
+        arena: &mut ActivationArena,
+    ) -> StdResult<bool, DeviceError> {
+        let profile = self.device.profile().map_err(error)?;
+        record_narrow(scope, node, arena, (self.weights, profile))
+    }
+
     fn capture32(
         &mut self,
         arena: &mut ActivationArena,
@@ -1088,7 +1099,7 @@ impl BatchBuilder<'_> {
         let demand = (readout == PromptReadout::StateOnly)
             .then(|| super::prefill_demand::StateDemand::new(self.graph));
         let quant_plan = super::nvfp4_gemm::QuantPairPlan::new(self.graph, self.weights);
-        let pairs = gdn_ba_pairs(self.graph, self.weights);
+        let dense = DensePlan::new(self.graph, prompt_row.as_ref().and(self.graph.logits));
         let mlp = super::prefill_projection::MlpPlan::new(
             self.graph,
             self.weights,
@@ -1123,7 +1134,7 @@ impl BatchBuilder<'_> {
                 )? {
                     continue;
                 }
-                if !skip && let Some(&second) = pairs.get(&index) {
+                if !skip && let Some(second) = dense.pair(index) {
                     let paired = &self.graph.nodes[second];
                     let paired_skip = paired
                         .outputs
@@ -1142,6 +1153,9 @@ impl BatchBuilder<'_> {
                         fused_second = Some(second);
                         continue;
                     }
+                }
+                if !skip && dense.narrow(index) && self.record_prompt_narrow(scope, node, arena)? {
+                    continue;
                 }
                 if logits && let Some(row) = prompt_row.as_deref_mut() {
                     super::prompt_logits::record(
@@ -1287,7 +1301,7 @@ impl BatchBuilder<'_> {
                     scope,
                     node,
                     arena,
-                    (self.weights, self.device.profile().map_err(error)?),
+                    self.weights,
                     partials,
                     self.nvfp4,
                     self.delegated.as_deref_mut(),
@@ -2331,48 +2345,6 @@ impl SlotDecodeGraph {
         *cursor = position;
         Ok(())
     }
-}
-
-/// Adjacent GDN `in_proj_b`/`in_proj_a` Dense projections of the same input.
-/// The pair is the only two consecutive N48 K5120 linears in the decoder graph.
-fn gdn_ba_pairs(graph: &DataflowGraph, weights: &ProgramWeights) -> BTreeMap<usize, usize> {
-    let mut pairs = BTreeMap::new();
-    let mut index = 0;
-    while index + 1 < graph.nodes.len() {
-        let first = &graph.nodes[index];
-        let second = &graph.nodes[index + 1];
-        if gdn_ba_nodes(first, second)
-            && gdn_ba_projection(first, weights)
-            && gdn_ba_projection(second, weights)
-        {
-            pairs.insert(index, index + 1);
-            index += 2;
-        } else {
-            index += 1;
-        }
-    }
-    pairs
-}
-
-/// Structural half of the pair test: same layer, same single activation input, both
-/// are plain `Linear` nodes. Weight identity/shape is checked separately.
-fn gdn_ba_nodes(first: &TensorNode, second: &TensorNode) -> bool {
-    first.layer == second.layer
-        && first.op == TensorOp::Linear
-        && second.op == TensorOp::Linear
-        && first.inputs.len() == 2
-        && second.inputs.len() == 2
-        && first.inputs[0] == second.inputs[0]
-        && first.outputs.len() == 1
-        && second.outputs.len() == 1
-}
-
-fn gdn_ba_projection(node: &TensorNode, weights: &ProgramWeights) -> bool {
-    matches!(
-        weights.projections.get(&node.inputs[1]),
-        Some(ProjectionWeight::Dense(weight))
-            if weight.shape() == super::prefill_projection::GDN_BA_SHAPE
-    )
 }
 
 /// One allocation for every prompt lane's metadata, with a non-owning row view per lane.
