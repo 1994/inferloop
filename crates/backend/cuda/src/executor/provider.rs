@@ -73,10 +73,15 @@ impl CudaExecutor {
             .map(|state| state.history.len().div_ceil(block))
             .sum();
         let (allocations, releases) = pool.map_or((0, 0), SlotPool::lease_counters);
+        let pending = self
+            .pool_quote
+            .as_ref()
+            .filter(|_| pool.is_none())
+            .map(|quote| (quote.width, quote.capacity));
         KvCacheInspection {
             pinned_blocks: 0,
             block_size: block,
-            total_blocks: pool_blocks.max(self.loaded.model().max_sequence.div_ceil(block)),
+            total_blocks: logical_kv_blocks(pool_blocks, pending, self.loaded.model().max_sequence),
             free_blocks,
             active_blocks,
             cached_blocks: self.prefix.cached_tokens().div_ceil(block),
@@ -155,3 +160,20 @@ impl CudaExecutor {
         self.release(state)
     }
 }
+
+/// The runtime allocates logical descriptors once, before a demand-driven pool exists.
+/// Its ceiling must cover any funded future slot layout; these are not free physical pages.
+fn logical_kv_blocks(
+    physical: usize,
+    pending: Option<(usize, usize)>,
+    private_capacity: usize,
+) -> usize {
+    let pooled = pending.map_or(physical, |(width, capacity)| {
+        width.saturating_mul(capacity).div_ceil(KV_BLOCK_TOKENS)
+    });
+    pooled.max(private_capacity.div_ceil(KV_BLOCK_TOKENS))
+}
+
+#[cfg(test)]
+#[path = "../../tests/unit/executor_kv_inspection.rs"]
+mod tests;

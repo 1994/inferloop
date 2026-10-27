@@ -84,6 +84,9 @@ fn request_length_pool_preserves_live_state_and_restores_after_long_request() ->
     assert!(initial.selected > 1);
     let cold = backend.kv_cache();
     assert_eq!(cold.pool_bytes, 0);
+    let planned = backend.pool_quote.unwrap();
+    assert!(cold.total_blocks >= planned.width * planned.capacity / KV_BLOCK_TOKENS);
+    assert_eq!(cold.available_blocks, 0);
     assert_eq!(cold.block_size, KV_BLOCK_TOKENS);
     backend.prepare_state_reservation(384, OutputReadout::Logits)?;
     assert!(
