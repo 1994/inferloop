@@ -142,7 +142,8 @@ def check_exceptions():
                         ROOT / "crates/backend/cuda/src/resident/arena.rs",
                         # Narrow callers of lifetime-bound FP4 arena aliases: sole-consumer
                         # product, exclusive arena lease, completion and same-stream replay.
-                        ROOT / "crates/backend/cuda/src/resident/nvfp4_gemm/workspace/vendor_fp4.rs",
+                        ROOT
+                        / "crates/backend/cuda/src/resident/nvfp4_gemm/workspace/vendor_fp4.rs",
                         ROOT / "crates/backend/cuda/src/resident/profile.rs",
                         # Explicit PTX launch boundaries: checked extents, owning device stream,
                         # Function/Module retention and input/output resource leases.
