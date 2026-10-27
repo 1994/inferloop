@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 348
+      "tests": 357
     },
     "frontdoor": {
       "benches": 0,
@@ -199,6 +199,8 @@
     "requires CUDA, INFER_TEST_MODEL, safe-run; four slot matrix rows, all 96 weights and complete original F64/bit gates": 1,
     "requires CUDA, INFER_TEST_MODEL/frozen tokens/table, safe-run; four distinct trajectories, inactive/rebind, complete private F32/pool equality": 1,
     "requires CUDA, Qwen checkpoint and safe-run": 1,
+    "requires CUDA, actual checkpoint and frozen prompt; safe-run": 1,
+    "requires CUDA, checkpoint and private seed missing both live down geometries; safe-run": 1,
     "requires CUDA, frozen INFER_TEST_MODEL/TOKENS/table; safe-run; complete F32/FP8 state and vocabulary comparisons": 1,
     "requires CUDA, release, safe-run; validates actual probe input bits and temporary ownership": 1,
     "requires CUDA/Lt FP4 hardware, release, and protected runner": 1,
@@ -809,6 +811,11 @@
     },
     {
       "crate": "cuda",
+      "file": "src/tuning/projection_budget.rs",
+      "mount": "../../tests/unit/projection_search_budget.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/tuning/recurrent/exact.rs",
       "mount": "../../../tests/unit/tuning_recurrent_exact.rs"
     },
@@ -1299,11 +1306,11 @@
     }
   ],
   "totals": {
-    "all": 913,
+    "all": 922,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 913
+    "tests": 922
   }
 }
