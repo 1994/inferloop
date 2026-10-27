@@ -96,13 +96,19 @@ attention、recurrent、norm、greedy 的独立 allowance 保持原有边界。
 | 常数 | 位置 | 现状 | 应改为 |
 |---|---|---|---|
 | `DEFAULT_MAX_BATCH = 16` | `engine/runtime/src/config.rs` | 最大并发序列数固定为 16 | `min(N_mem, N_knee)`：N_mem = 状态预算 ÷ (每序列状态 + 保底 KV)；N_knee = (峰值算力 ÷ 带宽) × (权重字节 ÷ 参数量) ÷ 2 ÷ 每序列每步 token 数。由 backend 计算后经接口交给 runtime |
-| `VALUE_SPLIT_*`（按 SM 数 63/127 分档） | `resident/slot_recurrent.rs` | GDN verify 的 value 切分按 SM 数分档 | 由 `ceil(目标 wave 数 × SM 数 ÷ (层头数 × 槽数))` 推出，并按 value 维的整除约束取值 |
+| GDN value 切分（已推导） | `resident/slot_recurrent.rs` | 读取设备 SM/warp 数和当前节点的 value 头数、维度、槽数 | 在每个 value 分块不宽于设备 warp 的约束内，选择最接近一条 SM wave 的合法网格；按 value 维的二次幂整除约束取值，不再按 SM 数分档 |
 | pooled attention `MAX_BATCH = 4`、切分数上限 64 | `resident/attention_decode/pooled.rs`、`tuning/attention/decode.rs` | 每组 4 个槽串行；切分数已按 SM 数、KV 头数与每组槽数推导，尚未结合上下文长度 | 切分数按上下文长度推导（每份至少若干 KV 块），部分和 workspace 随之缩小，从而一次启动处理全部槽 |
 | `SWIGLU_TILE_ROWS/COLUMNS = 64` | `resident/nvfp4_gemm/workspace.rs` | 在 RTX 5090 上实测得出（128 行时寄存器溢出） | 纳入 resident GEMM 调优器，作为候选按形状实测 |
 | `GDN_BA_SHAPE = [48, 5120]` | `resident/prefill_projection.rs` | 按形状识别 b/a 投影对 | 按图结构识别（同输入、相邻、同为稠密小投影），不依赖具体形状 |
 | `MAX_POOL_ROWS = CB_DECODE_SLOTS` | `resident/pool_gemv.rs` | 行数不超过 16 时走 GEMV | 由 GEMV 与分块 GEMM 的实测交叉点决定，纳入调优 |
 | resident 投影搜索预算（已推导） | `tuning/projection_budget.rs` | 按实际录图保留的 FP4/FP8 形状、候选数和独立确认轮次估算 | 同一模型跨层和 serving state 去重；耗尽时列出尚未完成的形状，保留 native 路径 |
 | 每槽保底 KV = 单槽容量 ÷ 2 | `loading/budget.rs` 的 `funded_kv_tokens` | 槽数 = KV token ÷ 4128 | 按实际请求长度分布接纳请求，而不是按固定半容量保底 |
+
+
+GDN 的 wave 目标还要服从分块的资源边界：一个 verify CTA 要处理三个候选 lane，
+过宽的 value 分块会让寄存器和共享内存压力上升，不能只以 CTA 数更少作为优化依据。
+实现从驱动读取 warp 宽度限制连续 value 列，再用实际头数与槽数寻找最近的合法网格；
+设备数值、状态与性能检查分别验证所选分块，不把网格推导本身当作性能证明。
 
 ## 参考：一次完整调优的记录
 

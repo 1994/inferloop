@@ -1,12 +1,111 @@
-use super::fused;
+use super::{ValueDevice, fused};
 use crate::constants::CONV_KERNEL_TILE;
+use crate::tuning::median;
+use cutile::bench::{BenchOptions, do_bench_paired};
+use cutile::cutile_compiler::hints::CompileOptions;
+use cutile::error::tensor_error;
+use infer_workloads::DeltaGeometry;
 use std::error::Error;
+use std::time::Duration;
 
 #[test]
-fn value_split_follows_the_device_sm_budget() {
-    assert_eq!(super::value_split(32), 1);
-    assert_eq!(super::value_split(80), 2);
-    assert_eq!(super::value_split(170), 4);
+fn wave_split_uses_actual_head_grid_and_value_dimension() -> TestResult {
+    for (sm, heads, dim, slots, expected) in [
+        (32, 48, 128, 1, 4),
+        (80, 48, 128, 1, 4),
+        (170, 48, 128, 1, 4),
+        (170, 48, 128, 2, 4),
+        (170, 48, 128, 4, 4),
+        (170, 48, 128, 16, 4),
+        (170, 192, 128, 1, 4),
+        (170, 16, 32, 1, 8),
+        (170, 4, 32, 1, 32),
+    ] {
+        assert_eq!(
+            super::value_split(
+                ValueDevice {
+                    multiprocessors: sm,
+                    warp_size: 32
+                },
+                heads,
+                dim,
+                slots
+            )?,
+            expected
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn wave_split_minimizes_global_grid_distance() -> TestResult {
+    for sm in [1, 32, 80, 170, 512] {
+        for heads in [1, 4, 16, 48, 192] {
+            for dim in [1, 32, 128] {
+                for slots in [1, 2, 4, 16] {
+                    let split = super::value_split(
+                        ValueDevice {
+                            multiprocessors: sm,
+                            warp_size: 32,
+                        },
+                        heads,
+                        dim,
+                        slots,
+                    )?;
+                    assert!(split.is_power_of_two());
+                    assert_eq!(dim % split, 0);
+                    let target = usize::try_from(sm)?;
+                    let distance = (slots * heads * split).abs_diff(target);
+                    assert!(dim / split <= 32);
+                    let mut alternative = (dim / 32).max(1);
+                    while alternative <= dim {
+                        assert!(distance <= (slots * heads * alternative).abs_diff(target));
+                        alternative *= 2;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn wave_split_rejects_invalid_graph_or_device_geometry() {
+    for (sm, heads, dim, slots) in [
+        (0, 48, 128, 1),
+        (170, 0, 128, 1),
+        (170, 48, 0, 1),
+        (170, 48, 3, 1),
+        (170, 48, 128, 0),
+        (170, usize::MAX, 128, 2),
+    ] {
+        assert!(
+            super::value_split(
+                ValueDevice {
+                    multiprocessors: sm,
+                    warp_size: 32
+                },
+                heads,
+                dim,
+                slots
+            )
+            .is_err()
+        );
+    }
+    for warp_size in [0, 3] {
+        assert!(
+            super::value_split(
+                ValueDevice {
+                    multiprocessors: 170,
+                    warp_size
+                },
+                48,
+                128,
+                1
+            )
+            .is_err()
+        );
+    }
 }
 
 // Tile IR is only specialized at launch; compile the snapshot-free kernels on header-only CI.
@@ -94,7 +193,7 @@ fn snapshot_free_recurrent_kernels_compile_without_a_device() -> Result<(), Box<
 use crate::{device::CudaDevice, resident::recurrent::recurrent};
 use cutile::prelude::*;
 
-type TestResult = Result<(), Box<dyn Error>>;
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 fn upload(
     device: &CudaDevice,
@@ -114,6 +213,7 @@ fn values(count: usize, salt: usize) -> Vec<f32> {
 fn assert_close(label: &str, actual: &[f32], expected: &[f32]) {
     assert_eq!(actual.len(), expected.len(), "{label} length");
     for (index, (a, b)) in actual.iter().zip(expected).enumerate() {
+        assert!(a.is_finite() && b.is_finite(), "{label}[{index}] nonfinite");
         assert!(
             (a - b).abs() <= 1e-5 * b.abs().max(1.0),
             "{label}[{index}]: {a} != {b}"
@@ -303,10 +403,50 @@ struct DeltaFixture {
     a_log: Tensor<f32>,
     bias: Tensor<f32>,
     dim: usize,
+    block: usize,
     generics: Vec<String>,
 }
 
 impl DeltaFixture {
+    fn graph(
+        &self,
+        device: &CudaDevice,
+        state: &Tensor<f32>,
+        outs: &mut [Tensor<f32>],
+        metadata: &[Arc<Tensor<i32>>],
+        compile: &CompileOptions,
+    ) -> TestResult<CudaGraph<()>> {
+        let block = self.block;
+        let [o0, o1, o2] = outs else { unreachable!() };
+        Ok(CudaGraph::scope(&device.stream, |scope| {
+            scope.record(
+                fused::delta_verify3(
+                    o0.partition([1, 1, block]),
+                    o1.partition([1, 1, block]),
+                    o2.partition([1, 1, block]),
+                    state,
+                    &self.lanes[0].0,
+                    &self.lanes[1].0,
+                    &self.lanes[2].0,
+                    &self.lanes[0].1,
+                    &self.lanes[1].1,
+                    &self.lanes[2].1,
+                    &self.lanes[0].2,
+                    &self.lanes[1].2,
+                    &self.lanes[2].2,
+                    &self.a_log,
+                    &self.bias,
+                    &metadata[0],
+                    &metadata[1],
+                    &metadata[2],
+                )
+                .generics(self.generics.clone())
+                .compile_options(compile.clone()),
+            )?;
+            Ok(())
+        })?)
+    }
+
     fn verify(
         &self,
         device: &CudaDevice,
@@ -314,12 +454,12 @@ impl DeltaFixture {
         outs: &mut [Tensor<f32>],
         metadata: &[Arc<Tensor<i32>>],
     ) -> TestResult {
-        let dim = self.dim;
+        let block = self.block;
         let [o0, o1, o2] = outs else { unreachable!() };
         fused::delta_verify3(
-            o0.partition([1, 1, dim]),
-            o1.partition([1, 1, dim]),
-            o2.partition([1, 1, dim]),
+            o0.partition([1, 1, block]),
+            o1.partition([1, 1, block]),
+            o2.partition([1, 1, block]),
             state,
             &self.lanes[0].0,
             &self.lanes[1].0,
@@ -349,8 +489,9 @@ impl DeltaFixture {
         count: usize,
     ) -> TestResult {
         let dim = self.dim;
+        let block = self.block;
         fused::delta_commit3(
-            state.partition([1, dim, dim]),
+            state.partition([1, dim, block]),
             &self.lanes[0].0,
             &self.lanes[1].0,
             &self.lanes[2].0,
@@ -378,31 +519,100 @@ impl DeltaFixture {
 fn delta_verify_and_commit_match_sequential_lanes() -> TestResult {
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
-    let (key_heads, value_heads, dim) = (2usize, 4usize, 32usize);
+    delta_reference_case(&device, [2, 4, 32], 32)
+}
+
+#[test]
+#[ignore = "requires CUDA hardware; derived head grids, unchanged existing reference tolerance"]
+fn wave_derived_delta_matches_existing_reference() -> TestResult {
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    for geometry in [
+        [2, 4, 32],
+        [4, 16, 32],
+        [4, 16, 128],
+        [16, 48, 128],
+        [16, 192, 128],
+    ] {
+        let [_, heads, dim] = geometry;
+        let mut blocks = Vec::new();
+        for slots in [1, 2, 4, 16] {
+            let split = super::value_split(ValueDevice::new(&device)?, heads, dim, slots)?;
+            let block = dim / split;
+            if blocks.contains(&block) {
+                continue;
+            }
+            blocks.push(block);
+            delta_reference_case(&device, geometry, block)?;
+        }
+    }
+    Ok(())
+}
+
+fn delta_scalar_reference(
+    device: &CudaDevice,
+    fixture: &DeltaFixture,
+    positions: [i32; 3],
+    count: usize,
+    geometry: [usize; 3],
+) -> TestResult<Reference<Vec<f32>>> {
+    let [key_heads, value_heads, dim] = geometry;
+    let geometry = DeltaGeometry {
+        key_heads,
+        value_heads,
+        key_dim: dim,
+        value_dim: dim,
+        norm_epsilon: 1e-6,
+    };
+    let rate = device.read_borrowed(&fixture.a_log)?;
+    let bias = device.read_borrowed(&fixture.bias)?;
+    let mut state = values(value_heads * dim * dim, 23);
+    let mut outputs = Vec::new();
+    let mut accepted = None;
+    for (lane, (qkv, beta, alpha)) in fixture.lanes.iter().enumerate() {
+        let qkv = device.read_borrowed(qkv)?;
+        let beta = device.read_borrowed(beta)?;
+        let alpha = device.read_borrowed(alpha)?;
+        let output = if positions[lane] >= 0 {
+            geometry.step(&mut state, &[&qkv, &beta, &alpha, &rate, &bias])?
+        } else {
+            vec![0.0; value_heads * dim]
+        };
+        outputs.push(output);
+        if lane + 1 == count {
+            accepted = Some(state.clone());
+        }
+    }
+    Ok((outputs, accepted.ok_or("scalar accepted state missing")?))
+}
+
+fn delta_reference_case(device: &CudaDevice, geometry: [usize; 3], block: usize) -> TestResult {
+    let [key_heads, value_heads, dim] = geometry;
     let generics = vec![
         key_heads.to_string(),
         value_heads.to_string(),
         dim.to_string(),
-        dim.to_string(),
+        block.to_string(),
     ];
     let qkv_len = (2 * key_heads + value_heads) * dim;
     let state_len = value_heads * dim * dim;
     let lanes = (0..3)
         .map(|lane| {
             Ok((
-                upload(&device, values(qkv_len, lane + 17), &[qkv_len])?,
-                upload(&device, values(value_heads, lane + 13), &[value_heads])?,
-                upload(&device, values(value_heads, lane + 7), &[value_heads])?,
+                upload(device, values(qkv_len, lane + 17), &[qkv_len])?,
+                upload(device, values(value_heads, lane + 13), &[value_heads])?,
+                upload(device, values(value_heads, lane + 7), &[value_heads])?,
             ))
         })
         .collect::<infer_core::Result<Vec<_>>>()?;
-    let a_log = upload(&device, values(value_heads, 3), &[value_heads])?;
-    let bias = upload(&device, values(value_heads, 5), &[value_heads])?;
+    let a_log = upload(device, values(value_heads, 3), &[value_heads])?;
+    let bias = upload(device, values(value_heads, 5), &[value_heads])?;
     let fixture = DeltaFixture {
         lanes,
         a_log,
         bias,
         dim,
+        block,
         generics,
     };
     for positions in PATTERNS {
@@ -412,7 +622,7 @@ fn delta_verify_and_commit_match_sequential_lanes() -> TestResult {
             .collect::<infer_core::Result<Vec<_>>>()?;
         for count in 1..=3usize {
             let (expected_out, expected_state) = delta_reference(
-                &device,
+                device,
                 &fixture.lanes,
                 &fixture.a_log,
                 &fixture.bias,
@@ -420,25 +630,28 @@ fn delta_verify_and_commit_match_sequential_lanes() -> TestResult {
                 count,
                 [key_heads, value_heads, dim],
             )?;
-            let mut fused_state = upload(&device, values(state_len, 23), &[value_heads, dim, dim])?;
+            let (scalar_out, scalar_state) =
+                delta_scalar_reference(device, &fixture, positions, count, geometry)?;
+            let mut fused_state = upload(device, values(state_len, 23), &[value_heads, dim, dim])?;
             let mut outs = (0..3)
-                .map(|_| {
-                    upload(
-                        &device,
-                        vec![0.0; value_heads * dim],
-                        &[value_heads, 1, dim],
-                    )
-                })
+                .map(|_| upload(device, vec![0.0; value_heads * dim], &[value_heads, 1, dim]))
                 .collect::<infer_core::Result<Vec<_>>>()?;
-            fixture.verify(&device, &fused_state, &mut outs, &metadata)?;
+            fixture.verify(device, &fused_state, &mut outs, &metadata)?;
             for (lane, out) in outs.iter().enumerate() {
+                let actual = device.read_borrowed(out)?;
                 assert_close(
                     &format!("{positions:?} delta out {lane}"),
-                    &device.read_borrowed(out)?,
+                    &actual,
                     &expected_out[lane],
                 );
+                assert_close("independent scalar output", &actual, &scalar_out[lane]);
             }
-            fixture.commit(&device, &mut fused_state, &metadata, count)?;
+            fixture.commit(device, &mut fused_state, &metadata, count)?;
+            assert_close(
+                "independent scalar state",
+                &device.read_borrowed(&fused_state)?,
+                &scalar_state,
+            );
             assert_close(
                 &format!("{positions:?} count {count} delta state"),
                 &device.read_borrowed(&fused_state)?,
@@ -517,6 +730,177 @@ fn batched_commit_kernels_compile_without_a_device() -> Result<(), Box<dyn Error
             .generics(vec!["4".into()])
             .strides(&strides)
             .compile()?;
+    }
+    Ok(())
+}
+
+fn wave_perf_fixture(
+    device: &CudaDevice,
+    geometry: [usize; 3],
+    block: usize,
+) -> TestResult<DeltaFixture> {
+    let [key_heads, value_heads, dim] = geometry;
+    let qkv_len = (2 * key_heads + value_heads) * dim;
+    let lanes = (0..3)
+        .map(|lane| {
+            Ok((
+                upload(device, values(qkv_len, lane + 17), &[qkv_len])?,
+                upload(device, values(value_heads, lane + 13), &[value_heads])?,
+                upload(device, values(value_heads, lane + 7), &[value_heads])?,
+            ))
+        })
+        .collect::<infer_core::Result<Vec<_>>>()?;
+    Ok(DeltaFixture {
+        lanes,
+        a_log: upload(device, values(value_heads, 3), &[value_heads])?,
+        bias: upload(device, values(value_heads, 5), &[value_heads])?,
+        dim,
+        block,
+        generics: geometry
+            .into_iter()
+            .chain([block])
+            .map(|v| v.to_string())
+            .collect(),
+    })
+}
+
+fn wave_perf_pair(
+    device: &CudaDevice,
+    a: &CudaGraph<()>,
+    b: &CudaGraph<()>,
+    options: &BenchOptions,
+    reverse: bool,
+) -> TestResult<(Vec<f32>, Vec<f32>)> {
+    let launch = |graph: &CudaGraph<()>| {
+        graph
+            .launch()
+            .sync_on(&device.stream)
+            .map_err(|e| tensor_error(&e.to_string()))
+    };
+    let (a, b) = if reverse { (b, a) } else { (a, b) };
+    let (first, second) = do_bench_paired(&device.stream, options, |_| launch(a), |_| launch(b))?;
+    let pair = (first.times_ms().to_vec(), second.times_ms().to_vec());
+    Ok(if reverse { (pair.1, pair.0) } else { pair })
+}
+
+fn wave_perf_case(
+    device: &CudaDevice,
+    geometry: [usize; 3],
+    split: usize,
+    compile: &CompileOptions,
+) -> TestResult {
+    let [_, heads, dim] = geometry;
+    // Frozen pre-change policy on the selected 170-SM device uses four splits.
+    let old_block = dim / 4;
+    let block = dim / split;
+    if block == old_block {
+        println!(
+            "{}",
+            serde_json::json!({"kind":"head_grid_control","shape":geometry,"split":split})
+        );
+        return Ok(());
+    }
+    let mut fixture = wave_perf_fixture(device, geometry, old_block)?;
+    let state = upload(device, values(heads * dim * dim, 23), &[heads, dim, dim])?;
+    let mut output = (0..3)
+        .map(|_| upload(device, vec![0.0; heads * dim], &[heads, 1, dim]))
+        .collect::<infer_core::Result<Vec<_>>>()?;
+    let metadata = PATTERNS[0]
+        .iter()
+        .map(|&p| device.upload(vec![p, 0, p, 0], &[4]))
+        .collect::<infer_core::Result<Vec<_>>>()?;
+    let a = fixture.graph(
+        device,
+        &state,
+        &mut output,
+        &metadata,
+        &CompileOptions::default(),
+    )?;
+    a.launch().sync_on(&device.stream)?;
+    let expected = output
+        .iter()
+        .map(|t| device.read_borrowed(t))
+        .collect::<infer_core::Result<Vec<_>>>()?;
+    fixture.block = block;
+    fixture.generics[3] = block.to_string();
+    let b = fixture.graph(device, &state, &mut output, &metadata, compile)?;
+    b.launch().sync_on(&device.stream)?;
+    for (actual, expected) in output.iter().zip(&expected) {
+        assert_close(
+            "derived launch performance preflight",
+            &device.read_borrowed(actual)?,
+            expected,
+        );
+    }
+    let mut options = BenchOptions {
+        warmup: Duration::from_millis(50),
+        rep: Duration::ZERO,
+        min_reps: 3,
+        max_reps: 3,
+        clear_l2: true,
+    };
+    let (x, y) = wave_perf_pair(device, &a, &b, &options, false)?;
+    println!(
+        "{}",
+        serde_json::json!({"kind":"head_grid_canary","shape":geometry,"old_split":4,"split":split,"baseline_ms":x,"candidate_ms":y})
+    );
+    if median(&y) > median(&x) * 1.10 {
+        return Err(
+            format!("head-aware launch gross regression at {geometry:?}, split={split}").into(),
+        );
+    }
+    options.warmup = Duration::from_millis(50);
+    options.rep = Duration::from_millis(100);
+    options.min_reps = 10;
+    options.max_reps = 30;
+    for reverse in [false, true] {
+        fixture.block = old_block;
+        fixture.generics[3] = old_block.to_string();
+        let fresh_a = fixture.graph(
+            device,
+            &state,
+            &mut output,
+            &metadata,
+            &CompileOptions::default(),
+        )?;
+        fixture.block = block;
+        fixture.generics[3] = block.to_string();
+        let fresh_b = fixture.graph(device, &state, &mut output, &metadata, compile)?;
+        for cold in [true, false] {
+            options.clear_l2 = cold;
+            let (x, y) = wave_perf_pair(device, &fresh_a, &fresh_b, &options, reverse)?;
+            println!(
+                "{}",
+                serde_json::json!({"kind":"head_grid_timing","shape":geometry,"split":split,"cold":cold,"reverse":reverse,"baseline_ms":x,"candidate_ms":y})
+            );
+            if median(&y) > median(&x) * 1.02 {
+                return Err("head-grid paired median regression exceeds two percent".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires CUDA release, 170-SM baseline; no serving acceptance from this operator screen"]
+fn wave_derived_head_grid_performance_screen() -> TestResult {
+    CudaDevice::enable_kernel_cache()?;
+    if cfg!(debug_assertions) {
+        return Err("release profile required".into());
+    }
+    let device = CudaDevice::new(0)?;
+    let sm = device.profile()?.multiprocessors;
+    if sm != 170 {
+        return Err("frozen operator reference requires the 170-SM device".into());
+    }
+    for geometry in [[2, 4, 32], [4, 16, 128], [16, 48, 128], [16, 192, 128]] {
+        let [_, heads, dim] = geometry;
+        wave_perf_case(
+            &device,
+            geometry,
+            super::value_split(ValueDevice::new(&device)?, heads, dim, 1)?,
+            &CompileOptions::default(),
+        )?;
     }
     Ok(())
 }

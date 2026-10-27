@@ -2,7 +2,7 @@
 use super::{
     batch::States,
     capture::error,
-    slot_recurrent::{LANES, Staging, covers, fused, fused_block, value_split},
+    slot_recurrent::{LANES, Staging, ValueDevice, covers, fused, fused_block, value_split},
     slot_states::RecurrentParameters,
 };
 use crate::{
@@ -26,7 +26,7 @@ struct Inputs<'a> {
     metadata: &'a Tensor<i32>,
     counts: &'a Tensor<i32>,
     slots: usize,
-    value_split: usize,
+    hardware: ValueDevice,
 }
 
 impl CapturedCommit {
@@ -77,7 +77,7 @@ impl CapturedCommit {
             metadata,
             counts: &counts,
             slots,
-            value_split: value_split(device.profile()?.multiprocessors),
+            hardware: ValueDevice::new(device)?,
         };
         let graph = CudaGraph::scope(&device.stream, |scope| {
             for (index, node) in nodes.iter().enumerate().filter(|(_, node)| covers(node)) {
@@ -161,7 +161,8 @@ fn record_node(
                 .parameters
                 .get(&node.id)
                 .ok_or_else(|| Error::invariant("commit delta parameters"))?;
-            let block = fused_block(value_dim, inputs.value_split);
+            let split = value_split(inputs.hardware, value_heads, value_dim, inputs.slots)?;
+            let block = fused_block(value_dim, split);
             scope
                 .record(
                     fused::delta_commit_batch(

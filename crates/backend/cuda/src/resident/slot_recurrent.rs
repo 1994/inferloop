@@ -733,27 +733,74 @@ pub(super) const fn fused_block(value_dim: usize, split: usize) -> usize {
     }
 }
 
-/// Value-dimension split of the fused verify and commit kernels for a device's SM count.
-///
-/// Four splits are the measured optimum on the 170-SM RTX 5090 (192 CTAs per layer rather than
-/// 48). Smaller devices keep fewer splits: the goal is roughly one wave of CTAs, and many tiny
-/// blocks lose more to launch and reduction overhead than they gain in occupancy.
-pub(super) const fn value_split(multiprocessors: u32) -> usize {
-    match multiprocessors {
-        0..=VALUE_SPLIT_ONE_MAX_SM => VALUE_SPLIT_ONE,
-        VALUE_SPLIT_TWO_MIN_SM..=VALUE_SPLIT_TWO_MAX_SM => VALUE_SPLIT_TWO,
-        _ => VALUE_SPLIT_FOUR,
+/// Device facts used by pooled recurrent launch geometry.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ValueDevice {
+    multiprocessors: u32,
+    warp_size: u32,
+}
+impl ValueDevice {
+    pub(super) fn new(device: &CudaDevice) -> infer_core::Result<Self> {
+        use cuda_core::sys::CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_WARP_SIZE as WARP;
+        Ok(Self {
+            multiprocessors: device.profile()?.multiprocessors,
+            warp_size: device.attribute(WARP)?,
+        })
     }
 }
 
-/// SM counts at which the fused split grows. The 170-SM class takes four; smaller devices
-/// take one or two so each layer still has enough CTAs to fill them.
-const VALUE_SPLIT_ONE_MAX_SM: u32 = 63;
-const VALUE_SPLIT_TWO_MIN_SM: u32 = 64;
-const VALUE_SPLIT_TWO_MAX_SM: u32 = 127;
-const VALUE_SPLIT_ONE: usize = 1;
-const VALUE_SPLIT_TWO: usize = 2;
-const VALUE_SPLIT_FOUR: usize = 4;
+/// Value partitioning nearest to one SM wave over the pooled head grid.
+///
+/// Bound each contiguous value row to one warp. Carrying several warps' columns
+/// through all key rows increases the fused three-lane update's register pressure,
+/// even when the wider tile produces fewer CTAs.
+/// Within that bound, choose the legal grid nearest to `SM / (slots * value_heads)`;
+/// at a tie, prefer covering the full wave.
+pub(super) fn value_split(
+    hardware: ValueDevice,
+    value_heads: usize,
+    value_dim: usize,
+    slots: usize,
+) -> infer_core::Result<usize> {
+    if hardware.multiprocessors == 0
+        || !hardware.warp_size.is_power_of_two()
+        || value_heads == 0
+        || slots == 0
+        || !value_dim.is_power_of_two()
+    {
+        return Err(Error::invalid("recurrent wave geometry"));
+    }
+    let wave =
+        usize::try_from(hardware.multiprocessors).map_err(|e| Error::invalid(e.to_string()))?;
+    let warp = usize::try_from(hardware.warp_size).map_err(|e| Error::invalid(e.to_string()))?;
+    let minimum = value_dim / value_dim.min(warp);
+    let heads = value_heads
+        .checked_mul(slots)
+        .ok_or_else(|| Error::invalid("recurrent head grid overflow"))?;
+    if heads >= wave {
+        return Ok(minimum);
+    }
+    let needed = wave.div_ceil(heads);
+    if needed >= value_dim {
+        return Ok(value_dim);
+    }
+    let upper = needed
+        .checked_next_power_of_two()
+        .ok_or_else(|| Error::invalid("recurrent wave split overflow"))?;
+    let lower = upper / 2;
+    let upper_grid = heads
+        .checked_mul(upper)
+        .ok_or_else(|| Error::invalid("recurrent wave grid overflow"))?;
+    let lower_grid = heads
+        .checked_mul(lower)
+        .ok_or_else(|| Error::invalid("recurrent wave grid overflow"))?;
+    let selected = if upper_grid.abs_diff(wave) <= lower_grid.abs_diff(wave) {
+        upper
+    } else {
+        lower
+    };
+    Ok(selected.max(minimum))
+}
 
 /// Whether `node` is a recurrent state writer the fused verify/commit pair covers.
 pub(super) const fn covers(node: &TensorNode) -> bool {
@@ -817,7 +864,7 @@ pub(super) fn record_verify(
     states: &States,
     slot: &SlotLanes<'_>,
     weights: &ProgramWeights,
-    value_split: usize,
+    hardware: ValueDevice,
 ) -> Result<(), DeviceError> {
     let index = arena.slot(node.outputs[0]).map_err(error)?;
     let buffer = arena.buffers[index]
@@ -871,7 +918,9 @@ pub(super) fn record_verify(
                 let [state] = state.as_slice() else {
                     return Err(error("delta state layout"));
                 };
-                let block = fused_block(value_dim, value_split);
+                let split =
+                    value_split(hardware, value_heads, value_dim, lanes / LANES).map_err(error)?;
+                let block = fused_block(value_dim, split);
                 let shape = [value_heads, 1, value_dim];
                 let (mut o0, mut o1, mut o2) = (
                     o0.reshape(&shape)?,
@@ -930,7 +979,7 @@ pub(super) fn record_commit(
     states: &mut States,
     slot: &SlotLanes<'_>,
     weights: &ProgramWeights,
-    value_split: usize,
+    hardware: ValueDevice,
     (staged, count): (&[[Tensor<f32>; LANES]], usize),
 ) -> Result<(), DeviceError> {
     let count = i32::try_from(count).map_err(error)?;
@@ -969,7 +1018,9 @@ pub(super) fn record_commit(
             let [state] = state.as_mut_slice() else {
                 return Err(error("delta state layout"));
             };
-            let block = fused_block(value_dim, value_split);
+            let split = value_split(hardware, value_heads, value_dim, arena.lanes() / LANES)
+                .map_err(error)?;
+            let block = fused_block(value_dim, split);
             let [qkv, beta, alpha] = staged else {
                 return Err(error("delta staging layout"));
             };

@@ -1,5 +1,5 @@
 //! Contiguous pool state families with the same per-slot views used by homes and fallback graphs.
-use super::slot_recurrent::{LANES, covers, fused, fused_block};
+use super::slot_recurrent::{LANES, ValueDevice, covers, fused, fused_block, value_split};
 use super::{ActivationArena, capture::error};
 use super::{batch::States, program::ProgramWeights};
 use crate::constants::METADATA_FIELDS;
@@ -180,7 +180,7 @@ pub(super) fn record_batch(
     node: &TensorNode,
     arena: &mut ActivationArena,
     batch: &VerifyBatch<'_>,
-    value_split: usize,
+    hardware: ValueDevice,
 ) -> StdResult<bool, DeviceError> {
     let TensorOp::Delta {
         key_heads,
@@ -202,7 +202,8 @@ pub(super) fn record_batch(
         return Err(error("pooled delta state layout"));
     };
     let slots = arena.lanes() / LANES;
-    let block = fused_block(value_dim, value_split);
+    let split = value_split(hardware, value_heads, value_dim, slots).map_err(error)?;
+    let block = fused_block(value_dim, split);
     let index = arena.slot(node.outputs[0]).map_err(error)?;
     let output = arena.buffers[index]
         .take()
