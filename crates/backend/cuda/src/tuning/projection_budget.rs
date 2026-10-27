@@ -17,6 +17,10 @@ pub enum ProjectionKind {
     Fp8,
     Fp4Lt,
     Swiglu,
+    PoolDense {
+        output_tile: usize,
+        reduction_tile: usize,
+    },
 }
 /// Matrix geometry is activation rows, output columns and reduction columns.
 pub(super) const GEMM_RANK: usize = 3;

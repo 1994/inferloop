@@ -345,6 +345,7 @@ impl SlotPool {
             paging.is_some(),
         )?;
         let mut nvfp4 = super::nvfp4_gemm::Workspace::new(device, graph, weights, &[1, lanes])?;
+        nvfp4.prepare_pool_dense(device, graph, weights, lanes)?;
         let mut placeholder_states = States::new();
         let mut placeholder_fp8 = Fp8Caches::new();
         let (decode, verify_graph) = {

@@ -25,15 +25,11 @@ pub(crate) mod kernels {
     }
 }
 
-use crate::constants::CB_DECODE_SLOTS;
+use crate::tuning::pool_dense::{self, Choice};
 use crate::{mlp::ProjectionWeight, strategy::LinearTiling};
-use cutile::half::bf16;
 use cutile::prelude::*;
 #[cfg(test)]
 use std::cell::Cell;
-const MAX_SMALL_OUTPUTS: usize = 128;
-const MIN_SMALL_COLUMNS: usize = 4096;
-const MAX_POOL_ROWS: usize = CB_DECODE_SLOTS;
 pub(super) fn record(
     scope: &Scope,
     weight: &ProjectionWeight,
@@ -41,30 +37,24 @@ pub(super) fn record(
     output: &mut Tensor<f32>,
     columns: usize,
     tile: LinearTiling,
+    choice: Choice,
 ) -> Result<bool, DeviceError> {
     let rows =
         usize::try_from(input.shape()[0]).map_err(|e| DeviceError::Internal(e.to_string()))?;
     let outputs =
         usize::try_from(output.shape()[1]).map_err(|e| DeviceError::Internal(e.to_string()))?;
-    if rows == 0
-        || rows > MAX_POOL_ROWS
-        || outputs > MAX_SMALL_OUTPUTS
-        || columns < MIN_SMALL_COLUMNS
-        || !enabled()
-    {
+    if !pool_dense::supported([rows, outputs, columns]) || !enabled() {
+        return Ok(false);
+    }
+    #[cfg(test)]
+    let choice = pool_dense::recorded_choice(choice);
+    if choice == Choice::Native {
         return Ok(false);
     }
     let ProjectionWeight::Dense(weight) = weight else {
         return Ok(false);
     };
-    scope.record(
-        kernels::dense(output.partition([1, tile.rows()]), input, weight).generics(vec![
-            bf16::DTYPE.as_str().into(),
-            tile.rows().to_string(),
-            tile.columns().to_string(),
-            columns.to_string(),
-        ]),
-    )?;
+    choice.record(scope, weight, input, output, columns, tile)?;
     #[cfg(test)]
     CAPTURES.with(|n| n.set(n.get() + 1));
     Ok(true)

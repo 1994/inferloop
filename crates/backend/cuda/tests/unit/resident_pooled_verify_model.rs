@@ -1,3 +1,4 @@
+use crate::tuning::pool_dense;
 use crate::{
     device::CudaDevice,
     loading::{LoadOptions, LoadedModel},
@@ -10,6 +11,7 @@ use std::env::var;
 enum Operation {
     Attention,
     Convolution,
+    Dense,
 }
 
 impl Operation {
@@ -17,6 +19,7 @@ impl Operation {
         match self {
             Self::Attention => pooled::builds(),
             Self::Convolution => slot_convolution::builds(),
+            Self::Dense => super::pool_gemv::captures(),
         }
     }
 
@@ -25,6 +28,7 @@ impl Operation {
         match self {
             Self::Attention => pooled::with_row_reference(build),
             Self::Convolution => slot_convolution::with_row_reference(build),
+            Self::Dense => pool_dense::with_private_reference(build),
         }
     }
 }
@@ -41,6 +45,12 @@ fn pooled_convolution_preserves_checkpoint_model_bits() -> Result<()> {
     compare_model(Operation::Convolution)
 }
 
+#[test]
+#[ignore = "requires CUDA/checkpoint/private cache; full small-pool model/commit/rebind states"]
+fn measured_pool_dense_preserves_private_checkpoint_bits() -> Result<()> {
+    compare_model(Operation::Dense)
+}
+
 fn compare_model(operation: Operation) -> Result<()> {
     CudaDevice::enable_kernel_cache()?;
     let path = var("INFER_TEST_MODEL").map_err(|error| Error::invalid(error.to_string()))?;
@@ -52,12 +62,16 @@ fn compare_model(operation: Operation) -> Result<()> {
             prefill_width: 64,
             verification_width: 3,
             mtp_depth: 2,
-            autotune: false,
+            autotune: matches!(operation, Operation::Dense),
             chunked_recurrent: false,
             ..LoadOptions::default()
         },
     )?;
-    for width in [2, 5] {
+    let widths = match operation {
+        Operation::Dense => [6, 8],
+        Operation::Attention | Operation::Convolution => [2, 5],
+    };
+    for width in widths {
         compare_pool(&loaded, width, operation)?;
     }
     Ok(())
@@ -72,11 +86,17 @@ fn compare_pool(loaded: &LoadedModel, width: usize, operation: Operation) -> Res
     );
     let before = operation.builds();
     let mut reference = operation.reference(loaded, width)?;
-    assert_eq!(
-        operation.builds(),
-        before,
-        "reference must retain the original operation"
-    );
+    match operation {
+        Operation::Dense => assert!(
+            operation.builds() > before,
+            "private reference actually captured"
+        ),
+        Operation::Attention | Operation::Convolution => assert_eq!(
+            operation.builds(),
+            before,
+            "reference must retain the original operation"
+        ),
+    }
     compare_states(loaded.device(), &candidate, &reference, width)?;
     let mut worker = loaded.sequence_pooled(64)?;
     drop(worker.prefill_batch(&[101, 102, 103], 0, false)?);

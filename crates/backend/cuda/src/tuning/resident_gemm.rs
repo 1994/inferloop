@@ -258,7 +258,7 @@ pub struct ResidentGemmKey {
 }
 
 impl ResidentGemmKey {
-    fn new(
+    pub(super) fn new(
         profile: &DeviceProfile,
         driver_version: u32,
         shape: [usize; GEMM_RANK],
@@ -561,7 +561,7 @@ fn verifications() -> &'static Verifications {
 }
 
 /// Read the installed driver release/build rather than its supported CUDA API version.
-fn driver_build() -> Option<String> {
+pub(super) fn driver_build() -> Option<String> {
     let version = read_to_string("/proc/driver/nvidia/version").ok()?;
     version
         .lines()
@@ -572,7 +572,7 @@ fn driver_build() -> Option<String> {
 }
 
 /// Frontend-only identities: no cubin compilation or kernel execution is requested here.
-fn kernel_environment(device: &CudaDevice) -> Result<String> {
+pub(super) fn kernel_environment(device: &CudaDevice) -> Result<String> {
     use cutile::cutile_compiler::cuda_tile_runtime_utils as compiler;
     let compile = CompileOptions::default();
     Ok(format!(
@@ -1054,10 +1054,10 @@ fn ordered_times(first: &[f32], second: &[f32], order: MeasurementOrder) -> Resu
     Ok(times)
 }
 
-fn measure(
+pub(super) fn measure_graphs(
     device: &CudaDevice,
-    baseline: &Captured,
-    candidate: &Captured,
+    baseline: &CudaGraph<()>,
+    candidate: &CudaGraph<()>,
     clear_l2: bool,
     order: MeasurementOrder,
 ) -> Result<PairedTimes> {
@@ -1068,9 +1068,8 @@ fn measure(
         max_reps: MAX_REPS,
         clear_l2,
     };
-    let run = |graph: &Captured| {
+    let run = |graph: &CudaGraph<()>| {
         graph
-            .graph
             .launch()
             .sync_on(&device.stream)
             .map_err(|e| tensor_error(&e.to_string()))
@@ -1099,8 +1098,8 @@ fn trial(
     Ok(GemmTrial {
         config,
         order,
-        cold: measure(device, base, candidate, true, order)?,
-        warm: measure(device, base, candidate, false, order)?,
+        cold: measure_graphs(device, &base.graph, &candidate.graph, true, order)?,
+        warm: measure_graphs(device, &base.graph, &candidate.graph, false, order)?,
     })
 }
 

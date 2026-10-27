@@ -18,7 +18,7 @@ pub(crate) mod fp8_cache;
 pub(crate) mod fp8_gemm;
 pub(crate) mod fusion_batch;
 pub(crate) mod kernels;
-mod linear_batch;
+pub(crate) mod linear_batch;
 mod metadata;
 pub(crate) mod nvfp4_gemm;
 #[cfg(test)]
@@ -67,7 +67,6 @@ pub(crate) mod fp8_quant_reduction;
 
 pub(crate) mod pool_gemv;
 
-#[cfg(test)]
 pub(crate) use small_gemm::kernels as small_gemm_kernels;
 
 #[cfg(test)]
