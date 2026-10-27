@@ -7,13 +7,19 @@ use crate::resident::{ProgramWeights, prefill_projection::MlpPlan};
 use crate::tuning::{
     fp8_gemm::{self, prefill_choice, probe_inputs::Scope as ProbeInputsScope, select},
     projection_budget::{ProjectionKind, ProjectionShape},
-    resident_gemm,
+    resident_gemm::{self, swiglu},
 };
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 
+struct SwigluProjection {
+    gate: TensorId,
+    up: TensorId,
+    down: TensorId,
+    shape: ProjectionShape,
+}
 struct Projection {
     weight: TensorId,
     output: TensorId,
@@ -44,15 +50,25 @@ impl Workspace {
         let _probe_inputs = ProbeInputsScope::new(device)?;
         self.allocate_inputs(device, graph, weights, widths)?;
         let projections = self.live_projections(graph, weights, widths)?;
+        let fused = self.live_swiglu(graph, weights, widths)?;
         for projection in &projections {
             let trials = match projection.kind {
                 ProjectionKind::Fp4 => resident_gemm::search_trials(),
                 ProjectionKind::Fp8 => fp8_gemm::search_trials(),
-                ProjectionKind::Fp4Lt => return Err(Error::invariant("standalone Lt projection")),
+                ProjectionKind::Fp4Lt | ProjectionKind::Swiglu => {
+                    return Err(Error::invariant("standalone projection kind"));
+                }
             };
             weights
                 .resident_tuning
                 .plan_projection(projection.kind, projection.shape, trials)?;
+        }
+        for projection in &fused {
+            weights.resident_tuning.plan_projection(
+                ProjectionKind::Swiglu,
+                projection.shape,
+                swiglu::search_trials(projection.shape),
+            )?;
         }
         for projection in projections {
             let [rows, _, columns] = projection.shape;
@@ -70,7 +86,74 @@ impl Workspace {
                 self.prepare_fp4(device, weights, &projection)?;
             }
         }
+        for projection in &fused {
+            self.prepare_swiglu(device, weights, projection)?;
+        }
         weights.resident_tuning.report_projection_work()
+    }
+
+    fn live_swiglu(
+        &self,
+        graph: &DataflowGraph,
+        weights: &ProgramWeights,
+        widths: &[usize],
+    ) -> Result<Vec<SwigluProjection>> {
+        let mut fused = Vec::new();
+        for &rows in widths.iter().filter(|rows| **rows >= PREFILL_LANES) {
+            let plan = MlpPlan::new(graph, weights, (rows, self));
+            for (gate, up, down) in plan.fused_projections() {
+                let gate = &graph.nodes[gate];
+                fused.push(SwigluProjection {
+                    gate: gate.inputs[1],
+                    up: graph.nodes[up].inputs[1],
+                    down: graph.nodes[down].inputs[1],
+                    shape: [
+                        rows,
+                        elements(graph, gate.outputs[0])?,
+                        elements(graph, gate.inputs[0])?,
+                    ],
+                });
+            }
+        }
+        Ok(fused)
+    }
+
+    fn prepare_swiglu(
+        &mut self,
+        device: &CudaDevice,
+        weights: &ProgramWeights,
+        projection: &SwigluProjection,
+    ) -> Result<()> {
+        use crate::resident::program::ActivationQuantization;
+        let weight = |id| {
+            weights
+                .projections
+                .get(&id)
+                .ok_or_else(|| Error::invariant("SwiGLU projection weight"))
+        };
+        let scale = |id| match weights.activation_quantization(id) {
+            Some(ActivationQuantization::Fp4(scale)) => Ok(scale),
+            _ => Err(Error::invariant("SwiGLU activation scale")),
+        };
+        let pair = (weight(projection.gate)?, weight(projection.up)?);
+        let scales = (scale(projection.gate)?, scale(projection.down)?);
+        if scales.0.to_bits() != scale(projection.up)?.to_bits() {
+            return Err(Error::invariant("SwiGLU shared activation scale"));
+        }
+        let binding = swiglu::Binding::new(pair, scales, projection.shape)?;
+        if self.swiglu_strategies.contains_key(&binding) {
+            return Ok(());
+        }
+        let config = swiglu::select(
+            device,
+            pair,
+            scales,
+            projection.shape,
+            weights.autotune,
+            &weights.resident_tuning,
+        );
+        self.swiglu_strategies.insert(binding, config);
+        Ok(())
     }
 
     fn live_projections(

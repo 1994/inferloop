@@ -1,4 +1,5 @@
 //! Actual-weight W4A4 graph tuning. Every candidate preserves quantization and K order.
+pub(crate) mod swiglu;
 use super::projection_budget::{
     GEMM_RANK, ProjectionKind, ProjectionShape, SearchBudget, SearchScope,
 };
@@ -33,6 +34,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock, Weak},
     time::{Duration, Instant},
 };
+pub use swiglu::Entry as SwigluEntry;
 
 /// Bump when quantization, arithmetic or the paired measurement protocol changes.
 const KERNEL_SCHEMA: &str = "cutile0.4-nvfp4-v3:search-ab:confirm-ba:block16-e4m3:quant512:mma-k256:f32:full-output:alpha1/(wg*xs):tile-m128";
@@ -570,12 +572,10 @@ fn driver_build() -> Option<String> {
 }
 
 /// Frontend-only identities: no cubin compilation or kernel execution is requested here.
-fn kernel_fingerprint(device: &CudaDevice, shape: [usize; GEMM_RANK]) -> Result<String> {
+fn kernel_environment(device: &CudaDevice) -> Result<String> {
     use cutile::cutile_compiler::cuda_tile_runtime_utils as compiler;
-    type Fingerprints = Mutex<BTreeMap<(String, [usize; GEMM_RANK]), String>>;
-    static FINGERPRINTS: OnceLock<Fingerprints> = OnceLock::new();
     let compile = CompileOptions::default();
-    let environment = format!(
+    Ok(format!(
         "{}:{}:{:?}:{:?}:{:?}:{:?}",
         device.profile()?.architecture,
         compiler::tileiras_fingerprint(),
@@ -583,7 +583,13 @@ fn kernel_fingerprint(device: &CudaDevice, shape: [usize; GEMM_RANK]) -> Result<
         compile,
         var_os("CUTILE_DISABLE_CHECK_HOISTING"),
         var_os("CUTILE_FORCE_DEVICE_CHECKS"),
-    );
+    ))
+}
+
+fn kernel_fingerprint(device: &CudaDevice, shape: [usize; GEMM_RANK]) -> Result<String> {
+    type Fingerprints = Mutex<BTreeMap<(String, [usize; GEMM_RANK]), String>>;
+    static FINGERPRINTS: OnceLock<Fingerprints> = OnceLock::new();
+    let environment = kernel_environment(device)?;
     let memo = FINGERPRINTS.get_or_init(|| Mutex::new(BTreeMap::new()));
     let cached = memo
         .lock()

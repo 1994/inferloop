@@ -166,7 +166,8 @@ fn separate_swiglu(
     gate: &Fp4Weight,
     up: &Fp4Weight,
 ) -> Result<Fp4Operand, Box<dyn StdError>> {
-    let (rows, columns, hidden, _) = SWIGLU_FIXTURE;
+    let (_, columns, hidden, _) = SWIGLU_FIXTURE;
+    let rows = usize::try_from(q.shape()[0])?;
     let (input_global, gate_global, up_global, down_global) = SWIGLU_GLOBALS;
     let project = |(codes, scales): &Fp4Weight, global: f32| {
         kernels::packed_prefill(
@@ -660,6 +661,82 @@ fn fused_gate_up_swiglu_performance() -> Result<(), Box<dyn StdError>> {
             fused_time.median_ms(),
             separated_time.median_ms()
         );
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires CUDA and isolated INFER_CUDA_TUNING_TABLE; bounded fused tile search"]
+fn fused_swiglu_tuner_preserves_complete_quantized_outputs() -> Result<(), Box<dyn StdError>> {
+    use crate::mlp::ProjectionWeight;
+    use crate::tuning::{
+        TilingTable,
+        resident_gemm::{ResidentTuningSession, swiglu},
+    };
+    use std::{env, fs};
+    let path = env::var("INFER_CUDA_TUNING_TABLE")?;
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    let (_, columns, hidden, _) = SWIGLU_FIXTURE;
+    let (xs, wg, wu, down) = SWIGLU_GLOBALS;
+    let gate = swiglu_weight(&device, 1)?;
+    let up = swiglu_weight(&device, 5)?;
+    let weights = (
+        ProjectionWeight::Fp4(Arc::clone(&gate.0), Arc::clone(&gate.1), wg),
+        ProjectionWeight::Fp4(Arc::clone(&up.0), Arc::clone(&up.1), wu),
+    );
+    let session = ResidentTuningSession::for_hardware_validation();
+    for rows in [64, 128] {
+        let shape = [rows, hidden, columns];
+        let selected = swiglu::select(
+            &device,
+            (&weights.0, &weights.1),
+            (xs, down),
+            shape,
+            true,
+            &session,
+        );
+        let table: TilingTable = serde_json::from_slice(&fs::read(&path)?)?;
+        let entry = table
+            .resident_swiglu
+            .iter()
+            .find(|entry| [entry.key.m, entry.key.n, entry.key.k] == shape)
+            .ok_or("fused search did not retain complete measurement evidence")?;
+        assert_eq!(entry.selected, selected);
+        assert!(entry.bitwise_verified);
+        assert!(!entry.trials.is_empty());
+        let input: Vec<_> = (0..rows * columns)
+            .map(|i| (f32::from(u16::try_from(i % 131).expect("bounded")) - 65.0) / 37.0)
+            .collect();
+        let input = device.upload(input, &[rows, columns])?;
+        let mut q = api::zeros::<f4e2m1fnx2>(&[rows, columns / 2]).sync_on(&device.stream)?;
+        let mut qs = api::zeros::<f8e4m3fn>(&[rows, columns / 16]).sync_on(&device.stream)?;
+        kernels::quantize_rows(
+            (&mut q).partition([16, 256]),
+            (&mut qs).partition([16, 32]),
+            &input,
+            xs,
+        )
+        .generics(vec![columns.to_string()])
+        .sync_on(&device.stream)?;
+        let expected = operand_bytes(&device, separate_swiglu(&device, (&q, &qs), &gate, &up)?)?;
+        let mut codes = api::zeros::<f4e2m1fnx2>(&[rows, hidden / 2]).sync_on(&device.stream)?;
+        let mut scales = api::zeros::<f8e4m3fn>(&[rows, hidden / 16]).sync_on(&device.stream)?;
+        let graph = CudaGraph::scope(&device.stream, |scope| {
+            swiglu::record(
+                scope,
+                selected,
+                (&weights.0, &weights.1),
+                (xs, down),
+                (&q, &qs),
+                (&mut codes, &mut scales),
+                columns,
+            )
+        })?;
+        graph.launch().sync_on(&device.stream)?;
+        drop(graph);
+        assert_eq!(operand_bytes(&device, (codes, scales))?, expected);
+        println!("{}", serde_json::to_string(entry)?);
     }
     Ok(())
 }

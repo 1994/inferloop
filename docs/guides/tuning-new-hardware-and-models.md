@@ -117,7 +117,7 @@ attention、recurrent、norm、greedy 的独立 allowance 保持原有边界。
 | `DEFAULT_MAX_BATCH = 16` | `engine/runtime/src/config.rs` | 最大并发序列数固定为 16 | `min(N_mem, N_knee)`：N_mem = 状态预算 ÷ (每序列状态 + 保底 KV)；N_knee = (峰值算力 ÷ 带宽) × (权重字节 ÷ 参数量) ÷ 2 ÷ 每序列每步 token 数。由 backend 计算后经接口交给 runtime |
 | GDN value 切分（已推导） | `resident/slot_recurrent.rs` | 读取设备 SM/warp 数和当前节点的 value 头数、维度、槽数 | 在每个 value 分块不宽于设备 warp 的约束内，选择最接近一条 SM wave 的合法网格；按 value 维的二次幂整除约束取值，不再按 SM 数分档 |
 | pooled attention `MAX_BATCH = 4`、切分数上限 64 | `resident/attention_decode/pooled.rs`、`tuning/attention/decode.rs` | 每组 4 个槽串行；切分数已按 SM 数、KV 头数与每组槽数推导，尚未结合上下文长度 | 切分数按上下文长度推导（每份至少若干 KV 块），部分和 workspace 随之缩小，从而一次启动处理全部槽 |
-| `SWIGLU_TILE_ROWS/COLUMNS = 64` | `resident/nvfp4_gemm/workspace.rs` | 在 RTX 5090 上实测得出（128 行时寄存器溢出） | 纳入 resident GEMM 调优器，作为候选按形状实测 |
+| 融合 SwiGLU tile（已接入调优） | `tuning/resident_gemm/swiglu` | 加载期按实际融合形状比较合法行/列 tile，独立缓存 | 完整 codes/scales 逐位校验，冷/暖两种状态与反向独立确认后选用；预算不足或候选失效保留原 `64×64` 基线 |
 | 稠密投影识别（已推导） | `resident/prefill_projection/dense.rs` | 从图声明的输入与权重维度识别相邻、同层、同输入的稠密投影对和小输出投影 | 不再匹配固定模型维度；录图时复核实际稠密权重、尺寸与别名，保留 vendor、稀疏和单行 logits 路径 |
 | `MAX_POOL_ROWS = CB_DECODE_SLOTS` | `resident/pool_gemv.rs` | 行数不超过 16 时走 GEMV | 由 GEMV 与分块 GEMM 的实测交叉点决定，纳入调优 |
 | resident 投影搜索预算（已推导） | `tuning/projection_budget.rs` | 按实际录图保留的 FP4/FP8 形状、候选数和独立确认轮次估算 | 同一模型跨层和 serving state 去重；耗尽时列出尚未完成的形状，保留 native 路径 |
@@ -144,3 +144,9 @@ PR #47 是一个完整的例子：把逐算子 profile、逐提交二分、和 v
 小输出投影的窄布局仍受已验证的 SM120、64 个 prompt lane 和既有 tile 宽度约束；
 这些是设备与 kernel 布局边界，不是模型维度。图结构识别只在录图时执行，
 不增加逐 token 查图；扩大适用形状后仍需独立数值与性能验收。
+
+融合 SwiGLU 与独立 FP4 GEMM 分开登记搜索工作，跳过已被融合吸收的独立 gate/up，
+不把同一形状的每一层都重新计时。不同权重对、输入 scale 和 down scale 仍分别进行完整
+量化输出校验；缓存绑定硬件、驱动、编译器及量化器/融合 kernel 身份。候选失败记录原因，
+不通过确认的配置不得覆盖基线。现有融合资格保持不变；当前 27B 的两个 prompt 形状
+在 RTX 5090 上仍选中原 tile，其他形状的算子改善不能外推成该模型的服务收益。

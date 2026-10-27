@@ -16,6 +16,7 @@ pub enum ProjectionKind {
     Fp4,
     Fp8,
     Fp4Lt,
+    Swiglu,
 }
 /// Matrix geometry is activation rows, output columns and reduction columns.
 pub(super) const GEMM_RANK: usize = 3;
