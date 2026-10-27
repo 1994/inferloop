@@ -12,10 +12,10 @@ use super::{
 use crate::attention_profile::precise_prefix_positions;
 use crate::constants::ATTENTION_SPLIT_THRESHOLD;
 use crate::constants::AUX_KERNEL_TILE;
-use crate::constants::CB_DECODE_SLOTS;
 use crate::constants::EXTRA_WIDE_PREFILL_LANES;
 use crate::constants::F32_BYTES;
 use crate::constants::INACTIVE_LANE_STATE_POSITION;
+use crate::constants::MAX_POOL_SLOTS;
 use crate::constants::MAX_PREFILL_LANES;
 use crate::constants::MAX_VERIFICATION_WIDTH;
 use crate::constants::METADATA_FIELDS;
@@ -262,7 +262,7 @@ impl BatchBuilder<'_> {
     /// `states`/`fp8_states` are placeholders
     /// and stay untouched.
     /// # Errors
-    /// Rejects mismatched lane slices, a width outside `2..=CB_DECODE_SLOTS` or CUDA
+    /// Rejects mismatched lane slices, a width outside `2..=MAX_POOL_SLOTS` or CUDA
     /// capture failures.
     pub fn build_slots(
         &mut self,
@@ -270,7 +270,7 @@ impl BatchBuilder<'_> {
         lane_fp8: &mut [Fp8Caches],
     ) -> Result<SlotDecodeGraph> {
         let width = lane_states.len();
-        if !(2..=CB_DECODE_SLOTS).contains(&width)
+        if !(2..=MAX_POOL_SLOTS).contains(&width)
             || lane_fp8.len() != width
             || self.lane_external.len() < width
             || self.lane_fusion.len() < width

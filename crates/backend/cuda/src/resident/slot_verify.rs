@@ -8,9 +8,9 @@ use super::{
     profile,
     slot_commit::CapturedCommit,
 };
-use crate::constants::CB_DECODE_SLOTS;
 use crate::constants::F32_BYTES;
 use crate::constants::INACTIVE_LANE_STATE_POSITION;
+use crate::constants::MAX_POOL_SLOTS;
 use crate::constants::MAX_VERIFICATION_WIDTH;
 use crate::constants::METADATA_FIELDS;
 use crate::constants::MIB;
@@ -451,7 +451,7 @@ impl BatchBuilder<'_> {
     /// once across every lane; state, metadata and checkpoint copies record per lane
     /// against `lane_states[lane / verify]`.
     /// # Errors
-    /// Rejects mismatched lane slices, a slot count outside `2..=CB_DECODE_SLOTS`, a verify
+    /// Rejects mismatched lane slices, a slot count outside `2..=MAX_POOL_SLOTS`, a verify
     /// width outside `2..=MAX_VERIFICATION_WIDTH`, an exceeded checkpoint budget or CUDA
     /// capture failures.
     pub fn build_slot_verify(
@@ -464,7 +464,7 @@ impl BatchBuilder<'_> {
         let lanes = slots
             .checked_mul(verify)
             .ok_or_else(|| Error::invalid("slot verify width overflow"))?;
-        if !(2..=CB_DECODE_SLOTS).contains(&slots)
+        if !(2..=MAX_POOL_SLOTS).contains(&slots)
             || !(2..=MAX_VERIFICATION_WIDTH).contains(&verify)
             || lane_fp8.len() != slots
             || self.lane_external.len() < lanes

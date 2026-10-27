@@ -399,3 +399,12 @@ fn split_decode_preserves_outputs_cursors_and_inactive_slots() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+#[ignore = "requires CUDA/safe-run; complete private/pool state at extended protocol widths"]
+fn pooled_verify_covers_extended_concurrency_and_last_slot() -> Result<()> {
+    for width in [17, 32, 64] {
+        check_pool_width_rotary(width, 3, 32, true)?;
+    }
+    Ok(())
+}

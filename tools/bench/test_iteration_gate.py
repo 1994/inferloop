@@ -152,6 +152,39 @@ class IterationTests(unittest.TestCase):
         ):
             gate.remaining(SimpleNamespace(deadline=600))
 
+    def test_added_concurrency_diagnostics_preserve_comparable_execution(self):
+        baseline, candidate = serving(), serving()
+        profile = candidate["readback"]["readback"]["execution_profile"]
+        profile["concurrency"] = {"memory_bound": 15, "roofline_bound": 52, "selected": 15}
+        self.assertEqual(set(gate.compare(baseline, candidate, 10)), {"c16", "short1"})
+        self.assertIn("concurrency", profile)
+        profile["attention_profile"] = "fp8"
+        with self.assertRaisesRegex(ValueError, "runtime execution profiles differ"):
+            gate.compare(baseline, candidate, 10)
+
+    def test_invalid_concurrency_diagnostics_cannot_hide_resource_changes(self):
+        invalid = [
+            {"memory_bound": 15, "roofline_bound": 52, "selected": 14},
+            {"memory_bound": 14, "roofline_bound": 52, "selected": 15},
+            {"memory_bound": 15, "roofline_bound": 14, "selected": 15},
+            {"memory_bound": 15, "roofline_bound": 0, "selected": 15},
+            {"memory_bound": 15, "roofline_bound": 52, "selected": True},
+            {},
+        ]
+        for bounds in invalid:
+            with self.subTest(bounds=bounds):
+                candidate = serving()
+                candidate["readback"]["readback"]["execution_profile"]["concurrency"] = bounds
+                with self.assertRaisesRegex(ValueError, "concurrency"):
+                    gate.compare(serving(), candidate, 10)
+        candidate = serving()
+        candidate["readback"]["readback"]["execution_profile"]["concurrency"] = {
+            "memory_bound": 15,
+            "roofline_bound": None,
+            "selected": 15,
+        }
+        gate.compare(serving(), candidate, 10)
+
     def test_funded_resource_change_is_explicit_failure(self):
         candidate = serving()
         candidate["readback"]["readback"]["serving_plan"]["width"] = 14

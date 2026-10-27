@@ -4,6 +4,7 @@ use crate::constants::EXTRA_WIDE_PREFILL_LANES;
 use crate::constants::WIDER_PREFILL_LANES;
 use crate::constants::WIDEST_PREFILL_LANES;
 use crate::resident::prompt_logits;
+mod concurrency;
 mod kv_scales;
 mod weights;
 use crate::constants::FUSED_VERIFY_LANES;
@@ -249,6 +250,7 @@ impl LoadedModel {
     #[must_use]
     pub fn execution_profile(&self) -> infer_ir::ExecutionProfileInspection {
         infer_ir::ExecutionProfileInspection {
+            concurrency: None,
             prefill_width: self.weights.prefill_width,
             pooled_prefill_width: None,
             batch_width: self.weights.batch_width,

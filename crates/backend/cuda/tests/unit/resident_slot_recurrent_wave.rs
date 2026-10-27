@@ -203,7 +203,7 @@ fn performance(
     Ok(())
 }
 
-fn case(device: &CudaDevice, slots: usize) -> TestResult {
+fn case(device: &CudaDevice, slots: usize, timing: bool) -> TestResult {
     let block = D / value_split(ValueDevice::new(device)?, VH, D, slots)?;
     let mut fixture = Fixture::new(device, slots)?;
     fixture.prepare_parameters(device)?;
@@ -239,7 +239,7 @@ fn case(device: &CudaDevice, slots: usize) -> TestResult {
             device.read_borrowed(&fixture.state)?,
             super::values(slots * VH * D * D, 23)
         );
-        if !padded {
+        if !padded && timing {
             performance(device, &baseline, &candidate, slots, block)?;
         }
     }
@@ -258,7 +258,18 @@ fn global_wave_matches_scalar_and_split_contract() -> TestResult {
         return Err("frozen four-split operator baseline requires 170 SMs".into());
     }
     for slots in [2, 4, 16] {
-        case(&device, slots)?;
+        case(&device, slots, true)?;
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "CUDA release; extended slots, complete scalar reference and committed states"]
+fn extended_concurrency_preserves_recurrent_scalar_and_commit_contract() -> TestResult {
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    for slots in [17, 32, 64] {
+        case(&device, slots, false)?;
     }
     Ok(())
 }

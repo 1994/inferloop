@@ -17,8 +17,6 @@ const DEFAULT_MAX_INPUT_TOKENS: usize = usize::MAX;
 const DEFAULT_STATE_PAGES: usize = 4096;
 /// Default number of KV tokens addressed by one state page.
 const DEFAULT_PAGE_TOKENS: usize = 16;
-/// Default number of completion cells published in one batch.
-const DEFAULT_MAX_BATCH: usize = 16;
 /// Default decode token budget charged to one scheduling round.
 const DEFAULT_TOKEN_BUDGET: usize = 64;
 /// Default GPU compute budget per scheduling round, in microseconds.
@@ -69,6 +67,8 @@ pub struct RuntimeConfig {
     pub max_input_tokens: usize,
     pub num_gpu_blocks: usize,
     pub block_size: usize,
+    /// Operator upper bound. The default is the completion protocol ceiling; backend
+    /// load-time memory/compute policy resolves the effective limit before allocation.
     pub max_num_seqs: usize,
     /// Name clients address this deployment by (`--served-model-name`). `None` uses the model
     /// identity, which is what `/v1/models` and the request `model` field then report.
@@ -105,7 +105,7 @@ impl Default for RuntimeConfig {
             max_input_tokens: DEFAULT_MAX_INPUT_TOKENS,
             num_gpu_blocks: DEFAULT_STATE_PAGES,
             block_size: DEFAULT_PAGE_TOKENS,
-            max_num_seqs: DEFAULT_MAX_BATCH,
+            max_num_seqs: infer_gpu_api::MAX_SUBMISSION_BATCH,
             served_model_name: None,
             max_num_batched_tokens: DEFAULT_TOKEN_BUDGET,
             gpu_budget_us: DEFAULT_GPU_BUDGET_US,
@@ -129,6 +129,35 @@ impl Default for RuntimeConfig {
     }
 }
 impl RuntimeConfig {
+    /// Apply a backend's already funded cold-start concurrency, preserving a smaller
+    /// explicit operator cap. Opaque providers retain the configured protocol bound.
+    /// # Errors
+    /// Rejects invalid requested bounds or inconsistent backend inspection.
+    pub fn resolve_concurrency(
+        &mut self,
+        profile: Option<&infer_ir::ExecutionProfileInspection>,
+    ) -> Result<()> {
+        if self.max_num_seqs == 0 || self.max_num_seqs > infer_gpu_api::MAX_SUBMISSION_BATCH {
+            return Err(Error::invalid(
+                "runtime batch exceeds completion protocol bounds",
+            ));
+        }
+        let Some(limit) = profile.and_then(|profile| profile.concurrency.as_ref()) else {
+            return Ok(());
+        };
+        if limit.selected == 0
+            || limit.selected > limit.memory_bound
+            || limit
+                .roofline_bound
+                .is_some_and(|bound| bound == 0 || limit.selected > bound)
+        {
+            return Err(Error::invariant(
+                "backend concurrency bounds are inconsistent",
+            ));
+        }
+        self.max_num_seqs = self.max_num_seqs.min(limit.selected);
+        Ok(())
+    }
     /// # Errors
     /// Returns an invalid-input or invariant error if dimensions, identities, ranges, or ownership are inconsistent.
     pub fn validate(&self) -> Result<()> {
@@ -193,3 +222,7 @@ impl RuntimeConfig {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/config_concurrency.rs"]
+mod concurrency_tests;

@@ -20,6 +20,7 @@ pub fn derive_config(
     model: &ModelIr,
     registry: &KernelRegistry,
 ) -> Result<()> {
+    config.resolve_concurrency(backend.execution_profile().as_ref())?;
     let capabilities = backend.capabilities();
     let budget = backend
         .free_state_bytes()?

@@ -65,8 +65,9 @@ pub trait BackendProvider {
     }
     /// Install a persistent owner notification. Implementations must not mutate the engine in callbacks.
     fn set_waker(&mut self, _wake: Arc<dyn Fn() + Send + Sync>) {}
-    /// Effective load-time graph geometry and speculation depth when the backend resolves
-    /// them from device policy. Opaque compatibility drivers return None.
+    /// Effective load-time graph geometry, speculation and funded concurrency when the
+    /// backend resolves them from device policy. Runtime applies its smaller operator cap
+    /// before sizing host/scheduler resources. Opaque compatibility drivers return None.
     fn execution_profile(&self) -> Option<infer_ir::ExecutionProfileInspection> {
         None
     }

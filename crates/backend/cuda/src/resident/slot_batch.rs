@@ -9,9 +9,9 @@ use super::{
     slot_states::SlotStates,
     slot_verify::{SlotVerifyGraph, SlotVerifyLane},
 };
-use crate::constants::CB_DECODE_SLOTS;
 use crate::constants::F32_BYTES;
 use crate::constants::KV_BLOCK_TOKENS;
+use crate::constants::MAX_POOL_SLOTS;
 use crate::constants::MAX_VERIFICATION_WIDTH;
 use crate::device::PinnedUpload;
 #[cfg(test)]
@@ -301,10 +301,7 @@ impl SlotPool {
     ) -> Result<Self> {
         let (vocabulary, verify) = output;
         let capacity = super::capacity::padded(capacity)?;
-        if !(2..=CB_DECODE_SLOTS).contains(&width)
-            || capacity == 0
-            || hidden == 0
-            || vocabulary == 0
+        if !(2..=MAX_POOL_SLOTS).contains(&width) || capacity == 0 || hidden == 0 || vocabulary == 0
         {
             return Err(Error::invalid("slot pool width, capacity or geometry"));
         }
@@ -381,7 +378,7 @@ impl SlotPool {
             states,
             fp8,
             tables,
-            table_staging: PinnedUpload::slots(device, capacity.div_ceil(KV_BLOCK_TOKENS))?,
+            table_staging: PinnedUpload::slots(device, capacity.div_ceil(KV_BLOCK_TOKENS), width)?,
             plan,
             paging,
             leases: SlotLedger::new(width),

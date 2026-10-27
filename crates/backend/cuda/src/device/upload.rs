@@ -1,6 +1,6 @@
 //! Persistent pinned inputs; the owning execution path bounds uploads between fences.
 use super::{CudaDevice, device_error};
-use crate::constants::{CB_DECODE_SLOTS, MAX_VERIFICATION_WIDTH};
+use crate::constants::MAX_VERIFICATION_WIDTH;
 use cuda_core::{CudaContext, DType, DeviceCopy, PinnedHostBuffer};
 use cutile::tensor::Tensor;
 use infer_core::{Error, Result};
@@ -19,10 +19,15 @@ impl<T: DType + DeviceCopy> PinnedUpload<T> {
         Self::new(device, elements, MAX_VERIFICATION_WIDTH + 1)
     }
     /// At most one block-table assignment for each physical slot per flight.
-    pub(crate) fn slots(device: &CudaDevice, elements: usize) -> Result<Self> {
-        Self::new(device, elements, CB_DECODE_SLOTS)
+    pub(crate) fn slots(device: &CudaDevice, elements: usize, slots: usize) -> Result<Self> {
+        Self::new(device, elements, slots)
     }
     fn new(device: &CudaDevice, elements: usize, depth: usize) -> Result<Self> {
+        if depth == 0 {
+            return Err(Error::invalid(
+                "pinned upload requires a nonzero bounded depth",
+            ));
+        }
         let context = CudaContext::new(device.stream.device().ordinal()).map_err(device_error)?;
         let buffers = (0..depth)
             .map(|_| PinnedHostBuffer::zeroed(&context, elements).map_err(device_error))
