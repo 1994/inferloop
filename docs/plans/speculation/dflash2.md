@@ -245,14 +245,14 @@ D1 的资源验收要求报价覆盖"**权重、target/draft 状态、feature �
 |---|---|---|---|---|
 | native 无推测 | 55 | – | – | – |
 | native MTP2 | 101 | 232 | – | – |
-| native DFlash2 FP8（本 PR） | 198 | 496 | 584 | 4.83 |
+| native DFlash2 FP8（本 PR） | 203 | 498 | 596 | 4.83 |
 | native DFlash2 BF16 草稿 | 197 | 496 | 543 | 4.76 |
 | vLLM 0.31 DFlash2 块 FP8 草稿 | 47 | 90 | 100 | 1.00（草稿全被拒绝，随后 EngineCore 崩溃） |
 | vLLM 0.31 DFlash2 BF16 草稿 | 252 | 无法运行 | 无法运行 | ≈5.2 |
 
 vLLM 的 BF16 配置只能以 `--max-model-len 896 --max-num-seqs 1` 起服务（更长上下文 KV 不够）；native 同一张卡以 4096 上下文、8 并发运行。compressed-tensors FP8 草稿在 vLLM 0.31 上加载失败，源码版 vLLM 的环境缺编译扩展，无法对照。
 
-C1 每步约 22.6 ms：verify 17.9 ms（与普通 decode 一步相当，主要是 target 自身 NVFP4/FP8 GEMM），草稿 3.5 ms。native 的 FP8 与 BF16 草稿接受长度相同，FP8 量化没有损失接受率；与 vLLM 的差距来自 target 数值不同导致的 greedy 轨迹差异与 verify GEMM 效率，后者是全引擎的普通 decode 问题。
+C1 每步约 22.2 ms：verify 17.9 ms（与普通 decode 一步相当，主要是 target 自身 NVFP4/FP8 GEMM），草稿 3.1 ms。native 的 FP8 与 BF16 草稿接受长度相同，FP8 量化没有损失接受率；与 vLLM 的差距来自 target 数值不同导致的 greedy 轨迹差异与 verify GEMM 效率，后者是全引擎的普通 decode 问题。
 
 **明确未做**：随机采样的推测接受；prefix 缓存与草稿环的联动快照；宽度 8 的 pooled 三 lane 共享 attention（当前宽度 8 时 attention 走逐 lane 路径，1 slot 时约 1.2 ms）。
 
