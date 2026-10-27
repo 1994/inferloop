@@ -1,4 +1,5 @@
 //! Per-program activation quantization buffers, retained as long as captured graphs.
+mod vendor_fp4;
 use super::{
     kernels,
     quant_reuse::{CaptureQuantReuse, QuantKey, QuantKind, QuantPairRole},
@@ -59,6 +60,7 @@ pub struct Workspace {
     fp8_strategies: BTreeMap<(WeightKey, usize, usize, usize), Choice>,
     /// Lt handle, descriptors and original weight allocations outlive every program capture.
     vendor_fp8: vendor_fp8::Support,
+    vendor_fp4: vendor_fp8::nvfp4::Support,
     /// Explicit diagnostic override; production automatic choices still require exact gates.
     vendor_diagnostic: bool,
     /// Keyed by `(rows, columns, scale_columns)`: per-channel and block-scaled FP8 share an
@@ -188,6 +190,12 @@ impl Workspace {
         weights: &ProgramWeights,
         widths: &[usize],
     ) -> Result<Self> {
+        let vendor_fp8 = vendor_fp8::Support::new_with(device, true);
+        let vendor_fp4 = vendor_fp8::nvfp4::Support::new(
+            &vendor_fp8,
+            &weights.resident_tuning,
+            weights.autotune,
+        );
         let mut workspace = Self {
             quant_reuse: CaptureQuantReuse::default(),
             norm_maximum: None,
@@ -196,7 +204,8 @@ impl Workspace {
             buffers: BTreeMap::new(),
             fp8: BTreeMap::new(),
             fp8_strategies: BTreeMap::new(),
-            vendor_fp8: vendor_fp8::Support::new_with(device, true),
+            vendor_fp8,
+            vendor_fp4,
             vendor_diagnostic: vendor_diagnostic_enabled(),
         };
         workspace.extend(device, graph, weights, widths)?;

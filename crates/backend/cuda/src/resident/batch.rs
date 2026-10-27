@@ -1094,6 +1094,8 @@ impl BatchBuilder<'_> {
             self.weights,
             (arena.lanes(), &*self.nvfp4),
         );
+        mlp.prepare_vendor(self.device, self.graph, self.weights, arena, self.nvfp4)
+            .map_err(device_error)?;
         self.nvfp4.begin_quant_capture();
         let result = CudaGraph::scope(&self.device.stream, |scope| {
             let mut boundaries = profile.map(|profile| profile.graph(last));

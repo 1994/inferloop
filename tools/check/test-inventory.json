@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 338
+      "tests": 348
     },
     "frontdoor": {
       "benches": 0,
@@ -156,6 +156,7 @@
     "CUDA release, protected runner; GDN complete output/state and original-tile performance comparison": 1,
     "CUDA/checkpoint/frozen511tokens/safe-run; INFER_CUDA_ATTENTION_PRECISE_PREFIX=2048": 1,
     "actual 27B checkpoint, CUDA release and protected runner": 1,
+    "actual 27B checkpoint, CUDA, release and protected runner": 1,
     "opt-in projection-only shape A/B with real checkpoint and CUDA; run inside safe-run": 1,
     "real 2B checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 3,
     "real CUDA/MTP checkpoint; reserve graphs only after quote acknowledgement": 1,
@@ -185,6 +186,7 @@
     "requires CUDA hardware; run under safe-run": 29,
     "requires CUDA hardware; run under safe-run in release": 1,
     "requires CUDA hardware; weak decay and correlated K expose unstable inverse construction": 1,
+    "requires CUDA, 27B checkpoint and frozen 1025-token INFER_TEST_TOKENS; safe-run": 4,
     "requires CUDA, INFER_TEST_MODEL and INFER_TEST_TOKENS (JSON token array)": 1,
     "requires CUDA, INFER_TEST_MODEL and INFER_TEST_TOKENS; run under safe-run": 1,
     "requires CUDA, INFER_TEST_MODEL and frozen 1025-token INFER_TEST_TOKENS; safe-run": 6,
@@ -199,6 +201,7 @@
     "requires CUDA, Qwen checkpoint and safe-run": 1,
     "requires CUDA, frozen INFER_TEST_MODEL/TOKENS/table; safe-run; complete F32/FP8 state and vocabulary comparisons": 1,
     "requires CUDA, release, safe-run; validates actual probe input bits and temporary ownership": 1,
+    "requires CUDA/Lt FP4 hardware, release, and protected runner": 1,
     "requires CUDA/checkpoint/failing52token inputs/safe-run; GPUselected versus full logits/crosscapacity join": 1,
     "requires CUDA/checkpoint/frozen1025tokens/safe-run; default-width full chunks and state bits": 1,
     "requires CUDA/checkpoint/frozen1025tokens/safe-run; pooled physical KV stride and complete bits": 1,
@@ -226,6 +229,7 @@
     "requires CUDA; exact ordered recurrence at captured prompt widths": 1,
     "requires CUDA; full F64/cache numerical gate and hardware AB/BA tuning": 1,
     "requires CUDA; only after complete numerical gate; diagnostic costs, no service claim": 1,
+    "requires CUDA; rejected operands must record no vendor nodes": 1,
     "requires CUDA; run inside safe-run": 1,
     "requires CUDA; run inside safe-run with --test-threads 1": 2,
     "requires CUDA; run release serially inside safe-run": 1,
@@ -282,6 +286,16 @@
       "crate": "cuda",
       "file": "src/device/readback.rs",
       "mount": "../../tests/unit/device_readback_check.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/device/vendor_fp8/nvfp4.rs",
+      "mount": "../../../tests/unit/vendor_nvfp4_numerics.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/device/vendor_fp8/nvfp4.rs",
+      "mount": "../../../tests/unit/vendor_nvfp4.rs"
     },
     {
       "crate": "cuda",
@@ -442,6 +456,16 @@
       "crate": "cuda",
       "file": "src/loading/mod.rs",
       "mount": "../../tests/unit/resident_norm_fp4_model.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/loading/mod.rs",
+      "mount": "../../tests/unit/vendor_nvfp4_fixture.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/loading/mod.rs",
+      "mount": "../../tests/unit/resident_vendor_fp4_model.rs"
     },
     {
       "crate": "cuda",
@@ -777,6 +801,11 @@
       "crate": "cuda",
       "file": "src/tuning/greedy.rs",
       "mount": "../../tests/unit/tuning_greedy.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/tuning/nvfp4_lt.rs",
+      "mount": "../../tests/unit/tuning_nvfp4_lt.rs"
     },
     {
       "crate": "cuda",
@@ -1270,11 +1299,11 @@
     }
   ],
   "totals": {
-    "all": 903,
+    "all": 913,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 903
+    "tests": 913
   }
 }

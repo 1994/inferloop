@@ -1185,3 +1185,5 @@ pub(crate) mod kernels {
         output.store(mulf(first, column, rounding::NearestEven, ftz::Disabled));
     }
 }
+
+pub mod nvfp4;

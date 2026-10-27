@@ -6,6 +6,7 @@ use crate::constants::NVFP4_QUANT_SCALES_TILE;
 use crate::constants::PROMPT_GEMM_TILE_ROWS;
 use crate::constants::QUANT_GEMM_TILE;
 use crate::constants::WIDE_PROMPT_GEMM_TILE_ROWS;
+use crate::device::vendor_fp8::nvfp4::ModelCache;
 use crate::resident::nvfp4_gemm::kernels;
 use crate::{
     device::{CudaDevice, DeviceProfile, device_error},
@@ -26,7 +27,7 @@ use std::path::Path;
 use std::result::Result as StdResult;
 use std::{
     collections::BTreeMap,
-    sync::{Mutex, OnceLock, Weak},
+    sync::{Arc, Mutex, OnceLock, Weak},
     time::{Duration, Instant},
 };
 
@@ -93,6 +94,8 @@ const HARDWARE_VALIDATION_BUDGET: Duration = Duration::from_secs(600);
 /// The allowance starts at the first new resident search, after weight binding.
 /// Cache identities and mandatory real-weight proofs remain available after it expires.
 pub struct ResidentTuningSession {
+    /// Immutable-weight Lt proofs shared across this model's serving states.
+    pub(crate) vendor_fp4: Arc<ModelCache>,
     started: OnceLock<Instant>,
     greedy_started: OnceLock<Instant>,
     norm_started: OnceLock<Instant>,
@@ -104,6 +107,7 @@ pub struct ResidentTuningSession {
 impl Default for ResidentTuningSession {
     fn default() -> Self {
         Self {
+            vendor_fp4: Arc::new(ModelCache::default()),
             started: OnceLock::new(),
             greedy_started: OnceLock::new(),
             norm_started: OnceLock::new(),
@@ -390,7 +394,7 @@ fn sample_median(samples: &[f32]) -> Option<f32> {
     Some(median)
 }
 
-fn times_valid(times: &PairedTimes) -> bool {
+pub(crate) fn times_valid(times: &PairedTimes) -> bool {
     !times.baseline_ms.is_empty()
         && times.baseline_ms.len() == times.candidate_ms.len()
         && sample_median(&times.baseline_ms)
@@ -704,6 +708,17 @@ pub(crate) fn select(
             baseline
         }
     }
+}
+
+/// Current native comparison identity, shared by optional FP4 library qualifications.
+pub(crate) fn cache_key(device: &CudaDevice, shape: [usize; GEMM_RANK]) -> Result<ResidentGemmKey> {
+    ResidentGemmKey::new(
+        device.profile()?,
+        CudaDevice::driver_version()?,
+        shape,
+        driver_build(),
+        kernel_fingerprint(device, shape)?,
+    )
 }
 
 fn resolve(

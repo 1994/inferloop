@@ -1,6 +1,7 @@
 //! Capture-boundary invalidation and exact buffer binding, including the error path.
 use super::{CaptureQuantReuse, Workspace, vendor_fp8};
 use crate::resident::norm_fp4;
+use crate::tuning::resident_gemm::ResidentTuningSession;
 use crate::{device::CudaDevice, mlp::ProjectionWeight};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
@@ -9,6 +10,12 @@ use std::error::Error as StdError;
 type TestResult<T = ()> = Result<T, Box<dyn StdError>>;
 
 fn workspace(device: &CudaDevice) -> Workspace {
+    let vendor_fp8 = vendor_fp8::Support::new_with(device, true);
+    let vendor_fp4 = vendor_fp8::nvfp4::Support::new(
+        &vendor_fp8,
+        &Arc::new(ResidentTuningSession::default()),
+        false,
+    );
     Workspace {
         quant_reuse: CaptureQuantReuse::default(),
         norm_maximum: None,
@@ -17,7 +24,8 @@ fn workspace(device: &CudaDevice) -> Workspace {
         buffers: BTreeMap::new(),
         fp8: BTreeMap::new(),
         fp8_strategies: BTreeMap::new(),
-        vendor_fp8: vendor_fp8::Support::new_with(device, true),
+        vendor_fp8,
+        vendor_fp4,
         vendor_diagnostic: false,
     }
 }

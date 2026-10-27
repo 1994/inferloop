@@ -818,3 +818,11 @@ mod norm_fp4_quant_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/resident_norm_fp4_model.rs"]
 mod norm_fp4_model_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/vendor_nvfp4_fixture.rs"]
+pub(crate) mod nvfp4_fixture;
+
+#[cfg(test)]
+#[path = "../../tests/unit/resident_vendor_fp4_model.rs"]
+mod vendor_fp4_model_tests;

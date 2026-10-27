@@ -1,5 +1,8 @@
 use crate::constants::F32_BYTES;
+use crate::constants::NVFP4_GROUP_SIZE;
+use crate::device::vendor_fp8::nvfp4::SCALE_ROWS;
 use crate::device::{CudaDevice, device_error};
+use cuda_core::f8e4m3fn;
 use cuda_core::sys::CUdeviceptr;
 use cutile::{cuda_async::device_buffer::DeviceAllocation, prelude::*};
 use infer_core::{Error, Result, TensorId};
@@ -495,4 +498,99 @@ pub fn row_tensor(
         )
     };
     Ok((row, shared))
+}
+
+/// Two metadata views under one exclusive lease of an unused fused FP4 product.
+/// Probe completion must precede byte packing; neither view adds device allocation.
+pub(super) struct Fp4Scratch<'a> {
+    floats: Tensor<f32>,
+    bytes: Tensor<f8e4m3fn>,
+    _source: &'a mut Tensor<f32>,
+}
+impl<'a> Fp4Scratch<'a> {
+    pub(super) const fn floats(&mut self) -> &mut Tensor<f32> {
+        &mut self.floats
+    }
+    pub(super) const fn bytes(&mut self) -> &mut Tensor<f8e4m3fn> {
+        &mut self.bytes
+    }
+    /// # Safety
+    /// The source arena must outlive every captured replay. Only its current lease holder
+    /// may access these aliases, on one owning stream; probe completion precedes byte packing.
+    #[expect(
+        unsafe_code,
+        reason = "Exclusive source lease anchors complete checked aliases; the owning stream orders probe and scale packing"
+    )]
+    pub(super) unsafe fn new(
+        source: &'a mut Tensor<f32>,
+        rows: usize,
+        columns: usize,
+    ) -> Result<Option<Self>> {
+        let elements = rows
+            .checked_mul(columns)
+            .ok_or_else(|| Error::invalid("FP4 product overflow"))?;
+        if rows == 0
+            || columns == 0
+            || !rows.is_multiple_of(SCALE_ROWS)
+            || !columns.is_multiple_of(NVFP4_GROUP_SIZE)
+            || source.size() != elements
+            || !source.is_contiguous()
+        {
+            return Ok(None);
+        }
+        // SAFETY: The exclusive source lease lasts until both aliases are destroyed, their
+        // full extents equal the source, and the caller orders probe completion before packing.
+        let floats = unsafe { row_view(source, 1, 0) }?
+            .reshape(&[rows, columns])
+            .map_err(device_error)?;
+        // SAFETY: Same full extent and exclusive source lease; only metadata is created.
+        let owner = Arc::new(unsafe { row_view(source, 1, 0) }?);
+        let scale_row = columns / NVFP4_GROUP_SIZE * SCALE_ROWS;
+        let bytes = owner
+            .reinterpret::<f8e4m3fn>(&[source.num_bytes() / scale_row, scale_row])
+            .map_err(device_error)?;
+        drop(owner);
+        let bytes =
+            Arc::try_unwrap(bytes).map_err(|_| Error::invariant("FP4 exclusive byte metadata"))?;
+        Ok(Some(Self {
+            floats,
+            bytes,
+            _source: source,
+        }))
+    }
+}
+/// A shaped output alias whose exclusive owner remains borrowed through synchronous tuning.
+pub(super) struct Fp4Output<'a> {
+    tensor: Tensor<f32>,
+    _source: &'a mut Tensor<f32>,
+}
+impl<'a> Fp4Output<'a> {
+    pub(super) const fn tensor(&mut self) -> &mut Tensor<f32> {
+        &mut self.tensor
+    }
+    /// # Safety
+    /// Retain the source until every temporary preparation graph completes and is destroyed.
+    /// Serialize all accesses with the arena's owning stream and exclusive lease.
+    #[expect(
+        unsafe_code,
+        reason = "Complete shape-checked output alias is bounded by the exclusive source lease"
+    )]
+    pub(super) unsafe fn new(
+        source: &'a mut Tensor<f32>,
+        rows: usize,
+        columns: usize,
+    ) -> Result<Self> {
+        if rows.checked_mul(columns) != Some(source.size()) || !source.is_contiguous() {
+            return Err(Error::invalid("FP4 output shape"));
+        }
+        // SAFETY: The source is exclusively borrowed for the alias lifetime; temporary
+        // preparation graphs complete and are destroyed before this lease is released.
+        let tensor = unsafe { row_view(source, 1, 0) }?
+            .reshape(&[rows, columns])
+            .map_err(device_error)?;
+        Ok(Self {
+            tensor,
+            _source: source,
+        })
+    }
 }

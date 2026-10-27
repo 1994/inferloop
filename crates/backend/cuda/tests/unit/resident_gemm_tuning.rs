@@ -149,6 +149,7 @@ fn autotune_disabled_never_requests_measurement_but_keeps_valid_cached_choices()
     table.resident_gemm[0].bitwise_verified = false;
     assert!(decision(Some(&table), &key, true).is_err());
     let expired = ResidentTuningSession {
+        vendor_fp4: Arc::default(),
         started: OnceLock::new(),
         greedy_started: OnceLock::new(),
         norm_started: OnceLock::new(),
