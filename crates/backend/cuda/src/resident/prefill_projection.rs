@@ -5,6 +5,7 @@ use crate::constants::PREFILL_LANES;
 use crate::constants::PREFILL_NVFP4_TILE_N;
 use crate::constants::PREFILL_SPLIT_K;
 use crate::constants::SMALL_GEMM_TILE;
+use crate::device::CudaDevice;
 use crate::device::cublaslt::Support;
 use crate::{device::DeviceProfile, mlp::ProjectionWeight};
 use cutile::half::bf16;
@@ -84,6 +85,42 @@ pub(super) struct MlpPlan {
 }
 
 impl MlpPlan {
+    /// Warm and screen only down nodes whose F32 product this exact plan never materializes.
+    pub(super) fn prepare_vendor(
+        &self,
+        device: &CudaDevice,
+        graph: &infer_ir::DataflowGraph,
+        weights: &ProgramWeights,
+        arena: &mut super::ActivationArena,
+        nvfp4: &mut super::nvfp4_gemm::Workspace,
+    ) -> Result<(), DeviceError> {
+        if weights.fusion.is_some() || !weights.attention_profile.is_bf16() {
+            return Ok(());
+        }
+        let rows = arena.lanes();
+        for &index in &self.fused_downs {
+            let node = &graph.nodes[index];
+            let Some(super::program::ActivationQuantization::Fp4(scale)) =
+                weights.activation_quantization(node.inputs[1])
+            else {
+                continue;
+            };
+            let weight = weights
+                .projections
+                .get(&node.inputs[1])
+                .ok_or_else(|| error("fused down vendor weight"))?;
+            let columns = arena.get(node.inputs[0]).map_err(error)?.size() / rows;
+            let Some((input, output)) = down_buffers(arena, node)? else {
+                continue;
+            };
+            let output = output
+                .as_mut()
+                .ok_or_else(|| error("fused down vendor output"))?;
+            nvfp4.prepare_vendor_down(device, weight, scale, input, output, (rows, columns))?;
+        }
+        Ok(())
+    }
+
     pub(super) fn new(
         graph: &infer_ir::DataflowGraph,
         weights: &ProgramWeights,
@@ -291,6 +328,19 @@ fn record_fused_down(
         .ok_or_else(|| error("prefill projection"))?;
     let width = arena.lanes();
     let columns = arena.get(node.inputs[0]).map_err(error)?.size() / width;
+    if let Some((input, destination)) = down_buffers(arena, node)? {
+        let output = destination.take().ok_or_else(|| error("prefill output"))?;
+        let flat = output.size();
+        let mut output = output.reshape(&[width, flat / width])?;
+        let result =
+            match nvfp4.record_vendor_down(scope, weight, scale, input, &mut output, columns) {
+                Ok(true) => Ok(()),
+                Ok(false) => nvfp4.record_prequantized(scope, weight, scale, &mut output, columns),
+                Err(error) => Err(error),
+            };
+        *destination = Some(output.reshape(&[flat])?);
+        return result;
+    }
     let slot = arena.slot(node.outputs[0]).map_err(error)?;
     let output = arena.buffers[slot]
         .take()
@@ -660,3 +710,30 @@ pub fn with_dense_reference<T>(run: impl FnOnce() -> T) -> T {
 #[cfg(test)]
 #[path = "../../tests/unit/resident_prefill_projection.rs"]
 mod tests;
+
+/// The last-consumer arena may reuse a slot, but the vendor pack needs two disjoint slots.
+type DownBuffers<'a> = (&'a mut Tensor<f32>, &'a mut Option<Tensor<f32>>);
+fn down_buffers<'a>(
+    arena: &'a mut super::ActivationArena,
+    node: &TensorNode,
+) -> Result<Option<DownBuffers<'a>>, DeviceError> {
+    let input = arena.slot(node.inputs[0]).map_err(error)?;
+    let output = arena.slot(node.outputs[0]).map_err(error)?;
+    if input == output {
+        return Ok(None);
+    }
+    let (low, high) = arena
+        .buffers
+        .split_at_mut_checked(input.max(output))
+        .ok_or_else(|| error("fused down arena slots"))?;
+    let (input, output) = if input < output {
+        (low.get_mut(input), high.first_mut())
+    } else {
+        (high.first_mut(), low.get_mut(output))
+    };
+    let input = input
+        .and_then(Option::as_mut)
+        .ok_or_else(|| error("fused down arena input"))?;
+    let output = output.ok_or_else(|| error("fused down arena output"))?;
+    Ok(Some((input, output)))
+}

@@ -134,9 +134,15 @@ def check_exceptions():
                         ROOT / "crates/backend/cuda/src/device/readback.rs",
                         ROOT / "crates/backend/cuda/src/device/cublaslt.rs",
                         ROOT / "crates/backend/cuda/src/device/vendor_fp8.rs",
+                        # FP4 extension of the Lt ABI: checked complete extents, exact output
+                        # proofs, zero workspace, one owning stream and retained handles/weights.
+                        ROOT / "crates/backend/cuda/src/device/vendor_fp8/nvfp4.rs",
                         ROOT / "crates/backend/cuda/src/mlp/pdl.rs",
                         ROOT / "crates/backend/cuda/src/mlp/pdl_consumers.rs",
                         ROOT / "crates/backend/cuda/src/resident/arena.rs",
+                        # Narrow callers of lifetime-bound FP4 arena aliases: sole-consumer
+                        # product, exclusive arena lease, completion and same-stream replay.
+                        ROOT / "crates/backend/cuda/src/resident/nvfp4_gemm/workspace/vendor_fp4.rs",
                         ROOT / "crates/backend/cuda/src/resident/profile.rs",
                         # Explicit PTX launch boundaries: checked extents, owning device stream,
                         # Function/Module retention and input/output resource leases.

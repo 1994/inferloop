@@ -4,6 +4,7 @@ pub mod fp8_gemm;
 pub mod gated_norm;
 pub mod greedy;
 pub(crate) mod memory;
+pub mod nvfp4_lt;
 pub(crate) mod prefill;
 pub mod recurrent;
 pub mod resident_gemm;
@@ -45,7 +46,7 @@ use std::{
 };
 
 /// Winners must beat the baseline by this factor on an independent trial.
-const MIN_CONFIRM_SPEEDUP: f32 = 1.02;
+pub(crate) const MIN_CONFIRM_SPEEDUP: f32 = 1.02;
 /// Search space of graph GEMV tile dimensions.
 const TILE_ROW_SEARCH: [usize; 4] = [1, 4, 8, 16];
 /// Search space of graph GEMV tile dimensions.
@@ -59,20 +60,20 @@ const SAMPLE_CENTER: i16 = 15;
 /// Deterministic sample value bounds: modulo, center and scale.
 const SAMPLE_SCALE: f32 = 16.0;
 /// Measurement wall clocks and repetition bounds.
-const WARMUP_MS: u64 = 50;
+pub(crate) const WARMUP_MS: u64 = 50;
 /// Measurement wall clocks and repetition bounds.
-const REP_MS: u64 = 100;
+pub(crate) const REP_MS: u64 = 100;
 /// Measurement wall clocks and repetition bounds.
-const MIN_REPS: usize = 10;
+pub(crate) const MIN_REPS: usize = 10;
 /// Measurement wall clocks and repetition bounds.
-const MAX_REPS: usize = 30;
+pub(crate) const MAX_REPS: usize = 30;
 
 /// Median of paired timing samples, or NaN when there are none.
 ///
 /// Every tuning search reports a median through this one implementation so a speedup cannot depend
 /// on which module computed it. The halve-then-add form keeps the midpoint of two large samples
 /// from overflowing the way `(lo + hi) / 2` would.
-fn median(samples: &[f32]) -> f32 {
+pub(crate) fn median(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         return f32::NAN;
     }
@@ -299,6 +300,9 @@ pub struct TilingTable {
     pub resident_gemm: Vec<resident_gemm::ResidentGemmEntry>,
     #[serde(default)]
     pub resident_fp8_gemm: Vec<fp8_gemm::Entry>,
+    /// Qualified zero-workspace FP4 library projections.
+    #[serde(default)]
+    pub resident_fp4_lt: Vec<nvfp4_lt::Entry>,
     /// Device/driver/kernel/geometry scoped exact greedy reduction decisions.
     #[serde(default)]
     pub greedy: Vec<greedy::Entry>,
@@ -347,6 +351,8 @@ struct StoredTilingTable {
     #[serde(default)]
     resident_fp8_gemm: Vec<fp8_gemm::Entry>,
     #[serde(default)]
+    resident_fp4_lt: Vec<nvfp4_lt::Entry>,
+    #[serde(default)]
     greedy: Vec<greedy::Entry>,
     #[serde(default)]
     resident_gated_norm: Vec<gated_norm::NormEntry>,
@@ -391,6 +397,7 @@ impl From<StoredTilingTable> for TilingTable {
             devices,
             resident_gemm: stored.resident_gemm,
             resident_fp8_gemm: stored.resident_fp8_gemm,
+            resident_fp4_lt: stored.resident_fp4_lt,
             greedy: stored.greedy,
             resident_gated_norm: stored.resident_gated_norm,
             resident_recurrent: stored.resident_recurrent,
