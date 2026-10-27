@@ -2,17 +2,20 @@
 use super::{upload, values};
 use std::error::Error;
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
-use crate::{device::CudaDevice, resident::slot_recurrent::fused};
+use crate::{
+    device::CudaDevice,
+    resident::slot_recurrent::{ValueDevice, fused, value_split},
+};
 use cutile::prelude::*;
 use std::slice::from_ref;
 
 const KH: usize = 16;
 const VH: usize = 48;
 const D: usize = 128;
-const SW: usize = 32;
 const QKV: usize = (2 * KH + VH) * D;
 
 struct Fixture {
+    block: usize,
     state: Tensor<f32>,
     qkv: Tensor<f32>,
     beta: Tensor<f32>,
@@ -44,6 +47,7 @@ impl Fixture {
             .map(|_| upload(device, vec![0.0; VH * D], &[VH, 1, D]))
             .collect::<infer_core::Result<Vec<_>>>()?;
         Ok(Self {
+            block: D / value_split(ValueDevice::new(device)?, VH, D, slots)?,
             state: upload(
                 device,
                 values(slots * VH * D * D, 23),
@@ -72,9 +76,9 @@ impl Fixture {
             let state = self.state.slice(from_ref(&state_range))?;
             scope.record(
                 fused::delta_verify3(
-                    o0.partition([1, 1, SW]),
-                    o1.partition([1, 1, SW]),
-                    o2.partition([1, 1, SW]),
+                    o0.partition([1, 1, self.block]),
+                    o1.partition([1, 1, self.block]),
+                    o2.partition([1, 1, self.block]),
                     &state.view(&[VH, D, D])?,
                     &qkv[0],
                     &qkv[1],
@@ -91,7 +95,12 @@ impl Fixture {
                     &metadata[1],
                     &metadata[2],
                 )
-                .generics([KH, VH, D, SW].iter().map(ToString::to_string).collect()),
+                .generics(
+                    [KH, VH, D, self.block]
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
+                ),
             )?;
         }
         Ok(())
@@ -117,7 +126,7 @@ impl Fixture {
         let candidate = CudaGraph::scope(&device.stream, |scope| {
             scope.record(
                 fused::delta_verify_batch(
-                    (&mut self.candidate).partition([1, 3, SW]),
+                    (&mut self.candidate).partition([1, 3, self.block]),
                     &self.state.view(&[slots * VH, D, D])?,
                     &self.qkv,
                     &self.beta,
@@ -125,7 +134,12 @@ impl Fixture {
                     &self.parameters.view(&[2 * VH])?,
                     &self.metadata,
                 )
-                .generics([KH, VH, D, SW, 4].iter().map(ToString::to_string).collect()),
+                .generics(
+                    [KH, VH, D, self.block, 4]
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
+                ),
             )?;
             Ok(())
         })?;
@@ -168,7 +182,7 @@ impl Fixture {
             let metadata = lane_rows(&self.metadata, slot, 4)?;
             scope.record(
                 fused::delta_commit3(
-                    state.partition([1, D, SW]),
+                    state.partition([1, D, self.block]),
                     &qkv[0],
                     &qkv[1],
                     &qkv[2],
@@ -185,7 +199,12 @@ impl Fixture {
                     &metadata[2],
                     counts[slot],
                 )
-                .generics([KH, VH, D, SW].iter().map(ToString::to_string).collect()),
+                .generics(
+                    [KH, VH, D, self.block]
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
+                ),
             )?;
         }
         Ok(())
@@ -217,7 +236,7 @@ impl Fixture {
             let candidate_graph = CudaGraph::scope(&device.stream, |scope| {
                 scope.record(
                     fused::delta_commit_batch(
-                        (&mut candidate).partition([1, D, SW]),
+                        (&mut candidate).partition([1, D, self.block]),
                         &self.qkv,
                         &self.beta,
                         &self.alpha,
@@ -225,7 +244,12 @@ impl Fixture {
                         &self.metadata,
                         &counts,
                     )
-                    .generics([KH, VH, D, SW, 4].iter().map(ToString::to_string).collect()),
+                    .generics(
+                        [KH, VH, D, self.block, 4]
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect(),
+                    ),
                 )?;
                 Ok(())
             })?;
@@ -286,3 +310,6 @@ fn batch_commit_matches_per_slot_bits_at_model_geometry() -> TestResult {
     }
     Ok(())
 }
+
+#[path = "resident_slot_recurrent_wave.rs"]
+mod wave;

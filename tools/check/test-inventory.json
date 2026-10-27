@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 357
+      "tests": 362
     },
     "frontdoor": {
       "benches": 0,
@@ -154,6 +154,7 @@
   "ignored_reasons": {
     "CUDA release and protected runner": 2,
     "CUDA release, protected runner; GDN complete output/state and original-tile performance comparison": 1,
+    "CUDA release; original scalar tolerance and split error bounds, then bounded performance screen": 1,
     "CUDA/checkpoint/frozen511tokens/safe-run; INFER_CUDA_ATTENTION_PRECISE_PREFIX=2048": 1,
     "actual 27B checkpoint, CUDA release and protected runner": 1,
     "actual 27B checkpoint, CUDA, release and protected runner": 1,
@@ -177,6 +178,7 @@
     "requires CUDA hardware and a writable tuning cache; run under safe-run": 1,
     "requires CUDA hardware and cuBLAS; run under safe-run": 1,
     "requires CUDA hardware; actual captured prompt graph widths": 1,
+    "requires CUDA hardware; derived head grids, unchanged existing reference tolerance": 1,
     "requires CUDA hardware; finite hardware tuning with independent F64 references": 1,
     "requires CUDA hardware; new F32-state/F64-reference contract": 1,
     "requires CUDA hardware; root runs release serially": 3,
@@ -186,6 +188,7 @@
     "requires CUDA hardware; run under safe-run": 29,
     "requires CUDA hardware; run under safe-run in release": 1,
     "requires CUDA hardware; weak decay and correlated K expose unstable inverse construction": 1,
+    "requires CUDA release, 170-SM baseline; no serving acceptance from this operator screen": 1,
     "requires CUDA, 27B checkpoint and frozen 1025-token INFER_TEST_TOKENS; safe-run": 4,
     "requires CUDA, INFER_TEST_MODEL and INFER_TEST_TOKENS (JSON token array)": 1,
     "requires CUDA, INFER_TEST_MODEL and INFER_TEST_TOKENS; run under safe-run": 1,
@@ -875,6 +878,11 @@
       "mount": "resident_slot_recurrent_batch.rs"
     },
     {
+      "crate": "cuda",
+      "file": "tests/unit/resident_slot_recurrent_batch.rs",
+      "mount": "resident_slot_recurrent_wave.rs"
+    },
+    {
       "crate": "kernel-api",
       "file": "src/attention.rs",
       "mount": "../tests/unit/attention_tests.rs"
@@ -1306,11 +1314,11 @@
     }
   ],
   "totals": {
-    "all": 922,
+    "all": 927,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 922
+    "tests": 927
   }
 }

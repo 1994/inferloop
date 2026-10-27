@@ -1,4 +1,5 @@
 //! Cross-sequence target verification with per-slot recurrent rollback.
+use super::slot_recurrent::ValueDevice;
 use super::{
     ActivationArena,
     batch::{BatchBuilder, BatchReadout, Dispatch32, States, dispatch32, take_result},
@@ -169,8 +170,7 @@ impl BatchBuilder<'_> {
         (verify, staging): (usize, &super::slot_recurrent::Staging),
     ) -> Result<Vec<Vec<CudaGraph<()>>>> {
         let mut commits = Vec::with_capacity(lane_states.len());
-        let value_split =
-            super::slot_recurrent::value_split(self.device.profile()?.multiprocessors);
+        let hardware = ValueDevice::new(self.device)?;
         for (slot, states) in lane_states.iter_mut().enumerate() {
             let lanes = slot_lanes(slot, metadata).map_err(device_error)?;
             let mut graphs = Vec::with_capacity(verify);
@@ -189,7 +189,7 @@ impl BatchBuilder<'_> {
                                     states,
                                     &lanes,
                                     self.weights,
-                                    value_split,
+                                    hardware,
                                     (staged, count),
                                 )?;
                             }
@@ -305,16 +305,16 @@ impl BatchBuilder<'_> {
         node: &TensorNode,
         arena: &mut ActivationArena,
         (states, metadata): (&[States], &[Tensor<i32>]),
-        (staging, index, value_split, batch): (
+        (staging, index, hardware, batch): (
             &mut super::slot_recurrent::Staging,
             usize,
-            usize,
+            ValueDevice,
             &super::slot_states::VerifyBatch<'_>,
         ),
     ) -> StdResult<(), DeviceError> {
         staging.record_node(scope, node, arena, index)?;
         if super::slot_convolution::record(scope, node, arena, batch, self.weights)?
-            || super::slot_states::record_batch(scope, node, arena, batch, value_split)?
+            || super::slot_states::record_batch(scope, node, arena, batch, hardware)?
         {
             return Ok(());
         }
@@ -327,7 +327,7 @@ impl BatchBuilder<'_> {
                 states,
                 &lanes,
                 self.weights,
-                value_split,
+                hardware,
             )?;
         }
         Ok(())
@@ -344,8 +344,7 @@ impl BatchBuilder<'_> {
     ) -> Result<CudaGraph<()>> {
         let (verify, metadata, batch) = geometry;
         let fused = fused_recurrent(self.graph, verify);
-        let value_split =
-            super::slot_recurrent::value_split(self.device.profile()?.multiprocessors);
+        let hardware = ValueDevice::new(self.device)?;
         CudaGraph::scope(&self.device.stream, |scope| {
             let mut no_fusion = None;
             for (index, node) in self.graph.nodes.iter().enumerate() {
@@ -398,7 +397,7 @@ impl BatchBuilder<'_> {
                             node,
                             arena,
                             (lane_states, metadata),
-                            (staging, index, value_split, batch),
+                            (staging, index, hardware, batch),
                         )?;
                     }
                     Dispatch32::Row => {
