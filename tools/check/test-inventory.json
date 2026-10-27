@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 396
+      "tests": 399
     },
     "frontdoor": {
       "benches": 0,
@@ -165,6 +165,7 @@
     "opt-in projection-only shape A/B with real checkpoint and CUDA; run inside safe-run": 1,
     "real 2B checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 3,
     "real CUDA/MTP checkpoint; reserve graphs only after quote acknowledgement": 1,
+    "real CUDA/MTP2 checkpoint; run under safe-run with an explicit fixture": 1,
     "real MTP2 checkpoint and CUDA; run inside safe-run": 1,
     "real MTP2 checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 2,
     "real MTP2 checkpoint, CUDA, frozen table/tokens and protected serial runner required": 1,
@@ -317,6 +318,11 @@
       "crate": "cuda",
       "file": "src/device.rs",
       "mount": "../tests/unit/device.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/executor/admission_pool.rs",
+      "mount": "../../tests/unit/executor_request_kv.rs"
     },
     {
       "crate": "cuda",
@@ -1350,11 +1356,11 @@
     }
   ],
   "totals": {
-    "all": 966,
+    "all": 969,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 966
+    "tests": 969
   }
 }

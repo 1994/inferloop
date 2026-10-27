@@ -133,6 +133,7 @@ impl CudaExecutor {
         self.homes.clear();
         drop(self.draft_slots.take());
         drop(self.slots.take());
+        self.pool_quote = None;
         // The pool's padded storage may exceed a non-power-of-two model ceiling.
         self.reclaimed_slot_capacity = Some(pool_capacity.min(self.loaded.model().max_sequence));
         // Rebuild before a compatible quote, preserving pooled state pricing.
@@ -214,6 +215,9 @@ impl CudaExecutor {
                 ErrorCode::Conflict,
                 "CUDA state already reserved",
             ));
+        }
+        if allow_home {
+            self.resolve_request_pool(capacity, readout)?;
         }
         self.restore_slot_pool_for(capacity, readout)?;
         self.prepare_reservation_for(capacity, readout)?;

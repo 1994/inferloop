@@ -58,7 +58,7 @@ impl View {
     pub(super) fn refresh(&mut self, executor: &CudaExecutor) -> Result<()> {
         self.free = executor.free_state_bytes()?;
         self.capacity = executor.state_capacity_bytes()?;
-        self.kv = executor.kv_cache();
+        self.kv = Some(executor.kv_cache());
         self.pool = executor.pool_inspection();
         self.prefix = executor.prefix_inspection();
         self.multimodal = executor.loaded.vision().is_some();

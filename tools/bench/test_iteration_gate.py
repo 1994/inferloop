@@ -23,7 +23,11 @@ def serving(metrics=None):
     return {
         "readback": {
             "readback": {
-                "execution_profile": {"draft_depth": 2, "attention_profile": "bf16"},
+                "execution_profile": {
+                    "draft_depth": 2,
+                    "attention_profile": "bf16",
+                    "pooled_prefill_width": 1024,
+                },
                 "serving_plan": {
                     "width": 15,
                     "capacity": 8192,
@@ -35,6 +39,8 @@ def serving(metrics=None):
                 },
             }
         },
+        "startup_seconds": 1,
+        "trials": [{"wall_seconds": 2}],
         "metrics": metrics
         or {
             name: {"wall_seconds": 2, "ttft_seconds": 1, "tpot_seconds": 0.01}
@@ -184,6 +190,57 @@ class IterationTests(unittest.TestCase):
             "selected": 15,
         }
         gate.compare(serving(), candidate, 10)
+
+    def test_declared_request_resource_change_keeps_execution_and_budget_checks(self):
+        baseline, candidate = serving(), serving()
+        readback = candidate["readback"]["readback"]
+        readback["serving_plan"]["width"] = 14
+        readback["serving_plan"]["prompt_width"] = 512
+        readback["execution_profile"]["pooled_prefill_width"] = 512
+        readback["execution_profile"]["concurrency"] = {
+            "memory_bound": 14,
+            "roofline_bound": 52,
+            "selected": 14,
+        }
+        result = gate.compare(baseline, candidate, 10, "actual request length")
+        self.assertTrue(result["c16"]["resource_plan_changed"])
+        readback["execution_profile"]["attention_profile"] = "fp8"
+        with self.assertRaisesRegex(ValueError, "runtime execution profiles differ"):
+            gate.compare(baseline, candidate, 10, "actual request length")
+        readback["execution_profile"]["attention_profile"] = "bf16"
+        readback["serving_plan"]["allocated_bytes"] = 111
+        with self.assertRaisesRegex(ValueError, "exceed budget"):
+            gate.compare(baseline, candidate, 10, "actual request length")
+
+    def test_each_workload_uses_its_actual_post_warmup_resource_plan(self):
+        baseline, candidate = serving(), serving()
+        alternate = serving()["readback"]
+        alternate["readback"]["serving_plan"]["width"] = 14
+        candidate["case_readbacks"] = {"short1": alternate}
+        result = gate.compare(baseline, candidate, 10, "request-dependent allocation")
+        self.assertFalse(result["c16"]["resource_plan_changed"])
+        self.assertTrue(result["short1"]["resource_plan_changed"])
+        with self.assertRaisesRegex(ValueError, "funded serving resources differ"):
+            gate.compare(baseline, candidate, 10)
+
+    def test_startup_regression_stops_before_quality_collection(self):
+        baseline, candidate = serving(), serving()
+        candidate["startup_seconds"] = 10
+        gate.performance.side_effect = [baseline, candidate]
+        with self.assertRaisesRegex(ValueError, "startup regression"):
+            self.run_gate()
+        self.collect.assert_not_called()
+        result = json.loads((self.args.output / "summary.json").read_text())
+        self.assertTrue(result["startup"]["gross_regression"])
+
+    def test_first_workload_capture_is_included_in_startup_comparison(self):
+        baseline = {"startup_seconds": 70, "trials": [{"wall_seconds": 10}]}
+        candidate = {"startup_seconds": 30, "trials": [{"wall_seconds": 50}]}
+        result = gate.startup_comparison(baseline, candidate, 10)
+        self.assertEqual(result["change_percent"], 0)
+        self.assertFalse(result["gross_regression"])
+        candidate["trials"][0]["wall_seconds"] = 70
+        self.assertTrue(gate.startup_comparison(baseline, candidate, 10)["gross_regression"])
 
     def test_funded_resource_change_is_explicit_failure(self):
         candidate = serving()

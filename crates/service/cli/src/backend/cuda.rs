@@ -149,7 +149,14 @@ fn resident_backend(
         .concurrency
         .as_ref()
         .is_some_and(|limit| limit.roofline_bound == Some(1));
-    if require_pool && profile.pooled_prefill_width.is_none() && !serial_roofline {
+    // Automatic concurrency can have a complete funded quote pending the first
+    // request's actual length. No worker width is reported until capture succeeds.
+    let funded_pending = profile
+        .concurrency
+        .as_ref()
+        .is_some_and(|limit| limit.selected > 1);
+    if require_pool && profile.pooled_prefill_width.is_none() && !serial_roofline && !funded_pending
+    {
         return Err(Error::new(
             infer_core::ErrorCode::Capacity,
             "automatic fast execution could not fund a complete pooled serving plan",

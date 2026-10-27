@@ -2,6 +2,7 @@
 //!
 //! An owned execution future separates submission from completion across every compute path.
 //! Tickets publish committed state only after the complete device flight has fenced.
+mod admission_pool;
 mod capabilities;
 mod drafting;
 mod execution;
@@ -17,7 +18,11 @@ use crate::registry::CudaKernels;
 pub use pool::PoolInspection;
 mod state;
 mod validation;
-use crate::{loading::LoadedModel, resident::DeviceProgram, resident::slot_batch::SlotPool};
+use crate::{
+    loading::{LoadedModel, PooledServingQuote},
+    resident::DeviceProgram,
+    resident::slot_batch::SlotPool,
+};
 use cutile::prelude::Tensor;
 use infer_core::{Error, Result, StateId};
 use infer_ir::{DeviceCapabilities, ExecutionProgram, ModelOutput, OutputReadout};
@@ -38,6 +43,9 @@ pub(super) struct CudaExecutor {
     maximum_states: usize,
     roofline_bound: Option<usize>,
     memory_bound: usize,
+    /// Pure funded quote before the first request, or the last complete capture quote.
+    pool_quote: Option<PooledServingQuote>,
+    pool_envelope: u64,
     pool: pool::StatePool,
     prefix: prefix::PrefixCache,
     /// KV bytes one 32-token block of the target graph occupies; the physical page price the
@@ -170,7 +178,10 @@ impl CudaExecutor {
         profile.concurrency = Some(infer_ir::ConcurrencyInspection {
             memory_bound: self.memory_bound,
             roofline_bound: self.roofline_bound,
-            selected: self.slots.as_ref().map_or(1, SlotPool::width),
+            selected: self.slots.as_ref().map_or_else(
+                || self.pool_quote.as_ref().map_or(1, |quote| quote.width),
+                SlotPool::width,
+            ),
         });
         profile.pooled_prefill_width = self
             .worker
@@ -181,7 +192,18 @@ impl CudaExecutor {
 
     /// # Errors
     /// Rejects an empty state limit/budget or unavailable device attributes.
+    #[cfg(test)]
     pub fn new(loaded: LoadedModel, state_budget: u64, maximum_states: usize) -> Result<Self> {
+        let mut backend = Self::with_roofline(loaded, state_budget, maximum_states, None)?;
+        backend.pool_quote = None;
+        backend.warm_slot_pool();
+        Ok(backend)
+    }
+    pub(super) fn new_bounded(
+        loaded: LoadedModel,
+        state_budget: u64,
+        maximum_states: usize,
+    ) -> Result<Self> {
         Self::with_roofline(loaded, state_budget, maximum_states, None)
     }
     pub fn new_automatic(
@@ -243,6 +265,8 @@ impl CudaExecutor {
             maximum_states,
             roofline_bound,
             memory_bound: 1,
+            pool_quote: None,
+            pool_envelope: 0,
             pool: pool::StatePool::default(),
             prefix,
             kv_block_bytes,
@@ -257,7 +281,7 @@ impl CudaExecutor {
             busy: false,
             fatal: None,
         };
-        backend.warm_slot_pool();
+        backend.defer_request_pool()?;
         Ok(backend)
     }
     #[must_use]

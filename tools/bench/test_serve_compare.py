@@ -111,6 +111,15 @@ class ServingPlanReadbackTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIsNone(module.serving_plan_readback(text))
 
+    def test_retired_request_pool_cannot_leave_a_stale_accepted_plan(self):
+        for message in (
+            "retired idle CUDA request pool",
+            "reclaimed idle incompatible CUDA slot pools before admission",
+        ):
+            with self.subTest(message=message):
+                text = self.planned() + self.accepted() + f"INFO {message}\n"
+                self.assertIsNone(module.serving_plan_readback(text))
+
     def test_colored_tracing_and_activity_logs_preserve_accepted_plan(self):
         text = "\x1b[32m" + self.planned() + self.accepted() + "\x1b[0m"
         text += "INFO infer::http: request path=runtime status=200\n"

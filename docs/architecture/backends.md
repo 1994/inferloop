@@ -78,3 +78,10 @@ CUDA provider 已接入 CLI/HTTP，执行设备驻留图、状态/图复用、�
 | 性能 | CPU 分配门禁只覆盖指定路径，不代表全进程零分配；单模型/单设备实验不能代表通用 P99 或吞吐达标 |
 
 模型扩展见 [新增模型](../guides/adding-a-model.md)，CUDA 工具链与执行入口见 [CUDA README](../../crates/backend/cuda/README.md)。服务协议限制见 [OpenAI API](../guides/openai-api.md)，诊断能力见 [Agent](agent.md)。
+
+
+CUDA 的请求长度接纳在异步 reservation 中选择实体 serving 计划：启动期可以先报告完整
+报价支持的并发上限，此时 `pooled_prefill_width` 缺失；实际捕获后才报告 worker
+宽度和实体槽数。普通资源 quote 不捕获图，活动状态、slot lease 或设备 flight 未完成时
+不重建池。已保留的请求 KV 页覆盖实际 prompt + 最大输出长度，物理空闲页与逻辑
+上下文容量分别统计；超出共享池容量的私有请求保留独立报价和回收路径。
