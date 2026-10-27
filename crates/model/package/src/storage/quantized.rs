@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 mod activations;
+mod draft;
+pub use draft::DFlash2Package;
 
 /// Values sharing one E4M3 block scale in an NVFP4 weight.
 const NVFP4_GROUP_SIZE: usize = 16;
@@ -37,6 +39,16 @@ pub struct WeightView {
     pub element_offset: u64,
     #[serde(default)]
     pub rows: Vec<usize>,
+    /// `[first, count]` columns kept from every selected row; `None` keeps whole rows.
+    #[serde(default)]
+    pub columns: Option<[usize; 2]>,
+}
+impl WeightView {
+    /// Whether the view selects rows or columns, so its bytes need an owned gather.
+    #[must_use]
+    pub const fn gathered(&self) -> bool {
+        !self.rows.is_empty() || self.columns.is_some()
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeightSource {
@@ -71,6 +83,8 @@ pub struct QuantizedPackage {
     pub graph: DataflowGraph,
     pub weights: BTreeMap<String, DeviceWeight>,
     pub mtp: BTreeMap<String, DeviceWeight>,
+    /// Attached `DFlash2` draft, bound against this target by [`Self::attach_dflash2`].
+    pub dflash2: Option<DFlash2Package>,
     /// KV storage declared by the checkpoint, separate from weight encoding.
     pub kv_cache_dtype: Option<TensorDtype>,
     shards: BTreeMap<String, SafetensorsFile>,
@@ -122,6 +136,7 @@ impl QuantizedPackage {
             graph,
             weights: BTreeMap::new(),
             mtp: BTreeMap::new(),
+            dflash2: None,
             kv_cache_dtype: declared_kv_dtype(&value["quantization_config"]["kv_cache_scheme"])?,
             shards,
             tensor_map,
@@ -136,7 +151,7 @@ impl QuantizedPackage {
     /// # Errors
     /// Returns errors for a foreign source descriptor, I/O failure, or exceeded budget.
     pub fn read(&mut self, source: &WeightSource, budget: u64) -> Result<Vec<u8>> {
-        let Some(view) = source.view.as_ref().filter(|view| !view.rows.is_empty()) else {
+        let Some(view) = source.view.as_ref().filter(|view| view.gathered()) else {
             return Ok(self.read_view(source, budget)?.to_vec());
         };
         let file = self
@@ -150,18 +165,24 @@ impl QuantizedPackage {
         let [stored_rows, columns] = header.shape.as_slice() else {
             return Err(Error::invalid("gathered weight rank"));
         };
-        let bytes = view
-            .rows
+        let [first, width] = view.columns.unwrap_or([0, *columns]);
+        let rows: Vec<usize> = if view.rows.is_empty() {
+            (0..*stored_rows).collect()
+        } else {
+            view.rows.clone()
+        };
+        let bytes = rows
             .len()
-            .checked_mul(*columns)
+            .checked_mul(width)
             .and_then(|n| (n as u64).checked_mul(source.dtype.bytes()))
             .ok_or_else(|| Error::invalid("gathered weight size overflow"))?;
         if source.bytes != bytes
-            || source.shape != [view.rows.len(), *columns]
+            || source.shape != [rows.len(), width]
             || view.stored_shape != header.shape
             || view.element_offset != 0
             || source.dtype != header.dtype
-            || view.rows.iter().any(|row| *row >= *stored_rows)
+            || first.checked_add(width).is_none_or(|end| end > *columns)
+            || rows.iter().any(|row| *row >= *stored_rows)
         {
             return Err(Error::invalid("gathered weight descriptor changed"));
         }
@@ -171,16 +192,18 @@ impl QuantizedPackage {
                 "gathered weight exceeds staging budget",
             ));
         }
+        let element =
+            usize::try_from(source.dtype.bytes()).map_err(|e| Error::invalid(e.to_string()))?;
         let row_bytes = columns
-            .checked_mul(
-                usize::try_from(source.dtype.bytes()).map_err(|e| Error::invalid(e.to_string()))?,
-            )
+            .checked_mul(element)
             .ok_or_else(|| Error::invalid("weight row overflow"))?;
+        let (skip, kept) = (first * element, width * element);
         let stored = file.bytes(&source.name, u64::MAX)?;
         let mut output =
             Vec::with_capacity(usize::try_from(bytes).map_err(|e| Error::invalid(e.to_string()))?);
-        for row in &view.rows {
-            output.extend_from_slice(&stored[row * row_bytes..(row + 1) * row_bytes]);
+        for row in &rows {
+            let start = row * row_bytes + skip;
+            output.extend_from_slice(&stored[start..start + kept]);
         }
         Ok(output)
     }
@@ -201,7 +224,7 @@ impl QuantizedPackage {
             return Err(Error::invalid("weight source dtype changed"));
         }
         if let Some(view) = &source.view {
-            if !view.rows.is_empty() {
+            if view.gathered() {
                 return Err(Error::unsupported("gathered weight requires owned read"));
             }
             let elements = source
@@ -490,6 +513,7 @@ impl QuantizedPackage {
             stored_shape: data.shape.clone(),
             element_offset: 0,
             rows: indices,
+            columns: None,
         });
         data.shape = shape.to_vec();
         data.bytes = bytes;
@@ -538,6 +562,7 @@ impl QuantizedPackage {
             stored_shape: source.shape.clone(),
             element_offset: offset as u64,
             rows: Vec::new(),
+            columns: None,
         });
         source.shape = vec![rows, columns];
         source.bytes = bytes;

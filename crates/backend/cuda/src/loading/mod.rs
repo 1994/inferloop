@@ -34,6 +34,7 @@ mod budget;
 pub(crate) use budget::PooledServingQuote;
 mod experts;
 mod phase;
+use crate::resident::dflash2::DraftWeights;
 use crate::{
     device::CudaDevice,
     resident::{DeviceProgram, ProgramWeights},
@@ -43,6 +44,7 @@ use infer_core::{Error, ModelId, Result};
 use infer_ir::{DataflowGraph, ModelIr};
 use infer_models::QuantizedPackage;
 use std::path::Path;
+use std::sync::Arc;
 pub use weights::{Projection, floats};
 
 /// Load-time execution policy; each request receives independent mutable device state.
@@ -67,6 +69,8 @@ pub struct LoadOptions {
     /// Bind the vision tower; false serves text only, as vLLM does with all-zero multimodal
     /// limits, and rejects image inputs.
     pub vision: bool,
+    /// Separate `DFlash2` draft package to speculate with; excludes an MTP depth.
+    pub draft_model: Option<std::path::PathBuf>,
 }
 impl Default for LoadOptions {
     fn default() -> Self {
@@ -79,6 +83,7 @@ impl Default for LoadOptions {
             chunked_recurrent: false,
             attention_profile: crate::AttentionProfile::Canonical,
             vision: true,
+            draft_model: None,
         }
     }
 }
@@ -122,6 +127,11 @@ impl LoadOptions {
         if self.mtp_depth > MAX_MTP_DEPTH {
             return Err(Error::invalid("CUDA MTP draft depth"));
         }
+        if self.mtp_depth > 0 && self.draft_model.is_some() {
+            return Err(Error::invalid(
+                "an MTP depth and a separate draft model are exclusive",
+            ));
+        }
         Ok(())
     }
 }
@@ -141,6 +151,8 @@ pub struct LoadedModel {
     graph: DataflowGraph,
     weights: ProgramWeights,
     draft: Option<Draft>,
+    /// Attached `DFlash2` draft weights, shared by the executor's draft engine.
+    dflash2: Option<Arc<DraftWeights>>,
     vision: Option<LoadedVision>,
     imported: infer_spi::ImportedModel,
     mtp_depth: usize,
@@ -246,6 +258,27 @@ impl LoadedModel {
         self.draft.as_ref().map(|draft| &draft.graph)
     }
 
+    /// Attached `DFlash2` draft weights.
+    pub(crate) fn dflash2(&self) -> Option<&Arc<DraftWeights>> {
+        self.dflash2.as_ref()
+    }
+
+    /// Tokens one speculative step may propose: the MTP depth or the `DFlash2` block's masks.
+    #[must_use]
+    pub fn draft_depth(&self) -> usize {
+        self.dflash2
+            .as_ref()
+            .map_or(self.mtp_depth, |draft| draft.geometry.block - 1)
+    }
+
+    /// Target lanes one pooled verification replays per slot, zero without speculation.
+    fn speculation_width(&self) -> usize {
+        match self.draft_depth() {
+            0 => 0,
+            depth => depth + 1,
+        }
+    }
+
     /// Effective graph widths and speculation depth after automatic resolution.
     #[must_use]
     pub fn execution_profile(&self) -> infer_ir::ExecutionProfileInspection {
@@ -254,7 +287,7 @@ impl LoadedModel {
             prefill_width: self.weights.prefill_width,
             pooled_prefill_width: None,
             batch_width: self.weights.batch_width,
-            draft_depth: self.mtp_depth,
+            draft_depth: self.draft_depth(),
             automatic_prefill: self.automatic_prefill,
             arena_budget_bytes: self.profile.arena_budget_bytes(),
             attention_profile: self.weights.attention_profile.name().to_owned(),
@@ -281,6 +314,21 @@ impl LoadedModel {
             ),
         );
         let mut package = QuantizedPackage::open(root, id).map_err(|e| package_phase.fail(&e))?;
+        if let Some(draft) = &options.draft_model {
+            package
+                .attach_dflash2(draft)
+                .map_err(|e| package_phase.fail(&e))?;
+            let block = package
+                .dflash2
+                .as_ref()
+                .map_or(0, |draft| draft.config.dflash_config.block_size);
+            if !(2..=MAX_VERIFICATION_WIDTH).contains(&block) {
+                return Err(package_phase.fail(&Error::unsupported(format!(
+                    "DFlash2 block {block} exceeds the verification width limit"
+                ))));
+            }
+            options.verification_width = block;
+        }
         package_phase.finish();
         options.fp8_kv =
             Some(options.fp8_kv.unwrap_or_else(|| {
@@ -293,6 +341,16 @@ impl LoadedModel {
         let mtp_depth = options.mtp_depth;
         let (mut weights, mut draft, tuning) =
             bindings::load(&device, &profile, &mut package, &options)?;
+        let dflash2 = if package.dflash2.is_some() {
+            let draft_phase = phase::Phase::start("dflash2", "binding the DFlash2 draft");
+            let weights = DraftWeights::load(&device, &mut package, &weights)
+                .map_err(|e| draft_phase.fail(&e))?;
+            draft_phase.finish();
+            tracing::info!(target: "infer::load", bytes = weights.bytes(), "DFlash2 draft bound");
+            Some(Arc::new(weights))
+        } else {
+            None
+        };
         if automatic_prefill
             && !weights.projections.iter().any(|(id, weight)| {
                 matches!(weight, ProjectionWeight::Fp4(..))
@@ -368,6 +426,7 @@ impl LoadedModel {
             graph: package.graph,
             weights,
             draft,
+            dflash2,
             vision,
             imported,
             mtp_depth,
@@ -627,14 +686,7 @@ impl LoadedModel {
             width,
             capacity,
             self.model.hidden_size,
-            (
-                self.model.vocab_size,
-                if self.mtp_depth == 0 {
-                    0
-                } else {
-                    self.mtp_depth + 1
-                },
-            ),
+            (self.model.vocab_size, self.speculation_width()),
             kv_tokens,
         )
     }

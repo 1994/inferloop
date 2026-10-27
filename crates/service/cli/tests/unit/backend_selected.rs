@@ -21,6 +21,7 @@ fn selected_backend_preserves_compact_generation_reservation() -> Result<()> {
             served_model_name: None,
             upload_staging_mib: None,
             num_speculative_tokens: Some(super::super::SpeculativeTokens::Depth(0)),
+            draft_model: None,
             gpu_memory_utilization: 0.0,
             autotune: false,
             text_only: false,

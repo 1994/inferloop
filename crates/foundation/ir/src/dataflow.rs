@@ -138,6 +138,9 @@ pub struct DataflowGraph {
     pub nodes: Vec<TensorNode>,
     pub hidden: Option<TensorId>,
     pub logits: Option<TensorId>,
+    /// Per-token features a speculative draft reads from the target, when one is attached.
+    #[serde(default)]
+    pub features: Option<TensorId>,
     pub lifetimes: Vec<BufferLifetime>,
     pub scratch_elements: usize,
 }
@@ -189,7 +192,10 @@ impl DataflowGraph {
                 }
             }
         }
-        for output in [self.hidden, self.logits].into_iter().flatten() {
+        for output in [self.hidden, self.logits, self.features]
+            .into_iter()
+            .flatten()
+        {
             if !available.contains(&output) {
                 return Err(Error::invalid("undefined graph result"));
             }
@@ -214,7 +220,10 @@ impl DataflowGraph {
                 }
             }
         }
-        for id in [self.hidden, self.logits].into_iter().flatten() {
+        for id in [self.hidden, self.logits, self.features]
+            .into_iter()
+            .flatten()
+        {
             bounds
                 .get_mut(&id)
                 .ok_or_else(|| Error::invariant("validated result"))?

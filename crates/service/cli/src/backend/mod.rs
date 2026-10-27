@@ -125,6 +125,8 @@ pub struct Selection {
     pub upload_staging_mib: Option<usize>,
     /// Omitted execution options select a qualified pair or fall back to canonical/depth0.
     pub num_speculative_tokens: Option<SpeculativeTokens>,
+    /// Separate `DFlash2` draft package (`--draft-model`); excludes an MTP depth.
+    pub draft_model: Option<std::path::PathBuf>,
     /// Explicit target attention profile; absence allows paired automatic selection.
     #[cfg(cuda_backend)]
     pub attention_profile: Option<CudaAttentionProfile>,

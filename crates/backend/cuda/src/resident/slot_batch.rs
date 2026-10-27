@@ -138,7 +138,14 @@ impl SlotLedger {
     }
     /// Take a free slot, if any remain.
     fn take(&mut self) -> Option<usize> {
-        let slot = self.free.pop()?;
+        // The lowest free slot keeps busy slots inside the narrowest verify graph.
+        let index = self
+            .free
+            .iter()
+            .enumerate()
+            .min_by_key(|&(_, &slot)| slot)
+            .map(|(index, _)| index)?;
+        let slot = self.free.swap_remove(index);
         self.allocations = self.allocations.saturating_add(1);
         Some(slot)
     }
@@ -183,6 +190,13 @@ pub struct SlotPool {
     // arena buffers their kernels reference.
     decode: Option<SlotDecodeGraph>,
     verify: Option<SlotVerifyGraph>,
+    /// Verify graphs over the pool's first 1, 2, 4, ... slots, narrowest first: a step whose
+    /// busy slots are all low replays only their lanes. `verify` stays the timeline of record.
+    narrow: Vec<SlotVerifyGraph>,
+    /// The narrow graph the last verification replayed, `None` for the full graph.
+    active_verify: Option<usize>,
+    /// Root-family views the narrow graphs read; they alias `states` and drop before it.
+    _narrow_roots: Vec<States>,
     states: SlotStates,
     fp8: Vec<Fp8Caches>,
     /// Per-slot identity block tables; declared with the states so they outlive the captures.
@@ -289,6 +303,11 @@ impl SlotPool {
         clippy::too_many_arguments,
         reason = "Pool construction binds model, geometry, readout and KV paging explicitly"
     )]
+    #[expect(
+        unsafe_code,
+        reason = "Audited narrow verify roots: prefix views of `states`, which the pool owns \
+                  and drops after its graphs"
+    )]
     pub fn new(
         device: &CudaDevice,
         graph: &DataflowGraph,
@@ -341,10 +360,25 @@ impl SlotPool {
             (width, verify, capacity),
             paging.is_some(),
         )?;
-        let mut nvfp4 = super::nvfp4_gemm::Workspace::new(device, graph, weights, &[1, lanes])?;
-        nvfp4.prepare_pool_dense(device, graph, weights, lanes)?;
+        let narrow_slots: Vec<usize> =
+            if verify >= 2 && super::slot_verify::fused_recurrent(graph, verify) {
+                (0..)
+                    .map(|shift| 1usize << shift)
+                    .take_while(|&slots| slots < width)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        let mut widths = vec![1, lanes];
+        widths.extend(narrow_slots.iter().map(|&slots| slots * verify));
+        let mut nvfp4 = super::nvfp4_gemm::Workspace::new(device, graph, weights, &widths)?;
+        for &rows in &widths[1..] {
+            nvfp4.prepare_pool_dense(device, graph, weights, rows)?;
+        }
         let mut placeholder_states = States::new();
         let mut placeholder_fp8 = Fp8Caches::new();
+        let mut narrow = Vec::with_capacity(narrow_slots.len());
+        let mut narrow_roots = Vec::with_capacity(narrow_slots.len());
         let (decode, verify_graph) = {
             let mut builder = super::batch::BatchBuilder {
                 device,
@@ -364,10 +398,19 @@ impl SlotPool {
                 width,
             };
             if verify >= 2 {
-                (
-                    None,
-                    Some(builder.build_slot_verify(&mut states, &mut fp8, verify)?),
-                )
+                let full = builder.build_slot_verify(&mut states, &mut fp8, verify)?;
+                for &slots in &narrow_slots {
+                    // SAFETY: the pool keeps `states` alive behind `_narrow_roots` and drops
+                    // its graphs first; every graph replays on the pool's one stream.
+                    let (lanes, mut roots) = unsafe { states.prefix(slots)? };
+                    narrow.push(builder.build_slot_verify_parts(
+                        (lanes, &mut roots),
+                        &mut fp8[..slots],
+                        verify,
+                    )?);
+                    narrow_roots.push(roots);
+                }
+                (None, Some(full))
             } else {
                 (Some(builder.build_slots(&mut states, &mut fp8)?), None)
             }
@@ -375,6 +418,9 @@ impl SlotPool {
         Ok(Self {
             decode,
             verify: verify_graph,
+            narrow,
+            active_verify: None,
+            _narrow_roots: narrow_roots,
             states,
             fp8,
             tables,
@@ -526,6 +572,24 @@ impl SlotPool {
     #[must_use]
     pub fn verify(&self) -> Option<usize> {
         self.verify.as_ref().map(|graph| graph.verify)
+    }
+
+    /// Device draft features of every verify graph, narrowest first, with its slot count;
+    /// see [`SlotVerifyGraph::features`].
+    pub(crate) fn verify_features(&self) -> Option<Vec<(usize, Arc<Tensor<f32>>)>> {
+        self.narrow
+            .iter()
+            .chain(self.verify.as_ref())
+            .map(|graph| graph.features().map(|features| (graph.slots, features)))
+            .collect()
+    }
+
+    /// Slots of the verify graph the last verification replayed.
+    pub(crate) fn verified_slots(&self) -> usize {
+        self.active_verify
+            .and_then(|index| self.narrow.get(index))
+            .or(self.verify.as_ref())
+            .map_or(0, |graph| graph.slots)
     }
 
     /// Slots no sequence currently leases.
@@ -890,11 +954,51 @@ impl SlotPool {
         lanes: &[SlotVerifyLane],
         plain_greedy: bool,
     ) -> Result<super::batch::BatchReadout> {
-        self.verify
+        let full = self
+            .verify
             .as_mut()
-            .ok_or_else(|| Error::invalid("slot pool has no verify graph"))?
+            .ok_or_else(|| Error::invalid("slot pool has no verify graph"))?;
+        let busy = lanes.iter().map(|&(slot, ..)| slot + 1).max().unwrap_or(0);
+        self.active_verify = self.narrow.iter().position(|graph| graph.slots >= busy);
+        let Some(graph) = self.active_verify.map(|index| &mut self.narrow[index]) else {
+            return full
+                .run_verify_readout_async(
+                    device,
+                    lanes,
+                    self.capacity,
+                    self.vocabulary,
+                    plain_greedy,
+                )
+                .await;
+        };
+        graph.sync_from(full);
+        let readout = graph
             .run_verify_readout_async(device, lanes, self.capacity, self.vocabulary, plain_greedy)
-            .await
+            .await;
+        full.sync_from(graph);
+        readout
+    }
+
+    /// Run `commit` on the graph the last verification replayed, keeping the full graph's
+    /// cursors the timeline of record.
+    fn commit_active(
+        &mut self,
+        commit: impl FnOnce(&mut SlotVerifyGraph) -> Result<()>,
+    ) -> Result<()> {
+        let full = self
+            .verify
+            .as_mut()
+            .ok_or_else(|| Error::invalid("slot pool has no verify graph"))?;
+        let Some(graph) = self
+            .active_verify
+            .and_then(|index| self.narrow.get_mut(index))
+        else {
+            return commit(full);
+        };
+        graph.sync_from(full);
+        let result = commit(graph);
+        full.sync_from(graph);
+        result
     }
 
     /// Commit one slot's accepted candidates; see [`SlotVerifyGraph::commit`].
@@ -906,10 +1010,7 @@ impl SlotPool {
         slot: usize,
         accepted: usize,
     ) -> Result<()> {
-        self.verify
-            .as_mut()
-            .ok_or_else(|| Error::invalid("slot pool has no verify graph"))?
-            .commit(device, slot, accepted)
+        self.commit_active(|graph| graph.commit(device, slot, accepted))
     }
 
     /// Commit independent accepted prefixes in one pooled update.
@@ -923,10 +1024,7 @@ impl SlotPool {
         if let [(slot, accepted)] = commits {
             return self.commit_verify(device, *slot, *accepted);
         }
-        self.verify
-            .as_mut()
-            .ok_or_else(|| Error::invalid("slot pool has no verify graph"))?
-            .commit_many(device, commits)
+        self.commit_active(|graph| graph.commit_many(device, commits))
     }
 
     /// Copy the covered token-row prefix of one KV state family into the slot.

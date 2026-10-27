@@ -88,6 +88,39 @@ impl SlotStates {
     pub(super) fn parts(&mut self) -> (&mut [States], &mut States) {
         (&mut self.lanes, &mut self.roots)
     }
+
+    /// The first `slots` slots' views and views of their rows of every root family, for a
+    /// pooled graph narrower than the pool.
+    ///
+    /// # Safety
+    /// The returned roots alias this object's root allocations: the pool must keep it alive
+    /// for every graph captured through them, and replay them on the pool's single stream.
+    #[expect(
+        unsafe_code,
+        reason = "Audited prefix alias: the pool owns the roots and drops its graphs first"
+    )]
+    pub(super) unsafe fn prefix(&mut self, slots: usize) -> Result<(&mut [States], States)> {
+        let width = self.lanes.len();
+        if slots == 0 || slots > width {
+            return Err(Error::invalid("pooled state prefix"));
+        }
+        let mut roots = States::new();
+        for (id, owners) in &self.roots {
+            let mut views = Vec::with_capacity(owners.len());
+            for owner in owners {
+                let mut shape = owner
+                    .shape()
+                    .iter()
+                    .map(|&dim| usize::try_from(dim).map_err(device_error))
+                    .collect::<Result<Vec<_>>>()?;
+                shape[0] = slots;
+                // SAFETY: forwarded from this function's contract.
+                views.push(unsafe { super::arena::prefix_view(owner, width, slots, &shape)? });
+            }
+            roots.insert(*id, views);
+        }
+        Ok((&mut self.lanes[..slots], roots))
+    }
 }
 
 impl Deref for SlotStates {
@@ -109,6 +142,8 @@ pub(super) struct VerifyBatch<'a> {
     pub roots: &'a States,
     pub parameters: &'a RecurrentParameters,
     pub metadata: &'a Tensor<i32>,
+    /// Candidate lanes per slot.
+    pub lanes: usize,
 }
 
 const DELTA_PARAMETER_VECTORS: u64 = 2;
@@ -201,7 +236,8 @@ pub(super) fn record_batch(
     let [state] = roots.as_slice() else {
         return Err(error("pooled delta state layout"));
     };
-    let slots = arena.lanes() / LANES;
+    let lanes = batch.lanes;
+    let slots = arena.lanes() / lanes;
     let split = value_split(hardware, value_heads, value_dim, slots).map_err(error)?;
     let block = fused_block(value_dim, split);
     let index = arena.slot(node.outputs[0]).map_err(error)?;
@@ -209,26 +245,45 @@ pub(super) fn record_batch(
         .take()
         .ok_or_else(|| error("pooled delta output"))?;
     let output_size = output.size();
-    let mut output = output.reshape(&[slots, LANES, value_heads * value_dim])?;
+    let mut output = output.reshape(&[slots, lanes, value_heads * value_dim])?;
     let recorded = (|| {
-        scope.record(
-            fused::delta_verify_batch(
-                (&mut output).partition([1, LANES, block]),
-                &state.view(&[slots * value_heads, key_dim, value_dim])?,
-                arena.get(node.inputs[0]).map_err(error)?,
-                arena.get(node.inputs[1]).map_err(error)?,
-                arena.get(node.inputs[2]).map_err(error)?,
-                &parameters.view(&[parameters.size()])?,
-                batch.metadata,
-            )
-            .generics(vec![
-                key_heads.to_string(),
-                value_heads.to_string(),
-                key_dim.to_string(),
-                block.to_string(),
-                METADATA_FIELDS.to_string(),
-            ]),
-        )?;
+        let state = state.view(&[slots * value_heads, key_dim, value_dim])?;
+        let parameters = parameters.view(&[parameters.size()])?;
+        let mut generics = vec![
+            key_heads.to_string(),
+            value_heads.to_string(),
+            key_dim.to_string(),
+            block.to_string(),
+            METADATA_FIELDS.to_string(),
+        ];
+        if lanes == LANES {
+            scope.record(
+                fused::delta_verify_batch(
+                    (&mut output).partition([1, LANES, block]),
+                    &state,
+                    arena.get(node.inputs[0]).map_err(error)?,
+                    arena.get(node.inputs[1]).map_err(error)?,
+                    arena.get(node.inputs[2]).map_err(error)?,
+                    &parameters,
+                    batch.metadata,
+                )
+                .generics(generics),
+            )?;
+        } else {
+            generics.push(lanes.to_string());
+            scope.record(
+                fused::delta_verify_lanes(
+                    (&mut output).partition([1, lanes, block]),
+                    &state,
+                    arena.get(node.inputs[0]).map_err(error)?,
+                    arena.get(node.inputs[1]).map_err(error)?,
+                    arena.get(node.inputs[2]).map_err(error)?,
+                    &parameters,
+                    batch.metadata,
+                )
+                .generics(generics),
+            )?;
+        }
         Ok(true)
     })();
     arena.buffers[index] = Some(output.reshape(&[output_size])?);

@@ -46,3 +46,45 @@ fn fused_linear_projection_rejects_out_of_range_gather_rows() -> Result<()> {
     assert!(package.read(&source, 1024).is_err());
     Ok(())
 }
+
+#[test]
+fn column_views_gather_each_row_slice() -> Result<()> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples/qwen-moe-tiny");
+    let mut package = QuantizedPackage::open(root, ModelId::ONE)?;
+    let source = package
+        .weights
+        .values()
+        .find(|weight| {
+            weight.encoding == WeightEncoding::Float
+                && weight.data.view.is_none()
+                && weight.shape.len() == 2
+                && weight.shape[1] >= 4
+        })
+        .map(|weight| weight.data.clone())
+        .expect("a dense matrix weight");
+    let [rows, columns] = source.shape[..] else {
+        unreachable!()
+    };
+    let element = usize::try_from(source.dtype.bytes()).unwrap();
+    let whole = package.read(&source, u64::MAX)?;
+    let (first, count) = (1, columns / 2);
+    let mut slice = source.clone();
+    slice.shape = vec![rows, count];
+    slice.bytes = (rows * count * element) as u64;
+    slice.view = Some(WeightView {
+        stored_shape: source.shape.clone(),
+        element_offset: 0,
+        rows: Vec::new(),
+        columns: Some([first, count]),
+    });
+    let expected: Vec<u8> = whole
+        .chunks(columns * element)
+        .flat_map(|row| row[first * element..(first + count) * element].to_vec())
+        .collect();
+    assert_eq!(package.read(&slice, u64::MAX)?, expected);
+    assert!(package.read_view(&slice, u64::MAX).is_err());
+    let mut outside = slice;
+    outside.view.as_mut().unwrap().columns = Some([columns - count + 1, count]);
+    assert!(package.read(&outside, u64::MAX).is_err());
+    Ok(())
+}

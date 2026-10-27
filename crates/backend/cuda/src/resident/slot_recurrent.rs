@@ -530,6 +530,148 @@ pub(crate) mod fused {
         }
     }
 
+    /// [`delta_verify_batch`] for `L` candidate lanes per slot: the lanes run in order over
+    /// one register-resident state, with the three-lane kernel's per-lane arithmetic.
+    #[cutile::entry()]
+    fn delta_verify_lanes<
+        const KH: i32,
+        const VH: i32,
+        const D: i32,
+        const SW: i32,
+        const MF: i32,
+        const L: i32,
+    >(
+        out: &mut Tensor<f32, { [1, L, SW] }>,
+        state: &Tensor<f32, { [-1, D, D] }>,
+        qkv: &Tensor<f32, { [-1] }>,
+        beta: &Tensor<f32, { [-1] }>,
+        alpha: &Tensor<f32, { [-1] }>,
+        parameters: &Tensor<f32, { [-1] }>,
+        metadata: &Tensor<i32, { [-1] }>,
+    ) {
+        let pid = get_tile_block_id();
+        let slot = pid.0;
+        let head = pid.2 / (D / SW);
+        let split = pid.2 % (D / SW);
+        let key = head / (VH / KH);
+        let head_bias = parameters.partition(shape![1]).load([VH + head]);
+        let rate = exp(parameters.partition(shape![1]).load([head]));
+        let mut current: Tile<f32, { [D, SW] }> = state
+            .partition(shape![1, D, SW])
+            .load([slot * VH + head, 0i32, split])
+            .reshape(shape![D, SW]);
+        let qp = qkv.partition(shape![D]);
+        let vp = qkv.partition(shape![SW]);
+        for lane in 0i32..L {
+            let row = slot * L + lane;
+            let base = row * (2i32 * KH + VH);
+            let active = batch_active::<MF>(metadata, row);
+            let k: Tile<f32, { [D] }> = qp.load([base + KH + key]);
+            let v: Tile<f32, { [SW] }> = vp.load([(base + 2i32 * KH + head) * (D / SW) + split]);
+            let bt = sigmoid(beta.partition(shape![1]).load([row * VH + head]));
+            let decay = delta_decay(
+                alpha.partition(shape![1]).load([row * VH + head]) + head_bias,
+                rate,
+            );
+            current = delta_update(current, k, v, bt, decay, active);
+            let q: Tile<f32, { [D] }> = qp.load([base + key]);
+            out.partition_mut(shape![1, 1, SW])
+                .store(delta_output(current, q, active), [0i32, lane, 0i32]);
+        }
+    }
+
+    /// [`delta_commit_batch`] for `L` candidate lanes per slot.
+    #[cutile::entry()]
+    fn delta_commit_lanes<
+        const KH: i32,
+        const VH: i32,
+        const D: i32,
+        const SW: i32,
+        const MF: i32,
+        const L: i32,
+    >(
+        state: &mut Tensor<f32, { [1, D, SW] }>,
+        qkv: &Tensor<f32, { [-1] }>,
+        beta: &Tensor<f32, { [-1] }>,
+        alpha: &Tensor<f32, { [-1] }>,
+        parameters: &Tensor<f32, { [-1] }>,
+        metadata: &Tensor<i32, { [-1] }>,
+        counts: &Tensor<i32, { [-1] }>,
+    ) {
+        let pid = get_tile_block_id();
+        let slot = pid.0;
+        let head = pid.1;
+        let count = counts.partition(shape![1]).load([slot]);
+        let enabled: bool =
+            tile_to_scalar(ge_tile(count, 1i32.broadcast(shape![1])).reshape(shape![]));
+        if enabled {
+            let key = head / (VH / KH);
+            let head_bias = parameters.partition(shape![1]).load([VH + head]);
+            let rate = exp(parameters.partition(shape![1]).load([head]));
+            let mut current: Tile<f32, { [D, SW] }> = state.load_like(state).reshape(shape![D, SW]);
+            let mut applied: Tile<bool, { [1] }> = ge_tile(count, 1i32.broadcast(shape![1]));
+            let qp = qkv.partition(shape![D]);
+            let vp = qkv.partition(shape![SW]);
+            for lane in 0i32..L {
+                let row = slot * L + lane;
+                let base = row * (2i32 * KH + VH);
+                applied = applied
+                    & batch_active::<MF>(metadata, row)
+                    & ge_tile(count, (lane + 1i32).broadcast(shape![1]));
+                let k: Tile<f32, { [D] }> = qp.load([base + KH + key]);
+                let v: Tile<f32, { [SW] }> =
+                    vp.load([(base + 2i32 * KH + head) * (D / SW) + pid.2]);
+                let bt = sigmoid(beta.partition(shape![1]).load([row * VH + head]));
+                let decay = delta_decay(
+                    alpha.partition(shape![1]).load([row * VH + head]) + head_bias,
+                    rate,
+                );
+                current = delta_update(current, k, v, bt, decay, applied);
+            }
+            state.store(current.reshape(shape![1, D, SW]));
+        }
+    }
+
+    /// [`conv_commit_batch`] for `L` candidate lanes per slot: the window after `n` applied
+    /// lanes is the last three of `[h0, h1, h2, x0, ..., x(n-1)]`.
+    #[cutile::entry()]
+    fn conv_commit_lanes<const MF: i32, const L: i32>(
+        h0: &mut Tensor<f32, { [1, 128] }>,
+        h1: &mut Tensor<f32, { [1, 128] }>,
+        h2: &mut Tensor<f32, { [1, 128] }>,
+        input: &Tensor<f32, { [-1, -1] }>,
+        metadata: &Tensor<i32, { [-1] }>,
+        counts: &Tensor<i32, { [-1] }>,
+    ) {
+        let pid = get_tile_block_id();
+        let count = counts.partition(shape![1]).load([pid.0]);
+        let enabled: bool =
+            tile_to_scalar(ge_tile(count, 1i32.broadcast(shape![1])).reshape(shape![]));
+        if enabled {
+            let mut oldest = h0.load_like(h0).reshape(shape![128]);
+            let mut middle = h1.load_like(h1).reshape(shape![128]);
+            let mut newest = h2.load_like(h2).reshape(shape![128]);
+            let mut applied: Tile<bool, { [1] }> = ge_tile(count, 1i32.broadcast(shape![1]));
+            for lane in 0i32..L {
+                let row = pid.0 * L + lane;
+                applied = applied
+                    & batch_active::<MF>(metadata, row)
+                    & ge_tile(count, (lane + 1i32).broadcast(shape![1]));
+                let shift = applied.broadcast(shape![128]);
+                let next = input
+                    .partition(shape![1, 128])
+                    .load([row, pid.1])
+                    .reshape(shape![128]);
+                oldest = select(shift, middle, oldest);
+                middle = select(shift, newest, middle);
+                newest = select(shift, next, newest);
+            }
+            h0.store(oldest.reshape(shape![1, 128]));
+            h1.store(middle.reshape(shape![1, 128]));
+            h2.store(newest.reshape(shape![1, 128]));
+        }
+    }
+
     /// Shift each slot's window by its own accepted prefix; other slots keep their state.
     #[cutile::entry()]
     fn conv_commit_batch<const MF: i32>(
@@ -679,10 +821,10 @@ pub(super) fn allocate_staging(
     device: &CudaDevice,
     nodes: &[TensorNode],
     arena: &ActivationArena,
-    slots: usize,
+    (slots, verify): (usize, usize),
 ) -> infer_core::Result<Staging> {
     let lanes = slots
-        .checked_mul(LANES)
+        .checked_mul(verify)
         .ok_or_else(|| Error::invalid("batched recurrent staging overflow"))?;
     if lanes != arena.lanes() {
         return Err(Error::invalid("batched recurrent staging lanes"));
@@ -693,7 +835,8 @@ pub(super) fn allocate_staging(
             let mut root = api::zeros::<f32>(&[arena.get(id)?.size()])
                 .sync_on(&device.stream)
                 .map_err(device_error)?;
-            for slot in 0..slots {
+            // Per-slot rows feed the three-lane commit graphs; wider pools commit in one batch.
+            for slot in (0..slots).filter(|_| verify == LANES) {
                 let base = slot * LANES;
                 let (first, owner) = staging_row(root, lanes, base)?;
                 let (second, owner) = staging_row(owner, lanes, base + 1)?;

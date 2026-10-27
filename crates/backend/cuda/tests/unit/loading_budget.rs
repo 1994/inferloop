@@ -376,6 +376,7 @@ fn attention_graph(lanes: usize) -> Result<(DataflowGraph, TensorId)> {
         ],
         hidden: Some(output),
         logits: Some(output),
+        features: None,
         ..DataflowGraph::default()
     };
     Ok((graph, state))

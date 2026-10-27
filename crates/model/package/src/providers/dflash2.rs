@@ -5,7 +5,7 @@
 //! Nothing here touches a device - the draft graph, its CUDA module and the proposal SPI come
 //! later, and the SPI that carries proposals belongs to I1.
 use infer_core::{Error, Result};
-use infer_ir::{BackboneKind, Mixer, ModelIr, Operation};
+use infer_ir::{BackboneKind, ModelIr, Operation};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -78,7 +78,28 @@ pub struct DFlash2Config {
     /// Vocabulary boundaries the draft shares with its target.
     pub eos_token_id: Option<usize>,
     pub pad_token_id: Option<usize>,
+    /// Epsilon of every draft `RMSNorm`.
+    #[serde(default = "default_norm_epsilon")]
+    pub rms_norm_eps: f64,
+    /// Rotary parameters of the draft's own queries and keys.
+    #[serde(default)]
+    pub rope_parameters: Option<DFlash2Rope>,
     pub dflash_config: DFlash2DraftConfig,
+}
+
+/// The draft's `rope_parameters` block; only the default rotary type is declared.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DFlash2Rope {
+    pub rope_theta: f64,
+}
+
+/// Epsilon the reference applies when a configuration omits `rms_norm_eps`.
+const DEFAULT_NORM_EPSILON: f64 = 1e-6;
+/// Rotary base the reference applies when a configuration omits `rope_theta`.
+const DEFAULT_ROPE_THETA: f64 = 1_000_000.0;
+
+const fn default_norm_epsilon() -> f64 {
+    DEFAULT_NORM_EPSILON
 }
 
 impl DFlash2Config {
@@ -89,6 +110,14 @@ impl DFlash2Config {
             .map_err(|error| Error::invalid(format!("draft configuration is invalid: {error}")))?;
         check_declared_architecture(&config.architectures)?;
         Ok(config)
+    }
+
+    /// Rotary base of the draft attention; the reference's default applies when it is omitted.
+    #[must_use]
+    pub fn rope_theta(&self) -> f64 {
+        self.rope_parameters
+            .as_ref()
+            .map_or(DEFAULT_ROPE_THETA, |rope| rope.rope_theta)
     }
 
     #[must_use]
@@ -571,8 +600,12 @@ impl DraftGeometry {
         Ok(())
     }
 
-    /// Checks the target-side acceptance conditions: a causal decoder whose hidden geometry the
-    /// taps can feed, with every tapped layer present.
+    /// Checks the target-side acceptance conditions: a causal decoder (dense or hybrid) whose hidden
+    /// geometry the taps can feed, with every tapped layer present.
+    ///
+    /// A tap is the residual stream after the tapped layer, whatever that layer's mixer is: the
+    /// reference reads `hidden + residual` once the layer returns, so a recurrent layer feeds a tap
+    /// exactly like an attention layer does.
     ///
     /// Target identity, tokenizer correspondence and embedding sharing need the package's declared
     /// metadata and a token map, so they stay with the loader that resolves them.
@@ -580,7 +613,10 @@ impl DraftGeometry {
     /// # Errors
     /// Reports the first condition the target fails, naming the tap or the geometry that differs.
     pub fn check_target(&self, target: &ModelIr) -> Result<()> {
-        if target.backbone != BackboneKind::Decoder {
+        if !matches!(
+            target.backbone,
+            BackboneKind::Decoder | BackboneKind::Hybrid
+        ) {
             return Err(Error::invalid("draft requires a causal decoder target"));
         }
         if target.hidden_size != self.hidden_size {
@@ -596,17 +632,10 @@ impl DraftGeometry {
                 self.target_layers
             )));
         }
-        for tap in &self.target_taps {
-            let Some(mixer) = target.mixers.get(*tap) else {
-                return Err(Error::invalid(format!(
-                    "draft tap {tap} has no target layer (target has {layers})"
-                )));
-            };
-            if !matches!(mixer, Mixer::Attention { .. }) {
-                return Err(Error::invalid(format!(
-                    "draft tap {tap} does not name a target attention layer"
-                )));
-            }
+        if let Some(tap) = self.target_taps.iter().find(|tap| **tap >= layers) {
+            return Err(Error::invalid(format!(
+                "draft tap {tap} has no target layer (target has {layers})"
+            )));
         }
         Ok(())
     }

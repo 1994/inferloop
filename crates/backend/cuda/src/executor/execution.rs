@@ -7,6 +7,7 @@ use crate::constants::PREFILL_LANES;
 use crate::constants::WIDER_PREFILL_LANES;
 use crate::device::CudaDevice;
 use crate::loading::{LoadedModel, PooledServingQuote};
+use crate::resident::dflash2::Engine;
 use crate::resident::slot_batch::SlotPool;
 use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::{ExecutionInput, ExecutionTask, MediaPlan, OutputReadout, TaskOutput};
@@ -33,6 +34,7 @@ async fn cacheable_prefix(
     if task.media.is_some()
         || state.poisoned
         || state.home.is_some()
+        || state.draft.is_some()
         || state.readout != OutputReadout::Logits
         || !matches!(
             task.tokens,
@@ -376,6 +378,9 @@ impl CudaExecutor {
             return None;
         }
         let Ok(allocated_bytes) = allocated else {
+            tracing::warn!(target: "infer::executor", attempt,
+                reason = self.pool_failure_reason.as_deref().unwrap_or("unknown"),
+                "pooled CUDA capture failed; decoding serially");
             super::profiling::capture_outcome(
                 attempt,
                 "rejected",
@@ -431,6 +436,7 @@ impl CudaExecutor {
         self.draft_slots = self.prepare_draft_pool(width, capacity);
         super::profiling::memory(attempt, "draft_pool", width, self.loaded.device());
         self.slots = Some(pool);
+        self.attach_dflash();
         self.build_homes(attempt, prompt_width);
         super::profiling::memory(attempt, "homes", width, self.loaded.device());
         if self.worker.is_none()
@@ -449,9 +455,30 @@ impl CudaExecutor {
     fn clear_unbound_pool(&mut self) {
         self.worker = None;
         self.homes.clear();
+        if let Some(engine) = self.dflash.as_mut() {
+            engine.detach_pool();
+        }
         drop(self.draft_slots.take());
         drop(self.slots.take());
         let _ = self.loaded.reclaim_idle_prompt_scratch();
+    }
+
+    /// Capture the draft's pooled proposal against the new pool. A failure keeps the pool and
+    /// decodes without proposals.
+    fn attach_dflash(&mut self) {
+        let (Some(engine), Some(pool)) = (self.dflash.as_mut(), self.slots.as_ref()) else {
+            return;
+        };
+        let attached = pool
+            .verify_features()
+            .ok_or_else(|| Error::invariant("pooled verification carries no draft features"))
+            .and_then(|graphs| engine.attach_pool(self.loaded.device(), graphs));
+        match attached {
+            Ok(()) => tracing::info!(target: "infer::executor", width = pool.width(),
+                "DFlash2 pooled proposal captured"),
+            Err(error) => tracing::warn!(target: "infer::executor", %error,
+                "DFlash2 pooled proposal unavailable; decoding without proposals"),
+        }
     }
 
     /// Quote all resources before capturing; retain the largest prompt rung at a width.
@@ -715,7 +742,7 @@ impl CudaExecutor {
         participants.sort_unstable_by_key(|&(index, _)| index);
         let device = self.loaded.device();
         if let Err(error) = slot_replay(
-            (pool, self.draft_slots.as_mut()),
+            (pool, self.draft_slots.as_mut(), self.dflash.as_mut()),
             &mut self.states,
             device,
             tasks,
@@ -766,9 +793,10 @@ impl CudaExecutor {
         // A slot-resident sequence's programs capture no prompt graph: every prompt chunk runs
         // on the worker.
         let wide = state.home.is_some() && !matches!(task.tokens, ExecutionInput::Decode { .. });
+        let draft = self.dflash.as_mut();
         let output = match self.worker.as_mut() {
-            Some(worker) if wide => run_on_worker(state, worker, task, &self.loaded).await?,
-            _ => state.run(task, &self.loaded).await?,
+            Some(worker) if wide => run_on_worker(state, worker, task, &self.loaded, draft).await?,
+            _ => state.run(task, &self.loaded, draft).await?,
         };
         if let Some(snapshot) =
             cacheable_prefix(self.loaded.device(), &self.loaded, state, task).await
@@ -792,6 +820,7 @@ async fn run_on_worker(
     worker: &mut super::Worker,
     task: &ExecutionTask,
     loaded: &LoadedModel,
+    draft: Option<&mut Engine>,
 ) -> Result<ModelOutput> {
     super::profiling::phase("worker_load", || -> Result<()> {
         worker
@@ -803,7 +832,7 @@ async fn run_on_worker(
         Ok(())
     })?;
     swap_worker(state, worker);
-    let output = state.run(task, loaded).await;
+    let output = state.run(task, loaded, draft).await;
     swap_worker(state, worker);
     let output = output?;
     super::profiling::phase("worker_store", || -> Result<()> {
@@ -838,7 +867,7 @@ const fn paged_tokens(width: usize, capacity: usize) -> usize {
 }
 
 async fn slot_replay(
-    pools: (&mut SlotPool, Option<&mut SlotPool>),
+    pools: (&mut SlotPool, Option<&mut SlotPool>, Option<&mut Engine>),
     states: &mut BTreeMap<StateId, Sequence>,
     device: &CudaDevice,
     tasks: &[ExecutionTask],
@@ -846,7 +875,7 @@ async fn slot_replay(
     newly: &[(usize, usize)],
     outputs: &mut [Option<TaskOutput>],
 ) -> Result<()> {
-    let (pool, draft) = pools;
+    let (pool, draft, dflash) = pools;
     for &(index, slot) in newly {
         let state = states
             .get_mut(&tasks[index].state)
@@ -879,7 +908,7 @@ async fn slot_replay(
     }
     if let Some(width) = pool.verify() {
         return slot_speculate(
-            (pool, draft),
+            (pool, draft, dflash),
             states,
             device,
             tasks,
@@ -936,7 +965,7 @@ async fn slot_replay(
 
 /// Batch compatible drafts, then verify all candidate chains in one target replay.
 async fn slot_speculate(
-    pools: (&mut SlotPool, Option<&mut SlotPool>),
+    pools: (&mut SlotPool, Option<&mut SlotPool>, Option<&mut Engine>),
     states: &mut BTreeMap<StateId, Sequence>,
     device: &CudaDevice,
     tasks: &[ExecutionTask],
@@ -944,8 +973,28 @@ async fn slot_speculate(
     outputs: &mut [Option<TaskOutput>],
     width: usize,
 ) -> Result<()> {
-    let (pool, mut draft) = pools;
+    let (pool, mut draft, dflash) = pools;
+    let mut dflash = dflash.filter(|engine| engine.attached());
+    let proposed = if dflash.is_some() {
+        Some(
+            super::profiling::phase_async("draft_propose", async {
+                dflash_chains(
+                    dflash.as_deref_mut(),
+                    states,
+                    device,
+                    tasks,
+                    participants,
+                    width,
+                )
+                .await
+            })
+            .await?,
+        )
+    } else {
+        None
+    };
     let batched = match draft.as_deref_mut() {
+        _ if proposed.is_some() => proposed,
         Some(draft) => {
             super::profiling::phase_async("draft_propose", async {
                 super::drafting::propose(draft, states, device, tasks, participants, width).await
@@ -954,7 +1003,7 @@ async fn slot_speculate(
         }
         None => None,
     };
-    let defer_draft = batched.is_some();
+    let defer_draft = batched.is_some() && dflash.is_none();
     let candidates = if let Some(candidates) = batched {
         candidates
     } else {
@@ -984,10 +1033,12 @@ async fn slot_speculate(
     .await?;
     let rows = &mut readout.rows;
     let mut commits = Vec::with_capacity(participants.len());
+    let mut verified = Vec::with_capacity(participants.len());
     for (&(index, slot), chain) in participants.iter().zip(candidates) {
         let state = states
             .get_mut(&tasks[index].state)
             .ok_or_else(|| Error::invariant("slot speculation state"))?;
+        let position = state.history.len();
         let output = state
             .slot_decide(
                 &tasks[index],
@@ -1004,13 +1055,31 @@ async fn slot_speculate(
         if let Some(lease) = &mut state.slot {
             lease.position = state.history.len();
         }
+        // The submitted token and every accepted candidate are now target history: their
+        // feature rows become draft context. A ring that missed a position stays stale.
+        if let Some(cursor) = state
+            .draft
+            .as_mut()
+            .filter(|draft| !draft.stale && draft.cursor.context == position)
+            .map(|draft| &mut draft.cursor)
+        {
+            verified.push((slot * width, cursor.ring, position, 1 + output.tokens.len()));
+            cursor.context = state.history.len();
+        } else if let Some(draft) = state.draft.as_mut() {
+            draft.stale = true;
+        }
         outputs[index] = Some(TaskOutput {
             request: tasks[index].request,
             output,
         });
     }
     pool.commit_verify_many(device, &commits)?;
-    if defer_draft {
+    if let Some(engine) = dflash
+        && !verified.is_empty()
+    {
+        engine.ingest_verified(device, &verified, pool.verified_slots())?;
+    }
+    if defer_draft && draft.is_some() {
         super::drafting::catch_up(
             draft.ok_or_else(|| Error::invariant("batched draft pool"))?,
             states,
@@ -1023,6 +1092,88 @@ async fn slot_speculate(
         )?;
     }
     Ok(())
+}
+
+/// One `DFlash2` block per eligible participant: the submitted token followed by the draft's
+/// proposals, cut to the sequence's remaining capacity. Other participants verify their
+/// submitted token alone.
+async fn dflash_chains(
+    engine: Option<&mut Engine>,
+    states: &mut BTreeMap<StateId, Sequence>,
+    device: &CudaDevice,
+    tasks: &[ExecutionTask],
+    participants: &[(usize, usize)],
+    width: usize,
+) -> Result<Vec<Vec<u32>>> {
+    let engine = engine.ok_or_else(|| Error::invariant("DFlash2 engine"))?;
+    let mut chains = Vec::with_capacity(participants.len());
+    let mut requests = Vec::new();
+    let mut lengths = Vec::new();
+    for (row, &(index, slot)) in participants.iter().enumerate() {
+        let task = &tasks[index];
+        let ExecutionInput::Decode { token, position } = task.tokens else {
+            return Err(Error::invariant("DFlash2 decode task"));
+        };
+        let state = states
+            .get_mut(&task.state)
+            .ok_or_else(|| Error::invariant("DFlash2 state"))?;
+        chains.push(vec![token]);
+        let capacity = state.capacity;
+        let Some(draft) = state.draft.as_mut() else {
+            continue;
+        };
+        draft.prompt_len.get_or_insert(position);
+        let count = (width - 1).min(capacity.saturating_sub(position + 1));
+        if draft.stale
+            || draft.cursor.context != position
+            || count == 0
+            || !task
+                .sampling
+                .as_ref()
+                .is_some_and(|sampling| sampling.temperature == 0.0)
+        {
+            continue;
+        }
+        requests.push((slot, draft.cursor.ring, token, position));
+        lengths.push((row, count));
+    }
+    if requests.is_empty() {
+        return Ok(chains);
+    }
+    let proposals = engine.propose(device, &requests).await?;
+    for ((row, count), proposal) in lengths.into_iter().zip(proposals) {
+        chains[row].extend_from_slice(&proposal[..count.min(proposal.len())]);
+    }
+    Ok(chains)
+}
+
+/// The longest candidate prefix the target selects itself, stopping after an end token.
+fn accept(
+    chain: &[u32],
+    rows: &[(Vec<f32>, Vec<f32>)],
+    tokens: Option<&[Option<u32>]>,
+    sampler: &mut Sampler<'_>,
+    position: usize,
+    generated: &mut Vec<u32>,
+) -> Result<Vec<u32>> {
+    let mut accepted = Vec::new();
+    for (offset, &candidate) in chain[1..].iter().enumerate() {
+        let selected = match tokens {
+            Some(tokens) => {
+                tokens[offset].ok_or_else(|| Error::invariant("verification selected token"))?
+            }
+            None => sampler.pick(&rows[offset].1, position + offset + 1, generated)?,
+        };
+        if selected != candidate {
+            break;
+        }
+        accepted.push(candidate);
+        generated.push(candidate);
+        if sampler.sampling.is_eos(candidate) {
+            break;
+        }
+    }
+    Ok(accepted)
 }
 
 /// Greedy decision at one sequence position; the engine output stage uses the same sampler.
@@ -1141,7 +1292,19 @@ impl Sequence {
         let position = self.history.len();
         task.tokens.commit(&mut self.history)?;
         let mut accepted = Vec::new();
-        if let Some(spec) = self.speculation.as_mut() {
+        if let Some(draft) = self.draft.as_mut().filter(|_| chain.len() > 1) {
+            let prompt_len = *draft.prompt_len.get_or_insert(position);
+            if let Some(sampling) = task.sampling.as_ref() {
+                let mut generated = self.history[prompt_len..].to_vec();
+                let mut sampler = Sampler {
+                    sampling,
+                    request: task.request.get(),
+                    prompt: &self.history[..prompt_len],
+                    scratch: &mut draft.scratch,
+                };
+                accepted = accept(chain, rows, tokens, &mut sampler, position, &mut generated)?;
+            }
+        } else if let Some(spec) = self.speculation.as_mut() {
             let prompt_len = *spec.prompt_len.get_or_insert(position);
             if let Some(sampling) = task.sampling.as_ref() {
                 let mut generated = self.history[prompt_len..].to_vec();
@@ -1151,21 +1314,7 @@ impl Sequence {
                     prompt: &self.history[..prompt_len],
                     scratch: &mut spec.scratch,
                 };
-                for (offset, &candidate) in chain[1..].iter().enumerate() {
-                    let selected = match tokens {
-                        Some(tokens) => tokens[offset]
-                            .ok_or_else(|| Error::invariant("verification selected token"))?,
-                        None => sampler.pick(&rows[offset].1, position + offset + 1, &generated)?,
-                    };
-                    if selected != candidate {
-                        break;
-                    }
-                    accepted.push(candidate);
-                    generated.push(candidate);
-                    if sampling.is_eos(candidate) {
-                        break;
-                    }
-                }
+                accepted = accept(chain, rows, tokens, &mut sampler, position, &mut generated)?;
             }
             if !defer_draft {
                 // Even fully accepted proposals used draft hidden rows during drafting.
@@ -1189,7 +1338,12 @@ impl Sequence {
         })
     }
 
-    async fn run(&mut self, task: &ExecutionTask, loaded: &LoadedModel) -> Result<ModelOutput> {
+    async fn run(
+        &mut self,
+        task: &ExecutionTask,
+        loaded: &LoadedModel,
+        mut engine: Option<&mut Engine>,
+    ) -> Result<ModelOutput> {
         if let Some(plan) = task.media.as_ref() {
             return self.run_media(task, plan, loaded).await;
         }
@@ -1207,6 +1361,13 @@ impl Sequence {
         // host rows.
         let mut priming = Vec::new();
         let mut device_primed = false;
+        // A DFlash2 ring follows a prompt only through the prompt graph's feature rows, so every
+        // prompt chunk of a drafting sequence replays the prompt graph. A serial decode step
+        // leaves a gap instead: the sequence then decodes without proposals.
+        let ingest = engine.is_some()
+            && !matches!(task.tokens, ExecutionInput::Decode { .. })
+            && self.program.prefill_width() >= PREFILL_LANES
+            && self.draft.as_ref().is_some_and(|draft| !draft.stale);
         while offset < tokens.len() {
             let count = self.chunk_len(tokens.len() - offset);
             let position = self.history.len() + offset;
@@ -1214,7 +1375,7 @@ impl Sequence {
             let read_logits = last && readout != OutputReadout::None;
             let device_prime = speculate && count > 1 && self.readout != OutputReadout::Full;
             let read_hidden = self.readout == OutputReadout::Full || (speculate && !device_prime);
-            let results = if count > 1 {
+            let results = if count > 1 || ingest {
                 super::profiling::phase_async("prefill_chunk", async {
                     self.program
                         .prefill_batch_readout_async(
@@ -1258,6 +1419,12 @@ impl Sequence {
                     .await?;
                 device_primed = true;
             }
+            if ingest {
+                self.ingest_chunk(engine.as_deref_mut(), loaded.device(), count, position)
+                    .await?;
+            } else if let Some(draft) = self.draft.as_mut() {
+                draft.stale = true;
+            }
             for (lane, (hidden, row_logits)) in results.into_iter().enumerate() {
                 if speculate && !device_prime {
                     priming.push((position + lane, tokens[offset + lane], hidden.clone()));
@@ -1281,6 +1448,33 @@ impl Sequence {
         }
         task.tokens.commit(&mut self.history)?;
         Ok(self.output(readout, next_token, logits))
+    }
+
+    /// Turn the prompt graph's feature rows of the chunk just replayed into draft context.
+    async fn ingest_chunk(
+        &mut self,
+        engine: Option<&mut Engine>,
+        device: &CudaDevice,
+        count: usize,
+        position: usize,
+    ) -> Result<()> {
+        let features = self.program.prompt_features(count);
+        let (Some(engine), Some(draft), Some(features)) = (engine, self.draft.as_mut(), features)
+        else {
+            if let Some(draft) = self.draft.as_mut() {
+                draft.stale = true;
+            }
+            return Ok(());
+        };
+        if draft.stale || draft.cursor.context != position {
+            draft.stale = true;
+            return Ok(());
+        }
+        super::profiling::phase_async(
+            "draft_ingest",
+            engine.ingest_prompt(device, &features, count, &mut draft.cursor, position),
+        )
+        .await
     }
 
     /// Prefill one media prompt chunk with embeddings cached for the whole prompt.

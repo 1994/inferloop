@@ -40,6 +40,7 @@ fn ir() -> Result<ExecutionIr> {
         }],
         hidden: Some(output),
         logits: Some(output),
+        features: None,
         ..DataflowGraph::default()
     };
     dataflow.plan_lifetimes()?;

@@ -83,6 +83,7 @@ fn load_once(
         LoadOptions {
             prefill_width: selection.max_num_batched_tokens.unwrap_or(0),
             mtp_depth: summary.mtp_depth,
+            draft_model: selection.draft_model.clone(),
             autotune: selection.autotune,
             attention_profile: summary.attention_profile.into(),
             vision: !selection.text_only,
@@ -386,11 +387,12 @@ fn preflight(
         max_sequence: package.imported.model.max_sequence,
         tensors: package.weights.len(),
         mtp_tensors: package.mtp.len(),
-        mtp_depth: super::speculation::resolve(
-            requested_depth,
-            selection.max_num_batched_tokens,
-            &package,
-        ),
+        // A separate draft replaces the checkpoint's own MTP head.
+        mtp_depth: if selection.draft_model.is_some() {
+            0
+        } else {
+            super::speculation::resolve(requested_depth, selection.max_num_batched_tokens, &package)
+        },
         attention_profile,
         payload_bytes: minimum,
         native_fp4,

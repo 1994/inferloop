@@ -87,7 +87,7 @@ fn contiguous_staging_preserves_rows_after_arena_reuse() -> infer_core::Result<(
         device.copy_host_slice(target, &data)?;
         expected.insert(id, data);
     }
-    let mut staging = allocate_staging(&device, &nodes, &arena, slots)?;
+    let mut staging = allocate_staging(&device, &nodes, &arena, (slots, LANES))?;
     assert_eq!(staging.roots.len(), 4);
     assert_eq!(staging.entries.len(), slots * nodes.len());
     let copy = CudaGraph::scope(&device.stream, |scope| {

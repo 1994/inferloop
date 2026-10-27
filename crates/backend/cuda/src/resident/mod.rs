@@ -14,6 +14,7 @@ mod capture_attention;
 mod capture_checkpoint;
 mod capture_rope;
 mod capture_state;
+pub(crate) mod dflash2;
 pub(crate) mod fp8_cache;
 pub(crate) mod fp8_gemm;
 pub(crate) mod fusion_batch;

@@ -34,6 +34,8 @@ impl Restore<'_> {
             && sequence.readout == OutputReadout::Logits
             && sequence.slot.is_none()
             && sequence.home.is_none()
+            // A snapshot does not carry the draft ring the restored prefix would need.
+            && sequence.draft.is_none()
     }
 }
 impl PrefixReuse<Snapshot> for Restore<'_> {
