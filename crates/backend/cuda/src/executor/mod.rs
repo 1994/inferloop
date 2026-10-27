@@ -64,7 +64,7 @@ pub(super) struct CudaExecutor {
     /// A rejected concurrent reservation may bootstrap a pool when that same
     /// intent retries after the solo private request drains. A different intent
     /// clears the hint, so cancellation cannot force an unrelated pool capture.
-    pool_retry: Option<StateId>,
+    pool_retry: Option<(StateId, usize)>,
     slots_disabled: bool,
     deferred_pool_plan: Option<(usize, u64)>,
     /// Reason the last pool attempt failed, reported when batching is given up for good.

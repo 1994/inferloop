@@ -124,9 +124,16 @@ fn bootstrap_short_pool(backend: &mut CudaExecutor) -> Result<()> {
         .reserve_state_for(waiting, 384, OutputReadout::Logits)
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::Capacity);
+    let heterogeneous = StateId::new(5)?;
+    let error = backend
+        .reserve_state_for(heterogeneous, 4352, OutputReadout::Logits)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Capacity);
     backend.release_state(unrelated)?;
     backend.reserve_state_for(waiting, 384, OutputReadout::Logits)?;
     assert!(backend.slots.is_some() && backend.states[&waiting].home.is_some());
+    let quote = backend.pool_quote.unwrap();
+    assert!(quote.kv_tokens >= quote.width * 4352);
     backend.release_state(waiting)?;
     Ok(())
 }

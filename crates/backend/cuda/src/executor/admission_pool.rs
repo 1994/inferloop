@@ -54,7 +54,10 @@ impl CudaExecutor {
             return Ok(());
         }
         self.idle()?;
-        if self.defer_solo_pool(id)? || !self.pool_is_idle() {
+        let Some(demand) = self.defer_solo_pool(id, tokens)? else {
+            return Ok(());
+        };
+        if !self.pool_is_idle() {
             return Ok(());
         }
         // A shorter request does not justify rebuilding a working pool. Retain the
@@ -73,7 +76,7 @@ impl CudaExecutor {
         // An accepted pool's envelope remains an upper bound for the idle replacement.
         // Actual free memory is measured again after retirement, before any allocation.
         let envelope = self.pool_envelope.max(self.pool_funding()?.0);
-        let Some(plan) = self.pooled_plan_for(capacity, maximum, envelope, tokens)? else {
+        let Some(plan) = self.pooled_plan_for(capacity, maximum, envelope, demand)? else {
             // A single long request may still use the current pool or private execution.
             if self.slots.is_none() {
                 self.pool_quote = None;
@@ -90,7 +93,7 @@ impl CudaExecutor {
             return Ok(());
         }
         self.retire_request_pool()?;
-        self.warm_slot_pool_for(capacity, tokens);
+        self.warm_slot_pool_for(capacity, demand);
         if self.slots.is_none() {
             return Err(Error::new(
                 ErrorCode::Backend,
@@ -107,12 +110,15 @@ impl CudaExecutor {
 
     /// A solo request uses a reusable private program. Only a previously observed
     /// concurrent reservation may pay for pool capture once that solo state drains.
-    fn defer_solo_pool(&mut self, id: StateId) -> Result<bool> {
+    fn defer_solo_pool(&mut self, id: StateId, tokens: usize) -> Result<Option<usize>> {
         if self.slots.is_some() {
-            return Ok(false);
+            return Ok(Some(tokens));
         }
         if self.states.is_empty() {
-            return Ok(self.pool_retry.take().is_none_or(|waiting| waiting != id));
+            return Ok(self
+                .pool_retry
+                .take()
+                .and_then(|(waiting, demand)| (waiting == id).then_some(demand.max(tokens))));
         }
         if self.states.len() == 1
             && self.states.values().all(|state| {
@@ -121,14 +127,22 @@ impl CudaExecutor {
                     && state.media.is_none()
             })
         {
-            self.pool_retry.get_or_insert(id);
+            let demand = self
+                .states
+                .values()
+                .map(|state| state.capacity)
+                .max()
+                .unwrap_or(tokens)
+                .max(tokens);
+            let waiting = self.pool_retry.get_or_insert((id, demand));
+            waiting.1 = waiting.1.max(demand);
             return Err(Error::new(
                 ErrorCode::Capacity,
                 "concurrent request waits for the solo state before pooled capture",
             ));
         }
         // Incompatible private states retain the existing funded lazy batching path.
-        Ok(true)
+        Ok(None)
     }
 
     fn pool_is_idle(&self) -> bool {
