@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 396
+      "tests": 400
     },
     "frontdoor": {
       "benches": 0,
@@ -82,7 +82,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 94
+      "tests": 95
     },
     "scheduler": {
       "benches": 0,
@@ -165,6 +165,7 @@
     "opt-in projection-only shape A/B with real checkpoint and CUDA; run inside safe-run": 1,
     "real 2B checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 3,
     "real CUDA/MTP checkpoint; reserve graphs only after quote acknowledgement": 1,
+    "real CUDA/MTP2 checkpoint; run under safe-run with an explicit fixture": 1,
     "real MTP2 checkpoint and CUDA; run inside safe-run": 1,
     "real MTP2 checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 2,
     "real MTP2 checkpoint, CUDA, frozen table/tokens and protected serial runner required": 1,
@@ -320,6 +321,11 @@
     },
     {
       "crate": "cuda",
+      "file": "src/executor/admission_pool.rs",
+      "mount": "../../tests/unit/executor_request_kv.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/executor/execution.rs",
       "mount": "../../tests/unit/executor_execution.rs"
     },
@@ -357,6 +363,11 @@
       "crate": "cuda",
       "file": "src/executor/profiling.rs",
       "mount": "../../tests/unit/executor_profiling.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/executor/provider.rs",
+      "mount": "../../tests/unit/executor_kv_inspection.rs"
     },
     {
       "crate": "cuda",
@@ -1350,11 +1361,11 @@
     }
   ],
   "totals": {
-    "all": 966,
+    "all": 971,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 966
+    "tests": 971
   }
 }

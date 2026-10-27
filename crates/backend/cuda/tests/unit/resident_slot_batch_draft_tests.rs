@@ -301,6 +301,7 @@ fn paged_kv_scatter_survives_exhaustion_and_block_reuse() -> Result<()> {
     weights.fusion = None;
     weights.kv_scales.insert(TensorId::new(4)?, [0.01, 0.02]);
     let mut pool = SlotPool::new(&device, &graph, &weights, 3, 96, 32, (32, 0), Some(160))?;
+    assert_eq!(pool.kv_pages(), (5, 5));
     let mut references = (0..3)
         .map(|_| DeviceProgram::new(&device, &graph, &weights, 96, 32, 32))
         .collect::<Result<Vec<_>>>()?;
@@ -325,7 +326,9 @@ fn paged_kv_scatter_survives_exhaustion_and_block_reuse() -> Result<()> {
         )?;
     }
     assert!(pool.take_slot(2));
+    assert_eq!(pool.kv_pages(), (5, 0));
     assert!(!pool.assign(2, 1, &device)?);
+    assert_eq!(pool.kv_pages(), (5, 0));
     assert!(pool.assign(0, pool.capacity() + 1, &device).is_err());
     let table = device.read_borrowed(&pool.tables[0])?;
     assert_ne!(&table[..2], &[0, 1]);
@@ -349,7 +352,9 @@ fn paged_kv_scatter_survives_exhaustion_and_block_reuse() -> Result<()> {
         }
     }
     pool.release(0);
+    assert_eq!(pool.kv_pages(), (5, 2));
     assert!(pool.assign(2, 34, &device)?);
+    assert_eq!(pool.kv_pages(), (5, 0));
     for position in 0..33 {
         references[2].step(
             u32::try_from((position * 3 + 5) % 32).unwrap(),

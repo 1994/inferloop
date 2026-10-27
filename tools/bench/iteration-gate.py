@@ -57,7 +57,13 @@ def performance(args, executable, label):
     port = harness.free_port()
     base = f"http://127.0.0.1:{port}"
     command = [str(executable), str(args.model), "--listen", f"127.0.0.1:{port}"]
-    report = {"completed": False, "command": command, "trials": [], "metrics": {}}
+    report = {
+        "completed": False,
+        "command": command,
+        "trials": [],
+        "metrics": {},
+        "case_readbacks": {},
+    }
     counter = itertools.count(1)
     with (dest / "server.log").open("x") as log:
         process = subprocess.Popen(
@@ -71,7 +77,7 @@ def performance(args, executable, label):
                 dest / "server.log",
                 min(args.startup_timeout, remaining(args)),
             )
-            report["readback"] = harness.runtime_readback(native, base, dest / "server.log")
+            report["initial_readback"] = harness.runtime_readback(native, base, dest / "server.log")
             for name, path in [("c16", args.workload), ("short1", args.short_workload)]:
                 rows = harness.load_workload(path, 1)
                 for repeat in [-1, 0]:
@@ -95,7 +101,16 @@ def performance(args, executable, label):
                             is not True
                         ):
                             raise ValueError("incomplete or unsuccessful performance response")
-                    trial.update(name=name, repeat=repeat)
+                    readback = harness.runtime_readback(native, base, dest / "server.log")
+                    if repeat == -1:
+                        report["case_readbacks"][name] = readback
+                        report.setdefault("readback", readback)
+                    else:
+                        warm = report["case_readbacks"][name]["readback"]
+                        for key in ("execution_profile", "serving_plan"):
+                            if warm.get(key) != readback["readback"].get(key):
+                                raise ValueError(f"{name} resources changed after warmup")
+                    trial.update(name=name, repeat=repeat, readback=readback)
                     report["trials"].append(trial)
                     if repeat == 0:
                         report["metrics"][name] = metrics(trial)
@@ -133,8 +148,13 @@ def quality_summary(report, baseline_rows):
     }
 
 
-def comparable_profile(readback):
+def comparable_profile(readback, resource_change_reason=None):
     profile = dict(readback.get("execution_profile") or {})
+    plan = readback.get("serving_plan") or {}
+    if profile.get("pooled_prefill_width") != plan.get("prompt_width"):
+        raise ValueError("pooled worker disagrees with funded serving resources")
+    if resource_change_reason:
+        profile.pop("pooled_prefill_width", None)
     if "concurrency" not in profile:
         return profile
     bounds = profile.pop("concurrency")
@@ -154,23 +174,36 @@ def comparable_profile(readback):
     return profile
 
 
-def compare(left, right, limit):
-    a = left["readback"]["readback"]
-    b = right["readback"]["readback"]
-    profile = comparable_profile(a)
-    if not profile or profile != comparable_profile(b):
+def compare_resources(a, b, reason):
+    profile = comparable_profile(a, reason)
+    if not profile or profile != comparable_profile(b, reason):
         raise ValueError("runtime execution profiles differ")
     keys = ("width", "capacity", "kv_tokens", "prompt_width", "envelope_bytes")
     plans = [row.get("serving_plan") for row in (a, b)]
-    if any(not plan or any(key not in plan for key in keys) for plan in plans):
-        raise ValueError("missing funded serving resources")
-    if any(plans[0][key] != plans[1][key] for key in keys):
-        raise ValueError("funded serving resources differ; declare a separate release profile")
     for plan in plans:
+        required = (*keys, "quoted_bytes", "allocated_bytes")
+        if not plan or any(type(plan.get(key)) is not int or plan[key] <= 0 for key in required):
+            raise ValueError("missing or invalid funded serving resources")
+        if not plan["capacity"] <= plan["kv_tokens"] <= plan["width"] * plan["capacity"]:
+            raise ValueError("physical KV outside logical serving capacity")
         if max(plan["quoted_bytes"], plan["allocated_bytes"]) > plan["envelope_bytes"]:
             raise ValueError("serving resources exceed budget")
+    if plans[0]["capacity"] != plans[1]["capacity"]:
+        raise ValueError("logical serving context differs")
+    changed = any(plans[0][key] != plans[1][key] for key in keys)
+    if changed and not reason:
+        raise ValueError("funded serving resources differ; declare an audited resource change")
+    return {"resource_plan_changed": changed, "baseline_plan": plans[0], "candidate_plan": plans[1]}
+
+
+def compare(left, right, limit, resource_change_reason=None):
+    if set(left["metrics"]) != set(right["metrics"]):
+        raise ValueError("performance cases differ")
     result = {}
     for name, baseline in left["metrics"].items():
+        a = left.get("case_readbacks", {}).get(name, left["readback"])["readback"]
+        b = right.get("case_readbacks", {}).get(name, right["readback"])["readback"]
+        resources = compare_resources(a, b, resource_change_reason)
         candidate = right["metrics"][name]
         changes = {key: 100 * (candidate[key] / value - 1) for key, value in baseline.items()}
         result[name] = {
@@ -178,8 +211,30 @@ def compare(left, right, limit):
             "candidate": candidate,
             "change_percent": changes,
             "gross_regression": any(value > limit for value in changes.values()),
+            **resources,
         }
     return result
+
+
+def startup_comparison(left, right, limit):
+    rows = [
+        {
+            "ready_seconds": arm["startup_seconds"],
+            "first_warmup_seconds": arm["trials"][0]["wall_seconds"],
+        }
+        for arm in (left, right)
+    ]
+    for row in rows:
+        row["ready_plus_first_warmup_seconds"] = sum(row.values())
+    change = 100 * (
+        rows[1]["ready_plus_first_warmup_seconds"] / rows[0]["ready_plus_first_warmup_seconds"] - 1
+    )
+    return {
+        "baseline": rows[0],
+        "candidate": rows[1],
+        "change_percent": change,
+        "gross_regression": change > limit,
+    }
 
 
 def run(args, decode=None):
@@ -241,6 +296,7 @@ def run(args, decode=None):
         "inputs_sha256": hashes,
         "gross_regression_limit_percent": args.regression_percent,
         "scope": "one-pair performance snapshot and rejection-only quality screen",
+        "resource_change_reason": getattr(args, "resource_change_reason", None),
     }
     try:
         summary["phase"] = "baseline performance"
@@ -249,11 +305,19 @@ def run(args, decode=None):
         summary["phase"] = "candidate performance"
         write(args.output / "summary.json", summary)
         right = performance(args, args.executable, "candidate-performance")
-        summary["performance"] = compare(left, right, args.regression_percent)
+        summary["performance"] = compare(
+            left, right, args.regression_percent, getattr(args, "resource_change_reason", None)
+        )
+        summary["startup"] = startup_comparison(left, right, args.regression_percent)
         summary["phase"] = "64-task quality screen"
         write(args.output / "summary.json", summary)
-        if any(row["gross_regression"] for row in summary["performance"].values()):
-            raise ValueError("gross performance regression; stop before quality collection")
+        if (
+            any(row["gross_regression"] for row in summary["performance"].values())
+            or summary["startup"]["gross_regression"]
+        ):
+            raise ValueError(
+                "gross performance or startup regression; stop before quality collection"
+            )
         if decode is None:
             from transformers import AutoTokenizer
 
@@ -314,6 +378,10 @@ def main():
         "output",
     ]:
         parser.add_argument("--" + name, required=True, type=Path)
+    parser.add_argument(
+        "--resource-change-reason",
+        help="record a physical plan change while retaining execution, context and budget checks",
+    )
     parser.add_argument("--tokens", type=int, default=256)
     parser.add_argument("--concurrency", type=int, default=16)
     parser.add_argument("--startup-timeout", type=float, default=120)
@@ -321,6 +389,8 @@ def main():
     args = parser.parse_args()
     if min(args.tokens, args.concurrency, args.startup_timeout) <= 0 or args.regression_percent < 0:
         parser.error("budgets/concurrency must be positive; regression limit must be nonnegative")
+    if args.resource_change_reason is not None and not args.resource_change_reason.strip():
+        parser.error("resource change reason must be nonempty")
     run(args)
 
 

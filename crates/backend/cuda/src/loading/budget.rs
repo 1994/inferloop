@@ -319,11 +319,16 @@ impl LoadedModel {
         width: usize,
         capacity: usize,
         maximum_kv_tokens: usize,
+        request_tokens: usize,
         prompt_width: usize,
         envelope: u64,
     ) -> Result<Option<PooledServingQuote>> {
         let capacity = self.validate_capacity(capacity)?;
         let maximum_kv_tokens = maximum_kv_tokens / KV_BLOCK_TOKENS * KV_BLOCK_TOKENS;
+        let minimum = minimum_kv_tokens(width, capacity, request_tokens)?;
+        if maximum_kv_tokens < minimum {
+            return Ok(None);
+        }
         let full = self.pooled_serving_quote(width, capacity, maximum_kv_tokens, prompt_width)?;
         if full.total_bytes <= envelope {
             return Ok(Some(full));
@@ -336,14 +341,8 @@ impl LoadedModel {
             return Ok(None);
         }
         let block_bytes = full.total_bytes.saturating_sub(fixed) / blocks as u64;
-        let Some(tokens) = funded_kv_tokens(
-            width,
-            capacity,
-            maximum_kv_tokens,
-            block_bytes,
-            fixed,
-            envelope,
-        )?
+        let Some(tokens) =
+            funded_kv_tokens(minimum, maximum_kv_tokens, block_bytes, fixed, envelope)
         else {
             return Ok(None);
         };
@@ -382,30 +381,37 @@ impl LoadedModel {
     }
 }
 
-/// A logical power-of-two bucket starts just above half its padded capacity. Keep
-/// enough pages for every resident slot to admit a request from that bucket, instead
-/// of funding many unusable state handles with only a handful of physical KV blocks.
+/// One complete context keeps isolated requests executable. A known request demand
+/// additionally funds its actual page-rounded length per slot, never half a bucket.
+fn minimum_kv_tokens(width: usize, capacity: usize, request_tokens: usize) -> Result<usize> {
+    if request_tokens > capacity {
+        return Err(Error::invalid("request KV exceeds pooled capacity"));
+    }
+    let pages = request_tokens.div_ceil(KV_BLOCK_TOKENS);
+    pages
+        .checked_mul(KV_BLOCK_TOKENS)
+        .and_then(|tokens| tokens.checked_mul(width))
+        .map(|tokens| tokens.max(capacity))
+        .ok_or_else(|| Error::invalid("pooled request KV overflow"))
+}
+
+/// Allocate whole physical pages after fixed programs, honoring real request demand.
 fn funded_kv_tokens(
-    width: usize,
-    capacity: usize,
+    minimum: usize,
     maximum: usize,
     block_bytes: u64,
     fixed: u64,
     envelope: u64,
-) -> Result<Option<usize>> {
+) -> Option<usize> {
     if block_bytes == 0 || fixed >= envelope {
-        return Ok(None);
+        return None;
     }
-    let per_slot = (capacity / 2 / KV_BLOCK_TOKENS + 1) * KV_BLOCK_TOKENS;
-    let minimum = width
-        .checked_mul(per_slot)
-        .ok_or_else(|| Error::invalid("pooled minimum KV overflow"))?;
     let pages = (envelope - fixed) / block_bytes;
     let tokens = usize::try_from(pages)
         .unwrap_or(usize::MAX)
         .min(maximum / KV_BLOCK_TOKENS)
         * KV_BLOCK_TOKENS;
-    Ok((tokens >= minimum).then_some(tokens))
+    (tokens >= minimum).then_some(tokens)
 }
 
 fn missing_prompt_scratch_bytes(

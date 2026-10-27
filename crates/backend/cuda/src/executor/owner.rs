@@ -28,7 +28,7 @@ impl CudaBackend {
     /// # Errors
     /// Rejects invalid state limits, unavailable devices, or failed initialization.
     pub fn new(loaded: LoadedModel, budget: u64, maximum_states: usize) -> Result<Self> {
-        Self::from_executor(CudaExecutor::new(loaded, budget, maximum_states)?)
+        Self::from_executor(CudaExecutor::new_bounded(loaded, budget, maximum_states)?)
     }
     /// Derive the default batch from the loaded graph's roofline and full memory quote.
     /// # Errors

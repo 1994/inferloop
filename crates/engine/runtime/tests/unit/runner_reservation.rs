@@ -22,9 +22,13 @@ struct QuoteBackend {
     quotes: Arc<AtomicUsize>,
     fail: bool,
     geometry: Arc<Mutex<Option<infer_ir::PrefillGeometry>>>,
+    profile: Arc<Mutex<Option<infer_ir::ExecutionProfileInspection>>>,
 }
 impl BackendProvider for QuoteBackend {
     type Ticket = <support::ProtocolBackend as BackendProvider>::Ticket;
+    fn execution_profile(&self) -> Option<infer_ir::ExecutionProfileInspection> {
+        self.profile.lock().ok().and_then(|profile| profile.clone())
+    }
     fn identity(&self) -> &str {
         self.inner.identity()
     }
@@ -106,6 +110,7 @@ fn engine(fail: bool) -> Result<Engine<QuoteBackend>> {
         quotes: Arc::default(),
         fail,
         geometry: Arc::default(),
+        profile: Arc::default(),
     };
     let mut registry = KernelRegistry::default();
     registry.register(&support::DeclaredKernels)?;
@@ -248,5 +253,55 @@ fn threaded_reservation_publishes_and_retires_actual_prompt_geometry() -> Result
         deadline(limit)?;
     }
     assert_eq!(engine.backend().state_prefill_geometry(StateId::ONE)?, None);
+    Ok(())
+}
+
+#[test]
+fn threaded_resource_ack_publishes_the_current_execution_profile() -> Result<()> {
+    use infer_ir::{ConcurrencyInspection, ExecutionProfileInspection};
+    let direct = engine(false)?;
+    let shared_profile = direct.backend().profile.clone();
+    let cold = ExecutionProfileInspection {
+        concurrency: Some(ConcurrencyInspection {
+            memory_bound: 24,
+            roofline_bound: Some(52),
+            selected: 24,
+        }),
+        prefill_width: 1024,
+        pooled_prefill_width: None,
+        batch_width: 3,
+        draft_depth: 2,
+        automatic_prefill: true,
+        arena_budget_bytes: 1024,
+        attention_profile: "bf16".into(),
+        precise_prefix_positions: Some(0),
+    };
+    *shared_profile
+        .lock()
+        .map_err(|error| Error::invariant(error.to_string()))? = Some(cold.clone());
+    let mut threaded = direct.into_threaded(4, Duration::from_millis(20))?;
+    assert_eq!(threaded.backend().execution_profile(), Some(cold.clone()));
+    let mut current = cold;
+    current.pooled_prefill_width = Some(1024);
+    current.concurrency.as_mut().unwrap().selected = 15;
+    *shared_profile
+        .lock()
+        .map_err(|error| Error::invariant(error.to_string()))? = Some(current.clone());
+    let prepared = threaded.request_preparer()?.prepare(request(1)?)?;
+    let mut quote = threaded.admission_quote(&prepared)?;
+    let limit = Instant::now() + Duration::from_secs(3);
+    while quote.poll()?.is_none() {
+        deadline(limit)?;
+    }
+    assert_eq!(threaded.backend().execution_profile(), Some(current));
+    *shared_profile
+        .lock()
+        .map_err(|error| Error::invariant(error.to_string()))? = None;
+    let mut quote = threaded.admission_quote(&prepared)?;
+    let limit = Instant::now() + Duration::from_secs(3);
+    while quote.poll()?.is_none() {
+        deadline(limit)?;
+    }
+    assert_eq!(threaded.backend().execution_profile(), None);
     Ok(())
 }

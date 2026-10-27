@@ -534,6 +534,21 @@ impl SlotPool {
         self.leases.free.len()
     }
 
+    /// Physical KV pages and pages not reserved by any request, including resident homes.
+    pub(crate) fn kv_pages(&self) -> (usize, usize) {
+        self.paging.as_ref().map_or_else(
+            || {
+                let per_slot = self.capacity.div_ceil(KV_BLOCK_TOKENS);
+                (self.width() * per_slot, self.free_slots() * per_slot)
+            },
+            |paging| {
+                let free = paging.free.len();
+                let owned: usize = paging.owned.iter().map(Vec::len).sum();
+                (free + owned, free)
+            },
+        )
+    }
+
     /// Lifetime slot leases granted and returned, in slots.
     #[must_use]
     pub(crate) const fn lease_counters(&self) -> (u64, u64) {
