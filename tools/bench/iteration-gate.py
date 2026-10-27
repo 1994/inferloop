@@ -133,10 +133,32 @@ def quality_summary(report, baseline_rows):
     }
 
 
+def comparable_profile(readback):
+    profile = dict(readback.get("execution_profile") or {})
+    if "concurrency" not in profile:
+        return profile
+    bounds = profile.pop("concurrency")
+    if not isinstance(bounds, dict):
+        raise ValueError("invalid concurrency diagnostics")
+    memory, knee, selected = (
+        bounds.get(key) for key in ("memory_bound", "roofline_bound", "selected")
+    )
+    if (
+        type(memory) is not int
+        or type(selected) is not int
+        or not 0 < selected <= memory
+        or (knee is not None and (type(knee) is not int or knee < selected))
+        or selected != (readback.get("serving_plan") or {}).get("width")
+    ):
+        raise ValueError("concurrency diagnostics disagree with funded resources")
+    return profile
+
+
 def compare(left, right, limit):
     a = left["readback"]["readback"]
     b = right["readback"]["readback"]
-    if not a.get("execution_profile") or a.get("execution_profile") != b.get("execution_profile"):
+    profile = comparable_profile(a)
+    if not profile or profile != comparable_profile(b):
         raise ValueError("runtime execution profiles differ")
     keys = ("width", "capacity", "kv_tokens", "prompt_width", "envelope_bytes")
     plans = [row.get("serving_plan") for row in (a, b)]
