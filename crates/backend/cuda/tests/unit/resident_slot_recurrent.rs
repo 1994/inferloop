@@ -698,6 +698,9 @@ fn batched_recurrent_kernels_compile_without_a_device() -> Result<(), Box<dyn Er
 #[path = "resident_slot_recurrent_batch.rs"]
 mod batched;
 
+#[path = "resident_slot_recurrent_lanes.rs"]
+mod lanes;
+
 #[test]
 fn batched_commit_kernels_compile_without_a_device() -> Result<(), Box<dyn Error>> {
     use cutile::cutile_compiler::compile_api::KernelCompiler;
