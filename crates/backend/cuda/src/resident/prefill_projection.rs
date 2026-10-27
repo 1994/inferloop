@@ -121,6 +121,11 @@ impl MlpPlan {
         Ok(())
     }
 
+    /// Actual gate/up/down projection nodes retained by this prompt fusion plan.
+    pub(super) fn fused_projections(&self) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
+        self.fused.values().copied()
+    }
+
     pub(super) fn new(
         graph: &infer_ir::DataflowGraph,
         weights: &ProgramWeights,

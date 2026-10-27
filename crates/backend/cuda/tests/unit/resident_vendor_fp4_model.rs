@@ -327,3 +327,57 @@ fn graph_derived_dense_preserves_short_checkpoint_bits() -> Result<()> {
         &[65, 1],
     )
 }
+
+#[test]
+#[ignore = "requires CUDA, checkpoint and frozen1025 tokens; bounded fused SwiGLU model regression"]
+fn tuned_swiglu_preserves_short_checkpoint_bits() -> Result<()> {
+    use crate::tuning::{TilingTable, resident_gemm::swiglu};
+    let (loaded, tokens) = loaded_model(AttentionProfile::Bf16, 1024, 64)?;
+    let before = swiglu::capture_counts();
+    let mut candidate = loaded.sequence(2048)?;
+    let captured = swiglu::capture_counts();
+    assert!(
+        captured.0 > before.0,
+        "tuned fused recorder must actually capture"
+    );
+    let prepared = candidate.prepared_gemm_configs();
+    let configs = prepared.as_array().expect("configuration array");
+    let table_path = var("INFER_CUDA_TUNING_TABLE").map_err(|e| Error::invalid(e.to_string()))?;
+    let table: TilingTable =
+        serde_json::from_slice(&read(table_path).map_err(|e| Error::invalid(e.to_string()))?)
+            .map_err(|e| Error::invalid(e.to_string()))?;
+    for rows in [64, 1024] {
+        assert!(
+            configs
+                .iter()
+                .any(|row| row["mode"] == "nvfp4-swiglu" && row["m"] == rows),
+            "actual model fused projection strategies must be prepared"
+        );
+    }
+    for config in configs.iter().filter(|row| row["mode"] == "nvfp4-swiglu") {
+        let shape = ["m", "n", "k"].map(|key| config[key].as_u64().expect("geometry"));
+        assert!(
+            table.resident_swiglu.iter().any(|entry| {
+                [entry.key.m as u64, entry.key.n as u64, entry.key.k as u64] == shape
+                    && entry.bitwise_verified
+                    && !entry.trials.is_empty()
+            }),
+            "normal model budget must retain complete fused search evidence"
+        );
+    }
+    let mut reference = swiglu::with_baseline(|| loaded.sequence(2048))?;
+    let reference_captured = swiglu::capture_counts();
+    assert_eq!(reference_captured.0, captured.0);
+    assert!(
+        reference_captured.1 > captured.1,
+        "reference must capture the original tile"
+    );
+    compare_programs(
+        &loaded,
+        &mut candidate,
+        &mut reference,
+        &tokens,
+        1024,
+        &[65, 1],
+    )
+}

@@ -17,6 +17,7 @@ use crate::tuning::fp8_gemm::WeightKey;
 use crate::tuning::resident_gemm::native_tile;
 
 use crate::tuning::resident_gemm::GemmConfig;
+use crate::tuning::resident_gemm::swiglu::{self, Binding as SwigluBinding};
 
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use crate::tuning::resident_gemm::WeightKey as ResidentGemmWeightKey;
@@ -36,11 +37,6 @@ use std::env::var;
 use std::result::Result as StdResult;
 
 type Quantized = (Tensor<f4e2m1fnx2>, Tensor<f8e4m3fn>);
-/// Fused gate/up tile. Two F32 accumulators plus the grouped quantization epilogue fit at 64 by
-/// 64; a 128-row tile spills (2.5 ms instead of 0.40 ms at 1024 x 17408 x 5120 on RTX 5090,
-/// against 0.45 ms for the separate projections and quantizer).
-const SWIGLU_TILE_ROWS: usize = 64;
-const SWIGLU_TILE_COLUMNS: usize = 64;
 /// Keyed by `(rows, columns, activation-scale columns)`.
 type Fp8Key = (usize, usize, usize);
 type StrategyKey = (ResidentGemmWeightKey, usize, usize, usize);
@@ -52,6 +48,7 @@ pub struct Workspace {
     norm_maximum: Option<super::super::norm_maximum::Pending>,
     norm_fp4: Option<norm_fp4::Pending>,
     strategies: BTreeMap<StrategyKey, GemmConfig>,
+    swiglu_strategies: BTreeMap<SwigluBinding, GemmConfig>,
     buffers: BTreeMap<(usize, usize), Quantized>,
     fp8_strategies: BTreeMap<(WeightKey, usize, usize, usize), Choice>,
     /// Lt handle, descriptors and original weight allocations outlive every program capture.
@@ -149,6 +146,18 @@ impl Workspace {
                 ))
                 .or_default() += 1;
         }
+        for (binding, config) in &self.swiglu_strategies {
+            let [rows, outputs, columns] = binding.shape();
+            *groups
+                .entry((
+                    "nvfp4-swiglu",
+                    rows,
+                    outputs,
+                    columns,
+                    format!("{config:?}"),
+                ))
+                .or_default() += 1;
+        }
         serde_json::json!(
             groups
                 .into_iter()
@@ -197,6 +206,7 @@ impl Workspace {
             norm_maximum: None,
             norm_fp4: None,
             strategies: BTreeMap::new(),
+            swiglu_strategies: BTreeMap::new(),
             buffers: BTreeMap::new(),
             fp8: BTreeMap::new(),
             fp8_strategies: BTreeMap::new(),
@@ -331,9 +341,8 @@ impl Workspace {
 
     /// Whether [`Self::record_gate_up_swiglu`] can run for this prompt width and MLP geometry.
     pub(crate) fn gate_up_swiglu_ready(&self, rows: usize, columns: usize, hidden: usize) -> bool {
-        rows.is_multiple_of(SWIGLU_TILE_ROWS)
+        swiglu::compatible(swiglu::baseline(), [rows, hidden, columns])
             && rows.is_multiple_of(QUANTIZATION_ROWS)
-            && hidden.is_multiple_of(SWIGLU_TILE_COLUMNS)
             && self.buffers.contains_key(&(rows, columns))
             && self.buffers.contains_key(&(rows, hidden))
     }
@@ -350,13 +359,22 @@ impl Workspace {
         (rows, columns, hidden): (usize, usize, usize),
     ) -> StdResult<(), DeviceError> {
         let pending = self.norm_fp4.take();
-        let (
-            ProjectionWeight::Fp4(gate_codes, gate_scales, gate_global),
-            ProjectionWeight::Fp4(up_codes, up_scales, up_global),
-        ) = (gate, up)
-        else {
+        let (ProjectionWeight::Fp4(..), ProjectionWeight::Fp4(..)) = (gate, up) else {
             return Err(super::super::capture::error("fused SwiGLU weights"));
         };
+        let binding = SwigluBinding::new(
+            (gate, up),
+            (input_scale, down_scale),
+            [rows, hidden, columns],
+        )
+        .map_err(super::super::capture::error)?;
+        let config = self
+            .swiglu_strategies
+            .get(&binding)
+            .copied()
+            .unwrap_or(swiglu::baseline());
+        #[cfg(test)]
+        let config = swiglu::recorded_config(config);
         if !self.gate_up_swiglu_ready(rows, columns, hidden) {
             return Err(super::super::capture::error("fused SwiGLU geometry"));
         }
@@ -398,36 +416,15 @@ impl Workspace {
             let (codes, code_scales) = self.buffers.get_mut(&(rows, hidden)).ok_or_else(|| {
                 super::super::capture::error("FP4 quantization workspace missing")
             })?;
-            scope
-                .record(
-                    kernels::packed_swiglu(
-                        codes.partition([SWIGLU_TILE_ROWS, SWIGLU_TILE_COLUMNS / 2]),
-                        code_scales
-                            .partition([SWIGLU_TILE_ROWS, SWIGLU_TILE_COLUMNS / NVFP4_GROUP_SIZE]),
-                        &q,
-                        &qs,
-                        gate_codes,
-                        gate_scales,
-                        up_codes,
-                        up_scales,
-                        1.0 / (gate_global * input_scale),
-                        1.0 / (up_global * input_scale),
-                        down_scale,
-                    )
-                    .generics(
-                        [
-                            columns,
-                            SWIGLU_TILE_ROWS,
-                            SWIGLU_TILE_COLUMNS,
-                            SWIGLU_TILE_COLUMNS / 2,
-                            SWIGLU_TILE_COLUMNS / NVFP4_GROUP_SIZE,
-                        ]
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect(),
-                    ),
-                )
-                .map(drop)
+            swiglu::record(
+                scope,
+                config,
+                (gate, up),
+                (input_scale, down_scale),
+                (&q, &qs),
+                (codes, code_scales),
+                columns,
+            )
         });
         self.buffers.insert((rows, columns), (q, qs));
         recorded

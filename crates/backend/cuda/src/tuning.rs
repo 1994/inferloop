@@ -299,6 +299,9 @@ pub struct TilingTable {
     /// Multirow W4A4 decisions are independent of scalar GEMV entries.
     #[serde(default)]
     pub resident_gemm: Vec<resident_gemm::ResidentGemmEntry>,
+    /// Fused FP4 gate/up/quantizer decisions with complete-code and reverse timing evidence.
+    #[serde(default)]
+    pub resident_swiglu: Vec<resident_gemm::SwigluEntry>,
     #[serde(default)]
     pub resident_fp8_gemm: Vec<fp8_gemm::Entry>,
     /// Qualified zero-workspace FP4 library projections.
@@ -350,6 +353,8 @@ struct StoredTilingTable {
     #[serde(default)]
     resident_gemm: Vec<resident_gemm::ResidentGemmEntry>,
     #[serde(default)]
+    resident_swiglu: Vec<resident_gemm::SwigluEntry>,
+    #[serde(default)]
     resident_fp8_gemm: Vec<fp8_gemm::Entry>,
     #[serde(default)]
     resident_fp4_lt: Vec<nvfp4_lt::Entry>,
@@ -397,6 +402,7 @@ impl From<StoredTilingTable> for TilingTable {
         Self {
             devices,
             resident_gemm: stored.resident_gemm,
+            resident_swiglu: stored.resident_swiglu,
             resident_fp8_gemm: stored.resident_fp8_gemm,
             resident_fp4_lt: stored.resident_fp4_lt,
             greedy: stored.greedy,
