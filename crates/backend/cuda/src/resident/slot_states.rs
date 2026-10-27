@@ -89,37 +89,8 @@ impl SlotStates {
         (&mut self.lanes, &mut self.roots)
     }
 
-    /// The first `slots` slots' views and views of their rows of every root family, for a
-    /// pooled graph narrower than the pool.
-    ///
-    /// # Safety
-    /// The returned roots alias this object's root allocations: the pool must keep it alive
-    /// for every graph captured through them, and replay them on the pool's single stream.
-    #[expect(
-        unsafe_code,
-        reason = "Audited prefix alias: the pool owns the roots and drops its graphs first"
-    )]
-    pub(super) unsafe fn prefix(&mut self, slots: usize) -> Result<(&mut [States], States)> {
-        let width = self.lanes.len();
-        if slots == 0 || slots > width {
-            return Err(Error::invalid("pooled state prefix"));
-        }
-        let mut roots = States::new();
-        for (id, owners) in &self.roots {
-            let mut views = Vec::with_capacity(owners.len());
-            for owner in owners {
-                let mut shape = owner
-                    .shape()
-                    .iter()
-                    .map(|&dim| usize::try_from(dim).map_err(device_error))
-                    .collect::<Result<Vec<_>>>()?;
-                shape[0] = slots;
-                // SAFETY: forwarded from this function's contract.
-                views.push(unsafe { super::arena::prefix_view(owner, width, slots, &shape)? });
-            }
-            roots.insert(*id, views);
-        }
-        Ok((&mut self.lanes[..slots], roots))
+    pub(super) const fn roots(&self) -> &States {
+        &self.roots
     }
 }
 

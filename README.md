@@ -72,7 +72,7 @@ cargo build --locked --release -p infer-cli                 # macOS Metal
 
 CUDA builds need the environment in [crates/backend/cuda/README.md](crates/backend/cuda/README.md).
 
-The server listens on `http://127.0.0.1:8080`. On supported CUDA checkpoints, the default profile may enable BF16 prefill attention and multi-token prediction (MTP); `--num-speculative-tokens 0` keeps the canonical path.
+The server listens on `http://127.0.0.1:8080`. On supported CUDA checkpoints, the default profile may enable BF16 prefill attention and multi-token prediction (MTP); `--num-speculative-tokens 0` keeps the canonical path. `--draft-model PATH` speculates with a separate DFlash2 draft (BF16 or FP8) instead of the MTP head.
 
 ```sh
 target/release/infer /path/to/model --served-model-name model

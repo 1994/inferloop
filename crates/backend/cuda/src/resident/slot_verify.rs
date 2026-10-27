@@ -473,6 +473,21 @@ impl BatchBuilder<'_> {
         self.build_slot_verify_parts(lane_states.parts(), lane_fp8, verify)
     }
 
+    /// Lanes of a `slots`-slot, `verify`-wide graph, after checking the geometry fits.
+    fn verify_lanes(&self, slots: usize, verify: usize, caches: usize) -> Result<usize> {
+        let lanes = slots
+            .checked_mul(verify)
+            .ok_or_else(|| Error::invalid("slot verify width overflow"))?;
+        let geometry =
+            (1..=MAX_POOL_SLOTS).contains(&slots) && (2..=MAX_VERIFICATION_WIDTH).contains(&verify);
+        let owners =
+            caches == slots && self.lane_external.len() >= lanes && self.lane_fusion.len() >= lanes;
+        if !geometry || !owners {
+            return Err(Error::invalid("slot verify lanes"));
+        }
+        Ok(lanes)
+    }
+
     /// [`Self::build_slot_verify`] over the pool's first `lane_states.len()` slots, whose
     /// contiguous state families `roots` cover exactly those slots. A narrower graph over the
     /// low slots of a pool replays fewer lanes when only those slots are busy.
@@ -485,17 +500,7 @@ impl BatchBuilder<'_> {
         verify: usize,
     ) -> Result<SlotVerifyGraph> {
         let slots = lane_states.len();
-        let lanes = slots
-            .checked_mul(verify)
-            .ok_or_else(|| Error::invalid("slot verify width overflow"))?;
-        if !(1..=MAX_POOL_SLOTS).contains(&slots)
-            || !(2..=MAX_VERIFICATION_WIDTH).contains(&verify)
-            || lane_fp8.len() != slots
-            || self.lane_external.len() < lanes
-            || self.lane_fusion.len() < lanes
-        {
-            return Err(Error::invalid("slot verify lanes"));
-        }
+        let lanes = self.verify_lanes(slots, verify, lane_fp8.len())?;
         let fused = fused_recurrent(self.graph, verify);
         let mut checkpoints = if fused {
             (0..slots).map(|_| Vec::new()).collect()
@@ -538,13 +543,13 @@ impl BatchBuilder<'_> {
         } else {
             None
         };
-        let wide = verify != super::slot_recurrent::LANES;
-        if fused && wide && batched_commit.is_none() {
+        let wide = fused && verify != super::slot_recurrent::LANES;
+        if wide && batched_commit.is_none() {
             return Err(Error::unsupported(
-                "wide slot verification requires the batched recurrent commit",
+                "wide slot verification needs a batched commit",
             ));
         }
-        let restore = if fused && wide {
+        let restore = if wide {
             Vec::new()
         } else if fused {
             self.capture_commits(lane_states, &arena, &metadata, (verify, &recurrent.staging))?
@@ -556,8 +561,7 @@ impl BatchBuilder<'_> {
         let features = self
             .graph
             .features
-            .map(|id| take_result(&mut arena, Some(id)))
-            .transpose()?;
+            .map(|id| take_result(&mut arena, Some(id)));
         let token_readout = super::token_readout::TokenReadout::new(
             self.device,
             from_ref(&logits),
@@ -577,7 +581,7 @@ impl BatchBuilder<'_> {
             metadata_staging: PinnedUpload::single(self.device, lanes * METADATA_FIELDS)?,
             hidden,
             logits,
-            features,
+            features: features.transpose()?,
             slots,
             verify,
             cursors: vec![0; slots],

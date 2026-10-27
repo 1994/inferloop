@@ -207,11 +207,6 @@ pub(crate) mod draft {
     /// block's first position, negative for an idle slot, and `rings[slot]` the ring it reads.
     /// `q` and `out` are `[rows, kv_heads, GROUP * D]`, so one tile holds the block's queries of
     /// one KV head in `(token, head)` order.
-    #[expect(
-        clippy::useless_let_if_seq,
-        clippy::too_many_lines,
-        reason = "cuTile DSL requires statement control flow; one online-softmax loop"
-    )]
     #[cutile::entry()]
     fn block_attention<
         const D: i32,
@@ -262,7 +257,7 @@ pub(crate) mod draft {
             let zero_scores: Tile<f32, { [QR, KEYS] }> = constant(0.0f32, shape![QR, KEYS]);
             let zero_values: Tile<f32, { [QR, D] }> = constant(0.0f32, shape![QR, D]);
             let masked: Tile<f32, { [QR, KEYS] }> = constant(MASKED, shape![QR, KEYS]);
-            for tile in (first / KEYS)..(last / KEYS + 1i32) {
+            for tile in (first / KEYS)..=(last / KEYS) {
                 let physical = ring * tiles + tile % tiles;
                 let key: Tile<bf16, { [KEYS, D] }> =
                     kp.load([pid.1, physical, 0i32]).reshape(shape![KEYS, D]);
@@ -311,6 +306,56 @@ pub(crate) mod draft {
         } else {
             out.store(0.0f32.broadcast(shape![BLOCK, 1, GD]));
         }
+    }
+
+    /// Split-K window of a per-channel FP8 GEMM: block row `pid.0` of `partials`
+    /// (`[splits * 32, N]`) is split `pid.0`, which accumulates K tiles
+    /// `[pid.0 * k_tiles, (pid.0 + 1) * k_tiles)` of row tile zero, unscaled.
+    #[cutile::entry()]
+    fn fp8_split<const K: i32>(
+        partials: &mut Tensor<f32, { [32, 64] }>,
+        input: &Tensor<f32, { [-1, K] }>,
+        weight: &Tensor<f8e4m3fn, { [-1, K] }>,
+        k_tiles: i32,
+    ) {
+        let pid = get_tile_block_id();
+        let xp = input.partition(shape![32, 64]);
+        let wp = weight.partition(shape![64, 64]);
+        let total = (K + 63i32) / 64i32;
+        let first = pid.0 * k_tiles;
+        let mut last = first + k_tiles;
+        if last > total {
+            last = total;
+        }
+        let mut acc: Tile<f32, { [32, 64] }> = constant(0.0f32, shape![32, 64]);
+        for k in first..last {
+            let x: Tile<bf16, { [32, 64] }> = convert_tile(xp.load([0i32, k]));
+            let w: Tile<bf16, { [64, 64] }> = convert_tile(wp.load([pid.1, k]));
+            acc = mmaf(x, w.transpose(), acc);
+        }
+        partials.store(acc);
+    }
+
+    /// Sum the split windows of [`fp8_split`] in split order and apply the channel scales.
+    #[cutile::entry()]
+    fn reduce_scaled(
+        out: &mut Tensor<f32, { [32, 64] }>,
+        partials: &Tensor<f32, { [-1, -1] }>,
+        scale: &Tensor<f32, { [-1] }>,
+        splits: i32,
+    ) {
+        let pid = get_tile_block_id();
+        let pp = partials.partition(shape![32, 64]);
+        let mut acc: Tile<f32, { [32, 64] }> = constant(0.0f32, shape![32, 64]);
+        for split in 0i32..splits {
+            acc = acc + pp.load([split, pid.1]);
+        }
+        let scales = scale
+            .partition(shape![64])
+            .load([pid.1])
+            .reshape(shape![1, 64])
+            .broadcast(shape![32, 64]);
+        out.store(acc * scales);
     }
 
     /// Block-scaled FP8 GEMM against F32 activations: each 128-column K block's partial product
@@ -434,10 +479,6 @@ pub(crate) mod draft {
     /// `K` candidates against the token chosen one step earlier (the anchor for the first step):
     /// `unary[c] + Σ_r predecessor[previous, r] * hidden[r] * successor[c, r]`, and keeps the
     /// first maximum. `tokens[slot]` receives the anchor followed by the `BLOCK - 1` choices.
-    #[expect(
-        clippy::useless_let_if_seq,
-        reason = "cuTile DSL requires statement control flow"
-    )]
     #[cutile::entry()]
     fn select_walk<const R: i32, const K: i32, const BLOCK: i32>(
         tokens: &mut Tensor<i32, { [1, BLOCK] }>,

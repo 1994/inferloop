@@ -1,5 +1,6 @@
 use super::{CudaExecutor, Sequence};
 use crate::resident::DeviceProgram;
+use crate::resident::dflash2::Engine;
 use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::OutputReadout;
 use std::collections::BTreeSet;
@@ -366,7 +367,7 @@ impl CudaExecutor {
         });
         if let Err(error) = reset {
             if let (Some(draft), Some(engine)) = (state.draft.take(), self.dflash.as_mut()) {
-                engine.release(draft.cursor);
+                engine.release(&draft.cursor);
             }
             self.pool.retain(state);
             if let Err(drain_error) = self.loaded.device().drain() {
@@ -452,7 +453,7 @@ impl CudaExecutor {
             .remove(&id)
             .ok_or_else(|| Error::invalid("unknown CUDA state"))?;
         if let (Some(draft), Some(engine)) = (state.draft.take(), self.dflash.as_mut()) {
-            engine.release(draft.cursor);
+            engine.release(&draft.cursor);
         }
         if let Some(lease) = state.slot.take()
             && let Some(pool) = self.slots.as_mut()
@@ -481,11 +482,7 @@ impl CudaExecutor {
     /// Lease a `DFlash2` ring to a speculating sequence; without a free ring it decodes plainly.
     fn lease_draft(&mut self, allow_speculation: bool) -> Option<super::DraftState> {
         allow_speculation
-            .then(|| {
-                self.dflash
-                    .as_mut()
-                    .and_then(crate::resident::dflash2::Engine::acquire)
-            })
+            .then(|| self.dflash.as_mut().and_then(Engine::acquire))
             .flatten()
             .map(super::DraftState::new)
     }

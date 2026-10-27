@@ -70,9 +70,15 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 150
+      "tests": 152
     },
     "quality": {
+      "benches": 0,
+      "src_inline": 0,
+      "src_near": 0,
+      "tests": 3
+    },
+    "recipes": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
@@ -1229,6 +1235,11 @@
       "mount": "../../tests/unit/storage_quantized.rs"
     },
     {
+      "crate": "recipes",
+      "file": "src/features.rs",
+      "mount": "../tests/unit/features.rs"
+    },
+    {
       "crate": "agent",
       "file": "src/lib.rs",
       "mount": "../tests/unit/cases.rs"
@@ -1350,11 +1361,11 @@
     }
   ],
   "totals": {
-    "all": 966,
+    "all": 971,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 966
+    "tests": 971
   }
 }

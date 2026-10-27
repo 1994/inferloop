@@ -7,7 +7,7 @@ use crate::constants::PREFILL_LANES;
 use crate::constants::WIDER_PREFILL_LANES;
 use crate::device::CudaDevice;
 use crate::loading::{LoadedModel, PooledServingQuote};
-use crate::resident::dflash2::Engine;
+use crate::resident::dflash2::{Engine, VerifiedRows};
 use crate::resident::slot_batch::SlotPool;
 use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::{ExecutionInput, ExecutionTask, MediaPlan, OutputReadout, TaskOutput};
@@ -472,7 +472,7 @@ impl CudaExecutor {
         let attached = pool
             .verify_features()
             .ok_or_else(|| Error::invariant("pooled verification carries no draft features"))
-            .and_then(|graphs| engine.attach_pool(self.loaded.device(), graphs));
+            .and_then(|graphs| engine.attach_pool(self.loaded.device(), &graphs));
         match attached {
             Ok(()) => tracing::info!(target: "infer::executor", width = pool.width(),
                 "DFlash2 pooled proposal captured"),
@@ -975,23 +975,15 @@ async fn slot_speculate(
 ) -> Result<()> {
     let (pool, mut draft, dflash) = pools;
     let mut dflash = dflash.filter(|engine| engine.attached());
-    let proposed = if dflash.is_some() {
-        Some(
-            super::profiling::phase_async("draft_propose", async {
-                dflash_chains(
-                    dflash.as_deref_mut(),
-                    states,
-                    device,
-                    tasks,
-                    participants,
-                    width,
-                )
-                .await
-            })
+    let proposed = match dflash.as_deref_mut() {
+        Some(engine) => Some(
+            super::profiling::phase_async(
+                "draft_propose",
+                dflash_chains(engine, states, device, tasks, participants, width),
+            )
             .await?,
-        )
-    } else {
-        None
+        ),
+        None => None,
     };
     let batched = match draft.as_deref_mut() {
         _ if proposed.is_some() => proposed,
@@ -1004,17 +996,9 @@ async fn slot_speculate(
         None => None,
     };
     let defer_draft = batched.is_some() && dflash.is_none();
-    let candidates = if let Some(candidates) = batched {
-        candidates
-    } else {
-        let mut candidates = Vec::with_capacity(participants.len());
-        for &(index, _) in participants {
-            let state = states
-                .get_mut(&tasks[index].state)
-                .ok_or_else(|| Error::invariant("slot speculation state"))?;
-            candidates.push(state.slot_candidates(&tasks[index], width).await?);
-        }
-        candidates
+    let candidates = match batched {
+        Some(candidates) => candidates,
+        None => serial_candidates(states, tasks, participants, width).await?,
     };
     let mut lanes = Vec::new();
     for (&(index, slot), chain) in participants.iter().zip(&candidates) {
@@ -1055,18 +1039,8 @@ async fn slot_speculate(
         if let Some(lease) = &mut state.slot {
             lease.position = state.history.len();
         }
-        // The submitted token and every accepted candidate are now target history: their
-        // feature rows become draft context. A ring that missed a position stays stale.
-        if let Some(cursor) = state
-            .draft
-            .as_mut()
-            .filter(|draft| !draft.stale && draft.cursor.context == position)
-            .map(|draft| &mut draft.cursor)
-        {
-            verified.push((slot * width, cursor.ring, position, 1 + output.tokens.len()));
-            cursor.context = state.history.len();
-        } else if let Some(draft) = state.draft.as_mut() {
-            draft.stale = true;
+        if let Some(run) = state.verified_run(slot * width, position) {
+            verified.push(run);
         }
         outputs[index] = Some(TaskOutput {
             request: tasks[index].request,
@@ -1094,18 +1068,34 @@ async fn slot_speculate(
     Ok(())
 }
 
+/// Each participant's own draft chain, proposed one sequence at a time.
+async fn serial_candidates(
+    states: &mut BTreeMap<StateId, Sequence>,
+    tasks: &[ExecutionTask],
+    participants: &[(usize, usize)],
+    width: usize,
+) -> Result<Vec<Vec<u32>>> {
+    let mut candidates = Vec::with_capacity(participants.len());
+    for &(index, _) in participants {
+        let state = states
+            .get_mut(&tasks[index].state)
+            .ok_or_else(|| Error::invariant("slot speculation state"))?;
+        candidates.push(state.slot_candidates(&tasks[index], width).await?);
+    }
+    Ok(candidates)
+}
+
 /// One `DFlash2` block per eligible participant: the submitted token followed by the draft's
 /// proposals, cut to the sequence's remaining capacity. Other participants verify their
 /// submitted token alone.
 async fn dflash_chains(
-    engine: Option<&mut Engine>,
+    engine: &mut Engine,
     states: &mut BTreeMap<StateId, Sequence>,
     device: &CudaDevice,
     tasks: &[ExecutionTask],
     participants: &[(usize, usize)],
     width: usize,
 ) -> Result<Vec<Vec<u32>>> {
-    let engine = engine.ok_or_else(|| Error::invariant("DFlash2 engine"))?;
     let mut chains = Vec::with_capacity(participants.len());
     let mut requests = Vec::new();
     let mut lengths = Vec::new();
@@ -1210,6 +1200,20 @@ impl Sequence {
             loaded.ensure_verification(&mut self.program)?;
         }
         Ok(())
+    }
+
+    /// The submitted token and every accepted candidate of a verify step that began at
+    /// `position` are now target history: their feature rows, from verify lane `lane` on,
+    /// become draft context. A ring that missed a position goes stale instead.
+    fn verified_run(&mut self, lane: usize, position: usize) -> Option<VerifiedRows> {
+        let committed = self.history.len();
+        let draft = self.draft.as_mut()?;
+        if draft.stale || draft.cursor.context != position {
+            draft.stale = true;
+            return None;
+        }
+        draft.cursor.context = committed;
+        Some((lane, draft.cursor.ring, position, committed - position))
     }
 
     /// Keep the draft cursor aligned even on non-greedy or capacity-limited steps.

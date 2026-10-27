@@ -1,6 +1,6 @@
 # DFlash2 模型接入方案
 
-状态：设计方案。基于 2026 年 10 月 9 日的 `7c79d99`，目标为 `z-lab/Qwen3.8-27B-DFlash2`。
+状态：CUDA greedy 路径已实施（见“已实施：CUDA 执行路径”）；其余为设计方案。基于 2026 年 10 月 9 日的 `7c79d99`，目标为 `z-lab/Qwen3.8-27B-DFlash2`。
 
 整体排期与任务状态见 [路线图](../README.md) 的 D1、D2。本文维护本项设计与验收。
 
@@ -225,6 +225,36 @@ D1 的资源验收要求报价覆盖"**权重、target/draft 状态、feature �
 答案 ✓。另外文档写明：**target 自身的状态与缓存不计入** ✓，因为无论有没有草稿，target 都要跑 ✓（所以这是
 草稿的**边际**成本 ✓，不是整个 feature 的成本 ✓）。arena 与 graph 的正式报价仍**等设备窗口** ✓，
 在此之前它们是被声明的缺口 ✓，而不是被忘记的字段 ✓。
+
+## 已实施：CUDA 执行路径（FP8 草稿，`--draft-model`）
+
+`infer MODEL --draft-model DRAFT` 把独立的 DFlash2 包挂到 target 上；草稿可为 BF16、compressed-tensors 逐通道 FP8（[`TechPrototyper/Qwen3.8-27B-DFlash2-fp8-vllm`](https://huggingface.co/TechPrototyper/Qwen3.8-27B-DFlash2-fp8-vllm)）或 128×128 块缩放 FP8（[`tcclaviger/Qwen3.8-27B-DFlash2-FP8`](https://huggingface.co/tcclaviger/Qwen3.8-27B-DFlash2-FP8)）。显式给出草稿时不再加载 MTP 头。
+
+| 环节 | 实现 |
+|---|---|
+| package | `QuantizedPackage::attach_dflash2` 把草稿 shard 并入同一包，按 dtype 与 `weight_scale` / `weight_scale_inv` 绑定 FP8；`check_target` 改为接受混合 GDN target（抽头是层返回后的残差流，与 mixer 种类无关，Qwen3.8 的抽头 5 就是 GDN 层） |
+| target 特征 | `recipes::features::attach_tap_projection` 在每个抽头层之后插入 `fc` 的第 i 个列块投影并累加，`Σ fc_i · x_L(i)` 等于参考的 `fc(concat)`，图只多一个常驻结果 `DataflowGraph::features`；`fc` 列块由新的 `WeightView::columns` 读取 |
+| 草稿状态 | 每个序列一个 2048+8（向上取整到 64）行的 K/V 环，环属于序列而不是 pool slot，因为 prompt 在序列绑定 slot 之前就要 ingest；prompt chunk 与已提交的 verify lane 经 `hidden_norm → k/v_proj → k_norm → RoPE` 写入环 |
+| proposal | 常驻 CUDA 图：block `[anchor, mask×7]` 过五层（双抽头分组卷积、块内非因果滑窗 attention、FP8 GEMM，窄输出用 split-K）、target head 取 top-16、selector 低秩打分并做 greedy lattice walk；只回读 7 个 token |
+| target 验证 | 复用 pooled verify，宽度 = block（8）。无快照的 GDN 验证/提交从固定 3 lane 推广到任意 lane 数；另外按 1、2、4…slot 捕获窄图，低 slot 忙时只重放这些 lane（slot 分配改为取最小空闲号） |
+| 退化 | 只做 greedy；串行 decode、前缀命中（不复用 prefix 缓存）或 ring 不足时该序列不提议，照常解码 |
+
+**测量（RTX 5090，Qwen3.8-27B-NVFP4 target，GSM8K 16 题，greedy，max_tokens 512，同机交替运行）**
+
+| 配置 | C1 tok/s | C4 | C8 | 接受长度 |
+|---|---|---|---|---|
+| native 无推测 | 55 | – | – | – |
+| native MTP2 | 101 | 232 | – | – |
+| native DFlash2 FP8（本 PR） | 198 | 496 | 584 | 4.83 |
+| native DFlash2 BF16 草稿 | 197 | 496 | 543 | 4.76 |
+| vLLM 0.31 DFlash2 块 FP8 草稿 | 47 | 90 | 100 | 1.00（草稿全被拒绝，随后 EngineCore 崩溃） |
+| vLLM 0.31 DFlash2 BF16 草稿 | 252 | 无法运行 | 无法运行 | ≈5.2 |
+
+vLLM 的 BF16 配置只能以 `--max-model-len 896 --max-num-seqs 1` 起服务（更长上下文 KV 不够）；native 同一张卡以 4096 上下文、8 并发运行。compressed-tensors FP8 草稿在 vLLM 0.31 上加载失败，源码版 vLLM 的环境缺编译扩展，无法对照。
+
+C1 每步约 22.6 ms：verify 17.9 ms（与普通 decode 一步相当，主要是 target 自身 NVFP4/FP8 GEMM），草稿 3.5 ms。native 的 FP8 与 BF16 草稿接受长度相同，FP8 量化没有损失接受率；与 vLLM 的差距来自 target 数值不同导致的 greedy 轨迹差异与 verify GEMM 效率，后者是全引擎的普通 decode 问题。
+
+**明确未做**：随机采样的推测接受；prefix 缓存与草稿环的联动快照；宽度 8 的 pooled 三 lane 共享 attention（当前宽度 8 时 attention 走逐 lane 路径，1 slot 时约 1.2 ms）。
 
 ## Target 特征捕获
 

@@ -22,6 +22,98 @@ use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
 use std::collections::BTreeSet;
+use std::iter::successors;
+
+/// Slot counts of the narrow verify graphs a pool of `width` slots captures: powers of two
+/// below the width, when the pool verifies without recurrent snapshots.
+fn narrow_widths(graph: &DataflowGraph, width: usize, verify: usize) -> Vec<usize> {
+    if verify < 2 || !super::slot_verify::fused_recurrent(graph, verify) {
+        return Vec::new();
+    }
+    successors(Some(1usize), |slots| slots.checked_mul(2))
+        .take_while(|&slots| slots < width)
+        .collect()
+}
+
+/// NVFP4 workspace for every lane count the pool's graphs replay.
+fn pool_workspace(
+    device: &CudaDevice,
+    graph: &DataflowGraph,
+    weights: &ProgramWeights,
+    (lanes, verify): (usize, usize),
+    narrow: &[usize],
+) -> Result<super::nvfp4_gemm::Workspace> {
+    let mut widths = vec![1, lanes];
+    widths.extend(narrow.iter().map(|&slots| slots * verify));
+    let mut workspace = super::nvfp4_gemm::Workspace::new(device, graph, weights, &widths)?;
+    for &rows in &widths[1..] {
+        workspace.prepare_pool_dense(device, graph, weights, rows)?;
+    }
+    Ok(workspace)
+}
+
+/// The pool-wide verify graph and one narrower graph per `narrow` slot count, with the root
+/// views each narrow graph reads.
+#[expect(
+    unsafe_code,
+    reason = "Audited narrow verify roots: prefix views of `states`, which the pool owns \
+              and drops after its graphs"
+)]
+fn build_verify_graphs(
+    builder: &mut super::batch::BatchBuilder<'_>,
+    (states, fp8): (&mut SlotStates, &mut [Fp8Caches]),
+    verify: usize,
+    narrow: &[usize],
+) -> Result<(SlotVerifyGraph, Vec<SlotVerifyGraph>, Vec<States>)> {
+    let full = builder.build_slot_verify(states, fp8, verify)?;
+    let mut graphs = Vec::with_capacity(narrow.len());
+    let mut roots = Vec::with_capacity(narrow.len());
+    for &slots in narrow {
+        // SAFETY: the pool keeps `states` alive behind `_narrow_roots` and drops its graphs
+        // first; every graph replays on the pool's one stream.
+        let mut prefix = unsafe { prefix_roots(states, slots)? };
+        graphs.push(builder.build_slot_verify_parts(
+            (&mut states.parts().0[..slots], &mut prefix),
+            &mut fp8[..slots],
+            verify,
+        )?);
+        roots.push(prefix);
+    }
+    Ok((full, graphs, roots))
+}
+
+/// Views of the first `slots` rows of every pooled root family, for a verify graph narrower
+/// than the pool.
+///
+/// # Safety
+/// The returned roots alias `states`: the pool must keep it alive for every graph captured
+/// through them and replay them on its single stream.
+#[expect(
+    unsafe_code,
+    reason = "Audited prefix alias: the pool owns the roots and drops its graphs first"
+)]
+unsafe fn prefix_roots(states: &SlotStates, slots: usize) -> Result<States> {
+    let width = states.len();
+    if slots == 0 || slots > width {
+        return Err(Error::invalid("pooled state prefix"));
+    }
+    let mut roots = States::new();
+    for (id, owners) in states.roots() {
+        let mut views = Vec::with_capacity(owners.len());
+        for owner in owners {
+            let mut shape = owner
+                .shape()
+                .iter()
+                .map(|&dim| usize::try_from(dim).map_err(device_error))
+                .collect::<Result<Vec<_>>>()?;
+            shape[0] = slots;
+            // SAFETY: forwarded from this function's contract.
+            views.push(unsafe { super::arena::prefix_view(owner, width, slots, &shape)? });
+        }
+        roots.insert(*id, views);
+    }
+    Ok(roots)
+}
 
 /// Pinned ring depth per external-hidden lane: one upload per draft or catch-up step,
 /// and a lane's chain between stream barriers never exceeds the maximum verify width.
@@ -303,11 +395,6 @@ impl SlotPool {
         clippy::too_many_arguments,
         reason = "Pool construction binds model, geometry, readout and KV paging explicitly"
     )]
-    #[expect(
-        unsafe_code,
-        reason = "Audited narrow verify roots: prefix views of `states`, which the pool owns \
-                  and drops after its graphs"
-    )]
     pub fn new(
         device: &CudaDevice,
         graph: &DataflowGraph,
@@ -353,33 +440,13 @@ impl SlotPool {
             })
             .collect::<Result<_>>()?;
         let mut attention = super::attention_decode::Workspace::new(device, graph, capacity)?;
-        attention.prepare_pooled(
-            device,
-            graph,
-            weights,
-            (width, verify, capacity),
-            paging.is_some(),
-        )?;
-        let narrow_slots: Vec<usize> =
-            if verify >= 2 && super::slot_verify::fused_recurrent(graph, verify) {
-                (0..)
-                    .map(|shift| 1usize << shift)
-                    .take_while(|&slots| slots < width)
-                    .collect()
-            } else {
-                Vec::new()
-            };
-        let mut widths = vec![1, lanes];
-        widths.extend(narrow_slots.iter().map(|&slots| slots * verify));
-        let mut nvfp4 = super::nvfp4_gemm::Workspace::new(device, graph, weights, &widths)?;
-        for &rows in &widths[1..] {
-            nvfp4.prepare_pool_dense(device, graph, weights, rows)?;
-        }
+        let geometry = (width, verify, capacity);
+        attention.prepare_pooled(device, graph, weights, geometry, paging.is_some())?;
+        let narrow_slots = narrow_widths(graph, width, verify);
+        let mut nvfp4 = pool_workspace(device, graph, weights, (lanes, verify), &narrow_slots)?;
         let mut placeholder_states = States::new();
         let mut placeholder_fp8 = Fp8Caches::new();
-        let mut narrow = Vec::with_capacity(narrow_slots.len());
-        let mut narrow_roots = Vec::with_capacity(narrow_slots.len());
-        let (decode, verify_graph) = {
+        let (decode, verify_graph, narrow, narrow_roots) = {
             let mut builder = super::batch::BatchBuilder {
                 device,
                 graph,
@@ -398,21 +465,16 @@ impl SlotPool {
                 width,
             };
             if verify >= 2 {
-                let full = builder.build_slot_verify(&mut states, &mut fp8, verify)?;
-                for &slots in &narrow_slots {
-                    // SAFETY: the pool keeps `states` alive behind `_narrow_roots` and drops
-                    // its graphs first; every graph replays on the pool's one stream.
-                    let (lanes, mut roots) = unsafe { states.prefix(slots)? };
-                    narrow.push(builder.build_slot_verify_parts(
-                        (lanes, &mut roots),
-                        &mut fp8[..slots],
-                        verify,
-                    )?);
-                    narrow_roots.push(roots);
-                }
-                (None, Some(full))
+                let (full, graphs, roots) = build_verify_graphs(
+                    &mut builder,
+                    (&mut states, &mut fp8),
+                    verify,
+                    &narrow_slots,
+                )?;
+                (None, Some(full), graphs, roots)
             } else {
-                (Some(builder.build_slots(&mut states, &mut fp8)?), None)
+                let decode = builder.build_slots(&mut states, &mut fp8)?;
+                (Some(decode), None, Vec::new(), Vec::new())
             }
         };
         Ok(Self {

@@ -7,17 +7,22 @@
 //! the top candidates of every masked row from the target's head and walks the selector lattice.
 //! Rings belong to sequences, not pool slots, because a prompt is ingested before its sequence
 //! is bound to a slot.
-pub(crate) mod kernels;
+mod kernels;
 mod weights;
-pub(crate) use weights::DraftWeights;
+pub use weights::DraftWeights;
 
 use super::prefill_gemm::gemm;
+use crate::constants::AUX_KERNEL_TILE;
+use crate::constants::WIDEST_PREFILL_LANES;
 use crate::device::{CudaDevice, PinnedUpload, Readbacks, device_error};
 use crate::mlp::ProjectionWeight;
 use cutile::{half::bf16, prelude::*};
 use infer_core::{Error, Result};
 use kernels::draft;
+use std::collections::BTreeMap;
+use std::ops::Range;
 use std::result::Result as StdResult;
+use std::slice::from_ref;
 use std::sync::Arc;
 use weights::Geometry;
 
@@ -33,11 +38,48 @@ const TOP_BLOCK: usize = 2048;
 const PROMPT_ROWS: usize = 256;
 /// Pinned metadata uploads a prompt ingestion queues before it fences: the widest prompt chunk
 /// split into [`PROMPT_ROWS`] replays, plus one.
-const PROMPT_UPLOADS: usize = crate::constants::WIDEST_PREFILL_LANES / PROMPT_ROWS + 1;
+const PROMPT_UPLOADS: usize = WIDEST_PREFILL_LANES / PROMPT_ROWS + 1;
+
+/// Per-row and per-slot fields of the proposal metadata, in upload order.
+#[derive(Clone, Copy)]
+enum Field {
+    Tokens,
+    Positions,
+    RowRings,
+    Bases,
+    Anchors,
+    SlotRings,
+}
+
+/// Row fields precede the slot fields in the proposal metadata.
+const ROW_FIELDS: usize = 3;
+/// Slot fields follow the row fields in the proposal metadata.
+const SLOT_FIELDS: usize = 3;
+
+/// Elements of the proposal metadata for `rows` rows over `slots` slots.
+const fn meta_len(rows: usize, slots: usize) -> usize {
+    ROW_FIELDS * rows + SLOT_FIELDS * slots
+}
+
+/// Element range of one metadata field.
+const fn meta_range(field: Field, rows: usize, slots: usize) -> Range<usize> {
+    let (offset, len) = match field {
+        Field::Tokens => (0, rows),
+        Field::Positions => (rows, rows),
+        Field::RowRings => (2 * rows, rows),
+        Field::Bases => (ROW_FIELDS * rows, slots),
+        Field::Anchors => (ROW_FIELDS * rows + slots, slots),
+        Field::SlotRings => (ROW_FIELDS * rows + 2 * slots, slots),
+    };
+    offset..offset + len
+}
+
+/// Split-K partials keyed by `(N, K)`: the buffer, its split count and K tiles per split.
+type Partials = BTreeMap<(usize, usize), (Tensor<f32>, usize, usize)>;
 
 /// One sequence's place in the rings and how much of its timeline the draft has seen.
 #[derive(Debug)]
-pub(crate) struct Cursor {
+pub struct Cursor {
     pub ring: usize,
     /// Positions `0..context` have draft K/V in the ring.
     pub context: usize,
@@ -111,6 +153,9 @@ struct ProposeBuffers {
     candidates: Tensor<i32>,
     selector: Tensor<f32>,
     tokens: Tensor<i32>,
+    /// Split-K partials keyed by `(N, K)` of the narrow FP8 projections: buffer, splits and
+    /// K tiles per split.
+    partials: Partials,
 }
 
 struct Propose {
@@ -122,11 +167,11 @@ struct Propose {
 }
 
 /// One slot's block request: pool slot, the sequence's ring, the anchor token and its position.
-pub(crate) type BlockRequest = (usize, usize, u32, usize);
+pub type BlockRequest = (usize, usize, u32, usize);
 
 /// One verified run of feature rows to ingest: first lane in the verify graph, ring, first
 /// position and row count.
-pub(crate) type VerifiedRows = (usize, usize, usize, usize);
+pub type VerifiedRows = (usize, usize, usize, usize);
 
 /// The pooled graphs captured against one verify graph of `slots` slots.
 struct Pooled {
@@ -136,7 +181,7 @@ struct Pooled {
 }
 
 /// Draft state shared by every sequence of one executor.
-pub(crate) struct Engine {
+pub struct Engine {
     /// Verified blocks and the tokens they committed, for the acceptance-length report.
     verified_blocks: u64,
     committed_tokens: u64,
@@ -152,11 +197,7 @@ impl Engine {
     /// Allocate `rings` sequence rings and capture prompt ingestion.
     /// # Errors
     /// Rejects an empty ring count and reports CUDA allocation or capture failures.
-    pub(crate) fn new(
-        device: &CudaDevice,
-        weights: Arc<DraftWeights>,
-        rings: usize,
-    ) -> Result<Self> {
+    pub fn new(device: &CudaDevice, weights: Arc<DraftWeights>, rings: usize) -> Result<Self> {
         if rings == 0 {
             return Err(Error::invalid("DFlash2 needs at least one ring"));
         }
@@ -177,10 +218,10 @@ impl Engine {
             count: rings,
             free: (0..rings).rev().collect(),
         };
-        let mut features = zeros::<f32>(device, &[PROMPT_ROWS, geometry.hidden])?;
+        let features = zeros::<f32>(device, &[PROMPT_ROWS, geometry.hidden])?;
         let mut work = Ingest::new(device, &geometry, PROMPT_ROWS)?;
         let graph = CudaGraph::scope(&device.stream, |scope| {
-            record_ingest(scope, &weights, &mut rings, &mut work, &mut features)
+            record_ingest(scope, &weights, &mut rings, &mut work, &features)
         })
         .map_err(device_error)?;
         let prompt = PromptIngest {
@@ -200,18 +241,13 @@ impl Engine {
     }
 
     /// Device bytes one ring of every layer occupies.
-    pub(crate) fn ring_bytes(
-        geometry_window: usize,
-        block: usize,
-        layers: usize,
-        kv: usize,
-    ) -> u64 {
+    pub const fn ring_bytes(geometry_window: usize, block: usize, layers: usize, kv: usize) -> u64 {
         let ring = (geometry_window + block).div_ceil(KEY_TILE) * KEY_TILE;
         (2 * layers * ring * kv * size_of::<bf16>()) as u64
     }
 
     /// Lease a ring to a new sequence, if one is free.
-    pub(crate) fn acquire(&mut self) -> Option<Cursor> {
+    pub fn acquire(&mut self) -> Option<Cursor> {
         self.rings
             .free
             .pop()
@@ -219,7 +255,7 @@ impl Engine {
     }
 
     /// Return a sequence's ring.
-    pub(crate) fn release(&mut self, cursor: Cursor) {
+    pub fn release(&mut self, cursor: &Cursor) {
         if cursor.ring < self.rings.count && !self.rings.free.contains(&cursor.ring) {
             self.rings.free.push(cursor.ring);
         }
@@ -230,15 +266,15 @@ impl Engine {
     /// feature tensor.
     /// # Errors
     /// Rejects a feature tensor that is not `slots * block` rows wide and reports CUDA failures.
-    pub(crate) fn attach_pool(
+    pub fn attach_pool(
         &mut self,
         device: &CudaDevice,
-        graphs: Vec<(usize, Arc<Tensor<f32>>)>,
+        graphs: &[(usize, Arc<Tensor<f32>>)],
     ) -> Result<()> {
         self.detach_pool();
         let mut pooled = Vec::with_capacity(graphs.len());
         for (slots, features) in graphs {
-            pooled.push(self.capture_pooled(device, slots, features)?);
+            pooled.push(self.capture_pooled(device, *slots, Arc::clone(features))?);
         }
         pooled.sort_by_key(|graphs| graphs.slots);
         self.pooled = pooled;
@@ -291,11 +327,11 @@ impl Engine {
     }
 
     /// Drop the pooled graphs; the pool they read is going away.
-    pub(crate) fn detach_pool(&mut self) {
+    pub fn detach_pool(&mut self) {
         self.pooled.clear();
     }
 
-    pub(crate) fn attached(&self) -> bool {
+    pub const fn attached(&self) -> bool {
         !self.pooled.is_empty()
     }
 
@@ -307,7 +343,7 @@ impl Engine {
         reason = "Audited replay: single-stream ordering after the staged copies, \
                   engine-owned buffers, drained before the engine drops"
     )]
-    pub(crate) async fn ingest_prompt(
+    pub async fn ingest_prompt(
         &mut self,
         device: &CudaDevice,
         features: &Tensor<f32>,
@@ -362,7 +398,7 @@ impl Engine {
         reason = "Audited replay: single-stream ordering after the verify graph and the staged \
                   metadata, engine-owned buffers, drained before the engine drops"
     )]
-    pub(crate) fn ingest_verified(
+    pub fn ingest_verified(
         &mut self,
         device: &CudaDevice,
         runs: &[VerifiedRows],
@@ -376,9 +412,7 @@ impl Engine {
             .verified;
         let rows = verified.work.rows;
         let mut upload = vec![-1i32; 2 * rows];
-        for row in 0..rows {
-            upload[row] = 0;
-        }
+        upload[..rows].fill(0);
         for &(lane, ring, position, count) in runs {
             if lane + count > rows || ring >= self.rings.count {
                 return Err(Error::invalid("DFlash2 verified rows"));
@@ -428,7 +462,7 @@ impl Engine {
         reason = "Audited replay: single-stream ordering after the staged metadata, \
                   engine-owned buffers, fenced by the token readback"
     )]
-    pub(crate) async fn propose(
+    pub async fn propose(
         &mut self,
         device: &CudaDevice,
         requests: &[BlockRequest],
@@ -450,13 +484,13 @@ impl Engine {
         let mask = i32::try_from(geometry.mask_token).map_err(device_error)?;
         let upload = &mut propose.upload;
         upload.clear();
-        upload.resize(3 * rows + 3 * slots, 0);
+        upload.resize(meta_len(rows, slots), 0);
         for row in 0..rows {
             upload[row] = mask;
             upload[rows + row] = -1;
         }
         for slot in 0..slots {
-            upload[3 * rows + slot] = -1;
+            upload[meta_range(Field::Bases, rows, slots).start + slot] = -1;
         }
         let mut seen = vec![false; slots];
         for &(slot, ring, anchor, position) in requests {
@@ -473,11 +507,11 @@ impl Engine {
                     upload[row] = anchor;
                 }
                 upload[rows + row] = base + i32::try_from(offset).map_err(device_error)?;
-                upload[2 * rows + row] = ring;
+                upload[meta_range(Field::RowRings, rows, slots).start + row] = ring;
             }
-            upload[3 * rows + slot] = base;
-            upload[3 * rows + slots + slot] = anchor;
-            upload[3 * rows + 2 * slots + slot] = ring;
+            upload[meta_range(Field::Bases, rows, slots).start + slot] = base;
+            upload[meta_range(Field::Anchors, rows, slots).start + slot] = anchor;
+            upload[meta_range(Field::SlotRings, rows, slots).start + slot] = ring;
         }
         propose
             .uploads
@@ -529,6 +563,28 @@ impl Ingest {
 impl ProposeBuffers {
     fn new(device: &CudaDevice, geometry: &Geometry, slots: usize) -> Result<Self> {
         let rows = slots * geometry.block;
+        let multiprocessors =
+            usize::try_from(device.profile()?.multiprocessors).map_err(device_error)?;
+        let mut partials = BTreeMap::new();
+        let query = geometry.heads * geometry.head_dim;
+        let kv = geometry.kv_heads * geometry.head_dim;
+        for (n, k) in [
+            (query, geometry.hidden),
+            (kv, geometry.hidden),
+            (geometry.hidden, query),
+            (geometry.hidden, geometry.intermediate),
+        ] {
+            if let Some((splits, k_tiles)) = split_plan(rows, n, k, multiprocessors) {
+                partials.insert(
+                    (n, k),
+                    (
+                        zeros::<f32>(device, &[splits * ROW_TILE, n])?,
+                        splits,
+                        k_tiles,
+                    ),
+                );
+            }
+        }
         let hidden = geometry.hidden;
         let query = geometry.heads * geometry.head_dim;
         let kv = geometry.kv_heads * geometry.head_dim;
@@ -538,7 +594,7 @@ impl ProposeBuffers {
         Ok(Self {
             slots,
             rows,
-            meta: zeros::<i32>(device, &[3 * rows + 3 * slots])?,
+            meta: zeros::<i32>(device, &[meta_len(slots * geometry.block, slots)])?,
             stream: [f(&[rows, hidden])?, f(&[rows, hidden])?],
             normed: f(&[rows, hidden])?,
             coefficients: f(&[rows, coefficients])?,
@@ -566,6 +622,7 @@ impl ProposeBuffers {
             candidates: zeros::<i32>(device, &[rows, geometry.top_k])?,
             selector: f(&[rows, geometry.rank])?,
             tokens: zeros::<i32>(device, &[slots, geometry.block])?,
+            partials,
         })
     }
 }
@@ -602,6 +659,49 @@ fn record_gemm(
             ));
         }
     }
+    Ok(())
+}
+
+/// Split-K geometry `(splits, k_tiles)` for a projection whose output tiles alone would
+/// leave most multiprocessors idle; `None` when one row tile cannot use it or the grid is wide.
+fn split_plan(rows: usize, n: usize, k: usize, multiprocessors: usize) -> Option<(usize, usize)> {
+    let tiles = n / KEY_TILE;
+    if rows > ROW_TILE || tiles == 0 || 2 * tiles >= multiprocessors {
+        return None;
+    }
+    let total = k.div_ceil(KEY_TILE);
+    let k_tiles = total.div_ceil(multiprocessors.div_ceil(tiles).min(total));
+    Some((total.div_ceil(k_tiles), k_tiles))
+}
+
+/// [`record_gemm`] that splits K across idle multiprocessors for narrow per-channel FP8
+/// outputs, when the proposal owns a partial buffer for this output width.
+fn record_projection(
+    scope: &Scope,
+    weight: &ProjectionWeight,
+    input: &TensorView<'_, f32>,
+    out: &mut Tensor<f32>,
+    (k, partials): (usize, &mut Partials),
+) -> StdResult<(), DeviceError> {
+    let rows = usize::try_from(input.shape()[0]).map_err(|e| DeviceError::Launch(e.to_string()))?;
+    let n = out.size() / rows;
+    let (ProjectionWeight::Fp8(w, s), Some((buffer, splits, k_tiles))) =
+        (weight, partials.get_mut(&(n, k)))
+    else {
+        return record_gemm(scope, weight, input, out, k);
+    };
+    let k_tiles = i32::try_from(*k_tiles).map_err(|e| DeviceError::Launch(e.to_string()))?;
+    let splits = i32::try_from(*splits).map_err(|e| DeviceError::Launch(e.to_string()))?;
+    scope.record(
+        draft::fp8_split(buffer.partition([ROW_TILE, KEY_TILE]), input, w, k_tiles)
+            .generics(vec![k.to_string()]),
+    )?;
+    scope.record(draft::reduce_scaled(
+        out.partition([ROW_TILE, KEY_TILE]),
+        &*buffer,
+        s,
+        splits,
+    ))?;
     Ok(())
 }
 
@@ -685,7 +785,7 @@ fn record_ingest(
     weights: &DraftWeights,
     rings: &mut Rings,
     work: &mut Ingest,
-    features: &mut Tensor<f32>,
+    features: &Tensor<f32>,
 ) -> StdResult<(), DeviceError> {
     let input = features.view(&[work.rows, weights.geometry.hidden])?;
     record_ingest_from(scope, weights, rings, work, &input)
@@ -740,8 +840,9 @@ fn record_ingest_from(
             &layer.k_norm,
             &geometry,
         )?;
-        let ring_ids = work.meta.slice(&[0..rows])?;
-        let positions = work.meta.slice(&[rows..2 * rows])?;
+        let (ring_ids, positions) = (0..rows, rows..2 * rows);
+        let ring_ids = work.meta.slice(from_ref(&ring_ids))?;
+        let positions = work.meta.slice(from_ref(&positions))?;
         record_rope(
             scope,
             &mut work.k_rotated,
@@ -791,7 +892,7 @@ fn record_conv(
     side: i32,
     geometry: &Geometry,
 ) -> StdResult<(), DeviceError> {
-    let base = base.view(&[4, geometry.hidden])?;
+    let base = base.view(&[base.size() / geometry.hidden, geometry.hidden])?;
     scope.record(
         draft::grouped_conv(
             out.partition([1, CHANNEL_TILE]),
@@ -811,10 +912,7 @@ fn record_conv(
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one straight-line recording of the five draft layers, head and selector"
-)]
+/// Record the whole block proposal: embedding, every draft layer, candidates and the walk.
 fn record_propose(
     scope: &Scope,
     weights: &DraftWeights,
@@ -823,19 +921,9 @@ fn record_propose(
 ) -> StdResult<(), DeviceError> {
     let g = weights.geometry;
     let rows = w.rows;
-    let slots = w.slots;
     let hidden = g.hidden;
-    let query = g.heads * g.head_dim;
-    let group = g.heads / g.kv_heads;
-    let capacity = rings.count * rings.ring;
-    let meta = &w.meta;
-    let tokens = meta.slice(&[0..rows])?;
-    let positions = meta.slice(&[rows..2 * rows])?;
-    let row_rings = meta.slice(&[2 * rows..3 * rows])?;
-    let bases = meta.slice(&[3 * rows..3 * rows + slots])?;
-    let anchors = meta.slice(&[3 * rows + slots..3 * rows + 2 * slots])?;
-    let slot_rings = meta.slice(&[3 * rows + 2 * slots..3 * rows + 3 * slots])?;
-    let [first, second] = &mut w.stream;
+    let tokens = w.meta.slice(&[meta_range(Field::Tokens, rows, w.slots)])?;
+    let [first, _] = &mut w.stream;
     scope.record(
         draft::embed(
             first.partition([1, CHANNEL_TILE]),
@@ -857,216 +945,309 @@ fn record_propose(
             hidden.next_power_of_two().to_string(),
         ]),
     )?;
-    let (mut residual, mut next) = (first, second);
-    for (index, layer) in weights.layers.iter().enumerate() {
-        // Attention block: dynamic convolution around the non-causal block attention.
-        let conv = &layer.attention_conv;
-        record_gemm(
-            scope,
-            &conv.projection,
-            &w.normed.view(&[rows, hidden])?,
-            &mut w.coefficients,
-            hidden,
-        )?;
-        record_conv(
-            scope,
-            &mut w.conv,
-            &w.normed.view(&[rows, hidden])?,
-            &w.coefficients,
-            &conv.base,
-            0,
-            &g,
-        )?;
-        record_gemm(
-            scope,
-            &layer.q,
-            &w.conv.view(&[rows, hidden])?,
-            &mut w.q,
-            hidden,
-        )?;
-        record_gemm(
-            scope,
-            &layer.k,
-            &w.conv.view(&[rows, hidden])?,
-            &mut w.k,
-            hidden,
-        )?;
-        record_gemm(
-            scope,
-            &layer.v,
-            &w.conv.view(&[rows, hidden])?,
-            &mut w.v,
-            hidden,
-        )?;
-        let q_heads = w.q.view(&[rows * g.heads, g.head_dim])?;
-        record_head_norm(scope, &mut w.q_normed, &q_heads, &layer.q_norm, &g)?;
-        let k_heads = w.k.view(&[rows * g.kv_heads, g.head_dim])?;
-        record_head_norm(scope, &mut w.k_normed, &k_heads, &layer.k_norm, &g)?;
-        record_rope(
-            scope,
-            &mut w.q_rotated,
-            &w.q_normed.view(&[rows * g.heads, g.head_dim])?,
-            weights,
-            &positions,
-            g.heads,
-        )?;
-        record_rope(
-            scope,
-            &mut w.k_rotated,
-            &w.k_normed.view(&[rows * g.kv_heads, g.head_dim])?,
-            weights,
-            &positions,
-            g.kv_heads,
-        )?;
-        let keys = w.k_rotated.view(&[rows, g.kv_heads, g.head_dim])?;
-        let values = w.v.view(&[rows, g.kv_heads, g.head_dim])?;
-        record_ring_store(
-            scope,
-            &mut rings.keys[index],
-            &keys,
-            rows,
-            &row_rings,
-            &positions,
-            capacity,
-            &g,
-            rings.ring,
-        )?;
-        record_ring_store(
-            scope,
-            &mut rings.values[index],
-            &values,
-            rows,
-            &row_rings,
-            &positions,
-            capacity,
-            &g,
-            rings.ring,
-        )?;
-        let queries = w.q_rotated.view(&[rows, g.kv_heads, group * g.head_dim])?;
-        let key_ring = rings.keys[index].view(&[g.kv_heads, capacity, g.head_dim])?;
-        let value_ring = rings.values[index].view(&[g.kv_heads, capacity, g.head_dim])?;
-        scope.record(
-            draft::block_attention(
-                (&mut w.attention).partition([g.block, 1, group * g.head_dim]),
-                &queries,
-                &key_ring,
-                &value_ring,
-                &bases,
-                &slot_rings,
-            )
-            .generics(vec![
-                g.head_dim.to_string(),
-                group.to_string(),
-                (group * g.head_dim).to_string(),
-                g.block.to_string(),
-                (g.block * group).to_string(),
-                rings.ring.to_string(),
-                g.window.to_string(),
-            ]),
-        )?;
-        let attended = w.attention.view(&[rows, query])?;
-        record_gemm(scope, &layer.o, &attended, &mut w.projected, query)?;
-        record_conv(
-            scope,
-            &mut w.conv,
-            &w.projected.view(&[rows, hidden])?,
-            &w.coefficients,
-            &conv.base,
-            1,
-            &g,
-        )?;
-        scope.record(
-            draft::add_norm(
-                (&mut w.normed).partition([1, hidden.next_power_of_two()]),
-                (&mut *next).partition([1, hidden.next_power_of_two()]),
-                &*residual,
-                &w.conv,
-                &layer.post_norm,
-                g.epsilon,
-            )
-            .generics(vec![
-                hidden.to_string(),
-                hidden.next_power_of_two().to_string(),
-            ]),
-        )?;
-        (residual, next) = (next, residual);
-        // MLP block, wrapped in its own dynamic convolution.
-        let conv = &layer.mlp_conv;
-        record_gemm(
-            scope,
-            &conv.projection,
-            &w.normed.view(&[rows, hidden])?,
-            &mut w.coefficients,
-            hidden,
-        )?;
-        record_conv(
-            scope,
-            &mut w.conv,
-            &w.normed.view(&[rows, hidden])?,
-            &w.coefficients,
-            &conv.base,
-            0,
-            &g,
-        )?;
-        record_gemm(
-            scope,
-            &layer.gate,
-            &w.conv.view(&[rows, hidden])?,
-            &mut w.gate,
-            hidden,
-        )?;
-        record_gemm(
-            scope,
-            &layer.up,
-            &w.conv.view(&[rows, hidden])?,
-            &mut w.up,
-            hidden,
-        )?;
-        let gate = w.gate.view(&[rows * g.intermediate])?;
-        let up = w.up.view(&[rows * g.intermediate])?;
-        scope.record(draft::silu_mul(
-            (&mut w.activated).partition([256]),
-            &gate,
-            &up,
-        ))?;
-        let activated = w.activated.view(&[rows, g.intermediate])?;
-        record_gemm(
-            scope,
-            &layer.down,
-            &activated,
-            &mut w.projected,
-            g.intermediate,
-        )?;
-        record_conv(
-            scope,
-            &mut w.conv,
-            &w.projected.view(&[rows, hidden])?,
-            &w.coefficients,
-            &conv.base,
-            1,
-            &g,
-        )?;
-        let norm = weights
-            .layers
-            .get(index + 1)
-            .map_or(&weights.norm, |layer| &layer.input_norm);
-        scope.record(
-            draft::add_norm(
-                (&mut w.normed).partition([1, hidden.next_power_of_two()]),
-                (&mut *next).partition([1, hidden.next_power_of_two()]),
-                &*residual,
-                &w.conv,
-                norm,
-                g.epsilon,
-            )
-            .generics(vec![
-                hidden.to_string(),
-                hidden.next_power_of_two().to_string(),
-            ]),
-        )?;
-        (residual, next) = (next, residual);
+    let mut current = 0;
+    for index in 0..weights.layers.len() {
+        record_attention_block(scope, weights, rings, w, (index, current))?;
+        current = 1 - current;
+        record_mlp_block(scope, weights, w, (index, current))?;
+        current = 1 - current;
     }
-    // Candidates from the target head, then the selector walk over them.
+    record_candidates(scope, weights, w)
+}
+
+/// The attention block's inputs: the first dynamic convolution, Q/K/V with their norms and
+/// `RoPE`, and the block's keys and values stored into the rings.
+fn record_attention_inputs(
+    scope: &Scope,
+    weights: &DraftWeights,
+    rings: &mut Rings,
+    w: &mut ProposeBuffers,
+    index: usize,
+) -> StdResult<(), DeviceError> {
+    let g = weights.geometry;
+    let rows = w.rows;
+    let slots = w.slots;
+    let hidden = g.hidden;
+    let capacity = rings.count * rings.ring;
+    let layer = &weights.layers[index];
+    let positions = w.meta.slice(&[meta_range(Field::Positions, rows, slots)])?;
+    let row_rings = w.meta.slice(&[meta_range(Field::RowRings, rows, slots)])?;
+    // Attention block: dynamic convolution around the non-causal block attention.
+    let conv = &layer.attention_conv;
+    record_gemm(
+        scope,
+        &conv.projection,
+        &w.normed.view(&[rows, hidden])?,
+        &mut w.coefficients,
+        hidden,
+    )?;
+    record_conv(
+        scope,
+        &mut w.conv,
+        &w.normed.view(&[rows, hidden])?,
+        &w.coefficients,
+        &conv.base,
+        0,
+        &g,
+    )?;
+    record_projection(
+        scope,
+        &layer.q,
+        &w.conv.view(&[rows, hidden])?,
+        &mut w.q,
+        (hidden, &mut w.partials),
+    )?;
+    record_projection(
+        scope,
+        &layer.k,
+        &w.conv.view(&[rows, hidden])?,
+        &mut w.k,
+        (hidden, &mut w.partials),
+    )?;
+    record_projection(
+        scope,
+        &layer.v,
+        &w.conv.view(&[rows, hidden])?,
+        &mut w.v,
+        (hidden, &mut w.partials),
+    )?;
+    let q_heads = w.q.view(&[rows * g.heads, g.head_dim])?;
+    record_head_norm(scope, &mut w.q_normed, &q_heads, &layer.q_norm, &g)?;
+    let k_heads = w.k.view(&[rows * g.kv_heads, g.head_dim])?;
+    record_head_norm(scope, &mut w.k_normed, &k_heads, &layer.k_norm, &g)?;
+    record_rope(
+        scope,
+        &mut w.q_rotated,
+        &w.q_normed.view(&[rows * g.heads, g.head_dim])?,
+        weights,
+        &positions,
+        g.heads,
+    )?;
+    record_rope(
+        scope,
+        &mut w.k_rotated,
+        &w.k_normed.view(&[rows * g.kv_heads, g.head_dim])?,
+        weights,
+        &positions,
+        g.kv_heads,
+    )?;
+    let keys = w.k_rotated.view(&[rows, g.kv_heads, g.head_dim])?;
+    let values = w.v.view(&[rows, g.kv_heads, g.head_dim])?;
+    record_ring_store(
+        scope,
+        &mut rings.keys[index],
+        &keys,
+        rows,
+        &row_rings,
+        &positions,
+        capacity,
+        &g,
+        rings.ring,
+    )?;
+    record_ring_store(
+        scope,
+        &mut rings.values[index],
+        &values,
+        rows,
+        &row_rings,
+        &positions,
+        capacity,
+        &g,
+        rings.ring,
+    )?;
+    Ok(())
+}
+
+/// One draft layer's attention block: dynamic convolution around the non-causal block
+/// attention, then the residual update into the other stream buffer.
+fn record_attention_block(
+    scope: &Scope,
+    weights: &DraftWeights,
+    rings: &mut Rings,
+    w: &mut ProposeBuffers,
+    (index, current): (usize, usize),
+) -> StdResult<(), DeviceError> {
+    let g = weights.geometry;
+    let rows = w.rows;
+    let slots = w.slots;
+    let hidden = g.hidden;
+    let query = g.heads * g.head_dim;
+    let group = g.heads / g.kv_heads;
+    let capacity = rings.count * rings.ring;
+    let layer = &weights.layers[index];
+    record_attention_inputs(scope, weights, rings, w, index)?;
+    let meta = &w.meta;
+    let bases = meta.slice(&[meta_range(Field::Bases, rows, slots)])?;
+    let slot_rings = meta.slice(&[meta_range(Field::SlotRings, rows, slots)])?;
+    let [first, second] = &mut w.stream;
+    let (residual, next) = if current == 0 {
+        (&*first, second)
+    } else {
+        (&*second, first)
+    };
+    let conv = &layer.attention_conv;
+    let queries = w.q_rotated.view(&[rows, g.kv_heads, group * g.head_dim])?;
+    let key_ring = rings.keys[index].view(&[g.kv_heads, capacity, g.head_dim])?;
+    let value_ring = rings.values[index].view(&[g.kv_heads, capacity, g.head_dim])?;
+    scope.record(
+        draft::block_attention(
+            (&mut w.attention).partition([g.block, 1, group * g.head_dim]),
+            &queries,
+            &key_ring,
+            &value_ring,
+            &bases,
+            &slot_rings,
+        )
+        .generics(vec![
+            g.head_dim.to_string(),
+            group.to_string(),
+            (group * g.head_dim).to_string(),
+            g.block.to_string(),
+            (g.block * group).to_string(),
+            rings.ring.to_string(),
+            g.window.to_string(),
+        ]),
+    )?;
+    let attended = w.attention.view(&[rows, query])?;
+    record_projection(
+        scope,
+        &layer.o,
+        &attended,
+        &mut w.projected,
+        (query, &mut w.partials),
+    )?;
+    record_conv(
+        scope,
+        &mut w.conv,
+        &w.projected.view(&[rows, hidden])?,
+        &w.coefficients,
+        &conv.base,
+        1,
+        &g,
+    )?;
+    scope.record(
+        draft::add_norm(
+            (&mut w.normed).partition([1, hidden.next_power_of_two()]),
+            (&mut *next).partition([1, hidden.next_power_of_two()]),
+            residual,
+            &w.conv,
+            &layer.post_norm,
+            g.epsilon,
+        )
+        .generics(vec![
+            hidden.to_string(),
+            hidden.next_power_of_two().to_string(),
+        ]),
+    )?;
+    Ok(())
+}
+
+/// One draft layer's MLP block inside its dynamic convolution, then the residual update and
+/// the next layer's (or the final) norm.
+fn record_mlp_block(
+    scope: &Scope,
+    weights: &DraftWeights,
+    w: &mut ProposeBuffers,
+    (index, current): (usize, usize),
+) -> StdResult<(), DeviceError> {
+    let g = weights.geometry;
+    let rows = w.rows;
+    let hidden = g.hidden;
+    let layer = &weights.layers[index];
+    let [first, second] = &mut w.stream;
+    let (residual, next) = if current == 0 {
+        (&*first, second)
+    } else {
+        (&*second, first)
+    };
+    // MLP block, wrapped in its own dynamic convolution.
+    let conv = &layer.mlp_conv;
+    record_gemm(
+        scope,
+        &conv.projection,
+        &w.normed.view(&[rows, hidden])?,
+        &mut w.coefficients,
+        hidden,
+    )?;
+    record_conv(
+        scope,
+        &mut w.conv,
+        &w.normed.view(&[rows, hidden])?,
+        &w.coefficients,
+        &conv.base,
+        0,
+        &g,
+    )?;
+    record_gemm(
+        scope,
+        &layer.gate,
+        &w.conv.view(&[rows, hidden])?,
+        &mut w.gate,
+        hidden,
+    )?;
+    record_gemm(
+        scope,
+        &layer.up,
+        &w.conv.view(&[rows, hidden])?,
+        &mut w.up,
+        hidden,
+    )?;
+    let gate = w.gate.view(&[rows * g.intermediate])?;
+    let up = w.up.view(&[rows * g.intermediate])?;
+    scope.record(draft::silu_mul(
+        (&mut w.activated).partition([AUX_KERNEL_TILE]),
+        &gate,
+        &up,
+    ))?;
+    let activated = w.activated.view(&[rows, g.intermediate])?;
+    record_projection(
+        scope,
+        &layer.down,
+        &activated,
+        &mut w.projected,
+        (g.intermediate, &mut w.partials),
+    )?;
+    record_conv(
+        scope,
+        &mut w.conv,
+        &w.projected.view(&[rows, hidden])?,
+        &w.coefficients,
+        &conv.base,
+        1,
+        &g,
+    )?;
+    let norm = weights
+        .layers
+        .get(index + 1)
+        .map_or(&weights.norm, |layer| &layer.input_norm);
+    scope.record(
+        draft::add_norm(
+            (&mut w.normed).partition([1, hidden.next_power_of_two()]),
+            (&mut *next).partition([1, hidden.next_power_of_two()]),
+            residual,
+            &w.conv,
+            norm,
+            g.epsilon,
+        )
+        .generics(vec![
+            hidden.to_string(),
+            hidden.next_power_of_two().to_string(),
+        ]),
+    )?;
+    Ok(())
+}
+
+/// Top candidates of every row from the target head, then the selector walk over them.
+fn record_candidates(
+    scope: &Scope,
+    weights: &DraftWeights,
+    w: &mut ProposeBuffers,
+) -> StdResult<(), DeviceError> {
+    let g = weights.geometry;
+    let rows = w.rows;
+    let slots = w.slots;
+    let hidden = g.hidden;
+    let anchors = w.meta.slice(&[meta_range(Field::Anchors, rows, slots)])?;
     record_gemm(
         scope,
         &weights.head,

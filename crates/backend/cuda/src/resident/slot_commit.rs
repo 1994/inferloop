@@ -131,38 +131,10 @@ fn record_node(
     };
     match node.op {
         TensorOp::Conv { channels, .. } => {
-            let [h0, h1, h2] = state.as_mut_slice() else {
-                return Err(Error::invariant("commit convolution state"));
-            };
             let rows = input(0)?
                 .view(&[inputs.slots * inputs.lanes, channels])
                 .map_err(device_error)?;
-            let recorded = if inputs.lanes == LANES {
-                scope.record(
-                    fused::conv_commit_batch(
-                        h0.partition([1, CONV_KERNEL_TILE]),
-                        h1.partition([1, CONV_KERNEL_TILE]),
-                        h2.partition([1, CONV_KERNEL_TILE]),
-                        &rows,
-                        inputs.metadata,
-                        inputs.counts,
-                    )
-                    .generics(vec![METADATA_FIELDS.to_string()]),
-                )
-            } else {
-                scope.record(
-                    fused::conv_commit_lanes(
-                        h0.partition([1, CONV_KERNEL_TILE]),
-                        h1.partition([1, CONV_KERNEL_TILE]),
-                        h2.partition([1, CONV_KERNEL_TILE]),
-                        &rows,
-                        inputs.metadata,
-                        inputs.counts,
-                    )
-                    .generics(vec![METADATA_FIELDS.to_string(), inputs.lanes.to_string()]),
-                )
-            };
-            recorded.map_err(device_error)?;
+            record_conv(scope, state, &rows, inputs)?;
         }
         TensorOp::Delta {
             key_heads,
@@ -221,6 +193,45 @@ fn record_node(
         }
         _ => return Err(Error::invariant("covered recurrent commit node")),
     }
+    Ok(())
+}
+
+/// Shift each slot's convolution window by its accepted prefix.
+fn record_conv(
+    scope: &Scope,
+    state: &mut [Tensor<f32>],
+    rows: &TensorView<'_, f32>,
+    inputs: &Inputs<'_>,
+) -> Result<()> {
+    let [h0, h1, h2] = state else {
+        return Err(Error::invariant("commit convolution state"));
+    };
+    let recorded = if inputs.lanes == LANES {
+        scope.record(
+            fused::conv_commit_batch(
+                h0.partition([1, CONV_KERNEL_TILE]),
+                h1.partition([1, CONV_KERNEL_TILE]),
+                h2.partition([1, CONV_KERNEL_TILE]),
+                rows,
+                inputs.metadata,
+                inputs.counts,
+            )
+            .generics(vec![METADATA_FIELDS.to_string()]),
+        )
+    } else {
+        scope.record(
+            fused::conv_commit_lanes(
+                h0.partition([1, CONV_KERNEL_TILE]),
+                h1.partition([1, CONV_KERNEL_TILE]),
+                h2.partition([1, CONV_KERNEL_TILE]),
+                rows,
+                inputs.metadata,
+                inputs.counts,
+            )
+            .generics(vec![METADATA_FIELDS.to_string(), inputs.lanes.to_string()]),
+        )
+    };
+    recorded.map_err(device_error)?;
     Ok(())
 }
 
