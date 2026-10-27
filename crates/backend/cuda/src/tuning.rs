@@ -5,6 +5,7 @@ pub mod gated_norm;
 pub mod greedy;
 pub(crate) mod memory;
 pub mod nvfp4_lt;
+pub mod pool_dense;
 pub(crate) mod prefill;
 pub(crate) mod projection_budget;
 pub mod recurrent;
@@ -302,6 +303,9 @@ pub struct TilingTable {
     /// Fused FP4 gate/up/quantizer decisions with complete-code and reverse timing evidence.
     #[serde(default)]
     pub resident_swiglu: Vec<resident_gemm::SwigluEntry>,
+    /// Measured pooled F32 projection crossover decisions.
+    #[serde(default)]
+    pub resident_pool_dense: Vec<pool_dense::Entry>,
     #[serde(default)]
     pub resident_fp8_gemm: Vec<fp8_gemm::Entry>,
     /// Qualified zero-workspace FP4 library projections.
@@ -355,6 +359,8 @@ struct StoredTilingTable {
     #[serde(default)]
     resident_swiglu: Vec<resident_gemm::SwigluEntry>,
     #[serde(default)]
+    resident_pool_dense: Vec<pool_dense::Entry>,
+    #[serde(default)]
     resident_fp8_gemm: Vec<fp8_gemm::Entry>,
     #[serde(default)]
     resident_fp4_lt: Vec<nvfp4_lt::Entry>,
@@ -403,6 +409,7 @@ impl From<StoredTilingTable> for TilingTable {
             devices,
             resident_gemm: stored.resident_gemm,
             resident_swiglu: stored.resident_swiglu,
+            resident_pool_dense: stored.resident_pool_dense,
             resident_fp8_gemm: stored.resident_fp8_gemm,
             resident_fp4_lt: stored.resident_fp4_lt,
             greedy: stored.greedy,

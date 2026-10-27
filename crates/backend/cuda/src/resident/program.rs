@@ -452,6 +452,8 @@ impl DeviceProgram {
         }
         self.nvfp4
             .ensure_width(&self.device, graph, weights, weights.batch_width)?;
+        self.nvfp4
+            .prepare_pool_dense(&self.device, graph, weights, weights.batch_width)?;
         let mut builder = super::batch::BatchBuilder {
             device: &self.device,
             graph,

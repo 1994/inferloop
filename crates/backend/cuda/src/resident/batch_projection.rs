@@ -226,7 +226,8 @@ pub(super) fn record_slots(
             weights.tiling.get(&node.inputs[1]).copied().unwrap_or(
                 LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS).map_err(error)?,
             );
-        if super::pool_gemv::record(scope, weight, &input, &mut output, columns, tile)? {
+        let choice = nvfp4.pool_dense_choice(weight, [lanes, flat / lanes, columns], tile);
+        if super::pool_gemv::record(scope, weight, &input, &mut output, columns, tile, choice)? {
             nvfp4.clear_quant_reuse();
             arena.buffers[slot] = Some(output.reshape(&[flat]).map_err(error)?);
             return Ok(());

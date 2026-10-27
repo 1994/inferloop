@@ -1,9 +1,13 @@
 //! Allocate operands before planning; only captured standalone projections enter search.
 use super::{Choice, Quantized, ResidentGemmWeightKey, WeightKey, Workspace};
-use crate::constants::{FP8_BLOCK_COLUMNS, NVFP4_GROUP_SIZE, PREFILL_LANES};
+use crate::constants::{
+    DEFAULT_TILE_COLUMNS, DEFAULT_TILE_ROWS, FP8_BLOCK_COLUMNS, NVFP4_GROUP_SIZE, PREFILL_LANES,
+};
 use crate::device::{CudaDevice, device_error};
 use crate::mlp::ProjectionWeight;
 use crate::resident::{ProgramWeights, prefill_projection::MlpPlan};
+use crate::strategy::LinearTiling;
+use crate::tuning::pool_dense;
 use crate::tuning::{
     fp8_gemm::{self, prefill_choice, probe_inputs::Scope as ProbeInputsScope, select},
     projection_budget::{ProjectionKind, ProjectionShape},
@@ -55,7 +59,9 @@ impl Workspace {
             let trials = match projection.kind {
                 ProjectionKind::Fp4 => resident_gemm::search_trials(),
                 ProjectionKind::Fp8 => fp8_gemm::search_trials(),
-                ProjectionKind::Fp4Lt | ProjectionKind::Swiglu => {
+                ProjectionKind::Fp4Lt
+                | ProjectionKind::Swiglu
+                | ProjectionKind::PoolDense { .. } => {
                     return Err(Error::invariant("standalone projection kind"));
                 }
             };
@@ -88,6 +94,70 @@ impl Workspace {
         }
         for projection in &fused {
             self.prepare_swiglu(device, weights, projection)?;
+        }
+        weights.resident_tuning.report_projection_work()
+    }
+
+    /// Only actual pooled decode/verify rows enter this search, never prompt or single rows.
+    pub(crate) fn prepare_pool_dense(
+        &mut self,
+        device: &CudaDevice,
+        graph: &DataflowGraph,
+        weights: &ProgramWeights,
+        rows: usize,
+    ) -> Result<()> {
+        if rows <= 1 {
+            return Ok(());
+        }
+        let mut projections = Vec::new();
+        for node in &graph.nodes {
+            if node.op != TensorOp::Linear
+                || weights.constants.contains_key(&node.inputs[0])
+                || weights.activation_quantization(node.inputs[1]).is_some()
+            {
+                continue;
+            }
+            let Some(ProjectionWeight::Dense(weight)) = weights.projections.get(&node.inputs[1])
+            else {
+                continue;
+            };
+            let shape = [
+                rows,
+                elements(graph, node.outputs[0])?,
+                elements(graph, node.inputs[0])?,
+            ];
+            if !pool_dense::supported(shape) {
+                continue;
+            }
+            let tile = weights
+                .tiling
+                .get(&node.inputs[1])
+                .copied()
+                .unwrap_or(LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS)?);
+            let binding = pool_dense::Binding::new(weight, shape, tile);
+            if self.pool_dense_strategies.contains_key(&binding) {
+                continue;
+            }
+            weights.resident_tuning.plan_projection(
+                pool_dense::kind(tile),
+                shape,
+                pool_dense::search_trials(shape),
+            )?;
+            projections.push((node.inputs[1], shape, tile, binding));
+        }
+        for (id, shape, tile, binding) in projections {
+            let Some(ProjectionWeight::Dense(weight)) = weights.projections.get(&id) else {
+                return Err(Error::invariant("pooled dense preparation weight"));
+            };
+            let choice = pool_dense::select(
+                device,
+                weight,
+                shape,
+                tile,
+                weights.autotune,
+                &weights.resident_tuning,
+            );
+            self.pool_dense_strategies.insert(binding, choice);
         }
         weights.resident_tuning.report_projection_work()
     }

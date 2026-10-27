@@ -119,9 +119,15 @@ attention、recurrent、norm、greedy 的独立 allowance 保持原有边界。
 | pooled attention `MAX_BATCH = 4`、切分数上限 64 | `resident/attention_decode/pooled.rs`、`tuning/attention/decode.rs` | 每组 4 个槽串行；切分数已按 SM 数、KV 头数与每组槽数推导，尚未结合上下文长度 | 切分数按上下文长度推导（每份至少若干 KV 块），部分和 workspace 随之缩小，从而一次启动处理全部槽 |
 | 融合 SwiGLU tile（已接入调优） | `tuning/resident_gemm/swiglu` | 加载期按实际融合形状比较合法行/列 tile，独立缓存 | 完整 codes/scales 逐位校验，冷/暖两种状态与反向独立确认后选用；预算不足或候选失效保留原 `64×64` 基线 |
 | 稠密投影识别（已推导） | `resident/prefill_projection/dense.rs` | 从图声明的输入与权重维度识别相邻、同层、同输入的稠密投影对和小输出投影 | 不再匹配固定模型维度；录图时复核实际稠密权重、尺寸与别名，保留 vendor、稀疏和单行 logits 路径 |
-| `MAX_POOL_ROWS = CB_DECODE_SLOTS` | `resident/pool_gemv.rs` | 行数不超过 16 时走 GEMV | 由 GEMV 与分块 GEMM 的实测交叉点决定，纳入调优 |
+| pooled 稠密投影交叉点（已接入调优） | `tuning/pool_dense` | 对实际 decode/verify 行数比较逐行 GEMV、四行共享权重分块与原小 GEMM | 按设备、驱动、内核、M/N/K 与实际 GEMV tile 缓存冷/暖正反确认结果；新路径保持私有 F32 归约，只有原已使用小 GEMM 的行数允许保留该算法 |
 | resident 投影搜索预算（已推导） | `tuning/projection_budget.rs` | 按实际录图保留的 FP4/FP8 形状、候选数和独立确认轮次估算 | 同一模型跨层和 serving state 去重；耗尽时列出尚未完成的形状，保留 native 路径 |
 | 每槽保底 KV = 单槽容量 ÷ 2 | `loading/budget.rs` 的 `funded_kv_tokens` | 槽数 = KV token ÷ 4128 | 按实际请求长度分布接纳请求，而不是按固定半容量保底 |
+
+加载期只登记实际 pooled decode/verify 形状，不为此测单行或 prompt 宽度。每个新候选
+须在冷、暖缓存下都超过原路径至少 2%，并通过独立反向顺序确认；四行分块还会对
+新的实际权重执行完整逐位校验。结果随 workspace 绑定，图重放期间不搜索、不读回。
+未测量、预算耗尽或关闭调优且没有可用缓存时，才保留原有 16 行分界的兼容选择。
+此处仍限于已验收的小输出 BF16 权重族，不把算子收益外推为服务收益。
 
 
 GDN 的 wave 目标还要服从分块的资源边界：一个 verify CTA 要处理三个候选 lane，

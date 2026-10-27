@@ -16,6 +16,9 @@ use crate::tuning::fp8_gemm::Choice;
 use crate::tuning::fp8_gemm::WeightKey;
 use crate::tuning::resident_gemm::native_tile;
 
+use crate::strategy::LinearTiling;
+use crate::tuning::pool_dense::{self, Binding as PoolDenseBinding, Choice as PoolDenseChoice};
+use crate::tuning::projection_budget::ProjectionShape;
 use crate::tuning::resident_gemm::GemmConfig;
 use crate::tuning::resident_gemm::swiglu::{self, Binding as SwigluBinding};
 
@@ -49,6 +52,7 @@ pub struct Workspace {
     norm_fp4: Option<norm_fp4::Pending>,
     strategies: BTreeMap<StrategyKey, GemmConfig>,
     swiglu_strategies: BTreeMap<SwigluBinding, GemmConfig>,
+    pool_dense_strategies: BTreeMap<PoolDenseBinding, PoolDenseChoice>,
     buffers: BTreeMap<(usize, usize), Quantized>,
     fp8_strategies: BTreeMap<(WeightKey, usize, usize, usize), Choice>,
     /// Lt handle, descriptors and original weight allocations outlive every program capture.
@@ -176,7 +180,24 @@ impl Workspace {
         geometry: ProgramGeometry,
     ) -> Result<Self> {
         let widths = geometry.widths();
-        Self::new(device, graph, weights, &widths)
+        let mut workspace = Self::new(device, graph, weights, &widths)?;
+        workspace.prepare_pool_dense(device, graph, weights, geometry.verification)?;
+        Ok(workspace)
+    }
+
+    pub(crate) fn pool_dense_choice(
+        &self,
+        weight: &ProjectionWeight,
+        shape: ProjectionShape,
+        tile: LinearTiling,
+    ) -> PoolDenseChoice {
+        let ProjectionWeight::Dense(weight) = weight else {
+            return pool_dense::legacy(shape[0]);
+        };
+        self.pool_dense_strategies
+            .get(&PoolDenseBinding::new(weight, shape, tile))
+            .copied()
+            .unwrap_or_else(|| pool_dense::legacy(shape[0]))
     }
 
     pub(crate) fn ensure_width(
@@ -207,6 +228,7 @@ impl Workspace {
             norm_fp4: None,
             strategies: BTreeMap::new(),
             swiglu_strategies: BTreeMap::new(),
+            pool_dense_strategies: BTreeMap::new(),
             buffers: BTreeMap::new(),
             fp8: BTreeMap::new(),
             fp8_strategies: BTreeMap::new(),
