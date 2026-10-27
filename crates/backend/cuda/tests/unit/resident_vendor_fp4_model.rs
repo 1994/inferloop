@@ -299,3 +299,31 @@ fn live_budget_completes_uncached_down_shapes() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+#[ignore = "requires CUDA, checkpoint and frozen1025 tokens; bounded dense layout/model regression"]
+fn graph_derived_dense_preserves_short_checkpoint_bits() -> Result<()> {
+    use crate::resident::{narrow_dense_captures, with_dense_reference};
+    let (loaded, tokens) = loaded_model(AttentionProfile::Bf16, 1024, 64)?;
+    let before = narrow_dense_captures();
+    let mut candidate = loaded.sequence(2048)?;
+    let captured = narrow_dense_captures();
+    assert!(
+        captured > before,
+        "graph-identified narrow projection must actually be captured"
+    );
+    let mut reference = with_dense_reference(|| loaded.sequence(2048))?;
+    assert_eq!(
+        narrow_dense_captures(),
+        captured,
+        "reference must retain original Dense layout"
+    );
+    compare_programs(
+        &loaded,
+        &mut candidate,
+        &mut reference,
+        &tokens,
+        1024,
+        &[65, 1],
+    )
+}
