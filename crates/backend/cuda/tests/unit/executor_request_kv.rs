@@ -1,5 +1,6 @@
 use super::*;
 use crate::AttentionProfile;
+use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::{CudaDevice, asynchronous::block_on};
 use crate::loading::{LoadOptions, LoadedModel};
 use infer_core::{ModelId, RequestId, StateId};
@@ -83,7 +84,7 @@ fn request_length_pool_preserves_live_state_and_restores_after_long_request() ->
     assert!(initial.selected > 1);
     let cold = backend.kv_cache();
     assert_eq!(cold.pool_bytes, 0);
-    assert_eq!(cold.block_size, crate::constants::KV_BLOCK_TOKENS);
+    assert_eq!(cold.block_size, KV_BLOCK_TOKENS);
     backend.prepare_state_reservation(384, OutputReadout::Logits)?;
     assert!(
         backend
