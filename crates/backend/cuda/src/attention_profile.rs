@@ -3,17 +3,24 @@
 //! The profile is resolved once when the model loads and is immutable for every sequence the
 //! loaded model creates. It never changes weights, KV storage or the draft proposal path.
 use serde::Serialize;
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(all(target_os = "linux", feature = "cuda", test))]
 use std::{env::var, sync::OnceLock};
 
 /// Initial context kept on F32 before the target BF16 bulk path, by default none.
 ///
-/// Full-prompt FA4 passes the paired task-accuracy non-inferiority gate; the F32 prefix
-/// remains a diagnostic that `INFER_CUDA_ATTENTION_PRECISE_PREFIX=<positions>` restores.
+/// Full-prompt FA4 passes the paired task-accuracy non-inferiority gate. Internal CUDA
+/// tests may restore an F32 prefix; production always uses this qualified default.
 pub const PRECISE_PREFIX_POSITIONS: usize = 0;
 
-/// Resolved once per process: the prompt path consults it for every chunk.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+/// Qualified production prefix; experiments are confined to internal CUDA tests.
+#[cfg(all(target_os = "linux", feature = "cuda", not(test)))]
+#[must_use]
+pub const fn precise_prefix_positions() -> usize {
+    PRECISE_PREFIX_POSITIONS
+}
+
+/// Internal diagnostics resolve their prefix once per test process.
+#[cfg(all(target_os = "linux", feature = "cuda", test))]
 #[must_use]
 pub fn precise_prefix_positions() -> usize {
     static POSITIONS: OnceLock<usize> = OnceLock::new();
@@ -27,8 +34,8 @@ pub fn precise_prefix_positions() -> usize {
     })
 }
 
-/// Unset or unparsable values keep the default rather than guessing an operator intent.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+/// Internal diagnostics keep the default for unset or unparsable values.
+#[cfg(all(target_os = "linux", feature = "cuda", test))]
 fn precise_prefix_from(value: Option<&str>) -> usize {
     value
         .and_then(|value| value.trim().parse().ok())
@@ -38,7 +45,7 @@ fn precise_prefix_from(value: Option<&str>) -> usize {
 /// Target prefill attention arithmetic selected by the operator.
 ///
 /// `Canonical` keeps the established F32 path. `Bf16` uses FA4 BF16-QKV/F32 accumulation for
-/// target prefill, after an optional F32 prefix (`INFER_CUDA_ATTENTION_PRECISE_PREFIX`).
+/// target prefill. Only internal CUDA tests may insert a diagnostic F32 prefix.
 /// The CLI pairs it with MTP only when the package and device support both; library callers
 /// retain the canonical default. `Fp16` remains an explicit experimental SM120 profile.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -46,7 +53,7 @@ pub enum AttentionProfile {
     /// Existing canonical attention, unchanged.
     #[default]
     Canonical,
-    /// FA4 BF16 target FP8-KV prefill, after any configured canonical prefix.
+    /// FA4 BF16 target FP8-KV prefill.
     Bf16,
     /// FA4 plain-FP16 attention for validated SM120 target FP8-KV prefill; not quality-approved.
     Fp16,

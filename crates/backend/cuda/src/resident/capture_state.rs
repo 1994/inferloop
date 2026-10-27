@@ -6,18 +6,32 @@ use crate::constants::CONV_KERNEL_SIZE;
 use crate::constants::CONV_KERNEL_TILE;
 use cutile::prelude::*;
 use infer_ir::{TensorNode, TensorOp};
-use std::env::var;
+#[cfg(test)]
+use std::env::{var, var_os};
 
-/// Value-dimension blocks per head for the per-lane Delta, requested by
-/// `INFER_CUDA_RECURRENT_VALUE_SPLIT`.
-///
-/// One is the established behaviour: one block per value head, each moving the whole state. The
-/// split is read once at capture time, so a run's graphs and its report agree.
+/// The untuned per-lane path retains one block per value head.
+#[cfg(not(test))]
+const fn value_split() -> usize {
+    1
+}
+
+/// Internal tests can compare value partitions without adding a production tuning knob.
+#[cfg(test)]
 fn value_split() -> usize {
     var("INFER_CUDA_RECURRENT_VALUE_SPLIT")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(1)
+}
+
+/// Whether an internal diagnostic overrides the measured chunk-prefill choice.
+#[cfg(not(test))]
+pub(super) const fn value_split_override() -> bool {
+    false
+}
+#[cfg(test)]
+pub(super) fn value_split_override() -> bool {
+    var_os("INFER_CUDA_RECURRENT_VALUE_SPLIT").is_some()
 }
 
 /// Width of one value-dimension block, rejecting a split that does not divide the dimension.

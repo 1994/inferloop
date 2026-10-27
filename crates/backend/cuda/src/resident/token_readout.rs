@@ -4,6 +4,7 @@ use crate::device::{CudaDevice, ReadbackSource, Readbacks, device_error};
 use crate::tuning::greedy::select;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+#[cfg(test)]
 use std::env::var;
 use std::slice::from_ref;
 
@@ -41,6 +42,7 @@ impl TokenReadout {
         vocabulary: usize,
         weights: &ProgramWeights,
     ) -> Result<Option<Self>> {
+        #[cfg(test)]
         if var("INFER_CUDA_DEVICE_GREEDY").is_ok_and(|value| value == "0") {
             return Ok(None);
         }

@@ -10,6 +10,7 @@ use crate::tuning::greedy::select;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_models::mrope::ROTARY_AXES;
+#[cfg(test)]
 use std::env::var;
 
 pub(super) struct ProgramReadouts {
@@ -66,7 +67,8 @@ impl DeviceGreedy {
         if weights.fusion.is_none() || logits.size() != vocabulary {
             return Ok(None);
         }
-        // A diagnostic switch permits matched baseline/candidate runs with one binary.
+        // Internal diagnostics may compare readout paths in one test executable.
+        #[cfg(test)]
         if var("INFER_CUDA_DEVICE_GREEDY").is_ok_and(|v| v == "0") {
             return Ok(None);
         }

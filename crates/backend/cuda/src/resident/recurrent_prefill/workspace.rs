@@ -15,7 +15,6 @@ use cutile::prelude::*;
 use infer_core::{Result, TensorId};
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::collections::BTreeMap;
-use std::env::var_os;
 use std::result::Result as StdResult;
 
 #[derive(Default)]
@@ -68,7 +67,7 @@ impl Workspace {
                     let shape = [key_heads, value_heads, key_dim, lanes];
                     let selected = if key_dim == ORDERED_DIM && ORDERED_WIDTHS.contains(&lanes) {
                         Some(ORDERED_BLOCK)
-                    } else if var_os("INFER_CUDA_RECURRENT_VALUE_SPLIT").is_some() {
+                    } else if super::super::capture_state::value_split_override() {
                         Some(
                             super::super::capture_state::value_block(value_dim)
                                 .map_err(device_error)?,
