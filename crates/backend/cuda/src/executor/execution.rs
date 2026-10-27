@@ -207,7 +207,18 @@ impl CudaExecutor {
         if self.deferred_pool_plan == Some((capacity, active)) {
             return;
         }
-        self.warm_slot_pool_at(capacity);
+        let request_tokens = self
+            .states
+            .values()
+            .filter(|state| {
+                !state.poisoned
+                    && state.readout == OutputReadout::Logits
+                    && state.capacity <= capacity
+            })
+            .map(|state| state.capacity)
+            .max()
+            .unwrap_or(capacity);
+        self.warm_slot_pool_for(capacity, request_tokens);
         let Some(pool) = self.slots.as_ref() else {
             // A live private request can temporarily consume the worker's budget.
             // Retry after reservation accounting changes, rather than on every decode
@@ -310,7 +321,7 @@ impl CudaExecutor {
                 self.memory_bound = plan.memory_bound;
                 self.pool_quote = Some(plan.quote);
                 self.pool_envelope = funding;
-                self.reclaimed_slot_capacity = None;
+                self.pool_retry = None;
                 self.deferred_pool_plan = None;
                 self.slots_disabled = false;
                 self.pool_failure_reason = None;

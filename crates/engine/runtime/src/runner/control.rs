@@ -17,7 +17,12 @@ where
         self.recipe.as_ref()
     }
     fn execution_profile(&self) -> Option<infer_ir::ExecutionProfileInspection> {
-        self.execution_profile.clone()
+        self.shared.snapshot().ok().and_then(|snapshot| {
+            snapshot
+                .execution_profile
+                .as_ref()
+                .map(|profile| profile.as_ref().clone())
+        })
     }
     fn recycle_output(&mut self, state: StateId, output: infer_ir::ModelOutput) -> Result<()> {
         self.recycle(super::Recycled::Output(state, output))

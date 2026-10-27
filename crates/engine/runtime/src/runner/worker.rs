@@ -27,6 +27,7 @@ struct Flight<T> {
 }
 pub(super) struct Worker<B: BackendProvider> {
     pub backend: B,
+    execution_profile: Option<Arc<infer_ir::ExecutionProfileInspection>>,
     pub states: BoundedSet<StateId>,
     program: Arc<ExecutionProgram>,
     pub shared: Arc<Shared>,
@@ -49,8 +50,10 @@ impl<B: BackendProvider> Worker<B> {
         states: BoundedSet<StateId>,
     ) -> Self {
         let config = shared.config;
+        let execution_profile = backend.execution_profile().map(Arc::new);
         Self {
             backend,
+            execution_profile,
             states,
             program,
             shared,
@@ -103,6 +106,15 @@ impl<B: BackendProvider> Worker<B> {
         self.refresh();
         self
     }
+    /// Fetch owned diagnostic strings only after control-plane changes. Decode snapshots
+    /// share this immutable Arc and never allocate another profile per token.
+    fn refresh_profile(&mut self) {
+        let profile = self.backend.execution_profile();
+        if self.execution_profile.as_deref() != profile.as_ref() {
+            self.execution_profile = profile.map(Arc::new);
+        }
+    }
+
     pub fn refresh(&mut self) {
         let Some(pool) = &mut self.snapshots else {
             return;
@@ -119,6 +131,9 @@ impl<B: BackendProvider> Worker<B> {
             snapshot.free_bytes = self.backend.free_state_bytes()?;
             snapshot.state_capacity_bytes = self.backend.state_capacity_bytes()?;
             snapshot.kv = self.backend.kv_cache();
+            snapshot
+                .execution_profile
+                .clone_from(&self.execution_profile);
             snapshot.growth.clear();
             snapshot.prefill.clear();
             for state in self.states.iter() {
@@ -138,7 +153,8 @@ impl<B: BackendProvider> Worker<B> {
                     if let Some(snapshot) = Arc::get_mut(&mut pool[index]) {
                         snapshot.error.clone_from(&published.error);
                     }
-                    let changed = published.free_bytes != pool[index].free_bytes
+                    let changed = published.execution_profile != pool[index].execution_profile
+                        || published.free_bytes != pool[index].free_bytes
                         || published.state_capacity_bytes != pool[index].state_capacity_bytes
                         || published.growth != pool[index].growth
                         || published.prefill != pool[index].prefill
@@ -200,6 +216,7 @@ impl<B: BackendProvider> Worker<B> {
             }
         }
         if drained {
+            self.refresh_profile();
             self.refresh();
         }
     }
@@ -231,6 +248,7 @@ impl<B: BackendProvider> Worker<B> {
                     self.fail(error);
                 }
                 if changes_state {
+                    self.refresh_profile();
                     self.refresh();
                 }
                 let _ = reply.send(result);
@@ -254,6 +272,7 @@ impl<B: BackendProvider> Worker<B> {
                         }
                     }
                 }
+                self.refresh_profile();
                 self.refresh();
             }
         }

@@ -61,9 +61,10 @@ pub(super) struct CudaExecutor {
     /// `None` with `slots_disabled` means initialization failed and decode stays serial.
     slots: Option<SlotPool>,
     draft_slots: Option<SlotPool>,
-    /// Geometry of an idle pool evicted for a long request. Restore it before
-    /// pricing the next compatible request, so short batches keep pooled admission.
-    reclaimed_slot_capacity: Option<usize>,
+    /// A rejected concurrent reservation may bootstrap a pool when that same
+    /// intent retries after the solo private request drains. A different intent
+    /// clears the hint, so cancellation cannot force an unrelated pool capture.
+    pool_retry: Option<StateId>,
     slots_disabled: bool,
     deferred_pool_plan: Option<(usize, u64)>,
     /// Reason the last pool attempt failed, reported when batching is given up for good.
@@ -274,7 +275,7 @@ impl CudaExecutor {
             homes: Vec::new(),
             slots: None,
             draft_slots: None,
-            reclaimed_slot_capacity: None,
+            pool_retry: None,
             slots_disabled: false,
             deferred_pool_plan: None,
             pool_failure_reason: None,

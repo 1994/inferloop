@@ -1,8 +1,8 @@
 //! Select physical serving resources from real request lengths at idle boundaries.
 use super::CudaExecutor;
-use crate::constants::{CB_SLOT_TOKENS, MAX_POOL_SLOTS};
+use crate::constants::{CB_SLOT_TOKENS, KV_BLOCK_TOKENS, MAX_POOL_SLOTS};
 use crate::executor::execution::pooled_envelope;
-use infer_core::{Error, ErrorCode, Result};
+use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::OutputReadout;
 
 impl CudaExecutor {
@@ -41,6 +41,7 @@ impl CudaExecutor {
     /// Reservation owns the incoming request. Quotes and live requests never recapture.
     pub(super) fn resolve_request_pool(
         &mut self,
+        id: StateId,
         tokens: usize,
         readout: OutputReadout,
     ) -> Result<()> {
@@ -49,11 +50,25 @@ impl CudaExecutor {
             || tokens > capacity
             || self.maximum_states < 2
             || self.roofline_bound == Some(1)
-            || !self.pool_is_idle()
         {
             return Ok(());
         }
         self.idle()?;
+        if self.defer_solo_pool(id)? || !self.pool_is_idle() {
+            return Ok(());
+        }
+        // A shorter request does not justify rebuilding a working pool. Retain the
+        // current width whenever its actual physical pages can fund that demand.
+        if self.slots.as_ref().is_some_and(|pool| {
+            let (pages, _) = pool.kv_pages();
+            tokens <= pool.capacity()
+                && pool
+                    .width()
+                    .saturating_mul(tokens.div_ceil(KV_BLOCK_TOKENS))
+                    <= pages
+        }) {
+            return Ok(());
+        }
         let maximum = self.maximum_states.min(MAX_POOL_SLOTS);
         // An accepted pool's envelope remains an upper bound for the idle replacement.
         // Actual free memory is measured again after retirement, before any allocation.
@@ -88,6 +103,32 @@ impl CudaExecutor {
             ));
         }
         Ok(())
+    }
+
+    /// A solo request uses a reusable private program. Only a previously observed
+    /// concurrent reservation may pay for pool capture once that solo state drains.
+    fn defer_solo_pool(&mut self, id: StateId) -> Result<bool> {
+        if self.slots.is_some() {
+            return Ok(false);
+        }
+        if self.states.is_empty() {
+            return Ok(self.pool_retry.take().is_none_or(|waiting| waiting != id));
+        }
+        if self.states.len() == 1
+            && self.states.values().all(|state| {
+                state.readout == OutputReadout::Logits
+                    && state.capacity <= CB_SLOT_TOKENS
+                    && state.media.is_none()
+            })
+        {
+            self.pool_retry.get_or_insert(id);
+            return Err(Error::new(
+                ErrorCode::Capacity,
+                "concurrent request waits for the solo state before pooled capture",
+            ));
+        }
+        // Incompatible private states retain the existing funded lazy batching path.
+        Ok(true)
     }
 
     fn pool_is_idle(&self) -> bool {

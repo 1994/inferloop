@@ -121,13 +121,15 @@ attention、recurrent、norm、greedy 的独立 allowance 保持原有边界。
 | 稠密投影识别（已推导） | `resident/prefill_projection/dense.rs` | 从图声明的输入与权重维度识别相邻、同层、同输入的稠密投影对和小输出投影 | 不再匹配固定模型维度；录图时复核实际稠密权重、尺寸与别名，保留 vendor、稀疏和单行 logits 路径 |
 | pooled 稠密投影交叉点（已接入调优） | `tuning/pool_dense` | 对实际 decode/verify 行数比较逐行 GEMV、四行共享权重分块与原小 GEMM | 按设备、驱动、内核、M/N/K 与实际 GEMV tile 缓存冷/暖正反确认结果；新路径保持私有 F32 归约，只有原已使用小 GEMM 的行数允许保留该算法 |
 | resident 投影搜索预算（已推导） | `tuning/projection_budget.rs` | 按实际录图保留的 FP4/FP8 形状、候选数和独立确认轮次估算 | 同一模型跨层和 serving state 去重；耗尽时列出尚未完成的形状，保留 native 路径 |
-| 每槽半容量 KV 保底（已删除） | `loading/budget.rs`、`executor/admission_pool.rs` | 每请求按实际 prompt + 最大输出长度向上取整到页；保留一个完整上下文的隔离能力 | 冷启动纯报价，reservation 按实际长度选择计划；只在无活动状态、所有 lease 归还后调整实体池 |
+| 每槽半容量 KV 保底（已删除） | `loading/budget.rs`、`executor/admission_pool.rs` | 每请求按实际 prompt + 最大输出长度向上取整到页；保留一个完整上下文的隔离能力 | 冷启动纯报价，单请求复用私有图；实际并发重试时按长度选择计划，只在无活动状态且 lease 全归还后调整实体池 |
 
 CUDA 默认并发按两个界限推导。N_mem 通过现有完整 serving 报价求最大可资助宽度，
 包括 target/draft pool、worker、slot home、workspace、KV 与 driver headroom。
 每槽固定半容量保底已删除；KV 需求由实际 prompt + 最大输出长度逐页取整。
 冷启动的并发是完整报价可资助的上限，实体 worker 尚不存在时不报告其宽度。
-首次 reservation 及后续空闲边界再按实际请求需求选择池；活动状态、lease 或 flight
+单请求先复用私有图；观察到实际并发等待后，等待该私有状态释放，再按重试请求需求选择池。
+已有池的物理页足以支持当前宽度时直接复用，不为更短的请求扩大图。
+后续需要调整计划时仍仅在空闲边界执行；活动状态、lease 或 flight
 存在时不重建。运行时的初始并发仍是上限，实体槽或物理页不足的请求等待资源归还。
 N_knee 用实际线性图的
 权重/scale 字节、参数数、计算格式、设备 SM/时钟/带宽及每序列验证行数估算。

@@ -93,6 +93,73 @@ fn check_cold_quote(backend: &mut CudaExecutor) -> Result<usize> {
     Ok(initial.selected)
 }
 
+fn bootstrap_short_pool(backend: &mut CudaExecutor) -> Result<()> {
+    let solo = StateId::ONE;
+    let canceled = StateId::new(2)?;
+    backend.reserve_state_for(solo, 384, OutputReadout::Logits)?;
+    assert!(backend.slots.is_none() && backend.states[&solo].home.is_none());
+    let prompt = TokenBuffer::from(vec![1, 2]);
+    step(
+        backend,
+        solo,
+        ExecutionInput::Prefill {
+            span: prompt.span(0..prompt.len())?,
+            readout: OutputReadout::Logits,
+        },
+    )?;
+    let before = committed_state(backend, solo)?;
+    let error = backend
+        .reserve_state_for(canceled, 384, OutputReadout::Logits)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Capacity);
+    assert_eq!(committed_state(backend, solo)?, before);
+    backend.release_state(solo)?;
+    // The canceled intent never retries. An unrelated solo request must stay private.
+    let unrelated = StateId::new(3)?;
+    let waiting = StateId::new(4)?;
+    backend.reserve_state_for(unrelated, 384, OutputReadout::Logits)?;
+    assert!(backend.slots.is_none());
+    backend.prepare_execution()?;
+    let error = backend
+        .reserve_state_for(waiting, 384, OutputReadout::Logits)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Capacity);
+    backend.release_state(unrelated)?;
+    backend.reserve_state_for(waiting, 384, OutputReadout::Logits)?;
+    assert!(backend.slots.is_some() && backend.states[&waiting].home.is_some());
+    backend.release_state(waiting)?;
+    Ok(())
+}
+
+fn restore_after_private(backend: &mut CudaExecutor) -> Result<usize> {
+    let solo = StateId::ONE;
+    let waiting = StateId::new(2)?;
+    backend.prepare_state_reservation(CB_SLOT_TOKENS + 1, OutputReadout::Logits)?;
+    assert!(backend.slots.is_none());
+    backend.reserve_state_for(waiting, CB_SLOT_TOKENS + 1, OutputReadout::Logits)?;
+    assert!(backend.states[&waiting].home.is_none());
+    backend.release_state(waiting)?;
+    backend.prepare_state_reservation(384, OutputReadout::Logits)?;
+    assert!(
+        backend.slots.is_none(),
+        "restore happened in the quote phase"
+    );
+    backend.reserve_state_for(solo, 384, OutputReadout::Logits)?;
+    assert!(backend.slots.is_none());
+    let error = backend
+        .reserve_state_for(waiting, 384, OutputReadout::Logits)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Capacity);
+    backend.release_state(solo)?;
+    backend.reserve_state_for(waiting, 384, OutputReadout::Logits)?;
+    let restored = backend.slots.as_ref().unwrap().width();
+    assert!(backend.states[&waiting].home.is_some());
+    backend.release_state(waiting)?;
+    let (total, free) = backend.slots.as_ref().unwrap().kv_pages();
+    assert_eq!(total, free);
+    Ok(restored)
+}
+
 /// Exercise the real owner-facing reservation path and complete live-state readbacks.
 #[test]
 #[ignore = "real CUDA/MTP2 checkpoint; run under safe-run with an explicit fixture"]
@@ -101,6 +168,7 @@ fn request_length_pool_preserves_live_state_and_restores_after_long_request() ->
     let short = StateId::ONE;
     let long = StateId::new(2)?;
     let initial = check_cold_quote(&mut backend)?;
+    bootstrap_short_pool(&mut backend)?;
     backend.reserve_state_for(short, 384, OutputReadout::Logits)?;
     let short_width = backend.slots.as_ref().unwrap().width();
     let (physical, free) = backend.slots.as_ref().unwrap().kv_pages();
@@ -149,22 +217,15 @@ fn request_length_pool_preserves_live_state_and_restores_after_long_request() ->
     let long_width = backend.slots.as_ref().unwrap().width();
     assert!(long_width <= short_width);
     backend.release_state(long)?;
-    backend.prepare_state_reservation(CB_SLOT_TOKENS + 1, OutputReadout::Logits)?;
-    assert!(backend.slots.is_none());
-    backend.reserve_state_for(long, CB_SLOT_TOKENS + 1, OutputReadout::Logits)?;
-    assert!(backend.states[&long].home.is_none());
-    backend.release_state(long)?;
-    backend.prepare_state_reservation(384, OutputReadout::Logits)?;
-    assert!(
-        backend.slots.is_none(),
-        "restore happened in the quote phase"
-    );
+    let leases = backend.slots.as_ref().unwrap().lease_counters().0;
     backend.reserve_state_for(short, 384, OutputReadout::Logits)?;
-    let restored = backend.slots.as_ref().unwrap().width();
-    assert!(backend.states[&short].home.is_some());
+    assert_eq!(backend.slots.as_ref().unwrap().width(), long_width);
+    assert_eq!(
+        backend.slots.as_ref().unwrap().lease_counters().0,
+        leases + 1
+    );
     backend.release_state(short)?;
-    let (total, free) = backend.slots.as_ref().unwrap().kv_pages();
-    assert_eq!(total, free);
+    let restored = restore_after_private(&mut backend)?;
     println!(
         "request KV widths: initial={initial}, short={short_width}, long={long_width}, restored={restored}"
     );

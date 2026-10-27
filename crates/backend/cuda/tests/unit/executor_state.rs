@@ -1,4 +1,5 @@
 use super::private_funding;
+use infer_core::ErrorCode;
 
 #[test]
 fn private_request_cannot_be_admitted_without_its_shared_workspace() {
@@ -65,7 +66,6 @@ fn quotes_do_not_recapture_a_retired_pool_and_reservation_restores_it() -> infer
     assert!(backend.slots.is_some());
     backend.prepare_state_reservation(CB_SLOT_TOKENS + 1, OutputReadout::Logits)?;
     assert!(backend.slots.is_none());
-    assert_eq!(backend.reclaimed_slot_capacity, Some(CB_SLOT_TOKENS));
     backend.prepare_state_reservation(512, OutputReadout::Logits)?;
     let quoted = backend
         .state_reservation_bytes_for(512, OutputReadout::Logits)?
@@ -77,10 +77,18 @@ fn quotes_do_not_recapture_a_retired_pool_and_reservation_restores_it() -> infer
     );
     assert!(backend.homes.is_empty() && backend.worker.is_none());
     backend.reserve_state_for(StateId::ONE, 512, OutputReadout::Logits)?;
-    assert!(backend.slots.is_some() && backend.worker.is_some());
-    assert!(backend.states[&StateId::ONE].home.is_some());
-    assert_eq!(backend.states[&StateId::ONE].budget, 0);
-    assert!(!backend.slots_disabled);
+    assert!(backend.slots.is_none());
+    let waiting = StateId::new(2)?;
+    let error = backend
+        .reserve_state_for(waiting, 512, OutputReadout::Logits)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Capacity);
     backend.release_state(StateId::ONE)?;
+    backend.reserve_state_for(waiting, 512, OutputReadout::Logits)?;
+    assert!(backend.slots.is_some() && backend.worker.is_some());
+    assert!(backend.states[&waiting].home.is_some());
+    assert_eq!(backend.states[&waiting].budget, 0);
+    assert!(!backend.slots_disabled);
+    backend.release_state(waiting)?;
     Ok(())
 }

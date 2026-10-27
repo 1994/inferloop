@@ -81,7 +81,12 @@ CUDA provider 已接入 CLI/HTTP，执行设备驻留图、状态/图复用、�
 
 
 CUDA 的请求长度接纳在异步 reservation 中选择实体 serving 计划：启动期可以先报告完整
-报价支持的并发上限，此时 `pooled_prefill_width` 缺失；实际捕获后才报告 worker
+报价支持的并发上限，此时 `pooled_prefill_width` 缺失；单请求复用私有图，实际并发重试后才建立共享池并报告 worker
 宽度和实体槽数。普通资源 quote 不捕获图，活动状态、slot lease 或设备 flight 未完成时
 不重建池。已保留的请求 KV 页覆盖实际 prompt + 最大输出长度，物理空闲页与逻辑
 上下文容量分别统计；超出共享池容量的私有请求保留独立报价和回收路径。
+
+
+线程 owner 在资源控制变更后获取执行配置，并随已有不可变 snapshot 发布。
+decode 只共享配置 Arc，不逐 token 克隆诊断字符串；资源确认返回前，配置读回与当前
+backend 保持一致。实际物理页已经满足请求时复用池，避免更短的单请求触发扩大图。
