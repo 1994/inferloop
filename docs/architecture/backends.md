@@ -27,6 +27,12 @@ Runtime 通过静态 BackendProvider 协调资源与 ticket。具体设备 buffe
 选择索引，并实现 `PrefixReuse<V>` 获取 lease 或恢复设备快照；无需复制公共流程。
 CUDA 的连续/FP8/target/draft 快照与 Metal 的共享页保留各自布局和完成协议，见 [KV 合约](kv-manager.md)。
 
+backend 可通过 ExecutionProfileInspection.concurrency 发布加载期的显存界限、
+计算/带宽拐点和实际选定宽度。runtime 先保留完成协议容量作为请求上限，再在创建
+scheduler workspace 与主机完成缓冲前应用 backend 建议和较小的显式上限。
+CUDA 仅在完整 pool capture 通过预算校验后发布该选择；未知计算吞吐不伪造拐点，
+仍保留显存与协议约束。未报告建议的 backend 不具有自动并发最优性保证。
+
 ## CUDA resident 准入
 
 CUDA capture、projection workspace 与新建序列报价共用 ProgramGeometry：verification 和 wide/narrow prompt 各自记录实际捕获行数。省略宽 prompt 图的 pooled 程序只计入窄图的 activation arena；external/fusion 配置缓冲仍按实际分配上界计费。prefill 需要 verification fallback 时保留相应报价。

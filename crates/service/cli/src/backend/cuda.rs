@@ -120,8 +120,14 @@ fn load_once(
         elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         "model loaded"
     );
-    let backend = resident_backend(loaded, state_budget, maximum_states, *automatic_fast)
-        .map_err(|error| load_failure(&error, budget, selection))?;
+    let backend = resident_backend(
+        loaded,
+        state_budget,
+        maximum_states,
+        *automatic_fast,
+        selection.max_num_seqs.is_none(),
+    )
+    .map_err(|error| load_failure(&error, budget, selection))?;
     Ok(SelectedBackend::Cuda(Box::new(backend)))
 }
 
@@ -131,9 +137,19 @@ fn resident_backend(
     budget: u64,
     maximum: usize,
     require_pool: bool,
+    automatic_concurrency: bool,
 ) -> Result<CudaBackend> {
-    let backend = CudaBackend::new(loaded, budget, maximum)?;
-    if require_pool && backend.execution_profile().pooled_prefill_width.is_none() {
+    let backend = if automatic_concurrency {
+        CudaBackend::new_automatic(loaded, budget, maximum)?
+    } else {
+        CudaBackend::new(loaded, budget, maximum)?
+    };
+    let profile = backend.execution_profile();
+    let serial_roofline = profile
+        .concurrency
+        .as_ref()
+        .is_some_and(|limit| limit.roofline_bound == Some(1));
+    if require_pool && profile.pooled_prefill_width.is_none() && !serial_roofline {
         return Err(Error::new(
             infer_core::ErrorCode::Capacity,
             "automatic fast execution could not fund a complete pooled serving plan",

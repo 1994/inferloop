@@ -15,7 +15,8 @@ pub use dataflow::{
     BufferLifetime, DataflowGraph, TensorNode, TensorOp, TensorSpec, TensorStorage,
 };
 pub use diagnostics::{
-    ExecutionProfileInspection, ExecutionStats, KvCacheInspection, LayerProbe, OpTrace,
+    ConcurrencyInspection, ExecutionProfileInspection, ExecutionStats, KvCacheInspection,
+    LayerProbe, OpTrace,
 };
 pub use execution::{
     CompiledOp, CostEstimate, DecisionWindow, DeferReason, DeferredWork, ExecutionIr,

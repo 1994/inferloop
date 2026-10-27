@@ -814,3 +814,31 @@ fn continuous_calibration_covers_the_queue_and_resumes_its_checkpoint_cursor() -
     assert!(Engine::restore(backend(), &registry(), corrupted).is_err());
     Ok(())
 }
+
+#[test]
+fn cold_backend_concurrency_reaches_engine_before_resources_are_sized() {
+    let ir = support::model(ModelId::ONE);
+    let profile: ExecutionProfileInspection = serde_json::from_value(serde_json::json!({
+        "prefill_width":64,"batch_width":1,"draft_depth":0,"automatic_prefill":true,
+        "arena_budget_bytes":1,"concurrency":{"memory_bound":48,"roofline_bound":32,"selected":32}
+    }))
+    .unwrap();
+    let backend = ProtocolBackend::new(64, 32, &ir)
+        .unwrap()
+        .with_profile(profile);
+    let mut e = Engine::new(
+        backend,
+        ir,
+        PrecisionPlan::f32(),
+        &registry(),
+        RuntimeConfig::default(),
+    )
+    .unwrap();
+    assert_eq!(e.config().max_num_seqs, 32);
+    for id in 1..=32 {
+        e.submit(request(id, 1)).unwrap();
+    }
+    finish(&mut e, 0);
+    assert_eq!(e.inspect().active_requests, 0);
+    e.check_invariants().unwrap();
+}

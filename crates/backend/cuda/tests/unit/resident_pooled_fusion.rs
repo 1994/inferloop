@@ -11,6 +11,14 @@ use std::env::var;
 #[test]
 #[ignore = "requires CUDA and INFER_TEST_MODEL; run release inside safe-run"]
 fn pooled_fusion_preserves_checkpoint_model_bits() -> Result<()> {
+    let loaded = checkpoint_fixture()?;
+    for width in [2, 5, 16] {
+        compare_pool(&loaded, width)?;
+    }
+    Ok(())
+}
+
+fn checkpoint_fixture() -> Result<LoadedModel> {
     CudaDevice::enable_kernel_cache()?;
     let path = var("INFER_TEST_MODEL").map_err(|error| Error::invalid(error.to_string()))?;
     let loaded = LoadedModel::open(
@@ -27,7 +35,21 @@ fn pooled_fusion_preserves_checkpoint_model_bits() -> Result<()> {
         },
     )?;
     assert_eq!(loaded.model().hidden_size, 5120);
-    for width in [2, 5, 16] {
+    Ok(loaded)
+}
+#[test]
+#[ignore = "CUDA/checkpoint/safe-run; extended draft pool complete output/state bits and reuse"]
+fn extended_concurrency_preserves_checkpoint_draft_states() -> Result<()> {
+    let loaded = checkpoint_fixture()?;
+    let bound = loaded
+        .concurrency_roofline()?
+        .ok_or_else(|| Error::invariant("checkpoint roofline absent"))?;
+    assert!(bound > 0);
+    println!(
+        "{}",
+        serde_json::json!({"checkpoint_roofline_bound":bound,"extended_slots":[17,32,64]})
+    );
+    for width in [17, 32, 64] {
         compare_pool(&loaded, width)?;
     }
     Ok(())
@@ -40,8 +62,8 @@ fn compare_pool(loaded: &LoadedModel, width: usize) -> Result<()> {
         .ok_or_else(|| Error::invariant("checkpoint draft pool missing"))?;
     assert_eq!(
         captures() - before,
-        2,
-        "full and state-only graphs must use batched FC"
+        if super::pooled(width) { 2 } else { 0 },
+        "qualified fusion or original row captures must match the actual pool geometry"
     );
     let before = captures();
     let mut reference = with_row_reference(|| loaded.draft_slot_pool(width, 64))?

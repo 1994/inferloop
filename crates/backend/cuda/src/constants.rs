@@ -125,13 +125,11 @@ mod device {
     pub const CONV_KERNEL_TILE: usize = 128;
     /// Hidden size bound for resident programs.
     pub const MAX_HIDDEN_SIZE: usize = 32768;
-    /// Maximum shared decode slots. Independent of the per-sequence draft depth;
-    /// the batched projection kernels handle row tails and reuse weights across slots.
-    ///
-    /// Maximum concurrent state sets in a shared decode/verification pool. Memory admission
-    /// backs off to a narrower pool when its graphs, states and serving reserve do not fit.
-    /// Verification rows are slot count times the configured per-sequence candidate width.
+    /// Legacy normalization and exact-projection reference geometry. This is not the
+    /// automatic serving concurrency; retain its arithmetic for compatibility.
     pub const CB_DECODE_SLOTS: usize = 16;
+    /// Shared pools cannot exceed the protocol's completion-cell capacity.
+    pub const MAX_POOL_SLOTS: usize = infer_gpu_api::MAX_SUBMISSION_BATCH;
     /// Token rows in each slot's KV cache. Sequences admitted above this stay on the
     /// per-sequence serial path. The pool is captured at load time, so this allocation
     /// (fp8 KV per slot per token) competes with the sequences it must coexist with:

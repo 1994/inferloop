@@ -50,6 +50,9 @@ pub struct ExecutionStats {
 /// geometry and speculation depth actually ran instead of restating the request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionProfileInspection {
+    /// Backend-resolved cold-start concurrency; absent for opaque compatibility providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<ConcurrencyInspection>,
     /// Default prompt chunk width for private programs. A pooled worker may split it
     /// into smaller captured replays without changing long-context scheduling.
     pub prefill_width: usize,
@@ -91,4 +94,15 @@ pub struct KvCacheInspection {
     pub cow_copies: u64,
     pub cache_evictions: u64,
     pub reused_tokens: u64,
+}
+
+/// A backend's load-time serving bounds, before the operator's runtime cap is applied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConcurrencyInspection {
+    /// Largest pool the complete serving memory quote can fund.
+    pub memory_bound: usize,
+    /// Estimated compute/bandwidth crossover; absent when architecture facts are unavailable.
+    pub roofline_bound: Option<usize>,
+    /// Actually selected pooled width, or one for serial/private execution.
+    pub selected: usize,
 }

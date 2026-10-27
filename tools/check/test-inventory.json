@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 389
+      "tests": 396
     },
     "frontdoor": {
       "benches": 0,
@@ -82,7 +82,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 89
+      "tests": 94
     },
     "scheduler": {
       "benches": 0,
@@ -155,8 +155,11 @@
     "CUDA release and protected runner": 2,
     "CUDA release, protected runner; GDN complete output/state and original-tile performance comparison": 1,
     "CUDA release; actual graph-role capture, full Dense/scalar comparison, bounded operator timing": 1,
+    "CUDA release; extended slots, complete scalar reference and committed states": 1,
     "CUDA release; original scalar tolerance and split error bounds, then bounded performance screen": 1,
     "CUDA/checkpoint/frozen511tokens/safe-run; INFER_CUDA_ATTENTION_PRECISE_PREFIX=2048": 1,
+    "CUDA/checkpoint/safe-run; extended draft pool complete output/state bits and reuse": 1,
+    "CUDA/safe-run; short bounded context, extended slot groups, full output/cache bytes": 1,
     "actual 27B checkpoint, CUDA release and protected runner": 1,
     "actual 27B checkpoint, CUDA, release and protected runner": 1,
     "opt-in projection-only shape A/B with real checkpoint and CUDA; run inside safe-run": 1,
@@ -230,6 +233,7 @@
     "requires CUDA/safe-run; combined KV graph ownership and exclusive access": 1,
     "requires CUDA/safe-run; complete F64/bitwise and short/long cold/warm AB/BA gates": 2,
     "requires CUDA/safe-run; complete pipeline cold/warm AB/BA with pre/post bits": 1,
+    "requires CUDA/safe-run; complete private/pool state at extended protocol widths": 1,
     "requires CUDA/safe-run; exact finite row max and quantizer cost": 1,
     "requires CUDA/safe-run; exhaustive codes and full bits/F64 before any timing": 1,
     "requires CUDA/safe-run; full original F32 state/output and independent F64": 1,
@@ -368,6 +372,11 @@
       "crate": "cuda",
       "file": "src/loading/budget.rs",
       "mount": "../../tests/unit/loading_budget.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/loading/concurrency.rs",
+      "mount": "../../tests/unit/loading_concurrency.rs"
     },
     {
       "crate": "cuda",
@@ -941,6 +950,11 @@
     },
     {
       "crate": "runtime",
+      "file": "src/config.rs",
+      "mount": "../tests/unit/config_concurrency.rs"
+    },
+    {
+      "crate": "runtime",
       "file": "src/cpu/plans.rs",
       "mount": "../../tests/unit/cpu_plans.rs"
     },
@@ -1336,11 +1350,11 @@
     }
   ],
   "totals": {
-    "all": 954,
+    "all": 966,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 954
+    "tests": 966
   }
 }

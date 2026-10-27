@@ -1,6 +1,6 @@
 use super::{CachedMedia, CudaExecutor, ModelOutput, Sequence, SlotLease, Speculation, prefix};
-use crate::constants::CB_DECODE_SLOTS;
 use crate::constants::CB_SLOT_TOKENS;
+use crate::constants::MAX_POOL_SLOTS;
 use crate::constants::MIB;
 use crate::constants::MTP_KV_OFFSET;
 use crate::constants::PREFILL_LANES;
@@ -84,6 +84,7 @@ async fn cacheable_prefix(
 /// All storage needed before publishing a load-time pooled serving geometry.
 struct PoolPlan {
     quote: PooledServingQuote,
+    memory_bound: usize,
 }
 
 impl CudaExecutor {
@@ -253,7 +254,7 @@ impl CudaExecutor {
         if self.maximum_states < 2 {
             return;
         }
-        let maximum = self.maximum_states.min(CB_DECODE_SLOTS);
+        let maximum = self.maximum_states.min(MAX_POOL_SLOTS);
         let (envelope, baseline) = match self.loaded.shared_scratch_bytes().and_then(|scratch| {
             let physical = self.physical_available()?;
             Ok((
@@ -267,6 +268,9 @@ impl CudaExecutor {
                 return;
             }
         };
+        if self.serial_roofline(capacity, maximum, envelope) {
+            return;
+        }
         let mut funding = envelope;
         // Capture can materialize driver/graph storage absent from tensor quotes.
         // Retry against a smaller quote, never against a larger serving envelope.
@@ -305,6 +309,7 @@ impl CudaExecutor {
                     None,
                     None,
                 );
+                self.memory_bound = plan.memory_bound;
                 self.reclaimed_slot_capacity = None;
                 self.deferred_pool_plan = None;
                 self.slots_disabled = false;
@@ -327,6 +332,20 @@ impl CudaExecutor {
                 "pooled CUDA capture exceeded budget; replanning before publication");
         }
         self.slots_disabled = true;
+    }
+
+    fn serial_roofline(&mut self, capacity: usize, maximum: usize, envelope: u64) -> bool {
+        if self.roofline_bound != Some(1) {
+            return false;
+        }
+        match self.memory_plan(capacity, maximum, envelope) {
+            Ok(plan) => self.memory_bound = plan.map_or(1, |plan| plan.quote.width),
+            Err(error) => {
+                self.pool_failure_reason = Some(error.to_string());
+                tracing::warn!(target:"infer::executor",%error,"serial roofline memory quote unavailable");
+            }
+        }
+        true
     }
 
     fn reject_pool_capture(
@@ -442,6 +461,25 @@ impl CudaExecutor {
         maximum: usize,
         envelope: u64,
     ) -> Result<Option<PoolPlan>> {
+        let Some(plan) = self.memory_plan(capacity, maximum, envelope)? else {
+            return Ok(None);
+        };
+        let selected = self.roofline_bound.unwrap_or(maximum).min(plan.quote.width);
+        if selected == plan.quote.width {
+            return Ok(Some(plan));
+        }
+        let Some(mut narrower) = self.memory_plan(capacity, selected, envelope)? else {
+            return Ok(None);
+        };
+        narrower.memory_bound = plan.memory_bound;
+        Ok(Some(narrower))
+    }
+    fn memory_plan(
+        &self,
+        capacity: usize,
+        maximum: usize,
+        envelope: u64,
+    ) -> Result<Option<PoolPlan>> {
         let configured = self.loaded.pooled_prompt_width();
         // Preserve wide-prompt throughput: at most one halving, and never cross the
         // established 1024-row worker floor. Deeper shrinking saves memory but adds replays.
@@ -456,7 +494,10 @@ impl CudaExecutor {
                     prompt_width,
                     envelope,
                 )? {
-                    return Ok(Some(PoolPlan { quote }));
+                    return Ok(Some(PoolPlan {
+                        quote,
+                        memory_bound: width,
+                    }));
                 }
                 if prompt_width <= minimum_prompt {
                     break;

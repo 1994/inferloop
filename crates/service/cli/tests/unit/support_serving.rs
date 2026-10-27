@@ -31,6 +31,7 @@ fn cuda_round_preserves_a_larger_budget_and_single_sequence_geometry() {
 #[test]
 fn pooled_worker_reporting_does_not_reduce_private_prompt_chunks() {
     let profile = infer_ir::ExecutionProfileInspection {
+        concurrency: None,
         prefill_width: 2048,
         pooled_prefill_width: Some(1024),
         batch_width: 3,

@@ -60,6 +60,8 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         config: RuntimeConfig,
         policy: P,
     ) -> Result<Self> {
+        let mut config = config;
+        config.resolve_concurrency(backend.execution_profile().as_ref())?;
         config.validate()?;
         // Resolve the deployment length contract before any resource is planned, so every entry
         // point, the workload plan and capacity planning share one set of numbers.

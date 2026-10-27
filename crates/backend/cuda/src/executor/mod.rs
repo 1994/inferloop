@@ -36,6 +36,8 @@ pub(super) struct CudaExecutor {
     states: BTreeMap<StateId, Sequence>,
     budget: u64,
     maximum_states: usize,
+    roofline_bound: Option<usize>,
+    memory_bound: usize,
     pool: pool::StatePool,
     prefix: prefix::PrefixCache,
     /// KV bytes one 32-token block of the target graph occupies; the physical page price the
@@ -165,6 +167,11 @@ impl CudaExecutor {
     #[must_use]
     pub fn execution_profile(&self) -> infer_ir::ExecutionProfileInspection {
         let mut profile = self.loaded.execution_profile();
+        profile.concurrency = Some(infer_ir::ConcurrencyInspection {
+            memory_bound: self.memory_bound,
+            roofline_bound: self.roofline_bound,
+            selected: self.slots.as_ref().map_or(1, SlotPool::width),
+        });
         profile.pooled_prefill_width = self
             .worker
             .as_ref()
@@ -175,6 +182,22 @@ impl CudaExecutor {
     /// # Errors
     /// Rejects an empty state limit/budget or unavailable device attributes.
     pub fn new(loaded: LoadedModel, state_budget: u64, maximum_states: usize) -> Result<Self> {
+        Self::with_roofline(loaded, state_budget, maximum_states, None)
+    }
+    pub fn new_automatic(
+        loaded: LoadedModel,
+        state_budget: u64,
+        maximum_states: usize,
+    ) -> Result<Self> {
+        let roofline = loaded.concurrency_roofline()?;
+        Self::with_roofline(loaded, state_budget, maximum_states, roofline)
+    }
+    fn with_roofline(
+        loaded: LoadedModel,
+        state_budget: u64,
+        maximum_states: usize,
+        roofline_bound: Option<usize>,
+    ) -> Result<Self> {
         if state_budget == 0 || maximum_states == 0 {
             return Err(Error::invalid("CUDA state limits must be nonzero"));
         }
@@ -218,6 +241,8 @@ impl CudaExecutor {
             states: BTreeMap::new(),
             budget: state_budget,
             maximum_states,
+            roofline_bound,
+            memory_bound: 1,
             pool: pool::StatePool::default(),
             prefix,
             kv_block_bytes,

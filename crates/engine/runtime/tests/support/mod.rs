@@ -138,6 +138,7 @@ struct State {
 }
 
 pub struct ProtocolBackend {
+    profile: Option<infer_ir::ExecutionProfileInspection>,
     host_sampling_draft_depth: usize,
     multimodal: bool,
     media_tasks: Arc<AtomicUsize>,
@@ -155,6 +156,10 @@ pub struct ProtocolBackend {
 }
 
 impl ProtocolBackend {
+    pub fn with_profile(mut self, profile: infer_ir::ExecutionProfileInspection) -> Self {
+        self.profile = Some(profile);
+        self
+    }
     /// # Errors
     /// Returns an invalid-input error when the configured request bound cannot be reserved.
     pub fn new(requests: usize, batch: usize, ir: &ModelIr) -> Result<Self> {
@@ -217,6 +222,7 @@ impl ProtocolBackend {
             value += 1.0;
         }
         Ok(Self {
+            profile: None,
             host_sampling_draft_depth: 0,
             multimodal: false,
             media_tasks: Arc::new(AtomicUsize::new(0)),
@@ -281,6 +287,9 @@ impl ProtocolBackend {
 }
 
 impl BackendProvider for ProtocolBackend {
+    fn execution_profile(&self) -> Option<infer_ir::ExecutionProfileInspection> {
+        self.profile.clone()
+    }
     type Ticket = Option<Vec<TaskOutput>>;
     fn identity(&self) -> &str {
         &self.identity

@@ -111,6 +111,7 @@ fn upload<T: DType>(device: &CudaDevice, values: Vec<T>, shape: &[usize]) -> Tes
 
 struct Fixture {
     slots: usize,
+    capacity: usize,
     tables: Vec<Tensor<i32>>,
     queries: Arc<Tensor<f32>>,
     inputs: [Arc<Tensor<f32>>; 2],
@@ -120,7 +121,10 @@ struct Fixture {
 
 impl Fixture {
     fn new(device: &CudaDevice, slots: usize) -> TestResult<Self> {
-        let blocks = CAPACITY / KV_BLOCK_TOKENS;
+        Self::with_capacity(device, slots, CAPACITY)
+    }
+    fn with_capacity(device: &CudaDevice, slots: usize, capacity: usize) -> TestResult<Self> {
+        let blocks = capacity / KV_BLOCK_TOKENS;
         let tables = (0..slots)
             .map(|slot| {
                 upload(
@@ -158,7 +162,7 @@ impl Fixture {
         let cache = |seed: usize| {
             upload(
                 device,
-                (0..KV * slots * CAPACITY * DIM)
+                (0..KV * slots * capacity * DIM)
                     .map(|i| {
                         f8e4m3fn(
                             32 + u8::try_from((i + seed) % 48).unwrap()
@@ -166,11 +170,12 @@ impl Fixture {
                         )
                     })
                     .collect(),
-                &[KV, slots * CAPACITY, DIM],
+                &[KV, slots * capacity, DIM],
             )
         };
         Ok(Self {
             slots,
+            capacity,
             tables,
             queries,
             inputs: [input(0)?, input(13)?],
@@ -212,7 +217,7 @@ impl Fixture {
         let buffer = Buffers::new(
             device,
             Blueprint {
-                layout: Layout::new(geometry, self.slots, CAPACITY, PARTS)?,
+                layout: Layout::new(geometry, self.slots, self.capacity, PARTS)?,
                 parameters: BTreeMap::from([(node, header)]),
             },
         )?;
@@ -293,7 +298,7 @@ impl Fixture {
         let mut maxima = api::zeros::<f32>(&[KV * PARTS, STACKED_ROWS]).sync_on(&device.stream)?;
         let mut sums = api::zeros::<f32>(&[KV * PARTS, STACKED_ROWS]).sync_on(&device.stream)?;
         let [keys, values] = &mut self.original;
-        let physical = self.slots * CAPACITY;
+        let physical = self.slots * self.capacity;
         let reference = CudaGraph::scope(&device.stream, |scope| {
             for (lane, metadata) in lane_metadata.iter().enumerate() {
                 let range = lane * KV * DIM..(lane + 1) * KV * DIM;
@@ -373,4 +378,18 @@ impl Fixture {
         reference.launch().sync_on(&device.stream)?;
         Ok(())
     }
+}
+
+#[test]
+#[ignore = "CUDA/safe-run; short bounded context, extended slot groups, full output/cache bytes"]
+fn extended_concurrency_preserves_attention_outputs_and_pages() -> TestResult {
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    for slots in [17, 32, 64] {
+        let mut fixture = Fixture::with_capacity(&device, slots, 128)?;
+        for (position, window) in [(0, 0), (30, 0), (125, 32), (125, 0)] {
+            fixture.check(&device, position, window)?;
+        }
+    }
+    Ok(())
 }

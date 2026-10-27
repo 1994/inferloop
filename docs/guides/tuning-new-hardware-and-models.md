@@ -114,7 +114,7 @@ attention、recurrent、norm、greedy 的独立 allowance 保持原有边界。
 
 | 常数 | 位置 | 现状 | 应改为 |
 |---|---|---|---|
-| `DEFAULT_MAX_BATCH = 16` | `engine/runtime/src/config.rs` | 最大并发序列数固定为 16 | `min(N_mem, N_knee)`：N_mem = 状态预算 ÷ (每序列状态 + 保底 KV)；N_knee = (峰值算力 ÷ 带宽) × (权重字节 ÷ 参数量) ÷ 2 ÷ 每序列每步 token 数。由 backend 计算后经接口交给 runtime |
+| 默认并发（已推导） | `loading/concurrency.rs`、`executor/execution.rs`、runtime config | CUDA 自动模式取完整显存报价与计算/带宽拐点的较小值，录图成功后报告实际槽数 | runtime 在分配前应用 backend 的建议及更小的显式上限；64 仅是完成协议容量，不是性能默认值 |
 | GDN value 切分（已推导） | `resident/slot_recurrent.rs` | 读取设备 SM/warp 数和当前节点的 value 头数、维度、槽数 | 在每个 value 分块不宽于设备 warp 的约束内，选择最接近一条 SM wave 的合法网格；按 value 维的二次幂整除约束取值，不再按 SM 数分档 |
 | pooled attention `MAX_BATCH = 4`、切分数上限 64 | `resident/attention_decode/pooled.rs`、`tuning/attention/decode.rs` | 每组 4 个槽串行；切分数已按 SM 数、KV 头数与每组槽数推导，尚未结合上下文长度 | 切分数按上下文长度推导（每份至少若干 KV 块），部分和 workspace 随之缩小，从而一次启动处理全部槽 |
 | 融合 SwiGLU tile（已接入调优） | `tuning/resident_gemm/swiglu` | 加载期按实际融合形状比较合法行/列 tile，独立缓存 | 完整 codes/scales 逐位校验，冷/暖两种状态与反向独立确认后选用；预算不足或候选失效保留原 `64×64` 基线 |
@@ -122,6 +122,25 @@ attention、recurrent、norm、greedy 的独立 allowance 保持原有边界。
 | pooled 稠密投影交叉点（已接入调优） | `tuning/pool_dense` | 对实际 decode/verify 行数比较逐行 GEMV、四行共享权重分块与原小 GEMM | 按设备、驱动、内核、M/N/K 与实际 GEMV tile 缓存冷/暖正反确认结果；新路径保持私有 F32 归约，只有原已使用小 GEMM 的行数允许保留该算法 |
 | resident 投影搜索预算（已推导） | `tuning/projection_budget.rs` | 按实际录图保留的 FP4/FP8 形状、候选数和独立确认轮次估算 | 同一模型跨层和 serving state 去重；耗尽时列出尚未完成的形状，保留 native 路径 |
 | 每槽保底 KV = 单槽容量 ÷ 2 | `loading/budget.rs` 的 `funded_kv_tokens` | 槽数 = KV token ÷ 4128 | 按实际请求长度分布接纳请求，而不是按固定半容量保底 |
+
+CUDA 默认并发按两个界限推导。N_mem 通过现有完整 serving 报价求最大可资助宽度，
+包括 target/draft pool、worker、slot home、workspace、KV 与 driver headroom。
+当前每槽 KV 保底规则仍保留，按实际请求长度接纳另行处理。N_knee 用实际线性图的
+权重/scale 字节、参数数、计算格式、设备 SM/时钟/带宽及每序列验证行数估算。
+混合精度按各算子的峰值计算时间求和，再与权重读取时间相除；同精度时退化为
+(峰值算力/带宽)×(权重字节/参数量)/(2×每序列行数)。只用 dense 吞吐与实际
+F32 累加格式，不能混入稀疏或 FP16 累加的宣传峰值。
+
+架构常数依据 [NVIDIA RTX Blackwell 白皮书表 3](https://images.nvidia.com/aem-dam/Solutions/geforce/blackwell/nvidia-rtx-blackwell-gpu-architecture.pdf)
+及 [Hopper Tensor Core 说明](https://developer.nvidia.com/blog/?p=45555)；
+SM 数、时钟与带宽来自驱动，不按显卡型号匹配。未知架构或专家路由图没有完整
+计算估计时，明确记录该限制，仅使用显存及协议边界。该估计不是饱和点的实测认证。
+显式 CLI 并发上限绕过自动 roofline 选择，仍受实际显存与协议容量限制。
+
+runtime 默认先持有协议容量；收到 backend 报告的 concurrency 后，在分配主机缓冲与
+scheduler workspace 前收紧。未提供建议的兼容 backend 只受原有资源准入及给定上限
+约束，不把协议上限宣称为已调优并发。Metal 尚未提供这套 roofline 建议。
+槽位上传环按实际池宽分配，池及验证的结构上限与完成协议保持一致。
 
 加载期只登记实际 pooled decode/verify 形状，不为此测单行或 prompt 宽度。每个新候选
 须在冷、暖缓存下都超过原路径至少 2%，并通过独立反向顺序确认；四行分块还会对
