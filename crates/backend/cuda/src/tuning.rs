@@ -6,6 +6,7 @@ pub mod greedy;
 pub(crate) mod memory;
 pub mod nvfp4_lt;
 pub(crate) mod prefill;
+pub(crate) mod projection_budget;
 pub mod recurrent;
 pub mod resident_gemm;
 

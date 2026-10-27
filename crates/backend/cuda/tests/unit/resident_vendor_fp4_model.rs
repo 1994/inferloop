@@ -7,6 +7,7 @@ use crate::tuning::resident_gemm::ResidentTuningSession;
 use crate::{
     AttentionProfile,
     device::{CudaDevice, vendor_fp8::nvfp4},
+    mlp::ProjectionWeight,
     resident::DeviceProgram,
 };
 use infer_core::{Error, ModelId, Result};
@@ -154,6 +155,147 @@ fn vendor_fp4_reuses_model_session_qualifications() -> Result<()> {
     println!(
         "model-session qualifications reused; confirmations={}",
         confirmed - before
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires CUDA, actual checkpoint and frozen prompt; safe-run"]
+fn fused_prompt_excludes_standalone_gate_up_tuning() -> Result<()> {
+    use crate::resident::nvfp4_gemm::Workspace;
+    let (mut loaded, _) = loaded_model(AttentionProfile::Bf16, 1024, 64)?;
+    loaded.weights.autotune = false;
+    let workspace = Workspace::new(
+        loaded.device(),
+        &loaded.graph,
+        &loaded.weights,
+        &[1, 3, 64, 1024],
+    )?;
+    let strategies = workspace.prepared_configs();
+    let rows = strategies
+        .as_array()
+        .ok_or_else(|| Error::invariant("prepared strategies"))?;
+    let contains = |m, n, k| {
+        rows.iter()
+            .any(|row| row["mode"] == "nvfp4" && row["m"] == m && row["n"] == n && row["k"] == k)
+    };
+    for m in [64, 1024] {
+        assert!(
+            !contains(m, 17408, 5120),
+            "fused gate/up must not be tuned at M={m}"
+        );
+        assert!(
+            contains(m, 5120, 17408),
+            "live down must still be prepared at M={m}"
+        );
+    }
+    for m in [1, 3] {
+        assert!(
+            contains(m, 17408, 5120),
+            "unfused decode/verify must retain gate/up at M={m}"
+        );
+    }
+    println!("live geometry only: {strategies}");
+    drop(workspace);
+    extra_consumer_retains_standalone(&loaded)?;
+    Ok(())
+}
+
+fn extra_consumer_retains_standalone(loaded: &LoadedModel) -> Result<()> {
+    use crate::resident::nvfp4_gemm::Workspace;
+    use infer_core::{OpId, TensorId};
+    use infer_ir::{TensorNode, TensorOp};
+    let gate = loaded
+        .graph
+        .nodes
+        .iter()
+        .find(|node| {
+            node.op == TensorOp::Linear
+                && loaded
+                    .weights
+                    .projections
+                    .get(&node.inputs[1])
+                    .is_some_and(|weight| matches!(weight, ProjectionWeight::Fp4(codes, ..) if codes.shape() == [17408, 5120]))
+        })
+        .ok_or_else(|| Error::invalid("checkpoint gate projection"))?;
+    let mut graph = loaded.graph.clone();
+    let new_output = TensorId::new(1_000_000)?;
+    let new_op = OpId::new(1_000_000)?;
+    assert!(graph.tensors.iter().all(|tensor| tensor.id != new_output));
+    assert!(graph.nodes.iter().all(|node| node.id != new_op));
+    let mut tensor = graph
+        .tensors
+        .iter()
+        .find(|t| t.id == gate.outputs[0])
+        .ok_or_else(|| Error::invariant("gate output"))?
+        .clone();
+    tensor.id = new_output;
+    graph.tensors.push(tensor);
+    graph.nodes.push(TensorNode {
+        id: new_op,
+        layer: None,
+        op: TensorOp::Silu,
+        inputs: vec![gate.outputs[0]],
+        outputs: vec![new_output],
+        states: vec![],
+    });
+    let workspace = Workspace::new(loaded.device(), &graph, &loaded.weights, &[64, 1024])?;
+    let configs = workspace.prepared_configs();
+    let configs = configs
+        .as_array()
+        .ok_or_else(|| Error::invariant("prepared strategies"))?;
+    for width in [64, 1024] {
+        assert!(
+            configs.iter().any(|row| row["mode"] == "nvfp4"
+                && row["m"] == width
+                && row["n"] == 17408
+                && row["k"] == 5120),
+            "a real additional reader prevents fusion and keeps standalone preparation"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires CUDA, checkpoint and private seed missing both live down geometries; safe-run"]
+fn live_budget_completes_uncached_down_shapes() -> Result<()> {
+    use crate::resident::nvfp4_gemm::Workspace;
+    use crate::tuning::{resolve_table, table_path};
+    let (mut loaded, _) = loaded_model(AttentionProfile::Bf16, 1024, 64)?;
+    loaded.weights.autotune = true;
+    let path = table_path().ok_or_else(|| Error::invalid("private tuning table required"))?;
+    let before =
+        resolve_table(Some(&path))?.ok_or_else(|| Error::invalid("private seed required"))?;
+    for m in [64, 1024] {
+        assert!(
+            !before
+                .resident_gemm
+                .iter()
+                .any(|e| e.key.m == m && e.key.n == 5120 && e.key.k == 17408),
+            "fixture must really remove the live down shape before this fresh process"
+        );
+    }
+    let workspace = Workspace::new(loaded.device(), &loaded.graph, &loaded.weights, &[64, 1024])?;
+    let table =
+        resolve_table(Some(&path))?.ok_or_else(|| Error::invalid("measured table required"))?;
+    for m in [64, 1024] {
+        let entry = table
+            .resident_gemm
+            .iter()
+            .find(|e| e.key.m == m && e.key.n == 5120 && e.key.k == 17408)
+            .ok_or_else(|| {
+                Error::invalid(format!("missing completed actual-weight search at M={m}"))
+            })?;
+        assert!(entry.bitwise_verified);
+        assert!(!entry.trials.is_empty());
+        println!(
+            "completed uncached down search: M={m}, selected={:?}",
+            entry.selected
+        );
+    }
+    println!(
+        "live standalone strategies: {}",
+        workspace.prepared_configs()
     );
     Ok(())
 }

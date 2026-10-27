@@ -30,9 +30,18 @@
 | prompt 宽度 | `loading/mod.rs`：按 arena 预算在若干档宽度中选择 | `prompt width rung width=...` |
 
 **新硬件上要检查的日志：**
-- 没有出现 `resident GEMM model search budget exhausted`。如果出现，说明 30 s 的搜索预算不够，剩余形状会回退到默认配置。
+- 没有出现 `resident projection search budget exhausted: missing shapes`。投影预算按实际录图会使用的唯一形状及候选计时窗口估算；若 JIT、数值验证或设备开销使估算耗尽，日志会列出未完成的 `(类型, M/N/K)`，这些形状继续使用保守默认配置，不保留不完整证据。
 - 没有出现 `conservative fallback`。
 - 槽数和 KV token 数与显存相符。
+
+投影准备先分配既有量化缓冲区，再用录图本身的 MLP 融合计划确定活跃投影。
+融合 gate/up 的 prompt 宽度不搜索独立 gate/up GEMM；decode、verify、额外消费者或不满足融合条件的图仍保留独立投影。
+搜索额度为每个唯一 `(数值路径, M/N/K)` 的候选 AB 轮次、独立 BA 确认及必要的 native 确认之和，
+每轮按冷/热两种状态乘以现有 `WARMUP_MS + REP_MS` 测量窗口计算。
+重复权重不续期；新增宽度或新增候选只增加相应工作量，不重启计时。
+只累计新搜索本身的用时；缓存命中的实际权重校验和其他准备工作不消耗搜索额度。
+这是加载期计时工作量估算，正在执行的 CUDA JIT 与数值验证不能被中断；外层准备进程继续遵守既有时长保护。
+attention、recurrent、norm、greedy 的独立 allowance 保持原有边界。
 
 ## 新硬件检查表
 
@@ -49,7 +58,7 @@
 4. **正确性。** 运行 `make test-cuda-hosted`。和本次改动相关的 `#[ignore]` GPU 测试要在 safe-run 里单独运行：先用 `cargo test --no-run` 编出测试二进制，再执行 `tools/bench/safe-run.sh --memory-gib 24 <测试二进制> <名称过滤> --ignored`。
 5. **性能基线。** 用 `tools/bench/fixed-work-serving.py`，分别跑零参数默认配置和与 vLLM 对齐的配置，按 BAAB 交替。用 `--profile` 跑一次，再用 `tools/bench/graph-profile-summary.py` 得到每张图、每类算子的 GPU 时间。
 6. **和参照引擎逐形状对比。** 对占比最高的投影形状，测参照引擎的内核（如 vLLM 的 CUTLASS NVFP4 / FP8 GEMM）。计时要包含激活量化，并且**在多份权重副本之间轮换，使总量超过 L2**，否则小 M 形状会读到 L2 缓存，得出高于显存带宽的错误结论。
-7. **质量。** 只有当数值路径改变时，才跑 1,024 题质量门禁。
+7. **迭代与发布。** 普通改动运行 `make check-iteration`：一次原生进程对、性能指标和分批快速失败的 64 条原始质量任务，总时限十分钟。1,024 题、五对以上进程与长上下文/受限资源矩阵只在明确的大版本验收中通过 `make check-release` 运行；64 条筛查不构成正式质量资格。
 8. **复查推导项。** 对照下文的“待改为推导的常数”，确认这些常数在新硬件上是否仍然合理；不合理的，按公式改写，不要只换一个新数字。
 
 ## 新模型检查表
@@ -92,7 +101,7 @@
 | `SWIGLU_TILE_ROWS/COLUMNS = 64` | `resident/nvfp4_gemm/workspace.rs` | 在 RTX 5090 上实测得出（128 行时寄存器溢出） | 纳入 resident GEMM 调优器，作为候选按形状实测 |
 | `GDN_BA_SHAPE = [48, 5120]` | `resident/prefill_projection.rs` | 按形状识别 b/a 投影对 | 按图结构识别（同输入、相邻、同为稠密小投影），不依赖具体形状 |
 | `MAX_POOL_ROWS = CB_DECODE_SLOTS` | `resident/pool_gemv.rs` | 行数不超过 16 时走 GEMV | 由 GEMV 与分块 GEMM 的实测交叉点决定，纳入调优 |
-| `MODEL_SEARCH_BUDGET = 30 s` | `tuning/resident_gemm.rs` | 加载期搜索的总时长上限 | 按形状数和单次测量时长估算；预算耗尽时在日志中给出缺失形状 |
+| resident 投影搜索预算（已推导） | `tuning/projection_budget.rs` | 按实际录图保留的 FP4/FP8 形状、候选数和独立确认轮次估算 | 同一模型跨层和 serving state 去重；耗尽时列出尚未完成的形状，保留 native 路径 |
 | 每槽保底 KV = 单槽容量 ÷ 2 | `loading/budget.rs` 的 `funded_kv_tokens` | 槽数 = KV token ÷ 4128 | 按实际请求长度分布接纳请求，而不是按固定半容量保底 |
 
 ## 参考：一次完整调优的记录

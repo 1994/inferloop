@@ -1,4 +1,5 @@
 //! Per-program activation quantization buffers, retained as long as captured graphs.
+mod preparation;
 mod vendor_fp4;
 use super::{
     kernels,
@@ -8,31 +9,26 @@ use crate::constants::FP8_BLOCK_COLUMNS;
 use crate::constants::NVFP4_GROUP_SIZE;
 use crate::constants::NVFP4_QUANT_CODES_TILE;
 use crate::constants::NVFP4_QUANT_SCALES_TILE;
-use crate::constants::PREFILL_LANES;
 use crate::resident::{norm_fp4, norm_fp4_kernel};
-use crate::tuning::fp8_gemm::prefill_choice;
 
 use crate::resident::program::ProgramGeometry;
 use crate::tuning::fp8_gemm::Choice;
 use crate::tuning::fp8_gemm::WeightKey;
-use crate::tuning::fp8_gemm::probe_inputs::Scope as ProbeInputsScope;
-use crate::tuning::fp8_gemm::select;
 use crate::tuning::resident_gemm::native_tile;
 
 use crate::tuning::resident_gemm::GemmConfig;
 
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use crate::tuning::resident_gemm::WeightKey as ResidentGemmWeightKey;
-use crate::tuning::resident_gemm::select as resident_gemm_select;
 use crate::{
-    device::{CudaDevice, device_error, vendor_fp8},
+    device::{CudaDevice, vendor_fp8},
     mlp::ProjectionWeight,
     resident::ProgramWeights,
 };
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
-use infer_core::{Error, Result};
-use infer_ir::{DataflowGraph, TensorOp};
+use infer_core::Result;
+use infer_ir::DataflowGraph;
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::env::var;
@@ -210,202 +206,6 @@ impl Workspace {
         };
         workspace.extend(device, graph, weights, widths)?;
         Ok(workspace)
-    }
-
-    fn extend(
-        &mut self,
-        device: &CudaDevice,
-        graph: &DataflowGraph,
-        weights: &ProgramWeights,
-        widths: &[usize],
-    ) -> Result<()> {
-        let _probe_inputs = ProbeInputsScope::new(device)?;
-        for node in &graph.nodes {
-            if node.op != TensorOp::Linear
-                || (!weights.input_scales.contains_key(&node.inputs[1])
-                    && !weights.fp8_inputs.contains(&node.inputs[1]))
-            {
-                continue;
-            }
-            let columns = graph
-                .tensors
-                .iter()
-                .find(|t| t.id == node.inputs[0])
-                .ok_or_else(|| Error::invariant("FP4 input tensor"))?
-                .elements()?;
-            if weights.fp8_inputs.contains(&node.inputs[1]) {
-                self.allocate_fp8(
-                    device,
-                    weights.projections.get(&node.inputs[1]),
-                    columns,
-                    widths,
-                )?;
-                self.prepare_channel(
-                    device,
-                    graph,
-                    weights,
-                    node.inputs[1],
-                    node.outputs[0],
-                    columns,
-                    widths,
-                )?;
-                continue;
-            }
-            if let Some(weight @ ProjectionWeight::Fp4(..)) =
-                weights.projections.get(&node.inputs[1])
-                && let Some(&scale) = weights.input_scales.get(&node.inputs[1])
-            {
-                let outputs = graph
-                    .tensors
-                    .iter()
-                    .find(|tensor| tensor.id == node.outputs[0])
-                    .ok_or_else(|| Error::invariant("FP4 output tensor"))?
-                    .elements()?;
-                let weight_key = ResidentGemmWeightKey::new(weight, scale)?;
-                for &rows in widths {
-                    if rows > 0 {
-                        self.strategies
-                            .entry((weight_key, rows, outputs, columns))
-                            .or_insert_with(|| {
-                                resident_gemm_select(
-                                    device,
-                                    weight,
-                                    scale,
-                                    [rows, outputs, columns],
-                                    weights.autotune,
-                                    &weights.resident_tuning,
-                                )
-                            });
-                    }
-                }
-            }
-            for &rows in widths {
-                if rows == 0 || self.buffers.contains_key(&(rows, columns)) {
-                    continue;
-                }
-                self.buffers.insert(
-                    (rows, columns),
-                    (
-                        api::zeros::<f4e2m1fnx2>(&[rows, columns / 2])
-                            .sync_on(&device.stream)
-                            .map_err(device_error)?,
-                        api::zeros::<f8e4m3fn>(&[rows, columns / NVFP4_GROUP_SIZE])
-                            .sync_on(&device.stream)
-                            .map_err(device_error)?,
-                    ),
-                );
-            }
-        }
-        Ok(())
-    }
-
-    fn allocate_fp8(
-        &mut self,
-        device: &CudaDevice,
-        weight: Option<&ProjectionWeight>,
-        columns: usize,
-        widths: &[usize],
-    ) -> Result<()> {
-        let block = matches!(weight, Some(ProjectionWeight::Fp8Block(..)));
-        let scale_columns = if block {
-            columns / FP8_BLOCK_COLUMNS
-        } else {
-            1
-        };
-        for &rows in widths {
-            if rows > 0 && !self.fp8.contains_key(&(rows, columns, scale_columns)) {
-                self.fp8.insert(
-                    (rows, columns, scale_columns),
-                    (
-                        api::zeros::<f8e4m3fn>(&[rows, columns])
-                            .sync_on(&device.stream)
-                            .map_err(device_error)?,
-                        api::zeros::<f32>(&[rows, scale_columns])
-                            .sync_on(&device.stream)
-                            .map_err(device_error)?,
-                    ),
-                );
-            }
-        }
-        Ok(())
-    }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Preparation carries graph weight/output identities and the captured widths before any CUDA scope starts"
-    )]
-    fn prepare_channel(
-        &mut self,
-        device: &CudaDevice,
-        graph: &DataflowGraph,
-        weights: &ProgramWeights,
-        weight_id: infer_core::TensorId,
-        output_id: infer_core::TensorId,
-        columns: usize,
-        widths: &[usize],
-    ) -> Result<()> {
-        if let Some(weight @ ProjectionWeight::Fp8(codes, scales)) =
-            weights.projections.get(&weight_id)
-        {
-            self.vendor_fp8.retain_channels(codes, scales);
-            let outputs = graph
-                .tensors
-                .iter()
-                .find(|tensor| tensor.id == output_id)
-                .ok_or_else(|| Error::invariant("FP8 output tensor"))?
-                .elements()?;
-            let weight_key = WeightKey::new(weight)?;
-            for &rows in widths {
-                // Prompt captures omit the batched vocabulary head and use a single final lane.
-                if rows == 0 || (rows >= PREFILL_LANES && Some(output_id) == graph.logits) {
-                    continue;
-                }
-                let key = (weight_key, rows, outputs, columns);
-                if self.fp8_strategies.contains_key(&key) {
-                    continue;
-                }
-                let lt_prefill = self
-                    .fp8
-                    .get(&(rows, columns, 1))
-                    .map(|(q, ..)| {
-                        prefill_choice(
-                            device,
-                            &mut self.vendor_fp8,
-                            q,
-                            codes,
-                            [rows, outputs, columns],
-                        )
-                    })
-                    .transpose()?
-                    .flatten();
-                let choice = if let Some(choice) = lt_prefill {
-                    choice
-                } else if self.vendor_diagnostic {
-                    let q = &self
-                        .fp8
-                        .get(&(rows, columns, 1))
-                        .ok_or_else(|| Error::invariant("FP8 diagnostic activation"))?
-                        .0;
-                    let out = api::zeros::<f32>(&[rows, outputs])
-                        .sync_on(&device.stream)
-                        .map_err(device_error)?;
-                    if let Err(error) = self.vendor_fp8.prepare(q, codes, &out) {
-                        tracing::warn!(target: "infer::tuning", %error, "FP8 diagnostic preparation rejected: native fallback");
-                    }
-                    Choice::baseline(rows)
-                } else {
-                    select(
-                        device,
-                        &mut self.vendor_fp8,
-                        weight,
-                        [rows, outputs, columns],
-                        weights.autotune,
-                        &weights.resident_tuning,
-                    )
-                };
-                self.fp8_strategies.insert(key, choice);
-            }
-        }
-        Ok(())
     }
 
     #[expect(

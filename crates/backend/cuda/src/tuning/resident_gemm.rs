@@ -1,4 +1,7 @@
 //! Actual-weight W4A4 graph tuning. Every candidate preserves quantization and K order.
+use super::projection_budget::{
+    GEMM_RANK, ProjectionKind, ProjectionShape, SearchBudget, SearchScope,
+};
 use super::{MAX_REPS, MIN_CONFIRM_SPEEDUP, MIN_REPS, REP_MS, TilingTable, WARMUP_MS};
 use crate::constants::NVFP4_GROUP_SIZE;
 use crate::constants::NVFP4_QUANT_CODES_TILE;
@@ -34,8 +37,6 @@ use std::{
 /// Bump when quantization, arithmetic or the paired measurement protocol changes.
 const KERNEL_SCHEMA: &str = "cutile0.4-nvfp4-v3:search-ab:confirm-ba:block16-e4m3:quant512:mma-k256:f32:full-output:alpha1/(wg*xs):tile-m128";
 const ACTIVATION_MODE: &str = "nvfp4-w4a4-block16";
-/// Resident projection geometry is (activation rows, output columns, reduction columns).
-const GEMM_RANK: usize = 3;
 /// Linear interpolation weight of both central samples for an even-sized median.
 const MEDIAN_INTERPOLATION: f32 = 0.5;
 
@@ -83,9 +84,15 @@ const SAMPLE_DIVISOR: f32 = 37.0;
 /// CUDA JIT optimization level required for representative timing.
 const JIT_OPT_LEVEL: u8 = 3;
 
-/// Default elapsed allowance for new-shape searches in one model load.
-/// A JIT or measurement already in progress is not interruptible; this is not a hard time cap.
-const MODEL_SEARCH_BUDGET: Duration = Duration::from_secs(30);
+/// Existing independent allowances for the non-projection tuning families.
+const AUXILIARY_SEARCH_BUDGET: Duration = Duration::from_secs(30);
+/// One reverse confirmation and an optional native-baseline confirmation after rejection.
+const CONFIRMATION_TRIALS: usize = 2;
+
+/// Native candidate trials plus the independent confirmation paths.
+pub(crate) const fn search_trials() -> usize {
+    TILE_M_SEARCH.len() * TILE_N_SEARCH.len() * LOOP_SEARCH.len() - 1 + CONFIRMATION_TRIALS
+}
 #[cfg(test)]
 const HARDWARE_VALIDATION_BUDGET: Duration = Duration::from_secs(600);
 
@@ -96,7 +103,7 @@ const HARDWARE_VALIDATION_BUDGET: Duration = Duration::from_secs(600);
 pub struct ResidentTuningSession {
     /// Immutable-weight Lt proofs shared across this model's serving states.
     pub(crate) vendor_fp4: Arc<ModelCache>,
-    started: OnceLock<Instant>,
+    projection_budget: Mutex<SearchBudget>,
     greedy_started: OnceLock<Instant>,
     norm_started: OnceLock<Instant>,
     recurrent_started: OnceLock<Instant>,
@@ -108,12 +115,12 @@ impl Default for ResidentTuningSession {
     fn default() -> Self {
         Self {
             vendor_fp4: Arc::new(ModelCache::default()),
-            started: OnceLock::new(),
+            projection_budget: Mutex::new(SearchBudget::default()),
             greedy_started: OnceLock::new(),
             norm_started: OnceLock::new(),
             recurrent_started: OnceLock::new(),
             attention_started: OnceLock::new(),
-            budget: MODEL_SEARCH_BUDGET,
+            budget: AUXILIARY_SEARCH_BUDGET,
         }
     }
 }
@@ -123,6 +130,7 @@ impl ResidentTuningSession {
     pub(crate) fn for_hardware_validation() -> Self {
         Self {
             budget: HARDWARE_VALIDATION_BUDGET,
+            projection_budget: Mutex::new(SearchBudget::with_limit(HARDWARE_VALIDATION_BUDGET)),
             ..Self::default()
         }
     }
@@ -130,6 +138,7 @@ impl ResidentTuningSession {
     pub(crate) fn without_search_budget() -> Self {
         Self {
             budget: Duration::ZERO,
+            projection_budget: Mutex::new(SearchBudget::with_limit(Duration::ZERO)),
             ..Self::default()
         }
     }
@@ -154,8 +163,69 @@ impl ResidentTuningSession {
         self.norm_started.get_or_init(Instant::now).elapsed() < self.budget
     }
 
+    pub(crate) fn plan_projection(
+        &self,
+        kind: ProjectionKind,
+        shape: ProjectionShape,
+        trials: usize,
+    ) -> Result<()> {
+        let mut budget = self
+            .projection_budget
+            .lock()
+            .map_err(|_| Error::invariant("projection search budget poisoned"))?;
+        let snapshot = budget.plan(kind, shape, trials)?.then(|| budget.snapshot());
+        drop(budget);
+        if let Some(snapshot) = snapshot {
+            tracing::info!(target: "infer::tuning", ?kind, ?shape,
+                planned_shapes=snapshot.planned, budget_ms=snapshot.allowance.as_millis(),
+                "resident projection search workload planned");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn complete_projection(
+        &self,
+        kind: ProjectionKind,
+        shape: ProjectionShape,
+    ) -> Result<()> {
+        self.projection_budget
+            .lock()
+            .map_err(|_| Error::invariant("projection search budget poisoned"))?
+            .complete(kind, shape);
+        Ok(())
+    }
+
+    pub(crate) fn report_projection_work(&self) -> Result<()> {
+        let snapshot = self
+            .projection_budget
+            .lock()
+            .map_err(|_| Error::invariant("projection search budget poisoned"))?
+            .snapshot();
+        tracing::info!(target: "infer::tuning", planned_shapes=snapshot.planned,
+            budget_ms=snapshot.allowance.as_millis(), search_elapsed_ms=snapshot.elapsed.as_millis(),
+            pending_shapes=?snapshot.pending, "resident projection preparation coverage");
+        Ok(())
+    }
+
+    pub(crate) fn projection_search(&self) -> Result<SearchScope<'_>> {
+        SearchScope::begin(&self.projection_budget)
+    }
+
     pub(crate) fn permits_search(&self) -> bool {
-        self.started.get_or_init(Instant::now).elapsed() < self.budget
+        let Ok(mut budget) = self.projection_budget.lock() else {
+            tracing::error!(target: "infer::tuning", "projection search budget poisoned; search disabled");
+            return false;
+        };
+        let elapsed = budget.elapsed();
+        let permitted = budget.permits(elapsed);
+        let snapshot = budget.report_expiration(elapsed).then(|| budget.snapshot());
+        drop(budget);
+        if let Some(snapshot) = snapshot {
+            tracing::info!(target: "infer::tuning", elapsed_ms=elapsed.as_millis(),
+                budget_ms=snapshot.allowance.as_millis(), pending_shapes=?snapshot.pending,
+                "resident projection search budget exhausted: missing shapes");
+        }
+        permitted
     }
 
     fn exhausted(&self, key: &ResidentGemmKey) -> bool {
@@ -163,8 +233,6 @@ impl ResidentTuningSession {
             return false;
         }
         tracing::info!(target: "infer::tuning", ?key,
-            elapsed_ms=self.started.get_or_init(Instant::now).elapsed().as_millis(),
-            budget_ms=self.budget.as_millis(),
             "resident GEMM model search budget exhausted: incomplete evidence discarded");
         true
     }
@@ -745,7 +813,9 @@ fn resolve(
         .copied();
     if let Some(config) = cached {
         tracing::info!(target: "infer::tuning", ?key, ?config, source="process-cache", "resident GEMM selected");
-        return verified_config(device, weight, scale, &key, config);
+        let config = verified_config(device, weight, scale, &key, config)?;
+        session.complete_projection(ProjectionKind::Fp4, shape)?;
+        return Ok(config);
     }
     let path = super::table_path();
     let table = if key.driver_build.is_some() {
@@ -771,7 +841,9 @@ fn resolve(
         .map_err(|_| Error::invariant("resident tuning cache poisoned"))?
         .insert(key.clone(), config);
     tracing::info!(target: "infer::tuning", ?key, ?config, source, "resident GEMM selected");
-    verified_config(device, weight, scale, &key, config)
+    let config = verified_config(device, weight, scale, &key, config)?;
+    session.complete_projection(ProjectionKind::Fp4, shape)?;
+    Ok(config)
 }
 
 fn selected_config(
@@ -1068,10 +1140,12 @@ fn tune(
             "resident tuning requires release and CUDA JIT O3",
         ));
     }
+    let shape = [key.m, key.n, key.k];
+    session.plan_projection(ProjectionKind::Fp4, shape, search_trials())?;
+    let _search = session.projection_search()?;
     if session.exhausted(&key) {
         return Ok(None);
     }
-    let shape = [key.m, key.n, key.k];
     let baseline = GemmConfig::baseline(key.m);
     let base = Captured::new(device, weight, scale, shape, baseline)?;
     base.run(device)?;

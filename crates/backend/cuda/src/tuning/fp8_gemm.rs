@@ -3,6 +3,7 @@
 
 #[cfg(test)]
 use super::TilingTable;
+use super::projection_budget::{GEMM_RANK, ProjectionKind};
 use super::resident_gemm::{PairedTimes, ResidentTuningSession};
 use super::{MAX_REPS, MIN_CONFIRM_SPEEDUP, MIN_REPS, REP_MS, WARMUP_MS};
 use crate::constants::AUX_KERNEL_TILE;
@@ -47,6 +48,10 @@ const ROW_TILES: [usize; 3] = [
     WIDE_PROMPT_GEMM_TILE_ROWS,
 ];
 const COLUMN_TILES: [usize; 2] = [QUANT_GEMM_TILE[1], QUANT_GEMM_TILE[1] * 2];
+/// Each non-baseline tile can need AB and BA trials; native has one BA fallback.
+pub(crate) const fn search_trials() -> usize {
+    ROW_TILES.len() * COLUMN_TILES.len() * 2 - 1
+}
 const PERIOD: usize = 131;
 const STRIDE: usize = 17;
 const CENTER: f32 = 65.0;
@@ -56,7 +61,6 @@ const FIXTURE_RANDOM: usize = 3;
 const RANDOM_MULTIPLIER: u64 = 0x9e37_79b9_7f4a_7c15;
 const RANDOM_SEED: u64 = 0xd1b5_4a32_d192_ed03;
 const RANDOM_SHIFT: u32 = 29;
-const GEMM_RANK: usize = 3;
 const EXPONENT_PERIOD: usize = 17;
 const EXPONENT_OFFSET: i32 = 12;
 const MEDIAN_INTERPOLATION: f32 = 0.5;
@@ -945,6 +949,8 @@ fn tune(
     session: &ResidentTuningSession,
 ) -> Result<Option<Entry>> {
     let shape = [key.m, key.n, key.k];
+    session.plan_projection(ProjectionKind::Fp8, shape, search_trials())?;
+    let _search = session.projection_search()?;
     if !permits(session, shape) {
         return Ok(None);
     }
@@ -975,6 +981,7 @@ fn tune(
     ) else {
         return Ok(None);
     };
+    session.plan_projection(ProjectionKind::Fp8, shape, choices.len() * 2 - 1)?;
     let mut trials = Vec::new();
     for choice in choices {
         if choice == baseline {
@@ -1044,7 +1051,9 @@ fn resolve(
         .get(&key)
         .copied();
     if let Some(choice) = remembered {
-        return cached_gate(device, support, weight, &key, choice);
+        let choice = cached_gate(device, support, weight, &key, choice)?;
+        session.complete_projection(ProjectionKind::Fp8, shape)?;
+        return Ok(choice);
     }
     let path = super::table_path();
     let table = if key.persistent() {
@@ -1085,7 +1094,9 @@ fn resolve(
         .lock()
         .map_err(|_| Error::invariant("FP8 tuning cache poisoned"))?
         .insert(key.clone(), choice);
-    cached_gate(device, support, weight, &key, choice)
+    let choice = cached_gate(device, support, weight, &key, choice)?;
+    session.complete_projection(ProjectionKind::Fp8, shape)?;
+    Ok(choice)
 }
 /// Lt's reduction order lacks a full model qualification. Only internal tests may search it;
 /// production automatically tunes the qualified native geometry candidates.

@@ -1,4 +1,6 @@
 //! One-pair rejection, AB search and independently captured BA confirmation.
+/// Fresh AB search followed by separately recaptured BA confirmation.
+pub(super) const SEARCH_TRIALS: usize = 2;
 use super::Shape;
 use crate::device::CudaDevice;
 use crate::tuning::nvfp4_lt::Trial;

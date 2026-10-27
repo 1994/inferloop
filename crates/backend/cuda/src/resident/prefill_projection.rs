@@ -146,6 +146,13 @@ impl MlpPlan {
         }
     }
 
+    /// These linear nodes are recorded by the fused gate/up kernel, never by standalone GEMM.
+    pub(super) fn fuses_projection(&self, index: usize) -> bool {
+        self.fused
+            .values()
+            .any(|&(gate, up, _)| index == gate || index == up)
+    }
+
     /// Nodes another node of the plan records; the capture skips them.
     pub(super) fn absorbs(&self, index: usize) -> bool {
         self.absorbed.contains(&index)

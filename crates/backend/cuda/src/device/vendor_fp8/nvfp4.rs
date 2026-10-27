@@ -8,6 +8,7 @@ use super::{
 use super::{LibraryIdentity, algorithm_config};
 use crate::constants::NVFP4_GROUP_SIZE;
 use crate::mlp::ProjectionWeight;
+use crate::tuning::projection_budget::ProjectionKind;
 use crate::tuning::resident_gemm::{self, GemmConfig, ResidentTuningSession};
 use crate::tuning::{nvfp4_lt as cache, table_path};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
@@ -329,6 +330,14 @@ impl Support {
                 return Qualification::Native;
             }
         };
+        if let Err(reason) = self.session.plan_projection(
+            ProjectionKind::Fp4Lt,
+            [shape.m, shape.n, shape.k],
+            timing::SEARCH_TRIALS,
+        ) {
+            tracing::warn!(target:"infer::tuning",%reason,"vendor FP4 workload unavailable");
+            return Qualification::Native;
+        }
         let path = table_path();
         match cache::cached(path.as_deref(), &key) {
             Ok(true) => {
@@ -376,16 +385,29 @@ impl Support {
                 .as_ref()
                 .ok_or_else(|| error("FP4 proof candidate missing"))?;
             if !exact(&context, &baseline, graph, op.output)? {
+                self.session
+                    .complete_projection(ProjectionKind::Fp4Lt, [shape.m, shape.n, shape.k])
+                    .map_err(|e| error(e.to_string()))?;
                 self.model.save_numerical(key, &op, false)?;
                 self.proofs.insert(proof, false);
                 return Ok(false);
             }
             if timed.is_none() {
+                let _search = self
+                    .session
+                    .projection_search()
+                    .map_err(|e| error(e.to_string()))?;
+                if !self.session.permits_search() {
+                    return Ok(false);
+                }
                 let fresh_a = capture(&context, &mut op, native, None, shape)?;
                 let fresh_b = capture(&context, &mut op, native, Some(&prepared), shape)?;
                 let Some(trials) =
                     timing::confirm(&context.device, &baseline, graph, &fresh_a, &fresh_b, shape)?
                 else {
+                    self.session
+                        .complete_projection(ProjectionKind::Fp4Lt, [shape.m, shape.n, shape.k])
+                        .map_err(|e| error(e.to_string()))?;
                     self.model.save_timing(key, false)?;
                     self.plans.insert(proof.0, None);
                     return Ok(false);
@@ -406,6 +428,9 @@ impl Support {
         let ProjectionWeight::Fp4(w, s, _) = op.weight else {
             return Ok(false);
         };
+        self.session
+            .complete_projection(ProjectionKind::Fp4Lt, [shape.m, shape.n, shape.k])
+            .map_err(|e| error(e.to_string()))?;
         self.plans.insert(proof.0, Some(prepared));
         self.proofs.insert(proof, true);
         self.weights
