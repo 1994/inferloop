@@ -72,13 +72,7 @@ fn committed_state(backend: &CudaExecutor, state: StateId) -> Result<Vec<Vec<u32
         .collect()
 }
 
-/// Exercise the real owner-facing reservation path and complete live-state readbacks.
-#[test]
-#[ignore = "real CUDA/MTP2 checkpoint; run under safe-run with an explicit fixture"]
-fn request_length_pool_preserves_live_state_and_restores_after_long_request() -> Result<()> {
-    let mut backend = fixture()?;
-    let short = StateId::ONE;
-    let long = StateId::new(2)?;
+fn check_cold_quote(backend: &mut CudaExecutor) -> Result<usize> {
     assert!(backend.slots.is_none() && backend.worker.is_none());
     let initial = backend.execution_profile().concurrency.unwrap();
     assert!(initial.selected > 1);
@@ -96,6 +90,17 @@ fn request_length_pool_preserves_live_state_and_restores_after_long_request() ->
     );
     assert!(backend.slots.is_none(), "a quote captured CUDA graphs");
 
+    Ok(initial.selected)
+}
+
+/// Exercise the real owner-facing reservation path and complete live-state readbacks.
+#[test]
+#[ignore = "real CUDA/MTP2 checkpoint; run under safe-run with an explicit fixture"]
+fn request_length_pool_preserves_live_state_and_restores_after_long_request() -> Result<()> {
+    let mut backend = fixture()?;
+    let short = StateId::ONE;
+    let long = StateId::new(2)?;
+    let initial = check_cold_quote(&mut backend)?;
     backend.reserve_state_for(short, 384, OutputReadout::Logits)?;
     let short_width = backend.slots.as_ref().unwrap().width();
     let (physical, free) = backend.slots.as_ref().unwrap().kv_pages();
@@ -161,8 +166,7 @@ fn request_length_pool_preserves_live_state_and_restores_after_long_request() ->
     let (total, free) = backend.slots.as_ref().unwrap().kv_pages();
     assert_eq!(total, free);
     println!(
-        "request KV widths: initial={}, short={short_width}, long={long_width}, restored={restored}",
-        initial.selected
+        "request KV widths: initial={initial}, short={short_width}, long={long_width}, restored={restored}"
     );
     Ok(())
 }
