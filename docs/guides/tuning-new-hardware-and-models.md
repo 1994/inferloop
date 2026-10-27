@@ -89,6 +89,25 @@ attention、recurrent、norm、greedy 的独立 allowance 保持原有边界。
 | `INFER_CUDA_PREFILL_PROFILE` / `INFER_CUDA_EXECUTION_PROFILE` | 逐节点 CUDA 事件 / host 阶段记录（由 `--profile` 设置） |
 | `INFER_CUDA_TUNING_TABLE` | 指定调优缓存文件，用于冷启动调优和隔离实验 |
 
+## 内部诊断开关与生产边界
+
+生产程序不读取下列路径选择实验开关；它们只存在于内部 CUDA 测试程序，普通推理
+无需设置任何 `INFER_CUDA_*` 变量：
+
+| 内部测试变量 | 诊断用途 |
+|---|---|
+| `INFER_CUDA_ATTENTION_PRECISE_PREFIX` | 对照 canonical 前缀与完整 FA4 prefill |
+| `INFER_CUDA_RECURRENT_VALUE_SPLIT` | 对照 recurrent value 分块，不能覆盖生产加载期实测选择 |
+| `INFER_CUDA_DEVICE_GREEDY` | 对照 GPU token 读出与原始读出 |
+| `INFER_CUDA_TILED_ATTENTION` | 比较尚未通过完整质量门槛的 tiled attention |
+| `INFER_CUDA_FP8_LT_AUTOTUNE`、`INFER_CUDA_VENDOR_FP8` | 独立 vendor FP8 搜索与数值诊断 |
+
+生产保留的变量仅用于开发者记录与隔离：`INFER_CUDA_PREFILL_PROFILE`、
+`INFER_CUDA_EXECUTION_PROFILE`、`INFER_CUDA_PROFILE_GRAPH_ONLY` 控制性能记录，
+`INFER_CUDA_TUNING_TABLE` 指定隔离的调优缓存路径。默认推理自行解析硬件能力、
+图结构和调优结果，不依赖这些变量选择可用算法。历史实验文档里的开关命令描述
+当时的冻结版本，不能作为当前生产配置步骤。
+
 ## 待改为推导的常数
 
 下列值目前写死，换硬件或换模型时可能不再合适。改动时用推导替换，或者交给调优器实测，不要只换数字。

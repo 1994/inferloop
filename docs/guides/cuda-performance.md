@@ -35,8 +35,9 @@ profiling、冻结缓存和测试的 A/B 控制是开发诊断工具，不能用
 −0.65%（界 −2%），zero-shot 与 eight-shot 点估计均为正。旧的逐题回归上界门不计答错变答对，
 会否决这类双向翻转，已被替换。
 
-`INFER_CUDA_ATTENTION_PRECISE_PREFIX=<positions>` 仅作诊断：恢复前若干 prompt 位置的
-canonical attention，并为此额外捕获一套 prompt 图；默认值为 0，不捕获这套图。目标 BF16
+内部 CUDA 测试可用 `INFER_CUDA_ATTENTION_PRECISE_PREFIX=<positions>` 恢复前若干 prompt
+位置的 canonical attention，以比较数值路径。生产程序忽略这个诊断变量，始终使用已验收的
+0 前缀默认值，不额外捕获 canonical prompt 图。目标 BF16
 调参使用独立的 `fa4-bf16` schema 与 `resident_mma_attention` 缓存区，不与 canonical FP8-KV
 的 `resident_attention` 缓存混用；加载期 tuning、workspace 定价与 admission 共用同一纯
 eligibility 判断。
