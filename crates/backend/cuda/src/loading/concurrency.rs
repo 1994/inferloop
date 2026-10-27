@@ -139,6 +139,26 @@ fn bound(
     ))
 }
 impl LoadedModel {
+    fn roofline_mode(
+        &self,
+        id: TensorId,
+        weight: &ProjectionWeight,
+        n: usize,
+        k: usize,
+    ) -> Compute {
+        match weight {
+            ProjectionWeight::Fp4(..) if self.weights.input_scales.contains_key(&id) => {
+                Compute::Fp4
+            }
+            ProjectionWeight::Fp8(..) | ProjectionWeight::Fp8Block(..)
+                if self.weights.fp8_inputs.contains(&id) =>
+            {
+                Compute::Fp8
+            }
+            _ if pool_dense::supported([1, n, k]) => Compute::Scalar,
+            _ => Compute::Dense,
+        }
+    }
     pub(crate) fn concurrency_roofline(&self) -> Result<Option<usize>> {
         use cuda_core::sys::CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_CLOCK_RATE as CLOCK_RATE;
         if self.graph.nodes.iter().any(|node| {
@@ -181,22 +201,7 @@ impl LoadedModel {
                 .ok_or_else(|| Error::invariant("roofline projection weight"))?;
             let n = elements(&sizes, node.outputs[0])?;
             let k = elements(&sizes, node.inputs[0])?;
-            let small = pool_dense::supported([1, n, k]);
-            let mode = match weight {
-                ProjectionWeight::Fp4(..)
-                    if self.weights.input_scales.contains_key(&node.inputs[1]) =>
-                {
-                    Compute::Fp4
-                }
-                ProjectionWeight::Fp8(..) | ProjectionWeight::Fp8Block(..)
-                    if self.weights.fp8_inputs.contains(&node.inputs[1]) =>
-                {
-                    Compute::Fp8
-                }
-                _ if small => Compute::Scalar,
-                _ => Compute::Dense,
-            };
-            let rate = rates.compute(mode)?;
+            let rate = rates.compute(self.roofline_mode(node.inputs[1], weight, n, k))?;
             memory_bytes = add(memory_bytes, bytes(weight)?)?;
             let flops = mul(mul(extent(n)?, extent(k)?)?, FLOPS_PER_MAC)?;
             normalized_flops = add(normalized_flops, mul(flops, rates.normalization / rate)?)?;
