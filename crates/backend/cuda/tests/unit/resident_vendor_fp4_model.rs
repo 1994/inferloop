@@ -215,7 +215,7 @@ fn extra_consumer_retains_standalone(loaded: &LoadedModel) -> Result<()> {
                     .weights
                     .projections
                     .get(&node.inputs[1])
-                    .is_some_and(|weight| matches!(weight, ProjectionWeight::Fp4(codes, ..) if codes.shape() == [17408, 5120]))
+                    .is_some_and(|weight| matches!(weight, ProjectionWeight::Fp4(codes, ..) if codes.shape() == [17408, 5120 / 2]))
         })
         .ok_or_else(|| Error::invalid("checkpoint gate projection"))?;
     let mut graph = loaded.graph.clone();
