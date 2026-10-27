@@ -330,6 +330,10 @@ impl Support {
                 return Qualification::Native;
             }
         };
+        self.key_qualification(shape, key)
+    }
+
+    fn key_qualification(&self, shape: Shape, key: cache::Key) -> Qualification {
         if let Err(reason) = self.session.plan_projection(
             ProjectionKind::Fp4Lt,
             [shape.m, shape.n, shape.k],
