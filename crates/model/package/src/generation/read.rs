@@ -1,4 +1,4 @@
-use super::GenerationDefaults;
+use super::{GenerationDefaults, apply_preset};
 use crate::ModelRegistry;
 use crate::constants::CONFIG_MAX_BYTES;
 use crate::constants::MIB_U64;
@@ -13,18 +13,7 @@ pub fn load(root: &Path, registry: &ModelRegistry) -> Result<GenerationDefaults>
     let generation = json(root, "generation_config.json")?;
     let mut base = Sampling::default();
     let mut sources = BTreeMap::new();
-    let card = if root.join("README.md").exists() {
-        let bytes = read_bounded(&package_path(root, "README.md")?, 2 * MIB_U64)?;
-        Some(String::from_utf8(bytes).map_err(|e| Error::invalid(e.to_string()))?)
-    } else {
-        None
-    };
-    let config_bytes = serde_json::to_vec(&config).map_err(|e| Error::invalid(e.to_string()))?;
-    let policy = match registry.resolve(&config_bytes) {
-        Ok(provider) => provider.generation_policy(&config_bytes, card.as_deref())?,
-        Err(error) if error.code == ErrorCode::Unsupported => GenerationPolicy::default(),
-        Err(error) => return Err(error),
-    };
+    let policy = generation_policy(root, registry, &config)?;
     for key in [
         "temperature",
         "top_p",
@@ -45,6 +34,9 @@ pub fn load(root: &Path, registry: &ModelRegistry) -> Result<GenerationDefaults>
         },
     )?;
     base.temperature = if sampling { 1.0 } else { 0.0 };
+    if let Some(defaults) = &policy.sampling_defaults {
+        apply_preset(&mut base, &mut sources, defaults);
+    }
     for (key, target) in [
         ("temperature", &mut base.temperature),
         ("top_p", &mut base.top_p),
@@ -60,6 +52,12 @@ pub fn load(root: &Path, registry: &ModelRegistry) -> Result<GenerationDefaults>
     }
     if !sampling {
         base.temperature = 0.0;
+        if generation.get("do_sample").is_some() {
+            sources.insert(
+                "temperature".into(),
+                "generation_config.json do_sample=false".into(),
+            );
+        }
     }
     if let Some(value) = generation.get("top_k") {
         let number = value
@@ -101,6 +99,25 @@ pub fn load(root: &Path, registry: &ModelRegistry) -> Result<GenerationDefaults>
         policy,
         sources,
     })
+}
+
+fn generation_policy(
+    root: &Path,
+    registry: &ModelRegistry,
+    config: &serde_json::Value,
+) -> Result<GenerationPolicy> {
+    let card = if root.join("README.md").exists() {
+        let bytes = read_bounded(&package_path(root, "README.md")?, 2 * MIB_U64)?;
+        Some(String::from_utf8(bytes).map_err(|e| Error::invalid(e.to_string()))?)
+    } else {
+        None
+    };
+    let config_bytes = serde_json::to_vec(&config).map_err(|e| Error::invalid(e.to_string()))?;
+    match registry.resolve(&config_bytes) {
+        Ok(provider) => provider.generation_policy(&config_bytes, card.as_deref()),
+        Err(error) if error.code == ErrorCode::Unsupported => Ok(GenerationPolicy::default()),
+        Err(error) => Err(error),
+    }
 }
 
 fn json(root: &Path, name: &str) -> Result<serde_json::Value> {

@@ -1,6 +1,12 @@
 //! Qwen model-card generation recommendations.
-use infer_spi::{GenerationPolicy, GenerationPreset, GreedyPreset};
+use infer_spi::{GenerationPolicy, GenerationPreset};
 
+/// Recommended thinking temperature for original Qwen3 hybrid models.
+const QWEN3_THINKING_TEMPERATURE: f32 = 0.6;
+/// Recommended thinking nucleus probability for Qwen3 and Qwen3.8.
+const THINKING_TOP_P: f32 = 0.95;
+/// Recommended top-k for Qwen3 and Qwen3.8 generation.
+const QWEN_TOP_K: usize = 20;
 /// Recommended non-thinking temperature for Qwen3 and Qwen3.8.
 const NON_THINKING_TEMPERATURE: f32 = 0.7;
 /// Recommended non-thinking nucleus probability for Qwen3 and Qwen3.8.
@@ -31,20 +37,26 @@ pub(super) fn policy(card: Option<&str>) -> GenerationPolicy {
             if line.strip_prefix("- Qwen/Qwen3.8-").is_some_and(model_size) {
                 return preset(QwenVariant::Qwen38);
             }
-            if line
-                .strip_prefix("- Qwen/Qwen3-")
-                .and_then(|name| name.strip_suffix("-Base"))
-                .is_some_and(model_size)
-            {
+            if line.strip_prefix("- Qwen/Qwen3-").is_some_and(model_size) {
                 return preset(QwenVariant::Hybrid);
             }
         }
     }
-    // Original Qwen3.8 cards have no base_model field but identify themselves in the title.
-    if body
+    // Original cards identify the actual chat model in the first title. A base-model lineage
+    // alone is insufficient: embedding and reranking models may share the same base.
+    let title = body
         .lines()
         .map(str::trim)
-        .any(|line| line.strip_prefix("# Qwen3.8-").is_some_and(model_size))
+        .find_map(|line| line.strip_prefix("# "));
+    if title
+        .and_then(|title| title.strip_prefix("Qwen3-"))
+        .is_some_and(model_size)
+    {
+        return preset(QwenVariant::Hybrid);
+    }
+    if title
+        .and_then(|title| title.strip_prefix("Qwen3.8-"))
+        .is_some_and(model_size)
     {
         return preset(QwenVariant::Qwen38);
     }
@@ -83,16 +95,26 @@ fn preset(variant: QwenVariant) -> GenerationPolicy {
     let qwen38 = variant == QwenVariant::Qwen38;
     GenerationPolicy {
         enable_thinking: true,
-        sample_by_default: qwen38,
+        sample_by_default: true,
+        sampling_defaults: Some(GenerationPreset {
+            temperature: Some(if qwen38 {
+                1.0
+            } else {
+                QWEN3_THINKING_TEMPERATURE
+            }),
+            top_k: Some(QWEN_TOP_K),
+            top_p: Some(THINKING_TOP_P),
+            source: if qwen38 {
+                "Qwen3.8 model-card sampling fallback"
+            } else {
+                "Qwen3 hybrid model-card sampling fallback"
+            },
+            ..GenerationPreset::default()
+        }),
         non_thinking: Some(GenerationPreset {
             temperature: Some(NON_THINKING_TEMPERATURE),
             top_p: Some(NON_THINKING_TOP_P),
             presence_penalty: qwen38.then_some(QWEN38_PRESENCE_PENALTY),
-            greedy: if qwen38 {
-                GreedyPreset::Apply
-            } else {
-                GreedyPreset::Preserve
-            },
             source: if qwen38 {
                 "Qwen3.8 model-card non-thinking recommendation"
             } else {
