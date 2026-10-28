@@ -314,3 +314,26 @@ package 校验、独立参考、draft 图/selector 模块与容量分析属于 D
 正确性矩阵覆盖首 token 拒绝、中间拒绝、全接受、EOS、输出上限、prefill chunk 尾部、2048 窗口边界、prefix 恢复与 provider 切换。greedy 的最终输出对照同一 target 权重和精度下的普通 decode；中间状态须在拒绝后继续运行多步验证。
 
 性能比较执行 [性能基线方案](../performance/baseline.md) 的构建、配置、负载与统计要求，至少包括普通 decode、当前最佳 MTP 配置和 DFlash2。引用已验收的普通 decode/MTP baseline ID，另行登记 DFlash2 候选 profile；首次接入不预设 DFlash2 已有有效基线。报告真实启用的算法、图宽度、池化状态、显存与接受长度，不能把因容量失败而退回 serial 的结果标为 pooled DFlash2。
+
+## 小模型回归
+
+`--draft-model` 的首个单请求也在准入阶段建立 proposal/verify 图；单槽验证不要求第二个请求到来。
+普通 decoder 没有 recurrent writer 时只提交游标，不要求 recurrent commit 图。准入按实际
+block 宽度计算 target storage，并覆盖各窄图、草稿 proposal/ingestion、split-K 和 greedy
+readout 工作区；引擎的序列环与 prompt ingestion 单独计费。无法资助草稿图时明确拒绝。
+
+可用 ModelScope 的 `Qwen/Qwen3-0.6B` 真权重验证较小的普通 decoder，再生成一个约
+18 MB 的确定性 FP8 草稿测试包，覆盖草稿加载、冷启动、提议与拒绝后的状态提交：
+
+```sh
+python3 tools/fixtures/export-dflash2-test-package.py \
+  --target /path/to/Qwen3-0.6B --output /tmp/dflash2-test-package
+INFER_TEST_MODEL=/path/to/Qwen3-0.6B INFER_TEST_DRAFT=/tmp/dflash2-test-package \
+  bash tools/bench/safe-run.sh --memory-gib 24 --time-limit-seconds 600 \
+  cargo test --locked --release -p infer-backend-cuda --features cuda --lib -- \
+  --ignored --test-threads=1 cold_dflash2 block_attention draft_buffer_quotes \
+  resident::slot_verify::tests::pooled_verify lanes
+```
+
+这个草稿包未经训练，不能用于接受率、模型质量或加速比结论。MTP 专用模型测试仍需要
+具备 MTP 头的独立 checkpoint；小模型通过不能代替其设备验收。
