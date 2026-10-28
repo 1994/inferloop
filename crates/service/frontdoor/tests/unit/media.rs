@@ -46,7 +46,10 @@ fn image_resize_options_merge_and_preserve_shared_defaults() {
         (processor.min_pixels, processor.max_pixels),
         (1024, 16_777_216)
     );
-    assert_eq!(defaults.processor(&processor).unwrap().max_pixels, 1_048_576);
+    assert_eq!(
+        defaults.processor(&processor).unwrap().max_pixels,
+        1_048_576
+    );
     let mut zero_minimum = processor.clone();
     zero_minimum.min_pixels = 0;
     assert_eq!(
