@@ -9,10 +9,12 @@ const NON_THINKING_TOP_P: f32 = 0.8;
 const QWEN38_PRESENCE_PENALTY: f32 = 1.5;
 
 pub(super) fn policy(card: Option<&str>) -> GenerationPolicy {
-    let Some(front) = card
-        .and_then(|card| card.strip_prefix("---"))
+    let Some(card) = card else {
+        return GenerationPolicy::default();
+    };
+    let Some((front, body)) = card
+        .strip_prefix("---")
         .and_then(|card| card.split_once("---"))
-        .map(|(front, _)| front)
     else {
         return GenerationPolicy::default();
     };
@@ -25,24 +27,50 @@ pub(super) fn policy(card: Option<&str>) -> GenerationPolicy {
         if !line.starts_with("- ") && !line.is_empty() {
             base_model = false;
         }
-        match line {
-            "- Qwen/Qwen3.8-27B" => return preset(QwenVariant::Qwen38),
-            "- Qwen/Qwen3-0.6B-Base"
-            | "- Qwen/Qwen3-1.7B-Base"
-            | "- Qwen/Qwen3-4B-Base"
-            | "- Qwen/Qwen3-8B-Base"
-            | "- Qwen/Qwen3-14B-Base"
-            | "- Qwen/Qwen3-32B-Base"
-            | "- Qwen/Qwen3-30B-A3B-Base"
-            | "- Qwen/Qwen3-235B-A22B-Base"
-                if base_model =>
+        if base_model {
+            if line.strip_prefix("- Qwen/Qwen3.8-").is_some_and(model_size) {
+                return preset(QwenVariant::Qwen38);
+            }
+            if line
+                .strip_prefix("- Qwen/Qwen3-")
+                .and_then(|name| name.strip_suffix("-Base"))
+                .is_some_and(model_size)
             {
                 return preset(QwenVariant::Hybrid);
             }
-            _ => {}
         }
     }
+    // Original Qwen3.8 cards have no base_model field but identify themselves in the title.
+    if body
+        .lines()
+        .map(str::trim)
+        .any(|line| line.strip_prefix("# Qwen3.8-").is_some_and(model_size))
+    {
+        return preset(QwenVariant::Qwen38);
+    }
     GenerationPolicy::default()
+}
+
+// A Qwen size may be dense (e.g. 8B) or an MoE total/active pair (e.g. 30B-A3B).
+fn model_size(name: &str) -> bool {
+    match name.split_once("-A") {
+        Some((total, active)) => size(total) && size(active),
+        None => size(name),
+    }
+}
+
+fn size(name: &str) -> bool {
+    let Some(number) = name.strip_suffix("B") else {
+        return false;
+    };
+    let mut parts = number.split('.');
+    let first = parts.next().unwrap_or_default();
+    !first.is_empty()
+        && first.bytes().all(|byte| byte.is_ascii_digit())
+        && parts
+            .next()
+            .is_none_or(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+        && parts.next().is_none()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
