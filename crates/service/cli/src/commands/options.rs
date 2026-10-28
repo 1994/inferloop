@@ -1,6 +1,7 @@
 //! Options commands.
 use crate::constants::DEFAULT_LISTEN_PORT;
 use infer_frontdoor::ImageProcessingOptions;
+#[cfg(any(native_backend, test))]
 use infer_frontdoor::cpu::CpuConfig;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
@@ -10,6 +11,7 @@ use std::path::PathBuf;
 /// Bytes in one mebibyte.
 const BYTES_PER_MIB: usize = 1 << 20;
 /// Microseconds in one millisecond.
+#[cfg(any(native_backend, test))]
 const MICROS_PER_MILLI: u64 = 1_000;
 
 #[derive(clap::Args)]
@@ -34,6 +36,7 @@ impl ServeOptions {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), DEFAULT_LISTEN_PORT)
     }
 
+    #[cfg(any(native_backend, test))]
     pub(crate) fn cpu_config(staging_bytes: Option<usize>, resource_timeout_us: u64) -> CpuConfig {
         let mut config = CpuConfig {
             device_control_timeout_ms: resource_timeout_us.div_ceil(MICROS_PER_MILLI),
