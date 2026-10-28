@@ -12,11 +12,14 @@ use tokio::runtime::Runtime;
 pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Result<()> {
     #[cfg(cuda_backend)]
     let (backend_choice, tuning_worker) = super::tuning_worker::prepare(backend_choice)?;
+    let cpu_staging_bytes = options.cpu_staging_bytes;
     let ServeOptions {
         listen,
         config: config_path,
         package,
         host_memory_mib,
+        image_options,
+        ..
     } = options;
     let media_limits = backend_choice.media_limits;
     let text_only = backend_choice.text_only;
@@ -27,6 +30,8 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
         host_memory_mib,
         backend_choice,
     )?;
+    let cpu_config =
+        ServeOptions::cpu_config(cpu_staging_bytes, engine.config().resource_timeout_us);
     #[cfg(cuda_backend)]
     if tuning_worker {
         tracing::info!(target: "infer::tuning", "CUDA tuning preparation complete; releasing preparation resources");
@@ -47,7 +52,13 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
             .map(infer_models::MultimodalAssets::open)
             .transpose()?
             .flatten()
-            .map(|assets| Arc::new(infer_frontdoor::MediaService::new(assets, media_limits)))
+            .map(|assets| {
+                let service = infer_frontdoor::MediaService::new(assets, media_limits);
+                Arc::new(match image_options {
+                    Some(options) => service.with_image_options(options),
+                    None => service,
+                })
+            })
     };
     Runtime::new()
         .map_err(|e| Error::new(ErrorCode::Backend, e.to_string()))?
@@ -55,7 +66,7 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
             let listener = TcpListener::bind(listen)
                 .await
                 .map_err(|e| Error::new(ErrorCode::Backend, e.to_string()))?;
-            let handle = infer_frontdoor::RuntimeHandle::start(engine)?;
+            let handle = infer_frontdoor::RuntimeHandle::start_with_config(engine, cpu_config)?;
             let shutdown = handle.clone();
             tracing::info!(target: "infer::serve", listen = %listen, "listening for requests");
             axum_serve(listener, handle, shutdown, assets, media).await

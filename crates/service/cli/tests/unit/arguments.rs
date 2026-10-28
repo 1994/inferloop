@@ -1,4 +1,5 @@
 use super::*;
+use infer_frontdoor::cpu::CpuConfig;
 use std::path::Path;
 
 #[test]
@@ -18,7 +19,69 @@ fn model_path_serves_with_automatic_defaults() {
         Some(Path::new("/models/example"))
     );
     assert!(options.config.is_none());
+    assert!(options.cpu_staging_bytes.is_none());
+    let config = commands::ServeOptions::cpu_config(options.cpu_staging_bytes, 1_001);
+    assert_eq!(config.max_bytes, CpuConfig::default().max_bytes);
+    assert_eq!(config.device_control_timeout_ms, 2);
     assert_eq!(options.listen.to_string(), "127.0.0.1:8080");
+}
+
+#[test]
+fn cpu_staging_budget_is_validated_and_reaches_server_config() {
+    for args in [
+        vec!["infer", "./model", "--cpu-staging-mib", "128"],
+        vec![
+            "infer",
+            "serve",
+            "--package",
+            "./model",
+            "--cpu-staging-mib",
+            "128",
+        ],
+    ] {
+        let Command::Serve(options) = Cli::try_parse_from(args).unwrap().into_command().unwrap()
+        else {
+            panic!("expected server")
+        };
+        let config = commands::ServeOptions::cpu_config(options.cpu_staging_bytes, 1_001);
+        assert_eq!(config.max_bytes, 128 * 1024 * 1024);
+        assert_eq!(config.device_control_timeout_ms, 2);
+        assert!(config.validate().is_ok());
+    }
+    for value in ["0", "-1", "1.5", "18446744073709551615"] {
+        assert!(Cli::try_parse_from(["infer", "./model", "--cpu-staging-mib", value]).is_err());
+    }
+}
+
+#[test]
+fn image_processor_options_are_accepted_by_both_server_entrypoints() {
+    let kwargs = r#"{"max_pixels":262144}"#;
+    for args in [
+        vec!["infer", "./model", "--mm-processor-kwargs", kwargs],
+        vec![
+            "infer",
+            "serve",
+            "--package",
+            "./model",
+            "--mm-processor-kwargs",
+            kwargs,
+        ],
+    ] {
+        let Command::Serve(options) = Cli::try_parse_from(args).unwrap().into_command().unwrap()
+        else {
+            panic!("expected server")
+        };
+        assert!(options.image_options.is_some());
+    }
+    assert!(
+        Cli::try_parse_from([
+            "infer",
+            "./model",
+            "--mm-processor-kwargs",
+            r#"{"do_resize":false}"#
+        ])
+        .is_err()
+    );
 }
 
 #[test]

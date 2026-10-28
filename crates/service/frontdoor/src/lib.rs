@@ -10,4 +10,4 @@ pub use http::{
     HttpError, NativeJsonAdapter, NativeTextRequest, router, router_with_text,
     router_with_text_and_media, serve, serve_with_text, serve_with_text_and_media,
 };
-pub use media::{MediaRequest, MediaService};
+pub use media::{ImageProcessingOptions, MediaRequest, MediaService};

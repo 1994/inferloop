@@ -173,7 +173,8 @@ pub(crate) fn patchify(
         .checked_mul(grid.temporal)
         .and_then(|value| value.checked_mul(patch_area))
         .ok_or_else(|| Error::invalid("patch width overflow"))?;
-    let patches = expected_frames
+    let patches = grid
+        .groups
         .checked_mul(grid.height)
         .and_then(|value| value.checked_mul(grid.width))
         .ok_or_else(|| Error::invalid("patch count overflow"))?;
@@ -322,16 +323,25 @@ impl ImageProcessor {
     /// # Errors
     /// Rejects malformed image buffers or geometry that does not tile by the patch grid.
     pub fn preprocess(&self, image: &RgbImage) -> Result<PreprocessedImage> {
-        let expected = image
-            .height
-            .checked_mul(image.width)
+        self.preprocess_rgb(image.height, image.width, &image.pixels)
+    }
+
+    /// Preprocess borrowed RGB8 pixels without copying the caller's image.
+    pub(crate) fn preprocess_rgb(
+        &self,
+        height: usize,
+        width: usize,
+        pixels: &[u8],
+    ) -> Result<PreprocessedImage> {
+        let expected = height
+            .checked_mul(width)
             .and_then(|value| value.checked_mul(RGB_CHANNELS))
             .ok_or_else(|| Error::invalid("image dimensions overflow"))?;
-        if image.pixels.len() != expected {
+        if pixels.len() != expected {
             return Err(Error::invalid("image buffer does not match its dimensions"));
         }
-        let (resized_height, resized_width) = self.smart_resize(image.height, image.width)?;
-        let resized = Self::resize(image, resized_height, resized_width);
+        let (resized_height, resized_width) = self.smart_resize(height, width)?;
+        let resized = Self::resize_pixels(pixels, height, width, resized_height, resized_width);
         let grid_h = resized_height / self.patch_size;
         let grid_w = resized_width / self.patch_size;
         let merge = self.merge_size;
@@ -365,22 +375,36 @@ impl ImageProcessor {
     }
 
     /// Separable bicubic resize of an RGB8 image into `height × width`, in `0..=255`.
+    pub(crate) fn resize(image: &RgbImage, height: usize, width: usize) -> Vec<f32> {
+        Self::resize_pixels(&image.pixels, image.height, image.width, height, width)
+    }
+
     #[expect(
         clippy::cast_possible_truncation,
         reason = "Resampled values are rounded into the 8-bit range before the narrowing cast"
     )]
-    pub(crate) fn resize(image: &RgbImage, height: usize, width: usize) -> Vec<f32> {
-        let horizontal = resample_axis(image.width, width);
-        let vertical = resample_axis(image.height, height);
-        let mut intermediate = vec![0f32; image.height * width * RGB_CHANNELS];
-        for y in 0..image.height {
+    fn resize_pixels(
+        pixels: &[u8],
+        source_height: usize,
+        source_width: usize,
+        height: usize,
+        width: usize,
+    ) -> Vec<f32> {
+        if source_height == height && source_width == width {
+            // At unit scale the bicubic taps select the original RGB8 value exactly.
+            return pixels.iter().copied().map(f32::from).collect();
+        }
+        let horizontal = resample_axis(source_width, width);
+        let vertical = resample_axis(source_height, height);
+        let mut intermediate = vec![0f32; source_height * width * RGB_CHANNELS];
+        for y in 0..source_height {
             for x in 0..width {
                 let weights = &horizontal[x];
                 for channel in 0..RGB_CHANNELS {
                     let mut value = 0f64;
                     for &(tap, weight) in weights {
-                        let index = (y * image.width + tap) * RGB_CHANNELS + channel;
-                        value = weight.mul_add(f64::from(image.pixels[index]), value);
+                        let index = (y * source_width + tap) * RGB_CHANNELS + channel;
+                        value = weight.mul_add(f64::from(pixels[index]), value);
                     }
                     let rounded = value.round().clamp(0.0, BYTE_SCALE) as f32;
                     intermediate[(y * width + x) * RGB_CHANNELS + channel] = rounded;

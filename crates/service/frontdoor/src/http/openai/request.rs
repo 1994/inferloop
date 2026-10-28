@@ -92,6 +92,7 @@ pub(super) struct GenerationRequest {
     pub tool_choice: Option<WireToolChoice>,
     pub parallel_tool_calls: Option<bool>,
     pub stream_options: Option<StreamOptions>,
+    pub mm_processor_kwargs: Option<Value>,
 }
 
 /// Streaming modifiers accepted alongside `stream=true`.

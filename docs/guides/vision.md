@@ -14,7 +14,7 @@ CUDA 提供 patch embed、LayerNorm、QKV/MLP/merger 投影、轴向 RoPE、按�
 
 多模态 prompt 以融合分块执行：每个 media 行在设备流上拷入 lane 的外部 embedding 槽，embedding kernel 按每个 token 的 override 标志选择词表或外部向量，每个 lane 的三轴位置写入 prefill 的 M-RoPE 表，因此一个 1000 token 的图像 prompt 只花 `ceil(tokens / prefill_width)` 次图重放，而不是每 token 一次 decode。没有 prompt 图（`prefill_width < 32`）时退回逐 token 路径，对齐合同不变。
 
-RTX 5090 上 Qwen3-VL-2B 的实测（prefill 阶段，含同一视觉编码）：172 token 双图 prompt 融合分块 60 ms，逐 token 回退 543 ms；45 token 视频（2 个 temporal group）9.7 ms 对 128 ms。数字只说明两条路径的相对差，不作为发布性能门槛。
+RTX 5090 上 Qwen3-VL-2B 的实测（prefill 阶段，视觉编码在计时前完成）：172 token 双图 prompt 融合分块 60 ms，逐 token 回退 543 ms；45 token 视频（2 个 temporal group）9.7 ms 对 128 ms。这些数字不包含预处理或视觉编码，只说明两条 prefill 路径的相对差，不作为发布性能门槛。
 
 ## 服务路径
 
@@ -22,6 +22,8 @@ OpenAI chat 的 `image_url` / `video_url` 内容部分现在进入真实 serving
 
 - 同一 prompt 暂只支持一种媒体模态；混合 image/video 会返回显式 unsupported。
 - `--limit-mm-per-prompt '{"image":N,"video":M}'` 是每 prompt 上限。全零配置只服务文本并跳过视觉塔；非零配置在加载时绑定并使用视觉权重。默认上限为 2 张图、1 段视频。
+- `--cpu-staging-mib` 设置 CPU 准备和入口的准入字节预算；省略时各为 64 MiB。每个媒体项目前按 25 MiB 计入预算，另加文本等费用；额度不足时拒绝请求。该预算不是进程内存上限，调大不会增加 CPU 处理能力，调整前应测量并发、实际内存和延迟。
+- `--mm-processor-kwargs` 可设置图像处理默认 JSON，OpenAI chat 的 `mm_processor_kwargs` 按顶层键覆盖默认值。当前仅支持 `min_pixels`、`max_pixels`，或完整的 `size` 对象（`shortest_edge` 和 `longest_edge`）；`size` 不可与平铺像素参数混用。嵌套 `images_kwargs`、`do_resize` 等暂不支持并会报错。覆盖参数按固定每项 25 MiB 的准备预算保守估算，可能拒绝较大图片；增加全局 CPU 准入预算不会增加这一单项估价。这是 vLLM 接口的受限子集，不代表完整兼容。
 - 文本部署收到媒体时返回结构化 `unsupported_feature`，不消费 request identity。
 - `data:`/`http(s)` 的 PNG/JPEG/WebP/GIF 由进程内 codec 解码；视频以及 `http(s)` 下载依赖宿主 `ffmpeg`/`ffprobe`/`curl`，缺失时返回显式 unsupported。公开 HTTP 输入拒绝 `file://` 与服务端绝对路径；所有读取、帧数、尺寸、解码维度和子进程墙钟时间都有上限。
 - media 请求不参与 prefix reuse，也不支持 MTP speculation；这两条都是显式错误而不是静默降级。

@@ -1,3 +1,4 @@
+use super::options::{ImageProcessingOptions, check_working_set};
 use super::{
     MEDIA_STAGING_BYTES, SourcePolicy, TempPath, check_video_frame_limit, load_image,
     load_video_with, parse_rate, read_url, run_bounded,
@@ -6,6 +7,7 @@ use crate::cpu::cancelled_context;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use infer_models::MediaLimits;
+use infer_models::{ImageProcessor, RawImage};
 use std::env::temp_dir;
 use std::fs::{remove_file, write};
 use std::io::Cursor;
@@ -14,6 +16,197 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const ONE_PIXEL_PNG: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+#[test]
+fn image_resize_options_merge_and_preserve_shared_defaults() {
+    let defaults =
+        ImageProcessingOptions::parse(r#"{"min_pixels":65536,"max_pixels":1048576}"#).unwrap();
+    let request = ImageProcessingOptions::parse(r#"{"max_pixels":262144}"#).unwrap();
+    let processor = ImageProcessor {
+        patch_size: 16,
+        temporal_patch_size: 2,
+        merge_size: 2,
+        min_pixels: 1024,
+        max_pixels: 16777216,
+        mean: [0.5; 3],
+        std: [0.5; 3],
+        rescale: 1.0 / 255.0,
+    };
+    let effective = defaults
+        .merge(Some(&request))
+        .unwrap()
+        .processor(&processor)
+        .unwrap();
+    assert_eq!(
+        (effective.min_pixels, effective.max_pixels),
+        (65536, 262144)
+    );
+    assert_eq!(effective.smart_resize(1024, 1024).unwrap(), (512, 512));
+    assert_eq!(
+        (processor.min_pixels, processor.max_pixels),
+        (1024, 16777216)
+    );
+    assert_eq!(defaults.processor(&processor).unwrap().max_pixels, 1048576);
+    let mut zero_minimum = processor.clone();
+    zero_minimum.min_pixels = 0;
+    assert_eq!(
+        ImageProcessingOptions::default()
+            .processor(&zero_minimum)
+            .unwrap()
+            .min_pixels,
+        0
+    );
+    let size =
+        ImageProcessingOptions::parse(r#"{"size":{"shortest_edge":65536,"longest_edge":262144}}"#)
+            .unwrap();
+    assert_eq!(
+        size.processor(&processor)
+            .unwrap()
+            .smart_resize(1024, 1024)
+            .unwrap(),
+        (512, 512)
+    );
+    let image = RawImage {
+        height: 1024,
+        width: 1024,
+        pixels: vec![0; 1024 * 1024 * 3],
+    };
+    assert!(check_working_set(&[image], &effective).is_ok());
+    // At equal dimensions, the patch buffer and its handoff copy fit the per-item budget.
+    let image = RawImage {
+        height: 704,
+        width: 704,
+        pixels: vec![0; 704 * 704 * 3],
+    };
+    assert!(check_working_set(&[image], &defaults.processor(&processor).unwrap()).is_ok());
+}
+
+#[test]
+fn image_resize_options_reject_ambiguous_unsupported_and_unbounded_inputs() {
+    for value in [
+        r#"{"size":{"shortest_edge":1}}"#,
+        r#"{"size":{"shortest_edge":1,"longest_edge":2},"max_pixels":2}"#,
+        r#"{"max_pixels":0}"#,
+        r#"{"min_pixels":100,"max_pixels":50}"#,
+        r#"{"images_kwargs":{}}"#,
+        r#"{"do_resize":false}"#,
+        r#"{"max_pixels":16777217}"#,
+    ] {
+        assert!(
+            ImageProcessingOptions::parse(value).is_err(),
+            "accepted {value}"
+        );
+    }
+    let processor = ImageProcessor {
+        patch_size: 16,
+        temporal_patch_size: 2,
+        merge_size: 2,
+        min_pixels: 16777216,
+        max_pixels: 16777216,
+        mean: [0.5; 3],
+        std: [0.5; 3],
+        rescale: 1.0 / 255.0,
+    };
+    let image = RawImage {
+        height: 32,
+        width: 32,
+        pixels: vec![0; 32 * 32 * 3],
+    };
+    assert!(check_working_set(&[image], &processor).is_err());
+}
+
+/// The real package fixture is required to exercise tokenizer, grid and media handoff together.
+#[tokio::test]
+async fn image_request_overrides_are_isolated_and_align_media() {
+    use crate::cpu::{CpuConfig, CpuPool};
+    use std::env::var;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    let Ok(package) = var("INFER_VISION_PACKAGE") else {
+        return;
+    };
+    let root = Path::new(&package);
+    let multimodal = infer_models::MultimodalAssets::open(root)
+        .expect("package metadata")
+        .expect("vision model");
+    let assets = Arc::new(infer_models::TextAssets::open(root, 4096).expect("tokenizer"));
+    let defaults = ImageProcessingOptions::parse(r#"{"max_pixels":262144}"#).unwrap();
+    let service = Arc::new(
+        super::MediaService::new(multimodal, MediaLimits::default()).with_image_options(defaults),
+    );
+    let uri = format!(
+        "data:image/png;base64,{}",
+        STANDARD.encode(encoded(
+            image::RgbImage::new(1024, 1024),
+            image::ImageFormat::Png
+        ))
+    );
+    let pool = CpuPool::new(CpuConfig::default()).unwrap();
+    let run = |request_options: Option<ImageProcessingOptions>| {
+        let assets = assets.clone();
+        let service = service.clone();
+        let uri = uri.clone();
+        pool.run(MEDIA_STAGING_BYTES, move |context| {
+            let requests = [super::MediaRequest {
+                modality: infer_ir::Modality::Image,
+                url: uri,
+            }];
+            service.prepare_with_options(
+                &assets,
+                "<|vision_start|><|image_pad|><|vision_end|>describe",
+                &requests,
+                context,
+                request_options.as_ref(),
+            )
+        })
+    };
+    let requested = ImageProcessingOptions::parse(r#"{"max_pixels":65536}"#).unwrap();
+    let (normal, overridden) = tokio::join!(run(None), run(Some(requested)));
+    let (normal, normal_media) = normal.expect("service defaults");
+    let (overridden, overridden_media) = overridden.expect("request override");
+    assert_eq!(normal.images[0].grid, (1, 32, 32));
+    assert_eq!(overridden.images[0].grid, (1, 16, 16));
+    for (prepared, media) in [(normal, normal_media), (overridden, overridden_media)] {
+        assert_eq!(
+            prepared.images[0].grid,
+            media[0].item.as_ref().unwrap().grid
+        );
+        assert_eq!(prepared.spans[0], media[0].item.as_ref().unwrap().span);
+        assert_eq!(
+            prepared.spans[0].len(),
+            prepared.images[0].grid.1 * prepared.images[0].grid.2 / 4
+        );
+    }
+
+    let run_video = |request_options: Option<ImageProcessingOptions>| {
+        let assets = assets.clone();
+        let service = service.clone();
+        pool.run(MEDIA_STAGING_BYTES, move |context| {
+            let requests = [super::MediaRequest {
+                modality: infer_ir::Modality::Video,
+                url: "invalid-scheme:video".to_owned(),
+            }];
+            service.prepare_with_options(
+                &assets,
+                "<|vision_start|><|video_pad|><|vision_end|>describe",
+                &requests,
+                context,
+                request_options.as_ref(),
+            )
+        })
+    };
+    let error = run_video(None).await.expect_err("invalid URL");
+    assert!(error.message.starts_with("media URL must be"));
+    let options = ImageProcessingOptions::parse(r#"{"max_pixels":65536}"#).unwrap();
+    let error = run_video(Some(options))
+        .await
+        .expect_err("video image options");
+    assert_eq!(
+        error.message,
+        "image processor options do not apply to video"
+    );
+}
 
 fn noisy_image(width: u32, height: u32) -> image::RgbImage {
     let mut image = image::RgbImage::new(width, height);

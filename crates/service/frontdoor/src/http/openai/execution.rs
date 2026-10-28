@@ -1,7 +1,7 @@
 use super::{ApiResult, GenerationRequest, TextState, ToolPolicy};
 use crate::constants::TOKEN_STAGING_BYTES;
 use crate::cpu::CpuContext;
-use crate::media::{MEDIA_STAGING_BYTES, MediaRequest, MediaService};
+use crate::media::{ImageProcessingOptions, MEDIA_STAGING_BYTES, MediaRequest, MediaService};
 use axum::http::HeaderMap;
 use infer_core::{Error, ErrorCode, FinishReason, RequestId};
 use infer_ir::{CanonicalRequest, RequestInput, Workload, WorkloadOutput};
@@ -39,6 +39,7 @@ struct Encoding {
     messages: Option<Vec<infer_models::ChatMessage>>,
     media_requests: Vec<MediaRequest>,
     media: Option<Arc<MediaService>>,
+    image_options: Option<ImageProcessingOptions>,
     prompt: Option<String>,
     tools: Option<Value>,
     enable_thinking: bool,
@@ -78,8 +79,13 @@ impl Encoding {
                     .media
                     .as_ref()
                     .ok_or_else(|| Error::unsupported("this deployment is text-only"))?;
-                let (prepared, inputs) =
-                    media.prepare(&self.assets, &rendered, &self.media_requests, context)?;
+                let (prepared, inputs) = media.prepare_with_options(
+                    &self.assets,
+                    &rendered,
+                    &self.media_requests,
+                    context,
+                    self.image_options.as_ref(),
+                )?;
                 (prepared.tokens, inputs)
             }
         } else {
@@ -158,6 +164,41 @@ fn chat_media(
     Ok((messages, media, bytes))
 }
 
+fn image_options(
+    request: &GenerationRequest,
+    media: &[MediaRequest],
+) -> infer_core::Result<Option<ImageProcessingOptions>> {
+    let options = request
+        .mm_processor_kwargs
+        .as_ref()
+        .map(|value| ImageProcessingOptions::parse(&value.to_string()))
+        .transpose()?;
+    if options.is_some() && media.is_empty() {
+        return Err(Error::unsupported(
+            "image processor options require image media",
+        ));
+    }
+    Ok(options)
+}
+
+fn preparation_bytes(
+    request: &GenerationRequest,
+    max_new_tokens: usize,
+    media_bytes: usize,
+    policy: &ToolPolicy,
+) -> infer_core::Result<usize> {
+    request
+        .preparation_bytes(max_new_tokens)?
+        .checked_add(media_bytes)
+        .ok_or_else(|| Error::invalid("media preparation budget overflow"))?
+        .checked_add(if policy.constraint().is_some() {
+            infer_models::CONSTRAINT_REQUEST_BYTES
+        } else {
+            0
+        })
+        .ok_or_else(|| Error::invalid("constraint preparation budget overflow"))
+}
+
 /// Validate, price and submit one generation.
 ///
 /// # Errors
@@ -186,16 +227,8 @@ pub(super) async fn prepare(
     // Convert the wire history before consuming a request identity, so a malformed tool or
     // media part is a parameter error rather than a failed request.
     let (messages, media_requests, media_bytes) = chat_media(state, &request, chat)?;
-    let bytes = request
-        .preparation_bytes(max_new_tokens)?
-        .checked_add(media_bytes)
-        .ok_or_else(|| Error::invalid("media preparation budget overflow"))?
-        .checked_add(if policy.constraint().is_some() {
-            infer_models::CONSTRAINT_REQUEST_BYTES
-        } else {
-            0
-        })
-        .ok_or_else(|| Error::invalid("constraint preparation budget overflow"))?;
+    let image_options = image_options(&request, &media_requests)?;
+    let bytes = preparation_bytes(&request, max_new_tokens, media_bytes, &policy)?;
     if request.model != inspection.model_name {
         return Err(Error::new(ErrorCode::NotFound, "model is not served; see /v1/models").into());
     }
@@ -240,6 +273,7 @@ pub(super) async fn prepare(
         messages,
         media_requests,
         media: state.media.clone(),
+        image_options,
         prompt,
         tools,
         enable_thinking,

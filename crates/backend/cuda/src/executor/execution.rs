@@ -1601,13 +1601,14 @@ impl Sequence {
         let tower = loaded
             .vision()
             .ok_or_else(|| Error::unsupported("model has no bound vision encoder"))?;
+        // Layout validation needs grids and spans, not the potentially large patch buffers.
         let prepared = PreparedPrompt {
             tokens: plan.prompt.to_vec(),
             images: plan
                 .items
                 .iter()
                 .map(|item| PromptImage {
-                    pixels: item.pixels.to_vec(),
+                    pixels: Vec::new(),
                     grid: item.grid,
                 })
                 .collect(),
@@ -1619,9 +1620,9 @@ impl Sequence {
         }
         let hidden = loaded.model().hidden_size;
         let mut data = Vec::new();
-        let mut bases = Vec::with_capacity(prepared.images.len());
-        for image in &prepared.images {
-            let encoded = tower.encode(loaded.device(), image)?;
+        let mut bases = Vec::with_capacity(plan.items.len());
+        for item in &plan.items {
+            let encoded = tower.encode_pixels(loaded.device(), &item.pixels, item.grid)?;
             bases.push(data.len() / hidden);
             data.extend(encoded);
         }
