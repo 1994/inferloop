@@ -57,6 +57,9 @@ pub struct Cli {
     /// With both execution options omitted, CUDA may select a validated fast profile.
     #[arg(long, global = true, value_name = "COUNT|auto")]
     pub(super) num_speculative_tokens: Option<backend::SpeculativeTokens>,
+    /// Separate `DFlash2` draft package to speculate with (CUDA); replaces the MTP head.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub(super) draft_model: Option<PathBuf>,
     /// Target prefill attention profile. Omit both execution options for automatic selection;
     /// an explicit override keeps the other option at canonical/depth0.
     #[arg(long, global = true, value_enum)]

@@ -376,6 +376,7 @@ fn attention_graph(lanes: usize) -> Result<(DataflowGraph, TensorId)> {
         ],
         hidden: Some(output),
         logits: Some(output),
+        features: None,
         ..DataflowGraph::default()
     };
     Ok((graph, state))
@@ -667,5 +668,24 @@ fn real_request_kv_rounding_and_bounds_are_checked() -> Result<()> {
     assert!(minimum_kv_tokens(usize::MAX, 128, 33).is_err());
     assert_eq!(funded_kv_tokens(256, 512, 10, 100, 179), None);
     assert_eq!(funded_kv_tokens(256, 512, 10, 100, 180), Some(256));
+    Ok(())
+}
+
+/// Every captured target arena must be funded even though the graphs alias one state pool.
+#[test]
+fn pooled_quote_covers_all_narrow_verification_arenas() -> Result<()> {
+    let graph = fixture_graph(48)?;
+    let weights = fixture_weights();
+    let bytes = pool_storage_bytes(&graph, &weights, (8, 256, 2048), 8, 48, &fixture_profile())?;
+    let arenas = [1, 2, 4, 8]
+        .into_iter()
+        .map(|slots| ActivationArena::required_bytes(&graph, slots * 8))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .sum::<usize>() as u64;
+    assert!(
+        bytes >= arenas,
+        "quote {bytes} omits captured arenas {arenas}"
+    );
     Ok(())
 }

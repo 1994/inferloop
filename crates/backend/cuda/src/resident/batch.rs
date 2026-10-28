@@ -137,6 +137,8 @@ pub(super) struct BatchGraph {
     prefill_rotary: Option<Tensor<i32>>,
     hidden: Vec<Arc<Tensor<f32>>>,
     logits: Vec<Arc<Tensor<f32>>>,
+    /// Prompt lanes' draft features, when the target graph carries them.
+    features: Option<Arc<Tensor<f32>>>,
     pub width: usize,
     /// Token capacity of the KV arena this graph's kernels address. Positions are rows in it,
     /// so a chunk that would write past the end is an internal inconsistency, not a request
@@ -375,6 +377,7 @@ impl BatchBuilder<'_> {
                         arena,
                         self.weights,
                         self.nvfp4,
+                        None,
                     )?;
                     continue;
                 }
@@ -573,6 +576,7 @@ impl BatchBuilder<'_> {
             rotary_staging: PinnedUpload::single(self.device, self.width * ROTARY_AXES)?,
             hidden,
             logits,
+            features: None,
             width,
             capacity: self.capacity,
             profile: None,
@@ -644,6 +648,11 @@ impl BatchBuilder<'_> {
         drop(shared);
         let hidden = vec![take_result(&mut arena, self.graph.hidden)?];
         let logits = vec![take_result(&mut arena, self.graph.logits)?];
+        let features = self
+            .graph
+            .features
+            .map(|id| take_result(&mut arena, Some(id)))
+            .transpose()?;
         Ok(BatchGraph {
             token_readout: None,
             graph: None,
@@ -669,6 +678,7 @@ impl BatchBuilder<'_> {
             rotary_staging: PinnedUpload::single(self.device, self.width * ROTARY_AXES)?,
             hidden,
             logits,
+            features,
             width: self.width,
             capacity: self.capacity,
             profile,
@@ -848,6 +858,7 @@ impl BatchBuilder<'_> {
                     arena,
                     self.weights,
                     self.nvfp4,
+                    None,
                 )?;
             }
             Dispatch32::Batched => {
@@ -1545,6 +1556,11 @@ impl BatchGraph {
     /// Device hidden rows of this graph's prompt lanes, valid after a replay.
     pub(crate) fn hidden_rows(&self) -> Arc<Tensor<f32>> {
         Arc::clone(&self.hidden[0])
+    }
+
+    /// Device draft features of this graph's prompt lanes, valid after a replay.
+    pub(crate) fn feature_rows(&self) -> Option<Arc<Tensor<f32>>> {
+        self.features.as_ref().map(Arc::clone)
     }
 
     pub(crate) async fn run_async(

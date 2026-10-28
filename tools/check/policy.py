@@ -167,6 +167,9 @@ def check_exceptions():
                         # Disjoint verification output rows and staged commit inputs retain
                         # their owning arena for the lifetime of every captured graph.
                         ROOT / "crates/backend/cuda/src/resident/slot_recurrent.rs",
+                        # Draft graph replays: engine-owned buffers and rings on the device
+                        # stream, fenced by the token readback or drained before teardown.
+                        ROOT / "crates/backend/cuda/src/resident/dflash2/mod.rs",
                         ROOT / "crates/backend/cuda/src/resident/slot_verify.rs",
                         ROOT / "crates/foundation/core/src/placement/mod.rs",
                         ROOT / "tools/bench/cpu/src/main.rs",

@@ -46,6 +46,7 @@ fn every_state_effect_and_its_dependency_closure_is_retained() -> Result<()> {
         ],
         hidden: Some(TensorId::new(5)?),
         logits: Some(TensorId::new(6)?),
+        features: None,
         ..DataflowGraph::default()
     };
     let plan = StateDemand::new(&graph);

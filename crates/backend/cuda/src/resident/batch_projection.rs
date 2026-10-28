@@ -153,7 +153,7 @@ pub(super) fn record(
         weights.activation_quantization(node.inputs[1]),
         &packed,
         output,
-        columns,
+        (columns, width),
     )?;
     let mut outputs = Vec::new();
     let mut slots = Vec::new();
@@ -197,6 +197,7 @@ pub(super) fn record_slots(
     arena: &mut super::ActivationArena,
     weights: &ProgramWeights,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
+    arithmetic_rows: Option<usize>,
 ) -> StdResult<(), DeviceError> {
     if weights.constants.contains_key(&node.inputs[0]) {
         return Err(error("slot decode constant linear input"));
@@ -250,7 +251,7 @@ pub(super) fn record_slots(
             weights.activation_quantization(node.inputs[1]),
             &input,
             &mut output,
-            columns,
+            (columns, arithmetic_rows.unwrap_or(lanes)),
         )?;
     }
     arena.buffers[slot] = Some(output.reshape(&[flat]).map_err(error)?);
@@ -264,7 +265,7 @@ fn record_projection(
     input_scale: Option<super::program::ActivationQuantization>,
     x: &TensorView<'_, f32>,
     output: &mut Tensor<f32>,
-    columns: usize,
+    (columns, arithmetic_rows): (usize, usize),
 ) -> StdResult<(), DeviceError> {
     if super::nvfp4_gemm::record(scope, nvfp4, weight, input_scale, x, output, columns)? {
         return Ok(());
@@ -273,7 +274,9 @@ fn record_projection(
     // GEMV path for narrow batches with a very wide output (e.g. a vocabulary head).
     let rows = usize::try_from(x.shape()[0]).map_err(error)?;
     let outputs = output.size() / rows;
-    if rows > SMALL_GEMV_MAX_ROWS || outputs <= columns.saturating_mul(GEMV_WIDE_OUTPUT_RATIO) {
+    if arithmetic_rows > SMALL_GEMV_MAX_ROWS
+        || outputs <= columns.saturating_mul(GEMV_WIDE_OUTPUT_RATIO)
+    {
         match weight {
             ProjectionWeight::Dense(w) => {
                 #[cfg(test)]

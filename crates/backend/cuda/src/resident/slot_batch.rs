@@ -22,6 +22,110 @@ use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
 use std::collections::BTreeSet;
+use std::iter::successors;
+
+/// Slot counts of the narrow verify graphs a pool of `width` slots captures: powers of two
+/// below the width, when the pool verifies without recurrent snapshots.
+pub fn narrow_widths(graph: &DataflowGraph, width: usize, verify: usize) -> Vec<usize> {
+    if verify < 2 || !super::slot_verify::fused_recurrent(graph, verify) {
+        return Vec::new();
+    }
+    successors(Some(1usize), |slots| slots.checked_mul(2))
+        .take_while(|&slots| slots < width)
+        .collect()
+}
+
+/// A single slot is useful for speculative verification; plain batching needs two.
+fn valid_pool_geometry(
+    width: usize,
+    verify: usize,
+    capacity: usize,
+    hidden: usize,
+    vocabulary: usize,
+) -> bool {
+    let minimum = if verify >= 2 { 1 } else { 2 };
+    (minimum..=MAX_POOL_SLOTS).contains(&width) && capacity > 0 && hidden > 0 && vocabulary > 0
+}
+
+/// NVFP4 workspace for every lane count the pool's graphs replay.
+fn pool_workspace(
+    device: &CudaDevice,
+    graph: &DataflowGraph,
+    weights: &ProgramWeights,
+    (lanes, verify): (usize, usize),
+    narrow: &[usize],
+) -> Result<super::nvfp4_gemm::Workspace> {
+    let mut widths = vec![1, lanes];
+    widths.extend(narrow.iter().map(|&slots| slots * verify));
+    let mut workspace = super::nvfp4_gemm::Workspace::new(device, graph, weights, &widths)?;
+    for &rows in &widths[1..] {
+        workspace.prepare_pool_dense(device, graph, weights, rows)?;
+    }
+    Ok(workspace)
+}
+
+/// The pool-wide verify graph and one narrower graph per `narrow` slot count, with the root
+/// views each narrow graph reads.
+#[expect(
+    unsafe_code,
+    reason = "Audited narrow verify roots: prefix views of `states`, which the pool owns \
+              and drops after its graphs"
+)]
+fn build_verify_graphs(
+    builder: &mut super::batch::BatchBuilder<'_>,
+    (states, fp8): (&mut SlotStates, &mut [Fp8Caches]),
+    verify: usize,
+    narrow: &[usize],
+) -> Result<(SlotVerifyGraph, Vec<SlotVerifyGraph>, Vec<States>)> {
+    let full = builder.build_slot_verify(states, fp8, verify)?;
+    let mut graphs = Vec::with_capacity(narrow.len());
+    let mut roots = Vec::with_capacity(narrow.len());
+    for &slots in narrow {
+        // SAFETY: the pool keeps `states` alive behind `_narrow_roots` and drops its graphs
+        // first; every graph replays on the pool's one stream.
+        let mut prefix = unsafe { prefix_roots(states, slots)? };
+        graphs.push(builder.build_slot_verify_parts(
+            (&mut states.parts().0[..slots], &mut prefix),
+            &mut fp8[..slots],
+            verify,
+        )?);
+        roots.push(prefix);
+    }
+    Ok((full, graphs, roots))
+}
+
+/// Views of the first `slots` rows of every pooled root family, for a verify graph narrower
+/// than the pool.
+///
+/// # Safety
+/// The returned roots alias `states`: the pool must keep it alive for every graph captured
+/// through them and replay them on its single stream.
+#[expect(
+    unsafe_code,
+    reason = "Audited prefix alias: the pool owns the roots and drops its graphs first"
+)]
+unsafe fn prefix_roots(states: &SlotStates, slots: usize) -> Result<States> {
+    let width = states.len();
+    if slots == 0 || slots > width {
+        return Err(Error::invalid("pooled state prefix"));
+    }
+    let mut roots = States::new();
+    for (id, owners) in states.roots() {
+        let mut views = Vec::with_capacity(owners.len());
+        for owner in owners {
+            let mut shape = owner
+                .shape()
+                .iter()
+                .map(|&dim| usize::try_from(dim).map_err(device_error))
+                .collect::<Result<Vec<_>>>()?;
+            shape[0] = slots;
+            // SAFETY: forwarded from this function's contract.
+            views.push(unsafe { super::arena::prefix_view(owner, width, slots, &shape)? });
+        }
+        roots.insert(*id, views);
+    }
+    Ok(roots)
+}
 
 /// Pinned ring depth per external-hidden lane: one upload per draft or catch-up step,
 /// and a lane's chain between stream barriers never exceeds the maximum verify width.
@@ -138,7 +242,14 @@ impl SlotLedger {
     }
     /// Take a free slot, if any remain.
     fn take(&mut self) -> Option<usize> {
-        let slot = self.free.pop()?;
+        // The lowest free slot keeps busy slots inside the narrowest verify graph.
+        let index = self
+            .free
+            .iter()
+            .enumerate()
+            .min_by_key(|&(_, &slot)| slot)
+            .map(|(index, _)| index)?;
+        let slot = self.free.swap_remove(index);
         self.allocations = self.allocations.saturating_add(1);
         Some(slot)
     }
@@ -183,6 +294,13 @@ pub struct SlotPool {
     // arena buffers their kernels reference.
     decode: Option<SlotDecodeGraph>,
     verify: Option<SlotVerifyGraph>,
+    /// Verify graphs over the pool's first 1, 2, 4, ... slots, narrowest first: a step whose
+    /// busy slots are all low replays only their lanes. `verify` stays the timeline of record.
+    narrow: Vec<SlotVerifyGraph>,
+    /// The narrow graph the last verification replayed, `None` for the full graph.
+    active_verify: Option<usize>,
+    /// Root-family views the narrow graphs read; they alias `states` and drop before it.
+    _narrow_roots: Vec<States>,
     states: SlotStates,
     fp8: Vec<Fp8Caches>,
     /// Per-slot identity block tables; declared with the states so they outlive the captures.
@@ -301,8 +419,7 @@ impl SlotPool {
     ) -> Result<Self> {
         let (vocabulary, verify) = output;
         let capacity = super::capacity::padded(capacity)?;
-        if !(2..=MAX_POOL_SLOTS).contains(&width) || capacity == 0 || hidden == 0 || vocabulary == 0
-        {
+        if !valid_pool_geometry(width, verify, capacity, hidden, vocabulary) {
             return Err(Error::invalid("slot pool width, capacity or geometry"));
         }
         if weights.fusion.is_some() && verify >= 2 {
@@ -334,18 +451,13 @@ impl SlotPool {
             })
             .collect::<Result<_>>()?;
         let mut attention = super::attention_decode::Workspace::new(device, graph, capacity)?;
-        attention.prepare_pooled(
-            device,
-            graph,
-            weights,
-            (width, verify, capacity),
-            paging.is_some(),
-        )?;
-        let mut nvfp4 = super::nvfp4_gemm::Workspace::new(device, graph, weights, &[1, lanes])?;
-        nvfp4.prepare_pool_dense(device, graph, weights, lanes)?;
+        let geometry = (width, verify, capacity);
+        attention.prepare_pooled(device, graph, weights, geometry, paging.is_some())?;
+        let narrow_slots = narrow_widths(graph, width, verify);
+        let mut nvfp4 = pool_workspace(device, graph, weights, (lanes, verify), &narrow_slots)?;
         let mut placeholder_states = States::new();
         let mut placeholder_fp8 = Fp8Caches::new();
-        let (decode, verify_graph) = {
+        let (decode, verify_graph, narrow, narrow_roots) = {
             let mut builder = super::batch::BatchBuilder {
                 device,
                 graph,
@@ -364,17 +476,24 @@ impl SlotPool {
                 width,
             };
             if verify >= 2 {
-                (
-                    None,
-                    Some(builder.build_slot_verify(&mut states, &mut fp8, verify)?),
-                )
+                let (full, graphs, roots) = build_verify_graphs(
+                    &mut builder,
+                    (&mut states, &mut fp8),
+                    verify,
+                    &narrow_slots,
+                )?;
+                (None, Some(full), graphs, roots)
             } else {
-                (Some(builder.build_slots(&mut states, &mut fp8)?), None)
+                let decode = builder.build_slots(&mut states, &mut fp8)?;
+                (Some(decode), None, Vec::new(), Vec::new())
             }
         };
         Ok(Self {
             decode,
             verify: verify_graph,
+            narrow,
+            active_verify: None,
+            _narrow_roots: narrow_roots,
             states,
             fp8,
             tables,
@@ -526,6 +645,24 @@ impl SlotPool {
     #[must_use]
     pub fn verify(&self) -> Option<usize> {
         self.verify.as_ref().map(|graph| graph.verify)
+    }
+
+    /// Device draft features of every verify graph, narrowest first, with its slot count;
+    /// see [`SlotVerifyGraph::features`].
+    pub(crate) fn verify_features(&self) -> Option<Vec<(usize, Arc<Tensor<f32>>)>> {
+        self.narrow
+            .iter()
+            .chain(self.verify.as_ref())
+            .map(|graph| graph.features().map(|features| (graph.slots, features)))
+            .collect()
+    }
+
+    /// Slots of the verify graph the last verification replayed.
+    pub(crate) fn verified_slots(&self) -> usize {
+        self.active_verify
+            .and_then(|index| self.narrow.get(index))
+            .or(self.verify.as_ref())
+            .map_or(0, |graph| graph.slots)
     }
 
     /// Slots no sequence currently leases.
@@ -905,11 +1042,51 @@ impl SlotPool {
         lanes: &[SlotVerifyLane],
         plain_greedy: bool,
     ) -> Result<super::batch::BatchReadout> {
-        self.verify
+        let full = self
+            .verify
             .as_mut()
-            .ok_or_else(|| Error::invalid("slot pool has no verify graph"))?
+            .ok_or_else(|| Error::invalid("slot pool has no verify graph"))?;
+        let busy = lanes.iter().map(|&(slot, ..)| slot + 1).max().unwrap_or(0);
+        self.active_verify = self.narrow.iter().position(|graph| graph.slots >= busy);
+        let Some(graph) = self.active_verify.map(|index| &mut self.narrow[index]) else {
+            return full
+                .run_verify_readout_async(
+                    device,
+                    lanes,
+                    self.capacity,
+                    self.vocabulary,
+                    plain_greedy,
+                )
+                .await;
+        };
+        graph.sync_from(full);
+        let readout = graph
             .run_verify_readout_async(device, lanes, self.capacity, self.vocabulary, plain_greedy)
-            .await
+            .await;
+        full.sync_from(graph);
+        readout
+    }
+
+    /// Run `commit` on the graph the last verification replayed, keeping the full graph's
+    /// cursors the timeline of record.
+    fn commit_active(
+        &mut self,
+        commit: impl FnOnce(&mut SlotVerifyGraph) -> Result<()>,
+    ) -> Result<()> {
+        let full = self
+            .verify
+            .as_mut()
+            .ok_or_else(|| Error::invalid("slot pool has no verify graph"))?;
+        let Some(graph) = self
+            .active_verify
+            .and_then(|index| self.narrow.get_mut(index))
+        else {
+            return commit(full);
+        };
+        graph.sync_from(full);
+        let result = commit(graph);
+        full.sync_from(graph);
+        result
     }
 
     /// Commit one slot's accepted candidates; see [`SlotVerifyGraph::commit`].
@@ -921,10 +1098,7 @@ impl SlotPool {
         slot: usize,
         accepted: usize,
     ) -> Result<()> {
-        self.verify
-            .as_mut()
-            .ok_or_else(|| Error::invalid("slot pool has no verify graph"))?
-            .commit(device, slot, accepted)
+        self.commit_active(|graph| graph.commit(device, slot, accepted))
     }
 
     /// Commit independent accepted prefixes in one pooled update.
@@ -938,10 +1112,7 @@ impl SlotPool {
         if let [(slot, accepted)] = commits {
             return self.commit_verify(device, *slot, *accepted);
         }
-        self.verify
-            .as_mut()
-            .ok_or_else(|| Error::invalid("slot pool has no verify graph"))?
-            .commit_many(device, commits)
+        self.commit_active(|graph| graph.commit_many(device, commits))
     }
 
     /// Copy the covered token-row prefix of one KV state family into the slot.

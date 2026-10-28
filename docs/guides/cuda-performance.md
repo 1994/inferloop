@@ -23,6 +23,7 @@ profiling、冻结缓存和测试的 A/B 控制是开发诊断工具，不能用
 时自动选 MTP 深度 2 和目标 attention `bf16`；加载时容量或显存不足，会以 canonical attention、
 无 MTP 重新加载一次，并在日志中给出原因。显式数值继续走 loader 校验，不静默降级；
 `--num-speculative-tokens auto` 只按 MTP head、fusion 与 draft graph 绑定选择 2 或 0。
+`--draft-model PATH` 改用独立的 DFlash2 草稿（BF16 或 FP8），target 以 block 宽度 8 做 pooled 验证，默认保持 canonical attention（自动 BF16 profile 只随 MTP 启用）；见 [DFlash2 方案](../plans/speculation/dflash2.md)。
 
 - `canonical`：既有 F32 精确 attention 路径。
 - `bf16`：目标图的 **FP8-KV prefill** 使用 FA4 BF16 QKV / F32 累加 / BF16 输出核，覆盖整段

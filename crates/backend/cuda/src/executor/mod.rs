@@ -18,6 +18,8 @@ use crate::registry::CudaKernels;
 pub use pool::PoolInspection;
 mod state;
 mod validation;
+use crate::resident::dflash2::budget::fixed_bytes;
+use crate::resident::dflash2::{Cursor, Engine};
 use crate::{
     loading::{LoadedModel, PooledServingQuote},
     resident::DeviceProgram,
@@ -28,6 +30,7 @@ use infer_core::{Error, Result, StateId};
 use infer_ir::{DeviceCapabilities, ExecutionProgram, ModelOutput, OutputReadout};
 use infer_models::MediaLayout;
 use infer_state::cache::SnapshotScan;
+use infer_workloads::SamplingWorkspace;
 use std::collections::BTreeMap;
 use std::mem::{forget, take};
 use std::sync::Arc;
@@ -57,6 +60,8 @@ pub(super) struct CudaExecutor {
     /// sequence holds them. Declared before the pools so they drop first: their states are
     /// views of the slots' storage.
     homes: Vec<Option<Home>>,
+    /// `DFlash2` draft engine: sequence rings and, once a pool exists, its pooled proposal.
+    dflash: Option<Engine>,
     /// Continuous-batching decode slots, captured lazily on the first batchable step;
     /// `None` with `slots_disabled` means initialization failed and decode stays serial.
     slots: Option<SlotPool>,
@@ -105,6 +110,34 @@ struct Sequence {
     /// Whether `budget` included private verification storage; a slot-lease credit and a
     /// reset restore only apply to bytes admission actually charged.
     verification_priced: bool,
+    /// `DFlash2` timeline of this sequence, when it speculates with the draft engine.
+    draft: Option<DraftState>,
+}
+/// A sequence's `DFlash2` ring and the sampling state its acceptance needs.
+pub(super) struct DraftState {
+    cursor: Cursor,
+    /// Index where generated tokens start, captured on the first decode step.
+    prompt_len: Option<usize>,
+    /// The ring missed part of the timeline (a serial step or a restored prefix): the sequence
+    /// decodes without proposals rather than drafting from a gap.
+    stale: bool,
+    scratch: SamplingWorkspace,
+}
+impl DraftState {
+    fn new(cursor: Cursor) -> Self {
+        Self {
+            cursor,
+            prompt_len: None,
+            stale: false,
+            scratch: SamplingWorkspace::default(),
+        }
+    }
+    /// Start a new timeline in the same ring.
+    const fn reset(&mut self) {
+        self.cursor.context = 0;
+        self.prompt_len = None;
+        self.stale = false;
+    }
 }
 /// Device-resident encoded media for one prompt, reused across every prefill chunk.
 pub(super) struct CachedMedia {
@@ -128,7 +161,7 @@ pub(super) struct Speculation {
     prompt_len: Option<usize>,
     /// Target hidden of the most recently consumed token; the draft fuses the token before it.
     last_hidden: Vec<f32>,
-    scratch: infer_workloads::SamplingWorkspace,
+    scratch: SamplingWorkspace,
 }
 impl Speculation {
     pub(super) fn new(program: DeviceProgram, depth: usize) -> Self {
@@ -137,7 +170,7 @@ impl Speculation {
             depth,
             prompt_len: None,
             last_hidden: Vec::new(),
-            scratch: infer_workloads::SamplingWorkspace::default(),
+            scratch: SamplingWorkspace::default(),
         }
     }
     /// # Errors
@@ -229,8 +262,27 @@ impl CudaExecutor {
         capabilities.require(loaded.requirements())?;
         // Greedy-only speculation, and only when a draft was actually loaded.
         capabilities.speculation = infer_ir::SpeculationCapability {
-            draft_depth: loaded.mtp_depth(),
+            draft_depth: loaded.draft_depth(),
             greedy_only: true,
+        };
+        // Rings are sequence state the engine owns outright: fund them before admission.
+        let (dflash, state_budget) = match loaded.dflash2() {
+            Some(weights) => {
+                let geometry = weights.geometry;
+                let rings = maximum_states;
+                let bytes = fixed_bytes(&geometry, weights.layers.len(), rings)?;
+                if bytes >= state_budget {
+                    return Err(Error::new(
+                        infer_core::ErrorCode::Capacity,
+                        "DFlash2 engine exceeds the state budget",
+                    ));
+                }
+                let engine = Engine::new(loaded.device(), Arc::clone(weights), rings)?;
+                tracing::info!(target: "infer::executor", rings, engine_bytes = bytes,
+                    "DFlash2 draft engine ready");
+                (Some(engine), state_budget - bytes)
+            }
+            None => (None, state_budget),
         };
         let mut registry = infer_kernel_api::KernelRegistry::default();
         registry.register(&CudaKernels)?;
@@ -273,6 +325,7 @@ impl CudaExecutor {
             kv_block_bytes,
             worker: None,
             homes: Vec::new(),
+            dflash,
             slots: None,
             draft_slots: None,
             pool_retry: None,
@@ -343,6 +396,7 @@ impl Drop for CudaExecutor {
                 self.worker.take(),
                 take(&mut self.homes),
                 take(&mut self.states),
+                self.dflash.take(),
             ));
         }
     }

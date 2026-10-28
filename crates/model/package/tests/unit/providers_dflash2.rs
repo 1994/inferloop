@@ -1,4 +1,5 @@
 use super::*;
+use infer_ir::Mixer;
 use std::fs::read;
 use std::path::Path;
 
@@ -106,13 +107,21 @@ fn the_target_layer_count_must_match_the_draft() {
 }
 
 #[test]
-fn every_tap_must_name_a_target_attention_layer() {
+fn a_tap_reads_the_residual_stream_of_any_mixer() {
     let draft = DraftGeometry::official();
     let mut target = decoder(5120, 64);
-    // A recurrent layer at a tapped index feeds no attention hidden state.
-    target.mixers[61] = Mixer::Recurrent { state_width: 128 };
-    let error = draft.check_target(&target).unwrap_err();
-    assert!(error.to_string().contains("tap 61"), "{error}");
+    // Qwen3.8 taps recurrent layers: the residual stream after a layer does not depend on its mixer.
+    target.backbone = BackboneKind::Hybrid;
+    target.mixers[5] = Mixer::Recurrent { state_width: 128 };
+    draft.check_target(&target).unwrap();
+}
+
+#[test]
+fn a_tap_past_the_last_target_layer_is_rejected() {
+    let error = geometry(vec![5, 70])
+        .check_target(&decoder(5120, 64))
+        .unwrap_err();
+    assert!(error.to_string().contains("tap 70"), "{error}");
 }
 
 #[test]

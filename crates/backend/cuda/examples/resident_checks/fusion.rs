@@ -60,6 +60,7 @@ pub fn run(device: &CudaDevice) -> Result<()> {
         ],
         hidden: Some(hidden),
         logits: Some(logits),
+        features: None,
         ..Default::default()
     };
     let weights = weights(device, d, id)?;

@@ -13,6 +13,7 @@ mod speculation;
 use infer_backend_cuda::device::CudaDevice;
 #[cfg(any(test, native_backend))]
 use infer_core::{Error, Result};
+use std::path::PathBuf;
 use std::result::Result as ParseResult;
 use std::str::FromStr;
 
@@ -125,6 +126,8 @@ pub struct Selection {
     pub upload_staging_mib: Option<usize>,
     /// Omitted execution options select a qualified pair or fall back to canonical/depth0.
     pub num_speculative_tokens: Option<SpeculativeTokens>,
+    /// Separate `DFlash2` draft package (`--draft-model`); excludes an MTP depth.
+    pub draft_model: Option<PathBuf>,
     /// Explicit target attention profile; absence allows paired automatic selection.
     #[cfg(cuda_backend)]
     pub attention_profile: Option<CudaAttentionProfile>,

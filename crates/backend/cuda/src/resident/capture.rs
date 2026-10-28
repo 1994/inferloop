@@ -30,6 +30,8 @@ pub(super) enum CaptureMode {
     Batched,
     /// Serving slots retain one normalization policy when physical funding narrows the pool.
     Pooled,
+    /// Candidate rows retain the ordinary pool's normalization policy.
+    Verification { slots: usize },
     /// Contiguous prompt rows with [position, active rows, state offset, unused] metadata.
     Prefill,
     /// Prefill width 32 with a per-lane `(t, h, w)` rotary table instead of one base position.
@@ -83,6 +85,7 @@ impl Capture<'_> {
             CaptureMode::Flat => identity(tensor),
             CaptureMode::Batched
             | CaptureMode::Pooled
+            | CaptureMode::Verification { .. }
             | CaptureMode::Prefill
             | CaptureMode::PrefillRotary => tensor.view(&[tensor.size()]).map_err(error),
             CaptureMode::Row(lane) => self.arena.row(id, lane).map_err(error),
@@ -490,18 +493,7 @@ impl Capture<'_> {
         // Physical funding must not change the automatic target's arithmetic.
         // Match the established full serving pool even when fewer slots fit.
         // The row kernel masks its final partial tile.
-        let normalization_heads = if self.weights.fusion.is_none()
-            && self.weights.attention_profile.is_bf16()
-            && self.mode == CaptureMode::Pooled
-        {
-            let slots = self.arena.lanes();
-            if slots == 0 || !heads.is_multiple_of(slots) {
-                return Err(error("pooled normalization geometry"));
-            }
-            (heads / slots) * CB_DECODE_SLOTS
-        } else {
-            heads
-        };
+        let normalization_heads = self.normalization_heads(heads)?;
         if dimension.is_power_of_two()
             && dimension <= NORM_ROWS_MAX_DIMENSION
             && normalization_heads >= NORM_ROWS * NORM_ROWS
@@ -536,6 +528,27 @@ impl Capture<'_> {
         .compile_options(options);
         self.scope.record(kernel)?;
         Ok(output)
+    }
+
+    /// Kernel selection follows logical serving rows, independently of candidate padding.
+    fn normalization_heads(&self, heads: usize) -> Result<usize, DeviceError> {
+        let bf16_pool = self.weights.fusion.is_none() && self.weights.attention_profile.is_bf16();
+        let reference_slots = match self.mode {
+            CaptureMode::Verification { slots } => {
+                if bf16_pool {
+                    CB_DECODE_SLOTS
+                } else {
+                    slots
+                }
+            }
+            CaptureMode::Pooled if bf16_pool => CB_DECODE_SLOTS,
+            _ => return Ok(heads),
+        };
+        let rows = self.arena.lanes();
+        if rows == 0 || !heads.is_multiple_of(rows) {
+            return Err(error("pooled normalization geometry"));
+        }
+        Ok((heads / rows) * reference_slots)
     }
 }
 

@@ -1,5 +1,6 @@
 use super::{CudaExecutor, Sequence};
 use crate::resident::DeviceProgram;
+use crate::resident::dflash2::Engine;
 use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::OutputReadout;
 use std::collections::BTreeSet;
@@ -131,6 +132,9 @@ impl CudaExecutor {
         let before = self.physical_available()?;
         self.worker = None;
         self.homes.clear();
+        if let Some(engine) = self.dflash.as_mut() {
+            engine.detach_pool();
+        }
         drop(self.draft_slots.take());
         drop(self.slots.take());
         self.pool_quote = None;
@@ -223,7 +227,8 @@ impl CudaExecutor {
         {
             return Err(self.reservation_rejection(id, capacity, private_verification, budget)?);
         }
-        if let Some(state) = self.pool.take(capacity, readout) {
+        if let Some(mut state) = self.pool.take(capacity, readout) {
+            state.draft = self.lease_draft(allow_speculation);
             return self.reuse_pooled(id, state, capacity, budget, private_verification);
         }
         let scratch = self
@@ -259,9 +264,11 @@ impl CudaExecutor {
             None
         };
         self.pool.allocations = self.pool.allocations.saturating_add(1);
+        let draft = self.lease_draft(allow_speculation);
         self.states.insert(
             id,
             Sequence {
+                draft,
                 home: None,
                 program,
                 speculation,
@@ -340,6 +347,9 @@ impl CudaExecutor {
                 .map_or(Ok(()), super::Speculation::reset)
         });
         if let Err(error) = reset {
+            if let (Some(draft), Some(engine)) = (state.draft.take(), self.dflash.as_mut()) {
+                engine.release(&draft.cursor);
+            }
             self.pool.retain(state);
             if let Err(drain_error) = self.loaded.device().drain() {
                 self.fatal = Some(drain_error);
@@ -391,6 +401,9 @@ impl CudaExecutor {
         if let Some(speculation) = state.speculation.as_mut() {
             speculation.reset()?;
         }
+        if let Some(draft) = state.draft.as_mut() {
+            draft.reset();
+        }
         // The slot keeps no rollback state: the next bind overwrites its covered prefix. A
         // slot-resident sequence keeps its slot leased; only the pooled replay forgets it.
         if let Some(lease) = state.slot.take()
@@ -420,6 +433,9 @@ impl CudaExecutor {
             .states
             .remove(&id)
             .ok_or_else(|| Error::invalid("unknown CUDA state"))?;
+        if let (Some(draft), Some(engine)) = (state.draft.take(), self.dflash.as_mut()) {
+            engine.release(&draft.cursor);
+        }
         if let Some(lease) = state.slot.take()
             && let Some(pool) = self.slots.as_mut()
         {
@@ -444,6 +460,14 @@ impl CudaExecutor {
         }
         Ok(())
     }
+    /// Lease a `DFlash2` ring to a speculating sequence; without a free ring it decodes plainly.
+    fn lease_draft(&mut self, allow_speculation: bool) -> Option<super::DraftState> {
+        allow_speculation
+            .then(|| self.dflash.as_mut().and_then(Engine::acquire))
+            .flatten()
+            .map(super::DraftState::new)
+    }
+
     /// Whether a request is served by slot-resident programs when one is free.
     fn home_eligible(
         &self,
@@ -530,9 +554,11 @@ impl CudaExecutor {
             return Err(error);
         }
         let depth = self.loaded.mtp_depth();
+        let draft = self.lease_draft(allow_speculation);
         self.states.insert(
             id,
             Sequence {
+                draft,
                 home: Some(slot),
                 program: home.program,
                 speculation: home

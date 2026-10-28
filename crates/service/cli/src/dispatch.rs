@@ -25,6 +25,7 @@ pub fn run() {
         served_model_name: cli.served_model_name.clone(),
         upload_staging_mib: cli.upload_staging_mib,
         num_speculative_tokens: cli.num_speculative_tokens,
+        draft_model: cli.draft_model.clone(),
         #[cfg(cuda_backend)]
         attention_profile: cli.cuda_attention_profile,
         gpu_memory_utilization: cli.gpu_memory_utilization,

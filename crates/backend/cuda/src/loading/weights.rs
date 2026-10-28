@@ -10,7 +10,7 @@ use cutile::{half::bf16, prelude::*};
 use infer_core::{Error, Result};
 use infer_ir::DType;
 use infer_models::{
-    DeviceWeight, QuantizedPackage, WeightEncoding, WeightSource, convert_float_bytes,
+    DeviceWeight, QuantizedPackage, WeightEncoding, WeightSource, WeightView, convert_float_bytes,
 };
 use std::cmp::Ordering;
 use std::sync::Arc;
@@ -44,7 +44,7 @@ pub fn floats(package: &mut QuantizedPackage, source: &WeightSource) -> Result<V
     let gathered = source
         .view
         .as_ref()
-        .filter(|view| !view.rows.is_empty())
+        .filter(|view| view.gathered())
         .map(|_| package.read(source, STAGING))
         .transpose()?;
     let bytes = if let Some(bytes) = &gathered {
@@ -58,6 +58,23 @@ pub fn floats(package: &mut QuantizedPackage, source: &WeightSource) -> Result<V
         .0
         .iter()
         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect())
+}
+
+/// FP8 codes of one stored weight; a gathered view is copied out, a contiguous one is borrowed.
+fn codes(package: &mut QuantizedPackage, source: &WeightSource) -> Result<Vec<f8e4m3fn>> {
+    if source.view.as_ref().is_some_and(WeightView::gathered) {
+        return Ok(package
+            .read(source, STAGING)?
+            .into_iter()
+            .map(f8e4m3fn)
+            .collect());
+    }
+    Ok(package
+        .read_view(source, STAGING)?
+        .iter()
+        .copied()
+        .map(f8e4m3fn)
         .collect())
 }
 
@@ -167,12 +184,7 @@ impl Projection {
                 Ok(Self::Dense(device.upload(values, &weight.shape)?))
             }
             WeightEncoding::Fp8Channel => {
-                let values = package
-                    .read_view(&weight.data, STAGING)?
-                    .iter()
-                    .copied()
-                    .map(f8e4m3fn)
-                    .collect();
+                let values = codes(package, &weight.data)?;
                 let scaling = floats(package, scale()?)?;
                 Ok(Self::Fp8(
                     device.upload(values, &weight.shape)?,
@@ -181,12 +193,7 @@ impl Projection {
             }
             WeightEncoding::Nvfp4 => Self::load_nvfp4(device, package, weight),
             WeightEncoding::Fp8Block => {
-                let values = package
-                    .read_view(&weight.data, STAGING)?
-                    .iter()
-                    .copied()
-                    .map(f8e4m3fn)
-                    .collect();
+                let values = codes(package, &weight.data)?;
                 let [rows, columns] = weight.shape.as_slice() else {
                     return Err(Error::invalid("block FP8 weights must be matrices"));
                 };

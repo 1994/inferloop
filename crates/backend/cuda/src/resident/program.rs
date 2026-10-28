@@ -1247,6 +1247,16 @@ impl DeviceProgram {
     }
 
     /// Device hidden rows written by the prompt graph that runs a `lanes`-token chunk.
+    /// Device draft features of the prompt graph a `lanes`-row chunk replays.
+    pub(crate) fn prompt_features(&self, lanes: usize) -> Option<Arc<Tensor<f32>>> {
+        let prompt = if self.prefers_narrow_prompt(lanes) {
+            self.prompt_narrow.as_ref()
+        } else {
+            self.prompt_batch.as_ref()
+        };
+        prompt.and_then(super::batch::BatchGraph::feature_rows)
+    }
+
     pub(crate) fn prompt_hidden(&self, lanes: usize) -> Option<Arc<Tensor<f32>>> {
         let prompt = if self.prefers_narrow_prompt(lanes) {
             self.prompt_narrow.as_ref()

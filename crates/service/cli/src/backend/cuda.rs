@@ -83,6 +83,7 @@ fn load_once(
         LoadOptions {
             prefill_width: selection.max_num_batched_tokens.unwrap_or(0),
             mtp_depth: summary.mtp_depth,
+            draft_model: selection.draft_model.clone(),
             autotune: selection.autotune,
             attention_profile: summary.attention_profile.into(),
             vision: !selection.text_only,
@@ -368,7 +369,10 @@ fn preflight(
             ),
         ));
     }
-    let fast_supported = native_fp4
+    // The automatic BF16 attention profile is admitted only with its MTP depth: under a DFlash2
+    // draft it measured 441/512 on GSM8K against 474 for canonical attention.
+    let fast_supported = selection.draft_model.is_none()
+        && native_fp4
         && package.kv_cache_dtype == Some(infer_models::TensorDtype::F8E4m3)
         && super::speculation::resolve(
             super::SpeculativeTokens::Auto,
@@ -393,11 +397,12 @@ fn preflight(
         max_sequence: package.imported.model.max_sequence,
         tensors: package.weights.len(),
         mtp_tensors: package.mtp.len(),
-        mtp_depth: super::speculation::resolve(
-            requested_depth,
-            selection.max_num_batched_tokens,
-            &package,
-        ),
+        // A separate draft replaces the checkpoint's own MTP head.
+        mtp_depth: if selection.draft_model.is_some() {
+            0
+        } else {
+            super::speculation::resolve(requested_depth, selection.max_num_batched_tokens, &package)
+        },
         attention_profile,
         payload_bytes: minimum,
         native_fp4,

@@ -17,7 +17,7 @@ impl CudaExecutor {
 
     /// A pure quote bounds runtime resources; capture waits for actual request demand.
     pub(super) fn defer_request_pool(&mut self) -> Result<()> {
-        if self.maximum_states < 2 || self.roofline_bound == Some(1) {
+        if self.dflash.is_none() && (self.maximum_states < 2 || self.roofline_bound == Some(1)) {
             self.warm_slot_pool();
             return Ok(());
         }
@@ -48,8 +48,8 @@ impl CudaExecutor {
         let capacity = CB_SLOT_TOKENS.min(self.loaded.model().max_sequence);
         if readout != OutputReadout::Logits
             || tokens > capacity
-            || self.maximum_states < 2
-            || self.roofline_bound == Some(1)
+            || (self.dflash.is_none()
+                && (self.maximum_states < 2 || self.roofline_bound == Some(1)))
         {
             return Ok(());
         }
@@ -77,6 +77,12 @@ impl CudaExecutor {
         // Actual free memory is measured again after retirement, before any allocation.
         let envelope = self.pool_envelope.max(self.pool_funding()?.0);
         let Some(plan) = self.pooled_plan_for(capacity, maximum, envelope, demand)? else {
+            if self.dflash.is_some() {
+                return Err(Error::new(
+                    ErrorCode::Capacity,
+                    "DFlash2 proposal and verification graphs exceed the serving budget",
+                ));
+            }
             // A single long request may still use the current pool or private execution.
             if self.slots.is_none() {
                 self.pool_quote = None;
@@ -111,7 +117,9 @@ impl CudaExecutor {
     /// A solo request uses a reusable private program. Only a previously observed
     /// concurrent reservation may pay for pool capture once that solo state drains.
     fn defer_solo_pool(&mut self, id: StateId, tokens: usize) -> Result<Option<usize>> {
-        if self.slots.is_some() {
+        // A separate draft has no private proposal graph. Its first request must fund the
+        // shared verification/proposal pair before prefill, including a solo request.
+        if self.slots.is_some() || (self.dflash.is_some() && self.states.is_empty()) {
             return Ok(Some(tokens));
         }
         if self.states.is_empty() {
@@ -161,6 +169,9 @@ impl CudaExecutor {
         tracing::info!(target: "infer::cuda_admission", "retired idle CUDA request pool");
         self.worker = None;
         self.homes.clear();
+        if let Some(engine) = self.dflash.as_mut() {
+            engine.detach_pool();
+        }
         drop(self.draft_slots.take());
         drop(self.slots.take());
         self.pool_quote = None;

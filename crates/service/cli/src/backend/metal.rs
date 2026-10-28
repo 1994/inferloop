@@ -28,6 +28,11 @@ pub fn load(path: &Path, memory_bytes: u64, selection: &Selection) -> Result<Sel
             "MTP draft depth requires the CUDA resident backend",
         ));
     }
+    if selection.draft_model.is_some() {
+        return Err(Error::unsupported(
+            "a separate draft model requires the CUDA resident backend",
+        ));
+    }
     let mut package = infer_models::ModelPackage::open(path, ModelId::new(1)?)?;
     Ok(SelectedBackend::Metal(Box::new(
         MetalBackend::from_package(

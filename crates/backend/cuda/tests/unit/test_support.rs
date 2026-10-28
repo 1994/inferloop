@@ -52,6 +52,7 @@ pub fn fixture_graph(width: usize) -> Result<DataflowGraph> {
         ],
         hidden: Some(hidden),
         logits: Some(logits),
+        features: None,
         ..Default::default()
     })
 }

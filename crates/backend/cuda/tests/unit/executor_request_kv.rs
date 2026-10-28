@@ -238,3 +238,71 @@ fn request_length_pool_preserves_live_state_and_restores_after_long_request() ->
     );
     Ok(())
 }
+
+/// A single cold request must retain a usable draft timeline after its first decode.
+#[test]
+#[ignore = "requires CUDA and explicit target/draft checkpoints"]
+fn cold_dflash2_keeps_its_draft_timeline() -> Result<()> {
+    CudaDevice::enable_kernel_cache()?;
+    let loaded = LoadedModel::open(
+        CudaDevice::new(0)?,
+        var("INFER_TEST_MODEL").map_err(|error| Error::invalid(error.to_string()))?,
+        ModelId::ONE,
+        LoadOptions {
+            prefill_width: 256,
+            draft_model: Some(
+                var("INFER_TEST_DRAFT")
+                    .map_err(|error| Error::invalid(error.to_string()))?
+                    .into(),
+            ),
+            autotune: false,
+            vision: false,
+            ..LoadOptions::default()
+        },
+    )?;
+    let budget = loaded
+        .device()
+        .allocatable_memory_bytes()?
+        .saturating_sub(loaded.device().profile()?.device_headroom_bytes())
+        .saturating_sub(loaded.shared_scratch_bytes()?);
+    let mut backend = CudaExecutor::new_bounded(loaded, budget, 1)?;
+    let state = StateId::ONE;
+    backend.reserve_state_for(state, 384, OutputReadout::Logits)?;
+    let prompt = TokenBuffer::from(vec![1, 2]);
+    step(
+        &mut backend,
+        state,
+        ExecutionInput::Prefill {
+            span: prompt.span(0..prompt.len())?,
+            readout: OutputReadout::Logits,
+        },
+    )?;
+    let draft = backend.states[&state].draft.as_ref().unwrap();
+    assert_eq!(draft.cursor.context, 2);
+    assert!(!draft.stale);
+    backend.prepare_execution()?;
+    let result = block_on(backend.execute(&[ExecutionTask {
+        plain_greedy: true,
+        request: RequestId::ONE,
+        state,
+        tokens: ExecutionInput::Decode {
+            token: 3,
+            position: 2,
+        },
+        sampling: Some(infer_ir::Sampling::default()),
+        media: None,
+    }]));
+    let fence = block_on(backend.loaded.device().fence());
+    backend.busy = false;
+    fence?;
+    let output = result?;
+    assert!(output[0].output.next_token.is_some());
+    assert!(backend.dflash.as_ref().unwrap().attached());
+    let draft = backend.states[&state].draft.as_ref().unwrap();
+    assert_eq!(draft.cursor.context, backend.states[&state].history.len());
+    assert!(
+        !draft.stale,
+        "the first solo decode permanently disabled DFlash2"
+    );
+    Ok(())
+}

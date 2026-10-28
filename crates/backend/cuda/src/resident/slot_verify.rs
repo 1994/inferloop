@@ -49,6 +49,8 @@ pub(super) struct SlotVerifyGraph {
     metadata_staging: PinnedUpload<i32>,
     hidden: Arc<Tensor<f32>>,
     logits: Arc<Tensor<f32>>,
+    /// Per-lane draft features `[lanes, hidden]`, when the target graph carries them.
+    features: Option<Arc<Tensor<f32>>>,
     /// Slot state sets the graph interleaves.
     pub slots: usize,
     /// Candidate lanes each slot runs per replay (submitted token plus draft proposals).
@@ -75,7 +77,7 @@ impl RecurrentCapture {
     fn new(
         builder: &BatchBuilder<'_>,
         arena: &ActivationArena,
-        slots: usize,
+        (slots, verify): (usize, usize),
         fused: bool,
     ) -> Result<Self> {
         let staging = if fused {
@@ -83,7 +85,7 @@ impl RecurrentCapture {
                 builder.device,
                 &builder.graph.nodes,
                 arena,
-                slots,
+                (slots, verify),
             )?
         } else {
             super::slot_recurrent::Staging::new()
@@ -142,7 +144,7 @@ fn validate_commits(pending: &[usize], commits: &[(usize, usize)]) -> Result<()>
 
 /// Whether every recurrent writer uses snapshot-free pooled verification.
 pub(super) fn fused_recurrent(graph: &infer_ir::DataflowGraph, verify: usize) -> bool {
-    verify == super::slot_recurrent::LANES
+    (2..=MAX_VERIFICATION_WIDTH).contains(&verify)
         && graph.nodes.iter().all(|node| {
             !node.states.iter().any(|id| {
                 graph.tensors.iter().any(|spec| {
@@ -318,6 +320,11 @@ impl BatchBuilder<'_> {
         {
             return Ok(());
         }
+        if batch.lanes != super::slot_recurrent::LANES {
+            return Err(error(
+                "wide slot verification requires the batched recurrent path",
+            ));
+        }
         for (slot, states) in states.iter().enumerate() {
             let lanes = slot_lanes(slot, metadata)?;
             super::slot_recurrent::record_verify(
@@ -333,6 +340,14 @@ impl BatchBuilder<'_> {
         Ok(())
     }
 
+    fn verification_mode(&self) -> CaptureMode {
+        self.graph
+            .features
+            .map_or(CaptureMode::Batched, |_| CaptureMode::Verification {
+                slots: self.width,
+            })
+    }
+
     fn capture_slot_verify(
         &mut self,
         lane_states: &mut [States],
@@ -345,6 +360,7 @@ impl BatchBuilder<'_> {
         let (verify, metadata, batch) = geometry;
         let fused = fused_recurrent(self.graph, verify);
         let hardware = ValueDevice::new(self.device)?;
+        let mode = self.verification_mode();
         CudaGraph::scope(&self.device.stream, |scope| {
             let mut no_fusion = None;
             for (index, node) in self.graph.nodes.iter().enumerate() {
@@ -358,6 +374,9 @@ impl BatchBuilder<'_> {
                         arena,
                         self.weights,
                         self.nvfp4,
+                        // Candidate lanes must not change the target head's reduction policy.
+                        // Use the ordinary pool's slot count even in a narrow verification.
+                        self.graph.features.map(|_| self.width),
                     )?;
                     continue;
                 }
@@ -388,7 +407,7 @@ impl BatchBuilder<'_> {
                         external: self.external,
                         capacity: self.capacity,
                         fusion: &mut no_fusion,
-                        mode: CaptureMode::Batched,
+                        mode,
                     }
                     .record(node)?,
                     Dispatch32::Row if fused && super::slot_recurrent::covers(node) => {
@@ -460,19 +479,37 @@ impl BatchBuilder<'_> {
         lane_fp8: &mut [Fp8Caches],
         verify: usize,
     ) -> Result<SlotVerifyGraph> {
-        let slots = lane_states.len();
+        self.build_slot_verify_parts(lane_states.parts(), lane_fp8, verify)
+    }
+
+    /// Lanes of a `slots`-slot, `verify`-wide graph, after checking the geometry fits.
+    fn verify_lanes(&self, slots: usize, verify: usize, caches: usize) -> Result<usize> {
         let lanes = slots
             .checked_mul(verify)
             .ok_or_else(|| Error::invalid("slot verify width overflow"))?;
-        if !(2..=MAX_POOL_SLOTS).contains(&slots)
-            || !(2..=MAX_VERIFICATION_WIDTH).contains(&verify)
-            || lane_fp8.len() != slots
-            || self.lane_external.len() < lanes
-            || self.lane_fusion.len() < lanes
-        {
+        let geometry =
+            (1..=MAX_POOL_SLOTS).contains(&slots) && (2..=MAX_VERIFICATION_WIDTH).contains(&verify);
+        let owners =
+            caches == slots && self.lane_external.len() >= lanes && self.lane_fusion.len() >= lanes;
+        if !geometry || !owners {
             return Err(Error::invalid("slot verify lanes"));
         }
-        let (lane_states, roots) = lane_states.parts();
+        Ok(lanes)
+    }
+
+    /// [`Self::build_slot_verify`] over the pool's first `lane_states.len()` slots, whose
+    /// contiguous state families `roots` cover exactly those slots. A narrower graph over the
+    /// low slots of a pool replays fewer lanes when only those slots are busy.
+    /// # Errors
+    /// As [`Self::build_slot_verify`], with one slot allowed.
+    pub(super) fn build_slot_verify_parts(
+        &mut self,
+        (lane_states, roots): (&mut [States], &mut States),
+        lane_fp8: &mut [Fp8Caches],
+        verify: usize,
+    ) -> Result<SlotVerifyGraph> {
+        let slots = lane_states.len();
+        let lanes = self.verify_lanes(slots, verify, lane_fp8.len())?;
         let fused = fused_recurrent(self.graph, verify);
         let mut checkpoints = if fused {
             (0..slots).map(|_| Vec::new()).collect()
@@ -487,11 +524,12 @@ impl BatchBuilder<'_> {
         )?;
         let (metadata_owner, metadata) = super::batch::batched_metadata(self.device, lanes)?;
         let mut profile = profile::SlotProfile::from_env(self.device);
-        let mut recurrent = RecurrentCapture::new(self, &arena, slots, fused)?;
+        let mut recurrent = RecurrentCapture::new(self, &arena, (slots, verify), fused)?;
         let batch = super::slot_states::VerifyBatch {
             roots,
             parameters: &recurrent.parameters,
             metadata: &metadata_owner,
+            lanes: verify,
         };
         let graph = self.capture_slot_verify(
             lane_states,
@@ -509,18 +547,32 @@ impl BatchBuilder<'_> {
                 &self.graph.nodes,
                 roots,
                 (&recurrent.staging, &recurrent.parameters, &metadata_owner),
-                slots,
+                (slots, verify),
             )?)
         } else {
             None
         };
-        let restore = if fused {
+        let wide = fused
+            && verify != super::slot_recurrent::LANES
+            && self.graph.nodes.iter().any(super::slot_recurrent::covers);
+        if wide && batched_commit.is_none() {
+            return Err(Error::unsupported(
+                "wide slot verification needs a batched commit",
+            ));
+        }
+        let restore = if wide {
+            Vec::new()
+        } else if fused && verify == super::slot_recurrent::LANES {
             self.capture_commits(lane_states, &arena, &metadata, (verify, &recurrent.staging))?
         } else {
             self.capture_restores(lane_states, &checkpoints)?
         };
         let hidden = take_result(&mut arena, self.graph.hidden)?;
         let logits = take_result(&mut arena, self.graph.logits)?;
+        let features = self
+            .graph
+            .features
+            .map(|id| take_result(&mut arena, Some(id)));
         let token_readout = super::token_readout::TokenReadout::new(
             self.device,
             from_ref(&logits),
@@ -540,6 +592,7 @@ impl BatchBuilder<'_> {
             metadata_staging: PinnedUpload::single(self.device, lanes * METADATA_FIELDS)?,
             hidden,
             logits,
+            features: features.transpose()?,
             slots,
             verify,
             cursors: vec![0; slots],
@@ -678,7 +731,9 @@ impl SlotVerifyGraph {
         if commits.is_empty() {
             return Ok(());
         }
-        if let Some(batch) = self.batched_commit.as_mut().filter(|_| commits.len() > 1) {
+        // Wide pools capture no per-slot commit graphs: every commit runs batched.
+        let batched = commits.len() > 1 || self.restore.is_empty();
+        if let Some(batch) = self.batched_commit.as_mut().filter(|_| batched) {
             batch.update(device, commits)?;
             // SAFETY: same capture stream, retained state/count owners and the pool's drop barrier.
             unsafe { batch.graph().launch().async_on(&device.stream) }.map_err(device_error)?;
@@ -711,6 +766,20 @@ impl SlotVerifyGraph {
     #[must_use]
     pub fn cursors(&self) -> &[usize] {
         &self.cursors
+    }
+
+    /// Adopt `source`'s cursors and pending counts for the slots both graphs cover; the
+    /// pool keeps one timeline per slot across its graphs of different widths.
+    pub(super) fn sync_from(&mut self, source: &Self) {
+        let slots = self.slots.min(source.slots);
+        self.cursors[..slots].copy_from_slice(&source.cursors[..slots]);
+        self.pending[..slots].copy_from_slice(&source.pending[..slots]);
+    }
+
+    /// Device draft features of every lane, valid after a replay; lane `slot * verify + i`
+    /// holds the feature of the slot's `i`-th verified token.
+    pub(crate) fn features(&self) -> Option<Arc<Tensor<f32>>> {
+        self.features.as_ref().map(Arc::clone)
     }
 
     /// Drain the capture stream: the pool's teardown barrier for detached restores.

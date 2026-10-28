@@ -373,6 +373,51 @@ pub(super) unsafe fn row_view<T: DType>(
     })
 }
 
+/// Borrow the first `kept` of `rows` leading-axis rows of a tensor, reshaped to `shape`.
+///
+/// Used by narrower pooled graphs that address only the low slots of a pool-wide state
+/// family. The caller must keep `whole` alive for every use of the view.
+///
+/// # Safety
+/// The returned tensor aliases `whole`'s device memory; its lifetime is not tracked.
+#[expect(
+    unsafe_code,
+    reason = "Audited prefix view: the pool retains the owner for the graph lifetime, the               prefix extent is checked against it, and same-stream replay serializes access"
+)]
+pub(super) unsafe fn prefix_view<T: DType>(
+    whole: &Tensor<T>,
+    rows: usize,
+    kept: usize,
+    shape: &[usize],
+) -> Result<Tensor<T>> {
+    if rows == 0 || kept == 0 || kept > rows || !whole.size().is_multiple_of(rows) {
+        return Err(Error::invalid("prefix view of a non-batched tensor"));
+    }
+    let elements = whole.size() / rows * kept;
+    if shape.iter().product::<usize>() != elements {
+        return Err(Error::invalid("prefix view shape"));
+    }
+    let allocation = RowAllocation {
+        pointer: whole.device_pointer().cu_deviceptr(),
+        bytes: elements
+            .checked_mul(size_of::<T>())
+            .ok_or_else(|| Error::invalid("prefix view extent"))?,
+        device: whole.device_id(),
+    };
+    let dims = shape
+        .iter()
+        .map(|&dim| i32::try_from(dim).map_err(device_error))
+        .collect::<Result<Vec<_>>>()?;
+    let mut strides = vec![1i32; dims.len()];
+    for axis in (0..dims.len().saturating_sub(1)).rev() {
+        strides[axis] = strides[axis + 1]
+            .checked_mul(dims[axis + 1])
+            .ok_or_else(|| Error::invalid("prefix view strides"))?;
+    }
+    // SAFETY: the owner is retained by the caller and the prefix lies inside it.
+    Ok(unsafe { Tensor::from_foreign(Arc::new(allocation), dims, strides) })
+}
+
 /// `DeviceAllocation` view of one batched lane that also owns the slot storage.
 ///
 /// Unlike [`RowAllocation`], this row carries a shared handle to the whole slot, so it

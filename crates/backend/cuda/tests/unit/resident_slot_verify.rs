@@ -165,6 +165,171 @@ fn check_pool_width(width: usize, verify: usize, capacity: usize) -> Result<()> 
     check_pool_width_rotary(width, verify, capacity, false)
 }
 
+/// A stateless decoder needs cursor commits, without any recurrent restore graph.
+#[test]
+#[ignore = "requires CUDA hardware; run inside safe-run"]
+fn pooled_verify_without_recurrent_state_matches_serial() -> Result<()> {
+    enable_default().map_err(device_error)?;
+    let device = CudaDevice::new(0)?;
+    let (mut graph, mut weights) = fixture(&device)?;
+    graph
+        .nodes
+        .retain(|node| !matches!(node.op, TensorOp::Conv { .. }));
+    graph
+        .tensors
+        .retain(|tensor| ![3, 4, 5].contains(&tensor.id.get()));
+    graph.nodes[1].inputs[0] = TensorId::new(2)?;
+    graph.hidden = Some(TensorId::new(2)?);
+    weights.batch_width = 8;
+    weights.prefill_width = 1;
+    for width in [1, 2, 4] {
+        let mut pool = SlotPool::new(&device, &graph, &weights, width, 32, 32, (32, 8), None)?;
+        let mut serial = DeviceProgram::new(&device, &graph, &weights, 32, 32, 32)?;
+        for (position, accepted) in [(0, 2), (3, 0), (4, 1)] {
+            let tokens = [1, 2, 3];
+            let expected = serial.step_batch(&tokens, position)?;
+            let lanes: Vec<_> = tokens
+                .iter()
+                .enumerate()
+                .map(|(offset, &token)| (0, offset, token, position + offset, position + offset))
+                .collect();
+            let actual = pool.run_verify(&device, &lanes)?;
+            compare(&actual[..tokens.len()], &expected);
+            pool.commit_verify(&device, 0, accepted)?;
+            serial.commit_batch(accepted + 1)?;
+            assert_eq!(pool.cursors()[0], serial.position());
+        }
+    }
+    Ok(())
+}
+
+fn feature_fixture(
+    device: &CudaDevice,
+    hidden: usize,
+    norm_dim: usize,
+    vocab: usize,
+) -> Result<(DataflowGraph, ProgramWeights)> {
+    let (_, mut weights) = fixture(device)?;
+    let mut graph = DataflowGraph::default();
+    for (id, shape, slot) in [
+        (1, vec![32, hidden], Some("embedding")),
+        (2, vec![hidden], None),
+        (3, vec![norm_dim], Some("norm")),
+        (4, vec![hidden], None),
+        (5, vec![vocab, hidden], Some("head")),
+        (6, vec![vocab], None),
+        (7, vec![hidden], None),
+        (8, vec![hidden, hidden], Some("projection")),
+        (9, vec![hidden], None),
+    ] {
+        graph.tensors.push(TensorSpec {
+            id: TensorId::new(id)?,
+            shape,
+            dtype: DType::F32,
+            storage: slot.map_or(TensorStorage::Activation, |slot| TensorStorage::Weight {
+                slot: slot.into(),
+            }),
+        });
+    }
+    for (id, op, inputs, output) in [
+        (1, TensorOp::Embedding, vec![1], 2),
+        (2, TensorOp::Linear, vec![2, 8], 9),
+        (
+            3,
+            TensorOp::Norm {
+                epsilon: 1e-6,
+                offset: 0.0,
+                head_dim: norm_dim,
+            },
+            vec![9, 3],
+            4,
+        ),
+        (4, TensorOp::Linear, vec![4, 5], 6),
+        (5, TensorOp::Add, vec![4, 4], 7),
+    ] {
+        graph.nodes.push(TensorNode {
+            id: OpId::new(id)?,
+            layer: None,
+            op,
+            inputs: inputs
+                .into_iter()
+                .map(TensorId::new)
+                .collect::<Result<_>>()?,
+            outputs: vec![TensorId::new(output)?],
+            states: vec![],
+        });
+    }
+    graph.hidden = Some(TensorId::new(4)?);
+    graph.logits = Some(TensorId::new(6)?);
+    graph.features = Some(TensorId::new(7)?);
+    let values = |n: usize| {
+        (0..n)
+            .map(|i| bf16::from_f32(f32::from(u16::try_from(i % 97).unwrap()) / 97.0 - 0.5))
+            .collect()
+    };
+    weights.embeddings = BTreeMap::from([(
+        TensorId::ONE,
+        device.upload(values(32 * hidden), &[32, hidden])?,
+    )]);
+    weights.constants = BTreeMap::from([(
+        TensorId::new(3)?,
+        device.upload(vec![1.0; norm_dim], &[norm_dim])?,
+    )]);
+    weights.projections = BTreeMap::from([
+        (
+            TensorId::new(5)?,
+            ProjectionWeight::Dense(device.upload(values(vocab * hidden), &[vocab, hidden])?),
+        ),
+        (
+            TensorId::new(8)?,
+            ProjectionWeight::Dense(device.upload(values(hidden * hidden), &[hidden, hidden])?),
+        ),
+    ]);
+    weights.batch_width = 8;
+    weights.prefill_width = 1;
+    Ok((graph, weights))
+}
+
+fn check_feature_decode_bits(hidden: usize, norm_dim: usize, vocab: usize) -> Result<()> {
+    enable_default().map_err(device_error)?;
+    let device = CudaDevice::new(0)?;
+    let (graph, weights) = feature_fixture(&device, hidden, norm_dim, vocab)?;
+    let mut plain = SlotPool::new(&device, &graph, &weights, 4, 32, hidden, (vocab, 0), None)?;
+    let mut verify = SlotPool::new(&device, &graph, &weights, 4, 32, hidden, (vocab, 8), None)?;
+    for slot in [0, 3] {
+        let expected = plain.run_lanes(&device, &[(slot, 7, 0, 0)])?;
+        // Ordinary target decode only reads logits; inspect its resident hidden row separately.
+        let expected_hidden = plain.test_hidden(&device, slot)?;
+        let actual = verify.run_verify(&device, &[(slot, 0, 7, 0, 0)])?;
+        let left: Vec<_> = expected_hidden
+            .iter()
+            .chain(&expected[0].1)
+            .map(|value| value.to_bits())
+            .collect();
+        let right: Vec<_> = actual[slot * 8]
+            .0
+            .iter()
+            .chain(&actual[slot * 8].1)
+            .map(|value| value.to_bits())
+            .collect();
+        assert_eq!(left, right, "decode bits at slot {slot}");
+        verify.commit_verify(&device, slot, 0)?;
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires CUDA hardware; run inside safe-run"]
+fn feature_verification_preserves_wide_head_decode_bits() -> Result<()> {
+    check_feature_decode_bits(32, 32, 512)
+}
+
+#[test]
+#[ignore = "requires CUDA hardware; run inside safe-run"]
+fn feature_verification_preserves_head_norm_decode_bits() -> Result<()> {
+    check_feature_decode_bits(2048, 128, 32)
+}
+
 #[test]
 #[ignore = "requires CUDA hardware; run inside safe-run"]
 fn pooled_rotary_preserves_row_consumers_prefixes_and_reuse() -> Result<()> {
@@ -198,7 +363,7 @@ fn check_pool_width_rotary(
         (32, verify),
         None,
     )?;
-    assert_eq!(pool.test_batched_commit(), verify == 3);
+    assert!(pool.test_batched_commit());
     let mut serial = (0..width)
         .map(|_| DeviceProgram::new(&device, &graph, &weights, 32, 32, 32))
         .collect::<Result<Vec<_>>>()?;
