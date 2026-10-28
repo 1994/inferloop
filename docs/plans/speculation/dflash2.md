@@ -321,8 +321,9 @@ package 校验、独立参考、draft 图/selector 模块与容量分析属于 D
 普通 decoder 没有 recurrent writer 时只提交游标，不要求 recurrent commit 图。准入按实际
 block 宽度计算 target storage，并覆盖各窄图、草稿 proposal/ingestion、split-K 和 greedy
 readout 工作区；引擎的序列环与 prompt ingestion 单独计费。无法资助草稿图时明确拒绝。
-target 的宽词表投影沿用普通 slot decode 的归约选择；候选 lane 数不能触发另一种输入分解
-和累加次序。这个约束可能增加大词表验证的 F32 计算成本，不能沿用调整前的吞吐数字。
+target 的宽词表投影与 Q/K 归一化沿用普通 slot decode 的 kernel 选择；候选 lane 数不能
+触发另一种输入分解、归约或累加次序。这个约束可能增加验证的 F32 计算成本，不能沿用
+调整前的吞吐数字。
 
 可用 ModelScope 的 `Qwen/Qwen3-0.6B` 真权重验证较小的普通 decoder，再生成一个约
 18 MB 的确定性 FP8 草稿测试包，覆盖草稿加载、冷启动、提议与拒绝后的状态提交：
@@ -334,7 +335,7 @@ INFER_TEST_MODEL=/path/to/Qwen3-0.6B INFER_TEST_DRAFT=/tmp/dflash2-test-package 
   bash tools/bench/safe-run.sh --memory-gib 24 --time-limit-seconds 600 \
   cargo test --locked --release -p infer-backend-cuda --features cuda --lib -- \
   --ignored --test-threads=1 cold_dflash2 block_attention draft_buffer_quotes \
-  resident::slot_verify::tests::pooled_verify lanes
+  resident::slot_verify::tests::pooled_verify feature_verification lanes
 ```
 
 这个草稿包未经训练，不能用于接受率、模型质量或加速比结论。MTP 专用模型测试仍需要

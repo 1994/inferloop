@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 409
+      "tests": 410
     },
     "frontdoor": {
       "benches": 0,
@@ -196,7 +196,7 @@
     "requires CUDA hardware; new F32-state/F64-reference contract": 1,
     "requires CUDA hardware; root runs release serially": 3,
     "requires CUDA hardware; run explicitly inside tools/bench/safe-run.sh": 5,
-    "requires CUDA hardware; run inside safe-run": 32,
+    "requires CUDA hardware; run inside safe-run": 33,
     "requires CUDA hardware; run release inside safe-run": 1,
     "requires CUDA hardware; run under safe-run": 29,
     "requires CUDA hardware; run under safe-run in release": 1,
@@ -1388,11 +1388,11 @@
     }
   ],
   "totals": {
-    "all": 985,
+    "all": 986,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 985
+    "tests": 986
   }
 }

@@ -340,6 +340,14 @@ impl BatchBuilder<'_> {
         Ok(())
     }
 
+    fn verification_mode(&self) -> CaptureMode {
+        self.graph
+            .features
+            .map_or(CaptureMode::Batched, |_| CaptureMode::Verification {
+                slots: self.width,
+            })
+    }
+
     fn capture_slot_verify(
         &mut self,
         lane_states: &mut [States],
@@ -352,6 +360,7 @@ impl BatchBuilder<'_> {
         let (verify, metadata, batch) = geometry;
         let fused = fused_recurrent(self.graph, verify);
         let hardware = ValueDevice::new(self.device)?;
+        let mode = self.verification_mode();
         CudaGraph::scope(&self.device.stream, |scope| {
             let mut no_fusion = None;
             for (index, node) in self.graph.nodes.iter().enumerate() {
@@ -398,7 +407,7 @@ impl BatchBuilder<'_> {
                         external: self.external,
                         capacity: self.capacity,
                         fusion: &mut no_fusion,
-                        mode: CaptureMode::Batched,
+                        mode,
                     }
                     .record(node)?,
                     Dispatch32::Row if fused && super::slot_recurrent::covers(node) => {

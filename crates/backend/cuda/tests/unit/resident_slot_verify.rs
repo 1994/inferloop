@@ -203,101 +203,130 @@ fn pooled_verify_without_recurrent_state_matches_serial() -> Result<()> {
     Ok(())
 }
 
-/// Candidate rows must not switch a wide vocabulary head away from ordinary decode arithmetic.
-#[test]
-#[ignore = "requires CUDA hardware; run inside safe-run"]
-fn feature_verification_preserves_wide_head_decode_bits() -> Result<()> {
-    enable_default().map_err(device_error)?;
-    let device = CudaDevice::new(0)?;
-    let (mut graph, mut weights) = fixture(&device)?;
-    graph
-        .nodes
-        .retain(|node| !matches!(node.op, TensorOp::Conv { .. }));
-    graph
-        .tensors
-        .retain(|tensor| ![3, 4, 5].contains(&tensor.id.get()));
-    graph
-        .tensors
-        .iter_mut()
-        .find(|tensor| tensor.id.get() == 6)
-        .unwrap()
-        .shape = vec![512, 32];
-    graph
-        .tensors
-        .iter_mut()
-        .find(|tensor| tensor.id.get() == 7)
-        .unwrap()
-        .shape = vec![512];
-    for (id, storage) in [
-        (
-            8,
-            TensorStorage::Weight {
-                slot: "norm".into(),
-            },
-        ),
-        (9, TensorStorage::Activation),
-        (10, TensorStorage::Activation),
+fn feature_fixture(
+    device: &CudaDevice,
+    hidden: usize,
+    norm_dim: usize,
+    vocab: usize,
+) -> Result<(DataflowGraph, ProgramWeights)> {
+    let (_, mut weights) = fixture(device)?;
+    let mut graph = DataflowGraph::default();
+    for (id, shape, slot) in [
+        (1, vec![32, hidden], Some("embedding")),
+        (2, vec![hidden], None),
+        (3, vec![norm_dim], Some("norm")),
+        (4, vec![hidden], None),
+        (5, vec![vocab, hidden], Some("head")),
+        (6, vec![vocab], None),
+        (7, vec![hidden], None),
+        (8, vec![hidden, hidden], Some("projection")),
+        (9, vec![hidden], None),
     ] {
         graph.tensors.push(TensorSpec {
             id: TensorId::new(id)?,
-            shape: vec![32],
+            shape,
             dtype: DType::F32,
-            storage,
+            storage: slot.map_or(TensorStorage::Activation, |slot| TensorStorage::Weight {
+                slot: slot.into(),
+            }),
         });
     }
-    graph.nodes.insert(
-        1,
-        TensorNode {
-            id: OpId::new(4)?,
-            layer: None,
-            op: TensorOp::Norm {
+    for (id, op, inputs, output) in [
+        (1, TensorOp::Embedding, vec![1], 2),
+        (2, TensorOp::Linear, vec![2, 8], 9),
+        (
+            3,
+            TensorOp::Norm {
                 epsilon: 1e-6,
                 offset: 0.0,
-                head_dim: 32,
+                head_dim: norm_dim,
             },
-            inputs: vec![TensorId::new(2)?, TensorId::new(8)?],
-            outputs: vec![TensorId::new(9)?],
+            vec![9, 3],
+            4,
+        ),
+        (4, TensorOp::Linear, vec![4, 5], 6),
+        (5, TensorOp::Add, vec![4, 4], 7),
+    ] {
+        graph.nodes.push(TensorNode {
+            id: OpId::new(id)?,
+            layer: None,
+            op,
+            inputs: inputs
+                .into_iter()
+                .map(TensorId::new)
+                .collect::<Result<_>>()?,
+            outputs: vec![TensorId::new(output)?],
             states: vec![],
-        },
-    );
-    graph.nodes[2].inputs[0] = TensorId::new(9)?;
-    graph.nodes.push(TensorNode {
-        id: OpId::new(5)?,
-        layer: None,
-        op: TensorOp::Add,
-        inputs: vec![TensorId::new(9)?, TensorId::new(9)?],
-        outputs: vec![TensorId::new(10)?],
-        states: vec![],
-    });
-    graph.hidden = Some(TensorId::new(9)?);
-    graph.features = Some(TensorId::new(10)?);
-    weights
-        .constants
-        .insert(TensorId::new(8)?, device.upload(vec![1.0; 32], &[32])?);
-    let head = (0..16384_u16)
-        .map(|i| bf16::from_f32(f32::from(i % 97) / 97.0 - 0.5))
-        .collect();
-    weights.projections.insert(
-        TensorId::new(6)?,
-        ProjectionWeight::Dense(device.upload(head, &[512, 32])?),
-    );
+        });
+    }
+    graph.hidden = Some(TensorId::new(4)?);
+    graph.logits = Some(TensorId::new(6)?);
+    graph.features = Some(TensorId::new(7)?);
+    let values = |n: usize| {
+        (0..n)
+            .map(|i| bf16::from_f32(f32::from(u16::try_from(i % 97).unwrap()) / 97.0 - 0.5))
+            .collect()
+    };
+    weights.embeddings = BTreeMap::from([(
+        TensorId::ONE,
+        device.upload(values(32 * hidden), &[32, hidden])?,
+    )]);
+    weights.constants = BTreeMap::from([(
+        TensorId::new(3)?,
+        device.upload(vec![1.0; norm_dim], &[norm_dim])?,
+    )]);
+    weights.projections = BTreeMap::from([
+        (
+            TensorId::new(5)?,
+            ProjectionWeight::Dense(device.upload(values(vocab * hidden), &[vocab, hidden])?),
+        ),
+        (
+            TensorId::new(8)?,
+            ProjectionWeight::Dense(device.upload(values(hidden * hidden), &[hidden, hidden])?),
+        ),
+    ]);
     weights.batch_width = 8;
     weights.prefill_width = 1;
-    let mut plain = SlotPool::new(&device, &graph, &weights, 4, 32, 32, (512, 0), None)?;
-    let mut verify = SlotPool::new(&device, &graph, &weights, 4, 32, 32, (512, 8), None)?;
+    Ok((graph, weights))
+}
+
+fn check_feature_decode_bits(hidden: usize, norm_dim: usize, vocab: usize) -> Result<()> {
+    enable_default().map_err(device_error)?;
+    let device = CudaDevice::new(0)?;
+    let (graph, weights) = feature_fixture(&device, hidden, norm_dim, vocab)?;
+    let mut plain = SlotPool::new(&device, &graph, &weights, 4, 32, hidden, (vocab, 0), None)?;
+    let mut verify = SlotPool::new(&device, &graph, &weights, 4, 32, hidden, (vocab, 8), None)?;
     for slot in [0, 3] {
         let expected = plain.run_lanes(&device, &[(slot, 7, 0, 0)])?;
         let actual = verify.run_verify(&device, &[(slot, 0, 7, 0, 0)])?;
-        let left: Vec<_> = expected[0].1.iter().map(|value| value.to_bits()).collect();
-        let right: Vec<_> = actual[slot * 8]
-            .1
+        let left: Vec<_> = expected[0]
+            .0
             .iter()
+            .chain(&expected[0].1)
             .map(|value| value.to_bits())
             .collect();
-        assert_eq!(left, right, "head bits at slot {slot}");
+        let right: Vec<_> = actual[slot * 8]
+            .0
+            .iter()
+            .chain(&actual[slot * 8].1)
+            .map(|value| value.to_bits())
+            .collect();
+        assert_eq!(left, right, "decode bits at slot {slot}");
         verify.commit_verify(&device, slot, 0)?;
     }
     Ok(())
+}
+
+#[test]
+#[ignore = "requires CUDA hardware; run inside safe-run"]
+fn feature_verification_preserves_wide_head_decode_bits() -> Result<()> {
+    check_feature_decode_bits(32, 32, 512)
+}
+
+#[test]
+#[ignore = "requires CUDA hardware; run inside safe-run"]
+fn feature_verification_preserves_head_norm_decode_bits() -> Result<()> {
+    check_feature_decode_bits(2048, 128, 32)
 }
 
 #[test]
