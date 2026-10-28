@@ -19,9 +19,9 @@
 
 | 项 | 机制 | 落盘位置 / 日志 |
 |---|---|---|
-| 设备身份 | `DeviceProfile`：型号、架构、SM 数、显存、显存时钟、位宽、L2；驱动版本和驱动构建号 | 所有调优键的一部分，换硬件或驱动会自动重新测量 |
+| 设备身份 | `DeviceProfile` 提供型号、架构、SM 数、显存、时钟、位宽和 L2；各 chooser 的缓存身份不同 | 驻留 GEMM 另含驱动和内核身份；旧 GEMV 表仅按设备名称、架构和显存大小隔离，驱动改变不会自动使其失效 |
 | 调优预热 | 服务启动前先起一个独立的预热子进程，超时 600 s，测完后释放资源；服务进程复用缓存 | 日志 `CUDA tuning preparation complete` |
-| 调优缓存 | `$XDG_CACHE_HOME/infer-cuda/tuning.json`，未设置时为 `~/.cache/infer-cuda/tuning.json` | 每个条目带配对计时证据 |
+| 调优缓存 | `$XDG_CACHE_HOME/infer-cuda/tuning.json`，未设置时为 `~/.cache/infer-cuda/tuning.json` | typed section 的身份和证据合同不同；旧 GEMV 条目不保存配对计时证据 |
 | NVFP4 投影 tile | `tuning/resident_gemm.rs`：按形状 (M, N, K) 搜索 tile_m、tile_n 和主循环（Plain / Prefetch8），AB 搜索加 BA 确认 | `resident GEMM selected ... source=` 为 `measured`、`table-cache` 或 `autotune-disabled` |
 | FP8 投影 | `tuning/fp8_gemm.rs`：原生 tile 和 cuBLASLt 候选一起实测 | `FP8 GEMM choice ... selected=` |
 | attention、递推、norm | `tuning/attention`、`tuning/recurrent`、`tuning/gated_norm`：各自按形状实测 | `preparing hardware attention choices` |
@@ -54,7 +54,7 @@ attention、recurrent、norm、greedy 的独立 allowance 保持原有边界。
    - FP16 FA4：`resident/attention_mma/f16.rs`，只支持 sm_120。
 
    新架构上要确认回退路径正确，并记录哪些内核需要补充产物。NVFP4 W4A4 依赖 FP4 tensor core（Blackwell）；在 Hopper（sm_90）上需要另行确认 NVFP4 checkpoint 实际走的是哪条路径。
-3. **冷启动调优。** 换一个干净的缓存位置（只为开发诊断设置 `INFER_CUDA_TUNING_TABLE=<新文件>`），用零参数启动一次，等预热结束。然后按上面的日志检查表确认每个形状都是 `measured`，没有预算耗尽或回退。
+3. **冷启动调优。** 换一个干净的缓存位置（只为开发诊断设置 `INFER_CUDA_TUNING_TABLE=<新文件>`），用零参数启动一次，等预热结束。然后按上面的日志检查表记录各形状的选择来源、预算耗尽和回退；有效缓存命中与新测量应分别报告，回退不能算作已完成搜索。
 4. **正确性。** 运行 `make test-cuda-hosted`。和本次改动相关的 `#[ignore]` GPU 测试要在 safe-run 里单独运行：先用 `cargo test --no-run` 编出测试二进制，再执行 `tools/bench/safe-run.sh --memory-gib 24 <测试二进制> <名称过滤> --ignored`。
 5. **性能基线。** 用 `tools/bench/fixed-work-serving.py`，分别跑零参数默认配置和与 vLLM 对齐的配置，按 BAAB 交替。用 `--profile` 跑一次，再用 `tools/bench/graph-profile-summary.py` 得到每张图、每类算子的 GPU 时间。
 6. **和参照引擎逐形状对比。** 对占比最高的投影形状，测参照引擎的内核（如 vLLM 的 CUTLASS NVFP4 / FP8 GEMM）。计时要包含激活量化，并且**在多份权重副本之间轮换，使总量超过 L2**，否则小 M 形状会读到 L2 缓存，得出高于显存带宽的错误结论。
@@ -63,13 +63,15 @@ attention、recurrent、norm、greedy 的独立 allowance 保持原有边界。
 
 ## 新模型检查表
 
+模型与硬件联合调优的现状、缓存边界及跨模型验证计划见[专项研究](../research/model-hardware-tuning-2026-10-28.md)。
+
 1. **模型图。** 拓扑由 `crates/model/recipes` 构建（参考 [新增模型](adding-a-model.md)）。确认：
    - 量化格式在支持范围内：NVFP4 W4A4（`weight_global_scale` 加 `input_global_scale`）、FP8 按通道、BF16 稠密；
    - MTP head 是否存在、能否被自动选中；
    - recurrent 状态精度：例如 Qwen3.5 系列 config 中 `mamba_ssm_dtype: float32`，vLLM 也按 F32 存储。
 2. **按图结构匹配的融合是否生效。** 以下融合都通过识别图中的特定模式来触发，新模型的结构稍有不同就可能不再生效：
    - gate/up 加 SwiGLU 加 FP4 量化融合（`prefill_projection.rs` 的 `MlpPlan`）：要求 gate 与 up 读同一输入、激活缩放相同，输出只被 SiLU 和 multiply 读取；
-   - GDN `in_proj_b`/`in_proj_a` 合并（`batch.rs` 的 `gdn_ba_pairs`）：目前按形状 `[48, 5120]` 硬匹配，见待改清单；
+   - GDN `in_proj_b`/`in_proj_a` 合并：按图中投影角色和结构识别，录图时复核权重与布局；
    - norm 与 FP8 行最大值融合（`norm_maximum.rs`）、同输入的量化复用（`nvfp4_gemm/quant_reuse.rs`）。
 
    检查方法：用 profile 的节点数和各算子耗时，对比融合生效与不生效时的预期。也可以在对应的计划函数里打印命中数。
