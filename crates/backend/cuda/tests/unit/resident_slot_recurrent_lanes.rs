@@ -225,15 +225,30 @@ fn wide_convolution_lanes_match_three_lane_bits() -> TestResult {
         &narrow_rows(&device.read_borrowed(&wide_out)?, CHANNELS),
         &device.read_borrowed(&narrow_out)?,
     );
+    convolution_commits_match(
+        &device,
+        &history,
+        (&wide_input, &narrow_input),
+        (&wide_meta, &narrow_meta),
+    )
+}
+
+/// Commit every count pattern through both kernels and require identical histories.
+fn convolution_commits_match(
+    device: &CudaDevice,
+    history: &[Vec<f32>],
+    (wide_input, narrow_input): (&Tensor<f32>, &Tensor<f32>),
+    (wide_meta, narrow_meta): (&Tensor<i32>, &Tensor<i32>),
+) -> TestResult {
     for counts in [[1, 2, 3], [3, 1, 2], [0, 3, 1]] {
         let counts = device.upload(counts.to_vec(), &[SLOTS])?;
         let mut wide_h = history
             .iter()
-            .map(|values| upload(&device, values.clone(), &[SLOTS, CHANNELS]))
+            .map(|values| upload(device, values.clone(), &[SLOTS, CHANNELS]))
             .collect::<infer_core::Result<Vec<_>>>()?;
         let mut narrow_h = history
             .iter()
-            .map(|values| upload(&device, values.clone(), &[SLOTS, CHANNELS]))
+            .map(|values| upload(device, values.clone(), &[SLOTS, CHANNELS]))
             .collect::<infer_core::Result<Vec<_>>>()?;
         let [w0, w1, w2] = wide_h.as_mut_slice() else {
             unreachable!()
@@ -243,7 +258,7 @@ fn wide_convolution_lanes_match_three_lane_bits() -> TestResult {
             w1.partition([1, CONV_KERNEL_TILE]),
             w2.partition([1, CONV_KERNEL_TILE]),
             &wide_input.view(&[SLOTS * WIDE, CHANNELS])?,
-            &wide_meta,
+            wide_meta,
             &counts,
         )
         .generics(generics(&[FIELDS, WIDE]))
@@ -256,7 +271,7 @@ fn wide_convolution_lanes_match_three_lane_bits() -> TestResult {
             n1.partition([1, CONV_KERNEL_TILE]),
             n2.partition([1, CONV_KERNEL_TILE]),
             &narrow_input.view(&[SLOTS * NARROW, CHANNELS])?,
-            &narrow_meta,
+            narrow_meta,
             &counts,
         )
         .generics(generics(&[FIELDS]))

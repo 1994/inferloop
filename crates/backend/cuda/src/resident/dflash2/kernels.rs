@@ -257,7 +257,9 @@ pub(crate) mod draft {
             let zero_scores: Tile<f32, { [QR, KEYS] }> = constant(0.0f32, shape![QR, KEYS]);
             let zero_values: Tile<f32, { [QR, D] }> = constant(0.0f32, shape![QR, D]);
             let masked: Tile<f32, { [QR, KEYS] }> = constant(MASKED, shape![QR, KEYS]);
-            for tile in (first / KEYS)..=(last / KEYS) {
+            // The DSL lowers only half-open ranges; `..=` would silently drop the last tile.
+            let end = last / KEYS + 1i32;
+            for tile in (first / KEYS)..end {
                 let physical = ring * tiles + tile % tiles;
                 let key: Tile<bf16, { [KEYS, D] }> =
                     kp.load([pid.1, physical, 0i32]).reshape(shape![KEYS, D]);
@@ -543,3 +545,7 @@ pub(crate) mod draft {
         tokens.store(chosen.reshape(shape![1, BLOCK]));
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/resident_dflash2_kernels.rs"]
+mod tests;

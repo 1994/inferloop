@@ -299,7 +299,7 @@ impl Engine {
             let input = features.view(&[rows, geometry.hidden])?;
             record_ingest_from(scope, &weights, rings, &mut work, &input)
         })
-        .map_err(device_error)?;
+        .map_err(|error| device_error(format!("{slots}-slot verified ingestion: {error}")))?;
         let verified = VerifiedIngest {
             graph,
             work,
@@ -310,7 +310,7 @@ impl Engine {
         let graph = CudaGraph::scope(&device.stream, |scope| {
             record_propose(scope, &weights, rings, &mut buffers)
         })
-        .map_err(device_error)?;
+        .map_err(|error| device_error(format!("{slots}-slot proposal: {error}")))?;
         let meta = buffers.meta.size();
         let propose = Propose {
             graph,
