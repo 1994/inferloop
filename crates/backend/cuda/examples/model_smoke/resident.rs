@@ -76,6 +76,15 @@ pub fn prepare(
         if source.dtype != TensorDtype::BF16 {
             return Err(Error::unsupported("resident embedding requires BF16"));
         }
+        if let Some(projection) = model.projections.get(id) {
+            let super::Projection::Dense(embedding) = projection else {
+                return Err(Error::unsupported(
+                    "tied embedding requires a dense projection",
+                ));
+            };
+            weights.embeddings.insert(*id, Arc::clone(embedding));
+            continue;
+        }
         // Explicit bounded staging: this model's embedding is larger than 2 GiB.
         let bytes = model.package.read(source, 4 * 1024 * 1024 * 1024)?;
         let values = bytes

@@ -110,9 +110,14 @@ def sha256_file(path):
 
 
 def eos_tokens(model):
-    configuration = json.loads((Path(model) / "generation_config.json").read_text())
-    value = configuration["eos_token_id"]
-    return value if isinstance(value, list) else [value]
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "model_config", Path(__file__).with_name("model_config.py")
+    )
+    model_config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(model_config)
+    return model_config.eos_tokens(model)
 
 
 def git_identity():

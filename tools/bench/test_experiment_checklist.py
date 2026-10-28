@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 spec = importlib.util.spec_from_file_location(
     "experiment_checklist", Path(__file__).with_name("experiment-checklist.py")
@@ -76,6 +77,42 @@ def reference_report():
         engine_version="0.31.0",
     )
     return report
+
+
+class DraftTest(unittest.TestCase):
+    def test_nested_model_eos_without_generation_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "config.json").write_text(json.dumps({"text_config": {"eos_token_id": 248044}}))
+            workload = root / "workload.json"
+            workload.write_text(json.dumps([{"case": "short", "concurrency": 1, "repeat": 0}]))
+            arguments = SimpleNamespace(
+                workload=workload,
+                model=root,
+                artifacts=module.ARTIFACTS,
+                engine="native",
+                engine_version="test",
+                profile_id="test",
+                weights="bf16",
+                activation="bf16",
+                kv="bf16",
+                quality_gate="test",
+                quality_required=False,
+                gpu_memory_utilization=0.8,
+                max_model_len=1024,
+                max_num_seqs=1,
+                no_prefix_cache=False,
+                tokens=16,
+                temperature=0,
+                mtp=0,
+                repeats=1,
+                max_ratio=1.1,
+                require_identical_tokens=False,
+            )
+            result = module.draft(arguments)
+            self.assertEqual(result["workload"]["eos_tokens"], [248044])
+            self.assertIn("config.json", result["model"]["files"])
+            self.assertNotIn("generation_config.json", result["model"]["files"])
 
 
 class ValidateTest(unittest.TestCase):
