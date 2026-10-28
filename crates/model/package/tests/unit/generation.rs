@@ -87,3 +87,30 @@ fn every_resolved_parameter_records_the_layer_that_set_it() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn qwen_generation_policy_is_shared_across_family_sizes() {
+    for name in ["0.6B", "8B", "9B", "30B-A3B"] {
+        let card = format!("---\nbase_model:\n- Qwen/Qwen3-{name}-Base\n---\n");
+        let policy = QwenProvider.generation_policy(Some(&card));
+        assert!(policy.enable_thinking, "{name}");
+        assert_eq!(policy.non_thinking.unwrap().temperature, Some(0.7));
+    }
+    for name in ["27B", "60B-A6B"] {
+        for card in [
+            format!("---\nbase_model:\n- Qwen/Qwen3.8-{name}\n---\n"),
+            format!("---\nlibrary_name: transformers\n---\n# Qwen3.8-{name}\n"),
+        ] {
+            let policy = QwenProvider.generation_policy(Some(&card));
+            assert!(policy.enable_thinking, "{name}");
+            assert_eq!(policy.non_thinking.unwrap().presence_penalty, Some(1.5));
+        }
+    }
+    for name in ["Qwen3-VL-2B", "Qwen3-4B-Instruct-2507", "Qwen3-8B-Coder"] {
+        let card = format!("---\nbase_model:\n- Qwen/{name}-Base\n---\n");
+        assert!(
+            !QwenProvider.generation_policy(Some(&card)).enable_thinking,
+            "{name}"
+        );
+    }
+}
