@@ -69,6 +69,7 @@ struct Snapshot {
     free_bytes: Option<u64>,
     state_capacity_bytes: Option<u64>,
     kv: Option<KvCacheInspection>,
+    execution_profile: Option<Arc<infer_ir::ExecutionProfileInspection>>,
     growth: BoundedMap<StateId, PageGrowth>,
     prefill: BoundedMap<StateId, infer_ir::PrefillGeometry>,
     error: Option<Error>,
@@ -79,6 +80,7 @@ impl Snapshot {
             free_bytes: None,
             state_capacity_bytes: None,
             kv: None,
+            execution_profile: None,
             growth: BoundedMap::new(states)?,
             prefill: BoundedMap::new(states)?,
             error: None,
@@ -177,7 +179,6 @@ impl Multimodal {
 pub struct ThreadedBackend<B: BackendProvider> {
     recycled: infer_gpu_api::Producer<Recycled>,
     recipe: Option<infer_ir::StateRecipe>,
-    execution_profile: Option<infer_ir::ExecutionProfileInspection>,
     jobs: mpsc::SyncSender<Job>,
     submissions: infer_gpu_api::Producer<infer_gpu_api::BatchLease>,
     completions: infer_gpu_api::Consumer<infer_gpu_api::BatchLease>,
@@ -285,6 +286,7 @@ where
         snapshot.free_bytes = backend.free_state_bytes()?;
         snapshot.state_capacity_bytes = backend.state_capacity_bytes()?;
         snapshot.kv = backend.kv_cache();
+        snapshot.execution_profile = backend.execution_profile().map(Arc::new);
         let snapshot = Arc::new(snapshot);
         let snapshots = [
             snapshot.clone(),
@@ -316,7 +318,6 @@ where
         let program = Arc::new(program);
         let runner = Self {
             recipe: backend.state_recipe().cloned(),
-            execution_profile: backend.execution_profile(),
             recycled,
             resources: infer_spi::ResourcePool::new(
                 config

@@ -1,5 +1,6 @@
 use super::{CudaExecutor, prefix::Restore};
 use crate::constants::KV_BLOCK_TOKENS;
+use crate::resident::slot_batch::SlotPool;
 use infer_core::{Result, StateId};
 use infer_ir::{KvCacheInspection, OutputReadout, PageGrowth};
 impl CudaExecutor {
@@ -58,35 +59,34 @@ impl CudaExecutor {
     pub(super) fn free_state_bytes(&self) -> Result<Option<u64>> {
         self.available().map(Some)
     }
-    /// Report the slot pool in the engine's block vocabulary. The pool is slot-granular and
-    /// pre-paid: a leased slot's untouched tail is where its sequence's growth comes from, so
-    /// it counts as available; a free slot's blocks are entirely available. The prefix cache
-    /// holds whole-state snapshots outside the pool, so its coverage is reported in block
-    /// units for observability without ever feeding the available count. `total_blocks` is
-    /// floored at the private path's single-sequence ceiling: a sequence too long for the
-    /// pool still gets a private reservation up to the model context, and the admission
-    /// isolation check compares against this field.
-    pub(super) fn kv_cache(&self) -> Option<KvCacheInspection> {
-        let pool = self.slots.as_ref()?;
+    /// Report physically allocated/free pages, not logical slot tails. Total capacity
+    /// retains the private path's isolated context ceiling; its separately funded pages
+    /// never inflate free pooled pages. Prefix snapshots remain separately owned.
+    pub(super) fn kv_cache(&self) -> KvCacheInspection {
+        let pool = self.slots.as_ref();
         let block = KV_BLOCK_TOKENS;
-        let per_slot = pool.capacity().div_ceil(block);
-        let pool_blocks = pool.width().saturating_mul(per_slot);
+        let (pool_blocks, free_blocks) = pool.map_or((0, 0), SlotPool::kv_pages);
         let active_blocks = self
             .states
             .values()
-            .filter(|state| state.slot.is_some())
+            .filter(|state| state.slot.is_some() || state.home.is_some())
             .map(|state| state.history.len().div_ceil(block))
             .sum();
-        let (allocations, releases) = pool.lease_counters();
-        Some(KvCacheInspection {
+        let (allocations, releases) = pool.map_or((0, 0), SlotPool::lease_counters);
+        let pending = self
+            .pool_quote
+            .as_ref()
+            .filter(|_| pool.is_none())
+            .map(|quote| (quote.width, quote.capacity));
+        KvCacheInspection {
             pinned_blocks: 0,
             block_size: block,
-            total_blocks: pool_blocks.max(self.loaded.model().max_sequence.div_ceil(block)),
-            free_blocks: pool.free_slots().saturating_mul(per_slot),
+            total_blocks: logical_kv_blocks(pool_blocks, pending, self.loaded.model().max_sequence),
+            free_blocks,
             active_blocks,
             cached_blocks: self.prefix.cached_tokens().div_ceil(block),
             shared_blocks: 0,
-            available_blocks: pool_blocks.saturating_sub(active_blocks),
+            available_blocks: free_blocks,
             pool_bytes: u64::try_from(pool_blocks)
                 .unwrap_or(u64::MAX)
                 .saturating_mul(self.kv_block_bytes),
@@ -96,24 +96,17 @@ impl CudaExecutor {
             cow_copies: 0,
             cache_evictions: self.prefix.evictions,
             reused_tokens: self.prefix.reused_tokens,
-        })
+        }
     }
-    /// Physical page demand of a sequence's next step. A slot-leased sequence grows into its
-    /// slot's pre-paid tail, so the scheduler sees the content blocks it commits; a private
-    /// sequence reserved its whole capacity at admission and never grows at all. The draft
-    /// pool lags the target by one token and crosses the same 32-token boundaries, so it is
-    /// not separately reported.
+    /// Every request reserves pages through its exact admission capacity. Decode grows
+    /// within that reservation, so those already-owned pages are never charged again.
     pub(super) fn state_page_growth(&self, state: StateId) -> Result<Option<PageGrowth>> {
         let sequence = self
             .states
             .get(&state)
             .ok_or_else(|| infer_core::Error::invalid("unknown CUDA state"))?;
         let block = KV_BLOCK_TOKENS;
-        let allocated_pages = if sequence.slot.is_some() {
-            sequence.history.len().div_ceil(block)
-        } else {
-            sequence.capacity.div_ceil(block)
-        };
+        let allocated_pages = sequence.capacity.div_ceil(block);
         Ok(Some(PageGrowth {
             block_size: block,
             allocated_pages,
@@ -167,3 +160,20 @@ impl CudaExecutor {
         self.release(state)
     }
 }
+
+/// The runtime allocates logical descriptors once, before a demand-driven pool exists.
+/// Its ceiling must cover any funded future slot layout; these are not free physical pages.
+fn logical_kv_blocks(
+    physical: usize,
+    pending: Option<(usize, usize)>,
+    private_capacity: usize,
+) -> usize {
+    let pooled = pending.map_or(physical, |(width, capacity)| {
+        width.saturating_mul(capacity).div_ceil(KV_BLOCK_TOKENS)
+    });
+    pooled.max(private_capacity.div_ceil(KV_BLOCK_TOKENS))
+}
+
+#[cfg(test)]
+#[path = "../../tests/unit/executor_kv_inspection.rs"]
+mod tests;

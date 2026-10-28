@@ -84,9 +84,9 @@ async fn cacheable_prefix(
 }
 
 /// All storage needed before publishing a load-time pooled serving geometry.
-struct PoolPlan {
-    quote: PooledServingQuote,
-    memory_bound: usize,
+pub(super) struct PoolPlan {
+    pub(super) quote: PooledServingQuote,
+    pub(super) memory_bound: usize,
 }
 
 impl CudaExecutor {
@@ -209,7 +209,18 @@ impl CudaExecutor {
         if self.deferred_pool_plan == Some((capacity, active)) {
             return;
         }
-        self.warm_slot_pool_at(capacity);
+        let request_tokens = self
+            .states
+            .values()
+            .filter(|state| {
+                !state.poisoned
+                    && state.readout == OutputReadout::Logits
+                    && state.capacity <= capacity
+            })
+            .map(|state| state.capacity)
+            .max()
+            .unwrap_or(capacity);
+        self.warm_slot_pool_for(capacity, request_tokens);
         let Some(pool) = self.slots.as_ref() else {
             // A live private request can temporarily consume the worker's budget.
             // Retry after reservation accounting changes, rather than on every decode
@@ -253,17 +264,15 @@ impl CudaExecutor {
     }
 
     pub(super) fn warm_slot_pool_at(&mut self, capacity: usize) {
+        self.warm_slot_pool_for(capacity, 0);
+    }
+
+    pub(super) fn warm_slot_pool_for(&mut self, capacity: usize, request_tokens: usize) {
         if self.maximum_states < 2 {
             return;
         }
         let maximum = self.maximum_states.min(MAX_POOL_SLOTS);
-        let (envelope, baseline) = match self.loaded.shared_scratch_bytes().and_then(|scratch| {
-            let physical = self.physical_available()?;
-            Ok((
-                pooled_envelope(physical, self.budget, self.active_budget()?, scratch),
-                physical,
-            ))
-        }) {
+        let (envelope, baseline) = match self.pool_funding() {
             Ok(budget) => budget,
             Err(error) => {
                 self.pool_failure_reason = Some(error.to_string());
@@ -277,7 +286,7 @@ impl CudaExecutor {
         // Capture can materialize driver/graph storage absent from tensor quotes.
         // Retry against a smaller quote, never against a larger serving envelope.
         for attempt in 0..POOL_CAPTURE_ATTEMPTS {
-            let selected = self.pooled_plan(capacity, maximum, funding);
+            let selected = self.pooled_plan_for(capacity, maximum, funding, request_tokens);
             let plan = match selected {
                 Ok(Some(plan)) => plan,
                 Ok(None) => {
@@ -312,7 +321,9 @@ impl CudaExecutor {
                     None,
                 );
                 self.memory_bound = plan.memory_bound;
-                self.reclaimed_slot_capacity = None;
+                self.pool_quote = Some(plan.quote);
+                self.pool_envelope = funding;
+                self.pool_retry = None;
                 self.deferred_pool_plan = None;
                 self.slots_disabled = false;
                 self.pool_failure_reason = None;
@@ -340,7 +351,7 @@ impl CudaExecutor {
         if self.roofline_bound != Some(1) {
             return false;
         }
-        match self.memory_plan(capacity, maximum, envelope) {
+        match self.memory_plan(capacity, maximum, envelope, 0) {
             Ok(plan) => self.memory_bound = plan.map_or(1, |plan| plan.quote.width),
             Err(error) => {
                 self.pool_failure_reason = Some(error.to_string());
@@ -453,6 +464,7 @@ impl CudaExecutor {
 
     /// Only construction calls this: no live sequence has leased these new homes.
     fn clear_unbound_pool(&mut self) {
+        self.pool_quote = None;
         self.worker = None;
         self.homes.clear();
         if let Some(engine) = self.dflash.as_mut() {
@@ -482,20 +494,22 @@ impl CudaExecutor {
     }
 
     /// Quote all resources before capturing; retain the largest prompt rung at a width.
-    fn pooled_plan(
+    pub(super) fn pooled_plan_for(
         &self,
         capacity: usize,
         maximum: usize,
         envelope: u64,
+        request_tokens: usize,
     ) -> Result<Option<PoolPlan>> {
-        let Some(plan) = self.memory_plan(capacity, maximum, envelope)? else {
+        let Some(plan) = self.memory_plan(capacity, maximum, envelope, request_tokens)? else {
             return Ok(None);
         };
         let selected = self.roofline_bound.unwrap_or(maximum).min(plan.quote.width);
         if selected == plan.quote.width {
             return Ok(Some(plan));
         }
-        let Some(mut narrower) = self.memory_plan(capacity, selected, envelope)? else {
+        let Some(mut narrower) = self.memory_plan(capacity, selected, envelope, request_tokens)?
+        else {
             return Ok(None);
         };
         narrower.memory_bound = plan.memory_bound;
@@ -506,6 +520,7 @@ impl CudaExecutor {
         capacity: usize,
         maximum: usize,
         envelope: u64,
+        request_tokens: usize,
     ) -> Result<Option<PoolPlan>> {
         let configured = self.loaded.pooled_prompt_width();
         // Preserve wide-prompt throughput: at most one halving, and never cross the
@@ -518,6 +533,7 @@ impl CudaExecutor {
                     width,
                     capacity,
                     paged_tokens(width, capacity),
+                    request_tokens,
                     prompt_width,
                     envelope,
                 )? {
@@ -854,16 +870,9 @@ const fn swap_worker(state: &mut Sequence, worker: &mut super::Worker) {
     }
 }
 
-/// Numerator of the physical-KV share a paged pool reserves: three quarters of the unpaged
-/// reservation, since a request holds blocks for what it can reach, not the slot's whole
-/// capacity.
-const PAGED_KV_SHARE_NUMERATOR: usize = 3;
-/// Denominator of [`PAGED_KV_SHARE_NUMERATOR`].
-const PAGED_KV_SHARE_DENOMINATOR: usize = 4;
-
 /// Physical KV positions a pool of `width` slots of `capacity` tokens shares.
 const fn paged_tokens(width: usize, capacity: usize) -> usize {
-    width * capacity * PAGED_KV_SHARE_NUMERATOR / PAGED_KV_SHARE_DENOMINATOR
+    width * capacity
 }
 
 async fn slot_replay(
@@ -1926,7 +1935,7 @@ fn candidate_pool_capacity(states: impl Iterator<Item = (usize, OutputReadout)>)
 // Private programs keep their reservation and shared prompt scratch while a lazy
 // pool is constructed. Only an empty backend can spend the scratch reservation
 // on the pool's worker; physically reclaimable allocator storage is capped above.
-fn pooled_envelope(physical: u64, budget: u64, active: u64, scratch: u64) -> u64 {
+pub(super) fn pooled_envelope(physical: u64, budget: u64, active: u64, scratch: u64) -> u64 {
     let credit = if active == 0 { scratch } else { 0 };
     physical.min(budget.saturating_sub(active).saturating_add(credit))
 }

@@ -137,9 +137,9 @@ impl CudaExecutor {
         }
         drop(self.draft_slots.take());
         drop(self.slots.take());
-        // The pool's padded storage may exceed a non-power-of-two model ceiling.
-        self.reclaimed_slot_capacity = Some(pool_capacity.min(self.loaded.model().max_sequence));
-        // Rebuild before a compatible quote, preserving pooled state pricing.
+        self.pool_quote = None;
+        // Subsequent solo requests remain private; actual concurrent retries may
+        // rebuild a funded shared pool without retaining the old bucket geometry.
         self.slots_disabled = false;
         if let Err(error) = self.loaded.device().reclaim_barrier() {
             self.fatal = Some(error.clone());
@@ -157,27 +157,6 @@ impl CudaExecutor {
             pool_capacity,
             "reclaimed idle incompatible CUDA slot pools before admission"
         );
-        Ok(())
-    }
-
-    /// A quote never captures CUDA graphs. Restore only after the request has
-    /// entered the asynchronous reservation phase, whose owner retains its state.
-    fn restore_slot_pool_for(&mut self, capacity: usize, readout: OutputReadout) -> Result<()> {
-        if self.slots.is_none()
-            && self.states.is_empty()
-            && readout == OutputReadout::Logits
-            && let Some(previous) = self.reclaimed_slot_capacity
-            && capacity <= previous
-        {
-            self.idle()?;
-            // Cached private programs retain the old wide scratch. Compatible requests
-            // return to the pool, so retire those idle shells before planning its storage.
-            while self.pool.evict() {}
-            // Restore pooled throughput before retaining idle long-prefix snapshots.
-            while self.prefix.evict_oldest().is_some() {}
-            self.loaded.reclaim_idle_prompt_scratch()?;
-            self.warm_slot_pool_at(previous);
-        }
         Ok(())
     }
 
@@ -219,7 +198,9 @@ impl CudaExecutor {
                 "CUDA state already reserved",
             ));
         }
-        self.restore_slot_pool_for(capacity, readout)?;
+        if allow_home {
+            self.resolve_request_pool(id, capacity, readout)?;
+        }
         self.prepare_reservation_for(capacity, readout)?;
         if allow_home && self.reserve_home(id, capacity, readout, allow_speculation)? {
             return Ok(());

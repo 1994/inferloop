@@ -599,32 +599,74 @@ fn funded_kv_rounds_down_without_changing_logical_capacity() -> Result<()> {
     let fixed = 5_200_689_152;
     let block_bytes = 1_048_576;
     let envelope = 7_569_557_647;
-    let tokens = funded_kv_tokens(width, capacity, maximum, block_bytes, fixed, envelope)?
-        .ok_or_else(|| Error::invariant("funded fixture"))?;
+    let tokens = funded_kv_tokens(
+        minimum_kv_tokens(width, capacity, 0)?,
+        maximum,
+        block_bytes,
+        fixed,
+        envelope,
+    )
+    .ok_or_else(|| Error::invariant("funded fixture"))?;
     assert_eq!(tokens, 72_288);
     assert_eq!(tokens % KV_BLOCK_TOKENS, 0);
     assert!(fixed + (tokens / KV_BLOCK_TOKENS) as u64 * block_bytes <= envelope);
     assert!(fixed + (tokens / KV_BLOCK_TOKENS + 1) as u64 * block_bytes > envelope);
-    assert!(tokens >= width * (capacity / 2 + KV_BLOCK_TOKENS));
-    // A budget that cannot admit one minimum-bucket request per slot is not useful.
+    assert!(tokens >= capacity);
+    // A known request length must fit every selected lane, including page rounding.
     assert_eq!(
         funded_kv_tokens(
-            width,
-            capacity,
+            minimum_kv_tokens(width, capacity, capacity / 2 + 1)?,
             maximum,
             block_bytes,
             fixed,
             fixed + (width * capacity / 2 / KV_BLOCK_TOKENS) as u64 * block_bytes
-        )?,
+        ),
         None
     );
     assert_eq!(
-        funded_kv_tokens(width, capacity, maximum, 0, fixed, envelope)?,
+        funded_kv_tokens(capacity, maximum, 0, fixed, envelope),
         None
     );
     assert_eq!(
-        funded_kv_tokens(width, capacity, maximum, block_bytes, fixed, fixed)?,
+        funded_kv_tokens(capacity, maximum, block_bytes, fixed, fixed),
         None
     );
+    Ok(())
+}
+
+/// Short requests can share physical pages without a half-capacity allotment per slot.
+#[test]
+fn funded_kv_admits_short_requests_without_per_slot_half_capacity() -> Result<()> {
+    let width = 4;
+    let capacity = 8192;
+    let maximum = width * capacity;
+    let block_bytes = 1024;
+    let fixed = 100_000;
+    // One full-context request, or four 512-token requests with ample spare pages.
+    let physical_tokens = capacity;
+    let envelope = fixed + (physical_tokens / KV_BLOCK_TOKENS) as u64 * block_bytes;
+    assert_eq!(
+        funded_kv_tokens(
+            minimum_kv_tokens(width, capacity, 0)?,
+            maximum,
+            block_bytes,
+            fixed,
+            envelope
+        ),
+        Some(physical_tokens)
+    );
+    Ok(())
+}
+
+#[test]
+fn real_request_kv_rounding_and_bounds_are_checked() -> Result<()> {
+    assert_eq!(minimum_kv_tokens(4, 128, 1)?, 128);
+    assert_eq!(minimum_kv_tokens(4, 128, 32)?, 128);
+    assert_eq!(minimum_kv_tokens(4, 128, 33)?, 256);
+    assert_eq!(minimum_kv_tokens(4, 128, 128)?, 512);
+    assert!(minimum_kv_tokens(4, 128, 129).is_err());
+    assert!(minimum_kv_tokens(usize::MAX, 128, 33).is_err());
+    assert_eq!(funded_kv_tokens(256, 512, 10, 100, 179), None);
+    assert_eq!(funded_kv_tokens(256, 512, 10, 100, 180), Some(256));
     Ok(())
 }

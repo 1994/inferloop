@@ -357,6 +357,8 @@ def serving_plan_readback(text):
                 "pooled CUDA capture exceeded budget",
                 "CUDA slot pool disabled",
                 "CUDA slot pool deferred",
+                "retired idle CUDA request pool",
+                "reclaimed idle incompatible CUDA slot pools before admission",
             )
         ):
             pending = accepted = None

@@ -84,10 +84,10 @@ fn lazy_pool_retries_after_a_live_private_reservation_is_released() -> Result<()
     backend.reserve(StateId::new(3)?, 512, OutputReadout::Logits, true)?;
     let mut lower = 0;
     let mut upper = budget;
-    assert!(backend.pooled_plan(512, 16, upper)?.is_some());
+    assert!(backend.pooled_plan_for(512, 16, upper, 0)?.is_some());
     while lower < upper {
         let middle = lower + (upper - lower) / 2;
-        if backend.pooled_plan(512, 16, middle)?.is_some() {
+        if backend.pooled_plan_for(512, 16, middle, 0)?.is_some() {
             upper = middle;
         } else {
             lower = middle + 1;
