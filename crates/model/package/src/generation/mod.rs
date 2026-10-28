@@ -8,9 +8,9 @@ use infer_ir::Sampling;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 
-/// Qwen3.8 model-card temperature for non-thinking generation.
+/// Qwen3 hybrid and Qwen3.8 model-card temperature for non-thinking generation.
 const QWEN3_NON_THINKING_TEMPERATURE: f32 = 0.7;
-/// Qwen3.8 model-card top-p for non-thinking generation.
+/// Qwen3 hybrid and Qwen3.8 model-card top-p for non-thinking generation.
 const QWEN3_NON_THINKING_TOP_P: f32 = 0.8;
 /// Qwen3.8 model-card presence penalty for non-thinking generation.
 const QWEN3_NON_THINKING_PRESENCE_PENALTY: f32 = 1.5;
@@ -31,11 +31,18 @@ pub struct SamplingOverrides {
     pub enable_thinking: Option<bool>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelProfile {
+    Other,
+    Qwen3Hybrid,
+    Qwen38,
+}
+
 #[derive(Debug, Clone)]
 pub struct GenerationDefaults {
     base: Sampling,
     thinking: bool,
-    qwen38: bool,
+    profile: ModelProfile,
     sources: BTreeMap<String, String>,
 }
 
@@ -60,15 +67,27 @@ impl GenerationDefaults {
         let mut sampling = self.base.clone();
         let mut sources = self.sources.clone();
         let thinking = options.enable_thinking.unwrap_or(self.thinking);
-        if self.qwen38 && !thinking {
-            sampling.temperature = QWEN3_NON_THINKING_TEMPERATURE;
-            sampling.top_p = QWEN3_NON_THINKING_TOP_P;
-            sampling.presence_penalty = QWEN3_NON_THINKING_PRESENCE_PENALTY;
-            for key in ["temperature", "top_p", "presence_penalty"] {
-                sources.insert(
-                    key.into(),
-                    "Qwen3.8 model-card non-thinking recommendation".into(),
-                );
+        if !thinking {
+            let source = match self.profile {
+                ModelProfile::Qwen3Hybrid if sampling.temperature != 0.0 => {
+                    Some("Qwen3 hybrid model-card non-thinking recommendation")
+                }
+                ModelProfile::Qwen38 => {
+                    sampling.presence_penalty = QWEN3_NON_THINKING_PRESENCE_PENALTY;
+                    sources.insert(
+                        "presence_penalty".into(),
+                        "Qwen3.8 model-card non-thinking recommendation".into(),
+                    );
+                    Some("Qwen3.8 model-card non-thinking recommendation")
+                }
+                ModelProfile::Other | ModelProfile::Qwen3Hybrid => None,
+            };
+            if let Some(source) = source {
+                sampling.temperature = QWEN3_NON_THINKING_TEMPERATURE;
+                sampling.top_p = QWEN3_NON_THINKING_TOP_P;
+                for key in ["temperature", "top_p"] {
+                    sources.insert(key.into(), source.into());
+                }
             }
         }
         macro_rules! apply {
