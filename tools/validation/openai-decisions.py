@@ -121,21 +121,37 @@ def conversation_case(client, model):
         input=[
             {"role": "developer", "content": "Judge only the final assistant turn."},
             {"role": "user", "content": "Please refund the duplicate charge."},
-            {"type": "function_call", "call_id": "c1", "name": "lookup_order",
-             "arguments": json.dumps({"order": 42})},
-            {"type": "function_call_output", "call_id": "c1",
-             "output": json.dumps({"charges": [49, 49]})},
-            {"role": "user", "content": [
-                {"type": "input_text", "text": "Order record:"},
-                {"type": "input_json", "data": {"order": 42, "charges": [49, 49]}},
-            ]},
+            {
+                "type": "function_call",
+                "call_id": "c1",
+                "name": "lookup_order",
+                "arguments": json.dumps({"order": 42}),
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "c1",
+                "output": json.dumps({"charges": [49, 49]}),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "Order record:"},
+                    {"type": "input_json", "data": {"order": 42, "charges": [49, 49]}},
+                ],
+            },
             {"role": "assistant", "content": "I have refunded one of the two $49 charges."},
         ],
         questions=[
-            {"type": "predicate", "name": "duplicate",
-             "instructions": "Does the order record show a duplicate charge?"},
-            {"type": "predicate", "name": "refused",
-             "instructions": "Did the assistant refuse the customer's request?"},
+            {
+                "type": "predicate",
+                "name": "duplicate",
+                "instructions": "Does the order record show a duplicate charge?",
+            },
+            {
+                "type": "predicate",
+                "name": "refused",
+                "instructions": "Did the assistant refuse the customer's request?",
+            },
         ],
     )
     answers = {answer.name: answer.probability for answer in decision.answers}
@@ -202,8 +218,9 @@ def main():
         by_type[result["type"]] = (total + 1, right + int(result["correct"]))
     report = {
         "model": model,
-        "accuracy": {kind: {"correct": right, "total": total}
-                     for kind, (total, right) in by_type.items()},
+        "accuracy": {
+            kind: {"correct": right, "total": total} for kind, (total, right) in by_type.items()
+        },
         "single_question_latency_s": {
             "median": statistics.median(latencies),
             "max": max(latencies),

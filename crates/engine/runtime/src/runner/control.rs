@@ -45,7 +45,10 @@ where
             None
         };
         self.shared.controls.fetch_add(1, Ordering::AcqRel);
-        let credit = super::ControlCredit(self.shared.clone());
+        let credit = super::ControlCredit {
+            shared: self.shared.clone(),
+            notify: true,
+        };
         self.enqueue(Job::Resource {
             command,
             reply,
