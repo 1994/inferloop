@@ -11,7 +11,7 @@ fn mode_defaults_and_explicit_zero_overrides_are_distinct() -> Result<()> {
             ..Sampling::default()
         },
         thinking: true,
-        qwen38: true,
+        profile: ModelProfile::Qwen38,
         sources: BTreeMap::new(),
     };
     let thinking = defaults.resolve(&SamplingOverrides::default())?;
@@ -55,7 +55,7 @@ fn every_resolved_parameter_records_the_layer_that_set_it() -> Result<()> {
             ..Sampling::default()
         },
         thinking: true,
-        qwen38: true,
+        profile: ModelProfile::Qwen38,
         sources: BTreeMap::from([
             ("temperature".to_string(), "package default".to_string()),
             ("top_p".to_string(), "package default".to_string()),

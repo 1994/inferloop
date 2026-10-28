@@ -287,3 +287,83 @@ fn streaming_decode_matches_on_the_served_package() {
         }
     }
 }
+
+#[test]
+fn qwen3_hybrid_generation_resolves_the_mode_and_request_overrides() {
+    let root = temp();
+    write(
+        root.join("README.md"),
+        "---\nbase_model:\n- Qwen/Qwen3-0.6B-Base\n---\n",
+    )
+    .unwrap();
+    write(root.join("config.json"), r#"{"model_type":"qwen3"}"#).unwrap();
+    write(
+        root.join("generation_config.json"),
+        r#"{"do_sample":true,"temperature":0.6,"top_p":0.95,"top_k":20}"#,
+    )
+    .unwrap();
+    let defaults = GenerationDefaults::open(&root).unwrap();
+    let thinking = defaults.resolve(&SamplingOverrides::default()).unwrap();
+    assert!(thinking.enable_thinking);
+    assert_eq!(thinking.sampling.temperature, 0.6);
+    assert_eq!(thinking.sampling.top_p, 0.95);
+    assert_eq!(thinking.sampling.top_k, Some(20));
+    let direct = defaults
+        .resolve(&SamplingOverrides {
+            enable_thinking: Some(false),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(direct.sampling.temperature, 0.7);
+    assert_eq!(direct.sampling.top_p, 0.8);
+    assert_eq!(direct.sampling.top_k, Some(20));
+    let custom = defaults
+        .resolve(&SamplingOverrides {
+            enable_thinking: Some(false),
+            temperature: Some(0.0),
+            top_p: Some(0.5),
+            top_k: Some(0),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(custom.sampling.temperature, 0.0);
+    assert_eq!(custom.sampling.top_p, 0.5);
+    assert_eq!(custom.sampling.top_k, None);
+    // A package that explicitly disables sampling stays greedy on mode selection.
+    write(
+        root.join("generation_config.json"),
+        r#"{"do_sample":false,"temperature":0.6,"top_p":0.95,"top_k":20}"#,
+    )
+    .unwrap();
+    let greedy = GenerationDefaults::open(&root)
+        .unwrap()
+        .resolve(&SamplingOverrides {
+            enable_thinking: Some(false),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(greedy.sampling.temperature, 0.0);
+
+    // The architecture alone does not identify a hybrid chat model.
+    write(
+        root.join("README.md"),
+        "---\ntags:\n- Qwen/Qwen3-0.6B-Base\n---\n",
+    )
+    .unwrap();
+    write(
+        root.join("generation_config.json"),
+        r#"{"do_sample":true,"temperature":0.55,"top_p":0.93}"#,
+    )
+    .unwrap();
+    let other = GenerationDefaults::open(&root)
+        .unwrap()
+        .resolve(&SamplingOverrides {
+            enable_thinking: Some(false),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(!other.enable_thinking);
+    assert_eq!(other.sampling.temperature, 0.55);
+    assert_eq!(other.sampling.top_p, 0.93);
+    remove_dir_all(root).unwrap();
+}

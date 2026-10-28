@@ -1,4 +1,4 @@
-use super::GenerationDefaults;
+use super::{GenerationDefaults, ModelProfile};
 use crate::constants::CONFIG_MAX_BYTES;
 use crate::constants::MIB_U64;
 use crate::{package_path, storage::package::read_bounded};
@@ -12,18 +12,13 @@ pub fn load(root: &Path) -> Result<GenerationDefaults> {
     let mut base = Sampling::default();
     let mut sources = BTreeMap::new();
     let card = root.join("README.md");
-    let qwen38 = if card.exists() {
+    let profile = if card.exists() {
         let bytes = read_bounded(&package_path(root, "README.md")?, 2 * MIB_U64)?;
         let card = String::from_utf8(bytes).map_err(|e| Error::invalid(e.to_string()))?;
-        card.strip_prefix("---")
-            .and_then(|s| s.split_once("---"))
-            .is_some_and(|(front, _)| {
-                front
-                    .lines()
-                    .any(|line| line.trim() == "- Qwen/Qwen3.8-27B")
-            })
+        let front = card.strip_prefix("---").and_then(|s| s.split_once("---"));
+        front.map_or(ModelProfile::Other, |(front, _)| profile(front))
     } else {
-        false
+        ModelProfile::Other
     };
     for key in [
         "temperature",
@@ -37,10 +32,13 @@ pub fn load(root: &Path) -> Result<GenerationDefaults> {
     ] {
         sources.insert(key.into(), "runtime fallback".into());
     }
-    let sampling = generation.get("do_sample").map_or(Ok(qwen38), |v| {
-        v.as_bool()
-            .ok_or_else(|| Error::invalid("do_sample must be boolean"))
-    })?;
+    let sampling = generation.get("do_sample").map_or_else(
+        || Ok(profile == ModelProfile::Qwen38),
+        |v| {
+            v.as_bool()
+                .ok_or_else(|| Error::invalid("do_sample must be boolean"))
+        },
+    )?;
     base.temperature = if sampling { 1.0 } else { 0.0 };
     for (key, target) in [
         ("temperature", &mut base.temperature),
@@ -95,8 +93,8 @@ pub fn load(root: &Path) -> Result<GenerationDefaults> {
     base.validate()?;
     Ok(GenerationDefaults {
         base,
-        thinking: qwen38,
-        qwen38,
+        thinking: profile != ModelProfile::Other,
+        profile,
         sources,
     })
 }
@@ -107,4 +105,34 @@ fn json(root: &Path, name: &str) -> Result<serde_json::Value> {
     }
     let bytes = read_bounded(&package_path(root, name)?, CONFIG_MAX_BYTES)?;
     serde_json::from_slice(&bytes).map_err(|e| Error::invalid(e.to_string()))
+}
+
+fn profile(front: &str) -> ModelProfile {
+    let mut base_model = false;
+    for line in front.lines().map(str::trim) {
+        if line == "base_model:" {
+            base_model = true;
+            continue;
+        }
+        if !line.starts_with("- ") && !line.is_empty() {
+            base_model = false;
+        }
+        match line {
+            "- Qwen/Qwen3.8-27B" => return ModelProfile::Qwen38,
+            "- Qwen/Qwen3-0.6B-Base"
+            | "- Qwen/Qwen3-1.7B-Base"
+            | "- Qwen/Qwen3-4B-Base"
+            | "- Qwen/Qwen3-8B-Base"
+            | "- Qwen/Qwen3-14B-Base"
+            | "- Qwen/Qwen3-32B-Base"
+            | "- Qwen/Qwen3-30B-A3B-Base"
+            | "- Qwen/Qwen3-235B-A22B-Base"
+                if base_model =>
+            {
+                return ModelProfile::Qwen3Hybrid;
+            }
+            _ => {}
+        }
+    }
+    ModelProfile::Other
 }
