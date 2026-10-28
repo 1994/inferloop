@@ -102,6 +102,22 @@ pub fn catalog() -> serde_json::Value {
         "metal":{"implemented":cfg!(metal_backend),"available":metal_available()},
         "testing_backends":{"enabled":false,"supported_for_deployment":false}})
 }
+/// When a backend captures its shared serving pool.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(
+    not(native_backend),
+    allow(
+        dead_code,
+        reason = "The portable CLI records the capture point even when no native backend reads it"
+    )
+)]
+pub enum PoolCapture {
+    /// At the first reservation that needs it, priced for that request's length.
+    #[default]
+    OnDemand,
+    /// While loading, so the first concurrent requests batch at once.
+    AtLoad,
+}
 #[derive(Debug, Clone)]
 #[cfg_attr(
     not(native_backend),
@@ -138,6 +154,8 @@ pub struct Selection {
     pub text_only: bool,
     /// Per-prompt media item limits; all-zero limits are equivalent to `text_only`.
     pub media_limits: infer_models::MediaLimits,
+    /// A server captures before it listens; one-shot commands and tuning workers on demand.
+    pub pool_capture: PoolCapture,
 }
 #[cfg(any(test, native_backend))]
 fn resolve(

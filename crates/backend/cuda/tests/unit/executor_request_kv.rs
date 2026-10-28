@@ -2,6 +2,7 @@ use super::*;
 use crate::AttentionProfile;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::{CudaDevice, asynchronous::block_on};
+use crate::executor::SlotPool;
 use crate::loading::{LoadOptions, LoadedModel};
 use infer_core::{ModelId, RequestId, StateId};
 use infer_ir::{ExecutionInput, ExecutionTask, TokenBuffer};
@@ -236,6 +237,43 @@ fn request_length_pool_preserves_live_state_and_restores_after_long_request() ->
     println!(
         "request KV widths: initial={initial}, short={short_width}, long={long_width}, restored={restored}"
     );
+    Ok(())
+}
+
+/// A pool captured at load serves the first short request from a slot instead of a private
+/// program, and two concurrent requests bind without waiting for a capture.
+#[test]
+#[ignore = "real CUDA/MTP2 checkpoint; run under safe-run with an explicit fixture"]
+fn pool_captured_at_load_binds_the_first_requests_to_slots() -> Result<()> {
+    let mut backend = fixture()?;
+    let quoted = backend.pool_quote.unwrap().width;
+    assert!(backend.slots.is_none(), "construction must not capture");
+    backend.capture_funded_pool();
+    let width = backend.slots.as_ref().map(SlotPool::width).unwrap();
+    assert!(
+        width > 1 && width <= quoted,
+        "captured {width} of a {quoted}-wide quote"
+    );
+    let first = StateId::ONE;
+    let second = StateId::new(2)?;
+    backend.reserve_state_for(first, 384, OutputReadout::Logits)?;
+    backend.reserve_state_for(second, 384, OutputReadout::Logits)?;
+    assert!(backend.states[&first].home.is_some());
+    assert!(backend.states[&second].home.is_some());
+    let prompt = TokenBuffer::from(vec![1, 2]);
+    step(
+        &mut backend,
+        first,
+        ExecutionInput::Prefill {
+            span: prompt.span(0..prompt.len())?,
+            readout: OutputReadout::Logits,
+        },
+    )?;
+    backend.release_state(first)?;
+    backend.release_state(second)?;
+    // Capture is idempotent once a pool exists.
+    backend.capture_funded_pool();
+    assert_eq!(backend.slots.as_ref().map(SlotPool::width), Some(width));
     Ok(())
 }
 

@@ -32,6 +32,7 @@ pub fn run() {
         autotune: !cli.no_autotune,
         text_only: cli.limit_mm_per_prompt.unwrap_or_default().text_only(),
         media_limits: cli.limit_mm_per_prompt.unwrap_or_default(),
+        pool_capture: backend::PoolCapture::OnDemand,
     };
     if let Err(error) = execute(
         cli.into_command().unwrap_or_else(|error| error.exit()),
