@@ -7,6 +7,7 @@ use std::env::var;
 use std::fs::create_dir_all;
 use std::fs::read;
 use std::fs::remove_dir_all;
+use std::fs::remove_file;
 use std::fs::write;
 use std::process::id;
 use std::{collections::BTreeMap, path::PathBuf, sync::atomic::AtomicU64, sync::atomic::Ordering};
@@ -293,7 +294,7 @@ fn qwen3_hybrid_generation_resolves_the_mode_and_request_overrides() {
     let root = temp();
     write(
         root.join("README.md"),
-        "---\nbase_model:\n- Qwen/Qwen3-0.6B-Base\n---\n",
+        "---\nbase_model:\n- Qwen/Qwen3-0.6B-Base\n---\n# Qwen3-0.6B\n",
     )
     .unwrap();
     write(root.join("config.json"), r#"{"model_type":"qwen3"}"#).unwrap();
@@ -329,6 +330,17 @@ fn qwen3_hybrid_generation_resolves_the_mode_and_request_overrides() {
     assert_eq!(custom.sampling.temperature, 0.0);
     assert_eq!(custom.sampling.top_p, 0.5);
     assert_eq!(custom.sampling.top_k, None);
+    // If the optional generation configuration is absent, use the model family recommendation.
+    remove_file(root.join("generation_config.json")).unwrap();
+    let fallback = GenerationDefaults::open(&root)
+        .unwrap()
+        .resolve(&SamplingOverrides::default())
+        .unwrap();
+    assert!(fallback.enable_thinking);
+    assert_eq!(fallback.sampling.temperature, 0.6);
+    assert_eq!(fallback.sampling.top_p, 0.95);
+    assert_eq!(fallback.sampling.top_k, Some(20));
+
     // A package that explicitly disables sampling stays greedy on mode selection.
     write(
         root.join("generation_config.json"),
@@ -365,5 +377,55 @@ fn qwen3_hybrid_generation_resolves_the_mode_and_request_overrides() {
     assert!(!other.enable_thinking);
     assert_eq!(other.sampling.temperature, 0.55);
     assert_eq!(other.sampling.top_p, 0.93);
+    remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn qwen38_fallback_respects_package_values_and_explicit_greedy() {
+    let root = temp();
+    write(
+        root.join("README.md"),
+        "---\nlibrary_name: transformers\n---\n# Qwen3.8-27B\n",
+    )
+    .unwrap();
+    write(root.join("config.json"), r#"{"model_type":"qwen3_5"}"#).unwrap();
+    write(
+        root.join("generation_config.json"),
+        r#"{"do_sample":true,"temperature":1.3,"top_k":0}"#,
+    )
+    .unwrap();
+    let defaults = GenerationDefaults::open(&root).unwrap();
+    let thinking = defaults.resolve(&SamplingOverrides::default()).unwrap();
+    assert!(thinking.enable_thinking);
+    assert_eq!(thinking.sampling.temperature, 1.3);
+    assert_eq!(thinking.sampling.top_k, None);
+    assert_eq!(thinking.sampling.top_p, 0.95);
+    assert_eq!(thinking.sources["temperature"], "generation_config.json");
+    let instruct = defaults
+        .resolve(&SamplingOverrides {
+            enable_thinking: Some(false),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(instruct.sampling.temperature, 0.7);
+    assert_eq!(instruct.sampling.top_p, 0.8);
+    assert_eq!(instruct.sampling.top_k, None);
+    write(
+        root.join("generation_config.json"),
+        r#"{"do_sample":false}"#,
+    )
+    .unwrap();
+    let greedy = GenerationDefaults::open(&root)
+        .unwrap()
+        .resolve(&SamplingOverrides {
+            enable_thinking: Some(false),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(greedy.sampling.temperature, 0.0);
+    assert_eq!(
+        greedy.sources["temperature"],
+        "generation_config.json do_sample=false"
+    );
     remove_dir_all(root).unwrap();
 }

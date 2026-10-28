@@ -38,6 +38,8 @@ pub struct GenerationPolicy {
     pub enable_thinking: bool,
     /// Sampling fallback when the generation configuration does not specify `do_sample`.
     pub sample_by_default: bool,
+    /// Sampling fallbacks, applied before fields from the model package.
+    pub sampling_defaults: Option<GenerationPreset>,
     /// Per-field recommendation for explicit or default non-thinking mode.
     pub non_thinking: Option<GenerationPreset>,
 }

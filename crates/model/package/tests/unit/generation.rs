@@ -23,6 +23,10 @@ fn mode_defaults_and_explicit_zero_overrides_are_distinct() -> Result<()> {
         enable_thinking: Some(false),
         ..SamplingOverrides::default()
     };
+    let mut greedy_defaults = defaults.clone();
+    greedy_defaults.base.temperature = 0.0;
+    let greedy = greedy_defaults.resolve(&overrides)?;
+    assert_eq!(greedy.sampling.temperature, 0.0);
     let instruct = defaults.resolve(&overrides)?;
     assert_eq!(instruct.sampling.temperature, 0.7);
     assert_eq!(instruct.sampling.top_p, 0.8);
@@ -93,10 +97,17 @@ fn every_resolved_parameter_records_the_layer_that_set_it() -> Result<()> {
 #[test]
 fn qwen_generation_policy_is_shared_across_family_sizes() {
     for name in ["0.6B", "8B", "9B", "30B-A3B"] {
-        let card = format!("---\nbase_model:\n- Qwen/Qwen3-{name}-Base\n---\n");
+        let card = format!("---\nbase_model:\n- Qwen/Qwen3-{name}-Base\n---\n# Qwen3-{name}\n");
         let policy = QwenProvider.generation_policy(b"{}", Some(&card)).unwrap();
         assert!(policy.enable_thinking, "{name}");
         assert_eq!(policy.non_thinking.unwrap().temperature, Some(0.7));
+        let derivative = format!("---\nbase_model:\n- Qwen/Qwen3-{name}\n---\n");
+        assert!(
+            QwenProvider
+                .generation_policy(b"{}", Some(&derivative))
+                .unwrap()
+                .enable_thinking
+        );
     }
     for name in ["27B", "60B-A6B"] {
         for card in [
@@ -118,4 +129,13 @@ fn qwen_generation_policy_is_shared_across_family_sizes() {
             "{name}"
         );
     }
+}
+
+#[test]
+fn qwen_base_lineage_alone_does_not_imply_hybrid_chat() -> Result<()> {
+    let card = "---\nbase_model:\n- Qwen/Qwen3-4B-Base\n---\n# Qwen3-Reranker-4B\n# Qwen3-4B\n";
+    let policy = QwenProvider.generation_policy(b"{}", Some(card))?;
+    assert!(!policy.enable_thinking);
+    assert!(policy.non_thinking.is_none());
+    Ok(())
 }
