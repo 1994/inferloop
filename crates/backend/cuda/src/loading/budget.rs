@@ -14,11 +14,14 @@ use crate::resident::attention_mma::catalog::KV_HEADS;
 use crate::resident::attention_mma::catalog::workspace_bytes;
 use crate::resident::attention_mma::eligible;
 use crate::resident::capacity::for_model;
+use crate::resident::dflash2::budget::pooled_bytes;
 use crate::resident::fusion_batch;
 use crate::resident::fusion_batch::required_bytes;
+use crate::resident::greedy::TILE_SEARCH;
 use crate::resident::prompt_logits;
 use crate::resident::recurrent_prefill::required_bytes as recurrent_prefill_required_bytes;
 use crate::resident::slot_batch::SlotPool;
+use crate::resident::slot_batch::narrow_widths;
 use crate::tuning::attention::decode::GROUPED_ROWS;
 use crate::tuning::attention::decode::MAX_GROUPED_PARTS;
 use crate::{
@@ -27,6 +30,7 @@ use crate::{
 };
 use cutile::half::bf16;
 use infer_core::{Error, Result};
+use infer_ir::TensorSpec;
 use infer_ir::{DataflowGraph, OutputReadout, StateKind, TensorOp, TensorStorage};
 use std::array::from_fn;
 use std::collections::BTreeMap;
@@ -42,6 +46,10 @@ const PRICE_GEOMETRIES: usize = 4;
 
 /// Conservative control words per pooled lane, covering metadata and token readout.
 const POOLED_CONTROL_WORDS: usize = 16;
+/// Keys, indices and invalid-value flags per greedy vocabulary tile.
+const GREEDY_PARTIAL_ARRAYS: u64 = 3;
+/// Token/validity pairs in both the greedy reducer and the readout owner.
+const GREEDY_TOKEN_WORDS: u64 = 4;
 
 /// Exact storage price for one immutable program geometry.
 #[derive(Clone, Copy, Default)]
@@ -213,11 +221,7 @@ impl LoadedModel {
         let profile = self.device.profile()?;
         let hidden = self.model.hidden_size;
         let vocabulary = self.model.vocab_size;
-        let verify = if self.mtp_depth == 0 {
-            1
-        } else {
-            self.mtp_depth + 1
-        };
+        let verify = self.speculation_width().max(1);
         let target_pool_bytes = pool_storage_bytes(
             &self.graph,
             &self.weights,
@@ -288,6 +292,10 @@ impl LoadedModel {
             } else {
                 (0, 0, 0)
             };
+        let draft_pool_bytes = add(
+            draft_pool_bytes,
+            self.dflash_pool_bytes(width, verify, profile)?,
+        )?;
         let graph_headroom_bytes = profile.graph_headroom_bytes();
         let mut total_bytes = add(target_pool_bytes, target_homes_bytes)?;
         total_bytes = add(total_bytes, target_worker_bytes)?;
@@ -310,6 +318,29 @@ impl LoadedModel {
             graph_headroom_bytes,
             total_bytes,
         })
+    }
+
+    /// Draft proposal/ingestion pairs at the exact target graph widths.
+    fn dflash_pool_bytes(
+        &self,
+        width: usize,
+        verify: usize,
+        profile: &DeviceProfile,
+    ) -> Result<u64> {
+        let Some(draft) = &self.dflash2 else {
+            return Ok(0);
+        };
+        let multiprocessors = usize::try_from(profile.multiprocessors)
+            .map_err(|_| Error::invalid("DFlash2 multiprocessor count"))?;
+        narrow_widths(&self.graph, width, verify)
+            .into_iter()
+            .chain([width])
+            .try_fold(0, |bytes, slots| {
+                add(
+                    bytes,
+                    pooled_bytes(&draft.geometry, slots, multiprocessors)?,
+                )
+            })
     }
 
     /// Fund physical KV pages from the remaining whole-serving budget. Logical slot
@@ -521,7 +552,65 @@ fn pool_storage_bytes(
     // A block table per slot, plus scalar and per-lane control words.
     let controls = width * capacity.div_ceil(KV_BLOCK_TOKENS) + (1 + lanes) * POOLED_CONTROL_WORDS;
     bytes = add(bytes, mul(controls as u64, F32)?)?;
+    bytes = add(bytes, token_readout_bytes(graph, lanes)?)?;
+    // Narrow graphs alias pool state but retain independent arenas, commit staging,
+    // parameters, quantization buffers and control tensors at every captured width.
+    for slots in narrow_widths(graph, width, verify) {
+        bytes = add(
+            bytes,
+            narrow_graph_bytes(graph, weights, slots, verify, profile)?,
+        )?;
+    }
     Ok(bytes)
+}
+
+fn narrow_graph_bytes(
+    graph: &DataflowGraph,
+    weights: &ProgramWeights,
+    slots: usize,
+    verify: usize,
+    profile: &DeviceProfile,
+) -> Result<u64> {
+    let lanes = slots
+        .checked_mul(verify)
+        .ok_or_else(|| Error::invalid("narrow graph lanes"))?;
+    let mut bytes = ActivationArena::required_bytes(graph, lanes)? as u64;
+    bytes = add(bytes, SlotPool::rollback_bytes(graph, slots, verify)?)?;
+    bytes = add(bytes, SlotPool::parameter_bytes(graph, verify)?)?;
+    bytes = add(
+        bytes,
+        projection_workspace(
+            graph,
+            weights,
+            ProgramGeometry {
+                verification: 0,
+                prompts: [lanes, 0],
+            },
+        )?,
+    )?;
+    bytes = add(bytes, required_bytes(weights, lanes, profile))?;
+    bytes = add(bytes, token_readout_bytes(graph, lanes)?)?;
+    add(
+        bytes,
+        mul((1 + lanes) as u64, POOLED_CONTROL_WORDS as u64 * F32)?,
+    )
+}
+
+/// Greedy reduction retains three partial arrays plus its own and the readout's token pairs.
+fn token_readout_bytes(graph: &DataflowGraph, lanes: usize) -> Result<u64> {
+    let vocabulary = graph
+        .logits
+        .and_then(|id| graph.tensors.iter().find(|tensor| tensor.id == id))
+        .map(TensorSpec::elements)
+        .transpose()?
+        .unwrap_or(0);
+    let smallest = TILE_SEARCH
+        .iter()
+        .copied()
+        .min()
+        .ok_or_else(|| Error::invariant("empty greedy tile catalog"))?;
+    let partials = mul(vocabulary.div_ceil(smallest) as u64, GREEDY_PARTIAL_ARRAYS)?;
+    mul(mul(lanes as u64, add(partials, GREEDY_TOKEN_WORDS)?)?, F32)
 }
 
 fn worker_storage_bytes(

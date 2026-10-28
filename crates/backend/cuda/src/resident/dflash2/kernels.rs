@@ -244,7 +244,8 @@ pub(crate) mod draft {
                 .broadcast(shape![QR, KEYS]);
             let earliest = query_positions - (WINDOW - 1i32).broadcast(shape![QR, KEYS]);
             let last = base + BLOCK - 1i32;
-            let mut first = last + 1i32 - WINDOW;
+            // The first query has the earliest window; later queries mask its extra keys.
+            let mut first = base + 1i32 - WINDOW;
             if first < 0i32 {
                 first = 0i32;
             }

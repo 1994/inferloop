@@ -18,6 +18,7 @@ use crate::registry::CudaKernels;
 pub use pool::PoolInspection;
 mod state;
 mod validation;
+use crate::resident::dflash2::budget::fixed_bytes;
 use crate::resident::dflash2::{Cursor, Engine};
 use crate::{
     loading::{LoadedModel, PooledServingQuote},
@@ -268,24 +269,16 @@ impl CudaExecutor {
         let (dflash, state_budget) = match loaded.dflash2() {
             Some(weights) => {
                 let geometry = weights.geometry;
-                let ring = Engine::ring_bytes(
-                    geometry.window,
-                    geometry.block,
-                    weights.layers.len(),
-                    geometry.kv_heads * geometry.head_dim,
-                );
                 let rings = maximum_states;
-                let bytes = ring
-                    .checked_mul(rings as u64)
-                    .filter(|bytes| *bytes < state_budget)
-                    .ok_or_else(|| {
-                        Error::new(
-                            infer_core::ErrorCode::Capacity,
-                            "DFlash2 sequence rings exceed the state budget",
-                        )
-                    })?;
+                let bytes = fixed_bytes(&geometry, weights.layers.len(), rings)?;
+                if bytes >= state_budget {
+                    return Err(Error::new(
+                        infer_core::ErrorCode::Capacity,
+                        "DFlash2 engine exceeds the state budget",
+                    ));
+                }
                 let engine = Engine::new(loaded.device(), Arc::clone(weights), rings)?;
-                tracing::info!(target: "infer::executor", rings, ring_bytes = ring,
+                tracing::info!(target: "infer::executor", rings, engine_bytes = bytes,
                     "DFlash2 draft engine ready");
                 (Some(engine), state_budget - bytes)
             }
@@ -403,6 +396,7 @@ impl Drop for CudaExecutor {
                 self.worker.take(),
                 take(&mut self.homes),
                 take(&mut self.states),
+                self.dflash.take(),
             ));
         }
     }

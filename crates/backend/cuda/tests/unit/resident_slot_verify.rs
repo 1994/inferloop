@@ -165,6 +165,44 @@ fn check_pool_width(width: usize, verify: usize, capacity: usize) -> Result<()> 
     check_pool_width_rotary(width, verify, capacity, false)
 }
 
+/// A stateless decoder needs cursor commits, without any recurrent restore graph.
+#[test]
+#[ignore = "requires CUDA hardware; run inside safe-run"]
+fn pooled_verify_without_recurrent_state_matches_serial() -> Result<()> {
+    enable_default().map_err(device_error)?;
+    let device = CudaDevice::new(0)?;
+    let (mut graph, mut weights) = fixture(&device)?;
+    graph
+        .nodes
+        .retain(|node| !matches!(node.op, TensorOp::Conv { .. }));
+    graph
+        .tensors
+        .retain(|tensor| ![3, 4, 5].contains(&tensor.id.get()));
+    graph.nodes[1].inputs[0] = TensorId::new(2)?;
+    graph.hidden = Some(TensorId::new(2)?);
+    weights.batch_width = 8;
+    weights.prefill_width = 1;
+    for width in [1, 2, 4] {
+        let mut pool = SlotPool::new(&device, &graph, &weights, width, 32, 32, (32, 8), None)?;
+        let mut serial = DeviceProgram::new(&device, &graph, &weights, 32, 32, 32)?;
+        for (position, accepted) in [(0, 2), (3, 0), (4, 1)] {
+            let tokens = [1, 2, 3];
+            let expected = serial.step_batch(&tokens, position)?;
+            let lanes: Vec<_> = tokens
+                .iter()
+                .enumerate()
+                .map(|(offset, &token)| (0, offset, token, position + offset, position + offset))
+                .collect();
+            let actual = pool.run_verify(&device, &lanes)?;
+            compare(&actual[..tokens.len()], &expected);
+            pool.commit_verify(&device, 0, accepted)?;
+            serial.commit_batch(accepted + 1)?;
+            assert_eq!(pool.cursors()[0], serial.position());
+        }
+    }
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires CUDA hardware; run inside safe-run"]
 fn pooled_rotary_preserves_row_consumers_prefixes_and_reuse() -> Result<()> {
@@ -198,7 +236,7 @@ fn check_pool_width_rotary(
         (32, verify),
         None,
     )?;
-    assert_eq!(pool.test_batched_commit(), verify == 3);
+    assert!(pool.test_batched_commit());
     let mut serial = (0..width)
         .map(|_| DeviceProgram::new(&device, &graph, &weights, 32, 32, 32))
         .collect::<Result<Vec<_>>>()?;

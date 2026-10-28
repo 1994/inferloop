@@ -26,13 +26,25 @@ use std::iter::successors;
 
 /// Slot counts of the narrow verify graphs a pool of `width` slots captures: powers of two
 /// below the width, when the pool verifies without recurrent snapshots.
-fn narrow_widths(graph: &DataflowGraph, width: usize, verify: usize) -> Vec<usize> {
+pub fn narrow_widths(graph: &DataflowGraph, width: usize, verify: usize) -> Vec<usize> {
     if verify < 2 || !super::slot_verify::fused_recurrent(graph, verify) {
         return Vec::new();
     }
     successors(Some(1usize), |slots| slots.checked_mul(2))
         .take_while(|&slots| slots < width)
         .collect()
+}
+
+/// A single slot is useful for speculative verification; plain batching needs two.
+fn valid_pool_geometry(
+    width: usize,
+    verify: usize,
+    capacity: usize,
+    hidden: usize,
+    vocabulary: usize,
+) -> bool {
+    let minimum = if verify >= 2 { 1 } else { 2 };
+    (minimum..=MAX_POOL_SLOTS).contains(&width) && capacity > 0 && hidden > 0 && vocabulary > 0
 }
 
 /// NVFP4 workspace for every lane count the pool's graphs replay.
@@ -407,8 +419,7 @@ impl SlotPool {
     ) -> Result<Self> {
         let (vocabulary, verify) = output;
         let capacity = super::capacity::padded(capacity)?;
-        if !(2..=MAX_POOL_SLOTS).contains(&width) || capacity == 0 || hidden == 0 || vocabulary == 0
-        {
+        if !valid_pool_geometry(width, verify, capacity, hidden, vocabulary) {
             return Err(Error::invalid("slot pool width, capacity or geometry"));
         }
         if weights.fusion.is_some() && verify >= 2 {

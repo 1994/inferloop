@@ -36,9 +36,10 @@ fn upload<T: DType>(device: &CudaDevice, data: Vec<T>, shape: &[usize]) -> TestR
 fn block_attention_reads_every_tile_of_its_window() -> TestResult {
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
-    // Slot 0 straddles the key tile at 64, slot 1 wraps its ring, slot 2 is idle.
-    let bases = [60i32, 300, -1];
-    let slot_rings = [1i32, 0, 1];
+    // Slot 0 straddles a key tile, slot 1 wraps, slot 2 is idle, and slot 3
+    // crosses a tile boundary at the earliest query's sliding-window start.
+    let bases = [60i32, 300, -1, 156];
+    let slot_rings = [1i32, 0, 1, 0];
     let slots = bases.len();
     let rows = slots * BLOCK;
     let gd = GROUP * D;

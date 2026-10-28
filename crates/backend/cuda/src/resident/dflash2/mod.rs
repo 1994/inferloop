@@ -7,6 +7,10 @@
 //! the top candidates of every masked row from the target's head and walks the selector lattice.
 //! Rings belong to sequences, not pool slots, because a prompt is ingested before its sequence
 //! is bound to a slot.
+pub mod budget;
+#[cfg(test)]
+#[path = "../../../tests/unit/resident_dflash2_budget.rs"]
+mod budget_tests;
 mod kernels;
 mod weights;
 pub use weights::DraftWeights;
@@ -238,12 +242,6 @@ impl Engine {
             rings,
             weights,
         })
-    }
-
-    /// Device bytes one ring of every layer occupies.
-    pub const fn ring_bytes(geometry_window: usize, block: usize, layers: usize, kv: usize) -> u64 {
-        let ring = (geometry_window + block).div_ceil(KEY_TILE) * KEY_TILE;
-        (2 * layers * ring * kv * size_of::<bf16>()) as u64
     }
 
     /// Lease a ring to a new sequence, if one is free.

@@ -268,7 +268,7 @@ impl CudaExecutor {
     }
 
     pub(super) fn warm_slot_pool_for(&mut self, capacity: usize, request_tokens: usize) {
-        if self.maximum_states < 2 {
+        if self.maximum_states < 2 && self.dflash.is_none() {
             return;
         }
         let maximum = self.maximum_states.min(MAX_POOL_SLOTS);
@@ -348,7 +348,7 @@ impl CudaExecutor {
     }
 
     fn serial_roofline(&mut self, capacity: usize, maximum: usize, envelope: u64) -> bool {
-        if self.roofline_bound != Some(1) {
+        if self.roofline_bound != Some(1) || self.dflash.is_some() {
             return false;
         }
         match self.memory_plan(capacity, maximum, envelope, 0) {
@@ -447,7 +447,7 @@ impl CudaExecutor {
         self.draft_slots = self.prepare_draft_pool(width, capacity);
         super::profiling::memory(attempt, "draft_pool", width, self.loaded.device());
         self.slots = Some(pool);
-        self.attach_dflash();
+        self.attach_dflash()?;
         self.build_homes(attempt, prompt_width);
         super::profiling::memory(attempt, "homes", width, self.loaded.device());
         if self.worker.is_none()
@@ -475,22 +475,17 @@ impl CudaExecutor {
         let _ = self.loaded.reclaim_idle_prompt_scratch();
     }
 
-    /// Capture the draft's pooled proposal against the new pool. A failure keeps the pool and
-    /// decodes without proposals.
-    fn attach_dflash(&mut self) {
+    /// Capture the requested draft's proposal before publishing the serving pool.
+    fn attach_dflash(&mut self) -> Result<()> {
         let (Some(engine), Some(pool)) = (self.dflash.as_mut(), self.slots.as_ref()) else {
-            return;
+            return Ok(());
         };
-        let attached = pool
-            .verify_features()
+        pool.verify_features()
             .ok_or_else(|| Error::invariant("pooled verification carries no draft features"))
-            .and_then(|graphs| engine.attach_pool(self.loaded.device(), &graphs));
-        match attached {
-            Ok(()) => tracing::info!(target: "infer::executor", width = pool.width(),
-                "DFlash2 pooled proposal captured"),
-            Err(error) => tracing::warn!(target: "infer::executor", %error,
-                "DFlash2 pooled proposal unavailable; decoding without proposals"),
-        }
+            .and_then(|graphs| engine.attach_pool(self.loaded.device(), &graphs))?;
+        tracing::info!(target: "infer::executor", width = pool.width(),
+            "DFlash2 pooled proposal captured");
+        Ok(())
     }
 
     /// Quote all resources before capturing; retain the largest prompt rung at a width.
@@ -504,7 +499,11 @@ impl CudaExecutor {
         let Some(plan) = self.memory_plan(capacity, maximum, envelope, request_tokens)? else {
             return Ok(None);
         };
-        let selected = self.roofline_bound.unwrap_or(maximum).min(plan.quote.width);
+        let selected = self
+            .roofline_bound
+            .filter(|_| self.dflash.is_none())
+            .unwrap_or(maximum)
+            .min(plan.quote.width);
         if selected == plan.quote.width {
             return Ok(Some(plan));
         }
@@ -526,7 +525,8 @@ impl CudaExecutor {
         // Preserve wide-prompt throughput: at most one halving, and never cross the
         // established 1024-row worker floor. Deeper shrinking saves memory but adds replays.
         let minimum_prompt = (configured / 2).max(WIDER_PREFILL_LANES).min(configured);
-        for width in (2..=maximum).rev() {
+        let minimum = if self.dflash.is_some() { 1 } else { 2 };
+        for width in (minimum..=maximum).rev() {
             let mut prompt_width = configured;
             loop {
                 if let Some(quote) = self.loaded.funded_pooled_serving(
@@ -608,7 +608,8 @@ impl CudaExecutor {
         maximum: usize,
         kv_tokens: usize,
     ) -> Option<SlotPool> {
-        for width in (2..=maximum).rev() {
+        let minimum = if self.dflash.is_some() { 1 } else { 2 };
+        for width in (minimum..=maximum).rev() {
             loop {
                 match self.loaded.slot_pool(width, capacity, Some(kv_tokens)) {
                     Ok(pool) => return Some(pool),

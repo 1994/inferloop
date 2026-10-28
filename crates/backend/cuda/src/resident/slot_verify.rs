@@ -467,9 +467,6 @@ impl BatchBuilder<'_> {
         lane_fp8: &mut [Fp8Caches],
         verify: usize,
     ) -> Result<SlotVerifyGraph> {
-        if lane_states.len() < 2 {
-            return Err(Error::invalid("slot verify lanes"));
-        }
         self.build_slot_verify_parts(lane_states.parts(), lane_fp8, verify)
     }
 
@@ -543,7 +540,9 @@ impl BatchBuilder<'_> {
         } else {
             None
         };
-        let wide = fused && verify != super::slot_recurrent::LANES;
+        let wide = fused
+            && verify != super::slot_recurrent::LANES
+            && self.graph.nodes.iter().any(super::slot_recurrent::covers);
         if wide && batched_commit.is_none() {
             return Err(Error::unsupported(
                 "wide slot verification needs a batched commit",
@@ -551,7 +550,7 @@ impl BatchBuilder<'_> {
         }
         let restore = if wide {
             Vec::new()
-        } else if fused {
+        } else if fused && verify == super::slot_recurrent::LANES {
             self.capture_commits(lane_states, &arena, &metadata, (verify, &recurrent.staging))?
         } else {
             self.capture_restores(lane_states, &checkpoints)?
