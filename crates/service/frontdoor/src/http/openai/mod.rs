@@ -1,4 +1,5 @@
 //! A deliberately bounded subset of the `OpenAI` text generation protocol.
+mod decisions;
 mod error;
 mod execution;
 mod request;
@@ -30,6 +31,7 @@ pub(super) fn routes() -> Router<TextState> {
         .route("/v1/models/{model}", get(retrieve_model))
         .route("/v1/chat/completions", post(chat))
         .route("/v1/completions", post(completion))
+        .route("/v1/decisions", post(decision))
 }
 
 async fn models(State(state): State<TextState>) -> ApiResult<Json<Value>> {
@@ -73,6 +75,15 @@ async fn completion(
 ) -> ApiResult<Response> {
     let Json(request) = request.map_err(ApiError::from)?;
     reply(state, headers, request, false).await
+}
+
+async fn decision(
+    State(state): State<TextState>,
+    headers: HeaderMap,
+    request: Result<Json<decisions::DecisionRequest>, JsonRejection>,
+) -> ApiResult<Json<Value>> {
+    let Json(request) = request.map_err(ApiError::from)?;
+    decisions::decide(state, headers, request).await.map(Json)
 }
 
 /// Route one validated request to the complete or the streamed reply.

@@ -680,3 +680,6 @@ async fn public_chat_rejects_server_local_media_paths() {
     assert_eq!(handle.inspect().await.unwrap().active_requests, 0);
     handle.shutdown().await.unwrap();
 }
+
+#[path = "http_openai_decisions.rs"]
+mod decisions;

@@ -1,4 +1,5 @@
 //! Outputs workload responsibilities.
+use super::math::log_normalizer;
 use super::{pool, softmax};
 use infer_core::{Error, Result};
 use infer_ir::{
@@ -65,9 +66,16 @@ pub fn decisions(
     if output_count != 1 {
         return Err(Error::invariant("decision expects one backbone output"));
     }
+    // Every question reads the same scores, so their normalizer is computed once.
+    let normalizer = log_normalizer(&first.logits, schema.calibration_temperature)?;
     let mut answers = Vec::with_capacity(schema.questions.len());
     for question in &schema.questions {
-        answers.push(answer_question(&first.logits, question, schema)?);
+        answers.push(answer_question(
+            &first.logits,
+            normalizer,
+            question,
+            schema,
+        )?);
     }
     Ok(WorkloadOutput::Decisions(answers.into()))
 }
@@ -82,6 +90,7 @@ pub fn decisions(
 )]
 pub fn answer_question(
     logits: &[f32],
+    normalizer: f64,
     question: &DecisionQuestion,
     schema: &infer_ir::DecisionSchema,
 ) -> Result<DecisionAnswer> {
@@ -151,6 +160,25 @@ pub fn answer_question(
             )
         }
     };
+    let mass = |tokens: &[u32]| -> Result<Option<f32>> {
+        let scale = f64::from(schema.calibration_temperature);
+        tokens
+            .iter()
+            .try_fold(0.0f64, |sum, token| {
+                Ok(sum + (f64::from(read(*token)?) / scale - normalizer).exp())
+            })
+            .map(|mass| Some(mass.min(1.0) as f32))
+    };
+    let label_mass = match question {
+        DecisionQuestion::Binary {
+            negative_token,
+            positive_token,
+        } => mass(&[*negative_token, *positive_token])?,
+        DecisionQuestion::Categorical { options } | DecisionQuestion::Ordinal { options, .. } => {
+            mass(options)?
+        }
+        DecisionQuestion::Continuous { .. } => None,
+    };
     let abstained = schema.abstain_below.is_some_and(|t| {
         probabilities
             .iter()
@@ -162,5 +190,6 @@ pub fn answer_question(
         probabilities,
         expected,
         abstained,
+        label_mass,
     })
 }

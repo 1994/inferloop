@@ -64,7 +64,7 @@ impl<B: BackendProvider> RuntimeActor<B> {
                     if self.stopping {
                         return Err(Error::new(ErrorCode::Capacity, "runtime is shutting down"));
                     }
-                    self.engine.admission_quote(&request)
+                    self.engine.try_admission_quote(&request)
                 });
                 match result {
                     Ok(ticket) => self.quoting.push_back((

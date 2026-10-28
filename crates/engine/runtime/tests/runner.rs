@@ -21,8 +21,8 @@ use std::thread::sleep;
 
 use infer_spi::{BackendProvider, ResourceCommand, ResourceReply, ResourceTicket};
 use std::{
-    sync::Arc, sync::atomic::AtomicBool, sync::atomic::AtomicUsize, sync::atomic::Ordering,
-    sync::mpsc, time::Duration, time::Instant,
+    sync::Arc, sync::Mutex, sync::atomic::AtomicBool, sync::atomic::AtomicUsize,
+    sync::atomic::Ordering, sync::mpsc, time::Duration, time::Instant,
 };
 use support::ProtocolBackend;
 
@@ -39,6 +39,8 @@ struct ReserveGate {
     observed_sampling: Arc<AtomicUsize>,
     poll_gate: Arc<AtomicBool>,
     poll_permits: Arc<AtomicUsize>,
+    quote_gate: Arc<AtomicBool>,
+    quote_release: Mutex<mpsc::Receiver<()>>,
 }
 impl BackendProvider for ReserveGate {
     type Ticket = <ProtocolBackend as BackendProvider>::Ticket;
@@ -103,6 +105,16 @@ impl BackendProvider for ReserveGate {
         }))
     }
     fn state_reservation_bytes_for(&self, _: usize, _: OutputReadout) -> Result<Option<u64>> {
+        if self.quote_gate.load(Ordering::Acquire) {
+            self.entered
+                .send(())
+                .map_err(|e| Error::invariant(e.to_string()))?;
+            self.quote_release
+                .lock()
+                .map_err(|e| Error::invariant(e.to_string()))?
+                .recv()
+                .map_err(|e| Error::invariant(e.to_string()))?;
+        }
         Ok(self.state_capacity_bytes()?.map(|_| 1024))
     }
     fn reset_state(&mut self, state: StateId) -> Result<()> {
@@ -158,6 +170,8 @@ struct Fixture {
     observed_sampling: Arc<AtomicUsize>,
     poll_gate: Arc<AtomicBool>,
     poll_permits: Arc<AtomicUsize>,
+    quote_gate: Arc<AtomicBool>,
+    quote_release: mpsc::Sender<()>,
 }
 impl Fixture {
     fn new(gated: bool) -> Result<Self> {
@@ -183,6 +197,8 @@ impl Fixture {
         let observed_sampling = Arc::new(AtomicUsize::new(0));
         let poll_gate = Arc::new(AtomicBool::new(true));
         let poll_permits = Arc::new(AtomicUsize::new(usize::MAX));
+        let quote_gate = Arc::new(AtomicBool::new(false));
+        let (quote_release, quote_receiver) = mpsc::channel();
         let backend = ReserveGate {
             inner: ProtocolBackend::new(16, 8, &ir)?,
             draft_depth,
@@ -196,6 +212,8 @@ impl Fixture {
             observed_sampling: observed_sampling.clone(),
             poll_gate: poll_gate.clone(),
             poll_permits: poll_permits.clone(),
+            quote_gate: quote_gate.clone(),
+            quote_release: Mutex::new(quote_receiver),
         };
         let mut registry = KernelRegistry::default();
         registry.register(&support::DeclaredKernels)?;
@@ -228,6 +246,8 @@ impl Fixture {
             observed_sampling,
             poll_gate,
             poll_permits,
+            quote_gate,
+            quote_release,
         })
     }
     fn admit(&mut self, id: u64) -> Result<()> {
@@ -312,6 +332,168 @@ fn resource_timeout_retains_ownership_until_ack_and_later_requests_progress() ->
             .map(|done| &done.reason),
         Some(&FinishReason::Length)
     );
+    Ok(())
+}
+#[test]
+fn reservation_retries_after_a_lane_full_of_quotes_drains() -> Result<()> {
+    let mut fixture = Fixture::new(false)?;
+    let prepared = fixture.engine.request_preparer()?.prepare(request(1)?)?;
+    let mut quote = fixture.engine.admission_quote(&prepared)?;
+    let bytes = poll_quote(&mut quote)?;
+    drop(quote);
+    fixture.engine.tick(fixture.engine.now_us() + 1)?;
+
+    fixture.quote_gate.store(true, Ordering::Release);
+    let other = fixture.engine.request_preparer()?.prepare(request(2)?)?;
+    let first = fixture.engine.admission_quote(&other)?;
+    fixture
+        .entered
+        .recv_timeout(Duration::from_secs(3))
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    let mut quotes = vec![first];
+    while let Some(ticket) = fixture.engine.try_admission_quote(&other)? {
+        quotes.push(ticket);
+    }
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let wake_count = wakes.clone();
+    fixture.engine.backend_mut().set_waker(Arc::new(move || {
+        wake_count.fetch_add(1, Ordering::AcqRel);
+    }));
+    for _ in 0..2 {
+        assert!(fixture.engine.try_admission_quote(&other)?.is_none());
+    }
+    assert_eq!(wakes.load(Ordering::Acquire), 0);
+    fixture
+        .engine
+        .submit_quoted_with_trace(prepared, bytes, None)?;
+    let before = wakes.load(Ordering::Acquire);
+    for _ in 0..2 {
+        fixture.engine.tick(fixture.engine.now_us() + 1)?;
+    }
+    assert_eq!(wakes.load(Ordering::Acquire), before);
+    fixture.quote_gate.store(false, Ordering::Release);
+    fixture
+        .quote_release
+        .send(())
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    for ticket in &mut quotes {
+        poll_quote(ticket)?;
+    }
+    drop(quotes);
+    let mut retried = fixture
+        .engine
+        .try_admission_quote(&other)?
+        .ok_or_else(|| Error::invariant("drained lane refused quote"))?;
+    poll_quote(&mut retried)?;
+    drop(retried);
+    fixture.drain()?;
+    assert_eq!(
+        fixture
+            .engine
+            .request(infer_core::RequestId::ONE)?
+            .completed
+            .as_ref()
+            .map(|done| &done.reason),
+        Some(&FinishReason::Length)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_full_control_lane_defers_reservations_instead_of_rejecting_them() -> Result<()> {
+    let mut fixture = Fixture::new(true)?;
+    let mut quoted = Vec::new();
+    for id in 1..=8 {
+        let prepared = fixture.engine.request_preparer()?.prepare(request(id)?)?;
+        let mut quote = fixture.engine.admission_quote(&prepared)?;
+        let limit = Instant::now() + Duration::from_secs(3);
+        let bytes = loop {
+            if let Some(ResourceReply::ReservationBytes(bytes)) = quote.poll()? {
+                break bytes;
+            }
+            deadline(limit)?;
+        };
+        quoted.push((prepared, bytes));
+    }
+    let mut quoted = quoted.into_iter();
+    let (first, bytes) = quoted
+        .next()
+        .ok_or_else(|| Error::invariant("first request"))?;
+    fixture
+        .engine
+        .submit_quoted_with_trace(first, bytes, None)?;
+    // The owner now holds the first reservation, so later commands fill its bounded lane.
+    fixture
+        .entered
+        .recv_timeout(Duration::from_secs(3))
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    for (prepared, bytes) in quoted {
+        fixture
+            .engine
+            .submit_quoted_with_trace(prepared, bytes, None)?;
+    }
+    fixture
+        .release
+        .send(())
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    fixture.drain()?;
+    for id in 1..=8 {
+        assert_eq!(
+            fixture
+                .engine
+                .request(infer_core::RequestId::new(id)?)?
+                .completed
+                .as_ref()
+                .map(|done| &done.reason),
+            Some(&FinishReason::Length),
+            "request {id}"
+        );
+    }
+    Ok(())
+}
+#[test]
+fn a_full_control_lane_reports_quote_backpressure_until_the_owner_drains() -> Result<()> {
+    let mut fixture = Fixture::new(true)?;
+    fixture.admit(1)?;
+    fixture
+        .entered
+        .recv_timeout(Duration::from_secs(3))
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    // The owner holds the first reservation; quotes queue behind it until the lane is full.
+    let mut issued = Vec::new();
+    let mut deferred = None;
+    for id in 2..=16 {
+        let prepared = fixture.engine.request_preparer()?.prepare(request(id)?)?;
+        if let Some(ticket) = fixture.engine.try_admission_quote(&prepared)? {
+            issued.push(ticket);
+        } else {
+            deferred = Some(prepared);
+            break;
+        }
+    }
+    let prepared = deferred.ok_or_else(|| Error::invariant("the lane never filled"))?;
+    assert_eq!(
+        fixture
+            .engine
+            .admission_quote(&prepared)
+            .err()
+            .map(|e| e.code),
+        Some(infer_core::ErrorCode::Capacity)
+    );
+    fixture
+        .release
+        .send(())
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    drop(issued);
+    fixture.drain()?;
+    let mut ticket = fixture
+        .engine
+        .try_admission_quote(&prepared)?
+        .ok_or_else(|| Error::invariant("a drained lane still refused the quote"))?;
+    let limit = Instant::now() + Duration::from_secs(3);
+    while !matches!(ticket.poll()?, Some(ResourceReply::ReservationBytes(_))) {
+        deadline(limit)?;
+    }
     Ok(())
 }
 #[test]

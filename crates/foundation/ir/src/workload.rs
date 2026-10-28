@@ -1,4 +1,4 @@
-use crate::Head;
+use crate::{Head, OutputReadout};
 use infer_core::credits::CreditLease;
 use infer_core::{Error, ModelId, ProgramId, RequestId, Result};
 use serde::{Deserialize, Serialize};
@@ -27,11 +27,28 @@ pub enum DecisionQuestion {
         max: f32,
     },
 }
+/// Which scores a decision reads its option tokens from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionReadout {
+    /// An installed decision projection over the final hidden row; options index its channels.
+    #[default]
+    Projection,
+    /// The language-model head at the last prompt position; options are vocabulary tokens.
+    ///
+    /// A generation model answers through the first token of its reply, so a deployment that
+    /// generates can also decide without an extra head. The prompt must end where that reply
+    /// begins; the option tokens are what the reply's first token would be for each label.
+    LanguageModel,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DecisionSchema {
     pub questions: Vec<DecisionQuestion>,
     pub calibration_temperature: f32,
     pub abstain_below: Option<f32>,
+    /// Absent in older requests and snapshots, which always read an installed projection.
+    #[serde(default)]
+    pub readout: DecisionReadout,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Workload {
@@ -61,15 +78,37 @@ impl Workload {
     #[must_use]
     pub const fn head(&self) -> Option<Head> {
         Some(match self {
-            Self::Generate { .. } => Head::LanguageModel,
+            Self::Generate { .. }
+            | Self::Decision(DecisionSchema {
+                readout: DecisionReadout::LanguageModel,
+                ..
+            }) => Head::LanguageModel,
             Self::Embed { .. } => Head::Embedding,
             Self::Rerank { .. } => Head::Rank,
-            Self::Decision(_) => Head::Decision,
+            Self::Decision(DecisionSchema {
+                readout: DecisionReadout::Projection,
+                ..
+            }) => Head::Decision,
             Self::Classify { .. } => Head::Classification,
             Self::Reward => Head::Reward,
             Self::LateInteraction => Head::LateInteraction,
             Self::Extension { .. } => return None,
         })
+    }
+    /// The readout the last prompt position needs.
+    ///
+    /// Generation and language-model decisions consume only the final logits, so they keep the
+    /// pooled logits-only state; every other workload projects hidden rows and needs them all.
+    #[must_use]
+    pub const fn final_readout(&self) -> OutputReadout {
+        match self {
+            Self::Generate { .. }
+            | Self::Decision(DecisionSchema {
+                readout: DecisionReadout::LanguageModel,
+                ..
+            }) => OutputReadout::Logits,
+            _ => OutputReadout::Full,
+        }
     }
     /// # Errors
     /// Returns an invalid-input or invariant error if dimensions, identities, ranges, or ownership are inconsistent.
@@ -181,6 +220,12 @@ pub struct DecisionAnswer {
     pub probabilities: Vec<f32>,
     pub expected: Option<f32>,
     pub abstained: bool,
+    /// The options' joint probability over every readout score, before renormalizing to them.
+    ///
+    /// Low mass means the model preferred something other than the offered labels, which the
+    /// renormalized `probabilities` alone cannot show. `None` for a continuous answer.
+    #[serde(default)]
+    pub label_mass: Option<f32>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RankedDocument {
@@ -209,3 +254,7 @@ impl WorkloadOutput {
 #[cfg(test)]
 #[path = "../tests/unit/workload_speculation.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/workload_decision.rs"]
+mod decision_tests;
