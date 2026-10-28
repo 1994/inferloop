@@ -1,4 +1,6 @@
 use super::*;
+use crate::providers::qwen::QwenProvider;
+use infer_spi::ModelProvider;
 
 #[test]
 fn mode_defaults_and_explicit_zero_overrides_are_distinct() -> Result<()> {
@@ -10,8 +12,7 @@ fn mode_defaults_and_explicit_zero_overrides_are_distinct() -> Result<()> {
             eos_tokens: vec![10, 11],
             ..Sampling::default()
         },
-        thinking: true,
-        profile: ModelProfile::Qwen38,
+        policy: QwenProvider.generation_policy(Some("---\nbase_model:\n- Qwen/Qwen3.8-27B\n---")),
         sources: BTreeMap::new(),
     };
     let thinking = defaults.resolve(&SamplingOverrides::default())?;
@@ -54,8 +55,7 @@ fn every_resolved_parameter_records_the_layer_that_set_it() -> Result<()> {
             top_p: 0.95,
             ..Sampling::default()
         },
-        thinking: true,
-        profile: ModelProfile::Qwen38,
+        policy: QwenProvider.generation_policy(Some("---\nbase_model:\n- Qwen/Qwen3.8-27B\n---")),
         sources: BTreeMap::from([
             ("temperature".to_string(), "package default".to_string()),
             ("top_p".to_string(), "package default".to_string()),

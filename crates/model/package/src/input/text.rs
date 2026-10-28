@@ -148,6 +148,17 @@ impl TextAssets {
     /// # Errors
     /// Returns an I/O or invalid-input error for missing, malformed, unsupported, or oversized assets.
     pub fn open(root: impl AsRef<Path>, max_tokens: usize) -> Result<Self> {
+        Self::open_with(crate::default_registry(), root, max_tokens)
+    }
+
+    /// Open text assets with the registry used to import the model package.
+    /// # Errors
+    /// Returns an I/O or invalid-input error for missing, malformed, unsupported, or oversized assets.
+    pub fn open_with(
+        registry: &crate::ModelRegistry,
+        root: impl AsRef<Path>,
+        max_tokens: usize,
+    ) -> Result<Self> {
         if max_tokens == 0 {
             return Err(Error::invalid("empty text token budget"));
         }
@@ -218,7 +229,7 @@ impl TextAssets {
         let streaming_decode = byte_level_decoder(&bytes);
         Ok(Self {
             constraint_cache: Mutex::new(GrammarCache::default()),
-            generation: crate::GenerationDefaults::open(root)?,
+            generation: crate::GenerationDefaults::open_with(registry, root)?,
             tokenizer: Arc::new(tokenizer),
             template,
             special,

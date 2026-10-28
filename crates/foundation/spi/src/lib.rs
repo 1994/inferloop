@@ -1,6 +1,8 @@
 //! Planning-time extension contracts. Execution is monomorphized over a backend.
 mod constraint;
+mod generation;
 pub use constraint::{ConstraintHandle, GenerationConstraint};
+pub use generation::{GenerationPolicy, GenerationPreset, GreedyPreset};
 mod planning;
 mod resource;
 pub use planning::DecisionStorage;

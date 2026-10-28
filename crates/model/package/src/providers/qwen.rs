@@ -1,3 +1,4 @@
+mod generation;
 use crate::vision::validate;
 use infer_core::{Error, ModelId, ProviderId, Result};
 use infer_ir::{
@@ -6,8 +7,8 @@ use infer_ir::{
 };
 use infer_model_recipes::decoder::lower;
 use infer_spi::{
-    FusionPlan, HiddenActivation, ImportedModel, ModalityEncoder, ModalityPlan, ModelProvider,
-    PrecisionPolicy, ProviderMetadata, SPI_VERSION, SpeculationPlan,
+    FusionPlan, GenerationPolicy, HiddenActivation, ImportedModel, ModalityEncoder, ModalityPlan,
+    ModelProvider, PrecisionPolicy, ProviderMetadata, SPI_VERSION, SpeculationPlan,
 };
 use serde::{Deserialize, Serialize};
 
@@ -302,6 +303,9 @@ fn modality_placeholders(map: &serde_json::Map<String, serde_json::Value>) -> Ve
 }
 
 impl ModelProvider for QwenProvider {
+    fn generation_policy(&self, card: Option<&str>) -> GenerationPolicy {
+        generation::policy(card)
+    }
     fn graph(&self, model: &ModelIr) -> Result<infer_ir::DataflowGraph> {
         lower(model)
     }
