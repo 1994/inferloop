@@ -251,9 +251,9 @@ pub fn retained_bytes(
         })
         .ok_or_else(|| Error::invalid("host request bytes overflow"))?;
     // Forward readouts can retain all pair units. Include vector headers and both projection/input lifetimes.
-    let generate = matches!(request.workload, infer_ir::Workload::Generate { .. });
+    let hidden_rows = request.workload.final_readout() == infer_ir::OutputReadout::Full;
     for unit in &plan.units {
-        let rows = if generate { 0 } else { unit.len() };
+        let rows = if hidden_rows { unit.len() } else { 0 };
         let row_bytes = model
             .hidden_size
             .checked_mul(size_of::<f32>())

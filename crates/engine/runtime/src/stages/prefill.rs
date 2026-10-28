@@ -23,10 +23,8 @@ pub fn prepare(record: &RequestRecord, count: usize) -> Result<ExecutionInput> {
 pub fn readout(record: &RequestRecord, end: usize) -> OutputReadout {
     if end < record.prefill_target {
         OutputReadout::None
-    } else if matches!(record.request.workload, Workload::Generate { .. }) {
-        OutputReadout::Logits
     } else {
-        OutputReadout::Full
+        record.request.workload.final_readout()
     }
 }
 pub fn commit(record: &mut RequestRecord, count: usize) -> Result<usize> {
@@ -42,9 +40,5 @@ pub fn commit(record: &mut RequestRecord, count: usize) -> Result<usize> {
 }
 
 pub const fn retained_readout(workload: &Workload) -> OutputReadout {
-    if matches!(workload, Workload::Generate { .. }) {
-        OutputReadout::Logits
-    } else {
-        OutputReadout::Full
-    }
+    workload.final_readout()
 }

@@ -163,6 +163,7 @@ fn replay_byte_budget_counts_decision_schema_even_with_a_short_prompt() -> Resul
         ],
         calibration_temperature: 1.0,
         abstain_below: None,
+        readout: infer_ir::DecisionReadout::Projection,
     });
     engine.submit(request)?;
     assert!(engine.inspect().dropped_actions > 0);

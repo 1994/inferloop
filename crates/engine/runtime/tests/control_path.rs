@@ -98,6 +98,7 @@ fn workloads() -> Vec<CanonicalRequest> {
                 ],
                 calibration_temperature: 1.0,
                 abstain_below: Some(0.9),
+                readout: DecisionReadout::Projection,
             }),
         ),
     ]

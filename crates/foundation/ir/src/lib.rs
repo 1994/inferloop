@@ -44,8 +44,8 @@ pub use scheduling::{
 };
 pub use tokens::{ExecutionInput, OutputReadout, TokenBuffer, TokenSpan};
 pub use workload::{
-    DecisionAnswer, DecisionQuestion, DecisionSchema, FeaturePlan, Pooling, RankedDocument,
-    SpeculationPlan, Workload, WorkloadOutput, WorkloadPlan,
+    DecisionAnswer, DecisionQuestion, DecisionReadout, DecisionSchema, FeaturePlan, Pooling,
+    RankedDocument, SpeculationPlan, Workload, WorkloadOutput, WorkloadPlan,
 };
 
 mod buffer;
