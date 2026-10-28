@@ -98,6 +98,8 @@ make accept PACKAGE_FILE=/path/to/infer-....tar.gz \
 
 打包矩阵为 Linux CUDA x86_64 / AArch64（glibc 2.28）和 macOS Metal Apple Silicon / Intel。Linux 安装 CUDA 13.2 开发头文件，无需 GPU driver；macOS 使用 runner 的 Xcode SDK。两者使用 Python 3.12、Zig 0.16.0 和 Makefile 固定的 cargo-zigbuild。
 
-`make package` 执行目标检查、release 构建和归档校验；与宿主同架构时执行 CLI 冒烟，交叉目标只做编译和静态检查。成功后上传归档、SHA256SUMS 和 manifest，保留 14 天，不自动创建 GitHub Release。
+`make package` 执行目标检查、release 构建和归档校验；与宿主同架构时执行 CLI 冒烟，交叉目标只做编译和静态检查。成功后上传归档、SHA256SUMS 和 manifest 作为 Actions 制品，保留 14 天。
+
+推送与 workspace 版本一致的标签（例如版本 `0.1.0` 对应 `v0.1.0`）会运行完整门禁；全部通过后自动创建 GitHub Release，附上两个 Linux CUDA 架构的归档、各自的校验和与 manifest。发布前会核对版本、目标、CUDA feature、源码 commit 和归档校验和。已有同名 Release 不会被覆盖。下载同一架构的归档和 `.SHA256SUMS` 后，可用 `sha256sum -c <文件名>.SHA256SUMS` 验证。发布包仍需目标机器上的 NVIDIA driver 和 CUDA/cuTile JIT 工具链。
 
 最终 `quality-gate` 要求所有质量检查和打包项通过，可用作分支保护的必需检查。hosted CI 不证明真实 GPU 的正确性或性能，manifest 保留 `gpu_inference_accepted: false`。设备验收使用 `make accept`、`test-cuda` / `test-metal` 和独立的 Candle attention 门禁。
