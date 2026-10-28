@@ -203,6 +203,103 @@ fn pooled_verify_without_recurrent_state_matches_serial() -> Result<()> {
     Ok(())
 }
 
+/// Candidate rows must not switch a wide vocabulary head away from ordinary decode arithmetic.
+#[test]
+#[ignore = "requires CUDA hardware; run inside safe-run"]
+fn feature_verification_preserves_wide_head_decode_bits() -> Result<()> {
+    enable_default().map_err(device_error)?;
+    let device = CudaDevice::new(0)?;
+    let (mut graph, mut weights) = fixture(&device)?;
+    graph
+        .nodes
+        .retain(|node| !matches!(node.op, TensorOp::Conv { .. }));
+    graph
+        .tensors
+        .retain(|tensor| ![3, 4, 5].contains(&tensor.id.get()));
+    graph
+        .tensors
+        .iter_mut()
+        .find(|tensor| tensor.id.get() == 6)
+        .unwrap()
+        .shape = vec![512, 32];
+    graph
+        .tensors
+        .iter_mut()
+        .find(|tensor| tensor.id.get() == 7)
+        .unwrap()
+        .shape = vec![512];
+    for (id, storage) in [
+        (
+            8,
+            TensorStorage::Weight {
+                slot: "norm".into(),
+            },
+        ),
+        (9, TensorStorage::Activation),
+        (10, TensorStorage::Activation),
+    ] {
+        graph.tensors.push(TensorSpec {
+            id: TensorId::new(id)?,
+            shape: vec![32],
+            dtype: DType::F32,
+            storage,
+        });
+    }
+    graph.nodes.insert(
+        1,
+        TensorNode {
+            id: OpId::new(4)?,
+            layer: None,
+            op: TensorOp::Norm {
+                epsilon: 1e-6,
+                offset: 0.0,
+                head_dim: 32,
+            },
+            inputs: vec![TensorId::new(2)?, TensorId::new(8)?],
+            outputs: vec![TensorId::new(9)?],
+            states: vec![],
+        },
+    );
+    graph.nodes[2].inputs[0] = TensorId::new(9)?;
+    graph.nodes.push(TensorNode {
+        id: OpId::new(5)?,
+        layer: None,
+        op: TensorOp::Add,
+        inputs: vec![TensorId::new(9)?, TensorId::new(9)?],
+        outputs: vec![TensorId::new(10)?],
+        states: vec![],
+    });
+    graph.hidden = Some(TensorId::new(9)?);
+    graph.features = Some(TensorId::new(10)?);
+    weights
+        .constants
+        .insert(TensorId::new(8)?, device.upload(vec![1.0; 32], &[32])?);
+    let head = (0..16384_u16)
+        .map(|i| bf16::from_f32(f32::from(i % 97) / 97.0 - 0.5))
+        .collect();
+    weights.projections.insert(
+        TensorId::new(6)?,
+        ProjectionWeight::Dense(device.upload(head, &[512, 32])?),
+    );
+    weights.batch_width = 8;
+    weights.prefill_width = 1;
+    let mut plain = SlotPool::new(&device, &graph, &weights, 4, 32, 32, (512, 0), None)?;
+    let mut verify = SlotPool::new(&device, &graph, &weights, 4, 32, 32, (512, 8), None)?;
+    for slot in [0, 3] {
+        let expected = plain.run_lanes(&device, &[(slot, 7, 0, 0)])?;
+        let actual = verify.run_verify(&device, &[(slot, 0, 7, 0, 0)])?;
+        let left: Vec<_> = expected[0].1.iter().map(|value| value.to_bits()).collect();
+        let right: Vec<_> = actual[slot * 8]
+            .1
+            .iter()
+            .map(|value| value.to_bits())
+            .collect();
+        assert_eq!(left, right, "head bits at slot {slot}");
+        verify.commit_verify(&device, slot, 0)?;
+    }
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires CUDA hardware; run inside safe-run"]
 fn pooled_rotary_preserves_row_consumers_prefixes_and_reuse() -> Result<()> {

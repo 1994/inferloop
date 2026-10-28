@@ -365,6 +365,9 @@ impl BatchBuilder<'_> {
                         arena,
                         self.weights,
                         self.nvfp4,
+                        // Candidate lanes must not change the target head's reduction policy.
+                        // Use the ordinary pool's slot count even in a narrow verification.
+                        self.graph.features.map(|_| self.width),
                     )?;
                     continue;
                 }

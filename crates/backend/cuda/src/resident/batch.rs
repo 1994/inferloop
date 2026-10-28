@@ -377,6 +377,7 @@ impl BatchBuilder<'_> {
                         arena,
                         self.weights,
                         self.nvfp4,
+                        None,
                     )?;
                     continue;
                 }
@@ -857,6 +858,7 @@ impl BatchBuilder<'_> {
                     arena,
                     self.weights,
                     self.nvfp4,
+                    None,
                 )?;
             }
             Dispatch32::Batched => {
