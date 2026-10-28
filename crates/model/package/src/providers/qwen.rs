@@ -303,8 +303,8 @@ fn modality_placeholders(map: &serde_json::Map<String, serde_json::Value>) -> Ve
 }
 
 impl ModelProvider for QwenProvider {
-    fn generation_policy(&self, card: Option<&str>) -> GenerationPolicy {
-        generation::policy(card)
+    fn generation_policy(&self, _config: &[u8], card: Option<&str>) -> Result<GenerationPolicy> {
+        Ok(generation::policy(card))
     }
     fn graph(&self, model: &ModelIr) -> Result<infer_ir::DataflowGraph> {
         lower(model)

@@ -21,7 +21,7 @@ pub fn load(root: &Path, registry: &ModelRegistry) -> Result<GenerationDefaults>
     };
     let config_bytes = serde_json::to_vec(&config).map_err(|e| Error::invalid(e.to_string()))?;
     let policy = match registry.resolve(&config_bytes) {
-        Ok(provider) => provider.generation_policy(card.as_deref()),
+        Ok(provider) => provider.generation_policy(&config_bytes, card.as_deref())?,
         Err(error) if error.code == ErrorCode::Unsupported => GenerationPolicy::default(),
         Err(error) => return Err(error),
     };
