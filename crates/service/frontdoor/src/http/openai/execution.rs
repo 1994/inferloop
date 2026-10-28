@@ -210,19 +210,7 @@ pub(super) async fn prepare(
     let count = prompt_tokens.clone();
     let reasoning_open = Arc::new(AtomicBool::new(false));
     let assets = state.assets.clone();
-    let resolved = assets
-        .generation
-        .resolve(&infer_models::SamplingOverrides {
-            temperature: request.temperature,
-            top_p: request.top_p,
-            top_k: request.top_k,
-            min_p: request.min_p,
-            presence_penalty: request.presence_penalty,
-            repetition_penalty: request.repetition_penalty,
-            seed: request.seed,
-            enable_thinking: request.enable_thinking,
-            ..Default::default()
-        })?;
+    let resolved = resolve_generation(&assets, &request, chat)?;
     let enable_thinking = resolved.enable_thinking;
     let id = state.handle.allocate_request_id()?;
     // Which layer produced each effective sampling parameter is the difference between two
@@ -272,6 +260,29 @@ pub(super) async fn prepare(
         reasoning_open,
         dialect: state.assets.tool_dialect(),
     })
+}
+
+fn resolve_generation(
+    assets: &infer_models::TextAssets,
+    request: &GenerationRequest,
+    chat: bool,
+) -> infer_core::Result<infer_models::ResolvedGeneration> {
+    let overrides = infer_models::SamplingOverrides {
+        temperature: request.temperature,
+        top_p: request.top_p,
+        top_k: request.top_k,
+        min_p: request.min_p,
+        presence_penalty: request.presence_penalty,
+        repetition_penalty: request.repetition_penalty,
+        seed: request.seed,
+        enable_thinking: request.enable_thinking,
+        ..Default::default()
+    };
+    if chat {
+        assets.resolve_chat_generation(&overrides)
+    } else {
+        assets.generation.resolve(&overrides)
+    }
 }
 
 /// # Errors

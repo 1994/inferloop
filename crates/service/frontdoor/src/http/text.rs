@@ -100,7 +100,11 @@ pub(super) async fn text_infer(
                 if let Some(options) = &request.options {
                     overrides.enable_thinking = Some(options.enable_thinking);
                 }
-                let resolved = assets.generation.resolve(&overrides)?;
+                let resolved = if request.messages.is_some() && request.prompt.is_none() {
+                    assets.resolve_chat_generation(&overrides)?
+                } else {
+                    assets.generation.resolve(&overrides)?
+                };
                 let options = request
                     .options
                     .unwrap_or_else(|| infer_models::ChatOptions {

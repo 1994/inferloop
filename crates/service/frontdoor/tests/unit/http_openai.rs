@@ -10,6 +10,7 @@ use std::fs::copy;
 use std::fs::create_dir_all;
 use std::fs::read;
 use std::fs::read_dir;
+use std::fs::remove_dir_all;
 use std::fs::write;
 use std::path::Path;
 use std::process::id;
@@ -177,6 +178,56 @@ async fn completions_follow_the_served_model_and_report_usage() {
     assert_eq!(inspection.active_requests, 0);
     assert_eq!(inspection.state.allocated_pages, 0);
     handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn chat_stops_at_tokenizer_eos_without_changing_completion() {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let fixture_root =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples/qwen-hybrid-tiny");
+    let package = temp_dir().join(format!(
+        "infer-chat-eos-{}-{}",
+        id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    create_dir_all(&package).unwrap();
+    for name in ["tokenizer.json", "config.json"] {
+        copy(fixture_root.join(name), package.join(name)).unwrap();
+    }
+    let mut config: Value =
+        serde_json::from_slice(&read(fixture_root.join("tokenizer_config.json")).unwrap()).unwrap();
+    config["eos_token"] = json!("system");
+    write(
+        package.join("tokenizer_config.json"),
+        serde_json::to_vec(&config).unwrap(),
+    )
+    .unwrap();
+    let (handle, _) = fixture();
+    let assets = Arc::new(infer_models::TextAssets::open(&package, 4096).unwrap());
+    let app = router_with_text(handle.clone(), assets);
+    let (status, chat) = call(
+        app.clone(),
+        "/v1/chat/completions",
+        Some(json!({
+            "model":"1", "messages":[{"role":"user","content":"hello world"}], "max_tokens":3
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{chat}");
+    assert_eq!(chat["choices"][0]["finish_reason"], "stop");
+    let (status, completion) = call(
+        app,
+        "/v1/completions",
+        Some(json!({
+            "model":"1", "prompt":"hello world", "max_tokens":3
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{completion}");
+    assert_eq!(completion["choices"][0]["finish_reason"], "length");
+    assert_eq!(completion["choices"][0]["text"], "system system system");
+    handle.shutdown().await.unwrap();
+    remove_dir_all(package).unwrap();
 }
 
 #[tokio::test]
