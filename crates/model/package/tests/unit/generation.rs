@@ -27,10 +27,31 @@ fn mode_defaults_and_explicit_zero_overrides_are_distinct() -> Result<()> {
     greedy_defaults.base.temperature = 0.0;
     let greedy = greedy_defaults.resolve(&overrides)?;
     assert_eq!(greedy.sampling.temperature, 0.0);
+    let resampled = greedy_defaults.resolve(&SamplingOverrides {
+        enable_thinking: Some(false),
+        do_sample: Some(true),
+        ..SamplingOverrides::default()
+    })?;
+    assert_eq!(resampled.sampling.temperature, 0.7);
+    assert_eq!(resampled.sampling.top_p, 0.8);
+    let temperature = greedy_defaults.resolve(&SamplingOverrides {
+        enable_thinking: Some(false),
+        temperature: Some(0.4),
+        ..SamplingOverrides::default()
+    })?;
+    assert_eq!(temperature.sampling.temperature, 0.4);
+    assert_eq!(temperature.sampling.top_p, 0.8);
     let instruct = defaults.resolve(&overrides)?;
     assert_eq!(instruct.sampling.temperature, 0.7);
     assert_eq!(instruct.sampling.top_p, 0.8);
     assert_eq!(instruct.sampling.presence_penalty, 1.5);
+    let zero_temperature = defaults.resolve(&SamplingOverrides {
+        enable_thinking: Some(false),
+        temperature: Some(0.0),
+        ..SamplingOverrides::default()
+    })?;
+    assert_eq!(zero_temperature.sampling.temperature, 0.0);
+    assert_eq!(zero_temperature.sampling.presence_penalty, 1.5);
     let custom = defaults.resolve(&SamplingOverrides {
         temperature: Some(0.0),
         top_k: Some(0),

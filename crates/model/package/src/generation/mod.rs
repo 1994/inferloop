@@ -63,9 +63,14 @@ impl GenerationDefaults {
         let thinking = options
             .enable_thinking
             .unwrap_or(self.policy.enable_thinking);
+        // A request can enable sampling even if the package defaults to greedy. Preserve the
+        // model-mode penalty defaults when a sampled package is overridden to temperature zero.
+        let sampling_active = sampling.temperature != 0.0
+            || options.do_sample == Some(true)
+            || options.temperature.is_some_and(|value| value != 0.0);
         if !thinking
             && let Some(preset) = &self.policy.non_thinking
-            && (sampling.temperature != 0.0 || preset.greedy == GreedyPreset::Apply)
+            && (sampling_active || preset.greedy == GreedyPreset::Apply)
         {
             apply_preset(&mut sampling, &mut sources, preset);
         }
