@@ -55,6 +55,7 @@ fn request(id: u64, workload: Workload) -> CanonicalRequest {
             seed: 13,
             ..Default::default()
         },
+        prefix_boundary: None,
         extensions: BTreeMap::new(),
     }
 }

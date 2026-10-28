@@ -46,10 +46,17 @@ impl PreparedAdmission {
     fn into_record(
         mut self,
         state: StateId,
-        now_us: u64,
+        (now_us, page): (u64, usize),
         credit: CreditLease,
         byte_credit: CreditLease,
     ) -> RequestRecord {
+        // A snapshot covers whole pages, so the boundary rounds down to one.
+        let prefix_stop = self
+            .request
+            .prefix_boundary
+            .and_then(|boundary| boundary.checked_div(page))
+            .map(|pages| pages * page)
+            .filter(|stop| *stop > 0);
         self.generated.attach_credit(credit.clone());
         self.generated.attach_byte_credit(byte_credit.clone());
         self.context.attach_byte_credit(byte_credit.clone());
@@ -74,6 +81,7 @@ impl PreparedAdmission {
             preemptions: 0,
             cached_tokens: 0,
             prefix_attempted: false,
+            prefix_stop,
             context: crate::TokenContext::new(self.context),
             generated: self.generated,
             outputs: Vec::new(),
@@ -320,7 +328,12 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         let id = prepared.request.id;
         self.retain_request_identity(id);
         self.register_tenant(&prepared.request, prepared.tenant.clone(), &prepared.plan)?;
-        let record = prepared.into_record(state, self.now_us, credit, byte_credit);
+        let record = prepared.into_record(
+            state,
+            (self.now_us, self.config.block_size),
+            credit,
+            byte_credit,
+        );
         self.record_action(if record.constraint.is_some() {
             crate::ReplayAction::ConstrainedSubmit(id)
         } else {

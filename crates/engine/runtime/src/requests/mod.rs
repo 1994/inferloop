@@ -230,7 +230,11 @@ impl RequestArena {
         self.hot.remaining[slot] = if self.hot.phase[slot] == ExecutionRole::Decode {
             1
         } else {
-            record.context.len().saturating_sub(record.prefill_done)
+            record
+                .prefix_stop
+                .filter(|stop| record.prefill_done < *stop)
+                .unwrap_or_else(|| record.context.len())
+                .saturating_sub(record.prefill_done)
         };
         Ok(())
     }

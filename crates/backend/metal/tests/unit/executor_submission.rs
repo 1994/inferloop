@@ -52,6 +52,7 @@ fn compile_fixture(backend: &MetalBackend) -> Result<ExecutionProgram> {
 fn plain_task(request: RequestId, state: StateId, tokens: Vec<u32>) -> ExecutionTask {
     ExecutionTask {
         plain_greedy: false,
+        publish_prefix: false,
         request,
         state,
         tokens: tokens.into(),

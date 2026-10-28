@@ -78,6 +78,7 @@ fn request(workload: Workload) -> CanonicalRequest {
         workload,
         qos: Qos::default(),
         sampling: Sampling::default(),
+        prefix_boundary: None,
         extensions: BTreeMap::new(),
     }
 }

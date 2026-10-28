@@ -83,6 +83,7 @@ pub fn run() -> Result<(), Box<dyn StdError>> {
         &program,
         &[ExecutionTask {
             plain_greedy: false,
+            publish_prefix: false,
             request: RequestId::ONE,
             state: states[0],
             tokens: prompt.clone().into(),
@@ -128,6 +129,7 @@ fn prefill_tasks(prompt: &[u32], states: [StateId; 2]) -> Result<Vec<ExecutionTa
     Ok(vec![
         ExecutionTask {
             plain_greedy: false,
+            publish_prefix: false,
             request: RequestId::ONE,
             state: states[0],
             tokens: prompt.to_vec().into(),
@@ -137,6 +139,7 @@ fn prefill_tasks(prompt: &[u32], states: [StateId; 2]) -> Result<Vec<ExecutionTa
         },
         ExecutionTask {
             plain_greedy: false,
+            publish_prefix: false,
             request: RequestId::new(2)?,
             state: states[1],
             tokens: ExecutionInput::Prefill {
@@ -173,6 +176,7 @@ fn generate(
                 program,
                 &[ExecutionTask {
                     plain_greedy: false,
+                    publish_prefix: false,
                     request: RequestId::new(index as u64 + 1)?,
                     state: states[index],
                     tokens: ExecutionInput::Decode {

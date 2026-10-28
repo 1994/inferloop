@@ -17,6 +17,7 @@ pub fn example(id: u64, workload: Workload) -> Result<CanonicalRequest> {
         workload,
         qos: Qos::default(),
         sampling: Sampling::default(),
+        prefix_boundary: None,
         extensions: BTreeMap::new(),
     })
 }

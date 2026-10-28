@@ -22,6 +22,7 @@ fn fixture() -> (Arc<StepPlan>, Vec<ExecutionTask>) {
     });
     let tasks = vec![ExecutionTask {
         plain_greedy: false,
+        publish_prefix: false,
         request: RequestId::ONE,
         state: StateId::ONE,
         tokens: vec![1, 2, 3].into(),

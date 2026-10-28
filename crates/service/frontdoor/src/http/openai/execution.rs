@@ -118,6 +118,7 @@ impl Encoding {
                 },
                 qos: infer_ir::Qos::default(),
                 sampling: self.sampling,
+                prefix_boundary: None,
                 extensions: BTreeMap::new(),
             },
             constraint,

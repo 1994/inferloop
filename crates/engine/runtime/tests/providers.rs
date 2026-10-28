@@ -84,6 +84,7 @@ fn registered_provider_runs_through_core_and_checkpoint_requires_same_registry()
         },
         qos: Qos::default(),
         sampling: Sampling::default(),
+        prefix_boundary: None,
         extensions: BTreeMap::new(),
     };
     engine.submit(request).unwrap();

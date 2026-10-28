@@ -42,12 +42,17 @@ struct ReplyLabels {
     tokens: Vec<u32>,
     /// The template's reply prompt; every rendered question must end with it.
     reply_prompt: Vec<u32>,
+    /// Tokens every question's prompt starts with: the system turn and the shared evidence. The
+    /// engine keeps a snapshot there so later questions prefill only their own text.
+    shared_prefix: Option<usize>,
 }
 
 /// One answered question and the prompt it read.
 struct Read {
     answer: Value,
     prompt_tokens: usize,
+    /// Prompt tokens restored from the shared prefix instead of prefilled.
+    cached_tokens: usize,
 }
 
 /// The template options under which a reply's first token is the answer.
@@ -65,7 +70,7 @@ impl ReplyLabels {
     /// # Errors
     /// Returns an unsupported error when the template's reply prompt does not end at a token
     /// boundary, or a label is not one distinct token at the start of the reply.
-    fn discover(assets: &TextAssets, count: usize) -> infer_core::Result<Self> {
+    fn discover(assets: &TextAssets, plan: &ReadPlan, count: usize) -> infer_core::Result<Self> {
         let probe = [ChatMessage::new("user", PROBE_TEXT)];
         let opening = assets.render_chat(
             &probe,
@@ -102,6 +107,7 @@ impl ReplyLabels {
         Ok(Self {
             tokens,
             reply_prompt,
+            shared_prefix: shared_prefix(assets, plan)?,
         })
     }
 
@@ -120,17 +126,7 @@ impl ReplyLabels {
             .questions
             .get(index)
             .ok_or_else(|| Error::invariant("decision question index out of range"))?;
-        let content = if plan.evidence.is_empty() {
-            question.text.clone()
-        } else {
-            format!("{}\n\n{}", plan.evidence, question.text)
-        };
-        let mut messages = Vec::with_capacity(2);
-        if let Some(system) = &plan.system {
-            messages.push(ChatMessage::new("system", system.as_str()));
-        }
-        messages.push(ChatMessage::new("user", content));
-        let tokens = assets.encode_chat(&messages, &reading())?;
+        let tokens = assets.encode_chat(&messages(plan, &question.text), &reading())?;
         if !tokens.ends_with(&self.reply_prompt) {
             return Err(Error::unsupported(
                 "this conversation ends the chat prompt differently, so the label tokens are unknown",
@@ -138,6 +134,38 @@ impl ReplyLabels {
         }
         Ok(tokens)
     }
+}
+
+/// The chat turns one question reads: the system turn, then the evidence and the question.
+fn messages(plan: &ReadPlan, question: &str) -> Vec<ChatMessage> {
+    let content = if plan.evidence.is_empty() {
+        question.to_owned()
+    } else {
+        format!("{}\n\n{question}", plan.evidence)
+    };
+    let mut messages = Vec::with_capacity(2);
+    if let Some(system) = &plan.system {
+        messages.push(ChatMessage::new("system", system.as_str()));
+    }
+    messages.push(ChatMessage::new("user", content));
+    messages
+}
+
+/// The token prefix every question shares, found from two prompts that differ only in their
+/// question text. Token equality is checked again when the engine reuses it, so this only
+/// decides where a snapshot is worth keeping.
+fn shared_prefix(assets: &TextAssets, plan: &ReadPlan) -> infer_core::Result<Option<usize>> {
+    if plan.questions.len() < 2 || (plan.evidence.is_empty() && plan.system.is_none()) {
+        return Ok(None);
+    }
+    let first = assets.encode_chat(&messages(plan, LABELS[0]), &reading())?;
+    let second = assets.encode_chat(&messages(plan, LABELS[1]), &reading())?;
+    let common = first
+        .iter()
+        .zip(&second)
+        .take_while(|(left, right)| left == right)
+        .count();
+    Ok((common > 0).then_some(common))
 }
 
 /// Answer every question of one request.
@@ -150,7 +178,7 @@ pub(super) async fn decide(
     headers: HeaderMap,
     request: DecisionRequest,
 ) -> ApiResult<Value> {
-    let plan = request.plan()?;
+    let plan = Arc::new(request.plan()?);
     tracing::debug!(
         target: "infer::openai",
         questions = plan.questions.len(),
@@ -176,15 +204,36 @@ pub(super) async fn decide(
         state
             .handle
             .cpu_pool()
-            .run(TEXT_STAGING_OVERHEAD_BYTES, move |context| {
-                context.check()?;
-                ReplyLabels::discover(&assets, options)
+            .run(probe_bytes(&plan)?, {
+                let plan = Arc::clone(&plan);
+                move |context| {
+                    context.check()?;
+                    ReplyLabels::discover(&assets, &plan, options)
+                }
             })
             .await?,
     );
-    let plan = Arc::new(plan);
     let trace = super::super::trace_parent(&headers);
-    let reads: Vec<Read> = stream::iter(0..plan.questions.len())
+    // The first question publishes the shared prefix; the rest start from it. Starting them
+    // together would prefill the evidence once per question before any snapshot exists.
+    let mut reads = Vec::with_capacity(plan.questions.len());
+    let rest = if labels.shared_prefix.is_some() {
+        reads.push(
+            read(
+                &state,
+                inspection.model,
+                Arc::clone(&plan),
+                Arc::clone(&labels),
+                0,
+                trace.clone(),
+            )
+            .await?,
+        );
+        1
+    } else {
+        0
+    };
+    let later: Vec<Read> = stream::iter(rest..plan.questions.len())
         .map(|index| {
             read(
                 &state,
@@ -198,18 +247,30 @@ pub(super) async fn decide(
         .buffered(window)
         .try_collect()
         .await?;
+    reads.extend(later);
     let input_tokens: usize = reads.iter().map(|read| read.prompt_tokens).sum();
+    let cached_tokens: usize = reads.iter().map(|read| read.cached_tokens).sum();
     Ok(json!({
         "model": inspection.model_name,
         "answers": reads.into_iter().map(|read| read.answer).collect::<Vec<_>>(),
         "usage": {
             "input_tokens": input_tokens,
-            "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+            "input_tokens_details": {"cached_tokens": cached_tokens, "cache_write_tokens": 0},
             "output_tokens": 0,
             "output_tokens_details": {"reasoning_tokens": 0},
             "total_tokens": input_tokens,
         },
     }))
+}
+
+/// CPU staging for probing labels and the shared prefix: two renders of the evidence.
+fn probe_bytes(plan: &ReadPlan) -> infer_core::Result<usize> {
+    plan.evidence
+        .len()
+        .checked_add(plan.system.as_ref().map_or(0, String::len))
+        .and_then(|bytes| bytes.checked_mul(2 * TEXT_STAGING_EXPANSION))
+        .and_then(|bytes| bytes.checked_add(TEXT_STAGING_OVERHEAD_BYTES))
+        .ok_or_else(|| Error::invalid("decision preparation size overflow"))
 }
 
 /// Submit one question and wait for its answer.
@@ -250,7 +311,8 @@ async fn read(
             let tokens = labels.encode(&assets, &shared, index)?;
             count.store(tokens.len(), Ordering::Relaxed);
             context.check()?;
-            Ok(decision_request(id, model, tokens, options))
+            let boundary = labels.shared_prefix.filter(|prefix| *prefix < tokens.len());
+            Ok(decision_request(id, model, (tokens, boundary), options))
         })
         .await?;
     while let Some(event) = receiver.recv().await {
@@ -270,6 +332,7 @@ async fn read(
                     read.label_mass.unwrap_or(1.0),
                 )?,
                 prompt_tokens: prompt_tokens.load(Ordering::Relaxed),
+                cached_tokens: result.measurement.cached_tokens,
             });
         }
     }
@@ -283,7 +346,7 @@ async fn read(
 fn decision_request(
     id: RequestId,
     model: ModelId,
-    tokens: Vec<u32>,
+    (tokens, prefix_boundary): (Vec<u32>, Option<usize>),
     options: Vec<u32>,
 ) -> CanonicalRequest {
     CanonicalRequest {
@@ -302,6 +365,7 @@ fn decision_request(
         }),
         qos: infer_ir::Qos::default(),
         sampling: infer_ir::Sampling::default(),
+        prefix_boundary,
         extensions: BTreeMap::new(),
     }
 }

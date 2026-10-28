@@ -52,6 +52,7 @@ fn request(id: u64, input: usize) -> CanonicalRequest {
         workload: Workload::Generate { max_new_tokens: 8 },
         qos: Qos::default(),
         sampling: Sampling::default(),
+        prefix_boundary: None,
         extensions: BTreeMap::new(),
     }
 }
@@ -841,4 +842,41 @@ fn cold_backend_concurrency_reaches_engine_before_resources_are_sized() {
     finish(&mut e, 0);
     assert_eq!(e.inspect().active_requests, 0);
     e.check_invariants().unwrap();
+}
+
+#[test]
+fn a_prefix_boundary_ends_one_prompt_chunk_on_a_page_and_asks_to_keep_it() {
+    let backend = backend();
+    let published = backend.published_prefixes();
+    let model = support::model(ModelId::ONE);
+    let mut e = Engine::new(
+        backend,
+        model,
+        PrecisionPlan::f32(),
+        &registry(),
+        RuntimeConfig::default(),
+    )
+    .unwrap();
+    let page = e.config().block_size;
+    for (boundary, valid) in [(0, false), (100, false), (2 * page + 3, true)] {
+        let mut shared = request(1, 100);
+        shared.prefix_boundary = Some(boundary);
+        assert_eq!(e.submit(shared).is_ok(), valid, "boundary {boundary}");
+    }
+    finish(&mut e, 1);
+    // The boundary rounds down to whole pages; the chunk ends there and nowhere else asks.
+    assert_eq!(*published.lock().unwrap(), vec![2 * page]);
+    e.submit(request(2, 100)).unwrap();
+    finish(&mut e, 2000);
+    assert_eq!(published.lock().unwrap().len(), 1);
+    let output = |id| {
+        e.request(RequestId::new(id).unwrap())
+            .unwrap()
+            .completed
+            .as_ref()
+            .and_then(|done| done.output.clone())
+    };
+    // Splitting the prompt at the boundary does not change what the request produces.
+    assert!(output(1).is_some());
+    assert_eq!(output(1), output(2));
 }

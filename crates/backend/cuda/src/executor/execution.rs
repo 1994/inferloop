@@ -1,5 +1,6 @@
 use super::{CachedMedia, CudaExecutor, ModelOutput, Sequence, SlotLease, Speculation, prefix};
 use crate::constants::CB_SLOT_TOKENS;
+use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::MAX_POOL_SLOTS;
 use crate::constants::MIB;
 use crate::constants::MTP_KV_OFFSET;
@@ -20,20 +21,13 @@ use std::ops::Range;
 /// Bound capture/replan work while adapting tensor quotes to observed driver storage.
 const POOL_CAPTURE_ATTEMPTS: usize = 3;
 
-/// Snapshot the KV rows a sequence has covered, when they form a reusable prompt prefix.
+/// The prompt rows a just-finished chunk leaves as a reusable prefix, if any.
 ///
-/// Returns `None` unless the sequence is a logits-readout generation that just consumed prefill
-/// tokens at a cacheable granularity. Capture head-major KV rows and complete recurrent
-/// and draft state so restoration resumes the same inference trajectory.
-async fn cacheable_prefix(
-    device: &CudaDevice,
-    loaded: &LoadedModel,
-    state: &mut Sequence,
-    task: &ExecutionTask,
-) -> Option<prefix::CachedPrefix> {
+/// Only a logits-readout generation that consumed prefill tokens qualifies, at the regular
+/// cadence or at the request's prefix boundary, and always on whole KV blocks.
+fn reusable_prefix(state: &Sequence, task: &ExecutionTask) -> Option<usize> {
     if task.media.is_some()
         || state.poisoned
-        || state.home.is_some()
         || state.draft.is_some()
         || state.readout != OutputReadout::Logits
         || !matches!(
@@ -44,12 +38,21 @@ async fn cacheable_prefix(
         return None;
     }
     let covered = state.history.len();
-    if covered == 0
-        || covered > state.capacity
-        || !covered.is_multiple_of(prefix::PREFIX_GRANULARITY)
-    {
-        return None;
-    }
+    (covered > 0
+        && covered <= state.capacity
+        && covered.is_multiple_of(KV_BLOCK_TOKENS)
+        && (task.publish_prefix || covered.is_multiple_of(prefix::PREFIX_GRANULARITY)))
+    .then_some(covered)
+}
+
+/// Snapshot a private sequence's covered prefix: head-major KV rows and complete recurrent and
+/// draft state, so restoration resumes the same inference trajectory.
+async fn cacheable_prefix(
+    device: &CudaDevice,
+    loaded: &LoadedModel,
+    state: &mut Sequence,
+    covered: usize,
+) -> Option<prefix::CachedPrefix> {
     let target = super::prefix_state::ProgramSnapshot::capture_async(
         device,
         &state.program,
@@ -73,14 +76,60 @@ async fn cacheable_prefix(
     } else {
         None
     };
+    Some(cached(state, target, draft))
+}
+
+/// Snapshot a slot-resident sequence's covered prefix by exporting it from its target and draft
+/// slots; the copies are settled before the next chunk advances that state.
+fn slot_prefix(
+    device: &CudaDevice,
+    loaded: &LoadedModel,
+    (target_pool, draft_pool): (Option<&SlotPool>, Option<&SlotPool>),
+    state: &Sequence,
+    (slot, covered): (usize, usize),
+) -> Option<prefix::CachedPrefix> {
+    let (states, fp8) = target_pool?.export(slot, covered, device).ok()?;
+    let target = super::prefix_state::ProgramSnapshot::from_parts(
+        states,
+        fp8,
+        loaded.graph(),
+        state.program.position(),
+    )
+    .ok()?;
+    let draft = match &state.speculation {
+        Some(spec) => {
+            let rows = covered.saturating_sub(MTP_KV_OFFSET);
+            let (states, fp8) = draft_pool?.export(slot, rows, device).ok()?;
+            Some(super::prefix_state::DraftSnapshot {
+                program: super::prefix_state::ProgramSnapshot::from_parts(
+                    states,
+                    fp8,
+                    loaded.draft_graph()?,
+                    spec.program.position(),
+                )
+                .ok()?,
+                hidden: spec.last_hidden.clone(),
+            })
+        }
+        None => None,
+    };
+    device.drain().ok()?;
+    Some(cached(state, target, draft))
+}
+
+fn cached(
+    state: &Sequence,
+    target: super::prefix_state::ProgramSnapshot,
+    draft: Option<super::prefix_state::DraftSnapshot>,
+) -> prefix::CachedPrefix {
     let bytes = target
         .bytes
         .saturating_add(draft.as_ref().map_or(0, |d| d.program.bytes));
-    Some(prefix::CachedPrefix {
+    prefix::CachedPrefix {
         tokens: state.history.clone(),
         value: prefix::Snapshot { target, draft },
         bytes,
-    })
+    }
 }
 
 /// All storage needed before publishing a load-time pooled serving geometry.
@@ -815,9 +864,20 @@ impl CudaExecutor {
             Some(worker) if wide => run_on_worker(state, worker, task, &self.loaded, draft).await?,
             _ => state.run(task, &self.loaded, draft).await?,
         };
-        if let Some(snapshot) =
-            cacheable_prefix(self.loaded.device(), &self.loaded, state, task).await
-        {
+        let snapshot = match (reusable_prefix(state, task), state.home) {
+            (Some(covered), Some(slot)) => slot_prefix(
+                self.loaded.device(),
+                &self.loaded,
+                (self.slots.as_ref(), self.draft_slots.as_ref()),
+                state,
+                (slot, covered),
+            ),
+            (Some(covered), None) => {
+                cacheable_prefix(self.loaded.device(), &self.loaded, state, covered).await
+            }
+            (None, _) => None,
+        };
+        if let Some(snapshot) = snapshot {
             snapshots.push(snapshot);
         }
         outputs[index] = Some(TaskOutput {

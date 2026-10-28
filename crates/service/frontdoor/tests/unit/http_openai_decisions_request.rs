@@ -1,7 +1,8 @@
-use super::answer;
 use super::request::{Answering, ChoiceValue, DecisionRequest, ReadPlan};
+use super::{answer, shared_prefix};
 use infer_core::ErrorCode;
 use serde_json::{Value, json};
+use std::path::Path;
 
 fn parse(body: Value) -> DecisionRequest {
     serde_json::from_value(body).unwrap()
@@ -222,4 +223,22 @@ fn answers_follow_the_protocol_shapes() {
 
     let mismatch = answer(None, &Answering::Predicate, &[1.0], 1.0).unwrap_err();
     assert_eq!(mismatch.code, ErrorCode::Invariant);
+}
+
+#[test]
+fn the_shared_prefix_covers_the_evidence_only_when_questions_can_share_it() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples/qwen-hybrid-tiny");
+    let assets = infer_models::TextAssets::open(root, 128).unwrap();
+    let body = |input: &str, count: usize| json!({"model": "m", "input": input, "questions": vec![predicate(); count]});
+    let shared = shared_prefix(&assets, &plan(body("hello world", 2)).unwrap()).unwrap();
+    // "user hello world" at least: the evidence every question starts from.
+    assert!(shared.is_some_and(|tokens| tokens >= 3), "{shared:?}");
+    assert_eq!(
+        shared_prefix(&assets, &plan(body("hello world", 1)).unwrap()).unwrap(),
+        None
+    );
+    assert_eq!(
+        shared_prefix(&assets, &plan(body("", 2)).unwrap()).unwrap(),
+        None
+    );
 }

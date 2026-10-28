@@ -194,6 +194,68 @@ fn same_storage<T: DType>(left: &Tensor<T>, right: &Tensor<T>) -> bool {
     left.device_pointer().cu_deviceptr() == right.device_pointer().cu_deviceptr()
 }
 
+/// A tensor's dimensions as host sizes.
+fn dims<T: DType>(tensor: &Tensor<T>) -> Result<Vec<usize>> {
+    tensor
+        .shape()
+        .iter()
+        .map(|&dim| usize::try_from(dim).map_err(device_error))
+        .collect()
+}
+
+/// Gather the first `rows` positions of a head-major `[kv_heads, rows, head_dim]` KV state into
+/// a new contiguous tensor: block by block through `blocks` when the state is paged, otherwise
+/// one run per head.
+fn gather_kv<T: DType>(
+    src: &Tensor<T>,
+    rows: usize,
+    blocks: Option<&[i32]>,
+    device: &CudaDevice,
+) -> Result<Tensor<T>> {
+    let shape = dims(src)?;
+    let [heads, physical, dim] = shape[..] else {
+        return Err(Error::invariant("slot export KV layout"));
+    };
+    if blocks.is_none() && physical < rows
+        || blocks.is_some_and(|blocks| rows.div_ceil(KV_BLOCK_TOKENS) > blocks.len())
+    {
+        return Err(Error::invariant("slot export beyond the slot's KV"));
+    }
+    let mut dst = api::zeros::<T>(&[heads, rows, dim])
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    for head in 0..heads {
+        match blocks {
+            None => device.copy_d2d_at(
+                &mut dst,
+                src,
+                head * rows * dim,
+                head * physical * dim,
+                rows * dim,
+            )?,
+            Some(blocks) => {
+                for (index, &block) in blocks
+                    .iter()
+                    .enumerate()
+                    .take(rows.div_ceil(KV_BLOCK_TOKENS))
+                {
+                    let start = index * KV_BLOCK_TOKENS;
+                    let count = KV_BLOCK_TOKENS.min(rows - start);
+                    let block = usize::try_from(block).map_err(device_error)?;
+                    device.copy_d2d_at(
+                        &mut dst,
+                        src,
+                        (head * rows + start) * dim,
+                        (head * physical + block * KV_BLOCK_TOKENS) * dim,
+                        count * dim,
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(dst)
+}
+
 /// A whole-tensor alias with the source's shape.
 /// # Safety
 /// The source must outlive the alias; see [`SlotPool::slot_views`].
@@ -952,6 +1014,86 @@ impl SlotPool {
             (None, None) => return Err(Error::invariant("slot pool graph")),
         }
         Ok(())
+    }
+
+    /// Copy one slot's first `rows` positions out in a private program's layout: KV as
+    /// `[kv_heads, rows, head_dim]` gathered through the slot's blocks, conv/delta whole.
+    ///
+    /// The inverse of [`Self::bind`], so a slot-resident sequence's prompt prefix can be kept
+    /// as a snapshot and later bound into any slot or restored into a private program.
+    /// # Errors
+    /// Rejects unknown slots, prefixes beyond the slot's blocks, layout mismatches and driver
+    /// allocation or copy failures.
+    pub fn export(
+        &self,
+        slot: usize,
+        rows: usize,
+        device: &CudaDevice,
+    ) -> Result<(States, Fp8Caches)> {
+        if slot >= self.width() || rows == 0 || rows > self.capacity {
+            return Err(Error::invalid("slot export index or prefix length"));
+        }
+        let states = self
+            .states
+            .get(slot)
+            .ok_or_else(|| Error::invariant("slot states"))?;
+        let caches = self
+            .fp8
+            .get(slot)
+            .ok_or_else(|| Error::invariant("slot fp8 caches"))?;
+        let blocks = match &self.paging {
+            Some(paging) => Some(
+                paging
+                    .owned
+                    .get(slot)
+                    .ok_or_else(|| Error::invariant("slot blocks"))?
+                    .as_slice(),
+            ),
+            None => None,
+        };
+        let mut out = States::new();
+        let mut out_fp8 = Fp8Caches::new();
+        for (id, copy) in &self.plan {
+            match *copy {
+                SlotCopy::Kv => {
+                    let tensors = states
+                        .get(id)
+                        .ok_or_else(|| Error::invariant("slot export state"))?;
+                    let copies = tensors
+                        .iter()
+                        .map(|tensor| gather_kv(tensor, rows, None, device))
+                        .collect::<Result<_>>()?;
+                    out.insert(*id, copies);
+                }
+                SlotCopy::KvFp8 => {
+                    let (keys, values) = caches
+                        .get(id)
+                        .ok_or_else(|| Error::invariant("slot export fp8 cache"))?;
+                    out_fp8.insert(
+                        *id,
+                        (
+                            gather_kv(keys, rows, blocks, device)?,
+                            gather_kv(values, rows, blocks, device)?,
+                        ),
+                    );
+                }
+                SlotCopy::Whole => {
+                    let tensors = states
+                        .get(id)
+                        .ok_or_else(|| Error::invariant("slot export state"))?;
+                    let mut copies = Vec::with_capacity(tensors.len());
+                    for tensor in tensors {
+                        let mut copy = api::zeros::<f32>(&dims(tensor)?)
+                            .sync_on(&device.stream)
+                            .map_err(device_error)?;
+                        device.copy_d2d(&mut copy, tensor, tensor.size())?;
+                        copies.push(copy);
+                    }
+                    out.insert(*id, copies);
+                }
+            }
+        }
+        Ok((out, out_fp8))
     }
 
     /// Replay one decode step for the active lanes; see [`SlotDecodeGraph::run_lanes`].

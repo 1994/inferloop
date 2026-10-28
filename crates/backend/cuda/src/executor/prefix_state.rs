@@ -3,7 +3,7 @@ use crate::constants::KV_CACHE_RANK;
 use crate::device::asynchronous::block_on;
 use crate::{
     device::{CudaDevice, device_error},
-    resident::DeviceProgram,
+    resident::{DeviceProgram, slot_batch::SlotPool},
 };
 use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
@@ -47,20 +47,7 @@ impl ProgramSnapshot {
         let live_fp8 = program.fp8_states();
         let position = program.position();
         async move {
-            let kv: BTreeSet<_> = graph
-                .tensors
-                .iter()
-                .filter_map(|t| {
-                    matches!(
-                        t.storage,
-                        TensorStorage::State {
-                            kind: StateKind::AttentionKv,
-                            ..
-                        }
-                    )
-                    .then_some(t.id)
-                })
-                .collect();
+            let kv = kv_states(graph);
             let mut states = BTreeMap::new();
             let mut bytes = 0_u64;
             for (id, tensors) in live_states {
@@ -139,6 +126,49 @@ impl ProgramSnapshot {
         }
     }
 
+    /// A snapshot of state already copied out in a private program's layout, such as a slot
+    /// export; `graph` names which states are KV.
+    pub(super) fn from_parts(
+        states: BTreeMap<TensorId, Vec<Tensor<f32>>>,
+        fp8: BTreeMap<TensorId, (Tensor<f8e4m3fn>, Tensor<f8e4m3fn>)>,
+        graph: &DataflowGraph,
+        position: usize,
+    ) -> Result<Self> {
+        let kv = kv_states(graph);
+        let float = states.values().flatten().try_fold(0_u64, |sum, tensor| {
+            sum.checked_add((tensor.size() * size_of::<f32>()) as u64)
+        });
+        let packed = fp8.values().try_fold(0_u64, |sum, (keys, values)| {
+            sum.checked_add((keys.size() + values.size()) as u64)
+        });
+        let bytes = float
+            .zip(packed)
+            .and_then(|(float, packed)| float.checked_add(packed))
+            .ok_or_else(|| Error::invalid("prefix byte overflow"))?;
+        Ok(Self {
+            states,
+            kv,
+            fp8,
+            position,
+            bytes,
+        })
+    }
+
+    /// Bind the snapshot into a slot-resident program's slot: the slot pool scatters KV into
+    /// the slot's blocks and copies recurrent state, and the program resumes after the prefix.
+    pub(super) fn bind_slot(
+        &self,
+        device: &CudaDevice,
+        pool: &mut SlotPool,
+        (slot, program): (usize, &mut DeviceProgram),
+        covered: usize,
+    ) -> Result<()> {
+        pool.bind(slot, &self.states, &self.fp8, covered, device)?;
+        device.drain()?;
+        program.set_position(self.position);
+        Ok(())
+    }
+
     pub(super) fn restore(
         &self,
         device: &CudaDevice,
@@ -184,6 +214,24 @@ impl ProgramSnapshot {
         program.set_position(self.position);
         Ok(())
     }
+}
+
+/// The graph's attention KV states, which snapshots cover only up to the prefix.
+fn kv_states(graph: &DataflowGraph) -> BTreeSet<TensorId> {
+    graph
+        .tensors
+        .iter()
+        .filter_map(|t| {
+            matches!(
+                t.storage,
+                TensorStorage::State {
+                    kind: StateKind::AttentionKv,
+                    ..
+                }
+            )
+            .then_some(t.id)
+        })
+        .collect()
 }
 
 fn dimensions<T: DType>(tensor: &Tensor<T>) -> Result<Vec<usize>> {
