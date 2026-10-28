@@ -1,5 +1,5 @@
 //! Model extension contract.
-use super::ProviderMetadata;
+use super::{GenerationPolicy, ProviderMetadata};
 use infer_core::{ModelId, Result};
 use infer_ir::{CapabilityRequirements, DType, Modality, ModelIr, PrecisionPlan};
 use serde::{Deserialize, Serialize};
@@ -162,7 +162,7 @@ pub enum HiddenActivation {
 ///
 /// Adding a model means implementing this trait and registering the implementation with
 /// `infer_models::ModelRegistry`; no core dispatch changes. Everything the family customizes is
-/// defined by [`ModelProvider::import`], [`ModelProvider::graph`],
+/// defined by [`ModelProvider::import`], [`ModelProvider::generation_policy`], [`ModelProvider::graph`],
 /// [`ModelProvider::draft_graph`] and the weight-naming hooks below, so a new family — a
 /// decoder, a hybrid, or a full omni model with several modalities — is one implementation in one
 /// place. Providers are shared across loading threads.
@@ -172,6 +172,11 @@ pub trait ModelProvider: Send + Sync {
     /// Hugging Face `architectures` or `model_type` values this provider claims. A configuration
     /// is routed to the provider that claims one of its hints; the first registered match wins.
     fn architectures(&self) -> &'static [&'static str];
+    /// Provide model-specific defaults from the bounded model card, if present.
+    /// Resolution applies package defaults, then mode presets, then request overrides.
+    fn generation_policy(&self, _model_card: Option<&str>) -> GenerationPolicy {
+        GenerationPolicy::default()
+    }
     /// Import one configuration into the canonical family description.
     ///
     /// # Errors
