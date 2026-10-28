@@ -36,11 +36,11 @@ fn a_plain_chat_request_declares_no_tools() {
 fn chat_preserves_image_processor_kwargs_for_preparation() {
     let request = chat(
         &json!([{"role":"user", "content":[{"type":"image_url", "image_url":{"url":"data:image/png;base64,AA=="}}]}]),
-        &json!({"mm_processor_kwargs":{"max_pixels":262144}}),
+        &json!({"mm_processor_kwargs":{"max_pixels":262_144}}),
     );
     assert_eq!(
         request.mm_processor_kwargs.as_ref().unwrap()["max_pixels"],
-        262144
+        262_144
     );
     assert_eq!(request.chat_messages().unwrap().1.len(), 1);
 }

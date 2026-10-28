@@ -27,7 +27,7 @@ fn image_resize_options_merge_and_preserve_shared_defaults() {
         temporal_patch_size: 2,
         merge_size: 2,
         min_pixels: 1024,
-        max_pixels: 16777216,
+        max_pixels: 16_777_216,
         mean: [0.5; 3],
         std: [0.5; 3],
         rescale: 1.0 / 255.0,
@@ -39,14 +39,14 @@ fn image_resize_options_merge_and_preserve_shared_defaults() {
         .unwrap();
     assert_eq!(
         (effective.min_pixels, effective.max_pixels),
-        (65536, 262144)
+        (65536, 262_144)
     );
     assert_eq!(effective.smart_resize(1024, 1024).unwrap(), (512, 512));
     assert_eq!(
         (processor.min_pixels, processor.max_pixels),
-        (1024, 16777216)
+        (1024, 16_777_216)
     );
-    assert_eq!(defaults.processor(&processor).unwrap().max_pixels, 1048576);
+    assert_eq!(defaults.processor(&processor).unwrap().max_pixels, 1_048_576);
     let mut zero_minimum = processor.clone();
     zero_minimum.min_pixels = 0;
     assert_eq!(
@@ -101,8 +101,8 @@ fn image_resize_options_reject_ambiguous_unsupported_and_unbounded_inputs() {
         patch_size: 16,
         temporal_patch_size: 2,
         merge_size: 2,
-        min_pixels: 16777216,
-        max_pixels: 16777216,
+        min_pixels: 16_777_216,
+        max_pixels: 16_777_216,
         mean: [0.5; 3],
         std: [0.5; 3],
         rescale: 1.0 / 255.0,
