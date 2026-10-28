@@ -12,7 +12,8 @@ fn mode_defaults_and_explicit_zero_overrides_are_distinct() -> Result<()> {
             eos_tokens: vec![10, 11],
             ..Sampling::default()
         },
-        policy: QwenProvider.generation_policy(Some("---\nbase_model:\n- Qwen/Qwen3.8-27B\n---")),
+        policy: QwenProvider
+            .generation_policy(b"{}", Some("---\nbase_model:\n- Qwen/Qwen3.8-27B\n---"))?,
         sources: BTreeMap::new(),
     };
     let thinking = defaults.resolve(&SamplingOverrides::default())?;
@@ -55,7 +56,8 @@ fn every_resolved_parameter_records_the_layer_that_set_it() -> Result<()> {
             top_p: 0.95,
             ..Sampling::default()
         },
-        policy: QwenProvider.generation_policy(Some("---\nbase_model:\n- Qwen/Qwen3.8-27B\n---")),
+        policy: QwenProvider
+            .generation_policy(b"{}", Some("---\nbase_model:\n- Qwen/Qwen3.8-27B\n---"))?,
         sources: BTreeMap::from([
             ("temperature".to_string(), "package default".to_string()),
             ("top_p".to_string(), "package default".to_string()),
@@ -92,7 +94,7 @@ fn every_resolved_parameter_records_the_layer_that_set_it() -> Result<()> {
 fn qwen_generation_policy_is_shared_across_family_sizes() {
     for name in ["0.6B", "8B", "9B", "30B-A3B"] {
         let card = format!("---\nbase_model:\n- Qwen/Qwen3-{name}-Base\n---\n");
-        let policy = QwenProvider.generation_policy(Some(&card));
+        let policy = QwenProvider.generation_policy(b"{}", Some(&card)).unwrap();
         assert!(policy.enable_thinking, "{name}");
         assert_eq!(policy.non_thinking.unwrap().temperature, Some(0.7));
     }
@@ -101,7 +103,7 @@ fn qwen_generation_policy_is_shared_across_family_sizes() {
             format!("---\nbase_model:\n- Qwen/Qwen3.8-{name}\n---\n"),
             format!("---\nlibrary_name: transformers\n---\n# Qwen3.8-{name}\n"),
         ] {
-            let policy = QwenProvider.generation_policy(Some(&card));
+            let policy = QwenProvider.generation_policy(b"{}", Some(&card)).unwrap();
             assert!(policy.enable_thinking, "{name}");
             assert_eq!(policy.non_thinking.unwrap().presence_penalty, Some(1.5));
         }
@@ -109,7 +111,10 @@ fn qwen_generation_policy_is_shared_across_family_sizes() {
     for name in ["Qwen3-VL-2B", "Qwen3-4B-Instruct-2507", "Qwen3-8B-Coder"] {
         let card = format!("---\nbase_model:\n- Qwen/{name}-Base\n---\n");
         assert!(
-            !QwenProvider.generation_policy(Some(&card)).enable_thinking,
+            !QwenProvider
+                .generation_policy(b"{}", Some(&card))
+                .unwrap()
+                .enable_thinking,
             "{name}"
         );
     }

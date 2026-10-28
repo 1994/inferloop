@@ -218,8 +218,18 @@ fn text_assets_use_the_selected_provider_generation_policy() {
         fn import(&self, _id: ModelId, _config: &[u8]) -> Result<ImportedModel> {
             Err(Error::unsupported("not needed for this test"))
         }
-        fn generation_policy(&self, _card: Option<&str>) -> GenerationPolicy {
-            GenerationPolicy {
+        fn generation_policy(
+            &self,
+            config: &[u8],
+            _card: Option<&str>,
+        ) -> Result<GenerationPolicy> {
+            if !config
+                .windows(b"sampling-stub".len())
+                .any(|part| part == b"sampling-stub")
+            {
+                return Err(Error::invalid("wrong configuration"));
+            }
+            Ok(GenerationPolicy {
                 enable_thinking: true,
                 non_thinking: Some(GenerationPreset {
                     temperature: Some(0.4),
@@ -229,7 +239,7 @@ fn text_assets_use_the_selected_provider_generation_policy() {
                     ..GenerationPreset::default()
                 }),
                 ..GenerationPolicy::default()
-            }
+            })
         }
     }
     let root = temp_dir().join(format!("infer-provider-sampling-{}", id()));

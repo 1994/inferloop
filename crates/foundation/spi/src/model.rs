@@ -172,10 +172,16 @@ pub trait ModelProvider: Send + Sync {
     /// Hugging Face `architectures` or `model_type` values this provider claims. A configuration
     /// is routed to the provider that claims one of its hints; the first registered match wins.
     fn architectures(&self) -> &'static [&'static str];
-    /// Provide model-specific defaults from the bounded model card, if present.
+    /// Provide family defaults from the model configuration and optional bounded model card.
     /// Resolution applies package defaults, then mode presets, then request overrides.
-    fn generation_policy(&self, _model_card: Option<&str>) -> GenerationPolicy {
-        GenerationPolicy::default()
+    /// # Errors
+    /// Rejects invalid model metadata needed to select a generation policy.
+    fn generation_policy(
+        &self,
+        _config: &[u8],
+        _model_card: Option<&str>,
+    ) -> Result<GenerationPolicy> {
+        Ok(GenerationPolicy::default())
     }
     /// Import one configuration into the canonical family description.
     ///
