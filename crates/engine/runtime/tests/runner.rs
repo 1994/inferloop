@@ -315,6 +315,103 @@ fn resource_timeout_retains_ownership_until_ack_and_later_requests_progress() ->
     Ok(())
 }
 #[test]
+fn a_full_control_lane_defers_reservations_instead_of_rejecting_them() -> Result<()> {
+    let mut fixture = Fixture::new(true)?;
+    let mut quoted = Vec::new();
+    for id in 1..=8 {
+        let prepared = fixture.engine.request_preparer()?.prepare(request(id)?)?;
+        let mut quote = fixture.engine.admission_quote(&prepared)?;
+        let limit = Instant::now() + Duration::from_secs(3);
+        let bytes = loop {
+            if let Some(ResourceReply::ReservationBytes(bytes)) = quote.poll()? {
+                break bytes;
+            }
+            deadline(limit)?;
+        };
+        quoted.push((prepared, bytes));
+    }
+    let mut quoted = quoted.into_iter();
+    let (first, bytes) = quoted
+        .next()
+        .ok_or_else(|| Error::invariant("first request"))?;
+    fixture
+        .engine
+        .submit_quoted_with_trace(first, bytes, None)?;
+    // The owner now holds the first reservation, so later commands fill its bounded lane.
+    fixture
+        .entered
+        .recv_timeout(Duration::from_secs(3))
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    for (prepared, bytes) in quoted {
+        fixture
+            .engine
+            .submit_quoted_with_trace(prepared, bytes, None)?;
+    }
+    fixture
+        .release
+        .send(())
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    fixture.drain()?;
+    for id in 1..=8 {
+        assert_eq!(
+            fixture
+                .engine
+                .request(infer_core::RequestId::new(id)?)?
+                .completed
+                .as_ref()
+                .map(|done| &done.reason),
+            Some(&FinishReason::Length),
+            "request {id}"
+        );
+    }
+    Ok(())
+}
+#[test]
+fn a_full_control_lane_reports_quote_backpressure_until_the_owner_drains() -> Result<()> {
+    let mut fixture = Fixture::new(true)?;
+    fixture.admit(1)?;
+    fixture
+        .entered
+        .recv_timeout(Duration::from_secs(3))
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    // The owner holds the first reservation; quotes queue behind it until the lane is full.
+    let mut issued = Vec::new();
+    let mut deferred = None;
+    for id in 2..=16 {
+        let prepared = fixture.engine.request_preparer()?.prepare(request(id)?)?;
+        if let Some(ticket) = fixture.engine.try_admission_quote(&prepared)? {
+            issued.push(ticket);
+        } else {
+            deferred = Some(prepared);
+            break;
+        }
+    }
+    let prepared = deferred.ok_or_else(|| Error::invariant("the lane never filled"))?;
+    assert_eq!(
+        fixture
+            .engine
+            .admission_quote(&prepared)
+            .err()
+            .map(|e| e.code),
+        Some(infer_core::ErrorCode::Capacity)
+    );
+    fixture
+        .release
+        .send(())
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    drop(issued);
+    fixture.drain()?;
+    let mut ticket = fixture
+        .engine
+        .try_admission_quote(&prepared)?
+        .ok_or_else(|| Error::invariant("a drained lane still refused the quote"))?;
+    let limit = Instant::now() + Duration::from_secs(3);
+    while !matches!(ticket.poll()?, Some(ResourceReply::ReservationBytes(_))) {
+        deadline(limit)?;
+    }
+    Ok(())
+}
+#[test]
 fn reservation_cancel_is_idempotent_and_waits_for_real_ack() -> Result<()> {
     let mut fixture = Fixture::new(true)?;
     fixture.admit(1)?;
