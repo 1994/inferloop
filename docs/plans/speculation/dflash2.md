@@ -239,18 +239,21 @@ D1 的资源验收要求报价覆盖"**权重、target/draft 状态、feature �
 | target 验证 | 复用 pooled verify，宽度 = block（8）。无快照的 GDN 验证/提交从固定 3 lane 推广到任意 lane 数；另外按 1、2、4…slot 捕获窄图，低 slot 忙时只重放这些 lane（slot 分配改为取最小空闲号） |
 | 退化 | 只做 greedy；串行 decode、前缀命中（不复用 prefix 缓存）或 ring 不足时该序列不提议，照常解码 |
 
-**测量（RTX 5090，Qwen3.8-27B-NVFP4 target，GSM8K 16 题，greedy，max_tokens 512，同机交替运行）**
+**测量（RTX 5090，Qwen3.8-27B-NVFP4 target，GSM8K 16 题，greedy，max_tokens 512，同机交替运行；DFlash2 行为 `727e25f` 之后的构建）**
 
 | 配置 | C1 tok/s | C4 | C8 | 接受长度 |
 |---|---|---|---|---|
 | native 无推测 | 55 | – | – | – |
 | native MTP2 | 101 | 232 | – | – |
-| native DFlash2 FP8（本 PR） | 203 | 498 | 596 | 4.83 |
+| native DFlash2 FP8（本 PR，默认 canonical attention） | 212 | 447 | 521 | – |
+| native DFlash2 FP8 + `--cuda-attention-profile bf16` | 205 | 503 | 608 | 4.83 |
 | native DFlash2 BF16 草稿 | 197 | 496 | 543 | 4.76 |
 | vLLM 0.31 DFlash2 块 FP8 草稿 | 47 | 90 | 100 | 1.00（草稿全被拒绝，随后 EngineCore 崩溃） |
 | vLLM 0.31 DFlash2 BF16 草稿 | 252 | 无法运行 | 无法运行 | ≈5.2 |
 
 vLLM 的 BF16 配置只能以 `--max-model-len 896 --max-num-seqs 1` 起服务（更长上下文 KV 不够）；native 同一张卡以 4096 上下文、8 并发运行。compressed-tensors FP8 草稿在 vLLM 0.31 上加载失败，源码版 vLLM 的环境缺编译扩展，无法对照。
+
+**精度（GSM8K 512 题，greedy，max_tokens 2048，8 并发）**：无推测 canonical 476，MTP2 474，DFlash2 FP8 canonical 474，DFlash2 FP8 BF16 attention 441。BF16 attention profile 在 DFlash2 下没有通过精度不劣化门禁，所以 `--draft-model` 默认保持 canonical attention，只有显式 `--cuda-attention-profile bf16` 才启用（C4/C8 吞吐更高）。
 
 C1 每步约 22.2 ms：verify 17.9 ms（与普通 decode 一步相当，主要是 target 自身 NVFP4/FP8 GEMM），草稿 3.1 ms。native 的 FP8 与 BF16 草稿接受长度相同，FP8 量化没有损失接受率；与 vLLM 的差距来自 target 数值不同导致的 greedy 轨迹差异与 verify GEMM 效率，后者是全引擎的普通 decode 问题。
 

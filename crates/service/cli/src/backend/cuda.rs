@@ -362,7 +362,10 @@ fn preflight(
             ),
         ));
     }
-    let fast_supported = native_fp4
+    // The automatic BF16 attention profile is admitted only with its MTP depth: under a DFlash2
+    // draft it measured 441/512 on GSM8K against 474 for canonical attention.
+    let fast_supported = selection.draft_model.is_none()
+        && native_fp4
         && package.kv_cache_dtype == Some(infer_models::TensorDtype::F8E4m3)
         && super::speculation::resolve(
             super::SpeculativeTokens::Auto,
