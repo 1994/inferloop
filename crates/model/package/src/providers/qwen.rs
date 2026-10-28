@@ -7,8 +7,8 @@ use infer_ir::{
 };
 use infer_model_recipes::decoder::lower;
 use infer_spi::{
-    DraftHead, FusionPlan, GenerationPolicy, HiddenActivation, ImportedModel, ModalityEncoder, ModalityPlan, ModelProvider, PrecisionPolicy, ProviderMetadata, SPI_VERSION, SpeculationPlan,
-(refactor: route generation presets through model providers)
+    DraftHead, FusionPlan, GenerationPolicy, HiddenActivation, ImportedModel, ModalityEncoder,
+    ModalityPlan, ModelProvider, PrecisionPolicy, ProviderMetadata, SPI_VERSION,
 };
 use serde::{Deserialize, Serialize};
 

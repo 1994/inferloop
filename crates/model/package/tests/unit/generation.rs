@@ -160,3 +160,13 @@ fn qwen_base_lineage_alone_does_not_imply_hybrid_chat() -> Result<()> {
     assert!(policy.non_thinking.is_none());
     Ok(())
 }
+
+#[test]
+fn qwen_quantized_card_accepts_scalar_base_model() -> Result<()> {
+    for name in ["Qwen3.8-27B", "Qwen3-8B"] {
+        let card = format!("---\nbase_model: Qwen/{name}\n---\n# Quantized model\n");
+        let policy = QwenProvider.generation_policy(b"{}", Some(&card))?;
+        assert!(policy.enable_thinking, "{name}");
+    }
+    Ok(())
+}
