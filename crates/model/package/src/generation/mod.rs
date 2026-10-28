@@ -3,17 +3,12 @@ mod read;
 #[cfg(test)]
 #[path = "../../tests/unit/generation.rs"]
 mod tests;
+use crate::{ModelRegistry, default_registry};
 use infer_core::Result;
 use infer_ir::Sampling;
+use infer_spi::{GenerationPolicy, GenerationPreset, GreedyPreset};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
-
-/// Qwen3.8 model-card temperature for non-thinking generation.
-const QWEN3_NON_THINKING_TEMPERATURE: f32 = 0.7;
-/// Qwen3.8 model-card top-p for non-thinking generation.
-const QWEN3_NON_THINKING_TOP_P: f32 = 0.8;
-/// Qwen3.8 model-card presence penalty for non-thinking generation.
-const QWEN3_NON_THINKING_PRESENCE_PENALTY: f32 = 1.5;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -34,8 +29,7 @@ pub struct SamplingOverrides {
 #[derive(Debug, Clone)]
 pub struct GenerationDefaults {
     base: Sampling,
-    thinking: bool,
-    qwen38: bool,
+    policy: GenerationPolicy,
     sources: BTreeMap<String, String>,
 }
 
@@ -50,7 +44,14 @@ impl GenerationDefaults {
     /// # Errors
     /// Rejects malformed, oversized or invalid model sampling configuration.
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
-        read::load(root.as_ref())
+        Self::open_with(default_registry(), root)
+    }
+
+    /// Resolve a package with the same model registry used to load its model.
+    /// # Errors
+    /// Rejects malformed, oversized or invalid model sampling configuration.
+    pub fn open_with(registry: &ModelRegistry, root: impl AsRef<Path>) -> Result<Self> {
+        read::load(root.as_ref(), registry)
     }
 
     /// Resolve package defaults, the recognized model's mode preset, then explicit overrides.
@@ -59,17 +60,19 @@ impl GenerationDefaults {
     pub fn resolve(&self, options: &SamplingOverrides) -> Result<ResolvedGeneration> {
         let mut sampling = self.base.clone();
         let mut sources = self.sources.clone();
-        let thinking = options.enable_thinking.unwrap_or(self.thinking);
-        if self.qwen38 && !thinking {
-            sampling.temperature = QWEN3_NON_THINKING_TEMPERATURE;
-            sampling.top_p = QWEN3_NON_THINKING_TOP_P;
-            sampling.presence_penalty = QWEN3_NON_THINKING_PRESENCE_PENALTY;
-            for key in ["temperature", "top_p", "presence_penalty"] {
-                sources.insert(
-                    key.into(),
-                    "Qwen3.8 model-card non-thinking recommendation".into(),
-                );
-            }
+        let thinking = options
+            .enable_thinking
+            .unwrap_or(self.policy.enable_thinking);
+        // A request can enable sampling even if the package defaults to greedy. Preserve the
+        // model-mode penalty defaults when a sampled package is overridden to temperature zero.
+        let sampling_active = sampling.temperature != 0.0
+            || options.do_sample == Some(true)
+            || options.temperature.is_some_and(|value| value != 0.0);
+        if !thinking
+            && let Some(preset) = &self.policy.non_thinking
+            && (sampling_active || preset.greedy == GreedyPreset::Apply)
+        {
+            apply_preset(&mut sampling, &mut sources, preset);
         }
         macro_rules! apply {
             ($($name:ident),+) => { $(if let Some(value) = options.$name {
@@ -127,5 +130,29 @@ impl GenerationDefaults {
             enable_thinking: thinking,
             sources,
         })
+    }
+}
+
+fn apply_preset(
+    sampling: &mut Sampling,
+    sources: &mut BTreeMap<String, String>,
+    preset: &GenerationPreset,
+) {
+    macro_rules! apply {
+        ($($name:ident),+) => { $(if let Some(value) = preset.$name {
+            sampling.$name = value;
+            sources.insert(stringify!($name).into(), preset.source.into());
+        })+ };
+    }
+    apply!(
+        temperature,
+        top_p,
+        min_p,
+        presence_penalty,
+        repetition_penalty
+    );
+    if let Some(value) = preset.top_k {
+        sampling.top_k = (value != 0).then_some(value);
+        sources.insert("top_k".into(), preset.source.into());
     }
 }

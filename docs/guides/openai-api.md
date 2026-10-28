@@ -43,6 +43,8 @@
 
 可选字段允许为 `null`，按未提供处理。服务已读取包内 `generation_config.json`，并从 generation config / model config 解析 EOS；识别到的模型还会应用模式预设，显式请求字段最后覆盖。模型包配置了 EOS 时会参与停止判断，未配置时不凭空增加 EOS。请求级 `eos_token` 覆盖使用原生 API。
 
+原版 Qwen3 混合模型（由模型 provider 按模型卡的聊天模型家族标识或原版标题识别）默认启用 thinking，并使用包内生成配置；明确关闭 thinking 时使用官方建议的 `temperature=0.7`、`top_p=0.8`，其余参数仍取包配置。包明确关闭采样时保持 greedy。Qwen3.8 按 base_model 家族标识或原版模型卡标题识别，其非 thinking 预设另外包含 `presence_penalty=1.5`；其他 Qwen 模型不自动套用这两种预设。模型配置无法匹配 provider、模型卡缺失或标识不匹配时，沿用包配置和通用模式默认值。显式请求参数始终优先。更多背景见 [采样调研](../research/qwen-sampling-2026-10-28.md)。
+
 ### 消息与工具历史
 
 `content` 可以是字符串、`null`，或 `{"type":"text","text":...}` 组成的列表；其他 content part 类型返回 501。`null` 按空文本处理，这是只有工具调用的 assistant 消息的常见形式。

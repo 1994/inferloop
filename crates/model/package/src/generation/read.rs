@@ -1,30 +1,19 @@
-use super::GenerationDefaults;
+use super::{GenerationDefaults, apply_preset};
+use crate::ModelRegistry;
 use crate::constants::CONFIG_MAX_BYTES;
 use crate::constants::MIB_U64;
 use crate::{package_path, storage::package::read_bounded};
-use infer_core::{Error, Result};
+use infer_core::{Error, ErrorCode, Result};
 use infer_ir::Sampling;
+use infer_spi::GenerationPolicy;
 use std::{collections::BTreeMap, path::Path};
 
-pub fn load(root: &Path) -> Result<GenerationDefaults> {
+pub fn load(root: &Path, registry: &ModelRegistry) -> Result<GenerationDefaults> {
     let config = json(root, "config.json")?;
     let generation = json(root, "generation_config.json")?;
     let mut base = Sampling::default();
     let mut sources = BTreeMap::new();
-    let card = root.join("README.md");
-    let qwen38 = if card.exists() {
-        let bytes = read_bounded(&package_path(root, "README.md")?, 2 * MIB_U64)?;
-        let card = String::from_utf8(bytes).map_err(|e| Error::invalid(e.to_string()))?;
-        card.strip_prefix("---")
-            .and_then(|s| s.split_once("---"))
-            .is_some_and(|(front, _)| {
-                front
-                    .lines()
-                    .any(|line| line.trim() == "- Qwen/Qwen3.8-27B")
-            })
-    } else {
-        false
-    };
+    let policy = generation_policy(root, registry, &config)?;
     for key in [
         "temperature",
         "top_p",
@@ -37,11 +26,17 @@ pub fn load(root: &Path) -> Result<GenerationDefaults> {
     ] {
         sources.insert(key.into(), "runtime fallback".into());
     }
-    let sampling = generation.get("do_sample").map_or(Ok(qwen38), |v| {
-        v.as_bool()
-            .ok_or_else(|| Error::invalid("do_sample must be boolean"))
-    })?;
+    let sampling = generation.get("do_sample").map_or_else(
+        || Ok(policy.sample_by_default),
+        |v| {
+            v.as_bool()
+                .ok_or_else(|| Error::invalid("do_sample must be boolean"))
+        },
+    )?;
     base.temperature = if sampling { 1.0 } else { 0.0 };
+    if let Some(defaults) = &policy.sampling_defaults {
+        apply_preset(&mut base, &mut sources, defaults);
+    }
     for (key, target) in [
         ("temperature", &mut base.temperature),
         ("top_p", &mut base.top_p),
@@ -57,6 +52,12 @@ pub fn load(root: &Path) -> Result<GenerationDefaults> {
     }
     if !sampling {
         base.temperature = 0.0;
+        if generation.get("do_sample").is_some() {
+            sources.insert(
+                "temperature".into(),
+                "generation_config.json do_sample=false".into(),
+            );
+        }
     }
     if let Some(value) = generation.get("top_k") {
         let number = value
@@ -95,10 +96,28 @@ pub fn load(root: &Path) -> Result<GenerationDefaults> {
     base.validate()?;
     Ok(GenerationDefaults {
         base,
-        thinking: qwen38,
-        qwen38,
+        policy,
         sources,
     })
+}
+
+fn generation_policy(
+    root: &Path,
+    registry: &ModelRegistry,
+    config: &serde_json::Value,
+) -> Result<GenerationPolicy> {
+    let card = if root.join("README.md").exists() {
+        let bytes = read_bounded(&package_path(root, "README.md")?, 2 * MIB_U64)?;
+        Some(String::from_utf8(bytes).map_err(|e| Error::invalid(e.to_string()))?)
+    } else {
+        None
+    };
+    let config_bytes = serde_json::to_vec(&config).map_err(|e| Error::invalid(e.to_string()))?;
+    match registry.resolve(&config_bytes) {
+        Ok(provider) => provider.generation_policy(&config_bytes, card.as_deref()),
+        Err(error) if error.code == ErrorCode::Unsupported => Ok(GenerationPolicy::default()),
+        Err(error) => Err(error),
+    }
 }
 
 fn json(root: &Path, name: &str) -> Result<serde_json::Value> {

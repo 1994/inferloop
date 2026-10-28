@@ -194,3 +194,97 @@ fn unclaimed_architecture_is_unsupported_not_invalid() {
     };
     assert_eq!(error.code, infer_core::ErrorCode::Unsupported);
 }
+
+#[test]
+fn text_assets_use_the_selected_provider_generation_policy() {
+    use infer_spi::{GenerationPolicy, GenerationPreset};
+    use std::env::temp_dir;
+    use std::fs::{copy, create_dir_all, remove_dir_all, write};
+    use std::path::Path;
+    use std::process::id;
+
+    struct SamplingProvider;
+    impl ModelProvider for SamplingProvider {
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                id: ProviderId::ONE,
+                name: "sampling-stub".into(),
+                spi_version: infer_spi::SPI_VERSION,
+            }
+        }
+        fn architectures(&self) -> &'static [&'static str] {
+            &["sampling-stub"]
+        }
+        fn import(&self, _id: ModelId, _config: &[u8]) -> Result<ImportedModel> {
+            Err(Error::unsupported("not needed for this test"))
+        }
+        fn generation_policy(
+            &self,
+            config: &[u8],
+            _card: Option<&str>,
+        ) -> Result<GenerationPolicy> {
+            if !config
+                .windows(b"sampling-stub".len())
+                .any(|part| part == b"sampling-stub")
+            {
+                return Err(Error::invalid("wrong configuration"));
+            }
+            Ok(GenerationPolicy {
+                enable_thinking: true,
+                non_thinking: Some(GenerationPreset {
+                    temperature: Some(0.4),
+                    top_p: Some(0.75),
+                    top_k: Some(3),
+                    source: "custom provider",
+                    ..GenerationPreset::default()
+                }),
+                ..GenerationPolicy::default()
+            })
+        }
+    }
+    let root = temp_dir().join(format!("infer-provider-sampling-{}", id()));
+    create_dir_all(&root).unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples/qwen-hybrid-tiny");
+    copy(fixture.join("tokenizer.json"), root.join("tokenizer.json")).unwrap();
+    write(
+        root.join("config.json"),
+        r#"{"model_type":"sampling-stub"}"#,
+    )
+    .unwrap();
+    write(
+        root.join("generation_config.json"),
+        r#"{"do_sample":true,"temperature":0.9}"#,
+    )
+    .unwrap();
+    let mut registry = ModelRegistry::new();
+    registry.register(Arc::new(SamplingProvider)).unwrap();
+    let assets = crate::TextAssets::open_with(&registry, &root, 128).unwrap();
+    let default = assets
+        .generation
+        .resolve(&crate::SamplingOverrides::default())
+        .unwrap();
+    assert!(default.enable_thinking);
+    assert_eq!(default.sampling.temperature, 0.9);
+    let direct = assets
+        .generation
+        .resolve(&crate::SamplingOverrides {
+            enable_thinking: Some(false),
+            top_p: Some(0.5),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(direct.sampling.temperature, 0.4);
+    assert_eq!(direct.sampling.top_p, 0.5);
+    assert_eq!(direct.sampling.top_k, Some(3));
+    assert_eq!(direct.sources["temperature"], "custom provider");
+    assert_eq!(direct.sources["top_p"], "request override");
+    let generic = crate::TextAssets::open(&root, 128).unwrap();
+    assert!(
+        !generic
+            .generation
+            .resolve(&crate::SamplingOverrides::default())
+            .unwrap()
+            .enable_thinking
+    );
+    remove_dir_all(root).unwrap();
+}
