@@ -26,20 +26,19 @@ pub(super) fn policy(card: Option<&str>) -> GenerationPolicy {
     };
     let mut base_model = false;
     for line in front.lines().map(str::trim) {
-        if line == "base_model:" {
-            base_model = true;
+        if let Some(value) = line.strip_prefix("base_model:") {
+            let value = value.trim();
+            base_model = value.is_empty();
+            if let Some(variant) = base_variant(value) {
+                return preset(variant);
+            }
             continue;
         }
         if !line.starts_with("- ") && !line.is_empty() {
             base_model = false;
         }
-        if base_model {
-            if line.strip_prefix("- Qwen/Qwen3.8-").is_some_and(model_size) {
-                return preset(QwenVariant::Qwen38);
-            }
-            if line.strip_prefix("- Qwen/Qwen3-").is_some_and(model_size) {
-                return preset(QwenVariant::Hybrid);
-            }
+        if base_model && let Some(variant) = line.strip_prefix("- ").and_then(base_variant) {
+            return preset(variant);
         }
     }
     // Original cards identify the actual chat model in the first title. A base-model lineage
@@ -61,6 +60,18 @@ pub(super) fn policy(card: Option<&str>) -> GenerationPolicy {
         return preset(QwenVariant::Qwen38);
     }
     GenerationPolicy::default()
+}
+
+// A model card can declare either a scalar or a list of base models.
+fn base_variant(value: &str) -> Option<QwenVariant> {
+    let value = value.trim().trim_matches(['\'', '"']);
+    if value.strip_prefix("Qwen/Qwen3.8-").is_some_and(model_size) {
+        Some(QwenVariant::Qwen38)
+    } else if value.strip_prefix("Qwen/Qwen3-").is_some_and(model_size) {
+        Some(QwenVariant::Hybrid)
+    } else {
+        None
+    }
 }
 
 // A Qwen size may be dense (e.g. 8B) or an MoE total/active pair (e.g. 30B-A3B).
