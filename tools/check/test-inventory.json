@@ -88,7 +88,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 100
+      "tests": 101
     },
     "scheduler": {
       "benches": 0,
@@ -1404,11 +1404,11 @@
     }
   ],
   "totals": {
-    "all": 1009,
+    "all": 1010,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1009
+    "tests": 1010
   }
 }
