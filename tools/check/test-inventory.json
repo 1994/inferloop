@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 414
+      "tests": 418
     },
     "frontdoor": {
       "benches": 0,
@@ -306,6 +306,11 @@
       "crate": "cuda",
       "file": "src/device/cublaslt.rs",
       "mount": "../../tests/unit/device_cublaslt.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/device/nvjpeg_probe.rs",
+      "mount": "../../tests/unit/nvjpeg_probe.rs"
     },
     {
       "crate": "cuda",
@@ -1394,11 +1399,11 @@
     }
   ],
   "totals": {
-    "all": 998,
+    "all": 1002,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 998
+    "tests": 1002
   }
 }

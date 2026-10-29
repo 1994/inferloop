@@ -157,6 +157,8 @@ fn resident_states(total_memory_bytes: u64) -> usize {
         .clamp(MIN_RESIDENT_STATES, MAX_RESIDENT_STATES)
 }
 pub(crate) mod asynchronous;
+#[cfg(test)]
+mod nvjpeg_probe;
 mod readback;
 mod upload;
 #[cfg(test)]

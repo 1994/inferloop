@@ -134,6 +134,10 @@ def check_exceptions():
                         ROOT / "crates/backend/cuda/src/device/readback.rs",
                         ROOT / "crates/backend/cuda/src/device/cublaslt.rs",
                         ROOT / "crates/backend/cuda/src/device/vendor_fp8.rs",
+                        # nvJPEG version probe: exact documented ABI, library retained during
+                        # calls; test mocks write only to a valid borrowed output slot.
+                        ROOT / "crates/backend/cuda/src/device/nvjpeg_probe.rs",
+                        ROOT / "crates/backend/cuda/tests/unit/nvjpeg_probe.rs",
                         # FP4 extension of the Lt ABI: checked complete extents, exact output
                         # proofs, zero workspace, one owning stream and retained handles/weights.
                         ROOT / "crates/backend/cuda/src/device/vendor_fp8/nvfp4.rs",
