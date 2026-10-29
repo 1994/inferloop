@@ -231,8 +231,7 @@ impl RequestArena {
             1
         } else {
             record
-                .prefix_stop
-                .filter(|stop| record.prefill_done < *stop)
+                .pending_prefix_stop()
                 .unwrap_or_else(|| record.context.len())
                 .saturating_sub(record.prefill_done)
         };

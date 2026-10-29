@@ -1818,7 +1818,8 @@ impl ProgramUploads {
         })
     }
 }
-fn attention_states(graph: &DataflowGraph) -> BTreeSet<TensorId> {
+/// The graph's attention KV state tensors.
+pub fn attention_states(graph: &DataflowGraph) -> BTreeSet<TensorId> {
     graph
         .tensors
         .iter()

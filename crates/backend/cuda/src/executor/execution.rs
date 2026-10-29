@@ -1,3 +1,4 @@
+use super::prefix_state::{DraftSnapshot, ProgramSnapshot};
 use super::{CachedMedia, CudaExecutor, ModelOutput, Sequence, SlotLease, Speculation, prefix};
 use crate::constants::CB_SLOT_TOKENS;
 use crate::constants::KV_BLOCK_TOKENS;
@@ -53,17 +54,12 @@ async fn cacheable_prefix(
     state: &mut Sequence,
     covered: usize,
 ) -> Option<prefix::CachedPrefix> {
-    let target = super::prefix_state::ProgramSnapshot::capture_async(
-        device,
-        &state.program,
-        loaded.graph(),
-        covered,
-    )
-    .await
-    .ok()?;
+    let target = ProgramSnapshot::capture_async(device, &state.program, loaded.graph(), covered)
+        .await
+        .ok()?;
     let draft = if let Some(spec) = &mut state.speculation {
-        Some(super::prefix_state::DraftSnapshot {
-            program: super::prefix_state::ProgramSnapshot::capture_async(
+        Some(DraftSnapshot {
+            program: ProgramSnapshot::capture_async(
                 device,
                 &spec.program,
                 loaded.draft_graph()?,
@@ -80,47 +76,53 @@ async fn cacheable_prefix(
 }
 
 /// Snapshot a slot-resident sequence's covered prefix by exporting it from its target and draft
-/// slots; the copies are settled before the next chunk advances that state.
+/// slots. The copies are settled before the next chunk advances that state, and before any
+/// destination is dropped: a snapshot that cannot be built is skipped, but a device fault while
+/// settling it is reported.
 fn slot_prefix(
     device: &CudaDevice,
     loaded: &LoadedModel,
     (target_pool, draft_pool): (Option<&SlotPool>, Option<&SlotPool>),
     state: &Sequence,
     (slot, covered): (usize, usize),
-) -> Option<prefix::CachedPrefix> {
-    let (states, fp8) = target_pool?.export(slot, covered, device).ok()?;
-    let target = super::prefix_state::ProgramSnapshot::from_parts(
-        states,
-        fp8,
-        loaded.graph(),
-        state.program.position(),
-    )
-    .ok()?;
-    let draft = match &state.speculation {
-        Some(spec) => {
-            let rows = covered.saturating_sub(MTP_KV_OFFSET);
-            let (states, fp8) = draft_pool?.export(slot, rows, device).ok()?;
-            Some(super::prefix_state::DraftSnapshot {
-                program: super::prefix_state::ProgramSnapshot::from_parts(
-                    states,
-                    fp8,
-                    loaded.draft_graph()?,
-                    spec.program.position(),
-                )
-                .ok()?,
-                hidden: spec.last_hidden.clone(),
-            })
-        }
-        None => None,
-    };
-    device.drain().ok()?;
-    Some(cached(state, target, draft))
+) -> Result<Option<prefix::CachedPrefix>> {
+    let built = (|| -> Result<Option<(ProgramSnapshot, Option<DraftSnapshot>)>> {
+        let Some(target_pool) = target_pool else {
+            return Ok(None);
+        };
+        let (states, fp8) = target_pool.export(slot, covered, device)?;
+        let target =
+            ProgramSnapshot::from_parts(states, fp8, loaded.graph(), state.program.position())?;
+        let draft = match (&state.speculation, draft_pool, loaded.draft_graph()) {
+            (Some(spec), Some(draft_pool), Some(draft_graph)) => {
+                let rows = covered.saturating_sub(MTP_KV_OFFSET);
+                let (states, fp8) = draft_pool.export(slot, rows, device)?;
+                Some(DraftSnapshot {
+                    program: ProgramSnapshot::from_parts(
+                        states,
+                        fp8,
+                        draft_graph,
+                        spec.program.position(),
+                    )?,
+                    hidden: spec.last_hidden.clone(),
+                })
+            }
+            (Some(_), _, _) => return Ok(None),
+            (None, _, _) => None,
+        };
+        Ok(Some((target, draft)))
+    })();
+    device.drain()?;
+    Ok(built
+        .ok()
+        .flatten()
+        .map(|(target, draft)| cached(state, target, draft)))
 }
 
 fn cached(
     state: &Sequence,
-    target: super::prefix_state::ProgramSnapshot,
-    draft: Option<super::prefix_state::DraftSnapshot>,
+    target: ProgramSnapshot,
+    draft: Option<DraftSnapshot>,
 ) -> prefix::CachedPrefix {
     let bytes = target
         .bytes
@@ -871,7 +873,7 @@ impl CudaExecutor {
                 (self.slots.as_ref(), self.draft_slots.as_ref()),
                 state,
                 (slot, covered),
-            ),
+            )?,
             (Some(covered), None) => {
                 cacheable_prefix(self.loaded.device(), &self.loaded, state, covered).await
             }

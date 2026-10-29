@@ -230,11 +230,17 @@ fn the_shared_prefix_covers_the_evidence_only_when_questions_can_share_it() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples/qwen-hybrid-tiny");
     let assets = infer_models::TextAssets::open(root, 128).unwrap();
     let body = |input: &str, count: usize| json!({"model": "m", "input": input, "questions": vec![predicate(); count]});
-    let shared = shared_prefix(&assets, &plan(body("hello world", 2)).unwrap()).unwrap();
-    // "user hello world" at least: the evidence every question starts from.
-    assert!(shared.is_some_and(|tokens| tokens >= 3), "{shared:?}");
+    let long = "hello world ".repeat(40);
+    let shared = shared_prefix(&assets, &plan(body(&long, 2)).unwrap()).unwrap();
+    // At least the evidence every question starts from.
+    assert!(shared.is_some_and(|tokens| tokens >= 80), "{shared:?}");
     assert_eq!(
-        shared_prefix(&assets, &plan(body("hello world", 1)).unwrap()).unwrap(),
+        shared_prefix(&assets, &plan(body(&long, 1)).unwrap()).unwrap(),
+        None
+    );
+    // A prefix within the narrow prompt graph is not worth running one question first.
+    assert_eq!(
+        shared_prefix(&assets, &plan(body("hello world", 2)).unwrap()).unwrap(),
         None
     );
     assert_eq!(

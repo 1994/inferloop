@@ -1,6 +1,8 @@
 //! Node-major verification: consecutive projections reuse weights in cache.
 //! Recurrent checkpoints stay on the device; KV rollback is a logical prefix.
 //! Prefill width 32 keeps one batched arena: auxiliaries record once per node.
+use super::arena::prefix_view;
+use super::fusion_batch::Workspace as FusionRows;
 use super::prefill_projection::{DensePlan, record_narrow};
 use super::{
     ActivationArena, ProgramWeights,
@@ -625,9 +627,8 @@ impl BatchBuilder<'_> {
         for (rows, tensor) in &owner.partials {
             let kept = PREFILL_SPLIT_K * width;
             // SAFETY: as above; the split rows of `width` lanes lie inside the wider tensor.
-            let view = unsafe {
-                super::arena::prefix_view(tensor, PREFILL_SPLIT_K * wide, kept, &[kept, *rows])?
-            };
+            let view =
+                unsafe { prefix_view(tensor, PREFILL_SPLIT_K * wide, kept, &[kept, *rows])? };
             partials.insert(*rows, view);
         }
         let fusion = match owner.fusion.as_ref() {
@@ -635,14 +636,12 @@ impl BatchBuilder<'_> {
                 let (input, gathered) = fusion
                     .rows()
                     .ok_or_else(|| Error::invariant("fusion workspace rows are taken"))?;
-                let (columns, hidden) = super::fusion_batch::Workspace::columns();
+                let (columns, hidden) = FusionRows::columns();
                 // SAFETY: as above; the leading `width` rows lie inside the wider rows.
-                let input =
-                    unsafe { super::arena::prefix_view(input, wide, width, &[width, columns])? };
+                let input = unsafe { prefix_view(input, wide, width, &[width, columns])? };
                 // SAFETY: as above.
-                let gathered =
-                    unsafe { super::arena::prefix_view(gathered, wide, width, &[width, hidden])? };
-                Some(super::fusion_batch::Workspace::from_rows(input, gathered))
+                let gathered = unsafe { prefix_view(gathered, wide, width, &[width, hidden])? };
+                Some(FusionRows::from_rows(input, gathered))
             }
             None => None,
         };

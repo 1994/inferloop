@@ -54,11 +54,18 @@ impl RequestRecord {
     /// end of the prompt, then the end of the context.
     #[must_use]
     pub fn prefill_end(&self) -> usize {
-        match self.prefix_stop {
-            Some(stop) if self.prefill_done < stop => stop,
-            _ if self.prefill_done < self.context.prompt.len() => self.context.prompt.len(),
-            _ => self.context.len(),
-        }
+        self.pending_prefix_stop().unwrap_or_else(|| {
+            if self.prefill_done < self.context.prompt.len() {
+                self.context.prompt.len()
+            } else {
+                self.context.len()
+            }
+        })
+    }
+    /// The prefix stop while prefill has not reached it.
+    #[must_use]
+    pub fn pending_prefix_stop(&self) -> Option<usize> {
+        self.prefix_stop.filter(|stop| self.prefill_done < *stop)
     }
     /// Whether a prompt chunk of `count` tokens ends exactly at the prefix stop.
     #[must_use]

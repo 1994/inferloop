@@ -33,6 +33,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Probe content for finding where a reply begins; the template's reply prompt follows it.
 const PROBE_TEXT: &str = "x";
+/// Shortest shared prefix worth a snapshot. Below it the first question is not run alone: a
+/// prompt within the narrow 64-row prompt graph costs one narrow replay whether or not its
+/// prefix is restored, so serializing the first question would only add its latency.
+const MIN_SHARED_PREFIX_TOKENS: usize = 64;
 /// Option scores are read untempered: the answer is the model's own distribution.
 const CALIBRATION_TEMPERATURE: f32 = 1.0;
 
@@ -165,7 +169,7 @@ fn shared_prefix(assets: &TextAssets, plan: &ReadPlan) -> infer_core::Result<Opt
         .zip(&second)
         .take_while(|(left, right)| left == right)
         .count();
-    Ok((common > 0).then_some(common))
+    Ok((common >= MIN_SHARED_PREFIX_TOKENS).then_some(common))
 }
 
 /// Answer every question of one request.

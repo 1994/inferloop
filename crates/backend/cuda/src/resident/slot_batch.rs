@@ -1030,6 +1030,20 @@ impl SlotPool {
         rows: usize,
         device: &CudaDevice,
     ) -> Result<(States, Fp8Caches)> {
+        let exported = self.export_queued(slot, rows, device);
+        // A partial export has queued copies into tensors it is about to drop; settle them first.
+        if exported.is_err() {
+            device.drain()?;
+        }
+        exported
+    }
+
+    fn export_queued(
+        &self,
+        slot: usize,
+        rows: usize,
+        device: &CudaDevice,
+    ) -> Result<(States, Fp8Caches)> {
         if slot >= self.width() || rows == 0 || rows > self.capacity {
             return Err(Error::invalid("slot export index or prefix length"));
         }

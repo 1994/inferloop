@@ -44,8 +44,8 @@ mod slot_verify_attention;
 mod small_gemm;
 mod validation;
 pub use arena::ActivationArena;
-pub(crate) use program::ProgramGeometry;
 pub use program::{DeviceProgram, FusionWeights, ProgramWeights};
+pub(crate) use program::{ProgramGeometry, attention_states};
 pub use prompt_scratch::Registry as PromptScratchRegistry;
 
 mod conv_prefill;

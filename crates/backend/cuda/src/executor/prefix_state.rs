@@ -3,12 +3,12 @@ use crate::constants::KV_CACHE_RANK;
 use crate::device::asynchronous::block_on;
 use crate::{
     device::{CudaDevice, device_error},
-    resident::{DeviceProgram, slot_batch::SlotPool},
+    resident::{DeviceProgram, attention_states, slot_batch::SlotPool},
 };
 use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
-use infer_ir::{DataflowGraph, StateKind, TensorStorage};
+use infer_ir::DataflowGraph;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::mem::forget;
@@ -47,7 +47,7 @@ impl ProgramSnapshot {
         let live_fp8 = program.fp8_states();
         let position = program.position();
         async move {
-            let kv = kv_states(graph);
+            let kv = attention_states(graph);
             let mut states = BTreeMap::new();
             let mut bytes = 0_u64;
             for (id, tensors) in live_states {
@@ -134,7 +134,7 @@ impl ProgramSnapshot {
         graph: &DataflowGraph,
         position: usize,
     ) -> Result<Self> {
-        let kv = kv_states(graph);
+        let kv = attention_states(graph);
         let float = states.values().flatten().try_fold(0_u64, |sum, tensor| {
             sum.checked_add((tensor.size() * size_of::<f32>()) as u64)
         });
@@ -214,24 +214,6 @@ impl ProgramSnapshot {
         program.set_position(self.position);
         Ok(())
     }
-}
-
-/// The graph's attention KV states, which snapshots cover only up to the prefix.
-fn kv_states(graph: &DataflowGraph) -> BTreeSet<TensorId> {
-    graph
-        .tensors
-        .iter()
-        .filter_map(|t| {
-            matches!(
-                t.storage,
-                TensorStorage::State {
-                    kind: StateKind::AttentionKv,
-                    ..
-                }
-            )
-            .then_some(t.id)
-        })
-        .collect()
 }
 
 fn dimensions<T: DType>(tensor: &Tensor<T>) -> Result<Vec<usize>> {
