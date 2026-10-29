@@ -42,7 +42,7 @@ bash tools/bench/safe-run.sh python3 tools/bench/serve-compare.py --engine nativ
     --checklist benchmarks/profiles/27b-mtp0.json --run-id <唯一 ID>
 ```
 
-图片负载客户端读取 `--fixtures` 目录中的 `manifest.json`。例如，`--size 256x256` 对应：
+图片负载客户端使用 Python 3.12+，读取 `--fixtures` 目录中的 `manifest.json`。例如，`--size 256x256` 对应：
 
 ```json
 {"items":{"256x256":[{"file":"one.jpg","sha256":"<文件的 SHA-256>"}]}}

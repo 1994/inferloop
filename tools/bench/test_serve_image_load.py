@@ -26,6 +26,11 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
+class LoadTestServer(ThreadingHTTPServer):
+    # The concurrency test must exercise the client, not the default five-slot listen backlog.
+    request_queue_size = 128
+
+
 class Handler(BaseHTTPRequestHandler):
     received: ClassVar[list] = []
     hosts: ClassVar[list] = []
@@ -37,6 +42,7 @@ class Handler(BaseHTTPRequestHandler):
     malformed_chunk = b""
     manifest_update = None
     second_arrived = threading.Event()
+    all_arrived = None
 
     def log_message(self, *_):
         pass
@@ -57,6 +63,12 @@ class Handler(BaseHTTPRequestHandler):
         if update is not None:
             path, data = update
             path.write_bytes(data)
+        if self.mode == "concurrent_images":
+            try:
+                self.all_arrived.wait(timeout=10)
+            except threading.BrokenBarrierError:
+                self.send_error(503, "concurrent requests did not arrive")
+                return
         if self.mode == "fail_inflight":
             if request_index == 1:
                 self.second_arrived.wait(timeout=2)
@@ -244,9 +256,10 @@ class ImageLoadTest(unittest.TestCase):
         Handler.mode = None
         Handler.manifest_update = None
         Handler.second_arrived = threading.Event()
+        Handler.all_arrived = None
         # Avoid DNS reverse lookups in HTTPServer.server_bind on developer machines.
         with patch("socket.getfqdn", return_value="localhost"):
-            self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            self.server = LoadTestServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever)
         self.thread.start()
         self.url = f"http://127.0.0.1:{self.server.server_port}"
@@ -306,6 +319,42 @@ class ImageLoadTest(unittest.TestCase):
             i["sha256"] for r in report["warmups"] + report["samples"] for i in r["fixtures"]
         ]
         self.assertEqual(len(set(all_hashes)), 10)
+
+    def test_sixteen_requests_send_four_images_concurrently(self):
+        fixture = (
+            Path(__file__).resolve().parents[2]
+            / "crates/service/frontdoor/tests/fixtures/progressive-16x16.jpg"
+        ).read_bytes()
+        entries = []
+        for index in range(16 * 4):
+            # A unique JPEG APP segment gives each item a realistic request body size.
+            marker = b"\xff\xef" + (50_006).to_bytes(2, "big") + index.to_bytes(4, "big")
+            payload = fixture[:2] + marker + b"x" * 50_000 + fixture[2:]
+            path = self.root / f"parallel-{index}.jpg"
+            path.write_bytes(payload)
+            entries.append({"file": path.name, "sha256": hashlib.sha256(payload).hexdigest()})
+        (self.root / "manifest.json").write_text(json.dumps({"items": {"small": entries}}))
+        Handler.mode = "concurrent_images"
+        Handler.all_arrived = threading.Barrier(16)
+        args = self.args(
+            "--concurrency",
+            "16",
+            "--samples",
+            "16",
+            "--warmup",
+            "0",
+            "--images-per-request",
+            "4",
+            "--require-output-tokens",
+            "3",
+            "--timeout",
+            "15",
+        )
+        report = module.run(args)
+        failures = [item for item in report["samples"] if item["outcome"] != "success"]
+        self.assertEqual(report["counts"]["successes"], 16, failures)
+        self.assertEqual(len(Handler.received), 16)
+        self.assertTrue(all(len(item["messages"][0]["content"]) == 5 for item in Handler.received))
 
     def test_streaming_records_first_visible_content_and_length(self):
         Handler.stream = True
