@@ -24,6 +24,7 @@ use infer_models::vision::rope_frequencies;
 use infer_models::vision::row_tile;
 use infer_spi::ModalityEncoder;
 use std::env::var;
+use std::result::Result as StdResult;
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -89,7 +90,10 @@ pub fn patch_embed(
 }
 
 /// Embed patches while interpolating the learned position table on the device.
-pub(crate) fn patch_embed_device_positions(
+///
+/// # Errors
+/// Rejects mismatched input geometry or a failed CUDA operation.
+pub fn patch_embed_device_positions(
     device: &CudaDevice,
     encoder: &ModalityEncoder,
     weights: &VisionWeights,
@@ -107,6 +111,7 @@ pub(crate) fn patch_embed_device_positions(
     )
 }
 
+#[derive(Clone, Copy)]
 enum PositionInput<'a> {
     Host(&'a [f32]),
     Device(&'a PositionTaps),
@@ -128,7 +133,7 @@ impl StagedPositions {
     ) -> Result<Self> {
         let hidden = encoder.hidden_size;
         let (host, device_positions) = match positions {
-            PositionInput::Host(positions) if positions.is_empty() => (None, None),
+            PositionInput::Host([]) => (None, None),
             PositionInput::Host(positions) => {
                 let elements = patch_count
                     .checked_mul(hidden)
@@ -165,7 +170,7 @@ impl StagedPositions {
         })
     }
 
-    fn present(&self) -> bool {
+    const fn present(&self) -> bool {
         self.host.is_some() || self.device.is_some()
     }
 
@@ -175,7 +180,7 @@ impl StagedPositions {
         embedded: &Tensor<f32>,
         output: &mut Tensor<f32>,
         hidden: usize,
-    ) -> std::result::Result<(), DeviceError> {
+    ) -> StdResult<(), DeviceError> {
         if let Some(positions) = &self.host {
             scope.record(
                 kernels::encoder::add(

@@ -11,6 +11,7 @@ use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_models::vision::PositionTaps;
+use std::result::Result as StdResult;
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -97,7 +98,7 @@ impl DeviceTaps {
         scope: &Scope,
         embedded: &Tensor<f32>,
         output: &mut Tensor<f32>,
-    ) -> std::result::Result<(), DeviceError> {
+    ) -> StdResult<(), DeviceError> {
         if embedded.shape() != self.activation_shape || output.shape() != self.activation_shape {
             return Err(DeviceError::Launch(
                 "vision position activation shape".into(),
@@ -122,9 +123,18 @@ impl DeviceTaps {
 
 #[cutile::module]
 mod kernels {
-    use cutile::core::*;
+    use cutile::core::{
+        BroadcastScalar, Latency, PointerTile_0, PointerTile_2, Reshape, ReshapePtr, Shape_1,
+        Shape_2, StoreTileAtCurrentBlock, Tensor_2, Tile_1, Tile_2, Token, addptr_tile, bf16,
+        convert_tile, fma, ftz, get_tile_block_id, iota, load_ptr_tko, ordering, pointer_to_tile,
+        rounding, scope,
+    };
 
     /// Add a four-tap interpolation to a patch projection without a host round trip.
+    ///
+    /// # Safety
+    /// Table indices and all tensor shapes must be validated and their owners retained until the
+    /// recorded device work completes.
     #[cutile::entry()]
     unsafe fn add_positions<const H: i32>(
         out: &mut Tensor<f32, { [32, 64] }>,
