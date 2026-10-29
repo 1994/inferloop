@@ -61,7 +61,7 @@ impl BatchReadout {
 pub(super) struct PromptOverrides<'a> {
     /// `lanes[lane]` selects that lane's external embedding slot.
     pub lanes: &'a [bool],
-    /// Per-lane `(t, h, w)`; absent means `[position + lane; 3]`.
+    /// Absolute per-lane `(t, h, w)`; absent means `[position + lane; 3]`.
     pub rotary: Option<&'a [[usize; ROTARY_AXES]]>,
 }
 
@@ -2047,21 +2047,7 @@ impl BatchGraph {
         let Some(table) = self.prefill_rotary.as_mut() else {
             return Ok(());
         };
-        if rotary.is_some_and(|rotary| rotary.len() != lanes) {
-            return Err(Error::invalid("prompt rotary table width"));
-        }
-        let mut values = vec![0i32; self.width * ROTARY_AXES];
-        for lane in 0..lanes {
-            // Prompt-local coordinates shift with the base, like the 1-D fallback does.
-            let axes = rotary.map_or([position + lane; ROTARY_AXES], |rotary| {
-                let axes = rotary[lane];
-                [axes[0] + position, axes[1] + position, axes[2] + position]
-            });
-            let base = lane * ROTARY_AXES;
-            values[base] = i32::try_from(axes[0]).map_err(device_error)?;
-            values[base + 1] = i32::try_from(axes[1]).map_err(device_error)?;
-            values[base + 2] = i32::try_from(axes[2]).map_err(device_error)?;
-        }
+        let values = prompt_rotary_values(self.width, lanes, position, rotary)?;
         self.rotary_staging.copy(device, table, &values)
     }
 
@@ -2151,6 +2137,38 @@ impl BatchGraph {
             .ok_or_else(|| Error::invalid("batch commit count"));
         async move { device.run_op(launch?).await }
     }
+}
+
+fn prompt_rotary_values(
+    width: usize,
+    lanes: usize,
+    position: usize,
+    rotary: Option<&[[usize; ROTARY_AXES]]>,
+) -> Result<Vec<i32>> {
+    if lanes > width || rotary.is_some_and(|values| values.len() != lanes) {
+        return Err(Error::invalid("prompt rotary table width"));
+    }
+    let elements = width
+        .checked_mul(ROTARY_AXES)
+        .ok_or_else(|| Error::invalid("prompt rotary table overflow"))?;
+    let mut values = vec![0_i32; elements];
+    for lane in 0..lanes {
+        let axes = if let Some(rotary) = rotary {
+            rotary[lane]
+        } else {
+            let value = position
+                .checked_add(lane)
+                .ok_or_else(|| Error::invalid("prompt rotary position overflow"))?;
+            [value; ROTARY_AXES]
+        };
+        for (target, axis) in values[lane * ROTARY_AXES..][..ROTARY_AXES]
+            .iter_mut()
+            .zip(axes)
+        {
+            *target = i32::try_from(axis).map_err(device_error)?;
+        }
+    }
+    Ok(values)
 }
 
 /// Stage one prompt chunk's batched metadata rows into their existing owner.

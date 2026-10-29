@@ -999,7 +999,8 @@ async fn slot_replay(
             return Err(Error::invariant("slot decode task"));
         };
         let position = state.history.len();
-        lanes.push((slot, token, position, position));
+        // Media prompts use an independent rotary coordinate after their visual span.
+        lanes.push((slot, token, state.rotary_at(position), position));
     }
     let plain_greedy = participants
         .iter()
@@ -1074,9 +1075,11 @@ async fn slot_speculate(
     };
     let mut lanes = Vec::new();
     for (&(index, slot), chain) in participants.iter().zip(&candidates) {
-        let position = states[&tasks[index].state].history.len();
+        let state = &states[&tasks[index].state];
+        let position = state.history.len();
         for (offset, &token) in chain.iter().enumerate() {
-            lanes.push((slot, offset, token, position + offset, position + offset));
+            let cursor = position + offset;
+            lanes.push((slot, offset, token, state.rotary_at(cursor), cursor));
         }
     }
     let plain_greedy = participants
