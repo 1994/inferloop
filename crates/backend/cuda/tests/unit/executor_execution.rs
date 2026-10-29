@@ -297,6 +297,10 @@ fn pooled_decode_preserves_multimodal_rotary_position() -> Result<(), Box<dyn Er
     // Use the pooled graph directly with an independently supplied rotary position. This keeps
     // the full-logit comparison bitwise while exercising the executor's lane construction.
     let expected = pooled_position_reference(&mut executor, states[0], 65, 8)?;
+    assert!(
+        !expected.is_empty(),
+        "pooled reference needs complete logits"
+    );
     let single = run_media_position_tasks(&mut executor, &[decode(states[0], RequestId::ONE)])?;
     let batch = run_media_position_tasks(
         &mut executor,
