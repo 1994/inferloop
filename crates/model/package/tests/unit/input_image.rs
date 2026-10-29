@@ -72,6 +72,106 @@ fn rgb8_resize_matches_torchvision_antialiased_bicubic() {
 }
 
 #[test]
+fn resized_patches_preserve_scalar_bits_and_zero_sign() -> Result<()> {
+    let mut saw_negative_zero = false;
+    for mean in [[0.5; RGB_CHANNELS], [0.0; RGB_CHANNELS]] {
+        let processor = ImageProcessor {
+            patch_size: 16,
+            temporal_patch_size: 2,
+            merge_size: 2,
+            min_pixels: 1024,
+            max_pixels: 16_777_216,
+            mean,
+            std: [0.5; RGB_CHANNELS],
+            rescale: RESCALE,
+        };
+        for (height, width) in [(3, 5), (33, 65), (68, 57), (129, 191), (257, 257)] {
+            let mut state = 0x7bee_cafeu32;
+            let pixels = (0..height * width * RGB_CHANNELS)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    state.to_be_bytes()[0]
+                })
+                .collect();
+            let image = RgbImage {
+                height,
+                width,
+                pixels,
+            };
+            let (target_height, target_width) = processor.smart_resize(height, width)?;
+            let scalar = ImageProcessor::resize(&image, target_height, target_width);
+            let frames = vec![scalar.as_slice(); processor.temporal_patch_size];
+            let expected = patchify(
+                &frames,
+                PatchGrid {
+                    temporal: processor.temporal_patch_size,
+                    height: target_height / processor.patch_size,
+                    width: target_width / processor.patch_size,
+                    patch: processor.patch_size,
+                    merge: processor.merge_size,
+                    groups: 1,
+                },
+                &Normalization {
+                    mean: processor.mean,
+                    std: processor.std,
+                    rescale: processor.rescale,
+                },
+            )?;
+            let actual = processor.preprocess(&image)?;
+            assert_eq!(actual.grid, (1, target_height / 16, target_width / 16));
+            assert_eq!(actual.pixels.len(), expected.len());
+            for (actual, expected) in actual.pixels.iter().zip(&expected) {
+                assert_eq!(actual.to_bits(), expected.to_bits(), "{height}x{width}");
+                saw_negative_zero |= expected.to_bits() == (-0.0f32).to_bits();
+            }
+        }
+    }
+    assert!(
+        saw_negative_zero,
+        "zero-mean fixture must exercise signed zero"
+    );
+    Ok(())
+}
+
+#[test]
+fn fast_resize_matches_independent_torchvision_pixels_after_normalization() -> Result<()> {
+    let source = [
+        0, 30, 240, 60, 255, 90, 180, 10, 220, 40, 255, 75, 160, 0, 120,
+    ];
+    let pixels: Vec<u8> = source.into_iter().flat_map(|v| [v; RGB_CHANNELS]).collect();
+    let norm = Normalization {
+        mean: [0.5; RGB_CHANNELS],
+        std: [0.5; RGB_CHANNELS],
+        rescale: RESCALE,
+    };
+    let up: [u8; 48] = [
+        0, 0, 27, 211, 212, 48, 173, 255, 12, 25, 67, 166, 172, 96, 161, 210, 54, 101, 153, 71, 88,
+        197, 136, 70, 128, 153, 163, 55, 64, 180, 106, 34, 224, 174, 96, 121, 105, 47, 75, 105,
+        255, 184, 64, 152, 124, 0, 60, 138,
+    ];
+    let down: [u8; 6] = [50, 134, 156, 168, 97, 82];
+    for (height, width, expected) in [(6, 8, up.as_slice()), (2, 3, down.as_slice())] {
+        let actual = image_resize::resize(&pixels, 3, 5, height, width)?;
+        assert_eq!(actual.len(), expected.len() * RGB_CHANNELS);
+        for (index, (value, expected)) in actual
+            .iter()
+            .zip(expected.iter().flat_map(|v| [v; 3]))
+            .enumerate()
+        {
+            assert_eq!(
+                norm.apply(f32::from(*value), index % RGB_CHANNELS)
+                    .to_bits(),
+                norm.apply(f32::from(*expected), index % RGB_CHANNELS)
+                    .to_bits()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn configuration_comes_from_the_package() {
     let Ok(processor) = package_processor() else {
         return;

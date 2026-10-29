@@ -230,6 +230,8 @@ pub(super) fn required_working_set(
         let weights = axis_bytes(image.width, width)?
             .checked_add(axis_bytes(image.height, height)?)
             .ok_or_else(capacity)?;
+        let resize_extra =
+            processor.extra_resize_scratch(image.height, image.width, height, width)?;
         let actual_patch = output
             .checked_mul(processor.temporal_patch_size)
             .ok_or_else(capacity)?;
@@ -240,6 +242,7 @@ pub(super) fn required_working_set(
             .and_then(|n| n.checked_add(intermediate))
             .and_then(|n| n.checked_add(output))
             .and_then(|n| n.checked_add(weights))
+            .and_then(|n| n.checked_add(resize_extra))
             .ok_or_else(capacity)?;
         let patch_peak = raw
             .checked_add(retained)

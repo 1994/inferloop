@@ -4,6 +4,7 @@
 //! `patch_size × merge_size` and the pixel count lands in `[min_pixels, max_pixels]`, then
 //! normalizes and lays the patches out in spatial-merge-block order with the flattened
 //! `[channel, temporal, patch, patch]` vector the patch-embed projection consumes.
+use super::image_resize;
 use infer_core::{Error, Result};
 use infer_ir::ImageResizePolicy;
 
@@ -13,6 +14,8 @@ pub(crate) const RGB_CHANNELS: usize = 3;
 const BYTE_SCALE: f64 = 255.0;
 /// Reciprocal of [`BYTE_SCALE`], the processor's rescale factor.
 const RESCALE: f32 = 1.0 / 255.0;
+/// Symmetric normalization used by the bit-equivalent SIMD resize path.
+const SYMMETRIC_NORMALIZATION: f32 = 0.5;
 /// Largest aspect ratio the reference processor accepts.
 const MAX_ASPECT_RATIO: usize = 200;
 /// Output pixel centres sit half a pixel past the integer grid.
@@ -129,8 +132,8 @@ pub(crate) struct PatchGrid {
 /// # Errors
 /// Rejects missing frames, frames that disagree with the grid or a grid that does not divide by
 /// the merge size.
-pub(crate) fn patchify(
-    frames: &[&[f32]],
+pub(crate) fn patchify<T: Copy + Into<f32>>(
+    frames: &[&[T]],
     grid: PatchGrid,
     norm: &Normalization,
 ) -> Result<Vec<f32>> {
@@ -198,8 +201,9 @@ pub(crate) fn patchify(
                                     for patch_col in 0..grid.patch {
                                         let y = row * grid.patch + patch_row;
                                         let x = col * grid.patch + patch_col;
-                                        let value =
-                                            frame[(y * resized_width + x) * RGB_CHANNELS + channel];
+                                        let value = frame
+                                            [(y * resized_width + x) * RGB_CHANNELS + channel]
+                                            .into();
                                         pixels.push(norm.apply(value, channel));
                                     }
                                 }
@@ -383,7 +387,6 @@ impl ImageProcessor {
             return Err(Error::invalid("image buffer does not match its dimensions"));
         }
         let (resized_height, resized_width) = self.target_dimensions(height, width, resize)?;
-        let resized = Self::resize_pixels(pixels, height, width, resized_height, resized_width);
         let grid_h = resized_height / self.patch_size;
         let grid_w = resized_width / self.patch_size;
         let merge = self.merge_size;
@@ -392,28 +395,73 @@ impl ImageProcessor {
                 "patch grid does not divide by the merge size",
             ));
         }
+        let grid = PatchGrid {
+            temporal: self.temporal_patch_size,
+            height: grid_h,
+            width: grid_w,
+            patch: self.patch_size,
+            merge: self.merge_size,
+            groups: 1,
+        };
+        let norm = Normalization {
+            mean: self.mean,
+            std: self.std,
+            rescale: self.rescale,
+        };
         // A still image repeats the same frame across the temporal taps.
-        let frames = vec![resized.as_slice(); self.temporal_patch_size];
-        let pixels = patchify(
-            &frames,
-            PatchGrid {
-                temporal: self.temporal_patch_size,
-                height: grid_h,
-                width: grid_w,
-                patch: self.patch_size,
-                merge: self.merge_size,
-                groups: 1,
-            },
-            &Normalization {
-                mean: self.mean,
-                std: self.std,
-                rescale: self.rescale,
-            },
-        )?;
+        let pixels = if self.fast_resize_supported(height, width, resized_height, resized_width) {
+            let resized =
+                image_resize::resize(pixels, height, width, resized_height, resized_width)?;
+            let frames = vec![resized.as_slice(); self.temporal_patch_size];
+            patchify(&frames, grid, &norm)?
+        } else {
+            let resized = Self::resize_pixels(pixels, height, width, resized_height, resized_width);
+            let frames = vec![resized.as_slice(); self.temporal_patch_size];
+            patchify(&frames, grid, &norm)?
+        };
         Ok(PreprocessedImage {
             pixels,
             grid: (1, grid_h, grid_w),
         })
+    }
+
+    // The original resize can produce negative zero. These normalization parameters erase its
+    // sign before the patch tensor is observable, so the unsigned SIMD result is equivalent.
+    fn fast_resize_supported(
+        &self,
+        height: usize,
+        width: usize,
+        target_height: usize,
+        target_width: usize,
+    ) -> bool {
+        (height != target_height || width != target_width)
+            && self.mean == [SYMMETRIC_NORMALIZATION; RGB_CHANNELS]
+            && self.std == [SYMMETRIC_NORMALIZATION; RGB_CHANNELS]
+            && self.rescale == RESCALE
+            && [height, width, target_height, target_width]
+                .into_iter()
+                .all(|dimension| u32::try_from(dimension).is_ok())
+    }
+
+    /// Additional host scratch needed by the selected RGB8 resize implementation.
+    ///
+    /// This supplements the existing scalar resize quote. Dimensions must already have passed
+    /// [`Self::target_dimensions`] and source buffer validation. The bound excludes the source,
+    /// patch output, and allocator bookkeeping.
+    ///
+    /// # Errors
+    /// Returns an error when the dimensions or scratch byte count overflow.
+    pub fn extra_resize_scratch(
+        &self,
+        height: usize,
+        width: usize,
+        target_height: usize,
+        target_width: usize,
+    ) -> Result<usize> {
+        if !self.fast_resize_supported(height, width, target_height, target_width) {
+            return Ok(0);
+        }
+        image_resize::extra_scratch(height, width, target_height, target_width)
     }
 
     /// Separable bicubic resize of an RGB8 image into `height × width`, in `0..=255`.

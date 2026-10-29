@@ -21,6 +21,7 @@ path = "tests/package.rs"
 workspace = true
 
 [dependencies]
+fast_image_resize.workspace = true
 llguidance.workspace = true
 infer-core.workspace = true
 infer-ir.workspace = true
