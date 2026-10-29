@@ -268,6 +268,125 @@ async fn staged_image_waits_for_credit_without_occupying_a_worker() -> Result<()
     Ok(())
 }
 
+#[tokio::test]
+async fn new_image_does_not_take_credit_needed_by_a_waiting_stage() -> Result<()> {
+    let registry = Registry::new(3, 100);
+    let waiting = registry.reserve(RequestId::ONE, 10)?;
+    let blocker = registry.reserve(RequestId::new(2)?, 40)?;
+    let worker = waiting.clone();
+    let mut completion = tokio::spawn(async move {
+        worker
+            .wait_for_bytes(80, Instant::now() + Duration::from_secs(2))
+            .await
+    });
+    assert!(
+        timeout(Duration::from_millis(20), &mut completion)
+            .await
+            .is_err()
+    );
+    let (incoming, funded) = registry.reserve_staged(RequestId::new(3)?, 3, 40)?;
+    assert!(
+        !funded,
+        "new input must not consume a waiting stage's credit"
+    );
+    drop(blocker);
+    timeout(Duration::from_secs(2), completion)
+        .await
+        .map_err(|error| Error::invariant(error.to_string()))?
+        .map_err(|error| Error::invariant(error.to_string()))??;
+    drop(waiting);
+    drop(incoming);
+    drop(registry.reserve(RequestId::new(4)?, 100)?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn decoded_image_waiting_for_credit_precedes_a_new_decode() -> Result<()> {
+    let registry = Registry::new(3, 100);
+    let decoded = registry.reserve(RequestId::ONE, 10)?;
+    let blocker = registry.reserve(RequestId::new(2)?, 60)?;
+    let worker = decoded.clone();
+    let mut processed = tokio::spawn(async move {
+        worker
+            .wait_for_decoded_bytes(10, 80, Instant::now() + Duration::from_secs(2))
+            .await
+    });
+    assert!(
+        timeout(Duration::from_millis(20), &mut processed)
+            .await
+            .is_err()
+    );
+    let (incoming, funded) = registry.reserve_staged(RequestId::new(3)?, 2, 20)?;
+    assert!(!funded);
+    let worker = incoming.clone();
+    let mut decoded_next = tokio::spawn(async move {
+        worker
+            .wait_for_bytes(20, Instant::now() + Duration::from_secs(2))
+            .await
+    });
+    assert!(
+        timeout(Duration::from_millis(20), &mut decoded_next)
+            .await
+            .is_err()
+    );
+    drop(blocker);
+    timeout(Duration::from_secs(2), processed)
+        .await
+        .map_err(|error| Error::invariant(error.to_string()))?
+        .map_err(|error| Error::invariant(error.to_string()))??;
+    timeout(Duration::from_secs(2), decoded_next)
+        .await
+        .map_err(|error| Error::invariant(error.to_string()))?
+        .map_err(|error| Error::invariant(error.to_string()))??;
+    drop(decoded);
+    drop(incoming);
+    drop(registry.reserve(RequestId::new(4)?, 100)?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_decoded_stage_releases_priority_and_wakes_new_input() -> Result<()> {
+    let registry = Registry::new(3, 100);
+    let decoded = registry.reserve(RequestId::ONE, 10)?;
+    let blocker = registry.reserve(RequestId::new(2)?, 60)?;
+    let worker = decoded.clone();
+    let mut processed = tokio::spawn(async move {
+        worker
+            .wait_for_decoded_bytes(10, 80, Instant::now() + Duration::from_secs(2))
+            .await
+    });
+    assert!(
+        timeout(Duration::from_millis(20), &mut processed)
+            .await
+            .is_err()
+    );
+    let (incoming, funded) = registry.reserve_staged(RequestId::new(3)?, 2, 20)?;
+    assert!(!funded);
+    let worker = incoming.clone();
+    let mut next = tokio::spawn(async move {
+        worker
+            .wait_for_bytes(20, Instant::now() + Duration::from_secs(2))
+            .await
+    });
+    assert!(timeout(Duration::from_millis(20), &mut next).await.is_err());
+    assert!(registry.cancel(RequestId::ONE));
+    let error = timeout(Duration::from_secs(2), processed)
+        .await
+        .map_err(|error| Error::invariant(error.to_string()))?
+        .map_err(|error| Error::invariant(error.to_string()))?
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Capacity);
+    drop(decoded);
+    timeout(Duration::from_secs(2), next)
+        .await
+        .map_err(|error| Error::invariant(error.to_string()))?
+        .map_err(|error| Error::invariant(error.to_string()))??;
+    drop(blocker);
+    drop(incoming);
+    drop(registry.reserve(RequestId::new(4)?, 100)?);
+    Ok(())
+}
+
 #[test]
 fn initial_staging_checks_identities_and_retained_capacity() -> Result<()> {
     let registry = Registry::new(3, 64);
@@ -277,6 +396,14 @@ fn initial_staging_checks_identities_and_retained_capacity() -> Result<()> {
     assert_eq!(
         registry
             .reserve_staged(RequestId::ONE, 3, 25)
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        registry
+            .reserve_staged(RequestId::ONE, 3, 65)
             .err()
             .unwrap()
             .code,
@@ -674,6 +801,69 @@ async fn staged_requests_make_progress_under_a_shared_credit_limit() -> Result<(
         while let Some(event) = timeout(Duration::from_secs(5), output.recv())
             .await
             .map_err(|e| Error::invariant(e.to_string()))?
+        {
+            if matches!(event?, EngineOutput::Finished(_)) {
+                break;
+            }
+        }
+    }
+    handle.shutdown().await
+}
+
+#[tokio::test]
+async fn many_staged_images_finish_with_bounded_shared_credit() -> Result<()> {
+    use crate::cpu::{StagingPlan, StagingQuote};
+    use std::sync::Barrier;
+    use std::sync::atomic::AtomicUsize;
+
+    let handle = handle_with_cpu(CpuConfig {
+        workers: 2,
+        max_jobs: 32,
+        max_bytes: 1000,
+        ..CpuConfig::default()
+    })?;
+    let barrier = Arc::new(Barrier::new(2));
+    let arrivals = Arc::new(AtomicUsize::new(0));
+    let mut tasks = Vec::new();
+    for value in 1..=16 {
+        let handle = handle.clone();
+        let barrier = barrier.clone();
+        let arrivals = arrivals.clone();
+        let id = RequestId::new(value)?;
+        tasks.push(tokio::spawn(async move {
+            handle
+                .submit_staged_preparing(
+                    id,
+                    StagingQuote::new(2, 260)?,
+                    None,
+                    None,
+                    move |_| {
+                        if arrivals.fetch_add(1, Ordering::Relaxed) < 2 {
+                            barrier.wait();
+                        }
+                        Ok(StagingPlan::Deferred(id, StagingQuote::new(40, 480)?))
+                    },
+                    |id, _| {
+                        let request = serde_json::from_value(serde_json::json!({
+                            "id": id.get(), "model": 1,
+                            "input": {"Sequence": {"tokens": [1, 2, 3]}},
+                            "workload": {"Generate": {"max_new_tokens": 2}}
+                        }))
+                        .map_err(|error| Error::invalid(error.to_string()))?;
+                        Ok((request, None))
+                    },
+                )
+                .await
+        }));
+    }
+    for task in tasks {
+        let mut output = timeout(Duration::from_secs(10), task)
+            .await
+            .map_err(|error| Error::invariant(error.to_string()))?
+            .map_err(|error| Error::invariant(error.to_string()))??;
+        while let Some(event) = timeout(Duration::from_secs(10), output.recv())
+            .await
+            .map_err(|error| Error::invariant(error.to_string()))?
         {
             if matches!(event?, EngineOutput::Finished(_)) {
                 break;

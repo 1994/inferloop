@@ -294,8 +294,9 @@ impl RuntimeHandle {
             input: stage,
             pending: pending.clone(),
         };
-        pending.retain_bytes(quote.retained())?;
-        pending.wait_for_bytes(quote.peak(), deadline).await?;
+        pending
+            .wait_for_decoded_bytes(quote.retained(), quote.peak(), deadline)
+            .await?;
         let request = self
             .cpu
             .run_preparing_wait(quote.peak(), deadline, &pending, move |context| {

@@ -21,6 +21,12 @@ struct Usage {
 struct GrowthDemand {
     id: RequestId,
     target: usize,
+    stage: GrowthStage,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GrowthStage {
+    Input,
+    Decoded,
 }
 pub struct Registry {
     usage: Mutex<Usage>,
@@ -53,12 +59,22 @@ impl Registry {
             .usage
             .lock()
             .map_err(|_| Error::invariant("ingress registry poisoned"))?;
-        if usage.stopped {
-            return Err(Error::new(ErrorCode::Capacity, "ingress is stopping"));
-        }
-        if usage.entries.contains_key(&id) {
-            return Err(Error::new(ErrorCode::Conflict, "request already preparing"));
-        }
+        let cancelled = self.reserve_entry(&mut usage, id, bytes)?;
+        drop(usage);
+        Ok(Arc::new(Pending {
+            registry: self.clone(),
+            id,
+            cancelled,
+        }))
+    }
+
+    fn reserve_entry(
+        &self,
+        usage: &mut Usage,
+        id: RequestId,
+        bytes: usize,
+    ) -> Result<Arc<AtomicBool>> {
+        Self::check_identity(usage, id)?;
         let total = usage
             .bytes
             .checked_add(bytes)
@@ -72,12 +88,17 @@ impl Registry {
         let cancelled = Arc::new(AtomicBool::new(false));
         usage.entries.insert(id, (cancelled.clone(), bytes));
         usage.bytes = total;
-        drop(usage);
-        Ok(Arc::new(Pending {
-            registry: self.clone(),
-            id,
-            cancelled,
-        }))
+        Ok(cancelled)
+    }
+
+    fn check_identity(usage: &Usage, id: RequestId) -> Result<()> {
+        if usage.stopped {
+            return Err(Error::new(ErrorCode::Capacity, "ingress is stopping"));
+        }
+        if usage.entries.contains_key(&id) {
+            return Err(Error::new(ErrorCode::Conflict, "request already preparing"));
+        }
+        Ok(())
     }
     /// Reserve the full preparation quote when possible, otherwise retain the input's credit.
     pub(super) fn reserve_staged(
@@ -89,17 +110,38 @@ impl Registry {
         if retained > peak {
             return Err(Error::invariant("staged input exceeds its peak quote"));
         }
-        match self.reserve(id, peak) {
-            Ok(pending) => Ok((pending, true)),
-            Err(error)
-                if error.code == ErrorCode::Capacity
-                    && retained < peak
-                    && peak <= self.max_bytes =>
-            {
-                self.reserve(id, retained).map(|pending| (pending, false))
-            }
-            Err(error) => Err(error),
+        let mut usage = self
+            .usage
+            .lock()
+            .map_err(|_| Error::invariant("ingress registry poisoned"))?;
+        Self::check_identity(&usage, id)?;
+        usage
+            .bytes
+            .checked_add(peak)
+            .ok_or_else(|| Error::invalid("ingress bytes overflow"))?;
+        if peak > self.max_bytes {
+            return Err(Error::new(
+                ErrorCode::Capacity,
+                "pending ingress budget exhausted",
+            ));
         }
+        let available = self
+            .max_bytes
+            .checked_sub(usage.bytes)
+            .ok_or_else(|| Error::invariant("ingress free bytes underflow"))?;
+        // Do not bypass queued growth: it may already own decoded pixels and needs headroom
+        // to finish before another input can safely start decoding.
+        let funded = (usage.waiters.is_empty() || retained == peak) && peak <= available;
+        let cancelled = self.reserve_entry(&mut usage, id, if funded { peak } else { retained })?;
+        drop(usage);
+        Ok((
+            Arc::new(Pending {
+                registry: self.clone(),
+                id,
+                cancelled,
+            }),
+            funded,
+        ))
     }
     pub fn cancel(&self, id: RequestId) -> bool {
         let Ok(usage) = self.usage.lock() else {
@@ -238,12 +280,23 @@ impl Pending {
     }
 
     /// Return unused media preparation credit while retaining the staged input.
+    #[cfg(test)]
     pub(super) fn retain_bytes(&self, bytes: usize) -> Result<()> {
         let mut usage = self
             .registry
             .usage
             .lock()
             .map_err(|_| Error::invariant("ingress registry poisoned"))?;
+        self.retain_locked(&mut usage, bytes)?;
+        let wake = !usage.waiters.is_empty();
+        drop(usage);
+        if wake {
+            self.registry.changed.notify_waiters();
+        }
+        Ok(())
+    }
+
+    fn retain_locked(&self, usage: &mut Usage, bytes: usize) -> Result<()> {
         self.check()?;
         let (cancelled, current) = usage
             .entries
@@ -265,23 +318,43 @@ impl Pending {
             .ok_or_else(|| Error::invariant("pending ingress identity missing"))?;
         *current = bytes;
         usage.bytes = total;
-        let wake = !usage.waiters.is_empty();
-        drop(usage);
-        if wake {
-            self.registry.changed.notify_waiters();
-        }
         Ok(())
     }
 
     /// Wait without occupying a CPU worker until this request's full quote fits.
     pub(super) async fn wait_for_bytes(&self, target: usize, deadline: Instant) -> Result<()> {
+        self.wait_for_growth(target, deadline, GrowthStage::Input, None)
+            .await
+    }
+
+    /// Publish decoded retention and its processing demand atomically before waking new inputs.
+    pub(super) async fn wait_for_decoded_bytes(
+        &self,
+        retained: usize,
+        target: usize,
+        deadline: Instant,
+    ) -> Result<()> {
+        if retained > target {
+            return Err(Error::invariant("staged input exceeds its peak quote"));
+        }
+        self.wait_for_growth(target, deadline, GrowthStage::Decoded, Some(retained))
+            .await
+    }
+
+    async fn wait_for_growth(
+        &self,
+        target: usize,
+        deadline: Instant,
+        stage: GrowthStage,
+        retained: Option<usize>,
+    ) -> Result<()> {
         if target > self.registry.max_bytes {
             return Err(Error::new(
                 ErrorCode::Capacity,
                 "image staging quote exceeds ingress budget",
             ));
         }
-        let mut waiter = GrowthWait::enter(self, target)?;
+        let mut waiter = GrowthWait::enter(self, target, stage, retained)?;
         loop {
             if Instant::now() >= deadline {
                 return Err(Error::new(
@@ -308,7 +381,12 @@ struct GrowthWait<'a> {
     queued: bool,
 }
 impl<'a> GrowthWait<'a> {
-    fn enter(pending: &'a Pending, target: usize) -> Result<Self> {
+    fn enter(
+        pending: &'a Pending,
+        target: usize,
+        stage: GrowthStage,
+        retained: Option<usize>,
+    ) -> Result<Self> {
         let mut usage = pending
             .registry
             .usage
@@ -328,11 +406,18 @@ impl<'a> GrowthWait<'a> {
         {
             return Err(Error::invariant("pending ingress identity changed"));
         }
+        if let Some(retained) = retained {
+            pending.retain_locked(&mut usage, retained)?;
+        }
         usage.waiters.push_back(GrowthDemand {
             id: pending.id,
             target,
+            stage,
         });
         drop(usage);
+        if stage == GrowthStage::Decoded {
+            pending.registry.changed.notify_waiters();
+        }
         Ok(Self {
             pending,
             target,
@@ -357,8 +442,15 @@ impl<'a> GrowthWait<'a> {
             .max_bytes
             .checked_sub(usage.bytes)
             .ok_or_else(|| Error::invariant("ingress free bytes underflow"))?;
+        let decoded_waiting = usage
+            .waiters
+            .iter()
+            .any(|waiter| waiter.stage == GrowthStage::Decoded);
         let mut selected = None;
         for waiter in &usage.waiters {
+            if decoded_waiting && waiter.stage != GrowthStage::Decoded {
+                continue;
+            }
             let (_, current) = usage
                 .entries
                 .get(&waiter.id)
