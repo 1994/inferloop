@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 415
+      "tests": 416
     },
     "frontdoor": {
       "benches": 0,
@@ -173,7 +173,7 @@
     "real CUDA/MTP checkpoint; reserve graphs only after quote acknowledgement": 1,
     "real CUDA/MTP2 checkpoint; run under safe-run with an explicit fixture": 3,
     "real MTP2 checkpoint and CUDA; run inside safe-run": 1,
-    "real MTP2 checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 2,
+    "real MTP2 checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 3,
     "real MTP2 checkpoint, CUDA, frozen table/tokens and protected serial runner required": 1,
     "real MTP2 checkpoint/CUDA; fixed-batch diagnostic under safe-run with profile paths": 1,
     "real MTP2 checkpoint/CUDA; validates pooled quotes without resident home programs": 1,
@@ -1404,11 +1404,11 @@
     }
   ],
   "totals": {
-    "all": 1016,
+    "all": 1017,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1016
+    "tests": 1017
   }
 }
