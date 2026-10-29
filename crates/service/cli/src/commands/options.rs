@@ -1,5 +1,6 @@
 //! Options commands.
 use crate::constants::DEFAULT_LISTEN_PORT;
+use infer_frontdoor::ImageProcessingOptions;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
@@ -15,11 +16,32 @@ pub struct ServeOptions {
     pub package: Option<PathBuf>,
     #[arg(long, default_value_t = 0, hide = true)]
     pub host_memory_mib: u64,
+    /// Default image processor options as JSON; requests can override supported keys.
+    #[arg(long = "mm-processor-kwargs", value_name = "JSON", value_parser = parse_image_options)]
+    pub image_options: Option<ImageProcessingOptions>,
 }
 impl ServeOptions {
     pub const fn default_listen() -> SocketAddr {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), DEFAULT_LISTEN_PORT)
     }
+
+    #[cfg(any(native_backend, test))]
+    pub(crate) fn validate_image_options(
+        &self,
+        limits: infer_models::MediaLimits,
+        text_only: bool,
+    ) -> infer_core::Result<()> {
+        if self.image_options.is_some() && (text_only || limits.images == 0) {
+            return Err(infer_core::Error::unsupported(
+                "image processor options require images to be enabled",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn parse_image_options(value: &str) -> Result<ImageProcessingOptions, String> {
+    ImageProcessingOptions::parse(value).map_err(|error| error.to_string())
 }
 #[derive(clap::Args)]
 pub struct RunOptions {

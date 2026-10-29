@@ -658,6 +658,70 @@ async fn image_parts_are_rejected_on_a_text_only_deployment() {
 }
 
 #[tokio::test]
+async fn chat_image_resize_override_changes_prompt_geometry() {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+    use std::io::Cursor;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multimodal-tiny");
+    let assets = Arc::new(infer_models::TextAssets::open(&root, 4096).unwrap());
+    let media_assets = infer_models::MultimodalAssets::open(&root)
+        .unwrap()
+        .unwrap();
+    let mut model = support::model(ModelId::ONE);
+    model.max_sequence = 4096;
+    let mut registry = KernelRegistry::default();
+    registry.register(&support::DeclaredKernels).unwrap();
+    let backend = ProtocolBackend::peaking_at(3, 16, 8, &model)
+        .unwrap()
+        .multimodal();
+    let media_tasks = backend.media_tasks();
+    let engine = Engine::new(
+        backend,
+        model,
+        PrecisionPlan::f32(),
+        &registry,
+        RuntimeConfig::default(),
+    )
+    .unwrap();
+    let handle = RuntimeHandle::start(engine).unwrap();
+    let service = Arc::new(crate::MediaService::new(
+        media_assets,
+        infer_models::MediaLimits::default(),
+    ));
+    let app = crate::router_with_text_and_media(handle.clone(), assets, Some(service));
+    let mut encoded = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image::RgbImage::new(256, 128))
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    let url = format!(
+        "data:image/png;base64,{}",
+        STANDARD.encode(encoded.into_inner())
+    );
+    let payload = |resize: bool| {
+        json!({
+            "model":"1",
+            "messages":[{"role":"user","content":[
+                {"type":"text","text":"describe"},
+                {"type":"image_url","image_url":{"url":url}}
+            ]}],
+            "mm_processor_kwargs":{"images_kwargs":{"do_resize":resize}},
+            "max_tokens":1
+        })
+    };
+    let (without_status, without) =
+        call(app.clone(), "/v1/chat/completions", Some(payload(false))).await;
+    let (with_status, with) = call(app, "/v1/chat/completions", Some(payload(true))).await;
+    assert_eq!(without_status, StatusCode::OK, "{without}");
+    assert_eq!(with_status, StatusCode::OK, "{with}");
+    let without_tokens = without["usage"]["prompt_tokens"].as_u64().unwrap();
+    let with_tokens = with["usage"]["prompt_tokens"].as_u64().unwrap();
+    assert!(without_tokens < with_tokens);
+    assert!(media_tasks.load(Ordering::Relaxed) >= 2);
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn public_chat_rejects_server_local_media_paths() {
     let (handle, assets) = fixture();
     let app = router_with_text(handle.clone(), assets);

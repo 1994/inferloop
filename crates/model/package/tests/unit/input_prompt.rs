@@ -258,6 +258,15 @@ fn media_layout_exposes_every_span_and_the_next_rotary_coordinate() -> Result<()
         spans: expanded.spans,
     };
     let layout = media_layout(&prepared, &imported, &Modality::Image)?;
+    // Layout depends on geometry, not the patch payload. The CUDA executor can therefore
+    // validate layout without copying the request-owned pixels into a second prompt.
+    let mut with_pixels = prepared.clone();
+    with_pixels.images[0].pixels = vec![0.25; 32];
+    with_pixels.images[1].pixels = vec![0.75; 48];
+    assert_eq!(
+        layout,
+        media_layout(&with_pixels, &imported, &Modality::Image)?
+    );
     assert_eq!(layout.spans.len(), 2);
     assert_eq!(layout.spans[0].range, 1..5);
     assert_eq!(layout.spans[1].range, 8..14);

@@ -8,7 +8,7 @@ use crate::cpu::CpuContext;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use infer_core::{Error, ErrorCode, MediaId, Result};
-use infer_ir::{MediaInput, MediaItem, Modality};
+use infer_ir::{ImageResizePolicy, MediaInput, MediaItem, Modality};
 use infer_models::{
     MediaLimits, MultimodalAssets, PreparedPrompt, RawImage, RawVideo, RgbImage, TextAssets,
 };
@@ -25,6 +25,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+mod options;
+pub use options::ImageProcessingOptions;
+use options::check_working_set;
+use options::check_working_set_with_resize;
 
 /// Largest accepted image payload after decoding or download.
 const MAX_IMAGE_BYTES: usize = 24 * 1024 * 1024;
@@ -97,6 +102,7 @@ pub struct MediaService {
     assets: Arc<MultimodalAssets>,
     limits: MediaLimits,
     source: SourcePolicy,
+    image_options: Option<ImageProcessingOptions>,
 }
 impl MediaService {
     #[must_use]
@@ -105,7 +111,14 @@ impl MediaService {
             assets,
             limits,
             source: SourcePolicy::Public,
+            image_options: None,
         }
+    }
+    /// Apply validated image resize defaults to this service.
+    #[must_use]
+    pub const fn with_image_options(mut self, options: ImageProcessingOptions) -> Self {
+        self.image_options = Some(options);
+        self
     }
     #[must_use]
     pub const fn limits(&self) -> MediaLimits {
@@ -123,6 +136,17 @@ impl MediaService {
         requests: &[MediaRequest],
         context: &CpuContext,
     ) -> Result<(PreparedPrompt, Vec<MediaInput>)> {
+        self.prepare_with_options(assets, prompt, requests, context, None)
+    }
+
+    pub(crate) fn prepare_with_options(
+        &self,
+        assets: &TextAssets,
+        prompt: &str,
+        requests: &[MediaRequest],
+        context: &CpuContext,
+        request_options: Option<&ImageProcessingOptions>,
+    ) -> Result<(PreparedPrompt, Vec<MediaInput>)> {
         if requests.is_empty() {
             return Err(Error::invalid("media preparation needs at least one item"));
         }
@@ -139,13 +163,14 @@ impl MediaService {
         self.limits.check(&modality, requests.len())?;
         let prepared = match modality {
             Modality::Image => {
-                let images = requests
-                    .iter()
-                    .map(|request| load_image_with(&request.url, self.source, Some(context)))
-                    .collect::<Result<Vec<_>>>()?;
-                self.assets.prepare_images(assets, prompt, &images)?
+                self.prepare_images(assets, prompt, requests, context, request_options)?
             }
             Modality::Video => {
+                if request_options.is_some_and(|options| !options.is_empty()) {
+                    return Err(Error::unsupported(
+                        "image processor options do not apply to video",
+                    ));
+                }
                 let videos = requests
                     .iter()
                     .map(|request| load_video_with(&request.url, self.source, Some(context)))
@@ -184,6 +209,54 @@ impl MediaService {
             });
         }
         Ok((prepared, media))
+    }
+
+    fn prepare_images(
+        &self,
+        assets: &TextAssets,
+        prompt: &str,
+        requests: &[MediaRequest],
+        context: &CpuContext,
+        request_options: Option<&ImageProcessingOptions>,
+    ) -> Result<PreparedPrompt> {
+        let options = self
+            .image_options
+            .clone()
+            .unwrap_or_default()
+            .merge(request_options)?;
+        let processor = options.processor(&self.assets.images)?;
+        let resize = options.resize_policy();
+        let images = requests
+            .iter()
+            .map(|request| load_image_with(&request.url, self.source, Some(context)))
+            .collect::<Result<Vec<_>>>()?;
+        if !options.is_empty() {
+            if resize == ImageResizePolicy::Smart {
+                check_working_set(&images, &processor)?;
+            } else {
+                check_working_set_with_resize(&images, &processor, resize)?;
+            }
+        }
+        if resize == ImageResizePolicy::Smart {
+            infer_models::prepare(
+                assets,
+                &processor,
+                &self.assets.imported,
+                prompt,
+                &images,
+                &Modality::Image,
+            )
+        } else {
+            infer_models::prepare_with_resize(
+                assets,
+                &processor,
+                &self.assets.imported,
+                prompt,
+                &images,
+                &Modality::Image,
+                resize,
+            )
+        }
     }
 }
 

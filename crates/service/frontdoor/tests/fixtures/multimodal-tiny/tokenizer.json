@@ -1,0 +1,87 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {
+      "id": 6,
+      "content": "<|vision_start|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 7,
+      "content": "<|vision_end|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 8,
+      "content": "<|image_pad|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 9,
+      "content": "<|video_pad|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    }
+  ],
+  "normalizer": null,
+  "pre_tokenizer": {
+    "type": "Whitespace"
+  },
+  "post_processor": null,
+  "decoder": null,
+  "model": {
+    "type": "WordLevel",
+    "vocab": {
+      "[UNK]": 0,
+      "hello": 1,
+      "world": 2,
+      "system": 3,
+      "user": 4,
+      "assistant": 5,
+      "token10": 10,
+      "token11": 11,
+      "token12": 12,
+      "token13": 13,
+      "token14": 14,
+      "token15": 15,
+      "token16": 16,
+      "token17": 17,
+      "token18": 18,
+      "token19": 19,
+      "token20": 20,
+      "token21": 21,
+      "token22": 22,
+      "token23": 23,
+      "token24": 24,
+      "token25": 25,
+      "token26": 26,
+      "token27": 27,
+      "token28": 28,
+      "token29": 29,
+      "token30": 30,
+      "token31": 31,
+      "<|vision_start|>": 6,
+      "<|vision_end|>": 7,
+      "<|image_pad|>": 8,
+      "<|video_pad|>": 9
+    },
+    "unk_token": "[UNK]"
+  }
+}

@@ -22,6 +22,58 @@ fn model_path_serves_with_automatic_defaults() {
 }
 
 #[test]
+fn image_processor_options_are_validated_for_both_server_entrypoints() {
+    let kwargs = r#"{"images_kwargs":{"do_resize":false}}"#;
+    for args in [
+        vec!["infer", "./model", "--mm-processor-kwargs", kwargs],
+        vec![
+            "infer",
+            "serve",
+            "--package",
+            "./model",
+            "--mm-processor-kwargs",
+            kwargs,
+        ],
+    ] {
+        let Command::Serve(options) = Cli::try_parse_from(args).unwrap().into_command().unwrap()
+        else {
+            panic!("expected server")
+        };
+        assert!(options.image_options.is_some());
+        let video_only = infer_models::MediaLimits {
+            images: 0,
+            videos: 1,
+        };
+        assert_eq!(
+            options
+                .validate_image_options(video_only, false)
+                .unwrap_err()
+                .code,
+            infer_core::ErrorCode::Unsupported
+        );
+        assert!(
+            options
+                .validate_image_options(infer_models::MediaLimits::default(), false)
+                .is_ok()
+        );
+        assert!(
+            options
+                .validate_image_options(infer_models::MediaLimits::default(), true)
+                .is_err()
+        );
+    }
+    assert!(
+        Cli::try_parse_from([
+            "infer",
+            "./model",
+            "--mm-processor-kwargs",
+            r#"{"do_resize":"false"}"#,
+        ])
+        .is_err()
+    );
+}
+
+#[test]
 fn speculation_distinguishes_automatic_selection_from_explicit_zero() {
     for args in [
         vec![

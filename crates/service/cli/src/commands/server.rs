@@ -10,6 +10,7 @@ use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 
 pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Result<()> {
+    options.validate_image_options(backend_choice.media_limits, backend_choice.text_only)?;
     #[cfg(cuda_backend)]
     let (mut backend_choice, tuning_worker) = super::tuning_worker::prepare(backend_choice)?;
     #[cfg(not(cuda_backend))]
@@ -19,14 +20,16 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
     if !tuning_worker {
         backend_choice.pool_capture = backend::PoolCapture::AtLoad;
     }
+    let media_limits = backend_choice.media_limits;
+    let text_only = backend_choice.text_only;
+    let has_image_options = options.image_options.is_some();
     let ServeOptions {
         listen,
         config: config_path,
         package,
         host_memory_mib,
+        image_options,
     } = options;
-    let media_limits = backend_choice.media_limits;
-    let text_only = backend_choice.text_only;
     let engine = configured_engine(
         config_path.as_deref().map(read_json).transpose()?,
         None,
@@ -54,8 +57,19 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
             .map(infer_models::MultimodalAssets::open)
             .transpose()?
             .flatten()
-            .map(|assets| Arc::new(infer_frontdoor::MediaService::new(assets, media_limits)))
+            .map(|assets| {
+                let service = infer_frontdoor::MediaService::new(assets, media_limits);
+                Arc::new(match image_options {
+                    Some(options) => service.with_image_options(options),
+                    None => service,
+                })
+            })
     };
+    if has_image_options && media.is_none() {
+        return Err(Error::unsupported(
+            "image processor options require a multimodal package",
+        ));
+    }
     Runtime::new()
         .map_err(|e| Error::new(ErrorCode::Backend, e.to_string()))?
         .block_on(async move {

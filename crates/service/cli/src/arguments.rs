@@ -111,6 +111,7 @@ impl Cli {
                 || self.serve.package.is_some()
                 || self.serve.config.is_some()
                 || self.serve.host_memory_mib != 0
+                || self.serve.image_options.is_some()
                 || self.serve.listen != commands::ServeOptions::default_listen())
         {
             return Err(clap::Error::raw(
