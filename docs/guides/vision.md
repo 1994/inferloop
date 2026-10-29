@@ -27,7 +27,7 @@ OpenAI chat 的 `image_url` / `video_url` 内容部分现在进入真实 serving
 - media 请求不参与 prefix reuse，也不支持 MTP speculation；这两条都是显式错误而不是静默降级。
 - media payload 与请求生命周期绑定，until backend prefill completes；checkpoint 在 media 状态存活时拒绝，避免恢复后丢失像素或设备 embedding。
 
-`cuda-multimodal-generate` / `cuda-multimodal-media` / `cuda-parity-2b` 仍是独立数值/示例入口。音频与完整 DeepStack 路径不在此验收范围：Qwen3-VL 没有音频模态，Qwen Omni 也未被 provider 导入。当前 provider 不执行 `deepstack_visual_indexes` 指定的融合，且导入时不会拒绝非空索引；关闭 DeepStack 的共享路径实验不代表完整 Qwen3-VL 模型的推理结果。
+`cuda-multimodal-generate` / `cuda-multimodal-media` / `cuda-parity-2b` 仍是独立数值/示例入口。音频与完整 DeepStack 路径不在此验收范围：Qwen3-VL 没有音频模态，Qwen Omni 也未被 provider 导入。非空 `deepstack_visual_indexes` 的多模态配置会明确返回 unsupported；Qwen3-VL 省略该字段时也会拒绝，因为 [Transformers 的默认值启用 DeepStack](https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_vl/configuration_qwen3_vl.py)。关闭 DeepStack 的共享路径实验不代表完整 Qwen3-VL 模型的推理结果。配置显式指定 `language_model_only` 时仍可导入文本路径。
 
 ## Head-width padding (OPEN)
 

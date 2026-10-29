@@ -10,6 +10,7 @@ use infer_spi::{
     PrecisionPolicy, ProviderMetadata, SPI_VERSION, SpeculationPlan,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value as DeepstackValue;
 
 /// Maximum layer count accepted from a Qwen text configuration.
 const MAX_HIDDEN_LAYERS: usize = 10_000;
@@ -29,11 +30,20 @@ pub struct VisionConfig {
     #[serde(default)]
     pub hidden_act: Option<String>,
 }
+
+#[derive(Deserialize)]
+struct ConfiguredVision {
+    #[serde(flatten)]
+    geometry: VisionConfig,
+    #[serde(default)]
+    deepstack_visual_indexes: Option<DeepstackValue>,
+}
+
 #[derive(Deserialize)]
 struct HfConfig {
     model_type: String,
     text_config: Option<TextConfig>,
-    vision_config: Option<VisionConfig>,
+    vision_config: Option<ConfiguredVision>,
     #[serde(default)]
     language_model_only: bool,
     #[serde(default)]
@@ -216,8 +226,13 @@ impl QwenProvider {
         } else {
             config.vision_config
         };
-        validate_vision(vision.as_ref(), text.hidden_size)?;
-        let encoder = vision_encoder(vision.as_ref())?;
+        if config.model_type == "qwen3_vl" && !config.language_model_only && vision.is_none() {
+            return Err(Error::unsupported(
+                "Qwen3-VL requires an explicit vision configuration; its default uses DeepStack",
+            ));
+        }
+        validate_vision(vision.as_ref(), text.hidden_size, &config.model_type)?;
+        let encoder = vision_encoder(vision.as_ref().map(|config| &config.geometry))?;
         if let Some(encoder) = &encoder {
             validate(encoder)?;
         }
@@ -591,8 +606,24 @@ fn vision_encoder(vision: Option<&VisionConfig>) -> Result<Option<ModalityEncode
     }))
 }
 
-fn validate_vision(vision: Option<&VisionConfig>, hidden_size: usize) -> Result<()> {
-    if let Some(vision) = vision
+fn validate_vision(
+    vision: Option<&ConfiguredVision>,
+    hidden_size: usize,
+    model_type: &str,
+) -> Result<()> {
+    let requires_deepstack =
+        match vision.and_then(|config| config.deepstack_visual_indexes.as_ref()) {
+            Some(DeepstackValue::Array(indexes)) => !indexes.is_empty(),
+            Some(_) => return Err(Error::invalid("invalid vision DeepStack indexes")),
+            // Qwen3-VL's upstream default enables DeepStack when this field is omitted.
+            None => vision.is_some() && model_type == "qwen3_vl",
+        };
+    if requires_deepstack {
+        return Err(Error::unsupported(
+            "Qwen vision DeepStack feature fusion is not implemented",
+        ));
+    }
+    if let Some(vision) = vision.map(|config| &config.geometry)
         && ([
             vision.depth,
             vision.hidden_size,
