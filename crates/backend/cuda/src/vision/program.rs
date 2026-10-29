@@ -20,6 +20,10 @@ use infer_spi::ModalityEncoder;
 use std::env::var;
 use std::sync::Arc;
 
+#[cfg(test)]
+#[path = "../../tests/unit/vision_projection_output.rs"]
+mod projection_output_tests;
+
 /// Token tile of every vision projection, matching the prompt GEMM.
 const TOKEN_TILE: usize = 32;
 /// Column tile of every vision projection, matching the prompt GEMM.
@@ -218,8 +222,22 @@ pub fn project_with(
         .launch()
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let values = device.read(&Arc::new(output))?;
-    Ok(values[..rows * out_features].to_vec())
+    projection_output(device.read(&Arc::new(output))?, rows, out_features)
+}
+
+fn projection_output(values: Vec<f32>, rows: usize, out_features: usize) -> Result<Vec<f32>> {
+    let len = rows
+        .checked_mul(out_features)
+        .ok_or_else(|| Error::invalid("vision projection output overflow"))?;
+    if values.len() < len {
+        return Err(Error::invariant("vision projection output truncated"));
+    }
+    if values.len() == len {
+        Ok(values)
+    } else {
+        // Do not retain the extra padded rows in long-lived host results.
+        Ok(values[..len].to_vec())
+    }
 }
 
 /// Padded intermediate width of the block MLPs.

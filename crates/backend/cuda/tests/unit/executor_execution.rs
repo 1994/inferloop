@@ -1,4 +1,4 @@
-use super::{candidate_pool_capacity, pool_retry_budget, pooled_envelope};
+use super::{append_encoded_media, candidate_pool_capacity, pool_retry_budget, pooled_envelope};
 use crate::constants::CB_SLOT_TOKENS;
 use infer_ir::OutputReadout;
 use std::{env::var, error::Error};
@@ -139,4 +139,25 @@ fn retry_quote_accounts_for_storage_retained_by_previous_captures() {
     assert_eq!(next, 49);
     // Both retained increments fit alongside the smaller final capture.
     assert!(next + 20 + 10 <= envelope);
+}
+
+#[test]
+fn media_rows_reuse_the_first_buffer_and_keep_image_order() {
+    let mut output = Vec::new();
+    let first = vec![1.0, -2.0, 3.0, 4.0];
+    let address = first.as_ptr();
+    append_encoded_media(&mut output, first);
+    assert_eq!(output.as_ptr(), address);
+    append_encoded_media(&mut output, vec![5.0, 6.0]);
+    append_encoded_media(&mut output, vec![7.0, 8.0]);
+    assert_eq!(output, [1.0, -2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+}
+
+#[test]
+fn empty_media_rows_do_not_change_other_images() {
+    let mut output = Vec::new();
+    append_encoded_media(&mut output, Vec::new());
+    append_encoded_media(&mut output, vec![1.0, 2.0]);
+    append_encoded_media(&mut output, Vec::new());
+    assert_eq!(output, [1.0, 2.0]);
 }

@@ -22,6 +22,15 @@ use std::ops::Range;
 /// Bound capture/replan work while adapting tensor quotes to observed driver storage.
 const POOL_CAPTURE_ATTEMPTS: usize = 3;
 
+/// Append the next encoded image, taking the first nonempty buffer without copying it.
+fn append_encoded_media(data: &mut Vec<f32>, encoded: Vec<f32>) {
+    if data.is_empty() {
+        *data = encoded;
+    } else {
+        data.extend(encoded);
+    }
+}
+
 /// The prompt rows a just-finished chunk leaves as a reusable prefix, if any.
 ///
 /// Only a logits-readout generation that consumed prefill tokens qualifies, at the regular
@@ -1686,7 +1695,7 @@ impl Sequence {
         for item in &plan.items {
             let encoded = tower.encode_pixels(loaded.device(), &item.pixels, item.grid)?;
             bases.push(data.len() / hidden);
-            data.extend(encoded);
+            append_encoded_media(&mut data, encoded);
         }
         let rows = data.len() / hidden;
         tracing::debug!(target: "infer::executor", rows, bases = ?bases,
