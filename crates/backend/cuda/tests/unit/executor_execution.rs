@@ -237,7 +237,14 @@ fn media_position_fixture(
         },
     )?;
     let budget = loaded.device().allocatable_memory_bytes()?;
-    let mut executor = CudaExecutor::new(loaded, budget, 3)?;
+    let mut executor = if mtp_depth == 0 {
+        CudaExecutor::new(loaded, budget, 3)?
+    } else {
+        // Only the target verification graph is needed: media reservations do not draft.
+        let mut executor = CudaExecutor::new_bounded(loaded, budget, 3)?;
+        executor.slots = Some(executor.loaded.slot_pool(2, 128, Some(256))?);
+        executor
+    };
     assert!(
         executor.slots.is_some(),
         "test needs the pooled decode path"
@@ -254,7 +261,8 @@ fn media_position_fixture(
         }],
     };
     let states = [StateId::ONE, StateId::new(2)?, StateId::new(3)?];
-    for (index, &state) in states.iter().enumerate() {
+    let state_count = if mtp_depth == 0 { states.len() } else { 1 };
+    for (index, &state) in states.iter().take(state_count).enumerate() {
         executor.reserve_media(state, 128, OutputReadout::Logits, &plan)?;
         let request = RequestId::new(u64::try_from(index)? + 1)?;
         let task = media_position_task(
@@ -337,11 +345,11 @@ fn pooled_decode_preserves_multimodal_rotary_position() -> Result<(), Box<dyn Er
 fn pooled_verification_preserves_multimodal_rotary_position() -> Result<(), Box<dyn Error>> {
     let (mut executor, prompt, states) = media_position_fixture(2)?;
     assert_eq!(executor.slots.as_ref().and_then(SlotPool::verify), Some(3));
-    assert!(executor.states[&states[1]].speculation.is_none());
+    assert!(executor.states[&states[0]].speculation.is_none());
     let expected = pooled_position_reference(&mut executor, states[0], 65, 8)?;
     assert!(!expected.is_empty(), "verification needs complete logits");
     let task = media_position_task(
-        states[1],
+        states[0],
         RequestId::ONE,
         ExecutionInput::Decode {
             token: 65,
@@ -349,7 +357,7 @@ fn pooled_verification_preserves_multimodal_rotary_position() -> Result<(), Box<
         },
     );
     let outputs = run_media_position_tasks(&mut executor, &[task])?;
-    assert!(executor.states[&states[1]].slot.is_some());
+    assert!(executor.states[&states[0]].slot.is_some());
     let logits = &outputs[0].output.logits;
     assert_eq!(logits.len(), expected.len());
     assert!(
