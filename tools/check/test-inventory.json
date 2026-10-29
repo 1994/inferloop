@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 426
+      "tests": 427
     },
     "frontdoor": {
       "benches": 0,
@@ -178,6 +178,7 @@
     "real MTP2 checkpoint/CUDA; fixed-batch diagnostic under safe-run with profile paths": 1,
     "real MTP2 checkpoint/CUDA; validates pooled quotes without resident home programs": 1,
     "real MTP2 checkpoint/CUDA; validates private slot binding, admission and reset accounting": 1,
+    "real Qwen text checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 1,
     "real Qwen3-VL text checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 1,
     "release CUDA performance diagnostic; run inside safe-run": 1,
     "requires CUDA and INFER_TEST_MODEL; run release inside safe-run": 3,
@@ -1421,11 +1422,11 @@
     }
   ],
   "totals": {
-    "all": 1027,
+    "all": 1028,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1027
+    "tests": 1028
   }
 }
