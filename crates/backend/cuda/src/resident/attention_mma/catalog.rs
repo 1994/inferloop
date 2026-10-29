@@ -1,4 +1,5 @@
 //! FA4 numerical profile and hardware candidates, separate from canonical F32 attention.
+use crate::device::platform::is_linux_x86_64;
 use infer_core::{Error, Result};
 use serde::{Deserialize, Serialize};
 
@@ -74,7 +75,7 @@ pub fn supported(
     lanes: usize,
     window: usize,
 ) -> bool {
-    cfg!(all(target_os = "linux", target_arch = "x86_64"))
+    is_linux_x86_64()
         && !Variant::candidates(architecture).is_empty()
         && geometry(heads, kv_heads, dim, lanes, window)
 }

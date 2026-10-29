@@ -4,6 +4,7 @@
 //! 24/4/256 full-causal geometry and only target FP8-KV prefill. Every other target shape and
 //! the entire draft proposal path keep their existing arithmetic. The artifact identity and
 //! tuning schema are independent from BF16 so cache entries can never cross profiles.
+use crate::device::platform::is_linux_x86_64;
 use crate::{
     device::CudaDevice,
     tuning::attention::{Choice, Shape},
@@ -31,7 +32,7 @@ pub fn supported(
     lanes: usize,
     window: usize,
 ) -> bool {
-    cfg!(all(target_os = "linux", target_arch = "x86_64"))
+    is_linux_x86_64()
         && architecture == ARCHITECTURE
         && super::catalog::geometry(heads, kv_heads, dim, lanes, window)
 }

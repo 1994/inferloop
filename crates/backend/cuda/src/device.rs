@@ -202,6 +202,7 @@ pub(crate) mod asynchronous;
 pub(crate) mod library_names;
 #[cfg(test)]
 mod nvjpeg_probe;
+pub(crate) mod platform;
 mod readback;
 mod upload;
 #[cfg(test)]
