@@ -68,3 +68,41 @@ fn batches_match_independent_reference_for_unequal_lengths_and_tails() {
     let too_many = vec![image(&[1], (1, 1, 1)); BATCH_IMAGES + 1];
     assert!(hashes(&too_many).is_err());
 }
+
+#[test]
+fn uneven_batches_preserve_hashes_across_input_permutations() {
+    let images = [
+        image(&[], (1, 1, 1)),
+        image(&[0x8000_0000], (1, 2, 3)),
+        image(&[0x7fc0_0001], (1, 3, 4)),
+        image(
+            &(0..257)
+                .map(|value: u32| value.wrapping_mul(2_654_435_761))
+                .collect::<Vec<_>>(),
+            (1, 4, 5),
+        ),
+    ];
+    for a in 0..BATCH_IMAGES {
+        for b in 0..BATCH_IMAGES {
+            for c in 0..BATCH_IMAGES {
+                for d in 0..BATCH_IMAGES {
+                    let indices = [a, b, c, d];
+                    if indices
+                        .iter()
+                        .enumerate()
+                        .any(|(i, value)| indices[..i].contains(value))
+                    {
+                        continue;
+                    }
+                    let batch = indices.map(|index| images[index].clone());
+                    for count in 1..=BATCH_IMAGES {
+                        let result = hashes(&batch[..count]).expect("bounded batch");
+                        for (actual, image) in result.iter().zip(&batch).take(count) {
+                            assert_eq!(*actual, reference(image));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

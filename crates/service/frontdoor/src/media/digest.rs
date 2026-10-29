@@ -35,7 +35,7 @@ fn finish(mut hash: u64, pixels: &[f32], grid: (usize, usize, usize)) -> u64 {
     hash
 }
 
-fn group<const N: usize>(images: [&PromptImage; N]) -> [u64; N] {
+fn group_common<const N: usize>(images: [&PromptImage; N]) -> [u64; N] {
     let common = images
         .iter()
         .map(|image| image.pixels.len())
@@ -59,6 +59,67 @@ fn group<const N: usize>(images: [&PromptImage; N]) -> [u64; N] {
     })
 }
 
+struct Lane<'a> {
+    image: &'a PromptImage,
+    hash: u64,
+    original: usize,
+}
+
+fn advance<const N: usize>(mut lanes: [&mut Lane<'_>; N], start: usize, end: usize) {
+    for index in start..end {
+        let words: [[u8; size_of::<f32>()]; N] =
+            from_fn(|lane| lanes[lane].image.pixels[index].to_bits().to_le_bytes());
+        for byte in 0..size_of::<f32>() {
+            for (lane, word) in lanes.iter_mut().zip(&words) {
+                lane.hash = hash_byte(lane.hash, word[byte]);
+            }
+        }
+    }
+}
+
+fn group_uneven<const N: usize>(images: [&PromptImage; N]) -> Result<[u64; N]> {
+    let mut lanes: [Lane<'_>; N] = from_fn(|index| Lane {
+        image: images[index],
+        hash: FNV_OFFSET_BASIS,
+        original: index,
+    });
+    lanes.sort_unstable_by_key(|lane| lane.image.pixels.len());
+    let mut start = 0;
+    for index in 0..N {
+        let end = lanes[index].image.pixels.len();
+        if end > start {
+            match &mut lanes[index..] {
+                [a] => advance([a], start, end),
+                [a, b] => advance([a, b], start, end),
+                [a, b, c] => advance([a, b, c], start, end),
+                [a, b, c, d] => advance([a, b, c, d], start, end),
+                _ => return Err(Error::invariant("invalid media digest lane count")),
+            }
+        }
+        start = end;
+        lanes[index].hash = finish(lanes[index].hash, &[], lanes[index].image.grid);
+    }
+    let mut hashes = [0; N];
+    for lane in lanes {
+        hashes[lane.original] = lane.hash;
+    }
+    Ok(hashes)
+}
+
+fn group<const N: usize>(images: [&PromptImage; N]) -> Result<[u64; N]> {
+    // Two lanes cannot overlap a tail with another tail. Preserve the established fast path
+    // for that case and for equal sizes, where every lane has the same end point.
+    if N <= 2
+        || images
+            .iter()
+            .all(|image| image.pixels.len() == images[0].pixels.len())
+    {
+        Ok(group_common(images))
+    } else {
+        group_uneven(images)
+    }
+}
+
 /// Digest at most four images, preserving their individual byte order and input order.
 ///
 /// Each float is hashed by its exact little-endian bits, followed by each grid axis as little-
@@ -71,14 +132,14 @@ pub(super) fn hashes(images: &[PromptImage]) -> Result<[u64; BATCH_IMAGES]> {
         [] => [0; BATCH_IMAGES],
         [a] => [finish(FNV_OFFSET_BASIS, &a.pixels, a.grid), 0, 0, 0],
         [a, b] => {
-            let [a, b] = group([a, b]);
+            let [a, b] = group([a, b])?;
             [a, b, 0, 0]
         }
         [a, b, c] => {
-            let [a, b, c] = group([a, b, c]);
+            let [a, b, c] = group([a, b, c])?;
             [a, b, c, 0]
         }
-        [a, b, c, d] => group([a, b, c, d]),
+        [a, b, c, d] => group([a, b, c, d])?,
         _ => return Err(Error::invalid("media digest batch too large")),
     })
 }
