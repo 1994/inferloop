@@ -1,5 +1,5 @@
 use super::{ApiResult, GenerationRequest, TextState, ToolPolicy};
-use crate::constants::TOKEN_STAGING_BYTES;
+use crate::constants::{TEXT_STAGING_OVERHEAD_BYTES, TOKEN_STAGING_BYTES};
 use crate::cpu::{CpuContext, StagingPlan, StagingQuote};
 use crate::media::{
     ImageProcessingOptions, LoadedImages, MEDIA_STAGING_BYTES, MediaRequest, MediaService,
@@ -10,6 +10,7 @@ use infer_ir::{CanonicalRequest, RequestInput, Workload, WorkloadOutput};
 use infer_observe::trace::TraceContext;
 use infer_runtime::{CompletedRequest, EngineOutput};
 use serde_json::{Value, json};
+use std::mem::size_of;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use std::{
@@ -61,6 +62,57 @@ struct StagedEncoding {
 }
 
 impl Encoding {
+    /// Retained input while a simple image request waits for its full preparation quote.
+    /// Complex histories retain their existing conservative text quote.
+    fn waiting_input_bytes(&self, conservative: usize) -> infer_core::Result<usize> {
+        let Some(messages) = &self.messages else {
+            return Ok(conservative);
+        };
+        let [message] = messages.as_slice() else {
+            return Ok(conservative);
+        };
+        if message.role != "user"
+            || !message.tool_calls.is_empty()
+            || message.tool_call_id.is_some()
+            || self.constraint.is_some()
+            || self.tools.is_some()
+            || self.prompt.is_some()
+            || self
+                .media_requests
+                .iter()
+                .any(|item| item.modality != infer_ir::Modality::Image)
+        {
+            return Ok(conservative);
+        }
+        let invalid = || Error::invalid("waiting image input size overflow");
+        let messages_bytes = messages
+            .capacity()
+            .checked_mul(size_of::<infer_models::ChatMessage>())
+            .and_then(|bytes| bytes.checked_add(message.role.capacity()))
+            .and_then(|bytes| bytes.checked_add(message.content.capacity()))
+            .and_then(|bytes| {
+                message
+                    .tool_calls
+                    .capacity()
+                    .checked_mul(size_of::<infer_models::ToolCall>())
+                    .and_then(|calls| bytes.checked_add(calls))
+            })
+            .ok_or_else(invalid)?;
+        let media_bytes = self
+            .media_requests
+            .capacity()
+            .checked_mul(size_of::<MediaRequest>())
+            .ok_or_else(invalid)?;
+        self.media_requests.iter().try_fold(
+            size_of::<Self>()
+                .checked_add(TEXT_STAGING_OVERHEAD_BYTES)
+                .and_then(|bytes| bytes.checked_add(messages_bytes))
+                .and_then(|bytes| bytes.checked_add(media_bytes))
+                .ok_or_else(invalid)?,
+            |bytes, item| bytes.checked_add(item.url.capacity()).ok_or_else(invalid),
+        )
+    }
+
     /// Encode the prompt and describe the workload to run over it.
     fn encode(
         mut self,
@@ -280,7 +332,7 @@ fn preparation_bytes(
 /// Returns a parameter, capacity or model-resolution error before a request identity is consumed.
 pub(super) async fn prepare(
     state: &TextState,
-    headers: &HeaderMap,
+    headers: HeaderMap,
     mut request: GenerationRequest,
     chat: bool,
 ) -> ApiResult<Prepared> {
@@ -360,14 +412,11 @@ pub(super) async fn prepare(
         max_new_tokens,
         sampling: resolved.sampling,
     };
-    let receiver = submit_encoding(
-        &state.handle,
-        encoding,
-        bytes,
-        media_bytes,
-        super::super::trace_parent(headers),
-    )
-    .await?;
+    let trace = super::super::trace_parent(&headers);
+    // Neither the wire request nor the headers are needed while admission waits.
+    drop(request);
+    drop(headers);
+    let receiver = submit_encoding(&state.handle, encoding, bytes, media_bytes, trace).await?;
     Ok(Prepared {
         request: id,
         receiver,
@@ -398,10 +447,11 @@ async fn submit_encoding(
         let non_media_bytes = bytes
             .checked_sub(media_bytes)
             .ok_or_else(|| Error::invariant("media staging quote exceeds request bytes"))?;
+        let retained = encoding.waiting_input_bytes(non_media_bytes)?;
         handle
             .submit_staged_preparing(
                 id,
-                StagingQuote::new(non_media_bytes, bytes)?,
+                StagingQuote::new(retained, bytes)?,
                 trace,
                 None,
                 move |context| encoding.stage_images(context, non_media_bytes, bytes),
@@ -425,7 +475,7 @@ pub(super) async fn generate(
     request: GenerationRequest,
     chat: bool,
 ) -> ApiResult<Value> {
-    let mut prepared = prepare(&state, &headers, request, chat).await?;
+    let mut prepared = prepare(&state, headers, request, chat).await?;
     while let Some(event) = prepared.receiver.recv().await {
         if let EngineOutput::Finished(result) = event? {
             return response(

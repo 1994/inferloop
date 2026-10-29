@@ -278,7 +278,7 @@ pub(super) async fn stream(
         .stream_options
         .as_ref()
         .is_some_and(|options| options.include_usage);
-    let prepared = prepare(&state, &headers, request, chat).await?;
+    let prepared = prepare(&state, headers, request, chat).await?;
     let prefix = if chat { "chatcmpl" } else { "cmpl" };
     let object = if chat {
         "chat.completion.chunk"

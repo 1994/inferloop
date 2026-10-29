@@ -30,9 +30,15 @@ use super::super::tests::support;
 use support::ProtocolBackend;
 
 fn tiny_media_app(config: CpuConfig) -> (Router, RuntimeHandle, Arc<AtomicUsize>) {
+    tiny_media_app_with_limits(config, infer_models::MediaLimits::default())
+}
+
+fn tiny_media_app_with_limits(
+    config: CpuConfig,
+    limits: infer_models::MediaLimits,
+) -> (Router, RuntimeHandle, Arc<AtomicUsize>) {
     use crate::media::MediaService;
     use crate::router_with_text_and_media;
-    use infer_models::MediaLimits;
 
     let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multimodal-tiny");
     let root = package.as_path();
@@ -55,9 +61,99 @@ fn tiny_media_app(config: CpuConfig) -> (Router, RuntimeHandle, Arc<AtomicUsize>
     )
     .unwrap();
     let handle = RuntimeHandle::start_with_config(engine, config).unwrap();
-    let media = Arc::new(MediaService::new(multimodal, MediaLimits::default()));
+    let media = Arc::new(MediaService::new(multimodal, limits));
     let app = router_with_text_and_media(handle.clone(), assets, Some(media));
     (app, handle, media_tasks)
+}
+
+#[test]
+fn concurrent_inline_image_requests_wait_for_staging_credit() {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+    use infer_models::MediaLimits;
+    use std::io::Cursor;
+    use tokio::runtime::Builder;
+    use tokio::sync::Barrier;
+    use tokio::task::JoinSet;
+
+    const REQUESTS: usize = 16;
+    let runtime = Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let (app, handle, _) = tiny_media_app_with_limits(
+            CpuConfig {
+                workers: 4,
+                max_jobs: 32,
+                max_bytes: 128 << 20,
+                ..CpuConfig::default()
+            },
+            MediaLimits {
+                images: 4,
+                videos: 1,
+            },
+        );
+        let mut random = 0x9e37_79b9_u32;
+        let image = image::RgbImage::from_fn(257, 257, |_, _| {
+            random ^= random << 13;
+            random ^= random >> 17;
+            random ^= random << 5;
+            let [low, mid, high, _] = random.to_le_bytes();
+            image::Rgb([high, mid, low])
+        });
+        let mut encoded = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image)
+            .write_to(&mut encoded, image::ImageFormat::Jpeg)
+            .unwrap();
+        let url = format!(
+            "data:image/jpeg;base64,{}",
+            STANDARD.encode(encoded.into_inner())
+        );
+        let mut content = vec![json!({"type":"text", "text":"Describe the image."})];
+        for _ in 0..4 {
+            content.push(json!({"type":"image_url", "image_url":{"url":url}}));
+        }
+        let payload =
+            json!({"model":"1", "max_tokens":1, "messages":[{"role":"user", "content":content}]})
+                .to_string();
+        let barrier = Arc::new(Barrier::new(REQUESTS + 1));
+        let mut tasks = JoinSet::new();
+        for _ in 0..REQUESTS {
+            let app = app.clone();
+            let body = payload.clone();
+            let barrier = barrier.clone();
+            tasks.spawn(async move {
+                barrier.wait().await;
+                let request = Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap();
+                let response = app.oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+                (status, String::from_utf8_lossy(&body).into_owned())
+            });
+        }
+        barrier.wait().await;
+        let responses = timeout(Duration::from_secs(30), async {
+            let mut responses = Vec::with_capacity(REQUESTS);
+            while let Some(response) = tasks.join_next().await {
+                responses.push(response.unwrap());
+            }
+            responses
+        })
+        .await
+        .expect("image requests completed");
+        handle.shutdown().await.unwrap();
+        assert_eq!(responses.len(), REQUESTS);
+        for (status, body) in responses {
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+    });
 }
 
 #[tokio::test]
