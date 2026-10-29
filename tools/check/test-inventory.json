@@ -34,19 +34,19 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 410
+      "tests": 412
     },
     "frontdoor": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 90
+      "tests": 103
     },
     "ir": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 14
+      "tests": 16
     },
     "kernel-api": {
       "benches": 0,
@@ -88,7 +88,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 95
+      "tests": 99
     },
     "scheduler": {
       "benches": 0,
@@ -112,7 +112,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 28
+      "tests": 29
     }
   },
   "executor_consumers": [
@@ -171,7 +171,7 @@
     "opt-in projection-only shape A/B with real checkpoint and CUDA; run inside safe-run": 1,
     "real 2B checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 3,
     "real CUDA/MTP checkpoint; reserve graphs only after quote acknowledgement": 1,
-    "real CUDA/MTP2 checkpoint; run under safe-run with an explicit fixture": 1,
+    "real CUDA/MTP2 checkpoint; run under safe-run with an explicit fixture": 3,
     "real MTP2 checkpoint and CUDA; run inside safe-run": 1,
     "real MTP2 checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 2,
     "real MTP2 checkpoint, CUDA, frozen table/tokens and protected serial runner required": 1,
@@ -1182,6 +1182,11 @@
       "mount": "../tests/unit/workload_speculation.rs"
     },
     {
+      "crate": "ir",
+      "file": "src/workload.rs",
+      "mount": "../tests/unit/workload_decision.rs"
+    },
+    {
       "crate": "spi",
       "file": "src/resource.rs",
       "mount": "../tests/unit/resource.rs"
@@ -1338,6 +1343,11 @@
     },
     {
       "crate": "frontdoor",
+      "file": "src/http/openai/decisions/mod.rs",
+      "mount": "../../../../tests/unit/http_openai_decisions_request.rs"
+    },
+    {
+      "crate": "frontdoor",
       "file": "src/http/openai/execution.rs",
       "mount": "../../../tests/unit/http_openai_execution.rs"
     },
@@ -1385,14 +1395,19 @@
       "crate": "frontdoor",
       "file": "tests/unit/http_openai.rs",
       "mount": "http_strict_tools.rs"
+    },
+    {
+      "crate": "frontdoor",
+      "file": "tests/unit/http_openai.rs",
+      "mount": "http_openai_decisions.rs"
     }
   ],
   "totals": {
-    "all": 986,
+    "all": 1008,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 986
+    "tests": 1008
   }
 }
