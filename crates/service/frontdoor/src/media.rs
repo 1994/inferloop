@@ -299,7 +299,7 @@ fn decode_png(bytes: &[u8]) -> Result<image::RgbImage> {
     let image = reader
         .decode()
         .map_err(|error| Error::invalid(format!("image decode: {error}")))?;
-    Ok(image.to_rgb8())
+    Ok(image.into_rgb8())
 }
 
 fn rgb_image(width: u32, height: u32, pixels: Vec<u8>) -> Result<RawImage> {

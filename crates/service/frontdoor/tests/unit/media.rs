@@ -45,6 +45,41 @@ fn data_uri_png_is_decoded_into_rgb8() {
 }
 
 #[test]
+fn native_png_conversion_preserves_rgb_values_for_color_and_grayscale_inputs() {
+    use image::{DynamicImage, GrayImage, RgbImage, RgbaImage};
+
+    let cases = [
+        (
+            DynamicImage::ImageRgb8(RgbImage::from_raw(2, 1, vec![1, 2, 3, 4, 5, 6]).unwrap()),
+            vec![1, 2, 3, 4, 5, 6],
+        ),
+        (
+            DynamicImage::ImageRgba8(
+                RgbaImage::from_raw(2, 1, vec![7, 8, 9, 0, 10, 11, 12, 255]).unwrap(),
+            ),
+            vec![7, 8, 9, 10, 11, 12],
+        ),
+        (
+            DynamicImage::ImageLuma8(GrayImage::from_raw(2, 1, vec![13, 14]).unwrap()),
+            vec![13, 13, 13, 14, 14, 14],
+        ),
+    ];
+    for (image, expected) in cases {
+        let mut encoded = Cursor::new(Vec::new());
+        image
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let uri = format!(
+            "data:image/png;base64,{}",
+            STANDARD.encode(encoded.into_inner())
+        );
+        let decoded = load_image(&uri).expect("native PNG");
+        assert_eq!((decoded.width, decoded.height), (2, 1));
+        assert_eq!(decoded.pixels, expected);
+    }
+}
+
+#[test]
 fn valid_inline_image_may_exceed_the_short_url_limit() {
     let png = encoded(noisy_image(128, 128), image::ImageFormat::Png);
     assert!(png.len() > 8192, "fixture must exceed the URL limit");
