@@ -146,5 +146,7 @@ pub struct Engine<B: BackendProvider, P: SchedulingPolicy = CostAwarePolicy> {
     pub(crate) dropped_actions: u64,
     pub(crate) diagnostic_snapshot: Option<crate::RuntimeSnapshot>,
     pub(crate) fault: Option<EngineFault>,
+    /// Deduplicate persistent owner errors while an isolated engine drains its work.
+    pub(crate) maintenance_failure: Option<Error>,
     pub(crate) observations: Observations,
 }
