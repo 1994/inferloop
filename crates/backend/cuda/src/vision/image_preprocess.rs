@@ -6,6 +6,7 @@
 use crate::device::{CudaDevice, device_error};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_ir::ImageResizePolicy;
 use infer_models::ImageProcessor;
 use std::sync::Arc;
 
@@ -54,8 +55,10 @@ pub struct DeviceImagePatches {
 ///
 /// `budget_bytes` bounds the input, temporary image, output, coefficient buffers and temporary
 /// host coefficient storage. This synchronous experimental entry point preserves the resources
-/// until both kernel nodes complete. It supports a canonical `1/255` rescale and positive finite
-/// normalization values; unsupported settings fail explicitly.
+/// until both kernel nodes complete. The resize policy follows the model processor's geometry;
+/// disabled resize requires the input dimensions to tile by the patch and merge sizes. It supports
+/// a canonical `1/255` rescale and positive finite normalization values; unsupported settings
+/// fail explicitly.
 ///
 /// # Errors
 /// Rejects unsupported settings, invalid RGB data, overflowing geometry, a budget too small for
@@ -66,9 +69,10 @@ pub fn preprocess_rgb8(
     height: usize,
     width: usize,
     pixels: &[u8],
+    resize: ImageResizePolicy,
     budget_bytes: usize,
 ) -> Result<DeviceImagePatches> {
-    let plan = Plan::new(processor, height, width, pixels.len(), budget_bytes)?;
+    let plan = Plan::new(processor, height, width, pixels.len(), resize, budget_bytes)?;
     let horizontal = Axis::new(width, plan.target_width, plan.horizontal_taps)?;
     let vertical = Axis::new(height, plan.target_height, plan.vertical_taps)?;
     let input = device.upload(pixels.to_vec(), &[pixels.len()])?;
@@ -243,11 +247,12 @@ impl Plan {
         height: usize,
         width: usize,
         input_len: usize,
+        resize: ImageResizePolicy,
         budget: usize,
     ) -> Result<Self> {
         validate_processor(processor)?;
         let input = validate_input(processor, height, width, input_len)?;
-        let (target_height, target_width) = processor.smart_resize(height, width)?;
+        let (target_height, target_width) = processor.target_dimensions(height, width, resize)?;
         for value in [target_height, target_width] {
             i32::try_from(value)
                 .map_err(|_| Error::invalid("image geometry exceeds CUDA index range"))?;

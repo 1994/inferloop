@@ -20,6 +20,8 @@ RTX 5090 上 Qwen3-VL-2B 的实测（prefill 阶段，视觉编码在计时前�
 
 OpenAI chat 的 `image_url` / `video_url` 内容部分现在进入真实 serving 路径：输入层解析 URL（`data:`、`file://`、绝对路径、`http(s)`），按上限下载/解码并调用 provider 的 `ImageProcessor` / `VideoProcessor` 生成 prompt 对齐的 patch 载荷；每个 media item 作为 `infer_ir::MediaItem` 随 `MediaPlan` 经过 admission、scheduler 和 `ExecutionTask`，由 CUDA backend 在 prompt prefill 时编码并写入 lane 外部 embedding 槽。媒体 span、旋转位置和 token 计数在编码前校验；占位符、编码器或 patch grid 不匹配时报错，不会回退成纯文本。
 
+编码图片的 backend 扩展、设备前处理与资源所有权方案见[图像前处理计划](../plans/serving/multimodal-image-pipeline.md)；该计划尚未完成，当前服务不使用 nvJPEG 或 GPU 图像预处理。
+
 - 同一 prompt 暂只支持一种媒体模态；混合 image/video 会返回显式 unsupported。
 - `--limit-mm-per-prompt '{"image":N,"video":M}'` 是每 prompt 上限。全零配置只服务文本并跳过视觉塔；非零配置在加载时绑定并使用视觉权重。默认上限为 2 张图、1 段视频。
 - `--cpu-staging-mib` 设置 CPU 准备和入口的准入字节预算；省略时各为 64 MiB。每个媒体项初始预留 25 MiB，另加文本等费用；图片解码后根据实际尺寸估算前处理峰值。初始额度足够时在同一工作任务中完成；需要补充额度时保留解码结果、归还多余额度并异步等待，等待期间不占用 CPU 工作线程。当所有等待图片无法同时保留并让任一请求执行时，会拒绝一个后来的请求，以保证其他请求能够继续；初始准入或单个请求超额也会直接拒绝。取消时额度留到对应工作和所有权交接完成。该估算尚未覆盖图片解码及视频处理的全部暂存峰值，也不是进程内存上限；调大预算不会增加 CPU 处理能力，调整前应测量并发、实际内存和延迟。
