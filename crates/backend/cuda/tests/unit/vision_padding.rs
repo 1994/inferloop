@@ -315,3 +315,14 @@ fn media_footprint_covers_the_fused_block_mlp_live_buffers() -> Result<(), Box<d
     assert!(footprint >= required);
     Ok(())
 }
+
+#[test]
+fn media_footprint_covers_the_resident_tower_live_buffers() -> Result<(), Box<dyn Error>> {
+    let mut encoder = encoder();
+    encoder.hidden_size = 1024;
+    let footprint = super::footprint::footprint(&encoder, &media_plan((1, 14, 22), 1))?;
+    let attention_rows = 320_u64;
+    let required = attention_rows * (6 * 1024 + 6 * 1024 + 2 * 4096 + 2 * 64) * 4;
+    assert!(footprint >= required);
+    Ok(())
+}

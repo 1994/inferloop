@@ -4,6 +4,7 @@
 //! every item has been encoded. The quote is therefore the maximum of the largest single-item
 //! encode peak and the total retained encoded-row tensor. Resident vision weights are excluded;
 //! they are load-time owners, not request allocations.
+use super::device_tower;
 use super::program::{attention_tiles, mlp_width, patch_width};
 use super::weights::half_tile;
 use infer_core::{Error, Result};
@@ -27,6 +28,10 @@ const RESIDUAL_ACTIVATIONS: usize = 3;
 const BLOCK_MLP_HIDDEN_ACTIVATIONS: usize = 4;
 /// Fused block MLP holds the first projection and its activated output.
 const BLOCK_MLP_INTERMEDIATE_ACTIVATIONS: usize = 2;
+/// Two tower states, norm, attention output, residual and second MLP projection.
+const DEVICE_TOWER_HIDDEN_ACTIVATIONS: usize = 6;
+/// First MLP projection and its activated output remain live for the tower graph.
+const DEVICE_TOWER_INTERMEDIATE_ACTIVATIONS: usize = 2;
 
 fn bytes(elements: usize) -> Result<u64> {
     u64::try_from(elements)
@@ -118,13 +123,41 @@ fn one_item_peak(encoder: &ModalityEncoder, grid: (usize, usize, usize)) -> Resu
     let attention_pack = attention
         .checked_add(compact_pack)
         .ok_or_else(|| Error::invalid("vision attention pack footprint overflow"))?;
-    let block = [attention_pack, layernorm, block_mlp, residual]
+    let mut block = [attention_pack, layernorm, block_mlp, residual]
         .into_iter()
         .max()
         .ok_or_else(|| Error::invalid("vision block footprint empty"))?;
+    if device_tower::supports(encoder)? {
+        block = block.max(resident_tower_bytes(
+            attention_rows,
+            hidden,
+            projections,
+            mlp,
+            head_width,
+        )?);
+    }
 
     let merger_peak = merger_peak(encoder, patches, hidden)?;
     Ok(patch_embed.max(block).max(merger_peak))
+}
+
+fn resident_tower_bytes(
+    rows: usize,
+    hidden: usize,
+    projections: usize,
+    mlp: usize,
+    head_width: usize,
+) -> Result<u64> {
+    let per_row = hidden
+        .checked_mul(DEVICE_TOWER_HIDDEN_ACTIVATIONS)
+        .and_then(|n| n.checked_add(projections.checked_mul(ATTENTION_PROJECTION_COPIES)?))
+        .and_then(|n| n.checked_add(mlp.checked_mul(DEVICE_TOWER_INTERMEDIATE_ACTIVATIONS)?))
+        .and_then(|n| n.checked_add(head_width.checked_mul(2)?))
+        .ok_or_else(|| Error::invalid("vision tower footprint overflow"))?;
+    bytes(
+        rows.checked_mul(per_row)
+            .ok_or_else(|| Error::invalid("vision tower footprint overflow"))?,
+    )
 }
 
 fn compact_pack_bytes(encoder: &ModalityEncoder, attention_rows: usize) -> Result<u64> {
