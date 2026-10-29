@@ -99,6 +99,7 @@ fn tasks(
                     ..Sampling::default()
                 }),
                 plain_greedy: round.is_multiple_of(2),
+                publish_prefix: false,
 
                 media: None,
             })

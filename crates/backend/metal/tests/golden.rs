@@ -87,6 +87,7 @@ fn check_prefix(
         &step,
         vec![ExecutionTask {
             plain_greedy: false,
+            publish_prefix: false,
             request,
             state,
             tokens: tokens.into(),

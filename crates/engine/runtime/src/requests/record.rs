@@ -30,6 +30,10 @@ pub struct RequestRecord {
     pub cached_tokens: usize,
     #[serde(default)]
     pub prefix_attempted: bool,
+    /// The request's prefix boundary rounded down to a page: the prompt chunk that reaches it
+    /// stops there so the backend can keep the covered prefix.
+    #[serde(default)]
+    pub prefix_stop: Option<usize>,
     pub context: TokenContext,
     pub generated: infer_ir::TokenBuffer,
     pub outputs: Vec<ModelOutput>,
@@ -43,6 +47,32 @@ pub struct RequestRecord {
     pub last_service_us: u64,
     #[serde(default)]
     pub admission: AdmissionDecision,
+}
+
+impl RequestRecord {
+    /// Where the next prompt chunk must stop: the prefix stop while it is still ahead, then the
+    /// end of the prompt, then the end of the context.
+    #[must_use]
+    pub fn prefill_end(&self) -> usize {
+        self.pending_prefix_stop().unwrap_or_else(|| {
+            if self.prefill_done < self.context.prompt.len() {
+                self.context.prompt.len()
+            } else {
+                self.context.len()
+            }
+        })
+    }
+    /// The prefix stop while prefill has not reached it.
+    #[must_use]
+    pub fn pending_prefix_stop(&self) -> Option<usize> {
+        self.prefix_stop.filter(|stop| self.prefill_done < *stop)
+    }
+    /// Whether a prompt chunk of `count` tokens ends exactly at the prefix stop.
+    #[must_use]
+    pub fn chunk_reaches_prefix_stop(&self, count: usize) -> bool {
+        self.prefix_stop
+            .is_some_and(|stop| self.prefill_done.checked_add(count) == Some(stop))
+    }
 }
 
 /// Prompt storage is shared; generated payload has one mutable owner in `RequestRecord`.

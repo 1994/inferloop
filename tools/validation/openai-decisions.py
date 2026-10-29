@@ -186,6 +186,9 @@ def coexistence_case(client, model):
             model=model,
             messages=[{"role": "user", "content": "Name one primary colour."}],
             max_tokens=32,
+            # Coexistence, not reasoning, is under test: an end of sequence inside an open
+            # thinking block is reported as an error by design and would make this case flaky.
+            extra_body={"enable_thinking": False},
         )
         chat = chat.result()
         return {

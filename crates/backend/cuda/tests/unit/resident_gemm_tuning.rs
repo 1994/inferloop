@@ -162,7 +162,7 @@ fn autotune_disabled_never_requests_measurement_but_keeps_valid_cached_choices()
     );
     assert_eq!(
         ProgramGeometry::from_flags(3, 256, 64, true, true).widths(),
-        vec![1, 3, 64, 256]
+        vec![1, 3, 64, 128, 256]
     );
     assert_eq!(
         ProgramGeometry::from_flags(0, 128, 0, true, true).widths(),

@@ -143,6 +143,14 @@ impl CudaExecutor {
             return Ok(0);
         }
         let maximum = maximum.min(sequence.capacity);
+        let pools = if sequence.home.is_some() {
+            let Some(target) = self.slots.as_mut() else {
+                return Ok(0);
+            };
+            Some((target, self.draft_slots.as_mut()))
+        } else {
+            None
+        };
         self.prefix
             .reuse(
                 tokens,
@@ -150,6 +158,7 @@ impl CudaExecutor {
                 &mut Restore {
                     device: self.loaded.device(),
                     sequence,
+                    pools,
                 },
             )
             .map(|matched| matched.unwrap_or(0))

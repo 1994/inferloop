@@ -104,7 +104,8 @@ assistant 消息可以带 `tool_calls`（`null` 按空列表处理），每项�
 
 - 1..400 个问题；choice 最多 26 个选项（字母标签），协议允许的更多选项返回 400。
 - 图片（`input` 中或问题 `instructions` 中的 `input_image`）与 `item_reference` 返回 501。
-- `prompt_cache_key`、`prompt_cache_options`、`prompt_cache_breakpoint`、`safety_identifier` 会校验后接受，但不改变行为：前缀复用由引擎按相同 token 前缀自动进行，`usage.input_tokens_details.cached_tokens` 目前恒为 0。
+- 多个问题共享的前缀（system 轮与 `input`）只 prefill 一次：服务把共享 token 前缀作为请求的 `prefix_boundary`，第一个问题在该处保留快照，其余问题从快照恢复后只 prefill 自己的问题文本，`usage.input_tokens_details.cached_tokens` 报告这样恢复的 token 数。RTX 5090 上 Qwen3.8-27B 以约 2,500 token 的输入问 64 个问题，耗时从 60 s 降到 2.5 s，答案概率不变。快照按 32 token 的 KV 块对齐，在 GPU 前缀缓存预算内按 LRU 淘汰，可以被之后相同前缀的请求复用。
+- `prompt_cache_key`、`prompt_cache_options`、`prompt_cache_breakpoint`、`safety_identifier` 会校验后接受，但不改变上述行为；`cache_write_tokens` 恒为 0。
 - 从不返回 `refusal` 答案；`output_tokens` 为 0，`input_tokens` 是所有问题 prompt token 之和。
 - 包的回复前缀必须结束在 token 边界，且每个字母在回复开头是一个独立 token；否则返回 501。服务按包内模板实际探测，而非按模型名单判断。
 

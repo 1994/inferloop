@@ -113,12 +113,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         let remaining = if role == ExecutionRole::Decode {
             1
         } else {
-            let end = if r.prefill_done < r.context.prompt.len() {
-                r.context.prompt.len()
-            } else {
-                r.context.len()
-            };
-            end - r.prefill_done
+            r.prefill_end() - r.prefill_done
         };
         let context = if role == ExecutionRole::Decode {
             r.context.len()

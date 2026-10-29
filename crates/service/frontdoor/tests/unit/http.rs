@@ -59,6 +59,7 @@ fn request(id: u64, max_new_tokens: usize) -> CanonicalRequest {
         workload: Workload::Generate { max_new_tokens },
         qos: Qos::default(),
         sampling: Sampling::default(),
+        prefix_boundary: None,
         extensions: BTreeMap::new(),
     }
 }

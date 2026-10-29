@@ -252,6 +252,7 @@ fn execute(
             &step,
             vec![ExecutionTask {
                 plain_greedy: false,
+                publish_prefix: false,
                 request: rid,
                 state: sid,
                 tokens: tokens.into(),

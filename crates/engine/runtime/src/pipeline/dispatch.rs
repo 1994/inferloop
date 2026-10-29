@@ -84,6 +84,8 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                     infer_ir::Workload::Generate { .. }
                 ) && record.constraint.is_none()
                     && record.request.sampling.uses_plain_greedy(),
+                publish_prefix: work.role != ExecutionRole::Decode
+                    && record.chunk_reaches_prefix_stop(work.token_count),
                 request: work.request,
                 state: work.state,
                 tokens,

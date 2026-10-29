@@ -14,6 +14,7 @@ pub mod prefix;
 mod prefix_state;
 mod profiling;
 mod provider;
+use crate::constants::KV_BLOCK_TOKENS;
 use crate::registry::CudaKernels;
 pub use pool::PoolInspection;
 mod state;
@@ -302,7 +303,8 @@ impl CudaExecutor {
         // A cache belongs to this immutable loaded backend; snapshots never cross instances.
         let prefix = prefix::PrefixCache::with_policy(
             identity.as_bytes(),
-            prefix::PREFIX_GRANULARITY,
+            // Whole KV blocks: requested prefix boundaries publish between the regular cadence.
+            KV_BLOCK_TOKENS,
             prefix_cache_bytes(state_budget),
             usize::MAX,
             SnapshotScan,

@@ -590,6 +590,7 @@ fn batch_metadata_is_shared_across_the_device_owner_handoff() -> Result<()> {
         step.clone(),
         vec![ExecutionTask {
             plain_greedy: false,
+            publish_prefix: false,
             request: infer_core::RequestId::ONE,
             state: StateId::ONE,
             tokens: vec![1, 2, 3].into(),
@@ -646,6 +647,7 @@ fn dropped_compute_ticket_waits_for_fence_then_allows_next_submission() -> Resul
     });
     let tasks = vec![ExecutionTask {
         plain_greedy: false,
+        publish_prefix: false,
         request: infer_core::RequestId::ONE,
         state: StateId::ONE,
         tokens: vec![1, 2, 3].into(),
@@ -1167,6 +1169,7 @@ fn media_request_requires_a_multimodal_backend() -> Result<()> {
         workload: infer_ir::Workload::Generate { max_new_tokens: 1 },
         qos: infer_ir::Qos::default(),
         sampling: infer_ir::Sampling::default(),
+        prefix_boundary: None,
         extensions: BTreeMap::new(),
     };
     let error = engine.submit(request).unwrap_err();
@@ -1213,6 +1216,7 @@ fn prepared_media_reaches_the_scheduler_and_backend() -> Result<()> {
         workload: infer_ir::Workload::Generate { max_new_tokens: 1 },
         qos: infer_ir::Qos::default(),
         sampling: infer_ir::Sampling::default(),
+        prefix_boundary: None,
         extensions: BTreeMap::new(),
     };
     engine.submit(request)?;
@@ -1270,6 +1274,7 @@ fn automatic_mtp_is_disabled_for_media_instead_of_rejecting_it() -> Result<()> {
         workload: infer_ir::Workload::Generate { max_new_tokens: 1 },
         qos: infer_ir::Qos::default(),
         sampling: infer_ir::Sampling::default(),
+        prefix_boundary: None,
         extensions: BTreeMap::new(),
     };
     engine.submit(request)?;
@@ -1333,6 +1338,7 @@ fn threaded_media_request_uses_the_media_quote_command() -> Result<()> {
         workload: infer_ir::Workload::Generate { max_new_tokens: 1 },
         qos: infer_ir::Qos::default(),
         sampling: infer_ir::Sampling::default(),
+        prefix_boundary: None,
         extensions: BTreeMap::new(),
     };
     // The normal path must still quote its own price; only the media request uses 4096.

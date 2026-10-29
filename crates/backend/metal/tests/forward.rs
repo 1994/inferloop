@@ -141,6 +141,7 @@ fn execute(
         &step,
         vec![ExecutionTask {
             plain_greedy: false,
+            publish_prefix: false,
             request: RequestId::ONE,
             state: StateId::ONE,
             tokens: tokens.to_vec().into(),

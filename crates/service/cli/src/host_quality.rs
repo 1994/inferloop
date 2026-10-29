@@ -165,6 +165,7 @@ fn verify_prefixes(
             &step,
             vec![ExecutionTask {
                 plain_greedy: false,
+                publish_prefix: false,
                 request,
                 state,
                 tokens: prefix.tokens.clone().into(),
@@ -255,6 +256,7 @@ fn verify_trajectories(
                 },
                 qos: Qos::default(),
                 sampling: Sampling::default(),
+                prefix_boundary: None,
                 extensions: BTreeMap::new(),
             })?;
         }
