@@ -14,12 +14,14 @@ use std::fs::write;
 use std::path::Path;
 use std::process::id;
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tokio::time::timeout;
 use tower::ServiceExt;
 
+use crate::cpu::CpuConfig;
 use crate::{RuntimeHandle, router_with_text};
 
 // The native HTTP module already mounts the shared protocol double; this module is a sibling
@@ -27,15 +29,10 @@ use crate::{RuntimeHandle, router_with_text};
 use super::super::tests::support;
 use support::ProtocolBackend;
 
-#[tokio::test]
-async fn concurrent_large_images_share_staging_budget_without_all_failing() {
-    use crate::cpu::CpuConfig;
+fn tiny_media_app(config: CpuConfig) -> (Router, RuntimeHandle, Arc<AtomicUsize>) {
     use crate::media::MediaService;
     use crate::router_with_text_and_media;
-    use base64::Engine as _;
-    use base64::engine::general_purpose::STANDARD;
     use infer_models::MediaLimits;
-    use std::io::Cursor;
 
     let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multimodal-tiny");
     let root = package.as_path();
@@ -57,18 +54,24 @@ async fn concurrent_large_images_share_staging_budget_without_all_failing() {
         RuntimeConfig::default(),
     )
     .unwrap();
-    let handle = RuntimeHandle::start_with_config(
-        engine,
-        CpuConfig {
-            workers: 2,
-            max_jobs: 4,
-            max_bytes: 64 << 20,
-            ..CpuConfig::default()
-        },
-    )
-    .unwrap();
+    let handle = RuntimeHandle::start_with_config(engine, config).unwrap();
     let media = Arc::new(MediaService::new(multimodal, MediaLimits::default()));
     let app = router_with_text_and_media(handle.clone(), assets, Some(media));
+    (app, handle, media_tasks)
+}
+
+#[tokio::test]
+async fn concurrent_large_images_share_staging_budget_without_all_failing() {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+    use std::io::Cursor;
+
+    let (app, handle, media_tasks) = tiny_media_app(CpuConfig {
+        workers: 2,
+        max_jobs: 4,
+        max_bytes: 64 << 20,
+        ..CpuConfig::default()
+    });
     let image = image::RgbImage::from_pixel(1024, 1024, image::Rgb([24, 64, 128]));
     let mut encoded = Cursor::new(Vec::new());
     image::DynamicImage::ImageRgb8(image)
@@ -104,6 +107,37 @@ async fn concurrent_large_images_share_staging_budget_without_all_failing() {
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     }
     assert!(media_tasks.load(Ordering::Relaxed) >= 2);
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn inline_image_is_priced_before_its_url_moves_into_preparation() {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+
+    let (app, handle, media_tasks) = tiny_media_app(CpuConfig {
+        workers: 1,
+        max_jobs: 2,
+        max_bytes: 28 << 20,
+        ..CpuConfig::default()
+    });
+    let bytes = vec![0_u8; 256 * 1024];
+    let url = format!("data:image/png;base64,{}", STANDARD.encode(bytes));
+    let payload = json!({"model":"1", "max_tokens":1, "messages":[{"role":"user","content":[
+        {"type":"image_url", "image_url":{"url":url}}
+    ]}]});
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(payload.to_string()))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    let response: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(response["error"]["code"], "capacity_exceeded");
+    assert_eq!(media_tasks.load(Ordering::Relaxed), 0);
     handle.shutdown().await.unwrap();
 }
 

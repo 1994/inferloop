@@ -258,12 +258,12 @@ impl GenerationRequest {
     /// # Errors
     /// Rejects unsupported content parts, an assistant call without an identifier, a duplicated
     /// call identifier, and a `tool` result that does not answer an earlier assistant call.
-    pub(super) fn chat_messages(&self) -> Result<(Vec<ChatMessage>, Vec<MediaRequest>)> {
-        let wire = self.messages.as_deref().unwrap_or_default();
+    pub(super) fn take_chat_messages(&mut self) -> Result<(Vec<ChatMessage>, Vec<MediaRequest>)> {
+        let wire = self.messages.take().unwrap_or_default();
         let mut call_ids = BTreeSet::new();
         let mut out = Vec::with_capacity(wire.len());
         let mut media_requests = Vec::new();
-        for message in wire {
+        for mut message in wire {
             let (text, media) = message.rendered()?;
             if !media.is_empty() && message.role != "user" {
                 return Err(Error::invalid("only a user message may carry media"));
@@ -398,23 +398,49 @@ impl WireMessage {
         })
     }
     /// Rendered text with media placeholders plus the media requests in content order.
-    fn rendered(&self) -> Result<(String, Vec<MediaRequest>)> {
+    fn rendered(&mut self) -> Result<(String, Vec<MediaRequest>)> {
+        let parts = match self.content.take() {
+            None | Some(Value::Null) => return Ok((String::new(), Vec::new())),
+            Some(Value::String(text)) => return Ok((text, Vec::new())),
+            Some(Value::Array(parts)) => parts,
+            Some(_) => {
+                return Err(Error::invalid(
+                    "message content must be a string, null, or a list of text parts",
+                ));
+            }
+        };
         let mut text = String::new();
         let mut media = Vec::new();
-        for part in self.parts()? {
-            match part {
+        for (index, mut part) in parts.into_iter().enumerate() {
+            match wire_part(&part, index)? {
                 WirePart::Text(value) => text.push_str(value),
-                WirePart::Media { modality, url } => {
+                WirePart::Media { modality, .. } => {
                     text.push_str(placeholder(&modality));
                     media.push(MediaRequest {
+                        url: take_media_url(&mut part, &modality)?,
                         modality,
-                        url: url.to_owned(),
                     });
                 }
             }
         }
         Ok((text, media))
     }
+}
+
+fn take_media_url(part: &mut Value, modality: &Modality) -> Result<String> {
+    let key = match modality {
+        Modality::Image => "image_url",
+        Modality::Video => "video_url",
+        _ => return Err(Error::invariant("validated media modality changed")),
+    };
+    part.get_mut(key)
+        .and_then(Value::as_object_mut)
+        .and_then(|object| object.remove("url"))
+        .and_then(|value| match value {
+            Value::String(url) => Some(url),
+            _ => None,
+        })
+        .ok_or_else(|| Error::invariant("validated media URL disappeared"))
 }
 
 /// One accepted content part.

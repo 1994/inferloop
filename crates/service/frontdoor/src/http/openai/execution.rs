@@ -211,7 +211,7 @@ impl StagedEncoding {
 /// Parse chat media and reserve its bounded staging budget before an identity is consumed.
 fn chat_media(
     state: &TextState,
-    request: &GenerationRequest,
+    request: &mut GenerationRequest,
     chat: bool,
 ) -> infer_core::Result<(
     Option<Vec<infer_models::ChatMessage>>,
@@ -219,7 +219,7 @@ fn chat_media(
     usize,
 )> {
     let (messages, media) = if chat {
-        let (messages, media) = request.chat_messages()?;
+        let (messages, media) = request.take_chat_messages()?;
         (Some(messages), media)
     } else {
         (None, Vec::new())
@@ -259,13 +259,11 @@ fn image_options(
 }
 
 fn preparation_bytes(
-    request: &GenerationRequest,
-    max_new_tokens: usize,
+    text_bytes: usize,
     media_bytes: usize,
     policy: &ToolPolicy,
 ) -> infer_core::Result<usize> {
-    request
-        .preparation_bytes(max_new_tokens)?
+    text_bytes
         .checked_add(media_bytes)
         .ok_or_else(|| Error::invalid("media preparation budget overflow"))?
         .checked_add(if policy.constraint().is_some() {
@@ -303,9 +301,10 @@ pub(super) async fn prepare(
     let max_new_tokens = requested.tokens.min(limits.output_cap);
     // Convert the wire history before consuming a request identity, so a malformed tool or
     // media part is a parameter error rather than a failed request.
-    let (messages, media_requests, media_bytes) = chat_media(state, &request, chat)?;
+    let text_bytes = request.preparation_bytes(max_new_tokens)?;
+    let (messages, media_requests, media_bytes) = chat_media(state, &mut request, chat)?;
     let image_options = image_options(&request, &media_requests)?;
-    let bytes = preparation_bytes(&request, max_new_tokens, media_bytes, &policy)?;
+    let bytes = preparation_bytes(text_bytes, media_bytes, &policy)?;
     if request.model != inspection.model_name {
         return Err(Error::new(ErrorCode::NotFound, "model is not served; see /v1/models").into());
     }

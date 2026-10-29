@@ -23,10 +23,10 @@ fn weather_tool() -> Value {
 
 #[test]
 fn a_plain_chat_request_declares_no_tools() {
-    let request = chat(&json!([{"role": "user", "content": "hi"}]), &json!({}));
+    let mut request = chat(&json!([{"role": "user", "content": "hi"}]), &json!({}));
     request.validate(true).unwrap();
     assert!(!request.tool_policy(true).unwrap().parses());
-    let messages = request.chat_messages().unwrap().0;
+    let messages = request.take_chat_messages().unwrap().0;
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].content, "hi");
     assert_eq!(messages[0].tool_calls.len(), 0);
@@ -34,7 +34,7 @@ fn a_plain_chat_request_declares_no_tools() {
 
 #[test]
 fn chat_preserves_image_processor_kwargs_for_preparation() {
-    let request = chat(
+    let mut request = chat(
         &json!([{"role":"user", "content":[{"type":"image_url", "image_url":{"url":"data:image/png;base64,AA=="}}]}]),
         &json!({"mm_processor_kwargs":{"max_pixels":262_144}}),
     );
@@ -42,7 +42,7 @@ fn chat_preserves_image_processor_kwargs_for_preparation() {
         request.mm_processor_kwargs.as_ref().unwrap()["max_pixels"],
         262_144
     );
-    assert_eq!(request.chat_messages().unwrap().1.len(), 1);
+    assert_eq!(request.take_chat_messages().unwrap().1.len(), 1);
     let scoped = chat(
         &json!([{"role":"user", "content":[{"type":"image_url", "image_url":{"url":"data:image/png;base64,AA=="}}]}]),
         &json!({"mm_processor_kwargs":{"images_kwargs":{"max_pixels":65_536}}}),
@@ -62,7 +62,7 @@ fn inline_media_keeps_its_url_and_full_staging_charge() {
         } else {
             json!({"type": kind, "video_url": {"url": url}})
         };
-        let media = chat(&json!([{"role":"user", "content":[part]}]), &json!({}));
+        let mut media = chat(&json!([{"role":"user", "content":[part]}]), &json!({}));
         let text = chat(
             &json!([{"role":"user", "content":[{"type":"text", "text":url}]}]),
             &json!({}),
@@ -71,10 +71,33 @@ fn inline_media_keeps_its_url_and_full_staging_charge() {
             media.preparation_bytes(1).unwrap(),
             text.preparation_bytes(1).unwrap()
         );
-        let (_, inputs) = media.chat_messages().unwrap();
+        let (_, inputs) = media.take_chat_messages().unwrap();
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0].url, url);
     }
+}
+
+#[test]
+fn media_urls_keep_their_storage_when_transferred_to_preparation() {
+    let mut request = chat(
+        &json!([{"role":"user", "content":[
+            {"type":"image_url", "image_url":{"url":"data:image/png;base64,AAAA"}},
+            {"type":"video_url", "video_url":{"url":"https://example.invalid/v.mp4"}}
+        ]}]),
+        &json!({}),
+    );
+    let parts = request.messages.as_ref().unwrap()[0]
+        .content
+        .as_ref()
+        .unwrap()
+        .as_array()
+        .unwrap();
+    let image = parts[0]["image_url"]["url"].as_str().unwrap().as_ptr();
+    let video = parts[1]["video_url"]["url"].as_str().unwrap().as_ptr();
+    let (_, media) = request.take_chat_messages().unwrap();
+    assert_eq!(media.len(), 2);
+    assert_eq!(media[0].url.as_ptr(), image);
+    assert_eq!(media[1].url.as_ptr(), video);
 }
 
 #[test]
@@ -149,7 +172,7 @@ fn malformed_tool_declarations_are_parameter_errors() {
 
 #[test]
 fn a_tool_round_trips_into_internal_history() {
-    let request = chat(
+    let mut request = chat(
         &json!([
             {"role": "user", "content": "weather?"},
             {"role": "assistant", "content": null, "tool_calls": [
@@ -161,7 +184,7 @@ fn a_tool_round_trips_into_internal_history() {
         &json!({"tools": weather_tool()}),
     );
     request.validate(true).unwrap();
-    let messages = request.chat_messages().unwrap().0;
+    let messages = request.take_chat_messages().unwrap().0;
     assert_eq!(messages.len(), 3);
     // A null assistant content is stored as empty text, not rejected.
     assert_eq!(messages[1].content, "");
@@ -178,14 +201,14 @@ fn a_tool_round_trips_into_internal_history() {
 
 #[test]
 fn a_result_that_answers_no_earlier_call_is_rejected() {
-    let request = chat(
+    let mut request = chat(
         &json!([
             {"role": "user", "content": "x"},
             {"role": "tool", "content": "r", "tool_call_id": "call_missing"}
         ]),
         &json!({}),
     );
-    assert!(request.chat_messages().is_err());
+    assert!(request.take_chat_messages().is_err());
 }
 
 #[test]
@@ -196,17 +219,25 @@ fn duplicate_call_ids_and_misplaced_fields_are_rejected() {
             {"id": "call_1", "function": {"name": "g", "arguments": "{}"}}
         ]}
     ]);
-    assert!(chat(&duplicate, &json!({})).chat_messages().is_err());
+    assert!(chat(&duplicate, &json!({})).take_chat_messages().is_err());
     let on_user = json!([{"role": "user", "content": "x", "tool_calls": [
         {"id": "call_1", "function": {"name": "f", "arguments": "{}"}}
     ]}]);
-    assert!(chat(&on_user, &json!({})).chat_messages().is_err());
+    assert!(chat(&on_user, &json!({})).take_chat_messages().is_err());
     let id_on_assistant = json!([
         {"role": "assistant", "content": "x", "tool_call_id": "call_1"}
     ]);
-    assert!(chat(&id_on_assistant, &json!({})).chat_messages().is_err());
+    assert!(
+        chat(&id_on_assistant, &json!({}))
+            .take_chat_messages()
+            .is_err()
+    );
     let tool_without_id = json!([{"role": "tool", "content": "r"}]);
-    assert!(chat(&tool_without_id, &json!({})).chat_messages().is_err());
+    assert!(
+        chat(&tool_without_id, &json!({}))
+            .take_chat_messages()
+            .is_err()
+    );
 }
 
 #[test]
@@ -215,13 +246,13 @@ fn text_content_parts_are_joined_and_other_parts_are_refused() {
         {"type": "text", "text": "hello "}, {"type": "text", "text": "world"}
     ]}]);
     assert_eq!(
-        chat(&parts, &json!({})).chat_messages().unwrap().0[0].content,
+        chat(&parts, &json!({})).take_chat_messages().unwrap().0[0].content,
         "hello world"
     );
     let image = json!([{"role": "user", "content": [
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
     ]}]);
-    let (messages, media) = chat(&image, &json!({})).chat_messages().unwrap();
+    let (messages, media) = chat(&image, &json!({})).take_chat_messages().unwrap();
     assert_eq!(
         messages[0].content,
         "<|vision_start|><|image_pad|><|vision_end|>"
@@ -230,11 +261,11 @@ fn text_content_parts_are_joined_and_other_parts_are_refused() {
     assert_eq!(media[0].modality, Modality::Image);
     let missing_url =
         json!([{"role": "user", "content": [{"type": "image_url", "image_url": {}}]}]);
-    assert!(chat(&missing_url, &json!({})).chat_messages().is_err());
+    assert!(chat(&missing_url, &json!({})).take_chat_messages().is_err());
     let video = json!([{"role": "user", "content": [
         {"type": "video_url", "video_url": {"url": "https://example.invalid/clip.mp4"}}
     ]}]);
-    let (messages, media) = chat(&video, &json!({})).chat_messages().unwrap();
+    let (messages, media) = chat(&video, &json!({})).take_chat_messages().unwrap();
     assert_eq!(
         messages[0].content,
         "<|vision_start|><|video_pad|><|vision_end|>"
@@ -243,7 +274,11 @@ fn text_content_parts_are_joined_and_other_parts_are_refused() {
     let assistant_media = json!([{"role": "assistant", "content": [
         {"type": "image_url", "image_url": {"url": "https://example.invalid/a.png"}}
     ]}]);
-    assert!(chat(&assistant_media, &json!({})).chat_messages().is_err());
+    assert!(
+        chat(&assistant_media, &json!({}))
+            .take_chat_messages()
+            .is_err()
+    );
 }
 
 #[test]
@@ -263,7 +298,7 @@ fn completions_refuse_the_chat_only_tool_fields() {
 
 #[test]
 fn nullable_tool_calls_from_sdk_history_are_accepted() {
-    let request = chat(
+    let mut request = chat(
         &json!([
             {"role":"user", "content":"hello"},
             {"role":"assistant", "content":"hi", "tool_calls":null}
@@ -271,7 +306,7 @@ fn nullable_tool_calls_from_sdk_history_are_accepted() {
         &json!({}),
     );
     request.validate(true).unwrap();
-    let messages = request.chat_messages().unwrap().0;
+    let messages = request.take_chat_messages().unwrap().0;
     assert_eq!(messages[1].tool_calls.len(), 0);
     assert_eq!(messages[1].content, "hi");
 }
