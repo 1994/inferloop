@@ -637,6 +637,72 @@ fn cancellation_guard_kills_and_reaps_a_subprocess() {
 }
 
 #[tokio::test]
+async fn request_media_handoff_preserves_bits_and_releases_temporary_pixels() {
+    use crate::cpu::CpuConfig;
+    use infer_ir::Modality;
+    use infer_models::{PreparedPrompt, PromptImage};
+
+    let prepared = PreparedPrompt {
+        tokens: vec![1, 2, 3, 4, 5, 6],
+        images: [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| PromptImage {
+                pixels: vec![value, -0.0, 1.25],
+                grid: (1, 1, index + 1),
+            })
+            .collect(),
+        spans: (0..6).map(|index| index..index + 1).collect(),
+    };
+    let pool = CpuPool::new(CpuConfig::default()).expect("CPU pool");
+    pool.run(MEDIA_STAGING_BYTES, move |context| {
+        for modality in [Modality::Image, Modality::Video] {
+            let mut retained = prepared.clone();
+            let mut released = prepared.clone();
+            let expected = super::media_inputs(
+                &mut retained,
+                &modality,
+                context,
+                super::PreparedPixels::Retain,
+            )?;
+            let actual = super::media_inputs(
+                &mut released,
+                &modality,
+                context,
+                super::PreparedPixels::Release,
+            )?;
+            assert_eq!(retained, prepared);
+            assert_eq!(released.tokens, prepared.tokens);
+            assert_eq!(released.spans, prepared.spans);
+            assert!(
+                released
+                    .images
+                    .iter()
+                    .all(|image| image.pixels.capacity() == 0)
+            );
+            assert_eq!(actual, expected);
+            for (input, image) in actual.iter().zip(&prepared.images) {
+                let item = input.item.as_ref().expect("prepared media");
+                assert_eq!(
+                    item.pixels
+                        .iter()
+                        .map(|value| value.to_bits())
+                        .collect::<Vec<_>>(),
+                    image
+                        .pixels
+                        .iter()
+                        .map(|value| value.to_bits())
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+        Ok(())
+    })
+    .await
+    .expect("media handoff");
+}
+
+#[tokio::test]
 async fn multi_image_digest_matches_each_prepared_payload() {
     use crate::cpu::CpuConfig;
     use infer_ir::Modality;
@@ -673,21 +739,22 @@ async fn multi_image_digest_matches_each_prepared_payload() {
         })
         .collect();
     let config = CpuConfig {
-        max_bytes: IMAGE_COUNT * MEDIA_STAGING_BYTES,
+        max_bytes: 2 * IMAGE_COUNT * MEDIA_STAGING_BYTES,
         ..CpuConfig::default()
     };
     let pool = CpuPool::new(config).expect("CPU pool");
-    let (prepared, media) = pool
-        .run(IMAGE_COUNT * MEDIA_STAGING_BYTES, move |context| {
-            service.prepare(
-                &assets,
-                &"<|vision_start|><|image_pad|><|vision_end|>".repeat(IMAGE_COUNT),
-                &requests,
-                context,
-            )
+    let (prepared, media, request_tokens, request_media) = pool
+        .run(2 * IMAGE_COUNT * MEDIA_STAGING_BYTES, move |context| {
+            let prompt = "<|vision_start|><|image_pad|><|vision_end|>".repeat(IMAGE_COUNT);
+            let (prepared, media) = service.prepare(&assets, &prompt, &requests, context)?;
+            let (request_tokens, request_media) =
+                service.prepare_request(&assets, &prompt, &requests, context, None)?;
+            Ok((prepared, media, request_tokens, request_media))
         })
         .await
         .expect("multi-image preparation");
+    assert_eq!(request_tokens, prepared.tokens);
+    assert_eq!(request_media, media);
     assert_eq!(media.len(), IMAGE_COUNT);
     for ((image, span), media) in prepared.images.iter().zip(&prepared.spans).zip(media) {
         let item = media.item.expect("prepared item");

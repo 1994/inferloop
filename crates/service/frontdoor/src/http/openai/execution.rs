@@ -79,14 +79,13 @@ impl Encoding {
                     .media
                     .as_ref()
                     .ok_or_else(|| Error::unsupported("this deployment is text-only"))?;
-                let (prepared, inputs) = media.prepare_with_options(
+                media.prepare_request(
                     &self.assets,
                     &rendered,
                     &self.media_requests,
                     context,
                     self.image_options.as_ref(),
-                )?;
-                (prepared.tokens, inputs)
+                )?
             }
         } else {
             (

@@ -10,11 +10,13 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use infer_core::{Error, ErrorCode, MediaId, Result};
 use infer_ir::{ImageResizePolicy, MediaInput, MediaItem, Modality};
 use infer_models::{
-    MediaLimits, MultimodalAssets, PreparedPrompt, RawImage, RawVideo, RgbImage, TextAssets,
+    MediaLimits, MultimodalAssets, PreparedPrompt, PromptImage, RawImage, RawVideo, RgbImage,
+    TextAssets,
 };
 use std::env::temp_dir;
 use std::fs::{File, OpenOptions, metadata, read, remove_file};
 use std::io::{self, Cursor, Read, Write};
+use std::mem::take;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
@@ -107,6 +109,23 @@ pub struct MediaService {
     source: SourcePolicy,
     image_options: Option<ImageProcessingOptions>,
 }
+
+/// Whether the caller needs the original prepared pixels after constructing media inputs.
+#[derive(Clone, Copy)]
+enum PreparedPixels {
+    Retain,
+    Release,
+}
+
+impl PreparedPixels {
+    fn share(self, image: &mut PromptImage) -> Arc<[f32]> {
+        match self {
+            Self::Retain => Arc::from(image.pixels.as_slice()),
+            Self::Release => Arc::from(take(&mut image.pixels)),
+        }
+    }
+}
+
 impl MediaService {
     #[must_use]
     pub const fn new(assets: Arc<MultimodalAssets>, limits: MediaLimits) -> Self {
@@ -150,6 +169,45 @@ impl MediaService {
         context: &CpuContext,
         request_options: Option<&ImageProcessingOptions>,
     ) -> Result<(PreparedPrompt, Vec<MediaInput>)> {
+        self.prepare_inner(
+            assets,
+            prompt,
+            requests,
+            context,
+            request_options,
+            PreparedPixels::Retain,
+        )
+    }
+
+    /// Prepare the request while releasing each temporary patch buffer after it is shared.
+    pub(crate) fn prepare_request(
+        &self,
+        assets: &TextAssets,
+        prompt: &str,
+        requests: &[MediaRequest],
+        context: &CpuContext,
+        request_options: Option<&ImageProcessingOptions>,
+    ) -> Result<(Vec<u32>, Vec<MediaInput>)> {
+        let (prepared, media) = self.prepare_inner(
+            assets,
+            prompt,
+            requests,
+            context,
+            request_options,
+            PreparedPixels::Release,
+        )?;
+        Ok((prepared.tokens, media))
+    }
+
+    fn prepare_inner(
+        &self,
+        assets: &TextAssets,
+        prompt: &str,
+        requests: &[MediaRequest],
+        context: &CpuContext,
+        request_options: Option<&ImageProcessingOptions>,
+        pixels: PreparedPixels,
+    ) -> Result<(PreparedPrompt, Vec<MediaInput>)> {
         if requests.is_empty() {
             return Err(Error::invalid("media preparation needs at least one item"));
         }
@@ -164,7 +222,7 @@ impl MediaService {
             ));
         }
         self.limits.check(&modality, requests.len())?;
-        let prepared = match modality {
+        let mut prepared = match modality {
             Modality::Image => {
                 self.prepare_images(assets, prompt, requests, context, request_options)?
             }
@@ -192,33 +250,7 @@ impl MediaService {
                 "prepared media is empty or has inconsistent spans",
             ));
         }
-        let mut media = Vec::with_capacity(prepared.images.len());
-        for (images, spans) in prepared
-            .images
-            .chunks(digest::BATCH_IMAGES)
-            .zip(prepared.spans.chunks(digest::BATCH_IMAGES))
-        {
-            context.check()?;
-            let hashes = digest::hashes(images)?;
-            for ((image, span), hash) in images.iter().zip(spans).zip(hashes) {
-                let id = u64::try_from(media.len())
-                    .ok()
-                    .and_then(|value| value.checked_add(1))
-                    .ok_or_else(|| Error::invalid("media identity overflow"))?;
-                let item = MediaItem {
-                    modality: modality.clone(),
-                    pixels: Arc::from(image.pixels.as_slice()),
-                    grid: image.grid,
-                    span: span.clone(),
-                };
-                media.push(MediaInput {
-                    id: MediaId::new(id)?,
-                    modality: modality.clone(),
-                    content_digest: format!("fnv1a64:{hash:016x}"),
-                    item: Some(item),
-                });
-            }
-        }
+        let media = media_inputs(&mut prepared, &modality, context, pixels)?;
         Ok((prepared, media))
     }
 
@@ -269,6 +301,42 @@ impl MediaService {
             )
         }
     }
+}
+
+fn media_inputs(
+    prepared: &mut PreparedPrompt,
+    modality: &Modality,
+    context: &CpuContext,
+    pixels: PreparedPixels,
+) -> Result<Vec<MediaInput>> {
+    let mut media = Vec::with_capacity(prepared.images.len());
+    for (images, spans) in prepared
+        .images
+        .chunks_mut(digest::BATCH_IMAGES)
+        .zip(prepared.spans.chunks(digest::BATCH_IMAGES))
+    {
+        context.check()?;
+        let hashes = digest::hashes(images)?;
+        for ((image, span), hash) in images.iter_mut().zip(spans).zip(hashes) {
+            let id = u64::try_from(media.len())
+                .ok()
+                .and_then(|value| value.checked_add(1))
+                .ok_or_else(|| Error::invalid("media identity overflow"))?;
+            let item = MediaItem {
+                modality: modality.clone(),
+                pixels: pixels.share(image),
+                grid: image.grid,
+                span: span.clone(),
+            };
+            media.push(MediaInput {
+                id: MediaId::new(id)?,
+                modality: modality.clone(),
+                content_digest: format!("fnv1a64:{hash:016x}"),
+                item: Some(item),
+            });
+        }
+    }
+    Ok(media)
 }
 
 /// Decode one image URL/data URI into bounded RGB8.
