@@ -39,14 +39,16 @@ fn oracle(input: &[f32], residual: &[f32], hidden: usize, width: usize) -> Vec<f
     {
         let activated: Vec<f32> = (0..width)
             .map(|column| {
-                let x = row[column % hidden] * 0.5 - row[(column + 1) % hidden] * 0.25 + 0.125;
-                0.5 * x * (1.0 + (0.797_884_6 * (x + 0.044_715 * x * x * x)).tanh())
+                let x =
+                    row[column % hidden].mul_add(0.5, row[(column + 1) % hidden] * -0.25) + 0.125;
+                let inner = (0.044_715 * x * x).mul_add(x, x);
+                0.5 * x * (1.0 + (0.797_884_6 * inner).tanh())
             })
             .collect();
         result.extend(residual_row.iter().enumerate().map(|(column, value)| {
-            value + activated[column % width] * 0.25
-                - activated[(column + 1) % width] * 0.125
-                - 0.0625
+            let first = activated[column % width].mul_add(0.25, -0.0625);
+            let second = activated[(column + 1) % width].mul_add(-0.125, first);
+            value + second
         }));
     }
     result
