@@ -51,7 +51,7 @@ impl<B: BackendProvider> RuntimeActor<B> {
     pub(super) fn handle_command(&mut self, command: Command, generated: &mut Vec<EngineOutput>) {
         match command {
             Command::Submit {
-                request,
+                mut request,
                 pending,
                 trace,
                 output,
@@ -64,7 +64,11 @@ impl<B: BackendProvider> RuntimeActor<B> {
                     if self.stopping {
                         return Err(Error::new(ErrorCode::Capacity, "runtime is shutting down"));
                     }
-                    self.engine.try_admission_quote(&request)
+                    if self.engine.media_host_credit_ready(&mut request)? {
+                        self.engine.try_admission_quote(&request)
+                    } else {
+                        Ok(None)
+                    }
                 });
                 match result {
                     Ok(ticket) => self.quoting.push_back((

@@ -15,7 +15,7 @@ impl<B: BackendProvider> RuntimeActor<B> {
                 break;
             };
             let Command::Submit {
-                request,
+                mut request,
                 pending,
                 trace,
                 output,
@@ -45,15 +45,7 @@ impl<B: BackendProvider> RuntimeActor<B> {
                     notify_abandoned(reply, error);
                 }
             }
-            let result = if let Some(issued) = ticket.as_mut() {
-                issued.poll()
-            } else {
-                // The lane was full when the quote was first issued; issue it again now.
-                self.engine.try_admission_quote(&request).map(|issued| {
-                    ticket = issued;
-                    None
-                })
-            };
+            let result = self.poll_admission_quote(&mut request, &mut ticket);
             match result {
                 Ok(None) => self.quoting.push_back((
                     Command::Submit {
@@ -83,12 +75,32 @@ impl<B: BackendProvider> RuntimeActor<B> {
                     if let Err(error) = &result {
                         self.engine.record_admission_rejection(id, error);
                     }
-                    let admitted = result.and_then(|ack| match ack {
-                        Some(infer_spi::ResourceReply::ReservationBytes(bytes)) => {
-                            self.admit(*request, bytes, trace, output)
+                    let admitted = match result {
+                        Ok(Some(infer_spi::ResourceReply::ReservationBytes(bytes))) => {
+                            match self.engine.media_host_credit_ready(&mut request) {
+                                Ok(false) => {
+                                    self.quoting.push_back((
+                                        Command::Submit {
+                                            request,
+                                            pending,
+                                            trace,
+                                            output,
+                                            reply,
+                                        },
+                                        None,
+                                    ));
+                                    continue;
+                                }
+                                Ok(true) => self.admit(*request, bytes, trace, output),
+                                Err(error) => {
+                                    self.engine.record_admission_rejection(id, &error);
+                                    Err(error)
+                                }
+                            }
                         }
-                        _ => Err(Error::invariant("admission quote acknowledgement mismatch")),
-                    });
+                        Ok(_) => Err(Error::invariant("admission quote acknowledgement mismatch")),
+                        Err(error) => Err(error),
+                    };
                     if reply.send(admitted).is_err()
                         && let Ok(events) = self.engine.cancel(id)
                     {
@@ -97,6 +109,20 @@ impl<B: BackendProvider> RuntimeActor<B> {
                 }
             }
         }
+    }
+
+    fn poll_admission_quote(
+        &mut self,
+        request: &mut infer_runtime::PreparedRequest,
+        ticket: &mut Option<infer_spi::ResourceTicket>,
+    ) -> Result<Option<infer_spi::ResourceReply>> {
+        if let Some(issued) = ticket.as_mut() {
+            return issued.poll();
+        }
+        if self.engine.media_host_credit_ready(request)? {
+            *ticket = self.engine.try_admission_quote(request)?;
+        }
+        Ok(None)
     }
     pub(super) fn admit(
         &mut self,

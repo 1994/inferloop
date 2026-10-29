@@ -210,8 +210,14 @@ impl RuntimeHandle {
             })
             .await?;
         pending.check()?;
-        self.enqueue_prepared(request, pending, trace, deadline)
-            .await
+        self.enqueue_prepared(
+            request,
+            pending,
+            trace,
+            deadline,
+            self.control_admission_budget(),
+        )
+        .await
     }
 
     /// Prepare a staged input without keeping a CPU worker while its full quote is pending.
@@ -284,9 +290,7 @@ impl RuntimeHandle {
         pending.check()?;
         let (stage, quote, preparer) = match initial {
             InitialStage::Ready(request) => {
-                return self
-                    .enqueue_prepared(request, pending, trace, request_deadline)
-                    .await;
+                return self.enqueue_staged(request, pending, trace, deadline).await;
             }
             InitialStage::Deferred(stage, quote, preparer) => (stage, quote, preparer),
         };
@@ -315,8 +319,7 @@ impl RuntimeHandle {
             })
             .await?;
         pending.check()?;
-        self.enqueue_prepared(request, pending, trace, request_deadline)
-            .await
+        self.enqueue_staged(request, pending, trace, deadline).await
     }
 
     fn preparation_deadline(&self, deadline_us: Option<u64>) -> Option<Instant> {
@@ -327,12 +330,38 @@ impl RuntimeHandle {
             .map(|deadline| Instant::now() + Duration::from_micros(deadline.saturating_sub(now_us)))
     }
 
+    fn control_admission_budget(&self) -> Duration {
+        Duration::from_millis(
+            self.config
+                .command_timeout_ms
+                .max(self.config.device_control_timeout_ms),
+        )
+    }
+
+    async fn enqueue_staged(
+        &self,
+        request: infer_runtime::PreparedRequest,
+        pending: Arc<Pending>,
+        trace: Option<TraceContext>,
+        deadline: Instant,
+    ) -> Result<async_mpsc::Receiver<Result<EngineOutput>>> {
+        self.enqueue_prepared(
+            request,
+            pending,
+            trace,
+            Some(deadline),
+            Duration::from_millis(self.config.job_timeout_ms),
+        )
+        .await
+    }
+
     async fn enqueue_prepared(
         &self,
         request: infer_runtime::PreparedRequest,
         pending: Arc<Pending>,
         trace: Option<TraceContext>,
         deadline: Option<Instant>,
+        budget: Duration,
     ) -> Result<async_mpsc::Receiver<Result<EngineOutput>>> {
         let (output, receiver) = async_mpsc::channel(OUTPUT_CHANNEL_CAPACITY);
         let (reply, response) = oneshot::channel();
@@ -343,13 +372,7 @@ impl RuntimeHandle {
             output,
             reply,
         })?;
-        // Admission may wait behind resource capture on the device owner. It uses
-        // that existing resource budget; inspection/cancellation keep the control budget.
-        let budget = Duration::from_millis(
-            self.config
-                .command_timeout_ms
-                .max(self.config.device_control_timeout_ms),
-        );
+        // Staged media may also wait for host credit; control requests retain their own budget.
         let budget = deadline.map_or(budget, |deadline| {
             budget.min(deadline.saturating_duration_since(Instant::now()))
         });

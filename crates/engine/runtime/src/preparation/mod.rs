@@ -15,6 +15,12 @@ mod media_plan_tests;
 /// Fixed retained overhead beyond token, page and projection storage.
 const RETAINED_OVERHEAD_BYTES: usize = 4096;
 
+#[derive(Clone, Copy)]
+pub struct HostCreditQuote {
+    pub tokens: usize,
+    pub bytes: usize,
+}
+
 pub struct PreparedRequest {
     pub(crate) constraint: Option<infer_spi::ConstraintHandle>,
     pub(crate) request: Arc<CanonicalRequest>,
@@ -24,6 +30,7 @@ pub struct PreparedRequest {
     pub(crate) media: Option<Arc<infer_ir::MediaPlan>>,
     pub(crate) model: Arc<ModelIr>,
     pub(crate) provider: String,
+    pub(crate) host_quote: Option<HostCreditQuote>,
 }
 impl PreparedRequest {
     /// Attach a matcher built on the bounded preparation pool.
@@ -44,6 +51,7 @@ impl PreparedRequest {
             ));
         }
         self.constraint = constraint;
+        self.host_quote = None;
         Ok(self)
     }
 
@@ -111,6 +119,7 @@ impl RequestPreparer {
             plan,
             model: self.model.clone(),
             provider: self.workloads.identity().into(),
+            host_quote: None,
         })
     }
 }

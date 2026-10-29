@@ -71,6 +71,39 @@ impl CreditPool {
             *slot = Some(wake);
         }
     }
+    /// Check whether a request can currently obtain a lease without consuming a slot.
+    ///
+    /// This is a snapshot, not a reservation; the caller must still handle a later reservation
+    /// failure. A request larger than the pool's limit can never make progress.
+    /// # Errors
+    /// Returns a capacity error when the request cannot fit or all lease slots are retired.
+    pub fn can_reserve(&self, units: usize) -> Result<bool> {
+        let remaining = self
+            .budget
+            .limit
+            .checked_sub(units)
+            .ok_or_else(|| Error::new(ErrorCode::Capacity, "host storage credits exhausted"))?;
+        if self.budget.used.load(Ordering::Acquire) > remaining {
+            return Ok(false);
+        }
+        let mut reusable = false;
+        for slot in &self.slots {
+            if !slot.retired.load(Ordering::Acquire) {
+                reusable = true;
+                if !slot.leased.load(Ordering::Acquire) {
+                    return Ok(true);
+                }
+            }
+        }
+        if reusable {
+            Ok(false)
+        } else {
+            Err(Error::new(
+                ErrorCode::Capacity,
+                "host reader lease slots exhausted",
+            ))
+        }
+    }
     /// # Errors
     /// Rejects exhausted units/reader slots. It never allocates a new lease.
     pub fn reserve(&self, units: usize) -> Result<CreditLease> {

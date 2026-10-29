@@ -30,3 +30,19 @@ fn live_readers_block_slot_reuse_even_when_units_remain() -> Result<()> {
     assert!(next.generation > generation);
     Ok(())
 }
+
+#[test]
+fn availability_tracks_both_bytes_and_live_reader_slots() -> Result<()> {
+    let pool = CreditPool::new(1, 10)?;
+    assert!(pool.can_reserve(10)?);
+    assert_eq!(pool.can_reserve(11).unwrap_err().code, ErrorCode::Capacity);
+    let owner = pool.reserve(7)?;
+    let reader = owner.clone();
+    assert!(!pool.can_reserve(4)?);
+    assert!(!pool.can_reserve(1)?);
+    drop(owner);
+    assert!(!pool.can_reserve(1)?);
+    drop(reader);
+    assert!(pool.can_reserve(10)?);
+    Ok(())
+}

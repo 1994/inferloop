@@ -1383,6 +1383,74 @@ fn image_quote_request() -> Result<(CanonicalRequest, Arc<[f32]>)> {
     Ok((request, owner_pixels))
 }
 
+#[tokio::test]
+async fn image_admission_waits_for_runtime_host_credit_and_then_completes() -> Result<()> {
+    use infer_ir::RequestInput;
+    use tokio::sync::oneshot::error::TryRecvError;
+
+    let ir = support::model(ModelId::ONE);
+    let mut kernels = KernelRegistry::default();
+    kernels.register(&support::DeclaredKernels)?;
+    let mut config = RuntimeConfig::default();
+    config.cpu.host_tokens = 1 << 20;
+    let fixed = config.cpu.fixed_bytes_for(&config, ir.vocab_size)?;
+    config.cpu.host_bytes = fixed + (6 << 20);
+    let backend = support::ProtocolBackend::new(16, 8, &ir)?.multimodal();
+    let mut engine = Engine::new(backend, ir, PrecisionPlan::f32(), &kernels, config)?;
+    let preparer = engine.request_preparer()?;
+    let make_request = |id: RequestId| -> Result<CanonicalRequest> {
+        let (mut request, _) = image_quote_request()?;
+        request.id = id;
+        if let RequestInput::Sequence { media, .. } = &mut request.input {
+            let item = media[0]
+                .item
+                .as_mut()
+                .ok_or_else(|| Error::invariant("missing image fixture"))?;
+            item.pixels = Arc::from(vec![0_f32; 1 << 20]);
+        }
+        Ok(request)
+    };
+    engine.submit_prepared_with_trace(preparer.prepare(make_request(RequestId::ONE)?)?, None)?;
+    let candidate = preparer.prepare(make_request(RequestId::new(2)?)?)?;
+    let (_sender, receiver) = mpsc::sync_channel(1);
+    let (_control, control_rx) = mpsc::sync_channel(1);
+    let mut actor = RuntimeActor::new(
+        engine,
+        receiver,
+        control_rx,
+        Arc::new(AtomicBool::new(false)),
+        Instant::now(),
+    );
+    let ingress = Registry::new(1, 8 << 20);
+    let pending = ingress.reserve(RequestId::new(2)?, 4 << 20)?;
+    let (output, _reader) = async_mpsc::channel(1);
+    let (reply, mut response) = oneshot::channel();
+    actor.quoting.push_back((
+        Command::Submit {
+            request: Box::new(candidate),
+            pending,
+            trace: None,
+            output,
+            reply,
+        },
+        None,
+    ));
+    actor.poll_admissions(&mut Vec::new());
+    actor.poll_admissions(&mut Vec::new());
+    assert!(matches!(response.try_recv(), Err(TryRecvError::Empty)));
+    drop(actor.engine.cancel(RequestId::ONE)?);
+    drop(actor.engine.take_completed(RequestId::ONE)?);
+    for _ in 0..3 {
+        actor.poll_admissions(&mut Vec::new());
+    }
+    timeout(Duration::from_secs(2), response)
+        .await
+        .map_err(|error| Error::invariant(error.to_string()))?
+        .map_err(|error| Error::invariant(error.to_string()))??;
+    assert_eq!(actor.engine.inspect().active_requests, 1);
+    Ok(())
+}
+
 struct QuoteGate {
     inner: support::ProtocolBackend,
     entered: mpsc::Sender<()>,

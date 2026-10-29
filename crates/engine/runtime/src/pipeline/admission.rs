@@ -1,4 +1,5 @@
 //! Validate and prepare the entire request before reserving execution state.
+use crate::preparation::HostCreditQuote;
 use crate::preparation::generation_capacity;
 use crate::preparation::generation_storage;
 use crate::preparation::retained_bytes;
@@ -183,6 +184,46 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             Err(error) => Err(error),
         }
     }
+
+    /// Check whether a prepared media request can enter the runtime's host budget now.
+    ///
+    /// This does not reserve credit. The engine owner must still perform admission without
+    /// allowing another reservation between this check and the actual admission. Non-media
+    /// requests retain their existing admission behavior.
+    /// # Errors
+    /// Rejects foreign or invalid requests and requests that can never fit the host budget.
+    pub fn media_host_credit_ready(&self, prepared: &mut crate::PreparedRequest) -> Result<bool> {
+        if prepared.media.is_none() {
+            return Ok(true);
+        }
+        if self.fault.is_some() {
+            return Err(Error::new(
+                ErrorCode::Backend,
+                "engine is quarantined; replace it after in-flight work drains",
+            ));
+        }
+        if *prepared.model != self.model
+            || prepared.provider != self.workloads.identity()
+            || prepared.plan.program != self.program.id
+        {
+            return Err(Error::invalid("foreign request preparation context"));
+        }
+        self.validate_request_admission(&prepared.request)?;
+        let quote = if let Some(quote) = prepared.host_quote {
+            quote
+        } else {
+            let quote = self.host_requirements(
+                &prepared.request,
+                &prepared.plan,
+                prepared.constraint.as_ref(),
+            )?;
+            prepared.host_quote = Some(quote);
+            quote
+        };
+        let tokens = self.host.credits.can_reserve(quote.tokens)?;
+        let bytes = self.host.bytes.can_reserve(quote.bytes)?;
+        Ok(tokens && bytes)
+    }
     fn quote_command(
         &self,
         prepared: &crate::PreparedRequest,
@@ -306,24 +347,13 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             ));
         }
         let prepared = self.prepare_admission(request, plan, quote)?;
-        let tokens = retained_tokens(&prepared.plan, generation_capacity(&prepared.request))?;
-        let credit = self.host.credits.reserve(tokens)?;
-        let bytes = retained_bytes(
+        let quote = self.host_requirements(
             &prepared.request,
             &prepared.plan,
-            &self.model,
-            self.config.block_size,
+            prepared.constraint.as_ref(),
         )?;
-        let bytes = bytes
-            .checked_add(
-                prepared
-                    .constraint
-                    .as_ref()
-                    .map_or(0, infer_spi::ConstraintHandle::retained_bytes),
-            )
-            .ok_or_else(|| Error::invalid("constraint reservation overflow"))?;
-        let bytes = self.execution_host_bytes(&prepared, bytes)?;
-        let byte_credit = self.host.bytes.reserve(bytes)?;
+        let credit = self.host.credits.reserve(quote.tokens)?;
+        let byte_credit = self.host.bytes.reserve(quote.bytes)?;
         let state = self.reserve_execution_state(&prepared)?;
         let id = prepared.request.id;
         self.retain_request_identity(id);
@@ -581,15 +611,20 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
 }
 
 impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
-    fn execution_host_bytes(
+    fn host_requirements(
         &self,
-        prepared: &PreparedAdmission,
-        mut bytes: usize,
-    ) -> Result<usize> {
+        request: &CanonicalRequest,
+        plan: &WorkloadPlan,
+        constraint: Option<&infer_spi::ConstraintHandle>,
+    ) -> Result<HostCreditQuote> {
+        let tokens = retained_tokens(plan, generation_capacity(request))?;
+        let mut bytes = retained_bytes(request, plan, &self.model, self.config.block_size)?
+            .checked_add(constraint.map_or(0, infer_spi::ConstraintHandle::retained_bytes))
+            .ok_or_else(|| Error::invalid("constraint reservation overflow"))?;
         if let Some(recipe) = self.backend.state_recipe() {
             recipe.visit(
-                prepared.plan.reserved_tokens,
-                retained_readout(&prepared.request.workload),
+                plan.reserved_tokens,
+                retained_readout(&request.workload),
                 |region| {
                     // Numerical readbacks and their row headers are already charged by retained_bytes.
                     if region.region.memory == infer_ir::StateMemory::HostMirror
@@ -611,6 +646,6 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 },
             )?;
         }
-        Ok(bytes)
+        Ok(HostCreditQuote { tokens, bytes })
     }
 }
