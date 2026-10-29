@@ -60,7 +60,7 @@ SEND_CHUNK_BYTES = 64 * 1024
 TRANSPORT_CLOSE_SECONDS = 0.1
 MAX_CLIENT_CONCURRENCY = 256
 TEXT_FINISH_REASONS = frozenset(("stop", "length"))
-TEXT_CAPTURE_CONTRACT = "image-chat-text-v4"
+TEXT_CAPTURE_CONTRACT = "image-chat-text-v5"
 
 
 def read_json(path):
@@ -204,7 +204,9 @@ class StreamCapture:
     def __init__(self, started):
         self.started = started
         self.chunks = []
-        self.usage = self.finish_reason = self.first = self.identity = None
+        self.usage = self.finish_reason = self.first = self.last = self.identity = None
+        self.visible_events = 0
+        self.read_time = None
         self.done = False
         self.total_bytes = 0
         self.pending = bytearray()
@@ -212,6 +214,8 @@ class StreamCapture:
         self.data_lines = []
 
     def feed(self, data):
+        # Events delivered together have the same observable arrival time.
+        self.read_time = None
         self.total_bytes += len(data)
         if self.total_bytes > MAX_RESPONSE_BYTES:
             raise ValueError("stream exceeds client capture limit")
@@ -271,8 +275,12 @@ class StreamCapture:
             if not isinstance(text, str):
                 raise ValueError("non-string stream content")
             if text:
+                if self.read_time is None:
+                    self.read_time = (time.perf_counter() - self.started) * 1000
+                self.last = self.read_time
                 if self.first is None:
-                    self.first = (time.perf_counter() - self.started) * 1000
+                    self.first = self.last
+                self.visible_events += 1
                 self.chunks.append(text)
             self.finish_reason = choice.get("finish_reason") or self.finish_reason
 
@@ -285,12 +293,24 @@ class StreamCapture:
             raise ValueError(f"unsupported stream finish reason: {self.finish_reason}")
         if self.first is None or not valid_latency(self.first):
             raise ValueError("stream has no valid first visible content time")
+        tokens = self.usage.get("completion_tokens") if isinstance(self.usage, dict) else None
+        spacing = None
+        if (
+            self.visible_events > 1
+            and self.last > self.first
+            and type(tokens) is int
+            and tokens > 1
+        ):
+            spacing = (self.last - self.first) / (tokens - 1)
         return {
             "text": "".join(self.chunks),
             "finish_reason": self.finish_reason,
             "response_model": self.identity[1],
             "usage": self.usage,
             "ttft_ms": self.first,
+            "last_visible_content_ms": self.last,
+            "visible_content_events": self.visible_events,
+            "tpot_estimate_ms": spacing,
         }
 
 
@@ -333,6 +353,9 @@ def parse_complete(response):
         "response_model": response_model,
         "usage": item.get("usage"),
         "ttft_ms": None,
+        "last_visible_content_ms": None,
+        "visible_content_events": 0,
+        "tpot_estimate_ms": None,
     }
 
 
@@ -848,6 +871,9 @@ async def run_async(args, reference, manifest, manifest_sha256, groups, bodies, 
     successful = [item for item in samples if item["outcome"] == "success"]
     failed = [item for item in samples if item["outcome"] != "success"]
     first_tokens = [item["ttft_ms"] for item in successful if item.get("ttft_ms") is not None]
+    token_spacing = [
+        item["tpot_estimate_ms"] for item in successful if item.get("tpot_estimate_ms") is not None
+    ]
     report = {
         "scope": "closed-loop image-chat client; text HTTP response; not a release gate",
         "capture_contract": TEXT_CAPTURE_CONTRACT,
@@ -905,6 +931,16 @@ async def run_async(args, reference, manifest, manifest_sha256, groups, bodies, 
         "latency_success": percentiles([item["latency_ms"] for item in successful]),
         "latency_failure": percentiles([item["latency_ms"] for item in failed]),
         "first_visible_content": percentiles(first_tokens),
+        "tpot_estimate": percentiles(token_spacing),
+        "tpot_estimate_scope": (
+            "Last minus first visible content event, divided by completion tokens minus one. "
+            "Requires visible events in at least two reads and at least two completion tokens. "
+            "Events may contain "
+            "multiple or hidden tokens and may be coalesced by transport, so this is an "
+            "estimate and not a tokenizer-verified per-token latency."
+            if args.stream
+            else None
+        ),
         "percentile_note": (
             "Nearest-rank p95/p99; sparse samples are exploratory; failures are separate."
         ),
@@ -1031,6 +1067,7 @@ def main():
             "latency_success",
             "latency_failure",
             "first_visible_content",
+            "tpot_estimate",
         )
     }
     if "comparison_preflight" in report:

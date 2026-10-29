@@ -296,6 +296,7 @@ class ImageLoadTest(unittest.TestCase):
         self.assertEqual(report["counts"]["failures"], 0)
         self.assertEqual(report["latency_success"]["count"], 4)
         self.assertIsNone(report["first_visible_content"])
+        self.assertIsNone(report["tpot_estimate"])
         self.assertEqual(len(Handler.received), 5)
         self.assertTrue(all(len(x["messages"][0]["content"]) == 3 for x in Handler.received))
         self.assertTrue(
@@ -311,8 +312,73 @@ class ImageLoadTest(unittest.TestCase):
         report = module.run(self.args("--stream", "--require-output-tokens", "3"))
         self.assertEqual(report["counts"]["successes"], 4)
         self.assertEqual(report["first_visible_content"]["count"], 4)
+        self.assertTrue(all(x["visible_content_events"] == 2 for x in report["samples"]))
+        self.assertTrue(
+            all(
+                x["tpot_estimate_ms"] is None or x["tpot_estimate_ms"] > 0
+                for x in report["samples"]
+            )
+        )
+        measured = [
+            x["tpot_estimate_ms"] for x in report["samples"] if x["tpot_estimate_ms"] is not None
+        ]
+        if measured:
+            self.assertEqual(report["tpot_estimate"]["count"], len(measured))
+        else:
+            self.assertIsNone(report["tpot_estimate"])
         self.assertTrue(all(x["text"] == "first second" for x in report["samples"]))
         self.assertTrue(all(x["usage"]["completion_tokens"] == 3 for x in report["samples"]))
+
+    def test_visible_token_spacing_uses_first_and_last_events_and_valid_usage(self):
+        def event(content, finish=None, usage=None):
+            item = {
+                "id": "fixture-id",
+                "model": "fixture",
+                "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": finish}],
+            }
+            if usage is not None:
+                item["usage"] = usage
+            return json.dumps(item).encode()
+
+        for tokens in (5, 1, True, None):
+            with self.subTest(tokens=tokens):
+                capture = module.StreamCapture(100.0)
+                with patch.object(module.time, "perf_counter", side_effect=[100.1, 100.5]):
+                    capture.feed(b"data: " + event("first") + b"\n\n")
+                    capture.feed(
+                        b"data: "
+                        + event(" second", "length", {"completion_tokens": tokens})
+                        + b"\n\n"
+                    )
+                capture.feed(b"data: [DONE]\n\n")
+                result = capture.result()
+                self.assertAlmostEqual(result["ttft_ms"], 100.0)
+                self.assertAlmostEqual(result["last_visible_content_ms"], 500.0)
+                self.assertEqual(result["visible_content_events"], 2)
+                if type(tokens) is int and tokens > 1:
+                    self.assertAlmostEqual(result["tpot_estimate_ms"], 100.0)
+                else:
+                    self.assertIsNone(result["tpot_estimate_ms"])
+
+        capture = module.StreamCapture(100.0)
+        with patch.object(module.time, "perf_counter", return_value=100.1):
+            capture.feed(b"data: " + event("all", "length", {"completion_tokens": 5}) + b"\n\n")
+        capture.feed(b"data: [DONE]\n\n")
+        self.assertIsNone(capture.result()["tpot_estimate_ms"])
+
+        capture = module.StreamCapture(100.0)
+        with patch.object(module.time, "perf_counter", return_value=100.1):
+            capture.feed(
+                b"data: "
+                + event("first")
+                + b"\n\n"
+                + b"data: "
+                + event(" second", "length", {"completion_tokens": 5})
+                + b"\n\n"
+            )
+        capture.feed(b"data: [DONE]\n\n")
+        self.assertEqual(capture.result()["visible_content_events"], 2)
+        self.assertIsNone(capture.result()["tpot_estimate_ms"])
 
     def test_warmup_failure_is_recorded_and_stops_measured_work(self):
         Handler.reject = True
@@ -419,6 +485,9 @@ class ImageLoadTest(unittest.TestCase):
         }
         candidate = copy.deepcopy(reference)
         self.assertTrue(module.comparison_preflight(reference, candidate)["passed"])
+        candidate["capture_contract"] = "image-chat-text-v4"
+        self.assertFalse(module.comparison_preflight(reference, candidate)["passed"])
+        candidate = copy.deepcopy(reference)
         candidate["samples"][0]["usage"]["completion_tokens"] = 2
         self.assertFalse(module.comparison_preflight(reference, candidate)["passed"])
         candidate = copy.deepcopy(reference)

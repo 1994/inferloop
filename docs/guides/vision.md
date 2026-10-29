@@ -29,6 +29,8 @@ OpenAI chat 的 `image_url` / `video_url` 内容部分现在进入真实 serving
 - media 请求不参与 prefix reuse，也不支持 MTP speculation；这两条都是显式错误而不是静默降级。
 - media payload 与请求生命周期绑定，until backend prefill completes；checkpoint 在 media 状态存活时拒绝，避免恢复后丢失像素或设备 embedding。
 
+`tools/bench/serve-image-load.py` 可使用相同的图片清单、请求参数和输出长度，对比单图与多图并发服务。流式运行记录首个可见内容的时间，并用首尾可见内容事件间隔除以生成 token 数减一，给出 `tpot_estimate`；只有可见事件分两次以上到达且完成 token 数大于一时才有该估算。事件可能合并、一个事件可能包含多个 token，模型也可能产生不可见 token，因此该数值不是经过 tokenizer 验证的逐 token 延迟；不足条件时显示为空。客户端时间、服务 CPU/GPU 指标、失败请求和实际服务器配置需要一起检查，不能仅凭该估算认定服务性能提升。新的流式采集合同不与旧报告直接比较。
+
 `cuda-multimodal-generate` / `cuda-multimodal-media` / `cuda-parity-2b` 仍是独立数值/示例入口。音频与完整 DeepStack 路径不在此验收范围：Qwen3-VL 没有音频模态，Qwen Omni 也未被 provider 导入。非空 `deepstack_visual_indexes` 的多模态配置会明确返回 unsupported；Qwen3-VL 省略该字段时也会拒绝，因为 [Transformers 的默认值启用 DeepStack](https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_vl/configuration_qwen3_vl.py)。不能把关闭 DeepStack 的实验副本当作完整模型。配置显式指定 `language_model_only` 时仍可导入文本路径。
 
 ## Head-width padding (OPEN)
