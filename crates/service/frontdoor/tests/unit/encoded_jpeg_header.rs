@@ -1,6 +1,8 @@
 use super::*;
+use crate::cpu::cancelled_context;
 use image::GenericImageView;
 use std::io::Cursor;
+use std::iter::repeat_n;
 
 fn frame(marker: u8, width: u16, height: u16) -> Vec<u8> {
     let [h1, h2] = height.to_be_bytes();
@@ -99,10 +101,10 @@ fn malformed_segments_and_dimensions_are_rejected() {
 #[test]
 fn long_marker_fill_is_bounded_and_cancellable() {
     let mut bytes = vec![0xff, 0xd8];
-    bytes.extend(std::iter::repeat_n(0xff, FILL_SCAN_CHUNK_BYTES * 2));
+    bytes.extend(repeat_n(0xff, FILL_SCAN_CHUNK_BYTES * 2));
     bytes.extend_from_slice(&frame(0xc2, 64, 32)[3..]);
     assert_eq!(frame_dimensions(&bytes, None).unwrap(), (64, 32));
-    let context = crate::cpu::cancelled_context();
+    let context = cancelled_context();
     assert_eq!(
         frame_dimensions(&bytes, Some(&context)).unwrap_err().code,
         infer_core::ErrorCode::Capacity
