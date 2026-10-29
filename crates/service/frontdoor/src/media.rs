@@ -304,8 +304,8 @@ fn load_image_with(
         Err(error) if error.code == ErrorCode::Capacity => return Err(error),
         Err(_) => {}
     }
-    // A format the in-process decoder cannot identify (or a corrupted stream) is an explicit
-    // decode failure; ffmpeg is retained only for the video container path.
+    // Preserve compatibility with formats handled by ffmpeg after a native decode failure.
+    // Malformed input can reach this path too; both probing and decoding use subprocesses.
     let temp = materialize(&bytes, "image")?;
     let probe = probe(&temp.path, context)?;
     let raw = decode_frames(&temp.path, probe.width, probe.height, 1, context)?;
@@ -380,7 +380,7 @@ fn decode_png(bytes: &[u8]) -> Result<image::RgbImage> {
     let image = reader
         .decode()
         .map_err(|error| Error::invalid(format!("image decode: {error}")))?;
-    Ok(image.to_rgb8())
+    Ok(image.into_rgb8())
 }
 
 fn rgb_image(width: u32, height: u32, pixels: Vec<u8>) -> Result<RawImage> {
