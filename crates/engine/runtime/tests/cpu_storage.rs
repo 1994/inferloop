@@ -68,6 +68,93 @@ fn result_reader_holds_token_and_byte_credits_after_request_slot_is_freed() -> R
     engine.submit(request(3)?)?;
     drain(&mut engine, &mut outputs)
 }
+
+#[test]
+fn multi_image_credit_rejection_preserves_admission_and_releases_after_completion() -> Result<()> {
+    use infer_core::MediaId;
+    use infer_ir::{MediaInput, MediaItem, Modality, RequestInput};
+    use std::sync::Arc;
+
+    const FLOATS_PER_IMAGE: usize = 16_384;
+    const REQUEST_HEADROOM_BYTES: usize = 192 * 1024;
+    let mut config = RuntimeConfig {
+        max_requests: 4,
+        max_num_seqs: 2,
+        candidate_limit: 4,
+        history_capacity: 8,
+        max_history_bytes: 4096,
+        event_capacity: 64,
+        ..RuntimeConfig::default()
+    };
+    config.cpu.host_tokens = 4096;
+    let ir = support::model(ModelId::ONE);
+    config.cpu.host_bytes =
+        config.cpu.fixed_bytes_for(&config, ir.vocab_size)? + REQUEST_HEADROOM_BYTES;
+    let mut registry = KernelRegistry::default();
+    registry.register(&support::DeclaredKernels)?;
+    let mut engine = Engine::new(
+        support::ProtocolBackend::new(4, 2, &ir)?.multimodal(),
+        ir,
+        PrecisionPlan::f32(),
+        &registry,
+        config,
+    )?;
+    let image_request = |id| -> Result<CanonicalRequest> {
+        let mut request = request(id)?;
+        let RequestInput::Sequence { media, .. } = &mut request.input else {
+            return Err(Error::invariant("expected a token sequence"));
+        };
+        for (index, media_id) in [(0, 1), (1, 2)] {
+            media.push(MediaInput {
+                id: MediaId::new(media_id)?,
+                modality: Modality::Image,
+                content_digest: format!("image-{id}-{index}"),
+                item: Some(MediaItem {
+                    modality: Modality::Image,
+                    pixels: Arc::from(vec![0.5; FLOATS_PER_IMAGE]),
+                    grid: (1, 1, 1),
+                    span: index..index + 1,
+                }),
+            });
+        }
+        Ok(request)
+    };
+
+    engine.submit(image_request(1)?)?;
+    let held = engine.inspect().cpu;
+    assert!(held.retained_host_bytes >= 2 * FLOATS_PER_IMAGE * size_of::<f32>());
+    assert_eq!(
+        engine
+            .submit(image_request(2)?)
+            .err()
+            .map(|error| error.code),
+        Some(ErrorCode::Capacity)
+    );
+    let after_rejection = engine.inspect().cpu;
+    assert_eq!(
+        after_rejection.retained_host_bytes,
+        held.retained_host_bytes
+    );
+    assert_eq!(
+        after_rejection.retained_host_tokens,
+        held.retained_host_tokens
+    );
+    assert!(engine.request(RequestId::new(2)?).is_err());
+    engine.check_invariants()?;
+
+    let mut outputs = Vec::new();
+    drain(&mut engine, &mut outputs)?;
+    let completed = engine
+        .take_completed(RequestId::ONE)?
+        .ok_or_else(|| Error::invariant("missing completion"))?;
+    outputs.clear();
+    drop(completed);
+    assert_eq!(engine.inspect().cpu.retained_host_bytes, 0);
+    assert_eq!(engine.inspect().cpu.retained_host_tokens, 0);
+    engine.submit(image_request(2)?)?;
+    drain(&mut engine, &mut outputs)
+}
+
 #[test]
 fn bounded_candidate_windows_cover_all_requests_without_full_ready_scan() -> Result<()> {
     let mut engine = engine(RuntimeConfig {
