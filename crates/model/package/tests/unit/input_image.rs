@@ -2,6 +2,7 @@ use super::*;
 use std::env::var;
 use std::fs::read;
 use std::path::Path;
+use std::result::Result as StdResult;
 
 fn package_processor() -> Result<ImageProcessor> {
     let Ok(path) = var("INFER_VISION_PACKAGE") else {
@@ -185,6 +186,103 @@ fn custom_rescale_preserves_original_float_semantics() {
     }
 }
 
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "The scalar reference preserves the processor's specified rounding order"
+)]
+fn scalar_normalization(processor: &ImageProcessor, value: f32, channel: usize) -> f32 {
+    if processor.rescale == RESCALE {
+        (value - processor.mean[channel] * 255.0) / (processor.std[channel] * 255.0)
+    } else {
+        value.mul_add(processor.rescale, -processor.mean[channel]) / processor.std[channel]
+    }
+}
+
+#[test]
+fn unresized_rgb8_patches_match_scalar_layout_and_normalization() -> Result<()> {
+    use infer_ir::ImageResizePolicy;
+    for (height, width, patch, temporal, merge) in [
+        (8, 12, 2, 2, 2),
+        (16, 16, 16, 2, 1),
+        (32, 32, 16, 1, 2),
+        (32, 32, 16, 2, 2),
+        (64, 64, 16, 2, 2),
+        (48, 48, 24, 2, 2),
+        (96, 96, 24, 2, 2),
+        (64, 64, 32, 2, 2),
+    ] {
+        let pixels: Vec<u8> = (0..height * width * RGB_CHANNELS)
+            .map(|index| u8::try_from((index * 37 + 11) % 256))
+            .collect::<StdResult<_, _>>()
+            .map_err(|_| Error::invalid("fixture byte"))?;
+        for rescale in [RESCALE, 0.3, 0.0, 1.0e-30] {
+            let processor = ImageProcessor {
+                patch_size: patch,
+                temporal_patch_size: temporal,
+                merge_size: merge,
+                min_pixels: 1,
+                max_pixels: height * width,
+                mean: [0.11, 0.22, 0.33],
+                std: [0.5, 0.25, 0.125],
+                rescale,
+            };
+            let disabled = processor.preprocess_rgb_with_resize(
+                height,
+                width,
+                &pixels,
+                ImageResizePolicy::Disabled,
+            )?;
+            let smart = processor.preprocess_rgb_with_resize(
+                height,
+                width,
+                &pixels,
+                ImageResizePolicy::Smart,
+            )?;
+            assert_eq!(disabled.grid, (1, height / patch, width / patch));
+            assert_eq!(disabled.grid, smart.grid);
+            assert_eq!(disabled.pixels.len(), smart.pixels.len());
+            assert_scalar_patch_values(&processor, &pixels, width, &disabled);
+            for (actual, expected) in smart.pixels.iter().zip(&disabled.pixels) {
+                assert_eq!(actual.to_bits(), expected.to_bits());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn assert_scalar_patch_values(
+    processor: &ImageProcessor,
+    pixels: &[u8],
+    width: usize,
+    prepared: &PreprocessedImage,
+) {
+    let patch_area = processor.patch_size * processor.patch_size;
+    let channel_width = processor.temporal_patch_size * patch_area;
+    let patch_width = RGB_CHANNELS * channel_width;
+    let merge_area = processor.merge_size * processor.merge_size;
+    let blocks_per_row = prepared.grid.2 / processor.merge_size;
+    assert_eq!(
+        prepared.pixels.len(),
+        prepared.grid.1 * prepared.grid.2 * patch_width
+    );
+    for (index, &actual) in prepared.pixels.iter().enumerate() {
+        let patch = index / patch_width;
+        let channel = (index % patch_width) / channel_width;
+        let spatial = index % patch_area;
+        let block = patch / merge_area;
+        let local = patch % merge_area;
+        let row = (block / blocks_per_row * processor.merge_size + local / processor.merge_size)
+            * processor.patch_size
+            + spatial / processor.patch_size;
+        let col = (block % blocks_per_row * processor.merge_size + local % processor.merge_size)
+            * processor.patch_size
+            + spatial % processor.patch_size;
+        let value = f32::from(pixels[(row * width + col) * RGB_CHANNELS + channel]);
+        let expected = scalar_normalization(processor, value, channel);
+        assert_eq!(actual.to_bits(), expected.to_bits(), "patch value {index}");
+    }
+}
+
 #[test]
 fn disabled_resize_preserves_dimensions_and_rejects_unaligned_images() -> Result<()> {
     use infer_ir::ImageResizePolicy;
@@ -262,6 +360,49 @@ fn disabled_resize_matches_embedded_transformers_reference() -> Result<()> {
     {
         let reference = f32::from_le_bytes(*bytes);
         assert!((actual - reference).abs() <= 1.0e-6);
+    }
+    Ok(())
+}
+
+#[test]
+fn unresized_full_image_matches_embedded_transformers_patch_block() -> Result<()> {
+    use infer_ir::ImageResizePolicy;
+    let processor = ImageProcessor {
+        patch_size: 16,
+        temporal_patch_size: 2,
+        merge_size: 2,
+        min_pixels: 65_536,
+        max_pixels: 16_777_216,
+        mean: [0.5; 3],
+        std: [0.5; 3],
+        rescale: RESCALE,
+    };
+    let (height, width) = (128, 256);
+    let pixels: Vec<u8> = (0..height * width * RGB_CHANNELS)
+        .map(|index| u8::try_from(index % 251))
+        .collect::<StdResult<_, _>>()
+        .map_err(|_| Error::invalid("fixture byte"))?;
+    let result = processor.preprocess_rgb_with_resize(
+        height,
+        width,
+        &pixels,
+        ImageResizePolicy::Disabled,
+    )?;
+    assert_eq!(result.grid, (1, 8, 16));
+    assert_eq!(
+        result.pixels.len(),
+        result.grid.1 * result.grid.2 * processor.patch_width()
+    );
+    let expected = include_bytes!("../fixtures/qwen3vl-no-resize-first-block.f32");
+    assert!(expected.len().is_multiple_of(size_of::<f32>()));
+    let reference = expected.as_chunks::<{ size_of::<f32>() }>().0;
+    assert_eq!(
+        reference.len(),
+        processor.merge_size * processor.merge_size * processor.patch_width()
+    );
+    assert!(result.pixels.len() >= reference.len());
+    for (actual, bytes) in result.pixels.iter().zip(reference) {
+        assert!((actual - f32::from_le_bytes(*bytes)).abs() <= 1.0e-6);
     }
     Ok(())
 }

@@ -9,6 +9,12 @@ use infer_ir::ImageResizePolicy;
 
 /// Channels of the RGB images the processor accepts.
 pub(crate) const RGB_CHANNELS: usize = 3;
+/// Distinct input values in one eight-bit color channel.
+const RGB8_LEVELS: usize = 256;
+/// Bytes occupied by the per-channel RGB8 normalization table.
+const RGB8_TABLE_BYTES: usize = RGB_CHANNELS * RGB8_LEVELS * size_of::<f32>();
+/// Minimum source bytes used to amortize a table relative to the f32 expansion it replaces.
+const RGB8_TABLE_MIN_SOURCE_BYTES: usize = RGB8_TABLE_BYTES * size_of::<f32>();
 /// Full scale of one 8-bit channel.
 const BYTE_SCALE: f64 = 255.0;
 /// Reciprocal of [`BYTE_SCALE`], the processor's rescale factor.
@@ -134,6 +140,26 @@ pub(crate) fn patchify(
     grid: PatchGrid,
     norm: &Normalization,
 ) -> Result<Vec<f32>> {
+    patchify_with(frames, grid, |value, channel| norm.apply(value, channel))
+}
+
+fn patchify_rgb8(frames: &[&[u8]], grid: PatchGrid, norm: &Normalization) -> Result<Vec<f32>> {
+    let mut table = [[0.0_f32; RGB8_LEVELS]; RGB_CHANNELS];
+    for (channel, row) in table.iter_mut().enumerate() {
+        for (value, entry) in (u8::MIN..=u8::MAX).zip(row) {
+            *entry = norm.apply(f32::from(value), channel);
+        }
+    }
+    patchify_with(frames, grid, |value, channel| {
+        table[channel][usize::from(value)]
+    })
+}
+
+fn patchify_with<T: Copy>(
+    frames: &[&[T]],
+    grid: PatchGrid,
+    normalize: impl Fn(T, usize) -> f32,
+) -> Result<Vec<f32>> {
     let resized_height = grid
         .height
         .checked_mul(grid.patch)
@@ -200,7 +226,7 @@ pub(crate) fn patchify(
                                         let x = col * grid.patch + patch_col;
                                         let value =
                                             frame[(y * resized_width + x) * RGB_CHANNELS + channel];
-                                        pixels.push(norm.apply(value, channel));
+                                        pixels.push(normalize(value, channel));
                                     }
                                 }
                             }
@@ -383,7 +409,6 @@ impl ImageProcessor {
             return Err(Error::invalid("image buffer does not match its dimensions"));
         }
         let (resized_height, resized_width) = self.target_dimensions(height, width, resize)?;
-        let resized = Self::resize_pixels(pixels, height, width, resized_height, resized_width);
         let grid_h = resized_height / self.patch_size;
         let grid_w = resized_width / self.patch_size;
         let merge = self.merge_size;
@@ -392,24 +417,37 @@ impl ImageProcessor {
                 "patch grid does not divide by the merge size",
             ));
         }
-        // A still image repeats the same frame across the temporal taps.
-        let frames = vec![resized.as_slice(); self.temporal_patch_size];
-        let pixels = patchify(
-            &frames,
-            PatchGrid {
-                temporal: self.temporal_patch_size,
-                height: grid_h,
-                width: grid_w,
-                patch: self.patch_size,
-                merge: self.merge_size,
-                groups: 1,
-            },
-            &Normalization {
-                mean: self.mean,
-                std: self.std,
-                rescale: self.rescale,
-            },
-        )?;
+        let grid = PatchGrid {
+            temporal: self.temporal_patch_size,
+            height: grid_h,
+            width: grid_w,
+            patch: self.patch_size,
+            merge: self.merge_size,
+            groups: 1,
+        };
+        let norm = Normalization {
+            mean: self.mean,
+            std: self.std,
+            rescale: self.rescale,
+        };
+        // Use the table only when a patch has at least as many pixels as there are channel values,
+        // the source can amortize the table's footprint, and temporal taps can reuse values.
+        let table_eligible = height == resized_height
+            && width == resized_width
+            && self.temporal_patch_size > 1
+            && self
+                .patch_size
+                .checked_mul(self.patch_size)
+                .is_some_and(|area| area >= RGB8_LEVELS)
+            && pixels.len() >= RGB8_TABLE_MIN_SOURCE_BYTES;
+        let pixels = if table_eligible {
+            let frames = vec![pixels; self.temporal_patch_size];
+            patchify_rgb8(&frames, grid, &norm)?
+        } else {
+            let resized = Self::resize_pixels(pixels, height, width, resized_height, resized_width);
+            let frames = vec![resized.as_slice(); self.temporal_patch_size];
+            patchify(&frames, grid, &norm)?
+        };
         Ok(PreprocessedImage {
             pixels,
             grid: (1, grid_h, grid_w),
