@@ -218,7 +218,7 @@ impl RuntimeHandle {
     pub(crate) async fn submit_staged_preparing<T: Send + 'static>(
         &self,
         id: RequestId,
-        bytes: usize,
+        initial_quote: StagingQuote,
         trace: Option<TraceContext>,
         deadline_us: Option<u64>,
         load: impl FnOnce(&CpuContext) -> Result<StagingPlan<T>> + Send + 'static,
@@ -236,29 +236,49 @@ impl RuntimeHandle {
                 deadline.min(Instant::now() + Duration::from_millis(self.config.job_timeout_ms))
             },
         );
-        let pending = self.ingress.reserve(id, bytes)?;
+        let (pending, funded) =
+            self.ingress
+                .reserve_staged(id, initial_quote.retained(), initial_quote.peak())?;
         self.request_ids
             .fetch_max(id.get(), AtomicOrdering::Relaxed);
         let _abandon = Abandon(pending.clone());
-        let preparing = pending.clone();
+        let initial = RetainedStage {
+            input: load,
+            pending: pending.clone(),
+        };
+        let finish = RetainedStage {
+            input: finish,
+            pending: pending.clone(),
+        };
+        if !funded {
+            pending
+                .wait_for_bytes(initial_quote.peak(), deadline)
+                .await?;
+        }
         let preparer = self.preparer.clone();
         let initial = self
             .cpu
-            .run_preparing(bytes, Some(deadline), &pending, move |context| {
-                preparing.check()?;
-                let result = match load(context)? {
-                    StagingPlan::Ready(request, constraint) => {
-                        if request.id != id {
-                            return Err(Error::invalid("CPU preparation changed request identity"));
+            .run_preparing_wait(initial_quote.peak(), deadline, &pending, move |context| {
+                initial.with_owner(|load, preparing| {
+                    preparing.check()?;
+                    let result = match load(context)? {
+                        StagingPlan::Ready(request, constraint) => {
+                            if request.id != id {
+                                return Err(Error::invalid(
+                                    "CPU preparation changed request identity",
+                                ));
+                            }
+                            InitialStage::Ready(
+                                preparer.prepare(request)?.with_constraint(constraint)?,
+                            )
                         }
-                        InitialStage::Ready(preparer.prepare(request)?.with_constraint(constraint)?)
-                    }
-                    StagingPlan::Deferred(stage, quote) => {
-                        InitialStage::Deferred(stage, quote, preparer)
-                    }
-                };
-                preparing.check()?;
-                Ok(result)
+                        StagingPlan::Deferred(stage, quote) => {
+                            InitialStage::Deferred(stage, quote, preparer)
+                        }
+                    };
+                    preparing.check()?;
+                    Ok(result)
+                })
             })
             .await?;
         pending.check()?;
@@ -281,12 +301,15 @@ impl RuntimeHandle {
             .run_preparing_wait(quote.peak(), deadline, &pending, move |context| {
                 staged.with_owner(|stage, preparing| {
                     preparing.check()?;
-                    let (request, constraint) = finish(stage, context)?;
-                    if request.id != id {
-                        return Err(Error::invalid("CPU preparation changed request identity"));
-                    }
-                    preparing.check()?;
-                    preparer.prepare(request)?.with_constraint(constraint)
+                    finish.with_owner(|finish, finishing| {
+                        finishing.check()?;
+                        let (request, constraint) = finish(stage, context)?;
+                        if request.id != id {
+                            return Err(Error::invalid("CPU preparation changed request identity"));
+                        }
+                        finishing.check()?;
+                        preparer.prepare(request)?.with_constraint(constraint)
+                    })
                 })
             })
             .await?;

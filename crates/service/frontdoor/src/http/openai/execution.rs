@@ -401,7 +401,7 @@ async fn submit_encoding(
         handle
             .submit_staged_preparing(
                 id,
-                bytes,
+                StagingQuote::new(non_media_bytes, bytes)?,
                 trace,
                 None,
                 move |context| encoding.stage_images(context, non_media_bytes, bytes),

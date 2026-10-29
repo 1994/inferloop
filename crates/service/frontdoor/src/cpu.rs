@@ -458,7 +458,20 @@ impl CpuPool {
         pending: &Arc<Pending>,
         work: impl FnOnce(&CpuContext) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        let credit = self.wait_for_credit(bytes, deadline, pending).await?;
+        if Instant::now() >= deadline {
+            return Err(Error::new(
+                ErrorCode::Capacity,
+                "image staging wait timed out",
+            ));
+        }
+        pending.check()?;
+        let credit = match self.reserve(bytes) {
+            Ok(credit) => credit,
+            Err(error) if error.code == ErrorCode::Capacity => {
+                self.wait_for_credit(bytes, deadline, pending).await?
+            }
+            Err(error) => return Err(error),
+        };
         self.run_with_ingress(credit, Some(deadline), Some(pending.clone()), work)
             .await
     }

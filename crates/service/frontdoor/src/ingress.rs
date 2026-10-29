@@ -79,6 +79,28 @@ impl Registry {
             cancelled,
         }))
     }
+    /// Reserve the full preparation quote when possible, otherwise retain the input's credit.
+    pub(super) fn reserve_staged(
+        self: &Arc<Self>,
+        id: RequestId,
+        retained: usize,
+        peak: usize,
+    ) -> Result<(Arc<Pending>, bool)> {
+        if retained > peak {
+            return Err(Error::invariant("staged input exceeds its peak quote"));
+        }
+        match self.reserve(id, peak) {
+            Ok(pending) => Ok((pending, true)),
+            Err(error)
+                if error.code == ErrorCode::Capacity
+                    && retained < peak
+                    && peak <= self.max_bytes =>
+            {
+                self.reserve(id, retained).map(|pending| (pending, false))
+            }
+            Err(error) => Err(error),
+        }
+    }
     pub fn cancel(&self, id: RequestId) -> bool {
         let Ok(usage) = self.usage.lock() else {
             return false;

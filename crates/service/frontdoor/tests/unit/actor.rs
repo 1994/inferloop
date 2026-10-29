@@ -268,6 +268,41 @@ async fn staged_image_waits_for_credit_without_occupying_a_worker() -> Result<()
     Ok(())
 }
 
+#[test]
+fn initial_staging_checks_identities_and_retained_capacity() -> Result<()> {
+    let registry = Registry::new(3, 64);
+    let occupied = registry.reserve(RequestId::new(2)?, 48)?;
+    let (pending, funded) = registry.reserve_staged(RequestId::ONE, 3, 25)?;
+    assert!(!funded);
+    assert_eq!(
+        registry
+            .reserve_staged(RequestId::ONE, 3, 25)
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        registry.reserve(RequestId::new(3)?, 14).err().unwrap().code,
+        ErrorCode::Capacity
+    );
+    assert_eq!(
+        registry
+            .reserve_staged(RequestId::new(3)?, 3, 65)
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::Capacity
+    );
+    let (small, funded) = registry.reserve_staged(RequestId::new(3)?, 3, 13)?;
+    assert!(funded);
+    drop(small);
+    drop(pending);
+    drop(occupied);
+    drop(registry.reserve(RequestId::new(4)?, 64)?);
+    Ok(())
+}
+
 #[tokio::test]
 async fn smaller_staged_request_can_release_credit_before_a_large_waiter() -> Result<()> {
     let registry = Registry::new(2, 100);
@@ -529,6 +564,58 @@ async fn cancelling_a_cpu_credit_wait_does_not_need_the_worker_to_finish() -> Re
 }
 
 #[tokio::test]
+async fn staged_initial_credit_waits_without_rejecting_a_retained_request() -> Result<()> {
+    use crate::cpu::{StagingPlan, StagingQuote};
+
+    let handle = handle_with_cpu(CpuConfig {
+        workers: 1,
+        max_jobs: 3,
+        max_bytes: 64,
+        ..CpuConfig::default()
+    })?;
+    let occupied = handle.ingress.reserve(RequestId::new(2)?, 48)?;
+    let submitting = handle.clone();
+    let mut task = tokio::spawn(async move {
+        submitting
+            .submit_staged_preparing(
+                RequestId::ONE,
+                StagingQuote::new(3, 25)?,
+                None,
+                None,
+                |_| {
+                    let request = serde_json::from_value(serde_json::json!({
+                        "id": 1, "model": 1, "input": {"Sequence": {"tokens": [1, 2, 3]}},
+                        "workload": {"Generate": {"max_new_tokens": 2}}
+                    }))
+                    .map_err(|e| Error::invalid(e.to_string()))?;
+                    Ok(StagingPlan::<()>::Ready(request, None))
+                },
+                |(), _| Err(Error::invariant("unexpected second preparation stage")),
+            )
+            .await
+    });
+    let waiting = timeout(Duration::from_millis(50), &mut task).await;
+    if waiting.is_err() {
+        assert_eq!(handle.cpu_pool().run(1, |_| Ok(7)).await?, 7);
+    }
+    drop(occupied);
+    assert!(waiting.is_err(), "initial staging credit should wait");
+    let mut output = timeout(Duration::from_secs(5), task)
+        .await
+        .map_err(|e| Error::invariant(e.to_string()))?
+        .map_err(|e| Error::invariant(e.to_string()))??;
+    while let Some(event) = timeout(Duration::from_secs(5), output.recv())
+        .await
+        .map_err(|e| Error::invariant(e.to_string()))?
+    {
+        if matches!(event?, EngineOutput::Finished(_)) {
+            break;
+        }
+    }
+    handle.shutdown().await
+}
+
+#[tokio::test]
 async fn staged_requests_make_progress_under_a_shared_credit_limit() -> Result<()> {
     use crate::cpu::{StagingPlan, StagingQuote};
     use std::sync::Barrier;
@@ -561,7 +648,7 @@ async fn staged_requests_make_progress_under_a_shared_credit_limit() -> Result<(
             handle
                 .submit_staged_preparing(
                     id,
-                    25,
+                    StagingQuote::new(25, 25)?,
                     None,
                     None,
                     move |_| {
@@ -598,7 +685,7 @@ async fn staged_requests_make_progress_under_a_shared_credit_limit() -> Result<(
 
 #[tokio::test]
 async fn funded_staged_request_completes_without_a_second_worker_job() -> Result<()> {
-    use crate::cpu::StagingPlan;
+    use crate::cpu::{StagingPlan, StagingQuote};
 
     let handle = handle()?;
     let second_job = Arc::new(AtomicBool::new(false));
@@ -606,7 +693,7 @@ async fn funded_staged_request_completes_without_a_second_worker_job() -> Result
     let mut output = handle
         .submit_staged_preparing(
             RequestId::ONE,
-            48,
+            StagingQuote::new(48, 48)?,
             None,
             None,
             |_| {
@@ -650,6 +737,65 @@ impl Drop for CreditDropProbe {
 }
 
 #[tokio::test]
+async fn cancelled_initial_staging_drops_both_closures_under_credit() -> Result<()> {
+    use crate::cpu::{StagingPlan, StagingQuote};
+
+    let handle = handle_with_cpu(CpuConfig {
+        workers: 1,
+        max_jobs: 4,
+        max_bytes: 64,
+        ..CpuConfig::default()
+    })?;
+    let blocker = handle.ingress.reserve(RequestId::new(2)?, 61)?;
+    let load_dropped = Arc::new(AtomicBool::new(false));
+    let finish_dropped = Arc::new(AtomicBool::new(false));
+    let load_payload = CreditDropProbe {
+        registry: handle.ingress.clone(),
+        other: RequestId::new(3)?,
+        observed: load_dropped.clone(),
+    };
+    let finish_payload = CreditDropProbe {
+        registry: handle.ingress.clone(),
+        other: RequestId::new(3)?,
+        observed: finish_dropped.clone(),
+    };
+    let submitting = handle.clone();
+    let task = tokio::spawn(async move {
+        submitting
+            .submit_staged_preparing(
+                RequestId::ONE,
+                StagingQuote::new(3, 25)?,
+                None,
+                None,
+                move |_| {
+                    drop(load_payload);
+                    Err::<StagingPlan<()>, _>(Error::invariant("unexpected load"))
+                },
+                move |(), _| {
+                    drop(finish_payload);
+                    Err(Error::invariant("unexpected finish"))
+                },
+            )
+            .await
+    });
+    timeout(Duration::from_secs(2), async {
+        while handle.ingress.reserve(RequestId::new(3)?, 1).is_ok() {
+            sleep(Duration::from_millis(1)).await;
+        }
+        Result::<()>::Ok(())
+    })
+    .await
+    .map_err(|e| Error::invariant(e.to_string()))??;
+    task.abort();
+    assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+    assert!(load_dropped.load(Ordering::Acquire));
+    assert!(finish_dropped.load(Ordering::Acquire));
+    drop(blocker);
+    drop(handle.ingress.reserve(RequestId::new(4)?, 64)?);
+    handle.shutdown().await
+}
+
+#[tokio::test]
 async fn cancelled_staging_drops_its_input_before_releasing_ingress_credit() -> Result<()> {
     use crate::cpu::{StagingPlan, StagingQuote};
 
@@ -668,7 +814,7 @@ async fn cancelled_staging_drops_its_input_before_releasing_ingress_credit() -> 
         submitting
             .submit_staged_preparing(
                 RequestId::ONE,
-                4,
+                StagingQuote::new(4, 4)?,
                 None,
                 None,
                 move |_| {
@@ -740,7 +886,7 @@ async fn cancelled_cpu_wait_drops_its_staged_input_under_ingress_credit() -> Res
         submitting
             .submit_staged_preparing(
                 RequestId::ONE,
-                4,
+                StagingQuote::new(4, 4)?,
                 None,
                 None,
                 move |_| {
