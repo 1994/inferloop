@@ -1,5 +1,5 @@
 use super::{
-    MEDIA_STAGING_BYTES, SourcePolicy, TempPath, check_video_frame_limit, load_image,
+    MEDIA_STAGING_BYTES, SourcePolicy, TempPath, check_video_frame_limit, decode_png, load_image,
     load_video_with, parse_rate, read_url, run_bounded,
 };
 use crate::cpu::cancelled_context;
@@ -66,6 +66,58 @@ fn common_native_image_codecs_decode_without_external_tools() {
         let uri = format!("data:image/{mime};base64,{}", STANDARD.encode(bytes));
         let image = load_image(&uri).expect("native codec");
         assert_eq!((image.width, image.height), (64, 48));
+    }
+}
+
+#[test]
+fn jpeg_decode_preserves_baseline_grayscale_and_progressive_pixels() {
+    let rgb = encoded(noisy_image(257, 129), image::ImageFormat::Jpeg);
+    let gray = image::GrayImage::from_fn(17, 19, |x, y| {
+        image::Luma([u8::try_from((x * 7 + y * 11) % 256).expect("byte")])
+    });
+    let mut gray_bytes = Cursor::new(Vec::new());
+    image::DynamicImage::ImageLuma8(gray)
+        .write_to(&mut gray_bytes, image::ImageFormat::Jpeg)
+        .expect("encode grayscale fixture");
+    let progressive = include_bytes!("../fixtures/progressive-16x16.jpg");
+    for bytes in [rgb.as_slice(), gray_bytes.get_ref(), progressive.as_slice()] {
+        let expected = image::load_from_memory(bytes)
+            .expect("reference JPEG")
+            .to_rgb8();
+        let actual = decode_png(bytes).expect("decode JPEG");
+        assert_eq!(actual.dimensions(), expected.dimensions());
+        assert_eq!(actual.as_raw(), expected.as_raw());
+    }
+}
+
+#[test]
+fn jpeg_oversized_dimensions_are_rejected_before_decode() {
+    let mut jpeg = encoded(noisy_image(17, 19), image::ImageFormat::Jpeg);
+    let marker = jpeg
+        .windows(2)
+        .position(|bytes| bytes == [0xff, 0xc0])
+        .expect("baseline frame header");
+    jpeg[marker + 5..marker + 7].copy_from_slice(&8192_u16.to_be_bytes());
+    jpeg[marker + 7..marker + 9].copy_from_slice(&8192_u16.to_be_bytes());
+    let error = decode_png(&jpeg).expect_err("oversized JPEG");
+    assert_eq!(error.code, infer_core::ErrorCode::Capacity);
+
+    jpeg[marker + 5..marker + 7].copy_from_slice(&1_u16.to_be_bytes());
+    jpeg[marker + 7..marker + 9].copy_from_slice(&8193_u16.to_be_bytes());
+    let error = decode_png(&jpeg).expect_err("oversized JPEG edge");
+    assert_eq!(error.code, infer_core::ErrorCode::InvalidInput);
+    assert!(decode_png(&[0xff, 0xd8, 0xff, 0xc0]).is_err());
+}
+
+#[test]
+fn png_and_webp_decoding_remain_pixel_equivalent() {
+    for format in [image::ImageFormat::Png, image::ImageFormat::WebP] {
+        let bytes = encoded(noisy_image(32, 24), format);
+        let expected = image::load_from_memory(&bytes)
+            .expect("reference image")
+            .to_rgb8();
+        let actual = decode_png(&bytes).expect("decode image");
+        assert_eq!(actual, expected);
     }
 }
 

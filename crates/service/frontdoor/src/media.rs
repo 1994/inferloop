@@ -7,6 +7,8 @@
 use crate::cpu::CpuContext;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use image::ImageDecoder;
+use image::codecs::jpeg::JpegDecoder;
 use infer_core::{Error, ErrorCode, MediaId, Result};
 use infer_ir::{MediaInput, MediaItem, Modality};
 use infer_models::{
@@ -284,6 +286,9 @@ fn decode_png(bytes: &[u8]) -> Result<image::RgbImage> {
     let probe = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|error| Error::invalid(format!("image format: {error}")))?;
+    if probe.format() == Some(image::ImageFormat::Jpeg) {
+        return decode_jpeg(bytes);
+    }
     let (width, height) = probe
         .into_dimensions()
         .map_err(|error| Error::invalid(format!("image dimensions: {error}")))?;
@@ -291,13 +296,37 @@ fn decode_png(bytes: &[u8]) -> Result<image::RgbImage> {
     let mut reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|error| Error::invalid(format!("image format: {error}")))?;
+    reader.limits(image_decode_limits());
+    let image = reader
+        .decode()
+        .map_err(|error| Error::invalid(format!("image decode: {error}")))?;
+    Ok(image.to_rgb8())
+}
+
+fn image_decode_limits() -> image::Limits {
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_IMAGE_EDGE);
     limits.max_image_height = Some(MAX_IMAGE_EDGE);
     limits.max_alloc = Some(MAX_IMAGE_ALLOC_BYTES);
-    reader.limits(limits);
-    let image = reader
-        .decode()
+    limits
+}
+
+fn decode_jpeg(bytes: &[u8]) -> Result<image::RgbImage> {
+    // The decoder already reads the compressed input and parses its header for dimensions.
+    // Reuse that decoder for pixels instead of copying and parsing the same input again.
+    let mut decoder = JpegDecoder::new(Cursor::new(bytes))
+        .map_err(|error| Error::invalid(format!("image dimensions: {error}")))?;
+    let (width, height) = decoder.dimensions();
+    check_image_dimensions(width, height)?;
+    // Match ImageReader::decode: reserve the output size before setting decoder limits.
+    let mut limits = image_decode_limits();
+    limits
+        .reserve(decoder.total_bytes())
+        .map_err(|error| Error::invalid(format!("image decode: {error}")))?;
+    decoder
+        .set_limits(limits)
+        .map_err(|error| Error::invalid(format!("image decode: {error}")))?;
+    let image = image::DynamicImage::from_decoder(decoder)
         .map_err(|error| Error::invalid(format!("image decode: {error}")))?;
     Ok(image.to_rgb8())
 }
