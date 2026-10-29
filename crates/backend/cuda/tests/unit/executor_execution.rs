@@ -1,6 +1,8 @@
-use super::{candidate_pool_capacity, pool_retry_budget, pooled_envelope};
+use super::{SlotPool, candidate_pool_capacity, pool_retry_budget, pooled_envelope};
 use crate::constants::CB_SLOT_TOKENS;
-use infer_ir::OutputReadout;
+use crate::executor::CudaExecutor;
+use infer_core::{RequestId, StateId};
+use infer_ir::{ExecutionInput, ExecutionTask, OutputReadout, TaskOutput, TokenBuffer};
 use std::{env::var, error::Error};
 
 #[test]
@@ -55,11 +57,9 @@ fn pool_envelope_is_capped_by_physical_storage_and_saturates() {
 fn lazy_pool_retries_after_a_live_private_reservation_is_released() -> Result<(), Box<dyn Error>> {
     use crate::{
         device::CudaDevice,
-        executor::CudaExecutor,
         loading::{LoadOptions, LoadedModel},
     };
-    use infer_core::{ModelId, StateId};
-    use infer_ir::OutputReadout;
+    use infer_core::ModelId;
 
     CudaDevice::enable_kernel_cache()?;
     let loaded = LoadedModel::open(
@@ -139,4 +139,233 @@ fn retry_quote_accounts_for_storage_retained_by_previous_captures() {
     assert_eq!(next, 49);
     // Both retained increments fit alongside the smaller final capture.
     assert!(next + 20 + 10 <= envelope);
+}
+
+fn media_position_task(
+    state: StateId,
+    request: RequestId,
+    tokens: ExecutionInput,
+) -> ExecutionTask {
+    ExecutionTask {
+        request,
+        state,
+        tokens,
+        sampling: None,
+        plain_greedy: false,
+        publish_prefix: false,
+        media: None,
+    }
+}
+
+fn run_media_position_tasks(
+    executor: &mut CudaExecutor,
+    tasks: &[ExecutionTask],
+) -> Result<Vec<TaskOutput>, Box<dyn Error>> {
+    use crate::device::asynchronous::block_on;
+    executor.prepare_execution()?;
+    let outputs = block_on(executor.execute(tasks));
+    let fence = block_on(executor.loaded.device().fence());
+    executor.busy = false;
+    fence?;
+    Ok(outputs?)
+}
+
+fn pooled_position_reference(
+    executor: &mut CudaExecutor,
+    state: StateId,
+    token: u32,
+    rotary: usize,
+) -> Result<Vec<f32>, Box<dyn Error>> {
+    use crate::device::asynchronous::block_on;
+    let sequence = executor.states.get(&state).ok_or("missing sequence")?;
+    let device = executor.loaded.device();
+    let pool = executor.slots.as_mut().ok_or("missing pool")?;
+    let slot = pool.take_free().ok_or("missing free slot")?;
+    assert!(pool.assign(slot, sequence.capacity, device)?);
+    pool.bind(
+        slot,
+        sequence.program.states(),
+        sequence.program.fp8_states(),
+        sequence.history.len(),
+        device,
+    )?;
+    let (row, output) = if let Some(width) = pool.verify() {
+        (
+            slot * width,
+            block_on(pool.run_verify_readout_async(
+                device,
+                &[(slot, 0, token, rotary, sequence.history.len())],
+                false,
+            ))?,
+        )
+    } else {
+        (
+            0,
+            block_on(pool.run_lanes_readout_async(
+                device,
+                &[(slot, token, rotary, sequence.history.len())],
+                false,
+            ))?,
+        )
+    };
+    block_on(device.fence())?;
+    pool.release(slot);
+    let (_, logits) = output.rows.into_iter().nth(row).ok_or("missing logits")?;
+    Ok(logits)
+}
+
+fn media_position_fixture(
+    mtp_depth: usize,
+) -> Result<(CudaExecutor, TokenBuffer, [StateId; 3]), Box<dyn Error>> {
+    use crate::device::CudaDevice;
+    use crate::loading::{LoadOptions, LoadedModel};
+    use infer_core::ModelId;
+    use infer_ir::{MediaItem, MediaPlan, Modality};
+    use std::sync::Arc;
+
+    CudaDevice::enable_kernel_cache()?;
+    let loaded = LoadedModel::open(
+        CudaDevice::new(0)?,
+        var("INFER_TEST_MODEL")?,
+        ModelId::ONE,
+        LoadOptions {
+            prefill_width: 32,
+            mtp_depth,
+            autotune: false,
+            vision: false,
+            ..LoadOptions::default()
+        },
+    )?;
+    let budget = loaded.device().allocatable_memory_bytes()?;
+    let mut executor = if mtp_depth == 0 {
+        CudaExecutor::new(loaded, budget, 3)?
+    } else {
+        // Only the target verification graph is needed: media reservations do not draft.
+        let mut executor = CudaExecutor::new_bounded(loaded, budget, 3)?;
+        executor.slots = Some(executor.loaded.slot_pool(2, 128, Some(256))?);
+        executor
+    };
+    assert!(
+        executor.slots.is_some(),
+        "test needs the pooled decode path"
+    );
+    let prompt = TokenBuffer::from((1..=64).collect::<Vec<u32>>());
+    let plan = MediaPlan {
+        modality: Modality::Image,
+        prompt: prompt.clone(),
+        items: vec![MediaItem {
+            modality: Modality::Image,
+            pixels: Arc::from([1.0_f32]),
+            grid: (1, 2, 2),
+            span: 1..2,
+        }],
+    };
+    let states = [StateId::ONE, StateId::new(2)?, StateId::new(3)?];
+    let state_count = if mtp_depth == 0 { states.len() } else { 1 };
+    for (index, &state) in states.iter().take(state_count).enumerate() {
+        executor.reserve_media(state, 128, OutputReadout::Logits, &plan)?;
+        let request = RequestId::new(u64::try_from(index)? + 1)?;
+        let task = media_position_task(
+            state,
+            request,
+            ExecutionInput::Prefill {
+                span: prompt.span(0..prompt.len())?,
+                readout: OutputReadout::Logits,
+            },
+        );
+        run_media_position_tasks(&mut executor, &[task])?;
+        let sequence = executor.states.get_mut(&state).ok_or("missing sequence")?;
+        sequence.rotary_base = 8;
+        sequence.media_prompt_len = prompt.len();
+    }
+    Ok((executor, prompt, states))
+}
+
+#[test]
+#[ignore = "real Qwen3-VL text checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL"]
+fn pooled_decode_preserves_multimodal_rotary_position() -> Result<(), Box<dyn Error>> {
+    let (mut executor, prompt, states) = media_position_fixture(0)?;
+    let decode = |state, request| {
+        media_position_task(
+            state,
+            request,
+            ExecutionInput::Decode {
+                token: 65,
+                position: prompt.len(),
+            },
+        )
+    };
+    // Use the pooled graph directly with an independently supplied rotary position. This keeps
+    // the full-logit comparison bitwise while exercising the executor's lane construction.
+    let expected = pooled_position_reference(&mut executor, states[0], 65, 8)?;
+    assert!(
+        !expected.is_empty(),
+        "pooled reference needs complete logits"
+    );
+    let single = run_media_position_tasks(&mut executor, &[decode(states[0], RequestId::ONE)])?;
+    let batch = run_media_position_tasks(
+        &mut executor,
+        &[
+            decode(states[1], RequestId::new(2)?),
+            decode(states[2], RequestId::new(3)?),
+        ],
+    )?;
+    assert!(executor.states[&states[0]].slot.is_none());
+    assert!(executor.states[&states[1]].slot.is_some());
+    assert!(executor.states[&states[2]].slot.is_some());
+    for output in batch {
+        assert_eq!(output.output.logits.len(), expected.len());
+        let differences = output
+            .output
+            .logits
+            .iter()
+            .zip(&expected)
+            .filter(|(actual, expected)| actual.to_bits() != expected.to_bits())
+            .count();
+        assert_eq!(
+            differences, 0,
+            "pooled logits differ from the positioned reference"
+        );
+    }
+    let serial = &single[0].output.logits;
+    assert_eq!(serial.len(), expected.len());
+    let top = |values: &[f32]| {
+        values
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .map(|(index, _)| index)
+    };
+    assert_eq!(top(serial), top(&expected));
+    Ok(())
+}
+
+#[test]
+#[ignore = "real MTP2 checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL"]
+fn pooled_verification_preserves_multimodal_rotary_position() -> Result<(), Box<dyn Error>> {
+    let (mut executor, prompt, states) = media_position_fixture(2)?;
+    assert_eq!(executor.slots.as_ref().and_then(SlotPool::verify), Some(3));
+    assert!(executor.states[&states[0]].speculation.is_none());
+    let expected = pooled_position_reference(&mut executor, states[0], 65, 8)?;
+    assert!(!expected.is_empty(), "verification needs complete logits");
+    let task = media_position_task(
+        states[0],
+        RequestId::ONE,
+        ExecutionInput::Decode {
+            token: 65,
+            position: prompt.len(),
+        },
+    );
+    let outputs = run_media_position_tasks(&mut executor, &[task])?;
+    assert!(executor.states[&states[0]].slot.is_some());
+    let logits = &outputs[0].output.logits;
+    assert_eq!(logits.len(), expected.len());
+    assert!(
+        logits
+            .iter()
+            .zip(&expected)
+            .all(|(actual, expected)| actual.to_bits() == expected.to_bits()),
+        "pooled verification logits differ from the positioned reference"
+    );
+    Ok(())
 }
