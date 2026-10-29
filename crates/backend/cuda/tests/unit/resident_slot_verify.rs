@@ -371,7 +371,11 @@ fn pooled_verify_matches_positioned_steps_with_independent_coordinates() -> Resu
         for (slot, reference) in expected.iter().enumerate() {
             let rows = &actual[slot * 3..][..3];
             assert_eq!(rows.len(), reference.len());
-            assert!(!reference[0].1.is_empty());
+            assert_eq!(reference[0].1.len(), 32);
+            for (actual_row, expected_row) in rows.iter().zip(reference) {
+                assert_eq!(actual_row.0.len(), expected_row.0.len());
+                assert_eq!(actual_row.1.len(), expected_row.1.len());
+            }
             compare(rows, reference);
             pool.commit_verify(&device, slot, 2)?;
             assert_eq!(pool.cursors()[slot], serial[slot].position());
