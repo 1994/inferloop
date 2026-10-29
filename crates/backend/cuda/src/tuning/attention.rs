@@ -13,6 +13,7 @@ use super::{
     resident_gemm::ResidentTuningSession,
 };
 use crate::constants::PREFILL_LANES;
+use crate::device::platform::driver_build;
 use crate::device::{CudaDevice, device_error};
 use crate::resident::attention_mma::catalog::Variant;
 use capture::Captured;
@@ -27,7 +28,6 @@ use reference::Fixture;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::env::var;
-use std::fs::read_to_string;
 use std::{
     collections::BTreeMap,
     sync::{Mutex, OnceLock},
@@ -211,13 +211,7 @@ pub(crate) fn select(
     }
 }
 fn key(device: &CudaDevice, shape: Shape) -> Result<Key> {
-    let driver_build = read_to_string("/proc/driver/nvidia/version")
-        .ok()
-        .and_then(|text| {
-            text.lines()
-                .find(|l| l.starts_with("NVRM version:"))
-                .map(|l| l.trim().to_owned())
-        });
+    let driver_build = driver_build();
     Ok(Key {
         hardware: serde_json::to_string(device.profile()?).map_err(device_error)?,
         driver_api: CudaDevice::driver_version()?,

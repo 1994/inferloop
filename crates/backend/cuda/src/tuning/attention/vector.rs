@@ -4,6 +4,7 @@ use super::{
     capture::Captured,
     reference::{self, Fixture},
 };
+use crate::device::architecture::is_sm120;
 use crate::resident::attention_oxide::shared_identity;
 use crate::resident::attention_oxide::vector_identity;
 use crate::tuning::MIN_CONFIRM_SPEEDUP;
@@ -130,7 +131,7 @@ fn resolve(
     autotune: bool,
     session: &ResidentTuningSession,
 ) -> Result<Choice> {
-    if device.profile()?.architecture != "sm_120" {
+    if !is_sm120(&device.profile()?.architecture) {
         return Ok(Choice::SharedKv);
     }
     let key = key(device, shape)?;

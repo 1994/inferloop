@@ -1,6 +1,7 @@
 //! Exact F32 prefill attention compiled from the pinned Rust SIMT source.
 //! The generated PTX is embedded so host builds keep their stable toolchain.
 use crate::constants::KV_BLOCK_TOKENS;
+use crate::device::architecture::is_sm120;
 use crate::device::{CudaDevice, device_error};
 use cuda_core::{Function, LaunchConfig};
 use cutile::{
@@ -50,7 +51,7 @@ impl Support {
         if DISABLED.get() {
             return Ok(false);
         }
-        Ok(device.profile()?.architecture == "sm_120"
+        Ok(is_sm120(&device.profile()?.architecture)
             && graph.nodes.iter().any(|node| {
                 matches!(
                     node.op,
@@ -65,7 +66,7 @@ impl Support {
     }
 
     pub fn load(device: &CudaDevice) -> Result<Option<Self>> {
-        if device.profile()?.architecture != "sm_120" {
+        if !is_sm120(&device.profile()?.architecture) {
             return Ok(None);
         }
         let module = device

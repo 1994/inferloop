@@ -15,6 +15,10 @@
 
 能力定义放在 IR hardware 对应子模块，执行器、loader 与 device FFI 放在 `crates/backend/<name>`，CLI 的选择 adapter 放在 `crates/service/cli/src/backend`。新增 backend 的目录与注册约定见 [Backend 分组说明](../../crates/backend/README.md)。
 
+CUDA 的设备查询、SM 名称识别、驱动版本读取、平台事实和 CUDA 库候选集中在 `crates/backend/cuda/src/device`；kernel 模块仍负责声明已验证制品及其形状约束。backend 的编译目标由 `tools/build/backend_cfg.rs` 统一配置。新增 Windows 支持还需配置目标依赖并验证对应 DLL、ABI 和 AOT 制品，不能仅凭设备识别成功就声明可用。
+
+`tools/check/layout.py` 会检查 CUDA 源码中的常见设备查询、平台条件和 CUDA 库名，防止这些形式重新散落在 device 边界之外。该检查基于词法匹配，并未涵盖所有 CUDA 或第三方 API；新增探测方式仍需审查其归属。
+
 ## 选择与隔离
 
 发布版提供 `--backend auto|cuda|metal`：`auto` 按 CUDA → Metal 选择已实现且可用的设备，无可用设备时返回 Unsupported。CUDA 需要显式启用 `cuda` feature，并通过设备与模型能力检查。产品不提供 CPU 执行 backend。

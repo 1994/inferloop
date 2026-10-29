@@ -1,9 +1,9 @@
 //! Combined vector staging and PV consumer artifact loader.
 //!
-//! Declared from `shared.rs` on purpose: `shared.rs` is not hashed into any tuning
-//! fingerprint, while `attention_oxide.rs` and `vector.rs` are. Adding the combined device
-//! artifact therefore leaves the frozen vector and MMA tuning keys byte-identical.
+//! Declared from `shared.rs` so the combined loader has its own artifact identity. The device
+//! architecture classifier is part of that identity because it controls loader eligibility.
 use super::super::Support;
+use crate::device::architecture::is_sm120;
 use crate::device::{CudaDevice, device_error};
 use infer_core::Result;
 use std::sync::{Arc, OnceLock};
@@ -16,7 +16,7 @@ const LANES: &[usize] = &[256];
 impl Support {
     /// Load the SM120 combined vector key/consumer module.
     pub(crate) fn load_combined(device: &CudaDevice) -> Result<Option<Self>> {
-        if device.profile()?.architecture != "sm_120" {
+        if !is_sm120(&device.profile()?.architecture) {
             return Ok(None);
         }
         let module = device
@@ -47,11 +47,12 @@ impl Support {
             let provenance =
                 include_str!("../../../../kernels/vector-attention-combined/provenance.json");
             format!(
-                "{:x}:{:x}:{:x}:{:x}",
+                "{:x}:{:x}:{:x}:{:x}:{:x}",
                 Sha256::digest(PTX),
                 Sha256::digest(source),
                 Sha256::digest(provenance),
-                Sha256::digest(include_str!("combined.rs"))
+                Sha256::digest(include_str!("combined.rs")),
+                Sha256::digest(include_str!("../../../device/architecture.rs"))
             )
         })
     }

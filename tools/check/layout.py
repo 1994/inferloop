@@ -21,11 +21,41 @@ BACKENDS = {
     "infer-backend-metal",
     "infer-backend-cuda",
 }
+# These lexical checks protect the device boundary; they are not a complete Rust parser or a
+# substitute for reviewing new hardware APIs. Artifact eligibility may consume reported facts.
+CUDA_HARDWARE_PROBES = re.compile(
+    r"\b(?:cuDeviceGet\w*|cuDeviceComputeCapability|cuDeviceTotalMem\w*|"
+    r"cuDriverGetVersion|cudaDeviceGet\w*|cudaGetDevice\w*|"
+    r"cuda(?:Driver|Runtime)GetVersion|nvmlDeviceGet\w*|"
+    r"nvjpegGetHardware\w*|nvjpegDecoderJpegSupported|nvjpegDecodeBatchedSupported\w*)\b"
+    r"|\btarget_(?:os|arch|env|family|vendor|feature|pointer_width)\b"
+    r"|\bcfg(?:_attr)?!?\s*\([\s\w(),]*\b(?:unix|windows)\b"
+    r"|\b(?:std::)?env::consts::(?:OS|ARCH)\b"
+    r"|/proc/driver/nvidia/version"
+    r"|(?i:\b(?:lib(?:nvjpeg\w*|cublas(?:lt)?|cudart|cuda)|"
+    r"(?:nvjpeg|cublas(?:lt)?|cudart|cuda)\w*)\.(?:so(?:\.\d+)*|dylib|dll)\b)"
+)
 
 
 def require(condition, message):
     if not condition:
         raise SystemExit(message)
+
+
+def check_cuda_hardware_boundary(root=ROOT):
+    """Keep CUDA hardware/platform probes and library names in the device boundary."""
+    source = root / "crates/backend/cuda/src"
+    device = source / "device"
+    require(source.is_dir() and device.is_dir(), "CUDA device boundary is missing")
+    for path in source.rglob("*.rs"):
+        if path == source / "device.rs" or path.is_relative_to(device):
+            continue
+        match = CUDA_HARDWARE_PROBES.search(path.read_text())
+        if match:
+            raise SystemExit(
+                f"{path.relative_to(root)}: move CUDA hardware/platform detection "
+                f"or library name {match.group()!r} into the device boundary"
+            )
 
 
 def dependency_tables(manifest):
@@ -188,5 +218,6 @@ def check_sources():
 
 if __name__ == "__main__":
     check_crates()
+    check_cuda_hardware_boundary()
     check_links()
     check_sources()

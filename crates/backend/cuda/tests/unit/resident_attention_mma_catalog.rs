@@ -1,6 +1,12 @@
 use crate::resident::attention_mma::catalog::*;
 #[test]
 fn hardware_candidates_cannot_cross_instruction_families() {
+    let compiled = cfg!(all(target_os = "linux", target_arch = "x86_64"));
+    for architecture in ["sm_90", "sm_100", "sm_103", "sm_120"] {
+        assert_eq!(supported(architecture, 24, 4, 256, 128, 0), compiled);
+    }
+    assert!(!supported("sm_80", 24, 4, 256, 128, 0));
+    assert!(!supported("sm_120", 24, 4, 256, 63, 0));
     assert_eq!(Variant::candidates("sm_90"), &[Variant::Hopper]);
     assert_eq!(
         Variant::candidates("sm_100"),

@@ -8,6 +8,7 @@ mod workspace;
 pub use super::attention_oxide::Bindings;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::KV_CACHE_RANK;
+use crate::device::architecture::is_sm120;
 use crate::device::{CudaDevice, device_error};
 use catalog::{DIM, HEADS, KV_HEADS, Variant};
 use cuda_core::{Function, LaunchConfig};
@@ -57,7 +58,7 @@ impl Support {
         {
             return Err(infer_core::Error::invalid("MMA scratch dimensions"));
         }
-        if arithmetic == Arithmetic::F16 && device.profile()?.architecture != f16::ARCHITECTURE {
+        if arithmetic == Arithmetic::F16 && !is_sm120(&device.profile()?.architecture) {
             return Err(infer_core::Error::invalid(
                 "FP16 target attention artifact is only validated for SM120",
             ));
@@ -110,7 +111,7 @@ impl Support {
     pub fn prepare_variant(&mut self, device: &CudaDevice, variant: Variant) -> Result<()> {
         let ordinal = i32::try_from(device.stream.device().ordinal()).map_err(device_error)?;
         if self.arithmetic == Arithmetic::F16 {
-            if variant != Variant::Sm120 || device.profile()?.architecture != f16::ARCHITECTURE {
+            if variant != Variant::Sm120 || !is_sm120(&device.profile()?.architecture) {
                 return Err(infer_core::Error::invalid(
                     "FP16 attention variant architecture mismatch",
                 ));
@@ -321,6 +322,7 @@ pub fn f32_artifact_identity() -> String {
     hash.update(artifact_identity());
     hash.update(F32_PTX);
     hash.update(include_str!("mod.rs"));
+    hash.update(include_str!("../../device/architecture.rs"));
     hash.update(include_str!("recorded.rs"));
     hash.update(include_str!("host.rs"));
     hash.update(include_bytes!(

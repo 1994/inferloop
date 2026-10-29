@@ -884,10 +884,9 @@ pub(super) struct ValueDevice {
 }
 impl ValueDevice {
     pub(super) fn new(device: &CudaDevice) -> infer_core::Result<Self> {
-        use cuda_core::sys::CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_WARP_SIZE as WARP;
         Ok(Self {
             multiprocessors: device.profile()?.multiprocessors,
-            warp_size: device.attribute(WARP)?,
+            warp_size: device.warp_size()?,
         })
     }
 }

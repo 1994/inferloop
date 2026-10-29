@@ -32,3 +32,58 @@ fn profile_derives_bandwidth_headroom_and_identity() {
     // Identities of different devices never collide.
     assert_ne!(device.identity(), profile(24 * 1024 * MIB).identity());
 }
+
+#[test]
+fn compute_capability_queries_in_order_and_propagates_failures() {
+    let mut queried = Vec::new();
+    let facts = compute_capability_with(|attribute| {
+        queried.push(attribute);
+        if attribute == COMPUTE_MAJOR {
+            Ok(12)
+        } else if attribute == COMPUTE_MINOR {
+            Ok(0)
+        } else {
+            Err(InferError::invalid("unexpected attribute"))
+        }
+    })
+    .unwrap();
+    assert_eq!(
+        facts,
+        ComputeCapability {
+            major: 12,
+            minor: 0
+        }
+    );
+    assert_eq!(queried, [COMPUTE_MAJOR, COMPUTE_MINOR]);
+    assert_eq!(facts.tensor_core_generation(), Some(5));
+    assert_eq!(
+        ComputeCapability { major: 9, minor: 0 }.tensor_core_generation(),
+        Some(4)
+    );
+    assert_eq!(
+        ComputeCapability { major: 9, minor: 1 }.tensor_core_generation(),
+        None
+    );
+
+    let mut queried = Vec::new();
+    let failure = compute_capability_with(|attribute| {
+        queried.push(attribute);
+        Err(InferError::invalid("major query failed"))
+    })
+    .unwrap_err();
+    assert_eq!(failure.message, "major query failed");
+    assert_eq!(queried, [COMPUTE_MAJOR]);
+
+    let mut queried = Vec::new();
+    let failure = compute_capability_with(|attribute| {
+        queried.push(attribute);
+        if attribute == COMPUTE_MINOR {
+            Err(InferError::invalid("minor query failed"))
+        } else {
+            Ok(12)
+        }
+    })
+    .unwrap_err();
+    assert_eq!(failure.message, "minor query failed");
+    assert_eq!(queried, [COMPUTE_MAJOR, COMPUTE_MINOR]);
+}

@@ -4,6 +4,8 @@ use super::{
     capture::Captured,
     reference::{self, Fixture},
 };
+use crate::device::architecture::is_sm120;
+use crate::device::platform::driver_build;
 use crate::device::{CudaDevice, device_error};
 use crate::tuning::MIN_CONFIRM_SPEEDUP;
 use crate::tuning::resident_gemm::ResidentTuningSession;
@@ -14,7 +16,6 @@ use crate::tuning::update_table;
 use cutile::cutile_compiler::hints::CompileOptions;
 use infer_core::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::fs::read_to_string;
 use std::{
     collections::BTreeMap,
     sync::{Mutex, OnceLock},
@@ -93,13 +94,7 @@ fn memo() -> &'static Memo {
     MEMO.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 pub(super) fn key(device: &CudaDevice, shape: Shape) -> Result<Key> {
-    let driver_build = read_to_string("/proc/driver/nvidia/version")
-        .ok()
-        .and_then(|text| {
-            text.lines()
-                .find(|line| line.starts_with("NVRM version:"))
-                .map(|line| line.trim().to_owned())
-        });
+    let driver_build = driver_build();
     Ok(Key {
         hardware: serde_json::to_string(device.profile()?).map_err(device_error)?,
         driver_api: CudaDevice::driver_version()?,
@@ -132,7 +127,7 @@ fn resolve(
     autotune: bool,
     session: &ResidentTuningSession,
 ) -> Result<Choice> {
-    if device.profile()?.architecture != "sm_120" {
+    if !is_sm120(&device.profile()?.architecture) {
         return Ok(Choice::Simt);
     }
     let key = key(device, shape)?;
