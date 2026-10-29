@@ -1,6 +1,7 @@
 """Contract tests for the image serving client without a GPU or external service."""
 
 import asyncio
+import base64
 import contextlib
 import copy
 import hashlib
@@ -306,6 +307,7 @@ class ImageLoadTest(unittest.TestCase):
         )
         report = module.run(args)
         self.assertEqual(report["counts"]["successes"], 4)
+        self.assertNotIn("fixture_cycle", report["workload"])
         self.assertEqual(report["counts"]["failures"], 0)
         self.assertEqual(report["latency_success"]["count"], 4)
         self.assertIsNone(report["first_visible_content"])
@@ -319,6 +321,78 @@ class ImageLoadTest(unittest.TestCase):
             i["sha256"] for r in report["warmups"] + report["samples"] for i in r["fixtures"]
         ]
         self.assertEqual(len(set(all_hashes)), 10)
+
+    def test_fixture_cycle_records_repeated_multi_image_workload(self):
+        args = self.args("--images-per-request", "2", "--fixture-cycle", "3", "--offset", "2")
+        report = module.run(args)
+        self.assertEqual(report["counts"]["successes"], 4)
+        self.assertEqual(report["workload"]["fixture_cycle"], 3)
+        names = [
+            image["file"]
+            for item in report["warmups"] + report["samples"]
+            for image in item["fixtures"]
+        ]
+        self.assertEqual(names, ["2.png", "3.png", "4.png"] * 3 + ["2.png"])
+        self.assertEqual(len(Handler.received), 5)
+        sent = []
+        for request in Handler.received:
+            parts = request["messages"][0]["content"][:-1]
+            sent.append(
+                tuple(
+                    hashlib.sha256(
+                        base64.b64decode(part["image_url"]["url"].split(",", 1)[1])
+                    ).hexdigest()
+                    for part in parts
+                )
+            )
+        reported = [
+            tuple(image["sha256"] for image in item["fixtures"])
+            for item in report["warmups"] + report["samples"]
+        ]
+        self.assertCountEqual(sent, reported)
+        reference = copy.deepcopy(report)
+        self.assertTrue(module.comparison_preflight(reference, report)["passed"])
+        reference["workload"]["fixture_cycle"] = 2
+        self.assertIn("workload_mismatch", module.comparison_preflight(reference, report)["issues"])
+
+    def test_fixture_cycle_does_not_bypass_preparation_bound(self):
+        args = self.args(
+            "--samples", "1000000000", "--fixture-cycle", "1", "--max-prepared-mib", "1"
+        )
+        with self.assertRaisesRegex(ValueError, "preparation limit"):
+            module.fixture_payloads(args)
+        self.assertEqual(Handler.received, [])
+
+    def test_fixture_cycle_validates_the_pool_and_range(self):
+        for value in ("0", "-1", "6"):
+            with (
+                self.subTest(value=value),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                self.args("--fixture-cycle", value)
+        manifest = json.loads((self.root / "manifest.json").read_text())
+        manifest["items"]["small"][1] = manifest["items"]["small"][0]
+        (self.root / "manifest.json").write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "unique"):
+            module.fixture_payloads(self.args("--fixture-cycle", "2"))
+        with self.assertRaisesRegex(ValueError, "need 2 fixture images"):
+            module.fixture_payloads(self.args("--fixture-cycle", "2", "--offset", "11"))
+        self.assertEqual(Handler.received, [])
+
+    def test_fixture_cycle_supports_url_sources(self):
+        manifest = json.loads((self.root / "manifest.json").read_text())
+        for index, entry in enumerate(manifest["items"]["small"]):
+            entry["url"] = f"https://example.invalid/image-{index}.png"
+        (self.root / "manifest.json").write_text(json.dumps(manifest))
+        _, _, images = module.fixture_payloads(
+            self.args("--fixture-cycle", "2", "--image-source", "url")
+        )
+        self.assertEqual(
+            [source for _, _, source in images],
+            ["https://example.invalid/image-0.png", "https://example.invalid/image-1.png"] * 2
+            + ["https://example.invalid/image-0.png"],
+        )
 
     def test_sixteen_requests_send_four_images_concurrently(self):
         fixture = (
