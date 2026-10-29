@@ -1,11 +1,11 @@
 use super::support::{self, ProtocolBackend};
-use infer_core::{Error, ErrorCode, ModelId, Result, StateId};
+use infer_core::{Error, ErrorCode, ModelId, RequestId, Result, StateId};
 use infer_ir::{
     DeviceCapabilities, ExecutionProgram, ExecutionTask, ModelIr, OutputReadout, PrecisionPlan,
     StepPlan, TaskOutput,
 };
 use infer_kernel_api::KernelRegistry;
-use infer_runtime::{Engine, RuntimeConfig, runner::ThreadedBackend};
+use infer_runtime::{Engine, EngineOutput, RuntimeConfig, runner::ThreadedBackend};
 use infer_spi::{BackendProvider, ResourceCommand};
 use std::{
     sync::{
@@ -219,7 +219,7 @@ impl Fixture {
             program: self.engine.program().id,
             role: infer_ir::ExecutionRole::Prefill,
             work: vec![infer_ir::PlannedWork {
-                request: infer_core::RequestId::ONE,
+                request: RequestId::ONE,
                 state: StateId::ONE,
                 token_count: 3,
                 role: infer_ir::ExecutionRole::Prefill,
@@ -245,7 +245,7 @@ fn tasks() -> Vec<ExecutionTask> {
     vec![ExecutionTask {
         plain_greedy: false,
         publish_prefix: false,
-        request: infer_core::RequestId::ONE,
+        request: RequestId::ONE,
         state: StateId::ONE,
         tokens: vec![1, 2, 3].into(),
         sampling: None,
@@ -275,6 +275,54 @@ fn backend_notification_wakes_the_parked_device_owner() -> Result<()> {
         wait(deadline)?;
     }
     assert_eq!(fixture.observed.wrong_thread.load(Ordering::Acquire), 0);
+    Ok(())
+}
+
+#[test]
+fn repeated_owner_fault_notifies_the_engine_only_once() -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut fixture = Fixture::new(false)?;
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let wake_count = wakes.clone();
+    fixture.engine.set_waker(Arc::new(move || {
+        wake_count.fetch_add(1, Ordering::AcqRel);
+    }));
+    let owner_wake = loop {
+        let wake = fixture
+            .observed
+            .wake
+            .lock()
+            .map_err(|error| Error::invariant(error.to_string()))?
+            .clone();
+        if let Some(wake) = wake {
+            break wake;
+        }
+        wait(deadline)?;
+    };
+    let initial = wakes.load(Ordering::Acquire);
+    fixture.observed.failure.store(true, Ordering::Release);
+    owner_wake();
+    while wakes.load(Ordering::Acquire) == initial {
+        wait(deadline)?;
+    }
+    assert_eq!(wakes.load(Ordering::Acquire), initial + 1);
+    for _ in 0..3 {
+        let calls = fixture.observed.maintenance_calls.load(Ordering::Acquire);
+        owner_wake();
+        while fixture.observed.maintenance_calls.load(Ordering::Acquire) == calls {
+            wait(deadline)?;
+        }
+    }
+    assert_eq!(wakes.load(Ordering::Acquire), initial + 1);
+    assert_eq!(
+        fixture
+            .engine
+            .backend()
+            .free_state_bytes()
+            .err()
+            .map(|error| error.code),
+        Some(ErrorCode::Backend)
+    );
     Ok(())
 }
 
@@ -352,7 +400,15 @@ fn maintenance_failure_preserves_flight_and_release_until_the_fence() -> Result<
     while fixture.engine.backend().pending_resource_releases()
         || fixture.observed.ticket_drops.load(Ordering::Acquire) == 0
     {
-        fixture.engine.backend_mut().maintenance()?;
+        assert_eq!(
+            fixture
+                .engine
+                .backend_mut()
+                .maintenance()
+                .err()
+                .map(|error| error.code),
+            Some(ErrorCode::Backend)
+        );
         wait(deadline)?;
     }
     assert_eq!(fixture.observed.owned.load(Ordering::Acquire), 0);
@@ -366,4 +422,69 @@ fn maintenance_failure_preserves_flight_and_release_until_the_fence() -> Result<
     }
     assert_eq!(observed.backend_drops.load(Ordering::Acquire), 1);
     Ok(())
+}
+
+#[test]
+fn device_owner_failure_isolates_engine_and_drains_the_fenced_flight() -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut fixture = Fixture::new(false)?;
+    let prepared = fixture
+        .engine
+        .request_preparer()?
+        .prepare(super::request(1)?)?;
+    let mut quote = fixture.engine.admission_quote(&prepared)?;
+    let bytes = super::poll_quote(&mut quote)?;
+    drop(quote);
+    fixture
+        .engine
+        .submit_quoted_with_trace(prepared, bytes, None)?;
+    let mut now = 0;
+    while fixture.observed.submitted.load(Ordering::Acquire) == 0 {
+        fixture.engine.tick(now)?;
+        now += 1;
+        wait(deadline)?;
+    }
+    let flight = fixture.engine.inspect().inflight_step;
+    assert!(flight.is_some());
+    let pages = fixture.engine.inspect().state.allocated_pages;
+    assert!(pages > 0);
+    fixture.observed.failure.store(true, Ordering::Release);
+    while fixture.engine.backend().free_state_bytes().is_ok() {
+        wait(deadline)?;
+    }
+    assert_eq!(
+        fixture.engine.tick(now).err().map(|error| error.code),
+        Some(ErrorCode::Backend)
+    );
+    now += 1;
+    assert!(!fixture.engine.inspect().ready);
+    assert_eq!(fixture.engine.inspect().inflight_step, flight);
+    assert_eq!(
+        fixture.engine.cancel(RequestId::ONE)?,
+        [] as [EngineOutput; 0]
+    );
+    fixture.engine.tick(now)?;
+    now += 1;
+    assert_eq!(fixture.engine.inspect().state.allocated_pages, pages);
+    assert_eq!(fixture.observed.ticket_drops.load(Ordering::Acquire), 0);
+
+    fixture.observed.advance.store(true, Ordering::Release);
+    let mut outputs = Vec::new();
+    while !fixture.engine.is_idle() {
+        fixture.engine.tick_into(now, &mut outputs)?;
+        now += 1;
+        wait(deadline)?;
+    }
+    assert_eq!(fixture.observed.owned.load(Ordering::Acquire), 0);
+    assert_eq!(fixture.observed.ticket_drops.load(Ordering::Acquire), 1);
+    assert_eq!(fixture.observed.premature_drops.load(Ordering::Acquire), 0);
+    assert_eq!(fixture.observed.wrong_thread.load(Ordering::Acquire), 0);
+    assert_eq!(fixture.engine.inspect().state.allocated_pages, 0);
+    assert!(!fixture.engine.inspect().ready);
+    assert!(
+        outputs
+            .iter()
+            .any(|output| matches!(output, EngineOutput::Finished(_)))
+    );
+    fixture.engine.check_invariants()
 }

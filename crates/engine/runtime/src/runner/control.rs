@@ -8,6 +8,36 @@ use infer_ir::{
 use infer_spi::BackendProvider;
 use std::{sync::Arc, sync::atomic::Ordering};
 
+impl<B: BackendProvider + Send + 'static> ThreadedBackend<B>
+where
+    B::Ticket: Send,
+{
+    fn drain_control(&mut self) -> Result<()> {
+        if self.shared.flight_abandoned.load(Ordering::Acquire)
+            && let Ok(handle) = self.completions.pop()
+        {
+            let _ = self
+                .shared
+                .batches
+                .take_completion(handle)?
+                .ok_or_else(|| Error::invariant("abandoned flight has no fence"))?;
+            self.active = None;
+            self.shared.flight_abandoned.store(false, Ordering::Release);
+        }
+        while let Some(state) = self.pending_releases.front().copied() {
+            let job = Job::Release(state);
+            match self.enqueue(job) {
+                Ok(()) => {
+                    self.pending_releases.pop_front();
+                }
+                Err(error) if error.code == ErrorCode::Capacity => break,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+}
+
 impl<B: BackendProvider + Send + 'static> BackendProvider for ThreadedBackend<B>
 where
     B::Ticket: Send,
@@ -88,26 +118,13 @@ where
         self.speculation
     }
     fn maintenance(&mut self) -> Result<()> {
-        if self.shared.flight_abandoned.load(Ordering::Acquire)
-            && let Ok(handle) = self.completions.pop()
-        {
-            let _ = self
-                .shared
-                .batches
-                .take_completion(handle)?
-                .ok_or_else(|| Error::invariant("abandoned flight has no fence"))?;
-            self.active = None;
-            self.shared.flight_abandoned.store(false, Ordering::Release);
-        }
-        while let Some(state) = self.pending_releases.front().copied() {
-            let job = Job::Release(state);
-            match self.enqueue(job) {
-                Ok(()) => {
-                    self.pending_releases.pop_front();
-                }
-                Err(error) if error.code == ErrorCode::Capacity => break,
-                Err(error) => return Err(error),
-            }
+        self.drain_control()?;
+        if self.shared.faulted.load(Ordering::Acquire) {
+            let snapshot = self.shared.snapshot()?;
+            return Err(snapshot
+                .error
+                .clone()
+                .unwrap_or_else(|| Error::invariant("device fault missing from snapshot")));
         }
         Ok(())
     }
@@ -208,7 +225,7 @@ where
         }
         self.shared.releases.fetch_add(1, Ordering::AcqRel);
         self.pending_releases.push_back(state);
-        self.maintenance()
+        self.drain_control()
     }
     fn capture_execution_state(&self) -> Result<Option<Vec<u8>>> {
         Err(Error::unsupported(

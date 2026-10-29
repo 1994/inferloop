@@ -146,7 +146,7 @@ impl<B: BackendProvider> Worker<B> {
             }
             Ok(())
         })();
-        if let Ok(mut published) = self.shared.snapshot.lock() {
+        let failure = if let Ok(mut published) = self.shared.snapshot.lock() {
             match result {
                 Ok(()) => {
                     // Slot filling runs outside the publication lock. Readers hold immutable Arcs.
@@ -170,9 +170,15 @@ impl<B: BackendProvider> Worker<B> {
                     if changed {
                         self.shared.epoch.fetch_add(1, Ordering::AcqRel);
                     }
+                    None
                 }
-                Err(error) => Arc::make_mut(&mut published).error = Some(error),
+                Err(error) => Some(error),
             }
+        } else {
+            Some(Error::invariant("device snapshot poisoned"))
+        };
+        if let Some(error) = failure {
+            self.fail(error);
         }
     }
     fn collect_abandoned(&mut self) {
@@ -203,9 +209,7 @@ impl<B: BackendProvider> Worker<B> {
                     self.shared.releases.fetch_sub(1, Ordering::AcqRel);
                 }
                 Err(error) => {
-                    if let Ok(mut snapshot) = self.shared.snapshot.lock() {
-                        Arc::make_mut(&mut snapshot).error = Some(error);
-                    }
+                    self.fail(error);
                     if let Err(error) = self.shared.remember_abandoned(state) {
                         self.fail(error);
                     }
@@ -331,10 +335,7 @@ impl<B: BackendProvider> Worker<B> {
         }
     }
     fn fail(&self, error: Error) {
-        if let Ok(mut snapshot) = self.shared.snapshot.lock() {
-            Arc::make_mut(&mut snapshot).error = Some(error);
-        }
-        self.shared.notify();
+        self.shared.report_fault(error);
     }
     fn publish(&mut self, handle: BatchLease, completion: Result<Completion>) {
         let result = self

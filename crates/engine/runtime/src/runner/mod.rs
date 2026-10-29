@@ -91,6 +91,7 @@ struct Shared {
     config: RunnerConfig,
     encoding: AtomicBool,
     flight_abandoned: AtomicBool,
+    faulted: AtomicBool,
     batches: Arc<infer_gpu_api::BatchArena<Result<Completion>>>,
     device_thread: OnceLock<Thread>,
     snapshot: Mutex<Arc<Snapshot>>,
@@ -138,6 +139,23 @@ impl Shared {
             .map(|s| s.clone())
             .map_err(|_| Error::invariant("device snapshot poisoned"))
     }
+    fn report_fault(&self, error: Error) {
+        let (changed, first) = self.snapshot.lock().map_or_else(
+            |_| (false, !self.faulted.swap(true, Ordering::AcqRel)),
+            |mut snapshot| {
+                let changed = if snapshot.error.as_ref() == Some(&error) {
+                    false
+                } else {
+                    Arc::make_mut(&mut snapshot).error = Some(error);
+                    true
+                };
+                (changed, !self.faulted.swap(true, Ordering::AcqRel))
+            },
+        );
+        if first || changed {
+            self.notify();
+        }
+    }
     fn remember_abandoned(&self, state: StateId) -> Result<bool> {
         self.abandoned
             .lock()
@@ -152,11 +170,7 @@ impl infer_spi::ResourceAbandon for Shared {
                 self.releases.fetch_add(1, Ordering::AcqRel);
             }
             Ok(false) => {}
-            Err(error) => {
-                if let Ok(mut snapshot) = self.snapshot.lock() {
-                    Arc::make_mut(&mut snapshot).error = Some(error);
-                }
-            }
+            Err(error) => self.report_fault(error),
         }
         self.notify();
         if let Some(thread) = self.device_thread.get() {
@@ -312,6 +326,7 @@ where
             config,
             encoding: AtomicBool::new(false),
             flight_abandoned: AtomicBool::new(false),
+            faulted: AtomicBool::new(false),
             batches: Arc::new(infer_gpu_api::BatchArena::new(
                 config.batch_slots,
                 config.max_num_seqs,
