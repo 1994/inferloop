@@ -1585,12 +1585,13 @@ impl Sequence {
         if self.history.is_empty() && self.media.is_none() {
             self.prepare_media(plan, loaded)?;
         }
+        // A later row copy or replay may fail with device reads still in flight. Keep the
+        // source owned by the sequence until the submission's final fence can retire them.
         let media = self
             .media
-            .take()
+            .as_ref()
             .ok_or_else(|| Error::invalid("media prefill did not start at position zero"))?;
         if media.bases.len() != plan.items.len() {
-            self.media = Some(media);
             return Err(Error::invariant("cached media does not match its plan"));
         }
         let width = self.program.prefill_width();
@@ -1652,8 +1653,7 @@ impl Sequence {
         if self.history.len() + tokens.len() == prompt_len {
             self.rotary_base = media.layout.next_rotary;
             self.media_prompt_len = prompt_len;
-        } else {
-            self.media = Some(media);
+            self.media = None;
         }
         task.tokens.commit(&mut self.history)?;
         Ok(self.output(readout, None, logits))

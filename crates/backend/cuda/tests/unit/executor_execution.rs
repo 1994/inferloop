@@ -140,3 +140,119 @@ fn retry_quote_accounts_for_storage_retained_by_previous_captures() {
     // Both retained increments fit alongside the smaller final capture.
     assert!(next + 20 + 10 <= envelope);
 }
+
+#[test]
+#[ignore = "real CUDA and text checkpoint; run inside safe-run with INFER_TEST_MODEL"]
+#[expect(
+    clippy::mem_forget,
+    reason = "An unknown device fence must retain the test's source and destination owners"
+)]
+fn media_copy_error_retains_the_source_until_the_submission_fence() -> Result<(), Box<dyn Error>> {
+    use super::{CachedMedia, CudaExecutor};
+    use crate::{
+        device::{CudaDevice, asynchronous::block_on},
+        loading::{LoadOptions, LoadedModel},
+    };
+    use infer_core::{Error as InferError, ModelId, StateId};
+    use infer_models::MediaLayout;
+    use std::mem::forget;
+    use std::sync::Arc;
+
+    CudaDevice::enable_kernel_cache()?;
+    let loaded = LoadedModel::open(
+        CudaDevice::new(0)?,
+        var("INFER_TEST_MODEL")?,
+        ModelId::ONE,
+        LoadOptions {
+            prefill_width: 32,
+            autotune: false,
+            vision: false,
+            ..LoadOptions::default()
+        },
+    )?;
+    let budget = loaded.device().allocatable_memory_bytes()?;
+    let mut executor = CudaExecutor::new_bounded(loaded, budget, 1)?;
+    executor.reserve(StateId::ONE, 128, OutputReadout::Logits, false)?;
+    let hidden = executor.loaded.model().hidden_size;
+    let tensor = executor
+        .loaded
+        .device()
+        .upload(vec![0_f32; hidden], &[1, hidden])?;
+    let owner = Arc::downgrade(&tensor);
+    // Independently hold the same source so the regression remains safe on the buggy version;
+    // the strong count still reveals whether the sequence retained its own reference.
+    let storage_guard = Arc::clone(&tensor);
+    let (plan, task) = short_media_copy_task()?;
+    let state = executor
+        .states
+        .get_mut(&StateId::ONE)
+        .ok_or_else(|| InferError::invariant("missing reserved sequence"))?;
+    state.media = Some(CachedMedia {
+        tensor,
+        layout: MediaLayout {
+            spans: Vec::new(),
+            next_rotary: 2,
+            positions: None,
+        },
+        bases: vec![0],
+    });
+    // The first row is valid and enqueues a copy; the second is deliberately outside the
+    // one-row tensor. The error must not destroy the source before the completion fence.
+    let result = block_on(state.run_media(&task, &plan, &executor.loaded));
+    let retained_before_fence = Arc::strong_count(&storage_guard) > 1;
+    if let Err(error) = block_on(executor.loaded.device().fence()) {
+        // Unknown completion cannot release either the source or its destination program.
+        forget(storage_guard);
+        forget(executor);
+        return Err(error.into());
+    }
+    drop(storage_guard);
+    executor
+        .states
+        .get_mut(&StateId::ONE)
+        .ok_or_else(|| InferError::invariant("missing reserved sequence"))?
+        .poisoned = true;
+    executor.release(StateId::ONE)?;
+    let error = result
+        .err()
+        .ok_or("expected the second media row to fail")?;
+    assert_eq!(error.message, "device copy range outside tensor");
+    assert!(
+        retained_before_fence,
+        "media source retired before its fence"
+    );
+    assert!(owner.upgrade().is_none());
+    Ok(())
+}
+
+fn short_media_copy_task() -> Result<(infer_ir::MediaPlan, infer_ir::ExecutionTask), Box<dyn Error>>
+{
+    use infer_core::{RequestId, StateId};
+    use infer_ir::{ExecutionInput, ExecutionTask, MediaItem, MediaPlan, Modality, TokenBuffer};
+    use std::sync::Arc;
+
+    let prompt: TokenBuffer = vec![1, 2].into();
+    let plan = MediaPlan {
+        modality: Modality::Image,
+        prompt: prompt.clone(),
+        items: vec![MediaItem {
+            modality: Modality::Image,
+            pixels: Arc::from([0_f32]),
+            grid: (1, 2, 2),
+            span: 0..2,
+        }],
+    };
+    let task = ExecutionTask {
+        plain_greedy: false,
+        publish_prefix: false,
+        request: RequestId::new(1)?,
+        state: StateId::ONE,
+        tokens: ExecutionInput::Prefill {
+            span: prompt.span(0..2)?,
+            readout: OutputReadout::Logits,
+        },
+        sampling: None,
+        media: None,
+    };
+    Ok((plan, task))
+}
