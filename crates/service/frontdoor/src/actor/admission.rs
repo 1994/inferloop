@@ -4,7 +4,9 @@ use infer_core::{Error, ErrorCode, Result};
 use infer_observe::trace::TraceContext;
 use infer_runtime::EngineOutput;
 use infer_spi::BackendProvider;
+use std::mem::replace;
 use std::mem::take;
+use tokio::sync::oneshot;
 
 impl<B: BackendProvider> RuntimeActor<B> {
     pub(super) fn poll_admissions(&mut self, generated: &mut Vec<EngineOutput>) {
@@ -17,19 +19,33 @@ impl<B: BackendProvider> RuntimeActor<B> {
                 pending,
                 trace,
                 output,
-                reply,
+                mut reply,
             } = command
             else {
                 continue;
             };
-            let result = if self.stopping || reply.is_closed() || output.is_closed() {
-                Err(Error::new(
-                    ErrorCode::Capacity,
-                    "admission abandoned or runtime stopping",
-                ))
-            } else if let Err(error) = pending.check() {
-                Err(error)
-            } else if let Some(issued) = ticket.as_mut() {
+            let abandoned = if self.stopping || reply.is_closed() || output.is_closed() {
+                Some(abandoned_error())
+            } else {
+                pending.check().err()
+            };
+            if let Some(error) = abandoned {
+                if ticket.is_none() {
+                    self.engine.record_admission_rejection(request.id(), &error);
+                    drop(request);
+                    drop(pending);
+                    notify_abandoned(reply, error);
+                    continue;
+                }
+                if !reply.is_closed() {
+                    // The owner may still hold the media; keep its credit until acknowledgement.
+                    let (replacement, discarded) = oneshot::channel();
+                    drop(discarded);
+                    let reply = replace(&mut reply, replacement);
+                    notify_abandoned(reply, error);
+                }
+            }
+            let result = if let Some(issued) = ticket.as_mut() {
                 issued.poll()
             } else {
                 // The lane was full when the quote was first issued; issue it again now.
@@ -51,6 +67,19 @@ impl<B: BackendProvider> RuntimeActor<B> {
                 )),
                 result => {
                     let id = request.id();
+                    if self.stopping
+                        || reply.is_closed()
+                        || output.is_closed()
+                        || pending.check().is_err()
+                    {
+                        let error = abandoned_error();
+                        self.engine.record_admission_rejection(id, &error);
+                        notify_abandoned(reply, error);
+                        drop(result);
+                        drop(request);
+                        drop(pending);
+                        continue;
+                    }
                     if let Err(error) = &result {
                         self.engine.record_admission_rejection(id, error);
                     }
@@ -118,5 +147,18 @@ impl<B: BackendProvider> RuntimeActor<B> {
             }
         }
         self.scratch = scratch;
+    }
+}
+
+fn abandoned_error() -> Error {
+    Error::new(
+        ErrorCode::Capacity,
+        "admission abandoned or runtime stopping",
+    )
+}
+
+fn notify_abandoned(reply: oneshot::Sender<Result<()>>, error: Error) {
+    if let Err(unreceived) = reply.send(Err(error)) {
+        drop(unreceived);
     }
 }

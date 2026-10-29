@@ -204,3 +204,281 @@ async fn inspection_in_the_same_command_batch_observes_retired_cancellation() ->
     assert_eq!(generated, [] as [EngineOutput; 0]);
     Ok(())
 }
+
+#[tokio::test]
+async fn cancelled_image_quote_retains_ingress_until_owner_acknowledges() -> Result<()> {
+    use infer_spi::{ResourceReply, ResourceTicket};
+
+    #[derive(Clone, Copy)]
+    enum Cause {
+        Cancel,
+        Stop,
+        ReplyClosed,
+        OutputClosed,
+    }
+
+    for (cause, issued) in [
+        Cause::Cancel,
+        Cause::Stop,
+        Cause::ReplyClosed,
+        Cause::OutputClosed,
+    ]
+    .into_iter()
+    .flat_map(|cause| [(cause, false), (cause, true)])
+    {
+        let ir = support::model(ModelId::ONE);
+        let mut kernels = KernelRegistry::default();
+        kernels.register(&support::DeclaredKernels)?;
+        let backend = support::ProtocolBackend::new(16, 8, &ir)?.multimodal();
+        let engine = Engine::new(
+            backend,
+            ir,
+            PrecisionPlan::f32(),
+            &kernels,
+            RuntimeConfig::default(),
+        )?;
+        let (_sender, receiver) = mpsc::sync_channel(1);
+        let (_control, control_rx) = mpsc::sync_channel(1);
+        let mut actor = RuntimeActor::new(
+            engine,
+            receiver,
+            control_rx,
+            Arc::new(AtomicBool::new(false)),
+            Instant::now(),
+        );
+        let (request, owner_pixels) = image_quote_request()?;
+        let weak = Arc::downgrade(&owner_pixels);
+        let prepared = actor.engine.request_preparer()?.prepare(request)?;
+        let ingress = Registry::new(1, 128);
+        let pending = ingress.reserve(RequestId::ONE, 128)?;
+        let (ticket, owner_ack) = if issued {
+            let (ticket, acknowledgement) = ResourceTicket::channel();
+            (Some(ticket), Some(acknowledgement))
+        } else {
+            (None, None)
+        };
+        let (output, reader) = async_mpsc::channel(1);
+        let (reply, response) = oneshot::channel();
+        let mut reader = Some(reader);
+        let mut response = Some(response);
+        actor.quoting.push_back((
+            Command::Submit {
+                request: Box::new(prepared),
+                pending,
+                trace: None,
+                output,
+                reply,
+            },
+            ticket,
+        ));
+        match cause {
+            Cause::Cancel => assert!(ingress.cancel(RequestId::ONE)),
+            Cause::Stop => actor.stopping = true,
+            Cause::ReplyClosed => drop(response.take()),
+            Cause::OutputClosed => drop(reader.take()),
+        }
+        actor.poll_admissions(&mut Vec::new());
+        if let Some(response) = response {
+            assert!(
+                response
+                    .await
+                    .map_err(|error| Error::invariant(error.to_string()))?
+                    .is_err()
+            );
+        }
+        if let Some(owner_ack) = owner_ack {
+            assert!(ingress.reserve(RequestId::ONE, 128).is_err());
+            assert_eq!(actor.quoting.len(), 1);
+            drop(owner_pixels);
+            owner_ack
+                .send(Ok(ResourceReply::ReservationBytes(Some(1))))
+                .map_err(|_| Error::invariant("quote acknowledgement dropped"))?;
+            actor.poll_admissions(&mut Vec::new());
+        } else {
+            drop(owner_pixels);
+        }
+        assert!(actor.quoting.is_empty());
+        assert!(weak.upgrade().is_none());
+        drop(ingress.reserve(RequestId::ONE, 128)?);
+    }
+    Ok(())
+}
+
+fn image_quote_request() -> Result<(CanonicalRequest, Arc<[f32]>)> {
+    use infer_ir::{MediaInput, MediaItem, Modality, RequestInput};
+
+    let mut request: CanonicalRequest = serde_json::from_value(serde_json::json!({
+        "id": 1, "model": 1, "input": {"Sequence": {"tokens": [1, 2, 3]}},
+        "workload": {"Generate": {"max_new_tokens": 2}}
+    }))
+    .map_err(|error| Error::invalid(error.to_string()))?;
+    let pixels: Arc<[f32]> = Arc::from([0.0; 4]);
+    let owner_pixels = pixels.clone();
+    if let RequestInput::Sequence { media, .. } = &mut request.input {
+        media.push(MediaInput {
+            id: infer_core::MediaId::ONE,
+            modality: Modality::Image,
+            content_digest: "fixture".into(),
+            item: Some(MediaItem {
+                modality: Modality::Image,
+                pixels,
+                grid: (1, 1, 1),
+                span: 0..1,
+            }),
+        });
+    }
+    Ok((request, owner_pixels))
+}
+
+struct QuoteGate {
+    inner: support::ProtocolBackend,
+    entered: mpsc::Sender<()>,
+    gate: Option<mpsc::Receiver<()>>,
+}
+
+impl BackendProvider for QuoteGate {
+    type Ticket = <support::ProtocolBackend as BackendProvider>::Ticket;
+
+    fn identity(&self) -> &str {
+        self.inner.identity()
+    }
+    fn supports_multimodal(&self) -> bool {
+        true
+    }
+    fn capabilities(&self) -> infer_ir::DeviceCapabilities {
+        self.inner.capabilities()
+    }
+    fn validate_program(
+        &self,
+        model: &infer_ir::ModelIr,
+        program: &infer_ir::ExecutionProgram,
+    ) -> Result<()> {
+        self.inner.validate_program(model, program)
+    }
+    fn execution_graph(&self, model: &infer_ir::ModelIr) -> Result<infer_ir::DataflowGraph> {
+        self.inner.execution_graph(model)
+    }
+    fn prepare_state_reservation(
+        &mut self,
+        capacity: usize,
+        readout: infer_ir::OutputReadout,
+    ) -> Result<()> {
+        if let Some(gate) = self.gate.take() {
+            self.entered
+                .send(())
+                .map_err(|error| Error::invariant(error.to_string()))?;
+            gate.recv()
+                .map_err(|error| Error::invariant(error.to_string()))?;
+        }
+        self.inner.prepare_state_reservation(capacity, readout)
+    }
+    fn state_reservation_bytes_for_media(
+        &self,
+        capacity: usize,
+        readout: infer_ir::OutputReadout,
+        media: &infer_ir::MediaPlan,
+    ) -> Result<Option<u64>> {
+        self.inner
+            .state_reservation_bytes_for_media(capacity, readout, media)
+    }
+    fn submit(
+        &mut self,
+        program: &infer_ir::ExecutionProgram,
+        step: &infer_ir::StepPlan,
+        tasks: Vec<infer_ir::ExecutionTask>,
+    ) -> Result<Self::Ticket> {
+        self.inner.submit(program, step, tasks)
+    }
+    fn poll(&mut self, ticket: &mut Self::Ticket) -> Result<Option<Vec<infer_ir::TaskOutput>>> {
+        self.inner.poll(ticket)
+    }
+}
+
+#[tokio::test]
+async fn cancelled_image_quote_waits_for_threaded_owner() -> Result<()> {
+    let ir = support::model(ModelId::ONE);
+    let (release, gate) = mpsc::channel();
+    let (entered, started) = mpsc::channel();
+    let backend = QuoteGate {
+        inner: support::ProtocolBackend::new(16, 8, &ir)?
+            .multimodal()
+            .priced_quotes(1024, 4096),
+        entered,
+        gate: Some(gate),
+    };
+    let mut kernels = KernelRegistry::default();
+    kernels.register(&support::DeclaredKernels)?;
+    let mut engine = Engine::new(
+        backend,
+        ir,
+        PrecisionPlan::f32(),
+        &kernels,
+        RuntimeConfig::default(),
+    )?
+    .into_threaded(4, Duration::from_secs(5))?;
+    let first: CanonicalRequest = serde_json::from_value(serde_json::json!({
+        "id": 2, "model": 1, "input": {"Sequence": {"tokens": [1, 2, 3]}},
+        "workload": {"Generate": {"max_new_tokens": 2}}
+    }))
+    .map_err(|error| Error::invalid(error.to_string()))?;
+    let first = engine.request_preparer()?.prepare(first)?;
+    let _first_ticket = engine.admission_quote(&first)?;
+    started
+        .recv_timeout(Duration::from_secs(3))
+        .map_err(|error| Error::invariant(error.to_string()))?;
+    let (_sender, receiver) = mpsc::sync_channel(1);
+    let (_control, control_rx) = mpsc::sync_channel(1);
+    let mut actor = RuntimeActor::new(
+        engine,
+        receiver,
+        control_rx,
+        Arc::new(AtomicBool::new(false)),
+        Instant::now(),
+    );
+    let (request, pixels) = image_quote_request()?;
+    let weak = Arc::downgrade(&pixels);
+    drop(pixels);
+    let prepared = actor.engine.request_preparer()?.prepare(request)?;
+    let ingress = Registry::new(1, 128);
+    let pending = ingress.reserve(RequestId::ONE, 128)?;
+    let (output, _reader) = async_mpsc::channel(1);
+    let (reply, response) = oneshot::channel();
+    actor.handle_command(
+        Command::Submit {
+            request: Box::new(prepared),
+            pending,
+            trace: None,
+            output,
+            reply,
+        },
+        &mut Vec::new(),
+    );
+    assert_eq!(actor.quoting.len(), 1);
+    assert!(ingress.cancel(RequestId::ONE));
+    actor.poll_admissions(&mut Vec::new());
+    assert!(
+        response
+            .await
+            .map_err(|error| Error::invariant(error.to_string()))?
+            .is_err()
+    );
+    assert!(ingress.reserve(RequestId::ONE, 128).is_err());
+    assert!(weak.upgrade().is_some());
+    release
+        .send(())
+        .map_err(|error| Error::invariant(error.to_string()))?;
+    for _ in 0..3000 {
+        actor.poll_admissions(&mut Vec::new());
+        if actor.quoting.is_empty() {
+            break;
+        }
+        sleep(Duration::from_millis(1)).await;
+    }
+    assert!(
+        actor.quoting.is_empty(),
+        "owner did not finish its queued quote"
+    );
+    assert!(weak.upgrade().is_none());
+    drop(ingress.reserve(RequestId::ONE, 128)?);
+    Ok(())
+}
