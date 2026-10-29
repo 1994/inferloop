@@ -11,6 +11,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const PROBE_ENV: &str = "INFER_TUNING_PARENT_PIPE_TEST";
 const PROBE_TEST: &str = "commands::tuning_worker::tests::parent_link_survives_wait";
 const PROBE_LIFETIME: Duration = Duration::from_millis(200);
+const PARENT_LINK_TIMEOUT: Duration = Duration::from_secs(5);
+const PARENT_LINK_POLL: Duration = Duration::from_millis(10);
 
 fn probe_command() -> StdResult<Command, Box<dyn StdError>> {
     let mut command = Command::new(current_exe()?);
@@ -46,11 +48,27 @@ fn parent_link_survives_wait() -> StdResult<(), Box<dyn StdError>> {
 #[test]
 fn preparation_stops_when_parent_link_closes() -> StdResult<(), Box<dyn StdError>> {
     let mut child = probe_command()?
+        .env(PROBE_ENV, "wait")
         .process_group(0)
         .stdin(Stdio::piped())
         .spawn()?;
     drop(child.stdin.take());
-    assert_eq!(child.wait()?.signal(), Some(9));
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() >= PARENT_LINK_TIMEOUT {
+            kill_group(child.id());
+            let _ = child.kill();
+            let status = child.wait()?;
+            return Err(
+                format!("parent-link monitor timed out; child exited with {status}").into(),
+            );
+        }
+        sleep(PARENT_LINK_POLL);
+    };
+    assert_eq!(status.signal(), Some(9));
     Ok(())
 }
 
