@@ -1,5 +1,6 @@
 //! Captured vision-encoder programs.
 use super::block_mlp;
+use super::device_tower;
 use super::{VisionWeights, kernels, weights::AttentionLayer, weights::half_tile};
 #[cfg(test)]
 use crate::attention::benchmark::REPEATS;
@@ -36,7 +37,7 @@ pub(super) const COLUMN_TILE: usize = 64;
 pub(super) const fn column_tile() -> usize {
     COLUMN_TILE
 }
-const ATTENTION_CONFIG_FIELDS: usize = 3;
+pub(super) const ATTENTION_CONFIG_FIELDS: usize = 3;
 /// Power-of-two pack segment in the compact attention boundary.
 const PACK_SEGMENT: usize = 16;
 /// Compact physical half/full head and qualified wide pack width.
@@ -437,7 +438,7 @@ pub fn layernorm(
     clippy::cast_precision_loss,
     reason = "Head widths are tiny exact integers"
 )]
-fn attention_scale(encoder: &ModalityEncoder) -> Result<f32> {
+pub(super) fn attention_scale(encoder: &ModalityEncoder) -> Result<f32> {
     let head = head_dim(encoder)?;
     if head == 0 {
         return Err(Error::invalid("encoder head width must be nonzero"));
@@ -455,7 +456,7 @@ fn attention_scale(encoder: &ModalityEncoder) -> Result<f32> {
     clippy::cast_possible_truncation,
     reason = "RoPE angles are computed in f64 and stored in the f32 activation dtype"
 )]
-fn rope_tables(
+pub(super) fn rope_tables(
     encoder: &ModalityEncoder,
     grid: (usize, usize, usize),
     padded: usize,
@@ -862,7 +863,7 @@ fn compact_attention_launch(
     Ok(values)
 }
 
-fn frame_token_count(grid: (usize, usize, usize), tokens: usize) -> Result<i32> {
+pub(super) fn frame_token_count(grid: (usize, usize, usize), tokens: usize) -> Result<i32> {
     let count = grid
         .1
         .checked_mul(grid.2)
@@ -941,6 +942,9 @@ pub fn tower(
     grid: (usize, usize, usize),
     tokens: usize,
 ) -> Result<Vec<f32>> {
+    if device_tower::supports(encoder)? {
+        return device_tower::run(device, weights, encoder, input, grid, tokens);
+    }
     let mut state = input.to_vec();
     for layer in 0..encoder.depth {
         state = block(device, weights, encoder, layer, &state, grid, tokens)?;
@@ -1134,7 +1138,7 @@ fn attention_scale_from_width(width: usize) -> f32 {
     1.0 / (width as f32).sqrt()
 }
 
-fn attention_generics(
+pub(super) fn attention_generics(
     width: usize,
     mode: AttentionMode,
     tiles: [usize; ATTENTION_CONFIG_FIELDS],
