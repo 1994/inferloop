@@ -1,6 +1,6 @@
 use super::{
     MEDIA_STAGING_BYTES, SourcePolicy, TempPath, check_video_frame_limit, load_image,
-    load_video_with, parse_rate, read_url, run_bounded,
+    load_video_with, media_inputs, parse_rate, read_url, run_bounded,
 };
 use crate::cpu::cancelled_context;
 use base64::Engine as _;
@@ -35,6 +35,71 @@ fn encoded(image: image::RgbImage, format: image::ImageFormat) -> Vec<u8> {
         .write_to(&mut output, format)
         .expect("encode fixture");
     output.into_inner()
+}
+
+#[test]
+fn media_inputs_preserve_digest_and_order_across_batch_boundaries() -> infer_core::Result<()> {
+    use infer_core::MediaId;
+    use infer_ir::Modality;
+    use infer_models::{PreparedPrompt, PromptImage};
+
+    let images = (0_usize..7)
+        .map(|index| PromptImage {
+            pixels: (0..=index)
+                .map(|value| f32::from_bits(0x7fc0_0001 + u32::try_from(value).expect("small")))
+                .collect(),
+            grid: (1, index + 1, 2),
+        })
+        .collect();
+    let prepared = PreparedPrompt {
+        tokens: vec![0; 14],
+        images,
+        spans: (0..7).map(|index| index * 2..index * 2 + 1).collect(),
+    };
+    for modality in [Modality::Image, Modality::Video] {
+        let actual = media_inputs(&prepared, &modality)?;
+        assert_eq!(actual.len(), prepared.images.len());
+        for (index, input) in actual.iter().enumerate() {
+            let image = &prepared.images[index];
+            let item = input
+                .item
+                .as_ref()
+                .ok_or_else(|| infer_core::Error::invariant("media item missing"))?;
+            assert_eq!(
+                input.id,
+                MediaId::new(u64::try_from(index).expect("small") + 1)?
+            );
+            assert_eq!(input.modality, modality);
+            assert_eq!(item.modality, modality);
+            assert_eq!(item.grid, image.grid);
+            assert_eq!(item.span, prepared.spans[index]);
+            assert_eq!(
+                item.pixels
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>(),
+                image
+                    .pixels
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>()
+            );
+            let bytes = image
+                .pixels
+                .iter()
+                .flat_map(|value| value.to_bits().to_le_bytes())
+                .chain(
+                    <[usize; 3]>::from(image.grid)
+                        .into_iter()
+                        .flat_map(|value| u64::try_from(value).expect("small").to_le_bytes()),
+                );
+            let hash = bytes.fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+            });
+            assert_eq!(input.content_digest, format!("fnv1a64:{hash:016x}"));
+        }
+    }
+    Ok(())
 }
 
 #[test]
