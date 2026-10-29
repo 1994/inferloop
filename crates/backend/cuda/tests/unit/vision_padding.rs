@@ -304,3 +304,14 @@ fn media_footprint_rejects_overflowing_grids() {
         super::footprint::footprint(&encoder, &media_plan((usize::MAX, 2, 2), 1)).unwrap_err();
     assert_eq!(error.code, infer_core::ErrorCode::InvalidInput);
 }
+
+#[test]
+fn media_footprint_covers_the_fused_block_mlp_live_buffers() -> Result<(), Box<dyn Error>> {
+    let mut encoder = encoder();
+    encoder.intermediate_size = 65_536;
+    let footprint = super::footprint::footprint(&encoder, &media_plan((1, 14, 22), 1))?;
+    let padded_rows = 320_u64;
+    let required = padded_rows * (4 * 1152 + 2 * 65_536) * 4;
+    assert!(footprint >= required);
+    Ok(())
+}

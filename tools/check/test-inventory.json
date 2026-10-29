@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 415
+      "tests": 417
     },
     "frontdoor": {
       "benches": 0,
@@ -266,6 +266,7 @@
     "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 6,
     "requires a CUDA device; run inside safe-run": 5,
     "requires a Linux production host with get/set_mempolicy permitted; make check-linux-numa": 1,
+    "requires a reserved CUDA device; compares full outputs with scalar and existing paths": 1,
     "requires an NVIDIA GPU; run under tools/bench/safe-run.sh": 9,
     "requires real checkpoint and CUDA; run release serially inside safe-run": 1,
     "requires real checkpoint and CUDA; run serially inside safe-run": 1,
@@ -894,6 +895,11 @@
     },
     {
       "crate": "cuda",
+      "file": "src/vision/block_mlp.rs",
+      "mount": "../../tests/unit/vision_block_mlp.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/vision/mod.rs",
       "mount": "../../tests/unit/vision_attention_bench_check.rs"
     },
@@ -1404,11 +1410,11 @@
     }
   ],
   "totals": {
-    "all": 1016,
+    "all": 1018,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1016
+    "tests": 1018
   }
 }

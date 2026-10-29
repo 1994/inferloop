@@ -5,6 +5,7 @@ pub(crate) mod attention_bench;
 #[cfg(test)]
 #[path = "../../tests/unit/vision_attention_check.rs"]
 mod attention_check;
+mod block_mlp;
 mod footprint;
 pub(crate) mod kernels;
 #[cfg(test)]

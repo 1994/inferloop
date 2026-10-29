@@ -1,4 +1,5 @@
 //! Captured vision-encoder programs.
+use super::block_mlp;
 use super::{VisionWeights, kernels, weights::AttentionLayer, weights::half_tile};
 #[cfg(test)]
 use crate::attention::benchmark::REPEATS;
@@ -20,10 +21,14 @@ use infer_spi::ModalityEncoder;
 use std::env::var;
 use std::sync::Arc;
 
+#[cfg(test)]
+#[path = "../../tests/unit/vision_projection_output.rs"]
+mod projection_output_tests;
+
 /// Token tile of every vision projection, matching the prompt GEMM.
-const TOKEN_TILE: usize = 32;
+pub(super) const TOKEN_TILE: usize = 32;
 /// Column tile of every vision projection, matching the prompt GEMM.
-const COLUMN_TILE: usize = 64;
+pub(super) const COLUMN_TILE: usize = 64;
 
 /// Column tile of every vision projection; test-only audit hook.
 #[cfg(test)]
@@ -218,8 +223,26 @@ pub fn project_with(
         .launch()
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let values = device.read(&Arc::new(output))?;
-    Ok(values[..rows * out_features].to_vec())
+    projection_output(device.read(&Arc::new(output))?, rows, out_features)
+}
+
+pub(super) fn projection_output(
+    values: Vec<f32>,
+    rows: usize,
+    out_features: usize,
+) -> Result<Vec<f32>> {
+    let len = rows
+        .checked_mul(out_features)
+        .ok_or_else(|| Error::invalid("vision projection output overflow"))?;
+    if values.len() < len {
+        return Err(Error::invariant("vision projection output truncated"));
+    }
+    if values.len() == len {
+        Ok(values)
+    } else {
+        // Do not retain the extra padded rows in long-lived host results.
+        Ok(values[..len].to_vec())
+    }
 }
 
 /// Padded intermediate width of the block MLPs.
@@ -849,7 +872,7 @@ fn frame_token_count(grid: (usize, usize, usize), tokens: usize) -> Result<i32> 
 }
 
 /// Allocate a zeroed activation matrix on the device stream.
-fn activation(device: &CudaDevice, rows: usize, columns: usize) -> Result<Tensor<f32>> {
+pub(super) fn activation(device: &CudaDevice, rows: usize, columns: usize) -> Result<Tensor<f32>> {
     api::zeros::<f32>(&[rows, columns])
         .sync_on(&device.stream)
         .map_err(device_error)
@@ -895,24 +918,15 @@ pub fn block(
     )?;
     let width = mlp_width(encoder)?;
     let layer_weights = weights.mlp(layer)?;
-    let fc1 = project_with(
+    block_mlp::run(
         device,
-        &layer_weights.fc1.0,
-        &layer_weights.fc1.1,
+        layer_weights,
         &normed,
-        tokens,
-        width,
-    )?;
-    let activated = gelu(device, false, &fc1, tokens, width)?;
-    let fc2 = project_with(
-        device,
-        &layer_weights.fc2.0,
-        &layer_weights.fc2.1,
-        &activated,
+        &residual,
         tokens,
         hidden,
-    )?;
-    add(device, &residual, &fc2, tokens, hidden)
+        width,
+    )
 }
 
 /// The whole vision tower: every block in declaration order.
