@@ -60,3 +60,29 @@ pub fn softmax(logits: &[f32], temperature: f32) -> Result<Vec<f32>> {
     }
     Ok(exp.into_iter().map(|x| x as f32).collect())
 }
+
+/// The log of the tempered softmax normalizer over every score, accumulated in F64.
+///
+/// # Errors
+/// Returns an invalid-input error for empty or non-finite scores or an invalid temperature.
+pub fn log_normalizer(logits: &[f32], temperature: f32) -> Result<f64> {
+    if logits.is_empty()
+        || logits.iter().any(|v| !v.is_finite())
+        || !temperature.is_finite()
+        || temperature <= 0.0
+    {
+        return Err(Error::invalid("invalid softmax input"));
+    }
+    let scale = f64::from(temperature);
+    let max = logits
+        .iter()
+        .copied()
+        .reduce(f32::max)
+        .map(|max| f64::from(max) / scale)
+        .ok_or_else(|| Error::invariant("nonempty logits"))?;
+    let sum: f64 = logits
+        .iter()
+        .map(|x| (f64::from(*x) / scale - max).exp())
+        .sum();
+    Ok(max + sum.ln())
+}

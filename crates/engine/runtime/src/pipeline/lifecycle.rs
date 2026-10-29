@@ -205,6 +205,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 e2e_us: self.now_us - r.accepted_us,
                 output_tokens: r.generated.len(),
                 successful,
+                cached_tokens: r.cached_tokens,
             },
         };
         log_finish(&completed);
@@ -255,6 +256,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 e2e_us: self.now_us.saturating_sub(record.accepted_us),
                 output_tokens: record.generated.len(),
                 successful: false,
+                cached_tokens: record.cached_tokens,
             },
         })
     }

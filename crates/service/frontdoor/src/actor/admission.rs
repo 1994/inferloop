@@ -27,8 +27,16 @@ impl<B: BackendProvider> RuntimeActor<B> {
                     ErrorCode::Capacity,
                     "admission abandoned or runtime stopping",
                 ))
+            } else if let Err(error) = pending.check() {
+                Err(error)
+            } else if let Some(issued) = ticket.as_mut() {
+                issued.poll()
             } else {
-                pending.check().and_then(|()| ticket.poll())
+                // The lane was full when the quote was first issued; issue it again now.
+                self.engine.try_admission_quote(&request).map(|issued| {
+                    ticket = issued;
+                    None
+                })
             };
             match result {
                 Ok(None) => self.quoting.push_back((

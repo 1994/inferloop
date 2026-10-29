@@ -19,7 +19,10 @@ PrefixCache<V, M>
 
 - `PrefixSnapshot<V>` 只包含 tokens、字节报价和后端 payload；`V` 不要求 Clone 或页 lease。
   发布必须已越过设备完成边界。被拒绝、替换或淘汰的 payload 返回给 owner：页适配器 release
-  cache 自己的引用，独占设备快照由 CUDA 正常销毁。CUDA 保持每 4096 tokens 的发布粒度。
+  cache 自己的引用，独占设备快照由 CUDA 正常销毁。CUDA 以 32 token 的 KV 块为发布单位：常规每 4096 tokens 发布一次，请求带
+  `prefix_boundary` 时，运行时把该处向下取整到页，让一个 prompt chunk 恰好止于此并标记
+  `publish_prefix`，后端在那里额外发布快照。槽位常驻（home）序列从槽位按块表导出快照，
+  恢复时用 `SlotPool::bind` 散写回自己的槽位；私有序列仍用连续快照，两种快照布局相同、可互相恢复。
 - matcher 从只读 `PrefixSearch` 取得候选；公共候选迭代器先检查 maximum、完整 token 前缀相等
   和后端兼容性，再交给策略选择最长候选。CUDA 不需要为了共用生命周期而逐块哈希长 query。
 - 复用按“匹配兼容候选 → 后端获取/恢复 → 成功提交 hit/reused_tokens/LRU”执行。

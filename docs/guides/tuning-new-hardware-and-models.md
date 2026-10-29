@@ -26,7 +26,7 @@
 | FP8 投影 | `tuning/fp8_gemm.rs`：原生 tile 和 cuBLASLt 候选一起实测 | `FP8 GEMM choice ... selected=` |
 | attention、递推、norm | `tuning/attention`、`tuning/recurrent`、`tuning/gated_norm`：各自按形状实测 | `preparing hardware attention choices` |
 | 显存预算 | 预算 = `min(显存总量 × gpu_memory_utilization, 空闲 − 1 GiB)` | `device budget ... of ... total` |
-| 槽位与 KV | `loading/budget.rs` 与 `executor/admission_pool.rs`：扣除固定开销后按实际请求长度报价；冷启动先报告上限，reservation 选择实体池 | `planned pooled CUDA serving storage planned_width=... kv_tokens=...` |
+| 槽位与 KV | `loading/budget.rs` 与 `executor/admission_pool.rs`：扣除固定开销后按实际请求长度报价；`serve` 启动时按零需求捕获，reservation 按实际长度调整实体池 | `planned pooled CUDA serving storage planned_width=... kv_tokens=...` |
 | prompt 宽度 | `loading/mod.rs`：按 arena 预算在若干档宽度中选择 | `prompt width rung width=...` |
 
 **新硬件上要检查的日志：**
@@ -121,7 +121,7 @@ attention、recurrent、norm、greedy 的独立 allowance 保持原有边界。
 | 稠密投影识别（已推导） | `resident/prefill_projection/dense.rs` | 从图声明的输入与权重维度识别相邻、同层、同输入的稠密投影对和小输出投影 | 不再匹配固定模型维度；录图时复核实际稠密权重、尺寸与别名，保留 vendor、稀疏和单行 logits 路径 |
 | pooled 稠密投影交叉点（已接入调优） | `tuning/pool_dense` | 对实际 decode/verify 行数比较逐行 GEMV、四行共享权重分块与原小 GEMM | 按设备、驱动、内核、M/N/K 与实际 GEMV tile 缓存冷/暖正反确认结果；新路径保持私有 F32 归约，只有原已使用小 GEMM 的行数允许保留该算法 |
 | resident 投影搜索预算（已推导） | `tuning/projection_budget.rs` | 按实际录图保留的 FP4/FP8 形状、候选数和独立确认轮次估算 | 同一模型跨层和 serving state 去重；耗尽时列出尚未完成的形状，保留 native 路径 |
-| 每槽半容量 KV 保底（已删除） | `loading/budget.rs`、`executor/admission_pool.rs` | 每请求按实际 prompt + 最大输出长度向上取整到页；保留一个完整上下文的隔离能力 | 冷启动纯报价，单请求复用私有图；实际并发重试时按长度选择计划，只在无活动状态且 lease 全归还后调整实体池 |
+| 每槽半容量 KV 保底（已删除） | `loading/budget.rs`、`executor/admission_pool.rs` | 每请求按实际 prompt + 最大输出长度向上取整到页；保留一个完整上下文的隔离能力 | `serve` 启动时按零需求捕获实体池；更长的实际需求按长度重选计划，只在无活动状态且 lease 全归还后调整实体池 |
 
 CUDA 默认并发按两个界限推导。N_mem 通过现有完整 serving 报价求最大可资助宽度，
 包括 target/draft pool、worker、slot home、workspace、KV 与 driver headroom。
@@ -188,8 +188,11 @@ PR #47 是一个完整的例子：把逐算子 profile、逐提交二分、和 v
 空闲池回收和后续恢复路径。KV inspection 的空闲页来自真实物理页，不再按
 “槽数 × 逻辑容量”虚增；请求已保留到其实际最大长度的页，不在 decode 时重复收费。
 
-首次捕获可能从加载阶段移到首个请求。性能证据必须同时保留 ready 时间、首次
-warmup 的完整耗时以及两者之和，不能只把 ready 提前当成启动加速。
+`serve` 在开始监听前按零需求报价捕获实体池（调优 worker 与一次性命令仍按需捕获）：
+零需求报价已把剩余 KV 页全部分配并保留一个完整上下文，与首个短请求触发的池相同。
+RTX 5090 上 Qwen3.8-27B 的 ready 时间因此从 24 s 增至 74 s，而冷启动后首个请求从
+16 s、首次并发从 32 s 都降到 0.1 s 以内；更长的需求仍在空闲边界重建池。性能证据必须
+同时保留 ready 时间、首次 warmup 的完整耗时以及两者之和，不能只看其中一项。
 普通迭代门禁按每个 workload 的 warmup 后读回实际计划，并要求测量期间保持一致；
 默认仍拒绝资源计划变化。资源策略本身的修改须通过
 [迭代工具](../../tools/bench/iteration-gate.py)的 `--resource-change-reason`

@@ -55,6 +55,7 @@ fn request(id: u64, workload: Workload) -> CanonicalRequest {
             seed: 13,
             ..Default::default()
         },
+        prefix_boundary: None,
         extensions: BTreeMap::new(),
     }
 }
@@ -98,6 +99,7 @@ fn workloads() -> Vec<CanonicalRequest> {
                 ],
                 calibration_temperature: 1.0,
                 abstain_below: Some(0.9),
+                readout: DecisionReadout::Projection,
             }),
         ),
     ]

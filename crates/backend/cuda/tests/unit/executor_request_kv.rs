@@ -2,6 +2,7 @@ use super::*;
 use crate::AttentionProfile;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::{CudaDevice, asynchronous::block_on};
+use crate::executor::SlotPool;
 use crate::loading::{LoadOptions, LoadedModel};
 use infer_core::{ModelId, RequestId, StateId};
 use infer_ir::{ExecutionInput, ExecutionTask, TokenBuffer};
@@ -34,6 +35,7 @@ fn step(backend: &mut CudaExecutor, state: StateId, tokens: ExecutionInput) -> R
     backend.prepare_execution()?;
     let result = block_on(backend.execute(&[ExecutionTask {
         plain_greedy: false,
+        publish_prefix: false,
         request: RequestId::ONE,
         state,
         tokens,
@@ -239,6 +241,119 @@ fn request_length_pool_preserves_live_state_and_restores_after_long_request() ->
     Ok(())
 }
 
+/// A pool captured at load serves the first short request from a slot instead of a private
+/// program, and two concurrent requests bind without waiting for a capture.
+#[test]
+#[ignore = "real CUDA/MTP2 checkpoint; run under safe-run with an explicit fixture"]
+fn pool_captured_at_load_binds_the_first_requests_to_slots() -> Result<()> {
+    let mut backend = fixture()?;
+    let quoted = backend.pool_quote.unwrap().width;
+    assert!(backend.slots.is_none(), "construction must not capture");
+    backend.capture_funded_pool();
+    let width = backend.slots.as_ref().map(SlotPool::width).unwrap();
+    assert!(
+        width > 1 && width <= quoted,
+        "captured {width} of a {quoted}-wide quote"
+    );
+    let first = StateId::ONE;
+    let second = StateId::new(2)?;
+    backend.reserve_state_for(first, 384, OutputReadout::Logits)?;
+    backend.reserve_state_for(second, 384, OutputReadout::Logits)?;
+    assert!(backend.states[&first].home.is_some());
+    assert!(backend.states[&second].home.is_some());
+    let prompt = TokenBuffer::from(vec![1, 2]);
+    step(
+        &mut backend,
+        first,
+        ExecutionInput::Prefill {
+            span: prompt.span(0..prompt.len())?,
+            readout: OutputReadout::Logits,
+        },
+    )?;
+    backend.release_state(first)?;
+    backend.release_state(second)?;
+    // Capture is idempotent once a pool exists.
+    backend.capture_funded_pool();
+    assert_eq!(backend.slots.as_ref().map(SlotPool::width), Some(width));
+    Ok(())
+}
+
+/// One prompt chunk on `state`, returning its logits (empty for a chunk without a readout).
+fn chunk(
+    backend: &mut CudaExecutor,
+    state: StateId,
+    tokens: ExecutionInput,
+    publish_prefix: bool,
+) -> Result<Vec<f32>> {
+    backend.prepare_execution()?;
+    let result = block_on(backend.execute(&[ExecutionTask {
+        plain_greedy: false,
+        publish_prefix,
+        request: RequestId::ONE,
+        state,
+        tokens,
+        sampling: None,
+        media: None,
+    }]));
+    let fence = block_on(backend.loaded.device().fence());
+    backend.busy = false;
+    fence?;
+    Ok(result?.remove(0).output.logits)
+}
+
+/// A slot-resident sequence keeps its prompt prefix at a requested boundary, and another slot
+/// restored from it continues to the same logits as the sequence that computed the prefix.
+#[test]
+#[ignore = "real CUDA/MTP2 checkpoint; run under safe-run with an explicit fixture"]
+fn slot_prefix_snapshot_restores_into_another_slot() -> Result<()> {
+    let mut backend = fixture()?;
+    backend.capture_funded_pool();
+    let prompt = TokenBuffer::from((0..96).map(|i| 1000 + i * 7).collect::<Vec<u32>>());
+    let boundary = 2 * KV_BLOCK_TOKENS;
+    let (first, second) = (StateId::ONE, StateId::new(2)?);
+    backend.reserve_state_for(first, 384, OutputReadout::Logits)?;
+    assert!(backend.states[&first].home.is_some());
+    let head = chunk(
+        &mut backend,
+        first,
+        ExecutionInput::Prefill {
+            span: prompt.span(0..boundary)?,
+            readout: OutputReadout::None,
+        },
+        true,
+    )?;
+    assert_eq!(head, Vec::<f32>::new());
+    let tail = |backend: &mut CudaExecutor, state| {
+        chunk(
+            backend,
+            state,
+            ExecutionInput::Prefill {
+                span: prompt.span(boundary..prompt.len())?,
+                readout: OutputReadout::Logits,
+            },
+            false,
+        )
+    };
+    let computed = tail(&mut backend, first)?;
+    backend.reserve_state_for(second, 384, OutputReadout::Logits)?;
+    assert!(backend.states[&second].home.is_some());
+    assert_eq!(
+        backend.reuse_prefix_shared(second, &prompt, prompt.len() - 1)?,
+        boundary
+    );
+    let restored = tail(&mut backend, second)?;
+    assert_eq!(restored.len(), backend.model().vocab_size);
+    let worst = computed
+        .iter()
+        .zip(&restored)
+        .map(|(left, right)| (left - right).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(worst == 0.0, "restored logits differ by {worst}");
+    backend.release_state(first)?;
+    backend.release_state(second)?;
+    Ok(())
+}
+
 /// A single cold request must retain a usable draft timeline after its first decode.
 #[test]
 #[ignore = "requires CUDA and explicit target/draft checkpoints"]
@@ -283,6 +398,7 @@ fn cold_dflash2_keeps_its_draft_timeline() -> Result<()> {
     backend.prepare_execution()?;
     let result = block_on(backend.execute(&[ExecutionTask {
         plain_greedy: true,
+        publish_prefix: false,
         request: RequestId::ONE,
         state,
         tokens: ExecutionInput::Decode {

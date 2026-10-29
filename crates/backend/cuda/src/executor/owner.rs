@@ -36,6 +36,23 @@ impl CudaBackend {
     pub fn new_automatic(loaded: LoadedModel, budget: u64, maximum_states: usize) -> Result<Self> {
         Self::from_executor(CudaExecutor::new_automatic(loaded, budget, maximum_states)?)
     }
+    /// Capture the funded serving pool now instead of at the first reservation that needs it.
+    ///
+    /// The zero-demand quote already funds every remaining KV page while keeping one full
+    /// context, which is the pool the first short request would capture, so this moves that
+    /// one-time cost (tens of seconds for a large model) from a waiting request to start-up.
+    /// Longer demand still rebuilds the pool at an idle boundary, and a failed capture leaves
+    /// the quote for the first reservation to retry.
+    /// # Errors
+    /// Rejects a backend that is already executing.
+    pub fn with_pool_captured(mut self) -> Result<Self> {
+        let mut executor = self
+            .ready
+            .take()
+            .ok_or_else(|| Error::invariant("CUDA executor is not idle"))?;
+        executor.capture_funded_pool();
+        Self::from_executor(*executor)
+    }
     fn from_executor(executor: CudaExecutor) -> Result<Self> {
         let executor = Box::new(executor);
         let view = View::new(&executor)?;

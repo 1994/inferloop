@@ -13,6 +13,7 @@
 | `validation` | [smoke-host.py](validation/smoke-host.py) | 所选 backend 的 CLI、Agent、HTTP/SSE 与观测检查 |
 | `validation` | [smoke-paged-kv.py](validation/smoke-paged-kv.py) | 页池压力、抢占、checkpoint、golden 与所有权排空 |
 | `validation` | [cpu-open-loop.py](validation/cpu-open-loop.py) | 固定到达 HTTP 负载、控制延迟与显式容量拒绝 |
+| `validation` | [openai-decisions.py](validation/openai-decisions.py) | `/v1/decisions` 已知答案准确率、协议形状、批量问题与生成并存 |
 | `fixtures` | [export-qwen-golden.py](fixtures/export-qwen-golden.py)、[export-text-golden.py](fixtures/export-text-golden.py) | 独立参考的模型与文本 golden 导出 |
 | `fixtures` | [export-moe-golden.py](fixtures/export-moe-golden.py)、[export-moe-operators.py](fixtures/export-moe-operators.py) | [MoE 单卡验证](../docs/guides/moe-validation.md)的模型与 FP8 独立参考 |
 | `fixtures` | [requirements.txt](fixtures/requirements.txt) | 参考导出环境的固定依赖 |

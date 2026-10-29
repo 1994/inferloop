@@ -11,7 +11,14 @@ use tokio::runtime::Runtime;
 
 pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Result<()> {
     #[cfg(cuda_backend)]
-    let (backend_choice, tuning_worker) = super::tuning_worker::prepare(backend_choice)?;
+    let (mut backend_choice, tuning_worker) = super::tuning_worker::prepare(backend_choice)?;
+    #[cfg(not(cuda_backend))]
+    let (mut backend_choice, tuning_worker) = (backend_choice, false);
+    // A tuning worker only fills the cache and exits; the server pays the capture before it
+    // listens rather than inside its first concurrent request.
+    if !tuning_worker {
+        backend_choice.pool_capture = backend::PoolCapture::AtLoad;
+    }
     let cpu_staging_bytes = options.cpu_staging_bytes;
     let ServeOptions {
         listen,

@@ -24,8 +24,8 @@ use infer_ir::{
 use infer_model_recipes::decoder::lower;
 use infer_spi::{BackendProvider, KernelProvider, KernelRegistration, SourceLocation};
 use std::num::NonZeroU64;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// A small decoder descriptor: two attention layers, hidden 8, intermediate 16, vocabulary 32.
 #[must_use]
@@ -142,6 +142,8 @@ pub struct ProtocolBackend {
     host_sampling_draft_depth: usize,
     multimodal: bool,
     media_tasks: Arc<AtomicUsize>,
+    /// Sequence lengths at which a submitted chunk asked the backend to keep its prefix.
+    published_prefixes: Arc<Mutex<Vec<usize>>>,
     media_reservations: Arc<AtomicUsize>,
     media_quotes: Arc<AtomicUsize>,
     normal_quotes: Arc<AtomicUsize>,
@@ -226,6 +228,7 @@ impl ProtocolBackend {
             host_sampling_draft_depth: 0,
             multimodal: false,
             media_tasks: Arc::new(AtomicUsize::new(0)),
+            published_prefixes: Arc::new(Mutex::new(Vec::new())),
             media_reservations: Arc::new(AtomicUsize::new(0)),
             media_quotes: Arc::new(AtomicUsize::new(0)),
             normal_quotes: Arc::new(AtomicUsize::new(0)),
@@ -257,6 +260,11 @@ impl ProtocolBackend {
     #[must_use]
     pub fn media_tasks(&self) -> Arc<AtomicUsize> {
         self.media_tasks.clone()
+    }
+    /// Sequence lengths at which submitted prompt chunks asked to keep their prefix.
+    #[must_use]
+    pub fn published_prefixes(&self) -> Arc<Mutex<Vec<usize>>> {
+        self.published_prefixes.clone()
     }
     /// Number of media-specific reservations that suppressed speculative state.
     #[must_use]
@@ -497,6 +505,12 @@ impl BackendProvider for ProtocolBackend {
             // projects a hidden output only when the rows match the context it planned for.
             task.tokens.commit(&mut state.history)?;
             let rows = state.history.len();
+            if task.publish_prefix {
+                self.published_prefixes
+                    .lock()
+                    .map_err(|_| Error::invariant("published prefix log poisoned"))?
+                    .push(rows);
+            }
             let readout = task.tokens.readout();
             let mut output = self.template.clone();
             if readout == OutputReadout::Logits && !self.script.is_empty() {

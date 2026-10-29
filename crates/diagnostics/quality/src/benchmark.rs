@@ -20,6 +20,9 @@ pub struct RequestMeasurement {
     pub e2e_us: u64,
     pub output_tokens: usize,
     pub successful: bool,
+    /// Prompt tokens restored from a reused prefix instead of being prefilled.
+    #[serde(default)]
+    pub cached_tokens: usize,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkReport {

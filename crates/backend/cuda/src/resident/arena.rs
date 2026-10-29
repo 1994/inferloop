@@ -190,6 +190,49 @@ impl ActivationArena {
         })
     }
 
+    /// An arena planned for `lanes` rows of `graph` whose slots are the leading elements of
+    /// this wider arena's slots, so a narrower prompt graph needs no activation memory of its
+    /// own. `single` is the tensor this arena keeps one row of, as when it was planned.
+    /// # Safety
+    /// `self` must outlive every graph captured through the view, and replays through it and
+    /// through `self` must be serialized on one stream with no activation read across them.
+    /// # Errors
+    /// Rejects a wider `lanes`, a different slot layout or a slot taken out as an output.
+    #[expect(
+        unsafe_code,
+        reason = "Audited arena alias: the wider owner outlives the views by the caller's contract"
+    )]
+    pub(super) unsafe fn narrowed(
+        &self,
+        graph: &DataflowGraph,
+        lanes: usize,
+        single: Option<TensorId>,
+    ) -> Result<Self> {
+        let (sizes, indices) = Self::sizes(graph, lanes, single)?;
+        if lanes == 0 || lanes > self.lanes || indices != self.indices {
+            return Err(Error::invalid("narrowed arena layout"));
+        }
+        let mut buffers = Vec::with_capacity(sizes.len());
+        for (buffer, size) in self.buffers.iter().zip(&sizes) {
+            let slot = buffer
+                .as_ref()
+                .ok_or_else(|| Error::invariant("wide arena slot is currently an output"))?;
+            if *size > slot.size() {
+                return Err(Error::invalid("narrowed arena slot"));
+            }
+            // SAFETY: forwarded from this function's contract; the elements lie inside the slot.
+            buffers.push(Some(unsafe {
+                prefix_view(slot, slot.size(), *size, &[*size])?
+            }));
+        }
+        Ok(Self {
+            indices,
+            buffers,
+            lanes,
+            elements: sizes.iter().sum(),
+        })
+    }
+
     /// Batched prompt arena whose logits slot holds only the final row: prompt graphs project
     /// just the last active lane onto the vocabulary.
     /// # Errors

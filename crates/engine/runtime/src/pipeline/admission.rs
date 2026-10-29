@@ -46,10 +46,17 @@ impl PreparedAdmission {
     fn into_record(
         mut self,
         state: StateId,
-        now_us: u64,
+        (now_us, page): (u64, usize),
         credit: CreditLease,
         byte_credit: CreditLease,
     ) -> RequestRecord {
+        // A snapshot covers whole pages, so the boundary rounds down to one.
+        let prefix_stop = self
+            .request
+            .prefix_boundary
+            .and_then(|boundary| boundary.checked_div(page))
+            .map(|pages| pages * page)
+            .filter(|stop| *stop > 0);
         self.generated.attach_credit(credit.clone());
         self.generated.attach_byte_credit(byte_credit.clone());
         self.context.attach_byte_credit(byte_credit.clone());
@@ -74,6 +81,7 @@ impl PreparedAdmission {
             preemptions: 0,
             cached_tokens: 0,
             prefix_attempted: false,
+            prefix_stop,
             context: crate::TokenContext::new(self.context),
             generated: self.generated,
             outputs: Vec::new(),
@@ -154,6 +162,31 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         &mut self,
         prepared: &crate::PreparedRequest,
     ) -> Result<infer_spi::ResourceTicket> {
+        let command = self.quote_command(prepared)?;
+        self.backend.begin_resource(command)
+    }
+    /// Begin resource sizing, or report that the backend's command lane is momentarily full.
+    ///
+    /// `Ok(None)` is backpressure from commands already queued for the device owner: the
+    /// request itself was accepted and the same quote can be retried once the owner drains.
+    /// Errors about the request (identity, buffer limits, deadline) are returned as before.
+    /// # Errors
+    /// Rejects foreign preparation contexts, invalid or over-limit requests and a stopped lane.
+    pub fn try_admission_quote(
+        &mut self,
+        prepared: &crate::PreparedRequest,
+    ) -> Result<Option<infer_spi::ResourceTicket>> {
+        let command = self.quote_command(prepared)?;
+        match self.backend.begin_resource(command) {
+            Ok(ticket) => Ok(Some(ticket)),
+            Err(error) if error.code == ErrorCode::Capacity => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+    fn quote_command(
+        &self,
+        prepared: &crate::PreparedRequest,
+    ) -> Result<infer_spi::ResourceCommand> {
         if *prepared.model != self.model
             || prepared.provider != self.workloads.identity()
             || prepared.plan.program != self.program.id
@@ -163,15 +196,14 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         self.validate_request_admission(&prepared.request)?;
         let capacity = prepared.plan.reserved_tokens;
         let readout = retained_readout(&prepared.request.workload);
-        let command = prepared.media.clone().map_or_else(
+        Ok(prepared.media.clone().map_or_else(
             || infer_spi::ResourceCommand::ReservationBytes { capacity, readout },
             |media| infer_spi::ResourceCommand::ReservationBytesMedia {
                 capacity,
                 readout,
                 media,
             },
-        );
-        self.backend.begin_resource(command)
+        ))
     }
     /// Admit with the already acknowledged sizing quote, while rechecking live quotas/resources.
     /// # Errors
@@ -296,7 +328,12 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         let id = prepared.request.id;
         self.retain_request_identity(id);
         self.register_tenant(&prepared.request, prepared.tenant.clone(), &prepared.plan)?;
-        let record = prepared.into_record(state, self.now_us, credit, byte_credit);
+        let record = prepared.into_record(
+            state,
+            (self.now_us, self.config.block_size),
+            credit,
+            byte_credit,
+        );
         self.record_action(if record.constraint.is_some() {
             crate::ReplayAction::ConstrainedSubmit(id)
         } else {
@@ -458,7 +495,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 readout: retained_readout(&prepared.request.workload),
             }
         };
-        let pending =
+        let attempt =
             self.backend
                 .begin_resource(command)
                 .and_then(|mut ticket| match ticket.poll() {
@@ -466,20 +503,6 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                     Ok(Some(_)) => Err(Error::invariant(
                         "reservation acknowledgement type mismatch",
                     )),
-                    // The device owner can acknowledge before the engine's first poll.
-                    // A busy resident budget is backpressure, not a failed submission:
-                    // keep the host state and retry only after ownership progresses.
-                    Err(error)
-                        if error.code == ErrorCode::Capacity
-                            && self.backend.tracks_reservation_intent() =>
-                    {
-                        Ok(Some(PendingResource {
-                            ticket: None,
-                            phase: ResourcePhase::Reserve,
-                            retry_epoch: Some(self.resource_epoch),
-                            started: self.now_us,
-                        }))
-                    }
                     Err(error) => Err(error),
                     Ok(None) => Ok(Some(PendingResource {
                         ticket: Some(ticket),
@@ -488,6 +511,24 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                         started: self.now_us,
                     })),
                 });
+        let pending = match attempt {
+            // A busy resident budget, whether the device owner reports it before the engine's
+            // first poll or a full control lane refuses the command outright, is backpressure,
+            // not a failed submission: keep the host state and retry only after ownership
+            // progresses, exactly as a later retry of the same intent does.
+            Err(error)
+                if error.code == ErrorCode::Capacity
+                    && self.backend.tracks_reservation_intent() =>
+            {
+                Ok(Some(PendingResource {
+                    ticket: None,
+                    phase: ResourcePhase::Reserve,
+                    retry_epoch: Some(self.resource_epoch),
+                    started: self.now_us,
+                }))
+            }
+            attempt => attempt,
+        };
         let pending = match pending {
             Ok(pending) => pending,
             Err(error) => {

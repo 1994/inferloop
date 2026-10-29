@@ -77,6 +77,7 @@ fn request() -> CanonicalRequest {
             seed: 7,
             ..Sampling::default()
         },
+        prefix_boundary: None,
         extensions: BTreeMap::new(),
     }
 }

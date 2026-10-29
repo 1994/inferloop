@@ -2,9 +2,10 @@ use super::*;
 use crate::{NativeWorkloads, softmax};
 use infer_core::{ErrorCode, ModelId, RequestId};
 use infer_ir::{
-    BackboneKind, DecisionQuestion, DecisionSchema, FeedForward, Head, Mixer, Modality, Pooling,
-    PositionSpec, Qos, RequestInput, Sampling,
+    BackboneKind, DecisionQuestion, DecisionReadout, DecisionSchema, FeedForward, Head, Mixer,
+    Modality, Pooling, PositionSpec, Qos, RequestInput, Sampling,
 };
+use std::f64::consts::E;
 use std::slice::from_ref;
 
 fn readouts() -> ProjectionWorkloads {
@@ -77,6 +78,7 @@ fn request(workload: Workload) -> CanonicalRequest {
         workload,
         qos: Qos::default(),
         sampling: Sampling::default(),
+        prefix_boundary: None,
         extensions: BTreeMap::new(),
     }
 }
@@ -86,6 +88,7 @@ fn decision(question: DecisionQuestion) -> Workload {
         questions: vec![question],
         calibration_temperature: 1.0,
         abstain_below: None,
+        readout: DecisionReadout::Projection,
     })
 }
 
@@ -229,4 +232,55 @@ fn projected_readouts_keep_shape_and_output_count_failures() {
             .message,
         "readout has no hidden row"
     );
+}
+
+#[test]
+fn language_model_decisions_read_vocabulary_logits_without_a_projection() {
+    let mut readouts = readouts();
+    readouts.weights.remove("decision.weight");
+    let workload = Workload::Decision(DecisionSchema {
+        questions: vec![DecisionQuestion::Categorical {
+            options: vec![1, 2],
+        }],
+        calibration_temperature: 1.0,
+        abstain_below: None,
+        readout: DecisionReadout::LanguageModel,
+    });
+    let mut model = model();
+    model.heads = vec![Head::LanguageModel];
+    let request = request(workload);
+    assert!(readouts.supports(&request.workload));
+    readouts.plan(&request, &model, ProgramId::ONE).unwrap();
+    NativeWorkloads
+        .plan(&request, &model, ProgramId::ONE)
+        .unwrap();
+    // A projection decision still needs its head on a model that only generates.
+    let projection = self::request(decision(DecisionQuestion::Categorical {
+        options: vec![1, 2],
+    }));
+    assert_eq!(
+        NativeWorkloads
+            .plan(&projection, &model, ProgramId::ONE)
+            .unwrap_err()
+            .code,
+        ErrorCode::Unsupported
+    );
+
+    let mut logits = vec![0.0; 8];
+    logits[1] = 1.0;
+    logits[2] = 1.0;
+    let output = ModelOutput {
+        next_token: None,
+        logits,
+        hidden: vec![],
+        tokens: vec![],
+    };
+    let WorkloadOutput::Decisions(answers) =
+        readouts.postprocess(&request, from_ref(&output)).unwrap()
+    else {
+        panic!("expected decisions")
+    };
+    assert_eq!(answers[0].probabilities, vec![0.5, 0.5]);
+    let mass = f64::from(answers[0].label_mass.unwrap());
+    assert!((mass - 2.0 * E / 2.0f64.mul_add(E, 6.0)).abs() < 1e-6);
 }

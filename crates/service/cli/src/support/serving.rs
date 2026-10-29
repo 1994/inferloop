@@ -14,6 +14,13 @@ const CUDA_PREFILL_CHUNK_TOKENS: usize = 64;
 /// at tens of seconds; any tighter budget trims or defers prompt work.
 const CUDA_STEP_BUDGET_US: u64 = 60_000_000;
 
+/// Acknowledgement bound for a CUDA resource command. The serving pool is captured for actual
+/// request lengths inside the reservation that first needs it, so that reservation waits for
+/// every pooled graph width. The serving process reuses cached tuning and never searches, and
+/// a 27B hybrid model on one RTX 5090 captured in 34 to 52 s, past the 30 s submission bound;
+/// this leaves about twice that. A reservation whose owner never answers still fails.
+const CUDA_RESOURCE_TIMEOUT_US: u64 = 120_000_000;
+
 pub fn derive_config(
     config: &mut RuntimeConfig,
     backend: &impl BackendProvider,
@@ -55,6 +62,9 @@ pub fn derive_config(
     // Cold graph capture can take as long as a device submission. The generic resource
     // default is intended for already-warm pools and is too short for JIT-backed loading.
     config.resource_timeout_us = config.submission_timeout_us;
+    if capabilities.backend_kind() == infer_ir::BackendKind::Cuda {
+        config.resource_timeout_us = config.resource_timeout_us.max(CUDA_RESOURCE_TIMEOUT_US);
+    }
     if let Some(cache) = backend.kv_cache() {
         config.num_gpu_blocks = cache.total_blocks.max(1);
         // The engine's logical pages mirror the backend's physical blocks one for one; keeping

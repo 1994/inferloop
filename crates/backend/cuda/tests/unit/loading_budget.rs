@@ -163,7 +163,12 @@ fn pooled_admission_excludes_uncaptured_wide_prompt_and_private_readback() -> Re
         quote(true)? - quote(false)?,
         (256 - 64) * 48 * F32 + 3 * (2 * 48) * F32 + 3 * (48 + 48) * F32
     );
-    // The shared scratch covers both prompt widths once.
+    // The shared scratch holds the widest prompt's arena once; the 128-row rung and the narrow
+    // graph capture against views of it.
+    assert_eq!(
+        ProgramGeometry::new(&weights, true).prompt_widths(),
+        vec![256, 128, 64]
+    );
     assert_eq!(
         prompt_scratch_bytes(
             &graph,
@@ -171,7 +176,7 @@ fn pooled_admission_excludes_uncaptured_wide_prompt_and_private_readback() -> Re
             ProgramGeometry::new(&weights, true),
             &fixture_profile()
         )?,
-        (256 + 64) * (2 * 48) * F32
+        256 * (2 * 48) * F32
     );
     Ok(())
 }

@@ -13,7 +13,11 @@ pub fn available() -> bool {
 }
 pub fn load(path: &Path, memory_bytes: u64, selection: &Selection) -> Result<SelectedBackend> {
     // Metal already loads only the text graph; CUDA alone binds an optional vision tower.
-    let _ = (selection.autotune, selection.text_only);
+    let _ = (
+        selection.autotune,
+        selection.text_only,
+        selection.pool_capture,
+    );
     let recommended = MetalBackend::recommended_memory_bytes()
         .ok_or_else(|| Error::unsupported("no Metal device available"))?;
     let share = utilization_bytes(recommended, selection.gpu_memory_utilization)?;

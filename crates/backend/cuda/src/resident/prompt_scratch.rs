@@ -22,6 +22,50 @@ pub(super) struct PromptScratch {
     pub(super) partials: BTreeMap<usize, Tensor<f32>>,
     pub(super) recurrent: super::recurrent_prefill::Workspace,
     pub(super) fusion: Option<super::fusion_batch::Workspace>,
+    /// The wider scratch whose storage this one's arena, partials and fusion rows view; kept
+    /// alive with them and declared last so the views drop first.
+    _wider: Option<Arc<Mutex<Self>>>,
+}
+
+impl PromptScratch {
+    pub(super) const fn new(
+        arena: ActivationArena,
+        row: Option<Tensor<f32>>,
+        partials: BTreeMap<usize, Tensor<f32>>,
+        recurrent: super::recurrent_prefill::Workspace,
+        fusion: Option<super::fusion_batch::Workspace>,
+    ) -> Self {
+        Self {
+            arena,
+            row,
+            partials,
+            recurrent,
+            fusion,
+            _wider: None,
+        }
+    }
+
+    /// Scratch for a narrower prompt rung whose arena, partials and fusion rows view `wider`'s
+    /// storage; holding `wider` keeps that storage alive for as long as the views exist.
+    pub(super) fn viewing(
+        (arena, row, partials): (
+            ActivationArena,
+            Option<Tensor<f32>>,
+            BTreeMap<usize, Tensor<f32>>,
+        ),
+        recurrent: super::recurrent_prefill::Workspace,
+        fusion: Option<super::fusion_batch::Workspace>,
+        wider: Arc<Mutex<Self>>,
+    ) -> Self {
+        Self {
+            arena,
+            row,
+            partials,
+            recurrent,
+            fusion,
+            _wider: Some(wider),
+        }
+    }
 }
 
 /// Shared prompt scratch of one program, keyed by prompt width.
@@ -57,13 +101,14 @@ impl Registry {
         Ok(released)
     }
 
-    /// The scratch for `width`, allocated by `allocate` on first use.
+    /// The scratch for `width`, allocated by `allocate` on first use. `allocate` receives the
+    /// widest allocated scratch wider than `width`, which a narrower ladder rung views.
     /// # Errors
     /// Propagates allocation failures; a failed allocation is retried by the next caller.
     pub(super) fn get_or_allocate(
         &self,
         width: usize,
-        allocate: impl FnOnce() -> Result<PromptScratch>,
+        allocate: impl FnOnce(Option<&Arc<Mutex<PromptScratch>>>) -> Result<PromptScratch>,
     ) -> Result<Arc<Mutex<PromptScratch>>> {
         let mut entries = self
             .0
@@ -72,7 +117,11 @@ impl Registry {
         let scratch = if let Some(scratch) = entries.get(&width) {
             Arc::clone(scratch)
         } else {
-            let scratch = Arc::new(Mutex::new(allocate()?));
+            let wider = entries
+                .range(width + 1..)
+                .next_back()
+                .map(|(_, wider)| wider);
+            let scratch = Arc::new(Mutex::new(allocate(wider)?));
             entries.insert(width, Arc::clone(&scratch));
             scratch
         };
