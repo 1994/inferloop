@@ -17,6 +17,15 @@ pub struct ImageProcessingOptions {
     min_pixels: Option<usize>,
     max_pixels: Option<usize>,
     size: Option<ImageSize>,
+    images_kwargs: Option<ScopedImageOptions>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScopedImageOptions {
+    min_pixels: Option<usize>,
+    max_pixels: Option<usize>,
+    size: Option<ImageSize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -28,7 +37,17 @@ struct ImageSize {
 
 impl ImageProcessingOptions {
     pub(super) const fn is_empty(&self) -> bool {
-        self.min_pixels.is_none() && self.max_pixels.is_none() && self.size.is_none()
+        self.min_pixels.is_none()
+            && self.max_pixels.is_none()
+            && self.size.is_none()
+            && match &self.images_kwargs {
+                Some(scoped) => {
+                    scoped.min_pixels.is_none()
+                        && scoped.max_pixels.is_none()
+                        && scoped.size.is_none()
+                }
+                None => true,
+            }
     }
     /// Parse the supported image resize options.
     /// # Errors
@@ -42,7 +61,11 @@ impl ImageProcessingOptions {
         let object = value
             .as_object()
             .ok_or_else(|| Error::invalid("image processor options must be an object"))?;
-        if object.values().any(Value::is_null) {
+        let scoped_null = object
+            .get("images_kwargs")
+            .and_then(Value::as_object)
+            .is_some_and(|scope| scope.values().any(Value::is_null));
+        if object.values().any(Value::is_null) || scoped_null {
             return Err(Error::unsupported(
                 "null image processor options are not supported",
             ));
@@ -57,17 +80,33 @@ impl ImageProcessingOptions {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.size.is_some() && (self.min_pixels.is_some() || self.max_pixels.is_some()) {
+        let scoped = self.images_kwargs.as_ref();
+        if scoped.is_some_and(|scope| {
+            (self.min_pixels.is_some() && scope.min_pixels.is_some())
+                || (self.max_pixels.is_some() && scope.max_pixels.is_some())
+                || (self.size.is_some() && scope.size.is_some())
+        }) {
+            return Err(Error::unsupported(
+                "image processor option appears in both flat and scoped kwargs",
+            ));
+        }
+        let min = scoped
+            .and_then(|scope| scope.min_pixels)
+            .or(self.min_pixels);
+        let max = scoped
+            .and_then(|scope| scope.max_pixels)
+            .or(self.max_pixels);
+        let size = scoped
+            .and_then(|scope| scope.size.as_ref())
+            .or(self.size.as_ref());
+        if size.is_some() && (min.is_some() || max.is_some()) {
             return Err(Error::unsupported(
                 "size cannot be combined with min_pixels or max_pixels",
             ));
         }
-        let (min, max) = self
-            .size
-            .as_ref()
-            .map_or((self.min_pixels, self.max_pixels), |size| {
-                (Some(size.shortest_edge), Some(size.longest_edge))
-            });
+        let (min, max) = size.map_or((min, max), |size| {
+            (Some(size.shortest_edge), Some(size.longest_edge))
+        });
         if min == Some(0)
             || max == Some(0)
             || min.is_some_and(|v| v > MAX_IMAGE_PIXELS)
@@ -87,6 +126,9 @@ impl ImageProcessingOptions {
             if request.size.is_some() {
                 merged.size.clone_from(&request.size);
             }
+            if request.images_kwargs.is_some() {
+                merged.images_kwargs.clone_from(&request.images_kwargs);
+            }
         }
         merged.validate()?;
         Ok(merged)
@@ -94,14 +136,24 @@ impl ImageProcessingOptions {
 
     pub(super) fn processor(&self, original: &ImageProcessor) -> Result<ImageProcessor> {
         let mut result = original.clone();
-        if let Some(size) = &self.size {
+        let scoped = self.images_kwargs.as_ref();
+        if let Some(size) = scoped
+            .and_then(|scope| scope.size.as_ref())
+            .or(self.size.as_ref())
+        {
             result.min_pixels = size.shortest_edge;
             result.max_pixels = size.longest_edge;
         }
-        if let Some(min) = self.min_pixels {
+        if let Some(min) = scoped
+            .and_then(|scope| scope.min_pixels)
+            .or(self.min_pixels)
+        {
             result.min_pixels = min;
         }
-        if let Some(max) = self.max_pixels {
+        if let Some(max) = scoped
+            .and_then(|scope| scope.max_pixels)
+            .or(self.max_pixels)
+        {
             result.max_pixels = max;
         }
         if result.min_pixels > result.max_pixels {

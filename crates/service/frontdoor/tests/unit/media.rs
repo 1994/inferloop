@@ -3,19 +3,68 @@ use super::{
     MEDIA_STAGING_BYTES, SourcePolicy, TempPath, check_video_frame_limit, load_image,
     load_video_with, parse_rate, read_url, run_bounded,
 };
-use crate::cpu::cancelled_context;
+use crate::cpu::{CpuPool, cancelled_context};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use infer_models::MediaLimits;
-use infer_models::{ImageProcessor, RawImage};
+use infer_models::{ImageProcessor, RawImage, TextAssets};
 use std::env::temp_dir;
 use std::fs::{remove_file, write};
 use std::io::Cursor;
 use std::process::id;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const ONE_PIXEL_PNG: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+#[test]
+fn scoped_image_options_replace_the_request_scope() {
+    let defaults = ImageProcessingOptions::parse(
+        r#"{"images_kwargs":{"min_pixels":4096,"max_pixels":262144}}"#,
+    )
+    .unwrap();
+    let request =
+        ImageProcessingOptions::parse(r#"{"images_kwargs":{"max_pixels":65536}}"#).unwrap();
+    let processor = ImageProcessor {
+        patch_size: 16,
+        temporal_patch_size: 2,
+        merge_size: 2,
+        min_pixels: 1024,
+        max_pixels: 1_048_576,
+        mean: [0.5; 3],
+        std: [0.5; 3],
+        rescale: 1.0 / 255.0,
+    };
+    let effective = defaults
+        .merge(Some(&request))
+        .unwrap()
+        .processor(&processor)
+        .unwrap();
+    assert_eq!((effective.min_pixels, effective.max_pixels), (1024, 65536));
+    let scoped = ImageProcessingOptions::parse(
+        r#"{"images_kwargs":{"size":{"shortest_edge":1024,"longest_edge":65536}}}"#,
+    )
+    .unwrap()
+    .processor(&processor)
+    .unwrap();
+    assert_eq!(scoped.smart_resize(512, 512).unwrap(), (256, 256));
+    let flat_default = ImageProcessingOptions::parse(r#"{"min_pixels":4096}"#).unwrap();
+    let effective = flat_default
+        .merge(Some(&request))
+        .unwrap()
+        .processor(&processor)
+        .unwrap();
+    assert_eq!((effective.min_pixels, effective.max_pixels), (4096, 65536));
+    let duplicate_default = ImageProcessingOptions::parse(r#"{"max_pixels":262144}"#).unwrap();
+    assert!(duplicate_default.merge(Some(&request)).is_err());
+    assert!(
+        ImageProcessingOptions::parse(
+            r#"{"max_pixels":65536,"images_kwargs":{"max_pixels":131072}}"#
+        )
+        .is_err()
+    );
+}
 
 #[test]
 fn image_resize_options_merge_and_preserve_shared_defaults() {
@@ -91,8 +140,10 @@ fn image_resize_options_reject_ambiguous_unsupported_and_unbounded_inputs() {
         r#"{"size":{"shortest_edge":1,"longest_edge":2},"max_pixels":2}"#,
         r#"{"max_pixels":0}"#,
         r#"{"min_pixels":100,"max_pixels":50}"#,
-        r#"{"images_kwargs":{}}"#,
         r#"{"do_resize":false}"#,
+        r#"{"images_kwargs":null}"#,
+        r#"{"images_kwargs":{"size":{"shortest_edge":null,"longest_edge":2}}}"#,
+        r#"{"images_kwargs":{"unsupported":1}}"#,
         r#"{"max_pixels":16777217}"#,
     ] {
         assert!(
@@ -133,7 +184,7 @@ async fn image_request_overrides_are_isolated_and_align_media() {
     let multimodal = infer_models::MultimodalAssets::open(root)
         .expect("package metadata")
         .expect("vision model");
-    let assets = Arc::new(infer_models::TextAssets::open(root, 4096).expect("tokenizer"));
+    let assets = Arc::new(TextAssets::open(root, 4096).expect("tokenizer"));
     let defaults = ImageProcessingOptions::parse(r#"{"max_pixels":262144}"#).unwrap();
     let service = Arc::new(
         super::MediaService::new(multimodal, MediaLimits::default()).with_image_options(defaults),
@@ -182,6 +233,8 @@ async fn image_request_overrides_are_isolated_and_align_media() {
         );
     }
 
+    assert_scoped_image_override(&pool, &service, &assets, &uri).await;
+
     let run_video = |request_options: Option<ImageProcessingOptions>| {
         let assets = assets.clone();
         let service = service.clone();
@@ -209,6 +262,46 @@ async fn image_request_overrides_are_isolated_and_align_media() {
         error.message,
         "image processor options do not apply to video"
     );
+}
+
+async fn assert_scoped_image_override(
+    pool: &CpuPool,
+    service: &super::MediaService,
+    assets: &Arc<TextAssets>,
+    uri: &str,
+) {
+    let defaults =
+        ImageProcessingOptions::parse(r#"{"images_kwargs":{"max_pixels":262144}}"#).unwrap();
+    let service = Arc::new(
+        super::MediaService::new(service.assets.clone(), MediaLimits::default())
+            .with_image_options(defaults),
+    );
+    let options =
+        ImageProcessingOptions::parse(r#"{"images_kwargs":{"max_pixels":65536}}"#).unwrap();
+    let assets = assets.clone();
+    let uri = uri.to_owned();
+    let (prepared, media) = pool
+        .run(MEDIA_STAGING_BYTES, move |context| {
+            let requests = [super::MediaRequest {
+                modality: infer_ir::Modality::Image,
+                url: uri,
+            }];
+            service.prepare_with_options(
+                &assets,
+                "<|vision_start|><|image_pad|><|vision_end|>describe",
+                &requests,
+                context,
+                Some(&options),
+            )
+        })
+        .await
+        .expect("scoped override");
+    assert_eq!(prepared.images[0].grid, (1, 16, 16));
+    assert_eq!(
+        prepared.images[0].grid,
+        media[0].item.as_ref().unwrap().grid
+    );
+    assert_eq!(prepared.spans[0], media[0].item.as_ref().unwrap().span);
 }
 
 fn noisy_image(width: u32, height: u32) -> image::RgbImage {

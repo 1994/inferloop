@@ -43,6 +43,14 @@ fn chat_preserves_image_processor_kwargs_for_preparation() {
         262_144
     );
     assert_eq!(request.chat_messages().unwrap().1.len(), 1);
+    let scoped = chat(
+        &json!([{"role":"user", "content":[{"type":"image_url", "image_url":{"url":"data:image/png;base64,AA=="}}]}]),
+        &json!({"mm_processor_kwargs":{"images_kwargs":{"max_pixels":65_536}}}),
+    );
+    assert_eq!(
+        scoped.mm_processor_kwargs.as_ref().unwrap()["images_kwargs"]["max_pixels"],
+        65_536
+    );
 }
 
 #[test]
