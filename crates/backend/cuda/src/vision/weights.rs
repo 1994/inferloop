@@ -16,6 +16,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 #[cfg(test)]
+#[path = "../../tests/unit/vision_device_merger.rs"]
+mod device_merger_tests;
+#[cfg(test)]
 #[path = "../../tests/unit/vision_device_tower.rs"]
 mod device_tower_tests;
 

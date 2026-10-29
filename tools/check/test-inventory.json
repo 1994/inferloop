@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 429
+      "tests": 432
     },
     "frontdoor": {
       "benches": 0,
@@ -268,7 +268,7 @@
     "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 6,
     "requires a CUDA device; run inside safe-run": 5,
     "requires a Linux production host with get/set_mempolicy permitted; make check-linux-numa": 1,
-    "requires a reserved CUDA device": 1,
+    "requires a reserved CUDA device": 2,
     "requires a reserved CUDA device; compares every output with the prior tower": 1,
     "requires a reserved CUDA device; compares full outputs with scalar and existing paths": 1,
     "requires an NVIDIA GPU; run under tools/bench/safe-run.sh": 9,
@@ -935,6 +935,11 @@
     {
       "crate": "cuda",
       "file": "src/vision/weights.rs",
+      "mount": "../../tests/unit/vision_device_merger.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/vision/weights.rs",
       "mount": "../../tests/unit/vision_device_tower.rs"
     },
     {
@@ -1429,11 +1434,11 @@
     }
   ],
   "totals": {
-    "all": 1034,
+    "all": 1037,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1034
+    "tests": 1037
   }
 }

@@ -1,5 +1,6 @@
 //! Captured vision-encoder programs.
 use super::block_mlp;
+use super::device_merger;
 use super::device_tower;
 use super::{VisionWeights, kernels, weights::AttentionLayer, weights::half_tile};
 #[cfg(test)]
@@ -1097,8 +1098,14 @@ pub fn merger(
     let hidden = encoder.hidden_size;
     let merged = merged_width(encoder)?;
     let unit = merge_unit(encoder)?;
-    if tokens == 0 || !tokens.is_multiple_of(unit) || hidden_states.len() != tokens * hidden {
+    let elements = tokens
+        .checked_mul(hidden)
+        .ok_or_else(|| Error::invalid("vision merger input overflow"))?;
+    if tokens == 0 || !tokens.is_multiple_of(unit) || hidden_states.len() != elements {
         return Err(Error::invalid("vision merger input shape"));
+    }
+    if device_merger::supports(encoder)? {
+        return device_merger::run(device, weights, encoder, hidden_states, tokens);
     }
     let rows = tokens / unit;
     let normed = layernorm(

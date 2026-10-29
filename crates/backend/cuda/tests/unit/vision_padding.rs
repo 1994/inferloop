@@ -326,3 +326,21 @@ fn media_footprint_covers_the_resident_tower_live_buffers() -> Result<(), Box<dy
     assert!(footprint >= required);
     Ok(())
 }
+
+#[test]
+fn media_footprint_covers_all_resident_merger_activations() -> Result<(), Box<dyn Error>> {
+    let mut encoder = encoder();
+    encoder.hidden_size = 64;
+    encoder.intermediate_size = 64;
+    encoder.heads = 1;
+    encoder.spatial_merge_size = 8;
+    encoder.out_hidden_size = 4096;
+    let footprint = super::footprint::footprint(&encoder, &media_plan((1, 8, 8), 1))?;
+    // Four live 4096-wide merged matrices and one output across 32 padded rows.
+    let required = 32_u64 * (4 * 4096 + 4096) * 4;
+    assert!(
+        footprint >= required,
+        "merger footprint {footprint} < {required}"
+    );
+    Ok(())
+}
