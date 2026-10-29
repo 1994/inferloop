@@ -14,7 +14,7 @@ CUDA 提供 patch embed、LayerNorm、QKV/MLP/merger 投影、轴向 RoPE、按�
 
 多模态 prompt 以融合分块执行：每个 media 行在设备流上拷入 lane 的外部 embedding 槽，embedding kernel 按每个 token 的 override 标志选择词表或外部向量，每个 lane 的三轴位置写入 prefill 的 M-RoPE 表，因此一个 1000 token 的图像 prompt 只花 `ceil(tokens / prefill_width)` 次图重放，而不是每 token 一次 decode。没有 prompt 图（`prefill_width < 32`）时退回逐 token 路径，对齐合同不变。
 
-RTX 5090 上 Qwen3-VL-2B 的实测（prefill 阶段，含同一视觉编码）：172 token 双图 prompt 融合分块 60 ms，逐 token 回退 543 ms；45 token 视频（2 个 temporal group）9.7 ms 对 128 ms。数字只说明两条路径的相对差，不作为发布性能门槛。
+RTX 5090 上 Qwen3-VL-2B 的实测（prefill 阶段，视觉编码在计时前完成）：172 token 双图 prompt 融合分块 60 ms，逐 token 回退 543 ms；45 token 视频（2 个 temporal group）9.7 ms 对 128 ms。这些数字不包含预处理或视觉编码，只说明两条 prefill 路径的相对差，不作为发布性能门槛。
 
 ## 服务路径
 
@@ -27,7 +27,7 @@ OpenAI chat 的 `image_url` / `video_url` 内容部分现在进入真实 serving
 - media 请求不参与 prefix reuse，也不支持 MTP speculation；这两条都是显式错误而不是静默降级。
 - media payload 与请求生命周期绑定，until backend prefill completes；checkpoint 在 media 状态存活时拒绝，避免恢复后丢失像素或设备 embedding。
 
-`cuda-multimodal-generate` / `cuda-multimodal-media` / `cuda-parity-2b` 仍是独立数值/示例入口。音频与完整 DeepStack 路径不在此验收范围：Qwen3-VL 没有音频模态，Qwen Omni 也未被 provider 导入；带 `deepstack_visual_indexes` 的权重仍按共享路径验收（双方关闭 DeepStack）。
+`cuda-multimodal-generate` / `cuda-multimodal-media` / `cuda-parity-2b` 仍是独立数值/示例入口。音频与完整 DeepStack 路径不在此验收范围：Qwen3-VL 没有音频模态，Qwen Omni 也未被 provider 导入。当前 provider 不执行 `deepstack_visual_indexes` 指定的融合，且导入时不会拒绝非空索引；关闭 DeepStack 的共享路径实验不代表完整 Qwen3-VL 模型的推理结果。
 
 ## Head-width padding (OPEN)
 

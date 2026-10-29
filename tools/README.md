@@ -23,6 +23,7 @@
 | `bench` / `attention` | [attention.sh](bench/attention.sh) | 原生 attention 与 Candle 的独立数值、性能门禁 |
 | `bench` | [check-cuda-service.py](bench/check-cuda-service.py)、[mtp-ab.py](bench/mtp-ab.py) | CUDA 服务与 MTP A/B 验证；参数见 `--help` |
 | `bench` | [serve-workloads.py](bench/serve-workloads.py)、[serve-cases.py](bench/serve-cases.py) | 生成共同 token 输入与选取局部场景；每个用例声明并发 slot，采集端据此校验完整矩阵 |
+| `bench` | [serve-image-load.py](bench/serve-image-load.py) | 对已有 HTTP 服务采集单图及多图闭环负载，记录失败请求、响应延迟和可选遥测；不启动服务 |
 | `bench` | [experiment-checklist.py](bench/experiment-checklist.py) | 实验清单：`--init` 由 workload 与模型制品生成 profile，`--check` 校验一次运行，`--compare` 输出两边配置对照表 |
 | `bench` | [serve-compare.py](bench/serve-compare.py) | 服务采集：记录 release 构建身份、模型制品指纹、生效配置回读、逐请求计时与逐轮 GPU/进程遥测；每次运行用唯一 `--run-id` 且拒绝覆盖。必须在 [safe-run.sh](bench/safe-run.sh) 内运行，否则拒绝采集 |
 | `bench` | [freeze-baseline.py](bench/freeze-baseline.py) | 把已过门禁的配对冻结成不可覆盖的基线目录，可用 `--verify` 复核哈希 |
@@ -40,6 +41,14 @@
 bash tools/bench/safe-run.sh python3 tools/bench/serve-compare.py --engine native ... \
     --checklist benchmarks/profiles/27b-mtp0.json --run-id <唯一 ID>
 ```
+
+图片负载客户端使用 Python 3.12+，读取 `--fixtures` 目录中的 `manifest.json`。例如，`--size 256x256` 对应：
+
+```json
+{"items":{"256x256":[{"file":"one.jpg","sha256":"<文件的 SHA-256>"}]}}
+```
+
+清单中的相对路径必须位于该目录内；预热和采样总共需要 `(warmup + samples) * images-per-request` 张内容互不相同的图片。URL 模式还需为每项提供 `url` 并保证远端内容与本地文件一致。客户端流式 `tpot_estimate` 基于可见事件，不能当作逐 token 的设备计时；比较时还要核对请求、输出、服务配置和硬件遥测。
 
 服务的性能门禁是 **native/vLLM ≤ 1.10×**（`compare-results.py` 的 ratio 方向为「被测引擎 / 参考引擎」，
 跨引擎时必须显式给出参考侧；同引擎配对按候选相对基线解释）。
