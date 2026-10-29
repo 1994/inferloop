@@ -55,15 +55,11 @@ fn pool_envelope_is_capped_by_physical_storage_and_saturates() {
 #[test]
 #[ignore = "real MTP2 checkpoint and CUDA; run inside safe-run"]
 fn lazy_pool_retries_after_a_live_private_reservation_is_released() -> Result<(), Box<dyn Error>> {
-    use crate::executor::CudaExecutor;
     use crate::{
         device::CudaDevice,
-        executor::CudaExecutor,
         loading::{LoadOptions, LoadedModel},
     };
-    use infer_core::{ModelId, StateId};
-    use infer_core::{RequestId, StateId};
-    use infer_ir::{ExecutionInput, ExecutionTask, OutputReadout, TaskOutput, TokenBuffer};
+    use infer_core::ModelId;
 
     CudaDevice::enable_kernel_cache()?;
     let loaded = LoadedModel::open(
