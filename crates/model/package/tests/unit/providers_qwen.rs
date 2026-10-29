@@ -1,10 +1,5 @@
-/// A released Qwen3-VL checkpoint must resolve and import like its 3.5 sibling.
-///
-/// The fixture mirrors `Qwen/Qwen3-VL-2B-Instruct`, the package the end-to-end parity run uses:
-/// a plain `qwen3_vl` text backbone, tied embeddings and the same vision geometry family.
-#[test]
-fn qwen3_vl_configuration_imports_with_its_image_encoder() -> Result<()> {
-    const CONFIG: &str = r#"{
+/// Qwen3-VL shared vision path with `DeepStack` explicitly disabled.
+const QWEN3_VL_SHARED_CONFIG: &str = r#"{
             "architectures": ["Qwen3VLForConditionalGeneration"],
             "model_type": "qwen3_vl",
             "image_token_id": 151655,
@@ -37,10 +32,13 @@ fn qwen3_vl_configuration_imports_with_its_image_encoder() -> Result<()> {
                 "out_hidden_size": 2048,
                 "num_position_embeddings": 2304,
                 "hidden_act": "gelu_pytorch_tanh",
-                "deepstack_visual_indexes": [5, 11, 17]
+                "deepstack_visual_indexes": []
             }
         }"#;
-    let bytes = CONFIG.as_bytes();
+
+#[test]
+fn qwen3_vl_configuration_imports_with_its_image_encoder() -> Result<()> {
+    let bytes = QWEN3_VL_SHARED_CONFIG.as_bytes();
     let provider = crate::default_registry().resolve(bytes)?;
     assert!(provider.architectures().contains(&"qwen3_vl"));
     let imported = provider.import(ModelId::ONE, bytes)?;
@@ -62,6 +60,72 @@ fn qwen3_vl_configuration_imports_with_its_image_encoder() -> Result<()> {
         "the vision inventory must follow the declared depth"
     );
     assert_eq!(placeholders(&imported, &Modality::Image)?, [151_655]);
+    Ok(())
+}
+
+#[test]
+fn qwen3_vl_deepstack_is_explicitly_unsupported() -> Result<()> {
+    let config = QWEN3_VL_SHARED_CONFIG.replace(
+        "\"deepstack_visual_indexes\": []",
+        "\"deepstack_visual_indexes\": [5, 11, 17]",
+    );
+    let provider = crate::default_registry().resolve(config.as_bytes())?;
+    let error = provider
+        .import(ModelId::ONE, config.as_bytes())
+        .unwrap_err();
+    assert_eq!(error.code, infer_core::ErrorCode::Unsupported);
+    assert!(error.message.contains("DeepStack"));
+    let missing = QWEN3_VL_SHARED_CONFIG.replace(
+        "\"deepstack_visual_indexes\": []",
+        "\"unrelated_metadata\": null",
+    );
+    let error = provider
+        .import(ModelId::ONE, missing.as_bytes())
+        .unwrap_err();
+    assert_eq!(error.code, infer_core::ErrorCode::Unsupported);
+    let mut missing_vision: serde_json::Value = serde_json::from_str(QWEN3_VL_SHARED_CONFIG)
+        .map_err(|error| Error::invalid(error.to_string()))?;
+    missing_vision
+        .as_object_mut()
+        .ok_or_else(|| Error::invalid("test configuration must be an object"))?
+        .remove("vision_config");
+    let missing_vision =
+        serde_json::to_vec(&missing_vision).map_err(|error| Error::invalid(error.to_string()))?;
+    let error = provider.import(ModelId::ONE, &missing_vision).unwrap_err();
+    assert_eq!(error.code, infer_core::ErrorCode::Unsupported);
+    let text_only = config.replace(
+        "\"model_type\": \"qwen3_vl\",",
+        "\"model_type\": \"qwen3_vl\", \"language_model_only\": true,",
+    );
+    let imported = provider.import(ModelId::ONE, text_only.as_bytes())?;
+    assert_eq!(imported.model.modalities, vec![Modality::Text]);
+    let irrelevant_vision = text_only.replace(
+        "\"deepstack_visual_indexes\": [5, 11, 17]",
+        "\"deepstack_visual_indexes\": \"ignored\"",
+    );
+    let imported = provider.import(ModelId::ONE, irrelevant_vision.as_bytes())?;
+    assert_eq!(imported.model.modalities, vec![Modality::Text]);
+    Ok(())
+}
+
+#[test]
+fn public_vision_config_keeps_its_existing_shape() -> Result<()> {
+    let geometry = VisionConfig {
+        depth: 1,
+        hidden_size: 4,
+        intermediate_size: 8,
+        out_hidden_size: 4,
+        num_heads: 1,
+        in_channels: 3,
+        patch_size: 2,
+        temporal_patch_size: 1,
+        spatial_merge_size: 1,
+        num_position_embeddings: 4,
+        hidden_act: None,
+    };
+    let serialized =
+        serde_json::to_value(geometry).map_err(|error| Error::invalid(error.to_string()))?;
+    assert!(serialized.get("deepstack_visual_indexes").is_none());
     Ok(())
 }
 use super::*;
