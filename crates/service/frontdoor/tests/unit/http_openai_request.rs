@@ -54,6 +54,30 @@ fn chat_preserves_image_processor_kwargs_for_preparation() {
 }
 
 #[test]
+fn inline_media_keeps_its_url_and_full_staging_charge() {
+    let url = format!("data:image/png;base64,{}", "A".repeat(256 * 1024));
+    for kind in ["image_url", "video_url"] {
+        let part = if kind == "image_url" {
+            json!({"type": kind, "image_url": {"url": url}})
+        } else {
+            json!({"type": kind, "video_url": {"url": url}})
+        };
+        let media = chat(&json!([{"role":"user", "content":[part]}]), &json!({}));
+        let text = chat(
+            &json!([{"role":"user", "content":[{"type":"text", "text":url}]}]),
+            &json!({}),
+        );
+        assert_eq!(
+            media.preparation_bytes(1).unwrap(),
+            text.preparation_bytes(1).unwrap()
+        );
+        let (_, inputs) = media.chat_messages().unwrap();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].url, url);
+    }
+}
+
+#[test]
 fn declared_tools_enable_auto_parsing_and_reach_the_template() {
     let request = chat(
         &json!([{"role": "user", "content": "weather?"}]),

@@ -388,7 +388,7 @@ impl WireMessage {
         let content = self.parts().map_or(0, |parts| {
             parts.iter().fold(0usize, |sum, part| match part {
                 WirePart::Text(text) => sum.saturating_add(text.len()),
-                WirePart::Media(media) => sum.saturating_add(media.url.len()),
+                WirePart::Media { url, .. } => sum.saturating_add(url.len()),
             })
         });
         self.tool_calls.iter().fold(content, |sum, call| {
@@ -404,9 +404,12 @@ impl WireMessage {
         for part in self.parts()? {
             match part {
                 WirePart::Text(value) => text.push_str(value),
-                WirePart::Media(request) => {
-                    text.push_str(placeholder(&request.modality));
-                    media.push(request);
+                WirePart::Media { modality, url } => {
+                    text.push_str(placeholder(&modality));
+                    media.push(MediaRequest {
+                        modality,
+                        url: url.to_owned(),
+                    });
                 }
             }
         }
@@ -417,7 +420,7 @@ impl WireMessage {
 /// One accepted content part.
 enum WirePart<'a> {
     Text(&'a str),
-    Media(MediaRequest),
+    Media { modality: Modality, url: &'a str },
 }
 
 const fn placeholder(modality: &Modality) -> &'static str {
@@ -454,8 +457,14 @@ fn wire_part(part: &Value, index: usize) -> Result<WirePart<'_>> {
             })?;
             Ok(WirePart::Text(text))
         }
-        "image_url" | "input_image" => Ok(WirePart::Media(image_request(object, index)?)),
-        "video_url" | "input_video" => Ok(WirePart::Media(video_request(object, index)?)),
+        "image_url" | "input_image" => Ok(WirePart::Media {
+            modality: Modality::Image,
+            url: image_url(object, index)?,
+        }),
+        "video_url" | "input_video" => Ok(WirePart::Media {
+            modality: Modality::Video,
+            url: video_url(object, index)?,
+        }),
         "audio" | "input_audio" => Err(Error::unsupported("audio input is not supported")),
         _ => Err(Error::unsupported(
             "only text, image_url and video_url message content parts are supported",
@@ -473,7 +482,7 @@ fn validate_public_media_url(url: &str) -> Result<()> {
     }
 }
 
-fn image_request(object: &serde_json::Map<String, Value>, index: usize) -> Result<MediaRequest> {
+fn image_url(object: &serde_json::Map<String, Value>, index: usize) -> Result<&str> {
     let url = if let Some(value) = object.get("image_url") {
         let detail = value
             .as_object()
@@ -500,13 +509,10 @@ fn image_request(object: &serde_json::Map<String, Value>, index: usize) -> Resul
         .and_then(Value::as_str)
         .ok_or_else(|| Error::invalid(format!("image_url part {index} requires a URL")))?;
     validate_public_media_url(url)?;
-    Ok(MediaRequest {
-        modality: Modality::Image,
-        url: url.to_owned(),
-    })
+    Ok(url)
 }
 
-fn video_request(object: &serde_json::Map<String, Value>, index: usize) -> Result<MediaRequest> {
+fn video_url(object: &serde_json::Map<String, Value>, index: usize) -> Result<&str> {
     let value = object
         .get("video_url")
         .ok_or_else(|| Error::invalid(format!("video_url part {index} requires a video_url")))?;
@@ -522,10 +528,7 @@ fn video_request(object: &serde_json::Map<String, Value>, index: usize) -> Resul
         .filter(|url| !url.is_empty())
         .ok_or_else(|| Error::invalid(format!("video_url part {index} requires a URL")))?;
     validate_public_media_url(url)?;
-    Ok(MediaRequest {
-        modality: Modality::Video,
-        url: url.to_owned(),
-    })
+    Ok(url)
 }
 
 /// An assistant tool call in the history.
