@@ -55,7 +55,7 @@ fn cpu_staging_budget_is_validated_and_reaches_server_config() {
 
 #[test]
 fn image_processor_options_are_accepted_by_both_server_entrypoints() {
-    let kwargs = r#"{"max_pixels":262144}"#;
+    let kwargs = r#"{"max_pixels":262144,"do_resize":false}"#;
     for args in [
         vec!["infer", "./model", "--mm-processor-kwargs", kwargs],
         vec![
@@ -78,7 +78,7 @@ fn image_processor_options_are_accepted_by_both_server_entrypoints() {
             "infer",
             "./model",
             "--mm-processor-kwargs",
-            r#"{"do_resize":false}"#
+            r#"{"do_resize":"false"}"#
         ])
         .is_err()
     );
