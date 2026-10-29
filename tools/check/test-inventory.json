@@ -40,7 +40,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 94
+      "tests": 101
     },
     "ir": {
       "benches": 0,
@@ -1369,6 +1369,16 @@
     },
     {
       "crate": "frontdoor",
+      "file": "src/media/encoded/jpeg.rs",
+      "mount": "../../../tests/unit/encoded_jpeg_header.rs"
+    },
+    {
+      "crate": "frontdoor",
+      "file": "src/media.rs",
+      "mount": "media/encoded/jpeg.rs"
+    },
+    {
+      "crate": "frontdoor",
       "file": "src/media.rs",
       "mount": "../tests/unit/media.rs"
     },
@@ -1399,11 +1409,11 @@
     }
   ],
   "totals": {
-    "all": 1003,
+    "all": 1010,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1003
+    "tests": 1010
   }
 }

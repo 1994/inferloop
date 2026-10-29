@@ -26,9 +26,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
+#[path = "media/encoded/jpeg.rs"]
+mod jpeg;
 mod options;
 pub use options::ImageProcessingOptions;
 use options::check_working_set;
+
+#[cfg(test)]
+const JPEG_SIGNATURE: [u8; 3] = [0xff, 0xd8, 0xff];
+#[cfg(test)]
+const MEDIA_CHUNK_CANCELLATION_INTERVAL: usize = 256;
 
 /// Largest accepted image payload after decoding or download.
 const MAX_IMAGE_BYTES: usize = 24 * 1024 * 1024;
