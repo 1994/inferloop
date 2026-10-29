@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 427
+      "tests": 428
     },
     "frontdoor": {
       "benches": 0,
@@ -267,6 +267,7 @@
     "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 6,
     "requires a CUDA device; run inside safe-run": 5,
     "requires a Linux production host with get/set_mempolicy permitted; make check-linux-numa": 1,
+    "requires a reserved CUDA device": 1,
     "requires a reserved CUDA device; compares every output with the prior tower": 1,
     "requires a reserved CUDA device; compares full outputs with scalar and existing paths": 1,
     "requires an NVIDIA GPU; run under tools/bench/safe-run.sh": 9,
@@ -917,6 +918,11 @@
     },
     {
       "crate": "cuda",
+      "file": "src/vision/position.rs",
+      "mount": "../../tests/unit/vision_position.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/vision/program.rs",
       "mount": "../../tests/unit/vision_projection_output.rs"
     },
@@ -1422,11 +1428,11 @@
     }
   ],
   "totals": {
-    "all": 1028,
+    "all": 1029,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1028
+    "tests": 1029
   }
 }

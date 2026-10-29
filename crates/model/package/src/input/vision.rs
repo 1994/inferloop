@@ -191,8 +191,8 @@ const fn integer_sqrt(value: usize) -> usize {
 
 /// Weighted four-tap gather of the learned position table for one image.
 ///
-/// The gather runs host-side because a tile kernel cannot express per-token indices; it depends
-/// only on the image grid and the table, so it is a preprocessing step, not a model computation.
+/// This host reference depends only on the image grid and learned table. Device backends may
+/// perform the same interpolation while producing patch embeddings.
 ///
 /// # Errors
 /// Rejects a table that disagrees with the declared geometry or overflowing shapes.
