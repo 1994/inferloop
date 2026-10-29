@@ -84,21 +84,16 @@ impl Api {
                 errors.join("; ")
             ))
         })?;
-        // SAFETY: `nvjpeg.h` declares both version functions as
-        // nvjpegStatus_t(libraryPropertyType, int *); they are only used while this library lives.
-        let (nvjpeg, cudart) = unsafe {
-            let nvjpeg = *library
-                .get::<VersionQuery>(b"nvjpegGetProperty\0")
-                .map_err(|error| {
-                    Error::unsupported(format!("nvJPEG version query symbol: {error}"))
-                })?;
-            let cudart = *library
-                .get::<VersionQuery>(b"nvjpegGetCudartProperty\0")
-                .map_err(|error| {
-                    Error::unsupported(format!("nvJPEG CUDA version query symbol: {error}"))
-                })?;
-            (nvjpeg, cudart)
-        };
+        // SAFETY: `nvjpeg.h` declares this function as
+        // nvjpegStatus_t(libraryPropertyType, int *); it is used while the library lives.
+        let nvjpeg = *unsafe { library.get::<VersionQuery>(b"nvjpegGetProperty\0") }
+            .map_err(|error| Error::unsupported(format!("nvJPEG version query symbol: {error}")))?;
+        // SAFETY: the CUDA runtime property query has the same documented signature, and the
+        // owning library remains live while this function pointer is used.
+        let cudart = *unsafe { library.get::<VersionQuery>(b"nvjpegGetCudartProperty\0") }
+            .map_err(|error| {
+                Error::unsupported(format!("nvJPEG CUDA version query symbol: {error}"))
+            })?;
         Ok(Self {
             _library: library,
             nvjpeg,
