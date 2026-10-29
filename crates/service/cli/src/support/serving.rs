@@ -16,11 +16,10 @@ const CUDA_STEP_BUDGET_US: u64 = 60_000_000;
 
 /// Acknowledgement bound for a CUDA resource command. The serving pool is captured for actual
 /// request lengths inside the reservation that first needs it, so that reservation waits for
-/// every pooled graph width plus any tuning the capture plans. With warm tuning caches a 27B
-/// hybrid model on one RTX 5090 took 34 s, past the 30 s submission bound, and cold searches
-/// add their own finite allowances. The bound still fails a reservation whose owner never
-/// answers; it only stops a capture in progress from failing the request it serves.
-const CUDA_RESOURCE_TIMEOUT_US: u64 = 600_000_000;
+/// every pooled graph width. The serving process reuses cached tuning and never searches, and
+/// a 27B hybrid model on one RTX 5090 captured in 34 to 52 s, past the 30 s submission bound;
+/// this leaves about twice that. A reservation whose owner never answers still fails.
+const CUDA_RESOURCE_TIMEOUT_US: u64 = 120_000_000;
 
 pub fn derive_config(
     config: &mut RuntimeConfig,

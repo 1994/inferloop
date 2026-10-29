@@ -181,6 +181,14 @@ impl WorkloadProvider for ProjectionWorkloads {
         Ok(plan)
     }
     fn postprocess(&self, r: &CanonicalRequest, outputs: &[ModelOutput]) -> Result<WorkloadOutput> {
+        // Language-model decisions read the backbone logits as they are; no projection applies.
+        if let Workload::Decision(DecisionSchema {
+            readout: DecisionReadout::LanguageModel,
+            ..
+        }) = r.workload
+        {
+            return crate::NativeWorkloads.postprocess(r, outputs);
+        }
         let transformed = outputs
             .iter()
             .map(|o| {
