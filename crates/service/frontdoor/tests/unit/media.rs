@@ -703,6 +703,98 @@ async fn request_media_handoff_preserves_bits_and_releases_temporary_pixels() {
 }
 
 #[tokio::test]
+async fn default_image_preparation_respects_the_cpu_byte_budget() {
+    use crate::cpu::CpuConfig;
+    use infer_core::ErrorCode;
+    use infer_ir::Modality;
+    use std::env::var;
+    use std::path::Path;
+
+    let Ok(package) = var("INFER_VISION_PACKAGE") else {
+        return;
+    };
+    let root = Path::new(&package);
+    let multimodal = infer_models::MultimodalAssets::open(root)
+        .expect("package metadata")
+        .expect("vision model");
+    let assets = Arc::new(TextAssets::open(root, 4096).expect("tokenizer"));
+    let service = Arc::new(super::MediaService::new(multimodal, MediaLimits::default()));
+    let pixels = image::RgbImage::from_pixel(1024, 1024, image::Rgb([24, 64, 128]));
+    let request = super::MediaRequest {
+        modality: Modality::Image,
+        url: format!(
+            "data:image/png;base64,{}",
+            STANDARD.encode(encoded(pixels, image::ImageFormat::Png))
+        ),
+    };
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 1,
+        max_bytes: MEDIA_STAGING_BYTES,
+        ..CpuConfig::default()
+    })
+    .expect("CPU pool");
+    let limited_assets = assets.clone();
+    let limited_service = service.clone();
+    let limited_request = request.clone();
+    let result = pool
+        .run(MEDIA_STAGING_BYTES, move |context| {
+            limited_service.prepare_request(
+                &limited_assets,
+                "<|vision_start|><|image_pad|><|vision_end|>",
+                &[limited_request],
+                context,
+                None,
+            )
+        })
+        .await;
+    assert!(matches!(result, Err(error) if error.code == ErrorCode::Capacity));
+    assert_eq!(pool.inspect().retained_bytes, 0);
+    let funded = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 1,
+        max_bytes: 64 << 20,
+        ..CpuConfig::default()
+    })
+    .expect("funded CPU pool");
+    let default_assets = assets.clone();
+    let default_service = service.clone();
+    let default_request = request.clone();
+    let (default_tokens, media) = funded
+        .run(MEDIA_STAGING_BYTES, move |context| {
+            default_service.prepare_request(
+                &default_assets,
+                "<|vision_start|><|image_pad|><|vision_end|>",
+                &[default_request],
+                context,
+                None,
+            )
+        })
+        .await
+        .expect("funded image preparation");
+    assert_eq!(media.len(), 1);
+    let default_digest = media[0].content_digest.clone();
+    drop(media);
+    let options = ImageProcessingOptions::parse(r#"{"do_resize":false}"#).expect("disabled resize");
+    let (unresized_tokens, media) = funded
+        .run(MEDIA_STAGING_BYTES, move |context| {
+            service.prepare_request(
+                &assets,
+                "<|vision_start|><|image_pad|><|vision_end|>",
+                &[request],
+                context,
+                Some(&options),
+            )
+        })
+        .await
+        .expect("funded image without resize");
+    assert_eq!(unresized_tokens, default_tokens);
+    assert_eq!(media.len(), 1);
+    assert_eq!(media[0].content_digest, default_digest);
+    assert_eq!(funded.inspect().retained_bytes, 0);
+}
+
+#[tokio::test]
 async fn multi_image_digest_matches_each_prepared_payload() {
     use crate::cpu::CpuConfig;
     use infer_ir::Modality;

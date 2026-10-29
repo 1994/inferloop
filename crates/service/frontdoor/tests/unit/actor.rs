@@ -64,6 +64,191 @@ fn handle() -> Result<RuntimeHandle> {
         },
     )
 }
+
+#[tokio::test]
+async fn media_budget_growth_is_shared_and_retained_until_ingress_release() -> Result<()> {
+    let registry = Registry::new(2, 100);
+    let pending = registry.reserve(RequestId::ONE, 20)?;
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 1,
+        max_bytes: 100,
+        ..CpuConfig::default()
+    })?;
+    let observed_pool = pool.clone();
+    let observed_registry = registry.clone();
+    let late_context = pool
+        .run_preparing(20, None, &pending, move |context| {
+            context.ensure_media_bytes(70, 20)?;
+            context.ensure_media_bytes(70, 20)?;
+            assert_eq!(observed_pool.inspect().retained_bytes, 70);
+            assert!(observed_registry.reserve(RequestId::new(2)?, 31).is_err());
+            Ok(context.clone())
+        })
+        .await?;
+    assert_eq!(pool.inspect().retained_bytes, 0);
+    assert!(late_context.ensure_media_bytes(80, 20).is_err());
+    assert!(registry.reserve(RequestId::new(2)?, 31).is_err());
+    drop(pending);
+    drop(registry.reserve(RequestId::new(2)?, 100)?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_media_budget_growth_rolls_back_cpu_credit() -> Result<()> {
+    let registry = Registry::new(2, 64);
+    let pending = registry.reserve(RequestId::ONE, 20)?;
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 1,
+        max_bytes: 100,
+        ..CpuConfig::default()
+    })?;
+    let observed_pool = pool.clone();
+    let observed_registry = registry.clone();
+    pool.run_preparing(20, None, &pending, move |context| {
+        assert_eq!(
+            context.ensure_media_bytes(70, 20).unwrap_err().code,
+            ErrorCode::Capacity
+        );
+        assert_eq!(observed_pool.inspect().retained_bytes, 20);
+        drop(observed_registry.reserve(RequestId::new(2)?, 44)?);
+        Ok(())
+    })
+    .await?;
+    assert_eq!(pool.inspect().retained_bytes, 0);
+    drop(pending);
+    drop(registry.reserve(RequestId::new(2)?, 64)?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn exhausted_cpu_media_budget_does_not_grow_ingress_credit() -> Result<()> {
+    let registry = Registry::new(2, 100);
+    let pending = registry.reserve(RequestId::ONE, 20)?;
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 1,
+        max_bytes: 64,
+        ..CpuConfig::default()
+    })?;
+    let observed_pool = pool.clone();
+    let observed_registry = registry.clone();
+    pool.run_preparing(20, None, &pending, move |context| {
+        assert_eq!(
+            context.ensure_media_bytes(70, 20).unwrap_err().code,
+            ErrorCode::Capacity
+        );
+        assert_eq!(observed_pool.inspect().retained_bytes, 20);
+        drop(observed_registry.reserve(RequestId::new(2)?, 80)?);
+        Ok(())
+    })
+    .await?;
+    assert_eq!(pool.inspect().retained_bytes, 0);
+    drop(pending);
+    drop(registry.reserve(RequestId::new(2)?, 100)?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_ingress_cannot_grow_its_media_budget() -> Result<()> {
+    let registry = Registry::new(2, 100);
+    let pending = registry.reserve(RequestId::ONE, 20)?;
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 1,
+        max_bytes: 100,
+        ..CpuConfig::default()
+    })?;
+    let observed_pool = pool.clone();
+    let observed_registry = registry.clone();
+    pool.run_preparing(20, None, &pending, move |context| {
+        assert!(observed_registry.cancel(RequestId::ONE));
+        assert_eq!(
+            context.ensure_media_bytes(70, 20).unwrap_err().code,
+            ErrorCode::Capacity
+        );
+        assert_eq!(observed_pool.inspect().retained_bytes, 20);
+        drop(observed_registry.reserve(RequestId::new(2)?, 80)?);
+        Ok(())
+    })
+    .await?;
+    assert_eq!(pool.inspect().retained_bytes, 0);
+    drop(pending);
+    drop(registry.reserve(RequestId::new(2)?, 100)?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_media_growth_keeps_credit_until_the_worker_finishes() -> Result<()> {
+    let registry = Registry::new(2, 70);
+    let pending = registry.reserve(RequestId::ONE, 20)?;
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 1,
+        max_bytes: 70,
+        ..CpuConfig::default()
+    })?;
+    let (started, entered) = oneshot::channel();
+    let (release, gate) = mpsc::channel();
+    let dropped_under_credit = Arc::new(AtomicBool::new(false));
+    let payload = CreditDropProbe {
+        registry: registry.clone(),
+        other: RequestId::new(2)?,
+        observed: dropped_under_credit.clone(),
+    };
+    let worker_pool = pool.clone();
+    let worker_pending = pending.clone();
+    let task = tokio::spawn(async move {
+        worker_pool
+            .run_preparing(20, None, &worker_pending, move |context| {
+                context.ensure_media_bytes(70, 20)?;
+                started
+                    .send(())
+                    .map_err(|()| Error::invariant("start receiver dropped"))?;
+                gate.recv().map_err(|e| Error::invariant(e.to_string()))?;
+                Ok(payload)
+            })
+            .await
+    });
+    timeout(Duration::from_secs(2), entered)
+        .await
+        .map_err(|e| Error::invariant(e.to_string()))?
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    task.abort();
+    drop(pending);
+    assert_eq!(pool.inspect().retained_bytes, 70);
+    let next = RequestId::new(2)?;
+    assert!(registry.reserve(next, 1).is_err());
+    release
+        .send(())
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    timeout(Duration::from_secs(2), async {
+        while pool.inspect().retained_jobs != 0 || registry.reserve(next, 70).is_err() {
+            sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .map_err(|e| Error::invariant(e.to_string()))?;
+    assert!(dropped_under_credit.load(Ordering::Acquire));
+    drop(registry.reserve(next, 70)?);
+    Ok(())
+}
+
+struct CreditDropProbe {
+    registry: Arc<Registry>,
+    other: RequestId,
+    observed: Arc<AtomicBool>,
+}
+
+impl Drop for CreditDropProbe {
+    fn drop(&mut self) {
+        if self.registry.reserve(self.other, 1).is_err() {
+            self.observed.store(true, Ordering::Release);
+        }
+    }
+}
+
 #[tokio::test]
 async fn blocked_exporter_cannot_block_requests_controls_or_delivery() -> Result<()> {
     let handle = handle()?;

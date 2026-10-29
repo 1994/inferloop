@@ -179,7 +179,7 @@ impl RuntimeHandle {
         let preparer = self.preparer.clone();
         let request = self
             .cpu
-            .run_until(bytes, deadline, move |context| {
+            .run_preparing(bytes, deadline, &pending, move |context| {
                 preparing.check()?;
                 let (request, constraint) = work(context)?;
                 if request.id != id {

@@ -1,4 +1,5 @@
 //! Fixed CPU workers with admission bytes, queue bounds and cancellable asynchronous replies.
+use crate::ingress::Pending;
 use infer_core::placement::ThreadPlacement;
 use infer_core::{Error, ErrorCode, Result};
 use serde::{Deserialize, Serialize};
@@ -96,11 +97,61 @@ pub(super) struct Credit {
     budget: Arc<Budget>,
     bytes: usize,
 }
+impl Credit {
+    fn increase(&mut self, extra: usize) -> Result<()> {
+        let mut usage = self
+            .budget
+            .usage
+            .lock()
+            .map_err(|_| Error::invariant("CPU budget poisoned"))?;
+        let total = usage
+            .bytes
+            .checked_add(extra)
+            .ok_or_else(|| Error::invalid("CPU staging size overflow"))?;
+        let bytes = self
+            .bytes
+            .checked_add(extra)
+            .ok_or_else(|| Error::invalid("CPU request staging size overflow"))?;
+        if total > self.budget.config.max_bytes {
+            return Err(Error::new(
+                ErrorCode::Capacity,
+                "CPU preparation queue/byte budget exhausted",
+            ));
+        }
+        usage.bytes = total;
+        self.bytes = bytes;
+        drop(usage);
+        Ok(())
+    }
+
+    fn rollback(&mut self, extra: usize) -> Result<()> {
+        let mut usage = self
+            .budget
+            .usage
+            .lock()
+            .map_err(|_| Error::invariant("CPU budget poisoned"))?;
+        let total = usage
+            .bytes
+            .checked_sub(extra)
+            .ok_or_else(|| Error::invariant("CPU staging rollback underflow"))?;
+        let bytes = self
+            .bytes
+            .checked_sub(extra)
+            .ok_or_else(|| Error::invariant("CPU request rollback underflow"))?;
+        usage.bytes = total;
+        self.bytes = bytes;
+        drop(usage);
+        Ok(())
+    }
+}
 impl Drop for Credit {
     fn drop(&mut self) {
-        if let Ok(mut usage) = self.budget.usage.lock() {
-            usage.jobs -= 1;
-            usage.bytes -= self.bytes;
+        if let Ok(mut usage) = self.budget.usage.lock()
+            && let Some(jobs) = usage.jobs.checked_sub(1)
+            && let Some(bytes) = usage.bytes.checked_sub(self.bytes)
+        {
+            usage.jobs = jobs;
+            usage.bytes = bytes;
         }
     }
 }
@@ -112,14 +163,23 @@ impl Drop for Active {
 }
 #[derive(Clone)]
 pub struct CpuContext {
-    cancelled: Arc<AtomicBool>,
+    state: Arc<JobState>,
     deadline: Instant,
+}
+struct JobState {
+    cancelled: AtomicBool,
+    accounting: Mutex<JobAccounting>,
+    initial_bytes: usize,
+}
+struct JobAccounting {
+    credit: Option<Credit>,
+    ingress: Option<Arc<Pending>>,
 }
 impl CpuContext {
     /// # Errors
     /// Rejects work abandoned by its caller or past its deadline.
     pub fn check(&self) -> Result<()> {
-        if self.cancelled.load(Ordering::Acquire) || Instant::now() >= self.deadline {
+        if self.state.cancelled.load(Ordering::Acquire) || Instant::now() >= self.deadline {
             return Err(Error::new(
                 ErrorCode::Capacity,
                 "CPU preparation cancelled or timed out",
@@ -127,20 +187,80 @@ impl CpuContext {
         }
         Ok(())
     }
+
+    /// Fund a media working-set peak before allocating it. Existing non-media credit stays owned.
+    pub(super) fn ensure_media_bytes(&self, needed: usize, baseline: usize) -> Result<()> {
+        self.check()?;
+        let covered = self.state.initial_bytes.min(baseline);
+        let target = (self.state.initial_bytes - covered)
+            .checked_add(needed.max(covered))
+            .ok_or_else(|| Error::invalid("media staging size overflow"))?;
+        let mut accounting = self
+            .state
+            .accounting
+            .lock()
+            .map_err(|_| Error::invariant("CPU job credit poisoned"))?;
+        let JobAccounting { credit, ingress } = &mut *accounting;
+        let credit = credit
+            .as_mut()
+            .ok_or_else(|| Error::new(ErrorCode::Capacity, "CPU preparation already finished"))?;
+        if let Some(pending) = ingress.as_ref() {
+            pending.check()?;
+        }
+        let extra = target.saturating_sub(credit.bytes);
+        if extra == 0 {
+            return Ok(());
+        }
+        credit.increase(extra)?;
+        let result = ingress
+            .as_ref()
+            .map_or(Ok(()), |pending| pending.increase(extra));
+        if let Err(error) = result {
+            credit.rollback(extra)?;
+            return Err(error);
+        }
+        drop(accounting);
+        Ok(())
+    }
+
+    fn release_credit(&self) -> Result<Option<Arc<Pending>>> {
+        let mut accounting = self
+            .state
+            .accounting
+            .lock()
+            .map_err(|_| Error::invariant("CPU job credit poisoned"))?;
+        let credit = accounting.credit.take();
+        let ingress = accounting.ingress.take();
+        drop(accounting);
+        drop(credit);
+        Ok(ingress)
+    }
 }
 #[cfg(test)]
 pub(crate) fn cancelled_context() -> CpuContext {
     CpuContext {
-        cancelled: Arc::new(AtomicBool::new(true)),
+        state: Arc::new(JobState {
+            cancelled: AtomicBool::new(true),
+            accounting: Mutex::new(JobAccounting {
+                credit: None,
+                ingress: None,
+            }),
+            initial_bytes: 0,
+        }),
         deadline: Instant::now() + Duration::from_secs(1),
     }
 }
 
-struct CancelOnDrop(Arc<AtomicBool>);
+struct CancelOnDrop(Arc<JobState>);
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
-        self.0.store(true, Ordering::Release);
+        self.0.cancelled.store(true, Ordering::Release);
     }
+}
+/// An unclaimed result drops before its ingress credit, including when its receiver disappears.
+struct CpuReply<T> {
+    result: Result<T>,
+    ingress: Option<Arc<Pending>>,
 }
 type Job = Box<dyn FnOnce() + Send>;
 #[derive(Clone)]
@@ -245,6 +365,28 @@ impl CpuPool {
         deadline: Option<Instant>,
         work: impl FnOnce(&CpuContext) -> Result<T> + Send + 'static,
     ) -> Result<T> {
+        self.run_with_ingress(credit, deadline, None, work).await
+    }
+
+    pub(super) async fn run_preparing<T: Send + 'static>(
+        &self,
+        bytes: usize,
+        deadline: Option<Instant>,
+        pending: &Arc<Pending>,
+        work: impl FnOnce(&CpuContext) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let credit = self.reserve(bytes)?;
+        self.run_with_ingress(credit, deadline, Some(pending.clone()), work)
+            .await
+    }
+
+    async fn run_with_ingress<T: Send + 'static>(
+        &self,
+        credit: Credit,
+        deadline: Option<Instant>,
+        ingress: Option<Arc<Pending>>,
+        work: impl FnOnce(&CpuContext) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
         let now = Instant::now();
         let timeout = Duration::from_millis(self.budget.config.job_timeout_ms).min(
             deadline.map_or(Duration::MAX, |deadline| {
@@ -252,27 +394,50 @@ impl CpuPool {
             }),
         );
         let context = CpuContext {
-            cancelled: Arc::new(AtomicBool::new(false)),
+            state: Arc::new(JobState {
+                cancelled: AtomicBool::new(false),
+                initial_bytes: credit.bytes,
+                accounting: Mutex::new(JobAccounting {
+                    credit: Some(credit),
+                    ingress,
+                }),
+            }),
             deadline: now + timeout,
         };
-        let _cancel = CancelOnDrop(context.cancelled.clone());
+        let _cancel = CancelOnDrop(context.state.clone());
         let (reply, response) = oneshot::channel();
         self.jobs
             .try_send(Box::new(move || {
-                let admission_credit = credit;
                 let result = context
                     .check()
                     .and_then(|()| work(&context))
                     .and_then(|value| context.check().map(|()| value));
                 // Completion must make admission capacity reusable before waking the caller.
-                drop(admission_credit);
-                let _ = reply.send(result);
+                match context.release_credit() {
+                    Ok(ingress) => {
+                        if let Err(undelivered) = reply.send(CpuReply { result, ingress }) {
+                            drop(undelivered);
+                        }
+                    }
+                    Err(error) => {
+                        drop(result);
+                        if let Err(undelivered) = reply.send(CpuReply {
+                            result: Err(error),
+                            ingress: None,
+                        }) {
+                            drop(undelivered);
+                        }
+                    }
+                }
             }))
             .map_err(|_| Error::new(ErrorCode::Capacity, "CPU queue unavailable"))?;
-        time_timeout(timeout, response)
+        let reply = time_timeout(timeout, response)
             .await
             .map_err(|_| Error::new(ErrorCode::Capacity, "CPU preparation deadline exceeded"))?
-            .map_err(|_| Error::new(ErrorCode::Backend, "CPU preparation worker failed"))?
+            .map_err(|_| Error::new(ErrorCode::Backend, "CPU preparation worker failed"))?;
+        let CpuReply { result, ingress } = reply;
+        drop(ingress);
+        result
     }
     #[must_use]
     pub fn inspect(&self) -> CpuInspection {

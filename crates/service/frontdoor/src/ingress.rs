@@ -16,7 +16,6 @@ pub struct Registry {
 pub struct Pending {
     registry: Arc<Registry>,
     id: RequestId,
-    bytes: usize,
     cancelled: Arc<AtomicBool>,
 }
 impl Registry {
@@ -55,7 +54,6 @@ impl Registry {
         Ok(Arc::new(Pending {
             registry: self.clone(),
             id,
-            bytes,
             cancelled,
         }))
     }
@@ -83,12 +81,55 @@ impl Pending {
     pub fn abandon(&self) {
         self.cancelled.store(true, Ordering::Release);
     }
+
+    /// Retain additional request bytes until the last pending owner has finished.
+    pub(super) fn increase(&self, extra: usize) -> Result<()> {
+        let mut usage = self
+            .registry
+            .usage
+            .lock()
+            .map_err(|_| Error::invariant("ingress registry poisoned"))?;
+        let total = usage
+            .bytes
+            .checked_add(extra)
+            .ok_or_else(|| Error::invalid("ingress bytes overflow"))?;
+        if total > self.registry.max_bytes {
+            return Err(Error::new(
+                ErrorCode::Capacity,
+                "pending ingress budget exhausted",
+            ));
+        }
+        let (cancelled, bytes) = usage
+            .entries
+            .get_mut(&self.id)
+            .ok_or_else(|| Error::invariant("pending ingress identity missing"))?;
+        if !Arc::ptr_eq(cancelled, &self.cancelled) {
+            return Err(Error::invariant("pending ingress identity changed"));
+        }
+        if cancelled.load(Ordering::Acquire) {
+            return Err(Error::new(
+                ErrorCode::Capacity,
+                "request preparation cancelled",
+            ));
+        }
+        let updated = bytes
+            .checked_add(extra)
+            .ok_or_else(|| Error::invalid("ingress request bytes overflow"))?;
+        *bytes = updated;
+        usage.bytes = total;
+        drop(usage);
+        Ok(())
+    }
 }
 impl Drop for Pending {
     fn drop(&mut self) {
-        if let Ok(mut usage) = self.registry.usage.lock() {
+        if let Ok(mut usage) = self.registry.usage.lock()
+            && let Some((cancelled, bytes)) = usage.entries.get(&self.id)
+            && Arc::ptr_eq(cancelled, &self.cancelled)
+            && let Some(remaining) = usage.bytes.checked_sub(*bytes)
+        {
             usage.entries.remove(&self.id);
-            usage.bytes -= self.bytes;
+            usage.bytes = remaining;
         }
     }
 }

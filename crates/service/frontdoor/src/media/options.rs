@@ -1,5 +1,7 @@
 //! Validated image resize overrides and their host working-set bound.
-use super::{MAX_IMAGE_PIXELS, MEDIA_STAGING_BYTES, RGB_CHANNELS};
+#[cfg(test)]
+use super::MEDIA_STAGING_BYTES;
+use super::{MAX_IMAGE_PIXELS, RGB_CHANNELS};
 use infer_core::{Error, ErrorCode, Result};
 use infer_ir::ImageResizePolicy;
 use infer_models::{ImageProcessor, RawImage};
@@ -185,19 +187,23 @@ impl ImageProcessingOptions {
 }
 
 /// Bound the currently selected CPU processor's intermediate and retained patch allocations.
+#[cfg(test)]
 pub(super) fn check_working_set(images: &[RawImage], processor: &ImageProcessor) -> Result<()> {
-    check_working_set_with_resize(images, processor, ImageResizePolicy::Smart)
-}
-
-pub(super) fn check_working_set_with_resize(
-    images: &[RawImage],
-    processor: &ImageProcessor,
-    resize: ImageResizePolicy,
-) -> Result<()> {
     let budget = images
         .len()
         .checked_mul(MEDIA_STAGING_BYTES)
         .ok_or_else(capacity)?;
+    if required_working_set(images, processor, ImageResizePolicy::Smart)? > budget {
+        return Err(capacity());
+    }
+    Ok(())
+}
+
+pub(super) fn required_working_set(
+    images: &[RawImage],
+    processor: &ImageProcessor,
+    resize: ImageResizePolicy,
+) -> Result<usize> {
     let mut raw = 0usize;
     for image in images {
         raw = raw
@@ -206,6 +212,7 @@ pub(super) fn check_working_set_with_resize(
     }
     let mut retained = 0usize;
     let mut copied = 0usize;
+    let mut peak = 0usize;
     for image in images {
         let (height, width) = processor.target_dimensions(image.height, image.width, resize)?;
         let pixels = height
@@ -239,16 +246,11 @@ pub(super) fn check_working_set_with_resize(
             .and_then(|n| n.checked_add(output))
             .and_then(|n| n.checked_add(patch_capacity))
             .ok_or_else(capacity)?;
-        if resize_peak.max(patch_peak) > budget {
-            return Err(capacity());
-        }
+        peak = peak.max(resize_peak).max(patch_peak);
         retained = retained.checked_add(patch_capacity).ok_or_else(capacity)?;
         copied = copied.checked_add(actual_patch).ok_or_else(capacity)?;
     }
-    if retained.checked_add(copied).ok_or_else(capacity)? > budget {
-        return Err(capacity());
-    }
-    Ok(())
+    Ok(peak.max(retained.checked_add(copied).ok_or_else(capacity)?))
 }
 
 fn axis_bytes(source: usize, target: usize) -> Result<usize> {

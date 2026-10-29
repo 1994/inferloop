@@ -22,8 +22,8 @@ OpenAI chat 的 `image_url` / `video_url` 内容部分现在进入真实 serving
 
 - 同一 prompt 暂只支持一种媒体模态；混合 image/video 会返回显式 unsupported。
 - `--limit-mm-per-prompt '{"image":N,"video":M}'` 是每 prompt 上限。全零配置只服务文本并跳过视觉塔；非零配置在加载时绑定并使用视觉权重。默认上限为 2 张图、1 段视频。
-- `--cpu-staging-mib` 设置 CPU 准备和入口的准入字节预算；省略时各为 64 MiB。每个媒体项目前按 25 MiB 计入预算，另加文本等费用；额度不足时拒绝请求。该预算不是进程内存上限，调大不会增加 CPU 处理能力，调整前应测量并发、实际内存和延迟。
-- `--mm-processor-kwargs` 可设置图像处理默认 JSON，OpenAI chat 的 `mm_processor_kwargs` 按顶层键覆盖默认值。当前支持平铺或放在 `images_kwargs` 内的 `do_resize`、`min_pixels`、`max_pixels`，以及完整的 `size` 对象（`shortest_edge` 和 `longest_edge`）；相同键不可同时出现在两层，`size` 不可与像素参数混用。`do_resize: false` 保留原尺寸，要求宽高均可被 patch 与 merge 尺寸的乘积整除。请求中的 `images_kwargs` 整体覆盖服务默认的同名对象，与本次对照使用的 vLLM 0.31.0 一致；上游 main 当前递归合并。其他参数暂不支持并会报错。覆盖参数按固定每项 25 MiB 的准备预算保守估算，可能拒绝较大图片；增加全局 CPU 准入预算不会增加这一单项估价。这是 vLLM 接口的受限子集，不代表完整兼容。
+- `--cpu-staging-mib` 设置 CPU 准备和入口的准入字节预算；省略时各为 64 MiB。每个媒体项初始预留 25 MiB，另加文本等费用；图片解码后，会根据实际处理尺寸为图像前处理峰值补充额度。额度不足时拒绝请求，取消时额度留到对应工作和所有权交接完成。该估算尚未覆盖图片解码及视频处理的全部暂存峰值，也不是进程内存上限；调大预算不会增加 CPU 处理能力，调整前应测量并发、实际内存和延迟。
+- `--mm-processor-kwargs` 可设置图像处理默认 JSON，OpenAI chat 的 `mm_processor_kwargs` 按顶层键覆盖默认值。当前支持平铺或放在 `images_kwargs` 内的 `do_resize`、`min_pixels`、`max_pixels`，以及完整的 `size` 对象（`shortest_edge` 和 `longest_edge`）；相同键不可同时出现在两层，`size` 不可与像素参数混用。`do_resize: false` 保留原尺寸，要求宽高均可被 patch 与 merge 尺寸的乘积整除。请求中的 `images_kwargs` 整体覆盖服务默认的同名对象，与本次对照使用的 vLLM 0.31.0 一致；上游 main 当前递归合并。其他参数暂不支持并会报错。图片前处理按有效参数和实际尺寸申请额度，大图可能需要提高全局 CPU 准入预算。这是 vLLM 接口的受限子集，不代表完整兼容。
 - 文本部署收到媒体时返回结构化 `unsupported_feature`，不消费 request identity。
 - `data:`/`http(s)` 的 PNG/JPEG/WebP/GIF 由进程内 codec 解码；视频以及 `http(s)` 下载依赖宿主 `ffmpeg`/`ffprobe`/`curl`，缺失时返回显式 unsupported。公开 HTTP 输入拒绝 `file://` 与服务端绝对路径；所有读取、帧数、尺寸、解码维度和子进程墙钟时间都有上限。
 - media 请求不参与 prefix reuse，也不支持 MTP speculation；这两条都是显式错误而不是静默降级。

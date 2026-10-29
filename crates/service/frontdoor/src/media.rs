@@ -34,8 +34,7 @@ mod digest;
 mod jpeg;
 mod options;
 pub use options::ImageProcessingOptions;
-use options::check_working_set;
-use options::check_working_set_with_resize;
+use options::required_working_set;
 
 #[cfg(test)]
 const JPEG_SIGNATURE: [u8; 3] = [0xff, 0xd8, 0xff];
@@ -273,13 +272,12 @@ impl MediaService {
             .iter()
             .map(|request| load_image_with(&request.url, self.source, Some(context)))
             .collect::<Result<Vec<_>>>()?;
-        if !options.is_empty() {
-            if resize == ImageResizePolicy::Smart {
-                check_working_set(&images, &processor)?;
-            } else {
-                check_working_set_with_resize(&images, &processor, resize)?;
-            }
-        }
+        let baseline = images
+            .len()
+            .checked_mul(MEDIA_STAGING_BYTES)
+            .ok_or_else(|| Error::invalid("media staging size overflow"))?;
+        let needed = required_working_set(&images, &processor, resize)?;
+        context.ensure_media_bytes(needed, baseline)?;
         if resize == ImageResizePolicy::Smart {
             infer_models::prepare(
                 assets,
