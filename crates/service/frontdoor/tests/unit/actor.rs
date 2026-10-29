@@ -46,6 +46,14 @@ async fn automatic_request_ids_are_shared_concurrent_and_never_wrap() -> Result<
     handle.shutdown().await
 }
 fn handle() -> Result<RuntimeHandle> {
+    handle_with_cpu(CpuConfig {
+        workers: 1,
+        max_jobs: 4,
+        ..Default::default()
+    })
+}
+
+fn handle_with_cpu(config: CpuConfig) -> Result<RuntimeHandle> {
     let ir = support::model(ModelId::ONE);
     let mut registry = KernelRegistry::default();
     registry.register(&support::DeclaredKernels)?;
@@ -57,11 +65,7 @@ fn handle() -> Result<RuntimeHandle> {
             &registry,
             RuntimeConfig::default(),
         )?,
-        CpuConfig {
-            workers: 1,
-            max_jobs: 4,
-            ..Default::default()
-        },
+        config,
     )
 }
 
@@ -643,6 +647,138 @@ impl Drop for CreditDropProbe {
             self.observed.store(true, Ordering::Release);
         }
     }
+}
+
+#[tokio::test]
+async fn cancelled_staging_drops_its_input_before_releasing_ingress_credit() -> Result<()> {
+    use crate::cpu::{StagingPlan, StagingQuote};
+
+    const BUDGET: usize = 64 << 20;
+    let handle = handle()?;
+    let blocker = handle.ingress.reserve(RequestId::new(2)?, BUDGET - 4)?;
+    let observed = Arc::new(AtomicBool::new(false));
+    let payload = CreditDropProbe {
+        registry: handle.ingress.clone(),
+        other: RequestId::new(3)?,
+        observed: observed.clone(),
+    };
+    let (started, entered) = oneshot::channel();
+    let submitting = handle.clone();
+    let mut task = tokio::spawn(async move {
+        submitting
+            .submit_staged_preparing(
+                RequestId::ONE,
+                4,
+                None,
+                None,
+                move |_| {
+                    started
+                        .send(())
+                        .map_err(|()| Error::invariant("start receiver dropped"))?;
+                    Ok(StagingPlan::Deferred(payload, StagingQuote::new(4, 48)?))
+                },
+                |_, _| Err(Error::invariant("blocked input unexpectedly ran")),
+            )
+            .await
+    });
+    timeout(Duration::from_secs(2), entered)
+        .await
+        .map_err(|e| Error::invariant(e.to_string()))?
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    timeout(Duration::from_secs(2), async {
+        while handle.cpu_inspection().retained_jobs != 0 {
+            sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .map_err(|e| Error::invariant(e.to_string()))?;
+    assert!(timeout(Duration::from_millis(20), &mut task).await.is_err());
+    task.abort();
+    assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+    assert!(observed.load(Ordering::Acquire));
+    drop(blocker);
+    handle.shutdown().await
+}
+
+#[tokio::test]
+async fn cancelled_cpu_wait_drops_its_staged_input_under_ingress_credit() -> Result<()> {
+    use crate::cpu::{StagingPlan, StagingQuote};
+
+    const BUDGET: usize = 64 << 20;
+    let handle = handle_with_cpu(CpuConfig {
+        workers: 2,
+        max_jobs: 4,
+        max_bytes: BUDGET,
+        ..CpuConfig::default()
+    })?;
+    let pool = handle.cpu_pool();
+    let (started, entered) = oneshot::channel();
+    let (release, gate) = mpsc::channel();
+    let occupied = tokio::spawn(async move {
+        pool.run(BUDGET - 4, move |_| {
+            started
+                .send(())
+                .map_err(|()| Error::invariant("start receiver dropped"))?;
+            gate.recv().map_err(|e| Error::invariant(e.to_string()))?;
+            Ok(())
+        })
+        .await
+    });
+    timeout(Duration::from_secs(2), entered)
+        .await
+        .map_err(|e| Error::invariant(e.to_string()))?
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    let observed = Arc::new(AtomicBool::new(false));
+    let payload = CreditDropProbe {
+        registry: handle.ingress.clone(),
+        other: RequestId::new(2)?,
+        observed: observed.clone(),
+    };
+    let (loaded, ready) = oneshot::channel();
+    let submitting = handle.clone();
+    let mut task = tokio::spawn(async move {
+        submitting
+            .submit_staged_preparing(
+                RequestId::ONE,
+                4,
+                None,
+                None,
+                move |_| {
+                    loaded
+                        .send(())
+                        .map_err(|()| Error::invariant("start receiver dropped"))?;
+                    Ok(StagingPlan::Deferred(
+                        payload,
+                        StagingQuote::new(4, BUDGET)?,
+                    ))
+                },
+                |_, _| Err(Error::invariant("blocked input unexpectedly ran")),
+            )
+            .await
+    });
+    timeout(Duration::from_secs(2), ready)
+        .await
+        .map_err(|e| Error::invariant(e.to_string()))?
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    timeout(Duration::from_secs(2), async {
+        while handle.ingress.reserve(RequestId::new(2)?, 1).is_ok() {
+            sleep(Duration::from_millis(1)).await;
+        }
+        Result::<()>::Ok(())
+    })
+    .await
+    .map_err(|e| Error::invariant(e.to_string()))??;
+    assert!(timeout(Duration::from_millis(20), &mut task).await.is_err());
+    task.abort();
+    assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+    assert!(observed.load(Ordering::Acquire));
+    release
+        .send(())
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    occupied
+        .await
+        .map_err(|e| Error::invariant(e.to_string()))??;
+    handle.shutdown().await
 }
 
 #[tokio::test]

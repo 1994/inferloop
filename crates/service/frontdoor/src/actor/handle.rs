@@ -38,6 +38,18 @@ enum InitialStage<T> {
     Deferred(T, StagingQuote, infer_runtime::RequestPreparer),
 }
 
+// Fields drop in declaration order: staged input must disappear before its ingress owner.
+struct RetainedStage<T> {
+    input: T,
+    pending: Arc<Pending>,
+}
+impl<T> RetainedStage<T> {
+    fn with_owner<R>(self, work: impl FnOnce(T, &Pending) -> Result<R>) -> Result<R> {
+        let Self { input, pending } = self;
+        work(input, &pending)
+    }
+}
+
 impl RuntimeHandle {
     #[must_use]
     pub fn vocabulary(&self) -> usize {
@@ -258,19 +270,24 @@ impl RuntimeHandle {
             }
             InitialStage::Deferred(stage, quote, preparer) => (stage, quote, preparer),
         };
+        let staged = RetainedStage {
+            input: stage,
+            pending: pending.clone(),
+        };
         pending.retain_bytes(quote.retained())?;
         pending.wait_for_bytes(quote.peak(), deadline).await?;
-        let preparing = pending.clone();
         let request = self
             .cpu
             .run_preparing_wait(quote.peak(), deadline, &pending, move |context| {
-                preparing.check()?;
-                let (request, constraint) = finish(stage, context)?;
-                if request.id != id {
-                    return Err(Error::invalid("CPU preparation changed request identity"));
-                }
-                preparing.check()?;
-                preparer.prepare(request)?.with_constraint(constraint)
+                staged.with_owner(|stage, preparing| {
+                    preparing.check()?;
+                    let (request, constraint) = finish(stage, context)?;
+                    if request.id != id {
+                        return Err(Error::invalid("CPU preparation changed request identity"));
+                    }
+                    preparing.check()?;
+                    preparer.prepare(request)?.with_constraint(constraint)
+                })
             })
             .await?;
         pending.check()?;
