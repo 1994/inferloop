@@ -23,6 +23,10 @@ const PATCH_EMBED_HIDDEN_COPIES: usize = 3;
 const ATTENTION_PROJECTION_COPIES: usize = 6;
 /// Residual add uploads both operands and the output.
 const RESIDUAL_ACTIVATIONS: usize = 3;
+/// Fused block MLP holds the normalized input, residual, second projection and final output.
+const BLOCK_MLP_HIDDEN_ACTIVATIONS: usize = 4;
+/// Fused block MLP holds the first projection and its activated output.
+const BLOCK_MLP_INTERMEDIATE_ACTIVATIONS: usize = 2;
 
 fn bytes(elements: usize) -> Result<u64> {
     u64::try_from(elements)
@@ -92,21 +96,17 @@ fn one_item_peak(encoder: &ModalityEncoder, grid: (usize, usize, usize)) -> Resu
             .and_then(|n| n.checked_mul(2))
             .ok_or_else(|| Error::invalid("vision norm footprint overflow"))?,
     )?;
-    let fc1 = bytes(
+    let block_mlp = bytes(
         token_padded
             .checked_mul(
                 hidden
-                    .checked_add(mlp)
+                    .checked_mul(BLOCK_MLP_HIDDEN_ACTIVATIONS)
+                    .and_then(|value| {
+                        value.checked_add(mlp.checked_mul(BLOCK_MLP_INTERMEDIATE_ACTIVATIONS)?)
+                    })
                     .ok_or_else(|| Error::invalid("vision MLP footprint overflow"))?,
             )
             .ok_or_else(|| Error::invalid("vision MLP footprint overflow"))?,
-    )?;
-    let fc2 = fc1;
-    let gelu = bytes(
-        token_padded
-            .checked_mul(mlp)
-            .and_then(|n| n.checked_mul(2))
-            .ok_or_else(|| Error::invalid("vision GELU footprint overflow"))?,
     )?;
     let residual = bytes(
         token_padded
@@ -118,7 +118,7 @@ fn one_item_peak(encoder: &ModalityEncoder, grid: (usize, usize, usize)) -> Resu
     let attention_pack = attention
         .checked_add(compact_pack)
         .ok_or_else(|| Error::invalid("vision attention pack footprint overflow"))?;
-    let block = [attention_pack, layernorm, fc1, fc2, gelu, residual]
+    let block = [attention_pack, layernorm, block_mlp, residual]
         .into_iter()
         .max()
         .ok_or_else(|| Error::invalid("vision block footprint empty"))?;
