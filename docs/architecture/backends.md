@@ -37,6 +37,8 @@ CUDA 仅在完整 pool capture 通过预算校验后发布该选择；未知计�
 
 CUDA capture、projection workspace 与新建序列报价共用 ProgramGeometry：verification 和 wide/narrow prompt 各自记录实际捕获行数。省略宽 prompt 图的 pooled 程序只计入窄图的 activation arena；external/fusion 配置缓冲仍按实际分配上界计费。prefill 需要 verification fallback 时保留相应报价。
 
+wide 与 narrow 之间按 `ProgramGeometry::prompt_widths` 再捕获两档减半的 prompt 图（默认 1024/512/256/64），每块 prompt 在能容纳它的最窄图上重放。各档共享最宽档的 arena、split-K partials 与 fusion 行（前缀视图），只各自分配循环 workspace 与单行 logits；`prompt_scratch_bytes` 因此只为最宽档计 arena。RTX 5090 上 Qwen3.8-27B 65–256 token 的 prefill 从 99–101 ms 降到 36 ms，257–512 token 从约 102 ms 降到 58–61 ms，池的 KV 容量不变。
+
 cached shell 按 capacity/readout 与实际 take 路径匹配。转入 slot pool 会销毁私有 verification，但不会自动销毁原宽 prompt 图；复用报价保留旧 charge 的下界，并覆盖请求 private recapture 的新建报价。公共 state_reservation_bytes_for 与实际 reserve 使用同一算法，空闲 slot 不免除 prefill 私有程序的成本。
 
 图几何使用加载时由设备能力/tuning 得出的宽度，不按设备名称选择。报价是已知分配加 driver headroom 的保守上界，不能称作实测增量显存。实测收益与并发延迟取舍见[图几何准入实验](../archive/research/cuda-pooled-admission-geometry-2026-10-12.md)。
