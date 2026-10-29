@@ -15,6 +15,10 @@ use infer_spi::ModalityEncoder;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[cfg(test)]
+#[path = "../../tests/unit/vision_device_tower.rs"]
+mod device_tower_tests;
+
 /// Encoded staging limit for one vision tensor; the largest is a 4608×4608 merger projection.
 const STAGING_BYTES: u64 = 512 * 1024 * 1024;
 
