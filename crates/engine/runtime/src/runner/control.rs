@@ -44,19 +44,29 @@ where
         } else {
             None
         };
+        // Track the state before the owner can see its reservation, so a refused command never
+        // leaves a queued reservation that no ticket watches; undo the entry if it was not sent.
+        let tracked = match reserve {
+            Some(state) => self.state_ids.insert(state)?,
+            None => false,
+        };
         self.shared.controls.fetch_add(1, Ordering::AcqRel);
         let credit = super::ControlCredit {
             shared: self.shared.clone(),
             notify: true,
         };
-        self.enqueue(Job::Resource {
+        if let Err(error) = self.enqueue(Job::Resource {
             command,
             reply,
             reserve,
             credit,
-        })?;
+        }) {
+            if let Some(state) = reserve.filter(|_| tracked) {
+                self.state_ids.remove(&state);
+            }
+            return Err(error);
+        }
         if let Some(state) = reserve {
-            self.state_ids.insert(state)?;
             Ok(ticket.on_abandon_state(self.shared.clone(), state))
         } else {
             Ok(ticket)
