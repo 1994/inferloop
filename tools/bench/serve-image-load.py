@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Measure one closed-loop image-chat workload against an existing HTTP server.
 
-Use unique, pre-generated images and the same manifest for each engine.  This is an
-exploratory client, not the text serving gate or proof of equivalent model quality.
+Use pre-generated images and the same manifest for each engine. Images are unique
+by default; ``--fixture-cycle N`` repeats the first N selected images in order across
+warmup and measured requests. Warmup does not necessarily cover the whole cycle;
+concurrent arrival order and server cache hits must be verified separately.
+This is an exploratory client, not the text serving gate or proof of equivalent model quality.
 Start the server under the repository's protected benchmark workflow and use
 ``hardware-monitor.py`` for server CPU, RSS and GPU telemetry.  This client never
 starts a server or initializes a GPU.  A completed report includes every rejection;
@@ -81,9 +84,10 @@ def fixture_payloads(args):
     except (KeyError, TypeError) as error:
         raise ValueError(f"fixture size not present: {args.size}") from error
     total = (args.warmup + args.samples) * args.images_per_request
-    entries = available[args.offset : args.offset + total]
-    if len(entries) != total:
-        raise ValueError(f"need {total} fixture images from offset {args.offset}")
+    pool_size = args.fixture_cycle if args.fixture_cycle is not None else total
+    pool = available[args.offset : args.offset + pool_size]
+    if len(pool) != pool_size:
+        raise ValueError(f"need {pool_size} fixture images from offset {args.offset}")
     root = args.fixtures.resolve()
     fixed = len(request_body(args, []))
     if fixed > MAX_REQUEST_METADATA_BYTES:
@@ -91,6 +95,11 @@ def fixture_payloads(args):
     records = []
     sources = 4 * len(manifest_bytes)
     body_total = current_body = maximum_body = maximum_temporary = 0
+    entries = (
+        iter(pool)
+        if args.fixture_cycle is None
+        else (pool[index % pool_size] for index in range(total))
+    )
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict) or not isinstance(entry.get("file"), str):
             raise ValueError("invalid fixture entry")
@@ -130,7 +139,11 @@ def fixture_payloads(args):
             raise ValueError("fixture workload exceeds client preparation limit")
         records.append((entry, path, size))
     prepared, seen = [], set()
-    for entry, path, size in records:
+    for index, (entry, path, size) in enumerate(records):
+        if index >= pool_size:
+            # The verified source is immutable and reused for every later occurrence.
+            prepared.append(prepared[index % pool_size])
+            continue
         with path.open("rb") as file:
             raw = file.read(size + 1)
         if len(raw) != size:
@@ -139,7 +152,7 @@ def fixture_payloads(args):
         if digest != entry["sha256"]:
             raise ValueError(f"fixture hash mismatch: {entry['file']}")
         if digest in seen:
-            raise ValueError("fixture images must be unique across warmup and samples")
+            raise ValueError("fixture pool images must be unique")
         seen.add(digest)
         if args.image_source == "url":
             source = entry.get("url")
@@ -958,6 +971,12 @@ async def run_async(args, reference, manifest, manifest_sha256, groups, bodies, 
         "warmups": warmup,
         "samples": samples,
     }
+    if args.fixture_cycle is not None:
+        report["workload"]["fixture_cycle"] = args.fixture_cycle
+        report["fixture_cycle_scope"] = (
+            "The cycle applies to flattened image slots across warmup and samples. "
+            "Concurrent arrival order and server cache hits are not verified."
+        )
     if args.telemetry_file:
         try:
             if not args.telemetry_file.is_file():
@@ -985,6 +1004,11 @@ def parse_args(argv=None):
     parser.add_argument("--warmup", type=int, default=4)
     parser.add_argument("--offset", type=int, default=0, help="image offset in the manifest")
     parser.add_argument("--images-per-request", type=int, default=1)
+    parser.add_argument(
+        "--fixture-cycle",
+        type=int,
+        help="repeat this many unique manifest images across warmup and measured requests",
+    )
     parser.add_argument("--image-source", choices=("data", "url"), default="data")
     parser.add_argument(
         "--max-prepared-mib",
@@ -1023,6 +1047,10 @@ def parse_args(argv=None):
         or args.timeout <= 0
     ):
         parser.error("invalid warmup, offset, token, preparation or timeout limit")
+    if args.fixture_cycle is not None and not (
+        1 <= args.fixture_cycle <= (args.warmup + args.samples) * args.images_per_request
+    ):
+        parser.error("fixture-cycle must be between one and the total requested images")
     if (
         args.require_output_tokens is not None
         and not 0 <= args.require_output_tokens <= args.max_tokens
