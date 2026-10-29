@@ -440,6 +440,15 @@ fn verify_lanes_rejects_holes_duplicates_and_invalid_positions() {
 }
 
 #[test]
+fn verify_lanes_accepts_independent_rotary_and_state_positions() -> Result<()> {
+    let lanes = [(0, 0, 1, 8, 64), (0, 1, 2, 9, 65)];
+    let metadata = verify_lanes(&lanes, &[64], 3, 128, 32)?;
+    assert_eq!(metadata, vec![Some((1, 8, 64)), Some((2, 9, 65)), None]);
+    assert!(verify_lanes(&[(0, 0, 1, 8, 63)], &[64], 3, 128, 32).is_err());
+    Ok(())
+}
+
+#[test]
 #[ignore = "requires CUDA hardware; run inside safe-run"]
 fn wide_prefill_preserves_tail_and_scalar_continuation() -> Result<()> {
     CudaDevice::enable_kernel_cache()?;
