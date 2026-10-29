@@ -41,16 +41,46 @@ fn device_positions_match_scalar_interpolation_and_padding() -> Result<()> {
         let taps = fixture_taps(tokens)?;
         let mut invalid = taps.clone();
         invalid.indices[0][3] = u32::try_from(ROWS).map_err(device_error)?;
-        assert!(DeviceTaps::new(&device, &invalid, &device_table, ROWS, HIDDEN, padded).is_err());
+        assert!(
+            DeviceTaps::new(
+                &device,
+                &invalid.indices,
+                &invalid.weights,
+                &device_table,
+                ROWS,
+                HIDDEN,
+                padded,
+            )
+            .is_err()
+        );
         invalid = taps.clone();
         invalid.weights.clear();
-        assert!(DeviceTaps::new(&device, &invalid, &device_table, ROWS, HIDDEN, padded).is_err());
+        assert!(
+            DeviceTaps::new(
+                &device,
+                &invalid.indices,
+                &invalid.weights,
+                &device_table,
+                ROWS,
+                HIDDEN,
+                padded,
+            )
+            .is_err()
+        );
         let mut input = vec![0.0_f32; padded * HIDDEN];
         for (i, value) in input.iter_mut().take(tokens * HIDDEN).enumerate() {
             *value = (bounded_float(i)? * 0.017).cos();
         }
         let uploaded = device.upload(input.clone(), &[padded, HIDDEN])?;
-        let staged = DeviceTaps::new(&device, &taps, &device_table, ROWS, HIDDEN, padded)?;
+        let staged = DeviceTaps::new(
+            &device,
+            &taps.indices,
+            &taps.weights,
+            &device_table,
+            ROWS,
+            HIDDEN,
+            padded,
+        )?;
         let mut result = api::zeros::<f32>(&[padded, HIDDEN])
             .sync_on(&device.stream)
             .map_err(device_error)?;

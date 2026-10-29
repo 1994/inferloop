@@ -132,6 +132,9 @@ def check_exceptions():
                         ROOT / "crates/backend/cuda/src/device.rs",
                         ROOT / "tools/bench/attention/src/device.rs",
                         ROOT / "crates/backend/cuda/src/device/readback.rs",
+                        # Gather boundary validates every tap, shape and table address before
+                        # recording and retains all device owners until completion.
+                        ROOT / "crates/backend/cuda/src/device/vision_position.rs",
                         ROOT / "crates/backend/cuda/src/device/cublaslt.rs",
                         ROOT / "crates/backend/cuda/src/device/vendor_fp8.rs",
                         # FP4 extension of the Lt ABI: checked complete extents, exact output

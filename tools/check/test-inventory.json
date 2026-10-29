@@ -328,6 +328,11 @@
     },
     {
       "crate": "cuda",
+      "file": "src/device/vision_position.rs",
+      "mount": "../../tests/unit/vision_position.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/device.rs",
       "mount": "../tests/unit/device.rs"
     },
@@ -915,11 +920,6 @@
       "crate": "cuda",
       "file": "src/vision/mod.rs",
       "mount": "../../tests/unit/vision_padding.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/vision/position.rs",
-      "mount": "../../tests/unit/vision_position.rs"
     },
     {
       "crate": "cuda",

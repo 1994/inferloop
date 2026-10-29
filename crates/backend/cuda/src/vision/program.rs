@@ -1,7 +1,6 @@
 //! Captured vision-encoder programs.
 use super::block_mlp;
 use super::device_tower;
-use super::position::DeviceTaps;
 use super::{VisionWeights, kernels, weights::AttentionLayer, weights::half_tile};
 #[cfg(test)]
 use crate::attention::benchmark::REPEATS;
@@ -9,6 +8,7 @@ use crate::attention::benchmark::REPEATS;
 use crate::attention::benchmark::measure;
 use crate::attention::kernels::sdpa::attention as sdpa_attention;
 use crate::attention::tile_rows;
+use crate::device::vision_position::DeviceTaps;
 use crate::device::{CudaDevice, device_error};
 use cutile::cuda_async::cuda_graph::Scope;
 use cutile::cuda_async::error::DeviceError;
@@ -155,7 +155,8 @@ impl StagedPositions {
                 let table = weights.get("pos_embed.weight")?;
                 let staged = DeviceTaps::new(
                     device,
-                    taps,
+                    &taps.indices,
+                    &taps.weights,
                     table,
                     encoder.position_embeddings,
                     hidden,

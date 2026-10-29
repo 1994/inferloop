@@ -159,6 +159,7 @@ fn resident_states(total_memory_bytes: u64) -> usize {
 pub(crate) mod asynchronous;
 mod readback;
 mod upload;
+pub(crate) mod vision_position;
 #[cfg(test)]
 pub(crate) use readback::queue_test_gate;
 pub(crate) use upload::PinnedUpload;

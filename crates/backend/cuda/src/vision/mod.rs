@@ -12,7 +12,6 @@ pub(crate) mod kernels;
 #[cfg(test)]
 #[path = "../../tests/unit/vision_padding.rs"]
 mod padding_check;
-mod position;
 pub(crate) mod program;
 mod session;
 mod weights;

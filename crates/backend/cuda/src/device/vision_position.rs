@@ -3,14 +3,12 @@
     unsafe_code,
     reason = "The position gather validates every table index and owns all device buffers through graph completion"
 )]
-use super::program::{COLUMN_TILE, TOKEN_TILE};
 use crate::device::{CudaDevice, device_error};
 use cutile::cuda_async::cuda_graph::Scope;
 use cutile::cuda_async::error::DeviceError;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
-use infer_models::vision::PositionTaps;
 use std::result::Result as StdResult;
 use std::sync::Arc;
 
@@ -20,9 +18,13 @@ mod tests;
 
 /// Bilinear interpolation takes two taps on each image axis.
 const TAPS: usize = 4;
+/// Rows in one position-gather tile.
+const TOKEN_TILE: usize = 32;
+/// Channels in one position-gather tile.
+const COLUMN_TILE: usize = 64;
 
 /// Validated gather indices and interpolation weights, in tap-major order.
-pub(super) struct DeviceTaps {
+pub struct DeviceTaps {
     indices: Arc<Tensor<i32>>,
     weights: Arc<Tensor<f32>>,
     table: Arc<Tensor<bf16>>,
@@ -31,9 +33,14 @@ pub(super) struct DeviceTaps {
 }
 
 impl DeviceTaps {
-    pub(super) fn new(
+    /// Validate and upload the bounded tap data for one interpolation.
+    ///
+    /// # Errors
+    /// Rejects invalid shapes, out-of-range indices or failed CUDA transfers.
+    pub fn new(
         device: &CudaDevice,
-        taps: &PositionTaps,
+        tap_indices: &[[u32; TAPS]],
+        tap_weights: &[[f32; TAPS]],
         table: &Arc<Tensor<bf16>>,
         rows: usize,
         hidden: usize,
@@ -58,9 +65,9 @@ impl DeviceTaps {
             || hidden == 0
             || !hidden.is_multiple_of(COLUMN_TILE)
             || !padded.is_multiple_of(TOKEN_TILE)
-            || taps.indices.is_empty()
-            || taps.indices.len() != taps.weights.len()
-            || taps.indices.len() > padded
+            || tap_indices.is_empty()
+            || tap_indices.len() != tap_weights.len()
+            || tap_indices.len() > padded
             || table.num_bytes() != bytes
             || table.shape() != table_shape
             || i32::try_from(elements).is_err()
@@ -72,8 +79,7 @@ impl DeviceTaps {
             .ok_or_else(|| Error::invalid("vision position taps overflow"))?;
         let mut indices = vec![0_i32; len];
         let mut weights = vec![0.0_f32; len];
-        for (patch, (item_indices, item_weights)) in
-            taps.indices.iter().zip(&taps.weights).enumerate()
+        for (patch, (item_indices, item_weights)) in tap_indices.iter().zip(tap_weights).enumerate()
         {
             for tap in 0..TAPS {
                 let index = usize::try_from(item_indices[tap]).map_err(device_error)?;
@@ -93,7 +99,11 @@ impl DeviceTaps {
         })
     }
 
-    pub(super) fn record(
+    /// Record a gather and add on the supplied graph, retaining its device tensors.
+    ///
+    /// # Errors
+    /// Rejects mismatched activation shapes or graph-recording failures.
+    pub fn record(
         &self,
         scope: &Scope,
         embedded: &Tensor<f32>,
