@@ -1,7 +1,47 @@
-use super::{candidate_pool_capacity, pool_retry_budget, pooled_envelope};
+use super::{candidate_pool_capacity, media_layout_prompt, pool_retry_budget, pooled_envelope};
 use crate::constants::CB_SLOT_TOKENS;
-use infer_ir::OutputReadout;
+use infer_ir::{MediaItem, MediaPlan, Modality, OutputReadout};
+use std::sync::Arc;
 use std::{env::var, error::Error};
+
+#[test]
+fn layout_metadata_does_not_duplicate_media_payloads() {
+    const IMAGE: u32 = 248_056;
+    let source: Arc<[f32]> = vec![0.25; 4096].into();
+    let tokens = vec![
+        7, IMAGE, IMAGE, IMAGE, IMAGE, 8, IMAGE, IMAGE, IMAGE, IMAGE, IMAGE, IMAGE, 9,
+    ];
+    let plan = MediaPlan {
+        modality: Modality::Image,
+        prompt: tokens.clone().into(),
+        items: vec![
+            MediaItem {
+                modality: Modality::Image,
+                pixels: source.clone(),
+                grid: (1, 4, 4),
+                span: 1..5,
+            },
+            MediaItem {
+                modality: Modality::Image,
+                pixels: source.clone(),
+                grid: (1, 4, 6),
+                span: 6..12,
+            },
+        ],
+    };
+    let prompt = media_layout_prompt(&plan);
+    assert_eq!(prompt.tokens, tokens);
+    assert_eq!(prompt.spans, [1..5, 6..12]);
+    assert_eq!(prompt.images[0].grid, (1, 4, 4));
+    assert_eq!(prompt.images[1].grid, (1, 4, 6));
+    assert!(
+        prompt
+            .images
+            .iter()
+            .all(|image| image.pixels.capacity() == 0)
+    );
+    assert_eq!(Arc::strong_count(&source), 3);
+}
 
 #[test]
 fn incompatible_requests_cannot_create_or_enlarge_a_decode_pool() {

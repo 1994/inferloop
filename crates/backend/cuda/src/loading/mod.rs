@@ -42,7 +42,7 @@ use crate::{
     tuning::TuningReport,
 };
 use infer_core::{Error, ModelId, Result};
-use infer_ir::{DataflowGraph, ModelIr};
+use infer_ir::{DataflowGraph, MediaItem, ModelIr};
 use infer_models::QuantizedPackage;
 use std::path::Path;
 use std::sync::Arc;
@@ -218,7 +218,21 @@ impl LoadedVision {
         device: &CudaDevice,
         image: &infer_models::PromptImage,
     ) -> Result<Vec<f32>> {
-        let (temporal, height, width) = image.grid;
+        self.encode_pixels(device, &image.pixels, image.grid)
+    }
+
+    /// Borrow request-owned patches for the duration of the synchronous encoding call.
+    pub(crate) fn encode_item(&self, device: &CudaDevice, item: &MediaItem) -> Result<Vec<f32>> {
+        self.encode_pixels(device, &item.pixels, item.grid)
+    }
+
+    fn encode_pixels(
+        &self,
+        device: &CudaDevice,
+        pixels: &[f32],
+        grid: (usize, usize, usize),
+    ) -> Result<Vec<f32>> {
+        let (temporal, height, width) = grid;
         let patches = temporal
             .checked_mul(height)
             .and_then(|value| value.checked_mul(width))
@@ -227,18 +241,21 @@ impl LoadedVision {
             return Err(Error::invalid("image patch grid is empty"));
         }
         let width = patch_width(&self.encoder)?;
-        if image.pixels.len() != patches * width {
+        let expected = patches
+            .checked_mul(width)
+            .ok_or_else(|| Error::invalid("image patch size overflow"))?;
+        if pixels.len() != expected {
             return Err(Error::invalid("image pixels do not match the patch grid"));
         }
         // The position contribution is a host-side gather of the learned table, then the tower
         // consumes patch embeddings and the merger folds each merge group back into text width.
-        let taps = position_taps(image.grid, &self.encoder)?;
+        let taps = position_taps(grid, &self.encoder)?;
         let positions = gather_positions(self.weights.position_table(), &self.encoder, &taps)?;
         let embedded = patch_embed(
             device,
             &self.encoder,
             &self.weights,
-            &image.pixels,
+            pixels,
             &positions,
             patches,
         )?;
@@ -247,7 +264,7 @@ impl LoadedVision {
             &self.weights,
             &self.encoder,
             &embedded,
-            image.grid,
+            grid,
             patches,
         )?;
         merger(device, &self.weights, &self.encoder, &hidden, patches)

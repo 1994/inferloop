@@ -22,6 +22,22 @@ use std::ops::Range;
 /// Bound capture/replan work while adapting tensor quotes to observed driver storage.
 const POOL_CAPTURE_ATTEMPTS: usize = 3;
 
+/// Layout validation needs only the prompt, spans and grids, never the patch payload.
+fn media_layout_prompt(plan: &MediaPlan) -> PreparedPrompt {
+    PreparedPrompt {
+        tokens: plan.prompt.to_vec(),
+        images: plan
+            .items
+            .iter()
+            .map(|item| PromptImage {
+                pixels: Vec::new(),
+                grid: item.grid,
+            })
+            .collect(),
+        spans: plan.items.iter().map(|item| item.span.clone()).collect(),
+    }
+}
+
 /// The prompt rows a just-finished chunk leaves as a reusable prefix, if any.
 ///
 /// Only a logits-readout generation that consumed prefill tokens qualifies, at the regular
@@ -1663,18 +1679,7 @@ impl Sequence {
         let tower = loaded
             .vision()
             .ok_or_else(|| Error::unsupported("model has no bound vision encoder"))?;
-        let prepared = PreparedPrompt {
-            tokens: plan.prompt.to_vec(),
-            images: plan
-                .items
-                .iter()
-                .map(|item| PromptImage {
-                    pixels: item.pixels.to_vec(),
-                    grid: item.grid,
-                })
-                .collect(),
-            spans: plan.items.iter().map(|item| item.span.clone()).collect(),
-        };
+        let prepared = media_layout_prompt(plan);
         let layout = media_layout(&prepared, loaded.imported(), &plan.modality)?;
         if layout.spans.len() != plan.items.len() {
             return Err(Error::invalid("media layout does not cover every item"));
@@ -1682,8 +1687,8 @@ impl Sequence {
         let hidden = loaded.model().hidden_size;
         let mut data = Vec::new();
         let mut bases = Vec::with_capacity(prepared.images.len());
-        for image in &prepared.images {
-            let encoded = tower.encode(loaded.device(), image)?;
+        for item in &plan.items {
+            let encoded = tower.encode_item(loaded.device(), item)?;
             bases.push(data.len() / hidden);
             data.extend(encoded);
         }
