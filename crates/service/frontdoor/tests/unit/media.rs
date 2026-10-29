@@ -19,6 +19,55 @@ const ONE_PIXEL_PNG: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
 #[test]
+fn image_resize_overrides_match_transformers_reference_grids() -> infer_core::Result<()> {
+    let original = ImageProcessor {
+        patch_size: 16,
+        temporal_patch_size: 2,
+        merge_size: 2,
+        min_pixels: 65_536,
+        max_pixels: 16_777_216,
+        mean: [0.5; 3],
+        std: [0.5; 3],
+        rescale: 1.0 / 255.0,
+    };
+    // Transformers 5.17.0 Qwen2VLImageProcessor, with Qwen3-VL 2B processor geometry.
+    let cases = [
+        ("{}", (128, 256), (1, 12, 24)),
+        (r#"{"min_pixels":262144}"#, (128, 256), (1, 24, 46)),
+        (r#"{"max_pixels":65536}"#, (512, 512), (1, 16, 16)),
+        (
+            r#"{"size":{"shortest_edge":32768,"longest_edge":262144}}"#,
+            (128, 256),
+            (1, 8, 16),
+        ),
+        (r#"{"do_resize":false}"#, (128, 256), (1, 8, 16)),
+    ];
+    for (json, (height, width), expected_grid) in cases {
+        let options = ImageProcessingOptions::parse(json)?;
+        let processor = options.processor(&original)?;
+        let (height, width) =
+            processor.target_dimensions(height, width, options.resize_policy())?;
+        assert_eq!(
+            (
+                1,
+                height / processor.patch_size,
+                width / processor.patch_size
+            ),
+            expected_grid,
+            "{json}"
+        );
+    }
+    let disabled = ImageProcessingOptions::parse(r#"{"do_resize":false}"#)?;
+    assert!(
+        disabled
+            .processor(&original)?
+            .target_dimensions(129, 256, disabled.resize_policy())
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
 fn scoped_image_options_replace_the_request_scope() {
     let defaults = ImageProcessingOptions::parse(
         r#"{"images_kwargs":{"min_pixels":4096,"max_pixels":262144}}"#,

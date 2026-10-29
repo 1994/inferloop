@@ -40,7 +40,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 109
+      "tests": 110
     },
     "ir": {
       "benches": 0,
@@ -1403,11 +1403,11 @@
     }
   ],
   "totals": {
-    "all": 1020,
+    "all": 1021,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1020
+    "tests": 1021
   }
 }
