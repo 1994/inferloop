@@ -8,6 +8,7 @@
 //! Layouts follow the row-major to column-major mapping a projection needs:
 //! `out[m, n] = activations[m, k] * weights[n, k]^T`, so `A` is the activation with `OP_T`
 //! (`lda = k`), `B` is the weight with `OP_N` (`ldb = k`), and `C` is the output with `ldc = m`.
+use super::library_names::CUBLAS;
 use crate::device::CudaDevice;
 use crate::kernels::linear::cast_bf16;
 use crate::tuning::prefill::DENSE_CAST_TILE;
@@ -75,7 +76,7 @@ struct Api {
     reason = "Audited loader: opening the toolkit library the build already targets by its soname"
 )]
 fn open_library() -> Option<libloading::Library> {
-    for name in ["libcublas.so.13", "libcublas.so"] {
+    for name in CUBLAS {
         // SAFETY: dlopen of a toolkit soname; the library stays alive in `Api` for the process.
         if let Ok(library) = unsafe { libloading::Library::new(name) } {
             return Some(library);

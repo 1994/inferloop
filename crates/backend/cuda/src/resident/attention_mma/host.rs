@@ -1,6 +1,7 @@
 //! AOT launch code owns TMA descriptors and cluster launches; serving never imports Python.
 use super::catalog::Variant;
 use crate::device::device_error;
+use crate::device::library_names::CUDA_RUNTIME;
 use cuda_core::sys::{CUdeviceptr, CUstream};
 use infer_core::{Error, Result};
 use sha2::{Digest, Sha256};
@@ -78,7 +79,7 @@ fn cache_file(name: &str, bytes: &[u8]) -> Result<PathBuf> {
     reason = "loads only embedded hash-verified AOT host code and resolves its fixed C ABI while both libraries remain owned"
 )]
 fn open(name: &str, bytes: &'static [u8]) -> Result<Api> {
-    let runtime = ["libcudart.so.13", "/opt/cuda/lib64/libcudart.so.13"]
+    let runtime = CUDA_RUNTIME
         .into_iter()
         .find_map(|name| {
             // SAFETY: loading the installed CUDA runtime preserves its standard process ABI.

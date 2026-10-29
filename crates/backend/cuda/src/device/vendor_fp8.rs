@@ -3,6 +3,7 @@
 //! Descriptors and zero-workspace algorithms are warmed before graph capture. Native kernels
 //! remain the fallback for an absent library, unsupported shape or failed exact tuning gate.
 use super::CudaDevice;
+use super::library_names::CUBLAS_LT;
 use cuda_core::f8e4m3fn;
 use cuda_core::sys::CUcontext;
 use cuda_core::sys::CUdeviceptr;
@@ -186,7 +187,7 @@ struct Api {
     reason = "Audited loader resolves documented CUDA 13 Lt signatures and keeps the library alive"
 )]
 fn load() -> Option<Api> {
-    let library = ["libcublasLt.so.13", "libcublasLt.so"]
+    let library = CUBLAS_LT
         .into_iter()
         // SAFETY: The SDK call uses live lifetime-owned handles and pointers with the declared header ABI.
         .find_map(|name| unsafe { libloading::Library::new(name).ok() })?;

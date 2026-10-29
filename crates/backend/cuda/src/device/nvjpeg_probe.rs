@@ -1,4 +1,5 @@
 //! Load-only nvJPEG diagnostic. This module does not create CUDA contexts or decode images.
+use super::library_names::NVJPEG;
 use infer_core::{Error, ErrorCode, Result};
 use libloading::Library;
 
@@ -58,7 +59,7 @@ fn library_info() -> Result<LibraryInfo> {
 
 impl Api {
     fn load() -> Result<Self> {
-        Self::load_names(&["libnvjpeg.so.13", "libnvjpeg.so"])
+        Self::load_names(&NVJPEG)
     }
 
     #[expect(

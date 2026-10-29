@@ -16,6 +16,13 @@ use cuda_core::sys::cuMemcpyDtoH_v2;
 use cuda_core::sys::cuMemcpyHtoDAsync_v2;
 use cuda_core::sys::cudaError_enum_CUDA_SUCCESS;
 use cuda_core::sys::{CUDA_MEMCPY3D, CUmemorytype_enum_CU_MEMORYTYPE_DEVICE, cuMemcpy3DAsync_v2};
+use cuda_core::sys::{
+    CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_CLOCK_RATE as CORE_CLOCK,
+    CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR as COMPUTE_MAJOR,
+    CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR as COMPUTE_MINOR,
+    CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT as MULTIPROCESSORS,
+    CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_WARP_SIZE as WARP_SIZE,
+};
 use cuda_core::{DeviceCopy, PinnedHostBuffer};
 use cutile::cuda_async::device_context::with_default_device_policy;
 use cutile::cuda_async::device_future::DeviceFuture;
@@ -63,6 +70,41 @@ pub struct DeviceProfile {
     pub memory_bus_width_bits: u32,
     /// L2 cache size in bytes.
     pub l2_cache_bytes: u32,
+}
+
+/// Driver-reported SM capability, separate from any kernel or artifact qualification policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ComputeCapability {
+    pub(crate) major: u32,
+    pub(crate) minor: u32,
+}
+
+impl ComputeCapability {
+    /// Tensor-core generation for architectures qualified by this backend.
+    pub(crate) const fn tensor_core_generation(self) -> Option<u16> {
+        /// Compute capability major for the qualified fourth-generation tensor cores.
+        const HOPPER_SM_MAJOR: u32 = 9;
+        /// Compute capability major for the qualified fifth-generation tensor cores.
+        const BLACKWELL_SM_MAJOR: u32 = 12;
+        /// Tensor-core generation reported for the qualified Hopper target.
+        const HOPPER_TENSOR_CORE_GENERATION: u16 = 4;
+        /// Tensor-core generation reported for the qualified Blackwell target.
+        const BLACKWELL_TENSOR_CORE_GENERATION: u16 = 5;
+        match (self.major, self.minor) {
+            (HOPPER_SM_MAJOR, 0) => Some(HOPPER_TENSOR_CORE_GENERATION),
+            (BLACKWELL_SM_MAJOR, 0) => Some(BLACKWELL_TENSOR_CORE_GENERATION),
+            _ => None,
+        }
+    }
+}
+
+fn compute_capability_with(
+    mut query: impl FnMut(CUdevice_attribute) -> Result<u32>,
+) -> Result<ComputeCapability> {
+    Ok(ComputeCapability {
+        major: query(COMPUTE_MAJOR)?,
+        minor: query(COMPUTE_MINOR)?,
+    })
 }
 impl DeviceProfile {
     /// Stable identity for machine-local artifacts such as the kernel tuning table. Two
@@ -157,6 +199,7 @@ fn resident_states(total_memory_bytes: u64) -> usize {
         .clamp(MIN_RESIDENT_STATES, MAX_RESIDENT_STATES)
 }
 pub(crate) mod asynchronous;
+pub(crate) mod library_names;
 #[cfg(test)]
 mod nvjpeg_probe;
 mod readback;
@@ -413,7 +456,7 @@ fn dimensions<T: DType>(x: &Tensor<f32>, w: &Tensor<T>) -> Result<(usize, usize)
     reason = "Audited driver queries and stream drain with an owned device and a bound context"
 )]
 impl CudaDevice {
-    pub(crate) fn attribute(&self, attribute: CUdevice_attribute) -> Result<u32> {
+    fn attribute(&self, attribute: CUdevice_attribute) -> Result<u32> {
         let mut value = 0;
         // SAFETY: the owned stream retains this device; value is a live output pointer.
         let status = unsafe {
@@ -421,6 +464,22 @@ impl CudaDevice {
         };
         driver_status(status)?;
         u32::try_from(value).map_err(device_error)
+    }
+
+    pub(crate) fn compute_capability(&self) -> Result<ComputeCapability> {
+        compute_capability_with(|attribute| self.attribute(attribute))
+    }
+
+    pub(crate) fn multiprocessor_count(&self) -> Result<u32> {
+        self.attribute(MULTIPROCESSORS)
+    }
+
+    pub(crate) fn warp_size(&self) -> Result<u32> {
+        self.attribute(WARP_SIZE)
+    }
+
+    pub(crate) fn core_clock_khz(&self) -> Result<u32> {
+        self.attribute(CORE_CLOCK)
     }
 
     /// CUDA driver API version, used to invalidate measured kernel decisions.

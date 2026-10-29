@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 418
+      "tests": 419
     },
     "frontdoor": {
       "benches": 0,
@@ -1399,11 +1399,11 @@
     }
   ],
   "totals": {
-    "all": 1002,
+    "all": 1003,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1002
+    "tests": 1003
   }
 }

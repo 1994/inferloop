@@ -160,7 +160,6 @@ impl LoadedModel {
         }
     }
     pub(crate) fn concurrency_roofline(&self) -> Result<Option<usize>> {
-        use cuda_core::sys::CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_CLOCK_RATE as CLOCK_RATE;
         if self.graph.nodes.iter().any(|node| {
             matches!(
                 node.op,
@@ -177,7 +176,7 @@ impl LoadedModel {
                 "compute roofline unavailable; concurrency uses memory and protocol bounds");
             return Ok(None);
         };
-        let clock = u128::from(self.device.attribute(CLOCK_RATE)?);
+        let clock = u128::from(self.device.core_clock_khz()?);
         let chip_peak = mul(
             mul(u128::from(self.profile.multiprocessors), clock)?,
             mul(HZ_PER_KHZ, rates.normalization)?,
