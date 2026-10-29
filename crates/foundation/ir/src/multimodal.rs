@@ -5,6 +5,15 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 use std::sync::Arc;
 
+/// Spatial resize applied before image patch extraction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageResizePolicy {
+    /// Use the model processor's pixel bounds and patch-grid rounding.
+    Smart,
+    /// Preserve source dimensions, requiring them to tile by the patch and merge sizes.
+    Disabled,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Modality {
     Text,

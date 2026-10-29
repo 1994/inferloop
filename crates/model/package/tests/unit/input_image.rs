@@ -184,3 +184,113 @@ fn custom_rescale_preserves_original_float_semantics() {
         }
     }
 }
+
+#[test]
+fn disabled_resize_preserves_dimensions_and_rejects_unaligned_images() -> Result<()> {
+    use infer_ir::ImageResizePolicy;
+    let processor = ImageProcessor {
+        patch_size: 2,
+        temporal_patch_size: 2,
+        merge_size: 2,
+        min_pixels: 256,
+        max_pixels: 1024,
+        mean: [0.5; 3],
+        std: [0.5; 3],
+        rescale: RESCALE,
+    };
+    let pixels = vec![255; 4 * 8 * RGB_CHANNELS];
+    let processed =
+        processor.preprocess_rgb_with_resize(4, 8, &pixels, ImageResizePolicy::Disabled)?;
+    assert_eq!(processed.grid, (1, 2, 4));
+    assert!(
+        processed
+            .pixels
+            .iter()
+            .all(|value| value.to_bits() == 1.0f32.to_bits())
+    );
+    assert_ne!(
+        processor.target_dimensions(4, 8, ImageResizePolicy::Smart)?,
+        (4, 8)
+    );
+    assert!(
+        processor
+            .target_dimensions(3, 8, ImageResizePolicy::Disabled)
+            .is_err()
+    );
+    assert!(
+        processor
+            .target_dimensions(0, 8, ImageResizePolicy::Disabled)
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn disabled_resize_matches_embedded_transformers_reference() -> Result<()> {
+    use infer_ir::ImageResizePolicy;
+    let processor = ImageProcessor {
+        patch_size: 16,
+        temporal_patch_size: 2,
+        merge_size: 2,
+        min_pixels: 65_536,
+        max_pixels: 16_777_216,
+        mean: [0.5; 3],
+        std: [0.5; 3],
+        rescale: RESCALE,
+    };
+    // The fixture is the first 2x2 patch block produced by Transformers 5.17.0's
+    // Qwen2VLImageProcessor with do_resize=false, on a 128x256 RGB8 image whose
+    // row-major byte at index i is i % 251. Extract the same 32x32 input block.
+    let mut pixels = Vec::with_capacity(32 * 32 * RGB_CHANNELS);
+    for y in 0..32 {
+        for x in 0..32 {
+            for channel in 0..RGB_CHANNELS {
+                let value = ((y * 256 + x) * RGB_CHANNELS + channel) % 251;
+                pixels.push(u8::try_from(value).map_err(|_| Error::invalid("fixture byte"))?);
+            }
+        }
+    }
+    let result =
+        processor.preprocess_rgb_with_resize(32, 32, &pixels, ImageResizePolicy::Disabled)?;
+    let expected = include_bytes!("../fixtures/qwen3vl-no-resize-first-block.f32");
+    assert_eq!(result.grid, (1, 2, 2));
+    assert_eq!(expected.len(), result.pixels.len() * size_of::<f32>());
+    for (actual, bytes) in result
+        .pixels
+        .iter()
+        .zip(expected.as_chunks::<{ size_of::<f32>() }>().0)
+    {
+        let reference = f32::from_le_bytes(*bytes);
+        assert!((actual - reference).abs() <= 1.0e-6);
+    }
+    Ok(())
+}
+
+/// Optional independent Transformers fixture generated with `do_resize=false`.
+#[test]
+fn disabled_resize_matches_transformers_reference() -> Result<()> {
+    use infer_ir::ImageResizePolicy;
+    let Ok(directory) = var("INFER_NO_RESIZE_GOLDEN_DIR") else {
+        return Ok(());
+    };
+    let processor = package_processor()?;
+    let path = Path::new(&directory);
+    let pixels = read(path.join("rgb.u8")).map_err(|error| Error::invalid(error.to_string()))?;
+    let expected =
+        read(path.join("patches.f32")).map_err(|error| Error::invalid(error.to_string()))?;
+    let result =
+        processor.preprocess_rgb_with_resize(128, 256, &pixels, ImageResizePolicy::Disabled)?;
+    assert_eq!(result.grid, (1, 8, 16));
+    assert_eq!(expected.len(), result.pixels.len() * size_of::<f32>());
+    let mut max_error = 0.0_f32;
+    for (actual, bytes) in result
+        .pixels
+        .iter()
+        .zip(expected.as_chunks::<{ size_of::<f32>() }>().0)
+    {
+        let reference = f32::from_le_bytes(*bytes);
+        max_error = max_error.max((actual - reference).abs());
+    }
+    assert!(max_error <= 1.0e-6, "reference difference {max_error}");
+    Ok(())
+}

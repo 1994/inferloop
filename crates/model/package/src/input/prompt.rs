@@ -12,7 +12,7 @@ use crate::mrope::image_positions;
 use crate::video::{RawVideo, VideoProcessor};
 use crate::vision::merge_unit;
 use infer_core::{Error, Result};
-use infer_ir::Modality;
+use infer_ir::{ImageResizePolicy, Modality};
 use infer_spi::{ImportedModel, ModalityEncoder};
 use std::iter::repeat_n;
 use std::ops::Range;
@@ -387,6 +387,30 @@ pub fn prepare(
     images: &[RawImage],
     modality: &Modality,
 ) -> Result<PreparedPrompt> {
+    prepare_with_resize(
+        assets,
+        processor,
+        imported,
+        text,
+        images,
+        modality,
+        ImageResizePolicy::Smart,
+    )
+}
+
+/// Tokenize and prepare images using the requested spatial resize policy.
+///
+/// # Errors
+/// Rejects missing encoders or placeholders, malformed images and invalid processor geometry.
+pub fn prepare_with_resize(
+    assets: &TextAssets,
+    processor: &ImageProcessor,
+    imported: &ImportedModel,
+    text: &str,
+    images: &[RawImage],
+    modality: &Modality,
+    resize: ImageResizePolicy,
+) -> Result<PreparedPrompt> {
     let tokens = assets.encode(text, false)?;
     reject_foreign_placeholders(imported, &tokens, modality)?;
     if images.is_empty() {
@@ -403,7 +427,12 @@ pub fn prepare(
     let mut prepared = Vec::with_capacity(images.len());
     let mut counts = Vec::with_capacity(images.len());
     for image in images {
-        let processed = processor.preprocess_rgb(image.height, image.width, &image.pixels)?;
+        let processed = processor.preprocess_rgb_with_resize(
+            image.height,
+            image.width,
+            &image.pixels,
+            resize,
+        )?;
         counts.push(visual_tokens(processed.grid, encoder)?);
         prepared.push(PromptImage::new(processed));
     }

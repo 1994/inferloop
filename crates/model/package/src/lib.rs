@@ -14,7 +14,7 @@ pub use input::multimodal::{MediaLimits, MultimodalAssets};
 pub use input::prompt::{
     ExpandedPrompt, MediaLayout, MediaSpan, PreparedPrompt, PromptImage, RawImage, VisualPlacement,
     expand_placeholders, image_token_counts, media_layout, place_visual_embeddings, placeholders,
-    prepare, prepare_video, require_encoder, visual_tokens,
+    prepare, prepare_video, prepare_with_resize, require_encoder, visual_tokens,
 };
 pub use input::text::{ChatMessage, ChatOptions, TextAssets, TextStreamDecoder};
 pub use input::tool::{

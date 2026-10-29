@@ -1,6 +1,7 @@
 //! Validated image resize overrides and their host working-set bound.
 use super::{MAX_IMAGE_PIXELS, MEDIA_STAGING_BYTES, RGB_CHANNELS};
 use infer_core::{Error, ErrorCode, Result};
+use infer_ir::ImageResizePolicy;
 use infer_models::{ImageProcessor, RawImage};
 use serde::Deserialize;
 use serde_json::Value;
@@ -14,6 +15,7 @@ const RESAMPLE_ROUNDING: usize = 2;
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageProcessingOptions {
+    do_resize: Option<bool>,
     min_pixels: Option<usize>,
     max_pixels: Option<usize>,
     size: Option<ImageSize>,
@@ -23,6 +25,7 @@ pub struct ImageProcessingOptions {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ScopedImageOptions {
+    do_resize: Option<bool>,
     min_pixels: Option<usize>,
     max_pixels: Option<usize>,
     size: Option<ImageSize>,
@@ -37,12 +40,14 @@ struct ImageSize {
 
 impl ImageProcessingOptions {
     pub(super) const fn is_empty(&self) -> bool {
-        self.min_pixels.is_none()
+        self.do_resize.is_none()
+            && self.min_pixels.is_none()
             && self.max_pixels.is_none()
             && self.size.is_none()
             && match &self.images_kwargs {
                 Some(scoped) => {
-                    scoped.min_pixels.is_none()
+                    scoped.do_resize.is_none()
+                        && scoped.min_pixels.is_none()
                         && scoped.max_pixels.is_none()
                         && scoped.size.is_none()
                 }
@@ -82,7 +87,8 @@ impl ImageProcessingOptions {
     fn validate(&self) -> Result<()> {
         let scoped = self.images_kwargs.as_ref();
         if scoped.is_some_and(|scope| {
-            (self.min_pixels.is_some() && scope.min_pixels.is_some())
+            (self.do_resize.is_some() && scope.do_resize.is_some())
+                || (self.min_pixels.is_some() && scope.min_pixels.is_some())
                 || (self.max_pixels.is_some() && scope.max_pixels.is_some())
                 || (self.size.is_some() && scope.size.is_some())
         }) {
@@ -121,6 +127,7 @@ impl ImageProcessingOptions {
     pub(super) fn merge(&self, request: Option<&Self>) -> Result<Self> {
         let mut merged = self.clone();
         if let Some(request) = request {
+            merged.do_resize = request.do_resize.or(merged.do_resize);
             merged.min_pixels = request.min_pixels.or(merged.min_pixels);
             merged.max_pixels = request.max_pixels.or(merged.max_pixels);
             if request.size.is_some() {
@@ -132,6 +139,18 @@ impl ImageProcessingOptions {
         }
         merged.validate()?;
         Ok(merged)
+    }
+
+    pub(super) fn resize_policy(&self) -> ImageResizePolicy {
+        match self
+            .images_kwargs
+            .as_ref()
+            .and_then(|scope| scope.do_resize)
+            .or(self.do_resize)
+        {
+            Some(false) => ImageResizePolicy::Disabled,
+            Some(true) | None => ImageResizePolicy::Smart,
+        }
     }
 
     pub(super) fn processor(&self, original: &ImageProcessor) -> Result<ImageProcessor> {
@@ -167,6 +186,14 @@ impl ImageProcessingOptions {
 
 /// Bound the currently selected CPU processor's intermediate and retained patch allocations.
 pub(super) fn check_working_set(images: &[RawImage], processor: &ImageProcessor) -> Result<()> {
+    check_working_set_with_resize(images, processor, ImageResizePolicy::Smart)
+}
+
+pub(super) fn check_working_set_with_resize(
+    images: &[RawImage],
+    processor: &ImageProcessor,
+    resize: ImageResizePolicy,
+) -> Result<()> {
     let budget = images
         .len()
         .checked_mul(MEDIA_STAGING_BYTES)
@@ -180,7 +207,7 @@ pub(super) fn check_working_set(images: &[RawImage], processor: &ImageProcessor)
     let mut retained = 0usize;
     let mut copied = 0usize;
     for image in images {
-        let (height, width) = processor.smart_resize(image.height, image.width)?;
+        let (height, width) = processor.target_dimensions(image.height, image.width, resize)?;
         let pixels = height
             .checked_mul(width)
             .filter(|n| *n <= MAX_IMAGE_PIXELS)

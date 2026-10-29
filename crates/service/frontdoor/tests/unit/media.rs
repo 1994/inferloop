@@ -67,6 +67,25 @@ fn scoped_image_options_replace_the_request_scope() {
 }
 
 #[test]
+fn image_resize_flag_respects_request_scope_and_rejects_conflicts() {
+    use infer_ir::ImageResizePolicy;
+
+    let defaults = ImageProcessingOptions::parse(r#"{"do_resize":false}"#).unwrap();
+    assert_eq!(defaults.resize_policy(), ImageResizePolicy::Disabled);
+    let request = ImageProcessingOptions::parse(r#"{"do_resize":true}"#).unwrap();
+    assert_eq!(
+        defaults.merge(Some(&request)).unwrap().resize_policy(),
+        ImageResizePolicy::Smart
+    );
+    let scoped = ImageProcessingOptions::parse(r#"{"images_kwargs":{"do_resize":false}}"#).unwrap();
+    assert_eq!(scoped.resize_policy(), ImageResizePolicy::Disabled);
+    assert!(
+        ImageProcessingOptions::parse(r#"{"do_resize":true,"images_kwargs":{"do_resize":false}}"#)
+            .is_err()
+    );
+}
+
+#[test]
 fn image_resize_options_merge_and_preserve_shared_defaults() {
     let defaults =
         ImageProcessingOptions::parse(r#"{"min_pixels":65536,"max_pixels":1048576}"#).unwrap();
@@ -140,7 +159,7 @@ fn image_resize_options_reject_ambiguous_unsupported_and_unbounded_inputs() {
         r#"{"size":{"shortest_edge":1,"longest_edge":2},"max_pixels":2}"#,
         r#"{"max_pixels":0}"#,
         r#"{"min_pixels":100,"max_pixels":50}"#,
-        r#"{"do_resize":false}"#,
+        r#"{"do_resize":"false"}"#,
         r#"{"images_kwargs":null}"#,
         r#"{"images_kwargs":{"size":{"shortest_edge":null,"longest_edge":2}}}"#,
         r#"{"images_kwargs":{"unsupported":1}}"#,
@@ -234,6 +253,7 @@ async fn image_request_overrides_are_isolated_and_align_media() {
     }
 
     assert_scoped_image_override(&pool, &service, &assets, &uri).await;
+    assert_unresized_image(&pool, &service, &assets).await;
 
     let run_video = |request_options: Option<ImageProcessingOptions>| {
         let assets = assets.clone();
@@ -262,6 +282,44 @@ async fn image_request_overrides_are_isolated_and_align_media() {
         error.message,
         "image processor options do not apply to video"
     );
+}
+
+async fn assert_unresized_image(
+    pool: &CpuPool,
+    service: &Arc<super::MediaService>,
+    assets: &Arc<TextAssets>,
+) {
+    let image = image::RgbImage::from_pixel(256, 128, image::Rgb([32, 64, 128]));
+    let uri = format!(
+        "data:image/png;base64,{}",
+        STANDARD.encode(encoded(image, image::ImageFormat::Png))
+    );
+    let options = ImageProcessingOptions::parse(r#"{"do_resize":false}"#).unwrap();
+    let service = service.clone();
+    let assets = assets.clone();
+    let (prepared, media) = pool
+        .run(MEDIA_STAGING_BYTES, move |context| {
+            let requests = [super::MediaRequest {
+                modality: infer_ir::Modality::Image,
+                url: uri,
+            }];
+            service.prepare_with_options(
+                &assets,
+                "<|vision_start|><|image_pad|><|vision_end|>describe",
+                &requests,
+                context,
+                Some(&options),
+            )
+        })
+        .await
+        .expect("unresized image");
+    assert_eq!(prepared.images[0].grid, (1, 8, 16));
+    assert_eq!(
+        prepared.images[0].grid,
+        media[0].item.as_ref().unwrap().grid
+    );
+    assert_eq!(prepared.spans[0], media[0].item.as_ref().unwrap().span);
+    assert_eq!(prepared.spans[0].len(), 32);
 }
 
 async fn assert_scoped_image_override(

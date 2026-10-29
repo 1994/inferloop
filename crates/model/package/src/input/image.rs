@@ -5,6 +5,7 @@
 //! normalizes and lays the patches out in spatial-merge-block order with the flattened
 //! `[channel, temporal, patch, patch]` vector the patch-embed projection consumes.
 use infer_core::{Error, Result};
+use infer_ir::ImageResizePolicy;
 
 /// Channels of the RGB images the processor accepts.
 pub(crate) const RGB_CHANNELS: usize = 3;
@@ -319,6 +320,37 @@ impl ImageProcessor {
         Ok((resized_height, resized_width))
     }
 
+    /// Resolve the target dimensions using the requested spatial resize policy.
+    ///
+    /// Disabled resizing requires source dimensions to tile by the patch and merge sizes.
+    /// # Errors
+    /// Rejects zero, non-tiling or overflowing processor geometry.
+    pub fn target_dimensions(
+        &self,
+        height: usize,
+        width: usize,
+        policy: ImageResizePolicy,
+    ) -> Result<(usize, usize)> {
+        if policy == ImageResizePolicy::Smart {
+            return self.smart_resize(height, width);
+        }
+        let factor = self
+            .patch_size
+            .checked_mul(self.merge_size)
+            .filter(|factor| *factor != 0)
+            .ok_or_else(|| Error::invalid("invalid image patch and merge geometry"))?;
+        if height == 0
+            || width == 0
+            || !height.is_multiple_of(factor)
+            || !width.is_multiple_of(factor)
+        {
+            return Err(Error::invalid(
+                "unresized image dimensions must tile by patch and merge",
+            ));
+        }
+        Ok((height, width))
+    }
+
     /// Preprocess one image into patch vectors.
     /// # Errors
     /// Rejects malformed image buffers or geometry that does not tile by the patch grid.
@@ -333,6 +365,16 @@ impl ImageProcessor {
         width: usize,
         pixels: &[u8],
     ) -> Result<PreprocessedImage> {
+        self.preprocess_rgb_with_resize(height, width, pixels, ImageResizePolicy::Smart)
+    }
+
+    pub(crate) fn preprocess_rgb_with_resize(
+        &self,
+        height: usize,
+        width: usize,
+        pixels: &[u8],
+        resize: ImageResizePolicy,
+    ) -> Result<PreprocessedImage> {
         let expected = height
             .checked_mul(width)
             .and_then(|value| value.checked_mul(RGB_CHANNELS))
@@ -340,7 +382,7 @@ impl ImageProcessor {
         if pixels.len() != expected {
             return Err(Error::invalid("image buffer does not match its dimensions"));
         }
-        let (resized_height, resized_width) = self.smart_resize(height, width)?;
+        let (resized_height, resized_width) = self.target_dimensions(height, width, resize)?;
         let resized = Self::resize_pixels(pixels, height, width, resized_height, resized_width);
         let grid_h = resized_height / self.patch_size;
         let grid_w = resized_width / self.patch_size;

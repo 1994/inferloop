@@ -8,7 +8,7 @@ use crate::cpu::CpuContext;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use infer_core::{Error, ErrorCode, MediaId, Result};
-use infer_ir::{MediaInput, MediaItem, Modality};
+use infer_ir::{ImageResizePolicy, MediaInput, MediaItem, Modality};
 use infer_models::{
     MediaLimits, MultimodalAssets, PreparedPrompt, RawImage, RawVideo, RgbImage, TextAssets,
 };
@@ -32,6 +32,7 @@ mod jpeg;
 mod options;
 pub use options::ImageProcessingOptions;
 use options::check_working_set;
+use options::check_working_set_with_resize;
 
 #[cfg(test)]
 const JPEG_SIGNATURE: [u8; 3] = [0xff, 0xd8, 0xff];
@@ -170,27 +171,7 @@ impl MediaService {
         self.limits.check(&modality, requests.len())?;
         let prepared = match modality {
             Modality::Image => {
-                let options = self
-                    .image_options
-                    .clone()
-                    .unwrap_or_default()
-                    .merge(request_options)?;
-                let processor = options.processor(&self.assets.images)?;
-                let images = requests
-                    .iter()
-                    .map(|request| load_image_with(&request.url, self.source, Some(context)))
-                    .collect::<Result<Vec<_>>>()?;
-                if !options.is_empty() {
-                    check_working_set(&images, &processor)?;
-                }
-                infer_models::prepare(
-                    assets,
-                    &processor,
-                    &self.assets.imported,
-                    prompt,
-                    &images,
-                    &Modality::Image,
-                )?
+                self.prepare_images(assets, prompt, requests, context, request_options)?
             }
             Modality::Video => {
                 if request_options.is_some_and(|options| !options.is_empty()) {
@@ -236,6 +217,54 @@ impl MediaService {
             });
         }
         Ok((prepared, media))
+    }
+
+    fn prepare_images(
+        &self,
+        assets: &TextAssets,
+        prompt: &str,
+        requests: &[MediaRequest],
+        context: &CpuContext,
+        request_options: Option<&ImageProcessingOptions>,
+    ) -> Result<PreparedPrompt> {
+        let options = self
+            .image_options
+            .clone()
+            .unwrap_or_default()
+            .merge(request_options)?;
+        let processor = options.processor(&self.assets.images)?;
+        let resize = options.resize_policy();
+        let images = requests
+            .iter()
+            .map(|request| load_image_with(&request.url, self.source, Some(context)))
+            .collect::<Result<Vec<_>>>()?;
+        if !options.is_empty() {
+            if resize == ImageResizePolicy::Smart {
+                check_working_set(&images, &processor)?;
+            } else {
+                check_working_set_with_resize(&images, &processor, resize)?;
+            }
+        }
+        if resize == ImageResizePolicy::Smart {
+            infer_models::prepare(
+                assets,
+                &processor,
+                &self.assets.imported,
+                prompt,
+                &images,
+                &Modality::Image,
+            )
+        } else {
+            infer_models::prepare_with_resize(
+                assets,
+                &processor,
+                &self.assets.imported,
+                prompt,
+                &images,
+                &Modality::Image,
+                resize,
+            )
+        }
     }
 }
 

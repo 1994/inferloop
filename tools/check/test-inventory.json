@@ -40,7 +40,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 116
+      "tests": 117
     },
     "ir": {
       "benches": 0,
@@ -70,7 +70,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 154
+      "tests": 157
     },
     "quality": {
       "benches": 0,
@@ -1424,11 +1424,11 @@
     }
   ],
   "totals": {
-    "all": 1034,
+    "all": 1038,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1034
+    "tests": 1038
   }
 }

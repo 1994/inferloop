@@ -33,7 +33,8 @@ pub use model::{
     BackboneKind, FeedForward, Head, Mixer, ModelIr, PositionSpec, StateKind, StateRequirement,
 };
 pub use multimodal::{
-    MediaInput, MediaItem, MediaNode, MediaPlan, MediaStage, Modality, MultimodalGraph,
+    ImageResizePolicy, MediaInput, MediaItem, MediaNode, MediaPlan, MediaStage, Modality,
+    MultimodalGraph,
 };
 pub use precision::{DType, PrecisionPlan, ScaleGranularity, ScaleSpec, TensorLayout};
 pub use request::{CanonicalRequest, Qos, RequestInput, Sampling};
