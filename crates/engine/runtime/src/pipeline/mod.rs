@@ -40,6 +40,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         Ok(emitted)
     }
     /// Reuse caller-owned delivery storage. Appends outputs without clearing pending caller work.
+    /// After isolation, maintenance failures remain in diagnostics while published work is drained.
     /// # Errors
     /// Returns clock, lifecycle, planner or backend errors while retaining published ownership.
     pub fn tick_into(&mut self, now_us: u64, emitted: &mut Vec<EngineOutput>) -> Result<()> {
@@ -53,6 +54,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             .inspect_err(|error| self.isolate(DiagnosticCode::InvariantViolation, error))
     }
     /// Poll without dispatch using reusable output storage.
+    /// After isolation, maintenance failures remain in diagnostics while published work is drained.
     /// # Errors
     /// Rejects backwards time or invalid completion while retaining pending tickets.
     pub fn poll_completed_into(
@@ -137,7 +139,19 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         if !matches!(mode, DriveMode::Schedule) {
             self.discard_prepared();
         }
-        self.backend.maintenance()?;
+        if let Err(error) = self.backend.maintenance() {
+            if self.fault.is_none() {
+                self.maintenance_failure = Some(error.clone());
+                return Err(error);
+            }
+            // A persistent owner error cannot turn an unfinished device ticket into a
+            // completion. Keep draining after isolation and retain changed diagnostics.
+            if self.maintenance_failure.as_ref() != Some(&error) {
+                let step = self.inflight.as_ref().map(|flight| flight.step.id);
+                self.retain_diagnostic(DiagnosticCode::InvariantViolation, &error, None, step);
+                self.maintenance_failure = Some(error);
+            }
+        }
         if self.backend_resource_epoch != self.backend.resource_epoch() {
             self.backend_resource_epoch = self.backend.resource_epoch();
             self.resources_changed()?;
