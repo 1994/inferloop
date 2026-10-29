@@ -5,11 +5,11 @@
 //! Other platforms require their own SDK-verified names and calling conventions.
 
 /// cuBLAS used by projection GEMMs.
-pub(crate) const CUBLAS: [&str; 2] = ["libcublas.so.13", "libcublas.so"];
+pub const CUBLAS: [&str; 2] = ["libcublas.so.13", "libcublas.so"];
 /// cuBLASLt used by vendor FP8 projections.
-pub(crate) const CUBLAS_LT: [&str; 2] = ["libcublasLt.so.13", "libcublasLt.so"];
+pub const CUBLAS_LT: [&str; 2] = ["libcublasLt.so.13", "libcublasLt.so"];
 /// CUDA runtime required by the existing AOT host artifact.
-pub(crate) const CUDA_RUNTIME: [&str; 2] = ["libcudart.so.13", "/opt/cuda/lib64/libcudart.so.13"];
+pub const CUDA_RUNTIME: [&str; 2] = ["libcudart.so.13", "/opt/cuda/lib64/libcudart.so.13"];
 /// nvJPEG used only by the load-only diagnostic until a qualified device path exists.
 #[cfg(test)]
-pub(crate) const NVJPEG: [&str; 2] = ["libnvjpeg.so.13", "libnvjpeg.so"];
+pub const NVJPEG: [&str; 2] = ["libnvjpeg.so.13", "libnvjpeg.so"];
