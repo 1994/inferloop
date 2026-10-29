@@ -635,3 +635,76 @@ fn cancellation_guard_kills_and_reaps_a_subprocess() {
     assert_eq!(error.code, infer_core::ErrorCode::Capacity);
     assert!(started.elapsed() < Duration::from_secs(2));
 }
+
+#[tokio::test]
+async fn multi_image_digest_matches_each_prepared_payload() {
+    use crate::cpu::CpuConfig;
+    use infer_ir::Modality;
+    use std::env::var;
+    use std::path::Path;
+
+    const IMAGE_COUNT: usize = 6;
+    let Ok(package) = var("INFER_VISION_PACKAGE") else {
+        return;
+    };
+    let root = Path::new(&package);
+    let multimodal = infer_models::MultimodalAssets::open(root)
+        .expect("package metadata")
+        .expect("vision model");
+    let assets = Arc::new(TextAssets::open(root, 4096).expect("tokenizer"));
+    let service = Arc::new(super::MediaService::new(
+        multimodal,
+        MediaLimits {
+            images: IMAGE_COUNT,
+            videos: 1,
+        },
+    ));
+    let requests: Vec<_> = [24_u8, 48, 72, 96, 144, 192]
+        .into_iter()
+        .map(|value| {
+            let pixels = image::RgbImage::from_pixel(256, 256, image::Rgb([value, 64, 128]));
+            super::MediaRequest {
+                modality: Modality::Image,
+                url: format!(
+                    "data:image/png;base64,{}",
+                    STANDARD.encode(encoded(pixels, image::ImageFormat::Png))
+                ),
+            }
+        })
+        .collect();
+    let config = CpuConfig {
+        max_bytes: IMAGE_COUNT * MEDIA_STAGING_BYTES,
+        ..CpuConfig::default()
+    };
+    let pool = CpuPool::new(config).expect("CPU pool");
+    let (prepared, media) = pool
+        .run(IMAGE_COUNT * MEDIA_STAGING_BYTES, move |context| {
+            service.prepare(
+                &assets,
+                &"<|vision_start|><|image_pad|><|vision_end|>".repeat(IMAGE_COUNT),
+                &requests,
+                context,
+            )
+        })
+        .await
+        .expect("multi-image preparation");
+    assert_eq!(media.len(), IMAGE_COUNT);
+    for ((image, span), media) in prepared.images.iter().zip(&prepared.spans).zip(media) {
+        let item = media.item.expect("prepared item");
+        assert_eq!(item.grid, image.grid);
+        assert_eq!(item.span, *span);
+        assert_eq!(item.pixels.as_ref(), image.pixels.as_slice());
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        for value in &image.pixels {
+            for byte in value.to_bits().to_le_bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        for axis in <[usize; 3]>::from(image.grid) {
+            for byte in u64::try_from(axis).unwrap().to_le_bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        assert_eq!(media.content_digest, format!("fnv1a64:{hash:016x}"));
+    }
+}

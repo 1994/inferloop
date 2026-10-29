@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod digest;
 #[cfg(test)]
 #[path = "media/encoded/jpeg.rs"]
 mod jpeg;
@@ -65,12 +66,6 @@ const BASE64_EXPANSION_DENOMINATOR: usize = 3;
 const DATA_URI_HEADER_BYTES: usize = 4096;
 /// RGB channels in one decoded frame.
 const RGB_CHANNELS: usize = 3;
-/// Axes in one media patch grid.
-const GRID_AXES: usize = 3;
-/// FNV-1a 64-bit offset basis for the content digest.
-const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-/// FNV-1a 64-bit prime for the content digest.
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 /// Highest accepted source frame rate; lower rates such as 0.5 are preserved.
 const MAX_SOURCE_FPS: f64 = 1000.0;
 /// HTTP fetch timeout.
@@ -198,23 +193,31 @@ impl MediaService {
             ));
         }
         let mut media = Vec::with_capacity(prepared.images.len());
-        for (index, (image, span)) in prepared.images.iter().zip(&prepared.spans).enumerate() {
-            let id = u64::try_from(index)
-                .ok()
-                .and_then(|value| value.checked_add(1))
-                .ok_or_else(|| Error::invalid("media identity overflow"))?;
-            let item = MediaItem {
-                modality: modality.clone(),
-                pixels: Arc::from(image.pixels.as_slice()),
-                grid: image.grid,
-                span: span.clone(),
-            };
-            media.push(MediaInput {
-                id: MediaId::new(id)?,
-                modality: modality.clone(),
-                content_digest: digest(&item),
-                item: Some(item),
-            });
+        for (images, spans) in prepared
+            .images
+            .chunks(digest::BATCH_IMAGES)
+            .zip(prepared.spans.chunks(digest::BATCH_IMAGES))
+        {
+            context.check()?;
+            let hashes = digest::hashes(images)?;
+            for ((image, span), hash) in images.iter().zip(spans).zip(hashes) {
+                let id = u64::try_from(media.len())
+                    .ok()
+                    .and_then(|value| value.checked_add(1))
+                    .ok_or_else(|| Error::invalid("media identity overflow"))?;
+                let item = MediaItem {
+                    modality: modality.clone(),
+                    pixels: Arc::from(image.pixels.as_slice()),
+                    grid: image.grid,
+                    span: span.clone(),
+                };
+                media.push(MediaInput {
+                    id: MediaId::new(id)?,
+                    modality: modality.clone(),
+                    content_digest: format!("fnv1a64:{hash:016x}"),
+                    item: Some(item),
+                });
+            }
         }
         Ok((prepared, media))
     }
@@ -266,23 +269,6 @@ impl MediaService {
             )
         }
     }
-}
-
-fn digest(item: &MediaItem) -> String {
-    let mut hash = FNV_OFFSET_BASIS;
-    for value in item.pixels.iter() {
-        for byte in value.to_bits().to_le_bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
-    }
-    for value in <[usize; GRID_AXES]>::from(item.grid) {
-        for byte in u64::try_from(value).unwrap_or(u64::MAX).to_le_bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
-    }
-    format!("fnv1a64:{hash:016x}")
 }
 
 /// Decode one image URL/data URI into bounded RGB8.
