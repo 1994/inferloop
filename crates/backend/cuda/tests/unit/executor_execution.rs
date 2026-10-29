@@ -369,3 +369,63 @@ fn pooled_verification_preserves_multimodal_rotary_position() -> Result<(), Box<
     );
     Ok(())
 }
+#[test]
+#[ignore = "real Qwen text checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL"]
+fn failed_media_chunk_retains_its_device_source_until_the_fence() -> Result<(), Box<dyn Error>> {
+    use crate::device::asynchronous::block_on;
+    use infer_ir::{MediaItem, MediaPlan, Modality};
+    use infer_models::MediaLayout;
+    use std::sync::Arc;
+
+    let (mut executor, _, states) = media_position_fixture(0)?;
+    let device = executor.loaded.device();
+    let hidden = executor.loaded.model().hidden_size;
+    let owner = device.upload(vec![0.0; hidden], &[1, hidden])?;
+    let prompt = TokenBuffer::from((1..=66).collect::<Vec<u32>>());
+    let plan = MediaPlan {
+        modality: Modality::Image,
+        prompt: prompt.clone(),
+        items: vec![MediaItem {
+            modality: Modality::Image,
+            pixels: Arc::from([1.0_f32]),
+            grid: (1, 2, 2),
+            span: 64..66,
+        }],
+    };
+    let task = media_position_task(
+        states[0],
+        RequestId::ONE,
+        ExecutionInput::Prefill {
+            span: prompt.span(64..66)?,
+            readout: OutputReadout::Logits,
+        },
+    );
+    let sequence = executor
+        .states
+        .get_mut(&states[0])
+        .ok_or("missing sequence")?;
+    sequence.media = Some(super::CachedMedia {
+        tensor: Arc::clone(&owner),
+        layout: MediaLayout {
+            spans: Vec::new(),
+            next_rotary: 0,
+            positions: None,
+        },
+        bases: vec![0],
+    });
+    // The first row can be submitted, but the deliberately short source makes the
+    // second row fail. Keep this extra owner so the failing reproduction is safe.
+    let result = block_on(sequence.run_media(&task, &plan, &executor.loaded));
+    let retained = sequence
+        .media
+        .as_ref()
+        .is_some_and(|media| Arc::ptr_eq(&media.tensor, &owner));
+    block_on(device.fence())?;
+    let error = result.err().ok_or("short media tensor should fail")?;
+    assert_eq!(error.message, "device copy range outside tensor");
+    assert!(
+        retained,
+        "failed media chunk dropped the source before the completion fence"
+    );
+    Ok(())
+}
