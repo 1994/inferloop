@@ -28,6 +28,7 @@ use cutile::cuda_async::device_context::with_default_device_policy;
 use cutile::cuda_async::device_future::DeviceFuture;
 use cutile::jit_cache::enable_default;
 use cutile::prelude::*;
+use cutile::tile_kernel::validate_programmatic_dependent_launch;
 use infer_core::{Error as InferError, ErrorCode, Result};
 use serde::Serialize;
 use std::fmt::Display;
@@ -269,6 +270,11 @@ impl CudaDevice {
     #[must_use]
     pub const fn target(&self) -> &CudaTarget {
         &self.target
+    }
+
+    /// Validate programmatic dependent launch against the device and toolkit capabilities.
+    pub(crate) fn validate_programmatic_dependent_launch(&self) -> Result<()> {
+        validate_programmatic_dependent_launch(self.stream.device().ordinal()).map_err(device_error)
     }
 
     /// # Errors

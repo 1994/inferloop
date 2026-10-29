@@ -4,6 +4,50 @@ use crate::target::CudaTarget;
 use infer_core::{Error, Result};
 use infer_ir::DType;
 
+/// Derive BF16 support from a CUDA SM version, with optional compiler target qualifiers.
+/// NVIDIA documents BF16 for compute capability 8.0 and newer in the CUDA programming guide.
+#[inline(never)]
+const fn supports_native_bf16(name: &str) -> bool {
+    const MIN_SM_NAME_LEN: usize = 5;
+    // Two signed 32-bit decimal attributes, the `sm_` prefix and an optional qualifier.
+    const MAX_SM_NAME_LEN: usize = 24;
+    const MAJOR_OFFSET: usize = 3;
+    let bytes = name.as_bytes();
+    if bytes.len() < MIN_SM_NAME_LEN
+        || bytes.len() > MAX_SM_NAME_LEN
+        || bytes[0] != b's'
+        || bytes[1] != b'm'
+        || bytes[2] != b'_'
+        || bytes[MAJOR_OFFSET] == b'0'
+    {
+        return false;
+    }
+    let suffix = bytes[bytes.len() - 1];
+    let qualified = suffix == b'a' || suffix == b'f';
+    let digits_end = bytes.len() - if qualified { 1 } else { 0 };
+    if digits_end < MIN_SM_NAME_LEN {
+        return false;
+    }
+    let mut index = MAJOR_OFFSET;
+    while index < digits_end {
+        if !bytes[index].is_ascii_digit() {
+            return false;
+        }
+        index += 1;
+    }
+    let double_digit_major = digits_end > MIN_SM_NAME_LEN;
+    if qualified {
+        // Architecture-specific targets start at 9.x; family-specific targets at 10.x.
+        if suffix == b'a' && !double_digit_major && bytes[MAJOR_OFFSET] < b'9' {
+            return false;
+        }
+        if suffix == b'f' && !double_digit_major {
+            return false;
+        }
+    }
+    double_digit_major || bytes[MAJOR_OFFSET] >= b'8'
+}
+
 impl CudaTarget {
     /// Compute dtypes this architecture executes natively.
     ///
@@ -21,7 +65,8 @@ impl CudaTarget {
                 DType::Fp4E2M1,
             ],
             Self::HopperSm90 => &[DType::F32, DType::Bf16, DType::Fp8E4M3, DType::Fp8E5M2],
-            Self::Other(_) => &[DType::F32, DType::Bf16],
+            Self::Other(name) if supports_native_bf16(name.as_str()) => &[DType::F32, DType::Bf16],
+            Self::Other(_) => &[DType::F32],
         }
     }
 
