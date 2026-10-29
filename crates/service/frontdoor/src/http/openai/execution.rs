@@ -10,7 +10,7 @@ use infer_ir::{CanonicalRequest, RequestInput, Workload, WorkloadOutput};
 use infer_observe::trace::TraceContext;
 use infer_runtime::{CompletedRequest, EngineOutput};
 use serde_json::{Value, json};
-use std::mem::size_of;
+use std::mem::{size_of, take};
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use std::{
@@ -64,7 +64,11 @@ struct StagedEncoding {
 impl Encoding {
     /// Retained input while a simple image request waits for its full preparation quote.
     /// Complex histories retain their existing conservative text quote.
-    fn waiting_input_bytes(&self, conservative: usize) -> infer_core::Result<usize> {
+    fn waiting_input_bytes(
+        &self,
+        conservative: usize,
+        response_name_bytes: usize,
+    ) -> infer_core::Result<usize> {
         let Some(messages) = &self.messages else {
             return Ok(conservative);
         };
@@ -106,6 +110,7 @@ impl Encoding {
         self.media_requests.iter().try_fold(
             size_of::<Self>()
                 .checked_add(TEXT_STAGING_OVERHEAD_BYTES)
+                .and_then(|bytes| bytes.checked_add(response_name_bytes))
                 .and_then(|bytes| bytes.checked_add(messages_bytes))
                 .and_then(|bytes| bytes.checked_add(media_bytes))
                 .ok_or_else(invalid)?,
@@ -361,6 +366,8 @@ pub(super) async fn prepare(
         return Err(Error::new(ErrorCode::NotFound, "model is not served; see /v1/models").into());
     }
     let model = inspection.model;
+    let model_name = take(&mut request.model);
+    drop(inspection);
     let prompt = request.prompt.take();
     let tools = policy.template();
     let created = SystemTime::now()
@@ -416,12 +423,20 @@ pub(super) async fn prepare(
     // Neither the wire request nor the headers are needed while admission waits.
     drop(request);
     drop(headers);
-    let receiver = submit_encoding(&state.handle, encoding, bytes, media_bytes, trace).await?;
+    let receiver = submit_encoding(
+        &state.handle,
+        encoding,
+        bytes,
+        media_bytes,
+        model_name.capacity(),
+        trace,
+    )
+    .await?;
     Ok(Prepared {
         request: id,
         receiver,
         prompt_tokens,
-        model_name: inspection.model_name.clone(),
+        model_name,
         created,
         chat,
         policy,
@@ -436,6 +451,7 @@ async fn submit_encoding(
     encoding: Encoding,
     bytes: usize,
     media_bytes: usize,
+    response_name_bytes: usize,
     trace: Option<TraceContext>,
 ) -> infer_core::Result<mpsc::Receiver<infer_core::Result<EngineOutput>>> {
     let id = encoding.id;
@@ -444,10 +460,13 @@ async fn submit_encoding(
         .first()
         .is_some_and(|item| item.modality == infer_ir::Modality::Image);
     if image {
+        let bytes = bytes
+            .checked_add(response_name_bytes)
+            .ok_or_else(|| Error::invalid("image response staging size overflow"))?;
         let non_media_bytes = bytes
             .checked_sub(media_bytes)
             .ok_or_else(|| Error::invariant("media staging quote exceeds request bytes"))?;
-        let retained = encoding.waiting_input_bytes(non_media_bytes)?;
+        let retained = encoding.waiting_input_bytes(non_media_bytes, response_name_bytes)?;
         handle
             .submit_staged_preparing(
                 id,

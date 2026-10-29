@@ -37,6 +37,14 @@ fn tiny_media_app_with_limits(
     config: CpuConfig,
     limits: infer_models::MediaLimits,
 ) -> (Router, RuntimeHandle, Arc<AtomicUsize>) {
+    tiny_media_app_with_name(config, limits, None)
+}
+
+fn tiny_media_app_with_name(
+    config: CpuConfig,
+    limits: infer_models::MediaLimits,
+    name: Option<String>,
+) -> (Router, RuntimeHandle, Arc<AtomicUsize>) {
     use crate::media::MediaService;
     use crate::router_with_text_and_media;
 
@@ -57,7 +65,10 @@ fn tiny_media_app_with_limits(
         model,
         PrecisionPlan::f32(),
         &kernels,
-        RuntimeConfig::default(),
+        RuntimeConfig {
+            served_model_name: name,
+            ..RuntimeConfig::default()
+        },
     )
     .unwrap();
     let handle = RuntimeHandle::start_with_config(engine, config).unwrap();
@@ -203,6 +214,47 @@ async fn concurrent_large_images_share_staging_budget_without_all_failing() {
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     }
     assert!(media_tasks.load(Ordering::Relaxed) >= 2);
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn image_staging_accounts_for_the_retained_model_name() {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+    use std::io::Cursor;
+
+    let name = "m".repeat(3 * 512 * 1024);
+    let (app, handle, media_tasks) = tiny_media_app_with_name(
+        CpuConfig {
+            workers: 1,
+            max_jobs: 2,
+            max_bytes: 26 << 20,
+            ..CpuConfig::default()
+        },
+        infer_models::MediaLimits::default(),
+        Some(name.clone()),
+    );
+    let image = image::RgbImage::from_pixel(28, 28, image::Rgb([24, 64, 128]));
+    let mut encoded = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    let url = format!(
+        "data:image/png;base64,{}",
+        STANDARD.encode(encoded.into_inner())
+    );
+    let payload = json!({"model": name, "max_tokens":1, "messages":[{"role":"user","content":[
+        {"type":"image_url", "image_url":{"url":url}}
+    ]}]});
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(Body::from(payload.to_string()))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(media_tasks.load(Ordering::Relaxed), 0);
     handle.shutdown().await.unwrap();
 }
 
