@@ -2,6 +2,7 @@
 use crate::ingress::Pending;
 use infer_core::placement::ThreadPlacement;
 use infer_core::{Error, ErrorCode, Result};
+use infer_ir::CanonicalRequest;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
 use std::panic::AssertUnwindSafe;
@@ -11,8 +12,8 @@ use std::{
     sync::Arc, sync::Mutex, sync::atomic::AtomicBool, sync::atomic::AtomicUsize,
     sync::atomic::Ordering, sync::mpsc, time::Duration, time::Instant,
 };
-use tokio::sync::oneshot;
-use tokio::time::timeout as time_timeout;
+use tokio::sync::{Notify, oneshot};
+use tokio::time::{Instant as TokioInstant, sleep_until, timeout as time_timeout};
 
 /// CPU threads reserved for non-inference work when sizing the default worker pool.
 const DEFAULT_WORKER_RESERVE: usize = 7;
@@ -82,13 +83,48 @@ pub struct CpuInspection {
     pub active_workers: usize,
     pub peak_workers: usize,
 }
+
+/// Retained staged inputs and the peak needed for their next preparation step.
+#[derive(Clone, Copy)]
+pub(crate) struct StagingQuote {
+    retained: usize,
+    peak: usize,
+}
+impl StagingQuote {
+    pub(crate) fn new(retained: usize, peak: usize) -> Result<Self> {
+        if retained > peak {
+            return Err(Error::invariant("staged input exceeds its peak quote"));
+        }
+        Ok(Self { retained, peak })
+    }
+
+    pub(super) const fn retained(self) -> usize {
+        self.retained
+    }
+
+    pub(super) const fn peak(self) -> usize {
+        self.peak
+    }
+}
+
+/// A preparation that either fits its initial reservation or needs an asynchronous quote.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Keep the worker-local funded result inline without an allocation per image request"
+)]
+pub(crate) enum StagingPlan<T> {
+    Ready(CanonicalRequest, Option<infer_spi::ConstraintHandle>),
+    Deferred(T, StagingQuote),
+}
 #[derive(Default)]
 struct Usage {
     jobs: usize,
     bytes: usize,
+    waiters: usize,
 }
 struct Budget {
     usage: Mutex<Usage>,
+    changed: Notify,
     active: AtomicUsize,
     peak: AtomicUsize,
     config: CpuConfig,
@@ -140,7 +176,11 @@ impl Credit {
             .ok_or_else(|| Error::invariant("CPU request rollback underflow"))?;
         usage.bytes = total;
         self.bytes = bytes;
+        let wake = usage.waiters != 0;
         drop(usage);
+        if wake {
+            self.budget.changed.notify_waiters();
+        }
         Ok(())
     }
 }
@@ -152,6 +192,36 @@ impl Drop for Credit {
         {
             usage.jobs = jobs;
             usage.bytes = bytes;
+            let wake = usage.waiters != 0;
+            drop(usage);
+            if wake {
+                self.budget.changed.notify_waiters();
+            }
+        }
+    }
+}
+
+struct CpuWait<'a>(&'a Budget);
+impl<'a> CpuWait<'a> {
+    fn enter(budget: &'a Budget) -> Result<Self> {
+        let mut usage = budget
+            .usage
+            .lock()
+            .map_err(|_| Error::invariant("CPU budget poisoned"))?;
+        usage.waiters = usage
+            .waiters
+            .checked_add(1)
+            .ok_or_else(|| Error::invariant("CPU waiter count overflow"))?;
+        drop(usage);
+        Ok(Self(budget))
+    }
+}
+impl Drop for CpuWait<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut usage) = self.0.usage.lock()
+            && let Some(waiters) = usage.waiters.checked_sub(1)
+        {
+            usage.waiters = waiters;
         }
     }
 }
@@ -284,6 +354,7 @@ impl CpuPool {
         let receiver = Arc::new(Mutex::new(receiver));
         let budget = Arc::new(Budget {
             usage: Mutex::new(Usage::default()),
+            changed: Notify::new(),
             active: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
             config,
@@ -380,6 +451,60 @@ impl CpuPool {
             .await
     }
 
+    pub(super) async fn run_preparing_wait<T: Send + 'static>(
+        &self,
+        bytes: usize,
+        deadline: Instant,
+        pending: &Arc<Pending>,
+        work: impl FnOnce(&CpuContext) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let credit = self.wait_for_credit(bytes, deadline, pending).await?;
+        self.run_with_ingress(credit, Some(deadline), Some(pending.clone()), work)
+            .await
+    }
+
+    async fn wait_for_credit(
+        &self,
+        bytes: usize,
+        deadline: Instant,
+        pending: &Pending,
+    ) -> Result<Credit> {
+        if bytes > self.budget.config.max_bytes {
+            return Err(Error::new(
+                ErrorCode::Capacity,
+                "image staging quote exceeds CPU budget",
+            ));
+        }
+        // Register before arming and checking capacity so a release cannot miss this waiter.
+        let _waiter = CpuWait::enter(&self.budget)?;
+        loop {
+            if Instant::now() >= deadline {
+                return Err(Error::new(
+                    ErrorCode::Capacity,
+                    "image staging wait timed out",
+                ));
+            }
+            let cpu = self.budget.changed.notified();
+            let ingress = pending.notifier().notified();
+            tokio::pin!(cpu, ingress);
+            let _ = cpu.as_mut().enable();
+            let _ = ingress.as_mut().enable();
+            pending.check()?;
+            match self.reserve(bytes) {
+                Ok(credit) => return Ok(credit),
+                Err(error) if error.code == ErrorCode::Capacity => {}
+                Err(error) => return Err(error),
+            }
+            tokio::select! {
+                () = &mut cpu => {}
+                () = &mut ingress => {}
+                () = sleep_until(TokioInstant::from_std(deadline)) => {
+                    return Err(Error::new(ErrorCode::Capacity, "image staging wait timed out"));
+                }
+            }
+        }
+    }
+
     async fn run_with_ingress<T: Send + 'static>(
         &self,
         credit: Credit,
@@ -446,6 +571,7 @@ impl CpuPool {
             |u| Usage {
                 jobs: u.jobs,
                 bytes: u.bytes,
+                waiters: u.waiters,
             },
         );
         CpuInspection {

@@ -153,6 +153,9 @@ fn preparation_bytes(request: &CanonicalRequest) -> Result<usize> {
 impl Drop for RuntimeHandle {
     fn drop(&mut self) {
         if Arc::strong_count(&self.commands) == 1 {
+            if let Err(error) = self.ingress.stop() {
+                tracing::error!(target: "infer::frontdoor", %error, "failed to stop ingress during handle drop");
+            }
             self.stop.store(true, Ordering::Release);
             self.wake.unpark();
         }

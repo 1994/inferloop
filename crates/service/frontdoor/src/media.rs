@@ -10,8 +10,8 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use infer_core::{Error, ErrorCode, MediaId, Result};
 use infer_ir::{ImageResizePolicy, MediaInput, MediaItem, Modality};
 use infer_models::{
-    MediaLimits, MultimodalAssets, PreparedPrompt, PromptImage, RawImage, RawVideo, RgbImage,
-    TextAssets,
+    ImageProcessor, MediaLimits, MultimodalAssets, PreparedPrompt, PromptImage, RawImage, RawVideo,
+    RgbImage, TextAssets,
 };
 use std::env::temp_dir;
 use std::fs::{File, OpenOptions, metadata, read, remove_file};
@@ -107,6 +107,25 @@ pub struct MediaService {
     limits: MediaLimits,
     source: SourcePolicy,
     image_options: Option<ImageProcessingOptions>,
+}
+
+/// Decoded images and immutable processor settings retained between preparation stages.
+pub struct LoadedImages {
+    images: Vec<RawImage>,
+    processor: ImageProcessor,
+    resize: ImageResizePolicy,
+    retained_bytes: usize,
+    peak_bytes: usize,
+}
+
+impl LoadedImages {
+    pub(crate) const fn retained_bytes(&self) -> usize {
+        self.retained_bytes
+    }
+
+    pub(crate) const fn peak_bytes(&self) -> usize {
+        self.peak_bytes
+    }
 }
 
 /// Whether the caller needs the original prepared pixels after constructing media inputs.
@@ -221,7 +240,7 @@ impl MediaService {
             ));
         }
         self.limits.check(&modality, requests.len())?;
-        let mut prepared = match modality {
+        let prepared = match modality {
             Modality::Image => {
                 self.prepare_images(assets, prompt, requests, context, request_options)?
             }
@@ -241,16 +260,7 @@ impl MediaService {
                 return Err(Error::unsupported("unsupported media modality"));
             }
         };
-        tracing::debug!(target: "infer::media", prompt_tokens = prepared.tokens.len(), tokens = ?prepared.tokens,
-            spans = ?prepared.spans, grids = ?prepared.images.iter().map(|image| image.grid).collect::<Vec<_>>(),
-            "prepared HTTP media");
-        if prepared.images.is_empty() || prepared.images.len() != prepared.spans.len() {
-            return Err(Error::invalid(
-                "prepared media is empty or has inconsistent spans",
-            ));
-        }
-        let media = media_inputs(&mut prepared, &modality, context, pixels)?;
-        Ok((prepared, media))
+        finish_prepared(prepared, &modality, context, pixels)
     }
 
     fn prepare_images(
@@ -261,6 +271,34 @@ impl MediaService {
         context: &CpuContext,
         request_options: Option<&ImageProcessingOptions>,
     ) -> Result<PreparedPrompt> {
+        let loaded = self.load_images(requests, context, request_options)?;
+        let baseline = requests
+            .len()
+            .checked_mul(MEDIA_STAGING_BYTES)
+            .ok_or_else(|| Error::invalid("media staging size overflow"))?;
+        context.ensure_media_bytes(loaded.peak_bytes, baseline)?;
+        self.process_images(assets, prompt, loaded)
+    }
+
+    /// Fetch and decode images before entering the asynchronously funded preprocessing stage.
+    pub(crate) fn load_images(
+        &self,
+        requests: &[MediaRequest],
+        context: &CpuContext,
+        request_options: Option<&ImageProcessingOptions>,
+    ) -> Result<LoadedImages> {
+        if requests.is_empty() {
+            return Err(Error::invalid("media preparation needs at least one item"));
+        }
+        if requests
+            .iter()
+            .any(|request| request.modality != Modality::Image)
+        {
+            return Err(Error::unsupported(
+                "mixed image and video in one prompt is not supported",
+            ));
+        }
+        self.limits.check(&Modality::Image, requests.len())?;
         let options = self
             .image_options
             .clone()
@@ -276,8 +314,40 @@ impl MediaService {
             .len()
             .checked_mul(MEDIA_STAGING_BYTES)
             .ok_or_else(|| Error::invalid("media staging size overflow"))?;
-        let needed = required_working_set(&images, &processor, resize)?;
-        context.ensure_media_bytes(needed, baseline)?;
+        let metadata = images
+            .capacity()
+            .checked_mul(size_of::<RawImage>())
+            .and_then(|bytes| bytes.checked_add(size_of::<LoadedImages>()))
+            .ok_or_else(|| Error::invalid("media staging metadata overflow"))?;
+        let retained = images.iter().try_fold(metadata, |sum, image| {
+            sum.checked_add(image.pixels.capacity())
+                .ok_or_else(|| Error::invalid("media staging size overflow"))
+        })?;
+        let peak = required_working_set(&images, &processor, resize)?
+            .checked_add(metadata)
+            .ok_or_else(|| Error::invalid("media staging size overflow"))?;
+        context.ensure_media_bytes(retained, baseline)?;
+        Ok(LoadedImages {
+            images,
+            processor,
+            resize,
+            retained_bytes: retained,
+            peak_bytes: peak,
+        })
+    }
+
+    fn process_images(
+        &self,
+        assets: &TextAssets,
+        prompt: &str,
+        loaded: LoadedImages,
+    ) -> Result<PreparedPrompt> {
+        let LoadedImages {
+            images,
+            processor,
+            resize,
+            ..
+        } = loaded;
         if resize == ImageResizePolicy::Smart {
             infer_models::prepare(
                 assets,
@@ -299,6 +369,39 @@ impl MediaService {
             )
         }
     }
+
+    /// Process a decoded image stage whose complete peak was reserved before dispatch.
+    pub(crate) fn finish_images(
+        &self,
+        assets: &TextAssets,
+        prompt: &str,
+        loaded: LoadedImages,
+        context: &CpuContext,
+    ) -> Result<(Vec<u32>, Vec<MediaInput>)> {
+        context.check()?;
+        let prepared = self.process_images(assets, prompt, loaded)?;
+        let (prepared, media) =
+            finish_prepared(prepared, &Modality::Image, context, PreparedPixels::Release)?;
+        Ok((prepared.tokens, media))
+    }
+}
+
+fn finish_prepared(
+    mut prepared: PreparedPrompt,
+    modality: &Modality,
+    context: &CpuContext,
+    pixels: PreparedPixels,
+) -> Result<(PreparedPrompt, Vec<MediaInput>)> {
+    tracing::debug!(target: "infer::media", prompt_tokens = prepared.tokens.len(), tokens = ?prepared.tokens,
+        spans = ?prepared.spans, grids = ?prepared.images.iter().map(|image| image.grid).collect::<Vec<_>>(),
+        "prepared HTTP media");
+    if prepared.images.is_empty() || prepared.images.len() != prepared.spans.len() {
+        return Err(Error::invalid(
+            "prepared media is empty or has inconsistent spans",
+        ));
+    }
+    let media = media_inputs(&mut prepared, modality, context, pixels)?;
+    Ok((prepared, media))
 }
 
 fn media_inputs(

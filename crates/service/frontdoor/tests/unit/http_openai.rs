@@ -27,6 +27,86 @@ use crate::{RuntimeHandle, router_with_text};
 use super::super::tests::support;
 use support::ProtocolBackend;
 
+#[tokio::test]
+async fn concurrent_large_images_share_staging_budget_without_all_failing() {
+    use crate::cpu::CpuConfig;
+    use crate::media::MediaService;
+    use crate::router_with_text_and_media;
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+    use infer_models::MediaLimits;
+    use std::io::Cursor;
+
+    let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multimodal-tiny");
+    let root = package.as_path();
+    let multimodal = infer_models::MultimodalAssets::open(root).unwrap().unwrap();
+    let assets = Arc::new(infer_models::TextAssets::open(root, 4096).unwrap());
+    let mut model = support::model(ModelId::ONE);
+    model.max_sequence = 4096;
+    let mut kernels = KernelRegistry::default();
+    kernels.register(&support::DeclaredKernels).unwrap();
+    let backend = ProtocolBackend::peaking_at(3, 16, 8, &model)
+        .unwrap()
+        .multimodal();
+    let media_tasks = backend.media_tasks();
+    let engine = Engine::new(
+        backend,
+        model,
+        PrecisionPlan::f32(),
+        &kernels,
+        RuntimeConfig::default(),
+    )
+    .unwrap();
+    let handle = RuntimeHandle::start_with_config(
+        engine,
+        CpuConfig {
+            workers: 2,
+            max_jobs: 4,
+            max_bytes: 64 << 20,
+            ..CpuConfig::default()
+        },
+    )
+    .unwrap();
+    let media = Arc::new(MediaService::new(multimodal, MediaLimits::default()));
+    let app = router_with_text_and_media(handle.clone(), assets, Some(media));
+    let image = image::RgbImage::from_pixel(1024, 1024, image::Rgb([24, 64, 128]));
+    let mut encoded = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    let url = format!(
+        "data:image/png;base64,{}",
+        STANDARD.encode(encoded.into_inner())
+    );
+    let payload = json!({"model":"1", "max_tokens":1, "messages":[{"role":"user","content":[
+        {"type":"text", "text":"Describe the image."},
+        {"type":"image_url", "image_url":{"url":url}}
+    ]}]});
+    let make_request = || {
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .unwrap()
+    };
+    let result = timeout(Duration::from_secs(30), async {
+        tokio::join!(
+            app.clone().oneshot(make_request()),
+            app.oneshot(make_request())
+        )
+    })
+    .await
+    .expect("both requests completed");
+    for response in [result.0.unwrap(), result.1.unwrap()] {
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    }
+    assert!(media_tasks.load(Ordering::Relaxed) >= 2);
+    handle.shutdown().await.unwrap();
+}
+
 fn fixture() -> (RuntimeHandle, Arc<infer_models::TextAssets>) {
     fixture_with(RuntimeConfig::default())
 }

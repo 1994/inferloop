@@ -235,6 +235,402 @@ async fn cancelled_media_growth_keeps_credit_until_the_worker_finishes() -> Resu
     Ok(())
 }
 
+#[tokio::test]
+async fn staged_image_waits_for_credit_without_occupying_a_worker() -> Result<()> {
+    let registry = Registry::new(2, 64);
+    let first = registry.reserve(RequestId::ONE, 25)?;
+    let second = registry.reserve(RequestId::new(2)?, 25)?;
+    first.retain_bytes(3)?;
+    second.retain_bytes(3)?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    first.wait_for_bytes(48, deadline).await?;
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 1,
+        max_bytes: 64,
+        ..CpuConfig::default()
+    })?;
+    let waiting = second.clone();
+    let mut task = tokio::spawn(async move { waiting.wait_for_bytes(48, deadline).await });
+    assert!(timeout(Duration::from_millis(20), &mut task).await.is_err());
+    assert_eq!(pool.run(1, |_| Ok(7)).await?, 7);
+    drop(first);
+    timeout(Duration::from_secs(2), task)
+        .await
+        .map_err(|e| Error::invariant(e.to_string()))?
+        .map_err(|e| Error::invariant(e.to_string()))??;
+    drop(second);
+    drop(registry.reserve(RequestId::new(3)?, 64)?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn smaller_staged_request_can_release_credit_before_a_large_waiter() -> Result<()> {
+    let registry = Registry::new(2, 100);
+    let large = registry.reserve(RequestId::ONE, 30)?;
+    let small = registry.reserve(RequestId::new(2)?, 30)?;
+    let waiting = large.clone();
+    let mut task = tokio::spawn(async move {
+        waiting
+            .wait_for_bytes(80, Instant::now() + Duration::from_secs(2))
+            .await
+    });
+    assert!(timeout(Duration::from_millis(20), &mut task).await.is_err());
+    small
+        .wait_for_bytes(40, Instant::now() + Duration::from_secs(2))
+        .await?;
+    drop(small);
+    timeout(Duration::from_secs(2), task)
+        .await
+        .map_err(|e| Error::invariant(e.to_string()))?
+        .map_err(|e| Error::invariant(e.to_string()))??;
+    drop(large);
+    Ok(())
+}
+
+#[tokio::test]
+async fn staged_inputs_that_cannot_coexist_release_one_for_progress() -> Result<()> {
+    let registry = Registry::new(2, 100);
+    let first = registry.reserve(RequestId::ONE, 30)?;
+    let second = registry.reserve(RequestId::new(2)?, 30)?;
+    let waiting = first.clone();
+    let mut task = tokio::spawn(async move {
+        waiting
+            .wait_for_bytes(90, Instant::now() + Duration::from_secs(2))
+            .await
+    });
+    assert!(timeout(Duration::from_millis(20), &mut task).await.is_err());
+    assert_eq!(
+        second
+            .wait_for_bytes(90, Instant::now() + Duration::from_secs(2))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Capacity
+    );
+    drop(second);
+    timeout(Duration::from_secs(2), task)
+        .await
+        .map_err(|e| Error::invariant(e.to_string()))?
+        .map_err(|e| Error::invariant(e.to_string()))??;
+    drop(first);
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_and_timed_out_staging_waiters_release_their_queue_position() -> Result<()> {
+    let registry = Registry::new(3, 64);
+    let first = registry.reserve(RequestId::ONE, 48)?;
+    let second = registry.reserve(RequestId::new(2)?, 3)?;
+    let third = registry.reserve(RequestId::new(3)?, 3)?;
+    let waiting = second.clone();
+    let mut task = tokio::spawn(async move {
+        waiting
+            .wait_for_bytes(48, Instant::now() + Duration::from_secs(2))
+            .await
+    });
+    assert!(timeout(Duration::from_millis(20), &mut task).await.is_err());
+    assert!(registry.cancel(RequestId::new(2)?));
+    assert_eq!(
+        timeout(Duration::from_secs(2), task)
+            .await
+            .map_err(|e| Error::invariant(e.to_string()))?
+            .map_err(|e| Error::invariant(e.to_string()))?
+            .unwrap_err()
+            .code,
+        ErrorCode::Capacity
+    );
+    let timed_out = third
+        .wait_for_bytes(48, Instant::now() + Duration::from_millis(20))
+        .await;
+    assert_eq!(timed_out.unwrap_err().code, ErrorCode::Capacity);
+    drop(first);
+    third
+        .wait_for_bytes(48, Instant::now() + Duration::from_secs(2))
+        .await?;
+    drop(second);
+    drop(third);
+    drop(registry.reserve(RequestId::new(4)?, 64)?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn shutdown_wakes_staging_waiters_and_drains_their_credits() -> Result<()> {
+    let registry = Registry::new(2, 64);
+    let first = registry.reserve(RequestId::ONE, 48)?;
+    let second = registry.reserve(RequestId::new(2)?, 3)?;
+    let waiting = second.clone();
+    let mut task = tokio::spawn(async move {
+        waiting
+            .wait_for_bytes(48, Instant::now() + Duration::from_secs(2))
+            .await
+    });
+    assert!(timeout(Duration::from_millis(20), &mut task).await.is_err());
+    registry.stop()?;
+    assert_eq!(
+        task.await
+            .map_err(|e| Error::invariant(e.to_string()))?
+            .unwrap_err()
+            .code,
+        ErrorCode::Capacity
+    );
+    assert!(registry.reserve(RequestId::new(3)?, 1).is_err());
+    drop(first);
+    drop(second);
+    registry
+        .wait_drained(Instant::now() + Duration::from_secs(2))
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn handle_shutdown_waits_for_live_ingress_owners() -> Result<()> {
+    let handle = handle()?;
+    let pending = handle.ingress.reserve(RequestId::ONE, 1)?;
+    let closing = handle.clone();
+    let mut task = tokio::spawn(async move { closing.shutdown().await });
+    assert!(timeout(Duration::from_millis(20), &mut task).await.is_err());
+    assert!(pending.check().is_err());
+    drop(pending);
+    timeout(Duration::from_secs(2), task)
+        .await
+        .map_err(|e| Error::invariant(e.to_string()))?
+        .map_err(|e| Error::invariant(e.to_string()))??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn staged_cpu_credit_wait_wakes_after_an_existing_job_finishes() -> Result<()> {
+    let registry = Registry::new(1, 64);
+    let pending = registry.reserve(RequestId::ONE, 48)?;
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 1,
+        max_bytes: 64,
+        ..CpuConfig::default()
+    })?;
+    let (started, entered) = oneshot::channel();
+    let (release, gate) = mpsc::channel();
+    let occupied = pool.clone();
+    let first = tokio::spawn(async move {
+        occupied
+            .run(64, move |_| {
+                started
+                    .send(())
+                    .map_err(|()| Error::invariant("start receiver dropped"))?;
+                gate.recv().map_err(|e| Error::invariant(e.to_string()))?;
+                Ok(())
+            })
+            .await
+    });
+    timeout(Duration::from_secs(2), entered)
+        .await
+        .map_err(|e| Error::invariant(e.to_string()))?
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    let waiting_pool = pool.clone();
+    let waiting_pending = pending.clone();
+    let mut second = tokio::spawn(async move {
+        waiting_pool
+            .run_preparing_wait(
+                48,
+                Instant::now() + Duration::from_secs(2),
+                &waiting_pending,
+                |_| Ok(7),
+            )
+            .await
+    });
+    assert!(
+        timeout(Duration::from_millis(20), &mut second)
+            .await
+            .is_err()
+    );
+    release
+        .send(())
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    first.await.map_err(|e| Error::invariant(e.to_string()))??;
+    assert_eq!(
+        timeout(Duration::from_secs(2), second)
+            .await
+            .map_err(|e| Error::invariant(e.to_string()))?
+            .map_err(|e| Error::invariant(e.to_string()))??,
+        7
+    );
+    drop(pending);
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelling_a_cpu_credit_wait_does_not_need_the_worker_to_finish() -> Result<()> {
+    let registry = Registry::new(1, 64);
+    let pending = registry.reserve(RequestId::ONE, 48)?;
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 1,
+        max_bytes: 64,
+        ..CpuConfig::default()
+    })?;
+    let (started, entered) = oneshot::channel();
+    let (release, gate) = mpsc::channel();
+    let occupied = pool.clone();
+    let first = tokio::spawn(async move {
+        occupied
+            .run(64, move |_| {
+                started
+                    .send(())
+                    .map_err(|()| Error::invariant("start receiver dropped"))?;
+                gate.recv().map_err(|e| Error::invariant(e.to_string()))?;
+                Ok(())
+            })
+            .await
+    });
+    timeout(Duration::from_secs(2), entered)
+        .await
+        .map_err(|e| Error::invariant(e.to_string()))?
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    let waiting_pool = pool.clone();
+    let waiting_pending = pending.clone();
+    let mut second = tokio::spawn(async move {
+        waiting_pool
+            .run_preparing_wait(
+                48,
+                Instant::now() + Duration::from_secs(2),
+                &waiting_pending,
+                |_| Ok(7),
+            )
+            .await
+    });
+    assert!(
+        timeout(Duration::from_millis(20), &mut second)
+            .await
+            .is_err()
+    );
+    assert!(registry.cancel(RequestId::ONE));
+    assert_eq!(
+        timeout(Duration::from_secs(2), second)
+            .await
+            .map_err(|e| Error::invariant(e.to_string()))?
+            .map_err(|e| Error::invariant(e.to_string()))?
+            .unwrap_err()
+            .code,
+        ErrorCode::Capacity
+    );
+    assert_eq!(pool.inspect().retained_bytes, 64);
+    release
+        .send(())
+        .map_err(|e| Error::invariant(e.to_string()))?;
+    first.await.map_err(|e| Error::invariant(e.to_string()))??;
+    assert_eq!(pool.run(64, |_| Ok(9)).await?, 9);
+    drop(pending);
+    Ok(())
+}
+
+#[tokio::test]
+async fn staged_requests_make_progress_under_a_shared_credit_limit() -> Result<()> {
+    use crate::cpu::{StagingPlan, StagingQuote};
+    use std::sync::Barrier;
+
+    let ir = support::model(ModelId::ONE);
+    let mut kernels = KernelRegistry::default();
+    kernels.register(&support::DeclaredKernels)?;
+    let handle = RuntimeHandle::start_with_config(
+        Engine::new(
+            support::ProtocolBackend::new(16, 8, &ir)?,
+            ir,
+            PrecisionPlan::f32(),
+            &kernels,
+            RuntimeConfig::default(),
+        )?,
+        CpuConfig {
+            workers: 2,
+            max_jobs: 2,
+            max_bytes: 64,
+            ..CpuConfig::default()
+        },
+    )?;
+    let barrier = Arc::new(Barrier::new(2));
+    let mut tasks = Vec::new();
+    for value in 1..=2 {
+        let handle = handle.clone();
+        let barrier = barrier.clone();
+        let id = RequestId::new(value)?;
+        tasks.push(tokio::spawn(async move {
+            handle
+                .submit_staged_preparing(
+                    id,
+                    25,
+                    None,
+                    None,
+                    move |_| {
+                        barrier.wait();
+                        Ok(StagingPlan::Deferred(id, StagingQuote::new(3, 48)?))
+                    },
+                    |id, _| {
+                        let request = serde_json::from_value(serde_json::json!({
+                        "id": id.get(), "model": 1, "input": {"Sequence": {"tokens": [1, 2, 3]}},
+                        "workload": {"Generate": {"max_new_tokens": 2}}
+                    })).map_err(|e| Error::invalid(e.to_string()))?;
+                        Ok((request, None))
+                    },
+                )
+                .await
+        }));
+    }
+    for task in tasks {
+        let mut output = timeout(Duration::from_secs(5), task)
+            .await
+            .map_err(|e| Error::invariant(e.to_string()))?
+            .map_err(|e| Error::invariant(e.to_string()))??;
+        while let Some(event) = timeout(Duration::from_secs(5), output.recv())
+            .await
+            .map_err(|e| Error::invariant(e.to_string()))?
+        {
+            if matches!(event?, EngineOutput::Finished(_)) {
+                break;
+            }
+        }
+    }
+    handle.shutdown().await
+}
+
+#[tokio::test]
+async fn funded_staged_request_completes_without_a_second_worker_job() -> Result<()> {
+    use crate::cpu::StagingPlan;
+
+    let handle = handle()?;
+    let second_job = Arc::new(AtomicBool::new(false));
+    let observed = second_job.clone();
+    let mut output = handle
+        .submit_staged_preparing(
+            RequestId::ONE,
+            48,
+            None,
+            None,
+            |_| {
+                let request = serde_json::from_value(serde_json::json!({
+                    "id": 1, "model": 1, "input": {"Sequence": {"tokens": [1, 2, 3]}},
+                    "workload": {"Generate": {"max_new_tokens": 2}}
+                }))
+                .map_err(|e| Error::invalid(e.to_string()))?;
+                Ok(StagingPlan::<()>::Ready(request, None))
+            },
+            move |(), _| {
+                observed.store(true, Ordering::Release);
+                Err(Error::invariant("unneeded second preparation job"))
+            },
+        )
+        .await?;
+    while let Some(event) = timeout(Duration::from_secs(5), output.recv())
+        .await
+        .map_err(|e| Error::invariant(e.to_string()))?
+    {
+        if matches!(event?, EngineOutput::Finished(_)) {
+            break;
+        }
+    }
+    assert!(!second_job.load(Ordering::Acquire));
+    handle.shutdown().await
+}
+
 struct CreditDropProbe {
     registry: Arc<Registry>,
     other: RequestId,

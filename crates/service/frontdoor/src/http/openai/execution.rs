@@ -1,10 +1,13 @@
 use super::{ApiResult, GenerationRequest, TextState, ToolPolicy};
 use crate::constants::TOKEN_STAGING_BYTES;
-use crate::cpu::CpuContext;
-use crate::media::{ImageProcessingOptions, MEDIA_STAGING_BYTES, MediaRequest, MediaService};
+use crate::cpu::{CpuContext, StagingPlan, StagingQuote};
+use crate::media::{
+    ImageProcessingOptions, LoadedImages, MEDIA_STAGING_BYTES, MediaRequest, MediaService,
+};
 use axum::http::HeaderMap;
 use infer_core::{Error, ErrorCode, FinishReason, RequestId};
 use infer_ir::{CanonicalRequest, RequestInput, Workload, WorkloadOutput};
+use infer_observe::trace::TraceContext;
 use infer_runtime::{CompletedRequest, EngineOutput};
 use serde_json::{Value, json};
 use std::time::SystemTime;
@@ -51,27 +54,21 @@ struct Encoding {
     sampling: infer_ir::Sampling,
 }
 
+struct StagedEncoding {
+    encoding: Encoding,
+    rendered: String,
+    images: LoadedImages,
+}
+
 impl Encoding {
     /// Encode the prompt and describe the workload to run over it.
     fn encode(
-        self,
+        mut self,
         context: &CpuContext,
     ) -> infer_core::Result<(CanonicalRequest, Option<infer_spi::ConstraintHandle>)> {
         context.check()?;
-        let (tokens, media) = if let Some(messages) = self.messages {
-            let rendered = self.assets.render_chat(
-                &messages,
-                &infer_models::ChatOptions {
-                    enable_thinking: self.enable_thinking,
-                    tools: self.tools.clone(),
-                    ..Default::default()
-                },
-            )?;
-            self.reasoning_open.store(
-                self.enable_thinking
-                    && infer_models::OutputStreamParser::prompt_opens_reasoning(&rendered),
-                Ordering::Release,
-            );
+        let (tokens, media) = if let Some(messages) = self.messages.take() {
+            let rendered = self.render(&messages)?;
             if self.media_requests.is_empty() {
                 (self.assets.encode(&rendered, false)?, Vec::new())
             } else {
@@ -94,6 +91,70 @@ impl Encoding {
                 Vec::new(),
             )
         };
+        self.finish(context, tokens, media)
+    }
+
+    fn render(&self, messages: &[infer_models::ChatMessage]) -> infer_core::Result<String> {
+        let rendered = self.assets.render_chat(
+            messages,
+            &infer_models::ChatOptions {
+                enable_thinking: self.enable_thinking,
+                tools: self.tools.clone(),
+                ..Default::default()
+            },
+        )?;
+        self.reasoning_open.store(
+            self.enable_thinking
+                && infer_models::OutputStreamParser::prompt_opens_reasoning(&rendered),
+            Ordering::Release,
+        );
+        Ok(rendered)
+    }
+
+    fn stage_images(
+        mut self,
+        context: &CpuContext,
+        non_media_bytes: usize,
+        reserved_bytes: usize,
+    ) -> infer_core::Result<StagingPlan<StagedEncoding>> {
+        context.check()?;
+        let messages = self
+            .messages
+            .take()
+            .ok_or_else(|| Error::invalid("image media needs chat messages"))?;
+        let rendered = self.render(&messages)?;
+        let media = self
+            .media
+            .as_ref()
+            .ok_or_else(|| Error::unsupported("this deployment is text-only"))?;
+        let images =
+            media.load_images(&self.media_requests, context, self.image_options.as_ref())?;
+        let retained = non_media_bytes
+            .checked_add(images.retained_bytes())
+            .ok_or_else(|| Error::invalid("image retained staging overflow"))?;
+        let peak = non_media_bytes
+            .checked_add(images.peak_bytes())
+            .ok_or_else(|| Error::invalid("image staging peak overflow"))?;
+        let quote = StagingQuote::new(retained, peak)?;
+        let staged = StagedEncoding {
+            encoding: self,
+            rendered,
+            images,
+        };
+        if quote.peak() <= reserved_bytes {
+            let (request, constraint) = staged.finish(context)?;
+            Ok(StagingPlan::Ready(request, constraint))
+        } else {
+            Ok(StagingPlan::Deferred(staged, quote))
+        }
+    }
+
+    fn finish(
+        self,
+        context: &CpuContext,
+        tokens: Vec<u32>,
+        media: Vec<infer_ir::MediaInput>,
+    ) -> infer_core::Result<(CanonicalRequest, Option<infer_spi::ConstraintHandle>)> {
         self.count.store(tokens.len(), Ordering::Relaxed);
         let constraint = self
             .constraint
@@ -128,6 +189,22 @@ impl Encoding {
             },
             constraint,
         ))
+    }
+}
+
+impl StagedEncoding {
+    fn finish(
+        self,
+        context: &CpuContext,
+    ) -> infer_core::Result<(CanonicalRequest, Option<infer_spi::ConstraintHandle>)> {
+        let media = self
+            .encoding
+            .media
+            .as_ref()
+            .ok_or_else(|| Error::unsupported("this deployment is text-only"))?;
+        let (tokens, inputs) =
+            media.finish_images(&self.encoding.assets, &self.rendered, self.images, context)?;
+        self.encoding.finish(context, tokens, inputs)
     }
 }
 
@@ -284,16 +361,14 @@ pub(super) async fn prepare(
         max_new_tokens,
         sampling: resolved.sampling,
     };
-    let receiver = state
-        .handle
-        .submit_constrained_preparing(
-            id,
-            bytes,
-            super::super::trace_parent(headers),
-            None,
-            move |context| encoding.encode(context),
-        )
-        .await?;
+    let receiver = submit_encoding(
+        &state.handle,
+        encoding,
+        bytes,
+        media_bytes,
+        super::super::trace_parent(headers),
+    )
+    .await?;
     Ok(Prepared {
         request: id,
         receiver,
@@ -306,6 +381,41 @@ pub(super) async fn prepare(
         reasoning_open,
         dialect: state.assets.tool_dialect(),
     })
+}
+
+async fn submit_encoding(
+    handle: &crate::RuntimeHandle,
+    encoding: Encoding,
+    bytes: usize,
+    media_bytes: usize,
+    trace: Option<TraceContext>,
+) -> infer_core::Result<mpsc::Receiver<infer_core::Result<EngineOutput>>> {
+    let id = encoding.id;
+    let image = encoding
+        .media_requests
+        .first()
+        .is_some_and(|item| item.modality == infer_ir::Modality::Image);
+    if image {
+        let non_media_bytes = bytes
+            .checked_sub(media_bytes)
+            .ok_or_else(|| Error::invariant("media staging quote exceeds request bytes"))?;
+        handle
+            .submit_staged_preparing(
+                id,
+                bytes,
+                trace,
+                None,
+                move |context| encoding.stage_images(context, non_media_bytes, bytes),
+                StagedEncoding::finish,
+            )
+            .await
+    } else {
+        handle
+            .submit_constrained_preparing(id, bytes, trace, None, move |context| {
+                encoding.encode(context)
+            })
+            .await
+    }
 }
 
 /// # Errors

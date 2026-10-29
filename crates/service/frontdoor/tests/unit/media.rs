@@ -831,22 +831,34 @@ async fn multi_image_digest_matches_each_prepared_payload() {
         })
         .collect();
     let config = CpuConfig {
-        max_bytes: 2 * IMAGE_COUNT * MEDIA_STAGING_BYTES,
+        max_bytes: 3 * IMAGE_COUNT * MEDIA_STAGING_BYTES,
         ..CpuConfig::default()
     };
     let pool = CpuPool::new(config).expect("CPU pool");
-    let (prepared, media, request_tokens, request_media) = pool
-        .run(2 * IMAGE_COUNT * MEDIA_STAGING_BYTES, move |context| {
+    let (prepared, media, request_tokens, request_media, staged_tokens, staged_media) = pool
+        .run(3 * IMAGE_COUNT * MEDIA_STAGING_BYTES, move |context| {
             let prompt = "<|vision_start|><|image_pad|><|vision_end|>".repeat(IMAGE_COUNT);
             let (prepared, media) = service.prepare(&assets, &prompt, &requests, context)?;
             let (request_tokens, request_media) =
                 service.prepare_request(&assets, &prompt, &requests, context, None)?;
-            Ok((prepared, media, request_tokens, request_media))
+            let images = service.load_images(&requests, context, None)?;
+            let (staged_tokens, staged_media) =
+                service.finish_images(&assets, &prompt, images, context)?;
+            Ok((
+                prepared,
+                media,
+                request_tokens,
+                request_media,
+                staged_tokens,
+                staged_media,
+            ))
         })
         .await
         .expect("multi-image preparation");
     assert_eq!(request_tokens, prepared.tokens);
     assert_eq!(request_media, media);
+    assert_eq!(staged_tokens, prepared.tokens);
+    assert_eq!(staged_media, media);
     assert_eq!(media.len(), IMAGE_COUNT);
     for ((image, span), media) in prepared.images.iter().zip(&prepared.spans).zip(media) {
         let item = media.item.expect("prepared item");

@@ -3,14 +3,18 @@ use super::{Command, RuntimeHandle, async_mpsc, mpsc, oneshot, preparation_bytes
 use crate::cpu::CpuContext;
 use crate::cpu::CpuInspection;
 use crate::cpu::CpuPool;
+use crate::cpu::StagingPlan;
+use crate::cpu::StagingQuote;
 use crate::ingress::Abandon;
+use crate::ingress::Pending;
 use infer_core::{Error, ErrorCode, RequestId, Result};
 use infer_ir::CanonicalRequest;
 use infer_observe::{ObservationQuery, trace::TraceContext};
 use infer_runtime::{EngineOutput, RuntimeInspection};
+use std::sync::Arc;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::{time::Duration, time::Instant};
-use tokio::time::timeout;
+use tokio::time::{Instant as TokioInstant, timeout, timeout_at};
 
 /// Capacity of the output channel carrying each accepted request's engine events.
 const OUTPUT_CHANNEL_CAPACITY: usize = 16;
@@ -24,6 +28,15 @@ const EVENT_RESPONSE_BYTES: usize = 1024;
 const EVENTS_RESPONSE_BASE_BYTES: usize = 256 << 10;
 /// Seconds to wait for the actor to acknowledge shutdown.
 const SHUTDOWN_ACK_TIMEOUT_SECS: u64 = 5;
+
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Keep the funded image path inline instead of allocating an asynchronous result box"
+)]
+enum InitialStage<T> {
+    Ready(infer_runtime::PreparedRequest),
+    Deferred(T, StagingQuote, infer_runtime::RequestPreparer),
+}
 
 impl RuntimeHandle {
     #[must_use]
@@ -165,12 +178,7 @@ impl RuntimeHandle {
         + Send
         + 'static,
     ) -> Result<async_mpsc::Receiver<Result<EngineOutput>>> {
-        let now_us = self.clock_origin_us.saturating_add(
-            u64::try_from(self.clock_started.elapsed().as_micros()).unwrap_or(u64::MAX),
-        );
-        let deadline = deadline_us.map(|deadline| {
-            Instant::now() + Duration::from_micros(deadline.saturating_sub(now_us))
-        });
+        let deadline = self.preparation_deadline(deadline_us);
         let pending = self.ingress.reserve(id, bytes)?;
         self.request_ids
             .fetch_max(id.get(), AtomicOrdering::Relaxed);
@@ -190,6 +198,101 @@ impl RuntimeHandle {
             })
             .await?;
         pending.check()?;
+        self.enqueue_prepared(request, pending, trace, deadline)
+            .await
+    }
+
+    /// Prepare a staged input without keeping a CPU worker while its full quote is pending.
+    pub(crate) async fn submit_staged_preparing<T: Send + 'static>(
+        &self,
+        id: RequestId,
+        bytes: usize,
+        trace: Option<TraceContext>,
+        deadline_us: Option<u64>,
+        load: impl FnOnce(&CpuContext) -> Result<StagingPlan<T>> + Send + 'static,
+        finish: impl FnOnce(
+            T,
+            &CpuContext,
+        ) -> Result<(CanonicalRequest, Option<infer_spi::ConstraintHandle>)>
+        + Send
+        + 'static,
+    ) -> Result<async_mpsc::Receiver<Result<EngineOutput>>> {
+        let request_deadline = self.preparation_deadline(deadline_us);
+        let deadline = request_deadline.map_or_else(
+            || Instant::now() + Duration::from_millis(self.config.job_timeout_ms),
+            |deadline| {
+                deadline.min(Instant::now() + Duration::from_millis(self.config.job_timeout_ms))
+            },
+        );
+        let pending = self.ingress.reserve(id, bytes)?;
+        self.request_ids
+            .fetch_max(id.get(), AtomicOrdering::Relaxed);
+        let _abandon = Abandon(pending.clone());
+        let preparing = pending.clone();
+        let preparer = self.preparer.clone();
+        let initial = self
+            .cpu
+            .run_preparing(bytes, Some(deadline), &pending, move |context| {
+                preparing.check()?;
+                let result = match load(context)? {
+                    StagingPlan::Ready(request, constraint) => {
+                        if request.id != id {
+                            return Err(Error::invalid("CPU preparation changed request identity"));
+                        }
+                        InitialStage::Ready(preparer.prepare(request)?.with_constraint(constraint)?)
+                    }
+                    StagingPlan::Deferred(stage, quote) => {
+                        InitialStage::Deferred(stage, quote, preparer)
+                    }
+                };
+                preparing.check()?;
+                Ok(result)
+            })
+            .await?;
+        pending.check()?;
+        let (stage, quote, preparer) = match initial {
+            InitialStage::Ready(request) => {
+                return self
+                    .enqueue_prepared(request, pending, trace, request_deadline)
+                    .await;
+            }
+            InitialStage::Deferred(stage, quote, preparer) => (stage, quote, preparer),
+        };
+        pending.retain_bytes(quote.retained())?;
+        pending.wait_for_bytes(quote.peak(), deadline).await?;
+        let preparing = pending.clone();
+        let request = self
+            .cpu
+            .run_preparing_wait(quote.peak(), deadline, &pending, move |context| {
+                preparing.check()?;
+                let (request, constraint) = finish(stage, context)?;
+                if request.id != id {
+                    return Err(Error::invalid("CPU preparation changed request identity"));
+                }
+                preparing.check()?;
+                preparer.prepare(request)?.with_constraint(constraint)
+            })
+            .await?;
+        pending.check()?;
+        self.enqueue_prepared(request, pending, trace, request_deadline)
+            .await
+    }
+
+    fn preparation_deadline(&self, deadline_us: Option<u64>) -> Option<Instant> {
+        let now_us = self.clock_origin_us.saturating_add(
+            u64::try_from(self.clock_started.elapsed().as_micros()).unwrap_or(u64::MAX),
+        );
+        deadline_us
+            .map(|deadline| Instant::now() + Duration::from_micros(deadline.saturating_sub(now_us)))
+    }
+
+    async fn enqueue_prepared(
+        &self,
+        request: infer_runtime::PreparedRequest,
+        pending: Arc<Pending>,
+        trace: Option<TraceContext>,
+        deadline: Option<Instant>,
+    ) -> Result<async_mpsc::Receiver<Result<EngineOutput>>> {
         let (output, receiver) = async_mpsc::channel(OUTPUT_CHANNEL_CAPACITY);
         let (reply, response) = oneshot::channel();
         self.send(Command::Submit {
@@ -258,10 +361,13 @@ impl RuntimeHandle {
     /// # Errors
     /// Returns a conflict error if the runtime channel is closed or shutdown cannot be acknowledged.
     pub async fn shutdown(&self) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(SHUTDOWN_ACK_TIMEOUT_SECS);
+        self.ingress.stop()?;
         let (reply, response) = oneshot::channel();
         self.send(Command::Stop { reply })?;
-        timeout(Duration::from_secs(SHUTDOWN_ACK_TIMEOUT_SECS),response)
+        timeout_at(TokioInstant::from_std(deadline),response)
             .await.map_err(|_|Error::new(ErrorCode::Backend,"shutdown acknowledgement timed out; in-flight resources remain owned by the actor"))?
-            .map_err(|_| Error::new(ErrorCode::Backend, "engine actor stopped"))?
+            .map_err(|_| Error::new(ErrorCode::Backend, "engine actor stopped"))??;
+        self.ingress.wait_drained(deadline).await
     }
 }
