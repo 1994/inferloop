@@ -198,12 +198,14 @@ fn resident_states(total_memory_bytes: u64) -> usize {
         .unwrap_or(MAX_RESIDENT_STATES)
         .clamp(MIN_RESIDENT_STATES, MAX_RESIDENT_STATES)
 }
+pub(crate) mod architecture;
 pub(crate) mod asynchronous;
 pub(crate) mod library_names;
 #[cfg(test)]
 mod nvjpeg_probe;
 pub(crate) mod platform;
 mod readback;
+pub(crate) mod target;
 mod upload;
 #[cfg(test)]
 pub(crate) use readback::queue_test_gate;

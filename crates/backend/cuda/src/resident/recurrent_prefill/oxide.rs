@@ -1,5 +1,6 @@
 //! Exact F32 recurrence from pinned Rust SIMT source, with graph operand leases.
 use crate::device::CudaDevice;
+use crate::device::architecture::is_sm120;
 use crate::device::device_error;
 use crate::tuning::recurrent::exact::select as exact_select;
 use crate::tuning::resident_gemm::ResidentTuningSession;
@@ -51,7 +52,7 @@ impl Support {
     ) -> Result<Option<Self>> {
         if shape[..GEOMETRY_RANK] != [KH, VH, DIM]
             || !SUPPORTED_LANES.contains(&shape[3])
-            || device.profile()?.architecture != "sm_120"
+            || !is_sm120(&device.profile()?.architecture)
         {
             return Ok(None);
         }

@@ -4,6 +4,7 @@
 mod combined;
 use super::{Support, device_error};
 use crate::device::CudaDevice;
+use crate::device::architecture::is_sm120;
 use infer_core::Result;
 use std::sync::{Arc, OnceLock};
 const PTX: &str = include_str!("../../../kernels/shared-attention/attention-sm120.ptx");
@@ -11,7 +12,7 @@ pub(super) const LANES: [usize; 3] = [256, 1024, 2048];
 const THREADS: u32 = 384;
 const ROWS_PER_CTA: usize = 12;
 pub(super) fn load(device: &CudaDevice) -> Result<Option<Support>> {
-    if device.profile()?.architecture != "sm_120" {
+    if !is_sm120(&device.profile()?.architecture) {
         return Ok(None);
     }
     let module = device

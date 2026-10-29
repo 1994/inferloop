@@ -4,6 +4,7 @@
 //! 24/4/256 full-causal geometry and only target FP8-KV prefill. Every other target shape and
 //! the entire draft proposal path keep their existing arithmetic. The artifact identity and
 //! tuning schema are independent from BF16 so cache entries can never cross profiles.
+use crate::device::architecture::{SM120_NAME, is_sm120};
 use crate::device::platform::is_linux_x86_64;
 use crate::{
     device::CudaDevice,
@@ -14,7 +15,7 @@ use sha2::{Digest, Sha256};
 
 pub const PROFILE: &str = "fa4-f16-qkv:f32-acc:f16-output:gpu-seqlen-v1";
 pub const SCHEMA: &str = "fa4-f16:plain-f16-qkv:f32-acc:f16-output:sm120-fixed:v1";
-pub const ARCHITECTURE: &str = "sm_120";
+pub const ARCHITECTURE: &str = SM120_NAME;
 pub const VARIANT: &str = "sm120-f16";
 pub const PTX: &str = include_str!("../../../kernels/fa4-attention-f16/bridge.ptx");
 const BRIDGE_CU: &[u8] = include_bytes!("../../../kernels/fa4-attention-f16/bridge.cu");
@@ -33,7 +34,7 @@ pub fn supported(
     window: usize,
 ) -> bool {
     is_linux_x86_64()
-        && architecture == ARCHITECTURE
+        && is_sm120(architecture)
         && super::catalog::geometry(heads, kv_heads, dim, lanes, window)
 }
 

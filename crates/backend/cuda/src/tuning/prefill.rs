@@ -1,5 +1,6 @@
 //! Default projection policies; kernel modules retain only layout and ABI constraints.
 use crate::constants::{MID_PREFILL_LANES, PREFILL_GEMM_TILE_N};
+use crate::device::architecture::is_sm120;
 
 /// Vendor BF16 projection wins from 2048x8192 weights upwards in prompt measurements.
 const MIN_DELEGATED_WEIGHT_ELEMENTS: usize = 8 * 1024 * 1024;
@@ -12,12 +13,12 @@ pub const fn delegate_dense(m: usize, n: usize, k: usize) -> bool {
 
 /// The fused draft projection has been qualified on this architecture.
 pub fn fused_draft(architecture: &str) -> bool {
-    architecture == "sm_120"
+    is_sm120(architecture)
 }
 
 pub fn narrow_dense_layout(architecture: &str, shape: (usize, usize, usize)) -> bool {
     let (lanes, rows, columns) = shape;
-    architecture == "sm_120"
+    is_sm120(architecture)
         && lanes == MID_PREFILL_LANES
         && (1..=PREFILL_GEMM_TILE_N).contains(&rows)
         && columns > 0

@@ -34,7 +34,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 421
+      "tests": 423
     },
     "frontdoor": {
       "benches": 0,
@@ -304,6 +304,11 @@
     },
     {
       "crate": "cuda",
+      "file": "src/device/architecture.rs",
+      "mount": "../../tests/unit/device_architecture.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/device/cublaslt.rs",
       "mount": "../../tests/unit/device_cublaslt.rs"
     },
@@ -314,8 +319,18 @@
     },
     {
       "crate": "cuda",
+      "file": "src/device/platform.rs",
+      "mount": "../../tests/unit/device_platform.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/device/readback.rs",
       "mount": "../../tests/unit/device_readback_check.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/device/target.rs",
+      "mount": "../../tests/unit/target.rs"
     },
     {
       "crate": "cuda",
@@ -776,11 +791,6 @@
       "crate": "cuda",
       "file": "src/strategy.rs",
       "mount": "../tests/unit/strategy.rs"
-    },
-    {
-      "crate": "cuda",
-      "file": "src/target.rs",
-      "mount": "../tests/unit/target.rs"
     },
     {
       "crate": "cuda",
@@ -1424,11 +1434,11 @@
     }
   ],
   "totals": {
-    "all": 1038,
+    "all": 1040,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1038
+    "tests": 1040
   }
 }

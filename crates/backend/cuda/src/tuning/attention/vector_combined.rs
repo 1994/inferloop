@@ -6,6 +6,7 @@
 //! baseline unchanged, so adding this layer cannot alter existing behaviour.
 use super::{Choice, Key, Shape, Times, reference};
 use crate::device::CudaDevice;
+use crate::device::architecture::is_sm120;
 use crate::resident::attention_oxide::Support;
 use crate::resident::attention_oxide::shared_identity;
 use crate::resident::attention_oxide::vector_identity;
@@ -133,7 +134,7 @@ pub(crate) fn select(device: &CudaDevice, shape: Shape, baseline: Choice) -> Cho
     }
 }
 fn resolve(device: &CudaDevice, shape: Shape, baseline: Choice) -> Result<Choice> {
-    if device.profile()?.architecture != "sm_120" {
+    if !is_sm120(&device.profile()?.architecture) {
         return Ok(baseline);
     }
     let key = key(device, shape)?;

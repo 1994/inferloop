@@ -2,6 +2,8 @@
 mod capture;
 mod identity;
 use super::{CUDA_OPT_LEVEL, Key, SHAPE_RANK, Times, reference::Fixture};
+use crate::device::architecture::is_sm120;
+use crate::device::platform::driver_build;
 use crate::tuning::MAX_REPS;
 use crate::tuning::MIN_CONFIRM_SPEEDUP;
 use crate::tuning::MIN_REPS;
@@ -25,7 +27,6 @@ use cutile::{
 };
 use infer_core::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::fs::read_to_string;
 use std::{
     collections::BTreeMap,
     sync::{Mutex, OnceLock},
@@ -132,16 +133,10 @@ fn resolve(
     autotune: bool,
     session: &ResidentTuningSession,
 ) -> Result<bool> {
-    if device.profile()?.architecture != "sm_120" {
+    if !is_sm120(&device.profile()?.architecture) {
         return Ok(false);
     }
-    let driver_build = read_to_string("/proc/driver/nvidia/version")
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("NVRM version:"))
-                .map(|l| l.trim().to_owned())
-        });
+    let driver_build = driver_build();
     let key = Key {
         hardware: serde_json::to_string(device.profile()?).map_err(device_error)?,
         driver_version: CudaDevice::driver_version()?,

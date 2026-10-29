@@ -10,6 +10,7 @@ use crate::constants::NVFP4_QUANT_SCALES_TILE;
 use crate::constants::PROMPT_GEMM_TILE_ROWS;
 use crate::constants::QUANT_GEMM_TILE;
 use crate::constants::WIDE_PROMPT_GEMM_TILE_ROWS;
+pub(super) use crate::device::platform::driver_build;
 use crate::device::vendor_fp8::nvfp4::ModelCache;
 use crate::resident::nvfp4_gemm::kernels;
 use crate::{
@@ -26,7 +27,6 @@ use cutile::{
 use infer_core::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::env::var_os;
-use std::fs::read_to_string;
 use std::path::Path;
 use std::result::Result as StdResult;
 use std::{
@@ -558,17 +558,6 @@ type Verifications = Mutex<BTreeMap<VerificationKey, Verification>>;
 fn verifications() -> &'static Verifications {
     static VERIFIED: OnceLock<Verifications> = OnceLock::new();
     VERIFIED.get_or_init(|| Mutex::new(BTreeMap::new()))
-}
-
-/// Read the installed driver release/build rather than its supported CUDA API version.
-pub(super) fn driver_build() -> Option<String> {
-    let version = read_to_string("/proc/driver/nvidia/version").ok()?;
-    version
-        .lines()
-        .find(|line| line.starts_with("NVRM version:"))
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_owned)
 }
 
 /// Frontend-only identities: no cubin compilation or kernel execution is requested here.
