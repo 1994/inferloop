@@ -48,11 +48,10 @@ impl DeviceOp for Direct {
         // before the output may escape its fence-retained execution context.
         let output = unsafe { overwritten::<f32>(ctx, self.geometry.output_elements)? };
         let mut launch = AsyncKernelLaunch::new(Arc::clone(&self.kernel));
-        // SAFETY: both pointers refer to checked private allocations retained by the context.
-        unsafe {
-            launch.push_device_ptr(input.device_pointer().cu_deviceptr());
-            launch.push_device_ptr(output.device_pointer().cu_deviceptr());
-        }
+        // SAFETY: the input pointer refers to the checked allocation retained by the context.
+        unsafe { launch.push_device_ptr(input.device_pointer().cu_deviceptr()) };
+        // SAFETY: the output pointer refers to the checked allocation retained by the context.
+        unsafe { launch.push_device_ptr(output.device_pointer().cu_deviceptr()) };
         for value in [
             self.geometry.batch,
             self.geometry.source_height,
