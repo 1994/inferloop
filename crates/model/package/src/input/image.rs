@@ -327,15 +327,23 @@ impl ImageProcessor {
     /// # Errors
     /// Rejects malformed image buffers or geometry that does not tile by the patch grid.
     pub fn preprocess(&self, image: &RgbImage) -> Result<PreprocessedImage> {
-        let expected = image
-            .height
-            .checked_mul(image.width)
+        self.preprocess_rgb(image.height, image.width, &image.pixels)
+    }
+
+    pub(super) fn preprocess_rgb(
+        &self,
+        height: usize,
+        width: usize,
+        pixels: &[u8],
+    ) -> Result<PreprocessedImage> {
+        let expected = height
+            .checked_mul(width)
             .and_then(|value| value.checked_mul(RGB_CHANNELS))
             .ok_or_else(|| Error::invalid("image dimensions overflow"))?;
-        if image.pixels.len() != expected {
+        if pixels.len() != expected {
             return Err(Error::invalid("image buffer does not match its dimensions"));
         }
-        let (resized_height, resized_width) = self.smart_resize(image.height, image.width)?;
+        let (resized_height, resized_width) = self.smart_resize(height, width)?;
         let grid_h = resized_height / self.patch_size;
         let grid_w = resized_width / self.patch_size;
         let merge = self.merge_size;
@@ -358,18 +366,13 @@ impl ImageProcessor {
             rescale: self.rescale,
         };
         // A still image repeats the same frame across the temporal taps.
-        let pixels = if self.fast_resize_supported(image, resized_height, resized_width) {
-            let resized = image_resize::resize(
-                &image.pixels,
-                image.height,
-                image.width,
-                resized_height,
-                resized_width,
-            )?;
+        let pixels = if self.fast_resize_supported(height, width, resized_height, resized_width) {
+            let resized =
+                image_resize::resize(pixels, height, width, resized_height, resized_width)?;
             let frames = vec![resized.as_slice(); self.temporal_patch_size];
             patchify(&frames, grid, &norm)?
         } else {
-            let resized = Self::resize(image, resized_height, resized_width);
+            let resized = Self::resize_pixels(pixels, height, width, resized_height, resized_width);
             let frames = vec![resized.as_slice(); self.temporal_patch_size];
             patchify(&frames, grid, &norm)?
         };
@@ -379,40 +382,56 @@ impl ImageProcessor {
         })
     }
 
-    fn fast_resize_supported(&self, image: &RgbImage, height: usize, width: usize) -> bool {
-        (image.height != height || image.width != width)
+    fn fast_resize_supported(
+        &self,
+        source_height: usize,
+        source_width: usize,
+        height: usize,
+        width: usize,
+    ) -> bool {
+        (source_height != height || source_width != width)
             && self.mean == [SYMMETRIC_NORMALIZATION; RGB_CHANNELS]
             && self.std == [SYMMETRIC_NORMALIZATION; RGB_CHANNELS]
             && self.rescale == RESCALE
-            && [image.height, image.width, height, width]
+            && [source_height, source_width, height, width]
                 .into_iter()
                 .all(|dimension| u32::try_from(dimension).is_ok())
     }
 
     /// Separable bicubic resize of an RGB8 image into `height × width`, in `0..=255`.
+    pub(crate) fn resize(image: &RgbImage, height: usize, width: usize) -> Vec<f32> {
+        Self::resize_pixels(&image.pixels, image.height, image.width, height, width)
+    }
+
     #[expect(
         clippy::cast_possible_truncation,
         reason = "Resampled values are rounded into the 8-bit range before the narrowing cast"
     )]
-    pub(crate) fn resize(image: &RgbImage, height: usize, width: usize) -> Vec<f32> {
-        if image.height == height && image.width == width {
+    fn resize_pixels(
+        pixels: &[u8],
+        source_height: usize,
+        source_width: usize,
+        height: usize,
+        width: usize,
+    ) -> Vec<f32> {
+        if source_height == height && source_width == width {
             // Unit-scale bicubic sampling reproduces each RGB8 value exactly.
-            return image.pixels.iter().copied().map(f32::from).collect();
+            return pixels.iter().copied().map(f32::from).collect();
         }
-        let mut intermediate = if image.width == width {
+        let mut intermediate = if source_width == width {
             // Unit-scale horizontal filtering preserves each RGB8 value exactly.
-            image.pixels.iter().copied().map(f32::from).collect()
+            pixels.iter().copied().map(f32::from).collect()
         } else {
-            let horizontal = resample_axis(image.width, width);
-            let mut intermediate = vec![0f32; image.height * width * RGB_CHANNELS];
-            for y in 0..image.height {
+            let horizontal = resample_axis(source_width, width);
+            let mut intermediate = vec![0f32; source_height * width * RGB_CHANNELS];
+            for y in 0..source_height {
                 for x in 0..width {
                     let weights = &horizontal[x];
                     for channel in 0..RGB_CHANNELS {
                         let mut value = 0f64;
                         for &(tap, weight) in weights {
-                            let index = (y * image.width + tap) * RGB_CHANNELS + channel;
-                            value = weight.mul_add(f64::from(image.pixels[index]), value);
+                            let index = (y * source_width + tap) * RGB_CHANNELS + channel;
+                            value = weight.mul_add(f64::from(pixels[index]), value);
                         }
                         let rounded = value.round().clamp(0.0, BYTE_SCALE) as f32;
                         intermediate[(y * width + x) * RGB_CHANNELS + channel] = rounded;
@@ -421,7 +440,7 @@ impl ImageProcessor {
             }
             intermediate
         };
-        if image.height == height {
+        if source_height == height {
             // A unit vertical pass turns negative zero from horizontal rounding into positive
             // zero. Preserve that bit-level behavior for normalization with custom parameters.
             for value in &mut intermediate {
@@ -431,7 +450,7 @@ impl ImageProcessor {
             }
             return intermediate;
         }
-        let vertical = resample_axis(image.height, height);
+        let vertical = resample_axis(source_height, height);
         let mut output = vec![0f32; height * width * RGB_CHANNELS];
         for y in 0..height {
             let weights = &vertical[y];
