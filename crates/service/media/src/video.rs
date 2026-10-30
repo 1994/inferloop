@@ -287,3 +287,7 @@ fn selection(indices: &[usize]) -> String {
     let right = selection(&indices[middle..]);
     format!("if(lt(n\\,{})\\,{left}\\,{right})", indices[middle])
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/video.rs"]
+mod tests;

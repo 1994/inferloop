@@ -645,35 +645,39 @@ async fn short_video_at_standard_resolution_is_not_rejected_by_a_raw_byte_budget
     };
     let reference = processor.preprocess(&video).unwrap();
     let pool = CpuPool::new(CpuConfig {
-        workers: 2,
-        max_jobs: 2,
+        workers: 1,
+        max_jobs: 1,
         ..CpuConfig::default()
     })
     .unwrap();
-    let parts = super::video::resolve(
-        clip.path.to_string_lossy().into_owned(),
-        None,
-        SourcePolicy::TrustedLocal,
-        processor,
-        pool,
-    )
-    .await
-    .unwrap();
-    assert_eq!(parts.len(), reference.image.grid.0);
-    assert_eq!(
-        parts
-            .iter()
-            .flat_map(|part| part.image.pixels.iter().copied())
-            .collect::<Vec<_>>(),
-        reference.image.pixels
+    let source = clip.path.to_string_lossy().into_owned();
+    let (first, second) = tokio::join!(
+        super::video::resolve(
+            source.clone(),
+            None,
+            SourcePolicy::TrustedLocal,
+            processor.clone(),
+            pool.clone(),
+        ),
+        super::video::resolve(source, None, SourcePolicy::TrustedLocal, processor, pool),
     );
-    assert_eq!(
-        parts
-            .iter()
-            .flat_map(|part| part.timestamps.iter().copied())
-            .collect::<Vec<_>>(),
-        reference.timestamps
-    );
+    for parts in [first.unwrap(), second.unwrap()] {
+        assert_eq!(parts.len(), reference.image.grid.0);
+        assert_eq!(
+            parts
+                .iter()
+                .flat_map(|part| part.image.pixels.iter().copied())
+                .collect::<Vec<_>>(),
+            reference.image.pixels
+        );
+        assert_eq!(
+            parts
+                .iter()
+                .flat_map(|part| part.timestamps.iter().copied())
+                .collect::<Vec<_>>(),
+            reference.timestamps
+        );
+    }
 }
 
 #[cfg(unix)]

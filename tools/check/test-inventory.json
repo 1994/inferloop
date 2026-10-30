@@ -58,7 +58,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 7
+      "tests": 9
     },
     "metal": {
       "benches": 0,
@@ -160,7 +160,7 @@
     }
   ],
   "gated": {
-    "target_os = \"linux\"": 3,
+    "target_os = \"linux\"": 4,
     "target_os = \"macos\"": 1
   },
   "ignored_reasons": {
@@ -1443,14 +1443,19 @@
       "crate": "frontdoor",
       "file": "tests/unit/http_openai.rs",
       "mount": "http_openai_decisions.rs"
+    },
+    {
+      "crate": "media",
+      "file": "src/video.rs",
+      "mount": "../tests/unit/video.rs"
     }
   ],
   "totals": {
-    "all": 1059,
+    "all": 1061,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1059
+    "tests": 1061
   }
 }
