@@ -5,15 +5,17 @@
 //! gets a hard time/frame bound. A malformed or over-limit input is an explicit error, never a
 //! text-only fallback.
 use crate::cpu::CpuContext;
+use crate::staging::default_staging_bytes;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use infer_core::{Error, ErrorCode, MediaId, Result};
 use infer_ir::{MediaInput, MediaItem, Modality};
 use infer_models::{
-    MediaLimits, MultimodalAssets, PreparedPrompt, RawImage, RawVideo, RgbImage, TextAssets,
+    ImageProcessor, MediaLimits, MultimodalAssets, PreparedPrompt, RawImage, RawVideo, RgbImage,
+    TextAssets,
 };
 use std::env::temp_dir;
-use std::fs::{File, OpenOptions, metadata, read, remove_file};
+use std::fs::{File, OpenOptions, remove_file};
 use std::io::{self, Cursor, Read, Write};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -32,11 +34,9 @@ const MAX_IMAGE_BYTES: usize = 24 * 1024 * 1024;
 const MAX_IMAGE_PIXELS: usize = 16 * 1024 * 1024;
 /// Largest accepted image edge during in-process decode.
 const MAX_IMAGE_EDGE: u32 = 8192;
-/// Largest accepted decoder allocation during in-process decode.
-const MAX_IMAGE_ALLOC_BYTES: u64 = 64 << 20;
 /// Largest accepted video download/decoded raw output.
 const MAX_VIDEO_BYTES: usize = 24 * 1024 * 1024;
-/// Host staging credit reserved for one media item before decode.
+/// Host staging credit reserved for one video item before decode.
 pub const MEDIA_STAGING_BYTES: usize = MAX_VIDEO_BYTES + 1024 * 1024;
 /// Largest accepted frame count decoded from one clip.
 const MAX_VIDEO_FRAMES: usize = 768;
@@ -52,6 +52,10 @@ const BASE64_EXPANSION_DENOMINATOR: usize = 3;
 const DATA_URI_HEADER_BYTES: usize = 4096;
 /// RGB channels in one decoded frame.
 const RGB_CHANNELS: usize = 3;
+/// Conservative bytes per source pixel for decode, conversion, and RGB copies.
+const SOURCE_STAGING_BYTES_PER_PIXEL: usize = 16;
+/// Conservative per-coordinate allowance for bicubic resampling tables.
+const RESAMPLE_AXIS_STAGING_BYTES: usize = 128;
 /// Axes in one media patch grid.
 const GRID_AXES: usize = 3;
 /// FNV-1a 64-bit offset basis for the content digest.
@@ -141,7 +145,14 @@ impl MediaService {
             Modality::Image => {
                 let images = requests
                     .iter()
-                    .map(|request| load_image_with(&request.url, self.source, Some(context)))
+                    .map(|request| {
+                        load_image_with(
+                            &request.url,
+                            self.source,
+                            Some(context),
+                            Some(self.assets.image_processor()),
+                        )
+                    })
                     .collect::<Result<Vec<_>>>()?;
                 self.assets.prepare_images(assets, prompt, &images)?
             }
@@ -209,16 +220,17 @@ fn digest(item: &MediaItem) -> String {
 /// Rejects unsupported schemes, over-limit payloads, malformed bytes and decode failures.
 #[cfg(test)]
 pub fn load_image(url: &str) -> Result<RawImage> {
-    load_image_with(url, SourcePolicy::Public, None)
+    load_image_with(url, SourcePolicy::Public, None, None)
 }
 
 fn load_image_with(
     url: &str,
     source: SourcePolicy,
     context: Option<&CpuContext>,
+    processor: Option<&ImageProcessor>,
 ) -> Result<RawImage> {
     let bytes = read_url(url, MAX_IMAGE_BYTES, source, context)?;
-    match decode_png(&bytes) {
+    match decode_png(&bytes, context, processor) {
         Ok(rgb) => return rgb_image(rgb.width(), rgb.height(), rgb.into_raw()),
         Err(error) if error.code == ErrorCode::Capacity => return Err(error),
         Err(_) => {}
@@ -227,6 +239,7 @@ fn load_image_with(
     // decode failure; ffmpeg is retained only for the video container path.
     let temp = materialize(&bytes, "image")?;
     let probe = probe(&temp.path, context)?;
+    let _funded = fund_image(context, processor, probe.width, probe.height)?;
     let raw = decode_frames(&temp.path, probe.width, probe.height, 1, context)?;
     let frame = raw
         .into_iter()
@@ -278,7 +291,11 @@ fn check_image_dimensions(width: u32, height: u32) -> Result<()> {
     Ok(())
 }
 
-fn decode_png(bytes: &[u8]) -> Result<image::RgbImage> {
+fn decode_png(
+    bytes: &[u8],
+    context: Option<&CpuContext>,
+    processor: Option<&ImageProcessor>,
+) -> Result<image::RgbImage> {
     // Read the header before materializing the full image. A compressed high-dimension file
     // then fails here rather than allocating the claimed dimensions.
     let probe = image::ImageReader::new(Cursor::new(bytes))
@@ -288,18 +305,83 @@ fn decode_png(bytes: &[u8]) -> Result<image::RgbImage> {
         .into_dimensions()
         .map_err(|error| Error::invalid(format!("image dimensions: {error}")))?;
     check_image_dimensions(width, height)?;
+    let funded = fund_image(context, processor, width, height)?;
     let mut reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|error| Error::invalid(format!("image format: {error}")))?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_IMAGE_EDGE);
     limits.max_image_height = Some(MAX_IMAGE_EDGE);
-    limits.max_alloc = Some(MAX_IMAGE_ALLOC_BYTES);
+    let allocation_limit = funded
+        .unwrap_or_else(|| context.map_or_else(default_staging_bytes, CpuContext::staging_limit));
+    if allocation_limit == 0 {
+        return Err(Error::new(
+            ErrorCode::Capacity,
+            "host memory availability is unknown",
+        ));
+    }
+    limits.max_alloc = Some(u64::try_from(allocation_limit).unwrap_or(u64::MAX));
     reader.limits(limits);
-    let image = reader
-        .decode()
-        .map_err(|error| Error::invalid(format!("image decode: {error}")))?;
+    let image = reader.decode().map_err(|error| match error {
+        image::ImageError::Limits(_) => {
+            Error::new(ErrorCode::Capacity, format!("image decode: {error}"))
+        }
+        _ => Error::invalid(format!("image decode: {error}")),
+    })?;
     Ok(image.into_rgb8())
+}
+
+/// Account for decoding, RGB copies, resize scratch, patch capacity, and retained patches.
+fn fund_image(
+    context: Option<&CpuContext>,
+    processor: Option<&ImageProcessor>,
+    width: u32,
+    height: u32,
+) -> Result<Option<usize>> {
+    let (Some(context), Some(processor)) = (context, processor) else {
+        return Ok(None);
+    };
+    let width = usize::try_from(width).map_err(|_| Error::invalid("image width overflow"))?;
+    let height = usize::try_from(height).map_err(|_| Error::invalid("image height overflow"))?;
+    let (resized_height, resized_width) = processor.smart_resize(height, width)?;
+    let source = width
+        .checked_mul(height)
+        .ok_or_else(|| Error::invalid("image staging overflow"))?;
+    let resized = resized_width
+        .checked_mul(resized_height)
+        .ok_or_else(|| Error::invalid("image staging overflow"))?;
+    let temporal = processor.temporal_patch_size;
+    // The current patch vector reserves temporal squared frames and is then copied into an Arc.
+    let patch_frames = temporal
+        .checked_mul(temporal)
+        .and_then(|value| value.checked_add(temporal))
+        .ok_or_else(|| Error::invalid("image staging overflow"))?;
+    let scratch = height
+        .checked_mul(resized_width)
+        .and_then(|value| value.checked_add(resized))
+        .and_then(|value| value.checked_mul(RGB_CHANNELS * size_of::<f32>()))
+        .ok_or_else(|| Error::invalid("image staging overflow"))?;
+    let patches = resized
+        .checked_mul(patch_frames)
+        .and_then(|value| value.checked_mul(RGB_CHANNELS * size_of::<f32>()))
+        .ok_or_else(|| Error::invalid("image staging overflow"))?;
+    // Allow RGBA16 decode, conversion, and retained RGB copies together.
+    let decoded = source
+        .checked_mul(SOURCE_STAGING_BYTES_PER_PIXEL)
+        .ok_or_else(|| Error::invalid("image staging overflow"))?;
+    let axes = width
+        .checked_add(height)
+        .and_then(|value| value.checked_add(resized_width))
+        .and_then(|value| value.checked_add(resized_height))
+        .and_then(|value| value.checked_mul(RESAMPLE_AXIS_STAGING_BYTES))
+        .ok_or_else(|| Error::invalid("image staging overflow"))?;
+    let bytes = decoded
+        .checked_add(scratch)
+        .and_then(|value| value.checked_add(patches))
+        .and_then(|value| value.checked_add(axes))
+        .ok_or_else(|| Error::invalid("image staging overflow"))?;
+    context.grow_staging(bytes)?;
+    Ok(Some(bytes))
 }
 
 fn rgb_image(width: u32, height: u32, pixels: Vec<u8>) -> Result<RawImage> {
@@ -351,21 +433,21 @@ fn read_url(
                 "media data URI text exceeds the bounded limit",
             ));
         }
-        return read_data_uri(url, limit);
+        return read_data_uri(url, limit, context);
     }
     if url.len() > MAX_URL_BYTES {
         return Err(Error::invalid("media URL is too long"));
     }
     if let Some(path) = url.strip_prefix("file://") {
         require_local(source, url)?;
-        return read_file(Path::new(path), limit);
+        return read_file(Path::new(path), limit, context);
     }
     if url.starts_with("http://") || url.starts_with("https://") {
         return fetch_http(url, limit, context);
     }
     if Path::new(url).is_absolute() {
         require_local(source, url)?;
-        return read_file(Path::new(url), limit);
+        return read_file(Path::new(url), limit, context);
     }
     Err(Error::unsupported(
         "media URL must be data:, file://, absolute path, http:// or https://",
@@ -382,12 +464,20 @@ fn require_local(source: SourcePolicy, url: &str) -> Result<()> {
     }
 }
 
-fn read_data_uri(url: &str, limit: usize) -> Result<Vec<u8>> {
+fn read_data_uri(url: &str, limit: usize, context: Option<&CpuContext>) -> Result<Vec<u8>> {
     let (header, payload) = url
         .split_once(',')
         .ok_or_else(|| Error::invalid("malformed data URI"))?;
     if !header.ends_with(";base64") {
         return Err(Error::unsupported("only base64 data URIs are supported"));
+    }
+    let decoded_bound = payload
+        .len()
+        .div_ceil(BASE64_EXPANSION_NUMERATOR)
+        .checked_mul(BASE64_EXPANSION_DENOMINATOR)
+        .ok_or_else(|| Error::invalid("data URI size overflow"))?;
+    if let Some(context) = context {
+        context.grow_staging(decoded_bound)?;
     }
     let bytes = BASE64
         .decode(payload)
@@ -401,15 +491,32 @@ fn read_data_uri(url: &str, limit: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn read_file(path: &Path, limit: usize) -> Result<Vec<u8>> {
-    let metadata = metadata(path).map_err(|e| Error::invalid(e.to_string()))?;
+fn read_file(path: &Path, limit: usize, context: Option<&CpuContext>) -> Result<Vec<u8>> {
+    let mut file = File::open(path).map_err(|e| Error::invalid(e.to_string()))?;
+    let metadata = file.metadata().map_err(|e| Error::invalid(e.to_string()))?;
     if metadata.len() > limit as u64 {
         return Err(Error::new(
             ErrorCode::Capacity,
             "media file exceeds the bounded limit",
         ));
     }
-    read(path).map_err(|e| Error::invalid(e.to_string()))
+    let length =
+        usize::try_from(metadata.len()).map_err(|_| Error::invalid("media file size overflow"))?;
+    if let Some(context) = context {
+        context.grow_staging(length)?;
+    }
+    let mut bytes = vec![0; length];
+    file.read_exact(&mut bytes)
+        .map_err(|e| Error::invalid(e.to_string()))?;
+    let mut extra = [0u8; 1];
+    if file
+        .read(&mut extra)
+        .map_err(|e| Error::invalid(e.to_string()))?
+        != 0
+    {
+        return Err(Error::invalid("media file changed while reading"));
+    }
+    Ok(bytes)
 }
 
 /// A bounded subprocess result with both streams drained.
@@ -577,7 +684,7 @@ fn fetch_http(url: &str, limit: usize, context: Option<&CpuContext>) -> Result<V
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
-    read_file(&temp.path, limit)
+    read_file(&temp.path, limit, context)
 }
 
 fn materialize(bytes: &[u8], kind: &str) -> Result<TempPath> {

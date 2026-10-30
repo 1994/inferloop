@@ -2,7 +2,7 @@
  "configurations": [
   {
    "backend": "cuda",
-   "crates": 238,
+   "crates": 239,
    "duplicates": {
     "base64": [
      "0.13.1",
@@ -46,7 +46,7 @@
      "2.0.21"
     ]
    },
-   "edges": 774,
+   "edges": 771,
    "features": [
     "cuda"
    ],

@@ -2,7 +2,8 @@
 use crate::staging::StagingLimit;
 use infer_core::{Error, ErrorCode, RequestId, Result};
 use std::{
-    collections::BTreeMap, sync::Arc, sync::Mutex, sync::atomic::AtomicBool, sync::atomic::Ordering,
+    collections::BTreeMap, sync::Arc, sync::Mutex, sync::atomic::AtomicBool,
+    sync::atomic::AtomicUsize, sync::atomic::Ordering,
 };
 
 struct Usage {
@@ -17,7 +18,7 @@ pub struct Registry {
 pub struct Pending {
     registry: Arc<Registry>,
     id: RequestId,
-    bytes: usize,
+    bytes: AtomicUsize,
     cancelled: Arc<AtomicBool>,
 }
 impl Registry {
@@ -56,7 +57,7 @@ impl Registry {
         Ok(Arc::new(Pending {
             registry: self.clone(),
             id,
-            bytes,
+            bytes: AtomicUsize::new(bytes),
             cancelled,
         }))
     }
@@ -72,6 +73,36 @@ impl Registry {
     }
 }
 impl Pending {
+    pub(super) fn grow(&self, additional: usize) -> Result<()> {
+        let mut usage = self
+            .registry
+            .usage
+            .lock()
+            .map_err(|_| Error::invariant("ingress registry poisoned"))?;
+        let total = usage
+            .bytes
+            .checked_add(additional)
+            .ok_or_else(|| Error::invalid("ingress bytes overflow"))?;
+        let own = self
+            .bytes
+            .load(Ordering::Relaxed)
+            .checked_add(additional)
+            .ok_or_else(|| Error::invalid("ingress credit overflow"))?;
+        if total > self.registry.limit.current() {
+            return Err(Error::new(
+                ErrorCode::Capacity,
+                "pending ingress byte budget exhausted",
+            ));
+        }
+        let entry = usage
+            .entries
+            .get_mut(&self.id)
+            .ok_or_else(|| Error::invariant("ingress credit is missing"))?;
+        entry.1 = own;
+        usage.bytes = total;
+        self.bytes.store(own, Ordering::Relaxed);
+        Ok(())
+    }
     pub fn check(&self) -> Result<()> {
         if self.cancelled.load(Ordering::Acquire) {
             return Err(Error::new(
@@ -89,7 +120,7 @@ impl Drop for Pending {
     fn drop(&mut self) {
         if let Ok(mut usage) = self.registry.usage.lock() {
             usage.entries.remove(&self.id);
-            usage.bytes -= self.bytes;
+            usage.bytes -= self.bytes.load(Ordering::Relaxed);
         }
     }
 }

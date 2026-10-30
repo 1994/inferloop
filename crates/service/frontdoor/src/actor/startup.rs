@@ -4,7 +4,7 @@ use crate::cpu::CpuConfig;
 use crate::cpu::CpuPool;
 use crate::ingress::Registry;
 use crate::staging::StagingLimit;
-use infer_core::Result;
+use infer_core::{Error, ErrorCode, Result};
 use infer_runtime::Engine;
 use infer_spi::BackendProvider;
 use std::sync::atomic::AtomicU64;
@@ -33,7 +33,14 @@ impl RuntimeHandle {
                 .div_ceil(MICROS_PER_MILLI),
             ..CpuConfig::default()
         };
-        Self::start_inner(engine, config, Arc::new(StagingLimit::automatic()))
+        if config.max_bytes == 0 {
+            return Err(Error::new(
+                ErrorCode::Backend,
+                "cannot determine available host memory",
+            ));
+        }
+        let limit = Arc::new(StagingLimit::automatic(config.max_bytes));
+        Self::start_inner(engine, config, limit)
     }
     /// # Errors
     /// Rejects invalid CPU limits, unforkable preparation providers or startup failures.

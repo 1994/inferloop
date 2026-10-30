@@ -6,26 +6,23 @@ use sysinfo::System;
 
 /// Portion of currently available memory made available to each staging lane.
 const AVAILABLE_MEMORY_DIVISOR: u64 = 8;
-/// Conservative previous default when a memory snapshot is unavailable.
-const FALLBACK_BYTES: usize = 64 << 20;
 /// Bound the cost of refreshing the operating-system memory snapshot.
-pub(super) const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+pub const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
-pub(super) struct StagingLimit {
+pub struct StagingLimit {
     bytes: AtomicUsize,
     refreshed: Option<Mutex<Instant>>,
 }
 
 impl StagingLimit {
-    pub(super) fn fixed(bytes: usize) -> Self {
+    pub const fn fixed(bytes: usize) -> Self {
         Self {
             bytes: AtomicUsize::new(bytes),
             refreshed: None,
         }
     }
 
-    pub(super) fn automatic() -> Self {
-        let bytes = available_memory().map_or(FALLBACK_BYTES, budget_for_available);
+    pub(super) fn automatic(bytes: usize) -> Self {
         Self {
             bytes: AtomicUsize::new(bytes),
             refreshed: Some(Mutex::new(Instant::now())),
@@ -52,9 +49,14 @@ impl StagingLimit {
             return;
         }
         *last = Instant::now();
-        let next = available_memory().map_or(FALLBACK_BYTES, budget_for_available);
+        let next = default_staging_bytes();
         self.bytes.store(next, Ordering::Relaxed);
     }
+}
+
+/// A zero result means the operating system could not provide a memory snapshot.
+pub(super) fn default_staging_bytes() -> usize {
+    available_memory().map_or(0, budget_for_available)
 }
 
 fn budget_for_available(bytes: u64) -> usize {
