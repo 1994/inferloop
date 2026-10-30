@@ -180,6 +180,47 @@ fn simd_preprocessing_matches_scalar_patch_bits() -> Result<()> {
 }
 
 #[test]
+fn simd_resize_matches_scalar_across_random_shapes() -> Result<()> {
+    fn next(seed: &mut u64) -> u8 {
+        *seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (*seed >> 32).to_le_bytes()[0]
+    }
+    let norm = Normalization {
+        mean: [0.5; 3],
+        std: [0.5; 3],
+        rescale: RESCALE,
+    };
+    let mut seed = 456_321_u64;
+    for _ in 0..100 {
+        let height = 2 + usize::from(next(&mut seed) % 100);
+        let width = 2 + usize::from(next(&mut seed) % 100);
+        let target_height = 2 + usize::from(next(&mut seed) % 150);
+        let target_width = 2 + usize::from(next(&mut seed) % 150);
+        let image = RgbImage {
+            height,
+            width,
+            pixels: (0..height * width * RGB_CHANNELS)
+                .map(|_| next(&mut seed))
+                .collect(),
+        };
+        let scalar = ImageProcessor::resize(&image, target_height, target_width);
+        let simd = image_resize::resize(&image.pixels, height, width, target_height, target_width)?;
+        assert_eq!(simd.len(), scalar.len());
+        for (index, (&actual, &expected)) in simd.iter().zip(&scalar).enumerate() {
+            let channel = index % RGB_CHANNELS;
+            assert_eq!(
+                norm.apply(f32::from(actual), channel).to_bits(),
+                norm.apply(expected, channel).to_bits(),
+                "{height}x{width} -> {target_height}x{target_width} element {index}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn unchanged_images_preserve_patch_order_and_normalization() -> Result<()> {
     for (height, width, temporal) in [(32, 32, 1), (32, 64, 2), (64, 32, 3)] {
         for rescale in [RESCALE, 0.3] {
