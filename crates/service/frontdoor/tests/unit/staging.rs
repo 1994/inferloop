@@ -26,7 +26,9 @@ fn fixed_limit_is_not_automatically_changed() {
 fn automatic_limit_refreshes_an_outdated_snapshot() {
     let limit = StagingLimit::automatic(1);
     let refreshed = limit.refreshed.as_ref().expect("automatic refresh");
-    *refreshed.lock().expect("refresh lock") = Instant::now() - REFRESH_INTERVAL;
+    *refreshed.lock().expect("refresh lock") = Instant::now()
+        .checked_sub(REFRESH_INTERVAL)
+        .expect("test clock supports one second");
     limit.refresh_if_due();
     assert!(limit.current() > 1, "host memory snapshot was unavailable");
 }
