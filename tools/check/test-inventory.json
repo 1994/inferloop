@@ -1015,6 +1015,11 @@
       "mount": "resident_slot_recurrent_wave.rs"
     },
     {
+      "crate": "cuda-kernels",
+      "file": "src/contract/target.rs",
+      "mount": "../../tests/unit/target.rs"
+    },
+    {
       "crate": "kernel-api",
       "file": "src/attention.rs",
       "mount": "../tests/unit/attention_tests.rs"
