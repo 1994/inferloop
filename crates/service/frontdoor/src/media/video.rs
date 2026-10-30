@@ -1,34 +1,29 @@
 //! Bounded orchestration for sampled video-frame processing.
-use super::{SourcePolicy, materialize, read_url};
-use crate::cpu::CpuPool;
+use super::{READ_CHUNK_BYTES, SourcePolicy, TempPath, require_local, source};
+use crate::cpu::{CpuContext, CpuPool};
 use futures_util::stream::{self, TryStreamExt};
-use infer_core::{Error, Result};
-use infer_media_input::{SampledVideo, probe_video};
+use infer_core::{Error, ErrorCode, Result};
+use infer_media_input::{SampledVideo, data_uri_reader, probe_video};
 use infer_models::{PreprocessedVideo, RgbImage, VideoPlan, VideoProcessor};
+use std::fs::File;
+use std::io::{Read, Write};
+use std::path::Path;
 use std::sync::Arc;
 
 /// Decode only model-selected source frames and process temporal groups on the shared CPU pool.
 pub(super) async fn resolve(
     url: String,
-    downloaded: Option<Vec<u8>>,
     policy: SourcePolicy,
     processor: VideoProcessor,
     pool: CpuPool,
 ) -> Result<Vec<PreprocessedVideo>> {
-    let retained = url
-        .len()
-        .checked_add(downloaded.as_ref().map_or(0, Vec::len))
-        .ok_or_else(|| Error::invalid("video input size overflow"))?;
-    let temp = pool
-        .run_when_available(retained, move |context| {
-            context.check()?;
-            let bytes = match downloaded {
-                Some(bytes) => bytes,
-                None => read_url(&url, None, policy, Some(context))?,
-            };
-            materialize(&bytes, "video")
-        })
-        .await?;
+    let temp = if source::is_remote(&url) {
+        download(&url, &pool).await?
+    } else {
+        let retained = url.len();
+        pool.run_when_available(retained, move |context| materialize(&url, policy, context))
+            .await?
+    };
     let metadata = probe_video(&temp.path).await?;
     let temporal = processor.temporal_patch_size;
     let plan = Arc::new(
@@ -81,6 +76,100 @@ pub(super) async fn resolve(
         .await?;
     drop(temp);
     Ok(processed)
+}
+
+/// Keep the file ahead of its path so cancellation closes it before unlinking the temporary file.
+struct VideoFile {
+    file: File,
+    temp: TempPath,
+}
+
+impl VideoFile {
+    fn new() -> Result<Self> {
+        let (temp, file) = TempPath::create("video", "media")?;
+        Ok(Self { file, temp })
+    }
+
+    fn finish(self) -> TempPath {
+        let Self { file, temp } = self;
+        drop(file);
+        temp
+    }
+}
+
+async fn download(url: &str, pool: &CpuPool) -> Result<TempPath> {
+    let mut response = source::stream(url, pool).await?;
+    let mut target = pool
+        .run_when_available(0, |context| {
+            context.check()?;
+            VideoFile::new()
+        })
+        .await?;
+    while let Some(chunk) = response.next_chunk().await? {
+        let retained = chunk.as_ref().len();
+        target = pool
+            .run_when_available(retained, move |context| {
+                context.check()?;
+                target
+                    .file
+                    .write_all(chunk.as_ref())
+                    .map_err(|error| Error::invalid(format!("video file write: {error}")))?;
+                Ok(target)
+            })
+            .await?;
+    }
+    pool.run_when_available(0, move |context| {
+        context.check()?;
+        Ok(target.finish())
+    })
+    .await
+}
+
+fn materialize(url: &str, policy: SourcePolicy, context: &CpuContext) -> Result<TempPath> {
+    context.check()?;
+    let mut target = VideoFile::new()?;
+    if url.starts_with("data:") {
+        copy_source(data_uri_reader(url)?, &mut target.file, context)?;
+    } else {
+        let path = if let Some(path) = url.strip_prefix("file://") {
+            path
+        } else if Path::new(url).is_absolute() {
+            url
+        } else if url.is_empty() {
+            return Err(Error::invalid("media URL is empty"));
+        } else {
+            return Err(Error::unsupported(
+                "media URL must be data:, file://, absolute path, http:// or https://",
+            ));
+        };
+        require_local(policy, url)?;
+        let file = File::open(path).map_err(|error| Error::invalid(error.to_string()))?;
+        copy_source(file, &mut target.file, context)?;
+    }
+    Ok(target.finish())
+}
+
+fn copy_source(mut source: impl Read, target: &mut File, context: &CpuContext) -> Result<()> {
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(READ_CHUNK_BYTES).map_err(|error| {
+        Error::new(
+            ErrorCode::Capacity,
+            format!("video source buffer allocation: {error}"),
+        )
+    })?;
+    bytes.resize(READ_CHUNK_BYTES, 0);
+    loop {
+        context.check()?;
+        let count = source
+            .read(&mut bytes)
+            .map_err(|error| Error::invalid(format!("video source read: {error}")))?;
+        if count == 0 {
+            return Ok(());
+        }
+        target
+            .write_all(&bytes[..count])
+            .map_err(|error| Error::invalid(format!("video file write: {error}")))?;
+    }
 }
 
 async fn read_frames(reader: &mut SampledVideo, count: usize) -> Result<Vec<RgbImage>> {

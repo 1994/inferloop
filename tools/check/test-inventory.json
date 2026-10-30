@@ -58,7 +58,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 9
+      "tests": 12
     },
     "metal": {
       "benches": 0,
@@ -160,7 +160,7 @@
     }
   ],
   "gated": {
-    "target_os = \"linux\"": 4,
+    "target_os = \"linux\"": 6,
     "target_os = \"macos\"": 1
   },
   "ignored_reasons": {
@@ -1451,11 +1451,11 @@
     }
   ],
   "totals": {
-    "all": 1061,
+    "all": 1064,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1061
+    "tests": 1064
   }
 }

@@ -9,10 +9,12 @@ use infer_ir::Modality;
 use infer_models::{ImageProcessor, MediaLimits, MultimodalAssets, TextAssets, VideoProcessor};
 use std::env::{temp_dir, var};
 use std::fs::{read, remove_file, write};
-use std::io::{Cursor, Write};
+use std::io::{self, Cursor, Write};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::id;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::task::JoinHandle;
 
 const ONE_PIXEL_PNG: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -50,6 +52,23 @@ fn identity_processor() -> ImageProcessor {
         std: [0.5; 3],
         rescale: 1.0 / 255.0,
     }
+}
+
+async fn video_fixture_server(encoded: Vec<u8>) -> (SocketAddr, JoinHandle<io::Result<()>>) {
+    use axum::{Router, routing::get};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = Router::new().route(
+        "/clip",
+        get(move || {
+            let encoded = encoded.clone();
+            async move { encoded }
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    (address, server)
 }
 
 #[test]
@@ -644,6 +663,9 @@ async fn short_video_at_standard_resolution_is_not_rejected_by_a_raw_byte_budget
         max_frames: 4,
     };
     let reference = processor.preprocess(&video).unwrap();
+    let encoded = read(&clip.path).unwrap();
+    let inline = format!("data:video/x-matroska;base64,{}", STANDARD.encode(&encoded));
+    let (address, server) = video_fixture_server(encoded).await;
     let pool = CpuPool::new(CpuConfig {
         workers: 1,
         max_jobs: 1,
@@ -651,17 +673,28 @@ async fn short_video_at_standard_resolution_is_not_rejected_by_a_raw_byte_budget
     })
     .unwrap();
     let source = clip.path.to_string_lossy().into_owned();
-    let (first, second) = tokio::join!(
+    let (first, second, third) = tokio::join!(
         super::video::resolve(
-            source.clone(),
-            None,
+            source,
             SourcePolicy::TrustedLocal,
             processor.clone(),
             pool.clone(),
         ),
-        super::video::resolve(source, None, SourcePolicy::TrustedLocal, processor, pool),
+        super::video::resolve(
+            inline,
+            SourcePolicy::Public,
+            processor.clone(),
+            pool.clone()
+        ),
+        super::video::resolve(
+            format!("http://{address}/clip"),
+            SourcePolicy::Public,
+            processor,
+            pool,
+        ),
     );
-    for parts in [first.unwrap(), second.unwrap()] {
+    server.abort();
+    for parts in [first.unwrap(), second.unwrap(), third.unwrap()] {
         assert_eq!(parts.len(), reference.image.grid.0);
         assert_eq!(
             parts

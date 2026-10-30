@@ -163,8 +163,11 @@ impl MediaService {
                             })?
                             .clone();
                         let url = take(&mut request.url);
+                        if bytes.is_some() {
+                            return Err(Error::invariant("video source was already buffered"));
+                        }
                         ResolvedMedia::Video(
-                            video::resolve(url, bytes, self.source, processor, pool).await?,
+                            video::resolve(url, self.source, processor, pool).await?,
                         )
                     } else {
                         ResolvedMedia::Image(bytes)
