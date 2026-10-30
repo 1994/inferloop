@@ -570,9 +570,15 @@ impl SlotPool {
                 )?;
                 (None, Some(full), Vec::new(), graphs, roots)
             } else {
-                let decode = builder.build_slots(&mut states, &mut fp8)?;
+                // Narrow rungs stay per-lane: at one to four lanes the launch count is small,
+                // and their state views are prefixes the batch kernel cannot address directly.
                 let decode_narrow =
                     build_narrow_decode(&mut builder, &mut states, &mut fp8, &narrow_slots)?;
+                // The full-width graph records one batched state kernel per node instead of one
+                // per lane; its builder therefore holds the pooled state roots, not a lane.
+                let (lane_states, roots) = states.parts();
+                builder.states = roots;
+                let decode = builder.build_slots(lane_states, &mut fp8)?;
                 (Some(decode), None, decode_narrow, Vec::new(), Vec::new())
             }
         };

@@ -379,6 +379,34 @@ impl BatchBuilder<'_> {
                     )?;
                     continue;
                 }
+                // Pooled state roots let delta record one lane-batched kernel instead of one
+                // launch per lane. The builder holds those roots in `states` for this graph
+                // only; per-lane and verify graphs keep lane states there, and conv still
+                // needs its three per-lane history rows.
+                if matches!(node.op, TensorOp::Delta { .. })
+                    && node
+                        .states
+                        .first()
+                        .is_some_and(|id| self.states.contains_key(id))
+                {
+                    Capture {
+                        scope,
+                        arena,
+                        weights: self.weights,
+                        nvfp4: self.nvfp4,
+                        attention: self.attention,
+                        states: self.states,
+                        fp8_states: self.fp8_states,
+                        metadata: metadata_owner,
+                        table: &self.tables[0],
+                        external: self.external,
+                        capacity: self.capacity,
+                        fusion: &mut no_fusion,
+                        mode: CaptureMode::Pooled,
+                    }
+                    .record(node)?;
+                    continue;
+                }
                 match dispatch32(node, self.weights) {
                     Dispatch32::Linear => return Err(error("slot decode linear dispatch")),
                     Dispatch32::Batched => Capture {
