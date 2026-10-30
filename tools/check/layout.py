@@ -148,6 +148,27 @@ def check_crates():
     print(f"Layout: {len(members)} grouped crates, thin facades and dependency boundaries passed")
 
 
+
+def check_kernel_boundary():
+    """Kernel bodies and driver launches stay in their profile directories."""
+    host = ROOT / "crates/backend/cuda/src"
+    allowed = {host / "resident/small_gemm.rs"}
+    for path in host.rglob("*.rs"):
+        if "#[cutile::module]" in path.read_text() and path not in allowed:
+            raise SystemExit(
+                f"{path.relative_to(ROOT)}: move the kernel module to crates/backend/cuda-kernels/src/tile"
+            )
+    kernels = ROOT / "crates/backend/cuda-kernels/src"
+    for path in kernels.rglob("*.rs"):
+        profile = path.relative_to(kernels).parts[0]
+        text = path.read_text()
+        if "use cutile::" in text and profile != "tile":
+            raise SystemExit(f"{path.relative_to(ROOT)}: cuTile is a tile-profile dependency")
+        if ("cuLaunchKernel" in text or "cuModuleLoadData" in text) and profile != "aot":
+            raise SystemExit(f"{path.relative_to(ROOT)}: driver launches belong to the aot profile")
+    print("Kernel boundary: host has no kernels; profile dependencies are separated")
+
+
 def check_links():
     paths = [
         ROOT / "README.md",
@@ -189,5 +210,6 @@ def check_sources():
 
 if __name__ == "__main__":
     check_crates()
+    check_kernel_boundary()
     check_links()
     check_sources()

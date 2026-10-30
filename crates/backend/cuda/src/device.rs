@@ -22,9 +22,12 @@ use cutile::cuda_async::device_future::DeviceFuture;
 use cutile::jit_cache::enable_default;
 use cutile::prelude::*;
 use infer_core::{Error as InferError, ErrorCode, Result};
+use infer_cuda_kernels::contract::Arch;
 use infer_cuda_kernels::contract::DevicePtr;
 use infer_cuda_kernels::contract::LinearPlan;
+use infer_cuda_kernels::contract::Profile;
 use infer_cuda_kernels::contract::Projection;
+use infer_cuda_kernels::contract::Target;
 use infer_cuda_kernels::tile::projection::TileProjection;
 use serde::Serialize;
 use std::fmt::Display;
@@ -185,6 +188,7 @@ pub(crate) use readback::{ReadbackSource, Readbacks};
 pub struct CudaDevice {
     pub(crate) stream: Arc<cuda_core::Stream>,
     projection: Arc<dyn Projection>,
+    arch: Arch,
     target: CudaTarget,
     profile: Arc<OnceLock<DeviceProfile>>,
     ordinal: usize,
@@ -205,12 +209,13 @@ impl CudaDevice {
     /// Fails when the requested CUDA device or stream is unavailable.
     pub fn new(ordinal: usize) -> Result<Self> {
         let device = Device::new(ordinal).map_err(device_error)?;
-        let target = query_target(&device)?;
+        let (target, arch) = query_target(&device)?;
         let stream = device.new_stream().map_err(device_error)?;
         let projection = TileProjection::shared(device, stream.clone());
         Ok(Self {
             stream,
             projection,
+            arch,
             target,
             profile: Arc::new(OnceLock::new()),
             ordinal,
@@ -221,6 +226,15 @@ impl CudaDevice {
     #[must_use]
     pub const fn ordinal(&self) -> usize {
         self.ordinal
+    }
+
+    /// Kernel target resolved for this device.
+    #[must_use]
+    pub const fn kernel_target(&self) -> Target {
+        Target {
+            arch: self.arch,
+            profile: Profile::Tile,
+        }
     }
 
     /// # Errors
@@ -400,11 +414,30 @@ impl CudaDevice {
     unsafe_code,
     reason = "Audited read-only CUDA attribute query; the live owned Device supplies a valid driver handle"
 )]
-fn query_target(device: &Device) -> Result<CudaTarget> {
+fn query_target(device: &Device) -> Result<(CudaTarget, Arch)> {
     // SAFETY: Device::new initialized CUDA and owns this live device handle.
     let name =
         unsafe { cuda_core::get_device_sm_name(device.cu_device()) }.map_err(device_error)?;
-    Ok(CudaTarget::from_sm_name(&name))
+    Ok((CudaTarget::from_sm_name(&name), parse_arch(&name)?))
+}
+
+fn parse_arch(name: &str) -> Result<Arch> {
+    let digits = name
+        .strip_prefix("sm_")
+        .ok_or_else(|| InferError::invalid("device compute capability name"))?;
+    let (major, minor) = digits.split_at(
+        digits
+            .len()
+            .checked_sub(1)
+            .ok_or_else(|| InferError::invalid("device compute capability name"))?,
+    );
+    let major: u32 = major
+        .parse()
+        .map_err(|_| InferError::invalid("device compute capability major"))?;
+    let minor: u32 = minor
+        .parse()
+        .map_err(|_| InferError::invalid("device compute capability minor"))?;
+    Ok(Arch::from_sm(major, minor))
 }
 
 fn head_copy_shape<T: DType>(tensor: &Tensor<T>) -> Result<[usize; KV_CACHE_RANK]> {
