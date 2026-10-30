@@ -20,6 +20,7 @@ use tokio::time::sleep;
 use tokio::time::timeout;
 use tower::ServiceExt;
 
+use crate::constants::MAX_REQUEST_BODY_BYTES;
 use crate::{RuntimeHandle, router_with_text};
 
 // The native HTTP module already mounts the shared protocol double; this module is a sibling
@@ -316,9 +317,10 @@ async fn prompt_plus_output_over_the_total_context_is_rejected_after_tokenizatio
 async fn malformed_and_oversized_bodies_use_the_compatibility_error_envelope() {
     let (handle, assets) = fixture();
     let app = router_with_text(handle.clone(), assets);
-    for (body, expected) in [
-        ("{".into(), StatusCode::BAD_REQUEST),
+    for (path, body, expected) in [
+        ("/v1/chat/completions", "{".into(), StatusCode::BAD_REQUEST),
         (
+            "/v1/completions",
             " ".repeat(2 * 1024 * 1024 + 1),
             StatusCode::PAYLOAD_TOO_LARGE,
         ),
@@ -328,7 +330,7 @@ async fn malformed_and_oversized_bodies_use_the_compatibility_error_envelope() {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/v1/chat/completions")
+                    .uri(path)
                     .header("content-type", "application/json")
                     .body(Body::from(body))
                     .unwrap(),
@@ -340,6 +342,29 @@ async fn malformed_and_oversized_bodies_use_the_compatibility_error_envelope() {
         let error: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(error["error"]["type"], "invalid_request_error");
     }
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn large_inline_image_reaches_media_validation() {
+    let (handle, assets) = fixture();
+    let app = router_with_text(handle.clone(), assets);
+    let url = format!(
+        "data:image/png;base64,{}",
+        "A".repeat(MAX_REQUEST_BODY_BYTES)
+    );
+    let (status, body) = call(
+        app,
+        "/v1/chat/completions",
+        Some(json!({
+            "model":"1",
+            "messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":url}}]}],
+            "max_tokens":1
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{body}");
+    assert_eq!(body["error"]["message"], "this deployment is text-only");
     handle.shutdown().await.unwrap();
 }
 

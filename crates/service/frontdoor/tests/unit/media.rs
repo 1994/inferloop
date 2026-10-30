@@ -1,5 +1,5 @@
 use super::{
-    MAX_IMAGE_BYTES, MediaRequest, MediaService, SourcePolicy, TempPath, check_video_frame_limit,
+    MediaRequest, MediaService, SourcePolicy, TempPath, check_video_frame_limit,
     image_digest, load_image, load_image_with, load_video_with, parse_rate, read_url, run_bounded,
     source_digest,
 };
@@ -239,6 +239,30 @@ fn valid_inline_image_may_exceed_the_short_url_limit() {
 }
 
 #[test]
+fn inline_image_can_exceed_the_former_encoded_byte_limit() {
+    let mut bytes = STANDARD.decode(ONE_PIXEL_PNG).expect("fixture");
+    bytes.resize(24 * 1024 * 1024 + 1, 0);
+    let uri = format!("data:image/png;base64,{}", STANDARD.encode(bytes));
+    let image = load_image(&uri).expect("valid image over former byte cap");
+    assert_eq!((image.width, image.height), (1, 1));
+}
+
+#[test]
+fn decoded_image_can_exceed_the_former_dimensions_and_allocation_limits() {
+    let (width, height) = (8193, 2732);
+    let bytes = encoded(image::RgbImage::new(width, height), image::ImageFormat::Png);
+    let uri = format!("data:image/png;base64,{}", STANDARD.encode(bytes));
+    let image = load_image(&uri).expect("valid large image");
+    assert_eq!(
+        (image.width, image.height),
+        (width as usize, height as usize)
+    );
+    assert_eq!(image.pixels.len(), width as usize * height as usize * 3);
+    assert_eq!(&image.pixels[..3], &[0, 0, 0]);
+    assert_eq!(&image.pixels[image.pixels.len() - 3..], &[0, 0, 0]);
+}
+
+#[test]
 fn common_native_image_codecs_decode_without_external_tools() {
     for format in [image::ImageFormat::Jpeg, image::ImageFormat::WebP] {
         let bytes = encoded(noisy_image(64, 48), format);
@@ -254,37 +278,34 @@ fn common_native_image_codecs_decode_without_external_tools() {
 }
 
 #[test]
-fn high_dimension_image_header_is_rejected_before_full_decode() {
+fn malformed_image_is_rejected() {
     let mut png = STANDARD.decode(ONE_PIXEL_PNG).expect("fixture");
-    png[16..20].copy_from_slice(&100_000_u32.to_be_bytes());
-    png[20..24].copy_from_slice(&100_000_u32.to_be_bytes());
+    png[16..20].copy_from_slice(&100_u32.to_be_bytes());
+    png[20..24].copy_from_slice(&100_u32.to_be_bytes());
     let crc = crc32fast::hash(&png[12..29]);
     png[29..33].copy_from_slice(&crc.to_be_bytes());
     let uri = format!("data:image/png;base64,{}", STANDARD.encode(png));
-    let error = load_image(&uri).expect_err("huge dimensions");
-    assert_eq!(error.code, infer_core::ErrorCode::Capacity);
+    assert!(load_image(&uri).is_err());
 }
 
 #[test]
-fn malformed_and_oversized_data_uris_are_rejected_before_decode() {
+fn malformed_data_uris_and_bounded_video_inputs_are_rejected() {
     assert!(load_image("data:image/png;base64,!!!").is_err());
-    let oversized = "A".repeat(MAX_IMAGE_BYTES * 2);
-    assert!(load_image(&format!("data:image/png;base64,{oversized}")).is_err());
     let encoded_over_limit = format!("data:image/png;base64,{}", "A".repeat(5000));
-    assert!(read_url(&encoded_over_limit, 1, SourcePolicy::Public, None).is_err());
+    assert!(read_url(&encoded_over_limit, Some(1), SourcePolicy::Public, None).is_err());
     assert!(load_image("ftp://example.invalid/a.png").is_err());
 }
 
 #[test]
 fn public_source_policy_rejects_server_local_paths() {
     for url in ["file:///etc/passwd", "/etc/passwd"] {
-        let error = read_url(url, 1024, SourcePolicy::Public, None).expect_err("local path");
+        let error = read_url(url, Some(1024), SourcePolicy::Public, None).expect_err("local path");
         assert_eq!(error.code, infer_core::ErrorCode::Unsupported);
     }
     assert!(
         read_url(
             "data:image/png;base64,AAAA",
-            1024,
+            Some(1024),
             SourcePolicy::Public,
             None
         )
