@@ -4,6 +4,7 @@
 //! `patch_size × merge_size` and the pixel count lands in `[min_pixels, max_pixels]`, then
 //! normalizes and lays the patches out in spatial-merge-block order with the flattened
 //! `[channel, temporal, patch, patch]` vector the patch-embed projection consumes.
+use super::image_resize;
 use infer_core::{Error, Result};
 
 /// Channels of the RGB images the processor accepts.
@@ -12,6 +13,8 @@ pub(crate) const RGB_CHANNELS: usize = 3;
 const BYTE_SCALE: f64 = 255.0;
 /// Reciprocal of [`BYTE_SCALE`], the processor's rescale factor.
 const RESCALE: f32 = 1.0 / 255.0;
+/// Symmetric normalization erases the sign of zero introduced by scalar resizing.
+const SYMMETRIC_NORMALIZATION: f32 = 0.5;
 /// Largest aspect ratio the reference processor accepts.
 const MAX_ASPECT_RATIO: usize = 200;
 /// Output pixel centres sit half a pixel past the integer grid.
@@ -128,8 +131,8 @@ pub(crate) struct PatchGrid {
 /// # Errors
 /// Rejects missing frames, frames that disagree with the grid or a grid that does not divide by
 /// the merge size.
-pub(crate) fn patchify(
-    frames: &[&[f32]],
+pub(crate) fn patchify<T: Copy + Into<f32>>(
+    frames: &[&[T]],
     grid: PatchGrid,
     norm: &Normalization,
 ) -> Result<Vec<f32>> {
@@ -197,8 +200,9 @@ pub(crate) fn patchify(
                                     for patch_col in 0..grid.patch {
                                         let y = row * grid.patch + patch_row;
                                         let x = col * grid.patch + patch_col;
-                                        let value =
-                                            frame[(y * resized_width + x) * RGB_CHANNELS + channel];
+                                        let value = frame
+                                            [(y * resized_width + x) * RGB_CHANNELS + channel]
+                                            .into();
                                         pixels.push(norm.apply(value, channel));
                                     }
                                 }
@@ -332,7 +336,6 @@ impl ImageProcessor {
             return Err(Error::invalid("image buffer does not match its dimensions"));
         }
         let (resized_height, resized_width) = self.smart_resize(image.height, image.width)?;
-        let resized = Self::resize(image, resized_height, resized_width);
         let grid_h = resized_height / self.patch_size;
         let grid_w = resized_width / self.patch_size;
         let merge = self.merge_size;
@@ -341,28 +344,49 @@ impl ImageProcessor {
                 "patch grid does not divide by the merge size",
             ));
         }
+        let grid = PatchGrid {
+            temporal: self.temporal_patch_size,
+            height: grid_h,
+            width: grid_w,
+            patch: self.patch_size,
+            merge: self.merge_size,
+            groups: 1,
+        };
+        let norm = Normalization {
+            mean: self.mean,
+            std: self.std,
+            rescale: self.rescale,
+        };
         // A still image repeats the same frame across the temporal taps.
-        let frames = vec![resized.as_slice(); self.temporal_patch_size];
-        let pixels = patchify(
-            &frames,
-            PatchGrid {
-                temporal: self.temporal_patch_size,
-                height: grid_h,
-                width: grid_w,
-                patch: self.patch_size,
-                merge: self.merge_size,
-                groups: 1,
-            },
-            &Normalization {
-                mean: self.mean,
-                std: self.std,
-                rescale: self.rescale,
-            },
-        )?;
+        let pixels = if self.fast_resize_supported(image, resized_height, resized_width) {
+            let resized = image_resize::resize(
+                &image.pixels,
+                image.height,
+                image.width,
+                resized_height,
+                resized_width,
+            )?;
+            let frames = vec![resized.as_slice(); self.temporal_patch_size];
+            patchify(&frames, grid, &norm)?
+        } else {
+            let resized = Self::resize(image, resized_height, resized_width);
+            let frames = vec![resized.as_slice(); self.temporal_patch_size];
+            patchify(&frames, grid, &norm)?
+        };
         Ok(PreprocessedImage {
             pixels,
             grid: (1, grid_h, grid_w),
         })
+    }
+
+    fn fast_resize_supported(&self, image: &RgbImage, height: usize, width: usize) -> bool {
+        (image.height != height || image.width != width)
+            && self.mean == [SYMMETRIC_NORMALIZATION; RGB_CHANNELS]
+            && self.std == [SYMMETRIC_NORMALIZATION; RGB_CHANNELS]
+            && self.rescale == RESCALE
+            && [image.height, image.width, height, width]
+                .into_iter()
+                .all(|dimension| u32::try_from(dimension).is_ok())
     }
 
     /// Separable bicubic resize of an RGB8 image into `height × width`, in `0..=255`.
@@ -375,7 +399,7 @@ impl ImageProcessor {
             // Unit-scale bicubic sampling reproduces each RGB8 value exactly.
             return image.pixels.iter().copied().map(f32::from).collect();
         }
-        let intermediate = if image.width == width {
+        let mut intermediate = if image.width == width {
             // Unit-scale horizontal filtering preserves each RGB8 value exactly.
             image.pixels.iter().copied().map(f32::from).collect()
         } else {
@@ -398,7 +422,13 @@ impl ImageProcessor {
             intermediate
         };
         if image.height == height {
-            // The horizontal pass already rounded the result to RGB8 values.
+            // A unit vertical pass turns negative zero from horizontal rounding into positive
+            // zero. Preserve that bit-level behavior for normalization with custom parameters.
+            for value in &mut intermediate {
+                if *value == 0.0 {
+                    *value = 0.0;
+                }
+            }
             return intermediate;
         }
         let vertical = resample_axis(image.height, height);

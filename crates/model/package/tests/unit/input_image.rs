@@ -34,7 +34,7 @@ fn smart_resize_matches_the_reference_grid() -> Result<()> {
 }
 
 #[test]
-fn rgb8_resize_matches_torchvision_antialiased_bicubic() {
+fn rgb8_resize_matches_torchvision_antialiased_bicubic() -> Result<()> {
     let source = [
         0, 30, 240, 60, 255, 90, 180, 10, 220, 40, 255, 75, 160, 0, 120,
     ];
@@ -74,7 +74,13 @@ fn rgb8_resize_matches_torchvision_antialiased_bicubic() {
             .flat_map(|v| [f32::from(*v); RGB_CHANNELS])
             .collect();
         assert_eq!(actual, expected);
+        let simd = image_resize::resize(&image.pixels, image.height, image.width, height, width)?;
+        assert_eq!(
+            simd.into_iter().map(f32::from).collect::<Vec<_>>(),
+            expected
+        );
     }
+    Ok(())
 }
 
 #[test]
@@ -98,6 +104,79 @@ fn unchanged_rgb8_resize_preserves_every_value_bitwise() {
             );
         }
     }
+}
+
+#[test]
+fn horizontal_only_resize_keeps_unit_vertical_pass_zero_sign() {
+    let image = RgbImage {
+        height: 1,
+        width: 5,
+        pixels: [0, 1, 0, 0, 0]
+            .into_iter()
+            .flat_map(|value| [value; RGB_CHANNELS])
+            .collect(),
+    };
+    let resized = ImageProcessor::resize(&image, 1, 8);
+    for &value in &resized {
+        if value == 0.0 {
+            assert_eq!(value.to_bits(), 0.0f32.to_bits());
+        }
+    }
+}
+
+#[test]
+fn simd_preprocessing_matches_scalar_patch_bits() -> Result<()> {
+    let processor = ImageProcessor {
+        patch_size: 16,
+        temporal_patch_size: 2,
+        merge_size: 2,
+        min_pixels: 65_536,
+        max_pixels: 16_777_216,
+        mean: [0.5; 3],
+        std: [0.5; 3],
+        rescale: RESCALE,
+    };
+    for (height, width) in [
+        (60, 100),
+        (63, 65),
+        (257, 256),
+        (256, 257),
+        (333, 571),
+        (320, 576),
+    ] {
+        let image = RgbImage {
+            height,
+            width,
+            pixels: (0..height * width * RGB_CHANNELS)
+                .map(|index| (index * 37 + 11).to_le_bytes()[0])
+                .collect(),
+        };
+        let (target_height, target_width) = processor.smart_resize(height, width)?;
+        let scalar = ImageProcessor::resize(&image, target_height, target_width);
+        let frames = vec![scalar.as_slice(); processor.temporal_patch_size];
+        let expected = patchify(
+            &frames,
+            PatchGrid {
+                temporal: processor.temporal_patch_size,
+                height: target_height / processor.patch_size,
+                width: target_width / processor.patch_size,
+                patch: processor.patch_size,
+                merge: processor.merge_size,
+                groups: 1,
+            },
+            &Normalization {
+                mean: processor.mean,
+                std: processor.std,
+                rescale: processor.rescale,
+            },
+        )?;
+        let actual = processor.preprocess(&image)?;
+        assert_eq!(actual.pixels.len(), expected.len());
+        for (&actual, &expected) in actual.pixels.iter().zip(&expected) {
+            assert_eq!(actual.to_bits(), expected.to_bits(), "{height}x{width}");
+        }
+    }
+    Ok(())
 }
 
 #[test]
