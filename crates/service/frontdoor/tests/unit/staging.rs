@@ -1,8 +1,8 @@
 use super::{REFRESH_INTERVAL, StagingLimit};
 use crate::cpu::{CpuConfig, CpuPool};
 use crate::ingress::Registry;
-use infer_core::host_memory::staging_bytes;
 use infer_core::{RequestId, Result, credits::CreditPool};
+use infer_runtime::host_memory::staging_bytes;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;

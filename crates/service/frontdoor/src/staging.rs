@@ -1,6 +1,6 @@
 //! Host staging limits. Credits account for work; they do not allocate memory.
 use infer_core::credits::CreditLimit;
-use infer_core::host_memory::{snapshot, staging_bytes};
+use infer_runtime::host_memory::{snapshot, staging_bytes};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};

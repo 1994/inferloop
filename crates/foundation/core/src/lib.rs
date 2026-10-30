@@ -4,7 +4,6 @@ pub(crate) mod constants;
 pub mod credits;
 mod error;
 pub mod event;
-pub mod host_memory;
 pub mod id;
 pub mod lifecycle;
 pub mod map;

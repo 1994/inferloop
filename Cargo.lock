@@ -1274,7 +1274,6 @@ dependencies = [
  "libc",
  "rtrb",
  "serde",
- "sysinfo",
  "thiserror 2.0.21",
 ]
 
@@ -1427,6 +1426,7 @@ dependencies = [
  "infer-workloads",
  "serde",
  "serde_json",
+ "sysinfo",
  "tracing",
 ]
 

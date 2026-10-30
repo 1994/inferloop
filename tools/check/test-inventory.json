@@ -28,7 +28,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 21
+      "tests": 19
     },
     "cuda": {
       "benches": 0,
@@ -88,7 +88,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 105
+      "tests": 107
     },
     "scheduler": {
       "benches": 0,
@@ -1012,6 +1012,11 @@
     },
     {
       "crate": "runtime",
+      "file": "src/host_memory.rs",
+      "mount": "../tests/unit/host_memory.rs"
+    },
+    {
+      "crate": "runtime",
       "file": "src/lengths.rs",
       "mount": "../tests/unit/lengths.rs"
     },
@@ -1154,11 +1159,6 @@
       "crate": "core",
       "file": "src/event.rs",
       "mount": "../tests/unit/event.rs"
-    },
-    {
-      "crate": "core",
-      "file": "src/host_memory.rs",
-      "mount": "../tests/unit/host_memory.rs"
     },
     {
       "crate": "core",
