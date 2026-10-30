@@ -158,6 +158,14 @@ def check_kernel_boundary():
             raise SystemExit(
                 f"{path.relative_to(ROOT)}: move the kernel module to crates/backend/cuda-kernels/src/tile"
             )
+    for directory in ("resident", "executor"):
+        for path in (host / directory).rglob("*.rs"):
+            text = path.read_text()
+            if ".matvec_tiled(" in text or ".matvec(" in text:
+                raise SystemExit(
+                    f"{path.relative_to(ROOT)}: resident/executor must use recorded kernels, "
+                    "not the host matvec fallback"
+                )
     kernels = ROOT / "crates/backend/cuda-kernels/src"
     for path in kernels.rglob("*.rs"):
         profile = path.relative_to(kernels).parts[0]

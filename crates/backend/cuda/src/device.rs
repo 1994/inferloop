@@ -259,6 +259,8 @@ impl CudaDevice {
             .map_err(device_error)
     }
 
+    /// Host fallback for weight dequantization and benchmark probes. The resident graph records
+    /// its own kernels and never calls this path; keep it out of inference.
     /// # Errors
     /// Returns a shape or device error for an invalid matrix-vector product.
     pub fn matvec<T: DType>(
@@ -273,6 +275,8 @@ impl CudaDevice {
         )
     }
 
+    /// Host fallback for weight dequantization and benchmark probes. The resident graph records
+    /// its own kernels and never calls this path; keep it out of inference.
     /// # Errors
     /// Returns a shape or device error for an invalid projection.
     pub fn matvec_tiled<T: DType>(

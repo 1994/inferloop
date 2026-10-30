@@ -378,6 +378,25 @@ impl Function {
     }
 }
 
+// SAFETY: the provider opens one device and uses it from its owner thread; the primary context
+// and stream are only passed back to the driver from that thread. Sharing the handle is safe only
+// under that single-owner lifecycle, which the provider enforces.
+unsafe impl Send for Device {}
+// SAFETY: same single-owner lifecycle as `Send`.
+unsafe impl Sync for Device {}
+// SAFETY: the allocation is only used with the device that created it, from the owner thread.
+unsafe impl Send for Buffer {}
+// SAFETY: same single-owner lifecycle as `Send`.
+unsafe impl Sync for Buffer {}
+// SAFETY: the module handle is immutable after load and only used on the owner thread.
+unsafe impl Send for Module {}
+// SAFETY: same single-owner lifecycle as `Send`.
+unsafe impl Sync for Module {}
+// SAFETY: the function handle is immutable after resolution and only used on the owner thread.
+unsafe impl Send for Function {}
+// SAFETY: same single-owner lifecycle as `Send`.
+unsafe impl Sync for Function {}
+
 fn symbol<T: Copy>(library: &Library, name: &[u8]) -> Result<T> {
     // SAFETY: the caller names a driver entry point with the ABI signature of `T`; the library
     // outlives every copied function pointer.

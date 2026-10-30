@@ -19,6 +19,13 @@ REPO = Path(__file__).resolve().parents[2]
 # One entry per kernel the AOT profile can ship today. `source` is relative to the repository.
 KERNELS = [
     {
+        "name": "projection_dense_f32",
+        "contract": "canonical-f32",
+        "source": "crates/backend/cuda/kernels/aot/projection.cu",
+        "cubin": "projection.cubin",
+        "flags": ["--fmad=false", "--ftz=false", "--prec-div=true", "--prec-sqrt=true"],
+    },
+    {
         "name": "attention_fp8_256",
         "contract": "fp8-kv-f32acc",
         "source": "crates/backend/cuda/kernels/shared-attention/attention-sm120.cu",
@@ -85,7 +92,7 @@ def main():
             {
                 "name": kernel["name"],
                 "contract": kernel["contract"],
-                "cubin": f"{arguments.arch}/{kernel['cubin']}",
+                "cubin": kernel["cubin"],
                 "sha256": sha256(cubin),
             }
         )
