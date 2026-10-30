@@ -179,23 +179,23 @@ async fn prepared_images_preserve_order_and_source_identity() {
     let mut remote_requests = requests.clone();
     remote_requests[1].url = format!("http://{address}/image");
     let downloads = service.resolve(&remote_requests, &pool).await.unwrap();
-    let (prepared, media, direct, direct_media) = pool
+    let (tokens, media, direct, direct_media) = pool
         .run(0, move |context| {
             let prompt = "<|vision_start|><|image_pad|><|vision_end|><|vision_start|><|image_pad|><|vision_end|>describe";
             let (direct, direct_media) = service.prepare(&assets, prompt, &requests, context)?;
-            let (prepared, media) = service.prepare_resolved(
+            let (tokens, media) = service.prepare_resolved(
                 &assets,
                 prompt,
                 &remote_requests,
                 &downloads,
                 context,
             )?;
-            Ok((prepared, media, direct, direct_media))
+            Ok((tokens, media, direct, direct_media))
         })
         .await
         .unwrap();
     server.abort();
-    assert_eq!(prepared, direct);
+    assert_eq!(tokens, direct.tokens);
     for (resolved, original) in media.iter().zip(&direct_media) {
         assert_eq!(resolved.content_digest, original.content_digest);
         assert_eq!(
@@ -207,7 +207,7 @@ async fn prepared_images_preserve_order_and_source_identity() {
     assert_eq!(media[0].content_digest, expected[0]);
     assert_eq!(media[1].content_digest, expected[1]);
     assert_ne!(media[0].content_digest, media[1].content_digest);
-    assert_eq!(prepared.images[0].pixels, prepared.images[1].pixels);
+    assert_eq!(direct.images[0].pixels, direct.images[1].pixels);
     assert_eq!(
         media[0].item.as_ref().unwrap().pixels,
         media[1].item.as_ref().unwrap().pixels

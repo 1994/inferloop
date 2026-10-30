@@ -253,6 +253,50 @@ fn unchanged_images_preserve_patch_order_and_normalization() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn shared_patches_match_owned_processing_for_identity_and_resized_images() -> Result<()> {
+    for (height, width, min_pixels, rescale, mean, std) in [
+        (32, 64, 1, RESCALE, [0.0, 0.22, 0.5], [1.0, 0.25, 0.5]),
+        (257, 256, 65_536, RESCALE, [0.5; 3], [0.5; 3]),
+        (60, 100, 65_536, 0.3, [0.0, 0.22, 0.5], [1.0, 0.25, 0.5]),
+    ] {
+        let processor = ImageProcessor {
+            patch_size: 16,
+            temporal_patch_size: 2,
+            merge_size: 2,
+            min_pixels,
+            max_pixels: 16_777_216,
+            mean,
+            std,
+            rescale,
+        };
+        let image = RgbImage {
+            height,
+            width,
+            pixels: (0..height * width * RGB_CHANNELS)
+                .map(|index| (index * 37 + 11).to_le_bytes()[0])
+                .collect(),
+        };
+        let owned = processor.preprocess(&image)?;
+        let shared = processor.preprocess_shared(&image)?;
+        assert_eq!(shared.grid, owned.grid);
+        assert_eq!(shared.pixels.len(), owned.pixels.len());
+        for (&actual, &expected) in shared.pixels.iter().zip(&owned.pixels) {
+            assert_eq!(actual.to_bits(), expected.to_bits(), "{height}x{width}");
+        }
+        let malformed = RgbImage {
+            height,
+            width,
+            pixels: Vec::new(),
+        };
+        assert_eq!(
+            processor.preprocess_shared(&malformed).unwrap_err().code,
+            processor.preprocess(&malformed).unwrap_err().code
+        );
+    }
+    Ok(())
+}
+
 #[expect(
     clippy::suboptimal_flops,
     reason = "The scalar reference preserves the normalization rounding order"

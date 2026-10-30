@@ -4,7 +4,7 @@
 //! provider-declared model geometry and the deterministic preprocessors that turn RGB8 media
 //! into prompt-aligned patches.
 use crate::image::ImageProcessor;
-use crate::input::prompt::{prepare, prepare_video};
+use crate::input::prompt::{prepare, prepare_shared, prepare_video};
 use crate::input::text::TextAssets;
 use crate::input::video::VideoProcessor;
 use crate::package_path;
@@ -121,6 +121,27 @@ impl MultimodalAssets {
         images: &[crate::RawImage],
     ) -> Result<crate::PreparedPrompt> {
         prepare(
+            assets,
+            &self.images,
+            &self.imported,
+            prompt,
+            images,
+            &Modality::Image,
+        )
+    }
+
+    /// Preprocess images into shared buffers and expand their prompt placeholders.
+    ///
+    /// The returned patch buffers can be passed to a backend without another full copy.
+    /// # Errors
+    /// Rejects mismatched placeholders, geometry or unsupported modality declarations.
+    pub fn prepare_images_shared(
+        &self,
+        assets: &TextAssets,
+        prompt: &str,
+        images: &[crate::RawImage],
+    ) -> Result<crate::SharedPreparedPrompt> {
+        prepare_shared(
             assets,
             &self.images,
             &self.imported,

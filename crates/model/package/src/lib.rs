@@ -9,12 +9,13 @@ mod workload;
 /// Canonical provider import result, re-exported for package consumers.
 pub use infer_spi::ImportedModel;
 pub use input::constraint::{CONSTRAINT_REQUEST_BYTES, ToolConstraints};
-pub use input::image::{ImageProcessor, PreprocessedImage, RgbImage};
+pub use input::image::{ImageProcessor, PreprocessedImage, RgbImage, SharedPreprocessedImage};
 pub use input::multimodal::{MediaLimits, MultimodalAssets};
 pub use input::prompt::{
-    ExpandedPrompt, MediaLayout, MediaSpan, PreparedPrompt, PromptImage, RawImage, VisualPlacement,
-    expand_placeholders, image_token_counts, media_layout, place_visual_embeddings, placeholders,
-    prepare, prepare_video, require_encoder, visual_tokens,
+    ExpandedPrompt, MediaLayout, MediaSpan, PreparedPrompt, PromptImage, RawImage,
+    SharedPreparedPrompt, VisualPlacement, expand_placeholders, image_token_counts, media_layout,
+    place_visual_embeddings, placeholders, prepare, prepare_shared, prepare_video, require_encoder,
+    visual_tokens,
 };
 pub use input::text::{ChatMessage, ChatOptions, TextAssets, TextStreamDecoder};
 pub use input::tool::{
