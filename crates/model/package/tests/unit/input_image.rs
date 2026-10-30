@@ -50,7 +50,24 @@ fn rgb8_resize_matches_torchvision_antialiased_bicubic() {
         255, 184, 64, 152, 124, 0, 60, 138,
     ];
     let down: [u8; 6] = [50, 134, 156, 168, 97, 82];
-    for (height, width, expected) in [(6, 8, up.as_slice()), (2, 3, down.as_slice())] {
+    let vertical_up: [u8; 30] = [
+        0, 17, 255, 46, 255, 13, 61, 193, 95, 212, 59, 154, 51, 200, 82, 133, 167, 27, 182, 43,
+        226, 98, 126, 45, 100, 255, 66, 173, 0, 127,
+    ];
+    let horizontal_up: [u8; 24] = [
+        0, 1, 39, 197, 200, 62, 169, 255, 84, 134, 176, 44, 61, 217, 122, 27, 255, 180, 73, 143,
+        119, 3, 65, 129,
+    ];
+    let vertical_down: [u8; 10] = [25, 87, 154, 125, 177, 201, 118, 98, 83, 83];
+    let horizontal_down: [u8; 9] = [12, 152, 175, 126, 100, 116, 183, 98, 68];
+    for (height, width, expected) in [
+        (6, 8, up.as_slice()),
+        (2, 3, down.as_slice()),
+        (6, 5, vertical_up.as_slice()),
+        (3, 8, horizontal_up.as_slice()),
+        (2, 5, vertical_down.as_slice()),
+        (3, 3, horizontal_down.as_slice()),
+    ] {
         let actual = ImageProcessor::resize(&image, height, width);
         let expected: Vec<f32> = expected
             .iter()

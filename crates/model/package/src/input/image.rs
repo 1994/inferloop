@@ -375,23 +375,33 @@ impl ImageProcessor {
             // Unit-scale bicubic sampling reproduces each RGB8 value exactly.
             return image.pixels.iter().copied().map(f32::from).collect();
         }
-        let horizontal = resample_axis(image.width, width);
-        let vertical = resample_axis(image.height, height);
-        let mut intermediate = vec![0f32; image.height * width * RGB_CHANNELS];
-        for y in 0..image.height {
-            for x in 0..width {
-                let weights = &horizontal[x];
-                for channel in 0..RGB_CHANNELS {
-                    let mut value = 0f64;
-                    for &(tap, weight) in weights {
-                        let index = (y * image.width + tap) * RGB_CHANNELS + channel;
-                        value = weight.mul_add(f64::from(image.pixels[index]), value);
+        let intermediate = if image.width == width {
+            // Unit-scale horizontal filtering preserves each RGB8 value exactly.
+            image.pixels.iter().copied().map(f32::from).collect()
+        } else {
+            let horizontal = resample_axis(image.width, width);
+            let mut intermediate = vec![0f32; image.height * width * RGB_CHANNELS];
+            for y in 0..image.height {
+                for x in 0..width {
+                    let weights = &horizontal[x];
+                    for channel in 0..RGB_CHANNELS {
+                        let mut value = 0f64;
+                        for &(tap, weight) in weights {
+                            let index = (y * image.width + tap) * RGB_CHANNELS + channel;
+                            value = weight.mul_add(f64::from(image.pixels[index]), value);
+                        }
+                        let rounded = value.round().clamp(0.0, BYTE_SCALE) as f32;
+                        intermediate[(y * width + x) * RGB_CHANNELS + channel] = rounded;
                     }
-                    let rounded = value.round().clamp(0.0, BYTE_SCALE) as f32;
-                    intermediate[(y * width + x) * RGB_CHANNELS + channel] = rounded;
                 }
             }
+            intermediate
+        };
+        if image.height == height {
+            // The horizontal pass already rounded the result to RGB8 values.
+            return intermediate;
         }
+        let vertical = resample_axis(image.height, height);
         let mut output = vec![0f32; height * width * RGB_CHANNELS];
         for y in 0..height {
             let weights = &vertical[y];
