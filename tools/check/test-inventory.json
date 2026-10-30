@@ -36,6 +36,12 @@
       "src_near": 0,
       "tests": 447
     },
+    "cuda-kernels": {
+      "benches": 0,
+      "src_inline": 0,
+      "src_near": 0,
+      "tests": 3
+    },
     "frontdoor": {
       "benches": 0,
       "src_inline": 0,
@@ -1490,11 +1496,11 @@
     }
   ],
   "totals": {
-    "all": 1096,
+    "all": 1099,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1096
+    "tests": 1099
   }
 }
