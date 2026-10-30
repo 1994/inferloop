@@ -9,6 +9,8 @@ use infer_core::{Error, Result};
 
 /// Channels of the RGB images the processor accepts.
 pub(crate) const RGB_CHANNELS: usize = 3;
+/// Number of possible values in an 8-bit input channel.
+const BYTE_VALUES: usize = 256;
 /// Full scale of one 8-bit channel.
 const BYTE_SCALE: f64 = 255.0;
 /// Reciprocal of [`BYTE_SCALE`], the processor's rescale factor.
@@ -136,6 +138,29 @@ pub(crate) fn patchify<T: Copy + Into<f32>>(
     grid: PatchGrid,
     norm: &Normalization,
 ) -> Result<Vec<f32>> {
+    patchify_with(frames, grid, |value, channel| {
+        norm.apply(value.into(), channel)
+    })
+}
+
+/// Normalize byte frames using a per-channel table, preserving the same scalar rounding.
+fn patchify_rgb8(frames: &[&[u8]], grid: PatchGrid, norm: &Normalization) -> Result<Vec<f32>> {
+    let mut table = [[0.0; BYTE_VALUES]; RGB_CHANNELS];
+    for value in u8::MIN..=u8::MAX {
+        for (channel, channel_values) in table.iter_mut().enumerate() {
+            channel_values[usize::from(value)] = norm.apply(f32::from(value), channel);
+        }
+    }
+    patchify_with(frames, grid, |value, channel| {
+        table[channel][usize::from(value)]
+    })
+}
+
+fn patchify_with<T: Copy>(
+    frames: &[&[T]],
+    grid: PatchGrid,
+    convert: impl Fn(T, usize) -> f32,
+) -> Result<Vec<f32>> {
     let resized_height = grid
         .height
         .checked_mul(grid.patch)
@@ -200,10 +225,9 @@ pub(crate) fn patchify<T: Copy + Into<f32>>(
                                     for patch_col in 0..grid.patch {
                                         let y = row * grid.patch + patch_row;
                                         let x = col * grid.patch + patch_col;
-                                        let value = frame
-                                            [(y * resized_width + x) * RGB_CHANNELS + channel]
-                                            .into();
-                                        pixels.push(norm.apply(value, channel));
+                                        let value =
+                                            frame[(y * resized_width + x) * RGB_CHANNELS + channel];
+                                        pixels.push(convert(value, channel));
                                     }
                                 }
                             }
@@ -366,11 +390,14 @@ impl ImageProcessor {
             rescale: self.rescale,
         };
         // A still image repeats the same frame across the temporal taps.
-        let pixels = if self.fast_resize_supported(height, width, resized_height, resized_width) {
+        let pixels = if height == resized_height && width == resized_width {
+            let frames = vec![pixels; self.temporal_patch_size];
+            patchify_rgb8(&frames, grid, &norm)?
+        } else if self.fast_resize_supported(height, width, resized_height, resized_width) {
             let resized =
                 image_resize::resize(pixels, height, width, resized_height, resized_width)?;
             let frames = vec![resized.as_slice(); self.temporal_patch_size];
-            patchify(&frames, grid, &norm)?
+            patchify_rgb8(&frames, grid, &norm)?
         } else {
             let resized = Self::resize_pixels(pixels, height, width, resized_height, resized_width);
             let frames = vec![resized.as_slice(); self.temporal_patch_size];
