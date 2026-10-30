@@ -159,10 +159,16 @@ impl CpuContext {
     pub(super) fn grow_staging(&self, bytes: usize) -> Result<()> {
         self.check()?;
         if let Some(pending) = &self.pending {
+            pending.check()?;
             pending.grow(bytes)?;
         }
-        if let Some(credit) = &self.credit {
-            credit.grow(bytes)?;
+        if let Some(credit) = &self.credit
+            && let Err(error) = credit.grow(bytes)
+        {
+            if let Some(pending) = &self.pending {
+                pending.release_growth(bytes)?;
+            }
+            return Err(error);
         }
         Ok(())
     }

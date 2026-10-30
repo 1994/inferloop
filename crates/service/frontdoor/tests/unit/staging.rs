@@ -88,6 +88,8 @@ async fn failed_growth_releases_both_admission_and_worker_credits() -> Result<()
         .await;
     assert!(result.is_err());
     assert_eq!(pool.inspect().retained_bytes, 16);
+    let available_after_failure = registry.reserve(RequestId::new(2)?, 24)?;
+    drop(available_after_failure);
     drop(pending);
     drop(other_credit);
     assert_eq!(pool.inspect().retained_bytes, 0);

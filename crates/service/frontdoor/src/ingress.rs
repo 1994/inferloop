@@ -103,6 +103,30 @@ impl Pending {
         self.bytes.store(own, Ordering::Relaxed);
         Ok(())
     }
+    pub(super) fn release_growth(&self, bytes: usize) -> Result<()> {
+        let mut usage = self
+            .registry
+            .usage
+            .lock()
+            .map_err(|_| Error::invariant("ingress registry poisoned"))?;
+        let total = usage
+            .bytes
+            .checked_sub(bytes)
+            .ok_or_else(|| Error::invariant("ingress byte credit underflow"))?;
+        let own = self
+            .bytes
+            .load(Ordering::Relaxed)
+            .checked_sub(bytes)
+            .ok_or_else(|| Error::invariant("ingress credit underflow"))?;
+        let entry = usage
+            .entries
+            .get_mut(&self.id)
+            .ok_or_else(|| Error::invariant("ingress credit is missing"))?;
+        entry.1 = own;
+        usage.bytes = total;
+        self.bytes.store(own, Ordering::Relaxed);
+        Ok(())
+    }
     pub fn check(&self) -> Result<()> {
         if self.cancelled.load(Ordering::Acquire) {
             return Err(Error::new(
