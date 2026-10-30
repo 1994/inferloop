@@ -101,6 +101,7 @@ impl Pending {
         entry.1 = own;
         usage.bytes = total;
         self.bytes.store(own, Ordering::Relaxed);
+        drop(usage);
         Ok(())
     }
     pub(super) fn release_growth(&self, bytes: usize) -> Result<()> {
@@ -125,6 +126,7 @@ impl Pending {
         entry.1 = own;
         usage.bytes = total;
         self.bytes.store(own, Ordering::Relaxed);
+        drop(usage);
         Ok(())
     }
     pub fn check(&self) -> Result<()> {

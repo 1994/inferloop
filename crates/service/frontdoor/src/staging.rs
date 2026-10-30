@@ -55,7 +55,7 @@ impl StagingLimit {
 }
 
 /// A zero result means the operating system could not provide a memory snapshot.
-pub(super) fn default_staging_bytes() -> usize {
+pub fn default_staging_bytes() -> usize {
     available_memory().map_or(0, budget_for_available)
 }
 

@@ -20,6 +20,7 @@ const COMMAND_CHANNEL_CAPACITY: usize = 256;
 const CONTROL_CHANNEL_CAPACITY: usize = 64;
 
 impl RuntimeHandle {
+    /// Start with a staging limit that follows available host memory.
     /// # Errors
     /// Returns a backend/state error if stale completions cannot be drained or an I/O error if the runtime thread cannot start.
     pub fn start<B: BackendProvider + Send + 'static>(engine: Engine<B>) -> Result<Self>
@@ -42,6 +43,7 @@ impl RuntimeHandle {
         let limit = Arc::new(StagingLimit::automatic(config.max_bytes));
         Self::start_inner(engine, config, limit)
     }
+    /// Start with the fixed staging limit in `config`.
     /// # Errors
     /// Rejects invalid CPU limits, unforkable preparation providers or startup failures.
     pub fn start_with_config<B: BackendProvider + Send + 'static>(

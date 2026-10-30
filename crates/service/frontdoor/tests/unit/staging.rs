@@ -1,9 +1,10 @@
-use super::{StagingLimit, budget_for_available};
+use super::{REFRESH_INTERVAL, StagingLimit, budget_for_available};
 use crate::cpu::{CpuConfig, CpuPool};
 use crate::ingress::Registry;
 use infer_core::{RequestId, Result};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 #[test]
 fn automatic_budget_scales_with_available_memory() {
@@ -19,6 +20,15 @@ fn fixed_limit_is_not_automatically_changed() {
     assert!(!limit.is_automatic());
     limit.refresh_if_due();
     assert_eq!(limit.current(), 128);
+}
+
+#[test]
+fn automatic_limit_refreshes_an_outdated_snapshot() {
+    let limit = StagingLimit::automatic(1);
+    let refreshed = limit.refreshed.as_ref().expect("automatic refresh");
+    *refreshed.lock().expect("refresh lock") = Instant::now() - REFRESH_INTERVAL;
+    limit.refresh_if_due();
+    assert!(limit.current() > 1, "host memory snapshot was unavailable");
 }
 
 #[test]

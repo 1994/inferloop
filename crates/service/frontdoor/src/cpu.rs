@@ -34,6 +34,7 @@ pub struct CpuConfig {
     pub placement: ThreadPlacement,
     pub workers: usize,
     pub max_jobs: usize,
+    /// Per-lane staging limit; the default is derived from available host memory.
     pub max_bytes: usize,
     pub job_timeout_ms: u64,
     pub command_timeout_ms: u64,
@@ -121,6 +122,7 @@ impl Credit {
         }
         usage.bytes = total;
         self.bytes.store(own, Ordering::Relaxed);
+        drop(usage);
         Ok(())
     }
 }
