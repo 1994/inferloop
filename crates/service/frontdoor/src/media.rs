@@ -87,7 +87,7 @@ pub struct MediaRequest {
     pub url: String,
 }
 
-pub(crate) enum ResolvedMedia {
+pub enum ResolvedMedia {
     Image(Option<Vec<u8>>),
     Video(Vec<PreprocessedVideo>),
 }
@@ -275,12 +275,22 @@ impl MediaService {
         tracing::debug!(target: "infer::media", prompt_tokens = prepared.tokens.len(), tokens = ?prepared.tokens,
             spans = ?prepared.spans, grids = ?prepared.images.iter().map(|image| image.grid).collect::<Vec<_>>(),
             "prepared HTTP media");
+        let media = self.media_inputs(&prepared, &modality, image_sources)?;
+        Ok((prepared, media))
+    }
+
+    fn media_inputs(
+        &self,
+        prepared: &PreparedPrompt,
+        modality: &Modality,
+        image_sources: Vec<SourceDigest>,
+    ) -> Result<Vec<MediaInput>> {
         if prepared.images.is_empty() || prepared.images.len() != prepared.spans.len() {
             return Err(Error::invalid(
                 "prepared media is empty or has inconsistent spans",
             ));
         }
-        if modality == Modality::Image && image_sources.len() != prepared.images.len() {
+        if *modality == Modality::Image && image_sources.len() != prepared.images.len() {
             return Err(Error::invariant(
                 "image source identities do not match prepared images",
             ));
@@ -293,15 +303,15 @@ impl MediaService {
                 .and_then(|value| value.checked_add(1))
                 .ok_or_else(|| Error::invalid("media identity overflow"))?;
             let item = MediaItem {
-                modality: modality.clone(),
+                modality: (*modality).clone(),
                 pixels: Arc::from(image.pixels.as_slice()),
                 grid: image.grid,
                 span: span.clone(),
             };
             media.push(MediaInput {
                 id: MediaId::new(id)?,
-                modality: modality.clone(),
-                content_digest: if modality == Modality::Image {
+                modality: (*modality).clone(),
+                content_digest: if *modality == Modality::Image {
                     let source = sources
                         .next()
                         .ok_or_else(|| Error::invariant("missing image source identity"))?;
@@ -312,7 +322,7 @@ impl MediaService {
                 item: Some(item),
             });
         }
-        Ok((prepared, media))
+        Ok(media)
     }
 }
 

@@ -40,7 +40,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 117
+      "tests": 118
     },
     "ir": {
       "benches": 0,
@@ -274,7 +274,7 @@
     "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 6,
     "requires a CUDA device; run inside safe-run": 5,
     "requires a Linux production host with get/set_mempolicy permitted; make check-linux-numa": 1,
-    "requires a real Qwen3-VL package in INFER_VISION_PACKAGE": 1,
+    "requires a real Qwen3-VL package in INFER_VISION_PACKAGE": 2,
     "requires a reserved CUDA device": 1,
     "requires a reserved CUDA device; compares every output with the prior tower": 1,
     "requires a reserved CUDA device; compares full outputs with scalar and existing paths": 1,
@@ -1446,11 +1446,11 @@
     }
   ],
   "totals": {
-    "all": 1058,
+    "all": 1059,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1058
+    "tests": 1059
   }
 }

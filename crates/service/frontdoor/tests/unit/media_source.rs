@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::{Barrier, Notify};
+use tokio::sync::{Barrier, Notify, oneshot};
 use tokio::time::timeout;
 
 #[tokio::test]
@@ -126,7 +126,7 @@ async fn incremental_work_waits_for_worker_capacity_and_wakes() {
         ..CpuConfig::default()
     })
     .unwrap();
-    let (started, ready) = tokio::sync::oneshot::channel();
+    let (started, ready) = oneshot::channel();
     let (release, gate) = mpsc::channel();
     let first_pool = pool.clone();
     let first = tokio::spawn(async move {

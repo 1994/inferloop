@@ -8,7 +8,7 @@ use base64::engine::general_purpose::STANDARD;
 use infer_ir::Modality;
 use infer_models::{ImageProcessor, MediaLimits, MultimodalAssets, TextAssets, VideoProcessor};
 use std::env::{temp_dir, var};
-use std::fs::{remove_file, write};
+use std::fs::{read, remove_file, write};
 use std::io::{Cursor, Write};
 use std::path::PathBuf;
 use std::process::id;
@@ -212,6 +212,71 @@ async fn prepared_images_preserve_order_and_source_identity() {
         media[0].item.as_ref().unwrap().pixels,
         media[1].item.as_ref().unwrap().pixels
     );
+}
+
+#[tokio::test]
+#[ignore = "requires a real Qwen3-VL package in INFER_VISION_PACKAGE"]
+async fn prepared_video_groups_match_the_complete_clip() {
+    use std::process::Command;
+    use std::time::Duration;
+
+    let (clip, file) = TempPath::create("video-prompt", "mkv").unwrap();
+    drop(file);
+    let mut encode = Command::new("ffmpeg");
+    encode.args([
+        "-v",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=red:s=320x240:r=1:d=2",
+        "-frames:v",
+        "2",
+        "-c:v",
+        "ffv1",
+        &clip.path.to_string_lossy(),
+    ]);
+    let output = run_bounded(&mut encode, 1 << 20, 1 << 20, Duration::from_secs(10), None)
+        .expect("ffmpeg encode");
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let request = MediaRequest {
+        modality: Modality::Video,
+        url: format!(
+            "data:video/x-matroska;base64,{}",
+            STANDARD.encode(read(&clip.path).unwrap())
+        ),
+    };
+    let package = PathBuf::from(var("INFER_VISION_PACKAGE").unwrap());
+    let assets = TextAssets::open(&package, 4096).unwrap();
+    let multimodal = MultimodalAssets::open(&package).unwrap().unwrap();
+    let service = MediaService::new(multimodal, MediaLimits::default());
+    let pool = CpuPool::new(CpuConfig {
+        workers: 2,
+        max_jobs: 4,
+        ..CpuConfig::default()
+    })
+    .unwrap();
+    let (requests, groups) = service.resolve(vec![request.clone()], &pool).await.unwrap();
+    let (prepared, media, direct, direct_media) = pool
+        .run(0, move |context| {
+            let prompt = "<|vision_start|><|video_pad|><|vision_end|>describe";
+            let (direct, direct_media) = service.prepare(&assets, prompt, &[request], context)?;
+            let (prepared, media) =
+                service.prepare_resolved(&assets, prompt, &requests, groups, context)?;
+            Ok((prepared, media, direct, direct_media))
+        })
+        .await
+        .unwrap();
+    assert_eq!(prepared, direct);
+    assert_eq!(media.len(), direct_media.len());
+    for (actual, expected) in media.iter().zip(&direct_media) {
+        assert_eq!(actual.content_digest, expected.content_digest);
+        assert_eq!(
+            actual.item.as_ref().unwrap().pixels,
+            expected.item.as_ref().unwrap().pixels
+        );
+    }
 }
 
 #[test]

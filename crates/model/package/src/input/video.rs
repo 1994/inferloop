@@ -90,7 +90,7 @@ impl VideoPlan {
 
     /// Number of temporal groups in the processed clip.
     #[must_use]
-    pub fn groups(&self) -> usize {
+    pub const fn groups(&self) -> usize {
         self.indices
             .len()
             .div_ceil(self.processor.temporal_patch_size)
