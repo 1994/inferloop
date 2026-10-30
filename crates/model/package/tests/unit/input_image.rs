@@ -61,6 +61,98 @@ fn rgb8_resize_matches_torchvision_antialiased_bicubic() {
 }
 
 #[test]
+fn unchanged_rgb8_resize_preserves_every_value_bitwise() {
+    for (height, width) in [(1, 256), (256, 1), (16, 16), (32, 64)] {
+        let pixels: Vec<u8> = (0..height * width * RGB_CHANNELS)
+            .map(|index| (index * 37 + 11).to_le_bytes()[0])
+            .collect();
+        let image = RgbImage {
+            height,
+            width,
+            pixels,
+        };
+        let resized = ImageProcessor::resize(&image, height, width);
+        assert_eq!(resized.len(), image.pixels.len());
+        for (index, (&actual, &source)) in resized.iter().zip(&image.pixels).enumerate() {
+            assert_eq!(
+                actual.to_bits(),
+                f32::from(source).to_bits(),
+                "{height}x{width}, RGB element {index}"
+            );
+        }
+    }
+}
+
+#[test]
+fn unchanged_images_preserve_patch_order_and_normalization() -> Result<()> {
+    for (height, width, temporal) in [(32, 32, 1), (32, 64, 2), (64, 32, 3)] {
+        for rescale in [RESCALE, 0.3] {
+            let processor = ImageProcessor {
+                patch_size: 16,
+                temporal_patch_size: temporal,
+                merge_size: 2,
+                min_pixels: 1,
+                max_pixels: height * width,
+                mean: [0.0, 0.22, 0.5],
+                std: [1.0, 0.25, 0.5],
+                rescale,
+            };
+            let image = RgbImage {
+                height,
+                width,
+                pixels: (0..height * width * RGB_CHANNELS)
+                    .map(|index| (index * 37 + 11).to_le_bytes()[0])
+                    .collect(),
+            };
+            let output = processor.preprocess(&image)?;
+            assert_eq!(output.grid, (1, height / 16, width / 16));
+            assert_eq!(
+                output.pixels.len(),
+                height * width * RGB_CHANNELS * temporal
+            );
+            assert_image_patch_values(&processor, &image, &output);
+        }
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "The scalar reference preserves the normalization rounding order"
+)]
+fn assert_image_patch_values(
+    processor: &ImageProcessor,
+    image: &RgbImage,
+    output: &PreprocessedImage,
+) {
+    let patch_area = processor.patch_size * processor.patch_size;
+    let channel_width = processor.temporal_patch_size * patch_area;
+    let patch_width = RGB_CHANNELS * channel_width;
+    let merge_area = processor.merge_size * processor.merge_size;
+    let blocks_per_row = output.grid.2 / processor.merge_size;
+    for (index, &actual) in output.pixels.iter().enumerate() {
+        let patch = index / patch_width;
+        let channel = (index % patch_width) / channel_width;
+        let spatial = index % patch_area;
+        let block = patch / merge_area;
+        let local = patch % merge_area;
+        let row = (block / blocks_per_row * processor.merge_size + local / processor.merge_size)
+            * processor.patch_size
+            + spatial / processor.patch_size;
+        let col = (block % blocks_per_row * processor.merge_size + local % processor.merge_size)
+            * processor.patch_size
+            + spatial % processor.patch_size;
+        let value = f32::from(image.pixels[(row * image.width + col) * RGB_CHANNELS + channel]);
+        let expected = if processor.rescale == RESCALE {
+            (value - processor.mean[channel] * 255.0) / (processor.std[channel] * 255.0)
+        } else {
+            value.mul_add(processor.rescale, -processor.mean[channel]) / processor.std[channel]
+        };
+        assert_eq!(actual.to_bits(), expected.to_bits(), "patch value {index}");
+    }
+}
+
+#[test]
 fn configuration_comes_from_the_package() {
     let Ok(processor) = package_processor() else {
         return;
