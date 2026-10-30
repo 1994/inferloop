@@ -6,7 +6,6 @@
 //! with its media must never fall back to the text-only path.
 use crate::image::ImageProcessor;
 use crate::image::PreprocessedImage;
-use crate::image::RgbImage;
 use crate::input::text::TextAssets;
 use crate::mrope::ROTARY_AXES;
 use crate::mrope::image_positions;
@@ -404,11 +403,7 @@ pub fn prepare(
     let mut prepared = Vec::with_capacity(images.len());
     let mut counts = Vec::with_capacity(images.len());
     for image in images {
-        let processed = processor.preprocess(&RgbImage {
-            height: image.height,
-            width: image.width,
-            pixels: image.pixels.clone(),
-        })?;
+        let processed = processor.preprocess_rgb(image.height, image.width, &image.pixels)?;
         counts.push(visual_tokens(processed.grid, encoder)?);
         prepared.push(PromptImage::new(processed));
     }

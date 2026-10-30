@@ -70,7 +70,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 154
+      "tests": 157
     },
     "quality": {
       "benches": 0,
@@ -1430,11 +1430,11 @@
     }
   ],
   "totals": {
-    "all": 1040,
+    "all": 1043,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1040
+    "tests": 1043
   }
 }
