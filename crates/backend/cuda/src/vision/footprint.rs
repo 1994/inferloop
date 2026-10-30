@@ -4,9 +4,9 @@
 //! every item has been encoded. The quote is therefore the maximum of the largest single-item
 //! encode peak and the total retained encoded-row tensor. Resident vision weights are excluded;
 //! they are load-time owners, not request allocations.
-use super::device_tower;
 use super::program::{attention_tiles, mlp_width, patch_width};
 use super::weights::half_tile;
+use super::{device_merger, device_tower};
 use infer_core::{Error, Result};
 use infer_ir::MediaPlan;
 use infer_models::vision::{merge_unit, merged_width, row_tile};
@@ -33,6 +33,8 @@ const BLOCK_MLP_INTERMEDIATE_ACTIVATIONS: usize = 2;
 const DEVICE_TOWER_HIDDEN_ACTIVATIONS: usize = 6;
 /// First MLP projection and its activated output remain live for the tower graph.
 const DEVICE_TOWER_INTERMEDIATE_ACTIVATIONS: usize = 2;
+/// Fused merger input, normalized rows, first projection and activated projection.
+const DEVICE_MERGER_ACTIVATIONS: usize = 4;
 
 fn bytes(elements: usize) -> Result<u64> {
     u64::try_from(elements)
@@ -217,10 +219,21 @@ fn merger_peak(encoder: &ModalityEncoder, patches: usize, hidden: usize) -> Resu
             )
             .ok_or_else(|| Error::invalid("vision merger output overflow"))?,
     )?;
-    [merger_norm, merger_fc1, merger_gelu, merger_fc2]
+    let prior_peak = [merger_norm, merger_fc1, merger_gelu, merger_fc2]
         .into_iter()
         .max()
-        .ok_or_else(|| Error::invalid("vision merger footprint empty"))
+        .ok_or_else(|| Error::invalid("vision merger footprint empty"))?;
+    if !device_merger::supports(encoder)? {
+        return Ok(prior_peak);
+    }
+    let fused = bytes(
+        merged
+            .checked_mul(DEVICE_MERGER_ACTIVATIONS)
+            .and_then(|n| n.checked_add(encoder.out_hidden_size))
+            .and_then(|n| n.checked_mul(merge_rows))
+            .ok_or_else(|| Error::invalid("vision merger footprint overflow"))?,
+    )?;
+    Ok(prior_peak.max(fused))
 }
 
 /// Peak request-owned bytes and retained encoded rows for a prepared media plan.
