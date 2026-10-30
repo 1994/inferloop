@@ -51,29 +51,194 @@ KV、图、调优和准入逻辑。** 结论是新增一个编译期可选的 AO
 6. **数据布局由 host 定义，kernel 适配 host。** 外部 kernel 库（FlashInfer）只能适配既有布局，不能反向
    决定 KV 格式；例外处理见第 9 节。
 
-## 4. 分层
+### 3.1 维度模型
+
+不要用 CUDA 版本做组织维度。版本是二维的（工具链 × 硬件），按版本建目录/feature 会把矩阵压成一维，
+每加一个组合就多一条分支。用五个正交维度：
+
+| 维度 | 取值 | 谁感知 |
+|---|---|---|
+| `Target` | `Arch`（sm_75…sm_121）+ 设备类别 | `contract/target.rs`、能力探测 |
+| `Profile` | `tile` / `aot` | Cargo feature、实现目录 |
+| `Family` | projection/attention/norm/rope/recurrent/moe/vision/state/sampling | trait |
+| `Contract` | `canonical-f32` / `bf16-f32acc` / `fp8-kv-f32acc` / `vendor-*` | registration + manifest |
+| `Artifact` | `(profile, arch, family, contract)` → 文件 + hash + 工具链 + 格式 | `artifacts/` + registry |
+
+一个 **cell** = `(profile, arch, family, contract)`。host 只看到 `(family, contract)`；矩阵在构造期解析成
+`Kernels`，调用路径上没有版本/架构分支。
+
+### 3.2 版本策略
+
+- CUDA 小版本不是维度，是 profile 的**构建属性**：`tile` 需要 `tileiras` ≥ 13.1，`aot` 需要支持目标 arch
+  的 nvcc；具体版本 pin 在 manifest，不 pin 在代码。
+- 升小版本 = 更新构建配方 pin、重产制品、重验；不改 `cfg`、不加模块。
+- 升大版本或 Tile IR 变化 = 新增 profile 版本（如 `tile-v2`）或新 artifact variant；host 不变。
+- 驱动下限是 artifact 属性（PTX 版本 / SASS ABI + arch），加载时校验并明确报错。
+- 兼容性只有三类：**T**（运行期需要 toolkit/JIT）、**A**（运行期只需驱动）、**V**（需要厂商 `.so`）。
+  用能力探测决定，不用版本号分支。
+
+### 3.3 放置规则（CI 可检查）
+
+| 内容 | 只能出现在 |
+|---|---|
+| `cutile::`、`#[cutile::module]` | `cuda-kernels/tile` |
+| `libcuda` 符号、`cuLaunchKernel`、`cuModuleLoadData` | `cuda-kernels/aot` |
+| `include_bytes!` 制品 | `cuda-kernels/{tile,aot}/artifacts.rs` |
+| 架构名（`sm_89`…） | `contract/target.rs`、`aot/<family>/<arch>.rs`、tuning 参数 |
+| 工具链版本 pin | artifact manifest、`tools/cuda` registry |
+| `cfg(feature)` | `cuda-kernels`；host 不出现 |
+| `BackendProvider`、图、slot、tuning | `cuda` host |
+
+### 3.4 扩展 recipe
+
+- **新硬件**：`Arch` variant → 能力探测 → 每族选“复用 / 新写 / Unsupported” → 制品 → baseline → CI lane。
+  host 零改动。
+- **新 CUDA 版本**：能力是否变化？不变 → 更新 pin、重产、重验；变 → 新 profile 版本。host 零改动。
+- **新算子**：trait + `Plan` → 两个 profile 各自实现或 `None` → registry 注册 + contract → reference-ops →
+  制品 → tuning。host 只有一个调用点。
+- **优化**：要么只改 cell（kernel/参数/制品），要么只改 host（图/融合/调度），不要混在一个提交。
+
+### 3.5 治理
+
+- 由 manifest 生成 support matrix（`profile × arch × family × contract`）并入库；CI 检查每个
+  `KernelRegistration` 都有对应 cell 和制品 hash。
+- 禁止：host 出现 `cfg`/arch/version、`tile` 与 `aot` 同时启用、未登记制品、跨 cell 复用 tuning。
+- 新增 cell 必须同时带：manifest、contract、reference-ops 对照、实机证据。
+
+## 4. 模块布局
+
+目标不是"再加一个 backend"，而是让 **同一份 host 在两种工具链下编译，差异全部落在 kernel 实现和制品上**。
+布局按"契约 / 实现 / host"三层组织，实现内部再按算子族镜像。
+
+### 4.1 目标树
 
 ```text
-crates/backend/
-  cuda/                  host：provider、executor、resident、loading、tuning、strategy
-  cuda-kernels/          新增：设备运行时 + kernel 契约 + 两个互斥实现
-    src/lib.rs            Buffer / Device / Stream / Plan / traits（无驱动依赖）
-    src/tile/             feature "tile"：cuTile 实现，沿用现有 kernel 体（13.x）
-    src/aot/              feature "aot"：SASS 制品 + cuBLASLt（12.9）
-    src/flashinfer/       feature "flashinfer"：可选 shim，仅 GDN / MoE
+crates/backend/cuda/                         # host：一个 provider，没有第二个 backend
+  src/
+    lib.rs
+    device.rs  device/                       # Device 门面；不再直接 use cuda_core
+    executor/                                # provider/owner/submission/state/pool/prefix
+    loading/                                 # 权重、量化、workspace 预算
+    resident/                                # 图、capture、slot、workspace；不含 #[cutile::module]
+    tuning/                                  # 选择、测量、baseline
+    vision/                                  # 视觉 host 编排
+    strategy.rs  target.rs  registry.rs  constants.rs  ...
+  kernels/                                   # 迁移期保留的 13.x 制品
+  baselines/tuning.json
+
+crates/backend/cuda-kernels/                 # 新增：设备运行时 + 算子契约 + 实现
+  src/
+    lib.rs
+    contract/
+      buffer.rs  layout.rs  device.rs  stream.rs  plan.rs  target.rs
+      kernels/                               # 每个算子族一个 trait
+        projection.rs  attention.rs  norm.rs  rope.rs  recurrent.rs
+        moe.rs  vision.rs  state.rs  sampling.rs
+    tile/                                    # feature "tile"
+      mod.rs                                 # TileKernels::new -> contract::Kernels
+      projection.rs  attention.rs  norm.rs  rope.rs  recurrent.rs
+      moe.rs  vision.rs  state.rs  sampling.rs  support.rs
+    aot/                                     # feature "aot"
+      mod.rs                                 # AotKernels::new -> contract::Kernels
+      driver.rs  module.rs  launch.rs  cublaslt.rs  artifacts.rs
+      host/                                  # C ABI shim（.cpp/.cu）
+      projection.rs
+      attention/  mod.rs  sm89.rs  sm120.rs
+      norm.rs  rope.rs  recurrent.rs  state.rs  sampling.rs
+    flashinfer/                              # feature "flashinfer"
+  artifacts/                                 # 终态：制品跟实现走
+    aot/sm89/...  tile/sm120/...
+  tests/
 ```
 
-| 层 | 职责 | 依赖 |
+`crates/backend/cuda/kernels/` 在迁移期继续存在；终态整体移到 `cuda-kernels/artifacts/`，registry 与
+`kernels.py` 同步改路径，见第 8 节。
+
+### 4.2 镜像规则
+
+同一算子族在 host、`tile/`、`aot/` 三处使用**同一个名字**，读者可以并排 diff：
+
+```text
+host/resident/attention.rs        -> 计划、workspace、capture
+cuda-kernels/tile/attention.rs    -> cuTile 实现
+cuda-kernels/aot/attention/mod.rs -> AOT 实现（按 arch 选 sm89/sm120）
+```
+
+host 的文件名不要求与实现一一对应（例如 `attention_decode.rs`、`attention_prefill.rs` 都属于
+`Attention` 族），但实现侧必须收敛到族级，避免"一个 host 文件一个 kernel 文件"的碎片化。
+
+### 4.3 差异吸收矩阵
+
+| 差异 | 吸收位置 | 不应出现 |
 |---|---|---|
-| `infer-backend-cuda` | 能力选择、加载、常驻图、调优、`BackendProvider` | foundation、model、engine 契约、`infer-cuda-kernels` |
-| `infer-cuda-kernels` | buffer/stream/图捕获、kernel 契约与实现、制品加载 | foundation（`infer-core`、`infer-ir`） |
-| `infer-cuda-kernels/tile` | cuTile 编译与 launch | `cutile`、`cuda-core`（仅 13.x） |
-| `infer-cuda-kernels/aot` | 驱动 dlopen、cubin 加载、cuBLASLt | 无 CUDA 构建依赖 |
+| 工具链 13.x / 12.9 | Cargo feature + `tile/` / `aot/` | host 的 `cfg(feature)` |
+| 架构 sm89 / sm90 / sm120 | `Target` + `aot/<family>/<arch>.rs` + tuning 参数 | host 的 `match arch` |
+| 算子覆盖 | `Option<Arc<dyn Trait>>` + `KernelRegistration` | 调用点静默 fallback |
+| dtype | trait 方法（`dense_bf16` / `dense_fp8`） | host 泛型或 dtype 分支 |
+| 制品 | `artifacts/<impl>/<arch>/` + manifest | host 里的 `include_bytes!` |
+| 数值契约 | `Contract` 绑定到 registration | kernel 体内的特例 |
+| 厂商库 | `aot/cublaslt.rs`（`.so.12` / `.so.13` 回退） | host 直接 dlopen |
+
+### 4.4 选择只发生一次
+
+```rust
+// contract/kernels/mod.rs：一个 Kernels 类型，两种构造
+pub struct Kernels {
+    pub projection: Arc<dyn Projection>,
+    pub attention: Arc<dyn Attention>,
+    pub norm: Arc<dyn Norm>,
+    pub rope: Arc<dyn Rope>,
+    pub recurrent: Option<Arc<dyn Recurrent>>,
+    pub moe: Option<Arc<dyn Moe>>,
+    pub vision: Option<Arc<dyn Vision>>,
+    pub state: Arc<dyn State>,
+    pub sampling: Arc<dyn Sampling>,
+}
+```
+
+```rust
+// tile/mod.rs、aot/mod.rs
+pub fn new(device: &Device, target: Target) -> Result<Kernels>;
+
+// lib.rs：feature 决定用哪个构造器，host 只看 Kernels
+#[cfg(feature = "tile")] pub use tile::new as kernels;
+#[cfg(feature = "aot")]  pub use aot::new as kernels;
+```
+
+`aot` 内部允许一次 `match target.arch` 选择 `sm89` / `sm120` 子模块；这是**构造期**的一次选择，不在
+kernel 调用路径上。host 不感知 arch，也不感知 feature。
+
+### 4.5 现有文件怎么搬
+
+| 现在 | 目标 | 搬法 |
+|---|---|---|
+| `src/kernels.rs`（4 entry，linear） | `tile/projection.rs` | 整块移动，launch 改 trait |
+| `src/resident/kernels.rs`（12 entry，aux） | `tile/support.rs` + `tile/norm.rs` + `tile/rope.rs` | 按算子拆 |
+| `src/attention/kernels.rs` | `tile/attention.rs` | 整块移动 |
+| `src/mlp/{kernels,pdl,pdl_consumers}.rs` | `tile/mlp.rs` | 合并到族 |
+| `src/vision/kernels.rs`、`src/device/vision_position.rs` | `tile/vision.rs` | 合并 |
+| `src/resident/dflash2/kernels.rs` | `tile/speculation.rs` | 整块移动 |
+| `src/device/vendor_fp8.rs`、`vendor_fp8/nvfp4/kernels.rs` | `tile/quantized.rs` | 整块移动 |
+| `src/resident/attention_mma/host.rs`（FA4） | `tile/attention/fa4.rs` | 仅 13.x 编译 |
+| `src/resident/{attention,attention_decode,attention_prefill}.rs` | host 保留；`#[cutile::module]` 搬 `tile/attention.rs` | 拆文件 |
+| `src/resident/{nvfp4_gemm,fp8_gemm,prefill_gemm,linear_batch,small_gemm,pool_gemv}.rs` | host 保留；kernel 搬 `tile/projection.rs` | 拆文件 |
+| `src/resident/{recurrent_prefill,slot_recurrent,recurrent,recurrent_checkpoint,conv_prefill}.rs` | host 保留；kernel 搬 `tile/recurrent.rs` | 拆文件 |
+| `src/resident/{moe,slot_convolution,slot_rope,norm_*_kernel,fp8_quant_reduction,metadata,prompt_logits,greedy}.rs` | host 保留；kernel 搬对应族 | 拆文件 |
+
+原则：**先搬已经独立的 `kernels.rs`（7 个），再拆混合文件**；每搬一族，13.x 数值逐位不变，作为一个可
+回退的提交。
+
+### 4.6 迁移期与终态
+
+| 阶段 | 制品位置 | host 依赖 | 12.9 构建 |
+|---|---|---|---|
+| 迁移期 | `cuda/kernels/` 不动 | `cuda`（cuTile） | 不可用 |
+| 契约落地 | `cuda/kernels/` | `cuda` + `cuda-kernels/tile` | 不可用 |
+| AOT 落地 | 新增 `cuda/kernels/aot/` | `cuda` / `cuda-aot` 二选一 | 可用 |
+| 终态 | `cuda-kernels/artifacts/` | 同上 | 同上 |
 
 只拆一个 crate 而不是两个：契约与两个实现共享同一组类型，拆成 HAL + kernels 会多出第三个 manifest 和
 跨三处的 feature 组合；一个 crate 内的互斥 feature 提供同等隔离，只有一个边界要维护。
-
-`crates/backend/cuda/kernels/` 继续放 AOT 制品；新增 `kernels/aot/` 子目录与独立 registry，见第 8 节。
 
 ## 5. 契约
 
