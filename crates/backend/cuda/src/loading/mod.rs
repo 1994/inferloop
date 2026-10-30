@@ -217,7 +217,16 @@ impl LoadedVision {
         device: &CudaDevice,
         image: &infer_models::PromptImage,
     ) -> Result<Vec<f32>> {
-        let (temporal, height, width) = image.grid;
+        self.encode_pixels(device, image.grid, &image.pixels)
+    }
+
+    pub(crate) fn encode_pixels(
+        &self,
+        device: &CudaDevice,
+        grid: (usize, usize, usize),
+        pixels: &[f32],
+    ) -> Result<Vec<f32>> {
+        let (temporal, height, width) = grid;
         let patches = temporal
             .checked_mul(height)
             .and_then(|value| value.checked_mul(width))
@@ -226,16 +235,16 @@ impl LoadedVision {
             return Err(Error::invalid("image patch grid is empty"));
         }
         let width = patch_width(&self.encoder)?;
-        if image.pixels.len() != patches * width {
+        if patches.checked_mul(width) != Some(pixels.len()) {
             return Err(Error::invalid("image pixels do not match the patch grid"));
         }
         // The tower consumes patch embeddings and the merger folds each group into text width.
-        let taps = position_taps(image.grid, &self.encoder)?;
+        let taps = position_taps(grid, &self.encoder)?;
         let embedded = patch_embed_device_positions(
             device,
             &self.encoder,
             &self.weights,
-            &image.pixels,
+            pixels,
             &taps,
             patches,
         )?;
@@ -244,7 +253,7 @@ impl LoadedVision {
             &self.weights,
             &self.encoder,
             &embedded,
-            image.grid,
+            grid,
             patches,
         )?;
         merger(device, &self.weights, &self.encoder, &hidden, patches)

@@ -4,11 +4,13 @@ use crate::image::ImageProcessor;
 use crate::image::RgbImage;
 use crate::input::text::TextAssets;
 use infer_core::ModelId;
+use infer_ir::MediaItem;
 use std::env::var;
 use std::fs::read;
 use std::iter::once;
 use std::path::Path;
 use std::slice::from_ref;
+use std::sync::Arc;
 
 const IMAGE: u32 = 248_056;
 const VISION_START: u32 = 248_053;
@@ -300,6 +302,78 @@ fn media_layout_exposes_every_span_and_the_next_rotary_coordinate() -> Result<()
     let mut tampered = prepared;
     tampered.tokens[2] = VISION_END;
     assert!(media_layout(&tampered, &imported, &Modality::Image).is_err());
+    Ok(())
+}
+
+#[test]
+fn media_plan_layout_matches_prepared_layout_and_rejects_invalid_geometry() -> Result<()> {
+    let mut imported = shipped()?;
+    let expanded = expand_placeholders(
+        &[
+            VISION_START,
+            IMAGE,
+            VISION_END,
+            7,
+            VISION_START,
+            IMAGE,
+            VISION_END,
+        ],
+        &[4, 6],
+        IMAGE,
+    )?;
+    let prepared = PreparedPrompt {
+        tokens: expanded.tokens,
+        images: vec![
+            PromptImage {
+                pixels: vec![1.0],
+                grid: (1, 4, 4),
+            },
+            PromptImage {
+                pixels: vec![2.0],
+                grid: (1, 4, 6),
+            },
+        ],
+        spans: expanded.spans,
+    };
+    let mut plan = MediaPlan {
+        modality: Modality::Image,
+        prompt: prepared.tokens.clone().into(),
+        items: prepared
+            .images
+            .iter()
+            .zip(&prepared.spans)
+            .map(|(image, span)| MediaItem {
+                modality: Modality::Image,
+                pixels: Arc::from(image.pixels.as_slice()),
+                grid: image.grid,
+                span: span.clone(),
+            })
+            .collect(),
+    };
+    assert_eq!(
+        media_plan_layout(&plan, &imported)?,
+        media_layout(&prepared, &imported, &Modality::Image)?
+    );
+    imported.model.position.multimodal_sections.clear();
+    assert_eq!(
+        media_plan_layout(&plan, &imported)?,
+        media_layout(&prepared, &imported, &Modality::Image)?
+    );
+    plan.items[1].span = 2..8;
+    assert!(media_plan_layout(&plan, &imported).is_err());
+    plan.items[1].span = prepared.spans[1].clone();
+    plan.items[1].grid = (1, 4, 4);
+    assert!(media_plan_layout(&plan, &imported).is_err());
+    plan.items[1].grid = (1, 4, 6);
+    plan.prompt = vec![VISION_START; prepared.tokens.len()].into();
+    assert!(media_plan_layout(&plan, &imported).is_err());
+    plan.items.clear();
+    assert_eq!(
+        media_plan_layout(&plan, &imported)?.next_rotary,
+        prepared.tokens.len()
+    );
+    plan.prompt = vec![VISION_START, IMAGE, VISION_END].into();
+    assert!(media_plan_layout(&plan, &imported).is_err());
     Ok(())
 }
 
