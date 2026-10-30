@@ -1,5 +1,6 @@
 use super::{ImageInput, ImageNormalization, ImagePatchLayout, ImageTransform};
 use infer_core::Result;
+use std::sync::Arc;
 
 fn transform() -> Result<ImageTransform> {
     ImageTransform::new(
@@ -19,11 +20,11 @@ fn rgb_input_validates_dimensions_and_retains_shared_bytes() -> Result<()> {
     bytes.resize(33 * 64 * 3, 7);
     let input = ImageInput::new(transform, bytes)?;
     assert!(input.retained_bytes() >= input.pixels().len() + 100);
-    assert!(std::sync::Arc::ptr_eq(
-        &input.shared_pixels(),
-        &input.clone().shared_pixels()
-    ));
-    assert!(!format!("{input:?}").contains("7, 7"));
+    let shared = input.shared_pixels();
+    let copied = input.clone();
+    drop(input);
+    assert!(Arc::ptr_eq(&shared, &copied.shared_pixels()));
+    assert!(!format!("{copied:?}").contains("7, 7"));
     Ok(())
 }
 

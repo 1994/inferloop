@@ -12,6 +12,7 @@ use std::fs::{remove_file, write};
 use std::io::{Cursor, Write};
 use std::path::PathBuf;
 use std::process::id;
+use std::slice::from_ref;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -48,20 +49,10 @@ async fn image_preparation_follows_backend_capability() {
     let (gpu, host) = pool
         .run(0, move |context| {
             let prompt = "<|vision_start|><|image_pad|><|vision_end|>describe";
-            let gpu = gpu.prepare_resolved(
-                &assets,
-                prompt,
-                std::slice::from_ref(&request),
-                &[None],
-                context,
-            )?;
-            let host = host.prepare_resolved(
-                &assets,
-                prompt,
-                std::slice::from_ref(&request),
-                &[None],
-                context,
-            )?;
+            let gpu =
+                gpu.prepare_resolved(&assets, prompt, from_ref(&request), &[None], context)?;
+            let host =
+                host.prepare_resolved(&assets, prompt, from_ref(&request), &[None], context)?;
             Ok((gpu, host))
         })
         .await
