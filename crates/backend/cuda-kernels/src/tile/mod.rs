@@ -1,7 +1,10 @@
 //! cuTile kernel modules compiled by the CUDA 13.x toolchain.
 mod attention_kernels;
+mod attention_model_kernels;
 mod attn_decode_kernels;
 mod aux_kernels;
+mod dflash2_kernels;
+mod fp8_gemm_kernels;
 mod linear_batch_kernels;
 mod linear_kernels;
 mod mlp_kernels;
@@ -10,12 +13,17 @@ mod norm_maximum_kernels;
 mod nvfp4_kernels;
 mod pdl_consumers_kernels;
 mod pooled_device_kernels;
+mod prefill_gemm_kernels;
+mod recurrent_checkpoint_kernels;
 mod recurrent_kernels;
 mod vision_kernels;
 
 pub use attention_kernels::sdpa;
+pub use attention_model_kernels::attention;
 pub use attn_decode_kernels::kernel as attn_decode;
 pub use aux_kernels::aux;
+pub use dflash2_kernels::draft as dflash2;
+pub use fp8_gemm_kernels::kernels as fp8_gemm;
 pub use linear_batch_kernels::batched as linear_batch;
 pub use linear_kernels::linear;
 pub use mlp_kernels::fused;
@@ -24,5 +32,7 @@ pub use norm_maximum_kernels::kernels as norm_maximum;
 pub use nvfp4_kernels::entries;
 pub use pdl_consumers_kernels::consumers as pdl_consumers;
 pub use pooled_device_kernels::kernels as pooled_device;
+pub use prefill_gemm_kernels::gemm as prefill_gemm;
+pub use recurrent_checkpoint_kernels::checkpoint as recurrent_checkpoint;
 pub use recurrent_kernels::recurrent;
 pub use vision_kernels::encoder;
