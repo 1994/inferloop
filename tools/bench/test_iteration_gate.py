@@ -286,9 +286,11 @@ class IterationTests(unittest.TestCase):
                 right["serving_plan"]["quoted_bytes"] -= 1
             else:
                 right["serving_plan"]["allocated_bytes"] -= 1
-            with self.subTest(change=change):
-                with self.assertRaisesRegex(ValueError, "funded serving resources differ"):
-                    gate.compare(baseline, candidate, 10)
+            with (
+                self.subTest(change=change),
+                self.assertRaisesRegex(ValueError, "funded serving resources differ"),
+            ):
+                gate.compare(baseline, candidate, 10)
 
 
 class SafeRunTests(unittest.TestCase):

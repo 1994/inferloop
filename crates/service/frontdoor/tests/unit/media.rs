@@ -1,7 +1,6 @@
 use super::{
-    MediaRequest, MediaService, SourcePolicy, TempPath, check_video_frame_limit,
-    image_digest, load_image, load_image_with, load_video_with, parse_rate, read_url, run_bounded,
-    source_digest,
+    MediaRequest, MediaService, SourcePolicy, TempPath, check_video_frame_limit, image_digest,
+    load_image, load_image_with, load_video_with, parse_rate, read_url, run_bounded, source_digest,
 };
 use crate::cpu::{CpuConfig, CpuPool, cancelled_context};
 use base64::Engine as _;
