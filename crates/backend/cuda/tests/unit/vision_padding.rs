@@ -9,7 +9,6 @@ use cutile::cutile_compiler::compile_api::KernelCompiler;
 use infer_models::vision::{merged_width, row_tile};
 use infer_spi::{HiddenActivation, ModalityEncoder};
 use std::error::Error;
-use std::sync::Arc;
 
 fn encoder() -> ModalityEncoder {
     ModalityEncoder {
@@ -251,7 +250,7 @@ fn compact_projection_rope_attention_and_merge_compile_without_a_device()
 fn media_plan(grid: (usize, usize, usize), count: usize) -> infer_ir::MediaPlan {
     let item = infer_ir::MediaItem {
         modality: infer_ir::Modality::Image,
-        pixels: Arc::from(Vec::<f32>::new()),
+        pixels: Vec::<f32>::new().into(),
         grid,
         span: 0..1,
     };

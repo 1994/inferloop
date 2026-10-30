@@ -452,7 +452,7 @@ fn two_image_input() -> Result<(CanonicalRequest, Vec<Weak<[f32]>>)> {
             content_digest: format!("fixture-{id}"),
             item: Some(MediaItem {
                 modality: Modality::Image,
-                pixels,
+                pixels: pixels.into(),
                 grid: (1, 1, 1),
                 span: index..index + 1,
             }),

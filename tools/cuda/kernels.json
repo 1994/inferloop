@@ -160,6 +160,28 @@
         "--ftz=false",
         "--prec-div=true"
       ]
+    },
+    {
+      "name": "image-preprocess",
+      "builder": "nvcc",
+      "source": "preprocess_batch.cu",
+      "ptx": "preprocess-batch-strict-sm120.ptx",
+      "target": "sm_120",
+      "symbols": [
+        "mm_horizontal_batch",
+        "mm_vertical_patch_batch"
+      ],
+      "profile": "canonical-f32",
+      "rebuild_scope": "complete-ptx",
+      "arguments": [
+        "--ptx",
+        "-arch=compute_120",
+        "-O3",
+        "--fmad=false",
+        "--ftz=false",
+        "--prec-div=true",
+        "--prec-sqrt=true"
+      ]
     }
   ]
 }

@@ -81,6 +81,9 @@ where
     fn supports_multimodal(&self) -> bool {
         self.multimodal.supported()
     }
+    fn image_preprocessing(&self) -> Option<Arc<dyn infer_spi::ImagePreprocessing>> {
+        self.image_preprocessing.clone()
+    }
     fn capabilities(&self) -> DeviceCapabilities {
         self.capabilities.clone()
     }

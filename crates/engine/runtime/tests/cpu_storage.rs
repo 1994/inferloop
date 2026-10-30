@@ -104,7 +104,7 @@ fn default_host_storage_accepts_many_retained_images() -> Result<()> {
             content_digest: format!("image-{id}"),
             item: Some(MediaItem {
                 modality: Modality::Image,
-                pixels: pixels.clone(),
+                pixels: pixels.clone().into(),
                 grid: (1, 1, 1),
                 span: 0..1,
             }),
@@ -126,7 +126,6 @@ fn default_host_storage_accepts_many_retained_images() -> Result<()> {
 fn multi_image_accounting_releases_after_completion() -> Result<()> {
     use infer_core::MediaId;
     use infer_ir::{MediaInput, MediaItem, Modality, RequestInput};
-    use std::sync::Arc;
 
     const FLOATS_PER_IMAGE: usize = 16_384;
     let mut config = RuntimeConfig {
@@ -161,7 +160,7 @@ fn multi_image_accounting_releases_after_completion() -> Result<()> {
                 content_digest: format!("image-{id}-{index}"),
                 item: Some(MediaItem {
                     modality: Modality::Image,
-                    pixels: Arc::from(vec![0.5; FLOATS_PER_IMAGE]),
+                    pixels: vec![0.5; FLOATS_PER_IMAGE].into(),
                     grid: (1, 1, 1),
                     span: index..index + 1,
                 }),

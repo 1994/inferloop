@@ -5,17 +5,76 @@ use super::{
 use crate::cpu::{CpuConfig, CpuPool, cancelled_context};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use infer_ir::Modality;
+use infer_ir::{ImageTransform, MediaPixels, Modality};
 use infer_models::{ImageProcessor, MediaLimits, MultimodalAssets, TextAssets};
 use std::env::{temp_dir, var};
 use std::fs::{remove_file, write};
 use std::io::{Cursor, Write};
 use std::path::PathBuf;
 use std::process::id;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const ONE_PIXEL_PNG: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+struct TestImageCapability(bool);
+impl infer_spi::ImagePreprocessing for TestImageCapability {
+    fn supports(&self, _: &ImageTransform) -> bool {
+        self.0
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a real Qwen3-VL package in INFER_VISION_PACKAGE"]
+async fn image_preparation_follows_backend_capability() {
+    let package = PathBuf::from(var("INFER_VISION_PACKAGE").unwrap());
+    let assets = TextAssets::open(&package, 4096).unwrap();
+    let multimodal = MultimodalAssets::open(&package).unwrap().unwrap();
+    let gpu = MediaService::new(multimodal.clone(), MediaLimits::default())
+        .with_image_preprocessing(Arc::new(TestImageCapability(true)));
+    let host = MediaService::new(multimodal, MediaLimits::default())
+        .with_image_preprocessing(Arc::new(TestImageCapability(false)));
+    let request = MediaRequest {
+        modality: Modality::Image,
+        url: format!("data:image/png;base64,{ONE_PIXEL_PNG}"),
+    };
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 2,
+        ..CpuConfig::default()
+    })
+    .unwrap();
+    let (gpu, host) = pool
+        .run(0, move |context| {
+            let prompt = "<|vision_start|><|image_pad|><|vision_end|>describe";
+            let gpu = gpu.prepare_resolved(
+                &assets,
+                prompt,
+                std::slice::from_ref(&request),
+                &[None],
+                context,
+            )?;
+            let host = host.prepare_resolved(
+                &assets,
+                prompt,
+                std::slice::from_ref(&request),
+                &[None],
+                context,
+            )?;
+            Ok((gpu, host))
+        })
+        .await
+        .unwrap();
+    assert_eq!(gpu.0, host.0);
+    assert_eq!(gpu.1[0].content_digest, host.1[0].content_digest);
+    let device_item = gpu.1[0].item.as_ref().unwrap();
+    let host_item = host.1[0].item.as_ref().unwrap();
+    assert_eq!(device_item.grid, host_item.grid);
+    assert_eq!(device_item.span, host_item.span);
+    assert!(matches!(&device_item.pixels, MediaPixels::Image(_)));
+    assert!(matches!(&host_item.pixels, MediaPixels::Patches(_)));
+}
 
 fn noisy_image(width: u32, height: u32) -> image::RgbImage {
     let mut image = image::RgbImage::new(width, height);

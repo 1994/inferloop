@@ -7,6 +7,14 @@ use infer_ir::{
 };
 use std::sync::Arc;
 
+/// Backend's explicit contract for deferred image preparation.
+///
+/// This query is pure: it does not reserve memory or launch device work. A `true` result means
+/// the same backend can consume the described RGB8 transformation during media execution.
+pub trait ImagePreprocessing: Send + Sync {
+    fn supports(&self, transform: &infer_ir::ImageTransform) -> bool;
+}
+
 /// Owned work crosses the submission boundary; a future CUDA implementation uses
 /// persistent buffers and a bounded SPSC descriptor ring behind this contract.
 pub trait BackendProvider {
@@ -33,6 +41,10 @@ pub trait BackendProvider {
     /// Whether this backend has a bound multimodal encoder and can execute media prefill.
     fn supports_multimodal(&self) -> bool {
         false
+    }
+    /// Return the backend's deferred image-processing capability, when installed.
+    fn image_preprocessing(&self) -> Option<Arc<dyn ImagePreprocessing>> {
+        None
     }
     /// True only if control checkpoints can reconstruct all execution state.
     /// A proxy captures execution state via its owner lane; direct drivers can capture synchronously.

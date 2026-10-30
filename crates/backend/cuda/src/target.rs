@@ -11,6 +11,12 @@ pub enum CudaTarget {
 }
 
 impl CudaTarget {
+    /// Whether the registered RGB8 image kernel has been qualified on this target.
+    #[must_use]
+    pub const fn supports_rgb8_preprocessing(&self) -> bool {
+        matches!(self, Self::BlackwellSm120)
+    }
+
     /// Compute dtypes this architecture executes natively.
     ///
     /// This is a capability, not a policy: which precision a checkpoint uses is declared by its

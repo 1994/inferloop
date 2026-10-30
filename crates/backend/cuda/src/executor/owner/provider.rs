@@ -19,6 +19,9 @@ impl BackendProvider for CudaBackend {
     fn supports_multimodal(&self) -> bool {
         self.view.multimodal
     }
+    fn image_preprocessing(&self) -> Option<Arc<dyn infer_spi::ImagePreprocessing>> {
+        self.view.image_preprocessing.clone()
+    }
     fn capabilities(&self) -> DeviceCapabilities {
         self.view.capabilities.clone()
     }

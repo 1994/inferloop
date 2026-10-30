@@ -239,6 +239,9 @@ impl BackendProvider for SelectedBackend {
     fn supports_multimodal(&self) -> bool {
         forward!(self, supports_multimodal)
     }
+    fn image_preprocessing(&self) -> Option<Arc<dyn infer_spi::ImagePreprocessing>> {
+        forward!(self, image_preprocessing)
+    }
     fn execution_profile(&self) -> Option<infer_ir::ExecutionProfileInspection> {
         match self {
             #[cfg(cuda_backend)]

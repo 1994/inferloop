@@ -207,6 +207,7 @@ pub struct ThreadedBackend<B: BackendProvider> {
     program: Arc<ExecutionProgram>,
     weight_backed: bool,
     multimodal: Multimodal,
+    image_preprocessing: Option<Arc<dyn infer_spi::ImagePreprocessing>>,
     recompute: bool,
     checkpoint: bool,
     active: Option<StepId>,
@@ -353,6 +354,7 @@ where
             } else {
                 Multimodal::Disabled
             },
+            image_preprocessing: backend.image_preprocessing(),
             recompute: backend.supports_recompute_preemption(),
             checkpoint: backend.supports_control_checkpoint(),
             jobs,

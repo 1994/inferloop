@@ -255,7 +255,7 @@ fn media_position_fixture(
         prompt: prompt.clone(),
         items: vec![MediaItem {
             modality: Modality::Image,
-            pixels: Arc::from([1.0_f32]),
+            pixels: Arc::<[f32]>::from([1.0_f32]).into(),
             grid: (1, 2, 2),
             span: 1..2,
         }],
@@ -387,7 +387,7 @@ fn failed_media_chunk_retains_its_device_source_until_the_fence() -> Result<(), 
         prompt: prompt.clone(),
         items: vec![MediaItem {
             modality: Modality::Image,
-            pixels: Arc::from([1.0_f32]),
+            pixels: Arc::<[f32]>::from([1.0_f32]).into(),
             grid: (1, 2, 2),
             span: 64..66,
         }],

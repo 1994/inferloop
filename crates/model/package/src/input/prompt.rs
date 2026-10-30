@@ -12,7 +12,7 @@ use crate::mrope::positions_from_grids;
 use crate::video::{RawVideo, VideoProcessor};
 use crate::vision::merge_unit;
 use infer_core::{Error, Result};
-use infer_ir::{MediaPlan, Modality};
+use infer_ir::{ImageTransform, MediaPlan, Modality};
 use infer_spi::{ImportedModel, ModalityEncoder};
 use std::iter::repeat_n;
 use std::ops::Range;
@@ -464,13 +464,36 @@ struct PreparedImages<T> {
     spans: Vec<Range<usize>>,
 }
 
-fn prepare_with<T>(
+/// Expand an image prompt from validated transforms without materializing host patch buffers.
+/// # Errors
+/// Rejects a placeholder mismatch, unsupported modality, or incompatible encoder geometry.
+pub fn prepare_image_geometry(
     assets: &TextAssets,
     imported: &ImportedModel,
     text: &str,
-    images: &[RawImage],
+    transforms: &[ImageTransform],
+) -> Result<ExpandedPrompt> {
+    let prepared = prepare_with(
+        assets,
+        imported,
+        text,
+        transforms,
+        &Modality::Image,
+        |transform| Ok(((), transform.grid())),
+    )?;
+    Ok(ExpandedPrompt {
+        tokens: prepared.tokens,
+        spans: prepared.spans,
+    })
+}
+
+fn prepare_with<T, I>(
+    assets: &TextAssets,
+    imported: &ImportedModel,
+    text: &str,
+    images: &[I],
     modality: &Modality,
-    preprocess: impl Fn(&RawImage) -> Result<(T, (usize, usize, usize))>,
+    preprocess: impl Fn(&I) -> Result<(T, (usize, usize, usize))>,
 ) -> Result<PreparedImages<T>> {
     let tokens = assets.encode(text, false)?;
     reject_foreign_placeholders(imported, &tokens, modality)?;

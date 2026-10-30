@@ -6,6 +6,7 @@
 //! `[channel, temporal, patch, patch]` vector the patch-embed projection consumes.
 use super::image_resize;
 use infer_core::{Error, Result};
+use infer_ir::{ImageNormalization, ImagePatchLayout, ImageTransform};
 use std::iter::repeat_n;
 use std::sync::Arc;
 
@@ -320,6 +321,21 @@ fn visit_patches<T: Copy>(
 }
 
 impl ImageProcessor {
+    /// Plan an RGB8 transform without performing the pixel conversion.
+    ///
+    /// The returned geometry can be offered to a backend which advertises support for it.
+    /// # Errors
+    /// Rejects invalid source dimensions, processor geometry, or normalization.
+    pub fn transform(&self, height: usize, width: usize) -> Result<ImageTransform> {
+        let (resized_height, resized_width) = self.smart_resize(height, width)?;
+        ImageTransform::new(
+            [height, width],
+            (resized_height, resized_width).into(),
+            ImagePatchLayout::new(self.patch_size, self.temporal_patch_size, self.merge_size)?,
+            ImageNormalization::new(self.mean, self.std, self.rescale)?,
+        )
+    }
+
     /// Parse `preprocessor_config.json`.
     /// # Errors
     /// Rejects missing or inconsistent geometry and normalization fields.

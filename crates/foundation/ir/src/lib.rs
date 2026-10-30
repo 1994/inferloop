@@ -3,6 +3,7 @@ pub mod dataflow;
 pub mod diagnostics;
 pub mod execution;
 pub mod hardware;
+mod image;
 pub mod model;
 pub mod multimodal;
 pub mod precision;
@@ -29,11 +30,12 @@ pub use hardware::{
     DeviceCapabilities, MetalCapabilities, MetalRequirements, NvidiaArchitecture,
     NvidiaCapabilities, SpeculationCapability,
 };
+pub use image::{ImageInput, ImageNormalization, ImagePatchLayout, ImageTransform};
 pub use model::{
     BackboneKind, FeedForward, Head, Mixer, ModelIr, PositionSpec, StateKind, StateRequirement,
 };
 pub use multimodal::{
-    MediaInput, MediaItem, MediaNode, MediaPlan, MediaStage, Modality, MultimodalGraph,
+    MediaInput, MediaItem, MediaNode, MediaPixels, MediaPlan, MediaStage, Modality, MultimodalGraph,
 };
 pub use precision::{DType, PrecisionPlan, ScaleGranularity, ScaleSpec, TensorLayout};
 pub use request::{CanonicalRequest, Qos, RequestInput, Sampling};

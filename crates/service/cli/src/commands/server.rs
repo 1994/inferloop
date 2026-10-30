@@ -5,6 +5,7 @@ use crate::support::flush_logs;
 use crate::support::{configured_engine, read_json};
 use infer_core::ErrorCode;
 use infer_core::{Error, Result};
+use infer_spi::BackendProvider;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
@@ -46,6 +47,7 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
         .map(|p| infer_models::TextAssets::open(p, engine.model().max_sequence))
         .transpose()?
         .map(Arc::new);
+    let image_preprocessing = engine.backend().image_preprocessing();
     let media = if text_only {
         None
     } else {
@@ -54,7 +56,14 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
             .map(infer_models::MultimodalAssets::open)
             .transpose()?
             .flatten()
-            .map(|assets| Arc::new(infer_frontdoor::MediaService::new(assets, media_limits)))
+            .map(|assets| {
+                let media = infer_frontdoor::MediaService::new(assets, media_limits);
+                let media = match image_preprocessing {
+                    Some(capability) => media.with_image_preprocessing(capability),
+                    None => media,
+                };
+                Arc::new(media)
+            })
     };
     Runtime::new()
         .map_err(|e| Error::new(ErrorCode::Backend, e.to_string()))?

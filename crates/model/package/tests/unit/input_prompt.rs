@@ -344,7 +344,7 @@ fn media_plan_layout_matches_prepared_layout_and_rejects_invalid_geometry() -> R
             .zip(&prepared.spans)
             .map(|(image, span)| MediaItem {
                 modality: Modality::Image,
-                pixels: Arc::from(image.pixels.as_slice()),
+                pixels: Arc::<[f32]>::from(image.pixels.as_slice()).into(),
                 grid: image.grid,
                 span: span.clone(),
             })
