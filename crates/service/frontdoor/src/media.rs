@@ -169,7 +169,7 @@ impl MediaService {
                     } else {
                         ResolvedMedia::Image(bytes)
                     };
-                    Ok((request, value))
+                    Ok::<_, Error>((request, value))
                 }
             },
         ))

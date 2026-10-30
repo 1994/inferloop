@@ -84,6 +84,17 @@ async fn invalid_video_is_an_explicit_error() -> TestResult<()> {
 }
 
 #[tokio::test]
+async fn truncated_video_does_not_produce_partial_success() -> TestResult<()> {
+    let (fixture, _) = lossless_clip(7)?;
+    let path = fixture.0.join("clip.mkv");
+    let metadata = probe_video(&path).await.unwrap();
+    write(&path, b"truncated video")?;
+    let mut decoder = SampledVideo::start(&path, metadata, &[0, 3]).unwrap();
+    assert!(decoder.next_frame().await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
 async fn long_clips_decode_only_the_requested_frames() -> TestResult<()> {
     let (fixture, frames) = lossless_clip(800)?;
     let path = fixture.0.join("clip.mkv");
