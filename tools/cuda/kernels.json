@@ -168,6 +168,7 @@
       "ptx": "preprocess-batch-strict-sm120.ptx",
       "target": "sm_120",
       "symbols": [
+        "mm_direct_patch_batch",
         "mm_horizontal_batch",
         "mm_vertical_patch_batch"
       ],
@@ -190,6 +191,7 @@
       "ptx": "preprocess-batch-strict-sm70.ptx",
       "target": "sm_70",
       "symbols": [
+        "mm_direct_patch_batch",
         "mm_horizontal_batch",
         "mm_vertical_patch_batch"
       ],

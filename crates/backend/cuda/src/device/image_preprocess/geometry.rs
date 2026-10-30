@@ -60,6 +60,10 @@ impl Geometry {
             output_elements,
         })
     }
+
+    pub const fn is_identity(self) -> bool {
+        self.source_height == self.target_height && self.source_width == self.target_width
+    }
 }
 
 fn elements(dimensions: &[usize]) -> Result<usize> {

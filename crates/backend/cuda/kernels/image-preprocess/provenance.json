@@ -11,9 +11,9 @@
     "--prec-div=true",
     "--prec-sqrt=true"
   ],
-  "source_sha256": "a790634a4997d70c1ba9db3ac7825acddc44d6292f2d07e5f2d8747f52fc17d7",
-  "ptx_sha256": "d54b5565ace4cab3e573c372ca1635dbc9a5ed64113d75a917e2da283858a928",
-  "numeric_evidence": "45:/home/r/benchmarks/inferloop-media-20261030/artifacts/gpu-native-batch-validation-strict-20261030/",
-  "performance_evidence": "45:/home/r/benchmarks/inferloop-media-20261030/artifacts/gpu-native-batch-full-strict-20261030/",
-  "contract": "RGB8 bicubic resize with fixed-point coefficients, canonical per-channel normalization, and 16x16 temporal-2 merge-2 patch layout; zeroed tail patches"
+  "source_sha256": "677aed60c4619235fa52d33c6873a4f9030d703b56dc7bdfdf7f9960e9049404",
+  "ptx_sha256": "27c2d388cbf936cb32720f5d6f5aeaa3d53f66b4e316b2c5b34cbc4966478851",
+  "numeric_evidence": "45:/home/r/benchmarks/inferloop-media-20261030/artifacts/image-direct-device-validation/",
+  "performance_evidence": "45:/home/r/benchmarks/inferloop-media-20261030/artifacts/image-direct-processor-pair/",
+  "contract": "RGB8 identity patch construction or bicubic resize with fixed-point coefficients, canonical per-channel normalization, and 16x16 temporal-2 merge-2 patch layout; zeroed tail patches"
 }

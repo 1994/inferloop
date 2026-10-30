@@ -1,11 +1,13 @@
 //! CUDA image preprocessing plans and device execution.
 mod axis;
 mod capability;
+mod direct;
 mod geometry;
 mod launch;
 mod staging;
 mod tables;
 
+use self::direct::Direct;
 use self::geometry::{Geometry, PATCH_WIDTH};
 use self::launch::Kernels;
 use self::staging::UploadPool;
@@ -62,6 +64,7 @@ impl ImageBatch {
 pub struct Processor {
     horizontal: Arc<Function>,
     vertical: Arc<Function>,
+    direct: Arc<Function>,
     stream: usize,
     pixels: UploadPool<u8>,
     coefficients: UploadPool<i32>,
@@ -115,6 +118,11 @@ impl Processor {
                     .load_function("mm_vertical_patch_batch")
                     .map_err(device_error)?,
             ),
+            direct: Arc::new(
+                module
+                    .load_function("mm_direct_patch_batch")
+                    .map_err(device_error)?,
+            ),
             stream: device.stream.cu_stream() as usize,
             pixels: UploadPool::new(Arc::clone(&context)),
             coefficients: UploadPool::new(context),
@@ -143,28 +151,34 @@ impl Processor {
                 "image processor belongs to a different CUDA stream",
             ));
         }
-        let tables = self.tables.get(&geometry)?;
         let rows = usize::try_from(geometry.batch)
             .ok()
             .and_then(|count| count.checked_mul(usize::try_from(geometry.padded_patches).ok()?))
             .ok_or_else(|| Error::invalid("image patch rows overflow"))?;
-        let horizontal = Arc::clone(&self.horizontal);
-        let vertical = Arc::clone(&self.vertical);
-        let pixels = self.pixels.stage(&batch.pixels)?;
-        let coefficients = self.coefficients.stage(&tables.values)?;
-        let operation = Kernels {
-            device: device.clone(),
-            pixels,
-            coefficients,
-            geometry,
-            tables,
-            horizontal,
-            vertical,
-            stream: self.stream,
+        let output = if geometry.is_identity() {
+            let operation = Direct {
+                device: device.clone(),
+                pixels: self.pixels.stage(&batch.pixels)?,
+                geometry,
+                kernel: Arc::clone(&self.direct),
+                stream: self.stream,
+            };
+            device.run_op(operation).await?
+        } else {
+            let tables = self.tables.get(&geometry)?;
+            let operation = Kernels {
+                device: device.clone(),
+                pixels: self.pixels.stage(&batch.pixels)?,
+                coefficients: self.coefficients.stage(&tables.values)?,
+                geometry,
+                tables,
+                horizontal: Arc::clone(&self.horizontal),
+                vertical: Arc::clone(&self.vertical),
+                stream: self.stream,
+            };
+            device.run_op(operation).await?
         };
-        device
-            .run_op(operation)
-            .await?
+        output
             .reshape(&[rows, PATCH_WIDTH])
             .map(Arc::new)
             .map_err(device_error)

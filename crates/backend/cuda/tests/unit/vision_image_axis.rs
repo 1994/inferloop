@@ -55,6 +55,39 @@ fn filter_preserves_a_constant_and_keeps_indices_in_range() -> Result<()> {
 }
 
 #[test]
+fn equal_axis_preserves_every_channel_value_at_edges_and_interior() -> Result<()> {
+    for size in [32, 64, 96, 1024] {
+        let table = AxisTable::new(size, size)?;
+        for (position, (indices, weights)) in table
+            .indices
+            .chunks_exact(table.taps)
+            .zip(table.weights.chunks_exact(table.taps))
+            .enumerate()
+        {
+            for value in u8::MIN..=u8::MAX {
+                let sum: i64 = indices
+                    .iter()
+                    .zip(weights)
+                    .map(|(&index, &weight)| {
+                        let sample = if usize::try_from(index).ok() == Some(position) {
+                            value
+                        } else {
+                            u8::MAX - value
+                        };
+                        i64::from(sample) * i64::from(weight)
+                    })
+                    .sum();
+                assert_eq!(
+                    (sum + i64::from(table.denominator / 2)) / i64::from(table.denominator),
+                    i64::from(value)
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn invalid_and_unrepresentable_dimensions_are_rejected() {
     assert!(AxisTable::new(0, 1).is_err());
     assert!(AxisTable::new(1, 0).is_err());

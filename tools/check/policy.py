@@ -138,6 +138,8 @@ def check_exceptions():
                         # RGB8 PTX boundary checks all tensor extents and retains the source,
                         # coefficient tables, intermediate, output and modules until the fence.
                         ROOT / "crates/backend/cuda/src/device/image_preprocess/launch.rs",
+                        # The no-resize PTX boundary retains its input and output until the fence.
+                        ROOT / "crates/backend/cuda/src/device/image_preprocess/direct.rs",
                         ROOT / "crates/backend/cuda/src/device/cublaslt.rs",
                         ROOT / "crates/backend/cuda/src/device/vendor_fp8.rs",
                         # FP4 extension of the Lt ABI: checked complete extents, exact output
