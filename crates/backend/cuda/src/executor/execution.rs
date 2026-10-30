@@ -12,7 +12,7 @@ use crate::loading::{LoadedModel, PooledServingQuote};
 use crate::resident::dflash2::{Engine, VerifiedRows};
 use crate::resident::slot_batch::SlotPool;
 use infer_core::{Error, ErrorCode, Result, StateId};
-use infer_ir::{ExecutionInput, ExecutionTask, MediaPlan, OutputReadout, TaskOutput};
+use infer_ir::{ExecutionInput, ExecutionTask, MediaPixels, MediaPlan, OutputReadout, TaskOutput};
 use infer_models::media_plan_layout;
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::BTreeMap;
@@ -1586,7 +1586,7 @@ impl Sequence {
             return Err(Error::invalid("media prefill token range"));
         }
         if self.history.is_empty() && self.media.is_none() {
-            self.prepare_media(plan, loaded)?;
+            self.prepare_media(plan, loaded).await?;
         }
         // On error, keep the source with the sequence until the submission fences or is isolated.
         let media = self
@@ -1661,7 +1661,7 @@ impl Sequence {
         Ok(self.output(readout, None, logits))
     }
 
-    fn prepare_media(&mut self, plan: &MediaPlan, loaded: &LoadedModel) -> Result<()> {
+    async fn prepare_media(&mut self, plan: &MediaPlan, loaded: &LoadedModel) -> Result<()> {
         let tower = loaded
             .vision()
             .ok_or_else(|| Error::unsupported("model has no bound vision encoder"))?;
@@ -1673,7 +1673,16 @@ impl Sequence {
         let mut data = Vec::new();
         let mut bases = Vec::with_capacity(plan.items.len());
         for image in &plan.items {
-            let encoded = tower.encode_pixels(loaded.device(), image.grid, &image.pixels)?;
+            let encoded = match &image.pixels {
+                MediaPixels::Patches(pixels) => {
+                    tower.encode_pixels(loaded.device(), image.grid, pixels)?
+                }
+                MediaPixels::Image(input) => {
+                    tower
+                        .encode_image(loaded.device(), image.grid, input)
+                        .await?
+                }
+            };
             bases.push(data.len() / hidden);
             data.extend(encoded);
         }

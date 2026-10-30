@@ -18,12 +18,14 @@ RTX 5090 上 Qwen3-VL-2B 的实测（prefill 阶段，视觉编码在计时前�
 
 ## 服务路径
 
-OpenAI chat 的 `image_url` / `video_url` 内容部分现在进入真实 serving 路径：输入层解析 URL（`data:`、`file://`、绝对路径、`http(s)`），按上限下载/解码并调用 provider 的 `ImageProcessor` / `VideoProcessor` 生成 prompt 对齐的 patch 载荷；每个 media item 作为 `infer_ir::MediaItem` 随 `MediaPlan` 经过 admission、scheduler 和 `ExecutionTask`，由 CUDA backend 在 prompt prefill 时编码并写入 lane 外部 embedding 槽。媒体 span、旋转位置和 token 计数在编码前校验；占位符、编码器或 patch grid 不匹配时报错，不会回退成纯文本。
+OpenAI chat 的 `image_url` / `video_url` 内容部分进入真实服务路径：公开入口接受 `data:` 和 `http(s)`，HTTP 下载使用共享异步客户端，媒体解码在 CPU 工作池中执行。后端声明支持时，图片保留为 RGB8，resize、归一化和 patch 布局由 CUDA 完成；其他图片配置使用已有的主机预处理。每个 media item 随 `MediaPlan` 经过 admission、scheduler 和 `ExecutionTask`，由 CUDA backend 在 prompt prefill 时编码。媒体 span、旋转位置和 token 计数在编码前校验；占位符、编码器或 patch grid 不匹配时报错。
 
 - 同一 prompt 暂只支持一种媒体模态；混合 image/video 会返回显式 unsupported。
-- `--limit-mm-per-prompt '{"image":N,"video":M}'` 是每 prompt 上限。全零配置只服务文本并跳过视觉塔；非零配置在加载时绑定并使用视觉权重。默认上限为 2 张图、1 段视频。
+- `--limit-mm-per-prompt '{"image":N,"video":M}'` 可显式配置每 prompt 上限。全零配置只服务文本并跳过视觉塔；默认不限制图片数量，视频默认为 1 段。
+- `--mm-processor-kwargs` 接受图片选项 JSON，例如 `'{"min_pixels":4096,"max_pixels":262144}'` 或 `'{"size":{"shortest_edge":4096,"longest_edge":262144}}'`。Chat 请求可通过同名字段覆盖部署值，也可放入 `images_kwargs`；`do_resize=false` 保留原尺寸，尺寸须能按 patch 和 merge 网格整除。不支持的选项会被拒绝。
+- CUDA 图片处理按计算能力和驱动能力选择实现：通用 PTX 的目标为 compute 7.0、PTX 7.8；满足条件的 `sm_120` 可使用专用版本。通用版本已在 RTX 5090 上验证，其他 GPU 仍需各自实机验证和调优。
 - 文本部署收到媒体时返回结构化 `unsupported_feature`，不消费 request identity。
-- `data:`/`http(s)` 的 PNG/JPEG/WebP/GIF 由进程内 codec 解码；视频以及 `http(s)` 下载依赖宿主 `ffmpeg`/`ffprobe`/`curl`，缺失时返回显式 unsupported。公开 HTTP 输入拒绝 `file://` 与服务端绝对路径；所有读取、帧数、尺寸、解码维度和子进程墙钟时间都有上限。
+- `data:`/`http(s)` 的 PNG/JPEG/WebP/GIF 由进程内 codec 解码；视频解码依赖宿主 `ffmpeg`/`ffprobe`。公开 HTTP 输入拒绝 `file://` 与服务端绝对路径。视频读取、帧数和子进程墙钟时间仍有边界；图片还须满足模型几何、上下文及实际资源要求。
 - media 请求不参与 prefix reuse，也不支持 MTP speculation；这两条都是显式错误而不是静默降级。
 - media payload 与请求生命周期绑定，until backend prefill completes；checkpoint 在 media 状态存活时拒绝，避免恢复后丢失像素或设备 embedding。
 

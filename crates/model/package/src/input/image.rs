@@ -6,6 +6,7 @@
 //! `[channel, temporal, patch, patch]` vector the patch-embed projection consumes.
 use super::image_resize;
 use infer_core::{Error, Result};
+use infer_ir::{ImageNormalization, ImagePatchLayout, ImageTransform};
 use std::iter::repeat_n;
 use std::sync::Arc;
 
@@ -320,6 +321,21 @@ fn visit_patches<T: Copy>(
 }
 
 impl ImageProcessor {
+    /// Plan an RGB8 transform without performing the pixel conversion.
+    ///
+    /// The returned geometry can be offered to a backend which advertises support for it.
+    /// # Errors
+    /// Rejects invalid source dimensions, processor geometry, or normalization.
+    pub fn transform(&self, height: usize, width: usize) -> Result<ImageTransform> {
+        let (resized_height, resized_width) = self.smart_resize(height, width)?;
+        ImageTransform::new(
+            [height, width],
+            (resized_height, resized_width).into(),
+            ImagePatchLayout::new(self.patch_size, self.temporal_patch_size, self.merge_size)?,
+            ImageNormalization::new(self.mean, self.std, self.rescale)?,
+        )
+    }
+
     /// Parse `preprocessor_config.json`.
     /// # Errors
     /// Rejects missing or inconsistent geometry and normalization fields.
@@ -442,6 +458,32 @@ impl ImageProcessor {
         self.preprocess_rgb_shared(image.height, image.width, &image.pixels)
     }
 
+    /// Preprocess one RGB8 image without resizing its dimensions.
+    /// # Errors
+    /// Rejects malformed buffers and dimensions that cannot tile the configured patch grid.
+    pub fn preprocess_unresized(&self, image: &RgbImage) -> Result<PreprocessedImage> {
+        let (pixels, grid) = self.preprocess_rgb_to_target(
+            image.height,
+            image.width,
+            &image.pixels,
+            (image.height, image.width),
+        )?;
+        Ok(PreprocessedImage { pixels, grid })
+    }
+
+    /// Preprocess one RGB8 image without resizing into a shared patch buffer.
+    /// # Errors
+    /// Rejects malformed buffers and dimensions that cannot tile the configured patch grid.
+    pub fn preprocess_unresized_shared(&self, image: &RgbImage) -> Result<SharedPreprocessedImage> {
+        let (pixels, grid) = self.preprocess_rgb_to_target(
+            image.height,
+            image.width,
+            &image.pixels,
+            (image.height, image.width),
+        )?;
+        Ok(SharedPreprocessedImage { pixels, grid })
+    }
+
     pub(super) fn preprocess_rgb(
         &self,
         height: usize,
@@ -468,6 +510,17 @@ impl ImageProcessor {
         width: usize,
         pixels: &[u8],
     ) -> Result<(O, (usize, usize, usize))> {
+        let target = self.smart_resize(height, width)?;
+        self.preprocess_rgb_to_target(height, width, pixels, target)
+    }
+
+    fn preprocess_rgb_to_target<O: PatchOutput>(
+        &self,
+        height: usize,
+        width: usize,
+        pixels: &[u8],
+        target: (usize, usize),
+    ) -> Result<(O, (usize, usize, usize))> {
         let expected = height
             .checked_mul(width)
             .and_then(|value| value.checked_mul(RGB_CHANNELS))
@@ -475,7 +528,21 @@ impl ImageProcessor {
         if pixels.len() != expected {
             return Err(Error::invalid("image buffer does not match its dimensions"));
         }
-        let (resized_height, resized_width) = self.smart_resize(height, width)?;
+        let (resized_height, resized_width) = target;
+        let factor = self
+            .patch_size
+            .checked_mul(self.merge_size)
+            .filter(|factor| *factor > 0)
+            .ok_or_else(|| Error::invalid("invalid image patch factor"))?;
+        if resized_height == 0
+            || resized_width == 0
+            || !resized_height.is_multiple_of(factor)
+            || !resized_width.is_multiple_of(factor)
+        {
+            return Err(Error::invalid(
+                "image dimensions do not tile the patch grid",
+            ));
+        }
         let grid_h = resized_height / self.patch_size;
         let grid_w = resized_width / self.patch_size;
         let merge = self.merge_size;

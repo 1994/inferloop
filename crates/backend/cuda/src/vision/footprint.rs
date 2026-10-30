@@ -8,12 +8,20 @@ use super::device_tower;
 use super::program::{attention_tiles, mlp_width, patch_width};
 use super::weights::half_tile;
 use infer_core::{Error, Result};
-use infer_ir::MediaPlan;
+use infer_ir::{ImageInput, MediaPixels, MediaPlan};
 use infer_models::vision::{merge_unit, merged_width, row_tile};
 use infer_spi::ModalityEncoder;
 
 const F32_BYTES: u64 = 4;
 const TOKEN_TILE: usize = 32;
+/// RGB bytes in each decoded source pixel.
+const RGB_CHANNELS: usize = 3;
+/// Diameter of the bicubic filter before antialiasing.
+const FILTER_DIAMETER: usize = 4;
+/// Account for both edge-rounding endpoints when bounding filter taps.
+const FILTER_BOUND_SLACK: usize = 2;
+/// Each axis has a signed index and coefficient for every tap.
+const TABLE_ELEMENTS_PER_TAP: usize = 2;
 /// Qualified wide attention head width after packing compact 96-wide heads.
 const WIDE_HEAD_WIDTH: usize = 128;
 /// Q, K, V and attended temporary wide buffers.
@@ -235,6 +243,9 @@ pub fn footprint(encoder: &ModalityEncoder, media: &MediaPlan) -> Result<u64> {
     let mut retained = 0_u64;
     for item in &media.items {
         peak = peak.max(one_item_peak(encoder, item.grid)?);
+        if let MediaPixels::Image(image) = &item.pixels {
+            peak = peak.max(image_preprocessing_bytes(image, encoder)?);
+        }
         let patches = item
             .grid
             .0
@@ -254,4 +265,49 @@ pub fn footprint(encoder: &ModalityEncoder, media: &MediaPlan) -> Result<u64> {
     peak.max(retained)
         .checked_add(0)
         .ok_or_else(|| Error::invalid("vision media footprint"))
+}
+
+fn image_preprocessing_bytes(image: &ImageInput, encoder: &ModalityEncoder) -> Result<u64> {
+    let transform = image.transform();
+    let [source_height, source_width] = transform.source();
+    let [target_height, target_width] = transform.target();
+    let patches = (target_height / transform.layout().patch())
+        .checked_mul(target_width / transform.layout().patch())
+        .ok_or_else(|| Error::invalid("image preprocessing patches overflow"))?;
+    let output = padded(patches, TOKEN_TILE)?
+        .checked_mul(patch_width(encoder)?)
+        .and_then(|value| value.checked_mul(size_of::<f32>()))
+        .ok_or_else(|| Error::invalid("image preprocessing output overflow"))?;
+    let input = source_height
+        .checked_mul(source_width)
+        .and_then(|value| value.checked_mul(RGB_CHANNELS))
+        .ok_or_else(|| Error::invalid("image preprocessing source overflow"))?;
+    let horizontal = source_height
+        .checked_mul(target_width)
+        .and_then(|value| value.checked_mul(RGB_CHANNELS))
+        .ok_or_else(|| Error::invalid("image preprocessing intermediate overflow"))?;
+    let horizontal_taps = filter_tap_bound(source_width, target_width)?;
+    let vertical_taps = filter_tap_bound(source_height, target_height)?;
+    let tables = target_width
+        .checked_mul(horizontal_taps)
+        .and_then(|value| value.checked_add(target_height.checked_mul(vertical_taps)?))
+        .and_then(|value| value.checked_mul(TABLE_ELEMENTS_PER_TAP))
+        .and_then(|value| value.checked_mul(size_of::<i32>()))
+        .ok_or_else(|| Error::invalid("image preprocessing filter overflow"))?;
+    let total = input
+        .checked_add(horizontal)
+        .and_then(|value| value.checked_add(output))
+        .and_then(|value| value.checked_add(tables))
+        .ok_or_else(|| Error::invalid("image preprocessing footprint overflow"))?;
+    u64::try_from(total).map_err(|_| Error::invalid("image preprocessing footprint overflow"))
+}
+
+fn filter_tap_bound(source: usize, target: usize) -> Result<usize> {
+    source
+        .max(target)
+        .checked_mul(FILTER_DIAMETER)
+        .map(|value| value.div_ceil(target))
+        .and_then(|value| value.checked_add(FILTER_BOUND_SLACK))
+        .map(|value| value.min(source))
+        .ok_or_else(|| Error::invalid("image filter footprint overflow"))
 }

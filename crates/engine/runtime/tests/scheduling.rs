@@ -660,7 +660,7 @@ fn media_payload_remains_available_and_charged_when_prefill_is_replayed() -> Res
         content_digest: "fixture".into(),
         item: Some(MediaItem {
             modality: Modality::Image,
-            pixels: pixels.clone(),
+            pixels: pixels.clone().into(),
             grid: (1, 1, 1),
             span: 0..1,
         }),
@@ -682,7 +682,10 @@ fn media_payload_remains_available_and_charged_when_prefill_is_replayed() -> Res
     assert_eq!(replaying.preemptions, 1);
     assert_eq!(replaying.prefill_done, 0);
     assert_eq!(
-        replaying.media.as_ref().unwrap().items[0].pixels.as_ref(),
+        replaying.media.as_ref().unwrap().items[0]
+            .pixels
+            .patches()
+            .unwrap(),
         pixels.as_ref()
     );
     assert!(replaying.byte_lease.is_some());

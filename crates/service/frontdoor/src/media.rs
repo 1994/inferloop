@@ -1,18 +1,22 @@
 //! URL/data/media preparation for the `OpenAI` adapter.
 //!
-//! Decoding and network access stay in this input layer; the engine receives only preprocessed
-//! patch payloads plus their prompt spans. Video reads and external commands retain their
+//! Decoding and network access stay in this input layer; the engine receives prepared patches or
+//! RGB8 payloads accepted by its image processor, plus prompt spans. Video reads and commands retain their
 //! time/frame bounds. Malformed inputs are explicit errors, never text-only fallbacks.
+mod options;
 mod source;
+
+use self::options::{ResizeMode, ResolvedOptions};
 
 use crate::cpu::{CpuContext, CpuPool};
 use infer_core::{Error, ErrorCode, MediaId, Result};
-use infer_ir::{MediaInput, MediaItem, Modality};
+use infer_ir::{ImageInput, MediaInput, MediaItem, MediaPixels, Modality};
 use infer_media_input::{decode_data_uri, decode_rgb8};
 use infer_models::{
     ImageProcessor, MediaLimits, MultimodalAssets, PreparedPrompt, RawImage, RawVideo, RgbImage,
-    SharedPreparedPrompt, TextAssets,
+    SharedPreparedPrompt, TextAssets, prepare_image_geometry,
 };
+use infer_spi::ImagePreprocessing;
 use sha2::{Digest, Sha256};
 use std::env::temp_dir;
 use std::fs::{File, OpenOptions, metadata, read, remove_file};
@@ -28,6 +32,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep as async_sleep;
+
+pub use options::ImageProcessingOptions;
 
 /// Largest accepted raw video-frame pixel count.
 const MAX_VIDEO_PIXELS: usize = 16 * 1024 * 1024;
@@ -97,6 +103,8 @@ pub struct MediaService {
     assets: Arc<MultimodalAssets>,
     limits: MediaLimits,
     source: SourcePolicy,
+    image_preprocessing: Option<Arc<dyn ImagePreprocessing>>,
+    image_options: ImageProcessingOptions,
 }
 impl MediaService {
     #[must_use]
@@ -105,7 +113,23 @@ impl MediaService {
             assets,
             limits,
             source: SourcePolicy::Public,
+            image_preprocessing: None,
+            image_options: ImageProcessingOptions::empty(),
         }
+    }
+
+    /// Select backend preprocessing only for transforms that the backend explicitly supports.
+    #[must_use]
+    pub fn with_image_preprocessing(mut self, capability: Arc<dyn ImagePreprocessing>) -> Self {
+        self.image_preprocessing = Some(capability);
+        self
+    }
+
+    /// Apply validated deployment image options, overridden by any per-request values.
+    #[must_use]
+    pub const fn with_image_options(mut self, options: ImageProcessingOptions) -> Self {
+        self.image_options = options;
+        self
     }
     #[must_use]
     pub const fn limits(&self) -> MediaLimits {
@@ -126,7 +150,12 @@ impl MediaService {
         self.prepare_inner(assets, prompt, requests, None, context)
     }
 
-    pub(crate) async fn resolve(
+    /// Resolve remote media concurrently, preserving one slot per request.
+    ///
+    /// Inline sources leave an empty slot and are decoded later on a CPU worker.
+    /// # Errors
+    /// Returns a transport, cancellation or source-policy error.
+    pub async fn resolve(
         &self,
         requests: &[MediaRequest],
         pool: &CpuPool,
@@ -134,12 +163,19 @@ impl MediaService {
         source::resolve(requests, pool).await
     }
 
-    pub(crate) fn prepare_resolved(
+    /// Prepare resolved media for the selected backend and expand prompt placeholders.
+    ///
+    /// `downloads` must have one slot per request and contain bytes for every HTTP URL.
+    /// Call on a CPU worker with its cancellation context; the returned inputs retain their data.
+    /// # Errors
+    /// Returns errors for unmatched sources, invalid options, media or prompt geometry.
+    pub fn prepare_resolved(
         &self,
         assets: &TextAssets,
         prompt: &str,
         requests: &[MediaRequest],
         downloads: &[Option<Vec<u8>>],
+        options: Option<&ImageProcessingOptions>,
         context: &CpuContext,
     ) -> Result<(Vec<u32>, Vec<MediaInput>)> {
         if downloads.len() != requests.len()
@@ -152,13 +188,80 @@ impl MediaService {
         }
         if self.validate_requests(requests)? == Modality::Image {
             let (images, sources) = self.load_images(requests, Some(downloads), context)?;
-            let prepared = self.assets.prepare_images_shared(assets, prompt, &images)?;
-            self.shared_image_inputs(prepared, sources)
+            let selected = self
+                .image_options
+                .resolve(options, self.assets.image_processor())?;
+            if let Some(capability) = &self.image_preprocessing {
+                let transforms = images
+                    .iter()
+                    .map(|image| selected.transform(image.height, image.width))
+                    .collect::<Result<Vec<_>>>()?;
+                if transforms
+                    .iter()
+                    .all(|transform| capability.supports(transform))
+                {
+                    return self.deferred_image_inputs(
+                        assets, prompt, images, transforms, sources, &selected,
+                    );
+                }
+            }
+            let prepared =
+                selected.prepare_shared(assets, &self.assets.imported, prompt, images)?;
+            Self::shared_image_inputs(prepared, sources, &selected)
         } else {
+            if options.is_some() {
+                return Err(Error::unsupported(
+                    "image processor options require image inputs",
+                ));
+            }
             let (prepared, media) =
                 self.prepare_inner(assets, prompt, requests, Some(downloads), context)?;
             Ok((prepared.tokens, media))
         }
+    }
+
+    fn deferred_image_inputs(
+        &self,
+        assets: &TextAssets,
+        prompt: &str,
+        images: Vec<RawImage>,
+        transforms: Vec<infer_ir::ImageTransform>,
+        sources: Vec<SourceDigest>,
+        options: &ResolvedOptions,
+    ) -> Result<(Vec<u32>, Vec<MediaInput>)> {
+        if images.len() != transforms.len() || images.len() != sources.len() || images.is_empty() {
+            return Err(Error::invariant(
+                "deferred image metadata does not match inputs",
+            ));
+        }
+        let prepared = prepare_image_geometry(assets, &self.assets.imported, prompt, &transforms)?;
+        let mut media = Vec::with_capacity(images.len());
+        for (index, (((image, transform), source), span)) in images
+            .into_iter()
+            .zip(transforms)
+            .zip(sources)
+            .zip(prepared.spans)
+            .enumerate()
+        {
+            let id = u64::try_from(index)
+                .ok()
+                .and_then(|value| value.checked_add(1))
+                .ok_or_else(|| Error::invalid("media identity overflow"))?;
+            let grid = transform.grid();
+            let pixels = MediaPixels::Image(ImageInput::new(transform, image.pixels)?);
+            media.push(MediaInput {
+                id: MediaId::new(id)?,
+                modality: Modality::Image,
+                content_digest: image_digest_with_mode(source, &options.processor, options.resize)?,
+                item: Some(MediaItem {
+                    modality: Modality::Image,
+                    pixels,
+                    grid,
+                    span,
+                }),
+            });
+        }
+        Ok((prepared.tokens, media))
     }
 
     fn validate_requests(&self, requests: &[MediaRequest]) -> Result<Modality> {
@@ -200,9 +303,9 @@ impl MediaService {
     }
 
     fn shared_image_inputs(
-        &self,
         prepared: SharedPreparedPrompt,
         sources: Vec<SourceDigest>,
+        options: &ResolvedOptions,
     ) -> Result<(Vec<u32>, Vec<MediaInput>)> {
         if prepared.images.is_empty() || prepared.images.len() != prepared.spans.len() {
             return Err(Error::invalid(
@@ -231,14 +334,14 @@ impl MediaService {
                 .ok_or_else(|| Error::invalid("media identity overflow"))?;
             let item = MediaItem {
                 modality: Modality::Image,
-                pixels: image.pixels,
+                pixels: image.pixels.into(),
                 grid: image.grid,
                 span,
             };
             media.push(MediaInput {
                 id: MediaId::new(id)?,
                 modality: Modality::Image,
-                content_digest: image_digest(source, self.assets.image_processor())?,
+                content_digest: image_digest_with_mode(source, &options.processor, options.resize)?,
                 item: Some(item),
             });
         }
@@ -254,11 +357,22 @@ impl MediaService {
         context: &CpuContext,
     ) -> Result<(PreparedPrompt, Vec<MediaInput>)> {
         let modality = self.validate_requests(requests)?;
+        let image_options = if modality == Modality::Image {
+            Some(
+                self.image_options
+                    .resolve(None, self.assets.image_processor())?,
+            )
+        } else {
+            None
+        };
         let (prepared, image_sources) = match modality {
             Modality::Image => {
                 let (images, sources) = self.load_images(requests, downloads, context)?;
+                let options = image_options
+                    .as_ref()
+                    .ok_or_else(|| Error::invariant("image processor options"))?;
                 (
-                    self.assets.prepare_images(assets, prompt, &images)?,
+                    options.prepare(assets, &self.assets.imported, prompt, images)?,
                     sources,
                 )
             }
@@ -305,7 +419,7 @@ impl MediaService {
                 .ok_or_else(|| Error::invalid("media identity overflow"))?;
             let item = MediaItem {
                 modality: modality.clone(),
-                pixels: Arc::from(image.pixels.as_slice()),
+                pixels: Arc::<[f32]>::from(image.pixels.as_slice()).into(),
                 grid: image.grid,
                 span: span.clone(),
             };
@@ -316,9 +430,12 @@ impl MediaService {
                     let source = sources
                         .next()
                         .ok_or_else(|| Error::invariant("missing image source identity"))?;
-                    image_digest(source, self.assets.image_processor())?
+                    let options = image_options
+                        .as_ref()
+                        .ok_or_else(|| Error::invariant("image processor options"))?;
+                    image_digest_with_mode(source, &options.processor, options.resize)?
                 } else {
-                    digest(&item)
+                    digest(&image.pixels, image.grid)
                 },
                 item: Some(item),
             });
@@ -341,10 +458,22 @@ fn source_digest(bytes: &[u8], context: Option<&CpuContext>) -> Result<SourceDig
     Ok(SourceDigest(digest.finalize().into()))
 }
 
+#[cfg(test)]
 fn image_digest(source: SourceDigest, processor: &ImageProcessor) -> Result<String> {
+    image_digest_with_mode(source, processor, ResizeMode::Smart)
+}
+
+fn image_digest_with_mode(
+    source: SourceDigest,
+    processor: &ImageProcessor,
+    resize: ResizeMode,
+) -> Result<String> {
     let mut digest = Sha256::new();
     digest.update(IMAGE_IDENTITY_DOMAIN);
     digest.update(source.0);
+    if resize == ResizeMode::Disabled {
+        digest.update(b"resize-disabled");
+    }
     for value in [
         processor.patch_size,
         processor.temporal_patch_size,
@@ -369,15 +498,15 @@ fn image_digest(source: SourceDigest, processor: &ImageProcessor) -> Result<Stri
     Ok(format!("sha256-source-v1:{:x}", digest.finalize()))
 }
 
-fn digest(item: &MediaItem) -> String {
+fn digest(pixels: &[f32], grid: (usize, usize, usize)) -> String {
     let mut hash = FNV_OFFSET_BASIS;
-    for value in item.pixels.iter() {
+    for value in pixels {
         for byte in value.to_bits().to_le_bytes() {
             hash ^= u64::from(byte);
             hash = hash.wrapping_mul(FNV_PRIME);
         }
     }
-    for value in <[usize; GRID_AXES]>::from(item.grid) {
+    for value in <[usize; GRID_AXES]>::from(grid) {
         for byte in u64::try_from(value).unwrap_or(u64::MAX).to_le_bytes() {
             hash ^= u64::from(byte);
             hash = hash.wrapping_mul(FNV_PRIME);

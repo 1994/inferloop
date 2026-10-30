@@ -57,8 +57,13 @@ class NumbersTest(unittest.TestCase):
 
 
 class FrozenTest(unittest.TestCase):
+    def temporary_root(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        return root
+
     def copied(self):
-        directory = Path(tempfile.mkdtemp()) / "2b-mtp0-serving-v1"
+        directory = self.temporary_root() / "2b-mtp0-serving-v1"
         shutil.copytree(FROZEN, directory)
         return directory
 
@@ -375,7 +380,7 @@ class FrozenTest(unittest.TestCase):
 
     def test_an_edited_live_profile_is_caught(self):
         # The tree's profiles are shared between baselines, so tamper through a copied root.
-        root = Path(tempfile.mkdtemp())
+        root = self.temporary_root()
         (root / "benchmarks/profiles").mkdir(parents=True)
         (root / "benchmarks/baselines/serving").mkdir(parents=True)
         shutil.copytree(FROZEN, root / "benchmarks/baselines/serving/2b-mtp0-serving-v1")
@@ -387,7 +392,7 @@ class FrozenTest(unittest.TestCase):
         self.assertIn("live profile has changed", " ".join(problems))
 
     def test_a_retired_profile_is_a_note_not_a_failure(self):
-        root = Path(tempfile.mkdtemp())
+        root = self.temporary_root()
         (root / "benchmarks/baselines/serving").mkdir(parents=True)
         shutil.copytree(FROZEN, root / "benchmarks/baselines/serving/2b-mtp0-serving-v1")
         directory = root / "benchmarks/baselines/serving/2b-mtp0-serving-v1"

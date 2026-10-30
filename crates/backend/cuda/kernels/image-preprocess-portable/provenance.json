@@ -1,0 +1,18 @@
+{
+  "target": "sm_70",
+  "compiler": "nvcc V11.8.89",
+  "host_compiler": "GCC 11.4.0 (conda-forge)",
+  "language": "CUDA C++ device code; no host C++ runtime",
+  "arguments": [
+    "--ptx",
+    "-arch=compute_70",
+    "-O3",
+    "--fmad=false",
+    "--ftz=false",
+    "--prec-div=true",
+    "--prec-sqrt=true"
+  ],
+  "source_sha256": "a790634a4997d70c1ba9db3ac7825acddc44d6292f2d07e5f2d8747f52fc17d7",
+  "ptx_sha256": "f6cd2a926aef6516cd7cda4eacf1b7e9f2a8bea3f81b12d6f211272c02767820",
+  "contract": "Portable RGB8 bicubic resize with fixed-point coefficients, canonical per-channel normalization, and 16x16 temporal-2 merge-2 patch layout; zeroed tail patches"
+}

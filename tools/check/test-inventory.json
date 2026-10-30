@@ -34,19 +34,19 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 429
+      "tests": 437
     },
     "frontdoor": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 121
+      "tests": 122
     },
     "ir": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 16
+      "tests": 18
     },
     "kernel-api": {
       "benches": 0,
@@ -94,7 +94,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 105
+      "tests": 106
     },
     "scheduler": {
       "benches": 0,
@@ -274,7 +274,8 @@
     "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 6,
     "requires a CUDA device; run inside safe-run": 5,
     "requires a Linux production host with get/set_mempolicy permitted; make check-linux-numa": 1,
-    "requires a real Qwen3-VL package in INFER_VISION_PACKAGE": 1,
+    "requires a qualified CUDA device": 1,
+    "requires a real Qwen3-VL package in INFER_VISION_PACKAGE": 2,
     "requires a reserved CUDA device": 1,
     "requires a reserved CUDA device; compares every output with the prior tower": 1,
     "requires a reserved CUDA device; compares full outputs with scalar and existing paths": 1,
@@ -318,6 +319,31 @@
       "crate": "cuda",
       "file": "src/device/cublaslt.rs",
       "mount": "../../tests/unit/device_cublaslt.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/device/image_preprocess/axis.rs",
+      "mount": "../../../tests/unit/vision_image_axis.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/device/image_preprocess/capability.rs",
+      "mount": "../../../tests/unit/vision_image_capability.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/device/image_preprocess/geometry.rs",
+      "mount": "../../../tests/unit/vision_image_geometry.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/device/image_preprocess/mod.rs",
+      "mount": "../../../tests/unit/vision_image_preprocess.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/device/image_preprocess/tables.rs",
+      "mount": "../../../tests/unit/vision_image_tables.rs"
     },
     {
       "crate": "cuda",
@@ -1206,6 +1232,11 @@
     },
     {
       "crate": "ir",
+      "file": "src/image.rs",
+      "mount": "../tests/unit/image.rs"
+    },
+    {
+      "crate": "ir",
       "file": "src/state_recipe/mod.rs",
       "mount": "../../tests/unit/state_recipe.rs"
     },
@@ -1411,6 +1442,11 @@
     },
     {
       "crate": "frontdoor",
+      "file": "src/media/options.rs",
+      "mount": "../../tests/unit/media_options.rs"
+    },
+    {
+      "crate": "frontdoor",
       "file": "src/media/source.rs",
       "mount": "../../tests/unit/media_source.rs"
     },
@@ -1451,11 +1487,11 @@
     }
   ],
   "totals": {
-    "all": 1059,
+    "all": 1071,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1059
+    "tests": 1071
   }
 }

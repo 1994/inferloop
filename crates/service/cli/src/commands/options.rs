@@ -13,6 +13,9 @@ pub struct ServeOptions {
     pub config: Option<PathBuf>,
     #[arg(long)]
     pub package: Option<PathBuf>,
+    /// Image processor options as a vLLM-compatible JSON object.
+    #[arg(long, value_name = "JSON")]
+    pub mm_processor_kwargs: Option<String>,
     #[arg(long, default_value_t = 0, hide = true)]
     pub host_memory_mib: u64,
 }

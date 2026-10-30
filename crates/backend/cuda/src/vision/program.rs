@@ -83,7 +83,7 @@ pub fn patch_embed(
         device,
         encoder,
         weights,
-        patches,
+        PatchInput::Host(patches),
         PositionInput::Host(positions),
         patch_count,
     )
@@ -105,10 +105,35 @@ pub fn patch_embed_device_positions(
         device,
         encoder,
         weights,
-        patches,
+        PatchInput::Host(patches),
         PositionInput::Device(positions),
         patch_count,
     )
+}
+
+/// Embed already-preprocessed device patches without reading them back or uploading them again.
+pub fn patch_embed_device_pixels(
+    device: &CudaDevice,
+    encoder: &ModalityEncoder,
+    weights: &VisionWeights,
+    patches: &Arc<Tensor<f32>>,
+    positions: &PositionTaps,
+    patch_count: usize,
+) -> Result<Vec<f32>> {
+    patch_embed_with_positions(
+        device,
+        encoder,
+        weights,
+        PatchInput::Device(patches),
+        PositionInput::Device(positions),
+        patch_count,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum PatchInput<'a> {
+    Host(&'a [f32]),
+    Device(&'a Arc<Tensor<f32>>),
 }
 
 #[derive(Clone, Copy)]
@@ -203,7 +228,7 @@ fn patch_embed_with_positions(
     device: &CudaDevice,
     encoder: &ModalityEncoder,
     weights: &VisionWeights,
-    patches: &[f32],
+    patches: PatchInput<'_>,
     positions: PositionInput<'_>,
     patch_count: usize,
 ) -> Result<Vec<f32>> {
@@ -212,7 +237,7 @@ fn patch_embed_with_positions(
     let patch_elements = patch_count
         .checked_mul(width)
         .ok_or_else(|| Error::invalid("patch input overflow"))?;
-    if patch_count == 0 || patches.len() != patch_elements {
+    if patch_count == 0 {
         return Err(Error::invalid("patch input shape"));
     }
     if !hidden.is_multiple_of(COLUMN_TILE) || !width.is_multiple_of(COLUMN_TILE) {
@@ -226,15 +251,14 @@ fn patch_embed_with_positions(
     let padded_elements = padded
         .checked_mul(width)
         .ok_or_else(|| Error::invalid("vision patch padding overflow"))?;
+    validate_patch_input(&patches, patch_elements, padded, width)?;
     patch_count
         .checked_mul(hidden)
         .and_then(|_| padded.checked_mul(hidden))
         .ok_or_else(|| Error::invalid("vision patch output overflow"))?;
     let positions = StagedPositions::new(device, encoder, weights, positions, patch_count, padded)?;
 
-    let mut input_values = vec![0.0f32; padded_elements];
-    input_values[..patches.len()].copy_from_slice(patches);
-    let input = device.upload(input_values, &[padded, width])?;
+    let input = stage_patches(device, patches, padded_elements, padded, width)?;
     let mut embedded = api::zeros::<f32>(&[padded, hidden])
         .sync_on(&device.stream)
         .map_err(device_error)?;
@@ -279,6 +303,47 @@ fn patch_embed_with_positions(
         None => device.read(&Arc::new(embedded))?,
     };
     Ok(values[..patch_count * hidden].to_vec())
+}
+
+fn validate_patch_input(
+    patches: &PatchInput<'_>,
+    elements: usize,
+    rows: usize,
+    width: usize,
+) -> Result<()> {
+    match patches {
+        PatchInput::Host(values) if values.len() != elements => {
+            Err(Error::invalid("patch input shape"))
+        }
+        PatchInput::Device(values) => {
+            let shape = [
+                i32::try_from(rows).map_err(device_error)?,
+                i32::try_from(width).map_err(device_error)?,
+            ];
+            if values.shape() != shape || !values.is_contiguous() {
+                return Err(Error::invalid("device patch input shape"));
+            }
+            Ok(())
+        }
+        PatchInput::Host(_) => Ok(()),
+    }
+}
+
+fn stage_patches(
+    device: &CudaDevice,
+    patches: PatchInput<'_>,
+    elements: usize,
+    rows: usize,
+    width: usize,
+) -> Result<Arc<Tensor<f32>>> {
+    match patches {
+        PatchInput::Host(patches) => {
+            let mut values = vec![0.0f32; elements];
+            values[..patches.len()].copy_from_slice(patches);
+            device.upload(values, &[rows, width])
+        }
+        PatchInput::Device(patches) => Ok(Arc::clone(patches)),
+    }
 }
 
 /// Linear projection with bias: `out = input @ weight^T + bias` for `[rows, in_features]`.

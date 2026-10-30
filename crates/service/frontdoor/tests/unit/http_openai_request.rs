@@ -33,6 +33,27 @@ fn a_plain_chat_request_declares_no_tools() {
 }
 
 #[test]
+fn chat_accepts_and_validates_image_processor_options() {
+    let messages = json!([{"role": "user", "content": "hi"}]);
+    let valid = chat(
+        &messages,
+        &json!({"mm_processor_kwargs": {"min_pixels": 1024, "max_pixels": 4096}}),
+    );
+    assert!(valid.validate(true).is_ok());
+    let invalid = chat(
+        &messages,
+        &json!({"mm_processor_kwargs": {"min_pixels": 0}}),
+    );
+    assert!(invalid.validate(true).is_err());
+    assert!(
+        serde_json::from_value::<GenerationRequest>(json!({
+            "model": "1", "messages": messages, "mm_processor_kwargs": {"unsupported": true}
+        }))
+        .is_err()
+    );
+}
+
+#[test]
 fn declared_tools_enable_auto_parsing_and_reach_the_template() {
     let request = chat(
         &json!([{"role": "user", "content": "weather?"}]),

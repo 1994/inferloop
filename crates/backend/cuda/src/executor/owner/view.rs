@@ -1,11 +1,14 @@
 //! Committed host inspection remains available while the executor is suspended.
 use super::super::{CudaExecutor, PoolInspection};
+use crate::loading::LoadedVision;
 use infer_core::{Error, ProgramId, Result, StateId};
 use infer_ir::{
     DeviceCapabilities, ExecutionProfileInspection, ExecutionProgram, KvCacheInspection, ModelIr,
     PageGrowth, PrefillGeometry, TaskOutput,
 };
+use infer_spi::ImagePreprocessing;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 pub(super) struct StateView {
     pub capacity: usize,
@@ -27,6 +30,7 @@ pub(super) struct View {
     pub pool: PoolInspection,
     pub prefix: (u64, u64, u64, usize),
     pub multimodal: bool,
+    pub image_preprocessing: Option<Arc<dyn ImagePreprocessing>>,
     pub states: BTreeMap<StateId, StateView>,
     pub result: Option<Result<Vec<TaskOutput>>>,
 }
@@ -44,6 +48,10 @@ impl View {
             pool: executor.pool_inspection(),
             prefix: executor.prefix_inspection(),
             multimodal: executor.loaded.vision().is_some(),
+            image_preprocessing: executor
+                .loaded
+                .vision()
+                .and_then(LoadedVision::image_preprocessing),
             states: BTreeMap::new(),
             result: None,
         };

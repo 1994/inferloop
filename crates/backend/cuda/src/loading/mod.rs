@@ -18,6 +18,8 @@ use crate::constants::WIDE_PREFILL_LANES;
 use crate::device::DeviceProfile;
 use crate::mlp::ProjectionWeight;
 
+use crate::device::image_preprocess::Capability as ImageCapability;
+use crate::device::{CudaImageProcessor as ImageProcessor, ImageBatch};
 use crate::resident::fp8_cache::Fp8Caches;
 use crate::resident::slot_batch::SlotPool;
 use crate::tuning::attention::mma::prepare;
@@ -25,6 +27,7 @@ use crate::vision::VisionWeights;
 use crate::vision::footprint;
 use crate::vision::merger;
 use crate::vision::patch_width;
+use crate::vision::program::patch_embed_device_pixels;
 use crate::vision::program::patch_embed_device_positions;
 use crate::vision::tower;
 use infer_models::vision::position_taps;
@@ -41,10 +44,13 @@ use crate::{
     tuning::TuningReport,
 };
 use infer_core::{Error, ModelId, Result};
-use infer_ir::{DataflowGraph, ModelIr};
+use infer_ir::{DataflowGraph, ImageInput, ModelIr};
 use infer_models::QuantizedPackage;
+use infer_spi::ImagePreprocessing;
 use std::path::Path;
 use std::sync::Arc;
+/// Interleaved channels in a decoded RGB image.
+const IMAGE_CHANNELS: usize = 3;
 pub use weights::{Projection, floats};
 
 /// Load-time execution policy; each request receives independent mutable device state.
@@ -170,6 +176,7 @@ pub struct LoadedModel {
 pub struct LoadedVision {
     weights: VisionWeights,
     encoder: infer_spi::ModalityEncoder,
+    image_preprocessor: Option<ImageProcessor>,
 }
 
 impl LoadedVision {
@@ -187,7 +194,18 @@ impl LoadedVision {
             return Ok(None);
         };
         let weights = VisionWeights::load(device, package, &encoder)?;
-        Ok(Some(Self { weights, encoder }))
+        let image_preprocessor = ImageProcessor::load(device)?;
+        Ok(Some(Self {
+            weights,
+            encoder,
+            image_preprocessor,
+        }))
+    }
+
+    pub(crate) fn image_preprocessing(&self) -> Option<Arc<dyn ImagePreprocessing>> {
+        self.image_preprocessor
+            .as_ref()
+            .map(ImageProcessor::capability)
     }
 
     /// Declared geometry of the bound tower.
@@ -248,11 +266,63 @@ impl LoadedVision {
             &taps,
             patches,
         )?;
+        self.finish_encoding(device, grid, patches, &embedded)
+    }
+
+    pub(crate) async fn encode_image(
+        &self,
+        device: &CudaDevice,
+        grid: (usize, usize, usize),
+        image: &ImageInput,
+    ) -> Result<Vec<f32>> {
+        let transform = image.transform();
+        let layout = transform.layout();
+        if transform.grid() != grid
+            || layout.patch() != self.encoder.patch_size
+            || layout.temporal() != self.encoder.temporal_patch_size
+            || layout.merge() != self.encoder.spatial_merge_size
+            || self.encoder.in_channels != IMAGE_CHANNELS
+            || !ImageCapability.supports(&transform)
+        {
+            return Err(Error::unsupported(
+                "CUDA image processor cannot execute this transform",
+            ));
+        }
+        let processor = self
+            .image_preprocessor
+            .as_ref()
+            .ok_or_else(|| Error::unsupported("CUDA image processor is unavailable"))?;
+        let patches = grid
+            .0
+            .checked_mul(grid.1)
+            .and_then(|value| value.checked_mul(grid.2))
+            .ok_or_else(|| Error::invalid("image patch grid overflow"))?;
+        let batch = ImageBatch::new(image.shared_pixels(), 1, transform)?;
+        let input = processor.process(device, &batch).await?;
+        let taps = position_taps(grid, &self.encoder)?;
+        let embedded = patch_embed_device_pixels(
+            device,
+            &self.encoder,
+            &self.weights,
+            &input,
+            &taps,
+            patches,
+        )?;
+        self.finish_encoding(device, grid, patches, &embedded)
+    }
+
+    fn finish_encoding(
+        &self,
+        device: &CudaDevice,
+        grid: (usize, usize, usize),
+        patches: usize,
+        embedded: &[f32],
+    ) -> Result<Vec<f32>> {
         let hidden = tower(
             device,
             &self.weights,
             &self.encoder,
-            &embedded,
+            embedded,
             grid,
             patches,
         )?;

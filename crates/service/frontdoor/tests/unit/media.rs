@@ -5,17 +5,178 @@ use super::{
 use crate::cpu::{CpuConfig, CpuPool, cancelled_context};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use infer_ir::Modality;
+use infer_ir::{ImageTransform, MediaPixels, Modality};
 use infer_models::{ImageProcessor, MediaLimits, MultimodalAssets, TextAssets};
 use std::env::{temp_dir, var};
 use std::fs::{remove_file, write};
 use std::io::{Cursor, Write};
 use std::path::PathBuf;
 use std::process::id;
+use std::slice::from_ref;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const ONE_PIXEL_PNG: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+struct TestImageCapability(bool);
+impl infer_spi::ImagePreprocessing for TestImageCapability {
+    fn supports(&self, _: &ImageTransform) -> bool {
+        self.0
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a real Qwen3-VL package in INFER_VISION_PACKAGE"]
+async fn image_preparation_follows_backend_capability() {
+    let package = PathBuf::from(var("INFER_VISION_PACKAGE").unwrap());
+    let assets = TextAssets::open(&package, 4096).unwrap();
+    let multimodal = MultimodalAssets::open(&package).unwrap().unwrap();
+    let gpu = MediaService::new(multimodal.clone(), MediaLimits::default())
+        .with_image_preprocessing(Arc::new(TestImageCapability(true)));
+    let host = MediaService::new(multimodal, MediaLimits::default())
+        .with_image_preprocessing(Arc::new(TestImageCapability(false)));
+    let request = MediaRequest {
+        modality: Modality::Image,
+        url: format!("data:image/png;base64,{ONE_PIXEL_PNG}"),
+    };
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 2,
+        ..CpuConfig::default()
+    })
+    .unwrap();
+    let (gpu, host) = pool
+        .run(0, move |context| {
+            let prompt = "<|vision_start|><|image_pad|><|vision_end|>describe";
+            let gpu =
+                gpu.prepare_resolved(&assets, prompt, from_ref(&request), &[None], None, context)?;
+            let host =
+                host.prepare_resolved(&assets, prompt, from_ref(&request), &[None], None, context)?;
+            Ok((gpu, host))
+        })
+        .await
+        .unwrap();
+    assert_eq!(gpu.0, host.0);
+    assert_eq!(gpu.1[0].content_digest, host.1[0].content_digest);
+    let device_item = gpu.1[0].item.as_ref().unwrap();
+    let host_item = host.1[0].item.as_ref().unwrap();
+    assert_eq!(device_item.grid, host_item.grid);
+    assert_eq!(device_item.span, host_item.span);
+    assert!(matches!(&device_item.pixels, MediaPixels::Image(_)));
+    assert!(matches!(&host_item.pixels, MediaPixels::Patches(_)));
+}
+
+#[tokio::test]
+#[ignore = "requires a real Qwen3-VL package in INFER_VISION_PACKAGE"]
+async fn default_image_limit_accepts_multiple_images_in_one_prompt() {
+    let package = PathBuf::from(var("INFER_VISION_PACKAGE").unwrap());
+    let assets = TextAssets::open(&package, 8192).unwrap();
+    let multimodal = MultimodalAssets::open(&package).unwrap().unwrap();
+    let service = MediaService::new(multimodal, MediaLimits::default())
+        .with_image_preprocessing(Arc::new(TestImageCapability(true)));
+    let requests = (0..3)
+        .map(|_| MediaRequest {
+            modality: Modality::Image,
+            url: format!("data:image/png;base64,{ONE_PIXEL_PNG}"),
+        })
+        .collect::<Vec<_>>();
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 2,
+        ..CpuConfig::default()
+    })
+    .unwrap();
+    let (tokens, inputs) = pool
+        .run(0, move |context| {
+            let prompt = "<|vision_start|><|image_pad|><|vision_end|>".repeat(requests.len());
+            service.prepare_resolved(
+                &assets,
+                &prompt,
+                &requests,
+                &[None, None, None],
+                None,
+                context,
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(inputs.len(), 3);
+    for input in inputs {
+        let item = input.item.unwrap();
+        assert!(item.span.start < item.span.end && item.span.end <= tokens.len());
+        assert!(matches!(item.pixels, MediaPixels::Image(_)));
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a real Qwen3-VL package in INFER_VISION_PACKAGE"]
+async fn image_options_match_between_deferred_and_host_processing() {
+    use super::ImageProcessingOptions;
+
+    let package = PathBuf::from(var("INFER_VISION_PACKAGE").unwrap());
+    let assets = TextAssets::open(&package, 8192).unwrap();
+    let multimodal = MultimodalAssets::open(&package).unwrap().unwrap();
+    let global = ImageProcessingOptions::parse(r#"{"min_pixels":1024,"max_pixels":1024}"#).unwrap();
+    let gpu = MediaService::new(multimodal.clone(), MediaLimits::default())
+        .with_image_options(global.clone())
+        .with_image_preprocessing(Arc::new(TestImageCapability(true)));
+    let host = MediaService::new(multimodal, MediaLimits::default())
+        .with_image_options(global)
+        .with_image_preprocessing(Arc::new(TestImageCapability(false)));
+    let png = encoded(
+        image::RgbImage::from_pixel(96, 64, image::Rgb([7, 91, 231])),
+        image::ImageFormat::Png,
+    );
+    let request = MediaRequest {
+        modality: Modality::Image,
+        url: format!("data:image/png;base64,{}", STANDARD.encode(png)),
+    };
+    let options =
+        ImageProcessingOptions::parse(r#"{"images_kwargs":{"do_resize":false}}"#).unwrap();
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 2,
+        ..CpuConfig::default()
+    })
+    .unwrap();
+    let (gpu, host, resized) = pool
+        .run(0, move |context| {
+            let prompt = "<|vision_start|><|image_pad|><|vision_end|>describe";
+            let gpu_result = gpu.prepare_resolved(
+                &assets,
+                prompt,
+                from_ref(&request),
+                &[None],
+                Some(&options),
+                context,
+            )?;
+            let host_result = host.prepare_resolved(
+                &assets,
+                prompt,
+                from_ref(&request),
+                &[None],
+                Some(&options),
+                context,
+            )?;
+            let resized =
+                gpu.prepare_resolved(&assets, prompt, from_ref(&request), &[None], None, context)?;
+            Ok((gpu_result, host_result, resized))
+        })
+        .await
+        .unwrap();
+    assert_eq!(gpu.0, host.0);
+    assert_eq!(gpu.1[0].content_digest, host.1[0].content_digest);
+    assert_ne!(gpu.1[0].content_digest, resized.1[0].content_digest);
+    let device = gpu.1[0].item.as_ref().unwrap();
+    let cpu = host.1[0].item.as_ref().unwrap();
+    assert_eq!(device.grid, (1, 4, 6));
+    assert_eq!(device.grid, cpu.grid);
+    assert_eq!(device.span, cpu.span);
+    assert_ne!(device.grid, resized.1[0].item.as_ref().unwrap().grid);
+    assert!(matches!(&device.pixels, MediaPixels::Image(_)));
+    assert!(matches!(&cpu.pixels, MediaPixels::Patches(_)));
+}
 
 fn noisy_image(width: u32, height: u32) -> image::RgbImage {
     let mut image = image::RgbImage::new(width, height);
@@ -188,6 +349,7 @@ async fn prepared_images_preserve_order_and_source_identity() {
                 prompt,
                 &remote_requests,
                 &downloads,
+                None,
                 context,
             )?;
             Ok((tokens, media, direct, direct_media))
@@ -391,8 +553,13 @@ fn limits_are_per_modality_and_all_zero_is_text_only() {
     let limits = MediaLimits::default();
     assert!(!limits.text_only());
     assert!(limits.check(&Modality::Image, 1).is_ok());
-    assert!(limits.check(&Modality::Image, 5).is_err());
+    assert!(limits.check(&Modality::Image, 64).is_ok());
     assert!(limits.check(&Modality::Video, 2).is_err());
+    let configured = MediaLimits {
+        images: 2,
+        ..limits
+    };
+    assert!(configured.check(&Modality::Image, 3).is_err());
     let text_only = MediaLimits {
         images: 0,
         videos: 0,

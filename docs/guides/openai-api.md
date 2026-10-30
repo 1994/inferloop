@@ -41,6 +41,7 @@
 | `tools` | 仅 chat，至多 128 个 function 工具，名称唯一，1..64 个 ASCII 字母、数字、下划线或短横线 |
 | `tool_choice` | `"none"`、`"auto"`、`"required"` 或指定 function；指定未声明的 function、缺少工具的 required 或错误的 type 返回 400 |
 | `parallel_tool_calls` | 默认 `true`；`false` 通过生成约束限制至多一次调用 |
+| `mm_processor_kwargs` | 仅 chat 的图片输入；支持 resize 和像素范围选项，见[视觉服务路径](vision.md#服务路径) |
 
 可选字段允许为 `null`，按未提供处理。服务已读取包内 `generation_config.json`，并从 generation config / model config 解析 EOS；识别到的模型还会应用模式预设，显式请求字段最后覆盖。模型包配置了 EOS 时会参与停止判断，未配置时不凭空增加 EOS。请求级 `eos_token` 覆盖使用原生 API。
 
@@ -68,7 +69,7 @@ assistant 消息可以带 `tool_calls`（`null` 按空列表处理），每项�
 
 不要把当前输出默认 16 当作上下文上限，也不要假设省略采样参数一定得到 greedy。
 
-不支持的字段（如 `stop`、`response_format`、`logprobs`）与多模态 content 会被拒绝，不会静默忽略。Responses、Embeddings、鉴权、服务端存储均未实现。
+不支持的字段（如 `stop`、`response_format`、`logprobs`）会被拒绝，不会静默忽略。多模态输入的范围见[视觉服务路径](vision.md#服务路径)。Responses、Embeddings、鉴权、服务端存储均未实现。
 
 ## 决策
 

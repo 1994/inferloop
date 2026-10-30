@@ -68,7 +68,7 @@ fn repeated_media_reservations_do_not_accumulate_transient_bytes() -> infer_core
         prompt: TokenBuffer::from(vec![0; rows]),
         items: vec![MediaItem {
             modality: Modality::Image,
-            pixels: Arc::from(vec![0.0; GRID_SIDE * GRID_SIDE * patch_width]),
+            pixels: vec![0.0; GRID_SIDE * GRID_SIDE * patch_width].into(),
             grid: (1, GRID_SIDE, GRID_SIDE),
             span: 0..rows,
         }],

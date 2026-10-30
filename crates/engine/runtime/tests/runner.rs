@@ -1153,7 +1153,7 @@ fn media_request_requires_a_multimodal_backend() -> Result<()> {
         content_digest: "fixture".into(),
         item: Some(MediaItem {
             modality: Modality::Image,
-            pixels: Arc::from([0.0f32, 1.0, 2.0, 3.0]),
+            pixels: Arc::<[f32]>::from([0.0f32, 1.0, 2.0, 3.0]).into(),
             grid: (1, 1, 1),
             span: 0..1,
         }),
@@ -1200,7 +1200,7 @@ fn prepared_media_reaches_the_scheduler_and_backend() -> Result<()> {
         content_digest: "fixture".into(),
         item: Some(MediaItem {
             modality: Modality::Image,
-            pixels: Arc::from([0.0f32, 1.0, 2.0, 3.0]),
+            pixels: Arc::<[f32]>::from([0.0f32, 1.0, 2.0, 3.0]).into(),
             grid: (1, 1, 1),
             span: 0..1,
         }),
@@ -1258,7 +1258,7 @@ fn automatic_mtp_is_disabled_for_media_instead_of_rejecting_it() -> Result<()> {
         content_digest: "fixture".into(),
         item: Some(MediaItem {
             modality: Modality::Image,
-            pixels: Arc::from([0.0f32, 1.0, 2.0, 3.0]),
+            pixels: Arc::<[f32]>::from([0.0f32, 1.0, 2.0, 3.0]).into(),
             grid: (1, 1, 1),
             span: 0..1,
         }),
@@ -1322,7 +1322,7 @@ fn threaded_media_request_uses_the_media_quote_command() -> Result<()> {
         content_digest: "fixture".into(),
         item: Some(MediaItem {
             modality: Modality::Image,
-            pixels: Arc::from([0.0f32, 1.0, 2.0, 3.0]),
+            pixels: Arc::<[f32]>::from([0.0f32, 1.0, 2.0, 3.0]).into(),
             grid: (1, 1, 1),
             span: 0..1,
         }),

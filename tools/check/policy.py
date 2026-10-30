@@ -135,6 +135,9 @@ def check_exceptions():
                         # Gather boundary validates every tap, shape and table address before
                         # recording and retains all device owners until completion.
                         ROOT / "crates/backend/cuda/src/device/vision_position.rs",
+                        # RGB8 PTX boundary checks all tensor extents and retains the source,
+                        # coefficient tables, intermediate, output and modules until the fence.
+                        ROOT / "crates/backend/cuda/src/device/image_preprocess/launch.rs",
                         ROOT / "crates/backend/cuda/src/device/cublaslt.rs",
                         ROOT / "crates/backend/cuda/src/device/vendor_fp8.rs",
                         # FP4 extension of the Lt ABI: checked complete extents, exact output

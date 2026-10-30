@@ -40,6 +40,7 @@ struct Encoding {
     messages: Option<Vec<infer_models::ChatMessage>>,
     media_requests: Vec<MediaRequest>,
     media: Option<Arc<MediaService>>,
+    image_options: Option<crate::ImageProcessingOptions>,
     prompt: Option<String>,
     tools: Option<Value>,
     enable_thinking: bool,
@@ -85,6 +86,7 @@ impl Encoding {
                     &rendered,
                     &self.media_requests,
                     downloads,
+                    self.image_options.as_ref(),
                     context,
                 )?;
                 (tokens, inputs)
@@ -244,6 +246,7 @@ pub(super) async fn prepare(
         messages,
         media_requests,
         media: state.media.clone(),
+        image_options: request.mm_processor_kwargs.take(),
         prompt,
         tools,
         enable_thinking,

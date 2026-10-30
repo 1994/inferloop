@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 /// Largest accepted package metadata file.
 const METADATA_MAX_BYTES: u64 = 16 * 1024 * 1024;
-/// Default per-prompt image limit.
-const DEFAULT_IMAGE_LIMIT: usize = 2;
+/// Images are unrestricted by default; an explicit per-prompt limit is still honored.
+const DEFAULT_IMAGE_LIMIT: usize = usize::MAX;
 /// Default per-prompt video limit.
 const DEFAULT_VIDEO_LIMIT: usize = 1;
 
@@ -42,10 +42,10 @@ impl MediaLimits {
         self.images == 0 && self.videos == 0
     }
     /// # Errors
-    /// Rejects a zero limit for one modality while the other remains enabled.
+    /// Rejects an unbounded video limit; images may be unlimited by default.
     pub fn validate(self) -> Result<()> {
-        if self.images == usize::MAX || self.videos == usize::MAX {
-            return Err(Error::invalid("media limit is unbounded"));
+        if self.videos == usize::MAX {
+            return Err(Error::invalid("video limit is unbounded"));
         }
         Ok(())
     }
