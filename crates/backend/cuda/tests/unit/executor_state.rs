@@ -81,7 +81,7 @@ fn repeated_media_reservations_do_not_accumulate_transient_bytes() -> infer_core
     for id in 1..=REUSES {
         let state = StateId::new(id)?;
         executor.reserve_media(state, 128, OutputReadout::Logits, &plan)?;
-        let tensor = Arc::new(executor.loaded.device().upload(vec![0.0_f32], &[1])?);
+        let tensor = executor.loaded.device().upload(vec![0.0_f32], &[1])?;
         let reader = Arc::downgrade(&tensor);
         executor
             .states
