@@ -22,6 +22,10 @@ use cutile::cuda_async::device_future::DeviceFuture;
 use cutile::jit_cache::enable_default;
 use cutile::prelude::*;
 use infer_core::{Error as InferError, ErrorCode, Result};
+use infer_cuda_kernels::contract::DevicePtr;
+use infer_cuda_kernels::contract::LinearPlan;
+use infer_cuda_kernels::contract::Projection;
+use infer_cuda_kernels::tile::projection::TileProjection;
 use serde::Serialize;
 use std::fmt::Display;
 use std::ptr::{null, null_mut};
@@ -180,6 +184,7 @@ pub(crate) use readback::{ReadbackSource, Readbacks};
 #[derive(Clone)]
 pub struct CudaDevice {
     pub(crate) stream: Arc<cuda_core::Stream>,
+    projection: Arc<dyn Projection>,
     target: CudaTarget,
     profile: Arc<OnceLock<DeviceProfile>>,
     ordinal: usize,
@@ -201,8 +206,11 @@ impl CudaDevice {
     pub fn new(ordinal: usize) -> Result<Self> {
         let device = Device::new(ordinal).map_err(device_error)?;
         let target = query_target(&device)?;
+        let stream = device.new_stream().map_err(device_error)?;
+        let projection = TileProjection::shared(device, stream.clone());
         Ok(Self {
-            stream: device.new_stream().map_err(device_error)?,
+            stream,
+            projection,
             target,
             profile: Arc::new(OnceLock::new()),
             ordinal,
@@ -261,10 +269,31 @@ impl CudaDevice {
     ) -> Result<Arc<Tensor<f32>>> {
         let (rows, columns) = dimensions(&x, &w)?;
         let block = columns.min(tiling.columns()).next_power_of_two();
+        let dtype = T::DTYPE.as_str();
+        if matches!(dtype, "bf16" | "f32" | "f8e4m3fn") {
+            let out = api::zeros::<f32>(&[rows])
+                .sync_on(&self.stream)
+                .map_err(device_error)?;
+            let plan = LinearPlan {
+                rows,
+                columns,
+                block,
+                tile_rows: tiling.rows(),
+            };
+            let out_ptr = DevicePtr(out.device_pointer().cu_deviceptr());
+            let x_ptr = DevicePtr(x.device_pointer().cu_deviceptr());
+            let w_ptr = DevicePtr(w.device_pointer().cu_deviceptr());
+            match dtype {
+                "bf16" => self.projection.dense_bf16(&plan, out_ptr, x_ptr, w_ptr)?,
+                "f32" => self.projection.dense_f32(&plan, out_ptr, x_ptr, w_ptr)?,
+                _ => self.projection.dense_fp8(&plan, out_ptr, x_ptr, w_ptr)?,
+            }
+            return Ok(Arc::new(out));
+        }
         let out = api::zeros::<f32>(&[rows]).partition([tiling.rows()]);
         dense(out, x, w)
             .generics(vec![
-                T::DTYPE.as_str().into(),
+                dtype.into(),
                 tiling.rows().to_string(),
                 block.to_string(),
                 columns.to_string(),
