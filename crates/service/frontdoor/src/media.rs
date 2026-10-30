@@ -11,7 +11,7 @@ use infer_ir::{MediaInput, MediaItem, Modality};
 use infer_media_input::{decode_data_uri, decode_rgb8};
 use infer_models::{
     ImageProcessor, MediaLimits, MultimodalAssets, PreparedPrompt, RawImage, RawVideo, RgbImage,
-    TextAssets,
+    SharedPreparedPrompt, TextAssets,
 };
 use sha2::{Digest, Sha256};
 use std::env::temp_dir;
@@ -141,7 +141,7 @@ impl MediaService {
         requests: &[MediaRequest],
         downloads: &[Option<Vec<u8>>],
         context: &CpuContext,
-    ) -> Result<(PreparedPrompt, Vec<MediaInput>)> {
+    ) -> Result<(Vec<u32>, Vec<MediaInput>)> {
         if downloads.len() != requests.len()
             || requests.iter().zip(downloads).any(|(request, bytes)| {
                 (request.url.starts_with("http://") || request.url.starts_with("https://"))
@@ -150,17 +150,18 @@ impl MediaService {
         {
             return Err(Error::invariant("remote media sources were not resolved"));
         }
-        self.prepare_inner(assets, prompt, requests, Some(downloads), context)
+        if self.validate_requests(requests)? == Modality::Image {
+            let (images, sources) = self.load_images(requests, Some(downloads), context)?;
+            let prepared = self.assets.prepare_images_shared(assets, prompt, &images)?;
+            self.shared_image_inputs(prepared, sources)
+        } else {
+            let (prepared, media) =
+                self.prepare_inner(assets, prompt, requests, Some(downloads), context)?;
+            Ok((prepared.tokens, media))
+        }
     }
 
-    fn prepare_inner(
-        &self,
-        assets: &TextAssets,
-        prompt: &str,
-        requests: &[MediaRequest],
-        downloads: Option<&[Option<Vec<u8>>]>,
-        context: &CpuContext,
-    ) -> Result<(PreparedPrompt, Vec<MediaInput>)> {
+    fn validate_requests(&self, requests: &[MediaRequest]) -> Result<Modality> {
         if requests.is_empty() {
             return Err(Error::invalid("media preparation needs at least one item"));
         }
@@ -175,20 +176,87 @@ impl MediaService {
             ));
         }
         self.limits.check(&modality, requests.len())?;
+        Ok(modality)
+    }
+
+    fn load_images(
+        &self,
+        requests: &[MediaRequest],
+        downloads: Option<&[Option<Vec<u8>>]>,
+        context: &CpuContext,
+    ) -> Result<(Vec<RawImage>, Vec<SourceDigest>)> {
+        let decoded = requests
+            .iter()
+            .enumerate()
+            .map(|(index, request)| {
+                let bytes = downloads.and_then(|values| values[index].as_deref());
+                bytes.map_or_else(
+                    || load_image_with(&request.url, self.source, Some(context)),
+                    |bytes| load_image_bytes(bytes, Some(context)),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(decoded.into_iter().unzip())
+    }
+
+    fn shared_image_inputs(
+        &self,
+        prepared: SharedPreparedPrompt,
+        sources: Vec<SourceDigest>,
+    ) -> Result<(Vec<u32>, Vec<MediaInput>)> {
+        if prepared.images.is_empty() || prepared.images.len() != prepared.spans.len() {
+            return Err(Error::invalid(
+                "prepared media is empty or has inconsistent spans",
+            ));
+        }
+        if sources.len() != prepared.images.len() {
+            return Err(Error::invariant(
+                "image source identities do not match prepared images",
+            ));
+        }
+        tracing::debug!(target: "infer::media", prompt_tokens = prepared.tokens.len(), tokens = ?prepared.tokens,
+            spans = ?prepared.spans, grids = ?prepared.images.iter().map(|image| image.grid).collect::<Vec<_>>(),
+            "prepared HTTP media");
+        let mut media = Vec::with_capacity(prepared.images.len());
+        for (index, ((image, span), source)) in prepared
+            .images
+            .into_iter()
+            .zip(prepared.spans)
+            .zip(sources)
+            .enumerate()
+        {
+            let id = u64::try_from(index)
+                .ok()
+                .and_then(|value| value.checked_add(1))
+                .ok_or_else(|| Error::invalid("media identity overflow"))?;
+            let item = MediaItem {
+                modality: Modality::Image,
+                pixels: image.pixels,
+                grid: image.grid,
+                span,
+            };
+            media.push(MediaInput {
+                id: MediaId::new(id)?,
+                modality: Modality::Image,
+                content_digest: image_digest(source, self.assets.image_processor())?,
+                item: Some(item),
+            });
+        }
+        Ok((prepared.tokens, media))
+    }
+
+    fn prepare_inner(
+        &self,
+        assets: &TextAssets,
+        prompt: &str,
+        requests: &[MediaRequest],
+        downloads: Option<&[Option<Vec<u8>>]>,
+        context: &CpuContext,
+    ) -> Result<(PreparedPrompt, Vec<MediaInput>)> {
+        let modality = self.validate_requests(requests)?;
         let (prepared, image_sources) = match modality {
             Modality::Image => {
-                let decoded = requests
-                    .iter()
-                    .enumerate()
-                    .map(|(index, request)| {
-                        let bytes = downloads.and_then(|values| values[index].as_deref());
-                        bytes.map_or_else(
-                            || load_image_with(&request.url, self.source, Some(context)),
-                            |bytes| load_image_bytes(bytes, Some(context)),
-                        )
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                let (images, sources): (Vec<_>, Vec<_>) = decoded.into_iter().unzip();
+                let (images, sources) = self.load_images(requests, downloads, context)?;
                 (
                     self.assets.prepare_images(assets, prompt, &images)?,
                     sources,

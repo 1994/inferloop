@@ -80,14 +80,14 @@ impl Encoding {
                     .media
                     .as_ref()
                     .ok_or_else(|| Error::unsupported("this deployment is text-only"))?;
-                let (prepared, inputs) = media.prepare_resolved(
+                let (tokens, inputs) = media.prepare_resolved(
                     &self.assets,
                     &rendered,
                     &self.media_requests,
                     downloads,
                     context,
                 )?;
-                (prepared.tokens, inputs)
+                (tokens, inputs)
             }
         } else {
             (

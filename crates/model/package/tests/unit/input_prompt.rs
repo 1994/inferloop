@@ -93,14 +93,37 @@ fn prepared_prompt_lines_up_tokens_and_media() -> Result<()> {
         from_ref(&image),
         &Modality::Image,
     )?;
+    let shared = prepare_shared(
+        &assets,
+        &processor,
+        &imported,
+        text,
+        from_ref(&image),
+        &Modality::Image,
+    )?;
+    assert_eq!(shared.tokens, prepared.tokens);
+    assert_eq!(shared.spans, prepared.spans);
+    assert_eq!(shared.images[0].grid, prepared.images[0].grid);
+    assert_eq!(&*shared.images[0].pixels, prepared.images[0].pixels);
+    let image_token = *placeholders(&imported, &Modality::Image)?
+        .first()
+        .ok_or_else(|| Error::invalid("image placeholder is missing"))?;
     assert_eq!(prepared.images.len(), 1);
     assert_eq!(prepared.spans.len(), 1);
     let span = prepared.spans[0].clone();
     let (start, end) = (span.start, span.end);
-    assert!(prepared.tokens[start..end].iter().all(|id| *id == IMAGE));
+    assert!(
+        prepared.tokens[start..end]
+            .iter()
+            .all(|id| *id == image_token)
+    );
     // The placeholder itself is gone; only the expanded run remains.
     assert_eq!(
-        prepared.tokens.iter().filter(|id| **id == IMAGE).count(),
+        prepared
+            .tokens
+            .iter()
+            .filter(|id| **id == image_token)
+            .count(),
         span.len()
     );
     let text_only = prepare(

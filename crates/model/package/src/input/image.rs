@@ -6,6 +6,8 @@
 //! `[channel, temporal, patch, patch]` vector the patch-embed projection consumes.
 use super::image_resize;
 use infer_core::{Error, Result};
+use std::iter::repeat_n;
+use std::sync::Arc;
 
 /// Channels of the RGB images the processor accepts.
 pub(crate) const RGB_CHANNELS: usize = 3;
@@ -80,6 +82,15 @@ pub struct PreprocessedImage {
     pub grid: (usize, usize, usize),
 }
 
+/// Image patches in a shared buffer suitable for a request handed to a backend.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SharedPreprocessedImage {
+    /// `patches × channels × temporal × patch × patch`, in spatial-merge-block order.
+    pub pixels: Arc<[f32]>,
+    /// `(temporal, height, width)` patch grid.
+    pub grid: (usize, usize, usize),
+}
+
 /// Per-channel normalization applied to a rescaled RGB value.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Normalization {
@@ -144,7 +155,11 @@ pub(crate) fn patchify<T: Copy + Into<f32>>(
 }
 
 /// Normalize byte frames using a per-channel table, preserving the same scalar rounding.
-fn patchify_rgb8(frames: &[&[u8]], grid: PatchGrid, norm: &Normalization) -> Result<Vec<f32>> {
+fn patchify_rgb8<O: PatchOutput>(
+    frames: &[&[u8]],
+    grid: PatchGrid,
+    norm: &Normalization,
+) -> Result<O> {
     let mut table = [[0.0; BYTE_VALUES]; RGB_CHANNELS];
     for value in u8::MIN..=u8::MAX {
         for (channel, channel_values) in table.iter_mut().enumerate() {
@@ -156,11 +171,63 @@ fn patchify_rgb8(frames: &[&[u8]], grid: PatchGrid, norm: &Normalization) -> Res
     })
 }
 
-fn patchify_with<T: Copy>(
+trait PatchOutput: Sized {
+    fn build<T: Copy>(
+        frames: &[&[T]],
+        grid: PatchGrid,
+        convert: impl Fn(T, usize) -> f32,
+    ) -> Result<Self>;
+}
+
+impl PatchOutput for Vec<f32> {
+    fn build<T: Copy>(
+        frames: &[&[T]],
+        grid: PatchGrid,
+        convert: impl Fn(T, usize) -> f32,
+    ) -> Result<Self> {
+        let (width, elements) = patch_shape(frames, grid)?;
+        let mut pixels = Self::with_capacity(elements);
+        visit_patches(frames, grid, width, convert, |value| pixels.push(value));
+        Ok(pixels)
+    }
+}
+
+impl PatchOutput for Arc<[f32]> {
+    fn build<T: Copy>(
+        frames: &[&[T]],
+        grid: PatchGrid,
+        convert: impl Fn(T, usize) -> f32,
+    ) -> Result<Self> {
+        let (width, elements) = patch_shape(frames, grid)?;
+        // A known-length iterator allocates the Arc slice directly, avoiding a second full buffer.
+        let mut pixels: Self = repeat_n(0.0, elements).collect();
+        let buffer = Self::get_mut(&mut pixels)
+            .ok_or_else(|| Error::invariant("new image patch buffer is shared"))?;
+        let mut slots = buffer.iter_mut();
+        let mut overflow = false;
+        visit_patches(frames, grid, width, convert, |value| {
+            if let Some(slot) = slots.next() {
+                *slot = value;
+            } else {
+                overflow = true;
+            }
+        });
+        if overflow || slots.next().is_some() {
+            return Err(Error::invariant("image patch output length changed"));
+        }
+        Ok(pixels)
+    }
+}
+
+fn patchify_with<T: Copy, O: PatchOutput>(
     frames: &[&[T]],
     grid: PatchGrid,
     convert: impl Fn(T, usize) -> f32,
-) -> Result<Vec<f32>> {
+) -> Result<O> {
+    O::build(frames, grid, convert)
+}
+
+fn patch_shape<T>(frames: &[&[T]], grid: PatchGrid) -> Result<(usize, usize)> {
     let resized_height = grid
         .height
         .checked_mul(grid.patch)
@@ -206,11 +273,24 @@ fn patchify_with<T: Copy>(
         .checked_mul(grid.height)
         .and_then(|value| value.checked_mul(grid.width))
         .ok_or_else(|| Error::invalid("patch count overflow"))?;
-    let mut pixels = Vec::with_capacity(
-        patches
-            .checked_mul(patch_width)
-            .ok_or_else(|| Error::invalid("patch vector overflow"))?,
-    );
+    let elements = patches
+        .checked_mul(patch_width)
+        .filter(|elements| {
+            elements
+                .checked_mul(size_of::<f32>())
+                .is_some_and(|bytes| isize::try_from(bytes).is_ok())
+        })
+        .ok_or_else(|| Error::invalid("patch vector overflow"))?;
+    Ok((resized_width, elements))
+}
+
+fn visit_patches<T: Copy>(
+    frames: &[&[T]],
+    grid: PatchGrid,
+    resized_width: usize,
+    convert: impl Fn(T, usize) -> f32,
+    mut emit: impl FnMut(f32),
+) {
     for group in 0..grid.groups {
         for block_row in 0..grid.height / grid.merge {
             for block_col in 0..grid.width / grid.merge {
@@ -227,7 +307,7 @@ fn patchify_with<T: Copy>(
                                         let x = col * grid.patch + patch_col;
                                         let value =
                                             frame[(y * resized_width + x) * RGB_CHANNELS + channel];
-                                        pixels.push(convert(value, channel));
+                                        emit(convert(value, channel));
                                     }
                                 }
                             }
@@ -237,7 +317,6 @@ fn patchify_with<T: Copy>(
             }
         }
     }
-    Ok(pixels)
 }
 
 impl ImageProcessor {
@@ -354,12 +433,41 @@ impl ImageProcessor {
         self.preprocess_rgb(image.height, image.width, &image.pixels)
     }
 
+    /// Preprocess one image directly into a shared patch buffer.
+    ///
+    /// The returned buffer is owned by the caller and can be retained across backend handoffs.
+    /// # Errors
+    /// Rejects malformed image buffers or geometry that does not tile by the patch grid.
+    pub fn preprocess_shared(&self, image: &RgbImage) -> Result<SharedPreprocessedImage> {
+        self.preprocess_rgb_shared(image.height, image.width, &image.pixels)
+    }
+
     pub(super) fn preprocess_rgb(
         &self,
         height: usize,
         width: usize,
         pixels: &[u8],
     ) -> Result<PreprocessedImage> {
+        let (pixels, grid) = self.preprocess_rgb_to(height, width, pixels)?;
+        Ok(PreprocessedImage { pixels, grid })
+    }
+
+    pub(super) fn preprocess_rgb_shared(
+        &self,
+        height: usize,
+        width: usize,
+        pixels: &[u8],
+    ) -> Result<SharedPreprocessedImage> {
+        let (pixels, grid) = self.preprocess_rgb_to(height, width, pixels)?;
+        Ok(SharedPreprocessedImage { pixels, grid })
+    }
+
+    fn preprocess_rgb_to<O: PatchOutput>(
+        &self,
+        height: usize,
+        width: usize,
+        pixels: &[u8],
+    ) -> Result<(O, (usize, usize, usize))> {
         let expected = height
             .checked_mul(width)
             .and_then(|value| value.checked_mul(RGB_CHANNELS))
@@ -401,12 +509,9 @@ impl ImageProcessor {
         } else {
             let resized = Self::resize_pixels(pixels, height, width, resized_height, resized_width);
             let frames = vec![resized.as_slice(); self.temporal_patch_size];
-            patchify(&frames, grid, &norm)?
+            patchify_with(&frames, grid, |value, channel| norm.apply(value, channel))?
         };
-        Ok(PreprocessedImage {
-            pixels,
-            grid: (1, grid_h, grid_w),
-        })
+        Ok((pixels, (1, grid_h, grid_w)))
     }
 
     fn fast_resize_supported(

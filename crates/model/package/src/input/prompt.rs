@@ -5,7 +5,7 @@
 //! embeddings line up one-to-one. Every mismatch is an error: a prompt that cannot be aligned
 //! with its media must never fall back to the text-only path.
 use crate::image::ImageProcessor;
-use crate::image::PreprocessedImage;
+use crate::image::{PreprocessedImage, SharedPreprocessedImage};
 use crate::input::text::TextAssets;
 use crate::mrope::ROTARY_AXES;
 use crate::mrope::image_positions;
@@ -370,6 +370,17 @@ pub struct PreparedPrompt {
     pub spans: Vec<Range<usize>>,
 }
 
+/// An image prompt whose patch buffers can be shared without copying.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SharedPreparedPrompt {
+    /// Token stream the model consumes.
+    pub tokens: Vec<u32>,
+    /// Shared preprocessed images, in placeholder order.
+    pub images: Vec<SharedPreprocessedImage>,
+    /// Token range each image's embeddings replace, in the same order.
+    pub spans: Vec<Range<usize>>,
+}
+
 /// Tokenize `text`, preprocess `images` and expand every placeholder.
 ///
 /// Text-only prompts take the ordinary path. A prompt carrying media fails loudly when the model
@@ -387,10 +398,63 @@ pub fn prepare(
     images: &[RawImage],
     modality: &Modality,
 ) -> Result<PreparedPrompt> {
+    let prepared = prepare_with(assets, imported, text, images, modality, |image| {
+        let processed = processor.preprocess_rgb(image.height, image.width, &image.pixels)?;
+        let grid = processed.grid;
+        Ok((PromptImage::new(processed), grid))
+    })?;
+    Ok(PreparedPrompt {
+        tokens: prepared.tokens,
+        images: prepared.images,
+        spans: prepared.spans,
+    })
+}
+
+/// Tokenize an image prompt and preprocess directly into shared patch buffers.
+///
+/// The result owns the buffers and can hand them to a backend without copying their elements.
+/// # Errors
+/// Rejects a missing encoder or placeholder, a placeholder/media mismatch, malformed image buffers
+/// or a preprocessing failure.
+pub fn prepare_shared(
+    assets: &TextAssets,
+    processor: &ImageProcessor,
+    imported: &ImportedModel,
+    text: &str,
+    images: &[RawImage],
+    modality: &Modality,
+) -> Result<SharedPreparedPrompt> {
+    let prepared = prepare_with(assets, imported, text, images, modality, |image| {
+        let processed =
+            processor.preprocess_rgb_shared(image.height, image.width, &image.pixels)?;
+        let grid = processed.grid;
+        Ok((processed, grid))
+    })?;
+    Ok(SharedPreparedPrompt {
+        tokens: prepared.tokens,
+        images: prepared.images,
+        spans: prepared.spans,
+    })
+}
+
+struct PreparedImages<T> {
+    tokens: Vec<u32>,
+    images: Vec<T>,
+    spans: Vec<Range<usize>>,
+}
+
+fn prepare_with<T>(
+    assets: &TextAssets,
+    imported: &ImportedModel,
+    text: &str,
+    images: &[RawImage],
+    modality: &Modality,
+    preprocess: impl Fn(&RawImage) -> Result<(T, (usize, usize, usize))>,
+) -> Result<PreparedImages<T>> {
     let tokens = assets.encode(text, false)?;
     reject_foreign_placeholders(imported, &tokens, modality)?;
     if images.is_empty() {
-        return Ok(PreparedPrompt {
+        return Ok(PreparedImages {
             tokens,
             images: Vec::new(),
             spans: Vec::new(),
@@ -403,12 +467,12 @@ pub fn prepare(
     let mut prepared = Vec::with_capacity(images.len());
     let mut counts = Vec::with_capacity(images.len());
     for image in images {
-        let processed = processor.preprocess_rgb(image.height, image.width, &image.pixels)?;
-        counts.push(visual_tokens(processed.grid, encoder)?);
-        prepared.push(PromptImage::new(processed));
+        let (processed, grid) = preprocess(image)?;
+        counts.push(visual_tokens(grid, encoder)?);
+        prepared.push(processed);
     }
     let expanded = expand_placeholders(&tokens, &counts, placeholder)?;
-    Ok(PreparedPrompt {
+    Ok(PreparedImages {
         tokens: expanded.tokens,
         images: prepared,
         spans: expanded.spans,
