@@ -44,6 +44,8 @@ const MAX_VIDEO_FRAMES: usize = 768;
 const READ_CHUNK_BYTES: usize = 64 * 1024;
 /// Check cancellation between source-hash chunks, including for large input files.
 const HASH_CHUNK_BYTES: usize = 64 * 1024;
+/// SHA-256 produces 256-bit source identities.
+const SOURCE_DIGEST_BYTES: usize = 32;
 /// Identity namespace for the CPU image decoder and preprocessing contract.
 const IMAGE_IDENTITY_DOMAIN: &[u8] = b"inferloop-image-source-cpu-v1\0";
 /// Largest accepted URL or data-URI text.
@@ -90,7 +92,7 @@ pub enum SourcePolicy {
 }
 
 #[derive(Clone, Copy)]
-struct SourceDigest([u8; 32]);
+struct SourceDigest([u8; SOURCE_DIGEST_BYTES]);
 
 /// One media reference parsed from an `OpenAI` content part.
 #[derive(Debug, Clone, PartialEq, Eq)]
