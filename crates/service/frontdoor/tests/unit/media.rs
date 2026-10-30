@@ -67,6 +67,41 @@ async fn image_preparation_follows_backend_capability() {
     assert!(matches!(&host_item.pixels, MediaPixels::Patches(_)));
 }
 
+#[tokio::test]
+#[ignore = "requires a real Qwen3-VL package in INFER_VISION_PACKAGE"]
+async fn default_image_limit_accepts_multiple_images_in_one_prompt() {
+    let package = PathBuf::from(var("INFER_VISION_PACKAGE").unwrap());
+    let assets = TextAssets::open(&package, 8192).unwrap();
+    let multimodal = MultimodalAssets::open(&package).unwrap().unwrap();
+    let service = MediaService::new(multimodal, MediaLimits::default())
+        .with_image_preprocessing(Arc::new(TestImageCapability(true)));
+    let requests = (0..3)
+        .map(|_| MediaRequest {
+            modality: Modality::Image,
+            url: format!("data:image/png;base64,{ONE_PIXEL_PNG}"),
+        })
+        .collect::<Vec<_>>();
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 2,
+        ..CpuConfig::default()
+    })
+    .unwrap();
+    let (tokens, inputs) = pool
+        .run(0, move |context| {
+            let prompt = "<|vision_start|><|image_pad|><|vision_end|>".repeat(requests.len());
+            service.prepare_resolved(&assets, &prompt, &requests, &[None, None, None], context)
+        })
+        .await
+        .unwrap();
+    assert_eq!(inputs.len(), 3);
+    for input in inputs {
+        let item = input.item.unwrap();
+        assert!(item.span.start < item.span.end && item.span.end <= tokens.len());
+        assert!(matches!(item.pixels, MediaPixels::Image(_)));
+    }
+}
+
 fn noisy_image(width: u32, height: u32) -> image::RgbImage {
     let mut image = image::RgbImage::new(width, height);
     let mut state = 0x1234_5678_u32;
@@ -441,8 +476,13 @@ fn limits_are_per_modality_and_all_zero_is_text_only() {
     let limits = MediaLimits::default();
     assert!(!limits.text_only());
     assert!(limits.check(&Modality::Image, 1).is_ok());
-    assert!(limits.check(&Modality::Image, 5).is_err());
+    assert!(limits.check(&Modality::Image, 64).is_ok());
     assert!(limits.check(&Modality::Video, 2).is_err());
+    let configured = MediaLimits {
+        images: 2,
+        ..limits
+    };
+    assert!(configured.check(&Modality::Image, 3).is_err());
     let text_only = MediaLimits {
         images: 0,
         videos: 0,
