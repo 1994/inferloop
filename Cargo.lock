@@ -1544,7 +1544,9 @@ dependencies = [
 name = "infer-cuda-kernels"
 version = "0.1.0"
 dependencies = [
+ "cuda-core",
  "cutile",
+ "infer-core",
 ]
 
 [[package]]

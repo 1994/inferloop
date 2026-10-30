@@ -12,5 +12,7 @@
 #[cfg(all(feature = "tile", feature = "aot"))]
 compile_error!("tile and aot are mutually exclusive kernel profiles");
 
+pub mod contract;
+
 #[cfg(feature = "tile")]
 pub mod tile;

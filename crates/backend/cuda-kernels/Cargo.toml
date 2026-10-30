@@ -14,8 +14,12 @@ workspace = true
 
 [features]
 default = []
-tile = ["dep:cutile"]
+tile = ["dep:cutile", "dep:cuda-core"]
 aot = []
+
+[dependencies]
+infer-core.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 cutile = { workspace = true, optional = true }
+cuda-core = { workspace = true, optional = true }

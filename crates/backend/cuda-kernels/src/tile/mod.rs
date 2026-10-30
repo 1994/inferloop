@@ -22,6 +22,7 @@ mod pdl_kernels;
 mod pool_gemv_kernels;
 mod pooled_device_kernels;
 mod prefill_gemm_kernels;
+pub mod projection;
 mod prompt_logits_kernels;
 mod recurrent_checkpoint_kernels;
 mod recurrent_chunk_kernels;
