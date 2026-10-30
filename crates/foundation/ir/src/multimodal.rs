@@ -30,6 +30,9 @@ pub struct MediaItem {
 pub struct MediaInput {
     pub id: MediaId,
     pub modality: Modality,
+    /// Opaque, versioned content identity; consumers must not assume a specific hash algorithm.
+    /// Image identities include the source and preprocessing configuration, and are not a
+    /// replacement for model, backend, revision, or precision compatibility checks.
     pub content_digest: String,
     /// Bounded prepared payload; retained until the request's device frame completes.
     #[serde(skip)]
