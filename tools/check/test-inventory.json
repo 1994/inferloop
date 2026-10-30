@@ -40,7 +40,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 116
+      "tests": 121
     },
     "ir": {
       "benches": 0,
@@ -1371,6 +1371,11 @@
     },
     {
       "crate": "frontdoor",
+      "file": "src/cpu/queue.rs",
+      "mount": "../../tests/unit/cpu_queue.rs"
+    },
+    {
+      "crate": "frontdoor",
       "file": "src/http/mod.rs",
       "mount": "../../tests/unit/http.rs"
     },
@@ -1446,11 +1451,11 @@
     }
   ],
   "totals": {
-    "all": 1053,
+    "all": 1058,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1053
+    "tests": 1058
   }
 }

@@ -1,4 +1,7 @@
 //! Fixed CPU workers with queue bounds and cancellable asynchronous replies.
+mod queue;
+
+use self::queue::{WorkQueue, WorkSender};
 use infer_core::placement::ThreadPlacement;
 use infer_core::{Error, ErrorCode, Result};
 use serde::{Deserialize, Serialize};
@@ -8,7 +11,7 @@ use std::panic::catch_unwind;
 use std::thread::available_parallelism;
 use std::{
     sync::Arc, sync::Mutex, sync::atomic::AtomicBool, sync::atomic::AtomicUsize,
-    sync::atomic::Ordering, sync::mpsc, time::Duration, time::Instant,
+    sync::atomic::Ordering, time::Duration, time::Instant,
 };
 use tokio::runtime::Handle;
 use tokio::sync::oneshot;
@@ -146,10 +149,10 @@ impl Drop for CancelOnDrop {
         self.0.store(true, Ordering::Release);
     }
 }
-type Job = Box<dyn FnOnce() + Send>;
+type Job = Box<dyn FnOnce(&dyn Fn() -> Result<()>) + Send>;
 #[derive(Clone)]
 pub struct CpuPool {
-    jobs: mpsc::SyncSender<Job>,
+    jobs: Arc<WorkSender>,
     budget: Arc<Budget>,
 }
 impl CpuPool {
@@ -164,8 +167,8 @@ impl CpuPool {
     }
     fn initialize(config: CpuConfig, lane: &str) -> Result<Self> {
         config.validate()?;
-        let (jobs, receiver) = mpsc::sync_channel::<Job>(config.max_jobs);
-        let receiver = Arc::new(Mutex::new(receiver));
+        let queue = Arc::new(WorkQueue::new(config.workers, config.max_jobs));
+        let jobs = Arc::new(WorkSender(queue.clone()));
         let budget = Arc::new(Budget {
             usage: Mutex::new(Usage::default()),
             active: AtomicUsize::new(0),
@@ -173,29 +176,28 @@ impl CpuPool {
             config,
         });
         for index in 0..budget.config.workers {
-            let receiver = receiver.clone();
+            let queue = queue.clone();
             let budget = budget.clone();
             let placement = budget.config.placement.clone();
             placement.spawn(format!("infer-cpu-{lane}-{index}"), move |_| {
-                Self::work(&receiver, &budget);
+                Self::work(&queue, &budget, index);
             })?;
         }
         Ok(Self { jobs, budget })
     }
-    fn work(receiver: &Mutex<mpsc::Receiver<Job>>, budget: &Arc<Budget>) {
+    fn work(queue: &WorkQueue, budget: &Arc<Budget>, index: usize) {
         loop {
-            let job = match receiver.lock() {
-                Ok(receiver) => receiver.recv(),
-                Err(_) => break,
-            };
-            let Ok(job) = job else {
+            let Ok(Some(job)) = queue.next(index) else {
                 break;
             };
             let active = budget.active.fetch_add(1, Ordering::Relaxed) + 1;
             budget.peak.fetch_max(active, Ordering::Relaxed);
             let _active = Active(budget.clone());
+            let available = || queue.available(index);
             // A bad CPU provider fails its reply without destroying the fixed worker pool.
-            let _ = catch_unwind(AssertUnwindSafe(job));
+            if catch_unwind(AssertUnwindSafe(|| job(&available))).is_err() && available().is_err() {
+                break;
+            }
         }
     }
     pub(super) fn reserve(&self, bytes: usize) -> Result<Credit> {
@@ -262,18 +264,17 @@ impl CpuPool {
         };
         let _cancel = CancelOnDrop(context.cancelled.clone());
         let (reply, response) = oneshot::channel();
-        self.jobs
-            .try_send(Box::new(move || {
-                let admission_credit = credit;
-                let result = context
-                    .check()
-                    .and_then(|()| work(&context))
-                    .and_then(|value| context.check().map(|()| value));
-                // Completion must make admission capacity reusable before waking the caller.
-                drop(admission_credit);
-                let _ = reply.send(result);
-            }))
-            .map_err(|_| Error::new(ErrorCode::Capacity, "CPU queue unavailable"))?;
+        self.jobs.submit(Box::new(move |available| {
+            let admission_credit = credit;
+            let result = context
+                .check()
+                .and_then(|()| work(&context))
+                .and_then(|value| context.check().map(|()| value));
+            // Completion must make admission capacity reusable before waking the caller.
+            drop(admission_credit);
+            let result = available().and(result);
+            let _ = reply.send(result);
+        }))?;
         time_timeout(timeout, response)
             .await
             .map_err(|_| Error::new(ErrorCode::Capacity, "CPU preparation deadline exceeded"))?
