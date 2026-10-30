@@ -405,38 +405,72 @@ compile_error!("cuda and cuda-aot are mutually exclusive; build one kernel provi
 - `Makefile` 增加 `platform_targets linux-cuda-aot` 与 `test-cuda-aot`，保留 `test-cuda` 作为 13.x 别名。
 - [打包指南](../../guides/packaging.md) 更新产物矩阵与“12.9 产物不含 Tile IR/JIT”的说明。
 
-## 8. 制品规范
+## 8. 制品：源码入库，制品出库
 
-### 8.1 目录
+### 8.1 原则
 
-```text
-crates/backend/cuda/kernels/aot/
-  manifest.json
-  sm89/
-    attention-decode.cubin
-    dense.cubin
-    norm-rope.cubin
-  sm89/flashinfer/
-    libinfer_flashinfer_shim.so
+Git 只提交源码（`.cu` / `.rs`）、构建配方和 `kernels.lock`（期望的 `(profile, arch, toolchain, contract,
+hash)`）。**PTX / cubin / `.so` 不提交**；它们是构建产物，由本地 `make kernels` 或 CI 矩阵产出，进包，
+不进仓库。
+
+当前"本机构建后入库"的模型解决的是"运行期不需要工具链、可逐字节复现"，但代价是二进制进 git、PR 噪音、
+以及"谁的本机构建"无法作为 provenance。改为：
+
+| 关注点 | 旧模型 | 新模型 |
+|---|---|---|
+| 源码 | git | git |
+| 制品 | git | 构建产物（本地/CI） |
+| 身份 | manifest 内嵌 hash | `kernels.lock` + 构建 manifest |
+| 复现 | 逐字节重建 | 固定 toolchain 镜像 + 同一配方 |
+| 变更 | 大二进制提交 | 配方/lock 的 diff |
+
+### 8.2 构建
+
+```sh
+make kernels PROFILE=aot ARCH=sm89 CUDA_HOME=/opt/cuda-12.9
+# -> target/kernels/aot/sm89/manifest.json + *.cubin
 ```
 
-### 8.2 规则
+- 工具链 pin 在 `tools/cuda/toolchains.json`；manifest 记录实际 nvcc 版本。
+- 12.9 / sm_89：`--cubin`（SASS），禁止 PTX-only；浮点开关沿用现有逐项固定。
+- 13.x：`tile` profile 可以 JIT，也可以按 arch 预编 cubin；两者都输出到 `target/kernels/<profile>/<arch>/`。
+- 每个 cell 一个 manifest：符号、源码 hash、工具链、arch、contract ID、构建命令。
 
-| 项 | 规则 |
-|---|---|
-| 工具链 | nvcc 版本写入 manifest 并断言；12.9 与 13.x 制品不共用目录 |
-| 架构 | `-arch=sm_89`；**`--cubin`（SASS）**，禁止 PTX-only |
-| 浮点 | 沿用现有逐项固定：`--fmad=false --ftz=false --prec-div=true --prec-sqrt=true` |
-| 身份 | 每个 cubin 记录符号、源码 hash、工具链版本、arch、contract ID |
-| 校验 | `cuobjdump`/ELF 检查 arch 与符号；hash 不匹配拒绝加载 |
-| 加载 | `cuModuleLoadData` + `cuModuleGetFunction`；不 JIT、不读环境变量 |
+### 8.3 CI 与打包
 
-### 8.3 FlashInfer shim（可选）
+```text
+kernels job (matrix: profile x arch)  ->  upload artifact (manifest + cubins)
+package job                           ->  download into target/kernels/<profile>/<arch>/
+                                      ->  build CLI, assemble archive
+```
 
-- 离线编译，入库为 `.so` + hash；运行期只 `dlopen`，不带 Python、不带 torch、不做 JIT。
+- kernels job 不需要 GPU；只需要固定版本的 toolchain。
+- package job 不重新编译 kernel，只消费已构建且 hash 已核对的制品。
+- 归档内布局：
+
+```text
+infer-<version>-<target>-<profile>/
+  bin/infer
+  lib/infer/kernels/<profile>/<arch>/manifest.json + *.cubin
+```
+
+制品以 **sidecar** 形式随包分发，不 `include_bytes!` 进二进制：一个二进制支持多 arch，制品变更不触发
+host 重编。需要单文件部署时再提供可选的内嵌模式。
+
+### 8.4 加载与选择
+
+- 启动时 `Target::detect(device)` 得到 `(arch, capabilities)`；读取 sidecar manifest；按
+  `(profile, arch, family, contract)` 选 cell；`cuModuleLoadData` 加载。
+- 没有对应 cell 时在加载期返回 `Unsupported`，不拖到第一个 token。
+- 不读环境变量覆盖；`INFER_KERNEL_DIR` 只允许测试使用。
+- 校验：manifest 的 hash 与文件一致、`cuobjdump` 的 arch 与目标一致，否则拒绝加载。
+
+### 8.5 FlashInfer shim（可选）
+
+- 同一构建流水线产出，pin 源码 commit 与产物 hash；sidecar `.so`。
 - contract ID 为 `vendor-flashinfer`，不与 `canonical-f32` 比较。
-- 只允许出现在 `Recurrent` 与 `Moe` 两个 trait 后面；attention/GEMM 不接，理由见第 9 节。
-- shim 缺失时该能力返回 `Unsupported`，不静默回退到别的实现。
+- 只允许出现在 `Recurrent` 与 `Moe` 两个 trait 后面；attention/GEMM 不接。
+- shim 缺失时该能力返回 `Unsupported`，不静默回退。
 
 ## 9. 数值契约
 
