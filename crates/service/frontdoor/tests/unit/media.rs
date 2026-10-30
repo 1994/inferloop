@@ -46,9 +46,13 @@ fn data_uri_png_is_decoded_into_rgb8() {
 
 #[tokio::test]
 async fn image_memory_is_charged_before_decode_and_released_on_failure() -> infer_core::Result<()> {
-    let processor = ImageProcessor::from_json(include_bytes!(
-        "../fixtures/multimodal-tiny/preprocessor_config.json"
-    ))?;
+    let processor = ImageProcessor::from_json(
+        br#"{
+        "patch_size": 16, "temporal_patch_size": 2, "merge_size": 2,
+        "size": {"shortest_edge": 65536, "longest_edge": 16777216},
+        "image_mean": [0.5, 0.5, 0.5], "image_std": [0.5, 0.5, 0.5]
+    }"#,
+    )?;
     let png = encoded(noisy_image(256, 256), image::ImageFormat::Png);
     let pool = CpuPool::new(CpuConfig {
         workers: 1,
