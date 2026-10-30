@@ -1547,6 +1547,7 @@ dependencies = [
  "cuda-core",
  "cutile",
  "infer-core",
+ "libloading",
 ]
 
 [[package]]

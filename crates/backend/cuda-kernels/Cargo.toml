@@ -15,7 +15,7 @@ workspace = true
 [features]
 default = []
 tile = ["dep:cutile", "dep:cuda-core"]
-aot = []
+aot = ["dep:libloading"]
 
 [dependencies]
 infer-core.workspace = true
@@ -23,3 +23,4 @@ infer-core.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 cutile = { workspace = true, optional = true }
 cuda-core = { workspace = true, optional = true }
+libloading = { workspace = true, optional = true }
