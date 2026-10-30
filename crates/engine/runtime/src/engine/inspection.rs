@@ -1,5 +1,6 @@
 //! Inspection responsibilities.
 use super::{Engine, RequestRecord, RuntimeConfig, RuntimeInspection};
+use infer_core::credits::CreditLimit;
 use infer_core::{Error, ErrorCode, RequestId, Result};
 use infer_ir::{ExecutionProgram, ModelIr, SchedulingDecision};
 use infer_spi::{BackendProvider, SchedulingPolicy, WorkloadProvider};
@@ -50,6 +51,11 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
     }
     pub const fn config(&self) -> &RuntimeConfig {
         &self.config
+    }
+    /// Access the retained host-byte ceiling without changing its configured maximum.
+    #[must_use]
+    pub fn host_byte_limit(&self) -> CreditLimit {
+        self.host.bytes.limit()
     }
     /// Effective single-sequence length limits, resolved once at construction.
     pub const fn length_limits(&self) -> crate::ResolvedLengthLimits {

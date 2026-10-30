@@ -17,6 +17,7 @@ ahash.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 rtrb.workspace = true
+sysinfo.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 libc.workspace = true

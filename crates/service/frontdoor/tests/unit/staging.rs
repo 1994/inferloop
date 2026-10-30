@@ -1,7 +1,8 @@
-use super::{REFRESH_INTERVAL, StagingLimit, budget_for_available};
+use super::{REFRESH_INTERVAL, StagingLimit};
 use crate::cpu::{CpuConfig, CpuPool};
 use crate::ingress::Registry;
-use infer_core::{RequestId, Result};
+use infer_core::host_memory::staging_bytes;
+use infer_core::{RequestId, Result, credits::CreditPool};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -9,9 +10,9 @@ use std::time::Instant;
 #[test]
 fn automatic_budget_scales_with_available_memory() {
     const MIB: u64 = 1024 * 1024;
-    assert_eq!(budget_for_available(4 * 1024 * MIB), 512 * 1024 * 1024);
-    assert_eq!(budget_for_available(2 * 1024 * MIB), 256 * 1024 * 1024);
-    assert_eq!(budget_for_available(0), 1);
+    assert_eq!(staging_bytes(4 * 1024 * MIB), 512 * 1024 * 1024);
+    assert_eq!(staging_bytes(2 * 1024 * MIB), 256 * 1024 * 1024);
+    assert_eq!(staging_bytes(0), 1);
 }
 
 #[test]
@@ -24,7 +25,7 @@ fn fixed_limit_is_not_automatically_changed() {
 
 #[test]
 fn automatic_limit_refreshes_an_outdated_snapshot() {
-    let limit = StagingLimit::automatic(1);
+    let limit = StagingLimit::automatic(1, None);
     let refreshed = limit.refreshed.as_ref().expect("automatic refresh");
     *refreshed.lock().expect("refresh lock") = Instant::now()
         .checked_sub(REFRESH_INTERVAL)
@@ -34,11 +35,26 @@ fn automatic_limit_refreshes_an_outdated_snapshot() {
 }
 
 #[test]
+fn automatic_refresh_updates_runtime_credit_without_overriding_its_maximum() -> Result<()> {
+    let pool = CreditPool::new(2, 100)?;
+    let limit = StagingLimit::automatic(40, Some(pool.limit()));
+    assert!(pool.reserve(41).is_err());
+    let refreshed = limit.refreshed.as_ref().expect("automatic refresh");
+    *refreshed.lock().expect("refresh lock") = Instant::now()
+        .checked_sub(REFRESH_INTERVAL)
+        .expect("test clock supports one second");
+    limit.refresh_if_due();
+    let _credit = pool.reserve(100)?;
+    assert!(pool.reserve(1).is_err());
+    Ok(())
+}
+
+#[test]
 fn admission_uses_the_same_growing_limit_and_releases_credits() -> Result<()> {
     const IMAGE_CREDIT: usize = 25 * 1024 * 1024;
     const INITIAL: usize = 64 * 1024 * 1024;
     const EXPANDED: usize = 512 * 1024 * 1024;
-    let limit = Arc::new(StagingLimit::automatic(INITIAL));
+    let limit = Arc::new(StagingLimit::automatic(INITIAL, None));
     limit.bytes.store(INITIAL, Ordering::Relaxed);
     let registry = Registry::new(17, limit.clone());
     let pool = CpuPool::named_with_limit(

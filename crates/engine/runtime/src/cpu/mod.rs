@@ -8,6 +8,7 @@ use infer_core::event::CpuStage;
 use infer_core::event::EventKind;
 use infer_core::event::ObjectKind;
 use infer_core::event::SemanticEvent;
+use infer_core::host_memory::{snapshot, staging_bytes};
 use infer_core::placement::PlacementPair;
 use infer_core::placement::PlacementReport;
 use infer_core::placement::ThreadPlacement;
@@ -19,8 +20,6 @@ use std::time::Instant;
 const DEFAULT_MAINTENANCE_ITEMS: usize = 64;
 /// Default number of host tokens retained by the sampling pools.
 const DEFAULT_HOST_TOKENS: usize = 1 << 22;
-/// Default host byte budget for CPU-owned pools (256 MiB).
-const DEFAULT_HOST_BYTES: usize = 256 << 20;
 /// Default window in which deferred work is ranked urgent, in microseconds.
 const DEFAULT_URGENCY_WINDOW_US: u64 = 10_000;
 /// Default minimum poll interval for the CPU owner, in microseconds.
@@ -54,6 +53,7 @@ pub struct CpuRuntimeConfig {
     pub placement: OwnerPlacement,
     pub maintenance_items: usize,
     pub host_tokens: usize,
+    /// Hard ceiling for managed host storage; the default is derived from physical memory.
     pub host_bytes: usize,
     pub urgency_window_us: u64,
     pub poll_min_us: u64,
@@ -65,7 +65,7 @@ impl Default for CpuRuntimeConfig {
             placement: OwnerPlacement::default(),
             maintenance_items: DEFAULT_MAINTENANCE_ITEMS,
             host_tokens: DEFAULT_HOST_TOKENS,
-            host_bytes: DEFAULT_HOST_BYTES,
+            host_bytes: snapshot().map_or(0, |memory| staging_bytes(memory.total)),
             urgency_window_us: DEFAULT_URGENCY_WINDOW_US,
             poll_min_us: DEFAULT_POLL_MIN_US,
             poll_max_us: DEFAULT_POLL_MAX_US,

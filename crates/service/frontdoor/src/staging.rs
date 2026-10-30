@@ -1,17 +1,17 @@
 //! Host staging limits. Credits account for work; they do not allocate memory.
+use infer_core::credits::CreditLimit;
+use infer_core::host_memory::{snapshot, staging_bytes};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use sysinfo::System;
 
-/// Portion of currently available memory made available to each staging lane.
-const AVAILABLE_MEMORY_DIVISOR: u64 = 8;
 /// Bound the cost of refreshing the operating-system memory snapshot.
 pub const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct StagingLimit {
     bytes: AtomicUsize,
     refreshed: Option<Mutex<Instant>>,
+    host_limit: Option<CreditLimit>,
 }
 
 impl StagingLimit {
@@ -19,13 +19,18 @@ impl StagingLimit {
         Self {
             bytes: AtomicUsize::new(bytes),
             refreshed: None,
+            host_limit: None,
         }
     }
 
-    pub(super) fn automatic(bytes: usize) -> Self {
+    pub(super) fn automatic(bytes: usize, host_limit: Option<CreditLimit>) -> Self {
+        if let Some(limit) = &host_limit {
+            limit.set(bytes);
+        }
         Self {
             bytes: AtomicUsize::new(bytes),
             refreshed: Some(Mutex::new(Instant::now())),
+            host_limit,
         }
     }
 
@@ -51,69 +56,15 @@ impl StagingLimit {
         *last = Instant::now();
         let next = default_staging_bytes();
         self.bytes.store(next, Ordering::Relaxed);
+        if let Some(limit) = &self.host_limit {
+            limit.set(next);
+        }
     }
 }
 
 /// A zero result means the operating system could not provide a memory snapshot.
 pub fn default_staging_bytes() -> usize {
-    available_memory().map_or(0, budget_for_available)
-}
-
-fn budget_for_available(bytes: u64) -> usize {
-    usize::try_from(bytes / AVAILABLE_MEMORY_DIVISOR)
-        .unwrap_or(usize::MAX)
-        .max(1)
-}
-
-fn available_memory() -> Option<u64> {
-    let mut system = System::new();
-    system.refresh_memory();
-    let available = system.available_memory();
-    if available == 0 || system.total_memory() == 0 {
-        return None;
-    }
-    let available = system
-        .cgroup_limits()
-        .map_or(available, |limit| available.min(limit.free_memory));
-    #[cfg(target_os = "linux")]
-    let available = cgroup_v2_available().map_or(available, |limit| available.min(limit));
-    Some(available)
-}
-
-// sysinfo checks a cgroup namespace root. A systemd service can instead be nested
-// beneath that root, so include the effective limit of each ancestor of this process.
-#[cfg(target_os = "linux")]
-fn cgroup_v2_available() -> Option<u64> {
-    use std::fs::read_to_string;
-    use std::path::{Component, Path};
-
-    let groups = read_to_string("/proc/self/cgroup").ok()?;
-    let group = groups.lines().find_map(|line| line.strip_prefix("0::"))?;
-    let relative = Path::new(group).strip_prefix("/").ok()?;
-    if relative
-        .components()
-        .any(|part| !matches!(part, Component::Normal(_)))
-    {
-        return None;
-    }
-    let root = Path::new("/sys/fs/cgroup");
-    let leaf = root.join(relative);
-    leaf.ancestors()
-        .take_while(|path| path.starts_with(root))
-        .filter_map(|path| {
-            let max = read_to_string(path.join("memory.max"))
-                .ok()?
-                .trim()
-                .parse::<u64>()
-                .ok()?;
-            let current = read_to_string(path.join("memory.current"))
-                .ok()?
-                .trim()
-                .parse::<u64>()
-                .ok()?;
-            Some(max.saturating_sub(current))
-        })
-        .min()
+    snapshot().map_or(0, |memory| staging_bytes(memory.available))
 }
 
 #[cfg(test)]

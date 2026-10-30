@@ -40,7 +40,10 @@ impl RuntimeHandle {
                 "cannot determine available host memory",
             ));
         }
-        let limit = Arc::new(StagingLimit::automatic(config.max_bytes));
+        let limit = Arc::new(StagingLimit::automatic(
+            config.max_bytes,
+            Some(engine.host_byte_limit()),
+        ));
         Self::start_inner(engine, config, limit)
     }
     /// Start with the fixed staging limit in `config`.

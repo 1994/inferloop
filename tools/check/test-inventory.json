@@ -28,7 +28,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 18
+      "tests": 21
     },
     "cuda": {
       "benches": 0,
@@ -40,7 +40,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 109
+      "tests": 110
     },
     "ir": {
       "benches": 0,
@@ -88,7 +88,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 104
+      "tests": 105
     },
     "scheduler": {
       "benches": 0,
@@ -154,7 +154,7 @@
     }
   ],
   "gated": {
-    "target_os = \"linux\"": 3,
+    "target_os = \"linux\"": 4,
     "target_os = \"macos\"": 1
   },
   "ignored_reasons": {
@@ -1157,6 +1157,11 @@
     },
     {
       "crate": "core",
+      "file": "src/host_memory.rs",
+      "mount": "../tests/unit/host_memory.rs"
+    },
+    {
+      "crate": "core",
       "file": "src/map.rs",
       "mount": "../tests/unit/map.rs"
     },
@@ -1427,11 +1432,11 @@
     }
   ],
   "totals": {
-    "all": 1034,
+    "all": 1039,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1034
+    "tests": 1039
   }
 }

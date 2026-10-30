@@ -39,7 +39,6 @@ tokio.workspace = true
 futures-util.workspace = true
 base64.workspace = true
 image.workspace = true
-sysinfo.workspace = true
 
 [dev-dependencies]
 crc32fast.workspace = true
