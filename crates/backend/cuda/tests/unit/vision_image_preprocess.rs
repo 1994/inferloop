@@ -1,7 +1,7 @@
 use super::{ImageBatch, PORTABLE_PTX, Processor};
-use crate::device::CudaDevice;
 use crate::device::asynchronous::block_on;
 use crate::device::queue_test_gate;
+use crate::device::{CudaDevice, device_error};
 use infer_core::{Error, Result};
 use infer_models::{ImageProcessor, RgbImage};
 use std::sync::Arc;
@@ -146,6 +146,31 @@ fn simultaneous_image_uploads_keep_distinct_staging_until_completion() -> Result
         assert_eq!(&actual[..expected.len()], expected.as_slice());
         assert!(actual[expected.len()..].iter().all(|value| *value == 0.0));
     }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires a qualified CUDA device"]
+fn image_upload_staging_reuses_capacity_without_reusing_inflight_data() -> Result<()> {
+    let device = CudaDevice::new(0)?;
+    let processor = Processor::load(&device)?
+        .ok_or_else(|| Error::unsupported("CUDA image kernel is not qualified on this device"))?;
+    let first = processor.pixels.stage(&[7; 33])?;
+    let first_pointer = first.buffer().map_err(device_error)?.as_ptr();
+    let concurrent = processor.pixels.stage(&[11; 33])?;
+    assert_ne!(
+        first_pointer,
+        concurrent.buffer().map_err(device_error)?.as_ptr()
+    );
+    drop(first);
+    let reused = processor.pixels.stage(&[19; 50])?;
+    let buffer = reused.buffer().map_err(device_error)?;
+    assert_eq!(first_pointer, buffer.as_ptr());
+    assert_eq!(&buffer.as_slice()[..50], &[19; 50]);
+    assert_eq!(
+        &concurrent.buffer().map_err(device_error)?.as_slice()[..33],
+        &[11; 33]
+    );
     Ok(())
 }
 

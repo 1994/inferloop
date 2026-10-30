@@ -41,7 +41,16 @@ impl<T: DType + DeviceCopy> UploadPool<T> {
             buffer.as_mut_slice()[..values.len()].copy_from_slice(values);
             buffer
         } else {
-            PinnedHostBuffer::from_slice(&self.context, values).map_err(device_error)?
+            // Geometric growth prevents a sequence of increasing image sizes from leaving
+            // one idle pinned allocation for every distinct size.
+            let capacity = values
+                .len()
+                .checked_next_power_of_two()
+                .ok_or_else(|| Error::invalid("image upload capacity overflow"))?;
+            let mut buffer =
+                PinnedHostBuffer::zeroed(&self.context, capacity).map_err(device_error)?;
+            buffer.as_mut_slice()[..values.len()].copy_from_slice(values);
+            buffer
         };
         Ok(Arc::new(Staged {
             buffer: Some(buffer),
