@@ -182,6 +182,29 @@
         "--prec-div=true",
         "--prec-sqrt=true"
       ]
+    },
+    {
+      "name": "image-preprocess-portable",
+      "builder": "nvcc",
+      "source": "../image-preprocess/preprocess_batch.cu",
+      "ptx": "preprocess-batch-strict-sm70.ptx",
+      "target": "sm_70",
+      "symbols": [
+        "mm_horizontal_batch",
+        "mm_vertical_patch_batch"
+      ],
+      "profile": "canonical-f32",
+      "rebuild_scope": "complete-ptx",
+      "arguments": [
+        "--ptx",
+        "-arch=compute_70",
+        "-O3",
+        "--fmad=false",
+        "--ftz=false",
+        "--prec-div=true",
+        "--prec-sqrt=true"
+      ],
+      "nvcc_version": "11.8.89"
     }
   ]
 }

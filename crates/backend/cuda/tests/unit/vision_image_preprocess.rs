@@ -1,4 +1,4 @@
-use super::{ImageBatch, Processor};
+use super::{ImageBatch, PORTABLE_PTX, Processor};
 use crate::device::CudaDevice;
 use crate::device::asynchronous::block_on;
 use crate::device::queue_test_gate;
@@ -14,14 +14,17 @@ fn device_image_batches_match_cpu_patches_and_zero_padding() -> Result<()> {
     let device = CudaDevice::new(0)?;
     let processor = Processor::load(&device)?
         .ok_or_else(|| Error::unsupported("CUDA image kernel is not qualified on this device"))?;
-    for (source, batch, maximum) in [
-        ([256, 256], 16, 1024 * 1024),
-        ([333, 571], 16, 1024 * 1024),
-        ([225, 353], 16, 1024 * 1024),
-        ([333, 571], 16, 32 * 1024),
-        ([1024, 1024], 1, 1024 * 1024),
-    ] {
-        check_batch(&device, &processor, source, batch, maximum)?;
+    let portable = Processor::load_kernel(&device, PORTABLE_PTX)?;
+    for processor in [&processor, &portable] {
+        for (source, batch, maximum) in [
+            ([256, 256], 16, 1024 * 1024),
+            ([333, 571], 16, 1024 * 1024),
+            ([225, 353], 16, 1024 * 1024),
+            ([333, 571], 16, 32 * 1024),
+            ([1024, 1024], 1, 1024 * 1024),
+        ] {
+            check_batch(&device, processor, source, batch, maximum)?;
+        }
     }
     Ok(())
 }

@@ -11,9 +11,10 @@ use self::launch::Kernels;
 use self::staging::UploadPool;
 use self::tables::Tables;
 use crate::device::{CudaDevice, device_error};
+use crate::target::ImageKernel;
 use cuda_core::{CudaContext, Function};
 use cutile::prelude::*;
-use infer_core::{Error, Result};
+use infer_core::{Error, ErrorCode, Result};
 use infer_ir::ImageTransform;
 use infer_spi::ImagePreprocessing;
 use std::sync::Arc;
@@ -22,6 +23,8 @@ pub use capability::Capability;
 
 const PTX: &str =
     include_str!("../../../kernels/image-preprocess/preprocess-batch-strict-sm120.ptx");
+const PORTABLE_PTX: &str =
+    include_str!("../../../kernels/image-preprocess-portable/preprocess-batch-strict-sm70.ptx");
 
 /// An equal-geometry batch of packed RGB8 images accepted by this CUDA processor.
 pub struct ImageBatch {
@@ -65,20 +68,35 @@ pub struct Processor {
 }
 
 impl Processor {
-    /// Load the implementation only for the centrally qualified CUDA target.
+    /// Load the best available implementation selected from the CUDA compute capability.
     /// # Errors
     /// Returns an error when a qualified device cannot load its embedded CUDA kernel.
     pub fn load(device: &CudaDevice) -> Result<Option<Self>> {
-        if !device.target().supports_rgb8_preprocessing() {
-            return Ok(None);
-        }
+        let driver = CudaDevice::driver_version()?;
+        let ptx = match device.target().image_kernel(driver)? {
+            Some(ImageKernel::Sm120) => PTX,
+            Some(ImageKernel::Portable) => PORTABLE_PTX,
+            None => return Ok(None),
+        };
+        Self::load_kernel(device, ptx).map(Some)
+    }
+
+    fn load_kernel(device: &CudaDevice, ptx: &str) -> Result<Self> {
         let module = device
             .stream
             .device()
-            .load_module_from_ptx_src(PTX)
-            .map_err(device_error)?;
+            .load_module_from_ptx_src(ptx)
+            .map_err(|error| {
+                Error::new(
+                    ErrorCode::Backend,
+                    format!(
+                        "failed to load CUDA image preprocessing on {:?}: {error}",
+                        device.target()
+                    ),
+                )
+            })?;
         let context = CudaContext::new(device.ordinal()).map_err(device_error)?;
-        Ok(Some(Self {
+        Ok(Self {
             horizontal: Arc::new(
                 module
                     .load_function("mm_horizontal_batch")
@@ -92,7 +110,7 @@ impl Processor {
             stream: device.stream.cu_stream() as usize,
             pixels: UploadPool::new(Arc::clone(&context)),
             coefficients: UploadPool::new(context),
-        }))
+        })
     }
 
     /// Produce padded patch vectors on the device from equal-sized RGB8 images.
