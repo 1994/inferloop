@@ -106,7 +106,7 @@ fn erf(value: f64) -> f64 {
 )]
 fn scalar(input: &[f32]) -> Vec<f32> {
     let mut normalized = Vec::with_capacity(input.len());
-    for row in input.chunks_exact(HIDDEN) {
+    for row in input.as_chunks::<HIDDEN>().0 {
         let mean = row.iter().map(|value| f64::from(*value)).sum::<f64>() / 64.0;
         let variance = row
             .iter()
@@ -115,17 +115,16 @@ fn scalar(input: &[f32]) -> Vec<f32> {
             / 64.0;
         for value in row {
             let norm = (f64::from(*value) - mean) / (variance + f64::from(EPSILON)).sqrt();
-            let projected = (norm * 0.5 + 0.125) * 0.5 + 0.0625;
+            let projected = norm.mul_add(0.5, 0.125).mul_add(0.5, 0.0625);
             normalized.push(0.5 * projected * (1.0 + erf(projected / 2.0_f64.sqrt())));
         }
     }
     let mut output = Vec::with_capacity(input.len() / UNIT);
-    for group in normalized.chunks_exact(MERGED) {
+    for group in normalized.as_chunks::<MERGED>().0 {
         for channel in 0..OUTPUT {
-            let value = group[channel] * 0.5 - group[HIDDEN + channel] * 0.25
-                + group[2 * HIDDEN + channel] * 0.125
-                + group[3 * HIDDEN + channel] * 0.0625
-                - 0.125;
+            let value = group[HIDDEN + channel].mul_add(-0.25, group[channel] * 0.5);
+            let value = group[2 * HIDDEN + channel].mul_add(0.125, value);
+            let value = group[3 * HIDDEN + channel].mul_add(0.0625, value) - 0.125;
             output.push(value as f32);
         }
     }
