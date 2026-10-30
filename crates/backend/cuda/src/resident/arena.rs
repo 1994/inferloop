@@ -22,6 +22,9 @@ pub struct ActivationArena {
     indices: BTreeMap<TensorId, usize>,
     pub(crate) buffers: Vec<Option<Tensor<f32>>>,
     lanes: usize,
+    /// Whether slots hold concatenated lane rows. A one-lane arena is still batched when the
+    /// pool captures a narrow decode rung over it, unlike a scalar `new` arena.
+    batched: bool,
     elements: usize,
 }
 
@@ -29,7 +32,7 @@ impl ActivationArena {
     /// # Errors
     /// Rejects invalid graphs, overflowing budgets and failed device allocation.
     pub fn new(device: &CudaDevice, graph: &DataflowGraph, byte_budget: usize) -> Result<Self> {
-        Self::plan(device, graph, 1, byte_budget)
+        Self::plan(device, graph, 1, byte_budget, false)
     }
 
     /// One slot per plan entry holding `lanes` concatenated rows: activations of
@@ -45,7 +48,7 @@ impl ActivationArena {
         if lanes == 0 {
             return Err(Error::invalid("batched activation lanes"));
         }
-        Self::plan(device, graph, lanes, byte_budget)
+        Self::plan(device, graph, lanes, byte_budget, true)
     }
 
     /// Slot layout after last-consumer reuse, with the tensor-to-slot mapping. A `single`
@@ -149,6 +152,7 @@ impl ActivationArena {
             indices: self.indices.clone(),
             buffers,
             lanes: 1,
+            batched: true,
             elements: self.elements / self.lanes,
         })
     }
@@ -186,6 +190,7 @@ impl ActivationArena {
             indices: self.indices.clone(),
             buffers,
             lanes: self.lanes,
+            batched: self.batched,
             elements: self.elements,
         })
     }
@@ -229,6 +234,7 @@ impl ActivationArena {
             indices,
             buffers,
             lanes,
+            batched: self.batched,
             elements: sizes.iter().sum(),
         })
     }
@@ -246,7 +252,7 @@ impl ActivationArena {
         if lanes == 0 {
             return Err(Error::invalid("batched activation lanes"));
         }
-        Self::plan_with(device, graph, lanes, byte_budget, graph.logits)
+        Self::plan_with(device, graph, lanes, byte_budget, graph.logits, true)
     }
 
     fn plan(
@@ -254,8 +260,9 @@ impl ActivationArena {
         graph: &DataflowGraph,
         lanes: usize,
         byte_budget: usize,
+        batched: bool,
     ) -> Result<Self> {
-        Self::plan_with(device, graph, lanes, byte_budget, None)
+        Self::plan_with(device, graph, lanes, byte_budget, None, batched)
     }
 
     fn plan_with(
@@ -264,6 +271,7 @@ impl ActivationArena {
         lanes: usize,
         byte_budget: usize,
         single: Option<TensorId>,
+        batched: bool,
     ) -> Result<Self> {
         let (sizes, indices) = Self::sizes(graph, lanes, single)?;
         let elements = sizes
@@ -288,6 +296,7 @@ impl ActivationArena {
             indices,
             buffers,
             lanes,
+            batched,
             elements,
         })
     }
@@ -323,7 +332,7 @@ impl ActivationArena {
     /// Rejects non-batched arenas and out-of-range lanes.
     pub(crate) fn row(&self, id: TensorId, lane: usize) -> Result<TensorView<'_, f32>> {
         let tensor = self.get(id)?;
-        if self.lanes == 1 || !tensor.size().is_multiple_of(self.lanes) {
+        if !self.batched || !tensor.size().is_multiple_of(self.lanes) {
             return Err(Error::invalid("activation slot is not batched"));
         }
         let size = tensor.size() / self.lanes;

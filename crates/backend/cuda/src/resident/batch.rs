@@ -268,7 +268,9 @@ impl BatchBuilder<'_> {
         lane_fp8: &mut [Fp8Caches],
     ) -> Result<SlotDecodeGraph> {
         let width = lane_states.len();
-        if !(2..=MAX_POOL_SLOTS).contains(&width)
+        // A one-lane rung is valid: it replays exactly one busy slot, and the pool itself keeps
+        // the two-slot minimum that plain batching needs.
+        if !(1..=MAX_POOL_SLOTS).contains(&width)
             || lane_fp8.len() != width
             || self.lane_external.len() < width
             || self.lane_fusion.len() < width

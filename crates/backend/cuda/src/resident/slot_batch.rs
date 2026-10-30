@@ -24,10 +24,17 @@ use infer_ir::{DataflowGraph, StateKind, TensorStorage};
 use std::collections::BTreeSet;
 use std::iter::successors;
 
-/// Slot counts of the narrow verify graphs a pool of `width` slots captures: powers of two
-/// below the width, when the pool verifies without recurrent snapshots.
+/// Slot counts of the narrow graphs a pool of `width` slots captures: powers of two below
+/// the width. A plain decode pool replays one lane per busy slot, so its rungs keep a step
+/// with few live sequences from paying for every lane the configured concurrency allows. A
+/// verify pool needs fused recurrent state before narrower verification is valid.
 pub fn narrow_widths(graph: &DataflowGraph, width: usize, verify: usize) -> Vec<usize> {
-    if verify < 2 || !super::slot_verify::fused_recurrent(graph, verify) {
+    if verify < 2 {
+        return successors(Some(1usize), |slots| slots.checked_mul(2))
+            .take_while(|&slots| slots <= 4 && slots < width)
+            .collect();
+    }
+    if !super::slot_verify::fused_recurrent(graph, verify) {
         return Vec::new();
     }
     successors(Some(1usize), |slots| slots.checked_mul(2))
@@ -356,6 +363,9 @@ pub struct SlotPool {
     // arena buffers their kernels reference.
     decode: Option<SlotDecodeGraph>,
     verify: Option<SlotVerifyGraph>,
+    /// Decode graphs over the pool's first 2, 4, ... slots, narrowest first: a step whose busy
+    /// slots are all low replays only their lanes. `decode` stays the timeline of record.
+    narrow_decode: Vec<SlotDecodeGraph>,
     /// Verify graphs over the pool's first 1, 2, 4, ... slots, narrowest first: a step whose
     /// busy slots are all low replays only their lanes. `verify` stays the timeline of record.
     narrow: Vec<SlotVerifyGraph>,
@@ -519,7 +529,7 @@ impl SlotPool {
         let mut nvfp4 = pool_workspace(device, graph, weights, (lanes, verify), &narrow_slots)?;
         let mut placeholder_states = States::new();
         let mut placeholder_fp8 = Fp8Caches::new();
-        let (decode, verify_graph, narrow, narrow_roots) = {
+        let (decode, verify_graph, decode_narrow, narrow, narrow_roots) = {
             let mut builder = super::batch::BatchBuilder {
                 device,
                 graph,
@@ -544,15 +554,21 @@ impl SlotPool {
                     verify,
                     &narrow_slots,
                 )?;
-                (None, Some(full), graphs, roots)
+                (None, Some(full), Vec::new(), graphs, roots)
             } else {
                 let decode = builder.build_slots(&mut states, &mut fp8)?;
-                (Some(decode), None, Vec::new(), Vec::new())
+                let mut decode_narrow = Vec::with_capacity(narrow_slots.len());
+                for &slots in &narrow_slots {
+                    decode_narrow
+                        .push(builder.build_slots(&mut states[..slots], &mut fp8[..slots])?);
+                }
+                (Some(decode), None, decode_narrow, Vec::new(), Vec::new())
             }
         };
         Ok(Self {
             decode,
             verify: verify_graph,
+            narrow_decode: decode_narrow,
             narrow,
             active_verify: None,
             _narrow_roots: narrow_roots,
@@ -1009,7 +1025,14 @@ impl SlotPool {
             }
         }
         match (&mut self.decode, &mut self.verify) {
-            (Some(graph), _) => graph.set_cursor(slot, rows)?,
+            (Some(graph), _) => {
+                graph.set_cursor(slot, rows)?;
+                for rung in &mut self.narrow_decode {
+                    if slot < rung.width {
+                        rung.set_cursor(slot, rows)?;
+                    }
+                }
+            }
             (None, Some(graph)) => graph.set_cursor(slot, rows)?,
             (None, None) => return Err(Error::invariant("slot pool graph")),
         }
@@ -1144,9 +1167,32 @@ impl SlotPool {
         {
             return Err(Error::invalid("draft lane has no external hidden input"));
         }
-        self.decode
-            .as_mut()
-            .ok_or_else(|| Error::invalid("slot pool has no decode graph"))?
+        // Lanes only occupy low slots while few sequences are live, so the narrowest rung that
+        // covers the highest busy slot replays the step without charging for every lane the
+        // configured concurrency allows.
+        let required = lanes
+            .iter()
+            .map(|&(slot, ..)| slot.saturating_add(1))
+            .max()
+            .unwrap_or(0);
+        let selected = self
+            .narrow_decode
+            .iter()
+            .position(|graph| graph.width >= required);
+        let graph = match selected {
+            Some(index) => &mut self.narrow_decode[index],
+            None => self
+                .decode
+                .as_mut()
+                .ok_or_else(|| Error::invalid("slot pool has no decode graph"))?,
+        };
+        // A sequence can move between the full graph and a narrow rung when concurrency
+        // changes; the lane's staged position is authoritative, so restore the rung's cursor
+        // before it validates the step.
+        for &(slot, _, _, state_pos) in lanes {
+            graph.set_cursor(slot, state_pos)?;
+        }
+        let readout = graph
             .run_lanes_readout_async(
                 device,
                 lanes,
@@ -1155,7 +1201,26 @@ impl SlotPool {
                 true,
                 plain_greedy,
             )
-            .await
+            .await?;
+        // Advance every rung to the position the step ended at, so a later step can use any
+        // rung without failing its cursor check.
+        let advanced: Vec<(usize, usize)> = lanes
+            .iter()
+            .map(|&(slot, ..)| (slot, graph.cursors()[slot]))
+            .collect();
+        for (slot, position) in advanced {
+            if let Some(full) = self.decode.as_mut()
+                && slot < full.width
+            {
+                full.set_cursor(slot, position)?;
+            }
+            for rung in &mut self.narrow_decode {
+                if slot < rung.width {
+                    rung.set_cursor(slot, position)?;
+                }
+            }
+        }
+        Ok(readout)
     }
 
     /// Replay one pooled speculation step; see [`SlotVerifyGraph::run_verify_readout`].
