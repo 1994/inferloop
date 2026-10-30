@@ -4,7 +4,7 @@ use crate::ingress::Registry;
 use infer_core::{RequestId, Result, credits::CreditPool};
 use infer_runtime::host_memory::staging_bytes;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 #[test]
@@ -37,13 +37,30 @@ fn automatic_limit_refreshes_an_outdated_snapshot() {
 #[test]
 fn automatic_refresh_updates_runtime_credit_without_overriding_its_maximum() -> Result<()> {
     let pool = CreditPool::new(2, 100)?;
-    let limit = StagingLimit::automatic(40, Some(pool.limit()));
+    let limit = Arc::new(StagingLimit::automatic(40, Some(pool.limit())));
+    let weak = Arc::downgrade(&limit);
+    let lock_released = Arc::new(AtomicBool::new(false));
+    let observed = lock_released.clone();
+    pool.set_waker(Arc::new(move || {
+        let unlocked = weak.upgrade().is_some_and(|limit| {
+            limit.refreshed.as_ref().is_some_and(|refreshed| {
+                if let Ok(guard) = refreshed.try_lock() {
+                    drop(guard);
+                    true
+                } else {
+                    false
+                }
+            })
+        });
+        observed.store(unlocked, Ordering::Relaxed);
+    }));
     assert!(pool.reserve(41).is_err());
     let refreshed = limit.refreshed.as_ref().expect("automatic refresh");
     *refreshed.lock().expect("refresh lock") = Instant::now()
         .checked_sub(REFRESH_INTERVAL)
         .expect("test clock supports one second");
     limit.refresh_if_due();
+    assert!(lock_released.load(Ordering::Relaxed));
     let _credit = pool.reserve(100)?;
     assert!(pool.reserve(1).is_err());
     Ok(())

@@ -54,6 +54,7 @@ impl StagingLimit {
             return;
         }
         *last = Instant::now();
+        drop(last);
         let next = default_staging_bytes();
         self.bytes.store(next, Ordering::Relaxed);
         if let Some(limit) = &self.host_limit {
