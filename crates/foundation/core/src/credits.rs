@@ -35,15 +35,11 @@ pub struct CreditLimit {
 }
 impl CreditLimit {
     /// Change the ceiling without revoking live leases; it can never exceed the configured maximum.
+    /// Existing requests are not queued on this ceiling, so changing it does not signal the waker.
     pub fn set(&self, units: usize) {
-        let next = units.min(self.budget.maximum);
-        let previous = self.budget.limit.swap(next, Ordering::AcqRel);
-        if next > previous {
-            let wake = self.budget.wake.lock().ok().and_then(|wake| wake.clone());
-            if let Some(wake) = wake {
-                wake();
-            }
-        }
+        self.budget
+            .limit
+            .store(units.min(self.budget.maximum), Ordering::Release);
     }
 }
 pub struct CreditLease {
