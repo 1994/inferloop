@@ -113,7 +113,18 @@ impl CreditPool {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => break,
+                Ok(_) => {
+                    // A concurrent refresh may have lowered the limit after the first check.
+                    // Roll back before publishing any lease if that happened.
+                    if total > self.budget.limit.load(Ordering::Acquire) {
+                        self.budget.used.fetch_sub(units, Ordering::AcqRel);
+                        return Err(Error::new(
+                            ErrorCode::Capacity,
+                            "host storage credits exhausted",
+                        ));
+                    }
+                    break;
+                }
                 Err(actual) => used = actual,
             }
         }
