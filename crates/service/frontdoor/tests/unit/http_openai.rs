@@ -11,11 +11,13 @@ use std::fs::create_dir_all;
 use std::fs::read;
 use std::fs::read_dir;
 use std::fs::write;
+use std::future::pending;
 use std::path::Path;
 use std::process::id;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::{sync::Arc, time::Duration};
+use tokio::sync::oneshot;
 use tokio::time::sleep;
 use tokio::time::timeout;
 use tower::ServiceExt;
@@ -47,6 +49,42 @@ fn fixture_with(config: RuntimeConfig) -> (RuntimeHandle, Arc<infer_models::Text
     )
     .unwrap();
     (RuntimeHandle::start(engine).unwrap(), assets)
+}
+
+#[tokio::test]
+async fn cancelling_async_source_wakes_without_a_cpu_worker() {
+    let (handle, _) = fixture();
+    let id = infer_core::RequestId::new(123).unwrap();
+    let (entered, started) = oneshot::channel();
+    let request_handle = handle.clone();
+    let job = tokio::spawn(async move {
+        let source = async move {
+            entered.send(()).unwrap();
+            pending::<infer_core::Result<((), usize)>>().await
+        };
+        request_handle
+            .submit_with_source(id, 0, None, source, |_, ()| {
+                Err(infer_core::Error::invariant(
+                    "cancelled source ran CPU work",
+                ))
+            })
+            .await
+    });
+    timeout(Duration::from_secs(2), started)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(handle.cpu_inspection().active_workers, 0);
+    handle.cancel(id).await.unwrap();
+    assert!(
+        timeout(Duration::from_secs(2), job)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(handle.inspect().await.unwrap().active_requests, 0);
+    handle.shutdown().await.unwrap();
 }
 
 /// Copy the fixture package with a byte-level tokenizer, which is what the served packages use

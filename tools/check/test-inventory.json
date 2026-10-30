@@ -40,7 +40,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 110
+      "tests": 116
     },
     "ir": {
       "benches": 0,
@@ -53,6 +53,12 @@
       "src_inline": 0,
       "src_near": 0,
       "tests": 6
+    },
+    "media": {
+      "benches": 0,
+      "src_inline": 0,
+      "src_near": 0,
+      "tests": 3
     },
     "metal": {
       "benches": 0,
@@ -1395,6 +1401,16 @@
     },
     {
       "crate": "frontdoor",
+      "file": "src/ingress.rs",
+      "mount": "../tests/unit/ingress.rs"
+    },
+    {
+      "crate": "frontdoor",
+      "file": "src/media/source.rs",
+      "mount": "../../tests/unit/media_source.rs"
+    },
+    {
+      "crate": "frontdoor",
       "file": "src/media.rs",
       "mount": "../tests/unit/media.rs"
     },
@@ -1430,11 +1446,11 @@
     }
   ],
   "totals": {
-    "all": 1043,
+    "all": 1052,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1043
+    "tests": 1052
   }
 }

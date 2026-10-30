@@ -257,13 +257,13 @@ impl GenerationRequest {
     /// # Errors
     /// Rejects unsupported content parts, an assistant call without an identifier, a duplicated
     /// call identifier, and a `tool` result that does not answer an earlier assistant call.
-    pub(super) fn chat_messages(&self) -> Result<(Vec<ChatMessage>, Vec<MediaRequest>)> {
-        let wire = self.messages.as_deref().unwrap_or_default();
+    pub(super) fn chat_messages(&mut self) -> Result<(Vec<ChatMessage>, Vec<MediaRequest>)> {
+        let wire = self.messages.take().unwrap_or_default();
         let mut call_ids = BTreeSet::new();
         let mut out = Vec::with_capacity(wire.len());
         let mut media_requests = Vec::new();
-        for message in wire {
-            let (text, media) = message.rendered()?;
+        for mut message in wire {
+            let (text, media) = message.take_rendered()?;
             if !media.is_empty() && message.role != "user" {
                 return Err(Error::invalid("only a user message may carry media"));
             }
@@ -397,16 +397,42 @@ impl WireMessage {
         })
     }
     /// Rendered text with media placeholders plus the media requests in content order.
-    fn rendered(&self) -> Result<(String, Vec<MediaRequest>)> {
+    fn take_rendered(&mut self) -> Result<(String, Vec<MediaRequest>)> {
         let mut text = String::new();
         let mut media = Vec::new();
-        for part in self.parts()? {
-            match part {
-                WirePart::Text(value) => text.push_str(value),
-                WirePart::Media(request) => {
-                    text.push_str(placeholder(&request.modality));
-                    media.push(request);
+        let parts = match self.content.take() {
+            None | Some(Value::Null) => return Ok((text, media)),
+            Some(Value::String(value)) => return Ok((value, media)),
+            Some(Value::Array(parts)) => parts,
+            Some(_) => {
+                return Err(Error::invalid(
+                    "message content must be a string, null, or a list of text parts",
+                ));
+            }
+        };
+        for (index, mut part) in parts.into_iter().enumerate() {
+            let modality = match wire_part(&part, index)? {
+                WirePart::Text(value) => {
+                    text.push_str(value);
+                    continue;
                 }
+                WirePart::Media(request) => request.modality,
+            };
+            let field = match modality {
+                Modality::Image => "image_url",
+                Modality::Video => "video_url",
+                _ => return Err(Error::invariant("validated media modality changed")),
+            };
+            let url = part
+                .as_object_mut()
+                .and_then(|object| object.get_mut(field))
+                .and_then(Value::as_object_mut)
+                .and_then(|object| object.remove("url"));
+            if let Some(Value::String(url)) = url {
+                text.push_str(placeholder(&modality));
+                media.push(MediaRequest { modality, url });
+            } else {
+                return Err(Error::invariant("validated media URL changed"));
             }
         }
         Ok((text, media))
@@ -416,7 +442,12 @@ impl WireMessage {
 /// One accepted content part.
 enum WirePart<'a> {
     Text(&'a str),
-    Media(MediaRequest),
+    Media(WireMedia<'a>),
+}
+
+struct WireMedia<'a> {
+    modality: Modality,
+    url: &'a str,
 }
 
 const fn placeholder(modality: &Modality) -> &'static str {
@@ -472,7 +503,7 @@ fn validate_public_media_url(url: &str) -> Result<()> {
     }
 }
 
-fn image_request(object: &serde_json::Map<String, Value>, index: usize) -> Result<MediaRequest> {
+fn image_request(object: &serde_json::Map<String, Value>, index: usize) -> Result<WireMedia<'_>> {
     let url = if let Some(value) = object.get("image_url") {
         let detail = value
             .as_object()
@@ -499,13 +530,13 @@ fn image_request(object: &serde_json::Map<String, Value>, index: usize) -> Resul
         .and_then(Value::as_str)
         .ok_or_else(|| Error::invalid(format!("image_url part {index} requires a URL")))?;
     validate_public_media_url(url)?;
-    Ok(MediaRequest {
+    Ok(WireMedia {
         modality: Modality::Image,
-        url: url.to_owned(),
+        url,
     })
 }
 
-fn video_request(object: &serde_json::Map<String, Value>, index: usize) -> Result<MediaRequest> {
+fn video_request(object: &serde_json::Map<String, Value>, index: usize) -> Result<WireMedia<'_>> {
     let value = object
         .get("video_url")
         .ok_or_else(|| Error::invalid(format!("video_url part {index} requires a video_url")))?;
@@ -521,9 +552,9 @@ fn video_request(object: &serde_json::Map<String, Value>, index: usize) -> Resul
         .filter(|url| !url.is_empty())
         .ok_or_else(|| Error::invalid(format!("video_url part {index} requires a URL")))?;
     validate_public_media_url(url)?;
-    Ok(MediaRequest {
+    Ok(WireMedia {
         modality: Modality::Video,
-        url: url.to_owned(),
+        url,
     })
 }
 
