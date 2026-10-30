@@ -60,6 +60,7 @@ Agent 接入、tool parser、文本流式、max length 与严格工具约束的�
 | [Infernix 性能调研](research/infernix-performance.md) | 参考机制、精度变化与收益估算 |
 | [CUDA 长上下文性能结论与任务交接](research/cuda-vllm-performance-handoff-2026-10-17.md) | 已合并 PR #10、五组正式收益、当前 attention 瓶颈、失败方案、质量边界与可拆任务 |
 | [CUDA kernel 工程整理与 45 重建记录](research/cuda-kernel-engineering-2026-10-23.md) | AOT 制品清单、统一校验/重建入口与固定工具链 |
+| [Backend 标准化与接入 SOP 研究](research/backend-standardization-2026-10-25.md) | CUDA/Metal 接入面盘点、Tier 分层、可共享契约与分阶段验收 |
 
 过期的服务矩阵、10-13 性能画像和测试迁移清单已删除；2026-10-09 至 10-14 的完整 A/B 与逐轮调查记录移入[历史归档](archive/README.md)，保留源码基点与测量条件供复核，不代表当前状态，也不进入日常排期。
 
