@@ -182,6 +182,14 @@ impl CudaExecutor {
         self.reserve_inner(id, capacity, readout, false, false, Some(media))
     }
 
+    fn media_footprint(&self, media: Option<&infer_ir::MediaPlan>) -> Result<u64> {
+        media.map_or(Ok(0), |plan| {
+            self.loaded
+                .vision()
+                .map_or(Ok(0), |vision| vision.footprint(plan))
+        })
+    }
+
     fn reserve_inner(
         &mut self,
         id: StateId,
@@ -210,11 +218,7 @@ impl CudaExecutor {
         } else {
             true
         };
-        let media_bytes = media.map_or(Ok(0), |plan| {
-            self.loaded
-                .vision()
-                .map_or(Ok(0), |vision| vision.footprint(plan))
-        })?;
+        let media_bytes = self.media_footprint(media)?;
         let budget = self
             .reservation_budget(capacity, readout, private_verification)?
             .checked_add(media_bytes)
@@ -229,7 +233,14 @@ impl CudaExecutor {
         }
         if let Some(mut state) = self.pool.take(capacity, readout) {
             state.draft = self.lease_draft(allow_speculation);
-            return self.reuse_pooled(id, state, capacity, budget, private_verification);
+            return self.reuse_pooled(
+                id,
+                state,
+                capacity,
+                budget,
+                media_bytes,
+                private_verification,
+            );
         }
         let scratch = self
             .loaded
@@ -275,6 +286,7 @@ impl CudaExecutor {
                 capacity,
                 readout,
                 budget,
+                media_budget: media_bytes,
                 history: Vec::new(),
                 hidden: Vec::new(),
                 media: None,
@@ -337,6 +349,7 @@ impl CudaExecutor {
         mut state: Sequence,
         capacity: usize,
         budget: u64,
+        media_budget: u64,
         private_verification: bool,
     ) -> Result<()> {
         state.poisoned = true;
@@ -368,6 +381,7 @@ impl CudaExecutor {
         }
         state.verification_priced = private_verification;
         state.budget = budget;
+        state.media_budget = media_budget;
         state.history.clear();
         state.hidden.clear();
         state.media = None;
@@ -429,10 +443,24 @@ impl CudaExecutor {
     pub(super) fn release(&mut self, id: StateId) -> Result<()> {
         self.idle()?;
         self.loaded.device().drain()?;
+        let state = self
+            .states
+            .get(&id)
+            .ok_or_else(|| Error::invalid("unknown CUDA state"))?;
+        let retained_budget = state
+            .budget
+            .checked_sub(state.media_budget)
+            .ok_or_else(|| Error::invariant("media reservation exceeds sequence budget"))?;
         let mut state = self
             .states
             .remove(&id)
             .ok_or_else(|| Error::invalid("unknown CUDA state"))?;
+        // Drain before releasing request-owned vision data. The pooled shell retains its
+        // program, but not this request's vision peak; charging that peak again on reuse would
+        // make the quote grow after every image.
+        state.media = None;
+        state.budget = retained_budget;
+        state.media_budget = 0;
         if let (Some(draft), Some(engine)) = (state.draft.take(), self.dflash.as_mut()) {
             engine.release(&draft.cursor);
         }
@@ -568,6 +596,7 @@ impl CudaExecutor {
                 readout,
                 // The pool paid for the slot's storage and programs when it was built.
                 budget: 0,
+                media_budget: 0,
                 history: Vec::new(),
                 hidden: Vec::new(),
                 media: None,

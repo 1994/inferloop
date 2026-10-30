@@ -1,4 +1,4 @@
-//! Frozen owner budgets. Backend drivers share this CPU contract without selecting a device kind.
+//! CPU owner capacities. Backend drivers share this contract without selecting a device kind.
 mod history;
 pub mod plans;
 pub mod storage;
@@ -19,8 +19,6 @@ use std::time::Instant;
 const DEFAULT_MAINTENANCE_ITEMS: usize = 64;
 /// Default number of host tokens retained by the sampling pools.
 const DEFAULT_HOST_TOKENS: usize = 1 << 22;
-/// Default host byte budget for CPU-owned pools (256 MiB).
-const DEFAULT_HOST_BYTES: usize = 256 << 20;
 /// Default window in which deferred work is ranked urgent, in microseconds.
 const DEFAULT_URGENCY_WINDOW_US: u64 = 10_000;
 /// Default minimum poll interval for the CPU owner, in microseconds.
@@ -54,7 +52,6 @@ pub struct CpuRuntimeConfig {
     pub placement: OwnerPlacement,
     pub maintenance_items: usize,
     pub host_tokens: usize,
-    pub host_bytes: usize,
     pub urgency_window_us: u64,
     pub poll_min_us: u64,
     pub poll_max_us: u64,
@@ -65,7 +62,6 @@ impl Default for CpuRuntimeConfig {
             placement: OwnerPlacement::default(),
             maintenance_items: DEFAULT_MAINTENANCE_ITEMS,
             host_tokens: DEFAULT_HOST_TOKENS,
-            host_bytes: DEFAULT_HOST_BYTES,
             urgency_window_us: DEFAULT_URGENCY_WINDOW_US,
             poll_min_us: DEFAULT_POLL_MIN_US,
             poll_max_us: DEFAULT_POLL_MAX_US,
@@ -84,34 +80,27 @@ pub struct CpuRuntimeInspection {
     pub prepared_next: bool,
 }
 impl CpuRuntimeConfig {
-    /// Include all three synchronous/asynchronous sampling workspaces in the frozen owner budget.
+    /// Include all three synchronous/asynchronous sampling workspaces in the storage estimate.
     /// # Errors
-    /// Rejects overflow or a vocabulary whose persistent worker storage exceeds the host limit.
+    /// Rejects storage-size overflow.
     pub fn fixed_bytes_for(&self, runtime: &RuntimeConfig, vocabulary: usize) -> Result<usize> {
         let fixed = self.fixed_bytes(runtime)?;
         let total = vocabulary
             .checked_mul(SAMPLING_WORKSPACES * (size_of::<(usize, f32)>() + size_of::<f64>()))
             .and_then(|sampling| fixed.checked_add(sampling))
             .ok_or_else(|| Error::invalid("CPU sampling storage overflow"))?;
-        if self
-            .host_tokens
+        self.host_tokens
             .checked_mul(TOKEN_SCORE_BYTES)
             .and_then(|tokens| total.checked_add(tokens))
-            .is_none_or(|bytes| bytes > self.host_bytes)
-        {
-            return Err(Error::invalid(
-                "CPU sampling pools exceed host memory budget",
-            ));
-        }
+            .ok_or_else(|| Error::invalid("CPU sampling storage overflow"))?;
         Ok(total)
     }
-    /// Conservative application storage budget; driver/device allocations have a separate backend pool.
+    /// Conservative application storage estimate; device allocations have a separate backend pool.
     /// # Errors
-    /// Rejects overflowing capacities, invalid poll/drain limits or a host budget too small for its pools.
+    /// Rejects overflowing capacities or invalid poll/drain limits.
     pub fn fixed_bytes(&self, runtime: &RuntimeConfig) -> Result<usize> {
         if self.maintenance_items == 0
             || self.host_tokens == 0
-            || self.host_bytes == 0
             || self.poll_min_us == 0
             || self.poll_max_us < self.poll_min_us
             || self.poll_max_us > MAX_POLL_INTERVAL_US
@@ -152,16 +141,10 @@ impl CpuRuntimeConfig {
                 .and_then(|bytes| fixed.checked_add(bytes))
                 .ok_or_else(|| Error::invalid("CPU storage budget overflow"))?;
         }
-        let total = self
-            .host_tokens
+        self.host_tokens
             .checked_mul(size_of::<u32>())
             .and_then(|tokens| fixed.checked_add(tokens))
             .ok_or_else(|| Error::invalid("CPU token budget overflow"))?;
-        if total > self.host_bytes {
-            return Err(Error::invalid(
-                "CPU pools exceed configured host memory budget",
-            ));
-        }
         Ok(fixed)
     }
 }

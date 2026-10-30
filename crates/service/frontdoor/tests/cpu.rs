@@ -8,9 +8,21 @@ fn config() -> CpuConfig {
     CpuConfig {
         workers: 2,
         max_jobs: 4,
-        max_bytes: 4096,
         ..Default::default()
     }
+}
+
+#[tokio::test]
+async fn default_preparation_accepts_a_large_staging_request() -> Result<()> {
+    const LARGE_REQUEST_BYTES: usize = 128 * 1024 * 1024;
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 2,
+        ..CpuConfig::default()
+    })?;
+    assert_eq!(pool.run(LARGE_REQUEST_BYTES, |_| Ok(7)).await?, 7);
+    assert_eq!(pool.inspect().retained_bytes, 0);
+    Ok(())
 }
 #[tokio::test]
 async fn preparation_workers_run_concurrently_and_a_blocked_job_does_not_block_delivery()
@@ -64,7 +76,6 @@ async fn completed_jobs_release_credit_before_delivering_results() -> Result<()>
     let pool = CpuPool::new(CpuConfig {
         workers: 1,
         max_jobs: 1,
-        max_bytes: 32,
         ..config()
     })?;
     for _ in 0..1000 {
@@ -86,7 +97,6 @@ async fn timeout_keeps_byte_credit_until_the_actual_cpu_job_exits() -> Result<()
     let pool = CpuPool::new(CpuConfig {
         workers: 1,
         max_jobs: 1,
-        max_bytes: 32,
         job_timeout_ms: 20,
         ..config()
     })?;

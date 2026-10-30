@@ -91,7 +91,7 @@ impl RuntimeHandle {
             delivery,
             observation,
             observation_bytes,
-            ingress: Registry::new(config.max_jobs, config.max_bytes),
+            ingress: Registry::new(config.max_jobs),
             config,
         })
     }

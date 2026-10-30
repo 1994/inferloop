@@ -18,7 +18,8 @@ const TOKEN_TILE: usize = 32;
 const WIDE_HEAD_WIDTH: usize = 128;
 /// Q, K, V and attended temporary wide buffers.
 const COMPACT_PACK_BUFFERS: usize = 4;
-/// Patch embeddings, gathered positions and the added output each hold one hidden matrix.
+/// Patch embeddings, gathered positions and the added output each hold one hidden matrix. The
+/// device gather replaces the position matrix with tap arrays smaller than one hidden matrix.
 const PATCH_EMBED_HIDDEN_COPIES: usize = 3;
 /// Q, K, V, rotated Q, rotated K and the attended output each hold one projection matrix.
 const ATTENTION_PROJECTION_COPIES: usize = 6;

@@ -34,13 +34,13 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 427
+      "tests": 429
     },
     "frontdoor": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 103
+      "tests": 104
     },
     "ir": {
       "benches": 0,
@@ -70,7 +70,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 152
+      "tests": 154
     },
     "quality": {
       "benches": 0,
@@ -88,7 +88,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 104
+      "tests": 105
     },
     "scheduler": {
       "benches": 0,
@@ -179,6 +179,7 @@
     "real MTP2 checkpoint/CUDA; validates pooled quotes without resident home programs": 1,
     "real MTP2 checkpoint/CUDA; validates private slot binding, admission and reset accounting": 1,
     "real Qwen text checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 1,
+    "real Qwen3-VL checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 1,
     "real Qwen3-VL text checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 1,
     "release CUDA performance diagnostic; run inside safe-run": 1,
     "requires CUDA and INFER_TEST_MODEL; run release inside safe-run": 3,
@@ -267,6 +268,7 @@
     "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 6,
     "requires a CUDA device; run inside safe-run": 5,
     "requires a Linux production host with get/set_mempolicy permitted; make check-linux-numa": 1,
+    "requires a reserved CUDA device": 1,
     "requires a reserved CUDA device; compares every output with the prior tower": 1,
     "requires a reserved CUDA device; compares full outputs with scalar and existing paths": 1,
     "requires an NVIDIA GPU; run under tools/bench/safe-run.sh": 9,
@@ -324,6 +326,11 @@
       "crate": "cuda",
       "file": "src/device/vendor_fp8/nvfp4.rs",
       "mount": "../../../tests/unit/vendor_nvfp4.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/device/vision_position.rs",
+      "mount": "../../tests/unit/vision_position.rs"
     },
     {
       "crate": "cuda",
@@ -1422,11 +1429,11 @@
     }
   ],
   "totals": {
-    "all": 1028,
+    "all": 1034,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1028
+    "tests": 1034
   }
 }

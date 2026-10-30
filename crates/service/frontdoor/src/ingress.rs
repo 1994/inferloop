@@ -11,7 +11,6 @@ struct Usage {
 pub struct Registry {
     usage: Mutex<Usage>,
     max_jobs: usize,
-    max_bytes: usize,
 }
 pub struct Pending {
     registry: Arc<Registry>,
@@ -20,14 +19,13 @@ pub struct Pending {
     cancelled: Arc<AtomicBool>,
 }
 impl Registry {
-    pub fn new(max_jobs: usize, max_bytes: usize) -> Arc<Self> {
+    pub fn new(max_jobs: usize) -> Arc<Self> {
         Arc::new(Self {
             usage: Mutex::new(Usage {
                 entries: BTreeMap::new(),
                 bytes: 0,
             }),
             max_jobs,
-            max_bytes,
         })
     }
     pub fn reserve(self: &Arc<Self>, id: RequestId, bytes: usize) -> Result<Arc<Pending>> {
@@ -42,7 +40,7 @@ impl Registry {
             .bytes
             .checked_add(bytes)
             .ok_or_else(|| Error::invalid("ingress bytes overflow"))?;
-        if usage.entries.len() >= self.max_jobs || total > self.max_bytes {
+        if usage.entries.len() >= self.max_jobs {
             return Err(Error::new(
                 ErrorCode::Capacity,
                 "pending ingress budget exhausted",

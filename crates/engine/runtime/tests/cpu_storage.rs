@@ -70,13 +70,65 @@ fn result_reader_holds_token_and_byte_credits_after_request_slot_is_freed() -> R
 }
 
 #[test]
-fn multi_image_credit_rejection_preserves_admission_and_releases_after_completion() -> Result<()> {
+fn default_host_storage_accepts_many_retained_images() -> Result<()> {
+    use infer_core::MediaId;
+    use infer_ir::{MediaInput, MediaItem, Modality, RequestInput};
+    use std::sync::Arc;
+
+    const REQUESTS: u64 = 12;
+    const IMAGE_FLOATS: usize = 8 * 1024 * 1024;
+    let config = RuntimeConfig {
+        max_requests: 16,
+        max_num_seqs: 16,
+        ..RuntimeConfig::default()
+    };
+    let ir = support::model(ModelId::ONE);
+    let mut registry = KernelRegistry::default();
+    registry.register(&support::DeclaredKernels)?;
+    let mut engine = Engine::new(
+        support::ProtocolBackend::new(64, 16, &ir)?.multimodal(),
+        ir,
+        PrecisionPlan::f32(),
+        &registry,
+        config,
+    )?;
+    let pixels: Arc<[f32]> = Arc::from(vec![0.5; IMAGE_FLOATS]);
+    for id in 1..=REQUESTS {
+        let mut request = request(id)?;
+        let RequestInput::Sequence { media, .. } = &mut request.input else {
+            return Err(Error::invariant("expected a token sequence"));
+        };
+        media.push(MediaInput {
+            id: MediaId::ONE,
+            modality: Modality::Image,
+            content_digest: format!("image-{id}"),
+            item: Some(MediaItem {
+                modality: Modality::Image,
+                pixels: pixels.clone(),
+                grid: (1, 1, 1),
+                span: 0..1,
+            }),
+        });
+        engine.submit(request)?;
+    }
+    assert!(engine.inspect().cpu.retained_host_bytes > 256 * 1024 * 1024);
+    let mut outputs = Vec::new();
+    drain(&mut engine, &mut outputs)?;
+    outputs.clear();
+    for id in 1..=REQUESTS {
+        drop(engine.take_completed(RequestId::new(id)?)?);
+    }
+    assert_eq!(engine.inspect().cpu.retained_host_bytes, 0);
+    engine.check_invariants()
+}
+
+#[test]
+fn multi_image_accounting_releases_after_completion() -> Result<()> {
     use infer_core::MediaId;
     use infer_ir::{MediaInput, MediaItem, Modality, RequestInput};
     use std::sync::Arc;
 
     const FLOATS_PER_IMAGE: usize = 16_384;
-    const REQUEST_HEADROOM_BYTES: usize = 192 * 1024;
     let mut config = RuntimeConfig {
         max_requests: 4,
         max_num_seqs: 2,
@@ -88,8 +140,6 @@ fn multi_image_credit_rejection_preserves_admission_and_releases_after_completio
     };
     config.cpu.host_tokens = 4096;
     let ir = support::model(ModelId::ONE);
-    config.cpu.host_bytes =
-        config.cpu.fixed_bytes_for(&config, ir.vocab_size)? + REQUEST_HEADROOM_BYTES;
     let mut registry = KernelRegistry::default();
     registry.register(&support::DeclaredKernels)?;
     let mut engine = Engine::new(
@@ -123,23 +173,10 @@ fn multi_image_credit_rejection_preserves_admission_and_releases_after_completio
     engine.submit(image_request(1)?)?;
     let held = engine.inspect().cpu;
     assert!(held.retained_host_bytes >= 2 * FLOATS_PER_IMAGE * size_of::<f32>());
-    assert_eq!(
-        engine
-            .submit(image_request(2)?)
-            .err()
-            .map(|error| error.code),
-        Some(ErrorCode::Capacity)
-    );
-    let after_rejection = engine.inspect().cpu;
-    assert_eq!(
-        after_rejection.retained_host_bytes,
-        held.retained_host_bytes
-    );
-    assert_eq!(
-        after_rejection.retained_host_tokens,
-        held.retained_host_tokens
-    );
-    assert!(engine.request(RequestId::new(2)?).is_err());
+    engine.submit(image_request(2)?)?;
+    let both = engine.inspect().cpu;
+    assert!(both.retained_host_bytes > held.retained_host_bytes);
+    assert!(both.retained_host_tokens > held.retained_host_tokens);
     engine.check_invariants()?;
 
     let mut outputs = Vec::new();
@@ -147,12 +184,15 @@ fn multi_image_credit_rejection_preserves_admission_and_releases_after_completio
     let completed = engine
         .take_completed(RequestId::ONE)?
         .ok_or_else(|| Error::invariant("missing completion"))?;
+    let second = engine
+        .take_completed(RequestId::new(2)?)?
+        .ok_or_else(|| Error::invariant("missing second completion"))?;
     outputs.clear();
     drop(completed);
+    drop(second);
     assert_eq!(engine.inspect().cpu.retained_host_bytes, 0);
     assert_eq!(engine.inspect().cpu.retained_host_tokens, 0);
-    engine.submit(image_request(2)?)?;
-    drain(&mut engine, &mut outputs)
+    engine.check_invariants()
 }
 
 #[test]

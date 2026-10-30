@@ -173,7 +173,8 @@ pub(crate) fn patchify(
         .checked_mul(grid.temporal)
         .and_then(|value| value.checked_mul(patch_area))
         .ok_or_else(|| Error::invalid("patch width overflow"))?;
-    let patches = expected_frames
+    let patches = grid
+        .groups
         .checked_mul(grid.height)
         .and_then(|value| value.checked_mul(grid.width))
         .ok_or_else(|| Error::invalid("patch count overflow"))?;
@@ -370,6 +371,10 @@ impl ImageProcessor {
         reason = "Resampled values are rounded into the 8-bit range before the narrowing cast"
     )]
     pub(crate) fn resize(image: &RgbImage, height: usize, width: usize) -> Vec<f32> {
+        if image.height == height && image.width == width {
+            // Unit-scale bicubic sampling reproduces each RGB8 value exactly.
+            return image.pixels.iter().copied().map(f32::from).collect();
+        }
         let horizontal = resample_axis(image.width, width);
         let vertical = resample_axis(image.height, height);
         let mut intermediate = vec![0f32; image.height * width * RGB_CHANNELS];

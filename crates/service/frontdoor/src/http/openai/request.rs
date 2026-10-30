@@ -382,7 +382,7 @@ impl WireMessage {
             )),
         }
     }
-    /// Total text, URL and call bytes charged to the staging budget.
+    /// Total text, URL and call bytes used to estimate staging.
     fn text_len(&self) -> usize {
         let content = self.parts().map_or(0, |parts| {
             parts.iter().fold(0usize, |sum, part| match part {

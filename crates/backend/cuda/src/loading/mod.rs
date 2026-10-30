@@ -24,10 +24,9 @@ use crate::tuning::attention::mma::prepare;
 use crate::vision::VisionWeights;
 use crate::vision::footprint;
 use crate::vision::merger;
-use crate::vision::patch_embed;
 use crate::vision::patch_width;
+use crate::vision::program::patch_embed_device_positions;
 use crate::vision::tower;
-use infer_models::vision::gather_positions;
 use infer_models::vision::position_taps;
 pub use kv_scales::load as load_kv_scales;
 mod bindings;
@@ -230,16 +229,14 @@ impl LoadedVision {
         if image.pixels.len() != patches * width {
             return Err(Error::invalid("image pixels do not match the patch grid"));
         }
-        // The position contribution is a host-side gather of the learned table, then the tower
-        // consumes patch embeddings and the merger folds each merge group back into text width.
+        // The tower consumes patch embeddings and the merger folds each group into text width.
         let taps = position_taps(image.grid, &self.encoder)?;
-        let positions = gather_positions(self.weights.position_table(), &self.encoder, &taps)?;
-        let embedded = patch_embed(
+        let embedded = patch_embed_device_positions(
             device,
             &self.encoder,
             &self.weights,
             &image.pixels,
-            &positions,
+            &taps,
             patches,
         )?;
         let hidden = tower(
