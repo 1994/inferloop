@@ -4,6 +4,10 @@ use infer_core::{Error, ErrorCode, Result};
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 
+/// One device owner submits one host job at a time; keeping it on the same worker lets
+/// device-library state remain thread-local instead of multiplying its GPU allocations.
+const DEVICE_WORKER: usize = 0;
+
 #[derive(Default)]
 struct Worker {
     idle: bool,
@@ -12,9 +16,16 @@ struct Worker {
 
 struct State {
     jobs: VecDeque<Job>,
+    device_jobs: VecDeque<Job>,
     workers: Vec<Worker>,
     preferred: usize,
     closed: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Lane {
+    Preparation,
+    Device,
 }
 
 pub(super) struct WorkQueue {
@@ -28,6 +39,7 @@ impl WorkQueue {
         Self {
             state: Mutex::new(State {
                 jobs: VecDeque::new(),
+                device_jobs: VecDeque::new(),
                 workers: (0..workers).map(|_| Worker::default()).collect(),
                 preferred: 0,
                 closed: false,
@@ -38,26 +50,48 @@ impl WorkQueue {
     }
 
     fn submit(&self, job: Job) -> Result<()> {
+        self.submit_in(job, Lane::Preparation)
+    }
+
+    fn submit_device(&self, job: Job) -> Result<()> {
+        self.submit_in(job, Lane::Device)
+    }
+
+    fn submit_in(&self, job: Job, lane: Lane) -> Result<()> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| Error::invariant("CPU work queue poisoned"))?;
-        if state.closed || state.jobs.len() >= self.capacity {
+        let (length, capacity) = match lane {
+            Lane::Preparation => (state.jobs.len(), self.capacity),
+            Lane::Device => (state.device_jobs.len(), self.ready.len()),
+        };
+        let full = length >= capacity;
+        if state.closed || full {
             return Err(Error::new(ErrorCode::Capacity, "CPU queue unavailable"));
         }
-        state.jobs.try_reserve(1).map_err(|error| {
+        let jobs = match lane {
+            Lane::Preparation => &mut state.jobs,
+            Lane::Device => &mut state.device_jobs,
+        };
+        jobs.try_reserve(1).map_err(|error| {
             Error::new(
                 ErrorCode::Capacity,
                 format!("CPU work queue allocation: {error}"),
             )
         })?;
-        state.jobs.push_back(job);
+        jobs.push_back(job);
         let available = |worker: &Worker| worker.idle && !worker.notified;
         let preferred = state.preferred;
-        let target = if available(&state.workers[preferred]) {
-            Some(preferred)
-        } else {
-            state.workers.iter().position(available)
+        let target = match lane {
+            Lane::Device => available(&state.workers[DEVICE_WORKER]).then_some(DEVICE_WORKER),
+            Lane::Preparation => {
+                if available(&state.workers[preferred]) {
+                    Some(preferred)
+                } else {
+                    state.workers.iter().position(available)
+                }
+            }
         };
         if let Some(index) = target {
             state.workers[index].notified = true;
@@ -91,7 +125,10 @@ impl WorkQueue {
             .lock()
             .map_err(|_| Error::invariant("CPU work queue poisoned"))?;
         loop {
-            if let Some(job) = state.jobs.pop_front() {
+            let device = (index == DEVICE_WORKER)
+                .then(|| state.device_jobs.pop_front())
+                .flatten();
+            if let Some(job) = device.or_else(|| state.jobs.pop_front()) {
                 state.workers[index].idle = false;
                 state.workers[index].notified = false;
                 return Ok(Some(job));
@@ -123,6 +160,10 @@ pub(super) struct WorkSender(pub(super) Arc<WorkQueue>);
 impl WorkSender {
     pub(super) fn submit(&self, job: Job) -> Result<()> {
         self.0.submit(job)
+    }
+
+    pub(super) fn submit_device(&self, job: Job) -> Result<()> {
+        self.0.submit_device(job)
     }
 }
 

@@ -4,9 +4,10 @@ use crate::target::CudaTarget;
 use cuda_core::CudaContext;
 use infer_core::{Error, ErrorCode, Result};
 use infer_ir::{EncodedImageInfo, ImageEncoding};
+use infer_spi::DeviceHostExecutor;
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::ptr::{NonNull, null, null_mut};
+use std::ptr::{NonNull, from_mut, null, null_mut};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, ThreadId};
 
@@ -131,6 +132,12 @@ struct DecodeArgs {
     outputs: [Image; 1],
 }
 
+#[derive(Clone, Copy)]
+enum SessionKind {
+    Probe,
+    Device,
+}
+
 struct Session {
     api: &'static Api,
     context: Arc<CudaContext>,
@@ -142,14 +149,15 @@ struct Session {
     healthy: bool,
 }
 
+#[expect(
+    unsafe_code,
+    clippy::non_send_fields_in_send_ty,
+    reason = "Exclusive decoder leases transfer to the completion owner and retain device buffers through the fence"
+)]
 // SAFETY: a session is exclusively leased and can execute only on the thread that created it.
 // The pool may move ownership to another thread for release, but checks the creator before use;
 // every call and destruction binds the retained primary context. Pending bytes and descriptors
 // stay in the session until its submitting stream has fenced.
-#[expect(
-    unsafe_code,
-    reason = "Exclusive decoder leases move between bounded worker and device-owner threads"
-)]
 unsafe impl Send for Session {}
 
 impl Session {
@@ -157,7 +165,11 @@ impl Session {
         unsafe_code,
         reason = "The nvJPEG handles are created and validated within their retained primary CUDA context"
     )]
-    fn create(context: Arc<CudaContext>, api: &'static Api) -> Result<Option<Self>> {
+    fn create(
+        context: Arc<CudaContext>,
+        api: &'static Api,
+        kind: SessionKind,
+    ) -> Result<Option<Self>> {
         context.bind_to_thread().map_err(device_error)?;
         let mut session = Self {
             api,
@@ -178,7 +190,7 @@ impl Session {
                 null_mut(),
                 null_mut(),
                 UPSAMPLE_INTERPOLATION,
-                &mut raw,
+                &raw mut raw,
             )
         };
         if result == ARCH_MISMATCH || result == IMPLEMENTATION_NOT_SUPPORTED {
@@ -192,7 +204,7 @@ impl Session {
             .as_ptr();
         let (mut engines, mut cores) = (0, 0);
         // SAFETY: the handle is live and the writable output slots are valid.
-        let result = unsafe { (api.hardware_info)(handle, &mut engines, &mut cores) };
+        let result = unsafe { (api.hardware_info)(handle, &raw mut engines, &raw mut cores) };
         if result == ARCH_MISMATCH || result == IMPLEMENTATION_NOT_SUPPORTED {
             return Ok(None);
         }
@@ -200,28 +212,13 @@ impl Session {
         if engines == 0 || cores == 0 {
             return Ok(None);
         }
-        raw = null_mut();
-        // SAFETY: the handle is live and the output points to a valid state slot.
-        check(
-            unsafe { (api.state_create)(handle, &mut raw) },
-            "state create",
-        )?;
-        session.state = NonNull::new(raw);
-        let state = session
-            .state
-            .ok_or_else(|| Error::invariant("nvJPEG created a null state"))?
-            .as_ptr();
-        // SAFETY: both handles belong to this context; the fixed batch has one RGBI destination.
-        check(
-            unsafe { (api.initialize)(handle, state, 1, 1, RGB_INTERLEAVED) },
-            "initialize",
-        )?;
+        if matches!(kind, SessionKind::Device) {
+            session.initialize_state(handle)?;
+        }
         raw = null_mut();
         // SAFETY: the handle is live and the output points to a valid stream slot.
-        check(
-            unsafe { (api.stream_create)(handle, &mut raw) },
-            "JPEG stream create",
-        )?;
+        let result = unsafe { (api.stream_create)(handle, &raw mut raw) };
+        check(result, "JPEG stream create")?;
         session.jpeg = NonNull::new(raw);
         if session.jpeg.is_none() {
             return Err(Error::invariant("nvJPEG created a null JPEG stream"));
@@ -229,7 +226,26 @@ impl Session {
         Ok(Some(session))
     }
 
-    fn handles(&self) -> Result<(Handle, Handle, Handle)> {
+    #[expect(
+        unsafe_code,
+        reason = "The device decoder state belongs to the exclusively leased nvJPEG handle"
+    )]
+    fn initialize_state(&mut self, handle: Handle) -> Result<()> {
+        let mut raw = null_mut();
+        // SAFETY: the handle is live and the output points to a valid state slot.
+        let result = unsafe { (self.api.state_create)(handle, &raw mut raw) };
+        check(result, "state create")?;
+        self.state = NonNull::new(raw);
+        let state = self
+            .state
+            .ok_or_else(|| Error::invariant("nvJPEG created a null state"))?
+            .as_ptr();
+        // SAFETY: both handles belong to this context; the fixed batch has one RGBI destination.
+        let result = unsafe { (self.api.initialize)(handle, state, 1, 1, RGB_INTERLEAVED) };
+        check(result, "initialize")
+    }
+
+    fn handles(&self) -> Result<(Handle, Handle)> {
         if self.owner != thread::current().id() {
             return Err(Error::invariant(
                 "nvJPEG state used from a different thread",
@@ -238,13 +254,10 @@ impl Session {
         let handle = self
             .handle
             .ok_or_else(|| Error::invariant("nvJPEG handle missing"))?;
-        let state = self
-            .state
-            .ok_or_else(|| Error::invariant("nvJPEG state missing"))?;
         let jpeg = self
             .jpeg
             .ok_or_else(|| Error::invariant("nvJPEG stream missing"))?;
-        Ok((handle.as_ptr(), state.as_ptr(), jpeg.as_ptr()))
+        Ok((handle.as_ptr(), jpeg.as_ptr()))
     }
 
     #[expect(
@@ -256,7 +269,7 @@ impl Session {
             return Ok(None);
         }
         self.context.bind_to_thread().map_err(device_error)?;
-        let (handle, _, jpeg) = self.handles()?;
+        let (handle, jpeg) = self.handles()?;
         // SAFETY: bytes is readable for its exact length and both handles are live and exclusive.
         let result = unsafe { (self.api.parse_header)(handle, bytes.as_ptr(), bytes.len(), jpeg) };
         if [BAD_JPEG, JPEG_NOT_SUPPORTED, INCOMPLETE_BITSTREAM].contains(&result) {
@@ -265,19 +278,15 @@ impl Session {
         check(result, "parse header")?;
         let mut unsupported = 1;
         // SAFETY: the JPEG stream was parsed successfully; the output slot is valid.
-        check(
-            unsafe { (self.api.supported)(handle, jpeg, &mut unsupported) },
-            "support query",
-        )?;
+        let result = unsafe { (self.api.supported)(handle, jpeg, &raw mut unsupported) };
+        check(result, "support query")?;
         if unsupported != 0 {
             return Ok(None);
         }
         let (mut width, mut height) = (0, 0);
         // SAFETY: the parsed stream and both writable output slots are valid.
-        check(
-            unsafe { (self.api.dimensions)(jpeg, &mut width, &mut height) },
-            "dimensions",
-        )?;
+        let result = unsafe { (self.api.dimensions)(jpeg, &raw mut width, &raw mut height) };
+        check(result, "dimensions")?;
         let height = usize::try_from(height).map_err(|_| Error::invalid("JPEG height overflow"))?;
         let width = usize::try_from(width).map_err(|_| Error::invalid("JPEG width overflow"))?;
         Ok(Some([height, width]))
@@ -295,7 +304,11 @@ impl Session {
         stream: Handle,
     ) -> Result<()> {
         self.context.bind_to_thread().map_err(device_error)?;
-        let (handle, state, _) = self.handles()?;
+        let (handle, _) = self.handles()?;
+        let state = self
+            .state
+            .ok_or_else(|| Error::invariant("nvJPEG state missing"))?
+            .as_ptr();
         let address =
             usize::try_from(output).map_err(|_| Error::invalid("JPEG output address overflow"))?;
         let pitch = width
@@ -368,11 +381,13 @@ impl Drop for Session {
 struct Pool {
     context: Arc<CudaContext>,
     api: &'static Api,
+    kind: SessionKind,
     available: Mutex<HashMap<ThreadId, Vec<Session>>>,
 }
 
 pub(super) struct Decoder {
-    pool: Arc<Pool>,
+    probes: Arc<Pool>,
+    devices: Arc<Pool>,
     identity: String,
 }
 
@@ -381,14 +396,16 @@ pub(super) struct LazyDecoder {
     context: Arc<CudaContext>,
     target: CudaTarget,
     decoder: OnceLock<Result<Option<Arc<Decoder>>>>,
+    executor: OnceLock<Arc<dyn DeviceHostExecutor>>,
 }
 
 impl LazyDecoder {
-    pub fn new(context: Arc<CudaContext>, target: CudaTarget) -> Self {
+    pub const fn new(context: Arc<CudaContext>, target: CudaTarget) -> Self {
         Self {
             context,
             target,
             decoder: OnceLock::new(),
+            executor: OnceLock::new(),
         }
     }
 
@@ -402,10 +419,21 @@ impl LazyDecoder {
         if !bytes.starts_with(JPEG_MAGIC) {
             return Ok(None);
         }
-        match self.get()? {
-            Some(decoder) => decoder.inspect(bytes),
-            None => Ok(None),
-        }
+        self.get()?
+            .map_or(Ok(None), |decoder| decoder.inspect(bytes))
+    }
+
+    pub fn set_host_executor(&self, executor: Arc<dyn DeviceHostExecutor>) -> Result<()> {
+        self.executor
+            .set(executor)
+            .map_err(|_| Error::invariant("nvJPEG host executor is already installed"))
+    }
+
+    pub fn host_executor(&self) -> Result<Arc<dyn DeviceHostExecutor>> {
+        self.executor
+            .get()
+            .cloned()
+            .ok_or_else(|| Error::unsupported("nvJPEG requires a bounded host executor"))
     }
 }
 
@@ -416,7 +444,7 @@ impl Decoder {
     )]
     fn load(target: &CudaTarget, context: Arc<CudaContext>) -> Result<Option<Arc<Self>>> {
         let Some(api) = api() else { return Ok(None) };
-        let Some(session) = Session::create(Arc::clone(&context), api)? else {
+        let Some(session) = Session::create(Arc::clone(&context), api, SessionKind::Probe)? else {
             return Ok(None);
         };
         let mut version = [0; VERSION_COMPONENTS];
@@ -424,39 +452,48 @@ impl Decoder {
             let property =
                 i32::try_from(property).map_err(|_| Error::invariant("nvJPEG version index"))?;
             // SAFETY: the property is a libraryPropertyType discriminant and value is writable.
-            check(unsafe { (api.property)(property, value) }, "version")?;
+            let result = unsafe { (api.property)(property, from_mut(value)) };
+            check(result, "version")?;
         }
         let identity = format!(
             "nvjpeg-hardware-{}.{}.{}-interpolated-{:?}",
             version[0], version[1], version[2], target
         );
         Ok(Some(Arc::new(Self {
-            pool: Arc::new(Pool {
+            probes: Arc::new(Pool {
+                context: Arc::clone(&context),
+                api,
+                kind: SessionKind::Probe,
+                available: Mutex::new(HashMap::from([(session.owner, vec![session])])),
+            }),
+            devices: Arc::new(Pool {
                 context,
                 api,
-                available: Mutex::new(HashMap::from([(session.owner, vec![session])])),
+                kind: SessionKind::Device,
+                available: Mutex::new(HashMap::new()),
             }),
             identity,
         })))
     }
 
-    fn acquire(&self) -> Result<Arc<Lease>> {
+    fn acquire(pool: &Arc<Pool>) -> Result<Arc<Lease>> {
         let session = {
-            let mut pool = self
-                .pool
+            let mut available = pool
                 .available
                 .lock()
                 .map_err(|_| Error::invariant("nvJPEG pool poisoned"))?;
-            pool.get_mut(&thread::current().id()).and_then(Vec::pop)
+            available
+                .get_mut(&thread::current().id())
+                .and_then(Vec::pop)
         };
         let session = match session {
             Some(session) => session,
-            None => Session::create(Arc::clone(&self.pool.context), self.pool.api)?
+            None => Session::create(Arc::clone(&pool.context), pool.api, pool.kind)?
                 .ok_or_else(|| Error::unsupported("nvJPEG hardware decoder became unavailable"))?,
         };
         Ok(Arc::new(Lease {
             session: Mutex::new(Some(session)),
-            pool: Arc::clone(&self.pool),
+            pool: Arc::clone(pool),
         }))
     }
 
@@ -464,7 +501,7 @@ impl Decoder {
         if !bytes.starts_with(JPEG_MAGIC) {
             return Ok(None);
         }
-        let Some(source) = self.acquire()?.inspect(bytes)? else {
+        let Some(source) = Self::acquire(&self.probes)?.inspect(bytes)? else {
             return Ok(None);
         };
         EncodedImageInfo::new(source, ImageEncoding::Jpeg, self.identity.clone()).map(Some)
@@ -476,7 +513,7 @@ impl Decoder {
         {
             return Err(Error::invalid("compressed image decoder identity mismatch"));
         }
-        let lease = self.acquire()?;
+        let lease = Self::acquire(&self.devices)?;
         if lease.inspect(bytes)? != Some(expected.source()) {
             return Err(Error::invalid(
                 "compressed JPEG header or geometry mismatch",
@@ -532,9 +569,10 @@ impl Drop for Lease {
                 args.outputs[0].channel[0] = null_mut();
             }
             if session.healthy {
-                match self.pool.available.lock() {
-                    Ok(mut pool) => pool.entry(session.owner).or_default().push(session),
-                    Err(_) => tracing::error!("nvJPEG pool poisoned during release"),
+                if let Ok(mut pool) = self.pool.available.lock() {
+                    pool.entry(session.owner).or_default().push(session);
+                } else {
+                    tracing::error!("nvJPEG pool poisoned during release");
                 }
             }
         }

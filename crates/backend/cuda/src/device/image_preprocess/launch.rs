@@ -48,8 +48,8 @@ impl DeviceOp for Kernels {
                 "image preprocessing stream mismatch".into(),
             ));
         }
-        // SAFETY: both inputs are completely initialized by the pinned copies below
-        // before either kernel can read them. Their allocations are fence-retained.
+        // SAFETY: the source copy or decode initializes the input before either kernel
+        // can read it. The allocation is retained until the stream fence.
         let mut input = unsafe { overwritten::<u8>(ctx, self.geometry.input_elements)? };
         // SAFETY: as above, the coefficients are initialized before the kernels read them.
         let mut coefficients = unsafe { overwritten::<i32>(ctx, self.tables.values.len())? };

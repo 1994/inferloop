@@ -379,7 +379,7 @@ impl MediaService {
         } else {
             None
         };
-        let decoded = requests
+        let loaded = requests
             .iter()
             .enumerate()
             .map(|(index, request)| {
@@ -387,7 +387,7 @@ impl MediaService {
                 images::load(&request.url, bytes, self.source, context, capability)
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(decoded.into_iter().unzip())
+        Ok(loaded.into_iter().unzip())
     }
 
     fn shared_image_inputs(

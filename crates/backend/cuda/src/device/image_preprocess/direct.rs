@@ -42,7 +42,7 @@ impl DeviceOp for Direct {
                 "image preprocessing stream mismatch".into(),
             ));
         }
-        // SAFETY: the pinned copy initializes the input before the kernel reads it.
+        // SAFETY: the source copy or decode initializes the input before the kernel reads it.
         let mut input = unsafe { overwritten::<u8>(ctx, self.geometry.input_elements)? };
         // SAFETY: each kernel thread writes both temporal positions, including padding,
         // before the output may escape its fence-retained execution context.
@@ -67,7 +67,7 @@ impl DeviceOp for Direct {
         ctx.retain(Arc::clone(&self.kernel))?;
         self.source.enqueue(ctx, &self.device, &mut input)?;
         // SAFETY: all arguments match the kernel ABI and stay live until stream completion;
-        // the pinned input copy precedes this launch on the same validated stream.
+        // the input copy or decode precedes this launch on the same validated stream.
         unsafe { launch.execute(ctx)? };
         Ok(output)
     }

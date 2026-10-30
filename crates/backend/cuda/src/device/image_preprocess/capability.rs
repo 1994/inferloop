@@ -3,7 +3,7 @@ use super::geometry::{CHANNELS, Geometry};
 use super::nvjpeg::LazyDecoder;
 use infer_core::Result;
 use infer_ir::{EncodedImageInfo, ImageTransform};
-use infer_spi::ImagePreprocessing;
+use infer_spi::{DeviceHostExecutor, ImagePreprocessing};
 use std::sync::Arc;
 
 /// Qualified patch width and spatial/temporal merge dimensions.
@@ -41,6 +41,10 @@ impl DeviceCapability {
 }
 
 impl ImagePreprocessing for DeviceCapability {
+    fn set_host_executor(&self, executor: Arc<dyn DeviceHostExecutor>) -> Result<()> {
+        self.decoder.set_host_executor(executor)
+    }
+
     fn supports(&self, transform: &ImageTransform) -> bool {
         Capability.supports(transform)
     }

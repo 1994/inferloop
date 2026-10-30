@@ -1432,6 +1432,7 @@ dependencies = [
  "clap",
  "cuda-core",
  "cutile",
+ "futures-channel",
  "infer-compiler",
  "infer-core",
  "infer-gpu-api",

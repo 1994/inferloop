@@ -54,10 +54,11 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
         .transpose()?
         .map(Arc::new);
     let image_preprocessing = engine.backend().image_preprocessing();
-    if !text_only && image_decoder == super::ImageDecoder::Auto {
-        if let Some(capability) = &image_preprocessing {
-            capability.initialize_encoded()?;
-        }
+    if !text_only
+        && image_decoder == super::ImageDecoder::Auto
+        && let Some(capability) = &image_preprocessing
+    {
+        capability.initialize_encoded()?;
     }
     let media = if text_only {
         None

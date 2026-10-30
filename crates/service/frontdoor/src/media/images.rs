@@ -38,7 +38,7 @@ pub(super) enum LoadedImage {
 }
 
 impl LoadedImage {
-    pub fn source(&self) -> [usize; 2] {
+    pub const fn source(&self) -> [usize; 2] {
         match self {
             Self::Rgb(image) => [image.height, image.width],
             Self::Encoded { info, .. } => info.source(),
@@ -79,17 +79,17 @@ pub(super) fn load(
     } else {
         Cow::Owned(read_url(url, None, policy, Some(context))?)
     };
-    if let Some(capability) = capability {
-        if let Some(info) = capability.inspect_encoded(&bytes)? {
-            let source = source_digest(&bytes, Some(context))?;
-            return Ok((
-                LoadedImage::Encoded {
-                    info,
-                    bytes: bytes.into_owned(),
-                },
-                source,
-            ));
-        }
+    if let Some(capability) = capability
+        && let Some(info) = capability.inspect_encoded(&bytes)?
+    {
+        let source = source_digest(&bytes, Some(context))?;
+        return Ok((
+            LoadedImage::Encoded {
+                info,
+                bytes: bytes.into_owned(),
+            },
+            source,
+        ));
     }
     let (image, source) = load_image_bytes(&bytes, Some(context))?;
     Ok((LoadedImage::Rgb(image), source))
