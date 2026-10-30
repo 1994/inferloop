@@ -2,6 +2,8 @@
 
 use super::{SampledVideo, VideoMetadata};
 use std::error::Error;
+#[cfg(target_os = "linux")]
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -75,7 +77,7 @@ async fn dropping_reader_stops_its_decoder() -> TestResult {
     drop(video);
     let process = format!("/proc/{pid}");
     timeout(Duration::from_secs(5), async {
-        while std::path::Path::new(&process).exists() {
+        while Path::new(&process).exists() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
