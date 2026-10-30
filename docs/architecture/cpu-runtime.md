@@ -74,7 +74,7 @@ host_bytes = request/tenant/index/token storage + preparation/staging
            + observation/snapshots + queue/ack storage
 ```
 
-managed budget 包含固定存储与请求峰值，history 独立限额；它不是 RSS 或 driver allocator 上限。默认使用 mimalloc；热路径计数同时检查 alloc/realloc/dealloc。共享权重与 program，避免逐 token 的 `Arc`/`Mutex`，也不让冷对象最后一次 drop 发生在 owner 线程。
+固定存储与请求保留量分别统计，history 独立限额；前处理和运行时不设固定的 host 字节准入额度。字节统计不是 RSS 或 driver allocator 用量。默认使用 mimalloc；热路径计数同时检查 alloc/realloc/dealloc。共享权重与 program，避免逐 token 的 `Arc`/`Mutex`，也不让冷对象最后一次 drop 发生在 owner 线程。
 
 prompt 与结果共享只读 payload，生成的 token 追加到预留存储。prefill 提交 token range，decode 只提交新 token/frontier/page delta，CPU 拷贝量不随累计上下文增长。rerank 当前在 preparation 中拼接连续 query/document，计入预算，不能算作 zero-copy。
 

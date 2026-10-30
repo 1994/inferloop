@@ -36,8 +36,6 @@ const MAX_IMAGE_EDGE: u32 = 8192;
 const MAX_IMAGE_ALLOC_BYTES: u64 = 64 << 20;
 /// Largest accepted video download/decoded raw output.
 const MAX_VIDEO_BYTES: usize = 24 * 1024 * 1024;
-/// Host staging credit reserved for one media item before decode.
-pub const MEDIA_STAGING_BYTES: usize = MAX_VIDEO_BYTES + 1024 * 1024;
 /// Largest accepted frame count decoded from one clip.
 const MAX_VIDEO_FRAMES: usize = 768;
 /// Chunk size for bounded decoder output draining.

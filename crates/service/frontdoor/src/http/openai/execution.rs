@@ -1,7 +1,7 @@
 use super::{ApiResult, GenerationRequest, TextState, ToolPolicy};
 use crate::constants::TOKEN_STAGING_BYTES;
 use crate::cpu::CpuContext;
-use crate::media::{MEDIA_STAGING_BYTES, MediaRequest, MediaService};
+use crate::media::{MediaRequest, MediaService};
 use axum::http::HeaderMap;
 use infer_core::{Error, ErrorCode, FinishReason, RequestId};
 use infer_ir::{CanonicalRequest, RequestInput, Workload, WorkloadOutput};
@@ -126,16 +126,12 @@ impl Encoding {
     }
 }
 
-/// Parse chat media and reserve its bounded staging budget before an identity is consumed.
+/// Parse and validate chat media before an identity is consumed.
 fn chat_media(
     state: &TextState,
     request: &GenerationRequest,
     chat: bool,
-) -> infer_core::Result<(
-    Option<Vec<infer_models::ChatMessage>>,
-    Vec<MediaRequest>,
-    usize,
-)> {
+) -> infer_core::Result<(Option<Vec<infer_models::ChatMessage>>, Vec<MediaRequest>)> {
     let (messages, media) = if chat {
         let (messages, media) = request.chat_messages()?;
         (Some(messages), media)
@@ -151,12 +147,9 @@ fn chat_media(
             .iter()
             .all(|request| request.modality == first.modality)
     {
-        // Reject an over-limit item count before reserving one staging credit per item; the
-        // normal ingress budget error would otherwise mask the actual media-limit violation.
         service.limits().check(&first.modality, media.len())?;
     }
-    let bytes = media.len().saturating_mul(MEDIA_STAGING_BYTES);
-    Ok((messages, media, bytes))
+    Ok((messages, media))
 }
 
 /// Validate, price and submit one generation.
@@ -186,11 +179,9 @@ pub(super) async fn prepare(
     let max_new_tokens = requested.tokens.min(limits.output_cap);
     // Convert the wire history before consuming a request identity, so a malformed tool or
     // media part is a parameter error rather than a failed request.
-    let (messages, media_requests, media_bytes) = chat_media(state, &request, chat)?;
+    let (messages, media_requests) = chat_media(state, &request, chat)?;
     let bytes = request
         .preparation_bytes(max_new_tokens)?
-        .checked_add(media_bytes)
-        .ok_or_else(|| Error::invalid("media preparation budget overflow"))?
         .checked_add(if policy.constraint().is_some() {
             infer_models::CONSTRAINT_REQUEST_BYTES
         } else {

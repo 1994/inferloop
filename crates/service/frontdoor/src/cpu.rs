@@ -1,4 +1,4 @@
-//! Fixed CPU workers with admission bytes, queue bounds and cancellable asynchronous replies.
+//! Fixed CPU workers with queue bounds and cancellable asynchronous replies.
 use infer_core::placement::ThreadPlacement;
 use infer_core::{Error, ErrorCode, Result};
 use serde::{Deserialize, Serialize};
@@ -17,8 +17,6 @@ use tokio::time::timeout as time_timeout;
 const DEFAULT_WORKER_RESERVE: usize = 7;
 /// Upper bound on the auto-sized default worker pool.
 const MAX_DEFAULT_WORKERS: usize = 32;
-/// Default staging byte budget for one CPU pool.
-const DEFAULT_MAX_STAGING_BYTES: usize = 64 << 20;
 /// Default per-lane CPU job timeout, in milliseconds.
 const DEFAULT_JOB_TIMEOUT_MS: u64 = 30_000;
 /// Default control-command acknowledgement timeout, in milliseconds.
@@ -34,7 +32,6 @@ pub struct CpuConfig {
     pub placement: ThreadPlacement,
     pub workers: usize,
     pub max_jobs: usize,
-    pub max_bytes: usize,
     pub job_timeout_ms: u64,
     pub command_timeout_ms: u64,
     pub device_control_timeout_ms: u64,
@@ -49,7 +46,6 @@ impl Default for CpuConfig {
             placement: ThreadPlacement::default(),
             workers,
             max_jobs: workers * 2,
-            max_bytes: DEFAULT_MAX_STAGING_BYTES,
             job_timeout_ms: DEFAULT_JOB_TIMEOUT_MS,
             command_timeout_ms: DEFAULT_COMMAND_TIMEOUT_MS,
             device_control_timeout_ms: DEFAULT_DEVICE_CONTROL_TIMEOUT_MS,
@@ -63,7 +59,6 @@ impl CpuConfig {
         if self.workers == 0
             || self.workers > MAX_WORKERS
             || self.max_jobs < self.workers
-            || self.max_bytes == 0
             || self.job_timeout_ms == 0
             || self.command_timeout_ms == 0
             || self.device_control_timeout_ms == 0
@@ -204,10 +199,10 @@ impl CpuPool {
             .bytes
             .checked_add(bytes)
             .ok_or_else(|| Error::invalid("CPU staging size overflow"))?;
-        if usage.jobs >= self.budget.config.max_jobs || total > self.budget.config.max_bytes {
+        if usage.jobs >= self.budget.config.max_jobs {
             return Err(Error::new(
                 ErrorCode::Capacity,
-                "CPU preparation queue/byte budget exhausted",
+                "CPU preparation queue exhausted",
             ));
         }
         usage.jobs += 1;

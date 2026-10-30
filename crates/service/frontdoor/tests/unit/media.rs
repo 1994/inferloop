@@ -1,6 +1,6 @@
 use super::{
-    MEDIA_STAGING_BYTES, SourcePolicy, TempPath, check_video_frame_limit, load_image,
-    load_video_with, parse_rate, read_url, run_bounded,
+    MAX_IMAGE_BYTES, SourcePolicy, TempPath, check_video_frame_limit, load_image, load_video_with,
+    parse_rate, read_url, run_bounded,
 };
 use crate::cpu::cancelled_context;
 use base64::Engine as _;
@@ -119,7 +119,7 @@ fn high_dimension_image_header_is_rejected_before_full_decode() {
 #[test]
 fn malformed_and_oversized_data_uris_are_rejected_before_decode() {
     assert!(load_image("data:image/png;base64,!!!").is_err());
-    let oversized = "A".repeat(MEDIA_STAGING_BYTES + 1);
+    let oversized = "A".repeat(MAX_IMAGE_BYTES * 2);
     assert!(load_image(&format!("data:image/png;base64,{oversized}")).is_err());
     let encoded_over_limit = format!("data:image/png;base64,{}", "A".repeat(5000));
     assert!(read_url(&encoded_over_limit, 1, SourcePolicy::Public, None).is_err());

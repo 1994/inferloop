@@ -136,7 +136,7 @@ impl RuntimeHandle {
             .await
     }
     /// # Errors
-    /// Returns identity, byte budget, deadline, preparation or admission errors.
+    /// Returns identity, queue capacity, deadline, preparation or admission errors.
     pub async fn submit_preparing_until(
         &self,
         id: RequestId,

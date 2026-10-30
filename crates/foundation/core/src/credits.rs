@@ -11,7 +11,7 @@ use std::{
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
 struct Budget {
-    limit: usize,
+    limit: Option<usize>,
     used: AtomicUsize,
     wake: Mutex<Option<Wake>>,
 }
@@ -35,7 +35,17 @@ impl CreditPool {
     /// # Errors
     /// Rejects zero capacities or failure to allocate fixed lease slots.
     pub fn new(slots: usize, limit: usize) -> Result<Self> {
-        if slots == 0 || limit == 0 {
+        Self::with_limit(slots, Some(limit))
+    }
+    /// Tracks retained units without imposing a byte limit.
+    ///
+    /// # Errors
+    /// Rejects zero slots or failure to allocate the fixed lease slots.
+    pub fn tracking(slots: usize) -> Result<Self> {
+        Self::with_limit(slots, None)
+    }
+    fn with_limit(slots: usize, limit: Option<usize>) -> Result<Self> {
+        if slots == 0 || limit == Some(0) {
             return Err(Error::invalid("invalid host credit capacity"));
         }
         let budget = Arc::new(Budget {
@@ -78,7 +88,7 @@ impl CreditPool {
         loop {
             let total = used
                 .checked_add(units)
-                .filter(|total| *total <= self.budget.limit)
+                .filter(|total| self.budget.limit.is_none_or(|limit| *total <= limit))
                 .ok_or_else(|| Error::new(ErrorCode::Capacity, "host storage credits exhausted"))?;
             match self.budget.used.compare_exchange_weak(
                 used,
