@@ -48,7 +48,7 @@
      "2.0.21"
     ]
    },
-   "edges": 940,
+   "edges": 942,
    "features": [
     "cuda"
    ],
@@ -81,12 +81,12 @@
      "3.0.6"
     ]
    },
-   "edges": 690,
+   "edges": 692,
    "features": [],
    "name": "macos-metal",
    "target": "aarch64-apple-darwin"
   }
  ],
- "lockfile_sha256": "91428c77a6ec9f055ec258870531519e6bafc792e88e4f3beb89f06e727565e6",
+ "lockfile_sha256": "c1e1c5ab5e388c53a9f7f7f1c3c7966ce2577d0d2a7a7f214cb766b513dc77e8",
  "schema": 1
 }
