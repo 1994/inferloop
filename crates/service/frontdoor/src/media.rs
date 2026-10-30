@@ -6,7 +6,6 @@
 use crate::cpu::CpuContext;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use image::ImageDecoder;
 use infer_core::{Error, ErrorCode, MediaId, Result};
 use infer_ir::{MediaInput, MediaItem, Modality};
 use infer_models::{
@@ -372,36 +371,22 @@ fn check_image_dimensions(width: u32, height: u32) -> Result<()> {
 }
 
 fn decode_png(bytes: &[u8]) -> Result<image::RgbImage> {
+    let mut probe = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| Error::invalid(format!("image format: {error}")))?;
+    probe.limits(image::Limits::no_limits());
+    let (width, height) = probe
+        .into_dimensions()
+        .map_err(|error| Error::invalid(format!("image dimensions: {error}")))?;
+    check_image_dimensions(width, height)?;
     let mut reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|error| Error::invalid(format!("image format: {error}")))?;
     reader.limits(image::Limits::no_limits());
-    let decoder = reader
-        .into_decoder()
-        .map_err(|error| Error::invalid(format!("image dimensions: {error}")))?;
-    let (width, height) = decoder.dimensions();
-    check_image_dimensions(width, height)?;
-    if decoder.color_type() == image::ColorType::Rgb8 {
-        return decode_rgb8(decoder, width, height);
-    }
-    let image = image::DynamicImage::from_decoder(decoder)
+    let image = reader
+        .decode()
         .map_err(|error| Error::invalid(format!("image decode: {error}")))?;
     Ok(image.into_rgb8())
-}
-
-fn decode_rgb8(decoder: impl ImageDecoder, width: u32, height: u32) -> Result<image::RgbImage> {
-    let bytes = usize::try_from(decoder.total_bytes())
-        .map_err(|_| Error::invalid("decoded image size overflow"))?;
-    let mut pixels = Vec::new();
-    pixels
-        .try_reserve_exact(bytes)
-        .map_err(|error| Error::new(ErrorCode::Capacity, format!("image allocation: {error}")))?;
-    pixels.resize(bytes, 0);
-    decoder
-        .read_image(&mut pixels)
-        .map_err(|error| Error::invalid(format!("image decode: {error}")))?;
-    image::RgbImage::from_raw(width, height, pixels)
-        .ok_or_else(|| Error::invalid("decoded image buffer has the wrong size"))
 }
 
 fn rgb_image(width: u32, height: u32, pixels: Vec<u8>) -> Result<RawImage> {
