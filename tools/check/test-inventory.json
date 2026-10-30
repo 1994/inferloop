@@ -1442,6 +1442,11 @@
     },
     {
       "crate": "frontdoor",
+      "file": "src/media/options.rs",
+      "mount": "../../tests/unit/media_options.rs"
+    },
+    {
+      "crate": "frontdoor",
       "file": "src/media/source.rs",
       "mount": "../../tests/unit/media_source.rs"
     },

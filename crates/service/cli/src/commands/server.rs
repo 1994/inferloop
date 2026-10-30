@@ -24,8 +24,13 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
         listen,
         config: config_path,
         package,
+        mm_processor_kwargs,
         host_memory_mib,
     } = options;
+    let image_options = mm_processor_kwargs
+        .as_deref()
+        .map(infer_frontdoor::ImageProcessingOptions::parse)
+        .transpose()?;
     let media_limits = backend_choice.media_limits;
     let text_only = backend_choice.text_only;
     let engine = configured_engine(
@@ -57,7 +62,10 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
             .transpose()?
             .flatten()
             .map(|assets| {
-                let media = infer_frontdoor::MediaService::new(assets, media_limits);
+                let mut media = infer_frontdoor::MediaService::new(assets, media_limits);
+                if let Some(options) = image_options {
+                    media = media.with_image_options(options);
+                }
                 let media = match image_preprocessing {
                     Some(capability) => media.with_image_preprocessing(capability),
                     None => media,

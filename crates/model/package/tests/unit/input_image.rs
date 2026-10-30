@@ -34,6 +34,38 @@ fn smart_resize_matches_the_reference_grid() -> Result<()> {
 }
 
 #[test]
+fn disabled_resize_keeps_dimensions_and_requires_patch_alignment() -> Result<()> {
+    let processor = ImageProcessor {
+        patch_size: 16,
+        temporal_patch_size: 2,
+        merge_size: 2,
+        min_pixels: 65_536,
+        max_pixels: 1_048_576,
+        mean: [0.5; 3],
+        std: [0.5; 3],
+        rescale: RESCALE,
+    };
+    let image = RgbImage {
+        height: 32,
+        width: 32 * 201,
+        pixels: vec![123; 32 * 32 * 201 * RGB_CHANNELS],
+    };
+    assert!(processor.preprocess(&image).is_err());
+    let owned = processor.preprocess_unresized(&image)?;
+    let shared = processor.preprocess_unresized_shared(&image)?;
+    assert_eq!(owned.grid, (1, 2, 402));
+    assert_eq!(owned.grid, shared.grid);
+    assert_eq!(owned.pixels, shared.pixels.as_ref());
+    let invalid = RgbImage {
+        height: 33,
+        width: 32,
+        pixels: vec![0; 33 * 32 * RGB_CHANNELS],
+    };
+    assert!(processor.preprocess_unresized(&invalid).is_err());
+    Ok(())
+}
+
+#[test]
 fn rgb8_resize_matches_torchvision_antialiased_bicubic() -> Result<()> {
     let source = [
         0, 30, 240, 60, 255, 90, 180, 10, 220, 40, 255, 75, 160, 0, 120,

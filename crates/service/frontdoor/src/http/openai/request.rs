@@ -92,6 +92,7 @@ pub(super) struct GenerationRequest {
     pub tool_choice: Option<WireToolChoice>,
     pub parallel_tool_calls: Option<bool>,
     pub stream_options: Option<StreamOptions>,
+    pub mm_processor_kwargs: Option<crate::ImageProcessingOptions>,
 }
 
 /// Streaming modifiers accepted alongside `stream=true`.
@@ -104,6 +105,9 @@ pub(super) struct StreamOptions {
 
 impl GenerationRequest {
     pub(super) fn validate(&self, chat: bool) -> Result<RequestedOutput> {
+        if let Some(options) = &self.mm_processor_kwargs {
+            options.validate()?;
+        }
         if self.model.is_empty() {
             return Err(Error::invalid("model must not be empty"));
         }
@@ -129,6 +133,7 @@ impl GenerationRequest {
             || self.tools.is_some()
             || self.tool_choice.is_some()
             || self.parallel_tool_calls.is_some()
+            || self.mm_processor_kwargs.is_some()
         {
             return Err(Error::invalid(
                 "completions require a nonempty string prompt; use max_tokens",

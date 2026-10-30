@@ -205,7 +205,7 @@ impl LoadedVision {
     pub(crate) fn image_preprocessing(&self) -> Option<Arc<dyn ImagePreprocessing>> {
         self.image_preprocessor
             .as_ref()
-            .map(|_| Arc::new(ImageCapability) as Arc<dyn ImagePreprocessing>)
+            .map(ImageProcessor::capability)
     }
 
     /// Declared geometry of the bound tower.

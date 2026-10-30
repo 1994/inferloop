@@ -66,9 +66,16 @@ pub struct Processor {
     pixels: UploadPool<u8>,
     coefficients: UploadPool<i32>,
     tables: TableCache,
+    capability: Arc<dyn ImagePreprocessing>,
 }
 
 impl Processor {
+    /// Advertise the image transformations supported by this loaded device processor.
+    #[must_use]
+    pub fn capability(&self) -> Arc<dyn ImagePreprocessing> {
+        Arc::clone(&self.capability)
+    }
+
     /// Load the best available implementation selected from the CUDA compute capability.
     /// # Errors
     /// Returns an error when a qualified device cannot load its embedded CUDA kernel.
@@ -112,6 +119,7 @@ impl Processor {
             pixels: UploadPool::new(Arc::clone(&context)),
             coefficients: UploadPool::new(context),
             tables: TableCache::default(),
+            capability: Arc::new(Capability),
         })
     }
 
