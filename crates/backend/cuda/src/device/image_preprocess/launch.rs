@@ -28,7 +28,7 @@ pub(super) struct Kernels {
     pub pixels: Arc<Staged<u8>>,
     pub coefficients: Arc<Staged<i32>>,
     pub geometry: Geometry,
-    pub tables: Tables,
+    pub tables: Arc<Tables>,
     pub horizontal: Arc<Function>,
     pub vertical: Arc<Function>,
     pub stream: usize,

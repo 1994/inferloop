@@ -1,9 +1,43 @@
 //! Build both fixed-point filter axes into one upload.
 use super::{axis::AxisTable, geometry::Geometry};
 use infer_core::{Error, ErrorCode, Result};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 /// Horizontal and vertical axes each carry index and coefficient arrays.
 const TABLE_PARTS: usize = 4;
+
+/// The last used pair of filter axes; live launches retain their own immutable tables.
+#[derive(Default)]
+pub(super) struct TableCache {
+    entry: Mutex<Option<([i32; TABLE_PARTS], Arc<Tables>)>>,
+}
+
+impl TableCache {
+    pub fn get(&self, geometry: &Geometry) -> Result<Arc<Tables>> {
+        let key = [
+            geometry.source_height,
+            geometry.source_width,
+            geometry.target_height,
+            geometry.target_width,
+        ];
+        {
+            let entry = self
+                .entry
+                .lock()
+                .map_err(|_| Error::invariant("image filter cache poisoned"))?;
+            if let Some((_, tables)) = entry.as_ref().filter(|(cached, _)| *cached == key) {
+                return Ok(Arc::clone(tables));
+            }
+        }
+        let tables = Arc::new(Tables::new(geometry)?);
+        let mut entry = self
+            .entry
+            .lock()
+            .map_err(|_| Error::invariant("image filter cache poisoned"))?;
+        *entry = Some((key, Arc::clone(&tables)));
+        drop(entry);
+        Ok(tables)
+    }
+}
 
 pub(super) struct Tables {
     pub values: Arc<Vec<i32>>,
@@ -72,3 +106,7 @@ impl Tables {
 fn to_usize(value: i32) -> Result<usize> {
     usize::try_from(value).map_err(|_| Error::invalid("image dimension out of range"))
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/vision_image_tables.rs"]
+mod tests;

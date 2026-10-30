@@ -9,7 +9,7 @@ mod tables;
 use self::geometry::{Geometry, PATCH_WIDTH};
 use self::launch::Kernels;
 use self::staging::UploadPool;
-use self::tables::Tables;
+use self::tables::TableCache;
 use crate::device::{CudaDevice, device_error};
 use crate::target::ImageKernel;
 use cuda_core::{CudaContext, Function};
@@ -65,6 +65,7 @@ pub struct Processor {
     stream: usize,
     pixels: UploadPool<u8>,
     coefficients: UploadPool<i32>,
+    tables: TableCache,
 }
 
 impl Processor {
@@ -110,6 +111,7 @@ impl Processor {
             stream: device.stream.cu_stream() as usize,
             pixels: UploadPool::new(Arc::clone(&context)),
             coefficients: UploadPool::new(context),
+            tables: TableCache::default(),
         })
     }
 
@@ -133,7 +135,7 @@ impl Processor {
                 "image processor belongs to a different CUDA stream",
             ));
         }
-        let tables = Tables::new(&geometry)?;
+        let tables = self.tables.get(&geometry)?;
         let rows = usize::try_from(geometry.batch)
             .ok()
             .and_then(|count| count.checked_mul(usize::try_from(geometry.padded_patches).ok()?))

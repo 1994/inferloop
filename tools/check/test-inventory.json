@@ -342,6 +342,11 @@
     },
     {
       "crate": "cuda",
+      "file": "src/device/image_preprocess/tables.rs",
+      "mount": "../../../tests/unit/vision_image_tables.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/device/readback.rs",
       "mount": "../../tests/unit/device_readback_check.rs"
     },
