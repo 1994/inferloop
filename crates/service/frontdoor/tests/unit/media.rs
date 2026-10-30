@@ -1,14 +1,17 @@
 use super::{
-    MAX_IMAGE_BYTES, SourcePolicy, TempPath, check_video_frame_limit, load_image, load_video_with,
-    parse_rate, read_url, run_bounded,
+    MAX_IMAGE_BYTES, MediaRequest, MediaService, SourcePolicy, TempPath, check_video_frame_limit,
+    image_digest, load_image, load_image_with, load_video_with, parse_rate, read_url, run_bounded,
+    source_digest,
 };
-use crate::cpu::cancelled_context;
+use crate::cpu::{CpuConfig, CpuPool, cancelled_context};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use infer_models::MediaLimits;
-use std::env::temp_dir;
+use infer_ir::Modality;
+use infer_models::{ImageProcessor, MediaLimits, MultimodalAssets, TextAssets};
+use std::env::{temp_dir, var};
 use std::fs::{remove_file, write};
-use std::io::Cursor;
+use std::io::{Cursor, Write};
+use std::path::PathBuf;
 use std::process::id;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -35,6 +38,152 @@ fn encoded(image: image::RgbImage, format: image::ImageFormat) -> Vec<u8> {
         .write_to(&mut output, format)
         .expect("encode fixture");
     output.into_inner()
+}
+
+fn identity_processor() -> ImageProcessor {
+    ImageProcessor {
+        patch_size: 16,
+        temporal_patch_size: 2,
+        merge_size: 2,
+        min_pixels: 256,
+        max_pixels: 65_536,
+        mean: [0.5; 3],
+        std: [0.5; 3],
+        rescale: 1.0 / 255.0,
+    }
+}
+
+#[test]
+fn image_identity_tracks_source_and_every_processor_parameter() {
+    let source = source_digest(b"abc", None).expect("source identity");
+    assert_eq!(
+        source.0,
+        [
+            0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
+            0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
+            0xf2, 0x00, 0x15, 0xad,
+        ]
+    );
+    let processor = identity_processor();
+    let identity = image_digest(source, &processor).expect("image identity");
+    assert_eq!(identity, image_digest(source, &processor).unwrap());
+    let other = source_digest(b"abd", None).unwrap();
+    assert_ne!(identity, image_digest(other, &processor).unwrap());
+    let mut variants = Vec::new();
+    for axis in 0..5 {
+        let mut changed = processor.clone();
+        match axis {
+            0 => changed.patch_size += 1,
+            1 => changed.temporal_patch_size += 1,
+            2 => changed.merge_size += 1,
+            3 => changed.min_pixels += 1,
+            _ => changed.max_pixels += 1,
+        }
+        variants.push(changed);
+    }
+    for channel in 0..3 {
+        let mut mean = processor.clone();
+        mean.mean[channel] += 0.25;
+        variants.push(mean);
+        let mut std = processor.clone();
+        std.std[channel] += 0.25;
+        variants.push(std);
+    }
+    let mut scale = processor;
+    scale.rescale *= 2.0;
+    variants.push(scale);
+    for changed in variants {
+        assert_ne!(identity, image_digest(source, &changed).unwrap());
+    }
+    assert!(source_digest(b"", Some(&cancelled_context())).is_err());
+}
+
+#[test]
+fn image_source_identity_follows_content_not_the_url() {
+    let bytes = STANDARD.decode(ONE_PIXEL_PNG).expect("fixture");
+    let uri = format!("data:image/png;base64,{}", STANDARD.encode(&bytes));
+    let path = temp_dir().join(format!(
+        "inferloop-image-identity-{}-{}.png",
+        id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let (temp, mut file) = TempPath::create_at(path).expect("fixture file");
+    file.write_all(&bytes).unwrap();
+    drop(file);
+    let (inline, inline_source) = load_image_with(&uri, SourcePolicy::Public, None).unwrap();
+    let (file, file_source) = load_image_with(
+        temp.path.to_str().unwrap(),
+        SourcePolicy::TrustedLocal,
+        None,
+    )
+    .unwrap();
+    assert_eq!(inline, file);
+    assert_eq!(inline_source.0, file_source.0);
+    let mut trailing = bytes;
+    trailing.push(0);
+    let alternative = format!("data:image/png;base64,{}", STANDARD.encode(trailing));
+    let (same_pixels, other_source) =
+        load_image_with(&alternative, SourcePolicy::Public, None).unwrap();
+    assert_eq!(inline, same_pixels);
+    assert_ne!(inline_source.0, other_source.0);
+}
+
+#[tokio::test]
+#[ignore = "requires a real Qwen3-VL package in INFER_VISION_PACKAGE"]
+async fn prepared_images_preserve_order_and_source_identity() {
+    let package = PathBuf::from(var("INFER_VISION_PACKAGE").unwrap());
+    let assets = TextAssets::open(&package, 4096).unwrap();
+    let multimodal = MultimodalAssets::open(&package).unwrap().unwrap();
+    let processor = multimodal.images.clone();
+    let service = MediaService::new(multimodal, MediaLimits::default());
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 2,
+        ..CpuConfig::default()
+    })
+    .unwrap();
+    let image = STANDARD.decode(ONE_PIXEL_PNG).unwrap();
+    let mut second = image.clone();
+    second.push(0);
+    let requests = [image, second]
+        .into_iter()
+        .map(|bytes| MediaRequest {
+            modality: Modality::Image,
+            url: format!("data:image/png;base64,{}", STANDARD.encode(bytes)),
+        })
+        .collect::<Vec<_>>();
+    let expected = requests
+        .iter()
+        .map(|request| {
+            let bytes = STANDARD
+                .decode(request.url.split_once(',').unwrap().1)
+                .unwrap();
+            image_digest(source_digest(&bytes, None).unwrap(), &processor).unwrap()
+        })
+        .collect::<Vec<_>>();
+    let (prepared, media) = pool
+        .run(0, move |context| {
+            service.prepare(
+                &assets,
+                "<|vision_start|><|image_pad|><|vision_end|><|vision_start|><|image_pad|><|vision_end|>describe",
+                &requests,
+                context,
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(media.len(), 2);
+    assert_eq!(media[0].content_digest, expected[0]);
+    assert_eq!(media[1].content_digest, expected[1]);
+    assert_ne!(media[0].content_digest, media[1].content_digest);
+    assert_eq!(prepared.images[0].pixels, prepared.images[1].pixels);
+    assert_eq!(
+        media[0].item.as_ref().unwrap().pixels,
+        media[1].item.as_ref().unwrap().pixels
+    );
 }
 
 #[test]
@@ -155,15 +304,15 @@ fn source_fps_is_preserved_not_clamped() {
 fn limits_are_per_modality_and_all_zero_is_text_only() {
     let limits = MediaLimits::default();
     assert!(!limits.text_only());
-    assert!(limits.check(&infer_ir::Modality::Image, 1).is_ok());
-    assert!(limits.check(&infer_ir::Modality::Image, 5).is_err());
-    assert!(limits.check(&infer_ir::Modality::Video, 2).is_err());
+    assert!(limits.check(&Modality::Image, 1).is_ok());
+    assert!(limits.check(&Modality::Image, 5).is_err());
+    assert!(limits.check(&Modality::Video, 2).is_err());
     let text_only = MediaLimits {
         images: 0,
         videos: 0,
     };
     assert!(text_only.text_only());
-    assert!(text_only.check(&infer_ir::Modality::Image, 1).is_err());
+    assert!(text_only.check(&Modality::Image, 1).is_err());
 }
 
 #[cfg(unix)]

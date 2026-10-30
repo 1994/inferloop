@@ -10,8 +10,10 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use infer_core::{Error, ErrorCode, MediaId, Result};
 use infer_ir::{MediaInput, MediaItem, Modality};
 use infer_models::{
-    MediaLimits, MultimodalAssets, PreparedPrompt, RawImage, RawVideo, RgbImage, TextAssets,
+    ImageProcessor, MediaLimits, MultimodalAssets, PreparedPrompt, RawImage, RawVideo, RgbImage,
+    TextAssets,
 };
+use sha2::{Digest, Sha256};
 use std::env::temp_dir;
 use std::fs::{File, OpenOptions, metadata, read, remove_file};
 use std::io::{self, Cursor, Read, Write};
@@ -40,6 +42,10 @@ const MAX_VIDEO_BYTES: usize = 24 * 1024 * 1024;
 const MAX_VIDEO_FRAMES: usize = 768;
 /// Chunk size for bounded decoder output draining.
 const READ_CHUNK_BYTES: usize = 64 * 1024;
+/// Check cancellation between source-hash chunks, including for large input files.
+const HASH_CHUNK_BYTES: usize = 64 * 1024;
+/// Identity namespace for the CPU image decoder and preprocessing contract.
+const IMAGE_IDENTITY_DOMAIN: &[u8] = b"inferloop-image-source-cpu-v1\0";
 /// Largest accepted URL or data-URI text.
 const MAX_URL_BYTES: usize = 8192;
 /// Base64 expansion numerator for a bounded data-URI text length.
@@ -82,6 +88,9 @@ pub enum SourcePolicy {
     /// Trusted local fixture/debug input: also accepts file:// and absolute paths.
     TrustedLocal,
 }
+
+#[derive(Clone, Copy)]
+struct SourceDigest([u8; 32]);
 
 /// One media reference parsed from an `OpenAI` content part.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,20 +144,27 @@ impl MediaService {
             ));
         }
         self.limits.check(&modality, requests.len())?;
-        let prepared = match modality {
+        let (prepared, image_sources) = match modality {
             Modality::Image => {
-                let images = requests
+                let decoded = requests
                     .iter()
                     .map(|request| load_image_with(&request.url, self.source, Some(context)))
                     .collect::<Result<Vec<_>>>()?;
-                self.assets.prepare_images(assets, prompt, &images)?
+                let (images, sources): (Vec<_>, Vec<_>) = decoded.into_iter().unzip();
+                (
+                    self.assets.prepare_images(assets, prompt, &images)?,
+                    sources,
+                )
             }
             Modality::Video => {
                 let videos = requests
                     .iter()
                     .map(|request| load_video_with(&request.url, self.source, Some(context)))
                     .collect::<Result<Vec<_>>>()?;
-                self.assets.prepare_video(assets, prompt, &videos)?
+                (
+                    self.assets.prepare_video(assets, prompt, &videos)?,
+                    Vec::new(),
+                )
             }
             Modality::Text | Modality::Audio | Modality::Extension(_) => {
                 return Err(Error::unsupported("unsupported media modality"));
@@ -162,6 +178,12 @@ impl MediaService {
                 "prepared media is empty or has inconsistent spans",
             ));
         }
+        if modality == Modality::Image && image_sources.len() != prepared.images.len() {
+            return Err(Error::invariant(
+                "image source identities do not match prepared images",
+            ));
+        }
+        let mut sources = image_sources.into_iter();
         let mut media = Vec::with_capacity(prepared.images.len());
         for (index, (image, span)) in prepared.images.iter().zip(&prepared.spans).enumerate() {
             let id = u64::try_from(index)
@@ -177,12 +199,61 @@ impl MediaService {
             media.push(MediaInput {
                 id: MediaId::new(id)?,
                 modality: modality.clone(),
-                content_digest: digest(&item),
+                content_digest: if modality == Modality::Image {
+                    let source = sources
+                        .next()
+                        .ok_or_else(|| Error::invariant("missing image source identity"))?;
+                    image_digest(source, self.assets.image_processor())?
+                } else {
+                    digest(&item)
+                },
                 item: Some(item),
             });
         }
         Ok((prepared, media))
     }
+}
+
+fn source_digest(bytes: &[u8], context: Option<&CpuContext>) -> Result<SourceDigest> {
+    let mut digest = Sha256::new();
+    if let Some(context) = context {
+        context.check()?;
+    }
+    for chunk in bytes.chunks(HASH_CHUNK_BYTES) {
+        if let Some(context) = context {
+            context.check()?;
+        }
+        digest.update(chunk);
+    }
+    Ok(SourceDigest(digest.finalize().into()))
+}
+
+fn image_digest(source: SourceDigest, processor: &ImageProcessor) -> Result<String> {
+    let mut digest = Sha256::new();
+    digest.update(IMAGE_IDENTITY_DOMAIN);
+    digest.update(source.0);
+    for value in [
+        processor.patch_size,
+        processor.temporal_patch_size,
+        processor.merge_size,
+        processor.min_pixels,
+        processor.max_pixels,
+    ] {
+        digest.update(
+            u64::try_from(value)
+                .map_err(|_| Error::invalid("image identity geometry overflow"))?
+                .to_le_bytes(),
+        );
+    }
+    for value in processor
+        .mean
+        .into_iter()
+        .chain(processor.std)
+        .chain([processor.rescale])
+    {
+        digest.update(value.to_bits().to_le_bytes());
+    }
+    Ok(format!("sha256-source-v1:{:x}", digest.finalize()))
 }
 
 fn digest(item: &MediaItem) -> String {
@@ -207,17 +278,23 @@ fn digest(item: &MediaItem) -> String {
 /// Rejects unsupported schemes, over-limit payloads, malformed bytes and decode failures.
 #[cfg(test)]
 pub fn load_image(url: &str) -> Result<RawImage> {
-    load_image_with(url, SourcePolicy::Public, None)
+    load_image_with(url, SourcePolicy::Public, None).map(|(image, _)| image)
 }
 
 fn load_image_with(
     url: &str,
     source: SourcePolicy,
     context: Option<&CpuContext>,
-) -> Result<RawImage> {
+) -> Result<(RawImage, SourceDigest)> {
     let bytes = read_url(url, MAX_IMAGE_BYTES, source, context)?;
+    let identity = source_digest(&bytes, context)?;
     match decode_png(&bytes) {
-        Ok(rgb) => return rgb_image(rgb.width(), rgb.height(), rgb.into_raw()),
+        Ok(rgb) => {
+            return Ok((
+                rgb_image(rgb.width(), rgb.height(), rgb.into_raw())?,
+                identity,
+            ));
+        }
         Err(error) if error.code == ErrorCode::Capacity => return Err(error),
         Err(_) => {}
     }
@@ -230,7 +307,7 @@ fn load_image_with(
         .into_iter()
         .next()
         .ok_or_else(|| Error::invalid("image decoder produced no frame"))?;
-    rgb_image(probe.width, probe.height, frame)
+    Ok((rgb_image(probe.width, probe.height, frame)?, identity))
 }
 
 /// Decode one video URL/data URI into source-rate RGB frames.
