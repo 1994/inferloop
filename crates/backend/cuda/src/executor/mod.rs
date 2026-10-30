@@ -106,6 +106,8 @@ struct Sequence {
     rotary_base: usize,
     media_prompt_len: usize,
     budget: u64,
+    /// Request-owned vision working set, released after the device drains.
+    media_budget: u64,
     poisoned: bool,
     slot: Option<SlotLease>,
     /// Whether `budget` included private verification storage; a slot-lease credit and a
