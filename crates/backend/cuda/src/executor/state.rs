@@ -182,6 +182,14 @@ impl CudaExecutor {
         self.reserve_inner(id, capacity, readout, false, false, Some(media))
     }
 
+    fn media_footprint(&self, media: Option<&infer_ir::MediaPlan>) -> Result<u64> {
+        media.map_or(Ok(0), |plan| {
+            self.loaded
+                .vision()
+                .map_or(Ok(0), |vision| vision.footprint(plan))
+        })
+    }
+
     fn reserve_inner(
         &mut self,
         id: StateId,
@@ -210,11 +218,7 @@ impl CudaExecutor {
         } else {
             true
         };
-        let media_bytes = media.map_or(Ok(0), |plan| {
-            self.loaded
-                .vision()
-                .map_or(Ok(0), |vision| vision.footprint(plan))
-        })?;
+        let media_bytes = self.media_footprint(media)?;
         let budget = self
             .reservation_budget(capacity, readout, private_verification)?
             .checked_add(media_bytes)
