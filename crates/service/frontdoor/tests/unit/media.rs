@@ -192,6 +192,43 @@ fn data_uri_png_is_decoded_into_rgb8() {
     assert_eq!(image.pixels.len(), 3);
 }
 
+#[tokio::test]
+async fn synchronous_media_api_can_use_the_shared_http_client() {
+    use axum::{Router, routing::get};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let bytes = STANDARD.decode(ONE_PIXEL_PNG).unwrap();
+    let app = Router::new().route(
+        "/image",
+        get(move || {
+            let bytes = bytes.clone();
+            async move { bytes }
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 2,
+        ..CpuConfig::default()
+    })
+    .unwrap();
+    let image = pool
+        .run(0, move |context| {
+            load_image_with(
+                &format!("http://{address}/image"),
+                SourcePolicy::Public,
+                Some(context),
+            )
+            .map(|(image, _)| image)
+        })
+        .await
+        .unwrap();
+    assert_eq!((image.width, image.height), (1, 1));
+    server.abort();
+}
+
 #[test]
 fn native_png_conversion_preserves_rgb_values_for_color_and_grayscale_inputs() {
     use image::{DynamicImage, GrayImage, RgbImage, RgbaImage};

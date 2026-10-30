@@ -16,7 +16,7 @@ DEVICE_BUILD_MEMBERS = {
     "crates/backend/cuda/kernels/oxide-attention",
     "crates/backend/cuda/kernels/oxide-gdn",
 }
-SERVICE = {"infer-frontdoor", "infer-agent", "infer-cli"}
+SERVICE = {"infer-frontdoor", "infer-media-input", "infer-agent", "infer-cli"}
 BACKENDS = {
     "infer-backend-metal",
     "infer-backend-cuda",

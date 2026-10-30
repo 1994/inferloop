@@ -3,11 +3,14 @@
 //! Decoding and network access stay in this input layer; the engine receives only preprocessed
 //! patch payloads plus their prompt spans. Video reads and external commands retain their
 //! time/frame bounds. Malformed inputs are explicit errors, never text-only fallbacks.
-use crate::cpu::CpuContext;
+mod source;
+
+use crate::cpu::{CpuContext, CpuPool};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use infer_core::{Error, ErrorCode, MediaId, Result};
 use infer_ir::{MediaInput, MediaItem, Modality};
+use infer_media_input::decode_rgb8;
 use infer_models::{
     ImageProcessor, MediaLimits, MultimodalAssets, PreparedPrompt, RawImage, RawVideo, RgbImage,
     TextAssets,
@@ -15,7 +18,7 @@ use infer_models::{
 use sha2::{Digest, Sha256};
 use std::env::temp_dir;
 use std::fs::{File, OpenOptions, metadata, read, remove_file};
-use std::io::{self, Cursor, Read, Write};
+use std::io::{self, Read, Write};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
@@ -26,6 +29,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::time::sleep as async_sleep;
 
 /// Largest accepted raw video-frame pixel count.
 const MAX_VIDEO_PIXELS: usize = 16 * 1024 * 1024;
@@ -41,8 +45,6 @@ const HASH_CHUNK_BYTES: usize = 64 * 1024;
 const SOURCE_DIGEST_BYTES: usize = 32;
 /// Identity namespace for the CPU image decoder and preprocessing contract.
 const IMAGE_IDENTITY_DOMAIN: &[u8] = b"inferloop-image-source-cpu-v1\0";
-/// Largest accepted URL or data-URI text.
-const MAX_URL_BYTES: usize = 8192;
 /// Base64 expansion numerator for a bounded data-URI text length.
 const BASE64_EXPANSION_NUMERATOR: usize = 4;
 /// Base64 expansion denominator for a bounded data-URI text length.
@@ -59,8 +61,6 @@ const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 /// Highest accepted source frame rate; lower rates such as 0.5 are preserved.
 const MAX_SOURCE_FPS: f64 = 1000.0;
-/// HTTP fetch timeout.
-const HTTP_TIMEOUT_SECONDS: u32 = 20;
 /// Bound for one subprocess stream that is not already media-sized.
 const SUBPROCESS_STREAM_BYTES: usize = 1 << 20;
 /// Wall-clock bound for one ffprobe invocation.
@@ -131,6 +131,44 @@ impl MediaService {
         requests: &[MediaRequest],
         context: &CpuContext,
     ) -> Result<(PreparedPrompt, Vec<MediaInput>)> {
+        self.prepare_inner(assets, prompt, requests, None, context)
+    }
+
+    pub(crate) async fn resolve(
+        &self,
+        requests: &[MediaRequest],
+        pool: &CpuPool,
+    ) -> Result<Vec<Option<Vec<u8>>>> {
+        source::resolve(requests, pool).await
+    }
+
+    pub(crate) fn prepare_resolved(
+        &self,
+        assets: &TextAssets,
+        prompt: &str,
+        requests: &[MediaRequest],
+        downloads: &[Option<Vec<u8>>],
+        context: &CpuContext,
+    ) -> Result<(PreparedPrompt, Vec<MediaInput>)> {
+        if downloads.len() != requests.len()
+            || requests.iter().zip(downloads).any(|(request, bytes)| {
+                (request.url.starts_with("http://") || request.url.starts_with("https://"))
+                    && bytes.is_none()
+            })
+        {
+            return Err(Error::invariant("remote media sources were not resolved"));
+        }
+        self.prepare_inner(assets, prompt, requests, Some(downloads), context)
+    }
+
+    fn prepare_inner(
+        &self,
+        assets: &TextAssets,
+        prompt: &str,
+        requests: &[MediaRequest],
+        downloads: Option<&[Option<Vec<u8>>]>,
+        context: &CpuContext,
+    ) -> Result<(PreparedPrompt, Vec<MediaInput>)> {
         if requests.is_empty() {
             return Err(Error::invalid("media preparation needs at least one item"));
         }
@@ -149,7 +187,14 @@ impl MediaService {
             Modality::Image => {
                 let decoded = requests
                     .iter()
-                    .map(|request| load_image_with(&request.url, self.source, Some(context)))
+                    .enumerate()
+                    .map(|(index, request)| {
+                        let bytes = downloads.and_then(|values| values[index].as_deref());
+                        bytes.map_or_else(
+                            || load_image_with(&request.url, self.source, Some(context)),
+                            |bytes| load_image_bytes(bytes, Some(context)),
+                        )
+                    })
                     .collect::<Result<Vec<_>>>()?;
                 let (images, sources): (Vec<_>, Vec<_>) = decoded.into_iter().unzip();
                 (
@@ -160,7 +205,14 @@ impl MediaService {
             Modality::Video => {
                 let videos = requests
                     .iter()
-                    .map(|request| load_video_with(&request.url, self.source, Some(context)))
+                    .enumerate()
+                    .map(|(index, request)| {
+                        let bytes = downloads.and_then(|values| values[index].as_deref());
+                        bytes.map_or_else(
+                            || load_video_with(&request.url, self.source, Some(context)),
+                            |bytes| load_video_bytes(bytes, Some(context)),
+                        )
+                    })
                     .collect::<Result<Vec<_>>>()?;
                 (
                     self.assets.prepare_video(assets, prompt, &videos)?,
@@ -288,19 +340,24 @@ fn load_image_with(
     context: Option<&CpuContext>,
 ) -> Result<(RawImage, SourceDigest)> {
     let bytes = read_url(url, None, source, context)?;
-    let identity = source_digest(&bytes, context)?;
-    match decode_png(&bytes) {
+    load_image_bytes(&bytes, context)
+}
+
+fn load_image_bytes(
+    bytes: &[u8],
+    context: Option<&CpuContext>,
+) -> Result<(RawImage, SourceDigest)> {
+    let identity = source_digest(bytes, context)?;
+    match decode_rgb8(bytes) {
         Ok(rgb) => {
-            return Ok((
-                rgb_image(rgb.width(), rgb.height(), rgb.into_raw())?,
-                identity,
-            ));
+            let (width, height, pixels) = rgb.into_parts();
+            return Ok((rgb_image(width, height, pixels)?, identity));
         }
         Err(error) if error.code == ErrorCode::Capacity => return Err(error),
         Err(_) => {}
     }
     // Try the existing external decoder for formats unavailable to the in-process decoder.
-    let temp = materialize(&bytes, "image")?;
+    let temp = materialize(bytes, "image")?;
     let probe = probe(&temp.path, context)?;
     let raw = decode_frames(
         &temp.path,
@@ -326,7 +383,11 @@ fn load_video_with(
     context: Option<&CpuContext>,
 ) -> Result<RawVideo> {
     let bytes = read_url(url, Some(MAX_VIDEO_BYTES), source, context)?;
-    let temp = materialize(&bytes, "video")?;
+    load_video_bytes(&bytes, context)
+}
+
+fn load_video_bytes(bytes: &[u8], context: Option<&CpuContext>) -> Result<RawVideo> {
+    let temp = materialize(bytes, "video")?;
     let probe = probe(&temp.path, context)?;
     if u64::from(probe.width) * u64::from(probe.height) > MAX_VIDEO_PIXELS as u64 {
         return Err(Error::new(
@@ -368,25 +429,6 @@ fn check_image_dimensions(width: u32, height: u32) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-fn decode_png(bytes: &[u8]) -> Result<image::RgbImage> {
-    let mut probe = image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|error| Error::invalid(format!("image format: {error}")))?;
-    probe.limits(image::Limits::no_limits());
-    let (width, height) = probe
-        .into_dimensions()
-        .map_err(|error| Error::invalid(format!("image dimensions: {error}")))?;
-    check_image_dimensions(width, height)?;
-    let mut reader = image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|error| Error::invalid(format!("image format: {error}")))?;
-    reader.limits(image::Limits::no_limits());
-    let image = reader
-        .decode()
-        .map_err(|error| Error::invalid(format!("image decode: {error}")))?;
-    Ok(image.into_rgb8())
 }
 
 fn rgb_image(width: u32, height: u32, pixels: Vec<u8>) -> Result<RawImage> {
@@ -442,9 +484,6 @@ fn read_url(
             ));
         }
         return read_data_uri(url, limit);
-    }
-    if url.len() > MAX_URL_BYTES {
-        return Err(Error::invalid("media URL is too long"));
     }
     if let Some(path) = url.strip_prefix("file://") {
         require_local(source, url)?;
@@ -640,35 +679,19 @@ fn kill_group(process_group: u32) {
 }
 
 fn fetch_http(url: &str, limit: Option<usize>, context: Option<&CpuContext>) -> Result<Vec<u8>> {
-    let (temp, file) = TempPath::create("download", "media")?;
-    drop(file);
-    let mut command = Command::new("curl");
-    command.args([
-        "--fail",
-        "--location",
-        "--silent",
-        "--show-error",
-        "--max-time",
-        &HTTP_TIMEOUT_SECONDS.to_string(),
-    ]);
-    if let Some(limit) = limit {
-        command.args(["--max-filesize", &limit.to_string()]);
-    }
-    command.args(["--output", &temp.path.to_string_lossy(), url]);
-    let output = run_bounded(
-        &mut command,
-        SUBPROCESS_STREAM_BYTES,
-        SUBPROCESS_STREAM_BYTES,
-        Duration::from_secs(u64::from(HTTP_TIMEOUT_SECONDS) + PROBE_TIMEOUT_SECONDS),
-        context,
-    )?;
-    if !output.status.success() {
-        return Err(Error::invalid(format!(
-            "media download failed; {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    read_file(&temp.path, limit)
+    let context = context.ok_or_else(|| Error::invariant("network media needs a CPU context"))?;
+    context.check()?;
+    context.runtime()?.block_on(async {
+        let request = source::fetch(url, limit);
+        tokio::pin!(request);
+        loop {
+            context.check()?;
+            tokio::select! {
+                result = &mut request => return result,
+                () = async_sleep(Duration::from_millis(PROCESS_POLL_MILLIS)) => {}
+            }
+        }
+    })
 }
 
 fn materialize(bytes: &[u8], kind: &str) -> Result<TempPath> {

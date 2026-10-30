@@ -10,6 +10,7 @@ use std::{
     sync::Arc, sync::Mutex, sync::atomic::AtomicBool, sync::atomic::AtomicUsize,
     sync::atomic::Ordering, sync::mpsc, time::Duration, time::Instant,
 };
+use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 use tokio::time::timeout as time_timeout;
 
@@ -109,6 +110,7 @@ impl Drop for Active {
 pub struct CpuContext {
     cancelled: Arc<AtomicBool>,
     deadline: Instant,
+    runtime: Option<Handle>,
 }
 impl CpuContext {
     /// # Errors
@@ -122,12 +124,19 @@ impl CpuContext {
         }
         Ok(())
     }
+
+    pub(crate) fn runtime(&self) -> Result<&Handle> {
+        self.runtime
+            .as_ref()
+            .ok_or_else(|| Error::invariant("CPU preparation has no async runtime"))
+    }
 }
 #[cfg(test)]
 pub(crate) fn cancelled_context() -> CpuContext {
     CpuContext {
         cancelled: Arc::new(AtomicBool::new(true)),
         deadline: Instant::now() + Duration::from_secs(1),
+        runtime: None,
     }
 }
 
@@ -249,6 +258,7 @@ impl CpuPool {
         let context = CpuContext {
             cancelled: Arc::new(AtomicBool::new(false)),
             deadline: now + timeout,
+            runtime: Handle::try_current().ok(),
         };
         let _cancel = CancelOnDrop(context.cancelled.clone());
         let (reply, response) = oneshot::channel();
