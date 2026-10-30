@@ -40,7 +40,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 3
+      "tests": 6
     },
     "frontdoor": {
       "benches": 0,
@@ -1016,6 +1016,11 @@
     },
     {
       "crate": "cuda-kernels",
+      "file": "src/aot/artifact.rs",
+      "mount": "../../tests/unit/aot_artifact.rs"
+    },
+    {
+      "crate": "cuda-kernels",
       "file": "src/contract/target.rs",
       "mount": "../../tests/unit/target.rs"
     },
@@ -1501,11 +1506,11 @@
     }
   ],
   "totals": {
-    "all": 1099,
+    "all": 1102,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1099
+    "tests": 1102
   }
 }
