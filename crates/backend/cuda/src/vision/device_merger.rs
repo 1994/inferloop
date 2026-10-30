@@ -29,7 +29,6 @@ struct Geometry {
     padded: usize,
     padded_patches: usize,
     elements: usize,
-    grid: u32,
 }
 
 impl Geometry {
@@ -71,7 +70,6 @@ impl Geometry {
             padded,
             padded_patches,
             elements,
-            grid: u32::try_from(tokens).map_err(device_error)?,
         })
     }
 }
@@ -93,7 +91,6 @@ pub(super) fn run(
         padded,
         padded_patches,
         elements,
-        grid,
     } = geometry;
     let mut values = vec![0.0_f32; elements];
     values[..input.len()].copy_from_slice(input);
@@ -118,6 +115,7 @@ pub(super) fn run(
         .view(&[out, merged])
         .map_err(device_error)?;
     let graph = CudaGraph::scope(&device.stream, |scope| {
+        // Padded patches form complete independent merge rows; their outputs are discarded.
         scope.record(
             kernels::encoder::layernorm(
                 (&mut norm).partition([hidden]),
@@ -126,8 +124,7 @@ pub(super) fn run(
                 norm_bias,
                 encoder.norm_epsilon,
             )
-            .generics(vec![hidden.to_string(), hidden.to_string()])
-            .grid((grid, 1, 1)),
+            .generics(vec![hidden.to_string(), hidden.to_string()]),
         )?;
         let grouped = norm
             .view(&[padded, merged])
