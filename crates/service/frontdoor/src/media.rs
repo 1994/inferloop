@@ -6,11 +6,9 @@
 mod source;
 
 use crate::cpu::{CpuContext, CpuPool};
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use infer_core::{Error, ErrorCode, MediaId, Result};
 use infer_ir::{MediaInput, MediaItem, Modality};
-use infer_media_input::decode_rgb8;
+use infer_media_input::{decode_data_uri, decode_rgb8};
 use infer_models::{
     ImageProcessor, MediaLimits, MultimodalAssets, PreparedPrompt, RawImage, RawVideo, RgbImage,
     TextAssets,
@@ -45,12 +43,6 @@ const HASH_CHUNK_BYTES: usize = 64 * 1024;
 const SOURCE_DIGEST_BYTES: usize = 32;
 /// Identity namespace for the CPU image decoder and preprocessing contract.
 const IMAGE_IDENTITY_DOMAIN: &[u8] = b"inferloop-image-source-cpu-v1\0";
-/// Base64 expansion numerator for a bounded data-URI text length.
-const BASE64_EXPANSION_NUMERATOR: usize = 4;
-/// Base64 expansion denominator for a bounded data-URI text length.
-const BASE64_EXPANSION_DENOMINATOR: usize = 3;
-/// Header and MIME headroom allowed around a base64 data-URI payload.
-const DATA_URI_HEADER_BYTES: usize = 4096;
 /// RGB channels in one decoded frame.
 const RGB_CHANNELS: usize = 3;
 /// Axes in one media patch grid.
@@ -471,19 +463,7 @@ fn read_url(
         return Err(Error::invalid("media URL is empty"));
     }
     if url.starts_with("data:") {
-        let exceeds = limit.is_some_and(|limit| {
-            let encoded_limit = limit.saturating_mul(BASE64_EXPANSION_NUMERATOR)
-                / BASE64_EXPANSION_DENOMINATOR
-                + DATA_URI_HEADER_BYTES;
-            url.len() > encoded_limit
-        });
-        if exceeds {
-            return Err(Error::new(
-                ErrorCode::Capacity,
-                "media data URI text exceeds the bounded limit",
-            ));
-        }
-        return read_data_uri(url, limit);
+        return decode_data_uri(url, limit);
     }
     if let Some(path) = url.strip_prefix("file://") {
         require_local(source, url)?;
@@ -509,25 +489,6 @@ fn require_local(source: SourcePolicy, url: &str) -> Result<()> {
             "public media input cannot reference server-local path {url:?}"
         )))
     }
-}
-
-fn read_data_uri(url: &str, limit: Option<usize>) -> Result<Vec<u8>> {
-    let (header, payload) = url
-        .split_once(',')
-        .ok_or_else(|| Error::invalid("malformed data URI"))?;
-    if !header.ends_with(";base64") {
-        return Err(Error::unsupported("only base64 data URIs are supported"));
-    }
-    let bytes = BASE64
-        .decode(payload)
-        .map_err(|error| Error::invalid(format!("data URI base64: {error}")))?;
-    if limit.is_some_and(|limit| bytes.len() > limit) {
-        return Err(Error::new(
-            ErrorCode::Capacity,
-            "media data URI exceeds the bounded limit",
-        ));
-    }
-    Ok(bytes)
 }
 
 fn read_file(path: &Path, limit: Option<usize>) -> Result<Vec<u8>> {

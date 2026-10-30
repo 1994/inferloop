@@ -1,6 +1,6 @@
 use axum::{Router, response::Redirect, routing::get};
 use infer_core::ErrorCode;
-use infer_media_input::{HttpSource, decode_rgb8};
+use infer_media_input::{HttpSource, decode_data_uri, decode_rgb8};
 use std::io::Cursor;
 use tokio::net::TcpListener;
 
@@ -48,4 +48,21 @@ fn decoder_returns_checked_rgb_pixels() {
     let (width, height, pixels) = decode_rgb8(&bytes.into_inner()).unwrap().into_parts();
     assert_eq!((width, height, pixels), (2, 1, expected));
     assert!(decode_rgb8(b"not an image").is_err());
+}
+
+#[test]
+fn inline_source_decodes_and_reports_errors_and_optional_limits() {
+    assert_eq!(
+        decode_data_uri("data:image/png;base64,AQID", None).unwrap(),
+        [1, 2, 3]
+    );
+    assert_eq!(
+        decode_data_uri("data:application/octet-stream;base64,AQID", Some(2))
+            .unwrap_err()
+            .code,
+        ErrorCode::Capacity
+    );
+    assert!(decode_data_uri("data:image/png;base64,!!!", None).is_err());
+    assert!(decode_data_uri("data:image/png,abc", None).is_err());
+    assert!(decode_data_uri("other;base64,AQID", None).is_err());
 }

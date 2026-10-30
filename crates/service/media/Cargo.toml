@@ -16,6 +16,7 @@ workspace = true
 
 [dependencies]
 infer-core.workspace = true
+base64.workspace = true
 image.workspace = true
 reqwest.workspace = true
 

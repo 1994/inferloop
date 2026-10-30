@@ -1579,6 +1579,7 @@ name = "infer-media-input"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "image",
  "infer-core",
  "reqwest",
