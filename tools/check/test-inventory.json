@@ -16,7 +16,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 27
+      "tests": 29
     },
     "compiler": {
       "benches": 0,
@@ -34,25 +34,31 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 411
+      "tests": 447
     },
     "frontdoor": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 91
+      "tests": 132
     },
     "ir": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 14
+      "tests": 19
     },
     "kernel-api": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
       "tests": 6
+    },
+    "media": {
+      "benches": 0,
+      "src_inline": 0,
+      "src_near": 0,
+      "tests": 3
     },
     "metal": {
       "benches": 0,
@@ -70,7 +76,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 153
+      "tests": 161
     },
     "quality": {
       "benches": 0,
@@ -88,7 +94,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 95
+      "tests": 106
     },
     "scheduler": {
       "benches": 0,
@@ -112,7 +118,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 28
+      "tests": 29
     }
   },
   "executor_consumers": [
@@ -171,13 +177,16 @@
     "opt-in projection-only shape A/B with real checkpoint and CUDA; run inside safe-run": 1,
     "real 2B checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 3,
     "real CUDA/MTP checkpoint; reserve graphs only after quote acknowledgement": 1,
-    "real CUDA/MTP2 checkpoint; run under safe-run with an explicit fixture": 1,
+    "real CUDA/MTP2 checkpoint; run under safe-run with an explicit fixture": 3,
     "real MTP2 checkpoint and CUDA; run inside safe-run": 1,
-    "real MTP2 checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 2,
+    "real MTP2 checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 3,
     "real MTP2 checkpoint, CUDA, frozen table/tokens and protected serial runner required": 1,
     "real MTP2 checkpoint/CUDA; fixed-batch diagnostic under safe-run with profile paths": 1,
     "real MTP2 checkpoint/CUDA; validates pooled quotes without resident home programs": 1,
     "real MTP2 checkpoint/CUDA; validates private slot binding, admission and reset accounting": 1,
+    "real Qwen text checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 1,
+    "real Qwen3-VL checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 1,
+    "real Qwen3-VL text checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL": 1,
     "release CUDA performance diagnostic; run inside safe-run": 1,
     "requires CUDA and INFER_TEST_MODEL; run release inside safe-run": 3,
     "requires CUDA and INFER_TEST_MODEL; run release serially inside safe-run": 1,
@@ -196,7 +205,7 @@
     "requires CUDA hardware; new F32-state/F64-reference contract": 1,
     "requires CUDA hardware; root runs release serially": 3,
     "requires CUDA hardware; run explicitly inside tools/bench/safe-run.sh": 5,
-    "requires CUDA hardware; run inside safe-run": 33,
+    "requires CUDA hardware; run inside safe-run": 34,
     "requires CUDA hardware; run release inside safe-run": 1,
     "requires CUDA hardware; run under safe-run": 29,
     "requires CUDA hardware; run under safe-run in release": 1,
@@ -265,7 +274,15 @@
     "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 6,
     "requires a CUDA device; run inside safe-run": 5,
     "requires a Linux production host with get/set_mempolicy permitted; make check-linux-numa": 1,
+    "requires a qualified CUDA device": 4,
+    "requires a real Qwen3-VL package in INFER_VISION_PACKAGE": 5,
+    "requires a reserved CUDA device": 1,
+    "requires a reserved CUDA device; compares every output with the prior tower": 1,
+    "requires a reserved CUDA device; compares full outputs with scalar and existing paths": 1,
     "requires an NVIDIA GPU; run under tools/bench/safe-run.sh": 9,
+    "requires nvJPEG hardware and JPEG fixture in INFER_NVJPEG_JPEG_FIXTURE": 1,
+    "requires nvJPEG hardware and JPEG/RGB fixtures in INFER_NVJPEG_JPEG_FIXTURE and INFER_NVJPEG_RGB_FIXTURE": 1,
+    "requires nvJPEG hardware and two JPEG/RGB fixtures in INFER_NVJPEG_*_FIXTURE": 1,
     "requires real checkpoint and CUDA; run release serially inside safe-run": 1,
     "requires real checkpoint and CUDA; run serially inside safe-run": 1,
     "requires release CUDA O3, completed CI and complete bitwise gate; safe-run; internal paired prefill cost only": 1
@@ -308,6 +325,31 @@
     },
     {
       "crate": "cuda",
+      "file": "src/device/image_preprocess/axis.rs",
+      "mount": "../../../tests/unit/vision_image_axis.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/device/image_preprocess/capability.rs",
+      "mount": "../../../tests/unit/vision_image_capability.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/device/image_preprocess/geometry.rs",
+      "mount": "../../../tests/unit/vision_image_geometry.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/device/image_preprocess/mod.rs",
+      "mount": "../../../tests/unit/vision_image_preprocess.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/device/image_preprocess/tables.rs",
+      "mount": "../../../tests/unit/vision_image_tables.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/device/readback.rs",
       "mount": "../../tests/unit/device_readback_check.rs"
     },
@@ -320,6 +362,11 @@
       "crate": "cuda",
       "file": "src/device/vendor_fp8/nvfp4.rs",
       "mount": "../../../tests/unit/vendor_nvfp4.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/device/vision_position.rs",
+      "mount": "../../tests/unit/vision_position.rs"
     },
     {
       "crate": "cuda",
@@ -893,6 +940,11 @@
     },
     {
       "crate": "cuda",
+      "file": "src/vision/block_mlp.rs",
+      "mount": "../../tests/unit/vision_block_mlp.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/vision/mod.rs",
       "mount": "../../tests/unit/vision_attention_bench_check.rs"
     },
@@ -908,8 +960,18 @@
     },
     {
       "crate": "cuda",
+      "file": "src/vision/program.rs",
+      "mount": "../../tests/unit/vision_projection_output.rs"
+    },
+    {
+      "crate": "cuda",
       "file": "src/vision/session.rs",
       "mount": "../../tests/unit/vision_session.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/vision/weights.rs",
+      "mount": "../../tests/unit/vision_device_tower.rs"
     },
     {
       "crate": "cuda",
@@ -1173,6 +1235,11 @@
     },
     {
       "crate": "ir",
+      "file": "src/image.rs",
+      "mount": "../tests/unit/image.rs"
+    },
+    {
+      "crate": "ir",
       "file": "src/state_recipe/mod.rs",
       "mount": "../../tests/unit/state_recipe.rs"
     },
@@ -1180,6 +1247,11 @@
       "crate": "ir",
       "file": "src/workload.rs",
       "mount": "../tests/unit/workload_speculation.rs"
+    },
+    {
+      "crate": "ir",
+      "file": "src/workload.rs",
+      "mount": "../tests/unit/workload_decision.rs"
     },
     {
       "crate": "spi",
@@ -1333,8 +1405,18 @@
     },
     {
       "crate": "frontdoor",
+      "file": "src/cpu/queue.rs",
+      "mount": "../../tests/unit/cpu_queue.rs"
+    },
+    {
+      "crate": "frontdoor",
       "file": "src/http/mod.rs",
       "mount": "../../tests/unit/http.rs"
+    },
+    {
+      "crate": "frontdoor",
+      "file": "src/http/openai/decisions/mod.rs",
+      "mount": "../../../../tests/unit/http_openai_decisions_request.rs"
     },
     {
       "crate": "frontdoor",
@@ -1355,6 +1437,21 @@
       "crate": "frontdoor",
       "file": "src/http/openai/stream.rs",
       "mount": "../../../tests/unit/http_openai_stream.rs"
+    },
+    {
+      "crate": "frontdoor",
+      "file": "src/ingress.rs",
+      "mount": "../tests/unit/ingress.rs"
+    },
+    {
+      "crate": "frontdoor",
+      "file": "src/media/options.rs",
+      "mount": "../../tests/unit/media_options.rs"
+    },
+    {
+      "crate": "frontdoor",
+      "file": "src/media/source.rs",
+      "mount": "../../tests/unit/media_source.rs"
     },
     {
       "crate": "frontdoor",
@@ -1385,14 +1482,19 @@
       "crate": "frontdoor",
       "file": "tests/unit/http_openai.rs",
       "mount": "http_strict_tools.rs"
+    },
+    {
+      "crate": "frontdoor",
+      "file": "tests/unit/http_openai.rs",
+      "mount": "http_openai_decisions.rs"
     }
   ],
   "totals": {
-    "all": 989,
+    "all": 1096,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 989
+    "tests": 1096
   }
 }
