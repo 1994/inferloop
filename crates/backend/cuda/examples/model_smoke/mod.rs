@@ -12,11 +12,20 @@ use infer_backend_cuda::device::CudaDevice;
 use infer_backend_cuda::resident::DeviceProgram;
 use infer_backend_cuda::strategy::LinearTiling;
 use infer_core::{Error, Result, TensorId};
-use infer_ir::{StateKind, TensorOp, TensorStorage};
+use infer_ir::{DataflowGraph, StateKind, TensorOp, TensorStorage};
 use infer_models::{QuantizedPackage, WeightSource};
 use infer_state::physical::{PagedRows, PhysicalTensor};
 use std::{collections::BTreeMap, path::Path};
 use weights::Projection;
+
+fn weight_roles(graph: &DataflowGraph, id: TensorId, slot: &str) -> (bool, bool) {
+    let embedding = slot == "embed_tokens.weight";
+    let projection = graph
+        .nodes
+        .iter()
+        .any(|node| node.op == TensorOp::Linear && node.inputs[1] == id);
+    (embedding, projection)
+}
 
 pub fn prepare_graphs(
     model: &mut Model,
@@ -113,16 +122,12 @@ impl Model {
             match &spec.storage {
                 TensorStorage::Weight { slot } => {
                     let weight = model.package.weights[slot].clone();
-                    let projection = model
-                        .package
-                        .graph
-                        .nodes
-                        .iter()
-                        .any(|n| n.op == TensorOp::Linear && n.inputs[1] == spec.id);
-                    if slot == "embed_tokens.weight" {
-                        model.embeddings.insert(spec.id, weight.data);
-                    } else if projection {
-                        let loaded = if slot == "lm_head.weight"
+                    let (embedding, projection) = weight_roles(&model.package.graph, spec.id, slot);
+                    if embedding {
+                        model.embeddings.insert(spec.id, weight.data.clone());
+                    }
+                    if projection {
+                        let loaded = if (slot == "lm_head.weight" || embedding)
                             && let Some(shared) = shared
                         {
                             shared.projection(slot)?.clone()
@@ -133,7 +138,7 @@ impl Model {
                         if model.projections.len().is_multiple_of(50) {
                             eprintln!("loaded {} GPU projections", model.projections.len());
                         }
-                    } else {
+                    } else if !embedding {
                         let values = weights::floats(&mut model.package, &weight.data)?;
                         model.constants.insert(spec.id, values);
                     }
@@ -326,3 +331,7 @@ impl Model {
             .unwrap_or_default())
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/model_smoke_bindings.rs"]
+mod tests;

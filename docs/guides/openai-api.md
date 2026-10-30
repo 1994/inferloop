@@ -43,7 +43,7 @@
 | `parallel_tool_calls` | 默认 `true`；`false` 通过生成约束限制至多一次调用 |
 | `mm_processor_kwargs` | 仅 chat 的图片输入；支持 resize 和像素范围选项，见[视觉服务路径](vision.md#服务路径) |
 
-可选字段允许为 `null`，按未提供处理。服务已读取包内 `generation_config.json`，并从 generation config / model config 解析 EOS；识别到的模型还会应用模式预设，显式请求字段最后覆盖。模型包配置了 EOS 时会参与停止判断，未配置时不凭空增加 EOS。请求级 `eos_token` 覆盖使用原生 API。
+可选字段允许为 `null`，按未提供处理。服务已读取包内 `generation_config.json`，并从 generation config / model config 解析 EOS；识别到的模型还会应用模式预设，显式请求字段最后覆盖。chat 请求还会把 `tokenizer_config.json` 声明的 `eos_token` 与模型 EOS 并列用于停止判断，因为部分导出的模型只在 tokenizer 中给出对话终止符；显式指定 `eos_token`/`eos_tokens` 时以显式值为准，不追加 tokenizer EOS。补全请求不追加 tokenizer EOS。模型包配置了 EOS 时会参与停止判断，未配置时不凭空增加 EOS。请求级 `eos_token` 覆盖使用原生 API。
 
 ### 消息与工具历史
 

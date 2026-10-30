@@ -31,6 +31,7 @@ Usage:
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -391,7 +392,12 @@ def draft(arguments):
     }
     if not files:
         raise ValueError(f"no known artifact found in {model}")
-    eos = json.loads((model / "generation_config.json").read_text())["eos_token_id"]
+    spec = importlib.util.spec_from_file_location(
+        "model_config", Path(__file__).with_name("model_config.py")
+    )
+    model_config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(model_config)
+    eos = model_config.eos_tokens(model)
     engines = {"native": {"version": None}} if arguments.engine == "native" else {}
     for engine in ("native", "vllm", "sglang"):
         if engine != arguments.engine:
@@ -418,7 +424,7 @@ def draft(arguments):
             "max_new_tokens": arguments.tokens,
             "temperature": arguments.temperature,
             "mtp_depth": arguments.mtp,
-            "eos_tokens": eos if isinstance(eos, list) else [eos],
+            "eos_tokens": eos,
             "matrix": cases,
         },
         "engines": engines,

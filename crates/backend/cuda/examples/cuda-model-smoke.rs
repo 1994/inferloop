@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     options.validate()?;
     let text = TextAssets::open(&options.model, 4096)?;
-    let resolved = text.generation.resolve(&options.sampling())?;
+    let resolved = text.resolve_chat_generation(&options.sampling())?;
     let input = text.encode_chat(
         &[ChatMessage::new("user", options.prompt.clone())],
         &ChatOptions {
