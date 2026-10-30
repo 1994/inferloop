@@ -3,6 +3,7 @@ use crate::{PreparedPrompt, VisualPlacement};
 use infer_core::{Error, Result};
 use infer_ir::PositionSpec;
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 /// Number of temporal and spatial rotary axes.
 pub const ROTARY_AXES: usize = 3;
@@ -49,20 +50,35 @@ pub fn axes(spec: &PositionSpec, half: usize) -> Result<Vec<i32>> {
 /// # Errors
 /// Rejects malformed, overlapping or out-of-range media spans and grids.
 pub fn image_positions(prompt: &PreparedPrompt, merge: usize) -> Result<Vec<[usize; ROTARY_AXES]>> {
-    if merge == 0 || prompt.spans.len() != prompt.images.len() {
+    if prompt.spans.len() != prompt.images.len() {
         return Err(Error::invalid("MRoPE media geometry"));
     }
-    let mut result = Vec::with_capacity(prompt.tokens.len());
+    let grids = prompt
+        .spans
+        .iter()
+        .zip(&prompt.images)
+        .map(|(span, image)| (span, image.grid));
+    positions_from_grids(prompt.tokens.len(), grids, merge)
+}
+
+pub(super) fn positions_from_grids<'a>(
+    tokens: usize,
+    grids: impl Iterator<Item = (&'a Range<usize>, (usize, usize, usize))>,
+    merge: usize,
+) -> Result<Vec<[usize; ROTARY_AXES]>> {
+    if merge == 0 {
+        return Err(Error::invalid("MRoPE media geometry"));
+    }
+    let mut result = Vec::with_capacity(tokens);
     let mut cursor = 0usize;
-    for (span, image) in prompt.spans.iter().zip(&prompt.images) {
-        let (t, h, w) = image.grid;
+    for (span, (t, h, w)) in grids {
         if t == 0
             || h == 0
             || w == 0
             || !h.is_multiple_of(merge)
             || !w.is_multiple_of(merge)
             || span.start < result.len()
-            || span.end > prompt.tokens.len()
+            || span.end > tokens
             || span.end <= span.start
         {
             return Err(Error::invalid("MRoPE grid/span mismatch"));
@@ -89,7 +105,7 @@ pub fn image_positions(prompt: &PreparedPrompt, merge: usize) -> Result<Vec<[usi
         }
         cursor = limit;
     }
-    while result.len() < prompt.tokens.len() {
+    while result.len() < tokens {
         result.push([cursor; ROTARY_AXES]);
         cursor = cursor
             .checked_add(1)

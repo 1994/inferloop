@@ -8,11 +8,11 @@ use crate::image::ImageProcessor;
 use crate::image::{PreprocessedImage, SharedPreprocessedImage};
 use crate::input::text::TextAssets;
 use crate::mrope::ROTARY_AXES;
-use crate::mrope::image_positions;
+use crate::mrope::positions_from_grids;
 use crate::video::{RawVideo, VideoProcessor};
 use crate::vision::merge_unit;
 use infer_core::{Error, Result};
-use infer_ir::Modality;
+use infer_ir::{MediaPlan, Modality};
 use infer_spi::{ImportedModel, ModalityEncoder};
 use std::iter::repeat_n;
 use std::ops::Range;
@@ -217,11 +217,38 @@ pub fn media_layout(
             "prepared prompt holds inconsistent media spans",
         ));
     }
-    if prepared.spans.is_empty() {
+    let grids = prepared
+        .spans
+        .iter()
+        .zip(&prepared.images)
+        .map(|(span, image)| (span, image.grid));
+    media_layout_from_grids(&prepared.tokens, grids, imported, modality)
+}
+
+/// Align a request's retained media without copying its pixel payloads.
+///
+/// Only token and geometry metadata are read; the request retains all pixel ownership.
+/// # Errors
+/// Rejects invalid spans, placeholders, or media geometry.
+pub fn media_plan_layout(plan: &MediaPlan, imported: &ImportedModel) -> Result<MediaLayout> {
+    let grids = plan.items.iter().map(|item| (&item.span, item.grid));
+    media_layout_from_grids(&plan.prompt, grids, imported, &plan.modality)
+}
+
+fn media_layout_from_grids<'a, I>(
+    tokens: &[u32],
+    grids: I,
+    imported: &ImportedModel,
+    modality: &Modality,
+) -> Result<MediaLayout>
+where
+    I: Iterator<Item = (&'a Range<usize>, (usize, usize, usize))> + Clone + ExactSizeIterator,
+{
+    if grids.len() == 0 {
         // A prompt that carries placeholders but no media would run them as ordinary text.
-        if let Ok(tokens) = placeholders(imported, modality)
-            && let Some(placeholder) = tokens.first()
-            && prepared.tokens.contains(placeholder)
+        if let Ok(declared) = placeholders(imported, modality)
+            && let Some(placeholder) = declared.first()
+            && tokens.contains(placeholder)
         {
             return Err(Error::invalid(
                 "prompt holds media placeholders without media",
@@ -229,7 +256,7 @@ pub fn media_layout(
         }
         return Ok(MediaLayout {
             spans: Vec::new(),
-            next_rotary: prepared.tokens.len(),
+            next_rotary: tokens.len(),
             positions: None,
         });
     }
@@ -241,12 +268,8 @@ pub fn media_layout(
     let placeholder = *placeholders(imported, modality)?
         .first()
         .ok_or_else(|| Error::invalid("media modality declares no placeholder token"))?;
-    let (mut spans, expanded) = validate_spans(prepared, placeholder, merge)?;
-    let declared = prepared
-        .tokens
-        .iter()
-        .filter(|token| **token == placeholder)
-        .count();
+    let (mut spans, expanded) = validate_spans(tokens, grids.clone(), placeholder, merge)?;
+    let declared = tokens.iter().filter(|token| **token == placeholder).count();
     if declared != expanded {
         return Err(Error::invalid(format!(
             "prompt holds {declared} media placeholders for {expanded} aligned tokens"
@@ -255,23 +278,21 @@ pub fn media_layout(
     let positions = if imported.model.position.multimodal_sections.is_empty() {
         None
     } else {
-        Some(image_positions(prepared, merge)?)
+        Some(positions_from_grids(tokens.len(), grids, merge)?)
     };
     if let Some(positions) = &positions {
         for span in &mut spans {
             span.rotary = Some(positions[span.range.clone()].to_vec());
         }
     }
-    let next_rotary = positions
-        .as_ref()
-        .map_or(prepared.tokens.len(), |positions| {
-            positions
-                .iter()
-                .filter_map(|coordinates| coordinates.iter().max().copied())
-                .max()
-                .unwrap_or(0)
-                .saturating_add(1)
-        });
+    let next_rotary = positions.as_ref().map_or(tokens.len(), |positions| {
+        positions
+            .iter()
+            .filter_map(|coordinates| coordinates.iter().max().copied())
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    });
     Ok(MediaLayout {
         spans,
         next_rotary,
@@ -280,21 +301,22 @@ pub fn media_layout(
 }
 
 /// Validate media spans against their grids and placeholder tokens.
-fn validate_spans(
-    prepared: &PreparedPrompt,
+fn validate_spans<'a>(
+    tokens: &[u32],
+    grids: impl ExactSizeIterator<Item = (&'a Range<usize>, (usize, usize, usize))>,
     placeholder: u32,
     merge: usize,
 ) -> Result<(Vec<MediaSpan>, usize)> {
-    let mut spans = Vec::with_capacity(prepared.spans.len());
+    let mut spans = Vec::with_capacity(grids.len());
     let mut expanded = 0usize;
     let mut previous_end = 0usize;
-    for (span, image) in prepared.spans.iter().zip(&prepared.images) {
-        if span.start < previous_end || span.start >= span.end || span.end > prepared.tokens.len() {
+    for (span, (temporal, height, width)) in grids {
+        if span.start < previous_end || span.start >= span.end || span.end > tokens.len() {
             return Err(Error::invalid(
                 "media spans must be ordered, disjoint and inside the prompt",
             ));
         }
-        if prepared.tokens[span.clone()]
+        if tokens[span.clone()]
             .iter()
             .any(|token| *token != placeholder)
         {
@@ -302,7 +324,6 @@ fn validate_spans(
                 "media span does not hold the modality placeholder token",
             ));
         }
-        let (temporal, height, width) = image.grid;
         if temporal == 0
             || height == 0
             || width == 0

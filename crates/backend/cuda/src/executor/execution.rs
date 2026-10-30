@@ -13,8 +13,8 @@ use crate::resident::dflash2::{Engine, VerifiedRows};
 use crate::resident::slot_batch::SlotPool;
 use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::{ExecutionInput, ExecutionTask, MediaPlan, OutputReadout, TaskOutput};
+use infer_models::media_plan_layout;
 use infer_models::mrope::ROTARY_AXES;
-use infer_models::{PreparedPrompt, PromptImage, media_layout};
 use std::collections::BTreeMap;
 use std::mem::swap;
 use std::mem::take;
@@ -1665,27 +1665,15 @@ impl Sequence {
         let tower = loaded
             .vision()
             .ok_or_else(|| Error::unsupported("model has no bound vision encoder"))?;
-        let prepared = PreparedPrompt {
-            tokens: plan.prompt.to_vec(),
-            images: plan
-                .items
-                .iter()
-                .map(|item| PromptImage {
-                    pixels: item.pixels.to_vec(),
-                    grid: item.grid,
-                })
-                .collect(),
-            spans: plan.items.iter().map(|item| item.span.clone()).collect(),
-        };
-        let layout = media_layout(&prepared, loaded.imported(), &plan.modality)?;
+        let layout = media_plan_layout(plan, loaded.imported())?;
         if layout.spans.len() != plan.items.len() {
             return Err(Error::invalid("media layout does not cover every item"));
         }
         let hidden = loaded.model().hidden_size;
         let mut data = Vec::new();
-        let mut bases = Vec::with_capacity(prepared.images.len());
-        for image in &prepared.images {
-            let encoded = tower.encode(loaded.device(), image)?;
+        let mut bases = Vec::with_capacity(plan.items.len());
+        for image in &plan.items {
+            let encoded = tower.encode_pixels(loaded.device(), image.grid, &image.pixels)?;
             bases.push(data.len() / hidden);
             data.extend(encoded);
         }
