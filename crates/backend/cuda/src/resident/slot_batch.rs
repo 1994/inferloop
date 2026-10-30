@@ -71,6 +71,20 @@ fn pool_workspace(
     Ok(workspace)
 }
 
+/// Decode graphs over the pool's first 1, 2, ... slots, narrowest first.
+fn build_narrow_decode(
+    builder: &mut super::batch::BatchBuilder<'_>,
+    states: &mut SlotStates,
+    fp8: &mut [Fp8Caches],
+    widths: &[usize],
+) -> Result<Vec<SlotDecodeGraph>> {
+    let mut graphs = Vec::with_capacity(widths.len());
+    for &slots in widths {
+        graphs.push(builder.build_slots(&mut states[..slots], &mut fp8[..slots])?);
+    }
+    Ok(graphs)
+}
+
 /// The pool-wide verify graph and one narrower graph per `narrow` slot count, with the root
 /// views each narrow graph reads.
 #[expect(
@@ -557,11 +571,8 @@ impl SlotPool {
                 (None, Some(full), Vec::new(), graphs, roots)
             } else {
                 let decode = builder.build_slots(&mut states, &mut fp8)?;
-                let mut decode_narrow = Vec::with_capacity(narrow_slots.len());
-                for &slots in &narrow_slots {
-                    decode_narrow
-                        .push(builder.build_slots(&mut states[..slots], &mut fp8[..slots])?);
-                }
+                let decode_narrow =
+                    build_narrow_decode(&mut builder, &mut states, &mut fp8, &narrow_slots)?;
                 (Some(decode), None, decode_narrow, Vec::new(), Vec::new())
             }
         };
