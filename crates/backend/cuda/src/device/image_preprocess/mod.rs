@@ -3,14 +3,15 @@ mod axis;
 mod capability;
 mod geometry;
 mod launch;
+mod staging;
 mod tables;
 
 use self::geometry::{Geometry, PATCH_WIDTH};
 use self::launch::Kernels;
+use self::staging::UploadPool;
 use self::tables::Tables;
 use crate::device::{CudaDevice, device_error};
-use cuda_core::Function;
-use cutile::cuda_async::device_operation::Zippable;
+use cuda_core::{CudaContext, Function};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_ir::ImageTransform;
@@ -59,6 +60,8 @@ pub struct Processor {
     horizontal: Arc<Function>,
     vertical: Arc<Function>,
     stream: usize,
+    pixels: UploadPool<u8>,
+    coefficients: UploadPool<i32>,
 }
 
 impl Processor {
@@ -74,6 +77,7 @@ impl Processor {
             .device()
             .load_module_from_ptx_src(PTX)
             .map_err(device_error)?;
+        let context = CudaContext::new(device.ordinal()).map_err(device_error)?;
         Ok(Some(Self {
             horizontal: Arc::new(
                 module
@@ -86,6 +90,8 @@ impl Processor {
                     .map_err(device_error)?,
             ),
             stream: device.stream.cu_stream() as usize,
+            pixels: UploadPool::new(Arc::clone(&context)),
+            coefficients: UploadPool::new(context),
         }))
     }
 
@@ -110,34 +116,24 @@ impl Processor {
             ));
         }
         let tables = Tables::new(&geometry)?;
-        let horizontal_elements = geometry.horizontal_elements;
-        let output_elements = geometry.output_elements;
         let rows = usize::try_from(geometry.batch)
             .ok()
             .and_then(|count| count.checked_mul(usize::try_from(geometry.padded_patches).ok()?))
             .ok_or_else(|| Error::invalid("image patch rows overflow"))?;
         let horizontal = Arc::clone(&self.horizontal);
         let vertical = Arc::clone(&self.vertical);
-        let stream = self.stream;
-        let operations = (
-            api::copy_host_vec_to_device(&batch.pixels),
-            api::copy_host_vec_to_device(&tables.values),
-            api::zeros::<u8>(&[horizontal_elements]),
-            api::zeros::<f32>(&[output_elements]),
-        )
-            .zip();
-        let operation =
-            operations.then(move |(input, coefficients, intermediate, output)| Kernels {
-                input,
-                coefficients,
-                intermediate,
-                output,
-                geometry,
-                tables,
-                horizontal,
-                vertical,
-                stream,
-            });
+        let pixels = self.pixels.stage(&batch.pixels)?;
+        let coefficients = self.coefficients.stage(&tables.values)?;
+        let operation = Kernels {
+            device: device.clone(),
+            pixels,
+            coefficients,
+            geometry,
+            tables,
+            horizontal,
+            vertical,
+            stream: self.stream,
+        };
         device
             .run_op(operation)
             .await?
