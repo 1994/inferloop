@@ -12,7 +12,9 @@
 use infer_core::{Error, ErrorCode, Result};
 use libloading::Library;
 use std::ffi::{CStr, c_char, c_void};
+use std::mem::size_of_val;
 use std::ptr;
+use std::slice;
 use std::sync::Arc;
 
 type CuResult = i32;
@@ -212,6 +214,32 @@ impl Device {
                 self.stream,
             ))
         }
+    }
+
+    /// Copy a typed `f32` slice into `destination`.
+    /// # Errors
+    /// Fails when the source is larger than the destination or the copy fails.
+    pub fn upload_f32(&self, destination: &Buffer, source: &[f32]) -> Result<()> {
+        // SAFETY: f32 has no padding and every bit pattern is valid; the source slice is readable
+        // for its full length.
+        let bytes =
+            unsafe { slice::from_raw_parts(source.as_ptr().cast::<u8>(), size_of_val(source)) };
+        self.upload(destination, bytes)
+    }
+
+    /// Copy device bytes into a typed `f32` slice.
+    /// # Errors
+    /// Fails when the destination is smaller than the source or the copy fails.
+    pub fn download_f32(&self, source: &Buffer, destination: &mut [f32]) -> Result<()> {
+        // SAFETY: f32 has no padding and every bit pattern is valid; the host slice is writable
+        // for its full length.
+        let bytes = unsafe {
+            slice::from_raw_parts_mut(
+                destination.as_mut_ptr().cast::<u8>(),
+                size_of_val(destination),
+            )
+        };
+        self.download(source, bytes)
     }
 
     /// Copy device bytes into `destination`.

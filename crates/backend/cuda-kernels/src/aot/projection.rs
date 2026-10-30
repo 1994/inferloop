@@ -16,6 +16,9 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
+/// One warp per output row.
+const WARP_THREADS: u32 = 32;
+
 /// Projection kernels loaded from an AOT artifact set.
 pub struct AotProjection {
     device: Arc<Device>,
@@ -89,8 +92,12 @@ impl Projection for AotProjection {
             (&raw mut out_pointer).cast::<c_void>(),
             (&raw mut columns_argument).cast::<c_void>(),
         ];
-        self.function
-            .launch(&self.device, (rows, 1, 1), (32, 1, 1), &mut parameters)
+        self.function.launch(
+            &self.device,
+            (rows, 1, 1),
+            (WARP_THREADS, 1, 1),
+            &mut parameters,
+        )
     }
 
     fn dense_fp8(

@@ -1,9 +1,5 @@
 //! Load an AOT projection artifact and compare it with a CPU reference.
 #![expect(
-    unsafe_code,
-    reason = "The example converts typed slices to bytes for device copies"
-)]
-#![expect(
     clippy::cast_precision_loss,
     reason = "The fixture values are small integers that fit exactly in f32"
 )]
@@ -14,18 +10,7 @@ use std::env;
 use std::error::Error;
 use std::mem::size_of;
 use std::path::Path;
-use std::slice;
 use std::sync::Arc;
-
-const fn bytes<T>(values: &[T]) -> &[u8] {
-    // SAFETY: every call passes f32 data, which has no padding and is valid for any bit pattern.
-    unsafe { slice::from_raw_parts(values.as_ptr().cast::<u8>(), size_of_val(values)) }
-}
-
-const fn bytes_mut<T>(values: &mut [T]) -> &mut [u8] {
-    // SAFETY: every call passes f32 data; the host buffer is writable for its full length.
-    unsafe { slice::from_raw_parts_mut(values.as_mut_ptr().cast::<u8>(), size_of_val(values)) }
-}
 
 fn main() -> Result<(), Box<dyn Error>> {
     let root = env::args()
@@ -43,8 +28,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let x_buffer = device.alloc(columns * size_of::<f32>())?;
     let w_buffer = device.alloc(rows * columns * size_of::<f32>())?;
     let out_buffer = device.alloc(rows * size_of::<f32>())?;
-    device.upload(&x_buffer, bytes(&x))?;
-    device.upload(&w_buffer, bytes(&w))?;
+    device.upload_f32(&x_buffer, &x)?;
+    device.upload_f32(&w_buffer, &w)?;
     let projection = AotProjection::load(
         device.clone(),
         Path::new(&root),
@@ -67,7 +52,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     device.synchronize()?;
     let mut actual = vec![0.0f32; rows];
-    device.download(&out_buffer, bytes_mut(&mut actual))?;
+    device.download_f32(&out_buffer, &mut actual)?;
     for row in 0..rows {
         let expected: f32 = (0..columns).map(|k| w[row * columns + k] * x[k]).sum();
         let tolerance = 1.0e-3 * columns as f32;

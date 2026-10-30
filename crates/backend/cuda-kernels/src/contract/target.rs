@@ -15,20 +15,31 @@ pub enum Arch {
     Other { major: u32, minor: u32 },
 }
 
+/// Compute capabilities named once so the mapping carries no magic numbers.
+const SM_70: (u32, u32) = (7, 0);
+const SM_75: (u32, u32) = (7, 5);
+const SM_80: (u32, u32) = (8, 0);
+const SM_86: (u32, u32) = (8, 6);
+const SM_89: (u32, u32) = (8, 9);
+const SM_90: (u32, u32) = (9, 0);
+const SM_100: (u32, u32) = (10, 0);
+const SM_103: (u32, u32) = (10, 3);
+const SM_120: (u32, u32) = (12, 0);
+
 impl Arch {
     /// Map a driver-reported compute capability to a known profile.
     #[must_use]
     pub const fn from_sm(major: u32, minor: u32) -> Self {
         match (major, minor) {
-            (7, 0) => Self::Sm70,
-            (7, 5) => Self::Sm75,
-            (8, 0) => Self::Sm80,
-            (8, 6) => Self::Sm86,
-            (8, 9) => Self::Sm89,
-            (9, 0) => Self::Sm90,
-            (10, 0) => Self::Sm100,
-            (10, 3) => Self::Sm103,
-            (12, 0) => Self::Sm120,
+            SM_70 => Self::Sm70,
+            SM_75 => Self::Sm75,
+            SM_80 => Self::Sm80,
+            SM_86 => Self::Sm86,
+            SM_89 => Self::Sm89,
+            SM_90 => Self::Sm90,
+            SM_100 => Self::Sm100,
+            SM_103 => Self::Sm103,
+            SM_120 => Self::Sm120,
             _ => Self::Other { major, minor },
         }
     }

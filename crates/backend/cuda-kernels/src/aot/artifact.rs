@@ -15,6 +15,10 @@ use std::path::Path;
 const SCHEMA: u32 = 1;
 /// Characters for a lowercase hex digest.
 const HEX: &[u8; 16] = b"0123456789abcdef";
+/// Bits per hex digit.
+const NIBBLE_SHIFT: u32 = 4;
+/// Mask for one hex digit.
+const NIBBLE_MASK: u8 = 0x0f;
 
 /// One architecture's AOT artifact set.
 #[derive(Debug, Deserialize)]
@@ -103,8 +107,8 @@ impl Manifest {
 fn hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        output.push(char::from(HEX[usize::from(byte >> 4)]));
-        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        output.push(char::from(HEX[usize::from(byte >> NIBBLE_SHIFT)]));
+        output.push(char::from(HEX[usize::from(byte & NIBBLE_MASK)]));
     }
     output
 }

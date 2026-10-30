@@ -25,7 +25,7 @@ help:
 	@echo 'CUDA artifacts: make check-cuda-artifacts | list-cuda-kernels | build-kernels-aot ARCH=sm_89'
 	@echo 'Iteration: check-iteration (performance + 64 tasks, <=10min); release: check-release'
 	@echo 'Quality gates: check, check-rust, check-tools, check-security,'
-	@echo '  test-cuda, test-cuda-hosted (CUDA compile/lint/tests, no GPU), test-metal, bench'
+	@echo '  test-cuda, test-cuda-hosted (CUDA compile/lint/tests, no GPU), test-kernels-aot, test-metal, bench'
 	@echo '  (aliases: check-cuda, check-metal, check-cpu),'
 	@echo '  check-attention, check-msrv, check-linux, check-linux-numa, check-package'
 
@@ -61,7 +61,7 @@ accept:
 
 # Device and tool entries use the documented verbs; the check-* names remain as aliases while the
 # rest of the tree migrates.
-.PHONY: check test-cuda test-cuda-hosted test-metal bench check-rust check-tools check-security check-metal check-cuda check-attention check-msrv check-cpu check-linux check-linux-numa check-package
+.PHONY: check test-cuda test-cuda-hosted test-kernels-aot test-metal bench check-rust check-tools check-security check-metal check-cuda check-attention check-msrv check-cpu check-linux check-linux-numa check-package
 check:
 	./tools/check/gate.sh all
 
@@ -71,6 +71,10 @@ test-cuda:
 # Header-only CUDA half: compiles, lints and tests the cuda-gated modules without a device.
 test-cuda-hosted:
 	./tools/check/gate.sh cuda-hosted
+
+# AOT kernel profile: no CUDA toolkit or headers required.
+test-kernels-aot:
+	./tools/check/gate.sh cuda-aot
 
 test-metal:
 	./tools/check/gate.sh metal

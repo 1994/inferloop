@@ -130,6 +130,14 @@ cuda_device_checks() {
     cargo run --locked --release -p infer-backend-cuda --features cuda --example cuda-kernels
 }
 
+# AOT kernel profile. It builds without a CUDA toolkit or headers, so a plain hosted runner is
+# enough; this is the check that keeps the no-toolkit property from regressing.
+cuda_aot_checks() {
+    cargo clippy --locked -p infer-cuda-kernels --features aot --all-targets -- -D warnings
+    python3 tools/check/test-report.py --entry cuda-aot -- \
+        cargo test --locked -p infer-cuda-kernels --features aot
+}
+
 cuda_checks() {
     cuda_hosted_checks
     cuda_device_checks
@@ -184,10 +192,11 @@ case "${1:-all}" in
     metal) metal_checks ;;
     cuda) cuda_checks ;;
     cuda-hosted) cuda_hosted_checks ;;
+    cuda-aot) cuda_aot_checks ;;
     cpu) cpu_checks ;;
     msrv) msrv_checks ;;
     linux) linux_checks ;;
     linux-numa) linux_numa_checks ;;
     attention) bash tools/bench/safe-run.sh --memory-gib 16 bash tools/bench/attention.sh ;;
-    *) echo "usage: $0 [all|rust|test|tools|security|metal|cuda|cuda-hosted|cpu|msrv|linux|linux-numa|attention]" >&2; exit 2 ;;
+    *) echo "usage: $0 [all|rust|test|tools|security|metal|cuda|cuda-hosted|cuda-aot|cpu|msrv|linux|linux-numa|attention]" >&2; exit 2 ;;
 esac
