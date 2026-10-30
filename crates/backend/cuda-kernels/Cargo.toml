@@ -1,0 +1,21 @@
+[package]
+name = "infer-cuda-kernels"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Kernel bodies live in their own crate so the host never depends on cuTile types. Exactly one
+# profile is enabled per build: `tile` (CUDA 13.x) or `aot` (precompiled SASS, no toolkit).
+autotests = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+tile = ["dep:cutile"]
+aot = []
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cutile = { workspace = true, optional = true }

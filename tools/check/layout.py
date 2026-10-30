@@ -20,6 +20,7 @@ SERVICE = {"infer-frontdoor", "infer-media-input", "infer-agent", "infer-cli"}
 BACKENDS = {
     "infer-backend-metal",
     "infer-backend-cuda",
+    "infer-cuda-kernels",
 }
 
 
