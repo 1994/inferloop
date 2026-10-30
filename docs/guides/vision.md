@@ -23,6 +23,7 @@ OpenAI chat 的 `image_url` / `video_url` 内容部分进入真实服务路径�
 - 同一 prompt 暂只支持一种媒体模态；混合 image/video 会返回显式 unsupported。
 - `--limit-mm-per-prompt '{"image":N,"video":M}'` 可显式配置每 prompt 上限。全零配置只服务文本并跳过视觉塔；默认不限制图片数量，视频默认为 1 段。
 - `--mm-processor-kwargs` 接受图片选项 JSON，例如 `'{"min_pixels":4096,"max_pixels":262144}'` 或 `'{"size":{"shortest_edge":4096,"longest_edge":262144}}'`。Chat 请求可通过同名字段覆盖部署值，也可放入 `images_kwargs`；`do_resize=false` 保留原尺寸，尺寸须能按 patch 和 merge 网格整除。不支持的选项会被拒绝。
+- CUDA 图片处理按计算能力和驱动能力选择实现：通用 PTX 的目标为 compute 7.0、PTX 7.8；满足条件的 `sm_120` 可使用专用版本。通用版本已在 RTX 5090 上验证，其他 GPU 仍需各自实机验证和调优。
 - 文本部署收到媒体时返回结构化 `unsupported_feature`，不消费 request identity。
 - `data:`/`http(s)` 的 PNG/JPEG/WebP/GIF 由进程内 codec 解码；视频解码依赖宿主 `ffmpeg`/`ffprobe`。公开 HTTP 输入拒绝 `file://` 与服务端绝对路径。视频读取、帧数和子进程墙钟时间仍有边界；图片还须满足模型几何、上下文及实际资源要求。
 - media 请求不参与 prefix reuse，也不支持 MTP speculation；这两条都是显式错误而不是静默降级。
