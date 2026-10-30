@@ -5,7 +5,7 @@ use super::{
 use crate::cpu::{CpuConfig, CpuPool, cancelled_context};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use infer_ir::{ImageTransform, MediaPixels, Modality};
+use infer_ir::{EncodedImageInfo, ImageEncoding, ImageTransform, MediaPixels, Modality};
 use infer_models::{ImageProcessor, MediaLimits, MultimodalAssets, TextAssets};
 use std::env::{temp_dir, var};
 use std::fs::{remove_file, write};
@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::process::id;
 use std::slice::from_ref;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const ONE_PIXEL_PNG: &str =
@@ -24,6 +25,99 @@ impl infer_spi::ImagePreprocessing for TestImageCapability {
     fn supports(&self, _: &ImageTransform) -> bool {
         self.0
     }
+}
+
+struct TestJpegCapability(Arc<AtomicUsize>);
+impl infer_spi::ImagePreprocessing for TestJpegCapability {
+    fn supports(&self, _: &ImageTransform) -> bool {
+        true
+    }
+    fn inspect_encoded(&self, bytes: &[u8]) -> infer_core::Result<Option<EncodedImageInfo>> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        if bytes.starts_with(&[0xff, 0xd8]) {
+            EncodedImageInfo::new([64, 96], ImageEncoding::Jpeg, "test-jpeg".into()).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a real Qwen3-VL package in INFER_VISION_PACKAGE"]
+async fn image_decoder_auto_retains_supported_jpeg_and_cpu_override_decodes_it() {
+    let package = PathBuf::from(var("INFER_VISION_PACKAGE").unwrap());
+    let assets = TextAssets::open(&package, 4096).unwrap();
+    let multimodal = MultimodalAssets::open(&package).unwrap().unwrap();
+    let inspections = Arc::new(AtomicUsize::new(0));
+    let capability = Arc::new(TestJpegCapability(Arc::clone(&inspections)));
+    let automatic = MediaService::new(multimodal.clone(), MediaLimits::default())
+        .with_image_preprocessing(capability.clone());
+    let cpu = MediaService::new(multimodal, MediaLimits::default())
+        .with_image_preprocessing(capability)
+        .with_image_decoder(super::ImageDecoder::Cpu);
+    let fixture = encoded(noisy_image(96, 64), image::ImageFormat::Jpeg);
+    let request = MediaRequest {
+        modality: Modality::Image,
+        url: format!("data:image/jpeg;base64,{}", STANDARD.encode(fixture)),
+    };
+    let png = MediaRequest {
+        modality: Modality::Image,
+        url: format!(
+            "data:image/png;base64,{}",
+            STANDARD.encode(encoded(noisy_image(96, 64), image::ImageFormat::Png))
+        ),
+    };
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 2,
+        ..CpuConfig::default()
+    })
+    .unwrap();
+    let (automatic, cpu, automatic_png, cpu_png) = pool
+        .run(0, move |context| {
+            let prompt = "<|vision_start|><|image_pad|><|vision_end|>describe";
+            let automatic_jpeg = automatic.prepare_resolved(
+                &assets,
+                prompt,
+                from_ref(&request),
+                &[None],
+                None,
+                context,
+            )?;
+            let cpu_jpeg =
+                cpu.prepare_resolved(&assets, prompt, from_ref(&request), &[None], None, context)?;
+            let automatic_png = automatic.prepare_resolved(
+                &assets,
+                prompt,
+                from_ref(&png),
+                &[None],
+                None,
+                context,
+            )?;
+            let cpu_png =
+                cpu.prepare_resolved(&assets, prompt, from_ref(&png), &[None], None, context)?;
+            Ok((automatic_jpeg, cpu_jpeg, automatic_png, cpu_png))
+        })
+        .await
+        .unwrap();
+    assert_eq!(inspections.load(Ordering::Relaxed), 2);
+    assert_eq!(automatic.0, cpu.0);
+    assert_ne!(automatic.1[0].content_digest, cpu.1[0].content_digest);
+    let device = automatic.1[0].item.as_ref().unwrap();
+    let cpu = cpu.1[0].item.as_ref().unwrap();
+    assert_eq!(device.grid, cpu.grid);
+    assert_eq!(device.span, cpu.span);
+    assert!(matches!(&device.pixels, MediaPixels::EncodedImage(_)));
+    assert!(matches!(&cpu.pixels, MediaPixels::Image(_)));
+    assert_eq!(automatic_png.0, cpu_png.0);
+    assert_eq!(
+        automatic_png.1[0].content_digest,
+        cpu_png.1[0].content_digest
+    );
+    assert!(matches!(
+        &automatic_png.1[0].item.as_ref().unwrap().pixels,
+        MediaPixels::Image(_)
+    ));
 }
 
 #[tokio::test]

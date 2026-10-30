@@ -1682,6 +1682,11 @@ impl Sequence {
                         .encode_image(loaded.device(), image.grid, input)
                         .await?
                 }
+                MediaPixels::EncodedImage(input) => {
+                    tower
+                        .encode_encoded_image(loaded.device(), image.grid, input)
+                        .await?
+                }
             };
             bases.push(data.len() / hidden);
             data.extend(encoded);

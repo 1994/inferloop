@@ -3,14 +3,16 @@
 //! Decoding and network access stay in this input layer; the engine receives prepared patches or
 //! RGB8 payloads accepted by its image processor, plus prompt spans. Video reads and commands retain their
 //! time/frame bounds. Malformed inputs are explicit errors, never text-only fallbacks.
+mod images;
 mod options;
 mod source;
 
+use self::images::{Downloads, LoadedImage};
 use self::options::{ResizeMode, ResolvedOptions};
 
 use crate::cpu::{CpuContext, CpuPool};
 use infer_core::{Error, ErrorCode, MediaId, Result};
-use infer_ir::{ImageInput, MediaInput, MediaItem, MediaPixels, Modality};
+use infer_ir::{MediaInput, MediaItem, MediaPixels, Modality};
 use infer_media_input::{decode_data_uri, decode_rgb8};
 use infer_models::{
     ImageProcessor, MediaLimits, MultimodalAssets, PreparedPrompt, RawImage, RawVideo, RgbImage,
@@ -82,6 +84,16 @@ pub enum SourcePolicy {
     TrustedLocal,
 }
 
+/// Image decode selection; device capability and image format still determine availability.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ImageDecoder {
+    /// Prefer a supported device decoder.
+    #[default]
+    Auto,
+    /// Decode on the CPU before optional device image preprocessing.
+    Cpu,
+}
+
 #[derive(Clone, Copy)]
 struct SourceDigest([u8; SOURCE_DIGEST_BYTES]);
 
@@ -105,6 +117,7 @@ pub struct MediaService {
     source: SourcePolicy,
     image_preprocessing: Option<Arc<dyn ImagePreprocessing>>,
     image_options: ImageProcessingOptions,
+    image_decoder: ImageDecoder,
 }
 impl MediaService {
     #[must_use]
@@ -115,6 +128,7 @@ impl MediaService {
             source: SourcePolicy::Public,
             image_preprocessing: None,
             image_options: ImageProcessingOptions::empty(),
+            image_decoder: ImageDecoder::Auto,
         }
     }
 
@@ -122,6 +136,13 @@ impl MediaService {
     #[must_use]
     pub fn with_image_preprocessing(mut self, capability: Arc<dyn ImagePreprocessing>) -> Self {
         self.image_preprocessing = Some(capability);
+        self
+    }
+
+    /// Select whether eligible compressed images may be decoded by the backend.
+    #[must_use]
+    pub const fn with_image_decoder(mut self, decoder: ImageDecoder) -> Self {
+        self.image_decoder = decoder;
         self
     }
 
@@ -178,23 +199,69 @@ impl MediaService {
         options: Option<&ImageProcessingOptions>,
         context: &CpuContext,
     ) -> Result<(Vec<u32>, Vec<MediaInput>)> {
-        if downloads.len() != requests.len()
-            || requests.iter().zip(downloads).any(|(request, bytes)| {
-                (request.url.starts_with("http://") || request.url.starts_with("https://"))
-                    && bytes.is_none()
-            })
+        self.prepare_resolved_from(
+            assets,
+            prompt,
+            requests,
+            Downloads::Borrowed(downloads),
+            options,
+            context,
+        )
+    }
+
+    /// Consume resolved HTTP bytes so compressed data can move directly into a media request.
+    pub(crate) fn prepare_resolved_owned(
+        &self,
+        assets: &TextAssets,
+        prompt: &str,
+        requests: &[MediaRequest],
+        downloads: Vec<Option<Vec<u8>>>,
+        options: Option<&ImageProcessingOptions>,
+        context: &CpuContext,
+    ) -> Result<(Vec<u32>, Vec<MediaInput>)> {
+        self.prepare_resolved_from(
+            assets,
+            prompt,
+            requests,
+            Downloads::Owned(downloads),
+            options,
+            context,
+        )
+    }
+
+    fn prepare_resolved_from(
+        &self,
+        assets: &TextAssets,
+        prompt: &str,
+        requests: &[MediaRequest],
+        mut downloads: Downloads<'_>,
+        options: Option<&ImageProcessingOptions>,
+        context: &CpuContext,
+    ) -> Result<(Vec<u32>, Vec<MediaInput>)> {
+        if downloads.as_slice().len() != requests.len()
+            || requests
+                .iter()
+                .zip(downloads.as_slice())
+                .any(|(request, bytes)| {
+                    (request.url.starts_with("http://") || request.url.starts_with("https://"))
+                        && bytes.is_none()
+                })
         {
             return Err(Error::invariant("remote media sources were not resolved"));
         }
         if self.validate_requests(requests)? == Modality::Image {
-            let (images, sources) = self.load_images(requests, Some(downloads), context)?;
+            let (images, sources) =
+                self.load_images(requests, &mut downloads, context, self.image_decoder)?;
             let selected = self
                 .image_options
                 .resolve(options, self.assets.image_processor())?;
             if let Some(capability) = &self.image_preprocessing {
                 let transforms = images
                     .iter()
-                    .map(|image| selected.transform(image.height, image.width))
+                    .map(|image| {
+                        let [height, width] = image.source();
+                        selected.transform(height, width)
+                    })
                     .collect::<Result<Vec<_>>>()?;
                 if transforms
                     .iter()
@@ -205,6 +272,10 @@ impl MediaService {
                     );
                 }
             }
+            let images = images
+                .into_iter()
+                .map(|image| image.into_raw(context))
+                .collect::<Result<Vec<_>>>()?;
             let prepared =
                 selected.prepare_shared(assets, &self.assets.imported, prompt, images)?;
             Self::shared_image_inputs(prepared, sources, &selected)
@@ -214,8 +285,13 @@ impl MediaService {
                     "image processor options require image inputs",
                 ));
             }
-            let (prepared, media) =
-                self.prepare_inner(assets, prompt, requests, Some(downloads), context)?;
+            let (prepared, media) = self.prepare_inner(
+                assets,
+                prompt,
+                requests,
+                Some(downloads.as_slice()),
+                context,
+            )?;
             Ok((prepared.tokens, media))
         }
     }
@@ -224,7 +300,7 @@ impl MediaService {
         &self,
         assets: &TextAssets,
         prompt: &str,
-        images: Vec<RawImage>,
+        images: Vec<LoadedImage>,
         transforms: Vec<infer_ir::ImageTransform>,
         sources: Vec<SourceDigest>,
         options: &ResolvedOptions,
@@ -248,11 +324,20 @@ impl MediaService {
                 .and_then(|value| value.checked_add(1))
                 .ok_or_else(|| Error::invalid("media identity overflow"))?;
             let grid = transform.grid();
-            let pixels = MediaPixels::Image(ImageInput::new(transform, image.pixels)?);
+            let pixels = image.into_pixels(transform)?;
+            let decoder_identity = match &pixels {
+                MediaPixels::EncodedImage(image) => Some(image.info().decoder_identity()),
+                MediaPixels::Image(_) | MediaPixels::Patches(_) => None,
+            };
             media.push(MediaInput {
                 id: MediaId::new(id)?,
                 modality: Modality::Image,
-                content_digest: image_digest_with_mode(source, &options.processor, options.resize)?,
+                content_digest: image_digest_with_decoder(
+                    source,
+                    &options.processor,
+                    options.resize,
+                    decoder_identity,
+                )?,
                 item: Some(MediaItem {
                     modality: Modality::Image,
                     pixels,
@@ -285,18 +370,21 @@ impl MediaService {
     fn load_images(
         &self,
         requests: &[MediaRequest],
-        downloads: Option<&[Option<Vec<u8>>]>,
+        downloads: &mut Downloads<'_>,
         context: &CpuContext,
-    ) -> Result<(Vec<RawImage>, Vec<SourceDigest>)> {
+        decoder: ImageDecoder,
+    ) -> Result<(Vec<LoadedImage>, Vec<SourceDigest>)> {
+        let capability = if decoder == ImageDecoder::Auto {
+            self.image_preprocessing.as_deref()
+        } else {
+            None
+        };
         let decoded = requests
             .iter()
             .enumerate()
             .map(|(index, request)| {
-                let bytes = downloads.and_then(|values| values[index].as_deref());
-                bytes.map_or_else(
-                    || load_image_with(&request.url, self.source, Some(context)),
-                    |bytes| load_image_bytes(bytes, Some(context)),
-                )
+                let bytes = downloads.take(index);
+                images::load(&request.url, bytes, self.source, context, capability)
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(decoded.into_iter().unzip())
@@ -367,7 +455,13 @@ impl MediaService {
         };
         let (prepared, image_sources) = match modality {
             Modality::Image => {
-                let (images, sources) = self.load_images(requests, downloads, context)?;
+                let mut sources = Downloads::Borrowed(downloads.unwrap_or(&[]));
+                let (images, sources) =
+                    self.load_images(requests, &mut sources, context, ImageDecoder::Cpu)?;
+                let images = images
+                    .into_iter()
+                    .map(|image| image.into_raw(context))
+                    .collect::<Result<Vec<_>>>()?;
                 let options = image_options
                     .as_ref()
                     .ok_or_else(|| Error::invariant("image processor options"))?;
@@ -468,9 +562,22 @@ fn image_digest_with_mode(
     processor: &ImageProcessor,
     resize: ResizeMode,
 ) -> Result<String> {
+    image_digest_with_decoder(source, processor, resize, None)
+}
+
+fn image_digest_with_decoder(
+    source: SourceDigest,
+    processor: &ImageProcessor,
+    resize: ResizeMode,
+    decoder_identity: Option<&str>,
+) -> Result<String> {
     let mut digest = Sha256::new();
     digest.update(IMAGE_IDENTITY_DOMAIN);
     digest.update(source.0);
+    if let Some(identity) = decoder_identity {
+        digest.update(b"device-decoder\0");
+        digest.update(identity.as_bytes());
+    }
     if resize == ResizeMode::Disabled {
         digest.update(b"resize-disabled");
     }
@@ -523,6 +630,7 @@ pub fn load_image(url: &str) -> Result<RawImage> {
     load_image_with(url, SourcePolicy::Public, None).map(|(image, _)| image)
 }
 
+#[cfg(test)]
 fn load_image_with(
     url: &str,
     source: SourcePolicy,

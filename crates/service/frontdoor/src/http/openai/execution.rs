@@ -57,7 +57,7 @@ impl Encoding {
     fn encode(
         self,
         context: &CpuContext,
-        downloads: &[Option<Vec<u8>>],
+        downloads: Vec<Option<Vec<u8>>>,
     ) -> infer_core::Result<(CanonicalRequest, Option<infer_spi::ConstraintHandle>)> {
         context.check()?;
         let (tokens, media) = if let Some(messages) = self.messages {
@@ -81,7 +81,7 @@ impl Encoding {
                     .media
                     .as_ref()
                     .ok_or_else(|| Error::unsupported("this deployment is text-only"))?;
-                let (tokens, inputs) = media.prepare_resolved(
+                let (tokens, inputs) = media.prepare_resolved_owned(
                     &self.assets,
                     &rendered,
                     &self.media_requests,
@@ -309,7 +309,7 @@ async fn submit_encoding(
         return state
             .handle
             .submit_constrained_preparing(id, bytes, trace, None, move |context| {
-                encoding.encode(context, &[])
+                encoding.encode(context, Vec::new())
             })
             .await;
     }
@@ -337,7 +337,7 @@ async fn submit_encoding(
             bytes,
             trace,
             source,
-            move |context, (encoding, downloads)| encoding.encode(context, &downloads),
+            move |context, (encoding, downloads)| encoding.encode(context, downloads),
         )
         .await
 }

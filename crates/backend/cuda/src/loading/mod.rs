@@ -43,8 +43,9 @@ use crate::{
     resident::{DeviceProgram, ProgramWeights},
     tuning::TuningReport,
 };
+use cutile::prelude::Tensor;
 use infer_core::{Error, ModelId, Result};
-use infer_ir::{DataflowGraph, ImageInput, ModelIr};
+use infer_ir::{DataflowGraph, EncodedImageInput, ImageInput, ImageTransform, ModelIr};
 use infer_models::QuantizedPackage;
 use infer_spi::ImagePreprocessing;
 use std::path::Path;
@@ -276,6 +277,32 @@ impl LoadedVision {
         image: &ImageInput,
     ) -> Result<Vec<f32>> {
         let transform = image.transform();
+        let patches = self.validate_image_transform(grid, transform)?;
+        let processor = self.image_preprocessor()?;
+        let batch = ImageBatch::new(image.shared_pixels(), 1, transform)?;
+        let input = processor.process(device, &batch).await?;
+        self.encode_image_patches(device, grid, patches, &input)
+    }
+
+    pub(crate) async fn encode_encoded_image(
+        &self,
+        device: &CudaDevice,
+        grid: (usize, usize, usize),
+        image: &EncodedImageInput,
+    ) -> Result<Vec<f32>> {
+        let patches = self.validate_image_transform(grid, image.transform())?;
+        let input = self
+            .image_preprocessor()?
+            .process_encoded(device, image)
+            .await?;
+        self.encode_image_patches(device, grid, patches, &input)
+    }
+
+    fn validate_image_transform(
+        &self,
+        grid: (usize, usize, usize),
+        transform: ImageTransform,
+    ) -> Result<usize> {
         let layout = transform.layout();
         if transform.grid() != grid
             || layout.patch() != self.encoder.patch_size
@@ -288,26 +315,28 @@ impl LoadedVision {
                 "CUDA image processor cannot execute this transform",
             ));
         }
-        let processor = self
-            .image_preprocessor
-            .as_ref()
-            .ok_or_else(|| Error::unsupported("CUDA image processor is unavailable"))?;
-        let patches = grid
-            .0
+        grid.0
             .checked_mul(grid.1)
             .and_then(|value| value.checked_mul(grid.2))
-            .ok_or_else(|| Error::invalid("image patch grid overflow"))?;
-        let batch = ImageBatch::new(image.shared_pixels(), 1, transform)?;
-        let input = processor.process(device, &batch).await?;
+            .ok_or_else(|| Error::invalid("image patch grid overflow"))
+    }
+
+    fn image_preprocessor(&self) -> Result<&ImageProcessor> {
+        self.image_preprocessor
+            .as_ref()
+            .ok_or_else(|| Error::unsupported("CUDA image processor is unavailable"))
+    }
+
+    fn encode_image_patches(
+        &self,
+        device: &CudaDevice,
+        grid: (usize, usize, usize),
+        patches: usize,
+        input: &Arc<Tensor<f32>>,
+    ) -> Result<Vec<f32>> {
         let taps = position_taps(grid, &self.encoder)?;
-        let embedded = patch_embed_device_pixels(
-            device,
-            &self.encoder,
-            &self.weights,
-            &input,
-            &taps,
-            patches,
-        )?;
+        let embedded =
+            patch_embed_device_pixels(device, &self.encoder, &self.weights, input, &taps, patches)?;
         self.finish_encoding(device, grid, patches, &embedded)
     }
 

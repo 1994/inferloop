@@ -4,12 +4,16 @@ mod capability;
 mod direct;
 mod geometry;
 mod launch;
+mod nvjpeg;
+mod source;
 mod staging;
 mod tables;
 
 use self::direct::Direct;
 use self::geometry::{Geometry, PATCH_WIDTH};
 use self::launch::Kernels;
+use self::nvjpeg::LazyDecoder;
+use self::source::Source;
 use self::staging::UploadPool;
 use self::tables::TableCache;
 use crate::device::{CudaDevice, device_error};
@@ -17,7 +21,7 @@ use crate::target::ImageKernel;
 use cuda_core::{CudaContext, Function};
 use cutile::prelude::*;
 use infer_core::{Error, ErrorCode, Result};
-use infer_ir::ImageTransform;
+use infer_ir::{EncodedImageInput, ImageTransform};
 use infer_spi::ImagePreprocessing;
 use std::sync::Arc;
 
@@ -69,6 +73,7 @@ pub struct Processor {
     pixels: UploadPool<u8>,
     coefficients: UploadPool<i32>,
     tables: TableCache,
+    decoder: Arc<LazyDecoder>,
     capability: Arc<dyn ImagePreprocessing>,
 }
 
@@ -107,6 +112,11 @@ impl Processor {
                 )
             })?;
         let context = CudaContext::new(device.ordinal()).map_err(device_error)?;
+        let decoder = Arc::new(LazyDecoder::new(
+            Arc::clone(&context),
+            device.target().clone(),
+        ));
+        let capability = Arc::new(capability::DeviceCapability::new(Arc::clone(&decoder)));
         Ok(Self {
             horizontal: Arc::new(
                 module
@@ -127,7 +137,8 @@ impl Processor {
             pixels: UploadPool::new(Arc::clone(&context)),
             coefficients: UploadPool::new(context),
             tables: TableCache::default(),
-            capability: Arc::new(Capability),
+            decoder,
+            capability,
         })
     }
 
@@ -145,7 +156,46 @@ impl Processor {
         device: &CudaDevice,
         batch: &ImageBatch,
     ) -> Result<Arc<Tensor<f32>>> {
-        let geometry = batch.geometry;
+        let source = Source::Rgb(self.pixels.stage(&batch.pixels)?);
+        self.process_source(device, batch.geometry, source).await
+    }
+
+    /// Decode a supported compressed image on the owning device and produce its patch vectors.
+    ///
+    /// The bytes, decoder state and device buffers remain live until the stream fence completes.
+    /// # Errors
+    /// Rejects a missing decoder, mismatched metadata, unsupported geometry or CUDA failure.
+    pub async fn process_encoded(
+        &self,
+        device: &CudaDevice,
+        image: &EncodedImageInput,
+    ) -> Result<Arc<Tensor<f32>>> {
+        let transform = image.transform();
+        if !Capability.supports(&transform) {
+            return Err(Error::unsupported(
+                "CUDA image processor cannot execute this transform",
+            ));
+        }
+        let decoder = self
+            .decoder
+            .get()?
+            .ok_or_else(|| Error::unsupported("nvJPEG hardware decoder is unavailable"))?;
+        let lease = decoder.prepare(image.bytes(), image.info())?;
+        let geometry = Geometry::new(1, transform.source(), transform.target())?;
+        let source = Source::Jpeg {
+            lease,
+            bytes: image.shared_bytes(),
+            width: transform.source()[1],
+        };
+        self.process_source(device, geometry, source).await
+    }
+
+    async fn process_source(
+        &self,
+        device: &CudaDevice,
+        geometry: Geometry,
+        source: Source,
+    ) -> Result<Arc<Tensor<f32>>> {
         if self.stream != device.stream.cu_stream() as usize {
             return Err(Error::invalid(
                 "image processor belongs to a different CUDA stream",
@@ -158,7 +208,7 @@ impl Processor {
         let output = if geometry.is_identity() {
             let operation = Direct {
                 device: device.clone(),
-                pixels: self.pixels.stage(&batch.pixels)?,
+                source,
                 geometry,
                 kernel: Arc::clone(&self.direct),
                 stream: self.stream,
@@ -168,7 +218,7 @@ impl Processor {
             let tables = self.tables.get(&geometry)?;
             let operation = Kernels {
                 device: device.clone(),
-                pixels: self.pixels.stage(&batch.pixels)?,
+                source,
                 coefficients: self.coefficients.stage(&tables.values)?,
                 geometry,
                 tables,

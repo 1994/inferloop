@@ -2,7 +2,7 @@
 use super::{
     geometry::Geometry,
     launch::{config, overwritten},
-    staging::Staged,
+    source::Source,
 };
 use crate::device::CudaDevice;
 use cuda_core::Function;
@@ -23,7 +23,7 @@ const TEMPORAL: usize = 2;
 
 pub(super) struct Direct {
     pub device: CudaDevice,
-    pub pixels: Arc<Staged<u8>>,
+    pub source: Source,
     pub geometry: Geometry,
     pub kernel: Arc<Function>,
     pub stream: usize,
@@ -63,11 +63,9 @@ impl DeviceOp for Direct {
         launch.push_arg(NORMALIZATION);
         launch.push_arg(NORMALIZATION);
         launch.set_launch_config(config(self.geometry.output_elements / TEMPORAL)?);
-        ctx.retain(Arc::clone(&self.pixels))?;
+        self.source.retain(ctx)?;
         ctx.retain(Arc::clone(&self.kernel))?;
-        self.device
-            .copy_h2d_pinned(&mut input, self.pixels.buffer()?, self.pixels.len())
-            .map_err(|error| DeviceError::Internal(error.to_string()))?;
+        self.source.enqueue(ctx, &self.device, &mut input)?;
         // SAFETY: all arguments match the kernel ABI and stay live until stream completion;
         // the pinned input copy precedes this launch on the same validated stream.
         unsafe { launch.execute(ctx)? };

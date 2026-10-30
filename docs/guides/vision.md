@@ -18,14 +18,15 @@ RTX 5090 上 Qwen3-VL-2B 的实测（prefill 阶段，视觉编码在计时前�
 
 ## 服务路径
 
-OpenAI chat 的 `image_url` / `video_url` 内容部分进入真实服务路径：公开入口接受 `data:` 和 `http(s)`，HTTP 下载使用共享异步客户端，媒体解码在 CPU 工作池中执行。后端声明支持时，图片保留为 RGB8，resize、归一化和 patch 布局由 CUDA 完成；其他图片配置使用已有的主机预处理。每个 media item 随 `MediaPlan` 经过 admission、scheduler 和 `ExecutionTask`，由 CUDA backend 在 prompt prefill 时编码。媒体 span、旋转位置和 token 计数在编码前校验；占位符、编码器或 patch grid 不匹配时报错。
+OpenAI chat 的 `image_url` / `video_url` 内容部分进入真实服务路径：公开入口接受 `data:` 和 `http(s)`，HTTP 下载使用共享异步客户端。CUDA 默认检测可用的 nvJPEG 硬解能力；支持的 JPEG 保留压缩字节并在设备上解码，其他图片在 CPU 工作池中解码。后端声明支持时，resize、归一化和 patch 布局由 CUDA 完成；其他图片配置使用已有的主机预处理。每个 media item 随 `MediaPlan` 经过 admission、scheduler 和 `ExecutionTask`，由 CUDA backend 在 prompt prefill 时编码。媒体 span、旋转位置和 token 计数在编码前校验；占位符、编码器或 patch grid 不匹配时报错。
 
 - 同一 prompt 暂只支持一种媒体模态；混合 image/video 会返回显式 unsupported。
 - `--limit-mm-per-prompt '{"image":N,"video":M}'` 可显式配置每 prompt 上限。全零配置只服务文本并跳过视觉塔；默认不限制图片数量，视频默认为 1 段。
 - `--mm-processor-kwargs` 接受图片选项 JSON，例如 `'{"min_pixels":4096,"max_pixels":262144}'` 或 `'{"size":{"shortest_edge":4096,"longest_edge":262144}}'`。Chat 请求可通过同名字段覆盖部署值，也可放入 `images_kwargs`；`do_resize=false` 保留原尺寸，尺寸须能按 patch 和 merge 网格整除。不支持的选项会被拒绝。
+- `--image-decoder auto|cpu` 控制图片解码，默认 `auto`。CUDA 检测到 nvJPEG 硬解及 JPEG 格式支持时自动使用，否则沿用 CPU 解码；`cpu` 强制 CPU 解码，但不关闭 CUDA 图片处理。nvJPEG 的 RGB 取整与 CPU 解码可能不同，如需维持 CPU 解码结果可选择 `cpu`。
 - CUDA 图片处理按计算能力和驱动能力选择实现：通用 PTX 的目标为 compute 7.0、PTX 7.8；满足条件的 `sm_120` 可使用专用版本。通用版本已在 RTX 5090 上验证，其他 GPU 仍需各自实机验证和调优。
 - 文本部署收到媒体时返回结构化 `unsupported_feature`，不消费 request identity。
-- `data:`/`http(s)` 的 PNG/JPEG/WebP/GIF 由进程内 codec 解码；视频解码依赖宿主 `ffmpeg`/`ffprobe`。公开 HTTP 输入拒绝 `file://` 与服务端绝对路径。视频读取、帧数和子进程墙钟时间仍有边界；图片还须满足模型几何、上下文及实际资源要求。
+- `data:`/`http(s)` 的 PNG/JPEG/WebP/GIF 均有进程内 CPU 解码路径，CUDA 上可用的 JPEG 使用 nvJPEG 硬解；视频解码依赖宿主 `ffmpeg`/`ffprobe`。公开 HTTP 输入拒绝 `file://` 与服务端绝对路径。视频读取、帧数和子进程墙钟时间仍有边界；图片还须满足模型几何、上下文及实际资源要求。
 - media 请求不参与 prefix reuse，也不支持 MTP speculation；这两条都是显式错误而不是静默降级。
 - media payload 与请求生命周期绑定，until backend prefill completes；checkpoint 在 media 状态存活时拒绝，避免恢复后丢失像素或设备 embedding。
 

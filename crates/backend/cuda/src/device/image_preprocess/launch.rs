@@ -1,6 +1,7 @@
 //! One stream-ordered launch retains all checked operands until the device fence.
 use super::{
     geometry::{CHANNELS, Geometry},
+    source::Source,
     staging::Staged,
     tables::Tables,
 };
@@ -25,7 +26,7 @@ const NORMALIZATION_FIELDS: usize = CHANNELS * 2;
 
 pub(super) struct Kernels {
     pub device: CudaDevice,
-    pub pixels: Arc<Staged<u8>>,
+    pub source: Source,
     pub coefficients: Arc<Staged<i32>>,
     pub geometry: Geometry,
     pub tables: Arc<Tables>,
@@ -61,13 +62,11 @@ impl DeviceOp for Kernels {
         let output = unsafe { overwritten::<f32>(ctx, self.geometry.output_elements)? };
         let (horizontal, vertical) =
             self.launches(&input, &coefficients, &intermediate, &output)?;
-        ctx.retain(Arc::clone(&self.pixels))?;
+        self.source.retain(ctx)?;
         ctx.retain(Arc::clone(&self.coefficients))?;
         ctx.retain(Arc::clone(&self.horizontal))?;
         ctx.retain(Arc::clone(&self.vertical))?;
-        self.device
-            .copy_h2d_pinned(&mut input, self.pixels.buffer()?, self.pixels.len())
-            .map_err(|error| DeviceError::Internal(error.to_string()))?;
+        self.source.enqueue(ctx, &self.device, &mut input)?;
         self.device
             .copy_h2d_pinned(
                 &mut coefficients,

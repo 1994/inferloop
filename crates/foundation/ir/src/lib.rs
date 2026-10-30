@@ -30,7 +30,10 @@ pub use hardware::{
     DeviceCapabilities, MetalCapabilities, MetalRequirements, NvidiaArchitecture,
     NvidiaCapabilities, SpeculationCapability,
 };
-pub use image::{ImageInput, ImageNormalization, ImagePatchLayout, ImageTransform};
+pub use image::{
+    EncodedImageInfo, EncodedImageInput, ImageEncoding, ImageInput, ImageNormalization,
+    ImagePatchLayout, ImageTransform,
+};
 pub use model::{
     BackboneKind, FeedForward, Head, Mixer, ModelIr, PositionSpec, StateKind, StateRequirement,
 };

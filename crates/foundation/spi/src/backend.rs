@@ -13,6 +13,24 @@ use std::sync::Arc;
 /// the same backend can consume the described RGB8 transformation during media execution.
 pub trait ImagePreprocessing: Send + Sync {
     fn supports(&self, transform: &infer_ir::ImageTransform) -> bool;
+
+    /// Initialize optional compressed-image acceleration before accepting requests.
+    /// # Errors
+    /// Returns unexpected backend initialization failures.
+    fn initialize_encoded(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Inspect compressed image bytes for a decoder owned by this backend.
+    ///
+    /// Returns `None` for formats or bitstreams the backend cannot decode. The metadata's
+    /// decoder identity distinguishes outputs from different decoding contracts. This may
+    /// perform host-side parsing and must be called on a CPU worker, not a service thread.
+    /// # Errors
+    /// Returns backend errors that prevent determining whether the bytes are supported.
+    fn inspect_encoded(&self, _bytes: &[u8]) -> Result<Option<infer_ir::EncodedImageInfo>> {
+        Ok(None)
+    }
 }
 
 /// Owned work crosses the submission boundary; a future CUDA implementation uses
