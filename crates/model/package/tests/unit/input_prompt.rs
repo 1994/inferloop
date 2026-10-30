@@ -314,6 +314,28 @@ fn prepared_video_prompt_expands_temporal_patches() -> Result<()> {
         from_ref(&video),
         &Modality::Video,
     )?;
+    let plan = processor.plan(video.frames.len(), video.fps, 32, 32)?;
+    let parts = plan
+        .indices()
+        .chunks(processor.temporal_patch_size)
+        .enumerate()
+        .map(|(group, indices)| {
+            let frames: Vec<_> = indices
+                .iter()
+                .map(|index| video.frames[*index].clone())
+                .collect();
+            plan.preprocess_group(group, &frames)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let incremental = prepare_preprocessed_video(
+        &assets,
+        &processor,
+        &imported,
+        text,
+        vec![parts],
+        &Modality::Video,
+    )?;
+    assert_eq!(incremental, prepared);
     let placeholder = placeholders(&imported, &Modality::Video)?[0];
     // Each temporal group is its own timestamped, marker-delimited media item.
     assert_eq!(prepared.images.len(), 2);

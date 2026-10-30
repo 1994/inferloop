@@ -4,7 +4,7 @@
 //! provider-declared model geometry and the deterministic preprocessors that turn RGB8 media
 //! into prompt-aligned patches.
 use crate::image::ImageProcessor;
-use crate::input::prompt::{prepare, prepare_video};
+use crate::input::prompt::{prepare, prepare_preprocessed_video, prepare_video};
 use crate::input::text::TextAssets;
 use crate::input::video::VideoProcessor;
 use crate::package_path;
@@ -144,6 +144,29 @@ impl MultimodalAssets {
             .as_ref()
             .ok_or_else(|| Error::unsupported("package declares no video processor"))?;
         prepare_video(
+            assets,
+            processor,
+            &self.imported,
+            prompt,
+            videos,
+            &Modality::Video,
+        )
+    }
+
+    /// Expand placeholders for independently preprocessed temporal groups, in clip order.
+    /// # Errors
+    /// Rejects a missing video processor, mismatched placeholders or malformed group geometry.
+    pub fn prepare_preprocessed_video(
+        &self,
+        assets: &TextAssets,
+        prompt: &str,
+        videos: Vec<Vec<crate::PreprocessedVideo>>,
+    ) -> Result<crate::PreparedPrompt> {
+        let processor = self
+            .video
+            .as_ref()
+            .ok_or_else(|| Error::unsupported("package declares no video processor"))?;
+        prepare_preprocessed_video(
             assets,
             processor,
             &self.imported,

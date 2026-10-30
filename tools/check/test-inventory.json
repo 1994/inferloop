@@ -40,7 +40,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 116
+      "tests": 118
     },
     "ir": {
       "benches": 0,
@@ -58,7 +58,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 3
+      "tests": 12
     },
     "metal": {
       "benches": 0,
@@ -76,7 +76,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 157
+      "tests": 158
     },
     "quality": {
       "benches": 0,
@@ -160,7 +160,7 @@
     }
   ],
   "gated": {
-    "target_os = \"linux\"": 3,
+    "target_os = \"linux\"": 6,
     "target_os = \"macos\"": 1
   },
   "ignored_reasons": {
@@ -274,7 +274,7 @@
     "requires NVIDIA GPU; run under tools/bench/safe-run.sh": 6,
     "requires a CUDA device; run inside safe-run": 5,
     "requires a Linux production host with get/set_mempolicy permitted; make check-linux-numa": 1,
-    "requires a real Qwen3-VL package in INFER_VISION_PACKAGE": 1,
+    "requires a real Qwen3-VL package in INFER_VISION_PACKAGE": 2,
     "requires a reserved CUDA device": 1,
     "requires a reserved CUDA device; compares every output with the prior tower": 1,
     "requires a reserved CUDA device; compares full outputs with scalar and existing paths": 1,
@@ -1443,14 +1443,19 @@
       "crate": "frontdoor",
       "file": "tests/unit/http_openai.rs",
       "mount": "http_openai_decisions.rs"
+    },
+    {
+      "crate": "media",
+      "file": "src/video.rs",
+      "mount": "../tests/unit/video.rs"
     }
   ],
   "totals": {
-    "all": 1052,
+    "all": 1064,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1052
+    "tests": 1064
   }
 }

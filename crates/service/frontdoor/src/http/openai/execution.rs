@@ -1,13 +1,14 @@
 use super::{ApiResult, GenerationRequest, TextState, ToolPolicy};
 use crate::constants::TOKEN_STAGING_BYTES;
 use crate::cpu::CpuContext;
-use crate::media::{MediaRequest, MediaService};
+use crate::media::{MediaRequest, MediaService, ResolvedMedia};
 use axum::http::HeaderMap;
 use infer_core::{Error, ErrorCode, FinishReason, RequestId};
 use infer_ir::{CanonicalRequest, RequestInput, Workload, WorkloadOutput};
 use infer_observe::trace::TraceContext;
 use infer_runtime::{CompletedRequest, EngineOutput};
 use serde_json::{Value, json};
+use std::mem::take;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use std::{
@@ -56,7 +57,7 @@ impl Encoding {
     fn encode(
         self,
         context: &CpuContext,
-        downloads: &[Option<Vec<u8>>],
+        downloads: Vec<ResolvedMedia>,
     ) -> infer_core::Result<(CanonicalRequest, Option<infer_spi::ConstraintHandle>)> {
         context.check()?;
         let (tokens, media) = if let Some(messages) = self.messages {
@@ -306,25 +307,25 @@ async fn submit_encoding(
         return state
             .handle
             .submit_constrained_preparing(id, bytes, trace, None, move |context| {
-                encoding.encode(context, &[])
+                encoding.encode(context, Vec::new())
             })
             .await;
     }
     let pool = state.handle.cpu_pool();
     let source = async move {
+        let mut encoding = encoding;
+        let requests = take(&mut encoding.media_requests);
         let media = encoding
             .media
             .as_ref()
             .ok_or_else(|| Error::unsupported("this deployment is text-only"))?;
-        let downloads = media.resolve(&encoding.media_requests, &pool).await?;
-        let retained = downloads
-            .iter()
-            .flatten()
-            .try_fold(0usize, |total, bytes| {
-                total
-                    .checked_add(bytes.len())
-                    .ok_or_else(|| Error::invalid("media download size overflow"))
-            })?;
+        let (requests, downloads) = media.resolve(requests, &pool).await?;
+        encoding.media_requests = requests;
+        let retained = downloads.iter().try_fold(0usize, |total, value| {
+            total
+                .checked_add(value.retained_bytes()?)
+                .ok_or_else(|| Error::invalid("media download size overflow"))
+        })?;
         Ok(((encoding, downloads), retained))
     };
     state
@@ -334,7 +335,7 @@ async fn submit_encoding(
             bytes,
             trace,
             source,
-            move |context, (encoding, downloads)| encoding.encode(context, &downloads),
+            move |context, (encoding, downloads)| encoding.encode(context, downloads),
         )
         .await
 }

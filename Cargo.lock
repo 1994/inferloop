@@ -1604,6 +1604,7 @@ dependencies = [
  "image",
  "infer-core",
  "reqwest",
+ "serde_json",
  "tokio",
 ]
 

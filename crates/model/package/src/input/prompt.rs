@@ -9,12 +9,13 @@ use crate::image::PreprocessedImage;
 use crate::input::text::TextAssets;
 use crate::mrope::ROTARY_AXES;
 use crate::mrope::image_positions;
-use crate::video::{RawVideo, VideoProcessor};
+use crate::video::{PreprocessedVideo, RawVideo, VideoProcessor};
 use crate::vision::merge_unit;
 use infer_core::{Error, Result};
 use infer_ir::Modality;
 use infer_spi::{ImportedModel, ModalityEncoder};
 use std::iter::repeat_n;
+use std::mem::take;
 use std::ops::Range;
 
 /// One preprocessed image attached to a prompt.
@@ -435,9 +436,55 @@ pub fn prepare_video(
     videos: &[RawVideo],
     modality: &Modality,
 ) -> Result<PreparedPrompt> {
+    prepare_video_parts(
+        assets,
+        processor,
+        imported,
+        text,
+        videos
+            .iter()
+            .map(|video| processor.preprocess(video).map(|part| vec![part])),
+        modality,
+    )
+}
+
+/// Assemble videos whose temporal groups have already been processed independently.
+///
+/// The outer vector is in prompt order and each inner vector is in clip timestamp order. A part
+/// may contain one or more complete temporal groups and is consumed without copying single-group
+/// patch buffers.
+///
+/// # Errors
+/// Rejects a missing encoder or placeholder, mismatched media counts or malformed group geometry.
+pub fn prepare_preprocessed_video(
+    assets: &TextAssets,
+    processor: &VideoProcessor,
+    imported: &ImportedModel,
+    text: &str,
+    videos: Vec<Vec<PreprocessedVideo>>,
+    modality: &Modality,
+) -> Result<PreparedPrompt> {
+    prepare_video_parts(
+        assets,
+        processor,
+        imported,
+        text,
+        videos.into_iter().map(Ok),
+        modality,
+    )
+}
+
+fn prepare_video_parts(
+    assets: &TextAssets,
+    processor: &VideoProcessor,
+    imported: &ImportedModel,
+    text: &str,
+    videos: impl ExactSizeIterator<Item = Result<Vec<PreprocessedVideo>>>,
+    modality: &Modality,
+) -> Result<PreparedPrompt> {
     let tokens = assets.encode(text, false)?;
     reject_foreign_placeholders(imported, &tokens, modality)?;
-    if videos.is_empty() {
+    if videos.len() == 0 {
         return Ok(PreparedPrompt {
             tokens,
             images: Vec::new(),
@@ -462,46 +509,38 @@ pub fn prepare_video(
     let mut prepared = Vec::new();
     let mut segments = Vec::with_capacity(videos.len());
     for video in videos {
-        let processed = processor.preprocess(video)?;
-        let (groups, height, width) = processed.image.grid;
-        if merge == 0
-            || height == 0
-            || width == 0
-            || !height.is_multiple_of(merge)
-            || !width.is_multiple_of(merge)
-        {
-            return Err(Error::invalid("video patch grid"));
+        let parts = video?;
+        if parts.is_empty() {
+            return Err(Error::invalid("video has no processed temporal groups"));
         }
-        let frame_seqlen = (height / merge) * (width / merge);
-        let chunk = height
-            .checked_mul(width)
-            .and_then(|patches| patches.checked_mul(processor.patch_width()))
-            .ok_or_else(|| Error::invalid("video group width overflow"))?;
-        let expected_pixels = groups
-            .checked_mul(chunk)
-            .ok_or_else(|| Error::invalid("video group split overflow"))?;
-        if groups == 0
-            || processed.image.pixels.len() != expected_pixels
-            || processed.timestamps.len() != groups
-        {
-            return Err(Error::invalid("video preprocessing split"));
-        }
-        let mut group_tokens = Vec::with_capacity(groups);
-        for group in 0..groups {
-            let start = group * chunk;
-            prepared.push(PromptImage {
-                pixels: processed.image.pixels[start..start + chunk].to_vec(),
-                grid: (1, height, width),
-            });
-            let timestamp = format!("<{:.1} seconds>", processed.timestamps[group]);
-            let timestamp = assets.encode(&timestamp, false)?;
-            if timestamp.is_empty() {
-                return Err(Error::invalid("video timestamp tokenization"));
+        let mut group_tokens = Vec::new();
+        let mut geometry = None;
+        let mut last_time = None;
+        for processed in parts {
+            let (_, height, width) = processed.image.grid;
+            if geometry.is_some_and(|value| value != (height, width))
+                || processed
+                    .timestamps
+                    .windows(2)
+                    .any(|times| times[0] > times[1])
+                || last_time
+                    .zip(processed.timestamps.first())
+                    .is_some_and(|(last, first)| last > *first)
+            {
+                return Err(Error::invalid(
+                    "video groups are inconsistent or out of order",
+                ));
             }
-            group_tokens.push(VideoSegment {
-                timestamp,
-                count: frame_seqlen,
-            });
+            geometry = Some((height, width));
+            last_time = processed.timestamps.last().copied();
+            append_video_part(
+                assets,
+                processor,
+                merge,
+                processed,
+                &mut prepared,
+                &mut group_tokens,
+            )?;
         }
         segments.push(group_tokens);
     }
@@ -512,6 +551,63 @@ pub fn prepare_video(
         images: prepared,
         spans,
     })
+}
+
+fn append_video_part(
+    assets: &TextAssets,
+    processor: &VideoProcessor,
+    merge: usize,
+    mut processed: PreprocessedVideo,
+    prepared: &mut Vec<PromptImage>,
+    group_tokens: &mut Vec<VideoSegment>,
+) -> Result<()> {
+    let (groups, height, width) = processed.image.grid;
+    if merge == 0
+        || height == 0
+        || width == 0
+        || !height.is_multiple_of(merge)
+        || !width.is_multiple_of(merge)
+    {
+        return Err(Error::invalid("video patch grid"));
+    }
+    let frame_seqlen = (height / merge)
+        .checked_mul(width / merge)
+        .ok_or_else(|| Error::invalid("video frame sequence overflow"))?;
+    let chunk = height
+        .checked_mul(width)
+        .and_then(|patches| patches.checked_mul(processor.patch_width()))
+        .ok_or_else(|| Error::invalid("video group width overflow"))?;
+    let expected_pixels = groups
+        .checked_mul(chunk)
+        .ok_or_else(|| Error::invalid("video group split overflow"))?;
+    if groups == 0
+        || processed.image.pixels.len() != expected_pixels
+        || processed.timestamps.len() != groups
+        || processed.timestamps.iter().any(|t| !t.is_finite())
+    {
+        return Err(Error::invalid("video preprocessing split"));
+    }
+    for (group, seconds) in processed.timestamps.into_iter().enumerate() {
+        let start = group * chunk;
+        let pixels = if groups == 1 {
+            take(&mut processed.image.pixels)
+        } else {
+            processed.image.pixels[start..start + chunk].to_vec()
+        };
+        prepared.push(PromptImage {
+            pixels,
+            grid: (1, height, width),
+        });
+        let timestamp = assets.encode(&format!("<{seconds:.1} seconds>"), false)?;
+        if timestamp.is_empty() {
+            return Err(Error::invalid("video timestamp tokenization"));
+        }
+        group_tokens.push(VideoSegment {
+            timestamp,
+            count: frame_seqlen,
+        });
+    }
+    Ok(())
 }
 
 /// One timestamped segment of a video, in prompt order.

@@ -11,6 +11,7 @@ use std::{
     sync::atomic::Ordering, sync::mpsc, time::Duration, time::Instant,
 };
 use tokio::runtime::Handle;
+use tokio::sync::Notify;
 use tokio::sync::oneshot;
 use tokio::time::timeout as time_timeout;
 
@@ -84,6 +85,7 @@ struct Usage {
 }
 struct Budget {
     usage: Mutex<Usage>,
+    available: Notify,
     active: AtomicUsize,
     peak: AtomicUsize,
     config: CpuConfig,
@@ -97,6 +99,8 @@ impl Drop for Credit {
         if let Ok(mut usage) = self.budget.usage.lock() {
             usage.jobs -= 1;
             usage.bytes -= self.bytes;
+            drop(usage);
+            self.budget.available.notify_waiters();
         }
     }
 }
@@ -168,6 +172,7 @@ impl CpuPool {
         let receiver = Arc::new(Mutex::new(receiver));
         let budget = Arc::new(Budget {
             usage: Mutex::new(Usage::default()),
+            available: Notify::new(),
             active: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
             config,
@@ -230,6 +235,33 @@ impl CpuPool {
         work: impl FnOnce(&CpuContext) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         self.run_until(bytes, None, work).await
+    }
+
+    /// Wait for an existing worker slot instead of rejecting an incrementally produced job.
+    pub(crate) async fn run_when_available<T: Send + 'static>(
+        &self,
+        bytes: usize,
+        work: impl FnOnce(&CpuContext) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_millis(self.budget.config.job_timeout_ms))
+            .ok_or_else(|| Error::invalid("CPU preparation deadline overflow"))?;
+        let credit = loop {
+            let notified = self.budget.available.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            match self.reserve(bytes) {
+                Ok(credit) => break credit,
+                Err(error) if error.code == ErrorCode::Capacity => {}
+                Err(error) => return Err(error),
+            }
+            time_timeout(deadline.saturating_duration_since(Instant::now()), notified)
+                .await
+                .map_err(|_| {
+                    Error::new(ErrorCode::Capacity, "CPU preparation deadline exceeded")
+                })?;
+        };
+        self.run_reserved(credit, Some(deadline), work).await
     }
     /// Bound queued CPU work by both its lane timeout and an absolute request deadline.
     /// # Errors
