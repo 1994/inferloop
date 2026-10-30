@@ -17,6 +17,9 @@ fn device_image_batches_match_cpu_patches_and_zero_padding() -> Result<()> {
     let portable = Processor::load_kernel(&device, PORTABLE_PTX)?;
     for processor in [&processor, &portable] {
         for (source, batch, maximum) in [
+            ([32, 32], 4, 1024 * 1024),
+            ([32, 64], 3, 1024 * 1024),
+            ([96, 160], 3, 1024 * 1024),
             ([256, 256], 16, 1024 * 1024),
             ([333, 571], 16, 1024 * 1024),
             ([225, 353], 16, 1024 * 1024),

@@ -177,7 +177,7 @@ impl Kernels {
     unsafe_code,
     reason = "The private tensor is initialized by the checked image kernels"
 )]
-unsafe fn overwritten<T: DType>(
+pub(super) unsafe fn overwritten<T: DType>(
     ctx: &ExecutionContext,
     elements: usize,
 ) -> StdResult<Tensor<T>, DeviceError> {
@@ -199,7 +199,7 @@ unsafe fn overwritten<T: DType>(
     Ok(tensor)
 }
 
-fn config(elements: usize) -> StdResult<LaunchConfig, DeviceError> {
+pub(super) fn config(elements: usize) -> StdResult<LaunchConfig, DeviceError> {
     let threads =
         usize::try_from(THREADS).map_err(|error| DeviceError::Internal(error.to_string()))?;
     let blocks = u32::try_from(elements.div_ceil(threads))

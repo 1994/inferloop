@@ -1,5 +1,38 @@
 // Experimental CUDA image batch preprocessing; buffers and geometry are checked by the host.
 #include <stdint.h>
+extern "C" __global__ void mm_direct_patch_batch(
+    const uint8_t* source, float* output, int32_t batch, int32_t height, int32_t width,
+    int32_t padded_patches, float mean, float std) {
+  const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+  const uint64_t per_image = (uint64_t)padded_patches * 768;
+  if (i >= per_image * batch) return;
+  const uint64_t sample = i / per_image;
+  const uint64_t local = i % per_image;
+  const uint64_t patch = local / 768;
+  const int32_t v = local % 768;
+  const int32_t c = v / 256;
+  const uint64_t destination = ((sample * padded_patches + patch) * 1536) + c * 512 + (v % 256);
+  const int32_t grid_width = width / 16;
+  const uint64_t real_patches = (uint64_t)(height / 16) * grid_width;
+  if (patch >= real_patches) {
+    output[destination] = 0.0f;
+    output[destination + 256] = 0.0f;
+    return;
+  }
+  const int32_t dx = v % 16;
+  const int32_t dy = (v / 16) % 16;
+  const int32_t mx = patch % 2;
+  const int32_t my = (patch / 2) % 2;
+  const int32_t gx = (patch / 4) % (grid_width / 2);
+  const int32_t gy = patch / (grid_width * 2);
+  const int32_t x = (gx * 2 + mx) * 16 + dx;
+  const int32_t y = (gy * 2 + my) * 16 + dy;
+  const uint8_t value = source[((sample * height + y) * width + x) * 3 + c];
+  const float normalized = ((float)value - mean * 255.0f) / (std * 255.0f);
+  output[destination] = normalized;
+  output[destination + 256] = normalized;
+}
+
 extern "C" __global__ void mm_horizontal_batch(
     const uint8_t* source, const int32_t* index, const int32_t* weight,
     uint8_t* intermediate, int32_t batch, int32_t source_height, int32_t source_width,
