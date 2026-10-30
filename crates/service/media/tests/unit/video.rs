@@ -8,6 +8,8 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+#[cfg(target_os = "linux")]
+use tokio::time::sleep;
 use tokio::time::timeout;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -78,7 +80,7 @@ async fn dropping_reader_stops_its_decoder() -> TestResult {
     let process = format!("/proc/{pid}");
     timeout(Duration::from_secs(5), async {
         while Path::new(&process).exists() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            sleep(Duration::from_millis(20)).await;
         }
     })
     .await?;
