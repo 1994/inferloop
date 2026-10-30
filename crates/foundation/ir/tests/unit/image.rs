@@ -1,4 +1,7 @@
-use super::{ImageInput, ImageNormalization, ImagePatchLayout, ImageTransform};
+use super::{
+    EncodedImageInfo, EncodedImageInput, ImageEncoding, ImageInput, ImageNormalization,
+    ImagePatchLayout, ImageTransform,
+};
 use infer_core::Result;
 use std::sync::Arc;
 
@@ -39,5 +42,24 @@ fn invalid_image_geometry_and_normalization_are_rejected() -> Result<()> {
     assert!(ImageTransform::new([0, 32], [32, 32], layout, norm).is_err());
     assert!(ImageTransform::new([32, 32], [33, 32], layout, norm).is_err());
     assert!(ImageTransform::new([usize::MAX, 2], [32, 32], layout, norm).is_err());
+    Ok(())
+}
+
+#[test]
+fn compressed_input_validates_geometry_and_keeps_its_byte_owner() -> Result<()> {
+    let transform = transform()?;
+    assert!(EncodedImageInfo::new([0, 64], ImageEncoding::Jpeg, "decoder".into()).is_err());
+    assert!(EncodedImageInfo::new([33, 64], ImageEncoding::Jpeg, String::new()).is_err());
+    let wrong = EncodedImageInfo::new([32, 64], ImageEncoding::Jpeg, "decoder".into())?;
+    assert!(EncodedImageInput::new(transform, wrong, vec![1]).is_err());
+    let info = EncodedImageInfo::new([33, 64], ImageEncoding::Jpeg, "decoder".into())?;
+    assert!(EncodedImageInput::new(transform, info.clone(), Vec::new()).is_err());
+    let input = EncodedImageInput::new(transform, info, vec![1, 2, 3])?;
+    let shared = input.shared_bytes();
+    let copy = input.clone();
+    drop(input);
+    assert!(Arc::ptr_eq(&shared, &copy.shared_bytes()));
+    assert_eq!(copy.bytes(), &[1, 2, 3]);
+    assert_eq!(copy.info().decoder_identity(), "decoder");
     Ok(())
 }

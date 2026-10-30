@@ -1,4 +1,4 @@
-use crate::{ImageInput, TokenBuffer};
+use crate::{EncodedImageInput, ImageInput, TokenBuffer};
 use infer_core::{Error, MediaId, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -20,6 +20,8 @@ pub enum MediaPixels {
     Patches(Arc<[f32]>),
     /// Decoded image bytes and their validated transformation.
     Image(ImageInput),
+    /// Compressed image retained for a capable backend decoder.
+    EncodedImage(EncodedImageInput),
 }
 
 impl MediaPixels {
@@ -28,7 +30,7 @@ impl MediaPixels {
     pub fn patches(&self) -> Option<&[f32]> {
         match self {
             Self::Patches(pixels) => Some(pixels),
-            Self::Image(_) => None,
+            Self::Image(_) | Self::EncodedImage(_) => None,
         }
     }
 
@@ -37,6 +39,7 @@ impl MediaPixels {
         match self {
             Self::Patches(pixels) => pixels.len().saturating_mul(size_of::<f32>()),
             Self::Image(image) => image.retained_bytes(),
+            Self::EncodedImage(image) => image.retained_bytes(),
         }
     }
 }
@@ -164,7 +167,12 @@ impl MediaPlan {
                 {
                     return Err(Error::invalid("raw image grid or modality mismatch"));
                 }
-                MediaPixels::Patches(_) | MediaPixels::Image(_) => {}
+                MediaPixels::EncodedImage(image)
+                    if first != Modality::Image || image.transform().grid() != item.grid =>
+                {
+                    return Err(Error::invalid("compressed image grid or modality mismatch"));
+                }
+                MediaPixels::Patches(_) | MediaPixels::Image(_) | MediaPixels::EncodedImage(_) => {}
             }
             previous_end = item.span.end;
             items.push(item);

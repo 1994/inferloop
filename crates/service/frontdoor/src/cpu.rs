@@ -298,3 +298,14 @@ impl CpuPool {
         }
     }
 }
+
+impl infer_spi::DeviceHostExecutor for CpuPool {
+    fn submit(&self, work: Box<dyn FnOnce() + Send>) -> Result<()> {
+        self.jobs.submit_device(Box::new(move |available| {
+            work();
+            if let Err(error) = available() {
+                tracing::error!(%error, "CPU device-work lane failed");
+            }
+        }))
+    }
+}

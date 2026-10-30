@@ -5,6 +5,27 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[test]
+fn device_work_remains_serviceable_when_preparation_queue_is_full() -> Result<(), Box<dyn Error>> {
+    let queue = Arc::new(WorkQueue::new(1, 1));
+    let sender = WorkSender(queue.clone());
+    let (output, results) = mpsc::channel();
+    let prepared = output.clone();
+    sender.submit(Box::new(move |_| {
+        prepared.send("prepare").unwrap();
+    }))?;
+    sender.submit_device(Box::new(move |_| {
+        output.send("device").unwrap();
+    }))?;
+    let job = queue.next(0)?.ok_or("missing device work")?;
+    job(&|| queue.available(0));
+    assert_eq!(results.recv_timeout(Duration::from_secs(1))?, "device");
+    let job = queue.next(0)?.ok_or("missing preparation work")?;
+    job(&|| queue.available(0));
+    assert_eq!(results.recv_timeout(Duration::from_secs(1))?, "prepare");
+    Ok(())
+}
+
+#[test]
 fn last_sender_drains_queued_jobs() -> Result<(), Box<dyn Error>> {
     let queue = Arc::new(WorkQueue::new(2, 4));
     let sender = WorkSender(queue.clone());

@@ -16,7 +16,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 28
+      "tests": 29
     },
     "compiler": {
       "benches": 0,
@@ -34,19 +34,19 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 443
+      "tests": 446
     },
     "frontdoor": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 129
+      "tests": 131
     },
     "ir": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 18
+      "tests": 19
     },
     "kernel-api": {
       "benches": 0,
@@ -275,11 +275,14 @@
     "requires a CUDA device; run inside safe-run": 5,
     "requires a Linux production host with get/set_mempolicy permitted; make check-linux-numa": 1,
     "requires a qualified CUDA device": 4,
-    "requires a real Qwen3-VL package in INFER_VISION_PACKAGE": 4,
+    "requires a real Qwen3-VL package in INFER_VISION_PACKAGE": 5,
     "requires a reserved CUDA device": 1,
     "requires a reserved CUDA device; compares every output with the prior tower": 1,
     "requires a reserved CUDA device; compares full outputs with scalar and existing paths": 1,
     "requires an NVIDIA GPU; run under tools/bench/safe-run.sh": 9,
+    "requires nvJPEG hardware and JPEG fixture in INFER_NVJPEG_JPEG_FIXTURE": 1,
+    "requires nvJPEG hardware and JPEG/RGB fixtures in INFER_NVJPEG_JPEG_FIXTURE and INFER_NVJPEG_RGB_FIXTURE": 1,
+    "requires nvJPEG hardware and two JPEG/RGB fixtures in INFER_NVJPEG_*_FIXTURE": 1,
     "requires real checkpoint and CUDA; run release serially inside safe-run": 1,
     "requires real checkpoint and CUDA; run serially inside safe-run": 1,
     "requires release CUDA O3, completed CI and complete bitwise gate; safe-run; internal paired prefill cost only": 1
@@ -1487,11 +1490,11 @@
     }
   ],
   "totals": {
-    "all": 1086,
+    "all": 1093,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1086
+    "tests": 1093
   }
 }

@@ -8,7 +8,7 @@ use super::device_tower;
 use super::program::{attention_tiles, mlp_width, patch_width};
 use super::weights::half_tile;
 use infer_core::{Error, Result};
-use infer_ir::{ImageInput, MediaPixels, MediaPlan};
+use infer_ir::{ImageTransform, MediaPixels, MediaPlan};
 use infer_models::vision::{merge_unit, merged_width, row_tile};
 use infer_spi::ModalityEncoder;
 
@@ -243,8 +243,14 @@ pub fn footprint(encoder: &ModalityEncoder, media: &MediaPlan) -> Result<u64> {
     let mut retained = 0_u64;
     for item in &media.items {
         peak = peak.max(one_item_peak(encoder, item.grid)?);
-        if let MediaPixels::Image(image) = &item.pixels {
-            peak = peak.max(image_preprocessing_bytes(image, encoder)?);
+        match &item.pixels {
+            MediaPixels::Image(image) => {
+                peak = peak.max(image_preprocessing_bytes(image.transform(), encoder)?);
+            }
+            MediaPixels::EncodedImage(image) => {
+                peak = peak.max(image_preprocessing_bytes(image.transform(), encoder)?);
+            }
+            MediaPixels::Patches(_) => {}
         }
         let patches = item
             .grid
@@ -267,8 +273,7 @@ pub fn footprint(encoder: &ModalityEncoder, media: &MediaPlan) -> Result<u64> {
         .ok_or_else(|| Error::invalid("vision media footprint"))
 }
 
-fn image_preprocessing_bytes(image: &ImageInput, encoder: &ModalityEncoder) -> Result<u64> {
-    let transform = image.transform();
+fn image_preprocessing_bytes(transform: ImageTransform, encoder: &ModalityEncoder) -> Result<u64> {
     let [source_height, source_width] = transform.source();
     let [target_height, target_width] = transform.target();
     let patches = (target_height / transform.layout().patch())

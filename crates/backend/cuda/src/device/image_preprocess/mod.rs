@@ -4,12 +4,17 @@ mod capability;
 mod direct;
 mod geometry;
 mod launch;
+mod nvjpeg;
+mod source;
 mod staging;
 mod tables;
+mod worker;
 
 use self::direct::Direct;
 use self::geometry::{Geometry, PATCH_WIDTH};
 use self::launch::Kernels;
+use self::nvjpeg::LazyDecoder;
+use self::source::Source;
 use self::staging::UploadPool;
 use self::tables::TableCache;
 use crate::device::{CudaDevice, device_error};
@@ -17,7 +22,7 @@ use crate::target::ImageKernel;
 use cuda_core::{CudaContext, Function};
 use cutile::prelude::*;
 use infer_core::{Error, ErrorCode, Result};
-use infer_ir::ImageTransform;
+use infer_ir::{EncodedImageInput, ImageTransform};
 use infer_spi::ImagePreprocessing;
 use std::sync::Arc;
 
@@ -67,8 +72,9 @@ pub struct Processor {
     direct: Arc<Function>,
     stream: usize,
     pixels: UploadPool<u8>,
-    coefficients: UploadPool<i32>,
-    tables: TableCache,
+    coefficients: Arc<UploadPool<i32>>,
+    tables: Arc<TableCache>,
+    decoder: Arc<LazyDecoder>,
     capability: Arc<dyn ImagePreprocessing>,
 }
 
@@ -107,6 +113,11 @@ impl Processor {
                 )
             })?;
         let context = CudaContext::new(device.ordinal()).map_err(device_error)?;
+        let decoder = Arc::new(LazyDecoder::new(
+            Arc::clone(&context),
+            device.target().clone(),
+        ));
+        let capability = Arc::new(capability::DeviceCapability::new(Arc::clone(&decoder)));
         Ok(Self {
             horizontal: Arc::new(
                 module
@@ -125,9 +136,10 @@ impl Processor {
             ),
             stream: device.stream.cu_stream() as usize,
             pixels: UploadPool::new(Arc::clone(&context)),
-            coefficients: UploadPool::new(context),
-            tables: TableCache::default(),
-            capability: Arc::new(Capability),
+            coefficients: Arc::new(UploadPool::new(context)),
+            tables: Arc::new(TableCache::default()),
+            decoder,
+            capability,
         })
     }
 
@@ -145,20 +157,102 @@ impl Processor {
         device: &CudaDevice,
         batch: &ImageBatch,
     ) -> Result<Arc<Tensor<f32>>> {
-        let geometry = batch.geometry;
+        let source = Source::Rgb(self.pixels.stage(&batch.pixels)?);
+        self.process_source(device, batch.geometry, source).await
+    }
+
+    /// Decode a supported compressed image on the owning device and produce its patch vectors.
+    ///
+    /// The bytes, decoder state and device buffers remain live until the stream fence completes.
+    /// # Errors
+    /// Rejects a missing decoder, mismatched metadata, unsupported geometry or CUDA failure.
+    pub async fn process_encoded(
+        &self,
+        device: &CudaDevice,
+        image: &EncodedImageInput,
+    ) -> Result<Arc<Tensor<f32>>> {
+        let transform = image.transform();
+        if !Capability.supports(&transform) {
+            return Err(Error::unsupported(
+                "CUDA image processor cannot execute this transform",
+            ));
+        }
+        let decoder = self
+            .decoder
+            .get()?
+            .ok_or_else(|| Error::unsupported("nvJPEG hardware decoder is unavailable"))?;
         if self.stream != device.stream.cu_stream() as usize {
             return Err(Error::invalid(
                 "image processor belongs to a different CUDA stream",
             ));
         }
-        let rows = usize::try_from(geometry.batch)
-            .ok()
-            .and_then(|count| count.checked_mul(usize::try_from(geometry.padded_patches).ok()?))
-            .ok_or_else(|| Error::invalid("image patch rows overflow"))?;
+        let executor = self.decoder.host_executor()?;
+        let geometry = Geometry::new(1, transform.source(), transform.target())?;
+        let bytes = image.shared_bytes();
+        let info = image.info().clone();
+        let width = transform.source()[1];
+        let device = device.clone();
+        let stream = self.stream;
+        let direct = Arc::clone(&self.direct);
+        let horizontal = Arc::clone(&self.horizontal);
+        let vertical = Arc::clone(&self.vertical);
+        let coefficients = Arc::clone(&self.coefficients);
+        let tables = Arc::clone(&self.tables);
+        let submission = worker::submit(executor.as_ref(), move || {
+            let lease = decoder.prepare(&bytes, &info)?;
+            let source = Source::Jpeg {
+                lease,
+                bytes,
+                width,
+            };
+            if geometry.is_identity() {
+                worker::kickoff(
+                    &device,
+                    Direct {
+                        device: device.clone(),
+                        source,
+                        geometry,
+                        kernel: direct,
+                        stream,
+                    },
+                )
+            } else {
+                let tables = tables.get(&geometry)?;
+                let coefficients = coefficients.stage(&tables.values)?;
+                worker::kickoff(
+                    &device,
+                    Kernels {
+                        device: device.clone(),
+                        source,
+                        coefficients,
+                        geometry,
+                        tables,
+                        horizontal,
+                        vertical,
+                        stream,
+                    },
+                )
+            }
+        })
+        .await?;
+        Self::finish_output(geometry, submission.finish().await?)
+    }
+
+    async fn process_source(
+        &self,
+        device: &CudaDevice,
+        geometry: Geometry,
+        source: Source,
+    ) -> Result<Arc<Tensor<f32>>> {
+        if self.stream != device.stream.cu_stream() as usize {
+            return Err(Error::invalid(
+                "image processor belongs to a different CUDA stream",
+            ));
+        }
         let output = if geometry.is_identity() {
             let operation = Direct {
                 device: device.clone(),
-                pixels: self.pixels.stage(&batch.pixels)?,
+                source,
                 geometry,
                 kernel: Arc::clone(&self.direct),
                 stream: self.stream,
@@ -168,7 +262,7 @@ impl Processor {
             let tables = self.tables.get(&geometry)?;
             let operation = Kernels {
                 device: device.clone(),
-                pixels: self.pixels.stage(&batch.pixels)?,
+                source,
                 coefficients: self.coefficients.stage(&tables.values)?,
                 geometry,
                 tables,
@@ -178,6 +272,14 @@ impl Processor {
             };
             device.run_op(operation).await?
         };
+        Self::finish_output(geometry, output)
+    }
+
+    fn finish_output(geometry: Geometry, output: Tensor<f32>) -> Result<Arc<Tensor<f32>>> {
+        let rows = usize::try_from(geometry.batch)
+            .ok()
+            .and_then(|count| count.checked_mul(usize::try_from(geometry.padded_patches).ok()?))
+            .ok_or_else(|| Error::invalid("image patch rows overflow"))?;
         output
             .reshape(&[rows, PATCH_WIDTH])
             .map(Arc::new)

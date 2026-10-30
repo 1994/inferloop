@@ -25,6 +25,7 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
         config: config_path,
         package,
         mm_processor_kwargs,
+        image_decoder,
         host_memory_mib,
     } = options;
     let image_options = mm_processor_kwargs
@@ -53,6 +54,12 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
         .transpose()?
         .map(Arc::new);
     let image_preprocessing = engine.backend().image_preprocessing();
+    if !text_only
+        && image_decoder == super::ImageDecoder::Auto
+        && let Some(capability) = &image_preprocessing
+    {
+        capability.initialize_encoded()?;
+    }
     let media = if text_only {
         None
     } else {
@@ -62,7 +69,11 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
             .transpose()?
             .flatten()
             .map(|assets| {
-                let mut media = infer_frontdoor::MediaService::new(assets, media_limits);
+                let mut media = infer_frontdoor::MediaService::new(assets, media_limits)
+                    .with_image_decoder(match image_decoder {
+                        super::ImageDecoder::Auto => infer_frontdoor::ImageDecoder::Auto,
+                        super::ImageDecoder::Cpu => infer_frontdoor::ImageDecoder::Cpu,
+                    });
                 if let Some(options) = image_options {
                     media = media.with_image_options(options);
                 }

@@ -154,6 +154,116 @@ pub struct ImageInput {
     pixels: Arc<Vec<u8>>,
 }
 
+/// Compressed image format understood by a backend decoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageEncoding {
+    /// A JPEG bitstream.
+    Jpeg,
+}
+
+/// Metadata checked by a backend before accepting a compressed image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncodedImageInfo {
+    source: [usize; 2],
+    encoding: ImageEncoding,
+    decoder_identity: String,
+}
+
+impl EncodedImageInfo {
+    /// Construct metadata for a nonempty source and a stable decoder identity.
+    /// # Errors
+    /// Rejects empty or overflowing dimensions and an empty decoder identity.
+    pub fn new(
+        source: [usize; 2],
+        encoding: ImageEncoding,
+        decoder_identity: String,
+    ) -> Result<Self> {
+        if source.contains(&0) || decoder_identity.is_empty() {
+            return Err(Error::invalid("invalid compressed image metadata"));
+        }
+        rgb_bytes(source)?;
+        Ok(Self {
+            source,
+            encoding,
+            decoder_identity,
+        })
+    }
+
+    #[must_use]
+    pub const fn source(&self) -> [usize; 2] {
+        self.source
+    }
+    #[must_use]
+    pub const fn encoding(&self) -> ImageEncoding {
+        self.encoding
+    }
+    #[must_use]
+    pub fn decoder_identity(&self) -> &str {
+        &self.decoder_identity
+    }
+}
+
+/// Compressed source and transform retained until the backend finishes decoding it.
+#[derive(Clone, PartialEq)]
+pub struct EncodedImageInput {
+    transform: ImageTransform,
+    info: EncodedImageInfo,
+    bytes: Arc<Vec<u8>>,
+}
+
+impl Debug for EncodedImageInput {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> FmtResult {
+        formatter
+            .debug_struct("EncodedImageInput")
+            .field("transform", &self.transform)
+            .field("info", &self.info)
+            .field("bytes", &self.bytes.len())
+            .finish()
+    }
+}
+
+impl EncodedImageInput {
+    /// Retain compressed bytes and their backend-probed geometry.
+    ///
+    /// A backend must still validate that the stream matches this metadata before device writes.
+    /// # Errors
+    /// Rejects empty bytes or a transform that does not match the source dimensions.
+    pub fn new(transform: ImageTransform, info: EncodedImageInfo, bytes: Vec<u8>) -> Result<Self> {
+        if bytes.is_empty() || transform.source() != info.source() {
+            return Err(Error::invalid(
+                "compressed image buffer or geometry mismatch",
+            ));
+        }
+        Ok(Self {
+            transform,
+            info,
+            bytes: Arc::new(bytes),
+        })
+    }
+
+    #[must_use]
+    pub const fn transform(&self) -> ImageTransform {
+        self.transform
+    }
+    #[must_use]
+    pub const fn info(&self) -> &EncodedImageInfo {
+        &self.info
+    }
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    #[must_use]
+    pub fn retained_bytes(&self) -> usize {
+        self.bytes.capacity()
+    }
+    /// Clone the owner without copying the compressed bytes.
+    #[must_use]
+    pub fn shared_bytes(&self) -> Arc<Vec<u8>> {
+        Arc::clone(&self.bytes)
+    }
+}
+
 impl Debug for ImageInput {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> FmtResult {
         formatter

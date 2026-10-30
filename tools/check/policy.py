@@ -140,6 +140,9 @@ def check_exceptions():
                         ROOT / "crates/backend/cuda/src/device/image_preprocess/launch.rs",
                         # The no-resize PTX boundary retains its input and output until the fence.
                         ROOT / "crates/backend/cuda/src/device/image_preprocess/direct.rs",
+                        # nvJPEG's optional FFI retains decoder state and stream inputs to the
+                        # completion fence and binds every handle to its owning device context.
+                        ROOT / "crates/backend/cuda/src/device/image_preprocess/nvjpeg.rs",
                         ROOT / "crates/backend/cuda/src/device/cublaslt.rs",
                         ROOT / "crates/backend/cuda/src/device/vendor_fp8.rs",
                         # FP4 extension of the Lt ABI: checked complete extents, exact output
