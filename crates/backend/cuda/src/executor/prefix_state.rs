@@ -3,12 +3,12 @@ use crate::constants::KV_CACHE_RANK;
 use crate::device::asynchronous::block_on;
 use crate::{
     device::{CudaDevice, device_error},
-    resident::DeviceProgram,
+    resident::{DeviceProgram, attention_states, slot_batch::SlotPool},
 };
 use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
-use infer_ir::{DataflowGraph, StateKind, TensorStorage};
+use infer_ir::DataflowGraph;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::mem::forget;
@@ -47,20 +47,7 @@ impl ProgramSnapshot {
         let live_fp8 = program.fp8_states();
         let position = program.position();
         async move {
-            let kv: BTreeSet<_> = graph
-                .tensors
-                .iter()
-                .filter_map(|t| {
-                    matches!(
-                        t.storage,
-                        TensorStorage::State {
-                            kind: StateKind::AttentionKv,
-                            ..
-                        }
-                    )
-                    .then_some(t.id)
-                })
-                .collect();
+            let kv = attention_states(graph);
             let mut states = BTreeMap::new();
             let mut bytes = 0_u64;
             for (id, tensors) in live_states {
@@ -137,6 +124,49 @@ impl ProgramSnapshot {
                 bytes,
             })
         }
+    }
+
+    /// A snapshot of state already copied out in a private program's layout, such as a slot
+    /// export; `graph` names which states are KV.
+    pub(super) fn from_parts(
+        states: BTreeMap<TensorId, Vec<Tensor<f32>>>,
+        fp8: BTreeMap<TensorId, (Tensor<f8e4m3fn>, Tensor<f8e4m3fn>)>,
+        graph: &DataflowGraph,
+        position: usize,
+    ) -> Result<Self> {
+        let kv = attention_states(graph);
+        let float = states.values().flatten().try_fold(0_u64, |sum, tensor| {
+            sum.checked_add((tensor.size() * size_of::<f32>()) as u64)
+        });
+        let packed = fp8.values().try_fold(0_u64, |sum, (keys, values)| {
+            sum.checked_add((keys.size() + values.size()) as u64)
+        });
+        let bytes = float
+            .zip(packed)
+            .and_then(|(float, packed)| float.checked_add(packed))
+            .ok_or_else(|| Error::invalid("prefix byte overflow"))?;
+        Ok(Self {
+            states,
+            kv,
+            fp8,
+            position,
+            bytes,
+        })
+    }
+
+    /// Bind the snapshot into a slot-resident program's slot: the slot pool scatters KV into
+    /// the slot's blocks and copies recurrent state, and the program resumes after the prefix.
+    pub(super) fn bind_slot(
+        &self,
+        device: &CudaDevice,
+        pool: &mut SlotPool,
+        (slot, program): (usize, &mut DeviceProgram),
+        covered: usize,
+    ) -> Result<()> {
+        pool.bind(slot, &self.states, &self.fp8, covered, device)?;
+        device.drain()?;
+        program.set_position(self.position);
+        Ok(())
     }
 
     pub(super) fn restore(

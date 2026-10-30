@@ -69,7 +69,7 @@ pub(crate) fn prepare(
     device: &CudaDevice,
     graph: &DataflowGraph,
     weights: &ProgramWeights,
-    widths: [usize; 2],
+    widths: &[usize],
 ) {
     let mut shapes = BTreeSet::new();
     for node in &graph.nodes {
@@ -92,7 +92,7 @@ pub(crate) fn prepare(
         if !elements.is_multiple_of(head_dim) {
             continue;
         }
-        for width in widths.into_iter().filter(|w| *w >= PREFILL_LANES) {
+        for &width in widths.iter().filter(|w| **w >= PREFILL_LANES) {
             if let Some(rows) = width.checked_mul(elements / head_dim)
                 && let Some(shape) = Shape::new(rows, head_dim, epsilon)
             {

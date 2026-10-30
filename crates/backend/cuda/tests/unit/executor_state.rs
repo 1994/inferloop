@@ -30,6 +30,83 @@ fn private_capacity_saturates_when_workspace_cannot_fit() {
 }
 
 #[test]
+#[ignore = "real Qwen3-VL checkpoint and CUDA; run inside safe-run with INFER_TEST_MODEL"]
+fn repeated_media_reservations_do_not_accumulate_transient_bytes() -> infer_core::Result<()> {
+    use crate::{
+        device::CudaDevice,
+        executor::{CachedMedia, CudaExecutor},
+        loading::{LoadOptions, LoadedModel},
+    };
+    use infer_core::{Error, ModelId, StateId};
+    use infer_ir::{MediaItem, MediaPlan, Modality, OutputReadout, TokenBuffer};
+    use infer_models::MediaLayout;
+    use std::{env::var, sync::Arc};
+
+    const GRID_SIDE: usize = 8;
+    const REUSES: u64 = 3;
+    CudaDevice::enable_kernel_cache()?;
+    let loaded = LoadedModel::open(
+        CudaDevice::new(0)?,
+        var("INFER_TEST_MODEL").map_err(|error| Error::invalid(error.to_string()))?,
+        ModelId::ONE,
+        LoadOptions {
+            prefill_width: 32,
+            mtp_depth: 0,
+            autotune: false,
+            vision: true,
+            ..LoadOptions::default()
+        },
+    )?;
+    let encoder = loaded
+        .vision()
+        .ok_or_else(|| Error::invalid("test model has no vision encoder"))?
+        .encoder();
+    let patch_width = 3 * encoder.temporal_patch_size * encoder.patch_size * encoder.patch_size;
+    let rows = GRID_SIDE * GRID_SIDE / (encoder.spatial_merge_size * encoder.spatial_merge_size);
+    let plan = MediaPlan {
+        modality: Modality::Image,
+        prompt: TokenBuffer::from(vec![0; rows]),
+        items: vec![MediaItem {
+            modality: Modality::Image,
+            pixels: vec![0.0; GRID_SIDE * GRID_SIDE * patch_width].into(),
+            grid: (1, GRID_SIDE, GRID_SIDE),
+            span: 0..rows,
+        }],
+    };
+    let budget = loaded.device().allocatable_memory_bytes()?;
+    let mut executor = CudaExecutor::new_bounded(loaded, budget, 2)?;
+    let initial = executor
+        .state_reservation_bytes_for_media(128, OutputReadout::Logits, &plan)?
+        .ok_or_else(|| Error::invariant("missing media quote"))?;
+    for id in 1..=REUSES {
+        let state = StateId::new(id)?;
+        executor.reserve_media(state, 128, OutputReadout::Logits, &plan)?;
+        let tensor = executor.loaded.device().upload(vec![0.0_f32], &[1])?;
+        let reader = Arc::downgrade(&tensor);
+        executor
+            .states
+            .get_mut(&state)
+            .ok_or_else(|| Error::invariant("missing media state"))?
+            .media = Some(CachedMedia {
+            tensor,
+            layout: MediaLayout {
+                spans: Vec::new(),
+                next_rotary: 0,
+                positions: None,
+            },
+            bases: Vec::new(),
+        });
+        executor.release(state)?;
+        assert!(reader.upgrade().is_none(), "cached shell retained media");
+        let next = executor
+            .state_reservation_bytes_for_media(128, OutputReadout::Logits, &plan)?
+            .ok_or_else(|| Error::invariant("missing media quote"))?;
+        assert_eq!(next, initial, "media quote grew after state was released");
+    }
+    Ok(())
+}
+
+#[test]
 #[ignore = "real CUDA/MTP checkpoint; reserve graphs only after quote acknowledgement"]
 fn quotes_do_not_recapture_a_retired_pool_and_reservation_restores_it() -> infer_core::Result<()> {
     use crate::{

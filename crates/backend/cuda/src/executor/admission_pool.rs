@@ -15,6 +15,13 @@ impl CudaExecutor {
         ))
     }
 
+    /// Capture the zero-demand funded pool unless one exists (`CudaBackend::with_pool_captured`).
+    pub(super) fn capture_funded_pool(&mut self) {
+        if self.slots.is_none() && self.pool_quote.is_some() {
+            self.warm_slot_pool_for(CB_SLOT_TOKENS.min(self.loaded.model().max_sequence), 0);
+        }
+    }
+
     /// A pure quote bounds runtime resources; capture waits for actual request demand.
     pub(super) fn defer_request_pool(&mut self) -> Result<()> {
         if self.dflash.is_none() && (self.maximum_states < 2 || self.roofline_bound == Some(1)) {

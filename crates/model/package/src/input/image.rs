@@ -4,14 +4,22 @@
 //! `patch_size × merge_size` and the pixel count lands in `[min_pixels, max_pixels]`, then
 //! normalizes and lays the patches out in spatial-merge-block order with the flattened
 //! `[channel, temporal, patch, patch]` vector the patch-embed projection consumes.
+use super::image_resize;
 use infer_core::{Error, Result};
+use infer_ir::{ImageNormalization, ImagePatchLayout, ImageTransform};
+use std::iter::repeat_n;
+use std::sync::Arc;
 
 /// Channels of the RGB images the processor accepts.
 pub(crate) const RGB_CHANNELS: usize = 3;
+/// Number of possible values in an 8-bit input channel.
+const BYTE_VALUES: usize = 256;
 /// Full scale of one 8-bit channel.
 const BYTE_SCALE: f64 = 255.0;
 /// Reciprocal of [`BYTE_SCALE`], the processor's rescale factor.
 const RESCALE: f32 = 1.0 / 255.0;
+/// Symmetric normalization erases the sign of zero introduced by scalar resizing.
+const SYMMETRIC_NORMALIZATION: f32 = 0.5;
 /// Largest aspect ratio the reference processor accepts.
 const MAX_ASPECT_RATIO: usize = 200;
 /// Output pixel centres sit half a pixel past the integer grid.
@@ -75,6 +83,15 @@ pub struct PreprocessedImage {
     pub grid: (usize, usize, usize),
 }
 
+/// Image patches in a shared buffer suitable for a request handed to a backend.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SharedPreprocessedImage {
+    /// `patches × channels × temporal × patch × patch`, in spatial-merge-block order.
+    pub pixels: Arc<[f32]>,
+    /// `(temporal, height, width)` patch grid.
+    pub grid: (usize, usize, usize),
+}
+
 /// Per-channel normalization applied to a rescaled RGB value.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Normalization {
@@ -128,11 +145,90 @@ pub(crate) struct PatchGrid {
 /// # Errors
 /// Rejects missing frames, frames that disagree with the grid or a grid that does not divide by
 /// the merge size.
-pub(crate) fn patchify(
-    frames: &[&[f32]],
+pub(crate) fn patchify<T: Copy + Into<f32>>(
+    frames: &[&[T]],
     grid: PatchGrid,
     norm: &Normalization,
 ) -> Result<Vec<f32>> {
+    patchify_with(frames, grid, |value, channel| {
+        norm.apply(value.into(), channel)
+    })
+}
+
+/// Normalize byte frames using a per-channel table, preserving the same scalar rounding.
+fn patchify_rgb8<O: PatchOutput>(
+    frames: &[&[u8]],
+    grid: PatchGrid,
+    norm: &Normalization,
+) -> Result<O> {
+    let mut table = [[0.0; BYTE_VALUES]; RGB_CHANNELS];
+    for value in u8::MIN..=u8::MAX {
+        for (channel, channel_values) in table.iter_mut().enumerate() {
+            channel_values[usize::from(value)] = norm.apply(f32::from(value), channel);
+        }
+    }
+    patchify_with(frames, grid, |value, channel| {
+        table[channel][usize::from(value)]
+    })
+}
+
+trait PatchOutput: Sized {
+    fn build<T: Copy>(
+        frames: &[&[T]],
+        grid: PatchGrid,
+        convert: impl Fn(T, usize) -> f32,
+    ) -> Result<Self>;
+}
+
+impl PatchOutput for Vec<f32> {
+    fn build<T: Copy>(
+        frames: &[&[T]],
+        grid: PatchGrid,
+        convert: impl Fn(T, usize) -> f32,
+    ) -> Result<Self> {
+        let (width, elements) = patch_shape(frames, grid)?;
+        let mut pixels = Self::with_capacity(elements);
+        visit_patches(frames, grid, width, convert, |value| pixels.push(value));
+        Ok(pixels)
+    }
+}
+
+impl PatchOutput for Arc<[f32]> {
+    fn build<T: Copy>(
+        frames: &[&[T]],
+        grid: PatchGrid,
+        convert: impl Fn(T, usize) -> f32,
+    ) -> Result<Self> {
+        let (width, elements) = patch_shape(frames, grid)?;
+        // A known-length iterator allocates the Arc slice directly, avoiding a second full buffer.
+        let mut pixels: Self = repeat_n(0.0, elements).collect();
+        let buffer = Self::get_mut(&mut pixels)
+            .ok_or_else(|| Error::invariant("new image patch buffer is shared"))?;
+        let mut slots = buffer.iter_mut();
+        let mut overflow = false;
+        visit_patches(frames, grid, width, convert, |value| {
+            if let Some(slot) = slots.next() {
+                *slot = value;
+            } else {
+                overflow = true;
+            }
+        });
+        if overflow || slots.next().is_some() {
+            return Err(Error::invariant("image patch output length changed"));
+        }
+        Ok(pixels)
+    }
+}
+
+fn patchify_with<T: Copy, O: PatchOutput>(
+    frames: &[&[T]],
+    grid: PatchGrid,
+    convert: impl Fn(T, usize) -> f32,
+) -> Result<O> {
+    O::build(frames, grid, convert)
+}
+
+fn patch_shape<T>(frames: &[&[T]], grid: PatchGrid) -> Result<(usize, usize)> {
     let resized_height = grid
         .height
         .checked_mul(grid.patch)
@@ -173,15 +269,29 @@ pub(crate) fn patchify(
         .checked_mul(grid.temporal)
         .and_then(|value| value.checked_mul(patch_area))
         .ok_or_else(|| Error::invalid("patch width overflow"))?;
-    let patches = expected_frames
+    let patches = grid
+        .groups
         .checked_mul(grid.height)
         .and_then(|value| value.checked_mul(grid.width))
         .ok_or_else(|| Error::invalid("patch count overflow"))?;
-    let mut pixels = Vec::with_capacity(
-        patches
-            .checked_mul(patch_width)
-            .ok_or_else(|| Error::invalid("patch vector overflow"))?,
-    );
+    let elements = patches
+        .checked_mul(patch_width)
+        .filter(|elements| {
+            elements
+                .checked_mul(size_of::<f32>())
+                .is_some_and(|bytes| isize::try_from(bytes).is_ok())
+        })
+        .ok_or_else(|| Error::invalid("patch vector overflow"))?;
+    Ok((resized_width, elements))
+}
+
+fn visit_patches<T: Copy>(
+    frames: &[&[T]],
+    grid: PatchGrid,
+    resized_width: usize,
+    convert: impl Fn(T, usize) -> f32,
+    mut emit: impl FnMut(f32),
+) {
     for group in 0..grid.groups {
         for block_row in 0..grid.height / grid.merge {
             for block_col in 0..grid.width / grid.merge {
@@ -198,7 +308,7 @@ pub(crate) fn patchify(
                                         let x = col * grid.patch + patch_col;
                                         let value =
                                             frame[(y * resized_width + x) * RGB_CHANNELS + channel];
-                                        pixels.push(norm.apply(value, channel));
+                                        emit(convert(value, channel));
                                     }
                                 }
                             }
@@ -208,10 +318,24 @@ pub(crate) fn patchify(
             }
         }
     }
-    Ok(pixels)
 }
 
 impl ImageProcessor {
+    /// Plan an RGB8 transform without performing the pixel conversion.
+    ///
+    /// The returned geometry can be offered to a backend which advertises support for it.
+    /// # Errors
+    /// Rejects invalid source dimensions, processor geometry, or normalization.
+    pub fn transform(&self, height: usize, width: usize) -> Result<ImageTransform> {
+        let (resized_height, resized_width) = self.smart_resize(height, width)?;
+        ImageTransform::new(
+            [height, width],
+            (resized_height, resized_width).into(),
+            ImagePatchLayout::new(self.patch_size, self.temporal_patch_size, self.merge_size)?,
+            ImageNormalization::new(self.mean, self.std, self.rescale)?,
+        )
+    }
+
     /// Parse `preprocessor_config.json`.
     /// # Errors
     /// Rejects missing or inconsistent geometry and normalization fields.
@@ -322,16 +446,103 @@ impl ImageProcessor {
     /// # Errors
     /// Rejects malformed image buffers or geometry that does not tile by the patch grid.
     pub fn preprocess(&self, image: &RgbImage) -> Result<PreprocessedImage> {
-        let expected = image
-            .height
-            .checked_mul(image.width)
+        self.preprocess_rgb(image.height, image.width, &image.pixels)
+    }
+
+    /// Preprocess one image directly into a shared patch buffer.
+    ///
+    /// The returned buffer is owned by the caller and can be retained across backend handoffs.
+    /// # Errors
+    /// Rejects malformed image buffers or geometry that does not tile by the patch grid.
+    pub fn preprocess_shared(&self, image: &RgbImage) -> Result<SharedPreprocessedImage> {
+        self.preprocess_rgb_shared(image.height, image.width, &image.pixels)
+    }
+
+    /// Preprocess one RGB8 image without resizing its dimensions.
+    /// # Errors
+    /// Rejects malformed buffers and dimensions that cannot tile the configured patch grid.
+    pub fn preprocess_unresized(&self, image: &RgbImage) -> Result<PreprocessedImage> {
+        let (pixels, grid) = self.preprocess_rgb_to_target(
+            image.height,
+            image.width,
+            &image.pixels,
+            (image.height, image.width),
+        )?;
+        Ok(PreprocessedImage { pixels, grid })
+    }
+
+    /// Preprocess one RGB8 image without resizing into a shared patch buffer.
+    /// # Errors
+    /// Rejects malformed buffers and dimensions that cannot tile the configured patch grid.
+    pub fn preprocess_unresized_shared(&self, image: &RgbImage) -> Result<SharedPreprocessedImage> {
+        let (pixels, grid) = self.preprocess_rgb_to_target(
+            image.height,
+            image.width,
+            &image.pixels,
+            (image.height, image.width),
+        )?;
+        Ok(SharedPreprocessedImage { pixels, grid })
+    }
+
+    pub(super) fn preprocess_rgb(
+        &self,
+        height: usize,
+        width: usize,
+        pixels: &[u8],
+    ) -> Result<PreprocessedImage> {
+        let (pixels, grid) = self.preprocess_rgb_to(height, width, pixels)?;
+        Ok(PreprocessedImage { pixels, grid })
+    }
+
+    pub(super) fn preprocess_rgb_shared(
+        &self,
+        height: usize,
+        width: usize,
+        pixels: &[u8],
+    ) -> Result<SharedPreprocessedImage> {
+        let (pixels, grid) = self.preprocess_rgb_to(height, width, pixels)?;
+        Ok(SharedPreprocessedImage { pixels, grid })
+    }
+
+    fn preprocess_rgb_to<O: PatchOutput>(
+        &self,
+        height: usize,
+        width: usize,
+        pixels: &[u8],
+    ) -> Result<(O, (usize, usize, usize))> {
+        let target = self.smart_resize(height, width)?;
+        self.preprocess_rgb_to_target(height, width, pixels, target)
+    }
+
+    fn preprocess_rgb_to_target<O: PatchOutput>(
+        &self,
+        height: usize,
+        width: usize,
+        pixels: &[u8],
+        target: (usize, usize),
+    ) -> Result<(O, (usize, usize, usize))> {
+        let expected = height
+            .checked_mul(width)
             .and_then(|value| value.checked_mul(RGB_CHANNELS))
             .ok_or_else(|| Error::invalid("image dimensions overflow"))?;
-        if image.pixels.len() != expected {
+        if pixels.len() != expected {
             return Err(Error::invalid("image buffer does not match its dimensions"));
         }
-        let (resized_height, resized_width) = self.smart_resize(image.height, image.width)?;
-        let resized = Self::resize(image, resized_height, resized_width);
+        let (resized_height, resized_width) = target;
+        let factor = self
+            .patch_size
+            .checked_mul(self.merge_size)
+            .filter(|factor| *factor > 0)
+            .ok_or_else(|| Error::invalid("invalid image patch factor"))?;
+        if resized_height == 0
+            || resized_width == 0
+            || !resized_height.is_multiple_of(factor)
+            || !resized_width.is_multiple_of(factor)
+        {
+            return Err(Error::invalid(
+                "image dimensions do not tile the patch grid",
+            ));
+        }
         let grid_h = resized_height / self.patch_size;
         let grid_w = resized_width / self.patch_size;
         let merge = self.merge_size;
@@ -340,53 +551,105 @@ impl ImageProcessor {
                 "patch grid does not divide by the merge size",
             ));
         }
+        let grid = PatchGrid {
+            temporal: self.temporal_patch_size,
+            height: grid_h,
+            width: grid_w,
+            patch: self.patch_size,
+            merge: self.merge_size,
+            groups: 1,
+        };
+        let norm = Normalization {
+            mean: self.mean,
+            std: self.std,
+            rescale: self.rescale,
+        };
         // A still image repeats the same frame across the temporal taps.
-        let frames = vec![resized.as_slice(); self.temporal_patch_size];
-        let pixels = patchify(
-            &frames,
-            PatchGrid {
-                temporal: self.temporal_patch_size,
-                height: grid_h,
-                width: grid_w,
-                patch: self.patch_size,
-                merge: self.merge_size,
-                groups: 1,
-            },
-            &Normalization {
-                mean: self.mean,
-                std: self.std,
-                rescale: self.rescale,
-            },
-        )?;
-        Ok(PreprocessedImage {
-            pixels,
-            grid: (1, grid_h, grid_w),
-        })
+        let pixels = if height == resized_height && width == resized_width {
+            let frames = vec![pixels; self.temporal_patch_size];
+            patchify_rgb8(&frames, grid, &norm)?
+        } else if self.fast_resize_supported(height, width, resized_height, resized_width) {
+            let resized =
+                image_resize::resize(pixels, height, width, resized_height, resized_width)?;
+            let frames = vec![resized.as_slice(); self.temporal_patch_size];
+            patchify_rgb8(&frames, grid, &norm)?
+        } else {
+            let resized = Self::resize_pixels(pixels, height, width, resized_height, resized_width);
+            let frames = vec![resized.as_slice(); self.temporal_patch_size];
+            patchify_with(&frames, grid, |value, channel| norm.apply(value, channel))?
+        };
+        Ok((pixels, (1, grid_h, grid_w)))
+    }
+
+    fn fast_resize_supported(
+        &self,
+        source_height: usize,
+        source_width: usize,
+        height: usize,
+        width: usize,
+    ) -> bool {
+        (source_height != height || source_width != width)
+            && self.mean == [SYMMETRIC_NORMALIZATION; RGB_CHANNELS]
+            && self.std == [SYMMETRIC_NORMALIZATION; RGB_CHANNELS]
+            && self.rescale == RESCALE
+            && [source_height, source_width, height, width]
+                .into_iter()
+                .all(|dimension| u32::try_from(dimension).is_ok())
     }
 
     /// Separable bicubic resize of an RGB8 image into `height × width`, in `0..=255`.
+    pub(crate) fn resize(image: &RgbImage, height: usize, width: usize) -> Vec<f32> {
+        Self::resize_pixels(&image.pixels, image.height, image.width, height, width)
+    }
+
     #[expect(
         clippy::cast_possible_truncation,
         reason = "Resampled values are rounded into the 8-bit range before the narrowing cast"
     )]
-    pub(crate) fn resize(image: &RgbImage, height: usize, width: usize) -> Vec<f32> {
-        let horizontal = resample_axis(image.width, width);
-        let vertical = resample_axis(image.height, height);
-        let mut intermediate = vec![0f32; image.height * width * RGB_CHANNELS];
-        for y in 0..image.height {
-            for x in 0..width {
-                let weights = &horizontal[x];
-                for channel in 0..RGB_CHANNELS {
-                    let mut value = 0f64;
-                    for &(tap, weight) in weights {
-                        let index = (y * image.width + tap) * RGB_CHANNELS + channel;
-                        value = weight.mul_add(f64::from(image.pixels[index]), value);
+    fn resize_pixels(
+        pixels: &[u8],
+        source_height: usize,
+        source_width: usize,
+        height: usize,
+        width: usize,
+    ) -> Vec<f32> {
+        if source_height == height && source_width == width {
+            // Unit-scale bicubic sampling reproduces each RGB8 value exactly.
+            return pixels.iter().copied().map(f32::from).collect();
+        }
+        let mut intermediate = if source_width == width {
+            // Unit-scale horizontal filtering preserves each RGB8 value exactly.
+            pixels.iter().copied().map(f32::from).collect()
+        } else {
+            let horizontal = resample_axis(source_width, width);
+            let mut intermediate = vec![0f32; source_height * width * RGB_CHANNELS];
+            for y in 0..source_height {
+                for x in 0..width {
+                    let weights = &horizontal[x];
+                    for channel in 0..RGB_CHANNELS {
+                        let mut value = 0f64;
+                        for &(tap, weight) in weights {
+                            let index = (y * source_width + tap) * RGB_CHANNELS + channel;
+                            value = weight.mul_add(f64::from(pixels[index]), value);
+                        }
+                        let rounded = value.round().clamp(0.0, BYTE_SCALE) as f32;
+                        intermediate[(y * width + x) * RGB_CHANNELS + channel] = rounded;
                     }
-                    let rounded = value.round().clamp(0.0, BYTE_SCALE) as f32;
-                    intermediate[(y * width + x) * RGB_CHANNELS + channel] = rounded;
                 }
             }
+            intermediate
+        };
+        if source_height == height {
+            // A unit vertical pass turns negative zero from horizontal rounding into positive
+            // zero. Preserve that bit-level behavior for normalization with custom parameters.
+            for value in &mut intermediate {
+                if *value == 0.0 {
+                    *value = 0.0;
+                }
+            }
+            return intermediate;
         }
+        let vertical = resample_axis(source_height, height);
         let mut output = vec![0f32; height * width * RGB_CHANNELS];
         for y in 0..height {
             let weights = &vertical[y];

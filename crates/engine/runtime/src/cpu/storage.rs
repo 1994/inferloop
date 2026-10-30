@@ -74,6 +74,7 @@ impl HostStorage {
             1,
             CostEstimate::default(),
         );
+        config.cpu.fixed_bytes_for(config, vocabulary)?;
         Ok(Self {
             placement: config.cpu.placement.scheduler.report()?,
             preemption: infer_scheduler::PreemptionWorkspace::new(candidates)?,
@@ -96,10 +97,7 @@ impl HostStorage {
             sampling: infer_workloads::SamplingWorkspace::with_capacity(vocabulary)?,
             output_jobs: scratch(config.max_num_seqs)?,
             credits: CreditPool::new(config.max_requests, config.cpu.host_tokens)?,
-            bytes: CreditPool::new(
-                config.max_requests,
-                config.cpu.host_bytes - config.cpu.fixed_bytes_for(config, vocabulary)?,
-            )?,
+            bytes: CreditPool::tracking(config.max_requests)?,
             prepared_next: None,
             checkpoint: None,
             resource_poll_buffer: scratch(config.max_requests)?,

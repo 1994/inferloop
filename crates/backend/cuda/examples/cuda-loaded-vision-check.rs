@@ -8,7 +8,9 @@ use cutile::jit_cache::enable_default;
 use std::env;
 #[cfg(cuda_backend)]
 use std::env::args as env_args;
+#[cfg(cuda_backend)]
 use std::error::Error as StdError;
+#[cfg(cuda_backend)]
 use std::fs;
 #[cfg(cuda_backend)]
 fn main() -> Result<(), Box<dyn StdError>> {

@@ -1,6 +1,8 @@
 //! Node-major verification: consecutive projections reuse weights in cache.
 //! Recurrent checkpoints stay on the device; KV rollback is a logical prefix.
 //! Prefill width 32 keeps one batched arena: auxiliaries record once per node.
+use super::arena::prefix_view;
+use super::fusion_batch::Workspace as FusionRows;
 use super::prefill_projection::{DensePlan, record_narrow};
 use super::{
     ActivationArena, ProgramWeights,
@@ -59,7 +61,7 @@ impl BatchReadout {
 pub(super) struct PromptOverrides<'a> {
     /// `lanes[lane]` selects that lane's external embedding slot.
     pub lanes: &'a [bool],
-    /// Per-lane `(t, h, w)`; absent means `[position + lane; 3]`.
+    /// Absolute per-lane `(t, h, w)`; absent means `[position + lane; 3]`.
     pub rotary: Option<&'a [[usize; ROTARY_AXES]]>,
 }
 
@@ -100,8 +102,8 @@ struct PromptCaptures {
 
 pub(super) struct ProgramCaptures {
     pub batch: Option<BatchGraph>,
-    pub prompt_batch: Option<BatchGraph>,
-    pub prompt_narrow: Option<BatchGraph>,
+    /// Prompt graphs, narrowest first; see [`super::program::ProgramGeometry::prompt_widths`].
+    pub prompts: Vec<BatchGraph>,
     pub forward: CudaGraph<()>,
     pub prefill: CudaGraph<()>,
 }
@@ -206,17 +208,18 @@ pub(super) struct SlotDecodeGraph {
 }
 
 impl BatchBuilder<'_> {
-    /// Batch graph plus every prompt graph the program captures, widest last.
+    /// Batch graph plus every prompt graph the program captures, narrowest first.
     ///
-    /// A prompt chunk costs one fixed-width replay whatever its token count, so a program may
-    /// capture a second, narrower prompt graph and route short chunks to it.
+    /// A prompt chunk costs one fixed-width replay whatever its token count, so a program
+    /// captures a ladder of narrower prompt graphs and routes each chunk to the narrowest
+    /// that holds it. The widest is captured first: the rungs view its scratch.
     /// Capture the verification graph (unless the sequence will speculate through the
     /// shared slot pool) plus whichever prompt graphs the configured widths select.
     /// Pool-bound geometry omits the wide prompt arena when a narrow prompt graph is available.
     pub fn build_pair(
         &mut self,
         geometry: super::program::ProgramGeometry,
-    ) -> Result<(Option<BatchGraph>, Option<BatchGraph>, Option<BatchGraph>)> {
+    ) -> Result<(Option<BatchGraph>, Vec<BatchGraph>)> {
         if self.weights.batch_width > MAX_VERIFICATION_WIDTH {
             return Err(Error::invalid("verification width exceeds 9"));
         }
@@ -227,25 +230,18 @@ impl BatchBuilder<'_> {
             None
         };
         let wide = self.weights.prefill_width;
-        let narrow = geometry.prompts[1];
         if wide < PREFILL_LANES && wide > 1 && wide != self.weights.batch_width {
             return Err(Error::invalid(
                 "prefill width must match verification width or be 32",
             ));
         }
-        let prompt_narrow = if geometry.prompts[1] > 0 {
-            self.width = narrow;
-            Some(self.build()?)
-        } else {
-            None
-        };
-        let prompt = if geometry.prompts[0] > 0 {
-            self.width = geometry.prompts[0];
-            Some(self.build()?)
-        } else {
-            None
-        };
-        Ok((batch, prompt, prompt_narrow))
+        let mut prompts = Vec::new();
+        for width in geometry.prompt_widths() {
+            self.width = width;
+            prompts.push(self.build()?);
+        }
+        prompts.reverse();
+        Ok((batch, prompts))
     }
 
     /// State positions a fused program writes, relative to its `RoPE` positions.
@@ -438,7 +434,7 @@ impl BatchBuilder<'_> {
         fusion: &mut Option<super::program::FusionWorkspace>,
         forward_captured: bool,
     ) -> Result<ProgramCaptures> {
-        let (batch, prompt_batch, prompt_narrow) = self.build_pair(geometry)?;
+        let (batch, prompts) = self.build_pair(geometry)?;
         let forward = if forward_captured {
             self.capture_single(arena, metadata, fusion, false)?
         } else {
@@ -451,8 +447,7 @@ impl BatchBuilder<'_> {
         };
         Ok(ProgramCaptures {
             batch,
-            prompt_batch,
-            prompt_narrow,
+            prompts,
             forward,
             prefill,
         })
@@ -596,10 +591,78 @@ impl BatchBuilder<'_> {
             return Ok((arena, None));
         }
         let arena = ActivationArena::new_prompt(self.device, self.graph, self.width, budget)?;
-        let row = api::zeros::<f32>(&[1, self.external.size()])
+        Ok((arena, self.prompt_row()?))
+    }
+
+    /// Scratch for a narrower prompt rung that views `wider`'s storage, so a rung costs its own
+    /// recurrent workspace and logits row but no second arena. Sharing is sound for the reason
+    /// one width's scratch serves every sequence: prompt replays are serialized on the device
+    /// stream and nothing reads the scratch after its replay.
+    #[expect(
+        unsafe_code,
+        reason = "Audited scratch alias: the narrower scratch holds its wider owner, and prompt replays through either are serialized on the device stream"
+    )]
+    fn narrowed_scratch(
+        &self,
+        wider: &Arc<Mutex<PromptScratch>>,
+        recurrent: super::recurrent_prefill::Workspace,
+    ) -> Result<PromptScratch> {
+        let row = self.prompt_row()?;
+        let owner = wider
+            .lock()
+            .map_err(|_| Error::invariant("prompt scratch poisoned"))?;
+        let (width, wide) = (self.width, owner.arena.lanes());
+        if width >= wide || row.is_some() != owner.row.is_some() {
+            return Err(Error::invalid("narrowed prompt scratch geometry"));
+        }
+        let single = if owner.row.is_some() {
+            self.graph.logits
+        } else {
+            None
+        };
+        // SAFETY: the returned scratch holds `wider`, which owns every viewed tensor, and prompt
+        // replays through either scratch are serialized on the device stream.
+        let arena = unsafe { owner.arena.narrowed(self.graph, width, single)? };
+        let mut partials = BTreeMap::new();
+        for (rows, tensor) in &owner.partials {
+            let kept = PREFILL_SPLIT_K * width;
+            // SAFETY: as above; the split rows of `width` lanes lie inside the wider tensor.
+            let view =
+                unsafe { prefix_view(tensor, PREFILL_SPLIT_K * wide, kept, &[kept, *rows])? };
+            partials.insert(*rows, view);
+        }
+        let fusion = match owner.fusion.as_ref() {
+            Some(fusion) => {
+                let (input, gathered) = fusion
+                    .rows()
+                    .ok_or_else(|| Error::invariant("fusion workspace rows are taken"))?;
+                let (columns, hidden) = FusionRows::columns();
+                // SAFETY: as above; the leading `width` rows lie inside the wider rows.
+                let input = unsafe { prefix_view(input, wide, width, &[width, columns])? };
+                // SAFETY: as above.
+                let gathered = unsafe { prefix_view(gathered, wide, width, &[width, hidden])? };
+                Some(FusionRows::from_rows(input, gathered))
+            }
+            None => None,
+        };
+        drop(owner);
+        Ok(PromptScratch::viewing(
+            (arena, row, partials),
+            recurrent,
+            fusion,
+            Arc::clone(wider),
+        ))
+    }
+
+    /// The one row the final prompt chunk projects onto the vocabulary, when supported.
+    fn prompt_row(&self) -> Result<Option<Tensor<f32>>> {
+        if !super::prompt_logits::supported(self.graph, self.weights) {
+            return Ok(None);
+        }
+        api::zeros::<f32>(&[1, self.external.size()])
             .sync_on(&self.device.stream)
-            .map_err(device_error)?;
-        Ok((arena, Some(row)))
+            .map(Some)
+            .map_err(device_error)
     }
 
     fn build32(&mut self) -> Result<BatchGraph> {
@@ -616,7 +679,7 @@ impl BatchBuilder<'_> {
         let scratch = self
             .weights
             .prompt_scratch
-            .get_or_allocate(self.width, || self.allocate_prompt_scratch())?;
+            .get_or_allocate(self.width, |wider| self.allocate_prompt_scratch(wider))?;
         let mut shared = scratch
             .lock()
             .map_err(|_| Error::invariant("prompt scratch poisoned"))?;
@@ -788,24 +851,28 @@ impl BatchBuilder<'_> {
     }
 
     /// Prompt scratch for this width, allocated once per program and shared by its sequences.
-    fn allocate_prompt_scratch(&self) -> Result<PromptScratch> {
+    fn allocate_prompt_scratch(
+        &self,
+        wider: Option<&Arc<Mutex<PromptScratch>>>,
+    ) -> Result<PromptScratch> {
+        let recurrent = super::recurrent_prefill::Workspace::new(
+            self.device,
+            self.graph,
+            self.weights,
+            self.width,
+        )?;
+        // A ladder rung views the widest scratch, captured first, rather than allocating.
+        if let Some(wider) = wider {
+            return self.narrowed_scratch(wider, recurrent);
+        }
         let (arena, row) = self.prompt_arena()?;
-        Ok(PromptScratch {
+        Ok(PromptScratch::new(
             arena,
             row,
-            partials: self.allocate_prompt_partials()?,
-            recurrent: super::recurrent_prefill::Workspace::new(
-                self.device,
-                self.graph,
-                self.weights,
-                self.width,
-            )?,
-            fusion: super::fusion_batch::Workspace::allocate(
-                self.device,
-                self.weights,
-                self.width,
-            )?,
-        })
+            self.allocate_prompt_partials()?,
+            recurrent,
+            super::fusion_batch::Workspace::allocate(self.device, self.weights, self.width)?,
+        ))
     }
 
     fn allocate_prompt_partials(&self) -> Result<BTreeMap<usize, Tensor<f32>>> {
@@ -1980,21 +2047,7 @@ impl BatchGraph {
         let Some(table) = self.prefill_rotary.as_mut() else {
             return Ok(());
         };
-        if rotary.is_some_and(|rotary| rotary.len() != lanes) {
-            return Err(Error::invalid("prompt rotary table width"));
-        }
-        let mut values = vec![0i32; self.width * ROTARY_AXES];
-        for lane in 0..lanes {
-            // Prompt-local coordinates shift with the base, like the 1-D fallback does.
-            let axes = rotary.map_or([position + lane; ROTARY_AXES], |rotary| {
-                let axes = rotary[lane];
-                [axes[0] + position, axes[1] + position, axes[2] + position]
-            });
-            let base = lane * ROTARY_AXES;
-            values[base] = i32::try_from(axes[0]).map_err(device_error)?;
-            values[base + 1] = i32::try_from(axes[1]).map_err(device_error)?;
-            values[base + 2] = i32::try_from(axes[2]).map_err(device_error)?;
-        }
+        let values = prompt_rotary_values(self.width, lanes, position, rotary)?;
         self.rotary_staging.copy(device, table, &values)
     }
 
@@ -2084,6 +2137,38 @@ impl BatchGraph {
             .ok_or_else(|| Error::invalid("batch commit count"));
         async move { device.run_op(launch?).await }
     }
+}
+
+fn prompt_rotary_values(
+    width: usize,
+    lanes: usize,
+    position: usize,
+    rotary: Option<&[[usize; ROTARY_AXES]]>,
+) -> Result<Vec<i32>> {
+    if lanes > width || rotary.is_some_and(|values| values.len() != lanes) {
+        return Err(Error::invalid("prompt rotary table width"));
+    }
+    let elements = width
+        .checked_mul(ROTARY_AXES)
+        .ok_or_else(|| Error::invalid("prompt rotary table overflow"))?;
+    let mut values = vec![0_i32; elements];
+    for lane in 0..lanes {
+        let axes = if let Some(rotary) = rotary {
+            rotary[lane]
+        } else {
+            let value = position
+                .checked_add(lane)
+                .ok_or_else(|| Error::invalid("prompt rotary position overflow"))?;
+            [value; ROTARY_AXES]
+        };
+        for (target, axis) in values[lane * ROTARY_AXES..][..ROTARY_AXES]
+            .iter_mut()
+            .zip(axes)
+        {
+            *target = i32::try_from(axis).map_err(device_error)?;
+        }
+    }
+    Ok(values)
 }
 
 /// Stage one prompt chunk's batched metadata rows into their existing owner.

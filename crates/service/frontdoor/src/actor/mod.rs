@@ -93,7 +93,9 @@ struct RuntimeActor<B: BackendProvider> {
     control: mpsc::Receiver<Command>,
     stop: Arc<AtomicBool>,
     deferred: VecDeque<Command>,
-    quoting: VecDeque<(Command, infer_spi::ResourceTicket)>,
+    /// Submissions awaiting their sizing quote. `None` waits for room in the device owner's
+    /// command lane; the quote is issued again on a later pass instead of refusing the request.
+    quoting: VecDeque<(Command, Option<infer_spi::ResourceTicket>)>,
     subscribers: BTreeMap<RequestId, Subscriber>,
     start: Instant,
     clock_origin_us: u64,

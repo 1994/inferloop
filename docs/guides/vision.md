@@ -14,20 +14,23 @@ CUDA 提供 patch embed、LayerNorm、QKV/MLP/merger 投影、轴向 RoPE、按�
 
 多模态 prompt 以融合分块执行：每个 media 行在设备流上拷入 lane 的外部 embedding 槽，embedding kernel 按每个 token 的 override 标志选择词表或外部向量，每个 lane 的三轴位置写入 prefill 的 M-RoPE 表，因此一个 1000 token 的图像 prompt 只花 `ceil(tokens / prefill_width)` 次图重放，而不是每 token 一次 decode。没有 prompt 图（`prefill_width < 32`）时退回逐 token 路径，对齐合同不变。
 
-RTX 5090 上 Qwen3-VL-2B 的实测（prefill 阶段，含同一视觉编码）：172 token 双图 prompt 融合分块 60 ms，逐 token 回退 543 ms；45 token 视频（2 个 temporal group）9.7 ms 对 128 ms。数字只说明两条路径的相对差，不作为发布性能门槛。
+RTX 5090 上 Qwen3-VL-2B 的实测（prefill 阶段，视觉编码在计时前完成）：172 token 双图 prompt 融合分块 60 ms，逐 token 回退 543 ms；45 token 视频（2 个 temporal group）9.7 ms 对 128 ms。这些数字不包含预处理或视觉编码，只说明两条 prefill 路径的相对差，不作为发布性能门槛。
 
 ## 服务路径
 
-OpenAI chat 的 `image_url` / `video_url` 内容部分现在进入真实 serving 路径：输入层解析 URL（`data:`、`file://`、绝对路径、`http(s)`），按上限下载/解码并调用 provider 的 `ImageProcessor` / `VideoProcessor` 生成 prompt 对齐的 patch 载荷；每个 media item 作为 `infer_ir::MediaItem` 随 `MediaPlan` 经过 admission、scheduler 和 `ExecutionTask`，由 CUDA backend 在 prompt prefill 时编码并写入 lane 外部 embedding 槽。媒体 span、旋转位置和 token 计数在编码前校验；占位符、编码器或 patch grid 不匹配时报错，不会回退成纯文本。
+OpenAI chat 的 `image_url` / `video_url` 内容部分进入真实服务路径：公开入口接受 `data:` 和 `http(s)`，HTTP 下载使用共享异步客户端。CUDA 默认检测可用的 nvJPEG 硬解能力；支持的 JPEG 保留压缩字节并在设备上解码，其他图片在 CPU 工作池中解码。后端声明支持时，resize、归一化和 patch 布局由 CUDA 完成；其他图片配置使用已有的主机预处理。每个 media item 随 `MediaPlan` 经过 admission、scheduler 和 `ExecutionTask`，由 CUDA backend 在 prompt prefill 时编码。媒体 span、旋转位置和 token 计数在编码前校验；占位符、编码器或 patch grid 不匹配时报错。
 
 - 同一 prompt 暂只支持一种媒体模态；混合 image/video 会返回显式 unsupported。
-- `--limit-mm-per-prompt '{"image":N,"video":M}'` 是每 prompt 上限。全零配置只服务文本并跳过视觉塔；非零配置在加载时绑定并使用视觉权重。默认上限为 2 张图、1 段视频。
+- `--limit-mm-per-prompt '{"image":N,"video":M}'` 可显式配置每 prompt 上限。全零配置只服务文本并跳过视觉塔；默认不限制图片数量，视频默认为 1 段。
+- `--mm-processor-kwargs` 接受图片选项 JSON，例如 `'{"min_pixels":4096,"max_pixels":262144}'` 或 `'{"size":{"shortest_edge":4096,"longest_edge":262144}}'`。Chat 请求可通过同名字段覆盖部署值，也可放入 `images_kwargs`；`do_resize=false` 保留原尺寸，尺寸须能按 patch 和 merge 网格整除。不支持的选项会被拒绝。
+- `--image-decoder auto|cpu` 控制图片解码，默认 `auto`。CUDA 检测到 nvJPEG 硬解及 JPEG 格式支持时自动使用，否则沿用 CPU 解码；`cpu` 强制 CPU 解码，但不关闭 CUDA 图片处理。nvJPEG 的 RGB 取整与 CPU 解码可能不同，如需维持 CPU 解码结果可选择 `cpu`。
+- CUDA 图片处理按计算能力和驱动能力选择实现：通用 PTX 的目标为 compute 7.0、PTX 7.8；满足条件的 `sm_120` 可使用专用版本。通用版本已在 RTX 5090 上验证，其他 GPU 仍需各自实机验证和调优。
 - 文本部署收到媒体时返回结构化 `unsupported_feature`，不消费 request identity。
-- `data:`/`http(s)` 的 PNG/JPEG/WebP/GIF 由进程内 codec 解码；视频以及 `http(s)` 下载依赖宿主 `ffmpeg`/`ffprobe`/`curl`，缺失时返回显式 unsupported。公开 HTTP 输入拒绝 `file://` 与服务端绝对路径；所有读取、帧数、尺寸、解码维度和子进程墙钟时间都有上限。
+- `data:`/`http(s)` 的 PNG/JPEG/WebP/GIF 均有进程内 CPU 解码路径，CUDA 上可用的 JPEG 使用 nvJPEG 硬解；视频解码依赖宿主 `ffmpeg`/`ffprobe`。公开 HTTP 输入拒绝 `file://` 与服务端绝对路径。视频读取、帧数和子进程墙钟时间仍有边界；图片还须满足模型几何、上下文及实际资源要求。
 - media 请求不参与 prefix reuse，也不支持 MTP speculation；这两条都是显式错误而不是静默降级。
 - media payload 与请求生命周期绑定，until backend prefill completes；checkpoint 在 media 状态存活时拒绝，避免恢复后丢失像素或设备 embedding。
 
-`cuda-multimodal-generate` / `cuda-multimodal-media` / `cuda-parity-2b` 仍是独立数值/示例入口。音频与完整 DeepStack 路径不在此验收范围：Qwen3-VL 没有音频模态，Qwen Omni 也未被 provider 导入；带 `deepstack_visual_indexes` 的权重仍按共享路径验收（双方关闭 DeepStack）。
+`cuda-multimodal-generate` / `cuda-multimodal-media` / `cuda-parity-2b` 仍是独立数值/示例入口。音频与完整 DeepStack 路径不在此验收范围：Qwen3-VL 没有音频模态，Qwen Omni 也未被 provider 导入。当前 provider 不执行 `deepstack_visual_indexes` 指定的融合，且导入时不会拒绝非空索引；关闭 DeepStack 的共享路径实验不代表完整 Qwen3-VL 模型的推理结果。
 
 ## Head-width padding (OPEN)
 

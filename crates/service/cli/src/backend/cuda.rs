@@ -127,6 +127,7 @@ fn load_once(
         maximum_states,
         *automatic_fast,
         selection.max_num_seqs.is_none(),
+        selection.pool_capture,
     )
     .map_err(|error| load_failure(&error, budget, selection))?;
     Ok(SelectedBackend::Cuda(Box::new(backend)))
@@ -139,11 +140,16 @@ fn resident_backend(
     maximum: usize,
     require_pool: bool,
     automatic_concurrency: bool,
+    capture: super::PoolCapture,
 ) -> Result<CudaBackend> {
     let backend = if automatic_concurrency {
         CudaBackend::new_automatic(loaded, budget, maximum)?
     } else {
         CudaBackend::new(loaded, budget, maximum)?
+    };
+    let backend = match capture {
+        super::PoolCapture::AtLoad => backend.with_pool_captured()?,
+        super::PoolCapture::OnDemand => backend,
     };
     let profile = backend.execution_profile();
     let serial_roofline = profile

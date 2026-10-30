@@ -5,15 +5,14 @@
 //! embeddings line up one-to-one. Every mismatch is an error: a prompt that cannot be aligned
 //! with its media must never fall back to the text-only path.
 use crate::image::ImageProcessor;
-use crate::image::PreprocessedImage;
-use crate::image::RgbImage;
+use crate::image::{PreprocessedImage, SharedPreprocessedImage};
 use crate::input::text::TextAssets;
 use crate::mrope::ROTARY_AXES;
-use crate::mrope::image_positions;
+use crate::mrope::positions_from_grids;
 use crate::video::{RawVideo, VideoProcessor};
 use crate::vision::merge_unit;
 use infer_core::{Error, Result};
-use infer_ir::Modality;
+use infer_ir::{ImageTransform, MediaPlan, Modality};
 use infer_spi::{ImportedModel, ModalityEncoder};
 use std::iter::repeat_n;
 use std::ops::Range;
@@ -218,11 +217,38 @@ pub fn media_layout(
             "prepared prompt holds inconsistent media spans",
         ));
     }
-    if prepared.spans.is_empty() {
+    let grids = prepared
+        .spans
+        .iter()
+        .zip(&prepared.images)
+        .map(|(span, image)| (span, image.grid));
+    media_layout_from_grids(&prepared.tokens, grids, imported, modality)
+}
+
+/// Align a request's retained media without copying its pixel payloads.
+///
+/// Only token and geometry metadata are read; the request retains all pixel ownership.
+/// # Errors
+/// Rejects invalid spans, placeholders, or media geometry.
+pub fn media_plan_layout(plan: &MediaPlan, imported: &ImportedModel) -> Result<MediaLayout> {
+    let grids = plan.items.iter().map(|item| (&item.span, item.grid));
+    media_layout_from_grids(&plan.prompt, grids, imported, &plan.modality)
+}
+
+fn media_layout_from_grids<'a, I>(
+    tokens: &[u32],
+    grids: I,
+    imported: &ImportedModel,
+    modality: &Modality,
+) -> Result<MediaLayout>
+where
+    I: Iterator<Item = (&'a Range<usize>, (usize, usize, usize))> + Clone + ExactSizeIterator,
+{
+    if grids.len() == 0 {
         // A prompt that carries placeholders but no media would run them as ordinary text.
-        if let Ok(tokens) = placeholders(imported, modality)
-            && let Some(placeholder) = tokens.first()
-            && prepared.tokens.contains(placeholder)
+        if let Ok(declared) = placeholders(imported, modality)
+            && let Some(placeholder) = declared.first()
+            && tokens.contains(placeholder)
         {
             return Err(Error::invalid(
                 "prompt holds media placeholders without media",
@@ -230,7 +256,7 @@ pub fn media_layout(
         }
         return Ok(MediaLayout {
             spans: Vec::new(),
-            next_rotary: prepared.tokens.len(),
+            next_rotary: tokens.len(),
             positions: None,
         });
     }
@@ -242,12 +268,8 @@ pub fn media_layout(
     let placeholder = *placeholders(imported, modality)?
         .first()
         .ok_or_else(|| Error::invalid("media modality declares no placeholder token"))?;
-    let (mut spans, expanded) = validate_spans(prepared, placeholder, merge)?;
-    let declared = prepared
-        .tokens
-        .iter()
-        .filter(|token| **token == placeholder)
-        .count();
+    let (mut spans, expanded) = validate_spans(tokens, grids.clone(), placeholder, merge)?;
+    let declared = tokens.iter().filter(|token| **token == placeholder).count();
     if declared != expanded {
         return Err(Error::invalid(format!(
             "prompt holds {declared} media placeholders for {expanded} aligned tokens"
@@ -256,23 +278,21 @@ pub fn media_layout(
     let positions = if imported.model.position.multimodal_sections.is_empty() {
         None
     } else {
-        Some(image_positions(prepared, merge)?)
+        Some(positions_from_grids(tokens.len(), grids, merge)?)
     };
     if let Some(positions) = &positions {
         for span in &mut spans {
             span.rotary = Some(positions[span.range.clone()].to_vec());
         }
     }
-    let next_rotary = positions
-        .as_ref()
-        .map_or(prepared.tokens.len(), |positions| {
-            positions
-                .iter()
-                .filter_map(|coordinates| coordinates.iter().max().copied())
-                .max()
-                .unwrap_or(0)
-                .saturating_add(1)
-        });
+    let next_rotary = positions.as_ref().map_or(tokens.len(), |positions| {
+        positions
+            .iter()
+            .filter_map(|coordinates| coordinates.iter().max().copied())
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    });
     Ok(MediaLayout {
         spans,
         next_rotary,
@@ -281,21 +301,22 @@ pub fn media_layout(
 }
 
 /// Validate media spans against their grids and placeholder tokens.
-fn validate_spans(
-    prepared: &PreparedPrompt,
+fn validate_spans<'a>(
+    tokens: &[u32],
+    grids: impl ExactSizeIterator<Item = (&'a Range<usize>, (usize, usize, usize))>,
     placeholder: u32,
     merge: usize,
 ) -> Result<(Vec<MediaSpan>, usize)> {
-    let mut spans = Vec::with_capacity(prepared.spans.len());
+    let mut spans = Vec::with_capacity(grids.len());
     let mut expanded = 0usize;
     let mut previous_end = 0usize;
-    for (span, image) in prepared.spans.iter().zip(&prepared.images) {
-        if span.start < previous_end || span.start >= span.end || span.end > prepared.tokens.len() {
+    for (span, (temporal, height, width)) in grids {
+        if span.start < previous_end || span.start >= span.end || span.end > tokens.len() {
             return Err(Error::invalid(
                 "media spans must be ordered, disjoint and inside the prompt",
             ));
         }
-        if prepared.tokens[span.clone()]
+        if tokens[span.clone()]
             .iter()
             .any(|token| *token != placeholder)
         {
@@ -303,7 +324,6 @@ fn validate_spans(
                 "media span does not hold the modality placeholder token",
             ));
         }
-        let (temporal, height, width) = image.grid;
         if temporal == 0
             || height == 0
             || width == 0
@@ -371,6 +391,17 @@ pub struct PreparedPrompt {
     pub spans: Vec<Range<usize>>,
 }
 
+/// An image prompt whose patch buffers can be shared without copying.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SharedPreparedPrompt {
+    /// Token stream the model consumes.
+    pub tokens: Vec<u32>,
+    /// Shared preprocessed images, in placeholder order.
+    pub images: Vec<SharedPreprocessedImage>,
+    /// Token range each image's embeddings replace, in the same order.
+    pub spans: Vec<Range<usize>>,
+}
+
 /// Tokenize `text`, preprocess `images` and expand every placeholder.
 ///
 /// Text-only prompts take the ordinary path. A prompt carrying media fails loudly when the model
@@ -388,10 +419,86 @@ pub fn prepare(
     images: &[RawImage],
     modality: &Modality,
 ) -> Result<PreparedPrompt> {
+    let prepared = prepare_with(assets, imported, text, images, modality, |image| {
+        let processed = processor.preprocess_rgb(image.height, image.width, &image.pixels)?;
+        let grid = processed.grid;
+        Ok((PromptImage::new(processed), grid))
+    })?;
+    Ok(PreparedPrompt {
+        tokens: prepared.tokens,
+        images: prepared.images,
+        spans: prepared.spans,
+    })
+}
+
+/// Tokenize an image prompt and preprocess directly into shared patch buffers.
+///
+/// The result owns the buffers and can hand them to a backend without copying their elements.
+/// # Errors
+/// Rejects a missing encoder or placeholder, a placeholder/media mismatch, malformed image buffers
+/// or a preprocessing failure.
+pub fn prepare_shared(
+    assets: &TextAssets,
+    processor: &ImageProcessor,
+    imported: &ImportedModel,
+    text: &str,
+    images: &[RawImage],
+    modality: &Modality,
+) -> Result<SharedPreparedPrompt> {
+    let prepared = prepare_with(assets, imported, text, images, modality, |image| {
+        let processed =
+            processor.preprocess_rgb_shared(image.height, image.width, &image.pixels)?;
+        let grid = processed.grid;
+        Ok((processed, grid))
+    })?;
+    Ok(SharedPreparedPrompt {
+        tokens: prepared.tokens,
+        images: prepared.images,
+        spans: prepared.spans,
+    })
+}
+
+struct PreparedImages<T> {
+    tokens: Vec<u32>,
+    images: Vec<T>,
+    spans: Vec<Range<usize>>,
+}
+
+/// Expand an image prompt from validated transforms without materializing host patch buffers.
+/// # Errors
+/// Rejects a placeholder mismatch, unsupported modality, or incompatible encoder geometry.
+pub fn prepare_image_geometry(
+    assets: &TextAssets,
+    imported: &ImportedModel,
+    text: &str,
+    transforms: &[ImageTransform],
+) -> Result<ExpandedPrompt> {
+    let prepared = prepare_with(
+        assets,
+        imported,
+        text,
+        transforms,
+        &Modality::Image,
+        |transform| Ok(((), transform.grid())),
+    )?;
+    Ok(ExpandedPrompt {
+        tokens: prepared.tokens,
+        spans: prepared.spans,
+    })
+}
+
+fn prepare_with<T, I>(
+    assets: &TextAssets,
+    imported: &ImportedModel,
+    text: &str,
+    images: &[I],
+    modality: &Modality,
+    preprocess: impl Fn(&I) -> Result<(T, (usize, usize, usize))>,
+) -> Result<PreparedImages<T>> {
     let tokens = assets.encode(text, false)?;
     reject_foreign_placeholders(imported, &tokens, modality)?;
     if images.is_empty() {
-        return Ok(PreparedPrompt {
+        return Ok(PreparedImages {
             tokens,
             images: Vec::new(),
             spans: Vec::new(),
@@ -404,16 +511,12 @@ pub fn prepare(
     let mut prepared = Vec::with_capacity(images.len());
     let mut counts = Vec::with_capacity(images.len());
     for image in images {
-        let processed = processor.preprocess(&RgbImage {
-            height: image.height,
-            width: image.width,
-            pixels: image.pixels.clone(),
-        })?;
-        counts.push(visual_tokens(processed.grid, encoder)?);
-        prepared.push(PromptImage::new(processed));
+        let (processed, grid) = preprocess(image)?;
+        counts.push(visual_tokens(grid, encoder)?);
+        prepared.push(processed);
     }
     let expanded = expand_placeholders(&tokens, &counts, placeholder)?;
-    Ok(PreparedPrompt {
+    Ok(PreparedImages {
         tokens: expanded.tokens,
         images: prepared,
         spans: expanded.spans,

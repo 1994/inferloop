@@ -350,7 +350,8 @@ def main():
             len(selected) == 1 and args.output is not None,
             "Rebuild needs one --kernel and --output",
         )
-        print(json.dumps(rebuild(selected[0], args, data["nvcc_version"])))
+        version = selected[0].get("nvcc_version", data["nvcc_version"])
+        print(json.dumps(rebuild(selected[0], args, version)))
     elif args.action == "verify":
         results = [verify(e, args.generated) for e in selected]
         print(json.dumps({"verified": len(results), "results": results}, indent=2))

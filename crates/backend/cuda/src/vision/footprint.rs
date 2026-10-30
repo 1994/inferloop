@@ -4,25 +4,43 @@
 //! every item has been encoded. The quote is therefore the maximum of the largest single-item
 //! encode peak and the total retained encoded-row tensor. Resident vision weights are excluded;
 //! they are load-time owners, not request allocations.
+use super::device_tower;
 use super::program::{attention_tiles, mlp_width, patch_width};
 use super::weights::half_tile;
 use infer_core::{Error, Result};
-use infer_ir::MediaPlan;
+use infer_ir::{ImageTransform, MediaPixels, MediaPlan};
 use infer_models::vision::{merge_unit, merged_width, row_tile};
 use infer_spi::ModalityEncoder;
 
 const F32_BYTES: u64 = 4;
 const TOKEN_TILE: usize = 32;
+/// RGB bytes in each decoded source pixel.
+const RGB_CHANNELS: usize = 3;
+/// Diameter of the bicubic filter before antialiasing.
+const FILTER_DIAMETER: usize = 4;
+/// Account for both edge-rounding endpoints when bounding filter taps.
+const FILTER_BOUND_SLACK: usize = 2;
+/// Each axis has a signed index and coefficient for every tap.
+const TABLE_ELEMENTS_PER_TAP: usize = 2;
 /// Qualified wide attention head width after packing compact 96-wide heads.
 const WIDE_HEAD_WIDTH: usize = 128;
 /// Q, K, V and attended temporary wide buffers.
 const COMPACT_PACK_BUFFERS: usize = 4;
-/// Patch embeddings, gathered positions and the added output each hold one hidden matrix.
+/// Patch embeddings, gathered positions and the added output each hold one hidden matrix. The
+/// device gather replaces the position matrix with tap arrays smaller than one hidden matrix.
 const PATCH_EMBED_HIDDEN_COPIES: usize = 3;
 /// Q, K, V, rotated Q, rotated K and the attended output each hold one projection matrix.
 const ATTENTION_PROJECTION_COPIES: usize = 6;
 /// Residual add uploads both operands and the output.
 const RESIDUAL_ACTIVATIONS: usize = 3;
+/// Fused block MLP holds the normalized input, residual, second projection and final output.
+const BLOCK_MLP_HIDDEN_ACTIVATIONS: usize = 4;
+/// Fused block MLP holds the first projection and its activated output.
+const BLOCK_MLP_INTERMEDIATE_ACTIVATIONS: usize = 2;
+/// Two tower states, norm, attention output, residual and second MLP projection.
+const DEVICE_TOWER_HIDDEN_ACTIVATIONS: usize = 6;
+/// First MLP projection and its activated output remain live for the tower graph.
+const DEVICE_TOWER_INTERMEDIATE_ACTIVATIONS: usize = 2;
 
 fn bytes(elements: usize) -> Result<u64> {
     u64::try_from(elements)
@@ -92,21 +110,17 @@ fn one_item_peak(encoder: &ModalityEncoder, grid: (usize, usize, usize)) -> Resu
             .and_then(|n| n.checked_mul(2))
             .ok_or_else(|| Error::invalid("vision norm footprint overflow"))?,
     )?;
-    let fc1 = bytes(
+    let block_mlp = bytes(
         token_padded
             .checked_mul(
                 hidden
-                    .checked_add(mlp)
+                    .checked_mul(BLOCK_MLP_HIDDEN_ACTIVATIONS)
+                    .and_then(|value| {
+                        value.checked_add(mlp.checked_mul(BLOCK_MLP_INTERMEDIATE_ACTIVATIONS)?)
+                    })
                     .ok_or_else(|| Error::invalid("vision MLP footprint overflow"))?,
             )
             .ok_or_else(|| Error::invalid("vision MLP footprint overflow"))?,
-    )?;
-    let fc2 = fc1;
-    let gelu = bytes(
-        token_padded
-            .checked_mul(mlp)
-            .and_then(|n| n.checked_mul(2))
-            .ok_or_else(|| Error::invalid("vision GELU footprint overflow"))?,
     )?;
     let residual = bytes(
         token_padded
@@ -118,13 +132,41 @@ fn one_item_peak(encoder: &ModalityEncoder, grid: (usize, usize, usize)) -> Resu
     let attention_pack = attention
         .checked_add(compact_pack)
         .ok_or_else(|| Error::invalid("vision attention pack footprint overflow"))?;
-    let block = [attention_pack, layernorm, fc1, fc2, gelu, residual]
+    let mut block = [attention_pack, layernorm, block_mlp, residual]
         .into_iter()
         .max()
         .ok_or_else(|| Error::invalid("vision block footprint empty"))?;
+    if device_tower::supports(encoder)? {
+        block = block.max(resident_tower_bytes(
+            attention_rows,
+            hidden,
+            projections,
+            mlp,
+            head_width,
+        )?);
+    }
 
     let merger_peak = merger_peak(encoder, patches, hidden)?;
     Ok(patch_embed.max(block).max(merger_peak))
+}
+
+fn resident_tower_bytes(
+    rows: usize,
+    hidden: usize,
+    projections: usize,
+    mlp: usize,
+    head_width: usize,
+) -> Result<u64> {
+    let per_row = hidden
+        .checked_mul(DEVICE_TOWER_HIDDEN_ACTIVATIONS)
+        .and_then(|n| n.checked_add(projections.checked_mul(ATTENTION_PROJECTION_COPIES)?))
+        .and_then(|n| n.checked_add(mlp.checked_mul(DEVICE_TOWER_INTERMEDIATE_ACTIVATIONS)?))
+        .and_then(|n| n.checked_add(head_width.checked_mul(2)?))
+        .ok_or_else(|| Error::invalid("vision tower footprint overflow"))?;
+    bytes(
+        rows.checked_mul(per_row)
+            .ok_or_else(|| Error::invalid("vision tower footprint overflow"))?,
+    )
 }
 
 fn compact_pack_bytes(encoder: &ModalityEncoder, attention_rows: usize) -> Result<u64> {
@@ -201,6 +243,15 @@ pub fn footprint(encoder: &ModalityEncoder, media: &MediaPlan) -> Result<u64> {
     let mut retained = 0_u64;
     for item in &media.items {
         peak = peak.max(one_item_peak(encoder, item.grid)?);
+        match &item.pixels {
+            MediaPixels::Image(image) => {
+                peak = peak.max(image_preprocessing_bytes(image.transform(), encoder)?);
+            }
+            MediaPixels::EncodedImage(image) => {
+                peak = peak.max(image_preprocessing_bytes(image.transform(), encoder)?);
+            }
+            MediaPixels::Patches(_) => {}
+        }
         let patches = item
             .grid
             .0
@@ -220,4 +271,48 @@ pub fn footprint(encoder: &ModalityEncoder, media: &MediaPlan) -> Result<u64> {
     peak.max(retained)
         .checked_add(0)
         .ok_or_else(|| Error::invalid("vision media footprint"))
+}
+
+fn image_preprocessing_bytes(transform: ImageTransform, encoder: &ModalityEncoder) -> Result<u64> {
+    let [source_height, source_width] = transform.source();
+    let [target_height, target_width] = transform.target();
+    let patches = (target_height / transform.layout().patch())
+        .checked_mul(target_width / transform.layout().patch())
+        .ok_or_else(|| Error::invalid("image preprocessing patches overflow"))?;
+    let output = padded(patches, TOKEN_TILE)?
+        .checked_mul(patch_width(encoder)?)
+        .and_then(|value| value.checked_mul(size_of::<f32>()))
+        .ok_or_else(|| Error::invalid("image preprocessing output overflow"))?;
+    let input = source_height
+        .checked_mul(source_width)
+        .and_then(|value| value.checked_mul(RGB_CHANNELS))
+        .ok_or_else(|| Error::invalid("image preprocessing source overflow"))?;
+    let horizontal = source_height
+        .checked_mul(target_width)
+        .and_then(|value| value.checked_mul(RGB_CHANNELS))
+        .ok_or_else(|| Error::invalid("image preprocessing intermediate overflow"))?;
+    let horizontal_taps = filter_tap_bound(source_width, target_width)?;
+    let vertical_taps = filter_tap_bound(source_height, target_height)?;
+    let tables = target_width
+        .checked_mul(horizontal_taps)
+        .and_then(|value| value.checked_add(target_height.checked_mul(vertical_taps)?))
+        .and_then(|value| value.checked_mul(TABLE_ELEMENTS_PER_TAP))
+        .and_then(|value| value.checked_mul(size_of::<i32>()))
+        .ok_or_else(|| Error::invalid("image preprocessing filter overflow"))?;
+    let total = input
+        .checked_add(horizontal)
+        .and_then(|value| value.checked_add(output))
+        .and_then(|value| value.checked_add(tables))
+        .ok_or_else(|| Error::invalid("image preprocessing footprint overflow"))?;
+    u64::try_from(total).map_err(|_| Error::invalid("image preprocessing footprint overflow"))
+}
+
+fn filter_tap_bound(source: usize, target: usize) -> Result<usize> {
+    source
+        .max(target)
+        .checked_mul(FILTER_DIAMETER)
+        .map(|value| value.div_ceil(target))
+        .and_then(|value| value.checked_add(FILTER_BOUND_SLACK))
+        .map(|value| value.min(source))
+        .ok_or_else(|| Error::invalid("image filter footprint overflow"))
 }

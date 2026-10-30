@@ -12,15 +12,18 @@ use std::fs::read;
 use std::fs::read_dir;
 use std::fs::remove_dir_all;
 use std::fs::write;
+use std::future::pending;
 use std::path::Path;
 use std::process::id;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::{sync::Arc, time::Duration};
+use tokio::sync::oneshot;
 use tokio::time::sleep;
 use tokio::time::timeout;
 use tower::ServiceExt;
 
+use crate::constants::MAX_REQUEST_BODY_BYTES;
 use crate::{RuntimeHandle, router_with_text};
 
 // The native HTTP module already mounts the shared protocol double; this module is a sibling
@@ -47,6 +50,42 @@ fn fixture_with(config: RuntimeConfig) -> (RuntimeHandle, Arc<infer_models::Text
     )
     .unwrap();
     (RuntimeHandle::start(engine).unwrap(), assets)
+}
+
+#[tokio::test]
+async fn cancelling_async_source_wakes_without_a_cpu_worker() {
+    let (handle, _) = fixture();
+    let id = infer_core::RequestId::new(123).unwrap();
+    let (entered, started) = oneshot::channel();
+    let request_handle = handle.clone();
+    let job = tokio::spawn(async move {
+        let source = async move {
+            entered.send(()).unwrap();
+            pending::<infer_core::Result<((), usize)>>().await
+        };
+        request_handle
+            .submit_with_source(id, 0, None, source, |_, ()| {
+                Err(infer_core::Error::invariant(
+                    "cancelled source ran CPU work",
+                ))
+            })
+            .await
+    });
+    timeout(Duration::from_secs(2), started)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(handle.cpu_inspection().active_workers, 0);
+    handle.cancel(id).await.unwrap();
+    assert!(
+        timeout(Duration::from_secs(2), job)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(handle.inspect().await.unwrap().active_requests, 0);
+    handle.shutdown().await.unwrap();
 }
 
 /// Copy the fixture package with a byte-level tokenizer, which is what the served packages use
@@ -367,9 +406,10 @@ async fn prompt_plus_output_over_the_total_context_is_rejected_after_tokenizatio
 async fn malformed_and_oversized_bodies_use_the_compatibility_error_envelope() {
     let (handle, assets) = fixture();
     let app = router_with_text(handle.clone(), assets);
-    for (body, expected) in [
-        ("{".into(), StatusCode::BAD_REQUEST),
+    for (path, body, expected) in [
+        ("/v1/chat/completions", "{".into(), StatusCode::BAD_REQUEST),
         (
+            "/v1/completions",
             " ".repeat(2 * 1024 * 1024 + 1),
             StatusCode::PAYLOAD_TOO_LARGE,
         ),
@@ -379,7 +419,7 @@ async fn malformed_and_oversized_bodies_use_the_compatibility_error_envelope() {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/v1/chat/completions")
+                    .uri(path)
                     .header("content-type", "application/json")
                     .body(Body::from(body))
                     .unwrap(),
@@ -391,6 +431,29 @@ async fn malformed_and_oversized_bodies_use_the_compatibility_error_envelope() {
         let error: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(error["error"]["type"], "invalid_request_error");
     }
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn large_inline_image_reaches_media_validation() {
+    let (handle, assets) = fixture();
+    let app = router_with_text(handle.clone(), assets);
+    let url = format!(
+        "data:image/png;base64,{}",
+        "A".repeat(MAX_REQUEST_BODY_BYTES)
+    );
+    let (status, body) = call(
+        app,
+        "/v1/chat/completions",
+        Some(json!({
+            "model":"1",
+            "messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":url}}]}],
+            "max_tokens":1
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{body}");
+    assert_eq!(body["error"]["message"], "this deployment is text-only");
     handle.shutdown().await.unwrap();
 }
 
@@ -731,3 +794,6 @@ async fn public_chat_rejects_server_local_media_paths() {
     assert_eq!(handle.inspect().await.unwrap().active_requests, 0);
     handle.shutdown().await.unwrap();
 }
+
+#[path = "http_openai_decisions.rs"]
+mod decisions;

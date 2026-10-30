@@ -23,13 +23,34 @@ fn weather_tool() -> Value {
 
 #[test]
 fn a_plain_chat_request_declares_no_tools() {
-    let request = chat(&json!([{"role": "user", "content": "hi"}]), &json!({}));
+    let mut request = chat(&json!([{"role": "user", "content": "hi"}]), &json!({}));
     request.validate(true).unwrap();
     assert!(!request.tool_policy(true).unwrap().parses());
     let messages = request.chat_messages().unwrap().0;
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].content, "hi");
     assert_eq!(messages[0].tool_calls.len(), 0);
+}
+
+#[test]
+fn chat_accepts_and_validates_image_processor_options() {
+    let messages = json!([{"role": "user", "content": "hi"}]);
+    let valid = chat(
+        &messages,
+        &json!({"mm_processor_kwargs": {"min_pixels": 1024, "max_pixels": 4096}}),
+    );
+    assert!(valid.validate(true).is_ok());
+    let invalid = chat(
+        &messages,
+        &json!({"mm_processor_kwargs": {"min_pixels": 0}}),
+    );
+    assert!(invalid.validate(true).is_err());
+    assert!(
+        serde_json::from_value::<GenerationRequest>(json!({
+            "model": "1", "messages": messages, "mm_processor_kwargs": {"unsupported": true}
+        }))
+        .is_err()
+    );
 }
 
 #[test]
@@ -104,7 +125,7 @@ fn malformed_tool_declarations_are_parameter_errors() {
 
 #[test]
 fn a_tool_round_trips_into_internal_history() {
-    let request = chat(
+    let mut request = chat(
         &json!([
             {"role": "user", "content": "weather?"},
             {"role": "assistant", "content": null, "tool_calls": [
@@ -133,7 +154,7 @@ fn a_tool_round_trips_into_internal_history() {
 
 #[test]
 fn a_result_that_answers_no_earlier_call_is_rejected() {
-    let request = chat(
+    let mut request = chat(
         &json!([
             {"role": "user", "content": "x"},
             {"role": "tool", "content": "r", "tool_call_id": "call_missing"}
@@ -218,7 +239,7 @@ fn completions_refuse_the_chat_only_tool_fields() {
 
 #[test]
 fn nullable_tool_calls_from_sdk_history_are_accepted() {
-    let request = chat(
+    let mut request = chat(
         &json!([
             {"role":"user", "content":"hello"},
             {"role":"assistant", "content":"hi", "tool_calls":null}

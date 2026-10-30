@@ -50,6 +50,7 @@ pub fn run(
                 repetition_penalty: 1.0,
                 ..sampling.clone()
             },
+            prefix_boundary: None,
             extensions: BTreeMap::new(),
         })?;
     }

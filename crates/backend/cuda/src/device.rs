@@ -157,8 +157,11 @@ fn resident_states(total_memory_bytes: u64) -> usize {
         .clamp(MIN_RESIDENT_STATES, MAX_RESIDENT_STATES)
 }
 pub(crate) mod asynchronous;
+pub(crate) mod image_preprocess;
+pub use image_preprocess::{ImageBatch, Processor as CudaImageProcessor};
 mod readback;
 mod upload;
+pub(crate) mod vision_position;
 #[cfg(test)]
 pub(crate) use readback::queue_test_gate;
 pub(crate) use upload::PinnedUpload;

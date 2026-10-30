@@ -248,6 +248,9 @@ pub struct ExecutionTask {
     /// Allows a backend to replace a generation logits readout with an exact plain-greedy token.
     /// This flag does not change speculative acceptance or the committed input timeline.
     pub plain_greedy: bool,
+    /// This prompt chunk ends at the request's prefix boundary: the backend may keep the
+    /// covered prefix as a reusable snapshot for later requests that repeat it.
+    pub publish_prefix: bool,
     pub request: RequestId,
     pub state: StateId,
     pub tokens: crate::ExecutionInput,

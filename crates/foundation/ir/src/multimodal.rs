@@ -1,4 +1,4 @@
-use crate::TokenBuffer;
+use crate::{EncodedImageInput, ImageInput, TokenBuffer};
 use infer_core::{Error, MediaId, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -13,14 +13,57 @@ pub enum Modality {
     Audio,
     Extension(String),
 }
-/// Prepared pixels for one media item, owned by the request until its device work completes.
+/// Request-owned media pixels, either prepared patches or an RGB8 image for backend preparation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MediaPixels {
+    /// Normalized, patch-ordered floating-point values.
+    Patches(Arc<[f32]>),
+    /// Decoded image bytes and their validated transformation.
+    Image(ImageInput),
+    /// Compressed image retained for a capable backend decoder.
+    EncodedImage(EncodedImageInput),
+}
+
+impl MediaPixels {
+    /// Borrow already-prepared patches, if present.
+    #[must_use]
+    pub fn patches(&self) -> Option<&[f32]> {
+        match self {
+            Self::Patches(pixels) => Some(pixels),
+            Self::Image(_) | Self::EncodedImage(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn retained_bytes(&self) -> usize {
+        match self {
+            Self::Patches(pixels) => pixels.len().saturating_mul(size_of::<f32>()),
+            Self::Image(image) => image.retained_bytes(),
+            Self::EncodedImage(image) => image.retained_bytes(),
+        }
+    }
+}
+
+impl From<Arc<[f32]>> for MediaPixels {
+    fn from(pixels: Arc<[f32]>) -> Self {
+        Self::Patches(pixels)
+    }
+}
+
+impl From<Vec<f32>> for MediaPixels {
+    fn from(pixels: Vec<f32>) -> Self {
+        Self::Patches(pixels.into())
+    }
+}
+
+/// Pixels for one media item, owned by the request until its device work completes.
 ///
-/// Preprocessing happens in the input layer before admission. The payload is never serialized
-/// into a checkpoint: a media request cannot be checkpointed while its pixels are in flight.
+/// The payload is never serialized into a checkpoint: a media request cannot be checkpointed
+/// while its pixels are in flight.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MediaItem {
     pub modality: Modality,
-    pub pixels: Arc<[f32]>,
+    pub pixels: MediaPixels,
     /// `(temporal, height, width)` patch grid.
     pub grid: (usize, usize, usize),
     /// Prompt token positions replaced by this item's embeddings.
@@ -30,6 +73,9 @@ pub struct MediaItem {
 pub struct MediaInput {
     pub id: MediaId,
     pub modality: Modality,
+    /// Opaque, versioned content identity; consumers must not assume a specific hash algorithm.
+    /// Image identities include the source and preprocessing configuration, and are not a
+    /// replacement for model, backend, revision, or precision compatibility checks.
     pub content_digest: String,
     /// Bounded prepared payload; retained until the request's device frame completes.
     #[serde(skip)]
@@ -41,16 +87,15 @@ impl MediaInput {
         size_of::<Self>()
             .saturating_add(self.content_digest.capacity())
             .saturating_add(self.item.as_ref().map_or(0, |item| {
-                size_of::<MediaItem>()
-                    .saturating_add(item.pixels.len().saturating_mul(size_of::<f32>()))
+                size_of::<MediaItem>().saturating_add(item.pixels.retained_bytes())
             }))
     }
 }
 /// Fully prepared media attached to one prompt.
 ///
-/// `prompt` is the expanded token stream the backend executes; the items carry the preprocessed
-/// patch payload, not model topology. Keeping the whole prompt lets a chunked scheduler replay
-/// media chunks without re-tokenizing or re-preprocessing.
+/// `prompt` is the expanded token stream the backend executes; items carry either prepared patches
+/// or decoded image data and its transform, not model topology. Keeping the whole prompt lets a
+/// chunked scheduler replay media chunks without re-tokenizing or re-preprocessing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MediaPlan {
     pub modality: Modality,
@@ -113,8 +158,21 @@ impl MediaPlan {
             {
                 return Err(Error::invalid("media patch grid is empty or overflows"));
             }
-            if item.pixels.is_empty() {
-                return Err(Error::invalid("media pixel payload is empty"));
+            match &item.pixels {
+                MediaPixels::Patches(pixels) if pixels.is_empty() => {
+                    return Err(Error::invalid("media pixel payload is empty"));
+                }
+                MediaPixels::Image(image)
+                    if first != Modality::Image || image.transform().grid() != item.grid =>
+                {
+                    return Err(Error::invalid("raw image grid or modality mismatch"));
+                }
+                MediaPixels::EncodedImage(image)
+                    if first != Modality::Image || image.transform().grid() != item.grid =>
+                {
+                    return Err(Error::invalid("compressed image grid or modality mismatch"));
+                }
+                MediaPixels::Patches(_) | MediaPixels::Image(_) | MediaPixels::EncodedImage(_) => {}
             }
             previous_end = item.span.end;
             items.push(item);
@@ -140,8 +198,8 @@ impl MediaPlan {
             .saturating_add(
                 self.items
                     .iter()
-                    .map(|item| item.pixels.len().saturating_mul(size_of::<f32>()))
-                    .sum::<usize>(),
+                    .map(|item| item.pixels.retained_bytes())
+                    .fold(0usize, usize::saturating_add),
             )
     }
 }

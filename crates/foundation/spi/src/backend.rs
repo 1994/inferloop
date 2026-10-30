@@ -7,6 +7,47 @@ use infer_ir::{
 };
 use std::sync::Arc;
 
+/// Submit short host-side device preparation to an existing bounded worker pool.
+pub trait DeviceHostExecutor: Send + Sync {
+    /// Transfer one job to the worker pool without blocking the calling device owner.
+    /// # Errors
+    /// Rejects a stopped executor or an exhausted device-work lane.
+    fn submit(&self, work: Box<dyn FnOnce() + Send>) -> Result<()>;
+}
+
+/// Backend's explicit contract for deferred image preparation.
+///
+/// This query is pure: it does not reserve memory or launch device work. A `true` result means
+/// the same backend can consume the described RGB8 transformation during media execution.
+pub trait ImagePreprocessing: Send + Sync {
+    fn supports(&self, transform: &infer_ir::ImageTransform) -> bool;
+
+    /// Install the bounded host executor used for potentially blocking device-library calls.
+    /// # Errors
+    /// Rejects an incompatible or already installed executor.
+    fn set_host_executor(&self, _executor: Arc<dyn DeviceHostExecutor>) -> Result<()> {
+        Ok(())
+    }
+
+    /// Initialize optional compressed-image acceleration before accepting requests.
+    /// # Errors
+    /// Returns unexpected backend initialization failures.
+    fn initialize_encoded(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Inspect compressed image bytes for a decoder owned by this backend.
+    ///
+    /// Returns `None` for formats or bitstreams the backend cannot decode. The metadata's
+    /// decoder identity distinguishes outputs from different decoding contracts. This may
+    /// perform host-side parsing and must be called on a CPU worker, not a service thread.
+    /// # Errors
+    /// Returns backend errors that prevent determining whether the bytes are supported.
+    fn inspect_encoded(&self, _bytes: &[u8]) -> Result<Option<infer_ir::EncodedImageInfo>> {
+        Ok(None)
+    }
+}
+
 /// Owned work crosses the submission boundary; a future CUDA implementation uses
 /// persistent buffers and a bounded SPSC descriptor ring behind this contract.
 pub trait BackendProvider {
@@ -33,6 +74,10 @@ pub trait BackendProvider {
     /// Whether this backend has a bound multimodal encoder and can execute media prefill.
     fn supports_multimodal(&self) -> bool {
         false
+    }
+    /// Return the backend's deferred image-processing capability, when installed.
+    fn image_preprocessing(&self) -> Option<Arc<dyn ImagePreprocessing>> {
+        None
     }
     /// True only if control checkpoints can reconstruct all execution state.
     /// A proxy captures execution state via its owner lane; direct drivers can capture synchronously.

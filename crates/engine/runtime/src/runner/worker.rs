@@ -168,10 +168,7 @@ impl<B: BackendProvider> Worker<B> {
                                 .map(|kv| (kv.available_blocks, kv.free_blocks));
                     *published = pool[index].clone();
                     if changed {
-                        let epoch = self.shared.epoch.load(Ordering::Relaxed);
-                        self.shared
-                            .epoch
-                            .store(epoch.saturating_add(1), Ordering::Release);
+                        self.shared.epoch.fetch_add(1, Ordering::AcqRel);
                     }
                 }
                 Err(error) => Arc::make_mut(&mut published).error = Some(error),
@@ -306,6 +303,7 @@ impl<B: BackendProvider> Worker<B> {
                 match self.receiver.try_recv() {
                     Ok(job) => {
                         controls += 1;
+                        self.shared.queue_drained();
                         self.execute(job);
                         self.shared.notify();
                         continue;

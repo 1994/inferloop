@@ -26,6 +26,7 @@ workspace = true
 
 [dependencies]
 infer-core.workspace = true
+infer-media-input.workspace = true
 infer-ir.workspace = true
 infer-spi.workspace = true
 infer-models.workspace = true
@@ -37,10 +38,12 @@ serde_json.workspace = true
 axum.workspace = true
 tokio.workspace = true
 futures-util.workspace = true
-base64.workspace = true
-image.workspace = true
+mime.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
+image.workspace = true
 crc32fast.workspace = true
 infer-workloads.workspace = true
 tower.workspace = true

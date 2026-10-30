@@ -5,6 +5,16 @@ use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+/// Image decoding preference for the serving entry point.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum ImageDecoder {
+    /// Select a supported device decoder when available.
+    #[default]
+    Auto,
+    /// Decode images on CPU before device preprocessing.
+    Cpu,
+}
+
 #[derive(clap::Args)]
 pub struct ServeOptions {
     #[arg(long, default_value_t = Self::default_listen())]
@@ -13,6 +23,12 @@ pub struct ServeOptions {
     pub config: Option<PathBuf>,
     #[arg(long)]
     pub package: Option<PathBuf>,
+    /// Image processor options as a vLLM-compatible JSON object.
+    #[arg(long, value_name = "JSON")]
+    pub mm_processor_kwargs: Option<String>,
+    /// Image decoder: use an available device decoder automatically, or force CPU decoding.
+    #[arg(long, value_enum, default_value_t = ImageDecoder::Auto)]
+    pub image_decoder: ImageDecoder,
     #[arg(long, default_value_t = 0, hide = true)]
     pub host_memory_mib: u64,
 }

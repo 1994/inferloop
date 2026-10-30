@@ -3,6 +3,8 @@ mod support;
 use infer_kernel_api::KernelRegistry;
 use infer_spi::{BackendProvider, SchedulingPolicy};
 use std::collections::BTreeMap;
+use std::sync::Weak;
+use std::sync::atomic::Ordering;
 use support::ProtocolBackend;
 
 use infer_core::*;
@@ -55,6 +57,7 @@ fn request(id: u64, workload: Workload) -> CanonicalRequest {
             seed: 13,
             ..Default::default()
         },
+        prefix_boundary: None,
         extensions: BTreeMap::new(),
     }
 }
@@ -98,6 +101,7 @@ fn workloads() -> Vec<CanonicalRequest> {
                 ],
                 calibration_temperature: 1.0,
                 abstain_below: Some(0.9),
+                readout: DecisionReadout::Projection,
             }),
         ),
     ]
@@ -344,6 +348,8 @@ enum Fault {
     NeverComplete,
     Recover,
     InvalidTiming,
+    MaintenancePending,
+    MaintenanceFenced,
 }
 struct FaultyBackend {
     inner: ProtocolBackend,
@@ -356,6 +362,18 @@ impl BackendProvider for FaultyBackend {
     }
     fn capabilities(&self) -> DeviceCapabilities {
         self.inner.capabilities()
+    }
+    fn supports_multimodal(&self) -> bool {
+        self.inner.supports_multimodal()
+    }
+    fn maintenance(&mut self) -> Result<()> {
+        if matches!(
+            self.fault,
+            Fault::MaintenancePending | Fault::MaintenanceFenced
+        ) {
+            return Err(Error::new(ErrorCode::Backend, "injected owner failure"));
+        }
+        Ok(())
     }
     fn reserve_state_for(
         &mut self,
@@ -398,8 +416,8 @@ impl BackendProvider for FaultyBackend {
     fn poll(&mut self, t: &mut Self::Ticket) -> Result<Option<Vec<TaskOutput>>> {
         match self.fault {
             Fault::Poll => Err(Error::new(ErrorCode::Backend, "injected poll failure")),
-            Fault::NeverComplete => Ok(None),
-            Fault::Recover | Fault::InvalidTiming => self.inner.poll(t),
+            Fault::NeverComplete | Fault::MaintenancePending => Ok(None),
+            Fault::Recover | Fault::InvalidTiming | Fault::MaintenanceFenced => self.inner.poll(t),
             Fault::Malformed => {
                 let mut outputs = self.inner.poll(t)?;
                 if let Some(outputs) = &mut outputs {
@@ -416,6 +434,220 @@ impl BackendProvider for FaultyBackend {
             source: TimingSource::CpuWall,
         })
     }
+}
+fn two_image_input() -> Result<(CanonicalRequest, Vec<Weak<[f32]>>)> {
+    use std::sync::Arc;
+
+    let mut input = request(1, Workload::Generate { max_new_tokens: 1 });
+    let RequestInput::Sequence { media, .. } = &mut input.input else {
+        return Err(Error::invariant("fixture requires a sequence"));
+    };
+    let mut pixel_readers = Vec::new();
+    for (index, id) in [(0, 1), (1, 2)] {
+        let pixels: Arc<[f32]> = Arc::from(vec![0.5; 16_384]);
+        pixel_readers.push(Arc::downgrade(&pixels));
+        media.push(MediaInput {
+            id: MediaId::new(id)?,
+            modality: Modality::Image,
+            content_digest: format!("fixture-{id}"),
+            item: Some(MediaItem {
+                modality: Modality::Image,
+                pixels: pixels.into(),
+                grid: (1, 1, 1),
+                span: index..index + 1,
+            }),
+        });
+    }
+    Ok((input, pixel_readers))
+}
+
+#[test]
+fn isolated_engine_drains_media_after_persistent_maintenance_failure() -> Result<()> {
+    let b = FaultyBackend {
+        inner: backend().multimodal(),
+        fault: Fault::Recover,
+    };
+    let media_tasks = b.inner.media_tasks();
+    let model = support::model(ModelId::ONE);
+    let mut e = Engine::new(
+        b,
+        model,
+        PrecisionPlan::f32(),
+        &registry(),
+        RuntimeConfig::default(),
+    )?;
+    let (input, pixel_readers) = two_image_input()?;
+    e.submit(input)?;
+    e.tick(0)?;
+    assert!(media_tasks.load(Ordering::Relaxed) > 0);
+    let held = e.inspect();
+    assert!(held.inflight_step.is_some());
+    assert!(held.cpu.retained_host_bytes >= 2 * 16_384 * size_of::<f32>());
+    assert!(held.cpu.retained_host_tokens > 0);
+
+    e.backend_mut().fault = Fault::MaintenancePending;
+    assert_eq!(
+        e.tick(1).err().map(|error| error.code),
+        Some(ErrorCode::Backend)
+    );
+    assert!(!e.inspect().ready);
+    assert_eq!(
+        e.submit(request(2, Workload::Generate { max_new_tokens: 1 }))
+            .err()
+            .map(|error| error.code),
+        Some(ErrorCode::Backend)
+    );
+    assert_eq!(e.cancel(RequestId::ONE)?, [] as [EngineOutput; 0]);
+    e.tick(2)?;
+    let pending = e.inspect();
+    assert!(pending.inflight_step.is_some());
+    assert_eq!(pending.state.allocated_pages, held.state.allocated_pages);
+    assert_eq!(
+        pending.cpu.retained_host_bytes,
+        held.cpu.retained_host_bytes
+    );
+    assert_eq!(
+        pending.cpu.retained_host_tokens,
+        held.cpu.retained_host_tokens
+    );
+
+    e.backend_mut().fault = Fault::MaintenanceFenced;
+    let outputs = e.poll_completed(3)?;
+    assert!(outputs.iter().any(|output| matches!(output, EngineOutput::Finished(done) if matches!(done.reason, FinishReason::Failed(_)))));
+    assert!(e.is_idle());
+    assert_eq!(e.inspect().state.allocated_pages, 0);
+    assert!(!e.inspect().ready);
+    assert!(e.snapshot().is_err());
+    let completed = e.take_completed(RequestId::ONE)?;
+    drop(completed);
+    drop(outputs);
+    // The fault snapshot is also a reader and keeps its request credits alive.
+    assert_eq!(
+        e.inspect().cpu.retained_host_bytes,
+        held.cpu.retained_host_bytes
+    );
+    assert_eq!(
+        e.inspect().cpu.retained_host_tokens,
+        held.cpu.retained_host_tokens
+    );
+    e.check_invariants()?;
+    let diagnostic = e
+        .last_diagnostic_snapshot()
+        .ok_or_else(|| Error::invariant("missing diagnostic snapshot"))?
+        .clone();
+    drop(e);
+    assert!(
+        pixel_readers
+            .iter()
+            .all(|reader| reader.upgrade().is_some())
+    );
+    drop(diagnostic);
+    assert!(
+        pixel_readers
+            .iter()
+            .all(|reader| reader.upgrade().is_none())
+    );
+    Ok(())
+}
+
+#[test]
+fn isolated_drain_retains_a_new_maintenance_diagnostic_once() -> Result<()> {
+    let b = FaultyBackend {
+        inner: backend(),
+        fault: Fault::NeverComplete,
+    };
+    let model = support::model(ModelId::ONE);
+    let mut e = Engine::new(
+        b,
+        model,
+        PrecisionPlan::f32(),
+        &registry(),
+        RuntimeConfig {
+            submission_timeout_us: 10,
+            ..RuntimeConfig::default()
+        },
+    )?;
+    e.submit(request(1, Workload::Generate { max_new_tokens: 1 }))?;
+    e.tick(0)?;
+    assert_eq!(
+        e.tick(11).err().map(|error| error.code),
+        Some(ErrorCode::Invariant)
+    );
+    e.backend_mut().fault = Fault::MaintenancePending;
+    e.tick(12)?;
+    e.tick(13)?;
+    let diagnostics = e.diagnostics();
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.error.message == "injected owner failure")
+            .count(),
+        1
+    );
+    assert_eq!(
+        e.inspect().fault.map(|fault| fault.error.code),
+        Some(ErrorCode::Invariant)
+    );
+    assert!(e.inspect().inflight_step.is_some());
+    e.backend_mut().fault = Fault::MaintenanceFenced;
+    let outputs = e.tick(14)?;
+    assert!(outputs.iter().any(|output| matches!(output, EngineOutput::Finished(done) if matches!(done.reason, FinishReason::Failed(_)))));
+    assert!(e.is_idle());
+    e.check_invariants()
+}
+
+#[test]
+fn isolated_maintenance_failure_drains_queue_without_dispatching_more_work() -> Result<()> {
+    let b = FaultyBackend {
+        inner: backend(),
+        fault: Fault::Recover,
+    };
+    let model = support::model(ModelId::ONE);
+    let mut e = Engine::new(
+        b,
+        model,
+        PrecisionPlan::f32(),
+        &registry(),
+        RuntimeConfig {
+            max_num_seqs: 1,
+            ..RuntimeConfig::default()
+        },
+    )?;
+    e.submit(request(1, Workload::Generate { max_new_tokens: 1 }))?;
+    e.submit(request(2, Workload::Generate { max_new_tokens: 1 }))?;
+    e.tick(0)?;
+    let original_flight = e.inspect().inflight_step;
+    assert!(original_flight.is_some());
+    e.backend_mut().fault = Fault::MaintenancePending;
+    assert_eq!(
+        e.tick(1).err().map(|error| error.code),
+        Some(ErrorCode::Backend)
+    );
+    let queued_outputs = e.tick(2)?;
+    assert_eq!(
+        queued_outputs
+            .iter()
+            .filter(|output| matches!(output, EngineOutput::Finished(_)))
+            .count(),
+        1
+    );
+    assert_eq!(e.inspect().inflight_step, original_flight);
+    let (events, checkpoint) = e.quiesce(3)?;
+    assert_eq!(events, [] as [EngineOutput; 0]);
+    assert!(checkpoint.is_none());
+    assert_eq!(e.inspect().inflight_step, original_flight);
+    e.backend_mut().fault = Fault::MaintenanceFenced;
+    let final_outputs = e.poll_completed(4)?;
+    assert_eq!(
+        final_outputs
+            .iter()
+            .filter(|output| matches!(output, EngineOutput::Finished(_)))
+            .count(),
+        1
+    );
+    assert!(e.is_idle());
+    assert!(!e.inspect().ready);
+    e.check_invariants()
 }
 #[test]
 fn failure_after_device_completion_does_not_leave_requests_waiting_on_a_missing_ticket() {

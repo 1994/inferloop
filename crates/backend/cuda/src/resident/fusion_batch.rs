@@ -115,6 +115,27 @@ impl Workspace {
         }))
     }
 
+    /// A workspace over rows a narrower prompt rung borrows from a wider one.
+    pub(super) const fn from_rows(input: Tensor<f32>, gathered: Tensor<f32>) -> Self {
+        Self {
+            input: Some(input),
+            gathered: Some(gathered),
+        }
+    }
+
+    /// The projection input and gathered embedding rows, when no capture holds them.
+    pub(super) const fn rows(&self) -> Option<(&Tensor<f32>, &Tensor<f32>)> {
+        match (&self.input, &self.gathered) {
+            (Some(input), Some(gathered)) => Some((input, gathered)),
+            _ => None,
+        }
+    }
+
+    /// Columns of the projection input and the gathered embedding rows.
+    pub(super) const fn columns() -> (usize, usize) {
+        (COLUMNS, HIDDEN)
+    }
+
     #[cfg(test)]
     pub(super) fn bytes(&self) -> usize {
         self.input.as_ref().map_or(0, Tensor::num_bytes)
@@ -274,6 +295,10 @@ fn record_wide(
     if external.size() < lanes * HIDDEN {
         return Err(error("fusion batch external rows"));
     }
+    // The owner holds the widest prompt's rows; a narrower rung's grid reads its leading lanes.
+    let external = external
+        .view(&[external.size() / HIDDEN, HIDDEN])
+        .map_err(error)?;
     let Some(super::program::FusionWeights {
         projection: ProjectionWeight::Dense(weight),
         norms,
@@ -314,7 +339,7 @@ fn record_wide(
         super::kernels::aux::fusion_norm_rows(
             (&mut rows).partition([1, block]),
             &gathered.view(&[lanes, HIDDEN]).map_err(error)?,
-            &external.view(&[lanes, HIDDEN]).map_err(error)?,
+            &external,
             norms,
             *epsilon,
             *offset,

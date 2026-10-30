@@ -1,0 +1,25 @@
+[package]
+name = "infer-media-input"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+autotests = false
+
+[[test]]
+name = "source"
+path = "tests/source.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+infer-core.workspace = true
+base64.workspace = true
+image.workspace = true
+reqwest.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+tokio.workspace = true

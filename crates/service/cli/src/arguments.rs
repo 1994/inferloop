@@ -110,6 +110,7 @@ impl Cli {
             && (self.model_path.is_some()
                 || self.serve.package.is_some()
                 || self.serve.config.is_some()
+                || self.serve.image_decoder != commands::ImageDecoder::Auto
                 || self.serve.host_memory_mib != 0
                 || self.serve.listen != commands::ServeOptions::default_listen())
         {

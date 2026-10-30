@@ -47,6 +47,9 @@ impl RuntimeHandle {
         let request_ids = Arc::new(AtomicU64::new(engine.request_id_high_watermark()));
         let preparer = engine.request_preparer()?;
         let cpu = CpuPool::new(config.clone())?;
+        if let Some(capability) = engine.backend().image_preprocessing() {
+            capability.set_host_executor(Arc::new(cpu.clone()))?;
+        }
         let delivery = CpuPool::named(
             CpuConfig {
                 workers: 1,
@@ -91,7 +94,7 @@ impl RuntimeHandle {
             delivery,
             observation,
             observation_bytes,
-            ingress: Registry::new(config.max_jobs, config.max_bytes),
+            ingress: Registry::new(config.max_jobs),
             config,
         })
     }

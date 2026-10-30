@@ -168,6 +168,12 @@ impl Workspace {
         }
         self.mma = None;
         self.mma_f16 = None;
+        // FA4 gathers whole KV pages, but a private program's arena holds exactly the request's
+        // capacity. An unaligned one (a short prompt before the pool exists) keeps the exact
+        // attention paths, which bound reads by the arena instead of failing the request.
+        if !capacity.is_multiple_of(KV_BLOCK_TOKENS) {
+            return Ok(());
+        }
         let architecture = device.profile()?.architecture.clone();
         let target = weights.fusion.is_none();
         let any_f16 = target

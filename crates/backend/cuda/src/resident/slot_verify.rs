@@ -818,7 +818,8 @@ impl SlotVerifyGraph {
 
 type VerifyMetadata = Option<(u32, usize, usize)>;
 
-/// Validate every active slot as a contiguous prefix before updating any device metadata.
+/// Validate each active slot's state cursor before updating device metadata. Rotary
+/// coordinates are independent of the state cursor for multimodal prompts.
 fn verify_lanes(
     lanes: &[SlotVerifyLane],
     cursors: &[usize],
@@ -839,7 +840,6 @@ fn verify_lanes(
         if per_lane[lane].is_some()
             || usize::try_from(token).map_err(device_error)? >= vocabulary
             || state_pos >= capacity
-            || state_pos != rope_pos
             || cursors[slot].checked_add(position) != Some(state_pos)
         {
             return Err(Error::invalid("slot verify token or position"));

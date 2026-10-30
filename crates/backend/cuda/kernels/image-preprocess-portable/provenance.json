@@ -1,0 +1,20 @@
+{
+  "target": "sm_70",
+  "compiler": "nvcc V11.8.89",
+  "host_compiler": "GCC 11.4.0 (conda-forge)",
+  "language": "CUDA C++ device code; no host C++ runtime",
+  "arguments": [
+    "--ptx",
+    "-arch=compute_70",
+    "-O3",
+    "--fmad=false",
+    "--ftz=false",
+    "--prec-div=true",
+    "--prec-sqrt=true"
+  ],
+  "source_sha256": "677aed60c4619235fa52d33c6873a4f9030d703b56dc7bdfdf7f9960e9049404",
+  "ptx_sha256": "8ac09929105c8d3c062c35935cc1bb38665c70565875b86831d81cd38fb45ea7",
+  "contract": "RGB8 identity patch construction or bicubic resize with fixed-point coefficients, canonical per-channel normalization, and 16x16 temporal-2 merge-2 patch layout; zeroed tail patches",
+  "numeric_evidence": "45:/home/r/benchmarks/inferloop-media-20261030/artifacts/image-direct-device-validation/",
+  "performance_evidence": "45:/home/r/benchmarks/inferloop-media-20261030/artifacts/image-direct-processor-pair/"
+}

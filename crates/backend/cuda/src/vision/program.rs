@@ -1,4 +1,6 @@
 //! Captured vision-encoder programs.
+use super::block_mlp;
+use super::device_tower;
 use super::{VisionWeights, kernels, weights::AttentionLayer, weights::half_tile};
 #[cfg(test)]
 use crate::attention::benchmark::REPEATS;
@@ -6,10 +8,14 @@ use crate::attention::benchmark::REPEATS;
 use crate::attention::benchmark::measure;
 use crate::attention::kernels::sdpa::attention as sdpa_attention;
 use crate::attention::tile_rows;
+use crate::device::vision_position::DeviceTaps;
 use crate::device::{CudaDevice, device_error};
+use cutile::cuda_async::cuda_graph::Scope;
+use cutile::cuda_async::error::DeviceError;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_models::vision::PositionTaps;
 use infer_models::vision::head_dim;
 use infer_models::vision::merge_unit;
 use infer_models::vision::merged_width;
@@ -18,12 +24,17 @@ use infer_models::vision::rope_frequencies;
 use infer_models::vision::row_tile;
 use infer_spi::ModalityEncoder;
 use std::env::var;
+use std::result::Result as StdResult;
 use std::sync::Arc;
 
+#[cfg(test)]
+#[path = "../../tests/unit/vision_projection_output.rs"]
+mod projection_output_tests;
+
 /// Token tile of every vision projection, matching the prompt GEMM.
-const TOKEN_TILE: usize = 32;
+pub(super) const TOKEN_TILE: usize = 32;
 /// Column tile of every vision projection, matching the prompt GEMM.
-const COLUMN_TILE: usize = 64;
+pub(super) const COLUMN_TILE: usize = 64;
 
 /// Column tile of every vision projection; test-only audit hook.
 #[cfg(test)]
@@ -31,7 +42,7 @@ const COLUMN_TILE: usize = 64;
 pub(super) const fn column_tile() -> usize {
     COLUMN_TILE
 }
-const ATTENTION_CONFIG_FIELDS: usize = 3;
+pub(super) const ATTENTION_CONFIG_FIELDS: usize = 3;
 /// Power-of-two pack segment in the compact attention boundary.
 const PACK_SEGMENT: usize = 16;
 /// Compact physical half/full head and qualified wide pack width.
@@ -68,9 +79,165 @@ pub fn patch_embed(
     positions: &[f32],
     patch_count: usize,
 ) -> Result<Vec<f32>> {
+    patch_embed_with_positions(
+        device,
+        encoder,
+        weights,
+        PatchInput::Host(patches),
+        PositionInput::Host(positions),
+        patch_count,
+    )
+}
+
+/// Embed patches while interpolating the learned position table on the device.
+///
+/// # Errors
+/// Rejects mismatched input geometry or a failed CUDA operation.
+pub fn patch_embed_device_positions(
+    device: &CudaDevice,
+    encoder: &ModalityEncoder,
+    weights: &VisionWeights,
+    patches: &[f32],
+    positions: &PositionTaps,
+    patch_count: usize,
+) -> Result<Vec<f32>> {
+    patch_embed_with_positions(
+        device,
+        encoder,
+        weights,
+        PatchInput::Host(patches),
+        PositionInput::Device(positions),
+        patch_count,
+    )
+}
+
+/// Embed already-preprocessed device patches without reading them back or uploading them again.
+pub fn patch_embed_device_pixels(
+    device: &CudaDevice,
+    encoder: &ModalityEncoder,
+    weights: &VisionWeights,
+    patches: &Arc<Tensor<f32>>,
+    positions: &PositionTaps,
+    patch_count: usize,
+) -> Result<Vec<f32>> {
+    patch_embed_with_positions(
+        device,
+        encoder,
+        weights,
+        PatchInput::Device(patches),
+        PositionInput::Device(positions),
+        patch_count,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum PatchInput<'a> {
+    Host(&'a [f32]),
+    Device(&'a Arc<Tensor<f32>>),
+}
+
+#[derive(Clone, Copy)]
+enum PositionInput<'a> {
+    Host(&'a [f32]),
+    Device(&'a PositionTaps),
+}
+
+struct StagedPositions {
+    host: Option<Arc<Tensor<f32>>>,
+    device: Option<DeviceTaps>,
+}
+
+impl StagedPositions {
+    fn new(
+        device: &CudaDevice,
+        encoder: &ModalityEncoder,
+        weights: &VisionWeights,
+        positions: PositionInput<'_>,
+        patch_count: usize,
+        padded: usize,
+    ) -> Result<Self> {
+        let hidden = encoder.hidden_size;
+        let (host, device_positions) = match positions {
+            PositionInput::Host([]) => (None, None),
+            PositionInput::Host(positions) => {
+                let elements = patch_count
+                    .checked_mul(hidden)
+                    .ok_or_else(|| Error::invalid("position input overflow"))?;
+                let padded_elements = padded
+                    .checked_mul(hidden)
+                    .ok_or_else(|| Error::invalid("position padding overflow"))?;
+                if positions.len() != elements {
+                    return Err(Error::invalid("position input shape"));
+                }
+                let mut values = vec![0.0f32; padded_elements];
+                values[..positions.len()].copy_from_slice(positions);
+                (Some(device.upload(values, &[padded, hidden])?), None)
+            }
+            PositionInput::Device(taps) => {
+                if taps.indices.len() != patch_count {
+                    return Err(Error::invalid("position input shape"));
+                }
+                let table = weights.get("pos_embed.weight")?;
+                let staged = DeviceTaps::new(
+                    device,
+                    &taps.indices,
+                    &taps.weights,
+                    table,
+                    encoder.position_embeddings,
+                    hidden,
+                    padded,
+                )?;
+                (None, Some(staged))
+            }
+        };
+        Ok(Self {
+            host,
+            device: device_positions,
+        })
+    }
+
+    const fn present(&self) -> bool {
+        self.host.is_some() || self.device.is_some()
+    }
+
+    fn record(
+        &self,
+        scope: &Scope,
+        embedded: &Tensor<f32>,
+        output: &mut Tensor<f32>,
+        hidden: usize,
+    ) -> StdResult<(), DeviceError> {
+        if let Some(positions) = &self.host {
+            scope.record(
+                kernels::encoder::add(
+                    output.partition([TOKEN_TILE, COLUMN_TILE]),
+                    embedded,
+                    positions,
+                )
+                .generics(vec![hidden.to_string()]),
+            )?;
+        }
+        if let Some(taps) = &self.device {
+            taps.record(scope, embedded, output)?;
+        }
+        Ok(())
+    }
+}
+
+fn patch_embed_with_positions(
+    device: &CudaDevice,
+    encoder: &ModalityEncoder,
+    weights: &VisionWeights,
+    patches: PatchInput<'_>,
+    positions: PositionInput<'_>,
+    patch_count: usize,
+) -> Result<Vec<f32>> {
     let width = patch_width(encoder)?;
     let hidden = encoder.hidden_size;
-    if patch_count == 0 || patches.len() != patch_count * width {
+    let patch_elements = patch_count
+        .checked_mul(width)
+        .ok_or_else(|| Error::invalid("patch input overflow"))?;
+    if patch_count == 0 {
         return Err(Error::invalid("patch input shape"));
     }
     if !hidden.is_multiple_of(COLUMN_TILE) || !width.is_multiple_of(COLUMN_TILE) {
@@ -78,26 +245,24 @@ pub fn patch_embed(
             "vision patch/hidden widths must tile by the GEMM column size",
         ));
     }
-    let with_positions = !positions.is_empty();
-    if with_positions && positions.len() != patch_count * hidden {
-        return Err(Error::invalid("position input shape"));
-    }
-    let padded = patch_count.div_ceil(TOKEN_TILE) * TOKEN_TILE;
+    let padded = patch_count
+        .checked_next_multiple_of(TOKEN_TILE)
+        .ok_or_else(|| Error::invalid("vision patch padding overflow"))?;
+    let padded_elements = padded
+        .checked_mul(width)
+        .ok_or_else(|| Error::invalid("vision patch padding overflow"))?;
+    validate_patch_input(&patches, patch_elements, padded, width)?;
+    patch_count
+        .checked_mul(hidden)
+        .and_then(|_| padded.checked_mul(hidden))
+        .ok_or_else(|| Error::invalid("vision patch output overflow"))?;
+    let positions = StagedPositions::new(device, encoder, weights, positions, patch_count, padded)?;
 
-    let mut input_values = vec![0.0f32; padded * width];
-    input_values[..patches.len()].copy_from_slice(patches);
-    let input = device.upload(input_values, &[padded, width])?;
+    let input = stage_patches(device, patches, padded_elements, padded, width)?;
     let mut embedded = api::zeros::<f32>(&[padded, hidden])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let position_tensor = if with_positions {
-        let mut values = vec![0.0f32; padded * hidden];
-        values[..positions.len()].copy_from_slice(positions);
-        Some(device.upload(values, &[padded, hidden])?)
-    } else {
-        None
-    };
-    let mut output = if with_positions {
+    let mut output = if positions.present() {
         Some(
             api::zeros::<f32>(&[padded, hidden])
                 .sync_on(&device.stream)
@@ -122,15 +287,8 @@ pub fn patch_embed(
             )
             .generics(vec![width.to_string()]),
         )?;
-        if let (Some(positions), Some(output)) = (&position_tensor, output.as_mut()) {
-            scope.record(
-                kernels::encoder::add(
-                    output.partition([TOKEN_TILE, COLUMN_TILE]),
-                    &embedded,
-                    positions,
-                )
-                .generics(vec![hidden.to_string()]),
-            )?;
+        if let Some(output) = output.as_mut() {
+            positions.record(scope, &embedded, output, hidden)?;
         }
         Ok(())
     })
@@ -145,6 +303,47 @@ pub fn patch_embed(
         None => device.read(&Arc::new(embedded))?,
     };
     Ok(values[..patch_count * hidden].to_vec())
+}
+
+fn validate_patch_input(
+    patches: &PatchInput<'_>,
+    elements: usize,
+    rows: usize,
+    width: usize,
+) -> Result<()> {
+    match patches {
+        PatchInput::Host(values) if values.len() != elements => {
+            Err(Error::invalid("patch input shape"))
+        }
+        PatchInput::Device(values) => {
+            let shape = [
+                i32::try_from(rows).map_err(device_error)?,
+                i32::try_from(width).map_err(device_error)?,
+            ];
+            if values.shape() != shape || !values.is_contiguous() {
+                return Err(Error::invalid("device patch input shape"));
+            }
+            Ok(())
+        }
+        PatchInput::Host(_) => Ok(()),
+    }
+}
+
+fn stage_patches(
+    device: &CudaDevice,
+    patches: PatchInput<'_>,
+    elements: usize,
+    rows: usize,
+    width: usize,
+) -> Result<Arc<Tensor<f32>>> {
+    match patches {
+        PatchInput::Host(patches) => {
+            let mut values = vec![0.0f32; elements];
+            values[..patches.len()].copy_from_slice(patches);
+            device.upload(values, &[rows, width])
+        }
+        PatchInput::Device(patches) => Ok(Arc::clone(patches)),
+    }
 }
 
 /// Linear projection with bias: `out = input @ weight^T + bias` for `[rows, in_features]`.
@@ -218,8 +417,26 @@ pub fn project_with(
         .launch()
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let values = device.read(&Arc::new(output))?;
-    Ok(values[..rows * out_features].to_vec())
+    projection_output(device.read(&Arc::new(output))?, rows, out_features)
+}
+
+pub(super) fn projection_output(
+    values: Vec<f32>,
+    rows: usize,
+    out_features: usize,
+) -> Result<Vec<f32>> {
+    let len = rows
+        .checked_mul(out_features)
+        .ok_or_else(|| Error::invalid("vision projection output overflow"))?;
+    if values.len() < len {
+        return Err(Error::invariant("vision projection output truncated"));
+    }
+    if values.len() == len {
+        Ok(values)
+    } else {
+        // Do not retain the extra padded rows in long-lived host results.
+        Ok(values[..len].to_vec())
+    }
 }
 
 /// Padded intermediate width of the block MLPs.
@@ -414,7 +631,7 @@ pub fn layernorm(
     clippy::cast_precision_loss,
     reason = "Head widths are tiny exact integers"
 )]
-fn attention_scale(encoder: &ModalityEncoder) -> Result<f32> {
+pub(super) fn attention_scale(encoder: &ModalityEncoder) -> Result<f32> {
     let head = head_dim(encoder)?;
     if head == 0 {
         return Err(Error::invalid("encoder head width must be nonzero"));
@@ -432,7 +649,7 @@ fn attention_scale(encoder: &ModalityEncoder) -> Result<f32> {
     clippy::cast_possible_truncation,
     reason = "RoPE angles are computed in f64 and stored in the f32 activation dtype"
 )]
-fn rope_tables(
+pub(super) fn rope_tables(
     encoder: &ModalityEncoder,
     grid: (usize, usize, usize),
     padded: usize,
@@ -839,7 +1056,7 @@ fn compact_attention_launch(
     Ok(values)
 }
 
-fn frame_token_count(grid: (usize, usize, usize), tokens: usize) -> Result<i32> {
+pub(super) fn frame_token_count(grid: (usize, usize, usize), tokens: usize) -> Result<i32> {
     let count = grid
         .1
         .checked_mul(grid.2)
@@ -849,7 +1066,7 @@ fn frame_token_count(grid: (usize, usize, usize), tokens: usize) -> Result<i32> 
 }
 
 /// Allocate a zeroed activation matrix on the device stream.
-fn activation(device: &CudaDevice, rows: usize, columns: usize) -> Result<Tensor<f32>> {
+pub(super) fn activation(device: &CudaDevice, rows: usize, columns: usize) -> Result<Tensor<f32>> {
     api::zeros::<f32>(&[rows, columns])
         .sync_on(&device.stream)
         .map_err(device_error)
@@ -895,24 +1112,15 @@ pub fn block(
     )?;
     let width = mlp_width(encoder)?;
     let layer_weights = weights.mlp(layer)?;
-    let fc1 = project_with(
+    block_mlp::run(
         device,
-        &layer_weights.fc1.0,
-        &layer_weights.fc1.1,
+        layer_weights,
         &normed,
-        tokens,
-        width,
-    )?;
-    let activated = gelu(device, false, &fc1, tokens, width)?;
-    let fc2 = project_with(
-        device,
-        &layer_weights.fc2.0,
-        &layer_weights.fc2.1,
-        &activated,
+        &residual,
         tokens,
         hidden,
-    )?;
-    add(device, &residual, &fc2, tokens, hidden)
+        width,
+    )
 }
 
 /// The whole vision tower: every block in declaration order.
@@ -927,6 +1135,9 @@ pub fn tower(
     grid: (usize, usize, usize),
     tokens: usize,
 ) -> Result<Vec<f32>> {
+    if device_tower::supports(encoder)? {
+        return device_tower::run(device, weights, encoder, input, grid, tokens);
+    }
     let mut state = input.to_vec();
     for layer in 0..encoder.depth {
         state = block(device, weights, encoder, layer, &state, grid, tokens)?;
@@ -1120,7 +1331,7 @@ fn attention_scale_from_width(width: usize) -> f32 {
     1.0 / (width as f32).sqrt()
 }
 
-fn attention_generics(
+pub(super) fn attention_generics(
     width: usize,
     mode: AttentionMode,
     tiles: [usize; ATTENTION_CONFIG_FIELDS],

@@ -452,19 +452,12 @@ fn missing_prompt_scratch_bytes(
     profile: &DeviceProfile,
 ) -> Result<u64> {
     let mut bytes = 0;
-    for width in geometry.prompts.into_iter().filter(|width| *width > 0) {
+    let widths = geometry.prompt_widths();
+    for (index, &width) in widths.iter().enumerate() {
         if !weights.prompt_scratch.is_allocated(width)? {
             bytes = add(
                 bytes,
-                prompt_scratch_bytes(
-                    graph,
-                    weights,
-                    ProgramGeometry {
-                        verification: 0,
-                        prompts: [width, 0],
-                    },
-                    profile,
-                )?,
+                width_scratch_bytes(graph, weights, (width, index == 0), profile)?,
             )?;
         }
     }
@@ -777,15 +770,29 @@ fn prompt_scratch_bytes(
     profile: &DeviceProfile,
 ) -> Result<u64> {
     let mut bytes = 0;
-    for width in geometry.prompts.into_iter().filter(|width| *width > 0) {
+    for (index, &width) in geometry.prompt_widths().iter().enumerate() {
+        bytes = add(
+            bytes,
+            width_scratch_bytes(graph, weights, (width, index == 0), profile)?,
+        )?;
+    }
+    Ok(bytes)
+}
+
+/// Scratch one prompt width allocates. Only the widest owns its arena, logits row, split
+/// partials and fusion rows; narrower rungs view them and add their recurrent workspace.
+fn width_scratch_bytes(
+    graph: &DataflowGraph,
+    weights: &ProgramWeights,
+    (width, widest): (usize, bool),
+    profile: &DeviceProfile,
+) -> Result<u64> {
+    let mut bytes = recurrent_prefill_required_bytes(graph, weights, width)?;
+    if widest {
         let arena = prompt_logits::required_bytes(graph, weights, width)?;
         bytes = add(
             bytes,
             u64::try_from(arena).map_err(|_| Error::invalid("activation budget"))?,
-        )?;
-        bytes = add(
-            bytes,
-            recurrent_prefill_required_bytes(graph, weights, width)?,
         )?;
         bytes = add(bytes, required_bytes(weights, width, profile))?;
         bytes = add(bytes, prompt_partials_bytes(graph, weights, width)?)?;

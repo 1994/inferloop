@@ -1,5 +1,6 @@
 //! Text and media preparation before device execution.
 pub mod image;
+mod image_resize;
 pub mod mrope;
 pub mod multimodal;
 pub mod prompt;

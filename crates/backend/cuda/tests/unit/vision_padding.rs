@@ -9,7 +9,6 @@ use cutile::cutile_compiler::compile_api::KernelCompiler;
 use infer_models::vision::{merged_width, row_tile};
 use infer_spi::{HiddenActivation, ModalityEncoder};
 use std::error::Error;
-use std::sync::Arc;
 
 fn encoder() -> ModalityEncoder {
     ModalityEncoder {
@@ -251,7 +250,7 @@ fn compact_projection_rope_attention_and_merge_compile_without_a_device()
 fn media_plan(grid: (usize, usize, usize), count: usize) -> infer_ir::MediaPlan {
     let item = infer_ir::MediaItem {
         modality: infer_ir::Modality::Image,
-        pixels: Arc::from(Vec::<f32>::new()),
+        pixels: Vec::<f32>::new().into(),
         grid,
         span: 0..1,
     };
@@ -303,4 +302,26 @@ fn media_footprint_rejects_overflowing_grids() {
     let error =
         super::footprint::footprint(&encoder, &media_plan((usize::MAX, 2, 2), 1)).unwrap_err();
     assert_eq!(error.code, infer_core::ErrorCode::InvalidInput);
+}
+
+#[test]
+fn media_footprint_covers_the_fused_block_mlp_live_buffers() -> Result<(), Box<dyn Error>> {
+    let mut encoder = encoder();
+    encoder.intermediate_size = 65_536;
+    let footprint = super::footprint::footprint(&encoder, &media_plan((1, 14, 22), 1))?;
+    let padded_rows = 320_u64;
+    let required = padded_rows * (4 * 1152 + 2 * 65_536) * 4;
+    assert!(footprint >= required);
+    Ok(())
+}
+
+#[test]
+fn media_footprint_covers_the_resident_tower_live_buffers() -> Result<(), Box<dyn Error>> {
+    let mut encoder = encoder();
+    encoder.hidden_size = 1024;
+    let footprint = super::footprint::footprint(&encoder, &media_plan((1, 14, 22), 1))?;
+    let attention_rows = 320_u64;
+    let required = attention_rows * (6 * 1024 + 6 * 1024 + 2 * 4096 + 2 * 64) * 4;
+    assert!(footprint >= required);
+    Ok(())
 }

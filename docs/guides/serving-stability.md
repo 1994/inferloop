@@ -40,7 +40,7 @@ CUDA hang/错误 = 全站 503 直到替换实例 —— 必须有编排层（liv
 
 | 队列 | 容量 | 满时行为 |
 |---|---:|---|
-| ingress 准入信用 | `max_jobs`（CPU workers×2）/ 64MiB | 429 |
+| ingress 准入信用 | `max_jobs`（CPU workers×2） | 429 |
 | CPU 准备池 | `max_jobs` + 30s 超时 | 429 |
 | actor 命令 / 控制通道 | 256 / 64 | 429 |
 | 设备控制通道 | 32 | 429 |

@@ -339,6 +339,51 @@ fn pooled_rotary_preserves_row_consumers_prefixes_and_reuse() -> Result<()> {
     Ok(())
 }
 
+#[test]
+#[ignore = "requires CUDA hardware; run inside safe-run"]
+fn pooled_verify_matches_positioned_steps_with_independent_coordinates() -> Result<()> {
+    enable_default().map_err(device_error)?;
+    let device = CudaDevice::new(0)?;
+    let (mut graph, mut weights) = fixture(&device)?;
+    add_rotary(&device, &mut graph, &mut weights)?;
+    weights.batch_width = 3;
+    weights.prefill_width = 1;
+    let mut pool = SlotPool::new(&device, &graph, &weights, 2, 32, 32, (32, 3), None)?;
+    let mut serial = (0..2)
+        .map(|_| DeviceProgram::new(&device, &graph, &weights, 32, 32, 32))
+        .collect::<Result<Vec<_>>>()?;
+    for round in 0..2 {
+        let mut lanes = Vec::new();
+        let mut expected = Vec::new();
+        for (slot, program) in serial.iter_mut().enumerate() {
+            let mut rows = Vec::new();
+            for offset in 0..3 {
+                let cursor = program.position();
+                let rotary = cursor + 8 + slot * 3;
+                let token =
+                    u32::try_from(1 + round * 6 + slot * 3 + offset).map_err(device_error)?;
+                rows.push(program.step_positioned(token, [rotary; 3], cursor, None, true)?);
+                lanes.push((slot, offset, token, rotary, cursor));
+            }
+            expected.push(rows);
+        }
+        let actual = pool.run_verify(&device, &lanes)?;
+        for (slot, reference) in expected.iter().enumerate() {
+            let rows = &actual[slot * 3..][..3];
+            assert_eq!(rows.len(), reference.len());
+            assert_eq!(reference[0].1.len(), 32);
+            for (actual_row, expected_row) in rows.iter().zip(reference) {
+                assert_eq!(actual_row.0.len(), expected_row.0.len());
+                assert_eq!(actual_row.1.len(), expected_row.1.len());
+            }
+            compare(rows, reference);
+            pool.commit_verify(&device, slot, 2)?;
+            assert_eq!(pool.cursors()[slot], serial[slot].position());
+        }
+    }
+    Ok(())
+}
+
 fn check_pool_width_rotary(
     width: usize,
     verify: usize,
@@ -437,6 +482,15 @@ fn verify_lanes_rejects_holes_duplicates_and_invalid_positions() {
     assert!(verify_lanes(&[(0, 0, 1, 2, 1)], &cursors, 3, 16, 32).is_err());
     assert!(verify_lanes(&[(2, 0, 1, 7, 7)], &cursors, 3, 7, 32).is_err());
     assert!(verify_lanes(&[(2, 0, 1, 7, 7), (0, 0, 2, 2, 2)], &cursors, 3, 16, 32).is_ok());
+}
+
+#[test]
+fn verify_lanes_accepts_independent_rotary_and_state_positions() -> Result<()> {
+    let lanes = [(0, 0, 1, 8, 64), (0, 1, 2, 9, 65)];
+    let metadata = verify_lanes(&lanes, &[64], 3, 128, 32)?;
+    assert_eq!(metadata, vec![Some((1, 8, 64)), Some((2, 9, 65)), None]);
+    assert!(verify_lanes(&[(0, 0, 1, 8, 63)], &[64], 3, 128, 32).is_err());
+    Ok(())
 }
 
 #[test]

@@ -1,4 +1,7 @@
-//! Fixed CPU workers with admission bytes, queue bounds and cancellable asynchronous replies.
+//! Fixed CPU workers with queue bounds and cancellable asynchronous replies.
+mod queue;
+
+use self::queue::{WorkQueue, WorkSender};
 use infer_core::placement::ThreadPlacement;
 use infer_core::{Error, ErrorCode, Result};
 use serde::{Deserialize, Serialize};
@@ -8,8 +11,9 @@ use std::panic::catch_unwind;
 use std::thread::available_parallelism;
 use std::{
     sync::Arc, sync::Mutex, sync::atomic::AtomicBool, sync::atomic::AtomicUsize,
-    sync::atomic::Ordering, sync::mpsc, time::Duration, time::Instant,
+    sync::atomic::Ordering, time::Duration, time::Instant,
 };
+use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 use tokio::time::timeout as time_timeout;
 
@@ -17,8 +21,6 @@ use tokio::time::timeout as time_timeout;
 const DEFAULT_WORKER_RESERVE: usize = 7;
 /// Upper bound on the auto-sized default worker pool.
 const MAX_DEFAULT_WORKERS: usize = 32;
-/// Default staging byte budget for one CPU pool.
-const DEFAULT_MAX_STAGING_BYTES: usize = 64 << 20;
 /// Default per-lane CPU job timeout, in milliseconds.
 const DEFAULT_JOB_TIMEOUT_MS: u64 = 30_000;
 /// Default control-command acknowledgement timeout, in milliseconds.
@@ -34,7 +36,6 @@ pub struct CpuConfig {
     pub placement: ThreadPlacement,
     pub workers: usize,
     pub max_jobs: usize,
-    pub max_bytes: usize,
     pub job_timeout_ms: u64,
     pub command_timeout_ms: u64,
     pub device_control_timeout_ms: u64,
@@ -49,7 +50,6 @@ impl Default for CpuConfig {
             placement: ThreadPlacement::default(),
             workers,
             max_jobs: workers * 2,
-            max_bytes: DEFAULT_MAX_STAGING_BYTES,
             job_timeout_ms: DEFAULT_JOB_TIMEOUT_MS,
             command_timeout_ms: DEFAULT_COMMAND_TIMEOUT_MS,
             device_control_timeout_ms: DEFAULT_DEVICE_CONTROL_TIMEOUT_MS,
@@ -63,7 +63,6 @@ impl CpuConfig {
         if self.workers == 0
             || self.workers > MAX_WORKERS
             || self.max_jobs < self.workers
-            || self.max_bytes == 0
             || self.job_timeout_ms == 0
             || self.command_timeout_ms == 0
             || self.device_control_timeout_ms == 0
@@ -114,6 +113,7 @@ impl Drop for Active {
 pub struct CpuContext {
     cancelled: Arc<AtomicBool>,
     deadline: Instant,
+    runtime: Option<Handle>,
 }
 impl CpuContext {
     /// # Errors
@@ -127,12 +127,19 @@ impl CpuContext {
         }
         Ok(())
     }
+
+    pub(crate) fn runtime(&self) -> Result<&Handle> {
+        self.runtime
+            .as_ref()
+            .ok_or_else(|| Error::invariant("CPU preparation has no async runtime"))
+    }
 }
 #[cfg(test)]
 pub(crate) fn cancelled_context() -> CpuContext {
     CpuContext {
         cancelled: Arc::new(AtomicBool::new(true)),
         deadline: Instant::now() + Duration::from_secs(1),
+        runtime: None,
     }
 }
 
@@ -142,10 +149,10 @@ impl Drop for CancelOnDrop {
         self.0.store(true, Ordering::Release);
     }
 }
-type Job = Box<dyn FnOnce() + Send>;
+type Job = Box<dyn FnOnce(&dyn Fn() -> Result<()>) + Send>;
 #[derive(Clone)]
 pub struct CpuPool {
-    jobs: mpsc::SyncSender<Job>,
+    jobs: Arc<WorkSender>,
     budget: Arc<Budget>,
 }
 impl CpuPool {
@@ -160,8 +167,8 @@ impl CpuPool {
     }
     fn initialize(config: CpuConfig, lane: &str) -> Result<Self> {
         config.validate()?;
-        let (jobs, receiver) = mpsc::sync_channel::<Job>(config.max_jobs);
-        let receiver = Arc::new(Mutex::new(receiver));
+        let queue = Arc::new(WorkQueue::new(config.workers, config.max_jobs));
+        let jobs = Arc::new(WorkSender(queue.clone()));
         let budget = Arc::new(Budget {
             usage: Mutex::new(Usage::default()),
             active: AtomicUsize::new(0),
@@ -169,29 +176,28 @@ impl CpuPool {
             config,
         });
         for index in 0..budget.config.workers {
-            let receiver = receiver.clone();
+            let queue = queue.clone();
             let budget = budget.clone();
             let placement = budget.config.placement.clone();
             placement.spawn(format!("infer-cpu-{lane}-{index}"), move |_| {
-                Self::work(&receiver, &budget);
+                Self::work(&queue, &budget, index);
             })?;
         }
         Ok(Self { jobs, budget })
     }
-    fn work(receiver: &Mutex<mpsc::Receiver<Job>>, budget: &Arc<Budget>) {
+    fn work(queue: &WorkQueue, budget: &Arc<Budget>, index: usize) {
         loop {
-            let job = match receiver.lock() {
-                Ok(receiver) => receiver.recv(),
-                Err(_) => break,
-            };
-            let Ok(job) = job else {
+            let Ok(Some(job)) = queue.next(index) else {
                 break;
             };
             let active = budget.active.fetch_add(1, Ordering::Relaxed) + 1;
             budget.peak.fetch_max(active, Ordering::Relaxed);
             let _active = Active(budget.clone());
+            let available = || queue.available(index);
             // A bad CPU provider fails its reply without destroying the fixed worker pool.
-            let _ = catch_unwind(AssertUnwindSafe(job));
+            if catch_unwind(AssertUnwindSafe(|| job(&available))).is_err() && available().is_err() {
+                break;
+            }
         }
     }
     pub(super) fn reserve(&self, bytes: usize) -> Result<Credit> {
@@ -204,10 +210,10 @@ impl CpuPool {
             .bytes
             .checked_add(bytes)
             .ok_or_else(|| Error::invalid("CPU staging size overflow"))?;
-        if usage.jobs >= self.budget.config.max_jobs || total > self.budget.config.max_bytes {
+        if usage.jobs >= self.budget.config.max_jobs {
             return Err(Error::new(
                 ErrorCode::Capacity,
-                "CPU preparation queue/byte budget exhausted",
+                "CPU preparation queue exhausted",
             ));
         }
         usage.jobs += 1;
@@ -254,21 +260,21 @@ impl CpuPool {
         let context = CpuContext {
             cancelled: Arc::new(AtomicBool::new(false)),
             deadline: now + timeout,
+            runtime: Handle::try_current().ok(),
         };
         let _cancel = CancelOnDrop(context.cancelled.clone());
         let (reply, response) = oneshot::channel();
-        self.jobs
-            .try_send(Box::new(move || {
-                let admission_credit = credit;
-                let result = context
-                    .check()
-                    .and_then(|()| work(&context))
-                    .and_then(|value| context.check().map(|()| value));
-                // Completion must make admission capacity reusable before waking the caller.
-                drop(admission_credit);
-                let _ = reply.send(result);
-            }))
-            .map_err(|_| Error::new(ErrorCode::Capacity, "CPU queue unavailable"))?;
+        self.jobs.submit(Box::new(move |available| {
+            let admission_credit = credit;
+            let result = context
+                .check()
+                .and_then(|()| work(&context))
+                .and_then(|value| context.check().map(|()| value));
+            // Completion must make admission capacity reusable before waking the caller.
+            drop(admission_credit);
+            let result = available().and(result);
+            let _ = reply.send(result);
+        }))?;
         time_timeout(timeout, response)
             .await
             .map_err(|_| Error::new(ErrorCode::Capacity, "CPU preparation deadline exceeded"))?
@@ -290,5 +296,16 @@ impl CpuPool {
             active_workers: self.budget.active.load(Ordering::Relaxed),
             peak_workers: self.budget.peak.load(Ordering::Relaxed),
         }
+    }
+}
+
+impl infer_spi::DeviceHostExecutor for CpuPool {
+    fn submit(&self, work: Box<dyn FnOnce() + Send>) -> Result<()> {
+        self.jobs.submit_device(Box::new(move |available| {
+            work();
+            if let Err(error) = available() {
+                tracing::error!(%error, "CPU device-work lane failed");
+            }
+        }))
     }
 }

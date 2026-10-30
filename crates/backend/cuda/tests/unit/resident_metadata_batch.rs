@@ -1,4 +1,4 @@
-use super::{PromptOverrides, stage_metadata_batch};
+use super::{PromptOverrides, prompt_rotary_values, stage_metadata_batch};
 use crate::resident::arena::batch_rows;
 use crate::{
     constants::{METADATA_FIELDS, PREFILL_LANES},
@@ -9,6 +9,25 @@ use infer_core::Result;
 
 const CAPACITY: usize = 4096;
 const STATE_OFFSET: i32 = -1;
+
+#[test]
+fn media_rotary_coordinates_remain_absolute_across_prompt_chunks() -> Result<()> {
+    let coordinates = [[7, 8, 9], [10, 11, 12]];
+    let actual = prompt_rotary_values(4, coordinates.len(), 128, Some(&coordinates))?;
+    assert_eq!(actual, [7, 8, 9, 10, 11, 12, 0, 0, 0, 0, 0, 0]);
+    Ok(())
+}
+
+#[test]
+fn text_rotary_coordinates_use_the_chunk_position_and_validate_bounds() -> Result<()> {
+    assert_eq!(
+        prompt_rotary_values(3, 2, 128, None)?,
+        [128, 128, 128, 129, 129, 129, 0, 0, 0]
+    );
+    assert!(prompt_rotary_values(1, 2, 128, None).is_err());
+    assert!(prompt_rotary_values(2, 2, usize::MAX, None).is_err());
+    Ok(())
+}
 
 fn allocate_owner(device: &CudaDevice) -> Result<Tensor<i32>> {
     api::zeros::<i32>(&[PREFILL_LANES * METADATA_FIELDS])

@@ -135,6 +135,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             dropped_actions: 0,
             diagnostic_snapshot: None,
             fault: None,
+            maintenance_failure: None,
             observations,
         })
     }
@@ -260,6 +261,7 @@ where
             dropped_actions: self.dropped_actions,
             diagnostic_snapshot: self.diagnostic_snapshot,
             fault: self.fault,
+            maintenance_failure: self.maintenance_failure,
             observations: self.observations,
         })
     }

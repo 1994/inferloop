@@ -240,3 +240,37 @@ fn multimodal_limits_are_parsed_and_all_zero_means_text_only() {
         );
     }
 }
+
+#[test]
+fn image_processor_options_are_accepted_by_serve() {
+    let options = r#"{"min_pixels":1024,"max_pixels":65536}"#;
+    let cli = Cli::try_parse_from(["infer", "/models/example", "--mm-processor-kwargs", options])
+        .unwrap();
+    assert_eq!(cli.serve.mm_processor_kwargs.as_deref(), Some(options));
+}
+
+#[test]
+fn image_decoder_override_accepts_cpu_and_rejects_unknown_modes() {
+    let default = Cli::try_parse_from(["infer", "/models/example"]).unwrap();
+    assert_eq!(default.serve.image_decoder, commands::ImageDecoder::Auto);
+    for args in [
+        vec!["infer", "/models/example", "--image-decoder", "cpu"],
+        vec![
+            "infer",
+            "serve",
+            "--package",
+            "/models/example",
+            "--image-decoder",
+            "cpu",
+        ],
+    ] {
+        let Command::Serve(options) = Cli::try_parse_from(args).unwrap().into_command().unwrap()
+        else {
+            panic!("expected server")
+        };
+        assert_eq!(options.image_decoder, commands::ImageDecoder::Cpu);
+    }
+    assert!(
+        Cli::try_parse_from(["infer", "/models/example", "--image-decoder", "invalid"]).is_err()
+    );
+}

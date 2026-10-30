@@ -1,7 +1,10 @@
 use crate::constants::F32_BYTES_U64;
 use crate::native::decision_tokens_fit;
 use infer_core::{Error, ProgramId, Result};
-use infer_ir::{CanonicalRequest, ModelIr, ModelOutput, Workload, WorkloadOutput, WorkloadPlan};
+use infer_ir::{
+    CanonicalRequest, DecisionReadout, DecisionSchema, ModelIr, ModelOutput, Workload,
+    WorkloadOutput, WorkloadPlan,
+};
 use infer_models::{HostTensor, SafetensorsFile, package_path};
 use infer_spi::WorkloadProvider;
 use sha2::{Digest, Sha256};
@@ -134,7 +137,10 @@ impl WorkloadProvider for ProjectionWorkloads {
             Workload::Generate { .. } => true,
             Workload::Embed { .. } => self.weights.contains_key("embedding.weight"),
             Workload::Rerank { .. } => self.weights.contains_key("rank.weight"),
-            Workload::Decision(_) => self.weights.contains_key("decision.weight"),
+            Workload::Decision(schema) => {
+                schema.readout == DecisionReadout::LanguageModel
+                    || self.weights.contains_key("decision.weight")
+            }
             _ => false,
         }
     }
@@ -160,7 +166,9 @@ impl WorkloadProvider for ProjectionWorkloads {
                 "embedding request exceeds installed projection width",
             ));
         }
-        if let Workload::Decision(schema) = &r.workload {
+        if let Workload::Decision(schema) = &r.workload
+            && schema.readout == DecisionReadout::Projection
+        {
             let limit = self.weights["decision.weight"].shape[0];
             for q in &schema.questions {
                 if !decision_tokens_fit(q, limit) {
@@ -173,6 +181,14 @@ impl WorkloadProvider for ProjectionWorkloads {
         Ok(plan)
     }
     fn postprocess(&self, r: &CanonicalRequest, outputs: &[ModelOutput]) -> Result<WorkloadOutput> {
+        // Language-model decisions read the backbone logits as they are; no projection applies.
+        if let Workload::Decision(DecisionSchema {
+            readout: DecisionReadout::LanguageModel,
+            ..
+        }) = r.workload
+        {
+            return crate::NativeWorkloads.postprocess(r, outputs);
+        }
         let transformed = outputs
             .iter()
             .map(|o| {
@@ -200,7 +216,10 @@ impl WorkloadProvider for ProjectionWorkloads {
                                 .ok_or_else(|| Error::invalid("readout has no hidden row"))?,
                         )?;
                     }
-                    Workload::Decision(_) => {
+                    Workload::Decision(DecisionSchema {
+                        readout: DecisionReadout::Projection,
+                        ..
+                    }) => {
                         projected.logits = self.project(
                             "decision",
                             o.hidden

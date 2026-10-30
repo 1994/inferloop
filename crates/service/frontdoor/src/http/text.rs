@@ -127,6 +127,7 @@ pub(super) async fn text_infer(
                     workload: request.workload,
                     qos: request.qos,
                     sampling: resolved.sampling,
+                    prefix_boundary: None,
                     extensions: BTreeMap::new(),
                 })
             },

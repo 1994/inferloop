@@ -52,6 +52,7 @@ fn request(id: u64, input: usize) -> CanonicalRequest {
         workload: Workload::Generate { max_new_tokens: 8 },
         qos: Qos::default(),
         sampling: Sampling::default(),
+        prefix_boundary: None,
         extensions: BTreeMap::new(),
     }
 }
@@ -625,6 +626,85 @@ fn memory_blocked_decode_preempts_even_when_another_request_is_feasible() {
 }
 
 #[test]
+fn media_payload_remains_available_and_charged_when_prefill_is_replayed() -> Result<()> {
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    let mut config = RuntimeConfig {
+        num_gpu_blocks: 3,
+        block_size: 4,
+        max_num_seqs: 1,
+        max_num_batched_tokens: 6,
+        ..Default::default()
+    };
+    config.scheduler.prefill_chunk_tokens = 6;
+    config.scheduler.max_wait_us = 4;
+    let model = support::model(ModelId::ONE);
+    let backend = backend().multimodal();
+    let media_tasks = backend.media_tasks();
+    let mut engine = Engine::new(backend, model, PrecisionPlan::f32(), &registry(), config)?;
+    let mut first = request(1, 4);
+    first.workload = Workload::Generate { max_new_tokens: 2 };
+    first.qos.tenant = "decode".into();
+    let mut second = request(2, 8);
+    second.workload = Workload::Generate { max_new_tokens: 2 };
+    second.qos.tenant = "prefill".into();
+    second.qos.weight = 10;
+    let pixels: Arc<[f32]> = Arc::from(vec![0.5; 32_768]);
+    let RequestInput::Sequence { media, .. } = &mut second.input else {
+        return Err(Error::invariant("expected a token sequence"));
+    };
+    media.push(MediaInput {
+        id: MediaId::ONE,
+        modality: Modality::Image,
+        content_digest: "fixture".into(),
+        item: Some(MediaItem {
+            modality: Modality::Image,
+            pixels: pixels.clone().into(),
+            grid: (1, 1, 1),
+            span: 0..1,
+        }),
+    });
+    engine.submit(first)?;
+    engine.tick(0)?;
+    engine.quiesce(1)?;
+    let retained_before_media = engine.inspect().cpu.retained_host_bytes;
+    engine.submit(second.clone())?;
+    let retained_with_media = engine.inspect().cpu.retained_host_bytes;
+    assert!(retained_with_media >= retained_before_media + pixels.len() * size_of::<f32>());
+    engine.tick(2)?;
+    engine.poll_completed(3)?;
+    assert_eq!(engine.request(second.id)?.prefill_done, 6);
+    let initial_tasks = media_tasks.load(Ordering::Relaxed);
+    assert!(initial_tasks > 0);
+    engine.tick(4)?;
+    let replaying = engine.request(second.id)?;
+    assert_eq!(replaying.preemptions, 1);
+    assert_eq!(replaying.prefill_done, 0);
+    assert_eq!(
+        replaying.media.as_ref().unwrap().items[0]
+            .pixels
+            .patches()
+            .unwrap(),
+        pixels.as_ref()
+    );
+    assert!(replaying.byte_lease.is_some());
+    assert!(engine.inspect().cpu.retained_host_bytes >= retained_with_media);
+    finish(&mut engine, 5);
+    assert!(media_tasks.load(Ordering::Relaxed) > initial_tasks);
+    assert!(
+        engine
+            .request(second.id)?
+            .completed
+            .as_ref()
+            .unwrap()
+            .measurement
+            .successful
+    );
+    Ok(())
+}
+
+#[test]
 fn bounded_runtime_window_uses_remaining_ttft_service() -> Result<()> {
     let mut config = RuntimeConfig {
         candidate_limit: 1,
@@ -841,4 +921,41 @@ fn cold_backend_concurrency_reaches_engine_before_resources_are_sized() {
     finish(&mut e, 0);
     assert_eq!(e.inspect().active_requests, 0);
     e.check_invariants().unwrap();
+}
+
+#[test]
+fn a_prefix_boundary_ends_one_prompt_chunk_on_a_page_and_asks_to_keep_it() {
+    let backend = backend();
+    let published = backend.published_prefixes();
+    let model = support::model(ModelId::ONE);
+    let mut e = Engine::new(
+        backend,
+        model,
+        PrecisionPlan::f32(),
+        &registry(),
+        RuntimeConfig::default(),
+    )
+    .unwrap();
+    let page = e.config().block_size;
+    for (boundary, valid) in [(0, false), (100, false), (2 * page + 3, true)] {
+        let mut shared = request(1, 100);
+        shared.prefix_boundary = Some(boundary);
+        assert_eq!(e.submit(shared).is_ok(), valid, "boundary {boundary}");
+    }
+    finish(&mut e, 1);
+    // The boundary rounds down to whole pages; the chunk ends there and nowhere else asks.
+    assert_eq!(*published.lock().unwrap(), vec![2 * page]);
+    e.submit(request(2, 100)).unwrap();
+    finish(&mut e, 2000);
+    assert_eq!(published.lock().unwrap().len(), 1);
+    let output = |id| {
+        e.request(RequestId::new(id).unwrap())
+            .unwrap()
+            .completed
+            .as_ref()
+            .and_then(|done| done.output.clone())
+    };
+    // Splitting the prompt at the boundary does not change what the request produces.
+    assert!(output(1).is_some());
+    assert_eq!(output(1), output(2));
 }

@@ -17,6 +17,7 @@ members = [
     "crates/engine/runtime",
     "crates/diagnostics/observe",
     "crates/diagnostics/quality",
+    "crates/service/media",
     "crates/service/frontdoor",
     "crates/service/agent",
     "crates/service/cli",
@@ -42,6 +43,7 @@ default-members = [
     "crates/engine/runtime",
     "crates/diagnostics/observe",
     "crates/diagnostics/quality",
+    "crates/service/media",
     "crates/service/frontdoor",
     "crates/service/agent",
     "crates/service/cli",
@@ -58,16 +60,20 @@ license = "Apache-2.0"
 [workspace.dependencies]
 llguidance = { version = "=1.9.1", default-features = false, features = ["lark"] }
 infer-backend-cuda = { version = "=0.1.0", path = "crates/backend/cuda" }
+infer-media-input = { version = "=0.1.0", path = "crates/service/media" }
 libc = "0.2"
 libloading = "0.8"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 base64 = "0.22"
+mime = "0.3"
 crc32fast = "1"
 # png 0.18 (image 0.25's codec release) still requires miniz_oxide ^0.8 while flate2 1.1.10
 # moved to ^0.9; the lockfile holds flate2 at 1.1.9 so both resolve to one miniz_oxide 0.8.9.
 # Revisit when png's miniz_oxide range converges with flate2's.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+fast_image_resize = { version = "=6.1.0", default-features = false, features = ["std"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots", "http2", "system-proxy"] }
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 rtrb = "0.4"
@@ -77,6 +83,7 @@ sha2 = "0.10"
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 futures-util = "0.3"
+futures-channel = "0.3"
 mimalloc = { version = "0.1.52", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

@@ -14,6 +14,7 @@
 | `GET /v1/models/{model}` | 查询部署名对应的模型；不存在时返回 OpenAI 格式的 404 |
 | `POST /v1/chat/completions` | 用包内模板编码 messages，返回 `chat.completion` 或 SSE |
 | `POST /v1/completions` | 编码单个字符串 prompt，返回 `text_completion` 或 SSE |
+| `POST /v1/decisions` | 用同一生成模型回答 predicate / choice / score 问题，见「决策」 |
 
 部署名默认是内部 ModelId 的十进制字符串，可用 `--served-model-name` 覆盖；样例模型默认名为 `"1"`。请求未加载的模型返回 404。包内没有 tokenizer 时上述路由不存在，原生 token API 仍可使用。
 
@@ -40,6 +41,7 @@
 | `tools` | 仅 chat，至多 128 个 function 工具，名称唯一，1..64 个 ASCII 字母、数字、下划线或短横线 |
 | `tool_choice` | `"none"`、`"auto"`、`"required"` 或指定 function；指定未声明的 function、缺少工具的 required 或错误的 type 返回 400 |
 | `parallel_tool_calls` | 默认 `true`；`false` 通过生成约束限制至多一次调用 |
+| `mm_processor_kwargs` | 仅 chat 的图片输入；支持 resize 和像素范围选项，见[视觉服务路径](vision.md#服务路径) |
 
 可选字段允许为 `null`，按未提供处理。服务已读取包内 `generation_config.json`，并从 generation config / model config 解析 EOS；识别到的模型还会应用模式预设，显式请求字段最后覆盖。模型包配置了 EOS 时会参与停止判断，未配置时不凭空增加 EOS。请求级 `eos_token` 覆盖使用原生 API。
 
@@ -67,7 +69,46 @@ assistant 消息可以带 `tool_calls`（`null` 按空列表处理），每项�
 
 不要把当前输出默认 16 当作上下文上限，也不要假设省略采样参数一定得到 greedy。
 
-不支持的字段（如 `stop`、`response_format`、`logprobs`）与多模态 content 会被拒绝，不会静默忽略。Responses、Embeddings、鉴权、服务端存储均未实现。
+不支持的字段（如 `stop`、`response_format`、`logprobs`）会被拒绝，不会静默忽略。多模态输入的范围见[视觉服务路径](vision.md#服务路径)。Responses、Embeddings、鉴权、服务端存储均未实现。
+
+## 决策
+
+`POST /v1/decisions` 实现 [OpenAI Decisions](https://developers.openai.com/api/docs/guides/decisions) 的文本子集。它不需要单独的决策模型或额外 head：服务生成的同一份权重也回答决策，`model` 与其他路由一样填部署名。
+
+```json
+{
+  "model": "1",
+  "input": "I was charged twice for my order.",
+  "questions": [
+    {"type": "predicate", "name": "refund", "instructions": "Does the customer ask for a refund?"},
+    {"type": "choice", "name": "department", "instructions": "Which department should handle this?",
+     "choices": [{"value": "billing", "description": "Payments and refunds."}, {"value": "other"}]},
+    {"type": "score", "name": "severity", "instructions": "How severe is this issue?",
+     "levels": [{"label": "Cosmetic"}, {"label": "Workaround available"}, {"label": "Fully blocked"}]}
+  ]
+}
+```
+
+每个问题是一次独立的 prompt 读取：共享 `input` 在前，问题与按 A、B、C… 标注的选项在后，prompt 停在模型回复开始处（thinking 关闭）。引擎只做 prefill，读取最后位置的 LM logits，在选项字母上归一化，不生成 token。问题按部署的并发宽度分批提交，答案顺序与 `questions` 一致。
+
+| 类型 | 选项 | 返回 |
+|---|---|---|
+| `predicate` | `false`、`true` 两项 | `probability`：`true` 的概率 |
+| `choice` | 2..26 个 `choices`，`value` 为字符串或布尔值，类型不同即不同值 | `choice`、各值 `probabilities`、`confidence` |
+| `score` | 2..10 个由低到高的 `levels` | `score`：以 0 起始的档位序号按概率加权的期望，各档 `probabilities`、`confidence` |
+
+`confidence` 是胜出选项在整个词表上的概率（选项内概率 × 选项总质量），模型更想输出选项以外的 token 时它会偏低；它未按 OpenAI 模型校准，阈值需用自己的标注数据确定。`name` 原样回显，未命名为 `null`。
+
+`input` 可以是字符串，或依次包含 user / developer / system / assistant 消息、`function_call` / `function_call_output`、`custom_tool_call` / `custom_tool_call_output` 的数组。developer 与 system 消息合并为聊天的 system 轮；只有 user 消息时按原文拼接，否则以「User: / Assistant: / Function call name (call_id):」等前缀保留说话方。工具输出必须对应更早的同类调用。`input_json` 只能出现在 user 消息中，以紧凑 JSON 文本呈现，限制为 32 层、10,000 个值、256 KiB。
+
+1 期范围与限制：
+
+- 1..400 个问题；choice 最多 26 个选项（字母标签），协议允许的更多选项返回 400。
+- 图片（`input` 中或问题 `instructions` 中的 `input_image`）与 `item_reference` 返回 501。
+- 多个问题共享的前缀（system 轮与 `input`）只 prefill 一次：服务把共享 token 前缀作为请求的 `prefix_boundary`，第一个问题在该处保留快照，其余问题从快照恢复后只 prefill 自己的问题文本，`usage.input_tokens_details.cached_tokens` 报告这样恢复的 token 数。RTX 5090 上 Qwen3.8-27B 以约 2,500 token 的输入问 64 个问题，耗时从 60 s 降到 2.5 s，答案概率不变。快照按 32 token 的 KV 块对齐，在 GPU 前缀缓存预算内按 LRU 淘汰，可以被之后相同前缀的请求复用。
+- `prompt_cache_key`、`prompt_cache_options`、`prompt_cache_breakpoint`、`safety_identifier` 会校验后接受，但不改变上述行为；`cache_write_tokens` 恒为 0。
+- 从不返回 `refusal` 答案；`output_tokens` 为 0，`input_tokens` 是所有问题 prompt token 之和。
+- 包的回复前缀必须结束在 token 边界，且每个字母在回复开头是一个独立 token；否则返回 501。服务按包内模板实际探测，而非按模型名单判断。
 
 ## 响应与错误
 

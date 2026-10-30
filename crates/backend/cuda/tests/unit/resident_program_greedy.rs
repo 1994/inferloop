@@ -348,7 +348,7 @@ fn fresh_pooled_prompt_and_retained_wide_prompt_match_for_continuation() -> Resu
     let mut pooled = DeviceProgram::new_pooled(&device, &graph, &weights, 256, width, width)?;
     assert_eq!(retained.prefill_width(), 64);
     assert_eq!(pooled.prefill_width(), 32);
-    assert!(pooled.batch.is_none() && pooled.prompt_batch.is_none());
+    assert!(pooled.batch.is_none() && pooled.prompts.is_empty());
     retained.forfeit_verification();
     assert!(retained.batch.is_none());
     assert_eq!(retained.prefill_width(), 64);

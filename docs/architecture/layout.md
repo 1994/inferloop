@@ -22,6 +22,7 @@
 | `crates/engine/runtime` | `infer-runtime` | 请求所有权、阶段推进、资源交接与故障处理 |
 | `crates/diagnostics/observe` | `infer-observe` | 指标、trace、事件、源码映射与诊断视图 |
 | `crates/diagnostics/quality` | `infer-quality` | golden、进展检测、校准与性能测量 |
+| `crates/service/media` | `infer-media-input` | 可复用的多模态来源读取和媒体解码 |
 | `crates/service/frontdoor` | `infer-frontdoor` | 输入准备、单所有者 actor、HTTP/SSE 与交付 |
 | `crates/service/agent` | `infer-agent` | 诊断工具、证据查询、实验与建议 |
 | `crates/service/cli` | `infer-cli` | 参数解析、命令分发、backend 选择与运行支持 |

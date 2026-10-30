@@ -1,10 +1,11 @@
 use super::{ApiResult, GenerationRequest, TextState, ToolPolicy};
 use crate::constants::TOKEN_STAGING_BYTES;
 use crate::cpu::CpuContext;
-use crate::media::{MEDIA_STAGING_BYTES, MediaRequest, MediaService};
+use crate::media::{MediaRequest, MediaService};
 use axum::http::HeaderMap;
 use infer_core::{Error, ErrorCode, FinishReason, RequestId};
 use infer_ir::{CanonicalRequest, RequestInput, Workload, WorkloadOutput};
+use infer_observe::trace::TraceContext;
 use infer_runtime::{CompletedRequest, EngineOutput};
 use serde_json::{Value, json};
 use std::time::SystemTime;
@@ -39,6 +40,7 @@ struct Encoding {
     messages: Option<Vec<infer_models::ChatMessage>>,
     media_requests: Vec<MediaRequest>,
     media: Option<Arc<MediaService>>,
+    image_options: Option<crate::ImageProcessingOptions>,
     prompt: Option<String>,
     tools: Option<Value>,
     enable_thinking: bool,
@@ -55,6 +57,7 @@ impl Encoding {
     fn encode(
         self,
         context: &CpuContext,
+        downloads: Vec<Option<Vec<u8>>>,
     ) -> infer_core::Result<(CanonicalRequest, Option<infer_spi::ConstraintHandle>)> {
         context.check()?;
         let (tokens, media) = if let Some(messages) = self.messages {
@@ -78,9 +81,15 @@ impl Encoding {
                     .media
                     .as_ref()
                     .ok_or_else(|| Error::unsupported("this deployment is text-only"))?;
-                let (prepared, inputs) =
-                    media.prepare(&self.assets, &rendered, &self.media_requests, context)?;
-                (prepared.tokens, inputs)
+                let (tokens, inputs) = media.prepare_resolved_owned(
+                    &self.assets,
+                    &rendered,
+                    &self.media_requests,
+                    downloads,
+                    self.image_options.as_ref(),
+                    context,
+                )?;
+                (tokens, inputs)
             }
         } else {
             (
@@ -118,6 +127,7 @@ impl Encoding {
                 },
                 qos: infer_ir::Qos::default(),
                 sampling: self.sampling,
+                prefix_boundary: None,
                 extensions: BTreeMap::new(),
             },
             constraint,
@@ -125,16 +135,12 @@ impl Encoding {
     }
 }
 
-/// Parse chat media and reserve its bounded staging budget before an identity is consumed.
+/// Parse and validate chat media before an identity is consumed.
 fn chat_media(
     state: &TextState,
-    request: &GenerationRequest,
+    request: &mut GenerationRequest,
     chat: bool,
-) -> infer_core::Result<(
-    Option<Vec<infer_models::ChatMessage>>,
-    Vec<MediaRequest>,
-    usize,
-)> {
+) -> infer_core::Result<(Option<Vec<infer_models::ChatMessage>>, Vec<MediaRequest>)> {
     let (messages, media) = if chat {
         let (messages, media) = request.chat_messages()?;
         (Some(messages), media)
@@ -144,18 +150,20 @@ fn chat_media(
     if !media.is_empty() && state.media.is_none() {
         return Err(Error::unsupported("this deployment is text-only"));
     }
-    if let Some(service) = &state.media
-        && let Some(first) = media.first()
-        && media
+    if let Some(first) = media.first() {
+        if media
             .iter()
-            .all(|request| request.modality == first.modality)
-    {
-        // Reject an over-limit item count before reserving one staging credit per item; the
-        // normal ingress budget error would otherwise mask the actual media-limit violation.
-        service.limits().check(&first.modality, media.len())?;
+            .any(|request| request.modality != first.modality)
+        {
+            return Err(Error::unsupported(
+                "mixed image and video in one prompt is not supported",
+            ));
+        }
+        if let Some(service) = &state.media {
+            service.limits().check(&first.modality, media.len())?;
+        }
     }
-    let bytes = media.len().saturating_mul(MEDIA_STAGING_BYTES);
-    Ok((messages, media, bytes))
+    Ok((messages, media))
 }
 
 /// Validate, price and submit one generation.
@@ -165,7 +173,7 @@ fn chat_media(
 pub(super) async fn prepare(
     state: &TextState,
     headers: &HeaderMap,
-    mut request: GenerationRequest,
+    request: GenerationRequest,
     chat: bool,
 ) -> ApiResult<Prepared> {
     let requested = request.validate(chat)?;
@@ -183,19 +191,17 @@ pub(super) async fn prepare(
         .into());
     }
     let max_new_tokens = requested.tokens.min(limits.output_cap);
-    // Convert the wire history before consuming a request identity, so a malformed tool or
-    // media part is a parameter error rather than a failed request.
-    let (messages, media_requests, media_bytes) = chat_media(state, &request, chat)?;
     let bytes = request
         .preparation_bytes(max_new_tokens)?
-        .checked_add(media_bytes)
-        .ok_or_else(|| Error::invalid("media preparation budget overflow"))?
         .checked_add(if policy.constraint().is_some() {
             infer_models::CONSTRAINT_REQUEST_BYTES
         } else {
             0
         })
         .ok_or_else(|| Error::invalid("constraint preparation budget overflow"))?;
+    // Move inline media out of the wire history on a CPU worker before consuming an identity.
+    let (mut request, messages, media_requests) =
+        prepare_media_on_cpu(state, request, chat, bytes).await?;
     if request.model != inspection.model_name {
         return Err(Error::new(ErrorCode::NotFound, "model is not served; see /v1/models").into());
     }
@@ -228,6 +234,7 @@ pub(super) async fn prepare(
         messages,
         media_requests,
         media: state.media.clone(),
+        image_options: request.mm_processor_kwargs.take(),
         prompt,
         tools,
         enable_thinking,
@@ -238,16 +245,8 @@ pub(super) async fn prepare(
         max_new_tokens,
         sampling: resolved.sampling,
     };
-    let receiver = state
-        .handle
-        .submit_constrained_preparing(
-            id,
-            bytes,
-            super::super::trace_parent(headers),
-            None,
-            move |context| encoding.encode(context),
-        )
-        .await?;
+    let trace = super::super::trace_parent(headers);
+    let receiver = submit_encoding(state, id, bytes, trace, encoding).await?;
     Ok(Prepared {
         request: id,
         receiver,
@@ -283,6 +282,75 @@ fn resolve_generation(
     } else {
         assets.generation.resolve(&overrides)
     }
+}
+
+async fn prepare_media_on_cpu(
+    state: &TextState,
+    mut request: GenerationRequest,
+    chat: bool,
+    bytes: usize,
+) -> infer_core::Result<(
+    GenerationRequest,
+    Option<Vec<infer_models::ChatMessage>>,
+    Vec<MediaRequest>,
+)> {
+    if !chat {
+        return Ok((request, None, Vec::new()));
+    }
+    let state_for_work = state.clone();
+    state
+        .handle
+        .cpu_pool()
+        .run(bytes, move |context| {
+            context.check()?;
+            let (messages, media) = chat_media(&state_for_work, &mut request, true)?;
+            Ok((request, messages, media))
+        })
+        .await
+}
+
+async fn submit_encoding(
+    state: &TextState,
+    id: RequestId,
+    bytes: usize,
+    trace: Option<TraceContext>,
+    encoding: Encoding,
+) -> infer_core::Result<mpsc::Receiver<infer_core::Result<EngineOutput>>> {
+    if encoding.media_requests.is_empty() {
+        return state
+            .handle
+            .submit_constrained_preparing(id, bytes, trace, None, move |context| {
+                encoding.encode(context, Vec::new())
+            })
+            .await;
+    }
+    let pool = state.handle.cpu_pool();
+    let source = async move {
+        let media = encoding
+            .media
+            .as_ref()
+            .ok_or_else(|| Error::unsupported("this deployment is text-only"))?;
+        let downloads = media.resolve(&encoding.media_requests, &pool).await?;
+        let retained = downloads
+            .iter()
+            .flatten()
+            .try_fold(0usize, |total, bytes| {
+                total
+                    .checked_add(bytes.len())
+                    .ok_or_else(|| Error::invalid("media download size overflow"))
+            })?;
+        Ok(((encoding, downloads), retained))
+    };
+    state
+        .handle
+        .submit_with_source(
+            id,
+            bytes,
+            trace,
+            source,
+            move |context, (encoding, downloads)| encoding.encode(context, downloads),
+        )
+        .await
 }
 
 /// # Errors

@@ -80,6 +80,12 @@ pub struct CanonicalRequest {
     pub qos: Qos,
     #[serde(default)]
     pub sampling: Sampling,
+    /// Prompt position whose prefix later requests are expected to repeat: the prompt is
+    /// prefilled to exactly this position before continuing, and the backend may keep a
+    /// reusable snapshot there (a cache breakpoint). A request carrying an evidence block that
+    /// many follow-up questions share names the end of that block.
+    #[serde(default)]
+    pub prefix_boundary: Option<usize>,
     #[serde(default)]
     pub extensions: BTreeMap<String, Vec<u8>>,
 }
@@ -113,11 +119,22 @@ impl CanonicalRequest {
                 if tokens.is_empty() && media.is_empty() {
                     return Err(Error::invalid("empty input"));
                 }
+                if self
+                    .prefix_boundary
+                    .is_some_and(|boundary| boundary == 0 || boundary >= tokens.len())
+                {
+                    return Err(Error::invalid(
+                        "prefix boundary must fall strictly inside the prompt",
+                    ));
+                }
                 if matches!(self.workload, Workload::Rerank { .. }) {
                     return Err(Error::invalid("rerank requires query/document pairs"));
                 }
             }
             RequestInput::Pairs { query, documents } => {
+                if self.prefix_boundary.is_some() {
+                    return Err(Error::invalid("prefix boundaries apply to sequence input"));
+                }
                 if query.is_empty()
                     || documents.is_empty()
                     || documents.iter().any(|doc| doc.is_empty())

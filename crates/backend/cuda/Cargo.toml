@@ -14,7 +14,7 @@ workspace = true
 
 [features]
 default = []
-cuda = ["dep:cutile", "dep:cuda-core", "dep:sha2", "dep:infer-state"]
+cuda = ["dep:cutile", "dep:cuda-core", "dep:sha2", "dep:infer-state", "dep:futures-channel"]
 
 [dependencies]
 infer-core.workspace = true
@@ -35,6 +35,7 @@ cutile = { workspace = true, optional = true }
 cuda-core = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 libloading.workspace = true
+futures-channel = { workspace = true, optional = true }
 
 [dev-dependencies]
 infer-runtime.workspace = true

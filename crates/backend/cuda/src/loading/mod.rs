@@ -18,16 +18,18 @@ use crate::constants::WIDE_PREFILL_LANES;
 use crate::device::DeviceProfile;
 use crate::mlp::ProjectionWeight;
 
+use crate::device::image_preprocess::Capability as ImageCapability;
+use crate::device::{CudaImageProcessor as ImageProcessor, ImageBatch};
 use crate::resident::fp8_cache::Fp8Caches;
 use crate::resident::slot_batch::SlotPool;
 use crate::tuning::attention::mma::prepare;
 use crate::vision::VisionWeights;
 use crate::vision::footprint;
 use crate::vision::merger;
-use crate::vision::patch_embed;
 use crate::vision::patch_width;
+use crate::vision::program::patch_embed_device_pixels;
+use crate::vision::program::patch_embed_device_positions;
 use crate::vision::tower;
-use infer_models::vision::gather_positions;
 use infer_models::vision::position_taps;
 pub use kv_scales::load as load_kv_scales;
 mod bindings;
@@ -41,11 +43,15 @@ use crate::{
     resident::{DeviceProgram, ProgramWeights},
     tuning::TuningReport,
 };
+use cutile::prelude::Tensor;
 use infer_core::{Error, ModelId, Result};
-use infer_ir::{DataflowGraph, ModelIr};
+use infer_ir::{DataflowGraph, EncodedImageInput, ImageInput, ImageTransform, ModelIr};
 use infer_models::QuantizedPackage;
+use infer_spi::ImagePreprocessing;
 use std::path::Path;
 use std::sync::Arc;
+/// Interleaved channels in a decoded RGB image.
+const IMAGE_CHANNELS: usize = 3;
 pub use weights::{Projection, floats};
 
 /// Load-time execution policy; each request receives independent mutable device state.
@@ -171,6 +177,7 @@ pub struct LoadedModel {
 pub struct LoadedVision {
     weights: VisionWeights,
     encoder: infer_spi::ModalityEncoder,
+    image_preprocessor: Option<ImageProcessor>,
 }
 
 impl LoadedVision {
@@ -188,7 +195,18 @@ impl LoadedVision {
             return Ok(None);
         };
         let weights = VisionWeights::load(device, package, &encoder)?;
-        Ok(Some(Self { weights, encoder }))
+        let image_preprocessor = ImageProcessor::load(device)?;
+        Ok(Some(Self {
+            weights,
+            encoder,
+            image_preprocessor,
+        }))
+    }
+
+    pub(crate) fn image_preprocessing(&self) -> Option<Arc<dyn ImagePreprocessing>> {
+        self.image_preprocessor
+            .as_ref()
+            .map(ImageProcessor::capability)
     }
 
     /// Declared geometry of the bound tower.
@@ -218,7 +236,16 @@ impl LoadedVision {
         device: &CudaDevice,
         image: &infer_models::PromptImage,
     ) -> Result<Vec<f32>> {
-        let (temporal, height, width) = image.grid;
+        self.encode_pixels(device, image.grid, &image.pixels)
+    }
+
+    pub(crate) fn encode_pixels(
+        &self,
+        device: &CudaDevice,
+        grid: (usize, usize, usize),
+        pixels: &[f32],
+    ) -> Result<Vec<f32>> {
+        let (temporal, height, width) = grid;
         let patches = temporal
             .checked_mul(height)
             .and_then(|value| value.checked_mul(width))
@@ -227,27 +254,105 @@ impl LoadedVision {
             return Err(Error::invalid("image patch grid is empty"));
         }
         let width = patch_width(&self.encoder)?;
-        if image.pixels.len() != patches * width {
+        if patches.checked_mul(width) != Some(pixels.len()) {
             return Err(Error::invalid("image pixels do not match the patch grid"));
         }
-        // The position contribution is a host-side gather of the learned table, then the tower
-        // consumes patch embeddings and the merger folds each merge group back into text width.
-        let taps = position_taps(image.grid, &self.encoder)?;
-        let positions = gather_positions(self.weights.position_table(), &self.encoder, &taps)?;
-        let embedded = patch_embed(
+        // The tower consumes patch embeddings and the merger folds each group into text width.
+        let taps = position_taps(grid, &self.encoder)?;
+        let embedded = patch_embed_device_positions(
             device,
             &self.encoder,
             &self.weights,
-            &image.pixels,
-            &positions,
+            pixels,
+            &taps,
             patches,
         )?;
+        self.finish_encoding(device, grid, patches, &embedded)
+    }
+
+    pub(crate) async fn encode_image(
+        &self,
+        device: &CudaDevice,
+        grid: (usize, usize, usize),
+        image: &ImageInput,
+    ) -> Result<Vec<f32>> {
+        let transform = image.transform();
+        let patches = self.validate_image_transform(grid, transform)?;
+        let processor = self.image_preprocessor()?;
+        let batch = ImageBatch::new(image.shared_pixels(), 1, transform)?;
+        let input = processor.process(device, &batch).await?;
+        self.encode_image_patches(device, grid, patches, &input)
+    }
+
+    pub(crate) async fn encode_encoded_image(
+        &self,
+        device: &CudaDevice,
+        grid: (usize, usize, usize),
+        image: &EncodedImageInput,
+    ) -> Result<Vec<f32>> {
+        let patches = self.validate_image_transform(grid, image.transform())?;
+        let input = self
+            .image_preprocessor()?
+            .process_encoded(device, image)
+            .await?;
+        self.encode_image_patches(device, grid, patches, &input)
+    }
+
+    fn validate_image_transform(
+        &self,
+        grid: (usize, usize, usize),
+        transform: ImageTransform,
+    ) -> Result<usize> {
+        let layout = transform.layout();
+        if transform.grid() != grid
+            || layout.patch() != self.encoder.patch_size
+            || layout.temporal() != self.encoder.temporal_patch_size
+            || layout.merge() != self.encoder.spatial_merge_size
+            || self.encoder.in_channels != IMAGE_CHANNELS
+            || !ImageCapability.supports(&transform)
+        {
+            return Err(Error::unsupported(
+                "CUDA image processor cannot execute this transform",
+            ));
+        }
+        grid.0
+            .checked_mul(grid.1)
+            .and_then(|value| value.checked_mul(grid.2))
+            .ok_or_else(|| Error::invalid("image patch grid overflow"))
+    }
+
+    fn image_preprocessor(&self) -> Result<&ImageProcessor> {
+        self.image_preprocessor
+            .as_ref()
+            .ok_or_else(|| Error::unsupported("CUDA image processor is unavailable"))
+    }
+
+    fn encode_image_patches(
+        &self,
+        device: &CudaDevice,
+        grid: (usize, usize, usize),
+        patches: usize,
+        input: &Arc<Tensor<f32>>,
+    ) -> Result<Vec<f32>> {
+        let taps = position_taps(grid, &self.encoder)?;
+        let embedded =
+            patch_embed_device_pixels(device, &self.encoder, &self.weights, input, &taps, patches)?;
+        self.finish_encoding(device, grid, patches, &embedded)
+    }
+
+    fn finish_encoding(
+        &self,
+        device: &CudaDevice,
+        grid: (usize, usize, usize),
+        patches: usize,
+        embedded: &[f32],
+    ) -> Result<Vec<f32>> {
         let hidden = tower(
             device,
             &self.weights,
             &self.encoder,
-            &embedded,
-            image.grid,
+            embedded,
+            grid,
             patches,
         )?;
         merger(device, &self.weights, &self.encoder, &hidden, patches)

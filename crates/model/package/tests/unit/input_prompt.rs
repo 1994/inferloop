@@ -4,11 +4,13 @@ use crate::image::ImageProcessor;
 use crate::image::RgbImage;
 use crate::input::text::TextAssets;
 use infer_core::ModelId;
+use infer_ir::MediaItem;
 use std::env::var;
 use std::fs::read;
 use std::iter::once;
 use std::path::Path;
 use std::slice::from_ref;
+use std::sync::Arc;
 
 const IMAGE: u32 = 248_056;
 const VISION_START: u32 = 248_053;
@@ -93,14 +95,37 @@ fn prepared_prompt_lines_up_tokens_and_media() -> Result<()> {
         from_ref(&image),
         &Modality::Image,
     )?;
+    let shared = prepare_shared(
+        &assets,
+        &processor,
+        &imported,
+        text,
+        from_ref(&image),
+        &Modality::Image,
+    )?;
+    assert_eq!(shared.tokens, prepared.tokens);
+    assert_eq!(shared.spans, prepared.spans);
+    assert_eq!(shared.images[0].grid, prepared.images[0].grid);
+    assert_eq!(&*shared.images[0].pixels, prepared.images[0].pixels);
+    let image_token = *placeholders(&imported, &Modality::Image)?
+        .first()
+        .ok_or_else(|| Error::invalid("image placeholder is missing"))?;
     assert_eq!(prepared.images.len(), 1);
     assert_eq!(prepared.spans.len(), 1);
     let span = prepared.spans[0].clone();
     let (start, end) = (span.start, span.end);
-    assert!(prepared.tokens[start..end].iter().all(|id| *id == IMAGE));
+    assert!(
+        prepared.tokens[start..end]
+            .iter()
+            .all(|id| *id == image_token)
+    );
     // The placeholder itself is gone; only the expanded run remains.
     assert_eq!(
-        prepared.tokens.iter().filter(|id| **id == IMAGE).count(),
+        prepared
+            .tokens
+            .iter()
+            .filter(|id| **id == image_token)
+            .count(),
         span.len()
     );
     let text_only = prepare(
@@ -277,6 +302,78 @@ fn media_layout_exposes_every_span_and_the_next_rotary_coordinate() -> Result<()
     let mut tampered = prepared;
     tampered.tokens[2] = VISION_END;
     assert!(media_layout(&tampered, &imported, &Modality::Image).is_err());
+    Ok(())
+}
+
+#[test]
+fn media_plan_layout_matches_prepared_layout_and_rejects_invalid_geometry() -> Result<()> {
+    let mut imported = shipped()?;
+    let expanded = expand_placeholders(
+        &[
+            VISION_START,
+            IMAGE,
+            VISION_END,
+            7,
+            VISION_START,
+            IMAGE,
+            VISION_END,
+        ],
+        &[4, 6],
+        IMAGE,
+    )?;
+    let prepared = PreparedPrompt {
+        tokens: expanded.tokens,
+        images: vec![
+            PromptImage {
+                pixels: vec![1.0],
+                grid: (1, 4, 4),
+            },
+            PromptImage {
+                pixels: vec![2.0],
+                grid: (1, 4, 6),
+            },
+        ],
+        spans: expanded.spans,
+    };
+    let mut plan = MediaPlan {
+        modality: Modality::Image,
+        prompt: prepared.tokens.clone().into(),
+        items: prepared
+            .images
+            .iter()
+            .zip(&prepared.spans)
+            .map(|(image, span)| MediaItem {
+                modality: Modality::Image,
+                pixels: Arc::<[f32]>::from(image.pixels.as_slice()).into(),
+                grid: image.grid,
+                span: span.clone(),
+            })
+            .collect(),
+    };
+    assert_eq!(
+        media_plan_layout(&plan, &imported)?,
+        media_layout(&prepared, &imported, &Modality::Image)?
+    );
+    imported.model.position.multimodal_sections.clear();
+    assert_eq!(
+        media_plan_layout(&plan, &imported)?,
+        media_layout(&prepared, &imported, &Modality::Image)?
+    );
+    plan.items[1].span = 2..8;
+    assert!(media_plan_layout(&plan, &imported).is_err());
+    plan.items[1].span = prepared.spans[1].clone();
+    plan.items[1].grid = (1, 4, 4);
+    assert!(media_plan_layout(&plan, &imported).is_err());
+    plan.items[1].grid = (1, 4, 6);
+    plan.prompt = vec![VISION_START; prepared.tokens.len()].into();
+    assert!(media_plan_layout(&plan, &imported).is_err());
+    plan.items.clear();
+    assert_eq!(
+        media_plan_layout(&plan, &imported)?.next_rotary,
+        prepared.tokens.len()
+    );
+    plan.prompt = vec![VISION_START, IMAGE, VISION_END].into();
+    assert!(media_plan_layout(&plan, &imported).is_err());
     Ok(())
 }
 

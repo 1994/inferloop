@@ -99,15 +99,30 @@ struct Shared {
     controls: AtomicUsize,
     abandoned: Mutex<BoundedSet<StateId>>,
     epoch: AtomicU64,
+    queue_progress: AtomicU64,
+    queue_waiting: AtomicBool,
 }
-struct ControlCredit(Arc<Shared>);
+struct ControlCredit {
+    shared: Arc<Shared>,
+    notify: bool,
+}
 impl Drop for ControlCredit {
     fn drop(&mut self) {
-        self.0.controls.fetch_sub(1, Ordering::AcqRel);
-        self.0.notify();
+        self.shared.controls.fetch_sub(1, Ordering::AcqRel);
+        if self.notify {
+            self.shared.notify();
+        }
     }
 }
 impl Shared {
+    /// Publish queue progress only when a full lane has a waiting reservation.
+    fn queue_drained(&self) {
+        self.queue_progress.fetch_add(1, Ordering::SeqCst);
+        if self.queue_waiting.swap(false, Ordering::SeqCst) {
+            self.epoch.fetch_add(1, Ordering::AcqRel);
+            self.notify();
+        }
+    }
     fn notify(&self) {
         // Clone the waker out and release the lock before invoking it. The callback is opaque, so
         // waking under the lock would serialize every notify behind it and deadlock any waker that
@@ -192,6 +207,7 @@ pub struct ThreadedBackend<B: BackendProvider> {
     program: Arc<ExecutionProgram>,
     weight_backed: bool,
     multimodal: Multimodal,
+    image_preprocessing: Option<Arc<dyn infer_spi::ImagePreprocessing>>,
     recompute: bool,
     checkpoint: bool,
     active: Option<StepId>,
@@ -308,6 +324,8 @@ where
             controls: AtomicUsize::new(0),
             abandoned: Mutex::new(BoundedSet::new(config.max_states)?),
             epoch: AtomicU64::new(0),
+            queue_progress: AtomicU64::new(0),
+            queue_waiting: AtomicBool::new(false),
         });
         let (jobs, receiver) = mpsc::sync_channel(config.control_capacity);
         let (submissions, submit_rx) = infer_gpu_api::RingBuffer::new(config.batch_slots);
@@ -336,6 +354,7 @@ where
             } else {
                 Multimodal::Disabled
             },
+            image_preprocessing: backend.image_preprocessing(),
             recompute: backend.supports_recompute_preemption(),
             checkpoint: backend.supports_control_checkpoint(),
             jobs,
@@ -371,11 +390,29 @@ where
         Ok(runner)
     }
     fn enqueue(&self, job: Job) -> Result<()> {
+        let progress = self.shared.queue_progress.load(Ordering::SeqCst);
         self.jobs.try_send(job).map_err(|e| match e {
-            mpsc::TrySendError::Full(_) => {
+            mpsc::TrySendError::Full(mut job) => {
+                // A failed enqueue has not made progress. Dropping its credit must not wake the
+                // owner into retrying the same full lane; a real dequeue supplies that wake.
+                if let Job::Resource { credit, .. } = &mut job {
+                    credit.notify = false;
+                }
+                // Arm before checking for a concurrent dequeue. Either the worker observes the
+                // flag, or this recheck observes its progress and publishes the wake itself.
+                self.shared.queue_waiting.store(true, Ordering::SeqCst);
+                if self.shared.queue_progress.load(Ordering::SeqCst) != progress
+                    && self.shared.queue_waiting.swap(false, Ordering::SeqCst)
+                {
+                    self.shared.epoch.fetch_add(1, Ordering::AcqRel);
+                    self.shared.notify();
+                }
                 Error::new(ErrorCode::Capacity, "device command queue full")
             }
-            mpsc::TrySendError::Disconnected(_) => {
+            mpsc::TrySendError::Disconnected(mut job) => {
+                if let Job::Resource { credit, .. } = &mut job {
+                    credit.notify = false;
+                }
                 Error::new(ErrorCode::Backend, "device owner stopped")
             }
         })?;
