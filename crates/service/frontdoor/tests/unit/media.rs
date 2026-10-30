@@ -133,6 +133,9 @@ fn image_source_identity_follows_content_not_the_url() {
 #[tokio::test]
 #[ignore = "requires a real Qwen3-VL package in INFER_VISION_PACKAGE"]
 async fn prepared_images_preserve_order_and_source_identity() {
+    use axum::{Router, routing::get};
+    use tokio::net::TcpListener;
+
     let package = PathBuf::from(var("INFER_VISION_PACKAGE").unwrap());
     let assets = TextAssets::open(&package, 4096).unwrap();
     let multimodal = MultimodalAssets::open(&package).unwrap().unwrap();
@@ -147,7 +150,7 @@ async fn prepared_images_preserve_order_and_source_identity() {
     let image = STANDARD.decode(ONE_PIXEL_PNG).unwrap();
     let mut second = image.clone();
     second.push(0);
-    let requests = [image, second]
+    let requests = [image, second.clone()]
         .into_iter()
         .map(|bytes| MediaRequest {
             modality: Modality::Image,
@@ -163,17 +166,43 @@ async fn prepared_images_preserve_order_and_source_identity() {
             image_digest(source_digest(&bytes, None).unwrap(), &processor).unwrap()
         })
         .collect::<Vec<_>>();
-    let (prepared, media) = pool
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = Router::new().route(
+        "/image",
+        get(move || {
+            let bytes = second.clone();
+            async move { bytes }
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let mut remote_requests = requests.clone();
+    remote_requests[1].url = format!("http://{address}/image");
+    let downloads = service.resolve(&remote_requests, &pool).await.unwrap();
+    let (prepared, media, direct, direct_media) = pool
         .run(0, move |context| {
-            service.prepare(
+            let prompt = "<|vision_start|><|image_pad|><|vision_end|><|vision_start|><|image_pad|><|vision_end|>describe";
+            let (direct, direct_media) = service.prepare(&assets, prompt, &requests, context)?;
+            let (prepared, media) = service.prepare_resolved(
                 &assets,
-                "<|vision_start|><|image_pad|><|vision_end|><|vision_start|><|image_pad|><|vision_end|>describe",
-                &requests,
+                prompt,
+                &remote_requests,
+                &downloads,
                 context,
-            )
+            )?;
+            Ok((prepared, media, direct, direct_media))
         })
         .await
         .unwrap();
+    server.abort();
+    assert_eq!(prepared, direct);
+    for (resolved, original) in media.iter().zip(&direct_media) {
+        assert_eq!(resolved.content_digest, original.content_digest);
+        assert_eq!(
+            resolved.item.as_ref().unwrap().pixels,
+            original.item.as_ref().unwrap().pixels
+        );
+    }
     assert_eq!(media.len(), 2);
     assert_eq!(media[0].content_digest, expected[0]);
     assert_eq!(media[1].content_digest, expected[1]);

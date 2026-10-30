@@ -64,17 +64,26 @@ async fn waiting_for_remote_media_leaves_cpu_workers_available() {
         }),
     );
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
-    let download =
-        tokio::spawn(async move { fetch(&format!("http://{address}/media"), None).await });
-    timeout(Duration::from_secs(5), entered.notified())
-        .await
-        .expect("download reached server");
     let pool = CpuPool::new(CpuConfig {
         workers: 1,
         max_jobs: 1,
         ..CpuConfig::default()
     })
     .unwrap();
+    let source_pool = pool.clone();
+    let download = tokio::spawn(async move {
+        resolve(
+            &[MediaRequest {
+                modality: Modality::Image,
+                url: format!("http://{address}/media"),
+            }],
+            &source_pool,
+        )
+        .await
+    });
+    timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .expect("download reached server");
     assert_eq!(
         timeout(Duration::from_secs(1), pool.run(0, |_| Ok(7)))
             .await
@@ -83,7 +92,10 @@ async fn waiting_for_remote_media_leaves_cpu_workers_available() {
         7
     );
     release.notify_one();
-    assert_eq!(download.await.unwrap().unwrap(), b"image");
+    assert_eq!(
+        download.await.unwrap().unwrap(),
+        vec![Some(b"image".to_vec())]
+    );
     server.abort();
 }
 
