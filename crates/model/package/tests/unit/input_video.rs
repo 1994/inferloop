@@ -148,6 +148,53 @@ fn odd_clips_pad_their_last_frame_into_a_whole_temporal_patch() -> Result<()> {
 }
 
 #[test]
+fn incremental_groups_match_complete_clip_pixels_and_timestamps() -> Result<()> {
+    let mut processor = processor();
+    processor.fps = 5.0;
+    processor.min_frames = 1;
+    for (count, fps, height, width) in [(3, 5.0, 32, 32), (13, 7.0, 34, 62), (30, 10.0, 64, 65)] {
+        let frames: Vec<_> = (0..count)
+            .map(|index| {
+                let mut image = frame(height, width);
+                for (offset, pixel) in image.pixels.iter_mut().enumerate() {
+                    *pixel = u8::try_from((index * 37 + offset * 13) % 256).unwrap();
+                }
+                image
+            })
+            .collect();
+        let clip = RawVideo { fps, frames };
+        let reference = processor.preprocess(&clip)?;
+        let plan = processor.plan(count, fps, height, width)?;
+        assert_eq!(plan.indices(), processor.sample_frames(&clip)?);
+        let mut pixels = Vec::new();
+        let mut timestamps = Vec::new();
+        for (group, indices) in plan
+            .indices()
+            .chunks(processor.temporal_patch_size)
+            .enumerate()
+        {
+            let frames: Vec<_> = indices
+                .iter()
+                .map(|index| clip.frames[*index].clone())
+                .collect();
+            let processed = plan.preprocess_group(group, &frames)?;
+            assert_eq!(
+                processed.image.grid,
+                (1, reference.image.grid.1, reference.image.grid.2)
+            );
+            pixels.extend(processed.image.pixels);
+            timestamps.extend(processed.timestamps);
+        }
+        assert_eq!(plan.groups(), reference.image.grid.0);
+        assert_eq!(pixels, reference.image.pixels);
+        assert_eq!(timestamps, reference.timestamps);
+        assert!(plan.preprocess_group(plan.groups(), &[]).is_err());
+        assert!(plan.preprocess_group(0, &[]).is_err());
+    }
+    Ok(())
+}
+
+#[test]
 fn configuration_comes_from_the_package() {
     let Ok(package) = var("INFER_VISION_PACKAGE") else {
         return;

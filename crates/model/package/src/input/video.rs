@@ -67,6 +67,109 @@ pub struct VideoProcessor {
     pub max_frames: usize,
 }
 
+/// A clip's global sampling and resize decisions, reusable across independent temporal groups.
+///
+/// The plan keeps the original clip's timing and geometry when its frames are decoded in parts.
+#[derive(Debug, Clone)]
+pub struct VideoPlan {
+    processor: VideoProcessor,
+    indices: Vec<usize>,
+    source_fps: f64,
+    height: usize,
+    width: usize,
+    resized_height: usize,
+    resized_width: usize,
+}
+
+impl VideoPlan {
+    /// Source-frame indices in presentation order, to be supplied to the decoder.
+    #[must_use]
+    pub fn indices(&self) -> &[usize] {
+        &self.indices
+    }
+
+    /// Number of temporal groups in the processed clip.
+    #[must_use]
+    pub fn groups(&self) -> usize {
+        self.indices
+            .len()
+            .div_ceil(self.processor.temporal_patch_size)
+    }
+
+    /// Process one independently decoded temporal group while preserving the clip's global plan.
+    ///
+    /// `frames` must contain exactly the source frames selected for `group`, in index order.
+    /// The last group may contain fewer than a full temporal patch; its last frame is repeated.
+    /// Groups can be processed concurrently and assembled in increasing group order.
+    ///
+    /// # Errors
+    /// Rejects an out-of-range group, wrong frame count, geometry or buffer length.
+    pub fn preprocess_group(&self, group: usize, frames: &[RgbImage]) -> Result<PreprocessedVideo> {
+        let temporal = self.processor.temporal_patch_size;
+        let start = group
+            .checked_mul(temporal)
+            .filter(|start| *start < self.indices.len())
+            .ok_or_else(|| Error::invalid("video temporal group is outside the plan"))?;
+        let end = start.saturating_add(temporal).min(self.indices.len());
+        let indices = &self.indices[start..end];
+        if frames.len() != indices.len() {
+            return Err(Error::invalid("video temporal group frame count"));
+        }
+        let expected = self
+            .height
+            .checked_mul(self.width)
+            .and_then(|value| value.checked_mul(RGB_CHANNELS))
+            .ok_or_else(|| Error::invalid("video frame dimensions overflow"))?;
+        if frames.iter().any(|frame| {
+            frame.height != self.height
+                || frame.width != self.width
+                || frame.pixels.len() != expected
+        }) {
+            return Err(Error::invalid("video temporal group frame geometry"));
+        }
+        let resized: Vec<_> = frames
+            .iter()
+            .map(|frame| ImageProcessor::resize(frame, self.resized_height, self.resized_width))
+            .collect();
+        let last = resized
+            .last()
+            .ok_or_else(|| Error::invalid("video temporal group is empty"))?;
+        let mut views: Vec<_> = resized.iter().map(Vec::as_slice).collect();
+        views.extend(repeat_n(last.as_slice(), temporal - views.len()));
+        let grid_h = self.resized_height / self.processor.patch_size;
+        let grid_w = self.resized_width / self.processor.patch_size;
+        let pixels = patchify(
+            &views,
+            PatchGrid {
+                temporal,
+                height: grid_h,
+                width: grid_w,
+                patch: self.processor.patch_size,
+                merge: self.processor.merge_size,
+                groups: 1,
+            },
+            &Normalization {
+                mean: self.processor.mean,
+                std: self.processor.std,
+                rescale: self.processor.rescale,
+            },
+        )?;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "Frame indices follow the same bounded f64 sampler as whole-clip preprocessing"
+        )]
+        let timestamp =
+            (indices[0] as f64 + indices[indices.len() - 1] as f64) / (2.0 * self.source_fps);
+        Ok(PreprocessedVideo {
+            image: PreprocessedImage {
+                pixels,
+                grid: (1, grid_h, grid_w),
+            },
+            timestamps: vec![timestamp],
+        })
+    }
+}
+
 impl VideoProcessor {
     /// Parse `video_preprocessor_config.json`.
     ///
@@ -153,21 +256,28 @@ impl VideoProcessor {
     ///
     /// # Errors
     /// Rejects an empty clip, a non-positive source rate or an unrepresentable frame count.
+    pub fn sample_frames(&self, video: &RawVideo) -> Result<Vec<usize>> {
+        self.sample_frame_indices(video.frames.len(), video.fps)
+    }
+
+    /// Select source-frame indices from clip metadata, without materializing decoded frames.
+    ///
+    /// # Errors
+    /// Rejects an empty clip or a non-positive source rate.
     #[expect(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "Frame counts are far below the exact integer range of f64"
+        reason = "Frame counts follow the existing reference sampler's f64 contract"
     )]
-    pub fn sample_frames(&self, video: &RawVideo) -> Result<Vec<usize>> {
-        let total = video.frames.len();
+    pub fn sample_frame_indices(&self, total: usize, source_fps: f64) -> Result<Vec<usize>> {
         if total == 0 {
             return Err(Error::invalid("video has no frames"));
         }
-        if !video.fps.is_finite() || video.fps <= 0.0 {
+        if !source_fps.is_finite() || source_fps <= 0.0 {
             return Err(Error::invalid("video source fps must be positive"));
         }
-        let seconds = total as f64 / video.fps;
+        let seconds = total as f64 / source_fps;
         let wanted = (seconds * self.fps) as usize;
         let count = wanted.max(self.min_frames).min(self.max_frames).min(total);
         if count == 0 {
@@ -181,6 +291,36 @@ impl VideoProcessor {
         Ok((0..count)
             .map(|index| (index as f64 * step).round_ties_even() as usize)
             .collect())
+    }
+
+    /// Plan sampling and resizing once for incremental video processing.
+    ///
+    /// The count must be the actual number of source frames, not a duration-based estimate.
+    /// The returned groups retain the same sample positions and timestamps as [`Self::preprocess`].
+    ///
+    /// # Errors
+    /// Rejects invalid processor geometry, clip metadata or resize geometry.
+    pub fn plan(
+        &self,
+        total: usize,
+        source_fps: f64,
+        height: usize,
+        width: usize,
+    ) -> Result<VideoPlan> {
+        if self.patch_size == 0 || self.temporal_patch_size == 0 || self.merge_size == 0 {
+            return Err(Error::invalid("video processor geometry must be nonzero"));
+        }
+        let indices = self.sample_frame_indices(total, source_fps)?;
+        let (resized_height, resized_width) = self.smart_resize(indices.len(), height, width)?;
+        Ok(VideoPlan {
+            processor: self.clone(),
+            indices,
+            source_fps,
+            height,
+            width,
+            resized_height,
+            resized_width,
+        })
     }
 
     /// Resized frame dimensions: both axes are `patch × merge` multiples and the whole clip stays

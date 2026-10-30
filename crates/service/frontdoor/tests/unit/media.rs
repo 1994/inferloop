@@ -1,12 +1,12 @@
 use super::{
-    MediaRequest, MediaService, SourcePolicy, TempPath, check_video_frame_limit, image_digest,
-    load_image, load_image_with, load_video_with, parse_rate, read_url, run_bounded, source_digest,
+    MediaRequest, MediaService, SourcePolicy, TempPath, image_digest, load_image, load_image_with,
+    load_video_with, parse_rate, read_url, run_bounded, source_digest,
 };
 use crate::cpu::{CpuConfig, CpuPool, cancelled_context};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use infer_ir::Modality;
-use infer_models::{ImageProcessor, MediaLimits, MultimodalAssets, TextAssets};
+use infer_models::{ImageProcessor, MediaLimits, MultimodalAssets, TextAssets, VideoProcessor};
 use std::env::{temp_dir, var};
 use std::fs::{remove_file, write};
 use std::io::{Cursor, Write};
@@ -178,7 +178,7 @@ async fn prepared_images_preserve_order_and_source_identity() {
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
     let mut remote_requests = requests.clone();
     remote_requests[1].url = format!("http://{address}/image");
-    let downloads = service.resolve(&remote_requests, &pool).await.unwrap();
+    let (remote_requests, downloads) = service.resolve(remote_requests, &pool).await.unwrap();
     let (prepared, media, direct, direct_media) = pool
         .run(0, move |context| {
             let prompt = "<|vision_start|><|image_pad|><|vision_end|><|vision_start|><|image_pad|><|vision_end|>describe";
@@ -187,7 +187,7 @@ async fn prepared_images_preserve_order_and_source_identity() {
                 &assets,
                 prompt,
                 &remote_requests,
-                &downloads,
+                downloads,
                 context,
             )?;
             Ok((prepared, media, direct, direct_media))
@@ -460,14 +460,6 @@ fn temp_path_is_exclusive_and_removed_on_drop() {
     assert!(!path.exists());
 }
 
-#[test]
-fn video_frame_limit_is_explicit_and_not_silently_truncated() {
-    assert!(check_video_frame_limit(Some(768)).is_ok());
-    let error = check_video_frame_limit(Some(769)).expect_err("over-limit clip");
-    assert_eq!(error.code, infer_core::ErrorCode::Capacity);
-    assert!(check_video_frame_limit(None).is_ok());
-}
-
 #[cfg(unix)]
 #[test]
 fn lossless_video_roundtrip_preserves_frames_and_fps() {
@@ -536,6 +528,87 @@ fn lossless_video_roundtrip_preserves_frames_and_fps() {
         assert_eq!(loaded.height, height as usize);
         assert_eq!(&loaded.pixels, expected);
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn short_video_at_standard_resolution_is_not_rejected_by_a_raw_byte_budget() {
+    use std::process::Command;
+    use std::time::Duration;
+
+    let (clip, file) = TempPath::create("short-video", "mkv").unwrap();
+    drop(file);
+    let mut encode = Command::new("ffmpeg");
+    encode.args([
+        "-v",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=red:s=320x240:r=1:d=2",
+        "-frames:v",
+        "2",
+        "-c:v",
+        "ffv1",
+        &clip.path.to_string_lossy(),
+    ]);
+    let output = run_bounded(&mut encode, 1 << 20, 1 << 20, Duration::from_secs(10), None)
+        .expect("ffmpeg encode");
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let video = load_video_with(
+        &clip.path.to_string_lossy(),
+        SourcePolicy::TrustedLocal,
+        None,
+    )
+    .expect("small video must be accepted");
+    assert_eq!(video.frames.len(), 2);
+    assert_eq!((video.frames[0].width, video.frames[0].height), (320, 240));
+    let image = identity_processor();
+    let processor = VideoProcessor {
+        patch_size: image.patch_size,
+        temporal_patch_size: image.temporal_patch_size,
+        merge_size: image.merge_size,
+        min_pixels: image.min_pixels,
+        max_pixels: image.max_pixels,
+        mean: image.mean,
+        std: image.std,
+        rescale: image.rescale,
+        fps: 2.0,
+        min_frames: 1,
+        max_frames: 4,
+    };
+    let reference = processor.preprocess(&video).unwrap();
+    let pool = CpuPool::new(CpuConfig {
+        workers: 2,
+        max_jobs: 2,
+        ..CpuConfig::default()
+    })
+    .unwrap();
+    let parts = super::video::resolve(
+        clip.path.to_string_lossy().into_owned(),
+        None,
+        SourcePolicy::TrustedLocal,
+        processor,
+        pool,
+    )
+    .await
+    .unwrap();
+    assert_eq!(parts.len(), reference.image.grid.0);
+    assert_eq!(
+        parts
+            .iter()
+            .flat_map(|part| part.image.pixels.iter().copied())
+            .collect::<Vec<_>>(),
+        reference.image.pixels
+    );
+    assert_eq!(
+        parts
+            .iter()
+            .flat_map(|part| part.timestamps.iter().copied())
+            .collect::<Vec<_>>(),
+        reference.timestamps
+    );
 }
 
 #[cfg(unix)]

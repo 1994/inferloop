@@ -2,8 +2,10 @@ use super::*;
 use crate::cpu::{CpuConfig, CpuPool};
 use axum::extract::Path;
 use axum::{Router, routing::get};
-use infer_core::ErrorCode;
+use infer_core::{Error, ErrorCode};
+use infer_ir::Modality;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::{Barrier, Notify};
@@ -114,4 +116,44 @@ async fn remote_media_limit_and_http_errors_are_reported() {
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::InvalidInput);
     server.abort();
+}
+
+#[tokio::test]
+async fn incremental_work_waits_for_worker_capacity_and_wakes() {
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 1,
+        ..CpuConfig::default()
+    })
+    .unwrap();
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let (release, gate) = mpsc::channel();
+    let first_pool = pool.clone();
+    let first = tokio::spawn(async move {
+        first_pool
+            .run(0, move |_| {
+                started
+                    .send(())
+                    .map_err(|()| Error::invariant("waiter dropped"))?;
+                gate.recv()
+                    .map_err(|error| Error::invariant(error.to_string()))?;
+                Ok(())
+            })
+            .await
+    });
+    ready.await.unwrap();
+    let next_pool = pool.clone();
+    let mut next = tokio::spawn(async move { next_pool.run_when_available(0, |_| Ok(7)).await });
+    assert!(timeout(Duration::from_millis(20), &mut next).await.is_err());
+    release.send(()).unwrap();
+    first.await.unwrap().unwrap();
+    assert_eq!(
+        timeout(Duration::from_secs(2), next)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+        7
+    );
+    assert_eq!(pool.inspect().retained_jobs, 0);
 }
