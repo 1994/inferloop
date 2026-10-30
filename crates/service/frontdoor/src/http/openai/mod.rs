@@ -12,7 +12,7 @@ use super::text::TextState;
 use axum::extract::rejection::JsonRejection;
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::HeaderMap,
     response::{IntoResponse, Response},
     routing::get,
@@ -29,7 +29,10 @@ pub(super) fn routes() -> Router<TextState> {
     Router::new()
         .route("/v1/models", get(models))
         .route("/v1/models/{model}", get(retrieve_model))
-        .route("/v1/chat/completions", post(chat))
+        .route(
+            "/v1/chat/completions",
+            post(chat).layer(DefaultBodyLimit::disable()),
+        )
         .route("/v1/completions", post(completion))
         .route("/v1/decisions", post(decision))
 }

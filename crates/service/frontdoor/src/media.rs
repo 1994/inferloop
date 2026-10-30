@@ -1,9 +1,8 @@
-//! Bounded URL/data/media preparation for the `OpenAI` adapter.
+//! URL/data/media preparation for the `OpenAI` adapter.
 //!
 //! Decoding and network access stay in this input layer; the engine receives only preprocessed
-//! patch payloads plus their prompt spans. Every read is size-bounded and every external command
-//! gets a hard time/frame bound. A malformed or over-limit input is an explicit error, never a
-//! text-only fallback.
+//! patch payloads plus their prompt spans. Video reads and external commands retain their
+//! time/frame bounds. Malformed inputs are explicit errors, never text-only fallbacks.
 use crate::cpu::CpuContext;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -28,14 +27,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Largest accepted image payload after decoding or download.
-const MAX_IMAGE_BYTES: usize = 24 * 1024 * 1024;
-/// Largest accepted raw RGB image pixel count.
-const MAX_IMAGE_PIXELS: usize = 16 * 1024 * 1024;
-/// Largest accepted image edge during in-process decode.
-const MAX_IMAGE_EDGE: u32 = 8192;
-/// Largest accepted decoder allocation during in-process decode.
-const MAX_IMAGE_ALLOC_BYTES: u64 = 64 << 20;
+/// Largest accepted raw video-frame pixel count.
+const MAX_VIDEO_PIXELS: usize = 16 * 1024 * 1024;
 /// Largest accepted video download/decoded raw output.
 const MAX_VIDEO_BYTES: usize = 24 * 1024 * 1024;
 /// Largest accepted frame count decoded from one clip.
@@ -93,6 +86,12 @@ pub enum SourcePolicy {
 
 #[derive(Clone, Copy)]
 struct SourceDigest([u8; SOURCE_DIGEST_BYTES]);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FrameKind {
+    Image,
+    Video,
+}
 
 /// One media reference parsed from an `OpenAI` content part.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -275,9 +274,9 @@ fn digest(item: &MediaItem) -> String {
     format!("fnv1a64:{hash:016x}")
 }
 
-/// Decode one image URL/data URI into bounded RGB8.
+/// Decode one image URL/data URI into RGB8.
 /// # Errors
-/// Rejects unsupported schemes, over-limit payloads, malformed bytes and decode failures.
+/// Rejects unsupported schemes, malformed bytes, overflowing dimensions and decode failures.
 #[cfg(test)]
 pub fn load_image(url: &str) -> Result<RawImage> {
     load_image_with(url, SourcePolicy::Public, None).map(|(image, _)| image)
@@ -288,7 +287,7 @@ fn load_image_with(
     source: SourcePolicy,
     context: Option<&CpuContext>,
 ) -> Result<(RawImage, SourceDigest)> {
-    let bytes = read_url(url, MAX_IMAGE_BYTES, source, context)?;
+    let bytes = read_url(url, None, source, context)?;
     let identity = source_digest(&bytes, context)?;
     match decode_png(&bytes) {
         Ok(rgb) => {
@@ -300,11 +299,17 @@ fn load_image_with(
         Err(error) if error.code == ErrorCode::Capacity => return Err(error),
         Err(_) => {}
     }
-    // A format the in-process decoder cannot identify (or a corrupted stream) is an explicit
-    // decode failure; ffmpeg is retained only for the video container path.
+    // Try the existing external decoder for formats unavailable to the in-process decoder.
     let temp = materialize(&bytes, "image")?;
     let probe = probe(&temp.path, context)?;
-    let raw = decode_frames(&temp.path, probe.width, probe.height, 1, context)?;
+    let raw = decode_frames(
+        &temp.path,
+        probe.width,
+        probe.height,
+        1,
+        context,
+        FrameKind::Image,
+    )?;
     let frame = raw
         .into_iter()
         .next()
@@ -320,9 +325,15 @@ fn load_video_with(
     source: SourcePolicy,
     context: Option<&CpuContext>,
 ) -> Result<RawVideo> {
-    let bytes = read_url(url, MAX_VIDEO_BYTES, source, context)?;
+    let bytes = read_url(url, Some(MAX_VIDEO_BYTES), source, context)?;
     let temp = materialize(&bytes, "video")?;
     let probe = probe(&temp.path, context)?;
+    if u64::from(probe.width) * u64::from(probe.height) > MAX_VIDEO_PIXELS as u64 {
+        return Err(Error::new(
+            ErrorCode::Capacity,
+            "video frame dimensions exceed the bounded limit",
+        ));
+    }
     check_video_frame_limit(probe.total_frames)?;
     let frames = decode_frames(
         &temp.path,
@@ -330,6 +341,7 @@ fn load_video_with(
         probe.height,
         MAX_VIDEO_FRAMES,
         context,
+        FrameKind::Video,
     )?;
     if frames.is_empty() {
         return Err(Error::invalid("video decoder produced no frames"));
@@ -345,22 +357,24 @@ fn load_video_with(
 }
 
 fn check_image_dimensions(width: u32, height: u32) -> Result<()> {
-    let pixels = u64::from(width).saturating_mul(u64::from(height));
-    if width == 0 || height == 0 || pixels > MAX_IMAGE_PIXELS as u64 {
+    let bytes = usize::try_from(width)
+        .ok()
+        .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)))
+        .and_then(|pixels| pixels.checked_mul(RGB_CHANNELS));
+    if width == 0 || height == 0 || bytes.is_none_or(|bytes| bytes > isize::MAX as usize) {
         return Err(Error::new(
             ErrorCode::Capacity,
-            "image dimensions exceed the bounded media limit",
+            "image dimensions cannot be represented",
         ));
     }
     Ok(())
 }
 
 fn decode_png(bytes: &[u8]) -> Result<image::RgbImage> {
-    // Read the header before materializing the full image. A compressed high-dimension file
-    // then fails here rather than allocating the claimed dimensions.
-    let probe = image::ImageReader::new(Cursor::new(bytes))
+    let mut probe = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|error| Error::invalid(format!("image format: {error}")))?;
+    probe.limits(image::Limits::no_limits());
     let (width, height) = probe
         .into_dimensions()
         .map_err(|error| Error::invalid(format!("image dimensions: {error}")))?;
@@ -368,11 +382,7 @@ fn decode_png(bytes: &[u8]) -> Result<image::RgbImage> {
     let mut reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|error| Error::invalid(format!("image format: {error}")))?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(MAX_IMAGE_EDGE);
-    limits.max_image_height = Some(MAX_IMAGE_EDGE);
-    limits.max_alloc = Some(MAX_IMAGE_ALLOC_BYTES);
-    reader.limits(limits);
+    reader.limits(image::Limits::no_limits());
     let image = reader
         .decode()
         .map_err(|error| Error::invalid(format!("image decode: {error}")))?;
@@ -411,7 +421,7 @@ fn rgb_frame(width: u32, height: u32, pixels: Vec<u8>) -> Result<RgbImage> {
 
 fn read_url(
     url: &str,
-    limit: usize,
+    limit: Option<usize>,
     source: SourcePolicy,
     context: Option<&CpuContext>,
 ) -> Result<Vec<u8>> {
@@ -419,10 +429,13 @@ fn read_url(
         return Err(Error::invalid("media URL is empty"));
     }
     if url.starts_with("data:") {
-        let encoded_limit = limit.saturating_mul(BASE64_EXPANSION_NUMERATOR)
-            / BASE64_EXPANSION_DENOMINATOR
-            + DATA_URI_HEADER_BYTES;
-        if url.len() > encoded_limit {
+        let exceeds = limit.is_some_and(|limit| {
+            let encoded_limit = limit.saturating_mul(BASE64_EXPANSION_NUMERATOR)
+                / BASE64_EXPANSION_DENOMINATOR
+                + DATA_URI_HEADER_BYTES;
+            url.len() > encoded_limit
+        });
+        if exceeds {
             return Err(Error::new(
                 ErrorCode::Capacity,
                 "media data URI text exceeds the bounded limit",
@@ -459,7 +472,7 @@ fn require_local(source: SourcePolicy, url: &str) -> Result<()> {
     }
 }
 
-fn read_data_uri(url: &str, limit: usize) -> Result<Vec<u8>> {
+fn read_data_uri(url: &str, limit: Option<usize>) -> Result<Vec<u8>> {
     let (header, payload) = url
         .split_once(',')
         .ok_or_else(|| Error::invalid("malformed data URI"))?;
@@ -469,7 +482,7 @@ fn read_data_uri(url: &str, limit: usize) -> Result<Vec<u8>> {
     let bytes = BASE64
         .decode(payload)
         .map_err(|error| Error::invalid(format!("data URI base64: {error}")))?;
-    if bytes.len() > limit {
+    if limit.is_some_and(|limit| bytes.len() > limit) {
         return Err(Error::new(
             ErrorCode::Capacity,
             "media data URI exceeds the bounded limit",
@@ -478,13 +491,15 @@ fn read_data_uri(url: &str, limit: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn read_file(path: &Path, limit: usize) -> Result<Vec<u8>> {
-    let metadata = metadata(path).map_err(|e| Error::invalid(e.to_string()))?;
-    if metadata.len() > limit as u64 {
-        return Err(Error::new(
-            ErrorCode::Capacity,
-            "media file exceeds the bounded limit",
-        ));
+fn read_file(path: &Path, limit: Option<usize>) -> Result<Vec<u8>> {
+    if let Some(limit) = limit {
+        let metadata = metadata(path).map_err(|e| Error::invalid(e.to_string()))?;
+        if metadata.len() > limit as u64 {
+            return Err(Error::new(
+                ErrorCode::Capacity,
+                "media file exceeds the bounded limit",
+            ));
+        }
     }
     read(path).map_err(|e| Error::invalid(e.to_string()))
 }
@@ -624,7 +639,7 @@ fn kill_group(process_group: u32) {
     }
 }
 
-fn fetch_http(url: &str, limit: usize, context: Option<&CpuContext>) -> Result<Vec<u8>> {
+fn fetch_http(url: &str, limit: Option<usize>, context: Option<&CpuContext>) -> Result<Vec<u8>> {
     let (temp, file) = TempPath::create("download", "media")?;
     drop(file);
     let mut command = Command::new("curl");
@@ -635,12 +650,11 @@ fn fetch_http(url: &str, limit: usize, context: Option<&CpuContext>) -> Result<V
         "--show-error",
         "--max-time",
         &HTTP_TIMEOUT_SECONDS.to_string(),
-        "--max-filesize",
-        &limit.to_string(),
-        "--output",
-        &temp.path.to_string_lossy(),
-        url,
     ]);
+    if let Some(limit) = limit {
+        command.args(["--max-filesize", &limit.to_string()]);
+    }
+    command.args(["--output", &temp.path.to_string_lossy(), url]);
     let output = run_bounded(
         &mut command,
         SUBPROCESS_STREAM_BYTES,
@@ -714,12 +728,7 @@ fn probe(path: &Path, context: Option<&CpuContext>) -> Result<Probe> {
     };
     let width = u32::try_from(number("width")?).map_err(|_| Error::invalid("media width"))?;
     let height = u32::try_from(number("height")?).map_err(|_| Error::invalid("media height"))?;
-    if u64::from(width).saturating_mul(u64::from(height)) > MAX_IMAGE_PIXELS as u64 {
-        return Err(Error::new(
-            ErrorCode::Capacity,
-            "media frame dimensions exceed the bounded limit",
-        ));
-    }
+    check_image_dimensions(width, height)?;
     let rate = stream
         .get("avg_frame_rate")
         .and_then(serde_json::Value::as_str)
@@ -796,13 +805,17 @@ fn decode_frames(
     height: u32,
     frames: usize,
     context: Option<&CpuContext>,
+    kind: FrameKind,
 ) -> Result<Vec<Vec<u8>>> {
     let frame_bytes = usize::try_from(width)
         .ok()
         .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)))
         .and_then(|n| n.checked_mul(RGB_CHANNELS))
         .ok_or_else(|| Error::invalid("media frame size overflow"))?;
-    if frame_bytes == 0 || frame_bytes.saturating_mul(frames) > MAX_VIDEO_BYTES {
+    let total_bytes = frame_bytes
+        .checked_mul(frames)
+        .ok_or_else(|| Error::invalid("decoded media size overflow"))?;
+    if frame_bytes == 0 || (kind == FrameKind::Video && total_bytes > MAX_VIDEO_BYTES) {
         return Err(Error::new(
             ErrorCode::Capacity,
             "decoded media exceeds the bounded limit",
@@ -831,7 +844,11 @@ fn decode_frames(
     ]);
     let output = run_bounded(
         &mut command,
-        MAX_VIDEO_BYTES,
+        if kind == FrameKind::Image {
+            total_bytes
+        } else {
+            MAX_VIDEO_BYTES
+        },
         SUBPROCESS_STREAM_BYTES,
         Duration::from_secs(DECODE_TIMEOUT_SECONDS),
         context,

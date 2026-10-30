@@ -248,6 +248,50 @@ class IterationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "funded serving resources differ"):
             gate.compare(serving(), candidate, 10)
 
+    def test_sub_block_envelope_drift_with_identical_funded_resources_is_comparable(self):
+        baseline, candidate = serving(), serving()
+        left = baseline["readback"]["readback"]
+        right = candidate["readback"]["readback"]
+        for readback in (left, right):
+            readback["kv_cache"] = {"bytes_per_block": 1_048_576}
+            readback["serving_plan"].update(
+                width=14,
+                capacity=8192,
+                kv_tokens=61824,
+                quoted_bytes=7_111_545_788,
+                allocated_bytes=6_794_480_992,
+                envelope_bytes=7_111_973_112,
+            )
+        right["serving_plan"]["envelope_bytes"] += 262_144
+        result = gate.compare(baseline, candidate, 10)
+        self.assertFalse(result["c16"]["resource_plan_changed"])
+        self.assertEqual(result["c16"]["envelope_delta_bytes"], 262_144)
+        self.assertEqual(result["c16"]["envelope_quantum_bytes"], 1_048_576)
+
+    def test_envelope_drift_needs_matching_quantum_and_actual_resources(self):
+        for change in ("block", "missing", "wrong_block", "quote", "allocation"):
+            baseline, candidate = serving(), serving()
+            left = baseline["readback"]["readback"]
+            right = candidate["readback"]["readback"]
+            left["kv_cache"] = {"bytes_per_block": 8}
+            right["kv_cache"] = {"bytes_per_block": 8}
+            right["serving_plan"]["envelope_bytes"] += 1
+            if change == "block":
+                right["serving_plan"]["envelope_bytes"] += 7
+            elif change == "missing":
+                del right["kv_cache"]
+            elif change == "wrong_block":
+                right["kv_cache"]["bytes_per_block"] = 16
+            elif change == "quote":
+                right["serving_plan"]["quoted_bytes"] -= 1
+            else:
+                right["serving_plan"]["allocated_bytes"] -= 1
+            with (
+                self.subTest(change=change),
+                self.assertRaisesRegex(ValueError, "funded serving resources differ"),
+            ):
+                gate.compare(baseline, candidate, 10)
+
 
 class SafeRunTests(unittest.TestCase):
     def setUp(self):
