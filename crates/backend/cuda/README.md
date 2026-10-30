@@ -2,6 +2,13 @@
 
 `infer-backend-cuda` 使用 NVIDIA cuTile Rust 0.4.0 实现设备 kernel、驻留执行图、权重加载和 `BackendProvider`。模型拓扑由 provider 提供，后端按设备能力、dtype 和形状选择具体实现，不按模型名分派。
 
+## 结构导航
+
+目录职责、一次 launch 的路径、制品规则和“改 X 动哪里”的决策表见
+[CUDA 后端分层与改动入口](../../../docs/architecture/cuda-layers.md)。没有 Tile IR 的 CUDA 环境
+（12.9 / L20）如何接入同一套 engine，见
+[CUDA AOT kernel provider 与 12.9 设备接入方案](../../../docs/plans/engineering/cuda-kernel-provider.md)。
+
 ## Kernel 工程入口
 
 通用算子沿用 Rust/cuTile；手写 SIMT 新增实现默认优先 CUDA C++ AOT，已有 oxide 保留为
