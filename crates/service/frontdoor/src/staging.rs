@@ -54,12 +54,13 @@ impl StagingLimit {
             return;
         }
         *last = Instant::now();
-        drop(last);
+        // Serialize snapshots so an older, slow read cannot overwrite a newer memory limit.
         let next = default_staging_bytes();
         self.bytes.store(next, Ordering::Relaxed);
         if let Some(limit) = &self.host_limit {
             limit.set(next);
         }
+        drop(last);
     }
 }
 
