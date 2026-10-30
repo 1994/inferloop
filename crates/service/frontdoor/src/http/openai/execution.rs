@@ -155,12 +155,7 @@ fn chat_media(
         // normal ingress budget error would otherwise mask the actual media-limit violation.
         service.limits().check(&first.modality, media.len())?;
     }
-    // Images grow their credit from the actual source and decoded geometry on the worker.
-    let bytes = media
-        .iter()
-        .filter(|item| item.modality == infer_ir::Modality::Video)
-        .count()
-        .saturating_mul(MEDIA_STAGING_BYTES);
+    let bytes = media.len().saturating_mul(MEDIA_STAGING_BYTES);
     Ok((messages, media, bytes))
 }
 

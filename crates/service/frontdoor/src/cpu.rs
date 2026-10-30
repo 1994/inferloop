@@ -1,6 +1,4 @@
 //! Fixed CPU workers with admission bytes, queue bounds and cancellable asynchronous replies.
-use crate::ingress::Pending;
-use crate::staging::{REFRESH_INTERVAL, StagingLimit, default_staging_bytes};
 use infer_core::placement::ThreadPlacement;
 use infer_core::{Error, ErrorCode, Result};
 use serde::{Deserialize, Serialize};
@@ -19,6 +17,8 @@ use tokio::time::timeout as time_timeout;
 const DEFAULT_WORKER_RESERVE: usize = 7;
 /// Upper bound on the auto-sized default worker pool.
 const MAX_DEFAULT_WORKERS: usize = 32;
+/// Default staging byte budget for one CPU pool.
+const DEFAULT_MAX_STAGING_BYTES: usize = 64 << 20;
 /// Default per-lane CPU job timeout, in milliseconds.
 const DEFAULT_JOB_TIMEOUT_MS: u64 = 30_000;
 /// Default control-command acknowledgement timeout, in milliseconds.
@@ -34,7 +34,6 @@ pub struct CpuConfig {
     pub placement: ThreadPlacement,
     pub workers: usize,
     pub max_jobs: usize,
-    /// Per-lane staging limit; the default is derived from available host memory.
     pub max_bytes: usize,
     pub job_timeout_ms: u64,
     pub command_timeout_ms: u64,
@@ -50,7 +49,7 @@ impl Default for CpuConfig {
             placement: ThreadPlacement::default(),
             workers,
             max_jobs: workers * 2,
-            max_bytes: default_staging_bytes(),
+            max_bytes: DEFAULT_MAX_STAGING_BYTES,
             job_timeout_ms: DEFAULT_JOB_TIMEOUT_MS,
             command_timeout_ms: DEFAULT_COMMAND_TIMEOUT_MS,
             device_control_timeout_ms: DEFAULT_DEVICE_CONTROL_TIMEOUT_MS,
@@ -92,45 +91,16 @@ struct Budget {
     active: AtomicUsize,
     peak: AtomicUsize,
     config: CpuConfig,
-    limit: Arc<StagingLimit>,
 }
 pub(super) struct Credit {
     budget: Arc<Budget>,
-    bytes: AtomicUsize,
-}
-impl Credit {
-    fn grow(&self, additional: usize) -> Result<()> {
-        let mut usage = self
-            .budget
-            .usage
-            .lock()
-            .map_err(|_| Error::invariant("CPU budget poisoned"))?;
-        let total = usage
-            .bytes
-            .checked_add(additional)
-            .ok_or_else(|| Error::invalid("CPU staging size overflow"))?;
-        let own = self
-            .bytes
-            .load(Ordering::Relaxed)
-            .checked_add(additional)
-            .ok_or_else(|| Error::invalid("CPU credit size overflow"))?;
-        if total > self.budget.limit.current() {
-            return Err(Error::new(
-                ErrorCode::Capacity,
-                "CPU preparation byte budget exhausted",
-            ));
-        }
-        usage.bytes = total;
-        self.bytes.store(own, Ordering::Relaxed);
-        drop(usage);
-        Ok(())
-    }
+    bytes: usize,
 }
 impl Drop for Credit {
     fn drop(&mut self) {
         if let Ok(mut usage) = self.budget.usage.lock() {
             usage.jobs -= 1;
-            usage.bytes -= self.bytes.load(Ordering::Relaxed);
+            usage.bytes -= self.bytes;
         }
     }
 }
@@ -144,36 +114,8 @@ impl Drop for Active {
 pub struct CpuContext {
     cancelled: Arc<AtomicBool>,
     deadline: Instant,
-    staging: Arc<StagingLimit>,
-    credit: Option<Arc<Credit>>,
-    pending: Option<Arc<Pending>>,
 }
 impl CpuContext {
-    pub(super) fn staging_limit(&self) -> usize {
-        self.staging.current()
-    }
-    pub(super) fn with_pending(&self, pending: Arc<Pending>) -> Self {
-        let mut context = self.clone();
-        context.pending = Some(pending);
-        context
-    }
-    /// Increase both logical credits before allocating additional media storage.
-    pub(super) fn grow_staging(&self, bytes: usize) -> Result<()> {
-        self.check()?;
-        if let Some(pending) = &self.pending {
-            pending.check()?;
-            pending.grow(bytes)?;
-        }
-        if let Some(credit) = &self.credit
-            && let Err(error) = credit.grow(bytes)
-        {
-            if let Some(pending) = &self.pending {
-                pending.release_growth(bytes)?;
-            }
-            return Err(error);
-        }
-        Ok(())
-    }
     /// # Errors
     /// Rejects work abandoned by its caller or past its deadline.
     pub fn check(&self) -> Result<()> {
@@ -191,9 +133,6 @@ pub(crate) fn cancelled_context() -> CpuContext {
     CpuContext {
         cancelled: Arc::new(AtomicBool::new(true)),
         deadline: Instant::now() + Duration::from_secs(1),
-        staging: Arc::new(StagingLimit::fixed(default_staging_bytes())),
-        credit: None,
-        pending: None,
     }
 }
 
@@ -216,18 +155,10 @@ impl CpuPool {
         Self::named(config, "prepare")
     }
     pub(super) fn named(config: CpuConfig, lane: &str) -> Result<Self> {
-        let limit = Arc::new(StagingLimit::fixed(config.max_bytes));
-        Self::named_with_limit(config, lane, limit)
-    }
-    pub(super) fn named_with_limit(
-        config: CpuConfig,
-        lane: &str,
-        limit: Arc<StagingLimit>,
-    ) -> Result<Self> {
         let placement = config.placement.clone();
-        placement.scope(|| Self::initialize(config, lane, limit))
+        placement.scope(|| Self::initialize(config, lane))
     }
-    fn initialize(config: CpuConfig, lane: &str, limit: Arc<StagingLimit>) -> Result<Self> {
+    fn initialize(config: CpuConfig, lane: &str) -> Result<Self> {
         config.validate()?;
         let (jobs, receiver) = mpsc::sync_channel::<Job>(config.max_jobs);
         let receiver = Arc::new(Mutex::new(receiver));
@@ -236,7 +167,6 @@ impl CpuPool {
             active: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
             config,
-            limit,
         });
         for index in 0..budget.config.workers {
             let receiver = receiver.clone();
@@ -251,28 +181,17 @@ impl CpuPool {
     fn work(receiver: &Mutex<mpsc::Receiver<Job>>, budget: &Arc<Budget>) {
         loop {
             let job = match receiver.lock() {
-                Ok(receiver) if budget.limit.is_automatic() => {
-                    receiver.recv_timeout(REFRESH_INTERVAL)
-                }
-                Ok(receiver) => receiver
-                    .recv()
-                    .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+                Ok(receiver) => receiver.recv(),
                 Err(_) => break,
             };
-            let job = match job {
-                Ok(job) => job,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    budget.limit.refresh_if_due();
-                    continue;
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            let Ok(job) = job else {
+                break;
             };
             let active = budget.active.fetch_add(1, Ordering::Relaxed) + 1;
             budget.peak.fetch_max(active, Ordering::Relaxed);
             let _active = Active(budget.clone());
             // A bad CPU provider fails its reply without destroying the fixed worker pool.
             let _ = catch_unwind(AssertUnwindSafe(job));
-            budget.limit.refresh_if_due();
         }
     }
     pub(super) fn reserve(&self, bytes: usize) -> Result<Credit> {
@@ -285,7 +204,7 @@ impl CpuPool {
             .bytes
             .checked_add(bytes)
             .ok_or_else(|| Error::invalid("CPU staging size overflow"))?;
-        if usage.jobs >= self.budget.config.max_jobs || total > self.budget.limit.current() {
+        if usage.jobs >= self.budget.config.max_jobs || total > self.budget.config.max_bytes {
             return Err(Error::new(
                 ErrorCode::Capacity,
                 "CPU preparation queue/byte budget exhausted",
@@ -296,7 +215,7 @@ impl CpuPool {
         drop(usage);
         Ok(Credit {
             budget: self.budget.clone(),
-            bytes: AtomicUsize::new(bytes),
+            bytes,
         })
     }
     /// # Errors
@@ -332,13 +251,9 @@ impl CpuPool {
                 deadline.saturating_duration_since(now)
             }),
         );
-        let credit = Arc::new(credit);
         let context = CpuContext {
             cancelled: Arc::new(AtomicBool::new(false)),
             deadline: now + timeout,
-            staging: self.budget.limit.clone(),
-            credit: Some(credit.clone()),
-            pending: None,
         };
         let _cancel = CancelOnDrop(context.cancelled.clone());
         let (reply, response) = oneshot::channel();
@@ -349,7 +264,6 @@ impl CpuPool {
                     .check()
                     .and_then(|()| work(&context))
                     .and_then(|value| context.check().map(|()| value));
-                drop(context);
                 // Completion must make admission capacity reusable before waking the caller.
                 drop(admission_credit);
                 let _ = reply.send(result);

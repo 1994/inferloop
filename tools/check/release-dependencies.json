@@ -2,7 +2,7 @@
  "configurations": [
   {
    "backend": "cuda",
-   "crates": 239,
+   "crates": 238,
    "duplicates": {
     "base64": [
      "0.13.1",
@@ -46,7 +46,7 @@
      "2.0.21"
     ]
    },
-   "edges": 771,
+   "edges": 768,
    "features": [
     "cuda"
    ],
@@ -55,7 +55,7 @@
   },
   {
    "backend": "metal",
-   "crates": 210,
+   "crates": 207,
    "duplicates": {
     "base64": [
      "0.13.1",
@@ -70,12 +70,12 @@
      "3.0.6"
     ]
    },
-   "edges": 510,
+   "edges": 502,
    "features": [],
    "name": "macos-metal",
    "target": "aarch64-apple-darwin"
   }
  ],
- "lockfile_sha256": "f10f83ad7178a320bb0a72dfcd69fade347f11c62bc0d3ca20aa910f47790641",
+ "lockfile_sha256": "16a10bab167d7f79dcecbcff5672a886eda86c5872192cf388d4f145ae9e9a63",
  "schema": 1
 }

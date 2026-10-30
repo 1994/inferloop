@@ -1,11 +1,11 @@
 use super::{
-    MEDIA_STAGING_BYTES, SourcePolicy, TempPath, check_video_frame_limit, decode_png, load_image,
+    MEDIA_STAGING_BYTES, SourcePolicy, TempPath, check_video_frame_limit, load_image,
     load_video_with, parse_rate, read_url, run_bounded,
 };
-use crate::cpu::{CpuConfig, CpuPool, cancelled_context};
+use crate::cpu::cancelled_context;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use infer_models::{ImageProcessor, MediaLimits};
+use infer_models::MediaLimits;
 use std::env::temp_dir;
 use std::fs::{remove_file, write};
 use std::io::Cursor;
@@ -42,33 +42,6 @@ fn data_uri_png_is_decoded_into_rgb8() {
     let image = load_image(&format!("data:image/png;base64,{ONE_PIXEL_PNG}")).expect("tiny PNG");
     assert_eq!((image.width, image.height), (1, 1));
     assert_eq!(image.pixels.len(), 3);
-}
-
-#[tokio::test]
-async fn image_memory_is_charged_before_decode_and_released_on_failure() -> infer_core::Result<()> {
-    let processor = ImageProcessor::from_json(
-        br#"{
-        "patch_size": 16, "temporal_patch_size": 2, "merge_size": 2,
-        "size": {"shortest_edge": 65536, "longest_edge": 16777216},
-        "image_mean": [0.5, 0.5, 0.5], "image_std": [0.5, 0.5, 0.5]
-    }"#,
-    )?;
-    let png = encoded(noisy_image(256, 256), image::ImageFormat::Png);
-    let pool = CpuPool::new(CpuConfig {
-        workers: 1,
-        max_jobs: 1,
-        max_bytes: 8192,
-        ..CpuConfig::default()
-    })?;
-    let error = pool
-        .run(1, move |context| {
-            decode_png(&png, Some(context), Some(&processor))
-        })
-        .await
-        .expect_err("decoded image exceeds the available staging memory");
-    assert_eq!(error.code, infer_core::ErrorCode::Capacity);
-    assert_eq!(pool.inspect().retained_bytes, 0);
-    Ok(())
 }
 
 #[test]

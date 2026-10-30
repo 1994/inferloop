@@ -5,7 +5,6 @@ pub mod cpu;
 mod http;
 mod ingress;
 mod media;
-mod staging;
 pub use actor::RuntimeHandle;
 pub use http::{
     HttpError, NativeJsonAdapter, NativeTextRequest, router, router_with_text,

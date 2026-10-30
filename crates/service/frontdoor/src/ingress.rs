@@ -1,9 +1,7 @@
 //! Admission credits survive abandoned futures until CPU jobs and deferred commands drop their payloads.
-use crate::staging::StagingLimit;
 use infer_core::{Error, ErrorCode, RequestId, Result};
 use std::{
-    collections::BTreeMap, sync::Arc, sync::Mutex, sync::atomic::AtomicBool,
-    sync::atomic::AtomicUsize, sync::atomic::Ordering,
+    collections::BTreeMap, sync::Arc, sync::Mutex, sync::atomic::AtomicBool, sync::atomic::Ordering,
 };
 
 struct Usage {
@@ -13,23 +11,23 @@ struct Usage {
 pub struct Registry {
     usage: Mutex<Usage>,
     max_jobs: usize,
-    limit: Arc<StagingLimit>,
+    max_bytes: usize,
 }
 pub struct Pending {
     registry: Arc<Registry>,
     id: RequestId,
-    bytes: AtomicUsize,
+    bytes: usize,
     cancelled: Arc<AtomicBool>,
 }
 impl Registry {
-    pub fn new(max_jobs: usize, limit: Arc<StagingLimit>) -> Arc<Self> {
+    pub fn new(max_jobs: usize, max_bytes: usize) -> Arc<Self> {
         Arc::new(Self {
             usage: Mutex::new(Usage {
                 entries: BTreeMap::new(),
                 bytes: 0,
             }),
             max_jobs,
-            limit,
+            max_bytes,
         })
     }
     pub fn reserve(self: &Arc<Self>, id: RequestId, bytes: usize) -> Result<Arc<Pending>> {
@@ -44,7 +42,7 @@ impl Registry {
             .bytes
             .checked_add(bytes)
             .ok_or_else(|| Error::invalid("ingress bytes overflow"))?;
-        if usage.entries.len() >= self.max_jobs || total > self.limit.current() {
+        if usage.entries.len() >= self.max_jobs || total > self.max_bytes {
             return Err(Error::new(
                 ErrorCode::Capacity,
                 "pending ingress budget exhausted",
@@ -57,7 +55,7 @@ impl Registry {
         Ok(Arc::new(Pending {
             registry: self.clone(),
             id,
-            bytes: AtomicUsize::new(bytes),
+            bytes,
             cancelled,
         }))
     }
@@ -73,62 +71,6 @@ impl Registry {
     }
 }
 impl Pending {
-    pub(super) fn grow(&self, additional: usize) -> Result<()> {
-        let mut usage = self
-            .registry
-            .usage
-            .lock()
-            .map_err(|_| Error::invariant("ingress registry poisoned"))?;
-        let total = usage
-            .bytes
-            .checked_add(additional)
-            .ok_or_else(|| Error::invalid("ingress bytes overflow"))?;
-        let own = self
-            .bytes
-            .load(Ordering::Relaxed)
-            .checked_add(additional)
-            .ok_or_else(|| Error::invalid("ingress credit overflow"))?;
-        if total > self.registry.limit.current() {
-            return Err(Error::new(
-                ErrorCode::Capacity,
-                "pending ingress byte budget exhausted",
-            ));
-        }
-        let entry = usage
-            .entries
-            .get_mut(&self.id)
-            .ok_or_else(|| Error::invariant("ingress credit is missing"))?;
-        entry.1 = own;
-        usage.bytes = total;
-        self.bytes.store(own, Ordering::Relaxed);
-        drop(usage);
-        Ok(())
-    }
-    pub(super) fn release_growth(&self, bytes: usize) -> Result<()> {
-        let mut usage = self
-            .registry
-            .usage
-            .lock()
-            .map_err(|_| Error::invariant("ingress registry poisoned"))?;
-        let total = usage
-            .bytes
-            .checked_sub(bytes)
-            .ok_or_else(|| Error::invariant("ingress byte credit underflow"))?;
-        let own = self
-            .bytes
-            .load(Ordering::Relaxed)
-            .checked_sub(bytes)
-            .ok_or_else(|| Error::invariant("ingress credit underflow"))?;
-        let entry = usage
-            .entries
-            .get_mut(&self.id)
-            .ok_or_else(|| Error::invariant("ingress credit is missing"))?;
-        entry.1 = own;
-        usage.bytes = total;
-        self.bytes.store(own, Ordering::Relaxed);
-        drop(usage);
-        Ok(())
-    }
     pub fn check(&self) -> Result<()> {
         if self.cancelled.load(Ordering::Acquire) {
             return Err(Error::new(
@@ -146,7 +88,7 @@ impl Drop for Pending {
     fn drop(&mut self) {
         if let Ok(mut usage) = self.registry.usage.lock() {
             usage.entries.remove(&self.id);
-            usage.bytes -= self.bytes.load(Ordering::Relaxed);
+            usage.bytes -= self.bytes;
         }
     }
 }

@@ -55,7 +55,6 @@ infer-observe.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-sysinfo.workspace = true
 
 [dev-dependencies]
 infer-model-recipes.workspace = true

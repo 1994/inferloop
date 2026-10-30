@@ -28,7 +28,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 19
+      "tests": 18
     },
     "cuda": {
       "benches": 0,
@@ -40,7 +40,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 110
+      "tests": 103
     },
     "ir": {
       "benches": 0,
@@ -88,7 +88,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 107
+      "tests": 104
     },
     "scheduler": {
       "benches": 0,
@@ -154,7 +154,7 @@
     }
   ],
   "gated": {
-    "target_os = \"linux\"": 4,
+    "target_os = \"linux\"": 3,
     "target_os = \"macos\"": 1
   },
   "ignored_reasons": {
@@ -1012,11 +1012,6 @@
     },
     {
       "crate": "runtime",
-      "file": "src/host_memory.rs",
-      "mount": "../tests/unit/host_memory.rs"
-    },
-    {
-      "crate": "runtime",
       "file": "src/lengths.rs",
       "mount": "../tests/unit/lengths.rs"
     },
@@ -1397,11 +1392,6 @@
     },
     {
       "crate": "frontdoor",
-      "file": "src/staging.rs",
-      "mount": "../tests/unit/staging.rs"
-    },
-    {
-      "crate": "frontdoor",
       "file": "tests/isolation.rs",
       "mount": "../../../engine/runtime/tests/support/mod.rs"
     },
@@ -1432,11 +1422,11 @@
     }
   ],
   "totals": {
-    "all": 1039,
+    "all": 1028,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1039
+    "tests": 1028
   }
 }

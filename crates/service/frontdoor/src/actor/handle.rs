@@ -181,8 +181,7 @@ impl RuntimeHandle {
             .cpu
             .run_until(bytes, deadline, move |context| {
                 preparing.check()?;
-                let funded = context.with_pending(preparing.clone());
-                let (request, constraint) = work(&funded)?;
+                let (request, constraint) = work(context)?;
                 if request.id != id {
                     return Err(Error::invalid("CPU preparation changed request identity"));
                 }

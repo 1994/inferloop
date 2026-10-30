@@ -3,7 +3,6 @@ mod config;
 mod constants;
 mod cpu;
 mod engine;
-pub mod host_memory;
 mod lengths;
 mod observation;
 mod persistence;

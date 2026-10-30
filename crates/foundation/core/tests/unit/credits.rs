@@ -30,22 +30,3 @@ fn live_readers_block_slot_reuse_even_when_units_remain() -> Result<()> {
     assert!(next.generation > generation);
     Ok(())
 }
-
-#[test]
-fn a_resizable_limit_never_revokes_live_leases_or_exceeds_its_configured_maximum() -> Result<()> {
-    let pool = CreditPool::new(3, 100)?;
-    let limit = pool.limit();
-    let first = pool.reserve(60)?;
-    limit.set(40);
-    assert!(pool.reserve(1).is_err());
-    drop(first);
-    let smaller = pool.reserve(40)?;
-    assert!(pool.reserve(1).is_err());
-    drop(smaller);
-    limit.set(200);
-    let full = pool.reserve(100)?;
-    assert!(pool.reserve(1).is_err());
-    drop(full);
-    assert_eq!(pool.used(), 0);
-    Ok(())
-}

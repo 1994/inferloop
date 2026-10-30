@@ -3,8 +3,7 @@ use super::{RuntimeActor, RuntimeHandle, mpsc, observation_bytes};
 use crate::cpu::CpuConfig;
 use crate::cpu::CpuPool;
 use crate::ingress::Registry;
-use crate::staging::StagingLimit;
-use infer_core::{Error, ErrorCode, Result};
+use infer_core::Result;
 use infer_runtime::Engine;
 use infer_spi::BackendProvider;
 use std::sync::atomic::AtomicU64;
@@ -20,7 +19,6 @@ const COMMAND_CHANNEL_CAPACITY: usize = 256;
 const CONTROL_CHANNEL_CAPACITY: usize = 64;
 
 impl RuntimeHandle {
-    /// Start with a staging limit that follows available host memory.
     /// # Errors
     /// Returns a backend/state error if stale completions cannot be drained or an I/O error if the runtime thread cannot start.
     pub fn start<B: BackendProvider + Send + 'static>(engine: Engine<B>) -> Result<Self>
@@ -34,19 +32,8 @@ impl RuntimeHandle {
                 .div_ceil(MICROS_PER_MILLI),
             ..CpuConfig::default()
         };
-        if config.max_bytes == 0 {
-            return Err(Error::new(
-                ErrorCode::Backend,
-                "cannot determine available host memory",
-            ));
-        }
-        let limit = Arc::new(StagingLimit::automatic(
-            config.max_bytes,
-            Some(engine.host_byte_limit()),
-        ));
-        Self::start_inner(engine, config, limit)
+        Self::start_with_config(engine, config)
     }
-    /// Start with the fixed staging limit in `config`.
     /// # Errors
     /// Rejects invalid CPU limits, unforkable preparation providers or startup failures.
     pub fn start_with_config<B: BackendProvider + Send + 'static>(
@@ -56,38 +43,25 @@ impl RuntimeHandle {
     where
         B::Ticket: Send,
     {
-        let limit = Arc::new(StagingLimit::fixed(config.max_bytes));
-        Self::start_inner(engine, config, limit)
-    }
-    fn start_inner<B: BackendProvider + Send + 'static>(
-        engine: Engine<B>,
-        config: CpuConfig,
-        limit: Arc<StagingLimit>,
-    ) -> Result<Self>
-    where
-        B::Ticket: Send,
-    {
         config.validate()?;
         let request_ids = Arc::new(AtomicU64::new(engine.request_id_high_watermark()));
         let preparer = engine.request_preparer()?;
-        let cpu = CpuPool::named_with_limit(config.clone(), "prepare", limit.clone())?;
-        let delivery = CpuPool::named_with_limit(
+        let cpu = CpuPool::new(config.clone())?;
+        let delivery = CpuPool::named(
             CpuConfig {
                 workers: 1,
                 max_jobs: config.max_jobs,
                 ..config.clone()
             },
             "delivery",
-            limit.clone(),
         )?;
-        let observation = CpuPool::named_with_limit(
+        let observation = CpuPool::named(
             CpuConfig {
                 workers: 1,
                 max_jobs: 2,
                 ..config.clone()
             },
             "observe",
-            limit.clone(),
         )?;
         let observation_bytes = observation_bytes(engine.config())?;
         let engine = engine.into_threaded(
@@ -117,7 +91,7 @@ impl RuntimeHandle {
             delivery,
             observation,
             observation_bytes,
-            ingress: Registry::new(config.max_jobs, limit),
+            ingress: Registry::new(config.max_jobs, config.max_bytes),
             config,
         })
     }

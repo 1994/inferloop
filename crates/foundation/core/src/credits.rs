@@ -11,8 +11,7 @@ use std::{
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
 struct Budget {
-    maximum: usize,
-    limit: AtomicUsize,
+    limit: usize,
     used: AtomicUsize,
     wake: Mutex<Option<Wake>>,
 }
@@ -28,20 +27,6 @@ pub struct CreditPool {
     budget: Arc<Budget>,
     slots: Vec<Arc<Slot>>,
 }
-/// A resizable credit ceiling constrained by the pool's configured maximum.
-#[derive(Clone)]
-pub struct CreditLimit {
-    budget: Arc<Budget>,
-}
-impl CreditLimit {
-    /// Change the ceiling without revoking live leases; it can never exceed the configured maximum.
-    /// Existing requests are not queued on this ceiling, so changing it does not signal the waker.
-    pub fn set(&self, units: usize) {
-        self.budget
-            .limit
-            .store(units.min(self.budget.maximum), Ordering::Release);
-    }
-}
 pub struct CreditLease {
     slot: Arc<Slot>,
     generation: u32,
@@ -54,8 +39,7 @@ impl CreditPool {
             return Err(Error::invalid("invalid host credit capacity"));
         }
         let budget = Arc::new(Budget {
-            maximum: limit,
-            limit: AtomicUsize::new(limit),
+            limit,
             used: AtomicUsize::new(0),
             wake: Mutex::new(None),
         });
@@ -82,13 +66,6 @@ impl CreditPool {
     pub fn used(&self) -> usize {
         self.budget.used.load(Ordering::Acquire)
     }
-    /// Return a controller that can resize the pool within its original configured maximum.
-    #[must_use]
-    pub fn limit(&self) -> CreditLimit {
-        CreditLimit {
-            budget: self.budget.clone(),
-        }
-    }
     pub fn set_waker(&self, wake: Wake) {
         if let Ok(mut slot) = self.budget.wake.lock() {
             *slot = Some(wake);
@@ -101,7 +78,7 @@ impl CreditPool {
         loop {
             let total = used
                 .checked_add(units)
-                .filter(|total| *total <= self.budget.limit.load(Ordering::Acquire))
+                .filter(|total| *total <= self.budget.limit)
                 .ok_or_else(|| Error::new(ErrorCode::Capacity, "host storage credits exhausted"))?;
             match self.budget.used.compare_exchange_weak(
                 used,
@@ -109,18 +86,7 @@ impl CreditPool {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => {
-                    // A concurrent refresh may have lowered the limit after the first check.
-                    // Roll back before publishing any lease if that happened.
-                    if total > self.budget.limit.load(Ordering::Acquire) {
-                        self.budget.used.fetch_sub(units, Ordering::AcqRel);
-                        return Err(Error::new(
-                            ErrorCode::Capacity,
-                            "host storage credits exhausted",
-                        ));
-                    }
-                    break;
-                }
+                Ok(_) => break,
                 Err(actual) => used = actual,
             }
         }
