@@ -190,10 +190,29 @@ def compare_resources(a, b, reason):
             raise ValueError("serving resources exceed budget")
     if plans[0]["capacity"] != plans[1]["capacity"]:
         raise ValueError("logical serving context differs")
-    changed = any(plans[0][key] != plans[1][key] for key in keys)
+    delta = abs(plans[0]["envelope_bytes"] - plans[1]["envelope_bytes"])
+    blocks = [(row.get("kv_cache") or {}).get("bytes_per_block") for row in (a, b)]
+    quantum = (
+        blocks[0]
+        if all(type(block) is int and block > 0 for block in blocks) and blocks[0] == blocks[1]
+        else None
+    )
+    # Free device memory can drift by less than one actual KV allocation block. That does not
+    # change a funded plan if its geometry, quote, and measured allocation are identical.
+    same_funding = all(
+        plans[0][key] == plans[1][key] for key in ("quoted_bytes", "allocated_bytes")
+    )
+    envelope_comparable = delta == 0 or (quantum is not None and delta < quantum and same_funding)
+    changed = any(plans[0][key] != plans[1][key] for key in keys[:-1]) or not envelope_comparable
     if changed and not reason:
         raise ValueError("funded serving resources differ; declare an audited resource change")
-    return {"resource_plan_changed": changed, "baseline_plan": plans[0], "candidate_plan": plans[1]}
+    return {
+        "resource_plan_changed": changed,
+        "envelope_delta_bytes": delta,
+        "envelope_quantum_bytes": quantum,
+        "baseline_plan": plans[0],
+        "candidate_plan": plans[1],
+    }
 
 
 def compare(left, right, limit, resource_change_reason=None):
