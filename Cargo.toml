@@ -68,6 +68,7 @@ crc32fast = "1"
 # moved to ^0.9; the lockfile holds flate2 at 1.1.9 so both resolve to one miniz_oxide 0.8.9.
 # Revisit when png's miniz_oxide range converges with flate2's.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+sysinfo = { version = "0.37.2", default-features = false, features = ["system"] }
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 rtrb = "0.4"

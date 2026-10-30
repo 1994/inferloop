@@ -1,4 +1,5 @@
 //! Admission credits survive abandoned futures until CPU jobs and deferred commands drop their payloads.
+use crate::staging::StagingLimit;
 use infer_core::{Error, ErrorCode, RequestId, Result};
 use std::{
     collections::BTreeMap, sync::Arc, sync::Mutex, sync::atomic::AtomicBool, sync::atomic::Ordering,
@@ -11,7 +12,7 @@ struct Usage {
 pub struct Registry {
     usage: Mutex<Usage>,
     max_jobs: usize,
-    max_bytes: usize,
+    limit: Arc<StagingLimit>,
 }
 pub struct Pending {
     registry: Arc<Registry>,
@@ -20,14 +21,14 @@ pub struct Pending {
     cancelled: Arc<AtomicBool>,
 }
 impl Registry {
-    pub fn new(max_jobs: usize, max_bytes: usize) -> Arc<Self> {
+    pub fn new(max_jobs: usize, limit: Arc<StagingLimit>) -> Arc<Self> {
         Arc::new(Self {
             usage: Mutex::new(Usage {
                 entries: BTreeMap::new(),
                 bytes: 0,
             }),
             max_jobs,
-            max_bytes,
+            limit,
         })
     }
     pub fn reserve(self: &Arc<Self>, id: RequestId, bytes: usize) -> Result<Arc<Pending>> {
@@ -42,7 +43,7 @@ impl Registry {
             .bytes
             .checked_add(bytes)
             .ok_or_else(|| Error::invalid("ingress bytes overflow"))?;
-        if usage.entries.len() >= self.max_jobs || total > self.max_bytes {
+        if usage.entries.len() >= self.max_jobs || total > self.limit.current() {
             return Err(Error::new(
                 ErrorCode::Capacity,
                 "pending ingress budget exhausted",

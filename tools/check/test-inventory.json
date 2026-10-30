@@ -40,7 +40,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 103
+      "tests": 106
     },
     "ir": {
       "benches": 0,
@@ -1392,6 +1392,11 @@
     },
     {
       "crate": "frontdoor",
+      "file": "src/staging.rs",
+      "mount": "../tests/unit/staging.rs"
+    },
+    {
+      "crate": "frontdoor",
       "file": "tests/isolation.rs",
       "mount": "../../../engine/runtime/tests/support/mod.rs"
     },
@@ -1422,11 +1427,11 @@
     }
   ],
   "totals": {
-    "all": 1028,
+    "all": 1031,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1028
+    "tests": 1031
   }
 }

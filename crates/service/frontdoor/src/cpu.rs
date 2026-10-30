@@ -1,4 +1,5 @@
 //! Fixed CPU workers with admission bytes, queue bounds and cancellable asynchronous replies.
+use crate::staging::{REFRESH_INTERVAL, StagingLimit};
 use infer_core::placement::ThreadPlacement;
 use infer_core::{Error, ErrorCode, Result};
 use serde::{Deserialize, Serialize};
@@ -91,6 +92,7 @@ struct Budget {
     active: AtomicUsize,
     peak: AtomicUsize,
     config: CpuConfig,
+    limit: Arc<StagingLimit>,
 }
 pub(super) struct Credit {
     budget: Arc<Budget>,
@@ -155,10 +157,18 @@ impl CpuPool {
         Self::named(config, "prepare")
     }
     pub(super) fn named(config: CpuConfig, lane: &str) -> Result<Self> {
-        let placement = config.placement.clone();
-        placement.scope(|| Self::initialize(config, lane))
+        let limit = Arc::new(StagingLimit::fixed(config.max_bytes));
+        Self::named_with_limit(config, lane, limit)
     }
-    fn initialize(config: CpuConfig, lane: &str) -> Result<Self> {
+    pub(super) fn named_with_limit(
+        config: CpuConfig,
+        lane: &str,
+        limit: Arc<StagingLimit>,
+    ) -> Result<Self> {
+        let placement = config.placement.clone();
+        placement.scope(|| Self::initialize(config, lane, limit))
+    }
+    fn initialize(config: CpuConfig, lane: &str, limit: Arc<StagingLimit>) -> Result<Self> {
         config.validate()?;
         let (jobs, receiver) = mpsc::sync_channel::<Job>(config.max_jobs);
         let receiver = Arc::new(Mutex::new(receiver));
@@ -167,6 +177,7 @@ impl CpuPool {
             active: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
             config,
+            limit,
         });
         for index in 0..budget.config.workers {
             let receiver = receiver.clone();
@@ -181,17 +192,28 @@ impl CpuPool {
     fn work(receiver: &Mutex<mpsc::Receiver<Job>>, budget: &Arc<Budget>) {
         loop {
             let job = match receiver.lock() {
-                Ok(receiver) => receiver.recv(),
+                Ok(receiver) if budget.limit.is_automatic() => {
+                    receiver.recv_timeout(REFRESH_INTERVAL)
+                }
+                Ok(receiver) => receiver
+                    .recv()
+                    .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
                 Err(_) => break,
             };
-            let Ok(job) = job else {
-                break;
+            let job = match job {
+                Ok(job) => job,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    budget.limit.refresh_if_due();
+                    continue;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             };
             let active = budget.active.fetch_add(1, Ordering::Relaxed) + 1;
             budget.peak.fetch_max(active, Ordering::Relaxed);
             let _active = Active(budget.clone());
             // A bad CPU provider fails its reply without destroying the fixed worker pool.
             let _ = catch_unwind(AssertUnwindSafe(job));
+            budget.limit.refresh_if_due();
         }
     }
     pub(super) fn reserve(&self, bytes: usize) -> Result<Credit> {
@@ -204,7 +226,7 @@ impl CpuPool {
             .bytes
             .checked_add(bytes)
             .ok_or_else(|| Error::invalid("CPU staging size overflow"))?;
-        if usage.jobs >= self.budget.config.max_jobs || total > self.budget.config.max_bytes {
+        if usage.jobs >= self.budget.config.max_jobs || total > self.budget.limit.current() {
             return Err(Error::new(
                 ErrorCode::Capacity,
                 "CPU preparation queue/byte budget exhausted",

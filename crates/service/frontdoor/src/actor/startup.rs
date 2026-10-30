@@ -3,6 +3,7 @@ use super::{RuntimeActor, RuntimeHandle, mpsc, observation_bytes};
 use crate::cpu::CpuConfig;
 use crate::cpu::CpuPool;
 use crate::ingress::Registry;
+use crate::staging::StagingLimit;
 use infer_core::Result;
 use infer_runtime::Engine;
 use infer_spi::BackendProvider;
@@ -32,7 +33,7 @@ impl RuntimeHandle {
                 .div_ceil(MICROS_PER_MILLI),
             ..CpuConfig::default()
         };
-        Self::start_with_config(engine, config)
+        Self::start_inner(engine, config, Arc::new(StagingLimit::automatic()))
     }
     /// # Errors
     /// Rejects invalid CPU limits, unforkable preparation providers or startup failures.
@@ -43,25 +44,38 @@ impl RuntimeHandle {
     where
         B::Ticket: Send,
     {
+        let limit = Arc::new(StagingLimit::fixed(config.max_bytes));
+        Self::start_inner(engine, config, limit)
+    }
+    fn start_inner<B: BackendProvider + Send + 'static>(
+        engine: Engine<B>,
+        config: CpuConfig,
+        limit: Arc<StagingLimit>,
+    ) -> Result<Self>
+    where
+        B::Ticket: Send,
+    {
         config.validate()?;
         let request_ids = Arc::new(AtomicU64::new(engine.request_id_high_watermark()));
         let preparer = engine.request_preparer()?;
-        let cpu = CpuPool::new(config.clone())?;
-        let delivery = CpuPool::named(
+        let cpu = CpuPool::named_with_limit(config.clone(), "prepare", limit.clone())?;
+        let delivery = CpuPool::named_with_limit(
             CpuConfig {
                 workers: 1,
                 max_jobs: config.max_jobs,
                 ..config.clone()
             },
             "delivery",
+            limit.clone(),
         )?;
-        let observation = CpuPool::named(
+        let observation = CpuPool::named_with_limit(
             CpuConfig {
                 workers: 1,
                 max_jobs: 2,
                 ..config.clone()
             },
             "observe",
+            limit.clone(),
         )?;
         let observation_bytes = observation_bytes(engine.config())?;
         let engine = engine.into_threaded(
@@ -91,7 +105,7 @@ impl RuntimeHandle {
             delivery,
             observation,
             observation_bytes,
-            ingress: Registry::new(config.max_jobs, config.max_bytes),
+            ingress: Registry::new(config.max_jobs, limit),
             config,
         })
     }
