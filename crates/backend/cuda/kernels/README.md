@@ -28,6 +28,17 @@ cuTile 和 cuda-oxide 属于 [NVIDIA CUDA Rust](https://nvidia.github.io/cuda-ru
 `combined` 是同一 canonical 合同下的实现变体；BF16/FP16 FA4 是不同数值合同。
 本次工程整理不改变运行时选择、默认 profile、调优缓存身份或已发布制品。
 
+## 两种交付方式
+
+同一份[制品清单](../../../../tools/cuda/kernels.json)管理两种交付方式，差异只在制品是否入库：
+
+| 交付 | 适用 | 制品 | 校验 |
+|---|---|---|---|
+| 内嵌（`kernels`） | 13.x 上已验证的 kernel | PTX 入库，编译时嵌入 | `kernels.py verify` 校验哈希与来源 |
+| Sidecar（`sidecar`） | 需要 SASS 的设备，比如 sm_89 / 驱动 550 | cubin 是构建产物，不入库 | 工具链 pin，加载时校验 manifest 与 digest |
+
+内嵌制品保持入库：打包 CI 没有 nvcc，oxide 和 FA4 的生成器也难以进入 CI，而且制品哈希是调优缓存身份的一部分。
+
 ## 清单与验收
 
 ```sh

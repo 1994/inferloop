@@ -2,9 +2,10 @@
 """Build one AOT artifact set: cubins plus a manifest. Never executes device code.
 
 The artifact set is a build product. `make build-kernels-aot ARCH=sm_89 CUDA_HOME=...` writes it
-under `target/kernels/aot/`. `aot-kernels.json` lists the entries and pins one toolchain per
-architecture; a different nvcc is refused, because a cubin from a newer toolchain is not evidence
-for the driver that architecture ships with. The set appears only once every cubin has built.
+under `target/kernels/aot/`. The `sidecar` section of `kernels.json` lists the entries and pins one
+toolchain per architecture; a different nvcc is refused, because a cubin from a newer toolchain is
+not evidence for the driver that architecture ships with. The set appears only once every cubin has
+built.
 """
 
 import argparse
@@ -18,7 +19,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-REGISTRY = Path(__file__).resolve().with_name("aot-kernels.json")
+REGISTRY = Path(__file__).resolve().with_name("kernels.json")
 
 
 def sha256(path):
@@ -39,7 +40,8 @@ def main():
     parser.add_argument("--out", type=Path, default=Path("target/kernels/aot"), help="output root")
     parser.add_argument("--cuda-home", type=Path, help="CUDA toolkit root (default: CUDA_HOME)")
     arguments = parser.parse_args()
-    registry = json.loads(REGISTRY.read_text())
+    document = json.loads(REGISTRY.read_text())
+    registry = document["sidecar"]
     pinned = registry["toolchains"].get(arguments.arch)
     if pinned is None:
         raise SystemExit(f"no toolchain pinned for {arguments.arch} in {REGISTRY.name}")
@@ -84,7 +86,7 @@ def main():
             }
         )
     manifest = {
-        "schema": registry["schema"],
+        "schema": document["schema"],
         "profile": "aot",
         "arch": arguments.arch,
         "toolchain": f"nvcc {version}",

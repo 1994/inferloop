@@ -184,8 +184,8 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         // Close paths cannot report through `Drop`; `Device::synchronize` surfaces stream errors.
-        let _ = self.synchronize();
         if !self.stream.is_null() {
+            let _ = self.synchronize();
             // SAFETY: the stream was created by this session and is destroyed once.
             let _ = unsafe { (self.driver.stream_destroy)(self.stream) };
         }

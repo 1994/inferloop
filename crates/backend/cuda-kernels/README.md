@@ -19,11 +19,11 @@ src/contract/                 what the host may see: arch, plans, recording, one
 src/tile/<family>/            cuTile kernels; only this source may name `cutile`
 src/aot/<family>.rs           driver launcher
 src/aot/<family>/*.cu         its kernels
-tools/cuda/aot-kernels.json   AOT entries and the toolchain pinned for each architecture
+tools/cuda/kernels.json       every device artifact; `sidecar` lists AOT entries and toolchain pins
 ```
 
 To bring a family to a device without cuTile, read `src/tile/<family>/`, write the `.cu`, register it
-in `aot-kernels.json`, and compare against an independent CPU reference on the device.
+in the `sidecar` section of `tools/cuda/kernels.json`, and compare against an independent CPU reference on the device.
 
 ## Launch contract
 
