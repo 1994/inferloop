@@ -111,7 +111,8 @@ fn load_once(
     let maximum_states = selection
         .max_num_seqs
         .unwrap_or(device_states)
-        .min(device_states);
+        .min(device_states)
+        .min(selection.tuned_pool_width.unwrap_or(usize::MAX));
     tracing::info!(
         target: "infer::load",
         resident = %human_bytes(used),

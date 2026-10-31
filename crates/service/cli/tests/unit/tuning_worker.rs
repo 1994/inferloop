@@ -111,3 +111,24 @@ fn preparation_timeout_and_nonzero_exit_are_bounded_failures() -> StdResult<(), 
     assert!(run_worker(&mut failed).is_err());
     Ok(())
 }
+
+#[cfg(cuda_backend)]
+#[test]
+fn preparation_stamp_needs_its_table_and_identity() -> StdResult<(), Box<dyn StdError>> {
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let root = temp_dir().join(format!("infer-stamp-{}-{unique}", id()));
+    create_dir_all(&root)?;
+    let table = root.join("tuning.json");
+    let stamp = stamp_path(&table, &[b"first".to_vec()]);
+    assert_ne!(stamp, stamp_path(&table, &[b"second".to_vec()]));
+    write_stamp(&stamp, 17)?;
+    assert_eq!(read_stamp(&table, &stamp), None);
+    write(&table, "{}")?;
+    assert_eq!(read_stamp(&table, &stamp), Some(17));
+    write(&stamp, "0")?;
+    assert_eq!(read_stamp(&table, &stamp), None);
+    write(&stamp, "garbage")?;
+    assert_eq!(read_stamp(&table, &stamp), None);
+    remove_dir_all(root)?;
+    Ok(())
+}

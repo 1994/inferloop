@@ -20,6 +20,8 @@ use std::mem::swap;
 use std::mem::take;
 use std::ops::Range;
 /// Bound capture/replan work while adapting tensor quotes to observed driver storage.
+/// Spacing of automatic pool widths; at most this many lanes minus one go unused.
+const POOL_WIDTH_STEP: usize = 4;
 const POOL_CAPTURE_ATTEMPTS: usize = 3;
 
 /// The prompt rows a just-finished chunk leaves as a reusable prefix, if any.
@@ -577,7 +579,13 @@ impl CudaExecutor {
         // established 1024-row worker floor. Deeper shrinking saves memory but adds replays.
         let minimum_prompt = (configured / 2).max(WIDER_PREFILL_LANES).min(configured);
         let minimum = if self.dflash.is_some() { 1 } else { 2 };
-        for width in (minimum..=maximum).rev() {
+        // Funded widths snap to a ladder: free memory differs between the tuning worker and the
+        // server, and every distinct width is a distinct set of measured shapes. Below one step
+        // and at the requested maximum the exact width is kept.
+        let ladder = move |width: &usize| {
+            *width == maximum || *width < POOL_WIDTH_STEP || width.is_multiple_of(POOL_WIDTH_STEP)
+        };
+        for width in (minimum..=maximum).rev().filter(ladder) {
             let mut prompt_width = configured;
             loop {
                 if let Some(quote) = self.loaded.funded_pooled_serving(

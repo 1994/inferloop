@@ -42,6 +42,12 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
     )?;
     #[cfg(cuda_backend)]
     if tuning_worker {
+        super::tuning_worker::record_prepared(
+            engine
+                .backend()
+                .execution_profile()
+                .and_then(|profile| profile.concurrency.as_ref().map(|limit| limit.selected)),
+        );
         tracing::info!(target: "infer::tuning", "CUDA tuning preparation complete; releasing preparation resources");
         flush_logs();
         return Ok(());

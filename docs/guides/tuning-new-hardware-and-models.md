@@ -20,7 +20,7 @@
 | 项 | 机制 | 落盘位置 / 日志 |
 |---|---|---|
 | 设备身份 | `DeviceProfile`：型号、架构、SM 数、显存、显存时钟、位宽、L2；驱动版本和驱动构建号 | 所有调优键的一部分，换硬件或驱动会自动重新测量 |
-| 调优预热 | 服务启动前先起一个独立的预热子进程，超时 600 s；它也会 capture slot pool，否则池宽度的形状测不到。测完后释放资源，服务进程复用缓存 | 日志 `CUDA tuning preparation complete` |
+| 调优预热 | 服务启动前先起一个独立的预热子进程，超时 600 s；它也会 capture slot pool，否则池宽度的形状测不到。完成后在缓存旁写准备戳（二进制、命令行、驱动和 GPU，以及测过的宽度）；戳匹配时下次启动跳过预热，服务进程的 pool 宽度不超过戳里的值 | 日志 `CUDA tuning preparation complete` |
 | 调优缓存 | `$XDG_CACHE_HOME/infer-cuda/tuning.json`，未设置时为 `~/.cache/infer-cuda/tuning.json` | 每个条目带配对计时证据 |
 | NVFP4 投影 tile | `tuning/resident_gemm.rs`：按形状 (M, N, K) 搜索 tile_m、tile_n 和主循环（Plain / Prefetch8），AB 搜索加 BA 确认 | `resident GEMM selected ... source=` 为 `measured`、`table-cache` 或 `autotune-disabled` |
 | BF16 池化投影 | `tuning/pool_dense.rs`：按 `(lanes, n, k)` 实测行 GEMV 和不同输出 tile 的 tensor-core kernel，包括窄 rung；tile 变体须与基线逐位相同，GEMV 须与 private 算术逐位相同，没搜完就保留基线 | `pooled dense choice shape=... choice=... source=` |

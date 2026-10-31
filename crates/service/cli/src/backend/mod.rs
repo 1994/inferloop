@@ -156,6 +156,8 @@ pub struct Selection {
     pub media_limits: infer_models::MediaLimits,
     /// A server captures before it listens; one-shot commands and tuning workers on demand.
     pub pool_capture: PoolCapture,
+    /// Widest pool the tuning preparation measured; a server stays within it.
+    pub tuned_pool_width: Option<usize>,
 }
 #[cfg(any(test, native_backend))]
 fn resolve(
