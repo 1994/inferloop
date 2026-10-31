@@ -90,7 +90,7 @@ oxide、nvcc 和图像预处理的 PTX 由 `kernels/` 内嵌，运行时通过 `
 | 生成器 | nvcc（`.cu`）、cuda-oxide（Rust SIMT）、CuTe DSL（FA4 离线 AOT） |
 
 12.9 / sm_89 的制品规则不同：**只接受 SASS cubin，不接受 PTX-only**（550 的 PTX JIT 只到 12.4），
-并使用独立清单 `tools/cuda/aot-kernels.json`。设计见[接入方案](../plans/engineering/cuda-kernel-provider.md)第 8 节。
+并在同一清单的 `sidecar` 段登记。设计见[接入方案](../plans/engineering/cuda-kernel-provider.md)第 8 节。
 
 ## 5. 改动入口
 
@@ -113,8 +113,8 @@ oxide、nvcc 和图像预处理的 PTX 由 `kernels/` 内嵌，运行时通过 `
 | host 直接持有 `cutile::Tensor`（1,492 处） | `cuda-kernels::Buffer`，host 不出现 cuTile 类型 |
 | kernel 模块内联在 37 个 host 文件 | `cuda-kernels/src/{tile,aot}` |
 | host 直接用 `cuda_core`（13.0+ 头文件构建门禁） | `Device` / `Stream` 契约，AOT 路径可零工具链构建 |
-| 一个 `cuda` feature | `cuda` / `cuda-aot` 编译期二选一 |
-| 一份制品 registry | 13.x 与 12.9 两份，工具链与哈希隔离 |
+| 一个 `cuda` feature | `cuda` / `cuda-aot` 两种构建；kernel 的 `tile`、`aot` 来源可叠加 |
+| 所有制品都入库 | 一份清单，内嵌 PTX 与 sidecar 两种交付 |
 | 12.9 不可用（无 Tile IR） | SASS + cuBLASLt；FlashInfer 仅可选补 GDN/MoE |
 
 迁移按[接入方案](../plans/engineering/cuda-kernel-provider.md)第 11 节的阶段执行。在此之前，新代码尽量

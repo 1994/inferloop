@@ -20,7 +20,7 @@ v1 范围以 dense BF16/FP8 为起点，先实现目标模型实际用到的算�
 
 ## 1. 目标
 
-一句话：**host 只认 `Buffer` / `Kernels` 契约，kernel 用编译期 feature 选 cuTile 或 AOT；新增设备 =
+一句话：**host 只认 `Buffer` / `Kernels` 契约，kernel 的来源（cuTile 或 AOT）由 feature 决定是否编入，构造时选定一次；新增设备 =
 新增 profile + 制品 + 验收。**
 
 可验收结果：
@@ -42,7 +42,7 @@ v1 范围以 dense BF16/FP8 为起点，先实现目标模型实际用到的算�
 
 1. **host 不出现 `cutile` / `cuda_core` / `libloading` 类型。** 设备句柄、buffer、stream、artifact 加载都在
    `cuda-kernels` 内。
-2. **编译期二选一。** `cuda` 与 `cuda-aot` 互斥，`compile_error!` 守卫；不存在运行期分支。
+2. **来源可叠加，选择只发生一次。** `tile` 与 `aot` 可同时编入，没有 cuTile 的设备只编 `aot`；每个算子族在构造期选定实现，调用路径上没有版本或架构分支。
 3. **一个 provider、一套 KV/图/调优/准入。** kernel 只是实现，不决定 page 格式、workspace 或调度。
 4. **制品与数值 contract 是一等公民。** 每个 kernel 有 manifest、hash、arch、toolchain 和 contract ID。
 5. **`cuda-aot` 构建零工具链依赖。** 驱动与 cuBLASLt 全部 dlopen，制品由固定工具链离线产出，不入库。
@@ -60,7 +60,7 @@ v1 范围以 dense BF16/FP8 为起点，先实现目标模型实际用到的算�
 | `Profile` | `tile` / `aot` | Cargo feature、实现目录 |
 | `Family` | projection/attention/norm/rope/recurrent/moe/vision/state/sampling | trait |
 | `Contract` | `canonical-f32` / `bf16-f32acc` / `fp8-kv-f32acc` / `vendor-*` | registration + manifest |
-| `Artifact` | `(profile, arch, family, contract)` → 文件 + hash + 工具链 + 格式 | `tools/cuda/aot-kernels.json` + 构建 manifest |
+| `Artifact` | `(profile, arch, family, contract)` → 文件 + hash + 工具链 + 格式 | `tools/cuda/kernels.json` 的 `sidecar` + 构建 manifest |
 
 一个 **cell** = `(profile, arch, family, contract)`。host 只看到 `(family, contract)`；矩阵在构造期解析成
 `Kernels`，调用路径上没有版本/架构分支。
@@ -81,7 +81,7 @@ v1 范围以 dense BF16/FP8 为起点，先实现目标模型实际用到的算�
 |---|---|
 | `cutile::`、`#[cutile::module]` | `cuda-kernels/tile` |
 | `libcuda` 符号、`cuLaunchKernel`、`cuModuleLoadData` | `cuda-kernels/aot` |
-| AOT 制品清单与工具链 pin | `tools/cuda/aot-kernels.json`；制品本身是 sidecar |
+| 制品清单与工具链 pin | `tools/cuda/kernels.json`；sidecar 制品本身不入库 |
 | 架构名（`sm_89`…） | `contract/target.rs`、`aot/<family>/<arch>.rs`、tuning 参数 |
 | 工具链版本 pin | artifact manifest、`tools/cuda` registry |
 | `cfg(feature)` | `cuda-kernels`；host 只保留既有的 `cuda_backend` 平台门控 |
@@ -111,10 +111,11 @@ v1 范围以 dense BF16/FP8 为起点，先实现目标模型实际用到的算�
 - **没有 cuTile 的设备写 `.cu`：** 按算子族实现，以独立 CPU 参考和实机结果验收，不按 entry 逐个翻译。
 - **按算子族收敛：** 同一算子族的 `.cu` 在 13.x 设备上数值通过、服务级性能不差时，才退役对应的 cuTile 实现。
   这样双份维护只是过渡，且每一步都有证据。
-- **待决定：** 13.x 构建今天已经同时使用 cuTile 与预编译 PTX，所以 `tile` / `aot` 互斥只描述构建依赖，不描述
-  kernel 来源。要做按算子族收敛，`aot` 的加载器需要在 `tile` 构建里也可用，届时把 `tile` 改为可叠加 feature。
+- **`tile` 与 `aot` 可叠加：** 13.x 构建今天已经同时使用 cuTile 与预编译 PTX，按算子族收敛也需要两者共存，
+  所以它们描述 kernel 来源，不互斥。
 
-选择入口复用 `infer-kernel-api` 的 `KernelRegistration`，不再建第二套注册表。
+`KernelRegistration` 按 `Operation` 回答编译器“这个操作能不能执行”，不是实现选择器：host 只注册当前设备有实现的
+操作，同一操作选哪个实现仍由算子族构造和 tuning 决定，不新增第二套注册表。
 
 ## 4. 模块布局
 
@@ -245,10 +246,10 @@ kernel 调用路径上。host 不感知 arch，也不感知 feature。
 |---|---|---|---|---|
 | 迁移期 | `cuda/kernels/` 入库 | 无 | `cuda`（cuTile） | 不可用 |
 | 契约落地 | 不变 | 构建产物 | `cuda` + `cuda-kernels/tile` | 不可用 |
-| AOT 落地 | 不变 | 构建产物，sidecar | `cuda` / `cuda-aot` 二选一 | 可用 |
+| AOT 落地 | 不变 | 构建产物，sidecar | `cuda` 或 `cuda-aot`（host 迁移后） | 可用 |
 
 只拆一个 crate 而不是两个：契约与两个实现共享同一组类型，拆成 HAL + kernels 会多出第三个 manifest 和
-跨三处的 feature 组合；一个 crate 内的互斥 feature 提供同等隔离，只有一个边界要维护。
+跨三处的 feature 组合；一个 crate 内的 feature 提供同等隔离，只有一个边界要维护。
 
 ## 5. 契约
 
@@ -327,7 +328,7 @@ pub fn kernels(device: &Device, target: Target) -> Result<Kernels>;
 
 - 不允许 `cutile::Tensor`、`at::Tensor`、FlashInfer 类型出现在签名里。
 - dtype 用独立方法而不是泛型，保持 object-safe，错误信息可读。
-- 每个方法对应一条 `KernelRegistration`，`source` 指向真实实现；不支持的算子返回
+- 操作只有在当前设备有实现时才注册 `KernelRegistration`；不支持的算子返回
   `Error::unsupported`，**不注册**，避免“注册后内部 fallback”。
 - `KvView` 是 host 的只读视图（page table、scale、长度），由 `state` 层构造；kernel 不得修改布局。
 
@@ -376,10 +377,7 @@ cuda = ["dep:infer-backend-cuda", "infer-backend-cuda/cuda"]
 cuda-aot = ["dep:infer-backend-cuda", "infer-backend-cuda/cuda-aot"]
 ```
 
-```rust
-#[cfg(all(feature = "cuda", feature = "cuda-aot"))]
-compile_error!("cuda and cuda-aot are mutually exclusive; build one kernel provider per artifact");
-```
+`cuda` 与 `cuda-aot` 是 host 的两种构建配置，kernel crate 的 `tile`、`aot` 可以同时编入。
 
 | 构建 | feature | 构建期需要 | 运行期需要 |
 |---|---|---|---|
@@ -411,7 +409,7 @@ compile_error!("cuda and cuda-aot are mutually exclusive; build one kernel provi
 
 ### 8.1 原则
 
-Git 只提交 AOT 的源码（`.cu`）和 `tools/cuda/aot-kernels.json`（条目与每个架构的工具链 pin）。**AOT 的 cubin 不提交**；它们是构建产物，由本地 `make kernels` 或 CI 矩阵产出，进包，
+Git 只提交 AOT 的源码（`.cu`）和 `tools/cuda/kernels.json` 的 `sidecar` 段（条目与每个架构的工具链 pin）。**AOT 的 cubin 不提交**；它们是构建产物，由本地 `make kernels` 或 CI 矩阵产出，进包，
 不进仓库。
 
 13.x 现有制品不变。"本机构建后入库"的模型解决的是"运行期不需要工具链、可逐字节复现"，但代价是二进制进 git、PR 噪音、
@@ -432,7 +430,7 @@ make build-kernels-aot ARCH=sm_89 CUDA_HOME=/opt/cuda-12.9
 # -> target/kernels/aot/sm_89/manifest.json + *.cubin
 ```
 
-- 工具链 pin 在 `tools/cuda/aot-kernels.json`，版本不符直接拒绝；manifest 记录实际 nvcc 版本。
+- 工具链 pin 在 `tools/cuda/kernels.json`，版本不符直接拒绝；manifest 记录实际 nvcc 版本。
 - 12.9 / sm_89：`--cubin`（SASS），禁止 PTX-only；浮点开关沿用现有逐项固定。
 - 13.x：`tile` profile 继续 JIT，本方案不改变它。
 - 每个 cell 一个 manifest：符号、源码 hash、工具链、arch、contract ID、构建命令。
@@ -475,6 +473,28 @@ host 重编。需要单文件部署时再提供可选的内嵌模式。
 - 只允许出现在 `Recurrent` 与 `Moe` 两个 trait 后面；attention/GEMM 不接。
 - shim 缺失时该能力返回 `Unsupported`，不静默回退。
 
+### 8.6 现有 PTX 与 sidecar 的关系
+
+只有一份清单 `tools/cuda/kernels.json`，一个入口 `kernels.py`；差异只在交付方式。
+
+| 交付 | 适用 | 制品 | 校验 |
+|---|---|---|---|
+| 内嵌（`kernels`） | 13.x 上已验证的 PTX | 入库，编译时嵌入 | `kernels.py verify` 校验哈希与来源 |
+| Sidecar（`sidecar`） | 需要 SASS 的设备 | 构建产物 | 工具链 pin，加载时校验 manifest 与 digest |
+
+现有 PTX 不迁出仓库：打包 CI 没有 nvcc，oxide 和 FA4 的生成器难以进入 CI，制品哈希也是调优缓存身份的一部分；
+总量约 4.4 MB，迁移收益不足以抵消这些代价。L20 需要的现有 `.cu` 以它为起点，在 sidecar 里按 sm_89 单独登记。
+
+### 8.7 开发驱动与生产驱动
+
+开发机（如 4090 / sm_89）可以使用比 550 新的驱动，生产 L20 保持 550。cubin 由固定的 12.9 nvcc 产出，新驱动可以加载。
+新驱动会掩盖两类问题，所以需要单独把关：
+
+- **PTX JIT：** 新驱动能 JIT 的 PTX 版本，550 不一定能；AOT 路径只发 cubin。
+- **驱动符号：** `aot/driver.rs` 在加载时解析全部符号，新驱动才有的符号在 550 上会让设备打不开。
+
+因此性能和调优结果只在 L20 上算数，发布前必须在 550 上跑完验收；开发机结果只说明功能可用。
+
 ## 9. 数值契约
 
 | Contract | 定义 | 对照方式 |
@@ -496,7 +516,7 @@ host 重编。需要单文件部署时再提供可选的内嵌模式。
 
 1. **探测能力。** 记录 sm、显存、FP4/FP8、driver 版本、是否 550、是否数据中心卡（前向兼容只对数据中心卡）。
 2. **选构建。** 设备能用 cuTile 走 `cuda`；不能用则 `cuda-aot`。不允许两边都编。
-3. **定义 profile。** 在 `target.rs` 增加 `Target`（arch + family），在 `KernelRegistration` 里只注册真实
+3. **定义 profile。** 在 `target.rs` 增加 `Arch`，在 `KernelRegistration` 里只注册真实
    可执行的算子与精度；未覆盖的返回 `Unsupported`。
 4. **产出制品。** 按第 8 节生成 SASS、manifest、hash，运行 `kernels.py verify`。
 5. **实现 trait。** 按算子族实现；先 `dense`，再 `norm/rope`，最后 `attention/recurrent`。
@@ -525,7 +545,7 @@ host 重编。需要单文件部署时再提供可选的内嵌模式。
 ### 10.2 完成定义
 
 ```text
-[ ] `cuda` 与 `cuda-aot` 各自能独立构建，编译期互斥
+[ ] `cuda` 与 `cuda-aot` 各自能独立构建，`cuda-aot` 不链接 cuTile
 [ ] host 无 cutile/cuda_core/libloading 类型
 [ ] 13.x 全量测试、smoke、数值不变
 [ ] 12.9 制品全部为 SASS，verify 通过
@@ -577,7 +597,6 @@ crates/backend/cuda-kernels/src/contract/**
 crates/backend/cuda-kernels/src/tile/**
 crates/backend/cuda-kernels/src/aot/**
 crates/backend/cuda-kernels/src/flashinfer/**
-tools/cuda/aot-kernels.json
 tools/cuda/build_aot.py
 ```
 
@@ -604,7 +623,7 @@ docs/architecture/backends.md      支持矩阵
 - [ADR-0004](../../adr/0004-performance-first.md)：AOT 覆盖是既定方向；本方案把 12.9 的 AOT 作为第一个
   完整实例，而不是第二个 backend。
 - [Kernel 制品工程](../../../crates/backend/cuda/kernels/README.md)：现有 manifest/verify/重建规则继续适用，
-  AOT 使用 `tools/cuda/aot-kernels.json`。
+  AOT 使用同一清单的 `sidecar` 段。
 - [CUDA 后端分层](../../architecture/cuda-layers.md)：当前目录职责、launch 路径与改动入口；本方案第 6 节
   列出它与目标分层的差异。
 - [代码布局](../../architecture/layout.md)：新 crate 落在 `crates/backend/<crate>`，依赖方向保持
