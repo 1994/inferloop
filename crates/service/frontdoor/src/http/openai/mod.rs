@@ -3,6 +3,7 @@ mod decisions;
 mod error;
 mod execution;
 mod request;
+mod responses;
 mod stream;
 #[cfg(test)]
 #[path = "../../../tests/unit/http_openai.rs"]
@@ -21,6 +22,7 @@ use axum::{
 };
 use error::ApiError;
 use request::{GenerationRequest, ToolPolicy};
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 type ApiResult<T> = Result<T, ApiError>;
@@ -36,6 +38,7 @@ pub(super) fn routes() -> Router<TextState> {
         )
         .route("/v1/completions", post(completion))
         .route("/v1/decisions", post(decision))
+        .route("/v1/responses", post(responses::create))
 }
 
 async fn models(State(state): State<TextState>) -> ApiResult<Json<Value>> {
@@ -68,11 +71,19 @@ async fn chat(
     headers: HeaderMap,
     request: Request,
 ) -> ApiResult<Response> {
-    let request = parse_chat_body(&state, request).await?;
+    let request = parse_json_body::<GenerationRequest>(&state, request).await?;
     reply(state, headers, request, true).await
 }
 
-async fn parse_chat_body(state: &TextState, request: Request) -> ApiResult<GenerationRequest> {
+/// Parse one JSON body on the bounded preparation pool.
+///
+/// Chat and Responses both carry enough text and inline media to make the parse worth moving
+/// off an async worker; the content type is checked here so a missing header keeps the
+/// compatibility 415 response.
+async fn parse_json_body<T>(state: &TextState, request: Request) -> ApiResult<T>
+where
+    T: DeserializeOwned + Send + 'static,
+{
     let is_json = request
         .headers()
         .get(CONTENT_TYPE)
@@ -94,9 +105,7 @@ async fn parse_chat_body(state: &TextState, request: Request) -> ApiResult<Gener
     let parsed = state
         .handle
         .cpu_pool()
-        .run(bytes.len(), move |_| {
-            Ok(Json::<GenerationRequest>::from_bytes(&bytes))
-        })
+        .run(bytes.len(), move |_| Ok(Json::<T>::from_bytes(&bytes)))
         .await?;
     let Json(request) = parsed.map_err(ApiError::from)?;
     Ok(request)

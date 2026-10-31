@@ -2,7 +2,7 @@
 
 `serve --package` 在模型包包含 `tokenizer.json` 时启用 `/v1` 兼容路由；Chat Completions 还需要包内聊天模板。接口直接调用本地推理引擎，不需要 OpenAI 账号或 API key。
 
-响应格式参考官方 [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create) 与 [Completions](https://developers.openai.com/api/reference/resources/completions/methods/create)，但兼容范围是明确限定的。
+响应格式参考官方 [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、[Completions](https://developers.openai.com/api/reference/resources/completions/methods/create) 与 [Responses](https://developers.openai.com/api/docs/guides/migrate-to-responses)，但兼容范围是明确限定的。
 
 已交付长度预算、有效配置读回、typed 工具历史、工具闭环与参数增量输出，以及非推测解码中的 `required`、指定 function、`strict` schema 生成约束。设计与后续推测组合见 [独立方案](../plans/serving/agent-api.md)。扩展按实际使用场景选择，以下只说明当前能力。
 
@@ -14,6 +14,7 @@
 | `GET /v1/models/{model}` | 查询部署名对应的模型；不存在时返回 OpenAI 格式的 404 |
 | `POST /v1/chat/completions` | 用包内模板编码 messages，返回 `chat.completion` 或 SSE |
 | `POST /v1/completions` | 编码单个字符串 prompt，返回 `text_completion` 或 SSE |
+| `POST /v1/responses` | 用 Responses 的 input / instructions 编码，返回 `response` 或 typed SSE，见「Responses」 |
 | `POST /v1/decisions` | 用同一生成模型回答 predicate / choice / score 问题，见「决策」 |
 
 部署名默认是内部 ModelId 的十进制字符串，可用 `--served-model-name` 覆盖；样例模型默认名为 `"1"`。请求未加载的模型返回 404。包内没有 tokenizer 时上述路由不存在，原生 token API 仍可使用。
@@ -69,7 +70,106 @@ assistant 消息可以带 `tool_calls`（`null` 按空列表处理），每项�
 
 不要把当前输出默认 16 当作上下文上限，也不要假设省略采样参数一定得到 greedy。
 
-不支持的字段（如 `stop`、`response_format`、`logprobs`）会被拒绝，不会静默忽略。多模态输入的范围见[视觉服务路径](vision.md#服务路径)。Responses、Embeddings、鉴权、服务端存储均未实现。
+不支持的字段（如 `stop`、`response_format`、`logprobs`）会被拒绝，不会静默忽略。多模态输入的范围见[视觉服务路径](vision.md#服务路径)。Responses 的文本与 function 工具子集已实现；Embeddings、鉴权、服务端存储、内置工具与结构化输出均未实现。
+
+## Responses
+
+`POST /v1/responses` 实现 [Responses API](https://developers.openai.com/api/docs/guides/migrate-to-responses) 的文本与 function 工具子集，与 `/v1/chat/completions` 共用准入、模板编码、生成约束和输出解析。OpenAI SDK 的 `client.responses.create(...)` 可直接指向该路由；响应是单个 `response`，没有 `choices`。
+
+| 字段 | 约定 |
+|---|---|
+| `model` | 必填，匹配部署名 |
+| `input` | 必填；字符串等价一条 user 消息，或 1..256 个 input item |
+| `instructions` | 字符串；作为 system 消息置于 input 之前；数组形式返回 501 |
+| `max_output_tokens` | 正整数，默认 16，与 Chat 的 `max_completion_tokens` 使用同一预算与 cap |
+| `temperature` | 0..2；省略时使用解析后的默认值 |
+| `top_p` | (0,1]；省略时使用解析后的默认值 |
+| `stream` | `true` 返回 typed SSE，见「Responses 流式」 |
+| `store` | 只接受 `false` 或省略（按 false 处理）；`true` 返回 501 |
+| `tools` | 至多 128 个 `{"type":"function","name",...}`；内置工具类型返回 501 |
+| `tool_choice` | `"none"`、`"auto"`、`"required"` 或 `{"type":"function","name":...}` |
+| `parallel_tool_calls` | 默认 `true`；`false` 通过生成约束限制至多一次调用 |
+| `reasoning.effort` | `none`/`minimal` 关闭 thinking，`low` 到 `max` 开启；其他 reasoning 子字段返回 501 |
+| `text.format` | 只接受 `{"type":"text"}`；`json_object`、`json_schema` 与 `verbosity` 返回 501 |
+| `metadata` | 至多 16 个字符串键值对，原样回显 |
+| `user`、`safety_identifier`、`prompt_cache_key`、`prompt_cache_retention`、`prompt_cache_options` | 校验后接受，不改变请求行为；`prompt_cache_key` 至多 64 字节，`safety_identifier` 至多 128 字节 |
+| `stream_options.include_obfuscation` | 只接受 `false` 或省略；不生成填充字段 |
+| `service_tier` | 只接受 `auto`/`default`，响应报告 `default` |
+| `truncation` | 只接受 `disabled` |
+
+`previous_response_id`、`conversation`、`background: true`、非空 `include`、`prompt`、`context_management`、`moderation`、`access_programs`、`top_logprobs`、`max_tool_calls` 都返回 501。未知字段返回 400。
+
+### 输入 item
+
+| item | 约定 |
+|---|---|
+| message | `role` 为 user/assistant/system/developer；developer 按 system 处理；`content` 为字符串、`null` 或 part 列表 |
+| function_call | 需要 `call_id`、`name`、`arguments`；追加到前一条 assistant 消息，形成可重放的调用历史 |
+| function_call_output | 需要 `call_id` 与 `output`（字符串或文本 part 列表）；必须对应历史中更早的调用 |
+| reasoning | 接受并跳过；模型模板没有 reasoning 历史槽位，工具回传时不会重新渲染 |
+| item_reference 与内置工具 item | 501 |
+
+message 的 part 支持 `input_text`、`output_text`、`text` 与 `input_image`（URL 或 data URL，可带 `detail`）。`input_file`、`input_audio`、`input_video` 返回 501；`input_image.file_id` 也返回 501。媒体沿用 Chat 的部署能力与限制，非 user 消息携带媒体返回 400。
+
+### 响应
+
+成功响应是 `object: "response"` 的单个对象，包含 `id`（`resp_<request>`）、`status`（`completed`/`incomplete`）、`created_at`、`completed_at`、`output`、`usage`、`instructions`、`tools`、`tool_choice`、`temperature`、`top_p`、`text`、`reasoning`、`metadata` 与 `store: false`、`previous_response_id: null`。`max_output_tokens` 回显请求值，省略时为 `null`（实际预算仍是默认 16 与服务 cap 的较小值）。output item 的 id 分别为 `rs_…`、`msg_…`、`fc_…`；函数调用另带 `call_id`（`call_<request>_<index>`）。
+
+`output` 按 reasoning、message、function_call 的顺序发布。文本 item 形如：
+
+```json
+{
+  "type": "message",
+  "id": "msg_7_1",
+  "status": "completed",
+  "role": "assistant",
+  "content": [{"type":"output_text","text":"hello","annotations":[],"logprobs":[]}]
+}
+```
+
+调用 item 形如：
+
+```json
+{
+  "type": "function_call",
+  "id": "fc_7_0",
+  "status": "completed",
+  "call_id": "call_7_0",
+  "name": "get_weather",
+  "arguments": "{\"city\":\"Paris\"}"
+}
+```
+
+reasoning 文本作为 reasoning item 的 `content`（`reasoning_text`）返回，`summary` 为空。SDK 的 `response.output_text` 从 `output` 的 `output_text` 客户端拼接，服务不额外发布该便利字段。
+
+`usage.input_tokens` 包含实际模板、instructions 与工具定义；`output_tokens` 包含 reasoning 与工具调用。引擎不单独归属 reasoning token，因此 `output_tokens_details.reasoning_tokens` 当前恒为 0，这部分 token 已计入 `output_tokens`。`input_tokens_details` 的缓存字段当前为 0。
+
+引擎因输出预算停止时 `status` 为 `incomplete`，`incomplete_details.reason` 为 `max_output_tokens`，`completed_at` 为 `null`；请求错误使用与 Chat 相同的 HTTP 错误 envelope。完整返回在结构化区域中断且不是长度上限时返回 503。
+
+### Responses 流式
+
+`stream=true` 返回 `text/event-stream`，每个事件有同名的 `event:` 行，`data:` 是带 `type` 与递增 `sequence_number` 的 JSON，末尾没有 `[DONE]`：
+
+```
+response.created
+response.in_progress
+response.output_item.added
+response.content_part.added
+response.output_text.delta ...
+response.output_text.done
+response.content_part.done
+response.output_item.done
+response.completed | response.incomplete
+```
+
+reasoning 使用 `response.reasoning_text.delta` 与 `response.reasoning_text.done`；函数调用使用 `response.output_item.added`、`response.function_call_arguments.delta`、`response.function_call_arguments.done` 与 `response.output_item.done`。失败时先发布 `error`，随后发布 `response.failed` 并结束流。流式仍要求包内 byte-level decoder；不满足时在准入前返回 501，已发布的前缀不会被回写。
+
+### 与 Chat Completions 的差异
+
+- 没有 `n`、`messages`、`response_format`、`logprobs`；对应能力使用 `input`、`text.format`（当前仅 text）与 typed output。
+- 没有服务端存储。历史由调用方把上一次的 `output` item 回传给下一次 `input`；`previous_response_id` 不建立状态。
+- 只支持 function 工具。web search、file search、MCP、computer use、code interpreter、image generation 返回 501。
+- reasoning item 可以在 input 中回传，但不会进入 prompt；模板没有 reasoning 历史槽位。
 
 ## 决策
 
