@@ -1442,6 +1442,7 @@ dependencies = [
  "infer-models",
  "infer-reference-ops",
  "infer-runtime",
+ "infer-scheduler",
  "infer-spi",
  "infer-state",
  "infer-workloads",

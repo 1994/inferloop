@@ -4,6 +4,7 @@ use crate::constants::{CB_SLOT_TOKENS, KV_BLOCK_TOKENS, MAX_POOL_SLOTS};
 use crate::executor::execution::pooled_envelope;
 use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::OutputReadout;
+use infer_scheduler::{LiveStates, PoolAction, PoolDemand, PoolFacts, decide_pool};
 
 impl CudaExecutor {
     pub(super) fn pool_funding(&self) -> Result<(u64, u64)> {
@@ -80,24 +81,17 @@ impl CudaExecutor {
             return Ok(());
         }
         self.idle()?;
-        let Some(demand) = self.defer_solo_pool(id, tokens)? else {
-            return Ok(());
+        let request = self.pool_demand(id, tokens);
+        let demand = match decide_pool(&request, &mut self.pool_retry) {
+            PoolAction::Keep => return Ok(()),
+            PoolAction::Wait => {
+                return Err(Error::new(
+                    ErrorCode::Capacity,
+                    "concurrent request waits for the solo state before pooled capture",
+                ));
+            }
+            PoolAction::Fund { demand } => demand,
         };
-        if !self.pool_is_idle() {
-            return Ok(());
-        }
-        // A shorter request does not justify rebuilding a working pool. Retain the
-        // current width whenever its actual physical pages can fund that demand.
-        if self.slots.as_ref().is_some_and(|pool| {
-            let (pages, _) = pool.kv_pages();
-            tokens <= pool.capacity()
-                && pool
-                    .width()
-                    .saturating_mul(tokens.div_ceil(KV_BLOCK_TOKENS))
-                    <= pages
-        }) {
-            return Ok(());
-        }
         let maximum = self.maximum_states.min(MAX_POOL_SLOTS);
         // An accepted pool's envelope remains an upper bound for the idle replacement.
         // Actual free memory is measured again after retirement, before any allocation.
@@ -140,43 +134,34 @@ impl CudaExecutor {
         Ok(())
     }
 
-    /// A solo request uses a reusable private program. Only a previously observed
-    /// concurrent reservation may pay for pool capture once that solo state drains.
-    fn defer_solo_pool(&mut self, id: StateId, tokens: usize) -> Result<Option<usize>> {
-        // A separate draft has no private proposal graph. Its first request must fund the
-        // shared verification/proposal pair before prefill, including a solo request.
-        if self.slots.is_some() || (self.dflash.is_some() && self.states.is_empty()) {
-            return Ok(Some(tokens));
+    /// The physical facts behind this reservation's pool decision.
+    fn pool_demand(&self, state: StateId, tokens: usize) -> PoolDemand {
+        let live = match (self.states.len(), self.states.values().next()) {
+            (0, _) => LiveStates::Empty,
+            (1, Some(solo))
+                if solo.readout == OutputReadout::Logits
+                    && solo.capacity <= CB_SLOT_TOKENS
+                    && solo.media.is_none() =>
+            {
+                LiveStates::Solo {
+                    capacity: solo.capacity,
+                }
+            }
+            _ => LiveStates::Other,
+        };
+        PoolDemand {
+            state,
+            tokens,
+            page_tokens: KV_BLOCK_TOKENS,
+            requires_pool: self.dflash.is_some(),
+            live,
+            pool: self.slots.as_ref().map(|pool| PoolFacts {
+                capacity: pool.capacity(),
+                width: pool.width(),
+                pages: pool.kv_pages().0,
+            }),
+            idle: self.pool_is_idle(),
         }
-        if self.states.is_empty() {
-            return Ok(self
-                .pool_retry
-                .take()
-                .and_then(|(waiting, demand)| (waiting == id).then_some(demand.max(tokens))));
-        }
-        if self.states.len() == 1
-            && self.states.values().all(|state| {
-                state.readout == OutputReadout::Logits
-                    && state.capacity <= CB_SLOT_TOKENS
-                    && state.media.is_none()
-            })
-        {
-            let demand = self
-                .states
-                .values()
-                .map(|state| state.capacity)
-                .max()
-                .unwrap_or(tokens)
-                .max(tokens);
-            let waiting = self.pool_retry.get_or_insert((id, demand));
-            waiting.1 = waiting.1.max(demand);
-            return Err(Error::new(
-                ErrorCode::Capacity,
-                "concurrent request waits for the solo state before pooled capture",
-            ));
-        }
-        // Incompatible private states retain the existing funded lazy batching path.
-        Ok(None)
     }
 
     fn pool_is_idle(&self) -> bool {
