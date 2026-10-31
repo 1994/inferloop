@@ -26,6 +26,12 @@ const CUDA_RESOURCE_TIMEOUT_US: u64 = 120_000_000;
 /// weight pass; a model whose chunk is already that wide keeps its one-chunk round.
 const CUDA_PROMPT_SEGMENT_TOKENS: usize = 64;
 
+/// What a program's workspace is checked against: the device's state capacity. What a pool already
+/// captured is not a limit on the program, or a pool funded to its envelope would refuse to start.
+fn program_workspace_limit(capacity: Option<u64>, free: Option<u64>, memory: u64) -> u64 {
+    capacity.or(free).unwrap_or(memory)
+}
+
 pub fn derive_config(
     config: &mut RuntimeConfig,
     backend: &impl BackendProvider,
@@ -34,9 +40,11 @@ pub fn derive_config(
 ) -> Result<()> {
     config.resolve_concurrency(backend.execution_profile().as_ref())?;
     let capabilities = backend.capabilities();
-    let budget = backend
-        .free_state_bytes()?
-        .unwrap_or(capabilities.memory_bytes);
+    let budget = program_workspace_limit(
+        backend.state_capacity_bytes()?,
+        backend.free_state_bytes()?,
+        capabilities.memory_bytes,
+    );
     let program = infer_compiler::compile(
         ProgramId::ONE,
         infer_compiler::lower(model, backend.execution_graph(model)?, PrecisionPlan::f32())?,

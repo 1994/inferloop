@@ -241,41 +241,39 @@ impl Capture<'_> {
         } else {
             self.arena.get(node.inputs[0]).map_err(error)?
         };
-        // The choice was measured before capture: a selected kernel records or the capture fails.
+        // The choice was measured for a slot's layout; a pool's operands may not fit it. That is
+        // decided here, in the open, and a selected kernel then records or fails the capture.
+        let geometry = (query_heads, kv_heads, head_dim, lanes, self.capacity);
+        let window = i32::try_from(window.unwrap_or(0)).map_err(error)?;
         if let Some((mma, variant)) = self.attention.prefill_mma(node.outputs[0], lanes) {
-            mma.record(
-                self.scope,
-                super::attention_mma::Bindings {
-                    output: &mut output,
-                    query,
-                    keys: &keys,
-                    values: &values,
-                    metadata: self.metadata,
-                    table: self.table,
-                },
-                (query_heads, kv_heads, head_dim, lanes, self.capacity),
-                i32::try_from(window.unwrap_or(0)).map_err(error)?,
-                scales,
-                variant,
-            )?;
-            return Ok((output, keys, values));
+            let bindings = super::attention_mma::Bindings {
+                output: &mut output,
+                query,
+                keys: &keys,
+                values: &values,
+                metadata: self.metadata,
+                table: self.table,
+            };
+            if mma.accepts(&bindings, geometry, window, scales)? {
+                mma.record(self.scope, bindings, geometry, window, scales, variant)?;
+                return Ok((output, keys, values));
+            }
+            tracing::info!(target: "infer::capture", lanes, "selected MMA does not fit this pool");
         }
         if let Some(oxide) = self.attention.prefill_oxide(node.outputs[0], lanes) {
-            oxide.record(
-                self.scope,
-                super::attention_oxide::Bindings {
-                    output: &mut output,
-                    query,
-                    keys: &keys,
-                    values: &values,
-                    metadata: self.metadata,
-                    table: self.table,
-                },
-                (query_heads, kv_heads, head_dim, lanes, self.capacity),
-                i32::try_from(window.unwrap_or(0)).map_err(error)?,
-                scales,
-            )?;
-            return Ok((output, keys, values));
+            let bindings = super::attention_oxide::Bindings {
+                output: &mut output,
+                query,
+                keys: &keys,
+                values: &values,
+                metadata: self.metadata,
+                table: self.table,
+            };
+            if oxide.accepts(&bindings, geometry, scales)? {
+                oxide.record(self.scope, bindings, geometry, window, scales)?;
+                return Ok((output, keys, values));
+            }
+            tracing::info!(target: "infer::capture", lanes, "selected SIMT does not fit this pool");
         }
         self.record_prefill_legacy(node, output, keys, values, scales)
     }

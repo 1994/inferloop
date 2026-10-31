@@ -80,3 +80,10 @@ fn automatic_round_funds_one_prompt_segment_per_sequence() {
     cuda_prefill_limits(&mut explicit, 128, false);
     assert_eq!(explicit.max_num_batched_tokens, 128);
 }
+
+#[test]
+fn a_fully_funded_pool_does_not_shrink_the_program_workspace_limit() {
+    assert_eq!(program_workspace_limit(Some(1000), Some(0), 9), 1000);
+    assert_eq!(program_workspace_limit(None, Some(5), 9), 5);
+    assert_eq!(program_workspace_limit(None, None, 9), 9);
+}
