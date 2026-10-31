@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 use std::process::id;
 use std::result::Result as StdResult;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Semaphore;
 
@@ -83,10 +84,12 @@ pub fn router_with_text_media_and_responses(
     )
 }
 fn response_instance() -> Arc<str> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos());
-    Arc::from(format!("{:x}{nanos:x}", id()))
+    let ordinal = NEXT.fetch_add(1, Ordering::Relaxed);
+    Arc::from(format!("{:x}{nanos:x}{ordinal:x}", id()))
 }
 
 pub(super) fn text_preparation_bytes(request: &NativeTextRequest) -> Result<usize> {
