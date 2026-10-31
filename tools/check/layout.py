@@ -22,8 +22,9 @@ BACKENDS = {
     "infer-backend-cuda",
     "infer-cuda-kernels",
 }
-# Direct cuTile use in the CUDA host, counted at main ef4d662 plus the O1 step clock. The counts may only fall: each
-# lowering moved behind `infer-cuda-kernels` lowers them, and that commit lowers the baseline too.
+# Direct cuTile use in the CUDA host, counted at main ef4d662 plus the O1 step clock. The counts may
+# only fall: each lowering moved behind `infer-cuda-kernels` lowers them, and that commit lowers the
+# baseline too.
 CUDA_HOST = "crates/backend/cuda/src"
 CUDA_HOST_TOKENS = {"Tensor<": 868, ".partition(": 341, ".generics(": 216, "cuda_core": 86}
 # Workload meaning stays in `infer-workloads`; these layers execute programs and never branch on it.
