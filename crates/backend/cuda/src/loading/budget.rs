@@ -39,9 +39,9 @@ use std::sync::OnceLock;
 
 /// Bytes per F32 element in u64 budget arithmetic.
 /// Envelope reserved per priced byte of multi-sequence prompt graphs. On the measured 27B pool
-/// 29 MB of tensors took about 170 MB once capture and allocator overhead counted, and a pool
-/// that overruns its envelope by any amount replans at a far smaller quote.
-const BURST_QUOTE_MARGIN: u64 = 6;
+/// 29 MB of tensors took about 250 MB once capture, allocator and projection workspace overhead
+/// counted. Without room for them `build_burst` drops the graphs and keeps the pool.
+const BURST_QUOTE_MARGIN: u64 = 10;
 const F32: u64 = F32_BYTES as u64;
 /// Full-history readback stages a device copy and returns a second host copy.
 const READBACK_COPIES: u64 = 2;
@@ -341,6 +341,7 @@ impl LoadedModel {
             || self.dflash2.is_some()
             || verify >= 2
             || self.weights.fusion.is_some()
+            || self.weights.attention_profile.is_bf16()
         {
             return Ok(0);
         }

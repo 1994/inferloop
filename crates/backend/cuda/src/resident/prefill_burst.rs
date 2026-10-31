@@ -388,10 +388,15 @@ impl PromptBurst {
         } = shared;
         let segments = programs.len();
         let rows = segments * SEGMENT_ROWS;
-        // Fused inputs have no per-segment binding; media prompts stay on the worker.
-        if segments == 0 || weights.fusion.is_some() || !hidden.is_multiple_of(ROW_TILE) {
+        // Fused inputs have no per-segment binding and a BF16 profile keeps its precise graphs for
+        // early positions, which only the worker captures; media prompts stay on the worker too.
+        if segments == 0
+            || weights.fusion.is_some()
+            || weights.attention_profile.is_bf16()
+            || !hidden.is_multiple_of(ROW_TILE)
+        {
             return Err(Error::unsupported(
-                "prompt burst covers plain text graphs with tiled hidden rows",
+                "prompt burst covers plain canonical text graphs with tiled hidden rows",
             ));
         }
         // SAFETY: forwarded from this function's contract.
