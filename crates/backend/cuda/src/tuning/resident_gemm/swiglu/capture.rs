@@ -1,13 +1,14 @@
 //! Capture the same quantizer and fused recorder used by prompt graphs.
 use super::super::{
     GemmConfig, ResidentGemmKey, SAMPLE_CENTER, SAMPLE_DIVISOR, SAMPLE_PERIOD, SAMPLE_STRIDE,
-    driver_build, kernel_environment,
+    kernel_environment,
 };
 use super::evidence::{candidates, compatible};
 use crate::constants::{NVFP4_GROUP_SIZE, NVFP4_QUANT_CODES_TILE, NVFP4_QUANT_SCALES_TILE};
 use crate::device::{CudaDevice, device_error};
 use crate::mlp::ProjectionWeight;
 use crate::resident::nvfp4_gemm::kernels;
+use crate::tuning::preparation::driver_build;
 use crate::tuning::projection_budget::ProjectionShape;
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};

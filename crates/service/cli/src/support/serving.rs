@@ -21,6 +21,11 @@ const CUDA_STEP_BUDGET_US: u64 = 60_000_000;
 /// this leaves about twice that. A reservation whose owner never answers still fails.
 const CUDA_RESOURCE_TIMEOUT_US: u64 = 120_000_000;
 
+/// Tokens of one sequence in the backend's multi-sequence prompt graph. An automatic round
+/// funds one for every sequence, so a burst of short prompts enters together and shares one
+/// weight pass; a model whose chunk is already that wide keeps its one-chunk round.
+const CUDA_PROMPT_SEGMENT_TOKENS: usize = 64;
+
 pub fn derive_config(
     config: &mut RuntimeConfig,
     backend: &impl BackendProvider,
@@ -88,7 +93,17 @@ fn cuda_prefill_limits(config: &mut RuntimeConfig, width: usize, automatic: bool
         .scheduler
         .prefill_chunk_tokens
         .saturating_add(decode_slots);
-    config.max_num_batched_tokens = config.max_num_batched_tokens.max(complete_round);
+    let minimum = if automatic {
+        complete_round.max(
+            config
+                .max_num_seqs
+                .saturating_mul(CUDA_PROMPT_SEGMENT_TOKENS)
+                .saturating_add(decode_slots),
+        )
+    } else {
+        complete_round
+    };
+    config.max_num_batched_tokens = config.max_num_batched_tokens.max(minimum);
 }
 
 #[cfg(test)]

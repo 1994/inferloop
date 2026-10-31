@@ -4,13 +4,13 @@ use super::{
 };
 use crate::device::{CudaDevice, device_error};
 use crate::resident::kernels::aux::norm;
+use crate::tuning::preparation::driver_build;
 use cutile::error::tensor_error;
 use cutile::{
     bench::{BenchOptions, do_bench_paired},
     prelude::*,
 };
 use infer_core::{Error, Result};
-use std::fs::read_to_string;
 use std::iter::once;
 use std::time::Duration;
 pub(super) const JIT_OPT_LEVEL: u8 = 3;
@@ -165,14 +165,6 @@ impl Buffers {
             .map_err(device_error)?;
         device.read_borrowed(&self.output)
     }
-}
-fn driver_build() -> Option<String> {
-    read_to_string("/proc/driver/nvidia/version")
-        .ok()?
-        .lines()
-        .find(|l| l.starts_with("NVRM version:"))
-        .map(str::trim)
-        .map(str::to_owned)
 }
 pub fn bits(actual: &[f32], expected: &[f32]) -> Result<()> {
     if actual.len() != expected.len()

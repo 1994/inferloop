@@ -1,6 +1,7 @@
 //! Exact integer greedy reductions: per-device geometry search with independent confirmation.
 use super::resident_gemm::ResidentTuningSession;
 use super::{MAX_REPS, MIN_CONFIRM_SPEEDUP, MIN_REPS, REP_MS, WARMUP_MS};
+use crate::tuning::preparation::driver_build;
 use crate::{
     device::{CudaDevice, device_error},
     resident::greedy::{Greedy, TILE_SEARCH},
@@ -13,7 +14,6 @@ use cutile::{
 };
 use infer_core::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::fs::read_to_string;
 use std::iter::once;
 use std::{
     collections::BTreeMap,
@@ -113,14 +113,6 @@ fn median(values: &[f32]) -> f32 {
     } else {
         values[middle]
     }
-}
-fn driver_build() -> Option<String> {
-    read_to_string("/proc/driver/nvidia/version")
-        .ok()?
-        .lines()
-        .find(|line| line.starts_with("NVRM version:"))
-        .map(str::trim)
-        .map(str::to_owned)
 }
 /// Kernel code, compiler options and driver identity are immutable in a live context.
 /// Keep the full identity; only its repeated construction is memoized, not validation.

@@ -239,6 +239,66 @@ impl ActivationArena {
         })
     }
 
+    /// Views of rows `start..start + rows` of every slot, as an arena of `rows` lanes.
+    ///
+    /// A slot holding one row whatever the lane count (the prompt logits row) is viewed whole.
+    /// # Safety
+    /// `self` must outlive the views, and replays through them must be serialized on one stream.
+    /// # Errors
+    /// Rejects a layout that differs from this arena's or a segment outside it.
+    #[expect(
+        unsafe_code,
+        reason = "Audited segment alias: the prompt burst owns the wide arena beside every graph \
+                  captured against its segments"
+    )]
+    pub(super) unsafe fn segment(
+        &self,
+        graph: &DataflowGraph,
+        rows: usize,
+        start: usize,
+        single: Option<TensorId>,
+    ) -> Result<Self> {
+        let (sizes, indices) = Self::sizes(graph, rows, single)?;
+        if rows == 0 || start + rows > self.lanes || indices != self.indices {
+            return Err(Error::invalid("arena segment layout"));
+        }
+        let mut buffers = Vec::with_capacity(sizes.len());
+        for (buffer, &size) in self.buffers.iter().zip(&sizes) {
+            let slot = buffer
+                .as_ref()
+                .ok_or_else(|| Error::invariant("wide arena slot is currently an output"))?;
+            let offset = if size == slot.size() {
+                0
+            } else {
+                start * (size / rows)
+            };
+            if offset + size > slot.size() {
+                return Err(Error::invalid("arena segment slot"));
+            }
+            let allocation = RowAllocation {
+                pointer: slot.device_pointer().cu_deviceptr()
+                    + u64::try_from(offset * F32_BYTES).map_err(device_error)?,
+                bytes: size * F32_BYTES,
+                device: slot.device_id(),
+            };
+            // SAFETY: forwarded from this function's contract; the range was checked above.
+            buffers.push(Some(unsafe {
+                Tensor::from_foreign(
+                    Arc::new(allocation),
+                    vec![i32::try_from(size).map_err(device_error)?],
+                    vec![1],
+                )
+            }));
+        }
+        Ok(Self {
+            indices,
+            buffers,
+            lanes: rows,
+            batched: self.batched,
+            elements: sizes.iter().sum(),
+        })
+    }
+
     /// Batched prompt arena whose logits slot holds only the final row: prompt graphs project
     /// just the last active lane onto the vocabulary.
     /// # Errors

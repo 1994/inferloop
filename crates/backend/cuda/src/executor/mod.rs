@@ -82,9 +82,13 @@ pub(super) struct CudaExecutor {
 /// programs capture only the narrow prompt graph (a wide one per slot does not fit), so a long
 /// prompt chunk moves the sequence's state into the worker, replays there, and moves it back:
 /// a few hundred megabytes of copies against a chunk that runs for hundreds of milliseconds.
+use crate::resident::prefill_burst::PromptBurst;
 struct Worker {
     program: DeviceProgram,
     draft: Option<DeviceProgram>,
+    /// Multi-sequence prompt graphs over the first slots, narrowest first; empty when the
+    /// graph is not covered.
+    bursts: Vec<PromptBurst>,
 }
 /// A pool slot's resident programs: prompts prefill into the slot's own storage, so a sequence
 /// that holds them never owns a private copy of its state.

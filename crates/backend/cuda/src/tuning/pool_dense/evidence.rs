@@ -1,6 +1,6 @@
 //! Complete paired evidence; new choices preserve the private reduction tree.
 use super::capture::tile;
-use super::{Choice, Key, baseline, candidates, searchable};
+use super::{Choice, Key, baseline, candidates_for, prompt_searchable, searchable};
 use crate::tuning::{
     MIN_CONFIRM_SPEEDUP,
     resident_gemm::{MeasurementOrder, PairedTimes, times_valid},
@@ -39,12 +39,25 @@ pub struct Entry {
 impl Entry {
     pub(crate) fn valid(&self) -> bool {
         let shape = [self.key.native.m, self.key.native.n, self.key.native.k];
-        let baseline = baseline(shape);
-        let allowed = |choice: Choice| !choice.native_family() || baseline.native_family();
+        let baseline = if self.key.baseline.prompt_family() {
+            Choice::PromptBase
+        } else {
+            baseline(shape)
+        };
+        let prompt = baseline.prompt_family();
+        let allowed = |choice: Choice| {
+            choice.prompt_family() == prompt
+                && (!choice.native_family() || baseline.native_family())
+        };
+        let candidates = candidates_for(baseline, shape);
         self.exact_candidates_verified
-            && searchable(shape)
+            && if prompt {
+                prompt_searchable(shape)
+            } else {
+                searchable(shape)
+            }
             && tile(&self.key).is_ok()
-            && candidates(shape).all(|choice| {
+            && candidates.iter().all(|&choice| {
                 self.trials
                     .iter()
                     .filter(|trial| trial.choice == choice)
@@ -56,7 +69,7 @@ impl Entry {
                         .count()
                     == 1
             })
-            && self.trials.len() + self.rejected.len() == candidates(shape).count()
+            && self.trials.len() + self.rejected.len() == candidates.len()
             && self.key.baseline == baseline
             && !self.key.native.kernel_fingerprint.is_empty()
             && self

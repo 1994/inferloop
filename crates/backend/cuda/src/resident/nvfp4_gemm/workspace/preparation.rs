@@ -173,6 +173,63 @@ impl Workspace {
         weights.resident_tuning.report_projection_work()
     }
 
+    /// Measure the output tile of every BF16 projection a prompt graph of `rows` replays.
+    pub(crate) fn prepare_prompt_rows(
+        &mut self,
+        device: &CudaDevice,
+        graph: &DataflowGraph,
+        weights: &ProgramWeights,
+        rows: usize,
+    ) -> Result<()> {
+        let tile = LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS)?;
+        let mut projections = Vec::new();
+        for node in &graph.nodes {
+            if node.op != TensorOp::Linear
+                || weights.constants.contains_key(&node.inputs[0])
+                || weights.activation_quantization(node.inputs[1]).is_some()
+                || Some(node.outputs[0]) == graph.logits
+            {
+                continue;
+            }
+            let Some(ProjectionWeight::Dense(weight)) = weights.projections.get(&node.inputs[1])
+            else {
+                continue;
+            };
+            let shape = [
+                rows,
+                elements(graph, node.outputs[0])?,
+                elements(graph, node.inputs[0])?,
+            ];
+            let binding = pool_dense::Binding::new(weight, shape, tile);
+            if !pool_dense::prompt_searchable(shape)
+                || self.prompt_dense_strategies.contains_key(&binding)
+            {
+                continue;
+            }
+            weights.resident_tuning.plan_projection(
+                pool_dense::kind(tile),
+                shape,
+                pool_dense::search_trials_for(pool_dense::Choice::PromptBase, shape),
+            )?;
+            projections.push((node.inputs[1], shape, binding));
+        }
+        for (id, shape, binding) in projections {
+            let Some(ProjectionWeight::Dense(weight)) = weights.projections.get(&id) else {
+                return Err(Error::invariant("prompt dense preparation weight"));
+            };
+            let choice = pool_dense::select_prompt(
+                device,
+                weight,
+                shape,
+                tile,
+                weights.autotune,
+                &weights.resident_tuning,
+            );
+            self.prompt_dense_strategies.insert(binding, choice);
+        }
+        weights.resident_tuning.report_projection_work()
+    }
+
     fn live_swiglu(
         &self,
         graph: &DataflowGraph,

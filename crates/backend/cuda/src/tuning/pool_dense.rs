@@ -2,10 +2,11 @@
 mod capture;
 mod evidence;
 use crate::constants::{
-    CB_DECODE_SLOTS, GEMV_WIDE_OUTPUT_RATIO, SMALL_GEMM_TILE, SMALL_GEMV_MAX_ROWS,
+    CB_DECODE_SLOTS, GEMV_WIDE_OUTPUT_RATIO, PREFILL_GEMM_TILE_N, PREFILL_LANES, SMALL_GEMM_TILE,
+    SMALL_GEMV_MAX_ROWS,
 };
 use crate::device::CudaDevice;
-use crate::resident::{linear_batch::batched, pool_gemv, small_gemm_kernels};
+use crate::resident::{linear_batch::batched, pool_gemv, prefill_gemm::gemm, small_gemm_kernels};
 use crate::strategy::LinearTiling;
 use crate::tuning::projection_budget::{ProjectionKind, ProjectionShape};
 use crate::tuning::resident_gemm::{
@@ -40,6 +41,14 @@ const NATIVE_TILE_ROWS: usize = SMALL_GEMM_TILE[0];
 const NATIVE_WIDE_64: usize = 64;
 /// Widest tensor-core candidate; wider accumulators cost more than they save in measured shapes.
 const NATIVE_WIDE_128: usize = 128;
+/// Rows of the balanced prompt tile candidate.
+const PROMPT_M64: usize = 64;
+/// Rows of the tall prompt tile candidate.
+const PROMPT_M128: usize = 128;
+/// Outputs of the balanced prompt tile candidate.
+const PROMPT_N128: usize = 128;
+/// Outputs of the wide prompt tile candidate.
+const PROMPT_N256: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Choice {
@@ -50,11 +59,34 @@ pub enum Choice {
     NativeN64,
     /// Same arithmetic as `Native` over the widest output tile.
     NativeN128,
+    /// The prompt graph's BF16 projection over its established output tile.
+    PromptBase,
+    /// Same arithmetic as `PromptBase` over a measured `[rows, outputs]` tile.
+    PromptM64N128,
+    /// Same arithmetic as `PromptBase`, reading each weight tile for more outputs.
+    PromptM32N256,
+    /// Same arithmetic as `PromptBase`, reading each weight tile for more rows.
+    PromptM128N64,
 }
 impl Choice {
     /// Tensor-core choices share one arithmetic; only their output tile differs.
     pub(crate) const fn native_family(self) -> bool {
         matches!(self, Self::Native | Self::NativeN64 | Self::NativeN128)
+    }
+    pub(crate) const fn prompt_family(self) -> bool {
+        matches!(
+            self,
+            Self::PromptBase | Self::PromptM64N128 | Self::PromptM32N256 | Self::PromptM128N64
+        )
+    }
+    /// Output tile of a prompt choice.
+    const fn prompt_tile(self) -> [usize; 2] {
+        match self {
+            Self::PromptM64N128 => [PROMPT_M64, PROMPT_N128],
+            Self::PromptM32N256 => [PREFILL_LANES, PROMPT_N256],
+            Self::PromptM128N64 => [PROMPT_M128, PREFILL_GEMM_TILE_N],
+            _ => [PREFILL_LANES, PREFILL_GEMM_TILE_N],
+        }
     }
     pub(crate) fn record(
         self,
@@ -88,6 +120,14 @@ impl Choice {
                 scope.record(
                     small_gemm_kernels::dense(output.partition(SMALL_GEMM_TILE), input, weight)
                         .generics(vec![bf16::DTYPE.as_str().into(), columns.to_string()]),
+                )?;
+            }
+            Self::PromptBase | Self::PromptM64N128 | Self::PromptM32N256 | Self::PromptM128N64 => {
+                let [rows, outputs] = self.prompt_tile();
+                scope.record(
+                    gemm::dense_tile(output.partition([rows, outputs]), input, weight).generics(
+                        vec![rows.to_string(), outputs.to_string(), columns.to_string()],
+                    ),
                 )?;
             }
             Self::NativeN64 | Self::NativeN128 => {
@@ -184,8 +224,54 @@ fn candidates(shape: ProjectionShape) -> impl Iterator<Item = Choice> {
     .into_iter()
     .filter(move |choice| *choice != baseline(shape) && (!qualified || !choice.native_family()))
 }
+/// What a search with this baseline measures.
+fn candidates_for(base: Choice, shape: ProjectionShape) -> Vec<Choice> {
+    if base.prompt_family() {
+        vec![
+            Choice::PromptM64N128,
+            Choice::PromptM32N256,
+            Choice::PromptM128N64,
+        ]
+    } else {
+        candidates(shape).collect()
+    }
+}
+/// A prompt projection is worth a search only where its rows fill the established tile.
+pub(crate) const fn prompt_searchable(shape: ProjectionShape) -> bool {
+    let [m, n, k] = shape;
+    m >= PREFILL_LANES && n > 0 && k > 0
+}
+/// Measured output tile of a prompt graph's BF16 projection, with the search budget of
+/// [`select`].
+pub(crate) fn select_prompt(
+    device: &CudaDevice,
+    weight: &Arc<Tensor<bf16>>,
+    shape: ProjectionShape,
+    tile: LinearTiling,
+    autotune: bool,
+    session: &ResidentTuningSession,
+) -> Choice {
+    match resolve(
+        device,
+        weight,
+        shape,
+        tile,
+        autotune,
+        session,
+        Choice::PromptBase,
+    ) {
+        Ok(choice) => choice,
+        Err(error) => {
+            tracing::warn!(target:"infer::tuning",?shape,%error,"prompt dense base fallback");
+            Choice::PromptBase
+        }
+    }
+}
 pub(crate) fn search_trials(shape: ProjectionShape) -> usize {
     candidates(shape).count() + CONFIRMATIONS
+}
+pub(crate) fn search_trials_for(base: Choice, shape: ProjectionShape) -> usize {
+    candidates_for(base, shape).len() + CONFIRMATIONS
 }
 type Memo = Mutex<BTreeMap<Key, Choice>>;
 fn memo() -> &'static Memo {
@@ -254,7 +340,15 @@ pub(crate) fn select(
     autotune: bool,
     session: &ResidentTuningSession,
 ) -> Choice {
-    match resolve(device, weight, shape, tile, autotune, session) {
+    match resolve(
+        device,
+        weight,
+        shape,
+        tile,
+        autotune,
+        session,
+        baseline(shape),
+    ) {
         Ok(choice) => choice,
         Err(error) => {
             tracing::warn!(target:"infer::tuning",?shape,%error,"pooled dense legacy fallback");
@@ -269,11 +363,17 @@ fn resolve(
     tile: LinearTiling,
     autotune: bool,
     session: &ResidentTuningSession,
+    base: Choice,
 ) -> Result<Choice> {
-    if !searchable(shape) {
+    let covered = if base.prompt_family() {
+        prompt_searchable(shape)
+    } else {
+        searchable(shape)
+    };
+    if !covered {
         return Err(Error::invalid("unsupported pooled dense geometry"));
     }
-    let key = key(device, shape, tile)?;
+    let key = key(device, shape, tile, base)?;
     let cached = memo()
         .lock()
         .map_err(|_| Error::invariant("pooled dense cache poisoned"))?
@@ -341,7 +441,7 @@ impl Search<'_> {
         let shape = [self.key.native.m, self.key.native.n, self.key.native.k];
         let candidate = Captured::new(self.device, self.weight, shape, self.tile, choice)?;
         candidate.run(self.device)?;
-        let expected = if choice.native_family() {
+        let expected = if choice.native_family() || choice.prompt_family() {
             self.legacy_expected
         } else {
             self.private_expected
@@ -391,17 +491,22 @@ fn tune(
     }
     let shape = [key.native.m, key.native.n, key.native.k];
     let tile = capture::tile(&key)?;
-    session.plan_projection(kind(tile), shape, search_trials(shape))?;
+    session.plan_projection(kind(tile), shape, search_trials_for(key.baseline, shape))?;
     let _search = session.projection_search()?;
     if !session.permits_search() {
         return Ok(None);
     }
     let baseline = Captured::new(device, weight, shape, tile, key.baseline)?;
-    let reference = Captured::new(device, weight, shape, tile, Choice::Gemv)?;
     baseline.run(device)?;
-    reference.run(device)?;
     let legacy_expected = baseline.output(device)?;
-    let private_expected = reference.output(device)?;
+    // Every prompt candidate must reproduce its base; only pool geometries compare to private.
+    let private_expected = if key.baseline.prompt_family() {
+        Vec::new()
+    } else {
+        let reference = Captured::new(device, weight, shape, tile, Choice::Gemv)?;
+        reference.run(device)?;
+        reference.output(device)?
+    };
     let search = Search {
         device,
         weight,
@@ -415,7 +520,7 @@ fn tune(
     let mut best = 1.0_f32;
     let mut trials = Vec::new();
     let mut rejected = Vec::new();
-    for choice in candidates(shape) {
+    for choice in candidates_for(key.baseline, shape) {
         if !session.permits_search() {
             return Ok(None);
         }

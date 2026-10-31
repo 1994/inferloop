@@ -582,6 +582,7 @@ impl SlotPool {
                 tables: &tables,
                 capacity,
                 width,
+                burst: None,
             };
             if verify >= 2 {
                 let (full, graphs, roots) = build_verify_graphs(

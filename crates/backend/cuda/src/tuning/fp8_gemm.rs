@@ -12,6 +12,7 @@ use crate::constants::QUANT_GEMM_TILE;
 use crate::constants::WIDE_PREFILL_LANES;
 use crate::constants::WIDE_PROMPT_GEMM_TILE_ROWS;
 pub use crate::device::vendor_fp8::{AlgorithmConfig, LibraryIdentity};
+use crate::tuning::preparation::driver_build;
 use crate::tuning::resident_gemm::prompt_tile_rows;
 use crate::{
     device::{CudaDevice, device_error, vendor_fp8},
@@ -30,7 +31,6 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::env::var;
 use std::env::var_os;
-use std::fs::read_to_string;
 use std::iter::once;
 use std::result::Result as StdResult;
 use std::{
@@ -333,15 +333,6 @@ fn permits(session: &ResidentTuningSession, shape: [usize; GEMM_RANK]) -> bool {
         tracing::info!(target:"infer::tuning", ?shape, "FP8 model tuning budget exhausted: unmeasured choice stays native");
         false
     }
-}
-fn driver_build() -> Option<String> {
-    read_to_string("/proc/driver/nvidia/version")
-        .ok()?
-        .lines()
-        .find(|line| line.starts_with("NVRM version:"))
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_owned)
 }
 type Identities = Mutex<BTreeMap<(String, [usize; GEMM_RANK]), String>>;
 fn fingerprint(device: &CudaDevice, shape: [usize; GEMM_RANK]) -> Result<String> {

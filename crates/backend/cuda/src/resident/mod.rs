@@ -22,9 +22,10 @@ pub(crate) mod kernels;
 pub(crate) mod linear_batch;
 mod metadata;
 pub(crate) mod nvfp4_gemm;
+pub(crate) mod prefill_burst;
 #[cfg(test)]
 pub(crate) mod prefill_demand;
-mod prefill_gemm;
+pub(crate) mod prefill_gemm;
 mod prefill_projection;
 mod profile;
 mod program;

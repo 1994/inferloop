@@ -16,11 +16,13 @@ use crate::tuning::fp8_gemm::Choice;
 use crate::tuning::fp8_gemm::WeightKey;
 use crate::tuning::resident_gemm::native_tile;
 
+use crate::constants::{DEFAULT_TILE_COLUMNS, DEFAULT_TILE_ROWS};
 use crate::strategy::LinearTiling;
 use crate::tuning::pool_dense::{self, Binding as PoolDenseBinding, Choice as PoolDenseChoice};
 use crate::tuning::projection_budget::ProjectionShape;
 use crate::tuning::resident_gemm::GemmConfig;
 use crate::tuning::resident_gemm::swiglu::{self, Binding as SwigluBinding};
+use cutile::half::bf16;
 
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use crate::tuning::resident_gemm::WeightKey as ResidentGemmWeightKey;
@@ -53,6 +55,7 @@ pub struct Workspace {
     strategies: BTreeMap<StrategyKey, GemmConfig>,
     swiglu_strategies: BTreeMap<SwigluBinding, GemmConfig>,
     pool_dense_strategies: BTreeMap<PoolDenseBinding, PoolDenseChoice>,
+    prompt_dense_strategies: BTreeMap<PoolDenseBinding, PoolDenseChoice>,
     buffers: BTreeMap<(usize, usize), Quantized>,
     fp8_strategies: BTreeMap<(WeightKey, usize, usize, usize), Choice>,
     /// Lt handle, descriptors and original weight allocations outlive every program capture.
@@ -229,6 +232,7 @@ impl Workspace {
             strategies: BTreeMap::new(),
             swiglu_strategies: BTreeMap::new(),
             pool_dense_strategies: BTreeMap::new(),
+            prompt_dense_strategies: BTreeMap::new(),
             buffers: BTreeMap::new(),
             fp8: BTreeMap::new(),
             fp8_strategies: BTreeMap::new(),
@@ -237,7 +241,26 @@ impl Workspace {
             vendor_diagnostic: vendor_diagnostic_enabled(),
         };
         workspace.extend(device, graph, weights, widths)?;
+        for &rows in widths {
+            workspace.prepare_prompt_rows(device, graph, weights, rows)?;
+        }
         Ok(workspace)
+    }
+
+    /// Measured output tile of one prompt projection; the established tile when unmeasured.
+    pub(crate) fn prompt_dense_choice(
+        &self,
+        weight: &Arc<Tensor<bf16>>,
+        shape: ProjectionShape,
+    ) -> PoolDenseChoice {
+        LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS)
+            .ok()
+            .and_then(|tile| {
+                self.prompt_dense_strategies
+                    .get(&PoolDenseBinding::new(weight, shape, tile))
+                    .copied()
+            })
+            .unwrap_or(PoolDenseChoice::PromptBase)
     }
 
     #[expect(

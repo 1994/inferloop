@@ -1,9 +1,10 @@
 //! Own every temporary until the captured graph is destroyed.
-use super::{Choice, Key, baseline};
+use super::{Choice, Key};
 use crate::device::{CudaDevice, device_error};
 use crate::strategy::LinearTiling;
+use crate::tuning::preparation::driver_build;
 use crate::tuning::projection_budget::ProjectionShape;
-use crate::tuning::resident_gemm::{ResidentGemmKey, driver_build, kernel_environment};
+use crate::tuning::resident_gemm::{ResidentGemmKey, kernel_environment};
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::{half::bf16, prelude::*};
 use infer_core::{Error, Result};
@@ -42,7 +43,7 @@ impl Captured {
         let [wn, wk] = weight.shape() else {
             return Err(Error::invalid("pooled dense weight rank"));
         };
-        if !super::searchable(shape)
+        if !(super::searchable(shape) || choice.prompt_family() && super::prompt_searchable(shape))
             || usize::try_from(*wn).map_err(device_error)? != n
             || usize::try_from(*wk).map_err(device_error)? != k
         {
@@ -105,12 +106,23 @@ pub(super) fn verify(actual: &[f32], expected: &[f32]) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn key(device: &CudaDevice, shape: ProjectionShape, tile: LinearTiling) -> Result<Key> {
-    type Memo = Mutex<BTreeMap<(String, ProjectionShape, usize, usize), String>>;
+pub(super) fn key(
+    device: &CudaDevice,
+    shape: ProjectionShape,
+    tile: LinearTiling,
+    base: Choice,
+) -> Result<Key> {
+    type Memo = Mutex<BTreeMap<(String, ProjectionShape, usize, usize, bool), String>>;
     static MEMO: OnceLock<Memo> = OnceLock::new();
     let environment = kernel_environment(device)?;
     let memo = MEMO.get_or_init(|| Mutex::new(BTreeMap::new()));
-    let cache = (environment, shape, tile.rows(), tile.columns());
+    let cache = (
+        environment,
+        shape,
+        tile.rows(),
+        tile.columns(),
+        base.prompt_family(),
+    );
     let cached = memo
         .lock()
         .map_err(|_| Error::invariant("pooled dense identity cache poisoned"))?
@@ -119,7 +131,11 @@ pub(super) fn key(device: &CudaDevice, shape: ProjectionShape, tile: LinearTilin
     let fingerprint = if let Some(value) = cached {
         value
     } else {
-        let value = fingerprint(device, shape, tile)?;
+        let value = if base.prompt_family() {
+            prompt_fingerprint(device, shape)?
+        } else {
+            fingerprint(device, shape, tile)?
+        };
         memo.lock()
             .map_err(|_| Error::invariant("pooled dense identity cache poisoned"))?
             .insert(cache, value.clone());
@@ -141,8 +157,37 @@ pub(super) fn key(device: &CudaDevice, shape: ProjectionShape, tile: LinearTilin
     Ok(Key {
         native,
         tile: [tile.rows(), tile.columns()],
-        baseline: baseline(shape),
+        baseline: base,
     })
+}
+fn prompt_fingerprint(device: &CudaDevice, shape: ProjectionShape) -> Result<String> {
+    use crate::resident::prefill_gemm::gemm;
+    let [m, n, k] = shape;
+    let input = api::meta::<f32>(&[m, k])
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    let weight = api::meta::<bf16>(&[n, k])
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    let mut output = api::meta::<f32>(&[m, n])
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    let mut identities = Vec::new();
+    for choice in [
+        Choice::PromptBase,
+        Choice::PromptM64N128,
+        Choice::PromptM32N256,
+        Choice::PromptM128N64,
+    ] {
+        let [rows, outputs] = choice.prompt_tile();
+        identities.push(
+            gemm::dense_tile((&mut output).partition([rows, outputs]), &input, &weight)
+                .generics(vec![rows.to_string(), outputs.to_string(), k.to_string()])
+                .l2_cache_key_on(&device.stream)
+                .map_err(device_error)?,
+        );
+    }
+    serde_json::to_string(&identities).map_err(device_error)
 }
 fn fingerprint(device: &CudaDevice, shape: ProjectionShape, tile: LinearTiling) -> Result<String> {
     use crate::constants::SMALL_GEMM_TILE;

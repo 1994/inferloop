@@ -6,8 +6,11 @@ use crate::constants::PREFILL_LANES;
 use crate::constants::PREFILL_NVFP4_TILE_N;
 use crate::constants::PREFILL_SPLIT_K;
 use crate::constants::SMALL_GEMM_TILE;
+use crate::constants::{DEFAULT_TILE_COLUMNS, DEFAULT_TILE_ROWS};
 use crate::device::CudaDevice;
 use crate::device::cublaslt::Support;
+use crate::strategy::LinearTiling;
+use crate::tuning::pool_dense::Choice as PromptChoice;
 use crate::{device::DeviceProfile, mlp::ProjectionWeight};
 use cutile::half::bf16;
 use cutile::prelude::*;
@@ -465,14 +468,26 @@ pub(super) fn record(
                 arena.buffers[slot] = Some(output.reshape(&[flat])?);
                 return Ok(());
             }
-            scope.record(
-                gemm::dense(
-                    (&mut output).partition([PREFILL_LANES, PREFILL_GEMM_TILE_N]),
-                    &input,
+            let choice = nvfp4.prompt_dense_choice(w, [width, rows, columns]);
+            if choice == PromptChoice::PromptBase {
+                scope.record(
+                    gemm::dense(
+                        (&mut output).partition([PREFILL_LANES, PREFILL_GEMM_TILE_N]),
+                        &input,
+                        w,
+                    )
+                    .generics(generics),
+                )?;
+            } else {
+                choice.record(
+                    scope,
                     w,
-                )
-                .generics(generics),
-            )?;
+                    &input,
+                    &mut output,
+                    columns,
+                    LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS).map_err(error)?,
+                )?;
+            }
         }
         ProjectionWeight::Fp8(w, scales) => {
             scope.record(

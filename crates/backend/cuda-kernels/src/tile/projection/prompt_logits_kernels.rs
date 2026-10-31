@@ -22,4 +22,29 @@ pub mod kernels {
             tile_to_scalar(metadata.partition(shape![1]).load([1i32]).reshape(shape![]));
         out.store(rows.partition(shape![1, 256]).load([count - 1i32, pid.1]));
     }
+
+    /// Copy each segment's last active row of a multi-sequence prompt graph into one row of
+    /// `out`. An inactive segment copies its first row, which nothing reads.
+    #[cutile::entry()]
+    fn last_rows<const H: i32, const R: i32>(
+        out: &mut Tensor<f32, { [1, 256] }>,
+        rows: &Tensor<f32, { [-1, H] }>,
+        metadata: &Tensor<i32, { [-1] }>,
+    ) {
+        let pid = get_tile_block_id();
+        let count: i32 = tile_to_scalar(
+            metadata
+                .partition(shape![1])
+                .load([pid.0 * 4i32 + 1i32])
+                .reshape(shape![]),
+        );
+        let mut last = count - 1i32;
+        if last < 0i32 {
+            last = 0i32;
+        }
+        out.store(
+            rows.partition(shape![1, 256])
+                .load([pid.0 * R + last, pid.1]),
+        );
+    }
 }

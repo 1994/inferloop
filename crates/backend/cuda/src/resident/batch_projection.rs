@@ -271,6 +271,19 @@ pub(super) fn record_slots(
     Ok(())
 }
 
+/// Project an already gathered `[rows, columns]` matrix.
+pub(super) fn record_rows(
+    scope: &Scope,
+    nvfp4: &mut super::nvfp4_gemm::Workspace,
+    weight: &ProjectionWeight,
+    input_scale: Option<super::program::ActivationQuantization>,
+    input: &TensorView<'_, f32>,
+    output: &mut Tensor<f32>,
+    geometry: (usize, usize),
+) -> StdResult<(), DeviceError> {
+    record_projection(scope, nvfp4, weight, input_scale, input, output, geometry)
+}
+
 fn record_projection(
     scope: &Scope,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
