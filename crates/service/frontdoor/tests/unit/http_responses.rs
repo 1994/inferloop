@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use tokio::time::sleep;
 use tokio::time::timeout;
 use tower::ServiceExt;
 
@@ -245,10 +246,8 @@ async fn responses_streams_typed_events_that_agree_with_the_complete_reply() {
     );
     let text: String = events
         .iter()
-        .filter_map(|event| {
-            (event["type"] == "response.output_text.delta")
-                .then(|| event["delta"].as_str().unwrap())
-        })
+        .filter(|event| event["type"] == "response.output_text.delta")
+        .map(|event| event["delta"].as_str().unwrap())
         .collect();
     assert_eq!(text, complete["output"][0]["content"][0]["text"]);
     let item_id = events
@@ -356,7 +355,7 @@ async fn responses_cleanup_after_a_disconnected_stream() {
             if handle.inspect().await.unwrap().active_requests == 0 {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            sleep(Duration::from_millis(5)).await;
         }
     })
     .await

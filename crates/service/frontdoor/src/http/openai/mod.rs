@@ -22,6 +22,7 @@ use axum::{
 };
 use error::ApiError;
 use request::{GenerationRequest, ToolPolicy};
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 type ApiResult<T> = Result<T, ApiError>;
@@ -81,7 +82,7 @@ async fn chat(
 /// compatibility 415 response.
 async fn parse_json_body<T>(state: &TextState, request: Request) -> ApiResult<T>
 where
-    T: serde::de::DeserializeOwned + Send + 'static,
+    T: DeserializeOwned + Send + 'static,
 {
     let is_json = request
         .headers()

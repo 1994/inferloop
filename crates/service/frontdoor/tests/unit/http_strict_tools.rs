@@ -211,10 +211,8 @@ async fn responses_complete_text_and_stream_end_with_completed() {
     assert_eq!(events.last().unwrap()["type"], "response.completed");
     let text: String = events
         .iter()
-        .filter_map(|event| {
-            (event["type"] == "response.output_text.delta")
-                .then(|| event["delta"].as_str().unwrap())
-        })
+        .filter(|event| event["type"] == "response.output_text.delta")
+        .map(|event| event["delta"].as_str().unwrap())
         .collect();
     assert_eq!(text, "hello");
     assert_eq!(events.last().unwrap()["response"]["status"], "completed");
@@ -258,10 +256,8 @@ async fn responses_map_reasoning_text_to_a_reasoning_item() {
     }
     let reasoning: String = events
         .iter()
-        .filter_map(|event| {
-            (event["type"] == "response.reasoning_text.delta")
-                .then(|| event["delta"].as_str().unwrap())
-        })
+        .filter(|event| event["type"] == "response.reasoning_text.delta")
+        .map(|event| event["delta"].as_str().unwrap())
         .collect();
     assert_eq!(reasoning, "why");
     let completed = &events.last().unwrap()["response"];

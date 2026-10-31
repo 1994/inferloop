@@ -128,7 +128,7 @@ impl Stream {
     /// Publish `response.created` and `response.in_progress` before the first token.
     fn start(&mut self) {
         let response = self.response("in_progress", None, None, None, None);
-        self.emit(json!({"type":"response.created","response":response.clone()}));
+        self.emit(json!({"type":"response.created","response":response}));
         self.emit(json!({"type":"response.in_progress","response":response}));
     }
 
@@ -199,7 +199,7 @@ impl Stream {
         }));
         let item = output::reasoning_item(self.request, open.index, &open.text, status);
         self.emit(json!({
-            "type":"response.output_item.done","output_index":open.index,"item":item.clone()
+            "type":"response.output_item.done","output_index":open.index,"item":item
         }));
         self.output.push(item);
     }
@@ -220,7 +220,7 @@ impl Stream {
         }));
         let item = output::message_item(self.request, open.index, &open.text, status);
         self.emit(json!({
-            "type":"response.output_item.done","output_index":open.index,"item":item.clone()
+            "type":"response.output_item.done","output_index":open.index,"item":item
         }));
         self.output.push(item);
     }
@@ -242,7 +242,7 @@ impl Stream {
             status,
         );
         self.emit(json!({
-            "type":"response.output_item.done","output_index":open.index,"item":item.clone()
+            "type":"response.output_item.done","output_index":open.index,"item":item
         }));
         self.output.push(item);
     }

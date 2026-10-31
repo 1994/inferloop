@@ -17,7 +17,7 @@ fn input_string_and_instructions_become_messages() {
         "model":"1", "input":"hello", "instructions":"be brief"
     }));
     let (messages, media) = prepared.generation.chat_messages().unwrap();
-    assert!(media.is_empty());
+    assert_eq!(media.len(), 0);
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].role, "system");
     assert_eq!(messages[0].content, "be brief");
@@ -38,7 +38,7 @@ fn an_item_list_accepts_text_and_developer_messages() {
         ]
     }));
     let (messages, media) = prepared.generation.chat_messages().unwrap();
-    assert!(media.is_empty());
+    assert_eq!(media.len(), 0);
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].role, "system");
     assert_eq!(messages[0].content, "rules");
@@ -151,7 +151,7 @@ fn null_optional_options_are_treated_as_absent() {
         "prompt_cache_key":null, "safety_identifier":null
     }));
     assert_eq!(prepared.spec.tool_choice, json!("auto"));
-    assert!(prepared.spec.tools.is_empty());
+    assert_eq!(prepared.spec.tools.len(), 0);
 }
 
 #[test]

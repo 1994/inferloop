@@ -195,7 +195,7 @@ impl ResponsesRequest {
                 "previous_response_id needs server-side response storage; this deployment does not store responses",
             ));
         }
-        if present(&self.conversation) {
+        if present(self.conversation.as_ref()) {
             return Err(Error::unsupported(
                 "conversation needs server-side response storage",
             ));
@@ -238,7 +238,7 @@ impl ResponsesRequest {
             ("moderation", &self.moderation),
             ("access_programs", &self.access_programs),
         ] {
-            if present(value) {
+            if present(value.as_ref()) {
                 return Err(Error::unsupported(format!("{field} is not supported")));
             }
         }
@@ -250,52 +250,62 @@ impl ResponsesRequest {
                 return Err(Error::unsupported(format!("{field} is not supported")));
             }
         }
-        if let Some(reasoning) = &self.reasoning {
-            if reasoning.summary.is_some()
+        let unsupported_reasoning = self.reasoning.as_ref().is_some_and(|reasoning| {
+            reasoning.summary.is_some()
                 || reasoning.generate_summary.is_some()
                 || reasoning.context.is_some()
                 || reasoning.mode.is_some()
-            {
-                return Err(Error::unsupported(
-                    "reasoning summaries and reasoning context are not supported; reasoning text is returned as a reasoning item",
-                ));
-            }
+        });
+        if unsupported_reasoning {
+            return Err(Error::unsupported(
+                "reasoning summaries and reasoning context are not supported; reasoning text is returned as a reasoning item",
+            ));
         }
-        if let Some(text) = &self.text {
-            if text.verbosity.is_some() {
-                return Err(Error::unsupported("text.verbosity is not supported"));
-            }
+        if self
+            .text
+            .as_ref()
+            .is_some_and(|text| text.verbosity.is_some())
+        {
+            return Err(Error::unsupported("text.verbosity is not supported"));
         }
         Ok(())
     }
 
     /// Validate advisory identifiers that do not change the generation.
     fn validate_hints(&self) -> Result<()> {
-        if let Some(options) = &self.prompt_cache_options {
-            if !options.is_object() && !options.is_null() {
-                return Err(Error::invalid("prompt_cache_options must be an object"));
-            }
+        if self
+            .prompt_cache_options
+            .as_ref()
+            .is_some_and(|options| !options.is_object() && !options.is_null())
+        {
+            return Err(Error::invalid("prompt_cache_options must be an object"));
         }
-        if let Some(options) = &self.stream_options {
-            if options.include_obfuscation == Some(true) {
-                return Err(Error::unsupported(
-                    "stream obfuscation is not supported; set include_obfuscation to false",
-                ));
-            }
+        if self
+            .stream_options
+            .as_ref()
+            .is_some_and(|options| options.include_obfuscation == Some(true))
+        {
+            return Err(Error::unsupported(
+                "stream obfuscation is not supported; set include_obfuscation to false",
+            ));
         }
-        if let Some(key) = &self.prompt_cache_key {
-            if key.len() > MAX_CACHE_KEY_BYTES {
-                return Err(Error::invalid(format!(
-                    "prompt_cache_key must be at most {MAX_CACHE_KEY_BYTES} bytes"
-                )));
-            }
+        if self
+            .prompt_cache_key
+            .as_ref()
+            .is_some_and(|key| key.len() > MAX_CACHE_KEY_BYTES)
+        {
+            return Err(Error::invalid(format!(
+                "prompt_cache_key must be at most {MAX_CACHE_KEY_BYTES} bytes"
+            )));
         }
-        if let Some(identifier) = &self.safety_identifier {
-            if identifier.len() > MAX_SAFETY_IDENTIFIER_BYTES {
-                return Err(Error::invalid(format!(
-                    "safety_identifier must be at most {MAX_SAFETY_IDENTIFIER_BYTES} bytes"
-                )));
-            }
+        if self
+            .safety_identifier
+            .as_ref()
+            .is_some_and(|identifier| identifier.len() > MAX_SAFETY_IDENTIFIER_BYTES)
+        {
+            return Err(Error::invalid(format!(
+                "safety_identifier must be at most {MAX_SAFETY_IDENTIFIER_BYTES} bytes"
+            )));
         }
         match self.prompt_cache_retention.as_deref() {
             None | Some("in_memory" | "24h") => {}
@@ -488,10 +498,10 @@ fn image_part(object: &Map<String, Value>, index: usize) -> Result<Value> {
         Some(Value::String(detail)) => Some(detail.as_str()),
         Some(_) => return Err(Error::invalid("input_image.detail must be a string")),
     };
-    let image = match detail {
-        Some(detail) => json!({"url":url, "detail":detail}),
-        None => json!({"url":url}),
-    };
+    let image = detail.map_or_else(
+        || json!({"url":url}),
+        |detail| json!({"url":url, "detail":detail}),
+    );
     Ok(json!({"type":"image_url","image_url":image}))
 }
 
@@ -626,12 +636,13 @@ fn check_reasoning(object: &Map<String, Value>, index: usize) -> Result<()> {
         index,
     )?;
     for field in ["summary", "content"] {
-        if let Some(value) = object.get(field) {
-            if !value.is_array() && !value.is_null() {
-                return Err(Error::invalid(format!(
-                    "reasoning item {index} {field} must be a list"
-                )));
-            }
+        if object
+            .get(field)
+            .is_some_and(|value| !value.is_array() && !value.is_null())
+        {
+            return Err(Error::invalid(format!(
+                "reasoning item {index} {field} must be a list"
+            )));
         }
     }
     if object
@@ -835,8 +846,8 @@ fn string_field<'a>(object: &'a Map<String, Value>, field: &str, index: usize) -
 }
 
 /// Whether an optional JSON field was actually supplied.
-fn present(value: &Option<Value>) -> bool {
-    value.as_ref().is_some_and(|value| !value.is_null())
+fn present(value: Option<&Value>) -> bool {
+    value.is_some_and(|value| !value.is_null())
 }
 
 fn check_keys(object: &Map<String, Value>, allowed: &[&str], index: usize) -> Result<()> {
