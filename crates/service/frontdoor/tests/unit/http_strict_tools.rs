@@ -126,3 +126,146 @@ async fn unsupported_strict_schema_is_rejected_before_admission() {
     assert_eq!(handle.inspect().await.unwrap().active_requests, 0);
     handle.shutdown().await.unwrap();
 }
+
+fn responses_request(stream: bool) -> Value {
+    json!({"model":"1","input":"x","max_output_tokens":128,"temperature":0.0,
+        "stream":stream,"tool_choice":"required","parallel_tool_calls":false,
+        "tools":[{"type":"function","name":"ping","strict":true,
+            "parameters":{"type":"object","properties":{},"required":[],
+                "additionalProperties":false}}]})
+}
+
+#[tokio::test]
+async fn responses_publish_function_call_items_and_their_round_trip() {
+    let text = r#"<tool_call>{"name":"ping","arguments":{}}</tool_call>"#;
+    let (handle, assets) = strict_fixture(text);
+    let app = router_with_text(handle.clone(), assets);
+    let (status, body) = call(app.clone(), "/v1/responses", Some(responses_request(false))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "completed");
+    let output = body["output"].as_array().unwrap();
+    assert_eq!(output.len(), 1, "{body}");
+    assert_eq!(output[0]["type"], "function_call");
+    assert_eq!(output[0]["name"], "ping");
+    assert_eq!(output[0]["arguments"], "{}");
+    assert_eq!(output[0]["status"], "completed");
+    let call_id = output[0]["call_id"].as_str().unwrap();
+    assert!(call_id.starts_with("call_"));
+
+    let (status, streamed) =
+        call_stream(app.clone(), "/v1/responses", responses_request(true)).await;
+    assert_eq!(status, StatusCode::OK, "{streamed}");
+    let events = stream_data(&streamed);
+    let done = events
+        .iter()
+        .find(|event| event["type"] == "response.function_call_arguments.done")
+        .unwrap();
+    assert_eq!(done["arguments"], "{}");
+    let completed = events.last().unwrap();
+    assert_eq!(completed["type"], "response.completed");
+    assert!(
+        completed["response"]["usage"]["output_tokens"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(completed["response"]["output"][0]["type"], "function_call");
+
+    // A client sends the call item back with its output; the next turn is a normal history.
+    let (status, body) = call(
+        app,
+        "/v1/responses",
+        Some(json!({
+            "model":"1",
+            "input":[
+                {"role":"user","content":"x"},
+                {"type":"function_call","call_id":call_id,"name":"ping","arguments":"{}"},
+                {"type":"function_call_output","call_id":call_id,"output":"pong"}
+            ],
+            "max_output_tokens":128
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "completed");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn responses_complete_text_and_stream_end_with_completed() {
+    let (handle, assets) = strict_fixture("hello");
+    let app = router_with_text(handle.clone(), assets);
+    let payload = json!({"model":"1","input":"x","max_output_tokens":16});
+    let (status, body) = call(app.clone(), "/v1/responses", Some(payload.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "completed");
+    assert!(body["completed_at"].as_u64().unwrap() > 0);
+    assert_eq!(body["incomplete_details"], Value::Null);
+    assert_eq!(body["output"][0]["content"][0]["text"], "hello");
+
+    let mut streamed = payload;
+    streamed["stream"] = json!(true);
+    let (status, body) = call_stream(app, "/v1/responses", streamed).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let events = stream_data(&body);
+    assert_eq!(events.last().unwrap()["type"], "response.completed");
+    let text: String = events
+        .iter()
+        .filter_map(|event| {
+            (event["type"] == "response.output_text.delta")
+                .then(|| event["delta"].as_str().unwrap())
+        })
+        .collect();
+    assert_eq!(text, "hello");
+    assert_eq!(events.last().unwrap()["response"]["status"], "completed");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn responses_map_reasoning_text_to_a_reasoning_item() {
+    let (handle, assets) = strict_fixture("<think>why</think>hello");
+    let app = router_with_text(handle.clone(), assets);
+    let payload = json!({"model":"1","input":"x","max_output_tokens":64,
+        "reasoning":{"effort":"low"}});
+    let (status, body) = call(app.clone(), "/v1/responses", Some(payload.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let output = body["output"].as_array().unwrap();
+    assert_eq!(output.len(), 2, "{body}");
+    assert_eq!(output[0]["type"], "reasoning");
+    assert_eq!(output[0]["content"][0]["type"], "reasoning_text");
+    assert_eq!(output[0]["content"][0]["text"], "why");
+    assert_eq!(output[1]["type"], "message");
+    assert_eq!(output[1]["content"][0]["text"], "hello");
+    assert_eq!(body["status"], "completed");
+    assert_eq!(body["reasoning"]["effort"], "low");
+
+    let mut streamed = payload;
+    streamed["stream"] = json!(true);
+    let (status, body) = call_stream(app, "/v1/responses", streamed).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let events = stream_data(&body);
+    let types: Vec<_> = events
+        .iter()
+        .map(|event| event["type"].as_str().unwrap())
+        .collect();
+    for expected in [
+        "response.reasoning_text.delta",
+        "response.reasoning_text.done",
+        "response.output_text.delta",
+        "response.completed",
+    ] {
+        assert!(types.contains(&expected), "{expected}: {types:?}");
+    }
+    let reasoning: String = events
+        .iter()
+        .filter_map(|event| {
+            (event["type"] == "response.reasoning_text.delta")
+                .then(|| event["delta"].as_str().unwrap())
+        })
+        .collect();
+    assert_eq!(reasoning, "why");
+    let completed = &events.last().unwrap()["response"];
+    assert_eq!(completed["output"][0]["type"], "reasoning");
+    assert_eq!(completed["output"][1]["type"], "message");
+    handle.shutdown().await.unwrap();
+}

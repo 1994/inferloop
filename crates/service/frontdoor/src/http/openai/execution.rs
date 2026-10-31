@@ -25,6 +25,9 @@ pub(super) struct Prepared {
     pub(super) prompt_tokens: Arc<AtomicUsize>,
     pub(super) model_name: String,
     pub(super) created: u64,
+    /// Effective sampling values after package defaults, mode presets and request overrides.
+    pub(super) temperature: f32,
+    pub(super) top_p: f32,
     pub(super) chat: bool,
     pub(super) policy: ToolPolicy,
     pub(super) enable_thinking: bool,
@@ -218,6 +221,8 @@ pub(super) async fn prepare(
     let assets = state.assets.clone();
     let resolved = resolve_generation(&assets, &request, chat)?;
     let enable_thinking = resolved.enable_thinking;
+    let temperature = resolved.sampling.temperature;
+    let top_p = resolved.sampling.top_p;
     let id = state.handle.allocate_request_id()?;
     // Which layer produced each effective sampling parameter is the difference between two
     // apparently identical baselines, so it is recorded per request rather than inferred.
@@ -253,6 +258,8 @@ pub(super) async fn prepare(
         prompt_tokens,
         model_name: inspection.model_name.clone(),
         created,
+        temperature,
+        top_p,
         chat,
         policy,
         enable_thinking,
@@ -439,6 +446,33 @@ async fn response(
     }))
 }
 
+/// Split a decoded completion into text, reasoning and calls in the package dialect.
+///
+/// # Errors
+/// Returns an invalid-input error when the response must be parsed but its generated region does
+/// not decode in the package dialect.
+pub(super) fn parse_reply(
+    text: &str,
+    dialect: infer_models::ToolDialect,
+    policy: &ToolPolicy,
+    enable_thinking: bool,
+    reasoning_open: bool,
+) -> infer_core::Result<infer_models::ParsedOutput> {
+    if policy.parses() || enable_thinking {
+        let mut parser = infer_models::OutputStreamParser::new(dialect, policy.declared().cloned())
+            .with_tools(policy.parses())
+            .with_open_reasoning(reasoning_open);
+        let mut events = parser.feed(text)?;
+        events.extend(parser.finish()?);
+        Ok(infer_models::assemble(events, parser.truncated()))
+    } else {
+        Ok(infer_models::ParsedOutput {
+            content: text.to_string(),
+            ..Default::default()
+        })
+    }
+}
+
 /// Assemble one chat choice from a decoded completion.
 ///
 /// # Errors
@@ -453,19 +487,7 @@ fn chat_choice(
     reason: &'static str,
     reasoning_open: bool,
 ) -> infer_core::Result<Value> {
-    let parsed = if policy.parses() || enable_thinking {
-        let mut parser = infer_models::OutputStreamParser::new(dialect, policy.declared().cloned())
-            .with_tools(policy.parses())
-            .with_open_reasoning(reasoning_open);
-        let mut events = parser.feed(text)?;
-        events.extend(parser.finish()?);
-        infer_models::assemble(events, parser.truncated())
-    } else {
-        infer_models::ParsedOutput {
-            content: text.to_string(),
-            ..Default::default()
-        }
-    };
+    let parsed = parse_reply(text, dialect, policy, enable_thinking, reasoning_open)?;
     let reason = completion_reason(reason, parsed.truncated, parsed.has_calls())?;
     let infer_models::ParsedOutput {
         content,
