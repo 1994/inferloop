@@ -1,6 +1,6 @@
 # CUDA AOT kernel provider 与 12.9 设备接入方案
 
-状态：设计，未实施。首个目标设备为 L20（sm_89 / CUDA 12.9 / 驱动 550.144）；现有 13.x 路径不回退。
+状态：部分实施。kernel 已搬入 `infer-cuda-kernels`，`pool_gemv_bf16` 已在推理路径走契约，AOT 版本在 sm_120 上通过捕获与回放；host 迁移和 L20 实机未开始。首个目标设备为 L20（sm_89 / CUDA 12.9 / 驱动 550.144）；现有 13.x 路径不回退。
 整体排期见[路线图](../README.md)，后端能力边界见 [Backend](../../architecture/backends.md)，CUDA 现有实现见
 [CUDA 说明](../../../crates/backend/cuda/README.md)。
 
@@ -292,7 +292,8 @@ impl<T> Buffer<T> {
 - `Device` / `Stream` / `Buffer` 是具体类型而不是 trait 对象，避免泛型方法与非对象安全。
 - launch 语义只有一种：在 stream 上排序，到下一次同步才保证完成。实现可以更早等待，调用方不能依赖。
 - 过渡形态：host 迁到 `Buffer` 之前，已落地的 `Projection` 用 `unsafe fn` + `DevicePtr`，义务写在 trait 上。
-  新算子族的模板必须先通过常驻图录制与回放，不能只在同步冷路径上验证。
+  launch 只录制不等待，`Recording` 指明去向：cuTile scope，或处于捕获模式的 driver stream。`pool_gemv_bf16`
+  是模板：tile 在推理路径上通过模型逐位对照，AOT 在设备上捕获并回放。
 
 ### 5.2 Kernel traits
 
