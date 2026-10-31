@@ -1,7 +1,7 @@
 # CUDA AOT kernel provider 与 12.9 设备接入方案
 
 状态：部分实施。kernel 已搬入 `infer-cuda-kernels`，`pool_gemv_bf16` 已在推理路径走契约，AOT 版本在 sm_120 上通过捕获与回放；host 迁移和 L20 实机未开始。首个目标设备为 L20（sm_89 / CUDA 12.9 / 驱动 550.144）；现有 13.x 路径不回退。
-整体排期见[路线图](../README.md)，后端能力边界见 [Backend](../../architecture/backends.md)，CUDA 现有实现见
+host 收口的整体顺序见 [CUDA 架构收口方案](cuda-architecture.md)。整体排期见[路线图](../README.md)，后端能力边界见 [Backend](../../architecture/backends.md)，CUDA 现有实现见
 [CUDA 说明](../../../crates/backend/cuda/README.md)。
 
 本文回答一个问题：**没有 Tile IR 的 CUDA 环境（12.9 / sm_89）如何跑同一套 engine，同时不改 host 的
