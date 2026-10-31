@@ -1,4 +1,5 @@
 use super::*;
+use infer_cuda_kernels::contract::target::Arch;
 #[test]
 fn mixed_precision_roofline_scales_with_compute_bandwidth_and_verification_rows() {
     assert_eq!(bound(160, 20, 100, 10, 1).unwrap(), Some(80));
@@ -22,9 +23,9 @@ fn incomplete_or_overflowing_roofline_facts_are_not_published() {
 }
 #[test]
 fn unknown_architectures_do_not_inherit_another_familys_tensor_rate() {
-    assert!(Rates::for_target(&CudaTarget::Other("sm_future".into())).is_none());
-    let hopper = Rates::for_target(&CudaTarget::HopperSm90).unwrap();
+    assert!(Arch::from_sm(99, 9).tensor_rates().is_none());
+    let hopper = Arch::Sm90.tensor_rates().unwrap();
     assert!(hopper.fp4.is_none());
-    let blackwell = Rates::for_target(&CudaTarget::BlackwellSm120).unwrap();
+    let blackwell = Arch::Sm120.tensor_rates().unwrap();
     assert!(blackwell.fp4.unwrap() > blackwell.fp8);
 }

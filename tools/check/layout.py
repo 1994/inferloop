@@ -27,6 +27,8 @@ BACKENDS = {
 # baseline too.
 CUDA_HOST = "crates/backend/cuda/src"
 CUDA_HOST_TOKENS = {"Tensor<": 868, ".partition(": 341, ".generics(": 216, "cuda_core": 86}
+# Artifact catalogs name the architectures they ship; everything else asks `Arch` what it can do.
+ARCHITECTURE_CATALOGS = ("resident/attention_mma/",)
 # Workload meaning stays in `infer-workloads`; these layers execute programs and never branch on it.
 WORKLOAD_BLIND_LAYERS = (CUDA_HOST, "crates/engine/runtime/src")
 
@@ -252,6 +254,20 @@ def check_cuda_host_ratchet(root=ROOT, baseline=None):
     print(f"CUDA host: cuTile use holds at {counts}")
 
 
+def check_host_architecture_names(root=ROOT):
+    host = root / CUDA_HOST
+    for path in sorted(host.rglob("*.rs")):
+        relative = path.relative_to(host).as_posix()
+        if relative.startswith(ARCHITECTURE_CATALOGS):
+            continue
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            require(
+                '"sm_' not in line.split("//", 1)[0],
+                f"{CUDA_HOST}/{relative}:{lineno}: ask contract::target::Arch, not its name",
+            )
+    print("CUDA host: only artifact catalogs name an architecture")
+
+
 def check_workload_blindness(root=ROOT):
     for layer in WORKLOAD_BLIND_LAYERS:
         for path in sorted((root / layer).rglob("*.rs")):
@@ -269,4 +285,5 @@ if __name__ == "__main__":
     check_links()
     check_sources()
     check_cuda_host_ratchet()
+    check_host_architecture_names()
     check_workload_blindness()

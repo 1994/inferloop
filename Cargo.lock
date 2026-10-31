@@ -1547,6 +1547,7 @@ dependencies = [
  "cuda-core",
  "cutile",
  "infer-core",
+ "infer-ir",
  "libloading",
  "serde",
  "serde_json",

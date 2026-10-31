@@ -126,7 +126,7 @@ fn resolve(
     autotune: bool,
     session: &ResidentTuningSession,
 ) -> Result<Choice> {
-    if device.profile()?.architecture != "sm_120" {
+    if !device.target().has_simt_artifacts() {
         return Ok(Choice::Simt);
     }
     let key = key(device, shape)?;

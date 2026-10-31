@@ -41,7 +41,7 @@ mod probe {
 fn main() -> Result<(), Box<dyn Error>> {
     use cutile::prelude::*;
     enable_default()?;
-    let target = CudaDevice::new(0)?.target().clone();
+    let target = CudaDevice::new(0)?.target().name();
     let device = Device::new(0)?;
     let stream = device.new_stream()?;
     let mut results = Vec::new();

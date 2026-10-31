@@ -14,7 +14,7 @@ pub mod nvfp4;
 mod quantized;
 pub mod resident;
 pub mod strategy;
-pub mod target;
+pub use infer_cuda_kernels::contract::target::Arch;
 pub mod tuning;
 pub mod vision;
 

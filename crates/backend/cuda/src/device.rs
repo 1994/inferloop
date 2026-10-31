@@ -4,7 +4,6 @@ use crate::constants::MATVEC_TILE_COLUMNS;
 use crate::constants::MATVEC_TILE_ROWS;
 use crate::kernels::linear::dense;
 use crate::strategy::LinearTiling;
-use crate::target::CudaTarget;
 use crate::tuning::memory::arena_budget;
 use cuda_core::sys::CUdevice_attribute;
 use cuda_core::sys::CUresult;
@@ -22,6 +21,7 @@ use cutile::cuda_async::device_future::DeviceFuture;
 use cutile::jit_cache::enable_default;
 use cutile::prelude::*;
 use infer_core::{Error as InferError, ErrorCode, Result};
+use infer_cuda_kernels::contract::target::Arch;
 use serde::Serialize;
 use std::fmt::Display;
 use std::ptr::{null, null_mut};
@@ -181,7 +181,7 @@ pub(crate) use readback::{ReadbackSource, Readbacks};
 #[derive(Clone)]
 pub struct CudaDevice {
     pub(crate) stream: Arc<cuda_core::Stream>,
-    target: CudaTarget,
+    target: Arch,
     profile: Arc<OnceLock<DeviceProfile>>,
     ordinal: usize,
 }
@@ -223,8 +223,8 @@ impl CudaDevice {
     }
 
     #[must_use]
-    pub const fn target(&self) -> &CudaTarget {
-        &self.target
+    pub const fn target(&self) -> Arch {
+        self.target
     }
 
     /// # Errors
@@ -372,11 +372,12 @@ impl CudaDevice {
     unsafe_code,
     reason = "Audited read-only CUDA attribute query; the live owned Device supplies a valid driver handle"
 )]
-fn query_target(device: &Device) -> Result<CudaTarget> {
+fn query_target(device: &Device) -> Result<Arch> {
     // SAFETY: Device::new initialized CUDA and owns this live device handle.
     let name =
         unsafe { cuda_core::get_device_sm_name(device.cu_device()) }.map_err(device_error)?;
-    Ok(CudaTarget::from_sm_name(&name))
+    // An unreadable name is an unknown architecture: general paths only, nothing specialized.
+    Ok(Arch::from_sm_name(&name).unwrap_or(Arch::Other { major: 0, minor: 0 }))
 }
 
 fn head_copy_shape<T: DType>(tensor: &Tensor<T>) -> Result<[usize; KV_CACHE_RANK]> {
@@ -464,7 +465,7 @@ impl CudaDevice {
         };
         Ok(DeviceProfile {
             name: self.name()?,
-            architecture: format!("sm_{}{}", self.attribute(MAJOR)?, self.attribute(MINOR)?),
+            architecture: Arch::from_sm(self.attribute(MAJOR)?, self.attribute(MINOR)?).name(),
             multiprocessors: self.attribute(SMS)?,
             total_memory_bytes: self.memory_info()?.1,
             memory_clock_khz: self.attribute(MEMORY_CLOCK)?,

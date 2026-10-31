@@ -14,7 +14,6 @@ pub mod resident_gemm;
 
 use crate::device::DeviceProfile;
 use crate::strategy::default_tiling;
-use crate::target::CudaTarget;
 use crate::{
     benchmark::Trial,
     device::{CudaDevice, device_error},
@@ -97,7 +96,7 @@ pub struct ProjectionTrial {
     pub rows: usize,
     pub columns: usize,
     pub gpu: String,
-    pub target: CudaTarget,
+    pub target: String,
     pub baseline: LinearTiling,
     pub selected: LinearTiling,
     pub trials: Vec<Trial>,
@@ -199,7 +198,7 @@ pub fn tune(device: &CudaDevice, weight: &ProjectionWeight) -> Result<Projection
         rows,
         columns,
         gpu: device.stream.device().name().map_err(device_error)?,
-        target: device.target().clone(),
+        target: device.target().name(),
         baseline,
         selected,
         trials,

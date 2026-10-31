@@ -19,6 +19,7 @@ aot = ["dep:libloading", "dep:serde", "dep:serde_json", "dep:sha2"]
 
 [dependencies]
 infer-core.workspace = true
+infer-ir.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }

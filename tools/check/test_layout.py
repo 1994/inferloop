@@ -8,6 +8,7 @@ from typing import ClassVar
 from layout import (
     CUDA_HOST,
     check_cuda_host_ratchet,
+    check_host_architecture_names,
     check_ownership,
     check_workload_blindness,
     production_dependencies,
@@ -82,6 +83,16 @@ class HostBoundaryTests(unittest.TestCase):
     def test_a_gain_must_lower_the_baseline(self):
         with self.assertRaisesRegex(SystemExit, "lower CUDA_HOST_TOKENS"):
             check_cuda_host_ratchet(self.tree(""), self.BASELINE)
+
+    def test_only_artifact_catalogs_name_an_architecture(self):
+        root = self.tree('let arch = "sm_120";')
+        with self.assertRaisesRegex(SystemExit, "ask contract::target::Arch"):
+            check_host_architecture_names(root)
+        catalog = self.tree("// sm_120 in a comment")
+        directory = catalog / CUDA_HOST / "resident/attention_mma"
+        directory.mkdir(parents=True)
+        (directory / "catalog.rs").write_text('"sm_120" => &[Self::Sm120],')
+        check_host_architecture_names(catalog)
 
     def test_workload_branches_fail_but_comments_pass(self):
         check_workload_blindness(self.tree("// WorkloadKind stays elsewhere"))

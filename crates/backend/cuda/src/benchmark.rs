@@ -1,5 +1,4 @@
 //! Reproducible paired measurements of the synchronous dense launch path.
-use crate::target::CudaTarget;
 use crate::{
     device::{CudaDevice, device_error},
     strategy::{LinearStrategy, LinearTiling},
@@ -58,7 +57,7 @@ pub struct Baseline {
     pub schema_version: u32,
     pub debug_assertions: bool,
     pub gpu: String,
-    pub target: CudaTarget,
+    pub target: String,
     pub measurement: &'static str,
     pub dtype: &'static str,
     pub rows: usize,
@@ -136,7 +135,7 @@ pub fn dense_baseline(
         schema_version: 2,
         debug_assertions: cfg!(debug_assertions),
         gpu: device.stream.device().name().map_err(device_error)?,
-        target: device.target().clone(),
+        target: device.target().name(),
         measurement: "CUDA events: synchronous launch including allocation and zeroing; synthetic weights",
         dtype: "BF16 weights, F32 input and accumulation",
         rows,

@@ -45,12 +45,12 @@ pub struct Bindings<'a, E: DType> {
 }
 
 impl Support {
-    pub(super) fn eligible(device: &CudaDevice, graph: &DataflowGraph) -> Result<bool> {
+    pub(super) fn eligible(device: &CudaDevice, graph: &DataflowGraph) -> bool {
         #[cfg(test)]
         if DISABLED.get() {
-            return Ok(false);
+            return false;
         }
-        Ok(device.profile()?.architecture == "sm_120"
+        device.target().has_simt_artifacts()
             && graph.nodes.iter().any(|node| {
                 matches!(
                     node.op,
@@ -61,11 +61,11 @@ impl Support {
                         ..
                     }
                 )
-            }))
+            })
     }
 
     pub fn load(device: &CudaDevice) -> Result<Option<Self>> {
-        if device.profile()?.architecture != "sm_120" {
+        if !device.target().has_simt_artifacts() {
             return Ok(None);
         }
         let module = device

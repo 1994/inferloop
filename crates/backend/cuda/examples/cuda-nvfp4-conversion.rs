@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
-            "passed": true, "device": device.name()?, "target": device.target(),
+            "passed": true, "device": device.name()?, "target": device.target().name(),
             "model": root, "projection": name, "shape": weight.shape,
             "packed_bytes": packed.len(), "converted_bytes": converted.len() * 2,
             "maximum_absolute_error_vs_bf16_f64_reference": error,
