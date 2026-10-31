@@ -11,7 +11,7 @@ use crate::device::CudaDevice;
 use crate::loading::{LoadedModel, PooledServingQuote};
 use crate::resident::DeviceProgram;
 use crate::resident::dflash2::{Engine, VerifiedRows};
-use crate::resident::prefill_burst::{self, SEGMENT_ROWS};
+use crate::resident::prefill_burst::{self, PromptBurst, SEGMENT_ROWS};
 use crate::resident::slot_batch::SlotPool;
 use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::{ExecutionInput, ExecutionTask, MediaPixels, MediaPlan, OutputReadout, TaskOutput};
@@ -30,6 +30,8 @@ const POOL_CAPTURE_ATTEMPTS: usize = 3;
 const MIN_BURST_PROMPTS: usize = 2;
 /// Narrowest multi-sequence graph; narrower ones cost as much as the worker.
 const MIN_BURST_SEGMENTS: usize = 4;
+/// A graph's workspaces beside its rows, measured on the widest rung of a BF16 model.
+const BURST_BYTES_MARGIN: u64 = 2;
 /// A rung replays every row: at most this many segments per prompt still beats the worker.
 const MAX_SEGMENTS_PER_PROMPT: usize = 4;
 
@@ -370,7 +372,7 @@ impl CudaExecutor {
             // Keep the original baseline across retries: failed captures can leave
             // driver modules resident even after their tensor owners are reclaimed.
             let allocated = self
-                .capture_pool_plan(attempt, capacity, envelope, &plan)
+                .capture_pool_plan(attempt, capacity, (baseline, envelope), &plan)
                 .and_then(|()| {
                     self.physical_available()
                         .map(|free| baseline.saturating_sub(free))
@@ -489,7 +491,7 @@ impl CudaExecutor {
         &mut self,
         attempt: usize,
         capacity: usize,
-        envelope: u64,
+        (baseline, envelope): (u64, u64),
         plan: &PoolPlan,
     ) -> Result<()> {
         let quote = plan.quote;
@@ -516,6 +518,7 @@ impl CudaExecutor {
         self.slots = Some(pool);
         self.attach_dflash()?;
         self.build_homes(attempt, prompt_width);
+        self.build_burst(baseline, envelope);
         super::profiling::memory(attempt, "homes", width, self.loaded.device());
         if self.worker.is_none()
             || (self.loaded.mtp_depth() > 0 && self.draft_slots.is_none())
@@ -674,7 +677,6 @@ impl CudaExecutor {
                 }
             }
         }
-        self.build_burst();
     }
 
     /// Capture the multi-sequence prompt graph over the resident slots. Its absence only means
@@ -684,7 +686,7 @@ impl CudaExecutor {
         reason = "The worker owning the burst is cleared before the slot pool drops, like the \
                   resident programs it binds"
     )]
-    fn build_burst(&mut self) {
+    fn build_burst(&mut self, baseline: u64, envelope: u64) {
         let Some(pool) = self.slots.as_ref() else {
             return;
         };
@@ -698,27 +700,48 @@ impl CudaExecutor {
         }
         let capacity = pool.capacity();
         let width = pool.width();
+        let remaining = self.physical_available().map_or(0, |free| {
+            envelope.saturating_sub(baseline.saturating_sub(free))
+        });
         let mut programs: Vec<&mut DeviceProgram> = self
             .homes
             .iter_mut()
             .flatten()
             .map(|home| &mut home.program)
             .collect();
-        let mut bursts = Vec::new();
-        for segments in burst_rungs(width) {
-            // SAFETY: see the expectation above.
-            match unsafe {
+        // What the worker and homes left of the envelope pays for the widest graph's rows; the
+        // serving pool never shrinks to fund them. Narrower rungs view the same rows.
+        let rungs = burst_rungs(width);
+        let affordable = rungs.last().is_some_and(|&segments| {
+            self.loaded
+                .prompt_burst_bytes(segments)
+                .is_ok_and(|bytes| bytes.saturating_mul(BURST_BYTES_MARGIN) <= remaining)
+        });
+        if !affordable {
+            tracing::info!(target: "infer::executor", remaining,
+                "serving envelope leaves no room for multi-sequence prompt graphs");
+            return;
+        }
+        let mut bursts: Vec<PromptBurst> = Vec::new();
+        for &segments in rungs.iter().rev() {
+            let wider = bursts.first().map(PromptBurst::arena);
+            // SAFETY: see the expectation above; a narrower rung views the widest rung's rows,
+            // and the worker keeps every rung for the pool's lifetime.
+            let built = unsafe {
                 self.loaded
-                    .prompt_burst(capacity, &mut programs[..segments])
-            } {
+                    .prompt_burst(capacity, &mut programs[..segments], wider)
+            };
+            match built {
                 Ok(burst) => bursts.push(burst),
                 Err(error) => {
                     tracing::info!(target: "infer::executor", segments, %error,
                         "multi-sequence prompt graph unavailable; prompts replay on the worker");
+                    bursts.clear();
                     break;
                 }
             }
         }
+        bursts.reverse();
         if let Some(worker) = self.worker.as_mut() {
             worker.bursts = bursts;
         }

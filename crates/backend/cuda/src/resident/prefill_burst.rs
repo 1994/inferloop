@@ -72,7 +72,7 @@ pub struct PromptBurst {
     logits: Arc<Tensor<f32>>,
     readbacks: Readbacks,
     _retained: Retained,
-    _keep: Keep,
+    keep: Keep,
 }
 
 /// Workspaces the graph addresses and nothing reads through this struct.
@@ -88,7 +88,7 @@ struct Retained {
 
 /// Device tensors the graph addresses and nothing reads through this struct.
 struct Keep {
-    _arena: ActivationArena,
+    arena: ActivationArena,
     _metadata_rows: Vec<Tensor<i32>>,
     _info_rows: Vec<Tensor<i32>>,
     _rotary_rows: Vec<Tensor<i32>>,
@@ -116,6 +116,31 @@ struct Storage {
     external: Tensor<f32>,
     lane_external: Vec<Tensor<f32>>,
     lane_fusion: Vec<Option<super::program::FusionWorkspace>>,
+}
+
+/// Pair each resident program with its rows and metadata.
+fn bind_segments<'a>(
+    programs: &'a mut [&mut super::program::DeviceProgram],
+    views: Vec<ActivationArena>,
+    (info_rows, rotary_rows): (&'a [Tensor<i32>], &'a [Tensor<i32>]),
+) -> Vec<Segment<'a>> {
+    programs
+        .iter_mut()
+        .zip(views)
+        .zip(info_rows)
+        .enumerate()
+        .map(|(segment, ((program, arena), info))| {
+            let (states, fp8, table) = program.burst_binding();
+            Segment {
+                arena,
+                states,
+                fp8,
+                table,
+                info,
+                rotary: rotary_rows.get(segment),
+            }
+        })
+        .collect()
 }
 
 /// Projection, attention and recurrent workspaces of one capture.
@@ -156,10 +181,15 @@ impl Storage {
         graph: &DataflowGraph,
         weights: &ProgramWeights,
         (segments, rows, hidden, vocabulary): (usize, usize, usize, usize),
+        wider: Option<&ActivationArena>,
     ) -> Result<Self> {
         let budget =
             usize::try_from(device.profile()?.arena_budget_bytes()).map_err(device_error)?;
-        let arena = ActivationArena::new_prompt(device, graph, rows, budget)?;
+        let arena = match wider {
+            // SAFETY: forwarded from this function's contract: replays share one stream.
+            Some(wider) => unsafe { wider.narrowed(graph, rows, graph.logits)? },
+            None => ActivationArena::new_prompt(device, graph, rows, budget)?,
+        };
         let (metadata, metadata_rows) = super::batch::batched_metadata(device, rows)?;
         let (info, info_rows) = super::batch::batched_metadata(device, segments)?;
         let rotary = if weights.mrope {
@@ -236,6 +266,7 @@ impl PromptBurst {
         weights: &ProgramWeights,
         (capacity, hidden, vocabulary): (usize, usize, usize),
         programs: &mut [&mut super::program::DeviceProgram],
+        wider: Option<&ActivationArena>,
     ) -> Result<Self> {
         let segments = programs.len();
         let rows = segments * SEGMENT_ROWS;
@@ -247,29 +278,19 @@ impl PromptBurst {
         }
         // SAFETY: forwarded from this function's contract.
         let mut storage = unsafe {
-            Storage::allocate(device, graph, weights, (segments, rows, hidden, vocabulary))?
+            Storage::allocate(
+                device,
+                graph,
+                weights,
+                (segments, rows, hidden, vocabulary),
+                wider,
+            )?
         };
         let (mut nvfp4, mut attention, recurrent) =
             workspaces(device, graph, weights, capacity, [rows, segments])?;
         // SAFETY: forwarded from this function's contract.
         let views = unsafe { storage.segment_views(graph, segments)? };
-        let mut bound = Vec::with_capacity(segments);
-        for (segment, ((program, view), info)) in programs
-            .iter_mut()
-            .zip(views)
-            .zip(&storage.info_rows)
-            .enumerate()
-        {
-            let (states, fp8, table) = program.burst_binding();
-            bound.push(Segment {
-                arena: view,
-                states,
-                fp8,
-                table,
-                info,
-                rotary: storage.rotary_rows.get(segment),
-            });
-        }
+        let bound = bind_segments(programs, views, (&storage.info_rows, &storage.rotary_rows));
         let mut placeholder_states = States::new();
         let mut placeholder_fp8 = Fp8Caches::new();
         let tables = [super::metadata::identity_table(device, capacity)?];
@@ -373,8 +394,8 @@ impl PromptBurst {
             logits,
             readbacks,
             _retained: retained,
-            _keep: Keep {
-                _arena: storage.arena,
+            keep: Keep {
+                arena: storage.arena,
                 _metadata_rows: storage.metadata_rows,
                 _info_rows: storage.info_rows,
                 _rotary_rows: storage.rotary_rows,
@@ -386,6 +407,11 @@ impl PromptBurst {
                 _last_rows: last_rows,
             },
         })
+    }
+
+    /// The rows narrower rungs view.
+    pub(crate) const fn arena(&self) -> &ActivationArena {
+        &self.keep.arena
     }
 
     /// Sequences this graph covers: the first slots of the pool.
