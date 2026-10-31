@@ -1,6 +1,6 @@
 //! Device time of one execution step, reported to the engine's cost model.
 use super::CudaDevice;
-use cuda_core::Event;
+use cuda_core::{DriverError, Event};
 use std::time::Duration;
 
 /// Milliseconds per second, the unit conversion for `cuEventElapsedTime`.
@@ -22,7 +22,7 @@ impl StepClock {
     pub fn new(device: &CudaDevice) -> Option<Self> {
         let created = (|| {
             let driver = device.stream.device();
-            Ok::<_, cuda_core::DriverError>(Self {
+            Ok::<_, DriverError>(Self {
                 start: driver.new_event()?,
                 end: driver.new_event()?,
             })
