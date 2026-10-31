@@ -1,6 +1,6 @@
 //! Minimal CUDA driver bindings and the objects a kernel provider needs.
 //!
-//! This module is the `aot` profile's device boundary. It deliberately depends on nothing from
+//! This module is the `aot` source's device boundary. It deliberately depends on nothing from
 //! the CUDA toolkit: the library is opened with `libloading` and every entry point is declared
 //! here, so device allocation, transfers, module loading and launches do not need headers.
 #![expect(
@@ -8,13 +8,23 @@
     reason = "Every driver entry point is a raw FFI call whose validity is the caller's contract"
 )]
 
+use crate::contract::recording::Recording;
+use crate::contract::target::Arch;
 use infer_core::{Error, ErrorCode, Result};
 use libloading::Library;
 use std::ffi::{CStr, c_char, c_void};
+use std::marker::PhantomData;
 use std::mem::size_of_val;
 use std::ptr;
 use std::slice;
 use std::sync::Arc;
+
+/// `CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR`.
+const ATTRIBUTE_SM_MAJOR: i32 = 75;
+/// `CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR`.
+const ATTRIBUTE_SM_MINOR: i32 = 76;
+/// `CU_STREAM_CAPTURE_MODE_GLOBAL`.
+const CAPTURE_MODE_GLOBAL: u32 = 0;
 
 type CuResult = i32;
 type CuDevice = i32;
@@ -23,6 +33,8 @@ type CuDeviceptr = u64;
 type CuStream = *mut c_void;
 type CuModule = *mut c_void;
 type CuFunction = *mut c_void;
+type CuGraph = *mut c_void;
+type CuGraphExec = *mut c_void;
 
 type Init = unsafe extern "C" fn(u32) -> CuResult;
 type DeviceGet = unsafe extern "C" fn(*mut CuDevice, i32) -> CuResult;
@@ -52,6 +64,13 @@ type Launch = unsafe extern "C" fn(
     *mut *mut c_void,
     *mut *mut c_void,
 ) -> CuResult;
+type DeviceAttribute = unsafe extern "C" fn(*mut i32, i32, CuDevice) -> CuResult;
+type BeginCapture = unsafe extern "C" fn(CuStream, u32) -> CuResult;
+type EndCapture = unsafe extern "C" fn(CuStream, *mut CuGraph) -> CuResult;
+type GraphInstantiate = unsafe extern "C" fn(*mut CuGraphExec, CuGraph, u32) -> CuResult;
+type GraphLaunch = unsafe extern "C" fn(CuGraphExec, CuStream) -> CuResult;
+type GraphExecDestroy = unsafe extern "C" fn(CuGraphExec) -> CuResult;
+type GraphDestroy = unsafe extern "C" fn(CuGraph) -> CuResult;
 type GetErrorName = unsafe extern "C" fn(CuResult, *mut *const c_char) -> CuResult;
 
 struct Driver {
@@ -72,6 +91,13 @@ struct Driver {
     module_get_function: ModuleGetFunction,
     module_unload: ModuleUnload,
     launch: Launch,
+    device_attribute: DeviceAttribute,
+    begin_capture: BeginCapture,
+    end_capture: EndCapture,
+    graph_instantiate: GraphInstantiate,
+    graph_launch: GraphLaunch,
+    graph_exec_destroy: GraphExecDestroy,
+    graph_destroy: GraphDestroy,
     get_error_name: GetErrorName,
 }
 
@@ -98,6 +124,13 @@ impl Driver {
             module_get_function: symbol(&library, b"cuModuleGetFunction\0")?,
             module_unload: symbol(&library, b"cuModuleUnload\0")?,
             launch: symbol(&library, b"cuLaunchKernel\0")?,
+            device_attribute: symbol(&library, b"cuDeviceGetAttribute\0")?,
+            begin_capture: symbol(&library, b"cuStreamBeginCapture_v2\0")?,
+            end_capture: symbol(&library, b"cuStreamEndCapture\0")?,
+            graph_instantiate: symbol(&library, b"cuGraphInstantiateWithFlags\0")?,
+            graph_launch: symbol(&library, b"cuGraphLaunch\0")?,
+            graph_exec_destroy: symbol(&library, b"cuGraphExecDestroy\0")?,
+            graph_destroy: symbol(&library, b"cuGraphDestroy\0")?,
             get_error_name: symbol(&library, b"cuGetErrorName\0")?,
             _library: library,
         })
@@ -211,6 +244,58 @@ impl Device {
         self.ordinal
     }
 
+    /// Compute capability reported by the driver.
+    /// # Errors
+    /// Fails when the driver cannot answer or reports a negative capability.
+    pub fn arch(&self) -> Result<Arch> {
+        let major = self.attribute(ATTRIBUTE_SM_MAJOR)?;
+        let minor = self.attribute(ATTRIBUTE_SM_MINOR)?;
+        Ok(Arch::from_sm(major, minor))
+    }
+
+    fn attribute(&self, attribute: i32) -> Result<u32> {
+        let session = &self.session;
+        session.bind()?;
+        let mut value = 0;
+        // SAFETY: `value` is writable and the handle belongs to this session.
+        let status =
+            unsafe { (session.driver.device_attribute)(&raw mut value, attribute, session.handle) };
+        session.driver.check(status)?;
+        u32::try_from(value).map_err(|_| backend("negative device attribute".to_owned()))
+    }
+
+    /// Capture everything `record` launches into a graph; nothing runs until [`Graph::launch`].
+    /// # Errors
+    /// Fails when `record` fails, or the driver cannot capture or instantiate the graph. Capture
+    /// mode always ends, so the stream stays usable after an error.
+    pub fn capture(&self, record: impl FnOnce(&Recording<'_>) -> Result<()>) -> Result<Graph> {
+        let session = &self.session;
+        session.bind()?;
+        // SAFETY: the stream belongs to this session and its context is current.
+        let status = unsafe { (session.driver.begin_capture)(session.stream, CAPTURE_MODE_GLOBAL) };
+        session.driver.check(status)?;
+        let recorded = record(&Recording::Stream {
+            handle: session.stream,
+            stream: PhantomData,
+        });
+        let mut graph = ptr::null_mut();
+        // SAFETY: the stream entered capture mode above; `graph` is writable.
+        let status = unsafe { (session.driver.end_capture)(session.stream, &raw mut graph) };
+        // A failed capture may still return a graph; `Graph` owns and destroys it either way.
+        let mut owned = Graph {
+            session: Arc::clone(session),
+            captured: graph,
+            exec: ptr::null_mut(),
+        };
+        recorded?;
+        session.driver.check(status)?;
+        // SAFETY: `graph` is the captured graph and `exec` is writable.
+        let status =
+            unsafe { (session.driver.graph_instantiate)(&raw mut owned.exec, owned.captured, 0) };
+        session.driver.check(status)?;
+        Ok(owned)
+    }
+
     /// Allocate `bytes` of device memory.
     /// # Errors
     /// Fails when the driver rejects the allocation.
@@ -322,6 +407,40 @@ impl Device {
     }
 }
 
+/// Captured kernels that can be replayed any number of times.
+pub struct Graph {
+    session: Arc<Session>,
+    captured: CuGraph,
+    exec: CuGraphExec,
+}
+
+impl Graph {
+    /// Enqueue one replay; [`Device::synchronize`] waits for it.
+    /// # Errors
+    /// Fails when the driver rejects the launch.
+    pub fn launch(&self) -> Result<()> {
+        self.session.bind()?;
+        // SAFETY: the graph was instantiated by this session, and the addresses it recorded were
+        // promised valid for every replay by the `Projection` caller.
+        let status = unsafe { (self.session.driver.graph_launch)(self.exec, self.session.stream) };
+        self.session.driver.check(status)
+    }
+}
+
+impl Drop for Graph {
+    fn drop(&mut self) {
+        let _ = self.session.synchronize();
+        if !self.exec.is_null() {
+            // SAFETY: the exec was instantiated by this object and is destroyed once.
+            let _ = unsafe { (self.session.driver.graph_exec_destroy)(self.exec) };
+        }
+        if !self.captured.is_null() {
+            // SAFETY: the graph was captured by this object and is destroyed once.
+            let _ = unsafe { (self.session.driver.graph_destroy)(self.captured) };
+        }
+    }
+}
+
 /// Owned device allocation; dropping it waits for queued work before freeing.
 pub struct Buffer {
     session: Arc<Session>,
@@ -401,24 +520,28 @@ pub struct Function {
 }
 
 impl Function {
-    /// Enqueue one launch on the device stream and return without waiting for it.
+    /// Launch on `recording`: captured when the stream is capturing, enqueued otherwise.
     ///
     /// # Safety
     /// `parameters` must match the kernel signature and each entry must point to a live argument
     /// for this call. Every device address they carry must stay valid, with no conflicting access,
-    /// until the stream is next synchronized.
+    /// until each resulting launch or replay has finished.
     /// # Errors
-    /// Fails when the driver rejects the launch.
+    /// Fails when the recording is not a driver stream or the driver rejects the launch.
     pub unsafe fn launch(
         &self,
+        recording: &Recording<'_>,
         grid: (u32, u32, u32),
         block: (u32, u32, u32),
         parameters: &mut [*mut c_void],
     ) -> Result<()> {
+        let Some(stream) = recording.stream() else {
+            return Err(Error::unsupported("AOT launches record on a driver stream"));
+        };
         let session = &self.module.session;
         session.bind()?;
-        // SAFETY: the caller upholds the parameter contract; the function's module and stream are
-        // kept alive by `self.module`.
+        // SAFETY: the caller upholds the parameter contract; `self.module` keeps the function
+        // loaded and the recording borrows a live stream of this context.
         let status = unsafe {
             (session.driver.launch)(
                 self.function,
@@ -429,7 +552,7 @@ impl Function {
                 block.1,
                 block.2,
                 0,
-                session.stream,
+                stream,
                 parameters.as_mut_ptr(),
                 ptr::null_mut(),
             )
@@ -447,6 +570,10 @@ unsafe impl Sync for Session {}
 unsafe impl Send for LoadedModule {}
 // SAFETY: as for `Send`.
 unsafe impl Sync for LoadedModule {}
+// SAFETY: the graph handles are immutable after capture and only passed back to the driver.
+unsafe impl Send for Graph {}
+// SAFETY: as for `Send`.
+unsafe impl Sync for Graph {}
 // SAFETY: the function handle is immutable after resolution and only passed back to the driver.
 unsafe impl Send for Function {}
 // SAFETY: as for `Send`.

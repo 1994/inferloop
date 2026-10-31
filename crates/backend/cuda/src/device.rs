@@ -22,13 +22,6 @@ use cutile::cuda_async::device_future::DeviceFuture;
 use cutile::jit_cache::enable_default;
 use cutile::prelude::*;
 use infer_core::{Error as InferError, ErrorCode, Result};
-use infer_cuda_kernels::contract::Arch;
-use infer_cuda_kernels::contract::DevicePtr;
-use infer_cuda_kernels::contract::LinearPlan;
-use infer_cuda_kernels::contract::Profile;
-use infer_cuda_kernels::contract::Projection;
-use infer_cuda_kernels::contract::Target;
-use infer_cuda_kernels::tile::projection::TileProjection;
 use serde::Serialize;
 use std::fmt::Display;
 use std::ptr::{null, null_mut};
@@ -187,8 +180,6 @@ pub(crate) use readback::{ReadbackSource, Readbacks};
 #[derive(Clone)]
 pub struct CudaDevice {
     pub(crate) stream: Arc<cuda_core::Stream>,
-    projection: Arc<dyn Projection>,
-    arch: Arch,
     target: CudaTarget,
     profile: Arc<OnceLock<DeviceProfile>>,
     ordinal: usize,
@@ -209,13 +200,9 @@ impl CudaDevice {
     /// Fails when the requested CUDA device or stream is unavailable.
     pub fn new(ordinal: usize) -> Result<Self> {
         let device = Device::new(ordinal).map_err(device_error)?;
-        let (target, arch) = query_target(&device)?;
-        let stream = device.new_stream().map_err(device_error)?;
-        let projection = TileProjection::shared(device, stream.clone());
+        let target = query_target(&device)?;
         Ok(Self {
-            stream,
-            projection,
-            arch,
+            stream: device.new_stream().map_err(device_error)?,
             target,
             profile: Arc::new(OnceLock::new()),
             ordinal,
@@ -226,15 +213,6 @@ impl CudaDevice {
     #[must_use]
     pub const fn ordinal(&self) -> usize {
         self.ordinal
-    }
-
-    /// Kernel target resolved for this device.
-    #[must_use]
-    pub const fn kernel_target(&self) -> Target {
-        Target {
-            arch: self.arch,
-            profile: Profile::COMPILED,
-        }
     }
 
     /// # Errors
@@ -259,8 +237,6 @@ impl CudaDevice {
             .map_err(device_error)
     }
 
-    /// Host fallback for weight dequantization and benchmark probes. The resident graph records
-    /// its own kernels and never calls this path; keep it out of inference.
     /// # Errors
     /// Returns a shape or device error for an invalid matrix-vector product.
     pub fn matvec<T: DType>(
@@ -275,14 +251,8 @@ impl CudaDevice {
         )
     }
 
-    /// Host fallback for weight dequantization and benchmark probes. The resident graph records
-    /// its own kernels and never calls this path; keep it out of inference.
     /// # Errors
     /// Returns a shape or device error for an invalid projection.
-    #[expect(
-        unsafe_code,
-        reason = "Passes owned tensors through the raw-address projection contract"
-    )]
     pub fn matvec_tiled<T: DType>(
         &self,
         x: Arc<Tensor<f32>>,
@@ -291,37 +261,10 @@ impl CudaDevice {
     ) -> Result<Arc<Tensor<f32>>> {
         let (rows, columns) = dimensions(&x, &w)?;
         let block = columns.min(tiling.columns()).next_power_of_two();
-        let dtype = T::DTYPE.as_str();
-        if matches!(dtype, "bf16" | "f32" | "f8e4m3fn") {
-            let out = api::zeros::<f32>(&[rows])
-                .sync_on(&self.stream)
-                .map_err(device_error)?;
-            let plan = LinearPlan {
-                rows,
-                columns,
-                block,
-                tile_rows: tiling.rows(),
-            };
-            let out_ptr = DevicePtr(out.device_pointer().cu_deviceptr());
-            let x_ptr = DevicePtr(x.device_pointer().cu_deviceptr());
-            let w_ptr = DevicePtr(w.device_pointer().cu_deviceptr());
-            // `dimensions` validated the shapes and uploaded tensors are contiguous row-major.
-            let projection = &self.projection;
-            match dtype {
-                // SAFETY: the locals own every allocation past the synchronization below; shapes are checked.
-                "bf16" => unsafe { projection.dense_bf16(&plan, out_ptr, x_ptr, w_ptr) }?,
-                // SAFETY: the locals own every allocation past the synchronization below; shapes are checked.
-                "f32" => unsafe { projection.dense_f32(&plan, out_ptr, x_ptr, w_ptr) }?,
-                // SAFETY: the locals own every allocation past the synchronization below; shapes are checked.
-                _ => unsafe { projection.dense_fp8(&plan, out_ptr, x_ptr, w_ptr) }?,
-            }
-            self.synchronize()?;
-            return Ok(Arc::new(out));
-        }
         let out = api::zeros::<f32>(&[rows]).partition([tiling.rows()]);
         dense(out, x, w)
             .generics(vec![
-                dtype.into(),
+                T::DTYPE.as_str().into(),
                 tiling.rows().to_string(),
                 block.to_string(),
                 columns.to_string(),
@@ -428,13 +371,11 @@ impl CudaDevice {
     unsafe_code,
     reason = "Audited read-only CUDA attribute query; the live owned Device supplies a valid driver handle"
 )]
-fn query_target(device: &Device) -> Result<(CudaTarget, Arch)> {
+fn query_target(device: &Device) -> Result<CudaTarget> {
     // SAFETY: Device::new initialized CUDA and owns this live device handle.
     let name =
         unsafe { cuda_core::get_device_sm_name(device.cu_device()) }.map_err(device_error)?;
-    let arch = Arch::from_sm_name(&name)
-        .ok_or_else(|| InferError::invalid("device compute capability name"))?;
-    Ok((CudaTarget::from_sm_name(&name), arch))
+    Ok(CudaTarget::from_sm_name(&name))
 }
 
 fn head_copy_shape<T: DType>(tensor: &Tensor<T>) -> Result<[usize; KV_CACHE_RANK]> {

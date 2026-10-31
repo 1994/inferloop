@@ -4,7 +4,7 @@
 //! manifest next to the cubins, and the package ships them as sidecars. The loader validates the
 //! schema, selects the target and verifies every digest before a module is loaded.
 
-use crate::contract::target::{Profile, Target};
+use crate::contract::target::Arch;
 use infer_core::{Error, ErrorCode, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -64,12 +64,12 @@ impl Manifest {
         Ok(manifest)
     }
 
-    /// Entries for one target.
+    /// Entries for one architecture.
     /// # Errors
-    /// Rejects a non-AOT target or an architecture mismatch.
-    pub fn select(&self, target: Target) -> Result<&[Entry]> {
-        if target.profile != Profile::Aot || self.arch != target.arch.name() {
-            return Err(Error::unsupported("no AOT manifest for this target"));
+    /// Rejects an architecture mismatch.
+    pub fn select(&self, arch: Arch) -> Result<&[Entry]> {
+        if self.arch != arch.name() {
+            return Err(Error::unsupported("no AOT manifest for this architecture"));
         }
         Ok(&self.entries)
     }

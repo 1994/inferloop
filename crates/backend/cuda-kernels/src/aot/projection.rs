@@ -1,8 +1,4 @@
-//! AOT implementation of the projection contract.
-//!
-//! The provider loads one artifact set, verifies every digest, and keeps the module alive for the
-//! process. Only the f32 entry ships today; bf16/fp8 return `Unsupported` instead of silently
-//! falling back to another profile.
+//! AOT implementation of the projection family; kernels live in `projection/*.cu`.
 #![expect(
     unsafe_code,
     reason = "Implements the unsafe launch contract and forwards its obligations to the driver"
@@ -11,19 +7,19 @@
 use super::artifact::Manifest;
 use super::driver::{Device, Function};
 use crate::contract::kernels::Projection;
-use crate::contract::plan::LinearPlan;
+use crate::contract::plan::PoolGemvPlan;
 use crate::contract::ptr::DevicePtr;
-use crate::contract::target::Target;
+use crate::contract::recording::Recording;
 use infer_core::{Error, ErrorCode, Result};
 use std::ffi::{CStr, c_void};
 use std::fs;
 use std::path::Path;
 
 /// Manifest name of the only entry this implementation launches.
-const ENTRY_NAME: &str = "projection_dense_f32";
+const ENTRY_NAME: &str = "pool_gemv_bf16";
 /// Device symbol of [`ENTRY_NAME`].
-const ENTRY: &CStr = c"projection_dense_f32";
-/// One warp per output row.
+const ENTRY: &CStr = c"pool_gemv_bf16";
+/// One warp per output element.
 const WARP_THREADS: u32 = 32;
 
 /// Projection kernels loaded from an AOT artifact set.
@@ -32,11 +28,11 @@ pub struct AotProjection {
 }
 
 impl AotProjection {
-    /// Load the `projection_dense_f32` entry from `root` for `target`.
+    /// Load the projection entry from `root`, for the architecture `device` reports.
     /// # Errors
-    /// Fails when the manifest is missing or invalid, the target does not match, a digest differs,
-    /// or the cubin/module/function cannot be loaded.
-    pub fn load(device: &Device, root: &Path, target: Target) -> Result<Self> {
+    /// Fails when the manifest is missing, invalid or built for another architecture, a digest
+    /// differs, or the cubin/module/function cannot be loaded.
+    pub fn load(device: &Device, root: &Path) -> Result<Self> {
         let bytes = fs::read(root.join("manifest.json")).map_err(|error| {
             Error::new(
                 ErrorCode::Backend,
@@ -44,7 +40,7 @@ impl AotProjection {
             )
         })?;
         let manifest = Manifest::parse(&bytes)?;
-        manifest.select(target)?;
+        manifest.select(device.arch()?)?;
         manifest.verify(root)?;
         let entry = manifest
             .entry(ENTRY_NAME)
@@ -63,52 +59,39 @@ impl AotProjection {
 }
 
 impl Projection for AotProjection {
-    unsafe fn dense_bf16(
+    unsafe fn pool_gemv_bf16(
         &self,
-        _plan: &LinearPlan,
-        _out: DevicePtr,
-        _x: DevicePtr,
-        _w: DevicePtr,
-    ) -> Result<()> {
-        Err(Error::unsupported("AOT projection provides f32 only"))
-    }
-
-    unsafe fn dense_f32(
-        &self,
-        plan: &LinearPlan,
+        recording: &Recording<'_>,
+        plan: &PoolGemvPlan,
         out: DevicePtr,
         x: DevicePtr,
         w: DevicePtr,
     ) -> Result<()> {
-        let rows =
-            u32::try_from(plan.rows).map_err(|_| Error::invalid("projection rows exceed u32"))?;
-        let columns = i32::try_from(plan.columns)
-            .map_err(|_| Error::invalid("projection columns exceed i32"))?;
-        let mut x_pointer = x.0;
-        let mut w_pointer = w.0;
-        let mut out_pointer = out.0;
-        let mut columns_argument = columns;
+        let rows = u32::try_from(plan.rows).map_err(|_| geometry("rows"))?;
+        let elements = u32::try_from(plan.outputs).map_err(|_| geometry("outputs"))?;
+        let mut outputs = i32::try_from(plan.outputs).map_err(|_| geometry("outputs"))?;
+        let mut columns = i32::try_from(plan.columns).map_err(|_| geometry("columns"))?;
+        let (mut x_pointer, mut w_pointer, mut out_pointer) = (x.0, w.0, out.0);
         let mut parameters = [
             (&raw mut x_pointer).cast::<c_void>(),
             (&raw mut w_pointer).cast::<c_void>(),
             (&raw mut out_pointer).cast::<c_void>(),
-            (&raw mut columns_argument).cast::<c_void>(),
+            (&raw mut columns).cast::<c_void>(),
+            (&raw mut outputs).cast::<c_void>(),
         ];
-        // SAFETY: the four parameters match `projection_dense_f32` and live through this call; the
+        // SAFETY: the five parameters match `pool_gemv_bf16` and live through this call; the
         // caller upholds the device-address contract of `Projection`.
         unsafe {
-            self.function
-                .launch((rows, 1, 1), (WARP_THREADS, 1, 1), &mut parameters)
+            self.function.launch(
+                recording,
+                (elements, rows, 1),
+                (WARP_THREADS, 1, 1),
+                &mut parameters,
+            )
         }
     }
+}
 
-    unsafe fn dense_fp8(
-        &self,
-        _plan: &LinearPlan,
-        _out: DevicePtr,
-        _x: DevicePtr,
-        _w: DevicePtr,
-    ) -> Result<()> {
-        Err(Error::unsupported("AOT projection provides f32 only"))
-    }
+fn geometry(field: &str) -> Error {
+    Error::invalid(format!("projection {field} exceeds i32"))
 }

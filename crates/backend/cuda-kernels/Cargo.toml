@@ -5,8 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# Kernel bodies live in their own crate, separate from host graphs and tuning. Exactly one
-# profile is enabled per build: `tile` (CUDA 13.x) or `aot` (precompiled SASS, no toolkit).
+# Kernel bodies live in their own crate, separate from host graphs and tuning. `tile` needs CUDA
+# 13.x; `aot` needs no toolkit, so a device without cuTile builds with `aot` alone.
 autotests = false
 
 [lints]
@@ -29,5 +29,5 @@ cutile = { workspace = true, optional = true }
 cuda-core = { workspace = true, optional = true }
 
 [[example]]
-name = "aot-projection"
+name = "aot-pool-gemv"
 required-features = ["aot"]

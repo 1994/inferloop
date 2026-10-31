@@ -1,6 +1,8 @@
 //! cuTile kernels, one directory per operator family.
 //!
-//! The `aot` profile mirrors these family names so an implementation can be compared side by side.
+//! The `aot` source mirrors these family names so an implementation can be compared side by side.
+pub use cutile::prelude::Scope;
+
 pub mod attention;
 pub mod mlp;
 pub mod moe;

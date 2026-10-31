@@ -1,14 +1,16 @@
 //! Geometry passed to a kernel launch; owns no device handles.
 
-/// One row-major matrix-vector projection.
+/// Row-independent projection: `output[row, n] = sum_k weight[n, k] * input[row, k]`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LinearPlan {
-    /// Output rows and weight rows.
+pub struct PoolGemvPlan {
+    /// Independent activation rows.
     pub rows: usize,
+    /// Output elements per row and weight rows.
+    pub outputs: usize,
     /// Reduction length and weight columns.
     pub columns: usize,
-    /// Reduction tile the kernel loads per step.
-    pub block: usize,
-    /// Output rows covered by one tile.
+    /// Output elements covered by one tile; only cuTile uses it.
     pub tile_rows: usize,
+    /// Reduction tile the kernel loads per step; only cuTile uses it.
+    pub tile_columns: usize,
 }

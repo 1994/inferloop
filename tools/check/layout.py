@@ -149,7 +149,7 @@ def check_crates():
 
 
 def check_kernel_boundary():
-    """Kernel bodies and driver launches stay in their profile directories."""
+    """Kernel bodies and driver launches stay in their source directories."""
     host = ROOT / "crates/backend/cuda/src"
     allowed = {host / "resident/small_gemm.rs"}
     for path in host.rglob("*.rs"):
@@ -160,7 +160,7 @@ def check_kernel_boundary():
             )
     for path in host.rglob("*.rs"):
         if "infer_cuda_kernels::aot" in path.read_text():
-            raise SystemExit(f"{path.relative_to(ROOT)}: the host selects a profile by feature")
+            raise SystemExit(f"{path.relative_to(ROOT)}: the host selects a source by feature")
     for directory in ("resident", "executor"):
         for path in (host / directory).rglob("*.rs"):
             text = path.read_text()
@@ -174,10 +174,10 @@ def check_kernel_boundary():
         profile = path.relative_to(kernels).parts[0]
         text = path.read_text()
         if "use cutile::" in text and profile != "tile":
-            raise SystemExit(f"{path.relative_to(ROOT)}: cuTile is a tile-profile dependency")
+            raise SystemExit(f"{path.relative_to(ROOT)}: cuTile belongs to the tile source")
         if ("cuLaunchKernel" in text or "cuModuleLoadData" in text) and profile != "aot":
-            raise SystemExit(f"{path.relative_to(ROOT)}: driver launches belong to the aot profile")
-    print("Kernel boundary: host has no kernels; profile dependencies are separated")
+            raise SystemExit(f"{path.relative_to(ROOT)}: driver launches belong to the aot source")
+    print("Kernel boundary: host has no kernels; source dependencies are separated")
 
 
 def check_links():

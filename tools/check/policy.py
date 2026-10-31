@@ -162,11 +162,12 @@ def check_exceptions():
                         # AOT driver boundary: every FFI call is checked, handles are owned and
                         # buffers are freed exactly once.
                         ROOT / "crates/backend/cuda-kernels/src/aot/driver.rs",
+                        ROOT / "crates/backend/cuda/src/resident/pool_gemv.rs",
                         # Raw-address launch contract: obligations are stated on the trait and
                         # discharged by the owning caller until the host adopts contract buffers.
                         ROOT / "crates/backend/cuda-kernels/src/contract/kernels.rs",
                         ROOT / "crates/backend/cuda-kernels/src/aot/projection.rs",
-                        ROOT / "crates/backend/cuda-kernels/examples/aot-projection.rs",
+                        ROOT / "crates/backend/cuda-kernels/examples/aot-pool-gemv.rs",
                         ROOT / "crates/backend/cuda/src/resident/arena.rs",
                         # Narrow callers of lifetime-bound FP4 arena aliases: sole-consumer
                         # product, exclusive arena lease, completion and same-stream replay.

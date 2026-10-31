@@ -72,7 +72,7 @@ test-cuda:
 test-cuda-hosted:
 	./tools/check/gate.sh cuda-hosted
 
-# AOT kernel profile: no CUDA toolkit or headers required.
+# AOT kernel source: no CUDA toolkit or headers required.
 test-kernels-aot:
 	./tools/check/gate.sh cuda-aot
 

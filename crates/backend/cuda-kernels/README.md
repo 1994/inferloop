@@ -3,9 +3,9 @@
 Kernel bodies for `infer-backend-cuda`. The host owns device allocation, CUDA graphs, KV, slot
 batching and tuning; this crate owns launches and device artifacts.
 
-## Profiles
+## Kernel sources
 
-Exactly one profile is compiled per build; enabling both is a compile error.
+`tile` and `aot` can be built together. A device without cuTile builds with `aot` alone.
 
 | Feature | Build needs | Runtime needs |
 |---|---|---|
@@ -15,19 +15,21 @@ Exactly one profile is compiled per build; enabling both is a compile error.
 ## Layout
 
 ```text
-src/contract/            what the host may see: target, plans, one trait per operator family
-src/tile/<family>/       cuTile kernels; only this profile may name `cutile`
-src/aot/<family>         driver launcher and its `.cu` source, side by side
+src/contract/                 what the host may see: arch, plans, recording, one trait per family
+src/tile/<family>/            cuTile kernels; only this source may name `cutile`
+src/aot/<family>.rs           driver launcher
+src/aot/<family>/*.cu         its kernels
 tools/cuda/aot-kernels.json   AOT entries and the toolchain pinned for each architecture
 ```
 
-Both profiles use the same family names. To bring a family to a device that has no cuTile, read
-`src/tile/<family>/`, write the `.cu` next to `src/aot/<family>`, register it in
-`aot-kernels.json`, and compare against an independent CPU reference on the device.
+To bring a family to a device without cuTile, read `src/tile/<family>/`, write the `.cu`, register it
+in `aot-kernels.json`, and compare against an independent CPU reference on the device.
 
 ## Launch contract
 
-`contract::kernels` states it once: a launch is ordered on the stream and completes by the next
-synchronization. An implementation may wait earlier, but no caller can rely on that.
+A family method records a launch and never waits, because the resident graph captures once and
+replays. `Recording` says where it goes: a cuTile scope, or a driver stream that is capturing.
+`pool_gemv_bf16` is the worked example: the host records it through the contract on the inference
+path, and `examples/aot-pool-gemv.rs` captures and replays the AOT version on a device.
 
 See `docs/plans/engineering/cuda-kernel-provider.md` for the target dimensions and extension rules.

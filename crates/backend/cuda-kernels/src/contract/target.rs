@@ -1,4 +1,4 @@
-//! Hardware identity and the kernel profile compiled into this binary.
+//! Hardware identity used to select device artifacts.
 
 /// Compute capability of the device the kernels run on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -68,31 +68,6 @@ impl Arch {
             Self::Other { major, minor } => format!("sm_{major}{minor}"),
         }
     }
-}
-
-/// Kernel build profile compiled into this binary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Profile {
-    /// cuTile kernels compiled by the CUDA 13.x toolchain.
-    Tile,
-    /// Precompiled SASS loaded through the driver; no CUDA toolkit at build time.
-    Aot,
-}
-
-impl Profile {
-    /// The one profile this build compiled.
-    #[cfg(feature = "tile")]
-    pub const COMPILED: Self = Self::Tile;
-    /// The one profile this build compiled.
-    #[cfg(all(feature = "aot", not(feature = "tile")))]
-    pub const COMPILED: Self = Self::Aot;
-}
-
-/// Device and profile pair resolved once at load.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Target {
-    pub arch: Arch,
-    pub profile: Profile,
 }
 
 #[cfg(test)]

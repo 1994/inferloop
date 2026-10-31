@@ -1,5 +1,5 @@
 use crate::aot::artifact::Manifest;
-use crate::contract::target::{Arch, Profile, Target};
+use crate::contract::target::Arch;
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fmt::Write as _;
@@ -26,12 +26,7 @@ fn manifest(arch: &str, sha256: &str) -> String {
 fn parses_and_selects_the_matching_target() {
     let document = manifest("sm_89", "abc");
     let parsed = Manifest::parse(document.as_bytes()).expect("manifest");
-    let entries = parsed
-        .select(Target {
-            arch: Arch::Sm89,
-            profile: Profile::Aot,
-        })
-        .expect("matching target");
+    let entries = parsed.select(Arch::Sm89).expect("matching target");
     assert_eq!(entries.len(), 1);
     assert_eq!(
         parsed
@@ -39,22 +34,7 @@ fn parses_and_selects_the_matching_target() {
             .map(|entry| entry.name.as_str()),
         Some("projection.dense_bf16")
     );
-    assert!(
-        parsed
-            .select(Target {
-                arch: Arch::Sm90,
-                profile: Profile::Aot
-            })
-            .is_err()
-    );
-    assert!(
-        parsed
-            .select(Target {
-                arch: Arch::Sm89,
-                profile: Profile::Tile
-            })
-            .is_err()
-    );
+    assert!(parsed.select(Arch::Sm90).is_err());
 }
 
 #[test]

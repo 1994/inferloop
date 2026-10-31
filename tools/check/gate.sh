@@ -120,6 +120,8 @@ cuda_hosted_checks() {
     python3 tools/check/test-report.py --entry cli-cuda -- \
         cargo test --locked -p infer-cli --features cuda
     RUSTDOCFLAGS="-D warnings" cargo doc --locked -p infer-backend-cuda --features cuda --no-deps
+    # Both kernel sources must keep building together; only this job has the headers for it.
+    cargo clippy --locked -p infer-cuda-kernels --features tile,aot --all-targets -- -D warnings
     # Compile the device example without running it: the kernels need a GPU on the next step.
     cargo build --locked --release -p infer-backend-cuda --features cuda --example cuda-kernels
 }
@@ -130,7 +132,7 @@ cuda_device_checks() {
     cargo run --locked --release -p infer-backend-cuda --features cuda --example cuda-kernels
 }
 
-# AOT kernel profile. It builds without a CUDA toolkit or headers, so a plain hosted runner is
+# AOT kernel source. It builds without a CUDA toolkit or headers, so a plain hosted runner is
 # enough; this is the check that keeps the no-toolkit property from regressing.
 cuda_aot_checks() {
     cargo clippy --locked -p infer-cuda-kernels --features aot --all-targets -- -D warnings

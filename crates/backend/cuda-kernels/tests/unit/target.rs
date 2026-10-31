@@ -1,4 +1,4 @@
-use crate::contract::target::{Arch, Profile, Target};
+use crate::contract::target::Arch;
 
 #[test]
 fn maps_known_and_unknown_compute_capabilities() {
@@ -14,16 +14,6 @@ fn names_architectures_for_manifests() {
     assert_eq!(Arch::Sm89.name(), "sm_89");
     assert_eq!(Arch::Sm100.name(), "sm_100");
     assert_eq!(Arch::Other { major: 9, minor: 1 }.name(), "sm_91");
-}
-
-#[test]
-fn target_keeps_the_compiled_profile() {
-    let target = Target {
-        arch: Arch::Sm89,
-        profile: Profile::Aot,
-    };
-    assert_eq!(target.profile, Profile::Aot);
-    assert_eq!(target.arch.name(), "sm_89");
 }
 
 #[test]

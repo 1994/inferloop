@@ -40,7 +40,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 7
+      "tests": 6
     },
     "frontdoor": {
       "benches": 0,
@@ -373,6 +373,11 @@
       "crate": "cuda",
       "file": "src/device/vision_position.rs",
       "mount": "../../tests/unit/vision_position.rs"
+    },
+    {
+      "crate": "cuda",
+      "file": "src/device.rs",
+      "mount": "../tests/unit/device.rs"
     },
     {
       "crate": "cuda",
@@ -1501,11 +1506,11 @@
     }
   ],
   "totals": {
-    "all": 1103,
+    "all": 1102,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1103
+    "tests": 1102
   }
 }
