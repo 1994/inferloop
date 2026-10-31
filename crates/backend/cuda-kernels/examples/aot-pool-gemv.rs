@@ -3,11 +3,11 @@
     unsafe_code,
     reason = "Launches through the raw-address kernel contract with buffers owned by this function"
 )]
-#![expect(
-    clippy::cast_precision_loss,
-    reason = "The fixture values are small integers that fit exactly in f32"
-)]
 
+#[path = "../acceptance/pool_gemv.rs"]
+mod acceptance;
+
+use acceptance::{Case, OUTPUTS, ROWS};
 use infer_cuda_kernels::aot::{AotProjection, Device};
 use infer_cuda_kernels::contract::{DevicePtr, PoolGemvPlan, Projection};
 use std::env;
@@ -15,35 +15,22 @@ use std::error::Error;
 use std::mem::size_of;
 use std::path::Path;
 
-/// Activation rows of every fixture.
-const ROWS: usize = 4;
-/// Output elements of every fixture.
-const OUTPUTS: usize = 8;
 /// Reduction lengths around the warp width, including partial warps.
 const COLUMNS: [usize; 5] = [1, 31, 32, 64, 129];
-/// Relative tolerance: a few F32 rounding units on the summed magnitude of the element.
-const RELATIVE_TOLERANCE: f32 = 1.0e-5;
 /// Replays of one captured graph; every replay must reproduce the same bits.
 const REPLAYS: usize = 3;
-/// Bits a BF16 keeps from the top of an F32.
-const BF16_SHIFT: u32 = 16;
 
 fn check(
     device: &Device,
     projection: &AotProjection,
     columns: usize,
 ) -> Result<(), Box<dyn Error>> {
-    let x: Vec<f32> = (0..ROWS * columns)
-        .map(|i| ((i * 7) % 13) as f32 / 8.0 - 0.5)
-        .collect();
-    // Eighths are exact in BF16, so truncating the F32 bits loses nothing.
-    let w: Vec<f32> = (0..OUTPUTS * columns)
-        .map(|i| ((i * 11) % 17) as f32 / 8.0 - 1.0)
-        .collect();
-    let bits: Vec<u8> = w
+    let case = Case { columns };
+    let x = case.input();
+    let bits: Vec<u8> = case
+        .weight_bits()
         .iter()
-        .flat_map(|value| u16::try_from(value.to_bits() >> BF16_SHIFT).map(u16::to_ne_bytes))
-        .flatten()
+        .flat_map(|value| value.to_ne_bytes())
         .collect();
     let x_buffer = device.alloc(ROWS * columns * size_of::<f32>())?;
     let w_buffer = device.alloc(bits.len())?;
@@ -81,17 +68,7 @@ fn check(
             return Err(format!("{columns} columns: replays differ").into());
         }
     }
-    for (index, value) in actual.iter().enumerate() {
-        let (row, element) = (index / OUTPUTS, index % OUTPUTS);
-        let terms = (0..columns).map(|k| w[element * columns + k] * x[row * columns + k]);
-        let expected: f32 = terms.clone().sum();
-        let magnitude: f32 = terms.map(f32::abs).sum();
-        if (value - expected).abs() > magnitude * RELATIVE_TOLERANCE {
-            return Err(
-                format!("{columns} columns, [{row}, {element}]: {value} vs {expected}").into(),
-            );
-        }
-    }
+    case.check(&actual)?;
     Ok(())
 }
 

@@ -85,6 +85,7 @@ runtime                  submit / poll，不重建拓扑
 
 ### M2 cell 验收工具
 
+- **模板已落地：** `cuda-kernels/acceptance/pool_gemv.rs` 放用例和独立参考，tile（host 的 ignored 用例）和 aot（`aot-pool-gemv` 示例）共用，两者都在 RTX 5090 上通过。其他算子族照此补齐。
 - **做什么：** 每个算子族一套验收，覆盖 CPU 参考对照、容差、有限值、单算子性能；tile 与 aot 共用同一入口。
 - **验收口径：** 同一 cell 的迁移要求逐位一致。跨 profile 只要求参考值加容差，因为归约顺序可以不同（见 `aot/projection/pool_gemv.cu` 头注释）。设备未运行、零用例或全 ignored 不算通过。
 
@@ -117,6 +118,7 @@ runtime                  submit / poll，不重建拓扑
 
 - **时机：** 先做一次探测，不等 M4、M5（理由见第 9.3 节）：探测失败的项就是这两步的工作清单，完成时再验收一次。
 - **做什么：** 选一个普通稠密 attention 解码器（无 Delta/Conv、无 MTP），先用微型 fixture 和独立参考。这是架构验收，不代表扩大正式支持范围。
+- **工具：** `tools/bench/model-probe.py` 一条命令跑完 12 种几何，每种要么能服务且批不变，要么在加载期被明确拒绝。
 - **验收：** 只改 provider；`resident/**` 零 diff；走通用路径能运行；自动调优能接管。做不到时，差距就是下一批 M4/M5 的工作清单。
 
 ### M8 L20 实机验收
