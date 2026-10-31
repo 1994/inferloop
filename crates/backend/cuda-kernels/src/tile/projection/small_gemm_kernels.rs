@@ -54,4 +54,26 @@ pub mod kernels {
             .broadcast(shape![16, 32]);
         out.store(acc * scale);
     }
+    /// Same K order and two-term input as [`dense`] with a measured output tile width.
+    #[cutile::entry()]
+    fn dense_wide<E: ElementType, const N: i32, const K: i32>(
+        out: &mut Tensor<f32, { [16, N] }>,
+        input: &Tensor<f32, { [-1, K] }>,
+        weight: &Tensor<E, { [-1, K] }>,
+    ) {
+        let pid = get_tile_block_id();
+        let xp = input.partition(shape![16, 128]);
+        let wp = weight.partition(shape![N, 128]);
+        let mut acc: Tile<f32, { [16, N] }> = constant(0.0f32, shape![16, N]);
+        for k in 0i32..((K + 127) / 128) {
+            let input = xp.load([pid.0, k]);
+            let high: Tile<bf16, { [16, 128] }> = convert_tile(input);
+            let rounded: Tile<f32, { [16, 128] }> = convert_tile(high);
+            let low: Tile<bf16, { [16, 128] }> = convert_tile(input - rounded);
+            let weight: Tile<bf16, { [N, 128] }> = convert_tile(wp.load([pid.1, k]));
+            acc = mmaf(low, weight.transpose(), acc);
+            acc = mmaf(high, weight.transpose(), acc);
+        }
+        out.store(acc);
+    }
 }

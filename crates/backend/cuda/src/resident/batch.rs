@@ -327,6 +327,34 @@ impl BatchBuilder<'_> {
         })
     }
 
+    /// Record one state node over the pooled roots, addressed through the whole metadata tensor.
+    fn record_pooled_state(
+        &mut self,
+        scope: &Scope,
+        node: &TensorNode,
+        arena: &mut ActivationArena,
+        metadata: &Tensor<i32>,
+    ) -> StdResult<(), DeviceError> {
+        let mut no_fusion = None;
+        Capture {
+            scope,
+            arena,
+            weights: self.weights,
+            nvfp4: self.nvfp4,
+            attention: self.attention,
+            states: self.states,
+            fp8_states: self.fp8_states,
+            metadata,
+            table: &self.tables[0],
+            external: self.external,
+            capacity: self.capacity,
+            fusion: &mut no_fusion,
+            mode: CaptureMode::Pooled,
+        }
+        .record(node)?;
+        Ok(())
+    }
+
     fn capture_slots(
         &mut self,
         arena: &mut ActivationArena,
@@ -389,22 +417,7 @@ impl BatchBuilder<'_> {
                         .first()
                         .is_some_and(|id| self.states.contains_key(id))
                 {
-                    Capture {
-                        scope,
-                        arena,
-                        weights: self.weights,
-                        nvfp4: self.nvfp4,
-                        attention: self.attention,
-                        states: self.states,
-                        fp8_states: self.fp8_states,
-                        metadata: metadata_owner,
-                        table: &self.tables[0],
-                        external: self.external,
-                        capacity: self.capacity,
-                        fusion: &mut no_fusion,
-                        mode: CaptureMode::Pooled,
-                    }
-                    .record(node)?;
+                    self.record_pooled_state(scope, node, arena, metadata_owner)?;
                     continue;
                 }
                 match dispatch32(node, self.weights) {

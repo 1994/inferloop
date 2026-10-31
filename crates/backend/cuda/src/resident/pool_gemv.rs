@@ -29,7 +29,7 @@ pub(super) fn record(
         usize::try_from(input.shape()[0]).map_err(|e| DeviceError::Internal(e.to_string()))?;
     let outputs =
         usize::try_from(output.shape()[1]).map_err(|e| DeviceError::Internal(e.to_string()))?;
-    if !pool_dense::supported([rows, outputs, columns]) || !enabled() {
+    if !pool_dense::searchable([rows, outputs, columns]) || !enabled() {
         return Ok(false);
     }
     #[cfg(test)]

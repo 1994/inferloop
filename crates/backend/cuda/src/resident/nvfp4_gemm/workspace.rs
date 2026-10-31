@@ -192,12 +192,12 @@ impl Workspace {
         tile: LinearTiling,
     ) -> PoolDenseChoice {
         let ProjectionWeight::Dense(weight) = weight else {
-            return pool_dense::legacy(shape[0]);
+            return pool_dense::baseline(shape);
         };
         self.pool_dense_strategies
             .get(&PoolDenseBinding::new(weight, shape, tile))
             .copied()
-            .unwrap_or_else(|| pool_dense::legacy(shape[0]))
+            .unwrap_or_else(|| pool_dense::baseline(shape))
     }
 
     pub(crate) fn ensure_width(

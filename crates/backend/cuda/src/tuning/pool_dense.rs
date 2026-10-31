@@ -1,7 +1,9 @@
 //! Measure the actual pooled row geometry before capture; new paths retain private F32 bits.
 mod capture;
 mod evidence;
-use crate::constants::{CB_DECODE_SLOTS, SMALL_GEMM_TILE};
+use crate::constants::{
+    CB_DECODE_SLOTS, GEMV_WIDE_OUTPUT_RATIO, SMALL_GEMM_TILE, SMALL_GEMV_MAX_ROWS,
+};
 use crate::device::CudaDevice;
 use crate::resident::{linear_batch::batched, pool_gemv, small_gemm_kernels};
 use crate::strategy::LinearTiling;
@@ -32,14 +34,28 @@ const MIN_SMALL_COLUMNS: usize = 4096;
 const CONFIRMATIONS: usize = 2;
 /// The benchmark protocol requires the release compiler policy.
 const JIT_OPT_LEVEL: u8 = 3;
+/// Output tile rows of the tensor-core family.
+const NATIVE_TILE_ROWS: usize = SMALL_GEMM_TILE[0];
+/// Output tile columns of the wider tensor-core candidates.
+const NATIVE_WIDE_64: usize = 64;
+/// Widest tensor-core candidate; wider accumulators cost more than they save in measured shapes.
+const NATIVE_WIDE_128: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Choice {
     Gemv,
     Shared,
     Native,
+    /// Same arithmetic as `Native` over a wider output tile.
+    NativeN64,
+    /// Same arithmetic as `Native` over the widest output tile.
+    NativeN128,
 }
 impl Choice {
+    /// Tensor-core choices share one arithmetic; only their output tile differs.
+    pub(crate) const fn native_family(self) -> bool {
+        matches!(self, Self::Native | Self::NativeN64 | Self::NativeN128)
+    }
     pub(crate) fn record(
         self,
         scope: &Scope,
@@ -74,6 +90,25 @@ impl Choice {
                         .generics(vec![bf16::DTYPE.as_str().into(), columns.to_string()]),
                 )?;
             }
+            Self::NativeN64 | Self::NativeN128 => {
+                let width = if self == Self::NativeN64 {
+                    NATIVE_WIDE_64
+                } else {
+                    NATIVE_WIDE_128
+                };
+                scope.record(
+                    small_gemm_kernels::dense_wide(
+                        output.partition([NATIVE_TILE_ROWS, width]),
+                        input,
+                        weight,
+                    )
+                    .generics(vec![
+                        bf16::DTYPE.as_str().into(),
+                        width.to_string(),
+                        columns.to_string(),
+                    ]),
+                )?;
+            }
         }
         Ok(())
     }
@@ -90,6 +125,22 @@ pub(crate) const fn legacy(rows: usize) -> Choice {
 pub(crate) const fn supported(shape: ProjectionShape) -> bool {
     let [m, n, k] = shape;
     m > 0 && n > 0 && n <= MAX_SMALL_OUTPUTS && k >= MIN_SMALL_COLUMNS
+}
+/// Any geometry the unmeasured path would send to tensor cores is measured the same way, keyed
+/// by shape alone. A very wide output at few rows keeps its dedicated vocabulary-head GEMV.
+pub(crate) const fn searchable(shape: ProjectionShape) -> bool {
+    let [m, n, k] = shape;
+    supported(shape)
+        || (m > 0 && n > 0 && k > 0 && (m > SMALL_GEMV_MAX_ROWS || n <= k * GEMV_WIDE_OUTPUT_RATIO))
+}
+/// What runs when nothing was measured. Only the qualified family has a row crossover; every
+/// other geometry stays on the tensor-core arithmetic it had before being measured.
+pub(crate) const fn baseline(shape: ProjectionShape) -> Choice {
+    if supported(shape) {
+        legacy(shape[0])
+    } else {
+        Choice::Native
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Key {
@@ -123,9 +174,15 @@ pub(crate) const fn kind(tile: LinearTiling) -> ProjectionKind {
     }
 }
 fn candidates(shape: ProjectionShape) -> impl Iterator<Item = Choice> {
-    [Choice::Gemv, Choice::Shared]
-        .into_iter()
-        .filter(move |choice| *choice != legacy(shape[0]))
+    let qualified = supported(shape);
+    [
+        Choice::Gemv,
+        Choice::Shared,
+        Choice::NativeN64,
+        Choice::NativeN128,
+    ]
+    .into_iter()
+    .filter(move |choice| *choice != baseline(shape) && (!qualified || !choice.native_family()))
 }
 pub(crate) fn search_trials(shape: ProjectionShape) -> usize {
     candidates(shape).count() + CONFIRMATIONS
@@ -201,7 +258,7 @@ pub(crate) fn select(
         Ok(choice) => choice,
         Err(error) => {
             tracing::warn!(target:"infer::tuning",?shape,%error,"pooled dense legacy fallback");
-            legacy(shape[0])
+            baseline(shape)
         }
     }
 }
@@ -213,7 +270,7 @@ fn resolve(
     autotune: bool,
     session: &ResidentTuningSession,
 ) -> Result<Choice> {
-    if !supported(shape) {
+    if !searchable(shape) {
         return Err(Error::invalid("unsupported pooled dense geometry"));
     }
     let key = key(device, shape, tile)?;
@@ -284,7 +341,7 @@ impl Search<'_> {
         let shape = [self.key.native.m, self.key.native.n, self.key.native.k];
         let candidate = Captured::new(self.device, self.weight, shape, self.tile, choice)?;
         candidate.run(self.device)?;
-        let expected = if choice == Choice::Native {
+        let expected = if choice.native_family() {
             self.legacy_expected
         } else {
             self.private_expected

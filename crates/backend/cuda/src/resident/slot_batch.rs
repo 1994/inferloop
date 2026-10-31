@@ -63,10 +63,11 @@ fn pool_workspace(
     narrow: &[usize],
 ) -> Result<super::nvfp4_gemm::Workspace> {
     let mut widths = vec![1, lanes];
-    widths.extend(narrow.iter().map(|&slots| slots * verify));
+    // A pool without verification has `verify == 0` and one lane per slot.
+    widths.extend(narrow.iter().map(|&slots| slots * verify.max(1)));
     let mut workspace = super::nvfp4_gemm::Workspace::new(device, graph, weights, &widths)?;
     for &rows in &widths[1..] {
-        workspace.prepare_pool_dense(device, graph, weights, rows)?;
+        workspace.prepare_pool_rows(device, graph, weights, rows)?;
     }
     Ok(workspace)
 }
@@ -83,6 +84,24 @@ fn build_narrow_decode(
         graphs.push(builder.build_slots(&mut states[..slots], &mut fp8[..slots])?);
     }
     Ok(graphs)
+}
+
+/// The full-width decode graph and its narrower rungs.
+fn build_pool_decode<'a>(
+    builder: &mut super::batch::BatchBuilder<'a>,
+    states: &'a mut SlotStates,
+    fp8: &mut [Fp8Caches],
+    narrow: &[usize],
+) -> Result<(SlotDecodeGraph, Vec<SlotDecodeGraph>)> {
+    // Narrow rungs stay per-lane: at one to four lanes the launch count is small, and their
+    // state views are prefixes the batch kernel cannot address directly.
+    let decode_narrow = build_narrow_decode(builder, states, fp8, narrow)?;
+    // The full-width graph records one batched state kernel per node instead of one per lane;
+    // its builder therefore holds the pooled state roots, not a lane.
+    let (lane_states, roots) = states.parts();
+    builder.states = roots;
+    let decode = builder.build_slots(lane_states, fp8)?;
+    Ok((decode, decode_narrow))
 }
 
 /// The pool-wide verify graph and one narrower graph per `narrow` slot count, with the root
@@ -570,15 +589,8 @@ impl SlotPool {
                 )?;
                 (None, Some(full), Vec::new(), graphs, roots)
             } else {
-                // Narrow rungs stay per-lane: at one to four lanes the launch count is small,
-                // and their state views are prefixes the batch kernel cannot address directly.
-                let decode_narrow =
-                    build_narrow_decode(&mut builder, &mut states, &mut fp8, &narrow_slots)?;
-                // The full-width graph records one batched state kernel per node instead of one
-                // per lane; its builder therefore holds the pooled state roots, not a lane.
-                let (lane_states, roots) = states.parts();
-                builder.states = roots;
-                let decode = builder.build_slots(lane_states, &mut fp8)?;
+                let (decode, decode_narrow) =
+                    build_pool_decode(&mut builder, &mut states, &mut fp8, &narrow_slots)?;
                 (Some(decode), None, decode_narrow, Vec::new(), Vec::new())
             }
         };
