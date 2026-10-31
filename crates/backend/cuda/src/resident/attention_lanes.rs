@@ -10,6 +10,8 @@ use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;
 
@@ -106,7 +108,7 @@ type Recorded<E> = (Tensor<E>, Tensor<E>, StdResult<(), DeviceError>);
 
 #[cfg(test)]
 std::thread_local! {
-    static RECORDED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static RECORDED: Cell<usize> = const { Cell::new(0) };
 }
 /// Lane-batched attention nodes this thread has recorded.
 #[cfg(test)]

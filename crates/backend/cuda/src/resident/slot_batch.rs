@@ -21,6 +21,8 @@ use cuda_core::{CudaContext, PinnedHostBuffer, f8e4m3fn};
 use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::iter::successors;
 
@@ -101,7 +103,7 @@ fn reject_fused_verification(weights: &ProgramWeights, verify: usize) -> Result<
 #[cfg(test)]
 thread_local! {
     /// Keeps per-lane attention and rotary launches, to compare a pool against them.
-    pub static LANES_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub static LANES_DISABLED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Lane-batched attention scratch; a pooled verification graph has its own grouped path.
