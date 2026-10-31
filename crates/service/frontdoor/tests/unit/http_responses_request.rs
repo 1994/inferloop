@@ -7,7 +7,7 @@ fn parse(value: Value) -> ResponsesRequest {
 
 fn prepared(value: Value) -> Prepared {
     parse(value)
-        .prepare()
+        .prepare(StoreOptions::default(), None)
         .expect("fixture request must prepare")
 }
 
@@ -133,7 +133,10 @@ fn unsupported_current_options_are_refused() {
         json!({"model":"1","input":"hi","prompt":"p"}),
     ];
     for case in cases {
-        let error = parse(case.clone()).prepare().err().unwrap();
+        let error = parse(case.clone())
+            .prepare(StoreOptions::default(), None)
+            .err()
+            .unwrap();
         assert_eq!(error.code, infer_core::ErrorCode::Unsupported, "{case}");
     }
 }
@@ -165,7 +168,10 @@ fn malformed_input_items_are_parameter_errors() {
         json!({"model":"1","input":[{"role":"user","content":"x"}],"metadata":{"a":1}}),
         json!({"model":"1","input":"x","text":{"format":{"type":"unknown"}}}),
     ] {
-        let error = parse(case.clone()).prepare().err().unwrap();
+        let error = parse(case.clone())
+            .prepare(StoreOptions::default(), None)
+            .err()
+            .unwrap();
         assert_eq!(error.code, infer_core::ErrorCode::InvalidInput, "{case}");
     }
 }
@@ -217,8 +223,115 @@ fn reasoning_effort_selects_thinking() {
         assert_eq!(prepared.generation.enable_thinking, thinking, "{effort}");
     }
     let error = parse(json!({"model":"1","input":"hi","reasoning":{"effort":"extreme"}}))
-        .prepare()
+        .prepare(StoreOptions::default(), None)
         .err()
         .unwrap();
     assert_eq!(error.code, infer_core::ErrorCode::InvalidInput);
+}
+
+fn installed() -> StoreOptions {
+    StoreOptions {
+        installed: true,
+        capabilities: ResponseStoreCapabilities {
+            retrieve: true,
+            previous_response_id: true,
+            background: true,
+            cancel: true,
+            event_replay: true,
+            persistent: false,
+            shared: false,
+            max_record_bytes: 1024,
+        },
+    }
+}
+
+#[test]
+fn an_installed_store_enables_stateful_fields() {
+    let prepared = parse(json!({
+        "model":"1", "input":"hello", "store":true, "background":false
+    }))
+    .prepare(installed(), None)
+    .unwrap();
+    assert!(prepared.spec.store);
+    assert!(!prepared.spec.background);
+    assert_eq!(prepared.spec.previous_response_id, None);
+
+    let prepared = parse(json!({"model":"1", "input":"hello"}))
+        .prepare(installed(), None)
+        .unwrap();
+    assert!(prepared.spec.store, "store defaults to true when installed");
+
+    let prepared = parse(json!({"model":"1", "input":"hello", "store":false}))
+        .prepare(installed(), None)
+        .unwrap();
+    assert!(!prepared.spec.store);
+}
+
+#[test]
+fn previous_response_id_combines_prior_input_and_output() {
+    let prior = PriorState {
+        input: vec![json!({"role":"user","content":"first"})],
+        output: vec![json!({
+            "type":"message","role":"assistant","status":"completed",
+            "content":[{"type":"output_text","text":"answer","annotations":[]}]
+        })],
+        model: "1".to_string(),
+    };
+    let mut prepared = parse(json!({
+        "model":"1", "input":"second", "previous_response_id":"resp_1"
+    }))
+    .prepare(installed(), Some(prior))
+    .unwrap();
+    let (messages, media) = prepared.generation.chat_messages().unwrap();
+    assert_eq!(media.len(), 0);
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[0].content, "first");
+    assert_eq!(messages[1].content, "answer");
+    assert_eq!(messages[2].content, "second");
+    let input: Value = serde_json::from_slice(&prepared.request_input).unwrap();
+    assert_eq!(input.as_array().unwrap().len(), 3);
+    assert_eq!(
+        prepared.spec.previous_response_id.as_deref(),
+        Some("resp_1")
+    );
+}
+
+#[test]
+fn background_needs_store_and_rejects_streaming() {
+    let error = parse(json!({
+        "model":"1", "input":"hello", "background":true, "store":false
+    }))
+    .prepare(installed(), None)
+    .err()
+    .unwrap();
+    assert_eq!(error.code, infer_core::ErrorCode::InvalidInput);
+
+    let error = parse(json!({
+        "model":"1", "input":"hello", "background":true, "stream":true
+    }))
+    .prepare(installed(), None)
+    .err()
+    .unwrap();
+    assert_eq!(error.code, infer_core::ErrorCode::Unsupported);
+
+    let error = parse(json!({"model":"1", "input":"hello", "background":true}))
+        .prepare(StoreOptions::default(), None)
+        .err()
+        .unwrap();
+    assert_eq!(error.code, infer_core::ErrorCode::Unsupported);
+}
+
+#[test]
+fn stateful_options_without_a_store_stay_unsupported() {
+    for request in [
+        json!({"model":"1", "input":"hello", "store":true}),
+        json!({"model":"1", "input":"hello", "previous_response_id":"resp_1"}),
+        json!({"model":"1", "input":"hello", "background":true}),
+    ] {
+        let error = parse(request)
+            .prepare(StoreOptions::default(), None)
+            .err()
+            .unwrap();
+        assert_eq!(error.code, infer_core::ErrorCode::Unsupported);
+    }
 }

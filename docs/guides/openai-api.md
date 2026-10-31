@@ -15,6 +15,8 @@
 | `POST /v1/chat/completions` | 用包内模板编码 messages，返回 `chat.completion` 或 SSE |
 | `POST /v1/completions` | 编码单个字符串 prompt，返回 `text_completion` 或 SSE |
 | `POST /v1/responses` | 用 Responses 的 input / instructions 编码，返回 `response` 或 typed SSE，见「Responses」 |
+| `GET /v1/responses/{id}` | 读取已保留的 response；需要启用 response store |
+| `POST /v1/responses/{id}/cancel` | 取消 `queued`/`in_progress` response；需要启用 store |
 | `POST /v1/decisions` | 用同一生成模型回答 predicate / choice / score 问题，见「决策」 |
 
 部署名默认是内部 ModelId 的十进制字符串，可用 `--served-model-name` 覆盖；样例模型默认名为 `"1"`。请求未加载的模型返回 404。包内没有 tokenizer 时上述路由不存在，原生 token API 仍可使用。
@@ -70,7 +72,7 @@ assistant 消息可以带 `tool_calls`（`null` 按空列表处理），每项�
 
 不要把当前输出默认 16 当作上下文上限，也不要假设省略采样参数一定得到 greedy。
 
-不支持的字段（如 `stop`、`response_format`、`logprobs`）会被拒绝，不会静默忽略。多模态输入的范围见[视觉服务路径](vision.md#服务路径)。Responses 的文本与 function 工具子集已实现；Embeddings、鉴权、服务端存储、内置工具与结构化输出均未实现。
+不支持的字段（如 `stop`、`response_format`、`logprobs`）会被拒绝，不会静默忽略。多模态输入的范围见[视觉服务路径](vision.md#服务路径)。Responses 的文本、function 工具与可选状态子集已实现；服务端存储需显式启用并默认关闭。Embeddings、鉴权、内置工具与结构化输出均未实现。
 
 ## Responses
 
@@ -85,7 +87,9 @@ assistant 消息可以带 `tool_calls`（`null` 按空列表处理），每项�
 | `temperature` | 0..2；省略时使用解析后的默认值 |
 | `top_p` | (0,1]；省略时使用解析后的默认值 |
 | `stream` | `true` 返回 typed SSE，见「Responses 流式」 |
-| `store` | 只接受 `false` 或省略（按 false 处理）；`true` 返回 501 |
+| `store` | 安装 store 时省略按 `true`；无 store 时省略/`false` 不保留，`true` 返回 501 |
+| `previous_response_id` | 需要启用 store；上一响应必须是本实例保留的 `completed`/`incomplete`，模型一致；否则 501/404/409 |
+| `background` | 需要启用 store 且 `store` 不为 false；返回 `in_progress` 并用 GET 轮询；`stream=true` 返回 501 |
 | `tools` | 至多 128 个 `{"type":"function","name",...}`；内置工具类型返回 501 |
 | `tool_choice` | `"none"`、`"auto"`、`"required"` 或 `{"type":"function","name":...}` |
 | `parallel_tool_calls` | 默认 `true`；`false` 通过生成约束限制至多一次调用 |
@@ -97,7 +101,20 @@ assistant 消息可以带 `tool_calls`（`null` 按空列表处理），每项�
 | `service_tier` | 只接受 `auto`/`default`，响应报告 `default` |
 | `truncation` | 只接受 `disabled` |
 
-`previous_response_id`、`conversation`、`background: true`、非空 `include`、`prompt`、`context_management`、`moderation`、`access_programs`、`top_logprobs`、`max_tool_calls` 都返回 501。未知字段返回 400。
+`conversation`、非空 `include`、`prompt`、`context_management`、`moderation`、`access_programs`、`top_logprobs`、`max_tool_calls` 都返回 501。未知字段返回 400。
+
+### 状态存储与后台
+
+默认不安装 response store，所有状态字段都保持显式错误。启动服务时加 `--enable-response-store` 会安装进程内参考实现；外部 SDK 可通过 `ResponsesExtensions::with_store` 注入自己的 `infer_spi::ResponseStore`（见[状态扩展 SPI](../architecture/responses-state.md)）。
+
+参考实现边界：最多 256 条、总计 64 MiB、单记录 4 MiB、每个响应 4096 个事件、终态保留 1 小时；终态按 LRU 驱逐，活动记录不会因 TTL/LRU 被删除。它是单进程、非持久、非共享的，重启丢失，多副本之间不一致。
+
+- `store` 安装后默认 true；显式 `false` 不保留本次 response，但仍可使用 `previous_response_id` 读取上一轮。
+- `previous_response_id` 会把上一轮的 input 与 output items 合并进本轮 input；上一轮的 `instructions`/tools 不继承。活动、失败或取消的记录返回 409；未知 id 返回 404；模型不一致返回 400。
+- `background=true` 会在准入后立即写入 `in_progress` 快照并返回；任务完成后用 `GET /v1/responses/{id}` 轮询到 `completed`/`incomplete`/`failed`。后台并发由有界 permit 控制，池满返回 429。
+- `POST /v1/responses/{id}/cancel` 只接受 `queued`/`in_progress`；终态返回 400。取消与完成竞争由 store 的条件写/原子迁移决定，取消优先，不会回写已发布的前缀。
+- 取消、完成和失败的状态迁移是原子的；`GET` 用记录元数据覆盖 body 中的 status/completed_at/error/incomplete/usage。
+- 后台流式（`background=true, stream=true`）当前返回 501；事件存储契约已保留，后续再接回放。
 
 ### 输入 item
 
@@ -113,7 +130,7 @@ message 的 part 支持 `input_text`、`output_text`、`text` 与 `input_image`�
 
 ### 响应
 
-成功响应是 `object: "response"` 的单个对象，包含 `id`（`resp_<request>`）、`status`（`completed`/`incomplete`）、`created_at`、`completed_at`、`output`、`usage`、`instructions`、`tools`、`tool_choice`、`temperature`、`top_p`、`text`、`reasoning`、`metadata` 与 `store: false`、`previous_response_id: null`。`max_output_tokens` 回显请求值，省略时为 `null`（实际预算仍是默认 16 与服务 cap 的较小值）。output item 的 id 分别为 `rs_…`、`msg_…`、`fc_…`；函数调用另带 `call_id`（`call_<request>_<index>`）。
+成功响应是 `object: "response"` 的单个对象，包含 `id`（无 store 时 `resp_<request>`，写入 store 时带实例前缀）、`status`（前台 `completed`/`incomplete`；后台还可能是 `in_progress`/`failed`/`cancelled`）、`created_at`、`completed_at`、`output`、`usage`、`instructions`、`tools`、`tool_choice`、`temperature`、`top_p`、`text`、`reasoning`、`metadata`、`store`、`background`、`previous_response_id`。`max_output_tokens` 回显请求值，省略时为 `null`（实际预算仍是默认 16 与服务 cap 的较小值）。output item 的 id 分别为 `rs_…`、`msg_…`、`fc_…`；函数调用另带 `call_id`（`call_<namespace>_<index>`；无 store 时 namespace 为 request，写入 store 时包含响应实例，避免持久后端重启后复用）。
 
 `output` 按 reasoning、message、function_call 的顺序发布。文本 item 形如：
 
@@ -162,14 +179,15 @@ response.output_item.done
 response.completed | response.incomplete
 ```
 
-reasoning 使用 `response.reasoning_text.delta` 与 `response.reasoning_text.done`；函数调用使用 `response.output_item.added`、`response.function_call_arguments.delta`、`response.function_call_arguments.done` 与 `response.output_item.done`。失败时先发布 `error`，随后发布 `response.failed` 并结束流。流式仍要求包内 byte-level decoder；不满足时在准入前返回 501，已发布的前缀不会被回写。
+reasoning 使用 `response.reasoning_text.delta` 与 `response.reasoning_text.done`；函数调用使用 `response.output_item.added`、`response.function_call_arguments.delta`、`response.function_call_arguments.done` 与 `response.output_item.done`。失败时先发布 `error`，随后发布 `response.failed` 并结束流。流式仍要求包内 byte-level decoder；不满足时在准入前返回 501，已发布的前缀不会被回写。`background=true` 与 `stream=true` 同时出现返回 501。
 
 ### 与 Chat Completions 的差异
 
 - 没有 `n`、`messages`、`response_format`、`logprobs`；对应能力使用 `input`、`text.format`（当前仅 text）与 typed output。
-- 没有服务端存储。历史由调用方把上一次的 `output` item 回传给下一次 `input`；`previous_response_id` 不建立状态。
+- 服务端存储默认关闭；启用后可 `store`、`previous_response_id`、GET 和 cancel。未启用时历史仍由调用方把上一次的 `output` item 回传给下一次 `input`。
 - 只支持 function 工具。web search、file search、MCP、computer use、code interpreter、image generation 返回 501。
 - reasoning item 可以在 input 中回传，但不会进入 prompt；模板没有 reasoning 历史槽位。
+- 存储扩展在 `infer-spi`，不是 wire protocol 扩展；外部实现只需实现 `ResponseStore`，无需改前端协议。
 
 ## 决策
 
@@ -263,6 +281,8 @@ schema 或输入错误返回 400，模型不存在 404，body 超限 413，容�
 文本流式要求包内 tokenizer 使用 byte-level decoder，才能保证增量解码的前缀稳定；其他 decoder（例如按空格连接 token）会让分段解码与整体解码不一致，这类包请求 `stream=true` 返回 501，而不是发布随后需要更正的字符。
 
 ## 实现说明
+
+Responses 状态由 `infer_spi::ResponseStore` 扩展点承载，frontdoor 只负责 OpenAI 线格式、状态机编排和参考 store。没有安装扩展时状态字段返回 501；`--enable-response-store` 安装有界进程内参考实现。原子写、取消竞争、payload 版本和外部 SDK 接入约定见[状态扩展 SPI](../architecture/responses-state.md)。
 
 请求 ID 来自 `RuntimeHandle` 的单调分配器：显式原生请求会推进计数器，路由重建不会重置；混用两套接口时可用 `RuntimeHandle::allocate_request_id` 分配 ID，避免手动 ID 冲突。文本编码与结果解码分别运行在有界 preparation / delivery 池中：流式路径同样把每个已提交 token 送进 delivery 池做增量 detokenize 与解析，兼容层继承原生准入、背压和断连取消机制。
 

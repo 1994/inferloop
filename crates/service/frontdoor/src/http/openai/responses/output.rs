@@ -44,7 +44,11 @@ impl Snapshot<'_> {
             })
         });
         json!({
-            "id": response_id(self.request),
+            "id": self
+                .spec
+                .response_id
+                .clone()
+                .unwrap_or_else(|| response_id(self.request)),
             "object": "response",
             "created_at": self.created,
             "status": self.status,
@@ -56,9 +60,9 @@ impl Snapshot<'_> {
             "model": self.model,
             "output": self.output,
             "parallel_tool_calls": self.spec.parallel_tool_calls,
-            "previous_response_id": null,
+            "previous_response_id": self.spec.previous_response_id,
             "reasoning": reasoning_echo(self.spec),
-            "store": false,
+            "store": self.spec.store,
             "temperature": self.temperature,
             "text": self.spec.text,
             "tool_choice": self.spec.tool_choice,
@@ -69,7 +73,7 @@ impl Snapshot<'_> {
             "user": self.spec.user,
             "metadata": self.spec.metadata,
             "access_programs": null,
-            "background": false,
+            "background": self.spec.background,
             "conversation": null,
             "service_tier": "default",
         })
@@ -89,19 +93,19 @@ pub(super) fn response_id(request: RequestId) -> String {
 ///
 /// `status` is the response's terminal status: a message cut off by the output budget keeps the
 /// `incomplete` status, while reasoning and fully parsed calls are complete on their own.
-pub(super) fn items(request: RequestId, parsed: &ParsedOutput, status: &str) -> Vec<Value> {
+pub(super) fn items(namespace: &str, parsed: &ParsedOutput, status: &str) -> Vec<Value> {
     let mut items = Vec::new();
     let mut position = 0;
     if let Some(reasoning) = parsed.reasoning.as_deref().filter(|text| !text.is_empty()) {
-        items.push(reasoning_item(request, position, reasoning, "completed"));
+        items.push(reasoning_item(namespace, position, reasoning, "completed"));
         position += 1;
     }
     if !parsed.content.is_empty() || parsed.calls.is_empty() {
-        items.push(message_item(request, position, &parsed.content, status));
+        items.push(message_item(namespace, position, &parsed.content, status));
     }
     for (index, call) in parsed.calls.iter().enumerate() {
         items.push(function_call_item(
-            request,
+            namespace,
             index,
             &call.name,
             &call.arguments,
@@ -117,19 +121,14 @@ pub(super) fn output_text_part(text: &str) -> Value {
 }
 
 /// A reasoning item carrying the generated reasoning as reasoning text content.
-pub(super) fn reasoning_item(
-    request: RequestId,
-    position: usize,
-    text: &str,
-    status: &str,
-) -> Value {
+pub(super) fn reasoning_item(namespace: &str, position: usize, text: &str, status: &str) -> Value {
     let content = if text.is_empty() {
         Vec::new()
     } else {
         vec![json!({"type":"reasoning_text","text":text})]
     };
     json!({
-        "id": format!("rs_{}_{}", request.get(), position),
+        "id": format!("rs_{namespace}_{position}"),
         "type": "reasoning",
         "status": status,
         "summary": [],
@@ -138,14 +137,14 @@ pub(super) fn reasoning_item(
 }
 
 /// An assistant message item. An in-progress item publishes no content part yet.
-pub(super) fn message_item(request: RequestId, position: usize, text: &str, status: &str) -> Value {
+pub(super) fn message_item(namespace: &str, position: usize, text: &str, status: &str) -> Value {
     let content = if text.is_empty() {
         Vec::new()
     } else {
         vec![output_text_part(text)]
     };
     json!({
-        "id": format!("msg_{}_{}", request.get(), position),
+        "id": format!("msg_{namespace}_{position}"),
         "type": "message",
         "status": status,
         "role": "assistant",
@@ -155,25 +154,30 @@ pub(super) fn message_item(request: RequestId, position: usize, text: &str, stat
 
 /// One round-trip function call. The `call_id` is the identifier a later output item answers.
 pub(super) fn function_call_item(
-    request: RequestId,
+    namespace: &str,
     index: usize,
     name: &str,
     arguments: &str,
     status: &str,
 ) -> Value {
     json!({
-        "id": format!("fc_{}_{}", request.get(), index),
+        "id": call_item_id(namespace, index),
         "type": "function_call",
         "status": status,
-        "call_id": call_id(request, index),
+        "call_id": call_id(namespace, index),
         "name": name,
         "arguments": arguments,
     })
 }
 
+/// The id of one function-call output item.
+pub(super) fn call_item_id(namespace: &str, index: usize) -> String {
+    format!("fc_{namespace}_{index}")
+}
+
 /// The stable identifier shared by a call item and its output item.
-pub(super) fn call_id(request: RequestId, index: usize) -> String {
-    format!("call_{}_{}", request.get(), index)
+pub(super) fn call_id(namespace: &str, index: usize) -> String {
+    format!("call_{namespace}_{index}")
 }
 
 /// The terminal status and details of one finished generation.

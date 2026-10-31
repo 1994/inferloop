@@ -274,3 +274,22 @@ fn image_decoder_override_accepts_cpu_and_rejects_unknown_modes() {
         Cli::try_parse_from(["infer", "/models/example", "--image-decoder", "invalid"]).is_err()
     );
 }
+
+#[test]
+fn serve_can_enable_the_in_process_response_store() {
+    let default = Cli::try_parse_from(["infer", "/models/example"]).unwrap();
+    assert!(!default.serve.enable_response_store);
+    let Command::Serve(options) = Cli::try_parse_from([
+        "infer",
+        "serve",
+        "--package",
+        "/models/example",
+        "--enable-response-store",
+    ])
+    .unwrap()
+    .into_command()
+    .unwrap() else {
+        panic!("expected server")
+    };
+    assert!(options.enable_response_store);
+}

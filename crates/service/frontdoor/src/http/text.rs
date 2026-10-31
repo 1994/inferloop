@@ -1,5 +1,6 @@
 //! Text HTTP adapter.
 use super::{HttpError, HttpResult, RuntimeHandle, cpu, router, trace_parent};
+use crate::constants::MAX_BACKGROUND_RESPONSES;
 use crate::constants::MAX_REQUEST_BODY_BYTES;
 use crate::constants::TEXT_STAGING_EXPANSION;
 use crate::constants::TEXT_STAGING_OVERHEAD_BYTES;
@@ -12,9 +13,13 @@ use axum::{
 use infer_core::{Error, ErrorCode, RequestId, Result};
 use infer_ir::{CanonicalRequest, WorkloadOutput};
 use infer_runtime::EngineOutput;
+use infer_spi::ResponsesExtensions;
 use std::collections::BTreeMap;
+use std::process::id;
 use std::result::Result as StdResult;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::Semaphore;
 
 #[derive(Clone)]
 pub(super) struct TextState {
@@ -22,6 +27,10 @@ pub(super) struct TextState {
     pub(super) assets: Arc<infer_models::TextAssets>,
     pub(super) media: Option<Arc<MediaService>>,
     pub(super) delivery: cpu::CpuPool,
+    pub(super) responses: ResponsesExtensions,
+    pub(super) background_permits: Arc<Semaphore>,
+    /// Process-instance namespace for retained response ids.
+    pub(super) response_instance: Arc<str>,
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -47,11 +56,23 @@ pub fn router_with_text_and_media(
     assets: Arc<infer_models::TextAssets>,
     media: Option<Arc<MediaService>>,
 ) -> Router {
+    router_with_text_media_and_responses(handle, assets, media, ResponsesExtensions::default())
+}
+
+pub fn router_with_text_media_and_responses(
+    handle: RuntimeHandle,
+    assets: Arc<infer_models::TextAssets>,
+    media: Option<Arc<MediaService>>,
+    responses: ResponsesExtensions,
+) -> Router {
     let state = TextState {
         handle: handle.clone(),
         assets,
         media,
         delivery: handle.delivery_pool(),
+        responses,
+        background_permits: Arc::new(Semaphore::new(MAX_BACKGROUND_RESPONSES)),
+        response_instance: response_instance(),
     };
     router(handle).merge(
         Router::new()
@@ -61,6 +82,13 @@ pub fn router_with_text_and_media(
             .with_state(state),
     )
 }
+fn response_instance() -> Arc<str> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    Arc::from(format!("{:x}{nanos:x}", id()))
+}
+
 pub(super) fn text_preparation_bytes(request: &NativeTextRequest) -> Result<usize> {
     let bytes = request
         .prompt

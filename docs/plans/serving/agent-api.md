@@ -1,6 +1,6 @@
 # Agent 工具调用与服务配置方案
 
-状态：S1/S2 已交付：基础工具协议、增量 parser、总上下文与有效配置、非推测生成约束、Responses 文本/function 子集均已实施，HTTP 严格工具模式按支持子集开放；真实模型与 GPU 严格工具验收、推测组合仍属后续工作。初始调研源码基点为 `7c79d99`，日期为 2026 年 10 月 9 日；基础实现基于 `3a188f4`，严格工具约束随 `a1a11fa` 交付。当前公开能力以 [OpenAI 接口指南](../../guides/openai-api.md) 为准。
+状态：S1/S2 已交付：基础工具协议、增量 parser、总上下文与有效配置、非推测生成约束、Responses 文本/function 子集与可选状态 store 均已实施，HTTP 严格工具模式按支持子集开放；真实模型与 GPU 严格工具验收、推测组合仍属后续工作。初始调研源码基点为 `7c79d99`，日期为 2026 年 10 月 9 日；基础实现基于 `3a188f4`，严格工具约束随 `a1a11fa` 交付。当前公开能力以 [OpenAI 接口指南](../../guides/openai-api.md) 为准。
 
 整体排期与任务状态见 [路线图](../README.md) 的 S1、S2。本文维护本项设计与验收。性能对比的 release、配置、统计和证据规则沿用 [统一基线方案](../performance/baseline.md)，不另设一套门槛。
 
@@ -95,7 +95,7 @@ SSE 的 tool index 与 ID 一旦发出就稳定，function name 只在确定后�
 
 流式实现先发送 role，随后发送 content/reasoning/tool deltas，再发送结束原因；支持 `stream_options.include_usage` 时发送终末 usage 和 `[DONE]`。正常生成完成且含完整调用时使用 `tool_calls`；引擎因长度上限停止仍保留 `length`，不因 parser 恰好收到闭合括号而改写原因。流式中已发出的部分调用不可撤回，SDK 集成必须按终末原因判断是否执行；非流式保留错误/不完整状态，不自行补括号、修参数或伪造成功。取消和 backend 失败按终末错误契约处理。
 
-Responses 的文本与 function 工具子集已按 [OpenAI 接口指南](../../guides/openai-api.md#responses) 交付，复用同一套准入、编码、约束与解析；服务端存储、`previous_response_id`、background、内置工具与结构化 `text.format` 仍显式拒绝。内置执行器、MCP 执行、custom tools、多 choice 或多模态工具内容继续不扩张，不能通过宽松反序列化默认“支持”。
+Responses 的文本与 function 工具子集已按 [OpenAI 接口指南](../../guides/openai-api.md#responses) 交付，复用同一套准入、编码、约束与解析；可选状态存储、`previous_response_id`、GET、cancel 与非流式 background 通过 [状态扩展 SPI](../../architecture/responses-state.md) 提供，内置工具与结构化 `text.format` 仍显式拒绝。内置执行器、MCP 执行、custom tools、多 choice 或多模态工具内容继续不扩张，不能通过宽松反序列化默认“支持”。
 
 ## Max length 的统一语义
 

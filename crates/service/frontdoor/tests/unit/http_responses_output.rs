@@ -25,7 +25,7 @@ fn call(name: &str, arguments: &str) -> ParsedToolCall {
 #[test]
 fn items_are_ordered_reasoning_message_and_calls() {
     let output = items(
-        request(),
+        "7",
         &parsed("hello", Some("thinking"), vec![call("ping", "{}")]),
         "completed",
     );
@@ -45,7 +45,7 @@ fn items_are_ordered_reasoning_message_and_calls() {
 #[test]
 fn a_call_only_response_has_no_message_item() {
     let output = items(
-        request(),
+        "7",
         &parsed("", None, vec![call("ping", "{}")]),
         "completed",
     );
@@ -55,7 +55,7 @@ fn a_call_only_response_has_no_message_item() {
 
 #[test]
 fn an_empty_response_still_has_a_message_item() {
-    let output = items(request(), &parsed("", None, Vec::new()), "completed");
+    let output = items("7", &parsed("", None, Vec::new()), "completed");
     assert_eq!(output.len(), 1);
     assert_eq!(output[0]["type"], "message");
     assert_eq!(output[0]["content"], json!([]));
@@ -83,6 +83,10 @@ fn an_unterminated_region_without_length_is_a_backend_error() {
 #[test]
 fn the_response_object_reports_usage_and_the_requested_limits() {
     let spec = Spec {
+        response_id: None,
+        store: false,
+        background: false,
+        previous_response_id: None,
         instructions: Some("be brief".to_string()),
         tools: Vec::new(),
         tool_choice: json!("auto"),
@@ -93,7 +97,7 @@ fn the_response_object_reports_usage_and_the_requested_limits() {
         max_output_tokens: Some(32),
         user: Some("user-1".to_string()),
     };
-    let output = items(request(), &parsed("hello", None, Vec::new()), "completed");
+    let output = items("7", &parsed("hello", None, Vec::new()), "completed");
     let usage = Usage {
         input: 5,
         output: 2,

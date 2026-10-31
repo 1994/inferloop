@@ -1,9 +1,15 @@
+use crate::InMemoryResponseStore;
 use axum::body::to_bytes;
 use axum::{Router, body::Body, http::Request, http::StatusCode};
 use infer_core::ModelId;
+use infer_core::RequestId;
 use infer_ir::PrecisionPlan;
 use infer_kernel_api::KernelRegistry;
 use infer_runtime::{Engine, RuntimeConfig};
+use infer_spi::{
+    RESPONSES_PAYLOAD_VERSION, ResponseId, ResponseStatus, ResponseStore, ResponsesExtensions,
+    StoredResponse, WriteCondition,
+};
 use serde_json::{Value, json};
 use std::env::temp_dir;
 use std::fs::copy;
@@ -22,7 +28,7 @@ use tokio::time::timeout;
 use tower::ServiceExt;
 
 use crate::http::tests::support;
-use crate::{RuntimeHandle, router_with_text};
+use crate::{RuntimeHandle, router_with_text, router_with_text_media_and_responses};
 
 fn fixture_with(config: RuntimeConfig) -> (RuntimeHandle, Arc<infer_models::TextAssets>) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples/qwen-hybrid-tiny");
@@ -382,5 +388,317 @@ async fn responses_media_is_refused_on_a_text_only_deployment() {
     .await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{body}");
     assert_eq!(body["error"]["message"], "this deployment is text-only");
+    handle.shutdown().await.unwrap();
+}
+
+fn store_fixture() -> (Router, Arc<InMemoryResponseStore>, RuntimeHandle) {
+    let (handle, assets) = fixture();
+    let store = Arc::new(InMemoryResponseStore::default());
+    let app = router_with_text_media_and_responses(
+        handle.clone(),
+        assets,
+        None,
+        ResponsesExtensions::new().with_store(store.clone()),
+    );
+    (app, store, handle)
+}
+
+fn seeded(status: ResponseStatus) -> StoredResponse {
+    let id = "resp_999";
+    StoredResponse {
+        id: ResponseId::new(id).unwrap(),
+        request_id: RequestId::new(999).unwrap(),
+        model: "1".to_string(),
+        created_at: 100,
+        completed_at: (status == ResponseStatus::Completed).then_some(101),
+        status,
+        incomplete: None,
+        error: None,
+        usage: None,
+        previous_response_id: None,
+        request_input: b"[{\"role\":\"user\",\"content\":\"hello\"}]".to_vec(),
+        response: serde_json::to_vec(&json!({
+            "id": id, "object": "response", "status": status.as_str(),
+            "model": "1", "output": [], "usage": null
+        }))
+        .unwrap(),
+        payload_version: RESPONSES_PAYLOAD_VERSION,
+    }
+}
+
+#[tokio::test]
+async fn a_stored_response_can_be_retrieved_and_store_false_is_not_retained() {
+    let (app, _store, handle) = store_fixture();
+    let (status, body) = call(
+        app.clone(),
+        "/v1/responses",
+        Some(json!({"model":"1", "input":"hello", "max_output_tokens":2})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["store"], true, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    let (status, retrieved) = call(app.clone(), &format!("/v1/responses/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{retrieved}");
+    assert_eq!(retrieved["id"], body["id"]);
+    assert_eq!(retrieved["output"], body["output"]);
+    assert_eq!(retrieved["status"], body["status"]);
+
+    let (status, body) = call(
+        app.clone(),
+        "/v1/responses",
+        Some(json!({"model":"1", "input":"hello", "max_output_tokens":2, "store":false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["store"], false);
+    let id = body["id"].as_str().unwrap().to_string();
+    let (status, _) = call(app, &format!("/v1/responses/{id}"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn previous_response_id_chains_the_retained_input_and_output() {
+    let (app, store, handle) = store_fixture();
+    let (status, first) = call(
+        app.clone(),
+        "/v1/responses",
+        Some(json!({"model":"1", "input":"hello", "max_output_tokens":2})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let previous = first["id"].as_str().unwrap().to_string();
+    let (status, second) = call(
+        app,
+        "/v1/responses",
+        Some(json!({
+            "model":"1", "input":"world", "max_output_tokens":2,
+            "previous_response_id":previous
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["previous_response_id"], previous);
+    let id = ResponseId::new(second["id"].as_str().unwrap()).unwrap();
+    let stored = store.get(&id).await.unwrap().unwrap();
+    let input: Value = serde_json::from_slice(&stored.request_input).unwrap();
+    let items = input.as_array().unwrap();
+    assert_eq!(items.len(), 3, "{input}");
+    assert_eq!(items[0]["role"], "user");
+    assert_eq!(items[0]["content"], "hello");
+    assert_eq!(items[1]["type"], "message");
+    assert_eq!(items[2]["content"], "world");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn chaining_rejects_missing_and_active_responses() {
+    let (app, store, handle) = store_fixture();
+    let (status, body) = call(
+        app.clone(),
+        "/v1/responses",
+        Some(json!({"model":"1", "input":"hi", "previous_response_id":"resp_missing"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+    store
+        .put(seeded(ResponseStatus::InProgress), WriteCondition::Always)
+        .await
+        .unwrap();
+    let (status, body) = call(
+        app.clone(),
+        "/v1/responses",
+        Some(json!({"model":"1", "input":"hi", "previous_response_id":"resp_999"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    store
+        .put(seeded(ResponseStatus::Cancelled), WriteCondition::Always)
+        .await
+        .unwrap();
+    let (status, body) = call(
+        app.clone(),
+        "/v1/responses",
+        Some(json!({"model":"1", "input":"hi", "previous_response_id":"resp_999"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    let mut completed = seeded(ResponseStatus::Completed);
+    completed.model = "another-model".to_string();
+    store.put(completed, WriteCondition::Always).await.unwrap();
+    let (status, body) = call(
+        app,
+        "/v1/responses",
+        Some(json!({"model":"1", "input":"hi", "previous_response_id":"resp_999"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn background_responses_are_pollable() {
+    let (app, _store, handle) = store_fixture();
+    let (status, body) = call(
+        app.clone(),
+        "/v1/responses",
+        Some(json!({
+            "model":"1", "input":"hello", "max_output_tokens":3, "background":true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["background"], true);
+    assert_eq!(body["status"], "in_progress");
+    let id = body["id"].as_str().unwrap().to_string();
+    timeout(Duration::from_secs(10), async {
+        loop {
+            let (_, polled) = call(app.clone(), &format!("/v1/responses/{id}"), None).await;
+            if polled["status"] != "in_progress" && polled["status"] != "queued" {
+                assert_eq!(polled["status"], "incomplete", "{polled}");
+                break;
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn background_requires_storage_and_rejects_streaming() {
+    let (app, _store, handle) = store_fixture();
+    let (status, body) = call(
+        app.clone(),
+        "/v1/responses",
+        Some(json!({
+            "model":"1", "input":"hello", "background":true, "store":false
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = call(
+        app,
+        "/v1/responses",
+        Some(json!({
+            "model":"1", "input":"hello", "background":true, "stream":true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{body}");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn cancel_transitions_an_active_response_and_rejects_terminal_ones() {
+    let (app, store, handle) = store_fixture();
+    store
+        .put(seeded(ResponseStatus::InProgress), WriteCondition::Always)
+        .await
+        .unwrap();
+    let (status, body) = call(
+        app.clone(),
+        "/v1/responses/resp_999/cancel",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "cancelled");
+    let (status, body) = call(
+        app.clone(),
+        "/v1/responses/resp_999/cancel",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    store
+        .put(seeded(ResponseStatus::Completed), WriteCondition::Always)
+        .await
+        .unwrap();
+    let (status, body) = call(app, "/v1/responses/resp_999/cancel", Some(json!({}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn stateful_routes_need_an_installed_store() {
+    let (handle, assets) = fixture();
+    let app = router_with_text(handle.clone(), assets);
+    for (method, path) in [
+        ("GET", "/v1/responses/resp_1"),
+        ("POST", "/v1/responses/resp_1/cancel"),
+    ] {
+        let request = Request::builder()
+            .method(method)
+            .uri(path)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED, "{path}");
+    }
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn streamed_responses_are_retained_by_the_installed_store() {
+    let (handle, assets) = streaming_fixture();
+    let store = Arc::new(InMemoryResponseStore::default());
+    let app = router_with_text_media_and_responses(
+        handle.clone(),
+        assets,
+        None,
+        ResponsesExtensions::new().with_store(store.clone()),
+    );
+    let (status, body) = call_stream(
+        app.clone(),
+        "/v1/responses",
+        json!({"model":"1", "input":"hello", "max_output_tokens":3, "stream":true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let events = stream_data(&body);
+    let completed = events.last().unwrap();
+    assert_eq!(completed["type"], "response.incomplete");
+    let id = completed["response"]["id"].as_str().unwrap().to_string();
+    let (status, retrieved) = call(app, &format!("/v1/responses/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{retrieved}");
+    assert_eq!(retrieved["status"], "incomplete");
+    assert_eq!(
+        retrieved["output"], completed["response"]["output"],
+        "{retrieved}"
+    );
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_chained_request_may_choose_not_to_store_its_own_result() {
+    let (app, _store, handle) = store_fixture();
+    let (_, first) = call(
+        app.clone(),
+        "/v1/responses",
+        Some(json!({"model":"1", "input":"hello", "max_output_tokens":2})),
+    )
+    .await;
+    let previous = first["id"].as_str().unwrap().to_string();
+    let (status, second) = call(
+        app.clone(),
+        "/v1/responses",
+        Some(json!({
+            "model":"1", "input":"world", "max_output_tokens":2,
+            "previous_response_id":previous, "store":false
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["store"], false);
+    let id = second["id"].as_str().unwrap().to_string();
+    let (status, _) = call(app, &format!("/v1/responses/{id}"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     handle.shutdown().await.unwrap();
 }

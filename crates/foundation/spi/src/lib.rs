@@ -3,10 +3,16 @@ mod constraint;
 pub use constraint::{ConstraintHandle, GenerationConstraint};
 mod planning;
 mod resource;
+mod responses;
 pub use planning::DecisionStorage;
 pub use resource::{
     ResourceAbandon, ResourceCommand, ResourcePool, ResourceReply, ResourceResponder,
     ResourceTicket, execute_resource,
+};
+pub use responses::{
+    IncompleteReason, RESPONSES_PAYLOAD_VERSION, RESPONSES_SPI_VERSION, ResponseError,
+    ResponseEvent, ResponseFuture, ResponseId, ResponseStatus, ResponseStore,
+    ResponseStoreCapabilities, ResponseUsage, ResponsesExtensions, StoredResponse, WriteCondition,
 };
 
 pub const SPI_VERSION: u32 = 1;

@@ -8,7 +8,7 @@
 |---|---|---|
 | `crates/foundation/core` | `infer-core` | ID、错误、生命周期、arena、credit、事件与有界容器 |
 | `crates/foundation/ir` | `infer-ir` | 请求、模型、执行、设备能力、计划与共享输出 |
-| `crates/foundation/spi` | `infer-spi` | backend、state、调度、模型、workload、资源与扩展接口 |
+| `crates/foundation/spi` | `infer-spi` | backend、state、调度、模型、workload、资源、Responses 状态存储与扩展接口 |
 | `crates/backend/api` | `infer-gpu-api` | 设备描述、传输与批次槽协议 |
 | `crates/backend/kernel-api` | `infer-kernel-api` | 通用算子描述（含 attention）、kernel 注册与能力选择 |
 | `crates/backend/cuda-kernels` | `infer-cuda-kernels` | CUDA kernel 契约与实现：`tile`（cuTile）、`aot`（预编译 SASS）按算子族镜像，编译期二选一；非默认成员 |
@@ -24,7 +24,7 @@
 | `crates/diagnostics/observe` | `infer-observe` | 指标、trace、事件、源码映射与诊断视图 |
 | `crates/diagnostics/quality` | `infer-quality` | golden、进展检测、校准与性能测量 |
 | `crates/service/media` | `infer-media-input` | 可复用的多模态来源读取和媒体解码 |
-| `crates/service/frontdoor` | `infer-frontdoor` | 输入准备、单所有者 actor、HTTP/SSE 与交付 |
+| `crates/service/frontdoor` | `infer-frontdoor` | 输入准备、单所有者 actor、HTTP/SSE、Responses 状态编排与参考 store |
 | `crates/service/agent` | `infer-agent` | 诊断工具、证据查询、实验与建议 |
 | `crates/service/cli` | `infer-cli` | 参数解析、命令分发、backend 选择与运行支持 |
 | `crates/testing/cpu/reference-ops` | `infer-reference-ops` | 标量参考算子：设备 kernel 的独立数值对照基准 |
@@ -82,7 +82,8 @@ prefill / decode 适配保留在 `runtime/src/stages`，runner 管理 backend �
 - `runtime/src/requests`：请求 record、冷热存储与 tenant 统计。
 - `state/src/logical`：reservation、prefix、lifecycle、inspection；`blocks` / `cache` / `kv` 保持独立。
 - `metal/src/executor`：loading、setup、state、prefix、forward、submission、execution、completion、checkpoint；`provider` 汇集 SPI 适配。
-- `spi/src`：按 provider、model、workload、scheduling、state、backend、kernel、protocol、observer 与扩展合约拆分。
+- `spi/src`：按 provider、model、workload、scheduling、state、backend、kernel、protocol、observer、responses 与扩展合约拆分。
+- `frontdoor/src/responses_store.rs`：有界进程内 Responses 参考 store；协议状态编排在 `http/openai/responses`，契约见 [Responses 状态与扩展 SPI](responses-state.md)。
 - `frontdoor/src/actor`：启动、驱动、命令、准入与交付；`http` 按 native、text、protocol、observability、server、error 拆分。
 - `cli/src/commands`：按命令领域组织；`support` 按 engine、JSON、fixtures、execution、server、agent 组织。
 

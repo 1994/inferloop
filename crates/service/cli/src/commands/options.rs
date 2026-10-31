@@ -29,6 +29,11 @@ pub struct ServeOptions {
     /// Image decoder: use an available device decoder automatically, or force CPU decoding.
     #[arg(long, value_enum, default_value_t = ImageDecoder::Auto)]
     pub image_decoder: ImageDecoder,
+    /// Retain Responses state in process for `store`, `previous_response_id`, retrieval,
+    /// background jobs and cancellation. Off by default; state is lost on restart and is not
+    /// shared by replicas.
+    #[arg(long)]
+    pub enable_response_store: bool,
     #[arg(long, default_value_t = 0, hide = true)]
     pub host_memory_mib: u64,
 }

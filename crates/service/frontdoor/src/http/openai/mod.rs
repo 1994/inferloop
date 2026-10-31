@@ -39,6 +39,8 @@ pub(super) fn routes() -> Router<TextState> {
         .route("/v1/completions", post(completion))
         .route("/v1/decisions", post(decision))
         .route("/v1/responses", post(responses::create))
+        .route("/v1/responses/{id}", get(responses::retrieve))
+        .route("/v1/responses/{id}/cancel", post(responses::cancel))
 }
 
 async fn models(State(state): State<TextState>) -> ApiResult<Json<Value>> {

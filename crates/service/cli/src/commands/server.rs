@@ -5,7 +5,7 @@ use crate::support::flush_logs;
 use crate::support::{configured_engine, read_json};
 use infer_core::ErrorCode;
 use infer_core::{Error, Result};
-use infer_spi::BackendProvider;
+use infer_spi::{BackendProvider, ResponsesExtensions};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
@@ -26,7 +26,14 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
         mm_processor_kwargs,
         image_decoder,
         host_memory_mib,
+        enable_response_store,
     } = options;
+    let responses = if enable_response_store {
+        ResponsesExtensions::new()
+            .with_store(Arc::new(infer_frontdoor::InMemoryResponseStore::default()))
+    } else {
+        ResponsesExtensions::default()
+    };
     let image_options = mm_processor_kwargs
         .as_deref()
         .map(infer_frontdoor::ImageProcessingOptions::parse)
@@ -98,7 +105,7 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
             let handle = infer_frontdoor::RuntimeHandle::start(engine)?;
             let shutdown = handle.clone();
             tracing::info!(target: "infer::serve", listen = %listen, "listening for requests");
-            axum_serve(listener, handle, shutdown, assets, media).await
+            axum_serve(listener, handle, shutdown, assets, media, responses).await
         })?;
 
     Ok(())
