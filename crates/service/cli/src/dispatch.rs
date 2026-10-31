@@ -33,6 +33,7 @@ pub fn run() {
         text_only: cli.limit_mm_per_prompt.unwrap_or_default().text_only(),
         media_limits: cli.limit_mm_per_prompt.unwrap_or_default(),
         pool_capture: backend::PoolCapture::OnDemand,
+        #[cfg(cuda_backend)]
         tuned_pool_width: None,
     };
     if let Err(error) = execute(

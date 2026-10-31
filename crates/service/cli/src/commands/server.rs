@@ -14,7 +14,7 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
     #[cfg(cuda_backend)]
     let (mut backend_choice, tuning_worker) = super::tuning_worker::prepare(backend_choice)?;
     #[cfg(not(cuda_backend))]
-    let (mut backend_choice, tuning_worker) = (backend_choice, false);
+    let mut backend_choice = backend_choice;
     // The server pays the capture before it listens rather than inside its first concurrent
     // request. A tuning worker captures too: pool geometries are only measured by the process
     // that builds them with autotune on, and the server only reads what the worker cached.

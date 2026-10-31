@@ -157,6 +157,7 @@ pub struct Selection {
     /// A server captures before it listens; one-shot commands and tuning workers on demand.
     pub pool_capture: PoolCapture,
     /// Widest pool the tuning preparation measured; a server stays within it.
+    #[cfg(cuda_backend)]
     pub tuned_pool_width: Option<usize>,
 }
 #[cfg(any(test, native_backend))]
