@@ -124,7 +124,7 @@ impl Support {
         (heads, kv_heads, dim, lanes, capacity): (usize, usize, usize, usize, usize),
         window: i32,
         scales: [f32; 2],
-    ) -> StdResult<bool, DeviceError> {
+    ) -> StdResult<(), DeviceError> {
         if (heads, kv_heads, dim) != (HEADS, KV_HEADS, DIM)
             || !self.lanes.contains(&lanes)
             || E::DTYPE != cuda_core::f8e4m3fn::DTYPE
@@ -150,7 +150,9 @@ impl Support {
             || !bindings.table.is_contiguous()
             || bindings.table.size() == 0
         {
-            return Ok(false);
+            return Err(super::capture::error(
+                "selected SIMT attention cannot record these operands",
+            ));
         }
         let mut launch = AsyncKernelLaunch::new(Arc::clone(&self.function));
         for pointer in [
@@ -188,7 +190,7 @@ impl Support {
         })?;
         #[cfg(test)]
         CAPTURES.set(CAPTURES.get() + 1);
-        Ok(true)
+        Ok(())
     }
 }
 

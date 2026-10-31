@@ -34,7 +34,7 @@ fn resource_contract(device: &CudaDevice, support: &Support, lanes: usize) -> Re
         &[lanes * HEADS, DIM],
     )?;
     let graph = CudaGraph::scope(&device.stream, |scope| {
-        if !support.record(
+        support.record(
             scope,
             Bindings {
                 output: &mut output,
@@ -47,9 +47,7 @@ fn resource_contract(device: &CudaDevice, support: &Support, lanes: usize) -> Re
             (HEADS, KV_HEADS, DIM, lanes, 128),
             0,
             [0.5, 2.0],
-        )? {
-            return Err(DeviceError::Internal("resource fixture unsupported".into()));
-        }
+        )?;
         Ok(())
     })
     .map_err(device_error)?;

@@ -159,13 +159,13 @@ impl Support {
             && b.table.is_contiguous()
             && b.table.size() >= capacity / KV_BLOCK_TOKENS)
     }
-    fn accepts<E: DType>(
+    fn require_operands<E: DType>(
         &self,
         b: &Bindings<'_, E>,
         shape: (usize, usize, usize, usize, usize),
         window: i32,
         scales: [f32; 2],
-    ) -> StdResult<bool, DeviceError> {
+    ) -> StdResult<(), DeviceError> {
         let bridge = match self.arithmetic {
             Arithmetic::Bf16 => {
                 (E::DTYPE == cuda_core::f8e4m3fn::DTYPE && size_of::<E>() == 1)
@@ -176,9 +176,15 @@ impl Support {
             }
             Arithmetic::F16 => E::DTYPE == cuda_core::f8e4m3fn::DTYPE && size_of::<E>() == 1,
         };
-        Ok(bridge
+        if bridge
             && scales.iter().all(|v| v.is_finite() && *v > 0.0)
-            && self.operands_valid(b, shape, window)?)
+            && self.operands_valid(b, shape, window)?
+        {
+            return Ok(());
+        }
+        Err(super::capture::error(
+            "selected MMA cannot record these operands",
+        ))
     }
     #[expect(
         unsafe_code,
@@ -192,11 +198,9 @@ impl Support {
         window: i32,
         scales: [f32; 2],
         variant: Variant,
-    ) -> StdResult<bool, DeviceError> {
+    ) -> StdResult<(), DeviceError> {
         let (_, _, _, lanes, capacity) = shape;
-        if !self.accepts(&b, shape, window, scales)? {
-            return Ok(false);
-        }
+        self.require_operands(&b, shape, window, scales)?;
         let api = match self.arithmetic {
             Arithmetic::Bf16 => self
                 .apis
@@ -295,7 +299,7 @@ impl Support {
             bindings: b,
             scratch: &mut self.scratch,
         })?;
-        Ok(true)
+        Ok(())
     }
 }
 pub fn artifact_identity() -> String {

@@ -241,8 +241,9 @@ impl Capture<'_> {
         } else {
             self.arena.get(node.inputs[0]).map_err(error)?
         };
-        if let Some((mma, variant)) = self.attention.prefill_mma(node.outputs[0], lanes)
-            && mma.record(
+        // The choice was measured before capture: a selected kernel records or the capture fails.
+        if let Some((mma, variant)) = self.attention.prefill_mma(node.outputs[0], lanes) {
+            mma.record(
                 self.scope,
                 super::attention_mma::Bindings {
                     output: &mut output,
@@ -256,14 +257,11 @@ impl Capture<'_> {
                 i32::try_from(window.unwrap_or(0)).map_err(error)?,
                 scales,
                 variant,
-            )?
-        {
+            )?;
             return Ok((output, keys, values));
         }
-        // Shared paged KV uses the pool's physical stride, not one sequence's limit.
-        let physical_rows = keys.size() / (kv_heads * head_dim);
-        if let Some(oxide) = self.attention.prefill_oxide(node.outputs[0], lanes)
-            && oxide.record(
+        if let Some(oxide) = self.attention.prefill_oxide(node.outputs[0], lanes) {
+            oxide.record(
                 self.scope,
                 super::attention_oxide::Bindings {
                     output: &mut output,
@@ -273,11 +271,10 @@ impl Capture<'_> {
                     metadata: self.metadata,
                     table: self.table,
                 },
-                (query_heads, kv_heads, head_dim, lanes, physical_rows),
+                (query_heads, kv_heads, head_dim, lanes, self.capacity),
                 i32::try_from(window.unwrap_or(0)).map_err(error)?,
                 scales,
-            )?
-        {
+            )?;
             return Ok((output, keys, values));
         }
         self.record_prefill_legacy(node, output, keys, values, scales)

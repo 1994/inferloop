@@ -422,6 +422,8 @@ impl LoadedModel {
         );
         let mut package = QuantizedPackage::open(root, id).map_err(|e| package_phase.fail(&e))?;
         attach_draft(&mut package, &mut options).map_err(|e| package_phase.fail(&e))?;
+        crate::resident::require_kernel_geometry(&package.graph)
+            .map_err(|e| package_phase.fail(&e))?;
         package_phase.finish();
         options.fp8_kv =
             Some(options.fp8_kv.unwrap_or_else(|| {
