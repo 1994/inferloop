@@ -1,14 +1,14 @@
 //! Typed server-sent events for the `OpenAI` Responses protocol.
 //!
-//! Both the streamed and the complete reply come from [`prepare`], so they accept the same
-//! requests and resolve the same limits. Each committed token is detokenized and parsed once on
-//! the delivery pool, and a published delta is never rewritten.
-use super::super::execution::{finish_reason, prepare};
-use super::super::{ApiResult, TextState};
+//! Both the streamed and the complete reply come from the same admission path, so they accept the
+//! same requests and resolve the same limits. Each committed token is detokenized and parsed once
+//! on the delivery pool, and a published delta is never rewritten.
+use super::super::TextState;
+use super::super::execution::{Prepared as GenerationPrepared, finish_reason};
 use super::output::{self, Snapshot, Usage};
-use super::request::{Prepared, Spec};
+use super::request::Spec;
+use super::state::StoreLease;
 use crate::cpu::CpuPool;
-use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::stream::unfold;
@@ -79,6 +79,8 @@ struct Stream {
     message: Option<OpenMessage>,
     reasoning: Option<OpenReasoning>,
     call: Option<OpenCall>,
+    /// Terminal response persistence, when the request asked to store its result.
+    lease: Option<StoreLease>,
     /// Output index the next item receives.
     next_index: usize,
     /// Calls published so far, which is also their `call_id` ordinal.
@@ -132,12 +134,19 @@ impl Stream {
         self.emit(json!({"type":"response.in_progress","response":response}));
     }
 
+    fn item_namespace(&self) -> String {
+        self.spec
+            .response_id
+            .clone()
+            .unwrap_or_else(|| self.request.to_string())
+    }
+
     /// Open a reasoning item and publish its arrival.
     fn open_reasoning(&mut self) {
         let index = self.next_index;
         self.next_index += 1;
-        let item_id = format!("rs_{}_{}", self.request.get(), index);
-        let item = output::reasoning_item(self.request, index, "", "in_progress");
+        let item_id = format!("rs_{}_{}", self.item_namespace(), index);
+        let item = output::reasoning_item(&self.item_namespace(), index, "", "in_progress");
         self.emit(json!({
             "type":"response.output_item.added","output_index":index,"item":item
         }));
@@ -152,8 +161,8 @@ impl Stream {
     fn open_message(&mut self) {
         let index = self.next_index;
         self.next_index += 1;
-        let item_id = format!("msg_{}_{}", self.request.get(), index);
-        let item = output::message_item(self.request, index, "", "in_progress");
+        let item_id = format!("msg_{}_{}", self.item_namespace(), index);
+        let item = output::message_item(&self.item_namespace(), index, "", "in_progress");
         self.emit(json!({
             "type":"response.output_item.added","output_index":index,"item":item
         }));
@@ -174,8 +183,9 @@ impl Stream {
         self.next_index += 1;
         let call_index = self.calls;
         self.calls += 1;
-        let item_id = format!("fc_{}_{}", self.request.get(), call_index);
-        let item = output::function_call_item(self.request, call_index, name, "", "in_progress");
+        let namespace = self.item_namespace();
+        let item_id = output::call_item_id(&namespace, call_index);
+        let item = output::function_call_item(&namespace, call_index, name, "", "in_progress");
         self.emit(json!({
             "type":"response.output_item.added","output_index":index,"item":item
         }));
@@ -197,7 +207,7 @@ impl Stream {
             "type":"response.reasoning_text.done","item_id":open.item_id,
             "output_index":open.index,"content_index":0,"text":open.text
         }));
-        let item = output::reasoning_item(self.request, open.index, &open.text, status);
+        let item = output::reasoning_item(&self.item_namespace(), open.index, &open.text, status);
         self.emit(json!({
             "type":"response.output_item.done","output_index":open.index,"item":item
         }));
@@ -218,7 +228,7 @@ impl Stream {
             "type":"response.content_part.done","item_id":open.item_id,
             "output_index":open.index,"content_index":0,"part":part
         }));
-        let item = output::message_item(self.request, open.index, &open.text, status);
+        let item = output::message_item(&self.item_namespace(), open.index, &open.text, status);
         self.emit(json!({
             "type":"response.output_item.done","output_index":open.index,"item":item
         }));
@@ -234,8 +244,9 @@ impl Stream {
             "type":"response.function_call_arguments.done","item_id":open.item_id,
             "output_index":open.index,"arguments":open.arguments
         }));
+        let namespace = self.item_namespace();
         let item = output::function_call_item(
-            self.request,
+            &namespace,
             open.call_index,
             &open.name,
             &open.arguments,
@@ -453,13 +464,25 @@ impl Stream {
         let incomplete = (reason == "length").then(|| json!({"reason":"max_output_tokens"}));
         let completed_at = (reason != "length").then(now).transpose()?;
         let response = self.response(status, completed_at, incomplete, None, Some(&usage));
+        if let Some(lease) = &mut self.lease {
+            lease.finish(&response).await?;
+        }
         self.emit(json!({"type":format!("response.{status}"),"response":response}));
         self.phase = Phase::Done;
         Ok(())
     }
 
     /// Publish a terminal failure event and end the stream.
-    fn fail(&mut self, error: &Error) {
+    async fn fail(&mut self, error: &Error) {
+        if let Some(lease) = &mut self.lease
+            && let Err(store_error) = lease.fail(error).await
+        {
+            tracing::error!(
+                target: "infer::openai",
+                error = %store_error,
+                "failed to retain a failed response"
+            );
+        }
         self.close_open("incomplete");
         let code = error_code(error.code);
         let value = json!({"code":code,"message":error.message});
@@ -491,18 +514,13 @@ fn now() -> infer_core::Result<u64> {
         .map_err(|error| Error::new(ErrorCode::Backend, error.to_string()))
 }
 
-/// Stream one Responses request as typed server-sent events.
-///
-/// # Errors
-/// Returns the same validation errors as the complete reply, plus `unsupported` when the package
-/// cannot publish a stable incremental decode.
-pub(super) async fn stream(
-    state: TextState,
-    headers: HeaderMap,
-    request: Prepared,
-) -> ApiResult<Response> {
-    let spec = request.spec;
-    let prepared = prepare(&state, &headers, request.generation, true).await?;
+/// Stream one admitted Responses generation as typed server-sent events.
+pub(super) fn stream(
+    state: &TextState,
+    prepared: GenerationPrepared,
+    spec: Spec,
+    lease: Option<StoreLease>,
+) -> Response {
     let mut stream = Stream {
         request: prepared.request,
         receiver: prepared.receiver,
@@ -527,6 +545,7 @@ pub(super) async fn stream(
         message: None,
         reasoning: None,
         call: None,
+        lease,
         next_index: 0,
         calls: 0,
         phase: Phase::Running,
@@ -549,18 +568,18 @@ pub(super) async fn stream(
                         ErrorCode::Backend,
                         "request stream closed before completion",
                     );
-                    stream.fail(&error);
+                    stream.fail(&error).await;
                 }
-                Some(Err(error)) => stream.fail(&error),
+                Some(Err(error)) => stream.fail(&error).await,
                 Some(Ok(event)) => {
                     if let Err(error) = stream.advance(event).await {
-                        stream.fail(&error);
+                        stream.fail(&error).await;
                     }
                 }
             }
         }
     });
-    Ok(Sse::new(events)
+    Sse::new(events)
         .keep_alive(KeepAlive::default())
-        .into_response())
+        .into_response()
 }

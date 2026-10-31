@@ -36,7 +36,7 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
   -d '{"model":"model","messages":[{"role":"user","content":"Hello"}],"max_tokens":64}'
 ```
 
-Use `--served-model-name model` to control the model ID your clients send. OpenAI routes require a tokenizer in the package; chat completions also require a chat template. See the [OpenAI API guide](docs/guides/openai-api.md) for streaming, tools, and parameter support.
+Use `--served-model-name model` to control the model ID your clients send. OpenAI routes require a tokenizer in the package; chat completions also require a chat template. `--enable-response-store` opts into in-process Responses state (`store`, `previous_response_id`, retrieval, cancel and non-streaming background jobs); storage is off by default and lost on restart. See the [OpenAI API guide](docs/guides/openai-api.md) for streaming, tools, state, and parameter support.
 
 ## What you can serve
 

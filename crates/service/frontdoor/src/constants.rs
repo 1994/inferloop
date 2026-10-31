@@ -14,3 +14,6 @@ pub const TEXT_STAGING_OVERHEAD_BYTES: usize = 4096;
 
 /// Maximum accepted HTTP request body size, in bytes.
 pub const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
+
+/// Background Responses jobs one deployment may run concurrently.
+pub const MAX_BACKGROUND_RESPONSES: usize = 8;

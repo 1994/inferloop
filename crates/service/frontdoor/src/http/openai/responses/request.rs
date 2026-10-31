@@ -8,6 +8,7 @@ use super::super::request::{
     WireToolFunction, WireToolName,
 };
 use infer_core::{Error, Result};
+use infer_spi::ResponseStoreCapabilities;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
@@ -105,6 +106,11 @@ pub(super) struct ResponsesTool {
 /// The Responses-specific values a generated response echoes and prices.
 #[derive(Clone)]
 pub(super) struct Spec {
+    /// Store-scoped response id; `None` keeps the process-local `resp_<request>` form.
+    pub(super) response_id: Option<String>,
+    pub(super) store: bool,
+    pub(super) background: bool,
+    pub(super) previous_response_id: Option<String>,
     pub(super) instructions: Option<String>,
     /// Declared tools in Responses shape, for the response object.
     pub(super) tools: Vec<Value>,
@@ -123,6 +129,22 @@ pub(super) struct Spec {
 pub(super) struct Prepared {
     pub(super) generation: GenerationRequest,
     pub(super) spec: Spec,
+    /// Effective input items, serialized by the frontdoor for a response store.
+    pub(super) request_input: Vec<u8>,
+}
+
+/// Installed Responses state support and its advertised capabilities.
+#[derive(Clone, Copy, Default)]
+pub(super) struct StoreOptions {
+    pub(super) installed: bool,
+    pub(super) capabilities: ResponseStoreCapabilities,
+}
+
+/// The prior response state needed to continue a chained request.
+pub(super) struct PriorState {
+    pub(super) input: Vec<Value>,
+    pub(super) output: Vec<Value>,
+    pub(super) model: String,
 }
 
 impl ResponsesRequest {
@@ -131,15 +153,37 @@ impl ResponsesRequest {
     /// # Errors
     /// Rejects malformed input items and any option this deployment cannot honor. Unsupported
     /// options are refused rather than ignored.
-    pub(super) fn prepare(self) -> Result<Prepared> {
-        self.reject_unimplemented()?;
+    pub(super) fn prepare(
+        self,
+        store: StoreOptions,
+        prior: Option<PriorState>,
+    ) -> Result<Prepared> {
+        self.reject_unimplemented(store)?;
         self.validate_hints()?;
         let instructions = instructions(self.instructions)?;
-        let messages = input_messages(
-            self.input
-                .ok_or_else(|| Error::invalid("responses requires an input"))?,
-            instructions.as_deref(),
-        )?;
+        let input = self
+            .input
+            .ok_or_else(|| Error::invalid("responses requires an input"))?;
+        let mut input_items = normalize_input(input)?;
+        if let Some(previous_id) = self.previous_response_id.as_deref() {
+            let prior = prior.ok_or_else(|| {
+                Error::invalid(format!(
+                    "previous response {previous_id:?} has no retained input"
+                ))
+            })?;
+            if prior.model != self.model {
+                return Err(Error::invalid(
+                    "previous_response_id belongs to a different model",
+                ));
+            }
+            let mut combined = prior.input;
+            combined.extend(prior.output);
+            combined.extend(input_items);
+            input_items = combined;
+        }
+        let request_input = serde_json::to_vec(&input_items)
+            .map_err(|error| Error::invalid(format!("response input serialization: {error}")))?;
+        let messages = input_messages(Value::Array(input_items), instructions.as_deref())?;
         let stream = self.stream.unwrap_or(false);
         if self.stream_options.is_some() && !stream {
             return Err(Error::invalid("stream_options requires stream=true"));
@@ -152,7 +196,12 @@ impl ResponsesRequest {
             .and_then(|reasoning| reasoning.effort.clone());
         let text = text_config(self.text.as_ref())?;
         let metadata = metadata(self.metadata)?;
+        let effective_store = store.installed && self.store.unwrap_or(true);
         let spec = Spec {
+            response_id: None,
+            store: effective_store,
+            background: self.background.unwrap_or(false),
+            previous_response_id: self.previous_response_id.clone(),
             instructions,
             tool_choice: tool_choice.echo(),
             tools,
@@ -185,14 +234,21 @@ impl ResponsesRequest {
             stream_options: None,
             mm_processor_kwargs: None,
         };
-        Ok(Prepared { generation, spec })
+        Ok(Prepared {
+            generation,
+            spec,
+            request_input,
+        })
     }
 
     /// Refuse current fields whose behavior this deployment does not implement.
-    fn reject_unimplemented(&self) -> Result<()> {
-        if self.previous_response_id.is_some() {
+    fn reject_unimplemented(&self, store: StoreOptions) -> Result<()> {
+        let store_ready = store.installed && store.capabilities.retrieve;
+        if self.previous_response_id.is_some()
+            && !(store_ready && store.capabilities.previous_response_id)
+        {
             return Err(Error::unsupported(
-                "previous_response_id needs server-side response storage; this deployment does not store responses",
+                "previous_response_id needs an installed response store with chaining support",
             ));
         }
         if present(self.conversation.as_ref()) {
@@ -201,11 +257,23 @@ impl ResponsesRequest {
             ));
         }
         if self.background == Some(true) {
-            return Err(Error::unsupported("background responses are not supported"));
+            if !(store_ready && store.capabilities.background) {
+                return Err(Error::unsupported(
+                    "background responses need an installed response store with background support",
+                ));
+            }
+            if self.store == Some(false) {
+                return Err(Error::invalid("background=true requires store=true"));
+            }
+            if self.stream == Some(true) {
+                return Err(Error::unsupported(
+                    "background streaming is not supported; poll the stored response instead",
+                ));
+            }
         }
-        if self.store == Some(true) {
+        if self.store == Some(true) && !store_ready {
             return Err(Error::unsupported(
-                "store=true needs server-side response storage; this deployment does not store responses",
+                "store=true needs an installed response store",
             ));
         }
         if self
@@ -328,6 +396,18 @@ fn instructions(value: Option<Value>) -> Result<Option<String>> {
             "instructions as a list of input items is not supported",
         )),
         Some(_) => Err(Error::invalid("instructions must be a string")),
+    }
+}
+
+/// Normalize the wire input into an item list. A bare string is one user message.
+fn normalize_input(input: Value) -> Result<Vec<Value>> {
+    match input {
+        Value::String(text) => Ok(vec![json!({"role":"user","content":text})]),
+        Value::Array(items) if !items.is_empty() => Ok(items),
+        Value::Array(_) => Err(Error::invalid("input requires at least one item")),
+        _ => Err(Error::invalid(
+            "input must be a string or a list of input items",
+        )),
     }
 }
 
