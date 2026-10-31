@@ -155,6 +155,7 @@ runtime                  submit / poll，不重建拓扑
 
 ### O4 推测账
 
+- **第一批已归还：** `infer-workloads` 现在持有提议预算 `draft_budget`、提议条件 `draft_may_propose`、接受前缀 `accepted_prefix`，MTP 和 DFlash2 共用。27B 上 MTP 与 main 逐位一致。提议和回滚的物理执行留在 CUDA；`execution.rs` 里按 `dflash`、`speculation` 的分支还在，新增 draft 仍要碰 executor，所以本项未完成。
 - **前置：** M4 之后、O3 之后。回滚语义依赖页所有权，lowering 收口后迁移成本更低。
 - **做什么：** 先拆开两个 `SpeculationPlan`（可立即做）。先把 MTP 和已合入的 DFlash2 都对照一遍公共契约，再按 [SPI 方案](../speculation/spi.md)步骤③把提议、接受、池宽和能力策略搬到 `infer-workloads`。此前冻结 DFlash2 的新接线。
 - **验收：** MTP token、状态、资源行为与迁移前一致；新增 draft 不需要改 executor 的策略分支。

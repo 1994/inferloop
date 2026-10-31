@@ -24,4 +24,6 @@ use outputs::{decisions, embedding, ranking};
 mod recurrent;
 pub use recurrent::{ConvGeometry, DeltaGeometry};
 mod speculative;
-pub use speculative::{Verification, draw_distribution, verify_draft};
+pub use speculative::{
+    Verification, accepted_prefix, draft_budget, draft_may_propose, draw_distribution, verify_draft,
+};
