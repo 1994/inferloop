@@ -4,18 +4,21 @@
 //! `segments * SEGMENT_ROWS` rows. Sequential nodes (convolution, gated delta, attention, `RoPE`)
 //! record once per segment, against that segment's rows and the resident slot's own state, so no
 //! state moves through a worker. A segment with a zero token count writes nothing.
+use super::arena::prefix_view;
 use super::batch::{BatchBuilder, States};
 use super::fp8_cache::Fp8Caches;
+use super::prompt_scratch::PromptScratch;
 use super::{ActivationArena, ProgramWeights};
-use crate::constants::METADATA_FIELDS;
+use crate::constants::{METADATA_FIELDS, PREFILL_SPLIT_K};
 use crate::device::{CudaDevice, PinnedUpload, ReadbackSource, Readbacks, device_error};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_ir::DataflowGraph;
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::BTreeMap;
+use std::iter::successors;
 use std::slice::from_ref;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Rows per sequence: one chunk of the tensor-core recurrent rule.
 pub const SEGMENT_ROWS: usize = 64;
@@ -23,6 +26,65 @@ pub const SEGMENT_ROWS: usize = 64;
 pub(super) const ROW_TILE: usize = 256;
 /// The state position sequential kernels skip.
 const INACTIVE_STATE_POSITION: i32 = -1;
+
+/// Narrowest multi-sequence graph; narrower ones cost as much as the worker.
+const MIN_SEGMENTS: usize = 4;
+/// Segment counts of the graphs for a pool, narrowest first.
+#[must_use]
+pub fn rungs(width: usize) -> Vec<usize> {
+    let mut rungs: Vec<usize> = successors(Some(MIN_SEGMENTS), |n| n.checked_mul(2))
+        .take_while(|&segments| segments < width)
+        .collect();
+    if width >= 2 {
+        rungs.push(width);
+    }
+    rungs
+}
+
+/// Device bytes of every rung: their rows when no prompt worker of `worker_rows` covers them,
+/// and what each rung owns regardless.
+/// # Errors
+/// Rejects invalid graphs or overflowing sizes.
+pub fn required_bytes(
+    graph: &DataflowGraph,
+    weights: &ProgramWeights,
+    (width, worker_rows): (usize, usize),
+    (hidden, vocabulary): (usize, usize),
+) -> Result<u64> {
+    let overflow = || Error::invalid("prompt burst size overflow");
+    let mut bytes = super::recurrent_prefill::required_bytes(graph, weights, SEGMENT_ROWS)?
+        .checked_mul(u64::try_from(rungs(width).len()).map_err(device_error)?)
+        .ok_or_else(overflow)?;
+    for segments in rungs(width) {
+        let rows = segments * SEGMENT_ROWS;
+        let tensors =
+            segments * hidden * size_of::<f32>() + rows * METADATA_FIELDS * size_of::<i32>();
+        bytes = bytes
+            .checked_add(u64::try_from(tensors).map_err(device_error)?)
+            .ok_or_else(overflow)?;
+    }
+    // Narrower rungs view the widest rung's logits.
+    let widest = width * SEGMENT_ROWS;
+    let mut shared = width * vocabulary * size_of::<f32>();
+    if widest > worker_rows {
+        // A covering worker lends its rows and external storage instead.
+        shared += ActivationArena::required_prompt_bytes(graph, widest)?;
+        shared += widest * hidden * size_of::<f32>();
+    }
+    bytes
+        .checked_add(u64::try_from(shared).map_err(device_error)?)
+        .ok_or_else(overflow)
+}
+
+/// What a graph borrows at capture instead of owning: everything replays on one stream.
+pub struct Shared<'a> {
+    /// The worker's projection workspace, holding its quantization rows.
+    pub nvfp4: &'a mut super::nvfp4_gemm::Workspace,
+    /// The widest rung, whose rows and logits narrower rungs view.
+    pub wider: Option<&'a PromptBurst>,
+    /// The worker's external hidden rows.
+    pub worker_external: &'a Tensor<f32>,
+}
 
 /// One sequence's view of the graph while it is captured.
 pub(super) struct Segment<'a> {
@@ -80,7 +142,6 @@ struct Retained {
     _segments: Vec<ActivationArena>,
     _partials: BTreeMap<usize, Tensor<f32>>,
     _recurrent: super::recurrent_prefill::Workspace,
-    _nvfp4: super::nvfp4_gemm::Workspace,
     _attention: super::attention_decode::Workspace,
     _placeholder_states: States,
     _placeholder_fp8: Fp8Caches,
@@ -98,6 +159,8 @@ struct Keep {
     _lane_external: Vec<Tensor<f32>>,
     _lane_fusion: Vec<Option<super::program::FusionWorkspace>>,
     _last_rows: Arc<Tensor<f32>>,
+    /// Declared last so the views above drop first.
+    _scratch: Option<Arc<Mutex<PromptScratch>>>,
 }
 
 /// Everything a capture binds before the graph exists.
@@ -116,6 +179,10 @@ struct Storage {
     external: Tensor<f32>,
     lane_external: Vec<Tensor<f32>>,
     lane_fusion: Vec<Option<super::program::FusionWorkspace>>,
+    /// Split rows viewing the prompt worker's, when its scratch covers these rows.
+    scratch_partials: Option<BTreeMap<usize, Tensor<f32>>>,
+    /// Retains the storage the views alias.
+    scratch: Option<Arc<Mutex<PromptScratch>>>,
 }
 
 /// Pair each resident program with its rows and metadata.
@@ -143,24 +210,21 @@ fn bind_segments<'a>(
         .collect()
 }
 
-/// Projection, attention and recurrent workspaces of one capture.
+/// Attention and recurrent workspaces of one capture.
 fn workspaces(
     device: &CudaDevice,
     graph: &DataflowGraph,
     weights: &ProgramWeights,
     capacity: usize,
-    widths: [usize; 2],
 ) -> Result<(
-    super::nvfp4_gemm::Workspace,
     super::attention_decode::Workspace,
     super::recurrent_prefill::Workspace,
 )> {
-    let nvfp4 = super::nvfp4_gemm::Workspace::new(device, graph, weights, &widths)?;
     let mut attention = super::attention_decode::Workspace::new(device, graph, capacity)?;
     attention.prepare_mma(device, graph, weights, capacity, SEGMENT_ROWS)?;
     attention.prepare_prefill(device, graph, weights, SEGMENT_ROWS);
     let recurrent = super::recurrent_prefill::Workspace::new(device, graph, weights, SEGMENT_ROWS)?;
-    Ok((nvfp4, attention, recurrent))
+    Ok((attention, recurrent))
 }
 
 fn zeros<T: DType>(device: &CudaDevice, shape: &[usize]) -> Result<Tensor<T>> {
@@ -181,14 +245,36 @@ impl Storage {
         graph: &DataflowGraph,
         weights: &ProgramWeights,
         (segments, rows, hidden, vocabulary): (usize, usize, usize, usize),
-        wider: Option<&ActivationArena>,
+        (wider, worker_external): (Option<&PromptBurst>, &Tensor<f32>),
     ) -> Result<Self> {
         let budget =
             usize::try_from(device.profile()?.arena_budget_bytes()).map_err(device_error)?;
-        let arena = match wider {
+        let scratch = weights.prompt_scratch.covering(rows)?;
+        let mut scratch_partials = None;
+        let arena = if let Some(shared) = scratch.as_ref() {
+            let owner = shared
+                .lock()
+                .map_err(|_| Error::invariant("prompt scratch poisoned"))?;
+            let wide = owner.arena.lanes();
+            let mut partials = BTreeMap::new();
+            for (columns, tensor) in &owner.partials {
+                let kept = PREFILL_SPLIT_K * rows;
+                // SAFETY: forwarded from this function's contract; `scratch` retains the owner.
+                let view = unsafe {
+                    prefix_view(tensor, PREFILL_SPLIT_K * wide, kept, &[kept, *columns])?
+                };
+                partials.insert(*columns, view);
+            }
+            scratch_partials = Some(partials);
+            // SAFETY: as above; prompt replays are serialized on the device stream.
+            let arena = unsafe { owner.arena.narrowed(graph, rows, graph.logits)? };
+            drop(owner);
+            arena
+        } else if let Some(wider) = wider {
             // SAFETY: forwarded from this function's contract: replays share one stream.
-            Some(wider) => unsafe { wider.narrowed(graph, rows, graph.logits)? },
-            None => ActivationArena::new_prompt(device, graph, rows, budget)?,
+            unsafe { wider.keep.arena.narrowed(graph, rows, graph.logits)? }
+        } else {
+            ActivationArena::new_prompt(device, graph, rows, budget)?
         };
         let (metadata, metadata_rows) = super::batch::batched_metadata(device, rows)?;
         let (info, info_rows) = super::batch::batched_metadata(device, segments)?;
@@ -204,12 +290,37 @@ impl Storage {
                 rotary_rows.push(unsafe { super::arena::row_view(owner, segments, segment)? });
             }
         }
-        let external = zeros::<f32>(device, &[rows * hidden])?;
+        // A worker at least this wide lends its external rows: replays share one stream.
+        let external = if worker_external.size() >= rows * hidden {
+            // SAFETY: forwarded from this function's contract; the worker outlives its graphs.
+            unsafe {
+                prefix_view(
+                    worker_external,
+                    worker_external.size() / hidden,
+                    rows,
+                    &[rows * hidden],
+                )?
+            }
+        } else {
+            zeros::<f32>(device, &[rows * hidden])?
+        };
         let mut lane_external = Vec::with_capacity(rows);
         for lane in 0..rows {
             // SAFETY: as above.
             lane_external.push(unsafe { super::arena::row_view(&external, rows, lane)? });
         }
+        let logits = match wider {
+            // SAFETY: forwarded from this function's contract; every rung lives with the worker.
+            Some(wider) => unsafe {
+                prefix_view(
+                    &wider.logits,
+                    wider.segments,
+                    segments,
+                    &[segments, vocabulary],
+                )?
+            },
+            None => zeros(device, &[segments, vocabulary])?,
+        };
         Ok(Self {
             arena,
             metadata,
@@ -219,12 +330,14 @@ impl Storage {
             rotary,
             rotary_rows,
             last_rows: zeros(device, &[segments, hidden])?,
-            logits: zeros(device, &[segments, vocabulary])?,
+            logits,
             prompt_row: zeros(device, &[1, hidden])?,
             external_row: zeros(device, &[hidden])?,
             external,
             lane_external,
             lane_fusion: (0..rows).map(|_| None).collect(),
+            scratch_partials,
+            scratch,
         })
     }
 
@@ -266,8 +379,13 @@ impl PromptBurst {
         weights: &ProgramWeights,
         (capacity, hidden, vocabulary): (usize, usize, usize),
         programs: &mut [&mut super::program::DeviceProgram],
-        wider: Option<&ActivationArena>,
+        shared: Shared<'_>,
     ) -> Result<Self> {
+        let Shared {
+            nvfp4,
+            wider,
+            worker_external,
+        } = shared;
         let segments = programs.len();
         let rows = segments * SEGMENT_ROWS;
         // Fused inputs have no per-segment binding; media prompts stay on the worker.
@@ -283,11 +401,14 @@ impl PromptBurst {
                 graph,
                 weights,
                 (segments, rows, hidden, vocabulary),
-                wider,
+                (wider, worker_external),
             )?
         };
-        let (mut nvfp4, mut attention, recurrent) =
-            workspaces(device, graph, weights, capacity, [rows, segments])?;
+        // The worker's workspace already holds its quantization rows; graphs share one stream.
+        nvfp4.ensure_width(device, graph, weights, rows)?;
+        nvfp4.ensure_width(device, graph, weights, segments)?;
+        nvfp4.prepare_prompt_rows(device, graph, weights, rows)?;
+        let (mut attention, recurrent) = workspaces(device, graph, weights, capacity)?;
         // SAFETY: forwarded from this function's contract.
         let views = unsafe { storage.segment_views(graph, segments)? };
         let bound = bind_segments(programs, views, (&storage.info_rows, &storage.rotary_rows));
@@ -306,7 +427,7 @@ impl PromptBurst {
             device,
             graph,
             weights,
-            nvfp4: &mut nvfp4,
+            nvfp4,
             delegated: None,
             attention: &mut attention,
             states: &mut placeholder_states,
@@ -318,9 +439,14 @@ impl PromptBurst {
             tables: &tables,
             capacity,
             width: rows,
+            table_root: None,
+            lanes_attention: None,
             burst: Some(binding),
         };
-        let mut partials = builder.burst_partials()?;
+        let mut partials = match storage.scratch_partials.take() {
+            Some(partials) => partials,
+            None => builder.burst_partials()?,
+        };
         let mut profile = BatchBuilder::burst_profile(device);
         // `info_rows[0]` is unused: every sequential node resolves through its segment.
         let captured = builder.capture_burst(
@@ -355,7 +481,6 @@ impl PromptBurst {
                 _segments: segment_arenas,
                 _partials: partials,
                 _recurrent: recurrent,
-                _nvfp4: nvfp4,
                 _attention: attention,
                 _placeholder_states: placeholder_states,
                 _placeholder_fp8: placeholder_fp8,
@@ -405,13 +530,9 @@ impl PromptBurst {
                 _lane_external: storage.lane_external,
                 _lane_fusion: storage.lane_fusion,
                 _last_rows: last_rows,
+                _scratch: storage.scratch,
             },
         })
-    }
-
-    /// The rows narrower rungs view.
-    pub(crate) const fn arena(&self) -> &ActivationArena {
-        &self.keep.arena
     }
 
     /// Sequences this graph covers: the first slots of the pool.

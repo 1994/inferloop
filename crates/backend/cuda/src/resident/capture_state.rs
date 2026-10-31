@@ -79,11 +79,14 @@ impl Capture<'_> {
             .ok_or_else(|| error("missing state binding"))?;
         // The pooled graph holds state roots here, not lane views: one replay advances every
         // busy lane instead of one launch per lane.
-        if self.mode == super::capture::CaptureMode::Pooled
-            && matches!(node.op, TensorOp::Delta { .. })
-            && self.states.contains_key(&id)
-        {
-            return self.record_delta_lanes(node, output);
+        if self.mode == super::capture::CaptureMode::Pooled && self.states.contains_key(&id) {
+            match node.op {
+                TensorOp::Delta { .. } => return self.record_delta_lanes(node, output),
+                TensorOp::Conv { channels, .. } => {
+                    return self.record_conv_lanes(node, output, channels);
+                }
+                _ => {}
+            }
         }
         if let Some((keys, values)) = self.fp8_states.remove(&id) {
             let (output, keys, values) =
@@ -156,6 +159,41 @@ impl Capture<'_> {
         }
         self.states.insert(id, state);
         Ok(output)
+    }
+
+    /// Lane-batched convolution decode: one kernel over every lane's pooled history rows.
+    fn record_conv_lanes(
+        &mut self,
+        node: &TensorNode,
+        output: Tensor<f32>,
+        channels: usize,
+    ) -> Result<Tensor<f32>, DeviceError> {
+        let id = *node
+            .states
+            .first()
+            .ok_or_else(|| error("missing state binding"))?;
+        let lanes = self.arena.lanes();
+        let mut state = self
+            .states
+            .remove(&id)
+            .ok_or_else(|| error("missing state allocation"))?;
+        let [h0, h1, h2] = state.as_mut_slice() else {
+            return Err(error("convolution state layout"));
+        };
+        let mut out = output.reshape(&[lanes, channels])?;
+        self.scope.record(recurrent::conv4_lanes(
+            (&mut out).partition([1, CONV_KERNEL_TILE]),
+            h0.partition([1, CONV_KERNEL_TILE]),
+            h1.partition([1, CONV_KERNEL_TILE]),
+            h2.partition([1, CONV_KERNEL_TILE]),
+            &self.input(node.inputs[0])?.view(&[lanes, channels])?,
+            &self
+                .input(node.inputs[1])?
+                .view(&[channels, CONV_KERNEL_SIZE])?,
+            self.metadata,
+        ))?;
+        self.states.insert(id, state);
+        Ok(out.reshape(&[lanes * channels])?)
     }
 
     /// Lane-batched delta decode: one kernel over `[lanes * value_heads]` blocks. The state

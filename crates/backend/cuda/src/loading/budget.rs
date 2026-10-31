@@ -38,6 +38,10 @@ use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 /// Bytes per F32 element in u64 budget arithmetic.
+/// Envelope reserved per priced byte of multi-sequence prompt graphs. On the measured 27B pool
+/// 29 MB of tensors took about 170 MB once capture and allocator overhead counted, and a pool
+/// that overruns its envelope by any amount replans at a far smaller quote.
+const BURST_QUOTE_MARGIN: u64 = 6;
 const F32: u64 = F32_BYTES as u64;
 /// Full-history readback stages a device copy and returns a second host copy.
 const READBACK_COPIES: u64 = 2;
@@ -230,20 +234,7 @@ impl LoadedModel {
             hidden,
             profile,
         )?;
-        // A target home is a state handle: no forward/attention/projection capture.
-        let target_home = add(
-            ActivationArena::required_bytes(&self.graph, 1)? as u64,
-            external_bytes(
-                &self.weights,
-                hidden,
-                ProgramGeometry {
-                    verification: 0,
-                    prompts: [0, 0],
-                },
-                profile,
-            )?,
-        )?;
-        let target_homes_bytes = mul(target_home, width as u64)?;
+        let target_homes_bytes = mul(self.target_home_bytes(hidden, profile)?, width as u64)?;
         let target_worker_bytes = worker_storage_bytes(
             &self.graph,
             &self.weights,
@@ -296,14 +287,22 @@ impl LoadedModel {
             draft_pool_bytes,
             self.dflash_pool_bytes(width, verify, profile)?,
         )?;
+        let target_worker_bytes = add(
+            target_worker_bytes,
+            self.burst_quote_bytes(width, verify, prompt_width)?,
+        )?;
         let graph_headroom_bytes = profile.graph_headroom_bytes();
-        let mut total_bytes = add(target_pool_bytes, target_homes_bytes)?;
-        total_bytes = add(total_bytes, target_worker_bytes)?;
-        total_bytes = add(total_bytes, draft_pool_bytes)?;
-        total_bytes = add(total_bytes, draft_homes_bytes)?;
-        total_bytes = add(total_bytes, draft_worker_bytes)?;
         // Captures and allocator metadata are not tensor storage.
-        total_bytes = add(total_bytes, graph_headroom_bytes)?;
+        let total_bytes = [
+            target_homes_bytes,
+            target_worker_bytes,
+            draft_pool_bytes,
+            draft_homes_bytes,
+            draft_worker_bytes,
+            graph_headroom_bytes,
+        ]
+        .into_iter()
+        .try_fold(target_pool_bytes, add)?;
         Ok(PooledServingQuote {
             width,
             capacity,
@@ -318,6 +317,37 @@ impl LoadedModel {
             graph_headroom_bytes,
             total_bytes,
         })
+    }
+
+    /// A target home is a state handle: no forward/attention/projection capture.
+    fn target_home_bytes(&self, hidden: usize, profile: &DeviceProfile) -> Result<u64> {
+        add(
+            ActivationArena::required_bytes(&self.graph, 1)? as u64,
+            external_bytes(
+                &self.weights,
+                hidden,
+                ProgramGeometry {
+                    verification: 0,
+                    prompts: [0, 0],
+                },
+                profile,
+            )?,
+        )
+    }
+
+    /// Multi-sequence prompt graphs cover plain text pools; see `build_burst`.
+    fn burst_quote_bytes(&self, width: usize, verify: usize, prompt_width: usize) -> Result<u64> {
+        if self.draft.is_some()
+            || self.dflash2.is_some()
+            || verify >= 2
+            || self.weights.fusion.is_some()
+        {
+            return Ok(0);
+        }
+        mul(
+            self.prompt_burst_bytes(width, prompt_width)?,
+            BURST_QUOTE_MARGIN,
+        )
     }
 
     /// Draft proposal/ingestion pairs at the exact target graph widths.

@@ -741,6 +741,6 @@ impl Workspace {
 
 /// Two CTAs per SM: the measured optimum of both grouped kernels on RTX 5090 at 32K tokens
 /// (the stacked three-lane kernel 150 → 59 µs, the one-lane kernel 53 → 46 µs per layer).
-pub(super) fn grouped_options() -> CompileOptions {
+pub fn grouped_options() -> CompileOptions {
     CompileOptions::default().occupancy(GROUPED_OCCUPANCY)
 }

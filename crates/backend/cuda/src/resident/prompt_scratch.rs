@@ -101,6 +101,20 @@ impl Registry {
         Ok(released)
     }
 
+    /// The widest allocated scratch of at least `rows` lanes, which another graph may view.
+    /// # Errors
+    /// Reports a poisoned registry.
+    pub(super) fn covering(&self, rows: usize) -> Result<Option<Arc<Mutex<PromptScratch>>>> {
+        let entries = self
+            .0
+            .lock()
+            .map_err(|_| Error::invariant("prompt scratch registry poisoned"))?;
+        Ok(entries
+            .range(rows..)
+            .next_back()
+            .map(|(_, s)| Arc::clone(s)))
+    }
+
     /// The scratch for `width`, allocated by `allocate` on first use. `allocate` receives the
     /// widest allocated scratch wider than `width`, which a narrower ladder rung views.
     /// # Errors

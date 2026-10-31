@@ -3,8 +3,7 @@ use crate::attention_profile::precise_prefix_positions;
 use crate::constants::EXTRA_WIDE_PREFILL_LANES;
 use crate::constants::WIDER_PREFILL_LANES;
 use crate::constants::WIDEST_PREFILL_LANES;
-use crate::resident::ActivationArena;
-use crate::resident::prefill_burst::{PromptBurst, SEGMENT_ROWS};
+use crate::resident::prefill_burst::{self, PromptBurst};
 use crate::resident::prompt_logits;
 use std::path::PathBuf;
 mod concurrency;
@@ -718,7 +717,7 @@ impl LoadedModel {
         &self,
         capacity: usize,
         programs: &mut [&mut DeviceProgram],
-        wider: Option<&ActivationArena>,
+        shared: prefill_burst::Shared<'_>,
     ) -> Result<PromptBurst> {
         // SAFETY: forwarded from this function's contract.
         unsafe {
@@ -728,18 +727,21 @@ impl LoadedModel {
                 &self.weights,
                 (capacity, self.model.hidden_size, self.model.vocab_size),
                 programs,
-                wider,
+                shared,
             )
         }
     }
 
-    /// Device bytes of the rows of a multi-sequence prompt graph over `segments` sequences.
+    /// Device bytes multi-sequence prompt graphs add to a pool beside a worker of `worker_rows`.
     /// # Errors
     /// Rejects invalid graphs or overflowing sizes.
-    pub(crate) fn prompt_burst_bytes(&self, segments: usize) -> Result<u64> {
-        let rows = segments.saturating_mul(SEGMENT_ROWS);
-        let bytes = ActivationArena::required_prompt_bytes(&self.graph, rows)?;
-        u64::try_from(bytes).map_err(|error| Error::invalid(error.to_string()))
+    pub(crate) fn prompt_burst_bytes(&self, width: usize, worker_rows: usize) -> Result<u64> {
+        prefill_burst::required_bytes(
+            &self.graph,
+            &self.weights,
+            (width, worker_rows),
+            (self.model.hidden_size, self.model.vocab_size),
+        )
     }
 
     /// Target and draft programs that prefill straight into `slot` of the target and draft

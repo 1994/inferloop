@@ -142,16 +142,53 @@ fn trace(backend: &mut CudaExecutor, together: bool) -> Result<Vec<Vec<Vec<f32>>
     Ok(traces)
 }
 
-/// Prompts through one graph must leave the same logits and the same state as one at a time,
-/// and must not disturb a resident sequence whose segment is idle during the replay.
-#[test]
-#[ignore = "real CUDA checkpoint; run under safe-run with INFER_TEST_MODEL"]
-fn multi_sequence_prompts_match_one_at_a_time() -> Result<()> {
-    let mut backend = fixture()?;
-    let reference = trace(&mut backend, false)?;
-    let burst = trace(&mut backend, true)?;
+/// Every lane through the full-width decode graph at once, after prompts through one graph.
+fn trace_together(backend: &mut CudaExecutor) -> Result<Vec<Vec<Vec<f32>>>> {
+    let buffers: Vec<_> = (0..PROMPTS)
+        .map(|seed| TokenBuffer::from(prompt(seed, 40 + seed * 4)))
+        .collect();
+    let mut tasks = Vec::new();
+    for (index, buffer) in buffers.iter().enumerate() {
+        let id = state(index)?;
+        backend.reserve_state_for(id, 256, OutputReadout::Logits)?;
+        tasks.push(prefill_task(id, buffer)?);
+    }
+    let first = run(backend, &tasks)?;
+    let mut tokens = Vec::new();
+    for logits in &first {
+        tokens.push(greedy(logits)?);
+    }
+    let mut traces: Vec<Vec<Vec<f32>>> = first.into_iter().map(|logits| vec![logits]).collect();
+    for step in 0..DECODE_STEPS {
+        let mut decode = Vec::new();
+        for (index, buffer) in buffers.iter().enumerate() {
+            decode.push(ExecutionTask {
+                plain_greedy: false,
+                publish_prefix: false,
+                request: RequestId::ONE,
+                state: state(index)?,
+                tokens: ExecutionInput::Decode {
+                    token: tokens[index],
+                    position: buffer.len() + step,
+                },
+                sampling: None,
+                media: None,
+            });
+        }
+        for (index, logits) in run(backend, &decode)?.into_iter().enumerate() {
+            tokens[index] = greedy(&logits)?;
+            traces[index].push(logits);
+        }
+    }
+    for index in 0..PROMPTS {
+        backend.release_state(state(index)?)?;
+    }
+    Ok(traces)
+}
+
+fn compare(reference: &[Vec<Vec<f32>>], actual: &[Vec<Vec<f32>>]) -> Result<f32> {
     let mut worst = 0.0_f32;
-    for (lane, (expected, actual)) in reference.iter().zip(&burst).enumerate() {
+    for (lane, (expected, actual)) in reference.iter().zip(actual).enumerate() {
         for (step, (expected, actual)) in expected.iter().zip(actual).enumerate() {
             assert_eq!(
                 greedy(expected)?,
@@ -169,6 +206,25 @@ fn multi_sequence_prompts_match_one_at_a_time() -> Result<()> {
             worst = worst.max(error / scale);
         }
     }
+    Ok(worst)
+}
+
+/// Prompts through one graph must leave the same logits and the same state as one at a time,
+/// and must not disturb a resident sequence whose segment is idle during the replay.
+#[test]
+#[ignore = "real CUDA checkpoint; run under safe-run with INFER_TEST_MODEL"]
+fn multi_sequence_prompts_match_one_at_a_time() -> Result<()> {
+    let mut backend = fixture()?;
+    let reference = trace(&mut backend, false)?;
+    let burst = trace(&mut backend, true)?;
+    let worst = compare(&reference, &burst)?;
+    let together = trace_together(&mut backend)?;
+    let worst_together = compare(&reference, &together)?;
+    println!("worst relative logit difference with full-width decode: {worst_together}");
+    assert!(
+        worst_together <= LOGIT_TOLERANCE,
+        "relative logit error {worst_together}"
+    );
     println!("worst relative logit difference: {worst}");
     assert!(worst <= LOGIT_TOLERANCE, "relative logit error {worst}");
 
@@ -220,10 +276,10 @@ fn multi_sequence_prompts_match_one_at_a_time() -> Result<()> {
 
 #[test]
 fn rungs_cover_the_pool_and_padding_stays_bounded() {
-    assert_eq!(burst_rungs(16), [4, 8, 16]);
-    assert_eq!(burst_rungs(20), [4, 8, 16, 20]);
-    assert_eq!(burst_rungs(4), [4]);
-    assert_eq!(burst_rungs(2), [2]);
+    assert_eq!(prefill_burst::rungs(16), [4, 8, 16]);
+    assert_eq!(prefill_burst::rungs(20), [4, 8, 16, 20]);
+    assert_eq!(prefill_burst::rungs(4), [4]);
+    assert_eq!(prefill_burst::rungs(2), [2]);
     assert!(burst_pays(2, 8));
     assert!(burst_pays(4, 16));
     assert!(!burst_pays(1, 4));

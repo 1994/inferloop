@@ -18,7 +18,6 @@ use infer_ir::{ExecutionInput, ExecutionTask, MediaPixels, MediaPlan, OutputRead
 use infer_models::media_plan_layout;
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::BTreeMap;
-use std::iter::successors;
 use std::mem::swap;
 use std::mem::take;
 use std::ops::Range;
@@ -28,10 +27,6 @@ const POOL_WIDTH_STEP: usize = 4;
 const POOL_CAPTURE_ATTEMPTS: usize = 3;
 /// Prompts one step needs before any multi-sequence graph is worth its padded rows.
 const MIN_BURST_PROMPTS: usize = 2;
-/// Narrowest multi-sequence graph; narrower ones cost as much as the worker.
-const MIN_BURST_SEGMENTS: usize = 4;
-/// A graph's workspaces beside its rows, measured on the widest rung of a BF16 model.
-const BURST_BYTES_MARGIN: u64 = 2;
 /// A rung replays every row: at most this many segments per prompt still beats the worker.
 const MAX_SEGMENTS_PER_PROMPT: usize = 4;
 
@@ -681,11 +676,6 @@ impl CudaExecutor {
 
     /// Capture the multi-sequence prompt graph over the resident slots. Its absence only means
     /// concurrent prompts replay one by one on the worker.
-    #[expect(
-        unsafe_code,
-        reason = "The worker owning the burst is cleared before the slot pool drops, like the \
-                  resident programs it binds"
-    )]
     fn build_burst(&mut self, baseline: u64, envelope: u64) {
         let Some(pool) = self.slots.as_ref() else {
             return;
@@ -709,41 +699,35 @@ impl CudaExecutor {
             .flatten()
             .map(|home| &mut home.program)
             .collect();
-        // What the worker and homes left of the envelope pays for the widest graph's rows; the
-        // serving pool never shrinks to fund them. Narrower rungs view the same rows.
-        let rungs = burst_rungs(width);
-        let affordable = rungs.last().is_some_and(|&segments| {
-            self.loaded
-                .prompt_burst_bytes(segments)
-                .is_ok_and(|bytes| bytes.saturating_mul(BURST_BYTES_MARGIN) <= remaining)
-        });
-        if !affordable {
-            tracing::info!(target: "infer::executor", remaining,
+        // The quote funded these graphs; never let the serving pool shrink to pay for them.
+        let rungs = prefill_burst::rungs(width);
+        let Some(worker) = self.worker.as_mut() else {
+            return;
+        };
+        let worker_rows = worker.program.prefill_width();
+        let required = self
+            .loaded
+            .prompt_burst_bytes(width, worker_rows)
+            .unwrap_or(u64::MAX);
+        if required > remaining {
+            tracing::info!(target: "infer::executor", required, remaining,
                 "serving envelope leaves no room for multi-sequence prompt graphs");
             return;
         }
-        let mut bursts: Vec<PromptBurst> = Vec::new();
-        for &segments in rungs.iter().rev() {
-            let wider = bursts.first().map(PromptBurst::arena);
-            // SAFETY: see the expectation above; a narrower rung views the widest rung's rows,
-            // and the worker keeps every rung for the pool's lifetime.
-            let built = unsafe {
-                self.loaded
-                    .prompt_burst(capacity, &mut programs[..segments], wider)
-            };
-            match built {
-                Ok(burst) => bursts.push(burst),
-                Err(error) => {
-                    tracing::info!(target: "infer::executor", segments, %error,
-                        "multi-sequence prompt graph unavailable; prompts replay on the worker");
-                    bursts.clear();
-                    break;
-                }
-            }
-        }
-        bursts.reverse();
-        if let Some(worker) = self.worker.as_mut() {
-            worker.bursts = bursts;
+        tracing::info!(target: "infer::executor", required, remaining,
+            "capturing multi-sequence prompt graphs");
+        let bursts = capture_bursts(&self.loaded, capacity, &mut programs, worker, &rungs);
+        worker.bursts = bursts;
+        // An estimate can miss capture overhead; the serving pool must not pay for that.
+        let free = self
+            .loaded
+            .device()
+            .allocatable_memory_bytes()
+            .map(|free| free.saturating_sub(self.loaded.profile().device_headroom_bytes()));
+        if free.is_ok_and(|free| baseline.saturating_sub(free) > envelope) {
+            tracing::info!(target: "infer::executor", envelope,
+                "multi-sequence prompt graphs exceeded the envelope; prompts replay on the worker");
+            worker.bursts.clear();
         }
     }
 
@@ -1099,15 +1083,40 @@ impl CudaExecutor {
     }
 }
 
-/// Segment counts of the multi-sequence graphs for a pool, narrowest first.
-fn burst_rungs(width: usize) -> Vec<usize> {
-    let mut rungs: Vec<usize> = successors(Some(MIN_BURST_SEGMENTS), |n| n.checked_mul(2))
-        .take_while(|&segments| segments < width)
-        .collect();
-    if width >= MIN_BURST_PROMPTS {
-        rungs.push(width);
+/// Every rung over the first programs, widest first so narrower rungs view its storage. Any
+/// failure leaves no rung: prompts then replay on the worker.
+#[expect(
+    unsafe_code,
+    reason = "The worker owning these graphs is cleared before the slot pool drops"
+)]
+fn capture_bursts(
+    loaded: &LoadedModel,
+    capacity: usize,
+    programs: &mut [&mut DeviceProgram],
+    worker: &mut super::Worker,
+    rungs: &[usize],
+) -> Vec<PromptBurst> {
+    let mut bursts: Vec<PromptBurst> = Vec::new();
+    for &segments in rungs.iter().rev() {
+        let (nvfp4, worker_external) = worker.program.burst_shared();
+        let shared = prefill_burst::Shared {
+            nvfp4,
+            wider: bursts.first(),
+            worker_external,
+        };
+        // SAFETY: see the expectation above; every rung lives with the worker.
+        let built = unsafe { loaded.prompt_burst(capacity, &mut programs[..segments], shared) };
+        match built {
+            Ok(burst) => bursts.push(burst),
+            Err(error) => {
+                tracing::info!(target: "infer::executor", segments, %error,
+                    "multi-sequence prompt graph unavailable; prompts replay on the worker");
+                return Vec::new();
+            }
+        }
     }
-    rungs
+    bursts.reverse();
+    bursts
 }
 
 const fn burst_pays(prompts: usize, segments: usize) -> bool {

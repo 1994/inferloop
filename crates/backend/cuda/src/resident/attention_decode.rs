@@ -9,6 +9,7 @@ pub(super) mod pooled;
 mod workspace;
 pub use workspace::VERIFY_LANES;
 pub use workspace::Workspace;
+pub(super) use workspace::grouped_options;
 
 #[cfg(test)]
 pub use workspace::taps;

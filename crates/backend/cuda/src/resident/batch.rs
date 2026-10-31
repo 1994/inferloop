@@ -176,6 +176,10 @@ pub(super) struct BatchBuilder<'a> {
     pub tables: &'a [Tensor<i32>],
     pub capacity: usize,
     pub width: usize,
+    /// Every lane's block table in one tensor, set while capturing the full-width decode graph.
+    pub table_root: Option<&'a Tensor<i32>>,
+    /// Scratch of that graph's lane-batched attention.
+    pub lanes_attention: Option<&'a mut super::attention_lanes::Workspace>,
     /// Set while capturing a multi-sequence prompt graph.
     pub burst: Option<super::prefill_burst::Binding<'a>>,
 }
@@ -329,6 +333,38 @@ impl BatchBuilder<'_> {
         })
     }
 
+    /// One launch for every lane of a sequential node, where this graph covers it.
+    fn record_lanes_node(
+        &mut self,
+        scope: &Scope,
+        node: &TensorNode,
+        arena: &mut ActivationArena,
+        caches: &mut [Fp8Caches],
+        metadata: &Tensor<i32>,
+    ) -> StdResult<bool, DeviceError> {
+        if self.record_lanes_attention(scope, node, arena, caches, metadata)? {
+            return Ok(true);
+        }
+        if self.table_root.is_some()
+            && super::slot_rope::record(scope, node, arena, self.weights, metadata)?
+        {
+            return Ok(true);
+        }
+        // Pooled state roots let state nodes record one lane-batched kernel instead of one launch
+        // per lane. The builder holds those roots in `states` for this graph only; per-lane and
+        // verify graphs keep lane states there.
+        if matches!(node.op, TensorOp::Delta { .. } | TensorOp::Conv { .. })
+            && node
+                .states
+                .first()
+                .is_some_and(|id| self.states.contains_key(id))
+        {
+            self.record_pooled_state(scope, node, arena, metadata)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// Record one state node over the pooled roots, addressed through the whole metadata tensor.
     fn record_pooled_state(
         &mut self,
@@ -409,17 +445,7 @@ impl BatchBuilder<'_> {
                     )?;
                     continue;
                 }
-                // Pooled state roots let delta record one lane-batched kernel instead of one
-                // launch per lane. The builder holds those roots in `states` for this graph
-                // only; per-lane and verify graphs keep lane states there, and conv still
-                // needs its three per-lane history rows.
-                if matches!(node.op, TensorOp::Delta { .. })
-                    && node
-                        .states
-                        .first()
-                        .is_some_and(|id| self.states.contains_key(id))
-                {
-                    self.record_pooled_state(scope, node, arena, metadata_owner)?;
+                if self.record_lanes_node(scope, node, arena, lane_fp8, metadata_owner)? {
                     continue;
                 }
                 match dispatch32(node, self.weights) {

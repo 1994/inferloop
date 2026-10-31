@@ -89,12 +89,36 @@ fn build_narrow_decode(
     Ok(graphs)
 }
 
+fn reject_fused_verification(weights: &ProgramWeights, verify: usize) -> Result<()> {
+    if weights.fusion.is_some() && verify >= 2 {
+        return Err(Error::unsupported(
+            "pooled verification requires unfused target weights",
+        ));
+    }
+    Ok(())
+}
+
+/// Lane-batched attention scratch; a pooled verification graph has its own grouped path.
+fn lanes_workspace(
+    device: &CudaDevice,
+    graph: &DataflowGraph,
+    width: usize,
+    verify: usize,
+) -> Result<super::attention_lanes::Workspace> {
+    if verify < 2 {
+        super::attention_lanes::Workspace::new(device, graph, width)
+    } else {
+        Ok(super::attention_lanes::Workspace::default())
+    }
+}
+
 /// The full-width decode graph and its narrower rungs.
 fn build_pool_decode<'a>(
     builder: &mut super::batch::BatchBuilder<'a>,
     states: &'a mut SlotStates,
     fp8: &mut [Fp8Caches],
     narrow: &[usize],
+    table_root: &'a Tensor<i32>,
 ) -> Result<(SlotDecodeGraph, Vec<SlotDecodeGraph>)> {
     // Narrow rungs stay per-lane: at one to four lanes the launch count is small, and their
     // state views are prefixes the batch kernel cannot address directly.
@@ -103,6 +127,7 @@ fn build_pool_decode<'a>(
     // its builder therefore holds the pooled state roots, not a lane.
     let (lane_states, roots) = states.parts();
     builder.states = roots;
+    builder.table_root = Some(table_root);
     let decode = builder.build_slots(lane_states, fp8)?;
     Ok((decode, decode_narrow))
 }
@@ -178,7 +203,14 @@ const EXTERNAL_UPLOAD_RING: usize = MAX_VERIFICATION_WIDTH + 1;
 type ExternalLanes = (Vec<Tensor<f32>>, Vec<Vec<PinnedHostBuffer<f32>>>);
 
 /// One pool's per-slot recurrent states, KV caches and KV position tables.
-type SlotStorage = (SlotStates, Vec<Fp8Caches>, Vec<Tensor<i32>>);
+/// The pool's external row, lane rows, pinned staging and fusion workspaces.
+type LaneInputs = (
+    Tensor<f32>,
+    Vec<Tensor<f32>>,
+    Vec<Vec<PinnedHostBuffer<f32>>>,
+    Vec<Option<super::program::FusionWorkspace>>,
+);
+type SlotStorage = (SlotStates, Vec<Fp8Caches>, Vec<Tensor<i32>>, Tensor<i32>);
 
 /// How one state family moves into a slot at bind time: a token-row prefix of a
 /// capacity-sized KV cache (f32 or fp8), or the whole tensor (conv/delta state).
@@ -411,6 +443,8 @@ pub struct SlotPool {
     _narrow_roots: Vec<States>,
     states: SlotStates,
     fp8: Vec<Fp8Caches>,
+    _lanes_attention: super::attention_lanes::Workspace,
+    _table_root: Tensor<i32>,
     /// Per-slot identity block tables; declared with the states so they outlive the captures.
     tables: Vec<Tensor<i32>>,
     table_staging: PinnedUpload<i32>,
@@ -452,6 +486,10 @@ impl SlotPool {
         geometry: (usize, usize, usize),
         profile: &DeviceProfile,
     ) -> Result<u64> {
+        let (slots, verify, _) = geometry;
+        if verify < 2 {
+            return super::attention_lanes::required_bytes(graph, slots, profile);
+        }
         super::attention_decode::Workspace::pooled_bytes(graph, weights, geometry, profile)
     }
 
@@ -530,16 +568,12 @@ impl SlotPool {
         if !valid_pool_geometry(width, verify, capacity, hidden, vocabulary) {
             return Err(Error::invalid("slot pool width, capacity or geometry"));
         }
-        if weights.fusion.is_some() && verify >= 2 {
-            return Err(Error::unsupported(
-                "pooled verification requires unfused target weights",
-            ));
-        }
+        reject_fused_verification(weights, verify)?;
         let plan = copy_plan(graph, weights)?;
         let headroom = device.profile()?.device_headroom_bytes();
         let budget = device.allocatable_memory_bytes()?.saturating_sub(headroom);
         let paging = Self::paging(device, graph, weights, (width, capacity), kv_tokens)?;
-        let (mut states, mut fp8, tables) = Self::allocate_slots(
+        let (mut states, mut fp8, tables, table_root) = Self::allocate_slots(
             device,
             graph,
             weights,
@@ -547,17 +581,9 @@ impl SlotPool {
             paging.as_ref(),
             budget,
         )?;
-        let external = api::zeros::<f32>(&[hidden])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
         let lanes = if verify >= 2 { width * verify } else { width };
-        let (mut lane_external, pinned_external) =
-            Self::external_lanes(device, weights.fusion.is_some(), lanes, hidden)?;
-        let mut lane_fusion: Vec<Option<super::program::FusionWorkspace>> = (0..lanes)
-            .map(|_| {
-                super::program::FusionWorkspace::allocate(device, hidden, weights.fusion.is_some())
-            })
-            .collect::<Result<_>>()?;
+        let (external, mut lane_external, pinned_external, mut lane_fusion) =
+            Self::lane_inputs(device, weights.fusion.is_some(), lanes, hidden)?;
         let mut attention = super::attention_decode::Workspace::new(device, graph, capacity)?;
         let geometry = (width, verify, capacity);
         attention.prepare_pooled(device, graph, weights, geometry, paging.is_some())?;
@@ -565,6 +591,7 @@ impl SlotPool {
         let mut nvfp4 = pool_workspace(device, graph, weights, (lanes, verify), &narrow_slots)?;
         let mut placeholder_states = States::new();
         let mut placeholder_fp8 = Fp8Caches::new();
+        let mut lanes_attention = lanes_workspace(device, graph, width, verify)?;
         let (decode, verify_graph, decode_narrow, narrow, narrow_roots) = {
             let mut builder = super::batch::BatchBuilder {
                 device,
@@ -582,6 +609,8 @@ impl SlotPool {
                 tables: &tables,
                 capacity,
                 width,
+                table_root: None,
+                lanes_attention: None,
                 burst: None,
             };
             if verify >= 2 {
@@ -593,8 +622,14 @@ impl SlotPool {
                 )?;
                 (None, Some(full), Vec::new(), graphs, roots)
             } else {
-                let (decode, decode_narrow) =
-                    build_pool_decode(&mut builder, &mut states, &mut fp8, &narrow_slots)?;
+                builder.lanes_attention = Some(&mut lanes_attention);
+                let (decode, decode_narrow) = build_pool_decode(
+                    &mut builder,
+                    &mut states,
+                    &mut fp8,
+                    &narrow_slots,
+                    &table_root,
+                )?;
                 (Some(decode), None, decode_narrow, Vec::new(), Vec::new())
             }
         };
@@ -618,6 +653,8 @@ impl SlotPool {
             _external: external,
             _nvfp4: nvfp4,
             _attention: attention,
+            _lanes_attention: lanes_attention,
+            _table_root: table_root,
             lane_external,
             external_uploaded: vec![false; lanes],
             pinned_external,
@@ -626,8 +663,29 @@ impl SlotPool {
         })
     }
 
+    /// The shared external row, each lane's own row and each lane's fusion workspace.
+    fn lane_inputs(
+        device: &CudaDevice,
+        fused: bool,
+        lanes: usize,
+        hidden: usize,
+    ) -> Result<LaneInputs> {
+        let external = api::zeros::<f32>(&[hidden])
+            .sync_on(&device.stream)
+            .map_err(device_error)?;
+        let (lane_external, pinned_external) = Self::external_lanes(device, fused, lanes, hidden)?;
+        let lane_fusion = (0..lanes)
+            .map(|_| super::program::FusionWorkspace::allocate(device, hidden, fused))
+            .collect::<Result<_>>()?;
+        Ok((external, lane_external, pinned_external, lane_fusion))
+    }
+
     /// Allocate each slot's recurrent states and KV cache, checking the running total against
     /// the device budget before the pool captures any graph.
+    #[expect(
+        unsafe_code,
+        reason = "Audited table rows: the pool stores their owner beside them"
+    )]
     fn allocate_slots(
         device: &CudaDevice,
         graph: &DataflowGraph,
@@ -666,11 +724,15 @@ impl SlotPool {
                 ));
             }
             fp8.push(slot_fp8);
-            // Step 1 of the KV refactor: a per-slot identity mapping over that slot's own cache.
-            // A paged pool fills the table from its shared blocks when the slot is assigned.
-            tables.push(super::metadata::identity_table(device, capacity)?);
         }
-        Ok((states, fp8, tables))
+        // Step 1 of the KV refactor: a per-slot identity mapping over that slot's own cache.
+        // A paged pool fills the table from its shared blocks when the slot is assigned.
+        let root = super::metadata::identity_tables(device, capacity, width)?;
+        for slot in 0..width {
+            // SAFETY: the pool stores `root` beside these views; the rows are disjoint.
+            tables.push(unsafe { super::arena::row_view(&root, width, slot)? });
+        }
+        Ok((states, fp8, tables, root))
     }
 
     /// Per-lane external hidden rows plus, for an external-hidden pool, their pinned

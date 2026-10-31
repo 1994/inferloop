@@ -186,4 +186,44 @@ pub mod recurrent {
             out.store(0.0f32.broadcast(shape![1, 1, SW]));
         }
     }
+
+    /// Lane-batched twin of [`conv4`]: block `pid.0` is the lane, one launch for the pool.
+    #[cutile::entry()]
+    fn conv4_lanes(
+        out: &mut Tensor<f32, { [1, 128] }>,
+        h0: &mut Tensor<f32, { [1, 128] }>,
+        h1: &mut Tensor<f32, { [1, 128] }>,
+        h2: &mut Tensor<f32, { [1, 128] }>,
+        x: &Tensor<f32, { [-1, -1] }>,
+        w: &Tensor<f32, { [-1, 4] }>,
+        metadata: &Tensor<i32, { [-1] }>,
+    ) {
+        let pid = get_tile_block_id();
+        let position: i32 = tile_to_scalar(
+            metadata
+                .partition(shape![1])
+                .load([pid.0 * 4i32 + 2i32])
+                .reshape(shape![]),
+        );
+        if position >= 0 {
+            let x = x.load_like(out).reshape(shape![128]);
+            let oldest = h0.load_like(out).reshape(shape![128]);
+            let middle = h1.load_like(out).reshape(shape![128]);
+            let newest = h2.load_like(out).reshape(shape![128]);
+            let wp = w.partition(shape![128, 1]);
+            let wa = wp.load([pid.1, 0i32]).reshape(shape![128]);
+            let wb = wp.load([pid.1, 1i32]).reshape(shape![128]);
+            let wc = wp.load([pid.1, 2i32]).reshape(shape![128]);
+            let wd = wp.load([pid.1, 3i32]).reshape(shape![128]);
+            let value = oldest * wa + middle * wb + newest * wc + x * wd;
+            let negative: Tile<f32, { [128] }> = 0.0f32.broadcast(shape![128]) - value;
+            let silu = value / (1.0f32.broadcast(shape![128]) + exp(negative));
+            out.store(silu.reshape(shape![1, 128]));
+            h0.store(middle.reshape(shape![1, 128]));
+            h1.store(newest.reshape(shape![1, 128]));
+            h2.store(x.reshape(shape![1, 128]));
+        } else {
+            out.store(0.0f32.broadcast(shape![1, 128]));
+        }
+    }
 }

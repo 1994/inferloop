@@ -465,6 +465,8 @@ impl DeviceProgram {
             tables: from_ref(&self.table),
             capacity: self.capacity,
             width: weights.batch_width,
+            table_root: None,
+            lanes_attention: None,
             burst: None,
         };
         self.batch = Some(builder.build()?);
@@ -747,6 +749,8 @@ impl DeviceProgram {
             tables: from_ref(&table),
             capacity,
             width: weights.batch_width,
+            table_root: None,
+            lanes_attention: None,
             burst: None,
         };
         let captures = builder.build_program(
@@ -1121,6 +1125,13 @@ impl DeviceProgram {
         &Tensor<i32>,
     ) {
         (&mut self.states, &mut self.fp8_states, &self.table)
+    }
+
+    /// The projection workspace multi-sequence prompt graphs share with this worker.
+    pub(crate) const fn burst_shared(
+        &mut self,
+    ) -> (&mut super::nvfp4_gemm::Workspace, &Tensor<f32>) {
+        (&mut self.nvfp4, &self.lane_external_owner)
     }
 
     /// Record that a multi-sequence prompt graph advanced this resident state to `end`.
