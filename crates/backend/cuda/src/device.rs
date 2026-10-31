@@ -160,6 +160,7 @@ pub(crate) mod asynchronous;
 pub(crate) mod image_preprocess;
 pub use image_preprocess::{ImageBatch, Processor as CudaImageProcessor};
 mod readback;
+pub(crate) mod step_clock;
 mod upload;
 pub(crate) mod vision_position;
 #[cfg(test)]

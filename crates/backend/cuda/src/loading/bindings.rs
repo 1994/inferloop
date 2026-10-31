@@ -407,7 +407,7 @@ fn draft_fusion(
     profile: &DeviceProfile,
     package: &mut QuantizedPackage,
     tiling_source: &TilingSource<'_>,
-    plan: &infer_spi::SpeculationPlan,
+    plan: &infer_spi::DraftHead,
     report: &mut TuningReport,
 ) -> Result<FusionWeights> {
     let fusion = plan

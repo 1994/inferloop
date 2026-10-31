@@ -8,6 +8,7 @@ mod drafting;
 mod execution;
 mod owner;
 mod submission;
+use crate::device::step_clock::StepClock;
 pub use owner::CudaBackend;
 mod pool;
 pub mod prefix;
@@ -37,6 +38,7 @@ use std::mem::{forget, take};
 use std::sync::Arc;
 
 pub(super) struct CudaExecutor {
+    clock: Option<StepClock>,
     loaded: LoadedModel,
     capabilities: DeviceCapabilities,
     operations: Vec<infer_ir::CompiledOp>,
@@ -316,6 +318,7 @@ impl CudaExecutor {
             SnapshotScan,
         )?;
         let mut backend = Self {
+            clock: StepClock::new(loaded.device()),
             loaded,
             capabilities,
             operations: program.operations,

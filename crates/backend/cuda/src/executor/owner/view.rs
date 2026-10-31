@@ -33,6 +33,7 @@ pub(super) struct View {
     pub image_preprocessing: Option<Arc<dyn ImagePreprocessing>>,
     pub states: BTreeMap<StateId, StateView>,
     pub result: Option<Result<Vec<TaskOutput>>>,
+    pub device_us: Option<u64>,
 }
 impl View {
     pub(super) fn new(executor: &CudaExecutor) -> Result<Self> {
@@ -54,6 +55,7 @@ impl View {
                 .and_then(LoadedVision::image_preprocessing),
             states: BTreeMap::new(),
             result: None,
+            device_us: None,
         };
         view.refresh(executor)?;
         Ok(view)

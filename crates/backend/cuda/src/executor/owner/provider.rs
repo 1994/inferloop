@@ -2,8 +2,8 @@ use super::CudaBackend;
 use crate::executor::{CudaTicket, submission::TicketState, validation::check_program};
 use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::{
-    DeviceCapabilities, ExecutionProgram, ExecutionTask, ModelIr, OutputReadout, PageGrowth,
-    PrefillGeometry, StepPlan, TaskOutput,
+    DeviceCapabilities, ExecutionProgram, ExecutionTask, ExecutionTiming, ModelIr, OutputReadout,
+    PageGrowth, PrefillGeometry, StepPlan, TaskOutput, TimingSource,
 };
 use infer_spi::BackendProvider;
 use std::collections::BTreeSet;
@@ -196,6 +196,12 @@ impl BackendProvider for CudaBackend {
         owned.extend_from_slice(tasks);
         self.start(program, step, owned)
     }
+    fn completion_timing(&self, ticket: &CudaTicket) -> Option<ExecutionTiming> {
+        Some(ExecutionTiming {
+            elapsed_us: ticket.device_us?,
+            source: TimingSource::CudaGpu,
+        })
+    }
     fn poll(&mut self, ticket: &mut CudaTicket) -> Result<Option<Vec<TaskOutput>>> {
         if !Arc::ptr_eq(&self.owner, &ticket.owner)
             || ticket.generation != self.generation
@@ -213,6 +219,7 @@ impl BackendProvider for CudaBackend {
             return Ok(None);
         };
         ticket.state = TicketState::Consumed;
+        ticket.device_us = self.view.device_us.take();
         self.busy = false;
         let result = if let Some(executor) = self.ready.as_deref() {
             let refresh = self.view.refresh(executor);

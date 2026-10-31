@@ -17,6 +17,7 @@ pub struct CudaTicket {
     pub(super) owner: Arc<()>,
     pub(super) generation: u64,
     pub(super) state: TicketState,
+    pub(super) device_us: Option<u64>,
 }
 pub(super) enum TicketState {
     Pending,
@@ -27,6 +28,7 @@ pub(super) struct Completed {
     pub tasks: Vec<ExecutionTask>,
     pub result: Result<Vec<TaskOutput>>,
     pub fenced: bool,
+    pub device_us: Option<u64>,
 }
 pub(super) struct Submission {
     future: Pin<Box<dyn Future<Output = Completed> + Send>>,
@@ -40,10 +42,22 @@ impl Submission {
         let phases = profile.as_ref().map(|_| PhaseScope::records());
         let report_phases = phases.clone();
         let future = Box::pin(async move {
+            let timed = executor
+                .clock
+                .as_ref()
+                .is_some_and(|clock| clock.start(executor.loaded.device()));
             let result = executor.execute(&tasks).await;
+            let timed = timed
+                && executor
+                    .clock
+                    .as_ref()
+                    .is_some_and(|clock| clock.stop(executor.loaded.device()));
             // Detached restores and draft catch-up are part of the same completion.
             let fence = executor.loaded.device().fence().await;
             let fenced = fence.is_ok();
+            let device_us = (timed && fenced && result.is_ok())
+                .then(|| executor.clock.as_ref()?.elapsed_us())
+                .flatten();
             let result = result.and_then(|outputs| fence.map(|()| outputs));
             if let Some(profile) = profile {
                 profile.finish(
@@ -57,6 +71,7 @@ impl Submission {
                 tasks,
                 result,
                 fenced,
+                device_us,
             }
         });
         Self {

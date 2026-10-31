@@ -1,8 +1,16 @@
 """Architecture gates prevent model logic from returning to orchestration."""
 
+import tempfile
 import unittest
+from pathlib import Path
 
-from layout import check_ownership, production_dependencies
+from layout import (
+    CUDA_HOST,
+    check_cuda_host_ratchet,
+    check_ownership,
+    check_workload_blindness,
+    production_dependencies,
+)
 
 
 class OwnershipTests(unittest.TestCase):
@@ -48,6 +56,36 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(dependencies, {"infer-model-recipes"})
         with self.assertRaises(SystemExit):
             check_ownership("crates/engine/runtime", dependencies)
+
+
+class HostBoundaryTests(unittest.TestCase):
+    BASELINE = {"Tensor<": 1, ".partition(": 0, ".generics(": 0, "cuda_core": 0}
+
+    def tree(self, source):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        host = root / CUDA_HOST
+        host.mkdir(parents=True)
+        (root / "crates/engine/runtime/src").mkdir(parents=True)
+        (host / "lib.rs").write_text(source)
+        return root
+
+    def test_the_baseline_holds(self):
+        check_cuda_host_ratchet(self.tree("let t: Tensor<f32>;"), self.BASELINE)
+
+    def test_new_host_recording_fails(self):
+        with self.assertRaisesRegex(SystemExit, "exceed the baseline"):
+            check_cuda_host_ratchet(self.tree("Tensor<f32> Tensor<f32>"), self.BASELINE)
+
+    def test_a_gain_must_lower_the_baseline(self):
+        with self.assertRaisesRegex(SystemExit, "lower CUDA_HOST_TOKENS"):
+            check_cuda_host_ratchet(self.tree(""), self.BASELINE)
+
+    def test_workload_branches_fail_but_comments_pass(self):
+        check_workload_blindness(self.tree("// WorkloadKind stays elsewhere"))
+        with self.assertRaisesRegex(SystemExit, "must not branch"):
+            check_workload_blindness(self.tree("match kind { WorkloadKind::Embed => {} }"))
 
 
 if __name__ == "__main__":

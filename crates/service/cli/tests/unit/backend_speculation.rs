@@ -1,13 +1,13 @@
 use super::*;
 use infer_core::{ModelId, Result};
-use infer_spi::{FusionPlan, SpeculationPlan};
+use infer_spi::{DraftHead, FusionPlan};
 use std::path::Path;
 
 /// Only metadata is needed: these tests never upload or read a draft payload.
 fn package_with_head() -> Result<QuantizedPackage> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples/qwen-hybrid-tiny");
     let mut package = QuantizedPackage::open(root, ModelId::ONE)?;
-    package.imported.speculation = Some(SpeculationPlan {
+    package.imported.speculation = Some(DraftHead {
         prefix: "mtp.".into(),
         layers: 1,
         fusion: Some(FusionPlan {

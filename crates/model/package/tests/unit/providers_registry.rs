@@ -4,7 +4,7 @@ use infer_ir::{
     BackboneKind, CapabilityRequirements, DType, FeedForward, Head, Mixer, Modality, ModelIr,
     PositionSpec, PrecisionPlan,
 };
-use infer_spi::{FusionPlan, ImportedModel, ModalityPlan, PrecisionPolicy, SpeculationPlan};
+use infer_spi::{DraftHead, FusionPlan, ImportedModel, ModalityPlan, PrecisionPolicy};
 
 /// Provider that claims one architecture and imports nothing.
 struct Stub;
@@ -83,7 +83,7 @@ impl ModelProvider for Omni {
         };
         imported.precision =
             PrecisionPolicy::Preferred(vec![PrecisionPlan::nvfp4_block(), PrecisionPlan::bf16()]);
-        imported.speculation = Some(SpeculationPlan {
+        imported.speculation = Some(DraftHead {
             prefix: "mtp.".into(),
             layers: 1,
             fusion: Some(FusionPlan {
