@@ -1159,31 +1159,6 @@ impl IntoFuture for GemmFp8<'_> {
         }
     }
 }
-#[cutile::module]
-pub(crate) mod kernels {
-    use cutile::core::{
-        LoadTileMutAtCurrentBlock, Reshape, Shape_1, Shape_2, StoreTileAtCurrentBlock, Tensor_1,
-        Tensor_2, Tile_2, ftz, get_tile_block_id, mulf, rounding,
-    };
-    #[cutile::entry()]
-    fn scale(
-        output: &mut Tensor<f32, { [1, 256] }>,
-        xs: &Tensor<f32, { [-1, 1] }>,
-        ws: &Tensor<f32, { [-1] }>,
-    ) {
-        let pid = get_tile_block_id();
-        let raw: Tile<f32, { [1, 256] }> = output.load();
-        let row = xs
-            .partition(shape![1, 1])
-            .load([pid.0, 0i32])
-            .broadcast(shape![1, 256]);
-        let column = ws
-            .partition(shape![256])
-            .load([pid.1])
-            .reshape(shape![1, 256]);
-        let first = mulf(raw, row, rounding::NearestEven, ftz::Disabled);
-        output.store(mulf(first, column, rounding::NearestEven, ftz::Disabled));
-    }
-}
+pub use infer_cuda_kernels::tile::projection::vendor_fp8 as kernels;
 
 pub mod nvfp4;

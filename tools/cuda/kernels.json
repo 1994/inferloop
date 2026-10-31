@@ -208,5 +208,25 @@
       ],
       "nvcc_version": "11.8.89"
     }
-  ]
+  ],
+  "sidecar": {
+    "toolchains": {
+      "sm_89": "12.9",
+      "sm_120": "13.4"
+    },
+    "flags": [
+      "--fmad=false",
+      "--ftz=false",
+      "--prec-div=true",
+      "--prec-sqrt=true"
+    ],
+    "kernels": [
+      {
+        "name": "pool_gemv_bf16",
+        "contract": "bf16-f32acc",
+        "source": "crates/backend/cuda-kernels/src/aot/projection/pool_gemv.cu",
+        "cubin": "pool_gemv.cubin"
+      }
+    ]
+  }
 }

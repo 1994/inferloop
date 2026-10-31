@@ -1435,6 +1435,7 @@ dependencies = [
  "futures-channel",
  "infer-compiler",
  "infer-core",
+ "infer-cuda-kernels",
  "infer-gpu-api",
  "infer-ir",
  "infer-kernel-api",
@@ -1537,6 +1538,19 @@ dependencies = [
  "mimalloc",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "infer-cuda-kernels"
+version = "0.1.0"
+dependencies = [
+ "cuda-core",
+ "cutile",
+ "infer-core",
+ "libloading",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

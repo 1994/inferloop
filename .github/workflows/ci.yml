@@ -160,6 +160,27 @@ jobs:
           env-vars: CUDA_HOME CUDA_TOOLKIT_PATH CUDA_TOOLKIT_TARGET_DIR CUDA_TOOLKIT_CACHE_KEY
       - run: make test-cuda-hosted
 
+  # AOT kernel profile: builds without a CUDA toolkit or headers, so a hosted runner is enough.
+  # This job is the proof that the profile does not silently grow a toolkit dependency.
+  cuda-aot:
+    name: CUDA AOT (no toolkit)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: 1.99.0
+          components: rustfmt, clippy
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: cuda-aot
+          cache-workspace-crates: true
+      - run: make test-kernels-aot
+
   packages:
     name: Package (${{ matrix.target }})
     needs: [rust, tools, msrv, security]
@@ -242,14 +263,14 @@ jobs:
 
   quality-gate:
     if: ${{ always() }}
-    needs: [rust, tools, msrv, security, packages, cuda]
+    needs: [rust, tools, msrv, security, packages, cuda, cuda-aot]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - name: Require every gate to pass
         env:
           RESULTS: ${{ join(needs.*.result, ',') }}
-        run: test "$RESULTS" = 'success,success,success,success,success,success'
+        run: test "$RESULTS" = 'success,success,success,success,success,success,success'
 
   release-cuda:
     name: Publish CUDA release

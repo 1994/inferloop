@@ -19,7 +19,11 @@ infer-backend-cuda
   ├─ device.rs     驱动、stream、内存、设备能力
   ├─ device/       cuBLASLt、回读、上传、图像预处理、厂商 FP8/NVFP4
   ├─ vision/       视觉塔、MRoPE、图像会话
-  └─ kernels/      cuTile 模块（当前与 host 同文件）
+  └─ kernels/      AOT 内嵌制品（PTX、manifest、校验）
+infer-cuda-kernels
+  ├─ contract/     host 可见的契约：架构、Plan、Recording、算子族 trait
+  ├─ tile/<family> cuTile kernel
+  └─ aot/<family>  驱动 launcher 与 .cu 源码
         │
         ▼
   CUDA driver / stream / graph
@@ -27,8 +31,8 @@ infer-backend-cuda
   kernels/**       AOT 制品（.cu → PTX / cubin / .so）
 ```
 
-当前 host 与 kernel **没有物理分离**：37 个文件里内联了 38 个 `#[cutile::module]`、146 个 entry，
-108 个文件出现 `Tensor<`（1,492 处）。这是本页最重要的结构事实，也是目标分层要解决的耦合。
+kernel 体已经搬到 `infer-cuda-kernels`，host 只保留一个测试专用模块。但 host 仍直接持有 cuTile 类型（`Tensor<`
+遍布 100 多个文件），这是目标分层还要解决的耦合。已有一个算子走完整契约：`pool_gemv_bf16`。
 
 ## 2. 目录职责
 
@@ -96,7 +100,7 @@ oxide、nvcc 和图像预处理的 PTX 由 `kernels/` 内嵌，运行时通过 `
 
 | 我要…… | 动这里 | 不要动 |
 |---|---|---|
-| 加一个通用算子 | `src/kernels.rs` 或对应 family 的 `kernels.rs`；`src/registry.rs` 注册；host 调用点 | 不在 host 文件里新写 `#[cutile::module]` |
+| 加一个通用算子 | `cuda-kernels/src/tile/<family>/`；host 调用点；操作是新的才改 `src/registry.rs` | 不在 host 文件里新写 `#[cutile::module]`（门禁拦截） |
 | 改一个 AOT kernel | `kernels/<name>/*.cu` + `compile.py` / `regenerate.py` + manifest；`kernels.py rebuild` 到新目录 | 不覆盖已有 PTX/cubin；不改 hash 绕过校验 |
 | 加一个架构 | `src/target.rs`；`kernels/` 新架构目录；`tuning/` 候选与 baseline | 不在 host 里按 GPU 型号分支 |
 | 改 KV/状态 | `src/executor/state.rs`、`src/loading/kv_scales.rs`；逻辑生命周期归 `engine/state` | 不在 backend 重建页表或 prefix 语义 |
@@ -111,14 +115,13 @@ oxide、nvcc 和图像预处理的 PTX 由 `kernels/` 内嵌，运行时通过 `
 | 当前 | 目标 |
 |---|---|
 | host 直接持有 `cutile::Tensor`（1,492 处） | `cuda-kernels::Buffer`，host 不出现 cuTile 类型 |
-| kernel 模块内联在 37 个 host 文件 | `cuda-kernels/src/{tile,aot}` |
 | host 直接用 `cuda_core`（13.0+ 头文件构建门禁） | `Device` / `Stream` 契约，AOT 路径可零工具链构建 |
 | 一个 `cuda` feature | `cuda` / `cuda-aot` 两种构建；kernel 的 `tile`、`aot` 来源可叠加 |
 | 所有制品都入库 | 一份清单，内嵌 PTX 与 sidecar 两种交付 |
 | 12.9 不可用（无 Tile IR） | SASS + cuBLASLt；FlashInfer 仅可选补 GDN/MoE |
 
 迁移按[接入方案](../plans/engineering/cuda-kernel-provider.md)第 11 节的阶段执行。在此之前，新代码尽量
-落在目标一侧（kernel 进 family 模块、host 不新增 cuTile 类型、不新增第二套 KV 布局）。
+落在目标一侧（kernel 进 `tile/<family>`、host 不新增 cuTile 类型、不新增第二套 KV 布局）。
 
 ## 7. 新同学阅读顺序
 
@@ -132,7 +135,7 @@ oxide、nvcc 和图像预处理的 PTX 由 `kernels/` 内嵌，运行时通过 `
 
 ## 8. 维护约定
 
-- 新增算子：kernel 放 family 模块，`KernelRegistration` 只注册真实可执行的精度与形状；未覆盖显式
+- 新增算子：kernel 放 `tile/<family>`，需要 AOT 时对照写 `aot/<family>`；`KernelRegistration` 只注册真实可执行的精度与形状；未覆盖显式
   `Unsupported`。
 - 新增架构：改 `target.rs`、加制品、补 baseline，不在 host 引入型号分支。
 - 制品：只通过 `tools/cuda/kernels.py` 生成和校验，不手写 hash，不覆盖既有目录。

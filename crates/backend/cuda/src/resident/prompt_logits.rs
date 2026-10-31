@@ -7,26 +7,7 @@ use super::{ActivationArena, ProgramWeights, capture::error};
 use cutile::prelude::*;
 use infer_ir::TensorNode;
 
-#[cutile::module]
-mod kernels {
-    use cutile::core::{
-        Reshape, Shape_0, Shape_1, Shape_2, StoreTileAtCurrentBlock, Tensor_1, Tensor_2,
-        get_tile_block_id, tile_to_scalar,
-    };
-
-    /// Copy row `count - 1` of a prompt chunk, 256 columns per block.
-    #[cutile::entry()]
-    fn last_row<const H: i32>(
-        out: &mut Tensor<f32, { [1, 256] }>,
-        rows: &Tensor<f32, { [-1, H] }>,
-        metadata: &Tensor<i32, { [-1] }>,
-    ) {
-        let pid = get_tile_block_id();
-        let count: i32 =
-            tile_to_scalar(metadata.partition(shape![1]).load([1i32]).reshape(shape![]));
-        out.store(rows.partition(shape![1, 256]).load([count - 1i32, pid.1]));
-    }
-}
+pub use infer_cuda_kernels::tile::projection::prompt_logits as kernels;
 
 /// Columns one `last_row` block copies.
 const ROW_TILE: usize = 256;

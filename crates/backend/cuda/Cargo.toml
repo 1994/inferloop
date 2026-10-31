@@ -14,7 +14,15 @@ workspace = true
 
 [features]
 default = []
-cuda = ["dep:cutile", "dep:cuda-core", "dep:sha2", "dep:infer-state", "dep:futures-channel"]
+cuda = [
+    "dep:cutile",
+    "dep:cuda-core",
+    "dep:sha2",
+    "dep:infer-state",
+    "dep:futures-channel",
+    "dep:infer-cuda-kernels",
+    "infer-cuda-kernels/tile",
+]
 
 [dependencies]
 infer-core.workspace = true
@@ -25,6 +33,7 @@ infer-spi.workspace = true
 infer-compiler.workspace = true
 infer-kernel-api.workspace = true
 infer-workloads.workspace = true
+infer-cuda-kernels = { workspace = true, optional = true }
 serde.workspace = true
 tracing.workspace = true
 serde_json.workspace = true

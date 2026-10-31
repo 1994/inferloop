@@ -6,6 +6,7 @@ members = [
     "crates/foundation/spi",
     "crates/backend/api",
     "crates/backend/kernel-api",
+    "crates/backend/cuda-kernels",
     "crates/backend/metal",
     "crates/backend/cuda",
     "crates/model/package",
@@ -60,6 +61,7 @@ license = "Apache-2.0"
 [workspace.dependencies]
 llguidance = { version = "=1.9.1", default-features = false, features = ["lark"] }
 infer-backend-cuda = { version = "=0.1.0", path = "crates/backend/cuda" }
+infer-cuda-kernels = { version = "=0.1.0", path = "crates/backend/cuda-kernels" }
 infer-media-input = { version = "=0.1.0", path = "crates/service/media" }
 libc = "0.2"
 libloading = "0.8"
