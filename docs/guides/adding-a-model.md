@@ -29,10 +29,10 @@
 | 字段 | 表达什么 | 谁消费 |
 |---|---|---|
 | `model: ModelIr` | 语义：mixer、state、位置编码、模态列表 | compiler、所有 backend |
-| `mtp_layers` | 草稿层数（0 关闭推测） | 加载期校验 |
+| `draft_layers` | 草稿层数（0 关闭推测） | 加载期校验 |
 | `requirements: CapabilityRequirements` | 需要的设备能力（compute dtype、CUDA graphs/TMA/clusters） | `DeviceCapabilities::require` |
 | `precision: PrecisionPolicy` | 存储/计算策略，如 `Preferred([nvfp4, bf16])` | 加载器按 `supports_compute` 解析 |
-| `speculation: Option<SpeculationPlan>` | 草稿头前缀、层数、融合投影与 norm 槽位 | CUDA draft 绑定 |
+| `speculation: Option<DraftHead>` | 草稿头前缀、层数、融合投影与 norm 槽位 | CUDA draft 绑定 |
 | `modalities: Vec<ModalityPlan>` | 非文本模态与占位 token | 上报与门禁 |
 
 provider 必须 `Send + Sync`：注册表是进程级共享的。`graph` 未实现时加载失败，不会自动使用默认 decoder。模型配方不依赖后端；编译器只接收已生成的图，runtime 通过 `BackendProvider::execution_graph` 取得绑定图。后端需要支持图中的算子和状态语义，否则在加载或编译期明确拒绝。
@@ -150,7 +150,7 @@ fn import(&self, id: ModelId, config: &[u8]) -> Result<ImportedModel> {
         PrecisionPlan::nvfp4_block(),
         PrecisionPlan::bf16(),
     ]);
-    imported.speculation = (config.mtp_layers > 0).then(|| SpeculationPlan {
+    imported.speculation = (config.mtp_layers > 0).then(|| DraftHead {
         prefix: "mtp.".into(),
         layers: config.mtp_layers,
         fusion: Some(FusionPlan {
