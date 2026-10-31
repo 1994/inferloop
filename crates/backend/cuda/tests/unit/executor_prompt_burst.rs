@@ -3,6 +3,8 @@ use crate::AttentionProfile;
 use crate::device::{CudaDevice, asynchronous::block_on};
 use crate::loading::{LoadOptions, LoadedModel};
 use crate::mlp::ProjectionWeight;
+use crate::resident::attention_lanes;
+use crate::resident::slot_batch::LANES_DISABLED;
 use infer_core::{ModelId, RequestId, StateId};
 use infer_ir::{ExecutionInput, ExecutionTask, TokenBuffer};
 use std::env::var;
@@ -250,15 +252,15 @@ fn bits(traces: &[Vec<Vec<f32>>]) -> Vec<u32> {
 fn lane_batched_decode_matches_per_lane_launches() -> Result<()> {
     let mut batched = fixture()?;
     assert!(
-        crate::resident::attention_lanes::recorded() > 0,
+        attention_lanes::recorded() > 0,
         "the pool recorded no lane-batched attention"
     );
     let lanes = trace_mode(&mut batched, false, PROMPTS)?;
     drop(batched);
-    crate::resident::slot_batch::LANES_DISABLED.set(true);
+    LANES_DISABLED.set(true);
     let mut plain = fixture()?;
     let per_lane = trace_mode(&mut plain, false, PROMPTS)?;
-    crate::resident::slot_batch::LANES_DISABLED.set(false);
+    LANES_DISABLED.set(false);
     assert_eq!(bits(&per_lane), bits(&lanes));
     Ok(())
 }
