@@ -1,6 +1,6 @@
 # CUDA 架构收口方案
 
-状态：方案已定，尚未实施。事实基点为 main `c249c0ff`（PR #129），复核日期 2026-10-31；下文的行号与计数都以该提交为准，开工前先复核。
+状态：实施中，第一批已合入（见第 8 节）。事实基点为 main `c249c0ff`（PR #129），复核日期 2026-10-31；下文的行号与计数都以该提交为准，开工前先复核。
 决策依据见 [ADR-0005](../../adr/0005-cuda-architecture-goals.md)，整体排期见[路线图](../README.md)的 A1。
 
 本文回答一个问题：**怎样让性能调优更方便、kernel 更容易更换、新模型更容易接入、CUDA 版本兼容更容易。** 结论是不新增层，改两件事：**收口 CUDA 内部的算子层**（kernel 选择、lowering、调优框架、host 对 cuTile 的依赖），并**把 CUDA 越权持有的决策交回 engine**（时间、准入、页、前缀、推测）。两件事都是主线，只做前者，CUDA 仍然是“什么都管的后端”。
@@ -128,12 +128,13 @@ runtime                  submit / poll，不重建拓扑
 ### O1 时间账
 
 - **做什么：** 实现 CUDA `completion_timing`，使用设备时间，按 prefill、verify、draft 区分，灌入 `CalibratedCosts`。
-- **风险：** 每次观测都增加 `cost_epoch`，而 `dispatch_prepared` 要求 epoch 不变，预规划批次可能频繁作废（读代码推断），接入时监控 prepared 命中率。
+- **已核实：** 观测在下一个 tick 开头才应用，而完成和 `dispatch_prepared` 在同一个 tick，所以样本不会让为它预规划的批次作废（`a_measured_completion_keeps_the_batch_prepared_for_it`）。线上用 `prepared_dispatched` 与 `prepared_discarded` 观察。
 - **验收：** 会改变调度结果，走 B3 配对验收；SLO 预测误差下降，prepared 命中率不恶化。
 
 ### O2 准入账
 
-- **做什么：** 先修竞态，准入计入准备中的预留。再把 `admission_pool.rs` 拆开：CUDA 只报价和上报物理事实，何时要资源、按什么计价归 runtime。完成 KV 方案 P3 的按块计价。第二 flight 的预算以后也从这个入口计入。
+- **竞态已不复现：** 现有代码在资源进展后重新计时；2026-10-31 在 27B 5×8000（16 槽）和 0.6B 14×8000（12 槽）上全部成功，后者整轮 48 秒，超过 30 秒超时。下一次复现之前不加预留账。
+- **做什么：** 把 `admission_pool.rs` 拆开：CUDA 只报价和上报物理事实，何时要资源、按什么计价归 runtime。完成 KV 方案 P3 的按块计价。第二 flight 的预算以后也从这个入口计入。
 - **验收：** 5×8000 竞态用例不再超时；CUDA 里不再有独立的准入判断；报价分项可读回。
 
 ### O3 页账
@@ -208,22 +209,21 @@ Workload 边界目前是干净的：CUDA 和 runtime 中查不到 `WorkloadKind`
 
 ## 8. 接手入口
 
-下一步从这里开始，以下工作可以并行：
+**已落地：** M0 棘轮和 `WorkloadKind` 拦截；O1 设备时间上报；O4 第一步（模型侧类型改名 `DraftHead`）；C1M 的池显存分项日志。host 级 `cuda-aot` lane 随 M6 落地，现在加只是一条必失败的 lane。
 
-1. **M0：** 改 `tools/check/layout.py` 与 `test_layout.py`，纯 CPU，无设备依赖。
-2. **P1：** 在 45 上做空泡归因和 C1M 分项，结果决定 P3 的顺序。
-3. **O1：** 实现 CUDA `completion_timing`，入口是 `executor/owner/provider.rs`，参考 `crates/backend/metal/src/executor/provider.rs:99`。
-4. **O2 第一步：** 准入计入准备中的预留，用 KV 方案记录的 5×8000 用例复现。
-5. **O4 第一步：** 拆开两个 `SpeculationPlan`。
+**下一步：**
 
-随后 M1 和 O3 并行。M1 开工前先复核第 1 节的数字和本文的第一批未知项。
+1. **M1：** `Buffer` 与多个算子族一起设计。host 目前只有一个契约调用点，不单独包 `Kernels`。
+2. **P1 空泡归因：** `gpu_execution` 已有每步设备时间，还要拆分步内的 launch、拷贝和间隙。
+3. **O3：** 页账本换所有者，保持预付语义。
+
+**27B 显存（2026-10-31，16 槽，容量 8192，报价 5.85 GiB）：** target 池 3.40 GiB，其中 KV 只有 0.33 GiB；target worker 0.95 GiB，draft worker 0.64 GiB，draft 池 0.32 GiB。按第 5 节的决策规则，KV 不是大头，**按需增长暂缓，先看 arena 和递推状态**。
 
 **未知项：**
 
 - O3 是否需要调整 SPI，`SlotPool` 的物理块能否直接镜像 `KvCacheManager`（Metal 布局不同，文档记录为各自保留）。
 - 第二条 flight 是否确实需要第二份 arena，需要多少显存。
-- 接入 timing 后 prepared 命中率的实际变化。
 - M4 能合并到什么程度，融合路径可能有多少保留为特化。第一批迁移后更新本节。
 - kernel 指纹改为内容身份后，现有 `tuning.json` 条目如何迁移。
 
-**本方案的证据范围：** 基于代码与文档阅读，未编译、未运行设备。性能数字均来自引用文档，未重测。
+**本方案的证据范围：** 第 1 至 7 节基于代码与文档阅读；O1、O2 的核实和第 8 节的显存数字来自 RTX 5090 release 实测。其余性能数字来自引用文档，未重测。
