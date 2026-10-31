@@ -20,7 +20,7 @@ impl CausalBlockBound {
     }
 }
 
-pub use infer_cuda_kernels::tile::resident_attention_prefill as kernels;
+pub use infer_cuda_kernels::tile::attention::resident_attention_prefill as kernels;
 
 #[cfg(test)]
 #[path = "../../tests/unit/resident_attention_prefill.rs"]

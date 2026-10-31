@@ -56,7 +56,7 @@ pub(super) fn update_rotary(
         .map_err(device_error)
 }
 
-pub use infer_cuda_kernels::tile::metadata as kernels;
+pub use infer_cuda_kernels::tile::state::metadata as kernels;
 
 /// Identity block table for one sequence's own KV cache: logical block `b` is physical block `b`.
 /// Step 1 of the KV refactor keeps the arena untouched, so this is the mapping the kernels consult

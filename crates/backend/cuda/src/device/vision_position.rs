@@ -131,4 +131,4 @@ impl DeviceTaps {
     }
 }
 
-pub use infer_cuda_kernels::tile::vision_position as kernels;
+pub use infer_cuda_kernels::tile::vision::vision_position as kernels;

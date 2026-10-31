@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# Kernel bodies live in their own crate so the host never depends on cuTile types. Exactly one
+# Kernel bodies live in their own crate, separate from host graphs and tuning. Exactly one
 # profile is enabled per build: `tile` (CUDA 13.x) or `aot` (precompiled SASS, no toolkit).
 autotests = false
 
@@ -22,11 +22,11 @@ infer-core.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
+libloading = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 cutile = { workspace = true, optional = true }
 cuda-core = { workspace = true, optional = true }
-libloading = { workspace = true, optional = true }
 
 [[example]]
 name = "aot-projection"

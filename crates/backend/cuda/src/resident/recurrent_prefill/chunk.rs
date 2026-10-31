@@ -24,7 +24,7 @@ const WIDE_SCAN_COLUMNS: usize = 64;
 /// Value-head count whose prompt widths benefit from the wider tile.
 const WIDE_SCAN_VALUE_HEADS: usize = 48;
 
-pub use infer_cuda_kernels::tile::recurrent_chunk as kernels;
+pub use infer_cuda_kernels::tile::recurrent::recurrent_chunk as kernels;
 
 /// Scratch for one prompt width.
 pub(super) struct Scratch {

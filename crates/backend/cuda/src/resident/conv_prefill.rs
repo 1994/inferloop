@@ -1,5 +1,5 @@
 //! Parallel causal convolution across a prompt chunk, followed by one state commit.
-pub use infer_cuda_kernels::tile::conv_prefill as kernels;
+pub use infer_cuda_kernels::tile::recurrent::conv_prefill as kernels;
 
 use super::{ActivationArena, ProgramWeights, batch::States, capture::error};
 use crate::constants::CONV_KERNEL_SIZE;

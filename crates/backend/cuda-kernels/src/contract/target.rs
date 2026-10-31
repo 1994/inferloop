@@ -44,6 +44,14 @@ impl Arch {
         }
     }
 
+    /// Parse the `sm_<major><minor>` spelling reported by the driver; the minor is one digit.
+    #[must_use]
+    pub fn from_sm_name(name: &str) -> Option<Self> {
+        let digits = name.strip_prefix("sm_")?;
+        let (major, minor) = digits.split_at(digits.len().checked_sub(1)?);
+        Some(Self::from_sm(major.parse().ok()?, minor.parse().ok()?))
+    }
+
     /// `sm_<major><minor>` spelling used by artifacts and capability reports.
     #[must_use]
     pub fn name(self) -> String {
@@ -69,6 +77,15 @@ pub enum Profile {
     Tile,
     /// Precompiled SASS loaded through the driver; no CUDA toolkit at build time.
     Aot,
+}
+
+impl Profile {
+    /// The one profile this build compiled.
+    #[cfg(feature = "tile")]
+    pub const COMPILED: Self = Self::Tile;
+    /// The one profile this build compiled.
+    #[cfg(all(feature = "aot", not(feature = "tile")))]
+    pub const COMPILED: Self = Self::Aot;
 }
 
 /// Device and profile pair resolved once at load.

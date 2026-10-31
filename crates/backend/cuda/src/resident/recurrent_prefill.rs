@@ -1,5 +1,5 @@
 //! Token-chunk recurrent execution: keep the state in registers across prompt rows.
-pub use infer_cuda_kernels::tile::recurrent_prefill as kernels;
+pub use infer_cuda_kernels::tile::recurrent::recurrent_prefill as kernels;
 
 #[cfg(test)]
 #[path = "../../tests/unit/resident_recurrent_prefill.rs"]

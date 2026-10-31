@@ -1,2 +1,2 @@
 //! Recurrent state kernels moved to `infer-cuda-kernels`.
-pub use infer_cuda_kernels::tile::recurrent;
+pub use infer_cuda_kernels::tile::recurrent::recurrent;

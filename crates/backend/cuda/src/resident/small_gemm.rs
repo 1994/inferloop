@@ -1,6 +1,6 @@
 //! Small batched projections using tensor cores with a two-term BF16 input.
 //! Retaining the input residual avoids reducing F32 activations to one BF16 value.
-pub use infer_cuda_kernels::tile::small_gemm as kernels;
+pub use infer_cuda_kernels::tile::projection::small_gemm as kernels;
 #[cfg(test)]
 use std::cell::Cell;
 

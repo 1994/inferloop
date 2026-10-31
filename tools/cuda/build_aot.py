@@ -2,8 +2,9 @@
 """Build one AOT artifact set: cubins plus a manifest. Never executes device code.
 
 The artifact set is a build product. `make build-kernels-aot ARCH=sm_89 CUDA_HOME=...` writes it
-under `target/kernels/aot/`; CI packages it as a sidecar. The manifest records the toolchain, the
-contract and every cubin digest so the loader can reject a mismatched or corrupted file.
+under `target/kernels/aot/`. `aot-kernels.json` lists the entries and pins one toolchain per
+architecture; a different nvcc is refused, because a cubin from a newer toolchain is not evidence
+for the driver that architecture ships with. The set appears only once every cubin has built.
 """
 
 import argparse
@@ -11,40 +12,25 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-# One entry per kernel the AOT profile can ship today. `source` is relative to the repository.
-KERNELS = [
-    {
-        "name": "projection_dense_f32",
-        "contract": "canonical-f32",
-        "source": "crates/backend/cuda/kernels/aot/projection.cu",
-        "cubin": "projection.cubin",
-        "flags": ["--fmad=false", "--ftz=false", "--prec-div=true", "--prec-sqrt=true"],
-    },
-    {
-        "name": "attention_fp8_256",
-        "contract": "fp8-kv-f32acc",
-        "source": "crates/backend/cuda/kernels/shared-attention/attention-sm120.cu",
-        "cubin": "attention.cubin",
-        "flags": ["--fmad=false", "--ftz=false", "--prec-div=true", "--prec-sqrt=true"],
-    },
-]
+REGISTRY = Path(__file__).resolve().with_name("aot-kernels.json")
 
 
 def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def toolchain(nvcc):
+def nvcc_version(nvcc):
     output = subprocess.check_output([str(nvcc), "--version"], text=True)
-    match = re.search(r"release [\d.]+, (V[\d.]+)", output)
+    match = re.search(r"release [\d.]+, V([\d.]+)", output)
     if not match:
         raise SystemExit("cannot parse nvcc version")
-    return f"nvcc {match.group(1).lstrip('V')}"
+    return match.group(1)
 
 
 def main():
@@ -52,36 +38,34 @@ def main():
     parser.add_argument("--arch", default="sm_89", help="target architecture, e.g. sm_89")
     parser.add_argument("--out", type=Path, default=Path("target/kernels/aot"), help="output root")
     parser.add_argument("--cuda-home", type=Path, help="CUDA toolkit root (default: CUDA_HOME)")
-    parser.add_argument("--plan", action="store_true", help="print the plan and exit")
     arguments = parser.parse_args()
+    registry = json.loads(REGISTRY.read_text())
+    pinned = registry["toolchains"].get(arguments.arch)
+    if pinned is None:
+        raise SystemExit(f"no toolchain pinned for {arguments.arch} in {REGISTRY.name}")
     cuda_home = arguments.cuda_home or Path(os.environ.get("CUDA_HOME", "/opt/cuda"))
     nvcc = cuda_home / "bin" / "nvcc"
     if not nvcc.is_file():
         raise SystemExit(f"nvcc not found under {cuda_home}")
-    plan = {
-        "profile": "aot",
-        "arch": arguments.arch,
-        "toolchain": toolchain(nvcc),
-        "out": str(arguments.out),
-        "kernels": [k["name"] for k in KERNELS],
-    }
-    if arguments.plan:
-        print(json.dumps(plan, indent=2))
-        return
+    version = nvcc_version(nvcc)
+    if version != pinned and not version.startswith(f"{pinned}."):
+        raise SystemExit(f"{arguments.arch} requires nvcc {pinned}, found {version} in {cuda_home}")
     target = arguments.out / arguments.arch
     if target.exists():
         raise SystemExit(f"refusing to overwrite existing artifact set: {target}")
-    target.mkdir(parents=True)
+    staging = arguments.out / f".{arguments.arch}.staging"
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
     entries = []
-    for kernel in KERNELS:
+    for kernel in registry["kernels"]:
         source = REPO / kernel["source"]
-        cubin = target / kernel["cubin"]
+        cubin = staging / kernel["cubin"]
         command = [
             str(nvcc),
             "--cubin",
             f"-arch={arguments.arch}",
             "-O3",
-            *kernel["flags"],
+            *registry["flags"],
             str(source),
             "-o",
             str(cubin),
@@ -92,18 +76,22 @@ def main():
             {
                 "name": kernel["name"],
                 "contract": kernel["contract"],
+                "source": kernel["source"],
+                "source_sha256": sha256(source),
+                "flags": registry["flags"],
                 "cubin": kernel["cubin"],
                 "sha256": sha256(cubin),
             }
         )
     manifest = {
-        "schema": 1,
+        "schema": registry["schema"],
         "profile": "aot",
         "arch": arguments.arch,
-        "toolchain": plan["toolchain"],
+        "toolchain": f"nvcc {version}",
         "entries": entries,
     }
-    (target / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    staging.rename(target)
     print(json.dumps(manifest, indent=2))
 
 

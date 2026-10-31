@@ -6,6 +6,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+TILE_KERNELS = ROOT / "crates/backend/cuda-kernels/src/tile"
 WORKSPACE = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]
 
 
@@ -134,7 +135,7 @@ def check_exceptions():
                         ROOT / "crates/backend/cuda/src/device/readback.rs",
                         # Gather boundary validates every tap, shape and table address before
                         # recording and retains all device owners until completion.
-                        ROOT / "crates/backend/cuda-kernels/src/tile/vision_position_kernels.rs",
+                        TILE_KERNELS / "vision/vision_position_kernels.rs",
                         ROOT / "crates/backend/cuda/src/device/vision_position.rs",
                         # RGB8 PTX boundary checks all tensor extents and retains the source,
                         # coefficient tables, intermediate, output and modules until the fence.
@@ -151,16 +152,21 @@ def check_exceptions():
                         ROOT / "crates/backend/cuda/src/device/vendor_fp8/nvfp4.rs",
                         # PDL launch boundaries: checked extents, owning stream and retained
                         # consumers until the completion fence.
-                        ROOT / "crates/backend/cuda-kernels/src/tile/pdl_kernels.rs",
-                        ROOT / "crates/backend/cuda-kernels/src/tile/pdl_consumers_kernels.rs",
+                        TILE_KERNELS / "mlp/pdl_kernels.rs",
+                        TILE_KERNELS / "mlp/pdl_consumers_kernels.rs",
                         ROOT / "crates/backend/cuda/src/mlp/pdl.rs",
                         ROOT / "crates/backend/cuda/src/mlp/pdl_consumers.rs",
                         # Borrowed tensor boundary: host-owned pointers are wrapped for exactly
                         # one synchronized launch and dropped before returning.
-                        ROOT / "crates/backend/cuda-kernels/src/tile/projection.rs",
+                        TILE_KERNELS / "projection/contract.rs",
                         # AOT driver boundary: every FFI call is checked, handles are owned and
                         # buffers are freed exactly once.
                         ROOT / "crates/backend/cuda-kernels/src/aot/driver.rs",
+                        # Raw-address launch contract: obligations are stated on the trait and
+                        # discharged by the owning caller until the host adopts contract buffers.
+                        ROOT / "crates/backend/cuda-kernels/src/contract/kernels.rs",
+                        ROOT / "crates/backend/cuda-kernels/src/aot/projection.rs",
+                        ROOT / "crates/backend/cuda-kernels/examples/aot-projection.rs",
                         ROOT / "crates/backend/cuda/src/resident/arena.rs",
                         # Narrow callers of lifetime-bound FP4 arena aliases: sole-consumer
                         # product, exclusive arena lease, completion and same-stream replay.

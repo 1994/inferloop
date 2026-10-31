@@ -177,7 +177,7 @@ impl Greedy {
     }
 }
 
-pub use infer_cuda_kernels::tile::greedy as kernels;
+pub use infer_cuda_kernels::tile::sampling::greedy as kernels;
 
 #[cfg(test)]
 #[path = "../../tests/unit/resident_greedy.rs"]

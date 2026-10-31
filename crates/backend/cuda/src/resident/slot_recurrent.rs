@@ -4,7 +4,7 @@
 //! slot's state and leaves it untouched; once acceptance is known, one commit launch applies the
 //! accepted prefix. Rolling back therefore needs no per-lane state snapshot, which was two full
 //! recurrent state copies (about 300 MB on the 27B) per slot.
-pub use infer_cuda_kernels::tile::slot_recurrent as fused;
+pub use infer_cuda_kernels::tile::recurrent::slot_recurrent as fused;
 
 use super::{ActivationArena, ProgramWeights, batch::States, capture::error};
 use crate::constants::{CONV_KERNEL_SIZE, CONV_KERNEL_TILE, GDN_PROJECTED_INPUTS};

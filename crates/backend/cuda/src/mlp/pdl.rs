@@ -9,7 +9,7 @@ use crate::constants::NVFP4_GROUP_SIZE;
 use crate::strategy::LinearTiling;
 use cutile::{half::bf16, prelude::*};
 
-pub use infer_cuda_kernels::tile::pdl as producer;
+pub use infer_cuda_kernels::tile::mlp::pdl as producer;
 
 pub(super) fn record_product(
     scope: &Scope,

@@ -7,7 +7,7 @@ use super::{ActivationArena, ProgramWeights, capture::error};
 use cutile::prelude::*;
 use infer_ir::TensorNode;
 
-pub use infer_cuda_kernels::tile::prompt_logits as kernels;
+pub use infer_cuda_kernels::tile::projection::prompt_logits as kernels;
 
 /// Columns one `last_row` block copies.
 const ROW_TILE: usize = 256;

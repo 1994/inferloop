@@ -2,8 +2,7 @@
 //!
 //! This module is the `aot` profile's device boundary. It deliberately depends on nothing from
 //! the CUDA toolkit: the library is opened with `libloading` and every entry point is declared
-//! here. The AOT artifacts and their manifests arrive in a later slice; this layer only proves
-//! that device allocation, transfers, module loading and launches do not need headers.
+//! here, so device allocation, transfers, module loading and launches do not need headers.
 #![expect(
     unsafe_code,
     reason = "Every driver entry point is a raw FFI call whose validity is the caller's contract"
@@ -123,47 +122,85 @@ impl Driver {
     }
 }
 
-/// Opens one device and owns its primary context and stream.
-pub struct Device {
-    driver: Arc<Driver>,
-    cu_handle: CuDevice,
+/// Primary context and stream shared by everything created from one [`Device`].
+///
+/// Every object that talks to the driver holds this session, so a buffer or module can never
+/// outlive the context it belongs to. Each operation binds the context on the calling thread.
+struct Session {
+    driver: Driver,
+    handle: CuDevice,
     context: CuContext,
     stream: CuStream,
+}
+
+impl Session {
+    fn bind(&self) -> Result<()> {
+        // SAFETY: the retained context stays live for the lifetime of this session.
+        let status = unsafe { (self.driver.ctx_set_current)(self.context) };
+        self.driver.check(status)
+    }
+
+    fn synchronize(&self) -> Result<()> {
+        self.bind()?;
+        // SAFETY: the stream belongs to this session and its context is current.
+        let status = unsafe { (self.driver.stream_sync)(self.stream) };
+        self.driver.check(status)
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        // Close paths cannot report through `Drop`; `Device::synchronize` surfaces stream errors.
+        let _ = self.synchronize();
+        if !self.stream.is_null() {
+            // SAFETY: the stream was created by this session and is destroyed once.
+            let _ = unsafe { (self.driver.stream_destroy)(self.stream) };
+        }
+        // SAFETY: the primary context was retained by this session and is released once.
+        let _ = unsafe { (self.driver.primary_ctx_release)(self.handle) };
+    }
+}
+
+/// One opened device with its primary context and stream.
+pub struct Device {
+    session: Arc<Session>,
     ordinal: usize,
 }
 
 impl Device {
-    /// Open `ordinal` and bind its primary context on the calling thread.
+    /// Open `ordinal`.
     /// # Errors
     /// Fails when the driver is missing, the device cannot be opened, or the stream cannot be created.
     pub fn open(ordinal: usize) -> Result<Self> {
-        let driver = Arc::new(Driver::load()?);
+        let driver = Driver::load()?;
         let ordinal_i32 =
             i32::try_from(ordinal).map_err(|_| backend("device ordinal exceeds i32".to_owned()))?;
-        // SAFETY: each call uses the signature declared in this module and its result is checked
-        // before the handle is used; the library outlives every pointer.
+        // SAFETY: the signature matches the driver ABI declared in this module.
         let status = unsafe { (driver.init)(0) };
         driver.check(status)?;
-        let mut device: CuDevice = 0;
-        // SAFETY: `device` is writable and the driver writes one ordinal-selected device.
-        let status = unsafe { (driver.device_get)(&raw mut device, ordinal_i32) };
+        let mut handle: CuDevice = 0;
+        // SAFETY: `handle` is writable and the driver writes one ordinal-selected device.
+        let status = unsafe { (driver.device_get)(&raw mut handle, ordinal_i32) };
         driver.check(status)?;
         let mut context = ptr::null_mut();
-        // SAFETY: `context` is writable and retained for the lifetime of `Self`.
-        let status = unsafe { (driver.primary_ctx_retain)(&raw mut context, device) };
+        // SAFETY: `context` is writable; ownership moves into `Session` on success.
+        let status = unsafe { (driver.primary_ctx_retain)(&raw mut context, handle) };
         driver.check(status)?;
-        // SAFETY: the retained context is live and becomes current on this thread.
-        let status = unsafe { (driver.ctx_set_current)(context) };
-        driver.check(status)?;
-        let mut stream = ptr::null_mut();
-        // SAFETY: `stream` is writable and destroyed by `Drop`.
-        let status = unsafe { (driver.stream_create)(&raw mut stream, 0) };
-        driver.check(status)?;
-        Ok(Self {
+        // The session owns the context from here, so a later failure releases it through `Drop`.
+        let mut session = Session {
             driver,
-            cu_handle: device,
+            handle,
             context,
-            stream,
+            stream: ptr::null_mut(),
+        };
+        session.bind()?;
+        let mut stream = ptr::null_mut();
+        // SAFETY: `stream` is writable and the session's context is current.
+        let status = unsafe { (session.driver.stream_create)(&raw mut stream, 0) };
+        session.driver.check(status)?;
+        session.stream = stream;
+        Ok(Self {
+            session: Arc::new(session),
             ordinal,
         })
     }
@@ -174,64 +211,59 @@ impl Device {
         self.ordinal
     }
 
-    /// Context handle owned by this device.
-    #[must_use]
-    pub const fn context(&self) -> *mut c_void {
-        self.context
-    }
-
     /// Allocate `bytes` of device memory.
     /// # Errors
     /// Fails when the driver rejects the allocation.
     pub fn alloc(&self, bytes: usize) -> Result<Buffer> {
+        self.session.bind()?;
         let mut pointer: CuDeviceptr = 0;
-        // SAFETY: the pointer is only read after a successful driver call.
-        unsafe {
-            self.driver
-                .check((self.driver.mem_alloc)(&raw mut pointer, bytes))?;
-        }
+        // SAFETY: `pointer` is writable and only read after a successful call.
+        let status = unsafe { (self.session.driver.mem_alloc)(&raw mut pointer, bytes) };
+        self.session.driver.check(status)?;
         Ok(Buffer {
-            driver: Arc::clone(&self.driver),
+            session: Arc::clone(&self.session),
             pointer,
             bytes,
         })
     }
 
-    /// Copy host bytes into `destination` on the device stream.
+    /// Copy host bytes into `destination` and wait for the copy, so `source` can be released.
     /// # Errors
     /// Fails when the source is larger than the destination or the copy fails.
     pub fn upload(&self, destination: &Buffer, source: &[u8]) -> Result<()> {
         if source.len() > destination.bytes {
             return Err(Error::invalid("upload exceeds the destination buffer"));
         }
-        // SAFETY: the destination is a live allocation of at least `source.len()` bytes and the
-        // stream belongs to this device.
-        unsafe {
-            self.driver.check((self.driver.memcpy_htod)(
+        self.session.bind()?;
+        // SAFETY: the destination holds at least `source.len()` bytes and `source` stays borrowed
+        // until the stream synchronizes below.
+        let status = unsafe {
+            (self.session.driver.memcpy_htod)(
                 destination.pointer,
                 source.as_ptr().cast(),
                 source.len(),
-                self.stream,
-            ))
-        }
+                self.session.stream,
+            )
+        };
+        self.session.driver.check(status)?;
+        self.session.synchronize()
     }
 
-    /// Copy a typed `f32` slice into `destination`.
+    /// Copy a typed `f32` slice into `destination` and wait for the copy.
     /// # Errors
     /// Fails when the source is larger than the destination or the copy fails.
     pub fn upload_f32(&self, destination: &Buffer, source: &[f32]) -> Result<()> {
-        // SAFETY: f32 has no padding and every bit pattern is valid; the source slice is readable
-        // for its full length.
+        // SAFETY: f32 has no padding and the source slice is readable for its full length.
         let bytes =
             unsafe { slice::from_raw_parts(source.as_ptr().cast::<u8>(), size_of_val(source)) };
         self.upload(destination, bytes)
     }
 
-    /// Copy device bytes into a typed `f32` slice.
+    /// Copy device bytes into a typed `f32` slice and wait for the copy.
     /// # Errors
     /// Fails when the destination is smaller than the source or the copy fails.
     pub fn download_f32(&self, source: &Buffer, destination: &mut [f32]) -> Result<()> {
-        // SAFETY: f32 has no padding and every bit pattern is valid; the host slice is writable
+        // SAFETY: f32 has no padding, every bit pattern is valid and the host slice is writable
         // for its full length.
         let bytes = unsafe {
             slice::from_raw_parts_mut(
@@ -242,68 +274,57 @@ impl Device {
         self.download(source, bytes)
     }
 
-    /// Copy device bytes into `destination`.
+    /// Copy device bytes into `destination` and wait for the copy, ordered after earlier launches.
     /// # Errors
     /// Fails when the destination is smaller than the source or the copy fails.
     pub fn download(&self, source: &Buffer, destination: &mut [u8]) -> Result<()> {
         if destination.len() < source.bytes {
             return Err(Error::invalid("download exceeds the destination slice"));
         }
-        // SAFETY: the source is a live allocation of `source.bytes` bytes and the host slice is
-        // writable for the same length.
-        unsafe {
-            self.driver.check((self.driver.memcpy_dtoh)(
+        self.session.bind()?;
+        // SAFETY: the source holds `source.bytes` bytes and `destination` stays mutably borrowed
+        // until the stream synchronizes below.
+        let status = unsafe {
+            (self.session.driver.memcpy_dtoh)(
                 destination.as_mut_ptr().cast(),
                 source.pointer,
                 source.bytes,
-                self.stream,
-            ))
-        }
+                self.session.stream,
+            )
+        };
+        self.session.driver.check(status)?;
+        self.session.synchronize()
     }
 
     /// Wait for every operation enqueued on this device's stream.
     /// # Errors
     /// Fails when the driver reports a stream error.
     pub fn synchronize(&self) -> Result<()> {
-        // SAFETY: the stream belongs to this device and stays alive through the call.
-        unsafe { self.driver.check((self.driver.stream_sync)(self.stream)) }
+        self.session.synchronize()
     }
 
     /// Load a cubin image.
     /// # Errors
     /// Fails when the image is not a valid module for this device.
     pub fn load_module(&self, image: &[u8]) -> Result<Module> {
+        self.session.bind()?;
         let mut module = ptr::null_mut();
         // SAFETY: `image` is a complete cubin for the duration of the call; the driver copies it.
-        unsafe {
-            self.driver.check((self.driver.module_load)(
-                &raw mut module,
-                image.as_ptr().cast(),
-            ))?;
-        }
+        let status =
+            unsafe { (self.session.driver.module_load)(&raw mut module, image.as_ptr().cast()) };
+        self.session.driver.check(status)?;
         Ok(Module {
-            driver: Arc::clone(&self.driver),
-            module,
+            inner: Arc::new(LoadedModule {
+                session: Arc::clone(&self.session),
+                module,
+            }),
         })
     }
 }
 
-impl Drop for Device {
-    fn drop(&mut self) {
-        // SAFETY: the stream was created by this object and is destroyed once.
-        unsafe {
-            let _ = (self.driver.stream_destroy)(self.stream);
-        }
-        // SAFETY: the primary context was retained by this object and is released once.
-        unsafe {
-            let _ = (self.driver.primary_ctx_release)(self.cu_handle);
-        }
-    }
-}
-
-/// Owned device allocation.
+/// Owned device allocation; dropping it waits for queued work before freeing.
 pub struct Buffer {
-    driver: Arc<Driver>,
+    session: Arc<Session>,
     pointer: CuDeviceptr,
     bytes: usize,
 }
@@ -324,72 +345,82 @@ impl Buffer {
 
 impl Drop for Buffer {
     fn drop(&mut self) {
-        // SAFETY: the allocation was created by this driver and is freed once.
-        unsafe {
-            let _ = (self.driver.mem_free)(self.pointer);
-        }
+        // A queued launch may still read this allocation, so drain before freeing.
+        let _ = self.session.synchronize();
+        // SAFETY: the allocation was created by this session and is freed once.
+        let _ = unsafe { (self.session.driver.mem_free)(self.pointer) };
+    }
+}
+
+struct LoadedModule {
+    session: Arc<Session>,
+    module: CuModule,
+}
+
+impl Drop for LoadedModule {
+    fn drop(&mut self) {
+        let _ = self.session.synchronize();
+        // SAFETY: the module was loaded by this session and is unloaded once.
+        let _ = unsafe { (self.session.driver.module_unload)(self.module) };
     }
 }
 
 /// Loaded cubin module.
 pub struct Module {
-    driver: Arc<Driver>,
-    module: CuModule,
+    inner: Arc<LoadedModule>,
 }
 
 impl Module {
-    /// Resolve one kernel by name.
+    /// Resolve one kernel by name; the function keeps the module loaded.
     /// # Errors
     /// Fails when the module has no function with that name.
-    pub fn function(&self, name: &[u8]) -> Result<Function> {
-        let mut symbol = ptr::null_mut();
-        let mut terminated = name.to_vec();
-        terminated.push(0);
-        // SAFETY: the module is loaded and the name is NUL-terminated for the call.
-        unsafe {
-            self.driver.check((self.driver.module_get_function)(
-                &raw mut symbol,
-                self.module,
-                terminated.as_ptr().cast(),
-            ))?;
-        }
+    pub fn function(&self, name: &CStr) -> Result<Function> {
+        let session = &self.inner.session;
+        session.bind()?;
+        let mut function = ptr::null_mut();
+        // SAFETY: the module is loaded and `name` is NUL-terminated for the call.
+        let status = unsafe {
+            (session.driver.module_get_function)(
+                &raw mut function,
+                self.inner.module,
+                name.as_ptr(),
+            )
+        };
+        session.driver.check(status)?;
         Ok(Function {
-            driver: Arc::clone(&self.driver),
-            function: symbol,
+            module: Arc::clone(&self.inner),
+            function,
         })
-    }
-}
-
-impl Drop for Module {
-    fn drop(&mut self) {
-        // SAFETY: the module was loaded by this object and is unloaded once.
-        unsafe {
-            let _ = (self.driver.module_unload)(self.module);
-        }
     }
 }
 
 /// Resolved kernel ready to launch.
 pub struct Function {
-    driver: Arc<Driver>,
+    module: Arc<LoadedModule>,
     function: CuFunction,
 }
 
 impl Function {
-    /// Launch on the device stream.
+    /// Enqueue one launch on the device stream and return without waiting for it.
+    ///
+    /// # Safety
+    /// `parameters` must match the kernel signature and each entry must point to a live argument
+    /// for this call. Every device address they carry must stay valid, with no conflicting access,
+    /// until the stream is next synchronized.
     /// # Errors
     /// Fails when the driver rejects the launch.
-    pub fn launch(
+    pub unsafe fn launch(
         &self,
-        device: &Device,
         grid: (u32, u32, u32),
         block: (u32, u32, u32),
         parameters: &mut [*mut c_void],
     ) -> Result<()> {
-        // SAFETY: the caller supplies parameter pointers matching the cubin signature and a
-        // stream belonging to the device; the driver validates the launch configuration.
-        unsafe {
-            self.driver.check((self.driver.launch)(
+        let session = &self.module.session;
+        session.bind()?;
+        // SAFETY: the caller upholds the parameter contract; the function's module and stream are
+        // kept alive by `self.module`.
+        let status = unsafe {
+            (session.driver.launch)(
                 self.function,
                 grid.0,
                 grid.1,
@@ -398,31 +429,27 @@ impl Function {
                 block.1,
                 block.2,
                 0,
-                device.stream,
+                session.stream,
                 parameters.as_mut_ptr(),
                 ptr::null_mut(),
-            ))
-        }
+            )
+        };
+        session.driver.check(status)
     }
 }
 
-// SAFETY: the provider opens one device and uses it from its owner thread; the primary context
-// and stream are only passed back to the driver from that thread. Sharing the handle is safe only
-// under that single-owner lifecycle, which the provider enforces.
-unsafe impl Send for Device {}
-// SAFETY: same single-owner lifecycle as `Send`.
-unsafe impl Sync for Device {}
-// SAFETY: the allocation is only used with the device that created it, from the owner thread.
-unsafe impl Send for Buffer {}
-// SAFETY: same single-owner lifecycle as `Send`.
-unsafe impl Sync for Buffer {}
-// SAFETY: the module handle is immutable after load and only used on the owner thread.
-unsafe impl Send for Module {}
-// SAFETY: same single-owner lifecycle as `Send`.
-unsafe impl Sync for Module {}
-// SAFETY: the function handle is immutable after resolution and only used on the owner thread.
+// SAFETY: driver entry points are thread-safe once a context is current, and every operation binds
+// the session's context on the calling thread first. The handles are never dereferenced by Rust.
+unsafe impl Send for Session {}
+// SAFETY: as for `Send`; the session has no interior state outside the driver.
+unsafe impl Sync for Session {}
+// SAFETY: the module handle is immutable after load and only passed back to the driver.
+unsafe impl Send for LoadedModule {}
+// SAFETY: as for `Send`.
+unsafe impl Sync for LoadedModule {}
+// SAFETY: the function handle is immutable after resolution and only passed back to the driver.
 unsafe impl Send for Function {}
-// SAFETY: same single-owner lifecycle as `Send`.
+// SAFETY: as for `Send`.
 unsafe impl Sync for Function {}
 
 fn symbol<T: Copy>(library: &Library, name: &[u8]) -> Result<T> {

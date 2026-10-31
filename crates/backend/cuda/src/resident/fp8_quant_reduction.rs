@@ -1,5 +1,5 @@
 //! Exact token FP8 quantization with parallel conversion for large aligned rows.
-pub use infer_cuda_kernels::tile::fp8_quant_reduction as kernels;
+pub use infer_cuda_kernels::tile::projection::fp8_quant_reduction as kernels;
 
 use cutile::prelude::DeviceError;
 use cutile::prelude::Scope;

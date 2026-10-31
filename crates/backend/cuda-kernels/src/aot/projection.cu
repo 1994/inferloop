@@ -1,4 +1,4 @@
-// One warp per output row, F32 accumulation, canonical order independent of tile geometry.
+// One warp per output row with F32 accumulation; the reduction order does not depend on tiling.
 extern "C" __global__ void projection_dense_f32(
     const float* __restrict__ x,
     const float* __restrict__ w,

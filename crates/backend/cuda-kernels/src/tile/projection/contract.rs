@@ -7,10 +7,10 @@
     reason = "Wraps host-owned device pointers in borrowed cuTile tensors for exactly one launch"
 )]
 
+use super::linear;
 use crate::contract::kernels::Projection;
 use crate::contract::plan::LinearPlan;
 use crate::contract::ptr::DevicePtr;
-use crate::tile::linear;
 use cuda_core::{DType, Device, Stream};
 use cutile::core::{ElementType, bf16, f8e4m3fn};
 use cutile::prelude::*;
@@ -36,7 +36,9 @@ impl TileProjection {
         Arc::new(Self::new(device, stream))
     }
 
-    fn launch<E: ElementType + DType>(
+    /// # Safety
+    /// The caller upholds the `Projection` address contract.
+    unsafe fn launch<E: ElementType + DType>(
         &self,
         plan: &LinearPlan,
         out: DevicePtr,
@@ -47,9 +49,8 @@ impl TileProjection {
         let rows = i32::try_from(plan.rows).map_err(|_| geometry("rows"))?;
         let columns = i32::try_from(plan.columns).map_err(|_| geometry("columns"))?;
         let ordinal = self.device.ordinal();
-        // SAFETY: the host guarantees that every pointer addresses a live allocation of the
-        // planned shape for the duration of this call, and the borrowed tensors are dropped
-        // after the stream synchronizes below.
+        // SAFETY: the caller guarantees a live allocation of the planned shape; the borrowed
+        // tensors are dropped after the stream synchronizes below.
         let out_tensor =
             unsafe { Tensor::<f32>::borrow_raw_parts(out.0, ordinal, vec![rows], vec![1]) };
         // SAFETY: same contract as `out_tensor`; `x` is a contiguous activation vector.
@@ -76,34 +77,37 @@ impl TileProjection {
 }
 
 impl Projection for TileProjection {
-    fn dense_bf16(
+    unsafe fn dense_bf16(
         &self,
         plan: &LinearPlan,
         out: DevicePtr,
         x: DevicePtr,
         w: DevicePtr,
     ) -> Result<()> {
-        self.launch::<bf16>(plan, out, x, w, "bf16")
+        // SAFETY: the caller upholds the `Projection` address contract.
+        unsafe { self.launch::<bf16>(plan, out, x, w, "bf16") }
     }
 
-    fn dense_f32(
+    unsafe fn dense_f32(
         &self,
         plan: &LinearPlan,
         out: DevicePtr,
         x: DevicePtr,
         w: DevicePtr,
     ) -> Result<()> {
-        self.launch::<f32>(plan, out, x, w, "f32")
+        // SAFETY: the caller upholds the `Projection` address contract.
+        unsafe { self.launch::<f32>(plan, out, x, w, "f32") }
     }
 
-    fn dense_fp8(
+    unsafe fn dense_fp8(
         &self,
         plan: &LinearPlan,
         out: DevicePtr,
         x: DevicePtr,
         w: DevicePtr,
     ) -> Result<()> {
-        self.launch::<f8e4m3fn>(plan, out, x, w, "f8e4m3fn")
+        // SAFETY: the caller upholds the `Projection` address contract.
+        unsafe { self.launch::<f8e4m3fn>(plan, out, x, w, "f8e4m3fn") }
     }
 }
 

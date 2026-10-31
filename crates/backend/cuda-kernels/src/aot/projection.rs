@@ -3,27 +3,32 @@
 //! The provider loads one artifact set, verifies every digest, and keeps the module alive for the
 //! process. Only the f32 entry ships today; bf16/fp8 return `Unsupported` instead of silently
 //! falling back to another profile.
+#![expect(
+    unsafe_code,
+    reason = "Implements the unsafe launch contract and forwards its obligations to the driver"
+)]
 
 use super::artifact::Manifest;
-use super::driver::{Device, Function, Module};
+use super::driver::{Device, Function};
 use crate::contract::kernels::Projection;
 use crate::contract::plan::LinearPlan;
 use crate::contract::ptr::DevicePtr;
 use crate::contract::target::Target;
 use infer_core::{Error, ErrorCode, Result};
-use std::ffi::c_void;
+use std::ffi::{CStr, c_void};
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
 
+/// Manifest name of the only entry this implementation launches.
+const ENTRY_NAME: &str = "projection_dense_f32";
+/// Device symbol of [`ENTRY_NAME`].
+const ENTRY: &CStr = c"projection_dense_f32";
 /// One warp per output row.
 const WARP_THREADS: u32 = 32;
 
 /// Projection kernels loaded from an AOT artifact set.
 pub struct AotProjection {
-    device: Arc<Device>,
     function: Function,
-    _module: Module,
 }
 
 impl AotProjection {
@@ -31,7 +36,7 @@ impl AotProjection {
     /// # Errors
     /// Fails when the manifest is missing or invalid, the target does not match, a digest differs,
     /// or the cubin/module/function cannot be loaded.
-    pub fn load(device: Arc<Device>, root: &Path, target: Target) -> Result<Self> {
+    pub fn load(device: &Device, root: &Path, target: Target) -> Result<Self> {
         let bytes = fs::read(root.join("manifest.json")).map_err(|error| {
             Error::new(
                 ErrorCode::Backend,
@@ -42,7 +47,7 @@ impl AotProjection {
         manifest.select(target)?;
         manifest.verify(root)?;
         let entry = manifest
-            .entry("projection_dense_f32")
+            .entry(ENTRY_NAME)
             .ok_or_else(|| Error::unsupported("AOT projection entry missing"))?;
         let cubin = fs::read(root.join(&entry.cubin)).map_err(|error| {
             Error::new(
@@ -51,17 +56,14 @@ impl AotProjection {
             )
         })?;
         let module = device.load_module(&cubin)?;
-        let function = module.function(b"projection_dense_f32")?;
         Ok(Self {
-            device,
-            function,
-            _module: module,
+            function: module.function(ENTRY)?,
         })
     }
 }
 
 impl Projection for AotProjection {
-    fn dense_bf16(
+    unsafe fn dense_bf16(
         &self,
         _plan: &LinearPlan,
         _out: DevicePtr,
@@ -71,7 +73,7 @@ impl Projection for AotProjection {
         Err(Error::unsupported("AOT projection provides f32 only"))
     }
 
-    fn dense_f32(
+    unsafe fn dense_f32(
         &self,
         plan: &LinearPlan,
         out: DevicePtr,
@@ -92,15 +94,15 @@ impl Projection for AotProjection {
             (&raw mut out_pointer).cast::<c_void>(),
             (&raw mut columns_argument).cast::<c_void>(),
         ];
-        self.function.launch(
-            &self.device,
-            (rows, 1, 1),
-            (WARP_THREADS, 1, 1),
-            &mut parameters,
-        )
+        // SAFETY: the four parameters match `projection_dense_f32` and live through this call; the
+        // caller upholds the device-address contract of `Projection`.
+        unsafe {
+            self.function
+                .launch((rows, 1, 1), (WARP_THREADS, 1, 1), &mut parameters)
+        }
     }
 
-    fn dense_fp8(
+    unsafe fn dense_fp8(
         &self,
         _plan: &LinearPlan,
         _out: DevicePtr,

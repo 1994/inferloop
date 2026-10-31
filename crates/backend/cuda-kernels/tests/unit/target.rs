@@ -25,3 +25,19 @@ fn target_keeps_the_compiled_profile() {
     assert_eq!(target.profile, Profile::Aot);
     assert_eq!(target.arch.name(), "sm_89");
 }
+
+#[test]
+fn parses_driver_names_and_rejects_anything_else() {
+    assert_eq!(Arch::from_sm_name("sm_89"), Some(Arch::Sm89));
+    assert_eq!(Arch::from_sm_name("sm_120"), Some(Arch::Sm120));
+    assert_eq!(
+        Arch::from_sm_name("sm_121"),
+        Some(Arch::Other {
+            major: 12,
+            minor: 1
+        })
+    );
+    assert_eq!(Arch::from_sm_name("sm_"), None);
+    assert_eq!(Arch::from_sm_name("sm_90a"), None);
+    assert_eq!(Arch::from_sm_name("gpu_89"), None);
+}

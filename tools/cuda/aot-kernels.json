@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "toolchains": {
+    "sm_89": "12.9",
+    "sm_120": "13.4"
+  },
+  "flags": ["--fmad=false", "--ftz=false", "--prec-div=true", "--prec-sqrt=true"],
+  "kernels": [
+    {
+      "name": "projection_dense_f32",
+      "contract": "canonical-f32",
+      "source": "crates/backend/cuda-kernels/src/aot/projection.cu",
+      "cubin": "projection.cubin"
+    }
+  ]
+}

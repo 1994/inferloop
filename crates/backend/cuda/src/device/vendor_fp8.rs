@@ -1159,6 +1159,6 @@ impl IntoFuture for GemmFp8<'_> {
         }
     }
 }
-pub use infer_cuda_kernels::tile::vendor_fp8 as kernels;
+pub use infer_cuda_kernels::tile::projection::vendor_fp8 as kernels;
 
 pub mod nvfp4;

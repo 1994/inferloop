@@ -233,7 +233,7 @@ impl CudaDevice {
     pub const fn kernel_target(&self) -> Target {
         Target {
             arch: self.arch,
-            profile: Profile::Tile,
+            profile: Profile::COMPILED,
         }
     }
 
@@ -279,6 +279,10 @@ impl CudaDevice {
     /// its own kernels and never calls this path; keep it out of inference.
     /// # Errors
     /// Returns a shape or device error for an invalid projection.
+    #[expect(
+        unsafe_code,
+        reason = "Passes owned tensors through the raw-address projection contract"
+    )]
     pub fn matvec_tiled<T: DType>(
         &self,
         x: Arc<Tensor<f32>>,
@@ -301,11 +305,17 @@ impl CudaDevice {
             let out_ptr = DevicePtr(out.device_pointer().cu_deviceptr());
             let x_ptr = DevicePtr(x.device_pointer().cu_deviceptr());
             let w_ptr = DevicePtr(w.device_pointer().cu_deviceptr());
+            // `dimensions` validated the shapes and uploaded tensors are contiguous row-major.
+            let projection = &self.projection;
             match dtype {
-                "bf16" => self.projection.dense_bf16(&plan, out_ptr, x_ptr, w_ptr)?,
-                "f32" => self.projection.dense_f32(&plan, out_ptr, x_ptr, w_ptr)?,
-                _ => self.projection.dense_fp8(&plan, out_ptr, x_ptr, w_ptr)?,
+                // SAFETY: the locals own every allocation past the synchronization below; shapes are checked.
+                "bf16" => unsafe { projection.dense_bf16(&plan, out_ptr, x_ptr, w_ptr) }?,
+                // SAFETY: the locals own every allocation past the synchronization below; shapes are checked.
+                "f32" => unsafe { projection.dense_f32(&plan, out_ptr, x_ptr, w_ptr) }?,
+                // SAFETY: the locals own every allocation past the synchronization below; shapes are checked.
+                _ => unsafe { projection.dense_fp8(&plan, out_ptr, x_ptr, w_ptr) }?,
             }
+            self.synchronize()?;
             return Ok(Arc::new(out));
         }
         let out = api::zeros::<f32>(&[rows]).partition([tiling.rows()]);
@@ -422,26 +432,9 @@ fn query_target(device: &Device) -> Result<(CudaTarget, Arch)> {
     // SAFETY: Device::new initialized CUDA and owns this live device handle.
     let name =
         unsafe { cuda_core::get_device_sm_name(device.cu_device()) }.map_err(device_error)?;
-    Ok((CudaTarget::from_sm_name(&name), parse_arch(&name)?))
-}
-
-fn parse_arch(name: &str) -> Result<Arch> {
-    let digits = name
-        .strip_prefix("sm_")
+    let arch = Arch::from_sm_name(&name)
         .ok_or_else(|| InferError::invalid("device compute capability name"))?;
-    let (major, minor) = digits.split_at(
-        digits
-            .len()
-            .checked_sub(1)
-            .ok_or_else(|| InferError::invalid("device compute capability name"))?,
-    );
-    let major: u32 = major
-        .parse()
-        .map_err(|_| InferError::invalid("device compute capability major"))?;
-    let minor: u32 = minor
-        .parse()
-        .map_err(|_| InferError::invalid("device compute capability minor"))?;
-    Ok(Arch::from_sm(major, minor))
+    Ok((CudaTarget::from_sm_name(&name), arch))
 }
 
 fn head_copy_shape<T: DType>(tensor: &Tensor<T>) -> Result<[usize; KV_CACHE_RANK]> {

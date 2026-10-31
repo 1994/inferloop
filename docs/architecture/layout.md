@@ -11,6 +11,7 @@
 | `crates/foundation/spi` | `infer-spi` | backend、state、调度、模型、workload、资源与扩展接口 |
 | `crates/backend/api` | `infer-gpu-api` | 设备描述、传输与批次槽协议 |
 | `crates/backend/kernel-api` | `infer-kernel-api` | 通用算子描述（含 attention）、kernel 注册与能力选择 |
+| `crates/backend/cuda-kernels` | `infer-cuda-kernels` | CUDA kernel 契约与实现：`tile`（cuTile）、`aot`（预编译 SASS）按算子族镜像，编译期二选一；非默认成员 |
 | `crates/backend/metal` | `infer-backend-metal` | Metal 设备、加载、forward、提交、完成与物理状态 |
 | `crates/backend/cuda` | `infer-backend-cuda` | 原生 Rust/cuTile 算子、设备能力选择、融合与常驻图执行；非默认成员 |
 | `crates/model/package` | `infer-models` | HF 包、索引、Safetensors、内存预检、tokenizer 与模板；模型 provider 注册表（按架构解析） |

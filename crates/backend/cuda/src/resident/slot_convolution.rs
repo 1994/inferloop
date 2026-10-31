@@ -108,7 +108,7 @@ pub(super) fn record(
     recorded
 }
 
-pub use infer_cuda_kernels::tile::slot_convolution as kernels;
+pub use infer_cuda_kernels::tile::recurrent::slot_convolution as kernels;
 
 #[cfg(test)]
 thread_local! {

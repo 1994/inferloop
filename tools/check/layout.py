@@ -148,7 +148,6 @@ def check_crates():
     print(f"Layout: {len(members)} grouped crates, thin facades and dependency boundaries passed")
 
 
-
 def check_kernel_boundary():
     """Kernel bodies and driver launches stay in their profile directories."""
     host = ROOT / "crates/backend/cuda/src"
@@ -156,8 +155,12 @@ def check_kernel_boundary():
     for path in host.rglob("*.rs"):
         if "#[cutile::module]" in path.read_text() and path not in allowed:
             raise SystemExit(
-                f"{path.relative_to(ROOT)}: move the kernel module to crates/backend/cuda-kernels/src/tile"
+                f"{path.relative_to(ROOT)}: "
+                "move the kernel module to crates/backend/cuda-kernels/src/tile"
             )
+    for path in host.rglob("*.rs"):
+        if "infer_cuda_kernels::aot" in path.read_text():
+            raise SystemExit(f"{path.relative_to(ROOT)}: the host selects a profile by feature")
     for directory in ("resident", "executor"):
         for path in (host / directory).rglob("*.rs"):
             text = path.read_text()

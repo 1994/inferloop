@@ -6,7 +6,7 @@ use cutile::prelude::DeviceError;
 use cutile::prelude::Scope;
 use cutile::prelude::Tensor as PreludeTensor;
 use cutile::prelude::TensorView;
-pub use infer_cuda_kernels::tile::nvfp4_gemm as kernels;
+pub use infer_cuda_kernels::tile::projection::nvfp4_gemm as kernels;
 pub use quant_reuse::QuantPairPlan;
 #[cfg(test)]
 pub use quant_reuse::with_quant_reuse_disabled;

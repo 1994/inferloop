@@ -1,5 +1,5 @@
 //! Row-independent F32 GEMV with the original private accumulation and reduction tree.
-pub use infer_cuda_kernels::tile::pool_gemv as kernels;
+pub use infer_cuda_kernels::tile::projection::pool_gemv as kernels;
 
 use crate::tuning::pool_dense::{self, Choice};
 use crate::{mlp::ProjectionWeight, strategy::LinearTiling};

@@ -1,4 +1,4 @@
-pub use infer_cuda_kernels::tile::attention;
+pub use infer_cuda_kernels::tile::attention::attention;
 
 #[cfg(test)]
 #[path = "../../tests/unit/resident_embedding_rows.rs"]

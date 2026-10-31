@@ -64,7 +64,7 @@ pub(super) fn record(
     Ok(true)
 }
 
-pub use infer_cuda_kernels::tile::slot_rope as kernels;
+pub use infer_cuda_kernels::tile::rope::slot_rope as kernels;
 
 #[cfg(test)]
 #[path = "../../tests/unit/resident_slot_rope.rs"]
