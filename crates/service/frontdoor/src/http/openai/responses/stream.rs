@@ -435,9 +435,13 @@ impl Stream {
             ("completed", "completed")
         };
         self.close_open(item_status);
-        // A response with no publishable item still carries the assistant message item the
+        // A response with no message or call still carries the assistant message item the
         // complete route produces, so both routes expose the same output shape.
-        if self.output.is_empty() {
+        let has_turn = self
+            .output
+            .iter()
+            .any(|item| matches!(item["type"].as_str(), Some("message" | "function_call")));
+        if !has_turn {
             self.open_message();
             self.close_message(item_status);
         }
