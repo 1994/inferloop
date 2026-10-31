@@ -9,15 +9,6 @@ The engine is organized around a request loop, not around one model family or on
 
 > **Status: active development.** Built-in model coverage is narrow and production performance is not certified. There is no CPU execution backend.
 
-## Current focus
-
-Most engineering effort currently goes to performance. The decision and its acceptance rules are recorded in [ADR-0004](docs/adr/0004-performance-first.md); it is a statement about where the work goes, not a claim about how fast the engine is today. CUDA compute already uses non-blocking submit/poll, including prefill and speculative decoding, but the runtime still drives a single compute flight, so the next batch is not prepared while the current one executes. The remaining work is:
-
-- **Execution overlap.** A depth-2 batch queue with scheduler support for delayed token/KV backfill, so a second batch can be in flight while the first runs; admission must account for the extra in-flight state.
-- **Ahead-of-time coverage.** Precompiled cuTile and CUDA C++ kernels for stable shapes and target architectures, shipped with the package, with JIT kept as a fallback for uncovered shapes.
-
-New model families, extra backends, and non-performance features wait behind these items. Correctness, quality, and baseline contracts are not relaxed to buy throughput.
-
 ## Highlights
 
 - **Workload-agnostic runtime** for generation, embedding, ranking, and decision requests.
@@ -107,7 +98,7 @@ The runtime artifact is a single native executable (`bin/infer`). Python appears
 - **No config file to start.** `infer /path/to/model` serves on `127.0.0.1:8080`; memory budget and KV sizing are derived from the device, and flags exist when you need to override them. A packaged binary starts the same way: `./bin/infer --backend cuda serve --package /path/to/model`.
 - **Existing clients.** The OpenAI-compatible subset works with clients that only need a new base URL.
 
-What it still needs: on CUDA hosts, an NVIDIA driver and the cuTile JIT toolchain (`tileiras`); Metal hosts need only the OS. Removing that toolchain dependency is the AOT work in [ADR-0004](docs/adr/0004-performance-first.md), which is not finished. There is no CPU backend, and only supported packages run.
+What it still needs: on CUDA hosts, an NVIDIA driver and the cuTile JIT toolchain (`tileiras`); Metal hosts need only the OS. Work to remove that toolchain dependency is in progress. There is no CPU backend, and only supported packages run.
 
 ## Backends
 
