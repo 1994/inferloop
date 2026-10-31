@@ -90,7 +90,7 @@ oxide、nvcc 和图像预处理的 PTX 由 `kernels/` 内嵌，运行时通过 `
 | 生成器 | nvcc（`.cu`）、cuda-oxide（Rust SIMT）、CuTe DSL（FA4 离线 AOT） |
 
 12.9 / sm_89 的制品规则不同：**只接受 SASS cubin，不接受 PTX-only**（550 的 PTX JIT 只到 12.4），
-并使用独立 registry。设计见[接入方案](../plans/engineering/cuda-kernel-provider.md)第 8 节。
+并使用独立清单 `tools/cuda/aot-kernels.json`。设计见[接入方案](../plans/engineering/cuda-kernel-provider.md)第 8 节。
 
 ## 5. 改动入口
 
