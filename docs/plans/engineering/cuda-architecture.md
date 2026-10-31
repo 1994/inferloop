@@ -98,7 +98,7 @@ runtime                  submit / poll，不重建拓扑
 ### M4 单一 lowering（风险最高）
 
 - **做什么：** 用一个入口把 `(算子, 模式)` 降低成 Plan，`CaptureMode` 成为 Plan 参数。`Capture`、`batch.rs`、`batch_projection.rs`、`slot_verify*`、`prefill_projection.rs`、`dflash2/mod.rs` 复用该入口。attention 回退链收成加载期选定的 Plan，`record` 不再用 `Ok(false)` 表示回退。优先级应高于只改 capture.rs：自 10-15 起 `batch.rs` 改动 41 次，`program.rs` 27 次，`slot_batch.rs` 26 次，`slot_verify.rs` 24 次，capture.rs 未进前 12。
-- **attention 回退链（已完成）：** 选择本来就在捕获前定好；被选中的 kernel 现在要么录制，要么让捕获失败，不再用 `Ok(false)` 静默退到慢路径。27B 和 0.6B 上均未触发，输出与 main 一致。
+- **attention 回退链（已完成）：** `Ok(false)` 已删除。捕获时先用 `accepts` 判断选中的 kernel 是否适合这个池，不适合就记日志走下一条路径；`record` 收到不合格的操作数直接报错。回退本身不能删：DFlash2 的共享页多于单槽容量，SIMT 的固定布局确实放不下。27B、0.6B 输出与 main 一致。
 - **分批：** 先 projection，再 attention（与 C1A 合并推进），再 norm 和 recurrent。融合、宽图如果合不进通用入口，保留为显式 Plan 特化，但必须有通用路径可退。
 - **前置：** PR #127 改动 `batch.rs`、`arena.rs` 和 executor，等它合并或定案后再动这些文件。
 - **验收：** 每批 13.x 逐位一致且性能不回退；`resident/**` 的 `.generics(` 单调下降；未融合时在生效配置里可见。
