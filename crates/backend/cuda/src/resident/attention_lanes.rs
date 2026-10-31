@@ -104,6 +104,16 @@ impl Workspace {
 /// The restored KV pair and the outcome of recording against it.
 type Recorded<E> = (Tensor<E>, Tensor<E>, StdResult<(), DeviceError>);
 
+#[cfg(test)]
+std::thread_local! {
+    static RECORDED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+/// Lane-batched attention nodes this thread has recorded.
+#[cfg(test)]
+pub fn recorded() -> usize {
+    RECORDED.get()
+}
+
 /// One KV pair and how a launch addresses it.
 struct Cache<E: DType> {
     keys: Tensor<E>,
@@ -296,6 +306,8 @@ impl BatchBuilder<'_> {
                 .compile_options(super::attention_decode::grouped_options()),
             )?;
             self.record_lanes_merge(scope, node, arena)?;
+            #[cfg(test)]
+            RECORDED.set(RECORDED.get() + 1);
             Ok(())
         })();
         if per_lane {

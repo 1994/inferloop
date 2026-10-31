@@ -732,6 +732,11 @@ impl LoadedModel {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) const fn test_weights(&self) -> &ProgramWeights {
+        &self.weights
+    }
+
     /// Device bytes multi-sequence prompt graphs add to a pool beside a worker of `worker_rows`.
     /// # Errors
     /// Rejects invalid graphs or overflowing sizes.

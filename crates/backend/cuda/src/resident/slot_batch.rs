@@ -98,6 +98,12 @@ fn reject_fused_verification(weights: &ProgramWeights, verify: usize) -> Result<
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Keeps per-lane attention and rotary launches, to compare a pool against them.
+    pub static LANES_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Lane-batched attention scratch; a pooled verification graph has its own grouped path.
 fn lanes_workspace(
     device: &CudaDevice,
@@ -127,7 +133,11 @@ fn build_pool_decode<'a>(
     // its builder therefore holds the pooled state roots, not a lane.
     let (lane_states, roots) = states.parts();
     builder.states = roots;
-    builder.table_root = Some(table_root);
+    #[cfg(test)]
+    let lanes = !LANES_DISABLED.get();
+    #[cfg(not(test))]
+    let lanes = true;
+    builder.table_root = lanes.then_some(table_root);
     let decode = builder.build_slots(lane_states, fp8)?;
     Ok((decode, decode_narrow))
 }
