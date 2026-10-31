@@ -173,4 +173,22 @@ pub mod gemm {
         }
         out.store(acc * inverse_global.broadcast(shape![32, 64]));
     }
+
+    /// [`dense`] over a measured output tile; the K order and BF16 input are unchanged.
+    #[cutile::entry()]
+    fn dense_tile<const M: i32, const N: i32, const K: i32>(
+        out: &mut Tensor<f32, { [M, N] }>,
+        input: &Tensor<f32, { [-1, K] }>,
+        weight: &Tensor<bf16, { [-1, K] }>,
+    ) {
+        let pid = get_tile_block_id();
+        let xp = input.partition(shape![M, 64]);
+        let wp = weight.partition(shape![N, 64]);
+        let mut acc: Tile<f32, { [M, N] }> = constant(0.0f32, shape![M, N]);
+        for k in 0i32..((K + 63) / 64) {
+            let x: Tile<bf16, { [M, 64] }> = convert_tile(xp.load([pid.0, k]));
+            acc = mmaf(x, wp.load([pid.1, k]).transpose(), acc);
+        }
+        out.store(acc);
+    }
 }

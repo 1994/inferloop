@@ -23,6 +23,7 @@ fn workspace(device: &CudaDevice) -> Workspace {
         strategies: BTreeMap::new(),
         swiglu_strategies: BTreeMap::new(),
         pool_dense_strategies: BTreeMap::new(),
+        prompt_dense_strategies: BTreeMap::new(),
         buffers: BTreeMap::new(),
         fp8: BTreeMap::new(),
         fp8_strategies: BTreeMap::new(),

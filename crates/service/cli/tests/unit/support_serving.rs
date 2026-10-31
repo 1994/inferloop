@@ -64,3 +64,19 @@ fn explicit_cuda_token_limit_does_not_gain_decode_headroom() {
     cuda_prefill_limits(&mut config, 1024, false);
     assert_eq!(config.max_num_batched_tokens, 1024);
 }
+
+#[test]
+fn automatic_round_funds_one_prompt_segment_per_sequence() {
+    let mut config = RuntimeConfig {
+        max_num_seqs: 16,
+        ..RuntimeConfig::default()
+    };
+    cuda_prefill_limits(&mut config, 128, true);
+    assert_eq!(config.max_num_batched_tokens, 16 * 64 + 15);
+    let mut explicit = RuntimeConfig {
+        max_num_seqs: 16,
+        ..RuntimeConfig::default()
+    };
+    cuda_prefill_limits(&mut explicit, 128, false);
+    assert_eq!(explicit.max_num_batched_tokens, 128);
+}

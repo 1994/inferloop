@@ -3,6 +3,7 @@ use crate::attention_profile::precise_prefix_positions;
 use crate::constants::EXTRA_WIDE_PREFILL_LANES;
 use crate::constants::WIDER_PREFILL_LANES;
 use crate::constants::WIDEST_PREFILL_LANES;
+use crate::resident::prefill_burst::{self, PromptBurst};
 use crate::resident::prompt_logits;
 use std::path::PathBuf;
 mod concurrency;
@@ -701,6 +702,51 @@ impl LoadedModel {
             })
             .transpose()?;
         Ok((program, draft))
+    }
+
+    /// One prompt graph over every resident program.
+    /// # Safety
+    /// The slot pool behind `programs` must outlive the graph.
+    /// # Errors
+    /// Rejects geometries the graph does not cover or CUDA capture failures.
+    #[expect(
+        unsafe_code,
+        reason = "Forwards the caller's slot-pool lifetime contract to the burst capture"
+    )]
+    pub(crate) unsafe fn prompt_burst(
+        &self,
+        capacity: usize,
+        programs: &mut [&mut DeviceProgram],
+        shared: prefill_burst::Shared<'_>,
+    ) -> Result<PromptBurst> {
+        // SAFETY: forwarded from this function's contract.
+        unsafe {
+            PromptBurst::new(
+                &self.device,
+                &self.graph,
+                &self.weights,
+                (capacity, self.model.hidden_size, self.model.vocab_size),
+                programs,
+                shared,
+            )
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn test_weights(&self) -> &ProgramWeights {
+        &self.weights
+    }
+
+    /// Device bytes multi-sequence prompt graphs add to a pool beside a worker of `worker_rows`.
+    /// # Errors
+    /// Rejects invalid graphs or overflowing sizes.
+    pub(crate) fn prompt_burst_bytes(&self, width: usize, worker_rows: usize) -> Result<u64> {
+        prefill_burst::required_bytes(
+            &self.graph,
+            &self.weights,
+            (width, worker_rows),
+            (self.model.hidden_size, self.model.vocab_size),
+        )
     }
 
     /// Target and draft programs that prefill straight into `slot` of the target and draft

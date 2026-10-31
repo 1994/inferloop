@@ -21,13 +21,25 @@ use cuda_core::{CudaContext, PinnedHostBuffer, f8e4m3fn};
 use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::iter::successors;
 
-/// Slot counts of the narrow verify graphs a pool of `width` slots captures: powers of two
-/// below the width, when the pool verifies without recurrent snapshots.
+/// Widest plain-decode rung; above it the full-width graph's batched state kernels win.
+const MAX_NARROW_DECODE_SLOTS: usize = 4;
+
+/// Slot counts of the narrow graphs a pool of `width` slots captures: powers of two below
+/// the width. A plain decode pool replays one lane per busy slot, so its rungs keep a step
+/// with few live sequences from paying for every lane the configured concurrency allows. A
+/// verify pool needs fused recurrent state before narrower verification is valid.
 pub fn narrow_widths(graph: &DataflowGraph, width: usize, verify: usize) -> Vec<usize> {
-    if verify < 2 || !super::slot_verify::fused_recurrent(graph, verify) {
+    if verify < 2 {
+        return successors(Some(1usize), |slots| slots.checked_mul(2))
+            .take_while(|&slots| slots <= MAX_NARROW_DECODE_SLOTS && slots < width)
+            .collect();
+    }
+    if !super::slot_verify::fused_recurrent(graph, verify) {
         return Vec::new();
     }
     successors(Some(1usize), |slots| slots.checked_mul(2))
@@ -56,12 +68,80 @@ fn pool_workspace(
     narrow: &[usize],
 ) -> Result<super::nvfp4_gemm::Workspace> {
     let mut widths = vec![1, lanes];
-    widths.extend(narrow.iter().map(|&slots| slots * verify));
+    // A pool without verification has `verify == 0` and one lane per slot.
+    widths.extend(narrow.iter().map(|&slots| slots * verify.max(1)));
     let mut workspace = super::nvfp4_gemm::Workspace::new(device, graph, weights, &widths)?;
     for &rows in &widths[1..] {
-        workspace.prepare_pool_dense(device, graph, weights, rows)?;
+        workspace.prepare_pool_rows(device, graph, weights, rows)?;
     }
     Ok(workspace)
+}
+
+/// Decode graphs over the pool's first 1, 2, ... slots, narrowest first.
+fn build_narrow_decode(
+    builder: &mut super::batch::BatchBuilder<'_>,
+    states: &mut SlotStates,
+    fp8: &mut [Fp8Caches],
+    widths: &[usize],
+) -> Result<Vec<SlotDecodeGraph>> {
+    let mut graphs = Vec::with_capacity(widths.len());
+    for &slots in widths {
+        graphs.push(builder.build_slots(&mut states[..slots], &mut fp8[..slots])?);
+    }
+    Ok(graphs)
+}
+
+fn reject_fused_verification(weights: &ProgramWeights, verify: usize) -> Result<()> {
+    if weights.fusion.is_some() && verify >= 2 {
+        return Err(Error::unsupported(
+            "pooled verification requires unfused target weights",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Keeps per-lane attention and rotary launches, to compare a pool against them.
+    pub static LANES_DISABLED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Lane-batched attention scratch; a pooled verification graph has its own grouped path.
+fn lanes_workspace(
+    device: &CudaDevice,
+    graph: &DataflowGraph,
+    width: usize,
+    verify: usize,
+) -> Result<super::attention_lanes::Workspace> {
+    if verify < 2 {
+        super::attention_lanes::Workspace::new(device, graph, width)
+    } else {
+        Ok(super::attention_lanes::Workspace::default())
+    }
+}
+
+/// The full-width decode graph and its narrower rungs.
+fn build_pool_decode<'a>(
+    builder: &mut super::batch::BatchBuilder<'a>,
+    states: &'a mut SlotStates,
+    fp8: &mut [Fp8Caches],
+    narrow: &[usize],
+    table_root: &'a Tensor<i32>,
+) -> Result<(SlotDecodeGraph, Vec<SlotDecodeGraph>)> {
+    // Narrow rungs stay per-lane: at one to four lanes the launch count is small, and their
+    // state views are prefixes the batch kernel cannot address directly.
+    let decode_narrow = build_narrow_decode(builder, states, fp8, narrow)?;
+    // The full-width graph records one batched state kernel per node instead of one per lane;
+    // its builder therefore holds the pooled state roots, not a lane.
+    let (lane_states, roots) = states.parts();
+    builder.states = roots;
+    #[cfg(test)]
+    let lanes = !LANES_DISABLED.get();
+    #[cfg(not(test))]
+    let lanes = true;
+    builder.table_root = lanes.then_some(table_root);
+    let decode = builder.build_slots(lane_states, fp8)?;
+    Ok((decode, decode_narrow))
 }
 
 /// The pool-wide verify graph and one narrower graph per `narrow` slot count, with the root
@@ -135,7 +215,14 @@ const EXTERNAL_UPLOAD_RING: usize = MAX_VERIFICATION_WIDTH + 1;
 type ExternalLanes = (Vec<Tensor<f32>>, Vec<Vec<PinnedHostBuffer<f32>>>);
 
 /// One pool's per-slot recurrent states, KV caches and KV position tables.
-type SlotStorage = (SlotStates, Vec<Fp8Caches>, Vec<Tensor<i32>>);
+/// The pool's external row, lane rows, pinned staging and fusion workspaces.
+type LaneInputs = (
+    Tensor<f32>,
+    Vec<Tensor<f32>>,
+    Vec<Vec<PinnedHostBuffer<f32>>>,
+    Vec<Option<super::program::FusionWorkspace>>,
+);
+type SlotStorage = (SlotStates, Vec<Fp8Caches>, Vec<Tensor<i32>>, Tensor<i32>);
 
 /// How one state family moves into a slot at bind time: a token-row prefix of a
 /// capacity-sized KV cache (f32 or fp8), or the whole tensor (conv/delta state).
@@ -356,6 +443,9 @@ pub struct SlotPool {
     // arena buffers their kernels reference.
     decode: Option<SlotDecodeGraph>,
     verify: Option<SlotVerifyGraph>,
+    /// Decode graphs over the pool's first 2, 4, ... slots, narrowest first: a step whose busy
+    /// slots are all low replays only their lanes. `decode` stays the timeline of record.
+    narrow_decode: Vec<SlotDecodeGraph>,
     /// Verify graphs over the pool's first 1, 2, 4, ... slots, narrowest first: a step whose
     /// busy slots are all low replays only their lanes. `verify` stays the timeline of record.
     narrow: Vec<SlotVerifyGraph>,
@@ -365,6 +455,8 @@ pub struct SlotPool {
     _narrow_roots: Vec<States>,
     states: SlotStates,
     fp8: Vec<Fp8Caches>,
+    _lanes_attention: super::attention_lanes::Workspace,
+    _table_root: Tensor<i32>,
     /// Per-slot identity block tables; declared with the states so they outlive the captures.
     tables: Vec<Tensor<i32>>,
     table_staging: PinnedUpload<i32>,
@@ -406,6 +498,10 @@ impl SlotPool {
         geometry: (usize, usize, usize),
         profile: &DeviceProfile,
     ) -> Result<u64> {
+        let (slots, verify, _) = geometry;
+        if verify < 2 {
+            return super::attention_lanes::required_bytes(graph, slots, profile);
+        }
         super::attention_decode::Workspace::pooled_bytes(graph, weights, geometry, profile)
     }
 
@@ -484,16 +580,12 @@ impl SlotPool {
         if !valid_pool_geometry(width, verify, capacity, hidden, vocabulary) {
             return Err(Error::invalid("slot pool width, capacity or geometry"));
         }
-        if weights.fusion.is_some() && verify >= 2 {
-            return Err(Error::unsupported(
-                "pooled verification requires unfused target weights",
-            ));
-        }
+        reject_fused_verification(weights, verify)?;
         let plan = copy_plan(graph, weights)?;
         let headroom = device.profile()?.device_headroom_bytes();
         let budget = device.allocatable_memory_bytes()?.saturating_sub(headroom);
         let paging = Self::paging(device, graph, weights, (width, capacity), kv_tokens)?;
-        let (mut states, mut fp8, tables) = Self::allocate_slots(
+        let (mut states, mut fp8, tables, table_root) = Self::allocate_slots(
             device,
             graph,
             weights,
@@ -501,17 +593,9 @@ impl SlotPool {
             paging.as_ref(),
             budget,
         )?;
-        let external = api::zeros::<f32>(&[hidden])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
         let lanes = if verify >= 2 { width * verify } else { width };
-        let (mut lane_external, pinned_external) =
-            Self::external_lanes(device, weights.fusion.is_some(), lanes, hidden)?;
-        let mut lane_fusion: Vec<Option<super::program::FusionWorkspace>> = (0..lanes)
-            .map(|_| {
-                super::program::FusionWorkspace::allocate(device, hidden, weights.fusion.is_some())
-            })
-            .collect::<Result<_>>()?;
+        let (external, mut lane_external, pinned_external, mut lane_fusion) =
+            Self::lane_inputs(device, weights.fusion.is_some(), lanes, hidden)?;
         let mut attention = super::attention_decode::Workspace::new(device, graph, capacity)?;
         let geometry = (width, verify, capacity);
         attention.prepare_pooled(device, graph, weights, geometry, paging.is_some())?;
@@ -519,7 +603,8 @@ impl SlotPool {
         let mut nvfp4 = pool_workspace(device, graph, weights, (lanes, verify), &narrow_slots)?;
         let mut placeholder_states = States::new();
         let mut placeholder_fp8 = Fp8Caches::new();
-        let (decode, verify_graph, narrow, narrow_roots) = {
+        let mut lanes_attention = lanes_workspace(device, graph, width, verify)?;
+        let (decode, verify_graph, decode_narrow, narrow, narrow_roots) = {
             let mut builder = super::batch::BatchBuilder {
                 device,
                 graph,
@@ -536,6 +621,9 @@ impl SlotPool {
                 tables: &tables,
                 capacity,
                 width,
+                table_root: None,
+                lanes_attention: None,
+                burst: None,
             };
             if verify >= 2 {
                 let (full, graphs, roots) = build_verify_graphs(
@@ -544,15 +632,23 @@ impl SlotPool {
                     verify,
                     &narrow_slots,
                 )?;
-                (None, Some(full), graphs, roots)
+                (None, Some(full), Vec::new(), graphs, roots)
             } else {
-                let decode = builder.build_slots(&mut states, &mut fp8)?;
-                (Some(decode), None, Vec::new(), Vec::new())
+                builder.lanes_attention = Some(&mut lanes_attention);
+                let (decode, decode_narrow) = build_pool_decode(
+                    &mut builder,
+                    &mut states,
+                    &mut fp8,
+                    &narrow_slots,
+                    &table_root,
+                )?;
+                (Some(decode), None, decode_narrow, Vec::new(), Vec::new())
             }
         };
         Ok(Self {
             decode,
             verify: verify_graph,
+            narrow_decode: decode_narrow,
             narrow,
             active_verify: None,
             _narrow_roots: narrow_roots,
@@ -569,6 +665,8 @@ impl SlotPool {
             _external: external,
             _nvfp4: nvfp4,
             _attention: attention,
+            _lanes_attention: lanes_attention,
+            _table_root: table_root,
             lane_external,
             external_uploaded: vec![false; lanes],
             pinned_external,
@@ -577,8 +675,29 @@ impl SlotPool {
         })
     }
 
+    /// The shared external row, each lane's own row and each lane's fusion workspace.
+    fn lane_inputs(
+        device: &CudaDevice,
+        fused: bool,
+        lanes: usize,
+        hidden: usize,
+    ) -> Result<LaneInputs> {
+        let external = api::zeros::<f32>(&[hidden])
+            .sync_on(&device.stream)
+            .map_err(device_error)?;
+        let (lane_external, pinned_external) = Self::external_lanes(device, fused, lanes, hidden)?;
+        let lane_fusion = (0..lanes)
+            .map(|_| super::program::FusionWorkspace::allocate(device, hidden, fused))
+            .collect::<Result<_>>()?;
+        Ok((external, lane_external, pinned_external, lane_fusion))
+    }
+
     /// Allocate each slot's recurrent states and KV cache, checking the running total against
     /// the device budget before the pool captures any graph.
+    #[expect(
+        unsafe_code,
+        reason = "Audited table rows: the pool stores their owner beside them"
+    )]
     fn allocate_slots(
         device: &CudaDevice,
         graph: &DataflowGraph,
@@ -617,11 +736,15 @@ impl SlotPool {
                 ));
             }
             fp8.push(slot_fp8);
-            // Step 1 of the KV refactor: a per-slot identity mapping over that slot's own cache.
-            // A paged pool fills the table from its shared blocks when the slot is assigned.
-            tables.push(super::metadata::identity_table(device, capacity)?);
         }
-        Ok((states, fp8, tables))
+        // Step 1 of the KV refactor: a per-slot identity mapping over that slot's own cache.
+        // A paged pool fills the table from its shared blocks when the slot is assigned.
+        let root = super::metadata::identity_tables(device, capacity, width)?;
+        for slot in 0..width {
+            // SAFETY: the pool stores `root` beside these views; the rows are disjoint.
+            tables.push(unsafe { super::arena::row_view(&root, width, slot)? });
+        }
+        Ok((states, fp8, tables, root))
     }
 
     /// Per-lane external hidden rows plus, for an external-hidden pool, their pinned
@@ -1009,7 +1132,14 @@ impl SlotPool {
             }
         }
         match (&mut self.decode, &mut self.verify) {
-            (Some(graph), _) => graph.set_cursor(slot, rows)?,
+            (Some(graph), _) => {
+                graph.set_cursor(slot, rows)?;
+                for rung in &mut self.narrow_decode {
+                    if slot < rung.width {
+                        rung.set_cursor(slot, rows)?;
+                    }
+                }
+            }
             (None, Some(graph)) => graph.set_cursor(slot, rows)?,
             (None, None) => return Err(Error::invariant("slot pool graph")),
         }
@@ -1144,9 +1274,32 @@ impl SlotPool {
         {
             return Err(Error::invalid("draft lane has no external hidden input"));
         }
-        self.decode
-            .as_mut()
-            .ok_or_else(|| Error::invalid("slot pool has no decode graph"))?
+        // Lanes only occupy low slots while few sequences are live, so the narrowest rung that
+        // covers the highest busy slot replays the step without charging for every lane the
+        // configured concurrency allows.
+        let required = lanes
+            .iter()
+            .map(|&(slot, ..)| slot.saturating_add(1))
+            .max()
+            .unwrap_or(0);
+        let selected = self
+            .narrow_decode
+            .iter()
+            .position(|graph| graph.width >= required);
+        let graph = match selected {
+            Some(index) => &mut self.narrow_decode[index],
+            None => self
+                .decode
+                .as_mut()
+                .ok_or_else(|| Error::invalid("slot pool has no decode graph"))?,
+        };
+        // A sequence can move between the full graph and a narrow rung when concurrency
+        // changes; the lane's staged position is authoritative, so restore the rung's cursor
+        // before it validates the step.
+        for &(slot, _, _, state_pos) in lanes {
+            graph.set_cursor(slot, state_pos)?;
+        }
+        let readout = graph
             .run_lanes_readout_async(
                 device,
                 lanes,
@@ -1155,7 +1308,26 @@ impl SlotPool {
                 true,
                 plain_greedy,
             )
-            .await
+            .await?;
+        // Advance every rung to the position the step ended at, so a later step can use any
+        // rung without failing its cursor check.
+        let advanced: Vec<(usize, usize)> = lanes
+            .iter()
+            .map(|&(slot, ..)| (slot, graph.cursors()[slot]))
+            .collect();
+        for (slot, position) in advanced {
+            if let Some(full) = self.decode.as_mut()
+                && slot < full.width
+            {
+                full.set_cursor(slot, position)?;
+            }
+            for rung in &mut self.narrow_decode {
+                if slot < rung.width {
+                    rung.set_cursor(slot, position)?;
+                }
+            }
+        }
+        Ok(readout)
     }
 
     /// Replay one pooled speculation step; see [`SlotVerifyGraph::run_verify_readout`].

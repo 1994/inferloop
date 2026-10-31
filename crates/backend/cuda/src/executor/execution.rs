@@ -9,7 +9,9 @@ use crate::constants::PREFILL_LANES;
 use crate::constants::WIDER_PREFILL_LANES;
 use crate::device::CudaDevice;
 use crate::loading::{LoadedModel, PooledServingQuote};
+use crate::resident::DeviceProgram;
 use crate::resident::dflash2::{Engine, VerifiedRows};
+use crate::resident::prefill_burst::{self, PromptBurst, SEGMENT_ROWS};
 use crate::resident::slot_batch::SlotPool;
 use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::{ExecutionInput, ExecutionTask, MediaPixels, MediaPlan, OutputReadout, TaskOutput};
@@ -20,7 +22,13 @@ use std::mem::swap;
 use std::mem::take;
 use std::ops::Range;
 /// Bound capture/replan work while adapting tensor quotes to observed driver storage.
+/// Spacing of automatic pool widths; at most this many lanes minus one go unused.
+const POOL_WIDTH_STEP: usize = 4;
 const POOL_CAPTURE_ATTEMPTS: usize = 3;
+/// Prompts one step needs before any multi-sequence graph is worth its padded rows.
+const MIN_BURST_PROMPTS: usize = 2;
+/// A rung replays every row: at most this many segments per prompt still beats the worker.
+const MAX_SEGMENTS_PER_PROMPT: usize = 4;
 
 /// The prompt rows a just-finished chunk leaves as a reusable prefix, if any.
 ///
@@ -182,8 +190,13 @@ impl CudaExecutor {
             .map(|task| self.decode_eligible(task))
             .collect();
         // Pool capture belongs to admission; submission only replays prepared graphs.
+        self.run_burst(tasks, &mut outputs, snapshots).await?;
         let mut index = 0;
         while index < tasks.len() {
+            if outputs[index].is_some() {
+                index += 1;
+                continue;
+            }
             if !eligible[index] {
                 self.run_serial(tasks, index, &mut outputs, snapshots)
                     .await?;
@@ -354,7 +367,7 @@ impl CudaExecutor {
             // Keep the original baseline across retries: failed captures can leave
             // driver modules resident even after their tensor owners are reclaimed.
             let allocated = self
-                .capture_pool_plan(attempt, capacity, envelope, &plan)
+                .capture_pool_plan(attempt, capacity, (baseline, envelope), &plan)
                 .and_then(|()| {
                     self.physical_available()
                         .map(|free| baseline.saturating_sub(free))
@@ -473,7 +486,7 @@ impl CudaExecutor {
         &mut self,
         attempt: usize,
         capacity: usize,
-        envelope: u64,
+        (baseline, envelope): (u64, u64),
         plan: &PoolPlan,
     ) -> Result<()> {
         let quote = plan.quote;
@@ -500,6 +513,7 @@ impl CudaExecutor {
         self.slots = Some(pool);
         self.attach_dflash()?;
         self.build_homes(attempt, prompt_width);
+        self.build_burst(baseline, envelope);
         super::profiling::memory(attempt, "homes", width, self.loaded.device());
         if self.worker.is_none()
             || (self.loaded.mtp_depth() > 0 && self.draft_slots.is_none())
@@ -577,7 +591,13 @@ impl CudaExecutor {
         // established 1024-row worker floor. Deeper shrinking saves memory but adds replays.
         let minimum_prompt = (configured / 2).max(WIDER_PREFILL_LANES).min(configured);
         let minimum = if self.dflash.is_some() { 1 } else { 2 };
-        for width in (minimum..=maximum).rev() {
+        // Funded widths snap to a ladder: free memory differs between the tuning worker and the
+        // server, and every distinct width is a distinct set of measured shapes. Below one step
+        // and at the requested maximum the exact width is kept.
+        let ladder = move |width: &usize| {
+            *width == maximum || *width < POOL_WIDTH_STEP || width.is_multiple_of(POOL_WIDTH_STEP)
+        };
+        for width in (minimum..=maximum).rev().filter(ladder) {
             let mut prompt_width = configured;
             loop {
                 if let Some(quote) = self.loaded.funded_pooled_serving(
@@ -619,7 +639,13 @@ impl CudaExecutor {
         let kv = unsafe { pool.kv_views() };
         let worker = kv.and_then(|kv| self.loaded.prompt_worker(pool.capacity(), kv, prompt_width));
         match worker {
-            Ok((program, draft)) => self.worker = Some(super::Worker { program, draft }),
+            Ok((program, draft)) => {
+                self.worker = Some(super::Worker {
+                    program,
+                    draft,
+                    bursts: Vec::new(),
+                });
+            }
             Err(error) => tracing::warn!(
                 target: "infer::executor",
                 %error,
@@ -646,6 +672,173 @@ impl CudaExecutor {
                 }
             }
         }
+    }
+
+    /// Capture the multi-sequence prompt graph over the resident slots. Its absence only means
+    /// concurrent prompts replay one by one on the worker.
+    fn build_burst(&mut self, baseline: u64, envelope: u64) {
+        let Some(pool) = self.slots.as_ref() else {
+            return;
+        };
+        if self.worker.is_none()
+            || pool.verify().is_some()
+            || self.draft_slots.is_some()
+            || self.dflash.is_some()
+            || self.homes.iter().any(Option::is_none)
+        {
+            return;
+        }
+        let capacity = pool.capacity();
+        let width = pool.width();
+        let remaining = self.physical_available().map_or(0, |free| {
+            envelope.saturating_sub(baseline.saturating_sub(free))
+        });
+        let mut programs: Vec<&mut DeviceProgram> = self
+            .homes
+            .iter_mut()
+            .flatten()
+            .map(|home| &mut home.program)
+            .collect();
+        // The quote funded these graphs; never let the serving pool shrink to pay for them.
+        let rungs = prefill_burst::rungs(width);
+        let Some(worker) = self.worker.as_mut() else {
+            return;
+        };
+        let worker_rows = worker.program.prefill_width();
+        let required = self
+            .loaded
+            .prompt_burst_bytes(width, worker_rows)
+            .unwrap_or(u64::MAX);
+        if required > remaining {
+            tracing::info!(target: "infer::executor", required, remaining,
+                "serving envelope leaves no room for multi-sequence prompt graphs");
+            return;
+        }
+        tracing::info!(target: "infer::executor", required, remaining,
+            "capturing multi-sequence prompt graphs");
+        let bursts = capture_bursts(&self.loaded, capacity, &mut programs, worker, &rungs);
+        worker.bursts = bursts;
+        // An estimate can miss capture overhead; the serving pool must not pay for that.
+        let free = self
+            .loaded
+            .device()
+            .allocatable_memory_bytes()
+            .map(|free| free.saturating_sub(self.loaded.profile().device_headroom_bytes()));
+        if free.is_ok_and(|free| baseline.saturating_sub(free) > envelope) {
+            tracing::info!(target: "infer::executor", envelope,
+                "multi-sequence prompt graphs exceeded the envelope; prompts replay on the worker");
+            worker.bursts.clear();
+        }
+    }
+
+    /// Whether this task's whole input fits one segment of the multi-sequence prompt graph.
+    fn burst_eligible(&self, task: &ExecutionTask) -> Option<usize> {
+        if task.media.is_some() || matches!(task.tokens, ExecutionInput::Decode { .. }) {
+            return None;
+        }
+        let state = self.states.get(&task.state)?;
+        let home = state.home?;
+        let count = task.tokens.delta(state.history.len()).ok()?.len();
+        (state.slot.is_none()
+            && !state.poisoned
+            && state.speculation.is_none()
+            && state.draft.is_none()
+            && state.media_prompt_len == 0
+            && state.readout == OutputReadout::Logits
+            && task.tokens.readout() != OutputReadout::Full
+            && (1..=SEGMENT_ROWS).contains(&count))
+        .then_some(home)
+    }
+
+    /// Replay every eligible prompt of this step through one graph, reading each weight once.
+    /// A step whose prompts would mostly pad their rung stays on the narrower worker graph.
+    async fn run_burst(
+        &mut self,
+        tasks: &[ExecutionTask],
+        outputs: &mut [Option<TaskOutput>],
+        snapshots: &mut Vec<prefix::CachedPrefix>,
+    ) -> Result<()> {
+        if self.worker.as_ref().is_none_or(|w| w.bursts.is_empty()) {
+            return Ok(());
+        }
+        let selected: Vec<(usize, usize)> = tasks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, task)| Some((index, self.burst_eligible(task)?)))
+            .collect();
+        let required = selected
+            .iter()
+            .map(|&(_, slot)| slot + 1)
+            .max()
+            .unwrap_or(0);
+        let rung = self.worker.as_ref().and_then(|worker| {
+            worker
+                .bursts
+                .iter()
+                .position(|burst| burst.segments() >= required)
+                .filter(|&rung| burst_pays(selected.len(), worker.bursts[rung].segments()))
+        });
+        let Some(rung) = rung else {
+            return Ok(());
+        };
+        let mut owned = Vec::with_capacity(selected.len());
+        for &(index, segment) in &selected {
+            let state = self
+                .states
+                .get_mut(&tasks[index].state)
+                .ok_or_else(|| Error::invariant("validated CUDA state"))?;
+            let position = state.history.len();
+            if position == 0 {
+                state.program.reset_async().await?;
+            }
+            owned.push((
+                segment,
+                tasks[index].tokens.delta(position)?.to_vec(),
+                position,
+            ));
+        }
+        let lanes: Vec<_> = owned
+            .iter()
+            .map(|(segment, tokens, position)| prefill_burst::Lane {
+                segment: *segment,
+                tokens,
+                position: *position,
+            })
+            .collect();
+        let device = self.loaded.device();
+        let burst = self
+            .worker
+            .as_mut()
+            .and_then(|worker| worker.bursts.get_mut(rung))
+            .ok_or_else(|| Error::invariant("prompt burst"))?;
+        let logits =
+            super::profiling::phase_async("prefill_burst", burst.run_async(device, &lanes)).await?;
+        for ((&(index, slot), lane), logits) in selected.iter().zip(&lanes).zip(logits) {
+            let task = &tasks[index];
+            let state = self
+                .states
+                .get_mut(&task.state)
+                .ok_or_else(|| Error::invariant("validated CUDA state"))?;
+            state.program.note_burst(lane.position + lane.tokens.len());
+            task.tokens.commit(&mut state.history)?;
+            let output = state.output(task.tokens.readout(), None, logits);
+            if let Some(covered) = reusable_prefix(state, task)
+                && let Some(snapshot) = slot_prefix(
+                    self.loaded.device(),
+                    &self.loaded,
+                    (self.slots.as_ref(), self.draft_slots.as_ref()),
+                    state,
+                    (slot, covered),
+                )?
+            {
+                snapshots.push(snapshot);
+            }
+            outputs[index] = Some(TaskOutput {
+                request: task.request,
+                output,
+            });
+        }
+        Ok(())
     }
 
     /// Widest pool the device can fund, trying every width down to two.
@@ -888,6 +1081,46 @@ impl CudaExecutor {
         });
         Ok(())
     }
+}
+
+/// Every rung over the first programs, widest first so narrower rungs view its storage. Any
+/// failure leaves no rung: prompts then replay on the worker.
+#[expect(
+    unsafe_code,
+    reason = "The worker owning these graphs is cleared before the slot pool drops"
+)]
+fn capture_bursts(
+    loaded: &LoadedModel,
+    capacity: usize,
+    programs: &mut [&mut DeviceProgram],
+    worker: &mut super::Worker,
+    rungs: &[usize],
+) -> Vec<PromptBurst> {
+    let mut bursts: Vec<PromptBurst> = Vec::new();
+    for &segments in rungs.iter().rev() {
+        let (nvfp4, worker_external) = worker.program.burst_shared();
+        let shared = prefill_burst::Shared {
+            nvfp4,
+            wider: bursts.first(),
+            worker_external,
+        };
+        // SAFETY: see the expectation above; every rung lives with the worker.
+        let built = unsafe { loaded.prompt_burst(capacity, &mut programs[..segments], shared) };
+        match built {
+            Ok(burst) => bursts.push(burst),
+            Err(error) => {
+                tracing::info!(target: "infer::executor", segments, %error,
+                    "multi-sequence prompt graph unavailable; prompts replay on the worker");
+                return Vec::new();
+            }
+        }
+    }
+    bursts.reverse();
+    bursts
+}
+
+const fn burst_pays(prompts: usize, segments: usize) -> bool {
+    prompts >= MIN_BURST_PROMPTS && prompts * MAX_SEGMENTS_PER_PROMPT >= segments
 }
 
 /// Bind newly assigned sequences into their slots, replay one decode step for every
@@ -1947,7 +2180,7 @@ impl Speculation {
 /// Draft proposals for the positions after the submitted token. The first step consumes that
 /// token itself, so it doubles as the draft's catch-up and proposes `position + 1`.
 async fn propose(
-    draft: &mut super::super::resident::DeviceProgram,
+    draft: &mut DeviceProgram,
     sampler: &mut Sampler<'_>,
     proposed: &mut Vec<u32>,
     submitted: (u32, usize),
@@ -2016,3 +2249,7 @@ fn pool_retry_budget(funding: u64, quoted: u64, allocated: u64, kv_block: u64) -
 #[cfg(test)]
 #[path = "../../tests/unit/executor_execution.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/executor_prompt_burst.rs"]
+mod prompt_burst_tests;

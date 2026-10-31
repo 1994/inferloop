@@ -465,6 +465,9 @@ impl DeviceProgram {
             tables: from_ref(&self.table),
             capacity: self.capacity,
             width: weights.batch_width,
+            table_root: None,
+            lanes_attention: None,
+            burst: None,
         };
         self.batch = Some(builder.build()?);
         let prompt = retained_prompt_lanes(&self.prompts);
@@ -746,6 +749,9 @@ impl DeviceProgram {
             tables: from_ref(&table),
             capacity,
             width: weights.batch_width,
+            table_root: None,
+            lanes_attention: None,
+            burst: None,
         };
         let captures = builder.build_program(
             geometry,
@@ -1110,6 +1116,30 @@ impl DeviceProgram {
     ///
     /// Prefix caching snapshots these with device-to-device copies and restores them into a
     /// later sequence, so the buffers must stay reachable after capture.
+    /// A resident slot's state, KV and block table for a multi-sequence prompt capture.
+    pub(super) const fn burst_binding(
+        &mut self,
+    ) -> (
+        &mut super::batch::States,
+        &mut super::fp8_cache::Fp8Caches,
+        &Tensor<i32>,
+    ) {
+        (&mut self.states, &mut self.fp8_states, &self.table)
+    }
+
+    /// The projection workspace multi-sequence prompt graphs share with this worker.
+    pub(crate) const fn burst_shared(
+        &mut self,
+    ) -> (&mut super::nvfp4_gemm::Workspace, &Tensor<f32>) {
+        (&mut self.nvfp4, &self.lane_external_owner)
+    }
+
+    /// Record that a multi-sequence prompt graph advanced this resident state to `end`.
+    pub(crate) const fn note_burst(&mut self, end: usize) {
+        self.next_position = end;
+        self.last_batch = None;
+    }
+
     #[must_use]
     pub const fn states(&self) -> &super::batch::States {
         &self.states

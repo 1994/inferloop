@@ -2,11 +2,16 @@
 #[cfg(cuda_backend)]
 use crate::backend::{self, BackendChoice, Selection};
 #[cfg(cuda_backend)]
-use infer_backend_cuda::tuning::table_path;
+use infer_backend_cuda::tuning::{
+    preparation::{prepared_width, record_prepared as record_width},
+    table_path,
+};
 use infer_core::{Error, ErrorCode, Result};
 #[cfg(cuda_backend)]
 use std::env::{args_os, current_exe, var_os};
 use std::ffi::OsStr;
+#[cfg(cuda_backend)]
+use std::fs::metadata;
 use std::fs::{OpenOptions, create_dir_all, remove_file};
 use std::io::{self, Read};
 use std::os::unix::process::CommandExt;
@@ -35,6 +40,26 @@ pub(super) fn prepare(mut selection: Selection) -> Result<(Selection, bool)> {
     {
         return Ok((selection, false));
     }
+    // A completed preparation for this exact binary, command line and device needs no second
+    // capture. It also bounds the pool to the width it measured: the worker sees less free memory
+    // than the server, and a wider server pool would replay shapes nothing measured.
+    if let Some(width) = prepared_width(&invocation()) {
+        selection.autotune = false;
+        selection.tuned_pool_width = Some(width);
+        tracing::info!(target: "infer::tuning", width, "reusing completed CUDA tuning preparation");
+        return Ok((selection, false));
+    }
+    run_preparation();
+    // The serving process still validates cached choices against its own live weights.
+    selection.autotune = false;
+    selection.tuned_pool_width = prepared_width(&invocation());
+    tracing::info!(target: "infer::tuning", "CUDA preparation exited; serving reuses validated tuning cache");
+    Ok((selection, false))
+}
+
+/// Fill the tuning cache in a child; failure leaves the server its validated cache or defaults.
+#[cfg(cuda_backend)]
+fn run_preparation() {
     tracing::info!(target: "infer::tuning", "preparing CUDA tuning cache in an isolated process");
     let prepared = current_exe()
         .map_err(|error| io_error(&error))
@@ -49,10 +74,29 @@ pub(super) fn prepare(mut selection: Selection) -> Result<(Selection, bool)> {
         tracing::warn!(target: "infer::tuning", %error,
             "CUDA preparation failed; serving retains validated cache or conservative defaults");
     }
-    // The serving process still validates cached choices against its own live weights.
-    selection.autotune = false;
-    tracing::info!(target: "infer::tuning", "CUDA preparation exited; serving reuses validated tuning cache");
-    Ok((selection, false))
+}
+
+/// The binary and command line that decide which geometries a preparation measures. The
+/// backend adds its own device identity.
+#[cfg(cuda_backend)]
+fn invocation() -> Vec<Vec<u8>> {
+    let mut parts: Vec<Vec<u8>> = args_os()
+        .skip(1)
+        .map(|arg| arg.as_encoded_bytes().to_vec())
+        .collect();
+    if let Ok(file) = current_exe().and_then(metadata) {
+        parts.push(format!("{}:{:?}", file.len(), file.modified().ok()).into_bytes());
+    }
+    parts
+}
+
+/// Runs in the worker once its pool is captured and measured. A worker that failed or captured
+/// nothing leaves no record, so the next start prepares again.
+#[cfg(cuda_backend)]
+pub(super) fn record_prepared(width: Option<usize>) {
+    if let Some(width) = width {
+        record_width(&invocation(), width);
+    }
 }
 
 fn worker_mode(value: Option<&OsStr>) -> Result<bool> {

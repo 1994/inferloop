@@ -7,6 +7,7 @@ use super::{
     resident_gemm::ResidentTuningSession,
 };
 use crate::device::{CudaDevice, device_error};
+use crate::tuning::preparation::driver_build;
 use capture::{Captured, fingerprint};
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
@@ -17,7 +18,6 @@ use cutile::{
 use infer_core::{Error, Result};
 use reference::Fixture;
 use serde::{Deserialize, Serialize};
-use std::fs::read_to_string;
 use std::{
     collections::BTreeMap,
     sync::{Mutex, OnceLock},
@@ -153,13 +153,7 @@ fn resolve(
     autotune: bool,
     session: &ResidentTuningSession,
 ) -> Result<usize> {
-    let driver_build = read_to_string("/proc/driver/nvidia/version")
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("NVRM version:"))
-                .map(|l| l.trim().to_owned())
-        });
+    let driver_build = driver_build();
     let key = Key {
         hardware: serde_json::to_string(device.profile()?).map_err(device_error)?,
         driver_version: CudaDevice::driver_version()?,

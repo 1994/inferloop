@@ -27,6 +27,8 @@ fn selected_backend_preserves_compact_generation_reservation() -> Result<()> {
             text_only: false,
             media_limits: infer_models::MediaLimits::default(),
             pool_capture: super::super::PoolCapture::OnDemand,
+            #[cfg(cuda_backend)]
+            tuned_pool_width: None,
             // The exact per-token kernel; this fixture checks the Metal reservation, not prefill.
         },
     )?;

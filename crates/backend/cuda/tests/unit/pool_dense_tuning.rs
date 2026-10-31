@@ -161,3 +161,42 @@ fn private_reference_scope_restores_after_nested_failure() {
     assert!(failed.is_err());
     assert_eq!(recorded_choice(Choice::Native), Choice::Native);
 }
+#[test]
+fn every_tensor_core_geometry_is_searchable_by_shape_alone() {
+    // Outside the qualified family: a narrow reduction, and a wide output at many rows.
+    for shape in [[1, 6144, 2048], [16, 16, 2048], [16, 248_320, 2048]] {
+        assert!(!supported(shape));
+        assert!(searchable(shape));
+        assert_eq!(baseline(shape), Choice::Native);
+    }
+    // A very wide output at few rows keeps its dedicated vocabulary-head GEMV.
+    assert!(!searchable([1, 248_320, 2048]));
+    assert!(!searchable([0, 16, 2048]));
+}
+#[test]
+fn qualified_family_keeps_its_baseline_and_candidates() {
+    assert_eq!(baseline([16, 48, 5120]), Choice::Gemv);
+    assert_eq!(baseline([24, 48, 5120]), Choice::Native);
+    assert_eq!(
+        candidates([16, 48, 5120]).collect::<Vec<_>>(),
+        [Choice::Shared]
+    );
+    assert_eq!(
+        candidates([24, 48, 5120]).collect::<Vec<_>>(),
+        [Choice::Gemv, Choice::Shared]
+    );
+}
+#[test]
+fn extended_geometry_searches_gemv_and_wider_tensor_core_tiles() {
+    assert_eq!(
+        candidates([1, 6144, 2048]).collect::<Vec<_>>(),
+        [
+            Choice::Gemv,
+            Choice::Shared,
+            Choice::NativeN64,
+            Choice::NativeN128
+        ]
+    );
+    assert!(Choice::NativeN64.native_family() && Choice::NativeN128.native_family());
+    assert!(!Choice::Gemv.native_family());
+}

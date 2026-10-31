@@ -22,6 +22,9 @@ pub struct ActivationArena {
     indices: BTreeMap<TensorId, usize>,
     pub(crate) buffers: Vec<Option<Tensor<f32>>>,
     lanes: usize,
+    /// Whether slots hold concatenated lane rows. A one-lane arena is still batched when the
+    /// pool captures a narrow decode rung over it, unlike a scalar `new` arena.
+    batched: bool,
     elements: usize,
 }
 
@@ -29,7 +32,7 @@ impl ActivationArena {
     /// # Errors
     /// Rejects invalid graphs, overflowing budgets and failed device allocation.
     pub fn new(device: &CudaDevice, graph: &DataflowGraph, byte_budget: usize) -> Result<Self> {
-        Self::plan(device, graph, 1, byte_budget)
+        Self::plan(device, graph, 1, byte_budget, false)
     }
 
     /// One slot per plan entry holding `lanes` concatenated rows: activations of
@@ -45,7 +48,7 @@ impl ActivationArena {
         if lanes == 0 {
             return Err(Error::invalid("batched activation lanes"));
         }
-        Self::plan(device, graph, lanes, byte_budget)
+        Self::plan(device, graph, lanes, byte_budget, true)
     }
 
     /// Slot layout after last-consumer reuse, with the tensor-to-slot mapping. A `single`
@@ -149,6 +152,7 @@ impl ActivationArena {
             indices: self.indices.clone(),
             buffers,
             lanes: 1,
+            batched: true,
             elements: self.elements / self.lanes,
         })
     }
@@ -186,6 +190,7 @@ impl ActivationArena {
             indices: self.indices.clone(),
             buffers,
             lanes: self.lanes,
+            batched: self.batched,
             elements: self.elements,
         })
     }
@@ -229,6 +234,67 @@ impl ActivationArena {
             indices,
             buffers,
             lanes,
+            batched: self.batched,
+            elements: sizes.iter().sum(),
+        })
+    }
+
+    /// Views of rows `start..start + rows` of every slot, as an arena of `rows` lanes.
+    ///
+    /// A slot holding one row whatever the lane count (the prompt logits row) is viewed whole.
+    /// # Safety
+    /// `self` must outlive the views, and replays through them must be serialized on one stream.
+    /// # Errors
+    /// Rejects a layout that differs from this arena's or a segment outside it.
+    #[expect(
+        unsafe_code,
+        reason = "Audited segment alias: the prompt burst owns the wide arena beside every graph \
+                  captured against its segments"
+    )]
+    pub(super) unsafe fn segment(
+        &self,
+        graph: &DataflowGraph,
+        rows: usize,
+        start: usize,
+        single: Option<TensorId>,
+    ) -> Result<Self> {
+        let (sizes, indices) = Self::sizes(graph, rows, single)?;
+        if rows == 0 || start + rows > self.lanes || indices != self.indices {
+            return Err(Error::invalid("arena segment layout"));
+        }
+        let mut buffers = Vec::with_capacity(sizes.len());
+        for (buffer, &size) in self.buffers.iter().zip(&sizes) {
+            let slot = buffer
+                .as_ref()
+                .ok_or_else(|| Error::invariant("wide arena slot is currently an output"))?;
+            let offset = if size == slot.size() {
+                0
+            } else {
+                start * (size / rows)
+            };
+            if offset + size > slot.size() {
+                return Err(Error::invalid("arena segment slot"));
+            }
+            let allocation = RowAllocation {
+                pointer: slot.device_pointer().cu_deviceptr()
+                    + u64::try_from(offset * F32_BYTES).map_err(device_error)?,
+                bytes: size * F32_BYTES,
+                device: slot.device_id(),
+            };
+            // SAFETY: forwarded from this function's contract; the range was checked above.
+            buffers.push(Some(unsafe {
+                Tensor::from_foreign(
+                    Arc::new(allocation),
+                    vec![i32::try_from(size).map_err(device_error)?],
+                    vec![1],
+                )
+            }));
+        }
+        Ok(Self {
+            indices,
+            buffers,
+            lanes: rows,
+            batched: self.batched,
             elements: sizes.iter().sum(),
         })
     }
@@ -246,7 +312,7 @@ impl ActivationArena {
         if lanes == 0 {
             return Err(Error::invalid("batched activation lanes"));
         }
-        Self::plan_with(device, graph, lanes, byte_budget, graph.logits)
+        Self::plan_with(device, graph, lanes, byte_budget, graph.logits, true)
     }
 
     fn plan(
@@ -254,8 +320,9 @@ impl ActivationArena {
         graph: &DataflowGraph,
         lanes: usize,
         byte_budget: usize,
+        batched: bool,
     ) -> Result<Self> {
-        Self::plan_with(device, graph, lanes, byte_budget, None)
+        Self::plan_with(device, graph, lanes, byte_budget, None, batched)
     }
 
     fn plan_with(
@@ -264,6 +331,7 @@ impl ActivationArena {
         lanes: usize,
         byte_budget: usize,
         single: Option<TensorId>,
+        batched: bool,
     ) -> Result<Self> {
         let (sizes, indices) = Self::sizes(graph, lanes, single)?;
         let elements = sizes
@@ -288,6 +356,7 @@ impl ActivationArena {
             indices,
             buffers,
             lanes,
+            batched,
             elements,
         })
     }
@@ -323,7 +392,7 @@ impl ActivationArena {
     /// Rejects non-batched arenas and out-of-range lanes.
     pub(crate) fn row(&self, id: TensorId, lane: usize) -> Result<TensorView<'_, f32>> {
         let tensor = self.get(id)?;
-        if self.lanes == 1 || !tensor.size().is_multiple_of(self.lanes) {
+        if !self.batched || !tensor.size().is_multiple_of(self.lanes) {
             return Err(Error::invalid("activation slot is not batched"));
         }
         let size = tensor.size() / self.lanes;

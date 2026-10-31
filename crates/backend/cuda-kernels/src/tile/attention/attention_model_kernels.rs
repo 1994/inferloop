@@ -213,4 +213,84 @@ pub mod attention {
             out.store(0.0f32.broadcast(shape![1, D]));
         }
     }
+
+    /// Lane-batched [`append`]. A paged cache is shared, so one block owns a KV head and walks
+    /// every lane; an unpaged pool has one block per lane and KV head (`PER_LANE`).
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::useless_let_if_seq,
+        reason = "cuTile DSL binds explicit tensors and uses statement control flow"
+    )]
+    #[cutile::entry()]
+    fn append_lanes<
+        E: ElementType,
+        const D: i32,
+        const CAP: i32,
+        const QUANT: i32,
+        const KH: i32,
+        const LANES: i32,
+        const PER_LANE: i32,
+    >(
+        keys: &mut Tensor<E, { [1, CAP, D] }>,
+        values: &mut Tensor<E, { [1, CAP, D] }>,
+        k: &Tensor<f32, { [-1, D] }>,
+        v: &Tensor<f32, { [-1, D] }>,
+        metadata: &Tensor<i32, { [-1] }>,
+        table: &Tensor<i32, { [-1, -1] }>,
+        k_scale: f32,
+        v_scale: f32,
+    ) {
+        let pid = get_tile_block_id();
+        let kv = pid.0 % KH;
+        let mut first = 0i32;
+        let mut last = LANES;
+        if PER_LANE == 1 {
+            first = pid.0 / KH;
+            last = first + 1i32;
+        }
+        for lane in first..last {
+            let position: i32 = tile_to_scalar(
+                metadata
+                    .partition(shape![1])
+                    .load([lane * 4i32 + 2i32])
+                    .reshape(shape![]),
+            );
+            if position >= 0 {
+                let physical: i32 = tile_to_scalar(
+                    table
+                        .partition(shape![1, 1])
+                        .load([lane, position / 32i32])
+                        .reshape(shape![]),
+                );
+                let row = physical * 32i32 + position % 32i32;
+                let mut key = k
+                    .partition(shape![1, D])
+                    .load([lane * KH + kv, 0i32])
+                    .reshape(shape![1, 1, D]);
+                let mut value = v
+                    .partition(shape![1, D])
+                    .load([lane * KH + kv, 0i32])
+                    .reshape(shape![1, 1, D]);
+                if QUANT == 1 {
+                    let low = (-448.0f32).broadcast(shape![1, 1, D]);
+                    let high = 448.0f32.broadcast(shape![1, 1, D]);
+                    key = min_tile(
+                        max_tile(key / k_scale.broadcast(shape![1, 1, D]), low),
+                        high,
+                    );
+                    value = min_tile(
+                        max_tile(value / v_scale.broadcast(shape![1, 1, D]), low),
+                        high,
+                    );
+                }
+                let key: Tile<E, { [1, 1, D] }> = convert_tile(key);
+                let value: Tile<E, { [1, 1, D] }> = convert_tile(value);
+                keys.partition_mut(shape![1, 1, D])
+                    .store(key, [0i32, row, 0i32]);
+                values
+                    .partition_mut(shape![1, 1, D])
+                    .store(value, [0i32, row, 0i32]);
+            }
+        }
+    }
 }

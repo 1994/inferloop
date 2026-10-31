@@ -176,6 +176,12 @@ pub(super) struct BatchBuilder<'a> {
     pub tables: &'a [Tensor<i32>],
     pub capacity: usize,
     pub width: usize,
+    /// Every lane's block table in one tensor, set while capturing the full-width decode graph.
+    pub table_root: Option<&'a Tensor<i32>>,
+    /// Scratch of that graph's lane-batched attention.
+    pub lanes_attention: Option<&'a mut super::attention_lanes::Workspace>,
+    /// Set while capturing a multi-sequence prompt graph.
+    pub burst: Option<super::prefill_burst::Binding<'a>>,
 }
 
 /// Decode-only slot graph: lane `i` reads and writes the slot pool's `i`-th state set,
@@ -268,7 +274,9 @@ impl BatchBuilder<'_> {
         lane_fp8: &mut [Fp8Caches],
     ) -> Result<SlotDecodeGraph> {
         let width = lane_states.len();
-        if !(2..=MAX_POOL_SLOTS).contains(&width)
+        // A one-lane rung is valid: it replays exactly one busy slot, and the pool itself keeps
+        // the two-slot minimum that plain batching needs.
+        if !(1..=MAX_POOL_SLOTS).contains(&width)
             || lane_fp8.len() != width
             || self.lane_external.len() < width
             || self.lane_fusion.len() < width
@@ -325,6 +333,66 @@ impl BatchBuilder<'_> {
         })
     }
 
+    /// One launch for every lane of a sequential node, where this graph covers it.
+    fn record_lanes_node(
+        &mut self,
+        scope: &Scope,
+        node: &TensorNode,
+        arena: &mut ActivationArena,
+        caches: &mut [Fp8Caches],
+        metadata: &Tensor<i32>,
+    ) -> StdResult<bool, DeviceError> {
+        if self.record_lanes_attention(scope, node, arena, caches, metadata)? {
+            return Ok(true);
+        }
+        if self.table_root.is_some()
+            && super::slot_rope::record(scope, node, arena, self.weights, metadata)?
+        {
+            return Ok(true);
+        }
+        // Pooled state roots let state nodes record one lane-batched kernel instead of one launch
+        // per lane. The builder holds those roots in `states` for this graph only; per-lane and
+        // verify graphs keep lane states there.
+        if matches!(node.op, TensorOp::Delta { .. } | TensorOp::Conv { .. })
+            && node
+                .states
+                .first()
+                .is_some_and(|id| self.states.contains_key(id))
+        {
+            self.record_pooled_state(scope, node, arena, metadata)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Record one state node over the pooled roots, addressed through the whole metadata tensor.
+    fn record_pooled_state(
+        &mut self,
+        scope: &Scope,
+        node: &TensorNode,
+        arena: &mut ActivationArena,
+        metadata: &Tensor<i32>,
+    ) -> StdResult<(), DeviceError> {
+        let mut no_fusion = None;
+        Capture {
+            scope,
+            arena,
+            weights: self.weights,
+            nvfp4: self.nvfp4,
+            attention: self.attention,
+            states: self.states,
+            fp8_states: self.fp8_states,
+            metadata,
+            table: &self.tables[0],
+            external: self.external,
+            capacity: self.capacity,
+            fusion: &mut no_fusion,
+            mode: CaptureMode::Pooled,
+        }
+        .record(node)?;
+        Ok(())
+    }
+
     fn capture_slots(
         &mut self,
         arena: &mut ActivationArena,
@@ -375,6 +443,9 @@ impl BatchBuilder<'_> {
                         self.nvfp4,
                         None,
                     )?;
+                    continue;
+                }
+                if self.record_lanes_node(scope, node, arena, lane_fp8, metadata_owner)? {
                     continue;
                 }
                 match dispatch32(node, self.weights) {
@@ -1157,6 +1228,169 @@ impl BatchBuilder<'_> {
         record_narrow(scope, node, arena, (self.weights, profile))
     }
 
+    /// A sequential node of a multi-sequence prompt graph records once per segment, against
+    /// that segment's rows, slot state and block table. Row-independent nodes never come here.
+    fn record_burst_state(
+        &mut self,
+        scope: &Scope,
+        node: &TensorNode,
+    ) -> StdResult<bool, DeviceError> {
+        let dynamic = !node
+            .inputs
+            .iter()
+            .any(|id| self.weights.constants.contains_key(id));
+        let sequential = match node.op {
+            TensorOp::Conv { .. } | TensorOp::Delta { .. } => true,
+            TensorOp::Rope { .. } | TensorOp::Attention { .. } => dynamic,
+            _ => !node.states.is_empty(),
+        };
+        if !sequential {
+            return Ok(false);
+        }
+        let mut binding = self
+            .burst
+            .take()
+            .ok_or_else(|| error("prompt burst binding"))?;
+        let result = binding.segments.iter_mut().try_for_each(|segment| {
+            if matches!(node.op, TensorOp::Conv { .. } | TensorOp::Delta { .. }) {
+                let recorded = binding.recurrent.record(
+                    scope,
+                    node,
+                    &mut segment.arena,
+                    self.weights,
+                    segment.states,
+                    segment.info,
+                )?;
+                return if recorded {
+                    Ok(())
+                } else {
+                    Err(error("prompt burst needs the chunked recurrent path"))
+                };
+            }
+            let mut no_fusion = None;
+            let (metadata, mode) = match (&node.op, segment.rotary) {
+                (TensorOp::Rope { .. }, Some(rotary)) => (rotary, CaptureMode::PrefillRotary),
+                _ => (segment.info, CaptureMode::Prefill),
+            };
+            Capture {
+                scope,
+                arena: &mut segment.arena,
+                weights: self.weights,
+                nvfp4: self.nvfp4,
+                attention: self.attention,
+                states: segment.states,
+                fp8_states: segment.fp8,
+                metadata,
+                table: segment.table,
+                external: self.external,
+                capacity: self.capacity,
+                fusion: &mut no_fusion,
+                mode,
+            }
+            .record(node)
+        });
+        self.burst = Some(binding);
+        result.map(|()| true)
+    }
+
+    fn record_prompt_row(
+        &mut self,
+        scope: &Scope,
+        node: &TensorNode,
+        arena: &mut ActivationArena,
+        row: &mut Tensor<f32>,
+        prefill_info: &Tensor<i32>,
+    ) -> StdResult<(), DeviceError> {
+        if self.burst.is_some() {
+            return self.record_burst_logits(scope, node, arena);
+        }
+        super::prompt_logits::record(
+            scope,
+            node,
+            arena,
+            self.weights,
+            self.nvfp4,
+            (row, prefill_info),
+        )
+        .map(drop)
+    }
+
+    /// Project only each segment's last row onto the vocabulary, one weight read for all.
+    fn record_burst_logits(
+        &mut self,
+        scope: &Scope,
+        node: &TensorNode,
+        arena: &ActivationArena,
+    ) -> StdResult<(), DeviceError> {
+        let binding = self
+            .burst
+            .as_mut()
+            .ok_or_else(|| error("prompt burst binding"))?;
+        let input = arena.get(node.inputs[0]).map_err(error)?;
+        let columns = input.size() / arena.lanes();
+        let rows = input.view(&[arena.lanes(), columns]).map_err(error)?;
+        scope.record(
+            super::prompt_logits::kernels::last_rows(
+                (&mut *binding.last_rows).partition([1, super::prefill_burst::ROW_TILE]),
+                &rows,
+                binding.info_batch,
+            )
+            .generics(vec![columns.to_string(), binding.segment_rows.to_string()]),
+        )?;
+        let segments = binding.segments.len();
+        let weight = self
+            .weights
+            .projections
+            .get(&node.inputs[1])
+            .ok_or_else(|| error("prompt burst vocabulary weight"))?;
+        let last = binding
+            .last_rows
+            .view(&[segments, columns])
+            .map_err(error)?;
+        super::batch_projection::record_rows(
+            scope,
+            self.nvfp4,
+            weight,
+            self.weights.activation_quantization(node.inputs[1]),
+            &last,
+            binding.logits,
+            (columns, segments),
+        )
+    }
+
+    /// Capture a multi-sequence prompt graph over `self.width` rows.
+    pub(super) fn capture_burst(
+        &mut self,
+        arena: &mut ActivationArena,
+        metadata: PromptMetadata<'_>,
+        partials: &mut BTreeMap<usize, Tensor<f32>>,
+        prompt_row: &mut Tensor<f32>,
+        profile: &mut Option<profile::PrefillProfile>,
+    ) -> Result<CudaGraph<()>> {
+        let mut recurrent = super::recurrent_prefill::Workspace::default();
+        let mut fusion = None;
+        self.capture32(
+            arena,
+            metadata,
+            PromptReadout::Logits,
+            profile.as_mut(),
+            (partials, &mut recurrent, &mut fusion),
+            Some(prompt_row),
+        )
+    }
+
+    pub(super) fn burst_profile(device: &CudaDevice) -> Option<profile::PrefillProfile> {
+        profile::PrefillProfile::from_env(device)
+    }
+
+    pub(super) fn burst_partials(&self) -> Result<BTreeMap<usize, Tensor<f32>>> {
+        self.allocate_prompt_partials()
+    }
+
+    pub(super) fn burst_state_offset(weights: &ProgramWeights) -> i32 {
+        Self::state_offset(weights)
+    }
+
     fn capture32(
         &mut self,
         arena: &mut ActivationArena,
@@ -1236,14 +1470,7 @@ impl BatchBuilder<'_> {
                     continue;
                 }
                 if logits && let Some(row) = prompt_row.as_deref_mut() {
-                    super::prompt_logits::record(
-                        scope,
-                        node,
-                        arena,
-                        self.weights,
-                        self.nvfp4,
-                        (row, prefill_info),
-                    )?;
+                    self.record_prompt_row(scope, node, arena, row, prefill_info)?;
                     continue;
                 }
                 if mlp.record(
@@ -1338,6 +1565,9 @@ impl BatchBuilder<'_> {
     ) -> StdResult<(), DeviceError> {
         let (metadata, metadata_batch, prefill_info, prefill_rotary) = metadata;
         let (partials, recurrent, fusion) = workspaces;
+        if self.burst.is_some() && self.record_burst_state(scope, node)? {
+            return Ok(());
+        }
         if self.record_prompt_embedding(scope, node, arena, metadata_batch)? {
             return Ok(());
         }
