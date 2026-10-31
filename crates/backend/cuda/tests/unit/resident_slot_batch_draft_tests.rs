@@ -330,8 +330,8 @@ fn paged_kv_scatter_survives_exhaustion_and_block_reuse() -> Result<()> {
     assert!(!pool.assign(2, 1, &device)?);
     assert_eq!(pool.kv_pages(), (5, 0));
     assert!(pool.assign(0, pool.capacity() + 1, &device).is_err());
-    let table = device.read_borrowed(&pool.tables[0])?;
-    assert_ne!(&table[..2], &[0, 1]);
+    let table = device.read_borrowed(&pool.tables[1])?;
+    assert_ne!(&table[..2], &[0, 1], "slot 1 must read through its table");
     for active in [vec![1, 0], vec![0], vec![1]] {
         let lanes: Vec<_> = active
             .iter()
@@ -378,7 +378,7 @@ fn paged_kv_scatter_survives_exhaustion_and_block_reuse() -> Result<()> {
     close(&actual[1], &(Vec::new(), expected.1));
     pool.release(1);
     pool.release(2);
-    assert_eq!(pool.paging.as_ref().unwrap().free.len(), 5);
+    assert_eq!(pool.paging.as_ref().unwrap().pages.free_blocks(), 5);
     assert_eq!(pool.free_slots(), 3);
     Ok(())
 }
@@ -449,7 +449,7 @@ fn paged_verify_attention_matches_scalar_causality_and_reuse() -> Result<()> {
             &device,
         )?;
     }
-    assert_ne!(&device.read_borrowed(&pool.tables[0])?[..2], &[0, 1]);
+    assert_ne!(&device.read_borrowed(&pool.tables[1])?[..2], &[0, 1]);
     for plans in [
         vec![
             (3, vec![3, 7, 11], 2),

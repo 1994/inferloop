@@ -21,9 +21,9 @@ use cuda_core::{CudaContext, PinnedHostBuffer, f8e4m3fn};
 use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
+use infer_state::blocks::{BlockLease, BlockPool};
 #[cfg(test)]
 use std::cell::Cell;
-use std::collections::BTreeSet;
 use std::iter::successors;
 
 /// Widest plain-decode rung; above it the full-width graph's batched state kernels win.
@@ -420,7 +420,10 @@ impl SlotLedger {
 struct Paging {
     /// Owner of the shared caches; each slot's entry in `SlotPool::fp8` aliases it.
     shared: Fp8Caches,
-    free: Vec<i32>,
+    /// The shared page ledger; this pool only maps its leases to device rows.
+    pages: BlockPool,
+    leases: Vec<Vec<BlockLease>>,
+    /// Each slot's leased pages as device table entries.
     owned: Vec<Vec<i32>>,
 }
 
@@ -434,6 +437,33 @@ impl Paging {
     fn slot_caches(&self) -> Result<Fp8Caches> {
         // SAFETY: see the expectation above.
         unsafe { alias_caches(&self.shared) }
+    }
+
+    /// Return a slot's pages to the ledger.
+    fn release(&mut self, slot: usize) -> Result<()> {
+        let leases = self
+            .leases
+            .get_mut(slot)
+            .ok_or_else(|| Error::invalid("slot assignment index"))?;
+        self.pages.release(leases)?;
+        leases.clear();
+        self.owned[slot].clear();
+        Ok(())
+    }
+
+    /// Lease `blocks` pages for a slot. False when the ledger lacks them; the slot then owns none.
+    fn assign(&mut self, slot: usize, blocks: usize) -> Result<bool> {
+        self.release(slot)?;
+        if self.pages.free_blocks() < blocks {
+            return Ok(false);
+        }
+        let leases = self.pages.allocate(blocks)?;
+        self.owned[slot] = leases
+            .iter()
+            .map(|lease| i32::try_from(lease.index).map_err(device_error))
+            .collect::<Result<_>>()?;
+        self.leases[slot] = leases;
+        Ok(true)
     }
 }
 
@@ -863,11 +893,7 @@ impl SlotPool {
                 let per_slot = self.capacity.div_ceil(KV_BLOCK_TOKENS);
                 (self.width() * per_slot, self.free_slots() * per_slot)
             },
-            |paging| {
-                let free = paging.free.len();
-                let owned: usize = paging.owned.iter().map(Vec::len).sum();
-                (free + owned, free)
-            },
+            |paging| (paging.pages.capacity(), paging.pages.free_blocks()),
         )
     }
 
@@ -964,9 +990,9 @@ impl SlotPool {
                 graph.discard(slot);
             }
             if let Some(paging) = self.paging.as_mut()
-                && let Some(owned) = paging.owned.get_mut(slot)
+                && let Err(error) = paging.release(slot)
             {
-                paging.free.append(owned);
+                tracing::error!(target: "infer::executor", %error, slot, "slot pages not released");
             }
         }
     }
@@ -989,17 +1015,10 @@ impl SlotPool {
             return Ok(true);
         };
         let blocks = tokens.div_ceil(KV_BLOCK_TOKENS).max(1);
-        let owned = paging
-            .owned
-            .get_mut(slot)
-            .ok_or_else(|| Error::invalid("slot assignment index"))?;
-        paging.free.append(owned);
-        if paging.free.len() < blocks {
+        if !paging.assign(slot, blocks)? {
             return Ok(false);
         }
-        let start = paging.free.len() - blocks;
-        *owned = paging.free.split_off(start);
-        debug_assert_eq!(owned.iter().collect::<BTreeSet<_>>().len(), owned.len());
+        let owned = &paging.owned[slot];
         let table = self
             .tables
             .get_mut(slot)
@@ -1043,12 +1062,10 @@ impl SlotPool {
         let block = KV_BLOCK_TOKENS;
         let blocks = tokens.div_ceil(block).max(capacity.div_ceil(block));
         let shared = allocate(device, graph, blocks * block, &weights.kv_scales)?;
-        let free = (0..i32::try_from(blocks).map_err(device_error)?)
-            .rev()
-            .collect();
         Ok(Some(Paging {
             shared,
-            free,
+            pages: BlockPool::new(blocks)?,
+            leases: vec![Vec::new(); width],
             owned: vec![Vec::new(); width],
         }))
     }
@@ -1568,28 +1585,34 @@ impl SlotPool {
                 .map(|&dim| usize::try_from(dim).map_err(device_error))
                 .collect::<Result<Vec<_>>>()
         };
+        // Pool caches are stored flat, so the head axis comes from the program side of the copy.
         let dst_dims = dims(dst)?;
         let src_dims = dims(src)?;
-        if dst_dims.len() != KV_STATE_DIMS
-            || src_dims.len() != KV_STATE_DIMS
-            || dst_dims[0] != src_dims[0]
-            || dst_dims[2] != src_dims[2]
-            || dst_dims[1] != slot_capacity
-            || src_dims[1] < rows
+        let shaped = if dst_dims.len() == KV_STATE_DIMS {
+            &dst_dims
+        } else {
+            &src_dims
+        };
+        if shaped.len() != KV_STATE_DIMS {
+            return Err(Error::invariant("slot bind KV layout"));
+        }
+        let (heads, head_dim) = (shaped[0], shaped[2]);
+        let row_elements = heads * head_dim;
+        if row_elements == 0
+            || dst.size() != row_elements * slot_capacity
+            || src.size() < row_elements * rows
+            || !src.size().is_multiple_of(row_elements)
         {
             return Err(Error::invariant("slot bind KV layout"));
         }
-        let head_dim = dst_dims[2];
         let dst_stride = slot_capacity
             .checked_mul(head_dim)
             .ok_or_else(|| Error::invalid("slot bind copy overflow"))?;
-        let src_stride = src_dims[1]
-            .checked_mul(head_dim)
-            .ok_or_else(|| Error::invalid("slot bind copy overflow"))?;
+        let src_stride = src.size() / heads;
         let elements = rows
             .checked_mul(head_dim)
             .ok_or_else(|| Error::invalid("slot bind copy overflow"))?;
-        for head in 0..dst_dims[0] {
+        for head in 0..heads {
             device.copy_d2d_at(
                 dst,
                 src,
