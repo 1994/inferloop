@@ -407,6 +407,41 @@ class IdentityTest(unittest.TestCase):
             self.assertNotEqual(identity["shards"], module.model_identity(root)["shards"])
 
 
+class EosTokensTest(unittest.TestCase):
+    def test_generation_config_overrides_nested_model_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "generation_config.json").write_text(json.dumps({"eos_token_id": [7, 8]}))
+            (root / "config.json").write_text(json.dumps({"text_config": {"eos_token_id": 9}}))
+            self.assertEqual(module.eos_tokens(root), [7, 8])
+
+    def test_model_config_fallback_for_nested_and_plain_models(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.json"
+            for data, expected in [
+                ({"text_config": {"eos_token_id": 248044}}, [248044]),
+                ({"eos_token_id": [4, 5]}, [4, 5]),
+            ]:
+                with self.subTest(data=data):
+                    config.write_text(json.dumps(data))
+                    self.assertEqual(module.eos_tokens(root), expected)
+            self.assertNotIn("generation_config.json", module.model_identity(root)["files"])
+            (root / "generation_config.json").write_text("{}")
+            self.assertEqual(module.eos_tokens(root), [4, 5])
+
+    def test_missing_eos_defaults_to_empty_and_invalid_eos_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(module.eos_tokens(root), [])
+            config = root / "config.json"
+            for invalid in [None, -1, 2**32, True, "9", [9, None]]:
+                with self.subTest(invalid=invalid):
+                    config.write_text(json.dumps({"eos_token_id": invalid}))
+                    with self.assertRaisesRegex(ValueError, "invalid EOS token"):
+                        module.eos_tokens(root)
+
+
 class GroupStartTest(unittest.TestCase):
     def arguments(self, engine):
         return SimpleNamespace(engine=engine, model=Path("/models/x"), tokens=2)

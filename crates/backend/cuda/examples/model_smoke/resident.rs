@@ -68,27 +68,7 @@ pub fn prepare(
             .constants
             .insert(*id, model.device.upload(data.clone(), &[data.len()])?);
     }
-    for (id, source) in &model.embeddings {
-        if let Some(embedding) = shared.and_then(|weights| weights.get(id)) {
-            weights.embeddings.insert(*id, embedding.clone());
-            continue;
-        }
-        if source.dtype != TensorDtype::BF16 {
-            return Err(Error::unsupported("resident embedding requires BF16"));
-        }
-        // Explicit bounded staging: this model's embedding is larger than 2 GiB.
-        let bytes = model.package.read(source, 4 * 1024 * 1024 * 1024)?;
-        let values = bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|v| bf16::from_bits(u16::from_le_bytes(*v)))
-            .collect();
-        drop(bytes);
-        weights
-            .embeddings
-            .insert(*id, model.device.upload(values, &source.shape)?);
-    }
+    prepare_embeddings(model, shared, &mut weights)?;
     for node in &model.package.graph.nodes {
         if let TensorOp::Rope {
             rotary_dim, theta, ..
@@ -122,6 +102,44 @@ pub fn prepare(
             .as_ref()
             .map_or(0, |program| program.activation_bytes)
     );
+    Ok(())
+}
+
+fn prepare_embeddings(
+    model: &mut Model,
+    shared: Option<&Embeddings>,
+    weights: &mut ProgramWeights,
+) -> Result<()> {
+    for (id, source) in &model.embeddings {
+        if let Some(embedding) = shared.and_then(|weights| weights.get(id)) {
+            weights.embeddings.insert(*id, embedding.clone());
+            continue;
+        }
+        if source.dtype != TensorDtype::BF16 {
+            return Err(Error::unsupported("resident embedding requires BF16"));
+        }
+        if let Some(projection) = model.projections.get(id) {
+            let super::Projection::Dense(embedding) = projection else {
+                return Err(Error::unsupported(
+                    "tied embedding requires a dense projection",
+                ));
+            };
+            weights.embeddings.insert(*id, Arc::clone(embedding));
+            continue;
+        }
+        // Explicit bounded staging: this model's embedding is larger than 2 GiB.
+        let bytes = model.package.read(source, 4 * 1024 * 1024 * 1024)?;
+        let values = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|v| bf16::from_bits(u16::from_le_bytes(*v)))
+            .collect();
+        drop(bytes);
+        weights
+            .embeddings
+            .insert(*id, model.device.upload(values, &source.shape)?);
+    }
     Ok(())
 }
 

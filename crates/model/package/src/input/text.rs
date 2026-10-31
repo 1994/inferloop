@@ -145,6 +145,48 @@ fn read(path: &Path, budget: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 impl TextAssets {
+    /// Resolve chat generation settings, including the tokenizer's end-of-message token.
+    /// Explicit EOS overrides replace the defaults, including the tokenizer token.
+    ///
+    /// # Errors
+    /// Returns an error if sampling settings are invalid or the declared tokenizer EOS is
+    /// malformed or absent from the tokenizer vocabulary.
+    pub fn resolve_chat_generation(
+        &self,
+        overrides: &crate::SamplingOverrides,
+    ) -> Result<crate::ResolvedGeneration> {
+        let mut resolved = self.generation.resolve(overrides)?;
+        if overrides.eos_token.is_some() || overrides.eos_tokens.is_some() {
+            return Ok(resolved);
+        }
+        let Some(value) = self
+            .special
+            .get("eos_token")
+            .filter(|value| !value.is_null())
+        else {
+            return Ok(resolved);
+        };
+        let token = value
+            .as_str()
+            .ok_or_else(|| Error::invalid("invalid tokenizer EOS token"))?;
+        let id = self
+            .tokenizer
+            .token_to_id(token)
+            .ok_or_else(|| Error::invalid("tokenizer EOS token is absent from vocabulary"))?;
+        if !resolved.sampling.is_eos(id) {
+            resolved.sampling.eos_tokens.push(id);
+            let source = resolved
+                .sources
+                .get("eos_tokens")
+                .map_or("runtime fallback", String::as_str);
+            resolved.sources.insert(
+                "eos_tokens".into(),
+                format!("{source} and tokenizer_config.json"),
+            );
+        }
+        Ok(resolved)
+    }
+
     /// # Errors
     /// Returns an I/O or invalid-input error for missing, malformed, unsupported, or oversized assets.
     pub fn open(root: impl AsRef<Path>, max_tokens: usize) -> Result<Self> {

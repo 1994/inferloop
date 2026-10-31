@@ -1,0 +1,33 @@
+[package]
+name = "infer-cuda-kernels"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Kernel bodies live in their own crate, separate from host graphs and tuning. `tile` needs CUDA
+# 13.x; `aot` needs no toolkit, so a device without cuTile builds with `aot` alone.
+autotests = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+tile = ["dep:cutile", "dep:cuda-core"]
+aot = ["dep:libloading", "dep:serde", "dep:serde_json", "dep:sha2"]
+
+[dependencies]
+infer-core.workspace = true
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+libloading = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cutile = { workspace = true, optional = true }
+cuda-core = { workspace = true, optional = true }
+
+[[example]]
+name = "aot-pool-gemv"
+required-features = ["aot"]

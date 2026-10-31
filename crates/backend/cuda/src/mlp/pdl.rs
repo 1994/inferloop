@@ -9,26 +9,7 @@ use crate::constants::NVFP4_GROUP_SIZE;
 use crate::strategy::LinearTiling;
 use cutile::{half::bf16, prelude::*};
 
-#[cutile::module]
-mod producer {
-    use cutile::core::{
-        BroadcastScalar, LoadTileLike, Shape_1, StoreTileAtCurrentBlock, Tensor_1, Tile_1, exp,
-        gdc_launch_dependents_tko,
-    };
-    #[cutile::entry()]
-    fn silu_mul(
-        out: &mut Tensor<f32, { [256] }>,
-        gate: &Tensor<f32, { [-1] }>,
-        up: &Tensor<f32, { [-1] }>,
-    ) {
-        let x = gate.load_like(out);
-        let negative: Tile<f32, { [256] }> = 0.0f32.broadcast(shape![256]) - x;
-        let denominator = 1.0f32.broadcast(shape![256]) + exp(negative);
-        let stored = out.store(x / denominator * up.load_like(out));
-        // SAFETY: paired consumers token-order all activation reads after gdc_wait.
-        let _signal = unsafe { gdc_launch_dependents_tko(Some(stored)) };
-    }
-}
+pub use infer_cuda_kernels::tile::mlp::pdl as producer;
 
 pub(super) fn record_product(
     scope: &Scope,

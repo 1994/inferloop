@@ -20,6 +20,7 @@ SERVICE = {"infer-frontdoor", "infer-media-input", "infer-agent", "infer-cli"}
 BACKENDS = {
     "infer-backend-metal",
     "infer-backend-cuda",
+    "infer-cuda-kernels",
 }
 
 
@@ -147,6 +148,38 @@ def check_crates():
     print(f"Layout: {len(members)} grouped crates, thin facades and dependency boundaries passed")
 
 
+def check_kernel_boundary():
+    """Kernel bodies and driver launches stay in their source directories."""
+    host = ROOT / "crates/backend/cuda/src"
+    allowed = {host / "resident/small_gemm.rs"}
+    for path in host.rglob("*.rs"):
+        if "#[cutile::module]" in path.read_text() and path not in allowed:
+            raise SystemExit(
+                f"{path.relative_to(ROOT)}: "
+                "move the kernel module to crates/backend/cuda-kernels/src/tile"
+            )
+    for path in host.rglob("*.rs"):
+        if "infer_cuda_kernels::aot" in path.read_text():
+            raise SystemExit(f"{path.relative_to(ROOT)}: the host selects a source by feature")
+    for directory in ("resident", "executor"):
+        for path in (host / directory).rglob("*.rs"):
+            text = path.read_text()
+            if ".matvec_tiled(" in text or ".matvec(" in text:
+                raise SystemExit(
+                    f"{path.relative_to(ROOT)}: resident/executor must use recorded kernels, "
+                    "not the host matvec fallback"
+                )
+    kernels = ROOT / "crates/backend/cuda-kernels/src"
+    for path in kernels.rglob("*.rs"):
+        profile = path.relative_to(kernels).parts[0]
+        text = path.read_text()
+        if "use cutile::" in text and profile != "tile":
+            raise SystemExit(f"{path.relative_to(ROOT)}: cuTile belongs to the tile source")
+        if ("cuLaunchKernel" in text or "cuModuleLoadData" in text) and profile != "aot":
+            raise SystemExit(f"{path.relative_to(ROOT)}: driver launches belong to the aot source")
+    print("Kernel boundary: host has no kernels; source dependencies are separated")
+
+
 def check_links():
     paths = [
         ROOT / "README.md",
@@ -188,5 +221,6 @@ def check_sources():
 
 if __name__ == "__main__":
     check_crates()
+    check_kernel_boundary()
     check_links()
     check_sources()

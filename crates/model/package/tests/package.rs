@@ -4,12 +4,19 @@ use infer_model_recipes::decoder::lower;
 use infer_models::*;
 use std::env::temp_dir;
 use std::env::var;
+use std::error::Error as StdError;
 use std::fs::create_dir_all;
 use std::fs::read;
 use std::fs::remove_dir_all;
 use std::fs::write;
 use std::process::id;
-use std::{collections::BTreeMap, path::PathBuf, sync::atomic::AtomicU64, sync::atomic::Ordering};
+use std::result::Result as StdResult;
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::atomic::AtomicU64,
+    sync::atomic::Ordering,
+};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 #[expect(
@@ -186,6 +193,112 @@ fn the_fixture_tokenizer_refuses_streaming_decode() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../examples/qwen-hybrid-tiny");
     let assets = TextAssets::open(&root, 4096).unwrap();
     assert!(!assets.supports_streaming_decode());
+}
+
+#[test]
+fn chat_generation_includes_tokenizer_end_without_changing_completion_defaults() {
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../examples/qwen-hybrid-tiny");
+    let package = temp();
+    write(
+        package.join("tokenizer.json"),
+        read(fixture.join("tokenizer.json")).unwrap(),
+    )
+    .unwrap();
+    write(
+        package.join("config.json"),
+        r#"{"text_config":{"eos_token_id":31}}"#,
+    )
+    .unwrap();
+    write(
+        package.join("tokenizer_config.json"),
+        r#"{"eos_token":"token30"}"#,
+    )
+    .unwrap();
+    let assets = TextAssets::open(&package, 4096).unwrap();
+    let raw = assets
+        .generation
+        .resolve(&SamplingOverrides::default())
+        .unwrap();
+    assert_eq!(raw.sampling.eos_tokens, [31]);
+    let chat = assets
+        .resolve_chat_generation(&SamplingOverrides::default())
+        .unwrap();
+    assert_eq!(chat.sampling.eos_tokens, [31, 30]);
+    let disabled = assets
+        .resolve_chat_generation(&SamplingOverrides {
+            eos_tokens: Some(vec![]),
+            ..SamplingOverrides::default()
+        })
+        .unwrap();
+    assert_eq!(disabled.sampling.eos_tokens, Vec::<u32>::new());
+    assert_eq!(disabled.sampling.eos_token, None);
+    let explicit = assets
+        .resolve_chat_generation(&SamplingOverrides {
+            eos_token: Some(6),
+            ..SamplingOverrides::default()
+        })
+        .unwrap();
+    assert_eq!(explicit.sampling.eos_token, Some(6));
+    assert_eq!(explicit.sampling.eos_tokens, Vec::<u32>::new());
+    check_chat_eos_edge_cases(&package).unwrap();
+    remove_dir_all(package).unwrap();
+}
+
+fn check_chat_eos_edge_cases(package: &Path) -> StdResult<(), Box<dyn StdError>> {
+    write(
+        package.join("tokenizer_config.json"),
+        r#"{"eos_token":{"content":"token31"}}"#,
+    )?;
+    let duplicate = TextAssets::open(package, 4096)?;
+    assert_eq!(
+        duplicate
+            .resolve_chat_generation(&SamplingOverrides::default())?
+            .sampling
+            .eos_tokens,
+        [31]
+    );
+    write(
+        package.join("tokenizer_config.json"),
+        r#"{"eos_token":"missing"}"#,
+    )?;
+    let invalid = TextAssets::open(package, 4096)?;
+    assert!(
+        invalid
+            .resolve_chat_generation(&SamplingOverrides::default())
+            .is_err()
+    );
+    assert_eq!(
+        invalid
+            .generation
+            .resolve(&SamplingOverrides::default())?
+            .sampling
+            .eos_tokens,
+        [31]
+    );
+    write(
+        package.join("tokenizer_config.json"),
+        r#"{"eos_token":{"content":17}}"#,
+    )?;
+    let malformed = TextAssets::open(package, 4096)?;
+    assert!(
+        malformed
+            .resolve_chat_generation(&SamplingOverrides::default())
+            .is_err()
+    );
+    write(
+        package.join("tokenizer_config.json"),
+        r#"{"eos_token":null}"#,
+    )?;
+    let absent = TextAssets::open(package, 4096)?;
+    assert_eq!(
+        absent
+            .resolve_chat_generation(&SamplingOverrides::default())?
+            .sampling
+            .eos_tokens,
+        [31]
+    );
+    Ok(())
 }
 
 #[expect(

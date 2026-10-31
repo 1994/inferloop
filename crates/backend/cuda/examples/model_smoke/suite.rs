@@ -15,7 +15,7 @@ pub fn run(options: &Options) -> Result<(), Box<dyn Error>> {
         return Err("empty dataset".into());
     }
     let text = TextAssets::open(&options.model, 4096)?;
-    let resolved = text.generation.resolve(&options.sampling())?;
+    let resolved = text.resolve_chat_generation(&options.sampling())?;
     let mut inputs = Vec::new();
     for record in records {
         inputs.push(text.encode_chat(

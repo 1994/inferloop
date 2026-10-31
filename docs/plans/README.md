@@ -28,6 +28,7 @@ P0 优先消除正确性和测量阻塞；P1 交付工程、服务与公共协�
 | P2 · R1 | [Target Record/Fold 状态重放](speculation/state-replay.md) | I1 的共同 verifier/提交契约稳定；迁移后 MTP 参考已验收 | Delta/Conv 接受前缀状态直接对照通过，serial/pooled 共用；容量、Fold 成本和完整周期有证据 | **部分**：两组 golden 与 Rust 参考已完成；设备对照与 Fold 成本需要窗口 |
 | P2 · D2 | [DFlash2 接入](speculation/dflash2.md)与[请求/轮次选择](speculation/composition.md) | D1、I1，以及目标设备可兑现的回滚和草稿资源能力；本轮小显存接入需 R1 与草稿预算一起解决 | 线性 greedy、拒绝后状态、池化与切换通过；实际启用算法、追赶成本和回退可见；两个 provider 分别有有效对照 | 未开始：前置 D1、I1 未满足 |
 | P2 · C1 | [按 profile 选择 CUDA/服务优化](performance/cuda.md) | 对应 B3 baseline 与阶段计时可用；涉及草稿时还需该 provider 已验收 | 每次只改变一个可归因策略，完整服务矩阵有收益，尾延迟/显存/数值通过；可早于 D2 做普通 decode 优化 | **部分**：精确 GPU token readout 与[pooled 图几何准入](../archive/research/cuda-pooled-admission-geometry-2026-10-12.md)各通过五组 native 服务配对；后者批量完成时间下降 37.8%，保留 TTFT/TPOT 取舍；最新 vLLM 跨引擎矩阵及后续 profile 优化待验收；2026 年 10 月 17 日：PR #10 已合并，vector 五组 native 20 项门通过；当前主线转为 attention，原 vLLM 质量和稳定长矩阵未验收，见下方 C1 子任务 |
+| P2 · C2 | [CUDA AOT kernel provider 与 12.9 设备接入](engineering/cuda-kernel-provider.md) | L20 需要 12.9 且不走 cuTile；v1 范围以 dense BF16/FP8 为起点 | `cuda` 与 `cuda-aot` 各自可构建且编译期互斥；13.x 行为不回退；L20 的数值、图、KV 与显存验收通过 | **部分**：kernel 搬移与 AOT 骨架见 PR #129；常驻图契约与 L20 实机未开始 |
 | P3 · X1 | [MTP 与 DFlash2 同轮组合](speculation/composition.md) | D2 的单 provider 和切换路径稳定，组合模型条件及资源报价明确 | 优于同负载下最佳单 provider，使用相同回滚策略；不能只与关闭推测比较 | 未开始：前置为 D2 单 provider 验收 |
 
 B3 不等待全部 E2 或完整 Agent 能力完成。先用经过修正的固定制品和当前实际配置建立基线；S1 或后续策略改变共同约束时，按基线合同创建新 profile 和交接结果。I1 不必等待整套 CI、打包和不相关 crate 的目录整理，但其涉及的测试、feature、构建合同必须已经稳定。共享 IR 的测试 feature 删除需要相关消费者一并迁移，不能只在某个局部构建中隐藏旧分叉。
@@ -128,6 +129,7 @@ CPU 协议或数学参考的准备可以早于这些验收点；实际设备接�
 | D1、D2 | [DFlash2 接入](speculation/dflash2.md) | 模型、特征、selector、block 与独立接入验收 |
 | D2、X1 | [选择与组合](speculation/composition.md) | 分请求/轮次选择和待验证的同轮组合 |
 | B1、C1 | [CUDA 执行优化](performance/cuda.md) | 计时、完整预算、设备驻留、算子与服务验收 |
+| C2 | [CUDA 12.9 设备接入](engineering/cuda-kernel-provider.md) | kernel provider 契约、AOT 制品、feature/CI 与设备接入 SOP |
 
 ## 审查与实验依据
 

@@ -8,6 +8,8 @@ DIST_DIR ?= artifacts/packages
 PACKAGE_FILE ?=
 MODEL ?=
 GOLDEN ?=
+ARCH ?= sm_89
+KERNELS_OUT ?= target/kernels/aot
 
 .PHONY: help build local-build test test-package package verify-package accept clean-artifacts
 help:
@@ -20,10 +22,10 @@ help:
 	@echo '  make verify-package PACKAGE_FILE=/path/to/archive.tar.gz'
 	@echo '  make accept PACKAGE_FILE=... MODEL=... GOLDEN=...'
 	@echo '  DIST_DIR=artifacts/packages overrides the artifact directory.'
-	@echo 'CUDA artifacts: make check-cuda-artifacts | list-cuda-kernels'
+	@echo 'CUDA artifacts: make check-cuda-artifacts | list-cuda-kernels | build-kernels-aot ARCH=sm_89'
 	@echo 'Iteration: check-iteration (performance + 64 tasks, <=10min); release: check-release'
 	@echo 'Quality gates: check, check-rust, check-tools, check-security,'
-	@echo '  test-cuda, test-cuda-hosted (CUDA compile/lint/tests, no GPU), test-metal, bench'
+	@echo '  test-cuda, test-cuda-hosted (CUDA compile/lint/tests, no GPU), test-kernels-aot, test-metal, bench'
 	@echo '  (aliases: check-cuda, check-metal, check-cpu),'
 	@echo '  check-attention, check-msrv, check-linux, check-linux-numa, check-package'
 
@@ -59,7 +61,7 @@ accept:
 
 # Device and tool entries use the documented verbs; the check-* names remain as aliases while the
 # rest of the tree migrates.
-.PHONY: check test-cuda test-cuda-hosted test-metal bench check-rust check-tools check-security check-metal check-cuda check-attention check-msrv check-cpu check-linux check-linux-numa check-package
+.PHONY: check test-cuda test-cuda-hosted test-kernels-aot test-metal bench check-rust check-tools check-security check-metal check-cuda check-attention check-msrv check-cpu check-linux check-linux-numa check-package
 check:
 	./tools/check/gate.sh all
 
@@ -69,6 +71,10 @@ test-cuda:
 # Header-only CUDA half: compiles, lints and tests the cuda-gated modules without a device.
 test-cuda-hosted:
 	./tools/check/gate.sh cuda-hosted
+
+# AOT kernel source: no CUDA toolkit or headers required.
+test-kernels-aot:
+	./tools/check/gate.sh cuda-aot
 
 test-metal:
 	./tools/check/gate.sh metal
@@ -96,12 +102,16 @@ setup-build:
 	"$${CARGO_ZIGBUILD_ZIG_PATH:-zig}" version
 
 # Artifact integrity is portable and does not require a CUDA Toolkit or GPU.
-.PHONY: check-cuda-artifacts list-cuda-kernels
+.PHONY: check-cuda-artifacts list-cuda-kernels build-kernels-aot
 check-cuda-artifacts:
 	$(PYTHON) tools/cuda/kernels.py verify
 
 list-cuda-kernels:
 	$(PYTHON) tools/cuda/kernels.py list
+
+# Build one AOT artifact set (cubins + manifest). Produces a package sidecar, not a source file.
+build-kernels-aot:
+	$(PYTHON) tools/cuda/build_aot.py --arch $(ARCH) --out $(KERNELS_OUT)
 
 # Iteration snapshots use prebuilt binaries and never start formal release measurement.
 ITERATION_ARGS ?=

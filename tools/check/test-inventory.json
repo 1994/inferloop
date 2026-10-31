@@ -34,13 +34,19 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 446
+      "tests": 447
+    },
+    "cuda-kernels": {
+      "benches": 0,
+      "src_inline": 0,
+      "src_near": 0,
+      "tests": 6
     },
     "frontdoor": {
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 131
+      "tests": 132
     },
     "ir": {
       "benches": 0,
@@ -76,7 +82,7 @@
       "benches": 0,
       "src_inline": 0,
       "src_near": 0,
-      "tests": 160
+      "tests": 161
     },
     "quality": {
       "benches": 0,
@@ -1009,6 +1015,16 @@
       "mount": "resident_slot_recurrent_wave.rs"
     },
     {
+      "crate": "cuda-kernels",
+      "file": "src/aot/artifact.rs",
+      "mount": "../../tests/unit/aot_artifact.rs"
+    },
+    {
+      "crate": "cuda-kernels",
+      "file": "src/contract/target.rs",
+      "mount": "../../tests/unit/target.rs"
+    },
+    {
       "crate": "kernel-api",
       "file": "src/attention.rs",
       "mount": "../tests/unit/attention_tests.rs"
@@ -1490,11 +1506,11 @@
     }
   ],
   "totals": {
-    "all": 1093,
+    "all": 1102,
     "benches": 0,
     "src": 0,
     "src_inline": 0,
     "src_near": 0,
-    "tests": 1093
+    "tests": 1102
   }
 }

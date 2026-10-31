@@ -51,6 +51,8 @@ def catalog():
                     directory / variant["name"] / f for f in variant["files"] if f.endswith(".ptx")
                 )
     require(set(ROOT.rglob("*.ptx")) <= registered, "Unregistered embedded PTX")
+    for entry in data["sidecar"]["kernels"]:
+        require((REPO / entry["source"]).is_file(), f"Missing sidecar source: {entry['name']}")
     return data
 
 
