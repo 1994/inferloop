@@ -3,6 +3,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 
 from layout import (
     CUDA_HOST,
@@ -59,7 +60,7 @@ class OwnershipTests(unittest.TestCase):
 
 
 class HostBoundaryTests(unittest.TestCase):
-    BASELINE = {"Tensor<": 1, ".partition(": 0, ".generics(": 0, "cuda_core": 0}
+    BASELINE: ClassVar = {"Tensor<": 1, ".partition(": 0, ".generics(": 0, "cuda_core": 0}
 
     def tree(self, source):
         directory = tempfile.TemporaryDirectory()

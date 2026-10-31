@@ -15,6 +15,25 @@ impl CudaExecutor {
         ))
     }
 
+    /// The funded pool's memory split, so capacity work can name its largest item.
+    pub(super) fn log_pool_memory(&self) {
+        let (Some(quote), Some(pool)) = (self.pool_quote.as_ref(), self.slots.as_ref()) else {
+            return;
+        };
+        let kv_pages = u64::try_from(pool.kv_pages().0).unwrap_or(u64::MAX);
+        tracing::info!(target: "infer::cuda_admission",
+            kv_bytes = kv_pages.saturating_mul(self.kv_block_bytes),
+            target_pool_bytes = quote.target_pool_bytes,
+            draft_pool_bytes = quote.draft_pool_bytes,
+            target_worker_bytes = quote.target_worker_bytes,
+            draft_worker_bytes = quote.draft_worker_bytes,
+            target_homes_bytes = quote.target_homes_bytes,
+            draft_homes_bytes = quote.draft_homes_bytes,
+            graph_headroom_bytes = quote.graph_headroom_bytes,
+            total_bytes = quote.total_bytes,
+            "CUDA serving pool memory split");
+    }
+
     /// Capture the zero-demand funded pool unless one exists (`CudaBackend::with_pool_captured`).
     pub(super) fn capture_funded_pool(&mut self) {
         if self.slots.is_none() && self.pool_quote.is_some() {

@@ -391,6 +391,7 @@ impl CudaExecutor {
                 self.deferred_pool_plan = None;
                 self.slots_disabled = false;
                 self.pool_failure_reason = None;
+                self.log_pool_memory();
                 tracing::info!(target: "infer::executor",
                     width = self.slots.as_ref().map_or(0, SlotPool::width),
                     capacity, quoted_bytes, allocated_bytes, envelope_bytes = envelope,
