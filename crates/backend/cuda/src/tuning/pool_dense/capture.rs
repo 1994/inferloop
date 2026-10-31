@@ -1,5 +1,5 @@
 //! Own every temporary until the captured graph is destroyed.
-use super::{Choice, Key, legacy};
+use super::{Choice, Key, baseline};
 use crate::device::{CudaDevice, device_error};
 use crate::strategy::LinearTiling;
 use crate::tuning::projection_budget::ProjectionShape;
@@ -42,7 +42,7 @@ impl Captured {
         let [wn, wk] = weight.shape() else {
             return Err(Error::invalid("pooled dense weight rank"));
         };
-        if !super::supported(shape)
+        if !super::searchable(shape)
             || usize::try_from(*wn).map_err(device_error)? != n
             || usize::try_from(*wk).map_err(device_error)? != k
         {
@@ -141,7 +141,7 @@ pub(super) fn key(device: &CudaDevice, shape: ProjectionShape, tile: LinearTilin
     Ok(Key {
         native,
         tile: [tile.rows(), tile.columns()],
-        baseline: legacy(shape[0]),
+        baseline: baseline(shape),
     })
 }
 fn fingerprint(device: &CudaDevice, shape: ProjectionShape, tile: LinearTiling) -> Result<String> {
@@ -181,7 +181,27 @@ fn fingerprint(device: &CudaDevice, shape: ProjectionShape, tile: LinearTiling) 
             .generics(vec![bf16::DTYPE.as_str().into(), k.to_string()])
             .l2_cache_key_on(&device.stream)
             .map_err(device_error)?;
-    serde_json::to_string(&[gemv, shared, native]).map_err(device_error)
+    let mut identities = vec![gemv, shared, native];
+    // Wider tiles are candidates only outside the qualified family, whose identity stays frozen.
+    if !super::supported(shape) {
+        for width in [super::NATIVE_WIDE_64, super::NATIVE_WIDE_128] {
+            identities.push(
+                small_gemm_kernels::dense_wide(
+                    (&mut output).partition([super::NATIVE_TILE_ROWS, width]),
+                    &input,
+                    &weight,
+                )
+                .generics(vec![
+                    bf16::DTYPE.as_str().into(),
+                    width.to_string(),
+                    k.to_string(),
+                ])
+                .l2_cache_key_on(&device.stream)
+                .map_err(device_error)?,
+            );
+        }
+    }
+    serde_json::to_string(&identities).map_err(device_error)
 }
 
 /// Reconstruct a validated tile from persisted dimensions.

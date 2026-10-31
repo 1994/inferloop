@@ -109,6 +109,17 @@ impl Workspace {
         if rows <= 1 {
             return Ok(());
         }
+        self.prepare_pool_rows(device, graph, weights, rows)
+    }
+
+    /// Search one pool graph's row count, including the one-lane rung a lone request replays.
+    pub(crate) fn prepare_pool_rows(
+        &mut self,
+        device: &CudaDevice,
+        graph: &DataflowGraph,
+        weights: &ProgramWeights,
+        rows: usize,
+    ) -> Result<()> {
         let mut projections = Vec::new();
         for node in &graph.nodes {
             if node.op != TensorOp::Linear
@@ -126,7 +137,7 @@ impl Workspace {
                 elements(graph, node.outputs[0])?,
                 elements(graph, node.inputs[0])?,
             ];
-            if !pool_dense::supported(shape) {
+            if !pool_dense::searchable(shape) {
                 continue;
             }
             let tile = weights

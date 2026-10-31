@@ -77,6 +77,14 @@ impl Capture<'_> {
             .states
             .first()
             .ok_or_else(|| error("missing state binding"))?;
+        // The pooled graph holds state roots here, not lane views: one replay advances every
+        // busy lane instead of one launch per lane.
+        if self.mode == super::capture::CaptureMode::Pooled
+            && matches!(node.op, TensorOp::Delta { .. })
+            && self.states.contains_key(&id)
+        {
+            return self.record_delta_lanes(node, output);
+        }
         if let Some((keys, values)) = self.fp8_states.remove(&id) {
             let (output, keys, values) =
                 self.record_attention(node, output, keys, values, self.weights.kv_scales[&id])?;
@@ -148,5 +156,76 @@ impl Capture<'_> {
         }
         self.states.insert(id, state);
         Ok(output)
+    }
+
+    /// Lane-batched delta decode: one kernel over `[lanes * value_heads]` blocks. The state
+    /// root is lane-major, so flattening its head and lane axes addresses every lane's
+    /// `[value_heads, key, value]` state without copying.
+    fn record_delta_lanes(
+        &mut self,
+        node: &TensorNode,
+        output: Tensor<f32>,
+    ) -> Result<Tensor<f32>, DeviceError> {
+        let TensorOp::Delta {
+            key_heads,
+            value_heads,
+            key_dim,
+            value_dim,
+        } = node.op
+        else {
+            return Err(error("expected delta operation"));
+        };
+        if key_dim != value_dim
+            || !key_dim.is_power_of_two()
+            || key_heads == 0
+            || !value_heads.is_multiple_of(key_heads)
+        {
+            return Err(error("resident delta dimensions"));
+        }
+        let id = *node
+            .states
+            .first()
+            .ok_or_else(|| error("missing state binding"))?;
+        let lanes = self.arena.lanes();
+        let mut state = self
+            .states
+            .remove(&id)
+            .ok_or_else(|| error("missing state allocation"))?;
+        let root = state.pop().ok_or_else(|| error("delta state layout"))?;
+        let shape = root
+            .shape()
+            .iter()
+            .map(|&dim| usize::try_from(dim).map_err(|_| error("delta state shape")))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut batched = root.reshape(&[
+            lanes
+                .checked_mul(value_heads)
+                .ok_or_else(|| error("delta lane overflow"))?,
+            key_dim,
+            value_dim,
+        ])?;
+        let block = value_block(value_dim)?;
+        let mut out = output.reshape(&[lanes * value_heads, 1, value_dim])?;
+        self.scope.record(
+            recurrent::delta_lanes(
+                (&mut out).partition([1, 1, block]),
+                (&mut batched).partition([1, key_dim, block]),
+                &self.input(node.inputs[0])?,
+                &self.input(node.inputs[1])?,
+                &self.input(node.inputs[2])?,
+                &self.input(node.inputs[3])?,
+                &self.input(node.inputs[4])?,
+                self.metadata,
+            )
+            .generics(vec![
+                key_heads.to_string(),
+                value_heads.to_string(),
+                key_dim.to_string(),
+                block.to_string(),
+            ]),
+        )?;
+        state.push(batched.reshape(&shape)?);
+        self.states.insert(id, state);
+        Ok(out.reshape(&[lanes * value_heads * value_dim])?)
     }
 }

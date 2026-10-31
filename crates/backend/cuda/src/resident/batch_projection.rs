@@ -11,6 +11,7 @@ use crate::constants::NVFP4_GROUP_SIZE;
 use crate::constants::SMALL_GEMM_TILE;
 use crate::constants::SMALL_GEMV_MAX_ROWS;
 use crate::strategy::LinearTiling;
+use crate::tuning::pool_dense;
 use crate::{
     device::{CudaDevice, device_error},
     mlp::ProjectionWeight,
@@ -222,7 +223,10 @@ pub(super) fn record_slots(
         arena.buffers[slot] = Some(output.reshape(&[flat]).map_err(error)?);
         return Ok(());
     }
-    if weights.activation_quantization(node.inputs[1]).is_none() {
+    // Verify graphs pin their tensor-core arithmetic through `arithmetic_rows`.
+    if weights.activation_quantization(node.inputs[1]).is_none()
+        && (arithmetic_rows.is_none() || pool_dense::supported([lanes, flat / lanes, columns]))
+    {
         let tile =
             weights.tiling.get(&node.inputs[1]).copied().unwrap_or(
                 LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS).map_err(error)?,

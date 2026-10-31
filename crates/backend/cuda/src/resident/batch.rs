@@ -268,7 +268,9 @@ impl BatchBuilder<'_> {
         lane_fp8: &mut [Fp8Caches],
     ) -> Result<SlotDecodeGraph> {
         let width = lane_states.len();
-        if !(2..=MAX_POOL_SLOTS).contains(&width)
+        // A one-lane rung is valid: it replays exactly one busy slot, and the pool itself keeps
+        // the two-slot minimum that plain batching needs.
+        if !(1..=MAX_POOL_SLOTS).contains(&width)
             || lane_fp8.len() != width
             || self.lane_external.len() < width
             || self.lane_fusion.len() < width
@@ -325,6 +327,34 @@ impl BatchBuilder<'_> {
         })
     }
 
+    /// Record one state node over the pooled roots, addressed through the whole metadata tensor.
+    fn record_pooled_state(
+        &mut self,
+        scope: &Scope,
+        node: &TensorNode,
+        arena: &mut ActivationArena,
+        metadata: &Tensor<i32>,
+    ) -> StdResult<(), DeviceError> {
+        let mut no_fusion = None;
+        Capture {
+            scope,
+            arena,
+            weights: self.weights,
+            nvfp4: self.nvfp4,
+            attention: self.attention,
+            states: self.states,
+            fp8_states: self.fp8_states,
+            metadata,
+            table: &self.tables[0],
+            external: self.external,
+            capacity: self.capacity,
+            fusion: &mut no_fusion,
+            mode: CaptureMode::Pooled,
+        }
+        .record(node)?;
+        Ok(())
+    }
+
     fn capture_slots(
         &mut self,
         arena: &mut ActivationArena,
@@ -375,6 +405,19 @@ impl BatchBuilder<'_> {
                         self.nvfp4,
                         None,
                     )?;
+                    continue;
+                }
+                // Pooled state roots let delta record one lane-batched kernel instead of one
+                // launch per lane. The builder holds those roots in `states` for this graph
+                // only; per-lane and verify graphs keep lane states there, and conv still
+                // needs its three per-lane history rows.
+                if matches!(node.op, TensorOp::Delta { .. })
+                    && node
+                        .states
+                        .first()
+                        .is_some_and(|id| self.states.contains_key(id))
+                {
+                    self.record_pooled_state(scope, node, arena, metadata_owner)?;
                     continue;
                 }
                 match dispatch32(node, self.weights) {

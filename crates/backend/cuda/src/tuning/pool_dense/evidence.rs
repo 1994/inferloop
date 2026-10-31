@@ -1,6 +1,6 @@
 //! Complete paired evidence; new choices preserve the private reduction tree.
 use super::capture::tile;
-use super::{Choice, Key, candidates, legacy, supported};
+use super::{Choice, Key, baseline, candidates, searchable};
 use crate::tuning::{
     MIN_CONFIRM_SPEEDUP,
     resident_gemm::{MeasurementOrder, PairedTimes, times_valid},
@@ -38,11 +38,11 @@ pub struct Entry {
 }
 impl Entry {
     pub(crate) fn valid(&self) -> bool {
-        let baseline = legacy(self.key.native.m);
-        let allowed = |choice| choice != Choice::Native || baseline == Choice::Native;
         let shape = [self.key.native.m, self.key.native.n, self.key.native.k];
+        let baseline = baseline(shape);
+        let allowed = |choice: Choice| !choice.native_family() || baseline.native_family();
         self.exact_candidates_verified
-            && supported(shape)
+            && searchable(shape)
             && tile(&self.key).is_ok()
             && candidates(shape).all(|choice| {
                 self.trials

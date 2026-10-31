@@ -8,9 +8,15 @@ use infer_core::{Error, ErrorCode, Result};
 use std::env::{args_os, current_exe, var_os};
 use std::ffi::OsStr;
 use std::fs::{OpenOptions, create_dir_all, remove_file};
+#[cfg(cuda_backend)]
+use std::fs::{metadata, read, read_dir, read_to_string, rename, write};
+#[cfg(cuda_backend)]
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, Read};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
+#[cfg(cuda_backend)]
+use std::path::PathBuf;
 use std::process::{Command, Stdio, abort, id};
 use std::thread::{Builder, sleep};
 use std::time::{Duration, Instant};
@@ -19,6 +25,12 @@ const WORKER_ENV: &str = "INFER_INTERNAL_CUDA_TUNING_WORKER";
 const WORKER_VALUE: &str = "prepare";
 const PREPARATION_TIMEOUT: Duration = Duration::from_secs(600);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// Driver identity files; a changed driver or GPU invalidates a preparation stamp.
+#[cfg(cuda_backend)]
+const DRIVER_VERSION: &str = "/proc/driver/nvidia/version";
+/// One directory per GPU, whose `information` file names the board.
+#[cfg(cuda_backend)]
+const DRIVER_GPUS: &str = "/proc/driver/nvidia/gpus";
 
 #[cfg(cuda_backend)]
 pub(super) fn prepare(mut selection: Selection) -> Result<(Selection, bool)> {
@@ -35,6 +47,26 @@ pub(super) fn prepare(mut selection: Selection) -> Result<(Selection, bool)> {
     {
         return Ok((selection, false));
     }
+    // A completed preparation for this exact binary, command line and device needs no second
+    // capture. It also bounds the pool to the width it measured: the worker sees less free memory
+    // than the server, and a wider server pool would replay shapes nothing measured.
+    if let Some(width) = prepared_width() {
+        selection.autotune = false;
+        selection.tuned_pool_width = Some(width);
+        tracing::info!(target: "infer::tuning", width, "reusing completed CUDA tuning preparation");
+        return Ok((selection, false));
+    }
+    run_preparation();
+    // The serving process still validates cached choices against its own live weights.
+    selection.autotune = false;
+    selection.tuned_pool_width = prepared_width();
+    tracing::info!(target: "infer::tuning", "CUDA preparation exited; serving reuses validated tuning cache");
+    Ok((selection, false))
+}
+
+/// Fill the tuning cache in a child; failure leaves the server its validated cache or defaults.
+#[cfg(cuda_backend)]
+fn run_preparation() {
     tracing::info!(target: "infer::tuning", "preparing CUDA tuning cache in an isolated process");
     let prepared = current_exe()
         .map_err(|error| io_error(&error))
@@ -49,10 +81,78 @@ pub(super) fn prepare(mut selection: Selection) -> Result<(Selection, bool)> {
         tracing::warn!(target: "infer::tuning", %error,
             "CUDA preparation failed; serving retains validated cache or conservative defaults");
     }
-    // The serving process still validates cached choices against its own live weights.
-    selection.autotune = false;
-    tracing::info!(target: "infer::tuning", "CUDA preparation exited; serving reuses validated tuning cache");
-    Ok((selection, false))
+}
+
+/// The width a completed preparation of this exact invocation measured.
+#[cfg(cuda_backend)]
+fn prepared_width() -> Option<usize> {
+    let table = table_path()?;
+    read_stamp(&table, &stamp_path(&table, &invocation()))
+}
+
+/// Everything that decides which geometries a preparation measures.
+#[cfg(cuda_backend)]
+fn invocation() -> Vec<Vec<u8>> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut parts: Vec<Vec<u8>> = args_os()
+        .skip(1)
+        .map(|arg| arg.as_bytes().to_vec())
+        .collect();
+    if let Ok(file) = current_exe().and_then(metadata) {
+        parts.push(format!("{}:{:?}", file.len(), file.modified().ok()).into_bytes());
+    }
+    parts.push(read(DRIVER_VERSION).unwrap_or_default());
+    if let Ok(gpus) = read_dir(DRIVER_GPUS) {
+        let mut boards: Vec<_> = gpus
+            .flatten()
+            .map(|gpu| read(gpu.path().join("information")).unwrap_or_default())
+            .collect();
+        boards.sort_unstable();
+        parts.extend(boards);
+    }
+    parts
+}
+
+#[cfg(cuda_backend)]
+/// The stamp lives beside the table it describes, so removing the cache removes both.
+fn stamp_path(table: &Path, invocation: &[Vec<u8>]) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    invocation.hash(&mut hasher);
+    table.with_file_name(format!("prepared-{:016x}", hasher.finish()))
+}
+
+/// The measured width, when the table it describes still exists.
+#[cfg(cuda_backend)]
+fn read_stamp(table: &Path, stamp: &Path) -> Option<usize> {
+    if !table.exists() {
+        return None;
+    }
+    read_to_string(stamp)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+        .filter(|&width| width > 0)
+}
+
+#[cfg(cuda_backend)]
+fn write_stamp(path: &Path, width: usize) -> io::Result<()> {
+    let temporary = path.with_extension(format!("{}.tmp", id()));
+    write(&temporary, width.to_string())?;
+    rename(&temporary, path)
+}
+
+/// Runs in the worker once its pool is captured and measured. A worker that failed or captured
+/// nothing leaves no stamp, so the next start prepares again.
+#[cfg(cuda_backend)]
+pub(super) fn record_prepared(width: Option<usize>) {
+    let (Some(width), Some(table)) = (width, table_path()) else {
+        return;
+    };
+    let path = stamp_path(&table, &invocation());
+    if let Err(error) = write_stamp(&path, width) {
+        tracing::warn!(target: "infer::tuning", %error, "CUDA preparation stamp not written");
+    }
 }
 
 fn worker_mode(value: Option<&OsStr>) -> Result<bool> {
