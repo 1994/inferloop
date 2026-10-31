@@ -46,6 +46,7 @@ Agent 接入、tool parser、文本流式、max length 与严格工具约束的�
 | [请求生命周期](architecture/request-lifecycle.md) | 状态提交、取消与恢复 |
 | [KV Manager](architecture/kv-manager.md) | 页所有权、StateRecipe、COW 与 prefix |
 | [Backend](architecture/backends.md) | 设备能力、选择、扩展与支持限制 |
+| [CUDA 后端分层](architecture/cuda-layers.md) | CUDA 目录职责、launch 路径、制品规则与改动入口 |
 | [Agent](architecture/agent.md) | JSON-RPC 诊断与配置实验 |
 | [架构决策](adr/README.md) | 已采纳决策及其理由 |
 
