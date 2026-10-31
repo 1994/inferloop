@@ -24,6 +24,9 @@ use infer_ir::{DataflowGraph, StateKind, TensorStorage};
 use std::collections::BTreeSet;
 use std::iter::successors;
 
+/// Widest plain-decode rung; above it the full-width graph's batched state kernels win.
+const MAX_NARROW_DECODE_SLOTS: usize = 4;
+
 /// Slot counts of the narrow graphs a pool of `width` slots captures: powers of two below
 /// the width. A plain decode pool replays one lane per busy slot, so its rungs keep a step
 /// with few live sequences from paying for every lane the configured concurrency allows. A
@@ -31,7 +34,7 @@ use std::iter::successors;
 pub fn narrow_widths(graph: &DataflowGraph, width: usize, verify: usize) -> Vec<usize> {
     if verify < 2 {
         return successors(Some(1usize), |slots| slots.checked_mul(2))
-            .take_while(|&slots| slots <= 4 && slots < width)
+            .take_while(|&slots| slots <= MAX_NARROW_DECODE_SLOTS && slots < width)
             .collect();
     }
     if !super::slot_verify::fused_recurrent(graph, verify) {

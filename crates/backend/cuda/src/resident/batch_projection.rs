@@ -225,8 +225,7 @@ pub(super) fn record_slots(
     }
     // Verify graphs pin their tensor-core arithmetic through `arithmetic_rows`.
     if weights.activation_quantization(node.inputs[1]).is_none()
-        && (arithmetic_rows.is_none()
-            || pool_dense::supported([lanes, flat / lanes, columns]))
+        && (arithmetic_rows.is_none() || pool_dense::supported([lanes, flat / lanes, columns]))
     {
         let tile =
             weights.tiling.get(&node.inputs[1]).copied().unwrap_or(
