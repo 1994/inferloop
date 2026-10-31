@@ -210,6 +210,21 @@ fn bind_segments<'a>(
         .collect()
 }
 
+/// Fused inputs have no per-segment binding and a BF16 profile keeps its precise graphs for early
+/// positions, which only the worker captures; media prompts stay on the worker too.
+fn check_covered(segments: usize, weights: &ProgramWeights, hidden: usize) -> Result<()> {
+    if segments == 0
+        || weights.fusion.is_some()
+        || weights.attention_profile.is_bf16()
+        || !hidden.is_multiple_of(ROW_TILE)
+    {
+        return Err(Error::unsupported(
+            "prompt burst covers plain canonical text graphs with tiled hidden rows",
+        ));
+    }
+    Ok(())
+}
+
 /// Attention and recurrent workspaces of one capture.
 fn workspaces(
     device: &CudaDevice,
@@ -388,17 +403,7 @@ impl PromptBurst {
         } = shared;
         let segments = programs.len();
         let rows = segments * SEGMENT_ROWS;
-        // Fused inputs have no per-segment binding and a BF16 profile keeps its precise graphs for
-        // early positions, which only the worker captures; media prompts stay on the worker too.
-        if segments == 0
-            || weights.fusion.is_some()
-            || weights.attention_profile.is_bf16()
-            || !hidden.is_multiple_of(ROW_TILE)
-        {
-            return Err(Error::unsupported(
-                "prompt burst covers plain canonical text graphs with tiled hidden rows",
-            ));
-        }
+        check_covered(segments, weights, hidden)?;
         // SAFETY: forwarded from this function's contract.
         let mut storage = unsafe {
             Storage::allocate(

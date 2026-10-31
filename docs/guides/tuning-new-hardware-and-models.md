@@ -24,6 +24,7 @@
 | 调优缓存 | `$XDG_CACHE_HOME/infer-cuda/tuning.json`，未设置时为 `~/.cache/infer-cuda/tuning.json` | 每个条目带配对计时证据 |
 | NVFP4 投影 tile | `tuning/resident_gemm.rs`：按形状 (M, N, K) 搜索 tile_m、tile_n 和主循环（Plain / Prefetch8），AB 搜索加 BA 确认 | `resident GEMM selected ... source=` 为 `measured`、`table-cache` 或 `autotune-disabled` |
 | BF16 池化投影 | `tuning/pool_dense.rs`：按 `(lanes, n, k)` 实测行 GEMV 和不同输出 tile 的 tensor-core kernel，包括窄 rung；tile 变体须与基线逐位相同，GEMV 须与 private 算术逐位相同，没搜完就保留基线 | `pooled dense choice shape=... choice=... source=` |
+| BF16 prompt 投影 | `tuning/pool_dense.rs`：按 `(rows, n, k)` 实测输出 tile，候选必须与现有 kernel 逐位相同 | `pooled dense choice ... choice=Prompt...` |
 | FP8 投影 | `tuning/fp8_gemm.rs`：原生 tile 和 cuBLASLt 候选一起实测 | `FP8 GEMM choice ... selected=` |
 | attention、递推、norm | `tuning/attention`、`tuning/recurrent`、`tuning/gated_norm`：各自按形状实测 | `preparing hardware attention choices` |
 | 显存预算 | 预算 = `min(显存总量 × gpu_memory_utilization, 空闲 − 1 GiB)` | `device budget ... of ... total` |
@@ -198,3 +199,9 @@ RTX 5090 上 Qwen3.8-27B 的 ready 时间因此从 24 s 增至 74 s，而冷启�
 默认仍拒绝资源计划变化。资源策略本身的修改须通过
 [迭代工具](../../tools/bench/iteration-gate.py)的 `--resource-change-reason`
 在证据中明确声明，执行精度、上下文、报价和实际分配的预算检查仍保留。
+
+## 并发路径
+
+无 MTP、无 draft、canonical attention 的文本模型，一轮中至少 2 个且占满对应 rung 四分之一的短 prompt（每个不超过 64 token）会走 `resident/prefill_burst.rs`：无状态节点一次跑完所有行，有状态节点按段记录，直接读写 slot。显存不够时不建这些图，prompt 仍走 worker，日志为 `serving envelope leaves no room`。满宽 decode 图的 `conv`、`delta`、`rope`、`attention` 都是一次 launch 覆盖所有 lane，且与逐 lane launch 逐位相同（`executor_prompt_burst.rs`）。
+
+NVFP4 模型的 logits 随批宽变化约 5%（逐 lane 路径同样如此），比较 token 摘要时不要把它当成回归；这个差异的根因还没有定位。
