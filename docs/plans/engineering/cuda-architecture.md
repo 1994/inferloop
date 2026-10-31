@@ -97,6 +97,7 @@ runtime                  submit / poll，不重建拓扑
 ### M4 单一 lowering（风险最高）
 
 - **做什么：** 用一个入口把 `(算子, 模式)` 降低成 Plan，`CaptureMode` 成为 Plan 参数。`Capture`、`batch.rs`、`batch_projection.rs`、`slot_verify*`、`prefill_projection.rs`、`dflash2/mod.rs` 复用该入口。attention 回退链收成加载期选定的 Plan，`record` 不再用 `Ok(false)` 表示回退。优先级应高于只改 capture.rs：自 10-15 起 `batch.rs` 改动 41 次，`program.rs` 27 次，`slot_batch.rs` 26 次，`slot_verify.rs` 24 次，capture.rs 未进前 12。
+- **attention 回退链（已完成）：** 选择本来就在捕获前定好；被选中的 kernel 现在要么录制，要么让捕获失败，不再用 `Ok(false)` 静默退到慢路径。27B 和 0.6B 上均未触发，输出与 main 一致。
 - **分批：** 先 projection，再 attention（与 C1A 合并推进），再 norm 和 recurrent。融合、宽图如果合不进通用入口，保留为显式 Plan 特化，但必须有通用路径可退。
 - **前置：** PR #127 改动 `batch.rs`、`arena.rs` 和 executor，等它合并或定案后再动这些文件。
 - **验收：** 每批 13.x 逐位一致且性能不回退；`resident/**` 的 `.generics(` 单调下降；未融合时在生效配置里可见。
@@ -257,9 +258,9 @@ L20 不在手边，所以用另一种办法检验架构：按操作手册的步�
 
 **判断：今天能靠回退路径跑起来，这条是好的；但拿到峰值要改 host。** 补进方案：
 
-- **G1（M1）：** 合并 `CudaTarget` 和 `Arch`，只留 `contract::target` 一套。
-- **G2（M1 起逐步）：** 架构名收回 `contract/target.rs` 和制品目录，M0 棘轮加一项，统计 host 中的架构名。
-- **G3（M5）：** `Rates` 这类算力参数搬到 `Target`，host 只读取。
+- **G1（已完成）：** 合并 `CudaTarget` 和 `Arch`，只留 `contract::target` 一套。
+- **G2（已完成）：** host 只有制品目录可以写架构名，门禁拦截其余位置。
+- **G3（已完成）：** 算力参数搬到 `Arch::tensor_rates`，host 只读取。
 
 ### 9.3 新模型：一个普通稠密 attention 解码器
 
@@ -271,7 +272,9 @@ L20 不在手边，所以用另一种办法检验架构：按操作手册的步�
 | 融合 | 按图形状识别，不命中就走通用路径 | 只慢不错，要确认未融合时可见（M4） |
 | 调优、显存 | 按形状和图自动推导 | 无 |
 
-**判断：对“形状碰巧符合”的模型应该已经能跑，但没有人验证过；这恰恰是推演回答不了的。** 因此调整顺序：
+**探测结果（2026-10-31，RTX 5090，12 种微型 Qwen3 几何，随机权重走真实服务路径）：** 头维度 64、128、256，无 GQA，单层，宽 MLP，`hidden` 与头数不匹配，F16、F32 全部能出 token，单独和并发的输出一致；头维度 48、96、100 原本能启动，却在第一个请求隔离引擎，现已改为加载期返回 `Unsupported`。随机权重只能证明路径通，不证明数值对，数值对照属于 M2。尚未覆盖的：非绑定权重、非 Qwen3 的 provider、Delta 和 Conv。
+
+**判断：** 模型只要形状落在 2 幂范围内，今天就能只靠 provider 接入。M5 的真实缺口收窄为非 2 幂的通用 cell。因此调整顺序：
 
 - **G4：** M7 提前做一次探测。微型 fixture 只需 CPU 参考和一台现有 GPU，失败项直接成为 M4、M5 的工作清单，比先改 2700 行的 `batch.rs` 再验收更便宜。
 

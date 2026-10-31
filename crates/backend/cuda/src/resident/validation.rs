@@ -16,7 +16,7 @@ const ATTENTION_INPUTS: usize = 3;
 ///
 /// cuTile partitions tensors into power-of-two tiles, so these geometries need a general cell
 /// rather than a different call.
-pub(crate) fn require_kernel_geometry(graph: &DataflowGraph) -> Result<()> {
+pub fn require_kernel_geometry(graph: &DataflowGraph) -> Result<()> {
     graph
         .nodes
         .iter()
