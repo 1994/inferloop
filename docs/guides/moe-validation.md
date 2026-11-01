@@ -54,6 +54,8 @@ bash tools/bench/safe-run.sh --memory-gib 8 env CUDA_TOOLKIT_PATH=/opt/cuda \
     target/debug/examples/cuda-moe-check examples/qwen-next-moe-head128
 ```
 
+decode attention 按[数值合同](../plans/performance/baseline.md)使用 BF16 乘积加 F32 累加，所以对照的口径是整行最大误差不超过该行最大幅值的 2%，且最大元素的位置一致，不是 F32 舍入级别。
+
 默认检查每个前缀的 decode hidden/logits、32 行 prompt 图最后有效行、三 token verification、重复 reset 和 loader 释放后的权重生命周期。容差是 `5e-5 + 5e-4 * abs(expected)`。非有限结果、形状不符或超出容差都会失败，末行 JSON 记录实际路径与最大绝对误差。
 
 `--decode-only` 只检查逐 token、重置和生命周期；`--verify-only` 另外检查三 token verification，不会报告未执行的 prompt 检查。

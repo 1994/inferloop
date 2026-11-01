@@ -44,7 +44,8 @@ fn precise_prefix_from(value: Option<&str>) -> usize {
 
 /// Target prefill attention arithmetic selected by the operator.
 ///
-/// `Canonical` keeps the established F32 path. `Bf16` uses FA4 BF16-QKV/F32 accumulation for
+/// `Canonical` keeps the established F32 prefill; decode scores with BF16 products under every
+/// profile, per the numeric contract that gates accuracy rather than bits. `Bf16` uses FA4 BF16-QKV/F32 accumulation for
 /// target prefill. Only internal CUDA tests may insert a diagnostic F32 prefix.
 /// The CLI pairs it with MTP only when the package and device support both; library callers
 /// retain the canonical default. `Fp16` remains an explicit experimental SM120 profile.
