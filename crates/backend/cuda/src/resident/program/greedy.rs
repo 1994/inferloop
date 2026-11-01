@@ -80,7 +80,7 @@ impl DeviceGreedy {
             weights.autotune,
             &weights.resident_tuning,
         );
-        let mut selector = Greedy::new(device, 1, vocabulary, tile)?;
+        let selector = Greedy::new(device, 1, vocabulary, tile)?;
         let graph = Graph::scope(&device.stream, |scope| selector.record(scope, logits))
             .map_err(device_error)?;
         tracing::info!(target:"infer::capture", device_greedy=true, rows=1, vocabulary, tile, "draft GPU token readout captured");

@@ -178,6 +178,7 @@ def check_exceptions():
                         TILE_KERNELS / "runtime.rs",
                         TILE_KERNELS / "norm/contract.rs",
                         TILE_KERNELS / "mlp/contract.rs",
+                        TILE_KERNELS / "moe/contract.rs",
                         ROOT / "crates/backend/cuda-kernels/src/aot/projection.rs",
                         ROOT / "crates/backend/cuda-kernels/examples/aot-pool-gemv.rs",
                         ROOT / "crates/backend/cuda/src/resident/arena.rs",

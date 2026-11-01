@@ -1,9 +1,12 @@
 //! Exact finite F32 greedy selection; only token IDs and validation flags leave the GPU.
+use super::buffers::buffer;
+use super::capture::error;
 use crate::device::Readbacks;
 use crate::device::{CudaDevice, device_error};
 use cutile::error::tensor_error;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{Buffer, GreedyPartials, GreedyPlan, Kernels, Recording};
 use std::result::Result as StdResult;
 
 /// Candidates to measure per device and row/vocabulary geometry before production selection.
@@ -19,6 +22,7 @@ pub struct Greedy {
     invalid: Tensor<i32>,
     pub tokens: Tensor<i32>,
     readbacks: Readbacks<i32>,
+    kernels: Arc<Kernels>,
 }
 impl Greedy {
     pub fn new(device: &CudaDevice, rows: usize, vocabulary: usize, tile: usize) -> Result<Self> {
@@ -29,6 +33,7 @@ impl Greedy {
         let blocks = vocabulary.div_ceil(tile);
         i32::try_from(blocks.next_power_of_two()).map_err(device_error)?;
         Ok(Self {
+            kernels: device.kernels(),
             readbacks: Readbacks::allocated(device, rows * 2)?,
             rows,
             vocabulary,
@@ -48,30 +53,16 @@ impl Greedy {
                 .map_err(device_error)?,
         })
     }
-    pub fn record(&mut self, scope: &Scope, logits: &Tensor<f32>) -> StdResult<(), DeviceError> {
+    pub fn record(&self, scope: &Scope, logits: &Tensor<f32>) -> StdResult<(), DeviceError> {
         self.record_partials(scope, logits)?;
-        scope.record(
-            kernels::finish(
-                (&mut self.tokens).partition([1, 2]),
-                &self.keys,
-                &self.indices,
-                &self.invalid,
-            )
-            .generics(vec![
-                self.blocks.to_string(),
-                self.blocks.next_power_of_two().to_string(),
-                "0".into(),
-                self.rows.to_string(),
-            ]),
-        )?;
-        Ok(())
+        self.record_finish(scope, buffer(&self.tokens)?, 0)
     }
 
     pub(crate) fn record_into(
-        &mut self,
+        &self,
         scope: &Scope,
         logits: &Tensor<f32>,
-        output: &mut Tensor<i32>,
+        output: &Tensor<i32>,
         offset: usize,
     ) -> StdResult<(), DeviceError> {
         if !output.size().is_multiple_of(2)
@@ -82,39 +73,54 @@ impl Greedy {
             return Err(tensor_error("greedy output row range").into());
         }
         self.record_partials(scope, logits)?;
-        scope.record(
-            kernels::finish(
-                output.partition([1, 2]),
-                &self.keys,
-                &self.indices,
-                &self.invalid,
-            )
-            .generics(vec![
-                self.blocks.to_string(),
-                self.blocks.next_power_of_two().to_string(),
-                offset.to_string(),
-                self.rows.to_string(),
-            ]),
-        )?;
-        Ok(())
+        self.record_finish(scope, buffer(output)?, offset)
     }
 
-    fn record_partials(
-        &mut self,
+    const fn plan(&self) -> GreedyPlan {
+        GreedyPlan {
+            rows: self.rows,
+            vocabulary: self.vocabulary,
+            tile: self.tile,
+            blocks: self.blocks,
+        }
+    }
+
+    fn partials(&self) -> StdResult<GreedyPartials<'_>, DeviceError> {
+        Ok(GreedyPartials {
+            keys: buffer(&self.keys)?,
+            indices: buffer(&self.indices)?,
+            invalid: buffer(&self.invalid)?,
+        })
+    }
+
+    fn record_finish(
+        &self,
         scope: &Scope,
-        logits: &Tensor<f32>,
+        output: Buffer<'_, i32>,
+        offset: usize,
     ) -> StdResult<(), DeviceError> {
-        let input = logits.view(&[self.rows, self.vocabulary])?;
-        scope.record(
-            kernels::partials(
-                (&mut self.keys).partition([1, 1]),
-                (&mut self.indices).partition([1, 1]),
-                (&mut self.invalid).partition([1, 1]),
-                &input,
+        self.kernels
+            .sampling
+            .greedy_finish(
+                &Recording::scope(scope),
+                &self.plan(),
+                offset,
+                output,
+                self.partials()?,
             )
-            .generics(vec![self.vocabulary.to_string(), self.tile.to_string()]),
-        )?;
-        Ok(())
+            .map_err(error)
+    }
+
+    fn record_partials(&self, scope: &Scope, logits: &Tensor<f32>) -> StdResult<(), DeviceError> {
+        self.kernels
+            .sampling
+            .greedy_partials(
+                &Recording::scope(scope),
+                &self.plan(),
+                self.partials()?,
+                buffer(logits)?,
+            )
+            .map_err(error)
     }
     /// Canonical frontend identities include both reductions and their exact geometry.
     pub fn fingerprint(&mut self, device: &CudaDevice, logits: &Tensor<f32>) -> Result<String> {

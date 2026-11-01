@@ -1,16 +1,15 @@
 //! Device-resident routing and selected-expert projections.
+use super::buffers::buffer;
 use super::capture::{Capture, error};
-use crate::constants::AUX_KERNEL_TILE;
 use crate::constants::FP8_BLOCK_COLUMNS;
 use crate::mlp::ProjectionWeight;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{ExpertPlan, ExpertWeight, Recording, RoutePlan};
 use infer_ir::{TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;
 
-/// Matches the fixed output Tensor tile declared by all selected-expert kernel entries.
-const EXPERT_PROJECTION_TILE: [usize; 2] = [1, 4];
 /// Existing supported routing reduction extent; this is a shape legality bound.
 const MAX_ROUTING_EXPERTS: usize = 4096;
 
@@ -50,35 +49,34 @@ impl Capture<'_> {
                 active,
                 normalize,
             } => {
-                let mut output = output;
-                self.scope.record(
-                    kernels::route(
-                        (&mut output).partition([1]),
-                        &self.input(node.inputs[0])?,
-                        f32::NEG_INFINITY,
+                self.weights
+                    .kernels
+                    .moe
+                    .route(
+                        &Recording::scope(self.scope),
+                        &RoutePlan {
+                            experts,
+                            active,
+                            normalize,
+                        },
+                        buffer(&output)?,
+                        self.input_buffer(node.inputs[0])?,
                     )
-                    .generics(vec![
-                        experts.to_string(),
-                        experts.next_power_of_two().to_string(),
-                        active.to_string(),
-                        i32::from(normalize).to_string(),
-                    ]),
-                )?;
+                    .map_err(error)?;
                 Ok(output)
             }
             TensorOp::MoeCombine { active, hidden } => {
-                let mut output = output;
-                self.scope.record(
-                    kernels::combine(
-                        (&mut output).partition([AUX_KERNEL_TILE]),
-                        &self
-                            .input(node.inputs[0])?
-                            .view(&[active, hidden])
-                            .map_err(error)?,
-                        &self.input(node.inputs[1])?,
+                self.weights
+                    .kernels
+                    .moe
+                    .combine(
+                        &Recording::scope(self.scope),
+                        (active, hidden),
+                        buffer(&output)?,
+                        self.input_buffer(node.inputs[0])?,
+                        self.input_buffer(node.inputs[1])?,
                     )
-                    .generics(vec![active.to_string(), hidden.to_string()]),
-                )?;
+                    .map_err(error)?;
                 Ok(output)
             }
             TensorOp::ExpertLinear {
@@ -105,71 +103,44 @@ impl Capture<'_> {
             .expert_banks
             .get(&node.inputs[2])
             .ok_or_else(|| error("missing expert bank"))?;
-        let x = self.input(node.inputs[0])?;
-        let x = x
-            .view(&[if routed_input { active } else { 1 }, input])
-            .map_err(error)?;
-        let routes = self.input(node.inputs[1])?;
-        let mut output = output.reshape(&[active, rows])?;
-        let mut generics = vec![
-            rows.to_string(),
-            input.to_string(),
-            i32::from(routed_input).to_string(),
-        ];
-        match &bank.projection {
-            ProjectionWeight::Dense(w) => {
-                self.scope.record(
-                    kernels::dense(
-                        (&mut output).partition(EXPERT_PROJECTION_TILE),
-                        &x,
-                        &routes,
-                        &w.view(&[bank.experts, rows, input]).map_err(error)?,
-                    )
-                    .generics(generics),
-                )?;
-            }
-            ProjectionWeight::Fp8(w, scales) => {
-                generics.extend([
-                    "1".into(),
-                    i32::from(bank.quantized_inputs).to_string(),
-                    input.next_power_of_two().to_string(),
-                ]);
-                self.scope.record(
-                    kernels::fp8(
-                        (&mut output).partition(EXPERT_PROJECTION_TILE),
-                        &x,
-                        &routes,
-                        &w.view(&[bank.experts, rows, input]).map_err(error)?,
-                        &scales.view(&[bank.experts, rows, 1]).map_err(error)?,
-                    )
-                    .generics(generics),
-                )?;
-            }
-            ProjectionWeight::Fp8Block(w, scales) => {
-                generics.extend([
-                    "0".into(),
-                    i32::from(bank.quantized_inputs).to_string(),
-                    input.next_power_of_two().to_string(),
-                ]);
-                self.scope.record(
-                    kernels::fp8(
-                        (&mut output).partition(EXPERT_PROJECTION_TILE),
-                        &x,
-                        &routes,
-                        &w.view(&[bank.experts, rows, input]).map_err(error)?,
-                        &scales
-                            .view(&[bank.experts, rows, input / FP8_BLOCK_COLUMNS])
-                            .map_err(error)?,
-                    )
-                    .generics(generics),
-                )?;
-            }
+        let weight = match &bank.projection {
+            ProjectionWeight::Dense(w) => ExpertWeight::Dense(buffer(w.as_ref())?),
+            ProjectionWeight::Fp8(w, scales) => ExpertWeight::Fp8Channel {
+                weight: buffer(w.as_ref())?,
+                scales: buffer(scales.as_ref())?,
+                quantized_inputs: bank.quantized_inputs,
+            },
+            ProjectionWeight::Fp8Block(w, scales) => ExpertWeight::Fp8Block {
+                weight: buffer(w.as_ref())?,
+                scales: buffer(scales.as_ref())?,
+                block_columns: FP8_BLOCK_COLUMNS,
+                quantized_inputs: bank.quantized_inputs,
+            },
             ProjectionWeight::Fp4(..) => {
                 return Err(error(
-                    "NVFP4 expert activation quantization requires an explicit numerical profile",
+                    "NVFP4 expert activation quantization requires an explicit numerical contract",
                 ));
             }
-        }
+        };
+        let output = output.reshape(&[active, rows])?;
+        self.weights
+            .kernels
+            .moe
+            .experts(
+                &Recording::scope(self.scope),
+                &ExpertPlan {
+                    experts: bank.experts,
+                    active,
+                    rows,
+                    input,
+                    routed_input,
+                },
+                buffer(&output)?,
+                self.input_buffer(node.inputs[0])?,
+                self.input_buffer(node.inputs[1])?,
+                weight,
+            )
+            .map_err(error)?;
         Ok(output.reshape(&[active * rows])?)
     }
 }

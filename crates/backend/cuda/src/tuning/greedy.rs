@@ -239,7 +239,7 @@ impl Captured {
         shape: [usize; 2],
         tile: usize,
     ) -> Result<Self> {
-        let mut greedy = Greedy::new(device, shape[0], shape[1], tile)?;
+        let greedy = Greedy::new(device, shape[0], shape[1], tile)?;
         let graph = Graph::scope(&device.stream, |scope| greedy.record(scope, input))
             .map_err(device_error)?;
         Ok(Self { graph, greedy })

@@ -27,6 +27,9 @@ impl Element for f32 {
 impl Element for i32 {
     type Marker = Self;
 }
+impl Element for u32 {
+    type Marker = Self;
+}
 impl Element for bf16 {
     type Marker = Bf16;
 }
