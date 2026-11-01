@@ -2,8 +2,9 @@
 
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::plan::{
-    BinaryOp, DownPlan, ExpertPlan, FusionNormPlan, GreedyPlan, NormPlan, PoolGemvPlan,
-    QuantNormPlan, RopePlan, RoutePlan, RowNormPlan, SplitPlan, UnaryOp,
+    BinaryOp, DownPlan, ExpertPlan, FusionNormPlan, GreedyPlan, LastRowsPlan, NormPlan,
+    PoolGemvPlan, QuantNormPlan, RopePlan, RoutePlan, RowNormPlan, RowsPlan, SplitPlan, THREE_ROWS,
+    UnaryOp,
 };
 use crate::contract::recording::Recording;
 use infer_core::Result;
@@ -13,6 +14,89 @@ use infer_core::Result;
 /// Methods are split by weight dtype instead of a generic parameter so the trait stays
 /// object-safe and unsupported dtypes are rejected before a launch.
 pub trait Projection: Send + Sync {
+    /// Project `[rows, columns]` rows into `[rows, outputs]`, by the kernel the plan names.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, the plan's kernel does not take this weight's
+    /// storage, or the launch is rejected.
+    fn rows(
+        &self,
+        recording: &Recording<'_>,
+        plan: &RowsPlan,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        weight: WeightRef<'_>,
+    ) -> Result<()>;
+
+    /// Project one flat row by the tiles of `plan`.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn row(
+        &self,
+        recording: &Recording<'_>,
+        plan: &DownPlan,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        weight: WeightRef<'_>,
+    ) -> Result<()>;
+
+    /// Copy flat `input` into row `row` of `out`, whose shape is `[rows, columns]`.
+    /// # Errors
+    /// Fails when the launch is rejected.
+    fn pack_row(
+        &self,
+        recording: &Recording<'_>,
+        shape: (usize, usize),
+        out: Buffer<'_, f32>,
+        input: Buffer<'_, f32>,
+        row: usize,
+    ) -> Result<()>;
+
+    /// Copy row `row` of `input`, whose shape is `[rows, columns]`, into flat `out`.
+    /// # Errors
+    /// Fails when the launch is rejected.
+    fn unpack_row(
+        &self,
+        recording: &Recording<'_>,
+        shape: (usize, usize),
+        out: Buffer<'_, f32>,
+        input: Buffer<'_, f32>,
+        row: usize,
+    ) -> Result<()>;
+
+    /// [`Self::pack_row`] of exactly three rows in one launch.
+    /// # Errors
+    /// Fails when the launch is rejected.
+    fn pack_three(
+        &self,
+        recording: &Recording<'_>,
+        columns: usize,
+        out: Buffer<'_, f32>,
+        inputs: [Buffer<'_, f32>; THREE_ROWS],
+    ) -> Result<()>;
+
+    /// [`Self::unpack_row`] of exactly three rows in one launch.
+    /// # Errors
+    /// Fails when the launch is rejected.
+    fn unpack_three(
+        &self,
+        recording: &Recording<'_>,
+        columns: usize,
+        outs: [Buffer<'_, f32>; THREE_ROWS],
+        input: Buffer<'_, f32>,
+    ) -> Result<()>;
+
+    /// Copy each lane's last active row into `out`.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn last_rows(
+        &self,
+        recording: &Recording<'_>,
+        plan: &LastRowsPlan,
+        out: Buffer<'_, f32>,
+        rows: Buffer<'_, f32>,
+        metadata: Buffer<'_, i32>,
+    ) -> Result<()>;
+
     /// Record one BF16 row-independent projection; no work completes before the graph runs.
     ///
     /// `out`, `x` and `w` are row-major with shapes `[rows, outputs]`, `[rows, columns]` and
@@ -152,9 +236,9 @@ pub trait Norm: Send + Sync {
     ) -> Result<()>;
 }
 
-/// A down projection's weight, in the storage its checkpoint uses.
+/// A projection's weight, in the storage its checkpoint uses.
 #[derive(Clone, Copy, Debug)]
-pub enum DownWeight<'a> {
+pub enum WeightRef<'a> {
     /// `[outputs, columns]`.
     Dense(Buffer<'a, Bf16>),
     /// `[outputs, columns]` and per-channel scales.
@@ -225,7 +309,7 @@ pub trait Mlp: Send + Sync {
         plan: &DownPlan,
         out: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
-        weight: DownWeight<'_>,
+        weight: WeightRef<'_>,
     ) -> Result<()>;
 }
 

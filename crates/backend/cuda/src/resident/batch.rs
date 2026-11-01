@@ -2,6 +2,7 @@
 //! Recurrent checkpoints stay on the device; KV rollback is a logical prefix.
 //! Prefill width 32 keeps one batched arena: auxiliaries record once per node.
 use super::arena::prefix_view;
+use super::buffers::buffer;
 use super::fusion_batch::Workspace as FusionRows;
 use super::prefill_projection::{DensePlan, record_narrow};
 use super::{
@@ -34,6 +35,7 @@ use crate::device::{PinnedUpload, Readbacks};
 use crate::mlp::ProjectionWeight;
 use cutile::prelude::*;
 use infer_core::{Error, ErrorCode, Result, TensorId};
+use infer_cuda_kernels::contract::{LastRowsKind, LastRowsPlan, Recording};
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::{DataflowGraph, StateKind, TensorNode, TensorOp, TensorStorage};
 use infer_models::mrope::ROTARY_AXES;
@@ -119,6 +121,8 @@ pub(super) struct BatchGraph {
     #[cfg(test)]
     state_prefill: Option<Graph>,
     restore: Vec<Graph>,
+    /// Pack and unpack matrices the verification graphs address; none on other paths.
+    _projections: Option<super::batch_projection::Workspace>,
     /// Split-K partial windows the captured fp4 prompt GEMMs accumulate into;
     /// declared after the graphs so their executables drop first.
     _partials: BTreeMap<usize, Tensor<f32>>,
@@ -648,6 +652,7 @@ impl BatchBuilder<'_> {
             capacity: self.capacity,
             profile: None,
             precise_profile: None,
+            _projections: Some(projections),
             _arena: shared,
         })
     }
@@ -799,6 +804,7 @@ impl BatchBuilder<'_> {
             #[cfg(test)]
             state_prefill: captures.regular.state_prefill,
             restore: Vec::new(),
+            _projections: None,
             _partials: BTreeMap::new(),
             prompt_row,
             _recurrent: super::recurrent_prefill::Workspace::default(),
@@ -1329,15 +1335,23 @@ impl BatchBuilder<'_> {
             .ok_or_else(|| error("prompt burst binding"))?;
         let input = arena.get(node.inputs[0]).map_err(error)?;
         let columns = input.size() / arena.lanes();
-        let rows = input.view(&[arena.lanes(), columns]).map_err(error)?;
-        scope.record(
-            super::prompt_logits::kernels::last_rows(
-                (&mut *binding.last_rows).partition([1, super::prefill_burst::ROW_TILE]),
-                &rows,
-                binding.info_batch,
+        self.weights
+            .kernels
+            .projection
+            .last_rows(
+                &Recording::scope(scope),
+                &LastRowsPlan {
+                    kind: LastRowsKind::Segments {
+                        segment_rows: binding.segment_rows,
+                    },
+                    lanes: arena.lanes(),
+                    hidden: columns,
+                },
+                buffer(&*binding.last_rows)?,
+                buffer(input)?,
+                buffer(binding.info_batch)?,
             )
-            .generics(vec![columns.to_string(), binding.segment_rows.to_string()]),
-        )?;
+            .map_err(error)?;
         let segments = binding.segments.len();
         let weight = self
             .weights
@@ -1349,11 +1363,12 @@ impl BatchBuilder<'_> {
             .view(&[segments, columns])
             .map_err(error)?;
         super::batch_projection::record_rows(
-            scope,
+            (&self.weights.kernels, scope),
             self.nvfp4,
             weight,
             self.weights.activation_quantization(node.inputs[1]),
             &last,
+            binding.last_rows.device_pointer().cu_deviceptr(),
             binding.logits,
             (columns, segments),
         )

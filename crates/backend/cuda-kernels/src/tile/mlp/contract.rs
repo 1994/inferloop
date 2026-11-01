@@ -1,7 +1,7 @@
 //! cuTile implementation of the fused MLP family.
 use super::{fused, pdl, pdl_consumers as consumers};
 use crate::contract::buffer::Buffer;
-use crate::contract::kernels::{DownWeight, Mlp, ProductBuffers};
+use crate::contract::kernels::{Mlp, ProductBuffers, WeightRef};
 use crate::contract::plan::{DownPlan, RowNormPlan};
 use crate::contract::recording::Recording;
 use crate::tile::{backend_error, borrowed};
@@ -134,7 +134,7 @@ impl Mlp for TileMlp {
         plan: &DownPlan,
         out: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
-        weight: DownWeight<'_>,
+        weight: WeightRef<'_>,
     ) -> Result<()> {
         let scope = capture(recording)?;
         recording.retain(out);
@@ -149,7 +149,7 @@ impl Mlp for TileMlp {
         ];
         let tile = (&mut out).partition([plan.tile_rows]);
         match weight {
-            DownWeight::Dense(w) => {
+            WeightRef::Dense(w) => {
                 recording.retain(w);
                 // SAFETY: `Bf16` marks `bf16` memory.
                 let w: Buffer<'_, bf16> = unsafe { w.retyped() };
@@ -161,7 +161,7 @@ impl Mlp for TileMlp {
                     .record(unsafe { launch.programmatic_dependent_launch() })
                     .map(drop)
             }
-            DownWeight::Fp8 { weight, scales } => {
+            WeightRef::Fp8 { weight, scales } => {
                 recording.retain(weight);
                 recording.retain(scales);
                 // SAFETY: `Fp8` marks `f8e4m3fn` memory.
@@ -174,7 +174,7 @@ impl Mlp for TileMlp {
                     .record(unsafe { launch.programmatic_dependent_launch() })
                     .map(drop)
             }
-            DownWeight::Fp4 {
+            WeightRef::Fp4 {
                 weight,
                 scales,
                 inverse_global,

@@ -365,7 +365,7 @@ impl Capture<'_> {
     fn linear(
         &mut self,
         node: &TensorNode,
-        mut output: Tensor<f32>,
+        output: Tensor<f32>,
     ) -> Result<Tensor<f32>, DeviceError> {
         let input = self.weights.constants.get(&node.inputs[0]).map_or_else(
             || self.arena.get(node.inputs[0]).map_err(error),
@@ -415,8 +415,9 @@ impl Capture<'_> {
             return Ok(matrix.reshape(&[size])?);
         }
         weights.record(
+            &self.weights.kernels,
             self.scope,
-            &mut output,
+            &output,
             input,
             input.size(),
             self.weights.tiling.get(&node.inputs[1]).copied().unwrap_or(
@@ -440,8 +441,9 @@ impl Capture<'_> {
                 .as_ref()
                 .ok_or_else(|| error("missing fusion weights"))?;
             fusion.projection.record(
+                &self.weights.kernels,
                 self.scope,
-                output,
+                &*output,
                 &normalized,
                 2 * dimension,
                 fusion.tiling,

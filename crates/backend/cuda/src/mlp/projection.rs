@@ -1,11 +1,12 @@
 //! Storage strategy shared by graph capture and model-specific binding adapters.
 use crate::constants::FP8_BLOCK_COLUMNS;
 use crate::constants::NVFP4_GROUP_SIZE;
-use crate::{kernels::linear, strategy::LinearTiling};
+use crate::resident::tensor_buffer as buffer;
+use crate::strategy::LinearTiling;
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::{half::bf16, prelude::*};
 use infer_core::{Error, Result};
-use infer_cuda_kernels::contract::Owner;
+use infer_cuda_kernels::contract::{DownPlan, Kernels, Owner, Recording, WeightRef};
 use std::result::Result as StdResult;
 use std::sync::Arc;
 
@@ -59,47 +60,48 @@ impl ProjectionWeight {
         }
     }
 
+    /// The weight in the form the projection contract takes.
+    pub(crate) fn weight_ref(&self) -> StdResult<WeightRef<'_>, DeviceError> {
+        match self {
+            Self::Dense(w) => Ok(WeightRef::Dense(buffer(w.as_ref())?)),
+            Self::Fp8(w, s) => Ok(WeightRef::Fp8 {
+                weight: buffer(w.as_ref())?,
+                scales: buffer(s.as_ref())?,
+            }),
+            Self::Fp8Block(..) => Err(DeviceError::Launch(
+                "block FP8 requires the resident FP8 GEMM".to_string(),
+            )),
+            Self::Fp4(w, s, global) => Ok(WeightRef::Fp4 {
+                weight: buffer(w.as_ref())?,
+                scales: buffer(s.as_ref())?,
+                inverse_global: global.recip(),
+            }),
+        }
+    }
+
     pub(crate) fn record(
         &self,
+        kernels: &Kernels,
         scope: &Scope,
-        out: &mut Tensor<f32>,
+        out: &Tensor<f32>,
         input: &Tensor<f32>,
         columns: usize,
         tile: LinearTiling,
     ) -> StdResult<(), DeviceError> {
-        let mut generics = vec![
-            tile.rows().to_string(),
-            tile.columns().to_string(),
-            columns.to_string(),
-        ];
-        match self {
-            Self::Dense(w) => {
-                generics.insert(0, bf16::DTYPE.as_str().into());
-                scope.record(
-                    linear::dense(out.partition([tile.rows()]), input, w).generics(generics),
-                )?;
-            }
-            Self::Fp8(w, s) => {
-                scope.record(
-                    linear::fp8(out.partition([tile.rows()]), input, w, s).generics(generics),
-                )?;
-            }
-            Self::Fp8Block(..) => {
-                return Err(DeviceError::Launch(
-                    "block FP8 requires the resident FP8 GEMM".to_string(),
-                ));
-            }
-            Self::Fp4(w, s, g) => {
-                generics.extend([
-                    (tile.columns() / 2).to_string(),
-                    (tile.columns() / NVFP4_GROUP_SIZE).to_string(),
-                ]);
-                scope.record(
-                    linear::nvfp4(out.partition([tile.rows()]), input, w, s, g.recip())
-                        .generics(generics),
-                )?;
-            }
-        }
+        kernels
+            .projection
+            .row(
+                &Recording::scope(scope),
+                &DownPlan {
+                    tile_rows: tile.rows(),
+                    tile_columns: tile.columns(),
+                    columns,
+                },
+                buffer(out)?,
+                buffer(input)?,
+                self.weight_ref()?,
+            )
+            .map_err(|error| DeviceError::Internal(error.to_string()))?;
         Ok(())
     }
 }
