@@ -7,8 +7,8 @@
 use super::artifact::Manifest;
 use super::driver::{Device, Function};
 use crate::contract::buffer::{Bf16, Buffer};
-use crate::contract::kernels::Projection;
-use crate::contract::plan::PoolGemvPlan;
+use crate::contract::kernels::{Projection, WeightRef};
+use crate::contract::plan::{DownPlan, LastRowsPlan, PoolGemvPlan, RowsPlan, THREE_ROWS};
 use crate::contract::recording::Recording;
 use infer_core::{Error, ErrorCode, Result};
 use std::ffi::{CStr, c_void};
@@ -59,6 +59,81 @@ impl AotProjection {
 }
 
 impl Projection for AotProjection {
+    fn rows(
+        &self,
+        _recording: &Recording<'_>,
+        _plan: &RowsPlan,
+        _out: Buffer<'_, f32>,
+        _x: Buffer<'_, f32>,
+        _weight: WeightRef<'_>,
+    ) -> Result<()> {
+        Err(not_compiled("rows"))
+    }
+
+    fn row(
+        &self,
+        _recording: &Recording<'_>,
+        _plan: &DownPlan,
+        _out: Buffer<'_, f32>,
+        _x: Buffer<'_, f32>,
+        _weight: WeightRef<'_>,
+    ) -> Result<()> {
+        Err(not_compiled("row"))
+    }
+
+    fn pack_row(
+        &self,
+        _recording: &Recording<'_>,
+        _shape: (usize, usize),
+        _out: Buffer<'_, f32>,
+        _input: Buffer<'_, f32>,
+        _row: usize,
+    ) -> Result<()> {
+        Err(not_compiled("pack_row"))
+    }
+
+    fn unpack_row(
+        &self,
+        _recording: &Recording<'_>,
+        _shape: (usize, usize),
+        _out: Buffer<'_, f32>,
+        _input: Buffer<'_, f32>,
+        _row: usize,
+    ) -> Result<()> {
+        Err(not_compiled("unpack_row"))
+    }
+
+    fn pack_three(
+        &self,
+        _recording: &Recording<'_>,
+        _columns: usize,
+        _out: Buffer<'_, f32>,
+        _inputs: [Buffer<'_, f32>; THREE_ROWS],
+    ) -> Result<()> {
+        Err(not_compiled("pack_three"))
+    }
+
+    fn unpack_three(
+        &self,
+        _recording: &Recording<'_>,
+        _columns: usize,
+        _outs: [Buffer<'_, f32>; THREE_ROWS],
+        _input: Buffer<'_, f32>,
+    ) -> Result<()> {
+        Err(not_compiled("unpack_three"))
+    }
+
+    fn last_rows(
+        &self,
+        _recording: &Recording<'_>,
+        _plan: &LastRowsPlan,
+        _out: Buffer<'_, f32>,
+        _rows: Buffer<'_, f32>,
+        _metadata: Buffer<'_, i32>,
+    ) -> Result<()> {
+        Err(not_compiled("last_rows"))
+    }
+
     fn pool_gemv_bf16(
         &self,
         recording: &Recording<'_>,
@@ -94,6 +169,11 @@ impl Projection for AotProjection {
             )
         }
     }
+}
+
+/// This family's AOT artifact holds only [`ENTRY_NAME`] so far.
+fn not_compiled(entry: &str) -> Error {
+    Error::unsupported(format!("projection {entry} has no AOT kernel"))
 }
 
 fn geometry(field: &str) -> Error {

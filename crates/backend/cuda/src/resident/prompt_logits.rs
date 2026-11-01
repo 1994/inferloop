@@ -3,11 +3,11 @@
 //! A prompt chunk reads back one row of logits, so its arena keeps one row (see
 //! [`super::ActivationArena::new_prompt`]) instead of `lanes x vocabulary`, which is most of a
 //! wide prompt arena (2 GB at 2048 lanes for a 248K vocabulary).
+use super::buffers::buffer;
 use super::{ActivationArena, ProgramWeights, capture::error};
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::{LastRowsKind, LastRowsPlan, Recording};
 use infer_ir::TensorNode;
-
-pub use infer_cuda_kernels::tile::projection::prompt_logits as kernels;
 
 /// Columns one `last_row` block copies.
 const ROW_TILE: usize = 256;
@@ -69,14 +69,21 @@ pub(super) fn record(
     let hidden = row.size();
     {
         let input = arena.get(node.inputs[0]).map_err(error)?;
-        scope.record(
-            kernels::last_row(
-                (&mut *row).partition([1, ROW_TILE]),
-                &input.view(&[width, hidden]).map_err(error)?,
-                metadata,
+        weights
+            .kernels
+            .projection
+            .last_rows(
+                &Recording::scope(scope),
+                &LastRowsPlan {
+                    kind: LastRowsKind::One,
+                    lanes: width,
+                    hidden,
+                },
+                buffer(&*row)?,
+                buffer(input)?,
+                buffer(metadata)?,
             )
-            .generics(vec![hidden.to_string()]),
-        )?;
+            .map_err(error)?;
     }
     let slot = arena.slot(node.outputs[0]).map_err(error)?;
     let output = arena.buffers[slot]

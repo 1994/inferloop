@@ -9,9 +9,7 @@ use crate::{
 use cutile::prelude::*;
 use cutile::tile_kernel::validate_programmatic_dependent_launch;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::contract::{
-    DownPlan, DownWeight, Kernels, ProductBuffers, Recording, RowNormPlan,
-};
+use infer_cuda_kernels::contract::{DownPlan, Kernels, ProductBuffers, Recording, RowNormPlan};
 use infer_cuda_kernels::tile::runtime::Graph;
 pub use projection::ProjectionWeight;
 use std::fmt::Display;
@@ -89,10 +87,10 @@ impl MlpGraph {
         };
         let input = allocate(d)?;
         let normalized = allocate(d)?;
-        let mut gate = allocate(n)?;
-        let mut up = allocate(n)?;
+        let gate = allocate(n)?;
+        let up = allocate(n)?;
         let activated = allocate(n)?;
-        let mut down = allocate(d)?;
+        let down = allocate(d)?;
         let output = allocate(d)?;
         let kernels = device.kernels();
         let graph = Graph::scope(&device.stream, |scope| {
@@ -113,16 +111,16 @@ impl MlpGraph {
                 .map_err(failed)?;
             weights
                 .gate
-                .record(scope, &mut gate, &normalized, d, config.tiling)?;
+                .record(&kernels, scope, &gate, &normalized, d, config.tiling)?;
             weights
                 .up
-                .record(scope, &mut up, &normalized, d, config.tiling)?;
+                .record(&kernels, scope, &up, &normalized, d, config.tiling)?;
             let parts = Activation {
                 gate: &gate,
                 up: &up,
                 activated: &activated,
             };
-            record_down(&kernels, scope, weights, config, &parts, &mut down, n)?;
+            record_down(&kernels, scope, weights, config, &parts, &down, n)?;
             kernels
                 .mlp
                 .residual(
@@ -196,7 +194,7 @@ fn record_down(
     weights: &MlpWeights,
     config: &MlpConfig,
     parts: &Activation<'_>,
-    down: &mut Tensor<f32>,
+    down: &Tensor<f32>,
     columns: usize,
 ) -> StdResult<(), DeviceError> {
     let recording = Recording::scope(scope);
@@ -219,33 +217,19 @@ fn record_down(
                     tile_columns: config.tiling.columns(),
                     columns,
                 },
-                buffer(&*down)?,
+                buffer(down)?,
                 buffer(parts.activated)?,
-                down_weight(&weights.down)?,
+                weights.down.weight_ref()?,
             )
             .map_err(failed);
     }
     kernels.mlp.product(&recording, product).map_err(failed)?;
-    weights
-        .down
-        .record(scope, down, parts.activated, columns, config.tiling)
-}
-
-/// The weight in the form the contract's down projection takes.
-fn down_weight(weight: &ProjectionWeight) -> StdResult<DownWeight<'_>, DeviceError> {
-    match weight {
-        ProjectionWeight::Dense(w) => Ok(DownWeight::Dense(buffer(w.as_ref())?)),
-        ProjectionWeight::Fp8(w, s) => Ok(DownWeight::Fp8 {
-            weight: buffer(w.as_ref())?,
-            scales: buffer(s.as_ref())?,
-        }),
-        ProjectionWeight::Fp8Block(..) => Err(DeviceError::Launch(
-            "block FP8 requires the resident FP8 GEMM".to_string(),
-        )),
-        ProjectionWeight::Fp4(w, s, global) => Ok(DownWeight::Fp4 {
-            weight: buffer(w.as_ref())?,
-            scales: buffer(s.as_ref())?,
-            inverse_global: global.recip(),
-        }),
-    }
+    weights.down.record(
+        kernels,
+        scope,
+        down,
+        parts.activated,
+        columns,
+        config.tiling,
+    )
 }

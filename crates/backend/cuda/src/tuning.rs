@@ -26,6 +26,7 @@ use cutile::{
     prelude::*,
 };
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::Owner;
 use infer_cuda_kernels::tile::runtime::Graph;
 use serde::{Deserialize, Serialize};
 use std::env::var_os;
@@ -156,11 +157,12 @@ fn key_dtype(key: &str) -> &str {
 pub fn tune(device: &CudaDevice, weight: &ProjectionWeight) -> Result<ProjectionTrial> {
     let (key, rows, columns) = projection_key(weight)?;
     let baseline = default_tiling()?;
-    let (base, expected) = capture(device, weight, rows, columns, baseline)?;
-    base.launch()
+    let base = capture(device, weight, rows, columns, baseline)?;
+    base.graph
+        .launch()
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let expected = device.read(&expected)?;
+    let expected = device.read(&base.output)?;
     let options = BenchOptions {
         warmup: Duration::from_millis(WARMUP_MS),
         rep: Duration::from_millis(REP_MS),
@@ -174,13 +176,14 @@ pub fn tune(device: &CudaDevice, weight: &ProjectionWeight) -> Result<Projection
     for tile_rows in TILE_ROW_SEARCH {
         for tile_columns in TILE_COLUMN_SEARCH {
             let tiling = LinearTiling::new(tile_rows, tile_columns)?;
-            let (candidate, output) = capture(device, weight, rows, columns, tiling)?;
+            let candidate = capture(device, weight, rows, columns, tiling)?;
             candidate
+                .graph
                 .launch()
                 .sync_on(&device.stream)
                 .map_err(device_error)?;
-            verify(&device.read(&output)?, &expected)?;
-            let trial = measure(device, &options, &base, &candidate, tiling)?;
+            verify(&device.read(&candidate.output)?, &expected)?;
+            let trial = measure(device, &options, &base.graph, &candidate.graph, tiling)?;
             if trial.speedup > best {
                 best = trial.speedup;
                 selected = tiling;
@@ -188,8 +191,8 @@ pub fn tune(device: &CudaDevice, weight: &ProjectionWeight) -> Result<Projection
             trials.push(trial);
         }
     }
-    let (candidate, _) = capture(device, weight, rows, columns, selected)?;
-    let confirmation = measure(device, &options, &base, &candidate, selected)?;
+    let candidate = capture(device, weight, rows, columns, selected)?;
+    let confirmation = measure(device, &options, &base.graph, &candidate.graph, selected)?;
     // Require a measurable win on the independent trial; noise keeps the baseline.
     if confirmation.speedup < MIN_CONFIRM_SPEEDUP {
         selected = baseline;
@@ -208,13 +211,21 @@ pub fn tune(device: &CudaDevice, weight: &ProjectionWeight) -> Result<Projection
     })
 }
 
+/// One captured candidate. Graphs address their buffers without holding them, so this keeps
+/// the input and output alive through every replay; the caller keeps the weight alive.
+struct Probe {
+    graph: Graph,
+    output: Arc<Tensor<f32>>,
+    _input: Owner,
+}
+
 fn capture(
     device: &CudaDevice,
     weight: &ProjectionWeight,
     rows: usize,
     columns: usize,
     tile: LinearTiling,
-) -> Result<(Graph, Arc<Tensor<f32>>)> {
+) -> Result<Probe> {
     weight.validate(rows, columns)?;
     let values = (0..columns)
         .map(|i| {
@@ -223,14 +234,19 @@ fn capture(
         })
         .collect();
     let input = device.upload(values, &[columns])?;
-    let mut output = api::zeros::<f32>(&[rows])
+    let output = api::zeros::<f32>(&[rows])
         .sync_on(&device.stream)
         .map_err(device_error)?;
+    let kernels = device.kernels();
     let graph = Graph::scope(&device.stream, |scope| {
-        weight.record(scope, &mut output, &input, columns, tile)
+        weight.record(&kernels, scope, &output, &input, columns, tile)
     })
     .map_err(device_error)?;
-    Ok((graph, Arc::new(output)))
+    Ok(Probe {
+        graph,
+        output: Arc::new(output),
+        _input: input as Owner,
+    })
 }
 
 fn measure(

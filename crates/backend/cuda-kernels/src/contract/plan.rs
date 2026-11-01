@@ -158,3 +158,47 @@ pub struct GreedyPlan {
     pub tile: usize,
     pub blocks: usize,
 }
+
+/// Which kernel projects a row matrix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowsKernel {
+    /// Scalar row reductions, for few rows against a wide output.
+    Small,
+    /// Tensor-core products over tiles of the output and reduction.
+    Tiled {
+        output_tile: [usize; 2],
+        tile_output: usize,
+        tile_columns: usize,
+        /// FP4 code and scale depths; read only for FP4 weights.
+        fp4_depths: [usize; 2],
+    },
+}
+
+/// Projection of `[rows, columns]` into `[rows, outputs]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RowsPlan {
+    pub kernel: RowsKernel,
+    pub rows: usize,
+    pub outputs: usize,
+    pub columns: usize,
+}
+
+/// Which lanes' last active rows a prompt reads back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LastRowsKind {
+    /// The one final row of a prompt chunk.
+    One,
+    /// One row per burst segment, `segment_rows` lanes each.
+    Segments { segment_rows: usize },
+}
+
+/// Copy of `[lanes, hidden]` rows' last active rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LastRowsPlan {
+    pub kind: LastRowsKind,
+    pub lanes: usize,
+    pub hidden: usize,
+}
+
+/// Rows of the fixed three-lane pack and unpack, one per verified MTP lane.
+pub const THREE_ROWS: usize = 3;
