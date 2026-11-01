@@ -7,6 +7,7 @@ use cuda_core::DType;
 pub use cutile::prelude::Scope;
 use cutile::prelude::Tensor;
 use infer_core::{Error, ErrorCode, Result};
+use mlp::TileMlp;
 use norm::TileNorm;
 use projection::TileProjection;
 use rope::TileRope;
@@ -32,6 +33,7 @@ pub fn kernels(ordinal: usize) -> Kernels {
         projection: Box::new(TileProjection::new(ordinal)),
         rope: Box::new(TileRope::new(ordinal)),
         norm: Box::new(TileNorm::new(ordinal)),
+        mlp: Box::new(TileMlp::new(ordinal)),
     }
 }
 

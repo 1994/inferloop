@@ -1,10 +1,7 @@
 //! Allocation-free MLP graph replay with resident intermediate activations.
-mod kernels;
-mod pdl;
-mod pdl_consumers;
 mod projection;
-use crate::constants::AUX_KERNEL_TILE;
 use crate::constants::MAX_HIDDEN_SIZE;
+use crate::resident::tensor_buffer as buffer;
 use crate::{
     device::{CudaDevice, device_error},
     strategy::LinearTiling,
@@ -12,9 +9,13 @@ use crate::{
 use cutile::prelude::*;
 use cutile::tile_kernel::validate_programmatic_dependent_launch;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{
+    DownPlan, DownWeight, Kernels, ProductBuffers, Recording, RowNormPlan,
+};
 use infer_cuda_kernels::tile::runtime::Graph;
-use kernels::fused;
 pub use projection::ProjectionWeight;
+use std::fmt::Display;
+use std::result::Result as StdResult;
 
 /// Intermediate size bound for resident MLP graphs.
 const MAX_INTERMEDIATE_SIZE: usize = 131_072;
@@ -29,6 +30,7 @@ pub struct MlpConfig {
     pub pdl: bool,
 }
 
+#[derive(Clone)]
 pub struct MlpWeights {
     pub norm: Arc<Tensor<f32>>,
     pub gate: ProjectionWeight,
@@ -38,6 +40,10 @@ pub struct MlpWeights {
 
 /// Owns stable input/output buffers; the graph retains all intermediate storage.
 pub struct MlpGraph {
+    /// Activations the graph addresses by device pointer; it does not hold them itself.
+    _storage: [Tensor<f32>; 5],
+    /// Weights the graph addresses by device pointer.
+    _weights: MlpWeights,
     graph: Graph,
     input: Tensor<f32>,
     output: Arc<Tensor<f32>>,
@@ -80,52 +86,50 @@ impl MlpGraph {
                 .map_err(device_error)
         };
         let input = allocate(d)?;
-        let mut normalized = allocate(d)?;
+        let normalized = allocate(d)?;
         let mut gate = allocate(n)?;
         let mut up = allocate(n)?;
-        let mut activated = allocate(n)?;
+        let activated = allocate(n)?;
         let mut down = allocate(d)?;
-        let mut output = allocate(d)?;
+        let output = allocate(d)?;
+        let kernels = device.kernels();
         let graph = Graph::scope(&device.stream, |scope| {
-            scope.record(
-                fused::norm(
-                    (&mut normalized).partition([d.next_power_of_two()]),
-                    &input,
-                    &weights.norm,
-                    config.epsilon,
-                    config.norm_offset,
+            let recording = Recording::scope(scope);
+            kernels
+                .mlp
+                .row_norm(
+                    &recording,
+                    &RowNormPlan {
+                        dimension: d,
+                        epsilon: config.epsilon,
+                        offset: config.norm_offset,
+                    },
+                    buffer(&normalized)?,
+                    buffer(&input)?,
+                    buffer(weights.norm.as_ref())?,
                 )
-                .generics(vec![d.to_string(), d.next_power_of_two().to_string()]),
-            )?;
+                .map_err(failed)?;
             weights
                 .gate
                 .record(scope, &mut gate, &normalized, d, config.tiling)?;
             weights
                 .up
                 .record(scope, &mut up, &normalized, d, config.tiling)?;
-            if config.pdl {
-                pdl::record_product(scope, &mut activated, &gate, &up)?;
-                pdl::record_down(
-                    scope,
-                    &weights.down,
-                    &mut down,
-                    &activated,
-                    n,
-                    config.tiling,
-                )?;
-            } else {
-                scope.record(
-                    fused::silu_mul((&mut activated).partition([AUX_KERNEL_TILE]), &gate, &up)
-                        .generics(vec![AUX_KERNEL_TILE.to_string()]),
-                )?;
-                weights
-                    .down
-                    .record(scope, &mut down, &activated, n, config.tiling)?;
-            }
-            scope.record(
-                fused::residual((&mut output).partition([AUX_KERNEL_TILE]), &down, &input)
-                    .generics(vec![AUX_KERNEL_TILE.to_string()]),
-            )?;
+            let parts = Activation {
+                gate: &gate,
+                up: &up,
+                activated: &activated,
+            };
+            record_down(&kernels, scope, weights, config, &parts, &mut down, n)?;
+            kernels
+                .mlp
+                .residual(
+                    &recording,
+                    buffer(&output)?,
+                    buffer(&down)?,
+                    buffer(&input)?,
+                )
+                .map_err(failed)?;
             Ok(())
         })
         .map_err(device_error)?;
@@ -135,6 +139,8 @@ impl MlpGraph {
             output: Arc::new(output),
             device: device.clone(),
             hidden: d,
+            _storage: [normalized, gate, up, activated, down],
+            _weights: weights.clone(),
         })
     }
 
@@ -167,5 +173,77 @@ impl MlpGraph {
             .to_host_vec()
             .sync_on(&self.device.stream)
             .map_err(device_error)
+    }
+}
+
+fn failed(error: impl Display) -> DeviceError {
+    DeviceError::Internal(error.to_string())
+}
+
+/// The activation product's operands.
+struct Activation<'a> {
+    gate: &'a Tensor<f32>,
+    up: &'a Tensor<f32>,
+    activated: &'a Tensor<f32>,
+}
+
+/// The activation product and the down projection it feeds, waiting on it under PDL.
+fn record_down(
+    kernels: &Kernels,
+    scope: &Scope,
+    weights: &MlpWeights,
+    config: &MlpConfig,
+    parts: &Activation<'_>,
+    down: &mut Tensor<f32>,
+    columns: usize,
+) -> StdResult<(), DeviceError> {
+    let recording = Recording::scope(scope);
+    let product = ProductBuffers {
+        out: buffer(parts.activated)?,
+        gate: buffer(parts.gate)?,
+        up: buffer(parts.up)?,
+    };
+    if config.pdl {
+        kernels
+            .mlp
+            .signalling_product(&recording, product)
+            .map_err(failed)?;
+        return kernels
+            .mlp
+            .down_after_product(
+                &recording,
+                &DownPlan {
+                    tile_rows: config.tiling.rows(),
+                    tile_columns: config.tiling.columns(),
+                    columns,
+                },
+                buffer(&*down)?,
+                buffer(parts.activated)?,
+                down_weight(&weights.down)?,
+            )
+            .map_err(failed);
+    }
+    kernels.mlp.product(&recording, product).map_err(failed)?;
+    weights
+        .down
+        .record(scope, down, parts.activated, columns, config.tiling)
+}
+
+/// The weight in the form the contract's down projection takes.
+fn down_weight(weight: &ProjectionWeight) -> StdResult<DownWeight<'_>, DeviceError> {
+    match weight {
+        ProjectionWeight::Dense(w) => Ok(DownWeight::Dense(buffer(w.as_ref())?)),
+        ProjectionWeight::Fp8(w, s) => Ok(DownWeight::Fp8 {
+            weight: buffer(w.as_ref())?,
+            scales: buffer(s.as_ref())?,
+        }),
+        ProjectionWeight::Fp8Block(..) => Err(DeviceError::Launch(
+            "block FP8 requires the resident FP8 GEMM".to_string(),
+        )),
+        ProjectionWeight::Fp4(w, s, global) => Ok(DownWeight::Fp4 {
+            weight: buffer(w.as_ref())?,
+            scales: buffer(s.as_ref())?,
+            inverse_global: global.recip(),
+        }),
     }
 }

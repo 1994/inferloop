@@ -89,3 +89,20 @@ pub struct QuantNormPlan {
     pub epsilon: f32,
     pub offset: f32,
 }
+
+/// Tiles of a down projection that waits on its producer's activation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DownPlan {
+    pub tile_rows: usize,
+    pub tile_columns: usize,
+    /// Reduction length and weight columns.
+    pub columns: usize,
+}
+
+/// Norm of one flat activation row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowNormPlan {
+    pub dimension: usize,
+    pub epsilon: f32,
+    pub offset: f32,
+}
