@@ -21,6 +21,12 @@ editing its directory. Preserve unrelated work in the checkout.
 - Every PR must state its performance impact and the evidence or reasoning behind it.
   Changes with no execution effect, such as prose-only edits, may give a brief explanation
   instead of running benchmarks. Use the existing performance gates and baseline contract.
+- API adapters under `crates/service/frontdoor/src/http` must serialize typed structs/enums
+  (`Json<T>`, `serde_json::to_string`) rather than build response objects dynamically. The
+  `json!` macro is banned there; `serde_json::Value` is limited to wire request DTOs and
+  protocol-defined opaque inputs (tool schemas, observation snapshots) listed in
+  `tools/check/policy.py`. This keeps response and SSE construction out of intermediate
+  `Value` trees and makes the wire shape compile-time checked.
 
 ## Iteration and release gates
 

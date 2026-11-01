@@ -26,7 +26,7 @@ use infer_models::{ChatMessage, ChatOptions, TextAssets};
 use infer_observe::trace::TraceContext;
 use infer_runtime::EngineOutput;
 use request::{Answering, LABELS, ReadPlan};
-use serde_json::{Value, json};
+use serde::Serialize;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -51,9 +51,87 @@ struct ReplyLabels {
     shared_prefix: Option<usize>,
 }
 
+/// Complete Decisions response.
+#[derive(Serialize)]
+pub(super) struct DecisionResponse {
+    model: String,
+    answers: Vec<DecisionAnswer>,
+    usage: DecisionUsage,
+}
+
+#[derive(Serialize)]
+struct DecisionUsage {
+    input_tokens: usize,
+    input_tokens_details: InputTokensDetails,
+    output_tokens: usize,
+    output_tokens_details: OutputTokensDetails,
+    total_tokens: usize,
+}
+
+#[derive(Serialize)]
+struct InputTokensDetails {
+    cached_tokens: usize,
+    cache_write_tokens: usize,
+}
+
+#[derive(Serialize)]
+struct OutputTokensDetails {
+    reasoning_tokens: usize,
+}
+
+/// One typed answer.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum DecisionAnswer {
+    Predicate(PredicateAnswer),
+    Choice(ChoiceAnswer),
+    Score(ScoreAnswer),
+}
+
+#[derive(Debug, Serialize)]
+struct PredicateAnswer {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    name: Option<String>,
+    probability: f32,
+}
+
+#[derive(Debug, Serialize)]
+struct ChoiceAnswer {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    name: Option<String>,
+    choice: request::ChoiceValue,
+    probabilities: Vec<ChoiceProbability>,
+    confidence: f32,
+}
+
+#[derive(Debug, Serialize)]
+struct ChoiceProbability {
+    value: request::ChoiceValue,
+    probability: f32,
+}
+
+#[derive(Debug, Serialize)]
+struct ScoreAnswer {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    name: Option<String>,
+    score: f64,
+    probabilities: Vec<ScoreProbability>,
+    confidence: f32,
+}
+
+#[derive(Debug, Serialize)]
+struct ScoreProbability {
+    value: usize,
+    label: String,
+    probability: f32,
+}
+
 /// One answered question and the prompt it read.
 struct Read {
-    answer: Value,
+    answer: DecisionAnswer,
     prompt_tokens: usize,
     /// Prompt tokens restored from the shared prefix instead of prefilled.
     cached_tokens: usize,
@@ -181,7 +259,7 @@ pub(super) async fn decide(
     state: TextState,
     headers: HeaderMap,
     request: DecisionRequest,
-) -> ApiResult<Value> {
+) -> ApiResult<DecisionResponse> {
     let plan = Arc::new(request.plan()?);
     tracing::debug!(
         target: "infer::openai",
@@ -254,17 +332,22 @@ pub(super) async fn decide(
     reads.extend(later);
     let input_tokens: usize = reads.iter().map(|read| read.prompt_tokens).sum();
     let cached_tokens: usize = reads.iter().map(|read| read.cached_tokens).sum();
-    Ok(json!({
-        "model": inspection.model_name,
-        "answers": reads.into_iter().map(|read| read.answer).collect::<Vec<_>>(),
-        "usage": {
-            "input_tokens": input_tokens,
-            "input_tokens_details": {"cached_tokens": cached_tokens, "cache_write_tokens": 0},
-            "output_tokens": 0,
-            "output_tokens_details": {"reasoning_tokens": 0},
-            "total_tokens": input_tokens,
+    Ok(DecisionResponse {
+        model: inspection.model_name,
+        answers: reads.into_iter().map(|read| read.answer).collect(),
+        usage: DecisionUsage {
+            input_tokens,
+            input_tokens_details: InputTokensDetails {
+                cached_tokens,
+                cache_write_tokens: 0,
+            },
+            output_tokens: 0,
+            output_tokens_details: OutputTokensDetails {
+                reasoning_tokens: 0,
+            },
+            total_tokens: input_tokens,
         },
-    }))
+    })
 }
 
 /// CPU staging for probing labels and the shared prefix: two renders of the evidence.
@@ -386,7 +469,7 @@ fn answer(
     answering: &Answering,
     probabilities: &[f32],
     label_mass: f32,
-) -> infer_core::Result<Value> {
+) -> infer_core::Result<DecisionAnswer> {
     let expected = match answering {
         Answering::Predicate => 2,
         Answering::Choice(values) => values.len(),
@@ -404,19 +487,24 @@ fn answer(
         .map_or(0, |(index, _)| index);
     let confidence = probabilities[top] * label_mass;
     Ok(match answering {
-        Answering::Predicate => json!({
-            "type": "predicate", "name": name, "probability": probabilities[1],
+        Answering::Predicate => DecisionAnswer::Predicate(PredicateAnswer {
+            kind: "predicate",
+            name: name.map(str::to_string),
+            probability: probabilities[1],
         }),
-        Answering::Choice(values) => json!({
-            "type": "choice",
-            "name": name,
-            "choice": values[top],
-            "probabilities": values
+        Answering::Choice(values) => DecisionAnswer::Choice(ChoiceAnswer {
+            kind: "choice",
+            name: name.map(str::to_string),
+            choice: values[top].clone(),
+            probabilities: values
                 .iter()
                 .zip(probabilities)
-                .map(|(value, probability)| json!({"value": value, "probability": probability}))
-                .collect::<Vec<_>>(),
-            "confidence": confidence,
+                .map(|(value, probability)| ChoiceProbability {
+                    value: value.clone(),
+                    probability: *probability,
+                })
+                .collect(),
+            confidence,
         }),
         Answering::Score(labels) => {
             // Level indices are the score's units: the expected index under the distribution.
@@ -426,19 +514,21 @@ fn answer(
                     .fold((0.0f64, 0.0f64), |(score, level), probability| {
                         (level.mul_add(f64::from(*probability), score), level + 1.0)
                     });
-            json!({
-                "type": "score",
-                "name": name,
-                "score": score,
-                "probabilities": labels
+            DecisionAnswer::Score(ScoreAnswer {
+                kind: "score",
+                name: name.map(str::to_string),
+                score,
+                probabilities: labels
                     .iter()
                     .zip(probabilities)
                     .enumerate()
-                    .map(|(level, (label, probability))| {
-                        json!({"value": level, "label": label, "probability": probability})
+                    .map(|(level, (label, probability))| ScoreProbability {
+                        value: level,
+                        label: label.clone(),
+                        probability: *probability,
                     })
-                    .collect::<Vec<_>>(),
-                "confidence": confidence,
+                    .collect(),
+                confidence,
             })
         }
     })

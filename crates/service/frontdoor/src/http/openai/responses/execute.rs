@@ -4,12 +4,11 @@
 //! completion once and turns the parser's output into typed items.
 use super::super::TextState;
 use super::super::execution::{Prepared as Generation, parse_reply};
-use super::output::{self, Snapshot, Usage};
+use super::output::{self, ResponseBody, Snapshot, Usage};
 use crate::constants::TOKEN_STAGING_BYTES;
 use infer_core::{Error, ErrorCode};
 use infer_ir::WorkloadOutput;
 use infer_runtime::{CompletedRequest, EngineOutput};
-use serde_json::Value;
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -21,7 +20,7 @@ pub(super) async fn generate_prepared(
     state: &TextState,
     mut prepared: Generation,
     spec: &super::request::Spec,
-) -> infer_core::Result<Value> {
+) -> infer_core::Result<ResponseBody> {
     while let Some(event) = prepared.receiver.recv().await {
         if let EngineOutput::Finished(result) = event? {
             return respond(state, result, &prepared, spec).await;
@@ -38,7 +37,7 @@ async fn respond(
     result: CompletedRequest,
     prepared: &Generation,
     spec: &super::request::Spec,
-) -> infer_core::Result<Value> {
+) -> infer_core::Result<ResponseBody> {
     let Some(WorkloadOutput::Tokens(tokens)) = result.output else {
         return Err(Error::invariant("generation completed without tokens"));
     };

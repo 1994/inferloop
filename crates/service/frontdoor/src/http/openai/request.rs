@@ -18,6 +18,11 @@ const MAX_TOOLS: usize = 128;
 /// `OpenAI` function names contain at most 64 ASCII characters.
 const MAX_TOOL_NAME_BYTES: usize = 64;
 
+/// An opaque protocol-defined JSON value (tool schema, request input item, ...).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub(super) struct OpaqueJson(pub(super) Value);
+
 /// The generated-token budget a request asked for, before the service cap and remaining
 /// context apply.
 pub(super) struct RequestedOutput {
@@ -37,7 +42,7 @@ pub(super) enum ToolPolicy {
     Auto {
         declared: BTreeSet<String>,
         /// The declared tools as the chat template expects them.
-        template: Value,
+        template: OpaqueJson,
         constraint: Option<infer_models::ToolConstraints>,
     },
 }
@@ -58,7 +63,7 @@ impl ToolPolicy {
         }
     }
     /// Declared tools for the chat template.
-    pub(super) fn template(&self) -> Option<Value> {
+    pub(super) fn template(&self) -> Option<OpaqueJson> {
         match self {
             Self::Disabled => None,
             Self::Auto { template, .. } => Some(template.clone()),
@@ -202,10 +207,13 @@ impl GenerationRequest {
             if !names.insert(name.clone()) {
                 return Err(Error::invalid("tool function names must be unique"));
             }
-            template.push(serde_json::json!({
-                "type": "function",
-                "function": tool.function,
-            }));
+            template.push(
+                serde_json::to_value(TemplateTool {
+                    kind: "function",
+                    function: &tool.function,
+                })
+                .map_err(|error| Error::invalid(error.to_string()))?,
+            );
         }
         let parallel = self.parallel_tool_calls.unwrap_or(true);
         let mut required = false;
@@ -252,7 +260,7 @@ impl GenerationRequest {
         });
         Ok(ToolPolicy::Auto {
             declared: names,
-            template,
+            template: OpaqueJson(template),
             constraint,
         })
     }
@@ -600,6 +608,13 @@ pub(super) struct WireToolFunction {
     pub parameters: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
+}
+
+#[derive(serde::Serialize)]
+struct TemplateTool<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: &'a WireToolFunction,
 }
 
 /// `tool_choice` as either a mode string or a named function.

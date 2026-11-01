@@ -22,8 +22,8 @@ use axum::{
 };
 use error::ApiError;
 use request::{GenerationRequest, ToolPolicy};
+use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
 
 type ApiResult<T> = Result<T, ApiError>;
 type Payload = Result<Json<GenerationRequest>, JsonRejection>;
@@ -43,18 +43,38 @@ pub(super) fn routes() -> Router<TextState> {
         .route("/v1/responses/{id}/cancel", post(responses::cancel))
 }
 
-async fn models(State(state): State<TextState>) -> ApiResult<Json<Value>> {
+#[derive(Serialize)]
+struct ModelObject {
+    id: String,
+    object: &'static str,
+    created: u64,
+    owned_by: &'static str,
+}
+
+#[derive(Serialize)]
+struct ModelList {
+    object: &'static str,
+    data: Vec<ModelObject>,
+}
+
+async fn models(State(state): State<TextState>) -> ApiResult<Json<ModelList>> {
     // The served name is configuration, not the internal model identity.
     let model = state.handle.inspect().await?.model_name;
-    Ok(Json(json!({"object":"list", "data":[{
-        "id":model, "object":"model", "created":0, "owned_by":"inference.rs"
-    }]})))
+    Ok(Json(ModelList {
+        object: "list",
+        data: vec![ModelObject {
+            id: model,
+            object: "model",
+            created: 0,
+            owned_by: "inference.rs",
+        }],
+    }))
 }
 
 async fn retrieve_model(
     State(state): State<TextState>,
     Path(model): Path<String>,
-) -> ApiResult<Json<Value>> {
+) -> ApiResult<Json<ModelObject>> {
     let served = state.handle.inspect().await?.model_name;
     if model != served {
         return Err(infer_core::Error::new(
@@ -63,9 +83,12 @@ async fn retrieve_model(
         )
         .into());
     }
-    Ok(Json(
-        json!({"id":served, "object":"model", "created":0, "owned_by":"inference.rs"}),
-    ))
+    Ok(Json(ModelObject {
+        id: served,
+        object: "model",
+        created: 0,
+        owned_by: "inference.rs",
+    }))
 }
 
 async fn chat(
@@ -126,7 +149,7 @@ async fn decision(
     State(state): State<TextState>,
     headers: HeaderMap,
     request: Result<Json<decisions::DecisionRequest>, JsonRejection>,
-) -> ApiResult<Json<Value>> {
+) -> ApiResult<Json<decisions::DecisionResponse>> {
     let Json(request) = request.map_err(ApiError::from)?;
     decisions::decide(state, headers, request).await.map(Json)
 }

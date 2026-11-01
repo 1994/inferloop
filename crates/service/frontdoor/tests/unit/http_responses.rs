@@ -418,8 +418,17 @@ fn seeded(status: ResponseStatus) -> StoredResponse {
         previous_response_id: None,
         request_input: b"[{\"role\":\"user\",\"content\":\"hello\"}]".to_vec(),
         response: serde_json::to_vec(&json!({
-            "id": id, "object": "response", "status": status.as_str(),
-            "model": "1", "output": [], "usage": null
+            "id": id, "object": "response", "created_at": 100,
+            "status": status.as_str(), "completed_at": null, "error": null,
+            "incomplete_details": null, "instructions": null,
+            "max_output_tokens": null, "model": "1", "output": [],
+            "parallel_tool_calls": true, "previous_response_id": null,
+            "reasoning": {"effort": null, "summary": null, "context": null},
+            "store": false, "temperature": 1.0,
+            "text": {"format": {"type": "text"}}, "tool_choice": "auto",
+            "tools": [], "top_p": 1.0, "truncation": "disabled", "usage": null,
+            "user": null, "metadata": {}, "access_programs": null,
+            "background": false, "conversation": null, "service_tier": "default"
         }))
         .unwrap(),
         payload_version: RESPONSES_PAYLOAD_VERSION,

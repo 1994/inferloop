@@ -63,9 +63,9 @@ fn declared_tools_enable_auto_parsing_and_reach_the_template() {
     let policy = request.tool_policy(true).unwrap();
     assert!(policy.parses());
     assert!(policy.declared().unwrap().contains("get_weather"));
-    assert_eq!(policy.template().unwrap()[0]["type"], "function");
+    assert_eq!(policy.template().unwrap().0[0]["type"], "function");
     assert_eq!(
-        policy.template().unwrap()[0]["function"]["name"],
+        policy.template().unwrap().0[0]["function"]["name"],
         "get_weather"
     );
 }

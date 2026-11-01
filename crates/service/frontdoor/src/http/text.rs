@@ -110,11 +110,18 @@ pub(super) fn text_preparation_bytes(request: &NativeTextRequest) -> Result<usiz
         .ok_or_else(|| Error::invalid("text staging size overflow"))
 }
 
+#[derive(serde::Serialize)]
+pub(super) struct NativeTextResponse {
+    result: infer_runtime::CompletedRequest,
+    text: Option<String>,
+    tokenizer_fingerprint: String,
+}
+
 pub(super) async fn text_infer(
     State(state): State<TextState>,
     headers: HeaderMap,
     request: StdResult<Json<NativeTextRequest>, JsonRejection>,
-) -> HttpResult<Json<serde_json::Value>> {
+) -> HttpResult<Json<NativeTextResponse>> {
     let Json(request) = request.map_err(HttpError::from)?;
     let assets = state.assets.clone();
     let bytes = text_preparation_bytes(&request)?;
@@ -180,9 +187,11 @@ pub(super) async fn text_infer(
                 }),
                 _ => None,
             };
-            return Ok(Json(
-                serde_json::json!({"result":result,"text":text,"tokenizer_fingerprint":state.assets.fingerprint}),
-            ));
+            return Ok(Json(NativeTextResponse {
+                result,
+                text,
+                tokenizer_fingerprint: state.assets.fingerprint.clone(),
+            }));
         }
     }
     Err(Error::new(ErrorCode::Backend, "text stream closed before completion").into())

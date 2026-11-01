@@ -4,6 +4,7 @@
 //! generation the `/v1/chat/completions` route uses, and reports the result as typed output
 //! items and typed streaming events. Stateful features are delegated to an installed
 //! [`infer_spi::ResponseStore`]; without one they remain explicit errors.
+mod events;
 mod execute;
 mod output;
 mod request;
@@ -191,7 +192,7 @@ async fn load_prior(
 pub(super) async fn retrieve(
     State(state): State<TextState>,
     Path(id): Path<String>,
-) -> ApiResult<Json<serde_json::Value>> {
+) -> ApiResult<Json<output::ResponseBody>> {
     let store = state.responses.store().cloned().ok_or_else(|| {
         Error::unsupported("response retrieval needs an installed response store")
     })?;
@@ -206,7 +207,7 @@ pub(super) async fn retrieve(
 pub(super) async fn cancel(
     State(state): State<TextState>,
     Path(id): Path<String>,
-) -> ApiResult<Json<serde_json::Value>> {
+) -> ApiResult<Json<output::ResponseBody>> {
     let store = state.responses.store().cloned().ok_or_else(|| {
         Error::unsupported("response cancellation needs an installed response store")
     })?;

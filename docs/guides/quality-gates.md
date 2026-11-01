@@ -15,6 +15,7 @@
 | 错误路径 | 生产代码禁止 `unwrap` / `expect` / `panic` / `todo` / `unimplemented` / `dbg` 与忽略 `Result` |
 | unsafe | 默认 `deny`；仅经局部安全证明的 OS/设备 FFI、CUDA PDL 与隔离的 benchmark allocator 开放，并说明安全条件 |
 | Feature 隔离 | 默认 CLI / IR / workspace 与 CUDA feature 分别构建；CUDA 在打包和硬件门禁单独启用，生产依赖图不含 CPU 执行器 |
+| API JSON | `crates/service/frontdoor/src/http` 禁止 `json!`；响应与 SSE 代码禁止 `serde_json::Value`，只允许 `tools/check/policy.py` 列出的 wire 请求 DTO 与协议不透明输入 |
 | 编译与文档 | release 构建、unit / integration / doctest、独立 golden、Rustdoc 警告失败 |
 | CPU | release 协议、KV primitives、Engine tick 分配门禁，范围见 [CPU 性能测量](cpu-performance.md) |
 | MSRV | Rust 1.90 检查 workspace（不含 CUDA）与隔离的 CPU benchmark |
@@ -196,7 +197,7 @@ make check
 ## 例外
 
 - [deny.toml](../../deny.toml) 记录 `paste 1.0.15`（RUSTSEC-2024-0436）、CUDA 构建依赖的精确许可证审批与重复版本例外，原因和移除条件以配置为准。
-- `tools/check/policy.py` 另外校验 workspace lint 继承与闲置依赖。
+- `tools/check/policy.py` 另外校验 workspace lint 继承、闲置依赖，以及 API 响应的 typed JSON 规则。
 - Metal 间接依赖 `block 0.1.6` 有已知 future-incompatibility 报告，作为上游迁移项保留，不用全局 `RUSTFLAGS` 隐藏。
 - 测试代码允许 `unwrap` / `expect` / `panic` 用于断言，helper 仍返回 `Result`；其他数值或接口例外需在局部说明。
 - 可选的官方 tokenizer parity 测试通过 `INFER_QWEN_TEXT_PACKAGE` 指向外部包，普通 CI 使用仓库内微型资产。

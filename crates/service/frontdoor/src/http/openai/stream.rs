@@ -15,7 +15,7 @@ use futures_util::stream::unfold;
 use infer_core::{Error, ErrorCode, RequestId};
 use infer_models::{OutputStreamParser, StreamEvent, TextStreamDecoder};
 use infer_runtime::EngineOutput;
-use serde_json::{Value, json};
+use serde::Serialize;
 use std::{
     collections::VecDeque,
     convert::Infallible,
@@ -65,56 +65,195 @@ struct Stream {
     phase: Phase,
 }
 
+#[derive(Serialize)]
+struct Usage {
+    #[serde(rename = "prompt_tokens")]
+    prompt: usize,
+    #[serde(rename = "completion_tokens")]
+    completion: usize,
+    #[serde(rename = "total_tokens")]
+    total: usize,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum UsageValue {
+    Null(()),
+    Present(Usage),
+}
+
+#[derive(Serialize, Default)]
+struct ChatDelta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<ToolCallDelta>>,
+}
+
+#[derive(Serialize)]
+struct ToolCallDelta {
+    index: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    kind: Option<&'static str>,
+    function: ToolFunctionDelta,
+}
+
+#[derive(Serialize)]
+struct ToolFunctionDelta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    arguments: String,
+}
+
+#[derive(Serialize)]
+struct ChatChunkChoice<'a> {
+    index: usize,
+    delta: ChatDelta,
+    finish_reason: Option<&'a str>,
+    logprobs: Option<()>,
+}
+
+#[derive(Serialize)]
+struct TextChunkChoice<'a> {
+    index: usize,
+    text: String,
+    finish_reason: Option<&'a str>,
+    logprobs: Option<()>,
+}
+
+#[derive(Serialize)]
+struct ChatChunk<'a> {
+    id: &'a str,
+    object: &'a str,
+    created: u64,
+    model: &'a str,
+    choices: Vec<ChatChunkChoice<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<UsageValue>,
+}
+
+#[derive(Serialize)]
+struct TextChunk<'a> {
+    id: &'a str,
+    object: &'a str,
+    created: u64,
+    model: &'a str,
+    choices: Vec<TextChunkChoice<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<UsageValue>,
+}
+
+fn encode<T: Serialize>(value: &T) -> String {
+    serde_json::to_string(value).unwrap_or_default()
+}
+
 impl Stream {
-    /// Serialize one chunk of this response.
-    fn chunk(&self, delta: &Value, finish_reason: Option<&str>) -> String {
-        let mut choice = json!({"index":0, "finish_reason":finish_reason, "logprobs":null});
-        if self.chat {
-            choice["delta"] = delta.clone();
-        } else {
-            choice["text"] = json!(delta["text"].as_str().unwrap_or_default());
-        }
-        let mut chunk = json!({
-            "id":self.id, "object":self.object, "created":self.created, "model":self.model,
-            "choices":[choice]
-        });
-        if self.include_usage {
-            chunk["usage"] = Value::Null;
-        }
-        chunk.to_string()
+    fn usage_field(&self) -> Option<UsageValue> {
+        self.include_usage.then_some(UsageValue::Null(()))
     }
-    fn queue_chunk(&mut self, delta: &Value, finish_reason: Option<&str>) {
-        let chunk = self.chunk(delta, finish_reason);
-        self.queue.push_back(chunk);
+
+    fn chat_chunk(&self, delta: ChatDelta, finish_reason: Option<&str>) -> String {
+        encode(&ChatChunk {
+            id: &self.id,
+            object: self.object,
+            created: self.created,
+            model: &self.model,
+            choices: vec![ChatChunkChoice {
+                index: 0,
+                delta,
+                finish_reason,
+                logprobs: None,
+            }],
+            usage: self.usage_field(),
+        })
     }
+
+    fn text_chunk(&self, text: &str, finish_reason: Option<&str>) -> String {
+        encode(&TextChunk {
+            id: &self.id,
+            object: self.object,
+            created: self.created,
+            model: &self.model,
+            choices: vec![TextChunkChoice {
+                index: 0,
+                text: text.to_string(),
+                finish_reason,
+                logprobs: None,
+            }],
+            usage: self.usage_field(),
+        })
+    }
+
+    fn queue_chat(&mut self, delta: ChatDelta, finish_reason: Option<&str>) {
+        self.queue.push_back(self.chat_chunk(delta, finish_reason));
+    }
+
+    fn queue_text(&mut self, text: &str, finish_reason: Option<&str>) {
+        self.queue.push_back(self.text_chunk(text, finish_reason));
+    }
+
     /// Publish one parser event as a delta.
     fn publish(&mut self, event: StreamEvent) {
         match event {
             StreamEvent::Text(text) => {
-                let delta = if self.chat {
-                    json!({"content": text})
+                if self.chat {
+                    self.queue_chat(
+                        ChatDelta {
+                            content: Some(text),
+                            ..Default::default()
+                        },
+                        None,
+                    );
                 } else {
-                    json!({"text": text})
-                };
-                self.queue_chunk(&delta, None);
+                    self.queue_text(&text, None);
+                }
             }
             StreamEvent::Reasoning(text) => {
-                self.queue_chunk(&json!({"reasoning_content": text}), None);
+                self.queue_chat(
+                    ChatDelta {
+                        reasoning_content: Some(text),
+                        ..Default::default()
+                    },
+                    None,
+                );
             }
             StreamEvent::CallStart { index, name } => {
-                self.queue_chunk(
-                    &json!({"tool_calls":[{
-                        "index":index, "id":format!("call_{}_{}",self.request.get(),index),
-                        "type":"function", "function":{"name":name,"arguments":""}
-                    }]}),
+                self.queue_chat(
+                    ChatDelta {
+                        tool_calls: Some(vec![ToolCallDelta {
+                            index,
+                            id: Some(format!("call_{}_{}", self.request.get(), index)),
+                            kind: Some("function"),
+                            function: ToolFunctionDelta {
+                                name: Some(name),
+                                arguments: String::new(),
+                            },
+                        }]),
+                        ..Default::default()
+                    },
                     None,
                 );
             }
             StreamEvent::CallArguments { index, arguments } => {
-                self.queue_chunk(
-                    &json!({"tool_calls":[{
-                        "index":index, "function":{"arguments":arguments}
-                    }]}),
+                self.queue_chat(
+                    ChatDelta {
+                        tool_calls: Some(vec![ToolCallDelta {
+                            index,
+                            id: None,
+                            kind: None,
+                            function: ToolFunctionDelta {
+                                name: None,
+                                arguments,
+                            },
+                        }]),
+                        ..Default::default()
+                    },
                     None,
                 );
             }
@@ -123,43 +262,55 @@ impl Stream {
             }
             StreamEvent::Call(call) => {
                 // Completed-only fallback, for string-wrapped JSON argument objects.
-                let delta = json!({"tool_calls":[{
-                    "index": self.call_index,
-                    "id": format!("call_{}_{}", self.request.get(), self.call_index),
-                    "type": "function",
-                    "function": {"name": call.name, "arguments": call.arguments},
-                }]});
+                self.queue_chat(
+                    ChatDelta {
+                        tool_calls: Some(vec![ToolCallDelta {
+                            index: self.call_index,
+                            id: Some(format!("call_{}_{}", self.request.get(), self.call_index)),
+                            kind: Some("function"),
+                            function: ToolFunctionDelta {
+                                name: Some(call.name),
+                                arguments: call.arguments,
+                            },
+                        }]),
+                        ..Default::default()
+                    },
+                    None,
+                );
                 self.call_index += 1;
-                self.queue_chunk(&delta, None);
             }
         }
     }
     /// Queue an error event and end the stream.
     fn fail(&mut self, error: &Error) {
-        self.queue.push_back(
-            ApiError::from(Error::new(error.code, error.message.clone()))
-                .body()
-                .to_string(),
-        );
+        self.queue.push_back(encode(
+            &ApiError::from(Error::new(error.code, error.message.clone())).envelope(),
+        ));
         self.queue.push_back(DONE.to_string());
         self.phase = Phase::Done;
     }
     /// Terminal chunks: the finish reason, optional usage, and the stream terminator.
     fn finish(&mut self, reason: &str) {
-        self.queue_chunk(&json!({}), Some(reason));
+        if self.chat {
+            self.queue_chat(ChatDelta::default(), Some(reason));
+        } else {
+            self.queue_text("", Some(reason));
+        }
         if self.include_usage {
             let prompt = self.prompt_tokens.load(Ordering::Relaxed);
-            self.queue.push_back(
-                json!({
-                    "id":self.id, "object":self.object, "created":self.created, "model":self.model,
-                    "choices":[],
-                    "usage":{
-                        "prompt_tokens":prompt, "completion_tokens":self.completion_tokens,
-                        "total_tokens":prompt + self.completion_tokens
-                    }
-                })
-                .to_string(),
-            );
+            let usage = Usage {
+                prompt,
+                completion: self.completion_tokens,
+                total: prompt + self.completion_tokens,
+            };
+            self.queue.push_back(encode(&ChatChunk {
+                id: &self.id,
+                object: self.object,
+                created: self.created,
+                model: &self.model,
+                choices: Vec::new(),
+                usage: Some(UsageValue::Present(usage)),
+            }));
         }
         self.queue.push_back(DONE.to_string());
         self.phase = Phase::Done;
@@ -322,7 +473,13 @@ pub(super) async fn stream(
                     // The role is published before any content, as the protocol requires.
                     stream.phase = Phase::Running;
                     if stream.chat {
-                        stream.queue_chunk(&json!({"role":"assistant"}), None);
+                        stream.queue_chat(
+                            ChatDelta {
+                                role: Some("assistant"),
+                                ..Default::default()
+                            },
+                            None,
+                        );
                     }
                     continue;
                 }

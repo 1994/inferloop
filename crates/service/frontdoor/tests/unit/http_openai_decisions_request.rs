@@ -188,6 +188,7 @@ fn cache_hints_are_accepted_without_changing_the_prompt() {
 #[test]
 fn answers_follow_the_protocol_shapes() {
     let predicate = answer(Some("p"), &Answering::Predicate, &[0.25, 0.75], 0.5).unwrap();
+    let predicate = serde_json::to_value(predicate).unwrap();
     assert_eq!(
         predicate,
         json!({"type": "predicate", "name": "p", "probability": 0.75})
@@ -198,6 +199,7 @@ fn answers_follow_the_protocol_shapes() {
         ChoiceValue::Bool(false),
     ];
     let choice = answer(None, &Answering::Choice(values), &[0.25, 0.75], 0.5).unwrap();
+    let choice = serde_json::to_value(choice).unwrap();
     assert_eq!(choice["choice"], json!(false));
     assert_eq!(choice["name"], Value::Null);
     assert_eq!(choice["confidence"], json!(0.375));
@@ -214,6 +216,7 @@ fn answers_follow_the_protocol_shapes() {
         1.0,
     )
     .unwrap();
+    let score = serde_json::to_value(score).unwrap();
     assert_eq!(score["score"], json!(1.0));
     assert_eq!(
         score["probabilities"][2],

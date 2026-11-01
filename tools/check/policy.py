@@ -7,6 +7,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 TILE_KERNELS = ROOT / "crates/backend/cuda-kernels/src/tile"
+API_ROOT = ROOT / "crates/service/frontdoor/src/http"
+# Wire parsing and opaque protocol payloads are the only places a dynamically shaped JSON value
+# is unavoidable. Every response object and SSE event must use a typed struct instead.
+API_VALUE_ALLOWED = {
+    "openai/request.rs": "OpenAI wire request DTOs",
+    "openai/responses/request.rs": "Responses wire request DTOs and opaque tool schemas",
+    "openai/decisions/request.rs": "Decisions wire request DTOs",
+    "observability.rs": "observation payload owned by infer-observe",
+}
 WORKSPACE = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]
 
 
@@ -448,6 +457,33 @@ def check_production_unwraps(root=ROOT):
     print("Production: no unwrap outside test sources")
 
 
+def check_typed_api_json():
+    """API responses are typed; dynamic JSON is limited to annotated wire inputs.
+
+    Building response objects with `json!` allocates an intermediate Value tree and loses the
+    compile-time shape, which is both slower and easier to drift. The gate also keeps
+    `serde_json::Value` out of response and stream code; the allow-list above is only for
+    protocol-defined opaque input.
+    """
+    require(API_ROOT.is_dir(), f"API adapter root is missing: {API_ROOT}")
+    for path in sorted(API_ROOT.rglob("*.rs")):
+        relative = path.relative_to(API_ROOT).as_posix()
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            code = line.split("//", 1)[0]
+            if re.search(r"\bjson!\s*\(", code):
+                raise SystemExit(
+                    f"{path.relative_to(ROOT)}:{lineno}: API code must use typed serialization, "
+                    "not the json! macro"
+                )
+            if relative not in API_VALUE_ALLOWED and re.search(r"\bValue\b", code):
+                raise SystemExit(
+                    f"{path.relative_to(ROOT)}:{lineno}: API response/event code must use typed "
+                    "structs, not serde_json::Value (allowed only in wire request DTOs and "
+                    "opaque protocol inputs listed in tools/check/policy.py)"
+                )
+    print("API: typed JSON only; no json! and no response-path Value")
+
+
 def check_production_dependencies():
     tree = subprocess.run(
         [
@@ -480,8 +516,9 @@ if __name__ == "__main__":
     check_strategy_neutrality()
     check_algorithm_neutrality()
     check_production_unwraps()
+    check_typed_api_json()
     check_production_dependencies()
     print(
-        "Lint inheritance, exception, magic number, strategy neutrality, and "
-        "GPU-only dependency checks passed"
+        "Lint inheritance, exception, magic number, strategy neutrality, typed API JSON, "
+        "and GPU-only dependency checks passed"
     )

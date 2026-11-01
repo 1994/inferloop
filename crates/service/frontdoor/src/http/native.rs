@@ -15,6 +15,7 @@ use infer_core::{Error, ErrorCode, RequestId};
 use infer_ir::CanonicalRequest;
 use infer_observe::trace::TraceContext;
 use infer_runtime::{CompletedRequest, EngineOutput, RuntimeInspection};
+use serde::Serialize;
 use std::convert::Infallible;
 
 pub fn router(handle: RuntimeHandle) -> Router {
@@ -33,17 +34,46 @@ pub fn router(handle: RuntimeHandle) -> Router {
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .with_state(handle)
 }
+#[derive(Serialize)]
+struct SseError {
+    message: String,
+}
+
 pub(super) fn trace_parent(headers: &HeaderMap) -> Option<TraceContext> {
     headers
         .get("traceparent")
         .and_then(|value| value.to_str().ok())
         .and_then(|parent| TraceContext::parse(parent).ok())
 }
+#[derive(Serialize)]
+struct HealthResponse<'a> {
+    ready: bool,
+    fault: Option<&'a infer_runtime::EngineFault>,
+    resource_release_pending: bool,
+    weight_backed_dataflow: bool,
+    backend: &'a str,
+    backend_kind: infer_ir::BackendKind,
+}
+
 pub(super) async fn health(State(handle): State<RuntimeHandle>) -> HttpResult<Response> {
     let inspection = handle.inspect().await?;
-    Ok((if inspection.ready {StatusCode::OK} else {StatusCode::SERVICE_UNAVAILABLE},Json(
-        serde_json::json!({"ready":inspection.ready,"fault":inspection.fault,"resource_release_pending":inspection.resource_release_pending,"weight_backed_dataflow":inspection.weight_backed_dataflow,"backend":inspection.backend,"backend_kind":inspection.backend_kind}),
-    )).into_response())
+    let body = HealthResponse {
+        ready: inspection.ready,
+        fault: inspection.fault.as_ref(),
+        resource_release_pending: inspection.resource_release_pending,
+        weight_backed_dataflow: inspection.weight_backed_dataflow,
+        backend: &inspection.backend,
+        backend_kind: inspection.backend_kind,
+    };
+    Ok((
+        if inspection.ready {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        Json(body),
+    )
+        .into_response())
 }
 pub(super) async fn inspect(
     State(handle): State<RuntimeHandle>,
@@ -116,7 +146,10 @@ pub(super) async fn stream(
                     finished = true;
                     (
                         "error",
-                        serde_json::json!({"message": error.to_string()}).to_string(),
+                        serde_json::to_string(&SseError {
+                            message: error.to_string(),
+                        })
+                        .unwrap_or_default(),
                     )
                 }
             };
