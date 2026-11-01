@@ -98,6 +98,8 @@ fn an_unterminated_reasoning_block_publishes_nothing() {
     let parsed = parse(&text).unwrap();
     assert_eq!(parsed.reasoning.as_deref(), Some("still going"));
     assert_eq!(parsed.content, "");
+    // The model ended its turn while thinking; that is an answer, not a malformed output.
+    assert!(!parsed.truncated);
 }
 
 #[test]

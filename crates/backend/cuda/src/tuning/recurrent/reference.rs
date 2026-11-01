@@ -1,5 +1,5 @@
 //! Independent host F64 scalar recurrence, from original F32 inputs.
-use super::{CHUNK_ROWS, MAX_F64_ERROR, MAX_LANES, SHAPE_RANK, SUPPORTED_DIMS};
+use super::{CHUNK_ROWS, MAX_F64_ERROR, SHAPE_RANK, SUPPORTED_DIMS};
 use crate::constants::METADATA_FIELDS;
 use infer_core::{Error, Result};
 
@@ -40,6 +40,9 @@ fn values(n: usize, salt: usize) -> Vec<f32> {
         })
         .collect()
 }
+/// Widest prompt graph the exact tuner measures; the reference covers every one of its rungs.
+const MAX_REFERENCE_LANES: usize = 2048;
+
 impl Fixture {
     pub fn new(shape: [usize; SHAPE_RANK], correlated: bool) -> Result<Self> {
         Self::new_case(
@@ -63,7 +66,7 @@ impl Fixture {
             || !vh.is_multiple_of(kh)
             || !SUPPORTED_DIMS.contains(&dim)
             || lanes == 0
-            || lanes > MAX_LANES
+            || lanes > MAX_REFERENCE_LANES
             || !lanes.is_multiple_of(CHUNK_ROWS)
         {
             return Err(Error::invalid("unsupported WY reference geometry"));

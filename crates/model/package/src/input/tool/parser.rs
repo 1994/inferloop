@@ -141,7 +141,7 @@ impl OutputStreamParser {
     pub fn finish(&mut self) -> infer_core::Result<Vec<StreamEvent>> {
         self.drain(true)
     }
-    /// True when a structured region opened without closing, so its tail was withheld.
+    /// True when a tool call opened without closing, so its tail was withheld.
     #[must_use]
     pub const fn truncated(&self) -> bool {
         self.truncated
@@ -196,8 +196,8 @@ impl OutputStreamParser {
             self.consume(end);
             self.publish_reasoning(&ready, events);
             if flush {
-                // A reasoning block that never closed leaves no assistant text.
-                self.truncated = true;
+                // A reasoning block that never closed leaves no assistant text, but all of it was
+                // published: the model finished thinking aloud, which is not a malformed answer.
                 self.clear();
                 self.phase = Phase::Done;
             }
