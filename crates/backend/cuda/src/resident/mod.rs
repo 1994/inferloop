@@ -49,6 +49,7 @@ pub use arena::ActivationArena;
 pub use program::{DeviceProgram, FusionWeights, ProgramWeights};
 pub(crate) use program::{ProgramGeometry, attention_states};
 pub use prompt_scratch::Registry as PromptScratchRegistry;
+pub(crate) use validation::require_kernel_geometry;
 
 mod conv_prefill;
 

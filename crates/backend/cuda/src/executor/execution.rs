@@ -17,6 +17,7 @@ use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::{ExecutionInput, ExecutionTask, MediaPixels, MediaPlan, OutputReadout, TaskOutput};
 use infer_models::media_plan_layout;
 use infer_models::mrope::ROTARY_AXES;
+use infer_workloads::{accepted_prefix, draft_budget, draft_may_propose};
 use std::collections::BTreeMap;
 use std::mem::swap;
 use std::mem::take;
@@ -391,6 +392,7 @@ impl CudaExecutor {
                 self.deferred_pool_plan = None;
                 self.slots_disabled = false;
                 self.pool_failure_reason = None;
+                self.log_pool_memory();
                 tracing::info!(target: "infer::executor",
                     width = self.slots.as_ref().map_or(0, SlotPool::width),
                     capacity, quoted_bytes, allocated_bytes, envelope_bytes = envelope,
@@ -1421,14 +1423,14 @@ async fn dflash_chains(
             continue;
         };
         draft.prompt_len.get_or_insert(position);
-        let count = (width - 1).min(capacity.saturating_sub(position + 1));
+        let count = draft_budget(usize::MAX, width, position, capacity);
         if draft.stale
             || draft.cursor.context != position
             || count == 0
             || !task
                 .sampling
                 .as_ref()
-                .is_some_and(|sampling| sampling.temperature == 0.0)
+                .is_some_and(|sampling| draft_may_propose(sampling.temperature))
         {
             continue;
         }
@@ -1445,7 +1447,7 @@ async fn dflash_chains(
     Ok(chains)
 }
 
-/// The longest candidate prefix the target selects itself, stopping after an end token.
+/// Accept what the target selected itself: read from the graph, or sampled from its rows.
 fn accept(
     chain: &[u32],
     rows: &[(Vec<f32>, Vec<f32>)],
@@ -1454,24 +1456,20 @@ fn accept(
     position: usize,
     generated: &mut Vec<u32>,
 ) -> Result<Vec<u32>> {
-    let mut accepted = Vec::new();
-    for (offset, &candidate) in chain[1..].iter().enumerate() {
-        let selected = match tokens {
-            Some(tokens) => {
-                tokens[offset].ok_or_else(|| Error::invariant("verification selected token"))?
-            }
-            None => sampler.pick(&rows[offset].1, position + offset + 1, generated)?,
-        };
-        if selected != candidate {
-            break;
-        }
-        accepted.push(candidate);
-        generated.push(candidate);
-        if sampler.sampling.is_eos(candidate) {
-            break;
-        }
-    }
-    Ok(accepted)
+    let sampling = sampler.sampling;
+    accepted_prefix(
+        &chain[1..],
+        generated,
+        |offset, generated| {
+            tokens.map_or_else(
+                || sampler.pick(&rows[offset].1, position + offset + 1, generated),
+                |tokens| {
+                    tokens[offset].ok_or_else(|| Error::invariant("verification selected token"))
+                },
+            )
+        },
+        |token| sampling.is_eos(token),
+    )
 }
 
 /// Greedy decision at one sequence position; the engine output stage uses the same sampler.
@@ -1534,8 +1532,11 @@ impl Sequence {
             return Ok(chain);
         };
         let prompt_len = *spec.prompt_len.get_or_insert(position);
-        let count = spec.depth.min(width - 1).min(self.capacity - position - 1);
-        if let Some(sampling) = task.sampling.as_ref().filter(|s| s.temperature == 0.0)
+        let count = draft_budget(spec.depth, width, position, self.capacity);
+        if let Some(sampling) = task
+            .sampling
+            .as_ref()
+            .filter(|s| draft_may_propose(s.temperature))
             && count > 0
             && position > 0
         {
@@ -2112,9 +2113,7 @@ impl Sequence {
         };
         let width = speculation.depth + 1;
         if readout != OutputReadout::Logits
-            // Rejection under a non-zero temperature needs residual sampling the engine sampler
-            // cannot reproduce from plain target logits, so speculation stays greedy-only.
-            || sampling.temperature != 0.0
+            || !draft_may_propose(sampling.temperature)
             || width < 2
             || position == 0
             || position != self.history.len()

@@ -18,10 +18,10 @@ use self::source::Source;
 use self::staging::UploadPool;
 use self::tables::TableCache;
 use crate::device::{CudaDevice, device_error};
-use crate::target::ImageKernel;
 use cuda_core::{CudaContext, Function};
 use cutile::prelude::*;
 use infer_core::{Error, ErrorCode, Result};
+use infer_cuda_kernels::contract::target::ImageKernel;
 use infer_ir::{EncodedImageInput, ImageTransform};
 use infer_spi::ImagePreprocessing;
 use std::sync::Arc;
@@ -113,10 +113,7 @@ impl Processor {
                 )
             })?;
         let context = CudaContext::new(device.ordinal()).map_err(device_error)?;
-        let decoder = Arc::new(LazyDecoder::new(
-            Arc::clone(&context),
-            device.target().clone(),
-        ));
+        let decoder = Arc::new(LazyDecoder::new(Arc::clone(&context), device.target()));
         let capability = Arc::new(capability::DeviceCapability::new(Arc::clone(&decoder)));
         Ok(Self {
             horizontal: Arc::new(

@@ -133,6 +133,8 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 logical_cpus: available_parallelism().map_or(1, NonZeroUsize::get),
                 placement: self.host.placement.clone(),
                 prepared_next: self.host.prepared_next.is_some(),
+                prepared_dispatched: self.host.prepared_dispatched,
+                prepared_discarded: self.host.prepared_discarded,
             },
         }
     }

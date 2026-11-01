@@ -35,8 +35,8 @@ pub use extensions::{
 };
 pub use kernel::{KernelProvider, KernelRegistration, SourceLocation};
 pub use model::{
-    FusionPlan, HiddenActivation, ImportedModel, ModalityEncoder, ModalityPlan, ModelProvider,
-    PrecisionPolicy, SpeculationPlan,
+    DraftHead, FusionPlan, HiddenActivation, ImportedModel, ModalityEncoder, ModalityPlan,
+    ModelProvider, PrecisionPolicy,
 };
 pub use observer::Observer;
 pub use protocol::ProtocolAdapter;

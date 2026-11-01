@@ -155,6 +155,7 @@ impl CudaBackend {
             owner: Arc::clone(&self.owner),
             generation,
             state: TicketState::Pending,
+            device_us: None,
         })
     }
     fn progress(&mut self) -> Result<()> {
@@ -187,6 +188,7 @@ impl CudaBackend {
         }
         executor.busy = false;
         self.view.result = Some(completed.result);
+        self.view.device_us = completed.device_us;
         Ok(())
     }
 }

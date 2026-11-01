@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "mlp_pdl": options.mlp_pdl,
         "verification": options.verification(),
         "timing_note": "diagnostic wall time includes host work, transfers and first-use JIT; not a production benchmark",
-        "target": model.device.target(), "model": options.model, "prompt": options.prompt,
+        "target": model.device.target().name(), "model": options.model, "prompt": options.prompt,
         "input_tokens": input, "decode": result, "text": text.decode(&result.tokens, true)?,
         "load_seconds": load_seconds, "prefill_seconds": prefill_seconds, "decode_seconds": decode_seconds,
     });

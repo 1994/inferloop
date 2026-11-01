@@ -61,8 +61,8 @@ pub fn load(path: &Path, model: &Model) -> Result<BTreeMap<String, LinearTiling>
     let rows = report["results"]
         .as_array()
         .ok_or_else(|| Error::invalid("missing tuning results"))?;
-    let target =
-        serde_json::to_value(model.device.target()).map_err(|e| Error::invalid(e.to_string()))?;
+    let target = serde_json::to_value(model.device.target().name())
+        .map_err(|e| Error::invalid(e.to_string()))?;
     let gpu = model.device.name()?;
     let mut tuning = BTreeMap::new();
     for row in rows {

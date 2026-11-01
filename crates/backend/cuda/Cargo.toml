@@ -19,6 +19,7 @@ cuda = [
     "dep:cuda-core",
     "dep:sha2",
     "dep:infer-state",
+    "dep:infer-scheduler",
     "dep:futures-channel",
     "dep:infer-cuda-kernels",
     "infer-cuda-kernels/tile",
@@ -40,6 +41,7 @@ serde_json.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 infer-state = { workspace = true, optional = true }
+infer-scheduler = { workspace = true, optional = true }
 cutile = { workspace = true, optional = true }
 cuda-core = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }

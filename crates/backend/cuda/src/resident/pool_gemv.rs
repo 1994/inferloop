@@ -116,3 +116,7 @@ pub fn with_pool_gemv<T>(enabled: bool, run: impl FnOnce() -> T) -> T {
     let _restore = Restore(ENABLED.with(|n| n.replace(enabled)));
     run()
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/resident_pool_gemv_cell.rs"]
+mod cell_tests;

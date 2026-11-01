@@ -3,6 +3,7 @@ use super::Sequence;
 use crate::{device::CudaDevice, resident::slot_batch::SlotPool};
 use infer_core::{Error, Result, StateId};
 use infer_ir::{ExecutionInput, ExecutionTask};
+use infer_workloads::{draft_budget, draft_may_propose};
 use std::collections::BTreeMap;
 
 pub(super) async fn propose(
@@ -47,7 +48,7 @@ pub(super) async fn propose(
         )?;
         chains.push(vec![token]);
         hidden.push(spec.last_hidden.clone());
-        counts.push(spec.depth.min(width - 1).min(state.capacity - position - 1));
+        counts.push(draft_budget(spec.depth, width, position, state.capacity));
     }
     let plain_greedy = participants
         .iter()
@@ -122,7 +123,7 @@ fn eligible(state: &Sequence, task: &ExecutionTask, width: usize) -> bool {
         && task
             .sampling
             .as_ref()
-            .is_some_and(|sampling| sampling.temperature == 0.0)
+            .is_some_and(|sampling| draft_may_propose(sampling.temperature))
 }
 
 /// Restore accepted draft timelines using target hidden rows, including full acceptance.

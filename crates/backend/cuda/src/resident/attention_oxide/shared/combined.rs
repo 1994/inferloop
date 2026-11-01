@@ -16,7 +16,7 @@ const LANES: &[usize] = &[256];
 impl Support {
     /// Load the SM120 combined vector key/consumer module.
     pub(crate) fn load_combined(device: &CudaDevice) -> Result<Option<Self>> {
-        if device.profile()?.architecture != "sm_120" {
+        if !device.target().has_simt_artifacts() {
             return Ok(None);
         }
         let module = device

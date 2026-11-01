@@ -139,7 +139,7 @@ impl Workspace {
         Ok(Self {
             #[cfg(test)]
             taps: taps::Taps::default(),
-            oxide_available: super::super::attention_oxide::Support::eligible(device, graph)?,
+            oxide_available: super::super::attention_oxide::Support::eligible(device, graph),
             mma: None,
             mma_f16: None,
             oxide: None,

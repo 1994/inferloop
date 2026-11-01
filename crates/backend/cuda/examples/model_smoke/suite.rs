@@ -83,7 +83,7 @@ pub fn run(options: &Options) -> Result<(), Box<dyn Error>> {
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
-            "framework": if options.device_graph { "rust-resident" } else { "rust-diagnostic" }, "model": options.model, "target": model.device.target(),
+            "framework": if options.device_graph { "rust-resident" } else { "rust-diagnostic" }, "model": options.model, "target": model.device.target().name(),
             "limitation": options.limitation(), "verification": options.verification(),
             "dataset": manifest, "generation": resolved, "mtp_depth": options.mtp,
         "max_new_tokens": options.max_new_tokens, "concurrency": 1, "warmup_requests": 1,

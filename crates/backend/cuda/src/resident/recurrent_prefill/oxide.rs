@@ -51,7 +51,7 @@ impl Support {
     ) -> Result<Option<Self>> {
         if shape[..GEOMETRY_RANK] != [KH, VH, DIM]
             || !SUPPORTED_LANES.contains(&shape[3])
-            || device.profile()?.architecture != "sm_120"
+            || !device.target().has_simt_artifacts()
         {
             return Ok(None);
         }

@@ -3,12 +3,14 @@ mod admission;
 pub(crate) mod constants;
 mod cost;
 mod policy;
+mod pool_demand;
 pub use admission::ResourceAdmission;
 pub use cost::{CalibratedCosts, FallbackCosts, aggregate, update_summary};
 pub use policy::{
     CostAwarePolicy, PackingWorkspace, latest_start, preemption_order, service_charge,
     validate_scheduler,
 };
+pub use pool_demand::{LiveStates, PoolAction, PoolDemand, PoolFacts, PoolRetry, decide_pool};
 
 pub mod queue;
 pub use queue::{BlockedOn, QueueInspection, QueueRequest, QueueState, QueueTiming, RequestQueue};

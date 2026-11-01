@@ -6,8 +6,8 @@ use infer_ir::{
 };
 use infer_model_recipes::decoder::lower;
 use infer_spi::{
-    FusionPlan, HiddenActivation, ImportedModel, ModalityEncoder, ModalityPlan, ModelProvider,
-    PrecisionPolicy, ProviderMetadata, SPI_VERSION, SpeculationPlan,
+    DraftHead, FusionPlan, HiddenActivation, ImportedModel, ModalityEncoder, ModalityPlan,
+    ModelProvider, PrecisionPolicy, ProviderMetadata, SPI_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -528,7 +528,7 @@ fn family_description(
         }
         WeightFormat::Dense => PrecisionPolicy::default(),
     };
-    imported.speculation = (draft_layers > 0).then(|| SpeculationPlan {
+    imported.speculation = (draft_layers > 0).then(|| DraftHead {
         prefix: MTP_PREFIX.into(),
         layers: draft_layers,
         fusion: Some(FusionPlan {

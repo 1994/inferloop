@@ -45,12 +45,12 @@ pub struct Bindings<'a, E: DType> {
 }
 
 impl Support {
-    pub(super) fn eligible(device: &CudaDevice, graph: &DataflowGraph) -> Result<bool> {
+    pub(super) fn eligible(device: &CudaDevice, graph: &DataflowGraph) -> bool {
         #[cfg(test)]
         if DISABLED.get() {
-            return Ok(false);
+            return false;
         }
-        Ok(device.profile()?.architecture == "sm_120"
+        device.target().has_simt_artifacts()
             && graph.nodes.iter().any(|node| {
                 matches!(
                     node.op,
@@ -61,11 +61,11 @@ impl Support {
                         ..
                     }
                 )
-            }))
+            })
     }
 
     pub fn load(device: &CudaDevice) -> Result<Option<Self>> {
-        if device.profile()?.architecture != "sm_120" {
+        if !device.target().has_simt_artifacts() {
             return Ok(None);
         }
         let module = device
@@ -113,19 +113,15 @@ impl Support {
             lanes: &SUPPORTED_LANES,
         })
     }
-    #[expect(
-        unsafe_code,
-        reason = "graph-owned tensors with checked contiguous extents are marshalled into the pinned Rust kernel"
-    )]
-    pub fn record<E: DType>(
+    /// Whether this kernel's fixed layout fits these operands. A pool whose shared pages outnumber
+    /// a slot's capacity does not, so the caller takes its next path.
+    pub fn accepts<E: DType>(
         &self,
-        scope: &Scope,
-        bindings: Bindings<'_, E>,
+        bindings: &Bindings<'_, E>,
         (heads, kv_heads, dim, lanes, capacity): (usize, usize, usize, usize, usize),
-        window: i32,
         scales: [f32; 2],
     ) -> StdResult<bool, DeviceError> {
-        if (heads, kv_heads, dim) != (HEADS, KV_HEADS, DIM)
+        Ok(!((heads, kv_heads, dim) != (HEADS, KV_HEADS, DIM)
             || !self.lanes.contains(&lanes)
             || E::DTYPE != cuda_core::f8e4m3fn::DTYPE
             || size_of::<E>() != 1
@@ -148,9 +144,25 @@ impl Support {
             || !bindings.metadata.is_contiguous()
             || bindings.metadata.size() < REQUIRED_METADATA_FIELDS
             || !bindings.table.is_contiguous()
-            || bindings.table.size() == 0
-        {
-            return Ok(false);
+            || bindings.table.size() == 0))
+    }
+
+    #[expect(
+        unsafe_code,
+        reason = "graph-owned tensors with checked contiguous extents are marshalled into the pinned Rust kernel"
+    )]
+    pub fn record<E: DType>(
+        &self,
+        scope: &Scope,
+        bindings: Bindings<'_, E>,
+        (heads, kv_heads, dim, lanes, capacity): (usize, usize, usize, usize, usize),
+        window: i32,
+        scales: [f32; 2],
+    ) -> StdResult<(), DeviceError> {
+        if !self.accepts(&bindings, (heads, kv_heads, dim, lanes, capacity), scales)? {
+            return Err(super::capture::error(
+                "selected SIMT attention cannot record these operands",
+            ));
         }
         let mut launch = AsyncKernelLaunch::new(Arc::clone(&self.function));
         for pointer in [
@@ -188,7 +200,7 @@ impl Support {
         })?;
         #[cfg(test)]
         CAPTURES.set(CAPTURES.get() + 1);
-        Ok(true)
+        Ok(())
     }
 }
 

@@ -73,7 +73,7 @@ impl Operands {
             .generics(append_generics(s, f.capacity)),
         )?;
         if let Choice::Mma { variant } = choice {
-            let selected = support
+            support
                 .ok_or_else(|| DeviceError::Internal("F32 MMA module missing".into()))?
                 .record(
                     scope,
@@ -90,9 +90,6 @@ impl Operands {
                     [1.0, 1.0],
                     variant,
                 )?;
-            if !selected {
-                return Err(DeviceError::Internal("F32 MMA shape rejected".into()));
-            }
         } else {
             scope.record(
                 kernels::decode(

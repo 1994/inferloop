@@ -11,7 +11,7 @@ pub(super) const LANES: [usize; 3] = [256, 1024, 2048];
 const THREADS: u32 = 384;
 const ROWS_PER_CTA: usize = 12;
 pub(super) fn load(device: &CudaDevice) -> Result<Option<Support>> {
-    if device.profile()?.architecture != "sm_120" {
+    if !device.target().has_simt_artifacts() {
         return Ok(None);
     }
     let module = device

@@ -136,6 +136,11 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         self.host.ready_buffer = Some(prepared.ready);
         prepared.versions.clear();
         self.host.prepare_versions = prepared.versions;
+        match result {
+            Ok(true) => self.host.prepared_dispatched += 1,
+            Ok(false) => self.host.prepared_discarded += 1,
+            Err(_) => {}
+        }
         result
     }
 }

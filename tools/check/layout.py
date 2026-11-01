@@ -22,6 +22,15 @@ BACKENDS = {
     "infer-backend-cuda",
     "infer-cuda-kernels",
 }
+# Direct cuTile use in the CUDA host, counted at main ef4d662 plus the O1 step clock. The counts may
+# only fall: each lowering moved behind `infer-cuda-kernels` lowers them, and that commit lowers the
+# baseline too.
+CUDA_HOST = "crates/backend/cuda/src"
+CUDA_HOST_TOKENS = {"Tensor<": 868, ".partition(": 341, ".generics(": 216, "cuda_core": 86}
+# Artifact catalogs name the architectures they ship; everything else asks `Arch` what it can do.
+ARCHITECTURE_CATALOGS = ("resident/attention_mma/",)
+# Workload meaning stays in `infer-workloads`; these layers execute programs and never branch on it.
+WORKLOAD_BLIND_LAYERS = (CUDA_HOST, "crates/engine/runtime/src")
 
 
 def require(condition, message):
@@ -219,8 +228,62 @@ def check_sources():
     print("Observability and fixtures: source paths passed")
 
 
+def count_host_tokens(root=ROOT):
+    counts = dict.fromkeys(CUDA_HOST_TOKENS, 0)
+    for path in (root / CUDA_HOST).rglob("*.rs"):
+        text = path.read_text()
+        for token in counts:
+            counts[token] += text.count(token)
+    return counts
+
+
+def check_cuda_host_ratchet(root=ROOT, baseline=None):
+    """The host may only lose direct cuTile use, and the baseline must follow the fall."""
+    baseline = CUDA_HOST_TOKENS if baseline is None else baseline
+    counts = count_host_tokens(root)
+    for token, count in counts.items():
+        require(
+            count <= baseline[token],
+            f"{CUDA_HOST}: {count} uses of `{token}` exceed the baseline {baseline[token]}; "
+            "put new kernel recording behind infer-cuda-kernels",
+        )
+        require(
+            count == baseline[token],
+            f"{CUDA_HOST}: `{token}` fell to {count}; lower CUDA_HOST_TOKENS to hold the gain",
+        )
+    print(f"CUDA host: cuTile use holds at {counts}")
+
+
+def check_host_architecture_names(root=ROOT):
+    host = root / CUDA_HOST
+    for path in sorted(host.rglob("*.rs")):
+        relative = path.relative_to(host).as_posix()
+        if relative.startswith(ARCHITECTURE_CATALOGS):
+            continue
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            require(
+                '"sm_' not in line.split("//", 1)[0],
+                f"{CUDA_HOST}/{relative}:{lineno}: ask contract::target::Arch, not its name",
+            )
+    print("CUDA host: only artifact catalogs name an architecture")
+
+
+def check_workload_blindness(root=ROOT):
+    for layer in WORKLOAD_BLIND_LAYERS:
+        for path in sorted((root / layer).rglob("*.rs")):
+            for lineno, line in enumerate(path.read_text().splitlines(), 1):
+                require(
+                    "WorkloadKind" not in line.split("//", 1)[0],
+                    f"{path.relative_to(root)}:{lineno}: {layer} must not branch on WorkloadKind",
+                )
+    print("Workload meaning: execution layers do not branch on it")
+
+
 if __name__ == "__main__":
     check_crates()
     check_kernel_boundary()
     check_links()
     check_sources()
+    check_cuda_host_ratchet()
+    check_host_architecture_names()
+    check_workload_blindness()

@@ -1,8 +1,8 @@
 //! Optional nvJPEG hardware decoder. All capability detection and FFI stay in this module.
 use crate::device::device_error;
-use crate::target::CudaTarget;
 use cuda_core::CudaContext;
 use infer_core::{Error, ErrorCode, Result};
+use infer_cuda_kernels::contract::target::Arch;
 use infer_ir::{EncodedImageInfo, ImageEncoding};
 use infer_spi::DeviceHostExecutor;
 use std::collections::HashMap;
@@ -394,13 +394,13 @@ pub(super) struct Decoder {
 /// Keeps CPU-only deployments independent of nvJPEG initialization.
 pub(super) struct LazyDecoder {
     context: Arc<CudaContext>,
-    target: CudaTarget,
+    target: Arch,
     decoder: OnceLock<Result<Option<Arc<Decoder>>>>,
     executor: OnceLock<Arc<dyn DeviceHostExecutor>>,
 }
 
 impl LazyDecoder {
-    pub const fn new(context: Arc<CudaContext>, target: CudaTarget) -> Self {
+    pub const fn new(context: Arc<CudaContext>, target: Arch) -> Self {
         Self {
             context,
             target,
@@ -411,7 +411,7 @@ impl LazyDecoder {
 
     pub fn get(&self) -> Result<Option<Arc<Decoder>>> {
         self.decoder
-            .get_or_init(|| Decoder::load(&self.target, Arc::clone(&self.context)))
+            .get_or_init(|| Decoder::load(self.target, Arc::clone(&self.context)))
             .clone()
     }
 
@@ -442,7 +442,7 @@ impl Decoder {
         unsafe_code,
         reason = "Version properties are read into valid host integers from a loaded nvJPEG library"
     )]
-    fn load(target: &CudaTarget, context: Arc<CudaContext>) -> Result<Option<Arc<Self>>> {
+    fn load(target: Arch, context: Arc<CudaContext>) -> Result<Option<Arc<Self>>> {
         let Some(api) = api() else { return Ok(None) };
         let Some(session) = Session::create(Arc::clone(&context), api, SessionKind::Probe)? else {
             return Ok(None);

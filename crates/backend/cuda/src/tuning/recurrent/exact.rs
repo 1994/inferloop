@@ -132,7 +132,7 @@ fn resolve(
     autotune: bool,
     session: &ResidentTuningSession,
 ) -> Result<bool> {
-    if device.profile()?.architecture != "sm_120" {
+    if !device.target().has_simt_artifacts() {
         return Ok(false);
     }
     let driver_build = driver_build();

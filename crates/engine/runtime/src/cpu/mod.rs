@@ -78,6 +78,10 @@ pub struct CpuRuntimeInspection {
     pub logical_cpus: usize,
     pub placement: PlacementReport,
     pub prepared_next: bool,
+    /// Batches prepared during a flight that were dispatched at its completion.
+    pub prepared_dispatched: u64,
+    /// Batches prepared during a flight that went stale and were planned again.
+    pub prepared_discarded: u64,
 }
 impl CpuRuntimeConfig {
     /// Include all three synchronous/asynchronous sampling workspaces in the storage estimate.

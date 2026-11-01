@@ -1,8 +1,8 @@
 use super::{SelectedBackend, Selection};
 use crate::constants::{GIB_U64, MIB_U64};
 use crate::support::memory::utilization_bytes;
+use infer_backend_cuda::Arch;
 use infer_backend_cuda::device::{CudaDevice, DeviceProfile};
-use infer_backend_cuda::target::CudaTarget;
 use infer_backend_cuda::tuning::TuningReport;
 use infer_backend_cuda::{
     executor::CudaBackend,
@@ -336,7 +336,7 @@ struct PackageSummary {
 
 fn preflight(
     path: &Path,
-    target: &CudaTarget,
+    target: Arch,
     architecture: &str,
     budget: u64,
     selection: &Selection,

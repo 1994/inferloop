@@ -1,5 +1,4 @@
 use super::*;
-use crate::target::CudaTarget;
 use std::env::temp_dir;
 use std::fs::create_dir;
 use std::fs::read_dir;
@@ -29,7 +28,7 @@ fn trial(rows: usize, columns: usize, selected: LinearTiling) -> ProjectionTrial
         rows,
         columns,
         gpu: "test GPU".to_owned(),
-        target: CudaTarget::Other("test".to_owned()),
+        target: "test".to_owned(),
         baseline: selected,
         selected,
         trials: Vec::new(),

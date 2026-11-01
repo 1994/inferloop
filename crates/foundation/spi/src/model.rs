@@ -23,7 +23,7 @@ pub struct ImportedModel {
     pub precision: PrecisionPolicy,
     /// Speculative draft head, when the family ships one.
     #[serde(default)]
-    pub speculation: Option<SpeculationPlan>,
+    pub speculation: Option<DraftHead>,
     /// Non-text modalities the family can encode.
     #[serde(default)]
     pub modalities: Vec<ModalityPlan>,
@@ -78,7 +78,7 @@ impl PrecisionPolicy {
 
 /// Speculative draft head: the package prefix and the slots it fuses.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SpeculationPlan {
+pub struct DraftHead {
     /// Package prefix holding draft tensors, for example `mtp.`.
     pub prefix: String,
     /// Draft layers declared by the head.
@@ -91,7 +91,7 @@ pub struct SpeculationPlan {
 /// Fusion projection of a speculative draft head.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FusionPlan {
-    /// Canonical slot of the fused projection, relative to [`SpeculationPlan::prefix`].
+    /// Canonical slot of the fused projection, relative to [`DraftHead::prefix`].
     pub projection: String,
     /// Canonical slots of the embedding and hidden normalization pair.
     pub norms: [String; 2],

@@ -133,7 +133,7 @@ pub(crate) fn select(device: &CudaDevice, shape: Shape, baseline: Choice) -> Cho
     }
 }
 fn resolve(device: &CudaDevice, shape: Shape, baseline: Choice) -> Result<Choice> {
-    if device.profile()?.architecture != "sm_120" {
+    if !device.target().has_simt_artifacts() {
         return Ok(baseline);
     }
     let key = key(device, shape)?;

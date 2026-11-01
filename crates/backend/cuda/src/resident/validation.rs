@@ -12,6 +12,47 @@ const DELTA_INPUTS: usize = 5;
 /// Attention binds query, key and value inputs.
 const ATTENTION_INPUTS: usize = 3;
 
+/// Refuse at load what the kernels cannot record, so a request never finds it first.
+///
+/// cuTile partitions tensors into power-of-two tiles, so these geometries need a general cell
+/// rather than a different call.
+pub fn require_kernel_geometry(graph: &DataflowGraph) -> Result<()> {
+    graph
+        .nodes
+        .iter()
+        .try_for_each(|node| check_kernel_geometry(&node.op))
+}
+
+fn check_kernel_geometry(op: &TensorOp) -> Result<()> {
+    match *op {
+        TensorOp::Rope {
+            head_dim,
+            rotary_dim,
+            ..
+        } if !(rotary_dim / 2).is_power_of_two() || !head_dim.is_multiple_of(rotary_dim / 2) => {
+            Err(Error::unsupported(format!(
+                "CUDA rotary kernels need a power-of-two half dimension dividing head_dim; \
+                 got rotary_dim {rotary_dim}, head_dim {head_dim}"
+            )))
+        }
+        TensorOp::Attention {
+            query_heads,
+            kv_heads,
+            head_dim,
+            ..
+        } if kv_heads == 0
+            || !query_heads.is_multiple_of(kv_heads)
+            || !head_dim.is_power_of_two() =>
+        {
+            Err(Error::unsupported(format!(
+                "CUDA attention kernels need a power-of-two head_dim and heads divisible by \
+                 kv_heads; got head_dim {head_dim}, heads {query_heads}/{kv_heads}"
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
 pub(super) fn validate(graph: &DataflowGraph, weights: &ProgramWeights) -> Result<()> {
     graph.validate()?;
     let specs: BTreeMap<_, _> = graph.tensors.iter().map(|spec| (spec.id, spec)).collect();
@@ -127,3 +168,7 @@ fn validate_norm(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/resident_validation.rs"]
+mod tests;

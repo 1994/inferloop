@@ -3,10 +3,10 @@
 use super::LoadedModel;
 use crate::device::device_error;
 use crate::mlp::ProjectionWeight;
-use crate::target::CudaTarget;
 use crate::tuning::pool_dense;
 use cutile::prelude::{DType, Tensor};
 use infer_core::{Error, Result, TensorId};
+use infer_cuda_kernels::contract::target::TensorRates;
 use infer_ir::TensorOp;
 use std::collections::BTreeMap;
 
@@ -14,59 +14,24 @@ use std::collections::BTreeMap;
 const HZ_PER_KHZ: u128 = 1000;
 /// Multiply and accumulate count as two operations.
 const FLOPS_PER_MAC: u128 = 2;
-/// Dense SM120 FP4/F32-accumulate operations per SM per clock.
-const SM120_FP4: u128 = 4096;
-/// Dense SM120 FP8/F32-accumulate operations per SM per clock.
-const SM120_FP8: u128 = 1024;
-/// SM120 BF16/F32-accumulate rate; the F32-input path records two BF16 products.
-const SM120_BF16: u128 = 512;
-/// Dense Hopper BF16/F32-accumulate operations per SM per clock.
-const SM90_BF16: u128 = 4096;
-/// Dense Hopper FP8/F32-accumulate operations per SM per clock.
-const SM90_FP8: u128 = 8192;
 /// Both supported SM families have 128 scalar F32 lanes, each executing an FMA.
 const SCALAR_F32: u128 = 256;
 /// A global FP4 scale is one F32 word.
 const GLOBAL_SCALE_BYTES: u128 = 4;
-/// The existing two-term F32 input decomposition uses two BF16 MMA products.
-const DENSE_PRODUCTS: u128 = 2;
 
-/// Architectural rates, not a table indexed by GPU marketing names. Dense/sparse and
-/// accumulator precision must not be conflated. Sources: NVIDIA RTX Blackwell whitepaper
-/// Table 3 and NVIDIA Hopper Architecture In-Depth, Tensor Core architecture/table 3.
+/// Tensor core rates of the device, read by this graph's precisions.
 #[derive(Clone, Copy)]
-struct Rates {
-    normalization: u128,
-    fp4: Option<u128>,
-    fp8: u128,
-    dense: u128,
-}
+struct Rates(TensorRates);
 impl Rates {
-    const fn for_target(target: &CudaTarget) -> Option<Self> {
-        match target {
-            CudaTarget::BlackwellSm120 => Some(Self {
-                normalization: SM120_FP4,
-                fp4: Some(SM120_FP4),
-                fp8: SM120_FP8,
-                dense: SM120_BF16 / DENSE_PRODUCTS,
-            }),
-            CudaTarget::HopperSm90 => Some(Self {
-                normalization: SM90_FP8,
-                fp4: None,
-                fp8: SM90_FP8,
-                dense: SM90_BF16 / DENSE_PRODUCTS,
-            }),
-            CudaTarget::Other(_) => None,
-        }
-    }
     fn compute(self, mode: Compute) -> Result<u128> {
         match mode {
             Compute::Fp4 => self
+                .0
                 .fp4
                 .ok_or_else(|| Error::unsupported("native FP4 roofline on this architecture")),
-            Compute::Fp8 => Ok(self.fp8),
-            Compute::Dense => Ok(self.dense),
-            Compute::Scalar => Ok(self.dense.min(SCALAR_F32)),
+            Compute::Fp8 => Ok(self.0.fp8),
+            Compute::Dense => Ok(self.0.dense),
+            Compute::Scalar => Ok(self.0.dense.min(SCALAR_F32)),
         }
     }
 }
@@ -172,7 +137,7 @@ impl LoadedModel {
             tracing::info!(target:"infer::load","routed-expert roofline unavailable; concurrency uses memory bounds");
             return Ok(None);
         }
-        let Some(rates) = Rates::for_target(self.device.target()) else {
+        let Some(rates) = self.device.target().tensor_rates().map(Rates) else {
             tracing::info!(target:"infer::load",architecture=%self.profile.architecture,
                 "compute roofline unavailable; concurrency uses memory and protocol bounds");
             return Ok(None);
@@ -180,7 +145,7 @@ impl LoadedModel {
         let clock = u128::from(self.device.attribute(CLOCK_RATE)?);
         let chip_peak = mul(
             mul(u128::from(self.profile.multiprocessors), clock)?,
-            mul(HZ_PER_KHZ, rates.normalization)?,
+            mul(HZ_PER_KHZ, rates.0.normalization)?,
         )?;
         let sizes = self
             .graph
@@ -204,7 +169,7 @@ impl LoadedModel {
             let rate = rates.compute(self.roofline_mode(node.inputs[1], weight, n, k))?;
             memory_bytes = add(memory_bytes, bytes(weight)?)?;
             let flops = mul(mul(extent(n)?, extent(k)?)?, FLOPS_PER_MAC)?;
-            normalized_flops = add(normalized_flops, mul(flops, rates.normalization / rate)?)?;
+            normalized_flops = add(normalized_flops, mul(flops, rates.0.normalization / rate)?)?;
         }
         let result = bound(
             memory_bytes,

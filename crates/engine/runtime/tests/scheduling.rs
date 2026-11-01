@@ -408,6 +408,7 @@ fn provider_cannot_underreport_cost_or_forge_permanent_rejection() {
 // Controlled timing fixtures isolate replay from machine timing variability.
 // Real Host and Metal measurements are covered by their backend integration tests.
 struct TimedBackend {
+    held: bool,
     inner: ProtocolBackend,
     elapsed: u64,
 }
@@ -476,6 +477,9 @@ impl BackendProvider for TimedBackend {
         })
     }
     fn poll(&mut self, t: &mut Self::Ticket) -> Result<Option<Vec<TaskOutput>>> {
+        if self.held {
+            return Ok(None);
+        }
         let result = self.inner.poll(&mut t.inner)?;
         t.done = result.is_some();
         Ok(result)
@@ -496,13 +500,43 @@ fn timed_engine(config: RuntimeConfig, elapsed: u64) -> Engine<TimedBackend> {
     let b = backend();
     let m = support::model(ModelId::ONE);
     Engine::new(
-        TimedBackend { inner: b, elapsed },
+        TimedBackend {
+            inner: b,
+            elapsed,
+            held: false,
+        },
         m,
         PrecisionPlan::f32(),
         &registry(),
         config,
     )
     .unwrap()
+}
+#[test]
+fn a_measured_completion_keeps_the_batch_prepared_for_it() {
+    let config = RuntimeConfig {
+        max_num_batched_tokens: 4,
+        ..Default::default()
+    };
+    let mut engine = timed_engine(config, 800);
+    for id in 1..=3 {
+        engine.submit(request(id, 3)).unwrap();
+    }
+    engine.backend_mut().held = true;
+    engine.tick(0).unwrap();
+    for round in 0..2 {
+        let now = round * 2 + 1;
+        engine.backend_mut().held = true;
+        engine.tick(now).unwrap();
+        assert!(engine.inspect().cpu.prepared_next, "round {round}");
+        // The sample lands in the tick that dispatches; it is applied only on the next one.
+        engine.backend_mut().held = false;
+        engine.tick(now + 1).unwrap();
+    }
+    let cpu = engine.inspect().cpu;
+    assert!(engine.inspect().cost_model.observations > 0);
+    assert!(cpu.prepared_dispatched > 0);
+    assert_eq!(cpu.prepared_discarded, 0);
 }
 #[test]
 fn measured_cost_feedback_is_replayed_and_checkpointed_deterministically() {
@@ -522,6 +556,7 @@ fn measured_cost_feedback_is_replayed_and_checkpointed_deterministically() {
         TimedBackend {
             inner: backend(),
             elapsed: 800,
+            held: false,
         },
         &registry(),
         checkpoint,

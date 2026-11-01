@@ -1,7 +1,7 @@
 # CUDA AOT kernel provider 与 12.9 设备接入方案
 
 状态：部分实施。kernel 已搬入 `infer-cuda-kernels`，`pool_gemv_bf16` 已在推理路径走契约，AOT 版本在 sm_120 上通过捕获与回放；host 迁移和 L20 实机未开始。首个目标设备为 L20（sm_89 / CUDA 12.9 / 驱动 550.144）；现有 13.x 路径不回退。
-整体排期见[路线图](../README.md)，后端能力边界见 [Backend](../../architecture/backends.md)，CUDA 现有实现见
+host 收口的整体顺序见 [CUDA 架构收口方案](cuda-architecture.md)。整体排期见[路线图](../README.md)，后端能力边界见 [Backend](../../architecture/backends.md)，CUDA 现有实现见
 [CUDA 说明](../../../crates/backend/cuda/README.md)。
 
 本文回答一个问题：**没有 Tile IR 的 CUDA 环境（12.9 / sm_89）如何跑同一套 engine，同时不改 host 的
@@ -100,7 +100,7 @@ v1 范围以 dense BF16/FP8 为起点，先实现目标模型实际用到的算�
 
 - 由 manifest 生成 support matrix（`profile × arch × family × contract`）并入库；CI 检查每个
   `KernelRegistration` 都有对应 cell 和制品 hash。
-- 禁止：host 出现 `cfg`/arch/version、`tile` 与 `aot` 同时启用、未登记制品、跨 cell 复用 tuning。
+- 禁止：host 出现 `cfg`/arch/version、未登记制品、跨 cell 复用 tuning。
 - 新增 cell 必须同时带：manifest、contract、reference-ops 对照、实机证据。
 
 ### 3.6 cuTile 与 `.cu` 的关系
@@ -516,7 +516,7 @@ host 重编。需要单文件部署时再提供可选的内嵌模式。
 给拿到本方案的同学。以 L20 为首个实例，后续 sm_90 / sm_120 AOT 走同一流程。
 
 1. **探测能力。** 记录 sm、显存、FP4/FP8、driver 版本、是否 550、是否数据中心卡（前向兼容只对数据中心卡）。
-2. **选构建。** 设备能用 cuTile 走 `cuda`；不能用则 `cuda-aot`。不允许两边都编。
+2. **选构建。** 设备能用 cuTile 走 `cuda`；不能用则 `cuda-aot`，此时不编 `tile`。
 3. **定义 profile。** 在 `target.rs` 增加 `Arch`，在 `KernelRegistration` 里只注册真实
    可执行的算子与精度；未覆盖的返回 `Unsupported`。
 4. **产出制品。** 按第 8 节生成 SASS、manifest、hash，运行 `kernels.py verify`。

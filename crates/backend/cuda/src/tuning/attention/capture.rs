@@ -154,8 +154,7 @@ impl Operands {
         )?;
         let window = i32::try_from(f.window).map_err(|e| DeviceError::Internal(e.to_string()))?;
         if let Choice::Mma { variant } = choice {
-            let supported = mma
-                .ok_or_else(|| DeviceError::Internal("MMA attention missing".into()))?
+            mma.ok_or_else(|| DeviceError::Internal("MMA attention missing".into()))?
                 .record(
                     scope,
                     crate::resident::attention_mma::Bindings {
@@ -171,13 +170,8 @@ impl Operands {
                     [KEY_SCALE, VALUE_SCALE],
                     variant,
                 )?;
-            if !supported {
-                return Err(DeviceError::Internal(
-                    "MMA fixture geometry unsupported".into(),
-                ));
-            }
         } else if choice.uses_oxide() {
-            let supported = oxide
+            oxide
                 .ok_or_else(|| DeviceError::Internal("Rust attention module missing".into()))?
                 .record(
                     scope,
@@ -193,11 +187,6 @@ impl Operands {
                     window,
                     [KEY_SCALE, VALUE_SCALE],
                 )?;
-            if !supported {
-                return Err(DeviceError::Internal(
-                    "Rust attention geometry unsupported".into(),
-                ));
-            }
         } else if let Some(qt) = choice.query_tile() {
             let scale = 1.0
                 / f32::from(

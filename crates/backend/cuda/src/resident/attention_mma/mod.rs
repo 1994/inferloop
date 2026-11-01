@@ -43,6 +43,10 @@ pub struct Support {
     capacity: usize,
     lanes: usize,
 }
+fn rejected() -> DeviceError {
+    super::capture::error("selected MMA cannot record these operands")
+}
+
 impl Support {
     pub fn load(
         device: &CudaDevice,
@@ -159,7 +163,7 @@ impl Support {
             && b.table.is_contiguous()
             && b.table.size() >= capacity / KV_BLOCK_TOKENS)
     }
-    fn accepts<E: DType>(
+    pub fn accepts<E: DType>(
         &self,
         b: &Bindings<'_, E>,
         shape: (usize, usize, usize, usize, usize),
@@ -192,10 +196,10 @@ impl Support {
         window: i32,
         scales: [f32; 2],
         variant: Variant,
-    ) -> StdResult<bool, DeviceError> {
+    ) -> StdResult<(), DeviceError> {
         let (_, _, _, lanes, capacity) = shape;
         if !self.accepts(&b, shape, window, scales)? {
-            return Ok(false);
+            return Err(rejected());
         }
         let api = match self.arithmetic {
             Arithmetic::Bf16 => self
@@ -295,7 +299,7 @@ impl Support {
             bindings: b,
             scratch: &mut self.scratch,
         })?;
-        Ok(true)
+        Ok(())
     }
 }
 pub fn artifact_identity() -> String {
