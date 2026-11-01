@@ -87,7 +87,7 @@ fn record_gemv(
     kernels
         .projection
         .pool_gemv_bf16(
-            &Recording::Scope(scope),
+            &Recording::scope(scope),
             &plan,
             output,
             region(input_pointer, rows * columns),
@@ -127,4 +127,4 @@ pub fn with_pool_gemv<T>(enabled: bool, run: impl FnOnce() -> T) -> T {
 
 #[cfg(test)]
 #[path = "../../tests/unit/resident_pool_gemv_cell.rs"]
-mod cell_tests;
+pub(super) mod cell_tests;

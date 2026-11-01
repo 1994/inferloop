@@ -8,7 +8,12 @@
     reason = "The constructor states what every later launch relies on, so launches can be safe"
 )]
 use infer_core::{Error, Result};
+use std::any::Any;
 use std::marker::PhantomData;
+use std::sync::Arc;
+
+/// Keeps device memory alive; a graph holds one for each allocation it recorded.
+pub type Owner = Arc<dyn Any + Send + Sync>;
 
 /// BF16 element marker, so the contract does not depend on a numeric crate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,7 +24,8 @@ pub struct Bf16;
 pub struct Buffer<'a, T> {
     address: u64,
     len: usize,
-    owner: PhantomData<&'a T>,
+    owner: Option<&'a Owner>,
+    element: PhantomData<&'a T>,
 }
 
 impl<T> Clone for Buffer<'_, T> {
@@ -30,7 +36,7 @@ impl<T> Clone for Buffer<'_, T> {
 
 impl<T> Copy for Buffer<'_, T> {}
 
-impl<T> Buffer<'_, T> {
+impl<'a, T> Buffer<'a, T> {
     /// # Safety
     /// `address` must address `len` contiguous elements of `T` on the recording's device, valid
     /// until every replay of any graph recording this buffer has finished. A kernel writes through
@@ -40,8 +46,30 @@ impl<T> Buffer<'_, T> {
         Self {
             address,
             len,
-            owner: PhantomData,
+            owner: None,
+            element: PhantomData,
         }
+    }
+
+    /// A buffer whose memory a recording keeps alive by retaining `owner`.
+    ///
+    /// # Safety
+    /// As [`Self::new`], except that `owner` must hold the memory, which discharges the lifetime
+    /// obligation for any recording that retains it.
+    #[must_use]
+    pub const unsafe fn owned(address: u64, len: usize, owner: &'a Owner) -> Self {
+        Self {
+            address,
+            len,
+            owner: Some(owner),
+            element: PhantomData,
+        }
+    }
+
+    /// What keeps this memory alive, when the buffer knows.
+    #[must_use]
+    pub const fn owner(self) -> Option<&'a Owner> {
+        self.owner
     }
 
     #[must_use]

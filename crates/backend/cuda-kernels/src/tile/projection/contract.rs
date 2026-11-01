@@ -42,9 +42,12 @@ impl Projection for TileProjection {
         x: Buffer<'_, f32>,
         w: Buffer<'_, Bf16>,
     ) -> Result<()> {
-        let Recording::Scope(scope) = recording else {
+        let Some(scope) = recording.cutile_scope() else {
             return Err(Error::unsupported("cuTile launches record through a scope"));
         };
+        recording.retain(out);
+        recording.retain(x);
+        recording.retain(w);
         let (rows, outputs, columns) = (plan.rows, plan.outputs, plan.columns);
         let out = out.require("projection output", rows * outputs)?;
         let x = x.require("projection input", rows * columns)?;

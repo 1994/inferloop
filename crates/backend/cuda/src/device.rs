@@ -24,6 +24,7 @@ use infer_core::{Error as InferError, ErrorCode, Result};
 use infer_cuda_kernels::contract::Kernels;
 use infer_cuda_kernels::contract::target::Arch;
 use infer_cuda_kernels::tile::kernels;
+use infer_cuda_kernels::tile::runtime::Device as Runtime;
 use serde::Serialize;
 use std::fmt::Display;
 use std::ptr::{null, null_mut};
@@ -222,6 +223,12 @@ impl CudaDevice {
     /// Returns a CUDA error when the device name cannot be queried.
     pub fn name(&self) -> Result<String> {
         self.stream.device().name().map_err(device_error)
+    }
+
+    /// This device's stream as the kernel contract sees it.
+    #[must_use]
+    pub fn runtime(&self) -> Runtime {
+        Runtime::new(Arc::clone(&self.stream), self.ordinal)
     }
 
     /// This device's kernels; the single place a kernel source is chosen.
