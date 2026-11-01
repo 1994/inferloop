@@ -1,6 +1,6 @@
 //! The cuTile source of the `pool_gemv_bf16` cell, through the contract, against the shared cases.
 #[path = "../../../cuda-kernels/acceptance/pool_gemv.rs"]
-mod acceptance;
+pub mod acceptance;
 
 use super::*;
 use crate::device::{CudaDevice, device_error};

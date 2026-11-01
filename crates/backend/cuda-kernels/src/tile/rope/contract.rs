@@ -34,7 +34,7 @@ impl Rope for TileRope {
         plan: &RopePlan,
         buffers: RopeBuffers<'_>,
     ) -> Result<()> {
-        let Recording::Scope(scope) = recording else {
+        let Some(scope) = recording.cutile_scope() else {
             return Err(Error::unsupported("cuTile launches record through a scope"));
         };
         let RopePlan {
@@ -44,6 +44,13 @@ impl Rope for TileRope {
             head_dim,
             half,
         } = *plan;
+        recording.retain(buffers.out);
+        recording.retain(buffers.x);
+        recording.retain(buffers.frequencies);
+        recording.retain(buffers.metadata);
+        if let Some(axes) = buffers.axes {
+            recording.retain(axes);
+        }
         let elements = rows * head_dim;
         let shape = [rows, head_dim];
         let mut out = borrowed(

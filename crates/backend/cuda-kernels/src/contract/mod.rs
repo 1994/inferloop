@@ -7,7 +7,7 @@ pub mod plan;
 pub mod recording;
 pub mod target;
 
-pub use buffer::{Bf16, Buffer};
+pub use buffer::{Bf16, Buffer, Owner};
 pub use kernels::{Kernels, Projection, Rope, RopeBuffers};
 pub use plan::{PoolGemvPlan, RopeMode, RopePlan};
 pub use recording::Recording;

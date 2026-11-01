@@ -60,7 +60,7 @@ impl Capture<'_> {
             .kernels
             .rope
             .rope(
-                &Recording::Scope(self.scope),
+                &Recording::scope(self.scope),
                 &plan,
                 RopeBuffers {
                     out: buffer(&output)?,

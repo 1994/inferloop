@@ -58,7 +58,7 @@ pub(super) fn record(
         .kernels
         .rope
         .rope(
-            &Recording::Scope(scope),
+            &Recording::scope(scope),
             &plan,
             RopeBuffers {
                 out: buffer(&output)?,

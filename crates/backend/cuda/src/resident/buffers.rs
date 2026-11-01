@@ -41,3 +41,7 @@ pub(super) const fn region(address: u64, len: usize) -> Buffer<'static, f32> {
     // SAFETY: as for [`buffer`]; callers derive both from a contiguous program-owned tensor.
     unsafe { Buffer::new(address, len) }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/resident_runtime_replay.rs"]
+mod runtime_tests;

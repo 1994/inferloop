@@ -253,89 +253,58 @@ kernel 调用路径上。host 不感知 arch，也不感知 feature。
 
 ## 5. 契约
 
-### 5.1 Device / Stream / Buffer
+host 只认这一层。先定层，再迁移：下面的基础层已落地并有数据，其余是按模板的机械工作。
 
-```rust
-pub struct Device { /* feature 内部实现 */ }
-pub struct Stream { /* 同一 stream 语义，两种实现 */ }
-pub struct Buffer<T> {
-    ptr: DevicePtr,
-    layout: Layout,
-    owner: Arc<Allocation>,
-    _dtype: PhantomData<T>,
-}
+### 5.1 四层
 
-impl Device {
-    pub fn open(ordinal: usize) -> Result<Self>;
-    pub fn alloc<T: Pod>(&self, shape: &[usize]) -> Result<Buffer<T>>;
-    pub fn upload<T: Pod>(&self, dst: &Buffer<T>, src: &[T]) -> Result<()>;
-    pub fn download<T: Pod>(&self, src: &Buffer<T>) -> Result<Vec<T>>;
-    pub fn begin_capture(&self) -> Result<()>;
-    pub fn end_capture(&self) -> Result<Graph>;
-    pub fn sync(&self) -> Result<()>;
-}
+| 层 | 类型 | host 怎么用 | 为什么零成本 |
+|---|---|---|---|
+| 内存 | `Allocation<T>`（持有）、`Buffer<'a, T>`（借用） | 分配，取 `buffer()` 传给 kernel | `Buffer` 是地址加长度，元素类型只在编译期存在；host 无 `unsafe` |
+| 录制 | `Device::capture(\|recording\| ...)`、`Graph` | 在闭包里调用算子族 | 只在加载和建池时发生，这里允许 `dyn` 和分配 |
+| 执行 | `Device::run(Launch)`、`Launch::then`、`Device::fence` | `device.run(graph.launch()).await` | 具体类型，编译期选定，`Launch<O>` 是 cuTile 操作的 newtype |
+| 算子族 | `Kernels { projection, rope, ... }` | 填 Plan 和操作数 | kernel 的 JIT 特化参数不变，机器码相同 |
 
-impl<T> Buffer<T> {
-    pub fn shape(&self) -> &[usize];
-    pub fn view(&self, shape: &[usize]) -> Result<Buffer<T>>;
-    pub fn transpose(&self, a: usize, b: usize) -> Result<Buffer<T>>;
-    pub fn slice(&self, axis: usize, range: Range<usize>) -> Result<Buffer<T>>;
-}
-```
+规则：
 
-约束：
+- **回放路径不经过 `dyn`。** `Kernels` 只在录制时用。
+- **图持有内存。** 录制时算子族调 `recording.retain(buffer)`，`Graph` 持有这些 owner，回放不碰它们。host 丢掉句柄后图仍可回放。
+- **`Allocation` 在 tile 实现下持有 cuTile `Tensor`，** 所以跨 stream 独占和资源跟踪原样保留。
+- **形状不进 `Buffer`。** Plan 给形状，实现校验长度。
+- **host 不写 `DeviceOp`。** 自定义 PTX 和 `.so`（MMA、oxide、cuBLASLt）随算子族搬进 `infer-cuda-kernels`。
+- **无效组合构造不出来。** Plan 用枚举，每个变体只带它需要的字段。
 
-- `Buffer` 不向 host 暴露裸指针；需要指针的 launch 只在 impl 内。
-- `partition` 只存在于 impl。host 不再持有 partitioned view，改为向 kernel 传 `Plan`，由 impl 计算
-  grid、tile 和 offset；这是与现状最大的语义变化，迁移时以编译器错误驱动。
-- 分配、拷贝、capture、事件必须由同一实现对；两个 impl 共享同一组契约测试（见第 10 节第 6 步）。
-- `Device` / `Stream` / `Buffer` 是具体类型而不是 trait 对象，避免泛型方法与非对象安全。
-- launch 语义只有一种：在 stream 上排序，到下一次同步才保证完成。实现可以更早等待，调用方不能依赖。
-- 已落地的形态：`Buffer<'a, T>` 只带地址、长度和元素类型，形状由 Plan 给出，实现校验长度；`unsafe` 集中在 `Buffer::new`，family 方法是安全函数。launch 只录制不等待，`Recording` 指明去向：cuTile scope，或处于捕获模式的 driver stream。本节上面的 `Buffer<T>` 带 layout 和 owner 是早期草案，以代码为准。
+**实测（RTX 5090，release，同一 `pool_gemv` 图交替回放，每块 2000 次，11 块中位数）：** 裸 cuTile 5.20 µs，`Device::run` 5.20 µs，比值 1.0002。见 `tests/unit/resident_runtime_replay.rs`，超过 1.03 用例失败。
 
-### 5.2 Kernel traits
+### 5.2 算子族
 
-按算子族拆分，全部 object-safe，参数只允许 `Buffer`、`Plan` 和标量：
+149 个 cuTile 入口按下表归入算子族。每个 trait 一个方法 `record(&self, recording, &Plan, Operands)`，模板是 `Rope`：`RopeMode` 一个变体对应一个入口，操作数一个结构体。
 
-```rust
-pub trait Projection: Send + Sync {
-    fn dense(&self, plan: &LinearPlan, out: &Buffer<f32>, x: &Buffer<f32>, w: &Buffer<f32>) -> Result<()>;
-    fn dense_bf16(&self, plan: &LinearPlan, out: &Buffer<f32>, x: &Buffer<f32>, w: &Buffer<Bf16>) -> Result<()>;
-    fn dense_fp8(&self, plan: &LinearPlan, out: &Buffer<f32>, x: &Buffer<f32>, w: &Buffer<Fp8>) -> Result<()>;
-    fn gemv(&self, plan: &LinearPlan, out: &Buffer<f32>, x: &Buffer<f32>, w: &Buffer<Bf16>) -> Result<()>;
-}
+| 算子族 | 入口来源（`tile/`） | 入口数 |
+|---|---|---|
+| `Projection` | `projection/*`（含 FP4、FP8、prompt logits、厂商库） | 43 |
+| `Attention` | `attention/*`，MMA、oxide 的 PTX 和 `.so` | 21 |
+| `Recurrent` | `recurrent/*`，oxide GDN | 31 |
+| `Norm` | `norm/*`、`state/aux` 的 norm 和 fusion norm、`mlp::norm` | 7 |
+| `Mlp` | `mlp/*`（激活、残差） | 6 |
+| `Rope` | `rope/*`、`state/aux` 的 rope | 5 |
+| `Moe` | `moe/*` | 5 |
+| `State` | `state/aux` 的 zero、unary、binary、split，`state/metadata` | 6 |
+| `Sampling` | `sampling/*` | 2 |
+| `Speculation` | `speculation/dflash2` | 14 |
+| `Vision` | `vision/*` | 9 |
 
-pub trait Attention: Send + Sync {
-    fn prefill(&self, plan: &PrefillPlan, q: &Buffer<f32>, kv: &KvView<'_>, out: &Buffer<f32>) -> Result<()>;
-    fn decode(&self, plan: &DecodePlan, q: &Buffer<f32>, kv: &KvView<'_>, out: &Buffer<f32>) -> Result<()>;
-    fn verify(&self, plan: &VerifyPlan, q: &Buffer<f32>, kv: &KvView<'_>, out: &Buffer<f32>) -> Result<()>;
-}
+`attention/*` 的 `KvView` 是 host 的只读视图（页表、scale、长度），kernel 不得改布局。
 
-pub trait Norm: Send + Sync { /* rmsnorm / gated / rows */ }
-pub trait Rope: Send + Sync { /* prefill / mrope / decode */ }
-pub trait Recurrent: Send + Sync { /* gdn chunk / decode / checkpoint */ }
-pub trait Moe: Send + Sync { /* route / combine */ }
-pub trait Vision: Send + Sync { /* conv / layernorm / gelu */ }
-pub trait State: Send + Sync { /* append / commit / checkpoint */ }
-pub trait Sampling: Send + Sync { /* greedy / top-k / top-p */ }
+### 5.3 迁移模板
 
-// `Kernels` 的定义见 4.4 节。
-pub fn kernels(device: &Device, target: Target) -> Result<Kernels>;
-```
+每一步都能单独合并，都要过棘轮和配对验收：
 
-约束：
+1. **图和执行换类型（机械）：** `CudaGraph` → `Graph`，`device.run_op(graph.launch())` → `runtime.run(graph.launch())`。闭包里未迁移的录制用过渡接口 `recording.cutile_scope()`。
+2. **逐算子族迁录制：** 在 `contract` 加 Plan 和 trait，把 kernel 调用搬进 `tile/<family>/contract.rs`，host 留一个调用点。
+3. **内存换类型：** `Tensor<T>` → `Allocation<T>`，`partition`、`generics` 只留在 `tile`。
+4. **删过渡接口：** host 不再出现 cuTile 类型，棘轮归零。
 
-- 不允许 `cutile::Tensor`、`at::Tensor`、FlashInfer 类型出现在签名里。
-- dtype 用独立方法而不是泛型，保持 object-safe，错误信息可读。
-- 操作只有在当前设备有实现时才注册 `KernelRegistration`；不支持的算子返回
-  `Error::unsupported`，**不注册**，避免“注册后内部 fallback”。
-- `KvView` 是 host 的只读视图（page table、scale、长度），由 `state` 层构造；kernel 不得修改布局。
-
-### 5.3 Plan 类型
-
-`LinearPlan`、`PrefillPlan`、`DecodePlan`、`VerifyPlan`、`NormPlan`、`RopePlan`、`StatePlan` 放在
-`cuda-kernels`，由 host 的 `strategy` / `tuning` 填充。Plan 只描述几何、dtype 和数值模式，不含设备句柄，
-便于在两种构建间共享同一份 host 决策。
+每批验收：27B、0.6B、MTP、DFlash2 输出与 main 逐位一致；调优缓存全部命中；配对吞吐不回退，每步设备时间不回退。
 
 ## 6. Host 改造
 
