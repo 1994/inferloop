@@ -244,6 +244,9 @@ pub struct DeviceProgram {
     prime_previous: Tensor<f32>,
     // Fusion workspaces are referenced by the captured graphs and never touched afterwards.
     lane_fusion: Vec<Option<FusionWorkspace>>,
+    // A graph addresses contract buffers without holding them, so these outlive every capture.
+    _fusion: Option<FusionWorkspace>,
+    _arena: ActivationArena,
     reset_graph: Graph,
     hidden: Arc<Tensor<f32>>,
     logits: Arc<Tensor<f32>>,
@@ -839,6 +842,8 @@ impl DeviceProgram {
             kv_states: attention_states(graph),
             fp8_states,
             lane_fusion,
+            _fusion: fusion,
+            _arena: arena,
             reset_graph,
             hidden: readouts.hidden,
             logits: readouts.logits,
