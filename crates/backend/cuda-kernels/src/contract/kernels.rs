@@ -2,7 +2,8 @@
 
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::plan::{
-    DownPlan, FusionNormPlan, NormPlan, PoolGemvPlan, QuantNormPlan, RopePlan, RowNormPlan,
+    BinaryOp, DownPlan, ExpertPlan, FusionNormPlan, GreedyPlan, NormPlan, PoolGemvPlan,
+    QuantNormPlan, RopePlan, RoutePlan, RowNormPlan, SplitPlan, UnaryOp,
 };
 use crate::contract::recording::Recording;
 use infer_core::Result;
@@ -228,10 +229,150 @@ pub trait Mlp: Send + Sync {
     ) -> Result<()>;
 }
 
+/// Element-wise and slicing kernels on activations. Every method records and never waits.
+pub trait State: Send + Sync {
+    /// # Errors
+    /// Fails when the launch is rejected.
+    fn unary(
+        &self,
+        recording: &Recording<'_>,
+        op: UnaryOp,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+    ) -> Result<()>;
+
+    /// # Errors
+    /// Fails when the launch is rejected.
+    fn binary(
+        &self,
+        recording: &Recording<'_>,
+        op: BinaryOp,
+        out: Buffer<'_, f32>,
+        a: Buffer<'_, f32>,
+        b: Buffer<'_, f32>,
+    ) -> Result<()>;
+
+    /// `out = x * scalar`, with `scalar` holding one element.
+    /// # Errors
+    /// Fails when the launch is rejected.
+    fn scale(
+        &self,
+        recording: &Recording<'_>,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        scalar: Buffer<'_, f32>,
+    ) -> Result<()>;
+
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn split(
+        &self,
+        recording: &Recording<'_>,
+        plan: &SplitPlan,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+    ) -> Result<()>;
+}
+
+/// An expert bank's weight, in the storage its checkpoint uses.
+#[derive(Clone, Copy, Debug)]
+pub enum ExpertWeight<'a> {
+    /// `[experts, rows, input]`.
+    Dense(Buffer<'a, Bf16>),
+    /// `[experts, rows, input]` with one scale per row.
+    Fp8Channel {
+        weight: Buffer<'a, Fp8>,
+        scales: Buffer<'a, f32>,
+        quantized_inputs: bool,
+    },
+    /// `[experts, rows, input]` with one scale per `block_columns` of a row.
+    Fp8Block {
+        weight: Buffer<'a, Fp8>,
+        scales: Buffer<'a, f32>,
+        block_columns: usize,
+        quantized_inputs: bool,
+    },
+}
+
+/// Mixture-of-experts kernels. Every method records and never waits.
+pub trait Moe: Send + Sync {
+    /// # Errors
+    /// Fails when the launch is rejected.
+    fn route(
+        &self,
+        recording: &Recording<'_>,
+        plan: &RoutePlan,
+        out: Buffer<'_, f32>,
+        scores: Buffer<'_, f32>,
+    ) -> Result<()>;
+
+    /// `x` is `[active, hidden]`, the two values of `geometry`.
+    /// # Errors
+    /// Fails when a buffer disagrees with the geometry, or the launch is rejected.
+    fn combine(
+        &self,
+        recording: &Recording<'_>,
+        geometry: (usize, usize),
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        routes: Buffer<'_, f32>,
+    ) -> Result<()>;
+
+    /// `out` is `[active, rows]`.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn experts(
+        &self,
+        recording: &Recording<'_>,
+        plan: &ExpertPlan,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        routes: Buffer<'_, f32>,
+        weight: ExpertWeight<'_>,
+    ) -> Result<()>;
+}
+
+/// Reduction state between the two greedy kernels, each `[rows, blocks]`.
+#[derive(Clone, Copy, Debug)]
+pub struct GreedyPartials<'a> {
+    pub keys: Buffer<'a, u32>,
+    pub indices: Buffer<'a, i32>,
+    pub invalid: Buffer<'a, i32>,
+}
+
+/// Device-side token selection. Every method records and never waits.
+pub trait Sampling: Send + Sync {
+    /// Reduce each logits block; `logits` is `[rows, vocabulary]`.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn greedy_partials(
+        &self,
+        recording: &Recording<'_>,
+        plan: &GreedyPlan,
+        partials: GreedyPartials<'_>,
+        logits: Buffer<'_, f32>,
+    ) -> Result<()>;
+
+    /// Finish into `output` rows of two elements, starting at row `offset`.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn greedy_finish(
+        &self,
+        recording: &Recording<'_>,
+        plan: &GreedyPlan,
+        offset: usize,
+        output: Buffer<'_, i32>,
+        partials: GreedyPartials<'_>,
+    ) -> Result<()>;
+}
+
 /// One device's kernels, selected once when a model loads; no call path chooses a source.
 pub struct Kernels {
     pub projection: Box<dyn Projection>,
     pub rope: Box<dyn Rope>,
     pub norm: Box<dyn Norm>,
     pub mlp: Box<dyn Mlp>,
+    pub state: Box<dyn State>,
+    pub moe: Box<dyn Moe>,
+    pub sampling: Box<dyn Sampling>,
 }

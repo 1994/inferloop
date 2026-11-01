@@ -148,6 +148,11 @@ impl ProgramWeights {
                 .map(|t| Arc::clone(t) as Owner),
         );
         owners.extend(self.projections.values().map(ProjectionWeight::owner));
+        owners.extend(
+            self.expert_banks
+                .values()
+                .map(|bank| bank.projection.owner()),
+        );
         if let Some(fusion) = &self.fusion {
             owners.push(Arc::clone(&fusion.norms) as Owner);
             owners.push(fusion.projection.owner());

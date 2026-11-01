@@ -69,12 +69,12 @@ impl TokenReadout {
             .iter()
             .map(|_| Greedy::new(device, per_input, vocabulary, tile))
             .collect::<Result<Vec<_>>>()?;
-        let mut tokens = api::zeros::<i32>(&[rows, 2])
+        let tokens = api::zeros::<i32>(&[rows, 2])
             .sync_on(&device.stream)
             .map_err(device_error)?;
         let graph = Graph::scope(&device.stream, |scope| {
             for (index, (selector, input)) in selectors.iter_mut().zip(logits).enumerate() {
-                selector.record_into(scope, input, &mut tokens, index * per_input)?;
+                selector.record_into(scope, input, &tokens, index * per_input)?;
             }
             Ok(())
         })

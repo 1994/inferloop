@@ -3,14 +3,18 @@
 //! The `aot` source mirrors these family names so an implementation can be compared side by side.
 use crate::contract::Kernels;
 use crate::contract::buffer::Buffer;
+use crate::contract::recording::Recording;
 use cuda_core::DType;
 pub use cutile::prelude::Scope;
 use cutile::prelude::Tensor;
 use infer_core::{Error, ErrorCode, Result};
 use mlp::TileMlp;
+use moe::TileMoe;
 use norm::TileNorm;
 use projection::TileProjection;
 use rope::TileRope;
+use sampling::TileSampling;
+use state::TileState;
 use std::fmt::Display;
 
 pub mod attention;
@@ -34,6 +38,9 @@ pub fn kernels(ordinal: usize) -> Kernels {
         rope: Box::new(TileRope::new(ordinal)),
         norm: Box::new(TileNorm::new(ordinal)),
         mlp: Box::new(TileMlp::new(ordinal)),
+        state: Box::new(TileState::new(ordinal)),
+        moe: Box::new(TileMoe::new(ordinal)),
+        sampling: Box::new(TileSampling::new(ordinal)),
     }
 }
 
@@ -54,6 +61,13 @@ fn borrowed<T: DType>(buffer: Buffer<'_, T>, ordinal: usize, shape: &[usize]) ->
     // SAFETY: `Buffer::new` guarantees a contiguous allocation outliving every replay, and the
     // caller checked the plan's shape covers exactly its elements. The tensor frees nothing.
     Ok(unsafe { Tensor::<T>::borrow_raw_parts(buffer.address(), ordinal, shape, strides) })
+}
+
+/// The capture scope of a recording, which every cuTile launch needs.
+fn capture_scope<'a>(recording: &Recording<'a>) -> Result<&'a Scope> {
+    recording
+        .cutile_scope()
+        .ok_or_else(|| Error::unsupported("cuTile launches record through a scope"))
 }
 
 fn backend_error(error: impl Display) -> Error {

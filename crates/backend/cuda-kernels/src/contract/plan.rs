@@ -106,3 +106,55 @@ pub struct RowNormPlan {
     pub epsilon: f32,
     pub offset: f32,
 }
+
+/// Element-wise activation of one operand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnaryOp {
+    Silu,
+    Sigmoid,
+}
+
+/// Element-wise combination of two operands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinaryOp {
+    Add,
+    Multiply,
+}
+
+/// One part of `[rows, stride]` rows into `[rows, width]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SplitPlan {
+    pub rows: usize,
+    pub stride: usize,
+    pub width: usize,
+    /// Which `width`-wide part of each row.
+    pub part: usize,
+}
+
+/// Top-scoring expert selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RoutePlan {
+    pub experts: usize,
+    pub active: usize,
+    pub normalize: bool,
+}
+
+/// Projection of `active` routed experts, each `[rows, input]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExpertPlan {
+    pub experts: usize,
+    pub active: usize,
+    pub rows: usize,
+    pub input: usize,
+    /// Each active expert reads its own input row rather than one shared row.
+    pub routed_input: bool,
+}
+
+/// Greedy selection over `rows` rows of `vocabulary` logits, split into `blocks` of `tile`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GreedyPlan {
+    pub rows: usize,
+    pub vocabulary: usize,
+    pub tile: usize,
+    pub blocks: usize,
+}

@@ -2,7 +2,6 @@ use super::{
     ActivationArena, ProgramWeights,
     attention::attention,
     buffers::{buffer, region},
-    kernels::aux,
     program::FusionWeights,
 };
 use crate::constants::AUX_KERNEL_TILE;
@@ -23,8 +22,8 @@ use cutile::prelude::*;
 use cutile::tile_kernel::CompileOptions;
 use infer_core::TensorId;
 use infer_cuda_kernels::contract::{
-    Buffer, FusionNormBuffers, FusionNormPlan, FusionShape, Kernels, NormBuffers, NormLayout,
-    NormPlan, Recording,
+    BinaryOp, Buffer, FusionNormBuffers, FusionNormPlan, FusionShape, Kernels, NormBuffers,
+    NormLayout, NormPlan, Recording, SplitPlan, UnaryOp,
 };
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::collections::BTreeMap;
@@ -111,6 +110,21 @@ fn record_fusion_norm(
             },
         )
         .map_err(error)
+}
+
+/// One part of a split, which must sit on a multiple of its power-of-two width.
+fn split_plan(widths: &[usize], part: usize, elements: usize) -> Result<SplitPlan, DeviceError> {
+    let width = widths[part];
+    let offset: usize = widths[..part].iter().sum();
+    if !width.is_power_of_two() || !offset.is_multiple_of(width) {
+        return Err(error("unsupported device split alignment"));
+    }
+    Ok(SplitPlan {
+        rows: elements / width,
+        stride: widths.iter().sum(),
+        width,
+        part: offset / width,
+    })
 }
 
 impl Capture<'_> {
@@ -251,11 +265,16 @@ impl Capture<'_> {
                 output = self.record_moe(node, output)?;
             }
             TensorOp::Scale => {
-                self.scope.record(super::moe::kernels::scale(
-                    (&mut output).partition([AUX_KERNEL_TILE]),
-                    &self.input(node.inputs[0])?,
-                    &self.input(node.inputs[1])?,
-                ))?;
+                self.weights
+                    .kernels
+                    .state
+                    .scale(
+                        &Recording::scope(self.scope),
+                        buffer(&output)?,
+                        self.input_buffer(node.inputs[0])?,
+                        self.input_buffer(node.inputs[1])?,
+                    )
+                    .map_err(error)?;
             }
             TensorOp::Embedding => {
                 self.embedding(node, &mut output)?;
@@ -264,23 +283,39 @@ impl Capture<'_> {
                 output = self.linear(node, output)?;
             }
             TensorOp::Silu | TensorOp::Sigmoid => {
-                self.scope.record(
-                    aux::unary(
-                        (&mut output).partition([AUX_KERNEL_TILE]),
-                        &self.input(node.inputs[0])?,
+                let op = if node.op == TensorOp::Sigmoid {
+                    UnaryOp::Sigmoid
+                } else {
+                    UnaryOp::Silu
+                };
+                self.weights
+                    .kernels
+                    .state
+                    .unary(
+                        &Recording::scope(self.scope),
+                        op,
+                        buffer(&output)?,
+                        self.input_buffer(node.inputs[0])?,
                     )
-                    .generics(vec![i32::from(node.op == TensorOp::Sigmoid).to_string()]),
-                )?;
+                    .map_err(error)?;
             }
             TensorOp::Add | TensorOp::Multiply => {
-                self.scope.record(
-                    aux::binary(
-                        (&mut output).partition([AUX_KERNEL_TILE]),
-                        &self.input(node.inputs[0])?,
-                        &self.input(node.inputs[1])?,
+                let op = if node.op == TensorOp::Multiply {
+                    BinaryOp::Multiply
+                } else {
+                    BinaryOp::Add
+                };
+                self.weights
+                    .kernels
+                    .state
+                    .binary(
+                        &Recording::scope(self.scope),
+                        op,
+                        buffer(&output)?,
+                        self.input_buffer(node.inputs[0])?,
+                        self.input_buffer(node.inputs[1])?,
                     )
-                    .generics(vec![i32::from(node.op == TensorOp::Multiply).to_string()]),
-                )?;
+                    .map_err(error)?;
             }
             TensorOp::Norm {
                 head_dim,
@@ -293,22 +328,9 @@ impl Capture<'_> {
                 output = self.norm(node, output, *head_dim, *epsilon, 0.0, true)?;
             }
             TensorOp::Split { widths, .. } => {
-                let width = widths[part];
-                let offset: usize = widths[..part].iter().sum();
-                if !width.is_power_of_two() || !offset.is_multiple_of(width) {
-                    return Err(error("unsupported device split alignment"));
-                }
-                let stride: usize = widths.iter().sum();
-                let heads = output.size() / width;
-                output = output.reshape(&[heads, width])?;
-                self.scope.record(
-                    aux::split(
-                        (&mut output).partition([1, width]),
-                        &self.input(node.inputs[0])?.view(&[heads, stride])?,
-                        i32::try_from(offset / width).map_err(error)?,
-                    )
-                    .generics(vec![stride.to_string(), width.to_string()]),
-                )?;
+                let plan = split_plan(widths, part, output.size())?;
+                output = output.reshape(&[plan.rows, plan.width])?;
+                self.record_split(node, buffer(&output)?, &plan)?;
             }
             TensorOp::Rope { .. } => {
                 output = self.record_rope(node, output)?;
@@ -318,6 +340,24 @@ impl Capture<'_> {
             }
         }
         Ok(output)
+    }
+
+    fn record_split(
+        &self,
+        node: &TensorNode,
+        out: Buffer<'_, f32>,
+        plan: &SplitPlan,
+    ) -> Result<(), DeviceError> {
+        self.weights
+            .kernels
+            .state
+            .split(
+                &Recording::scope(self.scope),
+                plan,
+                out,
+                self.input_buffer(node.inputs[0])?,
+            )
+            .map_err(error)
     }
 
     /// Width-1 and verification-width projection: per-lane input tensor.
