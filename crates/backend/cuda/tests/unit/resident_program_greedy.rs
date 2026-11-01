@@ -350,7 +350,10 @@ fn fresh_pooled_prompt_and_retained_wide_prompt_match_for_continuation() -> Resu
     let mut pooled = DeviceProgram::new_pooled(&device, &graph, &weights, 256, width, width)?;
     assert_eq!(retained.prefill_width(), 64);
     assert_eq!(pooled.prefill_width(), 32);
-    assert!(pooled.batch.is_none() && pooled.prompts.is_empty());
+    // A pool's program keeps only its narrow prompt graph; that is what makes it cheaper.
+    assert!(pooled.batch.is_none());
+    let widths: Vec<_> = pooled.prompts.iter().map(|prompt| prompt.width).collect();
+    assert_eq!(widths, [32]);
     retained.forfeit_verification();
     assert!(retained.batch.is_none());
     assert_eq!(retained.prefill_width(), 64);
