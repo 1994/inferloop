@@ -291,9 +291,7 @@ impl<T> Buffer<T> {
 - 分配、拷贝、capture、事件必须由同一实现对；两个 impl 共享同一组契约测试（见第 10 节第 6 步）。
 - `Device` / `Stream` / `Buffer` 是具体类型而不是 trait 对象，避免泛型方法与非对象安全。
 - launch 语义只有一种：在 stream 上排序，到下一次同步才保证完成。实现可以更早等待，调用方不能依赖。
-- 过渡形态：host 迁到 `Buffer` 之前，已落地的 `Projection` 用 `unsafe fn` + `DevicePtr`，义务写在 trait 上。
-  launch 只录制不等待，`Recording` 指明去向：cuTile scope，或处于捕获模式的 driver stream。`pool_gemv_bf16`
-  是模板：tile 在推理路径上通过模型逐位对照，AOT 在设备上捕获并回放。
+- 已落地的形态：`Buffer<'a, T>` 只带地址、长度和元素类型，形状由 Plan 给出，实现校验长度；`unsafe` 集中在 `Buffer::new`，family 方法是安全函数。launch 只录制不等待，`Recording` 指明去向：cuTile scope，或处于捕获模式的 driver stream。本节上面的 `Buffer<T>` 带 layout 和 owner 是早期草案，以代码为准。
 
 ### 5.2 Kernel traits
 

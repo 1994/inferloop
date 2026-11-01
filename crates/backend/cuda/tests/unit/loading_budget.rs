@@ -12,6 +12,7 @@ use crate::test_support::fixture_graph;
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use cutile::half::bf16;
 use infer_core::{OpId, TensorId};
+use infer_cuda_kernels::tile::kernels as tile_kernels;
 use infer_ir::{DType, TensorNode, TensorSpec};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -19,6 +20,7 @@ use std::sync::Arc;
 
 fn fixture_weights() -> ProgramWeights {
     ProgramWeights {
+        kernels: Arc::new(tile_kernels(0)),
         mrope: false,
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,

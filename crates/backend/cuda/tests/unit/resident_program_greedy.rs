@@ -10,6 +10,7 @@ use crate::tuning::resident_gemm::ResidentTuningSession;
 use crate::{mlp::ProjectionWeight, resident::FusionWeights};
 use cutile::half::bf16;
 use infer_core::TensorId;
+use infer_cuda_kernels::tile::kernels as tile_kernels;
 use infer_ir::{DType, Sampling, StateKind, TensorSpec, TensorStorage};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -22,6 +23,7 @@ fn fixture_weights(device: &CudaDevice, width: usize) -> Result<ProgramWeights> 
         .map(|i| bf16::from_f32(f32::from(i16::try_from(i * 13 % 29).unwrap() - 14) / 32.0))
         .collect();
     Ok(ProgramWeights {
+        kernels: Arc::new(tile_kernels(0)),
         mrope: false,
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,

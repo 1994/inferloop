@@ -64,6 +64,7 @@ fn check_projection(
 ) -> Result<()> {
     let mut graph = DataflowGraph::default();
     let mut weights = ProgramWeights {
+        kernels: device.kernels(),
         mrope: false,
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,

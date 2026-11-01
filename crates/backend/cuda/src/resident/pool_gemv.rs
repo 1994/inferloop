@@ -1,21 +1,20 @@
 //! Row-independent F32 GEMV with the original private accumulation and reduction tree.
 pub use infer_cuda_kernels::tile::projection::pool_gemv as kernels;
 
+use super::buffers::{buffer, region};
 use super::capture::error;
 use crate::tuning::pool_dense::{self, Choice};
 use crate::{mlp::ProjectionWeight, strategy::LinearTiling};
-use cutile::half::bf16;
 use cutile::prelude::*;
-use infer_cuda_kernels::contract::{DevicePtr, PoolGemvPlan, Projection, Recording};
-use infer_cuda_kernels::tile::projection::TileProjection;
+use infer_cuda_kernels::contract::{Bf16, Buffer, Kernels, PoolGemvPlan, Recording};
 #[cfg(test)]
 use std::cell::Cell;
-use std::sync::Arc;
 #[expect(
     clippy::too_many_arguments,
     reason = "The caller's view does not expose its address, so it is passed alongside"
 )]
 pub(super) fn record(
+    kernels: &Kernels,
     scope: &Scope,
     weight: &ProjectionWeight,
     input: &TensorView<'_, f32>,
@@ -41,7 +40,16 @@ pub(super) fn record(
         return Ok(false);
     };
     if choice == Choice::Gemv {
-        record_gemv(scope, weight, input, input_pointer, output, columns, tile)?;
+        record_gemv(
+            kernels,
+            scope,
+            buffer(weight.as_ref())?,
+            input,
+            input_pointer,
+            buffer(&*output)?,
+            columns,
+            tile,
+        )?;
     } else {
         choice.record(scope, weight, input, output, columns, tile)?;
     }
@@ -51,41 +59,41 @@ pub(super) fn record(
 }
 /// The row-independent kernel goes through the family contract, as every source will.
 #[expect(
-    unsafe_code,
-    reason = "The contract takes raw addresses of tensors the resident program owns"
+    clippy::too_many_arguments,
+    reason = "The caller's view does not expose its address, so it is passed alongside"
 )]
 fn record_gemv(
+    kernels: &Kernels,
     scope: &Scope,
-    weight: &Arc<Tensor<bf16>>,
+    weight: Buffer<'_, Bf16>,
     input: &TensorView<'_, f32>,
     input_pointer: u64,
-    output: &mut Tensor<f32>,
+    output: Buffer<'_, f32>,
     columns: usize,
     tile: LinearTiling,
 ) -> Result<(), DeviceError> {
     let width = i32::try_from(columns).map_err(error)?;
-    if input.strides() != [width, 1] || !weight.is_contiguous() || !output.is_contiguous() {
+    if input.strides() != [width, 1] {
         return Err(error("pool GEMV operands must be contiguous"));
     }
+    let rows = usize::try_from(input.shape()[0]).map_err(error)?;
     let plan = PoolGemvPlan {
-        rows: usize::try_from(input.shape()[0]).map_err(error)?,
-        outputs: usize::try_from(output.shape()[1]).map_err(error)?,
+        rows,
+        outputs: output.len() / rows.max(1),
         columns,
         tile_rows: tile.rows(),
         tile_columns: tile.columns(),
     };
-    // SAFETY: strides were checked above, and the resident program owns the three tensors until
-    // its captured graphs are destroyed. The arena hands out distinct input and output slots.
-    unsafe {
-        TileProjection::new(output.device_id()).pool_gemv_bf16(
+    kernels
+        .projection
+        .pool_gemv_bf16(
             &Recording::Scope(scope),
             &plan,
-            DevicePtr(output.device_pointer().cu_deviceptr()),
-            DevicePtr(input_pointer),
-            DevicePtr(weight.device_pointer().cu_deviceptr()),
+            output,
+            region(input_pointer, rows * columns),
+            weight,
         )
-    }
-    .map_err(error)
+        .map_err(error)
 }
 
 #[cfg(not(test))]

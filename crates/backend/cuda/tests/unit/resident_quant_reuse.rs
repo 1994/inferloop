@@ -14,6 +14,7 @@ use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
 use infer_core::{ModelId, OpId, TensorId};
+use infer_cuda_kernels::tile::kernels as tile_kernels;
 use infer_ir::{DType as IrDType, DataflowGraph, TensorNode, TensorOp, TensorSpec, TensorStorage};
 use infer_models::{DeviceWeight, QuantizedPackage, WeightEncoding};
 use std::env::var;
@@ -136,6 +137,7 @@ impl Pair {
 
 fn fixture_weights() -> ProgramWeights {
     ProgramWeights {
+        kernels: Arc::new(tile_kernels(0)),
         mrope: false,
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,

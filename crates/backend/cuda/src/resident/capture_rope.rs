@@ -1,9 +1,10 @@
 use super::{
+    buffers::{buffer, region},
     capture::{Capture, CaptureMode, error},
-    kernels::aux,
 };
 use crate::constants::METADATA_FIELDS;
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::{Recording, RopeBuffers, RopeMode, RopePlan};
 use infer_ir::{TensorNode, TensorOp};
 
 impl Capture<'_> {
@@ -36,64 +37,40 @@ impl Capture<'_> {
             .rope_frequencies
             .get(&node.id)
             .ok_or_else(|| error("missing rotary frequencies"))?;
-        if self.mode == CaptureMode::PrefillRotary {
-            let axes = self
-                .weights
-                .rope_axes
-                .get(&node.id)
-                .ok_or_else(|| error("missing rotary axes"))?;
-            self.scope.record(
-                aux::prefill_mrope(
-                    (&mut output).partition([1, half]),
-                    &self.input(node.inputs[0])?.view(&[rows, *head_dim])?,
-                    frequency,
-                    axes,
-                    self.metadata,
-                )
-                .generics(vec![
-                    head_dim.to_string(),
-                    half.to_string(),
-                    heads.to_string(),
-                ]),
-            )?;
-        } else if self.mode == CaptureMode::Prefill {
-            self.scope.record(
-                aux::prefill_rope(
-                    (&mut output).partition([1, half]),
-                    &self.input(node.inputs[0])?.view(&[rows, *head_dim])?,
-                    frequency,
-                    self.metadata,
-                )
-                .generics(vec![
-                    head_dim.to_string(),
-                    half.to_string(),
-                    heads.to_string(),
-                ]),
-            )?;
-        } else if self.metadata.size() == METADATA_FIELDS * 2
-            && let Some(axes) = self.weights.rope_axes.get(&node.id)
-        {
-            self.scope.record(
-                aux::mrope(
-                    (&mut output).partition([1, half]),
-                    &self.input(node.inputs[0])?.view(&[*heads, *head_dim])?,
-                    frequency,
-                    axes,
-                    self.metadata,
-                )
-                .generics(vec![head_dim.to_string(), half.to_string()]),
-            )?;
-        } else {
-            self.scope.record(
-                aux::rope(
-                    (&mut output).partition([1, half]),
-                    &self.input(node.inputs[0])?.view(&[*heads, *head_dim])?,
-                    frequency,
-                    self.metadata,
-                )
-                .generics(vec![head_dim.to_string(), half.to_string()]),
-            )?;
-        }
+        let axes = self.weights.rope_axes.get(&node.id);
+        let (mode, axes) = match self.mode {
+            CaptureMode::PrefillRotary => (
+                RopeMode::PromptAxes,
+                Some(axes.ok_or_else(|| error("missing rotary axes"))?),
+            ),
+            CaptureMode::Prefill => (RopeMode::Prompt, None),
+            _ if self.metadata.size() == METADATA_FIELDS * 2 && axes.is_some() => {
+                (RopeMode::SingleAxes, axes)
+            }
+            _ => (RopeMode::Single, None),
+        };
+        let plan = RopePlan {
+            mode,
+            rows,
+            heads: *heads,
+            head_dim: *head_dim,
+            half,
+        };
+        self.weights
+            .kernels
+            .rope
+            .rope(
+                &Recording::Scope(self.scope),
+                &plan,
+                RopeBuffers {
+                    out: buffer(&output)?,
+                    x: region(self.input_address(node.inputs[0])?, rows * head_dim),
+                    frequencies: buffer(frequency)?,
+                    axes: axes.map(|axes| buffer(axes)).transpose()?,
+                    metadata: buffer(self.metadata)?,
+                },
+            )
+            .map_err(error)?;
         Ok(output)
     }
 }

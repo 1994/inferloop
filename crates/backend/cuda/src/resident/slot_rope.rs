@@ -1,7 +1,8 @@
 //! One rotary launch across verification rows, using each row's original position.
-use super::{ActivationArena, capture::error, program::ProgramWeights};
+use super::{ActivationArena, buffers::buffer, capture::error, program::ProgramWeights};
 use crate::constants::METADATA_FIELDS;
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::{Recording, RopeBuffers, RopeMode, RopePlan};
 use infer_ir::{TensorNode, TensorOp};
 
 pub(super) fn record(
@@ -42,29 +43,38 @@ pub(super) fn record(
         .iter()
         .map(|&dim| usize::try_from(dim).map_err(error))
         .collect::<Result<Vec<_>, _>>()?;
-    let mut output = output.reshape(&[arena.lanes() * heads, head_dim])?;
-    scope.record(
-        kernels::rope(
-            (&mut output).partition([1, half]),
-            &arena
-                .get(node.inputs[0])
-                .map_err(error)?
-                .view(&[arena.lanes() * heads, head_dim])?,
-            frequencies,
-            metadata,
+    let output = output.reshape(&[arena.lanes() * heads, head_dim])?;
+    let input = arena.get(node.inputs[0]).map_err(error)?;
+    let plan = RopePlan {
+        mode: RopeMode::Pooled {
+            fields: METADATA_FIELDS,
+        },
+        rows: arena.lanes() * heads,
+        heads,
+        head_dim,
+        half,
+    };
+    weights
+        .kernels
+        .rope
+        .rope(
+            &Recording::Scope(scope),
+            &plan,
+            RopeBuffers {
+                out: buffer(&output)?,
+                x: buffer(input)?,
+                frequencies: buffer(frequencies)?,
+                axes: None,
+                metadata: buffer(metadata)?,
+            },
         )
-        .generics(
-            [head_dim, half, heads, METADATA_FIELDS]
-                .iter()
-                .map(ToString::to_string)
-                .collect(),
-        ),
-    )?;
+        .map_err(error)?;
     arena.buffers[slot] = Some(output.reshape(&restore)?);
     Ok(true)
 }
 
-pub use infer_cuda_kernels::tile::rope::slot_rope as kernels;
+#[cfg(test)]
+use infer_cuda_kernels::tile::rope::slot_rope as kernels;
 
 #[cfg(test)]
 #[path = "../../tests/unit/resident_slot_rope.rs"]

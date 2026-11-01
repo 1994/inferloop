@@ -1,7 +1,7 @@
 //! Capture an AOT projection into a graph, replay it, and compare with a CPU reference.
 #![expect(
     unsafe_code,
-    reason = "Launches through the raw-address kernel contract with buffers owned by this function"
+    reason = "Makes contract buffers from allocations owned by this function"
 )]
 
 #[path = "../acceptance/pool_gemv.rs"]
@@ -9,7 +9,7 @@ mod acceptance;
 
 use acceptance::{Case, OUTPUTS, ROWS};
 use infer_cuda_kernels::aot::{AotProjection, Device};
-use infer_cuda_kernels::contract::{DevicePtr, PoolGemvPlan, Projection};
+use infer_cuda_kernels::contract::{Buffer, PoolGemvPlan, Projection};
 use std::env;
 use std::error::Error;
 use std::mem::size_of;
@@ -44,19 +44,15 @@ fn check(
         tile_rows: 1,
         tile_columns: columns,
     };
-    let graph = device.capture(|recording| {
-        // SAFETY: the three buffers match the plan, do not alias, and are declared before `graph`,
-        // so they outlive it and every replay.
-        unsafe {
-            projection.pool_gemv_bf16(
-                recording,
-                &plan,
-                DevicePtr(out_buffer.pointer()),
-                DevicePtr(x_buffer.pointer()),
-                DevicePtr(w_buffer.pointer()),
-            )
-        }
-    })?;
+    // SAFETY: each allocation matches the plan, none aliases another, and all are declared before
+    // `graph`, so they outlive it and every replay.
+    let out = unsafe { Buffer::new(out_buffer.pointer(), ROWS * OUTPUTS) };
+    // SAFETY: as above.
+    let input = unsafe { Buffer::new(x_buffer.pointer(), ROWS * columns) };
+    // SAFETY: as above.
+    let weight = unsafe { Buffer::new(w_buffer.pointer(), OUTPUTS * columns) };
+    let graph = device
+        .capture(|recording| projection.pool_gemv_bf16(recording, &plan, out, input, weight))?;
     let mut first: Option<Vec<u32>> = None;
     let mut actual = vec![0.0f32; ROWS * OUTPUTS];
     for _ in 0..REPLAYS {
