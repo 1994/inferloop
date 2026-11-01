@@ -4,6 +4,7 @@ use crate::device::CudaDevice;
 use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::error::tensor_error;
 use cutile::prelude::*;
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error as StdError;
 use std::time::Duration;
 
@@ -30,10 +31,10 @@ fn capture(
     scratch: &mut Scratch,
     (state, output): (&mut Tensor<f32>, &mut Tensor<f32>),
     optimized: bool,
-) -> TestResult<CudaGraph<()>> {
+) -> TestResult<Graph> {
     let [kh, vh, lanes] = input.shape;
     let qkv = input.qkv.view(&[lanes, 2 * kh + vh, DIM])?;
-    Ok(CudaGraph::scope(&device.stream, |scope| {
+    Ok(Graph::scope(&device.stream, |scope| {
         scope.record(baseline::reset(
             (&mut *state).partition([1, DIM, 32]),
             &input.initial,

@@ -7,6 +7,7 @@ use crate::{
 };
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 const KH: usize = 16;
 const VH: usize = 48;
 const DIM: usize = 128;
@@ -52,13 +53,9 @@ impl Captured {
             width,
         })
     }
-    pub fn graph(
-        &mut self,
-        device: &CudaDevice,
-        rust: Option<&oxide::Support>,
-    ) -> Result<CudaGraph<()>> {
+    pub fn graph(&mut self, device: &CudaDevice, rust: Option<&oxide::Support>) -> Result<Graph> {
         let width = self.width;
-        CudaGraph::scope(&device.stream, |scope| {
+        Graph::scope(&device.stream, |scope| {
             scope.record(api::memcpy(&mut self.state, &self.initial))?;
             scope.record(
                 kernels::normalize_shared((&mut self.normalized).partition([1, 1, DIM]), &self.qkv)
@@ -159,7 +156,7 @@ impl Captured {
         }
         Ok(keys)
     }
-    pub fn run(&self, device: &CudaDevice, graph: &CudaGraph<()>) -> Result<[Vec<f32>; 2]> {
+    pub fn run(&self, device: &CudaDevice, graph: &Graph) -> Result<[Vec<f32>; 2]> {
         graph
             .launch()
             .sync_on(&device.stream)
@@ -172,8 +169,8 @@ impl Captured {
     pub fn verify(
         &self,
         device: &CudaDevice,
-        native: &CudaGraph<()>,
-        rust: &CudaGraph<()>,
+        native: &Graph,
+        rust: &Graph,
         fixture: &Fixture,
     ) -> Result<f64> {
         let expected = self.run(device, native)?;

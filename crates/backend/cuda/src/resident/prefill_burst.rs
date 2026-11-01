@@ -13,6 +13,7 @@ use crate::constants::{METADATA_FIELDS, PREFILL_SPLIT_K};
 use crate::device::{CudaDevice, PinnedUpload, ReadbackSource, Readbacks, device_error};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::DataflowGraph;
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::BTreeMap;
@@ -116,7 +117,7 @@ pub struct Lane<'a> {
 
 /// A captured multi-sequence prompt graph, retaining everything the graph addresses.
 pub struct PromptBurst {
-    graph: CudaGraph<()>,
+    graph: Graph,
     profile: Option<super::profile::PrefillProfile>,
     segments: usize,
     capacity: usize,
@@ -501,7 +502,7 @@ impl PromptBurst {
     fn finish(
         device: &CudaDevice,
         storage: Storage,
-        graph: CudaGraph<()>,
+        graph: Graph,
         profile: Option<super::profile::PrefillProfile>,
         (segments, rows, capacity, vocabulary): (usize, usize, usize, usize),
         state_offset: i32,

@@ -11,10 +11,11 @@ use crate::{
 };
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::{TensorNode, TensorOp};
 
 pub(super) struct CapturedCommit {
-    graph: CudaGraph<()>,
+    graph: Graph,
     counts: Tensor<i32>,
     upload: Vec<i32>,
     staging: PinnedUpload<i32>,
@@ -81,7 +82,7 @@ impl CapturedCommit {
             lanes,
             hardware: ValueDevice::new(device)?,
         };
-        let graph = CudaGraph::scope(&device.stream, |scope| {
+        let graph = Graph::scope(&device.stream, |scope| {
             for (index, node) in nodes.iter().enumerate().filter(|(_, node)| covers(node)) {
                 record_node(scope, node, index, roots, &inputs).map_err(error)?;
             }
@@ -108,7 +109,7 @@ impl CapturedCommit {
         self.staging.copy(device, &mut self.counts, &self.upload)
     }
 
-    pub(super) const fn graph(&self) -> &CudaGraph<()> {
+    pub(super) const fn graph(&self) -> &Graph {
         &self.graph
     }
 }

@@ -16,6 +16,7 @@ use crate::{
 use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::env::var_os;
 use std::result::Result as StdResult;
 struct Operands {
@@ -282,7 +283,7 @@ impl Operands {
     }
 }
 pub(super) struct Captured {
-    pub graph: CudaGraph<()>,
+    pub graph: Graph,
     operands: Operands,
     _oxide: Option<AttentionOxideSupport>,
     _mma: Option<Support>,
@@ -321,7 +322,7 @@ impl Captured {
             None
         };
         let mut operands = Operands::new(device, fixture, choice)?;
-        let graph = CudaGraph::scope(&device.stream, |scope| {
+        let graph = Graph::scope(&device.stream, |scope| {
             operands.record(scope, fixture, choice, oxide.as_ref(), mma.as_mut())
         })
         .map_err(device_error)?;
@@ -346,20 +347,15 @@ impl Captured {
         device: &CudaDevice,
         f: &Fixture,
         support: &AttentionOxideSupport,
-    ) -> Result<CudaGraph<()>> {
-        CudaGraph::scope(&device.stream, |scope| {
+    ) -> Result<Graph> {
+        Graph::scope(&device.stream, |scope| {
             self.operands
                 .record(scope, f, Choice::RustSimt, Some(support), None)
         })
         .map_err(device_error)
     }
     #[cfg(test)]
-    pub fn verify_variant(
-        &self,
-        device: &CudaDevice,
-        f: &Fixture,
-        graph: &CudaGraph<()>,
-    ) -> Result<usize> {
+    pub fn verify_variant(&self, device: &CudaDevice, f: &Fixture, graph: &Graph) -> Result<usize> {
         self.verify(device, f)?;
         let expected = device.read_borrowed(&self.operands.output)?;
         self.verify_graph(device, f, graph)?;
@@ -400,7 +396,7 @@ impl Captured {
     pub fn verify(&self, device: &CudaDevice, f: &Fixture) -> Result<f64> {
         self.verify_graph(device, f, &self.graph)
     }
-    fn verify_graph(&self, device: &CudaDevice, f: &Fixture, graph: &CudaGraph<()>) -> Result<f64> {
+    fn verify_graph(&self, device: &CudaDevice, f: &Fixture, graph: &Graph) -> Result<f64> {
         self.verify_graph_limit(device, f, graph, super::MAX_ERROR)
     }
     pub fn verify_mma(&self, device: &CudaDevice, f: &Fixture) -> Result<f64> {
@@ -426,7 +422,7 @@ impl Captured {
         &self,
         device: &CudaDevice,
         f: &Fixture,
-        graph: &CudaGraph<()>,
+        graph: &Graph,
         limit: f64,
     ) -> Result<f64> {
         graph

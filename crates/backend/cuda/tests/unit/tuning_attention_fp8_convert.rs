@@ -14,6 +14,7 @@ use cutile::bench::do_bench_paired;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::env::var;
 use std::fs::read_to_string;
 use std::ptr::from_mut;
@@ -135,7 +136,7 @@ fn fp8_hardware_complete_pipeline_cost() -> Result<()> {
                     } else {
                         (&baseline.graph, &candidate)
                     };
-                    let run = |graph: &CudaGraph<()>| {
+                    let run = |graph: &Graph| {
                         graph
                             .launch()
                             .sync_on(&device.stream)

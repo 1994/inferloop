@@ -13,6 +13,7 @@ use cutile::cuda_async::error::DeviceError;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_models::vision::row_tile;
 use infer_spi::ModalityEncoder;
 use std::mem::swap;
@@ -364,7 +365,7 @@ pub(super) fn run(
     let cosines = device.upload(cosines, &[geometry.rows, geometry.width])?;
     let sines = device.upload(sines, &[geometry.rows, geometry.width])?;
     let mut buffers = Buffers::new(device, &geometry, input)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         for layer in &layers {
             buffers.record(scope, layer, &geometry, &cosines, &sines)?;
         }

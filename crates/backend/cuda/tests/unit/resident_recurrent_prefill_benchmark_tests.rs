@@ -6,6 +6,7 @@ use cutile::{
     bench::{BenchOptions, do_bench_paired},
     prelude::*,
 };
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 use std::slice::from_ref;
 use std::time::Duration;
@@ -62,7 +63,7 @@ fn bench_case(
         );
         metadata.push(device.upload(vec![i32::try_from(lane)?, 0, i32::try_from(lane)?, 0], &[4])?);
     }
-    let baseline = CudaGraph::scope(&device.stream, |scope| {
+    let baseline = Graph::scope(&device.stream, |scope| {
         for (lane, output) in old_outputs.iter_mut().enumerate() {
             scope.record(
                 super::super::recurrent::recurrent::delta(
@@ -103,7 +104,7 @@ fn bench_case(
     let mut prepared = (dim == super::ORDERED_DIM)
         .then(|| super::prepared::Inputs::new(device, (kh, vh, dim), lanes))
         .transpose()?;
-    let candidate = CudaGraph::scope(&device.stream, |scope| {
+    let candidate = Graph::scope(&device.stream, |scope| {
         if dim == 128 {
             prepared.as_mut().expect("ordered preparation").record(
                 scope,
@@ -138,8 +139,8 @@ fn bench_case(
 
 fn compare_graphs(
     device: &CudaDevice,
-    baseline: &CudaGraph<()>,
-    candidate: &CudaGraph<()>,
+    baseline: &Graph,
+    candidate: &Graph,
     geometry: (usize, usize, usize, usize),
 ) -> Result<(), Box<dyn Error>> {
     let options = BenchOptions {

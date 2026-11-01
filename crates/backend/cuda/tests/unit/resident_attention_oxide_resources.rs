@@ -2,6 +2,7 @@
 use super::*;
 use crate::device::device_error;
 use cuda_core::f8e4m3fn;
+use infer_cuda_kernels::tile::runtime::Graph;
 
 fn upload<T: DType>(device: &CudaDevice, data: Vec<T>, shape: &[usize]) -> Result<Tensor<T>> {
     api::copy_host_vec_to_device(&Arc::new(data))
@@ -33,7 +34,7 @@ fn resource_contract(device: &CudaDevice, support: &Support, lanes: usize) -> Re
         vec![0.0; lanes * HEADS * DIM],
         &[lanes * HEADS, DIM],
     )?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         support.record(
             scope,
             Bindings {

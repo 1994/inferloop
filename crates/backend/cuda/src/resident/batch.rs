@@ -34,6 +34,7 @@ use crate::device::{PinnedUpload, Readbacks};
 use crate::mlp::ProjectionWeight;
 use cutile::prelude::*;
 use infer_core::{Error, ErrorCode, Result, TensorId};
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::{DataflowGraph, StateKind, TensorNode, TensorOp, TensorStorage};
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::BTreeMap;
@@ -89,10 +90,10 @@ enum PromptReadout {
 
 /// Prompt readout variants captured against the same shared scratch.
 struct PromptGraphs {
-    prefill: CudaGraph<()>,
-    prefill_last: CudaGraph<()>,
+    prefill: Graph,
+    prefill_last: Graph,
     #[cfg(test)]
-    state_prefill: Option<CudaGraph<()>>,
+    state_prefill: Option<Graph>,
 }
 
 struct PromptCaptures {
@@ -104,20 +105,20 @@ pub(super) struct ProgramCaptures {
     pub batch: Option<BatchGraph>,
     /// Prompt graphs, narrowest first; see [`super::program::ProgramGeometry::prompt_widths`].
     pub prompts: Vec<BatchGraph>,
-    pub forward: CudaGraph<()>,
-    pub prefill: CudaGraph<()>,
+    pub forward: Graph,
+    pub prefill: Graph,
 }
 
 pub(super) struct BatchGraph {
-    graph: Option<CudaGraph<()>>,
+    graph: Option<Graph>,
     readbacks: Readbacks,
     token_readout: Option<super::token_readout::TokenReadout>,
-    prefill: CudaGraph<()>,
-    prefill_last: CudaGraph<()>,
+    prefill: Graph,
+    prefill_last: Graph,
     precise: Option<PromptGraphs>,
     #[cfg(test)]
-    state_prefill: Option<CudaGraph<()>>,
-    restore: Vec<CudaGraph<()>>,
+    state_prefill: Option<Graph>,
+    restore: Vec<Graph>,
     /// Split-K partial windows the captured fp4 prompt GEMMs accumulate into;
     /// declared after the graphs so their executables drop first.
     _partials: BTreeMap<usize, Tensor<f32>>,
@@ -190,8 +191,8 @@ pub(super) struct BatchBuilder<'a> {
 /// Inactive lanes are masked with a `-1` state position (the state kernels gate writes on
 /// it); slot tenants never rewind, so no rollback checkpoints are captured.
 pub(super) struct SlotDecodeGraph {
-    graph: CudaGraph<()>,
-    state_only: Option<CudaGraph<()>>,
+    graph: Graph,
+    state_only: Option<Graph>,
     readbacks: Readbacks,
     token_readout: Option<super::token_readout::TokenReadout>,
     metadata_owner: Tensor<i32>,
@@ -404,13 +405,13 @@ impl BatchBuilder<'_> {
         states: (&mut [States], &mut [Fp8Caches]),
         profile: &mut Option<profile::SlotProfile>,
         read_logits: bool,
-    ) -> Result<CudaGraph<()>> {
+    ) -> Result<Graph> {
         let (metadata, metadata_owner, fusion) = metadata;
         let (lane_states, lane_fp8) = states;
         let width = lane_states.len();
         let quant_plan = super::nvfp4_gemm::QuantPairPlan::new(self.graph, self.weights);
         self.nvfp4.begin_quant_capture();
-        let result = CudaGraph::scope(&self.device.stream, |scope| {
+        let result = Graph::scope(&self.device.stream, |scope| {
             let mut no_fusion = None;
             for (index, node) in self.graph.nodes.iter().enumerate() {
                 self.nvfp4.enter_quant_node(index, quant_plan.role(index));
@@ -509,12 +510,12 @@ impl BatchBuilder<'_> {
         let forward = if forward_captured {
             self.capture_single(arena, metadata, fusion, false)?
         } else {
-            CudaGraph::scope(&self.device.stream, |_| Ok(())).map_err(device_error)?
+            Graph::scope(&self.device.stream, |_| Ok(())).map_err(device_error)?
         };
         let prefill = if forward_captured {
             self.capture_single(arena, metadata, fusion, true)?
         } else {
-            CudaGraph::scope(&self.device.stream, |_| Ok(())).map_err(device_error)?
+            Graph::scope(&self.device.stream, |_| Ok(())).map_err(device_error)?
         };
         Ok(ProgramCaptures {
             batch,
@@ -530,8 +531,8 @@ impl BatchBuilder<'_> {
         metadata: &Tensor<i32>,
         fusion: &mut Option<super::program::FusionWorkspace>,
         skip_logits: bool,
-    ) -> Result<CudaGraph<()>> {
-        CudaGraph::scope(&self.device.stream, |scope| {
+    ) -> Result<Graph> {
+        Graph::scope(&self.device.stream, |scope| {
             Capture {
                 scope,
                 arena,
@@ -590,7 +591,7 @@ impl BatchBuilder<'_> {
         let mut logits = Vec::new();
         for mut lane in lanes {
             restore.push(
-                CudaGraph::scope(&self.device.stream, |scope| {
+                Graph::scope(&self.device.stream, |scope| {
                     for (id, tensors) in &lane.checkpoints {
                         for (output, input) in self
                             .states
@@ -1129,11 +1130,11 @@ impl BatchBuilder<'_> {
         projections: &mut super::batch_projection::Workspace,
         prefill: Option<bool>,
         mut shared: Option<&mut ActivationArena>,
-    ) -> Result<CudaGraph<()>> {
+    ) -> Result<Graph> {
         let width = lanes.len();
         let device = self.device;
         self.nvfp4.end_quant_capture();
-        let result = CudaGraph::scope(&device.stream, |scope| {
+        let result = Graph::scope(&device.stream, |scope| {
             for node in &self.graph.nodes {
                 let logits = node.outputs.iter().any(|id| Some(*id) == self.graph.logits);
                 if logits && prefill == Some(false) {
@@ -1366,7 +1367,7 @@ impl BatchBuilder<'_> {
         partials: &mut BTreeMap<usize, Tensor<f32>>,
         prompt_row: &mut Tensor<f32>,
         profile: &mut Option<profile::PrefillProfile>,
-    ) -> Result<CudaGraph<()>> {
+    ) -> Result<Graph> {
         let mut recurrent = super::recurrent_prefill::Workspace::default();
         let mut fusion = None;
         self.capture32(
@@ -1403,7 +1404,7 @@ impl BatchBuilder<'_> {
             &mut Option<super::fusion_batch::Workspace>,
         ),
         mut prompt_row: Option<&mut Tensor<f32>>,
-    ) -> Result<CudaGraph<()>> {
+    ) -> Result<Graph> {
         let (metadata, metadata_batch, prefill_info, prefill_rotary) = metadata;
         let (partials, recurrent, fusion) = workspaces;
         let last = readout == PromptReadout::Logits;
@@ -1420,7 +1421,7 @@ impl BatchBuilder<'_> {
         mlp.prepare_vendor(self.device, self.graph, self.weights, arena, self.nvfp4)
             .map_err(device_error)?;
         self.nvfp4.begin_quant_capture();
-        let result = CudaGraph::scope(&self.device.stream, |scope| {
+        let result = Graph::scope(&self.device.stream, |scope| {
             let mut boundaries = profile.map(|profile| profile.graph(last));
             let mut fused_second = None;
             for (index, node) in self.graph.nodes.iter().enumerate() {
@@ -2053,7 +2054,7 @@ impl BatchGraph {
         reason = "Launch fields are independent scalars; bundling them would hide the metadata contract"
     )]
     fn update_metadata(
-        graph: &CudaGraph<()>,
+        graph: &Graph,
         metadata: &mut [Tensor<i32>],
         width: usize,
         capacity: usize,
@@ -2118,12 +2119,12 @@ impl BatchGraph {
     }
 
     fn prompt_readout_graph<'a>(
-        regular: (&'a CudaGraph<()>, &'a CudaGraph<()>),
+        regular: (&'a Graph, &'a Graph),
         selected: Option<&'a PromptGraphs>,
-        state: Option<&'a CudaGraph<()>>,
+        state: Option<&'a Graph>,
         readout: Option<bool>,
         read_hidden: bool,
-    ) -> Result<&'a CudaGraph<()>> {
+    ) -> Result<&'a Graph> {
         let prefill = selected.map_or(regular.0, |graphs| &graphs.prefill);
         let last = selected.map_or(regular.1, |graphs| &graphs.prefill_last);
         match readout {
@@ -2363,7 +2364,7 @@ impl BatchGraph {
         let launch = self
             .restore
             .get(count - 1)
-            .map(CudaGraph::launch)
+            .map(Graph::launch)
             .ok_or_else(|| Error::invalid("batch commit count"));
         async move { device.run_op(launch?).await }
     }

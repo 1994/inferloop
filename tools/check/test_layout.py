@@ -61,7 +61,13 @@ class OwnershipTests(unittest.TestCase):
 
 
 class HostBoundaryTests(unittest.TestCase):
-    BASELINE: ClassVar = {"Tensor<": 1, ".partition(": 0, ".generics(": 0, "cuda_core": 0}
+    BASELINE: ClassVar = {
+        "Tensor<": 1,
+        ".partition(": 0,
+        ".generics(": 0,
+        "cuda_core": 0,
+        "CudaGraph": 0,
+    }
 
     def tree(self, source):
         directory = tempfile.TemporaryDirectory()

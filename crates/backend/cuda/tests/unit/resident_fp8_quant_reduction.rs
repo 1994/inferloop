@@ -6,6 +6,7 @@ use cutile::{
     bench::{BenchOptions, do_bench_paired},
     prelude::*,
 };
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 use std::time::Duration;
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -31,13 +32,9 @@ impl Case {
             new_scale: api::zeros::<f32>(&[rows, 1]).sync_on(&device.stream)?,
         })
     }
-    fn graphs(
-        &mut self,
-        device: &CudaDevice,
-        count: usize,
-    ) -> TestResult<(CudaGraph<()>, CudaGraph<()>)> {
+    fn graphs(&mut self, device: &CudaDevice, count: usize) -> TestResult<(Graph, Graph)> {
         let pad = self.k.next_power_of_two();
-        let old = CudaGraph::scope(&device.stream, |scope| {
+        let old = Graph::scope(&device.stream, |scope| {
             for _ in 0..count {
                 scope.record(
                     fp8_gemm::kernels::quantize(
@@ -50,7 +47,7 @@ impl Case {
             }
             Ok(())
         })?;
-        let new = CudaGraph::scope(&device.stream, |scope| {
+        let new = Graph::scope(&device.stream, |scope| {
             for _ in 0..count {
                 scope.record(
                     kernels::maximum((&mut self.new_scale).partition([1, 1]), &self.input)
@@ -161,7 +158,7 @@ fn bits_and_cost() -> TestResult {
                         max_reps: 96,
                         clear_l2: cold,
                     };
-                    let run = |g: &CudaGraph<()>| {
+                    let run = |g: &Graph| {
                         g.launch()
                             .sync_on(&device.stream)
                             .map_err(|e| tensor_error(&e.to_string()))

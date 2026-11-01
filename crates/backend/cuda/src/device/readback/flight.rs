@@ -6,6 +6,7 @@ use cutile::cuda_async::device_future::DeviceFuture;
 use cutile::cuda_async::device_operation::BoxedDeviceOp;
 use cutile::prelude::*;
 use infer_core::{Error, ErrorCode, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
@@ -47,7 +48,7 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
     pub(crate) fn submit(
         &mut self,
         device: &CudaDevice,
-        graph: &CudaGraph<()>,
+        graph: &Graph,
         sources: &[Option<ReadbackSource<T>>],
     ) -> Result<()> {
         self.validate_submit(device, graph)?;
@@ -60,7 +61,7 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
         )
     }
 
-    fn validate_submit(&self, device: &CudaDevice, graph: &CudaGraph<()>) -> Result<()> {
+    fn validate_submit(&self, device: &CudaDevice, graph: &Graph) -> Result<()> {
         if self.poisoned || self.flight.is_some() || !Arc::ptr_eq(graph.stream(), &device.stream) {
             return Err(Error::invalid(
                 "busy/poisoned readback or mismatched CUDA graph stream",
@@ -147,9 +148,9 @@ impl Readbacks<f32> {
     pub(crate) fn submit_with_tokens(
         &mut self,
         device: &CudaDevice,
-        graph: &CudaGraph<()>,
+        graph: &Graph,
         sources: &[Option<ReadbackSource>],
-        tail: (&CudaGraph<()>, &mut Readbacks<i32>, Arc<Tensor<i32>>),
+        tail: (&Graph, &mut Readbacks<i32>, Arc<Tensor<i32>>),
     ) -> Result<()> {
         let (selector, tokens, tensor) = tail;
         self.validate_submit(device, graph)?;
@@ -237,7 +238,7 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
     pub(crate) async fn run_async(
         &mut self,
         device: &CudaDevice,
-        graph: &CudaGraph<()>,
+        graph: &Graph,
         sources: &[Option<ReadbackSource<T>>],
     ) -> Result<Rows<T>> {
         self.submit(device, graph, sources)?;
@@ -253,9 +254,9 @@ impl Readbacks<f32> {
     pub(crate) async fn run_with_tokens_async(
         &mut self,
         device: &CudaDevice,
-        graph: &CudaGraph<()>,
+        graph: &Graph,
         sources: &[Option<ReadbackSource>],
-        tail: (&CudaGraph<()>, &mut Readbacks<i32>, Arc<Tensor<i32>>),
+        tail: (&Graph, &mut Readbacks<i32>, Arc<Tensor<i32>>),
     ) -> Result<(Rows<f32>, Rows<i32>)> {
         let (selector, tokens, tensor) = tail;
         self.submit_with_tokens(device, graph, sources, (selector, tokens, tensor))?;

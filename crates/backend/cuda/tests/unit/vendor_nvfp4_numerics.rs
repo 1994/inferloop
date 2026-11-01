@@ -5,6 +5,7 @@ use crate::mlp::ProjectionWeight;
 use crate::tuning::resident_gemm::{GemmConfig, ResidentTuningSession};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -87,7 +88,7 @@ fn vendor_fp4_matches_independent_full_scalar_output() -> TestResult {
         output: &mut output,
     };
     assert!(op.shape()?.is_some());
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         append(scope, &context, &prepared, &mut op, shape)
     })?;
     graph.launch().sync_on(&device.stream)?;
@@ -159,7 +160,7 @@ fn vendor_fp4_rejects_overlap_and_unprepared_operands() -> TestResult {
             "no-autotune must not measure a new candidate"
         );
     }
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         let op = Operands {
             weight: &weight,
             scale: 1.0,

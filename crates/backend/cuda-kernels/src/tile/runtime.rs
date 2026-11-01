@@ -7,12 +7,14 @@ use crate::contract::recording::Recording;
 use crate::tile::backend_error;
 use cuda_core::{DType, Stream};
 use cutile::cuda_async::cuda_graph::GraphLaunch;
+use cutile::cuda_async::device_context::with_default_device_policy;
 use cutile::cuda_async::device_future::DeviceFuture;
 use cutile::cuda_async::device_operation::{ExecutionContext, value};
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, ErrorCode, Result};
 use std::cell::RefCell;
+use std::result::Result as StdResult;
 use std::sync::Arc;
 
 /// Device memory the host owns. A graph that recorded it keeps it alive.
@@ -137,21 +139,82 @@ pub struct Graph {
 }
 
 impl Graph {
+    /// Capture a graph whose recording still uses cuTile directly. Transitional, until recordings
+    /// move behind the kernel families and [`Device::capture`].
+    /// # Errors
+    /// Returns what `record` returns, or a capture failure.
+    pub fn scope(
+        stream: &Arc<Stream>,
+        record: impl FnOnce(&Scope) -> StdResult<(), DeviceError>,
+    ) -> StdResult<Self, DeviceError> {
+        Ok(Self {
+            inner: CudaGraph::scope(stream, record)?,
+            _owners: Vec::new(),
+        })
+    }
+
     #[inline]
     #[must_use]
     pub fn launch(&self) -> Launch<GraphLaunch> {
         Launch(self.inner.launch())
+    }
+
+    /// Apply an update ordered before this graph's next launch on its stream. Transitional, until
+    /// updates move behind the kernel families.
+    /// # Errors
+    /// Returns what the capture's stream reports.
+    pub fn update<N>(&self, op: N) -> StdResult<(), DeviceError>
+    where
+        N: GraphNode + DeviceOp<Output = ()>,
+    {
+        self.inner.update(op)
+    }
+
+    /// The stream this graph was captured on. Transitional, like [`Self::update`].
+    #[must_use]
+    pub fn stream(&self) -> &Arc<Stream> {
+        self.inner.stream()
     }
 }
 
 /// Work ready to run. A newtype over the cuTile operation, so it costs nothing beyond it.
 pub struct Launch<O>(O);
 
+/// Lets code that has not migrated keep combining launches; every method forwards.
+#[expect(
+    unsafe_code,
+    reason = "Forwards to the wrapped operation, with its obligations"
+)]
+impl<O: DeviceOp> DeviceOp for Launch<O> {
+    type Output = <O as DeviceOp>::Output;
+
+    #[inline]
+    unsafe fn execute(
+        self,
+        context: &ExecutionContext,
+    ) -> StdResult<<O as DeviceOp>::Output, DeviceError> {
+        // SAFETY: the caller upholds `DeviceOp::execute` for the wrapped operation.
+        unsafe { self.0.execute(context) }
+    }
+}
+
+impl<O: DeviceOp> IntoFuture for Launch<O> {
+    type Output = StdResult<<O as DeviceOp>::Output, DeviceError>;
+    type IntoFuture = DeviceFuture<<O as DeviceOp>::Output, Self>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        match with_default_device_policy(|policy| policy.next_stream()) {
+            Ok(Ok(stream)) => DeviceFuture::scheduled(self, ExecutionContext::new(stream)),
+            Ok(Err(error)) | Err(error) => DeviceFuture::failed(error),
+        }
+    }
+}
+
 impl<O: DeviceOp<Output = ()>> Launch<O> {
     /// Run `next` after this launch, in one submission and without returning to the host.
     #[inline]
     #[must_use]
-    pub fn then<N, F>(self, next: F) -> Launch<impl DeviceOp<Output = ()>>
+    pub fn followed_by<N, F>(self, next: F) -> Launch<impl DeviceOp<Output = ()>>
     where
         N: DeviceOp<Output = ()>,
         F: FnOnce() -> Launch<N> + Send,

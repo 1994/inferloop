@@ -19,6 +19,7 @@ use crate::device::Readbacks;
 use crate::device::{CudaDevice, ReadbackSource, device_error};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::{StateKind, TensorNode, TensorOp, TensorStorage};
 use std::result::Result as StdResult;
 use std::slice::from_ref;
@@ -32,12 +33,12 @@ use std::slice::from_ref;
 /// acceptance rolls one slot back to its longest accepted prefix without touching the other
 /// slots; KV rollback is the cursor rewind, exactly like the single-sequence verify graph.
 pub(super) struct SlotVerifyGraph {
-    graph: CudaGraph<()>,
+    graph: Graph,
     /// `restore[slot][accepted]` reinstates the conv/delta snapshot taken after that many
     /// candidate lanes of the slot committed; a fully accepted chain never restores. With
     /// [`Self::fused`] it instead applies the `accepted + 1` committed lanes to the untouched
     /// slot state, and runs on every commit.
-    restore: Vec<Vec<CudaGraph<()>>>,
+    restore: Vec<Vec<Graph>>,
     batched_commit: Option<CapturedCommit>,
     /// Recurrent nodes verify without writing state (`slot_recurrent`), so commits re-apply
     /// the accepted prefix instead of restoring snapshots.
@@ -170,7 +171,7 @@ impl BatchBuilder<'_> {
         arena: &ActivationArena,
         metadata: &[Tensor<i32>],
         (verify, staging): (usize, &super::slot_recurrent::Staging),
-    ) -> Result<Vec<Vec<CudaGraph<()>>>> {
+    ) -> Result<Vec<Vec<Graph>>> {
         let mut commits = Vec::with_capacity(lane_states.len());
         let hardware = ValueDevice::new(self.device)?;
         for (slot, states) in lane_states.iter_mut().enumerate() {
@@ -178,7 +179,7 @@ impl BatchBuilder<'_> {
             let mut graphs = Vec::with_capacity(verify);
             for count in 1..=verify {
                 graphs.push(
-                    CudaGraph::scope(&self.device.stream, |scope| {
+                    Graph::scope(&self.device.stream, |scope| {
                         for (index, node) in self.graph.nodes.iter().enumerate() {
                             if super::slot_recurrent::covers(node) {
                                 let staged = staging
@@ -211,13 +212,13 @@ impl BatchBuilder<'_> {
         &self,
         lane_states: &mut [States],
         checkpoints: &[Vec<States>],
-    ) -> Result<Vec<Vec<CudaGraph<()>>>> {
+    ) -> Result<Vec<Vec<Graph>>> {
         let mut restore = Vec::with_capacity(checkpoints.len());
         for (states, per_slot) in lane_states.iter_mut().zip(checkpoints) {
             let mut graphs = Vec::with_capacity(per_slot.len());
             for snapshot in per_slot {
                 graphs.push(
-                    CudaGraph::scope(&self.device.stream, |scope| {
+                    Graph::scope(&self.device.stream, |scope| {
                         for (id, tensors) in snapshot {
                             for (output, input) in states
                                 .get_mut(id)
@@ -356,12 +357,12 @@ impl BatchBuilder<'_> {
         arena: &mut ActivationArena,
         (checkpoints, staging): (&mut [Vec<States>], &mut super::slot_recurrent::Staging),
         profile: &mut Option<profile::SlotProfile>,
-    ) -> Result<CudaGraph<()>> {
+    ) -> Result<Graph> {
         let (verify, metadata, batch) = geometry;
         let fused = fused_recurrent(self.graph, verify);
         let hardware = ValueDevice::new(self.device)?;
         let mode = self.verification_mode();
-        CudaGraph::scope(&self.device.stream, |scope| {
+        Graph::scope(&self.device.stream, |scope| {
             let mut no_fusion = None;
             for (index, node) in self.graph.nodes.iter().enumerate() {
                 if let Some(profile) = profile.as_mut() {

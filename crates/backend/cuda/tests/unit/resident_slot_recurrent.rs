@@ -4,6 +4,7 @@ use crate::tuning::median;
 use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_workloads::DeltaGeometry;
 use std::error::Error;
 use std::time::Duration;
@@ -415,10 +416,10 @@ impl DeltaFixture {
         outs: &mut [Tensor<f32>],
         metadata: &[Arc<Tensor<i32>>],
         compile: &CompileOptions,
-    ) -> TestResult<CudaGraph<()>> {
+    ) -> TestResult<Graph> {
         let block = self.block;
         let [o0, o1, o2] = outs else { unreachable!() };
-        Ok(CudaGraph::scope(&device.stream, |scope| {
+        Ok(Graph::scope(&device.stream, |scope| {
             scope.record(
                 fused::delta_verify3(
                     o0.partition([1, 1, block]),
@@ -769,12 +770,12 @@ fn wave_perf_fixture(
 
 fn wave_perf_pair(
     device: &CudaDevice,
-    a: &CudaGraph<()>,
-    b: &CudaGraph<()>,
+    a: &Graph,
+    b: &Graph,
     options: &BenchOptions,
     reverse: bool,
 ) -> TestResult<(Vec<f32>, Vec<f32>)> {
-    let launch = |graph: &CudaGraph<()>| {
+    let launch = |graph: &Graph| {
         graph
             .launch()
             .sync_on(&device.stream)

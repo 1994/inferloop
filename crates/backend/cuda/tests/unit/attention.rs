@@ -2,6 +2,7 @@ use super::DenseAttentionPlan;
 use crate::device::{CudaDevice, device_error};
 use cutile::prelude::*;
 use infer_core::Result;
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_kernel_api::attention::{AttentionDescriptor, AttentionMask};
 
 fn descriptor() -> AttentionDescriptor {
@@ -68,7 +69,7 @@ fn dense_attention_supports_distinct_qk_and_value_dimensions() -> Result<()> {
     let mut out = api::zeros::<f32>(&shapes[3])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         plan.record(scope, &q, &k, &v, &mut out)
     })
     .map_err(device_error)?;

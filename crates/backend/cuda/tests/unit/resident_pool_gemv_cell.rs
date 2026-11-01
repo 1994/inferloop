@@ -7,6 +7,7 @@ use crate::device::{CudaDevice, device_error};
 use acceptance::{Case, OUTPUTS, ROWS};
 use cutile::half::bf16;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::sync::Arc;
 
 /// Reduction lengths the cuTile kernel tiles evenly.
@@ -39,7 +40,7 @@ fn check(device: &CudaDevice, case: Case) -> Result<()> {
     let view = input.view(&[ROWS, columns]).map_err(device_error)?;
     let kernels = device.kernels();
     let weight = Arc::new(weight);
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         record_gemv(
             &kernels,
             scope,

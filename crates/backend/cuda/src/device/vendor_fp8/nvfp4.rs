@@ -13,6 +13,7 @@ use crate::tuning::resident_gemm::{self, GemmConfig, ResidentTuningSession};
 use crate::tuning::{nvfp4_lt as cache, table_path};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
+use infer_cuda_kernels::tile::runtime::Graph;
 #[cfg(test)]
 use std::{
     cell::Cell,
@@ -516,8 +517,8 @@ fn disk_key(
 
 fn exact(
     context: &Context,
-    baseline: &CudaGraph<()>,
-    candidate: &CudaGraph<()>,
+    baseline: &Graph,
+    candidate: &Graph,
     out: &Tensor<f32>,
 ) -> Result<bool, DeviceError> {
     baseline.launch().sync_on(&context.device.stream)?;
@@ -543,8 +544,8 @@ fn capture(
     native: GemmConfig,
     prepared: Option<&Arc<Prepared>>,
     shape: Shape,
-) -> Result<CudaGraph<()>, DeviceError> {
-    CudaGraph::scope(&context.device.stream, |scope| {
+) -> Result<Graph, DeviceError> {
+    Graph::scope(&context.device.stream, |scope| {
         if let Some(prepared) = prepared {
             append(scope, context, prepared, op, shape)
         } else {

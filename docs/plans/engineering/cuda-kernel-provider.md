@@ -299,7 +299,7 @@ host 只认这一层。先定层，再迁移：下面的基础层已落地并有
 
 每一步都能单独合并，都要过棘轮和配对验收：
 
-1. **图和执行换类型（机械）：** `CudaGraph` → `Graph`，`device.run_op(graph.launch())` → `runtime.run(graph.launch())`。闭包里未迁移的录制用过渡接口 `recording.cutile_scope()`。
+1. **图换类型（已完成）：** host 产品代码不再出现 `CudaGraph`，棘轮归零。`Graph::scope` 和 `Launch` 的 `DeviceOp` 实现是过渡接口，让未迁移的录制和 `.sync_on`、`.then`、`run_op` 不用改写。
 2. **逐算子族迁录制：** 在 `contract` 加 Plan 和 trait，把 kernel 调用搬进 `tile/<family>/contract.rs`，host 留一个调用点。
 3. **内存换类型：** `Tensor<T>` → `Allocation<T>`，`partition`、`generics` 只留在 `tile`。
 4. **删过渡接口：** host 不再出现 cuTile 类型，棘轮归零。

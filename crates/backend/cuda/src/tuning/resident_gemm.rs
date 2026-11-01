@@ -25,6 +25,7 @@ use cutile::{
     prelude::*,
 };
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use serde::{Deserialize, Serialize};
 use std::env::var_os;
 use std::path::Path;
@@ -931,7 +932,7 @@ fn measured_config(
 }
 
 struct Captured {
-    graph: CudaGraph<()>,
+    graph: Graph,
     output: Arc<Tensor<f32>>,
     _input: Arc<Tensor<f32>>,
     _packed: Tensor<f4e2m1fnx2>,
@@ -973,7 +974,7 @@ impl Captured {
         let mut output = api::zeros::<f32>(&[m, n])
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        let graph = CudaGraph::scope(&device.stream, |scope| {
+        let graph = Graph::scope(&device.stream, |scope| {
             scope.record(
                 kernels::quantize(
                     (&mut packed).partition(NVFP4_QUANT_CODES_TILE),
@@ -1045,8 +1046,8 @@ fn ordered_times(first: &[f32], second: &[f32], order: MeasurementOrder) -> Resu
 
 pub(super) fn measure_graphs(
     device: &CudaDevice,
-    baseline: &CudaGraph<()>,
-    candidate: &CudaGraph<()>,
+    baseline: &Graph,
+    candidate: &Graph,
     clear_l2: bool,
     order: MeasurementOrder,
 ) -> Result<PairedTimes> {
@@ -1057,7 +1058,7 @@ pub(super) fn measure_graphs(
         max_reps: MAX_REPS,
         clear_l2,
     };
-    let run = |graph: &CudaGraph<()>| {
+    let run = |graph: &Graph| {
         graph
             .launch()
             .sync_on(&device.stream)

@@ -2,6 +2,7 @@ use super::kernels;
 use crate::{constants::KV_BLOCK_TOKENS, device::CudaDevice};
 use cuda_core::f8e4m3fn;
 use cutile::{cutile_compiler::compile_api::KernelCompiler, prelude::*};
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::{collections::BTreeSet, error::Error};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -113,7 +114,7 @@ impl Fixture {
         })
     }
 
-    fn graph(&mut self, device: &CudaDevice, optimized: bool) -> TestResult<CudaGraph<()>> {
+    fn graph(&mut self, device: &CudaDevice, optimized: bool) -> TestResult<Graph> {
         let rows = if optimized {
             KV_BLOCK_TOKENS
         } else {
@@ -125,7 +126,7 @@ impl Fixture {
         } else {
             &mut self.reference
         };
-        Ok(CudaGraph::scope(&device.stream, |scope| {
+        Ok(Graph::scope(&device.stream, |scope| {
             scope.record(
                 kernels::append(
                     keys.partition([1, rows, self.dimension]),
@@ -222,7 +223,7 @@ fn physical_page_append_paired_identity_and_fragmented_cost() -> TestResult {
                 clear_l2,
             };
             for reverse in [false, true] {
-                let run = |graph: &CudaGraph<()>| {
+                let run = |graph: &Graph| {
                     graph
                         .launch()
                         .sync_on(&device.stream)

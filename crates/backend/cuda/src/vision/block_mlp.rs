@@ -5,6 +5,7 @@ use super::weights::MlpLayer;
 use crate::device::{CudaDevice, device_error};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -45,7 +46,7 @@ pub(super) fn run(
     let mut activated = activation(device, padded, width)?;
     let mut fc2 = activation(device, padded, hidden)?;
     let mut output = activation(device, padded, hidden)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         scope.record(
             kernels::encoder::dense_bias(
                 (&mut fc1).partition([TOKEN_TILE, COLUMN_TILE]),

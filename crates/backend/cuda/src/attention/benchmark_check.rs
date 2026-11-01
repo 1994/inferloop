@@ -2,12 +2,13 @@
 use crate::device::{CudaDevice, device_error};
 use cutile::prelude::*;
 use infer_core::Result;
+use infer_cuda_kernels::tile::runtime::Graph;
 
 pub const REPEATS: usize = 8;
 
 pub fn measure(
     device: &CudaDevice,
-    graph: &CudaGraph<()>,
+    graph: &Graph,
     tokens: i32,
     heads: usize,
     head: usize,

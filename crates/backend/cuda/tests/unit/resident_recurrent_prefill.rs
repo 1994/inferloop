@@ -2,6 +2,7 @@ use super::kernels;
 use crate::device::CudaDevice;
 use crate::resident::recurrent::recurrent::delta as recurrent_delta;
 use cutile::prelude::*;
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::env::var_os;
 use std::error::Error;
 
@@ -802,7 +803,7 @@ fn check_ordered_fixture(
     let mut output = api::zeros::<f32>(&[vh, lanes, dim]).sync_on(&device.stream)?;
     let metadata = device.upload(vec![0, i32::try_from(count)?, offset, 0], &[4])?;
     let mut prepared = super::prepared::Inputs::new(device, (kh, vh, dim), lanes)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         prepared.record(
             scope,
             [&qkv_c, &beta_c, &alpha_c, &a_log, &bias],

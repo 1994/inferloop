@@ -5,6 +5,7 @@ use cutile::bench::BenchOptions as CutileBenchOptions;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error as StdError;
 use std::sync::Arc;
 
@@ -322,7 +323,7 @@ fn nvfp4_quantization_split_performance() -> Result<(), Box<dyn StdError>> {
             let mut quantized = api::zeros::<f4e2m1fnx2>(&[m, k / 2]).sync_on(&device.stream)?;
             let mut input_scales = api::zeros::<f8e4m3fn>(&[m, k / 16]).sync_on(&device.stream)?;
             let mut output = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
-            let fused = CudaGraph::scope(&device.stream, |scope| {
+            let fused = Graph::scope(&device.stream, |scope| {
                 scope.record(
                     kernels::matmul(
                         (&mut output).partition([16, 64]),
@@ -336,7 +337,7 @@ fn nvfp4_quantization_split_performance() -> Result<(), Box<dyn StdError>> {
                 )?;
                 Ok(())
             })?;
-            let separated = CudaGraph::scope(&device.stream, |scope| {
+            let separated = Graph::scope(&device.stream, |scope| {
                 scope.record(
                     kernels::quantize(
                         (&mut quantized).partition([1, 256]),
@@ -454,8 +455,8 @@ fn sweep_shape(
     let weight = device.upload(vec![f4e2m1fnx2::from_bits(0x21); n * k / 2], &[n, k / 2])?;
     let scales = device.upload(vec![f8e4m3fn(48); n * k / 16], &[n, k / 16])?;
     let mut output = api::zeros::<f32>(&[SWEEP_PAD_ROWS, n]).sync_on(&device.stream)?;
-    let mut tile_graph = |rows: usize, columns: usize| -> Result<CudaGraph<()>, Error> {
-        Ok(CudaGraph::scope(&device.stream, |scope| {
+    let mut tile_graph = |rows: usize, columns: usize| -> Result<Graph, Error> {
+        Ok(Graph::scope(&device.stream, |scope| {
             scope.record(
                 kernels::packed(
                     (&mut output).partition([rows, columns]),
@@ -519,9 +520,9 @@ fn separated_swiglu_graph(
     (q, qs): (&Tensor<f4e2m1fnx2>, &Tensor<f8e4m3fn>),
     (gate, up): (&Fp4Weight, &Fp4Weight),
     buffers: &mut SwigluBuffers,
-) -> Result<CudaGraph<()>, Box<dyn StdError>> {
+) -> Result<Graph, Box<dyn StdError>> {
     let (_, columns, hidden) = SWIGLU_PERF_SHAPE;
-    Ok(CudaGraph::scope(&device.stream, |scope| {
+    Ok(Graph::scope(&device.stream, |scope| {
         for (out, (w, s)) in [(&mut buffers.gate, gate), (&mut buffers.up, up)] {
             scope.record(
                 kernels::packed_prefill(out.partition([128, 128]), q, qs, w, s, 1.0e-6)
@@ -548,9 +549,9 @@ fn fused_swiglu_graph(
     (gate, up): (&Fp4Weight, &Fp4Weight),
     buffers: &mut SwigluBuffers,
     [tile_rows, tile_columns]: [usize; 2],
-) -> Result<CudaGraph<()>, Box<dyn StdError>> {
+) -> Result<Graph, Box<dyn StdError>> {
     let (_, columns, _) = SWIGLU_PERF_SHAPE;
-    Ok(CudaGraph::scope(&device.stream, |scope| {
+    Ok(Graph::scope(&device.stream, |scope| {
         scope.record(
             kernels::packed_swiglu(
                 (&mut buffers.codes).partition([tile_rows, tile_columns / 2]),
@@ -722,7 +723,7 @@ fn fused_swiglu_tuner_preserves_complete_quantized_outputs() -> Result<(), Box<d
         let expected = operand_bytes(&device, separate_swiglu(&device, (&q, &qs), &gate, &up)?)?;
         let mut codes = api::zeros::<f4e2m1fnx2>(&[rows, hidden / 2]).sync_on(&device.stream)?;
         let mut scales = api::zeros::<f8e4m3fn>(&[rows, hidden / 16]).sync_on(&device.stream)?;
-        let graph = CudaGraph::scope(&device.stream, |scope| {
+        let graph = Graph::scope(&device.stream, |scope| {
             swiglu::record(
                 scope,
                 selected,

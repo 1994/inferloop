@@ -1,6 +1,7 @@
 use super::*;
 use crate::test_support::fixture_graph;
 use infer_core::OpId;
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::{DType, DataflowGraph, TensorSpec, TensorStorage};
 use std::mem::take;
 
@@ -90,7 +91,7 @@ fn contiguous_staging_preserves_rows_after_arena_reuse() -> infer_core::Result<(
     let mut staging = allocate_staging(&device, &nodes, &arena, (slots, LANES))?;
     assert_eq!(staging.roots.len(), 4);
     assert_eq!(staging.entries.len(), slots * nodes.len());
-    let copy = CudaGraph::scope(&device.stream, |scope| {
+    let copy = Graph::scope(&device.stream, |scope| {
         for (index, node) in nodes.iter().enumerate() {
             staging.record_node(scope, node, &arena, index)?;
         }

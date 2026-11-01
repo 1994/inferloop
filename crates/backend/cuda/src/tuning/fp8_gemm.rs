@@ -27,6 +27,7 @@ use cutile::{
     prelude::*,
 };
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::env::var;
@@ -427,7 +428,7 @@ fn memo() -> &'static Memo {
 }
 
 struct Captured {
-    graph: CudaGraph<()>,
+    graph: Graph,
     output: Tensor<f32>,
     _vendor: Option<vendor_fp8::CaptureOwner>,
     _input: Arc<Tensor<f32>>,
@@ -536,7 +537,7 @@ impl Captured {
         } else {
             None
         };
-        let graph = CudaGraph::scope(&device.stream, |scope| {
+        let graph = Graph::scope(&device.stream, |scope| {
             scope.record(
                 kernels::quantize(
                     (&mut codes).partition([1, columns.next_power_of_two()]),

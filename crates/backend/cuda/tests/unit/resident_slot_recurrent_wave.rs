@@ -6,6 +6,7 @@ use crate::{
     resident::slot_recurrent::{ValueDevice, fused, value_split},
 };
 use cutile::prelude::*;
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_workloads::DeltaGeometry;
 
 struct Reference {
@@ -62,8 +63,8 @@ fn capture_verify(
     device: &CudaDevice,
     slots: usize,
     block: usize,
-) -> TestResult<CudaGraph<()>> {
-    Ok(CudaGraph::scope(&device.stream, |scope| {
+) -> TestResult<Graph> {
+    Ok(Graph::scope(&device.stream, |scope| {
         scope.record(
             fused::delta_verify_batch(
                 (&mut fixture.candidate).partition([1, 3, block]),
@@ -110,7 +111,7 @@ fn check_commits(
         let mut results = Vec::new();
         for selected in [32, block] {
             let mut state = upload(device, initial.clone(), &[slots, VH * D, D])?;
-            let graph = CudaGraph::scope(&device.stream, |scope| {
+            let graph = Graph::scope(&device.stream, |scope| {
                 scope.record(
                     fused::delta_commit_batch(
                         (&mut state).partition([1, D, selected]),
@@ -156,8 +157,8 @@ fn median(samples: &[f32]) -> f32 {
 
 fn performance(
     device: &CudaDevice,
-    baseline: &CudaGraph<()>,
-    candidate: &CudaGraph<()>,
+    baseline: &Graph,
+    candidate: &Graph,
     slots: usize,
     block: usize,
 ) -> TestResult {

@@ -8,6 +8,8 @@ use cutile::cuda_async::device_context::with_default_device_policy;
 use cutile::cuda_async::device_future::DeviceFuture;
 use cutile::{prelude::*, tensor::KernelInputStored};
 use infer_core::{Error, ErrorCode, Result};
+#[cfg(test)]
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::result::Result as StdResult;
 use std::sync::{Arc, Mutex};
 
@@ -89,7 +91,7 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
     pub(crate) fn run(
         &mut self,
         device: &CudaDevice,
-        graph: &CudaGraph<()>,
+        graph: &Graph,
         sources: &[Option<ReadbackSource<T>>],
     ) -> Result<Rows<T>> {
         super::asynchronous::block_on(self.run_async(device, graph, sources))
@@ -239,9 +241,9 @@ impl Readbacks<f32> {
     pub(crate) fn run_with_tokens(
         &mut self,
         device: &CudaDevice,
-        graph: &CudaGraph<()>,
+        graph: &Graph,
         sources: &[Option<ReadbackSource>],
-        tail: (&CudaGraph<()>, &mut Readbacks<i32>, Arc<Tensor<i32>>),
+        tail: (&Graph, &mut Readbacks<i32>, Arc<Tensor<i32>>),
     ) -> Result<(Rows<f32>, Rows<i32>)> {
         super::asynchronous::block_on(self.run_with_tokens_async(device, graph, sources, tail))
     }

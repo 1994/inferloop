@@ -15,6 +15,7 @@ use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -70,7 +71,7 @@ pub fn record(
 }
 
 pub(super) struct Captured {
-    pub(super) graph: CudaGraph<()>,
+    pub(super) graph: Graph,
     codes: Tensor<f4e2m1fnx2>,
     scales: Tensor<f8e4m3fn>,
     _input: Arc<Tensor<f32>>,
@@ -121,7 +122,7 @@ impl Captured {
         let mut out_scales = api::zeros::<f8e4m3fn>(&[m, n / NVFP4_GROUP_SIZE])
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        let graph = CudaGraph::scope(&device.stream, |scope| {
+        let graph = Graph::scope(&device.stream, |scope| {
             scope.record(
                 kernels::quantize_rows(
                     (&mut q).partition([QUANTIZATION_ROWS, NVFP4_QUANT_CODES_TILE[1]]),

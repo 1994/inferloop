@@ -1,5 +1,6 @@
 use super::*;
 use crate::device::{CudaDevice, device_error};
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 use std::time::Instant;
 
@@ -100,7 +101,7 @@ fn gemm_bf16_replays_inside_a_captured_graph() -> Result<(), Box<dyn Error>> {
     // selection), which a capturing stream rejects; run the shape once before recording it.
     gemm_bf16(&device, &a, &b, &out)?;
     device.reclaim_barrier()?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         let op = GemmBf16::new(
             context,
             rows as i32,

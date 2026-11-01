@@ -9,6 +9,7 @@ use crate::device::{CudaDevice, device_error};
 use crate::kernels::linear::cast_bf16;
 use cutile::half::bf16;
 use cutile::prelude::*;
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Instant;
@@ -56,7 +57,7 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
         let weight = device.upload(weights, &[n, k])?;
         let mut native = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
         // Our prompt kernel tiles the output 32x64 and the K loop by 64.
-        let kernel_graph = CudaGraph::scope(&device.stream, |scope| {
+        let kernel_graph = Graph::scope(&device.stream, |scope| {
             scope.record(
                 gemm::dense((&mut native).partition([32, 64]), &input, &weight)
                     .generics(vec![k.to_string()]),
@@ -67,7 +68,7 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
 
         let mut narrowed = api::zeros::<bf16>(&[m * k]).sync_on(&device.stream)?;
         let delegated = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
-        let cast_graph = CudaGraph::scope(&device.stream, |scope| {
+        let cast_graph = Graph::scope(&device.stream, |scope| {
             scope.record(
                 cast_bf16(
                     (&mut narrowed).partition([CAST_TILE as usize]),
@@ -82,7 +83,7 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
         // stream rejects it, so every shape is warmed here, outside the graph, exactly as the
         // production path does it. Warming after the capture would not have helped.
         support.warm(m, &weight, n, k)?;
-        let gemm_graph = CudaGraph::scope(&device.stream, |scope| {
+        let gemm_graph = Graph::scope(&device.stream, |scope| {
             let op = GemmBf16::new(
                 Arc::clone(
                     support
@@ -112,7 +113,7 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
             .map_err(device_error)?;
         device.reclaim_barrier()?;
         let repeats = 30;
-        let time = |graph: &CudaGraph<()>| -> Result<f64, Box<dyn Error>> {
+        let time = |graph: &Graph| -> Result<f64, Box<dyn Error>> {
             let started = Instant::now();
             for _ in 0..repeats {
                 graph
