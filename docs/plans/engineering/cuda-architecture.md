@@ -1,6 +1,6 @@
 # CUDA 架构收口方案
 
-状态：实施中，第一批已合入（见第 8 节）。事实基点为 main `c249c0ff`（PR #129），复核日期 2026-10-31；下文的行号与计数都以该提交为准，开工前先复核。
+状态：实施中，第一批已合入，其余未完成（见第 8 节）。事实基点为 main `c249c0ff`（PR #129），复核日期 2026-10-31；下文的行号与计数都以该提交为准，开工前先复核。
 决策依据见 [ADR-0005](../../adr/0005-cuda-architecture-goals.md)，整体排期见[路线图](../README.md)的 A1。
 
 本文回答一个问题：**怎样让性能调优更方便、kernel 更容易更换、新模型更容易接入、CUDA 版本兼容更容易。** 结论是不新增层，改两件事：**收口 CUDA 内部的算子层**（kernel 选择、lowering、调优框架、host 对 cuTile 的依赖），并**把 CUDA 越权持有的决策交回 engine**（时间、准入、页、前缀、推测）。两件事都是主线，只做前者，CUDA 仍然是“什么都管的后端”。
@@ -221,12 +221,16 @@ Workload 边界目前是干净的：CUDA 和 runtime 中查不到 `WorkloadKind`
 
 ## 8. 接手入口
 
-**已落地：** G1–G3；M4 的 attention 回退链；M7 探测；P1 测量；M0 棘轮和 `WorkloadKind` 拦截；O1 设备时间上报；O4 第一步（模型侧类型改名 `DraftHead`）；C1M 的池显存分项日志。host 级 `cuda-aot` lane 随 M6 落地，现在加只是一条必失败的 lane。
+**已落地（PR #130）：** M0 棘轮和 `WorkloadKind` 拦截；O1 设备时间上报；G1–G3 目标身份统一；M2 的 `pool_gemv` 模板；M4 的 attention 回退链；M7 探测和 `model-probe.py`；P1 测量；O2 的建池决策 `decide_pool`；O3 第一步（slot pool 用 `BlockPool`）；O4 的提议预算、提议条件和接受前缀；C1M 的池显存分项日志。host 级 `cuda-aot` lane 随 M6 落地，现在加只是一条必失败的 lane。
 
-**下一步：**
+**未完成，从这里接手。** 以下依赖链要改 868 处 `Tensor<` 和热路径，按方案逐项单独开 PR：
 
-1. **M1：** `Buffer` 与多个算子族一起设计。host 目前只有一个契约调用点，不单独包 `Kernels`。
-2. **O3：** 页账本换所有者，保持预付语义。
+1. **M1：** `Buffer`、`Device` / `Stream` 与多个算子族一起设计，契约必须覆盖捕获和异步执行（G5）。host 目前只有一个契约调用点，不单独包 `Kernels`。
+2. **M3：** 候选即 Plan，依赖 M1。现有 12 张调优表各有键和证据，要处理 `tuning.json` 的兼容或失效。
+3. **M4 其余、M5、M6：** 依次推进。M5 的已知缺口是非 2 幂形状的通用 cell。
+4. **O2 按块计价、O3 其余（`KvCacheManager` 和前缀）、O4 其余（executor 的 draft 分支）：** 都碰热路径，与上面错开。
+5. **M2 其余算子族：** 照 `cuda-kernels/acceptance/pool_gemv.rs` 补齐，可随时做。
+6. **M8：** 等 L20，没有设备前不算通过。
 
 **27B 显存（2026-10-31，16 槽，容量 8192，报价 5.85 GiB）：** target 池 3.40 GiB，其中 KV 只有 0.33 GiB；target worker 0.95 GiB，draft worker 0.64 GiB，draft 池 0.32 GiB。按第 5 节的决策规则，KV 不是大头，**按需增长暂缓，先看 arena 和递推状态**。
 

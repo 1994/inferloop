@@ -30,7 +30,7 @@ P0 优先消除正确性和测量阻塞；P1 交付工程、服务与公共协�
 | P2 · D2 | [DFlash2 接入](speculation/dflash2.md)与[请求/轮次选择](speculation/composition.md) | D1、I1，以及目标设备可兑现的回滚和草稿资源能力；本轮小显存接入需 R1 与草稿预算一起解决 | 线性 greedy、拒绝后状态、池化与切换通过；实际启用算法、追赶成本和回退可见；两个 provider 分别有有效对照 | 未开始：前置 D1、I1 未满足 |
 | P2 · C1 | [按 profile 选择 CUDA/服务优化](performance/cuda.md) | 对应 B3 baseline 与阶段计时可用；涉及草稿时还需该 provider 已验收 | 每次只改变一个可归因策略，完整服务矩阵有收益，尾延迟/显存/数值通过；可早于 D2 做普通 decode 优化 | **部分**：精确 GPU token readout 与[pooled 图几何准入](../archive/research/cuda-pooled-admission-geometry-2026-10-12.md)各通过五组 native 服务配对；后者批量完成时间下降 37.8%，保留 TTFT/TPOT 取舍；最新 vLLM 跨引擎矩阵及后续 profile 优化待验收；2026 年 10 月 17 日：PR #10 已合并，vector 五组 native 20 项门通过；当前主线转为 attention，原 vLLM 质量和稳定长矩阵未验收，见下方 C1 子任务 |
 | P2 · C2 | [CUDA AOT kernel provider 与 12.9 设备接入](engineering/cuda-kernel-provider.md) | L20 需要 12.9 且不走 cuTile；v1 范围以 dense BF16/FP8 为起点 | `cuda` 与 `cuda-aot` 各自可构建且编译期互斥；13.x 行为不回退；L20 的数值、图、KV 与显存验收通过 | **部分**：kernel 搬移与 AOT 骨架见 PR #129；常驻图契约与 L20 实机未开始 |
-| P2 · A1 | [CUDA 架构收口](engineering/cuda-architecture.md) | M0、O1、P1 可立即启动；M4 中涉及 `batch.rs` 的部分等 PR #127 定案 | 调优、换 kernel、多模型、版本兼容、层边界五项判定全部通过；13.x 行为不回退 | 未开始：方案已定，接手入口见方案第 8 节 |
+| P2 · A1 | [CUDA 架构收口](engineering/cuda-architecture.md) | 第一批已落地（PR #130）；下一步 M1，M8 等 L20 | 调优、换 kernel、多模型、版本兼容、层边界五项判定全部通过；13.x 行为不回退 | 未开始：方案已定，接手入口见方案第 8 节 |
 | P3 · X1 | [MTP 与 DFlash2 同轮组合](speculation/composition.md) | D2 的单 provider 和切换路径稳定，组合模型条件及资源报价明确 | 优于同负载下最佳单 provider，使用相同回滚策略；不能只与关闭推测比较 | 未开始：前置为 D2 单 provider 验收 |
 
 B3 不等待全部 E2 或完整 Agent 能力完成。先用经过修正的固定制品和当前实际配置建立基线；S1 或后续策略改变共同约束时，按基线合同创建新 profile 和交接结果。I1 不必等待整套 CI、打包和不相关 crate 的目录整理，但其涉及的测试、feature、构建合同必须已经稳定。共享 IR 的测试 feature 删除需要相关消费者一并迁移，不能只在某个局部构建中隐藏旧分叉。
