@@ -1,13 +1,15 @@
 //! Persistence glue between the Responses routes and an installed [`infer_spi::ResponseStore`].
 use super::super::execution::Prepared as GenerationPrepared;
-use super::output::Snapshot;
+use super::super::request::OpaqueJson;
+use super::output::{
+    IncompleteDetails, ResponseBody, ResponseErrorBody, ResponseUsageBody, Snapshot,
+};
 use super::request::{PriorState, Spec};
 use infer_core::{Error, ErrorCode, RequestId, Result};
 use infer_spi::{
     IncompleteReason, RESPONSES_PAYLOAD_VERSION, ResponseError, ResponseId, ResponseStatus,
     ResponseStore, ResponseUsage, StoredResponse, WriteCondition,
 };
-use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::runtime::Handle;
 
@@ -66,7 +68,7 @@ impl StoreSink {
     ///
     /// # Errors
     /// Returns a capacity or backend error from the store.
-    pub(super) async fn start(&self) -> Result<Value> {
+    pub(super) async fn start(&self) -> Result<ResponseBody> {
         let value = self.initial_value();
         self.put(&value, WriteCondition::Always).await?;
         Ok(value)
@@ -76,7 +78,7 @@ impl StoreSink {
     ///
     /// # Errors
     /// Returns a capacity or backend error from the store.
-    pub(super) async fn finish(&self, value: &Value) -> Result<()> {
+    pub(super) async fn finish(&self, value: &ResponseBody) -> Result<()> {
         if let Err(error) = self
             .put(
                 value,
@@ -122,10 +124,10 @@ impl StoreSink {
             model: &self.model,
             status: "failed",
             incomplete: None,
-            error: Some(json!({
-                "code": error_code(error.code),
-                "message": error.message,
-            })),
+            error: Some(ResponseErrorBody {
+                code: error_code(error.code).to_string(),
+                message: error.message.clone(),
+            }),
             output: &[],
             spec: &self.spec,
             temperature: self.temperature,
@@ -148,7 +150,7 @@ impl StoreSink {
         }
     }
 
-    fn initial_value(&self) -> Value {
+    fn initial_value(&self) -> ResponseBody {
         Snapshot {
             request: self.request_id,
             created: self.created,
@@ -166,7 +168,7 @@ impl StoreSink {
         .value()
     }
 
-    async fn put(&self, value: &Value, condition: WriteCondition) -> Result<()> {
+    async fn put(&self, value: &ResponseBody, condition: WriteCondition) -> Result<()> {
         let record = self.record(value)?;
         let limit = self.store.capabilities().max_record_bytes;
         let bytes = record
@@ -183,12 +185,8 @@ impl StoreSink {
         self.store.put(record, condition).await
     }
 
-    fn record(&self, value: &Value) -> Result<StoredResponse> {
-        let status = value
-            .get("status")
-            .and_then(Value::as_str)
-            .ok_or_else(|| Error::invariant("response object has no status"))?
-            .parse::<ResponseStatus>()?;
+    fn record(&self, value: &ResponseBody) -> Result<StoredResponse> {
+        let status = value.status.parse::<ResponseStatus>()?;
         let response = serde_json::to_vec(value)
             .map_err(|error| Error::invalid(format!("response serialization: {error}")))?;
         let record = StoredResponse {
@@ -196,11 +194,19 @@ impl StoreSink {
             request_id: self.request_id,
             model: self.model.clone(),
             created_at: self.created,
-            completed_at: value.get("completed_at").and_then(Value::as_u64),
+            completed_at: value.completed_at,
             status,
-            incomplete: incomplete_reason(value)?,
-            error: response_error(value)?,
-            usage: response_usage(value)?,
+            incomplete: value
+                .incomplete_details
+                .as_ref()
+                .map(|details| incomplete_reason(&details.reason))
+                .transpose()?,
+            error: value
+                .error
+                .as_ref()
+                .map(|error| ResponseError::new(&error.code, &error.message))
+                .transpose()?,
+            usage: value.usage.as_ref().map(response_usage),
             previous_response_id: self.previous_response_id.clone(),
             request_input: self.request_input.clone(),
             response,
@@ -231,16 +237,20 @@ pub(super) fn prior_state(stored: &StoredResponse, model: &str) -> Result<PriorS
             "previous_response_id belongs to a different model",
         ));
     }
-    let input: Vec<Value> = serde_json::from_slice(&stored.request_input)
+    let input: Vec<OpaqueJson> = serde_json::from_slice(&stored.request_input)
         .map_err(|error| Error::invariant(format!("stored input payload is invalid: {error}")))?;
-    let response: Value = serde_json::from_slice(&stored.response).map_err(|error| {
+    let response: ResponseBody = serde_json::from_slice(&stored.response).map_err(|error| {
         Error::invariant(format!("stored response payload is invalid: {error}"))
     })?;
     let output = response
-        .get("output")
-        .and_then(Value::as_array)
-        .cloned()
-        .ok_or_else(|| Error::invariant("stored response has no output list"))?;
+        .output()
+        .iter()
+        .map(|item| {
+            serde_json::to_value(item)
+                .map(OpaqueJson)
+                .map_err(|error| Error::invariant(format!("stored output is invalid: {error}")))
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(PriorState {
         input,
         output,
@@ -255,35 +265,25 @@ pub(super) fn prior_state(stored: &StoredResponse, model: &str) -> Result<PriorS
 ///
 /// # Errors
 /// Returns an invariant error if the stored body is not a JSON object.
-pub(super) fn retrieved(stored: &StoredResponse) -> Result<Value> {
-    let mut value: Value = serde_json::from_slice(&stored.response).map_err(|error| {
+pub(super) fn retrieved(stored: &StoredResponse) -> Result<ResponseBody> {
+    let mut value: ResponseBody = serde_json::from_slice(&stored.response).map_err(|error| {
         Error::invariant(format!("stored response payload is invalid: {error}"))
     })?;
-    if !value.is_object() {
-        return Err(Error::invariant("stored response is not an object"));
-    }
-    value["status"] = json!(stored.status.as_str());
-    value["completed_at"] = json!(stored.completed_at);
-    value["error"] = stored.error.as_ref().map_or(
-        Value::Null,
-        |error| json!({"code":error.code, "message":error.message}),
-    );
-    value["incomplete_details"] = stored
-        .incomplete
-        .map_or(Value::Null, |reason| json!({"reason":reason.as_str()}));
-    value["usage"] = stored.usage.map_or(Value::Null, usage_json);
+    value.status = stored.status.as_str().to_string();
+    value.completed_at = stored.completed_at;
+    value.error = stored.error.as_ref().map(|error| ResponseErrorBody {
+        code: error.code.clone(),
+        message: error.message.clone(),
+    });
+    value.incomplete_details = stored.incomplete.map(|reason| IncompleteDetails {
+        reason: reason.as_str().to_string(),
+    });
+    value.usage = stored.usage.map(response_usage_body);
     Ok(value)
 }
 
-fn incomplete_reason(value: &Value) -> Result<Option<IncompleteReason>> {
-    let Some(reason) = value
-        .get("incomplete_details")
-        .and_then(|details| details.get("reason"))
-        .and_then(Value::as_str)
-    else {
-        return Ok(None);
-    };
-    Ok(Some(match reason {
+fn incomplete_reason(reason: &str) -> Result<IncompleteReason> {
+    Ok(match reason {
         "max_output_tokens" => IncompleteReason::MaxOutputTokens,
         "max_messages" => IncompleteReason::MaxMessages,
         "content_filter" => IncompleteReason::ContentFilter,
@@ -292,61 +292,37 @@ fn incomplete_reason(value: &Value) -> Result<Option<IncompleteReason>> {
                 "unknown incomplete reason {other:?}"
             )));
         }
-    }))
-}
-
-fn response_error(value: &Value) -> Result<Option<ResponseError>> {
-    let Some(error) = value.get("error").filter(|error| !error.is_null()) else {
-        return Ok(None);
-    };
-    let code = error
-        .get("code")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::invariant("response error has no code"))?;
-    let message = error
-        .get("message")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::invariant("response error has no message"))?;
-    ResponseError::new(code, message).map(Some)
-}
-
-fn response_usage(value: &Value) -> Result<Option<ResponseUsage>> {
-    let Some(usage) = value.get("usage").filter(|usage| !usage.is_null()) else {
-        return Ok(None);
-    };
-    let field = |name: &str| -> Result<u64> {
-        usage
-            .get(name)
-            .and_then(Value::as_u64)
-            .ok_or_else(|| Error::invariant(format!("response usage has no {name}")))
-    };
-    let details = |name: &str, field_name: &str| -> u64 {
-        usage
-            .get(name)
-            .and_then(|details| details.get(field_name))
-            .and_then(Value::as_u64)
-            .unwrap_or(0)
-    };
-    Ok(Some(ResponseUsage {
-        input_tokens: field("input_tokens")?,
-        output_tokens: field("output_tokens")?,
-        reasoning_tokens: details("output_tokens_details", "reasoning_tokens"),
-        cached_tokens: details("input_tokens_details", "cached_tokens"),
-        cache_write_tokens: details("input_tokens_details", "cache_write_tokens"),
-    }))
-}
-
-pub(super) fn usage_json(usage: ResponseUsage) -> Value {
-    json!({
-        "input_tokens": usage.input_tokens,
-        "input_tokens_details": {
-            "cached_tokens": usage.cached_tokens,
-            "cache_write_tokens": usage.cache_write_tokens,
-        },
-        "output_tokens": usage.output_tokens,
-        "output_tokens_details": {"reasoning_tokens": usage.reasoning_tokens},
-        "total_tokens": usage.checked_total().unwrap_or(u64::MAX),
     })
+}
+
+fn response_usage(usage: &ResponseUsageBody) -> ResponseUsage {
+    ResponseUsage {
+        input_tokens: u64::try_from(usage.input_tokens).unwrap_or(u64::MAX),
+        output_tokens: u64::try_from(usage.output_tokens).unwrap_or(u64::MAX),
+        reasoning_tokens: u64::try_from(usage.output_tokens_details.reasoning_tokens)
+            .unwrap_or(u64::MAX),
+        cached_tokens: u64::try_from(usage.input_tokens_details.cached_tokens).unwrap_or(u64::MAX),
+        cache_write_tokens: u64::try_from(usage.input_tokens_details.cache_write_tokens)
+            .unwrap_or(u64::MAX),
+    }
+}
+
+fn response_usage_body(usage: ResponseUsage) -> ResponseUsageBody {
+    ResponseUsageBody {
+        input_tokens: usize::try_from(usage.input_tokens).unwrap_or(usize::MAX),
+        input_tokens_details: super::output::InputTokensDetails {
+            cached_tokens: usize::try_from(usage.cached_tokens).unwrap_or(usize::MAX),
+            cache_write_tokens: usize::try_from(usage.cache_write_tokens).unwrap_or(usize::MAX),
+        },
+        output_tokens: usize::try_from(usage.output_tokens).unwrap_or(usize::MAX),
+        output_tokens_details: super::output::OutputTokensDetails {
+            reasoning_tokens: usize::try_from(usage.reasoning_tokens).unwrap_or(usize::MAX),
+        },
+        total_tokens: usage
+            .checked_total()
+            .and_then(|total| usize::try_from(total).ok())
+            .unwrap_or(usize::MAX),
+    }
 }
 
 /// Storage-safe spelling of an error code for a failed response object.
@@ -381,7 +357,7 @@ impl StoreLease {
     ///
     /// # Errors
     /// Returns a capacity or backend error from the store.
-    pub(super) async fn start(&mut self) -> Result<Value> {
+    pub(super) async fn start(&mut self) -> Result<ResponseBody> {
         self.armed = true;
         match self.sink.start().await {
             Ok(value) => Ok(value),
@@ -396,7 +372,7 @@ impl StoreLease {
     ///
     /// # Errors
     /// Returns a capacity or backend error from the store.
-    pub(super) async fn finish(&mut self, value: &Value) -> Result<()> {
+    pub(super) async fn finish(&mut self, value: &ResponseBody) -> Result<()> {
         let result = self.sink.finish(value).await;
         self.armed = false;
         result

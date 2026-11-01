@@ -153,7 +153,10 @@ fn null_optional_options_are_treated_as_absent() {
         "stream_options":null,
         "prompt_cache_key":null, "safety_identifier":null
     }));
-    assert_eq!(prepared.spec.tool_choice, json!("auto"));
+    assert_eq!(
+        serde_json::to_value(&prepared.spec.tool_choice).unwrap(),
+        json!("auto")
+    );
     assert_eq!(prepared.spec.tools.len(), 0);
 }
 
@@ -186,11 +189,11 @@ fn function_tools_are_translated_and_echoed() {
             "parameters":{"type":"object","properties":{}}}]
     }));
     assert_eq!(
-        prepared.spec.tool_choice,
+        serde_json::to_value(&prepared.spec.tool_choice).unwrap(),
         json!({"type":"function","name":"ping"})
     );
     assert_eq!(prepared.spec.tools.len(), 1);
-    assert_eq!(prepared.spec.tools[0]["strict"], json!(true));
+    assert!(prepared.spec.tools[0].strict);
     assert_eq!(prepared.generation.tools.as_ref().unwrap().len(), 1);
 }
 
@@ -202,7 +205,7 @@ fn advisory_hints_and_metadata_are_accepted() {
         "prompt_cache_retention":"24h", "prompt_cache_options":{"mode":"implicit"},
         "metadata":{"trace":"abc"}
     }));
-    assert_eq!(prepared.spec.metadata["trace"], json!("abc"));
+    assert_eq!(prepared.spec.metadata["trace"], "abc");
     assert_eq!(prepared.spec.user, None);
 }
 
@@ -270,11 +273,11 @@ fn an_installed_store_enables_stateful_fields() {
 #[test]
 fn previous_response_id_combines_prior_input_and_output() {
     let prior = PriorState {
-        input: vec![json!({"role":"user","content":"first"})],
-        output: vec![json!({
+        input: vec![OpaqueJson(json!({"role":"user","content":"first"}))],
+        output: vec![OpaqueJson(json!({
             "type":"message","role":"assistant","status":"completed",
             "content":[{"type":"output_text","text":"answer","annotations":[]}]
-        })],
+        }))],
         model: "1".to_string(),
     };
     let mut prepared = parse(json!({

@@ -1,5 +1,6 @@
 use super::*;
 use infer_models::ToolDialect;
+use serde_json::Value;
 use std::collections::BTreeSet;
 
 fn policy(names: &[&str]) -> ToolPolicy {
@@ -9,21 +10,27 @@ fn policy(names: &[&str]) -> ToolPolicy {
             .iter()
             .map(|name| (*name).to_string())
             .collect::<BTreeSet<_>>(),
-        template: json!([]),
+        template: OpaqueJson(serde_json::json!([])),
     }
 }
 
+fn value(choice: ChatChoice) -> Value {
+    serde_json::to_value(choice).unwrap()
+}
+
 fn choice(text: &str, policy: &ToolPolicy, reason: &'static str) -> Value {
-    chat_choice(
-        RequestId::new(7).unwrap(),
-        text,
-        ToolDialect::FunctionParameters,
-        policy,
-        false,
-        reason,
-        false,
+    value(
+        chat_choice(
+            RequestId::new(7).unwrap(),
+            text,
+            ToolDialect::FunctionParameters,
+            policy,
+            false,
+            reason,
+            false,
+        )
+        .unwrap(),
     )
-    .unwrap()
 }
 
 #[test]
@@ -120,16 +127,18 @@ fn thinking_is_split_out_and_reasoning_is_published_separately() {
     let text = "\u{3c}think\u{3e}weigh the options\u{3c}/think\u{3e}\n\nThe answer is 17.";
     let parsed =
         infer_models::parse_model_output_with(text, ToolDialect::FunctionParameters, None).unwrap();
-    let choice = chat_choice(
-        RequestId::new(7).unwrap(),
-        text,
-        ToolDialect::FunctionParameters,
-        &ToolPolicy::Disabled,
-        true,
-        "stop",
-        false,
-    )
-    .unwrap();
+    let choice = value(
+        chat_choice(
+            RequestId::new(7).unwrap(),
+            text,
+            ToolDialect::FunctionParameters,
+            &ToolPolicy::Disabled,
+            true,
+            "stop",
+            false,
+        )
+        .unwrap(),
+    );
     assert_eq!(parsed.reasoning.as_deref(), Some("weigh the options"));
     assert_eq!(choice["message"]["content"], "The answer is 17.");
     assert_eq!(choice["message"]["reasoning_content"], "weigh the options");
@@ -150,32 +159,36 @@ fn an_unterminated_generated_call_is_an_error_unless_length_capped() {
         )
         .is_err()
     );
-    let choice = chat_choice(
-        RequestId::ONE,
-        text,
-        ToolDialect::FunctionParameters,
-        &policy(&["ping"]),
-        false,
-        "length",
-        false,
-    )
-    .unwrap();
+    let choice = value(
+        chat_choice(
+            RequestId::ONE,
+            text,
+            ToolDialect::FunctionParameters,
+            &policy(&["ping"]),
+            false,
+            "length",
+            false,
+        )
+        .unwrap(),
+    );
     assert_eq!(choice["finish_reason"], "length");
 }
 
 #[test]
 fn thinking_with_tool_choice_none_preserves_tool_like_text() {
     let text = "<think>why</think><tool_call><function=ping></function></tool_call>";
-    let choice = chat_choice(
-        RequestId::ONE,
-        text,
-        ToolDialect::FunctionParameters,
-        &ToolPolicy::Disabled,
-        true,
-        "stop",
-        false,
-    )
-    .unwrap();
+    let choice = value(
+        chat_choice(
+            RequestId::ONE,
+            text,
+            ToolDialect::FunctionParameters,
+            &ToolPolicy::Disabled,
+            true,
+            "stop",
+            false,
+        )
+        .unwrap(),
+    );
     assert!(
         choice["message"]["content"]
             .as_str()
@@ -187,16 +200,18 @@ fn thinking_with_tool_choice_none_preserves_tool_like_text() {
 
 #[test]
 fn a_prompt_opened_reasoning_region_is_not_assistant_content() {
-    let choice = chat_choice(
-        RequestId::ONE,
-        "weigh the options</think>\n\nThe answer is 17.",
-        ToolDialect::FunctionParameters,
-        &ToolPolicy::Disabled,
-        true,
-        "stop",
-        true,
-    )
-    .unwrap();
+    let choice = value(
+        chat_choice(
+            RequestId::ONE,
+            "weigh the options</think>\n\nThe answer is 17.",
+            ToolDialect::FunctionParameters,
+            &ToolPolicy::Disabled,
+            true,
+            "stop",
+            true,
+        )
+        .unwrap(),
+    );
     assert_eq!(choice["message"]["reasoning_content"], "weigh the options");
     assert_eq!(choice["message"]["content"], "The answer is 17.");
 }

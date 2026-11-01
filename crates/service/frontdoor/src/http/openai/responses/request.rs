@@ -3,14 +3,16 @@
 //! The Responses protocol describes the same generation the chat route runs, with a different
 //! request and output vocabulary. Validation therefore happens here, once, and the result is the
 //! internal [`GenerationRequest`] the existing admission and encoding path already understands.
+use super::super::request::OpaqueJson;
 use super::super::request::{
     GenerationRequest, WireMessage, WireTool, WireToolCall, WireToolCallFunction, WireToolChoice,
     WireToolFunction, WireToolName,
 };
 use infer_core::{Error, Result};
 use infer_spi::ResponseStoreCapabilities;
-use serde::Deserialize;
-use serde_json::{Map, Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 
 /// Metadata entries one request may attach.
 const MAX_METADATA_ENTRIES: usize = 16;
@@ -113,14 +115,14 @@ pub(super) struct Spec {
     pub(super) previous_response_id: Option<String>,
     pub(super) instructions: Option<String>,
     /// Declared tools in Responses shape, for the response object.
-    pub(super) tools: Vec<Value>,
+    pub(super) tools: Vec<FunctionToolEcho>,
     /// The normalized `tool_choice` value for the response object.
-    pub(super) tool_choice: Value,
+    pub(super) tool_choice: ToolChoiceEcho,
     pub(super) parallel_tool_calls: bool,
     /// The requested reasoning effort, echoed when present.
     pub(super) reasoning_effort: Option<String>,
-    pub(super) text: Value,
-    pub(super) metadata: Map<String, Value>,
+    pub(super) text: TextConfigEcho,
+    pub(super) metadata: BTreeMap<String, String>,
     pub(super) max_output_tokens: Option<usize>,
     pub(super) user: Option<String>,
 }
@@ -142,8 +144,8 @@ pub(super) struct StoreOptions {
 
 /// The prior response state needed to continue a chained request.
 pub(super) struct PriorState {
-    pub(super) input: Vec<Value>,
-    pub(super) output: Vec<Value>,
+    pub(super) input: Vec<OpaqueJson>,
+    pub(super) output: Vec<OpaqueJson>,
     pub(super) model: String,
 }
 
@@ -176,8 +178,8 @@ impl ResponsesRequest {
                     "previous_response_id belongs to a different model",
                 ));
             }
-            let mut combined = prior.input;
-            combined.extend(prior.output);
+            let mut combined: Vec<Value> = prior.input.into_iter().map(|item| item.0).collect();
+            combined.extend(prior.output.into_iter().map(|item| item.0));
             combined.extend(input_items);
             input_items = combined;
         }
@@ -399,10 +401,76 @@ fn instructions(value: Option<Value>) -> Result<Option<String>> {
     }
 }
 
+#[derive(Serialize)]
+struct UserInputEcho<'a> {
+    role: &'static str,
+    content: &'a str,
+}
+
+#[derive(Serialize)]
+struct ChatTextPartEcho<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    text: &'a str,
+}
+
+#[derive(Serialize)]
+struct ImageUrlEcho<'a> {
+    url: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct ChatImagePartEcho<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    image_url: ImageUrlEcho<'a>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct FunctionToolEcho {
+    #[serde(rename = "type")]
+    pub(super) kind: String,
+    pub(super) name: String,
+    pub(super) description: Option<String>,
+    pub(super) parameters: Option<OpaqueJson>,
+    pub(super) strict: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(super) enum ToolChoiceEcho {
+    Mode(String),
+    Named {
+        #[serde(rename = "type")]
+        kind: String,
+        name: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct TextFormatEcho {
+    #[serde(rename = "type")]
+    pub(super) kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct TextConfigEcho {
+    pub(super) format: TextFormatEcho,
+}
+
+fn to_value<T: Serialize>(value: T) -> Result<Value> {
+    serde_json::to_value(value).map_err(|error| Error::invalid(error.to_string()))
+}
+
 /// Normalize the wire input into an item list. A bare string is one user message.
 fn normalize_input(input: Value) -> Result<Vec<Value>> {
     match input {
-        Value::String(text) => Ok(vec![json!({"role":"user","content":text})]),
+        Value::String(text) => Ok(vec![to_value(UserInputEcho {
+            role: "user",
+            content: &text,
+        })?]),
         Value::Array(items) if !items.is_empty() => Ok(items),
         Value::Array(_) => Err(Error::invalid("input requires at least one item")),
         _ => Err(Error::invalid(
@@ -528,13 +596,19 @@ fn content_parts(parts: &[Value], item: usize) -> Result<Value> {
                 check_keys(object, &["type", "text", "annotations", "logprobs"], index)?;
                 let value = string_field(object, "text", index)?;
                 text.push_str(value);
-                converted.push(json!({"type":"text","text":value}));
+                converted.push(to_value(ChatTextPartEcho {
+                    kind: "text",
+                    text: value,
+                })?);
             }
             "input_text" | "text" => {
                 check_keys(object, &["type", "text"], index)?;
                 let value = string_field(object, "text", index)?;
                 text.push_str(value);
-                converted.push(json!({"type":"text","text":value}));
+                converted.push(to_value(ChatTextPartEcho {
+                    kind: "text",
+                    text: value,
+                })?);
             }
             "input_image" => {
                 has_media = true;
@@ -578,11 +652,11 @@ fn image_part(object: &Map<String, Value>, index: usize) -> Result<Value> {
         Some(Value::String(detail)) => Some(detail.as_str()),
         Some(_) => return Err(Error::invalid("input_image.detail must be a string")),
     };
-    let image = detail.map_or_else(
-        || json!({"url":url}),
-        |detail| json!({"url":url, "detail":detail}),
-    );
-    Ok(json!({"type":"image_url","image_url":image}))
+    let image = ImageUrlEcho { url, detail };
+    to_value(ChatImagePartEcho {
+        kind: "image_url",
+        image_url: image,
+    })
 }
 
 fn push_function_call(
@@ -737,7 +811,9 @@ fn check_reasoning(object: &Map<String, Value>, index: usize) -> Result<()> {
 }
 
 /// Convert the declared tools into the internal form and the response echo.
-fn declared_tools(tools: Option<Vec<ResponsesTool>>) -> Result<(Vec<Value>, Vec<WireTool>)> {
+fn declared_tools(
+    tools: Option<Vec<ResponsesTool>>,
+) -> Result<(Vec<FunctionToolEcho>, Vec<WireTool>)> {
     let mut echo = Vec::new();
     let mut wire = Vec::new();
     for (index, tool) in tools.unwrap_or_default().into_iter().enumerate() {
@@ -766,13 +842,13 @@ fn declared_tools(tools: Option<Vec<ResponsesTool>>) -> Result<(Vec<Value>, Vec<
             Error::invalid(format!("declared tool {index} requires a function name"))
         })?;
         let strict = tool.strict;
-        echo.push(json!({
-            "type": "function",
-            "name": name,
-            "description": tool.description,
-            "parameters": tool.parameters,
-            "strict": strict.unwrap_or(false),
-        }));
+        echo.push(FunctionToolEcho {
+            kind: "function".to_string(),
+            name: name.clone(),
+            description: tool.description.clone(),
+            parameters: tool.parameters.clone().map(OpaqueJson),
+            strict: strict.unwrap_or(false),
+        });
         wire.push(WireTool {
             kind: "function".to_string(),
             function: WireToolFunction {
@@ -797,12 +873,15 @@ enum Choice {
 }
 
 impl Choice {
-    fn echo(&self) -> Value {
+    fn echo(&self) -> ToolChoiceEcho {
         match self {
-            Self::Named(name) => json!({"type":"function","name":name}),
-            Self::Disabled => Value::String("none".to_string()),
-            Self::Auto => Value::String("auto".to_string()),
-            Self::Required => Value::String("required".to_string()),
+            Self::Named(name) => ToolChoiceEcho::Named {
+                kind: "function".to_string(),
+                name: name.clone(),
+            },
+            Self::Disabled => ToolChoiceEcho::Mode("none".to_string()),
+            Self::Auto => ToolChoiceEcho::Mode("auto".to_string()),
+            Self::Required => ToolChoiceEcho::Mode("required".to_string()),
         }
     }
     fn wire(&self) -> WireToolChoice {
@@ -863,12 +942,18 @@ fn thinking_override(effort: Option<&str>) -> Result<Option<bool>> {
     }
 }
 
-fn text_config(value: Option<&TextRequest>) -> Result<Value> {
+fn text_config(value: Option<&TextRequest>) -> Result<TextConfigEcho> {
     let Some(text) = value else {
-        return Ok(json!({"format":{"type":"text"}}));
+        return Ok(TextConfigEcho {
+            format: TextFormatEcho {
+                kind: "text".to_string(),
+            },
+        });
     };
     let format = match text.format.as_ref() {
-        None | Some(Value::Null) => json!({"type":"text"}),
+        None | Some(Value::Null) => TextFormatEcho {
+            kind: "text".to_string(),
+        },
         Some(Value::Object(object)) => {
             check_keys(
                 object,
@@ -876,7 +961,9 @@ fn text_config(value: Option<&TextRequest>) -> Result<Value> {
                 0,
             )?;
             match string_field(object, "type", 0)? {
-                "text" => json!({"type":"text"}),
+                "text" => TextFormatEcho {
+                    kind: "text".to_string(),
+                },
                 "json_object" | "json_schema" => {
                     return Err(Error::unsupported(
                         "structured text formats are not supported; only text is available",
@@ -887,12 +974,12 @@ fn text_config(value: Option<&TextRequest>) -> Result<Value> {
         }
         Some(_) => return Err(Error::invalid("text.format must be an object")),
     };
-    Ok(json!({"format":format}))
+    Ok(TextConfigEcho { format })
 }
 
-fn metadata(value: Option<Map<String, Value>>) -> Result<Map<String, Value>> {
+fn metadata(value: Option<Map<String, Value>>) -> Result<BTreeMap<String, String>> {
     let Some(metadata) = value else {
-        return Ok(Map::new());
+        return Ok(BTreeMap::new());
     };
     if metadata.len() > MAX_METADATA_ENTRIES {
         return Err(Error::invalid(format!(
@@ -914,7 +1001,15 @@ fn metadata(value: Option<Map<String, Value>>) -> Result<Map<String, Value>> {
             )));
         }
     }
-    Ok(metadata)
+    metadata
+        .into_iter()
+        .map(|(key, value)| {
+            value
+                .as_str()
+                .map(|value| (key, value.to_string()))
+                .ok_or_else(|| Error::invalid("metadata values must be strings"))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()
 }
 
 fn string_field<'a>(object: &'a Map<String, Value>, field: &str, index: usize) -> Result<&'a str> {

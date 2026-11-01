@@ -5,7 +5,10 @@
 //! on the delivery pool, and a published delta is never rewritten.
 use super::super::TextState;
 use super::super::execution::{Prepared as GenerationPrepared, finish_reason};
-use super::output::{self, Snapshot, Usage};
+use super::events::ResponseEvent;
+use super::output::{
+    self, IncompleteDetails, ResponseBody, ResponseErrorBody, ResponseItem, Snapshot, Usage,
+};
 use super::request::Spec;
 use super::state::StoreLease;
 use crate::cpu::CpuPool;
@@ -15,7 +18,7 @@ use futures_util::stream::unfold;
 use infer_core::{Error, ErrorCode, RequestId};
 use infer_models::{OutputStreamParser, StreamEvent, TextStreamDecoder};
 use infer_runtime::EngineOutput;
-use serde_json::{Value, json};
+
 use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -75,7 +78,7 @@ struct Stream {
     prompt_tokens: Arc<AtomicUsize>,
     completion_tokens: usize,
     /// Completed output items, in output order.
-    output: Vec<Value>,
+    output: Vec<ResponseItem>,
     message: Option<OpenMessage>,
     reasoning: Option<OpenReasoning>,
     call: Option<OpenCall>,
@@ -88,17 +91,18 @@ struct Stream {
     phase: Phase,
 }
 
+fn encode<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string(value).unwrap_or_default()
+}
+
 impl Stream {
     /// Serialize one event with the next sequence number.
-    fn emit(&mut self, mut event: Value) {
-        event["sequence_number"] = json!(self.sequence);
+    fn emit(&mut self, build: impl FnOnce(u64) -> ResponseEvent) {
+        let sequence_number = self.sequence;
         self.sequence += 1;
-        let name = event
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("message")
-            .to_string();
-        self.queue.push_back((name, event.to_string()));
+        let event = build(sequence_number);
+        let name = event.kind();
+        self.queue.push_back((name.to_string(), encode(&event)));
     }
 
     /// The response object at this point in the lifecycle.
@@ -106,10 +110,10 @@ impl Stream {
         &self,
         status: &str,
         completed_at: Option<u64>,
-        incomplete: Option<Value>,
-        error: Option<Value>,
+        incomplete: Option<IncompleteDetails>,
+        error: Option<ResponseErrorBody>,
         usage: Option<&Usage>,
-    ) -> Value {
+    ) -> ResponseBody {
         Snapshot {
             request: self.request,
             created: self.created,
@@ -130,8 +134,14 @@ impl Stream {
     /// Publish `response.created` and `response.in_progress` before the first token.
     fn start(&mut self) {
         let response = self.response("in_progress", None, None, None, None);
-        self.emit(json!({"type":"response.created","response":response}));
-        self.emit(json!({"type":"response.in_progress","response":response}));
+        self.emit(|sequence_number| ResponseEvent::Created {
+            response: response.clone(),
+            sequence_number,
+        });
+        self.emit(|sequence_number| ResponseEvent::InProgress {
+            response,
+            sequence_number,
+        });
     }
 
     fn item_namespace(&self) -> String {
@@ -145,11 +155,14 @@ impl Stream {
     fn open_reasoning(&mut self) {
         let index = self.next_index;
         self.next_index += 1;
-        let item_id = format!("rs_{}_{}", self.item_namespace(), index);
-        let item = output::reasoning_item(&self.item_namespace(), index, "", "in_progress");
-        self.emit(json!({
-            "type":"response.output_item.added","output_index":index,"item":item
-        }));
+        let namespace = self.item_namespace();
+        let item_id = format!("rs_{namespace}_{index}");
+        let item = output::reasoning_item(&namespace, index, "", "in_progress");
+        self.emit(|sequence_number| ResponseEvent::OutputItemAdded {
+            output_index: index,
+            item,
+            sequence_number,
+        });
         self.reasoning = Some(OpenReasoning {
             index,
             item_id,
@@ -161,15 +174,21 @@ impl Stream {
     fn open_message(&mut self) {
         let index = self.next_index;
         self.next_index += 1;
-        let item_id = format!("msg_{}_{}", self.item_namespace(), index);
-        let item = output::message_item(&self.item_namespace(), index, "", "in_progress");
-        self.emit(json!({
-            "type":"response.output_item.added","output_index":index,"item":item
-        }));
-        self.emit(json!({
-            "type":"response.content_part.added","item_id":item_id,"output_index":index,
-            "content_index":0,"part":output::output_text_part("")
-        }));
+        let namespace = self.item_namespace();
+        let item_id = format!("msg_{namespace}_{index}");
+        let item = output::message_item(&namespace, index, "", "in_progress");
+        self.emit(|sequence_number| ResponseEvent::OutputItemAdded {
+            output_index: index,
+            item,
+            sequence_number,
+        });
+        self.emit(|sequence_number| ResponseEvent::ContentPartAdded {
+            item_id: item_id.clone(),
+            output_index: index,
+            content_index: 0,
+            part: output::output_text_part(""),
+            sequence_number,
+        });
         self.message = Some(OpenMessage {
             index,
             item_id,
@@ -186,9 +205,11 @@ impl Stream {
         let namespace = self.item_namespace();
         let item_id = output::call_item_id(&namespace, call_index);
         let item = output::function_call_item(&namespace, call_index, name, "", "in_progress");
-        self.emit(json!({
-            "type":"response.output_item.added","output_index":index,"item":item
-        }));
+        self.emit(|sequence_number| ResponseEvent::OutputItemAdded {
+            output_index: index,
+            item,
+            sequence_number,
+        });
         self.call = Some(OpenCall {
             index,
             call_index,
@@ -199,51 +220,69 @@ impl Stream {
     }
 
     /// Finish and publish the open reasoning item.
-    fn close_reasoning(&mut self, status: &str) {
+    fn close_reasoning(&mut self, status: &'static str) {
         let Some(open) = self.reasoning.take() else {
             return;
         };
-        self.emit(json!({
-            "type":"response.reasoning_text.done","item_id":open.item_id,
-            "output_index":open.index,"content_index":0,"text":open.text
-        }));
-        let item = output::reasoning_item(&self.item_namespace(), open.index, &open.text, status);
-        self.emit(json!({
-            "type":"response.output_item.done","output_index":open.index,"item":item
-        }));
+        self.emit(|sequence_number| ResponseEvent::ReasoningTextDone {
+            item_id: open.item_id.clone(),
+            output_index: open.index,
+            content_index: 0,
+            text: open.text.clone(),
+            sequence_number,
+        });
+        let namespace = self.item_namespace();
+        let item = output::reasoning_item(&namespace, open.index, &open.text, status);
+        self.emit(|sequence_number| ResponseEvent::OutputItemDone {
+            output_index: open.index,
+            item: item.clone(),
+            sequence_number,
+        });
         self.output.push(item);
     }
 
     /// Finish and publish the open assistant message.
-    fn close_message(&mut self, status: &str) {
+    fn close_message(&mut self, status: &'static str) {
         let Some(open) = self.message.take() else {
             return;
         };
         let part = output::output_text_part(&open.text);
-        self.emit(json!({
-            "type":"response.output_text.done","item_id":open.item_id,
-            "output_index":open.index,"content_index":0,"text":open.text,"logprobs":[]
-        }));
-        self.emit(json!({
-            "type":"response.content_part.done","item_id":open.item_id,
-            "output_index":open.index,"content_index":0,"part":part
-        }));
-        let item = output::message_item(&self.item_namespace(), open.index, &open.text, status);
-        self.emit(json!({
-            "type":"response.output_item.done","output_index":open.index,"item":item
-        }));
+        self.emit(|sequence_number| ResponseEvent::OutputTextDone {
+            item_id: open.item_id.clone(),
+            output_index: open.index,
+            content_index: 0,
+            text: open.text.clone(),
+            logprobs: Vec::new(),
+            sequence_number,
+        });
+        self.emit(|sequence_number| ResponseEvent::ContentPartDone {
+            item_id: open.item_id.clone(),
+            output_index: open.index,
+            content_index: 0,
+            part,
+            sequence_number,
+        });
+        let namespace = self.item_namespace();
+        let item = output::message_item(&namespace, open.index, &open.text, status);
+        self.emit(|sequence_number| ResponseEvent::OutputItemDone {
+            output_index: open.index,
+            item: item.clone(),
+            sequence_number,
+        });
         self.output.push(item);
     }
 
     /// Finish and publish the open function call.
-    fn close_call(&mut self, status: &str) {
+    fn close_call(&mut self, status: &'static str) {
         let Some(open) = self.call.take() else {
             return;
         };
-        self.emit(json!({
-            "type":"response.function_call_arguments.done","item_id":open.item_id,
-            "output_index":open.index,"arguments":open.arguments
-        }));
+        self.emit(|sequence_number| ResponseEvent::FunctionCallArgumentsDone {
+            item_id: open.item_id.clone(),
+            output_index: open.index,
+            arguments: open.arguments.clone(),
+            sequence_number,
+        });
         let namespace = self.item_namespace();
         let item = output::function_call_item(
             &namespace,
@@ -252,14 +291,16 @@ impl Stream {
             &open.arguments,
             status,
         );
-        self.emit(json!({
-            "type":"response.output_item.done","output_index":open.index,"item":item
-        }));
+        self.emit(|sequence_number| ResponseEvent::OutputItemDone {
+            output_index: open.index,
+            item: item.clone(),
+            sequence_number,
+        });
         self.output.push(item);
     }
 
     /// Finish every open item; a normal finish completes them and an interruption does not.
-    fn close_open(&mut self, status: &str) {
+    fn close_open(&mut self, status: &'static str) {
         self.close_call(status);
         self.close_message(status);
         self.close_reasoning(status);
@@ -292,10 +333,13 @@ impl Stream {
             (open.item_id.clone(), open.index)
         });
         if let Some((item_id, index)) = delta {
-            self.emit(json!({
-                "type":"response.reasoning_text.delta","item_id":item_id,"output_index":index,
-                "content_index":0,"delta":text
-            }));
+            self.emit(|sequence_number| ResponseEvent::ReasoningTextDelta {
+                item_id,
+                output_index: index,
+                content_index: 0,
+                delta: text.to_string(),
+                sequence_number,
+            });
         }
     }
 
@@ -314,10 +358,14 @@ impl Stream {
             (open.item_id.clone(), open.index)
         });
         if let Some((item_id, index)) = delta {
-            self.emit(json!({
-                "type":"response.output_text.delta","item_id":item_id,"output_index":index,
-                "content_index":0,"delta":text,"logprobs":[]
-            }));
+            self.emit(|sequence_number| ResponseEvent::OutputTextDelta {
+                item_id,
+                output_index: index,
+                content_index: 0,
+                delta: text.to_string(),
+                logprobs: Vec::new(),
+                sequence_number,
+            });
         }
     }
 
@@ -336,10 +384,14 @@ impl Stream {
             (open.item_id.clone(), open.index)
         });
         if let Some((item_id, index)) = delta {
-            self.emit(json!({
-                "type":"response.function_call_arguments.delta","item_id":item_id,
-                "output_index":index,"delta":arguments
-            }));
+            self.emit(
+                |sequence_number| ResponseEvent::FunctionCallArgumentsDelta {
+                    item_id,
+                    output_index: index,
+                    delta: arguments.to_string(),
+                    sequence_number,
+                },
+            );
         }
     }
 
@@ -448,10 +500,12 @@ impl Stream {
         self.close_open(item_status);
         // A response with no message or call still carries the assistant message item the
         // complete route produces, so both routes expose the same output shape.
-        let has_turn = self
-            .output
-            .iter()
-            .any(|item| matches!(item["type"].as_str(), Some("message" | "function_call")));
+        let has_turn = self.output.iter().any(|item| {
+            matches!(
+                item,
+                ResponseItem::Message(_) | ResponseItem::FunctionCall(_)
+            )
+        });
         if !has_turn {
             self.open_message();
             self.close_message(item_status);
@@ -461,13 +515,25 @@ impl Stream {
             output: self.completion_tokens,
             reasoning: 0,
         };
-        let incomplete = (reason == "length").then(|| json!({"reason":"max_output_tokens"}));
+        let incomplete = (reason == "length").then_some(IncompleteDetails {
+            reason: "max_output_tokens".to_string(),
+        });
         let completed_at = (reason != "length").then(now).transpose()?;
         let response = self.response(status, completed_at, incomplete, None, Some(&usage));
         if let Some(lease) = &mut self.lease {
             lease.finish(&response).await?;
         }
-        self.emit(json!({"type":format!("response.{status}"),"response":response}));
+        if reason == "length" {
+            self.emit(|sequence_number| ResponseEvent::Incomplete {
+                response,
+                sequence_number,
+            });
+        } else {
+            self.emit(|sequence_number| ResponseEvent::Completed {
+                response,
+                sequence_number,
+            });
+        }
         self.phase = Phase::Done;
         Ok(())
     }
@@ -485,12 +551,26 @@ impl Stream {
         }
         self.close_open("incomplete");
         let code = error_code(error.code);
-        let value = json!({"code":code,"message":error.message});
-        let response = self.response("failed", None, None, Some(value), None);
-        self.emit(json!({
-            "type":"error","code":code,"message":error.message,"param":null
-        }));
-        self.emit(json!({"type":"response.failed","response":response}));
+        let response = self.response(
+            "failed",
+            None,
+            None,
+            Some(ResponseErrorBody {
+                code: code.to_string(),
+                message: error.message.clone(),
+            }),
+            None,
+        );
+        self.emit(|sequence_number| ResponseEvent::Error {
+            code,
+            message: error.message.clone(),
+            param: None,
+            sequence_number,
+        });
+        self.emit(|sequence_number| ResponseEvent::Failed {
+            response,
+            sequence_number,
+        });
         self.phase = Phase::Done;
     }
 }

@@ -1,7 +1,7 @@
 use axum::extract::rejection::JsonRejection;
 use axum::{Json, http::StatusCode, response::IntoResponse, response::Response};
 use infer_core::{Error, ErrorCode};
-use serde_json::{Value, json};
+use serde::Serialize;
 
 pub(super) struct ApiError {
     status: StatusCode,
@@ -10,11 +10,30 @@ pub(super) struct ApiError {
     message: String,
 }
 
+#[derive(Serialize)]
+pub(super) struct ErrorEnvelope<'a> {
+    pub(super) error: ErrorBody<'a>,
+}
+
+#[derive(Serialize)]
+pub(super) struct ErrorBody<'a> {
+    message: &'a str,
+    #[serde(rename = "type")]
+    kind: &'a str,
+    param: Option<&'a str>,
+    code: &'a str,
+}
+
 impl ApiError {
-    pub(super) fn body(&self) -> Value {
-        json!({"error":{
-            "message":self.message, "type":self.kind, "param":null, "code":self.code
-        }})
+    pub(super) fn envelope(&self) -> ErrorEnvelope<'_> {
+        ErrorEnvelope {
+            error: ErrorBody {
+                message: &self.message,
+                kind: self.kind,
+                param: None,
+                code: self.code,
+            },
+        }
     }
 }
 
@@ -83,6 +102,6 @@ impl From<JsonRejection> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.status, Json(self.body())).into_response()
+        (self.status, Json(self.envelope())).into_response()
     }
 }

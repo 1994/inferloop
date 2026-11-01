@@ -2,6 +2,7 @@ use super::*;
 use crate::cpu::CpuConfig;
 use crate::cpu::CpuPool;
 use infer_models::{ParsedToolCall, TextAssets};
+use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::env::temp_dir;
 use std::fs::create_dir_all;

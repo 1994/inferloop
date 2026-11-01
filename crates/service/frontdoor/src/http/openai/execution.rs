@@ -1,3 +1,4 @@
+use super::request::OpaqueJson;
 use super::{ApiResult, GenerationRequest, TextState, ToolPolicy};
 use crate::constants::TOKEN_STAGING_BYTES;
 use crate::cpu::CpuContext;
@@ -7,7 +8,7 @@ use infer_core::{Error, ErrorCode, FinishReason, RequestId};
 use infer_ir::{CanonicalRequest, RequestInput, Workload, WorkloadOutput};
 use infer_observe::trace::TraceContext;
 use infer_runtime::{CompletedRequest, EngineOutput};
-use serde_json::{Value, json};
+use serde::Serialize;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use std::{
@@ -45,7 +46,7 @@ struct Encoding {
     media: Option<Arc<MediaService>>,
     image_options: Option<crate::ImageProcessingOptions>,
     prompt: Option<String>,
-    tools: Option<Value>,
+    tools: Option<OpaqueJson>,
     enable_thinking: bool,
     reasoning_open: Arc<AtomicBool>,
     count: Arc<AtomicUsize>,
@@ -68,7 +69,7 @@ impl Encoding {
                 &messages,
                 &infer_models::ChatOptions {
                     enable_thinking: self.enable_thinking,
-                    tools: self.tools.clone(),
+                    tools: self.tools.as_ref().map(|tools| tools.0.clone()),
                     ..Default::default()
                 },
             )?;
@@ -360,6 +361,85 @@ async fn submit_encoding(
         .await
 }
 
+#[derive(Serialize)]
+pub(super) struct CompletionUsage {
+    #[serde(rename = "prompt_tokens")]
+    prompt: usize,
+    #[serde(rename = "completion_tokens")]
+    completion: usize,
+    #[serde(rename = "total_tokens")]
+    total: usize,
+}
+
+#[derive(Serialize)]
+pub(super) struct ChatFunctionCall {
+    name: String,
+    arguments: String,
+}
+
+#[derive(Serialize)]
+pub(super) struct ChatToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: ChatFunctionCall,
+}
+
+#[derive(Serialize)]
+pub(super) struct ChatMessage {
+    role: &'static str,
+    content: Option<String>,
+    refusal: Option<()>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_calls: Vec<ChatToolCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(super) struct ChatChoice {
+    index: usize,
+    message: ChatMessage,
+    finish_reason: &'static str,
+    logprobs: Option<()>,
+}
+
+#[derive(Serialize)]
+pub(super) struct ChatCompletionResponse {
+    id: String,
+    object: &'static str,
+    created: u64,
+    model: String,
+    choices: Vec<ChatChoice>,
+    usage: CompletionUsage,
+}
+
+#[derive(Serialize)]
+pub(super) struct TextChoice {
+    index: usize,
+    text: String,
+    finish_reason: &'static str,
+    logprobs: Option<()>,
+}
+
+#[derive(Serialize)]
+pub(super) struct TextCompletionResponse {
+    id: String,
+    object: &'static str,
+    created: u64,
+    model: String,
+    choices: Vec<TextChoice>,
+    usage: CompletionUsage,
+}
+
+/// One complete Chat Completions or Completions response.
+#[derive(Serialize)]
+#[serde(untagged)]
+pub(super) enum CompletionResponse {
+    Chat(ChatCompletionResponse),
+    Text(TextCompletionResponse),
+}
+
 /// # Errors
 /// Returns a validation, capacity or backend error.
 pub(super) async fn generate(
@@ -367,7 +447,7 @@ pub(super) async fn generate(
     headers: HeaderMap,
     request: GenerationRequest,
     chat: bool,
-) -> ApiResult<Value> {
+) -> ApiResult<CompletionResponse> {
     let mut prepared = prepare(&state, &headers, request, chat).await?;
     while let Some(event) = prepared.receiver.recv().await {
         if let EngineOutput::Finished(result) = event? {
@@ -405,7 +485,7 @@ async fn response(
     policy: &ToolPolicy,
     enable_thinking: bool,
     reasoning_open: bool,
-) -> ApiResult<Value> {
+) -> ApiResult<CompletionResponse> {
     let reason = finish_reason(&result.reason)?;
     let Some(WorkloadOutput::Tokens(tokens)) = result.output else {
         return Err(Error::invariant("generation completed without tokens").into());
@@ -423,8 +503,13 @@ async fn response(
     // Text is only split when the request could have produced a structured region: a declared
     // tool set for calls, or thinking mode for reasoning. Otherwise the decoded text is the
     // content, exactly as before.
-    let choice = if chat {
-        chat_choice(
+    let usage = CompletionUsage {
+        prompt: prompt_tokens,
+        completion: completion_tokens,
+        total: prompt_tokens + completion_tokens,
+    };
+    if chat {
+        let choice = chat_choice(
             result.request,
             &text,
             state.assets.tool_dialect(),
@@ -432,18 +517,30 @@ async fn response(
             enable_thinking,
             reason,
             reasoning_open,
-        )?
+        )?;
+        Ok(CompletionResponse::Chat(ChatCompletionResponse {
+            id: format!("chatcmpl-{}", result.request),
+            object: "chat.completion",
+            created,
+            model: model.to_string(),
+            choices: vec![choice],
+            usage,
+        }))
     } else {
-        json!({"index":0, "text":text, "finish_reason":reason, "logprobs":null})
-    };
-    let prefix = if chat { "chatcmpl" } else { "cmpl" };
-    Ok(json!({
-        "id":format!("{prefix}-{}", result.request),
-        "object":if chat { "chat.completion" } else { "text_completion" },
-        "created":created, "model":model, "choices":[choice],
-        "usage":{"prompt_tokens":prompt_tokens, "completion_tokens":completion_tokens,
-            "total_tokens":prompt_tokens + completion_tokens}
-    }))
+        Ok(CompletionResponse::Text(TextCompletionResponse {
+            id: format!("cmpl-{}", result.request),
+            object: "text_completion",
+            created,
+            model: model.to_string(),
+            choices: vec![TextChoice {
+                index: 0,
+                text,
+                finish_reason: reason,
+                logprobs: None,
+            }],
+            usage,
+        }))
+    }
 }
 
 /// Split a decoded completion into text, reasoning and calls in the package dialect.
@@ -486,7 +583,7 @@ fn chat_choice(
     enable_thinking: bool,
     reason: &'static str,
     reasoning_open: bool,
-) -> infer_core::Result<Value> {
+) -> infer_core::Result<ChatChoice> {
     let parsed = parse_reply(text, dialect, policy, enable_thinking, reasoning_open)?;
     let reason = completion_reason(reason, parsed.truncated, parsed.has_calls())?;
     let infer_models::ParsedOutput {
@@ -495,35 +592,40 @@ fn chat_choice(
         calls,
         ..
     } = parsed;
-    let tool_calls: Vec<Value> = if policy.parses() {
+    let tool_calls: Vec<ChatToolCall> = if policy.parses() {
         calls
             .iter()
             .enumerate()
-            .map(|(index, call)| {
-                json!({
-                    // Stable and unique per response, so a later `tool` result can name it.
-                    "id": format!("call_{}_{}", request.get(), index),
-                    "type": "function",
-                    "function": {"name": call.name, "arguments": call.arguments},
-                })
+            .map(|(index, call)| ChatToolCall {
+                // Stable and unique per response, so a later `tool` result can name it.
+                id: format!("call_{}_{}", request.get(), index),
+                kind: "function",
+                function: ChatFunctionCall {
+                    name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                },
             })
             .collect()
     } else {
         Vec::new()
     };
     let content = if content.is_empty() && !tool_calls.is_empty() {
-        Value::Null
+        None
     } else {
-        Value::String(content)
+        Some(content)
     };
-    let mut message = json!({"role":"assistant", "content":content, "refusal":null});
-    if !tool_calls.is_empty() {
-        message["tool_calls"] = json!(tool_calls);
-    }
-    if let Some(reasoning) = reasoning {
-        message["reasoning_content"] = json!(reasoning);
-    }
-    Ok(json!({"index":0, "message":message, "finish_reason":reason, "logprobs":null}))
+    Ok(ChatChoice {
+        index: 0,
+        message: ChatMessage {
+            role: "assistant",
+            content,
+            refusal: None,
+            tool_calls,
+            reasoning_content: reasoning,
+        },
+        finish_reason: reason,
+        logprobs: None,
+    })
 }
 
 /// A partial structural region is successful only when the engine reported its length cap.
