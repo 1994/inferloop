@@ -19,6 +19,14 @@ pub type Owner = Arc<dyn Any + Send + Sync>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bf16;
 
+/// FP4 code pair element marker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fp4Pair;
+
+/// FP8 element marker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fp8;
+
 /// Contiguous device memory the host owns, holding `len` elements of `T`.
 #[derive(Debug)]
 pub struct Buffer<'a, T> {
@@ -62,6 +70,20 @@ impl<'a, T> Buffer<'a, T> {
             address,
             len,
             owner: Some(owner),
+            element: PhantomData,
+        }
+    }
+
+    /// The same memory under another element type.
+    ///
+    /// # Safety
+    /// `U` must have the size and layout of `T`.
+    #[must_use]
+    pub const unsafe fn retyped<U>(self) -> Buffer<'a, U> {
+        Buffer {
+            address: self.address,
+            len: self.len,
+            owner: self.owner,
             element: PhantomData,
         }
     }

@@ -194,7 +194,7 @@ fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Resul
             "gated norm timing requires release CUDA JIT O3",
         ));
     }
-    let mut buffers = Buffers::new(device, key.shape)?;
+    let buffers = Buffers::new(device, key.shape)?;
     let baseline = buffers.capture(device, BASELINE)?;
     let expected = buffers.read(device, &baseline)?;
     capture::bits(&expected, &expected)?;

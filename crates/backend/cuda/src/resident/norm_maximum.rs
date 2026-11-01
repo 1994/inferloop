@@ -1,4 +1,5 @@
 //! Prime only the immediately following token-FP8 projection's row maximum.
+use super::buffers::buffer;
 use super::{ActivationArena, ProgramWeights, capture::error, nvfp4_gemm::Workspace};
 use crate::{constants::F32_BYTES, mlp::ProjectionWeight};
 use cutile::prelude::*;
@@ -88,19 +89,15 @@ pub(super) fn record(
     let output = arena.buffers[slot]
         .take()
         .ok_or_else(|| error("norm maximum output slot"))?;
-    let mut output = output.reshape(&[rows, head_dim])?;
+    let output = output.reshape(&[rows, head_dim])?;
     let result = (|| {
-        let input = arena
-            .get(norm.inputs[0])
-            .map_err(error)?
-            .view(&[rows, head_dim])
-            .map_err(error)?;
+        let input = buffer(arena.get(norm.inputs[0]).map_err(error)?)?;
         workspace.record_norm_maximum(
-            scope,
+            (&weights.kernels, scope),
             index + 1,
-            &input,
+            input,
             weight,
-            &mut output,
+            &output,
             (epsilon, offset),
         )
     })();

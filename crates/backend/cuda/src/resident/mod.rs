@@ -10,6 +10,7 @@ pub(crate) mod attention_oxide;
 pub(crate) mod attention_prefill;
 mod batch_projection;
 mod buffers;
+pub(crate) use buffers::buffer as tensor_buffer;
 pub(crate) mod capacity;
 mod capture;
 mod capture_attention;
@@ -86,7 +87,6 @@ pub(crate) use prefill_projection::{narrow_dense_captures, with_dense_reference}
 mod pooled_verify_model_tests;
 
 mod norm_maximum;
-mod norm_maximum_kernel;
 #[cfg(test)]
 pub(crate) use norm_maximum::{
     captures as norm_maximum_captures, consumptions as norm_maximum_consumptions,
@@ -94,6 +94,7 @@ pub(crate) use norm_maximum::{
 };
 
 mod norm_fp4;
+#[cfg(test)]
 mod norm_fp4_kernel;
 
 #[cfg(test)]
@@ -102,6 +103,7 @@ pub(crate) use norm_fp4::{
     with_separate as with_separate_norm_fp4,
 };
 
+#[cfg(test)]
 #[cfg(test)]
 pub(crate) use norm_fp4_kernel::kernels::norm_fp4 as norm_fp4_kernel_entry;
 
