@@ -110,7 +110,11 @@ fn replay(loaded: &LoadedModel, case: &mut Case, slots: usize) -> Result<()> {
         for ((&slot, reference), output) in active.iter().zip(&private).zip(&pooled) {
             let hidden = agreement(
                 &reference.0,
-                &case.pool.test_hidden(loaded.device(), slot)?,
+                &case.pool.test_hidden(
+                    loaded.device(),
+                    slot,
+                    active.iter().max().map_or(0, |top| top + 1),
+                )?,
                 "private/pool hidden",
             );
             let logits = agreement(&reference.1, &output.1, "private/pool full vocabulary");

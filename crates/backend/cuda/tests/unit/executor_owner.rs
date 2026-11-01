@@ -55,9 +55,33 @@ fn fixture_with_width(
         .map(|index| StateId::new(u64::try_from(index).unwrap() + 1))
         .collect::<Result<Vec<_>>>()?;
     for (&state, &readout) in states.iter().zip(readouts) {
-        backend.reserve_state_for(state, 128, readout)?;
+        reserve_past_solo(&mut backend, &states, state, readout)?;
     }
     Ok((backend, program, states))
+}
+
+/// A second request waits for the solo state to drain before it may fund the pool; a scheduler
+/// retries, and the drained state then comes back beside it.
+fn reserve_past_solo(
+    backend: &mut CudaBackend,
+    states: &[StateId],
+    state: StateId,
+    readout: OutputReadout,
+) -> TestResult {
+    let Err(error) = backend.reserve_state_for(state, 128, readout) else {
+        return Ok(());
+    };
+    if error.code != ErrorCode::Capacity {
+        return Err(error.into());
+    }
+    let solo = states
+        .iter()
+        .copied()
+        .find(|id| *id != state && backend.release_state(*id).is_ok())
+        .ok_or("no solo state to drain")?;
+    backend.reserve_state_for(state, 128, readout)?;
+    backend.reserve_state_for(solo, 128, readout)?;
+    Ok(())
 }
 
 #[path = "executor_fixed_batch.rs"]
@@ -196,6 +220,8 @@ fn drive(
         .iter()
         .map(|(id, view)| (*id, view.capacity, view.cursor))
         .collect::<Vec<_>>();
+    // Capturing a pool syncs the stream, so it happens before the GPU is gated.
+    backend.ready.as_mut().unwrap().prepare_execution()?;
     let gate = Gate::new(backend.ready.as_ref().unwrap().loaded.device())?;
     let mut ticket = backend.submit_borrowed(program, &plan, tasks)?;
     assert!(!gate.expired.load(Ordering::Acquire));

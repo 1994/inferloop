@@ -305,7 +305,7 @@ fn check_feature_decode_bits(hidden: usize, norm_dim: usize, vocab: usize) -> Re
     for slot in [0, 3] {
         let expected = plain.run_lanes(&device, &[(slot, 7, 0, 0)])?;
         // Ordinary target decode only reads logits; inspect its resident hidden row separately.
-        let expected_hidden = plain.test_hidden(&device, slot)?;
+        let expected_hidden = plain.test_hidden(&device, slot, slot + 1)?;
         let actual = verify.run_verify(&device, &[(slot, 0, 7, 0, 0)])?;
         let left: Vec<_> = expected_hidden
             .iter()
