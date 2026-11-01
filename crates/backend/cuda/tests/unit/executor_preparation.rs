@@ -23,8 +23,11 @@ fn later_admission_keeps_bound_verification_retired_and_reset_restores_its_charg
     executor.maximum_states = 3;
     executor.slots_disabled = true;
     states.push(StateId::new(2)?);
+    // Stay private for this admission; the pool is built below.
+    executor.roofline_bound = Some(1);
     backend.reserve_state_for(states[1], 128, OutputReadout::Logits)?;
     let executor = backend.ready.as_mut().unwrap();
+    executor.roofline_bound = None;
     executor.slots_disabled = false;
     executor.prepare_execution()?;
     assert!(executor.slots.as_ref().unwrap().verify().is_some());
@@ -84,7 +87,11 @@ fn check_private_fallback_preparation(prefill_width: usize) -> TestResult {
         backend.release_state(state)?;
     }
     // A supported pool can lack resident home programs after a home capture failed.
-    backend.ready.as_mut().unwrap().homes.clear();
+    let executor = backend.ready.as_mut().unwrap();
+    executor.homes.clear();
+    executor.slots = None;
+    executor.slots_disabled = true;
+    executor.roofline_bound = Some(1);
     for &state in &states {
         let quoted = backend.state_reservation_bytes_for(128, OutputReadout::Logits)?;
         backend.reserve_state_for(state, 128, OutputReadout::Logits)?;
