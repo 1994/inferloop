@@ -1,5 +1,6 @@
 //! Bitwise comparison against the existing per-slot fused kernel at the checkpoint geometry.
 use super::{upload, values};
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 use crate::{
@@ -122,8 +123,8 @@ impl Fixture {
 
     fn compare(&mut self, device: &CudaDevice, slots: usize) -> TestResult {
         self.prepare_parameters(device)?;
-        let original = CudaGraph::scope(&device.stream, |scope| self.record_original(scope))?;
-        let candidate = CudaGraph::scope(&device.stream, |scope| {
+        let original = Graph::scope(&device.stream, |scope| self.record_original(scope))?;
+        let candidate = Graph::scope(&device.stream, |scope| {
             scope.record(
                 fused::delta_verify_batch(
                     (&mut self.candidate).partition([1, 3, self.block]),
@@ -230,10 +231,10 @@ impl Fixture {
                 .map(|slot| i32::try_from((slot + shift) % 4).unwrap())
                 .collect::<Vec<_>>();
             device.copy_host_slice(&mut counts, &accepted)?;
-            let original_graph = CudaGraph::scope(&device.stream, |scope| {
+            let original_graph = Graph::scope(&device.stream, |scope| {
                 self.record_original_commit(scope, &mut original, &accepted)
             })?;
-            let candidate_graph = CudaGraph::scope(&device.stream, |scope| {
+            let candidate_graph = Graph::scope(&device.stream, |scope| {
                 scope.record(
                     fused::delta_commit_batch(
                         (&mut candidate).partition([1, D, self.block]),

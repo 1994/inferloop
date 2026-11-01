@@ -4,13 +4,14 @@ use crate::device::{CudaDevice, ReadbackSource, Readbacks, device_error};
 use crate::tuning::greedy::select;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 #[cfg(test)]
 use std::env::var;
 use std::slice::from_ref;
 
 pub(super) struct TokenReadout {
     // The graph is destroyed before every buffer it references.
-    graph: CudaGraph<()>,
+    graph: Graph,
     tokens: Arc<Tensor<i32>>,
     readbacks: Readbacks<i32>,
     _selectors: Vec<Greedy>,
@@ -71,7 +72,7 @@ impl TokenReadout {
         let mut tokens = api::zeros::<i32>(&[rows, 2])
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        let graph = CudaGraph::scope(&device.stream, |scope| {
+        let graph = Graph::scope(&device.stream, |scope| {
             for (index, (selector, input)) in selectors.iter_mut().zip(logits).enumerate() {
                 selector.record_into(scope, input, &mut tokens, index * per_input)?;
             }
@@ -92,7 +93,7 @@ impl TokenReadout {
     pub(super) async fn run_async(
         &mut self,
         device: &CudaDevice,
-        graph: &CudaGraph<()>,
+        graph: &Graph,
         readbacks: &mut Readbacks,
         sources: &[Option<ReadbackSource>],
         active: &[usize],

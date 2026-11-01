@@ -3,6 +3,7 @@ use crate::constants::METADATA_FIELDS;
 use crate::device::CudaDevice;
 use crate::resident::kernels::aux;
 use cutile::prelude::*;
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 use std::slice::from_ref;
 
@@ -81,7 +82,7 @@ fn check_geometry(
         .map(|_| api::zeros::<f32>(&[heads, dim]).sync_on(&device.stream))
         .collect::<Result<Vec<_>, _>>()?;
     let mut candidate = api::zeros::<f32>(&[lanes * heads, dim]).sync_on(&device.stream)?;
-    let reference = CudaGraph::scope(&device.stream, |scope| {
+    let reference = Graph::scope(&device.stream, |scope| {
         for (lane, out) in original.iter_mut().enumerate() {
             let input_range = lane * heads..(lane + 1) * heads;
             let metadata_range = lane * METADATA_FIELDS..(lane + 1) * METADATA_FIELDS;
@@ -97,7 +98,7 @@ fn check_geometry(
         }
         Ok(())
     })?;
-    let batched = CudaGraph::scope(&device.stream, |scope| {
+    let batched = Graph::scope(&device.stream, |scope| {
         scope.record(
             kernels::rope(
                 (&mut candidate).partition([1, half]),

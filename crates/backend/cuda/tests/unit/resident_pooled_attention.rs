@@ -1,6 +1,7 @@
 use super::*;
 use crate::resident::attention::attention;
 use cutile::cutile_compiler::compile_api::KernelCompiler;
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 
 type TestResult<T = ()> = StdResult<T, Box<dyn Error>>;
@@ -231,7 +232,7 @@ impl Fixture {
             .collect::<StdResult<Vec<_>, _>>()?;
         self.reference(device, &lane_metadata, window, &mut expected)?;
         let [keys, values] = &mut self.candidate;
-        let candidate = CudaGraph::scope(&device.stream, |scope| {
+        let candidate = Graph::scope(&device.stream, |scope| {
             work.append(
                 scope,
                 Append {
@@ -299,7 +300,7 @@ impl Fixture {
         let mut sums = api::zeros::<f32>(&[KV * PARTS, STACKED_ROWS]).sync_on(&device.stream)?;
         let [keys, values] = &mut self.original;
         let physical = self.slots * self.capacity;
-        let reference = CudaGraph::scope(&device.stream, |scope| {
+        let reference = Graph::scope(&device.stream, |scope| {
             for (lane, metadata) in lane_metadata.iter().enumerate() {
                 let range = lane * KV * DIM..(lane + 1) * KV * DIM;
                 scope.record(

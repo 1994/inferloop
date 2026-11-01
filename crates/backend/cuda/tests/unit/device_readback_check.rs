@@ -1,4 +1,5 @@
 use super::*;
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::hint::black_box;
 use std::thread::yield_now;
 use std::time::{Duration, Instant};
@@ -59,7 +60,7 @@ fn large_logit_geometry_preserves_hidden_only_readback() -> Result<()> {
     let mut destination = api::zeros::<f32>(&[2])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         scope.record(api::memcpy(&mut destination, &hidden))?;
         Ok(())
     })
@@ -128,7 +129,7 @@ fn fixtures(device: &CudaDevice) -> Result<(Tensors, Tensors)> {
 fn pinned_readbacks_ordering_and_overhead() -> Result<()> {
     let device = CudaDevice::new(0)?;
     let (mut inputs, mut outputs) = fixtures(&device)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         for (output, input) in outputs.iter_mut().zip(&inputs) {
             scope.record(api::memcpy(output, input))?;
         }
@@ -202,11 +203,7 @@ fn pinned_readbacks_ordering_and_overhead() -> Result<()> {
 }
 
 /// A mid-tensor range copies exactly those elements; out-of-bounds is rejected.
-fn partial_readback(
-    device: &CudaDevice,
-    graph: &CudaGraph<()>,
-    readbacks: &mut Readbacks,
-) -> Result<()> {
+fn partial_readback(device: &CudaDevice, graph: &Graph, readbacks: &mut Readbacks) -> Result<()> {
     let ramp = device.upload((0..8192_u16).map(f32::from).collect::<Vec<f32>>(), &[8192])?;
     let partial = [Some(ReadbackSource {
         tensor: Arc::clone(&ramp),
@@ -233,7 +230,7 @@ fn partial_readback(
 
 fn measure(
     device: &CudaDevice,
-    graph: &CudaGraph<()>,
+    graph: &Graph,
     sources: &[Option<ReadbackSource>],
     readbacks: &mut Readbacks,
 ) -> Result<()> {
@@ -297,13 +294,13 @@ fn pinned_float_and_integer_graphs_complete_in_order_and_reuse_buffers() -> Resu
     let mut float_output = api::zeros::<f32>(&[5])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         scope.record(api::memcpy(&mut float_output, &float_input))?;
         scope.record(api::memcpy(&mut middle, &integer_input))?;
         Ok(())
     })
     .map_err(device_error)?;
-    let tail = CudaGraph::scope(&device.stream, |scope| {
+    let tail = Graph::scope(&device.stream, |scope| {
         scope.record(api::memcpy(&mut integer_output, &middle))?;
         Ok(())
     })
@@ -394,7 +391,7 @@ fn split_readback_is_pending_until_stream_completion_and_rejects_reuse() -> Resu
     let mut output = api::zeros::<f32>(&[4])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         scope.record(api::memcpy(&mut output, &input))?;
         Ok(())
     })

@@ -3,6 +3,7 @@ use crate::device::CudaDevice;
 use cuda_core::f8e4m3fn;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 
 /// Tile these tests construct their output partition with; the GEMM's `M` and `N` generics and
@@ -276,7 +277,7 @@ fn fp8_small_m_split_k_preserves_values_and_measures_better() -> Result<(), Box<
         let mut partials = api::zeros::<f32>(&[splits, 16, n]).sync_on(&device.stream)?;
         let windows = k.div_ceil(128);
         let k_tiles = i32::try_from(windows.div_ceil(splits)).unwrap();
-        let baseline = CudaGraph::scope(&device.stream, |scope| {
+        let baseline = Graph::scope(&device.stream, |scope| {
             scope.record(
                 kernels::matmul(
                     (&mut output).partition([16, 64]),
@@ -289,7 +290,7 @@ fn fp8_small_m_split_k_preserves_values_and_measures_better() -> Result<(), Box<
             )?;
             Ok(())
         })?;
-        let candidate = CudaGraph::scope(&device.stream, |scope| {
+        let candidate = Graph::scope(&device.stream, |scope| {
             scope.record(
                 kernels::matmul_split(
                     (&mut partials).partition([1, 16, 64]),

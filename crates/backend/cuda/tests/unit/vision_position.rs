@@ -3,6 +3,7 @@ use crate::device::{CudaDevice, device_error};
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::Result;
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_models::vision::PositionTaps;
 use std::sync::Arc;
 
@@ -84,7 +85,7 @@ fn device_positions_match_scalar_interpolation_and_padding() -> Result<()> {
         let mut result = api::zeros::<f32>(&[padded, HIDDEN])
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        let graph = CudaGraph::scope(&device.stream, |scope| {
+        let graph = Graph::scope(&device.stream, |scope| {
             staged.record(scope, &uploaded, &mut result)
         })
         .map_err(device_error)?;

@@ -26,6 +26,7 @@ use cutile::{
     prelude::*,
 };
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use serde::{Deserialize, Serialize};
 use std::env::var_os;
 use std::fs::OpenOptions;
@@ -213,7 +214,7 @@ fn capture(
     rows: usize,
     columns: usize,
     tile: LinearTiling,
-) -> Result<(CudaGraph<()>, Arc<Tensor<f32>>)> {
+) -> Result<(Graph, Arc<Tensor<f32>>)> {
     weight.validate(rows, columns)?;
     let values = (0..columns)
         .map(|i| {
@@ -225,7 +226,7 @@ fn capture(
     let mut output = api::zeros::<f32>(&[rows])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         weight.record(scope, &mut output, &input, columns, tile)
     })
     .map_err(device_error)?;
@@ -235,11 +236,11 @@ fn capture(
 fn measure(
     device: &CudaDevice,
     options: &BenchOptions,
-    base: &CudaGraph<()>,
-    candidate: &CudaGraph<()>,
+    base: &Graph,
+    candidate: &Graph,
     tiling: LinearTiling,
 ) -> Result<Trial> {
-    let run = |graph: &CudaGraph<()>| {
+    let run = |graph: &Graph| {
         graph
             .launch()
             .sync_on(&device.stream)

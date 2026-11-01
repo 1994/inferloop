@@ -9,15 +9,16 @@ use crate::tuning::{MAX_REPS, MIN_CONFIRM_SPEEDUP, MIN_REPS, REP_MS, WARMUP_MS, 
 use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::error::tensor_error;
 use cutile::prelude::*;
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::time::Duration;
 /// Stop gross losers before the normal sample count.
 const CANARY_MAX_RATIO: f32 = 1.10;
 pub(super) fn confirm(
     device: &CudaDevice,
-    a: &CudaGraph<()>,
-    b: &CudaGraph<()>,
-    fresh_a: &CudaGraph<()>,
-    fresh_b: &CudaGraph<()>,
+    a: &Graph,
+    b: &Graph,
+    fresh_a: &Graph,
+    fresh_b: &Graph,
     shape: Shape,
 ) -> Result<Option<Vec<Trial>>, DeviceError> {
     #[cfg(test)]
@@ -59,8 +60,8 @@ pub(super) fn confirm(
 }
 fn one(
     device: &CudaDevice,
-    a: &CudaGraph<()>,
-    b: &CudaGraph<()>,
+    a: &Graph,
+    b: &Graph,
     shape: Shape,
     clear_l2: bool,
     reverse: bool,
@@ -87,8 +88,8 @@ fn one(
 }
 fn measure(
     device: &CudaDevice,
-    a: &CudaGraph<()>,
-    b: &CudaGraph<()>,
+    a: &Graph,
+    b: &Graph,
     options: &BenchOptions,
     reverse: bool,
 ) -> Result<PairedTimes, DeviceError> {

@@ -3,6 +3,7 @@ use super::{
     SHAPE_RANK,
     reference::{Fixture, maximum_error},
 };
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::env::var_os;
 
 const METADATA_LEN: usize = 4;
@@ -15,7 +16,7 @@ use cutile::prelude::*;
 use infer_core::{Error, Result};
 
 pub(super) struct Captured {
-    pub graph: CudaGraph<()>,
+    pub graph: Graph,
     state: Tensor<f32>,
     output: Tensor<f32>,
     _scratch: Tensor<f32>,
@@ -49,7 +50,7 @@ impl Captured {
         let mut output = api::zeros::<f32>(&[lanes, vh, dim])
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        let graph = CudaGraph::scope(&device.stream, |scope| {
+        let graph = Graph::scope(&device.stream, |scope| {
             scope.record(
                 kernels::delta_wy(
                     (&mut state).partition([1, dim, block]),

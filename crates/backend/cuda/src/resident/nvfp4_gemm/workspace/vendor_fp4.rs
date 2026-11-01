@@ -10,6 +10,7 @@ use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use crate::tuning::resident_gemm::{GemmConfig, WeightKey};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
+use infer_cuda_kernels::tile::runtime::Graph;
 
 impl Workspace {
     #[expect(
@@ -136,7 +137,7 @@ fn initialize(
     scale: f32,
     columns: usize,
 ) -> Result<(), DeviceError> {
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         scope.record(
             nvfp4::probe_input(
                 (&mut *input).partition([QUANTIZATION_ROWS, NVFP4_QUANT_CODES_TILE[1] * 2]),

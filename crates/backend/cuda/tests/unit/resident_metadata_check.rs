@@ -2,6 +2,7 @@ use super::update;
 use crate::device::{CudaDevice, device_error};
 use cutile::prelude::*;
 use infer_core::Result;
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::time::Instant;
 
 #[test]
@@ -15,7 +16,7 @@ fn metadata_ordering_and_overhead() -> Result<()> {
     let mut output = api::zeros::<i32>(&[4])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         scope.record(api::memcpy(&mut output, &input))?;
         Ok(())
     })
@@ -93,7 +94,7 @@ fn rotary_metadata_preserves_independent_axes() -> Result<()> {
     let mut output = api::zeros::<i32>(&[8])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         scope.record(api::memcpy(&mut output, &input))?;
         Ok(())
     })

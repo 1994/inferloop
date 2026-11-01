@@ -15,6 +15,7 @@ use cutile::cuda_async::error::DeviceError;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_models::vision::PositionTaps;
 use infer_models::vision::head_dim;
 use infer_models::vision::merge_unit;
@@ -277,7 +278,7 @@ fn patch_embed_with_positions(
         .map_err(device_error)?;
     let bias = weights.get("patch_embed.proj.bias")?;
 
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         scope.record(
             kernels::encoder::dense_bias(
                 (&mut embedded).partition([TOKEN_TILE, COLUMN_TILE]),
@@ -400,7 +401,7 @@ pub fn project_with(
     let view = weight
         .view(&[out_features, in_features])
         .map_err(device_error)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         scope.record(
             kernels::encoder::dense_bias(
                 (&mut output).partition([TOKEN_TILE, COLUMN_TILE]),
@@ -498,7 +499,7 @@ fn elementwise(
     let mut output = api::zeros::<f32>(&[padded, columns])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         let generics = vec![columns.to_string()];
         if erf {
             scope.record(
@@ -549,7 +550,7 @@ fn elementwise_sum(
     let mut output = api::zeros::<f32>(&[padded, columns])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         scope.record(
             kernels::encoder::add(
                 (&mut output).partition([TOKEN_TILE, COLUMN_TILE]),
@@ -598,7 +599,7 @@ pub fn layernorm(
         .map_err(device_error)?;
     let weight = weights.get(weight_slot)?;
     let bias = weights.get(bias_slot)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         scope.record(
             kernels::encoder::layernorm(
                 (&mut output).partition([tile]),
@@ -790,7 +791,7 @@ pub fn attention_with(
     let mut output = activation(device, padded, hidden)?;
     let tokens = i32::try_from(tokens).map_err(device_error)?;
     let scale = attention_scale(encoder)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         for (weight, bias, target) in [
             (&layer_weights.q.0, &layer_weights.q.1, &mut q),
             (&layer_weights.k.0, &layer_weights.k.1, &mut k),
@@ -973,7 +974,7 @@ fn compact_attention_launch(
         .output
         .take()
         .ok_or_else(|| Error::invalid("compact attention output buffer"))?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         for (weight, bias, target) in [
             (&layer_weights.q.0, &layer_weights.q.1, &mut buffers.q),
             (&layer_weights.k.0, &layer_weights.k.1, &mut buffers.k),
@@ -1277,7 +1278,7 @@ pub fn attention_kernel(
         .map_err(device_error)?;
     let scale = attention_scale_from_width(real_width);
     let tokens = i32::try_from(tokens).map_err(device_error)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         let repeats = if profile { REPEATS } else { 1 };
         for _ in 0..repeats {
             for (input, output) in [(&query, &mut rotated_query), (&key, &mut rotated_key)] {
@@ -1395,7 +1396,7 @@ pub fn rope_compact_kernel(
     let mut output = api::zeros::<f32>(&[padded, projections])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         scope.record(
             kernels::encoder::rope_indexed(
                 (&mut output).partition([TOKEN_TILE, 16]),
@@ -1494,7 +1495,7 @@ pub fn compact_attention(
     let tokens_i = i32::try_from(tokens).map_err(device_error)?;
     let frame_i = i32::try_from(frame_tokens).map_err(device_error)?;
     let scale = attention_scale_from_width(REAL_HEAD);
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         for (input, output) in [(&q, &mut q_rot), (&k, &mut k_rot)] {
             scope.record(
                 kernels::encoder::rope_indexed(

@@ -7,6 +7,7 @@ use crate::device::{CudaDevice, device_error};
 use cutile::error::tensor_error;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 const KH: usize = 16;
 const VH: usize = 48;
 const DIM: usize = 128;
@@ -97,7 +98,7 @@ fn check(
     ])
     .sync_on(&device.stream)
     .map_err(device_error)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         function.record(
             scope,
             Bindings {
@@ -207,9 +208,9 @@ impl Cost {
             width,
         })
     }
-    fn graph(&mut self, device: &CudaDevice, rust: Option<&Support>) -> Result<CudaGraph<()>> {
+    fn graph(&mut self, device: &CudaDevice, rust: Option<&Support>) -> Result<Graph> {
         let width = self.width;
-        CudaGraph::scope(&device.stream, |scope| {
+        Graph::scope(&device.stream, |scope| {
             scope.record(api::memcpy(&mut self.state, &self.initial))?;
             scope.record(
                 kernels::normalize_shared((&mut self.normalized).partition([1, 1, DIM]), &self.qkv)
@@ -265,12 +266,7 @@ impl Cost {
         })
         .map_err(device_error)
     }
-    fn verify(
-        &self,
-        device: &CudaDevice,
-        native: &CudaGraph<()>,
-        rust: &CudaGraph<()>,
-    ) -> Result<()> {
+    fn verify(&self, device: &CudaDevice, native: &Graph, rust: &Graph) -> Result<()> {
         native
             .launch()
             .sync_on(&device.stream)
@@ -329,7 +325,7 @@ fn rust_gdn_complete_pipeline_cost() -> Result<()> {
                     max_reps: 30,
                     clear_l2,
                 };
-                let run = |graph: &CudaGraph<()>| {
+                let run = |graph: &Graph| {
                     graph
                         .launch()
                         .sync_on(&device.stream)

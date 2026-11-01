@@ -5,6 +5,7 @@ use crate::tuning::resident_gemm::ResidentTuningSession;
 use crate::{device::CudaDevice, mlp::ProjectionWeight};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::collections::BTreeMap;
 use std::error::Error as StdError;
 type TestResult<T = ()> = Result<T, Box<dyn StdError>>;
@@ -84,7 +85,7 @@ fn run_case(device: &CudaDevice, action: &str) -> TestResult<(Vec<u8>, Vec<u8>)>
     );
     let before = norm_fp4::consumptions();
     workspace.begin_quant_capture();
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         workspace.record_norm_fp4(
             scope,
             1,

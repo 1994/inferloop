@@ -13,6 +13,7 @@ use cutile::{
     prelude::*,
 };
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use serde::{Deserialize, Serialize};
 use std::iter::once;
 use std::{
@@ -228,7 +229,7 @@ fn resolve(
 }
 
 struct Captured {
-    graph: CudaGraph<()>,
+    graph: Graph,
     greedy: Greedy,
 }
 impl Captured {
@@ -239,7 +240,7 @@ impl Captured {
         tile: usize,
     ) -> Result<Self> {
         let mut greedy = Greedy::new(device, shape[0], shape[1], tile)?;
-        let graph = CudaGraph::scope(&device.stream, |scope| greedy.record(scope, input))
+        let graph = Graph::scope(&device.stream, |scope| greedy.record(scope, input))
             .map_err(device_error)?;
         Ok(Self { graph, greedy })
     }

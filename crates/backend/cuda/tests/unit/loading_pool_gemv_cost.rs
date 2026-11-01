@@ -14,6 +14,7 @@ use cutile::{
     prelude::*,
 };
 use infer_core::{Error, ModelId, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::TensorStorage;
 use std::env::var;
 use std::error::Error as StdError;
@@ -243,19 +244,19 @@ fn limited_cases(loaded: &LoadedModel, rows: usize, limit: usize) -> TestResult<
 fn run_group(loaded: &LoadedModel, rows: usize) -> TestResult {
     let device = loaded.device();
     let mut cases = cases(loaded, rows)?;
-    let reference = CudaGraph::scope(&device.stream, |scope| {
+    let reference = Graph::scope(&device.stream, |scope| {
         for case in &mut cases {
             case.reference(scope)?;
         }
         Ok(())
     })?;
-    let old = CudaGraph::scope(&device.stream, |scope| {
+    let old = Graph::scope(&device.stream, |scope| {
         for case in &mut cases {
             case.original(scope)?;
         }
         Ok(())
     })?;
-    let new = CudaGraph::scope(&device.stream, |scope| {
+    let new = Graph::scope(&device.stream, |scope| {
         for case in &mut cases {
             case.candidate(scope)?;
         }
@@ -288,7 +289,7 @@ fn run_group(loaded: &LoadedModel, rows: usize) -> TestResult {
                 max_reps: 96,
                 clear_l2: cold,
             };
-            let run = |g: &CudaGraph<()>| {
+            let run = |g: &Graph| {
                 g.launch()
                     .sync_on(&device.stream)
                     .map_err(|e| tensor_error(&e.to_string()))
@@ -353,25 +354,25 @@ fn probe_rows(loaded: &LoadedModel, rows: usize) -> TestResult {
     let device = loaded.device();
     let mut cases = limited_cases(loaded, rows, 2)?;
     assert_eq!(cases.len(), 2);
-    let reference = CudaGraph::scope(&device.stream, |scope| {
+    let reference = Graph::scope(&device.stream, |scope| {
         for case in &mut cases {
             case.reference(scope)?;
         }
         Ok(())
     })?;
-    let gemv = CudaGraph::scope(&device.stream, |scope| {
+    let gemv = Graph::scope(&device.stream, |scope| {
         for case in &mut cases {
             case.candidate(scope)?;
         }
         Ok(())
     })?;
-    let shared = CudaGraph::scope(&device.stream, |scope| {
+    let shared = Graph::scope(&device.stream, |scope| {
         for case in &mut cases {
             case.shared(scope)?;
         }
         Ok(())
     })?;
-    let native = CudaGraph::scope(&device.stream, |scope| {
+    let native = Graph::scope(&device.stream, |scope| {
         for case in &mut cases {
             case.original(scope)?;
         }
@@ -407,7 +408,7 @@ fn probe_rows(loaded: &LoadedModel, rows: usize) -> TestResult {
                     max_reps: 30,
                     clear_l2: cold,
                 };
-                let run = |graph: &CudaGraph<()>| {
+                let run = |graph: &Graph| {
                     graph
                         .launch()
                         .sync_on(&device.stream)
@@ -483,8 +484,8 @@ fn checkpoint_selector_measures_and_reuses_complete_choices() -> TestResult {
             .ok_or("complete crossover evidence absent")?;
         assert!(entry.valid());
         assert_eq!(entry.selected, selected);
-        let reference = CudaGraph::scope(&loaded.device().stream, |scope| case.reference(scope))?;
-        let graph = CudaGraph::scope(&loaded.device().stream, |scope| {
+        let reference = Graph::scope(&loaded.device().stream, |scope| case.reference(scope))?;
+        let graph = Graph::scope(&loaded.device().stream, |scope| {
             let input = case.joined.view(&[rows, case.k])?;
             selected.record(
                 scope,

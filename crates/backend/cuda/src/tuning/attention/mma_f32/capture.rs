@@ -14,6 +14,7 @@ use cutile::{
     prelude::*,
 };
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::env::var_os;
 use std::result::Result as StdResult;
 struct Operands {
@@ -132,7 +133,7 @@ fn compute_generics(s: Shape) -> Vec<String> {
     ]
 }
 pub(super) struct Captured {
-    pub graph: CudaGraph<()>,
+    pub graph: Graph,
     operands: Operands,
     _support: Option<attention_mma::Support>,
 }
@@ -159,7 +160,7 @@ impl Captured {
             None
         };
         let mut operands = Operands::new(device, f)?;
-        let graph = CudaGraph::scope(&device.stream, |scope| {
+        let graph = Graph::scope(&device.stream, |scope| {
             operands.record(scope, f, choice, support.as_mut())
         })
         .map_err(device_error)?;

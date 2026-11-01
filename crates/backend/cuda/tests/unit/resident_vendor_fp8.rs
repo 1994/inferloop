@@ -10,6 +10,7 @@ use cutile::bench::do_bench_paired;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_models::{DeviceWeight, QuantizedPackage, WeightEncoding, convert_float_bytes};
 use std::env::var;
 use std::error::Error;
@@ -349,19 +350,19 @@ fn compare_case(
         weight.k
     );
 
-    let quantizer = CudaGraph::scope(&device.stream, |scope| inputs.quantize(scope))?;
+    let quantizer = Graph::scope(&device.stream, |scope| inputs.quantize(scope))?;
     quantizer.launch().sync_on(&device.stream)?;
-    let native_raw = CudaGraph::scope(&device.stream, |scope| {
+    let native_raw = Graph::scope(&device.stream, |scope| {
         inputs.matmul(scope, &mut native, false)
     })?;
-    let vendor_raw = CudaGraph::scope(&device.stream, |scope| {
+    let vendor_raw = Graph::scope(&device.stream, |scope| {
         inputs.matmul(scope, &mut vendor, true)
     })?;
-    let native_total = CudaGraph::scope(&device.stream, |scope| {
+    let native_total = Graph::scope(&device.stream, |scope| {
         inputs.quantize(scope)?;
         inputs.matmul(scope, &mut native, false)
     })?;
-    let vendor_total = CudaGraph::scope(&device.stream, |scope| {
+    let vendor_total = Graph::scope(&device.stream, |scope| {
         inputs.quantize(scope)?;
         inputs.matmul(scope, &mut vendor, true)
     })?;
@@ -564,7 +565,7 @@ fn vendor_fp8_verified_chooser_checkpoint_comparison() -> TestResult {
             );
             let mut baseline = api::zeros::<f32>(&[rows, weight.n]).sync_on(&device.stream)?;
             let mut output = api::zeros::<f32>(&[rows, weight.n]).sync_on(&device.stream)?;
-            let base = CudaGraph::scope(&device.stream, |scope| {
+            let base = Graph::scope(&device.stream, |scope| {
                 inputs.quantize(scope)?;
                 Choice::baseline(rows).record(
                     scope,
@@ -577,7 +578,7 @@ fn vendor_fp8_verified_chooser_checkpoint_comparison() -> TestResult {
                     weight.k,
                 )
             })?;
-            let candidate = CudaGraph::scope(&device.stream, |scope| {
+            let candidate = Graph::scope(&device.stream, |scope| {
                 inputs.quantize(scope)?;
                 choice.record(
                     scope,
@@ -615,7 +616,7 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
     let mut inputs = Inputs::new(&device, &weight, 128)?;
     let mut native = api::zeros::<f32>(&[128, 128]).sync_on(&device.stream)?;
     let mut restored_output = api::zeros::<f32>(&[128, 128]).sync_on(&device.stream)?;
-    let quantizer = CudaGraph::scope(&device.stream, |scope| inputs.quantize(scope))?;
+    let quantizer = Graph::scope(&device.stream, |scope| inputs.quantize(scope))?;
     quantizer.launch().sync_on(&device.stream)?;
     let configs =
         inputs
@@ -647,11 +648,11 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
     );
     assert!(Arc::strong_count(&weight.device_codes) >= 2);
     assert!(Arc::strong_count(&weight.device_scales) >= 2);
-    let native_graph = CudaGraph::scope(&device.stream, |scope| {
+    let native_graph = Graph::scope(&device.stream, |scope| {
         inputs.quantize(scope)?;
         inputs.matmul(scope, &mut native, false)
     })?;
-    let restored_graph = CudaGraph::scope(&device.stream, |scope| {
+    let restored_graph = Graph::scope(&device.stream, |scope| {
         inputs.quantize(scope)?;
         if !restored.record_config(
             scope,
@@ -704,7 +705,7 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
     Ok(())
 }
 
-type GraphPair<'a> = (&'a str, &'a CudaGraph<()>, &'a CudaGraph<()>);
+type GraphPair<'a> = (&'a str, &'a Graph, &'a Graph);
 
 fn measure_graphs(
     device: &CudaDevice,
@@ -766,8 +767,8 @@ fn measure_choice(
     weight: &Weight,
     rows: usize,
     choice: &Fp8GemmChoice,
-    base: &CudaGraph<()>,
-    candidate: &CudaGraph<()>,
+    base: &Graph,
+    candidate: &Graph,
 ) -> TestResult {
     for clear_l2 in [true, false] {
         let options = BenchOptions {

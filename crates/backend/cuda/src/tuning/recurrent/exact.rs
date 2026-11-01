@@ -25,6 +25,7 @@ use cutile::{
     prelude::*,
 };
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -220,8 +221,8 @@ fn fixtures(shape: [usize; SHAPE_RANK]) -> Result<Vec<Fixture>> {
 }
 fn measure(
     device: &CudaDevice,
-    native: &CudaGraph<()>,
-    rust: &CudaGraph<()>,
+    native: &Graph,
+    rust: &Graph,
     cold: bool,
     reverse: bool,
 ) -> Result<Times> {
@@ -237,7 +238,7 @@ fn measure(
     } else {
         (native, rust)
     };
-    let run = |graph: &CudaGraph<()>| {
+    let run = |graph: &Graph| {
         graph
             .launch()
             .sync_on(&device.stream)

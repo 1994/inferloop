@@ -6,6 +6,7 @@ use crate::device::GraphUpdate;
 use crate::device::device_error;
 use cutile::prelude::*;
 use infer_core::Result;
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_models::mrope::ROTARY_AXES;
 
 #[cfg(test)]
@@ -13,11 +14,11 @@ use infer_models::mrope::ROTARY_AXES;
 mod check;
 
 pub(super) fn update(
-    graph: &CudaGraph<()>,
+    graph: &Graph,
     output: &mut Tensor<i32>,
     values: [i32; METADATA_FIELDS],
 ) -> Result<()> {
-    // CudaGraph::update retains the output lease until replay completes. The replay
+    // Graph::update retains the output lease until replay completes. The replay
     // must use graph.stream(): same-stream ordering replaces the former upload sync.
     // Pass opaque bit patterns through float arguments: cuTile 0.4 automatically
     // specializes integer scalars by DivHint, causing runtime JIT as tokens change.
@@ -35,7 +36,7 @@ pub(super) fn update(
 
 /// Update scalar control metadata and independent rotary coordinates on the same stream.
 pub(super) fn update_rotary(
-    graph: &CudaGraph<()>,
+    graph: &Graph,
     output: &mut Tensor<i32>,
     values: [i32; METADATA_FIELDS],
     position: [usize; ROTARY_AXES],

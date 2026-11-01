@@ -6,6 +6,7 @@ use cutile::bench::do_bench_paired;
 use cutile::error::tensor_error;
 use cutile::{prelude::*, tile_kernel::CompileOptions};
 use infer_core::Result;
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::cell::Cell;
 use std::time::Duration;
 
@@ -35,7 +36,7 @@ fn gated_norm_occupancy_bits_and_cost() -> Result<()> {
             .sync_on(&device.stream)
             .map_err(device_error)?;
         let baseline = capture(&device, &x, &z, &w, &mut out, CompileOptions::default())?;
-        let run = |g: &CudaGraph<()>| g.launch().sync_on(&device.stream).map_err(device_error);
+        let run = |g: &Graph| g.launch().sync_on(&device.stream).map_err(device_error);
         run(&baseline)?;
         let expected = device.read_borrowed(&out)?;
         assert!(expected.iter().all(|v| v.is_finite()));
@@ -78,10 +79,10 @@ fn capture(
     w: &Tensor<f32>,
     out: &mut Tensor<f32>,
     options: CompileOptions,
-) -> Result<CudaGraph<()>> {
+) -> Result<Graph> {
     let xv = x.view(&[x.size() / 128, 128]).map_err(device_error)?;
     let zv = z.view(&[z.size() / 128, 128]).map_err(device_error)?;
-    CudaGraph::scope(&device.stream, |scope| {
+    Graph::scope(&device.stream, |scope| {
         scope.record(
             norm(out.partition([1, 128]), &xv, w, &zv, 1e-6f32, 0.0f32)
                 .generics(vec!["128".into(), "128".into(), "1".into()])
@@ -96,8 +97,8 @@ fn cost(
     device: &CudaDevice,
     rows: usize,
     occupancy: i32,
-    baseline: &CudaGraph<()>,
-    candidate: &CudaGraph<()>,
+    baseline: &Graph,
+    candidate: &Graph,
 ) -> Result<()> {
     for reverse in [false, true] {
         for cold in [true, false] {
@@ -113,7 +114,7 @@ fn cost(
             } else {
                 (baseline, candidate)
             };
-            let run = |g: &CudaGraph<()>| {
+            let run = |g: &Graph| {
                 g.launch()
                     .sync_on(&device.stream)
                     .map_err(|e| tensor_error(&e.to_string()))

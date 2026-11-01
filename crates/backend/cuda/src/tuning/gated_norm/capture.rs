@@ -11,6 +11,7 @@ use cutile::{
     prelude::*,
 };
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::iter::once;
 use std::time::Duration;
 pub(super) const JIT_OPT_LEVEL: u8 = 3;
@@ -130,14 +131,14 @@ impl Buffers {
             ),
         })
     }
-    pub fn capture(&mut self, device: &CudaDevice, occupancy: i32) -> Result<CudaGraph<()>> {
+    pub fn capture(&mut self, device: &CudaDevice, occupancy: i32) -> Result<Graph> {
         let s = self.shape;
         let x = self.x.view(&[s.rows, s.dimension]).map_err(device_error)?;
         let gate = self
             .gate
             .view(&[s.rows, s.dimension])
             .map_err(device_error)?;
-        CudaGraph::scope(&device.stream, |scope| {
+        Graph::scope(&device.stream, |scope| {
             scope.record(
                 norm(
                     (&mut self.output).partition([1, s.dimension]),
@@ -158,7 +159,7 @@ impl Buffers {
         })
         .map_err(device_error)
     }
-    pub fn read(&self, device: &CudaDevice, graph: &CudaGraph<()>) -> Result<Vec<f32>> {
+    pub fn read(&self, device: &CudaDevice, graph: &Graph) -> Result<Vec<f32>> {
         graph
             .launch()
             .sync_on(&device.stream)
@@ -181,8 +182,8 @@ pub fn bits(actual: &[f32], expected: &[f32]) -> Result<()> {
 }
 pub fn measure(
     device: &CudaDevice,
-    baseline: &CudaGraph<()>,
-    candidate: &CudaGraph<()>,
+    baseline: &Graph,
+    candidate: &Graph,
     occupancy: i32,
     reverse: bool,
     elements: usize,
@@ -200,7 +201,7 @@ pub fn measure(
             max_reps: super::super::MAX_REPS,
             clear_l2: cold,
         };
-        let run = |g: &CudaGraph<()>| {
+        let run = |g: &Graph| {
             g.launch()
                 .sync_on(&device.stream)
                 .map_err(|e| tensor_error(&e.to_string()))

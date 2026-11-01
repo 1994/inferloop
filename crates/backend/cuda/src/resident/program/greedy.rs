@@ -9,6 +9,7 @@ use crate::resident::token_readout::TokenReadout;
 use crate::tuning::greedy::select;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_models::mrope::ROTARY_AXES;
 #[cfg(test)]
 use std::env::var;
@@ -54,7 +55,7 @@ impl ProgramReadouts {
 }
 
 pub(super) struct DeviceGreedy {
-    graph: CudaGraph<()>,
+    graph: Graph,
     selector: Greedy,
 }
 impl DeviceGreedy {
@@ -80,7 +81,7 @@ impl DeviceGreedy {
             &weights.resident_tuning,
         );
         let mut selector = Greedy::new(device, 1, vocabulary, tile)?;
-        let graph = CudaGraph::scope(&device.stream, |scope| selector.record(scope, logits))
+        let graph = Graph::scope(&device.stream, |scope| selector.record(scope, logits))
             .map_err(device_error)?;
         tracing::info!(target:"infer::capture", device_greedy=true, rows=1, vocabulary, tile, "draft GPU token readout captured");
         Ok(Some(Self { graph, selector }))

@@ -6,6 +6,7 @@ use crate::device::{PinnedUpload, Readbacks};
 use crate::tuning::gated_norm::prepare;
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use infer_cuda_kernels::contract::Kernels;
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -180,11 +181,11 @@ pub struct DeviceProgram {
     last_batch: Option<(usize, usize)>,
     /// Prompt graphs, narrowest first; a chunk replays on the narrowest that holds it.
     prompts: Vec<super::batch::BatchGraph>,
-    graph: CudaGraph<()>,
+    graph: Graph,
     greedy: Option<greedy::DeviceGreedy>,
     token_readout: Option<super::token_readout::TokenReadout>,
     readbacks: Readbacks,
-    prefill: CudaGraph<()>,
+    prefill: Graph,
     metadata: Tensor<i32>,
     /// Identity block table over this program's own KV cache; see `capture::Capture::table`.
     table: Tensor<i32>,
@@ -207,7 +208,7 @@ pub struct DeviceProgram {
     prime_previous: Tensor<f32>,
     // Fusion workspaces are referenced by the captured graphs and never touched afterwards.
     lane_fusion: Vec<Option<FusionWorkspace>>,
-    reset_graph: CudaGraph<()>,
+    reset_graph: Graph,
     hidden: Arc<Tensor<f32>>,
     logits: Arc<Tensor<f32>>,
     device: CudaDevice,
@@ -1671,8 +1672,8 @@ impl DeviceProgram {
 fn capture_reset(
     device: &CudaDevice,
     states: &mut BTreeMap<TensorId, Vec<Tensor<f32>>>,
-) -> Result<CudaGraph<()>> {
-    CudaGraph::scope(&device.stream, |scope| {
+) -> Result<Graph> {
+    Graph::scope(&device.stream, |scope| {
         for tensors in states.values_mut() {
             for tensor in tensors {
                 scope.record(super::reset::Clear(tensor))?;

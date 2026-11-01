@@ -4,6 +4,7 @@ use crate::device::{CudaDevice, device_error};
 use crate::vision::program::{AttentionMode, attention_kernel, attention_tiles};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_kernel_api::attention::{AttentionDescriptor, AttentionMask};
 use serde::Deserialize;
 use std::env::var;
@@ -151,7 +152,7 @@ fn dense(device: &CudaDevice, case: &Case, q: &[f32], k: &[f32], v: &[f32]) -> R
     let mut out = api::zeros::<f32>(&shapes[3])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         for _ in 0..super::benchmark::REPEATS {
             plan.record(scope, &q, &k, &v, &mut out)?;
         }

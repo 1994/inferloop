@@ -11,6 +11,7 @@ use cutile::error::tensor_error;
 use cutile::prelude::*;
 use cutile::tile_kernel::CompileOptions;
 use infer_core::{Error, ModelId};
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::TensorOp;
 use std::env::var;
 use std::error::Error as StdError;
@@ -79,8 +80,8 @@ fn capture(
     temporary: &mut Tensor<f32>,
     outputs: &mut [Quantized],
     fused: bool,
-) -> TestResult<CudaGraph<()>> {
-    Ok(CudaGraph::scope(&device.stream, |scope| {
+) -> TestResult<Graph> {
+    Ok(Graph::scope(&device.stream, |scope| {
         for (layer, (codes, scales)) in layers.iter().zip(outputs) {
             if fused {
                 scope.record(
@@ -203,7 +204,7 @@ fn compare_dense(
     Ok(elements)
 }
 
-fn measure(device: &CudaDevice, a: &CudaGraph<()>, b: &CudaGraph<()>) -> TestResult {
+fn measure(device: &CudaDevice, a: &Graph, b: &Graph) -> TestResult {
     for cold in [true, false] {
         for reverse in [false, true] {
             let (first, second) = if reverse { (b, a) } else { (a, b) };
@@ -319,10 +320,10 @@ fn shape_graph(
     (dense, (codes, scales)): &mut (Tensor<f32>, Quantized),
     (columns, offset, scale): (usize, f32, f32),
     fused: bool,
-) -> TestResult<CudaGraph<()>> {
+) -> TestResult<Graph> {
     let block = columns.next_power_of_two();
     let fused = fused && norm_fp4_columns(columns);
-    Ok(CudaGraph::scope(&device.stream, |scope| {
+    Ok(Graph::scope(&device.stream, |scope| {
         if fused {
             scope.record(
                 norm_fp4(
@@ -485,8 +486,8 @@ fn shape_case(
 
 fn shape_latency(
     device: &CudaDevice,
-    baseline: &CudaGraph<()>,
-    fused: &CudaGraph<()>,
+    baseline: &Graph,
+    fused: &Graph,
     (rows, columns, offset, scale): (usize, usize, f32, f32),
     all_equal: bool,
 ) -> TestResult {

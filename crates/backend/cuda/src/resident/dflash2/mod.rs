@@ -13,6 +13,7 @@ pub mod budget;
 mod budget_tests;
 mod kernels;
 mod weights;
+use infer_cuda_kernels::tile::runtime::Graph;
 pub use weights::DraftWeights;
 
 use super::prefill_gemm::gemm;
@@ -115,13 +116,13 @@ struct Ingest {
 struct PromptIngest {
     features: Tensor<f32>,
     work: Ingest,
-    graph: CudaGraph<()>,
+    graph: Graph,
     uploads: PinnedUpload<i32>,
 }
 
 /// Verified-row ingestion reads the pooled verify graph's feature rows in place.
 struct VerifiedIngest {
-    graph: CudaGraph<()>,
+    graph: Graph,
     work: Ingest,
     uploads: PinnedUpload<i32>,
     _features: Arc<Tensor<f32>>,
@@ -163,7 +164,7 @@ struct ProposeBuffers {
 }
 
 struct Propose {
-    graph: CudaGraph<()>,
+    graph: Graph,
     buffers: ProposeBuffers,
     uploads: PinnedUpload<i32>,
     readbacks: Readbacks<i32>,
@@ -224,7 +225,7 @@ impl Engine {
         };
         let features = zeros::<f32>(device, &[PROMPT_ROWS, geometry.hidden])?;
         let mut work = Ingest::new(device, &geometry, PROMPT_ROWS)?;
-        let graph = CudaGraph::scope(&device.stream, |scope| {
+        let graph = Graph::scope(&device.stream, |scope| {
             record_ingest(scope, &weights, &mut rings, &mut work, &features)
         })
         .map_err(device_error)?;
@@ -293,7 +294,7 @@ impl Engine {
         let mut work = Ingest::new(device, &geometry, rows)?;
         let weights = Arc::clone(&self.weights);
         let rings = &mut self.rings;
-        let graph = CudaGraph::scope(&device.stream, |scope| {
+        let graph = Graph::scope(&device.stream, |scope| {
             let input = features.view(&[rows, geometry.hidden])?;
             record_ingest_from(scope, &weights, rings, &mut work, &input)
         })
@@ -305,7 +306,7 @@ impl Engine {
             _features: features,
         };
         let mut buffers = ProposeBuffers::new(device, &geometry, slots)?;
-        let graph = CudaGraph::scope(&device.stream, |scope| {
+        let graph = Graph::scope(&device.stream, |scope| {
             record_propose(scope, &weights, rings, &mut buffers)
         })
         .map_err(|error| device_error(format!("{slots}-slot proposal: {error}")))?;

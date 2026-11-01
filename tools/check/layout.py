@@ -26,7 +26,13 @@ BACKENDS = {
 # only fall: each lowering moved behind `infer-cuda-kernels` lowers them, and that commit lowers the
 # baseline too.
 CUDA_HOST = "crates/backend/cuda/src"
-CUDA_HOST_TOKENS = {"Tensor<": 867, ".partition(": 336, ".generics(": 211, "cuda_core": 86}
+CUDA_HOST_TOKENS = {
+    "Tensor<": 867,
+    ".partition(": 336,
+    ".generics(": 211,
+    "cuda_core": 86,
+    "CudaGraph": 0,
+}
 # Artifact catalogs name the architectures they ship; everything else asks `Arch` what it can do.
 ARCHITECTURE_CATALOGS = ("resident/attention_mma/",)
 # Workload meaning stays in `infer-workloads`; these layers execute programs and never branch on it.

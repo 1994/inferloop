@@ -12,6 +12,7 @@ use crate::{
 use cutile::prelude::*;
 use cutile::tile_kernel::validate_programmatic_dependent_launch;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use kernels::fused;
 pub use projection::ProjectionWeight;
 
@@ -37,7 +38,7 @@ pub struct MlpWeights {
 
 /// Owns stable input/output buffers; the graph retains all intermediate storage.
 pub struct MlpGraph {
-    graph: CudaGraph<()>,
+    graph: Graph,
     input: Tensor<f32>,
     output: Arc<Tensor<f32>>,
     device: CudaDevice,
@@ -85,7 +86,7 @@ impl MlpGraph {
         let mut activated = allocate(n)?;
         let mut down = allocate(d)?;
         let mut output = allocate(d)?;
-        let graph = CudaGraph::scope(&device.stream, |scope| {
+        let graph = Graph::scope(&device.stream, |scope| {
             scope.record(
                 fused::norm(
                     (&mut normalized).partition([d.next_power_of_two()]),

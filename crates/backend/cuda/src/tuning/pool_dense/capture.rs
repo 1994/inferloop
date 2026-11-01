@@ -8,6 +8,7 @@ use crate::tuning::resident_gemm::{ResidentGemmKey, kernel_environment};
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::{half::bf16, prelude::*};
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -26,7 +27,7 @@ const CENTER: f32 = 65.0;
 const DIVISOR: f32 = 37.0;
 
 pub(super) struct Captured {
-    pub(super) graph: CudaGraph<()>,
+    pub(super) graph: Graph,
     output: Tensor<f32>,
     _input: Arc<Tensor<f32>>,
     _weight: Arc<Tensor<bf16>>,
@@ -64,7 +65,7 @@ impl Captured {
             .sync_on(&device.stream)
             .map_err(device_error)?;
         let view = input.view(&[m, k]).map_err(device_error)?;
-        let graph = CudaGraph::scope(&device.stream, |scope| {
+        let graph = Graph::scope(&device.stream, |scope| {
             choice.record(scope, weight, &view, &mut output, k, tile)
         })
         .map_err(device_error)?;

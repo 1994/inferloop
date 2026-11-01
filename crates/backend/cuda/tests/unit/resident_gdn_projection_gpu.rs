@@ -20,6 +20,7 @@ use cutile::{
 };
 use infer_core::OpId;
 use infer_cuda_kernels::tile::kernels as tile_kernels;
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::{DType as IrDType, TensorNode, TensorOp, TensorSpec, TensorStorage};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -137,8 +138,8 @@ impl Fixture {
         })
     }
 
-    fn original(&mut self, device: &CudaDevice) -> TestResult<CudaGraph<()>> {
-        Ok(CudaGraph::scope(&device.stream, |scope| {
+    fn original(&mut self, device: &CudaDevice) -> TestResult<Graph> {
+        Ok(Graph::scope(&device.stream, |scope| {
             for index in [1, 2] {
                 let node = &self.graph.nodes[index];
                 let output_slot = self.arena.slot(node.outputs[0]).map_err(capture_error)?;
@@ -164,10 +165,10 @@ impl Fixture {
         })?)
     }
 
-    fn candidate(&mut self, device: &CudaDevice) -> TestResult<CudaGraph<()>> {
+    fn candidate(&mut self, device: &CudaDevice) -> TestResult<Graph> {
         let plan = DensePlan::new(&self.graph, None);
         assert_eq!(plan.pair(1), Some(2));
-        Ok(CudaGraph::scope(&device.stream, |scope| {
+        Ok(Graph::scope(&device.stream, |scope| {
             let profile = device.profile().map_err(capture_error)?;
             if !prefill_projection::record_pair(
                 scope,
@@ -221,12 +222,12 @@ impl Fixture {
 
 fn pair(
     device: &CudaDevice,
-    baseline: &CudaGraph<()>,
-    candidate: &CudaGraph<()>,
+    baseline: &Graph,
+    candidate: &Graph,
     options: &BenchOptions,
     reverse: bool,
 ) -> TestResult<(Vec<f32>, Vec<f32>)> {
-    let launch = |graph: &CudaGraph<()>| {
+    let launch = |graph: &Graph| {
         graph
             .launch()
             .sync_on(&device.stream)
@@ -253,8 +254,8 @@ fn pair(
 
 fn performance(
     device: &CudaDevice,
-    baseline: &CudaGraph<()>,
-    candidate: &CudaGraph<()>,
+    baseline: &Graph,
+    candidate: &Graph,
     shape: [usize; 3],
 ) -> TestResult {
     if shape[1..] == [48, 5120] {

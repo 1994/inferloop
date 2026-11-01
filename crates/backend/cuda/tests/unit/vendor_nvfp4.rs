@@ -9,6 +9,7 @@ use cutile::error::tensor_error;
 use cutile::prelude::*;
 use cutile::tile_kernel::CompileOptions;
 use infer_core::ModelId;
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::env::var;
 use std::error::Error as StdError;
 use std::time::Duration;
@@ -41,9 +42,9 @@ fn capture(
     outputs: &mut [Tensor<f32>],
     packed: &mut Packed,
     vendor: Option<(&Arc<Context>, &Arc<Prepared>)>,
-) -> TestResult<CudaGraph<()>> {
+) -> TestResult<Graph> {
     let (q, qs) = quantized;
-    Ok(CudaGraph::scope(&device.stream, |scope| {
+    Ok(Graph::scope(&device.stream, |scope| {
         for (layer, out) in layers.iter().zip(outputs) {
             scope.record(
                 kernels::quantize_rows(
@@ -134,12 +135,7 @@ fn compare(
     Ok(())
 }
 
-fn measure(
-    device: &CudaDevice,
-    a: &CudaGraph<()>,
-    b: &CudaGraph<()>,
-    algorithm: usize,
-) -> TestResult {
+fn measure(device: &CudaDevice, a: &Graph, b: &Graph, algorithm: usize) -> TestResult {
     let rows = test_rows()?;
     let canary = BenchOptions {
         warmup: Duration::ZERO,

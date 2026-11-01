@@ -6,6 +6,7 @@ use crate::resident::kernels::aux::prefill_rope;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 
 const HEADS: usize = 4;
@@ -696,7 +697,7 @@ impl ChunkFixture {
 
 /// Executables drop before every KV/output/input allocation they reference.
 struct AttentionGraph {
-    graph: CudaGraph<()>,
+    graph: Graph,
     output: Tensor<f32>,
     keys: Tensor<f8e4m3fn>,
     values: Tensor<f8e4m3fn>,
@@ -721,7 +722,7 @@ impl AttentionGraph {
             [fixture.case.lanes, MODEL_HEADS * MODEL_DIM]
         };
         let mut output = api::zeros::<f32>(&shape).sync_on(&device.stream)?;
-        let graph = CudaGraph::scope(&device.stream, |scope| {
+        let graph = Graph::scope(&device.stream, |scope| {
             fixture.record_append(scope, &mut keys, &mut values)?;
             fixture.record_compute(scope, &mut output, (&keys, &values), variant)?;
             Ok(())
@@ -752,7 +753,7 @@ impl AttentionGraph {
 fn check_complete_graph(
     device: &CudaDevice,
     fixture: &ChunkFixture,
-    graph: &CudaGraph<()>,
+    graph: &Graph,
     output: &Tensor<f32>,
     cache: (&Tensor<f8e4m3fn>, &Tensor<f8e4m3fn>),
     variant: AttentionVariant,
@@ -793,7 +794,7 @@ fn check_complete_graph(
 
 /// Cost arms share the exact KV/output addresses; all executables drop before their operands.
 struct SharedAttentionGraphs {
-    graphs: Vec<(AttentionVariant, CudaGraph<()>)>,
+    graphs: Vec<(AttentionVariant, Graph)>,
     output: Tensor<f32>,
     keys: Tensor<f8e4m3fn>,
     values: Tensor<f8e4m3fn>,
@@ -826,7 +827,7 @@ impl SharedAttentionGraphs {
                 [fixture.case.lanes, MODEL_HEADS * MODEL_DIM]
             };
             output = output.reshape(&shape)?;
-            let graph = CudaGraph::scope(&device.stream, |scope| {
+            let graph = Graph::scope(&device.stream, |scope| {
                 fixture.record_append(scope, &mut keys, &mut values)?;
                 fixture.record_compute(scope, &mut output, (&keys, &values), variant)?;
                 Ok(())
@@ -1239,7 +1240,7 @@ fn measure_attention_pair(
     let baseline = &shared.graphs[arms.0];
     let candidate = &shared.graphs[arms.1];
     let addresses = shared.addresses();
-    let run = |capture: &CudaGraph<()>| {
+    let run = |capture: &Graph| {
         capture
             .launch()
             .sync_on(&device.stream)

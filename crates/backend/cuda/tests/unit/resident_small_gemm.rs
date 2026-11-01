@@ -4,6 +4,7 @@ use crate::kernels::linear::dense;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::{half::bf16, prelude::*};
+use infer_cuda_kernels::tile::runtime::Graph;
 use std::env::var;
 use std::error::Error;
 
@@ -72,7 +73,7 @@ fn small_mma_performance() -> Result<(), Box<dyn Error>> {
         for m in [2, 4, 12] {
             let input = device.upload(vec![0.253_f32; m * k], &[m, k])?;
             let mut output = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
-            let old = CudaGraph::scope(&device.stream, |scope| {
+            let old = Graph::scope(&device.stream, |scope| {
                 scope.record(
                     super::super::linear_batch::batched::dense(
                         (&mut output).partition([4, 16]),
@@ -88,7 +89,7 @@ fn small_mma_performance() -> Result<(), Box<dyn Error>> {
                 )?;
                 Ok(())
             })?;
-            let new = CudaGraph::scope(&device.stream, |scope| {
+            let new = Graph::scope(&device.stream, |scope| {
                 scope.record(
                     kernels::dense((&mut output).partition([16, 32]), &input, &weights)
                         .generics(vec![bf16::DTYPE.as_str().into(), k.to_string()]),
@@ -505,7 +506,7 @@ fn checkpoint_pool_outputs(
     assert_eq!(vectors.len(), 4);
     let packed = device.upload(input.to_vec(), &[4, columns])?;
     let mut result = api::zeros::<f32>(&[4, outputs]).sync_on(&device.stream)?;
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         scope.record(
             super::super::linear_batch::batched::dense(
                 (&mut result).partition([4, 16]),
@@ -647,7 +648,7 @@ fn checkpoint_pool_small_f32_projection_cost() -> Result<(), Box<dyn Error>> {
         &[4, first.columns],
     )?;
     let mut output = api::zeros::<f32>(&[4, first.outputs]).sync_on(&device.stream)?;
-    let baseline = CudaGraph::scope(&device.stream, |scope| {
+    let baseline = Graph::scope(&device.stream, |scope| {
         for weight in &weights {
             scope.record(
                 kernels::dense((&mut output).partition([16, 32]), &input, &weight.device).generics(
@@ -657,7 +658,7 @@ fn checkpoint_pool_small_f32_projection_cost() -> Result<(), Box<dyn Error>> {
         }
         Ok(())
     })?;
-    let candidate = CudaGraph::scope(&device.stream, |scope| {
+    let candidate = Graph::scope(&device.stream, |scope| {
         for weight in &weights {
             scope.record(
                 super::super::linear_batch::batched::dense(

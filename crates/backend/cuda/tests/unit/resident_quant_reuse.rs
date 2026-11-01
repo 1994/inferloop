@@ -15,6 +15,7 @@ use cutile::error::tensor_error;
 use cutile::prelude::*;
 use infer_core::{ModelId, OpId, TensorId};
 use infer_cuda_kernels::tile::kernels as tile_kernels;
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::{DType as IrDType, DataflowGraph, TensorNode, TensorOp, TensorSpec, TensorStorage};
 use infer_models::{DeviceWeight, QuantizedPackage, WeightEncoding};
 use std::env::var;
@@ -237,8 +238,8 @@ fn checkpoint_pairs(package: &QuantizedPackage) -> TestResult<Vec<(String, Devic
 
 struct Case {
     // Graphs drop before every allocation and workspace they reference.
-    separate: CudaGraph<()>,
-    shared: CudaGraph<()>,
+    separate: Graph,
+    shared: Graph,
     workspace: Workspace,
     input: Tensor<f32>,
     gate: Tensor<f32>,
@@ -413,11 +414,11 @@ fn capture_pair(
     input: &Tensor<f32>,
     gate: &mut Tensor<f32>,
     up: &mut Tensor<f32>,
-) -> TestResult<CudaGraph<()>> {
+) -> TestResult<Graph> {
     let input_view = input.view(&[usize::try_from(input.shape()[0])?, pair.columns])?;
     let input_pointer = pointer(input);
     workspace.begin_quant_capture();
-    let graph = CudaGraph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         for (index, output) in [(0, &mut *gate), (1, &mut *up)] {
             workspace.enter_quant_node(index, plan.role(index));
             let id = pair.graph.nodes[index].inputs[1];
