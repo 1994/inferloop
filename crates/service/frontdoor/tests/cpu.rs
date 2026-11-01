@@ -27,6 +27,9 @@ async fn default_preparation_accepts_a_large_staging_request() -> Result<()> {
     Ok(())
 }
 
+/// Longer than a worker needs to return from a finished job to its wait.
+const WORKERS_PARKED: Duration = Duration::from_millis(100);
+
 #[tokio::test]
 async fn sequential_preparation_reuses_the_ready_worker() -> Result<()> {
     let pool = CpuPool::new(CpuConfig {
@@ -53,6 +56,8 @@ async fn sequential_preparation_reuses_the_ready_worker() -> Result<()> {
             .map_err(|error| Error::invariant(error.to_string()))?
             .map_err(|error| Error::invariant(error.to_string()))??;
     }
+    // A startup worker replies before it parks again, and until then it may take any queued job.
+    sleep(WORKERS_PARKED).await;
     let first = pool.run(0, |_| Ok(current().id())).await?;
     for _ in 0..100 {
         assert_eq!(pool.run(0, |_| Ok(current().id())).await?, first);
