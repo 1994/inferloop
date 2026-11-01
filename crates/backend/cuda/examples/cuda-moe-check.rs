@@ -123,22 +123,44 @@ struct Prefix {
     hidden: Vec<Vec<f32>>,
 }
 
+/// Largest error against a row's largest magnitude. Decode attention scores with BF16 products and
+/// F32 accumulation, so rows follow the goldens to that contract's accuracy rather than F32 rounding.
+#[cfg(cuda_backend)]
+const RELATIVE_TOLERANCE: f32 = 0.02;
+
 #[cfg(cuda_backend)]
 fn compare(actual: &[f32], expected: &[f32]) -> infer_core::Result<f32> {
     if actual.len() != expected.len() {
         return Err(infer_core::Error::invalid("parity output shape"));
     }
+    let scale = expected
+        .iter()
+        .fold(0.0f32, |peak, value| peak.max(value.abs()));
     let mut maximum = 0.0f32;
     for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
         let error = (actual - expected).abs();
-        if !actual.is_finite() || error > expected.abs().mul_add(0.000_5, 0.000_05) {
+        if !actual.is_finite() || error > scale * RELATIVE_TOLERANCE {
             return Err(infer_core::Error::invariant(format!(
-                "MoE parity index {index}: {actual} vs {expected}, error {error}"
+                "MoE parity index {index}: {actual} vs {expected}, error {error}, scale {scale}"
             )));
         }
         maximum = maximum.max(error);
     }
+    if top_one(actual) != top_one(expected) {
+        return Err(infer_core::Error::invariant(
+            "MoE parity top element differs",
+        ));
+    }
     Ok(maximum)
+}
+
+#[cfg(cuda_backend)]
+fn top_one(values: &[f32]) -> Option<usize> {
+    values
+        .iter()
+        .enumerate()
+        .max_by(|left, right| left.1.total_cmp(right.1))
+        .map(|(index, _)| index)
 }
 
 #[cfg(cuda_backend)]
