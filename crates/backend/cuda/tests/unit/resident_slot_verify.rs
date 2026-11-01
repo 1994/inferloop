@@ -7,9 +7,17 @@ use crate::{
 use cutile::half::bf16;
 use cutile::jit_cache::enable_default;
 use infer_core::{OpId, TensorId};
+use infer_cuda_kernels::tile::kernels as tile_kernels;
 use infer_ir::{DType, DataflowGraph, TensorNode, TensorSpec};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+
+fn fixture_embedding(device: &CudaDevice) -> Result<Arc<Tensor<bf16>>> {
+    let dense = (0..1024_u16)
+        .map(|i| bf16::from_f32(f32::from(i % 29) / 29.0 - 0.5))
+        .collect();
+    device.upload(dense, &[32, 32])
+}
 
 fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
     let mut graph = DataflowGraph::default();
@@ -85,11 +93,9 @@ fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
     }
     graph.hidden = Some(TensorId::new(4)?);
     graph.logits = Some(TensorId::new(7)?);
-    let dense = (0..1024_u16)
-        .map(|i| bf16::from_f32(f32::from(i % 29) / 29.0 - 0.5))
-        .collect();
-    let embedding = device.upload(dense, &[32, 32])?;
+    let embedding = fixture_embedding(device)?;
     let weights = ProgramWeights {
+        kernels: Arc::new(tile_kernels(0)),
         mrope: false,
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,

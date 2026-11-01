@@ -6,6 +6,7 @@ use crate::{
 };
 use cutile::half::bf16;
 use infer_core::{OpId, Result, TensorId};
+use infer_cuda_kernels::tile::kernels as tile_kernels;
 use infer_ir::{DType, DataflowGraph, StateKind, TensorNode, TensorOp, TensorSpec, TensorStorage};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -47,6 +48,7 @@ fn fixture_at(
         &[16, out_columns],
     )?;
     let weights = ProgramWeights {
+        kernels: Arc::new(tile_kernels(0)),
         mrope: false,
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,

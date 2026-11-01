@@ -21,7 +21,9 @@ use cutile::cuda_async::device_future::DeviceFuture;
 use cutile::jit_cache::enable_default;
 use cutile::prelude::*;
 use infer_core::{Error as InferError, ErrorCode, Result};
+use infer_cuda_kernels::contract::Kernels;
 use infer_cuda_kernels::contract::target::Arch;
+use infer_cuda_kernels::tile::kernels;
 use serde::Serialize;
 use std::fmt::Display;
 use std::ptr::{null, null_mut};
@@ -220,6 +222,12 @@ impl CudaDevice {
     /// Returns a CUDA error when the device name cannot be queried.
     pub fn name(&self) -> Result<String> {
         self.stream.device().name().map_err(device_error)
+    }
+
+    /// This device's kernels; the single place a kernel source is chosen.
+    #[must_use]
+    pub fn kernels(&self) -> Arc<Kernels> {
+        Arc::new(kernels(self.ordinal))
     }
 
     #[must_use]

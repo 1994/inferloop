@@ -79,6 +79,8 @@ runtime                  submit / poll，不重建拓扑
 
 ### M1 第一条纵切
 
+- **第一批已落地：** `Buffer` 取代裸 `DevicePtr`，`unsafe` 集中到构造处（host 只有 `resident/buffers.rs` 一个文件），family 方法变成安全函数；`Kernels { projection, rope }` 在加载时选定一次，放进 `ProgramWeights`。projection 只迁了 `pool_gemv`；rope 迁了主路径的 5 种变体，DFlash2 和 vision 的 rope 未迁。Plan 只带几何，操作数长度由实现校验。
+- **未解决：** 捕获和异步执行（G5）还在 host：`CudaGraph::scope` 和 `cutile::cuda_async` 都没动。`Recording::Scope` 仍是 cuTile 类型的入口。
 - **做什么：** 按 kernel provider 方案 Phase 1 落地 `Kernels`、`Buffer`、`Device` / `Stream`，打通 projection。host 不再 `TileProjection::new`（`resident/pool_gemv.rs:80`），选择一次定完。
 - **为什么先于其他算子族：** 现有契约是 `unsafe fn` 加 `DevicePtr`，不先定 `Buffer` 就迁移，unsafe 面会随算子族增长。
 - **验收：** 13.x 模型输出逐位一致；固定负载性能不回退；记录 kernel 指纹的失配范围及其对已选配置的影响。
@@ -225,7 +227,7 @@ Workload 边界目前是干净的：CUDA 和 runtime 中查不到 `WorkloadKind`
 
 **未完成，从这里接手。** 以下依赖链要改 868 处 `Tensor<` 和热路径，按方案逐项单独开 PR：
 
-1. **M1：** `Buffer`、`Device` / `Stream` 与多个算子族一起设计，契约必须覆盖捕获和异步执行（G5）。host 目前只有一个契约调用点，不单独包 `Kernels`。
+1. **M1 其余：** `Buffer` 和 `Kernels` 已落地（见第 3 节）。下一步是契约覆盖捕获和异步执行（G5），然后迁其余算子族。
 2. **M3：** 候选即 Plan，依赖 M1。现有 12 张调优表各有键和证据，要处理 `tuning.json` 的兼容或失效。
 3. **M4 其余、M5、M6：** 依次推进。M5 的已知缺口是非 2 幂形状的通用 cell。
 4. **O2 按块计价、O3 其余（`KvCacheManager` 和前缀）、O4 其余（executor 的 draft 分支）：** 都碰热路径，与上面错开。

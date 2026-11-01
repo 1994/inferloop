@@ -94,6 +94,7 @@ fn weights(device: &CudaDevice, d: usize, id: TensorId) -> Result<ProgramWeights
         .flat_map(|v| vec![bf16::from_f32(v); d])
         .collect();
     Ok(ProgramWeights {
+        kernels: device.kernels(),
         mrope: false,
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,

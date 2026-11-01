@@ -30,6 +30,7 @@ pub fn prepare(
     fusion: Option<FusionWeights>,
 ) -> Result<()> {
     let mut weights = ProgramWeights {
+        kernels: model.device.kernels(),
         mrope: false,
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,

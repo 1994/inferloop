@@ -19,6 +19,7 @@ use cutile::{
     prelude::*,
 };
 use infer_core::OpId;
+use infer_cuda_kernels::tile::kernels as tile_kernels;
 use infer_ir::{DType as IrDType, TensorNode, TensorOp, TensorSpec, TensorStorage};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -104,6 +105,7 @@ impl Fixture {
             ),
         ]);
         let weights = ProgramWeights {
+            kernels: Arc::new(tile_kernels(0)),
             autotune: false,
             resident_tuning: Arc::new(ResidentTuningSession::default()),
             batch_width: 3,

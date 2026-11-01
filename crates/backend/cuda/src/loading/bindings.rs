@@ -45,7 +45,7 @@ pub(super) fn load(
         path,
         autotune: options.autotune,
     };
-    let mut weights = empty_weights(options);
+    let mut weights = empty_weights(device, options);
     let weights_phase = phase::Phase::start(
         "weights",
         format!("binding {} checkpoint weights", package.weights.len()),
@@ -91,8 +91,9 @@ pub(super) fn load(
 }
 
 /// Weights with their graph-independent fields set; graph tensors are bound by [`bind_tensors`].
-fn empty_weights(options: &LoadOptions) -> ProgramWeights {
+fn empty_weights(device: &CudaDevice, options: &LoadOptions) -> ProgramWeights {
     ProgramWeights {
+        kernels: device.kernels(),
         autotune: options.autotune,
         resident_tuning: Arc::new(ResidentTuningSession::default()),
         batch_width: options.verification_width.max(
@@ -283,6 +284,15 @@ fn draft_kv_scales(graph: &DataflowGraph) -> BTreeMap<TensorId, [f32; 2]> {
 }
 
 /// Bind draft weights, sharing the target embedding and vocabulary projection by slot.
+fn linear_weights(graph: &DataflowGraph) -> BTreeSet<TensorId> {
+    graph
+        .nodes
+        .iter()
+        .filter(|n| n.op == TensorOp::Linear)
+        .map(|n| n.inputs[1])
+        .collect()
+}
+
 fn draft_weights(
     device: &CudaDevice,
     profile: &DeviceProfile,
@@ -297,13 +307,9 @@ fn draft_weights(
         .speculation
         .clone()
         .ok_or_else(|| Error::unsupported("MTP draft head is not declared"))?;
-    let linear_inputs: BTreeSet<_> = graph
-        .nodes
-        .iter()
-        .filter(|n| n.op == TensorOp::Linear)
-        .map(|n| n.inputs[1])
-        .collect();
+    let linear_inputs = linear_weights(graph);
     let mut weights = ProgramWeights {
+        kernels: Arc::clone(&target.kernels),
         autotune: target.autotune,
         resident_tuning: Arc::clone(&target.resident_tuning),
         // The draft captures the widest prompt graph so priming runs one pass per chunk instead

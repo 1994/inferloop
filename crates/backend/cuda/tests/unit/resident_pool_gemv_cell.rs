@@ -5,7 +5,9 @@ mod acceptance;
 use super::*;
 use crate::device::{CudaDevice, device_error};
 use acceptance::{Case, OUTPUTS, ROWS};
+use cutile::half::bf16;
 use infer_core::{Error, Result};
+use std::sync::Arc;
 
 /// Reduction lengths the cuTile kernel tiles evenly.
 const COLUMNS: [usize; 3] = [64, 128, 256];
@@ -31,17 +33,20 @@ fn check(device: &CudaDevice, case: Case) -> Result<()> {
             .collect(),
         &[OUTPUTS, columns],
     )?;
-    let mut output = upload(device, vec![f32::NAN; ROWS * OUTPUTS], &[ROWS, OUTPUTS])?;
+    let output = upload(device, vec![f32::NAN; ROWS * OUTPUTS], &[ROWS, OUTPUTS])?;
     let tile = LinearTiling::new(TILE.0, TILE.1)?;
     let pointer = input.device_pointer().cu_deviceptr();
     let view = input.view(&[ROWS, columns]).map_err(device_error)?;
+    let kernels = device.kernels();
+    let weight = Arc::new(weight);
     let graph = CudaGraph::scope(&device.stream, |scope| {
         record_gemv(
+            &kernels,
             scope,
-            &Arc::new(weight),
+            buffer(weight.as_ref())?,
             &view,
             pointer,
-            &mut output,
+            buffer(&output)?,
             columns,
             tile,
         )

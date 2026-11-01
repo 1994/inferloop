@@ -92,6 +92,22 @@ impl Capture<'_> {
         }
     }
 
+    /// Where [`Self::input`] starts on the device: a lane's row sits inside its batched slot.
+    pub(super) fn input_address(&self, id: TensorId) -> Result<u64, DeviceError> {
+        if let Some(value) = self.weights.constants.get(&id) {
+            return Ok(value.device_pointer().cu_deviceptr());
+        }
+        let tensor = self.arena.get(id).map_err(error)?;
+        let base = tensor.device_pointer().cu_deviceptr();
+        let CaptureMode::Row(lane) = self.mode else {
+            return Ok(base);
+        };
+        let row = tensor.size() / self.arena.lanes();
+        u64::try_from(lane * row * size_of::<f32>())
+            .map(|offset| base + offset)
+            .map_err(error)
+    }
+
     pub fn record(&mut self, node: &TensorNode) -> Result<(), DeviceError> {
         for (part, id) in node.outputs.iter().enumerate() {
             let index = self.arena.slot(*id).map_err(error)?;

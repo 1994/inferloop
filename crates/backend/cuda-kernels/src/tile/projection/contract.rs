@@ -1,21 +1,14 @@
 //! cuTile implementation of the projection family.
-//!
-//! The host owns every allocation; this module wraps its device pointers in borrowed tensors for
-//! exactly one recording, and the captured graph keeps only the addresses.
-#![expect(
-    unsafe_code,
-    reason = "Wraps host-owned device pointers in borrowed cuTile tensors for one recording"
-)]
-
 use super::pool_gemv;
+use crate::contract::buffer::{Bf16, Buffer};
 use crate::contract::kernels::Projection;
 use crate::contract::plan::PoolGemvPlan;
-use crate::contract::ptr::DevicePtr;
 use crate::contract::recording::Recording;
+use crate::tile::{backend_error, borrowed};
 use cuda_core::DType;
 use cutile::half::bf16;
 use cutile::prelude::*;
-use infer_core::{Error, ErrorCode, Result};
+use infer_core::{Error, Result};
 
 /// Projection kernels compiled with cuTile.
 pub struct TileProjection {
@@ -30,49 +23,35 @@ impl TileProjection {
     }
 }
 
+/// The same memory, typed for cuTile.
+#[expect(
+    unsafe_code,
+    reason = "Bf16 and bf16 are the same two bytes; only the marker changes"
+)]
+const fn weight(buffer: Buffer<'_, Bf16>) -> Buffer<'_, bf16> {
+    // SAFETY: the address and element count are unchanged and carry the caller's guarantee.
+    unsafe { Buffer::new(buffer.address(), buffer.len()) }
+}
+
 impl Projection for TileProjection {
-    unsafe fn pool_gemv_bf16(
+    fn pool_gemv_bf16(
         &self,
         recording: &Recording<'_>,
         plan: &PoolGemvPlan,
-        out: DevicePtr,
-        x: DevicePtr,
-        w: DevicePtr,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        w: Buffer<'_, Bf16>,
     ) -> Result<()> {
         let Recording::Scope(scope) = recording else {
             return Err(Error::unsupported("cuTile launches record through a scope"));
         };
-        let rows = i32::try_from(plan.rows).map_err(|_| geometry("rows"))?;
-        let outputs = i32::try_from(plan.outputs).map_err(|_| geometry("outputs"))?;
-        let columns = i32::try_from(plan.columns).map_err(|_| geometry("columns"))?;
-        // SAFETY: the caller guarantees a contiguous `[rows, outputs]` allocation that outlives
-        // every replay; the borrowed tensor frees nothing when it drops.
-        let mut out = unsafe {
-            Tensor::<f32>::borrow_raw_parts(
-                out.0,
-                self.ordinal,
-                vec![rows, outputs],
-                vec![outputs, 1],
-            )
-        };
-        // SAFETY: as for `out`, with the `[rows, columns]` input.
-        let x = unsafe {
-            Tensor::<f32>::borrow_raw_parts(
-                x.0,
-                self.ordinal,
-                vec![rows, columns],
-                vec![columns, 1],
-            )
-        };
-        // SAFETY: as for `out`, with the `[outputs, columns]` weight.
-        let w = unsafe {
-            Tensor::<bf16>::borrow_raw_parts(
-                w.0,
-                self.ordinal,
-                vec![outputs, columns],
-                vec![columns, 1],
-            )
-        };
+        let (rows, outputs, columns) = (plan.rows, plan.outputs, plan.columns);
+        let out = out.require("projection output", rows * outputs)?;
+        let x = x.require("projection input", rows * columns)?;
+        let w = w.require("projection weight", outputs * columns)?;
+        let mut out = borrowed(out, self.ordinal, &[rows, outputs])?;
+        let x = borrowed(x, self.ordinal, &[rows, columns])?;
+        let w = borrowed(weight(w), self.ordinal, &[outputs, columns])?;
         scope
             .record(
                 pool_gemv::dense((&mut out).partition([1, plan.tile_rows]), &x, &w).generics(vec![
@@ -82,11 +61,7 @@ impl Projection for TileProjection {
                     plan.columns.to_string(),
                 ]),
             )
-            .map_err(|error| Error::new(ErrorCode::Backend, error.to_string()))?;
+            .map_err(backend_error)?;
         Ok(())
     }
-}
-
-fn geometry(field: &str) -> Error {
-    Error::invalid(format!("projection {field} exceeds i32"))
 }

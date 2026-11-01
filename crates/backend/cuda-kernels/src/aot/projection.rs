@@ -1,14 +1,14 @@
 //! AOT implementation of the projection family; kernels live in `projection/*.cu`.
 #![expect(
     unsafe_code,
-    reason = "Implements the unsafe launch contract and forwards its obligations to the driver"
+    reason = "Passes buffers that already carry the contract's guarantee to the driver"
 )]
 
 use super::artifact::Manifest;
 use super::driver::{Device, Function};
+use crate::contract::buffer::{Bf16, Buffer};
 use crate::contract::kernels::Projection;
 use crate::contract::plan::PoolGemvPlan;
-use crate::contract::ptr::DevicePtr;
 use crate::contract::recording::Recording;
 use infer_core::{Error, ErrorCode, Result};
 use std::ffi::{CStr, c_void};
@@ -59,19 +59,23 @@ impl AotProjection {
 }
 
 impl Projection for AotProjection {
-    unsafe fn pool_gemv_bf16(
+    fn pool_gemv_bf16(
         &self,
         recording: &Recording<'_>,
         plan: &PoolGemvPlan,
-        out: DevicePtr,
-        x: DevicePtr,
-        w: DevicePtr,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        w: Buffer<'_, Bf16>,
     ) -> Result<()> {
+        let out = out.require("projection output", plan.rows * plan.outputs)?;
+        let x = x.require("projection input", plan.rows * plan.columns)?;
+        let w = w.require("projection weight", plan.outputs * plan.columns)?;
         let rows = u32::try_from(plan.rows).map_err(|_| geometry("rows"))?;
         let elements = u32::try_from(plan.outputs).map_err(|_| geometry("outputs"))?;
         let mut outputs = i32::try_from(plan.outputs).map_err(|_| geometry("outputs"))?;
         let mut columns = i32::try_from(plan.columns).map_err(|_| geometry("columns"))?;
-        let (mut x_pointer, mut w_pointer, mut out_pointer) = (x.0, w.0, out.0);
+        let (mut x_pointer, mut w_pointer, mut out_pointer) =
+            (x.address(), w.address(), out.address());
         let mut parameters = [
             (&raw mut x_pointer).cast::<c_void>(),
             (&raw mut w_pointer).cast::<c_void>(),

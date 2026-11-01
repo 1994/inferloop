@@ -5,6 +5,7 @@ use crate::device::cublaslt::Support;
 use crate::device::{PinnedUpload, Readbacks};
 use crate::tuning::gated_norm::prepare;
 use crate::tuning::resident_gemm::ResidentTuningSession;
+use infer_cuda_kernels::contract::Kernels;
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -90,6 +91,8 @@ impl FusionWorkspace {
 }
 
 pub struct ProgramWeights {
+    /// This device's kernels, selected once at load.
+    pub kernels: Arc<Kernels>,
     /// Measure uncovered resident GEMM geometries before graph capture.
     pub autotune: bool,
     /// One finite new-shape tuning allowance for this loaded model, shared with its draft.

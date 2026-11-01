@@ -5,6 +5,7 @@ use crate::strategy::default_tiling;
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use cutile::half::bf16;
 use infer_core::OpId;
+use infer_cuda_kernels::tile::kernels as tile_kernels;
 use infer_ir::{DType, TensorNode, TensorOp, TensorSpec};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -76,6 +77,7 @@ fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
             .collect()
     };
     let weights = ProgramWeights {
+        kernels: Arc::new(tile_kernels(0)),
         mrope: false,
         prompt_scratch: PromptScratchRegistry::default(),
         autotune: false,
