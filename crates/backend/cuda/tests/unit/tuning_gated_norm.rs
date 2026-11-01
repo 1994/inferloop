@@ -17,7 +17,7 @@ fn gated_norm_profile_preserves_all_other_entries() -> Result<()> {
         resolve(&device, shape, false, &session)?;
         assert_eq!(
             options(device.stream.device().ordinal(), 128, rows, 1e-6).occupancy,
-            None
+            Some(UNMEASURED)
         );
         resolve(&device, shape, true, &session)?;
     }

@@ -1,5 +1,6 @@
 //! The actual draft pool versus independent original per-slot FC captures.
 use super::{captures, with_row_reference};
+use crate::resident::slot_batch::narrow_widths;
 use crate::{
     device::CudaDevice,
     loading::{LoadOptions, LoadedModel},
@@ -60,9 +61,15 @@ fn compare_pool(loaded: &LoadedModel, width: usize) -> Result<()> {
     let mut candidate = loaded
         .draft_slot_pool(width, 64)?
         .ok_or_else(|| Error::invariant("checkpoint draft pool missing"))?;
+    // The pool also captures a graph per narrow decode rung, and each qualifies on its own width.
+    let rungs = narrow_widths(loaded.draft_graph().unwrap(), width, 0)
+        .into_iter()
+        .chain([width])
+        .filter(|&rung| super::pooled(rung))
+        .count();
     assert_eq!(
         captures() - before,
-        if super::pooled(width) { 2 } else { 0 },
+        2 * rungs,
         "qualified fusion or original row captures must match the actual pool geometry"
     );
     let before = captures();
