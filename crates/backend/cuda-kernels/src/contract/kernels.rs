@@ -1,7 +1,9 @@
 //! Operator-family traits implemented by each kernel source.
 
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
-use crate::contract::plan::{FusionNormPlan, NormPlan, PoolGemvPlan, QuantNormPlan, RopePlan};
+use crate::contract::plan::{
+    DownPlan, FusionNormPlan, NormPlan, PoolGemvPlan, QuantNormPlan, RopePlan, RowNormPlan,
+};
 use crate::contract::recording::Recording;
 use infer_core::Result;
 
@@ -149,9 +151,87 @@ pub trait Norm: Send + Sync {
     ) -> Result<()>;
 }
 
+/// A down projection's weight, in the storage its checkpoint uses.
+#[derive(Clone, Copy, Debug)]
+pub enum DownWeight<'a> {
+    /// `[outputs, columns]`.
+    Dense(Buffer<'a, Bf16>),
+    /// `[outputs, columns]` and per-channel scales.
+    Fp8 {
+        weight: Buffer<'a, Fp8>,
+        scales: Buffer<'a, f32>,
+    },
+    /// `[outputs, columns / 2]` code pairs, block scales and the inverse global scale.
+    Fp4 {
+        weight: Buffer<'a, Fp4Pair>,
+        scales: Buffer<'a, Fp8>,
+        inverse_global: f32,
+    },
+}
+
+/// Operands of an activation product: `out = silu(gate) * up`.
+#[derive(Clone, Copy, Debug)]
+pub struct ProductBuffers<'a> {
+    pub out: Buffer<'a, f32>,
+    pub gate: Buffer<'a, f32>,
+    pub up: Buffer<'a, f32>,
+}
+
+/// Fused MLP kernels. Every method records and never waits.
+pub trait Mlp: Send + Sync {
+    /// Normalize one flat row.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn row_norm(
+        &self,
+        recording: &Recording<'_>,
+        plan: &RowNormPlan,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        weight: Buffer<'_, f32>,
+    ) -> Result<()>;
+
+    /// # Errors
+    /// Fails when the launch is rejected.
+    fn product(&self, recording: &Recording<'_>, buffers: ProductBuffers<'_>) -> Result<()>;
+
+    /// `out = down + x`.
+    /// # Errors
+    /// Fails when the launch is rejected.
+    fn residual(
+        &self,
+        recording: &Recording<'_>,
+        out: Buffer<'_, f32>,
+        down: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+    ) -> Result<()>;
+
+    /// [`Self::product`] that signals [`Self::down_after_product`] as rows become ready.
+    /// # Errors
+    /// Fails when the launch is rejected.
+    fn signalling_product(
+        &self,
+        recording: &Recording<'_>,
+        buffers: ProductBuffers<'_>,
+    ) -> Result<()>;
+
+    /// A down projection that starts before its input is complete, waiting on the producer.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn down_after_product(
+        &self,
+        recording: &Recording<'_>,
+        plan: &DownPlan,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        weight: DownWeight<'_>,
+    ) -> Result<()>;
+}
+
 /// One device's kernels, selected once when a model loads; no call path chooses a source.
 pub struct Kernels {
     pub projection: Box<dyn Projection>,
     pub rope: Box<dyn Rope>,
     pub norm: Box<dyn Norm>,
+    pub mlp: Box<dyn Mlp>,
 }

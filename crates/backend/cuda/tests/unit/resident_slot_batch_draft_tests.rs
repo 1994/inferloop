@@ -504,3 +504,25 @@ fn paged_verify_attention_matches_scalar_causality_and_reuse() -> Result<()> {
     pool.commit_verify(&device, 1, 1)?;
     Ok(())
 }
+
+/// Kernels address weights by device pointer, so a program must keep them alive itself: a sequence
+/// can outlive the `LoadedModel` that built it, and a pool drops after its executor's model.
+#[test]
+#[ignore = "requires a CUDA device"]
+fn programs_and_pools_keep_their_weights_after_the_owner_drops_them() -> Result<()> {
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    let (graph, mut weights) = fixture(&device)?;
+    let weight = device.upload(vec![0.0f32; 32], &[32])?;
+    let held = [Arc::downgrade(&weight)];
+    weights.constants.insert(TensorId::new(999)?, weight);
+    let program = DeviceProgram::new(&device, &graph, &weights, 128, 32, 32)?;
+    let pool = SlotPool::new(&device, &graph, &weights, 4, 64, 32, (32, 0), None)?;
+    drop(weights);
+    assert!(held.iter().all(|weight| weight.upgrade().is_some()));
+    drop(program);
+    assert!(held.iter().all(|weight| weight.upgrade().is_some()));
+    drop(pool);
+    assert!(held.iter().all(|weight| weight.upgrade().is_none()));
+    Ok(())
+}

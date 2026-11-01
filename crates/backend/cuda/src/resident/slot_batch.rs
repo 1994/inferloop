@@ -20,6 +20,7 @@ use crate::device::{CudaDevice, DeviceProfile, device_error};
 use cuda_core::{CudaContext, PinnedHostBuffer, f8e4m3fn};
 use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
+use infer_cuda_kernels::contract::Owner;
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
 use infer_state::blocks::{BlockLease, BlockPool};
 #[cfg(test)]
@@ -468,6 +469,7 @@ impl Paging {
 }
 
 pub struct SlotPool {
+    _weights: Vec<Owner>,
     // Exactly one of the two graphs exists: plain decode without a draft, pooled
     // speculation with one. Declared first so the graphs drop before the state sets and
     // arena buffers their kernels reference.
@@ -676,6 +678,7 @@ impl SlotPool {
             }
         };
         Ok(Self {
+            _weights: weights.owners(),
             decode,
             verify: verify_graph,
             narrow_decode: decode_narrow,

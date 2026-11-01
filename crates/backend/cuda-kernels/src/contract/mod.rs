@@ -9,12 +9,12 @@ pub mod target;
 
 pub use buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner};
 pub use kernels::{
-    FusionNormBuffers, Kernels, Norm, NormBuffers, NormFp4Buffers, NormMaximumBuffers, Projection,
-    Rope, RopeBuffers,
+    DownWeight, FusionNormBuffers, Kernels, Mlp, Norm, NormBuffers, NormFp4Buffers,
+    NormMaximumBuffers, ProductBuffers, Projection, Rope, RopeBuffers,
 };
 pub use plan::{
-    FusionNormPlan, FusionShape, NormLayout, NormPlan, PoolGemvPlan, QuantNormPlan, RopeMode,
-    RopePlan,
+    DownPlan, FusionNormPlan, FusionShape, NormLayout, NormPlan, PoolGemvPlan, QuantNormPlan,
+    RopeMode, RopePlan, RowNormPlan,
 };
 pub use recording::Recording;
 pub use target::Arch;

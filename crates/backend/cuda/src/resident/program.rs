@@ -5,7 +5,9 @@ use crate::device::cublaslt::Support;
 use crate::device::{PinnedUpload, Readbacks};
 use crate::tuning::gated_norm::prepare;
 use crate::tuning::resident_gemm::ResidentTuningSession;
+use greedy::ProgramReadouts;
 use infer_cuda_kernels::contract::Kernels;
+use infer_cuda_kernels::contract::Owner;
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::BTreeSet;
@@ -133,6 +135,26 @@ pub(super) enum ActivationQuantization {
     Fp8Token,
 }
 impl ProgramWeights {
+    /// What a captured graph reads by device pointer. A program or pool holds these, so they outlive
+    /// its graphs whatever happens to the model that loaded them; replay never touches them.
+    pub(super) fn owners(&self) -> Vec<Owner> {
+        let mut owners: Vec<Owner> = Vec::new();
+        owners.extend(self.constants.values().map(|t| Arc::clone(t) as Owner));
+        owners.extend(self.embeddings.values().map(|t| Arc::clone(t) as Owner));
+        owners.extend(self.rope_axes.values().map(|t| Arc::clone(t) as Owner));
+        owners.extend(
+            self.rope_frequencies
+                .values()
+                .map(|t| Arc::clone(t) as Owner),
+        );
+        owners.extend(self.projections.values().map(ProjectionWeight::owner));
+        if let Some(fusion) = &self.fusion {
+            owners.push(Arc::clone(&fusion.norms) as Owner);
+            owners.push(fusion.projection.owner());
+        }
+        owners
+    }
+
     /// Prompt graph widths this program captures, widest first; empty when it captures none.
     ///
     /// A width below `PREFILL_LANES` is not a prompt graph: it is the verification width the
@@ -174,7 +196,16 @@ impl ProgramWeights {
 }
 
 /// Captures a complete single-token forward pass; all state and activations stay on CUDA.
+/// A slot-resident program with no prompt or verification graph only views the slot's state.
+fn needs_forward(on_slot: bool, weights: &ProgramWeights, geometry: ProgramGeometry) -> bool {
+    !(on_slot
+        && weights.fusion.is_none()
+        && geometry.verification == 0
+        && geometry.prompts == [0, 0])
+}
+
 pub struct DeviceProgram {
+    _weights: Vec<Owner>,
     /// Slot target handles own state views and reset only; their forward runs in the pool.
     forward_captured: bool,
     batch: Option<super::batch::BatchGraph>,
@@ -716,10 +747,7 @@ impl DeviceProgram {
         geometry: ProgramGeometry,
         slot: Option<SlotState>,
     ) -> Result<Self> {
-        let forward_captured = !(slot.is_some()
-            && weights.fusion.is_none()
-            && geometry.verification == 0
-            && geometry.prompts == [0, 0]);
+        let forward_captured = needs_forward(slot.is_some(), weights, geometry);
         super::validation::validate(graph, weights)?;
         let capacity = program_capacity(graph, weights, capacity, hidden, vocabulary)?;
         let mut arena = ActivationArena::new(device, graph, arena_budget(device)?)?;
@@ -768,7 +796,7 @@ impl DeviceProgram {
         let reset_graph = capture_reset(device, &mut states)?;
         let reclaimable_bytes =
             Self::program_retained_bytes(graph, &states, &fp8_states, activation_bytes, &captures);
-        let readouts = greedy::ProgramReadouts::new(
+        let readouts = ProgramReadouts::new(
             device,
             &mut arena,
             graph,
@@ -777,6 +805,7 @@ impl DeviceProgram {
             forward_captured,
         )?;
         Ok(Self {
+            _weights: weights.owners(),
             forward_captured,
             table,
             nvfp4,

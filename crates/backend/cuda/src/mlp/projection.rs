@@ -5,6 +5,7 @@ use crate::{kernels::linear, strategy::LinearTiling};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::{half::bf16, prelude::*};
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::Owner;
 use std::result::Result as StdResult;
 use std::sync::Arc;
 
@@ -19,6 +20,11 @@ pub enum ProjectionWeight {
 }
 
 impl ProjectionWeight {
+    /// What keeps this weight's storage alive; the FP4 and FP8 forms also hold their scales.
+    pub(crate) fn owner(&self) -> Owner {
+        Arc::new(self.clone())
+    }
+
     pub(crate) fn validate(&self, rows: usize, columns: usize) -> Result<()> {
         let matches = |shape: &[i32], expected: &[usize]| {
             shape.len() == expected.len()

@@ -10,8 +10,9 @@ use infer_cuda_kernels::tile::runtime::Element;
 
 /// A buffer over one tensor.
 ///
-/// A resident program owns its tensors until its captured graphs are destroyed, which is what
-/// [`Buffer::new`] requires of every caller here.
+/// Unlike a tensor recorded directly, a buffer does not make the graph hold its memory. Every
+/// caller must own the tensor for as long as the graph lives, as a resident program does, which is
+/// what [`Buffer::new`] requires. Code without such an owner takes an `Allocation` instead.
 pub fn buffer<T: DType + Element>(
     tensor: &Tensor<T>,
 ) -> Result<Buffer<'_, T::Marker>, DeviceError> {

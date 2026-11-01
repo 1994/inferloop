@@ -163,8 +163,6 @@ def check_exceptions():
                         # consumers until the completion fence.
                         TILE_KERNELS / "mlp/pdl_kernels.rs",
                         TILE_KERNELS / "mlp/pdl_consumers_kernels.rs",
-                        ROOT / "crates/backend/cuda/src/mlp/pdl.rs",
-                        ROOT / "crates/backend/cuda/src/mlp/pdl_consumers.rs",
                         # Borrowed tensor boundary: host-owned pointers are wrapped for exactly
                         # one synchronized launch and dropped before returning.
                         TILE_KERNELS / "projection/contract.rs",
@@ -179,6 +177,7 @@ def check_exceptions():
                         TILE_KERNELS / "mod.rs",
                         TILE_KERNELS / "runtime.rs",
                         TILE_KERNELS / "norm/contract.rs",
+                        TILE_KERNELS / "mlp/contract.rs",
                         ROOT / "crates/backend/cuda-kernels/src/aot/projection.rs",
                         ROOT / "crates/backend/cuda-kernels/examples/aot-pool-gemv.rs",
                         ROOT / "crates/backend/cuda/src/resident/arena.rs",
