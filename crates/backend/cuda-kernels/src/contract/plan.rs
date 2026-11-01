@@ -39,3 +39,53 @@ pub struct PoolGemvPlan {
     /// Reduction tile the kernel loads per step; only cuTile uses it.
     pub tile_columns: usize,
 }
+
+/// How a normalization launch partitions its rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NormLayout {
+    /// One row per block, over the next power of two of the dimension.
+    Block,
+    /// `tile` rows per block; the kernel masks a final partial tile.
+    Rows { tile: usize },
+}
+
+/// RMS normalization of `rows` rows of `dimension`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NormPlan {
+    pub layout: NormLayout,
+    pub rows: usize,
+    pub dimension: usize,
+    /// Multiply by the gate activation as well; [`NormLayout`] is unchanged by it.
+    pub gated: bool,
+    pub epsilon: f32,
+    pub offset: f32,
+    /// Measured compiler occupancy; `None` leaves the compiler's choice.
+    pub occupancy: Option<i32>,
+}
+
+/// Which rows a draft fusion normalizes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FusionShape {
+    /// One embedding row and one hidden row, both flat.
+    Single,
+    /// `lanes` embedding rows and as many hidden rows, each `dimension` wide.
+    Lanes { lanes: usize },
+}
+
+/// Normalization of a draft's embedding and hidden rows into `[2 * lanes, dimension]`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FusionNormPlan {
+    pub shape: FusionShape,
+    pub dimension: usize,
+    pub epsilon: f32,
+    pub offset: f32,
+}
+
+/// Normalization that also produces what the next projection quantizes from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QuantNormPlan {
+    pub rows: usize,
+    pub dimension: usize,
+    pub epsilon: f32,
+    pub offset: f32,
+}

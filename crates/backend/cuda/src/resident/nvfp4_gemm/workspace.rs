@@ -1,15 +1,19 @@
 //! Per-program activation quantization buffers, retained as long as captured graphs.
 mod preparation;
 mod vendor_fp4;
+use super::super::buffers::buffer;
+use super::super::capture::error as capture_error;
 use super::{
     kernels,
     quant_reuse::{CaptureQuantReuse, QuantKey, QuantKind, QuantPairRole},
 };
 use crate::constants::FP8_BLOCK_COLUMNS;
-use crate::constants::NVFP4_GROUP_SIZE;
 use crate::constants::NVFP4_QUANT_CODES_TILE;
 use crate::constants::NVFP4_QUANT_SCALES_TILE;
-use crate::resident::{norm_fp4, norm_fp4_kernel};
+use crate::resident::norm_fp4;
+use infer_cuda_kernels::contract::{
+    Buffer, Kernels, NormFp4Buffers, NormMaximumBuffers, QuantNormPlan, Recording,
+};
 
 use crate::resident::program::ProgramGeometry;
 use crate::tuning::fp8_gemm::Choice;
@@ -530,17 +534,17 @@ impl Workspace {
     /// Write existing dense and FP4 buffers in one RMS pass; permission is capture-local.
     pub(crate) fn record_norm_fp4(
         &mut self,
-        scope: &Scope,
+        (kernels, scope): (&Kernels, &Scope),
         next: usize,
-        input: &TensorView<'_, f32>,
+        input: Buffer<'_, f32>,
         weight: &Tensor<f32>,
-        output: &mut Tensor<f32>,
+        output: &Tensor<f32>,
         (epsilon, offset, scale): (f32, f32, f32),
     ) -> StdResult<bool, DeviceError> {
         self.norm_fp4 = None;
-        let rows = usize::try_from(output.shape()[0]).map_err(super::super::capture::error)?;
-        let columns = usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
-        let Some((codes, scales)) = self.buffers.get_mut(&(rows, columns)) else {
+        let rows = usize::try_from(output.shape()[0]).map_err(capture_error)?;
+        let columns = usize::try_from(output.shape()[1]).map_err(capture_error)?;
+        let Some((codes, scales)) = self.buffers.get(&(rows, columns)) else {
             return Ok(false);
         };
         let binding = norm_fp4::Binding {
@@ -551,25 +555,26 @@ impl Workspace {
             codes: codes.device_pointer().cu_deviceptr(),
             scales: scales.device_pointer().cu_deviceptr(),
         };
-        let block = columns.next_power_of_two();
-        scope.record(
-            norm_fp4_kernel::kernels::norm_fp4(
-                output.partition([1, block]),
-                codes.partition([1, block / 2]),
-                scales.partition([1, block / NVFP4_GROUP_SIZE]),
-                input,
-                weight,
-                epsilon,
-                offset,
+        kernels
+            .norm
+            .fp4(
+                &Recording::scope(scope),
+                &QuantNormPlan {
+                    rows,
+                    dimension: columns,
+                    epsilon,
+                    offset,
+                },
                 scale,
+                NormFp4Buffers {
+                    out: buffer(output)?,
+                    codes: buffer(codes)?,
+                    scales: buffer(scales)?,
+                    x: input,
+                    weight: buffer(weight)?,
+                },
             )
-            .generics(
-                [columns, block, block / NVFP4_GROUP_SIZE, block / 2]
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect(),
-            ),
-        )?;
+            .map_err(capture_error)?;
         self.norm_fp4 = Some(norm_fp4::Pending { next, binding });
         Ok(true)
     }
@@ -577,33 +582,37 @@ impl Workspace {
     /// Keep the existing scale allocation; its permission lasts exactly one graph node.
     pub(crate) fn record_norm_maximum(
         &mut self,
-        scope: &Scope,
+        (kernels, scope): (&Kernels, &Scope),
         next: usize,
-        input: &TensorView<'_, f32>,
+        input: Buffer<'_, f32>,
         weight: &Tensor<f32>,
-        output: &mut Tensor<f32>,
+        output: &Tensor<f32>,
         (epsilon, offset): (f32, f32),
     ) -> StdResult<bool, DeviceError> {
-        let rows = usize::try_from(output.shape()[0]).map_err(super::super::capture::error)?;
-        let columns = usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
-        let Some((_, scales)) = self.fp8.get_mut(&(rows, columns, 1)) else {
+        let rows = usize::try_from(output.shape()[0]).map_err(capture_error)?;
+        let columns = usize::try_from(output.shape()[1]).map_err(capture_error)?;
+        let Some((_, scales)) = self.fp8.get(&(rows, columns, 1)) else {
             return Ok(false);
         };
         let pointer = output.device_pointer().cu_deviceptr();
-        scope.record(
-            super::super::norm_maximum_kernel::kernels::norm_max(
-                output.partition([1, columns.next_power_of_two()]),
-                scales.partition([1, 1]),
-                input,
-                weight,
-                epsilon,
-                offset,
+        kernels
+            .norm
+            .maximum(
+                &Recording::scope(scope),
+                &QuantNormPlan {
+                    rows,
+                    dimension: columns,
+                    epsilon,
+                    offset,
+                },
+                NormMaximumBuffers {
+                    out: buffer(output)?,
+                    maximum: buffer(scales)?,
+                    x: input,
+                    weight: buffer(weight)?,
+                },
             )
-            .generics(vec![
-                columns.to_string(),
-                columns.next_power_of_two().to_string(),
-            ]),
-        )?;
+            .map_err(capture_error)?;
         self.norm_maximum = Some(super::super::norm_maximum::Pending {
             next,
             pointer,

@@ -1,5 +1,5 @@
 use super::{
-    buffers::{buffer, region},
+    buffers::buffer,
     capture::{Capture, CaptureMode, error},
 };
 use crate::constants::METADATA_FIELDS;
@@ -64,7 +64,7 @@ impl Capture<'_> {
                 &plan,
                 RopeBuffers {
                     out: buffer(&output)?,
-                    x: region(self.input_address(node.inputs[0])?, rows * head_dim),
+                    x: self.input_buffer(node.inputs[0])?,
                     frequencies: buffer(frequency)?,
                     axes: axes.map(|axes| buffer(axes)).transpose()?,
                     metadata: buffer(self.metadata)?,

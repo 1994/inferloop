@@ -2,10 +2,10 @@
 //!
 //! These are concrete types chosen at compile time, not trait objects: replaying a graph is the
 //! inference hot path, and here it compiles to exactly the cuTile future it wraps.
-use crate::contract::buffer::{Bf16, Buffer, Owner};
+use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner};
 use crate::contract::recording::Recording;
 use crate::tile::backend_error;
-use cuda_core::{DType, Stream};
+use cuda_core::{DType, Stream, f4e2m1fnx2, f8e4m3fn};
 use cutile::cuda_async::cuda_graph::GraphLaunch;
 use cutile::cuda_async::device_context::with_default_device_policy;
 use cutile::cuda_async::device_future::DeviceFuture;
@@ -16,6 +16,26 @@ use infer_core::{Error, ErrorCode, Result};
 use std::cell::RefCell;
 use std::result::Result as StdResult;
 use std::sync::Arc;
+
+/// The contract's marker for a cuTile element type.
+pub trait Element {
+    type Marker;
+}
+impl Element for f32 {
+    type Marker = Self;
+}
+impl Element for i32 {
+    type Marker = Self;
+}
+impl Element for bf16 {
+    type Marker = Bf16;
+}
+impl Element for f4e2m1fnx2 {
+    type Marker = Fp4Pair;
+}
+impl Element for f8e4m3fn {
+    type Marker = Fp8;
+}
 
 /// Device memory the host owns. A graph that recorded it keeps it alive.
 pub struct Allocation<T: DType> {

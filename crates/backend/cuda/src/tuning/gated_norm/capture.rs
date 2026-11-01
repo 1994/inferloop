@@ -4,6 +4,7 @@ use super::{
 };
 use crate::device::{CudaDevice, device_error};
 use crate::resident::kernels::aux::norm;
+use crate::resident::tensor_buffer as buffer;
 use crate::tuning::preparation::driver_build;
 use cutile::error::tensor_error;
 use cutile::{
@@ -11,6 +12,7 @@ use cutile::{
     prelude::*,
 };
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{NormBuffers, NormLayout, NormPlan, Recording};
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::iter::once;
 use std::time::Duration;
@@ -131,31 +133,32 @@ impl Buffers {
             ),
         })
     }
-    pub fn capture(&mut self, device: &CudaDevice, occupancy: i32) -> Result<Graph> {
+    pub fn capture(&self, device: &CudaDevice, occupancy: i32) -> Result<Graph> {
         let s = self.shape;
-        let x = self.x.view(&[s.rows, s.dimension]).map_err(device_error)?;
-        let gate = self
-            .gate
-            .view(&[s.rows, s.dimension])
-            .map_err(device_error)?;
+        let kernels = device.kernels();
+        let plan = NormPlan {
+            layout: NormLayout::Block,
+            rows: s.rows,
+            dimension: s.dimension,
+            gated: true,
+            epsilon: f32::from_bits(s.epsilon_bits),
+            offset: 0.0,
+            occupancy: compile_options(occupancy).occupancy,
+        };
         Graph::scope(&device.stream, |scope| {
-            scope.record(
-                norm(
-                    (&mut self.output).partition([1, s.dimension]),
-                    &x,
-                    &self.weight,
-                    &gate,
-                    f32::from_bits(s.epsilon_bits),
-                    0.0f32,
+            kernels
+                .norm
+                .norm(
+                    &Recording::scope(scope),
+                    &plan,
+                    NormBuffers {
+                        out: buffer(&self.output)?,
+                        x: buffer(&self.x)?,
+                        weight: buffer(&self.weight)?,
+                        gate: buffer(&self.gate)?,
+                    },
                 )
-                .generics(vec![
-                    s.dimension.to_string(),
-                    s.dimension.to_string(),
-                    "1".into(),
-                ])
-                .compile_options(compile_options(occupancy)),
-            )?;
-            Ok(())
+                .map_err(|error| DeviceError::Internal(error.to_string()))
         })
         .map_err(device_error)
     }

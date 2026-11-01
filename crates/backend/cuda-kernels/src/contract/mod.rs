@@ -7,8 +7,14 @@ pub mod plan;
 pub mod recording;
 pub mod target;
 
-pub use buffer::{Bf16, Buffer, Owner};
-pub use kernels::{Kernels, Projection, Rope, RopeBuffers};
-pub use plan::{PoolGemvPlan, RopeMode, RopePlan};
+pub use buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner};
+pub use kernels::{
+    FusionNormBuffers, Kernels, Norm, NormBuffers, NormFp4Buffers, NormMaximumBuffers, Projection,
+    Rope, RopeBuffers,
+};
+pub use plan::{
+    FusionNormPlan, FusionShape, NormLayout, NormPlan, PoolGemvPlan, QuantNormPlan, RopeMode,
+    RopePlan,
+};
 pub use recording::Recording;
 pub use target::Arch;

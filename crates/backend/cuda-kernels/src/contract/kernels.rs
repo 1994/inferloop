@@ -1,7 +1,7 @@
 //! Operator-family traits implemented by each kernel source.
 
-use crate::contract::buffer::{Bf16, Buffer};
-use crate::contract::plan::{PoolGemvPlan, RopePlan};
+use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
+use crate::contract::plan::{FusionNormPlan, NormPlan, PoolGemvPlan, QuantNormPlan, RopePlan};
 use crate::contract::recording::Recording;
 use infer_core::Result;
 
@@ -56,8 +56,102 @@ pub trait Rope: Send + Sync {
     ) -> Result<()>;
 }
 
+/// Operands of one normalization launch.
+#[derive(Clone, Copy, Debug)]
+pub struct NormBuffers<'a> {
+    /// `[rows, dimension]`.
+    pub out: Buffer<'a, f32>,
+    /// `[rows, dimension]`, distinct from `out`.
+    pub x: Buffer<'a, f32>,
+    /// `[dimension]`.
+    pub weight: Buffer<'a, f32>,
+    /// `[rows, dimension]`; read only when the plan is gated.
+    pub gate: Buffer<'a, f32>,
+}
+
+/// Operands of one draft fusion normalization.
+#[derive(Clone, Copy, Debug)]
+pub struct FusionNormBuffers<'a> {
+    /// `[2 * lanes, dimension]`.
+    pub out: Buffer<'a, f32>,
+    pub embedding: Buffer<'a, f32>,
+    pub hidden: Buffer<'a, f32>,
+    /// `[2, dimension]`.
+    pub norms: Buffer<'a, f32>,
+}
+
+/// Operands of a normalization that records each row's largest magnitude.
+#[derive(Clone, Copy, Debug)]
+pub struct NormMaximumBuffers<'a> {
+    /// `[rows, dimension]`.
+    pub out: Buffer<'a, f32>,
+    /// `[rows, 1]`.
+    pub maximum: Buffer<'a, f32>,
+    /// `[rows, dimension]`.
+    pub x: Buffer<'a, f32>,
+    /// `[dimension]`.
+    pub weight: Buffer<'a, f32>,
+}
+
+/// Operands of a normalization that also quantizes to FP4.
+#[derive(Clone, Copy, Debug)]
+pub struct NormFp4Buffers<'a> {
+    /// `[rows, dimension]`.
+    pub out: Buffer<'a, f32>,
+    /// `[rows, dimension / 2]` code pairs.
+    pub codes: Buffer<'a, Fp4Pair>,
+    /// `[rows, dimension / group]`.
+    pub scales: Buffer<'a, Fp8>,
+    /// `[rows, dimension]`.
+    pub x: Buffer<'a, f32>,
+    /// `[dimension]`.
+    pub weight: Buffer<'a, f32>,
+}
+
+/// Normalization kernels. Every method records and never waits.
+pub trait Norm: Send + Sync {
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn norm(
+        &self,
+        recording: &Recording<'_>,
+        plan: &NormPlan,
+        buffers: NormBuffers<'_>,
+    ) -> Result<()>;
+
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn fusion(
+        &self,
+        recording: &Recording<'_>,
+        plan: &FusionNormPlan,
+        buffers: FusionNormBuffers<'_>,
+    ) -> Result<()>;
+
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn maximum(
+        &self,
+        recording: &Recording<'_>,
+        plan: &QuantNormPlan,
+        buffers: NormMaximumBuffers<'_>,
+    ) -> Result<()>;
+
+    /// `input_global` is the activation's global FP4 scale.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn fp4(
+        &self,
+        recording: &Recording<'_>,
+        plan: &QuantNormPlan,
+        input_global: f32,
+        buffers: NormFp4Buffers<'_>,
+    ) -> Result<()>;
+}
+
 /// One device's kernels, selected once when a model loads; no call path chooses a source.
 pub struct Kernels {
     pub projection: Box<dyn Projection>,
     pub rope: Box<dyn Rope>,
+    pub norm: Box<dyn Norm>,
 }

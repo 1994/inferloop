@@ -1,4 +1,5 @@
 //! RMS normalization primes only the immediately following fused NVFP4 gate/up pass.
+use super::buffers::buffer;
 use super::program::ActivationQuantization;
 use super::{ActivationArena, ProgramWeights, capture::error, nvfp4_gemm::Workspace};
 use crate::{
@@ -113,19 +114,15 @@ pub(super) fn record(
     let output = arena.buffers[slot]
         .take()
         .ok_or_else(|| error("norm FP4 output slot"))?;
-    let mut output = output.reshape(&[rows, head_dim])?;
+    let output = output.reshape(&[rows, head_dim])?;
     let result = (|| {
-        let input = arena
-            .get(norm.inputs[0])
-            .map_err(error)?
-            .view(&[rows, head_dim])
-            .map_err(error)?;
+        let input = buffer(arena.get(norm.inputs[0]).map_err(error)?)?;
         workspace.record_norm_fp4(
-            scope,
+            (&weights.kernels, scope),
             index + 1,
-            &input,
+            input,
             weight,
-            &mut output,
+            &output,
             (epsilon, offset, scale),
         )
     })();

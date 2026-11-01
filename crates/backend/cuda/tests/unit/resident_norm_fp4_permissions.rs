@@ -1,6 +1,7 @@
 //! Capture-boundary invalidation and exact buffer binding, including the error path.
 use super::{CaptureQuantReuse, Workspace, vendor_fp8};
 use crate::resident::norm_fp4;
+use crate::resident::tensor_buffer;
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use crate::{device::CudaDevice, mlp::ProjectionWeight};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
@@ -61,7 +62,7 @@ fn run_case(device: &CudaDevice, action: &str) -> TestResult<(Vec<u8>, Vec<u8>)>
     let (rows, columns, hidden) = (64, 512, 64);
     let input = device.upload(vec![0.5f32; rows * columns], &[rows, columns])?;
     let weight = device.upload(vec![1.0f32; columns], &[columns])?;
-    let mut dense = api::zeros::<f32>(&[rows, columns]).sync_on(&device.stream)?;
+    let dense = api::zeros::<f32>(&[rows, columns]).sync_on(&device.stream)?;
     let mut workspace = workspace(device);
     for columns in [columns, hidden] {
         workspace.buffers.insert(
@@ -85,13 +86,14 @@ fn run_case(device: &CudaDevice, action: &str) -> TestResult<(Vec<u8>, Vec<u8>)>
     );
     let before = norm_fp4::consumptions();
     workspace.begin_quant_capture();
+    let kernels = device.kernels();
     let graph = Graph::scope(&device.stream, |scope| {
         workspace.record_norm_fp4(
-            scope,
+            (&kernels, scope),
             1,
-            &input.view(&[rows, columns])?,
+            tensor_buffer(&input)?,
             &weight,
-            &mut dense,
+            &dense,
             (1e-5, 1.0, 1.0),
         )?;
         assert!(workspace.norm_fp4.is_some());

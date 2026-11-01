@@ -1,4 +1,5 @@
 //! Exact prompt fusion: original row normalization, then shared-weight F32 projection.
+use super::buffers::buffer;
 use super::{
     ActivationArena, ProgramWeights,
     batch::BatchBuilder,
@@ -15,6 +16,7 @@ use crate::{
 };
 use cutile::{half::bf16, prelude::*};
 use infer_core::Result;
+use infer_cuda_kernels::contract::{FusionNormBuffers, FusionNormPlan, FusionShape, Recording};
 use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
@@ -296,9 +298,6 @@ fn record_wide(
         return Err(error("fusion batch external rows"));
     }
     // The owner holds the widest prompt's rows; a narrower rung's grid reads its leading lanes.
-    let external = external
-        .view(&[external.size() / HIDDEN, HIDDEN])
-        .map_err(error)?;
     let Some(super::program::FusionWeights {
         projection: ProjectionWeight::Dense(weight),
         norms,
@@ -333,19 +332,27 @@ fn record_wide(
         .input
         .take()
         .ok_or_else(|| error("fusion batch input"))?;
-    let mut rows = input.reshape(&[2 * lanes, HIDDEN])?;
-    let block = HIDDEN.next_power_of_two();
-    scope.record(
-        super::kernels::aux::fusion_norm_rows(
-            (&mut rows).partition([1, block]),
-            &gathered.view(&[lanes, HIDDEN]).map_err(error)?,
-            &external,
-            norms,
-            *epsilon,
-            *offset,
+    let rows = input.reshape(&[2 * lanes, HIDDEN])?;
+    builder
+        .weights
+        .kernels
+        .norm
+        .fusion(
+            &Recording::scope(scope),
+            &FusionNormPlan {
+                shape: FusionShape::Lanes { lanes },
+                dimension: HIDDEN,
+                epsilon: *epsilon,
+                offset: *offset,
+            },
+            FusionNormBuffers {
+                out: buffer(&rows)?,
+                embedding: buffer(&gathered)?,
+                hidden: buffer(external)?,
+                norms: buffer(norms.as_ref())?,
+            },
         )
-        .generics(vec![HIDDEN.to_string(), block.to_string()]),
-    )?;
+        .map_err(error)?;
     workspace.gathered = Some(gathered);
     let input = rows.reshape(&[lanes * COLUMNS])?;
     let output = arena.buffers[slot]

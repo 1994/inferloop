@@ -4,29 +4,15 @@
     reason = "The one place host tensors become contract buffers, so kernel calls stay safe"
 )]
 use super::capture::error;
-use cutile::half::bf16;
 use cutile::prelude::*;
-use infer_cuda_kernels::contract::{Bf16, Buffer};
-
-/// The contract's element type for a host tensor's element type.
-pub(super) trait Element {
-    type Marker;
-}
-impl Element for f32 {
-    type Marker = Self;
-}
-impl Element for i32 {
-    type Marker = Self;
-}
-impl Element for bf16 {
-    type Marker = Bf16;
-}
+use infer_cuda_kernels::contract::Buffer;
+use infer_cuda_kernels::tile::runtime::Element;
 
 /// A buffer over one tensor.
 ///
 /// A resident program owns its tensors until its captured graphs are destroyed, which is what
 /// [`Buffer::new`] requires of every caller here.
-pub(super) fn buffer<T: DType + Element>(
+pub fn buffer<T: DType + Element>(
     tensor: &Tensor<T>,
 ) -> Result<Buffer<'_, T::Marker>, DeviceError> {
     if !tensor.is_contiguous() {
