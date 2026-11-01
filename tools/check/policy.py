@@ -162,10 +162,12 @@ def check_exceptions():
                         # AOT driver boundary: every FFI call is checked, handles are owned and
                         # buffers are freed exactly once.
                         ROOT / "crates/backend/cuda-kernels/src/aot/driver.rs",
-                        ROOT / "crates/backend/cuda/src/resident/pool_gemv.rs",
-                        # Raw-address launch contract: obligations are stated on the trait and
-                        # discharged by the owning caller until the host adopts contract buffers.
-                        ROOT / "crates/backend/cuda-kernels/src/contract/kernels.rs",
+                        # Contract buffers: the constructor holds the only obligation, so family
+                        # methods are safe; the host makes buffers in one file, over tensors a
+                        # resident program owns until its graphs are destroyed.
+                        ROOT / "crates/backend/cuda-kernels/src/contract/buffer.rs",
+                        ROOT / "crates/backend/cuda/src/resident/buffers.rs",
+                        TILE_KERNELS / "mod.rs",
                         ROOT / "crates/backend/cuda-kernels/src/aot/projection.rs",
                         ROOT / "crates/backend/cuda-kernels/examples/aot-pool-gemv.rs",
                         ROOT / "crates/backend/cuda/src/resident/arena.rs",
