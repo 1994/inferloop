@@ -17,6 +17,8 @@ pub use projection::ProjectionWeight;
 use std::fmt::Display;
 use std::result::Result as StdResult;
 
+/// Normalized, gate, up, activated and down rows.
+const ACTIVATIONS: usize = 5;
 /// Intermediate size bound for resident MLP graphs.
 const MAX_INTERMEDIATE_SIZE: usize = 131_072;
 
@@ -41,7 +43,7 @@ pub struct MlpWeights {
 /// Owns stable input/output buffers; the graph retains all intermediate storage.
 pub struct MlpGraph {
     /// Activations the graph addresses by device pointer; it does not hold them itself.
-    _storage: [Tensor<f32>; 5],
+    _storage: [Tensor<f32>; ACTIVATIONS],
     /// Weights the graph addresses by device pointer.
     _weights: MlpWeights,
     graph: Graph,
