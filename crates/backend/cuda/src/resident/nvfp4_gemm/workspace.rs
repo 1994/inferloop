@@ -9,8 +9,8 @@ use crate::constants::NVFP4_QUANT_CODES_TILE;
 use crate::constants::NVFP4_QUANT_SCALES_TILE;
 use crate::resident::norm_fp4;
 use infer_cuda_kernels::contract::{
-    Buffer, Fp4QuantKind, Fp4QuantPlan, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, Kernels,
-    NormFp4Buffers, NormMaximumBuffers, QuantNormPlan, Recording, WeightRef,
+    Buffer, Fp4QuantKind, Fp4QuantPlan, Fp8, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan,
+    Kernels, NormFp4Buffers, NormMaximumBuffers, QuantNormPlan, Recording, WeightRef,
 };
 
 use crate::resident::program::ProgramGeometry;
