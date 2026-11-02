@@ -846,9 +846,17 @@ impl SlotPool {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_hidden(&self, device: &CudaDevice, slot: usize) -> Result<Vec<f32>> {
-        self.decode
-            .as_ref()
+    pub(crate) fn test_hidden(
+        &self,
+        device: &CudaDevice,
+        slot: usize,
+        busy: usize,
+    ) -> Result<Vec<f32>> {
+        // The rung that replayed: the narrowest covering the highest of `busy` low slots.
+        self.narrow_decode
+            .iter()
+            .find(|graph| graph.width >= busy)
+            .or(self.decode.as_ref())
             .ok_or_else(|| Error::invalid("test hidden needs decode pool"))?
             .test_hidden(device, slot)
     }

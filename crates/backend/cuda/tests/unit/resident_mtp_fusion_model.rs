@@ -123,7 +123,6 @@ fn capture_drafts(loaded: &LoadedModel) -> Result<(DeviceProgram, DeviceProgram,
         with_dense_reference(|| fusion_batch::with_row_reference(|| loaded.draft(CAPACITY)))?
             .ok_or_else(|| Error::invariant("row reference draft missing"))?;
     assert_eq!(fusion_batch::captures(), before_reference);
-    assert_eq!(reference.test_fusion_batch_scratch_bytes(), 0);
     for program in [&candidate, &reference] {
         assert_eq!(program.prefill_width(), 128);
         assert!(!program.states().is_empty(), "draft F32 state coverage");

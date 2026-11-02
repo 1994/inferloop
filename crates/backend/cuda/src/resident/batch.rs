@@ -2329,9 +2329,20 @@ impl BatchGraph {
         reason = "Test observes the retained graph owner allocation"
     )]
     pub(super) fn test_fusion_scratch_bytes(&self) -> usize {
-        self._fusion
-            .as_ref()
-            .map_or(0, super::fusion_batch::Workspace::bytes)
+        // Prompt graphs share their fusion rows through the program's scratch.
+        let scratch = self._prompt_scratch.as_ref().map_or(0, |scratch| {
+            scratch.lock().map_or(0, |scratch| {
+                scratch
+                    .fusion
+                    .as_ref()
+                    .map_or(0, super::fusion_batch::Workspace::bytes)
+            })
+        });
+        scratch
+            + self
+                ._fusion
+                .as_ref()
+                .map_or(0, super::fusion_batch::Workspace::bytes)
     }
 
     /// Passive readback of the most recent prompt replay; never launches a graph.

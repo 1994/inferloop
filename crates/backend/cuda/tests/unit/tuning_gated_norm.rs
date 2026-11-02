@@ -32,8 +32,16 @@ fn gated_norm_profile_preserves_all_other_entries() -> Result<()> {
         }
     }
     let table = super::super::TilingTable::load(&path)?;
-    assert_eq!(table.resident_gated_norm.len(), 2);
-    for entry in table.resident_gated_norm {
+    // A private table may already hold other geometries; these two must be among them.
+    let measured: Vec<_> = table
+        .resident_gated_norm
+        .into_iter()
+        .filter(|entry| {
+            [3072, 12288].contains(&entry.key.shape.rows) && entry.key.shape.dimension == 128
+        })
+        .collect();
+    assert!(measured.len() >= 2, "both geometries measured");
+    for entry in measured {
         assert!(entry.valid());
         assert_ne!(
             entry.selected, BASELINE,

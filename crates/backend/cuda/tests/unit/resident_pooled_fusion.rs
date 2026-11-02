@@ -137,7 +137,10 @@ fn compare_pool(loaded: &LoadedModel, width: usize) -> Result<()> {
 
 fn compare_states(device: &CudaDevice, a: &SlotPool, b: &SlotPool, width: usize) -> Result<()> {
     for slot in 0..width {
-        bits(&a.test_hidden(device, slot)?, &b.test_hidden(device, slot)?);
+        bits(
+            &a.test_hidden(device, slot, width)?,
+            &b.test_hidden(device, slot, width)?,
+        );
         let (a, a_packed) = a.test_states(slot);
         let (b, b_packed) = b.test_states(slot);
         assert_eq!(
