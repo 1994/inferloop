@@ -368,3 +368,29 @@ pub enum ConvKernel {
         fused: bool,
     },
 }
+
+/// Verification or commit of a whole pool across its slot axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolDeltaPlan {
+    pub key_heads: usize,
+    pub value_heads: usize,
+    pub dim: usize,
+    pub block: usize,
+    pub slots: usize,
+    pub lanes: usize,
+    /// Metadata fields per lane.
+    pub fields: usize,
+    /// The kernel specialized for the fused candidate count.
+    pub fused: bool,
+}
+
+/// Convolution commit of a whole pool across its slot axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolConvPlan {
+    pub channels: usize,
+    pub lanes: usize,
+    /// Metadata fields per lane.
+    pub fields: usize,
+    /// The kernel specialized for the fused candidate count.
+    pub fused: bool,
+}

@@ -1,6 +1,6 @@
 //! Contiguous pool state families with the same per-slot views used by homes and fallback graphs.
-use super::slot_recurrent::{LANES, ValueDevice, covers, fused, fused_block, value_split};
-use super::{ActivationArena, capture::error};
+use super::slot_recurrent::{LANES, ValueDevice, covers, fused_block, value_split};
+use super::{ActivationArena, buffers::buffer, capture::error};
 use super::{batch::States, program::ProgramWeights};
 use crate::constants::METADATA_FIELDS;
 use crate::{
@@ -9,6 +9,8 @@ use crate::{
 };
 use cutile::prelude::*;
 use infer_core::{Error, OpId, Result};
+use infer_cuda_kernels::contract::{Kernels, PoolDeltaBuffers, PoolDeltaPlan, Recording};
+use infer_cuda_kernels::tile::recurrent::pack_parameters;
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
@@ -110,6 +112,7 @@ pub(super) type RecurrentParameters = BTreeMap<OpId, Tensor<f32>>;
 
 /// Full owners used only while constructing the shared verification launch.
 pub(super) struct VerifyBatch<'a> {
+    pub kernels: &'a Kernels,
     pub roots: &'a States,
     pub parameters: &'a RecurrentParameters,
     pub metadata: &'a Tensor<i32>,
@@ -167,14 +170,7 @@ pub(super) fn prepare_parameters(
         let mut parameters = api::zeros::<f32>(&[2, value_heads])
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        fused::pack_parameters(
-            (&mut parameters).partition([2, 1]),
-            &rate.view(&[value_heads]).map_err(device_error)?,
-            &bias.view(&[value_heads]).map_err(device_error)?,
-        )
-        .generics(vec![value_heads.to_string()])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+        pack_parameters(&device.stream, &mut parameters, rate, bias)?;
         result.insert(node.id, parameters);
     }
     Ok(result)
@@ -216,45 +212,34 @@ pub(super) fn record_batch(
         .take()
         .ok_or_else(|| error("pooled delta output"))?;
     let output_size = output.size();
-    let mut output = output.reshape(&[slots, lanes, value_heads * value_dim])?;
+    let output = output.reshape(&[slots, lanes, value_heads * value_dim])?;
     let recorded = (|| {
-        let state = state.view(&[slots * value_heads, key_dim, value_dim])?;
-        let parameters = parameters.view(&[parameters.size()])?;
-        let mut generics = vec![
-            key_heads.to_string(),
-            value_heads.to_string(),
-            key_dim.to_string(),
-            block.to_string(),
-            METADATA_FIELDS.to_string(),
-        ];
-        if lanes == LANES {
-            scope.record(
-                fused::delta_verify_batch(
-                    (&mut output).partition([1, LANES, block]),
-                    &state,
-                    arena.get(node.inputs[0]).map_err(error)?,
-                    arena.get(node.inputs[1]).map_err(error)?,
-                    arena.get(node.inputs[2]).map_err(error)?,
-                    &parameters,
-                    batch.metadata,
-                )
-                .generics(generics),
-            )?;
-        } else {
-            generics.push(lanes.to_string());
-            scope.record(
-                fused::delta_verify_lanes(
-                    (&mut output).partition([1, lanes, block]),
-                    &state,
-                    arena.get(node.inputs[0]).map_err(error)?,
-                    arena.get(node.inputs[1]).map_err(error)?,
-                    arena.get(node.inputs[2]).map_err(error)?,
-                    &parameters,
-                    batch.metadata,
-                )
-                .generics(generics),
-            )?;
-        }
+        batch
+            .kernels
+            .recurrent_pool
+            .delta_verify_pool(
+                &Recording::scope(scope),
+                &PoolDeltaPlan {
+                    key_heads,
+                    value_heads,
+                    dim: key_dim,
+                    block,
+                    slots,
+                    lanes,
+                    fields: METADATA_FIELDS,
+                    fused: lanes == LANES,
+                },
+                buffer(&output)?,
+                PoolDeltaBuffers {
+                    state: buffer(state)?,
+                    qkv: buffer(arena.get(node.inputs[0]).map_err(error)?)?,
+                    beta: buffer(arena.get(node.inputs[1]).map_err(error)?)?,
+                    alpha: buffer(arena.get(node.inputs[2]).map_err(error)?)?,
+                    parameters: buffer(parameters)?,
+                    metadata: buffer(batch.metadata)?,
+                },
+            )
+            .map_err(error)?;
         Ok(true)
     })();
     arena.buffers[index] = Some(output.reshape(&[output_size])?);

@@ -1,8 +1,12 @@
 //! cuTile implementation of the recurrent prompt family.
-use super::{conv_prefill, recurrent, recurrent_chunk, recurrent_prefill, slot_convolution};
+use super::{
+    conv_prefill, recurrent, recurrent_checkpoint, recurrent_chunk, recurrent_prefill,
+    slot_convolution,
+};
 use crate::contract::buffer::{Bf16, Buffer};
 use crate::contract::kernels::{
-    ChunkBuffers, ConvBuffers, DeltaBuffers, GateBuffers, PreparedDeltaBuffers, Recurrent,
+    CONV_HISTORY, ChunkBuffers, ConvBuffers, DeltaBuffers, GateBuffers, PreparedDeltaBuffers,
+    Recurrent,
 };
 use crate::contract::plan::{ConvKernel, DeltaKernel, DeltaStepPlan, RecurrentShape};
 use crate::contract::recording::Recording;
@@ -26,6 +30,9 @@ const CONV_TILE: usize = 128;
 const CONV_TAPS: usize = 4;
 /// Prompt rows in one forward tile when the chunk divides evenly.
 const CONV_ROWS: usize = 16;
+/// Axes of a verification convolution: slots, lanes, channels.
+const VERIFY_RANK: usize = 3;
+
 /// Recurrent kernels compiled with cuTile.
 pub struct TileRecurrent {
     ordinal: usize,
@@ -186,7 +193,7 @@ impl TileRecurrent {
         &self,
         recording: &Recording<'_>,
         scope: &Scope,
-        ([slots, lanes, channels], fields, fused): ([usize; 3], usize, bool),
+        ([slots, lanes, channels], fields, fused): ([usize; VERIFY_RANK], usize, bool),
         buffers: ConvBuffers<'_>,
         (weight, metadata): ConvFixed<'_>,
     ) -> Result<()> {
@@ -239,6 +246,98 @@ impl TileRecurrent {
 }
 
 impl Recurrent for TileRecurrent {
+    fn delta_checkpoint(
+        &self,
+        recording: &Recording<'_>,
+        plan: &DeltaStepPlan,
+        snapshot: Buffer<'_, f32>,
+        buffers: DeltaBuffers<'_>,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let DeltaStepPlan {
+            key_heads,
+            value_heads,
+            dim,
+            block,
+            ..
+        } = *plan;
+        let shape = [value_heads, dim, dim];
+        let mut output =
+            self.tensor(recording, buffers.output, "output", &[value_heads, 1, dim])?;
+        let mut state = self.tensor(recording, buffers.state, "state", &shape)?;
+        let mut snapshot = self.tensor(recording, snapshot, "snapshot", &shape)?;
+        let qkv = self.flat(recording, buffers.qkv)?;
+        let beta = self.flat(recording, buffers.beta)?;
+        let alpha = self.flat(recording, buffers.alpha)?;
+        let decay = self.flat(recording, buffers.decay)?;
+        let bias = self.flat(recording, buffers.bias)?;
+        let metadata = self.flat(recording, buffers.metadata)?;
+        scope
+            .record(
+                recurrent_checkpoint::delta_checkpoint(
+                    (&mut output).partition([1, 1, block]),
+                    (&mut state).partition([1, dim, block]),
+                    (&mut snapshot).partition([1, dim, block]),
+                    &qkv,
+                    &beta,
+                    &alpha,
+                    &decay,
+                    &bias,
+                    &metadata,
+                )
+                .generics(vec![
+                    key_heads.to_string(),
+                    value_heads.to_string(),
+                    dim.to_string(),
+                    block.to_string(),
+                ]),
+            )
+            .map(drop)
+            .map_err(backend_error)
+    }
+
+    fn conv_checkpoint(
+        &self,
+        recording: &Recording<'_>,
+        channels: usize,
+        snapshot: [Buffer<'_, f32>; CONV_HISTORY],
+        buffers: ConvBuffers<'_>,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let [h0, h1, h2] = buffers.history;
+        let [c0, c1, c2] = snapshot;
+        let mut output = self.flat(recording, buffers.output)?;
+        let mut h0 = self.flat(recording, h0)?;
+        let mut h1 = self.flat(recording, h1)?;
+        let mut h2 = self.flat(recording, h2)?;
+        let mut c0 = self.flat(recording, c0)?;
+        let mut c1 = self.flat(recording, c1)?;
+        let mut c2 = self.flat(recording, c2)?;
+        let input = self.flat(recording, buffers.input)?;
+        let weight = self.tensor(
+            recording,
+            buffers.weight,
+            "conv weight",
+            &[channels, CONV_TAPS],
+        )?;
+        let metadata = self.flat(recording, buffers.metadata)?;
+        scope
+            .record(recurrent_checkpoint::conv4_checkpoint(
+                (&mut output).partition([CONV_TILE]),
+                (&mut h0).partition([CONV_TILE]),
+                (&mut h1).partition([CONV_TILE]),
+                (&mut h2).partition([CONV_TILE]),
+                (&mut c0).partition([CONV_TILE]),
+                (&mut c1).partition([CONV_TILE]),
+                (&mut c2).partition([CONV_TILE]),
+                &input,
+                &weight,
+                &metadata,
+            ))
+            .map(drop)
+            .map_err(backend_error)
+    }
+
     fn delta_step(
         &self,
         recording: &Recording<'_>,
