@@ -320,3 +320,21 @@ pub struct SplitGemmPlan {
     pub k_tiles: i32,
     pub splits: i32,
 }
+
+/// Heads, dimension and lanes of a recurrent prompt lowering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecurrentShape {
+    pub key_heads: usize,
+    pub value_heads: usize,
+    pub dim: usize,
+    pub lanes: usize,
+}
+
+/// Per-token recurrence that derives its own gates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeltaKernel {
+    /// One state update per token.
+    Scan,
+    /// The WY factorization of a chunk.
+    Wy,
+}

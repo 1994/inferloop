@@ -1,11 +1,12 @@
 //! Operator-family traits implemented by each kernel source.
 
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
+use crate::contract::plan::RecurrentShape;
 use crate::contract::plan::{
-    BinaryOp, DenseRowsPlan, DownPlan, EmbeddingPlan, ExpertPlan, Fp4QuantPlan, Fp8QuantPlan,
-    FusionNormPlan, GemmPlan, GreedyPlan, LastRowsPlan, NormPlan, PoolGemvPlan, PromptPlan,
-    QuantNormPlan, RopePlan, RoutePlan, RowNormPlan, RowsPlan, SplitGemmPlan, SplitPlan,
-    THREE_ROWS, UnaryOp,
+    BinaryOp, DeltaKernel, DenseRowsPlan, DownPlan, EmbeddingPlan, ExpertPlan, Fp4QuantPlan,
+    Fp8QuantPlan, FusionNormPlan, GemmPlan, GreedyPlan, LastRowsPlan, NormPlan, PoolGemvPlan,
+    PromptPlan, QuantNormPlan, RopePlan, RoutePlan, RowNormPlan, RowsPlan, SplitGemmPlan,
+    SplitPlan, THREE_ROWS, UnaryOp,
 };
 use crate::contract::recording::Recording;
 use infer_core::Result;
@@ -596,6 +597,128 @@ pub trait Sampling: Send + Sync {
     ) -> Result<()>;
 }
 
+/// Operands of the chunked prompt rule. The scratch is the caller's, and outlives the graph.
+#[derive(Clone, Copy)]
+pub struct ChunkBuffers<'a> {
+    pub queries: Buffer<'a, Bf16>,
+    pub keys: Buffer<'a, Bf16>,
+    pub u: Buffer<'a, Bf16>,
+    pub w: Buffer<'a, Bf16>,
+    pub p: Buffer<'a, Bf16>,
+    pub cumulative: Buffer<'a, f32>,
+    pub qkv: Buffer<'a, f32>,
+    pub betas: Buffer<'a, f32>,
+    pub decays: Buffer<'a, f32>,
+    pub state: Buffer<'a, f32>,
+    pub output: Buffer<'a, f32>,
+    pub metadata: Buffer<'a, i32>,
+}
+
+/// Operands of a recurrence that derives its gates per token.
+#[derive(Clone, Copy)]
+pub struct DeltaBuffers<'a> {
+    pub state: Buffer<'a, f32>,
+    pub output: Buffer<'a, f32>,
+    pub qkv: Buffer<'a, f32>,
+    pub beta: Buffer<'a, f32>,
+    pub alpha: Buffer<'a, f32>,
+    pub decay: Buffer<'a, f32>,
+    pub bias: Buffer<'a, f32>,
+    pub metadata: Buffer<'a, i32>,
+}
+
+/// Operands of the recurrence over precomputed normalization and gates.
+#[derive(Clone, Copy)]
+pub struct PreparedDeltaBuffers<'a> {
+    pub state: Buffer<'a, f32>,
+    pub output: Buffer<'a, f32>,
+    pub qkv: Buffer<'a, f32>,
+    pub normalized: Buffer<'a, f32>,
+    pub betas: Buffer<'a, f32>,
+    pub decays: Buffer<'a, f32>,
+    pub metadata: Buffer<'a, i32>,
+}
+
+/// Operands of the shared gate evaluation.
+#[derive(Clone, Copy)]
+pub struct GateBuffers<'a> {
+    pub betas: Buffer<'a, f32>,
+    pub decays: Buffer<'a, f32>,
+    pub beta: Buffer<'a, f32>,
+    pub alpha: Buffer<'a, f32>,
+    pub decay: Buffer<'a, f32>,
+    pub bias: Buffer<'a, f32>,
+}
+
+/// Gated delta recurrence over a prompt chunk.
+pub trait Recurrent: Send + Sync {
+    /// The chunked BF16 prompt rule.
+    /// # Errors
+    /// Fails when a buffer disagrees with the shape, or the launch is rejected.
+    fn chunk(
+        &self,
+        recording: &Recording<'_>,
+        shape: RecurrentShape,
+        chunk: usize,
+        buffers: ChunkBuffers<'_>,
+    ) -> Result<()>;
+
+    /// Normalize every query and key per head and token.
+    /// # Errors
+    /// Fails when a buffer disagrees with the shape, or the launch is rejected.
+    fn normalize(
+        &self,
+        recording: &Recording<'_>,
+        shape: RecurrentShape,
+        normalized: Buffer<'_, f32>,
+        qkv: Buffer<'_, f32>,
+    ) -> Result<()>;
+
+    /// Evaluate beta and decay once per head and token.
+    /// # Errors
+    /// Fails when a buffer disagrees with the shape, or the launch is rejected.
+    fn gates(
+        &self,
+        recording: &Recording<'_>,
+        shape: RecurrentShape,
+        buffers: GateBuffers<'_>,
+    ) -> Result<()>;
+
+    /// The ordered recurrence over [`Recurrent::normalize`] and [`Recurrent::gates`].
+    /// # Errors
+    /// Fails when a buffer disagrees with the shape, or the launch is rejected.
+    fn delta_prepared(
+        &self,
+        recording: &Recording<'_>,
+        shape: RecurrentShape,
+        block: usize,
+        buffers: PreparedDeltaBuffers<'_>,
+    ) -> Result<()>;
+
+    /// A recurrence that derives its gates per token.
+    /// # Errors
+    /// Fails when a buffer disagrees with the shape, or the launch is rejected.
+    fn delta(
+        &self,
+        recording: &Recording<'_>,
+        kernel: DeltaKernel,
+        shape: RecurrentShape,
+        block: usize,
+        buffers: DeltaBuffers<'_>,
+    ) -> Result<()>;
+
+    /// Reorder head-major scratch into lane-major output.
+    /// # Errors
+    /// Fails when a buffer disagrees with the shape, or the launch is rejected.
+    fn transpose(
+        &self,
+        recording: &Recording<'_>,
+        shape: RecurrentShape,
+        output: Buffer<'_, f32>,
+        scratch: Buffer<'_, f32>,
+    ) -> Result<()>;
+}
+
 /// One device's kernels, selected once when a model loads; no call path chooses a source.
 pub struct Kernels {
     pub projection: Box<dyn Projection>,
@@ -605,4 +728,5 @@ pub struct Kernels {
     pub state: Box<dyn State>,
     pub moe: Box<dyn Moe>,
     pub sampling: Box<dyn Sampling>,
+    pub recurrent: Box<dyn Recurrent>,
 }

@@ -6,6 +6,7 @@ use cutile::{
     bench::{BenchOptions, do_bench_paired},
     prelude::*,
 };
+use infer_cuda_kernels::tile::kernels as contract_kernels;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 use std::slice::from_ref;
@@ -102,13 +103,14 @@ fn bench_case(
         lanes.to_string(),
         block.to_string(),
     ];
-    let mut prepared = (dim == super::ORDERED_DIM)
+    let prepared = (dim == super::ORDERED_DIM)
         .then(|| super::prepared::Inputs::new(device, (kh, vh, dim), lanes))
         .transpose()?;
     let candidate = Graph::scope(&device.stream, |scope| {
         if dim == 128 {
-            prepared.as_mut().expect("ordered preparation").record(
+            prepared.as_ref().expect("ordered preparation").record(
                 scope,
+                contract_kernels(0).recurrent.as_ref(),
                 [&qkv, &beta, &alpha, &a_log, &bias],
                 [&mut state, &mut scratch],
                 &metadata,

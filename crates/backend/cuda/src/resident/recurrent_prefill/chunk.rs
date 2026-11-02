@@ -10,21 +10,18 @@
 //! products, TF32 for the triangular inverse);
 //! [`kernels::chunk_scan`] then carries the F32 state across chunks with four BF16 products per
 //! chunk, as the FLA and `FlashInfer` kernels do.
+use super::super::buffers::buffer;
+use super::super::capture::error;
 use crate::device::{CudaDevice, device_error};
 use cutile::{half::bf16, prelude::*};
 use infer_core::Result;
+use infer_cuda_kernels::contract::{Buffer, ChunkBuffers, Recording, Recurrent, RecurrentShape};
 use std::result::Result as StdResult;
 
 /// Tokens per chunk.
 pub(super) const CHUNK: usize = 64;
-/// Value columns in the general scan tile.
-const SCAN_COLUMNS: usize = 32;
-/// Wider tiles amortize factor loads for this measured value-head geometry.
-const WIDE_SCAN_COLUMNS: usize = 64;
-/// Value-head count whose prompt widths benefit from the wider tile.
-const WIDE_SCAN_VALUE_HEADS: usize = 48;
-
-pub use infer_cuda_kernels::tile::recurrent::recurrent_chunk as kernels;
+#[cfg(test)]
+use infer_cuda_kernels::tile::recurrent::recurrent_chunk as kernels;
 
 /// Scratch for one prompt width.
 pub(super) struct Scratch {
@@ -71,72 +68,39 @@ pub(super) const fn enabled(dim: usize, lanes: usize) -> bool {
     dim == super::ORDERED_DIM && lanes >= CHUNK && lanes.is_multiple_of(CHUNK)
 }
 
+/// F32 operands of [`record`].
+pub(super) const CHUNK_OPERANDS: usize = 5;
+
 /// Record the chunked recurrence; `betas` and `decays` come from the shared gate kernel.
 pub(super) fn record(
     scope: &Scope,
-    scratch: &mut Scratch,
-    qkv: &TensorView<'_, f32>,
-    (betas, decays): (&Tensor<f32>, &Tensor<f32>),
-    [state, output]: [&mut Tensor<f32>; 2],
-    metadata: &Tensor<i32>,
-    (kh, vh, dim, lanes): (usize, usize, usize, usize),
+    recurrent: &dyn Recurrent,
+    scratch: &Scratch,
+    shape: RecurrentShape,
+    [qkv, betas, decays, state, output]: [Buffer<'_, f32>; CHUNK_OPERANDS],
+    metadata: Buffer<'_, i32>,
 ) -> StdResult<(), DeviceError> {
-    scope.record(
-        kernels::chunk_normalize(
-            (&mut scratch.queries).partition([1, CHUNK, dim]),
-            (&mut scratch.keys).partition([1, CHUNK, dim]),
-            qkv,
-            metadata,
-        )
-        .generics(vec![kh.to_string(), dim.to_string()]),
-    )?;
-    scope.record(
-        kernels::chunk_prepare(
-            (&mut scratch.u).partition([1, CHUNK, dim]),
-            (&mut scratch.w).partition([1, CHUNK, dim]),
-            (&mut scratch.p).partition([1, CHUNK, CHUNK]),
-            (&mut scratch.cumulative).partition([1, CHUNK]),
-            qkv,
-            &scratch.queries,
-            &scratch.keys,
-            betas,
-            decays,
-            metadata,
-        )
-        .generics(vec![kh.to_string(), vh.to_string(), dim.to_string()]),
-    )?;
-    if vh == WIDE_SCAN_VALUE_HEADS {
-        scope.record(
-            kernels::chunk_scan_wide(
-                state.partition([1, dim, WIDE_SCAN_COLUMNS]),
-                output.partition([1, lanes, WIDE_SCAN_COLUMNS]),
-                &scratch.u,
-                &scratch.w,
-                &scratch.queries,
-                &scratch.keys,
-                &scratch.p,
-                &scratch.cumulative,
+    recurrent
+        .chunk(
+            &Recording::scope(scope),
+            shape,
+            CHUNK,
+            ChunkBuffers {
+                queries: buffer(&scratch.queries)?,
+                keys: buffer(&scratch.keys)?,
+                u: buffer(&scratch.u)?,
+                w: buffer(&scratch.w)?,
+                p: buffer(&scratch.p)?,
+                cumulative: buffer(&scratch.cumulative)?,
+                qkv,
+                betas,
+                decays,
+                state,
+                output,
                 metadata,
-            )
-            .generics(vec![kh.to_string(), vh.to_string(), lanes.to_string()]),
-        )?;
-    } else {
-        scope.record(
-            kernels::chunk_scan(
-                state.partition([1, dim, SCAN_COLUMNS]),
-                output.partition([1, lanes, SCAN_COLUMNS]),
-                &scratch.u,
-                &scratch.w,
-                &scratch.queries,
-                &scratch.keys,
-                &scratch.p,
-                &scratch.cumulative,
-                metadata,
-            )
-            .generics(vec![kh.to_string(), vh.to_string(), lanes.to_string()]),
-        )?;
-    }
-    Ok(())
+            },
+        )
+        .map_err(error)
 }
 
 #[cfg(test)]

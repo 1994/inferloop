@@ -1,9 +1,13 @@
 //! Compare production chunk scans with the original 32-column arithmetic and state.
-use super::{SCAN_COLUMNS, Scratch, WIDE_SCAN_COLUMNS, WIDE_SCAN_VALUE_HEADS, kernels, record};
+use super::{Scratch, kernels, record};
 use crate::device::CudaDevice;
+use crate::resident::buffers::buffer;
 use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::error::tensor_error;
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::RecurrentShape;
+use infer_cuda_kernels::tile::kernels as contract_kernels;
+use infer_cuda_kernels::tile::recurrent::{SCAN_COLUMNS, WIDE_SCAN_COLUMNS, WIDE_SCAN_VALUE_HEADS};
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error as StdError;
 use std::time::Duration;
@@ -42,12 +46,22 @@ fn capture(
         if optimized {
             return record(
                 scope,
-                scratch,
-                &qkv,
-                (&input.beta, &input.decay),
-                [state, output],
-                &input.metadata,
-                (kh, vh, DIM, lanes),
+                contract_kernels(0).recurrent.as_ref(),
+                &*scratch,
+                RecurrentShape {
+                    key_heads: kh,
+                    value_heads: vh,
+                    dim: DIM,
+                    lanes,
+                },
+                [
+                    buffer(input.qkv.as_ref())?,
+                    buffer(&input.beta)?,
+                    buffer(&input.decay)?,
+                    buffer(&*state)?,
+                    buffer(&*output)?,
+                ],
+                buffer(&input.metadata)?,
             );
         }
         scope.record(
