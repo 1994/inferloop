@@ -9,16 +9,18 @@ pub mod target;
 
 pub use buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner};
 pub use kernels::{
-    ChunkBuffers, DeltaBuffers, ExpertWeight, FusionNormBuffers, GateBuffers, GreedyPartials,
-    Kernels, Mlp, Moe, Norm, NormBuffers, NormFp4Buffers, NormMaximumBuffers, PreparedDeltaBuffers,
-    ProductBuffers, Projection, Recurrent, Rope, RopeBuffers, Sampling, State, WeightRef,
+    CONV_HISTORY, ChunkBuffers, ConvBuffers, DeltaBuffers, ExpertWeight, FusionNormBuffers,
+    GateBuffers, GreedyPartials, Kernels, Mlp, Moe, Norm, NormBuffers, NormFp4Buffers,
+    NormMaximumBuffers, PreparedDeltaBuffers, ProductBuffers, Projection, Recurrent, Rope,
+    RopeBuffers, Sampling, State, WeightRef,
 };
 pub use plan::{
-    BinaryOp, DeltaKernel, DenseKernel, DenseRowsPlan, DownPlan, EmbeddingPlan, ExpertPlan,
-    Fp4QuantKind, Fp4QuantPlan, Fp8QuantKind, Fp8QuantPlan, FusionNormPlan, FusionShape, GemmLoop,
-    GemmPlan, GreedyPlan, LastRowsKind, LastRowsPlan, NormLayout, NormPlan, PoolGemvPlan,
-    PromptPlan, QuantNormPlan, RecurrentShape, RopeMode, RopePlan, RoutePlan, RowNormPlan,
-    RowsKernel, RowsPlan, SplitGemmPlan, SplitPlan, THREE_ROWS, UnaryOp,
+    BinaryOp, ConvKernel, DeltaKernel, DeltaStepPlan, DenseKernel, DenseRowsPlan, DownPlan,
+    EmbeddingPlan, ExpertPlan, Fp4QuantKind, Fp4QuantPlan, Fp8QuantKind, Fp8QuantPlan,
+    FusionNormPlan, FusionShape, GemmLoop, GemmPlan, GreedyPlan, LastRowsKind, LastRowsPlan,
+    NormLayout, NormPlan, PoolGemvPlan, PromptPlan, QuantNormPlan, RecurrentShape, RopeMode,
+    RopePlan, RoutePlan, RowNormPlan, RowsKernel, RowsPlan, SplitGemmPlan, SplitPlan, THREE_ROWS,
+    UnaryOp,
 };
 pub use recording::Recording;
 pub use target::Arch;

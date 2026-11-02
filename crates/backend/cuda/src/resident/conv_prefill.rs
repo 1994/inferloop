@@ -1,14 +1,12 @@
 //! Parallel causal convolution across a prompt chunk, followed by one state commit.
+#[cfg(test)]
 pub use infer_cuda_kernels::tile::recurrent::conv_prefill as kernels;
 
-use super::{ActivationArena, ProgramWeights, batch::States, capture::error};
+use super::{ActivationArena, ProgramWeights, batch::States, buffers::buffer, capture::error};
 use crate::constants::CONV_KERNEL_SIZE;
-use crate::constants::CONV_KERNEL_TILE;
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::{ConvBuffers, ConvKernel, Recording};
 use infer_ir::{TensorNode, TensorOp};
-
-/// Rows per block of the row-sliding convolution kernel (fixed in the kernel).
-const CONV_ROWS: usize = 16;
 
 pub(super) fn record(
     scope: &Scope,
@@ -48,46 +46,29 @@ pub(super) fn record(
         .iter()
         .map(|&n| usize::try_from(n).map_err(error))
         .collect::<Result<_, _>>()?;
-    let mut output = output.reshape(&[lanes, channels])?;
-    let input = arena
-        .get(node.inputs[0])
-        .map_err(error)?
-        .view(&[lanes, channels])
+    let output = output.reshape(&[lanes, channels])?;
+    weights
+        .kernels
+        .recurrent
+        .conv(
+            &Recording::scope(scope),
+            ConvKernel::Prefill { lanes },
+            channels,
+            ConvBuffers {
+                output: buffer(&output)?,
+                history: [buffer(&*h0)?, buffer(&*h1)?, buffer(&*h2)?],
+                input: buffer(arena.get(node.inputs[0]).map_err(error)?)?,
+                weight: buffer(
+                    weights
+                        .constants
+                        .get(&node.inputs[1])
+                        .ok_or_else(|| error("prefill convolution weight"))?
+                        .as_ref(),
+                )?,
+                metadata: buffer(metadata)?,
+            },
+        )
         .map_err(error)?;
-    let weight = weights
-        .constants
-        .get(&node.inputs[1])
-        .ok_or_else(|| error("prefill convolution weight"))?
-        .view(&[channels, CONV_KERNEL_SIZE])
-        .map_err(error)?;
-    if lanes.is_multiple_of(CONV_ROWS) {
-        scope.record(kernels::forward_rows(
-            (&mut output).partition([CONV_ROWS, CONV_KERNEL_TILE]),
-            &*h0,
-            &*h1,
-            &*h2,
-            &input,
-            &weight,
-            metadata,
-        ))?;
-    } else {
-        scope.record(kernels::forward(
-            (&mut output).partition([1, CONV_KERNEL_TILE]),
-            &*h0,
-            &*h1,
-            &*h2,
-            &input,
-            &weight,
-            metadata,
-        ))?;
-    }
-    scope.record(kernels::commit(
-        h0.partition([CONV_KERNEL_TILE]),
-        h1.partition([CONV_KERNEL_TILE]),
-        h2.partition([CONV_KERNEL_TILE]),
-        &input,
-        metadata,
-    ))?;
     arena.buffers[slot] = Some(output.reshape(&original)?);
     Ok(true)
 }

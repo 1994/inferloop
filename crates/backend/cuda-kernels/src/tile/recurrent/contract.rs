@@ -1,10 +1,10 @@
 //! cuTile implementation of the recurrent prompt family.
-use super::{recurrent_chunk, recurrent_prefill};
+use super::{conv_prefill, recurrent, recurrent_chunk, recurrent_prefill, slot_convolution};
 use crate::contract::buffer::{Bf16, Buffer};
 use crate::contract::kernels::{
-    ChunkBuffers, DeltaBuffers, GateBuffers, PreparedDeltaBuffers, Recurrent,
+    ChunkBuffers, ConvBuffers, DeltaBuffers, GateBuffers, PreparedDeltaBuffers, Recurrent,
 };
-use crate::contract::plan::{DeltaKernel, RecurrentShape};
+use crate::contract::plan::{ConvKernel, DeltaKernel, DeltaStepPlan, RecurrentShape};
 use crate::contract::recording::Recording;
 use crate::tile::projection::retyped_bf16;
 use crate::tile::{backend_error, borrowed, capture_scope};
@@ -20,6 +20,12 @@ pub const WIDE_SCAN_COLUMNS: usize = 64;
 /// Value-head count whose prompt widths benefit from the wider tile.
 pub const WIDE_SCAN_VALUE_HEADS: usize = 48;
 
+/// Elements of a channel axis in one convolution tile.
+const CONV_TILE: usize = 128;
+/// Taps of the convolution weight.
+const CONV_TAPS: usize = 4;
+/// Prompt rows in one forward tile when the chunk divides evenly.
+const CONV_ROWS: usize = 16;
 /// Recurrent kernels compiled with cuTile.
 pub struct TileRecurrent {
     ordinal: usize,
@@ -67,7 +73,272 @@ impl TileRecurrent {
     }
 }
 
+type ConvFixed<'t> = (&'t Tensor<f32>, &'t Tensor<i32>);
+
+impl TileRecurrent {
+    fn conv_step(
+        &self,
+        recording: &Recording<'_>,
+        scope: &Scope,
+        buffers: ConvBuffers<'_>,
+        (weight, metadata): ConvFixed<'_>,
+    ) -> Result<()> {
+        let [h0, h1, h2] = buffers.history;
+        let mut output = self.flat(recording, buffers.output)?;
+        let mut h0 = self.flat(recording, h0)?;
+        let mut h1 = self.flat(recording, h1)?;
+        let mut h2 = self.flat(recording, h2)?;
+        let input = self.flat(recording, buffers.input)?;
+        scope
+            .record(recurrent::conv4(
+                (&mut output).partition([CONV_TILE]),
+                (&mut h0).partition([CONV_TILE]),
+                (&mut h1).partition([CONV_TILE]),
+                (&mut h2).partition([CONV_TILE]),
+                &input,
+                weight,
+                metadata,
+            ))
+            .map(drop)
+            .map_err(backend_error)
+    }
+
+    fn conv_lanes(
+        &self,
+        recording: &Recording<'_>,
+        scope: &Scope,
+        shape: [usize; 2],
+        buffers: ConvBuffers<'_>,
+        (weight, metadata): ConvFixed<'_>,
+    ) -> Result<()> {
+        let [h0, h1, h2] = buffers.history;
+        let mut output = self.tensor(recording, buffers.output, "conv output", &shape)?;
+        let mut h0 = self.tensor(recording, h0, "conv history", &shape)?;
+        let mut h1 = self.tensor(recording, h1, "conv history", &shape)?;
+        let mut h2 = self.tensor(recording, h2, "conv history", &shape)?;
+        let input = self.tensor(recording, buffers.input, "conv input", &shape)?;
+        scope
+            .record(recurrent::conv4_lanes(
+                (&mut output).partition([1, CONV_TILE]),
+                (&mut h0).partition([1, CONV_TILE]),
+                (&mut h1).partition([1, CONV_TILE]),
+                (&mut h2).partition([1, CONV_TILE]),
+                &input,
+                weight,
+                metadata,
+            ))
+            .map(drop)
+            .map_err(backend_error)
+    }
+
+    fn conv_prefill(
+        &self,
+        recording: &Recording<'_>,
+        scope: &Scope,
+        shape: [usize; 2],
+        buffers: ConvBuffers<'_>,
+        (weight, metadata): ConvFixed<'_>,
+    ) -> Result<()> {
+        let [h0, h1, h2] = buffers.history;
+        let mut output = self.tensor(recording, buffers.output, "conv output", &shape)?;
+        let mut h0 = self.flat(recording, h0)?;
+        let mut h1 = self.flat(recording, h1)?;
+        let mut h2 = self.flat(recording, h2)?;
+        let input = self.tensor(recording, buffers.input, "conv input", &shape)?;
+        if shape[0].is_multiple_of(CONV_ROWS) {
+            scope
+                .record(conv_prefill::forward_rows(
+                    (&mut output).partition([CONV_ROWS, CONV_TILE]),
+                    &h0,
+                    &h1,
+                    &h2,
+                    &input,
+                    weight,
+                    metadata,
+                ))
+                .map_err(backend_error)?;
+        } else {
+            scope
+                .record(conv_prefill::forward(
+                    (&mut output).partition([1, CONV_TILE]),
+                    &h0,
+                    &h1,
+                    &h2,
+                    &input,
+                    weight,
+                    metadata,
+                ))
+                .map_err(backend_error)?;
+        }
+        scope
+            .record(conv_prefill::commit(
+                (&mut h0).partition([CONV_TILE]),
+                (&mut h1).partition([CONV_TILE]),
+                (&mut h2).partition([CONV_TILE]),
+                &input,
+                metadata,
+            ))
+            .map(drop)
+            .map_err(backend_error)
+    }
+
+    fn conv_verify(
+        &self,
+        recording: &Recording<'_>,
+        scope: &Scope,
+        ([slots, lanes, channels], fields, fused): ([usize; 3], usize, bool),
+        buffers: ConvBuffers<'_>,
+        (weight, metadata): ConvFixed<'_>,
+    ) -> Result<()> {
+        let [h0, h1, h2] = buffers.history;
+        let shape = [slots, lanes, channels];
+        let history = [slots, channels];
+        let mut output = self.tensor(recording, buffers.output, "conv output", &shape)?;
+        let h0 = self.tensor(recording, h0, "conv history", &history)?;
+        let h1 = self.tensor(recording, h1, "conv history", &history)?;
+        let h2 = self.tensor(recording, h2, "conv history", &history)?;
+        let input = self.tensor(recording, buffers.input, "conv input", &shape)?;
+        if fused {
+            scope
+                .record(
+                    slot_convolution::verify(
+                        (&mut output).partition([1, lanes, CONV_TILE]),
+                        &input,
+                        &h0,
+                        &h1,
+                        &h2,
+                        weight,
+                        metadata,
+                    )
+                    .generics(vec![channels.to_string(), fields.to_string()]),
+                )
+                .map(drop)
+                .map_err(backend_error)
+        } else {
+            scope
+                .record(
+                    slot_convolution::verify_lanes(
+                        (&mut output).partition([1, lanes, CONV_TILE]),
+                        &input,
+                        &h0,
+                        &h1,
+                        &h2,
+                        weight,
+                        metadata,
+                    )
+                    .generics(vec![
+                        channels.to_string(),
+                        fields.to_string(),
+                        lanes.to_string(),
+                    ]),
+                )
+                .map(drop)
+                .map_err(backend_error)
+        }
+    }
+}
+
 impl Recurrent for TileRecurrent {
+    fn delta_step(
+        &self,
+        recording: &Recording<'_>,
+        plan: &DeltaStepPlan,
+        buffers: DeltaBuffers<'_>,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let DeltaStepPlan {
+            key_heads,
+            value_heads,
+            dim,
+            block,
+            lanes,
+        } = *plan;
+        let blocks = lanes.unwrap_or(1) * value_heads;
+        let mut output = self.tensor(recording, buffers.output, "output", &[blocks, 1, dim])?;
+        let mut state = self.tensor(recording, buffers.state, "state", &[blocks, dim, dim])?;
+        let qkv = self.flat(recording, buffers.qkv)?;
+        let beta = self.flat(recording, buffers.beta)?;
+        let alpha = self.flat(recording, buffers.alpha)?;
+        let decay = self.flat(recording, buffers.decay)?;
+        let bias = self.flat(recording, buffers.bias)?;
+        let metadata = self.flat(recording, buffers.metadata)?;
+        let generics = vec![
+            key_heads.to_string(),
+            value_heads.to_string(),
+            dim.to_string(),
+            block.to_string(),
+        ];
+        let recorded = if lanes.is_some() {
+            scope.record(
+                recurrent::delta_lanes(
+                    (&mut output).partition([1, 1, block]),
+                    (&mut state).partition([1, dim, block]),
+                    &qkv,
+                    &beta,
+                    &alpha,
+                    &decay,
+                    &bias,
+                    &metadata,
+                )
+                .generics(generics),
+            )
+        } else {
+            scope.record(
+                recurrent::delta(
+                    (&mut output).partition([1, 1, block]),
+                    (&mut state).partition([1, dim, block]),
+                    &qkv,
+                    &beta,
+                    &alpha,
+                    &decay,
+                    &bias,
+                    &metadata,
+                )
+                .generics(generics),
+            )
+        };
+        recorded.map(drop).map_err(backend_error)
+    }
+
+    fn conv(
+        &self,
+        recording: &Recording<'_>,
+        kernel: ConvKernel,
+        channels: usize,
+        buffers: ConvBuffers<'_>,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let weight = self.tensor(
+            recording,
+            buffers.weight,
+            "conv weight",
+            &[channels, CONV_TAPS],
+        )?;
+        let metadata = self.flat(recording, buffers.metadata)?;
+        let fixed = (&weight, &metadata);
+        match kernel {
+            ConvKernel::Step => self.conv_step(recording, scope, buffers, fixed),
+            ConvKernel::Lanes { lanes } => {
+                self.conv_lanes(recording, scope, [lanes, channels], buffers, fixed)
+            }
+            ConvKernel::Prefill { lanes } => {
+                self.conv_prefill(recording, scope, [lanes, channels], buffers, fixed)
+            }
+            ConvKernel::Verify {
+                slots,
+                lanes,
+                fields,
+                fused,
+            } => self.conv_verify(
+                recording,
+                scope,
+                ([slots, lanes, channels], fields, fused),
+                buffers,
+                fixed,
+            ),
+        }
+    }
+
     fn chunk(
         &self,
         recording: &Recording<'_>,

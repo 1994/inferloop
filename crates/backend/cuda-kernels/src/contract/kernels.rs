@@ -1,13 +1,13 @@
 //! Operator-family traits implemented by each kernel source.
 
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
-use crate::contract::plan::RecurrentShape;
 use crate::contract::plan::{
     BinaryOp, DeltaKernel, DenseRowsPlan, DownPlan, EmbeddingPlan, ExpertPlan, Fp4QuantPlan,
     Fp8QuantPlan, FusionNormPlan, GemmPlan, GreedyPlan, LastRowsPlan, NormPlan, PoolGemvPlan,
     PromptPlan, QuantNormPlan, RopePlan, RoutePlan, RowNormPlan, RowsPlan, SplitGemmPlan,
     SplitPlan, THREE_ROWS, UnaryOp,
 };
+use crate::contract::plan::{ConvKernel, DeltaStepPlan, RecurrentShape};
 use crate::contract::recording::Recording;
 use infer_core::Result;
 
@@ -597,6 +597,9 @@ pub trait Sampling: Send + Sync {
     ) -> Result<()>;
 }
 
+/// History rows a convolution keeps.
+pub const CONV_HISTORY: usize = 3;
+
 /// Operands of the chunked prompt rule. The scratch is the caller's, and outlives the graph.
 #[derive(Clone, Copy)]
 pub struct ChunkBuffers<'a> {
@@ -650,8 +653,39 @@ pub struct GateBuffers<'a> {
     pub bias: Buffer<'a, f32>,
 }
 
-/// Gated delta recurrence over a prompt chunk.
+/// Operands of a convolution: the three history rows are the state.
+#[derive(Clone, Copy)]
+pub struct ConvBuffers<'a> {
+    pub output: Buffer<'a, f32>,
+    pub history: [Buffer<'a, f32>; CONV_HISTORY],
+    pub input: Buffer<'a, f32>,
+    pub weight: Buffer<'a, f32>,
+    pub metadata: Buffer<'a, i32>,
+}
+
+/// Gated delta recurrence and its convolution.
 pub trait Recurrent: Send + Sync {
+    /// One token's recurrence.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn delta_step(
+        &self,
+        recording: &Recording<'_>,
+        plan: &DeltaStepPlan,
+        buffers: DeltaBuffers<'_>,
+    ) -> Result<()>;
+
+    /// A convolution of `channels`.
+    /// # Errors
+    /// Fails when a buffer disagrees with the kernel, or the launch is rejected.
+    fn conv(
+        &self,
+        recording: &Recording<'_>,
+        kernel: ConvKernel,
+        channels: usize,
+        buffers: ConvBuffers<'_>,
+    ) -> Result<()>;
+
     /// The chunked BF16 prompt rule.
     /// # Errors
     /// Fails when a buffer disagrees with the shape, or the launch is rejected.

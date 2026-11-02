@@ -1,10 +1,12 @@
 use super::{
+    buffers::buffer,
     capture::{Capture, error},
-    recurrent::recurrent,
 };
 use crate::constants::CONV_KERNEL_SIZE;
-use crate::constants::CONV_KERNEL_TILE;
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::{
+    Buffer, ConvBuffers, ConvKernel, DeltaBuffers, DeltaStepPlan, Recording,
+};
 use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
 use std::env::{var, var_os};
@@ -47,24 +49,29 @@ impl Capture<'_> {
     fn conv(
         &self,
         node: &TensorNode,
-        output: &mut Tensor<f32>,
-        state: &mut [Tensor<f32>],
+        output: &Tensor<f32>,
+        state: &[Tensor<f32>],
         channels: usize,
     ) -> Result<(), DeviceError> {
         let [h0, h1, h2] = state else {
             return Err(error("convolution state layout"));
         };
-        self.scope.record(recurrent::conv4(
-            output.partition([CONV_KERNEL_TILE]),
-            h0.partition([CONV_KERNEL_TILE]),
-            h1.partition([CONV_KERNEL_TILE]),
-            h2.partition([CONV_KERNEL_TILE]),
-            &self.input(node.inputs[0])?,
-            &self
-                .input(node.inputs[1])?
-                .view(&[channels, CONV_KERNEL_SIZE])?,
-            self.metadata,
-        ))?;
+        self.weights
+            .kernels
+            .recurrent
+            .conv(
+                &Recording::scope(self.scope),
+                ConvKernel::Step,
+                channels,
+                ConvBuffers {
+                    output: buffer(output)?,
+                    history: [buffer(h0)?, buffer(h1)?, buffer(h2)?],
+                    input: self.input_buffer(node.inputs[0])?,
+                    weight: self.input_buffer(node.inputs[1])?,
+                    metadata: buffer(self.metadata)?,
+                },
+            )
+            .map_err(error)?;
         Ok(())
     }
 
@@ -103,7 +110,7 @@ impl Capture<'_> {
                 channels,
                 kernel: CONV_KERNEL_SIZE,
             } => {
-                self.conv(node, &mut output, &mut state, channels)?;
+                self.conv(node, &output, &state, channels)?;
             }
             TensorOp::Delta {
                 key_heads,
@@ -126,23 +133,17 @@ impl Capture<'_> {
                 // dimension - and is off by default until the full matrix shows a gain.
                 let block = value_block(value_dim)?;
                 output = output.reshape(&[value_heads, 1, value_dim])?;
-                self.scope.record(
-                    recurrent::delta(
-                        (&mut output).partition([1, 1, block]),
-                        (&mut state[0]).partition([1, key_dim, block]),
-                        &self.input(node.inputs[0])?,
-                        &self.input(node.inputs[1])?,
-                        &self.input(node.inputs[2])?,
-                        &self.input(node.inputs[3])?,
-                        &self.input(node.inputs[4])?,
-                        self.metadata,
-                    )
-                    .generics(vec![
-                        key_heads.to_string(),
-                        value_heads.to_string(),
-                        key_dim.to_string(),
-                        block.to_string(),
-                    ]),
+                self.record_delta_step(
+                    node,
+                    &DeltaStepPlan {
+                        key_heads,
+                        value_heads,
+                        dim: key_dim,
+                        block,
+                        lanes: None,
+                    },
+                    buffer(&output)?,
+                    buffer(&state[0])?,
                 )?;
                 output = output.reshape(&[value_heads, value_dim])?;
             }
@@ -161,6 +162,33 @@ impl Capture<'_> {
         Ok(output)
     }
 
+    fn record_delta_step(
+        &self,
+        node: &TensorNode,
+        plan: &DeltaStepPlan,
+        output: Buffer<'_, f32>,
+        state: Buffer<'_, f32>,
+    ) -> Result<(), DeviceError> {
+        self.weights
+            .kernels
+            .recurrent
+            .delta_step(
+                &Recording::scope(self.scope),
+                plan,
+                DeltaBuffers {
+                    state,
+                    output,
+                    qkv: self.input_buffer(node.inputs[0])?,
+                    beta: self.input_buffer(node.inputs[1])?,
+                    alpha: self.input_buffer(node.inputs[2])?,
+                    decay: self.input_buffer(node.inputs[3])?,
+                    bias: self.input_buffer(node.inputs[4])?,
+                    metadata: buffer(self.metadata)?,
+                },
+            )
+            .map_err(error)
+    }
+
     /// Lane-batched convolution decode: one kernel over every lane's pooled history rows.
     fn record_conv_lanes(
         &mut self,
@@ -173,25 +201,30 @@ impl Capture<'_> {
             .first()
             .ok_or_else(|| error("missing state binding"))?;
         let lanes = self.arena.lanes();
-        let mut state = self
+        let state = self
             .states
             .remove(&id)
             .ok_or_else(|| error("missing state allocation"))?;
-        let [h0, h1, h2] = state.as_mut_slice() else {
+        let [h0, h1, h2] = state.as_slice() else {
             return Err(error("convolution state layout"));
         };
-        let mut out = output.reshape(&[lanes, channels])?;
-        self.scope.record(recurrent::conv4_lanes(
-            (&mut out).partition([1, CONV_KERNEL_TILE]),
-            h0.partition([1, CONV_KERNEL_TILE]),
-            h1.partition([1, CONV_KERNEL_TILE]),
-            h2.partition([1, CONV_KERNEL_TILE]),
-            &self.input(node.inputs[0])?.view(&[lanes, channels])?,
-            &self
-                .input(node.inputs[1])?
-                .view(&[channels, CONV_KERNEL_SIZE])?,
-            self.metadata,
-        ))?;
+        let out = output.reshape(&[lanes, channels])?;
+        self.weights
+            .kernels
+            .recurrent
+            .conv(
+                &Recording::scope(self.scope),
+                ConvKernel::Lanes { lanes },
+                channels,
+                ConvBuffers {
+                    output: buffer(&out)?,
+                    history: [buffer(h0)?, buffer(h1)?, buffer(h2)?],
+                    input: self.input_buffer(node.inputs[0])?,
+                    weight: self.input_buffer(node.inputs[1])?,
+                    metadata: buffer(self.metadata)?,
+                },
+            )
+            .map_err(error)?;
         self.states.insert(id, state);
         Ok(out.reshape(&[lanes * channels])?)
     }
@@ -235,7 +268,7 @@ impl Capture<'_> {
             .iter()
             .map(|&dim| usize::try_from(dim).map_err(|_| error("delta state shape")))
             .collect::<Result<Vec<_>, _>>()?;
-        let mut batched = root.reshape(&[
+        let batched = root.reshape(&[
             lanes
                 .checked_mul(value_heads)
                 .ok_or_else(|| error("delta lane overflow"))?,
@@ -243,24 +276,18 @@ impl Capture<'_> {
             value_dim,
         ])?;
         let block = value_block(value_dim)?;
-        let mut out = output.reshape(&[lanes * value_heads, 1, value_dim])?;
-        self.scope.record(
-            recurrent::delta_lanes(
-                (&mut out).partition([1, 1, block]),
-                (&mut batched).partition([1, key_dim, block]),
-                &self.input(node.inputs[0])?,
-                &self.input(node.inputs[1])?,
-                &self.input(node.inputs[2])?,
-                &self.input(node.inputs[3])?,
-                &self.input(node.inputs[4])?,
-                self.metadata,
-            )
-            .generics(vec![
-                key_heads.to_string(),
-                value_heads.to_string(),
-                key_dim.to_string(),
-                block.to_string(),
-            ]),
+        let out = output.reshape(&[lanes * value_heads, 1, value_dim])?;
+        self.record_delta_step(
+            node,
+            &DeltaStepPlan {
+                key_heads,
+                value_heads,
+                dim: key_dim,
+                block,
+                lanes: Some(lanes),
+            },
+            buffer(&out)?,
+            buffer(&batched)?,
         )?;
         state.push(batched.reshape(&shape)?);
         self.states.insert(id, state);

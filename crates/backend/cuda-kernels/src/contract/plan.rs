@@ -338,3 +338,33 @@ pub enum DeltaKernel {
     /// The WY factorization of a chunk.
     Wy,
 }
+
+/// Single-step recurrence, per one sequence or across a pool's lanes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeltaStepPlan {
+    pub key_heads: usize,
+    pub value_heads: usize,
+    pub dim: usize,
+    pub block: usize,
+    /// `Some` for one launch across this many lanes.
+    pub lanes: Option<usize>,
+}
+
+/// How a convolution lowers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConvKernel {
+    /// One sequence, one token.
+    Step,
+    /// One launch across a pool's lanes.
+    Lanes { lanes: usize },
+    /// A prompt chunk: forward all rows, then commit the history.
+    Prefill { lanes: usize },
+    /// Read-only candidates of every slot; `fields` metadata fields per lane.
+    Verify {
+        slots: usize,
+        lanes: usize,
+        fields: usize,
+        /// The kernel specialized for the fused candidate count.
+        fused: bool,
+    },
+}

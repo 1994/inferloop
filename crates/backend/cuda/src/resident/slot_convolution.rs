@@ -1,12 +1,14 @@
 //! Read-only three-candidate convolution verification across the pool's slot axis.
 use super::{
     ActivationArena, ProgramWeights,
+    buffers::buffer,
     capture::error,
     slot_recurrent::{LANES, covers},
     slot_states::VerifyBatch,
 };
-use crate::constants::{CONV_KERNEL_SIZE, CONV_KERNEL_TILE, METADATA_FIELDS};
+use crate::constants::METADATA_FIELDS;
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::{ConvBuffers, ConvKernel, Recording};
 use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
@@ -51,55 +53,29 @@ pub(super) fn record(
         .iter()
         .map(|&dim| usize::try_from(dim).map_err(error))
         .collect::<StdResult<Vec<_>, _>>()?;
-    let mut output = output.reshape(&[slots, lanes, channels])?;
+    let output = output.reshape(&[slots, lanes, channels])?;
     let recorded = (|| {
-        let input = arena
-            .get(node.inputs[0])
-            .map_err(error)?
-            .view(&[slots, lanes, channels])?;
-        let (h0, h1, h2) = (
-            oldest.view(&[slots, channels])?,
-            middle.view(&[slots, channels])?,
-            newest.view(&[slots, channels])?,
-        );
-        let weight = weight.view(&[channels, CONV_KERNEL_SIZE])?;
-        if lanes == LANES {
-            scope.record(
-                kernels::verify(
-                    (&mut output).partition([1, LANES, CONV_KERNEL_TILE]),
-                    &input,
-                    &h0,
-                    &h1,
-                    &h2,
-                    &weight,
-                    batch.metadata,
-                )
-                .generics(
-                    [channels, METADATA_FIELDS]
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect(),
-                ),
-            )?;
-        } else {
-            scope.record(
-                kernels::verify_lanes(
-                    (&mut output).partition([1, lanes, CONV_KERNEL_TILE]),
-                    &input,
-                    &h0,
-                    &h1,
-                    &h2,
-                    &weight,
-                    batch.metadata,
-                )
-                .generics(
-                    [channels, METADATA_FIELDS, lanes]
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect(),
-                ),
-            )?;
-        }
+        weights
+            .kernels
+            .recurrent
+            .conv(
+                &Recording::scope(scope),
+                ConvKernel::Verify {
+                    slots,
+                    lanes,
+                    fields: METADATA_FIELDS,
+                    fused: lanes == LANES,
+                },
+                channels,
+                ConvBuffers {
+                    output: buffer(&output)?,
+                    history: [buffer(oldest)?, buffer(middle)?, buffer(newest)?],
+                    input: buffer(arena.get(node.inputs[0]).map_err(error)?)?,
+                    weight: buffer(weight.as_ref())?,
+                    metadata: buffer(batch.metadata)?,
+                },
+            )
+            .map_err(error)?;
         #[cfg(test)]
         BUILDS.set(BUILDS.get() + 1);
         Ok(true)
@@ -108,6 +84,7 @@ pub(super) fn record(
     recorded
 }
 
+#[cfg(test)]
 pub use infer_cuda_kernels::tile::recurrent::slot_convolution as kernels;
 
 #[cfg(test)]
