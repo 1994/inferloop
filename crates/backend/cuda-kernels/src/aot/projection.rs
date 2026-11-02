@@ -9,8 +9,8 @@ use super::driver::{Device, Function};
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::kernels::{Projection, WeightRef};
 use crate::contract::plan::{
-    DownPlan, Fp4QuantPlan, Fp8QuantPlan, GemmPlan, LastRowsPlan, PoolGemvPlan, RowsPlan,
-    THREE_ROWS,
+    DenseRowsPlan, DownPlan, Fp4QuantPlan, Fp8QuantPlan, GemmPlan, LastRowsPlan, PoolGemvPlan,
+    PromptPlan, RowsPlan, SplitGemmPlan, THREE_ROWS,
 };
 use crate::contract::recording::Recording;
 use infer_core::{Error, ErrorCode, Result};
