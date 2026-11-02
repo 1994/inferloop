@@ -16,7 +16,7 @@ use cutile::half::bf16;
 use cutile::prelude::*;
 pub(super) use dense::DensePlan;
 use infer_cuda_kernels::contract::{
-    Buffer, DenseKernel, DenseRowsPlan, Kernels, PromptPlan, Recording, SplitGemmPlan,
+    Bf16, Buffer, DenseKernel, DenseRowsPlan, Kernels, PromptPlan, Recording, SplitGemmPlan,
 };
 use infer_ir::TensorNode;
 #[cfg(test)]
@@ -558,9 +558,7 @@ fn record_prompt_dense(
     if records_precise_sparse(
         (&weights.kernels, scope),
         weights,
-        input,
-        w,
-        output,
+        (buffer(output)?, buffer(input)?, buffer(w.as_ref())?),
         columns,
     )? {
         return Ok(());
@@ -734,15 +732,13 @@ fn records_vendor_gemm(
 fn records_precise_sparse(
     (contract, scope): (&Kernels, &Scope),
     weights: &ProgramWeights,
-    input: &Tensor<f32>,
-    weight: &Tensor<bf16>,
-    output: &Tensor<f32>,
+    (out, input, weight): (Buffer<'_, f32>, Buffer<'_, f32>, Buffer<'_, Bf16>),
     columns: usize,
 ) -> Result<bool, DeviceError> {
     if weights.expert_banks.is_empty() {
         return Ok(false);
     }
-    let rows = input.size() / columns;
+    let rows = input.len() / columns;
     contract
         .projection
         .dense(
@@ -750,12 +746,12 @@ fn records_precise_sparse(
             &DenseRowsPlan {
                 kernel: DenseKernel::Native,
                 rows,
-                outputs: output.size() / rows,
+                outputs: out.len() / rows,
                 columns,
             },
-            buffer(output)?,
-            buffer(input)?,
-            buffer(weight)?,
+            out,
+            input,
+            weight,
         )
         .map_err(error)?;
     Ok(true)
@@ -813,9 +809,7 @@ pub(super) fn record_narrow(
     let recorded = records_narrow_dense(
         (&weights.kernels, scope),
         profile,
-        input,
-        weight,
-        &output,
+        (buffer(&output)?, buffer(input)?, buffer(weight.as_ref())?),
         (width, rows, columns),
     );
     arena.buffers[output_slot] = Some(output.reshape(&[expected])?);
@@ -825,9 +819,7 @@ pub(super) fn record_narrow(
 fn records_narrow_dense(
     (contract, scope): (&Kernels, &Scope),
     profile: &DeviceProfile,
-    input: &Tensor<f32>,
-    weight: &Tensor<bf16>,
-    output: &Tensor<f32>,
+    (out, input, weight): (Buffer<'_, f32>, Buffer<'_, f32>, Buffer<'_, Bf16>),
     shape: (usize, usize, usize),
 ) -> Result<bool, DeviceError> {
     #[cfg(test)]
@@ -849,9 +841,9 @@ fn records_narrow_dense(
                 outputs: shape.1,
                 columns: shape.2,
             },
-            buffer(output)?,
-            buffer(input)?,
-            buffer(weight)?,
+            out,
+            input,
+            weight,
         )
         .map_err(error)?;
     #[cfg(test)]
