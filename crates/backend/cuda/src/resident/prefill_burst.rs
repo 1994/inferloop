@@ -454,7 +454,7 @@ impl PromptBurst {
             lanes_attention: None,
             burst: Some(binding),
         };
-        let mut partials = match storage.scratch_partials.take() {
+        let partials = match storage.scratch_partials.take() {
             Some(partials) => partials,
             None => builder.burst_partials()?,
         };
@@ -468,7 +468,7 @@ impl PromptBurst {
                 &storage.info_rows[0],
                 None,
             ),
-            &mut partials,
+            &partials,
             &mut storage.prompt_row,
             &mut profile,
         )?;

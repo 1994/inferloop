@@ -2,9 +2,9 @@
 
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::plan::{
-    BinaryOp, DownPlan, ExpertPlan, Fp4QuantPlan, Fp8QuantPlan, FusionNormPlan, GemmPlan,
-    GreedyPlan, LastRowsPlan, NormPlan, PoolGemvPlan, QuantNormPlan, RopePlan, RoutePlan,
-    RowNormPlan, RowsPlan, SplitPlan, THREE_ROWS, UnaryOp,
+    BinaryOp, DenseRowsPlan, DownPlan, ExpertPlan, Fp4QuantPlan, Fp8QuantPlan, FusionNormPlan,
+    GemmPlan, GreedyPlan, LastRowsPlan, NormPlan, PoolGemvPlan, PromptPlan, QuantNormPlan,
+    RopePlan, RoutePlan, RowNormPlan, RowsPlan, SplitGemmPlan, SplitPlan, THREE_ROWS, UnaryOp,
 };
 use crate::contract::recording::Recording;
 use infer_core::Result;
@@ -83,6 +83,57 @@ pub trait Projection: Send + Sync {
         columns: usize,
         outs: [Buffer<'_, f32>; THREE_ROWS],
         input: Buffer<'_, f32>,
+    ) -> Result<()>;
+
+    /// BF16 projection by the kernel the plan names.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn dense(
+        &self,
+        recording: &Recording<'_>,
+        plan: &DenseRowsPlan,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        w: Buffer<'_, Bf16>,
+    ) -> Result<()>;
+
+    /// Two prompt BF16 projections of one input in one launch.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn dense_pair(
+        &self,
+        recording: &Recording<'_>,
+        plan: &PromptPlan,
+        outs: (Buffer<'_, f32>, Buffer<'_, f32>),
+        x: Buffer<'_, f32>,
+        weights: (Buffer<'_, Bf16>, Buffer<'_, Bf16>),
+    ) -> Result<()>;
+
+    /// Prompt FP8 projection of unquantized activations.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, the weight is not FP8, or the launch is
+    /// rejected.
+    fn prompt_fp8(
+        &self,
+        recording: &Recording<'_>,
+        plan: &PromptPlan,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        weight: WeightRef<'_>,
+    ) -> Result<()>;
+
+    /// Split-K FP4 prompt projection accumulating into `partial`, then reducing into `out`.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, the weight is not FP4, or the launch is
+    /// rejected.
+    fn prompt_fp4_split(
+        &self,
+        recording: &Recording<'_>,
+        plan: &SplitGemmPlan,
+        out: Buffer<'_, f32>,
+        partial: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        weight: WeightRef<'_>,
     ) -> Result<()>;
 
     /// Quantize `[rows, columns]` activations into FP4 codes and block scales.

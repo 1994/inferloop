@@ -246,12 +246,10 @@ pub(super) fn record_slots(
             );
         let choice = nvfp4.pool_dense_choice(weight, [lanes, flat / lanes, columns], tile);
         if super::pool_gemv::record(
-            &weights.kernels,
-            scope,
+            (&weights.kernels, scope),
             weight,
-            &input,
-            input_pointer,
-            &mut output,
+            region(input_pointer, lanes * columns),
+            &output,
             columns,
             tile,
             choice,

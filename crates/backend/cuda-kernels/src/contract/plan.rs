@@ -261,3 +261,55 @@ pub struct GemmPlan {
     pub columns: usize,
     pub tile: [usize; 2],
 }
+
+/// Which dense row kernel a BF16 projection records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DenseKernel {
+    /// One tile per row, by the linear tiling.
+    Gemv {
+        tile_rows: usize,
+        tile_columns: usize,
+    },
+    /// Row groups of `group`, by the linear tiling.
+    Shared {
+        group: usize,
+        tile_rows: usize,
+        tile_columns: usize,
+    },
+    /// The small-matrix tile.
+    Native,
+    /// The small-matrix kernel with `width` outputs in a tile of `rows`.
+    NativeWide { rows: usize, width: usize },
+    /// The prompt GEMM by an explicit tile.
+    PromptTile { rows: usize, outputs: usize },
+    /// The prompt GEMM over `tile`, for its measured default shape.
+    Prompt { tile: [usize; 2] },
+    /// The prompt GEMM over a tile of sixteen outputs.
+    PromptNarrow { tile: [usize; 2] },
+}
+
+/// BF16 projection of `[rows, columns]` into `[rows, outputs]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DenseRowsPlan {
+    pub kernel: DenseKernel,
+    pub rows: usize,
+    pub outputs: usize,
+    pub columns: usize,
+}
+
+/// Prompt GEMM of `[rows, columns]` over the output tile `tile`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PromptPlan {
+    pub rows: usize,
+    pub outputs: usize,
+    pub columns: usize,
+    pub tile: [usize; 2],
+}
+
+/// Split-K FP4 prompt GEMM: partial windows, then their reduction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SplitGemmPlan {
+    pub prompt: PromptPlan,
+    pub k_tiles: i32,
+    pub splits: i32,
+}

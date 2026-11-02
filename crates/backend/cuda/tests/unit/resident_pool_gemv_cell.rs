@@ -36,21 +36,25 @@ fn check(device: &CudaDevice, case: Case) -> Result<()> {
     )?;
     let output = upload(device, vec![f32::NAN; ROWS * OUTPUTS], &[ROWS, OUTPUTS])?;
     let tile = LinearTiling::new(TILE.0, TILE.1)?;
-    let pointer = input.device_pointer().cu_deviceptr();
-    let view = input.view(&[ROWS, columns]).map_err(device_error)?;
     let kernels = device.kernels();
     let weight = Arc::new(weight);
     let graph = Graph::scope(&device.stream, |scope| {
-        record_gemv(
-            &kernels,
-            scope,
-            buffer(weight.as_ref())?,
-            &view,
-            pointer,
-            buffer(&output)?,
-            columns,
-            tile,
-        )
+        kernels
+            .projection
+            .pool_gemv_bf16(
+                &Recording::scope(scope),
+                &PoolGemvPlan {
+                    rows: ROWS,
+                    outputs: OUTPUTS,
+                    columns,
+                    tile_rows: tile.rows(),
+                    tile_columns: tile.columns(),
+                },
+                buffer(&output)?,
+                buffer(&input)?,
+                buffer(weight.as_ref())?,
+            )
+            .map_err(error)
     })
     .map_err(device_error)?;
     graph

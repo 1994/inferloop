@@ -62,6 +62,51 @@ impl AotProjection {
 }
 
 impl Projection for AotProjection {
+    fn dense(
+        &self,
+        _recording: &Recording<'_>,
+        _plan: &DenseRowsPlan,
+        _out: Buffer<'_, f32>,
+        _x: Buffer<'_, f32>,
+        _w: Buffer<'_, Bf16>,
+    ) -> Result<()> {
+        Err(not_compiled("dense"))
+    }
+
+    fn dense_pair(
+        &self,
+        _recording: &Recording<'_>,
+        _plan: &PromptPlan,
+        _outs: (Buffer<'_, f32>, Buffer<'_, f32>),
+        _x: Buffer<'_, f32>,
+        _weights: (Buffer<'_, Bf16>, Buffer<'_, Bf16>),
+    ) -> Result<()> {
+        Err(not_compiled("dense_pair"))
+    }
+
+    fn prompt_fp8(
+        &self,
+        _recording: &Recording<'_>,
+        _plan: &PromptPlan,
+        _out: Buffer<'_, f32>,
+        _x: Buffer<'_, f32>,
+        _weight: WeightRef<'_>,
+    ) -> Result<()> {
+        Err(not_compiled("prompt_fp8"))
+    }
+
+    fn prompt_fp4_split(
+        &self,
+        _recording: &Recording<'_>,
+        _plan: &SplitGemmPlan,
+        _out: Buffer<'_, f32>,
+        _partial: Buffer<'_, f32>,
+        _x: Buffer<'_, f32>,
+        _weight: WeightRef<'_>,
+    ) -> Result<()> {
+        Err(not_compiled("prompt_fp4_split"))
+    }
+
     fn quantize_fp4(
         &self,
         _recording: &Recording<'_>,

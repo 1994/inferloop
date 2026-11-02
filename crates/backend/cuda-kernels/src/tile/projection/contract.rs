@@ -1,13 +1,14 @@
 //! cuTile implementation of the projection family.
 use super::{
-    fp8_gemm, fp8_quant_reduction, linear, linear_batch, nvfp4_gemm, pool_gemv, prompt_logits,
-    small_gemm,
+    fp8_gemm, fp8_quant_reduction, linear, linear_batch, nvfp4_gemm, pool_gemv, prefill_gemm,
+    prompt_logits, small_gemm,
 };
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::kernels::{Projection, WeightRef};
 use crate::contract::plan::{
-    DownPlan, Fp4QuantKind, Fp4QuantPlan, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan,
-    LastRowsKind, LastRowsPlan, PoolGemvPlan, RowsKernel, RowsPlan, THREE_ROWS,
+    DenseKernel, DenseRowsPlan, DownPlan, Fp4QuantKind, Fp4QuantPlan, Fp8QuantKind, Fp8QuantPlan,
+    GemmLoop, GemmPlan, LastRowsKind, LastRowsPlan, PoolGemvPlan, PromptPlan, RowsKernel, RowsPlan,
+    SplitGemmPlan, THREE_ROWS,
 };
 use crate::contract::recording::Recording;
 use crate::tile::{backend_error, borrowed, capture_scope};
@@ -155,6 +156,221 @@ const fn retyped_fp4(buffer: Buffer<'_, Fp4Pair>) -> Buffer<'_, f4e2m1fnx2> {
 }
 
 impl Projection for TileProjection {
+    fn dense(
+        &self,
+        recording: &Recording<'_>,
+        plan: &DenseRowsPlan,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        w: Buffer<'_, Bf16>,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let DenseRowsPlan {
+            kernel,
+            rows,
+            outputs,
+            columns,
+        } = *plan;
+        let mut out = self.matrix(recording, out, "dense output", (rows, outputs))?;
+        let x = self.matrix(recording, x, "dense input", (rows, columns))?;
+        let w = self.matrix(
+            recording,
+            retyped_bf16(w),
+            "dense weight",
+            (outputs, columns),
+        )?;
+        let element = || -> String { bf16::DTYPE.as_str().into() };
+        let tiled = |rows: usize, tile_columns: usize| {
+            vec![
+                element(),
+                rows.to_string(),
+                tile_columns.to_string(),
+                columns.to_string(),
+            ]
+        };
+        match kernel {
+            DenseKernel::Gemv {
+                tile_rows,
+                tile_columns,
+            } => scope
+                .record(
+                    pool_gemv::dense((&mut out).partition([1, tile_rows]), &x, &w)
+                        .generics(tiled(tile_rows, tile_columns)),
+                )
+                .map(drop),
+            DenseKernel::Shared {
+                group,
+                tile_rows,
+                tile_columns,
+            } => scope
+                .record(
+                    linear_batch::dense((&mut out).partition([group, tile_rows]), &x, &w)
+                        .generics(tiled(tile_rows, tile_columns)),
+                )
+                .map(drop),
+            DenseKernel::Native => scope
+                .record(
+                    small_gemm::dense((&mut out).partition(SMALL_TILE), &x, &w)
+                        .generics(vec![element(), columns.to_string()]),
+                )
+                .map(drop),
+            DenseKernel::NativeWide {
+                rows: tile_rows,
+                width,
+            } => scope
+                .record(
+                    small_gemm::dense_wide((&mut out).partition([tile_rows, width]), &x, &w)
+                        .generics(vec![element(), width.to_string(), columns.to_string()]),
+                )
+                .map(drop),
+            DenseKernel::PromptTile {
+                rows: tile_rows,
+                outputs: tile_outputs,
+            } => scope
+                .record(
+                    prefill_gemm::dense_tile(
+                        (&mut out).partition([tile_rows, tile_outputs]),
+                        &x,
+                        &w,
+                    )
+                    .generics(vec![
+                        tile_rows.to_string(),
+                        tile_outputs.to_string(),
+                        columns.to_string(),
+                    ]),
+                )
+                .map(drop),
+            DenseKernel::Prompt { tile } => scope
+                .record(
+                    prefill_gemm::dense((&mut out).partition(tile), &x, &w)
+                        .generics(vec![columns.to_string()]),
+                )
+                .map(drop),
+            DenseKernel::PromptNarrow { tile } => scope
+                .record(
+                    prefill_gemm::dense_n16((&mut out).partition(tile), &x, &w)
+                        .generics(vec![columns.to_string()]),
+                )
+                .map(drop),
+        }
+        .map_err(backend_error)
+    }
+
+    fn dense_pair(
+        &self,
+        recording: &Recording<'_>,
+        plan: &PromptPlan,
+        (first, second): (Buffer<'_, f32>, Buffer<'_, f32>),
+        x: Buffer<'_, f32>,
+        (weight_first, weight_second): (Buffer<'_, Bf16>, Buffer<'_, Bf16>),
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let PromptPlan {
+            rows,
+            outputs,
+            columns,
+            tile,
+        } = *plan;
+        let mut first = self.matrix(recording, first, "pair output", (rows, outputs))?;
+        let mut second = self.matrix(recording, second, "pair output", (rows, outputs))?;
+        let x = self.matrix(recording, x, "pair input", (rows, columns))?;
+        let weight_first = self.matrix(
+            recording,
+            retyped_bf16(weight_first),
+            "pair weight",
+            (outputs, columns),
+        )?;
+        let weight_second = self.matrix(
+            recording,
+            retyped_bf16(weight_second),
+            "pair weight",
+            (outputs, columns),
+        )?;
+        scope
+            .record(
+                prefill_gemm::dense_pair(
+                    (&mut first).partition(tile),
+                    (&mut second).partition(tile),
+                    &x,
+                    &weight_first,
+                    &weight_second,
+                )
+                .generics(vec![columns.to_string()]),
+            )
+            .map(drop)
+            .map_err(backend_error)
+    }
+
+    fn prompt_fp8(
+        &self,
+        recording: &Recording<'_>,
+        plan: &PromptPlan,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        weight: WeightRef<'_>,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let PromptPlan {
+            rows,
+            outputs,
+            columns,
+            tile,
+        } = *plan;
+        let mut out = self.matrix(recording, out, "prompt output", (rows, outputs))?;
+        let x = self.matrix(recording, x, "prompt input", (rows, columns))?;
+        let Weight::Fp8(w, s) = self.weight(recording, weight, (outputs, columns))? else {
+            return Err(Error::invalid("prompt FP8 GEMM takes an FP8 weight"));
+        };
+        scope
+            .record(
+                prefill_gemm::fp8((&mut out).partition(tile), &x, &w, &s)
+                    .generics(vec![columns.to_string()]),
+            )
+            .map(drop)
+            .map_err(backend_error)
+    }
+
+    fn prompt_fp4_split(
+        &self,
+        recording: &Recording<'_>,
+        plan: &SplitGemmPlan,
+        out: Buffer<'_, f32>,
+        partial: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        weight: WeightRef<'_>,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let PromptPlan {
+            rows,
+            outputs,
+            columns,
+            tile,
+        } = plan.prompt;
+        let mut out = self.matrix(recording, out, "prompt output", (rows, outputs))?;
+        let mut partial = self.matrix(recording, partial, "prompt partials", (rows, outputs))?;
+        let x = self.matrix(recording, x, "prompt input", (rows, columns))?;
+        let Weight::Fp4(w, s, inverse_global) =
+            self.weight(recording, weight, (outputs, columns))?
+        else {
+            return Err(Error::invalid("split FP4 GEMM takes an FP4 weight"));
+        };
+        scope
+            .record(
+                prefill_gemm::nvfp4_split((&mut partial).partition(tile), &x, &w, &s, plan.k_tiles)
+                    .generics(vec![columns.to_string()]),
+            )
+            .map_err(backend_error)?;
+        scope
+            .record(prefill_gemm::reduce_split(
+                (&mut out).partition(tile),
+                &partial,
+                inverse_global,
+                plan.splits,
+            ))
+            .map(drop)
+            .map_err(backend_error)
+    }
+
     fn quantize_fp4(
         &self,
         recording: &Recording<'_>,
