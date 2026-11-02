@@ -98,16 +98,15 @@ fn run_case(device: &CudaDevice, action: &str) -> TestResult<(Vec<u8>, Vec<u8>)>
         )?;
         assert!(workspace.norm_fp4.is_some());
         invalidate(&mut workspace, action);
-        let pointer = dense.device_pointer().cu_deviceptr();
-        let view = dense.view(&[rows, columns])?;
+        let input = tensor_buffer(&dense)?;
         if action == "error" {
             assert!(
                 workspace
                     .record_gate_up_swiglu(
-                        scope,
+                        (&kernels, scope),
                         (&projection, &projection),
                         (1.0, 1.0),
-                        (&view, pointer),
+                        input,
                         (rows - 1, columns, hidden)
                     )
                     .is_err()
@@ -115,10 +114,10 @@ fn run_case(device: &CudaDevice, action: &str) -> TestResult<(Vec<u8>, Vec<u8>)>
             assert!(workspace.norm_fp4.is_none());
         }
         workspace.record_gate_up_swiglu(
-            scope,
+            (&kernels, scope),
             (&projection, &projection),
             (1.0, 1.0),
-            (&view, pointer),
+            input,
             (rows, columns, hidden),
         )?;
         assert!(workspace.norm_fp4.is_none());
@@ -127,10 +126,10 @@ fn run_case(device: &CudaDevice, action: &str) -> TestResult<(Vec<u8>, Vec<u8>)>
             usize::from(action == "valid")
         );
         workspace.record_gate_up_swiglu(
-            scope,
+            (&kernels, scope),
             (&projection, &projection),
             (1.0, 1.0),
-            (&view, pointer),
+            input,
             (rows, columns, hidden),
         )?;
         assert_eq!(

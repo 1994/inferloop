@@ -7,7 +7,7 @@ use super::evidence::{candidates, compatible};
 use crate::constants::{NVFP4_GROUP_SIZE, NVFP4_QUANT_CODES_TILE, NVFP4_QUANT_SCALES_TILE};
 use crate::device::{CudaDevice, device_error};
 use crate::mlp::ProjectionWeight;
-use crate::resident::nvfp4_gemm::kernels;
+use crate::resident::tensor_buffer as buffer;
 use crate::tuning::preparation::driver_build;
 use crate::tuning::projection_budget::ProjectionShape;
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
@@ -15,6 +15,10 @@ use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{
+    Fp4QuantKind, Fp4QuantPlan, GemmLoop, GemmPlan, Kernels, Recording,
+};
+use infer_cuda_kernels::tile::projection::nvfp4_gemm as kernels;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;
@@ -30,7 +34,7 @@ type Operands<'a> = (&'a Tensor<f4e2m1fnx2>, &'a Tensor<f8e4m3fn>);
 type Outputs<'a> = (&'a mut Tensor<f4e2m1fnx2>, &'a mut Tensor<f8e4m3fn>);
 
 pub fn record(
-    scope: &Scope,
+    (contract, scope): (&Kernels, &Scope),
     config: GemmConfig,
     (gate, up): (&ProjectionWeight, &ProjectionWeight),
     (input_scale, down_scale): (f32, f32),
@@ -38,36 +42,35 @@ pub fn record(
     (codes, scales): Outputs<'_>,
     columns: usize,
 ) -> StdResult<(), DeviceError> {
-    let (
-        ProjectionWeight::Fp4(gate, gate_scales, gate_global),
-        ProjectionWeight::Fp4(up, up_scales, up_global),
-    ) = (gate, up)
+    let (ProjectionWeight::Fp4(_, _, gate_global), ProjectionWeight::Fp4(_, _, up_global)) =
+        (gate, up)
     else {
         return Err(DeviceError::Internal("fused SwiGLU weights".into()));
     };
-    let [m, n] = config.tile();
-    scope.record(
-        kernels::packed_swiglu(
-            codes.partition([m, n / 2]),
-            scales.partition([m, n / NVFP4_GROUP_SIZE]),
-            q,
-            qs,
-            gate,
-            gate_scales,
-            up,
-            up_scales,
-            1.0 / (gate_global * input_scale),
-            1.0 / (up_global * input_scale),
-            down_scale,
+    let shape = |axis: usize| {
+        usize::try_from(codes.shape()[axis]).map_err(|e| DeviceError::Internal(e.to_string()))
+    };
+    contract
+        .projection
+        .gemm_swiglu(
+            &Recording::scope(scope),
+            &GemmPlan {
+                main_loop: GemmLoop::Plain,
+                rows: shape(0)?,
+                outputs: shape(1)? * 2,
+                columns,
+                tile: config.tile(),
+            },
+            (buffer(&*codes)?, buffer(&*scales)?),
+            (buffer(q)?, buffer(qs)?),
+            (gate.weight_ref()?, up.weight_ref()?),
+            (
+                1.0 / (gate_global * input_scale),
+                1.0 / (up_global * input_scale),
+                down_scale,
+            ),
         )
-        .generics(
-            [columns, m, n, n / 2, n / NVFP4_GROUP_SIZE]
-                .iter()
-                .map(ToString::to_string)
-                .collect(),
-        ),
-    )?;
-    Ok(())
+        .map_err(|e| DeviceError::Internal(e.to_string()))
 }
 
 pub(super) struct Captured {
@@ -110,10 +113,10 @@ impl Captured {
             })
             .collect();
         let input = device.upload(values, &[m, k])?;
-        let mut q = api::zeros::<f4e2m1fnx2>(&[m, k / 2])
+        let q = api::zeros::<f4e2m1fnx2>(&[m, k / 2])
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        let mut qs = api::zeros::<f8e4m3fn>(&[m, k / NVFP4_GROUP_SIZE])
+        let qs = api::zeros::<f8e4m3fn>(&[m, k / NVFP4_GROUP_SIZE])
             .sync_on(&device.stream)
             .map_err(device_error)?;
         let mut codes = api::zeros::<f4e2m1fnx2>(&[m, n / 2])
@@ -122,18 +125,29 @@ impl Captured {
         let mut out_scales = api::zeros::<f8e4m3fn>(&[m, n / NVFP4_GROUP_SIZE])
             .sync_on(&device.stream)
             .map_err(device_error)?;
+        let contract = device.kernels();
         let graph = Graph::scope(&device.stream, |scope| {
-            scope.record(
-                kernels::quantize_rows(
-                    (&mut q).partition([QUANTIZATION_ROWS, NVFP4_QUANT_CODES_TILE[1]]),
-                    (&mut qs).partition([QUANTIZATION_ROWS, NVFP4_QUANT_SCALES_TILE[1]]),
-                    &input,
+            contract
+                .projection
+                .quantize_fp4(
+                    &Recording::scope(scope),
+                    &Fp4QuantPlan {
+                        kind: Fp4QuantKind::RowGroups {
+                            rows: QUANTIZATION_ROWS,
+                        },
+                        rows: m,
+                        columns: k,
+                        codes_tile: [QUANTIZATION_ROWS, NVFP4_QUANT_CODES_TILE[1]],
+                        scales_tile: [QUANTIZATION_ROWS, NVFP4_QUANT_SCALES_TILE[1]],
+                    },
+                    buffer(&q)?,
+                    buffer(&qs)?,
+                    buffer(input.as_ref())?,
                     scales.0,
                 )
-                .generics(vec![k.to_string()]),
-            )?;
+                .map_err(|e| DeviceError::Internal(e.to_string()))?;
             record(
-                scope,
+                (&contract, scope),
                 config,
                 weights,
                 scales,

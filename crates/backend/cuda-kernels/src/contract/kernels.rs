@@ -2,9 +2,9 @@
 
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::plan::{
-    BinaryOp, DownPlan, ExpertPlan, FusionNormPlan, GreedyPlan, LastRowsPlan, NormPlan,
-    PoolGemvPlan, QuantNormPlan, RopePlan, RoutePlan, RowNormPlan, RowsPlan, SplitPlan, THREE_ROWS,
-    UnaryOp,
+    BinaryOp, DownPlan, ExpertPlan, Fp4QuantPlan, Fp8QuantPlan, FusionNormPlan, GemmPlan,
+    GreedyPlan, LastRowsPlan, NormPlan, PoolGemvPlan, QuantNormPlan, RopePlan, RoutePlan,
+    RowNormPlan, RowsPlan, SplitPlan, THREE_ROWS, UnaryOp,
 };
 use crate::contract::recording::Recording;
 use infer_core::Result;
@@ -83,6 +83,87 @@ pub trait Projection: Send + Sync {
         columns: usize,
         outs: [Buffer<'_, f32>; THREE_ROWS],
         input: Buffer<'_, f32>,
+    ) -> Result<()>;
+
+    /// Quantize `[rows, columns]` activations into FP4 codes and block scales.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn quantize_fp4(
+        &self,
+        recording: &Recording<'_>,
+        plan: &Fp4QuantPlan,
+        codes: Buffer<'_, Fp4Pair>,
+        scales: Buffer<'_, Fp8>,
+        input: Buffer<'_, f32>,
+        scale: f32,
+    ) -> Result<()>;
+
+    /// [`Self::quantize_fp4`] of `silu(gate) * up`, row groups only.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn quantize_swiglu(
+        &self,
+        recording: &Recording<'_>,
+        plan: &Fp4QuantPlan,
+        codes: Buffer<'_, Fp4Pair>,
+        scales: Buffer<'_, Fp8>,
+        inputs: (Buffer<'_, f32>, Buffer<'_, f32>),
+        scale: f32,
+    ) -> Result<()>;
+
+    /// W4A4 GEMM over prepared activation codes.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, the weight is not FP4, or the launch is
+    /// rejected.
+    fn gemm_fp4(
+        &self,
+        recording: &Recording<'_>,
+        plan: &GemmPlan,
+        out: Buffer<'_, f32>,
+        codes: (Buffer<'_, Fp4Pair>, Buffer<'_, Fp8>),
+        weight: WeightRef<'_>,
+        inverse_scale: f32,
+    ) -> Result<()>;
+
+    /// Gate and up GEMMs of a gated MLP, writing `silu(gate) * up` straight into FP4 codes.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, a weight is not FP4, or the launch is
+    /// rejected.
+    fn gemm_swiglu(
+        &self,
+        recording: &Recording<'_>,
+        plan: &GemmPlan,
+        out: (Buffer<'_, Fp4Pair>, Buffer<'_, Fp8>),
+        codes: (Buffer<'_, Fp4Pair>, Buffer<'_, Fp8>),
+        weights: (WeightRef<'_>, WeightRef<'_>),
+        scales: (f32, f32, f32),
+    ) -> Result<()>;
+
+    /// Quantize `[rows, columns]` activations into FP8 codes and scales.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn quantize_fp8(
+        &self,
+        recording: &Recording<'_>,
+        plan: &Fp8QuantPlan,
+        codes: Buffer<'_, Fp8>,
+        scales: Buffer<'_, f32>,
+        input: Buffer<'_, f32>,
+    ) -> Result<()>;
+
+    /// FP8 GEMM over prepared activation codes; `scales` per token, or per block for a block
+    /// weight.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, the weight is not FP8, or the launch is
+    /// rejected.
+    fn gemm_fp8(
+        &self,
+        recording: &Recording<'_>,
+        plan: &GemmPlan,
+        out: Buffer<'_, f32>,
+        codes: (Buffer<'_, Fp8>, Buffer<'_, f32>),
+        weight: WeightRef<'_>,
+        block_scales: bool,
     ) -> Result<()>;
 
     /// Copy each lane's last active row into `out`.

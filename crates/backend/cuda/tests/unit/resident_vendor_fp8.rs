@@ -568,7 +568,7 @@ fn vendor_fp8_verified_chooser_checkpoint_comparison() -> TestResult {
             let base = Graph::scope(&device.stream, |scope| {
                 inputs.quantize(scope)?;
                 Choice::baseline(rows).record(
-                    scope,
+                    (&device.kernels(), scope),
                     &inputs.vendor,
                     &inputs.codes,
                     &weight.device_codes,
@@ -581,7 +581,7 @@ fn vendor_fp8_verified_chooser_checkpoint_comparison() -> TestResult {
             let candidate = Graph::scope(&device.stream, |scope| {
                 inputs.quantize(scope)?;
                 choice.record(
-                    scope,
+                    (&device.kernels(), scope),
                     &inputs.vendor,
                     &inputs.codes,
                     &weight.device_codes,

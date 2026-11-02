@@ -379,15 +379,14 @@ impl Capture<'_> {
         if let Some(scale) = self.weights.activation_quantization(node.inputs[1]) {
             let size = output.size();
             let mut matrix = output.reshape(&[1, size])?;
-            if !super::nvfp4_gemm::record_with_input_pointer(
-                self.scope,
+            if !super::nvfp4_gemm::record_certified(
+                (&self.weights.kernels, self.scope),
                 self.nvfp4,
                 weights,
                 Some(scale),
-                &input.view(&[1, input.size()]).map_err(error)?,
+                buffer(input)?,
                 &mut matrix,
                 input.size(),
-                input.device_pointer().cu_deviceptr(),
             )? {
                 return Err(error(
                     "activation quantization and weight encoding disagree",

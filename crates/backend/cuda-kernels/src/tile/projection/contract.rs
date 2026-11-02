@@ -1,9 +1,13 @@
 //! cuTile implementation of the projection family.
-use super::{linear, linear_batch, pool_gemv, prompt_logits, small_gemm};
+use super::{
+    fp8_gemm, fp8_quant_reduction, linear, linear_batch, nvfp4_gemm, pool_gemv, prompt_logits,
+    small_gemm,
+};
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::kernels::{Projection, WeightRef};
 use crate::contract::plan::{
-    DownPlan, LastRowsKind, LastRowsPlan, PoolGemvPlan, RowsKernel, RowsPlan, THREE_ROWS,
+    DownPlan, Fp4QuantKind, Fp4QuantPlan, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan,
+    LastRowsKind, LastRowsPlan, PoolGemvPlan, RowsKernel, RowsPlan, THREE_ROWS,
 };
 use crate::contract::recording::Recording;
 use crate::tile::{backend_error, borrowed, capture_scope};
@@ -151,6 +155,326 @@ const fn retyped_fp4(buffer: Buffer<'_, Fp4Pair>) -> Buffer<'_, f4e2m1fnx2> {
 }
 
 impl Projection for TileProjection {
+    fn quantize_fp4(
+        &self,
+        recording: &Recording<'_>,
+        plan: &Fp4QuantPlan,
+        codes: Buffer<'_, Fp4Pair>,
+        scales: Buffer<'_, Fp8>,
+        input: Buffer<'_, f32>,
+        scale: f32,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let Fp4QuantPlan { rows, columns, .. } = *plan;
+        let mut codes = self.matrix(
+            recording,
+            retyped_fp4(codes),
+            "FP4 codes",
+            (rows, columns / 2),
+        )?;
+        let mut scales = self.matrix(
+            recording,
+            retyped_fp8(scales),
+            "FP4 scales",
+            (rows, columns / FP4_GROUP),
+        )?;
+        let input = self.matrix(recording, input, "FP4 input", (rows, columns))?;
+        let generics = vec![columns.to_string()];
+        let (codes, scales) = (
+            (&mut codes).partition(plan.codes_tile),
+            (&mut scales).partition(plan.scales_tile),
+        );
+        match plan.kind {
+            Fp4QuantKind::Whole => scope
+                .record(nvfp4_gemm::quantize(codes, scales, &input, scale).generics(generics))
+                .map(drop),
+            Fp4QuantKind::RowGroups { .. } => scope
+                .record(nvfp4_gemm::quantize_rows(codes, scales, &input, scale).generics(generics))
+                .map(drop),
+        }
+        .map_err(backend_error)
+    }
+
+    fn quantize_swiglu(
+        &self,
+        recording: &Recording<'_>,
+        plan: &Fp4QuantPlan,
+        codes: Buffer<'_, Fp4Pair>,
+        scales: Buffer<'_, Fp8>,
+        (gate, up): (Buffer<'_, f32>, Buffer<'_, f32>),
+        scale: f32,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let Fp4QuantPlan { rows, columns, .. } = *plan;
+        let mut codes = self.matrix(
+            recording,
+            retyped_fp4(codes),
+            "FP4 codes",
+            (rows, columns / 2),
+        )?;
+        let mut scales = self.matrix(
+            recording,
+            retyped_fp8(scales),
+            "FP4 scales",
+            (rows, columns / FP4_GROUP),
+        )?;
+        let gate = self.matrix(recording, gate, "gate", (rows, columns))?;
+        let up = self.matrix(recording, up, "up", (rows, columns))?;
+        scope
+            .record(
+                nvfp4_gemm::swiglu_quantize(
+                    (&mut codes).partition(plan.codes_tile),
+                    (&mut scales).partition(plan.scales_tile),
+                    &gate,
+                    &up,
+                    scale,
+                )
+                .generics(vec![columns.to_string()]),
+            )
+            .map(drop)
+            .map_err(backend_error)
+    }
+
+    fn gemm_fp4(
+        &self,
+        recording: &Recording<'_>,
+        plan: &GemmPlan,
+        out: Buffer<'_, f32>,
+        (codes, scales): (Buffer<'_, Fp4Pair>, Buffer<'_, Fp8>),
+        weight: WeightRef<'_>,
+        inverse_scale: f32,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let GemmPlan {
+            rows,
+            outputs,
+            columns,
+            tile,
+            ..
+        } = *plan;
+        let mut out = self.matrix(recording, out, "GEMM output", (rows, outputs))?;
+        let codes = self.matrix(
+            recording,
+            retyped_fp4(codes),
+            "FP4 codes",
+            (rows, columns / 2),
+        )?;
+        let scales = self.matrix(
+            recording,
+            retyped_fp8(scales),
+            "FP4 scales",
+            (rows, columns / FP4_GROUP),
+        )?;
+        let Weight::Fp4(w, s, _) = self.weight(recording, weight, (outputs, columns))? else {
+            return Err(Error::invalid("FP4 GEMM takes an FP4 weight"));
+        };
+        let generics = vec![
+            columns.to_string(),
+            tile[0].to_string(),
+            tile[1].to_string(),
+        ];
+        let out = (&mut out).partition(tile);
+        match plan.main_loop {
+            GemmLoop::Plain => scope
+                .record(
+                    nvfp4_gemm::packed(out, &codes, &scales, &w, &s, inverse_scale)
+                        .generics(generics),
+                )
+                .map(drop),
+            GemmLoop::Prefetch => scope
+                .record(
+                    nvfp4_gemm::packed_prefill(out, &codes, &scales, &w, &s, inverse_scale)
+                        .generics(generics),
+                )
+                .map(drop),
+        }
+        .map_err(backend_error)
+    }
+
+    fn gemm_swiglu(
+        &self,
+        recording: &Recording<'_>,
+        plan: &GemmPlan,
+        (out_codes, out_scales): (Buffer<'_, Fp4Pair>, Buffer<'_, Fp8>),
+        (codes, scales): (Buffer<'_, Fp4Pair>, Buffer<'_, Fp8>),
+        (gate, up): (WeightRef<'_>, WeightRef<'_>),
+        (inverse_gate, inverse_up, down_scale): (f32, f32, f32),
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let GemmPlan {
+            rows,
+            outputs,
+            columns,
+            tile: [m, n],
+            ..
+        } = *plan;
+        let mut out_codes = self.matrix(
+            recording,
+            retyped_fp4(out_codes),
+            "SwiGLU codes",
+            (rows, outputs / 2),
+        )?;
+        let mut out_scales = self.matrix(
+            recording,
+            retyped_fp8(out_scales),
+            "SwiGLU scales",
+            (rows, outputs / FP4_GROUP),
+        )?;
+        let codes = self.matrix(
+            recording,
+            retyped_fp4(codes),
+            "FP4 codes",
+            (rows, columns / 2),
+        )?;
+        let scales = self.matrix(
+            recording,
+            retyped_fp8(scales),
+            "FP4 scales",
+            (rows, columns / FP4_GROUP),
+        )?;
+        let (Weight::Fp4(gate, gate_scales, _), Weight::Fp4(up, up_scales, _)) = (
+            self.weight(recording, gate, (outputs, columns))?,
+            self.weight(recording, up, (outputs, columns))?,
+        ) else {
+            return Err(Error::invalid("fused SwiGLU takes FP4 weights"));
+        };
+        scope
+            .record(
+                nvfp4_gemm::packed_swiglu(
+                    (&mut out_codes).partition([m, n / 2]),
+                    (&mut out_scales).partition([m, n / FP4_GROUP]),
+                    &codes,
+                    &scales,
+                    &gate,
+                    &gate_scales,
+                    &up,
+                    &up_scales,
+                    inverse_gate,
+                    inverse_up,
+                    down_scale,
+                )
+                .generics(
+                    [columns, m, n, n / 2, n / FP4_GROUP]
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect(),
+                ),
+            )
+            .map(drop)
+            .map_err(backend_error)
+    }
+
+    fn quantize_fp8(
+        &self,
+        recording: &Recording<'_>,
+        plan: &Fp8QuantPlan,
+        codes: Buffer<'_, Fp8>,
+        scales: Buffer<'_, f32>,
+        input: Buffer<'_, f32>,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let Fp8QuantPlan {
+            kind,
+            rows,
+            columns,
+        } = *plan;
+        let mut codes = self.matrix(recording, retyped_fp8(codes), "FP8 codes", (rows, columns))?;
+        let input = self.matrix(recording, input, "FP8 input", (rows, columns))?;
+        let scale_columns = match kind {
+            Fp8QuantKind::Block { block } => columns / block,
+            _ => 1,
+        };
+        let mut scales = self.matrix(recording, scales, "FP8 scales", (rows, scale_columns))?;
+        let pad = columns.next_power_of_two();
+        match kind {
+            Fp8QuantKind::Whole => scope
+                .record(
+                    fp8_gemm::quantize(
+                        (&mut codes).partition([1, pad]),
+                        (&mut scales).partition([1, 1]),
+                        &input,
+                    )
+                    .generics(vec![columns.to_string(), pad.to_string()]),
+                )
+                .map(drop),
+            Fp8QuantKind::Block { block } => scope
+                .record(
+                    fp8_gemm::quantize_block(
+                        (&mut codes).partition([1, block]),
+                        (&mut scales).partition([1, 1]),
+                        &input,
+                    )
+                    .generics(vec![columns.to_string(), block.to_string()]),
+                )
+                .map(drop),
+            Fp8QuantKind::Parallel {
+                conversion_columns,
+                maximum_ready,
+            } => {
+                if !maximum_ready {
+                    scope
+                        .record(
+                            fp8_quant_reduction::maximum((&mut scales).partition([1, 1]), &input)
+                                .generics(vec![columns.to_string(), pad.to_string()]),
+                        )
+                        .map_err(backend_error)?;
+                }
+                scope
+                    .record(
+                        fp8_quant_reduction::quantize(
+                            (&mut codes).partition([1, conversion_columns]),
+                            &scales,
+                            &input,
+                        )
+                        .generics(vec![columns.to_string()]),
+                    )
+                    .map(drop)
+            }
+        }
+        .map_err(backend_error)
+    }
+
+    fn gemm_fp8(
+        &self,
+        recording: &Recording<'_>,
+        plan: &GemmPlan,
+        out: Buffer<'_, f32>,
+        (codes, scales): (Buffer<'_, Fp8>, Buffer<'_, f32>),
+        weight: WeightRef<'_>,
+        block_scales: bool,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let GemmPlan {
+            rows,
+            outputs,
+            columns,
+            tile,
+            ..
+        } = *plan;
+        let mut out = self.matrix(recording, out, "GEMM output", (rows, outputs))?;
+        let codes = self.matrix(recording, retyped_fp8(codes), "FP8 codes", (rows, columns))?;
+        let scales = self.flat(recording, scales)?;
+        let Weight::Fp8(w, s) = self.weight(recording, weight, (outputs, columns))? else {
+            return Err(Error::invalid("FP8 GEMM takes an FP8 weight"));
+        };
+        let generics = vec![
+            columns.to_string(),
+            tile[0].to_string(),
+            tile[1].to_string(),
+        ];
+        let out = (&mut out).partition(tile);
+        if block_scales {
+            scope
+                .record(fp8_gemm::matmul_block(out, &codes, &w, &scales, &s).generics(generics))
+                .map(drop)
+        } else {
+            scope
+                .record(fp8_gemm::matmul(out, &codes, &w, &scales, &s).generics(generics))
+                .map(drop)
+        }
+        .map_err(backend_error)
+    }
+
     fn rows(
         &self,
         recording: &Recording<'_>,

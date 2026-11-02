@@ -1,4 +1,5 @@
 mod dense;
+use super::buffers::buffer;
 use super::{ProgramWeights, capture::error, prefill_gemm::gemm};
 use crate::constants::PREFILL_GEMM_TILE_K;
 use crate::constants::PREFILL_GEMM_TILE_N;
@@ -312,14 +313,13 @@ fn record_fused_mlp(
     let width = arena.lanes();
     let input = arena.get(gate.inputs[0]).map_err(error)?;
     let columns = input.size() / width;
-    let pointer = input.device_pointer().cu_deviceptr();
-    let input = input.view(&[width, columns]).map_err(error)?;
+    let input = buffer(input)?;
     let hidden = arena.get(gate.outputs[0]).map_err(error)?.size() / width;
     nvfp4.record_gate_up_swiglu(
-        scope,
+        (&weights.kernels, scope),
         (weight(gate)?, weight(up)?),
         (scale(gate)?, scale(down)?),
-        (&input, pointer),
+        input,
         (width, columns, hidden),
     )
 }
@@ -350,7 +350,13 @@ fn record_fused_down(
         let result =
             match nvfp4.record_vendor_down(scope, weight, scale, input, &mut output, columns) {
                 Ok(true) => Ok(()),
-                Ok(false) => nvfp4.record_prequantized(scope, weight, scale, &mut output, columns),
+                Ok(false) => nvfp4.record_prequantized(
+                    (&weights.kernels, scope),
+                    weight,
+                    scale,
+                    &output,
+                    columns,
+                ),
                 Err(error) => Err(error),
             };
         *destination = Some(output.reshape(&[flat])?);
@@ -361,8 +367,8 @@ fn record_fused_down(
         .take()
         .ok_or_else(|| error("prefill output"))?;
     let flat = output.size();
-    let mut output = output.reshape(&[width, flat / width])?;
-    nvfp4.record_prequantized(scope, weight, scale, &mut output, columns)?;
+    let output = output.reshape(&[width, flat / width])?;
+    nvfp4.record_prequantized((&weights.kernels, scope), weight, scale, &output, columns)?;
     arena.buffers[slot] = Some(output.reshape(&[flat])?);
     Ok(())
 }
@@ -391,17 +397,20 @@ fn record_swiglu(
         .take()
         .ok_or_else(|| error("prefill output"))?;
     let flat = output.size();
-    let mut output = output.reshape(&[width, flat / width])?;
+    let output = output.reshape(&[width, flat / width])?;
     let gate = arena.get(gate).map_err(error)?;
     let columns = gate.size() / width;
-    let gate = gate.view(&[width, columns]).map_err(error)?;
-    let up = arena
-        .get(up)
-        .map_err(error)?
-        .view(&[width, columns])
-        .map_err(error)?;
-    nvfp4.record_swiglu_input(scope, weight, scale, &gate, &up, &mut output, columns)?;
-    drop((gate, up));
+    let gate = buffer(gate)?;
+    let up = buffer(arena.get(up).map_err(error)?)?;
+    nvfp4.record_swiglu_input(
+        (&weights.kernels, scope),
+        weight,
+        scale,
+        gate,
+        up,
+        &output,
+        columns,
+    )?;
     arena.buffers[slot] = Some(output.reshape(&[flat])?);
     Ok(true)
 }
@@ -430,22 +439,20 @@ pub(super) fn record(
     let flat = output.size();
     let mut output = output.reshape(&[width, flat / width])?;
     let flat_input = arena.get(node.inputs[0]).map_err(error)?;
-    let input_pointer = flat_input.device_pointer().cu_deviceptr();
     let columns = flat_input.size() / width;
     let input = flat_input.view(&[width, columns]).map_err(error)?;
     let weight = weights
         .projections
         .get(&node.inputs[1])
         .ok_or_else(|| error("prefill projection"))?;
-    if super::nvfp4_gemm::record_with_input_pointer(
-        scope,
+    if super::nvfp4_gemm::record_certified(
+        (&weights.kernels, scope),
         nvfp4,
         weight,
         weights.activation_quantization(node.inputs[1]),
-        &input,
+        buffer(flat_input)?,
         &mut output,
         columns,
-        input_pointer,
     )? {
         arena.buffers[slot] = Some(output.reshape(&[flat])?);
         return Ok(());

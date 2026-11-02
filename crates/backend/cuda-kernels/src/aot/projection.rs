@@ -6,9 +6,12 @@
 
 use super::artifact::Manifest;
 use super::driver::{Device, Function};
-use crate::contract::buffer::{Bf16, Buffer};
+use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::kernels::{Projection, WeightRef};
-use crate::contract::plan::{DownPlan, LastRowsPlan, PoolGemvPlan, RowsPlan, THREE_ROWS};
+use crate::contract::plan::{
+    DownPlan, Fp4QuantPlan, Fp8QuantPlan, GemmPlan, LastRowsPlan, PoolGemvPlan, RowsPlan,
+    THREE_ROWS,
+};
 use crate::contract::recording::Recording;
 use infer_core::{Error, ErrorCode, Result};
 use std::ffi::{CStr, c_void};
@@ -59,6 +62,77 @@ impl AotProjection {
 }
 
 impl Projection for AotProjection {
+    fn quantize_fp4(
+        &self,
+        _recording: &Recording<'_>,
+        _plan: &Fp4QuantPlan,
+        _codes: Buffer<'_, Fp4Pair>,
+        _scales: Buffer<'_, Fp8>,
+        _input: Buffer<'_, f32>,
+        _scale: f32,
+    ) -> Result<()> {
+        Err(not_compiled("quantize_fp4"))
+    }
+
+    fn quantize_swiglu(
+        &self,
+        _recording: &Recording<'_>,
+        _plan: &Fp4QuantPlan,
+        _codes: Buffer<'_, Fp4Pair>,
+        _scales: Buffer<'_, Fp8>,
+        _inputs: (Buffer<'_, f32>, Buffer<'_, f32>),
+        _scale: f32,
+    ) -> Result<()> {
+        Err(not_compiled("quantize_swiglu"))
+    }
+
+    fn gemm_fp4(
+        &self,
+        _recording: &Recording<'_>,
+        _plan: &GemmPlan,
+        _out: Buffer<'_, f32>,
+        _codes: (Buffer<'_, Fp4Pair>, Buffer<'_, Fp8>),
+        _weight: WeightRef<'_>,
+        _inverse_scale: f32,
+    ) -> Result<()> {
+        Err(not_compiled("gemm_fp4"))
+    }
+
+    fn gemm_swiglu(
+        &self,
+        _recording: &Recording<'_>,
+        _plan: &GemmPlan,
+        _out: (Buffer<'_, Fp4Pair>, Buffer<'_, Fp8>),
+        _codes: (Buffer<'_, Fp4Pair>, Buffer<'_, Fp8>),
+        _weights: (WeightRef<'_>, WeightRef<'_>),
+        _scales: (f32, f32, f32),
+    ) -> Result<()> {
+        Err(not_compiled("gemm_swiglu"))
+    }
+
+    fn quantize_fp8(
+        &self,
+        _recording: &Recording<'_>,
+        _plan: &Fp8QuantPlan,
+        _codes: Buffer<'_, Fp8>,
+        _scales: Buffer<'_, f32>,
+        _input: Buffer<'_, f32>,
+    ) -> Result<()> {
+        Err(not_compiled("quantize_fp8"))
+    }
+
+    fn gemm_fp8(
+        &self,
+        _recording: &Recording<'_>,
+        _plan: &GemmPlan,
+        _out: Buffer<'_, f32>,
+        _codes: (Buffer<'_, Fp8>, Buffer<'_, f32>),
+        _weight: WeightRef<'_>,
+        _block_scales: bool,
+    ) -> Result<()> {
+        Err(not_compiled("gemm_fp8"))
+    }
+
     fn rows(
         &self,
         _recording: &Recording<'_>,

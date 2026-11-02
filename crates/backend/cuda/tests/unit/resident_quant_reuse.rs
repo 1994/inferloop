@@ -1,6 +1,7 @@
 //! Exact activation-quantization CSE on real checkpoint gate/up pairs.
 //! No observer kernels enter either arm; snapshots and input updates stay outside replay.
-use super::{QuantPairPlan, Workspace, record_with_input_pointer};
+use super::{QuantPairPlan, Workspace, record_certified};
+use crate::resident::buffers::region;
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use crate::{
     device::CudaDevice,
@@ -427,15 +428,14 @@ fn capture_pair(
                 .projections
                 .get(&id)
                 .ok_or_else(|| DeviceError::Launch("pair weight missing".into()))?;
-            if !record_with_input_pointer(
-                scope,
+            if !record_certified(
+                (&pair.weights.kernels, scope),
                 workspace,
                 weight,
                 pair.weights.activation_quantization(id),
-                &input_view,
+                region(input_pointer, input_view.size()),
                 output,
                 pair.columns,
-                input_pointer,
             )? {
                 return Err(DeviceError::Launch(
                     "quantized pair path not recorded".into(),
