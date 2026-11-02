@@ -13,9 +13,12 @@ use infer_models::mrope::ROTARY_AXES;
 #[path = "../../tests/unit/resident_metadata_check.rs"]
 mod check;
 
+/// Device tensor of one program's control metadata.
+type Metadata = Tensor<i32>;
+
 pub(super) fn update(
     graph: &Graph,
-    output: &mut Tensor<i32>,
+    output: &mut Metadata,
     values: [i32; METADATA_FIELDS],
 ) -> Result<()> {
     // Graph::update retains the output lease until replay completes. The replay
@@ -37,7 +40,7 @@ pub(super) fn update(
 /// Update scalar control metadata and independent rotary coordinates on the same stream.
 pub(super) fn update_rotary(
     graph: &Graph,
-    output: &mut Tensor<i32>,
+    output: &mut Metadata,
     values: [i32; METADATA_FIELDS],
     position: [usize; ROTARY_AXES],
 ) -> Result<()> {

@@ -81,11 +81,7 @@ fn private_fallback_quotes_cover_verification_when_resident_homes_are_unavailabl
 }
 
 fn check_private_fallback_preparation(prefill_width: usize) -> TestResult {
-    let (mut backend, program, states) =
-        fixture_with_width(2, &[OutputReadout::Logits; 2], prefill_width)?;
-    for &state in &states {
-        backend.release_state(state)?;
-    }
+    let (mut backend, program, states) = unreserved_fixture(2, 2, prefill_width)?;
     // A supported pool can lack resident home programs after a home capture failed.
     let executor = backend.ready.as_mut().unwrap();
     executor.homes.clear();

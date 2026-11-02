@@ -30,6 +30,18 @@ fn fixture_with_width(
     readouts: &[OutputReadout],
     prefill_width: usize,
 ) -> TestResult<(CudaBackend, ExecutionProgram, Vec<StateId>)> {
+    let (mut backend, program, states) = unreserved_fixture(depth, readouts.len(), prefill_width)?;
+    for (&state, &readout) in states.iter().zip(readouts) {
+        reserve_past_solo(&mut backend, &states, state, readout)?;
+    }
+    Ok((backend, program, states))
+}
+
+fn unreserved_fixture(
+    depth: usize,
+    sequences: usize,
+    prefill_width: usize,
+) -> TestResult<(CudaBackend, ExecutionProgram, Vec<StateId>)> {
     CudaDevice::enable_kernel_cache()?;
     let loaded = LoadedModel::open(
         CudaDevice::new(0)?,
@@ -49,14 +61,11 @@ fn fixture_with_width(
         "selected fixture must contain the requested MTP head"
     );
     let budget = loaded.device().allocatable_memory_bytes()?;
-    let mut backend = CudaBackend::new(loaded, budget, readouts.len())?;
+    let backend = CudaBackend::new(loaded, budget, sequences)?;
     let program = backend.compile(ProgramId::ONE)?;
-    let states = (0..readouts.len())
+    let states = (0..sequences)
         .map(|index| StateId::new(u64::try_from(index).unwrap() + 1))
         .collect::<Result<Vec<_>>>()?;
-    for (&state, &readout) in states.iter().zip(readouts) {
-        reserve_past_solo(&mut backend, &states, state, readout)?;
-    }
     Ok((backend, program, states))
 }
 

@@ -1,4 +1,10 @@
 //! Scalar launch arguments update resident metadata without temporary device allocations.
+use crate::tile::backend_error;
+use cuda_core::Stream;
+use cutile::prelude::*;
+use infer_core::Result;
+use std::sync::Arc;
+
 #[cutile::module]
 pub mod kernels {
     use cutile::core::{
@@ -66,4 +72,24 @@ pub mod kernels {
         );
         out.store(result);
     }
+}
+
+/// Run the rotary metadata write once so its module is loaded before any submission: a module
+/// load waits for the GPU, which would otherwise stall the first decode behind running work.
+///
+/// # Errors
+/// Reports the driver's launch failure.
+pub fn load_rotary(stream: &Arc<Stream>, output: &mut Tensor<i32>) -> Result<()> {
+    kernels::write_rotary(
+        output.partition([output.size()]),
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    )
+    .sync_on(stream)
+    .map(|_| ())
+    .map_err(backend_error)
 }
