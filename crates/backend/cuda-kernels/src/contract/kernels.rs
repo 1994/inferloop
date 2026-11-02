@@ -202,8 +202,8 @@ pub trait Projection: Send + Sync {
         input: Buffer<'_, f32>,
     ) -> Result<()>;
 
-    /// FP8 GEMM over prepared activation codes; `scales` per token, or per block for a block
-    /// weight.
+    /// FP8 GEMM over prepared activation codes. Without `block`, `codes.1` holds one scale per row
+    /// and the weight's scales one per output; with it, both hold one per `block` columns.
     /// # Errors
     /// Fails when a buffer disagrees with the plan, the weight is not FP8, or the launch is
     /// rejected.
@@ -214,7 +214,7 @@ pub trait Projection: Send + Sync {
         out: Buffer<'_, f32>,
         codes: (Buffer<'_, Fp8>, Buffer<'_, f32>),
         weight: WeightRef<'_>,
-        block_scales: bool,
+        block: Option<usize>,
     ) -> Result<()>;
 
     /// Copy each lane's last active row into `out`.

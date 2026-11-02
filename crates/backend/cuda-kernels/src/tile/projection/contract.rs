@@ -657,7 +657,7 @@ impl Projection for TileProjection {
         out: Buffer<'_, f32>,
         (codes, scales): (Buffer<'_, Fp8>, Buffer<'_, f32>),
         weight: WeightRef<'_>,
-        block_scales: bool,
+        block: Option<usize>,
     ) -> Result<()> {
         let scope = capture_scope(recording)?;
         let GemmPlan {
@@ -667,25 +667,44 @@ impl Projection for TileProjection {
             tile,
             ..
         } = *plan;
-        let mut out = self.matrix(recording, out, "GEMM output", (rows, outputs))?;
-        let codes = self.matrix(recording, retyped_fp8(codes), "FP8 codes", (rows, columns))?;
-        let scales = self.flat(recording, scales)?;
-        let Weight::Fp8(w, s) = self.weight(recording, weight, (outputs, columns))? else {
+        let WeightRef::Fp8 {
+            weight,
+            scales: weight_scales,
+        } = weight
+        else {
             return Err(Error::invalid("FP8 GEMM takes an FP8 weight"));
         };
+        let mut out = self.matrix(recording, out, "GEMM output", (rows, outputs))?;
+        let codes = self.matrix(recording, retyped_fp8(codes), "FP8 codes", (rows, columns))?;
+        let w = self.matrix(
+            recording,
+            retyped_fp8(weight),
+            "FP8 weight",
+            (outputs, columns),
+        )?;
         let generics = vec![
             columns.to_string(),
             tile[0].to_string(),
             tile[1].to_string(),
         ];
         let out = (&mut out).partition(tile);
-        if block_scales {
+        if let Some(block) = block {
+            let groups = columns / block;
+            let xs = self.matrix(recording, scales, "FP8 scales", (rows, groups))?;
+            let ws = self.matrix(
+                recording,
+                weight_scales,
+                "FP8 weight scales",
+                (outputs, groups),
+            )?;
             scope
-                .record(fp8_gemm::matmul_block(out, &codes, &w, &scales, &s).generics(generics))
+                .record(fp8_gemm::matmul_block(out, &codes, &w, &xs, &ws).generics(generics))
                 .map(drop)
         } else {
+            let xs = self.matrix(recording, scales, "FP8 scales", (rows, 1))?;
+            let ws = self.flat(recording, weight_scales)?;
             scope
-                .record(fp8_gemm::matmul(out, &codes, &w, &scales, &s).generics(generics))
+                .record(fp8_gemm::matmul(out, &codes, &w, &xs, &ws).generics(generics))
                 .map(drop)
         }
         .map_err(backend_error)

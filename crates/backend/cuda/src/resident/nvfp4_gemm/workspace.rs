@@ -766,7 +766,7 @@ fn record_fp8_block(
             output,
             (q, qs),
             weight,
-            true,
+            Some(FP8_BLOCK_COLUMNS),
         )
         .map_err(capture_error)
 }

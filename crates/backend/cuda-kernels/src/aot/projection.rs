@@ -173,7 +173,7 @@ impl Projection for AotProjection {
         _out: Buffer<'_, f32>,
         _codes: (Buffer<'_, Fp8>, Buffer<'_, f32>),
         _weight: WeightRef<'_>,
-        _block_scales: bool,
+        _block: Option<usize>,
     ) -> Result<()> {
         Err(not_compiled("gemm_fp8"))
     }

@@ -153,7 +153,7 @@ impl Choice {
                     weight: buffer(weight)?,
                     scales: buffer(ws)?,
                 },
-                false,
+                None,
             )
             .map_err(fp8_launch)?;
         Ok(())
