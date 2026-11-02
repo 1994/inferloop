@@ -653,10 +653,16 @@ impl Workspace {
                 ProjectionWeight::Fp8Block(w, block_scale) => {
                     record_fp8_block(
                         (contract, &recording),
-                        (w, block_scale),
+                        WeightRef::Fp8 {
+                            weight: buffer(w.as_ref())?,
+                            scales: buffer(block_scale.as_ref())?,
+                        },
                         input,
-                        (&*q, &*qs),
-                        output,
+                        (buffer(&*q)?, buffer(&*qs)?),
+                        (
+                            buffer(&*output)?,
+                            usize::try_from(output.shape()[1]).map_err(error)?,
+                        ),
                         (rows, columns),
                     )?;
                 }
@@ -724,10 +730,10 @@ impl Workspace {
 /// Block-scaled FP8 quantizes every block on its own and takes no reuse or vendor path.
 fn record_fp8_block(
     (contract, recording): (&Kernels, &Recording<'_>),
-    (weight, block_scale): (&Tensor<f8e4m3fn>, &Tensor<f32>),
+    weight: WeightRef<'_>,
     input: Buffer<'_, f32>,
-    (q, qs): (&Tensor<f8e4m3fn>, &Tensor<f32>),
-    output: &Tensor<f32>,
+    (q, qs): (Buffer<'_, Fp8>, Buffer<'_, f32>),
+    (output, outputs): (Buffer<'_, f32>, usize),
     (rows, columns): (usize, usize),
 ) -> StdResult<(), DeviceError> {
     contract
@@ -741,8 +747,8 @@ fn record_fp8_block(
                 rows,
                 columns,
             },
-            buffer(q)?,
-            buffer(qs)?,
+            q,
+            qs,
             input,
         )
         .map_err(capture_error)?;
@@ -753,16 +759,13 @@ fn record_fp8_block(
             &GemmPlan {
                 main_loop: GemmLoop::Plain,
                 rows,
-                outputs: usize::try_from(output.shape()[1]).map_err(capture_error)?,
+                outputs,
                 columns,
                 tile: native_tile(rows),
             },
-            buffer(output)?,
-            (buffer(q)?, buffer(qs)?),
-            WeightRef::Fp8 {
-                weight: buffer(weight)?,
-                scales: buffer(block_scale)?,
-            },
+            output,
+            (q, qs),
+            weight,
             true,
         )
         .map_err(capture_error)
