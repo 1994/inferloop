@@ -246,12 +246,10 @@ pub(super) fn record_slots(
             );
         let choice = nvfp4.pool_dense_choice(weight, [lanes, flat / lanes, columns], tile);
         if super::pool_gemv::record(
-            &weights.kernels,
-            scope,
+            (&weights.kernels, scope),
             weight,
-            &input,
-            input_pointer,
-            &mut output,
+            region(input_pointer, lanes * columns),
+            &output,
             columns,
             tile,
             choice,
@@ -261,15 +259,14 @@ pub(super) fn record_slots(
             return Ok(());
         }
     }
-    if !super::nvfp4_gemm::record_with_input_pointer(
-        scope,
+    if !super::nvfp4_gemm::record_certified(
+        (&weights.kernels, scope),
         nvfp4,
         weight,
         weights.activation_quantization(node.inputs[1]),
-        &input,
+        region(input_pointer, lanes * columns),
         &mut output,
         columns,
-        input_pointer,
     )? {
         record_projection(
             (&weights.kernels, scope),
@@ -327,12 +324,21 @@ fn record_projection(
     output: &mut Tensor<f32>,
     (columns, arithmetic_rows): (usize, usize),
 ) -> StdResult<(), DeviceError> {
-    if super::nvfp4_gemm::record(scope, nvfp4, weight, input_scale, x, output, columns)? {
+    let rows = usize::try_from(x.shape()[0]).map_err(error)?;
+    let input = region(x_pointer, rows * columns);
+    if super::nvfp4_gemm::record(
+        (kernels, scope),
+        nvfp4,
+        weight,
+        input_scale,
+        input,
+        output,
+        columns,
+    )? {
         return Ok(());
     }
     // Tensor cores amortize weights across candidate rows. Keep the measured
     // GEMV path for narrow batches with a very wide output (e.g. a vocabulary head).
-    let rows = usize::try_from(x.shape()[0]).map_err(error)?;
     let outputs = output.size() / rows;
     let small = arithmetic_rows > SMALL_GEMV_MAX_ROWS
         || outputs <= columns.saturating_mul(GEMV_WIDE_OUTPUT_RATIO);

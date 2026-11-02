@@ -725,7 +725,7 @@ fn fused_swiglu_tuner_preserves_complete_quantized_outputs() -> Result<(), Box<d
         let mut scales = api::zeros::<f8e4m3fn>(&[rows, hidden / 16]).sync_on(&device.stream)?;
         let graph = Graph::scope(&device.stream, |scope| {
             swiglu::record(
-                scope,
+                (&device.kernels(), scope),
                 selected,
                 (&weights.0, &weights.1),
                 (xs, down),

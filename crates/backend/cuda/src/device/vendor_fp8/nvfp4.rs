@@ -545,11 +545,20 @@ fn capture(
     prepared: Option<&Arc<Prepared>>,
     shape: Shape,
 ) -> Result<Graph, DeviceError> {
+    let kernels = context.device.kernels();
     Graph::scope(&context.device.stream, |scope| {
         if let Some(prepared) = prepared {
             append(scope, context, prepared, op, shape)
         } else {
-            native.record(scope, op.weight, op.scale, op.q, op.qs, op.output, shape.k)
+            native.record(
+                (&kernels, scope),
+                op.weight,
+                op.scale,
+                op.q,
+                op.qs,
+                op.output,
+                shape.k,
+            )
         }
     })
 }

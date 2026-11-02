@@ -91,16 +91,14 @@ pub(super) fn record(
         .ok_or_else(|| error("prompt logits output"))?;
     let vocabulary = output.size();
     let mut matrix = output.reshape(&[1, vocabulary])?;
-    let pointer = row.device_pointer().cu_deviceptr();
-    let recorded = super::nvfp4_gemm::record_with_input_pointer(
-        scope,
+    let recorded = super::nvfp4_gemm::record_certified(
+        (&weights.kernels, scope),
         nvfp4,
         weight,
         Some(quantization),
-        &row.view(&[1, hidden]).map_err(error)?,
+        buffer(&*row)?,
         &mut matrix,
         hidden,
-        pointer,
     )?;
     arena.buffers[slot] = Some(matrix.reshape(&[vocabulary])?);
     if recorded {

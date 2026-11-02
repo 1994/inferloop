@@ -3,16 +3,14 @@ mod preparation;
 mod vendor_fp4;
 use super::super::buffers::buffer;
 use super::super::capture::error as capture_error;
-use super::{
-    kernels,
-    quant_reuse::{CaptureQuantReuse, QuantKey, QuantKind, QuantPairRole},
-};
+use super::quant_reuse::{CaptureQuantReuse, QuantKey, QuantKind, QuantPairRole};
 use crate::constants::FP8_BLOCK_COLUMNS;
 use crate::constants::NVFP4_QUANT_CODES_TILE;
 use crate::constants::NVFP4_QUANT_SCALES_TILE;
 use crate::resident::norm_fp4;
 use infer_cuda_kernels::contract::{
-    Buffer, Kernels, NormFp4Buffers, NormMaximumBuffers, QuantNormPlan, Recording,
+    Buffer, Fp4QuantKind, Fp4QuantPlan, Fp8, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan,
+    Kernels, NormFp4Buffers, NormMaximumBuffers, QuantNormPlan, Recording, WeightRef,
 };
 
 use crate::resident::program::ProgramGeometry;
@@ -273,13 +271,13 @@ impl Workspace {
     )]
     pub(super) fn record_input(
         &mut self,
-        scope: &Scope,
+        (contract, scope): (&Kernels, &Scope),
         weight: &ProjectionWeight,
         scale: f32,
-        input: &TensorView<'_, f32>,
-        output: &mut Tensor<f32>,
+        input: Buffer<'_, f32>,
+        output: &Tensor<f32>,
         columns: usize,
-        input_pointer: Option<u64>,
+        certified: bool,
     ) -> StdResult<(), DeviceError> {
         let ProjectionWeight::Fp4(..) = weight else {
             return Err(super::super::capture::error("FP4 workspace weight"));
@@ -291,7 +289,7 @@ impl Workspace {
             .get_mut(&(rows, columns))
             .ok_or_else(|| super::super::capture::error("FP4 quantization workspace missing"))?;
         let key = quant_key(
-            input_pointer,
+            certified,
             input,
             output,
             rows,
@@ -300,31 +298,23 @@ impl Workspace {
             (&*q, &*qs),
         );
         let (reuse, ticket) = self.quant_reuse.prepare(key);
-        let mut record = || {
-            if !reuse && rows.is_multiple_of(QUANTIZATION_ROWS) {
-                scope.record(
-                    kernels::quantize_rows(
-                        (&mut *q).partition([QUANTIZATION_ROWS, NVFP4_QUANT_CODES_TILE[1]]),
-                        (&mut *qs).partition([QUANTIZATION_ROWS, NVFP4_QUANT_SCALES_TILE[1]]),
+        let record = || {
+            if !reuse {
+                contract
+                    .projection
+                    .quantize_fp4(
+                        &Recording::scope(scope),
+                        &fp4_quant_plan(rows, columns),
+                        buffer(&*q)?,
+                        buffer(&*qs)?,
                         input,
                         scale,
                     )
-                    .generics(vec![columns.to_string()]),
-                )?;
-            } else if !reuse {
-                scope.record(
-                    kernels::quantize(
-                        (&mut *q).partition(NVFP4_QUANT_CODES_TILE),
-                        (&mut *qs).partition(NVFP4_QUANT_SCALES_TILE),
-                        input,
-                        scale,
-                    )
-                    .generics(vec![columns.to_string()]),
-                )?;
+                    .map_err(capture_error)?;
             }
             Self::record_quantized_gemm(
                 &self.strategies,
-                scope,
+                (contract, scope),
                 weight,
                 scale,
                 (&*q, &*qs),
@@ -345,12 +335,12 @@ impl Workspace {
     )]
     pub(crate) fn record_swiglu_input(
         &mut self,
-        scope: &Scope,
+        (contract, scope): (&Kernels, &Scope),
         weight: &ProjectionWeight,
         scale: f32,
-        gate: &TensorView<'_, f32>,
-        up: &TensorView<'_, f32>,
-        output: &mut Tensor<f32>,
+        gate: Buffer<'_, f32>,
+        up: Buffer<'_, f32>,
+        output: &Tensor<f32>,
         columns: usize,
     ) -> StdResult<(), DeviceError> {
         let ProjectionWeight::Fp4(..) = weight else {
@@ -367,19 +357,20 @@ impl Workspace {
         if !rows.is_multiple_of(QUANTIZATION_ROWS) {
             return Err(super::super::capture::error("fused SwiGLU row tile"));
         }
-        scope.record(
-            kernels::swiglu_quantize(
-                (&mut *q).partition([QUANTIZATION_ROWS, NVFP4_QUANT_CODES_TILE[1]]),
-                (&mut *qs).partition([QUANTIZATION_ROWS, NVFP4_QUANT_SCALES_TILE[1]]),
-                gate,
-                up,
+        contract
+            .projection
+            .quantize_swiglu(
+                &Recording::scope(scope),
+                &fp4_quant_plan(rows, columns),
+                buffer(&*q)?,
+                buffer(&*qs)?,
+                (gate, up),
                 scale,
             )
-            .generics(vec![columns.to_string()]),
-        )?;
+            .map_err(capture_error)?;
         Self::record_quantized_gemm(
             &self.strategies,
-            scope,
+            (contract, scope),
             weight,
             scale,
             (&*q, &*qs),
@@ -401,12 +392,13 @@ impl Workspace {
     /// projection's buffer for [`Self::record_prequantized`]. Neither F32 projection is written.
     pub(crate) fn record_gate_up_swiglu(
         &mut self,
-        scope: &Scope,
+        (contract, scope): (&Kernels, &Scope),
         (gate, up): (&ProjectionWeight, &ProjectionWeight),
         (input_scale, down_scale): (f32, f32),
-        (input, pointer): (&TensorView<'_, f32>, u64),
+        input: Buffer<'_, f32>,
         (rows, columns, hidden): (usize, usize, usize),
     ) -> StdResult<(), DeviceError> {
+        let pointer = input.address();
         let pending = self.norm_fp4.take();
         let (ProjectionWeight::Fp4(..), ProjectionWeight::Fp4(..)) = (gate, up) else {
             return Err(super::super::capture::error("fused SwiGLU weights"));
@@ -429,7 +421,7 @@ impl Workspace {
         }
         // Both writes replace shared quantization buffers; no reuse permit may span them.
         self.quant_reuse.clear();
-        let (mut q, mut qs) = self
+        let (q, qs) = self
             .buffers
             .remove(&(rows, columns))
             .ok_or_else(|| super::super::capture::error("FP4 quantization workspace missing"))?;
@@ -449,24 +441,26 @@ impl Workspace {
         let quantized = if ready {
             Ok(())
         } else {
-            scope
-                .record(
-                    kernels::quantize_rows(
-                        (&mut q).partition([QUANTIZATION_ROWS, NVFP4_QUANT_CODES_TILE[1]]),
-                        (&mut qs).partition([QUANTIZATION_ROWS, NVFP4_QUANT_SCALES_TILE[1]]),
+            buffer(&q).and_then(|codes| {
+                contract
+                    .projection
+                    .quantize_fp4(
+                        &Recording::scope(scope),
+                        &fp4_quant_plan(rows, columns),
+                        codes,
+                        buffer(&qs)?,
                         input,
                         input_scale,
                     )
-                    .generics(vec![columns.to_string()]),
-                )
-                .map(drop)
+                    .map_err(capture_error)
+            })
         };
         let recorded = quantized.and_then(|()| {
             let (codes, code_scales) = self.buffers.get_mut(&(rows, hidden)).ok_or_else(|| {
                 super::super::capture::error("FP4 quantization workspace missing")
             })?;
             swiglu::record(
-                scope,
+                (contract, scope),
                 config,
                 (gate, up),
                 (input_scale, down_scale),
@@ -482,10 +476,10 @@ impl Workspace {
     /// Down projection whose activation codes [`Self::record_gate_up_swiglu`] already wrote.
     pub(crate) fn record_prequantized(
         &self,
-        scope: &Scope,
+        (contract, scope): (&Kernels, &Scope),
         weight: &ProjectionWeight,
         scale: f32,
-        output: &mut Tensor<f32>,
+        output: &Tensor<f32>,
         columns: usize,
     ) -> StdResult<(), DeviceError> {
         let rows = output.size()
@@ -496,7 +490,7 @@ impl Workspace {
             .ok_or_else(|| super::super::capture::error("FP4 quantization workspace missing"))?;
         Self::record_quantized_gemm(
             &self.strategies,
-            scope,
+            (contract, scope),
             weight,
             scale,
             (q, qs),
@@ -507,11 +501,11 @@ impl Workspace {
 
     fn record_quantized_gemm(
         strategies: &BTreeMap<StrategyKey, GemmConfig>,
-        scope: &Scope,
+        (contract, scope): (&Kernels, &Scope),
         weight: &ProjectionWeight,
         scale: f32,
         (q, qs): (&Tensor<f4e2m1fnx2>, &Tensor<f8e4m3fn>),
-        output: &mut Tensor<f32>,
+        output: &Tensor<f32>,
         (rows, columns): (usize, usize),
     ) -> StdResult<(), DeviceError> {
         {
@@ -527,7 +521,7 @@ impl Workspace {
                 ))
                 .copied()
                 .unwrap_or_else(|| GemmConfig::baseline(rows));
-            config.record(scope, weight, scale, q, qs, output, columns)?;
+            config.record((contract, scope), weight, scale, q, qs, output, columns)?;
             Ok(())
         }
     }
@@ -624,14 +618,14 @@ impl Workspace {
 
     pub(super) fn record_fp8_input(
         &mut self,
-        scope: &Scope,
+        (contract, scope): (&Kernels, &Scope),
         weight: &ProjectionWeight,
-        input: &TensorView<'_, f32>,
+        input: Buffer<'_, f32>,
         output: &mut Tensor<f32>,
         columns: usize,
-        input_pointer: Option<u64>,
+        certified: bool,
     ) -> StdResult<(), DeviceError> {
-        use super::super::{capture::error, fp8_gemm::kernels};
+        use super::super::capture::error;
         if !matches!(
             weight,
             ProjectionWeight::Fp8(..) | ProjectionWeight::Fp8Block(..)
@@ -643,55 +637,54 @@ impl Workspace {
         let scale_columns = fp8_scale_columns(weight, columns);
         let maximum_ready = self.norm_maximum.take().is_some_and(|pending| {
             matches!(weight, ProjectionWeight::Fp8(..))
-                && pending.matches(input_pointer, rows, columns)
+                && pending.matches(certified.then_some(input.address()), rows, columns)
         });
         let (q, qs) = self
             .fp8
             .get_mut(&(rows, columns, scale_columns))
             .ok_or_else(|| error("FP8 quantization workspace missing"))?;
         let kind = matches!(weight, ProjectionWeight::Fp8(..)).then_some(QuantKind::Fp8Token);
-        let key = kind.and_then(|kind| {
-            quant_key(
-                input_pointer,
-                input,
-                output,
-                rows,
-                columns,
-                kind,
-                (&*q, &*qs),
-            )
-        });
+        let key = kind
+            .and_then(|kind| quant_key(certified, input, output, rows, columns, kind, (&*q, &*qs)));
         let (reuse, ticket) = self.quant_reuse.prepare(key);
         let mut record = || {
-            let tile = native_tile(rows);
-            let generics = [columns, tile[0], tile[1]]
-                .map(|value| value.to_string())
-                .to_vec();
+            let recording = Recording::scope(scope);
             match weight {
                 ProjectionWeight::Fp8Block(w, block_scale) => {
-                    scope.record(
-                        kernels::quantize_block(
-                            (&mut *q).partition([1, FP8_BLOCK_COLUMNS]),
-                            (&mut *qs).partition([1, 1]),
-                            input,
-                        )
-                        .generics(vec![columns.to_string(), FP8_BLOCK_COLUMNS.to_string()]),
-                    )?;
-                    scope.record(
-                        kernels::matmul_block(output.partition(tile), &*q, w, &*qs, block_scale)
-                            .generics(generics),
+                    record_fp8_block(
+                        (contract, &recording),
+                        WeightRef::Fp8 {
+                            weight: buffer(w.as_ref())?,
+                            scales: buffer(block_scale.as_ref())?,
+                        },
+                        input,
+                        (buffer(&*q)?, buffer(&*qs)?),
+                        (
+                            buffer(&*output)?,
+                            usize::try_from(output.shape()[1]).map_err(error)?,
+                        ),
+                        (rows, columns),
                     )?;
                 }
                 ProjectionWeight::Fp8(w, channel_scale) => {
                     if !reuse {
-                        super::super::fp8_quant_reduction::record_with_maximum(
-                            scope,
-                            q,
-                            qs,
-                            input,
-                            columns,
-                            maximum_ready,
-                        )?;
+                        contract
+                            .projection
+                            .quantize_fp8(
+                                &recording,
+                                &Fp8QuantPlan {
+                                    kind: super::super::fp8_quant_reduction::kind(
+                                        columns,
+                                        maximum_ready,
+                                    ),
+                                    rows,
+                                    columns,
+                                },
+                                buffer(&*q)?,
+                                buffer(&*qs)?,
+                                input,
+                            )
+                            .map_err(error)?;
                         #[cfg(test)]
                         super::super::norm_maximum::record_consumption(maximum_ready);
                     }
@@ -714,7 +707,7 @@ impl Workspace {
                         .copied()
                         .unwrap_or_else(|| Choice::baseline(rows));
                     choice.record(
-                        scope,
+                        (contract, scope),
                         &self.vendor_fp8,
                         &*q,
                         w,
@@ -734,6 +727,76 @@ impl Workspace {
     }
 }
 
+/// Block-scaled FP8 quantizes every block on its own and takes no reuse or vendor path.
+fn record_fp8_block(
+    (contract, recording): (&Kernels, &Recording<'_>),
+    weight: WeightRef<'_>,
+    input: Buffer<'_, f32>,
+    (q, qs): (Buffer<'_, Fp8>, Buffer<'_, f32>),
+    (output, outputs): (Buffer<'_, f32>, usize),
+    (rows, columns): (usize, usize),
+) -> StdResult<(), DeviceError> {
+    contract
+        .projection
+        .quantize_fp8(
+            recording,
+            &Fp8QuantPlan {
+                kind: Fp8QuantKind::Block {
+                    block: FP8_BLOCK_COLUMNS,
+                },
+                rows,
+                columns,
+            },
+            q,
+            qs,
+            input,
+        )
+        .map_err(capture_error)?;
+    contract
+        .projection
+        .gemm_fp8(
+            recording,
+            &GemmPlan {
+                main_loop: GemmLoop::Plain,
+                rows,
+                outputs,
+                columns,
+                tile: native_tile(rows),
+            },
+            output,
+            (q, qs),
+            weight,
+            Some(FP8_BLOCK_COLUMNS),
+        )
+        .map_err(capture_error)
+}
+
+/// Rows that fill whole quantization groups run them in one launch.
+const fn fp4_quant_plan(rows: usize, columns: usize) -> Fp4QuantPlan {
+    let (kind, codes_tile, scales_tile) = if rows.is_multiple_of(QUANTIZATION_ROWS) {
+        (
+            Fp4QuantKind::RowGroups {
+                rows: QUANTIZATION_ROWS,
+            },
+            [QUANTIZATION_ROWS, NVFP4_QUANT_CODES_TILE[1]],
+            [QUANTIZATION_ROWS, NVFP4_QUANT_SCALES_TILE[1]],
+        )
+    } else {
+        (
+            Fp4QuantKind::Whole,
+            NVFP4_QUANT_CODES_TILE,
+            NVFP4_QUANT_SCALES_TILE,
+        )
+    };
+    Fp4QuantPlan {
+        kind,
+        rows,
+        columns,
+        codes_tile,
+        scales_tile,
+    }
+}
+
 const fn fp8_scale_columns(weight: &ProjectionWeight, columns: usize) -> usize {
     match weight {
         ProjectionWeight::Fp8Block(..) => columns / FP8_BLOCK_COLUMNS,
@@ -741,26 +804,24 @@ const fn fp8_scale_columns(weight: &ProjectionWeight, columns: usize) -> usize {
     }
 }
 
-/// Only the certified whole-matrix paths supply a pointer; sliced/legacy views stay separate.
+/// Only the certified whole-matrix paths may reuse quantized activations.
 fn quant_key<Q: DType, S: DType>(
-    input_pointer: Option<u64>,
-    input: &TensorView<'_, f32>,
+    certified: bool,
+    input: Buffer<'_, f32>,
     output: &Tensor<f32>,
     rows: usize,
     columns: usize,
     kind: QuantKind,
     buffers: (&Tensor<Q>, &Tensor<S>),
 ) -> Option<QuantKey> {
-    let input_pointer = input_pointer.filter(|pointer| *pointer != 0)?;
-    let shape: [i32; 2] = input.shape().try_into().ok()?;
-    let strides: [i32; 2] = input.strides().try_into().ok()?;
-    if shape != [i32::try_from(rows).ok()?, i32::try_from(columns).ok()?]
-        || strides != [i32::try_from(columns).ok()?, 1]
-    {
+    let input_pointer = certified.then_some(input.address()).filter(|p| *p != 0)?;
+    if input.len() != rows.checked_mul(columns)? {
         return None;
     }
+    let shape = [i32::try_from(rows).ok()?, i32::try_from(columns).ok()?];
+    let strides = [shape[1], 1];
     let input_end = input_pointer
-        .checked_add(u64::try_from(input.size().checked_mul(size_of::<f32>())?).ok()?)?;
+        .checked_add(u64::try_from(input.len().checked_mul(size_of::<f32>())?).ok()?)?;
     let output_pointer = output.device_pointer().cu_deviceptr();
     let output_end = output_pointer
         .checked_add(u64::try_from(output.size().checked_mul(size_of::<f32>())?).ok()?)?;

@@ -1,33 +1,25 @@
 //! Row-independent F32 GEMV with the original private accumulation and reduction tree.
 pub use infer_cuda_kernels::tile::projection::pool_gemv as kernels;
 
-use super::buffers::{buffer, region};
+use super::buffers::buffer;
 use super::capture::error;
 use crate::tuning::pool_dense::{self, Choice};
 use crate::{mlp::ProjectionWeight, strategy::LinearTiling};
 use cutile::prelude::*;
-use infer_cuda_kernels::contract::{Bf16, Buffer, Kernels, PoolGemvPlan, Recording};
+use infer_cuda_kernels::contract::{Buffer, Kernels, PoolGemvPlan, Recording};
 #[cfg(test)]
 use std::cell::Cell;
-#[expect(
-    clippy::too_many_arguments,
-    reason = "The caller's view does not expose its address, so it is passed alongside"
-)]
 pub(super) fn record(
-    kernels: &Kernels,
-    scope: &Scope,
+    (kernels, scope): (&Kernels, &Scope),
     weight: &ProjectionWeight,
-    input: &TensorView<'_, f32>,
-    input_pointer: u64,
-    output: &mut Tensor<f32>,
+    input: Buffer<'_, f32>,
+    output: &Tensor<f32>,
     columns: usize,
     tile: LinearTiling,
     choice: Choice,
 ) -> Result<bool, DeviceError> {
-    let rows =
-        usize::try_from(input.shape()[0]).map_err(|e| DeviceError::Internal(e.to_string()))?;
-    let outputs =
-        usize::try_from(output.shape()[1]).map_err(|e| DeviceError::Internal(e.to_string()))?;
+    let rows = input.len() / columns.max(1);
+    let outputs = usize::try_from(output.shape()[1]).map_err(error)?;
     if !pool_dense::searchable([rows, outputs, columns]) || !enabled() {
         return Ok(false);
     }
@@ -40,60 +32,28 @@ pub(super) fn record(
         return Ok(false);
     };
     if choice == Choice::Gemv {
-        record_gemv(
-            kernels,
-            scope,
-            buffer(weight.as_ref())?,
-            input,
-            input_pointer,
-            buffer(&*output)?,
-            columns,
-            tile,
-        )?;
+        kernels
+            .projection
+            .pool_gemv_bf16(
+                &Recording::scope(scope),
+                &PoolGemvPlan {
+                    rows,
+                    outputs,
+                    columns,
+                    tile_rows: tile.rows(),
+                    tile_columns: tile.columns(),
+                },
+                buffer(output)?,
+                input,
+                buffer(weight.as_ref())?,
+            )
+            .map_err(error)?;
     } else {
-        choice.record(scope, weight, input, output, columns, tile)?;
+        choice.record((kernels, scope), weight, input, output, columns, tile)?;
     }
     #[cfg(test)]
     CAPTURES.with(|n| n.set(n.get() + 1));
     Ok(true)
-}
-/// The row-independent kernel goes through the family contract, as every source will.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "The caller's view does not expose its address, so it is passed alongside"
-)]
-fn record_gemv(
-    kernels: &Kernels,
-    scope: &Scope,
-    weight: Buffer<'_, Bf16>,
-    input: &TensorView<'_, f32>,
-    input_pointer: u64,
-    output: Buffer<'_, f32>,
-    columns: usize,
-    tile: LinearTiling,
-) -> Result<(), DeviceError> {
-    let width = i32::try_from(columns).map_err(error)?;
-    if input.strides() != [width, 1] {
-        return Err(error("pool GEMV operands must be contiguous"));
-    }
-    let rows = usize::try_from(input.shape()[0]).map_err(error)?;
-    let plan = PoolGemvPlan {
-        rows,
-        outputs: output.len() / rows.max(1),
-        columns,
-        tile_rows: tile.rows(),
-        tile_columns: tile.columns(),
-    };
-    kernels
-        .projection
-        .pool_gemv_bf16(
-            &Recording::scope(scope),
-            &plan,
-            output,
-            region(input_pointer, rows * columns),
-            weight,
-        )
-        .map_err(error)
 }
 
 #[cfg(not(test))]

@@ -1,6 +1,7 @@
 //! Own every temporary until the captured graph is destroyed.
 use super::{Choice, Key};
 use crate::device::{CudaDevice, device_error};
+use crate::resident::tensor_buffer;
 use crate::strategy::LinearTiling;
 use crate::tuning::preparation::driver_build;
 use crate::tuning::projection_budget::ProjectionShape;
@@ -61,12 +62,19 @@ impl Captured {
             })
             .collect();
         let input = device.upload(values, &[m, k])?;
-        let mut output = api::zeros::<f32>(&[m, n])
+        let output = api::zeros::<f32>(&[m, n])
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        let view = input.view(&[m, k]).map_err(device_error)?;
+        let kernels = device.kernels();
         let graph = Graph::scope(&device.stream, |scope| {
-            choice.record(scope, weight, &view, &mut output, k, tile)
+            choice.record(
+                (&kernels, scope),
+                weight,
+                tensor_buffer(input.as_ref())?,
+                &output,
+                k,
+                tile,
+            )
         })
         .map_err(device_error)?;
         Ok(Self {

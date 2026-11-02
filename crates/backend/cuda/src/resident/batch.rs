@@ -1379,7 +1379,7 @@ impl BatchBuilder<'_> {
         &mut self,
         arena: &mut ActivationArena,
         metadata: PromptMetadata<'_>,
-        partials: &mut BTreeMap<usize, Tensor<f32>>,
+        partials: &BTreeMap<usize, Tensor<f32>>,
         prompt_row: &mut Tensor<f32>,
         profile: &mut Option<profile::PrefillProfile>,
     ) -> Result<Graph> {
@@ -1414,7 +1414,7 @@ impl BatchBuilder<'_> {
         readout: PromptReadout,
         profile: Option<&mut profile::PrefillProfile>,
         workspaces: (
-            &mut BTreeMap<usize, Tensor<f32>>,
+            &BTreeMap<usize, Tensor<f32>>,
             &mut super::recurrent_prefill::Workspace,
             &mut Option<super::fusion_batch::Workspace>,
         ),
@@ -1574,7 +1574,7 @@ impl BatchBuilder<'_> {
         arena: &mut ActivationArena,
         metadata: PromptMetadata<'_>,
         workspaces: (
-            &mut BTreeMap<usize, Tensor<f32>>,
+            &BTreeMap<usize, Tensor<f32>>,
             &mut super::recurrent_prefill::Workspace,
             &mut Option<super::fusion_batch::Workspace>,
         ),
@@ -1616,7 +1616,7 @@ impl BatchBuilder<'_> {
         node: &TensorNode,
         arena: &mut ActivationArena,
         metadata: &[Tensor<i32>],
-        partials: &mut BTreeMap<usize, Tensor<f32>>,
+        partials: &BTreeMap<usize, Tensor<f32>>,
     ) -> StdResult<(), DeviceError> {
         let mut no_fusion = None;
         match dispatch32(node, self.weights) {

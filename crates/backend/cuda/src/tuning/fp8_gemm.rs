@@ -12,6 +12,7 @@ use crate::constants::QUANT_GEMM_TILE;
 use crate::constants::WIDE_PREFILL_LANES;
 use crate::constants::WIDE_PROMPT_GEMM_TILE_ROWS;
 pub use crate::device::vendor_fp8::{AlgorithmConfig, LibraryIdentity};
+use crate::resident::tensor_buffer as buffer;
 use crate::tuning::preparation::driver_build;
 use crate::tuning::resident_gemm::prompt_tile_rows;
 use crate::{
@@ -27,11 +28,15 @@ use cutile::{
     prelude::*,
 };
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{
+    Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, Kernels, Recording, WeightRef,
+};
 use infer_cuda_kernels::tile::runtime::Graph;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::env::var;
 use std::env::var_os;
+use std::fmt::Display;
 use std::iter::once;
 use std::result::Result as StdResult;
 use std::{
@@ -108,7 +113,7 @@ impl Choice {
     )]
     pub(crate) fn record(
         self,
-        scope: &Scope,
+        (contract, scope): (&Kernels, &Scope),
         support: &vendor_fp8::Support,
         q: &Tensor<f8e4m3fn>,
         weight: &Tensor<f8e4m3fn>,
@@ -130,16 +135,34 @@ impl Choice {
                 )
             }
         };
-        scope.record(
-            kernels::matmul(output.partition(native.tile()), q, weight, xs, ws).generics(vec![
-                columns.to_string(),
-                native.tile_m.to_string(),
-                native.tile_n.to_string(),
-            ]),
-        )?;
+        let shape = |axis: usize| usize::try_from(output.shape()[axis]).map_err(fp8_launch);
+        contract
+            .projection
+            .gemm_fp8(
+                &Recording::scope(scope),
+                &GemmPlan {
+                    main_loop: GemmLoop::Plain,
+                    rows: shape(0)?,
+                    outputs: shape(1)?,
+                    columns,
+                    tile: native.tile(),
+                },
+                buffer(&*output)?,
+                (buffer(q)?, buffer(xs)?),
+                WeightRef::Fp8 {
+                    weight: buffer(weight)?,
+                    scales: buffer(ws)?,
+                },
+                None,
+            )
+            .map_err(fp8_launch)?;
         Ok(())
     }
 }
+fn fp8_launch(error: impl Display) -> DeviceError {
+    DeviceError::Internal(error.to_string())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Key {
     pub hardware: String,
@@ -512,10 +535,10 @@ impl Captured {
         let input = probe_inputs::upload(device, [rows, columns], fixture, || {
             inputs(rows, columns, fixture)
         })?;
-        let mut codes = api::zeros::<f8e4m3fn>(&[rows, columns])
+        let codes = api::zeros::<f8e4m3fn>(&[rows, columns])
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        let mut xs = api::zeros::<f32>(&[rows, 1])
+        let xs = api::zeros::<f32>(&[rows, 1])
             .sync_on(&device.stream)
             .map_err(device_error)?;
         let mut output = api::zeros::<f32>(&[rows, outputs])
@@ -537,18 +560,22 @@ impl Captured {
         } else {
             None
         };
+        let contract = device.kernels();
         let graph = Graph::scope(&device.stream, |scope| {
-            scope.record(
-                kernels::quantize(
-                    (&mut codes).partition([1, columns.next_power_of_two()]),
-                    (&mut xs).partition([1, 1]),
-                    &input,
+            contract
+                .projection
+                .quantize_fp8(
+                    &Recording::scope(scope),
+                    &Fp8QuantPlan {
+                        kind: Fp8QuantKind::Whole,
+                        rows: usize::try_from(codes.shape()[0]).map_err(fp8_launch)?,
+                        columns,
+                    },
+                    buffer(&codes)?,
+                    buffer(&xs)?,
+                    buffer(input.as_ref())?,
                 )
-                .generics(vec![
-                    columns.to_string(),
-                    columns.next_power_of_two().to_string(),
-                ]),
-            )?;
+                .map_err(fp8_launch)?;
             if let Choice::Lt(config) = choice {
                 if !support.record_config(
                     scope,
@@ -566,7 +593,7 @@ impl Captured {
                 Ok(())
             } else {
                 choice.record(
-                    scope,
+                    (&contract, scope),
                     support,
                     &codes,
                     weight_codes,

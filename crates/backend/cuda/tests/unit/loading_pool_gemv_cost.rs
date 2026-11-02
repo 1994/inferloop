@@ -1,6 +1,7 @@
 use super::{LoadOptions, LoadedModel};
 use crate::constants::SMALL_GEMM_TILE;
 use crate::kernels::linear::dense;
+use crate::resident::tensor_buffer;
 use crate::strategy::LinearTiling;
 use crate::{
     device::CudaDevice,
@@ -486,12 +487,11 @@ fn checkpoint_selector_measures_and_reuses_complete_choices() -> TestResult {
         assert_eq!(entry.selected, selected);
         let reference = Graph::scope(&loaded.device().stream, |scope| case.reference(scope))?;
         let graph = Graph::scope(&loaded.device().stream, |scope| {
-            let input = case.joined.view(&[rows, case.k])?;
             selected.record(
-                scope,
+                (&loaded.weights.kernels, scope),
                 &case.weight,
-                &input,
-                &mut case.candidate,
+                tensor_buffer(&case.joined)?,
+                &case.candidate,
                 case.k,
                 case.tile,
             )

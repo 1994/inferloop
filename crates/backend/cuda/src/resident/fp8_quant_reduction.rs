@@ -1,11 +1,8 @@
 //! Exact token FP8 quantization with parallel conversion for large aligned rows.
+#[cfg(test)]
 pub use infer_cuda_kernels::tile::projection::fp8_quant_reduction as kernels;
 
-use cutile::prelude::DeviceError;
-use cutile::prelude::Scope;
-use cutile::prelude::Tensor as PreludeTensor;
-use cutile::prelude::TensorView;
-use cutile::prelude::{PartitionMut, TileKernel};
+use infer_cuda_kernels::contract::Fp8QuantKind;
 #[cfg(test)]
 use std::cell::Cell;
 const SERIAL_COLUMNS: usize = 4096;
@@ -15,65 +12,28 @@ pub(super) const fn parallel_columns(columns: usize) -> bool {
     columns > SERIAL_COLUMNS && columns.is_multiple_of(CONVERSION_COLUMNS)
 }
 
-/// Consume a maximum produced by the immediately preceding normalization, if present.
-pub(super) fn record_with_maximum(
-    scope: &Scope,
-    codes: &mut PreludeTensor<cuda_core::f8e4m3fn>,
-    scale: &mut PreludeTensor<f32>,
-    input: &TensorView<'_, f32>,
-    columns: usize,
-    ready: bool,
-) -> Result<(), DeviceError> {
-    if !ready {
-        return record(scope, codes, scale, input, columns);
+/// The conversion a row of `columns` takes; `maximum_ready` consumes a maximum the immediately
+/// preceding normalization produced. Large rows partition conversion independently from the row
+/// maximum, and both stages reuse the existing quantized activation and scale buffers.
+#[cfg_attr(
+    not(test),
+    expect(
+        clippy::missing_const_for_fn,
+        reason = "The test build reads a thread-local override"
+    )
+)]
+pub(super) fn kind(columns: usize, maximum_ready: bool) -> Fp8QuantKind {
+    if !maximum_ready && (!parallel_columns(columns) || !enabled()) {
+        return Fp8QuantKind::Whole;
     }
-    scope.record(
-        kernels::quantize(codes.partition([1, CONVERSION_COLUMNS]), &*scale, input)
-            .generics(vec![columns.to_string()]),
-    )?;
-    Ok(())
-}
-
-/// Large-row conversion is partitioned independently from the original row maximum.
-/// Both stages reuse the existing quantized activation and scale buffers.
-pub(super) fn record(
-    scope: &Scope,
-    codes: &mut PreludeTensor<cuda_core::f8e4m3fn>,
-    scale: &mut PreludeTensor<f32>,
-    input: &TensorView<'_, f32>,
-    columns: usize,
-) -> Result<(), DeviceError> {
-    if !parallel_columns(columns) || !enabled() {
-        scope.record(
-            super::fp8_gemm::kernels::quantize(
-                (&mut *codes).partition([1, columns.next_power_of_two()]),
-                (&mut *scale).partition([1, 1]),
-                input,
-            )
-            .generics(vec![
-                columns.to_string(),
-                columns.next_power_of_two().to_string(),
-            ]),
-        )?;
-    } else {
-        scope.record(
-            kernels::maximum((&mut *scale).partition([1, 1]), input).generics(vec![
-                columns.to_string(),
-                columns.next_power_of_two().to_string(),
-            ]),
-        )?;
-        scope.record(
-            kernels::quantize(
-                (&mut *codes).partition([1, CONVERSION_COLUMNS]),
-                &*scale,
-                input,
-            )
-            .generics(vec![columns.to_string()]),
-        )?;
-        #[cfg(test)]
+    #[cfg(test)]
+    if !maximum_ready {
         CAPTURES.with(|value| value.set(value.get() + 1));
     }
-    Ok(())
+    Fp8QuantKind::Parallel {
+        conversion_columns: CONVERSION_COLUMNS,
+        maximum_ready,
+    }
 }
 #[cfg(not(test))]
 const fn enabled() -> bool {

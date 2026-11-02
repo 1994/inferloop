@@ -6,7 +6,7 @@ use crate::constants::{
     SMALL_GEMV_MAX_ROWS,
 };
 use crate::device::CudaDevice;
-use crate::resident::{linear_batch::batched, pool_gemv, prefill_gemm::gemm, small_gemm_kernels};
+use crate::resident::tensor_buffer as buffer;
 use crate::strategy::LinearTiling;
 use crate::tuning::projection_budget::{ProjectionKind, ProjectionShape};
 use crate::tuning::resident_gemm::{
@@ -18,6 +18,7 @@ use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::{half::bf16, prelude::*};
 pub use evidence::{Entry, Trial};
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{Buffer, DenseKernel, DenseRowsPlan, Kernels, Recording};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::cell::Cell;
@@ -90,67 +91,57 @@ impl Choice {
     }
     pub(crate) fn record(
         self,
-        scope: &Scope,
+        (contract, scope): (&Kernels, &Scope),
         weight: &Arc<Tensor<bf16>>,
-        input: &TensorView<'_, f32>,
-        output: &mut Tensor<f32>,
+        input: Buffer<'_, f32>,
+        output: &Tensor<f32>,
         columns: usize,
         tile: LinearTiling,
     ) -> StdResult<(), DeviceError> {
-        let generics = vec![
-            bf16::DTYPE.as_str().into(),
-            tile.rows().to_string(),
-            tile.columns().to_string(),
-            columns.to_string(),
-        ];
-        match self {
-            Self::Gemv => {
-                scope.record(
-                    pool_gemv::kernels::dense(output.partition([1, tile.rows()]), input, weight)
-                        .generics(generics),
-                )?;
-            }
-            Self::Shared => {
-                scope.record(
-                    batched::dense(output.partition([SHARED_ROWS, tile.rows()]), input, weight)
-                        .generics(generics),
-                )?;
-            }
-            Self::Native => {
-                scope.record(
-                    small_gemm_kernels::dense(output.partition(SMALL_GEMM_TILE), input, weight)
-                        .generics(vec![bf16::DTYPE.as_str().into(), columns.to_string()]),
-                )?;
-            }
+        let (tile_rows, tile_columns) = (tile.rows(), tile.columns());
+        let kernel = match self {
+            Self::Gemv => DenseKernel::Gemv {
+                tile_rows,
+                tile_columns,
+            },
+            Self::Shared => DenseKernel::Shared {
+                group: SHARED_ROWS,
+                tile_rows,
+                tile_columns,
+            },
+            Self::Native => DenseKernel::Native,
             Self::PromptBase | Self::PromptM64N128 | Self::PromptM32N256 | Self::PromptM128N64 => {
                 let [rows, outputs] = self.prompt_tile();
-                scope.record(
-                    gemm::dense_tile(output.partition([rows, outputs]), input, weight).generics(
-                        vec![rows.to_string(), outputs.to_string(), columns.to_string()],
-                    ),
-                )?;
+                DenseKernel::PromptTile { rows, outputs }
             }
-            Self::NativeN64 | Self::NativeN128 => {
-                let width = if self == Self::NativeN64 {
-                    NATIVE_WIDE_64
-                } else {
-                    NATIVE_WIDE_128
-                };
-                scope.record(
-                    small_gemm_kernels::dense_wide(
-                        output.partition([NATIVE_TILE_ROWS, width]),
-                        input,
-                        weight,
-                    )
-                    .generics(vec![
-                        bf16::DTYPE.as_str().into(),
-                        width.to_string(),
-                        columns.to_string(),
-                    ]),
-                )?;
-            }
-        }
-        Ok(())
+            Self::NativeN64 => DenseKernel::NativeWide {
+                rows: NATIVE_TILE_ROWS,
+                width: NATIVE_WIDE_64,
+            },
+            Self::NativeN128 => DenseKernel::NativeWide {
+                rows: NATIVE_TILE_ROWS,
+                width: NATIVE_WIDE_128,
+            },
+        };
+        let dimension = |axis: usize| {
+            usize::try_from(output.shape()[axis])
+                .map_err(|error| DeviceError::Internal(error.to_string()))
+        };
+        contract
+            .projection
+            .dense(
+                &Recording::scope(scope),
+                &DenseRowsPlan {
+                    kernel,
+                    rows: dimension(0)?,
+                    outputs: dimension(1)?,
+                    columns,
+                },
+                buffer(output)?,
+                input,
+                buffer(weight.as_ref())?,
+            )
+            .map_err(|error| DeviceError::Internal(error.to_string()))
     }
 }
 /// Only the unmeasured/disabled path retains the previously admitted selection.

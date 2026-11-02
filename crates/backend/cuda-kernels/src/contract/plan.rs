@@ -202,3 +202,114 @@ pub struct LastRowsPlan {
 
 /// Rows of the fixed three-lane pack and unpack, one per verified MTP lane.
 pub const THREE_ROWS: usize = 3;
+
+/// How activations reach FP4 codes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fp4QuantKind {
+    /// One scale search per row.
+    Whole,
+    /// Row groups in one launch.
+    RowGroups { rows: usize },
+}
+
+/// FP4 activation quantization of `[rows, columns]` into codes and block scales.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fp4QuantPlan {
+    pub kind: Fp4QuantKind,
+    pub rows: usize,
+    pub columns: usize,
+    pub codes_tile: [usize; 2],
+    pub scales_tile: [usize; 2],
+}
+
+/// How activations reach FP8 codes and their scales.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fp8QuantKind {
+    /// Row maximum and conversion in one kernel.
+    Whole,
+    /// Row maximum, then conversion over `conversion_columns` tiles.
+    Parallel {
+        conversion_columns: usize,
+        /// The preceding norm already wrote the maximum.
+        maximum_ready: bool,
+    },
+    /// One scale per `block` columns.
+    Block { block: usize },
+}
+
+/// FP8 activation quantization of `[rows, columns]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fp8QuantPlan {
+    pub kind: Fp8QuantKind,
+    pub rows: usize,
+    pub columns: usize,
+}
+
+/// Main loop of a quantized GEMM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GemmLoop {
+    Plain,
+    Prefetch,
+}
+
+/// Quantized `[rows, outputs]` GEMM over `columns` by the output tile `tile`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GemmPlan {
+    pub main_loop: GemmLoop,
+    pub rows: usize,
+    pub outputs: usize,
+    pub columns: usize,
+    pub tile: [usize; 2],
+}
+
+/// Which dense row kernel a BF16 projection records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DenseKernel {
+    /// One tile per row, by the linear tiling.
+    Gemv {
+        tile_rows: usize,
+        tile_columns: usize,
+    },
+    /// Row groups of `group`, by the linear tiling.
+    Shared {
+        group: usize,
+        tile_rows: usize,
+        tile_columns: usize,
+    },
+    /// The small-matrix tile.
+    Native,
+    /// The small-matrix kernel with `width` outputs in a tile of `rows`.
+    NativeWide { rows: usize, width: usize },
+    /// The prompt GEMM by an explicit tile.
+    PromptTile { rows: usize, outputs: usize },
+    /// The prompt GEMM over `tile`, for its measured default shape.
+    Prompt { tile: [usize; 2] },
+    /// The prompt GEMM over a tile of sixteen outputs.
+    PromptNarrow { tile: [usize; 2] },
+}
+
+/// BF16 projection of `[rows, columns]` into `[rows, outputs]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DenseRowsPlan {
+    pub kernel: DenseKernel,
+    pub rows: usize,
+    pub outputs: usize,
+    pub columns: usize,
+}
+
+/// Prompt GEMM of `[rows, columns]` over the output tile `tile`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PromptPlan {
+    pub rows: usize,
+    pub outputs: usize,
+    pub columns: usize,
+    pub tile: [usize; 2],
+}
+
+/// Split-K FP4 prompt GEMM: partial windows, then their reduction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SplitGemmPlan {
+    pub prompt: PromptPlan,
+    pub k_tiles: i32,
+    pub splits: i32,
+}

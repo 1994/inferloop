@@ -1,11 +1,11 @@
 mod dense;
-use super::{ProgramWeights, capture::error, prefill_gemm::gemm};
+use super::buffers::buffer;
+use super::{ProgramWeights, capture::error};
 use crate::constants::PREFILL_GEMM_TILE_K;
 use crate::constants::PREFILL_GEMM_TILE_N;
 use crate::constants::PREFILL_LANES;
 use crate::constants::PREFILL_NVFP4_TILE_N;
 use crate::constants::PREFILL_SPLIT_K;
-use crate::constants::SMALL_GEMM_TILE;
 use crate::constants::{DEFAULT_TILE_COLUMNS, DEFAULT_TILE_ROWS};
 use crate::device::CudaDevice;
 use crate::device::cublaslt::Support;
@@ -15,10 +15,14 @@ use crate::{device::DeviceProfile, mlp::ProjectionWeight};
 use cutile::half::bf16;
 use cutile::prelude::*;
 pub(super) use dense::DensePlan;
+use infer_cuda_kernels::contract::{
+    Bf16, Buffer, DenseKernel, DenseRowsPlan, Kernels, PromptPlan, Recording, SplitGemmPlan,
+};
 use infer_ir::TensorNode;
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::tuning::prefill::{delegate_dense, narrow_dense_layout};
 const NARROW_DENSE_TILE: [usize; 2] = [PREFILL_LANES, 16];
@@ -312,14 +316,13 @@ fn record_fused_mlp(
     let width = arena.lanes();
     let input = arena.get(gate.inputs[0]).map_err(error)?;
     let columns = input.size() / width;
-    let pointer = input.device_pointer().cu_deviceptr();
-    let input = input.view(&[width, columns]).map_err(error)?;
+    let input = buffer(input)?;
     let hidden = arena.get(gate.outputs[0]).map_err(error)?.size() / width;
     nvfp4.record_gate_up_swiglu(
-        scope,
+        (&weights.kernels, scope),
         (weight(gate)?, weight(up)?),
         (scale(gate)?, scale(down)?),
-        (&input, pointer),
+        input,
         (width, columns, hidden),
     )
 }
@@ -350,7 +353,13 @@ fn record_fused_down(
         let result =
             match nvfp4.record_vendor_down(scope, weight, scale, input, &mut output, columns) {
                 Ok(true) => Ok(()),
-                Ok(false) => nvfp4.record_prequantized(scope, weight, scale, &mut output, columns),
+                Ok(false) => nvfp4.record_prequantized(
+                    (&weights.kernels, scope),
+                    weight,
+                    scale,
+                    &output,
+                    columns,
+                ),
                 Err(error) => Err(error),
             };
         *destination = Some(output.reshape(&[flat])?);
@@ -361,8 +370,8 @@ fn record_fused_down(
         .take()
         .ok_or_else(|| error("prefill output"))?;
     let flat = output.size();
-    let mut output = output.reshape(&[width, flat / width])?;
-    nvfp4.record_prequantized(scope, weight, scale, &mut output, columns)?;
+    let output = output.reshape(&[width, flat / width])?;
+    nvfp4.record_prequantized((&weights.kernels, scope), weight, scale, &output, columns)?;
     arena.buffers[slot] = Some(output.reshape(&[flat])?);
     Ok(())
 }
@@ -391,17 +400,20 @@ fn record_swiglu(
         .take()
         .ok_or_else(|| error("prefill output"))?;
     let flat = output.size();
-    let mut output = output.reshape(&[width, flat / width])?;
+    let output = output.reshape(&[width, flat / width])?;
     let gate = arena.get(gate).map_err(error)?;
     let columns = gate.size() / width;
-    let gate = gate.view(&[width, columns]).map_err(error)?;
-    let up = arena
-        .get(up)
-        .map_err(error)?
-        .view(&[width, columns])
-        .map_err(error)?;
-    nvfp4.record_swiglu_input(scope, weight, scale, &gate, &up, &mut output, columns)?;
-    drop((gate, up));
+    let gate = buffer(gate)?;
+    let up = buffer(arena.get(up).map_err(error)?)?;
+    nvfp4.record_swiglu_input(
+        (&weights.kernels, scope),
+        weight,
+        scale,
+        gate,
+        up,
+        &output,
+        columns,
+    )?;
     arena.buffers[slot] = Some(output.reshape(&[flat])?);
     Ok(true)
 }
@@ -415,7 +427,7 @@ pub(super) fn record(
     node: &TensorNode,
     arena: &mut super::ActivationArena,
     weights: &ProgramWeights,
-    partials: &mut BTreeMap<usize, Tensor<f32>>,
+    partials: &BTreeMap<usize, Tensor<f32>>,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
     delegated: Option<&mut Support>,
 ) -> Result<(), DeviceError> {
@@ -430,90 +442,161 @@ pub(super) fn record(
     let flat = output.size();
     let mut output = output.reshape(&[width, flat / width])?;
     let flat_input = arena.get(node.inputs[0]).map_err(error)?;
-    let input_pointer = flat_input.device_pointer().cu_deviceptr();
     let columns = flat_input.size() / width;
-    let input = flat_input.view(&[width, columns]).map_err(error)?;
     let weight = weights
         .projections
         .get(&node.inputs[1])
         .ok_or_else(|| error("prefill projection"))?;
-    if super::nvfp4_gemm::record_with_input_pointer(
-        scope,
+    if super::nvfp4_gemm::record_certified(
+        (&weights.kernels, scope),
         nvfp4,
         weight,
         weights.activation_quantization(node.inputs[1]),
-        &input,
+        buffer(flat_input)?,
         &mut output,
         columns,
-        input_pointer,
     )? {
         arena.buffers[slot] = Some(output.reshape(&[flat])?);
         return Ok(());
     }
-    let generics = vec![columns.to_string()];
     match weight {
         ProjectionWeight::Fp8Block(..) => {
             return Err(error("block FP8 requires the resident FP8 GEMM"));
         }
         ProjectionWeight::Dense(w) => {
-            if records_precise_sparse(scope, weights, &input, w, &mut output, columns)? {
-                arena.buffers[slot] = Some(output.reshape(&[flat])?);
-                return Ok(());
-            }
-            // Wide projections are worth a vendor GEMM, square ones are not: `record_dense`
-            // decides from the measured shape table.
-            let rows = flat / width;
-            let dims = (width, rows, columns);
-            if records_vendor_gemm(scope, delegated, flat_input, w, &output, dims)? {
-                arena.buffers[slot] = Some(output.reshape(&[flat])?);
-                return Ok(());
-            }
-            let choice = nvfp4.prompt_dense_choice(w, [width, rows, columns]);
-            if choice == PromptChoice::PromptBase {
-                scope.record(
-                    gemm::dense(
-                        (&mut output).partition([PREFILL_LANES, PREFILL_GEMM_TILE_N]),
-                        &input,
-                        w,
-                    )
-                    .generics(generics),
-                )?;
-            } else {
-                choice.record(
-                    scope,
-                    w,
-                    &input,
-                    &mut output,
-                    columns,
-                    LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS).map_err(error)?,
-                )?;
-            }
-        }
-        ProjectionWeight::Fp8(w, scales) => {
-            scope.record(
-                gemm::fp8(
-                    (&mut output).partition([PREFILL_LANES, PREFILL_GEMM_TILE_N]),
-                    &input,
-                    w,
-                    scales,
-                )
-                .generics(generics),
+            record_prompt_dense(
+                scope,
+                weights,
+                (flat_input, w),
+                &output,
+                (width, flat / width, columns),
+                (nvfp4, delegated),
             )?;
+        }
+        ProjectionWeight::Fp8(..) => {
+            weights
+                .kernels
+                .projection
+                .prompt_fp8(
+                    &Recording::scope(scope),
+                    &PromptPlan {
+                        rows: width,
+                        outputs: flat / width,
+                        columns,
+                        tile: [PREFILL_LANES, PREFILL_GEMM_TILE_N],
+                    },
+                    buffer(&output)?,
+                    buffer(flat_input)?,
+                    weight.weight_ref()?,
+                )
+                .map_err(error)?;
         }
         ProjectionWeight::Fp4(..) => {
             record_legacy_fp4(
-                scope,
+                (&weights.kernels, scope),
                 weight,
-                &input,
-                &mut output,
+                buffer(flat_input)?,
+                &output,
                 partials,
                 (width, columns),
-                generics,
             )?;
         }
     }
     arena.buffers[slot] = Some(output.reshape(&[flat])?);
     Ok(())
+}
+
+/// Two projections of one input, each with one output.
+fn pairable(first: &TensorNode, second: &TensorNode) -> bool {
+    first.inputs.len() == 2
+        && second.inputs.len() == 2
+        && first.inputs[0] == second.inputs[0]
+        && first.outputs.len() == 1
+        && second.outputs.len() == 1
+}
+
+/// The input and output slots of a pair whose extents match, all distinct.
+fn pair_slots(
+    first: &TensorNode,
+    second: &TensorNode,
+    arena: &super::ActivationArena,
+    width: usize,
+    (rows, columns): (usize, usize),
+) -> Result<Option<(usize, usize, usize)>, DeviceError> {
+    let expected = rows
+        .checked_mul(width)
+        .ok_or_else(|| error("paired projection extent overflow"))?;
+    let input_slot = arena.slot(first.inputs[0]).map_err(error)?;
+    let input_elements = arena.buffers[input_slot]
+        .as_ref()
+        .ok_or_else(|| error("paired projection input"))?
+        .size();
+    if input_elements.checked_div(width) != Some(columns)
+        || !input_elements.is_multiple_of(width)
+        || arena.get(first.outputs[0]).map_err(error)?.size() != expected
+        || arena.get(second.outputs[0]).map_err(error)?.size() != expected
+    {
+        return Ok(None);
+    }
+    let slot_b = arena.slot(first.outputs[0]).map_err(error)?;
+    let slot_a = arena.slot(second.outputs[0]).map_err(error)?;
+    if slot_b == slot_a || slot_b == input_slot || slot_a == input_slot {
+        return Ok(None);
+    }
+    Ok(Some((input_slot, slot_b, slot_a)))
+}
+
+/// One dense prompt projection: the sparse router path, a vendor GEMM, or the measured tile.
+fn record_prompt_dense(
+    scope: &Scope,
+    weights: &ProgramWeights,
+    (input, w): (&Tensor<f32>, &Arc<Tensor<bf16>>),
+    output: &Tensor<f32>,
+    (width, rows, columns): (usize, usize, usize),
+    (nvfp4, delegated): (&super::nvfp4_gemm::Workspace, Option<&mut Support>),
+) -> Result<(), DeviceError> {
+    if records_precise_sparse(
+        (&weights.kernels, scope),
+        weights,
+        (buffer(output)?, buffer(input)?, buffer(w.as_ref())?),
+        columns,
+    )? {
+        return Ok(());
+    }
+    // Wide projections are worth a vendor GEMM, square ones are not: `record_dense` decides from
+    // the measured shape table.
+    if records_vendor_gemm(scope, delegated, input, w, output, (width, rows, columns))? {
+        return Ok(());
+    }
+    let choice = nvfp4.prompt_dense_choice(w, [width, rows, columns]);
+    if choice != PromptChoice::PromptBase {
+        return choice.record(
+            (&weights.kernels, scope),
+            w,
+            buffer(input)?,
+            output,
+            columns,
+            LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS).map_err(error)?,
+        );
+    }
+    weights
+        .kernels
+        .projection
+        .dense(
+            &Recording::scope(scope),
+            &DenseRowsPlan {
+                kernel: DenseKernel::Prompt {
+                    tile: [PREFILL_LANES, PREFILL_GEMM_TILE_N],
+                },
+                rows: width,
+                outputs: rows,
+                columns,
+            },
+            buffer(output)?,
+            buffer(input)?,
+            buffer(w.as_ref())?,
+        )
+        .map_err(error)
 }
 
 /// Record two graph-identified sibling projections in one launch, retaining each K accumulation chain.
@@ -525,13 +608,7 @@ pub(super) fn record_pair(
     arena: &mut super::ActivationArena,
     (weights, profile): (&ProgramWeights, &DeviceProfile),
 ) -> Result<bool, DeviceError> {
-    if first.inputs.len() != 2
-        || second.inputs.len() != 2
-        || first.inputs[0] != second.inputs[0]
-        || first.outputs.len() != 1
-        || second.outputs.len() != 1
-        || !weights.expert_banks.is_empty()
-    {
+    if !pairable(first, second) || !weights.expert_banks.is_empty() {
         return Ok(false);
     }
     let (Some(ProjectionWeight::Dense(weight_b)), Some(ProjectionWeight::Dense(weight_a))) = (
@@ -557,48 +634,39 @@ pub(super) fn record_pair(
     {
         return Ok(false);
     }
-    let expected = rows
-        .checked_mul(width)
-        .ok_or_else(|| error("paired projection extent overflow"))?;
-    let input_slot = arena.slot(first.inputs[0]).map_err(error)?;
-    let input_elements = arena.buffers[input_slot]
-        .as_ref()
-        .ok_or_else(|| error("paired projection input"))?
-        .size();
-    if input_elements.checked_div(width) != Some(columns)
-        || !input_elements.is_multiple_of(width)
-        || arena.get(first.outputs[0]).map_err(error)?.size() != expected
-        || arena.get(second.outputs[0]).map_err(error)?.size() != expected
-    {
+    let Some((input_slot, slot_b, slot_a)) =
+        pair_slots(first, second, arena, width, (rows, columns))?
+    else {
         return Ok(false);
-    }
-    let slot_b = arena.slot(first.outputs[0]).map_err(error)?;
-    let slot_a = arena.slot(second.outputs[0]).map_err(error)?;
-    if slot_b == slot_a || slot_b == input_slot || slot_a == input_slot {
-        return Ok(false);
-    }
+    };
     let output_b = arena.buffers[slot_b]
         .take()
         .ok_or_else(|| error("paired projection b output"))?;
     let output_a = arena.buffers[slot_a]
         .take()
         .ok_or_else(|| error("paired projection a output"))?;
-    let mut output_b = output_b.reshape(&[width, rows])?;
-    let mut output_a = output_a.reshape(&[width, rows])?;
+    let expected = rows * width;
+    let output_b = output_b.reshape(&[width, rows])?;
+    let output_a = output_a.reshape(&[width, rows])?;
     let flat_input = arena.buffers[input_slot]
         .as_ref()
         .ok_or_else(|| error("paired projection input"))?;
-    let input = flat_input.view(&[width, columns]).map_err(error)?;
-    scope.record(
-        gemm::dense_pair(
-            (&mut output_b).partition([PREFILL_LANES, PREFILL_GEMM_TILE_N]),
-            (&mut output_a).partition([PREFILL_LANES, PREFILL_GEMM_TILE_N]),
-            &input,
-            weight_b,
-            weight_a,
+    weights
+        .kernels
+        .projection
+        .dense_pair(
+            &Recording::scope(scope),
+            &PromptPlan {
+                rows: width,
+                outputs: rows,
+                columns,
+                tile: [PREFILL_LANES, PREFILL_GEMM_TILE_N],
+            },
+            (buffer(&output_b)?, buffer(&output_a)?),
+            buffer(flat_input)?,
+            (buffer(weight_b.as_ref())?, buffer(weight_a.as_ref())?),
         )
-        .generics(vec![columns.to_string()]),
-    )?;
+        .map_err(error)?;
     arena.buffers[slot_b] = Some(output_b.reshape(&[expected])?);
     arena.buffers[slot_a] = Some(output_a.reshape(&[expected])?);
     Ok(true)
@@ -606,44 +674,43 @@ pub(super) fn record_pair(
 
 /// Record the established split-K projection with its existing operands and reduction.
 fn record_legacy_fp4(
-    scope: &Scope,
+    (contract, scope): (&Kernels, &Scope),
     weight: &ProjectionWeight,
-    input: &TensorView<'_, f32>,
-    output: &mut Tensor<f32>,
-    partials: &mut BTreeMap<usize, Tensor<f32>>,
+    input: Buffer<'_, f32>,
+    output: &Tensor<f32>,
+    partials: &BTreeMap<usize, Tensor<f32>>,
     (width, columns): (usize, usize),
-    generics: Vec<String>,
 ) -> Result<(), DeviceError> {
-    let ProjectionWeight::Fp4(w, scales, global) = weight else {
-        return Err(error("legacy FP4 prompt weight"));
-    };
     if width != PREFILL_LANES {
         return Err(error("legacy FP4 split prefill requires width 32"));
     }
     let rows = output.size() / width;
     let partial = partials
-        .get_mut(&rows)
+        .get(&rows)
         .ok_or_else(|| error("prefill split partials"))?;
     let windows = columns.div_ceil(PREFILL_GEMM_TILE_K);
     let k_tiles = i32::try_from(windows.div_ceil(PREFILL_SPLIT_K))
         .map_err(|_| error("prefill split window"))?;
-    scope.record(
-        gemm::nvfp4_split(
-            partial.partition([width, PREFILL_NVFP4_TILE_N]),
+    contract
+        .projection
+        .prompt_fp4_split(
+            &Recording::scope(scope),
+            &SplitGemmPlan {
+                prompt: PromptPlan {
+                    rows: width,
+                    outputs: rows,
+                    columns,
+                    tile: [width, PREFILL_NVFP4_TILE_N],
+                },
+                k_tiles,
+                splits: i32::try_from(PREFILL_SPLIT_K).map_err(|_| error("prefill split count"))?,
+            },
+            buffer(output)?,
+            buffer(partial)?,
             input,
-            w,
-            scales,
-            k_tiles,
+            weight.weight_ref()?,
         )
-        .generics(generics),
-    )?;
-    scope.record(gemm::reduce_split(
-        output.partition([width, PREFILL_NVFP4_TILE_N]),
-        &*partial,
-        global.recip(),
-        i32::try_from(PREFILL_SPLIT_K).map_err(|_| error("prefill split count"))?,
-    ))?;
-    Ok(())
+        .map_err(error)
 }
 
 /// Whether the vendor GEMM recorded this projection instead of the tile kernel.
@@ -663,20 +730,30 @@ fn records_vendor_gemm(
 
 // Preserve F32 router inputs through a high BF16 term and a low residual term.
 fn records_precise_sparse(
-    scope: &Scope,
+    (contract, scope): (&Kernels, &Scope),
     weights: &ProgramWeights,
-    input: &TensorView<'_, f32>,
-    weight: &Tensor<bf16>,
-    output: &mut Tensor<f32>,
+    (out, input, weight): (Buffer<'_, f32>, Buffer<'_, f32>, Buffer<'_, Bf16>),
     columns: usize,
 ) -> Result<bool, DeviceError> {
     if weights.expert_banks.is_empty() {
         return Ok(false);
     }
-    scope.record(
-        super::small_gemm::kernels::dense(output.partition(SMALL_GEMM_TILE), input, weight)
-            .generics(vec![bf16::DTYPE.as_str().into(), columns.to_string()]),
-    )?;
+    let rows = input.len() / columns;
+    contract
+        .projection
+        .dense(
+            &Recording::scope(scope),
+            &DenseRowsPlan {
+                kernel: DenseKernel::Native,
+                rows,
+                outputs: out.len() / rows,
+                columns,
+            },
+            out,
+            input,
+            weight,
+        )
+        .map_err(error)?;
     Ok(true)
 }
 
@@ -725,17 +802,14 @@ pub(super) fn record_narrow(
     let output = arena.buffers[output_slot]
         .take()
         .ok_or_else(|| error("control projection output"))?;
-    let mut output = output.reshape(&[width, rows])?;
+    let output = output.reshape(&[width, rows])?;
     let input = arena.buffers[input_slot]
         .as_ref()
         .ok_or_else(|| error("control projection input"))?;
-    let input = input.view(&[width, columns]).map_err(error)?;
     let recorded = records_narrow_dense(
-        scope,
+        (&weights.kernels, scope),
         profile,
-        &input,
-        weight,
-        &mut output,
+        (buffer(&output)?, buffer(input)?, buffer(weight.as_ref())?),
         (width, rows, columns),
     );
     arena.buffers[output_slot] = Some(output.reshape(&[expected])?);
@@ -743,11 +817,9 @@ pub(super) fn record_narrow(
 }
 
 fn records_narrow_dense(
-    scope: &Scope,
+    (contract, scope): (&Kernels, &Scope),
     profile: &DeviceProfile,
-    input: &TensorView<'_, f32>,
-    weight: &Tensor<bf16>,
-    output: &mut Tensor<f32>,
+    (out, input, weight): (Buffer<'_, f32>, Buffer<'_, f32>, Buffer<'_, Bf16>),
     shape: (usize, usize, usize),
 ) -> Result<bool, DeviceError> {
     #[cfg(test)]
@@ -757,10 +829,23 @@ fn records_narrow_dense(
     if !narrow_dense_layout(&profile.architecture, shape) {
         return Ok(false);
     }
-    scope.record(
-        gemm::dense_n16(output.partition(NARROW_DENSE_TILE), input, weight)
-            .generics(vec![shape.2.to_string()]),
-    )?;
+    contract
+        .projection
+        .dense(
+            &Recording::scope(scope),
+            &DenseRowsPlan {
+                kernel: DenseKernel::PromptNarrow {
+                    tile: NARROW_DENSE_TILE,
+                },
+                rows: shape.0,
+                outputs: shape.1,
+                columns: shape.2,
+            },
+            out,
+            input,
+            weight,
+        )
+        .map_err(error)?;
     #[cfg(test)]
     NARROW_DENSE_CAPTURES.set(NARROW_DENSE_CAPTURES.get() + 1);
     Ok(true)
