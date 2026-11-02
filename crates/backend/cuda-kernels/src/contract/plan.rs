@@ -288,6 +288,13 @@ pub enum DenseKernel {
     PromptNarrow { tile: [usize; 2] },
 }
 
+/// Token embedding lookup, or the external input when `external` and the metadata asks for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EmbeddingPlan {
+    pub dimension: usize,
+    pub external: bool,
+}
+
 /// BF16 projection of `[rows, columns]` into `[rows, outputs]`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DenseRowsPlan {

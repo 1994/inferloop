@@ -2,9 +2,10 @@
 
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::plan::{
-    BinaryOp, DenseRowsPlan, DownPlan, ExpertPlan, Fp4QuantPlan, Fp8QuantPlan, FusionNormPlan,
-    GemmPlan, GreedyPlan, LastRowsPlan, NormPlan, PoolGemvPlan, PromptPlan, QuantNormPlan,
-    RopePlan, RoutePlan, RowNormPlan, RowsPlan, SplitGemmPlan, SplitPlan, THREE_ROWS, UnaryOp,
+    BinaryOp, DenseRowsPlan, DownPlan, EmbeddingPlan, ExpertPlan, Fp4QuantPlan, Fp8QuantPlan,
+    FusionNormPlan, GemmPlan, GreedyPlan, LastRowsPlan, NormPlan, PoolGemvPlan, PromptPlan,
+    QuantNormPlan, RopePlan, RoutePlan, RowNormPlan, RowsPlan, SplitGemmPlan, SplitPlan,
+    THREE_ROWS, UnaryOp,
 };
 use crate::contract::recording::Recording;
 use infer_core::Result;
@@ -95,6 +96,19 @@ pub trait Projection: Send + Sync {
         out: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
         w: Buffer<'_, Bf16>,
+    ) -> Result<()>;
+
+    /// One token's embedding row, or the external input the plan allows.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn embedding(
+        &self,
+        recording: &Recording<'_>,
+        plan: &EmbeddingPlan,
+        out: Buffer<'_, f32>,
+        weight: Buffer<'_, Bf16>,
+        external: Buffer<'_, f32>,
+        metadata: Buffer<'_, i32>,
     ) -> Result<()>;
 
     /// Two prompt BF16 projections of one input in one launch.

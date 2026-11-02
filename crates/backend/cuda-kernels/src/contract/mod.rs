@@ -14,11 +14,11 @@ pub use kernels::{
     State, WeightRef,
 };
 pub use plan::{
-    BinaryOp, DenseKernel, DenseRowsPlan, DownPlan, ExpertPlan, Fp4QuantKind, Fp4QuantPlan,
-    Fp8QuantKind, Fp8QuantPlan, FusionNormPlan, FusionShape, GemmLoop, GemmPlan, GreedyPlan,
-    LastRowsKind, LastRowsPlan, NormLayout, NormPlan, PoolGemvPlan, PromptPlan, QuantNormPlan,
-    RopeMode, RopePlan, RoutePlan, RowNormPlan, RowsKernel, RowsPlan, SplitGemmPlan, SplitPlan,
-    THREE_ROWS, UnaryOp,
+    BinaryOp, DenseKernel, DenseRowsPlan, DownPlan, EmbeddingPlan, ExpertPlan, Fp4QuantKind,
+    Fp4QuantPlan, Fp8QuantKind, Fp8QuantPlan, FusionNormPlan, FusionShape, GemmLoop, GemmPlan,
+    GreedyPlan, LastRowsKind, LastRowsPlan, NormLayout, NormPlan, PoolGemvPlan, PromptPlan,
+    QuantNormPlan, RopeMode, RopePlan, RoutePlan, RowNormPlan, RowsKernel, RowsPlan, SplitGemmPlan,
+    SplitPlan, THREE_ROWS, UnaryOp,
 };
 pub use recording::Recording;
 pub use target::Arch;

@@ -1,10 +1,8 @@
 use super::{
     ActivationArena, ProgramWeights,
-    attention::attention,
     buffers::{buffer, region},
     program::FusionWeights,
 };
-use crate::constants::AUX_KERNEL_TILE;
 use crate::constants::CB_DECODE_SLOTS;
 use crate::constants::DEFAULT_TILE_COLUMNS;
 use crate::constants::DEFAULT_TILE_ROWS;
@@ -22,8 +20,8 @@ use cutile::prelude::*;
 use cutile::tile_kernel::CompileOptions;
 use infer_core::TensorId;
 use infer_cuda_kernels::contract::{
-    BinaryOp, Buffer, FusionNormBuffers, FusionNormPlan, FusionShape, Kernels, NormBuffers,
-    NormLayout, NormPlan, Recording, SplitPlan, UnaryOp,
+    Bf16, BinaryOp, Buffer, EmbeddingPlan, FusionNormBuffers, FusionNormPlan, FusionShape, Kernels,
+    NormBuffers, NormLayout, NormPlan, Recording, SplitPlan, UnaryOp,
 };
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::collections::BTreeMap;
@@ -85,6 +83,26 @@ fn identity(tensor: &Tensor<f32>) -> Result<TensorView<'_, f32>, DeviceError> {
 
 /// A draft's embedding and hidden rows through their fusion norm; the reduction width follows
 /// the dimension alone.
+fn record_embedding(
+    scope: &Scope,
+    kernels: &Kernels,
+    plan: &EmbeddingPlan,
+    (output, weight): (Buffer<'_, f32>, Buffer<'_, Bf16>),
+    (external, metadata): (Buffer<'_, f32>, Buffer<'_, i32>),
+) -> Result<(), DeviceError> {
+    kernels
+        .projection
+        .embedding(
+            &Recording::scope(scope),
+            plan,
+            output,
+            weight,
+            external,
+            metadata,
+        )
+        .map_err(error)
+}
+
 fn record_fusion_norm(
     scope: &Scope,
     kernels: &Kernels,
@@ -277,7 +295,7 @@ impl Capture<'_> {
                     .map_err(error)?;
             }
             TensorOp::Embedding => {
-                self.embedding(node, &mut output)?;
+                self.embedding(node, &output)?;
             }
             TensorOp::Linear => {
                 output = self.linear(node, output)?;
@@ -426,11 +444,7 @@ impl Capture<'_> {
         Ok(output)
     }
 
-    fn embedding(
-        &mut self,
-        node: &TensorNode,
-        output: &mut Tensor<f32>,
-    ) -> Result<(), DeviceError> {
+    fn embedding(&mut self, node: &TensorNode, output: &Tensor<f32>) -> Result<(), DeviceError> {
         let dimension = output.size();
         if self.weights.fusion.is_some() {
             let normalized = self.fusion_input(node, dimension)?;
@@ -442,7 +456,7 @@ impl Capture<'_> {
             fusion.projection.record(
                 &self.weights.kernels,
                 self.scope,
-                &*output,
+                output,
                 &normalized,
                 2 * dimension,
                 fusion.tiling,
@@ -457,14 +471,15 @@ impl Capture<'_> {
                 .embeddings
                 .get(&node.inputs[0])
                 .ok_or_else(|| error("missing device embedding"))?;
-            self.scope.record(
-                attention::embedding(
-                    output.partition([AUX_KERNEL_TILE]),
-                    weight,
-                    self.external,
-                    self.metadata,
-                )
-                .generics(vec![dimension.to_string(), "1".into()]),
+            record_embedding(
+                self.scope,
+                &self.weights.kernels,
+                &EmbeddingPlan {
+                    dimension,
+                    external: true,
+                },
+                (buffer(output)?, buffer(weight.as_ref())?),
+                (buffer(self.external)?, buffer(self.metadata)?),
             )?;
         }
         Ok(())
@@ -490,14 +505,15 @@ impl Capture<'_> {
             .fusion
             .as_mut()
             .ok_or_else(|| error("missing fusion workspace"))?;
-        self.scope.record(
-            attention::embedding(
-                (&mut work.embedding).partition([AUX_KERNEL_TILE]),
-                weight,
-                self.external,
-                self.metadata,
-            )
-            .generics(vec![dimension.to_string(), "0".into()]),
+        record_embedding(
+            self.scope,
+            &self.weights.kernels,
+            &EmbeddingPlan {
+                dimension,
+                external: false,
+            },
+            (buffer(&work.embedding)?, buffer(weight.as_ref())?),
+            (buffer(self.external)?, buffer(self.metadata)?),
         )?;
         let normalized = work
             .normalized

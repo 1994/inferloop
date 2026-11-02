@@ -5,12 +5,10 @@ use crate::device::{CudaDevice, vendor_fp8::nvfp4};
 use crate::mlp::ProjectionWeight;
 use crate::resident::arena::{Fp4Output, Fp4Scratch};
 use crate::resident::capture::error;
-use crate::resident::nvfp4_gemm::kernels;
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use crate::tuning::resident_gemm::{GemmConfig, WeightKey};
-use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::projection::fp4_probe::{self, ProbeGeometry};
 
 impl Workspace {
     #[expect(
@@ -74,7 +72,19 @@ impl Workspace {
             return Ok(());
         };
         if candidate.needs_probe() {
-            initialize(device, scratch.floats(), (q, qs), scale, columns)?;
+            fp4_probe::initialize(
+                &device.stream,
+                scratch.floats(),
+                (q, qs),
+                scale,
+                ProbeGeometry {
+                    rows: QUANTIZATION_ROWS,
+                    columns,
+                    code_tile: NVFP4_QUANT_CODES_TILE[1],
+                    scale_tile: NVFP4_QUANT_SCALES_TILE[1],
+                },
+            )
+            .map_err(error)?;
         }
         self.vendor_fp4.prepare(
             nvfp4::Operands {
@@ -129,32 +139,4 @@ impl Workspace {
             },
         )
     }
-}
-fn initialize(
-    device: &CudaDevice,
-    input: &mut Tensor<f32>,
-    (q, qs): (&mut Tensor<f4e2m1fnx2>, &mut Tensor<f8e4m3fn>),
-    scale: f32,
-    columns: usize,
-) -> Result<(), DeviceError> {
-    let graph = Graph::scope(&device.stream, |scope| {
-        scope.record(
-            nvfp4::probe_input(
-                (&mut *input).partition([QUANTIZATION_ROWS, NVFP4_QUANT_CODES_TILE[1] * 2]),
-            )
-            .generics(vec![columns.to_string()]),
-        )?;
-        scope.record(
-            kernels::quantize_rows(
-                (&mut *q).partition([QUANTIZATION_ROWS, NVFP4_QUANT_CODES_TILE[1]]),
-                (&mut *qs).partition([QUANTIZATION_ROWS, NVFP4_QUANT_SCALES_TILE[1]]),
-                &*input,
-                scale,
-            )
-            .generics(vec![columns.to_string()]),
-        )?;
-        Ok(())
-    })?;
-    graph.launch().sync_on(&device.stream)?;
-    Ok(())
 }

@@ -6,16 +6,20 @@ use super::{
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::kernels::{Projection, WeightRef};
 use crate::contract::plan::{
-    DenseKernel, DenseRowsPlan, DownPlan, Fp4QuantKind, Fp4QuantPlan, Fp8QuantKind, Fp8QuantPlan,
-    GemmLoop, GemmPlan, LastRowsKind, LastRowsPlan, PoolGemvPlan, PromptPlan, RowsKernel, RowsPlan,
-    SplitGemmPlan, THREE_ROWS,
+    DenseKernel, DenseRowsPlan, DownPlan, EmbeddingPlan, Fp4QuantKind, Fp4QuantPlan, Fp8QuantKind,
+    Fp8QuantPlan, GemmLoop, GemmPlan, LastRowsKind, LastRowsPlan, PoolGemvPlan, PromptPlan,
+    RowsKernel, RowsPlan, SplitGemmPlan, THREE_ROWS,
 };
 use crate::contract::recording::Recording;
+use crate::tile::attention::attention as attention_model;
 use crate::tile::{backend_error, borrowed, capture_scope};
 use cuda_core::{DType, f4e2m1fnx2, f8e4m3fn};
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+
+/// Elements of an embedding row a tile covers.
+const EMBEDDING_TILE: usize = 256;
 
 /// Elements one FP4 scale covers.
 const FP4_GROUP: usize = 16;
@@ -254,6 +258,47 @@ impl Projection for TileProjection {
                 .map(drop),
         }
         .map_err(backend_error)
+    }
+
+    fn embedding(
+        &self,
+        recording: &Recording<'_>,
+        plan: &EmbeddingPlan,
+        out: Buffer<'_, f32>,
+        weight: Buffer<'_, Bf16>,
+        external: Buffer<'_, f32>,
+        metadata: Buffer<'_, i32>,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let EmbeddingPlan {
+            dimension,
+            external: allow_external,
+        } = *plan;
+        let mut out = self.flat(recording, out)?;
+        let vocabulary = weight.len() / dimension.max(1);
+        let weight = self.matrix(
+            recording,
+            retyped_bf16(weight),
+            "embedding weight",
+            (vocabulary, dimension),
+        )?;
+        let external = self.flat(recording, external)?;
+        let metadata = self.flat(recording, metadata)?;
+        scope
+            .record(
+                attention_model::embedding(
+                    (&mut out).partition([EMBEDDING_TILE]),
+                    &weight,
+                    &external,
+                    &metadata,
+                )
+                .generics(vec![
+                    dimension.to_string(),
+                    u8::from(allow_external).to_string(),
+                ]),
+            )
+            .map(drop)
+            .map_err(backend_error)
     }
 
     fn dense_pair(
