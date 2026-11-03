@@ -572,6 +572,11 @@ pub trait State: Send + Sync {
         out: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
     ) -> Result<()>;
+
+    /// Zero every byte of `out`, a partial tile included.
+    /// # Errors
+    /// Fails when the clear is rejected.
+    fn clear(&self, recording: &Recording<'_>, out: Buffer<'_, f32>) -> Result<()>;
 }
 
 /// An expert bank's weight, in the storage its checkpoint uses.
