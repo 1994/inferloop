@@ -1,4 +1,6 @@
 //! Model-declared W4A4 projection with block-16 E4M3 activation scales.
+#[cfg(test)]
+pub use infer_cuda_kernels::tile::projection::nvfp4_gemm as kernels;
 mod quant_reuse;
 mod workspace;
 use crate::mlp::ProjectionWeight as MlpProjectionWeight;
@@ -6,7 +8,6 @@ use cutile::prelude::DeviceError;
 use cutile::prelude::Scope;
 use cutile::prelude::Tensor as PreludeTensor;
 use infer_cuda_kernels::contract::{Buffer, Kernels};
-pub use infer_cuda_kernels::tile::projection::nvfp4_gemm as kernels;
 pub use quant_reuse::QuantPairPlan;
 #[cfg(test)]
 pub use quant_reuse::with_quant_reuse_disabled;

@@ -1,4 +1,5 @@
 //! Row-independent F32 GEMV with the original private accumulation and reduction tree.
+#[cfg(test)]
 pub use infer_cuda_kernels::tile::projection::pool_gemv as kernels;
 
 use super::buffers::buffer;

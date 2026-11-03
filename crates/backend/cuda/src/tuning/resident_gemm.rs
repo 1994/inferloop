@@ -11,7 +11,6 @@ use crate::constants::PROMPT_GEMM_TILE_ROWS;
 use crate::constants::QUANT_GEMM_TILE;
 use crate::constants::WIDE_PROMPT_GEMM_TILE_ROWS;
 use crate::device::vendor_fp8::nvfp4::ModelCache;
-use crate::resident::nvfp4_gemm::kernels;
 use crate::resident::tensor_buffer as buffer;
 use crate::tuning::preparation::driver_build;
 use crate::{
@@ -29,6 +28,7 @@ use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Fp4QuantKind, Fp4QuantPlan, GemmLoop, GemmPlan, Kernels, Recording,
 };
+use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::runtime::Graph;
 use serde::{Deserialize, Serialize};
 use std::env::var_os;
@@ -589,68 +589,17 @@ fn kernel_fingerprint(device: &CudaDevice, shape: [usize; GEMM_RANK]) -> Result<
     if let Some(value) = cached {
         return Ok(value);
     }
-    let [m, n, k] = shape;
-    let input = api::meta::<f32>(&[m, k])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut packed = api::meta::<f4e2m1fnx2>(&[m, k / 2])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut scales = api::meta::<f8e4m3fn>(&[m, k / NVFP4_GROUP_SIZE])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let weight = api::meta::<f4e2m1fnx2>(&[n, k / 2])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let weight_scales = api::meta::<f8e4m3fn>(&[n, k / NVFP4_GROUP_SIZE])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut output = api::meta::<f32>(&[m, n])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut identities = vec![
-        kernels::quantize(
-            (&mut packed).partition(NVFP4_QUANT_CODES_TILE),
-            (&mut scales).partition(NVFP4_QUANT_SCALES_TILE),
-            &input,
-            1.0,
-        )
-        .generics(vec![k.to_string()])
-        .l2_cache_key_on(&device.stream)
-        .map_err(device_error)?,
-    ];
-    for tile_m in TILE_M_SEARCH {
-        for tile_n in TILE_N_SEARCH {
-            for main_loop in LOOP_SEARCH {
-                let tile = [tile_m, tile_n];
-                let generics = vec![k.to_string(), tile_m.to_string(), tile_n.to_string()];
-                let identity = match main_loop {
-                    MainLoop::Plain => kernels::packed(
-                        (&mut output).partition(tile),
-                        &packed,
-                        &scales,
-                        &weight,
-                        &weight_scales,
-                        1.0,
-                    )
-                    .generics(generics)
-                    .l2_cache_key_on(&device.stream),
-                    MainLoop::Prefetch8 => kernels::packed_prefill(
-                        (&mut output).partition(tile),
-                        &packed,
-                        &scales,
-                        &weight,
-                        &weight_scales,
-                        1.0,
-                    )
-                    .generics(generics)
-                    .l2_cache_key_on(&device.stream),
-                }
-                .map_err(device_error)?;
-                identities.push(identity);
-            }
-        }
-    }
+    let identities = identity::fp4_candidates(
+        &device.stream,
+        shape,
+        identity::Fp4Search {
+            group: NVFP4_GROUP_SIZE,
+            codes_tile: NVFP4_QUANT_CODES_TILE,
+            scales_tile: NVFP4_QUANT_SCALES_TILE,
+            tile_m: &TILE_M_SEARCH,
+            tile_n: &TILE_N_SEARCH,
+        },
+    )?;
     let fingerprint = serde_json::to_string(&identities).map_err(device_error)?;
     memo.lock()
         .map_err(|_| Error::invariant("kernel identity cache poisoned"))?

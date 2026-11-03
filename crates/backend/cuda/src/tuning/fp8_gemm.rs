@@ -18,7 +18,6 @@ use crate::tuning::resident_gemm::prompt_tile_rows;
 use crate::{
     device::{CudaDevice, device_error, vendor_fp8},
     mlp::ProjectionWeight,
-    resident::fp8_gemm::kernels,
 };
 use cuda_core::f8e4m3fn;
 use cutile::cutile_compiler::hints::CompileOptions;
@@ -31,6 +30,7 @@ use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, Kernels, Recording, WeightRef,
 };
+use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::runtime::Graph;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -380,63 +380,13 @@ fn fingerprint(device: &CudaDevice, shape: [usize; GEMM_RANK]) -> Result<String>
     if let Some(value) = remembered {
         return Ok(value);
     }
-    let [rows, outputs, columns] = shape;
-    let input = api::meta::<f32>(&[rows, columns])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut codes = api::meta::<f8e4m3fn>(&[rows, columns])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut xs = api::meta::<f32>(&[rows, 1])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let weight_codes = api::meta::<f8e4m3fn>(&[outputs, columns])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let ws = api::meta::<f32>(&[outputs])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut out = api::meta::<f32>(&[rows, outputs])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut ids = vec![
-        kernels::quantize(
-            (&mut codes).partition([1, columns.next_power_of_two()]),
-            (&mut xs).partition([1, 1]),
-            &input,
-        )
-        .generics(vec![
-            columns.to_string(),
-            columns.next_power_of_two().to_string(),
-        ])
-        .l2_cache_key_on(&device.stream)
-        .map_err(device_error)?,
-    ];
-    for tile_m in ROW_TILES {
-        for tile_n in COLUMN_TILES {
-            ids.push(
-                kernels::matmul(
-                    (&mut out).partition([tile_m, tile_n]),
-                    &codes,
-                    &weight_codes,
-                    &xs,
-                    &ws,
-                )
-                .generics(vec![
-                    columns.to_string(),
-                    tile_m.to_string(),
-                    tile_n.to_string(),
-                ])
-                .l2_cache_key_on(&device.stream)
-                .map_err(device_error)?,
-            );
-        }
-    }
-    ids.push(
-        vendor_fp8::kernels::scale((&mut out).partition([1, AUX_KERNEL_TILE]), &xs, &ws)
-            .l2_cache_key_on(&device.stream)
-            .map_err(device_error)?,
-    );
+    let ids = identity::fp8_candidates(
+        &device.stream,
+        shape,
+        &ROW_TILES,
+        &COLUMN_TILES,
+        AUX_KERNEL_TILE,
+    )?;
     let value = serde_json::to_string(&ids).map_err(device_error)?;
     cache
         .lock()

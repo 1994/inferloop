@@ -3,6 +3,7 @@ use super::{
     SHAPE_RANK,
     reference::{Fixture, maximum_error},
 };
+use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::env::var_os;
 
@@ -105,69 +106,7 @@ impl Captured {
     }
 }
 fn kernel_identities(device: &CudaDevice, shape: [usize; SHAPE_RANK]) -> Result<Vec<String>> {
-    let [kh, vh, dim, lanes] = shape;
-    let qkv = api::meta::<f32>(&[lanes, 2 * kh + vh, dim])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let beta = api::meta::<f32>(&[lanes, vh])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let alpha = api::meta::<f32>(&[lanes, vh])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let a_log = api::meta::<f32>(&[vh])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let bias = api::meta::<f32>(&[vh])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let metadata = api::meta::<i32>(&[METADATA_LEN])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut state = api::meta::<f32>(&[vh, dim, dim])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut scratch = api::meta::<f32>(&[vh, lanes, dim])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut output = api::meta::<f32>(&[lanes, vh, dim])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut identities = Vec::new();
-    for split in FINGERPRINT_SPLITS {
-        let block = dim / split;
-        identities.push(
-            kernels::delta_wy(
-                (&mut state).partition([1, dim, block]),
-                (&mut scratch).partition([1, lanes, block]),
-                &qkv,
-                &beta,
-                &alpha,
-                &a_log,
-                &bias,
-                &metadata,
-            )
-            .generics(vec![
-                kh.to_string(),
-                vh.to_string(),
-                dim.to_string(),
-                lanes.to_string(),
-                block.to_string(),
-            ])
-            .l2_cache_key_on(&device.stream)
-            .map_err(device_error)?,
-        );
-    }
-    identities.push(
-        kernels::transpose((&mut output).partition([1, 1, dim]), &scratch)
-            .generics(vec![dim.to_string()])
-            .l2_cache_key_on(&device.stream)
-            .map_err(device_error)?,
-    );
-    if identities.iter().any(String::is_empty) {
-        return Err(Error::invalid("incomplete WY kernel identity"));
-    }
-    Ok(identities)
+    identity::recurrent_wy(&device.stream, shape, &FINGERPRINT_SPLITS)
 }
 
 pub(super) fn fingerprint(device: &CudaDevice, shape: [usize; SHAPE_RANK]) -> Result<String> {

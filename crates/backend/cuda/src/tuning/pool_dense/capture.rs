@@ -1,5 +1,6 @@
 //! Own every temporary until the captured graph is destroyed.
 use super::{Choice, Key};
+use crate::constants::SMALL_GEMM_TILE;
 use crate::device::{CudaDevice, device_error};
 use crate::resident::tensor_buffer;
 use crate::strategy::LinearTiling;
@@ -9,6 +10,7 @@ use crate::tuning::resident_gemm::{ResidentGemmKey, kernel_environment};
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::{half::bf16, prelude::*};
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -170,91 +172,34 @@ pub(super) fn key(
     })
 }
 fn prompt_fingerprint(device: &CudaDevice, shape: ProjectionShape) -> Result<String> {
-    use crate::resident::prefill_gemm::gemm;
-    let [m, n, k] = shape;
-    let input = api::meta::<f32>(&[m, k])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let weight = api::meta::<bf16>(&[n, k])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut output = api::meta::<f32>(&[m, n])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut identities = Vec::new();
-    for choice in [
+    let tiles = [
         Choice::PromptBase,
         Choice::PromptM64N128,
         Choice::PromptM32N256,
         Choice::PromptM128N64,
-    ] {
-        let [rows, outputs] = choice.prompt_tile();
-        identities.push(
-            gemm::dense_tile((&mut output).partition([rows, outputs]), &input, &weight)
-                .generics(vec![rows.to_string(), outputs.to_string(), k.to_string()])
-                .l2_cache_key_on(&device.stream)
-                .map_err(device_error)?,
-        );
-    }
+    ]
+    .map(Choice::prompt_tile);
+    let identities = identity::dense_prompt_candidates(&device.stream, shape, &tiles)?;
     serde_json::to_string(&identities).map_err(device_error)
 }
 fn fingerprint(device: &CudaDevice, shape: ProjectionShape, tile: LinearTiling) -> Result<String> {
-    use crate::constants::SMALL_GEMM_TILE;
-    use crate::resident::{linear_batch::batched, pool_gemv, small_gemm_kernels};
-    let [m, n, k] = shape;
-    let input = api::meta::<f32>(&[m, k])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let weight = api::meta::<bf16>(&[n, k])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut output = api::meta::<f32>(&[m, n])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let generics = vec![
-        bf16::DTYPE.as_str().into(),
-        tile.rows().to_string(),
-        tile.columns().to_string(),
-        k.to_string(),
-    ];
-    let gemv =
-        pool_gemv::kernels::dense((&mut output).partition([1, tile.rows()]), &input, &weight)
-            .generics(generics.clone())
-            .l2_cache_key_on(&device.stream)
-            .map_err(device_error)?;
-    let shared = batched::dense(
-        (&mut output).partition([super::SHARED_ROWS, tile.rows()]),
-        &input,
-        &weight,
-    )
-    .generics(generics)
-    .l2_cache_key_on(&device.stream)
-    .map_err(device_error)?;
-    let native =
-        small_gemm_kernels::dense((&mut output).partition(SMALL_GEMM_TILE), &input, &weight)
-            .generics(vec![bf16::DTYPE.as_str().into(), k.to_string()])
-            .l2_cache_key_on(&device.stream)
-            .map_err(device_error)?;
-    let mut identities = vec![gemv, shared, native];
-    // Wider tiles are candidates only outside the qualified family, whose identity stays frozen.
-    if !super::supported(shape) {
-        for width in [super::NATIVE_WIDE_64, super::NATIVE_WIDE_128] {
-            identities.push(
-                small_gemm_kernels::dense_wide(
-                    (&mut output).partition([super::NATIVE_TILE_ROWS, width]),
-                    &input,
-                    &weight,
-                )
-                .generics(vec![
-                    bf16::DTYPE.as_str().into(),
-                    width.to_string(),
-                    k.to_string(),
-                ])
-                .l2_cache_key_on(&device.stream)
-                .map_err(device_error)?,
-            );
-        }
-    }
+    let wide: &[usize] = if super::supported(shape) {
+        &[]
+    } else {
+        &[super::NATIVE_WIDE_64, super::NATIVE_WIDE_128]
+    };
+    let identities = identity::dense_candidates(
+        &device.stream,
+        shape,
+        identity::DenseSearch {
+            tile_rows: tile.rows(),
+            tile_columns: tile.columns(),
+            shared_rows: super::SHARED_ROWS,
+            native_tile: SMALL_GEMM_TILE,
+            wide_rows: super::NATIVE_TILE_ROWS,
+            wide,
+        },
+    )?;
     serde_json::to_string(&identities).map_err(device_error)
 }
 
