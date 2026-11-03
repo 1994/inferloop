@@ -171,6 +171,7 @@ impl CudaExecutor {
     pub(super) fn prepare_execution(&mut self) -> Result<()> {
         self.ensure_slot_pool();
         for state in self.states.values_mut() {
+            state.program.release_retired_verification();
             if !state.poisoned {
                 state.prepare_verification(&self.loaded)?;
             }
@@ -1195,7 +1196,7 @@ async fn slot_replay(
             rows,
             device,
         )?;
-        state.program.discard_verification();
+        state.program.retire_verification();
         // Only a serial-priced admission charged for private verification storage; crediting
         // a pooled price with released bytes it never included would underflow the account.
         let credit = if state.verification_priced {
@@ -1686,7 +1687,7 @@ impl Sequence {
             let position = self.history.len() + offset;
             let last = offset + count == tokens.len();
             let read_logits = last && readout != OutputReadout::None;
-            let device_prime = speculate && count > 1 && self.readout != OutputReadout::Full;
+            let device_prime = speculate && self.primes_on_device(count);
             let read_hidden = self.readout == OutputReadout::Full || (speculate && !device_prime);
             let results = if count > 1 || ingest {
                 super::profiling::phase_async("prefill_chunk", async {
@@ -1993,6 +1994,14 @@ impl Sequence {
             },
             tokens: Vec::new(),
         }
+    }
+
+    /// Only a prompt graph writes its rows to one tensor; a private verification graph keeps one
+    /// tensor per lane, so its chunks prime the draft through the host.
+    fn primes_on_device(&self, count: usize) -> bool {
+        count > 1
+            && self.readout != OutputReadout::Full
+            && self.program.prompt_hidden(count).is_some()
     }
 
     /// Prime the draft with the device hidden rows the target's prompt chunk just wrote.

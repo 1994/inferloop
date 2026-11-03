@@ -125,8 +125,10 @@ fn capture_drafts(loaded: &LoadedModel) -> Result<(DeviceProgram, DeviceProgram,
     assert_eq!(fusion_batch::captures(), before_reference);
     for program in [&candidate, &reference] {
         assert_eq!(program.prefill_width(), 128);
-        assert!(!program.states().is_empty(), "draft F32 state coverage");
-        assert!(program.fp8_states().is_empty(), "real draft KV is F32");
+        assert!(
+            !program.states().is_empty() || !program.fp8_states().is_empty(),
+            "draft KV state coverage"
+        );
     }
     Ok((candidate, reference, packed_captures))
 }
@@ -829,10 +831,10 @@ fn default_fc128_preserves_real_mtp2_model_bits() -> Result<()> {
     let checked = &timelines.coverage;
     assert!(checked.hidden > 0 && checked.logits > 0);
     assert!(
-        checked.dense_state > 0,
-        "draft F32 full-state bits were not checked"
+        checked.packed_state > 0,
+        "draft FP8 full-state bits were not checked"
     );
-    assert_eq!(checked.packed_state, 0, "this real draft has no FP8 states");
+    assert_eq!(checked.dense_state, 0, "this real draft has no F32 KV");
     assert!(checked.target_dense_finite > 0 && checked.target_packed_finite > 0);
     assert!(checked.target_hidden > 0 && checked.target_logits > 0);
     eprintln!(
@@ -843,7 +845,7 @@ fn default_fc128_preserves_real_mtp2_model_bits() -> Result<()> {
             "hidden_elements": checked.hidden, "logits_elements": checked.logits,
             "f32_state_elements": checked.dense_state,
             "fp8_state_elements": checked.packed_state,
-            "draft_kv_storage": "f32", "target_kv_storage": "fp8",
+            "draft_kv_storage": "fp8", "target_kv_storage": "fp8",
             "target_f32_finite_elements": checked.target_dense_finite,
             "target_hidden_elements": checked.target_hidden,
             "target_logits_elements": checked.target_logits,

@@ -27,6 +27,7 @@ use crate::{
 use cutile::{half::bf16, prelude::*};
 pub use geometry::ProgramGeometry;
 use infer_core::{Error, Result, TensorId};
+use infer_cuda_kernels::tile::state::load_rotary;
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
 use std::collections::BTreeMap;
 
@@ -214,6 +215,8 @@ pub struct DeviceProgram {
     /// Slot target handles own state views and reset only; their forward runs in the pool.
     forward_captured: bool,
     batch: Option<super::batch::BatchGraph>,
+    /// Discarded on the submission path, freed at the next control point.
+    retired_verification: Option<super::batch::BatchGraph>,
     last_batch: Option<(usize, usize)>,
     /// Prompt graphs, narrowest first; a chunk replays on the narrowest that holds it.
     prompts: Vec<super::batch::BatchGraph>,
@@ -446,9 +449,18 @@ impl DeviceProgram {
     /// A leased sequence verifies through the shared pool. Its private rollback
     /// graph is idle and can be rebuilt if the sequence later returns to serial use.
     pub(crate) fn discard_verification(&mut self) -> bool {
-        if self.batch.take().is_none() {
+        let discarded = self.retire_verification();
+        self.release_retired_verification();
+        discarded
+    }
+
+    /// Discard the private verification on the submission path. Freeing its pinned staging
+    /// waits for the GPU to go idle, so the graph stays parked until the next control point.
+    pub(crate) fn retire_verification(&mut self) -> bool {
+        let Some(graph) = self.batch.take() else {
             return false;
-        }
+        };
+        self.retired_verification = Some(graph);
         self.last_batch = None;
         let before = self.reclaimable_bytes;
         let state_bytes = self
@@ -467,6 +479,11 @@ impl DeviceProgram {
             state_bytes + packed_bytes + self.activation_bytes as u64 * (1 + prompt) as u64;
         self.released_verification_bytes = before - self.reclaimable_bytes;
         true
+    }
+
+    /// Free a parked verification graph; only call this with no work in flight.
+    pub(crate) fn release_retired_verification(&mut self) {
+        self.retired_verification = None;
     }
 
     /// Remove private verification before pooled reuse. Cached admission retains its old
@@ -675,17 +692,22 @@ impl DeviceProgram {
     }
 
     /// Zeroed decode metadata tensor and external hidden row shared by every capture.
+    fn zero_row(device: &CudaDevice, hidden: usize) -> Result<Tensor<f32>> {
+        api::zeros::<f32>(&[hidden])
+            .sync_on(&device.stream)
+            .map_err(device_error)
+    }
+
     fn constant_inputs(
         device: &CudaDevice,
         hidden: usize,
         capacity: usize,
     ) -> Result<(Tensor<i32>, Tensor<f32>, Tensor<i32>)> {
         let metadata = device.upload(vec![0_i32; METADATA_FIELDS * 2], &[METADATA_FIELDS * 2])?;
-        let metadata =
+        let mut metadata =
             Arc::try_unwrap(metadata).map_err(|_| Error::invariant("unique metadata"))?;
-        let external = api::zeros::<f32>(&[hidden])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        load_rotary(&device.stream, &mut metadata)?;
+        let external = Self::zero_row(device, hidden)?;
         // Step 1 of the KV refactor: an identity mapping over this program's own cache.
         let table = super::metadata::identity_table(device, capacity)?;
         Ok((metadata, external, table))
@@ -770,9 +792,7 @@ impl DeviceProgram {
         let mut fusion = FusionWorkspace::allocate(device, hidden, weights.fusion.is_some())?;
         let (lane_external_owner, mut lane_external, mut lane_fusion) =
             allocate_lane_fusion(device, hidden, weights, geometry)?;
-        let prime_previous = api::zeros::<f32>(&[hidden])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        let prime_previous = Self::zero_row(device, hidden)?;
         let mut builder = super::batch::BatchBuilder {
             device,
             graph,
@@ -821,6 +841,7 @@ impl DeviceProgram {
             attention,
             batch: captures.batch,
             prompts: captures.prompts,
+            retired_verification: None,
             last_batch: None,
             graph: captures.forward,
             greedy: readouts.greedy,
@@ -1306,7 +1327,6 @@ impl DeviceProgram {
 
     pub(crate) fn prompt_hidden(&self, lanes: usize) -> Option<Arc<Tensor<f32>>> {
         self.prompt_for(lanes)
-            .or(self.batch.as_ref())
             .map(super::batch::BatchGraph::hidden_rows)
     }
 

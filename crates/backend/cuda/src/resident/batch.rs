@@ -1942,19 +1942,20 @@ impl BatchGraph {
             // rather than from the per-lane metadata. run32 writes it; this narrow path replayed
             // the same graphs without writing it, so they read the previous chunk's base - which
             // silently placed KV rows outside the chunk and, with a block table, out of the arena.
+            // A verification-only graph has no sidecar: it reads the per-lane metadata above.
             Self::validate_prefill_state(tokens.len(), position, self.state_offset, self.capacity)?;
-            super::metadata::update(
-                graph,
-                self.prefill_info
-                    .as_mut()
-                    .ok_or_else(|| Error::invariant("prefill metadata"))?,
-                [
-                    i32::try_from(position).map_err(device_error)?,
-                    i32::try_from(tokens.len()).map_err(device_error)?,
-                    self.state_offset,
-                    0,
-                ],
-            )?;
+            if let Some(info) = self.prefill_info.as_mut() {
+                super::metadata::update(
+                    graph,
+                    info,
+                    [
+                        i32::try_from(position).map_err(device_error)?,
+                        i32::try_from(tokens.len()).map_err(device_error)?,
+                        self.state_offset,
+                        0,
+                    ],
+                )?;
+            }
         }
         let mut sources = Vec::with_capacity(2 * tokens.len());
         for lane in 0..tokens.len() {
