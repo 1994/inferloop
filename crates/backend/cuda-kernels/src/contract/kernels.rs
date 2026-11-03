@@ -1,6 +1,7 @@
 //! Operator-family traits implemented by each kernel source.
 
 use super::attention::Attention;
+use super::draft::Draft;
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::plan::{
     BinaryOp, DeltaKernel, DenseRowsPlan, DownPlan, EmbeddingPlan, ExpertPlan, Fp4QuantPlan,
@@ -901,6 +902,7 @@ pub trait Recurrent: Send + Sync {
 
 /// One device's kernels, selected once when a model loads; no call path chooses a source.
 pub struct Kernels {
+    pub draft: Box<dyn Draft>,
     pub attention: Box<dyn Attention>,
     pub projection: Box<dyn Projection>,
     pub rope: Box<dyn Rope>,

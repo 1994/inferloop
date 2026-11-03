@@ -16,6 +16,7 @@ use projection::TileProjection;
 use recurrent::{TileRecurrent, TileRecurrentPool};
 use rope::TileRope;
 use sampling::TileSampling;
+use speculation::TileDraft;
 use state::TileState;
 use std::fmt::Display;
 
@@ -36,6 +37,7 @@ pub mod vision;
 #[must_use]
 pub fn kernels(ordinal: usize) -> Kernels {
     Kernels {
+        draft: Box::new(TileDraft::new(ordinal)),
         attention: Box::new(TileAttention::new(ordinal)),
         projection: Box::new(TileProjection::new(ordinal)),
         rope: Box::new(TileRope::new(ordinal)),
