@@ -547,18 +547,21 @@ impl CudaDevice {
         src_offset: usize,
         elements: usize,
     ) -> Result<()> {
+        let outside = || InferError::invalid("device copy range outside tensor");
         let range = |offset: usize| {
             offset
                 .checked_add(elements)
                 .map(|end| offset..end)
-                .ok_or_else(|| InferError::invalid("device copy range outside tensor"))
+                .ok_or_else(outside)
         };
         let dst = buffer(&*dst)
             .map_err(device_error)?
-            .slice(range(dst_offset)?)?;
+            .slice(range(dst_offset)?)
+            .map_err(|_| outside())?;
         let src = buffer(src)
             .map_err(device_error)?
-            .slice(range(src_offset)?)?;
+            .slice(range(src_offset)?)
+            .map_err(|_| outside())?;
         self.runtime.enqueue(|transfers| transfers.copy(dst, src))
     }
 
