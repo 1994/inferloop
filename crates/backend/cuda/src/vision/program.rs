@@ -1,7 +1,7 @@
 //! Captured vision-encoder programs.
 use super::block_mlp;
 use super::device_tower;
-use super::launches::{Launches, families};
+use super::launches::{Launches, capture};
 use super::{VisionWeights, weights::AttentionLayer, weights::half_tile};
 #[cfg(test)]
 use crate::attention::benchmark::REPEATS;
@@ -18,7 +18,7 @@ use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     DenseBuffers, DensePlan, Gelu, Pack, VisionDense, VisionNorm, VisionRope,
 };
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_models::vision::PositionTaps;
 use infer_models::vision::head_dim;
 use infer_models::vision::merge_unit;
@@ -145,7 +145,7 @@ enum PositionInput<'a> {
 }
 
 struct StagedPositions {
-    host: Option<Arc<Tensor<f32>>>,
+    host: Option<Allocation<f32>>,
     device: Option<DeviceTaps>,
 }
 
@@ -173,7 +173,7 @@ impl StagedPositions {
                 }
                 let mut values = vec![0.0f32; padded_elements];
                 values[..positions.len()].copy_from_slice(positions);
-                (Some(device.upload(values, &[padded, hidden])?), None)
+                (Some(device.runtime().upload(values)?), None)
             }
             PositionInput::Device(taps) => {
                 if taps.indices.len() != patch_count {
@@ -205,8 +205,8 @@ impl StagedPositions {
     fn record(
         &self,
         launches: &Launches<'_>,
-        embedded: &Tensor<f32>,
-        output: &Tensor<f32>,
+        embedded: &Allocation<f32>,
+        output: &Allocation<f32>,
         hidden: usize,
     ) -> StdResult<(), DeviceError> {
         if let Some(positions) = &self.host {
@@ -218,7 +218,7 @@ impl StagedPositions {
             )?;
         }
         if let Some(taps) = &self.device {
-            launches.add_positions(buffer(output)?, buffer(embedded)?, taps.taps()?)?;
+            launches.add_positions(buffer(output)?, buffer(embedded)?, taps.taps())?;
         }
         Ok(())
     }
@@ -258,25 +258,17 @@ fn patch_embed_with_positions(
         .ok_or_else(|| Error::invalid("vision patch output overflow"))?;
     let positions = StagedPositions::new(device, encoder, weights, positions, patch_count, padded)?;
 
-    let input = stage_patches(device, patches, padded_elements, padded, width)?;
-    let embedded = api::zeros::<f32>(&[padded, hidden])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    let input = stage_patches(device, patches, padded_elements)?;
+    let embedded = device.runtime().zeros::<f32>(padded * hidden)?;
     let output = if positions.present() {
-        Some(
-            api::zeros::<f32>(&[padded, hidden])
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
-        )
+        Some(device.runtime().zeros::<f32>(padded * hidden)?)
     } else {
         None
     };
     let weight = weights.get("patch_embed.proj.weight")?;
     let bias = weights.get("patch_embed.proj.bias")?;
 
-    let (family, dense) = families(device);
-    let graph = Graph::scope(&device.stream, |scope| {
-        let launches = Launches::new(&*family, &*dense, scope);
+    let graph = capture(device, |launches| {
         launches.dense_bias(VisionDense {
             out: buffer(&embedded)?,
             input: buffer(&input)?,
@@ -285,19 +277,18 @@ fn patch_embed_with_positions(
             columns: width,
         })?;
         if let Some(output) = output.as_ref() {
-            positions.record(&launches, &embedded, output, hidden)?;
+            positions.record(launches, &embedded, output, hidden)?;
         }
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     graph
         .launch()
         .sync_on(&device.stream)
         .map_err(device_error)?;
 
     let values = match output {
-        Some(output) => device.read(&Arc::new(output))?,
-        None => device.read(&Arc::new(embedded))?,
+        Some(output) => device.runtime().read(&output)?,
+        None => device.runtime().read(&embedded)?,
     };
     Ok(values[..patch_count * hidden].to_vec())
 }
@@ -330,16 +321,14 @@ fn stage_patches(
     device: &CudaDevice,
     patches: PatchInput<'_>,
     elements: usize,
-    rows: usize,
-    width: usize,
-) -> Result<Arc<Tensor<f32>>> {
+) -> Result<Allocation<f32>> {
     match patches {
         PatchInput::Host(patches) => {
             let mut values = vec![0.0f32; elements];
             values[..patches.len()].copy_from_slice(patches);
-            device.upload(values, &[rows, width])
+            device.runtime().upload(values)
         }
-        PatchInput::Device(patches) => Ok(Arc::clone(patches)),
+        PatchInput::Device(patches) => Allocation::adopt(Arc::clone(patches)),
     }
 }
 
@@ -372,8 +361,8 @@ pub fn project(
 /// Rejects shapes that disagree with the weights or failed CUDA capture/launch.
 pub fn project_with(
     device: &CudaDevice,
-    weight: &Arc<Tensor<bf16>>,
-    bias: &Arc<Tensor<bf16>>,
+    weight: &Allocation<bf16>,
+    bias: &Allocation<bf16>,
     input: &[f32],
     rows: usize,
     out_features: usize,
@@ -390,14 +379,10 @@ pub fn project_with(
     let padded = rows.div_ceil(TOKEN_TILE) * TOKEN_TILE;
     let mut values = vec![0.0f32; padded * in_features];
     values[..input.len()].copy_from_slice(input);
-    let tensor = device.upload(values, &[padded, in_features])?;
-    let output = api::zeros::<f32>(&[padded, out_features])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    let tensor = device.runtime().upload(values)?;
+    let output = device.runtime().zeros::<f32>(padded * out_features)?;
     let view = weight;
-    let (family, dense) = families(device);
-    let graph = Graph::scope(&device.stream, |scope| {
-        let launches = Launches::new(&*family, &*dense, scope);
+    let graph = capture(device, |launches| {
         launches.dense_bias(VisionDense {
             out: buffer(&output)?,
             input: buffer(&tensor)?,
@@ -406,13 +391,12 @@ pub fn project_with(
             columns: in_features,
         })?;
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     graph
         .launch()
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    projection_output(device.read(&Arc::new(output))?, rows, out_features)
+    projection_output(device.runtime().read(&output)?, rows, out_features)
 }
 
 pub(super) fn projection_output(
@@ -489,26 +473,21 @@ fn elementwise(
     let padded = rows.div_ceil(TOKEN_TILE) * TOKEN_TILE;
     let mut values = vec![0.0f32; padded * columns];
     values[..input.len()].copy_from_slice(input);
-    let tensor = device.upload(values, &[padded, columns])?;
-    let output = api::zeros::<f32>(&[padded, columns])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let (family, dense) = families(device);
-    let graph = Graph::scope(&device.stream, |scope| {
-        let launches = Launches::new(&*family, &*dense, scope);
+    let tensor = device.runtime().upload(values)?;
+    let output = device.runtime().zeros::<f32>(padded * columns)?;
+    let graph = capture(device, |launches| {
         if erf {
             launches.gelu(Gelu::Erf, columns, buffer(&output)?, buffer(&tensor)?)?;
         } else {
             launches.gelu(Gelu::Tanh, columns, buffer(&output)?, buffer(&tensor)?)?;
         }
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     graph
         .launch()
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let values = device.read(&Arc::new(output))?;
+    let values = device.runtime().read(&output)?;
     Ok(values[..rows * columns].to_vec())
 }
 
@@ -528,23 +507,18 @@ fn elementwise_sum(
     values[..left.len()].copy_from_slice(left);
     let mut other = vec![0.0f32; padded * columns];
     other[..right.len()].copy_from_slice(right);
-    let first = device.upload(values, &[padded, columns])?;
-    let second = device.upload(other, &[padded, columns])?;
-    let output = api::zeros::<f32>(&[padded, columns])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let (family, dense) = families(device);
-    let graph = Graph::scope(&device.stream, |scope| {
-        let launches = Launches::new(&*family, &*dense, scope);
+    let first = device.runtime().upload(values)?;
+    let second = device.runtime().upload(other)?;
+    let output = device.runtime().zeros::<f32>(padded * columns)?;
+    let graph = capture(device, |launches| {
         launches.add(columns, buffer(&output)?, buffer(&first)?, buffer(&second)?)?;
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     graph
         .launch()
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let values = device.read(&Arc::new(output))?;
+    let values = device.runtime().read(&output)?;
     Ok(values[..rows * columns].to_vec())
 }
 
@@ -571,15 +545,11 @@ pub fn layernorm(
         values[row * tile..row * tile + hidden]
             .copy_from_slice(&input[row * hidden..(row + 1) * hidden]);
     }
-    let tensor = device.upload(values, &[rows, tile])?;
-    let output = api::zeros::<f32>(&[rows * tile])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    let tensor = device.runtime().upload(values)?;
+    let output = device.runtime().zeros::<f32>(rows * tile)?;
     let weight = weights.get(weight_slot)?;
     let bias = weights.get(bias_slot)?;
-    let (family, dense) = families(device);
-    let graph = Graph::scope(&device.stream, |scope| {
-        let launches = Launches::new(&*family, &*dense, scope);
+    let graph = capture(device, |launches| {
         launches.layernorm(VisionNorm {
             out: buffer(&output)?,
             input: buffer(&tensor)?,
@@ -590,13 +560,12 @@ pub fn layernorm(
             epsilon: encoder.norm_epsilon,
         })?;
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     graph
         .launch()
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let padded = device.read(&Arc::new(output))?;
+    let padded = device.runtime().read(&output)?;
     let mut result = Vec::with_capacity(rows * hidden);
     for row in 0..rows {
         result.extend_from_slice(&padded[row * tile..row * tile + hidden]);
@@ -749,10 +718,10 @@ pub fn attention_with(
     let padded = tokens.div_ceil(tiles[0]) * tiles[0];
     let mut values = vec![0.0f32; padded * hidden];
     values[..input.len()].copy_from_slice(input);
-    let tensor = device.upload(values, &[padded, hidden])?;
+    let tensor = device.runtime().upload(values)?;
     let (cosines, sines) = rope_tables(encoder, grid, padded)?;
-    let cosines = device.upload(cosines, &[padded, width])?;
-    let sines = device.upload(sines, &[padded, width])?;
+    let cosines = device.runtime().upload(cosines)?;
+    let sines = device.runtime().upload(sines)?;
     let layer_weights = weights.attention(layer)?;
     let mut q = activation(device, padded, projections)?;
     let mut k = activation(device, padded, projections)?;
@@ -763,9 +732,7 @@ pub fn attention_with(
     let output = activation(device, padded, hidden)?;
     let tokens = i32::try_from(tokens).map_err(device_error)?;
     let scale = attention_scale(encoder)?;
-    let (family, dense) = families(device);
-    let graph = Graph::scope(&device.stream, |scope| {
-        let launches = Launches::new(&*family, &*dense, scope);
+    let graph = capture(device, |launches| {
         for (weight, bias, target) in [
             (&layer_weights.q.0, &layer_weights.q.1, &mut q),
             (&layer_weights.k.0, &layer_weights.k.1, &mut k),
@@ -807,28 +774,27 @@ pub fn attention_with(
             columns: projections,
         })?;
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     graph
         .launch()
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let values = device.read(&Arc::new(output))?;
+    let values = device.runtime().read(&output)?;
     Ok(values[..input.len()].to_vec())
 }
 
 struct CompactBuffers {
-    q: Tensor<f32>,
-    k: Tensor<f32>,
-    v: Tensor<f32>,
-    q_rot: Tensor<f32>,
-    k_rot: Tensor<f32>,
-    q_wide: Tensor<f32>,
-    k_wide: Tensor<f32>,
-    v_wide: Tensor<f32>,
-    attended: Tensor<f32>,
-    compact_out: Tensor<f32>,
-    output: Option<Tensor<f32>>,
+    q: Allocation<f32>,
+    k: Allocation<f32>,
+    v: Allocation<f32>,
+    q_rot: Allocation<f32>,
+    k_rot: Allocation<f32>,
+    q_wide: Allocation<f32>,
+    k_wide: Allocation<f32>,
+    v_wide: Allocation<f32>,
+    attended: Allocation<f32>,
+    compact_out: Allocation<f32>,
+    output: Option<Allocation<f32>>,
 }
 
 fn compact_buffers(
@@ -888,10 +854,10 @@ fn compact_attention_layer(
     let padded = tokens.div_ceil(tiles[0]) * tiles[0];
     let mut values = vec![0.0f32; padded * hidden];
     values[..input.len()].copy_from_slice(input);
-    let tensor = device.upload(values, &[padded, hidden])?;
+    let tensor = device.runtime().upload(values)?;
     let (cosines, sines) = rope_tables(encoder, grid, padded)?;
-    let cosines = device.upload(cosines, &[padded, COMPACT_WIDTH])?;
-    let sines = device.upload(sines, &[padded, COMPACT_WIDTH])?;
+    let cosines = device.runtime().upload(cosines)?;
+    let sines = device.runtime().upload(sines)?;
     let layer_weights = weights.attention(layer)?;
     let mut buffers = compact_buffers(device, padded, heads, hidden)?;
     let tokens_i = i32::try_from(tokens).map_err(device_error)?;
@@ -921,9 +887,9 @@ fn compact_attention_layer(
 fn compact_attention_launch(
     device: &CudaDevice,
     buffers: &mut CompactBuffers,
-    tensor: &Arc<Tensor<f32>>,
-    cosines: &Arc<Tensor<f32>>,
-    sines: &Arc<Tensor<f32>>,
+    tensor: &Allocation<f32>,
+    cosines: &Allocation<f32>,
+    sines: &Allocation<f32>,
     layer_weights: &AttentionLayer,
     tokens: i32,
     frame_tokens: i32,
@@ -933,14 +899,15 @@ fn compact_attention_launch(
     projections: usize,
     mode: AttentionMode,
 ) -> Result<Vec<f32>> {
-    let padded = usize::try_from(tensor.shape()[0]).map_err(device_error)?;
+    let padded = tensor
+        .len()
+        .checked_div(hidden)
+        .ok_or_else(|| Error::invalid("compact attention hidden width"))?;
     let output = buffers
         .output
         .take()
         .ok_or_else(|| Error::invalid("compact attention output buffer"))?;
-    let (family, dense) = families(device);
-    let graph = Graph::scope(&device.stream, |scope| {
-        let launches = Launches::new(&*family, &*dense, scope);
+    let graph = capture(device, |launches| {
         for (weight, bias, target) in [
             (&layer_weights.q.0, &layer_weights.q.1, &mut buffers.q),
             (&layer_weights.k.0, &layer_weights.k.1, &mut buffers.k),
@@ -998,13 +965,12 @@ fn compact_attention_launch(
             columns: projections,
         })?;
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     graph
         .launch()
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let values = device.read(&Arc::new(output))?;
+    let values = device.runtime().read(&output)?;
     Ok(values)
 }
 
@@ -1018,10 +984,15 @@ pub(super) fn frame_token_count(grid: (usize, usize, usize), tokens: usize) -> R
 }
 
 /// Allocate a zeroed activation matrix on the device stream.
-pub(super) fn activation(device: &CudaDevice, rows: usize, columns: usize) -> Result<Tensor<f32>> {
-    api::zeros::<f32>(&[rows, columns])
-        .sync_on(&device.stream)
-        .map_err(device_error)
+pub(super) fn activation(
+    device: &CudaDevice,
+    rows: usize,
+    columns: usize,
+) -> Result<Allocation<f32>> {
+    let elements = rows
+        .checked_mul(columns)
+        .ok_or_else(|| Error::invalid("vision activation overflow"))?;
+    device.runtime().zeros(elements)
 }
 
 /// One vision block: attention and MLP sublayers with their residual adds.
@@ -1200,38 +1171,30 @@ pub fn attention_kernel(
     }
     let align = TOKEN_TILE.max(tiles[0]).max(tiles[1]);
     let padded = tokens.div_ceil(align) * align;
-    let pad = |values: &[f32]| -> Result<Arc<Tensor<f32>>> {
+    let pad = |values: &[f32]| -> Result<Allocation<f32>> {
         let mut padded_values = vec![0.0f32; padded * projections];
         padded_values[..values.len()].copy_from_slice(values);
-        device.upload(padded_values, &[padded, projections])
+        device.runtime().upload(padded_values)
     };
-    let table_pad = |values: &[f32]| -> Result<Arc<Tensor<f32>>> {
+    let table_pad = |values: &[f32]| -> Result<Allocation<f32>> {
         let mut padded_values = vec![0.0f32; padded * width];
         for token in 0..tokens {
             padded_values[token * width..(token + 1) * width]
                 .copy_from_slice(&values[token * width..(token + 1) * width]);
         }
-        device.upload(padded_values, &[padded, width])
+        device.runtime().upload(padded_values)
     };
     let query = pad(query)?;
     let key = pad(key)?;
     let value = pad(value)?;
     let cosines = table_pad(cos)?;
     let sines = table_pad(sin)?;
-    let mut rotated_query = api::zeros::<f32>(&[padded, projections])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut rotated_key = api::zeros::<f32>(&[padded, projections])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let output = api::zeros::<f32>(&[padded, projections])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    let mut rotated_query = device.runtime().zeros::<f32>(padded * projections)?;
+    let mut rotated_key = device.runtime().zeros::<f32>(padded * projections)?;
+    let output = device.runtime().zeros::<f32>(padded * projections)?;
     let scale = attention_scale_from_width(real_width);
     let tokens = i32::try_from(tokens).map_err(device_error)?;
-    let (family, dense) = families(device);
-    let graph = Graph::scope(&device.stream, |scope| {
-        let launches = Launches::new(&*family, &*dense, scope);
+    let graph = capture(device, |launches| {
         let repeats = if profile { REPEATS } else { 1 };
         for _ in 0..repeats {
             for (input, output) in [(&query, &mut rotated_query), (&key, &mut rotated_key)] {
@@ -1256,8 +1219,7 @@ pub fn attention_kernel(
             )?;
         }
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     graph
         .launch()
         .sync_on(&device.stream)
@@ -1265,7 +1227,7 @@ pub fn attention_kernel(
     if profile {
         measure(device, &graph, tokens, heads, real_width, tiles)?;
     }
-    let values = device.read(&Arc::new(output))?;
+    let values = device.runtime().read(&output)?;
     Ok(values[..expected].to_vec())
 }
 
@@ -1353,19 +1315,15 @@ pub fn rope_compact_kernel(
     let projections = heads * width;
     let mut values = vec![0.0f32; padded * projections];
     values[..query.len()].copy_from_slice(query);
-    let input = device.upload(values, &[padded, projections])?;
+    let input = device.runtime().upload(values)?;
     let mut cosines = vec![0.0f32; padded * width];
     cosines[..cos.len()].copy_from_slice(cos);
     let mut sines = vec![0.0f32; padded * width];
     sines[..sin.len()].copy_from_slice(sin);
-    let cosines = device.upload(cosines, &[padded, width])?;
-    let sines = device.upload(sines, &[padded, width])?;
-    let output = api::zeros::<f32>(&[padded, projections])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let (family, dense) = families(device);
-    let graph = Graph::scope(&device.stream, |scope| {
-        let launches = Launches::new(&*family, &*dense, scope);
+    let cosines = device.runtime().upload(cosines)?;
+    let sines = device.runtime().upload(sines)?;
+    let output = device.runtime().zeros::<f32>(padded * projections)?;
+    let graph = capture(device, |launches| {
         launches.rope(VisionRope {
             out: buffer(&output)?,
             input: buffer(&input)?,
@@ -1376,13 +1334,12 @@ pub fn rope_compact_kernel(
             real_half: Some(real),
         })?;
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     graph
         .launch()
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let values = device.read(&Arc::new(output))?;
+    let values = device.runtime().read(&output)?;
     Ok(values[..query.len()].to_vec())
 }
 
@@ -1434,16 +1391,16 @@ pub fn compact_attention(
     let padded = tokens.div_ceil(align) * align;
     let compact_projection = heads * COMPACT_WIDTH;
     let wide_projection = heads * WIDE_WIDTH;
-    let pad = |values: &[f32], width: usize| -> Result<Arc<Tensor<f32>>> {
+    let pad = |values: &[f32], width: usize| -> Result<Allocation<f32>> {
         let projection = heads * width;
         let mut padded_values = vec![0.0f32; padded * projection];
         padded_values[..values.len()].copy_from_slice(values);
-        device.upload(padded_values, &[padded, projection])
+        device.runtime().upload(padded_values)
     };
-    let table = |values: &[f32]| -> Result<Arc<Tensor<f32>>> {
+    let table = |values: &[f32]| -> Result<Allocation<f32>> {
         let mut padded_values = vec![0.0f32; padded * COMPACT_WIDTH];
         padded_values[..values.len()].copy_from_slice(values);
-        device.upload(padded_values, &[padded, COMPACT_WIDTH])
+        device.runtime().upload(padded_values)
     };
     let q = pad(query, COMPACT_WIDTH)?;
     let k = pad(key, COMPACT_WIDTH)?;
@@ -1460,9 +1417,7 @@ pub fn compact_attention(
     let tokens_i = i32::try_from(tokens).map_err(device_error)?;
     let frame_i = i32::try_from(frame_tokens).map_err(device_error)?;
     let scale = attention_scale_from_width(REAL_HEAD);
-    let (family, dense) = families(device);
-    let graph = Graph::scope(&device.stream, |scope| {
-        let launches = Launches::new(&*family, &*dense, scope);
+    let graph = capture(device, |launches| {
         for (input, output) in [(&q, &mut q_rot), (&k, &mut k_rot)] {
             launches.rope(VisionRope {
                 out: buffer(output)?,
@@ -1505,12 +1460,11 @@ pub fn compact_attention(
             buffer(&attended)?,
         )?;
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     graph
         .launch()
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let values = device.read(&Arc::new(compact_out))?;
+    let values = device.runtime().read(&compact_out)?;
     Ok(values[..query.len()].to_vec())
 }

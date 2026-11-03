@@ -43,9 +43,20 @@ impl Element for f8e4m3fn {
 }
 
 /// Device memory the host owns. A graph that recorded it keeps it alive.
+///
+/// A clone shares the memory, as an `Arc` does; nothing is copied.
 pub struct Allocation<T: DType> {
     tensor: Arc<Tensor<T>>,
     owner: Owner,
+}
+
+impl<T: DType> Clone for Allocation<T> {
+    fn clone(&self) -> Self {
+        Self {
+            tensor: Arc::clone(&self.tensor),
+            owner: Arc::clone(&self.owner),
+        }
+    }
 }
 
 impl<T: DType> Allocation<T> {
@@ -90,6 +101,20 @@ impl<T: DType> Allocation<T> {
     }
 }
 
+impl<T: DType + Element> Allocation<T> {
+    /// The whole allocation as the contract types it, retained by any recording graph.
+    #[expect(
+        unsafe_code,
+        reason = "As `buffer`: each `Element` marker names exactly its element's size and layout"
+    )]
+    #[must_use]
+    pub fn operand(&self) -> Buffer<'_, T::Marker> {
+        let address = self.tensor.device_pointer().cu_deviceptr();
+        // SAFETY: as for `buffer`; the marker is declared for this element type above.
+        unsafe { Buffer::owned(address, self.len(), &self.owner) }
+    }
+}
+
 impl Allocation<bf16> {
     /// The whole allocation as a BF16 kernel operand.
     #[expect(
@@ -120,6 +145,36 @@ impl Device {
     #[must_use]
     pub const fn ordinal(&self) -> usize {
         self.ordinal
+    }
+
+    /// `len` zeroed elements, complete when this returns.
+    /// # Errors
+    /// Reports a failed allocation.
+    pub fn zeros<T: DType>(&self, len: usize) -> Result<Allocation<T>> {
+        let tensor = api::zeros::<T>(&[len])
+            .sync_on(&self.stream)
+            .map_err(backend_error)?;
+        Allocation::adopt(Arc::new(tensor))
+    }
+
+    /// A copy of `values`, complete when this returns.
+    /// # Errors
+    /// Reports a failed allocation or transfer.
+    pub fn upload<T: DType>(&self, values: Vec<T>) -> Result<Allocation<T>> {
+        let tensor = api::copy_host_vec_to_device(&Arc::new(values))
+            .sync_on(&self.stream)
+            .map_err(backend_error)?;
+        Allocation::adopt(Arc::new(tensor))
+    }
+
+    /// The contents of `allocation`, after the work already on this stream.
+    /// # Errors
+    /// Reports a failed transfer.
+    pub fn read<T: DType>(&self, allocation: &Allocation<T>) -> Result<Vec<T>> {
+        Arc::clone(&allocation.tensor)
+            .to_host_vec()
+            .sync_on(&self.stream)
+            .map_err(backend_error)
     }
 
     /// Record kernels into a graph. Nothing runs until a launch of it does.

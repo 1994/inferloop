@@ -33,8 +33,10 @@ fn prepared(device: &CudaDevice, rows: usize, columns: usize, scale: f32) -> Res
         matrix[row * columns + (row + 1) % columns] = bf16::from_f32(-0.125);
     }
     Ok((
-        device.upload(matrix, &[rows, columns])?,
-        device.upload(vec![bf16::from_f32(0.0625); rows], &[rows])?,
+        device.runtime().upload(matrix)?,
+        device
+            .runtime()
+            .upload(vec![bf16::from_f32(0.0625); rows])?,
     ))
 }
 
@@ -46,7 +48,9 @@ fn weights(device: &CudaDevice, encoder: &ModalityEncoder) -> Result<VisionWeigh
     for layer in 0..encoder.depth {
         for norm in ["norm1", "norm2"] {
             for (name, value) in [("weight", 0.5), ("bias", 0.125)] {
-                let tensor = device.upload(vec![bf16::from_f32(value); hidden], &[hidden])?;
+                let tensor = device
+                    .runtime()
+                    .upload(vec![bf16::from_f32(value); hidden])?;
                 tensors.insert(format!("blocks.{layer}.{norm}.{name}"), tensor);
             }
         }

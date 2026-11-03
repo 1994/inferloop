@@ -66,7 +66,7 @@ impl Capture<'_> {
                     out: buffer(&output)?,
                     x: self.input_buffer(node.inputs[0])?,
                     frequencies: buffer(frequency)?,
-                    axes: axes.map(|axes| buffer(axes)).transpose()?,
+                    axes: axes.map(buffer).transpose()?,
                     metadata: buffer(self.metadata)?,
                 },
             )

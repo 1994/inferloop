@@ -21,12 +21,16 @@ fn weights(device: &CudaDevice, hidden: usize, width: usize) -> Result<MlpLayer>
     }
     Ok(MlpLayer {
         fc1: (
-            device.upload(first, &[width, hidden])?,
-            device.upload(vec![bf16::from_f32(0.125); width], &[width])?,
+            device.runtime().upload(first)?,
+            device
+                .runtime()
+                .upload(vec![bf16::from_f32(0.125); width])?,
         ),
         fc2: (
-            device.upload(second, &[hidden, width])?,
-            device.upload(vec![bf16::from_f32(-0.0625); hidden], &[hidden])?,
+            device.runtime().upload(second)?,
+            device
+                .runtime()
+                .upload(vec![bf16::from_f32(-0.0625); hidden])?,
         ),
     })
 }

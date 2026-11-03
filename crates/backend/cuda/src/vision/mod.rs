@@ -25,4 +25,4 @@ pub use session::{
     MediaPrefill, argmax, decode, generate, media_positions, placeholder_tokens, prefill,
     require_placements,
 };
-pub use weights::{VisionWeights, matrix};
+pub use weights::VisionWeights;

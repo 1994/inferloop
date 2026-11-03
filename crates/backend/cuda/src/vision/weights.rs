@@ -3,9 +3,10 @@
 //! The inventory comes from `infer_models::vision::slots`, so a checkpoint whose tower differs
 //! from the declaration fails here — before any kernel runs — instead of producing a partially
 //! bound encoder. Vision tensors are BF16 in this family, so no quantized path is involved.
-use crate::device::{CudaDevice, device_error};
-use cutile::{half::bf16, prelude::*};
+use crate::device::CudaDevice;
+use cutile::half::bf16;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_models::vision::head_dim;
 use infer_models::vision::merged_width;
 use infer_models::vision::row_tile;
@@ -13,7 +14,6 @@ use infer_models::vision::slots as vision_slots;
 use infer_models::{QuantizedPackage, TensorDtype};
 use infer_spi::ModalityEncoder;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 #[cfg(test)]
 #[path = "../../tests/unit/vision_device_tower.rs"]
@@ -73,7 +73,7 @@ pub(super) fn half_layout(real_head: usize, half: usize) -> Vec<Option<usize>> {
 /// `q`, `k`, `v` are stored with each head laid out as `[half, half]` half-heads padded to a
 /// power-of-two tile, so a tile kernel can address either half through a partition axis; the
 /// padding lanes are zero and the projections carry matching zero rows/columns.
-pub type Prepared = (Arc<Tensor<bf16>>, Arc<Tensor<bf16>>);
+pub type Prepared = (Allocation<bf16>, Allocation<bf16>);
 
 /// Encoder slots the prepare passes upload in their own padded layout: block attention and
 /// MLP projections and the merger projections. Runtime kernels read only the prepared copies.
@@ -112,7 +112,7 @@ pub struct MergerLayer {
 
 /// Resident vision-encoder weights keyed by canonical slot.
 pub struct VisionWeights {
-    tensors: BTreeMap<String, Arc<Tensor<bf16>>>,
+    tensors: BTreeMap<String, Allocation<bf16>>,
     attention: Vec<AttentionLayer>,
     mlp: Vec<MlpLayer>,
     merger: Option<MergerLayer>,
@@ -158,7 +158,7 @@ impl VisionWeights {
                 .collect();
             drop(bytes);
             // Row kernels load a norm tensor whole, so it must span a power-of-two tile.
-            let shape = if slot.row {
+            if slot.row {
                 let padded = row_tile(encoder)?;
                 if padded < values.len() {
                     return Err(Error::invalid(format!(
@@ -167,10 +167,7 @@ impl VisionWeights {
                     )));
                 }
                 values.resize(padded, bf16::from_bits(0));
-                vec![padded]
-            } else {
-                slot.shape.clone()
-            };
+            }
             if slot.slot == "pos_embed.weight" {
                 positions = values.iter().map(|value| value.to_f32()).collect();
             }
@@ -179,7 +176,7 @@ impl VisionWeights {
             if prepares && prepared_slot(&slot.slot) {
                 continue;
             }
-            tensors.insert(slot.slot, device.upload(values, &shape)?);
+            tensors.insert(slot.slot, device.runtime().upload(values)?);
         }
         let mut weights = Self {
             tensors,
@@ -261,8 +258,8 @@ impl VisionWeights {
             let mut uploaded = Vec::with_capacity(QKV);
             for (weight, bias) in packed {
                 uploaded.push((
-                    device.upload(weight, &[rows, hidden])?,
-                    device.upload(bias, &[rows])?,
+                    device.runtime().upload(weight)?,
+                    device.runtime().upload(bias)?,
                 ));
             }
             let [q, k, v]: [Prepared; QKV] = uploaded
@@ -273,8 +270,8 @@ impl VisionWeights {
                 k,
                 v,
                 proj: (
-                    device.upload(proj, &[hidden, rows])?,
-                    device.upload(proj_bias, &[hidden])?,
+                    device.runtime().upload(proj)?,
+                    device.runtime().upload(proj_bias)?,
                 ),
             });
         }
@@ -334,12 +331,12 @@ impl VisionWeights {
             }
             layers.push(MlpLayer {
                 fc1: (
-                    device.upload(fc1, &[padded, hidden])?,
-                    device.upload(bias1, &[padded])?,
+                    device.runtime().upload(fc1)?,
+                    device.runtime().upload(bias1)?,
                 ),
                 fc2: (
-                    device.upload(fc2, &[hidden, padded])?,
-                    device.upload(fc2_bias, &[hidden])?,
+                    device.runtime().upload(fc2)?,
+                    device.runtime().upload(fc2_bias)?,
                 ),
             });
         }
@@ -375,12 +372,12 @@ impl VisionWeights {
         let _ = hidden;
         self.merger = Some(MergerLayer {
             fc1: (
-                device.upload(fc1_weight, &[merged, merged])?,
-                device.upload(fc1_bias, &[merged])?,
+                device.runtime().upload(fc1_weight)?,
+                device.runtime().upload(fc1_bias)?,
             ),
             fc2: (
-                device.upload(fc2_weight, &[out, merged])?,
-                device.upload(fc2_bias, &[out])?,
+                device.runtime().upload(fc2_weight)?,
+                device.runtime().upload(fc2_bias)?,
             ),
         });
         Ok(())
@@ -429,7 +426,7 @@ impl VisionWeights {
     /// [`Self::attention`], [`Self::mlp`] and [`Self::merger`], without duplicate raw storage.
     /// # Errors
     /// Rejects an unknown slot or a projection retained only in its prepared layout.
-    pub fn get(&self, slot: &str) -> Result<&Arc<Tensor<bf16>>> {
+    pub fn get(&self, slot: &str) -> Result<&Allocation<bf16>> {
         self.tensors
             .get(slot)
             .ok_or_else(|| Error::invalid(format!("unbound vision tensor {slot}")))
@@ -447,8 +444,9 @@ impl VisionWeights {
     /// Exact bytes of every retained raw and prepared vision owner.
     #[must_use]
     pub fn inventory_bytes(&self) -> u64 {
-        let tensor =
-            |value: &Arc<Tensor<bf16>>| u64::try_from(value.num_bytes()).unwrap_or(u64::MAX);
+        let tensor = |value: &Allocation<bf16>| {
+            u64::try_from(value.len() * size_of::<bf16>()).unwrap_or(u64::MAX)
+        };
         let prepared = |value: &Prepared| tensor(&value.0) + tensor(&value.1);
         self.tensors.values().map(tensor).sum::<u64>()
             + self
@@ -477,18 +475,4 @@ impl VisionWeights {
     pub fn is_empty(&self) -> bool {
         self.tensors.is_empty()
     }
-}
-
-/// Two-dimensional view of a bound tensor, for kernels that need explicit shapes.
-/// # Errors
-/// Rejects a tensor whose rank does not match.
-pub fn matrix(tensor: &Arc<Tensor<bf16>>) -> Result<[usize; 2]> {
-    let shape = tensor.shape();
-    let [rows, columns] = shape else {
-        return Err(Error::invalid("vision kernel requires a matrix"));
-    };
-    Ok([
-        usize::try_from(*rows).map_err(device_error)?,
-        usize::try_from(*columns).map_err(device_error)?,
-    ])
 }

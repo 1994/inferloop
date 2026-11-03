@@ -16,7 +16,7 @@ pub use attention::{
     PooledAppendBuffers, PooledDecodeBuffers, PooledPlan, PrefillAppendPlan, PrefillDecodePlan,
     STACKED_LANE_ROWS, STACKED_ROWS, SplitDecodePlan, VERIFY_LANES, VerifyDecodeBuffers,
 };
-pub use buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner};
+pub use buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner, Width};
 pub use draft::{
     DRAFT_KEY_TILE, DRAFT_ROW_TILE, Draft, DraftAddNorm, DraftAttention, DraftConv, DraftNorm,
     DraftProjection, DraftRingStore, DraftRope, DraftSplit, DraftTop, DraftWalk, DraftWeight,

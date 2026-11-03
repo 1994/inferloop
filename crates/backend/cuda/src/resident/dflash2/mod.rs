@@ -22,7 +22,7 @@ use infer_cuda_kernels::contract::{
 use infer_cuda_kernels::tile::{kernels as tile_kernels, runtime::Graph};
 pub use weights::DraftWeights;
 
-use super::buffers::{buffer, region};
+use super::buffers::buffer;
 use super::capture::error;
 use crate::constants::WIDEST_PREFILL_LANES;
 use crate::device::{CudaDevice, PinnedUpload, Readbacks, device_error};
@@ -667,11 +667,7 @@ fn draft_weight(weight: &ProjectionWeight) -> StdResult<DraftWeight<'_>, DeviceE
 
 /// One field of the metadata buffer.
 fn meta_field(meta: &Tensor<i32>, field: Range<usize>) -> StdResult<Buffer<'_, i32>, DeviceError> {
-    let offset = u64::try_from(field.start * size_of::<i32>()).map_err(error)?;
-    Ok(region(
-        buffer(meta)?.address() + offset,
-        field.end - field.start,
-    ))
+    buffer(meta)?.slice(field).map_err(error)
 }
 
 /// Record `out[rows, N] = input[rows, K] · weightᵀ` with the prompt GEMM tiles.
