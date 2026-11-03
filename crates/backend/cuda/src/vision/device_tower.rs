@@ -1,18 +1,17 @@
 //! Execute compatible vision towers without staging each block on the host.
-use super::kernels;
+use super::launches::{Launches, families};
 use super::program::{
-    ATTENTION_CONFIG_FIELDS, AttentionMode, COLUMN_TILE, TOKEN_TILE, activation,
-    attention_generics, attention_scale, attention_tiles, frame_token_count, mlp_width,
-    projection_output, rope_tables,
+    ATTENTION_CONFIG_FIELDS, AttentionMode, COLUMN_TILE, activation, attention_scale,
+    attention_tiles, frame_token_count, mlp_width, projection_output, rope_tables,
 };
 use super::weights::{AttentionLayer, MlpLayer, VisionWeights, half_tile};
-use crate::attention::kernels::sdpa::attention as sdpa_attention;
 use crate::device::{CudaDevice, device_error};
-use cutile::cuda_async::cuda_graph::Scope;
+use crate::resident::buffers::buffer;
 use cutile::cuda_async::error::DeviceError;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{DenseBuffers, Gelu, VisionDense, VisionNorm, VisionRope};
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_models::vision::row_tile;
 use infer_spi::ModalityEncoder;
@@ -85,12 +84,12 @@ struct Layer<'a> {
     norm2_bias: &'a Arc<Tensor<bf16>>,
     attention: &'a AttentionLayer,
     mlp: &'a MlpLayer,
-    fc1: TensorView<'a, bf16>,
-    fc2: TensorView<'a, bf16>,
+    fc1: &'a Arc<Tensor<bf16>>,
+    fc2: &'a Arc<Tensor<bf16>>,
 }
 
 impl<'a> Layer<'a> {
-    fn new(weights: &'a VisionWeights, layer: usize, geometry: &Geometry) -> Result<Self> {
+    fn new(weights: &'a VisionWeights, layer: usize) -> Result<Self> {
         let prefix = format!("blocks.{layer}.");
         let mlp = weights.mlp(layer)?;
         Ok(Self {
@@ -100,16 +99,8 @@ impl<'a> Layer<'a> {
             norm2_bias: weights.get(&format!("{prefix}norm2.bias"))?,
             attention: weights.attention(layer)?,
             mlp,
-            fc1: mlp
-                .fc1
-                .0
-                .view(&[geometry.intermediate, geometry.hidden])
-                .map_err(device_error)?,
-            fc2: mlp
-                .fc2
-                .0
-                .view(&[geometry.hidden, geometry.intermediate])
-                .map_err(device_error)?,
+            fc1: &mlp.fc1.0,
+            fc2: &mlp.fc2.0,
         })
     }
 }
@@ -166,180 +157,154 @@ impl Buffers {
 
     fn record(
         &mut self,
-        scope: &Scope,
+        launches: &Launches<'_>,
         layer: &Layer<'_>,
         geometry: &Geometry,
         cosines: &Arc<Tensor<f32>>,
         sines: &Arc<Tensor<f32>>,
     ) -> StdResult<(), DeviceError> {
         record_norm(
-            scope,
+            launches,
             &self.state,
-            &mut self.norm,
+            &self.norm,
             layer.norm1_weight,
             layer.norm1_bias,
             geometry,
         )?;
-        self.record_attention(scope, layer, geometry, cosines, sines)?;
-        scope.record(
-            kernels::encoder::add(
-                (&mut self.residual).partition([TOKEN_TILE, COLUMN_TILE]),
-                &self.state,
-                &self.attention_out,
-            )
-            .generics(vec![geometry.hidden.to_string()]),
+        self.record_attention(launches, layer, geometry, cosines, sines)?;
+        launches.add(
+            geometry.hidden,
+            buffer(&self.residual)?,
+            buffer(&self.state)?,
+            buffer(&self.attention_out)?,
         )?;
         record_norm(
-            scope,
+            launches,
             &self.residual,
-            &mut self.norm,
+            &self.norm,
             layer.norm2_weight,
             layer.norm2_bias,
             geometry,
         )?;
-        self.record_mlp(scope, layer, geometry)?;
+        self.record_mlp(launches, layer, geometry)?;
         swap(&mut self.state, &mut self.next);
         Ok(())
     }
 
     fn record_attention(
         &mut self,
-        scope: &Scope,
+        launches: &Launches<'_>,
         layer: &Layer<'_>,
         geometry: &Geometry,
         cosines: &Arc<Tensor<f32>>,
         sines: &Arc<Tensor<f32>>,
     ) -> StdResult<(), DeviceError> {
-        let norm = self
-            .norm
-            .view(&[geometry.rows, geometry.hidden])
-            .map_err(|error| DeviceError::Launch(error.to_string()))?;
+        let norm = &self.norm;
         for (weight, bias, target) in [
             (&layer.attention.q.0, &layer.attention.q.1, &mut self.q),
             (&layer.attention.k.0, &layer.attention.k.1, &mut self.k),
             (&layer.attention.v.0, &layer.attention.v.1, &mut self.v),
         ] {
-            scope.record(
-                kernels::encoder::dense_bias(
-                    target.partition([TOKEN_TILE, COLUMN_TILE]),
-                    &norm,
-                    weight,
-                    bias,
-                )
-                .generics(vec![geometry.hidden.to_string()]),
-            )?;
+            launches.dense_bias(VisionDense {
+                out: buffer(target)?,
+                input: buffer(norm)?,
+                weight: buffer(weight)?,
+                bias: buffer(bias)?,
+                columns: geometry.hidden,
+            })?;
         }
         for (input, output) in [(&self.q, &mut self.q_rot), (&self.k, &mut self.k_rot)] {
-            scope.record(
-                kernels::encoder::rope(
-                    output.partition([TOKEN_TILE, geometry.half]),
-                    input,
-                    cosines,
-                    sines,
-                )
-                .generics(vec![geometry.half.to_string()]),
-            )?;
+            launches.rope(VisionRope {
+                out: buffer(output)?,
+                input: buffer(input)?,
+                cosines: buffer(cosines)?,
+                sines: buffer(sines)?,
+                rows: geometry.rows,
+                half: geometry.half,
+                real_half: None,
+            })?;
         }
-        scope.record(
-            sdpa_attention(
-                (&mut self.attended).partition([geometry.tiles[0], geometry.width]),
-                &self.q_rot,
-                &self.k_rot,
-                &self.v,
-                geometry.tokens,
-                geometry.scale,
-                geometry.frame_tokens,
-                geometry.tokens,
-                0,
-                0,
-                0,
-            )
-            .generics(attention_generics(
+        launches.dense(
+            super::program::dense_plan(
                 geometry.width,
                 AttentionMode::Online,
                 geometry.tiles,
-            )),
+                geometry.rows,
+                geometry.tokens,
+                geometry.scale,
+                geometry.frame_tokens,
+            ),
+            DenseBuffers {
+                out: buffer(&self.attended)?,
+                query: buffer(&self.q_rot)?,
+                key: buffer(&self.k_rot)?,
+                value: buffer(&self.v)?,
+            },
         )?;
-        scope.record(
-            kernels::encoder::dense_bias(
-                (&mut self.attention_out).partition([TOKEN_TILE, COLUMN_TILE]),
-                &self.attended,
-                &layer.attention.proj.0,
-                &layer.attention.proj.1,
-            )
-            .generics(vec![geometry.projections.to_string()]),
-        )?;
+        launches.dense_bias(VisionDense {
+            out: buffer(&self.attention_out)?,
+            input: buffer(&self.attended)?,
+            weight: buffer(&layer.attention.proj.0)?,
+            bias: buffer(&layer.attention.proj.1)?,
+            columns: geometry.projections,
+        })?;
         Ok(())
     }
 
     fn record_mlp(
-        &mut self,
-        scope: &Scope,
+        &self,
+        launches: &Launches<'_>,
         layer: &Layer<'_>,
         geometry: &Geometry,
     ) -> StdResult<(), DeviceError> {
-        let norm = self
-            .norm
-            .view(&[geometry.rows, geometry.hidden])
-            .map_err(|error| DeviceError::Launch(error.to_string()))?;
-        scope.record(
-            kernels::encoder::dense_bias(
-                (&mut self.fc1).partition([TOKEN_TILE, COLUMN_TILE]),
-                &norm,
-                &layer.fc1,
-                &layer.mlp.fc1.1,
-            )
-            .generics(vec![geometry.hidden.to_string()]),
+        let norm = &self.norm;
+        launches.dense_bias(VisionDense {
+            out: buffer(&self.fc1)?,
+            input: buffer(norm)?,
+            weight: buffer(layer.fc1)?,
+            bias: buffer(&layer.mlp.fc1.1)?,
+            columns: geometry.hidden,
+        })?;
+        launches.gelu(
+            Gelu::Tanh,
+            geometry.intermediate,
+            buffer(&self.activated)?,
+            buffer(&self.fc1)?,
         )?;
-        scope.record(
-            kernels::encoder::gelu_tanh(
-                (&mut self.activated).partition([TOKEN_TILE, COLUMN_TILE]),
-                &self.fc1,
-            )
-            .generics(vec![geometry.intermediate.to_string()]),
-        )?;
-        scope.record(
-            kernels::encoder::dense_bias(
-                (&mut self.fc2).partition([TOKEN_TILE, COLUMN_TILE]),
-                &self.activated,
-                &layer.fc2,
-                &layer.mlp.fc2.1,
-            )
-            .generics(vec![geometry.intermediate.to_string()]),
-        )?;
-        scope.record(
-            kernels::encoder::add(
-                (&mut self.next).partition([TOKEN_TILE, COLUMN_TILE]),
-                &self.residual,
-                &self.fc2,
-            )
-            .generics(vec![geometry.hidden.to_string()]),
+        launches.dense_bias(VisionDense {
+            out: buffer(&self.fc2)?,
+            input: buffer(&self.activated)?,
+            weight: buffer(layer.fc2)?,
+            bias: buffer(&layer.mlp.fc2.1)?,
+            columns: geometry.intermediate,
+        })?;
+        launches.add(
+            geometry.hidden,
+            buffer(&self.next)?,
+            buffer(&self.residual)?,
+            buffer(&self.fc2)?,
         )?;
         Ok(())
     }
 }
 
 fn record_norm(
-    scope: &Scope,
+    launches: &Launches<'_>,
     input: &Tensor<f32>,
-    output: &mut Tensor<f32>,
+    output: &Tensor<f32>,
     weight: &Arc<Tensor<bf16>>,
     bias: &Arc<Tensor<bf16>>,
     geometry: &Geometry,
 ) -> StdResult<(), DeviceError> {
-    scope.record(
-        kernels::encoder::layernorm(
-            output.partition([geometry.hidden]),
-            input,
-            weight,
-            bias,
-            geometry.epsilon,
-        )
-        .generics(vec![
-            geometry.hidden.to_string(),
-            geometry.hidden.to_string(),
-        ]),
-    )?;
+    launches.layernorm(VisionNorm {
+        out: buffer(output)?,
+        input: buffer(input)?,
+        weight: buffer(weight)?,
+        bias: buffer(bias)?,
+        dim: geometry.hidden,
+        tile: geometry.hidden,
+        epsilon: geometry.epsilon,
+    })?;
     Ok(())
 }
 
@@ -359,15 +324,17 @@ pub(super) fn run(
     }
     let geometry = Geometry::new(encoder, grid, tokens)?;
     let layers = (0..encoder.depth)
-        .map(|index| Layer::new(weights, index, &geometry))
+        .map(|index| Layer::new(weights, index))
         .collect::<Result<Vec<_>>>()?;
     let (cosines, sines) = rope_tables(encoder, grid, geometry.rows)?;
     let cosines = device.upload(cosines, &[geometry.rows, geometry.width])?;
     let sines = device.upload(sines, &[geometry.rows, geometry.width])?;
     let mut buffers = Buffers::new(device, &geometry, input)?;
+    let (family, dense) = families(device);
     let graph = Graph::scope(&device.stream, |scope| {
+        let launches = Launches::new(&*family, &*dense, scope);
         for layer in &layers {
-            buffers.record(scope, layer, &geometry, &cosines, &sines)?;
+            buffers.record(&launches, layer, &geometry, &cosines, &sines)?;
         }
         Ok(())
     })

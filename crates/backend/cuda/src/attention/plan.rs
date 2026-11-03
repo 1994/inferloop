@@ -1,7 +1,7 @@
 //! Dense SDPA graph recording with caller-owned buffers and stream.
-use super::kernels::sdpa;
-use cutile::{cuda_async::cuda_graph::Scope, prelude::*};
+use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{Attention, DenseBuffers, DensePlan, Recording};
 use infer_ir::DType as Precision;
 use infer_kernel_api::attention::{AttentionDescriptor, AttentionMask};
 use std::result::Result as StdResult;
@@ -110,78 +110,48 @@ impl DenseAttentionPlan {
         self.tile
     }
 
-    /// Record into the caller's graph; the scope retains kernel resource leases.
+    /// Record into the caller's graph.
     /// # Errors
     /// Rejects incorrect physical shapes or failed kernel submission.
     pub fn record(
         &self,
-        scope: &Scope,
-        q: &Tensor<f32>,
-        k: &Tensor<f32>,
-        v: &Tensor<f32>,
-        out: &mut Tensor<f32>,
+        attention: &dyn Attention,
+        recording: &Recording<'_>,
+        buffers: DenseBuffers<'_>,
     ) -> StdResult<(), DeviceError> {
-        for (tensor, shape) in [q, k, v, &*out].into_iter().zip(self.shapes) {
-            if tensor.shape().len() != shape.len()
-                || !tensor
-                    .shape()
-                    .iter()
-                    .zip(shape)
-                    .all(|(&actual, expected)| usize::try_from(actual) == Ok(expected))
-            {
-                return Err(DeviceError::Launch(
-                    "attention buffer shape mismatch".into(),
-                ));
-            }
+        let operands = [buffers.query, buffers.key, buffers.value, buffers.out];
+        if operands
+            .iter()
+            .zip(self.shapes)
+            .any(|(buffer, [rows, columns])| buffer.len() != rows * columns)
+        {
+            return Err(DeviceError::Launch(
+                "attention buffer shape mismatch".into(),
+            ));
         }
+        let plan = DensePlan {
+            head_width: self.width,
+            online: true,
+            tiles: [self.tile, self.tile, 0],
+            group: self.descriptor.query_heads / self.descriptor.kv_heads,
+            value_width: self.value_width,
+            mask: self.mask[0],
+            query_rows: self.shapes[0][0],
+            key_rows: self.shapes[1][0],
+            tokens: self.keys,
+            scale: self.descriptor.scale,
+            frame_tokens: self.mask[1],
+            queries: self.queries,
+            query_start: self.mask[2],
+            left: self.mask[3],
+            right: self.mask[4],
+        };
         if self.descriptor.queries == 1 {
-            scope.record(
-                super::decode::kernel::decode(
-                    out.partition([1, self.value_width]),
-                    q,
-                    k,
-                    v,
-                    self.keys,
-                    self.descriptor.scale,
-                    self.mask[2],
-                    self.mask[3],
-                    self.mask[4],
-                )
-                .generics(vec![
-                    self.width.to_string(),
-                    self.value_width.to_string(),
-                    (self.descriptor.query_heads / self.descriptor.kv_heads).to_string(),
-                    self.mask[0].to_string(),
-                ]),
-            )?;
-            return Ok(());
+            attention.dense_decode(recording, plan, buffers)
+        } else {
+            attention.dense(recording, plan, buffers)
         }
-        scope.record(
-            sdpa::attention(
-                out.partition([self.tile, self.value_width]),
-                q,
-                k,
-                v,
-                self.keys,
-                self.descriptor.scale,
-                self.mask[1],
-                self.queries,
-                self.mask[2],
-                self.mask[3],
-                self.mask[4],
-            )
-            .generics(vec![
-                self.width.to_string(),
-                "1".into(),
-                self.tile.to_string(),
-                self.tile.to_string(),
-                "0".into(),
-                (self.descriptor.query_heads / self.descriptor.kv_heads).to_string(),
-                self.value_width.to_string(),
-                self.mask[0].to_string(),
-            ]),
-        )?;
-        Ok(())
+        .map_err(|error| DeviceError::Launch(error.to_string()))
     }
 }
 

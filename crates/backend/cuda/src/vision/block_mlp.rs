@@ -1,10 +1,12 @@
 //! Device-resident projection, activation and residual for one vision block.
-use super::kernels;
+use super::launches::{Launches, families};
 use super::program::{COLUMN_TILE, TOKEN_TILE, activation, projection_output};
 use super::weights::MlpLayer;
 use crate::device::{CudaDevice, device_error};
+use crate::resident::buffers::buffer;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{Gelu, VisionDense};
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::sync::Arc;
 
@@ -40,46 +42,31 @@ pub(super) fn run(
         .ok_or_else(|| Error::invalid("vision MLP row padding overflow"))?;
     let input = upload(device, input, padded, hidden)?;
     let residual = upload(device, residual, padded, hidden)?;
-    let fc1_weight = weights.fc1.0.view(&[width, hidden]).map_err(device_error)?;
-    let fc2_weight = weights.fc2.0.view(&[hidden, width]).map_err(device_error)?;
-    let mut fc1 = activation(device, padded, width)?;
-    let mut activated = activation(device, padded, width)?;
-    let mut fc2 = activation(device, padded, hidden)?;
-    let mut output = activation(device, padded, hidden)?;
+    let fc1_weight = &weights.fc1.0;
+    let fc2_weight = &weights.fc2.0;
+    let fc1 = activation(device, padded, width)?;
+    let activated = activation(device, padded, width)?;
+    let fc2 = activation(device, padded, hidden)?;
+    let output = activation(device, padded, hidden)?;
+    let (family, dense) = families(device);
     let graph = Graph::scope(&device.stream, |scope| {
-        scope.record(
-            kernels::encoder::dense_bias(
-                (&mut fc1).partition([TOKEN_TILE, COLUMN_TILE]),
-                &input,
-                &fc1_weight,
-                &weights.fc1.1,
-            )
-            .generics(vec![hidden.to_string()]),
-        )?;
-        scope.record(
-            kernels::encoder::gelu_tanh(
-                (&mut activated).partition([TOKEN_TILE, COLUMN_TILE]),
-                &fc1,
-            )
-            .generics(vec![width.to_string()]),
-        )?;
-        scope.record(
-            kernels::encoder::dense_bias(
-                (&mut fc2).partition([TOKEN_TILE, COLUMN_TILE]),
-                &activated,
-                &fc2_weight,
-                &weights.fc2.1,
-            )
-            .generics(vec![width.to_string()]),
-        )?;
-        scope.record(
-            kernels::encoder::add(
-                (&mut output).partition([TOKEN_TILE, COLUMN_TILE]),
-                &residual,
-                &fc2,
-            )
-            .generics(vec![hidden.to_string()]),
-        )?;
+        let launches = Launches::new(&*family, &*dense, scope);
+        launches.dense_bias(VisionDense {
+            out: buffer(&fc1)?,
+            input: buffer(&input)?,
+            weight: buffer(fc1_weight)?,
+            bias: buffer(&weights.fc1.1)?,
+            columns: hidden,
+        })?;
+        launches.gelu(Gelu::Tanh, width, buffer(&activated)?, buffer(&fc1)?)?;
+        launches.dense_bias(VisionDense {
+            out: buffer(&fc2)?,
+            input: buffer(&activated)?,
+            weight: buffer(fc2_weight)?,
+            bias: buffer(&weights.fc2.1)?,
+            columns: width,
+        })?;
+        launches.add(hidden, buffer(&output)?, buffer(&residual)?, buffer(&fc2)?)?;
         Ok(())
     })
     .map_err(device_error)?;

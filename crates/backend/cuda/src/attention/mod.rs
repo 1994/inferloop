@@ -1,5 +1,4 @@
 //! Reusable CUDA attention kernels; model-specific projection and `RoPE` stay with callers.
-mod decode;
 pub(crate) mod kernels;
 mod plan;
 pub use plan::DenseAttentionPlan;

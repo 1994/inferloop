@@ -1,10 +1,13 @@
 //! cuTile implementation of the attention family.
-use super::{attention, pooled_device, resident_attention_decode, resident_attention_prefill};
+use super::{
+    attention, attn_decode, pooled_device, resident_attention_decode, resident_attention_prefill,
+    sdpa,
+};
 use crate::contract::attention::{
-    AppendBuffers, Attention, DecodeBuffers, DecodePlan, GROUPED_ROWS, KvBuffers, KvCache,
-    LanesAppendPlan, LanesDecodePlan, Partials, PooledAppendBuffers, PooledDecodeBuffers,
-    PooledPlan, PrefillAppendPlan, PrefillDecodePlan, STACKED_LANE_ROWS, STACKED_ROWS,
-    SplitDecodePlan, VERIFY_LANES, VerifyDecodeBuffers,
+    AppendBuffers, Attention, DecodeBuffers, DecodePlan, DenseBuffers, DensePlan, GROUPED_ROWS,
+    KvBuffers, KvCache, LanesAppendPlan, LanesDecodePlan, Partials, PooledAppendBuffers,
+    PooledDecodeBuffers, PooledPlan, PrefillAppendPlan, PrefillDecodePlan, STACKED_LANE_ROWS,
+    STACKED_ROWS, SplitDecodePlan, VERIFY_LANES, VerifyDecodeBuffers,
 };
 use crate::contract::buffer::Buffer;
 use crate::contract::recording::Recording;
@@ -94,6 +97,9 @@ impl TileAttention {
         })
     }
 }
+
+/// Output, query, key and value of a dense launch.
+type DenseOperands = (Tensor<f32>, Tensor<f32>, Tensor<f32>, Tensor<f32>);
 
 /// A cache as one launch binds it.
 struct Kv<E: DType> {
@@ -678,7 +684,96 @@ impl TileAttention {
     }
 }
 
+impl TileAttention {
+    fn dense_operands(
+        &self,
+        recording: &Recording<'_>,
+        plan: DensePlan,
+        buffers: DenseBuffers<'_>,
+    ) -> Result<DenseOperands> {
+        let tensor = |buffer: Buffer<'_, f32>, name, rows: usize| {
+            self.tensor(recording, buffer, name, &[rows, buffer.len() / rows])
+        };
+        Ok((
+            tensor(buffers.out, "attention output", plan.query_rows)?,
+            tensor(buffers.query, "attention query", plan.query_rows)?,
+            tensor(buffers.key, "attention key", plan.key_rows)?,
+            tensor(buffers.value, "attention value", plan.key_rows)?,
+        ))
+    }
+}
+
 impl Attention for TileAttention {
+    fn dense(
+        &self,
+        recording: &Recording<'_>,
+        plan: DensePlan,
+        buffers: DenseBuffers<'_>,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let (mut out, query, key, value) = self.dense_operands(recording, plan, buffers)?;
+        scope
+            .record(
+                sdpa::attention(
+                    (&mut out).partition([plan.tiles[0], plan.value_width]),
+                    &query,
+                    &key,
+                    &value,
+                    plan.tokens,
+                    plan.scale,
+                    plan.frame_tokens,
+                    plan.queries,
+                    plan.query_start,
+                    plan.left,
+                    plan.right,
+                )
+                .generics(vec![
+                    plan.head_width.to_string(),
+                    i32::from(plan.online).to_string(),
+                    plan.tiles[0].to_string(),
+                    plan.tiles[1].to_string(),
+                    plan.tiles[2].to_string(),
+                    plan.group.to_string(),
+                    plan.value_width.to_string(),
+                    plan.mask.to_string(),
+                ]),
+            )
+            .map_err(backend_error)?;
+        Ok(())
+    }
+
+    fn dense_decode(
+        &self,
+        recording: &Recording<'_>,
+        plan: DensePlan,
+        buffers: DenseBuffers<'_>,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let (mut out, query, key, value) = self.dense_operands(recording, plan, buffers)?;
+        scope
+            .record(
+                attn_decode::decode(
+                    (&mut out).partition([1, plan.value_width]),
+                    &query,
+                    &key,
+                    &value,
+                    plan.tokens,
+                    plan.scale,
+                    plan.query_start,
+                    plan.left,
+                    plan.right,
+                )
+                .generics(vec![
+                    plan.head_width.to_string(),
+                    plan.value_width.to_string(),
+                    plan.group.to_string(),
+                    plan.mask.to_string(),
+                ]),
+            )
+            .map_err(backend_error)?;
+        Ok(())
+    }
+
     fn append(&self, recording: &Recording<'_>, buffers: AppendBuffers<'_>) -> Result<()> {
         typed!(self, recording, buffers.cache, append_one(buffers))
     }

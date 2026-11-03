@@ -8,12 +8,13 @@ pub mod kernels;
 pub mod plan;
 pub mod recording;
 pub mod target;
+pub mod vision;
 
 pub use attention::{
-    AppendBuffers, Attention, DecodeBuffers, DecodePlan, GROUPED_ROWS, KvBuffers, KvCache,
-    KvElement, LanesAppendPlan, LanesDecodePlan, POOLED_TABLES, Partials, PooledAppendBuffers,
-    PooledDecodeBuffers, PooledPlan, PrefillAppendPlan, PrefillDecodePlan, STACKED_LANE_ROWS,
-    STACKED_ROWS, SplitDecodePlan, VERIFY_LANES, VerifyDecodeBuffers,
+    AppendBuffers, Attention, DecodeBuffers, DecodePlan, DenseBuffers, DensePlan, GROUPED_ROWS,
+    KvBuffers, KvCache, KvElement, LanesAppendPlan, LanesDecodePlan, POOLED_TABLES, Partials,
+    PooledAppendBuffers, PooledDecodeBuffers, PooledPlan, PrefillAppendPlan, PrefillDecodePlan,
+    STACKED_LANE_ROWS, STACKED_ROWS, SplitDecodePlan, VERIFY_LANES, VerifyDecodeBuffers,
 };
 pub use buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner};
 pub use draft::{
@@ -37,3 +38,4 @@ pub use plan::{
 };
 pub use recording::Recording;
 pub use target::Arch;
+pub use vision::{Gelu, Pack, Vision, VisionDense, VisionNorm, VisionRope};

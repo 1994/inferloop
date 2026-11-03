@@ -19,6 +19,7 @@ use sampling::TileSampling;
 use speculation::TileDraft;
 use state::TileState;
 use std::fmt::Display;
+use vision::TileVision;
 
 pub mod attention;
 pub mod mlp;
@@ -37,6 +38,7 @@ pub mod vision;
 #[must_use]
 pub fn kernels(ordinal: usize) -> Kernels {
     Kernels {
+        vision: Box::new(TileVision::new(ordinal)),
         draft: Box::new(TileDraft::new(ordinal)),
         attention: Box::new(TileAttention::new(ordinal)),
         projection: Box::new(TileProjection::new(ordinal)),

@@ -15,6 +15,8 @@ pub const STACKED_ROWS: usize = 32;
 pub const STACKED_LANE_ROWS: usize = 8;
 /// Lanes of one verification step sharing a grouped launch.
 pub const VERIFY_LANES: usize = 3;
+/// Fields of a dense attention tile choice: query rows, key rows, pipelining.
+pub const DENSE_TILES: usize = 3;
 /// Page tables one pooled control block packs.
 pub const POOLED_TABLES: usize = 4;
 
@@ -126,6 +128,39 @@ pub struct PooledDecodeBuffers<'a> {
     pub control: Buffer<'a, i32>,
 }
 
+/// Dense attention operands, `[rows, columns]` each.
+#[derive(Clone, Copy, Debug)]
+pub struct DenseBuffers<'a> {
+    pub out: Buffer<'a, f32>,
+    pub query: Buffer<'a, f32>,
+    pub key: Buffer<'a, f32>,
+    pub value: Buffer<'a, f32>,
+}
+
+/// Compensated-F32 dense attention over one sequence.
+#[derive(Clone, Copy, Debug)]
+pub struct DensePlan {
+    pub head_width: usize,
+    /// Streaming accumulation rather than global-maximum-first.
+    pub online: bool,
+    /// Rows of the query and key tiles; pipelining the third field is reserved.
+    pub tiles: [usize; DENSE_TILES],
+    pub group: usize,
+    pub value_width: usize,
+    pub mask: i32,
+    /// Rows of the query and output operands.
+    pub query_rows: usize,
+    /// Rows of the key and value operands.
+    pub key_rows: usize,
+    pub tokens: i32,
+    pub scale: f32,
+    pub frame_tokens: i32,
+    pub queries: i32,
+    pub query_start: i32,
+    pub left: i32,
+    pub right: i32,
+}
+
 /// What every decode launch agrees on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecodePlan {
@@ -231,6 +266,26 @@ pub trait Attention: Send + Sync {
         recording: &Recording<'_>,
         plan: LanesAppendPlan,
         buffers: AppendBuffers<'_>,
+    ) -> Result<()>;
+
+    /// Dense attention over every query.
+    /// # Errors
+    /// See the trait.
+    fn dense(
+        &self,
+        recording: &Recording<'_>,
+        plan: DensePlan,
+        buffers: DenseBuffers<'_>,
+    ) -> Result<()>;
+
+    /// Dense attention of one query row.
+    /// # Errors
+    /// See the trait.
+    fn dense_decode(
+        &self,
+        recording: &Recording<'_>,
+        plan: DensePlan,
+        buffers: DenseBuffers<'_>,
     ) -> Result<()>;
 
     /// Decode one lane with one launch.

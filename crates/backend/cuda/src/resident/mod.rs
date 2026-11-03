@@ -9,7 +9,7 @@ pub(crate) mod attention_mma;
 pub(crate) mod attention_oxide;
 pub(crate) mod attention_prefill;
 mod batch_projection;
-mod buffers;
+pub(crate) mod buffers;
 pub(crate) use buffers::buffer as tensor_buffer;
 pub(crate) mod capacity;
 mod capture;
