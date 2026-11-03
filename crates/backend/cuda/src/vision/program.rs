@@ -361,8 +361,8 @@ pub fn project(
 /// Rejects shapes that disagree with the weights or failed CUDA capture/launch.
 pub fn project_with(
     device: &CudaDevice,
-    weight: &Arc<Tensor<bf16>>,
-    bias: &Arc<Tensor<bf16>>,
+    weight: &Allocation<bf16>,
+    bias: &Allocation<bf16>,
     input: &[f32],
     rows: usize,
     out_features: usize,

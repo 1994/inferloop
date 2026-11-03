@@ -78,14 +78,14 @@ impl Geometry {
 }
 
 struct Layer<'a> {
-    norm1_weight: &'a Arc<Tensor<bf16>>,
-    norm1_bias: &'a Arc<Tensor<bf16>>,
-    norm2_weight: &'a Arc<Tensor<bf16>>,
-    norm2_bias: &'a Arc<Tensor<bf16>>,
+    norm1_weight: &'a Allocation<bf16>,
+    norm1_bias: &'a Allocation<bf16>,
+    norm2_weight: &'a Allocation<bf16>,
+    norm2_bias: &'a Allocation<bf16>,
     attention: &'a AttentionLayer,
     mlp: &'a MlpLayer,
-    fc1: &'a Arc<Tensor<bf16>>,
-    fc2: &'a Arc<Tensor<bf16>>,
+    fc1: &'a Allocation<bf16>,
+    fc2: &'a Allocation<bf16>,
 }
 
 impl<'a> Layer<'a> {
@@ -289,8 +289,8 @@ fn record_norm(
     launches: &Launches<'_>,
     input: &Allocation<f32>,
     output: &Allocation<f32>,
-    weight: &Arc<Tensor<bf16>>,
-    bias: &Arc<Tensor<bf16>>,
+    weight: &Allocation<bf16>,
+    bias: &Allocation<bf16>,
     geometry: &Geometry,
 ) -> StdResult<(), DeviceError> {
     launches.layernorm(VisionNorm {

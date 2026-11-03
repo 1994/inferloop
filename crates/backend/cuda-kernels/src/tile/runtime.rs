@@ -43,9 +43,20 @@ impl Element for f8e4m3fn {
 }
 
 /// Device memory the host owns. A graph that recorded it keeps it alive.
+///
+/// A clone shares the memory, as an `Arc` does; nothing is copied.
 pub struct Allocation<T: DType> {
     tensor: Arc<Tensor<T>>,
     owner: Owner,
+}
+
+impl<T: DType> Clone for Allocation<T> {
+    fn clone(&self) -> Self {
+        Self {
+            tensor: Arc::clone(&self.tensor),
+            owner: Arc::clone(&self.owner),
+        }
+    }
 }
 
 impl<T: DType> Allocation<T> {

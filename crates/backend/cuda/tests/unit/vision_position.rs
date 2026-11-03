@@ -40,7 +40,7 @@ fn device_positions_match_scalar_interpolation_and_padding() -> Result<()> {
     let table: Vec<bf16> = (0..ROWS * HIDDEN)
         .map(|i| bounded_float(i).map(|value| bf16::from_f32((value * 0.013).sin())))
         .collect::<Result<_>>()?;
-    let device_table = device.upload(table.clone(), &[ROWS, HIDDEN])?;
+    let device_table = device.runtime().upload(table.clone())?;
     for tokens in [1_usize, 31, 32, 33, 96] {
         let padded = tokens.div_ceil(TOKEN_TILE) * TOKEN_TILE;
         let taps = fixture_taps(tokens)?;

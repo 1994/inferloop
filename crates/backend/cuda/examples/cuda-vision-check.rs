@@ -65,7 +65,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
         .iter()
         .map(|pair| bf16::from_bits(u16::from_le_bytes(*pair)))
         .collect();
-    if expected != device.read(weights.get(slot)?)? {
+    if expected != device.runtime().read(weights.get(slot)?)? {
         return Err(Error::invariant("vision weight upload mismatch").into());
     }
 

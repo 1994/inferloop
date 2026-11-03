@@ -209,8 +209,8 @@ fn projection_preserves_sub_bf16_residuals() -> Result<()> {
     let weights: Vec<bf16> = (0..WIDTH * WIDTH)
         .map(|index| bf16::from_f32(if index % 2 == 0 { 1.0 } else { -1.0 }))
         .collect();
-    let weight = device.upload(weights, &[WIDTH, WIDTH])?;
-    let bias = device.upload(vec![bf16::ZERO; WIDTH], &[WIDTH])?;
+    let weight = device.runtime().upload(weights)?;
+    let bias = device.runtime().upload(vec![bf16::ZERO; WIDTH])?;
     let input: Vec<f32> = (0..rows * WIDTH)
         .map(|index| {
             if index % 2 == 0 {

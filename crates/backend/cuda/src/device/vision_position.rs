@@ -5,11 +5,9 @@
 )]
 use crate::device::{CudaDevice, device_error};
 use cutile::half::bf16;
-use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::PositionTaps;
 use infer_cuda_kernels::tile::runtime::Allocation;
-use std::sync::Arc;
 
 #[cfg(test)]
 #[path = "../../tests/unit/vision_position.rs"]
@@ -39,7 +37,7 @@ impl DeviceTaps {
         device: &CudaDevice,
         tap_indices: &[[u32; TAPS]],
         tap_weights: &[[f32; TAPS]],
-        table: &Arc<Tensor<bf16>>,
+        table: &Allocation<bf16>,
         rows: usize,
         hidden: usize,
         padded: usize,
@@ -47,17 +45,12 @@ impl DeviceTaps {
         let elements = rows
             .checked_mul(hidden)
             .ok_or_else(|| Error::invalid("vision position table overflow"))?;
-        let bytes = elements
-            .checked_mul(size_of::<bf16>())
-            .ok_or_else(|| Error::invalid("vision position table overflow"))?;
         padded
             .checked_mul(hidden)
             .and_then(|value| value.checked_mul(size_of::<f32>()))
             .ok_or_else(|| Error::invalid("vision position activation overflow"))?;
-        let table_shape = [
-            i32::try_from(rows).map_err(device_error)?,
-            i32::try_from(hidden).map_err(device_error)?,
-        ];
+        i32::try_from(rows).map_err(device_error)?;
+        i32::try_from(hidden).map_err(device_error)?;
         i32::try_from(padded).map_err(device_error)?;
         if rows == 0
             || hidden == 0
@@ -66,8 +59,7 @@ impl DeviceTaps {
             || tap_indices.is_empty()
             || tap_indices.len() != tap_weights.len()
             || tap_indices.len() > padded
-            || table.num_bytes() != bytes
-            || table.shape() != table_shape
+            || table.len() != elements
             || i32::try_from(elements).is_err()
         {
             return Err(Error::invalid("vision position gather shape"));
@@ -91,7 +83,7 @@ impl DeviceTaps {
         Ok(Self {
             indices: device.runtime().upload(indices)?,
             weights: device.runtime().upload(weights)?,
-            table: Allocation::adopt(Arc::clone(table))?,
+            table: table.clone(),
             hidden,
         })
     }
