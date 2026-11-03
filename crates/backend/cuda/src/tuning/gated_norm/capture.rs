@@ -3,7 +3,6 @@ use super::{
     evidence::{Key, Shape, Times, Trial},
 };
 use crate::device::{CudaDevice, device_error};
-use crate::resident::kernels::aux::norm;
 use crate::resident::tensor_buffer as buffer;
 use crate::tuning::preparation::driver_build;
 use cutile::error::tensor_error;
@@ -13,6 +12,7 @@ use cutile::{
 };
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{NormBuffers, NormLayout, NormPlan, Recording};
+use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::iter::once;
 use std::time::Duration;
@@ -35,23 +35,6 @@ pub struct Buffers {
     output: Tensor<f32>,
 }
 impl Buffers {
-    pub fn metadata(device: &CudaDevice, shape: Shape) -> Result<Self> {
-        let matrix = [shape.rows, shape.dimension];
-        let meta = || {
-            api::meta::<f32>(&matrix)
-                .sync_on(&device.stream)
-                .map_err(device_error)
-        };
-        Ok(Self {
-            shape,
-            x: meta()?,
-            gate: meta()?,
-            output: meta()?,
-            weight: api::meta::<f32>(&[shape.dimension])
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
-        })
-    }
     pub fn new(device: &CudaDevice, shape: Shape) -> Result<Self> {
         let n = shape
             .rows
@@ -85,40 +68,18 @@ impl Buffers {
                 .map_err(device_error)?,
         })
     }
-    pub fn key(&self, device: &CudaDevice, shape: Shape) -> Result<Key> {
+    pub fn key(device: &CudaDevice, shape: Shape) -> Result<Key> {
         use cutile::cutile_compiler::cuda_tile_runtime_utils as compiler;
-        let x = self
-            .x
-            .view(&[shape.rows, shape.dimension])
-            .map_err(device_error)?;
-        let gate = self
-            .gate
-            .view(&[shape.rows, shape.dimension])
-            .map_err(device_error)?;
-        let mut output = api::meta::<f32>(&[shape.rows, shape.dimension])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
-        let mut ids = Vec::new();
-        for occupancy in once(0).chain(CANDIDATES) {
-            ids.push(
-                norm(
-                    (&mut output).partition([1, shape.dimension]),
-                    &x,
-                    &self.weight,
-                    &gate,
-                    f32::from_bits(shape.epsilon_bits),
-                    0.0f32,
-                )
-                .generics(vec![
-                    shape.dimension.to_string(),
-                    shape.dimension.to_string(),
-                    "1".into(),
-                ])
-                .compile_options(compile_options(occupancy))
-                .l2_cache_key_on(&device.stream)
-                .map_err(device_error)?,
-            );
-        }
+        let occupancies: Vec<_> = once(0)
+            .chain(CANDIDATES)
+            .map(|occupancy| compile_options(occupancy).occupancy)
+            .collect();
+        let ids = identity::gated_norm_candidates(
+            &device.stream,
+            [shape.rows, shape.dimension],
+            f32::from_bits(shape.epsilon_bits),
+            &occupancies,
+        )?;
         Ok(Key {
             hardware: serde_json::to_string(device.profile()?).map_err(device_error)?,
             driver_version: CudaDevice::driver_version()?,

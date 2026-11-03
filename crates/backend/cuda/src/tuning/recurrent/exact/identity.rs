@@ -1,8 +1,10 @@
 //! Actual native IR/compiler identity and embedded Rust device artifact identity.
-use super::super::{SHAPE_RANK, reference::Fixture};
-use super::capture::Captured;
+use super::super::SHAPE_RANK;
+use super::capture::{DIM, KH, NATIVE_VALUE_COLUMNS, VH};
+use crate::constants::METADATA_FIELDS;
 use crate::device::CudaDevice;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::identity::exact_recurrence;
 use sha2::{Digest, Sha256};
 use std::env::var_os;
 use std::{
@@ -32,9 +34,12 @@ pub(super) fn fingerprint(device: &CudaDevice, shape: [usize; SHAPE_RANK]) -> Re
     if let Some(value) = cached {
         return Ok(value);
     }
-    let fixture = Fixture::new_case(shape, false, [0, 0, 0, 0])?;
-    let mut data = Captured::new(device, &fixture)?;
-    let identities = data.identities(device)?;
+    let identities = exact_recurrence(
+        &device.stream,
+        [KH, VH, DIM, shape[3]],
+        NATIVE_VALUE_COLUMNS,
+        METADATA_FIELDS,
+    )?;
     let mut hash = Sha256::new();
     for bytes in [
         context.as_bytes(),

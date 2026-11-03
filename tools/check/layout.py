@@ -27,9 +27,9 @@ BACKENDS = {
 # baseline too.
 CUDA_HOST = "crates/backend/cuda/src"
 CUDA_HOST_TOKENS = {
-    "Tensor<": 828,
-    ".partition(": 55,
-    ".generics(": 29,
+    "Tensor<": 826,
+    ".partition(": 44,
+    ".generics(": 23,
     "cuda_core": 82,
     "CudaGraph": 0,
 }

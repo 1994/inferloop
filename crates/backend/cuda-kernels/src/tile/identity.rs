@@ -7,7 +7,9 @@ use super::projection::{
     fp8_gemm, linear_batch, nvfp4_gemm, pool_gemv, prefill_gemm, small_gemm, vendor_fp8,
 };
 use super::recurrent::recurrent_prefill;
+use super::state::aux;
 use cuda_core::{DType, Stream, f4e2m1fnx2, f8e4m3fn};
+use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::Result;
@@ -352,6 +354,201 @@ pub fn dense_candidates(
                 .map_err(backend_error)?,
             );
         }
+    }
+    Ok(identities)
+}
+
+/// Tiles a fused `SwiGLU` identity covers.
+#[derive(Clone, Copy, Debug)]
+pub struct SwigluSearch<'a> {
+    pub group: usize,
+    pub codes_tile: [usize; 2],
+    pub scales_tile: [usize; 2],
+    pub tiles: &'a [[usize; 2]],
+}
+
+/// The row-grouped quantizer and every candidate tile of the fused `SwiGLU` product.
+/// # Errors
+/// Reports a failed lowering.
+pub fn swiglu_candidates(
+    stream: &Arc<Stream>,
+    shape: [usize; GEMM_RANK],
+    search: SwigluSearch<'_>,
+) -> Result<Vec<String>> {
+    let [m, n, k] = shape;
+    let group = search.group;
+    let mut q = api::meta::<f4e2m1fnx2>(&[m, k / 2])
+        .sync_on(stream)
+        .map_err(backend_error)?;
+    let mut qs = api::meta::<f8e4m3fn>(&[m, k / group])
+        .sync_on(stream)
+        .map_err(backend_error)?;
+    let weight = api::meta::<f4e2m1fnx2>(&[n, k / 2])
+        .sync_on(stream)
+        .map_err(backend_error)?;
+    let weight_scales = api::meta::<f8e4m3fn>(&[n, k / group])
+        .sync_on(stream)
+        .map_err(backend_error)?;
+    let mut codes = api::meta::<f4e2m1fnx2>(&[m, n / 2])
+        .sync_on(stream)
+        .map_err(backend_error)?;
+    let mut scales = api::meta::<f8e4m3fn>(&[m, n / group])
+        .sync_on(stream)
+        .map_err(backend_error)?;
+    let input = api::meta::<f32>(&[m, k])
+        .sync_on(stream)
+        .map_err(backend_error)?;
+    let mut identities = vec![
+        nvfp4_gemm::quantize_rows(
+            (&mut q).partition(search.codes_tile),
+            (&mut qs).partition(search.scales_tile),
+            &input,
+            1.0,
+        )
+        .generics(vec![k.to_string()])
+        .l2_cache_key_on(stream)
+        .map_err(backend_error)?,
+    ];
+    for &[rows, outputs] in search.tiles {
+        identities.push(
+            nvfp4_gemm::packed_swiglu(
+                (&mut codes).partition([rows, outputs / 2]),
+                (&mut scales).partition([rows, outputs / group]),
+                &q,
+                &qs,
+                &weight,
+                &weight_scales,
+                &weight,
+                &weight_scales,
+                1.0,
+                1.0,
+                1.0,
+            )
+            .generics(
+                [k, rows, outputs, outputs / 2, outputs / group]
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            )
+            .l2_cache_key_on(stream)
+            .map_err(backend_error)?,
+        );
+    }
+    Ok(identities)
+}
+
+/// The gated norm at each candidate occupancy; `None` is the compiler's default.
+/// # Errors
+/// Reports a failed lowering.
+pub fn gated_norm_candidates(
+    stream: &Arc<Stream>,
+    [rows, dimension]: [usize; 2],
+    epsilon: f32,
+    occupancies: &[Option<i32>],
+) -> Result<Vec<String>> {
+    let meta = || {
+        api::meta::<f32>(&[rows, dimension])
+            .sync_on(stream)
+            .map_err(backend_error)
+    };
+    let (x, gate, mut output) = (meta()?, meta()?, meta()?);
+    let weight = api::meta::<f32>(&[dimension])
+        .sync_on(stream)
+        .map_err(backend_error)?;
+    let x = x.view(&[rows, dimension]).map_err(backend_error)?;
+    let gate = gate.view(&[rows, dimension]).map_err(backend_error)?;
+    let mut identities = Vec::new();
+    for occupancy in occupancies.iter().copied() {
+        identities.push(
+            aux::norm(
+                (&mut output).partition([1, dimension]),
+                &x,
+                &weight,
+                &gate,
+                epsilon,
+                0.0_f32,
+            )
+            .generics(vec![
+                dimension.to_string(),
+                dimension.to_string(),
+                "1".into(),
+            ])
+            .compile_options(occupancy.map_or_else(CompileOptions::default, |occupancy| {
+                CompileOptions::default().occupancy(occupancy)
+            }))
+            .l2_cache_key_on(stream)
+            .map_err(backend_error)?,
+        );
+    }
+    Ok(identities)
+}
+
+/// The native prepared recurrence: normalize, gates, precomputed delta and transpose.
+/// # Errors
+/// Reports a failed lowering or an empty identity.
+pub fn exact_recurrence(
+    stream: &Arc<Stream>,
+    shape: [usize; RECURRENT_RANK],
+    value_columns: usize,
+    metadata_fields: usize,
+) -> Result<Vec<String>> {
+    let [kh, vh, dim, width] = shape;
+    let meta = |extent: &[usize]| {
+        api::meta::<f32>(extent)
+            .sync_on(stream)
+            .map_err(backend_error)
+    };
+    let qkv = meta(&[width, 2 * kh + vh, dim])?;
+    let (beta, alpha) = (meta(&[width, vh])?, meta(&[width, vh])?);
+    let (a_log, bias) = (meta(&[vh])?, meta(&[vh])?);
+    let metadata = api::meta::<i32>(&[metadata_fields])
+        .sync_on(stream)
+        .map_err(backend_error)?;
+    let mut normalized = meta(&[width, 2 * kh, dim])?;
+    let (mut betas, mut decays) = (meta(&[width, vh])?, meta(&[width, vh])?);
+    let mut state = meta(&[vh, dim, dim])?;
+    let mut scratch = meta(&[vh, width, dim])?;
+    let mut output = meta(&[width, vh, dim])?;
+    let identities = vec![
+        recurrent_prefill::normalize_shared((&mut normalized).partition([1, 1, dim]), &qkv)
+            .generics(vec![kh.to_string(), dim.to_string()])
+            .l2_cache_key_on(stream)
+            .map_err(backend_error)?,
+        recurrent_prefill::gates_shared(
+            (&mut betas).partition([1, 1]),
+            (&mut decays).partition([1, 1]),
+            &beta,
+            &alpha,
+            &a_log,
+            &bias,
+        )
+        .l2_cache_key_on(stream)
+        .map_err(backend_error)?,
+        recurrent_prefill::delta_precomputed(
+            (&mut state).partition([1, dim, value_columns]),
+            (&mut scratch).partition([1, width, value_columns]),
+            &qkv,
+            &normalized,
+            &betas,
+            &decays,
+            &metadata,
+        )
+        .generics(vec![
+            kh.to_string(),
+            vh.to_string(),
+            dim.to_string(),
+            width.to_string(),
+            value_columns.to_string(),
+        ])
+        .l2_cache_key_on(stream)
+        .map_err(backend_error)?,
+        recurrent_prefill::transpose((&mut output).partition([1, 1, dim]), &scratch)
+            .generics(vec![dim.to_string()])
+            .l2_cache_key_on(stream)
+            .map_err(backend_error)?,
+    ];
+    if identities.iter().any(String::is_empty) {
+        return Err(backend_error("incomplete exact recurrence identity"));
     }
     Ok(identities)
 }

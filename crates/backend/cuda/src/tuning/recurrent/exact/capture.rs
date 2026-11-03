@@ -8,10 +8,10 @@ use crate::{
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::tile::runtime::Graph;
-const KH: usize = 16;
-const VH: usize = 48;
-const DIM: usize = 128;
-const NATIVE_VALUE_COLUMNS: usize = 16;
+pub(super) const KH: usize = 16;
+pub(super) const VH: usize = 48;
+pub(super) const DIM: usize = 128;
+pub(super) const NATIVE_VALUE_COLUMNS: usize = 16;
 fn zeros(device: &CudaDevice, shape: &[usize]) -> Result<Tensor<f32>> {
     api::zeros::<f32>(shape)
         .sync_on(&device.stream)
@@ -110,51 +110,6 @@ impl Captured {
             Ok(())
         })
         .map_err(device_error)
-    }
-    pub fn identities(&mut self, device: &CudaDevice) -> Result<Vec<String>> {
-        let width = self.width;
-        let keys = vec![
-            kernels::normalize_shared((&mut self.normalized).partition([1, 1, DIM]), &self.qkv)
-                .generics(vec![KH.to_string(), DIM.to_string()])
-                .l2_cache_key_on(&device.stream)
-                .map_err(device_error)?,
-            kernels::gates_shared(
-                (&mut self.betas).partition([1, 1]),
-                (&mut self.decays).partition([1, 1]),
-                &self.beta,
-                &self.alpha,
-                &self.a_log,
-                &self.bias,
-            )
-            .l2_cache_key_on(&device.stream)
-            .map_err(device_error)?,
-            kernels::delta_precomputed(
-                (&mut self.state).partition([1, DIM, NATIVE_VALUE_COLUMNS]),
-                (&mut self.scratch).partition([1, width, NATIVE_VALUE_COLUMNS]),
-                &self.qkv,
-                &self.normalized,
-                &self.betas,
-                &self.decays,
-                &self.metadata,
-            )
-            .generics(vec![
-                KH.to_string(),
-                VH.to_string(),
-                DIM.to_string(),
-                width.to_string(),
-                "16".into(),
-            ])
-            .l2_cache_key_on(&device.stream)
-            .map_err(device_error)?,
-            kernels::transpose((&mut self.output).partition([1, 1, DIM]), &self.scratch)
-                .generics(vec![DIM.to_string()])
-                .l2_cache_key_on(&device.stream)
-                .map_err(device_error)?,
-        ];
-        if keys.iter().any(String::is_empty) {
-            return Err(Error::invalid("exact GDN native kernel identity"));
-        }
-        Ok(keys)
     }
     pub fn run(&self, device: &CudaDevice, graph: &Graph) -> Result<[Vec<f32>; 2]> {
         graph
