@@ -2,7 +2,7 @@
 //! Recurrent checkpoints stay on the device; KV rollback is a logical prefix.
 //! Prefill width 32 keeps one batched arena: auxiliaries record once per node.
 use super::arena::prefix_view;
-use super::buffers::{buffer, kv_cache};
+use super::buffers::{buffer, kv_cache, region};
 use super::fusion_batch::Workspace as FusionRows;
 use super::prefill_projection::{DensePlan, record_narrow};
 use super::{
@@ -37,7 +37,7 @@ use crate::mlp::ProjectionWeight;
 use cutile::prelude::*;
 use infer_core::{Error, ErrorCode, Result, TensorId};
 use infer_cuda_kernels::contract::{DecodePlan, VerifyDecodeBuffers};
-use infer_cuda_kernels::contract::{LastRowsKind, LastRowsPlan, Recording};
+use infer_cuda_kernels::contract::{EmbeddingBatchPlan, LastRowsKind, LastRowsPlan, Recording};
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::{DataflowGraph, StateKind, TensorNode, TensorOp, TensorStorage};
 use infer_models::mrope::ROTARY_AXES;
@@ -45,7 +45,6 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::mem::take;
 use std::result::Result as StdResult;
-use std::slice::from_ref;
 use std::sync::Mutex;
 
 pub type States = BTreeMap<TensorId, Vec<Tensor<f32>>>;
@@ -1535,23 +1534,26 @@ impl BatchBuilder<'_> {
         let output = arena.buffers[slot]
             .take()
             .ok_or_else(|| error("prompt embedding output"))?;
-        let mut rows = output.reshape(&[lanes, dimension])?;
         // The owner holds rows for the widest prompt graph; this chunk reads its first lanes.
-        let range = 0..size;
-        let external = external.slice(from_ref(&range)).map_err(error)?;
-        let external = external.view(&[lanes, dimension]).map_err(error)?;
-        let recorded = scope
-            .record(
-                super::attention::attention::embedding_rows(
-                    (&mut rows).partition([1, AUX_KERNEL_TILE]),
-                    weight,
-                    &external,
-                    metadata_batch,
-                )
-                .generics(vec![dimension.to_string(), METADATA_FIELDS.to_string()]),
+        let external = region(buffer(external)?.address(), size);
+        let recorded = self
+            .weights
+            .kernels
+            .projection
+            .embedding_batch(
+                &Recording::scope(scope),
+                &EmbeddingBatchPlan {
+                    dimension,
+                    fields: METADATA_FIELDS,
+                    tile: AUX_KERNEL_TILE,
+                },
+                buffer(&output)?,
+                buffer(weight.as_ref())?,
+                Some(external),
+                buffer(metadata_batch)?,
             )
-            .map(drop);
-        arena.buffers[slot] = Some(rows.reshape(&[size])?);
+            .map_err(error);
+        arena.buffers[slot] = Some(output);
         recorded.map(|()| true)
     }
 

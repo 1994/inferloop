@@ -1,3 +1,4 @@
+#[cfg(test)]
 pub use infer_cuda_kernels::tile::attention::attention;
 
 #[cfg(test)]

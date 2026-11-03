@@ -295,6 +295,25 @@ pub struct EmbeddingPlan {
     pub external: bool,
 }
 
+/// Embedding of `dimension` channels over a metadata batch of `fields` per row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EmbeddingBatchPlan {
+    pub dimension: usize,
+    pub fields: usize,
+    /// Output tile columns.
+    pub tile: usize,
+}
+
+/// BF16 projection of `[rows, columns]` over `[row_tile, output_tile]` tiles of depth `depth`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LinearRowsPlan {
+    pub rows: usize,
+    pub row_tile: usize,
+    pub output_tile: usize,
+    pub depth: usize,
+    pub columns: usize,
+}
+
 /// BF16 projection of `[rows, columns]` into `[rows, outputs]`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DenseRowsPlan {

@@ -1,6 +1,5 @@
 use super::buffers::{buffer, region};
 #[cfg(test)]
-use super::linear_batch::batched;
 use super::{ProgramWeights, batch::Lane, capture::error};
 #[cfg(test)]
 use crate::constants::CB_DECODE_SLOTS;
@@ -23,7 +22,9 @@ use crate::{
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, OpId, Result};
-use infer_cuda_kernels::contract::{Buffer, Kernels, Recording, RowsKernel, RowsPlan};
+use infer_cuda_kernels::contract::{
+    Buffer, Kernels, LinearRowsPlan, Recording, RowsKernel, RowsPlan,
+};
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;
@@ -232,7 +233,15 @@ pub(super) fn record_slots(
         .get(&node.inputs[1])
         .ok_or_else(|| error("slot projection weight"))?;
     #[cfg(test)]
-    if record_pool_small_f32(scope, node, weights, weight, &input, &mut output, columns)? {
+    if record_pool_small_f32(
+        scope,
+        node,
+        weights,
+        weight,
+        region(input_pointer, lanes * columns),
+        &mut output,
+        columns,
+    )? {
         arena.buffers[slot] = Some(output.reshape(&[flat]).map_err(error)?);
         return Ok(());
     }
@@ -407,11 +416,11 @@ fn record_pool_small_f32(
     node: &TensorNode,
     weights: &ProgramWeights,
     weight: &ProjectionWeight,
-    input: &TensorView<'_, f32>,
+    input: Buffer<'_, f32>,
     output: &mut Tensor<f32>,
     columns: usize,
 ) -> StdResult<bool, DeviceError> {
-    let rows = usize::try_from(input.shape()[0]).map_err(error)?;
+    let rows = input.len() / columns.max(1);
     if rows != CB_DECODE_SLOTS
         || !super::small_gemm::pool_f32_enabled()
         || weights.activation_quantization(node.inputs[1]).is_some()
@@ -428,19 +437,23 @@ fn record_pool_small_f32(
         .get(&node.inputs[1])
         .copied()
         .unwrap_or(LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS).map_err(error)?);
-    scope.record(
-        batched::dense(
-            output.partition([CB_DECODE_SLOTS, tile.rows()]),
+    weights
+        .kernels
+        .projection
+        .linear_rows(
+            &Recording::scope(scope),
+            &LinearRowsPlan {
+                rows,
+                row_tile: CB_DECODE_SLOTS,
+                output_tile: tile.rows(),
+                depth: tile.columns(),
+                columns,
+            },
+            buffer(output)?,
             input,
-            weight,
+            buffer(weight.as_ref())?,
         )
-        .generics(vec![
-            bf16::DTYPE.as_str().into(),
-            tile.rows().to_string(),
-            tile.columns().to_string(),
-            columns.to_string(),
-        ]),
-    )?;
+        .map_err(error)?;
     #[cfg(test)]
     super::small_gemm::note_pool_record();
     Ok(true)

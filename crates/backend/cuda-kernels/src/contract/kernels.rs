@@ -5,10 +5,10 @@ use super::draft::Draft;
 use super::vision::Vision;
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::plan::{
-    BinaryOp, DeltaKernel, DenseRowsPlan, DownPlan, EmbeddingPlan, ExpertPlan, Fp4QuantPlan,
-    Fp8QuantPlan, FusionNormPlan, GemmPlan, GreedyPlan, LastRowsPlan, NormPlan, PoolGemvPlan,
-    PromptPlan, QuantNormPlan, RopePlan, RoutePlan, RowNormPlan, RowsPlan, SplitGemmPlan,
-    SplitPlan, THREE_ROWS, UnaryOp,
+    BinaryOp, DeltaKernel, DenseRowsPlan, DownPlan, EmbeddingBatchPlan, EmbeddingPlan, ExpertPlan,
+    Fp4QuantPlan, Fp8QuantPlan, FusionNormPlan, GemmPlan, GreedyPlan, LastRowsPlan, LinearRowsPlan,
+    NormPlan, PoolGemvPlan, PromptPlan, QuantNormPlan, RopePlan, RoutePlan, RowNormPlan, RowsPlan,
+    SplitGemmPlan, SplitPlan, THREE_ROWS, UnaryOp,
 };
 use crate::contract::plan::{
     ConvKernel, DeltaStepPlan, PoolConvPlan, PoolDeltaPlan, RecurrentShape,
@@ -115,6 +115,31 @@ pub trait Projection: Send + Sync {
         weight: Buffer<'_, Bf16>,
         external: Buffer<'_, f32>,
         metadata: Buffer<'_, i32>,
+    ) -> Result<()>;
+
+    /// Embedding rows of a whole metadata batch, taken from `external` where a row allows it.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn embedding_batch(
+        &self,
+        recording: &Recording<'_>,
+        plan: &EmbeddingBatchPlan,
+        out: Buffer<'_, f32>,
+        weight: Buffer<'_, Bf16>,
+        external: Option<Buffer<'_, f32>>,
+        metadata: Buffer<'_, i32>,
+    ) -> Result<()>;
+
+    /// BF16 projection of a pool's rows over an explicit output and depth tile.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn linear_rows(
+        &self,
+        recording: &Recording<'_>,
+        plan: &LinearRowsPlan,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        w: Buffer<'_, Bf16>,
     ) -> Result<()>;
 
     /// Two prompt BF16 projections of one input in one launch.
