@@ -1100,11 +1100,7 @@ impl Projection for TileProjection {
         column: Buffer<'_, f32>,
     ) -> Result<()> {
         let rows = out.len().checked_div(columns).unwrap_or(0);
-        if rows == 0
-            || out.len() != rows * columns
-            || !columns.is_multiple_of(SCALE_COLUMNS)
-            || row.len() != rows
-            || column.len() != columns
+        if rows == 0 || out.len() != rows * columns || row.len() != rows || column.len() != columns
         {
             return Err(Error::invalid(
                 "channel scale: factors do not match the output",

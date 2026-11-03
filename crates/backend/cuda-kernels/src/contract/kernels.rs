@@ -104,10 +104,10 @@ pub trait Projection: Send + Sync {
     ) -> Result<()>;
 
     /// Scale `[rows, columns]` `out` in place by `row[r] * column[c]`, the per-token and
-    /// per-channel factors a vendor FP8 GEMM leaves unapplied.
+    /// per-channel factors a vendor FP8 GEMM leaves unapplied. Any `columns` is accepted;
+    /// the ragged last column tile is masked.
     /// # Errors
-    /// Fails when the factors do not match `out`, `columns` does not tile, or the launch is
-    /// rejected.
+    /// Fails when the factors do not match `out` or the launch is rejected.
     fn channel_scale(
         &self,
         recording: &Recording<'_>,
