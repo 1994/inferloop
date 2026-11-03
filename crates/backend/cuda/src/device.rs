@@ -21,7 +21,7 @@ use infer_cuda_kernels::contract::Kernels;
 use infer_cuda_kernels::contract::target::Arch;
 use infer_cuda_kernels::tile::kernels;
 use infer_cuda_kernels::tile::projection::matvec::{MatvecGeometry, dense_matvec};
-use infer_cuda_kernels::tile::runtime::{Device as Runtime, Element, HeadMajor};
+use infer_cuda_kernels::tile::runtime::{Device as Runtime, Element, HeadMajor, Transfers};
 use serde::Serialize;
 use std::fmt::Display;
 use std::sync::{Arc, OnceLock};
@@ -549,12 +549,15 @@ impl CudaDevice {
         self.runtime.enqueue(|transfers| transfers.copy(dst, src))
     }
 
+    /// Image preprocessing stages through its own pinned pool inside a device op and is the last
+    /// user of this; it moves onto [`Runtime::staging`] together with that op.
+    ///
     /// Async H2D copy out of a pinned staging buffer, enqueued on the device stream and
     /// never synchronized here: the caller keeps the pinned bytes untouched until a later
     /// stream barrier (a readback or the owning pool's drop barrier) establishes completion.
     /// # Errors
     /// Rejects copies outside either buffer or a driver failure when the copy cannot be enqueued.
-    pub(crate) fn copy_h2d_pinned<T: DType + DeviceCopy>(
+    pub(super) fn copy_h2d_pinned<T: DType + DeviceCopy>(
         &self,
         dst: &mut Tensor<T>,
         src: &PinnedHostBuffer<T>,
@@ -579,6 +582,13 @@ impl CudaDevice {
             )
         };
         driver_status(status)
+    }
+
+    /// Enqueue `work` on this device's stream; see [`Runtime::enqueue`].
+    /// # Errors
+    /// Returns what `work` returns, or a failure to track the batch.
+    pub(crate) fn enqueue<R>(&self, work: impl FnOnce(&Transfers<'_>) -> Result<R>) -> Result<R> {
+        self.runtime.enqueue(work)
     }
 
     /// # Errors

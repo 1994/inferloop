@@ -106,3 +106,40 @@ fn head_copy_moves_the_prefix_of_every_head_and_keeps_the_tails() -> Result<()> 
     );
     Ok(())
 }
+
+#[test]
+#[ignore = "requires CUDA; run release serially inside safe-run"]
+fn staging_refills_a_slot_only_after_the_device_read_it() -> Result<()> {
+    const UPLOADS: usize = 4;
+    let device = CudaDevice::new(0)?;
+    let runtime = device.runtime();
+    let mut staging = runtime.staging::<f32>(LARGE, 1)?;
+    let rows = (0..UPLOADS)
+        .map(|upload| {
+            (0..LARGE)
+                .map(|index| value(index ^ upload))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let targets = (0..UPLOADS)
+        .map(|_| runtime.zeros::<f32>(LARGE))
+        .collect::<Result<Vec<_>>>()?;
+    for (row, target) in rows.iter().zip(&targets) {
+        runtime.enqueue(|transfers| transfers.upload(&mut staging, target.buffer(), row))?;
+    }
+    for (row, target) in rows.iter().zip(&targets) {
+        assert!(
+            runtime.read(target)? == *row,
+            "an upload kept what it staged"
+        );
+    }
+    assert!(
+        runtime
+            .enqueue(|transfers| {
+                transfers.upload(&mut staging, targets[0].buffer(), &rows[0][..1])
+            })
+            .is_err(),
+        "a destination of another length is rejected"
+    );
+    Ok(())
+}

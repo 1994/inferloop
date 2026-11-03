@@ -182,6 +182,9 @@ def check_exceptions():
                         # Eager transfers: extents and overlap are checked, and each batch retains
                         # its owners until the event recorded after it has passed.
                         TILE_KERNELS / "runtime/transfer.rs",
+                        # Pinned staging: a slot is refilled only after the event behind its last
+                        # copy has passed, and dropping the ring waits for every pending read.
+                        TILE_KERNELS / "runtime/staging.rs",
                         TILE_KERNELS / "norm/contract.rs",
                         TILE_KERNELS / "mlp/contract.rs",
                         TILE_KERNELS / "moe/contract.rs",

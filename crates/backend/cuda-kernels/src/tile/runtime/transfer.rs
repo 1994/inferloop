@@ -69,12 +69,12 @@ impl<'a, T> HeadMajor<'a, T> {
 
 /// Transfers enqueued on one stream as one batch; see the module documentation.
 pub struct Transfers<'a> {
-    stream: &'a Stream,
+    stream: &'a Arc<Stream>,
     owners: RefCell<Vec<Owner>>,
 }
 
 impl<'a> Transfers<'a> {
-    pub(super) const fn new(stream: &'a Stream) -> Self {
+    pub(super) const fn new(stream: &'a Arc<Stream>) -> Self {
         Self {
             stream,
             owners: RefCell::new(Vec::new()),
@@ -83,6 +83,10 @@ impl<'a> Transfers<'a> {
 
     pub(super) fn into_owners(self) -> Vec<Owner> {
         self.owners.into_inner()
+    }
+
+    pub(super) const fn stream(&self) -> &Arc<Stream> {
+        self.stream
     }
 
     /// Copy `src` into `dst` after the work already on the stream. Copying a buffer onto itself
@@ -184,7 +188,7 @@ impl<'a> Transfers<'a> {
         status(unsafe { cuMemcpy3DAsync_v2(&raw const copy, self.stream.cu_stream()) })
     }
 
-    fn retain(&self, owners: [Option<&Owner>; 2]) {
+    pub(super) fn retain(&self, owners: [Option<&Owner>; 2]) {
         let mut retained = self.owners.borrow_mut();
         for owner in owners.into_iter().flatten() {
             // Loops copy many ranges of one buffer; one reference keeps it alive.
@@ -286,7 +290,7 @@ fn overlaps((left, left_bytes): (u64, usize), (right, right_bytes): (u64, usize)
     left < end(right, right_bytes) && right < end(left, left_bytes)
 }
 
-fn status(status: CUresult) -> Result<()> {
+pub(super) fn status(status: CUresult) -> Result<()> {
     if status == cudaError_enum_CUDA_SUCCESS {
         Ok(())
     } else {

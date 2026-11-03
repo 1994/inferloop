@@ -6,7 +6,7 @@ use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner, Width};
 use crate::contract::recording::Recording;
 use crate::tile::backend_error;
 use cuda_core::sys::{cuMemsetD8Async, cudaError_enum_CUDA_SUCCESS};
-use cuda_core::{DType, Stream, f4e2m1fnx2, f8e4m3fn};
+use cuda_core::{DType, DeviceCopy, Stream, f4e2m1fnx2, f8e4m3fn};
 use cutile::cuda_async::cuda_graph::GraphLaunch;
 use cutile::cuda_async::device_context::with_default_device_policy;
 use cutile::cuda_async::device_future::DeviceFuture;
@@ -20,8 +20,10 @@ use std::result::Result as StdResult;
 use std::sync::{Arc, Mutex};
 use transfer::Inflight;
 
+mod staging;
 mod transfer;
 
+pub use staging::Staging;
 pub use transfer::{HeadMajor, Transfers};
 
 /// The contract's marker for a cuTile element type.
@@ -209,6 +211,13 @@ impl Device {
     /// Returns what `work` returns, or a failure to track the batch.
     pub fn enqueue<R>(&self, work: impl FnOnce(&Transfers<'_>) -> Result<R>) -> Result<R> {
         transfer::enqueue(&self.inflight, &self.stream, work)
+    }
+
+    /// Pinned staging for uploads of up to `elements` values, `depth` slots deep.
+    /// # Errors
+    /// Reports a failed pinned allocation or event creation.
+    pub fn staging<T: DeviceCopy>(&self, elements: usize, depth: usize) -> Result<Staging<T>> {
+        Staging::new(&self.stream, elements, depth)
     }
 
     /// Release what finished transfers retained, without waiting; a fence or synchronization of
