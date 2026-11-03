@@ -1,6 +1,7 @@
 //! Eager transfers keep their owners alive until the stream passes them, and copy exactly the
 //! ranges they name.
-use super::CudaDevice;
+use super::{CudaDevice, device_error};
+use cutile::prelude::*;
 use infer_core::Result;
 use infer_cuda_kernels::tile::runtime::{Allocation, HeadMajor};
 use std::sync::Arc;
@@ -141,5 +142,23 @@ fn staging_refills_a_slot_only_after_the_device_read_it() -> Result<()> {
             .is_err(),
         "a destination of another length is rejected"
     );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires CUDA; run release serially inside safe-run"]
+fn recorded_copy_replays_from_a_source_only_the_graph_holds() -> Result<()> {
+    let device = CudaDevice::new(0)?;
+    let runtime = device.runtime();
+    let values = ramp(LARGE);
+    let source = runtime.upload(values.clone())?;
+    let target = runtime.zeros::<f32>(LARGE)?;
+    let graph = runtime.capture(|recording| recording.copy(target.buffer(), source.buffer()))?;
+    drop(source);
+    graph
+        .launch()
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    assert_eq!(runtime.read(&target)?, values);
     Ok(())
 }

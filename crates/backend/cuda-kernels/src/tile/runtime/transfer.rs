@@ -9,6 +9,7 @@
     reason = "Driver copies between contract buffers whose extents are checked here and whose owners the batch retains until its event passes"
 )]
 use crate::contract::buffer::{Buffer, Owner, Width};
+use crate::contract::recording::{Foreign, Recording};
 use crate::tile::backend_error;
 use cuda_core::sys::{
     CUDA_MEMCPY3D, CUmemorytype_enum_CU_MEMORYTYPE_DEVICE, CUresult, cuMemcpy3DAsync_v2,
@@ -18,6 +19,7 @@ use cuda_core::{Event, Stream};
 use infer_core::{Error, Result};
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::ffi::c_void;
 use std::fmt::Display;
 use std::mem::ManuallyDrop;
 use std::ptr::{null, null_mut};
@@ -95,16 +97,9 @@ impl<'a> Transfers<'a> {
     /// Rejects buffers of different lengths or partly overlapping memory, and a copy the driver
     /// does not enqueue.
     pub fn copy<T: Width>(&self, dst: Buffer<'_, T>, src: Buffer<'_, T>) -> Result<()> {
-        if dst.len() != src.len() {
-            return Err(Error::invalid("device copy lengths differ"));
-        }
-        let bytes = bytes::<T>(src.len())?;
-        if dst.address() == src.address() || bytes == 0 {
+        let Some(bytes) = copy_bytes(dst, src)? else {
             return Ok(());
-        }
-        if overlaps((dst.address(), bytes), (src.address(), bytes)) {
-            return Err(Error::invalid("device copy ranges overlap"));
-        }
+        };
         self.retain([dst.owner(), src.owner()]);
         // SAFETY: both buffers address `bytes` bytes of device memory, disjoint as checked above;
         // their owners stay retained until the batch event passes, and unowned buffers carry the
@@ -197,6 +192,59 @@ impl<'a> Transfers<'a> {
             }
         }
     }
+}
+
+impl Recording<'_> {
+    /// Copy `src` into `dst` in order with the kernels around it; a graph keeps owned buffers
+    /// alive as it does for a kernel. Copying a buffer onto itself records nothing.
+    /// # Errors
+    /// Rejects buffers of different lengths or partly overlapping memory, and a copy the driver
+    /// does not enqueue.
+    pub fn copy<T: Width>(&self, dst: Buffer<'_, T>, src: Buffer<'_, T>) -> Result<()> {
+        let Some(bytes) = copy_bytes(dst, src)? else {
+            return Ok(());
+        };
+        self.retain(dst);
+        self.retain(src);
+        self.foreign(
+            Memcpy {
+                dst: dst.address(),
+                src: src.address(),
+                bytes,
+            },
+            Vec::new(),
+        )
+    }
+}
+
+/// One checked device-to-device copy, as a recorded node.
+struct Memcpy {
+    dst: u64,
+    src: u64,
+    bytes: usize,
+}
+
+impl Foreign for Memcpy {
+    fn enqueue(self, stream: *mut c_void) -> Result<()> {
+        // SAFETY: `copy_bytes` checked both ranges for length and overlap; the recording retains
+        // owned buffers and `Buffer::new` obliges the creator of any other to keep it alive.
+        status(unsafe { cuMemcpyDtoDAsync_v2(self.dst, self.src, self.bytes, stream.cast()) })
+    }
+}
+
+/// The bytes a copy of `src` into `dst` moves, or `None` when it moves nothing.
+fn copy_bytes<T: Width>(dst: Buffer<'_, T>, src: Buffer<'_, T>) -> Result<Option<usize>> {
+    if dst.len() != src.len() {
+        return Err(Error::invalid("device copy lengths differ"));
+    }
+    let bytes = bytes::<T>(src.len())?;
+    if dst.address() == src.address() || bytes == 0 {
+        return Ok(None);
+    }
+    if overlaps((dst.address(), bytes), (src.address(), bytes)) {
+        return Err(Error::invalid("device copy ranges overlap"));
+    }
+    Ok(Some(bytes))
 }
 
 /// Batches the stream has not yet been seen to pass, oldest first.

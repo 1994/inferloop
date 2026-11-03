@@ -266,7 +266,7 @@ fn cases(
         if !session.permits_recurrent_search() {
             return Ok(None);
         }
-        let mut data = Captured::new(device, &fixtures[index])?;
+        let data = Captured::new(device, &fixtures[index])?;
         let native = data.graph(device, false)?;
         let candidate = data.graph(device, true)?;
         data.verify(device, &native, &candidate, &fixtures[index])?;
@@ -295,7 +295,7 @@ fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Resul
         if !session.permits_recurrent_search() {
             return Ok(None);
         }
-        let mut data = Captured::new(device, fixture)?;
+        let data = Captured::new(device, fixture)?;
         let native = data.graph(device, false)?;
         let candidate = data.graph(device, true)?;
         max_f64_error = max_f64_error.max(data.verify(device, &native, &candidate, fixture)?);
