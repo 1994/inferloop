@@ -5,15 +5,19 @@ use super::{
 };
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::METADATA_FIELDS;
-use crate::{
-    device::{CudaDevice, device_error},
-    resident::{attention_mma, attention_prefill::kernels},
-};
+use crate::device::{CudaDevice, device_error};
+use crate::resident::attention_mma;
+use crate::resident::buffers::kv_cache;
+use crate::resident::tensor_buffer as buffer;
 use cutile::{
     cutile_compiler::{cuda_tile_runtime_utils as compiler, hints::CompileOptions},
     prelude::*,
 };
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{
+    AppendBuffers, DecodeBuffers, DecodePlan, Kernels, PrefillAppendPlan, PrefillDecodePlan,
+    Recording,
+};
 use infer_cuda_kernels::tile::identity::{AttentionShape, attention_candidates};
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::env::var_os;
@@ -55,25 +59,32 @@ impl Operands {
     }
     fn record(
         &mut self,
+        contract: &Kernels,
         scope: &Scope,
         f: &Fixture,
         choice: Choice,
         support: Option<&mut attention_mma::Support>,
     ) -> StdResult<(), DeviceError> {
         let s = f.shape;
-        scope.record(
-            kernels::append(
-                (&mut self.keys).partition([1, f.capacity, s.dim]),
-                (&mut self.values).partition([1, f.capacity, s.dim]),
-                &self.append_keys,
-                &self.append_values,
-                &self.metadata,
-                &self.table,
-                1.0,
-                1.0,
+        let recording = Recording::scope(scope);
+        contract
+            .attention
+            .append_prefill(
+                &recording,
+                PrefillAppendPlan {
+                    lanes: s.lanes,
+                    rows: f.capacity,
+                    block: KV_BLOCK_TOKENS,
+                },
+                AppendBuffers {
+                    cache: kv_cache((&self.keys, &self.values), s.kv_heads, s.dim, [1.0, 1.0])?,
+                    keys: buffer(self.append_keys.as_ref())?,
+                    values: buffer(self.append_values.as_ref())?,
+                    metadata: buffer(self.metadata.as_ref())?,
+                    table: buffer(self.table.as_ref())?,
+                },
             )
-            .generics(append_generics(s, f.capacity)),
-        )?;
+            .map_err(|error| DeviceError::Internal(error.to_string()))?;
         if let Choice::Mma { variant } = choice {
             support
                 .ok_or_else(|| DeviceError::Internal("F32 MMA module missing".into()))?
@@ -93,45 +104,32 @@ impl Operands {
                     variant,
                 )?;
         } else {
-            scope.record(
-                kernels::decode(
-                    (&mut self.output).partition([1, s.dim]),
-                    &self.query.view(&[s.lanes * s.heads, s.dim])?,
-                    &self.keys,
-                    &self.values,
-                    &self.metadata,
-                    &self.table,
-                    0,
-                    1.0,
-                    1.0,
+            contract
+                .attention
+                .decode_prefill(
+                    &recording,
+                    PrefillDecodePlan {
+                        decode: DecodePlan {
+                            heads: s.heads,
+                            kv_heads: s.kv_heads,
+                            dim: s.dim,
+                            window: 0,
+                            block: KV_BLOCK_TOKENS,
+                        },
+                        lanes: s.lanes,
+                    },
+                    DecodeBuffers {
+                        output: buffer(&self.output)?,
+                        query: buffer(self.query.as_ref())?,
+                        cache: kv_cache((&self.keys, &self.values), s.kv_heads, s.dim, [1.0, 1.0])?,
+                        metadata: buffer(self.metadata.as_ref())?,
+                        table: buffer(self.table.as_ref())?,
+                    },
                 )
-                .generics(compute_generics(s)),
-            )?;
+                .map_err(|error| DeviceError::Internal(error.to_string()))?;
         }
         Ok(())
     }
-}
-fn append_generics(s: Shape, capacity: usize) -> Vec<String> {
-    vec![
-        f32::DTYPE.as_str().into(),
-        s.dim.to_string(),
-        capacity.to_string(),
-        "0".into(),
-        KV_BLOCK_TOKENS.to_string(),
-        s.lanes
-            .div_ceil(KV_BLOCK_TOKENS)
-            .next_power_of_two()
-            .to_string(),
-    ]
-}
-fn compute_generics(s: Shape) -> Vec<String> {
-    vec![
-        f32::DTYPE.as_str().into(),
-        s.dim.to_string(),
-        (s.heads / s.kv_heads).to_string(),
-        s.heads.to_string(),
-        KV_BLOCK_TOKENS.to_string(),
-    ]
 }
 pub(super) struct Captured {
     pub graph: Graph,
@@ -161,8 +159,9 @@ impl Captured {
             None
         };
         let mut operands = Operands::new(device, f)?;
+        let contract = device.kernels();
         let graph = Graph::scope(&device.stream, |scope| {
-            operands.record(scope, f, choice, support.as_mut())
+            operands.record(&contract, scope, f, choice, support.as_mut())
         })
         .map_err(device_error)?;
         Ok(Self {

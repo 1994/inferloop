@@ -1,6 +1,21 @@
 use super::*;
 use cutile::cutile_compiler::compile_api::KernelCompiler;
+use infer_cuda_kernels::tile::attention::resident_attention_prefill as kernels;
 use std::error::Error as StdError;
+
+fn append_generics(s: Shape, capacity: usize) -> Vec<String> {
+    vec![
+        f32::DTYPE.as_str().into(),
+        s.dim.to_string(),
+        capacity.to_string(),
+        "0".into(),
+        KV_BLOCK_TOKENS.to_string(),
+        s.lanes
+            .div_ceil(KV_BLOCK_TOKENS)
+            .next_power_of_two()
+            .to_string(),
+    ]
+}
 
 // A generic-signature mismatch here silently disables the production MMA path.
 #[test]

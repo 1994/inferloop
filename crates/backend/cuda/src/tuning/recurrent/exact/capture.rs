@@ -1,12 +1,12 @@
 //! Complete prepared recurrence captures, including original transpose and state reset.
 use super::super::reference::{Fixture, maximum_error};
 use crate::constants::METADATA_FIELDS;
-use crate::{
-    device::{CudaDevice, device_error},
-    resident::recurrent_prefill::{kernels, oxide},
-};
+use crate::device::{CudaDevice, device_error};
+use crate::resident::recurrent_prefill::oxide;
+use crate::resident::tensor_buffer as buffer;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{GateBuffers, PreparedDeltaBuffers, Recording, RecurrentShape};
 use infer_cuda_kernels::tile::runtime::Graph;
 pub(super) const KH: usize = 16;
 pub(super) const VH: usize = 48;
@@ -55,20 +55,40 @@ impl Captured {
     }
     pub fn graph(&mut self, device: &CudaDevice, rust: Option<&oxide::Support>) -> Result<Graph> {
         let width = self.width;
+        let contract = device.kernels();
+        let shape = RecurrentShape {
+            key_heads: KH,
+            value_heads: VH,
+            dim: DIM,
+            lanes: width,
+        };
         Graph::scope(&device.stream, |scope| {
             scope.record(api::memcpy(&mut self.state, &self.initial))?;
-            scope.record(
-                kernels::normalize_shared((&mut self.normalized).partition([1, 1, DIM]), &self.qkv)
-                    .generics(vec![KH.to_string(), DIM.to_string()]),
-            )?;
-            scope.record(kernels::gates_shared(
-                (&mut self.betas).partition([1, 1]),
-                (&mut self.decays).partition([1, 1]),
-                &self.beta,
-                &self.alpha,
-                &self.a_log,
-                &self.bias,
-            ))?;
+            let recording = Recording::scope(scope);
+            contract
+                .recurrent
+                .normalize(
+                    &recording,
+                    shape,
+                    buffer(&self.normalized)?,
+                    buffer(self.qkv.as_ref())?,
+                )
+                .map_err(|error| DeviceError::Internal(error.to_string()))?;
+            contract
+                .recurrent
+                .gates(
+                    &recording,
+                    shape,
+                    GateBuffers {
+                        betas: buffer(&self.betas)?,
+                        decays: buffer(&self.decays)?,
+                        beta: buffer(self.beta.as_ref())?,
+                        alpha: buffer(self.alpha.as_ref())?,
+                        decay: buffer(self.a_log.as_ref())?,
+                        bias: buffer(self.bias.as_ref())?,
+                    },
+                )
+                .map_err(|error| DeviceError::Internal(error.to_string()))?;
             if let Some(function) = rust {
                 function.record(
                     scope,
@@ -84,30 +104,33 @@ impl Captured {
                     width,
                 )?;
             } else {
-                scope.record(
-                    kernels::delta_precomputed(
-                        (&mut self.state).partition([1, DIM, NATIVE_VALUE_COLUMNS]),
-                        (&mut self.scratch).partition([1, width, NATIVE_VALUE_COLUMNS]),
-                        &self.qkv,
-                        &self.normalized,
-                        &self.betas,
-                        &self.decays,
-                        &self.metadata,
+                contract
+                    .recurrent
+                    .delta_prepared(
+                        &recording,
+                        shape,
+                        NATIVE_VALUE_COLUMNS,
+                        PreparedDeltaBuffers {
+                            state: buffer(&self.state)?,
+                            output: buffer(&self.scratch)?,
+                            qkv: buffer(self.qkv.as_ref())?,
+                            normalized: buffer(&self.normalized)?,
+                            betas: buffer(&self.betas)?,
+                            decays: buffer(&self.decays)?,
+                            metadata: buffer(self.metadata.as_ref())?,
+                        },
                     )
-                    .generics(vec![
-                        KH.to_string(),
-                        VH.to_string(),
-                        DIM.to_string(),
-                        width.to_string(),
-                        "16".into(),
-                    ]),
-                )?;
+                    .map_err(|error| DeviceError::Internal(error.to_string()))?;
             }
-            scope.record(
-                kernels::transpose((&mut self.output).partition([1, 1, DIM]), &self.scratch)
-                    .generics(vec![DIM.to_string()]),
-            )?;
-            Ok(())
+            contract
+                .recurrent
+                .transpose(
+                    &recording,
+                    shape,
+                    buffer(&self.output)?,
+                    buffer(&self.scratch)?,
+                )
+                .map_err(|error| DeviceError::Internal(error.to_string()))
         })
         .map_err(device_error)
     }
