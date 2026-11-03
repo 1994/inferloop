@@ -8,6 +8,7 @@ use crate::{
 use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
+use infer_cuda_kernels::tile::runtime::Element;
 use infer_ir::DataflowGraph;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -224,7 +225,7 @@ fn dimensions<T: DType>(tensor: &Tensor<T>) -> Result<Vec<usize>> {
         .collect()
 }
 
-async fn copy_state<T: DType>(
+async fn copy_state<T: DType + Element>(
     device: &CudaDevice,
     dst: &mut Tensor<T>,
     src: &Tensor<T>,

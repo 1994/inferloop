@@ -2,7 +2,7 @@
 //!
 //! These are concrete types chosen at compile time, not trait objects: replaying a graph is the
 //! inference hot path, and here it compiles to exactly the cuTile future it wraps.
-use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner};
+use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner, Width};
 use crate::contract::recording::Recording;
 use crate::tile::backend_error;
 use cuda_core::sys::{cuMemsetD8Async, cudaError_enum_CUDA_SUCCESS};
@@ -17,11 +17,16 @@ use cutile::tensor::KernelOutputStored;
 use infer_core::{Error, ErrorCode, Result};
 use std::cell::RefCell;
 use std::result::Result as StdResult;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use transfer::Inflight;
+
+mod transfer;
+
+pub use transfer::{HeadMajor, Transfers};
 
 /// The contract's marker for a cuTile element type.
 pub trait Element {
-    type Marker;
+    type Marker: Width;
 }
 impl Element for f32 {
     type Marker = Self;
@@ -129,17 +134,22 @@ impl Allocation<bf16> {
     }
 }
 
-/// One execution stream on one device.
+/// One execution stream on one device. Clones share the stream and its pending transfers.
 #[derive(Clone)]
 pub struct Device {
     stream: Arc<Stream>,
     ordinal: usize,
+    inflight: Arc<Mutex<Inflight>>,
 }
 
 impl Device {
     #[must_use]
-    pub const fn new(stream: Arc<Stream>, ordinal: usize) -> Self {
-        Self { stream, ordinal }
+    pub fn new(stream: Arc<Stream>, ordinal: usize) -> Self {
+        Self {
+            stream,
+            ordinal,
+            inflight: Arc::default(),
+        }
     }
 
     #[must_use]
@@ -193,6 +203,22 @@ impl Device {
         })
     }
 
+    /// Enqueue `work` on this stream without waiting. Every owned buffer it transfers stays alive
+    /// until the stream has passed the batch, as a recorded buffer does for its graph.
+    /// # Errors
+    /// Returns what `work` returns, or a failure to track the batch.
+    pub fn enqueue<R>(&self, work: impl FnOnce(&Transfers<'_>) -> Result<R>) -> Result<R> {
+        transfer::enqueue(&self.inflight, &self.stream, work)
+    }
+
+    /// Release what finished transfers retained, without waiting; a fence or synchronization of
+    /// this stream beforehand makes that everything enqueued until then.
+    /// # Errors
+    /// Returns a device failure the completion query reports.
+    pub fn reap(&self) -> Result<()> {
+        transfer::reap(&self.inflight)
+    }
+
     /// Run a launch on this stream; it completes when the device has.
     /// # Errors
     /// Returns device failures.
@@ -207,7 +233,8 @@ impl Device {
     /// # Errors
     /// Returns device failures.
     pub async fn fence(&self) -> Result<()> {
-        self.run(Launch(value(()))).await
+        self.run(Launch(value(()))).await?;
+        self.reap()
     }
 }
 

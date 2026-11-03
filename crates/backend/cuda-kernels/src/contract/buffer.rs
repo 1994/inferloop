@@ -73,7 +73,8 @@ impl<T> Copy for Buffer<'_, T> {}
 impl<'a, T> Buffer<'a, T> {
     /// # Safety
     /// `address` must address `len` contiguous elements of `T` on the recording's device, valid
-    /// until every replay of any graph recording this buffer has finished. A kernel writes through
+    /// until every replay of any graph recording this buffer, and every transfer enqueued over it,
+    /// has finished. A kernel writes through
     /// its output buffers, so those must not alias another buffer of the same launch.
     #[must_use]
     pub const unsafe fn new(address: u64, len: usize) -> Self {

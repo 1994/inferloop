@@ -8,7 +8,7 @@ use crate::tuning::resident_gemm::ResidentTuningSession;
 use greedy::ProgramReadouts;
 use infer_cuda_kernels::contract::Kernels;
 use infer_cuda_kernels::contract::Owner;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::{Element, Graph};
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -400,7 +400,7 @@ fn arena_budget(device: &CudaDevice) -> Result<usize> {
 /// Copy one state tensor between programs of equal capacity: with `kv = (rows, capacity)` a
 /// head-major `[kv_heads, capacity, head_dim]` cache moves its first `rows` positions per head,
 /// otherwise the tensor moves whole.
-fn copy_prefix<T: DType>(
+fn copy_prefix<T: DType + Element>(
     device: &CudaDevice,
     dst: &mut Tensor<T>,
     src: &Tensor<T>,

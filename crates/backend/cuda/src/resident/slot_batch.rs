@@ -21,6 +21,7 @@ use cuda_core::{CudaContext, PinnedHostBuffer, f8e4m3fn};
 use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::Owner;
+use infer_cuda_kernels::tile::runtime::Element;
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
 use infer_state::blocks::{BlockLease, BlockPool};
 #[cfg(test)]
@@ -294,7 +295,7 @@ fn dims<T: DType>(tensor: &Tensor<T>) -> Result<Vec<usize>> {
 /// Gather the first `rows` positions of a head-major `[kv_heads, rows, head_dim]` KV state into
 /// a new contiguous tensor: block by block through `blocks` when the state is paged, otherwise
 /// one run per head.
-fn gather_kv<T: DType>(
+fn gather_kv<T: DType + Element>(
     src: &Tensor<T>,
     rows: usize,
     blocks: Option<&[i32]>,
@@ -1578,7 +1579,7 @@ impl SlotPool {
     /// `[kv_heads, capacity, head_dim]` and the two sides differ in capacity, so the
     /// token prefix moves per head block with each side's own stride. Anything but that
     /// exact layout is an invariant violation, never a silent partial copy.
-    fn copy_kv_tensor<T: DType>(
+    fn copy_kv_tensor<T: DType + Element>(
         dst: &mut Tensor<T>,
         src: &Tensor<T>,
         rows: usize,

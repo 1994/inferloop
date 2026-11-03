@@ -179,6 +179,9 @@ def check_exceptions():
                         ROOT / "crates/backend/cuda/src/resident/buffers.rs",
                         TILE_KERNELS / "mod.rs",
                         TILE_KERNELS / "runtime.rs",
+                        # Eager transfers: extents and overlap are checked, and each batch retains
+                        # its owners until the event recorded after it has passed.
+                        TILE_KERNELS / "runtime/transfer.rs",
                         TILE_KERNELS / "norm/contract.rs",
                         TILE_KERNELS / "mlp/contract.rs",
                         TILE_KERNELS / "moe/contract.rs",
