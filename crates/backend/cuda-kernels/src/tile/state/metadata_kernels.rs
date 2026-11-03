@@ -1,9 +1,66 @@
 //! Scalar launch arguments update resident metadata without temporary device allocations.
 use crate::tile::backend_error;
+use crate::tile::runtime::{Graph, GraphUpdate};
 use cuda_core::Stream;
 use cutile::prelude::*;
 use infer_core::Result;
 use std::sync::Arc;
+
+/// Fields of one program's control metadata.
+const METADATA_FIELDS: usize = 4;
+/// Axes of an independent rotary coordinate.
+const ROTARY_AXES: usize = 3;
+
+/// Opaque bit pattern through a float argument: cuTile 0.4 specializes integer scalars by
+/// `DivHint`, causing runtime JIT as tokens change. No float arithmetic touches these arguments.
+const fn bits(value: i32) -> f32 {
+    f32::from_ne_bytes(value.to_ne_bytes())
+}
+
+/// Write control metadata before the graph's next replay, on the graph's stream.
+/// # Errors
+/// Reports a rejected launch.
+pub fn update(
+    graph: &Graph,
+    output: &mut Tensor<i32>,
+    values: [i32; METADATA_FIELDS],
+) -> Result<()> {
+    // Graph::update retains the output lease until replay completes; same-stream ordering replaces
+    // an upload sync.
+    graph
+        .update(GraphUpdate(kernels::write(
+            output.partition([METADATA_FIELDS]),
+            bits(values[0]),
+            bits(values[1]),
+            bits(values[2]),
+            bits(values[3]),
+        )))
+        .map_err(backend_error)
+}
+
+/// Write control metadata and independent rotary coordinates on the graph's stream.
+/// # Errors
+/// Reports a rejected launch or a coordinate beyond the kernel's range.
+pub fn update_rotary(
+    graph: &Graph,
+    output: &mut Tensor<i32>,
+    values: [i32; METADATA_FIELDS],
+    position: [usize; ROTARY_AXES],
+) -> Result<()> {
+    let height = i32::try_from(position[1]).map_err(backend_error)?;
+    let width = i32::try_from(position[2]).map_err(backend_error)?;
+    graph
+        .update(GraphUpdate(kernels::write_rotary(
+            output.partition([METADATA_FIELDS * 2]),
+            bits(values[0]),
+            bits(values[1]),
+            bits(values[2]),
+            bits(values[3]),
+            bits(height),
+            bits(width),
+        )))
+        .map_err(backend_error)
+}
 
 #[cutile::module]
 pub mod kernels {

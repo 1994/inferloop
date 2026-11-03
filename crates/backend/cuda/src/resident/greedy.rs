@@ -7,6 +7,7 @@ use cutile::error::tensor_error;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Buffer, GreedyPartials, GreedyPlan, Kernels, Recording};
+use infer_cuda_kernels::tile::identity;
 use std::result::Result as StdResult;
 
 /// Candidates to measure per device and row/vocabulary geometry before production selection.
@@ -123,34 +124,8 @@ impl Greedy {
             .map_err(error)
     }
     /// Canonical frontend identities include both reductions and their exact geometry.
-    pub fn fingerprint(&mut self, device: &CudaDevice, logits: &Tensor<f32>) -> Result<String> {
-        let input = logits
-            .view(&[self.rows, self.vocabulary])
-            .map_err(device_error)?;
-        let first = kernels::partials(
-            (&mut self.keys).partition([1, 1]),
-            (&mut self.indices).partition([1, 1]),
-            (&mut self.invalid).partition([1, 1]),
-            &input,
-        )
-        .generics(vec![self.vocabulary.to_string(), self.tile.to_string()])
-        .l2_cache_key_on(&device.stream)
-        .map_err(device_error)?;
-        let second = kernels::finish(
-            (&mut self.tokens).partition([1, 2]),
-            &self.keys,
-            &self.indices,
-            &self.invalid,
-        )
-        .generics(vec![
-            self.blocks.to_string(),
-            self.blocks.next_power_of_two().to_string(),
-            "0".into(),
-            self.rows.to_string(),
-        ])
-        .l2_cache_key_on(&device.stream)
-        .map_err(device_error)?;
-        Ok(format!("{first}:{second}"))
+    pub fn fingerprint(&self, device: &CudaDevice) -> Result<String> {
+        identity::greedy_reductions(&device.stream, &self.plan())
     }
 
     pub fn read(&self, device: &CudaDevice) -> Result<Vec<u32>> {
@@ -182,8 +157,6 @@ impl Greedy {
         Ok(token)
     }
 }
-
-pub use infer_cuda_kernels::tile::sampling::greedy as kernels;
 
 #[cfg(test)]
 #[path = "../../tests/unit/resident_greedy.rs"]

@@ -245,3 +245,34 @@ impl<O: DeviceOp<Output = ()>> Launch<O> {
         Launch(self.0.then(move |()| next().0))
     }
 }
+
+/// Discard only the host return value of a graph-safe operation. Resource leases
+/// remain owned by its execution context until the enclosing replay completes.
+pub(in crate::tile) struct GraphUpdate<N>(pub N);
+
+#[expect(
+    unsafe_code,
+    reason = "Audited forwarding of the caller's live execution context to a graph-safe operation"
+)]
+impl<N: GraphNode> DeviceOp for GraphUpdate<N> {
+    type Output = ();
+
+    unsafe fn execute(self, context: &ExecutionContext) -> StdResult<(), DeviceError> {
+        // SAFETY: preserve the caller's context and submission lifetime unchanged.
+        unsafe { self.0.execute(context) }.map(|_| ())
+    }
+}
+
+impl<N: GraphNode> GraphNode for GraphUpdate<N> {}
+
+impl<N: GraphNode> IntoFuture for GraphUpdate<N> {
+    type Output = StdResult<(), DeviceError>;
+    type IntoFuture = DeviceFuture<(), Self>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        match with_default_device_policy(|policy| policy.next_stream()) {
+            Ok(Ok(stream)) => Self::IntoFuture::scheduled(self, ExecutionContext::new(stream)),
+            Ok(Err(error)) | Err(error) => Self::IntoFuture::failed(error),
+        }
+    }
+}

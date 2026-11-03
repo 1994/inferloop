@@ -8,7 +8,9 @@ use super::projection::{
     fp8_gemm, linear_batch, nvfp4_gemm, pool_gemv, prefill_gemm, small_gemm, vendor_fp8,
 };
 use super::recurrent::recurrent_prefill;
+use super::sampling::greedy;
 use super::state::aux;
+use crate::contract::GreedyPlan;
 use cuda_core::{DType, Stream, f4e2m1fnx2, f8e4m3fn};
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::half::bf16;
@@ -721,4 +723,50 @@ fn attention_compute<E: DType>(
         .l2_cache_key_on(stream)
     }
     .map_err(backend_error)
+}
+
+/// Both greedy reductions at their exact geometry.
+/// # Errors
+/// Reports a failed lowering.
+pub fn greedy_reductions(stream: &Arc<Stream>, plan: &GreedyPlan) -> Result<String> {
+    let GreedyPlan {
+        rows,
+        vocabulary,
+        tile,
+        blocks,
+    } = *plan;
+    let i32_partials = || {
+        api::meta::<i32>(&[rows, blocks])
+            .sync_on(stream)
+            .map_err(backend_error)
+    };
+    let mut keys = api::meta::<u32>(&[rows, blocks])
+        .sync_on(stream)
+        .map_err(backend_error)?;
+    let (mut indices, mut invalid) = (i32_partials()?, i32_partials()?);
+    let mut tokens = api::meta::<i32>(&[rows, 2])
+        .sync_on(stream)
+        .map_err(backend_error)?;
+    let logits = api::meta::<f32>(&[rows, vocabulary])
+        .sync_on(stream)
+        .map_err(backend_error)?;
+    let first = greedy::partials(
+        (&mut keys).partition([1, 1]),
+        (&mut indices).partition([1, 1]),
+        (&mut invalid).partition([1, 1]),
+        &logits,
+    )
+    .generics(vec![vocabulary.to_string(), tile.to_string()])
+    .l2_cache_key_on(stream)
+    .map_err(backend_error)?;
+    let second = greedy::finish((&mut tokens).partition([1, 2]), &keys, &indices, &invalid)
+        .generics(vec![
+            blocks.to_string(),
+            blocks.next_power_of_two().to_string(),
+            "0".into(),
+            rows.to_string(),
+        ])
+        .l2_cache_key_on(stream)
+        .map_err(backend_error)?;
+    Ok(format!("{first}:{second}"))
 }

@@ -1,66 +1,15 @@
 //! Scalar launch arguments update resident metadata without temporary device allocations.
 use crate::constants::KV_BLOCK_TOKENS;
-use crate::constants::METADATA_FIELDS;
 use crate::device::CudaDevice;
-use crate::device::GraphUpdate;
 use crate::device::device_error;
 use cutile::prelude::*;
 use infer_core::Result;
-use infer_cuda_kernels::tile::runtime::Graph;
-use infer_models::mrope::ROTARY_AXES;
 
 #[cfg(test)]
 #[path = "../../tests/unit/resident_metadata_check.rs"]
 mod check;
 
-/// Device tensor of one program's control metadata.
-type Metadata = Tensor<i32>;
-
-pub(super) fn update(
-    graph: &Graph,
-    output: &mut Metadata,
-    values: [i32; METADATA_FIELDS],
-) -> Result<()> {
-    // Graph::update retains the output lease until replay completes. The replay
-    // must use graph.stream(): same-stream ordering replaces the former upload sync.
-    // Pass opaque bit patterns through float arguments: cuTile 0.4 automatically
-    // specializes integer scalars by DivHint, causing runtime JIT as tokens change.
-    // No floating-point arithmetic or conversion is performed on these arguments.
-    graph
-        .update(GraphUpdate(kernels::write(
-            output.partition([METADATA_FIELDS]),
-            f32::from_ne_bytes(values[0].to_ne_bytes()),
-            f32::from_ne_bytes(values[1].to_ne_bytes()),
-            f32::from_ne_bytes(values[2].to_ne_bytes()),
-            f32::from_ne_bytes(values[3].to_ne_bytes()),
-        )))
-        .map_err(device_error)
-}
-
-/// Update scalar control metadata and independent rotary coordinates on the same stream.
-pub(super) fn update_rotary(
-    graph: &Graph,
-    output: &mut Metadata,
-    values: [i32; METADATA_FIELDS],
-    position: [usize; ROTARY_AXES],
-) -> Result<()> {
-    let bits = |value: i32| f32::from_ne_bytes(value.to_ne_bytes());
-    let height = i32::try_from(position[1]).map_err(device_error)?;
-    let width = i32::try_from(position[2]).map_err(device_error)?;
-    graph
-        .update(GraphUpdate(kernels::write_rotary(
-            output.partition([METADATA_FIELDS * 2]),
-            bits(values[0]),
-            bits(values[1]),
-            bits(values[2]),
-            bits(values[3]),
-            bits(height),
-            bits(width),
-        )))
-        .map_err(device_error)
-}
-
-pub use infer_cuda_kernels::tile::state::metadata as kernels;
+pub(super) use infer_cuda_kernels::tile::state::{update, update_rotary};
 
 /// Identity block table for one sequence's own KV cache: logical block `b` is physical block `b`.
 /// Step 1 of the KV refactor keeps the arena untouched, so this is the mapping the kernels consult
