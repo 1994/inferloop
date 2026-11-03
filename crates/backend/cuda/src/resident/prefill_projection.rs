@@ -575,7 +575,7 @@ fn record_prompt_dense(
         (&weights.kernels, scope),
         delegated,
         input,
-        w.tensor(),
+        w,
         output,
         (width, rows, columns),
     )? {
@@ -725,14 +725,20 @@ fn records_vendor_gemm(
     target: (&Kernels, &Scope),
     delegated: Option<&mut Support>,
     input: &Tensor<f32>,
-    weight: &Tensor<bf16>,
+    weight: &Matrix<bf16>,
     output: &Tensor<f32>,
     (width, rows, columns): (usize, usize, usize),
 ) -> Result<bool, DeviceError> {
     let Some(delegated) = delegated else {
         return Ok(false);
     };
-    delegated.record_dense(target, input, weight, output, (width, rows, columns))
+    delegated.record_dense(
+        target,
+        buffer(input)?,
+        weight,
+        buffer(output)?,
+        (width, rows, columns),
+    )
 }
 
 // Preserve F32 router inputs through a high BF16 term and a low residual term.
