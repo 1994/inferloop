@@ -3,7 +3,7 @@
 //! These are concrete types chosen at compile time, not trait objects: replaying a graph is the
 //! inference hot path, and here it compiles to exactly the cuTile future it wraps.
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner, Width};
-use crate::contract::recording::Recording;
+use crate::contract::recording::{Foreign, Recording};
 use crate::tile::backend_error;
 use cuda_core::sys::{cuMemsetD8Async, cudaError_enum_CUDA_SUCCESS};
 use cuda_core::{DType, DeviceCopy, Stream, f4e2m1fnx2, f8e4m3fn};
@@ -412,4 +412,48 @@ impl IntoFuture for Clear<'_> {
             Ok(Err(error)) | Err(error) => Self::IntoFuture::failed(error),
         }
     }
+}
+
+/// A [`Foreign`] call as one graph node, holding what the graph must keep alive.
+struct ForeignNode<F> {
+    call: F,
+    keep: Vec<Owner>,
+}
+
+#[expect(
+    unsafe_code,
+    reason = "The node hands the call the stream its execution context records on; the call owns its FFI"
+)]
+impl<F: Foreign> DeviceOp for ForeignNode<F> {
+    type Output = ();
+
+    unsafe fn execute(self, context: &ExecutionContext) -> StdResult<(), DeviceError> {
+        if !self.keep.is_empty() {
+            context.retain(self.keep)?;
+        }
+        self.call
+            .enqueue(context.get_cuda_stream().cu_stream().cast())
+            .map_err(|error| DeviceError::Internal(error.to_string()))
+    }
+}
+
+impl<F: Foreign> GraphNode for ForeignNode<F> {}
+
+impl<F: Foreign> IntoFuture for ForeignNode<F> {
+    type Output = StdResult<(), DeviceError>;
+    type IntoFuture = DeviceFuture<(), Self>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        match with_default_device_policy(|policy| policy.next_stream()) {
+            Ok(Ok(stream)) => Self::IntoFuture::scheduled(self, ExecutionContext::new(stream)),
+            Ok(Err(error)) | Err(error) => Self::IntoFuture::failed(error),
+        }
+    }
+}
+
+/// Record `call` into the graph `scope` captures.
+pub(crate) fn record_foreign(scope: &Scope, call: impl Foreign, keep: Vec<Owner>) -> Result<()> {
+    scope
+        .record(ForeignNode { call, keep })
+        .map_err(backend_error)
 }

@@ -98,8 +98,9 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
                 &delegated,
             )
             .map_err(|error| DeviceError::Internal(error.to_string()))?;
-            scope.record(op)?;
-            Ok(())
+            Recording::scope(scope)
+                .foreign(op, Vec::new())
+                .map_err(|error| DeviceError::Launch(error.to_string()))
         })
         .map_err(device_error)?;
         // Warm the native and cast paths before timing; the vendor one was warmed above.

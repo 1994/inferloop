@@ -4,9 +4,13 @@
 //! waits. The forms differ only in how an implementation reaches the capture: cuTile records
 //! through its scope, a driver launch goes to a stream in capture mode.
 #[cfg(all(feature = "tile", target_os = "linux"))]
-use crate::contract::buffer::{Buffer, Owner};
+use crate::contract::buffer::Buffer;
+use crate::contract::buffer::Owner;
 #[cfg(all(feature = "tile", target_os = "linux"))]
 use crate::tile::Scope;
+#[cfg(all(feature = "tile", target_os = "linux"))]
+use crate::tile::runtime::record_foreign;
+use infer_core::Result;
 #[cfg(all(feature = "tile", target_os = "linux"))]
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -77,7 +81,35 @@ impl<'a> Recording<'a> {
     }
 }
 
+/// A library call that enqueues its device work on the stream it is handed, as cuBLAS does.
+///
+/// The implementation owns its FFI. It must enqueue only on `stream` and only over memory that
+/// outlives every replay, which [`Recording::retain`] or [`Buffer::new`] guarantees.
+pub trait Foreign: Send {
+    /// Enqueue the call on `stream`, a stream in capture mode while a graph is recorded.
+    /// # Errors
+    /// Returns the library's refusal to enqueue.
+    fn enqueue(self, stream: *mut c_void) -> Result<()>;
+}
+
 impl Recording<'_> {
+    /// Record `call` in order with the kernels around it; in a capture its work becomes nodes of
+    /// the graph, which holds `keep` for as long as it lives. On a plain stream the caller holds
+    /// what the call uses.
+    /// # Errors
+    /// Returns what `call` returns, or a capture failure.
+    pub fn foreign(&self, call: impl Foreign, keep: Vec<Owner>) -> Result<()> {
+        match self {
+            Self::Stream { handle, .. } => {
+                let enqueued = call.enqueue(*handle);
+                drop(keep);
+                enqueued
+            }
+            #[cfg(all(feature = "tile", target_os = "linux"))]
+            Self::Scope { scope, .. } => record_foreign(scope, call, keep),
+        }
+    }
+
     /// Driver stream to launch on, when this recording is one.
     #[must_use]
     pub const fn stream(&self) -> Option<*mut c_void> {

@@ -20,14 +20,10 @@ use cuda_core::sys::cuCtxGetCurrent;
 use cuda_core::sys::cuPointerGetAttribute;
 use cuda_core::sys::cuStreamGetCtx;
 use cuda_core::sys::cudaError_enum_CUDA_SUCCESS;
-use cutile::cuda_async::device_context::with_default_device_policy;
-use cutile::cuda_async::{
-    device_future::DeviceFuture,
-    device_operation::{DeviceOp, ExecutionContext, GraphNode},
-    error::DeviceError,
-};
+use cutile::cuda_async::error::DeviceError;
 use cutile::prelude::*;
-use infer_cuda_kernels::contract::{Kernels, Recording};
+use infer_core::ErrorCode;
+use infer_cuda_kernels::contract::{Foreign, Kernels, Recording};
 use serde::{Deserialize, Serialize};
 use std::ops::Deref;
 use std::ptr::null_mut;
@@ -1112,13 +1108,18 @@ impl Support {
         ] {
             same_context(context, pointer)?;
         }
-        scope.record(GemmFp8 {
-            context: context.clone(),
-            prepared: prepared.clone(),
-            input,
-            weight,
-            output,
-        })?;
+        Recording::scope(scope)
+            .foreign(
+                GemmFp8 {
+                    context: context.clone(),
+                    prepared: prepared.clone(),
+                    input,
+                    weight,
+                    output,
+                },
+                Vec::new(),
+            )
+            .map_err(|error| DeviceError::Launch(error.to_string()))?;
         self.kernels
             .projection
             .channel_scale(
@@ -1139,16 +1140,10 @@ struct GemmFp8<'a> {
     weight: &'a Tensor<f8e4m3fn>,
     output: &'a Tensor<f32>,
 }
-impl GraphNode for GemmFp8<'_> {}
-#[expect(
-    unsafe_code,
-    reason = "Audited graph boundary checks stream identity and delegates shape-validated tensors to the owned Lt context"
-)]
-impl DeviceOp for GemmFp8<'_> {
-    type Output = ();
-    unsafe fn execute(self, execution: &ExecutionContext) -> Result<(), DeviceError> {
-        if execution.get_cuda_stream().cu_stream() != self.context.stream {
-            return Err(error(format!(
+impl Foreign for GemmFp8<'_> {
+    fn enqueue(self, stream: *mut c_void) -> infer_core::Result<()> {
+        if stream != self.context.stream.cast() {
+            return Err(infer_core::Error::invalid(format!(
                 "vendor FP8 device {} stream mismatch",
                 self.context.ordinal
             )));
@@ -1160,16 +1155,7 @@ impl DeviceOp for GemmFp8<'_> {
             self.weight,
             self.output,
         )
-    }
-}
-impl IntoFuture for GemmFp8<'_> {
-    type Output = Result<(), DeviceError>;
-    type IntoFuture = DeviceFuture<(), Self>;
-    fn into_future(self) -> Self::IntoFuture {
-        match with_default_device_policy(|policy| policy.next_stream()) {
-            Ok(Ok(stream)) => Self::IntoFuture::scheduled(self, ExecutionContext::new(stream)),
-            Ok(Err(error)) | Err(error) => Self::IntoFuture::failed(error),
-        }
+        .map_err(|error| infer_core::Error::new(ErrorCode::Backend, error.to_string()))
     }
 }
 pub mod nvfp4;

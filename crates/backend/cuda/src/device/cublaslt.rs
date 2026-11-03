@@ -12,12 +12,10 @@ use crate::device::CudaDevice;
 use crate::resident::tensor_buffer;
 use crate::tuning::prefill::delegate_dense;
 use cuda_core::sys::CUstream;
-use cutile::cuda_async::device_context::with_default_device_policy;
-use cutile::cuda_async::device_future::DeviceFuture;
-use cutile::cuda_async::device_operation::{DeviceOp, ExecutionContext, GraphNode};
 use cutile::cuda_async::error::DeviceError;
 use cutile::{half::bf16, prelude::*};
-use infer_cuda_kernels::contract::{Kernels, NARROW_GRANULE, Recording};
+use infer_core::ErrorCode;
+use infer_cuda_kernels::contract::{Foreign, Kernels, NARROW_GRANULE, Recording};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::null_mut;
@@ -316,10 +314,7 @@ pub fn gemm_bf16(
         )
     };
     status.map_err(|code| {
-        infer_core::Error::new(
-            infer_core::ErrorCode::Backend,
-            format!("cublasGemmEx status {code}"),
-        )
+        infer_core::Error::new(ErrorCode::Backend, format!("cublasGemmEx status {code}"))
     })
 }
 
@@ -464,7 +459,9 @@ impl Support {
             .map_err(|error| DeviceError::Launch(error.to_string()))?;
         let op = GemmBf16::new(context, m, n, k, scratch, weight, out)
             .map_err(|error| DeviceError::Internal(error.to_string()))?;
-        scope.record(op)?;
+        Recording::scope(scope)
+            .foreign(op, Vec::new())
+            .map_err(|error| DeviceError::Launch(error.to_string()))?;
         Ok(true)
     }
 }
@@ -526,22 +523,17 @@ impl<'a> GemmBf16<'a> {
     }
 }
 
-impl GraphNode for GemmBf16<'_> {}
-
 #[expect(
     unsafe_code,
-    reason = "Audited in-graph launch: the operands are borrowed for the whole capture and the stream comes from the context"
+    reason = "Audited in-graph launch: the operands are borrowed for the whole capture and the stream is the one the handle was bound to"
 )]
-impl DeviceOp for GemmBf16<'_> {
-    type Output = ();
-
-    unsafe fn execute(self, context: &ExecutionContext) -> Result<(), DeviceError> {
+impl Foreign for GemmBf16<'_> {
+    fn enqueue(self, stream: *mut c_void) -> infer_core::Result<()> {
         // A handle belongs to the device it was created on and launches on the stream it was bound
         // to. Recording it into a graph on another stream would place the GEMM outside that graph's
         // dependencies, so refuse rather than launch into the wrong stream.
-        let stream = context.get_cuda_stream().cu_stream();
-        if stream != self.context.stream {
-            return Err(DeviceError::Internal(format!(
+        if stream != self.context.stream.cast() {
+            return Err(infer_core::Error::invalid(format!(
                 "cuBLAS projection for device {} was built for a different stream than this context",
                 self.context.ordinal
             )));
@@ -559,20 +551,9 @@ impl DeviceOp for GemmBf16<'_> {
                 self.out.device_pointer().cu_deviceptr() as *mut c_void,
             )
         };
-        status.map_err(|code| DeviceError::Internal(format!("cublasGemmEx status {code}")))?;
-        Ok(())
-    }
-}
-
-impl IntoFuture for GemmBf16<'_> {
-    type Output = Result<(), DeviceError>;
-    type IntoFuture = DeviceFuture<(), Self>;
-
-    fn into_future(self) -> Self::IntoFuture {
-        match with_default_device_policy(|policy| policy.next_stream()) {
-            Ok(Ok(stream)) => Self::IntoFuture::scheduled(self, ExecutionContext::new(stream)),
-            Ok(Err(error)) | Err(error) => Self::IntoFuture::failed(error),
-        }
+        status.map_err(|code| {
+            infer_core::Error::new(ErrorCode::Backend, format!("cublasGemmEx status {code}"))
+        })
     }
 }
 
