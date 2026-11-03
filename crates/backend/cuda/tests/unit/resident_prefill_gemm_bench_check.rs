@@ -6,15 +6,14 @@
 use super::gemm;
 use crate::device::cublaslt::{GemmBf16, Support, available};
 use crate::device::{CudaDevice, device_error};
-use crate::kernels::linear::cast_bf16;
+use crate::resident::tensor_buffer;
 use cutile::half::bf16;
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::Recording;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Instant;
-
-const CAST_TILE: i32 = 1024;
 
 #[expect(
     clippy::cast_precision_loss,
@@ -66,17 +65,18 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
         })
         .map_err(device_error)?;
 
-        let mut narrowed = api::zeros::<bf16>(&[m * k]).sync_on(&device.stream)?;
+        let narrowed = api::zeros::<bf16>(&[m * k]).sync_on(&device.stream)?;
+        let kernels = device.kernels();
         let delegated = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
         let cast_graph = Graph::scope(&device.stream, |scope| {
-            scope.record(
-                cast_bf16(
-                    (&mut narrowed).partition([CAST_TILE as usize]),
-                    &input.view(&[m * k])?,
+            kernels
+                .projection
+                .narrow_bf16(
+                    &Recording::scope(scope),
+                    tensor_buffer(&narrowed)?,
+                    tensor_buffer(&input)?,
                 )
-                .generics(vec![CAST_TILE.to_string()]),
-            )?;
-            Ok(())
+                .map_err(|error| DeviceError::Launch(error.to_string()))
         })
         .map_err(device_error)?;
         // cuBLAS does host-side work the first time it sees a configuration and a capturing

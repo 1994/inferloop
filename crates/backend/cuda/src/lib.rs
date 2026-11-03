@@ -7,7 +7,6 @@ pub mod attention;
 pub mod benchmark;
 pub(crate) mod constants;
 pub mod device;
-mod kernels;
 pub mod loading;
 pub mod mlp;
 pub mod nvfp4;

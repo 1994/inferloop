@@ -565,7 +565,14 @@ fn record_prompt_dense(
     }
     // Wide projections are worth a vendor GEMM, square ones are not: `record_dense` decides from
     // the measured shape table.
-    if records_vendor_gemm(scope, delegated, input, w, output, (width, rows, columns))? {
+    if records_vendor_gemm(
+        (&weights.kernels, scope),
+        delegated,
+        input,
+        w,
+        output,
+        (width, rows, columns),
+    )? {
         return Ok(());
     }
     let choice = nvfp4.prompt_dense_choice(w, [width, rows, columns]);
@@ -715,7 +722,7 @@ fn record_legacy_fp4(
 
 /// Whether the vendor GEMM recorded this projection instead of the tile kernel.
 fn records_vendor_gemm(
-    scope: &Scope,
+    target: (&Kernels, &Scope),
     delegated: Option<&mut Support>,
     input: &Tensor<f32>,
     weight: &Tensor<bf16>,
@@ -725,7 +732,7 @@ fn records_vendor_gemm(
     let Some(delegated) = delegated else {
         return Ok(false);
     };
-    delegated.record_dense(scope, input, weight, output, (width, rows, columns))
+    delegated.record_dense(target, input, weight, output, (width, rows, columns))
 }
 
 // Preserve F32 router inputs through a high BF16 term and a low residual term.

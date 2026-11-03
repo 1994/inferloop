@@ -8,7 +8,8 @@ use crate::contract::kernels::{Projection, WeightRef};
 use crate::contract::plan::{
     DenseKernel, DenseRowsPlan, DownPlan, EmbeddingBatchPlan, EmbeddingPlan, Fp4QuantKind,
     Fp4QuantPlan, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, LastRowsKind, LastRowsPlan,
-    LinearRowsPlan, PoolGemvPlan, PromptPlan, RowsKernel, RowsPlan, SplitGemmPlan, THREE_ROWS,
+    LinearRowsPlan, NARROW_GRANULE, PoolGemvPlan, PromptPlan, RowsKernel, RowsPlan, SplitGemmPlan,
+    THREE_ROWS,
 };
 use crate::contract::recording::Recording;
 use crate::tile::attention::attention as attention_model;
@@ -1035,6 +1036,29 @@ impl Projection for TileProjection {
                 &b,
                 &c,
             ))
+            .map_err(backend_error)?;
+        Ok(())
+    }
+
+    fn narrow_bf16(
+        &self,
+        recording: &Recording<'_>,
+        out: Buffer<'_, Bf16>,
+        input: Buffer<'_, f32>,
+    ) -> Result<()> {
+        if out.len() != input.len() || !out.len().is_multiple_of(NARROW_GRANULE) {
+            return Err(Error::invalid(
+                "narrowing: lengths differ or leave a partial tile",
+            ));
+        }
+        let scope = capture_scope(recording)?;
+        let mut out = self.flat(recording, retyped_bf16(out))?;
+        let input = self.flat(recording, input)?;
+        scope
+            .record(
+                linear::cast_bf16((&mut out).partition([NARROW_GRANULE]), &input)
+                    .generics(vec![NARROW_GRANULE.to_string()]),
+            )
             .map_err(backend_error)?;
         Ok(())
     }

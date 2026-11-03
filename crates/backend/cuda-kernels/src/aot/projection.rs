@@ -268,6 +268,15 @@ impl Projection for AotProjection {
         Err(not_compiled("pack_three"))
     }
 
+    fn narrow_bf16(
+        &self,
+        _recording: &Recording<'_>,
+        _out: Buffer<'_, Bf16>,
+        _input: Buffer<'_, f32>,
+    ) -> Result<()> {
+        Err(not_compiled("narrow_bf16"))
+    }
+
     fn unpack_three(
         &self,
         _recording: &Recording<'_>,

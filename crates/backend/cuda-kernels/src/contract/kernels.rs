@@ -92,6 +92,17 @@ pub trait Projection: Send + Sync {
         input: Buffer<'_, f32>,
     ) -> Result<()>;
 
+    /// Narrow F32 `input` to the BF16 a vendor GEMM consumes, element for element.
+    /// # Errors
+    /// Fails when the lengths differ or are not a multiple of [`NARROW_GRANULE`](crate::contract::NARROW_GRANULE), or the launch
+    /// is rejected.
+    fn narrow_bf16(
+        &self,
+        recording: &Recording<'_>,
+        out: Buffer<'_, Bf16>,
+        input: Buffer<'_, f32>,
+    ) -> Result<()>;
+
     /// BF16 projection by the kernel the plan names.
     /// # Errors
     /// Fails when a buffer disagrees with the plan, or the launch is rejected.

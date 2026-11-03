@@ -1,9 +1,9 @@
 use super::kernels;
 use crate::device::CudaDevice;
-use crate::kernels::linear::dense;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::{half::bf16, prelude::*};
+use infer_cuda_kernels::tile::projection::linear::dense;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::env::var;
 use std::error::Error;

@@ -391,7 +391,13 @@ fn record_wide(
     let output = arena.buffers[slot]
         .take()
         .ok_or_else(|| error("fusion batch output"))?;
-    let recorded = delegated.record_dense(scope, &input, weight, &output, (lanes, HIDDEN, COLUMNS));
+    let recorded = delegated.record_dense(
+        (&builder.weights.kernels, scope),
+        &input,
+        weight,
+        &output,
+        (lanes, HIDDEN, COLUMNS),
+    );
     workspace.input = Some(input.reshape(&[lanes, COLUMNS])?);
     arena.buffers[slot] = Some(output);
     if recorded? {
