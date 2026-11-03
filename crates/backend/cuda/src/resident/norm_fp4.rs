@@ -2,6 +2,7 @@
 use super::buffers::buffer;
 use super::program::ActivationQuantization;
 use super::{ActivationArena, ProgramWeights, capture::error, nvfp4_gemm::Workspace};
+use crate::resident::buffers::tensor_rows;
 use crate::{
     constants::{F32_BYTES, NVFP4_QUANT_CODES_TILE},
     mlp::ProjectionWeight,
@@ -122,7 +123,7 @@ pub(super) fn record(
             index + 1,
             input,
             weight,
-            &output,
+            tensor_rows(&output)?,
             (epsilon, offset, scale),
         )
     })();

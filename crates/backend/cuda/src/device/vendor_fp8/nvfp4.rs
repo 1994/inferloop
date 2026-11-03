@@ -7,6 +7,7 @@ use super::{
 use super::{LibraryIdentity, algorithm_config};
 use crate::constants::NVFP4_GROUP_SIZE;
 use crate::mlp::ProjectionWeight;
+use crate::resident::buffers::tensor_rows;
 use crate::resident::tensor_buffer;
 use crate::tuning::projection_budget::ProjectionKind;
 use crate::tuning::resident_gemm::{self, GemmConfig, ResidentTuningSession};
@@ -560,11 +561,9 @@ fn capture(
             || {
                 native.record(
                     (&kernels, scope),
-                    op.weight,
-                    op.scale,
-                    op.q,
-                    op.qs,
-                    op.output,
+                    (op.weight, op.scale),
+                    (tensor_buffer(op.q)?, tensor_buffer(op.qs)?),
+                    tensor_rows(&*op.output)?,
                     shape.k,
                 )
             },

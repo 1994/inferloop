@@ -357,7 +357,7 @@ fn record_fused_down(
                     (&weights.kernels, scope),
                     weight,
                     scale,
-                    &output,
+                    tensor_rows(&output)?,
                     columns,
                 ),
                 Err(error) => Err(error),
@@ -371,7 +371,13 @@ fn record_fused_down(
         .ok_or_else(|| error("prefill output"))?;
     let flat = output.size();
     let output = output.reshape(&[width, flat / width])?;
-    nvfp4.record_prequantized((&weights.kernels, scope), weight, scale, &output, columns)?;
+    nvfp4.record_prequantized(
+        (&weights.kernels, scope),
+        weight,
+        scale,
+        tensor_rows(&output)?,
+        columns,
+    )?;
     arena.buffers[slot] = Some(output.reshape(&[flat])?);
     Ok(())
 }
@@ -411,7 +417,7 @@ fn record_swiglu(
         scale,
         gate,
         up,
-        &output,
+        tensor_rows(&output)?,
         columns,
     )?;
     arena.buffers[slot] = Some(output.reshape(&[flat])?);
