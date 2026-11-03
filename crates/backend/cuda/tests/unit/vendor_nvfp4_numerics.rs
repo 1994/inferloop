@@ -79,7 +79,7 @@ fn vendor_fp4_matches_independent_full_scalar_output() -> TestResult {
     let shape = Shape { m, n, k };
     let prepared =
         make_candidate(&context, shape, &scratch)?.ok_or("FP4 F32 algorithm unavailable")?;
-    let mut op = Operands {
+    let op = Operands {
         weight: &weight,
         scale: 1.0,
         q: &q,
@@ -89,7 +89,7 @@ fn vendor_fp4_matches_independent_full_scalar_output() -> TestResult {
     };
     assert!(op.shape()?.is_some());
     let graph = Graph::scope(&device.stream, |scope| {
-        append(scope, &context, &prepared, &mut op, shape)
+        append((&device.kernels(), scope), &context, &prepared, &op, shape)
     })?;
     graph.launch().sync_on(&device.stream)?;
     let actual = device.read_borrowed(&output)?;
@@ -140,7 +140,7 @@ fn vendor_fp4_rejects_overlap_and_unprepared_operands() -> TestResult {
         false,
     );
     {
-        let mut op = Operands {
+        let op = Operands {
             weight: &weight,
             scale: 1.0,
             q: &q,
@@ -149,11 +149,7 @@ fn vendor_fp4_rejects_overlap_and_unprepared_operands() -> TestResult {
             output: &mut output,
         };
         let before = super::confirmations();
-        assert!(
-            support
-                .candidate(&mut op, GemmConfig::baseline(m))?
-                .is_none()
-        );
+        assert!(support.candidate(&op, GemmConfig::baseline(m))?.is_none());
         assert_eq!(
             super::confirmations(),
             before,
@@ -170,7 +166,7 @@ fn vendor_fp4_rejects_overlap_and_unprepared_operands() -> TestResult {
             output: &mut output,
         };
         assert!(op.shape()?.is_none());
-        assert!(!support.record(scope, op)?);
+        assert!(!support.record(scope, &op)?);
         let op = Operands {
             weight: &weight,
             scale: 1.0,
@@ -180,7 +176,7 @@ fn vendor_fp4_rejects_overlap_and_unprepared_operands() -> TestResult {
             output: &mut output,
         };
         assert!(op.shape()?.is_some());
-        assert!(!support.record(scope, op)?);
+        assert!(!support.record(scope, &op)?);
         for scale in [0.0, -1.0, f32::NAN, f32::INFINITY] {
             let op = Operands {
                 weight: &weight,
@@ -191,7 +187,7 @@ fn vendor_fp4_rejects_overlap_and_unprepared_operands() -> TestResult {
                 output: &mut output,
             };
             assert!(op.shape()?.is_none());
-            assert!(!support.record(scope, op)?);
+            assert!(!support.record(scope, &op)?);
         }
         Ok(())
     })?;

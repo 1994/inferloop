@@ -29,7 +29,7 @@ CUDA_HOST = "crates/backend/cuda/src"
 CUDA_HOST_TOKENS = {
     "Tensor<": 822,
     ".partition(": 12,
-    ".generics(": 4,
+    ".generics(": 2,
     "cuda_core": 82,
     "CudaGraph": 0,
 }

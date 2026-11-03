@@ -1,15 +1,15 @@
 //! cuTile implementation of the projection family.
 use super::{
-    fp8_gemm, fp8_quant_reduction, linear, linear_batch, nvfp4_gemm, pool_gemv, prefill_gemm,
-    prompt_logits, small_gemm, vendor_fp8,
+    BLOCK_BYTES, entries, fp8_gemm, fp8_quant_reduction, linear, linear_batch, nvfp4_gemm,
+    pool_gemv, prefill_gemm, prompt_logits, small_gemm, swizzle, vendor_fp8,
 };
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::kernels::{Projection, WeightRef};
 use crate::contract::plan::{
     DenseKernel, DenseRowsPlan, DownPlan, EmbeddingBatchPlan, EmbeddingPlan, Fp4QuantKind,
-    Fp4QuantPlan, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, LastRowsKind, LastRowsPlan,
-    LinearRowsPlan, NARROW_GRANULE, PoolGemvPlan, PromptPlan, RowsKernel, RowsPlan, SplitGemmPlan,
-    THREE_ROWS,
+    Fp4QuantPlan, Fp4ScalePlan, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, LastRowsKind,
+    LastRowsPlan, LinearRowsPlan, NARROW_GRANULE, PoolGemvPlan, PromptPlan, RowsKernel, RowsPlan,
+    SplitGemmPlan, THREE_ROWS,
 };
 use crate::contract::recording::Recording;
 use crate::tile::attention::attention as attention_model;
@@ -1039,6 +1039,54 @@ impl Projection for TileProjection {
                 &b,
                 &c,
             ))
+            .map_err(backend_error)?;
+        Ok(())
+    }
+
+    fn swizzle_fp4_scales(
+        &self,
+        recording: &Recording<'_>,
+        plan: &Fp4ScalePlan,
+        out: Buffer<'_, Fp8>,
+        weight: Buffer<'_, Fp8>,
+        input: Buffer<'_, Fp8>,
+    ) -> Result<()> {
+        let launch = swizzle(plan)?;
+        let out_rows = out.len() / launch.row;
+        if out.len() != out_rows * launch.row
+            || out.len() < (plan.rows + plan.outputs) * launch.groups
+        {
+            return Err(Error::invalid("FP4 scale swizzle: destination rows"));
+        }
+        let scope = capture_scope(recording)?;
+        let mut out = self.matrix(
+            recording,
+            retyped_fp8(out),
+            "swizzled scales",
+            (out_rows, launch.row),
+        )?;
+        let weight = self.matrix(
+            recording,
+            retyped_fp8(weight),
+            "weight scales",
+            (plan.outputs, launch.groups),
+        )?;
+        let input = self.matrix(
+            recording,
+            retyped_fp8(input),
+            "input scales",
+            (plan.rows, launch.groups),
+        )?;
+        scope
+            .record(
+                entries::pack_pair(
+                    (&mut out).partition_prefix([1, BLOCK_BYTES]),
+                    &weight,
+                    &input,
+                )
+                .generics(launch.generics)
+                .grid(launch.grid),
+            )
             .map_err(backend_error)?;
         Ok(())
     }

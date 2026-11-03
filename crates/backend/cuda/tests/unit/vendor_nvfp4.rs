@@ -44,6 +44,7 @@ fn capture(
     vendor: Option<(&Arc<Context>, &Arc<Prepared>)>,
 ) -> TestResult<Graph> {
     let (q, qs) = quantized;
+    let families = device.kernels();
     Ok(Graph::scope(&device.stream, |scope| {
         for (layer, out) in layers.iter().zip(outputs) {
             scope.record(
@@ -64,7 +65,7 @@ fn capture(
                     n: OUTPUTS,
                     k: COLUMNS,
                 };
-                let mut op = Operands {
+                let op = Operands {
                     weight: &layer.weight,
                     scale: layer.scale,
                     q: &*q,
@@ -73,7 +74,7 @@ fn capture(
                     output: out,
                 };
                 assert_eq!(op.shape()?, Some(shape));
-                append(scope, context, prepared, &mut op, shape)?;
+                append((&families, scope), context, prepared, &op, shape)?;
             } else {
                 scope.record(
                     kernels::packed_prefill(

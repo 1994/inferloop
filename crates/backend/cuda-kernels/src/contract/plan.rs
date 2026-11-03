@@ -219,6 +219,15 @@ pub enum Fp4QuantKind {
     RowGroups { rows: usize },
 }
 
+/// An FP4 projection `[rows, columns] x [outputs, columns]` whose FP8 block scales a vendor
+/// GEMM reads in 128-row by four-group blocks, weight scales first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fp4ScalePlan {
+    pub rows: usize,
+    pub outputs: usize,
+    pub columns: usize,
+}
+
 /// FP4 activation quantization of `[rows, columns]` into codes and block scales.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fp4QuantPlan {

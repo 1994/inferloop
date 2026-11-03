@@ -5,12 +5,13 @@
 use super::attention::resident_attention_prefill;
 use super::backend_error;
 use super::projection::{
-    fp8_gemm, linear_batch, nvfp4_gemm, pool_gemv, prefill_gemm, small_gemm, vendor_fp8,
+    BLOCK_BYTES, entries, fp8_gemm, linear_batch, nvfp4_gemm, pool_gemv, prefill_gemm, small_gemm,
+    swizzle, vendor_fp8,
 };
 use super::recurrent::recurrent_prefill;
 use super::sampling::greedy;
 use super::state::aux;
-use crate::contract::GreedyPlan;
+use crate::contract::{Fp4ScalePlan, GreedyPlan};
 use cuda_core::{DType, Stream, f4e2m1fnx2, f8e4m3fn};
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::half::bf16;
@@ -769,4 +770,33 @@ pub fn greedy_reductions(stream: &Arc<Stream>, plan: &GreedyPlan) -> Result<Stri
         .l2_cache_key_on(stream)
         .map_err(backend_error)?;
     Ok(format!("{first}:{second}"))
+}
+
+/// The FP4 scale swizzle a vendor FP4 GEMM consumes, into an `out_len`-byte destination.
+/// # Errors
+/// Reports a plan that does not tile, or a failed lowering.
+pub fn fp4_scale_swizzle(
+    stream: &Arc<Stream>,
+    plan: &Fp4ScalePlan,
+    out_len: usize,
+) -> Result<String> {
+    let launch = swizzle(plan)?;
+    let mut out = api::meta::<f8e4m3fn>(&[out_len / launch.row, launch.row])
+        .sync_on(stream)
+        .map_err(backend_error)?;
+    let weight = api::meta::<f8e4m3fn>(&[plan.outputs, launch.groups])
+        .sync_on(stream)
+        .map_err(backend_error)?;
+    let input = api::meta::<f8e4m3fn>(&[plan.rows, launch.groups])
+        .sync_on(stream)
+        .map_err(backend_error)?;
+    entries::pack_pair(
+        (&mut out).partition_prefix([1, BLOCK_BYTES]),
+        &weight,
+        &input,
+    )
+    .generics(launch.generics)
+    .grid(launch.grid)
+    .l2_cache_key_on(stream)
+    .map_err(backend_error)
 }

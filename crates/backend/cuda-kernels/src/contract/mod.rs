@@ -30,9 +30,9 @@ pub use kernels::{
 };
 pub use plan::{
     BinaryOp, ConvKernel, DeltaKernel, DeltaStepPlan, DenseKernel, DenseRowsPlan, DownPlan,
-    EmbeddingBatchPlan, EmbeddingPlan, ExpertPlan, Fp4QuantKind, Fp4QuantPlan, Fp8QuantKind,
-    Fp8QuantPlan, FusionNormPlan, FusionShape, GemmLoop, GemmPlan, GreedyPlan, LastRowsKind,
-    LastRowsPlan, LinearRowsPlan, NARROW_GRANULE, NormLayout, NormPlan, PoolConvPlan,
+    EmbeddingBatchPlan, EmbeddingPlan, ExpertPlan, Fp4QuantKind, Fp4QuantPlan, Fp4ScalePlan,
+    Fp8QuantKind, Fp8QuantPlan, FusionNormPlan, FusionShape, GemmLoop, GemmPlan, GreedyPlan,
+    LastRowsKind, LastRowsPlan, LinearRowsPlan, NARROW_GRANULE, NormLayout, NormPlan, PoolConvPlan,
     PoolDeltaPlan, PoolGemvPlan, PromptPlan, QuantNormPlan, RecurrentShape, RopeMode, RopePlan,
     RoutePlan, RowNormPlan, RowsKernel, RowsPlan, SplitGemmPlan, SplitPlan, THREE_ROWS, UnaryOp,
 };

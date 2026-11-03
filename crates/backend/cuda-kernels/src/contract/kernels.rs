@@ -6,9 +6,9 @@ use super::vision::Vision;
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::plan::{
     BinaryOp, DeltaKernel, DenseRowsPlan, DownPlan, EmbeddingBatchPlan, EmbeddingPlan, ExpertPlan,
-    Fp4QuantPlan, Fp8QuantPlan, FusionNormPlan, GemmPlan, GreedyPlan, LastRowsPlan, LinearRowsPlan,
-    NormPlan, PoolGemvPlan, PromptPlan, QuantNormPlan, RopePlan, RoutePlan, RowNormPlan, RowsPlan,
-    SplitGemmPlan, SplitPlan, THREE_ROWS, UnaryOp,
+    Fp4QuantPlan, Fp4ScalePlan, Fp8QuantPlan, FusionNormPlan, GemmPlan, GreedyPlan, LastRowsPlan,
+    LinearRowsPlan, NormPlan, PoolGemvPlan, PromptPlan, QuantNormPlan, RopePlan, RoutePlan,
+    RowNormPlan, RowsPlan, SplitGemmPlan, SplitPlan, THREE_ROWS, UnaryOp,
 };
 use crate::contract::plan::{
     ConvKernel, DeltaStepPlan, PoolConvPlan, PoolDeltaPlan, RecurrentShape,
@@ -115,6 +115,20 @@ pub trait Projection: Send + Sync {
         out: Buffer<'_, f32>,
         row: Buffer<'_, f32>,
         column: Buffer<'_, f32>,
+    ) -> Result<()>;
+
+    /// Swizzle the weight then input block scales of `plan` into `out`, rows of
+    /// `columns / 16 * 128` bytes, in the vendor's block layout.
+    /// # Errors
+    /// Fails when the plan does not tile into whole blocks, a buffer disagrees with it, or the
+    /// launch is rejected.
+    fn swizzle_fp4_scales(
+        &self,
+        recording: &Recording<'_>,
+        plan: &Fp4ScalePlan,
+        out: Buffer<'_, Fp8>,
+        weight: Buffer<'_, Fp8>,
+        input: Buffer<'_, Fp8>,
     ) -> Result<()>;
 
     /// BF16 projection by the kernel the plan names.

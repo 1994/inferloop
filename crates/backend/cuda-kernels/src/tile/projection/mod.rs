@@ -21,7 +21,7 @@ pub use fp8_quant_reduction_kernels::kernels as fp8_quant_reduction;
 pub use linear_batch_kernels::batched as linear_batch;
 pub use linear_kernels::linear;
 pub use nvfp4_gemm_kernels::kernels as nvfp4_gemm;
-pub use nvfp4_kernels::entries;
+pub(in crate::tile) use nvfp4_kernels::{BLOCK_BYTES, entries, swizzle};
 pub use pool_gemv_kernels::kernels as pool_gemv;
 pub use prefill_gemm_kernels::gemm as prefill_gemm;
 pub use prompt_logits_kernels::kernels as prompt_logits;

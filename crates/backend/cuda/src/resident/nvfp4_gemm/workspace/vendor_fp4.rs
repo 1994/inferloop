@@ -55,7 +55,7 @@ impl Workspace {
             .get_mut(&(rows, columns))
             .ok_or_else(|| error("FP4 vendor quantization"))?;
         let candidate = {
-            let mut op = nvfp4::Operands {
+            let op = nvfp4::Operands {
                 weight,
                 scale,
                 q,
@@ -66,7 +66,7 @@ impl Workspace {
             if self.vendor_fp4.known(&op)?.is_some() {
                 return Ok(());
             }
-            self.vendor_fp4.candidate(&mut op, native)?
+            self.vendor_fp4.candidate(&op, native)?
         };
         let Some(candidate) = candidate else {
             return Ok(());
@@ -87,7 +87,7 @@ impl Workspace {
             .map_err(error)?;
         }
         self.vendor_fp4.prepare(
-            nvfp4::Operands {
+            &nvfp4::Operands {
                 weight,
                 scale,
                 q,
@@ -129,7 +129,7 @@ impl Workspace {
             .ok_or_else(|| error("FP4 vendor quantization"))?;
         self.vendor_fp4.record(
             scope,
-            nvfp4::Operands {
+            &nvfp4::Operands {
                 weight,
                 scale,
                 q,
