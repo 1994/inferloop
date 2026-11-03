@@ -360,10 +360,13 @@ pub(super) fn enqueue<R>(
     if owners.is_empty() {
         return result;
     }
+    // Every failure path settles the owners: dropping them early could free memory the copies
+    // just enqueued still read.
     let tracked = match inflight.lock() {
-        Ok(mut inflight) => inflight
-            .reap()
-            .and_then(|()| inflight.retain(stream, owners)),
+        Ok(mut inflight) => match inflight.reap() {
+            Ok(()) => inflight.retain(stream, owners),
+            Err(error) => Err(settle(stream, owners, error)),
+        },
         Err(_) => Err(settle(stream, owners, "transfer queue poisoned")),
     };
     tracked.and(result)
