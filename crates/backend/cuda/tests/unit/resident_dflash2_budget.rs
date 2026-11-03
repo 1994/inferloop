@@ -27,8 +27,8 @@ fn draft_quotes_reject_overflow_before_allocation() {
     assert!(budget::pooled_bytes(&g, usize::MAX, 128).is_err());
 }
 
-fn bytes<T: DType>(tensor: &Tensor<T>) -> u64 {
-    (tensor.size() * size_of::<T>()) as u64
+fn bytes<T: DType>(memory: &Allocation<T>) -> u64 {
+    (memory.len() * size_of::<T>()) as u64
 }
 
 #[test]

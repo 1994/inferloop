@@ -950,7 +950,9 @@ impl DeviceProgram {
         self.prepare_step_async(token, [position; ROTARY_AXES], position, None, true)
             .await?;
         let sources = [
-            read_hidden.then(|| ReadbackSource::whole(Arc::clone(&self.hidden))),
+            read_hidden
+                .then(|| ReadbackSource::whole_tensor(&self.hidden))
+                .transpose()?,
             None,
         ];
         let (rows, tokens) = self
@@ -1027,8 +1029,12 @@ impl DeviceProgram {
                 &self.device,
                 graph,
                 &[
-                    read_hidden.then(|| ReadbackSource::whole(Arc::clone(&self.hidden))),
-                    read_logits.then(|| ReadbackSource::whole(Arc::clone(&self.logits))),
+                    read_hidden
+                        .then(|| ReadbackSource::whole_tensor(&self.hidden))
+                        .transpose()?,
+                    read_logits
+                        .then(|| ReadbackSource::whole_tensor(&self.logits))
+                        .transpose()?,
                 ],
             )
             .await?
@@ -1456,7 +1462,7 @@ impl DeviceProgram {
             .lanes
             .as_mut()
             .ok_or_else(|| Error::invariant("draft prompt pinned staging"))?
-            .copy(&self.device, &mut self.lane_external_owner, externals)?;
+            .copy(&self.device, &self.lane_external_owner, externals)?;
         // Replay completion fences this pinned source before the next prompt upload.
         if self.prompt_for(tokens.len()).is_none() {
             return Err(Error::invariant("prompt batch graph"));

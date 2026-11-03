@@ -19,7 +19,8 @@ use infer_cuda_kernels::contract::{
     DraftAttention, DraftConv, DraftNorm, DraftProjection, DraftRingStore, DraftRope, DraftSplit,
     DraftTop, DraftWalk, DraftWeight, Recording,
 };
-use infer_cuda_kernels::tile::{kernels as tile_kernels, runtime::Graph};
+use infer_cuda_kernels::tile::kernels as tile_kernels;
+use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 pub use weights::DraftWeights;
 
 use super::buffers::buffer;
@@ -80,7 +81,7 @@ const fn meta_range(field: Field, rows: usize, slots: usize) -> Range<usize> {
 }
 
 /// Split-K partials keyed by `(N, K)`: the buffer, its split count and K tiles per split.
-type Partials = BTreeMap<(usize, usize), (Tensor<f32>, usize, usize)>;
+type Partials = BTreeMap<(usize, usize), (Allocation<f32>, usize, usize)>;
 
 /// One sequence's place in the rings and how much of its timeline the draft has seen.
 #[derive(Debug)]
@@ -92,8 +93,8 @@ pub struct Cursor {
 
 /// Per-layer K/V rings, `[kv_heads, rings * ring, head_dim]` each.
 struct Rings {
-    keys: Vec<Tensor<bf16>>,
-    values: Vec<Tensor<bf16>>,
+    keys: Vec<Allocation<bf16>>,
+    values: Vec<Allocation<bf16>>,
     /// Rows of one ring: the window plus one block, in whole key tiles.
     ring: usize,
     count: usize,
@@ -104,17 +105,17 @@ struct Rings {
 struct Ingest {
     rows: usize,
     /// `[rows]` ring ids then `[rows]` positions; a negative position skips the row.
-    meta: Tensor<i32>,
-    normed: Tensor<f32>,
-    k: Tensor<f32>,
-    v: Tensor<f32>,
-    k_normed: Tensor<f32>,
-    k_rotated: Tensor<f32>,
+    meta: Allocation<i32>,
+    normed: Allocation<f32>,
+    k: Allocation<f32>,
+    v: Allocation<f32>,
+    k_normed: Allocation<f32>,
+    k_rotated: Allocation<f32>,
 }
 
 /// Prompt ingestion owns its feature rows; the target's prompt graph writes elsewhere.
 struct PromptIngest {
-    features: Tensor<f32>,
+    features: Allocation<f32>,
     work: Ingest,
     graph: Graph,
     uploads: PinnedUpload<i32>,
@@ -134,30 +135,30 @@ struct ProposeBuffers {
     rows: usize,
     /// `[rows]` tokens, `[rows]` positions, `[rows]` ring ids, `[slots]` block bases,
     /// `[slots]` anchors, `[slots]` ring ids.
-    meta: Tensor<i32>,
-    stream: [Tensor<f32>; 2],
-    normed: Tensor<f32>,
-    coefficients: Tensor<f32>,
-    conv: Tensor<f32>,
-    q: Tensor<f32>,
-    k: Tensor<f32>,
-    v: Tensor<f32>,
-    q_normed: Tensor<f32>,
-    k_normed: Tensor<f32>,
-    q_rotated: Tensor<f32>,
-    k_rotated: Tensor<f32>,
-    attention: Tensor<f32>,
-    projected: Tensor<f32>,
-    gate: Tensor<f32>,
-    up: Tensor<f32>,
-    activated: Tensor<f32>,
-    logits: Tensor<f32>,
-    partial_values: Tensor<f32>,
-    partial_ids: Tensor<i32>,
-    unary: Tensor<f32>,
-    candidates: Tensor<i32>,
-    selector: Tensor<f32>,
-    tokens: Tensor<i32>,
+    meta: Allocation<i32>,
+    stream: [Allocation<f32>; 2],
+    normed: Allocation<f32>,
+    coefficients: Allocation<f32>,
+    conv: Allocation<f32>,
+    q: Allocation<f32>,
+    k: Allocation<f32>,
+    v: Allocation<f32>,
+    q_normed: Allocation<f32>,
+    k_normed: Allocation<f32>,
+    q_rotated: Allocation<f32>,
+    k_rotated: Allocation<f32>,
+    attention: Allocation<f32>,
+    projected: Allocation<f32>,
+    gate: Allocation<f32>,
+    up: Allocation<f32>,
+    activated: Allocation<f32>,
+    logits: Allocation<f32>,
+    partial_values: Allocation<f32>,
+    partial_ids: Allocation<i32>,
+    unary: Allocation<f32>,
+    candidates: Allocation<i32>,
+    selector: Allocation<f32>,
+    tokens: Allocation<i32>,
     /// Split-K partials keyed by `(N, K)` of the narrow FP8 projections: buffer, splits and
     /// K tiles per split.
     partials: Partials,
@@ -227,11 +228,11 @@ impl Engine {
         let features = zeros::<f32>(device, &[PROMPT_ROWS, geometry.hidden])?;
         let work = Ingest::new(device, &geometry, PROMPT_ROWS)?;
         let draft = tile_kernels(device.ordinal()).draft;
-        let graph = Graph::scope(&device.stream, |scope| {
-            let recorder = Recorder::new(&*draft, scope);
-            record_ingest(&recorder, &weights, &rings, &work, buffer(&features)?)
-        })
-        .map_err(device_error)?;
+        let graph = device.runtime().capture(|recording| {
+            let recorder = Recorder::new(&*draft, recording);
+            record_ingest(&recorder, &weights, &rings, &work, features.operand())
+                .map_err(device_error)
+        })?;
         let prompt = PromptIngest {
             features,
             work,
@@ -299,11 +300,15 @@ impl Engine {
         let weights = &self.weights;
         let rings = &self.rings;
         let draft = &*self.draft;
-        let graph = Graph::scope(&device.stream, |scope| {
-            let recorder = Recorder::new(draft, scope);
-            record_ingest(&recorder, weights, rings, &work, buffer(features.as_ref())?)
-        })
-        .map_err(|error| device_error(format!("{slots}-slot verified ingestion: {error}")))?;
+        let graph = device
+            .runtime()
+            .capture(|recording| {
+                let recorder = Recorder::new(draft, recording);
+                buffer(features.as_ref())
+                    .and_then(|features| record_ingest(&recorder, weights, rings, &work, features))
+                    .map_err(device_error)
+            })
+            .map_err(|error| device_error(format!("{slots}-slot verified ingestion: {error}")))?;
         let verified = VerifiedIngest {
             graph,
             work,
@@ -311,11 +316,14 @@ impl Engine {
             _features: features,
         };
         let buffers = ProposeBuffers::new(device, &geometry, slots)?;
-        let graph = Graph::scope(&device.stream, |scope| {
-            record_propose(&Recorder::new(draft, scope), weights, rings, &buffers)
-        })
-        .map_err(|error| device_error(format!("{slots}-slot proposal: {error}")))?;
-        let meta = buffers.meta.size();
+        let graph = device
+            .runtime()
+            .capture(|recording| {
+                record_propose(&Recorder::new(draft, recording), weights, rings, &buffers)
+                    .map_err(device_error)
+            })
+            .map_err(|error| device_error(format!("{slots}-slot proposal: {error}")))?;
+        let meta = buffers.meta.len();
         let propose = Propose {
             graph,
             buffers,
@@ -363,13 +371,11 @@ impl Engine {
         let mut start = 0;
         while start < rows {
             let count = (rows - start).min(PROMPT_ROWS);
-            device.copy_d2d_at(
-                &mut self.prompt.features,
-                features,
-                0,
-                start * hidden,
-                count * hidden,
-            )?;
+            let source = buffer(features)
+                .map_err(device_error)?
+                .slice(start * hidden..(start + count) * hidden)?;
+            let target = self.prompt.features.operand().slice(0..count * hidden)?;
+            device.enqueue(|transfers| transfers.copy(target, source))?;
             for row in 0..PROMPT_ROWS {
                 upload[row] = i32::try_from(cursor.ring).map_err(device_error)?;
                 upload[PROMPT_ROWS + row] = if row < count {
@@ -380,7 +386,7 @@ impl Engine {
             }
             self.prompt
                 .uploads
-                .copy(device, &mut self.prompt.work.meta, &upload)?;
+                .copy(device, &self.prompt.work.meta, &upload)?;
             // SAFETY: ordered on the engine stream after the copies above; every buffer the
             // graph touches is engine-owned and the engine drains the stream before dropping.
             unsafe { self.prompt.graph.launch().async_on(&device.stream) }.map_err(device_error)?;
@@ -388,7 +394,7 @@ impl Engine {
         }
         // The pinned ring above holds one chunk; fence it before the next chunk reuses it.
         let _ = device
-            .read_async(&self.prompt.work.meta, &mut Readbacks::default())
+            .read_allocation(&self.prompt.work.meta, &mut Readbacks::default())
             .await?;
         cursor.context = cursor.context.max(position + rows);
         Ok(())
@@ -429,7 +435,7 @@ impl Engine {
         }
         verified
             .uploads
-            .copy(device, &mut verified.work.meta, &upload)?;
+            .copy(device, &verified.work.meta, &upload)?;
         // SAFETY: ordered after the verify replay and the metadata copy on the engine stream;
         // the graph reads pool-owned features retained by `_features` and engine buffers.
         unsafe { verified.graph.launch().async_on(&device.stream) }.map_err(device_error)?;
@@ -519,12 +525,12 @@ impl Engine {
         }
         propose
             .uploads
-            .copy(device, &mut propose.buffers.meta, upload)?;
+            .copy(device, &propose.buffers.meta, upload)?;
         // SAFETY: ordered after the metadata copy on the engine stream; the readback below
         // fences the replay before any of its buffers is reused.
         unsafe { propose.graph.launch().async_on(&device.stream) }.map_err(device_error)?;
         let tokens = device
-            .read_async(&propose.buffers.tokens, &mut propose.readbacks)
+            .read_allocation(&propose.buffers.tokens, &mut propose.readbacks)
             .await?;
         requests
             .iter()
@@ -543,10 +549,8 @@ impl Engine {
     }
 }
 
-fn zeros<T: DType>(device: &CudaDevice, shape: &[usize]) -> Result<Tensor<T>> {
-    api::zeros::<T>(shape)
-        .sync_on(&device.stream)
-        .map_err(device_error)
+fn zeros<T: DType>(device: &CudaDevice, shape: &[usize]) -> Result<Allocation<T>> {
+    device.runtime().zeros(shape.iter().product())
 }
 
 impl Ingest {
@@ -634,15 +638,12 @@ impl ProposeBuffers {
 /// Where one capture's draft launches go.
 struct Recorder<'a> {
     draft: &'a dyn Draft,
-    recording: Recording<'a>,
+    recording: &'a Recording<'a>,
 }
 
 impl<'a> Recorder<'a> {
-    const fn new(draft: &'a dyn Draft, scope: &'a Scope) -> Self {
-        Self {
-            draft,
-            recording: Recording::scope(scope),
-        }
+    const fn new(draft: &'a dyn Draft, recording: &'a Recording<'a>) -> Self {
+        Self { draft, recording }
     }
 }
 
@@ -666,7 +667,10 @@ fn draft_weight(weight: &ProjectionWeight) -> StdResult<DraftWeight<'_>, DeviceE
 }
 
 /// One field of the metadata buffer.
-fn meta_field(meta: &Tensor<i32>, field: Range<usize>) -> StdResult<Buffer<'_, i32>, DeviceError> {
+fn meta_field(
+    meta: &Allocation<i32>,
+    field: Range<usize>,
+) -> StdResult<Buffer<'_, i32>, DeviceError> {
     buffer(meta)?.slice(field).map_err(error)
 }
 
@@ -680,7 +684,7 @@ fn record_gemm(
 ) -> StdResult<(), DeviceError> {
     r.draft
         .project(
-            &r.recording,
+            r.recording,
             draft_weight(weight)?,
             DraftProjection {
                 out,
@@ -721,7 +725,7 @@ fn record_projection(
     };
     r.draft
         .project_split(
-            &r.recording,
+            r.recording,
             DraftSplit {
                 projection: DraftProjection {
                     out,
@@ -748,7 +752,7 @@ fn record_head_norm(
 ) -> StdResult<(), DeviceError> {
     r.draft
         .norm(
-            &r.recording,
+            r.recording,
             DraftNorm {
                 out,
                 input,
@@ -787,7 +791,7 @@ fn record_rope(
 ) -> StdResult<(), DeviceError> {
     r.draft
         .rope(
-            &r.recording,
+            r.recording,
             DraftRope {
                 out,
                 input,
@@ -811,7 +815,7 @@ fn record_ring_stores(
     for (ring, input) in [(&rings.keys[index], keys), (&rings.values[index], values)] {
         r.draft
             .ring_store(
-                &r.recording,
+                r.recording,
                 DraftRingStore {
                     ring: buffer(ring)?,
                     input,
@@ -843,7 +847,7 @@ fn record_ingest(
     let normed = buffer(&work.normed)?;
     r.draft
         .norm(
-            &r.recording,
+            r.recording,
             hidden_norm(
                 normed,
                 features,
@@ -894,7 +898,7 @@ fn record_conv(
 ) -> StdResult<(), DeviceError> {
     r.draft
         .conv(
-            &r.recording,
+            r.recording,
             DraftConv {
                 out,
                 input,
@@ -923,7 +927,7 @@ fn record_propose(
     let first = buffer(&w.stream[0])?;
     r.draft
         .embed(
-            &r.recording,
+            r.recording,
             [g.hidden, CHANNEL_TILE],
             first,
             buffer(weights.embedding.as_ref())?,
@@ -932,7 +936,7 @@ fn record_propose(
         .map_err(error)?;
     r.draft
         .norm(
-            &r.recording,
+            r.recording,
             hidden_norm(
                 buffer(&w.normed)?,
                 first,
@@ -1025,7 +1029,7 @@ fn record_attention_block(
     let conv = &layer.attention_conv;
     r.draft
         .attend(
-            &r.recording,
+            r.recording,
             DraftAttention {
                 out: buffer(&w.attention)?,
                 queries: buffer(&w.q_rotated)?,
@@ -1062,7 +1066,7 @@ fn record_attention_block(
     )?;
     r.draft
         .add_norm(
-            &r.recording,
+            r.recording,
             DraftAddNorm {
                 norm: hidden_norm(
                     buffer(&w.normed)?,
@@ -1102,7 +1106,7 @@ fn record_mlp_block(
     record_gemm(r, &layer.gate, convolved, gate, (rows, hidden))?;
     record_gemm(r, &layer.up, convolved, up, (rows, hidden))?;
     r.draft
-        .gated_product(&r.recording, activated, gate, up)
+        .gated_product(r.recording, activated, gate, up)
         .map_err(error)?;
     record_projection(
         r,
@@ -1118,7 +1122,7 @@ fn record_mlp_block(
         .map_or(&weights.norm, |layer| &layer.input_norm);
     r.draft
         .add_norm(
-            &r.recording,
+            r.recording,
             DraftAddNorm {
                 norm: hidden_norm(normed, residual, buffer(norm.as_ref())?, &g),
                 stream: next,
@@ -1140,7 +1144,7 @@ fn record_candidates(
     record_gemm(r, &weights.head, normed, buffer(&w.logits)?, (rows, hidden))?;
     r.draft
         .top_candidates(
-            &r.recording,
+            r.recording,
             DraftTop {
                 partial_values: buffer(&w.partial_values)?,
                 partial_ids: buffer(&w.partial_ids)?,
@@ -1163,7 +1167,7 @@ fn record_candidates(
     )?;
     r.draft
         .walk(
-            &r.recording,
+            r.recording,
             DraftWalk {
                 tokens: buffer(&w.tokens)?,
                 candidates: buffer(&w.candidates)?,

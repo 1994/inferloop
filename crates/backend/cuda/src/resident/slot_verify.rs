@@ -642,22 +642,22 @@ impl SlotVerifyGraph {
             self.metadata_upload.extend_from_slice(&values);
         }
         self.metadata_staging
-            .copy(device, &mut self.metadata_owner, &self.metadata_upload)?;
+            .copy(device, &self.metadata_owner, &self.metadata_upload)?;
         let hidden_size = self.hidden.size() / total;
         let vocabulary = self.logits.size() / total;
         let mut sources = Vec::with_capacity(2 * total);
         for (lane, entry) in per_lane.iter().enumerate() {
             let active = entry.is_some();
-            sources.push(active.then(|| ReadbackSource {
-                tensor: Arc::clone(&self.hidden),
-                skip: lane * hidden_size,
-                len: hidden_size,
-            }));
-            sources.push((active && !device_tokens).then(|| ReadbackSource {
-                tensor: Arc::clone(&self.logits),
-                skip: lane * vocabulary,
-                len: vocabulary,
-            }));
+            sources.push(
+                active
+                    .then(|| ReadbackSource::tensor(&self.hidden, lane * hidden_size, hidden_size))
+                    .transpose()?,
+            );
+            sources.push(
+                (active && !device_tokens)
+                    .then(|| ReadbackSource::tensor(&self.logits, lane * vocabulary, vocabulary))
+                    .transpose()?,
+            );
         }
         let (output, tokens) = if device_tokens {
             let active: Vec<_> = per_lane

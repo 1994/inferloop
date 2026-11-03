@@ -85,6 +85,12 @@ impl<T: DType> Allocation<T> {
         self.tensor.size()
     }
 
+    /// Ordinal of the device holding the memory.
+    #[must_use]
+    pub fn device(&self) -> usize {
+        self.tensor.device_id()
+    }
+
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0

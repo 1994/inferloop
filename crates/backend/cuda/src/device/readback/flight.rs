@@ -6,7 +6,7 @@ use cutile::cuda_async::device_future::DeviceFuture;
 use cutile::cuda_async::device_operation::BoxedDeviceOp;
 use cutile::prelude::*;
 use infer_core::{Error, ErrorCode, Result};
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
@@ -25,7 +25,7 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
     pub(crate) async fn read_async(
         &mut self,
         device: &CudaDevice,
-        source: Arc<Tensor<T>>,
+        source: Allocation<T>,
     ) -> Result<Vec<T>> {
         if self.poisoned || self.flight.is_some() {
             return Err(Error::invalid("busy or poisoned tensor readback"));
@@ -155,7 +155,7 @@ impl Readbacks<f32> {
         let (selector, tokens, tensor) = tail;
         self.validate_submit(device, graph)?;
         tokens.validate_submit(device, selector)?;
-        let token_sources = [Some(ReadbackSource::whole(tensor))];
+        let token_sources = [Some(ReadbackSource::whole_tensor(&tensor)?)];
         let bytes = self
             .staging_bytes(device, sources)?
             .checked_add(tokens.staging_bytes(device, &token_sources)?)
