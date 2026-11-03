@@ -1,8 +1,10 @@
 //! Opt-in vendor FP8 pilot: unchanged checkpoint codes, unchanged token quantizer, F32 output.
 //! These ignored tests execute CUDA only when the serial safe-run owner invokes them.
 use super::super::fp8_gemm::kernels;
-use crate::device::{CudaDevice, vendor_fp8::Support};
+use crate::device::CudaDevice;
+use crate::device::vendor_fp8::{Gemm, Support};
 use crate::mlp::Matrix;
+use crate::resident::tensor_buffer as buffer;
 use crate::tuning::fp8_gemm::Choice as Fp8GemmChoice;
 use crate::tuning::resident_gemm::native_tile;
 use cuda_core::f8e4m3fn;
@@ -11,6 +13,7 @@ use cutile::bench::do_bench_paired;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::{Buffer, Recording};
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_models::{DeviceWeight, QuantizedPackage, WeightEncoding, convert_float_bytes};
@@ -29,8 +32,8 @@ struct Weight {
     k: usize,
     codes: Vec<u8>,
     scales: Vec<f32>,
-    device_codes: Arc<Tensor<f8e4m3fn>>,
-    device_scales: Arc<Tensor<f32>>,
+    device_codes: Matrix<f8e4m3fn>,
+    device_scales: Allocation<f32>,
 }
 impl Weight {
     fn new(
@@ -54,8 +57,12 @@ impl Weight {
             name,
             n,
             k,
-            device_codes: device.upload(codes.iter().copied().map(f8e4m3fn).collect(), &[n, k])?,
-            device_scales: device.upload(scales.clone(), &[n])?,
+            device_codes: Matrix::upload(
+                device,
+                codes.iter().copied().map(f8e4m3fn).collect(),
+                &[n, k],
+            )?,
+            device_scales: device.runtime().upload(scales.clone())?,
             codes,
             scales,
         })
@@ -110,6 +117,20 @@ impl Weight {
     }
 }
 
+/// The product of the quantized `codes` and the weight into `output`.
+fn gemm<'b>(
+    codes: &'b Tensor<f8e4m3fn>,
+    weight: &'b Weight,
+    output: &'b Tensor<f32>,
+) -> Result<Gemm<'b>, DeviceError> {
+    Ok(Gemm {
+        input: buffer(codes)?,
+        weight: buffer(&weight.device_codes)?,
+        output: buffer(output)?,
+        extents: [codes.size() / weight.k, weight.n, weight.k],
+    })
+}
+
 struct Inputs<'a> {
     weight: &'a Weight,
     rows: usize,
@@ -153,6 +174,13 @@ impl<'a> Inputs<'a> {
         )?;
         Ok(())
     }
+    fn gemm<'b>(&'b self, output: &'b Tensor<f32>) -> Result<Gemm<'b>, DeviceError> {
+        gemm(&self.codes, self.weight, output)
+    }
+    /// The per-token and per-channel factors.
+    fn factors(&self) -> Result<[Buffer<'_, f32>; 2], DeviceError> {
+        Ok([buffer(&self.scales)?, buffer(&self.weight.device_scales)?])
+    }
     fn matmul(
         &self,
         scope: &Scope,
@@ -161,12 +189,9 @@ impl<'a> Inputs<'a> {
     ) -> Result<(), DeviceError> {
         if vendor {
             if !self.vendor.record(
-                scope,
-                &self.codes,
-                &self.weight.device_codes,
-                output,
-                &self.scales,
-                &self.weight.device_scales,
+                &Recording::scope(scope),
+                self.gemm(output)?,
+                self.factors()?,
             )? {
                 return Err(DeviceError::Internal(
                     "requested vendor shape was not warmed".into(),
@@ -178,9 +203,9 @@ impl<'a> Inputs<'a> {
                 kernels::matmul(
                     output.partition(tile),
                     &self.codes,
-                    &self.weight.device_codes,
+                    self.weight.device_codes.tensor(),
                     &self.scales,
-                    &self.weight.device_scales,
+                    self.weight.device_scales.tensor(),
                 )
                 .generics(vec![
                     self.weight.k.to_string(),
@@ -346,7 +371,7 @@ fn compare_case(
     assert!(
         inputs
             .vendor
-            .prepare(&inputs.codes, &weight.device_codes, &vendor)?,
+            .prepare(gemm(&inputs.codes, weight, &vendor)?)?,
         "Lt zero-workspace algorithm unavailable for {rows}x{}x{}",
         weight.n,
         weight.k
@@ -550,10 +575,8 @@ fn vendor_fp8_verified_chooser_checkpoint_comparison() -> TestResult {
             })
             .ok_or_else(|| format!("no FP8 channel checkpoint family {family}"))?;
         let weight = Weight::checkpoint(&device, &package, name, source)?;
-        let projection = ProjectionWeight::Fp8(
-            Matrix::adopt(Arc::clone(&weight.device_codes))?,
-            Allocation::adopt(Arc::clone(&weight.device_scales))?,
-        );
+        let projection =
+            ProjectionWeight::Fp8(weight.device_codes.clone(), weight.device_scales.clone());
         // The same model allowance applies to all shapes; larger prompt shapes exercise the measured Lt wins first.
         for rows in [128, 64, 12, 1] {
             let mut inputs = Inputs::new(&device, &weight, rows)?;
@@ -570,27 +593,19 @@ fn vendor_fp8_verified_chooser_checkpoint_comparison() -> TestResult {
             let base = Graph::scope(&device.stream, |scope| {
                 inputs.quantize(scope)?;
                 Choice::baseline(rows).record(
-                    (&device.kernels(), scope),
+                    (&device.kernels(), &Recording::scope(scope)),
                     &inputs.vendor,
-                    &inputs.codes,
-                    &weight.device_codes,
-                    &baseline,
-                    &inputs.scales,
-                    &weight.device_scales,
-                    weight.k,
+                    inputs.gemm(&baseline)?,
+                    inputs.factors()?,
                 )
             })?;
             let candidate = Graph::scope(&device.stream, |scope| {
                 inputs.quantize(scope)?;
                 choice.record(
-                    (&device.kernels(), scope),
+                    (&device.kernels(), &Recording::scope(scope)),
                     &inputs.vendor,
-                    &inputs.codes,
-                    &weight.device_codes,
-                    &output,
-                    &inputs.scales,
-                    &weight.device_scales,
-                    weight.k,
+                    inputs.gemm(&output)?,
+                    inputs.factors()?,
                 )
             })?;
             base.launch().sync_on(&device.stream)?;
@@ -623,7 +638,7 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
     let configs =
         inputs
             .vendor
-            .prepare_candidates(&inputs.codes, &weight.device_codes, &restored_output)?;
+            .prepare_candidates(gemm(&inputs.codes, &weight, &restored_output)?)?;
     let selected = configs
         .first()
         .ok_or("no supported zero-workspace typed FP8 algorithm")?;
@@ -632,18 +647,9 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
     assert_eq!(*selected, config);
     assert!(inputs.vendor.heuristic_query_count() > 0);
     let mut restored = Support::new_with(&device, true);
-    restored.retain_channels(
-        &Matrix::adopt(Arc::clone(&weight.device_codes))?,
-        &Allocation::adopt(Arc::clone(&weight.device_scales))?,
-    );
     assert_eq!(restored.heuristic_query_count(), 0);
     assert!(
-        restored.prepare_config(
-            &inputs.codes,
-            &weight.device_codes,
-            &restored_output,
-            config
-        )?,
+        restored.prepare_config(inputs.gemm(&restored_output)?, config)?,
         "typed restore must execute SDK init/set/check and real warmup on a fresh handle"
     );
     assert_eq!(
@@ -651,8 +657,13 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
         0,
         "fresh typed restoration must work without a heuristic query"
     );
-    assert!(Arc::strong_count(&weight.device_codes) >= 2);
-    assert!(Arc::strong_count(&weight.device_scales) >= 2);
+    let held = |weight: &Weight| {
+        [
+            Arc::strong_count(weight.device_codes.tensor()),
+            Arc::strong_count(weight.device_scales.tensor()),
+        ]
+    };
+    let before = held(&weight);
     let native_graph = Graph::scope(&device.stream, |scope| {
         inputs.quantize(scope)?;
         inputs.matmul(scope, &mut native, false)
@@ -660,13 +671,10 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
     let restored_graph = Graph::scope(&device.stream, |scope| {
         inputs.quantize(scope)?;
         if !restored.record_config(
-            scope,
+            &Recording::scope(scope),
             config,
-            &inputs.codes,
-            &weight.device_codes,
-            &restored_output,
-            &inputs.scales,
-            &weight.device_scales,
+            inputs.gemm(&restored_output)?,
+            inputs.factors()?,
         )? {
             return Err(DeviceError::Internal(
                 "typed FP8 algorithm was not captured".into(),
@@ -674,6 +682,11 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
         }
         Ok(())
     })?;
+    assert_eq!(
+        held(&weight),
+        before.map(|count| count + 1),
+        "the recorded Lt node must hold the weight and channel scales it reads"
+    );
     // Both graphs are declared after the lifetime owners and are destroyed before them.
     native_graph.launch().sync_on(&device.stream)?;
     restored_graph.launch().sync_on(&device.stream)?;
