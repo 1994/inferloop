@@ -17,7 +17,8 @@ use crate::{
 use cutile::{half::bf16, prelude::*};
 use infer_core::Result;
 use infer_cuda_kernels::contract::{
-    EmbeddingBatchPlan, FusionNormBuffers, FusionNormPlan, FusionShape, LinearRowsPlan, Recording,
+    Buffer, EmbeddingBatchPlan, FusionNormBuffers, FusionNormPlan, FusionShape, LinearRowsPlan,
+    Recording,
 };
 use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
@@ -171,8 +172,8 @@ fn gather(
     builder: &BatchBuilder<'_>,
     scope: &Scope,
     node: &TensorNode,
-    gathered: &Tensor<f32>,
-    metadata_batch: &Tensor<i32>,
+    gathered: Buffer<'_, f32>,
+    metadata_batch: Buffer<'_, i32>,
 ) -> StdResult<(), DeviceError> {
     let weight = builder
         .weights
@@ -190,10 +191,10 @@ fn gather(
                 fields: METADATA_FIELDS,
                 tile: AUX_KERNEL_TILE,
             },
-            buffer(gathered)?,
+            gathered,
             buffer(weight.as_ref())?,
             None,
-            buffer(metadata_batch)?,
+            metadata_batch,
         )
         .map_err(error)
 }
@@ -246,7 +247,13 @@ pub(super) fn record(
         .gathered
         .take()
         .ok_or_else(|| error("fusion batch gather"))?;
-    gather(builder, scope, node, &gathered, metadata_batch)?;
+    gather(
+        builder,
+        scope,
+        node,
+        buffer(&gathered)?,
+        buffer(metadata_batch)?,
+    )?;
     for (lane, meta) in metadata.iter().enumerate().take(rows) {
         // The owned row tensor keeps the gather allocation anchored until it is put back;
         // `row_tensor` bounds the lane inside the slot and the return re-anchors ownership.
@@ -337,14 +344,23 @@ fn record_wide(
     else {
         return Err(error("fusion batch dense capability"));
     };
-    let Some(delegated) = builder.delegated.as_deref_mut() else {
+    if builder.delegated.is_none() {
         return Ok(false);
-    };
+    }
     let gathered = workspace
         .gathered
         .take()
         .ok_or_else(|| error("fusion batch gather"))?;
-    gather(builder, scope, node, &gathered, metadata_batch)?;
+    gather(
+        builder,
+        scope,
+        node,
+        buffer(&gathered)?,
+        buffer(metadata_batch)?,
+    )?;
+    let Some(delegated) = builder.delegated.as_deref_mut() else {
+        return Ok(false);
+    };
     let input = workspace
         .input
         .take()

@@ -1,5 +1,4 @@
 use super::buffers::{buffer, region};
-#[cfg(test)]
 use super::{ProgramWeights, batch::Lane, capture::error};
 #[cfg(test)]
 use crate::constants::CB_DECODE_SLOTS;
@@ -22,9 +21,9 @@ use crate::{
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, OpId, Result};
-use infer_cuda_kernels::contract::{
-    Buffer, Kernels, LinearRowsPlan, Recording, RowsKernel, RowsPlan,
-};
+#[cfg(test)]
+use infer_cuda_kernels::contract::LinearRowsPlan;
+use infer_cuda_kernels::contract::{Buffer, Kernels, Recording, RowsKernel, RowsPlan};
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;
@@ -239,7 +238,7 @@ pub(super) fn record_slots(
         weights,
         weight,
         region(input_pointer, lanes * columns),
-        &mut output,
+        &output,
         columns,
     )? {
         arena.buffers[slot] = Some(output.reshape(&[flat]).map_err(error)?);
@@ -417,7 +416,7 @@ fn record_pool_small_f32(
     weights: &ProgramWeights,
     weight: &ProjectionWeight,
     input: Buffer<'_, f32>,
-    output: &mut Tensor<f32>,
+    output: &Tensor<f32>,
     columns: usize,
 ) -> StdResult<bool, DeviceError> {
     let rows = input.len() / columns.max(1);
