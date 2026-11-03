@@ -2,7 +2,6 @@
 use super::super::reference::{Fixture, maximum_error};
 use crate::constants::METADATA_FIELDS;
 use crate::device::{CudaDevice, device_error};
-use crate::resident::recurrent_prefill::oxide;
 use crate::resident::tensor_buffer as buffer;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
@@ -53,7 +52,8 @@ impl Captured {
             width,
         })
     }
-    pub fn graph(&mut self, device: &CudaDevice, rust: Option<&oxide::Support>) -> Result<Graph> {
+    /// The pipeline with the SIMT recurrence when `simt`, otherwise the tile one.
+    pub fn graph(&mut self, device: &CudaDevice, simt: bool) -> Result<Graph> {
         let width = self.width;
         let contract = device.kernels();
         let shape = RecurrentShape {
@@ -62,6 +62,9 @@ impl Captured {
             dim: DIM,
             lanes: width,
         };
+        if simt && !contract.recurrent.prepare_simt_delta(shape)? {
+            return Err(Error::invalid("no SIMT recurrence build covers this shape"));
+        }
         Graph::scope(&device.stream, |scope| {
             scope.record(api::memcpy(&mut self.state, &self.initial))?;
             let recording = Recording::scope(scope);
@@ -89,37 +92,24 @@ impl Captured {
                     },
                 )
                 .map_err(|error| DeviceError::Internal(error.to_string()))?;
-            if let Some(function) = rust {
-                function.record(
-                    scope,
-                    oxide::Bindings {
-                        state: &mut self.state,
-                        output: &mut self.scratch,
-                        qkv: &self.qkv,
-                        normalized: &self.normalized,
-                        beta: &self.betas,
-                        decay: &self.decays,
-                        metadata: &self.metadata,
-                    },
-                    width,
-                )?;
+            let buffers = PreparedDeltaBuffers {
+                state: buffer(&self.state)?,
+                output: buffer(&self.scratch)?,
+                qkv: buffer(self.qkv.as_ref())?,
+                normalized: buffer(&self.normalized)?,
+                betas: buffer(&self.betas)?,
+                decays: buffer(&self.decays)?,
+                metadata: buffer(self.metadata.as_ref())?,
+            };
+            if simt {
+                contract
+                    .recurrent
+                    .delta_prepared_simt(&recording, shape, buffers)
+                    .map_err(|error| DeviceError::Internal(error.to_string()))?;
             } else {
                 contract
                     .recurrent
-                    .delta_prepared(
-                        &recording,
-                        shape,
-                        NATIVE_VALUE_COLUMNS,
-                        PreparedDeltaBuffers {
-                            state: buffer(&self.state)?,
-                            output: buffer(&self.scratch)?,
-                            qkv: buffer(self.qkv.as_ref())?,
-                            normalized: buffer(&self.normalized)?,
-                            betas: buffer(&self.betas)?,
-                            decays: buffer(&self.decays)?,
-                            metadata: buffer(self.metadata.as_ref())?,
-                        },
-                    )
+                    .delta_prepared(&recording, shape, NATIVE_VALUE_COLUMNS, buffers)
                     .map_err(|error| DeviceError::Internal(error.to_string()))?;
             }
             contract

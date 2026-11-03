@@ -6,6 +6,7 @@ mod recurrent_checkpoint_kernels;
 mod recurrent_chunk_kernels;
 mod recurrent_kernels;
 mod recurrent_prefill_kernels;
+mod simt;
 mod slot_convolution_kernels;
 mod slot_recurrent_kernels;
 

@@ -946,6 +946,24 @@ pub trait Recurrent: Send + Sync {
         buffers: PreparedDeltaBuffers<'_>,
     ) -> Result<()>;
 
+    /// Load the pinned SIMT build of [`Recurrent::delta_prepared`] for `shape`; `false` when no
+    /// build covers it. Call outside capture: loading a module is not a stream operation.
+    /// # Errors
+    /// Fails when the build does not load on this device.
+    fn prepare_simt_delta(&self, shape: RecurrentShape) -> Result<bool>;
+
+    /// [`Recurrent::delta_prepared`] by the SIMT build [`Recurrent::prepare_simt_delta`] loaded.
+    /// The exact recurrence tuning admits it only where the two agree bit for bit.
+    /// # Errors
+    /// Fails when the build was not prepared, a buffer disagrees with its fixed extents, or the
+    /// launch is rejected.
+    fn delta_prepared_simt(
+        &self,
+        recording: &Recording<'_>,
+        shape: RecurrentShape,
+        buffers: PreparedDeltaBuffers<'_>,
+    ) -> Result<()>;
+
     /// A recurrence that derives its gates per token.
     /// # Errors
     /// Fails when a buffer disagrees with the shape, or the launch is rejected.
