@@ -103,6 +103,20 @@ pub trait Projection: Send + Sync {
         input: Buffer<'_, f32>,
     ) -> Result<()>;
 
+    /// Scale `[rows, columns]` `out` in place by `row[r] * column[c]`, the per-token and
+    /// per-channel factors a vendor FP8 GEMM leaves unapplied.
+    /// # Errors
+    /// Fails when the factors do not match `out`, `columns` does not tile, or the launch is
+    /// rejected.
+    fn channel_scale(
+        &self,
+        recording: &Recording<'_>,
+        columns: usize,
+        out: Buffer<'_, f32>,
+        row: Buffer<'_, f32>,
+        column: Buffer<'_, f32>,
+    ) -> Result<()>;
+
     /// BF16 projection by the kernel the plan names.
     /// # Errors
     /// Fails when a buffer disagrees with the plan, or the launch is rejected.

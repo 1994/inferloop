@@ -117,7 +117,7 @@ impl Choice {
         support: &vendor_fp8::Support,
         q: &Tensor<f8e4m3fn>,
         weight: &Tensor<f8e4m3fn>,
-        output: &mut Tensor<f32>,
+        output: &Tensor<f32>,
         xs: &Tensor<f32>,
         ws: &Tensor<f32>,
         columns: usize,
@@ -147,7 +147,7 @@ impl Choice {
                     columns,
                     tile: native.tile(),
                 },
-                buffer(&*output)?,
+                buffer(output)?,
                 (buffer(q)?, buffer(xs)?),
                 WeightRef::Fp8 {
                     weight: buffer(weight)?,
@@ -491,7 +491,7 @@ impl Captured {
         let xs = api::zeros::<f32>(&[rows, 1])
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        let mut output = api::zeros::<f32>(&[rows, outputs])
+        let output = api::zeros::<f32>(&[rows, outputs])
             .sync_on(&device.stream)
             .map_err(device_error)?;
         support.retain_channels(weight_codes, ws);
@@ -527,15 +527,7 @@ impl Captured {
                 )
                 .map_err(fp8_launch)?;
             if let Choice::Lt(config) = choice {
-                if !support.record_config(
-                    scope,
-                    config,
-                    &codes,
-                    weight_codes,
-                    &mut output,
-                    &xs,
-                    ws,
-                )? {
+                if !support.record_config(scope, config, &codes, weight_codes, &output, &xs, ws)? {
                     return Err(DeviceError::Internal(
                         "FP8 Lt candidate did not record its algorithm".into(),
                     ));
@@ -547,7 +539,7 @@ impl Captured {
                     support,
                     &codes,
                     weight_codes,
-                    &mut output,
+                    &output,
                     &xs,
                     ws,
                     columns,

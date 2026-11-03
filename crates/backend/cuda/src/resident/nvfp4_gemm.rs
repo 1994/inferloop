@@ -20,7 +20,7 @@ pub(super) fn record(
     weight: &MlpProjectionWeight,
     input_scale: Option<super::program::ActivationQuantization>,
     input: Buffer<'_, f32>,
-    output: &mut PreludeTensor<f32>,
+    output: &PreludeTensor<f32>,
     columns: usize,
 ) -> Result<bool, DeviceError> {
     workspace.clear_quant_reuse();
@@ -43,7 +43,7 @@ pub(super) fn record_certified(
     weight: &MlpProjectionWeight,
     input_scale: Option<super::program::ActivationQuantization>,
     input: Buffer<'_, f32>,
-    output: &mut PreludeTensor<f32>,
+    output: &PreludeTensor<f32>,
     columns: usize,
 ) -> Result<bool, DeviceError> {
     record_input(
@@ -68,7 +68,7 @@ fn record_input(
     weight: &MlpProjectionWeight,
     input_scale: Option<super::program::ActivationQuantization>,
     input: Buffer<'_, f32>,
-    output: &mut PreludeTensor<f32>,
+    output: &PreludeTensor<f32>,
     columns: usize,
     certified: bool,
 ) -> Result<bool, DeviceError> {

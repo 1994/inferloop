@@ -1,7 +1,7 @@
 //! cuTile implementation of the projection family.
 use super::{
     fp8_gemm, fp8_quant_reduction, linear, linear_batch, nvfp4_gemm, pool_gemv, prefill_gemm,
-    prompt_logits, small_gemm,
+    prompt_logits, small_gemm, vendor_fp8,
 };
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::kernels::{Projection, WeightRef};
@@ -18,6 +18,9 @@ use cuda_core::{DType, f4e2m1fnx2, f8e4m3fn};
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+
+/// Columns one channel-scale tile covers.
+const SCALE_COLUMNS: usize = 256;
 
 /// Elements of an embedding row a tile covers.
 const EMBEDDING_TILE: usize = 256;
@@ -1035,6 +1038,39 @@ impl Projection for TileProjection {
                 &a,
                 &b,
                 &c,
+            ))
+            .map_err(backend_error)?;
+        Ok(())
+    }
+
+    fn channel_scale(
+        &self,
+        recording: &Recording<'_>,
+        columns: usize,
+        out: Buffer<'_, f32>,
+        row: Buffer<'_, f32>,
+        column: Buffer<'_, f32>,
+    ) -> Result<()> {
+        let rows = out.len().checked_div(columns).unwrap_or(0);
+        if rows == 0
+            || out.len() != rows * columns
+            || !columns.is_multiple_of(SCALE_COLUMNS)
+            || row.len() != rows
+            || column.len() != columns
+        {
+            return Err(Error::invalid(
+                "channel scale: factors do not match the output",
+            ));
+        }
+        let scope = capture_scope(recording)?;
+        let mut out = self.matrix(recording, out, "scaled output", (rows, columns))?;
+        let row = self.matrix(recording, row, "row factors", (rows, 1))?;
+        let column = self.flat(recording, column)?;
+        scope
+            .record(vendor_fp8::scale(
+                (&mut out).partition([1, SCALE_COLUMNS]),
+                &row,
+                &column,
             ))
             .map_err(backend_error)?;
         Ok(())

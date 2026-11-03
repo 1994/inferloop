@@ -3,6 +3,7 @@
 //! Descriptors and zero-workspace algorithms are warmed before graph capture. Native kernels
 //! remain the fallback for an absent library, unsupported shape or failed exact tuning gate.
 use super::CudaDevice;
+use crate::resident::tensor_buffer;
 use cuda_core::f8e4m3fn;
 use cuda_core::sys::CUcontext;
 use cuda_core::sys::CUdeviceptr;
@@ -26,6 +27,7 @@ use cutile::cuda_async::{
     error::DeviceError,
 };
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::{Kernels, Recording};
 use serde::{Deserialize, Serialize};
 use std::ops::Deref;
 use std::ptr::null_mut;
@@ -69,7 +71,6 @@ const ALGO_WORDS: usize = 8;
 const HEURISTIC_RESERVED: usize = 4;
 const MATRIX_LAYOUTS: usize = 4;
 const GEMM_RANK: usize = 3;
-const SCALE_TILE: [usize; 2] = [1, 256];
 
 /// Transcribed from CUDA 13.4 cublasLt.h: `cublasLtMatmulAlgo_t` has eight uint64 words.
 #[repr(C)]
@@ -811,6 +812,8 @@ pub struct Support {
     algorithms: BTreeMap<(Shape, AlgorithmConfig), Arc<Prepared>>,
     available: BTreeMap<Shape, Vec<AlgorithmConfig>>,
     channel_scales: BTreeMap<CUdeviceptr, Arc<Tensor<f32>>>,
+    /// The epilogue that applies the channel factors the Lt GEMM leaves at one.
+    kernels: Arc<Kernels>,
     rejected: BTreeSet<Shape>,
     /// The Lt node is consumed during capture, so allocations are anchored here instead.
     weights: BTreeMap<CUdeviceptr, Arc<Tensor<f8e4m3fn>>>,
@@ -824,6 +827,7 @@ impl Support {
             algorithms: BTreeMap::new(),
             available: BTreeMap::new(),
             channel_scales: BTreeMap::new(),
+            kernels: device.kernels(),
             rejected: BTreeSet::new(),
             weights: BTreeMap::new(),
         }
@@ -1045,7 +1049,7 @@ impl Support {
         scope: &Scope,
         input: &Tensor<f8e4m3fn>,
         weight: &Tensor<f8e4m3fn>,
-        output: &mut Tensor<f32>,
+        output: &Tensor<f32>,
         xs: &Tensor<f32>,
         ws: &Tensor<f32>,
     ) -> Result<bool, DeviceError> {
@@ -1065,7 +1069,7 @@ impl Support {
         config: AlgorithmConfig,
         input: &Tensor<f8e4m3fn>,
         weight: &Tensor<f8e4m3fn>,
-        output: &mut Tensor<f32>,
+        output: &Tensor<f32>,
         xs: &Tensor<f32>,
         ws: &Tensor<f32>,
     ) -> Result<bool, DeviceError> {
@@ -1085,7 +1089,7 @@ impl Support {
         prepared: &Arc<Prepared>,
         input: &Tensor<f8e4m3fn>,
         weight: &Tensor<f8e4m3fn>,
-        output: &mut Tensor<f32>,
+        output: &Tensor<f32>,
         xs: &Tensor<f32>,
         ws: &Tensor<f32>,
     ) -> Result<bool, DeviceError> {
@@ -1115,7 +1119,16 @@ impl Support {
             weight,
             output,
         })?;
-        scope.record(kernels::scale(output.partition(SCALE_TILE), xs, ws))?;
+        self.kernels
+            .projection
+            .channel_scale(
+                &Recording::scope(scope),
+                shape.n,
+                tensor_buffer(output)?,
+                tensor_buffer(xs)?,
+                tensor_buffer(ws)?,
+            )
+            .map_err(|error| DeviceError::Launch(error.to_string()))?;
         Ok(true)
     }
 }
@@ -1159,6 +1172,4 @@ impl IntoFuture for GemmFp8<'_> {
         }
     }
 }
-pub use infer_cuda_kernels::tile::projection::vendor_fp8 as kernels;
-
 pub mod nvfp4;

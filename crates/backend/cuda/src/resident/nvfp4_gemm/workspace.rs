@@ -621,7 +621,7 @@ impl Workspace {
         (contract, scope): (&Kernels, &Scope),
         weight: &ProjectionWeight,
         input: Buffer<'_, f32>,
-        output: &mut Tensor<f32>,
+        output: &Tensor<f32>,
         columns: usize,
         certified: bool,
     ) -> StdResult<(), DeviceError> {
@@ -647,7 +647,7 @@ impl Workspace {
         let key = kind
             .and_then(|kind| quant_key(certified, input, output, rows, columns, kind, (&*q, &*qs)));
         let (reuse, ticket) = self.quant_reuse.prepare(key);
-        let mut record = || {
+        let record = || {
             let recording = Recording::scope(scope);
             match weight {
                 ProjectionWeight::Fp8Block(w, block_scale) => {

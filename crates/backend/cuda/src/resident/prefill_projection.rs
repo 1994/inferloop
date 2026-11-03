@@ -440,7 +440,7 @@ pub(super) fn record(
         .take()
         .ok_or_else(|| error("prefill output"))?;
     let flat = output.size();
-    let mut output = output.reshape(&[width, flat / width])?;
+    let output = output.reshape(&[width, flat / width])?;
     let flat_input = arena.get(node.inputs[0]).map_err(error)?;
     let columns = flat_input.size() / width;
     let weight = weights
@@ -453,7 +453,7 @@ pub(super) fn record(
         weight,
         weights.activation_quantization(node.inputs[1]),
         buffer(flat_input)?,
-        &mut output,
+        &output,
         columns,
     )? {
         arena.buffers[slot] = Some(output.reshape(&[flat])?);

@@ -268,6 +268,17 @@ impl Projection for AotProjection {
         Err(not_compiled("pack_three"))
     }
 
+    fn channel_scale(
+        &self,
+        _recording: &Recording<'_>,
+        _columns: usize,
+        _out: Buffer<'_, f32>,
+        _row: Buffer<'_, f32>,
+        _column: Buffer<'_, f32>,
+    ) -> Result<()> {
+        Err(not_compiled("channel_scale"))
+    }
+
     fn narrow_bf16(
         &self,
         _recording: &Recording<'_>,

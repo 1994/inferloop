@@ -371,14 +371,14 @@ impl Capture<'_> {
             .ok_or_else(|| error("missing projection"))?;
         if let Some(scale) = self.weights.activation_quantization(node.inputs[1]) {
             let size = output.size();
-            let mut matrix = output.reshape(&[1, size])?;
+            let matrix = output.reshape(&[1, size])?;
             if !super::nvfp4_gemm::record_certified(
                 (&self.weights.kernels, self.scope),
                 self.nvfp4,
                 weights,
                 Some(scale),
                 buffer(input)?,
-                &mut matrix,
+                &matrix,
                 input.size(),
             )? {
                 return Err(error(

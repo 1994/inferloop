@@ -26,4 +26,4 @@ pub use pool_gemv_kernels::kernels as pool_gemv;
 pub use prefill_gemm_kernels::gemm as prefill_gemm;
 pub use prompt_logits_kernels::kernels as prompt_logits;
 pub use small_gemm_kernels::kernels as small_gemm;
-pub use vendor_fp8_kernels::kernels as vendor_fp8;
+pub(in crate::tile) use vendor_fp8_kernels::kernels as vendor_fp8;

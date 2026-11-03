@@ -90,14 +90,14 @@ pub(super) fn record(
         .take()
         .ok_or_else(|| error("prompt logits output"))?;
     let vocabulary = output.size();
-    let mut matrix = output.reshape(&[1, vocabulary])?;
+    let matrix = output.reshape(&[1, vocabulary])?;
     let recorded = super::nvfp4_gemm::record_certified(
         (&weights.kernels, scope),
         nvfp4,
         weight,
         Some(quantization),
         buffer(&*row)?,
-        &mut matrix,
+        &matrix,
         hidden,
     )?;
     arena.buffers[slot] = Some(matrix.reshape(&[vocabulary])?);
