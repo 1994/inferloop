@@ -1,14 +1,21 @@
 //! One launch of decode attention across a pool's lanes instead of three per lane.
 use super::{
-    ActivationArena, attention::attention, attention_decode::kernels, batch::BatchBuilder,
+    ActivationArena,
+    batch::BatchBuilder,
+    buffers::{buffer, kv_cache},
     capture::error,
 };
-use crate::constants::ATTENTION_SPLIT_THRESHOLD;
+use crate::constants::{ATTENTION_SPLIT_THRESHOLD, KV_BLOCK_TOKENS};
 use crate::device::{CudaDevice, DeviceProfile, device_error};
 use crate::tuning::attention::decode::{GROUPED_ROWS, grouped_parts_for, partitions};
 use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{
+    AppendBuffers, DecodeBuffers, DecodePlan, KvElement, LanesAppendPlan, LanesDecodePlan,
+    Partials, Recording,
+};
+use infer_cuda_kernels::tile::runtime::Element;
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
@@ -131,7 +138,7 @@ impl BatchBuilder<'_> {
         &mut self,
         scope: &Scope,
         node: &TensorNode,
-        arena: &mut ActivationArena,
+        arena: &ActivationArena,
         caches: &mut [super::fp8_cache::Fp8Caches],
         metadata: &Tensor<i32>,
     ) -> StdResult<bool, DeviceError> {
@@ -228,11 +235,11 @@ impl BatchBuilder<'_> {
     }
 
     /// Returns the KV whatever the recording did, so its owner can restore it.
-    fn record_lanes<E: DType>(
-        &mut self,
+    fn record_lanes<E: DType + Element<Marker: KvElement>>(
+        &self,
         scope: &Scope,
         node: &TensorNode,
-        arena: &mut ActivationArena,
+        arena: &ActivationArena,
         cache: Cache<E>,
         metadata: &Tensor<i32>,
     ) -> StdResult<Recorded<E>, DeviceError> {
@@ -262,52 +269,66 @@ impl BatchBuilder<'_> {
             .iter()
             .map(|&dim| usize::try_from(dim).map_err(error))
             .collect::<StdResult<Vec<_>, _>>()?;
-        let mut keys = keys.reshape(&[groups, rows, head_dim])?;
-        let mut values = values.reshape(&[groups, rows, head_dim])?;
-        let flag = i32::from(per_lane);
+        let keys = keys.reshape(&[groups, rows, head_dim])?;
+        let values = values.reshape(&[groups, rows, head_dim])?;
         let recorded = (|| -> StdResult<(), DeviceError> {
-            Self::record_lanes_append::<E>(
-                scope,
-                node,
-                arena,
-                (&mut keys, &mut values),
-                (table, metadata),
-                (scales, flag, rows),
-            )?;
             let work = self
                 .lanes_attention
-                .as_deref_mut()
-                .and_then(|work| work.0.get_mut(&(query_heads, head_dim)))
+                .as_deref()
+                .and_then(|work| work.0.get(&(query_heads, head_dim)))
                 .ok_or_else(|| error("pooled attention scratch"))?;
-            let parts = work.parts;
-            scope.record(
-                kernels::partial_gqa_lanes(
-                    (&mut work.numerator).partition([1, GROUPED_ROWS, head_dim]),
-                    (&mut work.maxima).partition([1, GROUPED_ROWS]),
-                    (&mut work.sums).partition([1, GROUPED_ROWS]),
-                    &arena.get(node.inputs[0]).map_err(error)?.view(&[
-                        lanes * kv_heads,
-                        query_heads / kv_heads,
-                        head_dim,
-                    ])?,
-                    metadata,
-                    &keys,
-                    &values,
-                    table,
-                    i32::try_from(window.unwrap_or(0)).map_err(error)?,
-                    scales[0],
-                    scales[1],
+            let cache = kv_cache((&keys, &values), groups, head_dim, scales)?;
+            let attention = &self.weights.kernels.attention;
+            let recording = Recording::scope(scope);
+            let table_rows = usize::try_from(table.shape()[0]).map_err(error)?;
+            attention
+                .append_lanes(
+                    &recording,
+                    LanesAppendPlan {
+                        kv_heads,
+                        lanes,
+                        per_lane,
+                        table_rows,
+                    },
+                    AppendBuffers {
+                        cache,
+                        keys: buffer(arena.get(node.inputs[1]).map_err(error)?)?,
+                        values: buffer(arena.get(node.inputs[2]).map_err(error)?)?,
+                        metadata: buffer(metadata)?,
+                        table: buffer(table)?,
+                    },
                 )
-                .generics(vec![
-                    E::DTYPE.as_str().into(),
-                    head_dim.to_string(),
-                    parts.to_string(),
-                    kv_heads.to_string(),
-                    flag.to_string(),
-                ])
-                .compile_options(super::attention_decode::grouped_options()),
-            )?;
-            self.record_lanes_merge(scope, node, arena)?;
+                .map_err(error)?;
+            attention
+                .decode_lanes(
+                    &recording,
+                    LanesDecodePlan {
+                        decode: DecodePlan {
+                            heads: query_heads,
+                            kv_heads,
+                            dim: head_dim,
+                            window: i32::try_from(window.unwrap_or(0)).map_err(error)?,
+                            block: KV_BLOCK_TOKENS,
+                        },
+                        parts: work.parts,
+                        lanes,
+                        per_lane,
+                        table_rows,
+                    },
+                    Partials {
+                        numerator: buffer(&work.numerator)?,
+                        maxima: buffer(&work.maxima)?,
+                        sums: buffer(&work.sums)?,
+                    },
+                    DecodeBuffers {
+                        output: buffer(arena.get(node.outputs[0]).map_err(error)?)?,
+                        query: buffer(arena.get(node.inputs[0]).map_err(error)?)?,
+                        cache,
+                        metadata: buffer(metadata)?,
+                        table: buffer(table)?,
+                    },
+                )
+                .map_err(error)?;
             #[cfg(test)]
             RECORDED.set(RECORDED.get() + 1);
             Ok(())
@@ -320,105 +341,5 @@ impl BatchBuilder<'_> {
             ));
         }
         Ok((keys, values, recorded))
-    }
-
-    fn record_lanes_append<E: DType>(
-        scope: &Scope,
-        node: &TensorNode,
-        arena: &ActivationArena,
-        (keys, values): (&mut Tensor<E>, &mut Tensor<E>),
-        (table, metadata): (&Tensor<i32>, &Tensor<i32>),
-        (scales, per_lane, rows): ([f32; 2], i32, usize),
-    ) -> StdResult<(), DeviceError> {
-        let TensorOp::Attention {
-            kv_heads, head_dim, ..
-        } = node.op
-        else {
-            return Err(error("expected attention"));
-        };
-        let lanes = arena.lanes();
-        let quantized = i32::from(E::DTYPE != f32::DTYPE);
-        scope.record(
-            attention::append_lanes(
-                keys.partition([1, rows, head_dim]),
-                values.partition([1, rows, head_dim]),
-                &arena
-                    .get(node.inputs[1])
-                    .map_err(error)?
-                    .view(&[lanes * kv_heads, head_dim])?,
-                &arena
-                    .get(node.inputs[2])
-                    .map_err(error)?
-                    .view(&[lanes * kv_heads, head_dim])?,
-                metadata,
-                table,
-                scales[0],
-                scales[1],
-            )
-            .generics(vec![
-                E::DTYPE.as_str().into(),
-                head_dim.to_string(),
-                rows.to_string(),
-                quantized.to_string(),
-                kv_heads.to_string(),
-                lanes.to_string(),
-                per_lane.to_string(),
-            ]),
-        )?;
-        Ok(())
-    }
-
-    fn record_lanes_merge(
-        &self,
-        scope: &Scope,
-        node: &TensorNode,
-        arena: &mut ActivationArena,
-    ) -> StdResult<(), DeviceError> {
-        let TensorOp::Attention {
-            query_heads,
-            kv_heads,
-            head_dim,
-            ..
-        } = node.op
-        else {
-            return Err(error("expected attention"));
-        };
-        let work = self
-            .lanes_attention
-            .as_deref()
-            .and_then(|work| work.0.get(&(query_heads, head_dim)))
-            .ok_or_else(|| error("pooled attention scratch"))?;
-        let parts = work.parts;
-        let lanes = arena.lanes();
-        let slot = arena.slot(node.outputs[0]).map_err(error)?;
-        let output = arena.buffers[slot]
-            .take()
-            .ok_or_else(|| error("pooled attention output"))?;
-        let original = output
-            .shape()
-            .iter()
-            .map(|&dim| usize::try_from(dim).map_err(error))
-            .collect::<StdResult<Vec<_>, _>>()?;
-        let mut output = output.reshape(&[lanes * query_heads, head_dim])?;
-        let blocks = lanes * kv_heads;
-        scope.record(
-            kernels::merge_gqa(
-                (&mut output).partition([1, head_dim]),
-                &work
-                    .numerator
-                    .view(&[blocks, parts, GROUPED_ROWS, head_dim])?,
-                &work.maxima.view(&[blocks, parts, GROUPED_ROWS])?,
-                &work.sums.view(&[blocks, parts, GROUPED_ROWS])?,
-                0,
-            )
-            .generics(vec![
-                head_dim.to_string(),
-                parts.to_string(),
-                (query_heads / kv_heads).to_string(),
-                GROUPED_ROWS.to_string(),
-            ]),
-        )?;
-        arena.buffers[slot] = Some(output.reshape(&original)?);
-        Ok(())
     }
 }

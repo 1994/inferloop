@@ -4,6 +4,7 @@
 use crate::contract::Kernels;
 use crate::contract::buffer::Buffer;
 use crate::contract::recording::Recording;
+use attention::TileAttention;
 use cuda_core::DType;
 pub use cutile::prelude::Scope;
 use cutile::prelude::Tensor;
@@ -35,6 +36,7 @@ pub mod vision;
 #[must_use]
 pub fn kernels(ordinal: usize) -> Kernels {
     Kernels {
+        attention: Box::new(TileAttention::new(ordinal)),
         projection: Box::new(TileProjection::new(ordinal)),
         rope: Box::new(TileRope::new(ordinal)),
         norm: Box::new(TileNorm::new(ordinal)),

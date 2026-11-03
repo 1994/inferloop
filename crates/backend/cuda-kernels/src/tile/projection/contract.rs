@@ -144,7 +144,7 @@ pub(in crate::tile) const fn retyped_bf16(buffer: Buffer<'_, Bf16>) -> Buffer<'_
     unsafe_code,
     reason = "Each marker is declared for exactly this element's size and layout"
 )]
-const fn retyped_fp8(buffer: Buffer<'_, Fp8>) -> Buffer<'_, f8e4m3fn> {
+pub(in crate::tile) const fn retyped_fp8(buffer: Buffer<'_, Fp8>) -> Buffer<'_, f8e4m3fn> {
     // SAFETY: `Fp8` marks `f8e4m3fn` memory.
     unsafe { buffer.retyped() }
 }

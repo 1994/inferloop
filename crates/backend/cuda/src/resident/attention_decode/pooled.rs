@@ -1,21 +1,21 @@
 //! Bounded groups of paged verification slots, retaining the original arithmetic.
-use super::workspace::{STACKED_LANE_ROWS, STACKED_ROWS, VERIFY_LANES, grouped_options};
+use super::workspace::{STACKED_LANE_ROWS, STACKED_ROWS, VERIFY_LANES};
 use crate::constants::{F32_BYTES, KV_BLOCK_TOKENS, METADATA_FIELDS};
 use crate::device::{CudaDevice, DeviceProfile, device_error};
+use crate::resident::buffers::buffer;
 use crate::resident::{ProgramWeights, capture::error};
 use crate::tuning::attention::decode::{grouped_parts_for, partitions};
 use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, OpId, Result};
+use infer_cuda_kernels::contract::{
+    Attention, Partials, PooledAppendBuffers, PooledDecodeBuffers, PooledPlan, Recording,
+};
 use infer_ir::{DataflowGraph, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;
-use std::slice::from_ref;
-
-mod device;
-use device::kernels;
 
 const MAX_BATCH: usize = 4;
 const ATTENTION_INPUTS: usize = 3;
@@ -252,6 +252,23 @@ impl Buffers {
     }
 }
 
+impl Buffers {
+    const fn plan(&self, first: usize, batch: usize) -> PooledPlan {
+        let l = self.layout;
+        PooledPlan {
+            heads: l.geometry.heads,
+            kv_heads: l.geometry.kv_heads,
+            dim: l.geometry.dim,
+            parts: l.parts,
+            columns: l.columns,
+            fields: METADATA_FIELDS,
+            full_batch: l.batch,
+            first,
+            batch,
+        }
+    }
+}
+
 pub(super) struct Workspace {
     buffers: BTreeMap<Geometry, Buffers>,
     nodes: BTreeMap<OpId, Geometry>,
@@ -259,8 +276,8 @@ pub(super) struct Workspace {
 
 pub struct Append<'a> {
     pub node: OpId,
-    pub keys: &'a mut Tensor<f8e4m3fn>,
-    pub values: &'a mut Tensor<f8e4m3fn>,
+    pub keys: &'a Tensor<f8e4m3fn>,
+    pub values: &'a Tensor<f8e4m3fn>,
     pub inputs: [&'a Tensor<f32>; 2],
     pub metadata: &'a Tensor<i32>,
     pub tables: &'a [Tensor<i32>],
@@ -268,7 +285,7 @@ pub struct Append<'a> {
 
 pub struct Attend<'a> {
     pub node: OpId,
-    pub output: &'a mut Tensor<f32>,
+    pub output: &'a Tensor<f32>,
     pub queries: &'a Tensor<f32>,
     pub keys: &'a Tensor<f8e4m3fn>,
     pub values: &'a Tensor<f8e4m3fn>,
@@ -303,18 +320,23 @@ impl Workspace {
             .map_or(0, |work| work.layout.prefix())
     }
 
-    fn buffer(&mut self, node: OpId) -> StdResult<&mut Buffers, DeviceError> {
+    fn buffer(&self, node: OpId) -> StdResult<&Buffers, DeviceError> {
         let key = self
             .nodes
             .get(&node)
             .ok_or_else(|| error("pooled attention node"))?;
         self.buffers
-            .get_mut(key)
+            .get(key)
             .ok_or_else(|| error("pooled attention buffers"))
     }
 
     /// All appends finish before attention may reuse the K/V activation storage.
-    pub(super) fn append(&mut self, scope: &Scope, args: Append<'_>) -> StdResult<(), DeviceError> {
+    pub(super) fn append(
+        &self,
+        attention: &dyn Attention,
+        recording: &Recording<'_>,
+        args: &Append<'_>,
+    ) -> StdResult<(), DeviceError> {
         let Append {
             node,
             keys,
@@ -322,7 +344,7 @@ impl Workspace {
             inputs,
             metadata,
             tables,
-        } = args;
+        } = *args;
         let work = self.buffer(node)?;
         let l = work.layout;
         let g = l.geometry;
@@ -333,71 +355,47 @@ impl Workspace {
         {
             return Err(error("pooled attention append dimensions"));
         }
-        let physical = keys.size() / (g.kv_heads * g.dim);
         let header = work
             .parameters
             .get(&node)
             .ok_or_else(|| error("pooled attention header"))?;
-        let key_input = inputs[0].view(&[size])?;
-        let value_input = inputs[1].view(&[size])?;
-        let metadata = metadata.view(&[metadata.size()])?;
-        for (group, control) in work.controls.iter_mut().enumerate() {
+        for (group, control) in work.controls.iter().enumerate() {
             let first = group * l.batch;
-            let last = (first + l.batch).min(l.slots);
-            let batch = last - first;
-            let first_lane = first * VERIFY_LANES;
-            let last_lane = last * VERIFY_LANES;
-            let table = |offset: usize| &tables[first + offset.min(batch - 1)];
-            let words = first_lane * METADATA_FIELDS..last_lane * METADATA_FIELDS;
-            let fragment = metadata.slice(from_ref(&words))?;
-            scope.record(
-                kernels::pack_control(
-                    control.partition([1, l.columns]),
-                    table(0),
-                    table(1),
-                    table(2),
-                    table(MAX_BATCH - 1),
-                    header.as_ref(),
-                    &fragment,
+            let batch = (l.slots - first).min(l.batch);
+            let table = |offset: usize| buffer(&tables[first + offset.min(batch - 1)]);
+            attention
+                .append_pooled(
+                    recording,
+                    work.plan(first, batch),
+                    PooledAppendBuffers {
+                        control: buffer(control)?,
+                        tables: [table(0)?, table(1)?, table(2)?, table(MAX_BATCH - 1)?],
+                        header: buffer(header.as_ref())?,
+                        metadata: buffer(metadata)?,
+                        keys: buffer(keys)?,
+                        values: buffer(values)?,
+                        key_rows: buffer(inputs[0])?,
+                        value_rows: buffer(inputs[1])?,
+                    },
                 )
-                .generics(vec![l.columns.to_string()]),
-            )?;
-            let range = first_lane * g.kv_heads * g.dim..last_lane * g.kv_heads * g.dim;
-            let key_rows = key_input.slice(from_ref(&range))?;
-            let value_rows = value_input.slice(from_ref(&range))?;
-            scope.record(
-                kernels::append_pages(
-                    (&mut *keys).partition([1, physical, g.dim]),
-                    (&mut *values).partition([1, physical, g.dim]),
-                    &key_rows.view(&[batch * VERIFY_LANES, g.kv_heads, g.dim])?,
-                    &value_rows.view(&[batch * VERIFY_LANES, g.kv_heads, g.dim])?,
-                    &*control,
-                )
-                .generics(
-                    [
-                        g.dim,
-                        physical,
-                        g.kv_heads,
-                        batch * VERIFY_LANES,
-                        METADATA_FIELDS,
-                    ]
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect(),
-                ),
-            )?;
+                .map_err(error)?;
         }
         Ok(())
     }
 
-    pub(super) fn attend(&mut self, scope: &Scope, args: Attend<'_>) -> StdResult<(), DeviceError> {
+    pub(super) fn attend(
+        &self,
+        attention: &dyn Attention,
+        recording: &Recording<'_>,
+        args: &Attend<'_>,
+    ) -> StdResult<(), DeviceError> {
         let Attend {
             node,
             output,
             queries,
             keys,
             values,
-        } = args;
+        } = *args;
         let work = self.buffer(node)?;
         let l = work.layout;
         let g = l.geometry;
@@ -405,65 +403,27 @@ impl Workspace {
         if queries.size() != size || output.size() != size {
             return Err(error("pooled attention query dimensions"));
         }
-        let queries = queries.view(&[size])?;
-        let physical = keys.size() / (g.kv_heads * g.dim);
-        let keys = keys.view(&[g.kv_heads, physical, g.dim])?;
-        let values = values.view(&[g.kv_heads, physical, g.dim])?;
         for (group, control) in work.controls.iter().enumerate() {
             let first = group * l.batch;
             let batch = (l.slots - first).min(l.batch);
-            let range = first * VERIFY_LANES * g.heads * g.dim
-                ..(first + batch) * VERIFY_LANES * g.heads * g.dim;
-            let fragment = queries.slice(from_ref(&range))?;
-            scope.record(
-                kernels::partial_slots(
-                    (&mut work.numerator).partition_prefix([1, STACKED_ROWS, g.dim]),
-                    (&mut work.maxima).partition_prefix([1, STACKED_ROWS]),
-                    (&mut work.sums).partition_prefix([1, STACKED_ROWS]),
-                    &fragment.view(&[
-                        batch * VERIFY_LANES * g.kv_heads,
-                        g.heads / g.kv_heads,
-                        g.dim,
-                    ])?,
-                    &keys,
-                    &values,
-                    control,
+            attention
+                .decode_pooled(
+                    recording,
+                    work.plan(first, batch),
+                    PooledDecodeBuffers {
+                        output: buffer(output)?,
+                        partials: Partials {
+                            numerator: buffer(&work.numerator)?,
+                            maxima: buffer(&work.maxima)?,
+                            sums: buffer(&work.sums)?,
+                        },
+                        queries: buffer(queries)?,
+                        keys: buffer(keys)?,
+                        values: buffer(values)?,
+                        control: buffer(control)?,
+                    },
                 )
-                .generics(
-                    [g.dim, g.kv_heads, l.parts, METADATA_FIELDS]
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect(),
-                )
-                .compile_options(grouped_options())
-                .grid((
-                    u32::try_from(batch * g.kv_heads * l.parts).map_err(error)?,
-                    1,
-                    1,
-                )),
-            )?;
-            scope.record(
-                kernels::merge_slots(
-                    (&mut *output).partition([1, g.dim]),
-                    &work
-                        .numerator
-                        .view(&[l.batch * g.kv_heads, l.parts, STACKED_ROWS, g.dim])?,
-                    &work
-                        .maxima
-                        .view(&[l.batch * g.kv_heads, l.parts, STACKED_ROWS])?,
-                    &work
-                        .sums
-                        .view(&[l.batch * g.kv_heads, l.parts, STACKED_ROWS])?,
-                    i32::try_from(first).map_err(error)?,
-                    i32::try_from(batch).map_err(error)?,
-                )
-                .generics(
-                    [g.dim, l.parts, g.heads / g.kv_heads, g.heads]
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect(),
-                ),
-            )?;
+                .map_err(error)?;
         }
         Ok(())
     }
@@ -507,25 +467,27 @@ impl super::workspace::Workspace {
     }
 
     pub(crate) fn record_pooled_append(
-        &mut self,
-        scope: &Scope,
-        args: Append<'_>,
+        &self,
+        attention: &dyn Attention,
+        recording: &Recording<'_>,
+        args: &Append<'_>,
     ) -> StdResult<(), DeviceError> {
         self.pooled
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| error("pooled attention absent"))?
-            .append(scope, args)
+            .append(attention, recording, args)
     }
 
     pub(crate) fn record_pooled_attention(
-        &mut self,
-        scope: &Scope,
-        args: Attend<'_>,
+        &self,
+        attention: &dyn Attention,
+        recording: &Recording<'_>,
+        args: &Attend<'_>,
     ) -> StdResult<(), DeviceError> {
         self.pooled
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| error("pooled attention absent"))?
-            .attend(scope, args)
+            .attend(attention, recording, args)
     }
 }
 

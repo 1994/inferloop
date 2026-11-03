@@ -1,8 +1,12 @@
 use super::*;
 use crate::resident::attention::attention;
 use cutile::cutile_compiler::compile_api::KernelCompiler;
+use infer_cuda_kernels::tile::attention::{
+    TileAttention, grouped_options, pooled_device as kernels,
+};
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
+use std::slice::from_ref;
 
 type TestResult<T = ()> = StdResult<T, Box<dyn Error>>;
 
@@ -222,20 +226,23 @@ impl Fixture {
                 parameters: BTreeMap::from([(node, header)]),
             },
         )?;
-        let mut work = Workspace {
+        let work = Workspace {
             buffers: BTreeMap::from([(geometry, buffer)]),
             nodes: BTreeMap::from([(node, geometry)]),
         };
-        let mut actual = api::zeros::<f32>(&[lanes * HEADS, DIM]).sync_on(&device.stream)?;
+        let actual = api::zeros::<f32>(&[lanes * HEADS, DIM]).sync_on(&device.stream)?;
         let mut expected = (0..lanes)
             .map(|_| api::zeros::<f32>(&[HEADS, DIM]).sync_on(&device.stream))
             .collect::<StdResult<Vec<_>, _>>()?;
         self.reference(device, &lane_metadata, window, &mut expected)?;
-        let [keys, values] = &mut self.candidate;
+        let [keys, values] = &self.candidate;
+        let family = TileAttention::new(device.ordinal());
         let candidate = Graph::scope(&device.stream, |scope| {
+            let recording = Recording::scope(scope);
             work.append(
-                scope,
-                Append {
+                &family,
+                &recording,
+                &Append {
                     node,
                     keys,
                     values,
@@ -245,10 +252,11 @@ impl Fixture {
                 },
             )?;
             work.attend(
-                scope,
-                Attend {
+                &family,
+                &recording,
+                &Attend {
                     node,
-                    output: &mut actual,
+                    output: &actual,
                     queries: &self.queries,
                     keys,
                     values,
@@ -274,6 +282,10 @@ impl Fixture {
                 );
             }
         }
+        self.check_cache(device, position, window)
+    }
+
+    fn check_cache(&self, device: &CudaDevice, position: i32, window: i32) -> TestResult {
         for (actual, expected) in self.candidate.iter().zip(&self.original) {
             let actual = device.read_borrowed(actual)?;
             let expected = device.read_borrowed(expected)?;

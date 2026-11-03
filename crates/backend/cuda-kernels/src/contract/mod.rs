@@ -1,12 +1,19 @@
 //! Device, geometry and kernel contracts shared by the kernel sources.
 //!
 //! The host speaks only these types; `tile` and `aot` implement the traits behind them.
+pub mod attention;
 pub mod buffer;
 pub mod kernels;
 pub mod plan;
 pub mod recording;
 pub mod target;
 
+pub use attention::{
+    AppendBuffers, Attention, DecodeBuffers, DecodePlan, GROUPED_ROWS, KvBuffers, KvCache,
+    KvElement, LanesAppendPlan, LanesDecodePlan, POOLED_TABLES, Partials, PooledAppendBuffers,
+    PooledDecodeBuffers, PooledPlan, PrefillAppendPlan, PrefillDecodePlan, STACKED_LANE_ROWS,
+    STACKED_ROWS, SplitDecodePlan, VERIFY_LANES, VerifyDecodeBuffers,
+};
 pub use buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner};
 pub use kernels::{
     CONV_HISTORY, ChunkBuffers, ConvBuffers, DeltaBuffers, ExpertWeight, FUSED_LANES,

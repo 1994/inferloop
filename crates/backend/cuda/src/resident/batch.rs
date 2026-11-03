@@ -2,7 +2,7 @@
 //! Recurrent checkpoints stay on the device; KV rollback is a logical prefix.
 //! Prefill width 32 keeps one batched arena: auxiliaries record once per node.
 use super::arena::prefix_view;
-use super::buffers::buffer;
+use super::buffers::{buffer, kv_cache};
 use super::fusion_batch::Workspace as FusionRows;
 use super::prefill_projection::{DensePlan, record_narrow};
 use super::{
@@ -18,6 +18,7 @@ use crate::constants::AUX_KERNEL_TILE;
 use crate::constants::EXTRA_WIDE_PREFILL_LANES;
 use crate::constants::F32_BYTES;
 use crate::constants::INACTIVE_LANE_STATE_POSITION;
+use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::MAX_POOL_SLOTS;
 use crate::constants::MAX_PREFILL_LANES;
 use crate::constants::MAX_VERIFICATION_WIDTH;
@@ -35,6 +36,7 @@ use crate::device::{PinnedUpload, Readbacks};
 use crate::mlp::ProjectionWeight;
 use cutile::prelude::*;
 use infer_core::{Error, ErrorCode, Result, TensorId};
+use infer_cuda_kernels::contract::{DecodePlan, VerifyDecodeBuffers};
 use infer_cuda_kernels::contract::{LastRowsKind, LastRowsPlan, Recording};
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::{DataflowGraph, StateKind, TensorNode, TensorOp, TensorStorage};
@@ -1082,51 +1084,37 @@ impl BatchBuilder<'_> {
         }
         let (keys, values) = self
             .fp8_states
-            .remove(&id)
+            .get(&id)
             .ok_or_else(|| error("verification FP8 state"))?;
-        let mut outputs = Vec::with_capacity(width);
-        for lane in lanes.iter_mut() {
-            let slot = lane.arena.slot(node.outputs[0]).map_err(error)?;
-            let output = lane.arena.buffers[slot]
-                .take()
-                .ok_or_else(|| error("verification attention output"))?;
-            let shape = output
-                .shape()
-                .iter()
-                .map(|&dim| usize::try_from(dim).map_err(error))
-                .collect::<StdResult<Vec<_>, _>>()?;
-            outputs.push((slot, shape, output.reshape(&[query_heads, head_dim])?));
-        }
-        let recorded = {
-            let queries = lanes
-                .iter()
-                .map(|lane| {
-                    lane.arena
-                        .get(node.inputs[0])
-                        .map_err(error)?
-                        .view(&[query_heads, head_dim])
-                        .map_err(error)
-                })
-                .collect::<StdResult<Vec<_>, DeviceError>>()?;
-            let [first, second, third] = outputs.as_mut_slice() else {
-                return Err(error("verification lanes"));
-            };
-            self.attention.record_verify(
-                scope,
-                [&mut first.2, &mut second.2, &mut third.2],
-                [&queries[0], &queries[1], &queries[2]],
-                [&lanes[0].metadata, &lanes[1].metadata, &lanes[2].metadata],
-                (&keys, &values, &self.tables[0]),
-                (query_heads, kv_heads, head_dim),
-                i32::try_from(window.unwrap_or(0)).map_err(error)?,
-                self.weights.kv_scales[&id],
-            )
-        };
-        self.fp8_states.insert(id, (keys, values));
-        for ((slot, shape, output), lane) in outputs.into_iter().zip(lanes.iter_mut()) {
-            lane.arena.buffers[slot] = Some(output.reshape(&shape)?);
-        }
-        recorded?;
+        let arena = |lane: usize, id| lanes[lane].arena.get(id).map_err(error).and_then(buffer);
+        let (query, output) = (node.inputs[0], node.outputs[0]);
+        self.attention.record_verify(
+            &*self.weights.kernels.attention,
+            &Recording::scope(scope),
+            DecodePlan {
+                heads: query_heads,
+                kv_heads,
+                dim: head_dim,
+                window: i32::try_from(window.unwrap_or(0)).map_err(error)?,
+                block: KV_BLOCK_TOKENS,
+            },
+            &VerifyDecodeBuffers {
+                outputs: [arena(0, output)?, arena(1, output)?, arena(2, output)?],
+                queries: [arena(0, query)?, arena(1, query)?, arena(2, query)?],
+                metadata: [
+                    buffer(&lanes[0].metadata)?,
+                    buffer(&lanes[1].metadata)?,
+                    buffer(&lanes[2].metadata)?,
+                ],
+                cache: kv_cache(
+                    (keys, values),
+                    kv_heads,
+                    head_dim,
+                    self.weights.kv_scales[&id],
+                )?,
+                table: buffer(&self.tables[0])?,
+            },
+        )?;
         Ok(true)
     }
 

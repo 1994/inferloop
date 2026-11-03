@@ -8,7 +8,6 @@ use cutile::{cuda_async::device_buffer::DeviceAllocation, prelude::*};
 use infer_core::{Error, Result, TensorId};
 use infer_ir::DataflowGraph;
 use std::collections::BTreeMap;
-use std::slice::from_ref;
 use std::sync::Arc;
 
 /// Slot layout of one graph: `last_node` and element count per reused slot.
@@ -385,22 +384,6 @@ impl ActivationArena {
         self.buffers[self.slot(id)?]
             .as_ref()
             .ok_or_else(|| Error::invariant("activation is currently an output"))
-    }
-
-    /// Flat view of one lane inside a batched slot.
-    /// # Errors
-    /// Rejects non-batched arenas and out-of-range lanes.
-    pub(crate) fn row(&self, id: TensorId, lane: usize) -> Result<TensorView<'_, f32>> {
-        let tensor = self.get(id)?;
-        if !self.batched || !tensor.size().is_multiple_of(self.lanes) {
-            return Err(Error::invalid("activation slot is not batched"));
-        }
-        let size = tensor.size() / self.lanes;
-        if lane >= self.lanes {
-            return Err(Error::invalid("activation lane out of bounds"));
-        }
-        let range = lane * size..(lane + 1) * size;
-        tensor.slice(from_ref(&range)).map_err(device_error)
     }
 }
 
