@@ -38,4 +38,4 @@ pub use plan::{
 };
 pub use recording::Recording;
 pub use target::Arch;
-pub use vision::{Gelu, Pack, Vision, VisionDense, VisionNorm, VisionRope};
+pub use vision::{Gelu, Pack, PositionTaps, Vision, VisionDense, VisionNorm, VisionRope};

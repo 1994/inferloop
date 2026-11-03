@@ -5,4 +5,3 @@ mod vision_position_kernels;
 
 pub use contract::TileVision;
 pub use vision_kernels::encoder;
-pub use vision_position_kernels::kernels as vision_position;

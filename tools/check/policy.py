@@ -173,6 +173,9 @@ def check_exceptions():
                         # methods are safe; the host makes buffers in one file, over tensors a
                         # resident program owns until its graphs are destroyed.
                         ROOT / "crates/backend/cuda-kernels/src/contract/buffer.rs",
+                        # Position taps: the constructor states the index bound the gather relies
+                        # on, so the vision family method stays safe.
+                        ROOT / "crates/backend/cuda-kernels/src/contract/vision.rs",
                         ROOT / "crates/backend/cuda/src/resident/buffers.rs",
                         TILE_KERNELS / "mod.rs",
                         TILE_KERNELS / "runtime.rs",

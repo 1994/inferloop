@@ -1,8 +1,12 @@
 use super::{DeviceTaps, TOKEN_TILE};
 use crate::device::{CudaDevice, device_error};
+use crate::resident::tensor_buffer;
+use cutile::cuda_async::error::DeviceError;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::Result;
+use infer_cuda_kernels::contract::Recording;
+use infer_cuda_kernels::tile::kernels;
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_models::vision::PositionTaps;
 use std::sync::Arc;
@@ -82,11 +86,19 @@ fn device_positions_match_scalar_interpolation_and_padding() -> Result<()> {
             HIDDEN,
             padded,
         )?;
-        let mut result = api::zeros::<f32>(&[padded, HIDDEN])
+        let result = api::zeros::<f32>(&[padded, HIDDEN])
             .sync_on(&device.stream)
             .map_err(device_error)?;
+        let vision = kernels(device.ordinal()).vision;
         let graph = Graph::scope(&device.stream, |scope| {
-            staged.record(scope, &uploaded, &mut result)
+            vision
+                .add_positions(
+                    &Recording::scope(scope),
+                    tensor_buffer(&result)?,
+                    tensor_buffer(&uploaded)?,
+                    staged.taps()?,
+                )
+                .map_err(|error| DeviceError::Launch(error.to_string()))
         })
         .map_err(device_error)?;
         graph

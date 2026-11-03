@@ -3,6 +3,80 @@
     unsafe_code,
     reason = "The position gather validates every table index and owns all device buffers through graph completion"
 )]
+use crate::contract::buffer::Buffer;
+use crate::contract::recording::Recording;
+use crate::contract::vision::PositionTaps;
+use crate::tile::projection::retyped_bf16;
+use crate::tile::{backend_error, borrowed, capture_scope};
+use cutile::prelude::*;
+use infer_core::{Error, Result};
+
+/// Interpolation taps per output row.
+const TAPS: usize = 4;
+/// Rows in one gather tile.
+const TOKEN_TILE: usize = 32;
+/// Channels in one gather tile.
+const COLUMN_TILE: usize = 64;
+
+/// Record `out = embedded + positions` for `[rows, hidden]` activations.
+///
+/// # Errors
+/// The operands do not tile as the kernel addresses them, or the launch is rejected.
+pub(super) fn add_positions(
+    recording: &Recording<'_>,
+    ordinal: usize,
+    out: Buffer<'_, f32>,
+    embedded: Buffer<'_, f32>,
+    taps: PositionTaps<'_>,
+) -> Result<()> {
+    let scope = capture_scope(recording)?;
+    let hidden = taps.hidden();
+    let rows = out.len().checked_div(hidden).unwrap_or(0);
+    if rows == 0
+        || !hidden.is_multiple_of(COLUMN_TILE)
+        || !rows.is_multiple_of(TOKEN_TILE)
+        || out.len() != rows * hidden
+        || embedded.len() != out.len()
+        || taps.indices().len() != TAPS * rows
+        || taps.weights().len() != TAPS * rows
+        || taps.table().is_empty()
+        || !taps.table().len().is_multiple_of(hidden)
+        || i32::try_from(taps.table().len()).is_err()
+    {
+        return Err(Error::invalid("vision position gather shape"));
+    }
+    recording.retain(out);
+    recording.retain(embedded);
+    recording.retain(taps.table());
+    recording.retain(taps.indices());
+    recording.retain(taps.weights());
+    let mut out = borrowed(out, ordinal, &[rows, hidden])?;
+    let embedded = borrowed(embedded, ordinal, &[rows, hidden])?;
+    let table = borrowed(
+        retyped_bf16(taps.table()),
+        ordinal,
+        &[taps.table().len() / hidden, hidden],
+    )?;
+    let indices = borrowed(taps.indices(), ordinal, &[TAPS, rows])?;
+    let weights = borrowed(taps.weights(), ordinal, &[TAPS, rows])?;
+    // SAFETY: `PositionTaps::new` bounds every index by the table's rows, and the full table span
+    // fits i32. The shapes checked above tile by 32x64, and the caller owns every buffer until
+    // the recorded work completes.
+    let launch = unsafe {
+        kernels::add_positions(
+            (&mut out).partition([TOKEN_TILE, COLUMN_TILE]),
+            &embedded,
+            &table,
+            &indices,
+            &weights,
+        )
+    };
+    scope
+        .record(launch.generics(vec![hidden.to_string()]))
+        .map_err(backend_error)?;
+    Ok(())
+}
+
 #[cutile::module]
 pub mod kernels {
     use cutile::core::{
