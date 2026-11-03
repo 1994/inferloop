@@ -185,6 +185,9 @@ def check_exceptions():
                         # Pinned staging: a slot is refilled only after the event behind its last
                         # copy has passed, and dropping the ring waits for every pending read.
                         TILE_KERNELS / "runtime/staging.rs",
+                        # Pinned readback: both ranges are checked and the launch retains the
+                        # source allocation and pinned destination until it completes.
+                        TILE_KERNELS / "runtime/readback.rs",
                         TILE_KERNELS / "norm/contract.rs",
                         TILE_KERNELS / "mlp/contract.rs",
                         TILE_KERNELS / "moe/contract.rs",

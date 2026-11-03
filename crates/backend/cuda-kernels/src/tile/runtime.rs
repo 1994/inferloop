@@ -20,9 +20,11 @@ use std::result::Result as StdResult;
 use std::sync::{Arc, Mutex};
 use transfer::Inflight;
 
+mod readback;
 mod staging;
 mod transfer;
 
+pub use readback::{Pinned, Readback};
 pub use staging::Staging;
 pub use transfer::{HeadMajor, Transfers};
 

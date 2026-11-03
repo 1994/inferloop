@@ -1,16 +1,12 @@
 //! Owned pinned destinations; host slices are exposed only after submission completion.
 use super::{CudaDevice, device_error};
 use crate::constants::MIB;
-use cuda_core::sys::cuMemcpyDtoHAsync_v2;
-use cuda_core::sys::cudaError_enum_CUDA_SUCCESS;
 use cuda_core::{CudaContext, DType, DeviceCopy, PinnedHostBuffer};
-use cutile::cuda_async::device_context::with_default_device_policy;
-use cutile::cuda_async::device_future::DeviceFuture;
-use cutile::{prelude::*, tensor::KernelInputStored};
+use cutile::prelude::*;
 use infer_core::{Error, ErrorCode, Result};
 #[cfg(test)]
 use infer_cuda_kernels::tile::runtime::Graph;
-use std::result::Result as StdResult;
+use infer_cuda_kernels::tile::runtime::{Allocation, Pinned, Readback};
 use std::sync::{Arc, Mutex};
 
 /// Total pinned bytes admitted across one batch of readback copies.
@@ -22,7 +18,7 @@ mod check;
 
 mod flight;
 
-type Buffer<T> = Arc<Mutex<PinnedHostBuffer<T>>>;
+type Buffer<T> = Pinned<T>;
 type Rows<T> = Vec<Vec<T>>;
 
 /// A half-open element range `[skip, skip + len)` of a device tensor to copy out.
@@ -103,13 +99,16 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
         for (index, source) in sources.iter().enumerate() {
             if let Some(source) = source {
                 let (buffer, destination_skip) = self.destination(index, offset)?;
-                copies.push(PinnedCopy {
-                    source: Arc::clone(&source.tensor),
-                    skip: source.skip,
-                    len: source.len,
-                    destination: Arc::clone(buffer),
+                let end = source
+                    .skip
+                    .checked_add(source.len)
+                    .ok_or_else(|| Error::invalid("pinned readback range out of bounds"))?;
+                copies.push(Readback::new(
+                    Allocation::adopt(Arc::clone(&source.tensor))?,
+                    source.skip..end,
+                    Arc::clone(buffer),
                     destination_skip,
-                });
+                )?);
                 offset += source.len;
             }
         }
@@ -246,91 +245,6 @@ impl Readbacks<f32> {
         tail: (&Graph, &mut Readbacks<i32>, Arc<Tensor<i32>>),
     ) -> Result<(Rows<f32>, Rows<i32>)> {
         super::asynchronous::block_on(self.run_with_tokens_async(device, graph, sources, tail))
-    }
-}
-
-struct PinnedCopy<T: DType + DeviceCopy> {
-    source: Arc<Tensor<T>>,
-    skip: usize,
-    len: usize,
-    destination: Buffer<T>,
-    destination_skip: usize,
-}
-
-#[expect(
-    unsafe_code,
-    reason = "Audited asynchronous D2H: the [skip, skip + len) element range is bounds-checked \
-              against the source before enqueue; source access lease and pinned destination are \
-              retained by the live submission"
-)]
-impl<T: DType + DeviceCopy> DeviceOp for PinnedCopy<T> {
-    type Output = ();
-
-    unsafe fn execute(self, context: &ExecutionContext) -> StdResult<(), DeviceError> {
-        self.source.retain(context)?;
-        context.retain(Arc::clone(&self.destination))?;
-        if self
-            .skip
-            .checked_add(self.len)
-            .is_none_or(|end| end > self.source.size())
-            || self.len.checked_mul(size_of::<T>()).is_none()
-        {
-            return Err(DeviceError::Internal(
-                "pinned copy range out of bounds".into(),
-            ));
-        }
-        let mut destination = self
-            .destination
-            .lock()
-            .map_err(|e| DeviceError::Internal(e.to_string()))?;
-        if self
-            .destination_skip
-            .checked_add(self.len)
-            .is_none_or(|end| end > destination.len())
-        {
-            return Err(DeviceError::Internal("pinned copy size mismatch".into()));
-        }
-        if self.len == 0 {
-            return Ok(());
-        }
-        let bytes = self.len * size_of::<T>();
-        let offset = self
-            .skip
-            .checked_mul(size_of::<T>())
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or_else(|| DeviceError::Internal("pinned copy offset overflow".into()))?;
-        // SAFETY: the checked destination range has self.len initialized elements; the
-        // checked source range keeps the offset read inside the source tensor.
-        // Both allocations outlive the submission. Host reads happen only after
-        // device completion; failures poison the owner and submission retains work.
-        let status = unsafe {
-            cuMemcpyDtoHAsync_v2(
-                destination
-                    .as_mut_ptr()
-                    .wrapping_add(self.destination_skip)
-                    .cast(),
-                self.source.device_pointer().cu_deviceptr() + offset,
-                bytes,
-                context.get_cuda_stream().cu_stream(),
-            )
-        };
-        if status != cudaError_enum_CUDA_SUCCESS {
-            return Err(DeviceError::Internal(format!(
-                "pinned D2H CUDA status {status}"
-            )));
-        }
-        Ok(())
-    }
-}
-
-impl<T: DType + DeviceCopy> IntoFuture for PinnedCopy<T> {
-    type Output = StdResult<(), DeviceError>;
-    type IntoFuture = DeviceFuture<(), Self>;
-    fn into_future(self) -> Self::IntoFuture {
-        match with_default_device_policy(|policy| policy.next_stream()) {
-            Ok(Ok(stream)) => Self::IntoFuture::scheduled(self, ExecutionContext::new(stream)),
-            Ok(Err(error)) | Err(error) => Self::IntoFuture::failed(error),
-        }
     }
 }
 
