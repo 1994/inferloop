@@ -84,7 +84,8 @@ impl<'a> Recording<'a> {
 /// A library call that enqueues its device work on the stream it is handed, as cuBLAS does.
 ///
 /// The implementation owns its FFI. It must enqueue only on `stream` and only over memory that
-/// outlives every replay, which [`Recording::retain`] or [`Buffer::new`] guarantees.
+/// outlives every replay, which a retaining capture or the contract of
+/// [`Buffer::new`](crate::contract::buffer::Buffer::new) guarantees.
 pub trait Foreign: Send {
     /// Enqueue the call on `stream`, a stream in capture mode while a graph is recorded.
     /// # Errors
