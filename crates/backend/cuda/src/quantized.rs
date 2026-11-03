@@ -1,14 +1,10 @@
 //! Quantized storage launch adapters; precision policy stays explicit.
 use crate::constants::NVFP4_GROUP_SIZE;
-use crate::kernels::linear::fp8;
-use crate::kernels::linear::nvfp4;
-use crate::{
-    device::{CudaDevice, device_error},
-    strategy::LinearTiling,
-};
+use crate::{device::CudaDevice, strategy::LinearTiling};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::projection::matvec::{self, MatvecGeometry};
 use std::sync::Arc;
 
 impl CudaDevice {
@@ -26,18 +22,7 @@ impl CudaDevice {
         if !matches_shape(scales.shape(), &[rows]) {
             return Err(Error::invalid("FP8 channel scales shape"));
         }
-        let out = api::zeros::<f32>(&[rows]).partition([tile.rows()]);
-        fp8(out, x, w, scales)
-            .generics(vec![
-                tile.rows().to_string(),
-                tile.columns().to_string(),
-                columns.to_string(),
-            ])
-            .first()
-            .unpartition()
-            .sync_on(&self.stream)
-            .map(Arc::new)
-            .map_err(device_error)
+        matvec::fp8_matvec(&self.stream, x, w, scales, geometry(rows, columns, tile))
     }
 
     /// Packed NVFP4 weights with F32 activations and accumulation.
@@ -63,20 +48,22 @@ impl CudaDevice {
         {
             return Err(Error::invalid("invalid NVFP4 scales or alignment"));
         }
-        let out = api::zeros::<f32>(&[rows]).partition([tile.rows()]);
-        nvfp4(out, x, w, scales, global_scale.recip())
-            .generics(vec![
-                tile.rows().to_string(),
-                tile.columns().to_string(),
-                columns.to_string(),
-                (tile.columns() / 2).to_string(),
-                (tile.columns() / NVFP4_GROUP_SIZE).to_string(),
-            ])
-            .first()
-            .unpartition()
-            .sync_on(&self.stream)
-            .map(Arc::new)
-            .map_err(device_error)
+        matvec::nvfp4_matvec(
+            &self.stream,
+            x,
+            (w, scales),
+            (global_scale.recip(), NVFP4_GROUP_SIZE),
+            geometry(rows, columns, tile),
+        )
+    }
+}
+
+const fn geometry(rows: usize, columns: usize, tile: LinearTiling) -> MatvecGeometry {
+    MatvecGeometry {
+        rows,
+        columns,
+        tile_rows: tile.rows(),
+        tile_columns: tile.columns(),
     }
 }
 

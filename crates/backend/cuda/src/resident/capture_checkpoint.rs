@@ -1,12 +1,12 @@
 //! State writes and their rollback snapshots share the original per-lane launch geometry.
 use super::{
+    buffers::buffer,
     capture::{Capture, CaptureMode, error},
     capture_state::value_block,
-    recurrent_checkpoint::checkpoint,
 };
 use crate::constants::CONV_KERNEL_SIZE;
-use crate::constants::CONV_KERNEL_TILE;
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::{ConvBuffers, DeltaBuffers, DeltaStepPlan, Recording};
 use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
@@ -18,7 +18,7 @@ impl Capture<'_> {
         &mut self,
         node: &TensorNode,
         lane: usize,
-        snapshot: &mut [Tensor<f32>],
+        snapshot: &[Tensor<f32>],
     ) -> Result<(), DeviceError> {
         if self.mode != CaptureMode::Row(lane) || node.outputs.len() != 1 || node.states.len() != 1
         {
@@ -43,7 +43,7 @@ impl Capture<'_> {
     pub(super) fn record_flat_checkpoint(
         &mut self,
         node: &TensorNode,
-        snapshot: &mut [Tensor<f32>],
+        snapshot: &[Tensor<f32>],
     ) -> Result<(), DeviceError> {
         if self.mode != CaptureMode::Flat || node.outputs.len() != 1 || node.states.len() != 1 {
             return Err(error("checkpoint flat capture bindings"));
@@ -67,10 +67,10 @@ impl Capture<'_> {
         &mut self,
         node: &TensorNode,
         output: Tensor<f32>,
-        snapshot: &mut [Tensor<f32>],
+        snapshot: &[Tensor<f32>],
     ) -> Result<Tensor<f32>, DeviceError> {
         let id = node.states[0];
-        let mut state = self
+        let state = self
             .states
             .remove(&id)
             .ok_or_else(|| error("missing checkpoint state allocation"))?;
@@ -78,7 +78,7 @@ impl Capture<'_> {
             TensorOp::Conv {
                 channels,
                 kernel: CONV_KERNEL_SIZE,
-            } => self.checkpoint_conv(node, output, &mut state, snapshot, channels)?,
+            } => self.checkpoint_conv(node, output, &state, snapshot, channels)?,
             TensorOp::Delta {
                 key_heads,
                 value_heads,
@@ -87,7 +87,7 @@ impl Capture<'_> {
             } => self.checkpoint_delta(
                 node,
                 output,
-                &mut state,
+                &state,
                 snapshot,
                 (key_heads, value_heads, key_dim, value_dim),
             )?,
@@ -100,9 +100,9 @@ impl Capture<'_> {
     fn checkpoint_conv(
         &self,
         node: &TensorNode,
-        mut output: Tensor<f32>,
-        state: &mut [Tensor<f32>],
-        snapshot: &mut [Tensor<f32>],
+        output: Tensor<f32>,
+        state: &[Tensor<f32>],
+        snapshot: &[Tensor<f32>],
         channels: usize,
     ) -> Result<Tensor<f32>, DeviceError> {
         let [h0, h1, h2] = state else {
@@ -111,20 +111,22 @@ impl Capture<'_> {
         let [c0, c1, c2] = snapshot else {
             return Err(error("checkpoint convolution snapshot layout"));
         };
-        self.scope.record(checkpoint::conv4_checkpoint(
-            (&mut output).partition([CONV_KERNEL_TILE]),
-            h0.partition([CONV_KERNEL_TILE]),
-            h1.partition([CONV_KERNEL_TILE]),
-            h2.partition([CONV_KERNEL_TILE]),
-            c0.partition([CONV_KERNEL_TILE]),
-            c1.partition([CONV_KERNEL_TILE]),
-            c2.partition([CONV_KERNEL_TILE]),
-            &self.input(node.inputs[0])?,
-            &self
-                .input(node.inputs[1])?
-                .view(&[channels, CONV_KERNEL_SIZE])?,
-            self.metadata,
-        ))?;
+        self.weights
+            .kernels
+            .recurrent
+            .conv_checkpoint(
+                &Recording::scope(self.scope),
+                channels,
+                [buffer(c0)?, buffer(c1)?, buffer(c2)?],
+                ConvBuffers {
+                    output: buffer(&output)?,
+                    history: [buffer(h0)?, buffer(h1)?, buffer(h2)?],
+                    input: self.input_buffer(node.inputs[0])?,
+                    weight: self.input_buffer(node.inputs[1])?,
+                    metadata: buffer(self.metadata)?,
+                },
+            )
+            .map_err(error)?;
         Ok(output)
     }
 
@@ -132,8 +134,8 @@ impl Capture<'_> {
         &self,
         node: &TensorNode,
         output: Tensor<f32>,
-        state: &mut [Tensor<f32>],
-        snapshot: &mut [Tensor<f32>],
+        state: &[Tensor<f32>],
+        snapshot: &[Tensor<f32>],
         (key_heads, value_heads, key_dim, value_dim): (usize, usize, usize, usize),
     ) -> Result<Tensor<f32>, DeviceError> {
         if key_dim != value_dim
@@ -150,26 +152,32 @@ impl Capture<'_> {
             return Err(error("checkpoint delta snapshot layout"));
         };
         let block = value_block(value_dim)?;
-        let mut output = output.reshape(&[value_heads, 1, value_dim])?;
-        self.scope.record(
-            checkpoint::delta_checkpoint(
-                (&mut output).partition([1, 1, block]),
-                state.partition([1, key_dim, block]),
-                snapshot.partition([1, key_dim, block]),
-                &self.input(node.inputs[0])?,
-                &self.input(node.inputs[1])?,
-                &self.input(node.inputs[2])?,
-                &self.input(node.inputs[3])?,
-                &self.input(node.inputs[4])?,
-                self.metadata,
+        let output = output.reshape(&[value_heads, 1, value_dim])?;
+        self.weights
+            .kernels
+            .recurrent
+            .delta_checkpoint(
+                &Recording::scope(self.scope),
+                &DeltaStepPlan {
+                    key_heads,
+                    value_heads,
+                    dim: key_dim,
+                    block,
+                    lanes: None,
+                },
+                buffer(snapshot)?,
+                DeltaBuffers {
+                    state: buffer(state)?,
+                    output: buffer(&output)?,
+                    qkv: self.input_buffer(node.inputs[0])?,
+                    beta: self.input_buffer(node.inputs[1])?,
+                    alpha: self.input_buffer(node.inputs[2])?,
+                    decay: self.input_buffer(node.inputs[3])?,
+                    bias: self.input_buffer(node.inputs[4])?,
+                    metadata: buffer(self.metadata)?,
+                },
             )
-            .generics(vec![
-                key_heads.to_string(),
-                value_heads.to_string(),
-                key_dim.to_string(),
-                block.to_string(),
-            ]),
-        )?;
+            .map_err(error)?;
         Ok(output)
     }
 }

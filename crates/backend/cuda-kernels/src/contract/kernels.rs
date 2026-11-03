@@ -2,9 +2,13 @@
 
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::plan::{
-    BinaryOp, DenseRowsPlan, DownPlan, ExpertPlan, Fp4QuantPlan, Fp8QuantPlan, FusionNormPlan,
-    GemmPlan, GreedyPlan, LastRowsPlan, NormPlan, PoolGemvPlan, PromptPlan, QuantNormPlan,
-    RopePlan, RoutePlan, RowNormPlan, RowsPlan, SplitGemmPlan, SplitPlan, THREE_ROWS, UnaryOp,
+    BinaryOp, DeltaKernel, DenseRowsPlan, DownPlan, EmbeddingPlan, ExpertPlan, Fp4QuantPlan,
+    Fp8QuantPlan, FusionNormPlan, GemmPlan, GreedyPlan, LastRowsPlan, NormPlan, PoolGemvPlan,
+    PromptPlan, QuantNormPlan, RopePlan, RoutePlan, RowNormPlan, RowsPlan, SplitGemmPlan,
+    SplitPlan, THREE_ROWS, UnaryOp,
+};
+use crate::contract::plan::{
+    ConvKernel, DeltaStepPlan, PoolConvPlan, PoolDeltaPlan, RecurrentShape,
 };
 use crate::contract::recording::Recording;
 use infer_core::Result;
@@ -95,6 +99,19 @@ pub trait Projection: Send + Sync {
         out: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
         w: Buffer<'_, Bf16>,
+    ) -> Result<()>;
+
+    /// One token's embedding row, or the external input the plan allows.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn embedding(
+        &self,
+        recording: &Recording<'_>,
+        plan: &EmbeddingPlan,
+        out: Buffer<'_, f32>,
+        weight: Buffer<'_, Bf16>,
+        external: Buffer<'_, f32>,
+        metadata: Buffer<'_, i32>,
     ) -> Result<()>;
 
     /// Two prompt BF16 projections of one input in one launch.
@@ -582,6 +599,305 @@ pub trait Sampling: Send + Sync {
     ) -> Result<()>;
 }
 
+/// History rows a convolution keeps.
+pub const CONV_HISTORY: usize = 3;
+
+/// Operands of the chunked prompt rule. The scratch is the caller's, and outlives the graph.
+#[derive(Clone, Copy)]
+pub struct ChunkBuffers<'a> {
+    pub queries: Buffer<'a, Bf16>,
+    pub keys: Buffer<'a, Bf16>,
+    pub u: Buffer<'a, Bf16>,
+    pub w: Buffer<'a, Bf16>,
+    pub p: Buffer<'a, Bf16>,
+    pub cumulative: Buffer<'a, f32>,
+    pub qkv: Buffer<'a, f32>,
+    pub betas: Buffer<'a, f32>,
+    pub decays: Buffer<'a, f32>,
+    pub state: Buffer<'a, f32>,
+    pub output: Buffer<'a, f32>,
+    pub metadata: Buffer<'a, i32>,
+}
+
+/// Operands of a recurrence that derives its gates per token.
+#[derive(Clone, Copy)]
+pub struct DeltaBuffers<'a> {
+    pub state: Buffer<'a, f32>,
+    pub output: Buffer<'a, f32>,
+    pub qkv: Buffer<'a, f32>,
+    pub beta: Buffer<'a, f32>,
+    pub alpha: Buffer<'a, f32>,
+    pub decay: Buffer<'a, f32>,
+    pub bias: Buffer<'a, f32>,
+    pub metadata: Buffer<'a, i32>,
+}
+
+/// Operands of the recurrence over precomputed normalization and gates.
+#[derive(Clone, Copy)]
+pub struct PreparedDeltaBuffers<'a> {
+    pub state: Buffer<'a, f32>,
+    pub output: Buffer<'a, f32>,
+    pub qkv: Buffer<'a, f32>,
+    pub normalized: Buffer<'a, f32>,
+    pub betas: Buffer<'a, f32>,
+    pub decays: Buffer<'a, f32>,
+    pub metadata: Buffer<'a, i32>,
+}
+
+/// Operands of the shared gate evaluation.
+#[derive(Clone, Copy)]
+pub struct GateBuffers<'a> {
+    pub betas: Buffer<'a, f32>,
+    pub decays: Buffer<'a, f32>,
+    pub beta: Buffer<'a, f32>,
+    pub alpha: Buffer<'a, f32>,
+    pub decay: Buffer<'a, f32>,
+    pub bias: Buffer<'a, f32>,
+}
+
+/// Operands of a convolution: the three history rows are the state.
+#[derive(Clone, Copy)]
+pub struct ConvBuffers<'a> {
+    pub output: Buffer<'a, f32>,
+    pub history: [Buffer<'a, f32>; CONV_HISTORY],
+    pub input: Buffer<'a, f32>,
+    pub weight: Buffer<'a, f32>,
+    pub metadata: Buffer<'a, i32>,
+}
+
+/// Candidate lanes the fused single-slot lowering covers.
+pub const FUSED_LANES: usize = 3;
+
+/// One buffer per fused candidate lane.
+pub type LaneBuffers<'a, T> = [Buffer<'a, T>; FUSED_LANES];
+
+/// Operands of the fused single-slot convolution verification.
+#[derive(Clone, Copy)]
+pub struct FusedConvBuffers<'a> {
+    pub history: [Buffer<'a, f32>; CONV_HISTORY],
+    pub inputs: LaneBuffers<'a, f32>,
+    pub weight: Buffer<'a, f32>,
+    pub metadata: LaneBuffers<'a, i32>,
+}
+
+/// Operands of the fused single-slot delta verification and commit.
+#[derive(Clone, Copy)]
+pub struct FusedDeltaBuffers<'a> {
+    pub state: Buffer<'a, f32>,
+    pub qkv: LaneBuffers<'a, f32>,
+    pub beta: LaneBuffers<'a, f32>,
+    pub alpha: LaneBuffers<'a, f32>,
+    pub decay: Buffer<'a, f32>,
+    pub bias: Buffer<'a, f32>,
+    pub metadata: LaneBuffers<'a, i32>,
+}
+
+/// Operands of pool-wide delta verification or commit.
+#[derive(Clone, Copy)]
+pub struct PoolDeltaBuffers<'a> {
+    pub state: Buffer<'a, f32>,
+    pub qkv: Buffer<'a, f32>,
+    pub beta: Buffer<'a, f32>,
+    pub alpha: Buffer<'a, f32>,
+    pub parameters: Buffer<'a, f32>,
+    pub metadata: Buffer<'a, i32>,
+}
+
+/// Fused and pool-wide speculative verification of the recurrence.
+pub trait RecurrentPool: Send + Sync {
+    /// Read-only three-candidate convolution of one slot.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn conv_verify_fused(
+        &self,
+        recording: &Recording<'_>,
+        channels: usize,
+        outputs: LaneBuffers<'_, f32>,
+        buffers: FusedConvBuffers<'_>,
+    ) -> Result<()>;
+
+    /// Commit the first `count` fused candidates into one slot's convolution history.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn conv_commit_fused(
+        &self,
+        recording: &Recording<'_>,
+        count: i32,
+        history: [Buffer<'_, f32>; CONV_HISTORY],
+        inputs: LaneBuffers<'_, f32>,
+        metadata: LaneBuffers<'_, i32>,
+    ) -> Result<()>;
+
+    /// Read-only three-candidate recurrence of one slot.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn delta_verify_fused(
+        &self,
+        recording: &Recording<'_>,
+        plan: &DeltaStepPlan,
+        outputs: LaneBuffers<'_, f32>,
+        buffers: FusedDeltaBuffers<'_>,
+    ) -> Result<()>;
+
+    /// Commit the first `count` fused candidates into one slot's recurrence state.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn delta_commit_fused(
+        &self,
+        recording: &Recording<'_>,
+        plan: &DeltaStepPlan,
+        count: i32,
+        buffers: FusedDeltaBuffers<'_>,
+    ) -> Result<()>;
+
+    /// Read-only verification across the slot axis.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn delta_verify_pool(
+        &self,
+        recording: &Recording<'_>,
+        plan: &PoolDeltaPlan,
+        output: Buffer<'_, f32>,
+        buffers: PoolDeltaBuffers<'_>,
+    ) -> Result<()>;
+
+    /// Commit each slot's accepted prefix across the slot axis.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn delta_commit_pool(
+        &self,
+        recording: &Recording<'_>,
+        plan: &PoolDeltaPlan,
+        counts: Buffer<'_, i32>,
+        buffers: PoolDeltaBuffers<'_>,
+    ) -> Result<()>;
+
+    /// Shift each slot's convolution window by its accepted prefix.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn conv_commit_pool(
+        &self,
+        recording: &Recording<'_>,
+        plan: &PoolConvPlan,
+        history: [Buffer<'_, f32>; CONV_HISTORY],
+        rows: Buffer<'_, f32>,
+        metadata: Buffer<'_, i32>,
+        counts: Buffer<'_, i32>,
+    ) -> Result<()>;
+}
+
+/// Gated delta recurrence and its convolution.
+pub trait Recurrent: Send + Sync {
+    /// One token's recurrence.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn delta_step(
+        &self,
+        recording: &Recording<'_>,
+        plan: &DeltaStepPlan,
+        buffers: DeltaBuffers<'_>,
+    ) -> Result<()>;
+
+    /// One token's recurrence, keeping the prior state in `snapshot`.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, or the launch is rejected.
+    fn delta_checkpoint(
+        &self,
+        recording: &Recording<'_>,
+        plan: &DeltaStepPlan,
+        snapshot: Buffer<'_, f32>,
+        buffers: DeltaBuffers<'_>,
+    ) -> Result<()>;
+
+    /// One token's convolution, keeping the prior history in `snapshot`.
+    /// # Errors
+    /// Fails when a buffer disagrees with the kernel, or the launch is rejected.
+    fn conv_checkpoint(
+        &self,
+        recording: &Recording<'_>,
+        channels: usize,
+        snapshot: [Buffer<'_, f32>; CONV_HISTORY],
+        buffers: ConvBuffers<'_>,
+    ) -> Result<()>;
+
+    /// A convolution of `channels`.
+    /// # Errors
+    /// Fails when a buffer disagrees with the kernel, or the launch is rejected.
+    fn conv(
+        &self,
+        recording: &Recording<'_>,
+        kernel: ConvKernel,
+        channels: usize,
+        buffers: ConvBuffers<'_>,
+    ) -> Result<()>;
+
+    /// The chunked BF16 prompt rule.
+    /// # Errors
+    /// Fails when a buffer disagrees with the shape, or the launch is rejected.
+    fn chunk(
+        &self,
+        recording: &Recording<'_>,
+        shape: RecurrentShape,
+        chunk: usize,
+        buffers: ChunkBuffers<'_>,
+    ) -> Result<()>;
+
+    /// Normalize every query and key per head and token.
+    /// # Errors
+    /// Fails when a buffer disagrees with the shape, or the launch is rejected.
+    fn normalize(
+        &self,
+        recording: &Recording<'_>,
+        shape: RecurrentShape,
+        normalized: Buffer<'_, f32>,
+        qkv: Buffer<'_, f32>,
+    ) -> Result<()>;
+
+    /// Evaluate beta and decay once per head and token.
+    /// # Errors
+    /// Fails when a buffer disagrees with the shape, or the launch is rejected.
+    fn gates(
+        &self,
+        recording: &Recording<'_>,
+        shape: RecurrentShape,
+        buffers: GateBuffers<'_>,
+    ) -> Result<()>;
+
+    /// The ordered recurrence over [`Recurrent::normalize`] and [`Recurrent::gates`].
+    /// # Errors
+    /// Fails when a buffer disagrees with the shape, or the launch is rejected.
+    fn delta_prepared(
+        &self,
+        recording: &Recording<'_>,
+        shape: RecurrentShape,
+        block: usize,
+        buffers: PreparedDeltaBuffers<'_>,
+    ) -> Result<()>;
+
+    /// A recurrence that derives its gates per token.
+    /// # Errors
+    /// Fails when a buffer disagrees with the shape, or the launch is rejected.
+    fn delta(
+        &self,
+        recording: &Recording<'_>,
+        kernel: DeltaKernel,
+        shape: RecurrentShape,
+        block: usize,
+        buffers: DeltaBuffers<'_>,
+    ) -> Result<()>;
+
+    /// Reorder head-major scratch into lane-major output.
+    /// # Errors
+    /// Fails when a buffer disagrees with the shape, or the launch is rejected.
+    fn transpose(
+        &self,
+        recording: &Recording<'_>,
+        shape: RecurrentShape,
+        output: Buffer<'_, f32>,
+        scratch: Buffer<'_, f32>,
+    ) -> Result<()>;
+}
+
 /// One device's kernels, selected once when a model loads; no call path chooses a source.
 pub struct Kernels {
     pub projection: Box<dyn Projection>,
@@ -591,4 +907,6 @@ pub struct Kernels {
     pub state: Box<dyn State>,
     pub moe: Box<dyn Moe>,
     pub sampling: Box<dyn Sampling>,
+    pub recurrent: Box<dyn Recurrent>,
+    pub recurrent_pool: Box<dyn RecurrentPool>,
 }

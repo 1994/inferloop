@@ -2,7 +2,6 @@
 use crate::constants::KV_CACHE_RANK;
 use crate::constants::MATVEC_TILE_COLUMNS;
 use crate::constants::MATVEC_TILE_ROWS;
-use crate::kernels::linear::dense;
 use crate::strategy::LinearTiling;
 use crate::tuning::memory::arena_budget;
 use cuda_core::sys::CUdevice_attribute;
@@ -24,6 +23,7 @@ use infer_core::{Error as InferError, ErrorCode, Result};
 use infer_cuda_kernels::contract::Kernels;
 use infer_cuda_kernels::contract::target::Arch;
 use infer_cuda_kernels::tile::kernels;
+use infer_cuda_kernels::tile::projection::matvec::{MatvecGeometry, dense_matvec};
 use infer_cuda_kernels::tile::runtime::Device as Runtime;
 use serde::Serialize;
 use std::fmt::Display;
@@ -276,20 +276,17 @@ impl CudaDevice {
         tiling: LinearTiling,
     ) -> Result<Arc<Tensor<f32>>> {
         let (rows, columns) = dimensions(&x, &w)?;
-        let block = columns.min(tiling.columns()).next_power_of_two();
-        let out = api::zeros::<f32>(&[rows]).partition([tiling.rows()]);
-        dense(out, x, w)
-            .generics(vec![
-                T::DTYPE.as_str().into(),
-                tiling.rows().to_string(),
-                block.to_string(),
-                columns.to_string(),
-            ])
-            .first()
-            .unpartition()
-            .sync_on(&self.stream)
-            .map(Arc::new)
-            .map_err(device_error)
+        dense_matvec(
+            &self.stream,
+            x,
+            w,
+            MatvecGeometry {
+                rows,
+                columns,
+                tile_rows: tiling.rows(),
+                tile_columns: tiling.columns(),
+            },
+        )
     }
 
     /// # Errors

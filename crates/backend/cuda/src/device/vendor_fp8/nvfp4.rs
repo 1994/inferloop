@@ -23,7 +23,6 @@ use std::{collections::BTreeMap, ffi::c_void, ptr::null_mut, sync::Arc};
 mod kernels;
 mod memo;
 mod timing;
-pub use kernels::entries::probe_input;
 pub use memo::ModelCache;
 /// CUDA 13 `library_types.h`: packed E2M1 pairs.
 const TYPE_FP4: i32 = 33;

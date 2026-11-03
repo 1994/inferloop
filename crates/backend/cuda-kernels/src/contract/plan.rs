@@ -288,6 +288,13 @@ pub enum DenseKernel {
     PromptNarrow { tile: [usize; 2] },
 }
 
+/// Token embedding lookup, or the external input when `external` and the metadata asks for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EmbeddingPlan {
+    pub dimension: usize,
+    pub external: bool,
+}
+
 /// BF16 projection of `[rows, columns]` into `[rows, outputs]`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DenseRowsPlan {
@@ -312,4 +319,78 @@ pub struct SplitGemmPlan {
     pub prompt: PromptPlan,
     pub k_tiles: i32,
     pub splits: i32,
+}
+
+/// Heads, dimension and lanes of a recurrent prompt lowering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecurrentShape {
+    pub key_heads: usize,
+    pub value_heads: usize,
+    pub dim: usize,
+    pub lanes: usize,
+}
+
+/// Per-token recurrence that derives its own gates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeltaKernel {
+    /// One state update per token.
+    Scan,
+    /// The WY factorization of a chunk.
+    Wy,
+}
+
+/// Single-step recurrence, per one sequence or across a pool's lanes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeltaStepPlan {
+    pub key_heads: usize,
+    pub value_heads: usize,
+    pub dim: usize,
+    pub block: usize,
+    /// `Some` for one launch across this many lanes.
+    pub lanes: Option<usize>,
+}
+
+/// How a convolution lowers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConvKernel {
+    /// One sequence, one token.
+    Step,
+    /// One launch across a pool's lanes.
+    Lanes { lanes: usize },
+    /// A prompt chunk: forward all rows, then commit the history.
+    Prefill { lanes: usize },
+    /// Read-only candidates of every slot; `fields` metadata fields per lane.
+    Verify {
+        slots: usize,
+        lanes: usize,
+        fields: usize,
+        /// The kernel specialized for the fused candidate count.
+        fused: bool,
+    },
+}
+
+/// Verification or commit of a whole pool across its slot axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolDeltaPlan {
+    pub key_heads: usize,
+    pub value_heads: usize,
+    pub dim: usize,
+    pub block: usize,
+    pub slots: usize,
+    pub lanes: usize,
+    /// Metadata fields per lane.
+    pub fields: usize,
+    /// The kernel specialized for the fused candidate count.
+    pub fused: bool,
+}
+
+/// Convolution commit of a whole pool across its slot axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolConvPlan {
+    pub channels: usize,
+    pub lanes: usize,
+    /// Metadata fields per lane.
+    pub fields: usize,
+    /// The kernel specialized for the fused candidate count.
+    pub fused: bool,
 }

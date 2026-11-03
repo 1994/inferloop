@@ -1,9 +1,11 @@
 //! Dense, batched, quantized and vendor projections.
 mod contract;
+pub mod fp4_probe;
 mod fp8_gemm_kernels;
 mod fp8_quant_reduction_kernels;
 mod linear_batch_kernels;
 mod linear_kernels;
+pub mod matvec;
 mod nvfp4_gemm_kernels;
 mod nvfp4_kernels;
 mod pool_gemv_kernels;
@@ -13,6 +15,7 @@ mod small_gemm_kernels;
 mod vendor_fp8_kernels;
 
 pub use contract::TileProjection;
+pub(in crate::tile) use contract::retyped_bf16;
 pub use fp8_gemm_kernels::kernels as fp8_gemm;
 pub use fp8_quant_reduction_kernels::kernels as fp8_quant_reduction;
 pub use linear_batch_kernels::batched as linear_batch;

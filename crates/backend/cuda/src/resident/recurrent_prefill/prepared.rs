@@ -1,5 +1,6 @@
 //! Per-token/head F32 normalization and gating shared across independent state columns.
-use super::{ORDERED_DIM, ORDERED_WIDTHS, chunk, kernels, oxide};
+use super::super::{buffers::buffer, capture::error};
+use super::{ORDERED_DIM, ORDERED_WIDTHS, chunk, oxide};
 use crate::constants::F32_BYTES;
 use crate::constants::GDN_PROJECTED_INPUTS;
 use crate::{
@@ -8,6 +9,9 @@ use crate::{
 };
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{
+    GateBuffers, PreparedDeltaBuffers, Recording, Recurrent, RecurrentShape,
+};
 use infer_ir::{DataflowGraph, TensorOp};
 use std::collections::{BTreeMap, BTreeSet};
 use std::result::Result as StdResult;
@@ -129,44 +133,60 @@ impl Inputs {
     }
 
     pub(super) fn record(
-        &mut self,
+        &self,
         scope: &Scope,
+        recurrent: &dyn Recurrent,
         [qkv_storage, beta, alpha, a_log, bias]: [&Tensor<f32>; INPUT_BINDINGS],
         [state, output]: [&mut Tensor<f32>; 2],
         metadata: &Tensor<i32>,
         (kh, vh, dim, lanes, block): (usize, usize, usize, usize, usize),
     ) -> StdResult<(), DeviceError> {
-        let qkv = qkv_storage.view(&[lanes, 2 * kh + vh, dim])?;
-        let beta = beta.view(&[lanes, vh])?;
-        let alpha = alpha.view(&[lanes, vh])?;
-        let a_log = a_log.view(&[vh])?;
-        let bias = bias.view(&[vh])?;
+        let recording = Recording::scope(scope);
+        let shape = RecurrentShape {
+            key_heads: kh,
+            value_heads: vh,
+            dim,
+            lanes,
+        };
         if self.chunk.is_none() {
-            scope.record(
-                kernels::normalize_shared((&mut self.normalized).partition([1, 1, dim]), &qkv)
-                    .generics(vec![kh.to_string(), dim.to_string()]),
-            )?;
+            recurrent
+                .normalize(
+                    &recording,
+                    shape,
+                    buffer(&self.normalized)?,
+                    buffer(qkv_storage)?,
+                )
+                .map_err(error)?;
         }
-        scope.record(kernels::gates_shared(
-            (&mut self.betas).partition([1, 1]),
-            (&mut self.decays).partition([1, 1]),
-            &beta,
-            &alpha,
-            &a_log,
-            &bias,
-        ))?;
-        if let Some(mut scratch) = self.chunk.take() {
-            let result = chunk::record(
+        recurrent
+            .gates(
+                &recording,
+                shape,
+                GateBuffers {
+                    betas: buffer(&self.betas)?,
+                    decays: buffer(&self.decays)?,
+                    beta: buffer(beta)?,
+                    alpha: buffer(alpha)?,
+                    decay: buffer(a_log)?,
+                    bias: buffer(bias)?,
+                },
+            )
+            .map_err(error)?;
+        if let Some(scratch) = &self.chunk {
+            return chunk::record(
                 scope,
-                &mut scratch,
-                &qkv,
-                (&self.betas, &self.decays),
-                [state, output],
-                metadata,
-                (kh, vh, dim, lanes),
+                recurrent,
+                scratch,
+                shape,
+                [
+                    buffer(qkv_storage)?,
+                    buffer(&self.betas)?,
+                    buffer(&self.decays)?,
+                    buffer(&*state)?,
+                    buffer(&*output)?,
+                ],
+                buffer(metadata)?,
             );
-            self.chunk = Some(scratch);
-            return result;
         }
         if let Some(rust) = &self.rust {
             return rust.record(
@@ -183,24 +203,22 @@ impl Inputs {
                 lanes,
             );
         }
-        scope.record(
-            kernels::delta_precomputed(
-                state.partition([1, dim, block]),
-                output.partition([1, lanes, block]),
-                &qkv,
-                &self.normalized,
-                &self.betas,
-                &self.decays,
-                metadata,
+        recurrent
+            .delta_prepared(
+                &recording,
+                shape,
+                block,
+                PreparedDeltaBuffers {
+                    state: buffer(state)?,
+                    output: buffer(output)?,
+                    qkv: buffer(qkv_storage)?,
+                    normalized: buffer(&self.normalized)?,
+                    betas: buffer(&self.betas)?,
+                    decays: buffer(&self.decays)?,
+                    metadata: buffer(metadata)?,
+                },
             )
-            .generics(vec![
-                kh.to_string(),
-                vh.to_string(),
-                dim.to_string(),
-                lanes.to_string(),
-                block.to_string(),
-            ]),
-        )?;
+            .map_err(error)?;
         Ok(())
     }
 }

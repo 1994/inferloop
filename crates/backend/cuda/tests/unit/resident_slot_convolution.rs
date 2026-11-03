@@ -1,4 +1,5 @@
 use super::*;
+use crate::constants::{CONV_KERNEL_SIZE, CONV_KERNEL_TILE};
 use crate::{device::CudaDevice, resident::slot_recurrent::fused};
 use cutile::cutile_compiler::compile_api::KernelCompiler;
 use infer_cuda_kernels::tile::runtime::Graph;

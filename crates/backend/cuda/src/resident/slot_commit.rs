@@ -1,16 +1,20 @@
 //! A single recurrent commit graph with independently uploaded acceptance counts.
 use super::{
     batch::States,
+    buffers::buffer,
     capture::error,
-    slot_recurrent::{LANES, Staging, ValueDevice, covers, fused, fused_block, value_split},
+    slot_recurrent::{LANES, Staging, ValueDevice, covers, fused_block, value_split},
     slot_states::RecurrentParameters,
 };
 use crate::{
-    constants::{CONV_KERNEL_TILE, CONV_STATE_TENSORS, METADATA_FIELDS},
+    constants::{CONV_STATE_TENSORS, METADATA_FIELDS},
     device::{CudaDevice, PinnedUpload, device_error},
 };
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{
+    Buffer, Kernels, PoolConvPlan, PoolDeltaBuffers, PoolDeltaPlan, Recording,
+};
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::{TensorNode, TensorOp};
 
@@ -22,6 +26,7 @@ pub(super) struct CapturedCommit {
 }
 
 struct Inputs<'a> {
+    kernels: &'a Kernels,
     staging: &'a Staging,
     parameters: &'a RecurrentParameters,
     metadata: &'a Tensor<i32>,
@@ -65,6 +70,7 @@ impl CapturedCommit {
 
     pub(super) fn new(
         device: &CudaDevice,
+        kernels: &Kernels,
         nodes: &[TensorNode],
         roots: &mut States,
         (staging, parameters, metadata): (&Staging, &RecurrentParameters, &Tensor<i32>),
@@ -74,6 +80,7 @@ impl CapturedCommit {
             .sync_on(&device.stream)
             .map_err(device_error)?;
         let inputs = Inputs {
+            kernels,
             staging,
             parameters,
             metadata,
@@ -132,10 +139,8 @@ fn record_node(
     };
     match node.op {
         TensorOp::Conv { channels, .. } => {
-            let rows = input(0)?
-                .view(&[inputs.slots * inputs.lanes, channels])
-                .map_err(device_error)?;
-            record_conv(scope, state, &rows, inputs)?;
+            let rows = buffer(input(0)?).map_err(device_error)?;
+            record_conv(scope, state, rows, channels, inputs)?;
         }
         TensorOp::Delta {
             key_heads,
@@ -152,45 +157,28 @@ fn record_node(
                 .ok_or_else(|| Error::invariant("commit delta parameters"))?;
             let split = value_split(inputs.hardware, value_heads, value_dim, inputs.slots)?;
             let block = fused_block(value_dim, split);
-            let parameters = parameters
-                .view(&[parameters.size()])
-                .map_err(device_error)?;
-            let mut generics = vec![
-                key_heads.to_string(),
-                value_heads.to_string(),
-                key_dim.to_string(),
-                block.to_string(),
-                METADATA_FIELDS.to_string(),
-            ];
-            let recorded = if inputs.lanes == LANES {
-                scope.record(
-                    fused::delta_commit_batch(
-                        state.partition([1, key_dim, block]),
-                        input(0)?,
-                        input(1)?,
-                        input(2)?,
-                        &parameters,
-                        inputs.metadata,
-                        inputs.counts,
-                    )
-                    .generics(generics),
-                )
-            } else {
-                generics.push(inputs.lanes.to_string());
-                scope.record(
-                    fused::delta_commit_lanes(
-                        state.partition([1, key_dim, block]),
-                        input(0)?,
-                        input(1)?,
-                        input(2)?,
-                        &parameters,
-                        inputs.metadata,
-                        inputs.counts,
-                    )
-                    .generics(generics),
-                )
-            };
-            recorded.map_err(device_error)?;
+            inputs.kernels.recurrent_pool.delta_commit_pool(
+                &Recording::scope(scope),
+                &PoolDeltaPlan {
+                    key_heads,
+                    value_heads,
+                    dim: key_dim,
+                    block,
+                    slots: inputs.slots,
+                    lanes: inputs.lanes,
+                    fields: METADATA_FIELDS,
+                    fused: inputs.lanes == LANES,
+                },
+                buffer(inputs.counts).map_err(device_error)?,
+                PoolDeltaBuffers {
+                    state: buffer(&*state).map_err(device_error)?,
+                    qkv: buffer(input(0)?).map_err(device_error)?,
+                    beta: buffer(input(1)?).map_err(device_error)?,
+                    alpha: buffer(input(2)?).map_err(device_error)?,
+                    parameters: buffer(parameters).map_err(device_error)?,
+                    metadata: buffer(inputs.metadata).map_err(device_error)?,
+                },
+            )?;
         }
         _ => return Err(Error::invariant("covered recurrent commit node")),
     }
@@ -200,40 +188,31 @@ fn record_node(
 /// Shift each slot's convolution window by its accepted prefix.
 fn record_conv(
     scope: &Scope,
-    state: &mut [Tensor<f32>],
-    rows: &TensorView<'_, f32>,
+    state: &[Tensor<f32>],
+    rows: Buffer<'_, f32>,
+    channels: usize,
     inputs: &Inputs<'_>,
 ) -> Result<()> {
     let [h0, h1, h2] = state else {
         return Err(Error::invariant("commit convolution state"));
     };
-    let recorded = if inputs.lanes == LANES {
-        scope.record(
-            fused::conv_commit_batch(
-                h0.partition([1, CONV_KERNEL_TILE]),
-                h1.partition([1, CONV_KERNEL_TILE]),
-                h2.partition([1, CONV_KERNEL_TILE]),
-                rows,
-                inputs.metadata,
-                inputs.counts,
-            )
-            .generics(vec![METADATA_FIELDS.to_string()]),
-        )
-    } else {
-        scope.record(
-            fused::conv_commit_lanes(
-                h0.partition([1, CONV_KERNEL_TILE]),
-                h1.partition([1, CONV_KERNEL_TILE]),
-                h2.partition([1, CONV_KERNEL_TILE]),
-                rows,
-                inputs.metadata,
-                inputs.counts,
-            )
-            .generics(vec![METADATA_FIELDS.to_string(), inputs.lanes.to_string()]),
-        )
-    };
-    recorded.map_err(device_error)?;
-    Ok(())
+    inputs.kernels.recurrent_pool.conv_commit_pool(
+        &Recording::scope(scope),
+        &PoolConvPlan {
+            channels,
+            lanes: inputs.lanes,
+            fields: METADATA_FIELDS,
+            fused: inputs.lanes == LANES,
+        },
+        [
+            buffer(h0).map_err(device_error)?,
+            buffer(h1).map_err(device_error)?,
+            buffer(h2).map_err(device_error)?,
+        ],
+        rows,
+        buffer(inputs.metadata).map_err(device_error)?,
+        buffer(inputs.counts).map_err(device_error)?,
+    )
 }
 
 fn has_shape(tensor: &Tensor<f32>, expected: &[usize]) -> bool {

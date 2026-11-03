@@ -527,6 +527,7 @@ impl BatchBuilder<'_> {
         let mut profile = profile::SlotProfile::from_env(self.device);
         let mut recurrent = RecurrentCapture::new(self, &arena, (slots, verify), fused)?;
         let batch = super::slot_states::VerifyBatch {
+            kernels: &self.weights.kernels,
             roots,
             parameters: &recurrent.parameters,
             metadata: &metadata_owner,
@@ -545,6 +546,7 @@ impl BatchBuilder<'_> {
         {
             Some(CapturedCommit::new(
                 self.device,
+                &self.weights.kernels,
                 &self.graph.nodes,
                 roots,
                 (&recurrent.staging, &recurrent.parameters, &metadata_owner),

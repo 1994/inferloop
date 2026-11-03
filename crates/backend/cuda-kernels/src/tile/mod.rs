@@ -12,6 +12,7 @@ use mlp::TileMlp;
 use moe::TileMoe;
 use norm::TileNorm;
 use projection::TileProjection;
+use recurrent::{TileRecurrent, TileRecurrentPool};
 use rope::TileRope;
 use sampling::TileSampling;
 use state::TileState;
@@ -39,6 +40,8 @@ pub fn kernels(ordinal: usize) -> Kernels {
         norm: Box::new(TileNorm::new(ordinal)),
         mlp: Box::new(TileMlp::new(ordinal)),
         state: Box::new(TileState::new(ordinal)),
+        recurrent: Box::new(TileRecurrent::new(ordinal)),
+        recurrent_pool: Box::new(TileRecurrentPool::new(ordinal)),
         moe: Box::new(TileMoe::new(ordinal)),
         sampling: Box::new(TileSampling::new(ordinal)),
     }

@@ -122,6 +122,7 @@ mod device {
     /// Stateful conv taps retained per mixer; the current input is separate.
     pub const CONV_STATE_TENSORS: usize = 3;
     /// Convolution kernels process one tile of channels per block.
+    #[cfg(test)]
     pub const CONV_KERNEL_TILE: usize = 128;
     /// Hidden size bound for resident programs.
     pub const MAX_HIDDEN_SIZE: usize = 32768;

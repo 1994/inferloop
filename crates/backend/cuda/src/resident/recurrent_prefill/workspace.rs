@@ -1,9 +1,9 @@
 //! Shared head-major scratch for token-chunk recurrent prefill.
-use super::super::capture::error;
+use super::super::{buffers::buffer, capture::error};
 use super::{
     ORDERED_BLOCK, ORDERED_DIM, ORDERED_WIDTHS,
     budget::{enabled, opted_in, ordered},
-    kernels, prepared,
+    prepared,
 };
 use crate::constants::GDN_PROJECTED_INPUTS;
 use crate::tuning::recurrent::select;
@@ -13,6 +13,7 @@ use crate::{
 };
 use cutile::prelude::*;
 use infer_core::{Result, TensorId};
+use infer_cuda_kernels::contract::{DeltaBuffers, DeltaKernel, Recording, RecurrentShape};
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;
@@ -175,7 +176,7 @@ impl Workspace {
             .iter()
             .map(|&x| usize::try_from(x).map_err(error))
             .collect::<StdResult<_, _>>()?;
-        let mut output = output.reshape(&[self.lanes, value_heads, value_dim])?;
+        let output = output.reshape(&[self.lanes, value_heads, value_dim])?;
         // The measured ordered path splits independent value columns without changing sums.
         // Other shapes use their existing qualified block policy.
         let block = if key_dim == ORDERED_DIM && ORDERED_WIDTHS.contains(&self.lanes) {
@@ -194,15 +195,26 @@ impl Workspace {
             weights,
             state,
             scratch,
-            self.prepared.get_mut(&(key_heads, value_heads, key_dim)),
+            self.prepared.get(&(key_heads, value_heads, key_dim)),
             metadata,
             [key_heads, value_heads, key_dim, self.lanes, block],
             self.wy_blocks.contains_key(&node.outputs[0]),
         )?;
-        scope.record(
-            kernels::transpose((&mut output).partition([1, 1, value_dim]), &*scratch)
-                .generics(vec![value_dim.to_string()]),
-        )?;
+        weights
+            .kernels
+            .recurrent
+            .transpose(
+                &Recording::scope(scope),
+                RecurrentShape {
+                    key_heads,
+                    value_heads,
+                    dim: value_dim,
+                    lanes: self.lanes,
+                },
+                buffer(&output)?,
+                buffer(&*scratch)?,
+            )
+            .map_err(error)?;
         arena.buffers[slot] = Some(output.reshape(&original)?);
         Ok(true)
     }
@@ -221,24 +233,11 @@ fn record_delta(
     weights: &ProgramWeights,
     state: &mut Tensor<f32>,
     scratch: &mut Tensor<f32>,
-    prepared: Option<&mut prepared::Inputs>,
+    prepared: Option<&prepared::Inputs>,
     metadata: &Tensor<i32>,
     [key_heads, value_heads, key_dim, lanes, block]: [usize; DELTA_GEOMETRY_RANK],
     wy: bool,
 ) -> StdResult<(), DeviceError> {
-    let qkv = arena.get(node.inputs[0]).map_err(error)?.view(&[
-        lanes,
-        2 * key_heads + value_heads,
-        key_dim,
-    ])?;
-    let beta = arena
-        .get(node.inputs[1])
-        .map_err(error)?
-        .view(&[lanes, value_heads])?;
-    let alpha = arena
-        .get(node.inputs[2])
-        .map_err(error)?
-        .view(&[lanes, value_heads])?;
     let decay = weights
         .constants
         .get(&node.inputs[3])
@@ -247,13 +246,6 @@ fn record_delta(
         .constants
         .get(&node.inputs[4])
         .ok_or_else(|| error("chunk delta bias"))?;
-    let generics = vec![
-        key_heads.to_string(),
-        value_heads.to_string(),
-        key_dim.to_string(),
-        lanes.to_string(),
-        block.to_string(),
-    ];
     if key_dim == ORDERED_DIM
         && [ORDERED_BLOCK, ORDERED_DIM].contains(&block)
         && ORDERED_WIDTHS.contains(&lanes)
@@ -264,6 +256,7 @@ fn record_delta(
             .ok_or_else(|| error("ordered recurrent preparation"))?
             .record(
                 scope,
+                weights.kernels.recurrent.as_ref(),
                 [
                     arena.get(node.inputs[0]).map_err(error)?,
                     arena.get(node.inputs[1]).map_err(error)?,
@@ -275,34 +268,36 @@ fn record_delta(
                 metadata,
                 (key_heads, value_heads, key_dim, lanes, block),
             )?;
-    } else if wy {
-        scope.record(
-            kernels::delta_wy(
-                state.partition([1, key_dim, block]),
-                scratch.partition([1, lanes, block]),
-                &qkv,
-                &beta,
-                &alpha,
-                decay,
-                bias,
-                metadata,
-            )
-            .generics(generics),
-        )?;
     } else {
-        scope.record(
-            kernels::delta(
-                state.partition([1, key_dim, block]),
-                scratch.partition([1, lanes, block]),
-                &qkv,
-                &beta,
-                &alpha,
-                decay,
-                bias,
-                metadata,
+        weights
+            .kernels
+            .recurrent
+            .delta(
+                &Recording::scope(scope),
+                if wy {
+                    DeltaKernel::Wy
+                } else {
+                    DeltaKernel::Scan
+                },
+                RecurrentShape {
+                    key_heads,
+                    value_heads,
+                    dim: key_dim,
+                    lanes,
+                },
+                block,
+                DeltaBuffers {
+                    state: buffer(&*state)?,
+                    output: buffer(&*scratch)?,
+                    qkv: buffer(arena.get(node.inputs[0]).map_err(error)?)?,
+                    beta: buffer(arena.get(node.inputs[1]).map_err(error)?)?,
+                    alpha: buffer(arena.get(node.inputs[2]).map_err(error)?)?,
+                    decay: buffer(decay.as_ref())?,
+                    bias: buffer(bias.as_ref())?,
+                    metadata: buffer(metadata)?,
+                },
             )
-            .generics(generics),
-        )?;
+            .map_err(error)?;
     }
     Ok(())
 }
