@@ -21,23 +21,41 @@ mod flight;
 type Buffer<T> = Pinned<T>;
 type Rows<T> = Vec<Vec<T>>;
 
-/// A half-open element range `[skip, skip + len)` of a device tensor to copy out.
+/// A half-open element range `[skip, skip + len)` of device memory to copy out.
 #[derive(Clone)]
 pub struct ReadbackSource<T: DType + DeviceCopy = f32> {
-    pub tensor: Arc<Tensor<T>>,
+    pub source: Allocation<T>,
     pub skip: usize,
     pub len: usize,
 }
 
 impl<T: DType + DeviceCopy> ReadbackSource<T> {
     #[must_use]
-    pub fn whole(tensor: Arc<Tensor<T>>) -> Self {
-        let len = tensor.size();
+    pub fn whole(source: Allocation<T>) -> Self {
+        let len = source.len();
         Self {
-            tensor,
+            source,
             skip: 0,
             len,
         }
+    }
+
+    /// `[skip, skip + len)` of a tensor a resident program still holds as one.
+    /// # Errors
+    /// Rejects a tensor that is not contiguous.
+    pub fn tensor(tensor: &Arc<Tensor<T>>, skip: usize, len: usize) -> Result<Self> {
+        Ok(Self {
+            source: Allocation::adopt(Arc::clone(tensor))?,
+            skip,
+            len,
+        })
+    }
+
+    /// All of such a tensor.
+    /// # Errors
+    /// Rejects a tensor that is not contiguous.
+    pub fn whole_tensor(tensor: &Arc<Tensor<T>>) -> Result<Self> {
+        Self::tensor(tensor, 0, tensor.size())
     }
 }
 
@@ -104,7 +122,7 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
                     .checked_add(source.len)
                     .ok_or_else(|| Error::invalid("pinned readback range out of bounds"))?;
                 copies.push(Readback::new(
-                    Allocation::adopt(Arc::clone(&source.tensor))?,
+                    source.source.clone(),
                     source.skip..end,
                     Arc::clone(buffer),
                     destination_skip,
@@ -264,13 +282,13 @@ fn source_bytes<T: DType + DeviceCopy>(
     device: &CudaDevice,
     source: &ReadbackSource<T>,
 ) -> Result<usize> {
-    if source.tensor.device_id() != device.stream.device().ordinal() {
+    if source.source.device() != device.stream.device().ordinal() {
         return Err(Error::invalid("pinned readback device mismatch"));
     }
     if source
         .skip
         .checked_add(source.len)
-        .is_none_or(|end| end > source.tensor.size())
+        .is_none_or(|end| end > source.source.len())
     {
         return Err(Error::invalid("pinned readback range out of bounds"));
     }
@@ -324,8 +342,8 @@ impl Readbacks {
         Self::prepared_rows(
             device,
             &[
-                Some(ReadbackSource::whole(Arc::clone(hidden))),
-                Some(ReadbackSource::whole(Arc::clone(logits))),
+                Some(ReadbackSource::whole_tensor(hidden)?),
+                Some(ReadbackSource::whole_tensor(logits)?),
             ],
         )
     }
@@ -334,16 +352,11 @@ impl Readbacks {
         hidden: &[Arc<Tensor<f32>>],
         logits: &[Arc<Tensor<f32>>],
     ) -> Result<Self> {
-        let sources = hidden
-            .iter()
-            .zip(logits)
-            .flat_map(|(hidden, logits)| {
-                [
-                    Some(ReadbackSource::whole(Arc::clone(hidden))),
-                    Some(ReadbackSource::whole(Arc::clone(logits))),
-                ]
-            })
-            .collect::<Vec<_>>();
+        let mut sources = Vec::with_capacity(2 * hidden.len());
+        for (hidden, logits) in hidden.iter().zip(logits) {
+            sources.push(Some(ReadbackSource::whole_tensor(hidden)?));
+            sources.push(Some(ReadbackSource::whole_tensor(logits)?));
+        }
         Self::prepared_rows(device, &sources)
     }
     pub(crate) fn contiguous(
@@ -352,22 +365,20 @@ impl Readbacks {
         logits: &Arc<Tensor<f32>>,
         rows: usize,
     ) -> Result<Self> {
-        let sources = (0..rows)
-            .flat_map(|row| {
-                [
-                    Some(ReadbackSource {
-                        tensor: Arc::clone(hidden),
-                        skip: row * (hidden.size() / rows),
-                        len: hidden.size() / rows,
-                    }),
-                    Some(ReadbackSource {
-                        tensor: Arc::clone(logits),
-                        skip: row * (logits.size() / rows),
-                        len: logits.size() / rows,
-                    }),
-                ]
-            })
-            .collect::<Vec<_>>();
+        let mut sources = Vec::with_capacity(2 * rows);
+        for row in 0..rows {
+            let (hidden_len, logits_len) = (hidden.size() / rows, logits.size() / rows);
+            sources.push(Some(ReadbackSource::tensor(
+                hidden,
+                row * hidden_len,
+                hidden_len,
+            )?));
+            sources.push(Some(ReadbackSource::tensor(
+                logits,
+                row * logits_len,
+                logits_len,
+            )?));
+        }
         Self::prepared_rows(device, &sources)
     }
 }

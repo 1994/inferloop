@@ -3,15 +3,13 @@ use super::super::{buffers::buffer, capture::error};
 use super::{ORDERED_DIM, ORDERED_WIDTHS, chunk, oxide};
 use crate::constants::F32_BYTES;
 use crate::constants::GDN_PROJECTED_INPUTS;
-use crate::{
-    device::{CudaDevice, device_error},
-    resident::ProgramWeights,
-};
+use crate::{device::CudaDevice, resident::ProgramWeights};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     GateBuffers, PreparedDeltaBuffers, Recording, Recurrent, RecurrentShape,
 };
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorOp};
 use std::collections::{BTreeMap, BTreeSet};
 use std::result::Result as StdResult;
@@ -21,9 +19,9 @@ type Geometry = (usize, usize, usize);
 pub(super) type Buffers = BTreeMap<Geometry, Inputs>;
 
 pub(super) struct Inputs {
-    normalized: Tensor<f32>,
-    betas: Tensor<f32>,
-    decays: Tensor<f32>,
+    normalized: Allocation<f32>,
+    betas: Allocation<f32>,
+    decays: Allocation<f32>,
     /// The pinned SIMT build records the recurrence; prepared on the program's families.
     simt: bool,
     chunk: Option<chunk::Scratch>,
@@ -122,20 +120,15 @@ impl Inputs {
         // The chunked rule normalizes into its own BF16 rows; the F32 rows only feed the
         // token-serial kernels.
         let normalized_rows = if chunked { 1 } else { lanes };
+        let runtime = device.runtime();
         Ok(Self {
             simt: false,
             chunk: chunked
                 .then(|| chunk::Scratch::new(device, (kh, vh, dim), lanes))
                 .transpose()?,
-            normalized: api::zeros::<f32>(&[normalized_rows, 2 * kh, dim])
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
-            betas: api::zeros::<f32>(&[lanes, vh])
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
-            decays: api::zeros::<f32>(&[lanes, vh])
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
+            normalized: runtime.zeros::<f32>(normalized_rows * 2 * kh * dim)?,
+            betas: runtime.zeros::<f32>(lanes * vh)?,
+            decays: runtime.zeros::<f32>(lanes * vh)?,
         })
     }
 

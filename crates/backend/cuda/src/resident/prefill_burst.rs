@@ -563,11 +563,11 @@ impl PromptBurst {
         self.stage(device, lanes)?;
         let sources = [
             None,
-            Some(ReadbackSource {
-                tensor: Arc::clone(&self.logits),
-                skip: 0,
-                len: self.segments * self.vocabulary,
-            }),
+            Some(ReadbackSource::tensor(
+                &self.logits,
+                0,
+                self.segments * self.vocabulary,
+            )?),
         ];
         let mut rows = self
             .readbacks
@@ -638,12 +638,12 @@ impl PromptBurst {
             }
         }
         self.metadata_staging
-            .copy(device, &mut self.metadata, &self.metadata_upload)?;
+            .copy(device, &self.metadata, &self.metadata_upload)?;
         if let Some(rotary) = self.rotary.as_mut() {
             self.rotary_staging
                 .copy(device, rotary, &self.rotary_upload)?;
         }
         self.info_staging
-            .copy(device, &mut self.info, &self.info_upload)
+            .copy(device, &self.info, &self.info_upload)
     }
 }

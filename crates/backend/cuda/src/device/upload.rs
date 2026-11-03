@@ -1,9 +1,8 @@
 //! Persistent pinned inputs, staged through rings that never refill a slot the device still reads.
 use super::{CudaDevice, device_error};
 use crate::constants::MAX_VERIFICATION_WIDTH;
-use crate::resident::buffers::buffer;
+use crate::resident::buffers::{Operand, buffer};
 use cuda_core::{DType, DeviceCopy};
-use cutile::tensor::Tensor;
 use infer_core::Result;
 use infer_cuda_kernels::tile::runtime::{Element, Staging};
 
@@ -32,17 +31,13 @@ impl<T: DType + DeviceCopy + Element> PinnedUpload<T> {
     /// # Errors
     /// Rejects more values than the ring was prepared for or `destination` holds, and a copy the
     /// driver does not enqueue.
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "The device writes destination; the exclusive borrow keeps a shared view from aliasing it"
-    )]
-    pub(crate) fn copy(
+    pub(crate) fn copy<O: Operand<Marker = T::Marker> + ?Sized>(
         &mut self,
         device: &CudaDevice,
-        destination: &mut Tensor<T>,
+        destination: &O,
         values: &[T],
     ) -> Result<()> {
-        let destination = buffer(&*destination)
+        let destination = buffer(destination)
             .map_err(device_error)?
             .slice(0..values.len())?;
         device.enqueue(|transfers| transfers.upload(&mut self.staging, destination, values))

@@ -113,7 +113,7 @@ impl CapturedCommit {
                 .ok_or_else(|| Error::invalid("commit slot"))?;
             *count = i32::try_from(accepted + 1).map_err(device_error)?;
         }
-        self.staging.copy(device, &mut self.counts, &self.upload)
+        self.staging.copy(device, &self.counts, &self.upload)
     }
 
     pub(super) const fn graph(&self) -> &Graph {

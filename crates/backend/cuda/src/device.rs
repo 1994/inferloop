@@ -21,7 +21,9 @@ use infer_cuda_kernels::contract::Kernels;
 use infer_cuda_kernels::contract::target::Arch;
 use infer_cuda_kernels::tile::kernels;
 use infer_cuda_kernels::tile::projection::matvec::{MatvecGeometry, dense_matvec};
-use infer_cuda_kernels::tile::runtime::{Device as Runtime, Element, HeadMajor, Transfers};
+use infer_cuda_kernels::tile::runtime::{
+    Allocation, Device as Runtime, Element, HeadMajor, Transfers,
+};
 use serde::Serialize;
 use std::fmt::Display;
 use std::sync::{Arc, OnceLock};
@@ -309,7 +311,18 @@ impl CudaDevice {
         // SAFETY: the immutable borrow lasts through the read; the alias owns shared storage,
         // registered device leases retain it until the future fences the ordered D2H.
         let source = unsafe { tensor.into_shared_alias() };
-        readbacks.read_async(self, source).await
+        readbacks.read_async(self, Allocation::adopt(source)?).await
+    }
+
+    /// Read all of `source` back through `readbacks`, after the work already on this stream.
+    /// # Errors
+    /// Returns a busy or poisoned owner, or a failed transfer.
+    pub(crate) async fn read_allocation<T: DType + DeviceCopy>(
+        &self,
+        source: &Allocation<T>,
+        readbacks: &mut Readbacks<T>,
+    ) -> Result<Vec<T>> {
+        readbacks.read_async(self, source.clone()).await
     }
 
     /// Enqueue a host slice into an existing device tensor on the device stream.

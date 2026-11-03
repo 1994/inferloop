@@ -3,7 +3,6 @@ use super::{
     evidence::{Key, Shape, Times, Trial},
 };
 use crate::device::{CudaDevice, device_error};
-use crate::resident::tensor_buffer as buffer;
 use crate::tuning::preparation::driver_build;
 use cutile::error::tensor_error;
 use cutile::{
@@ -11,9 +10,9 @@ use cutile::{
     prelude::*,
 };
 use infer_core::{Error, Result};
-use infer_cuda_kernels::contract::{NormBuffers, NormLayout, NormPlan, Recording};
+use infer_cuda_kernels::contract::{NormBuffers, NormLayout, NormPlan};
 use infer_cuda_kernels::tile::identity;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use std::iter::once;
 use std::time::Duration;
 pub(super) const JIT_OPT_LEVEL: u8 = 3;
@@ -29,10 +28,10 @@ const WEIGHT_BASE: f32 = 0.7;
 
 pub struct Buffers {
     shape: Shape,
-    x: Tensor<f32>,
-    gate: Tensor<f32>,
-    weight: Tensor<f32>,
-    output: Tensor<f32>,
+    x: Allocation<f32>,
+    gate: Allocation<f32>,
+    weight: Allocation<f32>,
+    output: Allocation<f32>,
 }
 impl Buffers {
     pub fn new(device: &CudaDevice, shape: Shape) -> Result<Self> {
@@ -55,17 +54,13 @@ impl Buffers {
             .take(shape.dimension)
             .map(|i| f32::from(i).mul_add(WEIGHT_SCALE, WEIGHT_BASE))
             .collect();
-        let matrix = [shape.rows, shape.dimension];
-        let unique =
-            |value| Arc::try_unwrap(value).map_err(|_| Error::invariant("unique norm fixture"));
+        let runtime = device.runtime();
         Ok(Self {
             shape,
-            x: unique(device.upload(x, &matrix)?)?,
-            gate: unique(device.upload(gate, &matrix)?)?,
-            weight: unique(device.upload(weight, &[shape.dimension])?)?,
-            output: api::zeros::<f32>(&matrix)
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
+            x: runtime.upload(x)?,
+            gate: runtime.upload(gate)?,
+            weight: runtime.upload(weight)?,
+            output: runtime.zeros(n)?,
         })
     }
     pub fn key(device: &CudaDevice, shape: Shape) -> Result<Key> {
@@ -106,29 +101,25 @@ impl Buffers {
             offset: 0.0,
             occupancy: compile_options(occupancy).occupancy,
         };
-        Graph::scope(&device.stream, |scope| {
-            kernels
-                .norm
-                .norm(
-                    &Recording::scope(scope),
-                    &plan,
-                    NormBuffers {
-                        out: buffer(&self.output)?,
-                        x: buffer(&self.x)?,
-                        weight: buffer(&self.weight)?,
-                        gate: buffer(&self.gate)?,
-                    },
-                )
-                .map_err(|error| DeviceError::Internal(error.to_string()))
+        device.runtime().capture(|recording| {
+            kernels.norm.norm(
+                recording,
+                &plan,
+                NormBuffers {
+                    out: self.output.operand(),
+                    x: self.x.operand(),
+                    weight: self.weight.operand(),
+                    gate: self.gate.operand(),
+                },
+            )
         })
-        .map_err(device_error)
     }
     pub fn read(&self, device: &CudaDevice, graph: &Graph) -> Result<Vec<f32>> {
         graph
             .launch()
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        device.read_borrowed(&self.output)
+        device.runtime().read(&self.output)
     }
 }
 pub fn bits(actual: &[f32], expected: &[f32]) -> Result<()> {

@@ -262,9 +262,9 @@ fn trial(
     block: usize,
     candidate_first: bool,
 ) -> Result<Trial> {
-    let mut candidate = Captured::new(device, fixture, block)?;
+    let candidate = Captured::new(device, fixture, block)?;
     let mut max_f64_error = candidate.verify(device, fixture)?;
-    let mut adversarial = Captured::new(device, correlated, block)?;
+    let adversarial = Captured::new(device, correlated, block)?;
     max_f64_error = max_f64_error.max(adversarial.verify(device, correlated)?);
     drop(adversarial);
     let cold = measure(device, base, &candidate, true, candidate_first)?;
@@ -289,7 +289,7 @@ fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Resul
     let fixture = Fixture::new(key.shape, false)?;
     let correlated = Fixture::new(key.shape, true)?;
     let baseline = key.shape[2];
-    let mut base = Captured::new(device, &fixture, baseline)?;
+    let base = Captured::new(device, &fixture, baseline)?;
     base.verify(device, &fixture)?;
     let mut selected = baseline;
     let mut search = Vec::new();

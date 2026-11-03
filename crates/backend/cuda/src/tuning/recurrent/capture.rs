@@ -3,53 +3,38 @@ use super::{
     SHAPE_RANK,
     reference::{Fixture, maximum_error},
 };
-use infer_cuda_kernels::contract::{DeltaBuffers, DeltaKernel, Recording, RecurrentShape};
+use infer_cuda_kernels::contract::{DeltaBuffers, DeltaKernel, RecurrentShape};
 use infer_cuda_kernels::tile::identity;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use std::env::var_os;
 
-const METADATA_LEN: usize = 4;
 const FINGERPRINT_SPLITS: [usize; 3] = [1, 2, 4];
 use crate::device::{CudaDevice, device_error};
-use crate::resident::tensor_buffer as buffer;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 
+/// The graph retains every operand; only what a check reads or resets is named here.
 pub(super) struct Captured {
     pub graph: Graph,
-    state: Tensor<f32>,
-    output: Tensor<f32>,
-    _scratch: Tensor<f32>,
-    _qkv: Arc<Tensor<f32>>,
-    _beta: Arc<Tensor<f32>>,
-    _alpha: Arc<Tensor<f32>>,
-    _a_log: Arc<Tensor<f32>>,
-    _bias: Arc<Tensor<f32>>,
-    initial: Arc<Tensor<f32>>,
-    _metadata: Arc<Tensor<i32>>,
+    state: Allocation<f32>,
+    output: Allocation<f32>,
+    initial: Allocation<f32>,
 }
 impl Captured {
     pub fn new(device: &CudaDevice, fixture: &Fixture, block: usize) -> Result<Self> {
         let [kh, vh, dim, lanes] = fixture.shape;
-        let qkv = device.upload(fixture.qkv.clone(), &[lanes, 2 * kh + vh, dim])?;
-        let beta = device.upload(fixture.beta.clone(), &[lanes, vh])?;
-        let alpha = device.upload(fixture.alpha.clone(), &[lanes, vh])?;
-        let a_log = device.upload(fixture.a_log.clone(), &[vh])?;
-        let bias = device.upload(fixture.bias.clone(), &[vh])?;
-        let initial = device.upload(fixture.initial.clone(), &[vh, dim, dim])?;
-        let metadata = device.upload(
-            vec![0, i32::try_from(lanes).map_err(device_error)?, 0, 0],
-            &[METADATA_LEN],
-        )?;
-        let state = api::zeros::<f32>(&[vh, dim, dim])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
-        let scratch = api::zeros::<f32>(&[vh, lanes, dim])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
-        let output = api::zeros::<f32>(&[lanes, vh, dim])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        let runtime = device.runtime();
+        let qkv = runtime.upload(fixture.qkv.clone())?;
+        let beta = runtime.upload(fixture.beta.clone())?;
+        let alpha = runtime.upload(fixture.alpha.clone())?;
+        let a_log = runtime.upload(fixture.a_log.clone())?;
+        let bias = runtime.upload(fixture.bias.clone())?;
+        let initial = runtime.upload(fixture.initial.clone())?;
+        let metadata =
+            runtime.upload(vec![0, i32::try_from(lanes).map_err(device_error)?, 0, 0])?;
+        let state = runtime.zeros::<f32>(vh * dim * dim)?;
+        let scratch = runtime.zeros::<f32>(vh * lanes * dim)?;
+        let output = runtime.zeros::<f32>(lanes * vh * dim)?;
         let contract = device.kernels();
         let shape = RecurrentShape {
             key_heads: kh,
@@ -57,57 +42,44 @@ impl Captured {
             dim,
             lanes,
         };
-        let graph = Graph::scope(&device.stream, |scope| {
-            let recording = Recording::scope(scope);
+        let graph = runtime.capture(|recording| {
+            contract.recurrent.delta(
+                recording,
+                DeltaKernel::Wy,
+                shape,
+                block,
+                DeltaBuffers {
+                    state: state.operand(),
+                    output: scratch.operand(),
+                    qkv: qkv.operand(),
+                    beta: beta.operand(),
+                    alpha: alpha.operand(),
+                    decay: a_log.operand(),
+                    bias: bias.operand(),
+                    metadata: metadata.operand(),
+                },
+            )?;
             contract
                 .recurrent
-                .delta(
-                    &recording,
-                    DeltaKernel::Wy,
-                    shape,
-                    block,
-                    DeltaBuffers {
-                        state: buffer(&state)?,
-                        output: buffer(&scratch)?,
-                        qkv: buffer(qkv.as_ref())?,
-                        beta: buffer(beta.as_ref())?,
-                        alpha: buffer(alpha.as_ref())?,
-                        decay: buffer(a_log.as_ref())?,
-                        bias: buffer(bias.as_ref())?,
-                        metadata: buffer(metadata.as_ref())?,
-                    },
-                )
-                .map_err(|error| DeviceError::Internal(error.to_string()))?;
-            contract
-                .recurrent
-                .transpose(&recording, shape, buffer(&output)?, buffer(&scratch)?)
-                .map_err(|error| DeviceError::Internal(error.to_string()))
-        })
-        .map_err(device_error)?;
+                .transpose(recording, shape, output.operand(), scratch.operand())
+        })?;
         Ok(Self {
             graph,
             state,
             output,
-            _scratch: scratch,
-            _qkv: qkv,
-            _beta: beta,
-            _alpha: alpha,
-            _a_log: a_log,
-            _bias: bias,
             initial,
-            _metadata: metadata,
         })
     }
-    pub fn verify(&mut self, device: &CudaDevice, fixture: &Fixture) -> Result<f64> {
-        api::memcpy(&mut self.state, &self.initial)
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+    pub fn verify(&self, device: &CudaDevice, fixture: &Fixture) -> Result<f64> {
+        let runtime = device.runtime();
+        runtime
+            .enqueue(|transfers| transfers.copy(self.state.operand(), self.initial.operand()))?;
         self.graph
             .launch()
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        let state = maximum_error(&device.read_borrowed(&self.state)?, &fixture.state)?;
-        let out = maximum_error(&device.read_borrowed(&self.output)?, &fixture.output)?;
+        let state = maximum_error(&runtime.read(&self.state)?, &fixture.state)?;
+        let out = maximum_error(&runtime.read(&self.output)?, &fixture.output)?;
         Ok(state.max(out))
     }
 }

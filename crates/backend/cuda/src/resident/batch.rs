@@ -1951,9 +1951,16 @@ impl BatchGraph {
         for lane in 0..tokens.len() {
             let logits = !device_tokens
                 && (prefill.is_none() || prefill == Some(true) && lane + 1 == tokens.len());
-            sources
-                .push(read_hidden.then(|| ReadbackSource::whole(Arc::clone(&self.hidden[lane]))));
-            sources.push(logits.then(|| ReadbackSource::whole(Arc::clone(&self.logits[lane]))));
+            sources.push(
+                read_hidden
+                    .then(|| ReadbackSource::whole_tensor(&self.hidden[lane]))
+                    .transpose()?,
+            );
+            sources.push(
+                logits
+                    .then(|| ReadbackSource::whole_tensor(&self.logits[lane]))
+                    .transpose()?,
+            );
         }
         if device_tokens {
             let active: Vec<_> = (0..tokens.len()).collect();
@@ -2211,20 +2218,22 @@ impl BatchGraph {
         let single_logits = self.prompt_row.is_some();
         let vocabulary = self.logits[0].size() / if single_logits { 1 } else { self.width };
         let sources = [
-            read_hidden.then(|| ReadbackSource {
-                tensor: Arc::clone(&self.hidden[0]),
-                skip: 0,
-                len: tokens.len() * hidden_dim,
-            }),
-            (prefill == Some(true)).then(|| ReadbackSource {
-                tensor: Arc::clone(&self.logits[0]),
-                skip: if single_logits {
-                    0
-                } else {
-                    (tokens.len() - 1) * vocabulary
-                },
-                len: vocabulary,
-            }),
+            read_hidden
+                .then(|| ReadbackSource::tensor(&self.hidden[0], 0, tokens.len() * hidden_dim))
+                .transpose()?,
+            (prefill == Some(true))
+                .then(|| {
+                    ReadbackSource::tensor(
+                        &self.logits[0],
+                        if single_logits {
+                            0
+                        } else {
+                            (tokens.len() - 1) * vocabulary
+                        },
+                        vocabulary,
+                    )
+                })
+                .transpose()?,
         ];
         let profile = if precise {
             &self.precise_profile
@@ -2429,7 +2438,7 @@ fn prompt_rotary_values(
 )]
 fn stage_metadata_batch(
     device: &CudaDevice,
-    owner: &mut Tensor<i32>,
+    owner: &Tensor<i32>,
     (upload, staging): (&mut Vec<i32>, &mut PinnedUpload<i32>),
     width: usize,
     capacity: usize,
@@ -2560,22 +2569,26 @@ impl SlotDecodeGraph {
             vocabulary,
         )?;
         self.metadata_staging
-            .copy(device, &mut self.metadata_owner, &self.metadata_upload)?;
+            .copy(device, &self.metadata_owner, &self.metadata_upload)?;
         let vocabulary = self.logits.size() / self.width;
         let mut sources = Vec::with_capacity(2 * lanes.len());
         for &(slot, ..) in lanes {
             sources.push(
-                (read_logits && self.external_hidden).then(|| ReadbackSource {
-                    tensor: Arc::clone(&self.hidden),
-                    skip: slot * (self.hidden.size() / self.width),
-                    len: self.hidden.size() / self.width,
-                }),
+                (read_logits && self.external_hidden)
+                    .then(|| {
+                        ReadbackSource::tensor(
+                            &self.hidden,
+                            slot * (self.hidden.size() / self.width),
+                            self.hidden.size() / self.width,
+                        )
+                    })
+                    .transpose()?,
             );
-            sources.push((read_logits && !device_tokens).then(|| ReadbackSource {
-                tensor: Arc::clone(&self.logits),
-                skip: slot * vocabulary,
-                len: vocabulary,
-            }));
+            sources.push(
+                (read_logits && !device_tokens)
+                    .then(|| ReadbackSource::tensor(&self.logits, slot * vocabulary, vocabulary))
+                    .transpose()?,
+            );
         }
         let (output, tokens) = if device_tokens {
             let active: Vec<_> = lanes.iter().map(|&(slot, ..)| slot).collect();
@@ -2653,7 +2666,7 @@ impl SlotDecodeGraph {
             vocabulary,
         )?;
         self.metadata_staging
-            .copy(device, &mut self.metadata_owner, &self.metadata_upload)?;
+            .copy(device, &self.metadata_owner, &self.metadata_upload)?;
         // SAFETY: the engine is single-stream, so this replay is ordered after the staged
         // metadata and uploads and before any later replay; every buffer it touches is
         // pool-owned, and the pool's drop barrier drains the stream before anything frees.

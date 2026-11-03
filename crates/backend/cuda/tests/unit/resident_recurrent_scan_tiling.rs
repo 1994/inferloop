@@ -4,6 +4,7 @@ use crate::device::CudaDevice;
 use crate::resident::buffers::buffer;
 use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::error::tensor_error;
+use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_cuda_kernels::contract::RecurrentShape;
 use infer_cuda_kernels::tile::kernels as contract_kernels;
@@ -24,6 +25,30 @@ struct Inputs {
     initial: Arc<Tensor<f32>>,
 }
 
+/// The original kernels' scratch, as tensors they partition themselves.
+struct Baseline {
+    u: Tensor<bf16>,
+    queries: Tensor<bf16>,
+    keys: Tensor<bf16>,
+    w: Tensor<bf16>,
+    p: Tensor<bf16>,
+    cumulative: Tensor<f32>,
+}
+
+impl Baseline {
+    fn new(device: &CudaDevice, [kh, vh, lanes]: [usize; 3]) -> TestResult<Self> {
+        let halves = |shape: &[usize]| api::zeros::<bf16>(shape).sync_on(&device.stream);
+        Ok(Self {
+            u: halves(&[vh, lanes, DIM])?,
+            queries: halves(&[kh, lanes, DIM])?,
+            keys: halves(&[kh, lanes, DIM])?,
+            w: halves(&[vh, lanes, DIM])?,
+            p: halves(&[vh, lanes, 64])?,
+            cumulative: api::zeros::<f32>(&[vh, lanes]).sync_on(&device.stream)?,
+        })
+    }
+}
+
 fn values(n: usize, salt: usize) -> Vec<f32> {
     (0..n)
         .map(|i| (f32::from(u16::try_from((i * salt + i / 7) % 131).unwrap()) - 65.0) / 200.0)
@@ -32,13 +57,13 @@ fn values(n: usize, salt: usize) -> Vec<f32> {
 fn capture(
     device: &CudaDevice,
     input: &Inputs,
-    scratch: &mut Scratch,
+    (scratch, baseline): (&Scratch, &mut Baseline),
     (state, output): (&mut Tensor<f32>, &mut Tensor<f32>),
     optimized: bool,
 ) -> TestResult<Graph> {
     let [kh, vh, lanes] = input.shape;
     let qkv = input.qkv.view(&[lanes, 2 * kh + vh, DIM])?;
-    Ok(Graph::scope(&device.stream, |scope| {
+    let graph = Graph::scope(&device.stream, |scope| {
         scope.record(baseline::reset(
             (&mut *state).partition([1, DIM, 32]),
             &input.initial,
@@ -47,7 +72,7 @@ fn capture(
             return record(
                 scope,
                 contract_kernels(0).recurrent.as_ref(),
-                &*scratch,
+                scratch,
                 RecurrentShape {
                     key_heads: kh,
                     value_heads: vh,
@@ -66,8 +91,8 @@ fn capture(
         }
         scope.record(
             kernels::chunk_normalize(
-                (&mut scratch.queries).partition([1, 64, DIM]),
-                (&mut scratch.keys).partition([1, 64, DIM]),
+                (&mut baseline.queries).partition([1, 64, DIM]),
+                (&mut baseline.keys).partition([1, 64, DIM]),
                 &qkv,
                 &input.metadata,
             )
@@ -75,13 +100,13 @@ fn capture(
         )?;
         scope.record(
             kernels::chunk_prepare(
-                (&mut scratch.u).partition([1, 64, DIM]),
-                (&mut scratch.w).partition([1, 64, DIM]),
-                (&mut scratch.p).partition([1, 64, 64]),
-                (&mut scratch.cumulative).partition([1, 64]),
+                (&mut baseline.u).partition([1, 64, DIM]),
+                (&mut baseline.w).partition([1, 64, DIM]),
+                (&mut baseline.p).partition([1, 64, 64]),
+                (&mut baseline.cumulative).partition([1, 64]),
                 &qkv,
-                &scratch.queries,
-                &scratch.keys,
+                &baseline.queries,
+                &baseline.keys,
                 &input.beta,
                 &input.decay,
                 &input.metadata,
@@ -92,18 +117,19 @@ fn capture(
             baseline::legacy_scan32(
                 state.partition([1, DIM, 32]),
                 output.partition([1, lanes, 32]),
-                &scratch.u,
-                &scratch.w,
-                &scratch.queries,
-                &scratch.keys,
-                &scratch.p,
-                &scratch.cumulative,
+                &baseline.u,
+                &baseline.w,
+                &baseline.queries,
+                &baseline.keys,
+                &baseline.p,
+                &baseline.cumulative,
                 &input.metadata,
             )
             .generics([kh, vh, lanes].iter().map(ToString::to_string).collect()),
         )?;
         Ok(())
-    })?)
+    })?;
+    Ok(graph)
 }
 
 fn equal(device: &CudaDevice, a: Tensor<f32>, b: Tensor<f32>) -> TestResult<[Arc<Tensor<f32>>; 2]> {
@@ -135,13 +161,26 @@ fn compare_case(device: &CudaDevice, shape: [usize; 3]) -> TestResult {
         metadata: device.upload(vec![0, i32::try_from(lanes - 3)?, 0, 0], &[4])?,
         initial: device.upload(values(vh * DIM * DIM, 13), &[vh, DIM, DIM])?,
     };
-    let mut scratch = Scratch::new(device, (kh, vh, DIM), lanes)?;
+    let scratch = Scratch::new(device, (kh, vh, DIM), lanes)?;
     let mut a = api::zeros::<f32>(&[vh, lanes, DIM]).sync_on(&device.stream)?;
     let mut b = api::zeros::<f32>(&[vh, lanes, DIM]).sync_on(&device.stream)?;
     let mut sa = api::zeros::<f32>(&[vh, DIM, DIM]).sync_on(&device.stream)?;
     let mut sb = api::zeros::<f32>(&[vh, DIM, DIM]).sync_on(&device.stream)?;
-    let ga = capture(device, &input, &mut scratch, (&mut sa, &mut a), false)?;
-    let gb = capture(device, &input, &mut scratch, (&mut sb, &mut b), true)?;
+    let mut baseline = Baseline::new(device, input.shape)?;
+    let ga = capture(
+        device,
+        &input,
+        (&scratch, &mut baseline),
+        (&mut sa, &mut a),
+        false,
+    )?;
+    let gb = capture(
+        device,
+        &input,
+        (&scratch, &mut baseline),
+        (&mut sb, &mut b),
+        true,
+    )?;
     ga.launch().sync_on(&device.stream)?;
     gb.launch().sync_on(&device.stream)?;
     let _outputs = equal(device, a, b)?;

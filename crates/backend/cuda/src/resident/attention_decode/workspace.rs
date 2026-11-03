@@ -1,7 +1,7 @@
 //! Capture-time split-KV planning and reusable scratch, independent of model identity.
 
 use crate::constants::KV_BLOCK_TOKENS;
-use crate::device::{CudaDevice, device_error};
+use crate::device::CudaDevice;
 use crate::resident::buffers::buffer;
 use crate::resident::capture::error;
 use crate::tuning::attention::Choice;
@@ -21,6 +21,7 @@ use infer_cuda_kernels::contract::{
     Attention, DecodeBuffers, DecodePlan, Partials as ContractPartials, Recording, SplitDecodePlan,
     VerifyDecodeBuffers,
 };
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorOp};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -38,9 +39,9 @@ struct Buffers {
     /// KV heads of the grouped kernel's partial layout, or `None` for one partial per query head.
     grouped: Option<usize>,
     parts: usize,
-    numerator: Tensor<f32>,
-    maxima: Tensor<f32>,
-    sums: Tensor<f32>,
+    numerator: Allocation<f32>,
+    maxima: Allocation<f32>,
+    sums: Allocation<f32>,
     /// Stacked partials of the three-lane verification kernel, when a KV group fits one lane's
     /// rows of the stacked query tile.
     verify: Option<Partials>,
@@ -48,9 +49,9 @@ struct Buffers {
 
 /// One lane's grouped split partials.
 struct Partials {
-    numerator: Tensor<f32>,
-    maxima: Tensor<f32>,
-    sums: Tensor<f32>,
+    numerator: Allocation<f32>,
+    maxima: Allocation<f32>,
+    sums: Allocation<f32>,
 }
 
 pub struct Workspace {
@@ -98,11 +99,8 @@ impl Workspace {
             if parts == 1 || buffers.contains_key(&(query_heads, head_dim)) {
                 continue;
             }
-            let zeros = |shape: &[usize]| {
-                api::zeros::<f32>(shape)
-                    .sync_on(&device.stream)
-                    .map_err(device_error)
-            };
+            let runtime = device.runtime();
+            let zeros = |shape: &[usize]| runtime.zeros::<f32>(shape.iter().product());
             let entry = if let Some(grouped) = grouped_parts(query_heads, kv_heads, sms) {
                 let blocks = kv_heads * grouped;
                 let verify = if query_heads / kv_heads <= STACKED_LANE_ROWS {

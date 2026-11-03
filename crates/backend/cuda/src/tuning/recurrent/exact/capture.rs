@@ -6,15 +6,13 @@ use crate::resident::tensor_buffer as buffer;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{GateBuffers, PreparedDeltaBuffers, Recording, RecurrentShape};
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 pub(super) const KH: usize = 16;
 pub(super) const VH: usize = 48;
 pub(super) const DIM: usize = 128;
 pub(super) const NATIVE_VALUE_COLUMNS: usize = 16;
-fn zeros(device: &CudaDevice, shape: &[usize]) -> Result<Tensor<f32>> {
-    api::zeros::<f32>(shape)
-        .sync_on(&device.stream)
-        .map_err(device_error)
+fn zeros(device: &CudaDevice, shape: &[usize]) -> Result<Allocation<f32>> {
+    device.runtime().zeros(shape.iter().product())
 }
 pub(super) struct Captured {
     qkv: Arc<Tensor<f32>>,
@@ -24,12 +22,12 @@ pub(super) struct Captured {
     bias: Arc<Tensor<f32>>,
     metadata: Arc<Tensor<i32>>,
     initial: Arc<Tensor<f32>>,
-    normalized: Tensor<f32>,
-    betas: Tensor<f32>,
-    decays: Tensor<f32>,
-    state: Tensor<f32>,
-    scratch: Tensor<f32>,
-    output: Tensor<f32>,
+    normalized: Allocation<f32>,
+    betas: Allocation<f32>,
+    decays: Allocation<f32>,
+    state: Allocation<f32>,
+    scratch: Allocation<f32>,
+    output: Allocation<f32>,
     width: usize,
 }
 impl Captured {
@@ -53,7 +51,7 @@ impl Captured {
         })
     }
     /// The pipeline with the SIMT recurrence when `simt`, otherwise the tile one.
-    pub fn graph(&mut self, device: &CudaDevice, simt: bool) -> Result<Graph> {
+    pub fn graph(&self, device: &CudaDevice, simt: bool) -> Result<Graph> {
         let width = self.width;
         let contract = device.kernels();
         let shape = RecurrentShape {
@@ -66,8 +64,10 @@ impl Captured {
             return Err(Error::invalid("no SIMT recurrence build covers this shape"));
         }
         Graph::scope(&device.stream, |scope| {
-            scope.record(api::memcpy(&mut self.state, &self.initial))?;
             let recording = Recording::scope(scope);
+            recording
+                .copy(self.state.operand(), buffer(self.initial.as_ref())?)
+                .map_err(|error| DeviceError::Internal(error.to_string()))?;
             contract
                 .recurrent
                 .normalize(
@@ -130,8 +130,8 @@ impl Captured {
             .sync_on(&device.stream)
             .map_err(device_error)?;
         Ok([
-            device.read_borrowed(&self.state)?,
-            device.read_borrowed(&self.output)?,
+            device.runtime().read(&self.state)?,
+            device.runtime().read(&self.output)?,
         ])
     }
     pub fn verify(
