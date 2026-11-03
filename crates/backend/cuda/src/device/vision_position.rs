@@ -1,14 +1,15 @@
 //! Device-side interpolation of the learned vision position table.
 #![expect(
     unsafe_code,
-    reason = "The position gather validates every table index and owns all device buffers through graph completion"
+    reason = "Construction validates every table index, which the position taps operand requires"
 )]
 use crate::device::{CudaDevice, device_error};
-use cutile::cuda_async::cuda_graph::Scope;
+use crate::resident::tensor_buffer;
 use cutile::cuda_async::error::DeviceError;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::PositionTaps;
 use std::result::Result as StdResult;
 use std::sync::Arc;
 
@@ -29,7 +30,6 @@ pub struct DeviceTaps {
     weights: Arc<Tensor<f32>>,
     table: Arc<Tensor<bf16>>,
     hidden: usize,
-    activation_shape: [i32; 2],
 }
 
 impl DeviceTaps {
@@ -60,7 +60,7 @@ impl DeviceTaps {
             i32::try_from(rows).map_err(device_error)?,
             i32::try_from(hidden).map_err(device_error)?,
         ];
-        let activation_shape = [i32::try_from(padded).map_err(device_error)?, table_shape[1]];
+        i32::try_from(padded).map_err(device_error)?;
         if rows == 0
             || hidden == 0
             || !hidden.is_multiple_of(COLUMN_TILE)
@@ -95,40 +95,18 @@ impl DeviceTaps {
             weights: device.upload(weights, &[TAPS, padded])?,
             table: table.clone(),
             hidden,
-            activation_shape,
         })
     }
 
-    /// Record a gather and add on the supplied graph, retaining its device tensors.
+    /// The taps as the gather addresses them; the caller owns `self` until the work completes.
     ///
     /// # Errors
-    /// Rejects mismatched activation shapes or graph-recording failures.
-    pub fn record(
-        &self,
-        scope: &Scope,
-        embedded: &Tensor<f32>,
-        output: &mut Tensor<f32>,
-    ) -> StdResult<(), DeviceError> {
-        if embedded.shape() != self.activation_shape || output.shape() != self.activation_shape {
-            return Err(DeviceError::Launch(
-                "vision position activation shape".into(),
-            ));
-        }
-        // SAFETY: construction checks each index and the full table span fits i32; the padded
-        // entries address row zero. Shapes tile by 32x64, and the graph retains the table, taps,
-        // input and output until the recorded work completes on the owning stream.
-        scope.record(unsafe {
-            kernels::add_positions(
-                output.partition([TOKEN_TILE, COLUMN_TILE]),
-                embedded,
-                &self.table,
-                &self.indices,
-                &self.weights,
-            )
-            .generics(vec![self.hidden.to_string()])
-        })?;
-        Ok(())
+    /// Rejects a table or tap tensor the device cannot address directly.
+    pub fn taps(&self) -> StdResult<PositionTaps<'_>, DeviceError> {
+        let table = tensor_buffer(&self.table)?;
+        let indices = tensor_buffer(&self.indices)?;
+        let weights = tensor_buffer(&self.weights)?;
+        // SAFETY: construction checks each index against the table's rows and pads with row zero.
+        Ok(unsafe { PositionTaps::new(table, indices, weights, self.hidden) })
     }
 }
-
-pub use infer_cuda_kernels::tile::vision::vision_position as kernels;

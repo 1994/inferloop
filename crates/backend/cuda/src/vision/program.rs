@@ -206,7 +206,7 @@ impl StagedPositions {
         &self,
         launches: &Launches<'_>,
         embedded: &Tensor<f32>,
-        output: &mut Tensor<f32>,
+        output: &Tensor<f32>,
         hidden: usize,
     ) -> StdResult<(), DeviceError> {
         if let Some(positions) = &self.host {
@@ -218,7 +218,7 @@ impl StagedPositions {
             )?;
         }
         if let Some(taps) = &self.device {
-            taps.record(launches.scope(), embedded, output)?;
+            launches.add_positions(buffer(output)?, buffer(embedded)?, taps.taps()?)?;
         }
         Ok(())
     }
@@ -262,7 +262,7 @@ fn patch_embed_with_positions(
     let embedded = api::zeros::<f32>(&[padded, hidden])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let mut output = if positions.present() {
+    let output = if positions.present() {
         Some(
             api::zeros::<f32>(&[padded, hidden])
                 .sync_on(&device.stream)
@@ -284,7 +284,7 @@ fn patch_embed_with_positions(
             bias: buffer(bias)?,
             columns: width,
         })?;
-        if let Some(output) = output.as_mut() {
+        if let Some(output) = output.as_ref() {
             positions.record(&launches, &embedded, output, hidden)?;
         }
         Ok(())

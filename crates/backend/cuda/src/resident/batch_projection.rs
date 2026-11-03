@@ -273,7 +273,7 @@ pub(super) fn record_slots(
         weight,
         weights.activation_quantization(node.inputs[1]),
         region(input_pointer, lanes * columns),
-        &mut output,
+        &output,
         columns,
     )? {
         record_projection(
@@ -321,6 +321,13 @@ pub(super) fn record_rows(
 #[expect(
     clippy::too_many_arguments,
     reason = "The view does not expose its address, so it is passed alongside"
+)]
+#[cfg_attr(
+    not(test),
+    expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "Only the test-only precise candidate partitions the output in place"
+    )
 )]
 fn record_projection(
     (kernels, scope): (&Kernels, &Scope),

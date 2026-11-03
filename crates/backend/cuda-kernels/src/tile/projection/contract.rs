@@ -1,14 +1,15 @@
 //! cuTile implementation of the projection family.
 use super::{
-    fp8_gemm, fp8_quant_reduction, linear, linear_batch, nvfp4_gemm, pool_gemv, prefill_gemm,
-    prompt_logits, small_gemm,
+    BLOCK_BYTES, entries, fp8_gemm, fp8_quant_reduction, linear, linear_batch, nvfp4_gemm,
+    pool_gemv, prefill_gemm, prompt_logits, small_gemm, swizzle, vendor_fp8,
 };
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::kernels::{Projection, WeightRef};
 use crate::contract::plan::{
     DenseKernel, DenseRowsPlan, DownPlan, EmbeddingBatchPlan, EmbeddingPlan, Fp4QuantKind,
-    Fp4QuantPlan, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, LastRowsKind, LastRowsPlan,
-    LinearRowsPlan, PoolGemvPlan, PromptPlan, RowsKernel, RowsPlan, SplitGemmPlan, THREE_ROWS,
+    Fp4QuantPlan, Fp4ScalePlan, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, LastRowsKind,
+    LastRowsPlan, LinearRowsPlan, NARROW_GRANULE, PoolGemvPlan, PromptPlan, RowsKernel, RowsPlan,
+    SplitGemmPlan, THREE_ROWS,
 };
 use crate::contract::recording::Recording;
 use crate::tile::attention::attention as attention_model;
@@ -17,6 +18,9 @@ use cuda_core::{DType, f4e2m1fnx2, f8e4m3fn};
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+
+/// Columns one channel-scale tile covers.
+const SCALE_COLUMNS: usize = 256;
 
 /// Elements of an embedding row a tile covers.
 const EMBEDDING_TILE: usize = 256;
@@ -1035,6 +1039,106 @@ impl Projection for TileProjection {
                 &b,
                 &c,
             ))
+            .map_err(backend_error)?;
+        Ok(())
+    }
+
+    fn swizzle_fp4_scales(
+        &self,
+        recording: &Recording<'_>,
+        plan: &Fp4ScalePlan,
+        out: Buffer<'_, Fp8>,
+        weight: Buffer<'_, Fp8>,
+        input: Buffer<'_, Fp8>,
+    ) -> Result<()> {
+        let launch = swizzle(plan)?;
+        let out_rows = out.len() / launch.row;
+        if out.len() != out_rows * launch.row
+            || out.len() < (plan.rows + plan.outputs) * launch.groups
+        {
+            return Err(Error::invalid("FP4 scale swizzle: destination rows"));
+        }
+        let scope = capture_scope(recording)?;
+        let mut out = self.matrix(
+            recording,
+            retyped_fp8(out),
+            "swizzled scales",
+            (out_rows, launch.row),
+        )?;
+        let weight = self.matrix(
+            recording,
+            retyped_fp8(weight),
+            "weight scales",
+            (plan.outputs, launch.groups),
+        )?;
+        let input = self.matrix(
+            recording,
+            retyped_fp8(input),
+            "input scales",
+            (plan.rows, launch.groups),
+        )?;
+        scope
+            .record(
+                entries::pack_pair(
+                    (&mut out).partition_prefix([1, BLOCK_BYTES]),
+                    &weight,
+                    &input,
+                )
+                .generics(launch.generics)
+                .grid(launch.grid),
+            )
+            .map_err(backend_error)?;
+        Ok(())
+    }
+
+    fn channel_scale(
+        &self,
+        recording: &Recording<'_>,
+        columns: usize,
+        out: Buffer<'_, f32>,
+        row: Buffer<'_, f32>,
+        column: Buffer<'_, f32>,
+    ) -> Result<()> {
+        let rows = out.len().checked_div(columns).unwrap_or(0);
+        if rows == 0 || out.len() != rows * columns || row.len() != rows || column.len() != columns
+        {
+            return Err(Error::invalid(
+                "channel scale: factors do not match the output",
+            ));
+        }
+        let scope = capture_scope(recording)?;
+        let mut out = self.matrix(recording, out, "scaled output", (rows, columns))?;
+        let row = self.matrix(recording, row, "row factors", (rows, 1))?;
+        let column = self.flat(recording, column)?;
+        scope
+            .record(vendor_fp8::scale(
+                (&mut out).partition([1, SCALE_COLUMNS]),
+                &row,
+                &column,
+            ))
+            .map_err(backend_error)?;
+        Ok(())
+    }
+
+    fn narrow_bf16(
+        &self,
+        recording: &Recording<'_>,
+        out: Buffer<'_, Bf16>,
+        input: Buffer<'_, f32>,
+    ) -> Result<()> {
+        if out.len() != input.len() || !out.len().is_multiple_of(NARROW_GRANULE) {
+            return Err(Error::invalid(
+                "narrowing: lengths differ or leave a partial tile",
+            ));
+        }
+        let scope = capture_scope(recording)?;
+        let mut out = self.flat(recording, retyped_bf16(out))?;
+        let input = self.flat(recording, input)?;
+        scope
+            .record(
+                linear::cast_bf16((&mut out).partition([NARROW_GRANULE]), &input)
+                    .generics(vec![NARROW_GRANULE.to_string()]),
+            )
             .map_err(backend_error)?;
         Ok(())
     }

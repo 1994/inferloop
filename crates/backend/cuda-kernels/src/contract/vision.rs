@@ -1,4 +1,8 @@
 //! The vision encoder family: the launches of one image's tower and position interpolation.
+#![expect(
+    unsafe_code,
+    reason = "Position taps state their index bound once, so the gather method can be safe"
+)]
 use super::buffer::{Bf16, Buffer};
 use super::recording::Recording;
 use infer_core::Result;
@@ -36,6 +40,65 @@ pub struct VisionRope<'a> {
     pub half: usize,
     /// Real half width of a compact head stored wider; `None` for a whole power-of-two head.
     pub real_half: Option<usize>,
+}
+
+/// Bilinear interpolation taps into a learned `[rows, hidden]` position table.
+///
+/// The gather reads the table at addresses the device computes from `indices`, so the bound on
+/// those indices is a precondition no launch can check; [`Self::new`] carries it.
+#[derive(Clone, Copy, Debug)]
+pub struct PositionTaps<'a> {
+    table: Buffer<'a, Bf16>,
+    indices: Buffer<'a, i32>,
+    weights: Buffer<'a, f32>,
+    hidden: usize,
+}
+
+impl<'a> PositionTaps<'a> {
+    /// Taps over `table` rows of `hidden` channels; `indices` and `weights` are tap-major
+    /// `[4, padded]`.
+    ///
+    /// # Safety
+    /// Every element of `indices` is non-negative and below `table.len() / hidden`, padded
+    /// entries included, until the recorded work has completed.
+    #[must_use]
+    pub const unsafe fn new(
+        table: Buffer<'a, Bf16>,
+        indices: Buffer<'a, i32>,
+        weights: Buffer<'a, f32>,
+        hidden: usize,
+    ) -> Self {
+        Self {
+            table,
+            indices,
+            weights,
+            hidden,
+        }
+    }
+
+    /// The table.
+    #[must_use]
+    pub const fn table(self) -> Buffer<'a, Bf16> {
+        self.table
+    }
+
+    /// Tap-major row indices.
+    #[must_use]
+    pub const fn indices(self) -> Buffer<'a, i32> {
+        self.indices
+    }
+
+    /// Tap-major interpolation weights.
+    #[must_use]
+    pub const fn weights(self) -> Buffer<'a, f32> {
+        self.weights
+    }
+
+    /// Channels of one table row.
+    #[must_use]
+    pub const fn hidden(self) -> usize {
+        self.hidden
+    }
 }
 
 /// The activation of a vision MLP.
@@ -110,5 +173,16 @@ pub trait Vision: Send + Sync {
         rows: usize,
         out: Buffer<'_, f32>,
         input: Buffer<'_, f32>,
+    ) -> Result<()>;
+
+    /// `out = embedded + Σ weight · table[index]` over the four taps of each row.
+    /// # Errors
+    /// See the trait.
+    fn add_positions(
+        &self,
+        recording: &Recording<'_>,
+        out: Buffer<'_, f32>,
+        embedded: Buffer<'_, f32>,
+        taps: PositionTaps<'_>,
     ) -> Result<()>;
 }

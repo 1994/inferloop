@@ -1,6 +1,5 @@
 use super::{LoadOptions, LoadedModel};
 use crate::constants::SMALL_GEMM_TILE;
-use crate::kernels::linear::dense;
 use crate::resident::tensor_buffer;
 use crate::strategy::LinearTiling;
 use crate::{
@@ -15,6 +14,7 @@ use cutile::{
     prelude::*,
 };
 use infer_core::{Error, ModelId, Result};
+use infer_cuda_kernels::tile::projection::linear::dense;
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::TensorStorage;
 use std::env::var;

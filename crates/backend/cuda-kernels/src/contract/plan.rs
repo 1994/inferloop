@@ -203,6 +203,13 @@ pub struct LastRowsPlan {
 /// Rows of the fixed three-lane pack and unpack, one per verified MTP lane.
 pub const THREE_ROWS: usize = 3;
 
+/// Elements one narrowing tile converts; a [`Projection::narrow_bf16`] length is a multiple.
+///
+/// Chosen from prompt measurements: 5.2 us at 1024 elements versus 8.1 us at 8192.
+///
+/// [`Projection::narrow_bf16`]: crate::contract::Projection::narrow_bf16
+pub const NARROW_GRANULE: usize = 1024;
+
 /// How activations reach FP4 codes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fp4QuantKind {
@@ -210,6 +217,15 @@ pub enum Fp4QuantKind {
     Whole,
     /// Row groups in one launch.
     RowGroups { rows: usize },
+}
+
+/// An FP4 projection `[rows, columns] x [outputs, columns]` whose FP8 block scales a vendor
+/// GEMM reads in 128-row by four-group blocks, weight scales first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fp4ScalePlan {
+    pub rows: usize,
+    pub outputs: usize,
+    pub columns: usize,
 }
 
 /// FP4 activation quantization of `[rows, columns]` into codes and block scales.

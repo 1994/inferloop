@@ -563,8 +563,8 @@ fn vendor_fp8_verified_chooser_checkpoint_comparison() -> TestResult {
                 true,
                 &session,
             );
-            let mut baseline = api::zeros::<f32>(&[rows, weight.n]).sync_on(&device.stream)?;
-            let mut output = api::zeros::<f32>(&[rows, weight.n]).sync_on(&device.stream)?;
+            let baseline = api::zeros::<f32>(&[rows, weight.n]).sync_on(&device.stream)?;
+            let output = api::zeros::<f32>(&[rows, weight.n]).sync_on(&device.stream)?;
             let base = Graph::scope(&device.stream, |scope| {
                 inputs.quantize(scope)?;
                 Choice::baseline(rows).record(
@@ -572,7 +572,7 @@ fn vendor_fp8_verified_chooser_checkpoint_comparison() -> TestResult {
                     &inputs.vendor,
                     &inputs.codes,
                     &weight.device_codes,
-                    &mut baseline,
+                    &baseline,
                     &inputs.scales,
                     &weight.device_scales,
                     weight.k,
@@ -585,7 +585,7 @@ fn vendor_fp8_verified_chooser_checkpoint_comparison() -> TestResult {
                     &inputs.vendor,
                     &inputs.codes,
                     &weight.device_codes,
-                    &mut output,
+                    &output,
                     &inputs.scales,
                     &weight.device_scales,
                     weight.k,
@@ -615,7 +615,7 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
     let weight = Weight::synthetic(&device, 128, 512)?;
     let mut inputs = Inputs::new(&device, &weight, 128)?;
     let mut native = api::zeros::<f32>(&[128, 128]).sync_on(&device.stream)?;
-    let mut restored_output = api::zeros::<f32>(&[128, 128]).sync_on(&device.stream)?;
+    let restored_output = api::zeros::<f32>(&[128, 128]).sync_on(&device.stream)?;
     let quantizer = Graph::scope(&device.stream, |scope| inputs.quantize(scope))?;
     quantizer.launch().sync_on(&device.stream)?;
     let configs =
@@ -659,7 +659,7 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
             config,
             &inputs.codes,
             &weight.device_codes,
-            &mut restored_output,
+            &restored_output,
             &inputs.scales,
             &weight.device_scales,
         )? {

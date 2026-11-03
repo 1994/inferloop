@@ -9,9 +9,9 @@ use super::driver::{Device, Function};
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::kernels::{Projection, WeightRef};
 use crate::contract::plan::{
-    DenseRowsPlan, DownPlan, EmbeddingBatchPlan, EmbeddingPlan, Fp4QuantPlan, Fp8QuantPlan,
-    GemmPlan, LastRowsPlan, LinearRowsPlan, PoolGemvPlan, PromptPlan, RowsPlan, SplitGemmPlan,
-    THREE_ROWS,
+    DenseRowsPlan, DownPlan, EmbeddingBatchPlan, EmbeddingPlan, Fp4QuantPlan, Fp4ScalePlan,
+    Fp8QuantPlan, GemmPlan, LastRowsPlan, LinearRowsPlan, PoolGemvPlan, PromptPlan, RowsPlan,
+    SplitGemmPlan, THREE_ROWS,
 };
 use crate::contract::recording::Recording;
 use infer_core::{Error, ErrorCode, Result};
@@ -266,6 +266,37 @@ impl Projection for AotProjection {
         _inputs: [Buffer<'_, f32>; THREE_ROWS],
     ) -> Result<()> {
         Err(not_compiled("pack_three"))
+    }
+
+    fn swizzle_fp4_scales(
+        &self,
+        _recording: &Recording<'_>,
+        _plan: &Fp4ScalePlan,
+        _out: Buffer<'_, Fp8>,
+        _weight: Buffer<'_, Fp8>,
+        _input: Buffer<'_, Fp8>,
+    ) -> Result<()> {
+        Err(not_compiled("swizzle_fp4_scales"))
+    }
+
+    fn channel_scale(
+        &self,
+        _recording: &Recording<'_>,
+        _columns: usize,
+        _out: Buffer<'_, f32>,
+        _row: Buffer<'_, f32>,
+        _column: Buffer<'_, f32>,
+    ) -> Result<()> {
+        Err(not_compiled("channel_scale"))
+    }
+
+    fn narrow_bf16(
+        &self,
+        _recording: &Recording<'_>,
+        _out: Buffer<'_, Bf16>,
+        _input: Buffer<'_, f32>,
+    ) -> Result<()> {
+        Err(not_compiled("narrow_bf16"))
     }
 
     fn unpack_three(

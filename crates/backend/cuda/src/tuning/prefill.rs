@@ -4,8 +4,6 @@ use infer_cuda_kernels::contract::target::Arch;
 
 /// Vendor BF16 projection wins from 2048x8192 weights upwards in prompt measurements.
 const MIN_DELEGATED_WEIGHT_ELEMENTS: usize = 8 * 1024 * 1024;
-/// Narrowing tile chosen from prompt measurements (1024 elements: 5.2 us versus 8.1 us at 8192).
-pub const DENSE_CAST_TILE: usize = 1024;
 
 pub const fn delegate_dense(m: usize, n: usize, k: usize) -> bool {
     m.saturating_mul(k) > 0 && n.saturating_mul(k) >= MIN_DELEGATED_WEIGHT_ELEMENTS

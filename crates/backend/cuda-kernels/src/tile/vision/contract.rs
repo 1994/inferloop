@@ -1,8 +1,11 @@
 //! cuTile implementation of the vision family.
 use super::encoder;
+use super::vision_position_kernels;
 use crate::contract::buffer::Buffer;
 use crate::contract::recording::Recording;
-use crate::contract::vision::{Gelu, Pack, Vision, VisionDense, VisionNorm, VisionRope};
+use crate::contract::vision::{
+    Gelu, Pack, PositionTaps, Vision, VisionDense, VisionNorm, VisionRope,
+};
 use crate::tile::projection::retyped_bf16;
 use crate::tile::{backend_error, borrowed, capture_scope};
 use cuda_core::DType;
@@ -196,5 +199,15 @@ impl Vision for TileVision {
         }
         .map_err(backend_error)?;
         Ok(())
+    }
+
+    fn add_positions(
+        &self,
+        recording: &Recording<'_>,
+        out: Buffer<'_, f32>,
+        embedded: Buffer<'_, f32>,
+        taps: PositionTaps<'_>,
+    ) -> Result<()> {
+        vision_position_kernels::add_positions(recording, self.ordinal, out, embedded, taps)
     }
 }

@@ -3,8 +3,8 @@ use crate::device::CudaDevice;
 use cutile::prelude::*;
 use infer_core::Result;
 use infer_cuda_kernels::contract::{
-    Attention, Buffer, DenseBuffers, DensePlan, Gelu, Pack, Recording, Vision, VisionDense,
-    VisionNorm, VisionRope,
+    Attention, Buffer, DenseBuffers, DensePlan, Gelu, Pack, PositionTaps, Recording, Vision,
+    VisionDense, VisionNorm, VisionRope,
 };
 use infer_cuda_kernels::tile::kernels;
 use std::result::Result as StdResult;
@@ -20,7 +20,6 @@ pub(super) struct Launches<'a> {
     vision: &'a dyn Vision,
     attention: &'a dyn Attention,
     recording: Recording<'a>,
-    scope: &'a Scope,
 }
 
 fn launched(result: Result<()>) -> StdResult<(), DeviceError> {
@@ -37,13 +36,7 @@ impl<'a> Launches<'a> {
             vision,
             attention,
             recording: Recording::scope(scope),
-            scope,
         }
-    }
-
-    /// The capture scope, for launches that have not moved behind a family yet.
-    pub(super) const fn scope(&self) -> &'a Scope {
-        self.scope
     }
 
     pub(super) fn dense_bias(&self, dense: VisionDense<'_>) -> StdResult<(), DeviceError> {
@@ -88,6 +81,18 @@ impl<'a> Launches<'a> {
         launched(
             self.vision
                 .pack(&self.recording, direction, rows, out, input),
+        )
+    }
+
+    pub(super) fn add_positions(
+        &self,
+        out: Buffer<'_, f32>,
+        embedded: Buffer<'_, f32>,
+        taps: PositionTaps<'_>,
+    ) -> StdResult<(), DeviceError> {
+        launched(
+            self.vision
+                .add_positions(&self.recording, out, embedded, taps),
         )
     }
 

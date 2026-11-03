@@ -8,11 +8,14 @@ use super::{
 use super::{LibraryIdentity, algorithm_config};
 use crate::constants::NVFP4_GROUP_SIZE;
 use crate::mlp::ProjectionWeight;
+use crate::resident::tensor_buffer;
 use crate::tuning::projection_budget::ProjectionKind;
 use crate::tuning::resident_gemm::{self, GemmConfig, ResidentTuningSession};
 use crate::tuning::{nvfp4_lt as cache, table_path};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::{Fp4ScalePlan, Kernels, Recording};
+use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::runtime::Graph;
 #[cfg(test)]
 use std::{
@@ -20,7 +23,6 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 use std::{collections::BTreeMap, ffi::c_void, ptr::null_mut, sync::Arc};
-mod kernels;
 mod memo;
 mod timing;
 pub use memo::ModelCache;
@@ -42,8 +44,6 @@ const CODES_PER_BYTE: usize = 2;
 pub const SCALE_ROWS: usize = 128;
 /// K groups within one SDK scale block.
 const SCALE_GROUPS: usize = 4;
-/// Bytes within one SDK scale block.
-const SCALE_BYTES: usize = SCALE_ROWS * SCALE_GROUPS;
 type PlanKey = (Shape, u64);
 type ProofKey = (PlanKey, u64, u64, u32, u32);
 type WeightOwners = (Arc<Tensor<f4e2m1fnx2>>, Arc<Tensor<f8e4m3fn>>);
@@ -195,6 +195,8 @@ pub struct Support {
     plans: BTreeMap<PlanKey, Option<Arc<Prepared>>>,
     proofs: BTreeMap<ProofKey, bool>,
     weights: BTreeMap<(u64, u64), WeightOwners>,
+    /// The scale swizzle every Lt FP4 node consumes.
+    kernels: Arc<Kernels>,
 }
 impl Support {
     pub(crate) fn new(
@@ -214,6 +216,7 @@ impl Support {
             plans: BTreeMap::new(),
             proofs: BTreeMap::new(),
             weights: BTreeMap::new(),
+            kernels: Arc::clone(&shared.kernels),
         }
     }
     pub(crate) const fn enabled(&self) -> bool {
@@ -237,7 +240,7 @@ impl Support {
     }
     pub(crate) fn candidate(
         &mut self,
-        op: &mut Operands<'_>,
+        op: &Operands<'_>,
         native: GemmConfig,
     ) -> Result<Option<Candidate>, DeviceError> {
         let Some(context) = self.context.clone() else {
@@ -267,15 +270,13 @@ impl Support {
         ] {
             same_context(&context, pointer)?;
         }
-        let Some(prepared) = (match self.plans.get(&proof.0).cloned().flatten() {
-            Some(plan) => Some(plan),
-            None => match make_candidate(&context, shape, op.scratch) {
-                Ok(candidate) => candidate,
-                Err(reason) => {
-                    tracing::warn!(target:"infer::tuning",?shape,%reason,"vendor FP4 metadata unavailable; retain native");
-                    None
-                }
-            },
+        let planned = self.plans.get(&proof.0).cloned().flatten();
+        let Some(prepared) = planned.or_else(|| match make_candidate(&context, shape, op.scratch) {
+            Ok(candidate) => candidate,
+            Err(reason) => {
+                tracing::warn!(target:"infer::tuning",?shape,%reason,"vendor FP4 metadata unavailable; retain native");
+                None
+            }
         }) else {
             self.plans.insert(proof.0, None);
             return Ok(None);
@@ -315,7 +316,7 @@ impl Support {
     fn qualification(
         &self,
         context: &Context,
-        op: &mut Operands<'_>,
+        op: &Operands<'_>,
         prepared: &Prepared,
         shape: Shape,
         native: GemmConfig,
@@ -360,7 +361,7 @@ impl Support {
     }
     pub(crate) fn prepare(
         &mut self,
-        mut op: Operands<'_>,
+        op: &Operands<'_>,
         candidate: Candidate,
     ) -> Result<bool, DeviceError> {
         let Candidate {
@@ -379,12 +380,12 @@ impl Support {
         }
         let cached = self.plans.get(&proof.0).cloned().flatten();
         let graph = if cached.is_none() || numerical.is_none() {
-            Some(capture(&context, &mut op, native, Some(&prepared), shape)?)
+            Some(capture(&context, op, native, Some(&prepared), shape)?)
         } else {
             None
         };
         if numerical.is_none() {
-            let baseline = capture(&context, &mut op, native, None, shape)?;
+            let baseline = capture(&context, op, native, None, shape)?;
             let graph = graph
                 .as_ref()
                 .ok_or_else(|| error("FP4 proof candidate missing"))?;
@@ -392,7 +393,7 @@ impl Support {
                 self.session
                     .complete_projection(ProjectionKind::Fp4Lt, [shape.m, shape.n, shape.k])
                     .map_err(|e| error(e.to_string()))?;
-                self.model.save_numerical(key, &op, false)?;
+                self.model.save_numerical(key, op, false)?;
                 self.proofs.insert(proof, false);
                 return Ok(false);
             }
@@ -404,8 +405,8 @@ impl Support {
                 if !self.session.permits_search() {
                     return Ok(false);
                 }
-                let fresh_a = capture(&context, &mut op, native, None, shape)?;
-                let fresh_b = capture(&context, &mut op, native, Some(&prepared), shape)?;
+                let fresh_a = capture(&context, op, native, None, shape)?;
+                let fresh_b = capture(&context, op, native, Some(&prepared), shape)?;
                 let Some(trials) =
                     timing::confirm(&context.device, &baseline, graph, &fresh_a, &fresh_b, shape)?
                 else {
@@ -425,7 +426,7 @@ impl Support {
                     tracing::info!(target:"infer::tuning",?shape,saved,"vendor FP4 qualification recorded");
                 }
             }
-            self.model.save_numerical(key, &op, true)?;
+            self.model.save_numerical(key, op, true)?;
         } else if let Some(graph) = &graph {
             graph.launch().sync_on(&context.device.stream)?;
         }
@@ -445,7 +446,7 @@ impl Support {
         Ok(true)
     }
     /// False records nothing. Errors after append abort the containing capture.
-    pub(crate) fn record(&self, scope: &Scope, mut op: Operands<'_>) -> Result<bool, DeviceError> {
+    pub(crate) fn record(&self, scope: &Scope, op: &Operands<'_>) -> Result<bool, DeviceError> {
         let Some(context) = &self.context else {
             return Ok(false);
         };
@@ -472,37 +473,39 @@ impl Support {
         ] {
             same_context(context, pointer)?;
         }
-        append(scope, context, prepared, &mut op, shape)?;
+        append((&self.kernels, scope), context, prepared, op, shape)?;
         #[cfg(test)]
         CAPTURES.fetch_add(1, Ordering::Relaxed);
         Ok(true)
     }
 }
 
+/// The scale swizzle of one FP4 projection, weight scales first.
+const fn scale_plan(shape: Shape) -> Fp4ScalePlan {
+    Fp4ScalePlan {
+        rows: shape.m,
+        outputs: shape.n,
+        columns: shape.k,
+    }
+}
+
 fn disk_key(
     context: &Context,
-    op: &mut Operands<'_>,
+    op: &Operands<'_>,
     prepared: &Prepared,
     shape: Shape,
     native: GemmConfig,
     library: LibraryIdentity,
 ) -> Result<cache::Key, DeviceError> {
-    let ProjectionWeight::Fp4(_, s, _) = op.weight else {
+    if !matches!(op.weight, ProjectionWeight::Fp4(..)) {
         return Err(error("FP4 weight identity"));
-    };
-    let pack_fingerprint = kernels::pack_pair(
-        (&mut *op.scratch).partition_prefix([1, SCALE_BYTES]),
-        s,
-        op.qs,
+    }
+    let pack_fingerprint = identity::fp4_scale_swizzle(
+        &context.device.stream,
+        &scale_plan(shape),
+        op.scratch.size(),
     )
-    .generics(vec![shape.n.to_string()])
-    .grid((
-        u32::try_from((shape.n + shape.m) / SCALE_ROWS).map_err(|e| error(e.to_string()))?,
-        u32::try_from(shape.k / NVFP4_GROUP_SIZE / SCALE_GROUPS)
-            .map_err(|e| error(e.to_string()))?,
-        1,
-    ))
-    .l2_cache_key_on(&context.device.stream)?;
+    .map_err(|e| error(e.to_string()))?;
     Ok(cache::Key {
         native: resident_gemm::cache_key(&context.device, [shape.m, shape.n, shape.k])
             .map_err(|e| error(e.to_string()))?,
@@ -539,52 +542,49 @@ fn exact(
 
 fn capture(
     context: &Arc<Context>,
-    op: &mut Operands<'_>,
+    op: &Operands<'_>,
     native: GemmConfig,
     prepared: Option<&Arc<Prepared>>,
     shape: Shape,
 ) -> Result<Graph, DeviceError> {
     let kernels = context.device.kernels();
     Graph::scope(&context.device.stream, |scope| {
-        if let Some(prepared) = prepared {
-            append(scope, context, prepared, op, shape)
-        } else {
-            native.record(
-                (&kernels, scope),
-                op.weight,
-                op.scale,
-                op.q,
-                op.qs,
-                op.output,
-                shape.k,
-            )
-        }
+        prepared.map_or_else(
+            || {
+                native.record(
+                    (&kernels, scope),
+                    op.weight,
+                    op.scale,
+                    op.q,
+                    op.qs,
+                    op.output,
+                    shape.k,
+                )
+            },
+            |prepared| append((&kernels, scope), context, prepared, op, shape),
+        )
     })
 }
 fn append(
-    scope: &Scope,
+    (kernels, scope): (&Kernels, &Scope),
     context: &Arc<Context>,
     prepared: &Arc<Prepared>,
-    op: &mut Operands<'_>,
+    op: &Operands<'_>,
     shape: Shape,
 ) -> Result<(), DeviceError> {
     let ProjectionWeight::Fp4(w, s, g) = op.weight else {
         return Err(error("FP4 weight"));
     };
-    scope.record(
-        kernels::pack_pair(
-            (&mut *op.scratch).partition_prefix([1, SCALE_BYTES]),
-            s,
-            op.qs,
+    kernels
+        .projection
+        .swizzle_fp4_scales(
+            &Recording::scope(scope),
+            &scale_plan(shape),
+            tensor_buffer(&*op.scratch)?,
+            tensor_buffer(s.as_ref())?,
+            tensor_buffer(op.qs)?,
         )
-        .generics(vec![shape.n.to_string()])
-        .grid((
-            u32::try_from((shape.n + shape.m) / SCALE_ROWS).map_err(|e| error(e.to_string()))?,
-            u32::try_from(shape.k / NVFP4_GROUP_SIZE / SCALE_GROUPS)
-                .map_err(|e| error(e.to_string()))?,
-            1,
-        )),
-    )?;
+        .map_err(|e| error(e.to_string()))?;
     scope.record(Fp4Node {
         context: context.clone(),
         prepared: prepared.clone(),

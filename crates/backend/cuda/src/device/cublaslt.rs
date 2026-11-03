@@ -9,8 +9,7 @@
 //! `out[m, n] = activations[m, k] * weights[n, k]^T`, so `A` is the activation with `OP_T`
 //! (`lda = k`), `B` is the weight with `OP_N` (`ldb = k`), and `C` is the output with `ldc = m`.
 use crate::device::CudaDevice;
-use crate::kernels::linear::cast_bf16;
-use crate::tuning::prefill::DENSE_CAST_TILE;
+use crate::resident::tensor_buffer;
 use crate::tuning::prefill::delegate_dense;
 use cuda_core::sys::CUstream;
 use cutile::cuda_async::device_context::with_default_device_policy;
@@ -18,6 +17,7 @@ use cutile::cuda_async::device_future::DeviceFuture;
 use cutile::cuda_async::device_operation::{DeviceOp, ExecutionContext, GraphNode};
 use cutile::cuda_async::error::DeviceError;
 use cutile::{half::bf16, prelude::*};
+use infer_cuda_kernels::contract::{Kernels, NARROW_GRANULE, Recording};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::null_mut;
@@ -426,7 +426,7 @@ impl Support {
     /// Propagates launch failures; a shape that is not worth delegating is not an error.
     pub fn record_dense(
         &mut self,
-        scope: &Scope,
+        (kernels, scope): (&Kernels, &Scope),
         input: &Tensor<f32>,
         weight: &Tensor<bf16>,
         out: &Tensor<f32>,
@@ -437,7 +437,7 @@ impl Support {
         };
         let activation_elements = m.saturating_mul(k);
         if !delegate_dense(m, n, k)
-            || activation_elements % DENSE_CAST_TILE != 0
+            || !activation_elements.is_multiple_of(NARROW_GRANULE)
             || input.size() != activation_elements
         {
             return Ok(false);
@@ -452,12 +452,16 @@ impl Support {
         }
         let scratch = self
             .activations
-            .get_mut(&activation_elements)
+            .get(&activation_elements)
             .ok_or_else(|| DeviceError::Internal("cuBLAS scratch".to_string()))?;
-        scope.record(
-            cast_bf16((&mut *scratch).partition([DENSE_CAST_TILE]), input)
-                .generics(vec![DENSE_CAST_TILE.to_string()]),
-        )?;
+        kernels
+            .projection
+            .narrow_bf16(
+                &Recording::scope(scope),
+                tensor_buffer(scratch)?,
+                tensor_buffer(input)?,
+            )
+            .map_err(|error| DeviceError::Launch(error.to_string()))?;
         let op = GemmBf16::new(context, m, n, k, scratch, weight, out)
             .map_err(|error| DeviceError::Internal(error.to_string()))?;
         scope.record(op)?;
