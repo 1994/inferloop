@@ -179,6 +179,15 @@ def check_exceptions():
                         ROOT / "crates/backend/cuda/src/resident/buffers.rs",
                         TILE_KERNELS / "mod.rs",
                         TILE_KERNELS / "runtime.rs",
+                        # Eager transfers: extents and overlap are checked, and each batch retains
+                        # its owners until the event recorded after it has passed.
+                        TILE_KERNELS / "runtime/transfer.rs",
+                        # Pinned staging: a slot is refilled only after the event behind its last
+                        # copy has passed, and dropping the ring waits for every pending read.
+                        TILE_KERNELS / "runtime/staging.rs",
+                        # Pinned readback: both ranges are checked and the launch retains the
+                        # source allocation and pinned destination until it completes.
+                        TILE_KERNELS / "runtime/readback.rs",
                         TILE_KERNELS / "norm/contract.rs",
                         TILE_KERNELS / "mlp/contract.rs",
                         TILE_KERNELS / "moe/contract.rs",

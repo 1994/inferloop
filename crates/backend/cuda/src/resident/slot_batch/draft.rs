@@ -1,9 +1,10 @@
 //! Batched external-hidden execution and attention state transfer.
 use super::{BatchOutput, SlotCopy, SlotLane, SlotPool};
-use crate::device::CudaDevice;
 #[cfg(test)]
 use crate::device::asynchronous::block_on;
+use crate::device::{CudaDevice, device_error};
 use crate::resident::batch::BatchReadout;
+use crate::resident::buffers::buffer;
 use infer_core::{Error, Result};
 
 impl SlotPool {
@@ -28,33 +29,23 @@ impl SlotPool {
         graph.set_cursor(slot, position)
     }
 
-    /// Stage one lane's external hidden row through its pinned ring and enqueue the H2D
-    /// copy; never syncs: ordering comes from the shared stream, completion from the
-    /// next readback or the pool drop barrier.
+    /// Stage one lane's external hidden row through its pinned ring and enqueue the H2D copy;
+    /// ordering comes from the shared stream, and the ring waits only if it laps the device.
     fn upload_external(&mut self, device: &CudaDevice, slot: usize, values: &[f32]) -> Result<()> {
-        let ring = self
+        let staging = self
             .pinned_external
             .get_mut(slot)
-            .filter(|ring| !ring.is_empty())
+            .and_then(Option::as_mut)
             .ok_or_else(|| Error::invalid("external hidden staging"))?;
-        let cursor = self
-            .pinned_cursor
-            .get_mut(slot)
-            .ok_or_else(|| Error::invariant("external staging cursor"))?;
-        let index = *cursor % ring.len();
-        let pinned = ring
-            .get_mut(index)
-            .ok_or_else(|| Error::invariant("external staging ring"))?;
-        *cursor = cursor.wrapping_add(1);
-        if values.len() != pinned.len() {
+        let row = self
+            .lane_external
+            .get(slot)
+            .ok_or_else(|| Error::invalid("external hidden slot"))?;
+        if values.len() != row.size() {
             return Err(Error::invalid("external hidden shape"));
         }
-        pinned.as_mut_slice().copy_from_slice(values);
-        let buffer = self
-            .lane_external
-            .get_mut(slot)
-            .ok_or_else(|| Error::invalid("external hidden slot"))?;
-        device.copy_h2d_pinned(buffer, pinned, values.len())?;
+        let row = buffer(row).map_err(device_error)?;
+        device.enqueue(|transfers| transfers.upload(staging, row, values))?;
         self.external_uploaded[slot] = true;
         Ok(())
     }

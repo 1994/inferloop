@@ -17,10 +17,11 @@ use crate::device::PinnedUpload;
 #[cfg(test)]
 use crate::device::asynchronous::block_on;
 use crate::device::{CudaDevice, DeviceProfile, device_error};
-use cuda_core::{CudaContext, PinnedHostBuffer, f8e4m3fn};
+use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::Owner;
+use infer_cuda_kernels::tile::runtime::{Element, Staging};
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
 use infer_state::blocks::{BlockLease, BlockPool};
 #[cfg(test)]
@@ -213,14 +214,14 @@ unsafe fn prefix_roots(states: &SlotStates, slots: usize) -> Result<States> {
 const EXTERNAL_UPLOAD_RING: usize = MAX_VERIFICATION_WIDTH + 1;
 
 /// Per-lane external hidden rows and their pinned upload rings.
-type ExternalLanes = (Vec<Tensor<f32>>, Vec<Vec<PinnedHostBuffer<f32>>>);
+type ExternalLanes = (Vec<Tensor<f32>>, Vec<Option<Staging<f32>>>);
 
 /// One pool's per-slot recurrent states, KV caches and KV position tables.
 /// The pool's external row, lane rows, pinned staging and fusion workspaces.
 type LaneInputs = (
     Tensor<f32>,
     Vec<Tensor<f32>>,
-    Vec<Vec<PinnedHostBuffer<f32>>>,
+    Vec<Option<Staging<f32>>>,
     Vec<Option<super::program::FusionWorkspace>>,
 );
 type SlotStorage = (SlotStates, Vec<Fp8Caches>, Vec<Tensor<i32>>, Tensor<i32>);
@@ -294,7 +295,7 @@ fn dims<T: DType>(tensor: &Tensor<T>) -> Result<Vec<usize>> {
 /// Gather the first `rows` positions of a head-major `[kv_heads, rows, head_dim]` KV state into
 /// a new contiguous tensor: block by block through `blocks` when the state is paged, otherwise
 /// one run per head.
-fn gather_kv<T: DType>(
+fn gather_kv<T: DType + Element>(
     src: &Tensor<T>,
     rows: usize,
     blocks: Option<&[i32]>,
@@ -507,11 +508,9 @@ pub struct SlotPool {
     lane_external: Vec<Tensor<f32>>,
     /// Whether a lane's external hidden row was uploaded at least once.
     external_uploaded: Vec<bool>,
-    /// Pinned staging rings feeding `lane_external`: uploads enqueue without a sync, so a
-    /// ring slot must not be rewritten while an earlier copy from it could still be in
-    /// flight. The ring outlasts the longest unsynced upload chain (a draft catch-up).
-    pinned_external: Vec<Vec<PinnedHostBuffer<f32>>>,
-    pinned_cursor: Vec<usize>,
+    /// Pinned staging feeding `lane_external`, present when decode takes external rows. It is as
+    /// deep as the longest unsynced upload chain (a draft catch-up), so uploads never wait.
+    pinned_external: Vec<Option<Staging<f32>>>,
     _lane_fusion: Vec<Option<super::program::FusionWorkspace>>,
 }
 
@@ -703,7 +702,6 @@ impl SlotPool {
             lane_external,
             external_uploaded: vec![false; lanes],
             pinned_external,
-            pinned_cursor: vec![0; lanes],
             _lane_fusion: lane_fusion,
         })
     }
@@ -798,20 +796,14 @@ impl SlotPool {
                     .map_err(device_error)?,
             );
         }
-        let context = external_hidden
-            .then(|| CudaContext::new(device.stream.device().ordinal()))
-            .transpose()
-            .map_err(device_error)?;
-        let mut pinned_external = Vec::with_capacity(lanes);
-        for _ in 0..lanes {
-            let ring = match &context {
-                Some(context) => (0..EXTERNAL_UPLOAD_RING)
-                    .map(|_| PinnedHostBuffer::zeroed(context, hidden).map_err(device_error))
-                    .collect::<Result<Vec<_>>>()?,
-                None => Vec::new(),
-            };
-            pinned_external.push(ring);
-        }
+        let runtime = device.runtime();
+        let pinned_external = (0..lanes)
+            .map(|_| {
+                external_hidden
+                    .then(|| runtime.staging(hidden, EXTERNAL_UPLOAD_RING))
+                    .transpose()
+            })
+            .collect::<Result<_>>()?;
         Ok((lane_external, pinned_external))
     }
 
@@ -1578,7 +1570,7 @@ impl SlotPool {
     /// `[kv_heads, capacity, head_dim]` and the two sides differ in capacity, so the
     /// token prefix moves per head block with each side's own stride. Anything but that
     /// exact layout is an invariant violation, never a silent partial copy.
-    fn copy_kv_tensor<T: DType>(
+    fn copy_kv_tensor<T: DType + Element>(
         dst: &mut Tensor<T>,
         src: &Tensor<T>,
         rows: usize,

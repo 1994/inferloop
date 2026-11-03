@@ -80,7 +80,13 @@ runtime                  submit / poll，不重建拓扑
 ### M1 第一条纵切
 
 - **第一批已落地：** `Buffer` 取代裸 `DevicePtr`，`unsafe` 集中到构造处（host 只有 `resident/buffers.rs` 一个文件），family 方法变成安全函数；`Kernels { projection, rope }` 在加载时选定一次，放进 `ProgramWeights`。projection 只迁了 `pool_gemv`；rope 迁了主路径的 5 种变体，DFlash2 和 vision 的 rope 未迁。Plan 只带几何，操作数长度由实现校验。
-- **G5：** 契约已覆盖捕获和异步执行；host 的 `CudaGraph::scope` 和 `cutile::cuda_async` 尚未换成它。
+- **G5：** 契约已覆盖捕获和异步执行。捕获外的流上工作也有了契约：
+  - `runtime::Device::enqueue` 下的 `Transfers` 负责 copy、head prefix copy 和 pinned upload；
+  - `Staging` 是 pinned 上传环，槽位要等设备读完才重填；
+  - `Readback` 是 pinned D2H launch；
+  - `Recording::copy` 和 `Recording::foreign` 负责图内拷贝和厂商库调用节点。
+
+  cuda-async 在单独的 deallocator 流上释放内存，所以每批传输会持有 owner，直到批后记录的 event 完成。host 剩下的只有图像预处理的 device op，以及各处 `Tensor` 到 `Allocation` 的机械迁移。
 - **做什么：** 按 kernel provider 方案 Phase 1 落地 `Kernels`、`Buffer`、`Device` / `Stream`，打通 projection。host 不再 `TileProjection::new`（`resident/pool_gemv.rs:80`），选择一次定完。
 - **为什么先于其他算子族：** 现有契约是 `unsafe fn` 加 `DevicePtr`，不先定 `Buffer` 就迁移，unsafe 面会随算子族增长。
 - **验收：** 13.x 模型输出逐位一致；固定负载性能不回退；记录 kernel 指纹的失配范围及其对已选配置的影响。
@@ -307,7 +313,7 @@ L20 不在手边，所以用另一种办法检验架构：按操作手册的步�
 
 **判断：engine 和数值策略这两层已经满足要求；难点全在 host 的 cuTile 依赖，方向正确但工作量不小。** 补进方案：
 
-- **G5（M1）：** `Device` / `Stream` 契约必须同时覆盖**捕获**和**异步执行**，不能只覆盖 `Buffer` 和 kernel launch。这是 M6 最大的风险，M1 设计时要先定。
+- **G5（M1）：** `Device` / `Stream` 契约必须同时覆盖**捕获**和**异步执行**，不能只覆盖 `Buffer` 和 kernel launch。这是 M6 最大的风险，M1 设计时要先定。已落地，见第 3 节 M1 的 G5 条目。
 - **G6：** kernel provider 方案第 3.5 节和第 10 节写着 `tile`、`aot` 不许同时编，与第 3 节、第 3.6 节的“可叠加”矛盾。以可叠加为准，已修正。
 
 ### 9.5 结论

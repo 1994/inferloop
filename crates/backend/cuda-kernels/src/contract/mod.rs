@@ -36,6 +36,6 @@ pub use plan::{
     PoolDeltaPlan, PoolGemvPlan, PromptPlan, QuantNormPlan, RecurrentShape, RopeMode, RopePlan,
     RoutePlan, RowNormPlan, RowsKernel, RowsPlan, SplitGemmPlan, SplitPlan, THREE_ROWS, UnaryOp,
 };
-pub use recording::Recording;
+pub use recording::{Foreign, Recording};
 pub use target::Arch;
 pub use vision::{Gelu, Pack, PositionTaps, Vision, VisionDense, VisionNorm, VisionRope};

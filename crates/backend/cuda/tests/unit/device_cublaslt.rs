@@ -112,8 +112,9 @@ fn gemm_bf16_replays_inside_a_captured_graph() -> Result<(), Box<dyn Error>> {
             &out,
         )
         .map_err(|error| DeviceError::Internal(error.to_string()))?;
-        scope.record(op)?;
-        Ok(())
+        Recording::scope(scope)
+            .foreign(op, Vec::new())
+            .map_err(|error| DeviceError::Launch(error.to_string()))
     })
     .map_err(device_error)?;
     graph

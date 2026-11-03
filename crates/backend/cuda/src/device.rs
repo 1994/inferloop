@@ -2,6 +2,7 @@
 use crate::constants::KV_CACHE_RANK;
 use crate::constants::MATVEC_TILE_COLUMNS;
 use crate::constants::MATVEC_TILE_ROWS;
+use crate::resident::buffers::buffer;
 use crate::strategy::LinearTiling;
 use crate::tuning::memory::arena_budget;
 use cuda_core::sys::CUdevice_attribute;
@@ -9,11 +10,9 @@ use cuda_core::sys::CUresult;
 use cuda_core::sys::cuDeviceGetAttribute;
 use cuda_core::sys::cuDriverGetVersion;
 use cuda_core::sys::cuMemGetInfo_v2;
-use cuda_core::sys::cuMemcpyDtoDAsync_v2;
 use cuda_core::sys::cuMemcpyDtoH_v2;
 use cuda_core::sys::cuMemcpyHtoDAsync_v2;
 use cuda_core::sys::cudaError_enum_CUDA_SUCCESS;
-use cuda_core::sys::{CUDA_MEMCPY3D, CUmemorytype_enum_CU_MEMORYTYPE_DEVICE, cuMemcpy3DAsync_v2};
 use cuda_core::{DeviceCopy, PinnedHostBuffer};
 use cutile::jit_cache::enable_default;
 use cutile::prelude::*;
@@ -22,10 +21,9 @@ use infer_cuda_kernels::contract::Kernels;
 use infer_cuda_kernels::contract::target::Arch;
 use infer_cuda_kernels::tile::kernels;
 use infer_cuda_kernels::tile::projection::matvec::{MatvecGeometry, dense_matvec};
-use infer_cuda_kernels::tile::runtime::Device as Runtime;
+use infer_cuda_kernels::tile::runtime::{Device as Runtime, Element, HeadMajor, Transfers};
 use serde::Serialize;
 use std::fmt::Display;
-use std::ptr::{null, null_mut};
 use std::sync::{Arc, OnceLock};
 
 /// One MiB in bytes, for human-readable identities.
@@ -181,6 +179,8 @@ pub(crate) use readback::{ReadbackSource, Readbacks};
 #[derive(Clone)]
 pub struct CudaDevice {
     pub(crate) stream: Arc<cuda_core::Stream>,
+    /// The contract's view of `stream`, made once so every clone shares its pending transfers.
+    runtime: Runtime,
     target: Arch,
     profile: Arc<OnceLock<DeviceProfile>>,
     ordinal: usize,
@@ -202,8 +202,10 @@ impl CudaDevice {
     pub fn new(ordinal: usize) -> Result<Self> {
         let device = Device::new(ordinal).map_err(device_error)?;
         let target = query_target(&device)?;
+        let stream = device.new_stream().map_err(device_error)?;
         Ok(Self {
-            stream: device.new_stream().map_err(device_error)?,
+            runtime: Runtime::new(Arc::clone(&stream), ordinal),
+            stream,
             target,
             profile: Arc::new(OnceLock::new()),
             ordinal,
@@ -225,7 +227,7 @@ impl CudaDevice {
     /// This device's stream as the kernel contract sees it.
     #[must_use]
     pub fn runtime(&self) -> Runtime {
-        Runtime::new(Arc::clone(&self.stream), self.ordinal)
+        self.runtime.clone()
     }
 
     /// This device's kernels; the single place a kernel source is chosen.
@@ -483,13 +485,10 @@ impl CudaDevice {
         })
     }
 
-    /// Copy `elements` values between resident tensors of one dtype on this device's stream.
-    ///
-    /// Prefix caching snapshots and restores KV state with this: one stream-ordered device copy,
-    /// no host round trip.
+    /// Copy all of `src` into `dst`, on this device's stream; see [`Self::copy_d2d_at`].
     /// # Errors
-    /// Returns a driver error when the copy cannot be enqueued.
-    pub fn copy_d2d<T: DType>(
+    /// Rejects a range outside either tensor or a copy the driver does not enqueue.
+    pub fn copy_d2d<T: DType + Element>(
         &self,
         dst: &mut Tensor<T>,
         src: &Tensor<T>,
@@ -498,84 +497,36 @@ impl CudaDevice {
         self.copy_d2d_at(dst, src, 0, 0, elements)
     }
 
-    /// Copy the first `rows` positions of head-major `[heads, capacity, dim]` tensors.
-    /// Owners retain both buffers through the next stream fence. Capacities may differ;
-    /// the active prefix moves in one asynchronous driver submission without touching tails.
+    /// Copy the first `rows` positions of head-major `[heads, capacity, dim]` tensors, whose
+    /// capacities may differ, in one driver submission that leaves the tails untouched.
+    /// Owners retain both tensors through the next stream fence.
     /// # Errors
-    /// Rejects incompatible layouts, ranges, devices, size overflow or driver failures.
-    pub(crate) fn copy_head_prefix<T: DType>(
+    /// Rejects incompatible layouts, ranges or devices, and a copy the driver does not enqueue.
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "The driver writes dst; the exclusive borrow keeps src or a shared view from aliasing it"
+    )]
+    pub(crate) fn copy_head_prefix<T: DType + Element>(
         &self,
         dst: &mut Tensor<T>,
         src: &Tensor<T>,
         rows: usize,
     ) -> Result<()> {
-        let d = head_copy_shape(dst)?;
-        let s = head_copy_shape(src)?;
-        if d[0] != s[0]
-            || d[2] != s[2]
-            || rows > d[1]
-            || rows > s[1]
-            || src.device_id() != self.ordinal
-            || dst.device_id() != self.ordinal
-        {
+        if src.device_id() != self.ordinal || dst.device_id() != self.ordinal {
             return Err(InferError::invalid("head prefix copy layout or range"));
         }
-        if rows == 0 || s[0] == 0 || s[2] == 0 {
-            return Ok(());
-        }
-        if dst.device_pointer().cu_deviceptr() == src.device_pointer().cu_deviceptr() {
-            return if d == s {
-                Ok(())
-            } else {
-                Err(InferError::invalid("aliased head copy layout"))
-            };
-        }
-        if rows == s[1] && d == s {
-            return self.copy_d2d(dst, src, src.size());
-        }
-        let pitch = s[2]
-            .checked_mul(size_of::<T>())
-            .ok_or_else(|| InferError::invalid("head copy pitch overflow"))?;
-        let copy = CUDA_MEMCPY3D {
-            srcXInBytes: 0,
-            srcY: 0,
-            srcZ: 0,
-            srcLOD: 0,
-            srcMemoryType: CUmemorytype_enum_CU_MEMORYTYPE_DEVICE,
-            srcHost: null(),
-            srcDevice: src.device_pointer().cu_deviceptr(),
-            srcArray: null_mut(),
-            reserved0: null_mut(),
-            srcPitch: pitch,
-            srcHeight: s[1],
-            dstXInBytes: 0,
-            dstY: 0,
-            dstZ: 0,
-            dstLOD: 0,
-            dstMemoryType: CUmemorytype_enum_CU_MEMORYTYPE_DEVICE,
-            dstHost: null_mut(),
-            dstDevice: dst.device_pointer().cu_deviceptr(),
-            dstArray: null_mut(),
-            reserved1: null_mut(),
-            dstPitch: pitch,
-            dstHeight: d[1],
-            WidthInBytes: pitch,
-            Height: rows,
-            Depth: s[0],
-        };
-        // SAFETY: checked shapes bound every [head, row, column] to the owned tensors.
-        // The fully initialized descriptor uses typed, aligned device storage and NULL unused
-        // host/array/reserved fields. Independent programs/snapshots own disjoint buffers;
-        // identical aliases returned above. Callers keep both owners through the stream fence,
-        // and the owned stream retains the current device context through this enqueue.
-        let status = unsafe { cuMemcpy3DAsync_v2(&raw const copy, self.stream.cu_stream()) };
-        driver_status(status)
+        let dst = HeadMajor::new(buffer(&*dst).map_err(device_error)?, head_copy_shape(dst)?)?;
+        let src = HeadMajor::new(buffer(src).map_err(device_error)?, head_copy_shape(src)?)?;
+        self.runtime
+            .enqueue(|transfers| transfers.copy_heads(dst, src, rows))
     }
 
-    /// Ranged variant: snapshots copy only the token rows a prefix actually covers.
+    /// Copy `elements` values from `src_offset` of `src` to `dst_offset` of `dst` on this
+    /// device's stream, with no host round trip; prefix caching snapshots KV state this way.
+    /// Owners retain both tensors through the next stream fence.
     /// # Errors
-    /// Rejects ranges outside either tensor or a driver failure when the copy cannot be enqueued.
-    pub fn copy_d2d_at<T: DType>(
+    /// Rejects a range outside either tensor or a copy the driver does not enqueue.
+    pub fn copy_d2d_at<T: DType + Element>(
         &self,
         dst: &mut Tensor<T>,
         src: &Tensor<T>,
@@ -583,45 +534,33 @@ impl CudaDevice {
         src_offset: usize,
         elements: usize,
     ) -> Result<()> {
-        let fits = |tensor: &Tensor<T>, offset: usize| {
+        let outside = || InferError::invalid("device copy range outside tensor");
+        let range = |offset: usize| {
             offset
                 .checked_add(elements)
-                .is_some_and(|end| end <= tensor.size())
+                .map(|end| offset..end)
+                .ok_or_else(outside)
         };
-        if !fits(dst, dst_offset) || !fits(src, src_offset) {
-            return Err(InferError::invalid("device copy range outside tensor"));
-        }
-        let bytes = elements
-            .checked_mul(size_of::<T>())
-            .ok_or_else(|| InferError::invalid("device copy size overflow"))?;
-        let offset_bytes = |offset: usize| {
-            offset
-                .checked_mul(size_of::<T>())
-                .and_then(|bytes| u64::try_from(bytes).ok())
-                .ok_or_else(|| InferError::invalid("device copy offset overflow"))
-        };
-        let dst_bytes = offset_bytes(dst_offset)?;
-        let src_bytes = offset_bytes(src_offset)?;
-        let stream = self.stream.cu_stream();
-        // SAFETY: the checked ranges keep both accesses inside live device allocations, and the
-        // stream belongs to this device; callers drain it before reusing the buffers.
-        let status = unsafe {
-            cuMemcpyDtoDAsync_v2(
-                dst.device_pointer().cu_deviceptr() + dst_bytes,
-                src.device_pointer().cu_deviceptr() + src_bytes,
-                bytes,
-                stream,
-            )
-        };
-        driver_status(status)
+        let dst = buffer(&*dst)
+            .map_err(device_error)?
+            .slice(range(dst_offset)?)
+            .map_err(|_| outside())?;
+        let src = buffer(src)
+            .map_err(device_error)?
+            .slice(range(src_offset)?)
+            .map_err(|_| outside())?;
+        self.runtime.enqueue(|transfers| transfers.copy(dst, src))
     }
 
+    /// Image preprocessing stages through its own pinned pool inside a device op and is the last
+    /// user of this; it moves onto [`Runtime::staging`] together with that op.
+    ///
     /// Async H2D copy out of a pinned staging buffer, enqueued on the device stream and
     /// never synchronized here: the caller keeps the pinned bytes untouched until a later
     /// stream barrier (a readback or the owning pool's drop barrier) establishes completion.
     /// # Errors
     /// Rejects copies outside either buffer or a driver failure when the copy cannot be enqueued.
-    pub(crate) fn copy_h2d_pinned<T: DType + DeviceCopy>(
+    pub(super) fn copy_h2d_pinned<T: DType + DeviceCopy>(
         &self,
         dst: &mut Tensor<T>,
         src: &PinnedHostBuffer<T>,
@@ -646,6 +585,13 @@ impl CudaDevice {
             )
         };
         driver_status(status)
+    }
+
+    /// Enqueue `work` on this device's stream; see [`Runtime::enqueue`].
+    /// # Errors
+    /// Returns what `work` returns, or a failure to track the batch.
+    pub(crate) fn enqueue<R>(&self, work: impl FnOnce(&Transfers<'_>) -> Result<R>) -> Result<R> {
+        self.runtime.enqueue(work)
     }
 
     /// # Errors
@@ -707,7 +653,9 @@ impl CudaDevice {
         // back in time, so a failed slot-pool attempt is only visible through
         // `pool_reclaimable_bytes`; nothing here pretends to make the query honest.
         // SAFETY: the owned device's context is current; this only waits for its work.
-        unsafe { self.stream.device().synchronize() }.map_err(device_error)
+        unsafe { self.stream.device().synchronize() }.map_err(device_error)?;
+        // Memory finished transfers retained returns to the pool before the next query.
+        self.runtime.reap()
     }
 
     /// Waits until all work queued on the device has completed.
@@ -727,7 +675,8 @@ impl CudaDevice {
             .bind_to_thread()
             .map_err(device_error)?;
         // SAFETY: the owned stream remains live and its parent context is current.
-        unsafe { self.stream.synchronize() }.map_err(device_error)
+        unsafe { self.stream.synchronize() }.map_err(device_error)?;
+        self.runtime.reap()
     }
 }
 
@@ -742,3 +691,7 @@ fn driver_status(status: CUresult) -> Result<()> {
 #[cfg(test)]
 #[path = "../tests/unit/device.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/device_transfers.rs"]
+mod transfer_tests;

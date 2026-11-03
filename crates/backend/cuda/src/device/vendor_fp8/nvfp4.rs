@@ -1,9 +1,8 @@
 //! Zero-workspace FP4 Lt candidates for sole-consumer fused-down scratch.
 //! Shape decisions and full-output exact proofs are made before graph capture.
 use super::{
-    ALIGNMENT, COMPUTE_F32, Context, Descriptors, DeviceFuture, DeviceOp, ExecutionContext,
-    GraphNode, MATRIX_LAYOUTS, OP_N, OP_T, Prepared, Shape, TRANSA, TRANSB, TYPE_F32, error,
-    heuristic_candidates, same_context, set, status, with_default_device_policy,
+    ALIGNMENT, COMPUTE_F32, Context, Descriptors, MATRIX_LAYOUTS, OP_N, OP_T, Prepared, Shape,
+    TRANSA, TRANSB, TYPE_F32, error, heuristic_candidates, same_context, set, status,
 };
 use super::{LibraryIdentity, algorithm_config};
 use crate::constants::NVFP4_GROUP_SIZE;
@@ -14,7 +13,8 @@ use crate::tuning::resident_gemm::{self, GemmConfig, ResidentTuningSession};
 use crate::tuning::{nvfp4_lt as cache, table_path};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
-use infer_cuda_kernels::contract::{Fp4ScalePlan, Kernels, Recording};
+use infer_core::ErrorCode;
+use infer_cuda_kernels::contract::{Foreign, Fp4ScalePlan, Kernels, Owner, Recording};
 use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::runtime::Graph;
 #[cfg(test)]
@@ -585,15 +585,21 @@ fn append(
             tensor_buffer(op.qs)?,
         )
         .map_err(|e| error(e.to_string()))?;
-    scope.record(Fp4Node {
-        context: context.clone(),
-        prepared: prepared.clone(),
-        input: op.q,
-        weight: w,
-        output: op.output,
-        scratch: op.scratch,
-        alpha: 1.0 / (g * op.scale),
-    })?;
+    let keep: Vec<Owner> = vec![context.clone(), prepared.clone()];
+    Recording::scope(scope)
+        .foreign(
+            Fp4Node {
+                context: context.clone(),
+                prepared: prepared.clone(),
+                input: op.q,
+                weight: w,
+                output: op.output,
+                scratch: op.scratch,
+                alpha: 1.0 / (g * op.scale),
+            },
+            keep,
+        )
+        .map_err(|e| error(e.to_string()))?;
     Ok(())
 }
 
@@ -685,20 +691,22 @@ struct Fp4Node<'a> {
     scratch: &'a Tensor<f8e4m3fn>,
     alpha: f32,
 }
-impl GraphNode for Fp4Node<'_> {}
+impl Foreign for Fp4Node<'_> {
+    fn enqueue(self, stream: *mut c_void) -> infer_core::Result<()> {
+        self.matmul(stream)
+            .map_err(|error| infer_core::Error::new(ErrorCode::Backend, error.to_string()))
+    }
+}
 #[expect(
     unsafe_code,
     reason = "Validated live FP4/F32 operands, owned immutable descriptors and serialized zero-workspace Lt capture"
 )]
-impl DeviceOp for Fp4Node<'_> {
-    type Output = ();
-    unsafe fn execute(self, execution: &ExecutionContext) -> Result<(), DeviceError> {
-        if execution.get_cuda_stream().cu_stream() != self.context.stream {
+impl Fp4Node<'_> {
+    fn matmul(&self, stream: *mut c_void) -> Result<(), DeviceError> {
+        if stream != self.context.stream.cast() {
             return Err(error("vendor FP4 stream mismatch"));
         }
         same_context(&self.context, self.scratch.device_pointer().cu_deviceptr())?;
-        execution.retain(self.context.clone())?;
-        execution.retain(self.prepared.clone())?;
         let _guard = self
             .context
             .calls
@@ -730,16 +738,6 @@ impl DeviceOp for Fp4Node<'_> {
             },
             "FP4 matmul",
         )
-    }
-}
-impl IntoFuture for Fp4Node<'_> {
-    type Output = Result<(), DeviceError>;
-    type IntoFuture = DeviceFuture<(), Self>;
-    fn into_future(self) -> Self::IntoFuture {
-        match with_default_device_policy(|p| p.next_stream()) {
-            Ok(Ok(s)) => Self::IntoFuture::scheduled(self, ExecutionContext::new(s)),
-            Ok(Err(e)) | Err(e) => Self::IntoFuture::failed(e),
-        }
     }
 }
 
