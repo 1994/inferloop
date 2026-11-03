@@ -1,4 +1,4 @@
-use super::buffers::{buffer, region};
+use super::buffers::{buffer, region, tensor_rows};
 use super::{ProgramWeights, batch::Lane, capture::error};
 #[cfg(test)]
 use crate::constants::CB_DECODE_SLOTS;
@@ -257,7 +257,7 @@ pub(super) fn record_slots(
             (&weights.kernels, scope),
             weight,
             region(input_pointer, lanes * columns),
-            &output,
+            tensor_rows(&output)?,
             columns,
             tile,
             choice,

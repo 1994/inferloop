@@ -147,7 +147,7 @@ impl Workspace {
                 .get(&node.inputs[1])
                 .copied()
                 .unwrap_or(LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS)?);
-            let binding = pool_dense::Binding::new(weight.tensor(), shape, tile);
+            let binding = pool_dense::Binding::new(weight, shape, tile);
             if self.pool_dense_strategies.contains_key(&binding) {
                 continue;
             }
@@ -164,7 +164,7 @@ impl Workspace {
             };
             let choice = pool_dense::select(
                 device,
-                weight.tensor(),
+                weight,
                 shape,
                 tile,
                 weights.autotune,
@@ -202,7 +202,7 @@ impl Workspace {
                 elements(graph, node.outputs[0])?,
                 elements(graph, node.inputs[0])?,
             ];
-            let binding = pool_dense::Binding::new(weight.tensor(), shape, tile);
+            let binding = pool_dense::Binding::new(weight, shape, tile);
             if !pool_dense::prompt_searchable(shape)
                 || self.prompt_dense_strategies.contains_key(&binding)
             {
@@ -221,7 +221,7 @@ impl Workspace {
             };
             let choice = pool_dense::select_prompt(
                 device,
-                weight.tensor(),
+                weight,
                 shape,
                 tile,
                 weights.autotune,

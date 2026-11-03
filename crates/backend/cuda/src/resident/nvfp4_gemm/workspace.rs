@@ -14,6 +14,7 @@ use infer_cuda_kernels::contract::{
 };
 
 use crate::device::vendor_fp8::Gemm;
+use crate::mlp::Matrix;
 use crate::resident::program::ProgramGeometry;
 use crate::tuning::fp8_gemm::Choice;
 use crate::tuning::fp8_gemm::WeightKey;
@@ -201,7 +202,7 @@ impl Workspace {
             return pool_dense::baseline(shape);
         };
         self.pool_dense_strategies
-            .get(&PoolDenseBinding::new(weight.tensor(), shape, tile))
+            .get(&PoolDenseBinding::new(weight, shape, tile))
             .copied()
             .unwrap_or_else(|| pool_dense::baseline(shape))
     }
@@ -253,7 +254,7 @@ impl Workspace {
     /// Measured output tile of one prompt projection; the established tile when unmeasured.
     pub(crate) fn prompt_dense_choice(
         &self,
-        weight: &Arc<Tensor<bf16>>,
+        weight: &Matrix<bf16>,
         shape: ProjectionShape,
     ) -> PoolDenseChoice {
         LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS)

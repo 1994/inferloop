@@ -2,7 +2,7 @@
 #[cfg(test)]
 pub use infer_cuda_kernels::tile::projection::pool_gemv as kernels;
 
-use super::buffers::buffer;
+use super::buffers::{RowMajor, buffer};
 use super::capture::error;
 use crate::tuning::pool_dense::{self, Choice};
 use crate::{mlp::ProjectionWeight, strategy::LinearTiling};
@@ -14,13 +14,13 @@ pub(super) fn record(
     (kernels, scope): (&Kernels, &Scope),
     weight: &ProjectionWeight,
     input: Buffer<'_, f32>,
-    output: &Tensor<f32>,
+    output: RowMajor<'_, f32>,
     columns: usize,
     tile: LinearTiling,
     choice: Choice,
 ) -> Result<bool, DeviceError> {
     let rows = input.len() / columns.max(1);
-    let outputs = usize::try_from(output.shape()[1]).map_err(error)?;
+    let outputs = output.columns;
     if !pool_dense::searchable([rows, outputs, columns]) || !enabled() {
         return Ok(false);
     }
@@ -44,20 +44,13 @@ pub(super) fn record(
                     tile_rows: tile.rows(),
                     tile_columns: tile.columns(),
                 },
-                buffer(output)?,
+                output.buffer,
                 input,
                 buffer(weight)?,
             )
             .map_err(error)?;
     } else {
-        choice.record(
-            (kernels, scope),
-            weight.tensor(),
-            input,
-            output,
-            columns,
-            tile,
-        )?;
+        choice.record((kernels, scope), weight, input, output, columns, tile)?;
     }
     #[cfg(test)]
     CAPTURES.with(|n| n.set(n.get() + 1));

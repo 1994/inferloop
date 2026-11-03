@@ -1,5 +1,5 @@
 mod dense;
-use super::buffers::buffer;
+use super::buffers::{buffer, tensor_rows};
 use super::{ProgramWeights, capture::error};
 use crate::constants::PREFILL_GEMM_TILE_K;
 use crate::constants::PREFILL_GEMM_TILE_N;
@@ -9,6 +9,7 @@ use crate::constants::PREFILL_SPLIT_K;
 use crate::constants::{DEFAULT_TILE_COLUMNS, DEFAULT_TILE_ROWS};
 use crate::device::CudaDevice;
 use crate::device::cublaslt::Support;
+use crate::mlp::Matrix;
 use crate::strategy::LinearTiling;
 use crate::tuning::pool_dense::Choice as PromptChoice;
 use crate::{device::DeviceProfile, mlp::ProjectionWeight};
@@ -22,7 +23,6 @@ use infer_ir::TensorNode;
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 use crate::tuning::prefill::{delegate_dense, narrow_dense_layout};
 const NARROW_DENSE_TILE: [usize; 2] = [PREFILL_LANES, 16];
@@ -467,7 +467,7 @@ pub(super) fn record(
             record_prompt_dense(
                 scope,
                 weights,
-                (flat_input, w.tensor()),
+                (flat_input, w),
                 &output,
                 (width, flat / width, columns),
                 (nvfp4, delegated),
@@ -550,7 +550,7 @@ fn pair_slots(
 fn record_prompt_dense(
     scope: &Scope,
     weights: &ProgramWeights,
-    (input, w): (&Tensor<f32>, &Arc<Tensor<bf16>>),
+    (input, w): (&Tensor<f32>, &Matrix<bf16>),
     output: &Tensor<f32>,
     (width, rows, columns): (usize, usize, usize),
     (nvfp4, delegated): (&super::nvfp4_gemm::Workspace, Option<&mut Support>),
@@ -558,7 +558,7 @@ fn record_prompt_dense(
     if records_precise_sparse(
         (&weights.kernels, scope),
         weights,
-        (buffer(output)?, buffer(input)?, buffer(w.as_ref())?),
+        (buffer(output)?, buffer(input)?, buffer(w)?),
         columns,
     )? {
         return Ok(());
@@ -569,7 +569,7 @@ fn record_prompt_dense(
         (&weights.kernels, scope),
         delegated,
         input,
-        w,
+        w.tensor(),
         output,
         (width, rows, columns),
     )? {
@@ -581,7 +581,7 @@ fn record_prompt_dense(
             (&weights.kernels, scope),
             w,
             buffer(input)?,
-            output,
+            tensor_rows(output)?,
             columns,
             LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS).map_err(error)?,
         );
@@ -601,7 +601,7 @@ fn record_prompt_dense(
             },
             buffer(output)?,
             buffer(input)?,
-            buffer(w.as_ref())?,
+            buffer(w)?,
         )
         .map_err(error)
 }

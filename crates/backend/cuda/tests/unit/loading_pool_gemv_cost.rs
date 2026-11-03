@@ -1,5 +1,7 @@
 use super::{LoadOptions, LoadedModel};
 use crate::constants::SMALL_GEMM_TILE;
+use crate::mlp::Matrix;
+use crate::resident::buffers::tensor_rows;
 use crate::resident::tensor_buffer;
 use crate::strategy::LinearTiling;
 use crate::{
@@ -25,7 +27,7 @@ type TestResult<T = ()> = StdResult<T, Box<dyn StdError>>;
 
 struct Case {
     name: String,
-    weight: Arc<Tensor<bf16>>,
+    weight: Matrix<bf16>,
     tile: LinearTiling,
     joined: Arc<Tensor<f32>>,
     rows: Vec<Arc<Tensor<f32>>>,
@@ -39,12 +41,11 @@ impl Case {
     fn new(
         device: &CudaDevice,
         name: String,
-        weight: Arc<Tensor<bf16>>,
+        weight: Matrix<bf16>,
         tile: LinearTiling,
         rows: usize,
     ) -> TestResult<Self> {
-        let n = usize::try_from(weight.shape()[0])?;
-        let k = usize::try_from(weight.shape()[1])?;
+        let [n, k] = weight.shape();
         Ok(Self {
             name,
             weight,
@@ -105,7 +106,12 @@ impl Case {
     fn reference(&mut self, scope: &Scope) -> StdResult<(), DeviceError> {
         for (input, output) in self.rows.iter().zip(&mut self.reference) {
             scope.record(
-                dense(output.partition([self.tile.rows()]), input, &self.weight).generics(vec![
+                dense(
+                    output.partition([self.tile.rows()]),
+                    input,
+                    self.weight.tensor(),
+                )
+                .generics(vec![
                     bf16::DTYPE.as_str().into(),
                     self.tile.rows().to_string(),
                     self.tile.columns().to_string(),
@@ -120,7 +126,7 @@ impl Case {
             small_gemm_kernels::dense(
                 (&mut self.original).partition(SMALL_GEMM_TILE),
                 &self.joined,
-                &self.weight,
+                self.weight.tensor(),
             )
             .generics(vec![bf16::DTYPE.as_str().into(), self.k.to_string()]),
         )?;
@@ -132,7 +138,7 @@ impl Case {
             batched::dense(
                 (&mut self.candidate).partition([4, self.tile.rows()]),
                 &self.joined,
-                &self.weight,
+                self.weight.tensor(),
             )
             .generics(vec![
                 bf16::DTYPE.as_str().into(),
@@ -148,7 +154,7 @@ impl Case {
             pool_gemv::kernels::dense(
                 (&mut self.candidate).partition([1, self.tile.rows()]),
                 &self.joined,
-                &self.weight,
+                self.weight.tensor(),
             )
             .generics(vec![
                 bf16::DTYPE.as_str().into(),
@@ -161,7 +167,7 @@ impl Case {
     }
     fn scalar_reference(&self, device: &CudaDevice) -> TestResult {
         let input = device.read(&self.joined)?;
-        let weights = device.read(&self.weight)?;
+        let weights = device.read(self.weight.tensor())?;
         let actual = device.read_borrowed(&self.candidate)?;
         assert_eq!(actual.len(), self.rows.len() * self.n);
         for (row, input) in input.chunks_exact(self.k).enumerate() {
@@ -234,7 +240,7 @@ fn limited_cases(loaded: &LoadedModel, rows: usize, limit: usize) -> TestResult<
         cases.push(Case::new(
             loaded.device(),
             slot.clone(),
-            Arc::clone(weight.tensor()),
+            weight.clone(),
             tile,
             rows,
         )?);
@@ -490,7 +496,7 @@ fn checkpoint_selector_measures_and_reuses_complete_choices() -> TestResult {
                 (&loaded.weights.kernels, scope),
                 &case.weight,
                 tensor_buffer(&case.joined)?,
-                &case.candidate,
+                tensor_rows(&case.candidate)?,
                 case.k,
                 case.tile,
             )
