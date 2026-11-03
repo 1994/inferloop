@@ -2,7 +2,7 @@
 //! Recurrent checkpoints stay on the device; KV rollback is a logical prefix.
 //! Prefill width 32 keeps one batched arena: auxiliaries record once per node.
 use super::arena::prefix_view;
-use super::buffers::{buffer, kv_cache, region};
+use super::buffers::{buffer, kv_cache};
 use super::fusion_batch::Workspace as FusionRows;
 use super::prefill_projection::{DensePlan, record_narrow};
 use super::{
@@ -1535,7 +1535,7 @@ impl BatchBuilder<'_> {
             .take()
             .ok_or_else(|| error("prompt embedding output"))?;
         // The owner holds rows for the widest prompt graph; this chunk reads its first lanes.
-        let external = region(buffer(external)?.address(), size);
+        let external = buffer(external)?.slice(0..size).map_err(error)?;
         let recorded = self
             .weights
             .kernels

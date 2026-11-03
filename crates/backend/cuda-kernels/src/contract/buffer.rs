@@ -10,6 +10,7 @@
 use infer_core::{Error, Result};
 use std::any::Any;
 use std::marker::PhantomData;
+use std::ops::Range;
 use std::sync::Arc;
 
 /// Keeps device memory alive; a graph holds one for each allocation it recorded.
@@ -26,6 +27,31 @@ pub struct Fp4Pair;
 /// FP8 element marker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fp8;
+
+/// Bytes one element of a buffer occupies, so a buffer can be cut without knowing its toolkit.
+pub trait Width {
+    /// Bytes of one element.
+    const BYTES: usize;
+}
+
+impl Width for f32 {
+    const BYTES: usize = 4;
+}
+impl Width for i32 {
+    const BYTES: usize = 4;
+}
+impl Width for u32 {
+    const BYTES: usize = 4;
+}
+impl Width for Bf16 {
+    const BYTES: usize = 2;
+}
+impl Width for Fp8 {
+    const BYTES: usize = 1;
+}
+impl Width for Fp4Pair {
+    const BYTES: usize = 1;
+}
 
 /// Contiguous device memory the host owns, holding `len` elements of `T`.
 #[derive(Debug)]
@@ -121,5 +147,34 @@ impl<'a, T> Buffer<'a, T> {
                 self.len
             )))
         }
+    }
+}
+
+impl<T: Width> Buffer<'_, T> {
+    /// Elements `range` of this memory, kept alive by the same owner.
+    /// # Errors
+    /// Rejects a range that is reversed or runs past the end.
+    pub fn slice(self, range: Range<usize>) -> Result<Self> {
+        let len = range
+            .end
+            .checked_sub(range.start)
+            .filter(|_| range.end <= self.len)
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "slice {range:?} of a buffer of {} elements",
+                    self.len
+                ))
+            })?;
+        let offset = range
+            .start
+            .checked_mul(T::BYTES)
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or_else(|| Error::invalid("slice offset overflows"))?;
+        Ok(Self {
+            address: self.address + offset,
+            len,
+            owner: self.owner,
+            element: PhantomData,
+        })
     }
 }
