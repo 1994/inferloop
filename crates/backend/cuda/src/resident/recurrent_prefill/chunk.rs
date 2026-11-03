@@ -12,10 +12,11 @@
 //! chunk, as the FLA and `FlashInfer` kernels do.
 use super::super::buffers::buffer;
 use super::super::capture::error;
-use crate::device::{CudaDevice, device_error};
+use crate::device::CudaDevice;
 use cutile::{half::bf16, prelude::*};
 use infer_core::Result;
 use infer_cuda_kernels::contract::{Buffer, ChunkBuffers, Recording, Recurrent, RecurrentShape};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use std::result::Result as StdResult;
 
 /// Tokens per chunk.
@@ -25,12 +26,12 @@ use infer_cuda_kernels::tile::recurrent::recurrent_chunk as kernels;
 
 /// Scratch for one prompt width.
 pub(super) struct Scratch {
-    u: Tensor<bf16>,
-    queries: Tensor<bf16>,
-    keys: Tensor<bf16>,
-    w: Tensor<bf16>,
-    p: Tensor<bf16>,
-    cumulative: Tensor<f32>,
+    u: Allocation<bf16>,
+    queries: Allocation<bf16>,
+    keys: Allocation<bf16>,
+    w: Allocation<bf16>,
+    p: Allocation<bf16>,
+    cumulative: Allocation<f32>,
 }
 
 impl Scratch {
@@ -39,20 +40,15 @@ impl Scratch {
         (kh, vh, dim): (usize, usize, usize),
         lanes: usize,
     ) -> Result<Self> {
-        let halves = |shape: &[usize]| {
-            api::zeros::<bf16>(shape)
-                .sync_on(&device.stream)
-                .map_err(device_error)
-        };
+        let runtime = device.runtime();
+        let halves = |shape: &[usize]| runtime.zeros::<bf16>(shape.iter().product());
         Ok(Self {
             u: halves(&[vh, lanes, dim])?,
             queries: halves(&[kh, lanes, dim])?,
             keys: halves(&[kh, lanes, dim])?,
             w: halves(&[vh, lanes, dim])?,
             p: halves(&[vh, lanes, CHUNK])?,
-            cumulative: api::zeros::<f32>(&[vh, lanes])
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
+            cumulative: runtime.zeros::<f32>(vh * lanes)?,
         })
     }
 
