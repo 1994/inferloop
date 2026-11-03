@@ -2,6 +2,7 @@
 //!
 //! An identity is cuTile's compiled-kernel cache key over meta tensors, so it changes exactly when
 //! the kernel or its compilation does, and no device memory is touched.
+use super::attention::resident_attention_prefill;
 use super::backend_error;
 use super::projection::{
     fp8_gemm, linear_batch, nvfp4_gemm, pool_gemv, prefill_gemm, small_gemm, vendor_fp8,
@@ -551,4 +552,173 @@ pub fn exact_recurrence(
         return Err(backend_error("incomplete exact recurrence identity"));
     }
     Ok(identities)
+}
+
+/// Geometry and arithmetic an attention identity covers.
+#[derive(Clone, Copy, Debug)]
+pub struct AttentionShape {
+    pub heads: usize,
+    pub kv_heads: usize,
+    pub dim: usize,
+    pub lanes: usize,
+    pub capacity: usize,
+    pub block: usize,
+    pub window: usize,
+    pub scales: [f32; 2],
+    pub metadata_fields: usize,
+}
+
+/// The prompt append and compute of KV element `E`; a query tile selects the tiled compute.
+/// # Errors
+/// Reports a failed lowering.
+pub fn attention_candidates<E: DType>(
+    stream: &Arc<Stream>,
+    shape: &AttentionShape,
+    query_tile: Option<usize>,
+) -> Result<Vec<String>> {
+    let AttentionShape {
+        heads,
+        kv_heads,
+        dim,
+        lanes,
+        capacity,
+        block,
+        scales: [key_scale, value_scale],
+        metadata_fields,
+        ..
+    } = *shape;
+    let meta = |extent: &[usize]| {
+        api::meta::<f32>(extent)
+            .sync_on(stream)
+            .map_err(backend_error)
+    };
+    let meta_i32 = |extent: &[usize]| {
+        api::meta::<i32>(extent)
+            .sync_on(stream)
+            .map_err(backend_error)
+    };
+    let meta_kv = || {
+        api::meta::<E>(&[kv_heads, capacity, dim])
+            .sync_on(stream)
+            .map_err(backend_error)
+    };
+    let query = meta(&[lanes, heads * dim])?;
+    let (append_keys, append_values) = (
+        meta(&[lanes, kv_heads, dim])?,
+        meta(&[lanes, kv_heads, dim])?,
+    );
+    let metadata = meta_i32(&[metadata_fields])?;
+    let table = meta_i32(&[capacity / block])?;
+    let (mut keys, mut values) = (meta_kv()?, meta_kv()?);
+    let element = || -> String { E::DTYPE.as_str().into() };
+    let append = resident_attention_prefill::append(
+        (&mut keys).partition([1, capacity, dim]),
+        (&mut values).partition([1, capacity, dim]),
+        &append_keys,
+        &append_values,
+        &metadata,
+        &table,
+        key_scale,
+        value_scale,
+    )
+    .generics(vec![
+        element(),
+        dim.to_string(),
+        capacity.to_string(),
+        i32::from(E::DTYPE != f32::DTYPE).to_string(),
+        block.to_string(),
+        lanes.div_ceil(block).next_power_of_two().to_string(),
+    ])
+    .l2_cache_key_on(stream)
+    .map_err(backend_error)?;
+    let compute = attention_compute(
+        stream,
+        shape,
+        query_tile,
+        (&query, &keys, &values, &metadata, &table),
+    )?;
+    Ok(vec![append, compute])
+}
+
+/// Query, keys, values, metadata and block table.
+type AttentionOperands<'a, E> = (
+    &'a Tensor<f32>,
+    &'a Tensor<E>,
+    &'a Tensor<E>,
+    &'a Tensor<i32>,
+    &'a Tensor<i32>,
+);
+
+fn attention_compute<E: DType>(
+    stream: &Arc<Stream>,
+    shape: &AttentionShape,
+    query_tile: Option<usize>,
+    (query, keys, values, metadata, table): AttentionOperands<'_, E>,
+) -> Result<String> {
+    let AttentionShape {
+        heads,
+        kv_heads,
+        dim,
+        lanes,
+        block,
+        window,
+        scales: [key_scale, value_scale],
+        ..
+    } = *shape;
+    let window = i32::try_from(window).map_err(backend_error)?;
+    let element = || -> String { E::DTYPE.as_str().into() };
+    let meta = |extent: &[usize]| {
+        api::meta::<f32>(extent)
+            .sync_on(stream)
+            .map_err(backend_error)
+    };
+    let group = heads / kv_heads;
+    if let Some(tile) = query_tile {
+        let mut output = meta(&[lanes, heads * dim])?;
+        let scale = 1.0 / f32::from(u16::try_from(dim).map_err(backend_error)?).sqrt();
+        resident_attention_prefill::decode_tiled(
+            (&mut output).partition([tile, dim]),
+            query,
+            keys,
+            values,
+            metadata,
+            table,
+            window,
+            key_scale,
+            value_scale,
+            scale,
+        )
+        .generics(vec![
+            element(),
+            dim.to_string(),
+            group.to_string(),
+            tile.to_string(),
+            block.to_string(),
+            block.to_string(),
+            "1".into(),
+        ])
+        .l2_cache_key_on(stream)
+    } else {
+        let mut output = meta(&[lanes * heads, dim])?;
+        resident_attention_prefill::decode(
+            (&mut output).partition([1, dim]),
+            &query.view(&[lanes * heads, dim]).map_err(backend_error)?,
+            keys,
+            values,
+            metadata,
+            table,
+            window,
+            key_scale,
+            value_scale,
+        )
+        .generics(vec![
+            element(),
+            dim.to_string(),
+            group.to_string(),
+            heads.to_string(),
+            block.to_string(),
+        ])
+        .l2_cache_key_on(stream)
+    }
+    .map_err(backend_error)
 }

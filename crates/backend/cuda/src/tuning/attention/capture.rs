@@ -16,6 +16,7 @@ use crate::{
 use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::identity::{AttentionShape, attention_candidates};
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::env::var_os;
 use std::result::Result as StdResult;
@@ -56,46 +57,6 @@ impl Operands {
                 .reshape(&[s.kv_heads, f.capacity, s.dim])
                 .map_err(device_error)?,
             output: api::zeros::<f32>(&output_shape(s, choice))
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
-        })
-    }
-    fn meta(device: &CudaDevice, s: Shape, choice: Choice) -> Result<Self> {
-        let capacity = s.lanes * 2;
-        let blocks = capacity / KV_BLOCK_TOKENS;
-        Ok(Self {
-            query: Arc::new(
-                api::meta::<f32>(&[s.lanes, s.heads * s.dim])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-            ),
-            append_keys: Arc::new(
-                api::meta::<f32>(&[s.lanes, s.kv_heads, s.dim])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-            ),
-            append_values: Arc::new(
-                api::meta::<f32>(&[s.lanes, s.kv_heads, s.dim])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-            ),
-            metadata: Arc::new(
-                api::meta::<i32>(&[METADATA_FIELDS])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-            ),
-            table: Arc::new(
-                api::meta::<i32>(&[blocks])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-            ),
-            keys: api::meta::<f8e4m3fn>(&[s.kv_heads, capacity, s.dim])
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
-            values: api::meta::<f8e4m3fn>(&[s.kv_heads, capacity, s.dim])
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
-            output: api::meta::<f32>(&output_shape(s, choice))
                 .sync_on(&device.stream)
                 .map_err(device_error)?,
         })
@@ -227,60 +188,23 @@ impl Operands {
         }
         Ok(())
     }
-    fn identities(&mut self, device: &CudaDevice, s: Shape, choice: Choice) -> Result<Vec<String>> {
-        let capacity = s.lanes * 2;
-        let append = kernels::append(
-            (&mut self.keys).partition([1, capacity, s.dim]),
-            (&mut self.values).partition([1, capacity, s.dim]),
-            &self.append_keys,
-            &self.append_values,
-            &self.metadata,
-            &self.table,
-            KEY_SCALE,
-            VALUE_SCALE,
-        )
-        .generics(Self::append_generics(s, capacity))
-        .l2_cache_key_on(&device.stream)
-        .map_err(device_error)?;
-        let window = i32::try_from(s.window).map_err(device_error)?;
-        let compute = if let Some(qt) = choice.query_tile() {
-            let scale = 1.0 / f32::from(u16::try_from(s.dim).map_err(device_error)?).sqrt();
-            kernels::decode_tiled(
-                (&mut self.output).partition([qt, s.dim]),
-                &self.query,
-                &self.keys,
-                &self.values,
-                &self.metadata,
-                &self.table,
-                window,
-                KEY_SCALE,
-                VALUE_SCALE,
-                scale,
-            )
-            .generics(Self::compute_generics(s, choice))
-            .l2_cache_key_on(&device.stream)
-            .map_err(device_error)?
-        } else {
-            kernels::decode(
-                (&mut self.output).partition([1, s.dim]),
-                &self
-                    .query
-                    .view(&[s.lanes * s.heads, s.dim])
-                    .map_err(device_error)?,
-                &self.keys,
-                &self.values,
-                &self.metadata,
-                &self.table,
-                window,
-                KEY_SCALE,
-                VALUE_SCALE,
-            )
-            .generics(Self::compute_generics(s, choice))
-            .l2_cache_key_on(&device.stream)
-            .map_err(device_error)?
-        };
-        Ok(vec![append, compute])
-    }
+}
+fn identities(device: &CudaDevice, s: Shape, choice: Choice) -> Result<Vec<String>> {
+    attention_candidates::<f8e4m3fn>(
+        &device.stream,
+        &AttentionShape {
+            heads: s.heads,
+            kv_heads: s.kv_heads,
+            dim: s.dim,
+            lanes: s.lanes,
+            capacity: s.lanes * 2,
+            block: KV_BLOCK_TOKENS,
+            window: s.window,
+            scales: [KEY_SCALE, VALUE_SCALE],
+            metadata_fields: METADATA_FIELDS,
+        },
+        choice.query_tile(),
+    )
 }
 pub(super) struct Captured {
     pub graph: Graph,
@@ -486,7 +410,7 @@ pub(super) fn fingerprint(device: &CudaDevice, shape: Shape) -> Result<String> {
     if let Some(value) = cached {
         return Ok(value);
     }
-    let mut identities = Vec::new();
+    let mut all = Vec::new();
     for choice in [
         Choice::Simt,
         Choice::Tiled {
@@ -496,13 +420,12 @@ pub(super) fn fingerprint(device: &CudaDevice, shape: Shape) -> Result<String> {
             query_tile: super::QUERY_TILES[1],
         },
     ] {
-        identities
-            .extend(Operands::meta(device, shape, choice)?.identities(device, shape, choice)?);
+        all.extend(identities(device, shape, choice)?);
     }
-    if identities.iter().any(String::is_empty) {
+    if all.iter().any(String::is_empty) {
         return Err(Error::invalid("incomplete attention kernel identity"));
     }
-    let value = format!("{}:{}", context, identities.join(":"));
+    let value = format!("{}:{}", context, all.join(":"));
     cache
         .lock()
         .map_err(|_| Error::invariant("attention identity poisoned"))?
@@ -538,8 +461,7 @@ pub(super) fn native_fingerprint(device: &CudaDevice, shape: Shape) -> Result<St
     {
         return Ok(identity.clone());
     }
-    let identities =
-        Operands::meta(device, shape, Choice::Simt)?.identities(device, shape, Choice::Simt)?;
+    let identities = identities(device, shape, Choice::Simt)?;
     if identities.iter().any(String::is_empty) {
         return Err(Error::invalid("incomplete native attention identity"));
     }

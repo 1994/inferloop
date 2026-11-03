@@ -14,6 +14,7 @@ use cutile::{
     prelude::*,
 };
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::identity::{AttentionShape, attention_candidates};
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::env::var_os;
 use std::result::Result as StdResult;
@@ -250,55 +251,23 @@ impl Captured {
 }
 pub(super) fn fingerprint(device: &CudaDevice, s: Shape) -> Result<String> {
     use sha2::{Digest, Sha256};
-    let cap = (s.lanes * 2).next_multiple_of(KV_BLOCK_TOKENS);
-    let mut keys = api::meta::<f32>(&[s.kv_heads, cap, s.dim])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut vals = api::meta::<f32>(&[s.kv_heads, cap, s.dim])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut out = api::meta::<f32>(&[s.lanes * s.heads, s.dim])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let q = api::meta::<f32>(&[s.lanes * s.heads, s.dim])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let kv = api::meta::<f32>(&[s.lanes, s.kv_heads, s.dim])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let meta = api::meta::<i32>(&[METADATA_FIELDS])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let table = api::meta::<i32>(&[cap / KV_BLOCK_TOKENS])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let append = kernels::append(
-        (&mut keys).partition([1, cap, s.dim]),
-        (&mut vals).partition([1, cap, s.dim]),
-        &kv,
-        &kv,
-        &meta,
-        &table,
-        1.0,
-        1.0,
-    )
-    .generics(append_generics(s, cap))
-    .l2_cache_key_on(&device.stream)
-    .map_err(device_error)?;
-    let compute = kernels::decode(
-        (&mut out).partition([1, s.dim]),
-        &q,
-        &keys,
-        &vals,
-        &meta,
-        &table,
-        0,
-        1.0,
-        1.0,
-    )
-    .generics(compute_generics(s))
-    .l2_cache_key_on(&device.stream)
-    .map_err(device_error)?;
+    let [append, compute]: [String; 2] = attention_candidates::<f32>(
+        &device.stream,
+        &AttentionShape {
+            heads: s.heads,
+            kv_heads: s.kv_heads,
+            dim: s.dim,
+            lanes: s.lanes,
+            capacity: (s.lanes * 2).next_multiple_of(KV_BLOCK_TOKENS),
+            block: KV_BLOCK_TOKENS,
+            window: 0,
+            scales: [1.0, 1.0],
+            metadata_fields: METADATA_FIELDS,
+        },
+        None,
+    )?
+    .try_into()
+    .map_err(|_| Error::invariant("F32 attention identity count"))?;
     let payload = serde_json::to_vec(&(
         append,
         compute,
