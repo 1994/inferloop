@@ -1,7 +1,8 @@
 //! Reset must clear every byte of rank-1 and recurrent state, including a partial tile.
-use super::Clear;
+use super::buffer;
 use crate::device::{CudaDevice, device_error};
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::Recording;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 
@@ -9,11 +10,17 @@ use std::error::Error;
 #[ignore = "requires CUDA hardware; run under safe-run"]
 fn captured_reset_clears_every_state_shape() -> Result<(), Box<dyn Error>> {
     let device = CudaDevice::new(0)?;
+    let kernels = device.kernels();
     for shape in [vec![257], vec![2, 128, 128], vec![1, 64, 128]] {
         let elements = shape.iter().product();
         let mut tensor = api::zeros::<f32>(&shape).sync_on(&device.stream)?;
         let source = device.upload(vec![7.25f32; elements], &shape)?;
-        let reset = Graph::scope(&device.stream, |scope| scope.record(Clear(&mut tensor)))?;
+        let reset = Graph::scope(&device.stream, |scope| {
+            kernels
+                .state
+                .clear(&Recording::scope(scope), buffer(&tensor)?)
+                .map_err(|error| DeviceError::Launch(error.to_string()))
+        })?;
         for _ in 0..2 {
             reset.update(api::memcpy(&mut tensor, &source))?;
             reset.launch().sync_on(&device.stream)?;

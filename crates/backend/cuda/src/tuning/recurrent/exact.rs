@@ -14,7 +14,6 @@ use crate::tuning::table_path;
 use crate::tuning::update_table;
 use crate::{
     device::{CudaDevice, device_error},
-    resident::recurrent_prefill::oxide,
     tuning::resident_gemm::ResidentTuningSession,
 };
 use capture::Captured;
@@ -259,7 +258,6 @@ fn measure(
 fn cases(
     device: &CudaDevice,
     fixtures: &[Fixture],
-    rust: &oxide::Support,
     reverse: bool,
     session: &ResidentTuningSession,
 ) -> Result<Option<Vec<Case>>> {
@@ -269,8 +267,8 @@ fn cases(
             return Ok(None);
         }
         let mut data = Captured::new(device, &fixtures[index])?;
-        let native = data.graph(device, None)?;
-        let candidate = data.graph(device, Some(rust))?;
+        let native = data.graph(device, false)?;
+        let candidate = data.graph(device, true)?;
         data.verify(device, &native, &candidate, &fixtures[index])?;
         cases.push(Case {
             fixture: index,
@@ -292,21 +290,20 @@ fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Resul
         ));
     }
     let fixtures = fixtures(key.shape)?;
-    let rust = oxide::Support::load(device)?;
     let mut max_f64_error = 0.0_f64;
     for fixture in &fixtures {
         if !session.permits_recurrent_search() {
             return Ok(None);
         }
         let mut data = Captured::new(device, fixture)?;
-        let native = data.graph(device, None)?;
-        let candidate = data.graph(device, Some(&rust))?;
+        let native = data.graph(device, false)?;
+        let candidate = data.graph(device, true)?;
         max_f64_error = max_f64_error.max(data.verify(device, &native, &candidate, fixture)?);
     }
-    let Some(forward) = cases(device, &fixtures, &rust, false, session)? else {
+    let Some(forward) = cases(device, &fixtures, false, session)? else {
         return Ok(None);
     };
-    let Some(reverse) = cases(device, &fixtures, &rust, true, session)? else {
+    let Some(reverse) = cases(device, &fixtures, true, session)? else {
         return Ok(None);
     };
     let entry = Entry {

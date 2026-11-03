@@ -1,22 +1,62 @@
-use super::{
-    kernels,
-    oxide::{Bindings, Support},
-    tests::reference_fixture,
-};
+use super::{kernels, tests::reference_fixture};
 use crate::device::{CudaDevice, device_error};
+use crate::resident::tensor_buffer;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{Kernels, PreparedDeltaBuffers, Recording, RecurrentShape};
 use infer_cuda_kernels::tile::runtime::Graph;
+use std::result::Result as StdResult;
 const KH: usize = 16;
 const VH: usize = 48;
 const DIM: usize = 128;
+
+/// The SIMT build prepared for `lanes`, which every width here must have.
+fn simt(kernels: &Kernels, lanes: usize) -> Result<RecurrentShape> {
+    let shape = RecurrentShape {
+        key_heads: KH,
+        value_heads: VH,
+        dim: DIM,
+        lanes,
+    };
+    if kernels.recurrent.prepare_simt_delta(shape)? {
+        Ok(shape)
+    } else {
+        Err(Error::invalid("no SIMT recurrence build for this width"))
+    }
+}
+
+/// Record the SIMT recurrence over test-owned tensors.
+fn record_simt(
+    kernels: &Kernels,
+    recording: &Recording<'_>,
+    shape: RecurrentShape,
+    [state, output, qkv, normalized, betas, decays]: [&Tensor<f32>; 6],
+    metadata: &Tensor<i32>,
+) -> StdResult<(), DeviceError> {
+    kernels
+        .recurrent
+        .delta_prepared_simt(
+            recording,
+            shape,
+            PreparedDeltaBuffers {
+                state: tensor_buffer(state)?,
+                output: tensor_buffer(output)?,
+                qkv: tensor_buffer(qkv)?,
+                normalized: tensor_buffer(normalized)?,
+                betas: tensor_buffer(betas)?,
+                decays: tensor_buffer(decays)?,
+                metadata: tensor_buffer(metadata)?,
+            },
+        )
+        .map_err(|error| DeviceError::Launch(error.to_string()))
+}
 #[test]
 #[ignore = "requires CUDA/safe-run; full original F32 state/output and independent F64"]
 fn rust_gdn_complete_state_output_gate() -> Result<()> {
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
-    let function = Support::load(&device)?;
+    let function = device.kernels();
     for width in [64, 256] {
         for (count, base, offset) in [
             (0, 0, 0),
@@ -35,7 +75,7 @@ fn rust_gdn_complete_state_output_gate() -> Result<()> {
 }
 fn check(
     device: &CudaDevice,
-    function: &Support,
+    function: &Kernels,
     lanes: usize,
     count: usize,
     base: i32,
@@ -79,7 +119,7 @@ fn check(
         .sync_on(&device.stream)
         .map_err(device_error)?;
     let mut native_output = zeros(device, &[VH, lanes, DIM])?;
-    let mut rust_output = zeros(device, &[VH, lanes, DIM])?;
+    let rust_output = zeros(device, &[VH, lanes, DIM])?;
     kernels::delta_precomputed(
         (&mut native_state).partition([1, DIM, 16]),
         (&mut native_output).partition([1, lanes, 16]),
@@ -98,19 +138,21 @@ fn check(
     ])
     .sync_on(&device.stream)
     .map_err(device_error)?;
+    let shape = simt(function, lanes)?;
     let graph = Graph::scope(&device.stream, |scope| {
-        function.record(
-            scope,
-            Bindings {
-                state: &mut rust_state,
-                output: &mut rust_output,
-                qkv: &qkv,
-                normalized: &normalized,
-                beta: &betas,
-                decay: &decays,
-                metadata: &metadata,
-            },
-            lanes,
+        record_simt(
+            function,
+            &Recording::scope(scope),
+            shape,
+            [
+                &rust_state,
+                &rust_output,
+                &qkv,
+                &normalized,
+                &betas,
+                &decays,
+            ],
+            &metadata,
         )
     })
     .map_err(device_error)?;
@@ -208,8 +250,9 @@ impl Cost {
             width,
         })
     }
-    fn graph(&mut self, device: &CudaDevice, rust: Option<&Support>) -> Result<Graph> {
+    fn graph(&mut self, device: &CudaDevice, rust: Option<&Kernels>) -> Result<Graph> {
         let width = self.width;
+        let shape = rust.map(|kernels| simt(kernels, width)).transpose()?;
         Graph::scope(&device.stream, |scope| {
             scope.record(api::memcpy(&mut self.state, &self.initial))?;
             scope.record(
@@ -224,19 +267,20 @@ impl Cost {
                 &self.a_log,
                 &self.bias,
             ))?;
-            if let Some(function) = rust {
-                function.record(
-                    scope,
-                    Bindings {
-                        state: &mut self.state,
-                        output: &mut self.scratch,
-                        qkv: &self.qkv,
-                        normalized: &self.normalized,
-                        beta: &self.betas,
-                        decay: &self.decays,
-                        metadata: &self.metadata,
-                    },
-                    width,
+            if let (Some(kernels), Some(shape)) = (rust, shape) {
+                record_simt(
+                    kernels,
+                    &Recording::scope(scope),
+                    shape,
+                    [
+                        &self.state,
+                        &self.scratch,
+                        &self.qkv,
+                        &self.normalized,
+                        &self.betas,
+                        &self.decays,
+                    ],
+                    &self.metadata,
                 )?;
             } else {
                 scope.record(
@@ -304,7 +348,7 @@ fn rust_gdn_complete_pipeline_cost() -> Result<()> {
     }
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
-    let function = Support::load(&device)?;
+    let function = device.kernels();
     for (width, count) in [(64, 51), (64, 64), (256, 51), (256, 255), (256, 256)] {
         let mut data = Cost::new(&device, width, count)?;
         let native = data.graph(&device, None)?;

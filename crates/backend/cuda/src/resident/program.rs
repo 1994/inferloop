@@ -821,7 +821,7 @@ impl DeviceProgram {
             forward_captured,
         )?;
         // Forward captures finalize the resident state bindings before reset records them.
-        let reset_graph = capture_reset(device, &mut states)?;
+        let reset_graph = super::reset::capture(device, &states)?;
         let reclaimable_bytes =
             Self::program_retained_bytes(graph, &states, &fp8_states, activation_bytes, &captures);
         let readouts = ProgramReadouts::new(
@@ -1726,21 +1726,6 @@ impl DeviceProgram {
         self.last_batch = None;
         Ok(())
     }
-}
-
-fn capture_reset(
-    device: &CudaDevice,
-    states: &mut BTreeMap<TensorId, Vec<Tensor<f32>>>,
-) -> Result<Graph> {
-    Graph::scope(&device.stream, |scope| {
-        for tensors in states.values_mut() {
-            for tensor in tensors {
-                scope.record(super::reset::Clear(tensor))?;
-            }
-        }
-        Ok(())
-    })
-    .map_err(device_error)
 }
 
 /// Allocation shapes shared by private and pooled state storage.

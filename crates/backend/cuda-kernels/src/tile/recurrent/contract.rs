@@ -1,4 +1,5 @@
 //! cuTile implementation of the recurrent prompt family.
+use super::simt::Simt;
 use super::{
     conv_prefill, recurrent, recurrent_checkpoint, recurrent_chunk, recurrent_prefill,
     slot_convolution,
@@ -36,13 +37,17 @@ const VERIFY_RANK: usize = 3;
 /// Recurrent kernels compiled with cuTile.
 pub struct TileRecurrent {
     ordinal: usize,
+    simt: Simt,
 }
 
 impl TileRecurrent {
     /// Build the implementation for one device ordinal.
     #[must_use]
     pub const fn new(ordinal: usize) -> Self {
-        Self { ordinal }
+        Self {
+            ordinal,
+            simt: Simt::new(),
+        }
     }
 
     fn tensor<T: DType>(
@@ -579,6 +584,19 @@ impl Recurrent for TileRecurrent {
             ))
             .map(drop)
             .map_err(backend_error)
+    }
+
+    fn prepare_simt_delta(&self, shape: RecurrentShape) -> Result<bool> {
+        self.simt.prepare(self.ordinal, shape)
+    }
+
+    fn delta_prepared_simt(
+        &self,
+        recording: &Recording<'_>,
+        shape: RecurrentShape,
+        buffers: PreparedDeltaBuffers<'_>,
+    ) -> Result<()> {
+        self.simt.record(recording, self.ordinal, shape, buffers)
     }
 
     fn delta_prepared(

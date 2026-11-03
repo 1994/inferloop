@@ -5,6 +5,7 @@ use crate::contract::kernels::State;
 use crate::contract::plan::{BinaryOp, SplitPlan, UnaryOp};
 use crate::contract::recording::Recording;
 use crate::tile::moe::moe as moe_kernels;
+use crate::tile::runtime::Clear;
 use crate::tile::{backend_error, borrowed, capture_scope};
 use cuda_core::DType;
 use cutile::prelude::*;
@@ -130,6 +131,13 @@ impl State for TileState {
                     .generics(vec![stride.to_string(), width.to_string()]),
             )
             .map_err(backend_error)?;
+        Ok(())
+    }
+
+    fn clear(&self, recording: &Recording<'_>, out: Buffer<'_, f32>) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let mut out = self.flat(recording, out)?;
+        scope.record(Clear(&mut out)).map_err(backend_error)?;
         Ok(())
     }
 }

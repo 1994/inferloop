@@ -24,7 +24,8 @@ pub(super) struct Inputs {
     normalized: Tensor<f32>,
     betas: Tensor<f32>,
     decays: Tensor<f32>,
-    rust: Option<oxide::Support>,
+    /// The pinned SIMT build records the recurrence; prepared on the program's families.
+    simt: bool,
     chunk: Option<chunk::Scratch>,
 }
 
@@ -65,9 +66,15 @@ pub(super) fn allocate(
         .into_iter()
         .map(|shape| {
             let mut inputs = Inputs::new(device, shape, lanes)?;
-            inputs.rust = oxide::Support::select(
+            inputs.simt = oxide::select(
                 device,
-                [shape.0, shape.1, shape.2, lanes],
+                weights.kernels.recurrent.as_ref(),
+                RecurrentShape {
+                    key_heads: shape.0,
+                    value_heads: shape.1,
+                    dim: shape.2,
+                    lanes,
+                },
                 weights.autotune,
                 &weights.resident_tuning,
             )?;
@@ -116,7 +123,7 @@ impl Inputs {
         // token-serial kernels.
         let normalized_rows = if chunked { 1 } else { lanes };
         Ok(Self {
-            rust: None,
+            simt: false,
             chunk: chunked
                 .then(|| chunk::Scratch::new(device, (kh, vh, dim), lanes))
                 .transpose()?,
@@ -188,20 +195,24 @@ impl Inputs {
                 buffer(metadata)?,
             );
         }
-        if let Some(rust) = &self.rust {
-            return rust.record(
-                scope,
-                oxide::Bindings {
-                    state,
-                    output,
-                    qkv: qkv_storage,
-                    normalized: &self.normalized,
-                    beta: &self.betas,
-                    decay: &self.decays,
-                    metadata,
-                },
-                lanes,
-            );
+        if self.simt {
+            #[cfg(test)]
+            oxide::recorded();
+            return recurrent
+                .delta_prepared_simt(
+                    &recording,
+                    shape,
+                    PreparedDeltaBuffers {
+                        state: buffer(state)?,
+                        output: buffer(output)?,
+                        qkv: buffer(qkv_storage)?,
+                        normalized: buffer(&self.normalized)?,
+                        betas: buffer(&self.betas)?,
+                        decays: buffer(&self.decays)?,
+                        metadata: buffer(metadata)?,
+                    },
+                )
+                .map_err(error);
         }
         recurrent
             .delta_prepared(

@@ -5,6 +5,7 @@
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner};
 use crate::contract::recording::Recording;
 use crate::tile::backend_error;
+use cuda_core::sys::{cuMemsetD8Async, cudaError_enum_CUDA_SUCCESS};
 use cuda_core::{DType, Stream, f4e2m1fnx2, f8e4m3fn};
 use cutile::cuda_async::cuda_graph::GraphLaunch;
 use cutile::cuda_async::device_context::with_default_device_policy;
@@ -12,6 +13,7 @@ use cutile::cuda_async::device_future::DeviceFuture;
 use cutile::cuda_async::device_operation::{ExecutionContext, value};
 use cutile::half::bf16;
 use cutile::prelude::*;
+use cutile::tensor::KernelOutputStored;
 use infer_core::{Error, ErrorCode, Result};
 use std::cell::RefCell;
 use std::result::Result as StdResult;
@@ -266,6 +268,48 @@ impl<N: GraphNode> DeviceOp for GraphUpdate<N> {
 impl<N: GraphNode> GraphNode for GraphUpdate<N> {}
 
 impl<N: GraphNode> IntoFuture for GraphUpdate<N> {
+    type Output = StdResult<(), DeviceError>;
+    type IntoFuture = DeviceFuture<(), Self>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        match with_default_device_policy(|policy| policy.next_stream()) {
+            Ok(Ok(stream)) => Self::IntoFuture::scheduled(self, ExecutionContext::new(stream)),
+            Ok(Err(error)) | Err(error) => Self::IntoFuture::failed(error),
+        }
+    }
+}
+
+/// Elements a clear retains its write lease over at a time.
+const CLEAR_LEASE_TILE: usize = 256;
+
+/// Zero every byte of a tensor with a driver memset, as one graph node.
+pub(in crate::tile) struct Clear<'a>(pub &'a mut Tensor<f32>);
+
+#[expect(
+    unsafe_code,
+    reason = "The live tensor bounds the memset extent; its write lease is retained by the capture context and replay submission"
+)]
+impl DeviceOp for Clear<'_> {
+    type Output = ();
+
+    unsafe fn execute(self, context: &ExecutionContext) -> StdResult<(), DeviceError> {
+        let pointer = self.0.device_pointer().cu_deviceptr();
+        let bytes = self.0.num_bytes();
+        KernelOutputStored::retain(&self.0.partition([CLEAR_LEASE_TILE]), context)?;
+        // SAFETY: the tensor addresses exactly this byte range on the captured stream's device.
+        let status =
+            unsafe { cuMemsetD8Async(pointer, 0, bytes, context.get_cuda_stream().cu_stream()) };
+        if status == cudaError_enum_CUDA_SUCCESS {
+            Ok(())
+        } else {
+            Err(DeviceError::Launch(format!("state clear: {status:?}")))
+        }
+    }
+}
+
+impl GraphNode for Clear<'_> {}
+
+impl IntoFuture for Clear<'_> {
     type Output = StdResult<(), DeviceError>;
     type IntoFuture = DeviceFuture<(), Self>;
 
