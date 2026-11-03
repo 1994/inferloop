@@ -1,5 +1,5 @@
 //! Device-resident projection, activation and residual for one vision block.
-use super::launches::{Launches, families};
+use super::launches::capture;
 use super::program::{COLUMN_TILE, TOKEN_TILE, activation, projection_output};
 use super::weights::MlpLayer;
 use crate::device::{CudaDevice, device_error};
@@ -7,8 +7,7 @@ use crate::resident::buffers::buffer;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Gelu, VisionDense};
-use infer_cuda_kernels::tile::runtime::Graph;
-use std::sync::Arc;
+use infer_cuda_kernels::tile::runtime::Allocation;
 
 #[cfg(test)]
 #[path = "../../tests/unit/vision_block_mlp.rs"]
@@ -48,9 +47,7 @@ pub(super) fn run(
     let activated = activation(device, padded, width)?;
     let fc2 = activation(device, padded, hidden)?;
     let output = activation(device, padded, hidden)?;
-    let (family, dense) = families(device);
-    let graph = Graph::scope(&device.stream, |scope| {
-        let launches = Launches::new(&*family, &*dense, scope);
+    let graph = capture(device, |launches| {
         launches.dense_bias(VisionDense {
             out: buffer(&fc1)?,
             input: buffer(&input)?,
@@ -68,13 +65,12 @@ pub(super) fn run(
         })?;
         launches.add(hidden, buffer(&output)?, buffer(&residual)?, buffer(&fc2)?)?;
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     graph
         .launch()
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    projection_output(device.read(&Arc::new(output))?, rows, hidden)
+    projection_output(device.runtime().read(&output)?, rows, hidden)
 }
 
 fn upload(
@@ -82,11 +78,11 @@ fn upload(
     input: &[f32],
     rows: usize,
     columns: usize,
-) -> Result<Arc<Tensor<f32>>> {
+) -> Result<Allocation<f32>> {
     let elements = rows
         .checked_mul(columns)
         .ok_or_else(|| Error::invalid("vision MLP padded input overflow"))?;
     let mut values = vec![0.0; elements];
     values[..input.len()].copy_from_slice(input);
-    device.upload(values, &[rows, columns])
+    device.runtime().upload(values)
 }

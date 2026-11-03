@@ -1,5 +1,5 @@
 //! Execute compatible vision towers without staging each block on the host.
-use super::launches::{Launches, families};
+use super::launches::{Launches, capture};
 use super::program::{
     ATTENTION_CONFIG_FIELDS, AttentionMode, COLUMN_TILE, activation, attention_scale,
     attention_tiles, frame_token_count, mlp_width, projection_output, rope_tables,
@@ -12,7 +12,7 @@ use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{DenseBuffers, Gelu, VisionDense, VisionNorm, VisionRope};
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_models::vision::row_tile;
 use infer_spi::ModalityEncoder;
 use std::mem::swap;
@@ -106,20 +106,20 @@ impl<'a> Layer<'a> {
 }
 
 struct Buffers {
-    state: Tensor<f32>,
-    next: Tensor<f32>,
-    norm: Tensor<f32>,
-    q: Tensor<f32>,
-    k: Tensor<f32>,
-    v: Tensor<f32>,
-    q_rot: Tensor<f32>,
-    k_rot: Tensor<f32>,
-    attended: Tensor<f32>,
-    attention_out: Tensor<f32>,
-    residual: Tensor<f32>,
-    fc1: Tensor<f32>,
-    activated: Tensor<f32>,
-    fc2: Tensor<f32>,
+    state: Allocation<f32>,
+    next: Allocation<f32>,
+    norm: Allocation<f32>,
+    q: Allocation<f32>,
+    k: Allocation<f32>,
+    v: Allocation<f32>,
+    q_rot: Allocation<f32>,
+    k_rot: Allocation<f32>,
+    attended: Allocation<f32>,
+    attention_out: Allocation<f32>,
+    residual: Allocation<f32>,
+    fc1: Allocation<f32>,
+    activated: Allocation<f32>,
+    fc2: Allocation<f32>,
 }
 
 impl Buffers {
@@ -130,17 +130,14 @@ impl Buffers {
             .ok_or_else(|| Error::invalid("vision state overflow"))?;
         let mut padded = vec![0.0; elements];
         padded[..input.len()].copy_from_slice(input);
-        let state = Arc::try_unwrap(device.upload(padded, &[geometry.rows, geometry.hidden])?)
-            .map_err(|_| Error::invariant("vision state upload unexpectedly shared"))?;
+        let state = device.runtime().upload(padded)?;
         let hidden = || activation(device, geometry.rows, geometry.hidden);
         let projection = || activation(device, geometry.rows, geometry.projections);
         let intermediate = || activation(device, geometry.rows, geometry.intermediate);
         Ok(Self {
             state,
             next: hidden()?,
-            norm: api::zeros::<f32>(&[elements])
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
+            norm: device.runtime().zeros::<f32>(elements)?,
             q: projection()?,
             k: projection()?,
             v: projection()?,
@@ -160,8 +157,8 @@ impl Buffers {
         launches: &Launches<'_>,
         layer: &Layer<'_>,
         geometry: &Geometry,
-        cosines: &Arc<Tensor<f32>>,
-        sines: &Arc<Tensor<f32>>,
+        cosines: &Allocation<f32>,
+        sines: &Allocation<f32>,
     ) -> StdResult<(), DeviceError> {
         record_norm(
             launches,
@@ -196,8 +193,8 @@ impl Buffers {
         launches: &Launches<'_>,
         layer: &Layer<'_>,
         geometry: &Geometry,
-        cosines: &Arc<Tensor<f32>>,
-        sines: &Arc<Tensor<f32>>,
+        cosines: &Allocation<f32>,
+        sines: &Allocation<f32>,
     ) -> StdResult<(), DeviceError> {
         let norm = &self.norm;
         for (weight, bias, target) in [
@@ -290,8 +287,8 @@ impl Buffers {
 
 fn record_norm(
     launches: &Launches<'_>,
-    input: &Tensor<f32>,
-    output: &Tensor<f32>,
+    input: &Allocation<f32>,
+    output: &Allocation<f32>,
     weight: &Arc<Tensor<bf16>>,
     bias: &Arc<Tensor<bf16>>,
     geometry: &Geometry,
@@ -327,24 +324,21 @@ pub(super) fn run(
         .map(|index| Layer::new(weights, index))
         .collect::<Result<Vec<_>>>()?;
     let (cosines, sines) = rope_tables(encoder, grid, geometry.rows)?;
-    let cosines = device.upload(cosines, &[geometry.rows, geometry.width])?;
-    let sines = device.upload(sines, &[geometry.rows, geometry.width])?;
+    let cosines = device.runtime().upload(cosines)?;
+    let sines = device.runtime().upload(sines)?;
     let mut buffers = Buffers::new(device, &geometry, input)?;
-    let (family, dense) = families(device);
-    let graph = Graph::scope(&device.stream, |scope| {
-        let launches = Launches::new(&*family, &*dense, scope);
+    let graph = capture(device, |launches| {
         for layer in &layers {
-            buffers.record(&launches, layer, &geometry, &cosines, &sines)?;
+            buffers.record(launches, layer, &geometry, &cosines, &sines)?;
         }
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     graph
         .launch()
         .sync_on(&device.stream)
         .map_err(device_error)?;
     projection_output(
-        device.read_borrowed(&buffers.state)?,
+        device.runtime().read(&buffers.state)?,
         tokens,
         geometry.hidden,
     )

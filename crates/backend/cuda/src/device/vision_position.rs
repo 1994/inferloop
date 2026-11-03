@@ -4,13 +4,11 @@
     reason = "Construction validates every table index, which the position taps operand requires"
 )]
 use crate::device::{CudaDevice, device_error};
-use crate::resident::tensor_buffer;
-use cutile::cuda_async::error::DeviceError;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::PositionTaps;
-use std::result::Result as StdResult;
+use infer_cuda_kernels::tile::runtime::Allocation;
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -26,9 +24,9 @@ const COLUMN_TILE: usize = 64;
 
 /// Validated gather indices and interpolation weights, in tap-major order.
 pub struct DeviceTaps {
-    indices: Arc<Tensor<i32>>,
-    weights: Arc<Tensor<f32>>,
-    table: Arc<Tensor<bf16>>,
+    indices: Allocation<i32>,
+    weights: Allocation<f32>,
+    table: Allocation<bf16>,
     hidden: usize,
 }
 
@@ -91,22 +89,24 @@ impl DeviceTaps {
             }
         }
         Ok(Self {
-            indices: device.upload(indices, &[TAPS, padded])?,
-            weights: device.upload(weights, &[TAPS, padded])?,
-            table: table.clone(),
+            indices: device.runtime().upload(indices)?,
+            weights: device.runtime().upload(weights)?,
+            table: Allocation::adopt(Arc::clone(table))?,
             hidden,
         })
     }
 
-    /// The taps as the gather addresses them; the caller owns `self` until the work completes.
-    ///
-    /// # Errors
-    /// Rejects a table or tap tensor the device cannot address directly.
-    pub fn taps(&self) -> StdResult<PositionTaps<'_>, DeviceError> {
-        let table = tensor_buffer(&self.table)?;
-        let indices = tensor_buffer(&self.indices)?;
-        let weights = tensor_buffer(&self.weights)?;
+    /// The taps as the gather addresses them; a recording graph keeps their memory alive.
+    #[must_use]
+    pub fn taps(&self) -> PositionTaps<'_> {
         // SAFETY: construction checks each index against the table's rows and pads with row zero.
-        Ok(unsafe { PositionTaps::new(table, indices, weights, self.hidden) })
+        unsafe {
+            PositionTaps::new(
+                self.table.operand(),
+                self.indices.operand(),
+                self.weights.operand(),
+                self.hidden,
+            )
+        }
     }
 }

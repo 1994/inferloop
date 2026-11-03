@@ -96,7 +96,7 @@ fn device_positions_match_scalar_interpolation_and_padding() -> Result<()> {
                     &Recording::scope(scope),
                     tensor_buffer(&result)?,
                     tensor_buffer(&uploaded)?,
-                    staged.taps()?,
+                    staged.taps(),
                 )
                 .map_err(|error| DeviceError::Launch(error.to_string()))
         })

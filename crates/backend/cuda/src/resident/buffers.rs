@@ -6,21 +6,57 @@
 use super::capture::error;
 use cutile::prelude::*;
 use infer_cuda_kernels::contract::{Buffer, KvCache, KvElement};
-use infer_cuda_kernels::tile::runtime::Element;
+use infer_cuda_kernels::tile::runtime::{Allocation, Element};
+use std::sync::Arc;
 
-/// A buffer over one tensor.
-///
-/// Unlike a tensor recorded directly, a buffer does not make the graph hold its memory. Every
-/// caller must own the tensor for as long as the graph lives, as a resident program does, which is
-/// what [`Buffer::new`] requires. Code without such an owner takes an `Allocation` instead.
-pub fn buffer<T: DType + Element>(
-    tensor: &Tensor<T>,
-) -> Result<Buffer<'_, T::Marker>, DeviceError> {
-    if !tensor.is_contiguous() {
-        return Err(error("kernel operand must be contiguous"));
+/// Device memory a launch can take as an operand, while the host still holds two kinds of it.
+pub trait Operand {
+    /// The contract's element type.
+    type Marker;
+
+    /// The memory as a contract buffer.
+    /// # Errors
+    /// Rejects storage a buffer cannot describe.
+    fn operand(&self) -> Result<Buffer<'_, Self::Marker>, DeviceError>;
+}
+
+/// Unlike a tensor recorded directly, a buffer over a tensor does not make the graph hold its
+/// memory. Every caller must own the tensor for as long as the graph lives, as a resident program
+/// does, which is what [`Buffer::new`] requires. Code without such an owner uses an
+/// [`Allocation`], whose buffer the recording graph retains.
+impl<T: DType + Element> Operand for Tensor<T> {
+    type Marker = T::Marker;
+
+    fn operand(&self) -> Result<Buffer<'_, T::Marker>, DeviceError> {
+        if !self.is_contiguous() {
+            return Err(error("kernel operand must be contiguous"));
+        }
+        // SAFETY: see above; the arena hands distinct slots to a launch's inputs and outputs.
+        Ok(unsafe { Buffer::new(self.device_pointer().cu_deviceptr(), self.size()) })
     }
-    // SAFETY: see above; the arena hands distinct slots to a launch's inputs and outputs.
-    Ok(unsafe { Buffer::new(tensor.device_pointer().cu_deviceptr(), tensor.size()) })
+}
+
+impl<T: DType + Element> Operand for Allocation<T> {
+    type Marker = T::Marker;
+
+    fn operand(&self) -> Result<Buffer<'_, T::Marker>, DeviceError> {
+        Ok(Self::operand(self))
+    }
+}
+
+impl<O: Operand> Operand for Arc<O> {
+    type Marker = O::Marker;
+
+    fn operand(&self) -> Result<Buffer<'_, O::Marker>, DeviceError> {
+        O::operand(self)
+    }
+}
+
+/// A buffer over `memory`; see [`Operand`] for who keeps it alive.
+/// # Errors
+/// Rejects storage a buffer cannot describe.
+pub fn buffer<O: Operand + ?Sized>(memory: &O) -> Result<Buffer<'_, O::Marker>, DeviceError> {
+    memory.operand()
 }
 
 /// A KV pair as a launch addresses it, in `groups` of `[rows, dim]`.
