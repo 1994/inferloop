@@ -11,6 +11,7 @@ use infer_core::{Error, OpId, Result};
 use infer_cuda_kernels::contract::{
     Attention, Partials, PooledAppendBuffers, PooledDecodeBuffers, PooledPlan, Recording,
 };
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
@@ -211,10 +212,10 @@ pub(super) fn required_bytes(
 
 struct Buffers {
     layout: Layout,
-    numerator: Tensor<f32>,
-    maxima: Tensor<f32>,
-    sums: Tensor<f32>,
-    controls: Vec<Tensor<i32>>,
+    numerator: Allocation<f32>,
+    maxima: Allocation<f32>,
+    sums: Allocation<f32>,
+    controls: Vec<Allocation<i32>>,
     parameters: BTreeMap<OpId, Arc<Tensor<i32>>>,
 }
 
@@ -222,22 +223,15 @@ impl Buffers {
     fn new(device: &CudaDevice, plan: Blueprint) -> Result<Self> {
         let l = plan.layout;
         l.bytes(plan.parameters.len())?;
-        let zeros = |shape: &[usize]| {
-            api::zeros::<f32>(shape)
-                .sync_on(&device.stream)
-                .map_err(device_error)
-        };
+        let runtime = device.runtime();
+        let zeros = |shape: &[usize]| runtime.zeros::<f32>(shape.iter().product());
         Ok(Self {
             layout: l,
             numerator: zeros(&[l.blocks, STACKED_ROWS, l.geometry.dim])?,
             maxima: zeros(&[l.blocks, STACKED_ROWS])?,
             sums: zeros(&[l.blocks, STACKED_ROWS])?,
             controls: (0..l.groups)
-                .map(|_| {
-                    api::zeros::<i32>(&[CONTROL_ROWS, l.columns])
-                        .sync_on(&device.stream)
-                        .map_err(device_error)
-                })
+                .map(|_| runtime.zeros::<i32>(CONTROL_ROWS * l.columns))
                 .collect::<Result<_>>()?,
             parameters: plan
                 .parameters
