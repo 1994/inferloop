@@ -1,5 +1,6 @@
 //! Capture-boundary invalidation and exact buffer binding, including the error path.
 use super::{CaptureQuantReuse, Workspace, vendor_fp8};
+use crate::mlp::Matrix;
 use crate::resident::norm_fp4;
 use crate::resident::tensor_buffer;
 use crate::tuning::resident_gemm::ResidentTuningSession;
@@ -74,11 +75,13 @@ fn run_case(device: &CudaDevice, action: &str) -> TestResult<(Vec<u8>, Vec<u8>)>
         );
     }
     let projection = ProjectionWeight::Fp4(
-        device.upload(
+        Matrix::upload(
+            device,
             vec![f4e2m1fnx2::from_bits(0x21); hidden * columns / 2],
             &[hidden, columns / 2],
         )?,
-        device.upload(
+        Matrix::upload(
+            device,
             vec![f8e4m3fn(56); hidden * columns / 16],
             &[hidden, columns / 16],
         )?,

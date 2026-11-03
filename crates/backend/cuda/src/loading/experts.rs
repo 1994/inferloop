@@ -1,6 +1,7 @@
 //! Bind expert banks once; kernels read only the selected matrices.
 use super::floats;
 use crate::constants::GIB;
+use crate::mlp::Matrix;
 use crate::{
     constants::{F32_BYTES, FP8_BLOCK_COLUMNS},
     device::CudaDevice,
@@ -73,7 +74,7 @@ pub(super) fn load(
                 for part in &parts {
                     data.extend(floats(package, &part.data)?.into_iter().map(bf16::from_f32));
                 }
-                ProjectionWeight::Dense(device.upload(data, &[rows, input])?)
+                ProjectionWeight::Dense(Matrix::upload(device, data, &[rows, input])?)
             }
             WeightEncoding::Fp8Channel | WeightEncoding::Fp8Block => {
                 fp8(device, package, &parts, rows, input, output)?
@@ -188,16 +189,16 @@ fn fp8(
             scaling.extend(scales);
         }
     }
-    let data = device.upload(data, &[rows, input])?;
+    let data = Matrix::upload(device, data, &[rows, input])?;
     if encoding == WeightEncoding::Fp8Channel {
         Ok(ProjectionWeight::Fp8(
             data,
-            device.upload(scaling, &[rows])?,
+            device.runtime().upload(scaling)?,
         ))
     } else {
         Ok(ProjectionWeight::Fp8Block(
             data,
-            device.upload(scaling, &[rows, input / FP8_BLOCK_COLUMNS])?,
+            Matrix::upload(device, scaling, &[rows, input / FP8_BLOCK_COLUMNS])?,
         ))
     }
 }

@@ -5,7 +5,7 @@ use crate::resident::buffers::region;
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use crate::{
     device::CudaDevice,
-    loading::{Projection, floats},
+    loading::floats,
     mlp::ProjectionWeight,
     resident::{ProgramWeights, PromptScratchRegistry},
 };
@@ -79,7 +79,7 @@ impl Pair {
         let mut weights = fixture_weights();
         for (id, source) in [(10, gate), (11, &up)] {
             let id = TensorId::new(id)?;
-            let projection = Projection::load(device, package, source)?.resident();
+            let projection = ProjectionWeight::load(device, package, source)?;
             projection.validate(*outputs, *columns)?;
             weights.projections.insert(id, projection);
             if source.encoding == WeightEncoding::Nvfp4 {
@@ -459,12 +459,16 @@ fn projection_pointers(weights: &ProgramWeights) -> serde_json::Value {
             .iter()
             .map(|(id, weight)| {
                 let allocations = match weight {
-                    ProjectionWeight::Fp4(codes, scales, _) => [pointer(codes), pointer(scales)],
-                    ProjectionWeight::Fp8(codes, scales)
-                    | ProjectionWeight::Fp8Block(codes, scales) => {
-                        [pointer(codes), pointer(scales)]
+                    ProjectionWeight::Fp4(codes, scales, _) => {
+                        [pointer(codes.tensor()), pointer(scales.tensor())]
                     }
-                    ProjectionWeight::Dense(codes) => [pointer(codes), 0],
+                    ProjectionWeight::Fp8(codes, scales) => {
+                        [pointer(codes.tensor()), pointer(scales.tensor())]
+                    }
+                    ProjectionWeight::Fp8Block(codes, scales) => {
+                        [pointer(codes.tensor()), pointer(scales.tensor())]
+                    }
+                    ProjectionWeight::Dense(codes) => [pointer(codes.tensor()), 0],
                 };
                 serde_json::json!({"id":id,"allocations":allocations})
             })

@@ -132,17 +132,16 @@ pub struct TuningReport {
 /// # Errors
 /// Rejects invalid projection rank/dimensions.
 pub fn projection_key(weight: &ProjectionWeight) -> Result<(String, usize, usize)> {
-    let (encoding, shape, packing) = match weight {
-        ProjectionWeight::Dense(w) => ("bf16", w.shape(), 1),
-        ProjectionWeight::Fp8(w, _) => ("fp8-channel", w.shape(), 1),
-        ProjectionWeight::Fp8Block(w, _) => ("fp8-block", w.shape(), 1),
-        ProjectionWeight::Fp4(w, _, _) => ("nvfp4", w.shape(), 2),
+    let (encoding, packing) = match weight {
+        ProjectionWeight::Dense(_) => ("bf16", 1),
+        ProjectionWeight::Fp8(..) => ("fp8-channel", 1),
+        ProjectionWeight::Fp8Block(..) => ("fp8-block", 1),
+        ProjectionWeight::Fp4(..) => ("nvfp4", 2),
     };
-    if shape.len() != 2 {
-        return Err(Error::invalid("projection rank"));
-    }
-    let rows = usize::try_from(shape[0]).map_err(device_error)?;
-    let columns = usize::try_from(shape[1]).map_err(device_error)? * packing;
+    let [rows, stored] = weight.shape();
+    let columns = stored
+        .checked_mul(packing)
+        .ok_or_else(|| Error::invalid("projection columns"))?;
     Ok((format!("{encoding}:{rows}x{columns}"), rows, columns))
 }
 

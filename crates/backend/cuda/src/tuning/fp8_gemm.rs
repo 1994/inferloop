@@ -198,8 +198,8 @@ impl WeightKey {
             return Err(Error::invalid("FP8 channel tuning weight"));
         };
         Ok(Self {
-            codes: Arc::as_ptr(codes) as usize,
-            scales: Arc::as_ptr(scales) as usize,
+            codes: Arc::as_ptr(codes.tensor()) as usize,
+            scales: Arc::as_ptr(scales.tensor()) as usize,
         })
     }
 }
@@ -319,11 +319,11 @@ fn remembered(weight: &ProjectionWeight, key: &Key, choice: Choice) -> Result<Op
             proof
                 .codes
                 .upgrade()
-                .is_some_and(|owner| Arc::ptr_eq(&owner, codes))
+                .is_some_and(|owner| Arc::ptr_eq(&owner, codes.tensor()))
                 && proof
                     .scales
                     .upgrade()
-                    .is_some_and(|owner| Arc::ptr_eq(&owner, scales))
+                    .is_some_and(|owner| Arc::ptr_eq(&owner, scales.tensor()))
         })
         .map(|proof| proof.accepted))
 }
@@ -342,8 +342,8 @@ fn remember(weight: &ProjectionWeight, key: &Key, choice: Choice, accepted: bool
             choice,
         },
         Proof {
-            codes: Arc::downgrade(codes),
-            scales: Arc::downgrade(scales),
+            codes: Arc::downgrade(codes.tensor()),
+            scales: Arc::downgrade(scales.tensor()),
             accepted,
         },
     );
@@ -495,6 +495,8 @@ impl Captured {
             .sync_on(&device.stream)
             .map_err(device_error)?;
         support.retain_channels(weight_codes, ws);
+        // The cuBLASLt and tuned GEMM paths still take tensors.
+        let (weight_codes, ws) = (weight_codes.tensor(), ws.tensor());
         let owner = if let Choice::Lt(config) = choice {
             if !support
                 .prepare_config(&codes, weight_codes, &output, config)
@@ -700,7 +702,7 @@ fn cached_gate(
                 .sync_on(&device.stream)
                 .map_err(device_error)?;
             if !support
-                .prepare_config(&q, w, &out, config)
+                .prepare_config(&q, w.tensor(), &out, config)
                 .map_err(device_error)?
             {
                 return Ok(baseline);
@@ -764,7 +766,7 @@ fn candidates(
     }
     if vendor_candidates && let ProjectionWeight::Fp8(w, _) = weight {
         if permits(session, shape) {
-            match support.prepare_candidates(&base.codes, w, &base.output) {
+            match support.prepare_candidates(&base.codes, w.tensor(), &base.output) {
                 Ok(configs) => choices.extend(configs.into_iter().map(Choice::Lt)),
                 Err(error) => {
                     tracing::warn!(target:"infer::tuning",?shape,%error,"FP8 Lt candidates unavailable: native candidates remain");

@@ -85,9 +85,9 @@ fn lower(model: &Model, nodes: &[TensorNode], pdl: bool) -> Result<Option<Reside
     };
     let weights = MlpWeights {
         norm: model.device.upload(weight.clone(), &[head_dim])?,
-        gate: model.projections[&gate.inputs[1]].resident(),
-        up: model.projections[&up.inputs[1]].resident(),
-        down: model.projections[&down.inputs[1]].resident(),
+        gate: model.projections[&gate.inputs[1]].clone(),
+        up: model.projections[&up.inputs[1]].clone(),
+        down: model.projections[&down.inputs[1]].clone(),
     };
     let config = MlpConfig {
         hidden,

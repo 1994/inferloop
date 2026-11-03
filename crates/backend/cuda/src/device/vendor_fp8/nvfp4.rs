@@ -62,7 +62,8 @@ impl Operands<'_> {
         let ProjectionWeight::Fp4(w, s, global) = self.weight else {
             return Ok(None);
         };
-        let ([m, half], [n, whalf], [om, on]) = (self.q.shape(), w.shape(), self.output.shape())
+        let ([m, half], [n, whalf], [om, on]) =
+            (self.q.shape(), w.tensor().shape(), self.output.shape())
         else {
             return Ok(None);
         };
@@ -87,7 +88,7 @@ impl Operands<'_> {
             || !shape.k.is_multiple_of(NVFP4_GROUP_SIZE * SCALE_GROUPS)
             || scales.is_none_or(|v| v > self.scratch.size())
             || self.qs.shape() != [*m, i32::try_from(groups).map_err(|e| error(e.to_string()))?]
-            || s.shape() != [*n, i32::try_from(groups).map_err(|e| error(e.to_string()))?]
+            || s.tensor().shape() != [*n, i32::try_from(groups).map_err(|e| error(e.to_string()))?]
             || !self.scale.is_finite()
             || self.scale <= 0.0
             || !global.is_finite()
@@ -109,8 +110,8 @@ impl Operands<'_> {
         }
         if !self.q.is_contiguous()
             || !self.qs.is_contiguous()
-            || !w.is_contiguous()
-            || !s.is_contiguous()
+            || !w.tensor().is_contiguous()
+            || !s.tensor().is_contiguous()
             || !self.output.is_contiguous()
             || !self.scratch.is_contiguous()
         {
@@ -123,8 +124,14 @@ impl Operands<'_> {
         for (pointer, bytes) in [
             (self.q.device_pointer().cu_deviceptr(), self.q.num_bytes()),
             (self.qs.device_pointer().cu_deviceptr(), self.qs.num_bytes()),
-            (w.device_pointer().cu_deviceptr(), w.num_bytes()),
-            (s.device_pointer().cu_deviceptr(), s.num_bytes()),
+            (
+                w.tensor().device_pointer().cu_deviceptr(),
+                w.tensor().num_bytes(),
+            ),
+            (
+                s.tensor().device_pointer().cu_deviceptr(),
+                s.tensor().num_bytes(),
+            ),
             (
                 self.output.device_pointer().cu_deviceptr(),
                 self.output.num_bytes(),
@@ -146,8 +153,8 @@ impl Operands<'_> {
     fn proof(&self, shape: Shape) -> ProofKey {
         let (pointer, scales, global) = match self.weight {
             ProjectionWeight::Fp4(w, s, g) => (
-                w.device_pointer().cu_deviceptr(),
-                s.device_pointer().cu_deviceptr(),
+                w.tensor().device_pointer().cu_deviceptr(),
+                s.tensor().device_pointer().cu_deviceptr(),
                 g.to_bits(),
             ),
             _ => (0, 0, 0),
@@ -263,8 +270,8 @@ impl Support {
         for pointer in [
             op.q.device_pointer().cu_deviceptr(),
             op.qs.device_pointer().cu_deviceptr(),
-            w.device_pointer().cu_deviceptr(),
-            s.device_pointer().cu_deviceptr(),
+            w.tensor().device_pointer().cu_deviceptr(),
+            s.tensor().device_pointer().cu_deviceptr(),
             op.scratch.device_pointer().cu_deviceptr(),
             op.output.device_pointer().cu_deviceptr(),
         ] {
@@ -440,7 +447,7 @@ impl Support {
         self.proofs.insert(proof, true);
         self.weights
             .entry((proof.1, proof.2))
-            .or_insert_with(|| (Arc::clone(w), Arc::clone(s)));
+            .or_insert_with(|| (Arc::clone(w.tensor()), Arc::clone(s.tensor())));
         tracing::info!(target:"infer::tuning",?shape,cached_proof=numerical.is_some(),
             "vendor FP4 complete exact proof accepted");
         Ok(true)
@@ -466,8 +473,8 @@ impl Support {
         for pointer in [
             op.q.device_pointer().cu_deviceptr(),
             op.qs.device_pointer().cu_deviceptr(),
-            w.device_pointer().cu_deviceptr(),
-            s.device_pointer().cu_deviceptr(),
+            w.tensor().device_pointer().cu_deviceptr(),
+            s.tensor().device_pointer().cu_deviceptr(),
             op.output.device_pointer().cu_deviceptr(),
             op.scratch.device_pointer().cu_deviceptr(),
         ] {
@@ -581,7 +588,7 @@ fn append(
             &Recording::scope(scope),
             &scale_plan(shape),
             tensor_buffer(&*op.scratch)?,
-            tensor_buffer(s.as_ref())?,
+            tensor_buffer(s)?,
             tensor_buffer(op.qs)?,
         )
         .map_err(|e| error(e.to_string()))?;
@@ -592,7 +599,7 @@ fn append(
                 context: context.clone(),
                 prepared: prepared.clone(),
                 input: op.q,
-                weight: w,
+                weight: w.tensor(),
                 output: op.output,
                 scratch: op.scratch,
                 alpha: 1.0 / (g * op.scale),

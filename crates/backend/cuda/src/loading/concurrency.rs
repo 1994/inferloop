@@ -4,7 +4,6 @@ use super::LoadedModel;
 use crate::device::device_error;
 use crate::mlp::ProjectionWeight;
 use crate::tuning::pool_dense;
-use cutile::prelude::{DType, Tensor};
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::target::TensorRates;
 use infer_ir::TensorOp;
@@ -55,19 +54,13 @@ fn add(a: u128, b: u128) -> Result<u128> {
     a.checked_add(b)
         .ok_or_else(|| Error::invalid("concurrency roofline overflow"))
 }
-fn tensor_bytes<T: DType>(tensor: &Tensor<T>) -> Result<u128> {
-    mul(extent(tensor.size())?, size_of::<T>() as u128)
-}
 fn bytes(weight: &ProjectionWeight) -> Result<u128> {
+    let stored = extent(weight.bytes())?;
     match weight {
-        ProjectionWeight::Dense(w) => tensor_bytes(w),
-        ProjectionWeight::Fp8(w, scales) | ProjectionWeight::Fp8Block(w, scales) => {
-            add(tensor_bytes(w)?, tensor_bytes(scales)?)
+        ProjectionWeight::Fp4(..) => add(stored, GLOBAL_SCALE_BYTES),
+        ProjectionWeight::Dense(_) | ProjectionWeight::Fp8(..) | ProjectionWeight::Fp8Block(..) => {
+            Ok(stored)
         }
-        ProjectionWeight::Fp4(w, scales, _) => add(
-            add(tensor_bytes(w)?, tensor_bytes(scales)?)?,
-            GLOBAL_SCALE_BYTES,
-        ),
     }
 }
 fn elements(sizes: &BTreeMap<TensorId, usize>, id: TensorId) -> Result<usize> {

@@ -1,6 +1,6 @@
 //! Device weights of an attached `DFlash2` draft, with the target tensors it shares.
 use crate::device::CudaDevice;
-use crate::loading::{Projection, floats};
+use crate::loading::floats;
 use crate::mlp::ProjectionWeight;
 use cutile::{half::bf16, prelude::*};
 use infer_core::{Error, Result};
@@ -130,15 +130,7 @@ impl DraftWeights {
 
     /// Device bytes the draft's own weights occupy, excluding the shared target tensors.
     pub fn bytes(&self) -> u64 {
-        let projection = |weight: &ProjectionWeight| -> u64 {
-            match weight {
-                ProjectionWeight::Dense(w) => bytes(w),
-                ProjectionWeight::Fp8(w, s) | ProjectionWeight::Fp8Block(w, s) => {
-                    bytes(w) + bytes(s)
-                }
-                ProjectionWeight::Fp4(w, s, _) => bytes(w) + bytes(s),
-            }
-        };
+        let projection = |weight: &ProjectionWeight| weight.bytes() as u64;
         let mut total = bytes(&self.hidden_norm)
             + bytes(&self.norm)
             + projection(&self.selector)
@@ -231,7 +223,7 @@ impl Source<'_> {
 
     fn projection(&mut self, name: &str) -> Result<ProjectionWeight> {
         let weight = self.weight(name)?.clone();
-        Ok(Projection::load(self.device, self.package, &weight)?.resident())
+        ProjectionWeight::load(self.device, self.package, &weight)
     }
 
     fn codebook(&mut self, name: &str) -> Result<Arc<Tensor<bf16>>> {

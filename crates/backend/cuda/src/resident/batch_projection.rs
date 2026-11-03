@@ -367,8 +367,12 @@ fn record_projection(
             return Err(error("precise dense weight"));
         };
         scope.record(
-            super::small_gemm::precise_kernels::dense(output.partition(SMALL_GEMM_TILE), x, w)
-                .generics(vec![bf16::DTYPE.as_str().into(), columns.to_string()]),
+            super::small_gemm::precise_kernels::dense(
+                output.partition(SMALL_GEMM_TILE),
+                x,
+                w.tensor(),
+            )
+            .generics(vec![bf16::DTYPE.as_str().into(), columns.to_string()]),
         )?;
         return Ok(());
     }
@@ -457,7 +461,7 @@ fn record_pool_small_f32(
             },
             buffer(output)?,
             input,
-            buffer(weight.as_ref())?,
+            buffer(weight)?,
         )
         .map_err(error)?;
     #[cfg(test)]

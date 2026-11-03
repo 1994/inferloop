@@ -1,5 +1,6 @@
 use super::*;
 use crate::constants::QUANT_GEMM_TILE;
+use crate::mlp::Matrix;
 use crate::resident::ProgramGeometry;
 use crate::strategy::LinearTiling;
 use std::env::temp_dir;
@@ -335,8 +336,8 @@ fn resident_gemm_candidates_preserve_quantization_and_output_bits_on_tails() -> 
             .map(|i| f8e4m3fn(48 + u8::try_from(i % 16).unwrap_or_default()))
             .collect();
         let weight = ProjectionWeight::Fp4(
-            device.upload(packed, &[n, k / 2])?,
-            device.upload(scales, &[n, k / 16])?,
+            Matrix::upload(&device, packed, &[n, k / 2])?,
+            Matrix::upload(&device, scales, &[n, k / 16])?,
             0.75,
         );
         let base = Captured::new(&device, &weight, 1.25, shape, GemmConfig::baseline(m))?;
@@ -383,7 +384,7 @@ fn resident_gemm_candidates_preserve_quantization_and_output_bits_on_tails() -> 
         let ProjectionWeight::Fp4(codes, scales, _) = &weight else {
             return Err(Error::invariant("GPU test FP4 weight"));
         };
-        let invalid_weight = ProjectionWeight::Fp4(Arc::clone(codes), Arc::clone(scales), 0.0);
+        let invalid_weight = ProjectionWeight::Fp4(codes.clone(), scales.clone(), 0.0);
         assert_eq!(
             verified_config(&device, &invalid_weight, 1.25, &key, choice)?,
             GemmConfig::baseline(m)

@@ -79,8 +79,8 @@ fn weak(weight: &ProjectionWeight, accepted: bool) -> Result<Verification> {
         return Err(Error::invalid("SwiGLU verification weight"));
     };
     Ok(Verification {
-        codes: Arc::downgrade(codes),
-        scales: Arc::downgrade(scales),
+        codes: Arc::downgrade(codes.tensor()),
+        scales: Arc::downgrade(scales.tensor()),
         accepted,
     })
 }

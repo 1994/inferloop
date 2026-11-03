@@ -650,15 +650,15 @@ impl<'a> Recorder<'a> {
 /// A weight in the forms a draft projection supports.
 fn draft_weight(weight: &ProjectionWeight) -> StdResult<DraftWeight<'_>, DeviceError> {
     match weight {
-        ProjectionWeight::Dense(w) => Ok(DraftWeight::Dense(buffer(w.as_ref())?)),
+        ProjectionWeight::Dense(w) => Ok(DraftWeight::Dense(buffer(w)?)),
         ProjectionWeight::Fp8(w, s) => Ok(DraftWeight::Fp8 {
-            weight: buffer(w.as_ref())?,
-            scales: buffer(s.as_ref())?,
+            weight: buffer(w)?,
+            scales: buffer(s)?,
         }),
         ProjectionWeight::Fp8Block(w, s) => Ok(DraftWeight::Fp8Block {
-            weight: buffer(w.as_ref())?,
-            scales: buffer(s.as_ref())?,
-            scale_columns: usize::try_from(s.shape()[1]).map_err(error)?,
+            weight: buffer(w)?,
+            scales: buffer(s)?,
+            scale_columns: s.columns(),
         }),
         ProjectionWeight::Fp4(..) => Err(DeviceError::Launch(
             "DFlash2 draft projections do not support NVFP4".into(),
@@ -733,8 +733,8 @@ fn record_projection(
                     rows,
                     columns: k,
                 },
-                weight: buffer(codes.as_ref())?,
-                scales: buffer(scales.as_ref())?,
+                weight: buffer(codes)?,
+                scales: buffer(scales)?,
                 partials: buffer(partial)?,
                 splits: *splits,
                 k_tiles: *k_tiles,

@@ -1,4 +1,5 @@
 use cutile::half::bf16;
+use infer_backend_cuda::mlp::Matrix;
 use infer_backend_cuda::strategy::default_tiling;
 use infer_backend_cuda::tuning::resident_gemm::ResidentTuningSession;
 use infer_backend_cuda::{
@@ -107,9 +108,11 @@ fn weights(device: &CudaDevice, d: usize, id: TensorId) -> Result<ProgramWeights
         kv_scales: BTreeMap::new(),
         tiling: BTreeMap::new(),
         fusion: Some(FusionWeights {
-            projection: ProjectionWeight::Dense(
-                device.upload(vec![bf16::from_f32(0.03125); d * 2 * d], &[d, 2 * d])?,
-            ),
+            projection: ProjectionWeight::Dense(Matrix::upload(
+                device,
+                vec![bf16::from_f32(0.03125); d * 2 * d],
+                &[d, 2 * d],
+            )?),
             // This synthetic check measures nothing, so it uses the hardware-independent tile.
             tiling: default_tiling()?,
             norms: device.upload(vec![0.0; 2 * d], &[2, d])?,

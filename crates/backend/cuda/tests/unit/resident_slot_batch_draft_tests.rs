@@ -1,4 +1,5 @@
 use super::*;
+use crate::mlp::Matrix;
 use crate::mlp::ProjectionWeight;
 use crate::resident::{DeviceProgram, FusionWeights, PromptScratchRegistry};
 use crate::strategy::default_tiling;
@@ -88,7 +89,11 @@ fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
         narrow_prefill_width: 0,
         attention_profile: crate::AttentionProfile::Canonical,
         fusion: Some(FusionWeights {
-            projection: ProjectionWeight::Dense(device.upload(values(32 * 64), &[32, 64])?),
+            projection: ProjectionWeight::Dense(Matrix::upload(
+                device,
+                values(32 * 64),
+                &[32, 64],
+            )?),
             tiling: default_tiling()?,
             norms: device.upload(vec![1.0; 64], &[2, 32])?,
             epsilon: 1e-6,

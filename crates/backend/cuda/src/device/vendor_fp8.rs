@@ -3,6 +3,7 @@
 //! Descriptors and zero-workspace algorithms are warmed before graph capture. Native kernels
 //! remain the fallback for an absent library, unsupported shape or failed exact tuning gate.
 use super::CudaDevice;
+use crate::mlp::Matrix;
 use crate::resident::tensor_buffer;
 use cuda_core::f8e4m3fn;
 use cuda_core::sys::CUcontext;
@@ -24,6 +25,7 @@ use cutile::cuda_async::error::DeviceError;
 use cutile::prelude::*;
 use infer_core::ErrorCode;
 use infer_cuda_kernels::contract::{Foreign, Kernels, Recording};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use serde::{Deserialize, Serialize};
 use std::ops::Deref;
 use std::ptr::null_mut;
@@ -869,13 +871,10 @@ impl Support {
         }
         Ok(false)
     }
-    pub(crate) fn retain_channels(
-        &mut self,
-        codes: &Arc<Tensor<f8e4m3fn>>,
-        scales: &Arc<Tensor<f32>>,
-    ) {
-        self.retain_projection(codes);
+    pub(crate) fn retain_channels(&mut self, codes: &Matrix<f8e4m3fn>, scales: &Allocation<f32>) {
+        self.retain_projection(codes.tensor());
         if self.context.is_some() {
+            let scales = scales.tensor();
             self.channel_scales
                 .entry(scales.device_pointer().cu_deviceptr())
                 .or_insert_with(|| Arc::clone(scales));

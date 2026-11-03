@@ -467,7 +467,7 @@ pub(super) fn record(
             record_prompt_dense(
                 scope,
                 weights,
-                (flat_input, w),
+                (flat_input, w.tensor()),
                 &output,
                 (width, flat / width, columns),
                 (nvfp4, delegated),
@@ -624,16 +624,10 @@ pub(super) fn record_pair(
     ) else {
         return Ok(false);
     };
-    let [rows, columns] = weight_b.shape() else {
-        return Ok(false);
-    };
-    if *rows <= 0 || *columns <= 0 || weight_a.shape() != weight_b.shape() {
+    let [rows, columns] = weight_b.shape();
+    if rows == 0 || columns == 0 || weight_a.shape() != weight_b.shape() {
         return Ok(false);
     }
-    let (rows, columns) = (
-        usize::try_from(*rows).map_err(error)?,
-        usize::try_from(*columns).map_err(error)?,
-    );
     let width = arena.lanes();
     if width == 0
         || delegate_dense(width, rows, columns)
@@ -671,7 +665,7 @@ pub(super) fn record_pair(
             },
             (buffer(&output_b)?, buffer(&output_a)?),
             buffer(flat_input)?,
-            (buffer(weight_b.as_ref())?, buffer(weight_a.as_ref())?),
+            (buffer(weight_b)?, buffer(weight_a)?),
         )
         .map_err(error)?;
     arena.buffers[slot_b] = Some(output_b.reshape(&[expected])?);
@@ -774,16 +768,10 @@ pub(super) fn record_narrow(
     let Some(ProjectionWeight::Dense(weight)) = weights.projections.get(&node.inputs[1]) else {
         return Ok(false);
     };
-    let [rows, columns] = weight.shape() else {
-        return Ok(false);
-    };
-    if *rows <= 0 || *columns <= 0 || !weights.expert_banks.is_empty() {
+    let [rows, columns] = weight.shape();
+    if rows == 0 || columns == 0 || !weights.expert_banks.is_empty() {
         return Ok(false);
     }
-    let (rows, columns) = (
-        usize::try_from(*rows).map_err(error)?,
-        usize::try_from(*columns).map_err(error)?,
-    );
     let width = arena.lanes();
     if !narrow_dense_layout(&profile.architecture, (width, rows, columns))
         || delegate_dense(width, rows, columns)
@@ -816,7 +804,7 @@ pub(super) fn record_narrow(
     let recorded = records_narrow_dense(
         (&weights.kernels, scope),
         profile,
-        (buffer(&output)?, buffer(input)?, buffer(weight.as_ref())?),
+        (buffer(&output)?, buffer(input)?, buffer(weight)?),
         (width, rows, columns),
     );
     arena.buffers[output_slot] = Some(output.reshape(&[expected])?);

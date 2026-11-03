@@ -1,3 +1,4 @@
+use crate::mlp::Matrix;
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use crate::{
     device::CudaDevice,
@@ -60,7 +61,10 @@ fn fixture_at(
         attention_profile: crate::AttentionProfile::Canonical,
         fusion: None,
         embeddings,
-        projections: BTreeMap::from([(TensorId::new(11)?, ProjectionWeight::Dense(dense))]),
+        projections: BTreeMap::from([(
+            TensorId::new(11)?,
+            ProjectionWeight::Dense(Matrix::adopt(dense)?),
+        )]),
         expert_banks: BTreeMap::new(),
         constants: BTreeMap::from([
             (

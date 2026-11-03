@@ -1,6 +1,7 @@
 //! Actual graph-role recorders compared with original Dense MMA and an independent scalar dot.
 use super::{fixture, id};
 use crate::AttentionProfile;
+use crate::mlp::Matrix;
 use crate::resident::capture::error as capture_error;
 use crate::resident::prefill_projection::DensePlan;
 use crate::{
@@ -94,15 +95,19 @@ impl Fixture {
         let projections = BTreeMap::from([
             (
                 id(2),
-                ProjectionWeight::Dense(
-                    device.upload(original_weights[0].clone(), &[rows, columns])?,
-                ),
+                ProjectionWeight::Dense(Matrix::upload(
+                    device,
+                    original_weights[0].clone(),
+                    &[rows, columns],
+                )?),
             ),
             (
                 id(4),
-                ProjectionWeight::Dense(
-                    device.upload(original_weights[1].clone(), &[rows, columns])?,
-                ),
+                ProjectionWeight::Dense(Matrix::upload(
+                    device,
+                    original_weights[1].clone(),
+                    &[rows, columns],
+                )?),
             ),
         ]);
         let weights = ProgramWeights {
@@ -156,7 +161,7 @@ impl Fixture {
                     unreachable!()
                 };
                 scope.record(
-                    gemm::dense((&mut output).partition([32, 64]), &input, weight)
+                    gemm::dense((&mut output).partition([32, 64]), &input, weight.tensor())
                         .generics(vec![columns.to_string()]),
                 )?;
                 self.arena.buffers[output_slot] = Some(output.reshape(&[lanes * rows])?);

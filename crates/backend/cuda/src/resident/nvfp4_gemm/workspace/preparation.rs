@@ -145,7 +145,7 @@ impl Workspace {
                 .get(&node.inputs[1])
                 .copied()
                 .unwrap_or(LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS)?);
-            let binding = pool_dense::Binding::new(weight, shape, tile);
+            let binding = pool_dense::Binding::new(weight.tensor(), shape, tile);
             if self.pool_dense_strategies.contains_key(&binding) {
                 continue;
             }
@@ -162,7 +162,7 @@ impl Workspace {
             };
             let choice = pool_dense::select(
                 device,
-                weight,
+                weight.tensor(),
                 shape,
                 tile,
                 weights.autotune,
@@ -200,7 +200,7 @@ impl Workspace {
                 elements(graph, node.outputs[0])?,
                 elements(graph, node.inputs[0])?,
             ];
-            let binding = pool_dense::Binding::new(weight, shape, tile);
+            let binding = pool_dense::Binding::new(weight.tensor(), shape, tile);
             if !pool_dense::prompt_searchable(shape)
                 || self.prompt_dense_strategies.contains_key(&binding)
             {
@@ -219,7 +219,7 @@ impl Workspace {
             };
             let choice = pool_dense::select_prompt(
                 device,
-                weight,
+                weight.tensor(),
                 shape,
                 tile,
                 weights.autotune,
@@ -483,7 +483,7 @@ impl Workspace {
                             device,
                             &mut self.vendor_fp8,
                             q,
-                            codes,
+                            codes.tensor(),
                             [rows, outputs, columns],
                         )
                     })
@@ -500,7 +500,7 @@ impl Workspace {
                     let out = api::zeros::<f32>(&[rows, outputs])
                         .sync_on(&device.stream)
                         .map_err(device_error)?;
-                    if let Err(error) = self.vendor_fp8.prepare(q, codes, &out) {
+                    if let Err(error) = self.vendor_fp8.prepare(q, codes.tensor(), &out) {
                         tracing::warn!(target: "infer::tuning", %error, "FP8 diagnostic preparation rejected: native fallback");
                     }
                     Choice::baseline(rows)

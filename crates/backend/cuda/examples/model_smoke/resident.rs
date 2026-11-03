@@ -48,7 +48,7 @@ pub fn prepare(
         projections: model
             .projections
             .iter()
-            .map(|(id, p)| (*id, p.resident()))
+            .map(|(id, p)| (*id, p.clone()))
             .collect(),
         expert_banks: BTreeMap::new(),
         constants: BTreeMap::new(),
@@ -120,12 +120,14 @@ fn prepare_embeddings(
             return Err(Error::unsupported("resident embedding requires BF16"));
         }
         if let Some(projection) = model.projections.get(id) {
-            let super::Projection::Dense(embedding) = projection else {
+            let super::ProjectionWeight::Dense(embedding) = projection else {
                 return Err(Error::unsupported(
                     "tied embedding requires a dense projection",
                 ));
             };
-            weights.embeddings.insert(*id, Arc::clone(embedding));
+            weights
+                .embeddings
+                .insert(*id, Arc::clone(embedding.tensor()));
             continue;
         }
         // Explicit bounded staging: this model's embedding is larger than 2 GiB.
