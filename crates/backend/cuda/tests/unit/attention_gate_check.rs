@@ -1,9 +1,12 @@
 //! The performance gate exercises the production tile selection against an independent oracle.
 use super::DenseAttentionPlan;
 use crate::device::{CudaDevice, device_error};
+use crate::resident::buffers::buffer;
 use crate::vision::program::{AttentionMode, attention_kernel, attention_tiles};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{DenseBuffers, Recording};
+use infer_cuda_kernels::tile::attention::TileAttention;
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_kernel_api::attention::{AttentionDescriptor, AttentionMask};
 use serde::Deserialize;
@@ -149,12 +152,20 @@ fn dense(device: &CudaDevice, case: &Case, q: &[f32], k: &[f32], v: &[f32]) -> R
     let q = upload(q, shapes[0])?;
     let k = upload(k, shapes[1])?;
     let v = upload(v, shapes[2])?;
-    let mut out = api::zeros::<f32>(&shapes[3])
+    let out = api::zeros::<f32>(&shapes[3])
         .sync_on(&device.stream)
         .map_err(device_error)?;
+    let family = TileAttention::new(device.ordinal());
     let graph = Graph::scope(&device.stream, |scope| {
+        let recording = Recording::scope(scope);
+        let buffers = DenseBuffers {
+            out: buffer(&out)?,
+            query: buffer(q.as_ref())?,
+            key: buffer(k.as_ref())?,
+            value: buffer(v.as_ref())?,
+        };
         for _ in 0..super::benchmark::REPEATS {
-            plan.record(scope, &q, &k, &v, &mut out)?;
+            plan.record(&family, &recording, buffers)?;
         }
         Ok(())
     })

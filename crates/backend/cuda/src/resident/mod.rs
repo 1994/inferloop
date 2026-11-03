@@ -9,7 +9,7 @@ pub(crate) mod attention_mma;
 pub(crate) mod attention_oxide;
 pub(crate) mod attention_prefill;
 mod batch_projection;
-mod buffers;
+pub(crate) mod buffers;
 pub(crate) use buffers::buffer as tensor_buffer;
 pub(crate) mod capacity;
 mod capture;
@@ -73,6 +73,7 @@ pub(crate) mod fp8_quant_reduction;
 
 pub(crate) mod pool_gemv;
 
+#[cfg(test)]
 pub(crate) use small_gemm::kernels as small_gemm_kernels;
 
 #[cfg(test)]

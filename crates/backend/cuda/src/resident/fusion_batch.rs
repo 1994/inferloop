@@ -16,7 +16,10 @@ use crate::{
 };
 use cutile::{half::bf16, prelude::*};
 use infer_core::Result;
-use infer_cuda_kernels::contract::{FusionNormBuffers, FusionNormPlan, FusionShape, Recording};
+use infer_cuda_kernels::contract::{
+    Buffer, EmbeddingBatchPlan, FusionNormBuffers, FusionNormPlan, FusionShape, LinearRowsPlan,
+    Recording,
+};
 use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
@@ -164,6 +167,38 @@ impl Workspace {
 }
 
 /// Returns false before recording when this embedding is outside the validated capability.
+/// Gather every lane's embedding row in one launch.
+fn gather(
+    builder: &BatchBuilder<'_>,
+    scope: &Scope,
+    node: &TensorNode,
+    gathered: Buffer<'_, f32>,
+    metadata_batch: Buffer<'_, i32>,
+) -> StdResult<(), DeviceError> {
+    let weight = builder
+        .weights
+        .embeddings
+        .get(&node.inputs[0])
+        .ok_or_else(|| error("fusion batch embedding"))?;
+    builder
+        .weights
+        .kernels
+        .projection
+        .embedding_batch(
+            &Recording::scope(scope),
+            &EmbeddingBatchPlan {
+                dimension: HIDDEN,
+                fields: METADATA_FIELDS,
+                tile: AUX_KERNEL_TILE,
+            },
+            gathered,
+            buffer(weight.as_ref())?,
+            None,
+            metadata_batch,
+        )
+        .map_err(error)
+}
+
 pub(super) fn record(
     builder: &mut BatchBuilder<'_>,
     scope: &Scope,
@@ -200,7 +235,7 @@ pub(super) fn record(
         .iter()
         .map(|&dim| usize::try_from(dim).map_err(error))
         .collect::<StdResult<Vec<_>, _>>()?;
-    let mut output = output.reshape(&[rows, HIDDEN])?;
+    let output = output.reshape(&[rows, HIDDEN])?;
     let Some(super::program::FusionWeights {
         projection: ProjectionWeight::Dense(weight),
         ..
@@ -208,22 +243,16 @@ pub(super) fn record(
     else {
         return Err(error("fusion batch dense capability"));
     };
-    let embedding_weight = builder
-        .weights
-        .embeddings
-        .get(&node.inputs[0])
-        .ok_or_else(|| error("fusion batch embedding"))?;
     let mut gathered = workspace
         .gathered
         .take()
         .ok_or_else(|| error("fusion batch gather"))?;
-    scope.record(
-        super::attention::attention::embedding_batch(
-            (&mut gathered).partition([1, AUX_KERNEL_TILE]),
-            embedding_weight,
-            metadata_batch,
-        )
-        .generics(vec![HIDDEN.to_string(), METADATA_FIELDS.to_string()]),
+    gather(
+        builder,
+        scope,
+        node,
+        buffer(&gathered)?,
+        buffer(metadata_batch)?,
     )?;
     for (lane, meta) in metadata.iter().enumerate().take(rows) {
         // The owned row tensor keeps the gather allocation anchored until it is put back;
@@ -254,22 +283,29 @@ pub(super) fn record(
             .normalized = Some(normalized);
     }
     workspace.gathered = Some(gathered);
-    scope.record(
-        super::linear_batch::batched::dense(
-            (&mut output).partition(TILE),
-            workspace
-                .input
-                .as_ref()
-                .ok_or_else(|| error("fusion batch owner"))?,
-            weight,
+    builder
+        .weights
+        .kernels
+        .projection
+        .linear_rows(
+            &Recording::scope(scope),
+            &LinearRowsPlan {
+                rows,
+                row_tile: TILE[0],
+                output_tile: TILE[1],
+                depth: DEPTH,
+                columns: COLUMNS,
+            },
+            buffer(&output)?,
+            buffer(
+                workspace
+                    .input
+                    .as_ref()
+                    .ok_or_else(|| error("fusion batch owner"))?,
+            )?,
+            buffer(weight.as_ref())?,
         )
-        .generics(vec![
-            bf16::DTYPE.as_str().into(),
-            TILE[1].to_string(),
-            DEPTH.to_string(),
-            COLUMNS.to_string(),
-        ]),
-    )?;
+        .map_err(error)?;
     arena.buffers[slot] = Some(output.reshape(&restore)?);
     #[cfg(test)]
     CAPTURES.set(CAPTURES.get() + 1);
@@ -308,26 +344,23 @@ fn record_wide(
     else {
         return Err(error("fusion batch dense capability"));
     };
-    let Some(delegated) = builder.delegated.as_deref_mut() else {
+    if builder.delegated.is_none() {
         return Ok(false);
-    };
-    let embedding_weight = builder
-        .weights
-        .embeddings
-        .get(&node.inputs[0])
-        .ok_or_else(|| error("fusion batch embedding"))?;
-    let mut gathered = workspace
+    }
+    let gathered = workspace
         .gathered
         .take()
         .ok_or_else(|| error("fusion batch gather"))?;
-    scope.record(
-        super::attention::attention::embedding_batch(
-            (&mut gathered).partition([1, AUX_KERNEL_TILE]),
-            embedding_weight,
-            metadata_batch,
-        )
-        .generics(vec![HIDDEN.to_string(), METADATA_FIELDS.to_string()]),
+    gather(
+        builder,
+        scope,
+        node,
+        buffer(&gathered)?,
+        buffer(metadata_batch)?,
     )?;
+    let Some(delegated) = builder.delegated.as_deref_mut() else {
+        return Ok(false);
+    };
     let input = workspace
         .input
         .take()

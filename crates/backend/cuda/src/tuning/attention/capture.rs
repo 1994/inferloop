@@ -5,17 +5,21 @@ use super::{
 };
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::METADATA_FIELDS;
+use crate::device::{CudaDevice, device_error};
 use crate::resident::attention_mma::Arithmetic;
 use crate::resident::attention_mma::Support;
 use crate::resident::attention_oxide::Support as AttentionOxideSupport;
 use crate::resident::attention_oxide::artifact_identity;
-use crate::{
-    device::{CudaDevice, device_error},
-    resident::attention_prefill::kernels,
-};
+use crate::resident::buffers::kv_cache;
+use crate::resident::tensor_buffer as buffer;
 use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{
+    AppendBuffers, DecodeBuffers, DecodePlan, Kernels, PrefillAppendPlan, PrefillDecodePlan,
+    Recording,
+};
+use infer_cuda_kernels::tile::identity::{AttentionShape, attention_candidates};
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::env::var_os;
 use std::result::Result as StdResult;
@@ -60,79 +64,9 @@ impl Operands {
                 .map_err(device_error)?,
         })
     }
-    fn meta(device: &CudaDevice, s: Shape, choice: Choice) -> Result<Self> {
-        let capacity = s.lanes * 2;
-        let blocks = capacity / KV_BLOCK_TOKENS;
-        Ok(Self {
-            query: Arc::new(
-                api::meta::<f32>(&[s.lanes, s.heads * s.dim])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-            ),
-            append_keys: Arc::new(
-                api::meta::<f32>(&[s.lanes, s.kv_heads, s.dim])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-            ),
-            append_values: Arc::new(
-                api::meta::<f32>(&[s.lanes, s.kv_heads, s.dim])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-            ),
-            metadata: Arc::new(
-                api::meta::<i32>(&[METADATA_FIELDS])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-            ),
-            table: Arc::new(
-                api::meta::<i32>(&[blocks])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-            ),
-            keys: api::meta::<f8e4m3fn>(&[s.kv_heads, capacity, s.dim])
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
-            values: api::meta::<f8e4m3fn>(&[s.kv_heads, capacity, s.dim])
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
-            output: api::meta::<f32>(&output_shape(s, choice))
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
-        })
-    }
-    fn append_generics(s: Shape, capacity: usize) -> Vec<String> {
-        vec![
-            f8e4m3fn::DTYPE.as_str().into(),
-            s.dim.to_string(),
-            capacity.to_string(),
-            "1".into(),
-            KV_BLOCK_TOKENS.to_string(),
-            s.lanes
-                .div_ceil(KV_BLOCK_TOKENS)
-                .next_power_of_two()
-                .to_string(),
-        ]
-    }
-    fn compute_generics(s: Shape, choice: Choice) -> Vec<String> {
-        let mut g = vec![
-            f8e4m3fn::DTYPE.as_str().into(),
-            s.dim.to_string(),
-            (s.heads / s.kv_heads).to_string(),
-        ];
-        if let Some(q) = choice.query_tile() {
-            g.extend([
-                q.to_string(),
-                KV_BLOCK_TOKENS.to_string(),
-                KV_BLOCK_TOKENS.to_string(),
-                "1".into(),
-            ]);
-        } else {
-            g.extend([s.heads.to_string(), KV_BLOCK_TOKENS.to_string()]);
-        }
-        g
-    }
     fn record(
         &mut self,
+        contract: &Kernels,
         scope: &Scope,
         f: &Fixture,
         choice: Choice,
@@ -140,19 +74,30 @@ impl Operands {
         mma: Option<&mut Support>,
     ) -> StdResult<(), DeviceError> {
         let s = f.shape;
-        scope.record(
-            kernels::append(
-                (&mut self.keys).partition([1, f.capacity, s.dim]),
-                (&mut self.values).partition([1, f.capacity, s.dim]),
-                &self.append_keys,
-                &self.append_values,
-                &self.metadata,
-                &self.table,
-                KEY_SCALE,
-                VALUE_SCALE,
+        let recording = Recording::scope(scope);
+        contract
+            .attention
+            .append_prefill(
+                &recording,
+                PrefillAppendPlan {
+                    lanes: s.lanes,
+                    rows: f.capacity,
+                    block: KV_BLOCK_TOKENS,
+                },
+                AppendBuffers {
+                    cache: kv_cache(
+                        (&self.keys, &self.values),
+                        s.kv_heads,
+                        s.dim,
+                        [KEY_SCALE, VALUE_SCALE],
+                    )?,
+                    keys: buffer(self.append_keys.as_ref())?,
+                    values: buffer(self.append_values.as_ref())?,
+                    metadata: buffer(self.metadata.as_ref())?,
+                    table: buffer(self.table.as_ref())?,
+                },
             )
-            .generics(Self::append_generics(s, f.capacity)),
-        )?;
+            .map_err(|error| DeviceError::Internal(error.to_string()))?;
         let window = i32::try_from(f.window).map_err(|e| DeviceError::Internal(e.to_string()))?;
         if let Choice::Mma { variant } = choice {
             mma.ok_or_else(|| DeviceError::Internal("MMA attention missing".into()))?
@@ -188,99 +133,60 @@ impl Operands {
                     window,
                     [KEY_SCALE, VALUE_SCALE],
                 )?;
-        } else if let Some(qt) = choice.query_tile() {
-            let scale = 1.0
-                / f32::from(
-                    u16::try_from(s.dim).map_err(|e| DeviceError::Internal(e.to_string()))?,
-                )
-                .sqrt();
-            scope.record(
-                kernels::decode_tiled(
-                    (&mut self.output).partition([qt, s.dim]),
-                    &self.query,
-                    &self.keys,
-                    &self.values,
-                    &self.metadata,
-                    &self.table,
-                    window,
-                    KEY_SCALE,
-                    VALUE_SCALE,
-                    scale,
-                )
-                .generics(Self::compute_generics(s, choice)),
-            )?;
         } else {
-            scope.record(
-                kernels::decode(
-                    (&mut self.output).partition([1, s.dim]),
-                    &self.query.view(&[s.lanes * s.heads, s.dim])?,
-                    &self.keys,
-                    &self.values,
-                    &self.metadata,
-                    &self.table,
+            let plan = PrefillDecodePlan {
+                decode: DecodePlan {
+                    heads: s.heads,
+                    kv_heads: s.kv_heads,
+                    dim: s.dim,
                     window,
-                    KEY_SCALE,
-                    VALUE_SCALE,
+                    block: KV_BLOCK_TOKENS,
+                },
+                lanes: s.lanes,
+            };
+            let buffers = DecodeBuffers {
+                output: buffer(&self.output)?,
+                query: buffer(self.query.as_ref())?,
+                cache: kv_cache(
+                    (&self.keys, &self.values),
+                    s.kv_heads,
+                    s.dim,
+                    [KEY_SCALE, VALUE_SCALE],
+                )?,
+                metadata: buffer(self.metadata.as_ref())?,
+                table: buffer(self.table.as_ref())?,
+            };
+            choice
+                .query_tile()
+                .map_or_else(
+                    || contract.attention.decode_prefill(&recording, plan, buffers),
+                    |tile| {
+                        contract
+                            .attention
+                            .decode_prefill_tiled(&recording, plan, tile, buffers)
+                    },
                 )
-                .generics(Self::compute_generics(s, choice)),
-            )?;
+                .map_err(|error| DeviceError::Internal(error.to_string()))?;
         }
         Ok(())
     }
-    fn identities(&mut self, device: &CudaDevice, s: Shape, choice: Choice) -> Result<Vec<String>> {
-        let capacity = s.lanes * 2;
-        let append = kernels::append(
-            (&mut self.keys).partition([1, capacity, s.dim]),
-            (&mut self.values).partition([1, capacity, s.dim]),
-            &self.append_keys,
-            &self.append_values,
-            &self.metadata,
-            &self.table,
-            KEY_SCALE,
-            VALUE_SCALE,
-        )
-        .generics(Self::append_generics(s, capacity))
-        .l2_cache_key_on(&device.stream)
-        .map_err(device_error)?;
-        let window = i32::try_from(s.window).map_err(device_error)?;
-        let compute = if let Some(qt) = choice.query_tile() {
-            let scale = 1.0 / f32::from(u16::try_from(s.dim).map_err(device_error)?).sqrt();
-            kernels::decode_tiled(
-                (&mut self.output).partition([qt, s.dim]),
-                &self.query,
-                &self.keys,
-                &self.values,
-                &self.metadata,
-                &self.table,
-                window,
-                KEY_SCALE,
-                VALUE_SCALE,
-                scale,
-            )
-            .generics(Self::compute_generics(s, choice))
-            .l2_cache_key_on(&device.stream)
-            .map_err(device_error)?
-        } else {
-            kernels::decode(
-                (&mut self.output).partition([1, s.dim]),
-                &self
-                    .query
-                    .view(&[s.lanes * s.heads, s.dim])
-                    .map_err(device_error)?,
-                &self.keys,
-                &self.values,
-                &self.metadata,
-                &self.table,
-                window,
-                KEY_SCALE,
-                VALUE_SCALE,
-            )
-            .generics(Self::compute_generics(s, choice))
-            .l2_cache_key_on(&device.stream)
-            .map_err(device_error)?
-        };
-        Ok(vec![append, compute])
-    }
+}
+fn identities(device: &CudaDevice, s: Shape, choice: Choice) -> Result<Vec<String>> {
+    attention_candidates::<f8e4m3fn>(
+        &device.stream,
+        &AttentionShape {
+            heads: s.heads,
+            kv_heads: s.kv_heads,
+            dim: s.dim,
+            lanes: s.lanes,
+            capacity: s.lanes * 2,
+            block: KV_BLOCK_TOKENS,
+            window: s.window,
+            scales: [KEY_SCALE, VALUE_SCALE],
+            metadata_fields: METADATA_FIELDS,
+        },
+        choice.query_tile(),
+    )
 }
 pub(super) struct Captured {
     pub graph: Graph,
@@ -322,8 +228,16 @@ impl Captured {
             None
         };
         let mut operands = Operands::new(device, fixture, choice)?;
+        let contract = device.kernels();
         let graph = Graph::scope(&device.stream, |scope| {
-            operands.record(scope, fixture, choice, oxide.as_ref(), mma.as_mut())
+            operands.record(
+                &contract,
+                scope,
+                fixture,
+                choice,
+                oxide.as_ref(),
+                mma.as_mut(),
+            )
         })
         .map_err(device_error)?;
         Ok(Self {
@@ -348,9 +262,10 @@ impl Captured {
         f: &Fixture,
         support: &AttentionOxideSupport,
     ) -> Result<Graph> {
+        let contract = device.kernels();
         Graph::scope(&device.stream, |scope| {
             self.operands
-                .record(scope, f, Choice::RustSimt, Some(support), None)
+                .record(&contract, scope, f, Choice::RustSimt, Some(support), None)
         })
         .map_err(device_error)
     }
@@ -486,7 +401,7 @@ pub(super) fn fingerprint(device: &CudaDevice, shape: Shape) -> Result<String> {
     if let Some(value) = cached {
         return Ok(value);
     }
-    let mut identities = Vec::new();
+    let mut all = Vec::new();
     for choice in [
         Choice::Simt,
         Choice::Tiled {
@@ -496,13 +411,12 @@ pub(super) fn fingerprint(device: &CudaDevice, shape: Shape) -> Result<String> {
             query_tile: super::QUERY_TILES[1],
         },
     ] {
-        identities
-            .extend(Operands::meta(device, shape, choice)?.identities(device, shape, choice)?);
+        all.extend(identities(device, shape, choice)?);
     }
-    if identities.iter().any(String::is_empty) {
+    if all.iter().any(String::is_empty) {
         return Err(Error::invalid("incomplete attention kernel identity"));
     }
-    let value = format!("{}:{}", context, identities.join(":"));
+    let value = format!("{}:{}", context, all.join(":"));
     cache
         .lock()
         .map_err(|_| Error::invariant("attention identity poisoned"))?
@@ -538,8 +452,7 @@ pub(super) fn native_fingerprint(device: &CudaDevice, shape: Shape) -> Result<St
     {
         return Ok(identity.clone());
     }
-    let identities =
-        Operands::meta(device, shape, Choice::Simt)?.identities(device, shape, Choice::Simt)?;
+    let identities = identities(device, shape, Choice::Simt)?;
     if identities.iter().any(String::is_empty) {
         return Err(Error::invalid("incomplete native attention identity"));
     }

@@ -9,6 +9,7 @@ mod block_mlp;
 mod device_tower;
 mod footprint;
 pub(crate) mod kernels;
+mod launches;
 #[cfg(test)]
 #[path = "../../tests/unit/vision_padding.rs"]
 mod padding_check;

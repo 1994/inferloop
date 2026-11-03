@@ -9,8 +9,9 @@ use super::driver::{Device, Function};
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::kernels::{Projection, WeightRef};
 use crate::contract::plan::{
-    DenseRowsPlan, DownPlan, EmbeddingPlan, Fp4QuantPlan, Fp8QuantPlan, GemmPlan, LastRowsPlan,
-    PoolGemvPlan, PromptPlan, RowsPlan, SplitGemmPlan, THREE_ROWS,
+    DenseRowsPlan, DownPlan, EmbeddingBatchPlan, EmbeddingPlan, Fp4QuantPlan, Fp8QuantPlan,
+    GemmPlan, LastRowsPlan, LinearRowsPlan, PoolGemvPlan, PromptPlan, RowsPlan, SplitGemmPlan,
+    THREE_ROWS,
 };
 use crate::contract::recording::Recording;
 use infer_core::{Error, ErrorCode, Result};
@@ -71,6 +72,29 @@ impl Projection for AotProjection {
         _w: Buffer<'_, Bf16>,
     ) -> Result<()> {
         Err(not_compiled("dense"))
+    }
+
+    fn embedding_batch(
+        &self,
+        _recording: &Recording<'_>,
+        _plan: &EmbeddingBatchPlan,
+        _out: Buffer<'_, f32>,
+        _weight: Buffer<'_, Bf16>,
+        _external: Option<Buffer<'_, f32>>,
+        _metadata: Buffer<'_, i32>,
+    ) -> Result<()> {
+        Err(not_compiled("embedding_batch"))
+    }
+
+    fn linear_rows(
+        &self,
+        _recording: &Recording<'_>,
+        _plan: &LinearRowsPlan,
+        _out: Buffer<'_, f32>,
+        _x: Buffer<'_, f32>,
+        _w: Buffer<'_, Bf16>,
+    ) -> Result<()> {
+        Err(not_compiled("linear_rows"))
     }
 
     fn embedding(

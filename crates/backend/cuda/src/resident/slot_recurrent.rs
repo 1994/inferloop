@@ -242,7 +242,7 @@ pub(super) const fn covers(node: &TensorNode) -> bool {
 }
 
 /// One lane's row of a slot the arena hands out by address.
-fn row_buffer(
+pub(super) fn row_buffer(
     slot: Buffer<'_, f32>,
     lanes: usize,
     lane: usize,

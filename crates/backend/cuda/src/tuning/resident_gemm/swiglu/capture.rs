@@ -18,7 +18,7 @@ use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Fp4QuantKind, Fp4QuantPlan, GemmLoop, GemmPlan, Kernels, Recording,
 };
-use infer_cuda_kernels::tile::projection::nvfp4_gemm as kernels;
+use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;
@@ -229,76 +229,20 @@ fn fingerprint(device: &CudaDevice, shape: ProjectionShape) -> Result<String> {
     if let Some(value) = cached {
         return Ok(value);
     }
-    let [m, n, k] = shape;
-    let mut q = api::meta::<f4e2m1fnx2>(&[m, k / 2])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut qs = api::meta::<f8e4m3fn>(&[m, k / NVFP4_GROUP_SIZE])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let weight = api::meta::<f4e2m1fnx2>(&[n, k / 2])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let weight_scales = api::meta::<f8e4m3fn>(&[n, k / NVFP4_GROUP_SIZE])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut codes = api::meta::<f4e2m1fnx2>(&[m, n / 2])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut scales = api::meta::<f8e4m3fn>(&[m, n / NVFP4_GROUP_SIZE])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut identities = vec![quantizer_key(device, shape, &mut q, &mut qs)?];
-    for config in candidates(shape) {
-        let [tm, tn] = config.tile();
-        identities.push(
-            kernels::packed_swiglu(
-                (&mut codes).partition([tm, tn / 2]),
-                (&mut scales).partition([tm, tn / NVFP4_GROUP_SIZE]),
-                &q,
-                &qs,
-                &weight,
-                &weight_scales,
-                &weight,
-                &weight_scales,
-                1.0,
-                1.0,
-                1.0,
-            )
-            .generics(
-                [k, tm, tn, tn / 2, tn / NVFP4_GROUP_SIZE]
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect(),
-            )
-            .l2_cache_key_on(&device.stream)
-            .map_err(device_error)?,
-        );
-    }
+    let tiles: Vec<_> = candidates(shape).map(GemmConfig::tile).collect();
+    let identities = identity::swiglu_candidates(
+        &device.stream,
+        shape,
+        identity::SwigluSearch {
+            group: NVFP4_GROUP_SIZE,
+            codes_tile: [QUANTIZATION_ROWS, NVFP4_QUANT_CODES_TILE[1]],
+            scales_tile: [QUANTIZATION_ROWS, NVFP4_QUANT_SCALES_TILE[1]],
+            tiles: &tiles,
+        },
+    )?;
     let fingerprint = serde_json::to_string(&identities).map_err(device_error)?;
     memo.lock()
         .map_err(|_| Error::invariant("SwiGLU identity cache poisoned"))?
         .insert((environment, shape), fingerprint.clone());
     Ok(fingerprint)
-}
-
-fn quantizer_key(
-    device: &CudaDevice,
-    shape: ProjectionShape,
-    q: &mut Tensor<f4e2m1fnx2>,
-    qs: &mut Tensor<f8e4m3fn>,
-) -> Result<String> {
-    let [m, _, k] = shape;
-    let input = api::meta::<f32>(&[m, k])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    kernels::quantize_rows(
-        q.partition([QUANTIZATION_ROWS, NVFP4_QUANT_CODES_TILE[1]]),
-        qs.partition([QUANTIZATION_ROWS, NVFP4_QUANT_SCALES_TILE[1]]),
-        &input,
-        1.0,
-    )
-    .generics(vec![k.to_string()])
-    .l2_cache_key_on(&device.stream)
-    .map_err(device_error)
 }

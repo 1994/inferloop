@@ -72,15 +72,6 @@ pub(super) fn error(message: impl Display) -> DeviceError {
     DeviceError::Launch(message.to_string())
 }
 
-fn identity(tensor: &Tensor<f32>) -> Result<TensorView<'_, f32>, DeviceError> {
-    let shape = tensor
-        .shape()
-        .iter()
-        .map(|&dim| usize::try_from(dim).map_err(error))
-        .collect::<Result<Vec<_>, _>>()?;
-    tensor.view(&shape).map_err(error)
-}
-
 /// A draft's embedding and hidden rows through their fusion norm; the reduction width follows
 /// the dimension alone.
 fn record_embedding(
@@ -146,24 +137,8 @@ fn split_plan(widths: &[usize], part: usize, elements: usize) -> Result<SplitPla
 }
 
 impl Capture<'_> {
-    /// Activation inputs resolve per mode; weight constants keep their own shape.
-    pub fn input(&self, id: TensorId) -> Result<TensorView<'_, f32>, DeviceError> {
-        if let Some(value) = self.weights.constants.get(&id) {
-            return identity(value);
-        }
-        let tensor = self.arena.get(id).map_err(error)?;
-        match self.mode {
-            CaptureMode::Flat => identity(tensor),
-            CaptureMode::Batched
-            | CaptureMode::Pooled
-            | CaptureMode::Verification { .. }
-            | CaptureMode::Prefill
-            | CaptureMode::PrefillRotary => tensor.view(&[tensor.size()]).map_err(error),
-            CaptureMode::Row(lane) => self.arena.row(id, lane).map_err(error),
-        }
-    }
-
-    /// [`Self::input`] as a kernel operand: a lane's row sits inside its batched slot.
+    /// An activation or weight constant as a kernel operand: a lane's row sits inside its batched
+    /// slot.
     pub(super) fn input_buffer(&self, id: TensorId) -> Result<Buffer<'static, f32>, DeviceError> {
         if let Some(value) = self.weights.constants.get(&id) {
             return Ok(region(value.device_pointer().cu_deviceptr(), value.size()));

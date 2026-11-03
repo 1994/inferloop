@@ -130,8 +130,7 @@ fn resolve(
     {
         return Ok(());
     }
-    let buffers = Buffers::metadata(device, shape)?;
-    let key = buffers.key(device, shape)?;
+    let key = Buffers::key(device, shape)?;
     let path = super::table_path();
     let table = if key.driver_build.is_some() {
         super::resolve_table(path.as_deref())?

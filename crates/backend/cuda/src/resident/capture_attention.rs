@@ -1,5 +1,5 @@
 use super::{
-    attention::attention,
+    buffers::{buffer, kv_cache},
     capture::{Capture, CaptureMode, error},
 };
 use crate::constants::ATTENTION_SPLIT_THRESHOLD;
@@ -7,6 +7,11 @@ use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::WIDE_PREFILL_LANES;
 use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::{
+    AppendBuffers, DecodeBuffers, DecodePlan, KvCache, KvElement, PrefillAppendPlan,
+    PrefillDecodePlan, Recording,
+};
+use infer_cuda_kernels::tile::runtime::Element;
 use infer_ir::{TensorNode, TensorOp};
 
 type AttentionResult<E> = Result<(Tensor<f32>, Tensor<E>, Tensor<E>), DeviceError>;
@@ -32,34 +37,15 @@ impl Capture<'_> {
             .ok_or_else(|| error("missing FP8 attention state"))?;
         // A paged slot's cache holds the pool's physical rows, not one sequence's capacity.
         let rows = keys.size() / (kv_heads * head_dim);
-        let mut keys = keys.reshape(&[kv_heads, rows, head_dim])?;
-        let mut values = values.reshape(&[kv_heads, rows, head_dim])?;
-        let result = self
-            .scope
-            .record(
-                attention::append(
-                    (&mut keys).partition([1, rows, head_dim]),
-                    (&mut values).partition([1, rows, head_dim]),
-                    &self.input(node.inputs[1])?.view(&[kv_heads, head_dim])?,
-                    &self.input(node.inputs[2])?.view(&[kv_heads, head_dim])?,
-                    self.metadata,
-                    self.table,
-                    scales[0],
-                    scales[1],
-                )
-                .generics(vec![
-                    f8e4m3fn::DTYPE.as_str().into(),
-                    head_dim.to_string(),
-                    rows.to_string(),
-                    "1".into(),
-                ]),
-            )
-            .map(|_| ());
+        let keys = keys.reshape(&[kv_heads, rows, head_dim])?;
+        let values = values.reshape(&[kv_heads, rows, head_dim])?;
+        let result = kv_cache((&keys, &values), kv_heads, head_dim, scales)
+            .and_then(|cache| self.record_append(node, cache));
         self.fp8_states.insert(id, (keys, values));
         result
     }
 
-    pub fn record_attention<E: DType>(
+    pub fn record_attention<E: DType + Element<Marker: KvElement>>(
         &mut self,
         node: &TensorNode,
         output: Tensor<f32>,
@@ -84,82 +70,60 @@ impl Capture<'_> {
         }
         // A paged slot's cache holds the pool's physical rows, not one sequence's capacity.
         let rows = keys.size() / (kv_heads * head_dim);
-        let mut keys = keys.reshape(&[kv_heads, rows, head_dim])?;
-        let mut values = values.reshape(&[kv_heads, rows, head_dim])?;
-        self.scope.record(
-            attention::append(
-                (&mut keys).partition([1, rows, head_dim]),
-                (&mut values).partition([1, rows, head_dim]),
-                &self.input(node.inputs[1])?.view(&[kv_heads, head_dim])?,
-                &self.input(node.inputs[2])?.view(&[kv_heads, head_dim])?,
-                self.metadata,
-                self.table,
-                scales[0],
-                scales[1],
-            )
-            .generics(vec![
-                E::DTYPE.as_str().into(),
-                head_dim.to_string(),
-                rows.to_string(),
-                i32::from(E::DTYPE != f32::DTYPE).to_string(),
-            ]),
-        )?;
-        let mut output = output.reshape(&[query_heads, head_dim])?;
+        let keys = keys.reshape(&[kv_heads, rows, head_dim])?;
+        let values = values.reshape(&[kv_heads, rows, head_dim])?;
+        let cache = kv_cache((&keys, &values), kv_heads, head_dim, scales)?;
+        self.record_append(node, cache)?;
+        let output = output.reshape(&[query_heads, head_dim])?;
+        let plan = DecodePlan {
+            heads: query_heads,
+            kv_heads,
+            dim: head_dim,
+            window: i32::try_from(window.unwrap_or(0)).map_err(error)?,
+            block: KV_BLOCK_TOKENS,
+        };
+        let buffers = DecodeBuffers {
+            output: buffer(&output)?,
+            query: self.input_buffer(node.inputs[0])?,
+            cache,
+            metadata: buffer(self.metadata)?,
+            table: buffer(self.table)?,
+        };
+        let recording = Recording::scope(self.scope);
         if self.attention.supports(query_heads, head_dim)
             && window.is_none_or(|w| w >= ATTENTION_SPLIT_THRESHOLD)
         {
-            let query = if let Some(query) = self.weights.constants.get(&node.inputs[0]) {
-                query.view(&[query_heads * head_dim])?
-            } else {
-                match self.mode {
-                    CaptureMode::Row(lane) => {
-                        self.arena.row(node.inputs[0], lane).map_err(error)?
-                    }
-                    _ => self
-                        .arena
-                        .get(node.inputs[0])
-                        .map_err(error)?
-                        .view(&[query_heads * head_dim])?,
-                }
-            };
-            self.attention.record(
-                self.scope,
-                &mut output,
-                &query.view(&[query_heads, head_dim])?,
-                &keys,
-                &values,
-                self.metadata,
-                self.table,
-                query_heads,
-                kv_heads,
-                head_dim,
-                i32::try_from(window.unwrap_or(0)).map_err(error)?,
-                scales,
-            )?;
-            return Ok((output, keys, values));
+            self.attention
+                .record(&*self.weights.kernels.attention, &recording, plan, buffers)?;
+        } else {
+            self.weights
+                .kernels
+                .attention
+                .decode(&recording, plan, buffers)
+                .map_err(error)?;
         }
-        self.scope.record(
-            attention::decode(
-                (&mut output).partition([1, head_dim]),
-                &self.input(node.inputs[0])?.view(&[query_heads, head_dim])?,
-                &keys,
-                &values,
-                self.metadata,
-                self.table,
-                i32::try_from(window.unwrap_or(0)).map_err(error)?,
-                scales[0],
-                scales[1],
-            )
-            .generics(vec![
-                E::DTYPE.as_str().into(),
-                head_dim.to_string(),
-                (query_heads / kv_heads).to_string(),
-                KV_BLOCK_TOKENS.to_string(),
-            ]),
-        )?;
         Ok((output, keys, values))
     }
-    fn record_prefill_attention<E: DType>(
+
+    /// Append one lane's key and value row.
+    fn record_append(&self, node: &TensorNode, cache: KvCache<'_>) -> Result<(), DeviceError> {
+        self.weights
+            .kernels
+            .attention
+            .append(
+                &Recording::scope(self.scope),
+                AppendBuffers {
+                    cache,
+                    keys: self.input_buffer(node.inputs[1])?,
+                    values: self.input_buffer(node.inputs[2])?,
+                    metadata: buffer(self.metadata)?,
+                    table: buffer(self.table)?,
+                },
+            )
+            .map_err(error)
+    }
+
+    fn record_prefill_attention<E: DType + Element<Marker: KvElement>>(
         &mut self,
         node: &TensorNode,
         output: Tensor<f32>,
@@ -167,7 +131,6 @@ impl Capture<'_> {
         values: Tensor<E>,
         scales: [f32; 2],
     ) -> AttentionResult<E> {
-        use super::attention_prefill::kernels;
         let TensorOp::Attention {
             kv_heads, head_dim, ..
         } = node.op
@@ -177,8 +140,8 @@ impl Capture<'_> {
         let lanes = self.arena.lanes();
         // A paged slot's cache holds the pool's physical rows, not one sequence's capacity.
         let rows = keys.size() / (kv_heads * head_dim);
-        let mut keys = keys.reshape(&[kv_heads, rows, head_dim])?;
-        let mut values = values.reshape(&[kv_heads, rows, head_dim])?;
+        let keys = keys.reshape(&[kv_heads, rows, head_dim])?;
+        let values = values.reshape(&[kv_heads, rows, head_dim])?;
         // A CTA owns one physical page, including its unmodified tail. Narrow
         // graphs retain the whole-head loop rather than launching idle pages.
         let append_rows = if E::DTYPE == f8e4m3fn::DTYPE
@@ -189,35 +152,29 @@ impl Capture<'_> {
         } else {
             rows
         };
-        let lookup = lanes.div_ceil(KV_BLOCK_TOKENS).next_power_of_two();
-        self.scope.record(
-            kernels::append(
-                (&mut keys).partition([1, append_rows, head_dim]),
-                (&mut values).partition([1, append_rows, head_dim]),
-                &self
-                    .input(node.inputs[1])?
-                    .view(&[lanes, kv_heads, head_dim])?,
-                &self
-                    .input(node.inputs[2])?
-                    .view(&[lanes, kv_heads, head_dim])?,
-                self.metadata,
-                self.table,
-                scales[0],
-                scales[1],
+        self.weights
+            .kernels
+            .attention
+            .append_prefill(
+                &Recording::scope(self.scope),
+                PrefillAppendPlan {
+                    lanes,
+                    rows: append_rows,
+                    block: KV_BLOCK_TOKENS,
+                },
+                AppendBuffers {
+                    cache: kv_cache((&keys, &values), kv_heads, head_dim, scales)?,
+                    keys: self.input_buffer(node.inputs[1])?,
+                    values: self.input_buffer(node.inputs[2])?,
+                    metadata: buffer(self.metadata)?,
+                    table: buffer(self.table)?,
+                },
             )
-            .generics(vec![
-                E::DTYPE.as_str().into(),
-                head_dim.to_string(),
-                append_rows.to_string(),
-                i32::from(E::DTYPE != f32::DTYPE).to_string(),
-                KV_BLOCK_TOKENS.to_string(),
-                lookup.to_string(),
-            ]),
-        )?;
+            .map_err(error)?;
         self.record_prefill_decode(node, output, keys, values, scales)
     }
 
-    fn record_prefill_decode<E: DType>(
+    fn record_prefill_decode<E: DType + Element<Marker: KvElement>>(
         &mut self,
         node: &TensorNode,
         output: Tensor<f32>,
@@ -277,15 +234,14 @@ impl Capture<'_> {
         }
         self.record_prefill_legacy(node, output, keys, values, scales)
     }
-    fn record_prefill_legacy<E: DType>(
+    fn record_prefill_legacy<E: DType + Element<Marker: KvElement>>(
         &self,
         node: &TensorNode,
-        mut output: Tensor<f32>,
+        output: Tensor<f32>,
         keys: Tensor<E>,
         values: Tensor<E>,
         scales: [f32; 2],
     ) -> AttentionResult<E> {
-        use super::attention_prefill::kernels;
         let TensorOp::Attention {
             query_heads,
             kv_heads,
@@ -296,67 +252,34 @@ impl Capture<'_> {
             return Err(error("expected attention"));
         };
         let lanes = self.arena.lanes();
+        let plan = PrefillDecodePlan {
+            decode: DecodePlan {
+                heads: query_heads,
+                kv_heads,
+                dim: head_dim,
+                window: i32::try_from(window.unwrap_or(0)).map_err(error)?,
+                block: KV_BLOCK_TOKENS,
+            },
+            lanes,
+        };
+        let buffers = DecodeBuffers {
+            output: buffer(&output)?,
+            query: self.input_buffer(node.inputs[0])?,
+            cache: kv_cache((&keys, &values), kv_heads, head_dim, scales)?,
+            metadata: buffer(self.metadata)?,
+            table: buffer(self.table)?,
+        };
+        let recording = Recording::scope(self.scope);
+        let attention = &self.weights.kernels.attention;
         // Query/head axes remain separate so each CTA addresses its own KV head.
         // Selection was measured and independently checked before graph capture.
-        if let Some(query_tile) =
-            self.attention
-                .prefill_query_tile(node.outputs[0], lanes, E::DTYPE == f8e4m3fn::DTYPE)
-        {
-            let scale = 1.0f32 / f32::from(u16::try_from(head_dim).map_err(error)?).sqrt();
-            let query = self.input(node.inputs[0])?;
-            let query = query.view(&[lanes, query_heads * head_dim])?;
-            let mut flat = output.reshape(&[lanes, query_heads * head_dim])?;
-            self.scope.record(
-                kernels::decode_tiled(
-                    (&mut flat).partition([query_tile, head_dim]),
-                    &query,
-                    &keys,
-                    &values,
-                    self.metadata,
-                    self.table,
-                    i32::try_from(window.unwrap_or(0)).map_err(error)?,
-                    scales[0],
-                    scales[1],
-                    scale,
-                )
-                .generics(vec![
-                    E::DTYPE.as_str().into(),
-                    head_dim.to_string(),
-                    (query_heads / kv_heads).to_string(),
-                    query_tile.to_string(),
-                    KV_BLOCK_TOKENS.to_string(),
-                    KV_BLOCK_TOKENS.to_string(),
-                    "1".into(),
-                ]),
-            )?;
-            return Ok((
-                flat.reshape(&[lanes * query_heads, head_dim])?,
-                keys,
-                values,
-            ));
-        }
-        self.scope.record(
-            kernels::decode(
-                (&mut output).partition([1, head_dim]),
-                &self
-                    .input(node.inputs[0])?
-                    .view(&[lanes * query_heads, head_dim])?,
-                &keys,
-                &values,
-                self.metadata,
-                self.table,
-                i32::try_from(window.unwrap_or(0)).map_err(error)?,
-                scales[0],
-                scales[1],
+        self.attention
+            .prefill_query_tile(node.outputs[0], lanes, E::DTYPE == f8e4m3fn::DTYPE)
+            .map_or_else(
+                || attention.decode_prefill(&recording, plan, buffers),
+                |tile| attention.decode_prefill_tiled(&recording, plan, tile, buffers),
             )
-            .generics(vec![
-                E::DTYPE.as_str().into(),
-                head_dim.to_string(),
-                (query_heads / kv_heads).to_string(),
-                query_heads.to_string(),
-                KV_BLOCK_TOKENS.to_string(),
-            ]),
-        )?;
+            .map_err(error)?;
         Ok((output, keys, values))
     }
 }

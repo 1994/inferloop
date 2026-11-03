@@ -5,7 +5,7 @@
 )]
 use super::capture::error;
 use cutile::prelude::*;
-use infer_cuda_kernels::contract::Buffer;
+use infer_cuda_kernels::contract::{Buffer, KvCache, KvElement};
 use infer_cuda_kernels::tile::runtime::Element;
 
 /// A buffer over one tensor.
@@ -23,8 +23,23 @@ pub fn buffer<T: DType + Element>(
     Ok(unsafe { Buffer::new(tensor.device_pointer().cu_deviceptr(), tensor.size()) })
 }
 
+/// A KV pair as a launch addresses it, in `groups` of `[rows, dim]`.
+pub fn kv_cache<'a, E: DType + Element<Marker: KvElement>>(
+    (keys, values): (&'a Tensor<E>, &'a Tensor<E>),
+    groups: usize,
+    dim: usize,
+    scales: [f32; 2],
+) -> Result<KvCache<'a>, DeviceError> {
+    Ok(KvCache {
+        buffers: E::Marker::kv(buffer(keys)?, buffer(values)?),
+        groups,
+        dim,
+        scales,
+    })
+}
+
 /// A buffer over part of a program-owned allocation, which a view does not expose by address.
-pub(super) const fn region(address: u64, len: usize) -> Buffer<'static, f32> {
+pub(super) const fn region<T>(address: u64, len: usize) -> Buffer<'static, T> {
     // SAFETY: as for [`buffer`]; callers derive both from a contiguous program-owned tensor.
     unsafe { Buffer::new(address, len) }
 }

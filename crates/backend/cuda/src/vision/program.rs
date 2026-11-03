@@ -1,20 +1,23 @@
 //! Captured vision-encoder programs.
 use super::block_mlp;
 use super::device_tower;
-use super::{VisionWeights, kernels, weights::AttentionLayer, weights::half_tile};
+use super::launches::{Launches, families};
+use super::{VisionWeights, weights::AttentionLayer, weights::half_tile};
 #[cfg(test)]
 use crate::attention::benchmark::REPEATS;
 #[cfg(test)]
 use crate::attention::benchmark::measure;
-use crate::attention::kernels::sdpa::attention as sdpa_attention;
 use crate::attention::tile_rows;
 use crate::device::vision_position::DeviceTaps;
 use crate::device::{CudaDevice, device_error};
-use cutile::cuda_async::cuda_graph::Scope;
+use crate::resident::buffers::buffer;
 use cutile::cuda_async::error::DeviceError;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::{
+    DenseBuffers, DensePlan, Gelu, Pack, VisionDense, VisionNorm, VisionRope,
+};
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_models::vision::PositionTaps;
 use infer_models::vision::head_dim;
@@ -44,8 +47,6 @@ pub(super) const fn column_tile() -> usize {
     COLUMN_TILE
 }
 pub(super) const ATTENTION_CONFIG_FIELDS: usize = 3;
-/// Power-of-two pack segment in the compact attention boundary.
-const PACK_SEGMENT: usize = 16;
 /// Compact physical half/full head and qualified wide pack width.
 const COMPACT_HALF: usize = 48;
 const COMPACT_REAL_HALF: usize = 36;
@@ -203,23 +204,21 @@ impl StagedPositions {
 
     fn record(
         &self,
-        scope: &Scope,
+        launches: &Launches<'_>,
         embedded: &Tensor<f32>,
         output: &mut Tensor<f32>,
         hidden: usize,
     ) -> StdResult<(), DeviceError> {
         if let Some(positions) = &self.host {
-            scope.record(
-                kernels::encoder::add(
-                    output.partition([TOKEN_TILE, COLUMN_TILE]),
-                    embedded,
-                    positions,
-                )
-                .generics(vec![hidden.to_string()]),
+            launches.add(
+                hidden,
+                buffer(output)?,
+                buffer(embedded)?,
+                buffer(positions)?,
             )?;
         }
         if let Some(taps) = &self.device {
-            taps.record(scope, embedded, output)?;
+            taps.record(launches.scope(), embedded, output)?;
         }
         Ok(())
     }
@@ -260,7 +259,7 @@ fn patch_embed_with_positions(
     let positions = StagedPositions::new(device, encoder, weights, positions, patch_count, padded)?;
 
     let input = stage_patches(device, patches, padded_elements, padded, width)?;
-    let mut embedded = api::zeros::<f32>(&[padded, hidden])
+    let embedded = api::zeros::<f32>(&[padded, hidden])
         .sync_on(&device.stream)
         .map_err(device_error)?;
     let mut output = if positions.present() {
@@ -272,24 +271,21 @@ fn patch_embed_with_positions(
     } else {
         None
     };
-    let weight = weights
-        .get("patch_embed.proj.weight")?
-        .view(&[hidden, width])
-        .map_err(device_error)?;
+    let weight = weights.get("patch_embed.proj.weight")?;
     let bias = weights.get("patch_embed.proj.bias")?;
 
+    let (family, dense) = families(device);
     let graph = Graph::scope(&device.stream, |scope| {
-        scope.record(
-            kernels::encoder::dense_bias(
-                (&mut embedded).partition([TOKEN_TILE, COLUMN_TILE]),
-                &input,
-                &weight,
-                bias,
-            )
-            .generics(vec![width.to_string()]),
-        )?;
+        let launches = Launches::new(&*family, &*dense, scope);
+        launches.dense_bias(VisionDense {
+            out: buffer(&embedded)?,
+            input: buffer(&input)?,
+            weight: buffer(weight)?,
+            bias: buffer(bias)?,
+            columns: width,
+        })?;
         if let Some(output) = output.as_mut() {
-            positions.record(scope, &embedded, output, hidden)?;
+            positions.record(&launches, &embedded, output, hidden)?;
         }
         Ok(())
     })
@@ -395,22 +391,20 @@ pub fn project_with(
     let mut values = vec![0.0f32; padded * in_features];
     values[..input.len()].copy_from_slice(input);
     let tensor = device.upload(values, &[padded, in_features])?;
-    let mut output = api::zeros::<f32>(&[padded, out_features])
+    let output = api::zeros::<f32>(&[padded, out_features])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let view = weight
-        .view(&[out_features, in_features])
-        .map_err(device_error)?;
+    let view = weight;
+    let (family, dense) = families(device);
     let graph = Graph::scope(&device.stream, |scope| {
-        scope.record(
-            kernels::encoder::dense_bias(
-                (&mut output).partition([TOKEN_TILE, COLUMN_TILE]),
-                &tensor,
-                &view,
-                bias,
-            )
-            .generics(vec![in_features.to_string()]),
-        )?;
+        let launches = Launches::new(&*family, &*dense, scope);
+        launches.dense_bias(VisionDense {
+            out: buffer(&output)?,
+            input: buffer(&tensor)?,
+            weight: buffer(view)?,
+            bias: buffer(bias)?,
+            columns: in_features,
+        })?;
         Ok(())
     })
     .map_err(device_error)?;
@@ -496,27 +490,16 @@ fn elementwise(
     let mut values = vec![0.0f32; padded * columns];
     values[..input.len()].copy_from_slice(input);
     let tensor = device.upload(values, &[padded, columns])?;
-    let mut output = api::zeros::<f32>(&[padded, columns])
+    let output = api::zeros::<f32>(&[padded, columns])
         .sync_on(&device.stream)
         .map_err(device_error)?;
+    let (family, dense) = families(device);
     let graph = Graph::scope(&device.stream, |scope| {
-        let generics = vec![columns.to_string()];
+        let launches = Launches::new(&*family, &*dense, scope);
         if erf {
-            scope.record(
-                kernels::encoder::gelu_erf(
-                    (&mut output).partition([TOKEN_TILE, COLUMN_TILE]),
-                    &tensor,
-                )
-                .generics(generics),
-            )?;
+            launches.gelu(Gelu::Erf, columns, buffer(&output)?, buffer(&tensor)?)?;
         } else {
-            scope.record(
-                kernels::encoder::gelu_tanh(
-                    (&mut output).partition([TOKEN_TILE, COLUMN_TILE]),
-                    &tensor,
-                )
-                .generics(generics),
-            )?;
+            launches.gelu(Gelu::Tanh, columns, buffer(&output)?, buffer(&tensor)?)?;
         }
         Ok(())
     })
@@ -547,18 +530,13 @@ fn elementwise_sum(
     other[..right.len()].copy_from_slice(right);
     let first = device.upload(values, &[padded, columns])?;
     let second = device.upload(other, &[padded, columns])?;
-    let mut output = api::zeros::<f32>(&[padded, columns])
+    let output = api::zeros::<f32>(&[padded, columns])
         .sync_on(&device.stream)
         .map_err(device_error)?;
+    let (family, dense) = families(device);
     let graph = Graph::scope(&device.stream, |scope| {
-        scope.record(
-            kernels::encoder::add(
-                (&mut output).partition([TOKEN_TILE, COLUMN_TILE]),
-                &first,
-                &second,
-            )
-            .generics(vec![columns.to_string()]),
-        )?;
+        let launches = Launches::new(&*family, &*dense, scope);
+        launches.add(columns, buffer(&output)?, buffer(&first)?, buffer(&second)?)?;
         Ok(())
     })
     .map_err(device_error)?;
@@ -594,22 +572,23 @@ pub fn layernorm(
             .copy_from_slice(&input[row * hidden..(row + 1) * hidden]);
     }
     let tensor = device.upload(values, &[rows, tile])?;
-    let mut output = api::zeros::<f32>(&[rows * tile])
+    let output = api::zeros::<f32>(&[rows * tile])
         .sync_on(&device.stream)
         .map_err(device_error)?;
     let weight = weights.get(weight_slot)?;
     let bias = weights.get(bias_slot)?;
+    let (family, dense) = families(device);
     let graph = Graph::scope(&device.stream, |scope| {
-        scope.record(
-            kernels::encoder::layernorm(
-                (&mut output).partition([tile]),
-                &tensor,
-                weight,
-                bias,
-                encoder.norm_epsilon,
-            )
-            .generics(vec![hidden.to_string(), tile.to_string()]),
-        )?;
+        let launches = Launches::new(&*family, &*dense, scope);
+        launches.layernorm(VisionNorm {
+            out: buffer(&output)?,
+            input: buffer(&tensor)?,
+            weight: buffer(weight)?,
+            bias: buffer(bias)?,
+            dim: hidden,
+            tile,
+            epsilon: encoder.norm_epsilon,
+        })?;
         Ok(())
     })
     .map_err(device_error)?;
@@ -692,13 +671,6 @@ pub enum AttentionMode {
 }
 
 impl AttentionMode {
-    const fn generic(self) -> &'static str {
-        match self {
-            Self::Online => "1",
-            Self::Exact => "0",
-        }
-    }
-
     /// Mode selected by `INFER_ATTENTION_MODE`, defaulting to the streaming form.
     #[must_use]
     pub fn from_environment() -> Self {
@@ -787,62 +759,53 @@ pub fn attention_with(
     let mut v = activation(device, padded, projections)?;
     let mut rotated_query = activation(device, padded, projections)?;
     let mut rotated_key = activation(device, padded, projections)?;
-    let mut attended = activation(device, padded, projections)?;
-    let mut output = activation(device, padded, hidden)?;
+    let attended = activation(device, padded, projections)?;
+    let output = activation(device, padded, hidden)?;
     let tokens = i32::try_from(tokens).map_err(device_error)?;
     let scale = attention_scale(encoder)?;
+    let (family, dense) = families(device);
     let graph = Graph::scope(&device.stream, |scope| {
+        let launches = Launches::new(&*family, &*dense, scope);
         for (weight, bias, target) in [
             (&layer_weights.q.0, &layer_weights.q.1, &mut q),
             (&layer_weights.k.0, &layer_weights.k.1, &mut k),
             (&layer_weights.v.0, &layer_weights.v.1, &mut v),
         ] {
-            scope.record(
-                kernels::encoder::dense_bias(
-                    target.partition([TOKEN_TILE, COLUMN_TILE]),
-                    &tensor,
-                    weight,
-                    bias,
-                )
-                .generics(vec![hidden.to_string()]),
-            )?;
+            launches.dense_bias(VisionDense {
+                out: buffer(target)?,
+                input: buffer(&tensor)?,
+                weight: buffer(weight)?,
+                bias: buffer(bias)?,
+                columns: hidden,
+            })?;
         }
         for (input, output) in [(&q, &mut rotated_query), (&k, &mut rotated_key)] {
-            scope.record(
-                kernels::encoder::rope(
-                    output.partition([TOKEN_TILE, half]),
-                    input,
-                    &cosines,
-                    &sines,
-                )
-                .generics(vec![half.to_string()]),
-            )?;
+            launches.rope(VisionRope {
+                out: buffer(output)?,
+                input: buffer(input)?,
+                cosines: buffer(&cosines)?,
+                sines: buffer(&sines)?,
+                rows: padded,
+                half,
+                real_half: None,
+            })?;
         }
-        scope.record(
-            sdpa_attention(
-                (&mut attended).partition([tiles[0], width]),
-                &rotated_query,
-                &rotated_key,
-                &v,
-                tokens,
-                scale,
-                frame_tokens,
-                tokens,
-                0,
-                0,
-                0,
-            )
-            .generics(attention_generics(width, mode, tiles)),
+        launches.dense(
+            dense_plan(width, mode, tiles, padded, tokens, scale, frame_tokens),
+            DenseBuffers {
+                out: buffer(&attended)?,
+                query: buffer(&rotated_query)?,
+                key: buffer(&rotated_key)?,
+                value: buffer(&v)?,
+            },
         )?;
-        scope.record(
-            kernels::encoder::dense_bias(
-                (&mut output).partition([TOKEN_TILE, COLUMN_TILE]),
-                &attended,
-                &layer_weights.proj.0,
-                &layer_weights.proj.1,
-            )
-            .generics(vec![projections.to_string()]),
-        )?;
+        launches.dense_bias(VisionDense {
+            out: buffer(&output)?,
+            input: buffer(&attended)?,
+            weight: buffer(&layer_weights.proj.0)?,
+            bias: buffer(&layer_weights.proj.1)?,
+            columns: projections,
+        })?;
         Ok(())
     })
     .map_err(device_error)?;
@@ -970,82 +933,70 @@ fn compact_attention_launch(
     projections: usize,
     mode: AttentionMode,
 ) -> Result<Vec<f32>> {
-    let mut output = buffers
+    let padded = usize::try_from(tensor.shape()[0]).map_err(device_error)?;
+    let output = buffers
         .output
         .take()
         .ok_or_else(|| Error::invalid("compact attention output buffer"))?;
+    let (family, dense) = families(device);
     let graph = Graph::scope(&device.stream, |scope| {
+        let launches = Launches::new(&*family, &*dense, scope);
         for (weight, bias, target) in [
             (&layer_weights.q.0, &layer_weights.q.1, &mut buffers.q),
             (&layer_weights.k.0, &layer_weights.k.1, &mut buffers.k),
             (&layer_weights.v.0, &layer_weights.v.1, &mut buffers.v),
         ] {
-            scope.record(
-                kernels::encoder::dense_bias(
-                    target.partition([TOKEN_TILE, COLUMN_TILE]),
-                    tensor,
-                    weight,
-                    bias,
-                )
-                .generics(vec![hidden.to_string()]),
-            )?;
+            launches.dense_bias(VisionDense {
+                out: buffer(target)?,
+                input: buffer(tensor)?,
+                weight: buffer(weight)?,
+                bias: buffer(bias)?,
+                columns: hidden,
+            })?;
         }
         for (input, output) in [
             (&buffers.q, &mut buffers.q_rot),
             (&buffers.k, &mut buffers.k_rot),
         ] {
-            scope.record(
-                kernels::encoder::rope_indexed(
-                    output.partition([TOKEN_TILE, PACK_SEGMENT]),
-                    input,
-                    cosines,
-                    sines,
-                )
-                .generics(vec![
-                    COMPACT_HALF.to_string(),
-                    COMPACT_REAL_HALF.to_string(),
-                ]),
-            )?;
+            launches.rope(VisionRope {
+                out: buffer(output)?,
+                input: buffer(input)?,
+                cosines: buffer(cosines)?,
+                sines: buffer(sines)?,
+                rows: padded,
+                half: COMPACT_HALF,
+                real_half: Some(COMPACT_REAL_HALF),
+            })?;
         }
         for (input, output) in [
             (&buffers.q_rot, &mut buffers.q_wide),
             (&buffers.k_rot, &mut buffers.k_wide),
             (&buffers.v, &mut buffers.v_wide),
         ] {
-            scope.record(kernels::encoder::pack_wide(
-                output.partition([TOKEN_TILE, PACK_SEGMENT]),
-                input,
-            ))?;
+            launches.pack(Pack::Wide, padded, buffer(output)?, buffer(input)?)?;
         }
-        scope.record(
-            sdpa_attention(
-                (&mut buffers.attended).partition([tiles[0], WIDE_WIDTH]),
-                &buffers.q_wide,
-                &buffers.k_wide,
-                &buffers.v_wide,
-                tokens,
-                scale,
-                frame_tokens,
-                tokens,
-                0,
-                0,
-                0,
-            )
-            .generics(attention_generics(WIDE_WIDTH, mode, tiles)),
+        launches.dense(
+            dense_plan(WIDE_WIDTH, mode, tiles, padded, tokens, scale, frame_tokens),
+            DenseBuffers {
+                out: buffer(&buffers.attended)?,
+                query: buffer(&buffers.q_wide)?,
+                key: buffer(&buffers.k_wide)?,
+                value: buffer(&buffers.v_wide)?,
+            },
         )?;
-        scope.record(kernels::encoder::pack_compact(
-            (&mut buffers.compact_out).partition([TOKEN_TILE, PACK_SEGMENT]),
-            &buffers.attended,
-        ))?;
-        scope.record(
-            kernels::encoder::dense_bias(
-                (&mut output).partition([TOKEN_TILE, COLUMN_TILE]),
-                &buffers.compact_out,
-                &layer_weights.proj.0,
-                &layer_weights.proj.1,
-            )
-            .generics(vec![projections.to_string()]),
+        launches.pack(
+            Pack::Compact,
+            padded,
+            buffer(&buffers.compact_out)?,
+            buffer(&buffers.attended)?,
         )?;
+        launches.dense_bias(VisionDense {
+            out: buffer(&output)?,
+            input: buffer(&buffers.compact_out)?,
+            weight: buffer(&layer_weights.proj.0)?,
+            bias: buffer(&layer_weights.proj.1)?,
+            columns: projections,
+        })?;
         Ok(())
     })
     .map_err(device_error)?;
@@ -1273,40 +1224,35 @@ pub fn attention_kernel(
     let mut rotated_key = api::zeros::<f32>(&[padded, projections])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let mut output = api::zeros::<f32>(&[padded, projections])
+    let output = api::zeros::<f32>(&[padded, projections])
         .sync_on(&device.stream)
         .map_err(device_error)?;
     let scale = attention_scale_from_width(real_width);
     let tokens = i32::try_from(tokens).map_err(device_error)?;
+    let (family, dense) = families(device);
     let graph = Graph::scope(&device.stream, |scope| {
+        let launches = Launches::new(&*family, &*dense, scope);
         let repeats = if profile { REPEATS } else { 1 };
         for _ in 0..repeats {
             for (input, output) in [(&query, &mut rotated_query), (&key, &mut rotated_key)] {
-                scope.record(
-                    kernels::encoder::rope(
-                        output.partition([TOKEN_TILE, half]),
-                        input,
-                        &cosines,
-                        &sines,
-                    )
-                    .generics(vec![half.to_string()]),
-                )?;
+                launches.rope(VisionRope {
+                    out: buffer(output)?,
+                    input: buffer(input)?,
+                    cosines: buffer(&cosines)?,
+                    sines: buffer(&sines)?,
+                    rows: padded,
+                    half,
+                    real_half: None,
+                })?;
             }
-            scope.record(
-                sdpa_attention(
-                    (&mut output).partition([tiles[0], width]),
-                    &rotated_query,
-                    &rotated_key,
-                    &value,
-                    tokens,
-                    scale,
-                    frame_tokens,
-                    tokens,
-                    0,
-                    0,
-                    0,
-                )
-                .generics(attention_generics(width, mode, tiles)),
+            launches.dense(
+                dense_plan(width, mode, tiles, padded, tokens, scale, frame_tokens),
+                DenseBuffers {
+                    out: buffer(&output)?,
+                    query: buffer(&rotated_query)?,
+                    key: buffer(&rotated_key)?,
+                    value: buffer(&value)?,
+                },
             )?;
         }
         Ok(())
@@ -1332,15 +1278,36 @@ fn attention_scale_from_width(width: usize) -> f32 {
     1.0 / (width as f32).sqrt()
 }
 
-pub(super) fn attention_generics(
+/// Mask form of a vision block: every token attends every token of its frame.
+const NONCAUSAL_MASK: i32 = 3;
+
+/// Full-head attention of one padded head width.
+pub(super) const fn dense_plan(
     width: usize,
     mode: AttentionMode,
     tiles: [usize; ATTENTION_CONFIG_FIELDS],
-) -> Vec<String> {
-    let mut values = vec![width.to_string(), mode.generic().to_owned()];
-    values.extend(tiles.map(|n| n.to_string()));
-    values.extend(["1".into(), width.to_string(), "3".into()]);
-    values
+    rows: usize,
+    tokens: i32,
+    scale: f32,
+    frame_tokens: i32,
+) -> DensePlan {
+    DensePlan {
+        head_width: width,
+        online: matches!(mode, AttentionMode::Online),
+        tiles,
+        group: 1,
+        value_width: width,
+        mask: NONCAUSAL_MASK,
+        query_rows: rows,
+        key_rows: rows,
+        tokens,
+        scale,
+        frame_tokens,
+        queries: tokens,
+        query_start: 0,
+        left: 0,
+        right: 0,
+    }
 }
 
 /// Measured crossover for compensated full-head attention. Pipelining did not improve timings.
@@ -1393,19 +1360,21 @@ pub fn rope_compact_kernel(
     sines[..sin.len()].copy_from_slice(sin);
     let cosines = device.upload(cosines, &[padded, width])?;
     let sines = device.upload(sines, &[padded, width])?;
-    let mut output = api::zeros::<f32>(&[padded, projections])
+    let output = api::zeros::<f32>(&[padded, projections])
         .sync_on(&device.stream)
         .map_err(device_error)?;
+    let (family, dense) = families(device);
     let graph = Graph::scope(&device.stream, |scope| {
-        scope.record(
-            kernels::encoder::rope_indexed(
-                (&mut output).partition([TOKEN_TILE, 16]),
-                &input,
-                &cosines,
-                &sines,
-            )
-            .generics(vec![half.to_string(), real.to_string()]),
-        )?;
+        let launches = Launches::new(&*family, &*dense, scope);
+        launches.rope(VisionRope {
+            out: buffer(&output)?,
+            input: buffer(&input)?,
+            cosines: buffer(&cosines)?,
+            sines: buffer(&sines)?,
+            rows: padded,
+            half,
+            real_half: Some(real),
+        })?;
         Ok(())
     })
     .map_err(device_error)?;
@@ -1447,10 +1416,6 @@ pub fn compact_attention(
     frame_tokens: usize,
     tiles: [usize; ATTENTION_CONFIG_FIELDS],
 ) -> Result<Vec<f32>> {
-    const COMPACT_WIDTH: usize = 96;
-    const WIDE_WIDTH: usize = 128;
-    const HALF: usize = 48;
-    const REAL_HALF: usize = 36;
     const REAL_HEAD: usize = 72;
     let (query, key, value) = qkv;
     if tokens == 0
@@ -1490,53 +1455,55 @@ pub fn compact_attention(
     let mut q_wide = activation(device, padded, wide_projection)?;
     let mut k_wide = activation(device, padded, wide_projection)?;
     let mut v_wide = activation(device, padded, wide_projection)?;
-    let mut attended = activation(device, padded, wide_projection)?;
-    let mut compact_out = activation(device, padded, compact_projection)?;
+    let attended = activation(device, padded, wide_projection)?;
+    let compact_out = activation(device, padded, compact_projection)?;
     let tokens_i = i32::try_from(tokens).map_err(device_error)?;
     let frame_i = i32::try_from(frame_tokens).map_err(device_error)?;
     let scale = attention_scale_from_width(REAL_HEAD);
+    let (family, dense) = families(device);
     let graph = Graph::scope(&device.stream, |scope| {
+        let launches = Launches::new(&*family, &*dense, scope);
         for (input, output) in [(&q, &mut q_rot), (&k, &mut k_rot)] {
-            scope.record(
-                kernels::encoder::rope_indexed(
-                    output.partition([TOKEN_TILE, PACK_SEGMENT]),
-                    input,
-                    &cos,
-                    &sin,
-                )
-                .generics(vec![HALF.to_string(), REAL_HALF.to_string()]),
-            )?;
+            launches.rope(VisionRope {
+                out: buffer(output)?,
+                input: buffer(input)?,
+                cosines: buffer(&cos)?,
+                sines: buffer(&sin)?,
+                rows: padded,
+                half: COMPACT_HALF,
+                real_half: Some(COMPACT_REAL_HALF),
+            })?;
         }
         for (input, output) in [
             (&q_rot, &mut q_wide),
             (&k_rot, &mut k_wide),
             (&v, &mut v_wide),
         ] {
-            scope.record(kernels::encoder::pack_wide(
-                output.partition([TOKEN_TILE, PACK_SEGMENT]),
-                input,
-            ))?;
+            launches.pack(Pack::Wide, padded, buffer(output)?, buffer(input)?)?;
         }
-        scope.record(
-            sdpa_attention(
-                (&mut attended).partition([tiles[0], WIDE_WIDTH]),
-                &q_wide,
-                &k_wide,
-                &v_wide,
+        launches.dense(
+            dense_plan(
+                WIDE_WIDTH,
+                AttentionMode::Online,
+                tiles,
+                padded,
                 tokens_i,
                 scale,
                 frame_i,
-                tokens_i,
-                0,
-                0,
-                0,
-            )
-            .generics(attention_generics(WIDE_WIDTH, AttentionMode::Online, tiles)),
+            ),
+            DenseBuffers {
+                out: buffer(&attended)?,
+                query: buffer(&q_wide)?,
+                key: buffer(&k_wide)?,
+                value: buffer(&v_wide)?,
+            },
         )?;
-        scope.record(kernels::encoder::pack_compact(
-            (&mut compact_out).partition([TOKEN_TILE, PACK_SEGMENT]),
-            &attended,
-        ))?;
+        launches.pack(
+            Pack::Compact,
+            padded,
+            buffer(&compact_out)?,
+            buffer(&attended)?,
+        )?;
         Ok(())
     })
     .map_err(device_error)?;

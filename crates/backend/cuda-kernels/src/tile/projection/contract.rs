@@ -6,9 +6,9 @@ use super::{
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::kernels::{Projection, WeightRef};
 use crate::contract::plan::{
-    DenseKernel, DenseRowsPlan, DownPlan, EmbeddingPlan, Fp4QuantKind, Fp4QuantPlan, Fp8QuantKind,
-    Fp8QuantPlan, GemmLoop, GemmPlan, LastRowsKind, LastRowsPlan, PoolGemvPlan, PromptPlan,
-    RowsKernel, RowsPlan, SplitGemmPlan, THREE_ROWS,
+    DenseKernel, DenseRowsPlan, DownPlan, EmbeddingBatchPlan, EmbeddingPlan, Fp4QuantKind,
+    Fp4QuantPlan, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, LastRowsKind, LastRowsPlan,
+    LinearRowsPlan, PoolGemvPlan, PromptPlan, RowsKernel, RowsPlan, SplitGemmPlan, THREE_ROWS,
 };
 use crate::contract::recording::Recording;
 use crate::tile::attention::attention as attention_model;
@@ -59,6 +59,21 @@ enum Weight {
 }
 
 impl TileProjection {
+    fn tensor<T: DType>(
+        &self,
+        recording: &Recording<'_>,
+        buffer: Buffer<'_, T>,
+        name: &str,
+        shape: &[usize],
+    ) -> Result<Tensor<T>> {
+        recording.retain(buffer);
+        borrowed(
+            buffer.require(name, shape.iter().product())?,
+            self.ordinal,
+            shape,
+        )
+    }
+
     fn flat<T: DType>(
         &self,
         recording: &Recording<'_>,
@@ -144,7 +159,7 @@ pub(in crate::tile) const fn retyped_bf16(buffer: Buffer<'_, Bf16>) -> Buffer<'_
     unsafe_code,
     reason = "Each marker is declared for exactly this element's size and layout"
 )]
-const fn retyped_fp8(buffer: Buffer<'_, Fp8>) -> Buffer<'_, f8e4m3fn> {
+pub(in crate::tile) const fn retyped_fp8(buffer: Buffer<'_, Fp8>) -> Buffer<'_, f8e4m3fn> {
     // SAFETY: `Fp8` marks `f8e4m3fn` memory.
     unsafe { buffer.retyped() }
 }
@@ -258,6 +273,85 @@ impl Projection for TileProjection {
                 .map(drop),
         }
         .map_err(backend_error)
+    }
+
+    fn embedding_batch(
+        &self,
+        recording: &Recording<'_>,
+        plan: &EmbeddingBatchPlan,
+        out: Buffer<'_, f32>,
+        weight: Buffer<'_, Bf16>,
+        external: Option<Buffer<'_, f32>>,
+        metadata: Buffer<'_, i32>,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let EmbeddingBatchPlan {
+            dimension,
+            fields,
+            tile,
+        } = *plan;
+        let rows = out.len() / dimension;
+        let mut out = self.tensor(recording, out, "embedding rows", &[rows, dimension])?;
+        let weight = retyped_bf16(weight);
+        let weight = self.tensor(
+            recording,
+            weight,
+            "embedding weight",
+            &[weight.len() / dimension, dimension],
+        )?;
+        let metadata = self.flat(recording, metadata)?;
+        let generics = vec![dimension.to_string(), fields.to_string()];
+        let tiles = (&mut out).partition([1, tile]);
+        if let Some(external) = external {
+            let external = self.tensor(recording, external, "external", &[rows, dimension])?;
+            scope
+                .record(
+                    attention_model::embedding_rows(tiles, &weight, &external, &metadata)
+                        .generics(generics),
+                )
+                .map_err(backend_error)?;
+        } else {
+            scope
+                .record(
+                    attention_model::embedding_batch(tiles, &weight, &metadata).generics(generics),
+                )
+                .map_err(backend_error)?;
+        }
+        Ok(())
+    }
+
+    fn linear_rows(
+        &self,
+        recording: &Recording<'_>,
+        plan: &LinearRowsPlan,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        w: Buffer<'_, Bf16>,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let LinearRowsPlan {
+            rows,
+            row_tile,
+            output_tile,
+            depth,
+            columns,
+        } = *plan;
+        let mut out = self.tensor(recording, out, "linear output", &[rows, out.len() / rows])?;
+        let x = self.tensor(recording, x, "linear input", &[rows, columns])?;
+        let w = retyped_bf16(w);
+        let w = self.tensor(recording, w, "linear weight", &[w.len() / columns, columns])?;
+        scope
+            .record(
+                linear_batch::dense((&mut out).partition([row_tile, output_tile]), &x, &w)
+                    .generics(vec![
+                        bf16::DTYPE.as_str().into(),
+                        output_tile.to_string(),
+                        depth.to_string(),
+                        columns.to_string(),
+                    ]),
+            )
+            .map_err(backend_error)?;
+        Ok(())
     }
 
     fn embedding(

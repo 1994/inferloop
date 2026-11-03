@@ -4,6 +4,7 @@
 use crate::contract::Kernels;
 use crate::contract::buffer::Buffer;
 use crate::contract::recording::Recording;
+use attention::TileAttention;
 use cuda_core::DType;
 pub use cutile::prelude::Scope;
 use cutile::prelude::Tensor;
@@ -15,10 +16,13 @@ use projection::TileProjection;
 use recurrent::{TileRecurrent, TileRecurrentPool};
 use rope::TileRope;
 use sampling::TileSampling;
+use speculation::TileDraft;
 use state::TileState;
 use std::fmt::Display;
+use vision::TileVision;
 
 pub mod attention;
+pub mod identity;
 pub mod mlp;
 pub mod moe;
 pub mod norm;
@@ -35,6 +39,9 @@ pub mod vision;
 #[must_use]
 pub fn kernels(ordinal: usize) -> Kernels {
     Kernels {
+        vision: Box::new(TileVision::new(ordinal)),
+        draft: Box::new(TileDraft::new(ordinal)),
+        attention: Box::new(TileAttention::new(ordinal)),
         projection: Box::new(TileProjection::new(ordinal)),
         rope: Box::new(TileRope::new(ordinal)),
         norm: Box::new(TileNorm::new(ordinal)),

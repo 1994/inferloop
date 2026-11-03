@@ -144,13 +144,10 @@ fn key(device: &CudaDevice, rows: usize, vocabulary: usize) -> Result<Key> {
 }
 
 fn build_key(device: &CudaDevice, rows: usize, vocabulary: usize) -> Result<Key> {
-    let input = api::meta::<f32>(&[rows, vocabulary])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
     let mut identities = Vec::new();
     for tile in TILE_SEARCH {
-        let mut greedy = Greedy::new(device, rows, vocabulary, tile)?;
-        identities.push(greedy.fingerprint(device, &input)?);
+        let greedy = Greedy::new(device, rows, vocabulary, tile)?;
+        identities.push(greedy.fingerprint(device)?);
     }
     Ok(Key {
         hardware: serde_json::to_string(device.profile()?).map_err(device_error)?,

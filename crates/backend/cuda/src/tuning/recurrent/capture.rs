@@ -3,15 +3,15 @@ use super::{
     SHAPE_RANK,
     reference::{Fixture, maximum_error},
 };
+use infer_cuda_kernels::contract::{DeltaBuffers, DeltaKernel, Recording, RecurrentShape};
+use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::env::var_os;
 
 const METADATA_LEN: usize = 4;
 const FINGERPRINT_SPLITS: [usize; 3] = [1, 2, 4];
-use crate::{
-    device::{CudaDevice, device_error},
-    resident::recurrent_prefill::kernels,
-};
+use crate::device::{CudaDevice, device_error};
+use crate::resident::tensor_buffer as buffer;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 
@@ -41,40 +41,47 @@ impl Captured {
             vec![0, i32::try_from(lanes).map_err(device_error)?, 0, 0],
             &[METADATA_LEN],
         )?;
-        let mut state = api::zeros::<f32>(&[vh, dim, dim])
+        let state = api::zeros::<f32>(&[vh, dim, dim])
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        let mut scratch = api::zeros::<f32>(&[vh, lanes, dim])
+        let scratch = api::zeros::<f32>(&[vh, lanes, dim])
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        let mut output = api::zeros::<f32>(&[lanes, vh, dim])
+        let output = api::zeros::<f32>(&[lanes, vh, dim])
             .sync_on(&device.stream)
             .map_err(device_error)?;
+        let contract = device.kernels();
+        let shape = RecurrentShape {
+            key_heads: kh,
+            value_heads: vh,
+            dim,
+            lanes,
+        };
         let graph = Graph::scope(&device.stream, |scope| {
-            scope.record(
-                kernels::delta_wy(
-                    (&mut state).partition([1, dim, block]),
-                    (&mut scratch).partition([1, lanes, block]),
-                    &qkv,
-                    &beta,
-                    &alpha,
-                    &a_log,
-                    &bias,
-                    &metadata,
+            let recording = Recording::scope(scope);
+            contract
+                .recurrent
+                .delta(
+                    &recording,
+                    DeltaKernel::Wy,
+                    shape,
+                    block,
+                    DeltaBuffers {
+                        state: buffer(&state)?,
+                        output: buffer(&scratch)?,
+                        qkv: buffer(qkv.as_ref())?,
+                        beta: buffer(beta.as_ref())?,
+                        alpha: buffer(alpha.as_ref())?,
+                        decay: buffer(a_log.as_ref())?,
+                        bias: buffer(bias.as_ref())?,
+                        metadata: buffer(metadata.as_ref())?,
+                    },
                 )
-                .generics(vec![
-                    kh.to_string(),
-                    vh.to_string(),
-                    dim.to_string(),
-                    lanes.to_string(),
-                    block.to_string(),
-                ]),
-            )?;
-            scope.record(
-                kernels::transpose((&mut output).partition([1, 1, dim]), &scratch)
-                    .generics(vec![dim.to_string()]),
-            )?;
-            Ok(())
+                .map_err(|error| DeviceError::Internal(error.to_string()))?;
+            contract
+                .recurrent
+                .transpose(&recording, shape, buffer(&output)?, buffer(&scratch)?)
+                .map_err(|error| DeviceError::Internal(error.to_string()))
         })
         .map_err(device_error)?;
         Ok(Self {
@@ -105,69 +112,7 @@ impl Captured {
     }
 }
 fn kernel_identities(device: &CudaDevice, shape: [usize; SHAPE_RANK]) -> Result<Vec<String>> {
-    let [kh, vh, dim, lanes] = shape;
-    let qkv = api::meta::<f32>(&[lanes, 2 * kh + vh, dim])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let beta = api::meta::<f32>(&[lanes, vh])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let alpha = api::meta::<f32>(&[lanes, vh])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let a_log = api::meta::<f32>(&[vh])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let bias = api::meta::<f32>(&[vh])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let metadata = api::meta::<i32>(&[METADATA_LEN])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut state = api::meta::<f32>(&[vh, dim, dim])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut scratch = api::meta::<f32>(&[vh, lanes, dim])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut output = api::meta::<f32>(&[lanes, vh, dim])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut identities = Vec::new();
-    for split in FINGERPRINT_SPLITS {
-        let block = dim / split;
-        identities.push(
-            kernels::delta_wy(
-                (&mut state).partition([1, dim, block]),
-                (&mut scratch).partition([1, lanes, block]),
-                &qkv,
-                &beta,
-                &alpha,
-                &a_log,
-                &bias,
-                &metadata,
-            )
-            .generics(vec![
-                kh.to_string(),
-                vh.to_string(),
-                dim.to_string(),
-                lanes.to_string(),
-                block.to_string(),
-            ])
-            .l2_cache_key_on(&device.stream)
-            .map_err(device_error)?,
-        );
-    }
-    identities.push(
-        kernels::transpose((&mut output).partition([1, 1, dim]), &scratch)
-            .generics(vec![dim.to_string()])
-            .l2_cache_key_on(&device.stream)
-            .map_err(device_error)?,
-    );
-    if identities.iter().any(String::is_empty) {
-        return Err(Error::invalid("incomplete WY kernel identity"));
-    }
-    Ok(identities)
+    identity::recurrent_wy(&device.stream, shape, &FINGERPRINT_SPLITS)
 }
 
 pub(super) fn fingerprint(device: &CudaDevice, shape: [usize; SHAPE_RANK]) -> Result<String> {

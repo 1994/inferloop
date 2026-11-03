@@ -11,30 +11,30 @@ pub mod budget;
 #[cfg(test)]
 #[path = "../../../tests/unit/resident_dflash2_budget.rs"]
 mod budget_tests;
+#[cfg(test)]
 mod kernels;
 mod weights;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::contract::{
+    Buffer, DRAFT_KEY_TILE as KEY_TILE, DRAFT_ROW_TILE as ROW_TILE, Draft, DraftAddNorm,
+    DraftAttention, DraftConv, DraftNorm, DraftProjection, DraftRingStore, DraftRope, DraftSplit,
+    DraftTop, DraftWalk, DraftWeight, Recording,
+};
+use infer_cuda_kernels::tile::{kernels as tile_kernels, runtime::Graph};
 pub use weights::DraftWeights;
 
-use super::prefill_gemm::gemm;
-use crate::constants::AUX_KERNEL_TILE;
+use super::buffers::{buffer, region};
+use super::capture::error;
 use crate::constants::WIDEST_PREFILL_LANES;
 use crate::device::{CudaDevice, PinnedUpload, Readbacks, device_error};
 use crate::mlp::ProjectionWeight;
 use cutile::{half::bf16, prelude::*};
 use infer_core::{Error, Result};
-use kernels::draft;
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::result::Result as StdResult;
-use std::slice::from_ref;
 use std::sync::Arc;
 use weights::Geometry;
 
-/// Keys one attention step reads; ring lengths are whole multiples of it.
-const KEY_TILE: usize = 64;
-/// Rows of one GEMM output tile.
-const ROW_TILE: usize = 32;
 /// Channels one embedding or convolution block handles.
 const CHANNEL_TILE: usize = 512;
 /// Vocabulary entries one top-k block reduces.
@@ -196,6 +196,7 @@ pub struct Engine {
     prompt: PromptIngest,
     rings: Rings,
     weights: Arc<DraftWeights>,
+    draft: Box<dyn Draft>,
 }
 
 impl Engine {
@@ -216,7 +217,7 @@ impl Engine {
             keys.push(zeros::<bf16>(device, &shape)?);
             values.push(zeros::<bf16>(device, &shape)?);
         }
-        let mut rings = Rings {
+        let rings = Rings {
             keys,
             values,
             ring,
@@ -224,9 +225,11 @@ impl Engine {
             free: (0..rings).rev().collect(),
         };
         let features = zeros::<f32>(device, &[PROMPT_ROWS, geometry.hidden])?;
-        let mut work = Ingest::new(device, &geometry, PROMPT_ROWS)?;
+        let work = Ingest::new(device, &geometry, PROMPT_ROWS)?;
+        let draft = tile_kernels(device.ordinal()).draft;
         let graph = Graph::scope(&device.stream, |scope| {
-            record_ingest(scope, &weights, &mut rings, &mut work, &features)
+            let recorder = Recorder::new(&*draft, scope);
+            record_ingest(&recorder, &weights, &rings, &work, buffer(&features)?)
         })
         .map_err(device_error)?;
         let prompt = PromptIngest {
@@ -242,6 +245,7 @@ impl Engine {
             prompt,
             rings,
             weights,
+            draft,
         })
     }
 
@@ -281,7 +285,7 @@ impl Engine {
     }
 
     fn capture_pooled(
-        &mut self,
+        &self,
         device: &CudaDevice,
         slots: usize,
         features: Arc<Tensor<f32>>,
@@ -291,12 +295,13 @@ impl Engine {
         if features.size() != rows * geometry.hidden {
             return Err(Error::invalid("verify features do not match the pool"));
         }
-        let mut work = Ingest::new(device, &geometry, rows)?;
-        let weights = Arc::clone(&self.weights);
-        let rings = &mut self.rings;
+        let work = Ingest::new(device, &geometry, rows)?;
+        let weights = &self.weights;
+        let rings = &self.rings;
+        let draft = &*self.draft;
         let graph = Graph::scope(&device.stream, |scope| {
-            let input = features.view(&[rows, geometry.hidden])?;
-            record_ingest_from(scope, &weights, rings, &mut work, &input)
+            let recorder = Recorder::new(draft, scope);
+            record_ingest(&recorder, weights, rings, &work, buffer(features.as_ref())?)
         })
         .map_err(|error| device_error(format!("{slots}-slot verified ingestion: {error}")))?;
         let verified = VerifiedIngest {
@@ -305,9 +310,9 @@ impl Engine {
             uploads: PinnedUpload::single(device, 2 * rows)?,
             _features: features,
         };
-        let mut buffers = ProposeBuffers::new(device, &geometry, slots)?;
+        let buffers = ProposeBuffers::new(device, &geometry, slots)?;
         let graph = Graph::scope(&device.stream, |scope| {
-            record_propose(scope, &weights, rings, &mut buffers)
+            record_propose(&Recorder::new(draft, scope), weights, rings, &buffers)
         })
         .map_err(|error| device_error(format!("{slots}-slot proposal: {error}")))?;
         let meta = buffers.meta.size();
@@ -626,39 +631,69 @@ impl ProposeBuffers {
     }
 }
 
-/// Record `out[rows, N] = input[rows, K] · weightᵀ` with the prompt GEMM tiles.
-fn record_gemm(
-    scope: &Scope,
-    weight: &ProjectionWeight,
-    input: &TensorView<'_, f32>,
-    out: &mut Tensor<f32>,
-    k: usize,
-) -> StdResult<(), DeviceError> {
-    let generics = vec![k.to_string()];
-    match weight {
-        ProjectionWeight::Dense(w) => {
-            scope.record(
-                gemm::dense(out.partition([ROW_TILE, KEY_TILE]), input, w).generics(generics),
-            )?;
-        }
-        ProjectionWeight::Fp8(w, s) => {
-            scope.record(
-                gemm::fp8(out.partition([ROW_TILE, KEY_TILE]), input, w, s).generics(generics),
-            )?;
-        }
-        ProjectionWeight::Fp8Block(w, s) => {
-            scope.record(
-                draft::fp8_block(out.partition([ROW_TILE, KEY_TILE]), input, w, s)
-                    .generics(generics),
-            )?;
-        }
-        ProjectionWeight::Fp4(..) => {
-            return Err(DeviceError::Launch(
-                "DFlash2 draft projections do not support NVFP4".into(),
-            ));
+/// Where one capture's draft launches go.
+struct Recorder<'a> {
+    draft: &'a dyn Draft,
+    recording: Recording<'a>,
+}
+
+impl<'a> Recorder<'a> {
+    const fn new(draft: &'a dyn Draft, scope: &'a Scope) -> Self {
+        Self {
+            draft,
+            recording: Recording::scope(scope),
         }
     }
-    Ok(())
+}
+
+/// A weight in the forms a draft projection supports.
+fn draft_weight(weight: &ProjectionWeight) -> StdResult<DraftWeight<'_>, DeviceError> {
+    match weight {
+        ProjectionWeight::Dense(w) => Ok(DraftWeight::Dense(buffer(w.as_ref())?)),
+        ProjectionWeight::Fp8(w, s) => Ok(DraftWeight::Fp8 {
+            weight: buffer(w.as_ref())?,
+            scales: buffer(s.as_ref())?,
+        }),
+        ProjectionWeight::Fp8Block(w, s) => Ok(DraftWeight::Fp8Block {
+            weight: buffer(w.as_ref())?,
+            scales: buffer(s.as_ref())?,
+            scale_columns: usize::try_from(s.shape()[1]).map_err(error)?,
+        }),
+        ProjectionWeight::Fp4(..) => Err(DeviceError::Launch(
+            "DFlash2 draft projections do not support NVFP4".into(),
+        )),
+    }
+}
+
+/// One field of the metadata buffer.
+fn meta_field(meta: &Tensor<i32>, field: Range<usize>) -> StdResult<Buffer<'_, i32>, DeviceError> {
+    let offset = u64::try_from(field.start * size_of::<i32>()).map_err(error)?;
+    Ok(region(
+        buffer(meta)?.address() + offset,
+        field.end - field.start,
+    ))
+}
+
+/// Record `out[rows, N] = input[rows, K] · weightᵀ` with the prompt GEMM tiles.
+fn record_gemm(
+    r: &Recorder<'_>,
+    weight: &ProjectionWeight,
+    input: Buffer<'_, f32>,
+    out: Buffer<'_, f32>,
+    (rows, columns): (usize, usize),
+) -> StdResult<(), DeviceError> {
+    r.draft
+        .project(
+            &r.recording,
+            draft_weight(weight)?,
+            DraftProjection {
+                out,
+                input,
+                rows,
+                columns,
+            },
+        )
+        .map_err(error)
 }
 
 /// Split-K geometry `(splits, k_tiles)` for a projection whose output tiles alone would
@@ -676,633 +711,477 @@ fn split_plan(rows: usize, n: usize, k: usize, multiprocessors: usize) -> Option
 /// [`record_gemm`] that splits K across idle multiprocessors for narrow per-channel FP8
 /// outputs, when the proposal owns a partial buffer for this output width.
 fn record_projection(
-    scope: &Scope,
+    r: &Recorder<'_>,
     weight: &ProjectionWeight,
-    input: &TensorView<'_, f32>,
-    out: &mut Tensor<f32>,
-    (k, partials): (usize, &mut Partials),
+    input: Buffer<'_, f32>,
+    out: Buffer<'_, f32>,
+    (rows, k, partials): (usize, usize, &Partials),
 ) -> StdResult<(), DeviceError> {
-    let rows = usize::try_from(input.shape()[0]).map_err(|e| DeviceError::Launch(e.to_string()))?;
-    let n = out.size() / rows;
-    let (ProjectionWeight::Fp8(w, s), Some((buffer, splits, k_tiles))) =
-        (weight, partials.get_mut(&(n, k)))
+    let n = out.len() / rows;
+    let (ProjectionWeight::Fp8(codes, scales), Some((partial, splits, k_tiles))) =
+        (weight, partials.get(&(n, k)))
     else {
-        return record_gemm(scope, weight, input, out, k);
+        return record_gemm(r, weight, input, out, (rows, k));
     };
-    let k_tiles = i32::try_from(*k_tiles).map_err(|e| DeviceError::Launch(e.to_string()))?;
-    let splits = i32::try_from(*splits).map_err(|e| DeviceError::Launch(e.to_string()))?;
-    scope.record(
-        draft::fp8_split(buffer.partition([ROW_TILE, KEY_TILE]), input, w, k_tiles)
-            .generics(vec![k.to_string()]),
-    )?;
-    scope.record(draft::reduce_scaled(
-        out.partition([ROW_TILE, KEY_TILE]),
-        &*buffer,
-        s,
-        splits,
-    ))?;
-    Ok(())
+    r.draft
+        .project_split(
+            &r.recording,
+            DraftSplit {
+                projection: DraftProjection {
+                    out,
+                    input,
+                    rows,
+                    columns: k,
+                },
+                weight: buffer(codes.as_ref())?,
+                scales: buffer(scales.as_ref())?,
+                partials: buffer(partial)?,
+                splits: *splits,
+                k_tiles: *k_tiles,
+            },
+        )
+        .map_err(error)
 }
 
 fn record_head_norm(
-    scope: &Scope,
-    out: &mut Tensor<f32>,
-    input: &TensorView<'_, f32>,
-    weight: &Tensor<f32>,
+    r: &Recorder<'_>,
+    out: Buffer<'_, f32>,
+    input: Buffer<'_, f32>,
+    weight: Buffer<'_, f32>,
     geometry: &Geometry,
 ) -> StdResult<(), DeviceError> {
-    scope.record(
-        draft::norm(
-            out.partition([1, geometry.head_dim]),
-            input,
-            weight,
-            geometry.epsilon,
+    r.draft
+        .norm(
+            &r.recording,
+            DraftNorm {
+                out,
+                input,
+                weight,
+                dim: geometry.head_dim,
+                tile: geometry.head_dim,
+                epsilon: geometry.epsilon,
+            },
         )
-        .generics(vec![
-            geometry.head_dim.to_string(),
-            geometry.head_dim.to_string(),
-        ]),
-    )?;
-    Ok(())
+        .map_err(error)
+}
+
+/// Normalization of `hidden` rows, written in whole power-of-two tiles.
+const fn hidden_norm<'a>(
+    out: Buffer<'a, f32>,
+    input: Buffer<'a, f32>,
+    weight: Buffer<'a, f32>,
+    geometry: &Geometry,
+) -> DraftNorm<'a> {
+    DraftNorm {
+        out,
+        input,
+        weight,
+        dim: geometry.hidden,
+        tile: geometry.hidden.next_power_of_two(),
+        epsilon: geometry.epsilon,
+    }
 }
 
 fn record_rope(
-    scope: &Scope,
-    out: &mut Tensor<f32>,
-    input: &TensorView<'_, f32>,
+    r: &Recorder<'_>,
+    (out, input): (Buffer<'_, f32>, Buffer<'_, f32>),
     weights: &DraftWeights,
-    positions: &TensorView<'_, i32>,
+    positions: Buffer<'_, i32>,
     heads: usize,
 ) -> StdResult<(), DeviceError> {
-    let half = weights.geometry.head_dim / 2;
-    scope.record(
-        draft::rope_rows(
-            out.partition([1, half]),
-            input,
-            &weights.frequencies,
-            positions,
+    r.draft
+        .rope(
+            &r.recording,
+            DraftRope {
+                out,
+                input,
+                frequencies: buffer(weights.frequencies.as_ref())?,
+                positions,
+                dim: weights.geometry.head_dim,
+                heads,
+            },
         )
-        .generics(vec![half.to_string(), heads.to_string()]),
-    )?;
-    Ok(())
+        .map_err(error)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one ring store binds the ring, rows and their per-row metadata"
-)]
-fn record_ring_store(
-    scope: &Scope,
-    ring: &mut Tensor<bf16>,
-    rows: &TensorView<'_, f32>,
-    count: usize,
-    rings: &TensorView<'_, i32>,
-    positions: &TensorView<'_, i32>,
-    capacity: usize,
-    geometry: &Geometry,
-    ring_rows: usize,
+/// Store one layer's keys and values, `[rows, kv_heads, head_dim]`, into its rings.
+fn record_ring_stores(
+    r: &Recorder<'_>,
+    (rings, index): (&Rings, usize),
+    (keys, values): (Buffer<'_, f32>, Buffer<'_, f32>),
+    (ring_ids, positions): (Buffer<'_, i32>, Buffer<'_, i32>),
+    (rows, geometry): (usize, &Geometry),
 ) -> StdResult<(), DeviceError> {
-    scope.record(
-        draft::ring_store(
-            ring.partition([1, capacity, geometry.head_dim]),
-            rows,
-            rings,
-            positions,
-        )
-        .generics(vec![
-            geometry.head_dim.to_string(),
-            capacity.to_string(),
-            ring_rows.to_string(),
-            count.to_string(),
-        ]),
-    )?;
+    for (ring, input) in [(&rings.keys[index], keys), (&rings.values[index], values)] {
+        r.draft
+            .ring_store(
+                &r.recording,
+                DraftRingStore {
+                    ring: buffer(ring)?,
+                    input,
+                    rings: ring_ids,
+                    positions,
+                    rows,
+                    heads: geometry.kv_heads,
+                    dim: geometry.head_dim,
+                    capacity: rings.count * rings.ring,
+                    ring_rows: rings.ring,
+                },
+            )
+            .map_err(error)?;
+    }
     Ok(())
-}
-
-fn record_ingest(
-    scope: &Scope,
-    weights: &DraftWeights,
-    rings: &mut Rings,
-    work: &mut Ingest,
-    features: &Tensor<f32>,
-) -> StdResult<(), DeviceError> {
-    let input = features.view(&[work.rows, weights.geometry.hidden])?;
-    record_ingest_from(scope, weights, rings, work, &input)
 }
 
 /// `hidden_norm`, then each layer's K/V projection, K norm and `RoPE`, stored into the rings.
-fn record_ingest_from(
-    scope: &Scope,
+fn record_ingest(
+    r: &Recorder<'_>,
     weights: &DraftWeights,
-    rings: &mut Rings,
-    work: &mut Ingest,
-    features: &TensorView<'_, f32>,
+    rings: &Rings,
+    work: &Ingest,
+    features: Buffer<'_, f32>,
 ) -> StdResult<(), DeviceError> {
     let geometry = weights.geometry;
     let rows = work.rows;
     let hidden = geometry.hidden;
-    scope.record(
-        draft::norm(
-            (&mut work.normed).partition([1, hidden.next_power_of_two()]),
-            features,
-            &weights.hidden_norm,
-            geometry.epsilon,
+    let normed = buffer(&work.normed)?;
+    r.draft
+        .norm(
+            &r.recording,
+            hidden_norm(
+                normed,
+                features,
+                buffer(weights.hidden_norm.as_ref())?,
+                &geometry,
+            ),
         )
-        .generics(vec![
-            hidden.to_string(),
-            hidden.next_power_of_two().to_string(),
-        ]),
-    )?;
-    let capacity = rings.count * rings.ring;
+        .map_err(error)?;
+    let ring_ids = meta_field(&work.meta, 0..rows)?;
+    let positions = meta_field(&work.meta, rows..2 * rows)?;
+    let (values_k, values_v) = (buffer(&work.k)?, buffer(&work.v)?);
+    let (k_normed, k_rotated) = (buffer(&work.k_normed)?, buffer(&work.k_rotated)?);
     for (index, layer) in weights.layers.iter().enumerate() {
-        record_gemm(
-            scope,
-            &layer.k,
-            &work.normed.view(&[rows, hidden])?,
-            &mut work.k,
-            hidden,
-        )?;
-        record_gemm(
-            scope,
-            &layer.v,
-            &work.normed.view(&[rows, hidden])?,
-            &mut work.v,
-            hidden,
-        )?;
-        let k_heads = work
-            .k
-            .view(&[rows * geometry.kv_heads, geometry.head_dim])?;
+        record_gemm(r, &layer.k, normed, values_k, (rows, hidden))?;
+        record_gemm(r, &layer.v, normed, values_v, (rows, hidden))?;
         record_head_norm(
-            scope,
-            &mut work.k_normed,
-            &k_heads,
-            &layer.k_norm,
+            r,
+            k_normed,
+            values_k,
+            buffer(layer.k_norm.as_ref())?,
             &geometry,
         )?;
-        let (ring_ids, positions) = (0..rows, rows..2 * rows);
-        let ring_ids = work.meta.slice(from_ref(&ring_ids))?;
-        let positions = work.meta.slice(from_ref(&positions))?;
         record_rope(
-            scope,
-            &mut work.k_rotated,
-            &work
-                .k_normed
-                .view(&[rows * geometry.kv_heads, geometry.head_dim])?,
+            r,
+            (k_rotated, k_normed),
             weights,
-            &positions,
+            positions,
             geometry.kv_heads,
         )?;
-        let keys = work
-            .k_rotated
-            .view(&[rows, geometry.kv_heads, geometry.head_dim])?;
-        let values = work.v.view(&[rows, geometry.kv_heads, geometry.head_dim])?;
-        record_ring_store(
-            scope,
-            &mut rings.keys[index],
-            &keys,
-            rows,
-            &ring_ids,
-            &positions,
-            capacity,
-            &geometry,
-            rings.ring,
-        )?;
-        record_ring_store(
-            scope,
-            &mut rings.values[index],
-            &values,
-            rows,
-            &ring_ids,
-            &positions,
-            capacity,
-            &geometry,
-            rings.ring,
+        record_ring_stores(
+            r,
+            (rings, index),
+            (k_rotated, values_v),
+            (ring_ids, positions),
+            (rows, &geometry),
         )?;
     }
     Ok(())
 }
 
 fn record_conv(
-    scope: &Scope,
-    out: &mut Tensor<f32>,
-    input: &TensorView<'_, f32>,
-    coefficients: &Tensor<f32>,
-    base: &Tensor<f32>,
-    side: i32,
+    r: &Recorder<'_>,
+    (out, input): (Buffer<'_, f32>, Buffer<'_, f32>),
+    coefficients: Buffer<'_, f32>,
+    base: Buffer<'_, f32>,
+    (rows, side): (usize, i32),
     geometry: &Geometry,
 ) -> StdResult<(), DeviceError> {
-    let base = base.view(&[base.size() / geometry.hidden, geometry.hidden])?;
-    scope.record(
-        draft::grouped_conv(
-            out.partition([1, CHANNEL_TILE]),
-            input,
-            coefficients,
-            &base,
-            side,
+    r.draft
+        .conv(
+            &r.recording,
+            DraftConv {
+                out,
+                input,
+                coefficients,
+                base,
+                rows,
+                hidden: geometry.hidden,
+                tile: CHANNEL_TILE,
+                group_size: geometry.group_size,
+                groups: geometry.groups,
+                block: geometry.block,
+                side,
+            },
         )
-        .generics(vec![
-            CHANNEL_TILE.to_string(),
-            geometry.group_size.to_string(),
-            (CHANNEL_TILE / geometry.group_size).to_string(),
-            geometry.groups.to_string(),
-            geometry.block.to_string(),
-        ]),
-    )?;
-    Ok(())
+        .map_err(error)
 }
 
 /// Record the whole block proposal: embedding, every draft layer, candidates and the walk.
 fn record_propose(
-    scope: &Scope,
+    r: &Recorder<'_>,
     weights: &DraftWeights,
-    rings: &mut Rings,
-    w: &mut ProposeBuffers,
+    rings: &Rings,
+    w: &ProposeBuffers,
 ) -> StdResult<(), DeviceError> {
     let g = weights.geometry;
-    let rows = w.rows;
-    let hidden = g.hidden;
-    let tokens = w.meta.slice(&[meta_range(Field::Tokens, rows, w.slots)])?;
-    let [first, _] = &mut w.stream;
-    scope.record(
-        draft::embed(
-            first.partition([1, CHANNEL_TILE]),
-            &weights.embedding,
-            &tokens,
+    let first = buffer(&w.stream[0])?;
+    r.draft
+        .embed(
+            &r.recording,
+            [g.hidden, CHANNEL_TILE],
+            first,
+            buffer(weights.embedding.as_ref())?,
+            meta_field(&w.meta, meta_range(Field::Tokens, w.rows, w.slots))?,
         )
-        .generics(vec![CHANNEL_TILE.to_string()]),
-    )?;
-    let input_norm = &weights.layers[0].input_norm;
-    scope.record(
-        draft::norm(
-            (&mut w.normed).partition([1, hidden.next_power_of_two()]),
-            &*first,
-            input_norm,
-            g.epsilon,
+        .map_err(error)?;
+    r.draft
+        .norm(
+            &r.recording,
+            hidden_norm(
+                buffer(&w.normed)?,
+                first,
+                buffer(weights.layers[0].input_norm.as_ref())?,
+                &g,
+            ),
         )
-        .generics(vec![
-            hidden.to_string(),
-            hidden.next_power_of_two().to_string(),
-        ]),
-    )?;
+        .map_err(error)?;
     let mut current = 0;
     for index in 0..weights.layers.len() {
-        record_attention_block(scope, weights, rings, w, (index, current))?;
+        record_attention_block(r, weights, rings, w, (index, current))?;
         current = 1 - current;
-        record_mlp_block(scope, weights, w, (index, current))?;
+        record_mlp_block(r, weights, w, (index, current))?;
         current = 1 - current;
     }
-    record_candidates(scope, weights, w)
+    record_candidates(r, weights, w)
 }
 
 /// The attention block's inputs: the first dynamic convolution, Q/K/V with their norms and
 /// `RoPE`, and the block's keys and values stored into the rings.
 fn record_attention_inputs(
-    scope: &Scope,
+    r: &Recorder<'_>,
     weights: &DraftWeights,
-    rings: &mut Rings,
-    w: &mut ProposeBuffers,
+    rings: &Rings,
+    w: &ProposeBuffers,
     index: usize,
 ) -> StdResult<(), DeviceError> {
     let g = weights.geometry;
-    let rows = w.rows;
-    let slots = w.slots;
-    let hidden = g.hidden;
-    let capacity = rings.count * rings.ring;
+    let (rows, slots, hidden) = (w.rows, w.slots, g.hidden);
     let layer = &weights.layers[index];
-    let positions = w.meta.slice(&[meta_range(Field::Positions, rows, slots)])?;
-    let row_rings = w.meta.slice(&[meta_range(Field::RowRings, rows, slots)])?;
+    let positions = meta_field(&w.meta, meta_range(Field::Positions, rows, slots))?;
+    let row_rings = meta_field(&w.meta, meta_range(Field::RowRings, rows, slots))?;
     // Attention block: dynamic convolution around the non-causal block attention.
     let conv = &layer.attention_conv;
-    record_gemm(
-        scope,
-        &conv.projection,
-        &w.normed.view(&[rows, hidden])?,
-        &mut w.coefficients,
-        hidden,
-    )?;
-    record_conv(
-        scope,
-        &mut w.conv,
-        &w.normed.view(&[rows, hidden])?,
-        &w.coefficients,
-        &conv.base,
-        0,
-        &g,
-    )?;
-    record_projection(
-        scope,
-        &layer.q,
-        &w.conv.view(&[rows, hidden])?,
-        &mut w.q,
-        (hidden, &mut w.partials),
-    )?;
-    record_projection(
-        scope,
-        &layer.k,
-        &w.conv.view(&[rows, hidden])?,
-        &mut w.k,
-        (hidden, &mut w.partials),
-    )?;
-    record_projection(
-        scope,
-        &layer.v,
-        &w.conv.view(&[rows, hidden])?,
-        &mut w.v,
-        (hidden, &mut w.partials),
-    )?;
-    let q_heads = w.q.view(&[rows * g.heads, g.head_dim])?;
-    record_head_norm(scope, &mut w.q_normed, &q_heads, &layer.q_norm, &g)?;
-    let k_heads = w.k.view(&[rows * g.kv_heads, g.head_dim])?;
-    record_head_norm(scope, &mut w.k_normed, &k_heads, &layer.k_norm, &g)?;
-    record_rope(
-        scope,
-        &mut w.q_rotated,
-        &w.q_normed.view(&[rows * g.heads, g.head_dim])?,
-        weights,
-        &positions,
-        g.heads,
-    )?;
-    record_rope(
-        scope,
-        &mut w.k_rotated,
-        &w.k_normed.view(&[rows * g.kv_heads, g.head_dim])?,
-        weights,
-        &positions,
-        g.kv_heads,
-    )?;
-    let keys = w.k_rotated.view(&[rows, g.kv_heads, g.head_dim])?;
-    let values = w.v.view(&[rows, g.kv_heads, g.head_dim])?;
-    record_ring_store(
-        scope,
-        &mut rings.keys[index],
-        &keys,
-        rows,
-        &row_rings,
-        &positions,
-        capacity,
-        &g,
-        rings.ring,
-    )?;
-    record_ring_store(
-        scope,
-        &mut rings.values[index],
-        &values,
-        rows,
-        &row_rings,
-        &positions,
-        capacity,
-        &g,
-        rings.ring,
-    )?;
-    Ok(())
+    let normed = buffer(&w.normed)?;
+    let convolved = buffer(&w.conv)?;
+    let coefficients = buffer(&w.coefficients)?;
+    let base = buffer(conv.base.as_ref())?;
+    record_gemm(r, &conv.projection, normed, coefficients, (rows, hidden))?;
+    record_conv(r, (convolved, normed), coefficients, base, (rows, 0), &g)?;
+    let split = (rows, hidden, &w.partials);
+    let (queries, keys, values) = (buffer(&w.q)?, buffer(&w.k)?, buffer(&w.v)?);
+    let (q_normed, k_normed) = (buffer(&w.q_normed)?, buffer(&w.k_normed)?);
+    let (q_rotated, k_rotated) = (buffer(&w.q_rotated)?, buffer(&w.k_rotated)?);
+    record_projection(r, &layer.q, convolved, queries, split)?;
+    record_projection(r, &layer.k, convolved, keys, split)?;
+    record_projection(r, &layer.v, convolved, values, split)?;
+    record_head_norm(r, q_normed, queries, buffer(layer.q_norm.as_ref())?, &g)?;
+    record_head_norm(r, k_normed, keys, buffer(layer.k_norm.as_ref())?, &g)?;
+    record_rope(r, (q_rotated, q_normed), weights, positions, g.heads)?;
+    record_rope(r, (k_rotated, k_normed), weights, positions, g.kv_heads)?;
+    record_ring_stores(
+        r,
+        (rings, index),
+        (k_rotated, values),
+        (row_rings, positions),
+        (rows, &g),
+    )
+}
+
+/// The stream holding the residual and the one the update writes.
+fn streams(
+    w: &ProposeBuffers,
+    current: usize,
+) -> StdResult<(Buffer<'_, f32>, Buffer<'_, f32>), DeviceError> {
+    let [first, second] = &w.stream;
+    let (first, second) = (buffer(first)?, buffer(second)?);
+    Ok(if current == 0 {
+        (first, second)
+    } else {
+        (second, first)
+    })
 }
 
 /// One draft layer's attention block: dynamic convolution around the non-causal block
 /// attention, then the residual update into the other stream buffer.
 fn record_attention_block(
-    scope: &Scope,
+    r: &Recorder<'_>,
     weights: &DraftWeights,
-    rings: &mut Rings,
-    w: &mut ProposeBuffers,
+    rings: &Rings,
+    w: &ProposeBuffers,
     (index, current): (usize, usize),
 ) -> StdResult<(), DeviceError> {
     let g = weights.geometry;
-    let rows = w.rows;
-    let slots = w.slots;
-    let hidden = g.hidden;
+    let (rows, slots) = (w.rows, w.slots);
     let query = g.heads * g.head_dim;
-    let group = g.heads / g.kv_heads;
-    let capacity = rings.count * rings.ring;
     let layer = &weights.layers[index];
-    record_attention_inputs(scope, weights, rings, w, index)?;
-    let meta = &w.meta;
-    let bases = meta.slice(&[meta_range(Field::Bases, rows, slots)])?;
-    let slot_rings = meta.slice(&[meta_range(Field::SlotRings, rows, slots)])?;
-    let [first, second] = &mut w.stream;
-    let (residual, next) = if current == 0 {
-        (&*first, second)
-    } else {
-        (&*second, first)
-    };
+    record_attention_inputs(r, weights, rings, w, index)?;
+    let (residual, next) = streams(w, current)?;
     let conv = &layer.attention_conv;
-    let queries = w.q_rotated.view(&[rows, g.kv_heads, group * g.head_dim])?;
-    let key_ring = rings.keys[index].view(&[g.kv_heads, capacity, g.head_dim])?;
-    let value_ring = rings.values[index].view(&[g.kv_heads, capacity, g.head_dim])?;
-    scope.record(
-        draft::block_attention(
-            (&mut w.attention).partition([g.block, 1, group * g.head_dim]),
-            &queries,
-            &key_ring,
-            &value_ring,
-            &bases,
-            &slot_rings,
+    r.draft
+        .attend(
+            &r.recording,
+            DraftAttention {
+                out: buffer(&w.attention)?,
+                queries: buffer(&w.q_rotated)?,
+                keys: buffer(&rings.keys[index])?,
+                values: buffer(&rings.values[index])?,
+                bases: meta_field(&w.meta, meta_range(Field::Bases, rows, slots))?,
+                rings: meta_field(&w.meta, meta_range(Field::SlotRings, rows, slots))?,
+                rows,
+                kv_heads: g.kv_heads,
+                group: g.heads / g.kv_heads,
+                dim: g.head_dim,
+                capacity: rings.count * rings.ring,
+                block: g.block,
+                ring_rows: rings.ring,
+                window: g.window,
+            },
         )
-        .generics(vec![
-            g.head_dim.to_string(),
-            group.to_string(),
-            (group * g.head_dim).to_string(),
-            g.block.to_string(),
-            (g.block * group).to_string(),
-            rings.ring.to_string(),
-            g.window.to_string(),
-        ]),
-    )?;
-    let attended = w.attention.view(&[rows, query])?;
+        .map_err(error)?;
+    let (projected, convolved) = (buffer(&w.projected)?, buffer(&w.conv)?);
     record_projection(
-        scope,
+        r,
         &layer.o,
-        &attended,
-        &mut w.projected,
-        (query, &mut w.partials),
+        buffer(&w.attention)?,
+        projected,
+        (rows, query, &w.partials),
     )?;
     record_conv(
-        scope,
-        &mut w.conv,
-        &w.projected.view(&[rows, hidden])?,
-        &w.coefficients,
-        &conv.base,
-        1,
+        r,
+        (convolved, projected),
+        buffer(&w.coefficients)?,
+        buffer(conv.base.as_ref())?,
+        (rows, 1),
         &g,
     )?;
-    scope.record(
-        draft::add_norm(
-            (&mut w.normed).partition([1, hidden.next_power_of_two()]),
-            (&mut *next).partition([1, hidden.next_power_of_two()]),
-            residual,
-            &w.conv,
-            &layer.post_norm,
-            g.epsilon,
+    r.draft
+        .add_norm(
+            &r.recording,
+            DraftAddNorm {
+                norm: hidden_norm(
+                    buffer(&w.normed)?,
+                    residual,
+                    buffer(layer.post_norm.as_ref())?,
+                    &g,
+                ),
+                stream: next,
+                delta: convolved,
+            },
         )
-        .generics(vec![
-            hidden.to_string(),
-            hidden.next_power_of_two().to_string(),
-        ]),
-    )?;
-    Ok(())
+        .map_err(error)
 }
 
 /// One draft layer's MLP block inside its dynamic convolution, then the residual update and
 /// the next layer's (or the final) norm.
 fn record_mlp_block(
-    scope: &Scope,
+    r: &Recorder<'_>,
     weights: &DraftWeights,
-    w: &mut ProposeBuffers,
+    w: &ProposeBuffers,
     (index, current): (usize, usize),
 ) -> StdResult<(), DeviceError> {
     let g = weights.geometry;
-    let rows = w.rows;
-    let hidden = g.hidden;
+    let (rows, hidden) = (w.rows, g.hidden);
     let layer = &weights.layers[index];
-    let [first, second] = &mut w.stream;
-    let (residual, next) = if current == 0 {
-        (&*first, second)
-    } else {
-        (&*second, first)
-    };
+    let (residual, next) = streams(w, current)?;
     // MLP block, wrapped in its own dynamic convolution.
     let conv = &layer.mlp_conv;
-    record_gemm(
-        scope,
-        &conv.projection,
-        &w.normed.view(&[rows, hidden])?,
-        &mut w.coefficients,
-        hidden,
-    )?;
-    record_conv(
-        scope,
-        &mut w.conv,
-        &w.normed.view(&[rows, hidden])?,
-        &w.coefficients,
-        &conv.base,
-        0,
-        &g,
-    )?;
-    record_gemm(
-        scope,
-        &layer.gate,
-        &w.conv.view(&[rows, hidden])?,
-        &mut w.gate,
-        hidden,
-    )?;
-    record_gemm(
-        scope,
-        &layer.up,
-        &w.conv.view(&[rows, hidden])?,
-        &mut w.up,
-        hidden,
-    )?;
-    let gate = w.gate.view(&[rows * g.intermediate])?;
-    let up = w.up.view(&[rows * g.intermediate])?;
-    scope.record(draft::silu_mul(
-        (&mut w.activated).partition([AUX_KERNEL_TILE]),
-        &gate,
-        &up,
-    ))?;
-    let activated = w.activated.view(&[rows, g.intermediate])?;
+    let normed = buffer(&w.normed)?;
+    let convolved = buffer(&w.conv)?;
+    let coefficients = buffer(&w.coefficients)?;
+    let base = buffer(conv.base.as_ref())?;
+    let (gate, up) = (buffer(&w.gate)?, buffer(&w.up)?);
+    let (activated, projected) = (buffer(&w.activated)?, buffer(&w.projected)?);
+    record_gemm(r, &conv.projection, normed, coefficients, (rows, hidden))?;
+    record_conv(r, (convolved, normed), coefficients, base, (rows, 0), &g)?;
+    record_gemm(r, &layer.gate, convolved, gate, (rows, hidden))?;
+    record_gemm(r, &layer.up, convolved, up, (rows, hidden))?;
+    r.draft
+        .gated_product(&r.recording, activated, gate, up)
+        .map_err(error)?;
     record_projection(
-        scope,
+        r,
         &layer.down,
-        &activated,
-        &mut w.projected,
-        (g.intermediate, &mut w.partials),
+        activated,
+        projected,
+        (rows, g.intermediate, &w.partials),
     )?;
-    record_conv(
-        scope,
-        &mut w.conv,
-        &w.projected.view(&[rows, hidden])?,
-        &w.coefficients,
-        &conv.base,
-        1,
-        &g,
-    )?;
+    record_conv(r, (convolved, projected), coefficients, base, (rows, 1), &g)?;
     let norm = weights
         .layers
         .get(index + 1)
         .map_or(&weights.norm, |layer| &layer.input_norm);
-    scope.record(
-        draft::add_norm(
-            (&mut w.normed).partition([1, hidden.next_power_of_two()]),
-            (&mut *next).partition([1, hidden.next_power_of_two()]),
-            residual,
-            &w.conv,
-            norm,
-            g.epsilon,
+    r.draft
+        .add_norm(
+            &r.recording,
+            DraftAddNorm {
+                norm: hidden_norm(normed, residual, buffer(norm.as_ref())?, &g),
+                stream: next,
+                delta: convolved,
+            },
         )
-        .generics(vec![
-            hidden.to_string(),
-            hidden.next_power_of_two().to_string(),
-        ]),
-    )?;
-    Ok(())
+        .map_err(error)
 }
 
 /// Top candidates of every row from the target head, then the selector walk over them.
 fn record_candidates(
-    scope: &Scope,
+    r: &Recorder<'_>,
     weights: &DraftWeights,
-    w: &mut ProposeBuffers,
+    w: &ProposeBuffers,
 ) -> StdResult<(), DeviceError> {
     let g = weights.geometry;
-    let rows = w.rows;
-    let slots = w.slots;
-    let hidden = g.hidden;
-    let anchors = w.meta.slice(&[meta_range(Field::Anchors, rows, slots)])?;
-    record_gemm(
-        scope,
-        &weights.head,
-        &w.normed.view(&[rows, hidden])?,
-        &mut w.logits,
-        hidden,
-    )?;
-    let top_blocks = g.vocabulary.div_ceil(TOP_BLOCK);
-    scope.record(
-        draft::top_partial(
-            (&mut w.partial_values).partition([1, g.top_k]),
-            (&mut w.partial_ids).partition([1, g.top_k]),
-            &w.logits,
+    let (rows, slots, hidden) = (w.rows, w.slots, g.hidden);
+    let normed = buffer(&w.normed)?;
+    record_gemm(r, &weights.head, normed, buffer(&w.logits)?, (rows, hidden))?;
+    r.draft
+        .top_candidates(
+            &r.recording,
+            DraftTop {
+                partial_values: buffer(&w.partial_values)?,
+                partial_ids: buffer(&w.partial_ids)?,
+                unary: buffer(&w.unary)?,
+                candidates: buffer(&w.candidates)?,
+                logits: buffer(&w.logits)?,
+                rows,
+                vocabulary: g.vocabulary,
+                top_block: TOP_BLOCK,
+                top_k: g.top_k,
+            },
         )
-        .generics(vec![
-            g.vocabulary.to_string(),
-            TOP_BLOCK.to_string(),
-            g.top_k.to_string(),
-        ]),
-    )?;
-    let merged = top_blocks * g.top_k;
-    scope.record(
-        draft::top_finish(
-            (&mut w.unary).partition([1, g.top_k]),
-            (&mut w.candidates).partition([1, g.top_k]),
-            &w.partial_values,
-            &w.partial_ids,
-        )
-        .generics(vec![
-            merged.to_string(),
-            merged.next_power_of_two().to_string(),
-            g.top_k.to_string(),
-        ]),
-    )?;
+        .map_err(error)?;
     record_gemm(
-        scope,
+        r,
         &weights.selector,
-        &w.normed.view(&[rows, hidden])?,
-        &mut w.selector,
-        hidden,
+        normed,
+        buffer(&w.selector)?,
+        (rows, hidden),
     )?;
-    scope.record(
-        draft::select_walk(
-            (&mut w.tokens).partition([1, g.block]),
-            &w.candidates,
-            &w.unary,
-            &w.selector,
-            &weights.predecessor,
-            &weights.successor,
-            &anchors,
+    r.draft
+        .walk(
+            &r.recording,
+            DraftWalk {
+                tokens: buffer(&w.tokens)?,
+                candidates: buffer(&w.candidates)?,
+                unary: buffer(&w.unary)?,
+                selector: buffer(&w.selector)?,
+                predecessor: buffer(weights.predecessor.as_ref())?,
+                successor: buffer(weights.successor.as_ref())?,
+                anchors: meta_field(&w.meta, meta_range(Field::Anchors, rows, slots))?,
+                rows,
+                slots,
+                rank: g.rank,
+                top_k: g.top_k,
+                block: g.block,
+            },
         )
-        .generics(vec![
-            g.rank.to_string(),
-            g.top_k.to_string(),
-            g.block.to_string(),
-        ]),
-    )?;
-    Ok(())
+        .map_err(error)
 }
