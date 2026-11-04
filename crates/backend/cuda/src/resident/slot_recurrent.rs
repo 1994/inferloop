@@ -20,8 +20,10 @@ use infer_core::{Error, TensorId};
 use infer_cuda_kernels::contract::{
     Buffer, DeltaStepPlan, FusedConvBuffers, FusedDeltaBuffers, LaneBuffers, Recording,
 };
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{TensorNode, TensorOp};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// Candidate lanes of one slot that the fused kernels cover.
 pub(super) const LANES: usize = 3;
@@ -106,16 +108,28 @@ pub(super) fn allocate_staging(
     let mut staging = Staging::new();
     for (index, node) in nodes.iter().enumerate().filter(|(_, node)| covers(node)) {
         for (input, &id) in commit_inputs(node).iter().enumerate() {
-            let root = api::zeros::<f32>(&[arena.get(id)?.size()])
-                .sync_on(&device.stream)
-                .map_err(device_error)?;
+            let memory = Allocation::adopt(Arc::new(
+                api::zeros::<f32>(&[arena.get(id)?.size()])
+                    .sync_on(&device.stream)
+                    .map_err(device_error)?,
+            ))?;
             // Per-slot rows feed the three-lane commit graphs; wider pools commit in one batch.
-            for slot in (0..slots).filter(|_| verify == LANES) {
-                let base = slot * LANES;
-                let row = |lane| super::arena::row(&root, lanes, lane);
-                let rows = [row(base)?, row(base + 1)?, row(base + 2)?];
-                staging.entries.entry((slot, index)).or_default().push(rows);
+            if verify == LANES {
+                let mut rows = super::arena::rows(&memory, lanes)?.into_iter();
+                let mut next = || {
+                    rows.next()
+                        .ok_or_else(|| Error::invariant("recurrent staging rows"))
+                };
+                for slot in 0..slots {
+                    let lane_rows = [next()?, next()?, next()?];
+                    staging
+                        .entries
+                        .entry((slot, index))
+                        .or_default()
+                        .push(lane_rows);
+                }
             }
+            let root = super::arena::whole(&memory, &[memory.len()])?;
             staging.roots.insert((index, input), root);
         }
     }

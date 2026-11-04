@@ -6,6 +6,8 @@ use crate::{
 };
 use cutile::prelude::*;
 use infer_core::Result;
+use infer_cuda_kernels::tile::runtime::Allocation;
+use std::sync::Arc;
 
 const CAPACITY: usize = 4096;
 const STATE_OFFSET: i32 = -1;
@@ -149,9 +151,11 @@ fn metadata_batch_full_tail_and_media_flags_round_trip() -> Result<()> {
 #[ignore = "requires an NVIDIA GPU; run under tools/bench/safe-run.sh"]
 fn batch_rows_outlive_the_owner_handle() -> Result<()> {
     let device = CudaDevice::new(0)?;
-    let owner = api::zeros::<i32>(&[8])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    let owner = Allocation::adopt(Arc::new(
+        api::zeros::<i32>(&[8])
+            .sync_on(&device.stream)
+            .map_err(device_error)?,
+    ))?;
     let mut rows = batch_rows(&owner, 2)?;
     drop(owner);
 
@@ -166,7 +170,7 @@ fn batch_rows_outlive_the_owner_handle() -> Result<()> {
 #[ignore = "requires an NVIDIA GPU; run under tools/bench/safe-run.sh"]
 fn batch_rows_rejects_zero_lanes() -> Result<()> {
     let device = CudaDevice::new(0)?;
-    let owner = allocate_owner(&device)?;
+    let owner = Allocation::adopt(Arc::new(allocate_owner(&device)?))?;
     let rows = batch_rows(&owner, 0);
     assert!(rows.is_err(), "zero-lane batch must be rejected");
     Ok(())

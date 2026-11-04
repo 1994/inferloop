@@ -11,10 +11,12 @@ use cutile::prelude::*;
 use infer_core::{Error, OpId, Result};
 use infer_cuda_kernels::contract::{Kernels, PoolDeltaBuffers, PoolDeltaPlan, Recording};
 use infer_cuda_kernels::tile::recurrent::pack_parameters;
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
 use std::result::Result as StdResult;
+use std::sync::Arc;
 
 const RECURRENT_STATE_RANK: usize = 3;
 
@@ -64,10 +66,12 @@ impl SlotStates {
             let mut owners = Vec::new();
             for shape in shapes {
                 let size = shape.iter().product::<usize>();
-                let root = api::zeros::<f32>(&[width * size])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?;
-                let rows = super::arena::rows(&root, width)?;
+                let memory = Allocation::adopt(Arc::new(
+                    api::zeros::<f32>(&[width * size])
+                        .sync_on(&device.stream)
+                        .map_err(device_error)?,
+                ))?;
+                let rows = super::arena::rows(&memory, width)?;
                 for (row, lane) in rows.into_iter().zip(result.lanes.iter_mut()) {
                     lane.entry(id)
                         .or_default()
@@ -78,7 +82,7 @@ impl SlotStates {
                 } else {
                     vec![width, size]
                 };
-                owners.push(root.reshape(&root_shape).map_err(device_error)?);
+                owners.push(super::arena::whole(&memory, &root_shape)?);
             }
             result.roots.insert(id, owners);
         }

@@ -3,7 +3,8 @@ use crate::constants::NVFP4_GROUP_SIZE;
 use crate::device::vendor_fp8::nvfp4::SCALE_ROWS;
 use crate::device::{CudaDevice, device_error};
 use cuda_core::f8e4m3fn;
-use cutile::prelude::*;
+use cuda_core::sys::CUdeviceptr;
+use cutile::{cuda_async::device_buffer::DeviceAllocation, prelude::*};
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::Buffer;
 use infer_cuda_kernels::tile::runtime::Allocation;
@@ -434,61 +435,200 @@ fn slot_tensor(memory: &Allocation<f32>, offset: usize, len: usize) -> Result<Te
     memory.view(offset..end, &[len])
 }
 
-/// Elements in each of `lanes` concatenated rows of `elements`.
-fn row_size(elements: usize, lanes: usize) -> Result<usize> {
-    if lanes == 0 || !elements.is_multiple_of(lanes) {
-        return Err(Error::invalid("activation slot is not batched"));
-    }
-    Ok(elements / lanes)
+/// `DeviceAllocation` view of one row inside a batched slot. Carries no owner:
+/// the slot itself is kept alive by the arena stored in `BatchGraph`, which
+/// outlives every captured graph that references these rows.
+struct RowAllocation {
+    pointer: CUdeviceptr,
+    bytes: usize,
+    device: usize,
 }
 
-/// Row `lane` of `tensor` taken as `lanes` concatenated rows. The row holds a share of the memory,
-/// so it stays valid whatever happens to `tensor`.
-/// # Errors
-/// Rejects a tensor that does not divide into `lanes` rows and a lane past the last.
-pub(super) fn row<T: DType>(tensor: &Tensor<T>, lanes: usize, lane: usize) -> Result<Tensor<T>> {
-    let size = row_size(tensor.size(), lanes)?;
+#[expect(
+    unsafe_code,
+    reason = "Audited row aliasing: the batched arena outlives its captured graphs; \
+              row extents are checked against the slot at construction; kernels on one \
+              stream order every row access"
+)]
+// SAFETY: getters are stable for the token's lifetime; `pointer`/`bytes` describe a
+// row range verified against the slot's own extent at construction in `row_tensor`.
+unsafe impl DeviceAllocation for RowAllocation {
+    fn device_ptr(&self) -> CUdeviceptr {
+        self.pointer
+    }
+
+    fn len_bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn device_id(&self) -> usize {
+        self.device
+    }
+}
+
+/// Borrow one lane of a batched tensor without taking ownership of the slot.
+///
+/// Used where the owner already outlives the capture (metadata rows and the batched
+/// fusion gather). The caller must keep `slot` alive for every use of the view and
+/// must not use two views of the same lane as concurrent mutable outputs.
+///
+/// # Safety
+/// The returned tensor aliases `slot`'s device memory; its lifetime is not tracked.
+#[expect(
+    unsafe_code,
+    reason = "Audited lane view: the owner is retained by the caller for the graph lifetime, \
+              the lane extent is checked against the slot, and same-stream replay serializes access"
+)]
+pub(super) unsafe fn row_view<T: DType>(
+    slot: &Tensor<T>,
+    lanes: usize,
+    lane: usize,
+) -> Result<Tensor<T>> {
+    if lanes == 0 || !slot.size().is_multiple_of(lanes) {
+        return Err(Error::invalid("activation slot is not batched"));
+    }
+    let size = slot.size() / lanes;
     if lane >= lanes {
         return Err(Error::invalid("activation lane out of bounds"));
     }
-    Allocation::share(tensor)?.view(lane * size..(lane + 1) * size, &[size])
+    let stride = size_of::<T>();
+    let offset = lane
+        .checked_mul(size)
+        .and_then(|row| row.checked_mul(stride))
+        .ok_or_else(|| Error::invalid("activation row offset overflow"))?;
+    let total = slot.num_bytes();
+    let allocation = RowAllocation {
+        pointer: slot.device_pointer().cu_deviceptr()
+            + u64::try_from(offset).map_err(device_error)?,
+        bytes: total
+            .checked_sub(offset)
+            .ok_or_else(|| Error::invalid("activation row extent"))?,
+        device: slot.device_id(),
+    };
+    // SAFETY: the owner is retained by the caller; the row lies fully inside the slot by
+    // construction, and the caller serializes disjoint lane access on one stream.
+    Ok(unsafe {
+        Tensor::from_foreign(
+            Arc::new(allocation),
+            vec![i32::try_from(size).map_err(device_error)?],
+            vec![1],
+        )
+    })
 }
 
-/// Every row of `tensor` taken as `lanes` concatenated rows, each holding a share of the memory.
-/// Rows are disjoint, so each can be a launch's output.
+/// Borrow the first `kept` of `rows` leading-axis rows of a tensor, reshaped to `shape`.
+///
+/// Used by narrower pooled graphs that address only the low slots of a pool-wide state
+/// family. The caller must keep `whole` alive for every use of the view.
+///
+/// # Safety
+/// The returned tensor aliases `whole`'s device memory; its lifetime is not tracked.
+#[expect(
+    unsafe_code,
+    reason = "Audited prefix view: the pool retains the owner for the graph lifetime, the               prefix extent is checked against it, and same-stream replay serializes access"
+)]
+pub(super) unsafe fn prefix_view<T: DType>(
+    whole: &Tensor<T>,
+    rows: usize,
+    kept: usize,
+    shape: &[usize],
+) -> Result<Tensor<T>> {
+    if rows == 0 || kept == 0 || kept > rows || !whole.size().is_multiple_of(rows) {
+        return Err(Error::invalid("prefix view of a non-batched tensor"));
+    }
+    let elements = whole.size() / rows * kept;
+    if shape.iter().product::<usize>() != elements {
+        return Err(Error::invalid("prefix view shape"));
+    }
+    let allocation = RowAllocation {
+        pointer: whole.device_pointer().cu_deviceptr(),
+        bytes: elements
+            .checked_mul(size_of::<T>())
+            .ok_or_else(|| Error::invalid("prefix view extent"))?,
+        device: whole.device_id(),
+    };
+    let dims = shape
+        .iter()
+        .map(|&dim| i32::try_from(dim).map_err(device_error))
+        .collect::<Result<Vec<_>>>()?;
+    let mut strides = vec![1i32; dims.len()];
+    for axis in (0..dims.len().saturating_sub(1)).rev() {
+        strides[axis] = strides[axis + 1]
+            .checked_mul(dims[axis + 1])
+            .ok_or_else(|| Error::invalid("prefix view strides"))?;
+    }
+    // SAFETY: the owner is retained by the caller and the prefix lies inside it.
+    Ok(unsafe { Tensor::from_foreign(Arc::new(allocation), dims, strides) })
+}
+
+/// Every row of `memory` taken as `lanes` concatenated rows, each holding a share of it, so a
+/// row stays valid whatever happens to any other handle. Rows are disjoint, so each can be a
+/// launch's output.
+///
 /// # Errors
-/// Rejects a tensor that does not divide into `lanes` rows.
-pub(super) fn rows<T: DType>(tensor: &Tensor<T>, lanes: usize) -> Result<Vec<Tensor<T>>> {
-    let size = row_size(tensor.size(), lanes)?;
-    let memory = Allocation::share(tensor)?;
+/// Rejects zero lanes and memory that does not divide into `lanes` rows.
+pub(super) fn rows<T: DType>(memory: &Allocation<T>, lanes: usize) -> Result<Vec<Tensor<T>>> {
+    if lanes == 0 || !memory.len().is_multiple_of(lanes) {
+        return Err(Error::invalid("activation slot is not batched"));
+    }
+    let size = memory.len() / lanes;
     (0..lanes)
         .map(|lane| memory.view(lane * size..(lane + 1) * size, &[size]))
         .collect()
 }
 
-/// The first `kept` of `rows` leading rows of `tensor`, shaped `shape`, holding a share of the
-/// memory. Narrower graphs use it to address the low slots of a pool-wide family.
+/// All of `memory` shaped `shape`, as the one tensor a kernel may write it through; its storage
+/// is its own, so cuTile can partition it mutably.
+///
 /// # Errors
-/// Rejects a tensor that does not divide into `rows`, a `kept` outside `1..=rows`, and a shape
-/// that does not cover the kept rows.
-pub(super) fn prefix<T: DType>(
-    tensor: &Tensor<T>,
-    rows: usize,
-    kept: usize,
-    shape: &[usize],
-) -> Result<Tensor<T>> {
-    let size = row_size(tensor.size(), rows)?;
-    if kept == 0 || kept > rows {
-        return Err(Error::invalid("prefix view of a non-batched tensor"));
-    }
-    Allocation::share(tensor)?.view(0..size * kept, shape)
+/// Rejects a shape that does not cover the memory.
+pub(super) fn whole<T: DType>(memory: &Allocation<T>, shape: &[usize]) -> Result<Tensor<T>> {
+    memory.view(0..memory.len(), shape)
 }
 
-/// All of `tensor` shaped `shape`, holding a share of the memory.
+/// Owned tensor covering row `lane` of a taken batched slot; dropping it frees
+/// nothing. The returned Arc restores the slot once every row tensor is dropped.
 /// # Errors
-/// Rejects a shape that does not cover the tensor.
-pub(super) fn alias<T: DType>(tensor: &Tensor<T>, shape: &[usize]) -> Result<Tensor<T>> {
-    Allocation::share(tensor)?.view(0..tensor.size(), shape)
+/// Rejects malformed slots, out-of-range lanes and offset overflows.
+#[expect(
+    unsafe_code,
+    reason = "Audited from_foreign row view: the caller re-anchors the slot in its owning \
+              arena or workspace before any launch; that owner outlives its graphs; \
+              construction bounds the row; same-stream ordering serializes accesses"
+)]
+pub fn row_tensor(
+    slot: Tensor<f32>,
+    lanes: usize,
+    lane: usize,
+) -> Result<(Tensor<f32>, Arc<Tensor<f32>>)> {
+    if lanes == 0 || !slot.size().is_multiple_of(lanes) {
+        return Err(Error::invalid("activation slot is not batched"));
+    }
+    let size = slot.size() / lanes;
+    if lane >= lanes {
+        return Err(Error::invalid("activation lane out of bounds"));
+    }
+    let offset = lane
+        .checked_mul(size)
+        .and_then(|row| row.checked_mul(F32_BYTES))
+        .ok_or_else(|| Error::invalid("activation row offset overflow"))?;
+    let shared = Arc::new(slot);
+    let allocation = RowAllocation {
+        pointer: shared.device_pointer().cu_deviceptr()
+            + u64::try_from(offset).map_err(device_error)?,
+        bytes: shared.num_bytes() - offset,
+        device: shared.device_id(),
+    };
+    // SAFETY: the slot outlives every graph replay through the arena anchor; the row
+    // lies fully inside it by construction; same-stream replay serializes row access.
+    let row = unsafe {
+        Tensor::from_foreign(
+            Arc::new(allocation),
+            vec![i32::try_from(size).map_err(device_error)?],
+            vec![1],
+        )
+    };
+    Ok((row, shared))
 }
 
 /// Two metadata views under one exclusive lease of an unused fused FP4 product.
@@ -505,9 +645,14 @@ impl<'a> Fp4Scratch<'a> {
     pub(super) const fn bytes(&mut self) -> &mut Tensor<f8e4m3fn> {
         &mut self.bytes
     }
-    /// Both views alias `source`, which stays borrowed so nothing else touches it meanwhile;
-    /// the owning stream must finish the probe before it packs scales.
-    pub(super) fn new(
+    /// # Safety
+    /// The source arena must outlive every captured replay. Only its current lease holder
+    /// may access these aliases, on one owning stream; probe completion precedes byte packing.
+    #[expect(
+        unsafe_code,
+        reason = "Exclusive source lease anchors complete checked aliases; the owning stream orders probe and scale packing"
+    )]
+    pub(super) unsafe fn new(
         source: &'a mut Tensor<f32>,
         rows: usize,
         columns: usize,
@@ -524,8 +669,13 @@ impl<'a> Fp4Scratch<'a> {
         {
             return Ok(None);
         }
-        let floats = alias(source, &[rows, columns])?;
-        let owner = Arc::new(alias(source, &[elements])?);
+        // SAFETY: The exclusive source lease lasts until both aliases are destroyed, their
+        // full extents equal the source, and the caller orders probe completion before packing.
+        let floats = unsafe { row_view(source, 1, 0) }?
+            .reshape(&[rows, columns])
+            .map_err(device_error)?;
+        // SAFETY: Same full extent and exclusive source lease; only metadata is created.
+        let owner = Arc::new(unsafe { row_view(source, 1, 0) }?);
         let scale_row = columns / NVFP4_GROUP_SIZE * SCALE_ROWS;
         let bytes = owner
             .reinterpret::<f8e4m3fn>(&[source.num_bytes() / scale_row, scale_row])
@@ -549,12 +699,26 @@ impl<'a> Fp4Output<'a> {
     pub(super) const fn tensor(&mut self) -> &mut Tensor<f32> {
         &mut self.tensor
     }
-    /// The alias keeps `source` borrowed, so nothing else touches it while tuning writes it.
-    pub(super) fn new(source: &'a mut Tensor<f32>, rows: usize, columns: usize) -> Result<Self> {
+    /// # Safety
+    /// Retain the source until every temporary preparation graph completes and is destroyed.
+    /// Serialize all accesses with the arena's owning stream and exclusive lease.
+    #[expect(
+        unsafe_code,
+        reason = "Complete shape-checked output alias is bounded by the exclusive source lease"
+    )]
+    pub(super) unsafe fn new(
+        source: &'a mut Tensor<f32>,
+        rows: usize,
+        columns: usize,
+    ) -> Result<Self> {
         if rows.checked_mul(columns) != Some(source.size()) || !source.is_contiguous() {
             return Err(Error::invalid("FP4 output shape"));
         }
-        let tensor = alias(source, &[rows, columns])?;
+        // SAFETY: The source is exclusively borrowed for the alias lifetime; temporary
+        // preparation graphs complete and are destroyed before this lease is released.
+        let tensor = unsafe { row_view(source, 1, 0) }?
+            .reshape(&[rows, columns])
+            .map_err(device_error)?;
         Ok(Self {
             tensor,
             _source: source,

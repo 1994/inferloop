@@ -111,20 +111,6 @@ impl<T: DType> Allocation<T> {
         unsafe { Buffer::owned(address, self.len(), &self.owner) }
     }
 
-    /// Share the memory of a tensor the host still holds, while it migrates away from cuTile
-    /// types. Writes through either side reach the other, as with a clone of an allocation.
-    /// # Errors
-    /// Rejects storage that is not contiguous, which a buffer cannot describe.
-    #[expect(
-        unsafe_code,
-        reason = "The alias is an allocation, which leaves aliasing between operands to the caller"
-    )]
-    pub fn share(tensor: &Tensor<T>) -> Result<Self> {
-        // SAFETY: the alias holds the tensor's storage. Avoiding a launch that writes one side
-        // while it reads or writes the other is the obligation every allocation already states.
-        Self::adopt(unsafe { tensor.into_shared_alias() })
-    }
-
     /// The tensor behind this allocation, for code that has not migrated yet.
     #[must_use]
     pub const fn tensor(&self) -> &Arc<Tensor<T>> {
