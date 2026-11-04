@@ -1,5 +1,6 @@
 use super::super::ProgramGeometry;
 use super::*;
+use crate::mlp::Matrix;
 use crate::resident::BatchOutput;
 use crate::resident::PromptScratchRegistry;
 use crate::resident::batch::BatchReadout;
@@ -36,7 +37,11 @@ fn fixture_weights(device: &CudaDevice, width: usize) -> Result<ProgramWeights> 
         kv_scales: BTreeMap::new(),
         tiling: BTreeMap::new(),
         fusion: Some(FusionWeights {
-            projection: ProjectionWeight::Dense(device.upload(fusion_values, &[width, 2 * width])?),
+            projection: ProjectionWeight::Dense(Matrix::upload(
+                device,
+                fusion_values,
+                &[width, 2 * width],
+            )?),
             tiling: default_tiling()?,
             norms: device.upload(vec![0.0; 2 * width], &[2, width])?,
             epsilon: 1e-6,

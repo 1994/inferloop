@@ -1,4 +1,4 @@
-use super::{Draft, LoadOptions, Projection, floats, phase};
+use super::{Draft, LoadOptions, floats, phase};
 use crate::constants::FUSED_VERIFY_LANES;
 use crate::constants::GIB;
 use crate::constants::MAX_PREFILL_LANES;
@@ -168,7 +168,7 @@ fn bind_tensors(
             .ok_or_else(|| Error::invalid("missing graph weight"))?
             .clone();
         if projections.contains(&tensor.id) {
-            let projection = Projection::load(device, package, &source)?.resident();
+            let projection = ProjectionWeight::load(device, package, &source)?;
             bind_activation(package, &source, weights, tensor.id)?;
             let tiling = select_tiling(device, &projection, profile, tuning_source, tuning)?;
             weights.tiling.insert(tensor.id, tiling);
@@ -180,7 +180,9 @@ fn bind_tensors(
                         "a tied input embedding requires a dense output projection",
                     ));
                 };
-                weights.embeddings.insert(tensor.id, Arc::clone(shared));
+                weights
+                    .embeddings
+                    .insert(tensor.id, Arc::clone(shared.tensor()));
             }
             weights.projections.insert(tensor.id, projection);
         } else if embeddings.contains(&tensor.id) {
@@ -263,9 +265,9 @@ fn draft_projection(
     let projection = if source.encoding == infer_models::WeightEncoding::Float {
         weights.fp8_inputs.insert(id);
         let values = floats(package, &source.data)?;
-        Projection::quantize_fp8(device, &values, &source.shape)?.resident()
+        ProjectionWeight::quantize_fp8(device, &values, &source.shape)?
     } else {
-        Projection::load(device, package, source)?.resident()
+        ProjectionWeight::load(device, package, source)?
     };
     bind_activation(package, source, weights, id)?;
     Ok(projection)
@@ -442,7 +444,7 @@ fn draft_fusion(
     {
         return Err(Error::invalid("MTP fusion weight shapes"));
     }
-    let fc = Projection::load(device, package, &fc)?.resident();
+    let fc = ProjectionWeight::load(device, package, &fc)?;
     // The fusion projection is tuned exactly like the target's own projections.
     let tiling = select_tiling(device, &fc, profile, tiling_source, report)?;
     let mut norms = floats(package, &embedding_norm.data)?;

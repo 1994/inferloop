@@ -1,6 +1,7 @@
 //! Independent, nonuniform fixtures exercise row/column layout and block scale indexing.
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::half::bf16;
+use infer_backend_cuda::mlp::Matrix;
 use infer_backend_cuda::nvfp4::to_bf16;
 use infer_backend_cuda::{device::CudaDevice, mlp::ProjectionWeight};
 use infer_core::{Error, Result};
@@ -34,7 +35,8 @@ pub fn make(
         }
     }
     let projection = match encoding {
-        0 => ProjectionWeight::Dense(device.upload(
+        0 => ProjectionWeight::Dense(Matrix::upload(
+            device,
             decoded.iter().copied().map(bf16::from_f32).collect(),
             &[rows, columns],
         )?),
@@ -49,8 +51,10 @@ pub fn make(
                 })
                 .collect();
             ProjectionWeight::Fp8(
-                device.upload(values, &[rows, columns])?,
-                device.upload((0..rows).map(|r| scale[r % 4]).collect(), &[rows])?,
+                Matrix::upload(device, values, &[rows, columns])?,
+                device
+                    .runtime()
+                    .upload((0..rows).map(|r| scale[r % 4]).collect())?,
             )
         }
         _ => {
@@ -69,17 +73,20 @@ pub fn make(
                 .collect();
             if encoding == 3 {
                 let converted = to_bf16(&values, &scales, 3.0, rows, columns, rows * columns * 2)?;
-                ProjectionWeight::Dense(device.upload(
+                ProjectionWeight::Dense(Matrix::upload(
+                    device,
                     converted.into_iter().map(bf16::from_bits).collect(),
                     &[rows, columns],
                 )?)
             } else {
                 ProjectionWeight::Fp4(
-                    device.upload(
+                    Matrix::upload(
+                        device,
                         values.into_iter().map(f4e2m1fnx2::from_bits).collect(),
                         &[rows, columns / 2],
                     )?,
-                    device.upload(
+                    Matrix::upload(
+                        device,
                         scales.into_iter().map(f8e4m3fn).collect(),
                         &[rows, columns / 16],
                     )?,

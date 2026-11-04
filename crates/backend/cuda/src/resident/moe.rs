@@ -104,15 +104,15 @@ impl Capture<'_> {
             .get(&node.inputs[2])
             .ok_or_else(|| error("missing expert bank"))?;
         let weight = match &bank.projection {
-            ProjectionWeight::Dense(w) => ExpertWeight::Dense(buffer(w.as_ref())?),
+            ProjectionWeight::Dense(w) => ExpertWeight::Dense(buffer(w)?),
             ProjectionWeight::Fp8(w, scales) => ExpertWeight::Fp8Channel {
-                weight: buffer(w.as_ref())?,
-                scales: buffer(scales.as_ref())?,
+                weight: buffer(w)?,
+                scales: buffer(scales)?,
                 quantized_inputs: bank.quantized_inputs,
             },
             ProjectionWeight::Fp8Block(w, scales) => ExpertWeight::Fp8Block {
-                weight: buffer(w.as_ref())?,
-                scales: buffer(scales.as_ref())?,
+                weight: buffer(w)?,
+                scales: buffer(scales)?,
                 block_columns: FP8_BLOCK_COLUMNS,
                 quantized_inputs: bank.quantized_inputs,
             },

@@ -16,7 +16,7 @@ use infer_ir::{DataflowGraph, StateKind, TensorOp, TensorStorage};
 use infer_models::{QuantizedPackage, WeightSource};
 use infer_state::physical::{PagedRows, PhysicalTensor};
 use std::{collections::BTreeMap, path::Path};
-use weights::Projection;
+use weights::ProjectionWeight;
 
 fn weight_roles(graph: &DataflowGraph, id: TensorId, slot: &str) -> (bool, bool) {
     let embedding = slot == "embed_tokens.weight";
@@ -72,7 +72,7 @@ pub struct Model {
     tuning: BTreeMap<String, LinearTiling>,
     pub package: QuantizedPackage,
     pub device: CudaDevice,
-    projections: BTreeMap<TensorId, Projection>,
+    projections: BTreeMap<TensorId, ProjectionWeight>,
     constants: BTreeMap<TensorId, Vec<f32>>,
     embeddings: BTreeMap<TensorId, WeightSource>,
     state: BTreeMap<TensorId, PhysicalTensor>,
@@ -132,7 +132,7 @@ impl Model {
                         {
                             shared.projection(slot)?.clone()
                         } else {
-                            Projection::load(&model.device, &mut model.package, &weight)?
+                            ProjectionWeight::load(&model.device, &mut model.package, &weight)?
                         };
                         model.projections.insert(spec.id, loaded);
                         if model.projections.len().is_multiple_of(50) {
@@ -185,7 +185,7 @@ impl Model {
         Ok(())
     }
 
-    fn projection(&self, name: &str) -> Result<&Projection> {
+    fn projection(&self, name: &str) -> Result<&ProjectionWeight> {
         let id = self
             .package
             .graph

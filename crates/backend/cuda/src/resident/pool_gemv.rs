@@ -46,11 +46,18 @@ pub(super) fn record(
                 },
                 buffer(output)?,
                 input,
-                buffer(weight.as_ref())?,
+                buffer(weight)?,
             )
             .map_err(error)?;
     } else {
-        choice.record((kernels, scope), weight, input, output, columns, tile)?;
+        choice.record(
+            (kernels, scope),
+            weight.tensor(),
+            input,
+            output,
+            columns,
+            tile,
+        )?;
     }
     #[cfg(test)]
     CAPTURES.with(|n| n.set(n.get() + 1));

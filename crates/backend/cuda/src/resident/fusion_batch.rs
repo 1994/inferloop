@@ -87,7 +87,7 @@ pub fn required_bytes(weights: &ProgramWeights, width: usize, profile: &DevicePr
     layout_bytes(
         &profile.architecture,
         width,
-        Some(weight.shape()),
+        Some(weight.tensor().shape()),
         fusion.tiling,
     )
 }
@@ -303,7 +303,7 @@ pub(super) fn record(
                     .as_ref()
                     .ok_or_else(|| error("fusion batch owner"))?,
             )?,
-            buffer(weight.as_ref())?,
+            buffer(weight)?,
         )
         .map_err(error)?;
     arena.buffers[slot] = Some(output.reshape(&restore)?);
@@ -394,7 +394,7 @@ fn record_wide(
     let recorded = delegated.record_dense(
         (&builder.weights.kernels, scope),
         &input,
-        weight,
+        weight.tensor(),
         &output,
         (lanes, HIDDEN, COLUMNS),
     );

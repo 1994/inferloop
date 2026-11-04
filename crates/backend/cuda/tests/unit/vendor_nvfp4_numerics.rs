@@ -1,6 +1,7 @@
 //! SDK FP4/F32 results checked against independent scalar dequantization.
 use super::{Operands, Shape, append, make_candidate};
 use crate::device::{CudaDevice, vendor_fp8};
+use crate::mlp::Matrix;
 use crate::mlp::ProjectionWeight;
 use crate::tuning::resident_gemm::{GemmConfig, ResidentTuningSession};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
@@ -58,11 +59,16 @@ fn vendor_fp4_matches_independent_full_scalar_output() -> TestResult {
     )?;
     let input_scales = device.upload(qs.iter().map(|&v| f8e4m3fn(v)).collect(), &[m, k / 16])?;
     let weight = ProjectionWeight::Fp4(
-        device.upload(
+        Matrix::upload(
+            &device,
             wc.iter().map(|&v| f4e2m1fnx2::from_bits(v)).collect(),
             &[n, k / 2],
         )?,
-        device.upload(ws.iter().map(|&v| f8e4m3fn(v)).collect(), &[n, k / 16])?,
+        Matrix::upload(
+            &device,
+            ws.iter().map(|&v| f8e4m3fn(v)).collect(),
+            &[n, k / 16],
+        )?,
         1.0,
     );
     let floats = Arc::new(api::zeros::<f32>(&[m * k]).sync_on(&device.stream)?);
@@ -123,8 +129,12 @@ fn vendor_fp4_rejects_overlap_and_unprepared_operands() -> TestResult {
     let q = api::zeros::<f4e2m1fnx2>(&[m, k / 2]).sync_on(&device.stream)?;
     let qs = api::zeros::<f8e4m3fn>(&[m, k / 16]).sync_on(&device.stream)?;
     let weight = ProjectionWeight::Fp4(
-        device.upload(vec![f4e2m1fnx2::from_bits(0x22); n * k / 2], &[n, k / 2])?,
-        device.upload(vec![f8e4m3fn(56); n * k / 16], &[n, k / 16])?,
+        Matrix::upload(
+            &device,
+            vec![f4e2m1fnx2::from_bits(0x22); n * k / 2],
+            &[n, k / 2],
+        )?,
+        Matrix::upload(&device, vec![f8e4m3fn(56); n * k / 16], &[n, k / 16])?,
         1.0,
     );
     let source = Arc::new(api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?);

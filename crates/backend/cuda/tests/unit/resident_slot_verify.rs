@@ -1,4 +1,5 @@
 use super::*;
+use crate::mlp::Matrix;
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use crate::{
     mlp::ProjectionWeight,
@@ -93,7 +94,7 @@ fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
     }
     graph.hidden = Some(TensorId::new(4)?);
     graph.logits = Some(TensorId::new(7)?);
-    let embedding = fixture_embedding(device)?;
+    let embedding = Matrix::adopt(fixture_embedding(device)?)?;
     let weights = ProgramWeights {
         kernels: Arc::new(tile_kernels(0)),
         mrope: false,
@@ -108,7 +109,7 @@ fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
         fusion: None,
         kv_scales: BTreeMap::new(),
         tiling: BTreeMap::new(),
-        embeddings: BTreeMap::from([(TensorId::ONE, Arc::clone(&embedding))]),
+        embeddings: BTreeMap::from([(TensorId::ONE, Arc::clone(embedding.tensor()))]),
         fp8_inputs: BTreeSet::new(),
         input_scales: BTreeMap::new(),
         projections: BTreeMap::from([(TensorId::new(6)?, ProjectionWeight::Dense(embedding))]),
@@ -284,11 +285,19 @@ fn feature_fixture(
     weights.projections = BTreeMap::from([
         (
             TensorId::new(5)?,
-            ProjectionWeight::Dense(device.upload(values(vocab * hidden), &[vocab, hidden])?),
+            ProjectionWeight::Dense(Matrix::upload(
+                device,
+                values(vocab * hidden),
+                &[vocab, hidden],
+            )?),
         ),
         (
             TensorId::new(8)?,
-            ProjectionWeight::Dense(device.upload(values(hidden * hidden), &[hidden, hidden])?),
+            ProjectionWeight::Dense(Matrix::upload(
+                device,
+                values(hidden * hidden),
+                &[hidden, hidden],
+            )?),
         ),
     ]);
     weights.batch_width = 8;

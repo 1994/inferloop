@@ -200,7 +200,7 @@ impl Workspace {
             return pool_dense::baseline(shape);
         };
         self.pool_dense_strategies
-            .get(&PoolDenseBinding::new(weight, shape, tile))
+            .get(&PoolDenseBinding::new(weight.tensor(), shape, tile))
             .copied()
             .unwrap_or_else(|| pool_dense::baseline(shape))
     }
@@ -654,8 +654,8 @@ impl Workspace {
                     record_fp8_block(
                         (contract, &recording),
                         WeightRef::Fp8 {
-                            weight: buffer(w.as_ref())?,
-                            scales: buffer(block_scale.as_ref())?,
+                            weight: buffer(w)?,
+                            scales: buffer(block_scale)?,
                         },
                         input,
                         (buffer(&*q)?, buffer(&*qs)?),
@@ -667,6 +667,8 @@ impl Workspace {
                     )?;
                 }
                 ProjectionWeight::Fp8(w, channel_scale) => {
+                    // The cuBLASLt and tuned paths below still take tensors.
+                    let (w, channel_scale) = (w.tensor(), channel_scale.tensor());
                     if !reuse {
                         contract
                             .projection

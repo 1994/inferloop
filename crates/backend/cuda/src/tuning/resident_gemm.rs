@@ -534,8 +534,8 @@ impl WeightKey {
             return Err(Error::invalid("resident GEMM requires FP4 weights"));
         };
         Ok(Self {
-            codes: Arc::as_ptr(codes) as usize,
-            scales: Arc::as_ptr(scales) as usize,
+            codes: Arc::as_ptr(codes.tensor()) as usize,
+            scales: Arc::as_ptr(scales.tensor()) as usize,
             global: global.to_bits(),
             activation: scale.to_bits(),
         })
@@ -635,11 +635,11 @@ fn verified_config(
         && previous
             .codes
             .upgrade()
-            .is_some_and(|owner| Arc::ptr_eq(&owner, codes))
+            .is_some_and(|owner| Arc::ptr_eq(&owner, codes.tensor()))
         && previous
             .scales
             .upgrade()
-            .is_some_and(|owner| Arc::ptr_eq(&owner, scales))
+            .is_some_and(|owner| Arc::ptr_eq(&owner, scales.tensor()))
     {
         return Ok(if previous.accepted {
             selected
@@ -689,8 +689,8 @@ fn remember_verification(
     verified.insert(
         verification_key,
         Verification {
-            codes: Arc::downgrade(codes),
-            scales: Arc::downgrade(scales),
+            codes: Arc::downgrade(codes.tensor()),
+            scales: Arc::downgrade(scales.tensor()),
             accepted,
         },
     );

@@ -1844,13 +1844,9 @@ fn warm_delegated(delegated: &mut Support, weights: &ProgramWeights, geometry: P
         let ProjectionWeight::Dense(dense) = weight else {
             continue;
         };
-        let [rows, columns] = dense.shape()[..] else {
-            continue;
-        };
-        let rows = usize::try_from(rows).unwrap_or(0);
-        let columns = usize::try_from(columns).unwrap_or(0);
+        let [rows, columns] = dense.shape();
         for width in geometry.widths() {
-            let _ = delegated.warm(width, dense, rows, columns);
+            let _ = delegated.warm(width, dense.tensor(), rows, columns);
         }
     }
 }

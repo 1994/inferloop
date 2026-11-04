@@ -1,6 +1,7 @@
 use super::*;
 use crate::constants::PROMPT_GEMM_TILE_ROWS;
 use crate::constants::QUANT_GEMM_TILE;
+use crate::mlp::Matrix;
 use crate::tuning::resident_gemm::prompt_tile_rows;
 use std::env::temp_dir;
 use std::fs::remove_file;
@@ -253,8 +254,10 @@ fn fp8_native_candidates_and_lt_exact_gate_cover_tails_and_weight_owners() -> Re
         let scales = (0..n)
             .map(|i| f32::from(u16::try_from(i % 13 + 1).unwrap_or_default()) / 113.0)
             .collect();
-        let weight =
-            ProjectionWeight::Fp8(device.upload(codes, &[n, k])?, device.upload(scales, &[n])?);
+        let weight = ProjectionWeight::Fp8(
+            Matrix::upload(&device, codes, &[n, k])?,
+            device.runtime().upload(scales)?,
+        );
         for fixture in 0..FIXTURES {
             let base = Captured::new(
                 &device,
@@ -306,8 +309,8 @@ fn fp8_native_candidates_and_lt_exact_gate_cover_tails_and_weight_owners() -> Re
             return Err(Error::invariant("FP8 test channel"));
         };
         let second = ProjectionWeight::Fp8(
-            Arc::clone(codes),
-            device.upload(device.read(scales)?, &[n])?,
+            codes.clone(),
+            device.runtime().upload(device.read(scales.tensor())?)?,
         );
         assert_eq!(remembered(&second, &identity, choice)?, None);
         assert_eq!(
@@ -315,7 +318,7 @@ fn fp8_native_candidates_and_lt_exact_gate_cover_tails_and_weight_owners() -> Re
             choice
         );
         let invalid =
-            ProjectionWeight::Fp8(Arc::clone(codes), device.upload(vec![f32::NAN; n], &[n])?);
+            ProjectionWeight::Fp8(codes.clone(), device.runtime().upload(vec![f32::NAN; n])?);
         assert_eq!(
             cached_gate(&device, &mut support, &invalid, &identity, choice)?,
             Choice::baseline(m)

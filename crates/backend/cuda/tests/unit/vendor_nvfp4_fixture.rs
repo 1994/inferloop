@@ -24,7 +24,7 @@ pub fn layers(_device: &CudaDevice, loaded: &LoadedModel) -> TestResult<Vec<Laye
         else {
             continue;
         };
-        if codes.shape() != [i32::try_from(OUTPUTS)?, i32::try_from(COLUMNS / 2)?] {
+        if codes.shape() != [OUTPUTS, COLUMNS / 2] {
             continue;
         }
         let scale = *loaded

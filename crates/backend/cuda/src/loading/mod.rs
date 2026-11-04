@@ -54,7 +54,7 @@ use std::path::Path;
 use std::sync::Arc;
 /// Interleaved channels in a decoded RGB image.
 const IMAGE_CHANNELS: usize = 3;
-pub use weights::{Projection, floats};
+pub use weights::floats;
 
 /// Load-time execution policy; each request receives independent mutable device state.
 #[derive(Debug, Clone)]

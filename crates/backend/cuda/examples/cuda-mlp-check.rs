@@ -5,6 +5,7 @@ use std::env::args;
 fn main() -> infer_core::Result<()> {
     use cuda_core::{f4e2m1fnx2, f8e4m3fn};
     use cutile::half::bf16;
+    use infer_backend_cuda::mlp::Matrix;
     use infer_backend_cuda::{
         device::CudaDevice,
         mlp::{MlpConfig, MlpGraph, MlpWeights, ProjectionWeight},
@@ -17,19 +18,27 @@ fn main() -> infer_core::Result<()> {
     {
         let matrix = |rows, columns| -> infer_core::Result<ProjectionWeight> {
             Ok(match encoding {
-                0 => ProjectionWeight::Dense(
-                    device.upload(vec![bf16::from_f32(0.5); rows * columns], &[rows, columns])?,
-                ),
+                0 => ProjectionWeight::Dense(Matrix::upload(
+                    &device,
+                    vec![bf16::from_f32(0.5); rows * columns],
+                    &[rows, columns],
+                )?),
                 1 => ProjectionWeight::Fp8(
-                    device.upload(vec![f8e4m3fn(0x38); rows * columns], &[rows, columns])?,
-                    device.upload(vec![0.5; rows], &[rows])?,
+                    Matrix::upload(
+                        &device,
+                        vec![f8e4m3fn(0x38); rows * columns],
+                        &[rows, columns],
+                    )?,
+                    device.runtime().upload(vec![0.5; rows])?,
                 ),
                 _ => ProjectionWeight::Fp4(
-                    device.upload(
+                    Matrix::upload(
+                        &device,
                         vec![f4e2m1fnx2::from_bits(0x22); rows * columns / 2],
                         &[rows, columns / 2],
                     )?,
-                    device.upload(
+                    Matrix::upload(
+                        &device,
                         vec![f8e4m3fn(0x38); rows * columns / 16],
                         &[rows, columns / 16],
                     )?,

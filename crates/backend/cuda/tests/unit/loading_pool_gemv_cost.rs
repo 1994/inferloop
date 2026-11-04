@@ -212,8 +212,7 @@ fn limited_cases(loaded: &LoadedModel, rows: usize, limit: usize) -> TestResult<
         let ProjectionWeight::Dense(weight) = projection else {
             continue;
         };
-        let n = usize::try_from(weight.shape()[0])?;
-        let k = usize::try_from(weight.shape()[1])?;
+        let [n, k] = weight.shape();
         if n > 128 || k < 4096 {
             continue;
         }
@@ -235,7 +234,7 @@ fn limited_cases(loaded: &LoadedModel, rows: usize, limit: usize) -> TestResult<
         cases.push(Case::new(
             loaded.device(),
             slot.clone(),
-            Arc::clone(weight),
+            Arc::clone(weight.tensor()),
             tile,
             rows,
         )?);

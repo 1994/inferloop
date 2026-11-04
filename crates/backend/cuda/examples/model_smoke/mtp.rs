@@ -1,7 +1,7 @@
 //! Single-layer Qwen MTP with a distinct KV cache and shared target vocabulary head.
 use super::{
     Model,
-    weights::{Projection, floats},
+    weights::{ProjectionWeight, floats},
 };
 use infer_backend_cuda::resident::DeviceProgram;
 use infer_backend_cuda::resident::FusionWeights;
@@ -15,7 +15,7 @@ use std::{collections::BTreeMap, path::Path};
 
 pub struct Mtp {
     pub model: Model,
-    pub(super) fc: Projection,
+    pub(super) fc: ProjectionWeight,
     embedding_norm: Vec<f32>,
     hidden_norm: Vec<f32>,
 }
@@ -53,7 +53,7 @@ impl Mtp {
         {
             return Err(Error::invalid("MTP fusion weight shapes"));
         }
-        let fc = Projection::load(&target.device, &mut package, &fc)?;
+        let fc = ProjectionWeight::load(&target.device, &mut package, &fc)?;
         let embedding_norm = floats(&mut package, &embedding_norm.data)?;
         let hidden_norm = floats(&mut package, &hidden_norm.data)?;
         let (_, graph) = package.provider.draft_graph(&package.imported.model)?;
@@ -88,7 +88,7 @@ impl Mtp {
         let mut norms = self.embedding_norm.clone();
         norms.extend_from_slice(&self.hidden_norm);
         let config = &self.model.package.imported.model;
-        let projection = self.fc.resident();
+        let projection = self.fc.clone();
         let (key, _, _) = projection_key(&projection)?;
         let tiling = self
             .model

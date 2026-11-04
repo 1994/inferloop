@@ -1,5 +1,6 @@
 use super::kernels;
 use crate::device::CudaDevice;
+use crate::mlp::Matrix;
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::bench::BenchOptions as CutileBenchOptions;
 use cutile::cutile_compiler::hints::CompileOptions;
@@ -683,8 +684,16 @@ fn fused_swiglu_tuner_preserves_complete_quantized_outputs() -> Result<(), Box<d
     let gate = swiglu_weight(&device, 1)?;
     let up = swiglu_weight(&device, 5)?;
     let weights = (
-        ProjectionWeight::Fp4(Arc::clone(&gate.0), Arc::clone(&gate.1), wg),
-        ProjectionWeight::Fp4(Arc::clone(&up.0), Arc::clone(&up.1), wu),
+        ProjectionWeight::Fp4(
+            Matrix::adopt(Arc::clone(&gate.0))?,
+            Matrix::adopt(Arc::clone(&gate.1))?,
+            wg,
+        ),
+        ProjectionWeight::Fp4(
+            Matrix::adopt(Arc::clone(&up.0))?,
+            Matrix::adopt(Arc::clone(&up.1))?,
+            wu,
+        ),
     );
     let session = ResidentTuningSession::for_hardware_validation();
     for rows in [64, 128] {

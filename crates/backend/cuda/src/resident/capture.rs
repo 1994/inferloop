@@ -400,7 +400,7 @@ impl Capture<'_> {
                 super::small_gemm::precise_kernels::dense(
                     (&mut matrix).partition(SMALL_GEMM_TILE),
                     &input.view(&[1, columns]).map_err(error)?,
-                    weight,
+                    weight.tensor(),
                 )
                 .generics(vec![bf16::DTYPE.as_str().into(), columns.to_string()]),
             )?;

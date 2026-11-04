@@ -27,7 +27,7 @@ impl Workspace {
         let ProjectionWeight::Fp4(w, _, _) = weight else {
             return Ok(());
         };
-        let outputs = usize::try_from(w.shape()[0]).map_err(error)?;
+        let outputs = w.rows();
         if !outputs.is_multiple_of(nvfp4::SCALE_ROWS) || !self.vendor_fp4.enabled() {
             return Ok(());
         }

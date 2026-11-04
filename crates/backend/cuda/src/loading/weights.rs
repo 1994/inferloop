@@ -2,18 +2,17 @@ use crate::constants::DEFAULT_TILE_COLUMNS;
 use crate::constants::DEFAULT_TILE_ROWS;
 use crate::constants::F32_BYTES;
 use crate::constants::GIB;
-use crate::mlp::ProjectionWeight as MlpProjectionWeight;
+use crate::mlp::{Matrix, ProjectionWeight};
 use crate::nvfp4::to_bf16;
 use crate::{device::CudaDevice, strategy::LinearTiling};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
-use cutile::{half::bf16, prelude::*};
+use cutile::half::bf16;
 use infer_core::{Error, Result};
 use infer_ir::DType;
 use infer_models::{
     DeviceWeight, QuantizedPackage, WeightEncoding, WeightSource, WeightView, convert_float_bytes,
 };
 use std::cmp::Ordering;
-use std::sync::Arc;
 
 const STAGING: u64 = 2 * 1024 * 1024 * 1024;
 /// Decoded BF16 byte budget for one NVFP4 projection falling back to host decoding.
@@ -28,14 +27,6 @@ const E4M3_MANTISSA_SCALE: f32 = 8.0;
 const E4M3_EXPONENT_BIAS: i32 = 7;
 const E4M3_MAX: f32 = 448.0;
 const E4M3_SIGN: u8 = 0x80;
-
-#[derive(Clone)]
-pub enum Projection {
-    Dense(Arc<Tensor<bf16>>),
-    Fp8(Arc<Tensor<f8e4m3fn>>, Arc<Tensor<f32>>),
-    Fp8Block(Arc<Tensor<f8e4m3fn>>, Arc<Tensor<f32>>),
-    Fp4(Arc<Tensor<f4e2m1fnx2>>, Arc<Tensor<f8e4m3fn>>, f32),
-}
 
 /// Read floating weights under a 2 GiB encoded staging limit.
 /// # Errors
@@ -118,7 +109,7 @@ fn e4m3_code(value: f32, magnitudes: &[f32]) -> u8 {
     u8::try_from(code).unwrap_or(E4M3_MAX_CODE) | sign
 }
 
-impl Projection {
+impl ProjectionWeight {
     /// Per-output-channel FP8 encoding of a dense `[rows, columns]` weight: each row is scaled by
     /// its largest magnitude over 448, matching the checkpoint's own FP8-channel projections.
     /// # Errors
@@ -147,21 +138,11 @@ impl Projection {
             );
         }
         Ok(Self::Fp8(
-            device.upload(codes, shape)?,
-            device.upload(scales, &[*rows])?,
+            Matrix::upload(device, codes, shape)?,
+            device.runtime().upload(scales)?,
         ))
     }
 
-    #[must_use]
-    pub fn resident(&self) -> MlpProjectionWeight {
-        use crate::mlp::ProjectionWeight;
-        match self {
-            Self::Dense(w) => ProjectionWeight::Dense(w.clone()),
-            Self::Fp8(w, s) => ProjectionWeight::Fp8(w.clone(), s.clone()),
-            Self::Fp8Block(w, s) => ProjectionWeight::Fp8Block(w.clone(), s.clone()),
-            Self::Fp4(w, s, g) => ProjectionWeight::Fp4(w.clone(), s.clone(), *g),
-        }
-    }
     /// # Errors
     /// Rejects malformed quantization, staging limits or failed CUDA allocations.
     pub fn load(
@@ -181,14 +162,17 @@ impl Projection {
                     .into_iter()
                     .map(bf16::from_f32)
                     .collect();
-                Ok(Self::Dense(device.upload(values, &weight.shape)?))
+                Ok(Self::Dense(Matrix::upload(device, values, &weight.shape)?))
             }
             WeightEncoding::Fp8Channel => {
                 let values = codes(package, &weight.data)?;
                 let scaling = floats(package, scale()?)?;
+                if weight.shape.first() != Some(&scaling.len()) {
+                    return Err(Error::invalid("FP8 channel scales"));
+                }
                 Ok(Self::Fp8(
-                    device.upload(values, &weight.shape)?,
-                    device.upload(scaling, &[weight.shape[0]])?,
+                    Matrix::upload(device, values, &weight.shape)?,
+                    device.runtime().upload(scaling)?,
                 ))
             }
             WeightEncoding::Nvfp4 => Self::load_nvfp4(device, package, weight),
@@ -211,8 +195,8 @@ impl Projection {
                     expanded.extend_from_slice(&scaling[start..start + blocks]);
                 }
                 Ok(Self::Fp8Block(
-                    device.upload(values, &weight.shape)?,
-                    device.upload(expanded, &[*rows, blocks])?,
+                    Matrix::upload(device, values, &weight.shape)?,
+                    Matrix::upload(device, expanded, &[*rows, blocks])?,
                 ))
             }
         }
@@ -250,11 +234,13 @@ impl Projection {
         let scaling = package.read_view(scale, STAGING)?;
         if native {
             Ok(Self::Fp4(
-                device.upload(
+                Matrix::upload(
+                    device,
                     values.iter().copied().map(f4e2m1fnx2::from_bits).collect(),
                     &weight.data.shape,
                 )?,
-                device.upload(
+                Matrix::upload(
+                    device,
                     scaling.iter().copied().map(f8e4m3fn).collect(),
                     &scale.shape,
                 )?,
@@ -272,7 +258,8 @@ impl Projection {
                 *columns,
                 NVFP4_DECODE_BUDGET,
             )?;
-            Ok(Self::Dense(device.upload(
+            Ok(Self::Dense(Matrix::upload(
+                device,
                 decoded.into_iter().map(bf16::from_bits).collect(),
                 &weight.shape,
             )?))
@@ -285,16 +272,23 @@ impl Projection {
         let vector = device.upload(input.to_vec(), &[input.len()])?;
         let tile = LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS)?;
         let output = match self {
-            Self::Dense(weights) => device.matvec_tiled(vector, weights.clone(), tile)?,
-            Self::Fp8(weights, scales) => {
-                device.fp8_matvec(vector, weights.clone(), scales.clone(), tile)?
-            }
+            Self::Dense(weights) => device.matvec_tiled(vector, weights.tensor().clone(), tile)?,
+            Self::Fp8(weights, scales) => device.fp8_matvec(
+                vector,
+                weights.tensor().clone(),
+                scales.tensor().clone(),
+                tile,
+            )?,
             Self::Fp8Block(..) => {
                 return Err(Error::unsupported("block FP8 has no host matvec fallback"));
             }
-            Self::Fp4(weights, scales, global) => {
-                device.nvfp4_matvec(vector, weights.clone(), scales.clone(), *global, tile)?
-            }
+            Self::Fp4(weights, scales, global) => device.nvfp4_matvec(
+                vector,
+                weights.tensor().clone(),
+                scales.tensor().clone(),
+                *global,
+                tile,
+            )?,
         };
         device.read(&output)
     }

@@ -2,6 +2,7 @@
 //! These ignored tests execute CUDA only when the serial safe-run owner invokes them.
 use super::super::fp8_gemm::kernels;
 use crate::device::{CudaDevice, vendor_fp8::Support};
+use crate::mlp::Matrix;
 use crate::tuning::fp8_gemm::Choice as Fp8GemmChoice;
 use crate::tuning::resident_gemm::native_tile;
 use cuda_core::f8e4m3fn;
@@ -10,6 +11,7 @@ use cutile::bench::do_bench_paired;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_models::{DeviceWeight, QuantizedPackage, WeightEncoding, convert_float_bytes};
 use std::env::var;
@@ -549,8 +551,8 @@ fn vendor_fp8_verified_chooser_checkpoint_comparison() -> TestResult {
             .ok_or_else(|| format!("no FP8 channel checkpoint family {family}"))?;
         let weight = Weight::checkpoint(&device, &package, name, source)?;
         let projection = ProjectionWeight::Fp8(
-            Arc::clone(&weight.device_codes),
-            Arc::clone(&weight.device_scales),
+            Matrix::adopt(Arc::clone(&weight.device_codes))?,
+            Allocation::adopt(Arc::clone(&weight.device_scales))?,
         );
         // The same model allowance applies to all shapes; larger prompt shapes exercise the measured Lt wins first.
         for rows in [128, 64, 12, 1] {
@@ -630,7 +632,10 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
     assert_eq!(*selected, config);
     assert!(inputs.vendor.heuristic_query_count() > 0);
     let mut restored = Support::new_with(&device, true);
-    restored.retain_channels(&weight.device_codes, &weight.device_scales);
+    restored.retain_channels(
+        &Matrix::adopt(Arc::clone(&weight.device_codes))?,
+        &Allocation::adopt(Arc::clone(&weight.device_scales))?,
+    );
     assert_eq!(restored.heuristic_query_count(), 0);
     assert!(
         restored.prepare_config(

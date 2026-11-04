@@ -11,7 +11,7 @@ use cutile::tile_kernel::validate_programmatic_dependent_launch;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{DownPlan, Kernels, ProductBuffers, Recording, RowNormPlan};
 use infer_cuda_kernels::tile::runtime::Graph;
-pub use projection::ProjectionWeight;
+pub use projection::{Matrix, ProjectionWeight};
 use std::fmt::Display;
 use std::result::Result as StdResult;
 

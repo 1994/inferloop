@@ -15,20 +15,10 @@ use std::{
 pub fn run(model: &Model, draft: Option<&Mtp>) -> Result<()> {
     let mut seen = BTreeSet::new();
     let mut results = Vec::new();
-    let mut weights: Vec<_> = model
-        .projections
-        .values()
-        .map(super::weights::Projection::resident)
-        .collect();
+    let mut weights: Vec<_> = model.projections.values().cloned().collect();
     if let Some(draft) = draft {
-        weights.extend(
-            draft
-                .model
-                .projections
-                .values()
-                .map(super::weights::Projection::resident),
-        );
-        weights.push(draft.fc.resident());
+        weights.extend(draft.model.projections.values().cloned());
+        weights.push(draft.fc.clone());
     }
     for weight in weights {
         let (key, _, _) = projection_key(&weight)?;
