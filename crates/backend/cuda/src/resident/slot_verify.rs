@@ -306,7 +306,7 @@ impl BatchBuilder<'_> {
         &self,
         scope: &Scope,
         node: &TensorNode,
-        arena: &mut ActivationArena,
+        arena: &ActivationArena,
         (states, metadata): (&[States], &[Tensor<i32>]),
         (staging, index, hardware, batch): (
             &mut super::slot_recurrent::Staging,
@@ -570,12 +570,9 @@ impl BatchBuilder<'_> {
         } else {
             self.capture_restores(lane_states, &checkpoints)?
         };
-        let hidden = take_result(&mut arena, self.graph.hidden)?;
-        let logits = take_result(&mut arena, self.graph.logits)?;
-        let features = self
-            .graph
-            .features
-            .map(|id| take_result(&mut arena, Some(id)));
+        let hidden = take_result(&arena, self.graph.hidden)?;
+        let logits = take_result(&arena, self.graph.logits)?;
+        let features = self.graph.features.map(|id| take_result(&arena, Some(id)));
         let token_readout = super::token_readout::TokenReadout::new(
             self.device,
             from_ref(&logits),

@@ -6,6 +6,8 @@ use cuda_core::f8e4m3fn;
 use cuda_core::sys::CUdeviceptr;
 use cutile::{cuda_async::device_buffer::DeviceAllocation, prelude::*};
 use infer_core::{Error, Result, TensorId};
+use infer_cuda_kernels::contract::Buffer;
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::DataflowGraph;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -15,11 +17,12 @@ type ArenaLayout = (Vec<(usize, usize)>, BTreeMap<TensorId, usize>);
 
 /// Reuses equal-sized device buffers after their last consumer.
 ///
-/// Graph results stay live until readback; cuTile mutable ownership remains exclusive.
-/// Batched arenas flatten lanes into one axis: every slot is `[lanes * size]`.
+/// Graph results stay live until readback. Batched arenas flatten lanes into one axis: every
+/// slot is `[lanes * size]`. Views of an arena share its allocations, so a view, and any tensor
+/// taken from one, stays valid whatever happens to the arena it came from.
 pub struct ActivationArena {
     indices: BTreeMap<TensorId, usize>,
-    pub(crate) buffers: Vec<Option<Tensor<f32>>>,
+    slots: Vec<Slot>,
     lanes: usize,
     /// Whether slots hold concatenated lane rows. A one-lane arena is still batched when the
     /// pool captures a narrow decode rung over it, unlike a scalar `new` arena.
@@ -122,72 +125,44 @@ impl ActivationArena {
             .ok_or_else(|| Error::invalid("activation size overflow"))
     }
 
-    /// One lane of this batched arena as a single-row arena whose slots alias that lane's rows,
+    /// One lane of this batched arena as a single-row arena whose slots are that lane's rows,
     /// so per-lane captures and whole-slot captures of the batched arena share storage.
     ///
-    /// # Safety
-    /// The returned arena does not own its storage: `self` must outlive every use of it and of
-    /// every graph captured against it, and a lane's rows must not be used as concurrent mutable
-    /// outputs together with the whole slot.
+    /// A lane's rows must not be used as concurrent mutable outputs together with the whole slot.
     /// # Errors
-    /// Rejects a lane outside the arena or a slot that is currently taken.
-    #[expect(
-        unsafe_code,
-        reason = "Audited lane alias: the batched owner outlives the views by the caller's contract"
-    )]
-    pub(super) unsafe fn lane_view(&self, lane: usize) -> Result<Self> {
-        if lane >= self.lanes {
-            return Err(Error::invalid("activation lane out of bounds"));
-        }
-        let mut buffers = Vec::with_capacity(self.buffers.len());
-        for buffer in &self.buffers {
-            let slot = buffer
-                .as_ref()
-                .ok_or_else(|| Error::invariant("batched slot is currently an output"))?;
-            // SAFETY: forwarded from this function's contract; the row lies inside the slot.
-            buffers.push(Some(unsafe { row_view(slot, self.lanes, lane)? }));
-        }
+    /// Rejects a lane outside the arena or a slot that does not divide into lanes.
+    pub(super) fn lane_view(&self, lane: usize) -> Result<Self> {
+        let slots = self
+            .slots
+            .iter()
+            .map(|slot| slot.row(self.lanes, lane))
+            .collect::<Result<_>>()?;
         Ok(Self {
             indices: self.indices.clone(),
-            buffers,
+            slots,
             lanes: 1,
             batched: true,
             elements: self.elements / self.lanes,
         })
     }
 
-    /// An arena whose slots alias this one's storage with the same shapes.
+    /// An arena whose slots are this one's storage.
     ///
     /// Prompt graphs of different sequences capture against views of one shared arena, so the
     /// activation memory is paid once per prompt width instead of once per admitted sequence.
-    /// # Safety
-    /// `self` must outlive every graph captured through the view, replays through any two
-    /// views must be serialized on one stream, and no activation may be read after another
-    /// view's replay has started.
+    /// Replays through any two views must be serialized on one stream, and no activation may be
+    /// read after another view's replay has started.
     /// # Errors
-    /// Rejects an arena with a slot currently taken out as an output.
-    #[expect(
-        unsafe_code,
-        reason = "Audited arena alias: the shared owner outlives the views by the caller's contract"
-    )]
-    pub(super) unsafe fn shared_view(&self) -> Result<Self> {
-        let mut buffers = Vec::with_capacity(self.buffers.len());
-        for buffer in &self.buffers {
-            let slot = buffer
-                .as_ref()
-                .ok_or_else(|| Error::invariant("shared arena slot is currently an output"))?;
-            let shape = slot
-                .shape()
-                .iter()
-                .map(|&dim| usize::try_from(dim).map_err(device_error))
-                .collect::<Result<Vec<_>>>()?;
-            // SAFETY: forwarded from this function's contract; one lane spans the whole slot.
-            let view = unsafe { row_view(slot, 1, 0)? };
-            buffers.push(Some(view.reshape(&shape).map_err(device_error)?));
-        }
+    /// Rejects a failed view construction.
+    pub(super) fn shared_view(&self) -> Result<Self> {
+        let slots = self
+            .slots
+            .iter()
+            .map(|slot| slot.range(0, slot.len))
+            .collect::<Result<_>>()?;
         Ok(Self {
             indices: self.indices.clone(),
-            buffers,
+            slots,
             lanes: self.lanes,
             batched: self.batched,
             elements: self.elements,
@@ -197,16 +172,11 @@ impl ActivationArena {
     /// An arena planned for `lanes` rows of `graph` whose slots are the leading elements of
     /// this wider arena's slots, so a narrower prompt graph needs no activation memory of its
     /// own. `single` is the tensor this arena keeps one row of, as when it was planned.
-    /// # Safety
-    /// `self` must outlive every graph captured through the view, and replays through it and
-    /// through `self` must be serialized on one stream with no activation read across them.
+    /// Replays through it and through `self` must be serialized on one stream with no activation
+    /// read across them.
     /// # Errors
-    /// Rejects a wider `lanes`, a different slot layout or a slot taken out as an output.
-    #[expect(
-        unsafe_code,
-        reason = "Audited arena alias: the wider owner outlives the views by the caller's contract"
-    )]
-    pub(super) unsafe fn narrowed(
+    /// Rejects a wider `lanes` or a different slot layout.
+    pub(super) fn narrowed(
         &self,
         graph: &DataflowGraph,
         lanes: usize,
@@ -216,22 +186,20 @@ impl ActivationArena {
         if lanes == 0 || lanes > self.lanes || indices != self.indices {
             return Err(Error::invalid("narrowed arena layout"));
         }
-        let mut buffers = Vec::with_capacity(sizes.len());
-        for (buffer, size) in self.buffers.iter().zip(&sizes) {
-            let slot = buffer
-                .as_ref()
-                .ok_or_else(|| Error::invariant("wide arena slot is currently an output"))?;
-            if *size > slot.size() {
-                return Err(Error::invalid("narrowed arena slot"));
-            }
-            // SAFETY: forwarded from this function's contract; the elements lie inside the slot.
-            buffers.push(Some(unsafe {
-                prefix_view(slot, slot.size(), *size, &[*size])?
-            }));
-        }
+        let slots = self
+            .slots
+            .iter()
+            .zip(&sizes)
+            .map(|(slot, &size)| {
+                if size > slot.len {
+                    return Err(Error::invalid("narrowed arena slot"));
+                }
+                slot.range(0, size)
+            })
+            .collect::<Result<_>>()?;
         Ok(Self {
             indices,
-            buffers,
+            slots,
             lanes,
             batched: self.batched,
             elements: sizes.iter().sum(),
@@ -241,16 +209,10 @@ impl ActivationArena {
     /// Views of rows `start..start + rows` of every slot, as an arena of `rows` lanes.
     ///
     /// A slot holding one row whatever the lane count (the prompt logits row) is viewed whole.
-    /// # Safety
-    /// `self` must outlive the views, and replays through them must be serialized on one stream.
+    /// Replays through the views must be serialized on one stream.
     /// # Errors
     /// Rejects a layout that differs from this arena's or a segment outside it.
-    #[expect(
-        unsafe_code,
-        reason = "Audited segment alias: the prompt burst owns the wide arena beside every graph \
-                  captured against its segments"
-    )]
-    pub(super) unsafe fn segment(
+    pub(super) fn segment(
         &self,
         graph: &DataflowGraph,
         rows: usize,
@@ -261,37 +223,25 @@ impl ActivationArena {
         if rows == 0 || start + rows > self.lanes || indices != self.indices {
             return Err(Error::invalid("arena segment layout"));
         }
-        let mut buffers = Vec::with_capacity(sizes.len());
-        for (buffer, &size) in self.buffers.iter().zip(&sizes) {
-            let slot = buffer
-                .as_ref()
-                .ok_or_else(|| Error::invariant("wide arena slot is currently an output"))?;
-            let offset = if size == slot.size() {
-                0
-            } else {
-                start * (size / rows)
-            };
-            if offset + size > slot.size() {
-                return Err(Error::invalid("arena segment slot"));
-            }
-            let allocation = RowAllocation {
-                pointer: slot.device_pointer().cu_deviceptr()
-                    + u64::try_from(offset * F32_BYTES).map_err(device_error)?,
-                bytes: size * F32_BYTES,
-                device: slot.device_id(),
-            };
-            // SAFETY: forwarded from this function's contract; the range was checked above.
-            buffers.push(Some(unsafe {
-                Tensor::from_foreign(
-                    Arc::new(allocation),
-                    vec![i32::try_from(size).map_err(device_error)?],
-                    vec![1],
-                )
-            }));
-        }
+        let slots = self
+            .slots
+            .iter()
+            .zip(&sizes)
+            .map(|(slot, &size)| {
+                let offset = if size == slot.len {
+                    0
+                } else {
+                    start * (size / rows)
+                };
+                if offset + size > slot.len {
+                    return Err(Error::invalid("arena segment slot"));
+                }
+                slot.range(offset, size)
+            })
+            .collect::<Result<_>>()?;
         Ok(Self {
             indices,
-            buffers,
+            slots,
             lanes: rows,
             batched: self.batched,
             elements: sizes.iter().sum(),
@@ -343,17 +293,16 @@ impl ActivationArena {
         {
             return Err(Error::invalid("device activation budget exceeded"));
         }
-        let mut buffers = Vec::with_capacity(sizes.len());
+        let mut slots = Vec::with_capacity(sizes.len());
         for size in sizes {
-            buffers.push(Some(
-                api::zeros::<f32>(&[size])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-            ));
+            let memory = api::zeros::<f32>(&[size])
+                .sync_on(&device.stream)
+                .map_err(device_error)?;
+            slots.push(Slot::new(Allocation::adopt(Arc::new(memory))?, 0, size)?);
         }
         Ok(Self {
             indices,
-            buffers,
+            slots,
             lanes,
             batched,
             elements,
@@ -381,10 +330,157 @@ impl ActivationArena {
     }
 
     pub(crate) fn get(&self, id: TensorId) -> Result<&Tensor<f32>> {
-        self.buffers[self.slot(id)?]
-            .as_ref()
-            .ok_or_else(|| Error::invariant("activation is currently an output"))
+        self.tensor(self.slot(id)?)
     }
+
+    /// Slot `index` as a tensor, for kernels still launched through cuTile.
+    /// # Errors
+    /// Rejects an index outside the arena.
+    pub(crate) fn tensor(&self, index: usize) -> Result<&Tensor<f32>> {
+        self.at(index).map(|slot| &slot.view)
+    }
+
+    /// Activation `id` as a kernel operand, kept alive by any recording that retains it.
+    /// # Errors
+    /// Rejects tensors which are not graph activations.
+    pub(crate) fn activation(&self, id: TensorId) -> Result<Buffer<'_, f32>> {
+        self.buffer(self.slot(id)?)
+    }
+
+    /// Slot `index` as a kernel operand, kept alive by any recording that retains it.
+    /// # Errors
+    /// Rejects an index outside the arena.
+    pub(crate) fn buffer(&self, index: usize) -> Result<Buffer<'_, f32>> {
+        self.at(index)?.buffer()
+    }
+
+    /// A tensor over slot `index` for a kernel to write; it holds the slot's memory, so it
+    /// needs no returning, and it aliases every other view of the slot.
+    /// # Errors
+    /// Rejects an index outside the arena.
+    pub(crate) fn output(&self, index: usize) -> Result<Tensor<f32>> {
+        self.at(index)?.tensor()
+    }
+
+    /// Row `lane` of batched slot `index`, as [`Self::output`] gives the whole slot.
+    /// # Errors
+    /// Rejects an index outside the arena, a lane outside it or a slot that is not batched.
+    pub(crate) fn output_row(&self, index: usize, lane: usize) -> Result<Tensor<f32>> {
+        self.at(index)?.row(self.lanes, lane)?.tensor()
+    }
+
+    fn at(&self, index: usize) -> Result<&Slot> {
+        self.slots
+            .get(index)
+            .ok_or_else(|| Error::invalid("activation slot index"))
+    }
+}
+
+/// Elements `offset..offset + len` of an allocation that every view of the slot shares.
+struct Slot {
+    memory: Allocation<f32>,
+    offset: usize,
+    len: usize,
+    /// The range as a tensor, for kernels still launched through cuTile.
+    view: Tensor<f32>,
+}
+
+impl Slot {
+    fn new(memory: Allocation<f32>, offset: usize, len: usize) -> Result<Self> {
+        let view = slot_tensor(&memory, offset, len)?;
+        Ok(Self {
+            memory,
+            offset,
+            len,
+            view,
+        })
+    }
+
+    /// Elements `offset..offset + len` of this slot, sharing its memory.
+    fn range(&self, offset: usize, len: usize) -> Result<Self> {
+        if offset.checked_add(len).is_none_or(|end| end > self.len) {
+            return Err(Error::invalid("activation slot range"));
+        }
+        Self::new(self.memory.clone(), self.offset + offset, len)
+    }
+
+    /// Row `lane` of this slot taken as `lanes` concatenated rows.
+    fn row(&self, lanes: usize, lane: usize) -> Result<Self> {
+        if lanes == 0 || !self.len.is_multiple_of(lanes) {
+            return Err(Error::invalid("activation slot is not batched"));
+        }
+        if lane >= lanes {
+            return Err(Error::invalid("activation lane out of bounds"));
+        }
+        let row = self.len / lanes;
+        self.range(lane * row, row)
+    }
+
+    fn buffer(&self) -> Result<Buffer<'_, f32>> {
+        self.memory
+            .buffer()
+            .slice(self.offset..self.offset + self.len)
+    }
+
+    fn tensor(&self) -> Result<Tensor<f32>> {
+        slot_tensor(&self.memory, self.offset, self.len)
+    }
+}
+
+/// A slot range as cuTile sees it; holding the allocation keeps the range valid.
+struct SlotMemory {
+    memory: Allocation<f32>,
+    pointer: CUdeviceptr,
+    bytes: usize,
+}
+
+#[expect(
+    unsafe_code,
+    reason = "Audited slot range: `memory` keeps the allocation alive and `slot_tensor` checks \
+              the range against it"
+)]
+// SAFETY: the getters are constant, and `pointer`/`bytes` lie inside `memory`, which this value
+// keeps alive, as `slot_tensor` checked when it made them.
+unsafe impl DeviceAllocation for SlotMemory {
+    fn device_ptr(&self) -> CUdeviceptr {
+        self.pointer
+    }
+
+    fn len_bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn device_id(&self) -> usize {
+        self.memory.device()
+    }
+}
+
+/// A 1-D tensor over elements `offset..offset + len` of `memory`, owning a share of it.
+#[expect(
+    unsafe_code,
+    reason = "Audited slot view: the foreign allocation owns the memory and its range is checked"
+)]
+fn slot_tensor(memory: &Allocation<f32>, offset: usize, len: usize) -> Result<Tensor<f32>> {
+    let end = offset
+        .checked_add(len)
+        .ok_or_else(|| Error::invalid("activation slot range"))?;
+    let range = memory.buffer().slice(offset..end)?;
+    let allocation = SlotMemory {
+        memory: memory.clone(),
+        pointer: range.address(),
+        bytes: len
+            .checked_mul(F32_BYTES)
+            .ok_or_else(|| Error::invalid("activation slot extent"))?,
+    };
+    // SAFETY: `allocation` owns the memory, so it outlives the tensor, and the range was cut by
+    // `Buffer::slice`, which rejects one outside the allocation. The tensor is contiguous.
+    Ok(unsafe {
+        Tensor::from_foreign(
+            Arc::new(allocation),
+            vec![i32::try_from(len).map_err(device_error)?],
+            vec![1],
+        )
+    })
 }
 
 /// `DeviceAllocation` view of one row inside a batched slot. Carries no owner:

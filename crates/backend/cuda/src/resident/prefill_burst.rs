@@ -282,13 +282,13 @@ impl Storage {
                 partials.insert(*columns, view);
             }
             scratch_partials = Some(partials);
-            // SAFETY: as above; prompt replays are serialized on the device stream.
-            let arena = unsafe { owner.arena.narrowed(graph, rows, graph.logits)? };
+            // Prompt replays are serialized on the device stream.
+            let arena = owner.arena.narrowed(graph, rows, graph.logits)?;
             drop(owner);
             arena
         } else if let Some(wider) = wider {
-            // SAFETY: forwarded from this function's contract: replays share one stream.
-            unsafe { wider.keep.arena.narrowed(graph, rows, graph.logits)? }
+            // Replays share one stream.
+            wider.keep.arena.narrowed(graph, rows, graph.logits)?
         } else {
             ActivationArena::new_prompt(device, graph, rows, budget)?
         };
@@ -357,21 +357,16 @@ impl Storage {
         })
     }
 
-    /// # Safety
-    /// As [`ActivationArena::segment`]; the arena is retained beside the graph.
-    #[expect(unsafe_code, reason = "Forwards the arena segment contract")]
-    unsafe fn segment_views(
+    /// One arena per segment, over this burst's arena; replays share one stream.
+    fn segment_views(
         &self,
         graph: &DataflowGraph,
         segments: usize,
     ) -> Result<Vec<ActivationArena>> {
         (0..segments)
             .map(|segment| {
-                // SAFETY: forwarded from this function's contract.
-                unsafe {
-                    self.arena
-                        .segment(graph, SEGMENT_ROWS, segment * SEGMENT_ROWS, graph.logits)
-                }
+                self.arena
+                    .segment(graph, SEGMENT_ROWS, segment * SEGMENT_ROWS, graph.logits)
             })
             .collect()
     }
@@ -420,8 +415,7 @@ impl PromptBurst {
         nvfp4.ensure_width(device, graph, weights, segments)?;
         nvfp4.prepare_prompt_rows(device, graph, weights, rows)?;
         let (mut attention, recurrent) = workspaces(device, graph, weights, capacity)?;
-        // SAFETY: forwarded from this function's contract.
-        let views = unsafe { storage.segment_views(graph, segments)? };
+        let views = storage.segment_views(graph, segments)?;
         let bound = bind_segments(programs, views, (&storage.info_rows, &storage.rotary_rows));
         let mut placeholder_states = States::new();
         let mut placeholder_fp8 = Fp8Caches::new();

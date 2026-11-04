@@ -178,4 +178,29 @@ impl<T: Width> Buffer<'_, T> {
             element: PhantomData,
         })
     }
+
+    /// Whether this memory and `other`'s share no byte; a span that overflows the address space
+    /// counts as shared.
+    #[must_use]
+    pub fn disjoint<U: Width>(self, other: Buffer<'_, U>) -> bool {
+        disjoint(
+            span(self.address, self.len, T::BYTES),
+            span(other.address, other.len, U::BYTES),
+        )
+    }
 }
+
+/// The bytes of `len` elements of `width` bytes from `address`, if they fit the address space.
+fn span(address: u64, len: usize, width: usize) -> Option<Range<u64>> {
+    let bytes = u64::try_from(len.checked_mul(width)?).ok()?;
+    Some(address..address.checked_add(bytes)?)
+}
+
+/// Whether two spans share no byte; a span that could not be formed counts as shared.
+const fn disjoint(a: Option<Range<u64>>, b: Option<Range<u64>>) -> bool {
+    matches!((a, b), (Some(a), Some(b)) if a.end <= b.start || b.end <= a.start)
+}
+
+#[cfg(test)]
+#[path = "../../tests/unit/contract_buffer.rs"]
+mod tests;

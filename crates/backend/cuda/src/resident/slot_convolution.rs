@@ -18,7 +18,7 @@ use std::result::Result as StdResult;
 pub(super) fn record(
     scope: &Scope,
     node: &TensorNode,
-    arena: &mut ActivationArena,
+    arena: &ActivationArena,
     batch: &VerifyBatch<'_>,
     weights: &ProgramWeights,
 ) -> StdResult<bool, DeviceError> {
@@ -45,43 +45,34 @@ pub(super) fn record(
     let lanes = batch.lanes;
     let slots = arena.lanes() / lanes;
     let index = arena.slot(node.outputs[0]).map_err(error)?;
-    let output = arena.buffers[index]
-        .take()
-        .ok_or_else(|| error("pooled convolution output"))?;
-    let restore = output
-        .shape()
-        .iter()
-        .map(|&dim| usize::try_from(dim).map_err(error))
-        .collect::<StdResult<Vec<_>, _>>()?;
-    let output = output.reshape(&[slots, lanes, channels])?;
-    let recorded = (|| {
-        weights
-            .kernels
-            .recurrent
-            .conv(
-                &Recording::scope(scope),
-                ConvKernel::Verify {
-                    slots,
-                    lanes,
-                    fields: METADATA_FIELDS,
-                    fused: lanes == LANES,
-                },
-                channels,
-                ConvBuffers {
-                    output: buffer(&output)?,
-                    history: [buffer(oldest)?, buffer(middle)?, buffer(newest)?],
-                    input: buffer(arena.get(node.inputs[0]).map_err(error)?)?,
-                    weight: buffer(weight.as_ref())?,
-                    metadata: buffer(batch.metadata)?,
-                },
-            )
-            .map_err(error)?;
-        #[cfg(test)]
-        BUILDS.set(BUILDS.get() + 1);
-        Ok(true)
-    })();
-    arena.buffers[index] = Some(output.reshape(&restore)?);
-    recorded
+    let output = arena
+        .buffer(index)
+        .and_then(|output| output.require("pooled convolution output", slots * lanes * channels))
+        .map_err(error)?;
+    weights
+        .kernels
+        .recurrent
+        .conv(
+            &Recording::scope(scope),
+            ConvKernel::Verify {
+                slots,
+                lanes,
+                fields: METADATA_FIELDS,
+                fused: lanes == LANES,
+            },
+            channels,
+            ConvBuffers {
+                output,
+                history: [buffer(oldest)?, buffer(middle)?, buffer(newest)?],
+                input: buffer(arena.get(node.inputs[0]).map_err(error)?)?,
+                weight: buffer(weight.as_ref())?,
+                metadata: buffer(batch.metadata)?,
+            },
+        )
+        .map_err(error)?;
+    #[cfg(test)]
+    BUILDS.set(BUILDS.get() + 1);
+    Ok(true)
 }
 
 #[cfg(test)]

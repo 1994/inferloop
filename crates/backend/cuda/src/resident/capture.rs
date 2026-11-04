@@ -26,7 +26,6 @@ use infer_cuda_kernels::contract::{
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::fmt::Display;
-use std::sync::Arc;
 
 /// How activation slots are bound for one captured node.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -156,15 +155,7 @@ impl Capture<'_> {
     pub fn record(&mut self, node: &TensorNode) -> Result<(), DeviceError> {
         for (part, id) in node.outputs.iter().enumerate() {
             let index = self.arena.slot(*id).map_err(error)?;
-            let output = self.arena.buffers[index]
-                .take()
-                .ok_or_else(|| error("missing output buffer"))?;
-            let restore = output
-                .shape()
-                .iter()
-                .map(|&dim| usize::try_from(dim).map_err(error))
-                .collect::<Result<Vec<_>, _>>()?;
-            let size = output.size();
+            let output = self.arena.output(index).map_err(error)?;
             #[cfg(test)]
             if self.mode == CaptureMode::Prefill && matches!(node.op, TensorOp::Attention { .. }) {
                 let input = |id| {
@@ -184,14 +175,15 @@ impl Capture<'_> {
                     (self.metadata, self.table),
                 )?;
             }
-            let output = self.operation(node, output.reshape(&[size])?, part)?;
+            // The slot holds what the node writes; the returned view is only a handle to it.
+            let written = self.operation(node, output, part)?;
             #[cfg(test)]
             if self.mode == CaptureMode::Prefill && matches!(node.op, TensorOp::Attention { .. }) {
                 self.attention
                     .taps
-                    .output(self.scope, (*id, self.arena.lanes()), &output)?;
+                    .output(self.scope, (*id, self.arena.lanes()), &written)?;
             }
-            self.arena.buffers[index] = Some(output.reshape(&restore)?);
+            drop(written);
         }
         Ok(())
     }
@@ -224,23 +216,16 @@ impl Capture<'_> {
         result
     }
 
-    /// Row-mode twin of [`Self::record`]: kernels write one lane of each batched
-    /// slot through an owned row tensor; slots return unaltered.
+    /// Row-mode twin of [`Self::record`]: kernels write one lane of each batched slot
+    /// through a view of that row.
     pub fn record_row(&mut self, node: &TensorNode, lane: usize) -> Result<(), DeviceError> {
         if self.mode != CaptureMode::Row(lane) {
             return Err(error("row capture mode mismatch"));
         }
         for (part, id) in node.outputs.iter().enumerate() {
             let index = self.arena.slot(*id).map_err(error)?;
-            let slot = self.arena.buffers[index]
-                .take()
-                .ok_or_else(|| error("missing output buffer"))?;
-            let (row, shared) =
-                super::arena::row_tensor(slot, self.arena.lanes(), lane).map_err(error)?;
+            let row = self.arena.output_row(index, lane).map_err(error)?;
             let _ = self.operation(node, row, part)?;
-            let slot = Arc::try_unwrap(shared)
-                .map_err(|_| error("activation row tensor still aliased"))?;
-            self.arena.buffers[index] = Some(slot);
         }
         Ok(())
     }

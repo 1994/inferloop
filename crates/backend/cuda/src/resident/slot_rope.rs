@@ -8,7 +8,7 @@ use infer_ir::{TensorNode, TensorOp};
 pub(super) fn record(
     scope: &Scope,
     node: &TensorNode,
-    arena: &mut ActivationArena,
+    arena: &ActivationArena,
     weights: &ProgramWeights,
     metadata: &Tensor<i32>,
 ) -> Result<bool, DeviceError> {
@@ -35,15 +35,10 @@ pub(super) fn record(
         .get(&node.id)
         .ok_or_else(|| error("missing pooled rotary frequencies"))?;
     let slot = arena.slot(node.outputs[0]).map_err(error)?;
-    let output = arena.buffers[slot]
-        .take()
-        .ok_or_else(|| error("pooled rotary output"))?;
-    let restore = output
-        .shape()
-        .iter()
-        .map(|&dim| usize::try_from(dim).map_err(error))
-        .collect::<Result<Vec<_>, _>>()?;
-    let output = output.reshape(&[arena.lanes() * heads, head_dim])?;
+    let output = arena
+        .buffer(slot)
+        .and_then(|output| output.require("pooled rotary output", arena.lanes() * heads * head_dim))
+        .map_err(error)?;
     let input = arena.get(node.inputs[0]).map_err(error)?;
     let plan = RopePlan {
         mode: RopeMode::Pooled {
@@ -61,7 +56,7 @@ pub(super) fn record(
             &Recording::scope(scope),
             &plan,
             RopeBuffers {
-                out: buffer(&output)?,
+                out: output,
                 x: buffer(input)?,
                 frequencies: buffer(frequencies)?,
                 axes: None,
@@ -69,7 +64,6 @@ pub(super) fn record(
             },
         )
         .map_err(error)?;
-    arena.buffers[slot] = Some(output.reshape(&restore)?);
     Ok(true)
 }
 

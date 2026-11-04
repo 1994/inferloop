@@ -104,7 +104,7 @@ pub(super) fn allocate(
 pub(super) fn record(
     scope: &Scope,
     node: &TensorNode,
-    lanes: &mut [Lane],
+    lanes: &[Lane],
     weights: &ProgramWeights,
     buffers: &mut Workspace,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
@@ -162,42 +162,35 @@ pub(super) fn record(
         output,
         (columns, width),
     )?;
-    let mut outputs = Vec::new();
-    let mut slots = Vec::new();
-    for lane in lanes.iter_mut() {
-        let slot = lane.arena.slot(node.outputs[0]).map_err(error)?;
-        outputs.push(
-            lane.arena.buffers[slot]
-                .take()
-                .ok_or_else(|| error("batch output"))?,
-        );
-        slots.push(slot);
-    }
+    let outputs = lanes
+        .iter()
+        .map(|lane| {
+            let slot = lane.arena.slot(node.outputs[0]).map_err(error)?;
+            lane.arena.buffer(slot).map_err(error)
+        })
+        .collect::<StdResult<Vec<_>, _>>()?;
     let packed_columns = output.size() / width;
-    if let [first, second, third] = outputs.as_slice() {
+    if let &[first, second, third] = outputs.as_slice() {
         kernels
             .unpack_three(
                 &recording,
                 packed_columns,
-                [buffer(first)?, buffer(second)?, buffer(third)?],
+                [first, second, third],
                 buffer(&*output)?,
             )
             .map_err(error)?;
     } else {
-        for (row, target) in outputs.iter().enumerate() {
+        for (row, &target) in outputs.iter().enumerate() {
             kernels
                 .unpack_row(
                     &recording,
                     (width, packed_columns),
-                    buffer(target)?,
+                    target,
                     buffer(&*output)?,
                     row,
                 )
                 .map_err(error)?;
         }
-    }
-    for ((lane, slot), output) in lanes.iter_mut().zip(slots).zip(outputs) {
-        lane.arena.buffers[slot] = Some(output);
     }
     Ok(())
 }
@@ -208,7 +201,7 @@ pub(super) fn record(
 pub(super) fn record_slots(
     scope: &Scope,
     node: &TensorNode,
-    arena: &mut super::ActivationArena,
+    arena: &super::ActivationArena,
     weights: &ProgramWeights,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
     arithmetic_rows: Option<usize>,
@@ -218,9 +211,7 @@ pub(super) fn record_slots(
     }
     let lanes = arena.lanes();
     let slot = arena.slot(node.outputs[0]).map_err(error)?;
-    let output = arena.buffers[slot]
-        .take()
-        .ok_or_else(|| error("slot decode output"))?;
+    let output = arena.output(slot).map_err(error)?;
     let input = arena.get(node.inputs[0]).map_err(error)?;
     let input_pointer = input.device_pointer().cu_deviceptr();
     let columns = input.size() / lanes;
@@ -241,7 +232,6 @@ pub(super) fn record_slots(
         &output,
         columns,
     )? {
-        arena.buffers[slot] = Some(output.reshape(&[flat]).map_err(error)?);
         return Ok(());
     }
     // Verify graphs pin their tensor-core arithmetic through `arithmetic_rows`.
@@ -263,7 +253,6 @@ pub(super) fn record_slots(
             choice,
         )? {
             nvfp4.clear_quant_reuse();
-            arena.buffers[slot] = Some(output.reshape(&[flat]).map_err(error)?);
             return Ok(());
         }
     }
@@ -287,7 +276,6 @@ pub(super) fn record_slots(
             (columns, arithmetic_rows.unwrap_or(lanes)),
         )?;
     }
-    arena.buffers[slot] = Some(output.reshape(&[flat]).map_err(error)?);
     Ok(())
 }
 

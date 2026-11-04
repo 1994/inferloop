@@ -71,7 +71,7 @@ fn contiguous_staging_preserves_rows_after_arena_reuse() -> infer_core::Result<(
     let slots = 5;
     let lanes = slots * LANES;
     let (graph, sources, nodes) = staging_fixture(width)?;
-    let mut arena = ActivationArena::new_batched(&device, &graph, lanes, 8 << 20)?;
+    let arena = ActivationArena::new_batched(&device, &graph, lanes, 8 << 20)?;
     let mut expected = BTreeMap::new();
     for (index, id) in sources.into_iter().enumerate() {
         let data = (0..lanes * width)
@@ -82,10 +82,8 @@ fn contiguous_staging_preserves_rows_after_arena_reuse() -> infer_core::Result<(
             })
             .collect::<infer_core::Result<Vec<_>>>()?;
         let slot = arena.slot(id)?;
-        let target = arena.buffers[slot]
-            .as_mut()
-            .ok_or_else(|| Error::invariant("staging fixture source"))?;
-        device.copy_host_slice(target, &data)?;
+        let mut target = arena.output(slot)?;
+        device.copy_host_slice(&mut target, &data)?;
         expected.insert(id, data);
     }
     let mut staging = allocate_staging(&device, &nodes, &arena, (slots, LANES))?;
@@ -103,10 +101,8 @@ fn contiguous_staging_preserves_rows_after_arena_reuse() -> infer_core::Result<(
         .map_err(device_error)?;
     for id in sources {
         let slot = arena.slot(id)?;
-        let target = arena.buffers[slot]
-            .as_mut()
-            .ok_or_else(|| Error::invariant("staging fixture source"))?;
-        device.copy_host_slice(target, &vec![0.0; lanes * width])?;
+        let mut target = arena.output(slot)?;
+        device.copy_host_slice(&mut target, &vec![0.0; lanes * width])?;
     }
     drop(copy);
     drop(arena);

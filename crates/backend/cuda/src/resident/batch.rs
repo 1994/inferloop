@@ -312,8 +312,8 @@ impl BatchBuilder<'_> {
         } else {
             None
         };
-        let hidden = take_result(&mut arena, self.graph.hidden)?;
-        let logits = take_result(&mut arena, self.graph.logits)?;
+        let hidden = take_result(&arena, self.graph.hidden)?;
+        let logits = take_result(&arena, self.graph.logits)?;
         let token_readout = super::token_readout::TokenReadout::contiguous(
             self.device,
             &logits,
@@ -594,7 +594,7 @@ impl BatchBuilder<'_> {
         let mut metadata = Vec::new();
         let mut hidden = Vec::new();
         let mut logits = Vec::new();
-        for mut lane in lanes {
+        for lane in lanes {
             restore.push(
                 Graph::scope(&self.device.stream, |scope| {
                     for (id, tensors) in &lane.checkpoints {
@@ -612,8 +612,8 @@ impl BatchBuilder<'_> {
                 })
                 .map_err(device_error)?,
             );
-            hidden.push(take_result(&mut lane.arena, self.graph.hidden)?);
-            logits.push(take_result(&mut lane.arena, self.graph.logits)?);
+            hidden.push(take_result(&lane.arena, self.graph.hidden)?);
+            logits.push(take_result(&lane.arena, self.graph.logits)?);
             metadata.push(lane.metadata);
         }
         let token_readout = super::token_readout::TokenReadout::new(
@@ -698,13 +698,13 @@ impl BatchBuilder<'_> {
         } else {
             None
         };
-        // SAFETY: the returned scratch holds `wider`, which owns every viewed tensor, and prompt
-        // replays through either scratch are serialized on the device stream.
-        let arena = unsafe { owner.arena.narrowed(self.graph, width, single)? };
+        let arena = owner.arena.narrowed(self.graph, width, single)?;
         let mut partials = BTreeMap::new();
         for (rows, tensor) in &owner.partials {
             let kept = PREFILL_SPLIT_K * width;
-            // SAFETY: as above; the split rows of `width` lanes lie inside the wider tensor.
+            // SAFETY: the returned scratch holds `wider`, which owns every viewed tensor, and
+            // prompt replays through either scratch are serialized on the device stream; the
+            // split rows of `width` lanes lie inside the wider tensor.
             let view =
                 unsafe { prefix_view(tensor, PREFILL_SPLIT_K * wide, kept, &[kept, *rows])? };
             partials.insert(*rows, view);
@@ -787,12 +787,12 @@ impl BatchBuilder<'_> {
             prompt_row.as_mut(),
         )?;
         drop(shared);
-        let hidden = vec![take_result(&mut arena, self.graph.hidden)?];
-        let logits = vec![take_result(&mut arena, self.graph.logits)?];
+        let hidden = vec![take_result(&arena, self.graph.hidden)?];
+        let logits = vec![take_result(&arena, self.graph.logits)?];
         let features = self
             .graph
             .features
-            .map(|id| take_result(&mut arena, Some(id)))
+            .map(|id| take_result(&arena, Some(id)))
             .transpose()?;
         Ok(BatchGraph {
             token_readout: None,
@@ -1206,7 +1206,7 @@ impl BatchBuilder<'_> {
         scope: &Scope,
         first: &TensorNode,
         second: &TensorNode,
-        arena: &mut ActivationArena,
+        arena: &ActivationArena,
     ) -> StdResult<bool, DeviceError> {
         let profile = self.device.profile().map_err(error)?;
         super::prefill_projection::record_pair(scope, first, second, arena, (self.weights, profile))
@@ -1216,7 +1216,7 @@ impl BatchBuilder<'_> {
         &self,
         scope: &Scope,
         node: &TensorNode,
-        arena: &mut ActivationArena,
+        arena: &ActivationArena,
     ) -> StdResult<bool, DeviceError> {
         let profile = self.device.profile().map_err(error)?;
         record_narrow(scope, node, arena, (self.weights, profile))
@@ -1250,7 +1250,7 @@ impl BatchBuilder<'_> {
                 let recorded = binding.recurrent.record(
                     scope,
                     node,
-                    &mut segment.arena,
+                    &segment.arena,
                     self.weights,
                     segment.states,
                     segment.info,
@@ -1291,7 +1291,7 @@ impl BatchBuilder<'_> {
         &mut self,
         scope: &Scope,
         node: &TensorNode,
-        arena: &mut ActivationArena,
+        arena: &ActivationArena,
         row: &mut Tensor<f32>,
         prefill_info: &Tensor<i32>,
     ) -> StdResult<(), DeviceError> {
@@ -1509,7 +1509,7 @@ impl BatchBuilder<'_> {
         &self,
         scope: &Scope,
         node: &TensorNode,
-        arena: &mut ActivationArena,
+        arena: &ActivationArena,
         metadata_batch: &Tensor<i32>,
     ) -> StdResult<bool, DeviceError> {
         let lanes = arena.lanes();
@@ -1531,9 +1531,7 @@ impl BatchBuilder<'_> {
         {
             return Ok(false);
         }
-        let output = arena.buffers[slot]
-            .take()
-            .ok_or_else(|| error("prompt embedding output"))?;
+        let output = arena.buffer(slot).map_err(error)?;
         // The owner holds rows for the widest prompt graph; this chunk reads its first lanes.
         let external = buffer(external)?.slice(0..size).map_err(error)?;
         let recorded = self
@@ -1547,13 +1545,12 @@ impl BatchBuilder<'_> {
                     fields: METADATA_FIELDS,
                     tile: AUX_KERNEL_TILE,
                 },
-                buffer(&output)?,
+                output,
                 buffer(weight.as_ref())?,
                 Some(external),
                 buffer(metadata_batch)?,
             )
             .map_err(error);
-        arena.buffers[slot] = Some(output);
         recorded.map(|()| true)
     }
 
@@ -1744,11 +1741,6 @@ impl BatchBuilder<'_> {
         skip
     }
 
-    #[expect(
-        unsafe_code,
-        reason = "Audited lane aliasing: the batched arena is stored in the BatchGraph that owns \
-                  every graph captured against its lane views"
-    )]
     fn allocate_lanes(&self, width: usize, shared: Option<&ActivationArena>) -> Result<Vec<Lane>> {
         let mut lanes = Vec::new();
         let mut bytes = 0usize;
@@ -1790,9 +1782,8 @@ impl BatchBuilder<'_> {
                 checkpoints.insert(spec.id, copies);
             }
             let arena = if let Some(shared) = shared {
-                // SAFETY: `build` keeps `shared` alive in the BatchGraph beside these lanes'
-                // graphs; per-lane and whole-slot nodes are recorded in sequence on one stream.
-                unsafe { shared.lane_view(lanes.len())? }
+                // Per-lane and whole-slot nodes are recorded in sequence on one stream.
+                shared.lane_view(lanes.len())?
             } else {
                 ActivationArena::new(
                     self.device,
@@ -1842,17 +1833,13 @@ pub(super) fn dispatch32(node: &TensorNode, weights: &ProgramWeights) -> Dispatc
     }
 }
 
-/// Move one captured output out of the activation arena.
+/// One captured output, sharing the arena slot that holds it.
 pub(super) fn take_result(
-    arena: &mut ActivationArena,
+    arena: &ActivationArena,
     id: Option<TensorId>,
 ) -> Result<Arc<Tensor<f32>>> {
     let slot = arena.slot(id.ok_or_else(|| Error::invalid("batch result binding"))?)?;
-    Ok(Arc::new(
-        arena.buffers[slot]
-            .take()
-            .ok_or_else(|| Error::invariant("batch result buffer"))?,
-    ))
+    Ok(Arc::new(arena.output(slot)?))
 }
 
 impl BatchGraph {
@@ -2742,8 +2729,7 @@ pub(super) fn batched_metadata(
     reason = "Audited prompt alias: graphs retain the shared scratch, and sequences replay prompt graphs one at a time on the device stream, reading their outputs before another starts"
 )]
 fn shared_prompt_views(shared: &PromptScratch) -> Result<(ActivationArena, Option<Tensor<f32>>)> {
-    // SAFETY: see the expectation above.
-    let arena = unsafe { shared.arena.shared_view()? };
+    let arena = shared.arena.shared_view()?;
     let row = match &shared.row {
         Some(row) => {
             // SAFETY: see the expectation above; one lane spans the whole row.

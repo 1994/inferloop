@@ -113,7 +113,7 @@ impl Workspace {
         &mut self,
         scope: &Scope,
         node: &TensorNode,
-        arena: &mut ActivationArena,
+        arena: &ActivationArena,
         weights: &ProgramWeights,
         states: &mut super::super::batch::States,
         metadata: &Tensor<i32>,
@@ -168,15 +168,12 @@ impl Workspace {
             .get_mut(&(value_heads, value_dim))
             .ok_or_else(|| error("chunk delta scratch"))?;
         let slot = arena.slot(node.outputs[0]).map_err(error)?;
-        let output = arena.buffers[slot]
-            .take()
-            .ok_or_else(|| error("chunk delta output"))?;
-        let original: Vec<usize> = output
-            .shape()
-            .iter()
-            .map(|&x| usize::try_from(x).map_err(error))
-            .collect::<StdResult<_, _>>()?;
-        let output = output.reshape(&[self.lanes, value_heads, value_dim])?;
+        let output = arena
+            .buffer(slot)
+            .and_then(|output| {
+                output.require("chunk delta output", self.lanes * value_heads * value_dim)
+            })
+            .map_err(error)?;
         // The measured ordered path splits independent value columns without changing sums.
         // Other shapes use their existing qualified block policy.
         let block = if key_dim == ORDERED_DIM && ORDERED_WIDTHS.contains(&self.lanes) {
@@ -211,11 +208,10 @@ impl Workspace {
                     dim: value_dim,
                     lanes: self.lanes,
                 },
-                buffer(&output)?,
+                output,
                 buffer(&*scratch)?,
             )
             .map_err(error)?;
-        arena.buffers[slot] = Some(output.reshape(&original)?);
         Ok(true)
     }
 }

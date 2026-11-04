@@ -1,8 +1,8 @@
 //! Prime only the immediately following token-FP8 projection's row maximum.
 use super::buffers::buffer;
 use super::{ActivationArena, ProgramWeights, capture::error, nvfp4_gemm::Workspace};
-use crate::resident::buffers::tensor_rows;
-use crate::{constants::F32_BYTES, mlp::ProjectionWeight};
+use crate::mlp::ProjectionWeight;
+use crate::resident::buffers::RowMajor;
 use cutile::prelude::*;
 use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
@@ -25,7 +25,7 @@ pub(super) fn record(
     scope: &Scope,
     index: usize,
     nodes: &[TensorNode],
-    arena: &mut ActivationArena,
+    arena: &ActivationArena,
     weights: &ProgramWeights,
     workspace: &mut Workspace,
 ) -> Result<bool, DeviceError> {
@@ -70,55 +70,32 @@ pub(super) fn record(
     let Some(weight) = weights.constants.get(&norm.inputs[1]) else {
         return Ok(false);
     };
-    let input = arena.get(norm.inputs[0]).map_err(error)?;
-    let output = arena.get(norm.outputs[0]).map_err(error)?;
+    let input = arena.activation(norm.inputs[0]).map_err(error)?;
+    let output = arena.activation(norm.outputs[0]).map_err(error)?;
     let rows = arena.lanes();
     if rows == 0
-        || Some(output.size()) != rows.checked_mul(head_dim)
-        || input.size() != output.size()
+        || Some(output.len()) != rows.checked_mul(head_dim)
+        || input.len() != output.len()
         || weight.size() != head_dim
-        || !input.is_contiguous()
-        || !output.is_contiguous()
-        || !weight.is_contiguous()
-        || !disjoint(input, output)
-        || !disjoint(weight, output)
+        || !input.disjoint(output)
+        || !buffer(weight.as_ref()).is_ok_and(|weight| weight.disjoint(output))
     {
         return Ok(false);
     }
-    let slot = arena.slot(norm.outputs[0]).map_err(error)?;
-    let flat = output.size();
-    let output = arena.buffers[slot]
-        .take()
-        .ok_or_else(|| error("norm maximum output slot"))?;
-    let output = output.reshape(&[rows, head_dim])?;
-    let result = (|| {
-        let input = buffer(arena.get(norm.inputs[0]).map_err(error)?)?;
-        workspace.record_norm_maximum(
-            (&weights.kernels, scope),
-            index + 1,
-            input,
-            weight,
-            tensor_rows(&output)?,
-            (epsilon, offset),
-        )
-    })();
-    arena.buffers[slot] = Some(output.reshape(&[flat])?);
+    let output = RowMajor::new(output, rows, head_dim)?;
+    let result = workspace.record_norm_maximum(
+        (&weights.kernels, scope),
+        index + 1,
+        input,
+        weight,
+        output,
+        (epsilon, offset),
+    );
     #[cfg(test)]
     if matches!(result, Ok(true)) {
         CAPTURES.set(CAPTURES.get() + 1);
     }
     result
-}
-
-fn disjoint(a: &Tensor<f32>, b: &Tensor<f32>) -> bool {
-    let span = |tensor: &Tensor<f32>| {
-        let start = tensor.device_pointer().cu_deviceptr();
-        let bytes = u64::try_from(tensor.size())
-            .ok()?
-            .checked_mul(u64::try_from(F32_BYTES).ok()?)?;
-        Some((start, start.checked_add(bytes)?))
-    };
-    matches!((span(a), span(b)), (Some(a), Some(b)) if a.1 <= b.0 || b.1 <= a.0)
 }
 
 #[cfg(test)]

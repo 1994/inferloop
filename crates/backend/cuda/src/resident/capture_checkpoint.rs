@@ -25,21 +25,13 @@ impl Capture<'_> {
             return Err(error("checkpoint row capture bindings"));
         }
         let index = self.arena.slot(node.outputs[0]).map_err(error)?;
-        let slot = self.arena.buffers[index]
-            .take()
-            .ok_or_else(|| error("missing checkpoint output buffer"))?;
-        let (row, shared) =
-            super::arena::row_tensor(slot, self.arena.lanes(), lane).map_err(error)?;
+        let row = self.arena.output_row(index, lane).map_err(error)?;
         let _ = self.checkpoint_state(node, row, snapshot)?;
-        self.arena.buffers[index] = Some(
-            Arc::try_unwrap(shared)
-                .map_err(|_| error("checkpoint activation row tensor still aliased"))?,
-        );
         Ok(())
     }
 
-    /// Flat verification lanes own their activation slots; return that allocation
-    /// after recording the same state writer used by pooled checkpoint rows.
+    /// Flat verification lanes own their activation slots; record into them the same state
+    /// writer used by pooled checkpoint rows.
     pub(super) fn record_flat_checkpoint(
         &mut self,
         node: &TensorNode,
@@ -49,17 +41,8 @@ impl Capture<'_> {
             return Err(error("checkpoint flat capture bindings"));
         }
         let index = self.arena.slot(node.outputs[0]).map_err(error)?;
-        let output = self.arena.buffers[index]
-            .take()
-            .ok_or_else(|| error("missing checkpoint output buffer"))?;
-        let shape = output
-            .shape()
-            .iter()
-            .map(|&dimension| usize::try_from(dimension).map_err(error))
-            .collect::<Result<Vec<_>, _>>()?;
-        let size = output.size();
-        let output = self.checkpoint_state(node, output.reshape(&[size])?, snapshot)?;
-        self.arena.buffers[index] = Some(output.reshape(&shape)?);
+        let output = self.arena.output(index).map_err(error)?;
+        let _ = self.checkpoint_state(node, output, snapshot)?;
         Ok(())
     }
 

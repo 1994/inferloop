@@ -1,5 +1,5 @@
 mod dense;
-use super::buffers::{buffer, tensor_rows};
+use super::buffers::{RowMajor, buffer, tensor_rows};
 use super::{ProgramWeights, capture::error};
 use crate::constants::PREFILL_GEMM_TILE_K;
 use crate::constants::PREFILL_GEMM_TILE_N;
@@ -98,7 +98,7 @@ impl MlpPlan {
         device: &CudaDevice,
         graph: &infer_ir::DataflowGraph,
         weights: &ProgramWeights,
-        arena: &mut super::ActivationArena,
+        arena: &super::ActivationArena,
         nvfp4: &mut super::nvfp4_gemm::Workspace,
     ) -> Result<(), DeviceError> {
         if weights.fusion.is_some() || !weights.attention_profile.is_bf16() {
@@ -117,13 +117,17 @@ impl MlpPlan {
                 .get(&node.inputs[1])
                 .ok_or_else(|| error("fused down vendor weight"))?;
             let columns = arena.get(node.inputs[0]).map_err(error)?.size() / rows;
-            let Some((input, output)) = down_buffers(arena, node)? else {
+            let Some((mut input, mut output)) = down_buffers(arena, node)? else {
                 continue;
             };
-            let output = output
-                .as_mut()
-                .ok_or_else(|| error("fused down vendor output"))?;
-            nvfp4.prepare_vendor_down(device, weight, scale, input, output, (rows, columns))?;
+            nvfp4.prepare_vendor_down(
+                device,
+                weight,
+                scale,
+                &mut input,
+                &mut output,
+                (rows, columns),
+            )?;
         }
         Ok(())
     }
@@ -175,7 +179,7 @@ impl MlpPlan {
         &self,
         scope: &Scope,
         (index, nodes): (usize, &[TensorNode]),
-        arena: &mut super::ActivationArena,
+        arena: &super::ActivationArena,
         weights: &ProgramWeights,
         nvfp4: &mut super::nvfp4_gemm::Workspace,
     ) -> Result<bool, DeviceError> {
@@ -192,7 +196,7 @@ impl MlpPlan {
         &self,
         scope: &Scope,
         (index, nodes): (usize, &[TensorNode]),
-        arena: &mut super::ActivationArena,
+        arena: &super::ActivationArena,
         weights: &ProgramWeights,
         nvfp4: &mut super::nvfp4_gemm::Workspace,
     ) -> Result<bool, DeviceError> {
@@ -331,7 +335,7 @@ fn record_fused_mlp(
 fn record_fused_down(
     scope: &Scope,
     node: &TensorNode,
-    arena: &mut super::ActivationArena,
+    arena: &super::ActivationArena,
     weights: &ProgramWeights,
     nvfp4: &super::nvfp4_gemm::Workspace,
 ) -> Result<(), DeviceError> {
@@ -346,39 +350,37 @@ fn record_fused_down(
         .ok_or_else(|| error("prefill projection"))?;
     let width = arena.lanes();
     let columns = arena.get(node.inputs[0]).map_err(error)?.size() / width;
-    if let Some((input, destination)) = down_buffers(arena, node)? {
-        let output = destination.take().ok_or_else(|| error("prefill output"))?;
+    if let Some((mut input, output)) = down_buffers(arena, node)? {
         let flat = output.size();
         let mut output = output.reshape(&[width, flat / width])?;
-        let result =
-            match nvfp4.record_vendor_down(scope, weight, scale, input, &mut output, columns) {
-                Ok(true) => Ok(()),
-                Ok(false) => nvfp4.record_prequantized(
-                    (&weights.kernels, scope),
-                    weight,
-                    scale,
-                    tensor_rows(&output)?,
-                    columns,
-                ),
-                Err(error) => Err(error),
-            };
-        *destination = Some(output.reshape(&[flat])?);
+        let result = match nvfp4.record_vendor_down(
+            scope,
+            weight,
+            scale,
+            &mut input,
+            &mut output,
+            columns,
+        ) {
+            Ok(true) => Ok(()),
+            Ok(false) => nvfp4.record_prequantized(
+                (&weights.kernels, scope),
+                weight,
+                scale,
+                tensor_rows(&output)?,
+                columns,
+            ),
+            Err(error) => Err(error),
+        };
         return result;
     }
-    let slot = arena.slot(node.outputs[0]).map_err(error)?;
-    let output = arena.buffers[slot]
-        .take()
-        .ok_or_else(|| error("prefill output"))?;
-    let flat = output.size();
-    let output = output.reshape(&[width, flat / width])?;
+    let output = arena.activation(node.outputs[0]).map_err(error)?;
     nvfp4.record_prequantized(
         (&weights.kernels, scope),
         weight,
         scale,
-        tensor_rows(&output)?,
+        RowMajor::new(output, width, output.len() / width)?,
         columns,
     )?;
-    arena.buffers[slot] = Some(output.reshape(&[flat])?);
     Ok(())
 }
 
@@ -387,7 +389,7 @@ fn record_swiglu(
     scope: &Scope,
     node: &TensorNode,
     (gate, up): (infer_core::TensorId, infer_core::TensorId),
-    arena: &mut super::ActivationArena,
+    arena: &super::ActivationArena,
     weights: &ProgramWeights,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
 ) -> Result<bool, DeviceError> {
@@ -401,12 +403,8 @@ fn record_swiglu(
         .get(&node.inputs[1])
         .ok_or_else(|| error("prefill projection"))?;
     let width = arena.lanes();
-    let slot = arena.slot(node.outputs[0]).map_err(error)?;
-    let output = arena.buffers[slot]
-        .take()
-        .ok_or_else(|| error("prefill output"))?;
-    let flat = output.size();
-    let output = output.reshape(&[width, flat / width])?;
+    let output = arena.activation(node.outputs[0]).map_err(error)?;
+    let output = RowMajor::new(output, width, output.len() / width)?;
     let gate = arena.get(gate).map_err(error)?;
     let columns = gate.size() / width;
     let gate = buffer(gate)?;
@@ -417,21 +415,20 @@ fn record_swiglu(
         scale,
         gate,
         up,
-        tensor_rows(&output)?,
+        output,
         columns,
     )?;
-    arena.buffers[slot] = Some(output.reshape(&[flat])?);
     Ok(true)
 }
 
-/// Zero-copy prompt GEMM:/// Zero-copy prompt GEMM: the batched input slot holds all 32 rows and the
+/// Zero-copy prompt GEMM: the batched input slot holds all 32 rows and the
 /// output slot is reshaped to `[32, rows]` in place; no packing kernels remain.
 /// Fp4 weights split the K loop across `PREFILL_SPLIT_K` CTAs per output tile:
 /// the prompt GEMM is latency-bound at one wave, so wider grids hide DRAM latency.
 pub(super) fn record(
     scope: &Scope,
     node: &TensorNode,
-    arena: &mut super::ActivationArena,
+    arena: &super::ActivationArena,
     weights: &ProgramWeights,
     partials: &BTreeMap<usize, Tensor<f32>>,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
@@ -442,9 +439,7 @@ pub(super) fn record(
     }
     let width = arena.lanes();
     let slot = arena.slot(node.outputs[0]).map_err(error)?;
-    let output = arena.buffers[slot]
-        .take()
-        .ok_or_else(|| error("prefill output"))?;
+    let output = arena.output(slot).map_err(error)?;
     let flat = output.size();
     let output = output.reshape(&[width, flat / width])?;
     let flat_input = arena.get(node.inputs[0]).map_err(error)?;
@@ -462,7 +457,6 @@ pub(super) fn record(
         &output,
         columns,
     )? {
-        arena.buffers[slot] = Some(output.reshape(&[flat])?);
         return Ok(());
     }
     match weight {
@@ -508,7 +502,6 @@ pub(super) fn record(
             )?;
         }
     }
-    arena.buffers[slot] = Some(output.reshape(&[flat])?);
     Ok(())
 }
 
@@ -533,10 +526,7 @@ fn pair_slots(
         .checked_mul(width)
         .ok_or_else(|| error("paired projection extent overflow"))?;
     let input_slot = arena.slot(first.inputs[0]).map_err(error)?;
-    let input_elements = arena.buffers[input_slot]
-        .as_ref()
-        .ok_or_else(|| error("paired projection input"))?
-        .size();
+    let input_elements = arena.buffer(input_slot).map_err(error)?.len();
     if input_elements.checked_div(width) != Some(columns)
         || !input_elements.is_multiple_of(width)
         || arena.get(first.outputs[0]).map_err(error)?.size() != expected
@@ -618,7 +608,7 @@ pub(super) fn record_pair(
     scope: &Scope,
     first: &TensorNode,
     second: &TensorNode,
-    arena: &mut super::ActivationArena,
+    arena: &super::ActivationArena,
     (weights, profile): (&ProgramWeights, &DeviceProfile),
 ) -> Result<bool, DeviceError> {
     if !pairable(first, second) || !weights.expert_banks.is_empty() {
@@ -646,18 +636,10 @@ pub(super) fn record_pair(
     else {
         return Ok(false);
     };
-    let output_b = arena.buffers[slot_b]
-        .take()
-        .ok_or_else(|| error("paired projection b output"))?;
-    let output_a = arena.buffers[slot_a]
-        .take()
-        .ok_or_else(|| error("paired projection a output"))?;
-    let expected = rows * width;
-    let output_b = output_b.reshape(&[width, rows])?;
-    let output_a = output_a.reshape(&[width, rows])?;
-    let flat_input = arena.buffers[input_slot]
-        .as_ref()
-        .ok_or_else(|| error("paired projection input"))?;
+    // `pair_slots` checked both outputs hold `width` rows of `rows` and the input `columns`.
+    let output_b = arena.buffer(slot_b).map_err(error)?;
+    let output_a = arena.buffer(slot_a).map_err(error)?;
+    let flat_input = arena.buffer(input_slot).map_err(error)?;
     weights
         .kernels
         .projection
@@ -669,13 +651,11 @@ pub(super) fn record_pair(
                 columns,
                 tile: [PREFILL_LANES, PREFILL_GEMM_TILE_N],
             },
-            (buffer(&output_b)?, buffer(&output_a)?),
-            buffer(flat_input)?,
+            (output_b, output_a),
+            flat_input,
             (buffer(weight_b)?, buffer(weight_a)?),
         )
         .map_err(error)?;
-    arena.buffers[slot_b] = Some(output_b.reshape(&[expected])?);
-    arena.buffers[slot_a] = Some(output_a.reshape(&[expected])?);
     Ok(true)
 }
 
@@ -774,7 +754,7 @@ fn records_precise_sparse(
 pub(super) fn record_narrow(
     scope: &Scope,
     node: &TensorNode,
-    arena: &mut super::ActivationArena,
+    arena: &super::ActivationArena,
     (weights, profile): (&ProgramWeights, &DeviceProfile),
 ) -> Result<bool, DeviceError> {
     let Some(ProjectionWeight::Dense(weight)) = weights.projections.get(&node.inputs[1]) else {
@@ -806,21 +786,16 @@ pub(super) fn record_narrow(
     {
         return Ok(false);
     }
-    let output = arena.buffers[output_slot]
-        .take()
-        .ok_or_else(|| error("control projection output"))?;
-    let output = output.reshape(&[width, rows])?;
-    let input = arena.buffers[input_slot]
-        .as_ref()
-        .ok_or_else(|| error("control projection input"))?;
-    let recorded = records_narrow_dense(
+    records_narrow_dense(
         (&weights.kernels, scope),
         profile,
-        (buffer(&output)?, buffer(input)?, buffer(weight)?),
+        (
+            arena.buffer(output_slot).map_err(error)?,
+            arena.buffer(input_slot).map_err(error)?,
+            buffer(weight)?,
+        ),
         (width, rows, columns),
-    );
-    arena.buffers[output_slot] = Some(output.reshape(&[expected])?);
-    recorded
+    )
 }
 
 fn records_narrow_dense(
@@ -888,29 +863,22 @@ pub fn with_dense_reference<T>(run: impl FnOnce() -> T) -> T {
 #[path = "../../tests/unit/resident_prefill_projection.rs"]
 mod tests;
 
-/// The last-consumer arena may reuse a slot, but the vendor pack needs two disjoint slots.
-type DownBuffers<'a> = (&'a mut Tensor<f32>, &'a mut Option<Tensor<f32>>);
-fn down_buffers<'a>(
-    arena: &'a mut super::ActivationArena,
+/// Input and output tensors of a fused down projection.
+type DownBuffers = (Tensor<f32>, Tensor<f32>);
+
+/// Input and output of a fused down projection, or `None` when the last-consumer arena gave them
+/// one slot: the vendor pack needs two disjoint slots.
+fn down_buffers(
+    arena: &super::ActivationArena,
     node: &TensorNode,
-) -> Result<Option<DownBuffers<'a>>, DeviceError> {
+) -> Result<Option<DownBuffers>, DeviceError> {
     let input = arena.slot(node.inputs[0]).map_err(error)?;
     let output = arena.slot(node.outputs[0]).map_err(error)?;
     if input == output {
         return Ok(None);
     }
-    let (low, high) = arena
-        .buffers
-        .split_at_mut_checked(input.max(output))
-        .ok_or_else(|| error("fused down arena slots"))?;
-    let (input, output) = if input < output {
-        (low.get_mut(input), high.first_mut())
-    } else {
-        (high.first_mut(), low.get_mut(output))
-    };
-    let input = input
-        .and_then(Option::as_mut)
-        .ok_or_else(|| error("fused down arena input"))?;
-    let output = output.ok_or_else(|| error("fused down arena output"))?;
-    Ok(Some((input, output)))
+    Ok(Some((
+        arena.output(input).map_err(error)?,
+        arena.output(output).map_err(error)?,
+    )))
 }
