@@ -96,11 +96,10 @@ fn key(device: &CudaDevice, shape: Shape) -> Result<Key> {
     key.fingerprint = format!(
         "{:x}",
         Sha256::digest(format!(
-            "{}:{}:{}:{:x}",
+            "{}:{}:{}",
             key.fingerprint,
             shared_identity(),
             vector_identity(),
-            Sha256::digest(include_str!("vector.rs")),
         ))
     );
     key.schema = SCHEMA.into();

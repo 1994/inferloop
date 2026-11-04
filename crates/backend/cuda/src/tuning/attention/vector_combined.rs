@@ -90,17 +90,17 @@ fn memo() -> &'static Memo {
     static MEMO: OnceLock<Memo> = OnceLock::new();
     MEMO.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
-/// Combined artifact plus tuning-source identity, kept out of the vector layer's fingerprint.
+/// Combined artifact identity, kept out of the vector layer's fingerprint; the method is the
+/// key's schema.
 fn fingerprint(base: &str) -> String {
     format!(
         "{:x}",
         Sha256::digest(format!(
-            "{}:{}:{}:{}:{:x}",
+            "{}:{}:{}:{}",
             base,
             shared_identity(),
             vector_identity(),
             Support::combined_identity(),
-            Sha256::digest(include_str!("vector_combined.rs")),
         ))
     )
 }
