@@ -8,7 +8,7 @@ use crate::{
     device::{CudaDevice, device_error},
 };
 use cutile::prelude::*;
-use infer_core::{Error, OpId, Result};
+use infer_core::{Error, OpId, Result, TensorId};
 use infer_cuda_kernels::contract::{Kernels, PoolDeltaBuffers, PoolDeltaPlan, Recording};
 use infer_cuda_kernels::tile::recurrent::pack_parameters;
 use infer_cuda_kernels::tile::runtime::Allocation;
@@ -20,10 +20,24 @@ use std::sync::Arc;
 
 const RECURRENT_STATE_RANK: usize = 3;
 
-/// Views drop before their owning allocations; the pool drops its captures before this object.
+/// Every view of a family holds its allocation, so views stay valid on their own.
 pub(super) struct SlotStates {
     lanes: Vec<States>,
     pub(super) roots: States,
+    families: BTreeMap<TensorId, Vec<Family>>,
+}
+
+/// One pooled state tensor: `width` concatenated lanes of `lane` shape, viewed whole as `root`.
+struct Family {
+    memory: Allocation<f32>,
+    lane: Vec<usize>,
+    root: Vec<usize>,
+}
+
+impl Family {
+    fn lane_elements(&self) -> usize {
+        self.lane.iter().product()
+    }
 }
 
 impl SlotStates {
@@ -61,9 +75,11 @@ impl SlotStates {
         let mut result = Self {
             lanes: (0..width).map(|_| States::new()).collect(),
             roots: States::new(),
+            families: BTreeMap::new(),
         };
         for (id, shapes) in plan {
             let mut owners = Vec::new();
+            let mut families = Vec::new();
             for shape in shapes {
                 let size = shape.iter().product::<usize>();
                 let memory = Allocation::adopt(Arc::new(
@@ -83,8 +99,14 @@ impl SlotStates {
                     vec![width, size]
                 };
                 owners.push(super::arena::whole(&memory, &root_shape)?);
+                families.push(Family {
+                    memory,
+                    lane: shape,
+                    root: root_shape,
+                });
             }
             result.roots.insert(id, owners);
+            result.families.insert(id, families);
         }
         Ok(result)
     }
@@ -93,8 +115,51 @@ impl SlotStates {
         (&mut self.lanes, &mut self.roots)
     }
 
-    pub(super) const fn roots(&self) -> &States {
-        &self.roots
+    /// The first `slots` lanes of every root family, for a graph narrower than the pool.
+    /// # Errors
+    /// Rejects a slot count outside `1..=width`.
+    pub(super) fn prefix(&self, slots: usize) -> Result<States> {
+        if slots == 0 || slots > self.lanes.len() {
+            return Err(Error::invalid("pooled state prefix"));
+        }
+        let mut roots = States::new();
+        for (id, families) in &self.families {
+            let mut views = Vec::with_capacity(families.len());
+            for family in families {
+                let mut shape = family.root.clone();
+                shape[0] = slots;
+                views.push(
+                    family
+                        .memory
+                        .view(0..slots * family.lane_elements(), &shape)?,
+                );
+            }
+            roots.insert(*id, views);
+        }
+        Ok(roots)
+    }
+
+    /// Another view of lane `slot` of every family, shaped as the lane's own states.
+    /// # Errors
+    /// Rejects a slot past the pool.
+    pub(super) fn lane(&self, slot: usize) -> Result<States> {
+        if slot >= self.lanes.len() {
+            return Err(Error::invalid("slot view index"));
+        }
+        let mut lane = States::new();
+        for (id, families) in &self.families {
+            let mut views = Vec::with_capacity(families.len());
+            for family in families {
+                let size = family.lane_elements();
+                views.push(
+                    family
+                        .memory
+                        .view(slot * size..(slot + 1) * size, &family.lane)?,
+                );
+            }
+            lane.insert(*id, views);
+        }
+        Ok(lane)
     }
 }
 
