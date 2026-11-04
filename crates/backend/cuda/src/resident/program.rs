@@ -233,22 +233,18 @@ pub struct DeviceProgram {
     nvfp4: super::nvfp4_gemm::Workspace,
     delegated: Support,
     attention: super::attention_decode::Workspace,
-    external: Tensor<f32>,
+    external: Allocation<f32>,
     uploads: ProgramUploads,
     // Declared after the graphs: the state tensors outlive every capture that references them,
     // and prefix caching reads them back for snapshots.
     states: super::batch::States,
     kv_states: BTreeSet<TensorId>,
     fp8_states: super::fp8_cache::Fp8Caches,
-    lane_external: Vec<Tensor<f32>>,
-    // Mutable upload handle for one contiguous external hidden per prompt lane. Every row in
-    // `lane_external` keeps the backing storage alive, so this handle is only the transfer
-    // target and is written before the prompt replay on the device stream.
-    lane_external_owner: Tensor<f32>,
+    lane_external: Vec<Allocation<f32>>,
     // The allocation the external rows view, which a prompt burst views too.
     lane_external_memory: Allocation<f32>,
     // Hidden row of the position before the next device-primed chunk.
-    prime_previous: Tensor<f32>,
+    prime_previous: Allocation<f32>,
     // Fusion workspaces are referenced by the captured graphs and never touched afterwards.
     lane_fusion: Vec<Option<FusionWorkspace>>,
     // A graph addresses contract buffers without holding them, so these outlive every capture.
@@ -282,14 +278,14 @@ impl ExternalInput<'_> {
     fn update(
         self,
         device: &CudaDevice,
-        destination: &mut Tensor<f32>,
+        destination: &Allocation<f32>,
         staging: Option<&mut PinnedUpload<f32>>,
     ) -> Result<()> {
         match self {
             Self::Host(values) => {
                 let staging =
                     staging.ok_or_else(|| Error::invariant("external hidden pinned staging"))?;
-                if values.len() != destination.size() {
+                if values.len() != destination.len() {
                     return Err(Error::invalid("external hidden shape"));
                 }
                 staging.copy(device, destination, values)
@@ -298,7 +294,7 @@ impl ExternalInput<'_> {
                 if tensor.device_id() != device.stream.device().ordinal() {
                     return Err(Error::invalid("external hidden device mismatch"));
                 }
-                device.copy_d2d(destination, tensor, tensor.size())
+                device.copy_d2d_at(destination, tensor, 0, 0, tensor.size())
             }
         }
     }
@@ -350,8 +346,8 @@ fn retained_tensor_bytes(
 /// One contiguous external-hidden allocation with its whole view, its per-lane row views and
 /// fusion workspaces.
 type LaneFusion = (
-    (Allocation<f32>, Tensor<f32>),
-    Vec<Tensor<f32>>,
+    Allocation<f32>,
+    Vec<Allocation<f32>>,
     Vec<Option<FusionWorkspace>>,
 );
 
@@ -372,13 +368,8 @@ fn allocate_lane_fusion(
     let elements = width
         .checked_mul(hidden)
         .ok_or_else(|| Error::invalid("external hidden size overflow"))?;
-    let memory = Allocation::adopt(Arc::new(
-        api::zeros::<f32>(&[elements])
-            .sync_on(&device.stream)
-            .map_err(device_error)?,
-    ))?;
-    let owner = super::arena::whole(&memory, &[elements])?;
-    let external = super::arena::rows(&memory, width)?;
+    let memory = device.runtime().zeros(elements)?;
+    let external = memory.rows(width)?;
     let fused = fused_lanes(device, weights)?;
     let mut fusion = Vec::with_capacity(width);
     for lane in 0..width {
@@ -388,7 +379,7 @@ fn allocate_lane_fusion(
             enabled && lane < fused,
         )?);
     }
-    Ok(((memory, owner), external, fusion))
+    Ok((memory, external, fusion))
 }
 
 /// Lanes that need their own fusion workspace: every lane, unless batched prompt fusion covers
@@ -532,7 +523,7 @@ impl DeviceProgram {
             fp8_states: &mut self.fp8_states,
             external: &self.external,
             lane_external: &mut self.lane_external,
-            lane_external_owner: Some(&self.lane_external_owner),
+            lane_external_owner: Some(&self.lane_external_memory),
             lane_fusion: &mut self.lane_fusion,
             tables: from_ref(&self.table),
             capacity: self.capacity,
@@ -709,17 +700,15 @@ impl DeviceProgram {
     }
 
     /// Zeroed decode metadata tensor and external hidden row shared by every capture.
-    fn zero_row(device: &CudaDevice, hidden: usize) -> Result<Tensor<f32>> {
-        api::zeros::<f32>(&[hidden])
-            .sync_on(&device.stream)
-            .map_err(device_error)
+    fn zero_row(device: &CudaDevice, hidden: usize) -> Result<Allocation<f32>> {
+        device.runtime().zeros(hidden)
     }
 
     fn constant_inputs(
         device: &CudaDevice,
         hidden: usize,
         capacity: usize,
-    ) -> Result<(Allocation<i32>, Tensor<f32>, Allocation<i32>)> {
+    ) -> Result<(Allocation<i32>, Allocation<f32>, Allocation<i32>)> {
         let metadata = device.runtime().zeros(METADATA_FIELDS * 2)?;
         load_rotary(&device.stream, metadata.buffer())?;
         let external = Self::zero_row(device, hidden)?;
@@ -805,7 +794,7 @@ impl DeviceProgram {
         // A slot program addresses its slot's KV blocks through the slot's own table.
         let table = slot_table.unwrap_or(identity);
         let mut fusion = FusionWorkspace::allocate(device, hidden, weights.fusion.is_some())?;
-        let ((lane_external_memory, lane_external_owner), mut lane_external, mut lane_fusion) =
+        let (lane_external_memory, mut lane_external, mut lane_fusion) =
             allocate_lane_fusion(device, hidden, weights, geometry)?;
         let prime_previous = Self::zero_row(device, hidden)?;
         let mut builder = super::batch::BatchBuilder {
@@ -819,7 +808,7 @@ impl DeviceProgram {
             fp8_states: &mut fp8_states,
             external: &external,
             lane_external: &mut lane_external,
-            lane_external_owner: Some(&lane_external_owner),
+            lane_external_owner: Some(&lane_external_memory),
             lane_fusion: &mut lane_fusion,
             tables: from_ref(&table),
             capacity,
@@ -860,13 +849,12 @@ impl DeviceProgram {
             metadata,
             uploads: ProgramUploads::new(
                 device,
-                external.size(),
-                lane_external_owner.size(),
+                external.len(),
+                lane_external_memory.len(),
                 weights.fusion.as_ref(),
             )?,
             external,
             lane_external,
-            lane_external_owner,
             lane_external_memory,
             prime_previous,
             states,
@@ -1085,7 +1073,7 @@ impl DeviceProgram {
         }
         if external
             .as_ref()
-            .is_some_and(|values| values.len() != self.external.size())
+            .is_some_and(|values| values.len() != self.external.len())
         {
             return Err(Error::invalid("external hidden dimensions"));
         }
@@ -1108,11 +1096,7 @@ impl DeviceProgram {
         };
         super::metadata::update_rotary(graph, self.metadata.buffer(), metadata, position)?;
         if let Some(external) = external {
-            external.update(
-                &self.device,
-                &mut self.external,
-                self.uploads.external.as_mut(),
-            )?;
+            external.update(&self.device, &self.external, self.uploads.external.as_mut())?;
         }
         Ok(())
     }
@@ -1361,7 +1345,7 @@ impl DeviceProgram {
         rows: &Tensor<f32>,
         previous: Option<&[f32]>,
     ) -> Result<()> {
-        let hidden = self.external.size();
+        let hidden = self.external.len();
         if tokens.is_empty()
             || rows.size() < tokens.len() * hidden
             || previous.is_some_and(|row| row.len() != hidden)
@@ -1371,12 +1355,12 @@ impl DeviceProgram {
         if let Some(row) = previous {
             ExternalInput::Host(row).update(
                 &self.device,
-                &mut self.prime_previous,
+                &self.prime_previous,
                 self.uploads.external.as_mut(),
             )?;
         } else if position == 0 {
             self.device
-                .copy_d2d_at(&mut self.prime_previous, rows, 0, 0, hidden)?;
+                .copy_d2d_at(&self.prime_previous, rows, 0, 0, hidden)?;
         }
         let width = self.prefill_width().max(PREFILL_LANES);
         let mut start = 0;
@@ -1384,7 +1368,7 @@ impl DeviceProgram {
             let count = width.min(tokens.len() - start);
             if start == 0 {
                 self.device.copy_d2d_at(
-                    &mut self.lane_external_owner,
+                    &self.lane_external_memory,
                     &self.prime_previous,
                     0,
                     0,
@@ -1392,7 +1376,7 @@ impl DeviceProgram {
                 )?;
             } else {
                 self.device.copy_d2d_at(
-                    &mut self.lane_external_owner,
+                    &self.lane_external_memory,
                     rows,
                     0,
                     (start - 1) * hidden,
@@ -1401,7 +1385,7 @@ impl DeviceProgram {
             }
             if count > 1 {
                 self.device.copy_d2d_at(
-                    &mut self.lane_external_owner,
+                    &self.lane_external_memory,
                     rows,
                     hidden,
                     start * hidden,
@@ -1418,7 +1402,7 @@ impl DeviceProgram {
             start += count;
         }
         self.device.copy_d2d_at(
-            &mut self.prime_previous,
+            &self.prime_previous,
             rows,
             0,
             (tokens.len() - 1) * hidden,
@@ -1433,7 +1417,7 @@ impl DeviceProgram {
         &mut self,
     ) -> impl Future<Output = Result<Vec<f32>>> + Send + '_ {
         self.device
-            .read_async(&self.prime_previous, &mut self.uploads.prime)
+            .read_async(self.prime_previous.tensor(), &mut self.uploads.prime)
     }
 
     /// Ingest a prompt chunk with one external hidden per lane, as a fused draft needs.
@@ -1455,7 +1439,7 @@ impl DeviceProgram {
         position: usize,
         externals: &[f32],
     ) -> Result<()> {
-        let hidden = self.external.size();
+        let hidden = self.external.len();
         let lanes = tokens
             .len()
             .checked_mul(hidden)
@@ -1472,7 +1456,7 @@ impl DeviceProgram {
             .lanes
             .as_mut()
             .ok_or_else(|| Error::invariant("draft prompt pinned staging"))?
-            .copy(&self.device, &self.lane_external_owner, externals)?;
+            .copy(&self.device, &self.lane_external_memory, externals)?;
         // Replay completion fences this pinned source before the next prompt upload.
         if self.prompt_for(tokens.len()).is_none() {
             return Err(Error::invariant("prompt batch graph"));
@@ -1644,7 +1628,7 @@ impl DeviceProgram {
                 .lane_external
                 .get_mut(lane)
                 .ok_or_else(|| Error::invalid("media prefill lane"))?;
-            if slot.size() != hidden {
+            if slot.len() != hidden {
                 return Err(Error::invalid("media external width"));
             }
             self.device.copy_d2d_at(slot, media, 0, offset, hidden)?;

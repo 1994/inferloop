@@ -408,7 +408,7 @@ fn slot_program_external_rows_follow_captured_geometry() -> Result<()> {
     );
     let mut home =
         DeviceProgram::new_on_slot(&device, &graph, &weights, (64, width, width), views)?;
-    assert_eq!(home.lane_external_owner.size(), width);
+    assert_eq!(home.lane_external_memory.len(), width);
     assert_eq!(home.lane_external.len(), 1);
     assert_eq!(home.lane_fusion.len(), 1);
     let previous = vec![0.125; width];

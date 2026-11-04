@@ -2,7 +2,7 @@
 use crate::constants::KV_CACHE_RANK;
 use crate::constants::MATVEC_TILE_COLUMNS;
 use crate::constants::MATVEC_TILE_ROWS;
-use crate::resident::buffers::buffer;
+use crate::resident::buffers::{Operand, buffer};
 use crate::strategy::LinearTiling;
 use crate::tuning::memory::arena_budget;
 use cuda_core::sys::CUdevice_attribute;
@@ -18,7 +18,7 @@ use cutile::jit_cache::enable_default;
 use cutile::prelude::*;
 use infer_core::{Error as InferError, ErrorCode, Result};
 use infer_cuda_kernels::contract::target::Arch;
-use infer_cuda_kernels::contract::{Buffer, Kernels};
+use infer_cuda_kernels::contract::{Buffer, Kernels, Width};
 use infer_cuda_kernels::tile::kernels;
 use infer_cuda_kernels::tile::projection::matvec::{MatvecGeometry, dense_matvec};
 use infer_cuda_kernels::tile::runtime::{
@@ -547,13 +547,17 @@ impl CudaDevice {
 
     /// Copy `elements` values from `src_offset` of `src` to `dst_offset` of `dst` on this
     /// device's stream, with no host round trip; prefix caching snapshots KV state this way.
-    /// Owners retain both tensors through the next stream fence.
+    /// Owners retain both operands through the next stream fence.
     /// # Errors
-    /// Rejects a range outside either tensor or a copy the driver does not enqueue.
-    pub fn copy_d2d_at<T: DType + Element>(
+    /// Rejects a range outside either operand or a copy the driver does not enqueue.
+    pub fn copy_d2d_at<
+        M: Width,
+        D: Operand<Marker = M> + ?Sized,
+        S: Operand<Marker = M> + ?Sized,
+    >(
         &self,
-        dst: &mut Tensor<T>,
-        src: &Tensor<T>,
+        dst: &D,
+        src: &S,
         dst_offset: usize,
         src_offset: usize,
         elements: usize,
@@ -565,7 +569,7 @@ impl CudaDevice {
                 .map(|end| offset..end)
                 .ok_or_else(outside)
         };
-        let dst = buffer(&*dst)
+        let dst = buffer(dst)
             .map_err(device_error)?
             .slice(range(dst_offset)?)
             .map_err(|_| outside())?;
