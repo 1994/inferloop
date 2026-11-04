@@ -1468,6 +1468,10 @@ impl SlotPool {
         let to = dst
             .get(&id)
             .ok_or_else(|| Error::invariant("slot bind target fp8 cache"))?;
+        // A slot-resident programs views are the slots own storage: nothing to move.
+        if to.same_memory(from) {
+            return Ok(());
+        }
         if to.layout.rows != slot_capacity {
             return Err(Error::invariant("slot bind KV layout"));
         }
