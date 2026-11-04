@@ -1,12 +1,12 @@
 //! Real checkpoint, one weight upload, distinct prompt captures and a prediction gate.
 use super::{LoadOptions, LoadedModel};
+use crate::resident::fp8_cache::KvState;
 use crate::tuning::table_path;
 use crate::{
-    device::{CudaDevice, device_error},
+    device::CudaDevice,
     resident::{BatchOutput, DeviceProgram},
 };
 use cuda_core::f8e4m3fn;
-use cutile::prelude::*;
 use infer_core::{Error, ModelId, Result};
 use serde_json::{Value, json};
 use std::env::var;
@@ -152,18 +152,6 @@ fn fp8_value(code: u8) -> f32 {
 }
 
 /// Copy through one temporary tensor: the captured source remains owned by its program.
-fn read_fp8(device: &CudaDevice, source: &Tensor<f8e4m3fn>) -> Result<Vec<f8e4m3fn>> {
-    let mut copy = api::zeros::<f8e4m3fn>(&[source.size()])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    api::memcpy(&mut copy, source)
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    copy.to_host_vec()
-        .sync_on(&device.stream)
-        .map_err(device_error)
-}
-
 fn compare_states(
     loaded: &LoadedModel,
     wide: &DeviceProgram,
@@ -216,8 +204,20 @@ fn compare_states(
         !wide.fp8_states().is_empty(),
         "fixture must exercise real FP8 KV"
     );
-    for (id, (actual_keys, actual_values)) in wide.fp8_states() {
-        let (expected_keys, expected_values) = narrow
+    for (
+        id,
+        KvState {
+            keys: actual_keys,
+            values: actual_values,
+            ..
+        },
+    ) in wide.fp8_states()
+    {
+        let KvState {
+            keys: expected_keys,
+            values: expected_values,
+            ..
+        } = narrow
             .fp8_states()
             .get(id)
             .ok_or_else(|| Error::invariant("FP8 KV ID"))?;
@@ -225,16 +225,12 @@ fn compare_states(
             ("keys", actual_keys, expected_keys),
             ("values", actual_values, expected_values),
         ] {
-            assert_eq!(
-                actual.shape(),
-                expected.shape(),
-                "{stage}: {id:?} {kind} shape"
-            );
+            assert_eq!(actual.len(), expected.len(), "{stage}: {id:?} {kind} shape");
             agreement.compare_fp8(
                 stage,
                 &format!("{id:?} FP8 {kind}"),
-                &read_fp8(loaded.device(), actual)?,
-                &read_fp8(loaded.device(), expected)?,
+                &loaded.device().runtime().read(actual)?,
+                &loaded.device().runtime().read(expected)?,
             );
         }
     }

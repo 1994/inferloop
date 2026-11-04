@@ -1,4 +1,5 @@
 use super::{LoadOptions, LoadedModel};
+use crate::resident::fp8_cache::KvState;
 use crate::{
     device::CudaDevice,
     resident::{
@@ -31,11 +32,23 @@ fn states(loaded: &LoadedModel, a: &DeviceProgram, b: &DeviceProgram, label: &st
         }
     }
     assert_eq!(a.fp8_states().len(), b.fp8_states().len());
-    for (id, (ak, av)) in a.fp8_states() {
-        let (bk, bv) = &b.fp8_states()[id];
+    for (
+        id,
+        KvState {
+            keys: ak,
+            values: av,
+            ..
+        },
+    ) in a.fp8_states()
+    {
+        let KvState {
+            keys: bk,
+            values: bv,
+            ..
+        } = &b.fp8_states()[id];
         for (x, y) in [(ak, bk), (av, bv)] {
-            let x = loaded.device().read_borrowed(x)?;
-            let y = loaded.device().read_borrowed(y)?;
+            let x = loaded.device().runtime().read(x)?;
+            let y = loaded.device().runtime().read(y)?;
             assert_eq!(x.len(), y.len());
             assert!(x.iter().chain(&y).all(|x| x.0 & 127 != 127));
             assert!(

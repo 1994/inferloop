@@ -1,60 +1,41 @@
 use super::{
     arena::SlotMemory,
-    buffers::{buffer, kv_cache},
+    buffers::buffer,
     capture::{Capture, CaptureMode, error},
 };
 use crate::constants::ATTENTION_SPLIT_THRESHOLD;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::WIDE_PREFILL_LANES;
-use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_cuda_kernels::contract::{
-    AppendBuffers, Buffer, DecodeBuffers, DecodePlan, KvCache, KvElement, PrefillAppendPlan,
+    AppendBuffers, Buffer, DecodeBuffers, DecodePlan, KvBuffers, KvCache, PrefillAppendPlan,
     PrefillDecodePlan, Recording,
 };
-use infer_cuda_kernels::tile::runtime::Element;
 use infer_ir::{TensorNode, TensorOp};
-
-/// The key and value caches, handed back in the head-major layout attention leaves them in.
-type AttentionResult<E> = Result<(Tensor<E>, Tensor<E>), DeviceError>;
 
 impl Capture<'_> {
     /// Append this lane's key and value row to the shared FP8 cache without attending; a
     /// verification step then attends all its lanes in one grouped launch.
-    pub fn record_attention_append(&mut self, node: &TensorNode) -> Result<(), DeviceError> {
-        let TensorOp::Attention {
-            kv_heads, head_dim, ..
-        } = node.op
-        else {
-            return Err(error("expected attention"));
-        };
+    pub fn record_attention_append(&self, node: &TensorNode) -> Result<(), DeviceError> {
         let id = *node
             .states
             .first()
             .ok_or_else(|| error("missing state binding"))?;
         let scales = self.weights.kv_scales[&id];
-        let (keys, values) = self
+        let state = self
             .fp8_states
-            .remove(&id)
+            .get(&id)
             .ok_or_else(|| error("missing FP8 attention state"))?;
-        // A paged slot's cache holds the pool's physical rows, not one sequence's capacity.
-        let rows = keys.size() / (kv_heads * head_dim);
-        let keys = keys.reshape(&[kv_heads, rows, head_dim])?;
-        let values = values.reshape(&[kv_heads, rows, head_dim])?;
-        let result = kv_cache((&keys, &values), kv_heads, head_dim, scales)
-            .and_then(|cache| self.record_append(node, cache));
-        self.fp8_states.insert(id, (keys, values));
-        result
+        self.record_append(node, state.cache(scales))
     }
 
-    pub fn record_attention<E: DType + Element<Marker: KvElement>>(
+    /// Record one attention node over `cache`, whose groups and dimension are the node's.
+    pub fn record_attention(
         &mut self,
         node: &TensorNode,
         output: &SlotMemory,
-        keys: Tensor<E>,
-        values: Tensor<E>,
-        scales: [f32; 2],
-    ) -> AttentionResult<E> {
+        cache: KvCache<'_>,
+    ) -> Result<(), DeviceError> {
         let TensorOp::Attention {
             query_heads,
             kv_heads,
@@ -67,14 +48,12 @@ impl Capture<'_> {
         if kv_heads == 0 || !query_heads.is_multiple_of(kv_heads) || !head_dim.is_power_of_two() {
             return Err(error("resident attention dimensions"));
         }
-        if self.mode == CaptureMode::Prefill {
-            return self.record_prefill_attention(node, output, keys, values, scales);
+        if (cache.groups, cache.dim) != (kv_heads, head_dim) || cache.rows().is_none() {
+            return Err(error("attention cache layout"));
         }
-        // A paged slot's cache holds the pool's physical rows, not one sequence's capacity.
-        let rows = keys.size() / (kv_heads * head_dim);
-        let keys = keys.reshape(&[kv_heads, rows, head_dim])?;
-        let values = values.reshape(&[kv_heads, rows, head_dim])?;
-        let cache = kv_cache((&keys, &values), kv_heads, head_dim, scales)?;
+        if self.mode == CaptureMode::Prefill {
+            return self.record_prefill_attention(node, output, cache);
+        }
         self.record_append(node, cache)?;
         let plan = DecodePlan {
             heads: query_heads,
@@ -103,7 +82,7 @@ impl Capture<'_> {
                 .decode(&recording, plan, buffers)
                 .map_err(error)?;
         }
-        Ok((keys, values))
+        Ok(())
     }
 
     /// Append one lane's key and value row.
@@ -124,35 +103,25 @@ impl Capture<'_> {
             .map_err(error)
     }
 
-    fn record_prefill_attention<E: DType + Element<Marker: KvElement>>(
+    fn record_prefill_attention(
         &mut self,
         node: &TensorNode,
         output: &SlotMemory,
-        keys: Tensor<E>,
-        values: Tensor<E>,
-        scales: [f32; 2],
-    ) -> AttentionResult<E> {
-        let TensorOp::Attention {
-            kv_heads, head_dim, ..
-        } = node.op
-        else {
-            return Err(error("expected attention"));
-        };
+        cache: KvCache<'_>,
+    ) -> Result<(), DeviceError> {
         let lanes = self.arena.lanes();
-        // A paged slot's cache holds the pool's physical rows, not one sequence's capacity.
-        let rows = keys.size() / (kv_heads * head_dim);
-        let keys = keys.reshape(&[kv_heads, rows, head_dim])?;
-        let values = values.reshape(&[kv_heads, rows, head_dim])?;
+        let rows = cache
+            .rows()
+            .ok_or_else(|| error("attention cache layout"))?;
+        let fp8 = matches!(cache.buffers, KvBuffers::Fp8 { .. });
         // A CTA owns one physical page, including its unmodified tail. Narrow
         // graphs retain the whole-head loop rather than launching idle pages.
-        let append_rows = if E::DTYPE == f8e4m3fn::DTYPE
-            && lanes >= WIDE_PREFILL_LANES
-            && rows.is_multiple_of(KV_BLOCK_TOKENS)
-        {
-            KV_BLOCK_TOKENS
-        } else {
-            rows
-        };
+        let append_rows =
+            if fp8 && lanes >= WIDE_PREFILL_LANES && rows.is_multiple_of(KV_BLOCK_TOKENS) {
+                KV_BLOCK_TOKENS
+            } else {
+                rows
+            };
         self.weights
             .kernels
             .attention
@@ -164,7 +133,7 @@ impl Capture<'_> {
                     block: KV_BLOCK_TOKENS,
                 },
                 AppendBuffers {
-                    cache: kv_cache((&keys, &values), kv_heads, head_dim, scales)?,
+                    cache,
                     keys: self.input_buffer(node.inputs[1])?,
                     values: self.input_buffer(node.inputs[2])?,
                     metadata: self.metadata,
@@ -172,17 +141,15 @@ impl Capture<'_> {
                 },
             )
             .map_err(error)?;
-        self.record_prefill_decode(node, output, keys, values, scales)
+        self.record_prefill_decode(node, output, cache)
     }
 
-    fn record_prefill_decode<E: DType + Element<Marker: KvElement>>(
+    fn record_prefill_decode(
         &mut self,
         node: &TensorNode,
         output: &SlotMemory,
-        keys: Tensor<E>,
-        values: Tensor<E>,
-        scales: [f32; 2],
-    ) -> AttentionResult<E> {
+        cache: KvCache<'_>,
+    ) -> Result<(), DeviceError> {
         let TensorOp::Attention {
             query_heads,
             kv_heads,
@@ -200,7 +167,7 @@ impl Capture<'_> {
         let buffers = DecodeBuffers {
             output: buffer(output)?,
             query: self.input_buffer(node.inputs[0])?,
-            cache: kv_cache((&keys, &values), kv_heads, head_dim, scales)?,
+            cache,
             metadata: self.metadata,
             table: self.table,
         };
@@ -208,27 +175,25 @@ impl Capture<'_> {
         if let Some((mma, variant)) = self.attention.prefill_mma(node.outputs[0], lanes) {
             if mma.accepts(&buffers, geometry, window) {
                 mma.record(&recording, buffers, geometry, window, variant)?;
-                return Ok((keys, values));
+                return Ok(());
             }
             tracing::info!(target: "infer::capture", lanes, "selected MMA does not fit this pool");
         }
         if let Some(oxide) = self.attention.prefill_oxide(node.outputs[0], lanes) {
             if oxide.accepts(&buffers, geometry) {
                 oxide.record(&recording, buffers, geometry, window)?;
-                return Ok((keys, values));
+                return Ok(());
             }
             tracing::info!(target: "infer::capture", lanes, "selected SIMT does not fit this pool");
         }
-        self.record_prefill_legacy(node, buffer(output)?, keys, values, scales)
+        self.record_prefill_legacy(node, buffer(output)?, cache)
     }
-    fn record_prefill_legacy<E: DType + Element<Marker: KvElement>>(
+    fn record_prefill_legacy(
         &self,
         node: &TensorNode,
         output: Buffer<'_, f32>,
-        keys: Tensor<E>,
-        values: Tensor<E>,
-        scales: [f32; 2],
-    ) -> AttentionResult<E> {
+        cache: KvCache<'_>,
+    ) -> Result<(), DeviceError> {
         let TensorOp::Attention {
             query_heads,
             kv_heads,
@@ -252,21 +217,22 @@ impl Capture<'_> {
         let buffers = DecodeBuffers {
             output,
             query: self.input_buffer(node.inputs[0])?,
-            cache: kv_cache((&keys, &values), kv_heads, head_dim, scales)?,
+            cache,
             metadata: self.metadata,
             table: self.table,
         };
+        let fp8 = matches!(cache.buffers, KvBuffers::Fp8 { .. });
         let recording = Recording::scope(self.scope);
         let attention = &self.weights.kernels.attention;
         // Query/head axes remain separate so each CTA addresses its own KV head.
         // Selection was measured and independently checked before graph capture.
         self.attention
-            .prefill_query_tile(node.outputs[0], lanes, E::DTYPE == f8e4m3fn::DTYPE)
+            .prefill_query_tile(node.outputs[0], lanes, fp8)
             .map_or_else(
                 || attention.decode_prefill(&recording, plan, buffers),
                 |tile| attention.decode_prefill_tiled(&recording, plan, tile, buffers),
             )
             .map_err(error)?;
-        Ok((keys, values))
+        Ok(())
     }
 }

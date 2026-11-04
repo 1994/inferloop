@@ -8,15 +8,13 @@ use super::{
 use crate::constants::{ATTENTION_SPLIT_THRESHOLD, KV_BLOCK_TOKENS};
 use crate::device::{CudaDevice, DeviceProfile, device_error};
 use crate::tuning::attention::decode::{GROUPED_ROWS, grouped_parts_for, partitions};
-use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
-    AppendBuffers, DecodeBuffers, DecodePlan, KvElement, LanesAppendPlan, LanesDecodePlan,
-    Partials, Recording,
+    AppendBuffers, DecodeBuffers, DecodePlan, KvCache, LanesAppendPlan, LanesDecodePlan, Partials,
+    Recording,
 };
 use infer_cuda_kernels::tile::runtime::Allocation;
-use infer_cuda_kernels::tile::runtime::Element;
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
@@ -25,8 +23,6 @@ use std::result::Result as StdResult;
 
 /// Elements of one split's `numerator`, `maxima` and `sums` rows beyond the head dimension.
 const PARTIAL_ROW_SCALARS: usize = 2;
-/// Keys and values of an unquantized attention state.
-const KV_TENSORS: usize = 2;
 
 /// Scratch of one geometry's lane-batched splits.
 pub struct Buffers {
@@ -111,9 +107,6 @@ impl Workspace {
     }
 }
 
-/// The restored KV pair and the outcome of recording against it.
-type Recorded<E> = (Tensor<E>, Tensor<E>, StdResult<(), DeviceError>);
-
 #[cfg(test)]
 std::thread_local! {
     static RECORDED: Cell<usize> = const { Cell::new(0) };
@@ -124,30 +117,21 @@ pub fn recorded() -> usize {
     RECORDED.get()
 }
 
-/// One KV pair and how a launch addresses it.
-struct Cache<E: DType> {
-    keys: Tensor<E>,
-    values: Tensor<E>,
-    scales: [f32; 2],
-    /// One row per lane of a pooled root, rather than pages shared by every lane.
-    per_lane: bool,
-}
-
 impl BatchBuilder<'_> {
     /// False leaves the node to one launch per lane.
     pub(super) fn record_lanes_attention(
-        &mut self,
+        &self,
         scope: &Scope,
         node: &TensorNode,
         arena: &ActivationArena,
-        caches: &mut [super::fp8_cache::Fp8Caches],
+        caches: &[super::fp8_cache::Fp8Caches],
         metadata: &Allocation<i32>,
     ) -> StdResult<bool, DeviceError> {
         let TensorOp::Attention {
             query_heads,
+            kv_heads,
             head_dim,
             window,
-            ..
         } = node.op
         else {
             return Ok(false);
@@ -169,81 +153,47 @@ impl BatchBuilder<'_> {
             return Ok(false);
         }
         if let Some(scales) = self.weights.kv_scales.get(&state).copied() {
-            // Only paged slots alias one cache; separate slot caches keep their own launches.
-            let Some((first, rest)) = caches.split_first_mut() else {
+            // Only paged slots share one cache; separate slot caches keep their own launches.
+            let Some((first, rest)) = caches.split_first() else {
                 return Ok(false);
             };
-            let pointer = |cache: &(Tensor<f8e4m3fn>, Tensor<f8e4m3fn>)| {
-                cache.0.device_pointer().cu_deviceptr()
-            };
-            let Some(shared) = first.get(&state).map(pointer) else {
+            let Some(shared) = first.get(&state) else {
                 return Ok(false);
             };
-            if rest
-                .iter()
-                .any(|slot| slot.get(&state).map(pointer) != Some(shared))
-            {
+            if rest.iter().any(|slot| {
+                !slot
+                    .get(&state)
+                    .is_some_and(|cache| cache.same_memory(shared))
+            }) {
                 return Ok(false);
             }
-            let Some((keys, values)) = first.remove(&state) else {
-                return Ok(false);
-            };
-            let cache = Cache {
-                keys,
-                values,
-                scales,
-                per_lane: false,
-            };
-            let (keys, values, recorded) =
-                self.record_lanes::<f8e4m3fn>(scope, node, arena, cache, metadata)?;
-            // A per-lane capture leaves each slot's views in the head-major shape state copies
-            // compare; this launch records none of them, so shape them here.
-            let shape = keys.shape().to_vec();
-            let dims = shape
-                .iter()
-                .map(|&dim| usize::try_from(dim).map_err(error))
-                .collect::<StdResult<Vec<_>, _>>()?;
-            first.insert(state, (keys, values));
-            for slot in rest {
-                let (keys, values) = slot
-                    .remove(&state)
-                    .ok_or_else(|| error("pooled attention slot cache"))?;
-                slot.insert(state, (keys.reshape(&dims)?, values.reshape(&dims)?));
-            }
-            return recorded.map(|()| true);
+            self.record_lanes(scope, node, arena, (shared.cache(scales), false), metadata)?;
+            return Ok(true);
         }
-        let mut owned = self
+        let owned = self
             .states
-            .remove(&state)
+            .get(&state)
             .ok_or_else(|| error("pooled attention state"))?;
-        if owned.len() != KV_TENSORS {
+        let [keys, values] = owned.as_slice() else {
             return Err(error("pooled attention state layout"));
-        }
-        let keys = owned.remove(0);
-        let values = owned.remove(0);
-        let cache = Cache {
-            keys,
-            values,
-            scales: [1.0, 1.0],
-            per_lane: true,
         };
-        let (keys, values, recorded) =
-            self.record_lanes::<f32>(scope, node, arena, cache, metadata)?;
-        owned.push(keys);
-        owned.push(values);
-        self.states.insert(state, owned);
-        recorded.map(|()| true)
+        // A pooled root holds one row of every head per lane.
+        let groups = arena.lanes() * kv_heads;
+        let cache = kv_cache((keys, values), groups, head_dim, [1.0, 1.0])?;
+        self.record_lanes(scope, node, arena, (cache, true), metadata)?;
+        Ok(true)
     }
 
-    /// Returns the KV whatever the recording did, so its owner can restore it.
-    fn record_lanes<E: DType + Element<Marker: KvElement>>(
+    /// Record the lane-batched append and decode over `cache`; `per_lane` when the cache holds
+    /// one row per lane of a pooled root rather than pages every lane shares.
+    fn record_lanes(
         &self,
         scope: &Scope,
         node: &TensorNode,
         arena: &ActivationArena,
-        cache: Cache<E>,
+        (cache, per_lane): (KvCache<'_>, bool),
         metadata: &Allocation<i32>,
-    ) -> StdResult<Recorded<E>, DeviceError> {
+    ) -> StdResult<(), DeviceError> {
         let TensorOp::Attention {
             query_heads,
             kv_heads,
@@ -253,94 +203,71 @@ impl BatchBuilder<'_> {
         else {
             return Err(error("expected attention"));
         };
-        let Cache {
-            keys,
-            values,
-            scales,
-            per_lane,
-        } = cache;
         let lanes = arena.lanes();
         let table = self
             .table_root
             .ok_or_else(|| error("pooled attention tables"))?;
-        let groups = if per_lane { lanes * kv_heads } else { kv_heads };
-        let rows = keys.size() / (groups * head_dim);
-        let original_kv = keys
-            .shape()
-            .iter()
-            .map(|&dim| usize::try_from(dim).map_err(error))
-            .collect::<StdResult<Vec<_>, _>>()?;
-        let keys = keys.reshape(&[groups, rows, head_dim])?;
-        let values = values.reshape(&[groups, rows, head_dim])?;
-        let recorded = (|| -> StdResult<(), DeviceError> {
-            let work = self
-                .lanes_attention
-                .as_deref()
-                .and_then(|work| work.0.get(&(query_heads, head_dim)))
-                .ok_or_else(|| error("pooled attention scratch"))?;
-            let cache = kv_cache((&keys, &values), groups, head_dim, scales)?;
-            let attention = &self.weights.kernels.attention;
-            let recording = Recording::scope(scope);
-            let table_rows = table.rows;
-            attention
-                .append_lanes(
-                    &recording,
-                    LanesAppendPlan {
-                        kv_heads,
-                        lanes,
-                        per_lane,
-                        table_rows,
-                    },
-                    AppendBuffers {
-                        cache,
-                        keys: buffer(arena.get(node.inputs[1]).map_err(error)?)?,
-                        values: buffer(arena.get(node.inputs[2]).map_err(error)?)?,
-                        metadata: buffer(metadata)?,
-                        table: table.buffer,
-                    },
-                )
-                .map_err(error)?;
-            attention
-                .decode_lanes(
-                    &recording,
-                    LanesDecodePlan {
-                        decode: DecodePlan {
-                            heads: query_heads,
-                            kv_heads,
-                            dim: head_dim,
-                            window: i32::try_from(window.unwrap_or(0)).map_err(error)?,
-                            block: KV_BLOCK_TOKENS,
-                        },
-                        parts: work.parts,
-                        lanes,
-                        per_lane,
-                        table_rows,
-                    },
-                    Partials {
-                        numerator: buffer(&work.numerator)?,
-                        maxima: buffer(&work.maxima)?,
-                        sums: buffer(&work.sums)?,
-                    },
-                    DecodeBuffers {
-                        output: buffer(arena.get(node.outputs[0]).map_err(error)?)?,
-                        query: buffer(arena.get(node.inputs[0]).map_err(error)?)?,
-                        cache,
-                        metadata: buffer(metadata)?,
-                        table: table.buffer,
-                    },
-                )
-                .map_err(error)?;
-            #[cfg(test)]
-            RECORDED.set(RECORDED.get() + 1);
-            Ok(())
-        })();
-        if per_lane {
-            return Ok((
-                keys.reshape(&original_kv)?,
-                values.reshape(&original_kv)?,
-                recorded,
-            ));
+        if cache.rows().is_none() {
+            return Err(error("pooled attention cache layout"));
         }
-        Ok((keys, values, recorded))
+        let work = self
+            .lanes_attention
+            .as_deref()
+            .and_then(|work| work.0.get(&(query_heads, head_dim)))
+            .ok_or_else(|| error("pooled attention scratch"))?;
+        let attention = &self.weights.kernels.attention;
+        let recording = Recording::scope(scope);
+        let table_rows = table.rows;
+        attention
+            .append_lanes(
+                &recording,
+                LanesAppendPlan {
+                    kv_heads,
+                    lanes,
+                    per_lane,
+                    table_rows,
+                },
+                AppendBuffers {
+                    cache,
+                    keys: buffer(arena.get(node.inputs[1]).map_err(error)?)?,
+                    values: buffer(arena.get(node.inputs[2]).map_err(error)?)?,
+                    metadata: buffer(metadata)?,
+                    table: table.buffer,
+                },
+            )
+            .map_err(error)?;
+        attention
+            .decode_lanes(
+                &recording,
+                LanesDecodePlan {
+                    decode: DecodePlan {
+                        heads: query_heads,
+                        kv_heads,
+                        dim: head_dim,
+                        window: i32::try_from(window.unwrap_or(0)).map_err(error)?,
+                        block: KV_BLOCK_TOKENS,
+                    },
+                    parts: work.parts,
+                    lanes,
+                    per_lane,
+                    table_rows,
+                },
+                Partials {
+                    numerator: buffer(&work.numerator)?,
+                    maxima: buffer(&work.maxima)?,
+                    sums: buffer(&work.sums)?,
+                },
+                DecodeBuffers {
+                    output: buffer(arena.get(node.outputs[0]).map_err(error)?)?,
+                    query: buffer(arena.get(node.inputs[0]).map_err(error)?)?,
+                    cache,
+                    metadata: buffer(metadata)?,
+                    table: table.buffer,
+                },
+            )
+            .map_err(error)?;
+        #[cfg(test)]
+        RECORDED.set(RECORDED.get() + 1);
+        Ok(())
     }
 }

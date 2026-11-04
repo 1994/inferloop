@@ -4,8 +4,9 @@
 //! through a single graph replay per step.
 use super::{
     batch::{BatchOutput, SlotDecodeGraph, SlotLane, States},
+    buffers::Operand,
     buffers::RowMajor,
-    fp8_cache::{Fp8Caches, Fp8Memory, allocate_memory},
+    fp8_cache::{self, Fp8Caches, KvLayout, KvState},
     program::ProgramWeights,
     slot_states::SlotStates,
     slot_verify::{SlotVerifyGraph, SlotVerifyLane},
@@ -21,7 +22,7 @@ use crate::device::{CudaDevice, DeviceProfile, device_error};
 use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
-use infer_cuda_kernels::contract::Owner;
+use infer_cuda_kernels::contract::{Owner, Width};
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_cuda_kernels::tile::runtime::{Element, Staging};
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
@@ -189,7 +190,7 @@ type LaneInputs = (
 );
 type SlotStorage = (SlotStates, Fp8Slots, Tables);
 /// Each slot's FP8 KV caches and the allocations they view.
-type Fp8Slots = (Vec<Fp8Caches>, Vec<Fp8Memory>);
+type Fp8Slots = Vec<Fp8Caches>;
 /// Each slot's block table row and the allocation they share, the whole `[slots, blocks]` table.
 struct Tables {
     rows: Vec<Allocation<i32>>,
@@ -269,18 +270,45 @@ fn gather_kv<T: DType + Element>(
     let [heads, physical, dim] = shape[..] else {
         return Err(Error::invariant("slot export KV layout"));
     };
+    let dst = api::zeros::<T>(&[heads, rows, dim])
+        .sync_on(&device.stream)
+        .map_err(device_error)?;
+    gather_kv_into(&dst, src, [heads, physical, dim], (rows, blocks), device)?;
+    Ok(dst)
+}
+
+/// [`gather_kv`] into a new FP8 cache of `rows` positions.
+fn gather_fp8(
+    src: &KvState<f8e4m3fn>,
+    rows: usize,
+    blocks: Option<&[i32]>,
+    device: &CudaDevice,
+) -> Result<KvState<f8e4m3fn>> {
+    let dst = KvState::zeros(device, KvLayout { rows, ..src.layout })?;
+    for (to, from) in [(&dst.keys, &src.keys), (&dst.values, &src.values)] {
+        gather_kv_into(to, from, src.layout.dims(), (rows, blocks), device)?;
+    }
+    Ok(dst)
+}
+
+/// Copy the first `rows` positions of `src`, laid out `[heads, physical, dim]`, into `dst`,
+/// laid out `[heads, rows, dim]`.
+fn gather_kv_into<M: Width, D: Operand<Marker = M> + ?Sized, S: Operand<Marker = M> + ?Sized>(
+    dst: &D,
+    src: &S,
+    [heads, physical, dim]: [usize; KV_STATE_DIMS],
+    (rows, blocks): (usize, Option<&[i32]>),
+    device: &CudaDevice,
+) -> Result<()> {
     if blocks.is_none() && physical < rows
         || blocks.is_some_and(|blocks| rows.div_ceil(KV_BLOCK_TOKENS) > blocks.len())
     {
         return Err(Error::invariant("slot export beyond the slot's KV"));
     }
-    let dst = api::zeros::<T>(&[heads, rows, dim])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
     for head in 0..heads {
         match blocks {
             None => device.copy_d2d_at(
-                &dst,
+                dst,
                 src,
                 head * rows * dim,
                 head * physical * dim,
@@ -296,7 +324,7 @@ fn gather_kv<T: DType + Element>(
                     let count = KV_BLOCK_TOKENS.min(rows - start);
                     let block = usize::try_from(block).map_err(device_error)?;
                     device.copy_d2d_at(
-                        &dst,
+                        dst,
                         src,
                         (head * rows + start) * dim,
                         (head * physical + block * KV_BLOCK_TOKENS) * dim,
@@ -306,7 +334,7 @@ fn gather_kv<T: DType + Element>(
             }
         }
     }
-    Ok(dst)
+    Ok(())
 }
 
 /// Device bytes one slot's state tensors occupy: f32 states plus fp8 KV caches.
@@ -316,11 +344,7 @@ fn state_bytes(states: &States, fp8: &Fp8Caches) -> u64 {
         .flatten()
         .map(|tensor| tensor.size() as u64)
         .sum();
-    let packed_elements: u64 = fp8
-        .values()
-        .map(|(keys, values)| (keys.size() + values.size()) as u64)
-        .sum();
-    float_elements.saturating_mul(F32_BYTES as u64) + packed_elements
+    float_elements.saturating_mul(F32_BYTES as u64) + fp8_cache::bytes(fp8)
 }
 
 /// Free-slot stack and the pool's lifetime lease counters.
@@ -367,7 +391,7 @@ impl SlotLedger {
 /// whole per-slot capacity.
 struct Paging {
     /// Allocations of the shared caches; each slot's entry in `SlotPool::fp8` views them.
-    shared: Fp8Memory,
+    shared: Fp8Caches,
     /// The shared page ledger; this pool only maps its leases to device rows.
     pages: BlockPool,
     leases: Vec<Vec<BlockLease>>,
@@ -423,8 +447,6 @@ pub struct SlotPool {
     _narrow_roots: Vec<States>,
     states: SlotStates,
     fp8: Vec<Fp8Caches>,
-    /// The allocations each slot's caches view, so slot views can hold their memory.
-    fp8_memory: Vec<Fp8Memory>,
     _lanes_attention: super::attention_lanes::Workspace,
     /// Per-slot identity block tables; declared with the states so they outlive the captures.
     tables: Vec<Allocation<i32>>,
@@ -554,7 +576,7 @@ impl SlotPool {
         let headroom = device.profile()?.device_headroom_bytes();
         let budget = device.allocatable_memory_bytes()?.saturating_sub(headroom);
         let paging = Self::paging(device, graph, weights, (width, capacity), kv_tokens)?;
-        let (mut states, (mut fp8, fp8_memory), tables) = Self::allocate_slots(
+        let (mut states, mut fp8, tables) = Self::allocate_slots(
             device,
             graph,
             weights,
@@ -624,7 +646,6 @@ impl SlotPool {
             _narrow_roots: narrow_roots,
             states,
             fp8,
-            fp8_memory,
             tables: tables.rows,
             table_memory: tables.memory,
             table_staging: PinnedUpload::slots(device, capacity.div_ceil(KV_BLOCK_TOKENS), width)?,
@@ -670,7 +691,7 @@ impl SlotPool {
         paging: Option<&Paging>,
         budget: u64,
     ) -> Result<SlotStorage> {
-        let paging_bytes = paging.map_or(0, |paging| paging.shared.bytes());
+        let paging_bytes = paging.map_or(0, |paging| fp8_cache::bytes(&paging.shared));
         let states = SlotStates::allocate(
             device,
             graph,
@@ -679,16 +700,14 @@ impl SlotPool {
             budget.saturating_sub(paging_bytes),
         )?;
         let mut fp8 = Vec::with_capacity(width);
-        let mut fp8_memory = Vec::with_capacity(width);
         let mut tables = Vec::with_capacity(width);
         let mut bytes = paging_bytes;
         for slot_states in states.iter() {
             // A paged slot views the shared caches; its table selects its blocks.
-            let memory = match paging {
+            let slot_fp8 = match paging {
                 Some(paging) => paging.shared.clone(),
-                None => allocate_memory(device, graph, capacity, &weights.kv_scales)?,
+                None => fp8_cache::allocate(device, graph, capacity, &weights.kv_scales)?,
             };
-            let slot_fp8 = memory.views()?;
             let slot_bytes = paging.map_or_else(
                 || state_bytes(slot_states, &slot_fp8),
                 |_| state_bytes(slot_states, &Fp8Caches::new()),
@@ -703,7 +722,6 @@ impl SlotPool {
                 ));
             }
             fp8.push(slot_fp8);
-            fp8_memory.push(memory);
         }
         // Step 1 of the KV refactor: a per-slot identity mapping over that slot's own cache.
         // A paged pool fills the table from its shared blocks when the slot is assigned.
@@ -711,7 +729,7 @@ impl SlotPool {
         tables.extend(memory.rows(width)?);
         Ok((
             states,
-            (fp8, fp8_memory),
+            fp8,
             Tables {
                 rows: tables,
                 memory,
@@ -887,12 +905,11 @@ impl SlotPool {
         &self,
         slot: usize,
     ) -> Result<(States, Fp8Caches, Allocation<i32>)> {
-        let memory = self.fp8_memory.get(slot);
-        let caches = self.fp8.get(slot);
-        let (Some(memory), Some(caches)) = (memory, caches) else {
-            return Err(Error::invalid("slot view index"));
-        };
-        let fp8 = memory.views_like(caches)?;
+        let fp8 = self
+            .fp8
+            .get(slot)
+            .cloned()
+            .ok_or_else(|| Error::invalid("slot view index"))?;
         let state_views = self.states.lane(slot)?;
         let blocks = self.table_memory.len() / self.width();
         let table = self
@@ -955,7 +972,7 @@ impl SlotPool {
     pub(crate) fn kv_views(&self) -> Result<Option<Fp8Caches>> {
         self.paging
             .as_ref()
-            .map(|paging| paging.shared.views())
+            .map(|paging| Ok(paging.shared.clone()))
             .transpose()
     }
 
@@ -973,7 +990,7 @@ impl SlotPool {
         };
         let block = KV_BLOCK_TOKENS;
         let blocks = tokens.div_ceil(block).max(capacity.div_ceil(block));
-        let shared = allocate_memory(device, graph, blocks * block, &weights.kv_scales)?;
+        let shared = fp8_cache::allocate(device, graph, blocks * block, &weights.kv_scales)?;
         Ok(Some(Paging {
             shared,
             pages: BlockPool::new(blocks)?,
@@ -1139,16 +1156,10 @@ impl SlotPool {
                     out.insert(*id, copies);
                 }
                 SlotCopy::KvFp8 => {
-                    let (keys, values) = caches
+                    let cache = caches
                         .get(id)
                         .ok_or_else(|| Error::invariant("slot export fp8 cache"))?;
-                    out_fp8.insert(
-                        *id,
-                        (
-                            gather_kv(keys, rows, blocks, device)?,
-                            gather_kv(values, rows, blocks, device)?,
-                        ),
-                    );
+                    out_fp8.insert(*id, gather_fp8(cache, rows, blocks, device)?);
                 }
                 SlotCopy::Whole => {
                     let tensors = states
@@ -1400,52 +1411,40 @@ impl SlotPool {
     /// into a paged slot's blocks, block by block. A slot-resident program's views are the
     /// slot's own blocks and move nothing.
     fn scatter_kv_fp8(
-        dst: &mut Fp8Caches,
+        dst: &Fp8Caches,
         src: &Fp8Caches,
         id: TensorId,
         (rows, blocks): (usize, &[i32]),
         device: &CudaDevice,
     ) -> Result<()> {
-        let (src_keys, src_values) = src
+        let from = src
             .get(&id)
             .ok_or_else(|| Error::invariant("slot bind source fp8 cache"))?;
-        let (dst_keys, dst_values) = dst
-            .get_mut(&id)
+        let to = dst
+            .get(&id)
             .ok_or_else(|| Error::invariant("slot bind target fp8 cache"))?;
         let block = KV_BLOCK_TOKENS;
         if rows.div_ceil(block) > blocks.len() {
             return Err(Error::invariant("slot bind beyond assigned blocks"));
         }
-        for (dst, src) in [(dst_keys, src_keys), (dst_values, src_values)] {
-            if same_storage(dst, src) {
-                continue;
-            }
-            let dims = |tensor: &Tensor<f8e4m3fn>| -> Result<Vec<usize>> {
-                tensor
-                    .shape()
-                    .iter()
-                    .map(|&dim| usize::try_from(dim).map_err(device_error))
-                    .collect()
-            };
-            let (dst_dims, src_dims) = (dims(dst)?, dims(src)?);
-            if dst_dims.len() != KV_STATE_DIMS
-                || src_dims.len() != KV_STATE_DIMS
-                || dst_dims[0] != src_dims[0]
-                || dst_dims[2] != src_dims[2]
-                || src_dims[1] < rows
-            {
-                return Err(Error::invariant("slot bind paged KV layout"));
-            }
-            let dim = dst_dims[2];
-            for head in 0..dst_dims[0] {
+        if to.same_memory(from) {
+            return Ok(());
+        }
+        let (target, source) = (to.layout, from.layout);
+        if (target.heads, target.dim) != (source.heads, source.dim) || source.rows < rows {
+            return Err(Error::invariant("slot bind paged KV layout"));
+        }
+        let dim = target.dim;
+        for (dst, src) in [(&to.keys, &from.keys), (&to.values, &from.values)] {
+            for head in 0..target.heads {
                 for (index, &physical) in blocks.iter().enumerate().take(rows.div_ceil(block)) {
                     let count = block.min(rows - index * block);
                     let physical = usize::try_from(physical).map_err(device_error)?;
                     device.copy_d2d_at(
                         dst,
                         src,
-                        (head * dst_dims[1] + physical * block) * dim,
-                        (head * src_dims[1] + index * block) * dim,
+                        (head * target.rows + physical * block) * dim,
+                        (head * source.rows + index * block) * dim,
                         count * dim,
                     )?;
                 }
@@ -1456,23 +1455,23 @@ impl SlotPool {
 
     /// fp8 twin of [`Self::copy_kv_states`].
     fn copy_kv_fp8(
-        dst: &mut Fp8Caches,
+        dst: &Fp8Caches,
         src: &Fp8Caches,
         id: TensorId,
         rows: usize,
         slot_capacity: usize,
         device: &CudaDevice,
     ) -> Result<()> {
-        let (src_keys, src_values) = src
+        let from = src
             .get(&id)
             .ok_or_else(|| Error::invariant("slot bind source fp8 cache"))?;
-        let (dst_keys, dst_values) = dst
-            .get_mut(&id)
+        let to = dst
+            .get(&id)
             .ok_or_else(|| Error::invariant("slot bind target fp8 cache"))?;
-        for (dst, src) in [(dst_keys, src_keys), (dst_values, src_values)] {
-            Self::copy_kv_tensor(dst, src, rows, slot_capacity, device)?;
+        if to.layout.rows != slot_capacity {
+            return Err(Error::invariant("slot bind KV layout"));
         }
-        Ok(())
+        to.copy_prefix_from(device, from, rows)
     }
 
     /// One KV tensor's covered rows. Captured KV state is head-major

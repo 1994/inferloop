@@ -1,6 +1,7 @@
 //! Same weights, width, convolution and GEMM policy; only Delta capture differs. The default
 //! lowering is the BF16 chunked rule, so the comparison is on predictions.
 use crate::resident::DeviceProgram;
+use crate::resident::fp8_cache::KvState;
 use crate::{
     device::CudaDevice,
     loading::{LoadOptions, LoadedModel},
@@ -193,11 +194,12 @@ fn finite_states(loaded: &LoadedModel, program: &DeviceProgram, label: &str) {
             finite(&values, label);
         }
     }
-    for (keys, values) in program.fp8_states().values() {
+    for KvState { keys, values, .. } in program.fp8_states().values() {
         for tensor in [keys, values] {
             let values = loaded
                 .device()
-                .read_borrowed(tensor)
+                .runtime()
+                .read(tensor)
                 .expect("FP8 state download");
             assert!(
                 values.iter().all(|x| x.0 & 127 != 127),

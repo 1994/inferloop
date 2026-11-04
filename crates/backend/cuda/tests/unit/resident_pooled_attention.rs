@@ -121,7 +121,7 @@ struct Fixture {
     queries: Arc<Tensor<f32>>,
     inputs: [Arc<Tensor<f32>>; 2],
     original: [Tensor<f8e4m3fn>; 2],
-    candidate: [Tensor<f8e4m3fn>; 2],
+    candidate: [Allocation<f8e4m3fn>; 2],
 }
 
 impl Fixture {
@@ -186,7 +186,10 @@ impl Fixture {
             queries,
             inputs: [input(0)?, input(13)?],
             original: [cache(0)?, cache(11)?],
-            candidate: [cache(0)?, cache(11)?],
+            candidate: [
+                Allocation::adopt(Arc::new(cache(0)?))?,
+                Allocation::adopt(Arc::new(cache(11)?))?,
+            ],
         })
     }
 
@@ -288,7 +291,7 @@ impl Fixture {
 
     fn check_cache(&self, device: &CudaDevice, position: i32, window: i32) -> TestResult {
         for (actual, expected) in self.candidate.iter().zip(&self.original) {
-            let actual = device.read_borrowed(actual)?;
+            let actual = device.runtime().read(actual)?;
             let expected = device.read_borrowed(expected)?;
             for (index, (a, b)) in actual.iter().zip(&expected).enumerate() {
                 assert_eq!(

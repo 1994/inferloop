@@ -1,6 +1,6 @@
 //! Same-checkpoint output and complete recurrent/KV-state gate for Rust SIMT attention.
 use super::{LoadOptions, LoadedModel, quant_reuse_model_tests as reference};
-use crate::device::device_error;
+use crate::resident::fp8_cache::{KvLayout, KvState, kv_geometry};
 use crate::{
     device::CudaDevice,
     resident::{
@@ -8,7 +8,6 @@ use crate::{
         fp8_cache::Fp8Caches,
     },
 };
-use cutile::prelude::*;
 use infer_core::{Error, ModelId, Result};
 use std::{env::var, fs::read};
 
@@ -124,14 +123,13 @@ fn pooled_caches(loaded: &LoadedModel) -> Result<Fp8Caches> {
     let mut result = Fp8Caches::new();
     for spec in &loaded.graph.tensors {
         if loaded.weights.kv_scales.contains_key(&spec.id) {
-            let shape = [12288 * spec.shape[1]];
-            let keys = api::zeros(&shape)
-                .sync_on(&loaded.device.stream)
-                .map_err(device_error)?;
-            let values = api::zeros(&shape)
-                .sync_on(&loaded.device.stream)
-                .map_err(device_error)?;
-            result.insert(spec.id, (keys, values));
+            let (heads, dim) = kv_geometry(&loaded.graph, spec.id)?;
+            let layout = KvLayout {
+                heads,
+                rows: 12288,
+                dim,
+            };
+            result.insert(spec.id, KvState::zeros(&loaded.device, layout)?);
         }
     }
     Ok(result)

@@ -320,10 +320,7 @@ fn retained_tensor_bytes(
         .flatten()
         .map(|t| t.size() as u64 * F32_BYTES as u64)
         .sum::<u64>();
-    let packed_bytes = fp8
-        .values()
-        .map(|(k, v)| (k.size() + v.size()) as u64)
-        .sum::<u64>();
+    let packed_bytes = super::fp8_cache::bytes(fp8);
     let recurrent = graph
         .tensors
         .iter()
@@ -472,11 +469,7 @@ impl DeviceProgram {
             .flatten()
             .map(|t| t.size() as u64 * F32_BYTES as u64)
             .sum::<u64>();
-        let packed_bytes = self
-            .fp8_states
-            .values()
-            .map(|(k, v)| (k.size() + v.size()) as u64)
-            .sum::<u64>();
+        let packed_bytes = super::fp8_cache::bytes(&self.fp8_states);
         let prompt = retained_prompt_lanes(&self.prompts);
         self.reclaimable_bytes =
             state_bytes + packed_bytes + self.activation_bytes as u64 * (1 + prompt) as u64;
@@ -648,13 +641,15 @@ impl DeviceProgram {
                 copy_prefix(device, dst, src, kv)?;
             }
         }
-        for (id, (keys, values)) in &mut self.fp8_states {
-            let (from_keys, from_values) = source
+        for (id, state) in &self.fp8_states {
+            let from = source
                 .fp8_states
                 .get(id)
                 .ok_or_else(|| Error::invariant("program state copy source"))?;
-            copy_prefix(device, keys, from_keys, Some((rows, self.capacity)))?;
-            copy_prefix(device, values, from_values, Some((rows, self.capacity)))?;
+            if state.layout != from.layout || state.layout.rows != self.capacity {
+                return Err(Error::invariant("program KV copy layout"));
+            }
+            state.copy_prefix_from(device, from, rows)?;
         }
         // Paged sequences share KV storage and differ in their block tables.
         if self.table.len() != source.table.len() {

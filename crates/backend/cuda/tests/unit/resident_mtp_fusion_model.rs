@@ -1,6 +1,7 @@
 //! Real MTP2 gate: independent default FC/GDN target and draft versus original captures.
 //! Both target timelines compare complete hidden, vocabulary and actual F32/FP8 state bits.
 use super::prefix_state::{DraftSnapshot, ProgramSnapshot};
+use crate::resident::fp8_cache::{KvLayout, KvState};
 use crate::tuning::table_path as tuning_table_path;
 use crate::{
     device::{CudaDevice, device_error},
@@ -192,12 +193,12 @@ fn layout(program: &DeviceProgram, graph: &DataflowGraph) {
             assert!(tensor.shape().iter().all(|&dimension| dimension > 0));
         }
     }
-    for (keys, values) in program.fp8_states().values() {
+    for KvState { keys, values, .. } in program.fp8_states().values() {
         assert!(
-            keys.size() > 0 && values.size() > 0,
+            !keys.is_empty() && !values.is_empty(),
             "FP8 state tensor is empty"
         );
-        assert_eq!(keys.shape(), values.shape(), "FP8 key/value shape");
+        assert_eq!(keys.len(), values.len(), "FP8 key/value shape");
     }
     assert!(
         program
@@ -240,13 +241,16 @@ fn compare_programs(
         actual.fp8_states().keys().collect::<Vec<_>>(),
         expected.fp8_states().keys().collect::<Vec<_>>()
     );
-    for (id, (keys, values)) in actual.fp8_states() {
-        let (ref_keys, ref_values) = &expected.fp8_states()[id];
+    for (id, KvState { keys, values, .. }) in actual.fp8_states() {
+        let KvState {
+            keys: ref_keys,
+            values: ref_values,
+            ..
+        } = &expected.fp8_states()[id];
         for (a, b) in [(keys, ref_keys), (values, ref_values)] {
-            assert_eq!(a.shape(), b.shape());
-            assert_eq!(a.size(), b.size());
-            let a = loaded.device().read_borrowed(a)?;
-            let b = loaded.device().read_borrowed(b)?;
+            assert_eq!(a.len(), b.len());
+            let a = loaded.device().runtime().read(a)?;
+            let b = loaded.device().runtime().read(b)?;
             assert_eq!(a.len(), b.len());
             assert!(
                 a.iter().chain(&b).all(|value| value.0 & 127 != 127),
@@ -554,6 +558,17 @@ fn live_ranges<T: DType>(
         .collect())
 }
 
+/// The covered rows of every head of an FP8 cache.
+fn kv_live_ranges(layout: KvLayout, covered: usize) -> Vec<Range<usize>> {
+    assert!(covered <= layout.rows);
+    (0..layout.heads)
+        .map(|head| {
+            let start = head * layout.rows * layout.dim;
+            start..start + covered * layout.dim
+        })
+        .collect()
+}
+
 /// For prefix-replay equality only: hash every recurrent value and every valid head-major KV row.
 /// Stale KV beyond the logical cursor is deliberately not a prefix snapshot.
 fn state_digest(
@@ -578,16 +593,16 @@ fn state_digest(
         }
         result.insert(*id, hashes);
     }
-    for (id, (keys, values)) in program.fp8_states() {
+    for (id, kv) in program.fp8_states() {
         let mut hashes = Vec::new();
-        for tensor in [keys, values] {
-            let values = loaded.device().read_borrowed(tensor)?;
+        for tensor in [&kv.keys, &kv.values] {
+            let values = loaded.device().runtime().read(tensor)?;
             assert!(
                 values.iter().all(|value| value.0 & 127 != 127),
                 "prefix FP8 state finite"
             );
             let mut hash = Sha256::new();
-            for range in live_ranges(tensor, graph, *id, program.position())? {
+            for range in kv_live_ranges(kv.layout, program.position()) {
                 for value in &values[range] {
                     hash.update([value.0]);
                 }

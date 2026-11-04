@@ -3,22 +3,27 @@ use crate::constants::KV_CACHE_RANK;
 use crate::device::asynchronous::block_on;
 use crate::{
     device::{CudaDevice, device_error},
-    resident::{DeviceProgram, attention_states, slot_batch::SlotPool},
+    resident::{
+        DeviceProgram, attention_states,
+        fp8_cache::{Fp8Caches, KvLayout, KvState},
+        slot_batch::SlotPool,
+    },
 };
 use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
-use infer_cuda_kernels::tile::runtime::Element;
+use infer_cuda_kernels::tile::runtime::{Allocation, Element};
 use infer_ir::DataflowGraph;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::mem::forget;
+use std::sync::Arc;
 
 #[derive(Default)]
 pub struct ProgramSnapshot {
     states: BTreeMap<TensorId, Vec<Tensor<f32>>>,
     kv: BTreeSet<TensorId>,
-    fp8: BTreeMap<TensorId, (Tensor<f8e4m3fn>, Tensor<f8e4m3fn>)>,
+    fp8: Fp8Caches,
     position: usize,
     pub bytes: u64,
 }
@@ -70,21 +75,33 @@ impl ProgramSnapshot {
                 states.insert(*id, copies);
             }
             let mut fp8 = BTreeMap::new();
-            for (id, (keys, values)) in live_fp8 {
-                let allocate = async |source: &Tensor<f8e4m3fn>| -> Result<Tensor<f8e4m3fn>> {
-                    let mut shape = dimensions(source)?;
-                    if shape.len() != KV_CACHE_RANK || shape[1] < covered {
-                        return Err(Error::invariant("prefix FP8 KV shape"));
-                    }
-                    shape[1] = covered;
-                    device.run_op(api::zeros::<f8e4m3fn>(&shape)).await
+            for (id, source) in live_fp8 {
+                if source.layout.rows < covered {
+                    return Err(Error::invariant("prefix FP8 KV shape"));
+                }
+                let layout = KvLayout {
+                    rows: covered,
+                    ..source.layout
                 };
-                let keys = allocate(keys).await?;
-                let values = allocate(values).await?;
+                let allocate = async || -> Result<Allocation<f8e4m3fn>> {
+                    let zeros = device
+                        .run_op(api::zeros::<f8e4m3fn>(&[layout.len()]))
+                        .await?;
+                    Allocation::adopt(Arc::new(zeros))
+                };
+                let keys = allocate().await?;
+                let values = allocate().await?;
                 bytes = bytes
-                    .checked_add((keys.size() + values.size()) as u64)
+                    .checked_add((keys.len() + values.len()) as u64)
                     .ok_or_else(|| Error::invalid("prefix byte overflow"))?;
-                fp8.insert(*id, (keys, values));
+                fp8.insert(
+                    *id,
+                    KvState {
+                        keys,
+                        values,
+                        layout,
+                    },
+                );
             }
             // Allocate and validate every destination before queuing copies. Keep the whole
             // destination set alive through the drain even when a later copy fails.
@@ -100,13 +117,10 @@ impl ProgramSnapshot {
                         }
                     }
                 }
-                for (id, (keys, values)) in &mut fp8 {
-                    let (source_keys, source_values) = &live_fp8[id];
-                    for (dst, src) in [(keys, source_keys), (values, source_values)] {
-                        if let Err(error) = copy_state(device, dst, src, true, covered).await {
-                            copied = Err(error);
-                            break 'copies;
-                        }
+                for (id, dst) in &fp8 {
+                    if let Err(error) = copy_kv(device, dst, &live_fp8[id], covered).await {
+                        copied = Err(error);
+                        break 'copies;
                     }
                 }
             }
@@ -131,7 +145,7 @@ impl ProgramSnapshot {
     /// export; `graph` names which states are KV.
     pub(super) fn from_parts(
         states: BTreeMap<TensorId, Vec<Tensor<f32>>>,
-        fp8: BTreeMap<TensorId, (Tensor<f8e4m3fn>, Tensor<f8e4m3fn>)>,
+        fp8: Fp8Caches,
         graph: &DataflowGraph,
         position: usize,
     ) -> Result<Self> {
@@ -139,8 +153,8 @@ impl ProgramSnapshot {
         let float = states.values().flatten().try_fold(0_u64, |sum, tensor| {
             sum.checked_add((tensor.size() * size_of::<f32>()) as u64)
         });
-        let packed = fp8.values().try_fold(0_u64, |sum, (keys, values)| {
-            sum.checked_add((keys.size() + values.size()) as u64)
+        let packed = fp8.values().try_fold(0_u64, |sum, state| {
+            sum.checked_add((state.keys.len() + state.values.len()) as u64)
         });
         let bytes = float
             .zip(packed)
@@ -200,16 +214,15 @@ impl ProgramSnapshot {
                 copy_state(device, dst, src, self.kv.contains(id), covered).await?;
             }
         }
-        let live = program.fp8_states_mut();
+        let live = program.fp8_states();
         if live.len() != self.fp8.len() {
             return Err(Error::invariant("prefix FP8 state set mismatch"));
         }
-        for (id, (keys, values)) in &self.fp8 {
-            let (dst_keys, dst_values) = live
-                .get_mut(id)
+        for (id, cached) in &self.fp8 {
+            let dst = live
+                .get(id)
                 .ok_or_else(|| Error::invariant("prefix FP8 state missing"))?;
-            copy_state(device, dst_keys, keys, true, covered).await?;
-            copy_state(device, dst_values, values, true, covered).await?;
+            copy_kv(device, dst, cached, covered).await?;
         }
         device.fence().await?;
         program.set_position(self.position);
@@ -250,6 +263,21 @@ async fn copy_state<T: DType + Element>(
         return Err(Error::invariant("prefix KV stride mismatch"));
     }
     if let Err(error) = device.copy_head_prefix(dst, src, covered) {
+        device.fence().await?;
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Copy the first `covered` positions of an FP8 cache; a failed enqueue fences first, since
+/// earlier copies of the batch may still be running.
+async fn copy_kv(
+    device: &CudaDevice,
+    dst: &KvState<f8e4m3fn>,
+    src: &KvState<f8e4m3fn>,
+    covered: usize,
+) -> Result<()> {
+    if let Err(error) = dst.copy_prefix_from(device, src, covered) {
         device.fence().await?;
         return Err(error);
     }
