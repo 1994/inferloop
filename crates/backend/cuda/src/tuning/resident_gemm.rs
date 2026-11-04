@@ -11,6 +11,7 @@ use crate::constants::PROMPT_GEMM_TILE_ROWS;
 use crate::constants::QUANT_GEMM_TILE;
 use crate::constants::WIDE_PROMPT_GEMM_TILE_ROWS;
 use crate::device::vendor_fp8::nvfp4::ModelCache;
+use crate::resident::buffers::{RowMajor, tensor_rows};
 use crate::resident::tensor_buffer as buffer;
 use crate::tuning::preparation::driver_build;
 use crate::{
@@ -26,7 +27,7 @@ use cutile::{
 };
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
-    Fp4QuantKind, Fp4QuantPlan, GemmLoop, GemmPlan, Kernels, Recording,
+    Buffer, Fp4Pair, Fp4QuantKind, Fp4QuantPlan, Fp8, GemmLoop, GemmPlan, Kernels, Recording,
 };
 use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::runtime::Graph;
@@ -326,18 +327,13 @@ impl GemmConfig {
     pub(crate) const fn tile(self) -> [usize; 2] {
         [self.tile_m, self.tile_n]
     }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Captured W4A4 operands and scale contract"
-    )]
+    /// Record over the quantized activation codes and scales `q`, into `out`.
     pub(crate) fn record(
         self,
         (contract, scope): (&Kernels, &Scope),
-        weight: &ProjectionWeight,
-        scale: f32,
-        q: &Tensor<f4e2m1fnx2>,
-        qs: &Tensor<f8e4m3fn>,
-        out: &Tensor<f32>,
+        (weight, scale): (&ProjectionWeight, f32),
+        q: (Buffer<'_, Fp4Pair>, Buffer<'_, Fp8>),
+        out: RowMajor<'_, f32>,
         columns: usize,
     ) -> StdResult<(), DeviceError> {
         let ProjectionWeight::Fp4(_, _, global) = weight else {
@@ -345,7 +341,6 @@ impl GemmConfig {
                 "resident tuning requires FP4 weights".into(),
             ));
         };
-        let shape = |axis: usize| usize::try_from(out.shape()[axis]).map_err(device_launch);
         contract
             .projection
             .gemm_fp4(
@@ -355,13 +350,13 @@ impl GemmConfig {
                         MainLoop::Plain => GemmLoop::Plain,
                         MainLoop::Prefetch8 => GemmLoop::Prefetch,
                     },
-                    rows: shape(0)?,
-                    outputs: shape(1)?,
+                    rows: out.rows,
+                    outputs: out.columns,
                     columns,
                     tile: self.tile(),
                 },
-                buffer(out)?,
-                (buffer(q)?, buffer(qs)?),
+                out.buffer,
+                q,
                 weight.weight_ref()?,
                 1.0 / (global * scale),
             )
@@ -944,11 +939,9 @@ impl Captured {
                 .map_err(device_launch)?;
             config.record(
                 (&contract, scope),
-                weight,
-                scale,
-                &packed,
-                &scales,
-                &output,
+                (weight, scale),
+                (buffer(&packed)?, buffer(&scales)?),
+                tensor_rows(&output)?,
                 k,
             )
         })

@@ -1,6 +1,7 @@
 //! Prime only the immediately following token-FP8 projection's row maximum.
 use super::buffers::buffer;
 use super::{ActivationArena, ProgramWeights, capture::error, nvfp4_gemm::Workspace};
+use crate::resident::buffers::tensor_rows;
 use crate::{constants::F32_BYTES, mlp::ProjectionWeight};
 use cutile::prelude::*;
 use infer_ir::{TensorNode, TensorOp};
@@ -97,7 +98,7 @@ pub(super) fn record(
             index + 1,
             input,
             weight,
-            &output,
+            tensor_rows(&output)?,
             (epsilon, offset),
         )
     })();

@@ -109,12 +109,22 @@ impl MlpGraph {
                     buffer(weights.norm.as_ref())?,
                 )
                 .map_err(failed)?;
-            weights
-                .gate
-                .record(&kernels, scope, &gate, &normalized, d, config.tiling)?;
-            weights
-                .up
-                .record(&kernels, scope, &up, &normalized, d, config.tiling)?;
+            weights.gate.record(
+                &kernels,
+                scope,
+                buffer(&gate)?,
+                buffer(&normalized)?,
+                d,
+                config.tiling,
+            )?;
+            weights.up.record(
+                &kernels,
+                scope,
+                buffer(&up)?,
+                buffer(&normalized)?,
+                d,
+                config.tiling,
+            )?;
             let parts = Activation {
                 gate: &gate,
                 up: &up,
@@ -227,8 +237,8 @@ fn record_down(
     weights.down.record(
         kernels,
         scope,
-        down,
-        parts.activated,
+        buffer(down)?,
+        buffer(parts.activated)?,
         columns,
         config.tiling,
     )

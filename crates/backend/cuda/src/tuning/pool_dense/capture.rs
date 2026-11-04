@@ -2,6 +2,8 @@
 use super::{Choice, Key};
 use crate::constants::SMALL_GEMM_TILE;
 use crate::device::{CudaDevice, device_error};
+use crate::mlp::Matrix;
+use crate::resident::buffers::tensor_rows;
 use crate::resident::tensor_buffer;
 use crate::strategy::LinearTiling;
 use crate::tuning::preparation::driver_build;
@@ -33,23 +35,19 @@ pub(super) struct Captured {
     pub(super) graph: Graph,
     output: Tensor<f32>,
     _input: Arc<Tensor<f32>>,
-    _weight: Arc<Tensor<bf16>>,
+    _weight: Matrix<bf16>,
 }
 impl Captured {
     pub(super) fn new(
         device: &CudaDevice,
-        weight: &Arc<Tensor<bf16>>,
+        weight: &Matrix<bf16>,
         shape: ProjectionShape,
         tile: LinearTiling,
         choice: Choice,
     ) -> Result<Self> {
         let [m, n, k] = shape;
-        let [wn, wk] = weight.shape() else {
-            return Err(Error::invalid("pooled dense weight rank"));
-        };
         if !(super::searchable(shape) || choice.prompt_family() && super::prompt_searchable(shape))
-            || usize::try_from(*wn).map_err(device_error)? != n
-            || usize::try_from(*wk).map_err(device_error)? != k
+            || weight.shape() != [n, k]
         {
             return Err(Error::invalid("pooled dense weight geometry"));
         }
@@ -73,7 +71,7 @@ impl Captured {
                 (&kernels, scope),
                 weight,
                 tensor_buffer(input.as_ref())?,
-                &output,
+                tensor_rows(&output)?,
                 k,
                 tile,
             )
@@ -83,7 +81,7 @@ impl Captured {
             graph,
             output,
             _input: input,
-            _weight: Arc::clone(weight),
+            _weight: weight.clone(),
         })
     }
     pub(super) fn run(&self, device: &CudaDevice) -> Result<()> {

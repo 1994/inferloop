@@ -6,6 +6,8 @@ use crate::constants::{
     SMALL_GEMV_MAX_ROWS,
 };
 use crate::device::CudaDevice;
+use crate::mlp::Matrix;
+use crate::resident::buffers::RowMajor;
 use crate::resident::tensor_buffer as buffer;
 use crate::strategy::LinearTiling;
 use crate::tuning::projection_budget::{ProjectionKind, ProjectionShape};
@@ -92,9 +94,9 @@ impl Choice {
     pub(crate) fn record(
         self,
         (contract, scope): (&Kernels, &Scope),
-        weight: &Arc<Tensor<bf16>>,
+        weight: &Matrix<bf16>,
         input: Buffer<'_, f32>,
-        output: &Tensor<f32>,
+        output: RowMajor<'_, f32>,
         columns: usize,
         tile: LinearTiling,
     ) -> StdResult<(), DeviceError> {
@@ -123,23 +125,19 @@ impl Choice {
                 width: NATIVE_WIDE_128,
             },
         };
-        let dimension = |axis: usize| {
-            usize::try_from(output.shape()[axis])
-                .map_err(|error| DeviceError::Internal(error.to_string()))
-        };
         contract
             .projection
             .dense(
                 &Recording::scope(scope),
                 &DenseRowsPlan {
                     kernel,
-                    rows: dimension(0)?,
-                    outputs: dimension(1)?,
+                    rows: output.rows,
+                    outputs: output.columns,
                     columns,
                 },
-                buffer(output)?,
+                output.buffer,
                 input,
-                buffer(weight.as_ref())?,
+                buffer(weight)?,
             )
             .map_err(|error| DeviceError::Internal(error.to_string()))
     }
@@ -186,13 +184,9 @@ pub(crate) struct Binding {
     tile: [usize; 2],
 }
 impl Binding {
-    pub(crate) fn new(
-        weight: &Arc<Tensor<bf16>>,
-        shape: ProjectionShape,
-        tile: LinearTiling,
-    ) -> Self {
+    pub(crate) fn new(weight: &Matrix<bf16>, shape: ProjectionShape, tile: LinearTiling) -> Self {
         Self {
-            weight: Arc::as_ptr(weight) as usize,
+            weight: Arc::as_ptr(weight.tensor()) as usize,
             shape,
             tile: [tile.rows(), tile.columns()],
         }
@@ -236,7 +230,7 @@ pub(crate) const fn prompt_searchable(shape: ProjectionShape) -> bool {
 /// [`select`].
 pub(crate) fn select_prompt(
     device: &CudaDevice,
-    weight: &Arc<Tensor<bf16>>,
+    weight: &Matrix<bf16>,
     shape: ProjectionShape,
     tile: LinearTiling,
     autotune: bool,
@@ -280,7 +274,7 @@ fn proofs() -> &'static Proofs {
 }
 fn verified(
     device: &CudaDevice,
-    weight: &Arc<Tensor<bf16>>,
+    weight: &Matrix<bf16>,
     key: &Key,
     choice: Choice,
 ) -> Result<Choice> {
@@ -288,7 +282,7 @@ fn verified(
     if choice != Choice::Shared {
         return Ok(choice);
     }
-    let binding = (key.clone(), Arc::as_ptr(weight) as usize);
+    let binding = (key.clone(), Arc::as_ptr(weight.tensor()) as usize);
     let accepted = proofs()
         .lock()
         .map_err(|_| Error::invariant("pooled dense proof cache poisoned"))?
@@ -316,7 +310,7 @@ fn verified(
     proofs.insert(
         binding,
         Proof {
-            weight: Arc::downgrade(weight),
+            weight: Arc::downgrade(weight.tensor()),
             accepted,
         },
     );
@@ -325,7 +319,7 @@ fn verified(
 }
 pub(crate) fn select(
     device: &CudaDevice,
-    weight: &Arc<Tensor<bf16>>,
+    weight: &Matrix<bf16>,
     shape: ProjectionShape,
     tile: LinearTiling,
     autotune: bool,
@@ -349,7 +343,7 @@ pub(crate) fn select(
 }
 fn resolve(
     device: &CudaDevice,
-    weight: &Arc<Tensor<bf16>>,
+    weight: &Matrix<bf16>,
     shape: ProjectionShape,
     tile: LinearTiling,
     autotune: bool,
@@ -420,7 +414,7 @@ fn resolve(
 }
 struct Search<'a> {
     device: &'a CudaDevice,
-    weight: &'a Arc<Tensor<bf16>>,
+    weight: &'a Matrix<bf16>,
     key: &'a Key,
     tile: LinearTiling,
     baseline: &'a Captured,
@@ -467,7 +461,7 @@ impl Search<'_> {
 }
 fn tune(
     device: &CudaDevice,
-    weight: &Arc<Tensor<bf16>>,
+    weight: &Matrix<bf16>,
     key: Key,
     session: &ResidentTuningSession,
 ) -> Result<Option<Entry>> {

@@ -59,6 +59,43 @@ pub fn buffer<O: Operand + ?Sized>(memory: &O) -> Result<Buffer<'_, O::Marker>, 
     memory.operand()
 }
 
+/// A row-major `[rows, columns]` operand: a buffer and the matrix shape a launch reads it as.
+#[derive(Clone, Copy)]
+pub struct RowMajor<'a, T> {
+    pub buffer: Buffer<'a, T>,
+    pub rows: usize,
+    pub columns: usize,
+}
+
+impl<'a, T> RowMajor<'a, T> {
+    /// `buffer` read as `rows` rows of `columns`.
+    /// # Errors
+    /// Rejects a shape that does not cover the buffer exactly.
+    pub fn new(buffer: Buffer<'a, T>, rows: usize, columns: usize) -> Result<Self, DeviceError> {
+        if rows.checked_mul(columns) != Some(buffer.len()) {
+            return Err(error("operand rows do not cover the buffer"));
+        }
+        Ok(Self {
+            buffer,
+            rows,
+            columns,
+        })
+    }
+}
+
+/// A rank-2 tensor as the [`RowMajor`] it holds, while launches still receive tensors.
+/// # Errors
+/// Rejects tensors that are not contiguous matrices.
+pub fn tensor_rows<E: DType + Element>(
+    tensor: &Tensor<E>,
+) -> Result<RowMajor<'_, E::Marker>, DeviceError> {
+    let [rows, columns] = tensor.shape() else {
+        return Err(error("operand is not a matrix"));
+    };
+    let dimension = |value: &i32| usize::try_from(*value).map_err(error);
+    RowMajor::new(buffer(tensor)?, dimension(rows)?, dimension(columns)?)
+}
+
 /// A KV pair as a launch addresses it, in `groups` of `[rows, dim]`.
 pub fn kv_cache<'a, E: DType + Element<Marker: KvElement>>(
     (keys, values): (&'a Tensor<E>, &'a Tensor<E>),

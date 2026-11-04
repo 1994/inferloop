@@ -192,8 +192,8 @@ impl ProjectionWeight {
         &self,
         kernels: &Kernels,
         scope: &Scope,
-        out: &Tensor<f32>,
-        input: &Tensor<f32>,
+        out: Buffer<'_, f32>,
+        input: Buffer<'_, f32>,
         columns: usize,
         tile: LinearTiling,
     ) -> StdResult<(), DeviceError> {
@@ -206,8 +206,8 @@ impl ProjectionWeight {
                     tile_columns: tile.columns(),
                     columns,
                 },
-                buffer(out)?,
-                buffer(input)?,
+                out,
+                input,
                 self.weight_ref()?,
             )
             .map_err(|error| DeviceError::Internal(error.to_string()))?;

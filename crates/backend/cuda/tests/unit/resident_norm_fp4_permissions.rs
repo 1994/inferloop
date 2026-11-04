@@ -1,6 +1,7 @@
 //! Capture-boundary invalidation and exact buffer binding, including the error path.
 use super::{CaptureQuantReuse, Workspace, vendor_fp8};
 use crate::mlp::Matrix;
+use crate::resident::buffers::tensor_rows;
 use crate::resident::norm_fp4;
 use crate::resident::tensor_buffer;
 use crate::tuning::resident_gemm::ResidentTuningSession;
@@ -96,7 +97,7 @@ fn run_case(device: &CudaDevice, action: &str) -> TestResult<(Vec<u8>, Vec<u8>)>
             1,
             tensor_buffer(&input)?,
             &weight,
-            &dense,
+            tensor_rows(&dense)?,
             (1e-5, 1.0, 1.0),
         )?;
         assert!(workspace.norm_fp4.is_some());

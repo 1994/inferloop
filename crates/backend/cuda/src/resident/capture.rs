@@ -409,8 +409,8 @@ impl Capture<'_> {
         weights.record(
             &self.weights.kernels,
             self.scope,
-            &output,
-            input,
+            buffer(&output)?,
+            buffer(input)?,
             input.size(),
             self.weights.tiling.get(&node.inputs[1]).copied().unwrap_or(
                 LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS).map_err(error)?,
@@ -431,8 +431,8 @@ impl Capture<'_> {
             fusion.projection.record(
                 &self.weights.kernels,
                 self.scope,
-                output,
-                &normalized,
+                buffer(output)?,
+                buffer(&normalized)?,
                 2 * dimension,
                 fusion.tiling,
             )?;

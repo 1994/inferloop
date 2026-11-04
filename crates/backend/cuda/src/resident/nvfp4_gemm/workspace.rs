@@ -1,7 +1,7 @@
 //! Per-program activation quantization buffers, retained as long as captured graphs.
 mod preparation;
 mod vendor_fp4;
-use super::super::buffers::buffer;
+use super::super::buffers::{RowMajor, buffer};
 use super::super::capture::error as capture_error;
 use super::quant_reuse::{CaptureQuantReuse, QuantKey, QuantKind, QuantPairRole};
 use crate::constants::FP8_BLOCK_COLUMNS;
@@ -14,6 +14,7 @@ use infer_cuda_kernels::contract::{
 };
 
 use crate::device::vendor_fp8::Gemm;
+use crate::mlp::Matrix;
 use crate::resident::program::ProgramGeometry;
 use crate::tuning::fp8_gemm::Choice;
 use crate::tuning::fp8_gemm::WeightKey;
@@ -201,7 +202,7 @@ impl Workspace {
             return pool_dense::baseline(shape);
         };
         self.pool_dense_strategies
-            .get(&PoolDenseBinding::new(weight.tensor(), shape, tile))
+            .get(&PoolDenseBinding::new(weight, shape, tile))
             .copied()
             .unwrap_or_else(|| pool_dense::baseline(shape))
     }
@@ -253,7 +254,7 @@ impl Workspace {
     /// Measured output tile of one prompt projection; the established tile when unmeasured.
     pub(crate) fn prompt_dense_choice(
         &self,
-        weight: &Arc<Tensor<bf16>>,
+        weight: &Matrix<bf16>,
         shape: ProjectionShape,
     ) -> PoolDenseChoice {
         LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS)
@@ -276,15 +277,14 @@ impl Workspace {
         weight: &ProjectionWeight,
         scale: f32,
         input: Buffer<'_, f32>,
-        output: &Tensor<f32>,
+        output: RowMajor<'_, f32>,
         columns: usize,
         certified: bool,
     ) -> StdResult<(), DeviceError> {
         let ProjectionWeight::Fp4(..) = weight else {
             return Err(super::super::capture::error("FP4 workspace weight"));
         };
-        let rows = output.size()
-            / usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
+        let rows = output.rows;
         let (q, qs) = self
             .buffers
             .get_mut(&(rows, columns))
@@ -341,14 +341,13 @@ impl Workspace {
         scale: f32,
         gate: Buffer<'_, f32>,
         up: Buffer<'_, f32>,
-        output: &Tensor<f32>,
+        output: RowMajor<'_, f32>,
         columns: usize,
     ) -> StdResult<(), DeviceError> {
         let ProjectionWeight::Fp4(..) = weight else {
             return Err(super::super::capture::error("FP4 workspace weight"));
         };
-        let rows = output.size()
-            / usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
+        let rows = output.rows;
         // The fused codes overwrite the shared quantization buffers; no reuse permit may span it.
         self.quant_reuse.clear();
         let (q, qs) = self
@@ -480,11 +479,10 @@ impl Workspace {
         (contract, scope): (&Kernels, &Scope),
         weight: &ProjectionWeight,
         scale: f32,
-        output: &Tensor<f32>,
+        output: RowMajor<'_, f32>,
         columns: usize,
     ) -> StdResult<(), DeviceError> {
-        let rows = output.size()
-            / usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
+        let rows = output.rows;
         let (q, qs) = self
             .buffers
             .get(&(rows, columns))
@@ -506,12 +504,11 @@ impl Workspace {
         weight: &ProjectionWeight,
         scale: f32,
         (q, qs): (&Tensor<f4e2m1fnx2>, &Tensor<f8e4m3fn>),
-        output: &Tensor<f32>,
+        output: RowMajor<'_, f32>,
         (rows, columns): (usize, usize),
     ) -> StdResult<(), DeviceError> {
         {
-            let outputs =
-                usize::try_from(output.shape()[1]).map_err(super::super::capture::error)?;
+            let outputs = output.columns;
             let config = strategies
                 .get(&(
                     ResidentGemmWeightKey::new(weight, scale)
@@ -522,7 +519,13 @@ impl Workspace {
                 ))
                 .copied()
                 .unwrap_or_else(|| GemmConfig::baseline(rows));
-            config.record((contract, scope), weight, scale, q, qs, output, columns)?;
+            config.record(
+                (contract, scope),
+                (weight, scale),
+                (buffer(q)?, buffer(qs)?),
+                output,
+                columns,
+            )?;
             Ok(())
         }
     }
@@ -533,17 +536,17 @@ impl Workspace {
         next: usize,
         input: Buffer<'_, f32>,
         weight: &Tensor<f32>,
-        output: &Tensor<f32>,
+        output: RowMajor<'_, f32>,
         (epsilon, offset, scale): (f32, f32, f32),
     ) -> StdResult<bool, DeviceError> {
         self.norm_fp4 = None;
-        let rows = usize::try_from(output.shape()[0]).map_err(capture_error)?;
-        let columns = usize::try_from(output.shape()[1]).map_err(capture_error)?;
+        let rows = output.rows;
+        let columns = output.columns;
         let Some((codes, scales)) = self.buffers.get(&(rows, columns)) else {
             return Ok(false);
         };
         let binding = norm_fp4::Binding {
-            pointer: output.device_pointer().cu_deviceptr(),
+            pointer: output.buffer.address(),
             rows,
             columns,
             scale_bits: scale.to_bits(),
@@ -562,7 +565,7 @@ impl Workspace {
                 },
                 scale,
                 NormFp4Buffers {
-                    out: buffer(output)?,
+                    out: output.buffer,
                     codes: buffer(codes)?,
                     scales: buffer(scales)?,
                     x: input,
@@ -581,15 +584,15 @@ impl Workspace {
         next: usize,
         input: Buffer<'_, f32>,
         weight: &Tensor<f32>,
-        output: &Tensor<f32>,
+        output: RowMajor<'_, f32>,
         (epsilon, offset): (f32, f32),
     ) -> StdResult<bool, DeviceError> {
-        let rows = usize::try_from(output.shape()[0]).map_err(capture_error)?;
-        let columns = usize::try_from(output.shape()[1]).map_err(capture_error)?;
+        let rows = output.rows;
+        let columns = output.columns;
         let Some((_, scales)) = self.fp8.get(&(rows, columns, 1)) else {
             return Ok(false);
         };
-        let pointer = output.device_pointer().cu_deviceptr();
+        let pointer = output.buffer.address();
         kernels
             .norm
             .maximum(
@@ -601,7 +604,7 @@ impl Workspace {
                     offset,
                 },
                 NormMaximumBuffers {
-                    out: buffer(output)?,
+                    out: output.buffer,
                     maximum: buffer(scales)?,
                     x: input,
                     weight: buffer(weight)?,
@@ -622,7 +625,7 @@ impl Workspace {
         (contract, scope): (&Kernels, &Scope),
         weight: &ProjectionWeight,
         input: Buffer<'_, f32>,
-        output: &Tensor<f32>,
+        output: RowMajor<'_, f32>,
         columns: usize,
         certified: bool,
     ) -> StdResult<(), DeviceError> {
@@ -633,7 +636,7 @@ impl Workspace {
         ) {
             return Err(error("FP8 workspace weight"));
         }
-        let rows = usize::try_from(output.shape()[0]).map_err(error)?;
+        let rows = output.rows;
         // The scales layout follows the weight's quantization mode, and the key has to say which.
         let scale_columns = fp8_scale_columns(weight, columns);
         let maximum_ready = self.norm_maximum.take().is_some_and(|pending| {
@@ -660,10 +663,7 @@ impl Workspace {
                         },
                         input,
                         (buffer(&*q)?, buffer(&*qs)?),
-                        (
-                            buffer(&*output)?,
-                            usize::try_from(output.shape()[1]).map_err(error)?,
-                        ),
+                        (output.buffer, output.columns),
                         (rows, columns),
                     )?;
                 }
@@ -689,11 +689,11 @@ impl Workspace {
                         #[cfg(test)]
                         super::super::norm_maximum::record_consumption(maximum_ready);
                     }
-                    let outputs = usize::try_from(output.shape()[1]).map_err(error)?;
+                    let outputs = output.columns;
                     let gemm = Gemm {
                         input: buffer(&*q)?,
                         weight: buffer(w)?,
-                        output: buffer(&*output)?,
+                        output: output.buffer,
                         extents: [rows, outputs, columns],
                     };
                     let scales = [buffer(&*qs)?, buffer(channel_scale)?];
@@ -803,7 +803,7 @@ const fn fp8_scale_columns(weight: &ProjectionWeight, columns: usize) -> usize {
 fn quant_key<Q: DType, S: DType>(
     certified: bool,
     input: Buffer<'_, f32>,
-    output: &Tensor<f32>,
+    output: RowMajor<'_, f32>,
     rows: usize,
     columns: usize,
     kind: QuantKind,
@@ -817,9 +817,9 @@ fn quant_key<Q: DType, S: DType>(
     let strides = [shape[1], 1];
     let input_end = input_pointer
         .checked_add(u64::try_from(input.len().checked_mul(size_of::<f32>())?).ok()?)?;
-    let output_pointer = output.device_pointer().cu_deviceptr();
+    let output_pointer = output.buffer.address();
     let output_end = output_pointer
-        .checked_add(u64::try_from(output.size().checked_mul(size_of::<f32>())?).ok()?)?;
+        .checked_add(u64::try_from(output.buffer.len().checked_mul(size_of::<f32>())?).ok()?)?;
     if input_pointer < output_end && output_pointer < input_end {
         return None;
     }

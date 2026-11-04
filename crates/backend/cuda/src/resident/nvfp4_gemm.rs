@@ -4,6 +4,7 @@ pub use infer_cuda_kernels::tile::projection::nvfp4_gemm as kernels;
 mod quant_reuse;
 mod workspace;
 use crate::mlp::ProjectionWeight as MlpProjectionWeight;
+use crate::resident::buffers::tensor_rows;
 use cutile::prelude::DeviceError;
 use cutile::prelude::Scope;
 use cutile::prelude::Tensor as PreludeTensor;
@@ -76,13 +77,28 @@ fn record_input(
     use crate::mlp::ProjectionWeight;
     match (weight, input_scale) {
         (ProjectionWeight::Fp4(..), Some(ActivationQuantization::Fp4(scale))) => {
-            workspace.record_input(target, weight, scale, input, output, columns, certified)?;
+            workspace.record_input(
+                target,
+                weight,
+                scale,
+                input,
+                tensor_rows(output)?,
+                columns,
+                certified,
+            )?;
         }
         (
             ProjectionWeight::Fp8(..) | ProjectionWeight::Fp8Block(..),
             Some(ActivationQuantization::Fp8Token),
         ) => {
-            workspace.record_fp8_input(target, weight, input, output, columns, certified)?;
+            workspace.record_fp8_input(
+                target,
+                weight,
+                input,
+                tensor_rows(output)?,
+                columns,
+                certified,
+            )?;
         }
         _ => {
             workspace.clear_quant_reuse();

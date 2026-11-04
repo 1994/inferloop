@@ -13,6 +13,7 @@ pub mod recurrent;
 pub mod resident_gemm;
 
 use crate::device::DeviceProfile;
+use crate::resident::tensor_buffer as buffer;
 use crate::strategy::default_tiling;
 use crate::{
     benchmark::Trial,
@@ -238,7 +239,14 @@ fn capture(
         .map_err(device_error)?;
     let kernels = device.kernels();
     let graph = Graph::scope(&device.stream, |scope| {
-        weight.record(&kernels, scope, &output, &input, columns, tile)
+        weight.record(
+            &kernels,
+            scope,
+            buffer(&output)?,
+            buffer(&input)?,
+            columns,
+            tile,
+        )
     })
     .map_err(device_error)?;
     Ok(Probe {
