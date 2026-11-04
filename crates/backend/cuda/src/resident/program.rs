@@ -410,6 +410,10 @@ fn copy_prefix(
     if dst.dims() != src.dims() {
         return Err(Error::invariant("program state copy shape"));
     }
+    // Two views of one slot pool state, as a slot-resident program and its worker hold.
+    if dst.same_memory(src) {
+        return Ok(());
+    }
     if let Some((rows, capacity)) = kv {
         if src.dims().len() != KV_CACHE_RANK || src.dims()[1] != capacity {
             return Err(Error::invariant("program KV copy layout"));
