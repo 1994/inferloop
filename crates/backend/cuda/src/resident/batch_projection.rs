@@ -262,7 +262,7 @@ pub(super) fn record_slots(
         weight,
         weights.activation_quantization(node.inputs[1]),
         region(input_pointer, lanes * columns),
-        &output,
+        tensor_rows(&output)?,
         columns,
     )? {
         record_projection(
@@ -335,7 +335,7 @@ fn record_projection(
         weight,
         input_scale,
         input,
-        output,
+        tensor_rows(output)?,
         columns,
     )? {
         return Ok(());

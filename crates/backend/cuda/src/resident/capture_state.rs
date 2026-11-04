@@ -1,4 +1,5 @@
 use super::{
+    arena::SlotMemory,
     buffers::buffer,
     capture::{Capture, error},
 };
@@ -49,7 +50,7 @@ impl Capture<'_> {
     fn conv(
         &self,
         node: &TensorNode,
-        output: &Tensor<f32>,
+        output: &SlotMemory,
         state: &[Tensor<f32>],
         channels: usize,
     ) -> Result<(), DeviceError> {
@@ -78,8 +79,8 @@ impl Capture<'_> {
     pub fn record_state(
         &mut self,
         node: &TensorNode,
-        mut output: Tensor<f32>,
-    ) -> Result<Tensor<f32>, DeviceError> {
+        output: &SlotMemory,
+    ) -> Result<(), DeviceError> {
         let id = *node
             .states
             .first()
@@ -96,10 +97,10 @@ impl Capture<'_> {
             }
         }
         if let Some((keys, values)) = self.fp8_states.remove(&id) {
-            let (output, keys, values) =
+            let (keys, values) =
                 self.record_attention(node, output, keys, values, self.weights.kv_scales[&id])?;
             self.fp8_states.insert(id, (keys, values));
-            return Ok(output);
+            return Ok(());
         }
         let mut state = self
             .states
@@ -110,7 +111,7 @@ impl Capture<'_> {
                 channels,
                 kernel: CONV_KERNEL_SIZE,
             } => {
-                self.conv(node, &output, &state, channels)?;
+                self.conv(node, output, &state, channels)?;
             }
             TensorOp::Delta {
                 key_heads,
@@ -125,14 +126,12 @@ impl Capture<'_> {
                 {
                     return Err(error("resident delta dimensions"));
                 }
-                output = output.reshape(&[value_heads, value_dim])?;
                 // The value dimension may be split so the grid can fill the device: the
                 // established single-block launch is one block per value head, 48 of them on the
                 // 27B against 170 multiprocessors, and each block moves the whole D-by-D state for
                 // every token. Splitting the columns is exact - every reduction is over the key
                 // dimension - and is off by default until the full matrix shows a gain.
                 let block = value_block(value_dim)?;
-                output = output.reshape(&[value_heads, 1, value_dim])?;
                 self.record_delta_step(
                     node,
                     &DeltaStepPlan {
@@ -142,24 +141,22 @@ impl Capture<'_> {
                         block,
                         lanes: None,
                     },
-                    buffer(&output)?,
+                    buffer(output)?,
                     buffer(&state[0])?,
                 )?;
-                output = output.reshape(&[value_heads, value_dim])?;
             }
             TensorOp::Attention { .. } => {
                 let keys = state.remove(0);
                 let values = state.remove(0);
-                let (result, keys, values) =
+                let (keys, values) =
                     self.record_attention(node, output, keys, values, [1.0, 1.0])?;
-                output = result;
                 state.push(keys);
                 state.push(values);
             }
             _ => return Err(error("unsupported resident state operation")),
         }
         self.states.insert(id, state);
-        Ok(output)
+        Ok(())
     }
 
     fn record_delta_step(
@@ -191,11 +188,11 @@ impl Capture<'_> {
 
     /// Lane-batched convolution decode: one kernel over every lane's pooled history rows.
     fn record_conv_lanes(
-        &mut self,
+        &self,
         node: &TensorNode,
-        output: Tensor<f32>,
+        output: &SlotMemory,
         channels: usize,
-    ) -> Result<Tensor<f32>, DeviceError> {
+    ) -> Result<(), DeviceError> {
         let id = *node
             .states
             .first()
@@ -203,12 +200,11 @@ impl Capture<'_> {
         let lanes = self.arena.lanes();
         let state = self
             .states
-            .remove(&id)
+            .get(&id)
             .ok_or_else(|| error("missing state allocation"))?;
         let [h0, h1, h2] = state.as_slice() else {
             return Err(error("convolution state layout"));
         };
-        let out = output.reshape(&[lanes, channels])?;
         self.weights
             .kernels
             .recurrent
@@ -217,26 +213,24 @@ impl Capture<'_> {
                 ConvKernel::Lanes { lanes },
                 channels,
                 ConvBuffers {
-                    output: buffer(&out)?,
+                    output: buffer(output)?,
                     history: [buffer(h0)?, buffer(h1)?, buffer(h2)?],
                     input: self.input_buffer(node.inputs[0])?,
                     weight: self.input_buffer(node.inputs[1])?,
                     metadata: buffer(self.metadata)?,
                 },
             )
-            .map_err(error)?;
-        self.states.insert(id, state);
-        Ok(out.reshape(&[lanes * channels])?)
+            .map_err(error)
     }
 
     /// Lane-batched delta decode: one kernel over `[lanes * value_heads]` blocks. The state
     /// root is lane-major, so flattening its head and lane axes addresses every lane's
     /// `[value_heads, key, value]` state without copying.
     fn record_delta_lanes(
-        &mut self,
+        &self,
         node: &TensorNode,
-        output: Tensor<f32>,
-    ) -> Result<Tensor<f32>, DeviceError> {
+        output: &SlotMemory,
+    ) -> Result<(), DeviceError> {
         let TensorOp::Delta {
             key_heads,
             value_heads,
@@ -258,25 +252,12 @@ impl Capture<'_> {
             .first()
             .ok_or_else(|| error("missing state binding"))?;
         let lanes = self.arena.lanes();
-        let mut state = self
+        let root = self
             .states
-            .remove(&id)
-            .ok_or_else(|| error("missing state allocation"))?;
-        let root = state.pop().ok_or_else(|| error("delta state layout"))?;
-        let shape = root
-            .shape()
-            .iter()
-            .map(|&dim| usize::try_from(dim).map_err(|_| error("delta state shape")))
-            .collect::<Result<Vec<_>, _>>()?;
-        let batched = root.reshape(&[
-            lanes
-                .checked_mul(value_heads)
-                .ok_or_else(|| error("delta lane overflow"))?,
-            key_dim,
-            value_dim,
-        ])?;
+            .get(&id)
+            .and_then(|state| state.last())
+            .ok_or_else(|| error("delta state layout"))?;
         let block = value_block(value_dim)?;
-        let out = output.reshape(&[lanes * value_heads, 1, value_dim])?;
         self.record_delta_step(
             node,
             &DeltaStepPlan {
@@ -286,11 +267,8 @@ impl Capture<'_> {
                 block,
                 lanes: Some(lanes),
             },
-            buffer(&out)?,
-            buffer(&batched)?,
-        )?;
-        state.push(batched.reshape(&shape)?);
-        self.states.insert(id, state);
-        Ok(out.reshape(&[lanes * value_heads * value_dim])?)
+            buffer(output)?,
+            buffer(root)?,
+        )
     }
 }

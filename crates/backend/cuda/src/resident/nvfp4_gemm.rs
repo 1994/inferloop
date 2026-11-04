@@ -4,10 +4,9 @@ pub use infer_cuda_kernels::tile::projection::nvfp4_gemm as kernels;
 mod quant_reuse;
 mod workspace;
 use crate::mlp::ProjectionWeight as MlpProjectionWeight;
-use crate::resident::buffers::tensor_rows;
+use crate::resident::buffers::RowMajor;
 use cutile::prelude::DeviceError;
 use cutile::prelude::Scope;
-use cutile::prelude::Tensor as PreludeTensor;
 use infer_cuda_kernels::contract::{Buffer, Kernels};
 pub use quant_reuse::QuantPairPlan;
 #[cfg(test)]
@@ -21,7 +20,7 @@ pub(super) fn record(
     weight: &MlpProjectionWeight,
     input_scale: Option<super::program::ActivationQuantization>,
     input: Buffer<'_, f32>,
-    output: &PreludeTensor<f32>,
+    output: RowMajor<'_, f32>,
     columns: usize,
 ) -> Result<bool, DeviceError> {
     workspace.clear_quant_reuse();
@@ -44,7 +43,7 @@ pub(super) fn record_certified(
     weight: &MlpProjectionWeight,
     input_scale: Option<super::program::ActivationQuantization>,
     input: Buffer<'_, f32>,
-    output: &PreludeTensor<f32>,
+    output: RowMajor<'_, f32>,
     columns: usize,
 ) -> Result<bool, DeviceError> {
     record_input(
@@ -69,7 +68,7 @@ fn record_input(
     weight: &MlpProjectionWeight,
     input_scale: Option<super::program::ActivationQuantization>,
     input: Buffer<'_, f32>,
-    output: &PreludeTensor<f32>,
+    output: RowMajor<'_, f32>,
     columns: usize,
     certified: bool,
 ) -> Result<bool, DeviceError> {
@@ -77,28 +76,13 @@ fn record_input(
     use crate::mlp::ProjectionWeight;
     match (weight, input_scale) {
         (ProjectionWeight::Fp4(..), Some(ActivationQuantization::Fp4(scale))) => {
-            workspace.record_input(
-                target,
-                weight,
-                scale,
-                input,
-                tensor_rows(output)?,
-                columns,
-                certified,
-            )?;
+            workspace.record_input(target, weight, scale, input, output, columns, certified)?;
         }
         (
             ProjectionWeight::Fp8(..) | ProjectionWeight::Fp8Block(..),
             Some(ActivationQuantization::Fp8Token),
         ) => {
-            workspace.record_fp8_input(
-                target,
-                weight,
-                input,
-                tensor_rows(output)?,
-                columns,
-                certified,
-            )?;
+            workspace.record_fp8_input(target, weight, input, output, columns, certified)?;
         }
         _ => {
             workspace.clear_quant_reuse();

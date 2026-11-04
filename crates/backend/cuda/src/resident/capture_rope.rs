@@ -1,4 +1,5 @@
 use super::{
+    arena::SlotMemory,
     buffers::buffer,
     capture::{Capture, CaptureMode, error},
 };
@@ -11,8 +12,8 @@ impl Capture<'_> {
     pub(super) fn record_rope(
         &self,
         node: &TensorNode,
-        mut output: Tensor<f32>,
-    ) -> Result<Tensor<f32>, DeviceError> {
+        output: &SlotMemory,
+    ) -> Result<(), DeviceError> {
         let TensorOp::Rope {
             heads,
             head_dim,
@@ -31,7 +32,6 @@ impl Capture<'_> {
         } else {
             *heads
         };
-        output = output.reshape(&[rows, *head_dim])?;
         let frequency = self
             .weights
             .rope_frequencies
@@ -63,14 +63,13 @@ impl Capture<'_> {
                 &Recording::scope(self.scope),
                 &plan,
                 RopeBuffers {
-                    out: buffer(&output)?,
+                    out: buffer(output)?,
                     x: self.input_buffer(node.inputs[0])?,
                     frequencies: buffer(frequency)?,
                     axes: axes.map(buffer).transpose()?,
                     metadata: buffer(self.metadata)?,
                 },
             )
-            .map_err(error)?;
-        Ok(output)
+            .map_err(error)
     }
 }

@@ -1,6 +1,7 @@
 use super::{
     ActivationArena, ProgramWeights,
-    buffers::{buffer, region},
+    arena::SlotMemory,
+    buffers::{RowMajor, buffer, region},
     program::FusionWeights,
 };
 use crate::constants::CB_DECODE_SLOTS;
@@ -155,7 +156,7 @@ impl Capture<'_> {
     pub fn record(&mut self, node: &TensorNode) -> Result<(), DeviceError> {
         for (part, id) in node.outputs.iter().enumerate() {
             let index = self.arena.slot(*id).map_err(error)?;
-            let output = self.arena.output(index).map_err(error)?;
+            let output = self.arena.memory(index).map_err(error)?;
             #[cfg(test)]
             if self.mode == CaptureMode::Prefill && matches!(node.op, TensorOp::Attention { .. }) {
                 let input = |id| {
@@ -175,15 +176,14 @@ impl Capture<'_> {
                     (self.metadata, self.table),
                 )?;
             }
-            // The slot holds what the node writes; the returned view is only a handle to it.
-            let written = self.operation(node, output, part)?;
+            self.operation(node, &output, part)?;
             #[cfg(test)]
             if self.mode == CaptureMode::Prefill && matches!(node.op, TensorOp::Attention { .. }) {
+                let written = output.tensor(&[output.len()]).map_err(error)?;
                 self.attention
                     .taps
                     .output(self.scope, (*id, self.arena.lanes()), &written)?;
             }
-            drop(written);
         }
         Ok(())
     }
@@ -224,23 +224,24 @@ impl Capture<'_> {
         }
         for (part, id) in node.outputs.iter().enumerate() {
             let index = self.arena.slot(*id).map_err(error)?;
-            let row = self.arena.output_row(index, lane).map_err(error)?;
-            let _ = self.operation(node, row, part)?;
+            let row = self.arena.row_memory(index, lane).map_err(error)?;
+            self.operation(node, &row, part)?;
         }
         Ok(())
     }
 
+    /// Record `node`'s part `part` into the slot `output`.
     fn operation(
         &mut self,
         node: &TensorNode,
-        mut output: Tensor<f32>,
+        output: &SlotMemory,
         part: usize,
-    ) -> Result<Tensor<f32>, DeviceError> {
+    ) -> Result<(), DeviceError> {
         match &node.op {
             TensorOp::MoeRoute { .. }
             | TensorOp::ExpertLinear { .. }
             | TensorOp::MoeCombine { .. } => {
-                output = self.record_moe(node, output)?;
+                self.record_moe(node, output)?;
             }
             TensorOp::Scale => {
                 self.weights
@@ -248,17 +249,17 @@ impl Capture<'_> {
                     .state
                     .scale(
                         &Recording::scope(self.scope),
-                        buffer(&output)?,
+                        buffer(output)?,
                         self.input_buffer(node.inputs[0])?,
                         self.input_buffer(node.inputs[1])?,
                     )
                     .map_err(error)?;
             }
             TensorOp::Embedding => {
-                self.embedding(node, &output)?;
+                self.embedding(node, output)?;
             }
             TensorOp::Linear => {
-                output = self.linear(node, output)?;
+                self.linear(node, output)?;
             }
             TensorOp::Silu | TensorOp::Sigmoid => {
                 let op = if node.op == TensorOp::Sigmoid {
@@ -272,7 +273,7 @@ impl Capture<'_> {
                     .unary(
                         &Recording::scope(self.scope),
                         op,
-                        buffer(&output)?,
+                        buffer(output)?,
                         self.input_buffer(node.inputs[0])?,
                     )
                     .map_err(error)?;
@@ -289,7 +290,7 @@ impl Capture<'_> {
                     .binary(
                         &Recording::scope(self.scope),
                         op,
-                        buffer(&output)?,
+                        buffer(output)?,
                         self.input_buffer(node.inputs[0])?,
                         self.input_buffer(node.inputs[1])?,
                     )
@@ -300,24 +301,23 @@ impl Capture<'_> {
                 epsilon,
                 offset,
             } => {
-                output = self.norm(node, output, *head_dim, *epsilon, *offset, false)?;
+                self.norm(node, output, *head_dim, *epsilon, *offset, false)?;
             }
             TensorOp::GatedNorm { head_dim, epsilon } => {
-                output = self.norm(node, output, *head_dim, *epsilon, 0.0, true)?;
+                self.norm(node, output, *head_dim, *epsilon, 0.0, true)?;
             }
             TensorOp::Split { widths, .. } => {
-                let plan = split_plan(widths, part, output.size())?;
-                output = output.reshape(&[plan.rows, plan.width])?;
-                self.record_split(node, buffer(&output)?, &plan)?;
+                let plan = split_plan(widths, part, output.len())?;
+                self.record_split(node, buffer(output)?, &plan)?;
             }
             TensorOp::Rope { .. } => {
-                output = self.record_rope(node, output)?;
+                self.record_rope(node, output)?;
             }
             TensorOp::Conv { .. } | TensorOp::Delta { .. } | TensorOp::Attention { .. } => {
-                output = self.record_state(node, output)?;
+                self.record_state(node, output)?;
             }
         }
-        Ok(output)
+        Ok(())
     }
 
     fn record_split(
@@ -340,11 +340,7 @@ impl Capture<'_> {
 
     /// Width-1 and verification-width projection: per-lane input tensor.
     /// Prefill width 32 linear nodes never reach here; see `prefill_projection`.
-    fn linear(
-        &mut self,
-        node: &TensorNode,
-        output: Tensor<f32>,
-    ) -> Result<Tensor<f32>, DeviceError> {
+    fn linear(&mut self, node: &TensorNode, output: &SlotMemory) -> Result<(), DeviceError> {
         let input = self.weights.constants.get(&node.inputs[0]).map_or_else(
             || self.arena.get(node.inputs[0]).map_err(error),
             |value| Ok(value.as_ref()),
@@ -355,32 +351,29 @@ impl Capture<'_> {
             .get(&node.inputs[1])
             .ok_or_else(|| error("missing projection"))?;
         if let Some(scale) = self.weights.activation_quantization(node.inputs[1]) {
-            let size = output.size();
-            let matrix = output.reshape(&[1, size])?;
             if !super::nvfp4_gemm::record_certified(
                 (&self.weights.kernels, self.scope),
                 self.nvfp4,
                 weights,
                 Some(scale),
                 buffer(input)?,
-                &matrix,
+                RowMajor::new(buffer(output)?, 1, output.len())?,
                 input.size(),
             )? {
                 return Err(error(
                     "activation quantization and weight encoding disagree",
                 ));
             }
-            return Ok(matrix.reshape(&[size])?);
+            return Ok(());
         }
         #[cfg(test)]
         if self.mode == CaptureMode::Flat
             && super::small_gemm::precise_dense_enabled()
-            && output.size() <= input.size().saturating_mul(GEMV_WIDE_OUTPUT_RATIO)
+            && output.len() <= input.size().saturating_mul(GEMV_WIDE_OUTPUT_RATIO)
             && let ProjectionWeight::Dense(weight) = weights
         {
-            let size = output.size();
             let columns = input.size();
-            let mut matrix = output.reshape(&[1, size])?;
+            let mut matrix = output.tensor(&[1, output.len()]).map_err(error)?;
             self.scope.record(
                 super::small_gemm::precise_kernels::dense(
                     (&mut matrix).partition(SMALL_GEMM_TILE),
@@ -389,23 +382,23 @@ impl Capture<'_> {
                 )
                 .generics(vec![bf16::DTYPE.as_str().into(), columns.to_string()]),
             )?;
-            return Ok(matrix.reshape(&[size])?);
+            return Ok(());
         }
         weights.record(
             &self.weights.kernels,
             self.scope,
-            buffer(&output)?,
+            buffer(output)?,
             buffer(input)?,
             input.size(),
             self.weights.tiling.get(&node.inputs[1]).copied().unwrap_or(
                 LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS).map_err(error)?,
             ),
         )?;
-        Ok(output)
+        Ok(())
     }
 
-    fn embedding(&mut self, node: &TensorNode, output: &Tensor<f32>) -> Result<(), DeviceError> {
-        let dimension = output.size();
+    fn embedding(&mut self, node: &TensorNode, output: &SlotMemory) -> Result<(), DeviceError> {
+        let dimension = output.len();
         if self.weights.fusion.is_some() {
             let normalized = self.fusion_input(node, dimension)?;
             let fusion = self
@@ -532,19 +525,18 @@ impl Capture<'_> {
     fn norm(
         &self,
         node: &TensorNode,
-        output: Tensor<f32>,
+        output: &SlotMemory,
         dimension: usize,
         epsilon: f32,
         offset: f32,
         gated: bool,
-    ) -> Result<Tensor<f32>, DeviceError> {
-        if dimension == 0 || !output.size().is_multiple_of(dimension) {
+    ) -> Result<(), DeviceError> {
+        if dimension == 0 || !output.len().is_multiple_of(dimension) {
             return Err(error("norm dimensions"));
         }
-        let heads = output.size() / dimension;
-        let output = output.reshape(&[heads, dimension])?;
+        let heads = output.len() / dimension;
         let options = if gated {
-            gated_norm_options(output.device_id(), dimension, heads, epsilon)
+            gated_norm_options(output.device(), dimension, heads, epsilon)
         } else {
             CompileOptions::default()
         };
@@ -578,14 +570,14 @@ impl Capture<'_> {
                     occupancy: options.occupancy,
                 },
                 NormBuffers {
-                    out: buffer(&output)?,
+                    out: buffer(output)?,
                     x: self.input_buffer(node.inputs[0])?,
                     weight: self.input_buffer(node.inputs[if gated { 2 } else { 1 }])?,
                     gate: self.input_buffer(node.inputs[usize::from(gated)])?,
                 },
             )
             .map_err(error)?;
-        Ok(output)
+        Ok(())
     }
 
     /// Kernel selection follows logical serving rows, independently of candidate padding.
