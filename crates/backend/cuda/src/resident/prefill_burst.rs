@@ -4,7 +4,6 @@
 //! `segments * SEGMENT_ROWS` rows. Sequential nodes (convolution, gated delta, attention, `RoPE`)
 //! record once per segment, against that segment's rows and the resident slot's own state, so no
 //! state moves through a worker. A segment with a zero token count writes nothing.
-use super::arena::prefix_view;
 use super::batch::{BatchBuilder, States};
 use super::fp8_cache::Fp8Caches;
 use super::prompt_scratch::{Partials, PromptScratch};
@@ -13,7 +12,7 @@ use crate::constants::METADATA_FIELDS;
 use crate::device::{CudaDevice, PinnedUpload, ReadbackSource, Readbacks, device_error};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use infer_ir::DataflowGraph;
 use infer_models::mrope::ROTARY_AXES;
 use std::iter::successors;
@@ -83,7 +82,7 @@ pub struct Shared<'a> {
     /// The widest rung, whose rows and logits narrower rungs view.
     pub wider: Option<&'a PromptBurst>,
     /// The worker's external hidden rows.
-    pub worker_external: &'a Tensor<f32>,
+    pub worker_external: &'a Allocation<f32>,
 }
 
 /// One sequence's view of the graph while it is captured.
@@ -132,6 +131,8 @@ pub struct PromptBurst {
     rotary_upload: Vec<i32>,
     rotary_staging: PinnedUpload<i32>,
     logits: Arc<Tensor<f32>>,
+    /// The allocation `logits` views, which narrower rungs view too.
+    logits_memory: Allocation<f32>,
     readbacks: Readbacks,
     _retained: Retained,
     keep: Keep,
@@ -174,6 +175,7 @@ struct Storage {
     rotary_rows: Vec<Tensor<i32>>,
     last_rows: Tensor<f32>,
     logits: Tensor<f32>,
+    logits_memory: Allocation<f32>,
     prompt_row: Tensor<f32>,
     external_row: Tensor<f32>,
     external: Tensor<f32>,
@@ -248,19 +250,20 @@ fn zeros<T: DType>(device: &CudaDevice, shape: &[usize]) -> Result<Tensor<T>> {
         .map_err(device_error)
 }
 
+/// `len` zeroed elements the host owns, for views that hold their memory.
+fn memory<T: DType>(device: &CudaDevice, len: usize) -> Result<Allocation<T>> {
+    Allocation::adopt(Arc::new(zeros::<T>(device, &[len])?))
+}
+
 impl Storage {
-    /// # Safety
-    /// Row views alias the returned owners, which must outlive every graph captured from them.
-    #[expect(
-        unsafe_code,
-        reason = "Audited row aliases of owners retained beside the graph"
-    )]
-    unsafe fn allocate(
+    /// Every view holds the memory it addresses: the worker's external rows and a wider rung's
+    /// logits when they cover this burst, otherwise its own.
+    fn allocate(
         device: &CudaDevice,
         graph: &DataflowGraph,
         weights: &ProgramWeights,
         (segments, rows, hidden, vocabulary): (usize, usize, usize, usize),
-        (wider, worker_external): (Option<&PromptBurst>, &Tensor<f32>),
+        (wider, worker_external): (Option<&PromptBurst>, &Allocation<f32>),
     ) -> Result<Self> {
         let budget =
             usize::try_from(device.profile()?.arena_budget_bytes()).map_err(device_error)?;
@@ -283,49 +286,31 @@ impl Storage {
         };
         let (metadata, metadata_rows) = super::batch::batched_metadata(device, rows)?;
         let (info, info_rows) = super::batch::batched_metadata(device, segments)?;
-        let rotary = if weights.mrope {
-            Some(zeros::<i32>(device, &[rows * ROTARY_AXES])?)
+        let (rotary, rotary_rows) = if weights.mrope {
+            let memory = memory::<i32>(device, rows * ROTARY_AXES)?;
+            (
+                Some(super::arena::whole(&memory, &[rows * ROTARY_AXES])?),
+                super::arena::rows(&memory, segments)?,
+            )
         } else {
-            None
+            (None, Vec::new())
         };
-        let mut rotary_rows = Vec::new();
-        if let Some(owner) = rotary.as_ref() {
-            for segment in 0..segments {
-                // SAFETY: forwarded from this function's contract; the rows are disjoint.
-                rotary_rows.push(unsafe { super::arena::row_view(owner, segments, segment)? });
-            }
-        }
         // A worker at least this wide lends its external rows: replays share one stream.
-        let external = if worker_external.size() >= rows * hidden {
-            // SAFETY: forwarded from this function's contract; the worker outlives its graphs.
-            unsafe {
-                prefix_view(
-                    worker_external,
-                    worker_external.size() / hidden,
-                    rows,
-                    &[rows * hidden],
-                )?
-            }
+        let external_memory = if worker_external.len() >= rows * hidden {
+            worker_external.clone()
         } else {
-            zeros::<f32>(device, &[rows * hidden])?
+            memory::<f32>(device, rows * hidden)?
         };
-        let mut lane_external = Vec::with_capacity(rows);
-        for lane in 0..rows {
-            // SAFETY: as above.
-            lane_external.push(unsafe { super::arena::row_view(&external, rows, lane)? });
-        }
-        let logits = match wider {
-            // SAFETY: forwarded from this function's contract; every rung lives with the worker.
-            Some(wider) => unsafe {
-                prefix_view(
-                    &wider.logits,
-                    wider.segments,
-                    segments,
-                    &[segments, vocabulary],
-                )?
-            },
-            None => zeros(device, &[segments, vocabulary])?,
+        let external = external_memory.view(0..rows * hidden, &[rows * hidden])?;
+        let lane_external = (0..rows)
+            .map(|lane| external_memory.view(lane * hidden..(lane + 1) * hidden, &[hidden]))
+            .collect::<Result<Vec<_>>>()?;
+        // Every rung lives with the worker, and replays share one stream.
+        let logits_memory = match wider {
+            Some(wider) => wider.logits_memory.clone(),
+            None => memory::<f32>(device, segments * vocabulary)?,
         };
+        let logits = logits_memory.view(0..segments * vocabulary, &[segments, vocabulary])?;
         Ok(Self {
             arena,
             metadata,
@@ -336,6 +321,7 @@ impl Storage {
             rotary_rows,
             last_rows: zeros(device, &[segments, hidden])?,
             logits,
+            logits_memory,
             prompt_row: zeros(device, &[1, hidden])?,
             external_row: zeros(device, &[hidden])?,
             external,
@@ -389,16 +375,13 @@ impl PromptBurst {
         let segments = programs.len();
         let rows = segments * SEGMENT_ROWS;
         check_covered(segments, weights, hidden)?;
-        // SAFETY: forwarded from this function's contract.
-        let mut storage = unsafe {
-            Storage::allocate(
-                device,
-                graph,
-                weights,
-                (segments, rows, hidden, vocabulary),
-                (wider, worker_external),
-            )?
-        };
+        let mut storage = Storage::allocate(
+            device,
+            graph,
+            weights,
+            (segments, rows, hidden, vocabulary),
+            (wider, worker_external),
+        )?;
         // The worker's workspace already holds its quantization rows; graphs share one stream.
         nvfp4.ensure_width(device, graph, weights, rows)?;
         nvfp4.ensure_width(device, graph, weights, segments)?;
@@ -511,6 +494,7 @@ impl PromptBurst {
             rotary_upload: Vec::with_capacity(rows * ROTARY_AXES),
             rotary_staging: PinnedUpload::single(device, rows * ROTARY_AXES)?,
             logits,
+            logits_memory: storage.logits_memory,
             readbacks,
             _retained: retained,
             keep: Keep {

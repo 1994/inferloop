@@ -80,7 +80,7 @@ pub(super) struct PromptScratch {
     pub(super) arena: ActivationArena,
     /// Final prompt row the one-row logits projection reads, when the vocabulary projection
     /// supports it.
-    pub(super) row: Option<Tensor<f32>>,
+    pub(super) row: Option<Allocation<f32>>,
     pub(super) partials: Partials,
     pub(super) recurrent: super::recurrent_prefill::Workspace,
     pub(super) fusion: Option<super::fusion_batch::Workspace>,
@@ -92,7 +92,7 @@ pub(super) struct PromptScratch {
 impl PromptScratch {
     pub(super) const fn new(
         arena: ActivationArena,
-        row: Option<Tensor<f32>>,
+        row: Option<Allocation<f32>>,
         partials: Partials,
         recurrent: super::recurrent_prefill::Workspace,
         fusion: Option<super::fusion_batch::Workspace>,
@@ -110,7 +110,7 @@ impl PromptScratch {
     /// Scratch for a narrower prompt rung whose arena, partials and fusion rows view `wider`'s
     /// storage; holding `wider` keeps that storage alive for as long as the views exist.
     pub(super) fn viewing(
-        (arena, row, partials): (ActivationArena, Option<Tensor<f32>>, Partials),
+        (arena, row, partials): (ActivationArena, Option<Allocation<f32>>, Partials),
         recurrent: super::recurrent_prefill::Workspace,
         fusion: Option<super::fusion_batch::Workspace>,
         wider: Arc<Mutex<Self>>,

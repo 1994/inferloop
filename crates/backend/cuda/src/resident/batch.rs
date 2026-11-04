@@ -658,7 +658,7 @@ impl BatchBuilder<'_> {
     /// Prefill width 32: one batched arena, one metadata tensor per lane.
     /// The prompt arena, with the one-row logits buffer its final chunk projects when the
     /// vocabulary projection supports it.
-    fn prompt_arena(&self) -> Result<(ActivationArena, Option<Tensor<f32>>)> {
+    fn prompt_arena(&self) -> Result<(ActivationArena, Option<Allocation<f32>>)> {
         let budget =
             usize::try_from(self.device.profile()?.arena_budget_bytes()).map_err(device_error)?;
         if !super::prompt_logits::supported(self.graph, self.weights) {
@@ -707,14 +707,14 @@ impl BatchBuilder<'_> {
     }
 
     /// The one row the final prompt chunk projects onto the vocabulary, when supported.
-    fn prompt_row(&self) -> Result<Option<Tensor<f32>>> {
+    fn prompt_row(&self) -> Result<Option<Allocation<f32>>> {
         if !super::prompt_logits::supported(self.graph, self.weights) {
             return Ok(None);
         }
-        api::zeros::<f32>(&[1, self.external.size()])
+        let row = api::zeros::<f32>(&[self.external.size()])
             .sync_on(&self.device.stream)
-            .map(Some)
-            .map_err(device_error)
+            .map_err(device_error)?;
+        Allocation::adopt(Arc::new(row)).map(Some)
     }
 
     fn build32(&mut self) -> Result<BatchGraph> {
@@ -2683,21 +2683,16 @@ pub(super) fn batched_metadata(
     ))
 }
 
-/// Views of the shared prompt arena and logits row for one program's prompt graphs.
-#[expect(
-    unsafe_code,
-    reason = "Audited prompt alias: graphs retain the shared scratch, and sequences replay prompt graphs one at a time on the device stream, reading their outputs before another starts"
-)]
+/// Views of the shared prompt arena and logits row for one program's prompt graphs. Sequences
+/// replay prompt graphs one at a time on the device stream, reading their outputs before
+/// another starts.
 fn shared_prompt_views(shared: &PromptScratch) -> Result<(ActivationArena, Option<Tensor<f32>>)> {
     let arena = shared.arena.shared_view()?;
-    let row = match &shared.row {
-        Some(row) => {
-            // SAFETY: see the expectation above; one lane spans the whole row.
-            let view = unsafe { super::arena::row_view(row, 1, 0)? };
-            Some(view.reshape(&[1, row.size()]).map_err(device_error)?)
-        }
-        None => None,
-    };
+    let row = shared
+        .row
+        .as_ref()
+        .map(|row| super::arena::whole(row, &[1, row.len()]))
+        .transpose()?;
     Ok((arena, row))
 }
 
