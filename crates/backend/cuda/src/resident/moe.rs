@@ -1,4 +1,5 @@
 //! Device-resident routing and selected-expert projections.
+use super::arena::SlotMemory;
 use super::buffers::buffer;
 use super::capture::{Capture, error};
 use crate::constants::FP8_BLOCK_COLUMNS;
@@ -41,44 +42,40 @@ impl Capture<'_> {
     pub(super) fn record_moe(
         &self,
         node: &TensorNode,
-        output: Tensor<f32>,
-    ) -> StdResult<Tensor<f32>, DeviceError> {
+        output: &SlotMemory,
+    ) -> StdResult<(), DeviceError> {
         match node.op {
             TensorOp::MoeRoute {
                 experts,
                 active,
                 normalize,
-            } => {
-                self.weights
-                    .kernels
-                    .moe
-                    .route(
-                        &Recording::scope(self.scope),
-                        &RoutePlan {
-                            experts,
-                            active,
-                            normalize,
-                        },
-                        buffer(&output)?,
-                        self.input_buffer(node.inputs[0])?,
-                    )
-                    .map_err(error)?;
-                Ok(output)
-            }
-            TensorOp::MoeCombine { active, hidden } => {
-                self.weights
-                    .kernels
-                    .moe
-                    .combine(
-                        &Recording::scope(self.scope),
-                        (active, hidden),
-                        buffer(&output)?,
-                        self.input_buffer(node.inputs[0])?,
-                        self.input_buffer(node.inputs[1])?,
-                    )
-                    .map_err(error)?;
-                Ok(output)
-            }
+            } => self
+                .weights
+                .kernels
+                .moe
+                .route(
+                    &Recording::scope(self.scope),
+                    &RoutePlan {
+                        experts,
+                        active,
+                        normalize,
+                    },
+                    buffer(output)?,
+                    self.input_buffer(node.inputs[0])?,
+                )
+                .map_err(error),
+            TensorOp::MoeCombine { active, hidden } => self
+                .weights
+                .kernels
+                .moe
+                .combine(
+                    &Recording::scope(self.scope),
+                    (active, hidden),
+                    buffer(output)?,
+                    self.input_buffer(node.inputs[0])?,
+                    self.input_buffer(node.inputs[1])?,
+                )
+                .map_err(error),
             TensorOp::ExpertLinear {
                 experts: _,
                 active,
@@ -92,12 +89,12 @@ impl Capture<'_> {
     fn record_experts(
         &self,
         node: &TensorNode,
-        output: Tensor<f32>,
+        output: &SlotMemory,
         active: usize,
         input: usize,
         rows: usize,
         routed_input: bool,
-    ) -> StdResult<Tensor<f32>, DeviceError> {
+    ) -> StdResult<(), DeviceError> {
         let bank = self
             .weights
             .expert_banks
@@ -122,7 +119,6 @@ impl Capture<'_> {
                 ));
             }
         };
-        let output = output.reshape(&[active, rows])?;
         self.weights
             .kernels
             .moe
@@ -135,13 +131,12 @@ impl Capture<'_> {
                     input,
                     routed_input,
                 },
-                buffer(&output)?,
+                buffer(output)?,
                 self.input_buffer(node.inputs[0])?,
                 self.input_buffer(node.inputs[1])?,
                 weight,
             )
-            .map_err(error)?;
-        Ok(output.reshape(&[active * rows])?)
+            .map_err(error)
     }
 }
 

@@ -126,7 +126,7 @@ impl MlpPlan {
                 weight,
                 scale,
                 (arena, input),
-                output,
+                arena.buffer(output).map_err(error)?,
                 (rows, columns),
             )?;
         }
@@ -352,27 +352,18 @@ fn record_fused_down(
     let width = arena.lanes();
     let columns = arena.get(node.inputs[0]).map_err(error)?.size() / width;
     if let Some((input, output)) = down_operands(arena, node)? {
-        let flat = output.size();
-        let mut output = output.reshape(&[width, flat / width])?;
-        let result = match nvfp4.record_vendor_down(
-            scope,
+        let output = arena.buffer(output).map_err(error)?;
+        let output = RowMajor::new(output, width, output.len() / width)?;
+        if nvfp4.record_vendor_down(scope, weight, scale, (arena, input), output, columns)? {
+            return Ok(());
+        }
+        return nvfp4.record_prequantized(
+            (&weights.kernels, scope),
             weight,
             scale,
-            (arena, input),
-            &mut output,
+            output,
             columns,
-        ) {
-            Ok(true) => Ok(()),
-            Ok(false) => nvfp4.record_prequantized(
-                (&weights.kernels, scope),
-                weight,
-                scale,
-                tensor_rows(&output)?,
-                columns,
-            ),
-            Err(error) => Err(error),
-        };
-        return result;
+        );
     }
     let output = arena.activation(node.outputs[0]).map_err(error)?;
     nvfp4.record_prequantized(
@@ -455,7 +446,7 @@ pub(super) fn record(
         weight,
         weights.activation_quantization(node.inputs[1]),
         buffer(flat_input)?,
-        &output,
+        tensor_rows(&output)?,
         columns,
     )? {
         return Ok(());
@@ -862,16 +853,13 @@ pub fn with_dense_reference<T>(run: impl FnOnce() -> T) -> T {
 #[path = "../../tests/unit/resident_prefill_projection.rs"]
 mod tests;
 
-/// The input slot and output tensor of a fused down projection, or `None` when the
+/// The input and output slots of a fused down projection, or `None` when the
 /// last-consumer arena gave them one slot: the vendor pack needs two disjoint slots.
 fn down_operands(
     arena: &super::ActivationArena,
     node: &TensorNode,
-) -> Result<Option<(usize, Tensor<f32>)>, DeviceError> {
+) -> Result<Option<(usize, usize)>, DeviceError> {
     let input = arena.slot(node.inputs[0]).map_err(error)?;
     let output = arena.slot(node.outputs[0]).map_err(error)?;
-    if input == output {
-        return Ok(None);
-    }
-    Ok(Some((input, arena.output(output).map_err(error)?)))
+    Ok((input != output).then_some((input, output)))
 }

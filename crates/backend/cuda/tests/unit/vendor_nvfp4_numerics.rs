@@ -3,6 +3,7 @@ use super::{Operands, Shape, append, make_candidate};
 use crate::device::{CudaDevice, vendor_fp8};
 use crate::mlp::Matrix;
 use crate::mlp::ProjectionWeight;
+use crate::resident::tensor_buffer as buffer;
 use crate::tuning::resident_gemm::{GemmConfig, ResidentTuningSession};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
@@ -78,20 +79,21 @@ fn vendor_fp4_matches_independent_full_scalar_output() -> TestResult {
         floats.device_pointer().cu_deviceptr()
     );
     drop(floats);
-    let mut scratch = Arc::try_unwrap(scratch).map_err(|_| "exclusive scratch")?;
-    let mut output = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
+    let scratch = Arc::try_unwrap(scratch).map_err(|_| "exclusive scratch")?;
+    let output = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
     let shared = vendor_fp8::Support::new_with(&device, true);
     let context = shared.context.ok_or("Lt unavailable")?;
     let shape = Shape { m, n, k };
-    let prepared =
-        make_candidate(&context, shape, &scratch)?.ok_or("FP4 F32 algorithm unavailable")?;
+    let prepared = make_candidate(&context, shape, buffer(&scratch)?)?
+        .ok_or("FP4 F32 algorithm unavailable")?;
     let op = Operands {
         weight: &weight,
         scale: 1.0,
-        q: &q,
-        qs: &input_scales,
-        scratch: &mut scratch,
-        output: &mut output,
+        q: buffer(&q)?,
+        qs: buffer(&input_scales)?,
+        scratch: buffer(&scratch)?,
+        output: buffer(&output)?,
+        extents: [m, n, k],
     };
     assert!(op.shape()?.is_some());
     let graph = Graph::scope(&device.stream, |scope| {
@@ -141,9 +143,9 @@ fn vendor_fp4_rejects_overlap_and_unprepared_operands() -> TestResult {
     let bytes = source.reinterpret::<f8e4m3fn>(&[m / 2, k / 16 * 128])?;
     let output = source.reinterpret::<f32>(&[m, n])?;
     drop(source);
-    let mut scratch = Arc::try_unwrap(bytes).map_err(|_| "scratch metadata")?;
-    let mut output = Arc::try_unwrap(output).map_err(|_| "output metadata")?;
-    let mut fresh = api::zeros::<f8e4m3fn>(&[m / 2, k / 16 * 128]).sync_on(&device.stream)?;
+    let scratch = Arc::try_unwrap(bytes).map_err(|_| "scratch metadata")?;
+    let output = Arc::try_unwrap(output).map_err(|_| "output metadata")?;
+    let fresh = api::zeros::<f8e4m3fn>(&[m / 2, k / 16 * 128]).sync_on(&device.stream)?;
     let mut support = super::Support::new(
         &vendor_fp8::Support::new_with(&device, true),
         &Arc::new(ResidentTuningSession::default()),
@@ -153,10 +155,11 @@ fn vendor_fp4_rejects_overlap_and_unprepared_operands() -> TestResult {
         let op = Operands {
             weight: &weight,
             scale: 1.0,
-            q: &q,
-            qs: &qs,
-            scratch: &mut fresh,
-            output: &mut output,
+            q: buffer(&q)?,
+            qs: buffer(&qs)?,
+            scratch: buffer(&fresh)?,
+            output: buffer(&output)?,
+            extents: [m, n, k],
         };
         let before = super::confirmations();
         assert!(support.candidate(&op, GemmConfig::baseline(m))?.is_none());
@@ -170,20 +173,22 @@ fn vendor_fp4_rejects_overlap_and_unprepared_operands() -> TestResult {
         let op = Operands {
             weight: &weight,
             scale: 1.0,
-            q: &q,
-            qs: &qs,
-            scratch: &mut scratch,
-            output: &mut output,
+            q: buffer(&q)?,
+            qs: buffer(&qs)?,
+            scratch: buffer(&scratch)?,
+            output: buffer(&output)?,
+            extents: [m, n, k],
         };
         assert!(op.shape()?.is_none());
         assert!(!support.record(scope, &op)?);
         let op = Operands {
             weight: &weight,
             scale: 1.0,
-            q: &q,
-            qs: &qs,
-            scratch: &mut fresh,
-            output: &mut output,
+            q: buffer(&q)?,
+            qs: buffer(&qs)?,
+            scratch: buffer(&fresh)?,
+            output: buffer(&output)?,
+            extents: [m, n, k],
         };
         assert!(op.shape()?.is_some());
         assert!(!support.record(scope, &op)?);
@@ -191,10 +196,11 @@ fn vendor_fp4_rejects_overlap_and_unprepared_operands() -> TestResult {
             let op = Operands {
                 weight: &weight,
                 scale,
-                q: &q,
-                qs: &qs,
-                scratch: &mut fresh,
-                output: &mut output,
+                q: buffer(&q)?,
+                qs: buffer(&qs)?,
+                scratch: buffer(&fresh)?,
+                output: buffer(&output)?,
+                extents: [m, n, k],
             };
             assert!(op.shape()?.is_none());
             assert!(!support.record(scope, &op)?);

@@ -3,6 +3,7 @@
     unsafe_code,
     reason = "The one place host tensors become contract buffers, so kernel calls stay safe"
 )]
+use super::arena::SlotMemory;
 use super::capture::error;
 use cutile::prelude::*;
 use infer_cuda_kernels::contract::{Buffer, KvCache, KvElement};
@@ -41,6 +42,14 @@ impl<T: DType + Element> Operand for Allocation<T> {
 
     fn operand(&self) -> Result<Buffer<'_, T::Marker>, DeviceError> {
         Ok(Self::operand(self))
+    }
+}
+
+impl Operand for SlotMemory {
+    type Marker = f32;
+
+    fn operand(&self) -> Result<Buffer<'_, f32>, DeviceError> {
+        self.buffer().map_err(error)
     }
 }
 

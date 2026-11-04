@@ -1,6 +1,7 @@
 use super::kernels;
 use crate::device::CudaDevice;
 use crate::mlp::Matrix;
+use crate::resident::tensor_buffer as buffer;
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::bench::BenchOptions as CutileBenchOptions;
 use cutile::cutile_compiler::hints::CompileOptions;
@@ -730,17 +731,17 @@ fn fused_swiglu_tuner_preserves_complete_quantized_outputs() -> Result<(), Box<d
         .generics(vec![columns.to_string()])
         .sync_on(&device.stream)?;
         let expected = operand_bytes(&device, separate_swiglu(&device, (&q, &qs), &gate, &up)?)?;
-        let mut codes = api::zeros::<f4e2m1fnx2>(&[rows, hidden / 2]).sync_on(&device.stream)?;
-        let mut scales = api::zeros::<f8e4m3fn>(&[rows, hidden / 16]).sync_on(&device.stream)?;
+        let codes = api::zeros::<f4e2m1fnx2>(&[rows, hidden / 2]).sync_on(&device.stream)?;
+        let scales = api::zeros::<f8e4m3fn>(&[rows, hidden / 16]).sync_on(&device.stream)?;
         let graph = Graph::scope(&device.stream, |scope| {
             swiglu::record(
                 (&device.kernels(), scope),
                 selected,
                 (&weights.0, &weights.1),
                 (xs, down),
-                (&q, &qs),
-                (&mut codes, &mut scales),
-                columns,
+                (buffer(&q)?, buffer(&qs)?),
+                (buffer(&codes)?, buffer(&scales)?),
+                [rows, hidden, columns],
             )
         })?;
         graph.launch().sync_on(&device.stream)?;

@@ -3,6 +3,7 @@ use crate::device::CudaDevice;
 use crate::loading::{LoadOptions, LoadedModel};
 use crate::mlp::ProjectionWeight;
 use crate::resident::nvfp4_gemm::kernels;
+use crate::resident::tensor_buffer as buffer;
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::error::tensor_error;
@@ -40,7 +41,7 @@ fn capture(
     input: &Tensor<f32>,
     quantized: &mut Quantized,
     outputs: &mut [Tensor<f32>],
-    packed: &mut Packed,
+    packed: &Packed,
     vendor: Option<(&Arc<Context>, &Arc<Prepared>)>,
 ) -> TestResult<Graph> {
     let (q, qs) = quantized;
@@ -68,10 +69,11 @@ fn capture(
                 let op = Operands {
                     weight: &layer.weight,
                     scale: layer.scale,
-                    q: &*q,
-                    qs: &*qs,
-                    scratch: &mut packed.scratch,
-                    output: out,
+                    q: buffer(&*q)?,
+                    qs: buffer(&*qs)?,
+                    scratch: buffer(&packed.scratch)?,
+                    output: buffer(&*out)?,
+                    extents: [shape.m, shape.n, shape.k],
                 };
                 assert_eq!(op.shape()?, Some(shape));
                 append((&families, scope), context, prepared, &op, shape)?;
@@ -254,7 +256,7 @@ fn actual_down_cublas_fp4_screen() -> TestResult {
     assert_eq!(float_pointer, bytes.device_pointer().cu_deviceptr());
     drop(floats);
     let scratch = Arc::try_unwrap(bytes).map_err(|_| "exclusive byte alias required")?;
-    let mut packed = Packed { scratch };
+    let packed = Packed { scratch };
     let context = context(&device).ok_or("cuBLASLt unavailable")?;
     let candidates = make_candidate(
         &context,
@@ -263,7 +265,7 @@ fn actual_down_cublas_fp4_screen() -> TestResult {
             n: OUTPUTS,
             k: COLUMNS,
         },
-        &packed.scratch,
+        buffer(&packed.scratch)?,
     )?
     .into_iter()
     .collect::<Vec<_>>();
@@ -281,7 +283,7 @@ fn actual_down_cublas_fp4_screen() -> TestResult {
         &input,
         &mut quantized,
         &mut a,
-        &mut packed,
+        &packed,
         None,
     )?;
     ga.launch().sync_on(&device.stream)?;
@@ -292,7 +294,7 @@ fn actual_down_cublas_fp4_screen() -> TestResult {
             &input,
             &mut quantized,
             &mut b,
-            &mut packed,
+            &packed,
             Some((&context, prepared)),
         )?;
         gb.launch().sync_on(&device.stream)?;
