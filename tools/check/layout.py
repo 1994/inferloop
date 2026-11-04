@@ -30,7 +30,7 @@ CUDA_HOST_TOKENS = {
     "Tensor<": 418,
     ".partition(": 5,
     ".generics(": 2,
-    "cuda_core": 73,
+    "cuda_core": 70,
     "CudaGraph": 0,
 }
 # Artifact catalogs name the architectures they ship; everything else asks `Arch` what it can do.
