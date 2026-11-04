@@ -3,9 +3,6 @@
 //! Descriptors and zero-workspace algorithms are warmed before graph capture. Native kernels
 //! remain the fallback for an absent library, unsupported shape or failed exact tuning gate.
 use super::CudaDevice;
-use crate::mlp::Matrix;
-use crate::resident::tensor_buffer;
-use cuda_core::f8e4m3fn;
 use cuda_core::sys::CUcontext;
 use cuda_core::sys::CUdeviceptr;
 use cuda_core::sys::CUmemoryPool;
@@ -22,10 +19,8 @@ use cuda_core::sys::cuPointerGetAttribute;
 use cuda_core::sys::cuStreamGetCtx;
 use cuda_core::sys::cudaError_enum_CUDA_SUCCESS;
 use cutile::cuda_async::error::DeviceError;
-use cutile::prelude::*;
 use infer_core::ErrorCode;
-use infer_cuda_kernels::contract::{Foreign, Kernels, Recording};
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::contract::{Buffer, Foreign, Fp8, Kernels, Owner, Recording};
 use serde::{Deserialize, Serialize};
 use std::ops::Deref;
 use std::ptr::null_mut;
@@ -69,6 +64,8 @@ const ALGO_WORDS: usize = 8;
 const HEURISTIC_RESERVED: usize = 4;
 const MATRIX_LAYOUTS: usize = 4;
 const GEMM_RANK: usize = 3;
+/// Device pointers of one GEMM: input, weight and output.
+const GEMM_OPERANDS: usize = 3;
 
 /// Transcribed from CUDA 13.4 cublasLt.h: `cublasLtMatmulAlgo_t` has eight uint64 words.
 #[repr(C)]
@@ -237,49 +234,57 @@ struct Shape {
     n: usize,
     k: usize,
 }
-impl Shape {
-    fn from(
-        input: &Tensor<f8e4m3fn>,
-        weight: &Tensor<f8e4m3fn>,
-        out: &Tensor<f32>,
-    ) -> Result<Self, DeviceError> {
-        let [m, k] = input.shape() else {
-            return Err(error("vendor FP8 input rank"));
-        };
-        let [n, wk] = weight.shape() else {
-            return Err(error("vendor FP8 weight rank"));
-        };
-        let [om, on] = out.shape() else {
-            return Err(error("vendor FP8 output rank"));
-        };
-        if m != om || n != on || k != wk {
-            return Err(error("vendor FP8 operand extents"));
-        }
-        let shape = Self {
-            m: usize::try_from(*m).map_err(|e| error(e.to_string()))?,
-            n: usize::try_from(*n).map_err(|e| error(e.to_string()))?,
-            k: usize::try_from(*k).map_err(|e| error(e.to_string()))?,
-        };
-        if shape.m == 0 || shape.n == 0 || shape.k == 0 {
+
+/// One row-major product `output[m, n] = input[m, k] · weight[n, k]ᵀ`, the only form the Lt
+/// layouts below describe.
+#[derive(Clone, Copy)]
+pub struct Gemm<'a> {
+    pub input: Buffer<'a, Fp8>,
+    pub weight: Buffer<'a, Fp8>,
+    pub output: Buffer<'a, f32>,
+    /// `[m, n, k]`.
+    pub extents: [usize; GEMM_RANK],
+}
+impl Gemm<'_> {
+    fn shape(&self) -> Result<Shape, DeviceError> {
+        let [m, n, k] = self.extents;
+        if m == 0 || n == 0 || k == 0 {
             return Err(error("vendor FP8 zero extent"));
         }
-        Ok(shape)
+        let elements = |rows: usize, columns: usize| {
+            rows.checked_mul(columns)
+                .ok_or_else(|| error("vendor FP8 extent overflow"))
+        };
+        if self.input.len() != elements(m, k)?
+            || self.weight.len() != elements(n, k)?
+            || self.output.len() != elements(m, n)?
+        {
+            return Err(error("vendor FP8 operand extents"));
+        }
+        Ok(Shape { m, n, k })
+    }
+
+    const fn pointers(&self) -> [CUdeviceptr; GEMM_OPERANDS] {
+        [
+            self.input.address(),
+            self.weight.address(),
+            self.output.address(),
+        ]
+    }
+
+    /// Pin a single alignment class in the preference and guard every pointer at record time,
+    /// so a shape warmed on a 256-byte allocation cannot be reused accidentally on a
+    /// less-aligned arena row alias.
+    fn aligned(&self) -> bool {
+        self.pointers()
+            .into_iter()
+            .all(|pointer| pointer.is_multiple_of(u64::from(ALIGNMENT)))
     }
 }
-/// Lt layouts below represent contiguous row-major matrices only. Pin a single alignment
-/// class in the preference and guard every pointer at record time, so a shape warmed on a
-/// 256-byte allocation cannot be reused accidentally on a less-aligned arena row alias.
-fn compatible(input: &Tensor<f8e4m3fn>, weight: &Tensor<f8e4m3fn>, out: &Tensor<f32>) -> bool {
-    input.is_contiguous()
-        && weight.is_contiguous()
-        && out.is_contiguous()
-        && [
-            input.device_pointer().cu_deviceptr(),
-            weight.device_pointer().cu_deviceptr(),
-            out.device_pointer().cu_deviceptr(),
-        ]
-        .into_iter()
-        .all(|pointer| pointer.is_multiple_of(u64::from(ALIGNMENT)))
+
+/// What a graph replaying a recorded call must keep alive.
+fn owners<const N: usize>(buffers: [Option<&Owner>; N]) -> Vec<Owner> {
+    buffers.into_iter().flatten().cloned().collect()
 }
 struct Context {
     api: &'static Api,
@@ -634,14 +639,12 @@ fn set<T: Copy>(api: &Api, desc: Handle, attr: i32, value: T) -> Result<(), Devi
 }
 #[expect(
     unsafe_code,
-    reason = "Audited raw launch uses shape-validated live tensors and a zero-workspace warmed algorithm"
+    reason = "Audited raw launch uses shape-validated live buffers and a zero-workspace warmed algorithm"
 )]
 fn launch(
     context: &Context,
     prepared: &Prepared,
-    input: &Tensor<f8e4m3fn>,
-    weight: &Tensor<f8e4m3fn>,
-    output: &Tensor<f32>,
+    [input, weight, output]: [CUdeviceptr; GEMM_OPERANDS],
 ) -> Result<(), DeviceError> {
     let _guard = context
         .calls
@@ -658,14 +661,14 @@ fn launch(
                 context.handle,
                 prepared.desc,
                 (&raw const alpha).cast(),
-                weight.device_pointer().cu_deviceptr() as *const c_void,
+                weight as *const c_void,
                 prepared.layouts[0],
-                input.device_pointer().cu_deviceptr() as *const c_void,
+                input as *const c_void,
                 prepared.layouts[1],
                 (&raw const beta).cast(),
-                output.device_pointer().cu_deviceptr() as *const c_void,
+                output as *const c_void,
                 prepared.layouts[2],
-                output.device_pointer().cu_deviceptr() as *mut c_void,
+                output as *mut c_void,
                 prepared.layouts[3],
                 &raw const prepared.algo,
                 null_mut(),
@@ -809,12 +812,9 @@ pub struct Support {
     prepared: BTreeMap<Shape, Arc<Prepared>>,
     algorithms: BTreeMap<(Shape, AlgorithmConfig), Arc<Prepared>>,
     available: BTreeMap<Shape, Vec<AlgorithmConfig>>,
-    channel_scales: BTreeMap<CUdeviceptr, Arc<Tensor<f32>>>,
     /// The epilogue that applies the channel factors the Lt GEMM leaves at one.
     kernels: Arc<Kernels>,
     rejected: BTreeSet<Shape>,
-    /// The Lt node is consumed during capture, so allocations are anchored here instead.
-    weights: BTreeMap<CUdeviceptr, Arc<Tensor<f8e4m3fn>>>,
 }
 impl Support {
     pub(crate) fn new_with(device: &CudaDevice, enabled: bool) -> Self {
@@ -824,19 +824,8 @@ impl Support {
             prepared: BTreeMap::new(),
             algorithms: BTreeMap::new(),
             available: BTreeMap::new(),
-            channel_scales: BTreeMap::new(),
             kernels: device.kernels(),
             rejected: BTreeSet::new(),
-            weights: BTreeMap::new(),
-        }
-    }
-    /// Keep every projection allocation alive independently of its shared shape algorithm.
-    /// Cloning an Arc holds the original GPU bytes; it does not allocate or copy device data.
-    pub(crate) fn retain_projection(&mut self, weight: &Arc<Tensor<f8e4m3fn>>) {
-        if self.context.is_some() {
-            self.weights
-                .entry(weight.device_pointer().cu_deviceptr())
-                .or_insert_with(|| Arc::clone(weight));
         }
     }
 
@@ -854,31 +843,17 @@ impl Support {
 
     /// Select and execute a zero-workspace algorithm before any Scope starts capture.
     /// Metadata is cached by full M/N/K, independently of checkpoint weight identity.
-    pub(crate) fn prepare(
-        &mut self,
-        input: &Tensor<f8e4m3fn>,
-        weight: &Arc<Tensor<f8e4m3fn>>,
-        output: &Tensor<f32>,
-    ) -> Result<bool, DeviceError> {
-        let configs = self.prepare_candidates(input, weight, output)?;
+    pub(crate) fn prepare(&mut self, gemm: Gemm<'_>) -> Result<bool, DeviceError> {
+        let configs = self.prepare_candidates(gemm)?;
         let Some(config) = configs.first() else {
             return Ok(false);
         };
-        let shape = Shape::from(input, weight, output)?;
+        let shape = gemm.shape()?;
         if let Some(prepared) = self.algorithms.get(&(shape, *config)).cloned() {
             self.prepared.insert(shape, prepared);
             return Ok(true);
         }
         Ok(false)
-    }
-    pub(crate) fn retain_channels(&mut self, codes: &Matrix<f8e4m3fn>, scales: &Allocation<f32>) {
-        self.retain_projection(codes.tensor());
-        if self.context.is_some() {
-            let scales = scales.tensor();
-            self.channel_scales
-                .entry(scales.device_pointer().cu_deviceptr())
-                .or_insert_with(|| Arc::clone(scales));
-        }
     }
     #[expect(
         unsafe_code,
@@ -915,29 +890,22 @@ impl Support {
     )]
     pub(crate) fn prepare_config(
         &mut self,
-        input: &Tensor<f8e4m3fn>,
-        weight: &Arc<Tensor<f8e4m3fn>>,
-        output: &Tensor<f32>,
+        gemm: Gemm<'_>,
         config: AlgorithmConfig,
     ) -> Result<bool, DeviceError> {
-        if !compatible(input, weight, output) || self.context.is_none() {
+        if !gemm.aligned() || self.context.is_none() {
             return Ok(false);
         }
-        let shape = Shape::from(input, weight, output)?;
+        let shape = gemm.shape()?;
         let Some(context) = self.context.clone() else {
             return Ok(false);
         };
         self.device
             .reclaim_barrier()
             .map_err(|e| error(e.to_string()))?;
-        for pointer in [
-            input.device_pointer().cu_deviceptr(),
-            weight.device_pointer().cu_deviceptr(),
-            output.device_pointer().cu_deviceptr(),
-        ] {
+        for pointer in gemm.pointers() {
             same_context(&context, pointer)?;
         }
-        self.retain_projection(weight);
         if self.algorithms.contains_key(&(shape, config)) {
             return Ok(true);
         }
@@ -962,7 +930,7 @@ impl Support {
             return Ok(false);
         }
         let prepared = Prepared { descriptors, algo };
-        launch(&context, &prepared, input, weight, output)?;
+        launch(&context, &prepared, gemm.pointers())?;
         self.device
             .reclaim_barrier()
             .map_err(|e| error(e.to_string()))?;
@@ -972,31 +940,23 @@ impl Support {
 
     pub(crate) fn prepare_candidates(
         &mut self,
-        input: &Tensor<f8e4m3fn>,
-        weight: &Arc<Tensor<f8e4m3fn>>,
-        output: &Tensor<f32>,
+        gemm: Gemm<'_>,
     ) -> Result<Vec<AlgorithmConfig>, DeviceError> {
         let Some(context) = self.context.clone() else {
             return Ok(Vec::new());
         };
-        if !compatible(input, weight, output) {
+        if !gemm.aligned() {
             return Ok(Vec::new());
         }
-        let shape = Shape::from(input, weight, output)?;
+        let shape = gemm.shape()?;
         // cuda.h cuMemAllocAsync: the pointer is returned immediately, but allocation must
         // complete before host metadata queries. This occurs only in pre-capture preparation.
         self.device
             .reclaim_barrier()
             .map_err(|e| error(e.to_string()))?;
-        for pointer in [
-            input.device_pointer().cu_deviceptr(),
-            weight.device_pointer().cu_deviceptr(),
-            output.device_pointer().cu_deviceptr(),
-        ] {
+        for pointer in gemm.pointers() {
             same_context(&context, pointer)?;
         }
-        // Retain even when a previous projection has already warmed this M/N/K.
-        self.retain_projection(weight);
         if let Some(configs) = self.available.get(&shape) {
             return Ok(configs.clone());
         }
@@ -1021,7 +981,7 @@ impl Support {
                 descriptors: Arc::clone(&descriptors),
                 algo: candidate.algo,
             };
-            if launch(&context, &prepared, input, weight, output).is_ok() {
+            if launch(&context, &prepared, gemm.pointers()).is_ok() {
                 self.device
                     .reclaim_barrier()
                     .map_err(|e| error(e.to_string()))?;
@@ -1039,107 +999,88 @@ impl Support {
     /// Record only a previously warmed shape. No allocation or heuristic occurs in capture.
     /// False is returned before recording any node. An error aborts the entire capture; callers
     /// must not append native kernels after an error from a partially recorded vendor path.
+    /// `scales` are the per-token and per-channel factors the epilogue applies.
     pub(crate) fn record(
         &self,
-        scope: &Scope,
-        input: &Tensor<f8e4m3fn>,
-        weight: &Tensor<f8e4m3fn>,
-        output: &Tensor<f32>,
-        xs: &Tensor<f32>,
-        ws: &Tensor<f32>,
+        recording: &Recording<'_>,
+        gemm: Gemm<'_>,
+        scales: [Buffer<'_, f32>; 2],
     ) -> Result<bool, DeviceError> {
-        let shape = Shape::from(input, weight, output)?;
-        let Some(prepared) = self.prepared.get(&shape) else {
+        let Some(prepared) = self.prepared.get(&gemm.shape()?) else {
             return Ok(false);
         };
-        self.record_prepared(scope, prepared, input, weight, output, xs, ws)
+        self.record_prepared(recording, prepared, gemm, scales)
     }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "The audited graph boundary receives all GEMM operands and scales with the selected algorithm owner"
-    )]
+
+    /// As [`Self::record`], with the algorithm `config` selects instead of the prepared default.
     pub(crate) fn record_config(
         &self,
-        scope: &Scope,
+        recording: &Recording<'_>,
         config: AlgorithmConfig,
-        input: &Tensor<f8e4m3fn>,
-        weight: &Tensor<f8e4m3fn>,
-        output: &Tensor<f32>,
-        xs: &Tensor<f32>,
-        ws: &Tensor<f32>,
+        gemm: Gemm<'_>,
+        scales: [Buffer<'_, f32>; 2],
     ) -> Result<bool, DeviceError> {
-        let shape = Shape::from(input, weight, output)?;
-        let Some(prepared) = self.algorithms.get(&(shape, config)) else {
+        let Some(prepared) = self.algorithms.get(&(gemm.shape()?, config)) else {
             return Ok(false);
         };
-        self.record_prepared(scope, prepared, input, weight, output, xs, ws)
+        self.record_prepared(recording, prepared, gemm, scales)
     }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "The audited graph boundary receives all GEMM operands and scales with the selected algorithm owner"
-    )]
+
     fn record_prepared(
         &self,
-        scope: &Scope,
+        recording: &Recording<'_>,
         prepared: &Arc<Prepared>,
-        input: &Tensor<f8e4m3fn>,
-        weight: &Tensor<f8e4m3fn>,
-        output: &Tensor<f32>,
-        xs: &Tensor<f32>,
-        ws: &Tensor<f32>,
+        gemm: Gemm<'_>,
+        [xs, ws]: [Buffer<'_, f32>; 2],
     ) -> Result<bool, DeviceError> {
         let Some(context) = self.context.as_ref() else {
             return Ok(false);
         };
-        if !compatible(input, weight, output) || !xs.is_contiguous() || !ws.is_contiguous() {
+        if !gemm.aligned() {
             return Ok(false);
         }
-        let shape = Shape::from(input, weight, output)?;
-        if xs.size() != shape.m || ws.size() != shape.n {
+        let shape = gemm.shape()?;
+        if xs.len() != shape.m || ws.len() != shape.n {
             return Err(error("vendor FP8 channel scale extents"));
         }
-        for pointer in [
-            input.device_pointer().cu_deviceptr(),
-            weight.device_pointer().cu_deviceptr(),
-            output.device_pointer().cu_deviceptr(),
-            xs.device_pointer().cu_deviceptr(),
-            ws.device_pointer().cu_deviceptr(),
-        ] {
+        for pointer in gemm
+            .pointers()
+            .into_iter()
+            .chain([xs.address(), ws.address()])
+        {
             same_context(context, pointer)?;
         }
-        Recording::scope(scope)
+        // The Lt node is consumed during capture, so the graph holds what it reads instead.
+        let keep = owners([
+            gemm.input.owner(),
+            gemm.weight.owner(),
+            gemm.output.owner(),
+            xs.owner(),
+            ws.owner(),
+        ]);
+        recording
             .foreign(
                 GemmFp8 {
                     context: context.clone(),
                     prepared: prepared.clone(),
-                    input,
-                    weight,
-                    output,
+                    pointers: gemm.pointers(),
                 },
-                Vec::new(),
+                keep,
             )
             .map_err(|error| DeviceError::Launch(error.to_string()))?;
         self.kernels
             .projection
-            .channel_scale(
-                &Recording::scope(scope),
-                shape.n,
-                tensor_buffer(output)?,
-                tensor_buffer(xs)?,
-                tensor_buffer(ws)?,
-            )
+            .channel_scale(recording, shape.n, gemm.output, xs, ws)
             .map_err(|error| DeviceError::Launch(error.to_string()))?;
         Ok(true)
     }
 }
-struct GemmFp8<'a> {
+struct GemmFp8 {
     context: Arc<Context>,
     prepared: Arc<Prepared>,
-    input: &'a Tensor<f8e4m3fn>,
-    weight: &'a Tensor<f8e4m3fn>,
-    output: &'a Tensor<f32>,
+    pointers: [CUdeviceptr; GEMM_OPERANDS],
 }
-impl Foreign for GemmFp8<'_> {
+impl Foreign for GemmFp8 {
     fn enqueue(self, stream: *mut c_void) -> infer_core::Result<()> {
         if stream != self.context.stream.cast() {
             return Err(infer_core::Error::invalid(format!(
@@ -1147,14 +1088,8 @@ impl Foreign for GemmFp8<'_> {
                 self.context.ordinal
             )));
         }
-        launch(
-            &self.context,
-            &self.prepared,
-            self.input,
-            self.weight,
-            self.output,
-        )
-        .map_err(|error| infer_core::Error::new(ErrorCode::Backend, error.to_string()))
+        launch(&self.context, &self.prepared, self.pointers)
+            .map_err(|error| infer_core::Error::new(ErrorCode::Backend, error.to_string()))
     }
 }
 pub mod nvfp4;

@@ -16,8 +16,9 @@ use crate::resident::tensor_buffer as buffer;
 use crate::tuning::preparation::driver_build;
 use crate::tuning::resident_gemm::prompt_tile_rows;
 use crate::{
+    device::vendor_fp8::Gemm,
     device::{CudaDevice, device_error, vendor_fp8},
-    mlp::ProjectionWeight,
+    mlp::{Matrix, ProjectionWeight},
 };
 use cuda_core::f8e4m3fn;
 use cutile::cutile_compiler::hints::CompileOptions;
@@ -28,7 +29,7 @@ use cutile::{
 };
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
-    Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, Kernels, Recording, WeightRef,
+    Buffer, Fp8, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, Kernels, Recording, WeightRef,
 };
 use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::runtime::Graph;
@@ -106,52 +107,43 @@ impl Choice {
             Self::Lt(config) => config.id >= 0 && config.split_k >= 0,
         }
     }
-    /// Capture only consumes a verified choice and pre-warmed Lt descriptors.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "The capture boundary explicitly names every GEMM operand, its scales and its immutable choice"
-    )]
+    /// Capture only consumes a verified choice and pre-warmed Lt descriptors. `scales` are the
+    /// per-token and per-channel factors.
     pub(crate) fn record(
         self,
-        (contract, scope): (&Kernels, &Scope),
+        (contract, recording): (&Kernels, &Recording<'_>),
         support: &vendor_fp8::Support,
-        q: &Tensor<f8e4m3fn>,
-        weight: &Tensor<f8e4m3fn>,
-        output: &Tensor<f32>,
-        xs: &Tensor<f32>,
-        ws: &Tensor<f32>,
-        columns: usize,
+        gemm: Gemm<'_>,
+        scales: [Buffer<'_, f32>; 2],
     ) -> StdResult<(), DeviceError> {
+        let [rows, outputs, columns] = gemm.extents;
         let native = match self {
             Self::Native(config) => config,
             Self::Lt(config) => {
-                if support.record_config(scope, config, q, weight, output, xs, ws)? {
+                if support.record_config(recording, config, gemm, scales)? {
                     return Ok(());
                 }
                 // An arena alias with a different alignment must fall back before any Lt node.
-                NativeConfig::baseline(
-                    usize::try_from(output.shape()[0])
-                        .map_err(|error| DeviceError::Internal(error.to_string()))?,
-                )
+                NativeConfig::baseline(rows)
             }
         };
-        let shape = |axis: usize| usize::try_from(output.shape()[axis]).map_err(fp8_launch);
+        let [xs, ws] = scales;
         contract
             .projection
             .gemm_fp8(
-                &Recording::scope(scope),
+                recording,
                 &GemmPlan {
                     main_loop: GemmLoop::Plain,
-                    rows: shape(0)?,
-                    outputs: shape(1)?,
+                    rows,
+                    outputs,
                     columns,
                     tile: native.tile(),
                 },
-                buffer(output)?,
-                (buffer(q)?, buffer(xs)?),
+                gemm.output,
+                (gemm.input, xs),
                 WeightRef::Fp8 {
-                    weight: buffer(weight)?,
-                    scales: buffer(ws)?,
+                    weight: gemm.weight,
+                    scales: ws,
                 },
                 None,
             )
@@ -494,14 +486,14 @@ impl Captured {
         let output = api::zeros::<f32>(&[rows, outputs])
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        support.retain_channels(weight_codes, ws);
-        // The cuBLASLt and tuned GEMM paths still take tensors.
-        let (weight_codes, ws) = (weight_codes.tensor(), ws.tensor());
+        let gemm = Gemm {
+            input: buffer(&codes).map_err(device_error)?,
+            weight: buffer(weight_codes).map_err(device_error)?,
+            output: buffer(&output).map_err(device_error)?,
+            extents: shape,
+        };
         let owner = if let Choice::Lt(config) = choice {
-            if !support
-                .prepare_config(&codes, weight_codes, &output, config)
-                .map_err(device_error)?
-            {
+            if !support.prepare_config(gemm, config).map_err(device_error)? {
                 return Err(Error::invalid("FP8 Lt algorithm unavailable"));
             }
             Some(
@@ -528,24 +520,17 @@ impl Captured {
                     buffer(input.as_ref())?,
                 )
                 .map_err(fp8_launch)?;
+            let recording = Recording::scope(scope);
+            let scales = [buffer(&xs)?, buffer(ws)?];
             if let Choice::Lt(config) = choice {
-                if !support.record_config(scope, config, &codes, weight_codes, &output, &xs, ws)? {
+                if !support.record_config(&recording, config, gemm, scales)? {
                     return Err(DeviceError::Internal(
                         "FP8 Lt candidate did not record its algorithm".into(),
                     ));
                 }
                 Ok(())
             } else {
-                choice.record(
-                    (&contract, scope),
-                    support,
-                    &codes,
-                    weight_codes,
-                    &output,
-                    &xs,
-                    ws,
-                    columns,
-                )
+                choice.record((&contract, &recording), support, gemm, scales)
             }
         })
         .map_err(device_error)?;
@@ -701,10 +686,13 @@ fn cached_gate(
             let out = api::zeros::<f32>(&[key.m, key.n])
                 .sync_on(&device.stream)
                 .map_err(device_error)?;
-            if !support
-                .prepare_config(&q, w.tensor(), &out, config)
-                .map_err(device_error)?
-            {
+            let gemm = Gemm {
+                input: buffer(&q).map_err(device_error)?,
+                weight: buffer(w).map_err(device_error)?,
+                output: buffer(&out).map_err(device_error)?,
+                extents: shape,
+            };
+            if !support.prepare_config(gemm, config).map_err(device_error)? {
                 return Ok(baseline);
             }
         }
@@ -766,7 +754,17 @@ fn candidates(
     }
     if vendor_candidates && let ProjectionWeight::Fp8(w, _) = weight {
         if permits(session, shape) {
-            match support.prepare_candidates(&base.codes, w.tensor(), &base.output) {
+            let gemm = buffer(&base.codes)
+                .and_then(|input| {
+                    Ok(Gemm {
+                        input,
+                        weight: buffer(w)?,
+                        output: buffer(&base.output)?,
+                        extents: shape,
+                    })
+                })
+                .and_then(|gemm| support.prepare_candidates(gemm));
+            match gemm {
                 Ok(configs) => choices.extend(configs.into_iter().map(Choice::Lt)),
                 Err(error) => {
                     tracing::warn!(target:"infer::tuning",?shape,%error,"FP8 Lt candidates unavailable: native candidates remain");
@@ -1077,8 +1075,8 @@ pub(crate) fn vendor_autotune_enabled() -> bool {
 pub(crate) fn prefill_choice(
     device: &CudaDevice,
     support: &mut vendor_fp8::Support,
-    input: &Tensor<f8e4m3fn>,
-    weight: &Arc<Tensor<f8e4m3fn>>,
+    input: Buffer<'_, Fp8>,
+    weight: &Matrix<f8e4m3fn>,
     shape: [usize; GEMM_RANK],
 ) -> Result<Option<Choice>> {
     let [rows, outputs, _] = shape;
@@ -1088,9 +1086,13 @@ pub(crate) fn prefill_choice(
     let out = api::zeros::<f32>(&[rows, outputs])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let configs = support
-        .prepare_candidates(input, weight, &out)
-        .map_err(device_error)?;
+    let gemm = Gemm {
+        input,
+        weight: buffer(weight).map_err(device_error)?,
+        output: buffer(&out).map_err(device_error)?,
+        extents: shape,
+    };
+    let configs = support.prepare_candidates(gemm).map_err(device_error)?;
     let choice = configs.first().copied().map(Choice::Lt);
     tracing::info!(target: "infer::tuning", ?shape, ?choice, "FP8 prefill cuBLASLt default");
     Ok(choice)
@@ -1105,9 +1107,6 @@ pub(crate) fn select(
     autotune: bool,
     session: &ResidentTuningSession,
 ) -> Choice {
-    if let ProjectionWeight::Fp8(codes, scales) = weight {
-        support.retain_channels(codes, scales);
-    }
     match resolve(device, support, weight, shape, autotune, session) {
         Ok(choice) => choice,
         Err(error) => {

@@ -3,8 +3,10 @@ use super::{Choice, Quantized, ResidentGemmWeightKey, WeightKey, Workspace};
 use crate::constants::{
     DEFAULT_TILE_COLUMNS, DEFAULT_TILE_ROWS, FP8_BLOCK_COLUMNS, NVFP4_GROUP_SIZE, PREFILL_LANES,
 };
+use crate::device::vendor_fp8::Gemm;
 use crate::device::{CudaDevice, device_error};
 use crate::mlp::ProjectionWeight;
+use crate::resident::tensor_buffer as buffer;
 use crate::resident::{ProgramWeights, prefill_projection::MlpPlan};
 use crate::strategy::LinearTiling;
 use crate::tuning::pool_dense;
@@ -455,10 +457,8 @@ impl Workspace {
         columns: usize,
         widths: &[usize],
     ) -> Result<()> {
-        if let Some(weight @ ProjectionWeight::Fp8(codes, scales)) =
-            weights.projections.get(&weight_id)
+        if let Some(weight @ ProjectionWeight::Fp8(codes, _)) = weights.projections.get(&weight_id)
         {
-            self.vendor_fp8.retain_channels(codes, scales);
             let outputs = graph
                 .tensors
                 .iter()
@@ -482,8 +482,8 @@ impl Workspace {
                         prefill_choice(
                             device,
                             &mut self.vendor_fp8,
-                            q,
-                            codes.tensor(),
+                            buffer(q).map_err(device_error)?,
+                            codes,
                             [rows, outputs, columns],
                         )
                     })
@@ -500,7 +500,13 @@ impl Workspace {
                     let out = api::zeros::<f32>(&[rows, outputs])
                         .sync_on(&device.stream)
                         .map_err(device_error)?;
-                    if let Err(error) = self.vendor_fp8.prepare(q, codes.tensor(), &out) {
+                    let gemm = Gemm {
+                        input: buffer(q).map_err(device_error)?,
+                        weight: buffer(codes).map_err(device_error)?,
+                        output: buffer(&out).map_err(device_error)?,
+                        extents: [rows, outputs, columns],
+                    };
+                    if let Err(error) = self.vendor_fp8.prepare(gemm) {
                         tracing::warn!(target: "infer::tuning", %error, "FP8 diagnostic preparation rejected: native fallback");
                     }
                     Choice::baseline(rows)

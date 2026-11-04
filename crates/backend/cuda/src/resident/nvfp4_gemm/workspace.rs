@@ -13,6 +13,7 @@ use infer_cuda_kernels::contract::{
     Kernels, NormFp4Buffers, NormMaximumBuffers, QuantNormPlan, Recording, WeightRef,
 };
 
+use crate::device::vendor_fp8::Gemm;
 use crate::resident::program::ProgramGeometry;
 use crate::tuning::fp8_gemm::Choice;
 use crate::tuning::fp8_gemm::WeightKey;
@@ -667,8 +668,6 @@ impl Workspace {
                     )?;
                 }
                 ProjectionWeight::Fp8(w, channel_scale) => {
-                    // The cuBLASLt and tuned paths below still take tensors.
-                    let (w, channel_scale) = (w.tensor(), channel_scale.tensor());
                     if !reuse {
                         contract
                             .projection
@@ -690,14 +689,17 @@ impl Workspace {
                         #[cfg(test)]
                         super::super::norm_maximum::record_consumption(maximum_ready);
                     }
-                    if self.vendor_diagnostic
-                        && self
-                            .vendor_fp8
-                            .record(scope, &*q, w, output, &*qs, channel_scale)?
-                    {
+                    let outputs = usize::try_from(output.shape()[1]).map_err(error)?;
+                    let gemm = Gemm {
+                        input: buffer(&*q)?,
+                        weight: buffer(w)?,
+                        output: buffer(&*output)?,
+                        extents: [rows, outputs, columns],
+                    };
+                    let scales = [buffer(&*qs)?, buffer(channel_scale)?];
+                    if self.vendor_diagnostic && self.vendor_fp8.record(&recording, gemm, scales)? {
                         return Ok(());
                     }
-                    let outputs = usize::try_from(output.shape()[1]).map_err(error)?;
                     let choice = self
                         .fp8_strategies
                         .get(&(
@@ -708,16 +710,7 @@ impl Workspace {
                         ))
                         .copied()
                         .unwrap_or_else(|| Choice::baseline(rows));
-                    choice.record(
-                        (contract, scope),
-                        &self.vendor_fp8,
-                        &*q,
-                        w,
-                        output,
-                        &*qs,
-                        channel_scale,
-                        columns,
-                    )?;
+                    choice.record((contract, &recording), &self.vendor_fp8, gemm, scales)?;
                 }
                 _ => return Err(error("FP8 workspace weight")),
             }
