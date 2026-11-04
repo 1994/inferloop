@@ -3,7 +3,8 @@ use super::Workspace;
 use crate::constants::{NVFP4_QUANT_CODES_TILE, NVFP4_QUANT_SCALES_TILE};
 use crate::device::{CudaDevice, vendor_fp8::nvfp4};
 use crate::mlp::ProjectionWeight;
-use crate::resident::arena::{Fp4Output, Fp4Scratch};
+use crate::resident::ActivationArena;
+use crate::resident::arena::Fp4Scratch;
 use crate::resident::capture::error;
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use crate::tuning::resident_gemm::{GemmConfig, WeightKey};
@@ -11,17 +12,15 @@ use cutile::prelude::*;
 use infer_cuda_kernels::tile::projection::fp4_probe::{self, ProbeGeometry};
 
 impl Workspace {
-    #[expect(
-        unsafe_code,
-        reason = "The exclusive, locked prompt arena outlives captures; synchronous preparation completes all alias use"
-    )]
+    /// Screen and warm the vendor FP4 down projection that reads arena slot `input`, an F32
+    /// product the fused plan never materializes, into `output`.
     pub(crate) fn prepare_vendor_down(
         &mut self,
         device: &CudaDevice,
         weight: &ProjectionWeight,
         scale: f32,
-        input: &mut Tensor<f32>,
-        output: &mut Tensor<f32>,
+        (arena, input): (&ActivationArena, usize),
+        output: Tensor<f32>,
         (rows, columns): (usize, usize),
     ) -> Result<(), DeviceError> {
         let ProjectionWeight::Fp4(w, _, _) = weight else {
@@ -31,15 +30,11 @@ impl Workspace {
         if !outputs.is_multiple_of(nvfp4::SCALE_ROWS) || !self.vendor_fp4.enabled() {
             return Ok(());
         }
-        // SAFETY: The fused plan never materializes this product; the locked arena retains it
-        // beyond all captures, and all probe/pack accesses are ordered on its owning stream.
-        let Some(mut scratch) = unsafe { Fp4Scratch::new(input, rows, columns) }.map_err(error)?
-        else {
+        // Probe and pack accesses to the unused product are ordered on its owning stream.
+        let Some(mut scratch) = Fp4Scratch::new(arena, input, rows, columns).map_err(error)? else {
             return Ok(());
         };
-        // SAFETY: Preparation keeps the exclusive output owner live until all temporary graphs
-        // complete and are destroyed before this function returns.
-        let mut output = unsafe { Fp4Output::new(output, rows, outputs) }.map_err(error)?;
+        let mut output = output.reshape(&[rows, outputs])?;
         let native = self
             .strategies
             .get(&(
@@ -61,7 +56,7 @@ impl Workspace {
                 q,
                 qs,
                 scratch: scratch.bytes(),
-                output: output.tensor(),
+                output: &mut output,
             };
             if self.vendor_fp4.known(&op)?.is_some() {
                 return Ok(());
@@ -93,23 +88,21 @@ impl Workspace {
                 q,
                 qs,
                 scratch: scratch.bytes(),
-                output: output.tensor(),
+                output: &mut output,
             },
             candidate,
         )?;
         Ok(())
     }
 
-    #[expect(
-        unsafe_code,
-        reason = "The fused plan proves a sole-consumer product; its source arena outlives every same-stream replay"
-    )]
+    /// Record the vendor FP4 down projection over arena slot `input`, a sole-consumer product
+    /// the fused plan never materializes; `false` when no vendor plan covers it.
     pub(crate) fn record_vendor_down(
         &self,
         scope: &Scope,
         weight: &ProjectionWeight,
         scale: f32,
-        input: &mut Tensor<f32>,
+        (arena, input): (&ActivationArena, usize),
         output: &mut Tensor<f32>,
         columns: usize,
     ) -> Result<bool, DeviceError> {
@@ -117,10 +110,8 @@ impl Workspace {
             return Ok(false);
         }
         let rows = usize::try_from(output.shape()[0]).map_err(error)?;
-        // SAFETY: The fused plan never materializes this product; the locked arena retains it
-        // beyond all captures, and all probe/pack accesses are ordered on its owning stream.
-        let Some(mut scratch) = unsafe { Fp4Scratch::new(input, rows, columns) }.map_err(error)?
-        else {
+        // Probe and pack accesses to the unused product are ordered on its owning stream.
+        let Some(mut scratch) = Fp4Scratch::new(arena, input, rows, columns).map_err(error)? else {
             return Ok(false);
         };
         let (q, qs) = self

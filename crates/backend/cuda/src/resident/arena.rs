@@ -3,8 +3,7 @@ use crate::constants::NVFP4_GROUP_SIZE;
 use crate::device::vendor_fp8::nvfp4::SCALE_ROWS;
 use crate::device::{CudaDevice, device_error};
 use cuda_core::f8e4m3fn;
-use cuda_core::sys::CUdeviceptr;
-use cutile::{cuda_async::device_buffer::DeviceAllocation, prelude::*};
+use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::Buffer;
 use infer_cuda_kernels::tile::runtime::Allocation;
@@ -362,6 +361,15 @@ impl ActivationArena {
         self.at(index)?.tensor()
     }
 
+    /// Slot `index` read as `U`s of `shape`, as [`Self::output`] gives it as floats.
+    /// # Errors
+    /// Rejects an index outside the arena and a shape that does not cover the slot's bytes.
+    pub(crate) fn output_as<U: DType>(&self, index: usize, shape: &[usize]) -> Result<Tensor<U>> {
+        let slot = self.at(index)?;
+        slot.memory
+            .view_as(slot.offset..slot.offset + slot.len, shape)
+    }
+
     /// Row `lane` of batched slot `index`, as [`Self::output`] gives the whole slot.
     /// # Errors
     /// Rejects an index outside the arena, a lane outside it or a slot that is not batched.
@@ -435,87 +443,6 @@ fn slot_tensor(memory: &Allocation<f32>, offset: usize, len: usize) -> Result<Te
     memory.view(offset..end, &[len])
 }
 
-/// `DeviceAllocation` view of one row inside a batched slot. Carries no owner:
-/// the slot itself is kept alive by the arena stored in `BatchGraph`, which
-/// outlives every captured graph that references these rows.
-struct RowAllocation {
-    pointer: CUdeviceptr,
-    bytes: usize,
-    device: usize,
-}
-
-#[expect(
-    unsafe_code,
-    reason = "Audited row aliasing: the batched arena outlives its captured graphs; \
-              row extents are checked against the slot at construction; kernels on one \
-              stream order every row access"
-)]
-// SAFETY: getters are stable for the token's lifetime; `pointer`/`bytes` describe a
-// row range verified against the source's own extent at construction in `row_view`.
-unsafe impl DeviceAllocation for RowAllocation {
-    fn device_ptr(&self) -> CUdeviceptr {
-        self.pointer
-    }
-
-    fn len_bytes(&self) -> usize {
-        self.bytes
-    }
-
-    fn device_id(&self) -> usize {
-        self.device
-    }
-}
-
-/// Borrow one lane of a batched tensor without taking ownership of the slot.
-///
-/// Used where the owner already outlives the capture (metadata rows and the batched
-/// fusion gather). The caller must keep `slot` alive for every use of the view and
-/// must not use two views of the same lane as concurrent mutable outputs.
-///
-/// # Safety
-/// The returned tensor aliases `slot`'s device memory; its lifetime is not tracked.
-#[expect(
-    unsafe_code,
-    reason = "Audited lane view: the owner is retained by the caller for the graph lifetime, \
-              the lane extent is checked against the slot, and same-stream replay serializes access"
-)]
-pub(super) unsafe fn row_view<T: DType>(
-    slot: &Tensor<T>,
-    lanes: usize,
-    lane: usize,
-) -> Result<Tensor<T>> {
-    if lanes == 0 || !slot.size().is_multiple_of(lanes) {
-        return Err(Error::invalid("activation slot is not batched"));
-    }
-    let size = slot.size() / lanes;
-    if lane >= lanes {
-        return Err(Error::invalid("activation lane out of bounds"));
-    }
-    let stride = size_of::<T>();
-    let offset = lane
-        .checked_mul(size)
-        .and_then(|row| row.checked_mul(stride))
-        .ok_or_else(|| Error::invalid("activation row offset overflow"))?;
-    let total = slot.num_bytes();
-    let allocation = RowAllocation {
-        pointer: slot.device_pointer().cu_deviceptr()
-            + u64::try_from(offset).map_err(device_error)?,
-        bytes: total
-            .checked_sub(offset)
-            .ok_or_else(|| Error::invalid("activation row extent"))?,
-        device: slot.device_id(),
-    };
-    // SAFETY: the owner is retained by the caller; the row lies fully inside the slot by
-    // construction, and the caller serializes disjoint lane access on one stream.
-    Ok(unsafe {
-        Tensor::from_foreign(
-            Arc::new(allocation),
-            vec![i32::try_from(size).map_err(device_error)?],
-            vec![1],
-        )
-    })
-}
-
 /// Every row of `memory` taken as `lanes` concatenated rows, each holding a share of it, so a
 /// row stays valid whatever happens to any other handle. Rows are disjoint, so each can be a
 /// launch's output.
@@ -541,29 +468,29 @@ pub(super) fn whole<T: DType>(memory: &Allocation<T>, shape: &[usize]) -> Result
     memory.view(0..memory.len(), shape)
 }
 
-/// Two metadata views under one exclusive lease of an unused fused FP4 product.
-/// Probe completion must precede byte packing; neither view adds device allocation.
-pub(super) struct Fp4Scratch<'a> {
+/// Float and byte views of an unused fused FP4 product, both holding the arena's memory: the
+/// probe writes the floats, then scale packing reuses the bytes, ordered on the owning stream.
+pub(super) struct Fp4Scratch {
     floats: Tensor<f32>,
     bytes: Tensor<f8e4m3fn>,
-    _source: &'a mut Tensor<f32>,
 }
-impl<'a> Fp4Scratch<'a> {
+
+impl Fp4Scratch {
     pub(super) const fn floats(&mut self) -> &mut Tensor<f32> {
         &mut self.floats
     }
+
     pub(super) const fn bytes(&mut self) -> &mut Tensor<f8e4m3fn> {
         &mut self.bytes
     }
-    /// # Safety
-    /// The source arena must outlive every captured replay. Only its current lease holder
-    /// may access these aliases, on one owning stream; probe completion precedes byte packing.
-    #[expect(
-        unsafe_code,
-        reason = "Exclusive source lease anchors complete checked aliases; the owning stream orders probe and scale packing"
-    )]
-    pub(super) unsafe fn new(
-        source: &'a mut Tensor<f32>,
+
+    /// Views of arena slot `slot` as a `[rows, columns]` product; `None` when the product's
+    /// geometry does not fit the FP4 scale layout.
+    /// # Errors
+    /// Rejects an unknown slot and overflowing geometry.
+    pub(super) fn new(
+        arena: &ActivationArena,
+        slot: usize,
         rows: usize,
         columns: usize,
     ) -> Result<Option<Self>> {
@@ -574,64 +501,17 @@ impl<'a> Fp4Scratch<'a> {
             || columns == 0
             || !rows.is_multiple_of(SCALE_ROWS)
             || !columns.is_multiple_of(NVFP4_GROUP_SIZE)
-            || source.size() != elements
-            || !source.is_contiguous()
+            || arena.buffer(slot)?.len() != elements
         {
             return Ok(None);
         }
-        // SAFETY: The exclusive source lease lasts until both aliases are destroyed, their
-        // full extents equal the source, and the caller orders probe completion before packing.
-        let floats = unsafe { row_view(source, 1, 0) }?
-            .reshape(&[rows, columns])
-            .map_err(device_error)?;
-        // SAFETY: Same full extent and exclusive source lease; only metadata is created.
-        let owner = Arc::new(unsafe { row_view(source, 1, 0) }?);
         let scale_row = columns / NVFP4_GROUP_SIZE * SCALE_ROWS;
-        let bytes = owner
-            .reinterpret::<f8e4m3fn>(&[source.num_bytes() / scale_row, scale_row])
-            .map_err(device_error)?;
-        drop(owner);
-        let bytes =
-            Arc::try_unwrap(bytes).map_err(|_| Error::invariant("FP4 exclusive byte metadata"))?;
         Ok(Some(Self {
-            floats,
-            bytes,
-            _source: source,
+            floats: arena
+                .output(slot)?
+                .reshape(&[rows, columns])
+                .map_err(device_error)?,
+            bytes: arena.output_as(slot, &[elements * F32_BYTES / scale_row, scale_row])?,
         }))
-    }
-}
-/// A shaped output alias whose exclusive owner remains borrowed through synchronous tuning.
-pub(super) struct Fp4Output<'a> {
-    tensor: Tensor<f32>,
-    _source: &'a mut Tensor<f32>,
-}
-impl<'a> Fp4Output<'a> {
-    pub(super) const fn tensor(&mut self) -> &mut Tensor<f32> {
-        &mut self.tensor
-    }
-    /// # Safety
-    /// Retain the source until every temporary preparation graph completes and is destroyed.
-    /// Serialize all accesses with the arena's owning stream and exclusive lease.
-    #[expect(
-        unsafe_code,
-        reason = "Complete shape-checked output alias is bounded by the exclusive source lease"
-    )]
-    pub(super) unsafe fn new(
-        source: &'a mut Tensor<f32>,
-        rows: usize,
-        columns: usize,
-    ) -> Result<Self> {
-        if rows.checked_mul(columns) != Some(source.size()) || !source.is_contiguous() {
-            return Err(Error::invalid("FP4 output shape"));
-        }
-        // SAFETY: The source is exclusively borrowed for the alias lifetime; temporary
-        // preparation graphs complete and are destroyed before this lease is released.
-        let tensor = unsafe { row_view(source, 1, 0) }?
-            .reshape(&[rows, columns])
-            .map_err(device_error)?;
-        Ok(Self {
-            tensor,
-            _source: source,
-        })
     }
 }
