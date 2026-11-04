@@ -26,6 +26,35 @@ impl Fp8Memory {
             .collect()
     }
 
+    /// Another view of every cache, shaped like its tensor in `like`: capture leaves a cache in
+    /// its head-major `[kv_heads, capacity, head_dim]` layout, and state copies compare shapes.
+    /// # Errors
+    /// Rejects a cache `like` lacks or a shape that does not cover the memory.
+    pub(super) fn views_like(&self, like: &Fp8Caches) -> Result<Fp8Caches> {
+        let shaped = |memory: &Allocation<f8e4m3fn>, dims: &[i32]| {
+            let shape = dims
+                .iter()
+                .map(|&dim| usize::try_from(dim).map_err(device_error))
+                .collect::<Result<Vec<_>>>()?;
+            memory.view(0..memory.len(), &shape)
+        };
+        self.0
+            .iter()
+            .map(|(id, (keys, values))| {
+                let (like_keys, like_values) = like
+                    .get(id)
+                    .ok_or_else(|| Error::invariant("fp8 cache view layout"))?;
+                Ok((
+                    *id,
+                    (
+                        shaped(keys, like_keys.shape())?,
+                        shaped(values, like_values.shape())?,
+                    ),
+                ))
+            })
+            .collect()
+    }
+
     /// Device bytes of every cache: one per FP8 element.
     pub(super) fn bytes(&self) -> u64 {
         self.0

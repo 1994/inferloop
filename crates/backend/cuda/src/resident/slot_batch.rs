@@ -887,11 +887,12 @@ impl SlotPool {
         &self,
         slot: usize,
     ) -> Result<(States, Fp8Caches, Tensor<i32>)> {
-        let fp8 = self
-            .fp8_memory
-            .get(slot)
-            .ok_or_else(|| Error::invalid("slot view index"))?
-            .views()?;
+        let memory = self.fp8_memory.get(slot);
+        let caches = self.fp8.get(slot);
+        let (Some(memory), Some(caches)) = (memory, caches) else {
+            return Err(Error::invalid("slot view index"));
+        };
+        let fp8 = memory.views_like(caches)?;
         let state_views = self.states.lane(slot)?;
         let blocks = self.table_memory.len() / self.width();
         let table = self
