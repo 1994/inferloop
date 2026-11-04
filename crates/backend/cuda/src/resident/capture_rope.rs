@@ -44,7 +44,7 @@ impl Capture<'_> {
                 Some(axes.ok_or_else(|| error("missing rotary axes"))?),
             ),
             CaptureMode::Prefill => (RopeMode::Prompt, None),
-            _ if self.metadata.size() == METADATA_FIELDS * 2 && axes.is_some() => {
+            _ if self.metadata.len() == METADATA_FIELDS * 2 && axes.is_some() => {
                 (RopeMode::SingleAxes, axes)
             }
             _ => (RopeMode::Single, None),
@@ -67,7 +67,7 @@ impl Capture<'_> {
                     x: self.input_buffer(node.inputs[0])?,
                     frequencies: buffer(frequency)?,
                     axes: axes.map(buffer).transpose()?,
-                    metadata: buffer(self.metadata)?,
+                    metadata: self.metadata,
                 },
             )
             .map_err(error)

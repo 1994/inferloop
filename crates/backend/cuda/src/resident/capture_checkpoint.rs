@@ -103,7 +103,7 @@ impl Capture<'_> {
                     history: [buffer(h0)?, buffer(h1)?, buffer(h2)?],
                     input: self.input_buffer(node.inputs[0])?,
                     weight: self.input_buffer(node.inputs[1])?,
-                    metadata: buffer(self.metadata)?,
+                    metadata: self.metadata,
                 },
             )
             .map_err(error)
@@ -152,7 +152,7 @@ impl Capture<'_> {
                     alpha: self.input_buffer(node.inputs[2])?,
                     decay: self.input_buffer(node.inputs[3])?,
                     bias: self.input_buffer(node.inputs[4])?,
-                    metadata: buffer(self.metadata)?,
+                    metadata: self.metadata,
                 },
             )
             .map_err(error)

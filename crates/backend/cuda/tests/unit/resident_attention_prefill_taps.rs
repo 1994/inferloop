@@ -2,9 +2,11 @@
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::METADATA_FIELDS;
 use crate::device::device_error;
+use crate::resident::buffers::buffer;
 use crate::{device::CudaDevice, resident::ProgramWeights, tuning::attention::Choice};
 use cutile::prelude::*;
 use infer_core::{Result, TensorId};
+use infer_cuda_kernels::contract::{Buffer, Recording};
 use infer_ir::{DataflowGraph, TensorOp};
 use std::result::Result as StdResult;
 use std::{cell::Cell, collections::BTreeMap};
@@ -104,7 +106,7 @@ impl Taps {
         scope: &Scope,
         key: (TensorId, usize),
         input: [&Tensor<f32>; 3],
-        bindings: (&Tensor<i32>, &Tensor<i32>),
+        (metadata, table): (Buffer<'_, i32>, Buffer<'_, i32>),
     ) -> StdResult<(), DeviceError> {
         if let Some(tap) = self.buffers.get_mut(&key) {
             for (out, input) in [
@@ -114,19 +116,27 @@ impl Taps {
             ] {
                 scope.record(api::memcpy(out, input))?;
             }
-            scope.record(api::memcpy(&mut tap.metadata, bindings.0))?;
-            scope.record(api::memcpy(&mut tap.table, bindings.1))?;
+            let recording = Recording::scope(scope);
+            let copy = |tap: &Tensor<i32>, source| {
+                recording
+                    .copy(buffer(tap)?, source)
+                    .map_err(|error| DeviceError::Internal(error.to_string()))
+            };
+            copy(&tap.metadata, metadata)?;
+            copy(&tap.table, table)?;
         }
         Ok(())
     }
     pub fn output(
-        &mut self,
+        &self,
         scope: &Scope,
         key: (TensorId, usize),
-        output: &Tensor<f32>,
+        output: Buffer<'_, f32>,
     ) -> StdResult<(), DeviceError> {
-        if let Some(tap) = self.buffers.get_mut(&key) {
-            scope.record(api::memcpy(&mut tap.output, output))?;
+        if let Some(tap) = self.buffers.get(&key) {
+            Recording::scope(scope)
+                .copy(buffer(&tap.output)?, output)
+                .map_err(|error| DeviceError::Internal(error.to_string()))?;
         }
         Ok(())
     }

@@ -56,13 +56,13 @@ pub(super) struct Capture<'a> {
     pub attention: &'a mut super::attention_decode::Workspace,
     pub fp8_states: &'a mut super::fp8_cache::Fp8Caches,
     pub states: &'a mut BTreeMap<TensorId, Vec<Tensor<f32>>>,
-    pub metadata: &'a Tensor<i32>,
+    pub metadata: Buffer<'a, i32>,
     /// Logical-to-physical KV block ids for the sequence this capture belongs to. Step 1 of the
     /// KV refactor keeps it an identity mapping over the sequence's own cache, so kernels resolve
     /// a position through it while every byte stays where it is today; the allocator of step 2
     /// will hand these blocks out across sequences.
-    pub table: &'a Tensor<i32>,
-    pub external: &'a Tensor<f32>,
+    pub table: Buffer<'a, i32>,
+    pub external: Buffer<'a, f32>,
     pub capacity: usize,
     pub fusion: &'a mut Option<super::program::FusionWorkspace>,
     pub mode: CaptureMode,
@@ -179,10 +179,11 @@ impl Capture<'_> {
             self.operation(node, &output, part)?;
             #[cfg(test)]
             if self.mode == CaptureMode::Prefill && matches!(node.op, TensorOp::Attention { .. }) {
-                let written = output.tensor(&[output.len()]).map_err(error)?;
-                self.attention
-                    .taps
-                    .output(self.scope, (*id, self.arena.lanes()), &written)?;
+                self.attention.taps.output(
+                    self.scope,
+                    (*id, self.arena.lanes()),
+                    output.buffer().map_err(error)?,
+                )?;
             }
         }
         Ok(())
@@ -432,7 +433,7 @@ impl Capture<'_> {
                     external: true,
                 },
                 (buffer(output)?, buffer(weight)?),
-                (buffer(self.external)?, buffer(self.metadata)?),
+                (self.external, self.metadata),
             )?;
         }
         Ok(())
@@ -466,7 +467,7 @@ impl Capture<'_> {
                 external: false,
             },
             (buffer(&work.embedding)?, buffer(weight)?),
-            (buffer(self.external)?, buffer(self.metadata)?),
+            (self.external, self.metadata),
         )?;
         let normalized = work
             .normalized
@@ -480,7 +481,7 @@ impl Capture<'_> {
             dimension,
             (
                 buffer(&work.embedding)?,
-                buffer(self.external)?,
+                self.external,
                 buffer(&normalized)?,
             ),
         )?;
@@ -513,11 +514,7 @@ impl Capture<'_> {
             &self.weights.kernels,
             fusion,
             dimension,
-            (
-                buffer(embedding)?,
-                buffer(self.external)?,
-                buffer(&normalized)?,
-            ),
+            (buffer(embedding)?, self.external, buffer(&normalized)?),
         )?;
         Ok(normalized.reshape(&[2 * dimension])?)
     }
