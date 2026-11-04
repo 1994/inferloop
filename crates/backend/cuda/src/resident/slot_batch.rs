@@ -4,7 +4,7 @@
 //! through a single graph replay per step.
 use super::{
     batch::{BatchOutput, SlotDecodeGraph, SlotLane, States},
-    fp8_cache::{Fp8Caches, allocate},
+    fp8_cache::{Fp8Caches, Fp8Memory, allocate_memory},
     program::ProgramWeights,
     slot_states::SlotStates,
     slot_verify::{SlotVerifyGraph, SlotVerifyLane},
@@ -186,7 +186,15 @@ type LaneInputs = (
     Vec<Option<Staging<f32>>>,
     Vec<Option<super::program::FusionWorkspace>>,
 );
-type SlotStorage = (SlotStates, Vec<Fp8Caches>, Vec<Tensor<i32>>, Tensor<i32>);
+type SlotStorage = (SlotStates, Fp8Slots, Tables);
+/// Each slot's FP8 KV caches and the allocations they view.
+type Fp8Slots = (Vec<Fp8Caches>, Vec<Fp8Memory>);
+/// Each slot's block table row, the whole `[slots, blocks]` table and its allocation.
+struct Tables {
+    rows: Vec<Tensor<i32>>,
+    root: Tensor<i32>,
+    memory: Allocation<i32>,
+}
 
 /// How one state family moves into a slot at bind time: a token-row prefix of a
 /// capacity-sized KV cache (f32 or fp8), or the whole tensor (conv/delta state).
@@ -218,25 +226,6 @@ fn copy_plan(graph: &DataflowGraph, weights: &ProgramWeights) -> Result<Vec<(Ten
         plan.push((spec.id, copy));
     }
     Ok(plan)
-}
-
-/// Whole-tensor aliases of every cache in `caches`.
-/// # Safety
-/// The caches must outlive the aliases; see [`SlotPool::slot_views`].
-#[expect(
-    unsafe_code,
-    reason = "Audited cache alias: forwarded from the pool's view contracts"
-)]
-unsafe fn alias_caches(caches: &Fp8Caches) -> Result<Fp8Caches> {
-    let mut views = Fp8Caches::new();
-    for (id, (keys, values)) in caches {
-        // SAFETY: forwarded from this function's contract.
-        let keys = unsafe { alias(keys)? };
-        // SAFETY: forwarded from this function's contract.
-        let values = unsafe { alias(values)? };
-        views.insert(*id, (keys, values));
-    }
-    Ok(views)
 }
 
 /// Whether two tensors start at the same device address: a slot-resident program's view and the
@@ -307,24 +296,6 @@ fn gather_kv<T: DType + Element>(
     Ok(dst)
 }
 
-/// A whole-tensor alias with the source's shape.
-/// # Safety
-/// The source must outlive the alias; see [`SlotPool::slot_views`].
-#[expect(
-    unsafe_code,
-    reason = "Audited slot alias: forwarded from SlotPool::slot_views"
-)]
-unsafe fn alias<T: DType>(tensor: &Tensor<T>) -> Result<Tensor<T>> {
-    let shape = tensor
-        .shape()
-        .iter()
-        .map(|&dim| usize::try_from(dim).map_err(device_error))
-        .collect::<Result<Vec<_>>>()?;
-    // SAFETY: forwarded from this function's contract; one lane spans the whole tensor.
-    let view = unsafe { super::arena::row_view(tensor, 1, 0)? };
-    view.reshape(&shape).map_err(device_error)
-}
-
 /// Device bytes one slot's state tensors occupy: f32 states plus fp8 KV caches.
 fn state_bytes(states: &States, fp8: &Fp8Caches) -> u64 {
     let float_elements: u64 = states
@@ -382,8 +353,8 @@ impl SlotLedger {
 /// block table: a slot holds blocks for the tokens its sequence can reach, not the pool's
 /// whole per-slot capacity.
 struct Paging {
-    /// Owner of the shared caches; each slot's entry in `SlotPool::fp8` aliases it.
-    shared: Fp8Caches,
+    /// Allocations of the shared caches; each slot's entry in `SlotPool::fp8` views them.
+    shared: Fp8Memory,
     /// The shared page ledger; this pool only maps its leases to device rows.
     pages: BlockPool,
     leases: Vec<Vec<BlockLease>>,
@@ -392,17 +363,6 @@ struct Paging {
 }
 
 impl Paging {
-    /// A slot's view of the shared caches; the slot's table selects its blocks.
-    #[expect(
-        unsafe_code,
-        reason = "Audited pool alias: the pool owns the shared caches and drops its graphs and \
-                  slot views first"
-    )]
-    fn slot_caches(&self) -> Result<Fp8Caches> {
-        // SAFETY: see the expectation above.
-        unsafe { alias_caches(&self.shared) }
-    }
-
     /// Return a slot's pages to the ledger.
     fn release(&mut self, slot: usize) -> Result<()> {
         let leases = self
@@ -450,10 +410,14 @@ pub struct SlotPool {
     _narrow_roots: Vec<States>,
     states: SlotStates,
     fp8: Vec<Fp8Caches>,
+    /// The allocations each slot's caches view, so slot views can hold their memory.
+    fp8_memory: Vec<Fp8Memory>,
     _lanes_attention: super::attention_lanes::Workspace,
     _table_root: Tensor<i32>,
     /// Per-slot identity block tables; declared with the states so they outlive the captures.
     tables: Vec<Tensor<i32>>,
+    /// The allocation the tables view.
+    table_memory: Allocation<i32>,
     table_staging: PinnedUpload<i32>,
     plan: Vec<(TensorId, SlotCopy)>,
     /// Shared physical KV blocks behind every slot's table, when the pool pages its KV.
@@ -578,7 +542,7 @@ impl SlotPool {
         let headroom = device.profile()?.device_headroom_bytes();
         let budget = device.allocatable_memory_bytes()?.saturating_sub(headroom);
         let paging = Self::paging(device, graph, weights, (width, capacity), kv_tokens)?;
-        let (mut states, mut fp8, tables, table_root) = Self::allocate_slots(
+        let (mut states, (mut fp8, fp8_memory), tables) = Self::allocate_slots(
             device,
             graph,
             weights,
@@ -611,7 +575,7 @@ impl SlotPool {
                 lane_external: &mut lane_external,
                 lane_external_owner: None,
                 lane_fusion: &mut lane_fusion,
-                tables: &tables,
+                tables: &tables.rows,
                 capacity,
                 width,
                 table_root: None,
@@ -633,7 +597,7 @@ impl SlotPool {
                     &mut states,
                     &mut fp8,
                     &narrow_slots,
-                    &table_root,
+                    &tables.root,
                 )?;
                 (Some(decode), None, decode_narrow, Vec::new(), Vec::new())
             }
@@ -648,7 +612,9 @@ impl SlotPool {
             _narrow_roots: narrow_roots,
             states,
             fp8,
-            tables,
+            fp8_memory,
+            tables: tables.rows,
+            table_memory: tables.memory,
             table_staging: PinnedUpload::slots(device, capacity.div_ceil(KV_BLOCK_TOKENS), width)?,
             plan,
             paging,
@@ -660,7 +626,7 @@ impl SlotPool {
             _nvfp4: nvfp4,
             _attention: attention,
             _lanes_attention: lanes_attention,
-            _table_root: table_root,
+            _table_root: tables.root,
             lane_external,
             external_uploaded: vec![false; lanes],
             pinned_external,
@@ -695,7 +661,7 @@ impl SlotPool {
         paging: Option<&Paging>,
         budget: u64,
     ) -> Result<SlotStorage> {
-        let paging_bytes = paging.map_or(0, |paging| state_bytes(&States::new(), &paging.shared));
+        let paging_bytes = paging.map_or(0, |paging| paging.shared.bytes());
         let states = SlotStates::allocate(
             device,
             graph,
@@ -704,13 +670,16 @@ impl SlotPool {
             budget.saturating_sub(paging_bytes),
         )?;
         let mut fp8 = Vec::with_capacity(width);
+        let mut fp8_memory = Vec::with_capacity(width);
         let mut tables = Vec::with_capacity(width);
-        let mut bytes = paging.map_or(0, |paging| state_bytes(&States::new(), &paging.shared));
+        let mut bytes = paging_bytes;
         for slot_states in states.iter() {
-            let slot_fp8 = match paging {
-                Some(paging) => paging.slot_caches()?,
-                None => allocate(device, graph, capacity, &weights.kv_scales)?,
+            // A paged slot views the shared caches; its table selects its blocks.
+            let memory = match paging {
+                Some(paging) => paging.shared.clone(),
+                None => allocate_memory(device, graph, capacity, &weights.kv_scales)?,
             };
+            let slot_fp8 = memory.views()?;
             let slot_bytes = paging.map_or_else(
                 || state_bytes(slot_states, &slot_fp8),
                 |_| state_bytes(slot_states, &Fp8Caches::new()),
@@ -725,6 +694,7 @@ impl SlotPool {
                 ));
             }
             fp8.push(slot_fp8);
+            fp8_memory.push(memory);
         }
         // Step 1 of the KV refactor: a per-slot identity mapping over that slot's own cache.
         // A paged pool fills the table from its shared blocks when the slot is assigned.
@@ -733,7 +703,15 @@ impl SlotPool {
         )?))?;
         tables.extend(super::arena::rows(&memory, width)?);
         let root = super::arena::whole(&memory, &[width, memory.len() / width])?;
-        Ok((states, fp8, tables, root))
+        Ok((
+            states,
+            (fp8, fp8_memory),
+            Tables {
+                rows: tables,
+                root,
+                memory,
+            },
+        ))
     }
 
     /// Per-lane external hidden rows plus, for an external-hidden pool, their pinned
@@ -895,41 +873,32 @@ impl SlotPool {
 
     /// Views of one slot's recurrent states and KV caches, for a program that prefills
     /// straight into the slot ([`super::program::DeviceProgram::new_on_slot`]).
+    /// Every view holds the memory it addresses.
     /// # Safety
-    /// The pool must outlive the views and every graph captured through them, and only the
-    /// slot's current owner may replay those graphs, serialized on the device stream.
+    /// Only the slot's current owner may replay graphs captured through the views, serialized on
+    /// the device stream.
     /// # Errors
     /// Rejects an unknown slot.
     #[expect(
         unsafe_code,
-        reason = "Audited slot alias: the views share the slot's storage under the caller's contract"
+        reason = "Audited slot alias: the caller serializes replays through the views with the slot's owner"
     )]
     pub(crate) unsafe fn slot_views(
         &self,
         slot: usize,
     ) -> Result<(States, Fp8Caches, Tensor<i32>)> {
-        let fp8 = self
-            .fp8
-            .get(slot)
-            .ok_or_else(|| Error::invalid("slot view index"))?;
-        let state_views = self.states.lane(slot)?;
-        // SAFETY: forwarded from this function's contract.
-        let table = unsafe {
-            alias(
-                self.tables
-                    .get(slot)
-                    .ok_or_else(|| Error::invalid("slot view index"))?,
-            )?
+        let memory = self.fp8_memory.get(slot);
+        let caches = self.fp8.get(slot);
+        let (Some(memory), Some(caches)) = (memory, caches) else {
+            return Err(Error::invalid("slot view index"));
         };
-        let mut fp8_views = Fp8Caches::new();
-        for (id, (keys, values)) in fp8 {
-            // SAFETY: forwarded from this function's contract.
-            let keys = unsafe { alias(keys)? };
-            // SAFETY: forwarded from this function's contract.
-            let values = unsafe { alias(values)? };
-            fp8_views.insert(*id, (keys, values));
-        }
-        Ok((state_views, fp8_views, table))
+        let fp8 = memory.views_like(caches)?;
+        let state_views = self.states.lane(slot)?;
+        let blocks = self.table_memory.len() / self.width();
+        let table = self
+            .table_memory
+            .view(slot * blocks..(slot + 1) * blocks, &[blocks])?;
+        Ok((state_views, fp8, table))
     }
 
     /// Return a slot to the free set; the next bind overwrites its state prefix.
@@ -980,19 +949,13 @@ impl SlotPool {
     }
 
     /// Views of the shared paged KV caches, for the prompt worker; `None` when unpaged.
-    /// # Safety
-    /// The pool must outlive the views and every graph captured through them.
+    /// The views hold the caches' memory, so they stay valid on their own.
     /// # Errors
     /// Propagates view failures.
-    #[expect(
-        unsafe_code,
-        reason = "Audited pool alias: the views share the paged caches under the caller's contract"
-    )]
-    pub(crate) unsafe fn kv_views(&self) -> Result<Option<Fp8Caches>> {
+    pub(crate) fn kv_views(&self) -> Result<Option<Fp8Caches>> {
         self.paging
             .as_ref()
-            // SAFETY: forwarded from this function's contract.
-            .map(|paging| unsafe { alias_caches(&paging.shared) })
+            .map(|paging| paging.shared.views())
             .transpose()
     }
 
@@ -1010,7 +973,7 @@ impl SlotPool {
         };
         let block = KV_BLOCK_TOKENS;
         let blocks = tokens.div_ceil(block).max(capacity.div_ceil(block));
-        let shared = allocate(device, graph, blocks * block, &weights.kv_scales)?;
+        let shared = allocate_memory(device, graph, blocks * block, &weights.kv_scales)?;
         Ok(Some(Paging {
             shared,
             pages: BlockPool::new(blocks)?,

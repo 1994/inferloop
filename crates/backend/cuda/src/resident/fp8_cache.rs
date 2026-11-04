@@ -2,17 +2,89 @@ use crate::device::{CudaDevice, device_error};
 use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 pub type Fp8Caches = BTreeMap<TensorId, (Tensor<f8e4m3fn>, Tensor<f8e4m3fn>)>;
 
+/// The allocations behind a set of FP8 KV caches. Views cut from it hold the memory, so an owner
+/// that keeps it can hand out caches without aliasing tensors it does not own.
+#[derive(Clone, Default)]
+pub(super) struct Fp8Memory(BTreeMap<TensorId, (Allocation<f8e4m3fn>, Allocation<f8e4m3fn>)>);
+
+impl Fp8Memory {
+    /// Another view of every cache, sharing its memory.
+    /// # Errors
+    /// Propagates view failures.
+    pub(super) fn views(&self) -> Result<Fp8Caches> {
+        let whole = |memory: &Allocation<f8e4m3fn>| memory.view(0..memory.len(), &[memory.len()]);
+        self.0
+            .iter()
+            .map(|(id, (keys, values))| Ok((*id, (whole(keys)?, whole(values)?))))
+            .collect()
+    }
+
+    /// Another view of every cache, shaped like its tensor in `like`: capture leaves a cache in
+    /// its head-major `[kv_heads, capacity, head_dim]` layout, and state copies compare shapes.
+    /// # Errors
+    /// Rejects a cache `like` lacks or a shape that does not cover the memory.
+    pub(super) fn views_like(&self, like: &Fp8Caches) -> Result<Fp8Caches> {
+        let shaped = |memory: &Allocation<f8e4m3fn>, dims: &[i32]| {
+            let shape = dims
+                .iter()
+                .map(|&dim| usize::try_from(dim).map_err(device_error))
+                .collect::<Result<Vec<_>>>()?;
+            memory.view(0..memory.len(), &shape)
+        };
+        self.0
+            .iter()
+            .map(|(id, (keys, values))| {
+                let (like_keys, like_values) = like
+                    .get(id)
+                    .ok_or_else(|| Error::invariant("fp8 cache view layout"))?;
+                Ok((
+                    *id,
+                    (
+                        shaped(keys, like_keys.shape())?,
+                        shaped(values, like_values.shape())?,
+                    ),
+                ))
+            })
+            .collect()
+    }
+
+    /// Device bytes of every cache: one per FP8 element.
+    pub(super) fn bytes(&self) -> u64 {
+        self.0
+            .values()
+            .map(|(keys, values)| (keys.len() + values.len()) as u64)
+            .sum()
+    }
+}
+
+/// FP8 KV caches of `capacity` positions for every scaled attention state.
+/// # Errors
+/// As [`allocate_memory`].
 pub(super) fn allocate(
     device: &CudaDevice,
     graph: &DataflowGraph,
     capacity: usize,
     scales: &BTreeMap<TensorId, [f32; 2]>,
 ) -> Result<Fp8Caches> {
+    allocate_memory(device, graph, capacity, scales)?.views()
+}
+
+/// The allocations for [`allocate`].
+/// # Errors
+/// Rejects invalid bindings or scales, budgets past the device, and failed allocation.
+pub(super) fn allocate_memory(
+    device: &CudaDevice,
+    graph: &DataflowGraph,
+    capacity: usize,
+    scales: &BTreeMap<TensorId, [f32; 2]>,
+) -> Result<Fp8Memory> {
     let mut plan = Vec::new();
     let mut bytes = 0usize;
     let budget = device
@@ -53,13 +125,14 @@ pub(super) fn allocate(
     }
     let mut result = BTreeMap::new();
     for (id, size) in plan {
-        let keys = api::zeros::<f8e4m3fn>(&[size])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
-        let values = api::zeros::<f8e4m3fn>(&[size])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
-        result.insert(id, (keys, values));
+        let zeros = || -> Result<Allocation<f8e4m3fn>> {
+            Allocation::adopt(Arc::new(
+                api::zeros::<f8e4m3fn>(&[size])
+                    .sync_on(&device.stream)
+                    .map_err(device_error)?,
+            ))
+        };
+        result.insert(id, (zeros()?, zeros()?));
     }
-    Ok(result)
+    Ok(Fp8Memory(result))
 }
