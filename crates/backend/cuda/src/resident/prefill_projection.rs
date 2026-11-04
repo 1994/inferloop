@@ -446,7 +446,7 @@ pub(super) fn record(
         weight,
         weights.activation_quantization(node.inputs[1]),
         buffer(flat_input)?,
-        &output,
+        tensor_rows(&output)?,
         columns,
     )? {
         return Ok(());

@@ -1,7 +1,7 @@
 //! Exact activation-quantization CSE on real checkpoint gate/up pairs.
 //! No observer kernels enter either arm; snapshots and input updates stay outside replay.
 use super::{QuantPairPlan, Workspace, record_certified};
-use crate::resident::buffers::region;
+use crate::resident::buffers::{region, tensor_rows};
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use crate::{
     device::CudaDevice,
@@ -434,7 +434,7 @@ fn capture_pair(
                 weight,
                 pair.weights.activation_quantization(id),
                 region(input_pointer, input_view.size()),
-                output,
+                tensor_rows(output)?,
                 pair.columns,
             )? {
                 return Err(DeviceError::Launch(

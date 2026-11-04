@@ -372,17 +372,62 @@ impl ActivationArena {
             .view_as(slot.offset..slot.offset + slot.len, shape)
     }
 
-    /// Row `lane` of batched slot `index`, as [`Self::output`] gives the whole slot.
+    /// Slot `index` as memory a kernel writes, held apart from the arena: it shares the slot's
+    /// allocation, so a capture can write it while it borrows the arena elsewhere.
+    /// # Errors
+    /// Rejects an index outside the arena.
+    pub(crate) fn memory(&self, index: usize) -> Result<SlotMemory> {
+        Ok(self.at(index)?.memory())
+    }
+
+    /// Row `lane` of batched slot `index`, as [`Self::memory`] gives the whole slot.
     /// # Errors
     /// Rejects an index outside the arena, a lane outside it or a slot that is not batched.
-    pub(crate) fn output_row(&self, index: usize, lane: usize) -> Result<Tensor<f32>> {
-        self.at(index)?.row(self.lanes, lane)?.tensor()
+    pub(crate) fn row_memory(&self, index: usize, lane: usize) -> Result<SlotMemory> {
+        Ok(self.at(index)?.row(self.lanes, lane)?.memory())
     }
 
     fn at(&self, index: usize) -> Result<&Slot> {
         self.slots
             .get(index)
             .ok_or_else(|| Error::invalid("activation slot index"))
+    }
+}
+
+/// Elements `offset..offset + len` of an arena slot, sharing its allocation.
+#[derive(Clone)]
+pub struct SlotMemory {
+    memory: Allocation<f32>,
+    offset: usize,
+    len: usize,
+}
+
+impl SlotMemory {
+    /// The memory as a kernel operand, kept alive by any recording that retains it.
+    /// # Errors
+    /// As [`Buffer::slice`], which cannot fail for a range the arena checked.
+    pub(crate) fn buffer(&self) -> Result<Buffer<'_, f32>> {
+        self.memory
+            .buffer()
+            .slice(self.offset..self.offset + self.len)
+    }
+
+    #[must_use]
+    pub(crate) const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Ordinal of the device holding the memory.
+    #[must_use]
+    pub(crate) fn device(&self) -> usize {
+        self.memory.device()
+    }
+
+    /// The memory shaped `shape`, for kernels still launched through cuTile.
+    /// # Errors
+    /// Rejects a shape that does not cover the memory.
+    pub(crate) fn tensor(&self, shape: &[usize]) -> Result<Tensor<f32>> {
+        self.memory.view(self.offset..self.offset + self.len, shape)
     }
 }
 
@@ -430,6 +475,14 @@ impl Slot {
         self.memory
             .buffer()
             .slice(self.offset..self.offset + self.len)
+    }
+
+    fn memory(&self) -> SlotMemory {
+        SlotMemory {
+            memory: self.memory.clone(),
+            offset: self.offset,
+            len: self.len,
+        }
     }
 
     fn tensor(&self) -> Result<Tensor<f32>> {

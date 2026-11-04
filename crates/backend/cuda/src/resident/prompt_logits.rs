@@ -3,7 +3,7 @@
 //! A prompt chunk reads back one row of logits, so its arena keeps one row (see
 //! [`super::ActivationArena::new_prompt`]) instead of `lanes x vocabulary`, which is most of a
 //! wide prompt arena (2 GB at 2048 lanes for a 248K vocabulary).
-use super::buffers::buffer;
+use super::buffers::{RowMajor, buffer};
 use super::{ActivationArena, ProgramWeights, capture::error};
 use cutile::prelude::*;
 use infer_cuda_kernels::contract::{LastRowsKind, LastRowsPlan, Recording};
@@ -86,16 +86,14 @@ pub(super) fn record(
             .map_err(error)?;
     }
     let slot = arena.slot(node.outputs[0]).map_err(error)?;
-    let output = arena.output(slot).map_err(error)?;
-    let vocabulary = output.size();
-    let matrix = output.reshape(&[1, vocabulary])?;
+    let output = arena.buffer(slot).map_err(error)?;
     let recorded = super::nvfp4_gemm::record_certified(
         (&weights.kernels, scope),
         nvfp4,
         weight,
         Some(quantization),
         buffer(&*row)?,
-        &matrix,
+        RowMajor::new(output, 1, output.len())?,
         hidden,
     )?;
     if recorded {
