@@ -1,3 +1,4 @@
+use super::buffers::buffer;
 use crate::constants::F32_BYTES;
 use crate::constants::NVFP4_GROUP_SIZE;
 use crate::device::vendor_fp8::nvfp4::SCALE_ROWS;
@@ -5,10 +6,11 @@ use crate::device::{CudaDevice, device_error};
 use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
-use infer_cuda_kernels::contract::Buffer;
+use infer_cuda_kernels::contract::{Buffer, Fp8};
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::DataflowGraph;
 use std::collections::BTreeMap;
+use std::result::Result as StdResult;
 use std::sync::Arc;
 
 /// Slot layout of one graph: `last_node` and element count per reused slot.
@@ -480,8 +482,11 @@ impl Fp4Scratch {
         &mut self.floats
     }
 
-    pub(super) const fn bytes(&mut self) -> &mut Tensor<f8e4m3fn> {
-        &mut self.bytes
+    /// The product's bytes as `[rows / 2, groups * 128]` rows of the FP4 scale layout.
+    /// # Errors
+    /// As [`buffer`].
+    pub(super) fn bytes(&self) -> StdResult<Buffer<'_, Fp8>, DeviceError> {
+        buffer(&self.bytes)
     }
 
     /// Views of arena slot `slot` as a `[rows, columns]` product; `None` when the product's

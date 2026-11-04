@@ -5,22 +5,27 @@ use crate::device::{CudaDevice, vendor_fp8::nvfp4};
 use crate::mlp::ProjectionWeight;
 use crate::resident::ActivationArena;
 use crate::resident::arena::Fp4Scratch;
+use crate::resident::buffers::RowMajor;
 use crate::resident::capture::error;
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use crate::tuning::resident_gemm::{GemmConfig, WeightKey};
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::Buffer;
 use infer_cuda_kernels::tile::projection::fp4_probe::{self, ProbeGeometry};
+
+/// Packed FP4 codes per stored element.
+const FP4_PER_ELEMENT: usize = 2;
 
 impl Workspace {
     /// Screen and warm the vendor FP4 down projection that reads arena slot `input`, an F32
-    /// product the fused plan never materializes, into `output`.
+    /// product the fused plan never materializes, into the `[rows, outputs]` `output`.
     pub(crate) fn prepare_vendor_down(
         &mut self,
         device: &CudaDevice,
         weight: &ProjectionWeight,
         scale: f32,
         (arena, input): (&ActivationArena, usize),
-        output: Tensor<f32>,
+        output: Buffer<'_, f32>,
         (rows, columns): (usize, usize),
     ) -> Result<(), DeviceError> {
         let ProjectionWeight::Fp4(w, _, _) = weight else {
@@ -34,7 +39,6 @@ impl Workspace {
         let Some(mut scratch) = Fp4Scratch::new(arena, input, rows, columns).map_err(error)? else {
             return Ok(());
         };
-        let mut output = output.reshape(&[rows, outputs])?;
         let native = self
             .strategies
             .get(&(
@@ -47,16 +51,18 @@ impl Workspace {
             .unwrap_or_else(|| GemmConfig::baseline(rows));
         let (q, qs) = self
             .buffers
-            .get_mut(&(rows, columns))
+            .get(&(rows, columns))
             .ok_or_else(|| error("FP4 vendor quantization"))?;
+        let extents = [rows, outputs, columns];
         let candidate = {
             let op = nvfp4::Operands {
                 weight,
                 scale,
-                q,
-                qs,
-                scratch: scratch.bytes(),
-                output: &mut output,
+                q: q.operand(),
+                qs: qs.operand(),
+                scratch: scratch.bytes()?,
+                output,
+                extents,
             };
             if self.vendor_fp4.known(&op)?.is_some() {
                 return Ok(());
@@ -67,10 +73,16 @@ impl Workspace {
             return Ok(());
         };
         if candidate.needs_probe() {
+            let half = columns / FP4_PER_ELEMENT;
             fp4_probe::initialize(
                 &device.stream,
                 scratch.floats(),
-                (q, qs),
+                (
+                    &mut q.view(0..q.len(), &[rows, half]).map_err(error)?,
+                    &mut qs
+                        .view(0..qs.len(), &[rows, qs.len() / rows])
+                        .map_err(error)?,
+                ),
                 scale,
                 ProbeGeometry {
                     rows: QUANTIZATION_ROWS,
@@ -85,10 +97,11 @@ impl Workspace {
             &nvfp4::Operands {
                 weight,
                 scale,
-                q,
-                qs,
-                scratch: scratch.bytes(),
-                output: &mut output,
+                q: q.operand(),
+                qs: qs.operand(),
+                scratch: scratch.bytes()?,
+                output,
+                extents,
             },
             candidate,
         )?;
@@ -96,22 +109,23 @@ impl Workspace {
     }
 
     /// Record the vendor FP4 down projection over arena slot `input`, a sole-consumer product
-    /// the fused plan never materializes; `false` when no vendor plan covers it.
+    /// the fused plan never materializes, into the `[rows, outputs]` `output`; `false` when no
+    /// vendor plan covers it.
     pub(crate) fn record_vendor_down(
         &self,
         scope: &Scope,
         weight: &ProjectionWeight,
         scale: f32,
         (arena, input): (&ActivationArena, usize),
-        output: &mut Tensor<f32>,
+        output: RowMajor<'_, f32>,
         columns: usize,
     ) -> Result<bool, DeviceError> {
         if !self.vendor_fp4.enabled() {
             return Ok(false);
         }
-        let rows = usize::try_from(output.shape()[0]).map_err(error)?;
+        let rows = output.rows;
         // Probe and pack accesses to the unused product are ordered on its owning stream.
-        let Some(mut scratch) = Fp4Scratch::new(arena, input, rows, columns).map_err(error)? else {
+        let Some(scratch) = Fp4Scratch::new(arena, input, rows, columns).map_err(error)? else {
             return Ok(false);
         };
         let (q, qs) = self
@@ -123,10 +137,11 @@ impl Workspace {
             &nvfp4::Operands {
                 weight,
                 scale,
-                q,
-                qs,
-                scratch: scratch.bytes(),
-                output,
+                q: q.operand(),
+                qs: qs.operand(),
+                scratch: scratch.bytes()?,
+                output: output.buffer,
+                extents: [rows, output.columns, columns],
             },
         )
     }
