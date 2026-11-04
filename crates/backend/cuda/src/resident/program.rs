@@ -48,7 +48,8 @@ pub struct FusionWeights {
     pub projection: ProjectionWeight,
     /// Tile for the fusion projection, selected like every other projection weight.
     pub tiling: LinearTiling,
-    pub norms: Arc<Tensor<f32>>,
+    /// Embedding then hidden normalization weights, `[2, hidden]` row-major.
+    pub norms: Allocation<f32>,
     pub epsilon: f32,
     pub offset: f32,
 }
@@ -56,7 +57,7 @@ pub struct FusionWeights {
 impl FusionWeights {
     fn validate(&self, hidden: usize) -> Result<()> {
         self.projection.validate(hidden, 2 * hidden)?;
-        if self.norms.shape() != [2, i32::try_from(hidden).map_err(device_error)?]
+        if Some(self.norms.len()) != hidden.checked_mul(2)
             || !self.epsilon.is_finite()
             || self.epsilon <= 0.0
             || !self.offset.is_finite()
@@ -122,10 +123,10 @@ pub struct ProgramWeights {
     /// Capture the chunked gated-delta prompt kernel rather than the per-token one.
     pub chunked_recurrent: bool,
     pub expert_banks: BTreeMap<TensorId, super::moe::ExpertBank>,
-    pub constants: BTreeMap<TensorId, Arc<Tensor<f32>>>,
-    pub embeddings: BTreeMap<TensorId, Arc<Tensor<bf16>>>,
-    pub rope_axes: BTreeMap<infer_core::OpId, Arc<Tensor<i32>>>,
-    pub rope_frequencies: BTreeMap<infer_core::OpId, Arc<Tensor<f32>>>,
+    pub constants: BTreeMap<TensorId, Allocation<f32>>,
+    pub embeddings: BTreeMap<TensorId, Allocation<bf16>>,
+    pub rope_axes: BTreeMap<infer_core::OpId, Allocation<i32>>,
+    pub rope_frequencies: BTreeMap<infer_core::OpId, Allocation<f32>>,
     /// Whether the model's `RoPE` carries three-axis (`t`, `h`, `w`) positions.
     pub mrope: bool,
     /// Prompt-graph scratch shared by every sequence of this program.
@@ -141,15 +142,14 @@ impl ProgramWeights {
     /// What a captured graph reads by device pointer. A program or pool holds these, so they outlive
     /// its graphs whatever happens to the model that loaded them; replay never touches them.
     pub(super) fn owners(&self) -> Vec<Owner> {
+        fn owner<T: DType>(memory: &Allocation<T>) -> Owner {
+            Arc::new(memory.clone())
+        }
         let mut owners: Vec<Owner> = Vec::new();
-        owners.extend(self.constants.values().map(|t| Arc::clone(t) as Owner));
-        owners.extend(self.embeddings.values().map(|t| Arc::clone(t) as Owner));
-        owners.extend(self.rope_axes.values().map(|t| Arc::clone(t) as Owner));
-        owners.extend(
-            self.rope_frequencies
-                .values()
-                .map(|t| Arc::clone(t) as Owner),
-        );
+        owners.extend(self.constants.values().map(owner));
+        owners.extend(self.embeddings.values().map(owner));
+        owners.extend(self.rope_axes.values().map(owner));
+        owners.extend(self.rope_frequencies.values().map(owner));
         owners.extend(self.projections.values().map(ProjectionWeight::owner));
         owners.extend(
             self.expert_banks
@@ -157,7 +157,7 @@ impl ProgramWeights {
                 .map(|bank| bank.projection.owner()),
         );
         if let Some(fusion) = &self.fusion {
-            owners.push(Arc::clone(&fusion.norms) as Owner);
+            owners.push(owner(&fusion.norms));
             owners.push(fusion.projection.owner());
         }
         owners

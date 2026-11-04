@@ -115,7 +115,7 @@ fn record_fusion_norm(
                 out,
                 embedding,
                 hidden,
-                norms: buffer(fusion.norms.as_ref())?,
+                norms: buffer(&fusion.norms)?,
             },
         )
         .map_err(error)
@@ -141,7 +141,7 @@ impl Capture<'_> {
     /// slot.
     pub(super) fn input_buffer(&self, id: TensorId) -> Result<Buffer<'static, f32>, DeviceError> {
         if let Some(value) = self.weights.constants.get(&id) {
-            return Ok(region(value.device_pointer().cu_deviceptr(), value.size()));
+            return Ok(region(value.buffer().address(), value.len()));
         }
         let tensor = self.arena.get(id).map_err(error)?;
         let base = tensor.device_pointer().cu_deviceptr();
@@ -162,7 +162,7 @@ impl Capture<'_> {
                 let input = |id| {
                     self.weights.constants.get(&id).map_or_else(
                         || self.arena.get(id).map_err(error),
-                        |constant| Ok(constant.as_ref()),
+                        |constant| Ok(&**constant.tensor()),
                     )
                 };
                 self.attention.taps.inputs(
@@ -343,7 +343,7 @@ impl Capture<'_> {
     fn linear(&mut self, node: &TensorNode, output: &SlotMemory) -> Result<(), DeviceError> {
         let input = self.weights.constants.get(&node.inputs[0]).map_or_else(
             || self.arena.get(node.inputs[0]).map_err(error),
-            |value| Ok(value.as_ref()),
+            |value| Ok(&**value.tensor()),
         )?;
         let weights = self
             .weights
@@ -431,7 +431,7 @@ impl Capture<'_> {
                     dimension,
                     external: true,
                 },
-                (buffer(output)?, buffer(weight.as_ref())?),
+                (buffer(output)?, buffer(weight)?),
                 (buffer(self.external)?, buffer(self.metadata)?),
             )?;
         }
@@ -465,7 +465,7 @@ impl Capture<'_> {
                 dimension,
                 external: false,
             },
-            (buffer(&work.embedding)?, buffer(weight.as_ref())?),
+            (buffer(&work.embedding)?, buffer(weight)?),
             (buffer(self.external)?, buffer(self.metadata)?),
         )?;
         let normalized = work

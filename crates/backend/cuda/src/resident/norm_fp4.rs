@@ -1,5 +1,4 @@
 //! RMS normalization primes only the immediately following fused NVFP4 gate/up pass.
-use super::buffers::buffer;
 use super::program::ActivationQuantization;
 use super::{ActivationArena, ProgramWeights, capture::error, nvfp4_gemm::Workspace};
 use crate::resident::buffers::RowMajor;
@@ -98,9 +97,9 @@ pub(super) fn record(
     if rows == 0
         || Some(output.len()) != rows.checked_mul(head_dim)
         || input.len() != output.len()
-        || weight.size() != head_dim
+        || weight.len() != head_dim
         || !input.disjoint(output)
-        || !buffer(weight.as_ref()).is_ok_and(|weight| weight.disjoint(output))
+        || !weight.buffer().disjoint(output)
     {
         return Ok(false);
     }
@@ -109,7 +108,7 @@ pub(super) fn record(
         (&weights.kernels, scope),
         index + 1,
         input,
-        weight,
+        weight.buffer(),
         output,
         (epsilon, offset, scale),
     );

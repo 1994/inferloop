@@ -101,7 +101,7 @@ fn check_projection(
         });
         weights
             .constants
-            .insert(id, device.upload(data.clone(), &[data.len()])?);
+            .insert(id, device.runtime().upload(data.clone())?);
     }
     if let Some(projection) = projection {
         weights.constants.remove(&TensorId::new(2)?);
@@ -206,7 +206,7 @@ fn add_external(
         .collect();
     weights
         .embeddings
-        .insert(id, device.upload(table, &[256, width])?);
+        .insert(id, device.runtime().upload(table)?);
     graph.nodes.push(TensorNode {
         id: OpId::new(3)?,
         layer: None,
@@ -316,7 +316,7 @@ fn add_rope(device: &CudaDevice, op: &TensorOp, weights: &mut ProgramWeights) ->
             .collect();
         weights
             .rope_frequencies
-            .insert(OpId::ONE, device.upload(frequencies, &[rotary_dim / 2])?);
+            .insert(OpId::ONE, device.runtime().upload(frequencies)?);
     }
     Ok(())
 }

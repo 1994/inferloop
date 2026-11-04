@@ -65,7 +65,7 @@ pub(super) fn record(
                 output,
                 history: [buffer(oldest)?, buffer(middle)?, buffer(newest)?],
                 input: buffer(arena.get(node.inputs[0]).map_err(error)?)?,
-                weight: buffer(weight.as_ref())?,
+                weight: buffer(weight)?,
                 metadata: buffer(batch.metadata)?,
             },
         )

@@ -528,7 +528,7 @@ impl Workspace {
         (kernels, scope): (&Kernels, &Scope),
         next: usize,
         input: Buffer<'_, f32>,
-        weight: &Tensor<f32>,
+        weight: Buffer<'_, f32>,
         output: RowMajor<'_, f32>,
         (epsilon, offset, scale): (f32, f32, f32),
     ) -> StdResult<bool, DeviceError> {
@@ -562,7 +562,7 @@ impl Workspace {
                     codes: buffer(codes)?,
                     scales: buffer(scales)?,
                     x: input,
-                    weight: buffer(weight)?,
+                    weight,
                 },
             )
             .map_err(capture_error)?;
@@ -576,7 +576,7 @@ impl Workspace {
         (kernels, scope): (&Kernels, &Scope),
         next: usize,
         input: Buffer<'_, f32>,
-        weight: &Tensor<f32>,
+        weight: Buffer<'_, f32>,
         output: RowMajor<'_, f32>,
         (epsilon, offset): (f32, f32),
     ) -> StdResult<bool, DeviceError> {
@@ -600,7 +600,7 @@ impl Workspace {
                     out: output.buffer,
                     maximum: buffer(scales)?,
                     x: input,
-                    weight: buffer(weight)?,
+                    weight,
                 },
             )
             .map_err(capture_error)?;
