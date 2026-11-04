@@ -96,7 +96,7 @@ fn run_case(device: &CudaDevice, action: &str) -> TestResult<(Vec<u8>, Vec<u8>)>
             (&kernels, scope),
             1,
             tensor_buffer(&input)?,
-            &weight,
+            tensor_buffer(&weight)?,
             tensor_rows(&dense)?,
             (1e-5, 1.0, 1.0),
         )?;

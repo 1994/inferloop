@@ -400,10 +400,10 @@ fn lane_input<'a>(
     node: &TensorNode,
     lane: &'a Lane,
 ) -> StdResult<Buffer<'a, f32>, DeviceError> {
-    buffer(weights.constants.get(&node.inputs[0]).map_or_else(
-        || lane.arena.get(node.inputs[0]).map_err(error),
-        |value| Ok(value.as_ref()),
-    )?)
+    match weights.constants.get(&node.inputs[0]) {
+        Some(value) => Ok(value.buffer()),
+        None => buffer(lane.arena.get(node.inputs[0]).map_err(error)?),
+    }
 }
 
 /// The four-row kernel consumes the existing slot matrix without additional copies.

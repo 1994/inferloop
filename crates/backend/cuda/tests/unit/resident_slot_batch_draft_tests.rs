@@ -95,11 +95,11 @@ fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
                 &[32, 64],
             )?),
             tiling: default_tiling()?,
-            norms: device.upload(vec![1.0; 64], &[2, 32])?,
+            norms: device.runtime().upload(vec![1.0; 64])?,
             epsilon: 1e-6,
             offset: 0.0,
         }),
-        embeddings: BTreeMap::from([(TensorId::ONE, device.upload(values(32 * 32), &[32, 32])?)]),
+        embeddings: BTreeMap::from([(TensorId::ONE, device.runtime().upload(values(32 * 32))?)]),
         projections: BTreeMap::new(),
         expert_banks: BTreeMap::new(),
         constants: BTreeMap::new(),
@@ -518,8 +518,8 @@ fn programs_and_pools_keep_their_weights_after_the_owner_drops_them() -> Result<
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
     let (graph, mut weights) = fixture(&device)?;
-    let weight = device.upload(vec![0.0f32; 32], &[32])?;
-    let held = [Arc::downgrade(&weight)];
+    let weight = device.runtime().upload(vec![0.0f32; 32])?;
+    let held = [Arc::downgrade(weight.tensor())];
     weights.constants.insert(TensorId::new(999)?, weight);
     let program = DeviceProgram::new(&device, &graph, &weights, 128, 32, 32)?;
     let pool = SlotPool::new(&device, &graph, &weights, 4, 64, 32, (32, 0), None)?;

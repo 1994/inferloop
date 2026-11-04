@@ -109,12 +109,12 @@ fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
         fusion: None,
         kv_scales: BTreeMap::new(),
         tiling: BTreeMap::new(),
-        embeddings: BTreeMap::from([(TensorId::ONE, Arc::clone(embedding.tensor()))]),
+        embeddings: BTreeMap::from([(TensorId::ONE, embedding.allocation().clone())]),
         fp8_inputs: BTreeSet::new(),
         input_scales: BTreeMap::new(),
         projections: BTreeMap::from([(TensorId::new(6)?, ProjectionWeight::Dense(embedding))]),
         expert_banks: BTreeMap::new(),
-        constants: BTreeMap::from([(TensorId::new(3)?, device.upload(vec![0.25; 128], &[32, 4])?)]),
+        constants: BTreeMap::from([(TensorId::new(3)?, device.runtime().upload(vec![0.25; 128])?)]),
         rope_axes: BTreeMap::new(),
         rope_frequencies: BTreeMap::new(),
     };
@@ -153,7 +153,7 @@ fn add_rotary(
     );
     weights
         .rope_frequencies
-        .insert(id, device.upload(vec![1.0, 0.01], &[2])?);
+        .insert(id, device.runtime().upload(vec![1.0, 0.01])?);
     Ok(())
 }
 
@@ -274,13 +274,11 @@ fn feature_fixture(
             .map(|i| bf16::from_f32(f32::from(u16::try_from(i % 97).unwrap()) / 97.0 - 0.5))
             .collect()
     };
-    weights.embeddings = BTreeMap::from([(
-        TensorId::ONE,
-        device.upload(values(32 * hidden), &[32, hidden])?,
-    )]);
+    weights.embeddings =
+        BTreeMap::from([(TensorId::ONE, device.runtime().upload(values(32 * hidden))?)]);
     weights.constants = BTreeMap::from([(
         TensorId::new(3)?,
-        device.upload(vec![1.0; norm_dim], &[norm_dim])?,
+        device.runtime().upload(vec![1.0; norm_dim])?,
     )]);
     weights.projections = BTreeMap::from([
         (
