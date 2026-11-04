@@ -56,7 +56,7 @@ pub fn record(
             &GemmPlan {
                 main_loop: GemmLoop::Plain,
                 rows,
-                outputs: hidden * 2,
+                outputs: hidden,
                 columns,
                 tile: config.tile(),
             },
