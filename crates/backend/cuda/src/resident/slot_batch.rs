@@ -150,11 +150,6 @@ fn build_pool_decode<'a>(
 
 /// The pool-wide verify graph and one narrower graph per `narrow` slot count, with the root
 /// views each narrow graph reads.
-#[expect(
-    unsafe_code,
-    reason = "Audited narrow verify roots: prefix views of `states`, which the pool owns \
-              and drops after its graphs"
-)]
 fn build_verify_graphs(
     builder: &mut super::batch::BatchBuilder<'_>,
     (states, fp8): (&mut SlotStates, &mut [Fp8Caches]),
@@ -165,9 +160,7 @@ fn build_verify_graphs(
     let mut graphs = Vec::with_capacity(narrow.len());
     let mut roots = Vec::with_capacity(narrow.len());
     for &slots in narrow {
-        // SAFETY: the pool keeps `states` alive behind `_narrow_roots` and drops its graphs
-        // first; every graph replays on the pool's one stream.
-        let mut prefix = unsafe { prefix_roots(states, slots)? };
+        let mut prefix = states.prefix(slots)?;
         graphs.push(builder.build_slot_verify_parts(
             (&mut states.parts().0[..slots], &mut prefix),
             &mut fp8[..slots],
@@ -176,39 +169,6 @@ fn build_verify_graphs(
         roots.push(prefix);
     }
     Ok((full, graphs, roots))
-}
-
-/// Views of the first `slots` rows of every pooled root family, for a verify graph narrower
-/// than the pool.
-///
-/// # Safety
-/// The returned roots alias `states`: the pool must keep it alive for every graph captured
-/// through them and replay them on its single stream.
-#[expect(
-    unsafe_code,
-    reason = "Audited prefix alias: the pool owns the roots and drops its graphs first"
-)]
-unsafe fn prefix_roots(states: &SlotStates, slots: usize) -> Result<States> {
-    let width = states.len();
-    if slots == 0 || slots > width {
-        return Err(Error::invalid("pooled state prefix"));
-    }
-    let mut roots = States::new();
-    for (id, owners) in states.roots() {
-        let mut views = Vec::with_capacity(owners.len());
-        for owner in owners {
-            let mut shape = owner
-                .shape()
-                .iter()
-                .map(|&dim| usize::try_from(dim).map_err(device_error))
-                .collect::<Result<Vec<_>>>()?;
-            shape[0] = slots;
-            // SAFETY: forwarded from this function's contract.
-            views.push(unsafe { super::arena::prefix_view(owner, width, slots, &shape)? });
-        }
-        roots.insert(*id, views);
-    }
-    Ok(roots)
 }
 
 /// Pinned ring depth per external-hidden lane: one upload per draft or catch-up step,
@@ -948,23 +908,11 @@ impl SlotPool {
         &self,
         slot: usize,
     ) -> Result<(States, Fp8Caches, Tensor<i32>)> {
-        let states = self
-            .states
-            .get(slot)
-            .ok_or_else(|| Error::invalid("slot view index"))?;
         let fp8 = self
             .fp8
             .get(slot)
             .ok_or_else(|| Error::invalid("slot view index"))?;
-        let mut state_views = States::new();
-        for (id, tensors) in states {
-            let mut views = Vec::with_capacity(tensors.len());
-            for tensor in tensors {
-                // SAFETY: forwarded from this function's contract.
-                views.push(unsafe { alias(tensor)? });
-            }
-            state_views.insert(*id, views);
-        }
+        let state_views = self.states.lane(slot)?;
         // SAFETY: forwarded from this function's contract.
         let table = unsafe {
             alias(
