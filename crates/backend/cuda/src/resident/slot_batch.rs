@@ -4,6 +4,7 @@
 //! through a single graph replay per step.
 use super::{
     batch::{BatchOutput, SlotDecodeGraph, SlotLane, States},
+    buffers::RowMajor,
     fp8_cache::{Fp8Caches, Fp8Memory, allocate_memory},
     program::ProgramWeights,
     slot_states::SlotStates,
@@ -130,7 +131,7 @@ fn build_pool_decode<'a>(
     states: &'a mut SlotStates,
     fp8: &mut [Fp8Caches],
     narrow: &[usize],
-    table_root: &'a Tensor<i32>,
+    table_root: RowMajor<'a, i32>,
 ) -> Result<(SlotDecodeGraph, Vec<SlotDecodeGraph>)> {
     // Narrow rungs stay per-lane: at one to four lanes the launch count is small, and their
     // state views are prefixes the batch kernel cannot address directly.
@@ -189,11 +190,23 @@ type LaneInputs = (
 type SlotStorage = (SlotStates, Fp8Slots, Tables);
 /// Each slot's FP8 KV caches and the allocations they view.
 type Fp8Slots = (Vec<Fp8Caches>, Vec<Fp8Memory>);
-/// Each slot's block table row, the whole `[slots, blocks]` table and its allocation.
+/// Each slot's block table row and the allocation they share, the whole `[slots, blocks]` table.
 struct Tables {
-    rows: Vec<Tensor<i32>>,
-    root: Tensor<i32>,
+    rows: Vec<Allocation<i32>>,
     memory: Allocation<i32>,
+}
+
+impl Tables {
+    /// The whole table as `[slots, blocks]`, as lane-batched attention addresses it.
+    fn root(&self) -> Result<RowMajor<'_, i32>> {
+        let slots = self.rows.len();
+        RowMajor::new(
+            self.memory.buffer(),
+            slots,
+            self.memory.len() / slots.max(1),
+        )
+        .map_err(device_error)
+    }
 }
 
 /// How one state family moves into a slot at bind time: a token-row prefix of a
@@ -413,9 +426,8 @@ pub struct SlotPool {
     /// The allocations each slot's caches view, so slot views can hold their memory.
     fp8_memory: Vec<Fp8Memory>,
     _lanes_attention: super::attention_lanes::Workspace,
-    _table_root: Tensor<i32>,
     /// Per-slot identity block tables; declared with the states so they outlive the captures.
-    tables: Vec<Tensor<i32>>,
+    tables: Vec<Allocation<i32>>,
     /// The allocation the tables view.
     table_memory: Allocation<i32>,
     table_staging: PinnedUpload<i32>,
@@ -597,7 +609,7 @@ impl SlotPool {
                     &mut states,
                     &mut fp8,
                     &narrow_slots,
-                    &tables.root,
+                    tables.root()?,
                 )?;
                 (Some(decode), None, decode_narrow, Vec::new(), Vec::new())
             }
@@ -626,7 +638,6 @@ impl SlotPool {
             _nvfp4: nvfp4,
             _attention: attention,
             _lanes_attention: lanes_attention,
-            _table_root: tables.root,
             lane_external,
             external_uploaded: vec![false; lanes],
             pinned_external,
@@ -698,17 +709,13 @@ impl SlotPool {
         }
         // Step 1 of the KV refactor: a per-slot identity mapping over that slot's own cache.
         // A paged pool fills the table from its shared blocks when the slot is assigned.
-        let memory = Allocation::adopt(Arc::new(super::metadata::identity_tables(
-            device, capacity, width,
-        )?))?;
-        tables.extend(super::arena::rows(&memory, width)?);
-        let root = super::arena::whole(&memory, &[width, memory.len() / width])?;
+        let memory = super::metadata::identity_tables(device, capacity, width)?;
+        tables.extend(memory.rows(width)?);
         Ok((
             states,
             (fp8, fp8_memory),
             Tables {
                 rows: tables,
-                root,
                 memory,
             },
         ))
@@ -886,7 +893,7 @@ impl SlotPool {
     pub(crate) unsafe fn slot_views(
         &self,
         slot: usize,
-    ) -> Result<(States, Fp8Caches, Tensor<i32>)> {
+    ) -> Result<(States, Fp8Caches, Allocation<i32>)> {
         let memory = self.fp8_memory.get(slot);
         let caches = self.fp8.get(slot);
         let (Some(memory), Some(caches)) = (memory, caches) else {
@@ -897,7 +904,7 @@ impl SlotPool {
         let blocks = self.table_memory.len() / self.width();
         let table = self
             .table_memory
-            .view(slot * blocks..(slot + 1) * blocks, &[blocks])?;
+            .slice(slot * blocks..(slot + 1) * blocks)?;
         Ok((state_views, fp8, table))
     }
 
@@ -943,7 +950,7 @@ impl SlotPool {
             .ok_or_else(|| Error::invariant("slot block table"))?;
         // Positions past the request's reach never resolve; point them at its first block.
         let mut entries = owned.clone();
-        entries.resize(table.size(), owned[0]);
+        entries.resize(table.len(), owned[0]);
         self.table_staging.copy(device, table, &entries)?;
         Ok(true)
     }
@@ -1016,7 +1023,7 @@ impl SlotPool {
         if self
             .tables
             .get(slot)
-            .is_none_or(|table| table.shape() != [blocks])
+            .is_none_or(|table| i32::try_from(table.len()).ok() != Some(blocks))
         {
             return Err(Error::invariant("slot block table shape"));
         }

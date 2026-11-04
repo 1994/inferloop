@@ -90,17 +90,17 @@ pub(super) struct Segment<'a> {
     pub arena: ActivationArena,
     pub states: &'a mut States,
     pub fp8: &'a mut Fp8Caches,
-    pub table: &'a Tensor<i32>,
-    pub info: &'a Tensor<i32>,
+    pub table: &'a Allocation<i32>,
+    pub info: &'a Allocation<i32>,
     /// Per-row `(t, h, w)` when the graph's `RoPE` reads absolute coordinates.
-    pub rotary: Option<&'a Tensor<i32>>,
+    pub rotary: Option<&'a Allocation<i32>>,
 }
 
 /// Everything a multi-sequence capture records beyond an ordinary prompt graph.
 pub(super) struct Binding<'a> {
     pub segments: Vec<Segment<'a>>,
     pub recurrent: super::recurrent_prefill::Workspace,
-    pub info_batch: &'a Tensor<i32>,
+    pub info_batch: &'a Allocation<i32>,
     pub last_rows: &'a mut Tensor<f32>,
     pub logits: &'a mut Tensor<f32>,
     pub segment_rows: usize,
@@ -121,13 +121,13 @@ pub struct PromptBurst {
     capacity: usize,
     vocabulary: usize,
     state_offset: i32,
-    metadata: Tensor<i32>,
+    metadata: Allocation<i32>,
     metadata_upload: Vec<i32>,
     metadata_staging: PinnedUpload<i32>,
-    info: Tensor<i32>,
+    info: Allocation<i32>,
     info_upload: Vec<i32>,
     info_staging: PinnedUpload<i32>,
-    rotary: Option<Tensor<i32>>,
+    rotary: Option<Allocation<i32>>,
     rotary_upload: Vec<i32>,
     rotary_staging: PinnedUpload<i32>,
     logits: Arc<Tensor<f32>>,
@@ -151,9 +151,9 @@ struct Retained {
 /// Device tensors the graph addresses and nothing reads through this struct.
 struct Keep {
     arena: ActivationArena,
-    _metadata_rows: Vec<Tensor<i32>>,
-    _info_rows: Vec<Tensor<i32>>,
-    _rotary_rows: Vec<Tensor<i32>>,
+    _metadata_rows: Vec<Allocation<i32>>,
+    _info_rows: Vec<Allocation<i32>>,
+    _rotary_rows: Vec<Allocation<i32>>,
     _prompt_row: Tensor<f32>,
     _external_row: Tensor<f32>,
     _external: Tensor<f32>,
@@ -167,12 +167,12 @@ struct Keep {
 /// Everything a capture binds before the graph exists.
 struct Storage {
     arena: ActivationArena,
-    metadata: Tensor<i32>,
-    metadata_rows: Vec<Tensor<i32>>,
-    info: Tensor<i32>,
-    info_rows: Vec<Tensor<i32>>,
-    rotary: Option<Tensor<i32>>,
-    rotary_rows: Vec<Tensor<i32>>,
+    metadata: Allocation<i32>,
+    metadata_rows: Vec<Allocation<i32>>,
+    info: Allocation<i32>,
+    info_rows: Vec<Allocation<i32>>,
+    rotary: Option<Allocation<i32>>,
+    rotary_rows: Vec<Allocation<i32>>,
     last_rows: Tensor<f32>,
     logits: Tensor<f32>,
     logits_memory: Allocation<f32>,
@@ -191,7 +191,7 @@ struct Storage {
 fn bind_segments<'a>(
     programs: &'a mut [&mut super::program::DeviceProgram],
     views: Vec<ActivationArena>,
-    (info_rows, rotary_rows): (&'a [Tensor<i32>], &'a [Tensor<i32>]),
+    (info_rows, rotary_rows): (&'a [Allocation<i32>], &'a [Allocation<i32>]),
 ) -> Vec<Segment<'a>> {
     programs
         .iter_mut()
@@ -288,10 +288,8 @@ impl Storage {
         let (info, info_rows) = super::batch::batched_metadata(device, segments)?;
         let (rotary, rotary_rows) = if weights.mrope {
             let memory = memory::<i32>(device, rows * ROTARY_AXES)?;
-            (
-                Some(super::arena::whole(&memory, &[rows * ROTARY_AXES])?),
-                super::arena::rows(&memory, segments)?,
-            )
+            let rows = memory.rows(segments)?;
+            (Some(memory), rows)
         } else {
             (None, Vec::new())
         };

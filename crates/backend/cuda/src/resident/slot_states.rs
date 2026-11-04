@@ -182,7 +182,7 @@ pub(super) struct VerifyBatch<'a> {
     pub kernels: &'a Kernels,
     pub roots: &'a States,
     pub parameters: &'a RecurrentParameters,
-    pub metadata: &'a Tensor<i32>,
+    pub metadata: &'a Allocation<i32>,
     /// Candidate lanes per slot.
     pub lanes: usize,
 }

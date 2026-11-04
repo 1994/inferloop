@@ -119,6 +119,33 @@ impl<T: DType> Allocation<T> {
         &self.tensor
     }
 
+    /// Elements `range` as an allocation of their own, holding a share of this memory, so it stays
+    /// valid whatever happens to the allocation it came from: one row of a batched owner that a
+    /// launch takes alone.
+    /// # Errors
+    /// Rejects a range outside the allocation.
+    pub fn slice(&self, range: Range<usize>) -> Result<Self> {
+        let len = range.end.saturating_sub(range.start);
+        Self::adopt(Arc::new(self.view(range, &[len])?))
+    }
+
+    /// The allocation as `count` equal, disjoint rows, each an allocation of its own as
+    /// [`Self::slice`] makes, so each can be a launch's output.
+    /// # Errors
+    /// Rejects zero rows and memory that does not divide into `count` rows.
+    pub fn rows(&self, count: usize) -> Result<Vec<Self>> {
+        if count == 0 || !self.len().is_multiple_of(count) {
+            return Err(Error::invalid(format!(
+                "{} elements do not divide into {count} rows",
+                self.len()
+            )));
+        }
+        let row = self.len() / count;
+        (0..count)
+            .map(|index| self.slice(index * row..(index + 1) * row))
+            .collect()
+    }
+
     /// Elements `range` as a contiguous tensor of `shape`, holding a share of this memory, so the
     /// view stays valid whatever happens to the allocation it came from. Transitional, for
     /// recordings that still take cuTile tensors.

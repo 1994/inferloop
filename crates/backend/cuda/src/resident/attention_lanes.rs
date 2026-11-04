@@ -15,6 +15,7 @@ use infer_cuda_kernels::contract::{
     AppendBuffers, DecodeBuffers, DecodePlan, KvElement, LanesAppendPlan, LanesDecodePlan,
     Partials, Recording,
 };
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_cuda_kernels::tile::runtime::Element;
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 #[cfg(test)]
@@ -140,7 +141,7 @@ impl BatchBuilder<'_> {
         node: &TensorNode,
         arena: &ActivationArena,
         caches: &mut [super::fp8_cache::Fp8Caches],
-        metadata: &Tensor<i32>,
+        metadata: &Allocation<i32>,
     ) -> StdResult<bool, DeviceError> {
         let TensorOp::Attention {
             query_heads,
@@ -241,7 +242,7 @@ impl BatchBuilder<'_> {
         node: &TensorNode,
         arena: &ActivationArena,
         cache: Cache<E>,
-        metadata: &Tensor<i32>,
+        metadata: &Allocation<i32>,
     ) -> StdResult<Recorded<E>, DeviceError> {
         let TensorOp::Attention {
             query_heads,
@@ -280,7 +281,7 @@ impl BatchBuilder<'_> {
             let cache = kv_cache((&keys, &values), groups, head_dim, scales)?;
             let attention = &self.weights.kernels.attention;
             let recording = Recording::scope(scope);
-            let table_rows = usize::try_from(table.shape()[0]).map_err(error)?;
+            let table_rows = table.rows;
             attention
                 .append_lanes(
                     &recording,
@@ -295,7 +296,7 @@ impl BatchBuilder<'_> {
                         keys: buffer(arena.get(node.inputs[1]).map_err(error)?)?,
                         values: buffer(arena.get(node.inputs[2]).map_err(error)?)?,
                         metadata: buffer(metadata)?,
-                        table: buffer(table)?,
+                        table: table.buffer,
                     },
                 )
                 .map_err(error)?;
@@ -325,7 +326,7 @@ impl BatchBuilder<'_> {
                         query: buffer(arena.get(node.inputs[0]).map_err(error)?)?,
                         cache,
                         metadata: buffer(metadata)?,
-                        table: buffer(table)?,
+                        table: table.buffer,
                     },
                 )
                 .map_err(error)?;

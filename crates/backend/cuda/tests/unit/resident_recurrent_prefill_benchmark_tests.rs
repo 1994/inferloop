@@ -92,7 +92,9 @@ fn bench_case(
         }
         Ok(())
     })?;
-    let metadata = device.upload(vec![0, i32::try_from(lanes)?, 0, 0], &[4])?;
+    let metadata = device
+        .runtime()
+        .upload(vec![0, i32::try_from(lanes)?, 0, 0])?;
     let mut scratch = api::zeros::<f32>(&[vh, lanes, dim]).sync_on(&device.stream)?;
     let mut output = api::zeros::<f32>(&[lanes, vh, dim]).sync_on(&device.stream)?;
     let block = production_block(dim, lanes);
@@ -126,7 +128,7 @@ fn bench_case(
                     &alpha,
                     &a_log,
                     &bias,
-                    &metadata,
+                    metadata.tensor(),
                 )
                 .generics(generics),
             )?;

@@ -7,6 +7,7 @@ use super::buffers::{RowMajor, buffer};
 use super::{ActivationArena, ProgramWeights, capture::error};
 use cutile::prelude::*;
 use infer_cuda_kernels::contract::{LastRowsKind, LastRowsPlan, Recording};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::TensorNode;
 
 /// Columns one `last_row` block copies.
@@ -56,7 +57,7 @@ pub(super) fn record(
     arena: &ActivationArena,
     weights: &ProgramWeights,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
-    (row, metadata): (&mut Tensor<f32>, &Tensor<i32>),
+    (row, metadata): (&mut Tensor<f32>, &Allocation<i32>),
 ) -> Result<(), DeviceError> {
     let quantization = weights
         .activation_quantization(node.inputs[1])

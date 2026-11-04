@@ -20,6 +20,7 @@ use crate::device::Readbacks;
 use crate::device::{CudaDevice, ReadbackSource, device_error};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::{StateKind, TensorNode, TensorOp, TensorStorage};
 use std::result::Result as StdResult;
@@ -46,7 +47,7 @@ pub(super) struct SlotVerifyGraph {
     fused: bool,
     readbacks: Readbacks,
     token_readout: Option<super::token_readout::TokenReadout>,
-    metadata_owner: Tensor<i32>,
+    metadata_owner: Allocation<i32>,
     metadata_upload: Vec<i32>,
     metadata_staging: PinnedUpload<i32>,
     hidden: Arc<Tensor<f32>>,
@@ -115,7 +116,7 @@ pub(super) type SlotVerifyLane = (usize, usize, u32, usize, usize);
 /// One slot's verification lanes of the pooled arena with their metadata.
 fn slot_lanes(
     slot: usize,
-    metadata: &[Tensor<i32>],
+    metadata: &[Allocation<i32>],
 ) -> StdResult<super::slot_recurrent::SlotLanes<'_>, DeviceError> {
     let base = slot * super::slot_recurrent::LANES;
     let [first, second, third] = [base, base + 1, base + 2];
@@ -170,7 +171,7 @@ impl BatchBuilder<'_> {
         &self,
         lane_states: &mut [States],
         arena: &ActivationArena,
-        metadata: &[Tensor<i32>],
+        metadata: &[Allocation<i32>],
         (verify, staging): (usize, &super::slot_recurrent::Staging),
     ) -> Result<Vec<Vec<Graph>>> {
         let mut commits = Vec::with_capacity(lane_states.len());
@@ -308,7 +309,7 @@ impl BatchBuilder<'_> {
         scope: &Scope,
         node: &TensorNode,
         arena: &ActivationArena,
-        (states, metadata): (&[States], &[Tensor<i32>]),
+        (states, metadata): (&[States], &[Allocation<i32>]),
         (staging, index, hardware, batch): (
             &mut super::slot_recurrent::Staging,
             usize,
@@ -354,7 +355,11 @@ impl BatchBuilder<'_> {
         &mut self,
         lane_states: &mut [States],
         lane_fp8: &mut [Fp8Caches],
-        geometry: (usize, &[Tensor<i32>], &super::slot_states::VerifyBatch<'_>),
+        geometry: (
+            usize,
+            &[Allocation<i32>],
+            &super::slot_states::VerifyBatch<'_>,
+        ),
         arena: &mut ActivationArena,
         (checkpoints, staging): (&mut [Vec<States>], &mut super::slot_recurrent::Staging),
         profile: &mut Option<profile::SlotProfile>,

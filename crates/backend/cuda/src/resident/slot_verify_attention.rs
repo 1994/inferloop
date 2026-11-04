@@ -14,6 +14,7 @@ use super::{
 use crate::constants::{ATTENTION_SPLIT_THRESHOLD, KV_BLOCK_TOKENS};
 use cutile::prelude::*;
 use infer_cuda_kernels::contract::{DecodePlan, Recording, VerifyDecodeBuffers};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{TensorNode, TensorOp};
 use std::result::Result as StdResult;
 
@@ -25,7 +26,7 @@ impl BatchBuilder<'_> {
         node: &TensorNode,
         arena: &mut ActivationArena,
         (states, caches): (&mut [States], &mut [Fp8Caches]),
-        (verify, metadata, metadata_owner): (usize, &[Tensor<i32>], &Tensor<i32>),
+        (verify, metadata, metadata_owner): (usize, &[Allocation<i32>], &Allocation<i32>),
     ) -> StdResult<bool, DeviceError> {
         let TensorOp::Attention {
             query_heads,
@@ -120,7 +121,7 @@ impl BatchBuilder<'_> {
         node: &TensorNode,
         arena: &ActivationArena,
         caches: &mut [Fp8Caches],
-        metadata_owner: &Tensor<i32>,
+        metadata_owner: &Allocation<i32>,
         state: infer_core::TensorId,
     ) -> StdResult<usize, DeviceError> {
         let shared = caches.first().is_some_and(|first| {
@@ -184,7 +185,7 @@ impl BatchBuilder<'_> {
         node: &TensorNode,
         arena: &mut ActivationArena,
         (states, caches): (&mut [States], &mut [Fp8Caches]),
-        metadata: &[Tensor<i32>],
+        metadata: &[Allocation<i32>],
         first_lane: usize,
     ) -> StdResult<(), DeviceError> {
         for (lane, metadata) in metadata.iter().enumerate().skip(first_lane) {

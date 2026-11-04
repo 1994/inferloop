@@ -1,6 +1,7 @@
 //! Scalar launch arguments update resident metadata without temporary device allocations.
-use crate::tile::backend_error;
+use crate::contract::buffer::Buffer;
 use crate::tile::runtime::{Graph, GraphUpdate};
+use crate::tile::{backend_error, borrowed};
 use cuda_core::Stream;
 use cutile::prelude::*;
 use infer_core::Result;
@@ -20,16 +21,19 @@ const fn bits(value: i32) -> f32 {
 /// Write control metadata before the graph's next replay, on the graph's stream.
 /// # Errors
 /// Reports a rejected launch.
+/// `output` must hold exactly one metadata row.
+/// # Errors
+/// Reports a row of another length or a rejected launch.
 pub fn update(
     graph: &Graph,
-    output: &mut Tensor<i32>,
+    output: Buffer<'_, i32>,
     values: [i32; METADATA_FIELDS],
 ) -> Result<()> {
-    // Graph::update retains the output lease until replay completes; same-stream ordering replaces
-    // an upload sync.
+    let mut output = row(graph, output, METADATA_FIELDS)?;
+    // Same-stream ordering on the graph's stream replaces an upload sync.
     graph
         .update(GraphUpdate(kernels::write(
-            output.partition([METADATA_FIELDS]),
+            (&mut output).partition([METADATA_FIELDS]),
             bits(values[0]),
             bits(values[1]),
             bits(values[2]),
@@ -38,20 +42,22 @@ pub fn update(
         .map_err(backend_error)
 }
 
-/// Write control metadata and independent rotary coordinates on the graph's stream.
+/// Write control metadata and independent rotary coordinates on the graph's stream; `output`
+/// must hold exactly the row and its coordinates.
 /// # Errors
-/// Reports a rejected launch or a coordinate beyond the kernel's range.
+/// Reports a row of another length, a rejected launch or a coordinate beyond the kernel's range.
 pub fn update_rotary(
     graph: &Graph,
-    output: &mut Tensor<i32>,
+    output: Buffer<'_, i32>,
     values: [i32; METADATA_FIELDS],
     position: [usize; ROTARY_AXES],
 ) -> Result<()> {
     let height = i32::try_from(position[1]).map_err(backend_error)?;
     let width = i32::try_from(position[2]).map_err(backend_error)?;
+    let mut output = row(graph, output, METADATA_FIELDS * 2)?;
     graph
         .update(GraphUpdate(kernels::write_rotary(
-            output.partition([METADATA_FIELDS * 2]),
+            (&mut output).partition([METADATA_FIELDS * 2]),
             bits(values[0]),
             bits(values[1]),
             bits(values[2]),
@@ -60,6 +66,15 @@ pub fn update_rotary(
             bits(width),
         )))
         .map_err(backend_error)
+}
+
+/// `output` as the one-row tensor a write kernel stores to, on the graph's device.
+fn row(graph: &Graph, output: Buffer<'_, i32>, fields: usize) -> Result<Tensor<i32>> {
+    borrowed(
+        output.require("control metadata", fields)?,
+        graph.stream().device().ordinal(),
+        &[fields],
+    )
 }
 
 #[cutile::module]
@@ -136,9 +151,11 @@ pub mod kernels {
 ///
 /// # Errors
 /// Reports the driver's launch failure.
-pub fn load_rotary(stream: &Arc<Stream>, output: &mut Tensor<i32>) -> Result<()> {
+pub fn load_rotary(stream: &Arc<Stream>, output: Buffer<'_, i32>) -> Result<()> {
+    let fields = output.len();
+    let mut output = borrowed(output, stream.device().ordinal(), &[fields])?;
     kernels::write_rotary(
-        output.partition([output.size()]),
+        (&mut output).partition([fields]),
         0.0,
         0.0,
         0.0,

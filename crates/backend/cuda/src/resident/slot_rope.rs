@@ -3,6 +3,7 @@ use super::{ActivationArena, buffers::buffer, capture::error, program::ProgramWe
 use crate::constants::METADATA_FIELDS;
 use cutile::prelude::*;
 use infer_cuda_kernels::contract::{Recording, RopeBuffers, RopeMode, RopePlan};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{TensorNode, TensorOp};
 
 pub(super) fn record(
@@ -10,7 +11,7 @@ pub(super) fn record(
     node: &TensorNode,
     arena: &ActivationArena,
     weights: &ProgramWeights,
-    metadata: &Tensor<i32>,
+    metadata: &Allocation<i32>,
 ) -> Result<bool, DeviceError> {
     let TensorOp::Rope {
         heads,
@@ -22,7 +23,7 @@ pub(super) fn record(
         return Ok(false);
     };
     if weights.constants.contains_key(&node.inputs[0])
-        || metadata.size() != arena.lanes() * METADATA_FIELDS
+        || metadata.len() != arena.lanes() * METADATA_FIELDS
     {
         return Ok(false);
     }

@@ -228,8 +228,8 @@ pub(super) fn record(
     scope: &Scope,
     node: &TensorNode,
     arena: &mut ActivationArena,
-    metadata: &[Tensor<i32>],
-    metadata_batch: &Tensor<i32>,
+    metadata: &[Allocation<i32>],
+    metadata_batch: &Allocation<i32>,
     workspace: &Workspace,
 ) -> StdResult<bool, DeviceError> {
     #[cfg(test)]
@@ -325,7 +325,7 @@ fn record_wide(
     scope: &Scope,
     node: &TensorNode,
     arena: &ActivationArena,
-    metadata_batch: &Tensor<i32>,
+    metadata_batch: &Allocation<i32>,
     workspace: &Workspace,
 ) -> StdResult<bool, DeviceError> {
     let lanes = arena.lanes();

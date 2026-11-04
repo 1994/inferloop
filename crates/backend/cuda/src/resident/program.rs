@@ -36,12 +36,12 @@ use std::sync::Arc;
 type SlotState = (
     super::batch::States,
     super::fp8_cache::Fp8Caches,
-    Tensor<i32>,
+    Allocation<i32>,
 );
 type InitialState = (
     super::batch::States,
     super::fp8_cache::Fp8Caches,
-    Option<Tensor<i32>>,
+    Option<Allocation<i32>>,
 );
 
 pub struct FusionWeights {
@@ -227,9 +227,9 @@ pub struct DeviceProgram {
     token_readout: Option<super::token_readout::TokenReadout>,
     readbacks: Readbacks,
     prefill: Graph,
-    metadata: Tensor<i32>,
+    metadata: Allocation<i32>,
     /// Identity block table over this program's own KV cache; see `capture::Capture::table`.
-    table: Tensor<i32>,
+    table: Allocation<i32>,
     nvfp4: super::nvfp4_gemm::Workspace,
     delegated: Support,
     attention: super::attention_decode::Workspace,
@@ -666,7 +666,12 @@ impl DeviceProgram {
             copy_prefix(device, values, from_values, Some((rows, self.capacity)))?;
         }
         // Paged sequences share KV storage and differ in their block tables.
-        copy_prefix(device, &mut self.table, &source.table, None)?;
+        if self.table.len() != source.table.len() {
+            return Err(Error::invariant("program block table length"));
+        }
+        device
+            .runtime()
+            .enqueue(|transfers| transfers.copy(self.table.buffer(), source.table.buffer()))?;
         self.next_position = rows;
         self.last_batch = None;
         Ok(())
@@ -714,11 +719,9 @@ impl DeviceProgram {
         device: &CudaDevice,
         hidden: usize,
         capacity: usize,
-    ) -> Result<(Tensor<i32>, Tensor<f32>, Tensor<i32>)> {
-        let metadata = device.upload(vec![0_i32; METADATA_FIELDS * 2], &[METADATA_FIELDS * 2])?;
-        let mut metadata =
-            Arc::try_unwrap(metadata).map_err(|_| Error::invariant("unique metadata"))?;
-        load_rotary(&device.stream, &mut metadata)?;
+    ) -> Result<(Allocation<i32>, Tensor<f32>, Allocation<i32>)> {
+        let metadata = device.runtime().zeros(METADATA_FIELDS * 2)?;
+        load_rotary(&device.stream, metadata.buffer())?;
         let external = Self::zero_row(device, hidden)?;
         // Step 1 of the KV refactor: an identity mapping over this program's own cache.
         let table = super::metadata::identity_table(device, capacity)?;
@@ -1103,7 +1106,7 @@ impl DeviceProgram {
         } else {
             &self.prefill
         };
-        super::metadata::update_rotary(graph, &mut self.metadata, metadata, position)?;
+        super::metadata::update_rotary(graph, self.metadata.buffer(), metadata, position)?;
         if let Some(external) = external {
             external.update(
                 &self.device,
@@ -1199,7 +1202,7 @@ impl DeviceProgram {
     ) -> (
         &mut super::batch::States,
         &mut super::fp8_cache::Fp8Caches,
-        &Tensor<i32>,
+        &Allocation<i32>,
     ) {
         (&mut self.states, &mut self.fp8_states, &self.table)
     }
