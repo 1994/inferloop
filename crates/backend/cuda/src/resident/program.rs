@@ -245,6 +245,8 @@ pub struct DeviceProgram {
     // `lane_external` keeps the backing storage alive, so this handle is only the transfer
     // target and is written before the prompt replay on the device stream.
     lane_external_owner: Tensor<f32>,
+    // The allocation the external rows view, which a prompt burst views too.
+    lane_external_memory: Allocation<f32>,
     // Hidden row of the position before the next device-primed chunk.
     prime_previous: Tensor<f32>,
     // Fusion workspaces are referenced by the captured graphs and never touched afterwards.
@@ -345,8 +347,13 @@ fn retained_tensor_bytes(
     activations + state_bytes + packed_bytes + recurrent * verify as u64
 }
 
-/// One contiguous external-hidden owner, its per-lane row views and fusion workspaces.
-type LaneFusion = (Tensor<f32>, Vec<Tensor<f32>>, Vec<Option<FusionWorkspace>>);
+/// One contiguous external-hidden allocation with its whole view, its per-lane row views and
+/// fusion workspaces.
+type LaneFusion = (
+    (Allocation<f32>, Tensor<f32>),
+    Vec<Tensor<f32>>,
+    Vec<Option<FusionWorkspace>>,
+);
 
 /// Per-lane external hidden row views and fusion workspaces for batched captures.
 ///
@@ -381,7 +388,7 @@ fn allocate_lane_fusion(
             enabled && lane < fused,
         )?);
     }
-    Ok((owner, external, fusion))
+    Ok(((memory, owner), external, fusion))
 }
 
 /// Lanes that need their own fusion workspace: every lane, unless batched prompt fusion covers
@@ -795,7 +802,7 @@ impl DeviceProgram {
         // A slot program addresses its slot's KV blocks through the slot's own table.
         let table = slot_table.unwrap_or(identity);
         let mut fusion = FusionWorkspace::allocate(device, hidden, weights.fusion.is_some())?;
-        let (lane_external_owner, mut lane_external, mut lane_fusion) =
+        let ((lane_external_memory, lane_external_owner), mut lane_external, mut lane_fusion) =
             allocate_lane_fusion(device, hidden, weights, geometry)?;
         let prime_previous = Self::zero_row(device, hidden)?;
         let mut builder = super::batch::BatchBuilder {
@@ -857,6 +864,7 @@ impl DeviceProgram {
             external,
             lane_external,
             lane_external_owner,
+            lane_external_memory,
             prime_previous,
             states,
             kv_states: attention_states(graph),
@@ -1199,8 +1207,8 @@ impl DeviceProgram {
     /// The projection workspace multi-sequence prompt graphs share with this worker.
     pub(crate) const fn burst_shared(
         &mut self,
-    ) -> (&mut super::nvfp4_gemm::Workspace, &Tensor<f32>) {
-        (&mut self.nvfp4, &self.lane_external_owner)
+    ) -> (&mut super::nvfp4_gemm::Workspace, &Allocation<f32>) {
+        (&mut self.nvfp4, &self.lane_external_memory)
     }
 
     /// Record that a multi-sequence prompt graph advanced this resident state to `end`.

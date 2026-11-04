@@ -15,15 +15,18 @@ use crate::{
     strategy::LinearTiling,
 };
 use cutile::{half::bf16, prelude::*};
-use infer_core::Result;
+use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, EmbeddingBatchPlan, FusionNormBuffers, FusionNormPlan, FusionShape, LinearRowsPlan,
     Recording,
 };
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
+use std::ops::Range;
 use std::result::Result as StdResult;
+use std::sync::Arc;
 
 const ROWS: usize = 128;
 const HIDDEN: usize = 5120;
@@ -92,10 +95,13 @@ pub fn required_bytes(weights: &ProgramWeights, width: usize, profile: &DevicePr
     )
 }
 
+/// Prompt fusion rows: the `[rows, COLUMNS]` projection input and the `[rows, HIDDEN]` gathered
+/// embeddings one gather kernel fills for every lane. Captures write through views cut from the
+/// allocations, so a narrower prompt rung shares a wider rung's memory by viewing its leading rows.
 pub(super) struct Workspace {
-    input: Option<Tensor<f32>>,
-    /// Batched embedding rows for one prompt chunk; one gather kernel fills all lanes.
-    gathered: Option<Tensor<f32>>,
+    input: Allocation<f32>,
+    gathered: Allocation<f32>,
+    rows: usize,
 }
 impl Workspace {
     pub(super) fn allocate(
@@ -106,62 +112,80 @@ impl Workspace {
         if required_bytes(weights, width, device.profile()?) == 0 {
             return Ok(None);
         }
+        let zeros = |columns: usize| -> Result<Allocation<f32>> {
+            Allocation::adopt(Arc::new(
+                api::zeros::<f32>(&[width * columns])
+                    .sync_on(&device.stream)
+                    .map_err(device_error)?,
+            ))
+        };
         Ok(Some(Self {
-            input: Some(
-                api::zeros::<f32>(&[width, COLUMNS])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-            ),
-            gathered: Some(
-                api::zeros::<f32>(&[width, HIDDEN])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-            ),
+            input: zeros(COLUMNS)?,
+            gathered: zeros(HIDDEN)?,
+            rows: width,
         }))
     }
 
-    /// A workspace over rows a narrower prompt rung borrows from a wider one.
-    pub(super) const fn from_rows(input: Tensor<f32>, gathered: Tensor<f32>) -> Self {
-        Self {
-            input: Some(input),
-            gathered: Some(gathered),
+    /// The leading `rows` rows, for a narrower prompt rung; the memory is shared.
+    /// # Errors
+    /// Rejects more rows than this workspace holds.
+    pub(super) fn narrowed(&self, rows: usize) -> Result<Self> {
+        if rows > self.rows {
+            return Err(Error::invalid("narrowed fusion rows"));
         }
-    }
-
-    /// The projection input and gathered embedding rows, when no capture holds them.
-    pub(super) const fn rows(&self) -> Option<(&Tensor<f32>, &Tensor<f32>)> {
-        match (&self.input, &self.gathered) {
-            (Some(input), Some(gathered)) => Some((input, gathered)),
-            _ => None,
-        }
-    }
-
-    /// Columns of the projection input and the gathered embedding rows.
-    pub(super) const fn columns() -> (usize, usize) {
-        (COLUMNS, HIDDEN)
+        Ok(Self {
+            input: self.input.clone(),
+            gathered: self.gathered.clone(),
+            rows,
+        })
     }
 
     #[cfg(test)]
-    pub(super) fn bytes(&self) -> usize {
-        self.input.as_ref().map_or(0, Tensor::num_bytes)
-            + self.gathered.as_ref().map_or(0, Tensor::num_bytes)
+    pub(super) const fn bytes(&self) -> usize {
+        self.rows * (COLUMNS + HIDDEN) * size_of::<f32>()
+    }
+
+    /// Projection input rows `lanes`, shaped `shape`.
+    fn input_rows(
+        &self,
+        lanes: Range<usize>,
+        shape: &[usize],
+    ) -> StdResult<Tensor<f32>, DeviceError> {
+        self.rows_of(&self.input, COLUMNS, lanes, shape)
+    }
+
+    /// Gathered embedding rows `lanes`, shaped `shape`.
+    fn gathered_rows(
+        &self,
+        lanes: Range<usize>,
+        shape: &[usize],
+    ) -> StdResult<Tensor<f32>, DeviceError> {
+        self.rows_of(&self.gathered, HIDDEN, lanes, shape)
+    }
+
+    fn rows_of(
+        &self,
+        memory: &Allocation<f32>,
+        columns: usize,
+        lanes: Range<usize>,
+        shape: &[usize],
+    ) -> StdResult<Tensor<f32>, DeviceError> {
+        if lanes.end > self.rows {
+            return Err(error("fusion batch rows"));
+        }
+        memory
+            .view(lanes.start * columns..lanes.end * columns, shape)
+            .map_err(error)
     }
 
     fn copy_row(
-        &mut self,
+        &self,
         scope: &Scope,
         lane: usize,
         normalized: &Tensor<f32>,
     ) -> StdResult<(), DeviceError> {
-        let matrix = self
-            .input
-            .take()
-            .ok_or_else(|| error("fusion batch input"))?;
-        let rows = usize::try_from(matrix.shape()[0]).map_err(error)?;
-        let (mut row, owner) = super::arena::row_tensor(matrix, rows, lane).map_err(error)?;
+        let mut row = self.input_rows(lane..lane + 1, &[COLUMNS])?;
         scope.record(api::memcpy(&mut row, normalized))?;
-        self.input =
-            Some(Arc::try_unwrap(owner).map_err(|_| error("fusion batch input still aliased"))?);
         Ok(())
     }
 }
@@ -206,7 +230,7 @@ pub(super) fn record(
     arena: &mut ActivationArena,
     metadata: &[Tensor<i32>],
     metadata_batch: &Tensor<i32>,
-    workspace: &mut Workspace,
+    workspace: &Workspace,
 ) -> StdResult<bool, DeviceError> {
     #[cfg(test)]
     if DISABLED.get() {
@@ -238,10 +262,7 @@ pub(super) fn record(
     else {
         return Err(error("fusion batch dense capability"));
     };
-    let mut gathered = workspace
-        .gathered
-        .take()
-        .ok_or_else(|| error("fusion batch gather"))?;
+    let gathered = workspace.gathered_rows(0..rows, &[rows, HIDDEN])?;
     gather(
         builder,
         scope,
@@ -249,10 +270,9 @@ pub(super) fn record(
         buffer(&gathered)?,
         buffer(metadata_batch)?,
     )?;
+    let input = workspace.input_rows(0..rows, &[rows, COLUMNS])?;
     for (lane, meta) in metadata.iter().enumerate().take(rows) {
-        // The owned row tensor keeps the gather allocation anchored until it is put back;
-        // `row_tensor` bounds the lane inside the slot and the return re-anchors ownership.
-        let (embedding, owner) = super::arena::row_tensor(gathered, rows, lane).map_err(error)?;
+        let embedding = workspace.gathered_rows(lane..lane + 1, &[HIDDEN])?;
         let normalized = Capture {
             scope,
             arena: &mut *arena,
@@ -269,15 +289,12 @@ pub(super) fn record(
             mode: CaptureMode::Row(lane),
         }
         .fusion_norm(HIDDEN, &embedding)?;
-        gathered =
-            Arc::try_unwrap(owner).map_err(|_| error("fusion batch gather still aliased"))?;
         workspace.copy_row(scope, lane, &normalized)?;
         builder.lane_fusion[lane]
             .as_mut()
             .ok_or_else(|| error("fusion row owner"))?
             .normalized = Some(normalized);
     }
-    workspace.gathered = Some(gathered);
     builder
         .weights
         .kernels
@@ -292,12 +309,7 @@ pub(super) fn record(
                 columns: COLUMNS,
             },
             buffer(&output)?,
-            buffer(
-                workspace
-                    .input
-                    .as_ref()
-                    .ok_or_else(|| error("fusion batch owner"))?,
-            )?,
+            buffer(&input)?,
             buffer(weight)?,
         )
         .map_err(error)?;
@@ -314,7 +326,7 @@ fn record_wide(
     node: &TensorNode,
     arena: &ActivationArena,
     metadata_batch: &Tensor<i32>,
-    workspace: &mut Workspace,
+    workspace: &Workspace,
 ) -> StdResult<bool, DeviceError> {
     let lanes = arena.lanes();
     let slot = arena.slot(node.outputs[0]).map_err(error)?;
@@ -341,10 +353,7 @@ fn record_wide(
     if builder.delegated.is_none() {
         return Ok(false);
     }
-    let gathered = workspace
-        .gathered
-        .take()
-        .ok_or_else(|| error("fusion batch gather"))?;
+    let gathered = workspace.gathered_rows(0..lanes, &[lanes, HIDDEN])?;
     gather(
         builder,
         scope,
@@ -355,11 +364,8 @@ fn record_wide(
     let Some(delegated) = builder.delegated.as_deref_mut() else {
         return Ok(false);
     };
-    let input = workspace
-        .input
-        .take()
-        .ok_or_else(|| error("fusion batch input"))?;
-    let rows = input.reshape(&[2 * lanes, HIDDEN])?;
+    // Each lane's `COLUMNS` input row is its normalized embedding then its normalized hidden row.
+    let rows = workspace.input_rows(0..lanes, &[2 * lanes, HIDDEN])?;
     builder
         .weights
         .kernels
@@ -380,21 +386,15 @@ fn record_wide(
             },
         )
         .map_err(error)?;
-    workspace.gathered = Some(gathered);
-    let input = rows.reshape(&[lanes * COLUMNS])?;
     let output = arena.buffer(slot).map_err(error)?;
-    // `workspace.input` is restored below whatever the outcome, so no early return happens here.
-    let recorded = buffer(&input).and_then(|flat| {
-        delegated.record_dense(
-            (&builder.weights.kernels, scope),
-            flat,
-            weight,
-            output,
-            (lanes, HIDDEN, COLUMNS),
-        )
-    });
-    workspace.input = Some(input.reshape(&[lanes, COLUMNS])?);
-    if recorded? {
+    let recorded = delegated.record_dense(
+        (&builder.weights.kernels, scope),
+        buffer(&rows)?,
+        weight,
+        output,
+        (lanes, HIDDEN, COLUMNS),
+    )?;
+    if recorded {
         Ok(true)
     } else {
         Err(error("fusion batch vendor projection"))
