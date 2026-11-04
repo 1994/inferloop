@@ -1,6 +1,4 @@
 //! Lossless FP8 staging reuses KV across two positions and six GQA heads.
-// The combined loader lives under this unhashed module so the frozen vector/MMA tuning keys
-// (which hash `attention_oxide.rs` and `vector.rs`) stay byte-identical.
 mod combined;
 use super::{Support, device_error};
 use crate::device::CudaDevice;

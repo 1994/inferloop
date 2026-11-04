@@ -23,6 +23,10 @@ const PTX: &str = include_str!("../../../kernels/fa4-attention/bridge.ptx");
 const F32_PTX: &str = include_str!("../../../kernels/fa4-attention-f32/bridge.ptx");
 const THREADS: u32 = 256;
 const RESIDENT_BLOCKS_PER_SM: u32 = 8;
+/// Version of the F32 readout's host launch contract: the bridge parameters, their order, the
+/// gather and readout grids. A measured choice stays valid across host refactors, so bump this
+/// only when a launch of the same artifacts would run differently.
+const F32_HOST_CONTRACT: &str = "fa4-attention-f32-launch-v1";
 
 /// Arithmetic of one AOT attention support instance. The draft program stays on BF16.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,9 +328,8 @@ pub fn f32_artifact_identity() -> String {
     let mut hash = Sha256::new();
     hash.update(artifact_identity());
     hash.update(F32_PTX);
-    hash.update(include_str!("mod.rs"));
-    hash.update(include_str!("recorded.rs"));
-    hash.update(include_str!("host.rs"));
+    hash.update(F32_HOST_CONTRACT);
+    hash.update(format!("{THREADS}:{RESIDENT_BLOCKS_PER_SM}"));
     hash.update(include_bytes!(
         "../../../kernels/fa4-attention-f32/bridge.cu"
     ));

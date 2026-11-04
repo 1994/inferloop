@@ -102,6 +102,7 @@ runtime                  submit / poll，不重建拓扑
 - **做什么：** 候选就是 Plan，只保留一种 key、证据和驱动，tuning 与服务走同一录制路径。key 使用内容身份（kernel 内容、合同、形状、设备），不依赖源码位置，否则每次搬移都会让缓存失效。从 `pool_dense` 开始逐族迁移，迁移时处理 `tuning.json` 与缓存的兼容或失效。诊断入口用 example 程序，不加环境变量。
 - **参考：** PR #89 对 GEMV 缓存身份和可推导参数的审查，直接相关，开工前先读。
 - **验收：** 新增候选不需要新 key 结构或新缓存字段；一条命令产出配对报告；迁移后默认选择不变，或变化有证据。
+- **第一步（2026-11-04）：** oxide vector/combined 和 FA4 F32 的 attention 调优身份原来哈希宿主 `.rs` 源码，改动或搬移这些文件就让 27B 的缓存条目失效，挡住了 M6 迁移它们的 `Bindings`。现在制品身份哈希 PTX、源码、provenance 和 launch 合同（launch 常量加 `HOST_CONTRACT` 版本，同一制品的 launch 行为变了才升版本），tuning 侧的方法由 key 的 `SCHEMA` 表达，不再哈希 tuning 源码。这一次有意让三族条目失效一次，在 5090 上重测。
 
 ### M4 单一 lowering（风险最高）
 

@@ -7,6 +7,10 @@ const PTX: &str = include_str!("../../../kernels/vector-attention/attention-sm12
 const THREADS: u32 = 384;
 const ROWS_PER_CTA: usize = 12;
 const LANES: &[usize] = &[256];
+/// Version of the host launch contract: the kernel parameters, their order and the grid. A
+/// measured choice stays valid across host refactors, so bump this only when a launch of the
+/// same artifact would run differently; the launch constants above are hashed on their own.
+const HOST_CONTRACT: &str = "vector-attention-launch-v1";
 pub(super) fn load(device: &CudaDevice) -> Result<Option<Support>> {
     if !device.target().has_simt_artifacts() {
         return Ok(None);
@@ -34,13 +38,13 @@ pub(super) fn artifact_identity() -> &'static str {
     IDENTITY.get_or_init(|| {
         let source = include_str!("../../../kernels/vector-attention/attention-sm120.cu");
         let provenance = include_str!("../../../kernels/vector-attention/provenance.json");
+        let launch = format!("{HOST_CONTRACT}:{THREADS}:{ROWS_PER_CTA}:{LANES:?}");
         format!(
-            "{:x}:{:x}:{:x}:{:x}:{:x}",
+            "{:x}:{:x}:{:x}:{:x}",
             Sha256::digest(PTX),
             Sha256::digest(source),
             Sha256::digest(provenance),
-            Sha256::digest(include_str!("vector.rs")),
-            Sha256::digest(include_str!("../attention_oxide.rs"))
+            Sha256::digest(launch)
         )
     })
 }
