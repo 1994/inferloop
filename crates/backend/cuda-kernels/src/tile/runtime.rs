@@ -6,7 +6,7 @@ use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner, Width};
 use crate::contract::recording::{Foreign, Recording};
 use crate::tile::backend_error;
 use cuda_core::sys::{CUdeviceptr, cuMemsetD8Async, cudaError_enum_CUDA_SUCCESS};
-use cuda_core::{DType, DeviceCopy, Stream, f4e2m1fnx2, f8e4m3fn};
+use cuda_core::{DType, DTypeId, DeviceCopy, Stream, f4e2m1fnx2, f8e4m3fn};
 use cutile::cuda_async::cuda_graph::GraphLaunch;
 use cutile::cuda_async::device_buffer::DeviceAllocation;
 use cutile::cuda_async::device_context::with_default_device_policy;
@@ -122,11 +122,24 @@ impl<T: DType> Allocation<T> {
     /// recordings that still take cuTile tensors.
     /// # Errors
     /// Rejects a range outside the allocation, and a shape that does not cover the range.
+    pub fn view(&self, range: Range<usize>, shape: &[usize]) -> Result<Tensor<T>> {
+        self.view_as(range, shape)
+    }
+
+    /// Elements `range` read as `U`s of `shape`, as [`Self::view`]: an unused F32 product doubles
+    /// as the byte scratch of an FP8 operand. Every bit pattern is a valid number, so only `bool`,
+    /// whose device stores are 0 or 1, is refused.
+    /// # Errors
+    /// Rejects a range outside the allocation, a shape whose bytes differ from the range's, a
+    /// start misaligned for `U`, and `bool`.
     #[expect(
         unsafe_code,
-        reason = "The view owns the memory it addresses, and its range is checked against it"
+        reason = "The view owns the memory it addresses, and its range, size and alignment are checked against it"
     )]
-    pub fn view(&self, range: Range<usize>, shape: &[usize]) -> Result<Tensor<T>> {
+    pub fn view_as<U: DType>(&self, range: Range<usize>, shape: &[usize]) -> Result<Tensor<U>> {
+        if U::DTYPE == DTypeId::Bool {
+            return Err(Error::invalid("a bool view of untyped memory"));
+        }
         let len = range
             .end
             .checked_sub(range.start)
@@ -137,21 +150,26 @@ impl<T: DType> Allocation<T> {
                     self.len()
                 ))
             })?;
+        let width = size_of::<T>();
+        let bytes = len * width;
         if shape
             .iter()
-            .try_fold(1usize, |all, &dim| all.checked_mul(dim))
-            != Some(len)
+            .try_fold(size_of::<U>(), |all, &dim| all.checked_mul(dim))
+            != Some(bytes)
         {
             return Err(Error::invalid(format!(
-                "view shape {shape:?} does not cover {len} elements"
+                "view shape {shape:?} does not cover {bytes} bytes"
             )));
         }
-        let width = size_of::<T>();
         let offset = range
             .start
             .checked_mul(width)
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or_else(|| Error::invalid("view offset overflows"))?;
+        let pointer = self.tensor.device_pointer().cu_deviceptr() + offset;
+        if !pointer.is_multiple_of(align_of::<U>() as u64) {
+            return Err(Error::invalid("view start is misaligned"));
+        }
         let dims = shape
             .iter()
             .map(|&dim| i32::try_from(dim).map_err(|_| Error::invalid("view dimension")))
@@ -163,12 +181,13 @@ impl<T: DType> Allocation<T> {
                 .ok_or_else(|| Error::invalid("view strides"))?;
         }
         let memory = View {
-            pointer: self.tensor.device_pointer().cu_deviceptr() + offset,
-            bytes: len * width,
+            pointer,
+            bytes,
             memory: self.clone(),
         };
         // SAFETY: `memory` owns the allocation, so it outlives the tensor, and its bytes lie
-        // inside the allocation, as checked above. The strides are contiguous over `shape`.
+        // inside the allocation, as checked above. The strides are contiguous over `shape`, the
+        // start is aligned for `U`, and any bytes are a valid `U` (`DType`), `bool` excepted.
         Ok(unsafe { Tensor::from_foreign(Arc::new(memory), dims, strides) })
     }
 }

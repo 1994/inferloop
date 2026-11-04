@@ -118,15 +118,15 @@ impl MlpPlan {
                 .get(&node.inputs[1])
                 .ok_or_else(|| error("fused down vendor weight"))?;
             let columns = arena.get(node.inputs[0]).map_err(error)?.size() / rows;
-            let Some((mut input, mut output)) = down_buffers(arena, node)? else {
+            let Some((input, output)) = down_operands(arena, node)? else {
                 continue;
             };
             nvfp4.prepare_vendor_down(
                 device,
                 weight,
                 scale,
-                &mut input,
-                &mut output,
+                (arena, input),
+                output,
                 (rows, columns),
             )?;
         }
@@ -351,14 +351,14 @@ fn record_fused_down(
         .ok_or_else(|| error("prefill projection"))?;
     let width = arena.lanes();
     let columns = arena.get(node.inputs[0]).map_err(error)?.size() / width;
-    if let Some((mut input, output)) = down_buffers(arena, node)? {
+    if let Some((input, output)) = down_operands(arena, node)? {
         let flat = output.size();
         let mut output = output.reshape(&[width, flat / width])?;
         let result = match nvfp4.record_vendor_down(
             scope,
             weight,
             scale,
-            &mut input,
+            (arena, input),
             &mut output,
             columns,
         ) {
@@ -862,22 +862,16 @@ pub fn with_dense_reference<T>(run: impl FnOnce() -> T) -> T {
 #[path = "../../tests/unit/resident_prefill_projection.rs"]
 mod tests;
 
-/// Input and output tensors of a fused down projection.
-type DownBuffers = (Tensor<f32>, Tensor<f32>);
-
-/// Input and output of a fused down projection, or `None` when the last-consumer arena gave them
-/// one slot: the vendor pack needs two disjoint slots.
-fn down_buffers(
+/// The input slot and output tensor of a fused down projection, or `None` when the
+/// last-consumer arena gave them one slot: the vendor pack needs two disjoint slots.
+fn down_operands(
     arena: &super::ActivationArena,
     node: &TensorNode,
-) -> Result<Option<DownBuffers>, DeviceError> {
+) -> Result<Option<(usize, Tensor<f32>)>, DeviceError> {
     let input = arena.slot(node.inputs[0]).map_err(error)?;
     let output = arena.slot(node.outputs[0]).map_err(error)?;
     if input == output {
         return Ok(None);
     }
-    Ok(Some((
-        arena.output(input).map_err(error)?,
-        arena.output(output).map_err(error)?,
-    )))
+    Ok(Some((input, arena.output(output).map_err(error)?)))
 }
