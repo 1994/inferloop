@@ -87,8 +87,8 @@ impl Capture<'_> {
             output: buffer(output)?,
             query: self.input_buffer(node.inputs[0])?,
             cache,
-            metadata: buffer(self.metadata)?,
-            table: buffer(self.table)?,
+            metadata: self.metadata,
+            table: self.table,
         };
         let recording = Recording::scope(self.scope);
         if self.attention.supports(query_heads, head_dim)
@@ -117,8 +117,8 @@ impl Capture<'_> {
                     cache,
                     keys: self.input_buffer(node.inputs[1])?,
                     values: self.input_buffer(node.inputs[2])?,
-                    metadata: buffer(self.metadata)?,
-                    table: buffer(self.table)?,
+                    metadata: self.metadata,
+                    table: self.table,
                 },
             )
             .map_err(error)
@@ -167,8 +167,8 @@ impl Capture<'_> {
                     cache: kv_cache((&keys, &values), kv_heads, head_dim, scales)?,
                     keys: self.input_buffer(node.inputs[1])?,
                     values: self.input_buffer(node.inputs[2])?,
-                    metadata: buffer(self.metadata)?,
-                    table: buffer(self.table)?,
+                    metadata: self.metadata,
+                    table: self.table,
                 },
             )
             .map_err(error)?;
@@ -201,8 +201,8 @@ impl Capture<'_> {
             output: buffer(output)?,
             query: self.input_buffer(node.inputs[0])?,
             cache: kv_cache((&keys, &values), kv_heads, head_dim, scales)?,
-            metadata: buffer(self.metadata)?,
-            table: buffer(self.table)?,
+            metadata: self.metadata,
+            table: self.table,
         };
         let recording = Recording::scope(self.scope);
         if let Some((mma, variant)) = self.attention.prefill_mma(node.outputs[0], lanes) {
@@ -253,8 +253,8 @@ impl Capture<'_> {
             output,
             query: self.input_buffer(node.inputs[0])?,
             cache: kv_cache((&keys, &values), kv_heads, head_dim, scales)?,
-            metadata: buffer(self.metadata)?,
-            table: buffer(self.table)?,
+            metadata: self.metadata,
+            table: self.table,
         };
         let recording = Recording::scope(self.scope);
         let attention = &self.weights.kernels.attention;
