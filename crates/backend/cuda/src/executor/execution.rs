@@ -629,8 +629,7 @@ impl CudaExecutor {
     /// serves sequences that bind a private program's state, so failures only log.
     #[expect(
         unsafe_code,
-        reason = "Audited slot alias: homes are declared before the pools and cleared before \
-                  either pool drops, and only the slot's lease holder replays them"
+        reason = "Audited slot alias: only the slot's lease holder replays its home's graphs"
     )]
     fn build_homes(&mut self, attempt: usize, prompt_width: usize) {
         self.worker = None;
@@ -638,8 +637,7 @@ impl CudaExecutor {
         let Some(pool) = self.slots.as_ref() else {
             return;
         };
-        // SAFETY: the worker is cleared before the pool drops (see the expectation above).
-        let kv = unsafe { pool.kv_views() };
+        let kv = pool.kv_views();
         let worker = kv.and_then(|kv| self.loaded.prompt_worker(pool.capacity(), kv, prompt_width));
         match worker {
             Ok((program, draft)) => {
