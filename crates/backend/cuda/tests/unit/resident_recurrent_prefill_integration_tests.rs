@@ -39,7 +39,7 @@ fn fixture_at(
             .into_iter()
             .map(bf16::from_f32)
             .collect();
-        embeddings.insert(TensorId::new(id)?, device.upload(data, &[16, columns])?);
+        embeddings.insert(TensorId::new(id)?, device.runtime().upload(data)?);
     }
     let dense = device.upload(
         super::tests::values(16 * out_columns, 11)
@@ -69,11 +69,15 @@ fn fixture_at(
         constants: BTreeMap::from([
             (
                 TensorId::new(7)?,
-                device.upload(super::tests::values(value_heads, 3), &[value_heads])?,
+                device
+                    .runtime()
+                    .upload(super::tests::values(value_heads, 3))?,
             ),
             (
                 TensorId::new(8)?,
-                device.upload(super::tests::values(value_heads, 5), &[value_heads])?,
+                device
+                    .runtime()
+                    .upload(super::tests::values(value_heads, 5))?,
             ),
         ]),
         kv_scales: BTreeMap::new(),
@@ -490,7 +494,9 @@ fn checkpoint_fixture(
     );
     weights.constants.insert(
         kernel,
-        device.upload(super::tests::values(channels * 4, 19), &[channels, 4])?,
+        device
+            .runtime()
+            .upload(super::tests::values(channels * 4, 19))?,
     );
     Ok((graph, weights))
 }

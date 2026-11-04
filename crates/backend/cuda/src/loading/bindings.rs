@@ -182,7 +182,7 @@ fn bind_tensors(
                 };
                 weights
                     .embeddings
-                    .insert(tensor.id, Arc::clone(shared.tensor()));
+                    .insert(tensor.id, shared.allocation().clone());
             }
             weights.projections.insert(tensor.id, projection);
         } else if embeddings.contains(&tensor.id) {
@@ -199,13 +199,12 @@ fn bind_tensors(
             drop(bytes);
             weights
                 .embeddings
-                .insert(tensor.id, device.upload(values, &source.shape)?);
+                .insert(tensor.id, device.runtime().upload(values)?);
         } else {
             let values = floats(package, &source.data)?;
-            let length = values.len();
             weights
                 .constants
-                .insert(tensor.id, device.upload(values, &[length])?);
+                .insert(tensor.id, device.runtime().upload(values)?);
         }
         done += 1;
         tracing::debug!(
@@ -400,10 +399,9 @@ fn draft_weights(
             weights.projections.insert(tensor.id, projection);
         } else {
             let values = floats(package, &source.data)?;
-            let length = values.len();
             weights
                 .constants
-                .insert(tensor.id, device.upload(values, &[length])?);
+                .insert(tensor.id, device.runtime().upload(values)?);
         }
     }
     Ok(weights)
@@ -452,7 +450,7 @@ fn draft_fusion(
     Ok(FusionWeights {
         projection: fc,
         tiling,
-        norms: device.upload(norms, &[2, hidden])?,
+        norms: device.runtime().upload(norms)?,
         epsilon: package.imported.model.norm_epsilon,
         offset: package.imported.model.norm_weight_offset,
     })
@@ -493,10 +491,10 @@ fn add_rope(
             let axes = mrope_axes(position, half)?;
             weights
                 .rope_axes
-                .insert(node.id, device.upload(axes, &[half])?);
+                .insert(node.id, device.runtime().upload(axes)?);
             weights
                 .rope_frequencies
-                .insert(node.id, device.upload(frequencies, &[half])?);
+                .insert(node.id, device.runtime().upload(frequencies)?);
         }
     }
     Ok(())

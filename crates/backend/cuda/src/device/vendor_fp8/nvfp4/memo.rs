@@ -79,7 +79,7 @@ impl ModelCache {
             entries
                 .owners
                 .entry((proof.1, proof.2))
-                .or_insert_with(|| (w.tensor().clone(), s.tensor().clone()));
+                .or_insert_with(|| (w.allocation().clone(), s.allocation().clone()));
         }
         entries.numerical.entry(proof).or_insert(accepted);
         drop(entries);

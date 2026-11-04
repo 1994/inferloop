@@ -1,4 +1,5 @@
 use super::{
+    arena::SlotMemory,
     buffers::{buffer, kv_cache},
     capture::{Capture, CaptureMode, error},
 };
@@ -8,13 +9,14 @@ use crate::constants::WIDE_PREFILL_LANES;
 use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_cuda_kernels::contract::{
-    AppendBuffers, DecodeBuffers, DecodePlan, KvCache, KvElement, PrefillAppendPlan,
+    AppendBuffers, Buffer, DecodeBuffers, DecodePlan, KvCache, KvElement, PrefillAppendPlan,
     PrefillDecodePlan, Recording,
 };
 use infer_cuda_kernels::tile::runtime::Element;
 use infer_ir::{TensorNode, TensorOp};
 
-type AttentionResult<E> = Result<(Tensor<f32>, Tensor<E>, Tensor<E>), DeviceError>;
+/// The key and value caches, handed back in the head-major layout attention leaves them in.
+type AttentionResult<E> = Result<(Tensor<E>, Tensor<E>), DeviceError>;
 
 impl Capture<'_> {
     /// Append this lane's key and value row to the shared FP8 cache without attending; a
@@ -48,7 +50,7 @@ impl Capture<'_> {
     pub fn record_attention<E: DType + Element<Marker: KvElement>>(
         &mut self,
         node: &TensorNode,
-        output: Tensor<f32>,
+        output: &SlotMemory,
         keys: Tensor<E>,
         values: Tensor<E>,
         scales: [f32; 2],
@@ -74,7 +76,6 @@ impl Capture<'_> {
         let values = values.reshape(&[kv_heads, rows, head_dim])?;
         let cache = kv_cache((&keys, &values), kv_heads, head_dim, scales)?;
         self.record_append(node, cache)?;
-        let output = output.reshape(&[query_heads, head_dim])?;
         let plan = DecodePlan {
             heads: query_heads,
             kv_heads,
@@ -83,7 +84,7 @@ impl Capture<'_> {
             block: KV_BLOCK_TOKENS,
         };
         let buffers = DecodeBuffers {
-            output: buffer(&output)?,
+            output: buffer(output)?,
             query: self.input_buffer(node.inputs[0])?,
             cache,
             metadata: buffer(self.metadata)?,
@@ -102,7 +103,7 @@ impl Capture<'_> {
                 .decode(&recording, plan, buffers)
                 .map_err(error)?;
         }
-        Ok((output, keys, values))
+        Ok((keys, values))
     }
 
     /// Append one lane's key and value row.
@@ -126,7 +127,7 @@ impl Capture<'_> {
     fn record_prefill_attention<E: DType + Element<Marker: KvElement>>(
         &mut self,
         node: &TensorNode,
-        output: Tensor<f32>,
+        output: &SlotMemory,
         keys: Tensor<E>,
         values: Tensor<E>,
         scales: [f32; 2],
@@ -177,7 +178,7 @@ impl Capture<'_> {
     fn record_prefill_decode<E: DType + Element<Marker: KvElement>>(
         &mut self,
         node: &TensorNode,
-        output: Tensor<f32>,
+        output: &SlotMemory,
         keys: Tensor<E>,
         values: Tensor<E>,
         scales: [f32; 2],
@@ -192,13 +193,12 @@ impl Capture<'_> {
             return Err(error("expected attention"));
         };
         let lanes = self.arena.lanes();
-        let output = output.reshape(&[lanes * query_heads, head_dim])?;
         // The choice was measured for a slot's layout; a pool's operands may not fit it. That is
         // decided here, in the open, and a selected kernel then records or fails the capture.
         let geometry = (query_heads, kv_heads, head_dim, lanes, self.capacity);
         let window = i32::try_from(window.unwrap_or(0)).map_err(error)?;
         let buffers = DecodeBuffers {
-            output: buffer(&output)?,
+            output: buffer(output)?,
             query: self.input_buffer(node.inputs[0])?,
             cache: kv_cache((&keys, &values), kv_heads, head_dim, scales)?,
             metadata: buffer(self.metadata)?,
@@ -208,23 +208,23 @@ impl Capture<'_> {
         if let Some((mma, variant)) = self.attention.prefill_mma(node.outputs[0], lanes) {
             if mma.accepts(&buffers, geometry, window) {
                 mma.record(&recording, buffers, geometry, window, variant)?;
-                return Ok((output, keys, values));
+                return Ok((keys, values));
             }
             tracing::info!(target: "infer::capture", lanes, "selected MMA does not fit this pool");
         }
         if let Some(oxide) = self.attention.prefill_oxide(node.outputs[0], lanes) {
             if oxide.accepts(&buffers, geometry) {
                 oxide.record(&recording, buffers, geometry, window)?;
-                return Ok((output, keys, values));
+                return Ok((keys, values));
             }
             tracing::info!(target: "infer::capture", lanes, "selected SIMT does not fit this pool");
         }
-        self.record_prefill_legacy(node, output, keys, values, scales)
+        self.record_prefill_legacy(node, buffer(output)?, keys, values, scales)
     }
     fn record_prefill_legacy<E: DType + Element<Marker: KvElement>>(
         &self,
         node: &TensorNode,
-        output: Tensor<f32>,
+        output: Buffer<'_, f32>,
         keys: Tensor<E>,
         values: Tensor<E>,
         scales: [f32; 2],
@@ -250,7 +250,7 @@ impl Capture<'_> {
             lanes,
         };
         let buffers = DecodeBuffers {
-            output: buffer(&output)?,
+            output,
             query: self.input_buffer(node.inputs[0])?,
             cache: kv_cache((&keys, &values), kv_heads, head_dim, scales)?,
             metadata: buffer(self.metadata)?,
@@ -267,6 +267,6 @@ impl Capture<'_> {
                 |tile| attention.decode_prefill_tiled(&recording, plan, tile, buffers),
             )
             .map_err(error)?;
-        Ok((output, keys, values))
+        Ok((keys, values))
     }
 }

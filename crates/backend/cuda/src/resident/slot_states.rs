@@ -231,13 +231,18 @@ pub(super) fn prepare_parameters(
         ) else {
             continue;
         };
-        if rate.size() != value_heads || bias.size() != value_heads {
+        if rate.len() != value_heads || bias.len() != value_heads {
             return Err(Error::invalid("pooled delta parameter geometry"));
         }
         let mut parameters = api::zeros::<f32>(&[2, value_heads])
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        pack_parameters(&device.stream, &mut parameters, rate, bias)?;
+        pack_parameters(
+            &device.stream,
+            &mut parameters,
+            rate.tensor(),
+            bias.tensor(),
+        )?;
         result.insert(node.id, parameters);
     }
     Ok(result)

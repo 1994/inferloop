@@ -9,8 +9,8 @@ use crate::constants::NVFP4_QUANT_CODES_TILE;
 use crate::constants::NVFP4_QUANT_SCALES_TILE;
 use crate::resident::norm_fp4;
 use infer_cuda_kernels::contract::{
-    Buffer, Fp4QuantKind, Fp4QuantPlan, Fp8, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan,
-    Kernels, NormFp4Buffers, NormMaximumBuffers, QuantNormPlan, Recording, WeightRef,
+    Buffer, Fp4Pair, Fp4QuantKind, Fp4QuantPlan, Fp8, Fp8QuantKind, Fp8QuantPlan, GemmLoop,
+    GemmPlan, Kernels, NormFp4Buffers, NormMaximumBuffers, QuantNormPlan, Recording, WeightRef,
 };
 
 use crate::device::vendor_fp8::Gemm;
@@ -38,6 +38,7 @@ use crate::{
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
 use infer_core::Result;
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::DataflowGraph;
 use std::collections::BTreeMap;
 #[cfg(test)]
@@ -45,12 +46,13 @@ use std::env::var;
 
 use std::result::Result as StdResult;
 
-type Quantized = (Tensor<f4e2m1fnx2>, Tensor<f8e4m3fn>);
+/// FP4 activation codes and their per-group scales.
+type Quantized = (Allocation<f4e2m1fnx2>, Allocation<f8e4m3fn>);
 /// Keyed by `(rows, columns, activation-scale columns)`.
 type Fp8Key = (usize, usize, usize);
 type StrategyKey = (ResidentGemmWeightKey, usize, usize, usize);
 /// Quantized activation and its per-token scales.
-type Fp8Buffers = (Tensor<f8e4m3fn>, Tensor<f32>);
+type Fp8Buffers = (Allocation<f8e4m3fn>, Allocation<f32>);
 
 pub struct Workspace {
     quant_reuse: CaptureQuantReuse,
@@ -124,7 +126,7 @@ impl Workspace {
     ) -> Option<(&Tensor<f8e4m3fn>, &Tensor<f32>)> {
         self.fp8
             .get(&(rows, columns, 1))
-            .map(|(codes, scales)| (codes, scales))
+            .map(|(codes, scales)| (&**codes.tensor(), &**scales.tensor()))
     }
     #[cfg(test)]
     pub(crate) fn quantized_fp4(
@@ -134,7 +136,7 @@ impl Workspace {
     ) -> Option<(&Tensor<f4e2m1fnx2>, &Tensor<f8e4m3fn>)> {
         self.buffers
             .get(&(rows, columns))
-            .map(|(codes, scales)| (codes, scales))
+            .map(|(codes, scales)| (&**codes.tensor(), &**scales.tensor()))
     }
 
     /// Test evidence for prepared strategies, grouped by shape/config; this is not a replay trace.
@@ -287,8 +289,9 @@ impl Workspace {
         let rows = output.rows;
         let (q, qs) = self
             .buffers
-            .get_mut(&(rows, columns))
+            .get(&(rows, columns))
             .ok_or_else(|| super::super::capture::error("FP4 quantization workspace missing"))?;
+        let (q, qs) = (q.operand(), qs.operand());
         let key = quant_key(
             certified,
             input,
@@ -296,7 +299,7 @@ impl Workspace {
             rows,
             columns,
             QuantKind::Fp4(scale.to_bits()),
-            (&*q, &*qs),
+            (q, qs),
         );
         let (reuse, ticket) = self.quant_reuse.prepare(key);
         let record = || {
@@ -306,8 +309,8 @@ impl Workspace {
                     .quantize_fp4(
                         &Recording::scope(scope),
                         &fp4_quant_plan(rows, columns),
-                        buffer(&*q)?,
-                        buffer(&*qs)?,
+                        q,
+                        qs,
                         input,
                         scale,
                     )
@@ -318,7 +321,7 @@ impl Workspace {
                 (contract, scope),
                 weight,
                 scale,
-                (&*q, &*qs),
+                (q, qs),
                 output,
                 (rows, columns),
             )
@@ -352,8 +355,9 @@ impl Workspace {
         self.quant_reuse.clear();
         let (q, qs) = self
             .buffers
-            .get_mut(&(rows, columns))
+            .get(&(rows, columns))
             .ok_or_else(|| super::super::capture::error("FP4 quantization workspace missing"))?;
+        let (q, qs) = (q.operand(), qs.operand());
         if !rows.is_multiple_of(QUANTIZATION_ROWS) {
             return Err(super::super::capture::error("fused SwiGLU row tile"));
         }
@@ -362,8 +366,8 @@ impl Workspace {
             .quantize_swiglu(
                 &Recording::scope(scope),
                 &fp4_quant_plan(rows, columns),
-                buffer(&*q)?,
-                buffer(&*qs)?,
+                q,
+                qs,
                 (gate, up),
                 scale,
             )
@@ -373,7 +377,7 @@ impl Workspace {
             (contract, scope),
             weight,
             scale,
-            (&*q, &*qs),
+            (q, qs),
             output,
             (rows, columns),
         )
@@ -421,10 +425,10 @@ impl Workspace {
         }
         // Both writes replace shared quantization buffers; no reuse permit may span them.
         self.quant_reuse.clear();
-        let (q, qs) = self
-            .buffers
-            .remove(&(rows, columns))
-            .ok_or_else(|| super::super::capture::error("FP4 quantization workspace missing"))?;
+        let missing = || super::super::capture::error("FP4 quantization workspace missing");
+        let (q, qs) = self.buffers.get(&(rows, columns)).ok_or_else(missing)?;
+        let (codes, code_scales) = self.buffers.get(&(rows, hidden)).ok_or_else(missing)?;
+        let (q, qs) = (q.operand(), qs.operand());
         let ready = pending.is_some_and(|pending| {
             pending.binding
                 == norm_fp4::Binding {
@@ -432,45 +436,34 @@ impl Workspace {
                     rows,
                     columns,
                     scale_bits: input_scale.to_bits(),
-                    codes: q.device_pointer().cu_deviceptr(),
-                    scales: qs.device_pointer().cu_deviceptr(),
+                    codes: q.address(),
+                    scales: qs.address(),
                 }
         });
         #[cfg(test)]
         norm_fp4::record_consumption(ready);
-        let quantized = if ready {
-            Ok(())
-        } else {
-            buffer(&q).and_then(|codes| {
-                contract
-                    .projection
-                    .quantize_fp4(
-                        &Recording::scope(scope),
-                        &fp4_quant_plan(rows, columns),
-                        codes,
-                        buffer(&qs)?,
-                        input,
-                        input_scale,
-                    )
-                    .map_err(capture_error)
-            })
-        };
-        let recorded = quantized.and_then(|()| {
-            let (codes, code_scales) = self.buffers.get_mut(&(rows, hidden)).ok_or_else(|| {
-                super::super::capture::error("FP4 quantization workspace missing")
-            })?;
-            swiglu::record(
-                (contract, scope),
-                config,
-                (gate, up),
-                (input_scale, down_scale),
-                (&q, &qs),
-                (codes, code_scales),
-                columns,
-            )
-        });
-        self.buffers.insert((rows, columns), (q, qs));
-        recorded
+        if !ready {
+            contract
+                .projection
+                .quantize_fp4(
+                    &Recording::scope(scope),
+                    &fp4_quant_plan(rows, columns),
+                    q,
+                    qs,
+                    input,
+                    input_scale,
+                )
+                .map_err(capture_error)?;
+        }
+        swiglu::record(
+            (contract, scope),
+            config,
+            (gate, up),
+            (input_scale, down_scale),
+            (q, qs),
+            (codes.operand(), code_scales.operand()),
+            [rows, hidden, columns],
+        )
     }
 
     /// Down projection whose activation codes [`Self::record_gate_up_swiglu`] already wrote.
@@ -492,7 +485,7 @@ impl Workspace {
             (contract, scope),
             weight,
             scale,
-            (q, qs),
+            (q.operand(), qs.operand()),
             output,
             (rows, columns),
         )
@@ -503,7 +496,7 @@ impl Workspace {
         (contract, scope): (&Kernels, &Scope),
         weight: &ProjectionWeight,
         scale: f32,
-        (q, qs): (&Tensor<f4e2m1fnx2>, &Tensor<f8e4m3fn>),
+        quantized: (Buffer<'_, Fp4Pair>, Buffer<'_, Fp8>),
         output: RowMajor<'_, f32>,
         (rows, columns): (usize, usize),
     ) -> StdResult<(), DeviceError> {
@@ -522,7 +515,7 @@ impl Workspace {
             config.record(
                 (contract, scope),
                 (weight, scale),
-                (buffer(q)?, buffer(qs)?),
+                quantized,
                 output,
                 columns,
             )?;
@@ -535,7 +528,7 @@ impl Workspace {
         (kernels, scope): (&Kernels, &Scope),
         next: usize,
         input: Buffer<'_, f32>,
-        weight: &Tensor<f32>,
+        weight: Buffer<'_, f32>,
         output: RowMajor<'_, f32>,
         (epsilon, offset, scale): (f32, f32, f32),
     ) -> StdResult<bool, DeviceError> {
@@ -550,8 +543,8 @@ impl Workspace {
             rows,
             columns,
             scale_bits: scale.to_bits(),
-            codes: codes.device_pointer().cu_deviceptr(),
-            scales: scales.device_pointer().cu_deviceptr(),
+            codes: codes.operand().address(),
+            scales: scales.operand().address(),
         };
         kernels
             .norm
@@ -569,7 +562,7 @@ impl Workspace {
                     codes: buffer(codes)?,
                     scales: buffer(scales)?,
                     x: input,
-                    weight: buffer(weight)?,
+                    weight,
                 },
             )
             .map_err(capture_error)?;
@@ -583,7 +576,7 @@ impl Workspace {
         (kernels, scope): (&Kernels, &Scope),
         next: usize,
         input: Buffer<'_, f32>,
-        weight: &Tensor<f32>,
+        weight: Buffer<'_, f32>,
         output: RowMajor<'_, f32>,
         (epsilon, offset): (f32, f32),
     ) -> StdResult<bool, DeviceError> {
@@ -607,7 +600,7 @@ impl Workspace {
                     out: output.buffer,
                     maximum: buffer(scales)?,
                     x: input,
-                    weight: buffer(weight)?,
+                    weight,
                 },
             )
             .map_err(capture_error)?;
@@ -645,11 +638,12 @@ impl Workspace {
         });
         let (q, qs) = self
             .fp8
-            .get_mut(&(rows, columns, scale_columns))
+            .get(&(rows, columns, scale_columns))
             .ok_or_else(|| error("FP8 quantization workspace missing"))?;
+        let (q, qs) = (q.operand(), qs.operand());
         let kind = matches!(weight, ProjectionWeight::Fp8(..)).then_some(QuantKind::Fp8Token);
-        let key = kind
-            .and_then(|kind| quant_key(certified, input, output, rows, columns, kind, (&*q, &*qs)));
+        let key =
+            kind.and_then(|kind| quant_key(certified, input, output, rows, columns, kind, (q, qs)));
         let (reuse, ticket) = self.quant_reuse.prepare(key);
         let record = || {
             let recording = Recording::scope(scope);
@@ -662,7 +656,7 @@ impl Workspace {
                             scales: buffer(block_scale)?,
                         },
                         input,
-                        (buffer(&*q)?, buffer(&*qs)?),
+                        (q, qs),
                         (output.buffer, output.columns),
                         (rows, columns),
                     )?;
@@ -681,8 +675,8 @@ impl Workspace {
                                     rows,
                                     columns,
                                 },
-                                buffer(&*q)?,
-                                buffer(&*qs)?,
+                                q,
+                                qs,
                                 input,
                             )
                             .map_err(error)?;
@@ -691,12 +685,12 @@ impl Workspace {
                     }
                     let outputs = output.columns;
                     let gemm = Gemm {
-                        input: buffer(&*q)?,
+                        input: q,
                         weight: buffer(w)?,
                         output: output.buffer,
                         extents: [rows, outputs, columns],
                     };
-                    let scales = [buffer(&*qs)?, buffer(channel_scale)?];
+                    let scales = [qs, buffer(channel_scale)?];
                     if self.vendor_diagnostic && self.vendor_fp8.record(&recording, gemm, scales)? {
                         return Ok(());
                     }
@@ -800,14 +794,14 @@ const fn fp8_scale_columns(weight: &ProjectionWeight, columns: usize) -> usize {
 }
 
 /// Only the certified whole-matrix paths may reuse quantized activations.
-fn quant_key<Q: DType, S: DType>(
+fn quant_key<Q, S>(
     certified: bool,
     input: Buffer<'_, f32>,
     output: RowMajor<'_, f32>,
     rows: usize,
     columns: usize,
     kind: QuantKind,
-    buffers: (&Tensor<Q>, &Tensor<S>),
+    (codes, scales): (Buffer<'_, Q>, Buffer<'_, S>),
 ) -> Option<QuantKey> {
     let input_pointer = certified.then_some(input.address()).filter(|p| *p != 0)?;
     if input.len() != rows.checked_mul(columns)? {
@@ -830,8 +824,8 @@ fn quant_key<Q: DType, S: DType>(
         shape,
         strides,
         kind,
-        codes_pointer: buffers.0.device_pointer().cu_deviceptr(),
-        scales_pointer: buffers.1.device_pointer().cu_deviceptr(),
+        codes_pointer: codes.address(),
+        scales_pointer: scales.address(),
     })
 }
 

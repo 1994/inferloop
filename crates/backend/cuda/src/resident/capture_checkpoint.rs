@@ -1,5 +1,6 @@
 //! State writes and their rollback snapshots share the original per-lane launch geometry.
 use super::{
+    arena::SlotMemory,
     buffers::buffer,
     capture::{Capture, CaptureMode, error},
     capture_state::value_block,
@@ -15,7 +16,7 @@ impl Capture<'_> {
     /// Record only a conv/delta row that has a rollback snapshot. Other row captures
     /// keep their original entry point and kernels.
     pub(super) fn record_row_checkpoint(
-        &mut self,
+        &self,
         node: &TensorNode,
         lane: usize,
         snapshot: &[Tensor<f32>],
@@ -25,15 +26,14 @@ impl Capture<'_> {
             return Err(error("checkpoint row capture bindings"));
         }
         let index = self.arena.slot(node.outputs[0]).map_err(error)?;
-        let row = self.arena.output_row(index, lane).map_err(error)?;
-        let _ = self.checkpoint_state(node, row, snapshot)?;
-        Ok(())
+        let row = self.arena.row_memory(index, lane).map_err(error)?;
+        self.checkpoint_state(node, &row, snapshot)
     }
 
     /// Flat verification lanes own their activation slots; record into them the same state
     /// writer used by pooled checkpoint rows.
     pub(super) fn record_flat_checkpoint(
-        &mut self,
+        &self,
         node: &TensorNode,
         snapshot: &[Tensor<f32>],
     ) -> Result<(), DeviceError> {
@@ -41,27 +41,26 @@ impl Capture<'_> {
             return Err(error("checkpoint flat capture bindings"));
         }
         let index = self.arena.slot(node.outputs[0]).map_err(error)?;
-        let output = self.arena.output(index).map_err(error)?;
-        let _ = self.checkpoint_state(node, output, snapshot)?;
-        Ok(())
+        let output = self.arena.memory(index).map_err(error)?;
+        self.checkpoint_state(node, &output, snapshot)
     }
 
     fn checkpoint_state(
-        &mut self,
+        &self,
         node: &TensorNode,
-        output: Tensor<f32>,
+        output: &SlotMemory,
         snapshot: &[Tensor<f32>],
-    ) -> Result<Tensor<f32>, DeviceError> {
+    ) -> Result<(), DeviceError> {
         let id = node.states[0];
         let state = self
             .states
-            .remove(&id)
+            .get(&id)
             .ok_or_else(|| error("missing checkpoint state allocation"))?;
-        let output = match node.op {
+        match node.op {
             TensorOp::Conv {
                 channels,
                 kernel: CONV_KERNEL_SIZE,
-            } => self.checkpoint_conv(node, output, &state, snapshot, channels)?,
+            } => self.checkpoint_conv(node, output, state, snapshot, channels),
             TensorOp::Delta {
                 key_heads,
                 value_heads,
@@ -70,24 +69,22 @@ impl Capture<'_> {
             } => self.checkpoint_delta(
                 node,
                 output,
-                &state,
+                state,
                 snapshot,
                 (key_heads, value_heads, key_dim, value_dim),
-            )?,
-            _ => return Err(error("unsupported checkpoint state operation")),
-        };
-        self.states.insert(id, state);
-        Ok(output)
+            ),
+            _ => Err(error("unsupported checkpoint state operation")),
+        }
     }
 
     fn checkpoint_conv(
         &self,
         node: &TensorNode,
-        output: Tensor<f32>,
+        output: &SlotMemory,
         state: &[Tensor<f32>],
         snapshot: &[Tensor<f32>],
         channels: usize,
-    ) -> Result<Tensor<f32>, DeviceError> {
+    ) -> Result<(), DeviceError> {
         let [h0, h1, h2] = state else {
             return Err(error("checkpoint convolution state layout"));
         };
@@ -102,25 +99,24 @@ impl Capture<'_> {
                 channels,
                 [buffer(c0)?, buffer(c1)?, buffer(c2)?],
                 ConvBuffers {
-                    output: buffer(&output)?,
+                    output: buffer(output)?,
                     history: [buffer(h0)?, buffer(h1)?, buffer(h2)?],
                     input: self.input_buffer(node.inputs[0])?,
                     weight: self.input_buffer(node.inputs[1])?,
                     metadata: buffer(self.metadata)?,
                 },
             )
-            .map_err(error)?;
-        Ok(output)
+            .map_err(error)
     }
 
     fn checkpoint_delta(
         &self,
         node: &TensorNode,
-        output: Tensor<f32>,
+        output: &SlotMemory,
         state: &[Tensor<f32>],
         snapshot: &[Tensor<f32>],
         (key_heads, value_heads, key_dim, value_dim): (usize, usize, usize, usize),
-    ) -> Result<Tensor<f32>, DeviceError> {
+    ) -> Result<(), DeviceError> {
         if key_dim != value_dim
             || !key_dim.is_power_of_two()
             || key_heads == 0
@@ -135,7 +131,6 @@ impl Capture<'_> {
             return Err(error("checkpoint delta snapshot layout"));
         };
         let block = value_block(value_dim)?;
-        let output = output.reshape(&[value_heads, 1, value_dim])?;
         self.weights
             .kernels
             .recurrent
@@ -151,7 +146,7 @@ impl Capture<'_> {
                 buffer(snapshot)?,
                 DeltaBuffers {
                     state: buffer(state)?,
-                    output: buffer(&output)?,
+                    output: buffer(output)?,
                     qkv: self.input_buffer(node.inputs[0])?,
                     beta: self.input_buffer(node.inputs[1])?,
                     alpha: self.input_buffer(node.inputs[2])?,
@@ -160,8 +155,7 @@ impl Capture<'_> {
                     metadata: buffer(self.metadata)?,
                 },
             )
-            .map_err(error)?;
-        Ok(output)
+            .map_err(error)
     }
 }
 
