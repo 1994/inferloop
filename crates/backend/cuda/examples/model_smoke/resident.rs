@@ -1,9 +1,6 @@
 //! Model bindings for the CUDA-resident token graph.
 use super::Model;
-use cutile::{
-    half::bf16,
-    prelude::{Arc, Tensor},
-};
+use cutile::half::bf16;
 use infer_backend_cuda::loading::load_kv_scales;
 use infer_backend_cuda::resident::{
     DeviceProgram, FusionWeights, ProgramWeights, PromptScratchRegistry,
@@ -12,12 +9,14 @@ use infer_backend_cuda::strategy::default_tiling;
 use infer_backend_cuda::tuning::projection_key;
 use infer_backend_cuda::tuning::resident_gemm::ResidentTuningSession;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::TensorOp;
 use infer_models::TensorDtype;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
-pub type Embeddings = BTreeMap<infer_core::TensorId, Arc<Tensor<bf16>>>;
+pub type Embeddings = BTreeMap<infer_core::TensorId, Allocation<bf16>>;
 
 #[expect(
     clippy::cast_precision_loss,
@@ -67,7 +66,7 @@ pub fn prepare(
     for (id, data) in &model.constants {
         weights
             .constants
-            .insert(*id, model.device.upload(data.clone(), &[data.len()])?);
+            .insert(*id, model.device.runtime().upload(data.clone())?);
     }
     prepare_embeddings(model, shared, &mut weights)?;
     for node in &model.package.graph.nodes {
@@ -81,7 +80,7 @@ pub fn prepare(
                 .collect();
             weights
                 .rope_frequencies
-                .insert(node.id, model.device.upload(frequencies, &[half])?);
+                .insert(node.id, model.device.runtime().upload(frequencies)?);
         }
     }
     let config = &model.package.imported.model;
@@ -127,7 +126,7 @@ fn prepare_embeddings(
             };
             weights
                 .embeddings
-                .insert(*id, Arc::clone(embedding.tensor()));
+                .insert(*id, embedding.allocation().clone());
             continue;
         }
         // Explicit bounded staging: this model's embedding is larger than 2 GiB.
@@ -141,7 +140,7 @@ fn prepare_embeddings(
         drop(bytes);
         weights
             .embeddings
-            .insert(*id, model.device.upload(values, &source.shape)?);
+            .insert(*id, model.device.runtime().upload(values)?);
     }
     Ok(())
 }

@@ -216,7 +216,7 @@ fn gather(
                 tile: AUX_KERNEL_TILE,
             },
             gathered,
-            buffer(weight.as_ref())?,
+            buffer(weight)?,
             None,
             metadata_batch,
         )
@@ -382,7 +382,7 @@ fn record_wide(
                 out: buffer(&rows)?,
                 embedding: buffer(&gathered)?,
                 hidden: buffer(external)?,
-                norms: buffer(norms.as_ref())?,
+                norms: buffer(norms)?,
             },
         )
         .map_err(error)?;

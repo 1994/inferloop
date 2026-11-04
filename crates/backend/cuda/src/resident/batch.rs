@@ -1512,7 +1512,7 @@ impl BatchBuilder<'_> {
                     tile: AUX_KERNEL_TILE,
                 },
                 output,
-                buffer(weight.as_ref())?,
+                buffer(weight)?,
                 Some(external),
                 buffer(metadata_batch)?,
             )

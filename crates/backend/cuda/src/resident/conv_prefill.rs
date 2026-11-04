@@ -57,8 +57,7 @@ pub(super) fn record(
                     weights
                         .constants
                         .get(&node.inputs[1])
-                        .ok_or_else(|| error("prefill convolution weight"))?
-                        .as_ref(),
+                        .ok_or_else(|| error("prefill convolution weight"))?,
                 )?,
                 metadata: buffer(metadata)?,
             },

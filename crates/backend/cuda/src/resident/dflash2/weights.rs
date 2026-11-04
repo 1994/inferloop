@@ -4,9 +4,9 @@ use crate::loading::floats;
 use crate::mlp::ProjectionWeight;
 use cutile::{half::bf16, prelude::*};
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorOp};
 use infer_models::{DFlash2Package, DeviceWeight, QuantizedPackage, TensorDtype};
-use std::sync::Arc;
 
 use super::super::ProgramWeights;
 
@@ -35,15 +35,15 @@ pub struct Geometry {
 /// One dynamic two-tap convolution: the base kernel `[side * tap, channels]` and the
 /// projection producing its per-row group coefficients.
 pub struct Convolution {
-    pub base: Arc<Tensor<f32>>,
+    pub base: Allocation<f32>,
     pub projection: ProjectionWeight,
 }
 
 pub struct Layer {
-    pub input_norm: Arc<Tensor<f32>>,
-    pub post_norm: Arc<Tensor<f32>>,
-    pub q_norm: Arc<Tensor<f32>>,
-    pub k_norm: Arc<Tensor<f32>>,
+    pub input_norm: Allocation<f32>,
+    pub post_norm: Allocation<f32>,
+    pub q_norm: Allocation<f32>,
+    pub k_norm: Allocation<f32>,
     pub attention_conv: Convolution,
     pub mlp_conv: Convolution,
     pub q: ProjectionWeight,
@@ -58,15 +58,15 @@ pub struct Layer {
 pub struct DraftWeights {
     pub geometry: Geometry,
     pub layers: Vec<Layer>,
-    pub hidden_norm: Arc<Tensor<f32>>,
-    pub norm: Arc<Tensor<f32>>,
+    pub hidden_norm: Allocation<f32>,
+    pub norm: Allocation<f32>,
     pub selector: ProjectionWeight,
-    pub predecessor: Arc<Tensor<bf16>>,
-    pub successor: Arc<Tensor<bf16>>,
+    pub predecessor: Allocation<bf16>,
+    pub successor: Allocation<bf16>,
     /// The target's input embedding and output head: the checkpoint ships neither.
-    pub embedding: Arc<Tensor<bf16>>,
+    pub embedding: Allocation<bf16>,
     pub head: ProjectionWeight,
-    pub frequencies: Arc<Tensor<f32>>,
+    pub frequencies: Allocation<f32>,
 }
 
 impl DraftWeights {
@@ -124,7 +124,7 @@ impl DraftWeights {
             successor: source.codebook("candidate_selector.successor_codebook")?,
             embedding,
             head,
-            frequencies: device.upload(frequencies, &[half])?,
+            frequencies: device.runtime().upload(frequencies)?,
         })
     }
 
@@ -147,7 +147,7 @@ impl DraftWeights {
                 &layer.mlp_conv.base,
             ]
             .into_iter()
-            .map(|tensor| bytes(tensor))
+            .map(bytes)
             .sum::<u64>();
             total += [
                 &layer.attention_conv.projection,
@@ -214,11 +214,10 @@ impl Source<'_> {
             .ok_or_else(|| Error::invalid(format!("draft is missing {name}")))
     }
 
-    fn vector(&mut self, name: &str) -> Result<Arc<Tensor<f32>>> {
+    fn vector(&mut self, name: &str) -> Result<Allocation<f32>> {
         let source = self.weight(name)?.data.clone();
         let values = floats(self.package, &source)?;
-        let length = values.len();
-        self.device.upload(values, &[length])
+        self.device.runtime().upload(values)
     }
 
     fn projection(&mut self, name: &str) -> Result<ProjectionWeight> {
@@ -226,7 +225,7 @@ impl Source<'_> {
         ProjectionWeight::load(self.device, self.package, &weight)
     }
 
-    fn codebook(&mut self, name: &str) -> Result<Arc<Tensor<bf16>>> {
+    fn codebook(&mut self, name: &str) -> Result<Allocation<bf16>> {
         let weight = self.weight(name)?.clone();
         if weight.data.dtype != TensorDtype::BF16 {
             return Err(Error::unsupported(
@@ -240,7 +239,7 @@ impl Source<'_> {
             .iter()
             .map(|v| bf16::from_bits(u16::from_le_bytes(*v)))
             .collect();
-        self.device.upload(values, &weight.shape)
+        self.device.runtime().upload(values)
     }
 
     fn layer(&mut self, layer: usize) -> Result<Layer> {
@@ -269,15 +268,15 @@ impl Source<'_> {
     }
 }
 
-fn bytes<T: DType>(tensor: &Tensor<T>) -> u64 {
-    (tensor.size() * size_of::<T>()) as u64
+fn bytes<T: DType>(memory: &Allocation<T>) -> u64 {
+    (memory.len() * size_of::<T>()) as u64
 }
 
 /// The target graph's token embedding and language-model head.
 fn shared_target(
     graph: &DataflowGraph,
     target: &ProgramWeights,
-) -> Result<(Arc<Tensor<bf16>>, ProjectionWeight)> {
+) -> Result<(Allocation<bf16>, ProjectionWeight)> {
     let embedding = graph
         .nodes
         .iter()
@@ -293,5 +292,5 @@ fn shared_target(
         .find(|node| node.outputs.contains(&logits) && node.op == TensorOp::Linear)
         .and_then(|node| target.projections.get(&node.inputs[1]))
         .ok_or_else(|| Error::invalid("target has no bound language-model head"))?;
-    Ok((Arc::clone(embedding), head.clone()))
+    Ok((embedding.clone(), head.clone()))
 }

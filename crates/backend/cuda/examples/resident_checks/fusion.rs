@@ -115,7 +115,7 @@ fn weights(device: &CudaDevice, d: usize, id: TensorId) -> Result<ProgramWeights
             )?),
             // This synthetic check measures nothing, so it uses the hardware-independent tile.
             tiling: default_tiling()?,
-            norms: device.upload(vec![0.0; 2 * d], &[2, d])?,
+            norms: device.runtime().upload(vec![0.0; 2 * d])?,
             epsilon: 1e-6,
             offset: 1.0,
         }),
@@ -126,6 +126,6 @@ fn weights(device: &CudaDevice, d: usize, id: TensorId) -> Result<ProgramWeights
         constants: BTreeMap::new(),
         rope_frequencies: BTreeMap::new(),
         rope_axes: BTreeMap::new(),
-        embeddings: BTreeMap::from([(id, device.upload(embedding, &[2, d])?)]),
+        embeddings: BTreeMap::from([(id, device.runtime().upload(embedding)?)]),
     })
 }

@@ -43,7 +43,7 @@ fn fixture_weights(device: &CudaDevice, width: usize) -> Result<ProgramWeights> 
                 &[width, 2 * width],
             )?),
             tiling: default_tiling()?,
-            norms: device.upload(vec![0.0; 2 * width], &[2, width])?,
+            norms: device.runtime().upload(vec![0.0; 2 * width])?,
             epsilon: 1e-6,
             offset: 1.0,
         }),
@@ -54,10 +54,7 @@ fn fixture_weights(device: &CudaDevice, width: usize) -> Result<ProgramWeights> 
         constants: BTreeMap::new(),
         rope_frequencies: BTreeMap::new(),
         rope_axes: BTreeMap::new(),
-        embeddings: BTreeMap::from([(
-            embedding,
-            device.upload(embedding_values, &[width, width])?,
-        )]),
+        embeddings: BTreeMap::from([(embedding, device.runtime().upload(embedding_values)?)]),
     })
 }
 

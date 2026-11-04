@@ -62,7 +62,7 @@ fn layers(loaded: &LoadedModel) -> TestResult<Vec<Layer>> {
             .get(&next.inputs[1])
             .ok_or_else(|| Error::invalid("FP4 activation scale missing"))?;
         result.push(Layer {
-            weight: weight.clone(),
+            weight: Arc::clone(weight.tensor()),
             epsilon,
             offset,
             scale,

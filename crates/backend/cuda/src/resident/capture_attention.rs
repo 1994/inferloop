@@ -198,7 +198,7 @@ impl Capture<'_> {
             .tensor(&[lanes * query_heads, head_dim])
             .map_err(error)?;
         let query = if let Some(value) = self.weights.constants.get(&node.inputs[0]) {
-            value
+            &**value.tensor()
         } else {
             self.arena.get(node.inputs[0]).map_err(error)?
         };

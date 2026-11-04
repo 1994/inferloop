@@ -99,7 +99,7 @@ impl Mtp {
         let fusion = FusionWeights {
             projection,
             tiling,
-            norms: self.model.device.upload(norms, &[2, config.hidden_size])?,
+            norms: self.model.device.runtime().upload(norms)?,
             epsilon: config.norm_epsilon,
             offset: config.norm_weight_offset,
         };

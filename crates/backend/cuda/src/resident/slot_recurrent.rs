@@ -259,12 +259,7 @@ fn lane_input(
 ) -> Result<Buffer<'static, f32>, DeviceError> {
     weights.constants.get(&id).map_or_else(
         || row_buffer(buffer(arena.get(id).map_err(error)?)?, arena.lanes(), lane),
-        |constant| {
-            Ok(region(
-                constant.device_pointer().cu_deviceptr(),
-                constant.size(),
-            ))
-        },
+        |constant| Ok(region(constant.buffer().address(), constant.len())),
     )
 }
 

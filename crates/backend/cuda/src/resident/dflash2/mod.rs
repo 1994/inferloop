@@ -795,7 +795,7 @@ fn record_rope(
             DraftRope {
                 out,
                 input,
-                frequencies: buffer(weights.frequencies.as_ref())?,
+                frequencies: buffer(&weights.frequencies)?,
                 positions,
                 dim: weights.geometry.head_dim,
                 heads,
@@ -848,12 +848,7 @@ fn record_ingest(
     r.draft
         .norm(
             r.recording,
-            hidden_norm(
-                normed,
-                features,
-                buffer(weights.hidden_norm.as_ref())?,
-                &geometry,
-            ),
+            hidden_norm(normed, features, buffer(&weights.hidden_norm)?, &geometry),
         )
         .map_err(error)?;
     let ring_ids = meta_field(&work.meta, 0..rows)?;
@@ -863,13 +858,7 @@ fn record_ingest(
     for (index, layer) in weights.layers.iter().enumerate() {
         record_gemm(r, &layer.k, normed, values_k, (rows, hidden))?;
         record_gemm(r, &layer.v, normed, values_v, (rows, hidden))?;
-        record_head_norm(
-            r,
-            k_normed,
-            values_k,
-            buffer(layer.k_norm.as_ref())?,
-            &geometry,
-        )?;
+        record_head_norm(r, k_normed, values_k, buffer(&layer.k_norm)?, &geometry)?;
         record_rope(
             r,
             (k_rotated, k_normed),
@@ -930,7 +919,7 @@ fn record_propose(
             r.recording,
             [g.hidden, CHANNEL_TILE],
             first,
-            buffer(weights.embedding.as_ref())?,
+            buffer(&weights.embedding)?,
             meta_field(&w.meta, meta_range(Field::Tokens, w.rows, w.slots))?,
         )
         .map_err(error)?;
@@ -940,7 +929,7 @@ fn record_propose(
             hidden_norm(
                 buffer(&w.normed)?,
                 first,
-                buffer(weights.layers[0].input_norm.as_ref())?,
+                buffer(&weights.layers[0].input_norm)?,
                 &g,
             ),
         )
@@ -974,7 +963,7 @@ fn record_attention_inputs(
     let normed = buffer(&w.normed)?;
     let convolved = buffer(&w.conv)?;
     let coefficients = buffer(&w.coefficients)?;
-    let base = buffer(conv.base.as_ref())?;
+    let base = buffer(&conv.base)?;
     record_gemm(r, &conv.projection, normed, coefficients, (rows, hidden))?;
     record_conv(r, (convolved, normed), coefficients, base, (rows, 0), &g)?;
     let split = (rows, hidden, &w.partials);
@@ -984,8 +973,8 @@ fn record_attention_inputs(
     record_projection(r, &layer.q, convolved, queries, split)?;
     record_projection(r, &layer.k, convolved, keys, split)?;
     record_projection(r, &layer.v, convolved, values, split)?;
-    record_head_norm(r, q_normed, queries, buffer(layer.q_norm.as_ref())?, &g)?;
-    record_head_norm(r, k_normed, keys, buffer(layer.k_norm.as_ref())?, &g)?;
+    record_head_norm(r, q_normed, queries, buffer(&layer.q_norm)?, &g)?;
+    record_head_norm(r, k_normed, keys, buffer(&layer.k_norm)?, &g)?;
     record_rope(r, (q_rotated, q_normed), weights, positions, g.heads)?;
     record_rope(r, (k_rotated, k_normed), weights, positions, g.kv_heads)?;
     record_ring_stores(
@@ -1060,7 +1049,7 @@ fn record_attention_block(
         r,
         (convolved, projected),
         buffer(&w.coefficients)?,
-        buffer(conv.base.as_ref())?,
+        buffer(&conv.base)?,
         (rows, 1),
         &g,
     )?;
@@ -1068,12 +1057,7 @@ fn record_attention_block(
         .add_norm(
             r.recording,
             DraftAddNorm {
-                norm: hidden_norm(
-                    buffer(&w.normed)?,
-                    residual,
-                    buffer(layer.post_norm.as_ref())?,
-                    &g,
-                ),
+                norm: hidden_norm(buffer(&w.normed)?, residual, buffer(&layer.post_norm)?, &g),
                 stream: next,
                 delta: convolved,
             },
@@ -1098,7 +1082,7 @@ fn record_mlp_block(
     let normed = buffer(&w.normed)?;
     let convolved = buffer(&w.conv)?;
     let coefficients = buffer(&w.coefficients)?;
-    let base = buffer(conv.base.as_ref())?;
+    let base = buffer(&conv.base)?;
     let (gate, up) = (buffer(&w.gate)?, buffer(&w.up)?);
     let (activated, projected) = (buffer(&w.activated)?, buffer(&w.projected)?);
     record_gemm(r, &conv.projection, normed, coefficients, (rows, hidden))?;
@@ -1124,7 +1108,7 @@ fn record_mlp_block(
         .add_norm(
             r.recording,
             DraftAddNorm {
-                norm: hidden_norm(normed, residual, buffer(norm.as_ref())?, &g),
+                norm: hidden_norm(normed, residual, buffer(norm)?, &g),
                 stream: next,
                 delta: convolved,
             },
@@ -1173,8 +1157,8 @@ fn record_candidates(
                 candidates: buffer(&w.candidates)?,
                 unary: buffer(&w.unary)?,
                 selector: buffer(&w.selector)?,
-                predecessor: buffer(weights.predecessor.as_ref())?,
-                successor: buffer(weights.successor.as_ref())?,
+                predecessor: buffer(&weights.predecessor)?,
+                successor: buffer(&weights.successor)?,
                 anchors: meta_field(&w.meta, meta_range(Field::Anchors, rows, slots))?,
                 rows,
                 slots,
