@@ -68,6 +68,9 @@ pub(super) struct SlotVerifyGraph {
     profile: Option<profile::SlotProfile>,
     /// Commit inputs the verify graph copies out and the commit graphs read.
     _recurrent: RecurrentCapture,
+    /// Rollback snapshots the verify graph writes and the restore graphs read; graphs address
+    /// contract buffers without holding them, so these outlive both.
+    _checkpoints: Vec<Vec<States>>,
     // The shared batched arena anchors the graph's activations; declared last so the graph
     // and the restore graphs drop before it.
     _arena: ActivationArena,
@@ -601,6 +604,7 @@ impl BatchBuilder<'_> {
             pending: vec![0; slots],
             profile,
             _recurrent: recurrent,
+            _checkpoints: checkpoints,
             _arena: arena,
         })
     }
