@@ -65,13 +65,13 @@ impl Operands {
         })
     }
     fn record(
-        &mut self,
+        &self,
         contract: &Kernels,
         scope: &Scope,
         f: &Fixture,
         choice: Choice,
         oxide: Option<&AttentionOxideSupport>,
-        mma: Option<&mut Support>,
+        mma: Option<&Support>,
     ) -> StdResult<(), DeviceError> {
         let s = f.shape;
         let recording = Recording::scope(scope);
@@ -99,40 +99,28 @@ impl Operands {
             )
             .map_err(|error| DeviceError::Internal(error.to_string()))?;
         let window = i32::try_from(f.window).map_err(|e| DeviceError::Internal(e.to_string()))?;
+        let geometry = (s.heads, s.kv_heads, s.dim, s.lanes, f.capacity);
+        let decode = || -> StdResult<DecodeBuffers<'_>, DeviceError> {
+            Ok(DecodeBuffers {
+                output: buffer(&self.output)?,
+                query: buffer(self.query.as_ref())?,
+                cache: kv_cache(
+                    (&self.keys, &self.values),
+                    s.kv_heads,
+                    s.dim,
+                    [KEY_SCALE, VALUE_SCALE],
+                )?,
+                metadata: buffer(self.metadata.as_ref())?,
+                table: buffer(self.table.as_ref())?,
+            })
+        };
         if let Choice::Mma { variant } = choice {
             mma.ok_or_else(|| DeviceError::Internal("MMA attention missing".into()))?
-                .record(
-                    scope,
-                    crate::resident::attention_mma::Bindings {
-                        output: &mut self.output,
-                        query: &self.query,
-                        keys: &self.keys,
-                        values: &self.values,
-                        metadata: &self.metadata,
-                        table: &self.table,
-                    },
-                    (s.heads, s.kv_heads, s.dim, s.lanes, f.capacity),
-                    window,
-                    [KEY_SCALE, VALUE_SCALE],
-                    variant,
-                )?;
+                .record(&recording, decode()?, geometry, window, variant)?;
         } else if choice.uses_oxide() {
             oxide
                 .ok_or_else(|| DeviceError::Internal("Rust attention module missing".into()))?
-                .record(
-                    scope,
-                    crate::resident::attention_oxide::Bindings {
-                        output: &mut self.output,
-                        query: &self.query,
-                        keys: &self.keys,
-                        values: &self.values,
-                        metadata: &self.metadata,
-                        table: &self.table,
-                    },
-                    (s.heads, s.kv_heads, s.dim, s.lanes, f.capacity),
-                    window,
-                    [KEY_SCALE, VALUE_SCALE],
-                )?;
+                .record(&recording, decode()?, geometry, window)?;
         } else {
             let plan = PrefillDecodePlan {
                 decode: DecodePlan {
@@ -144,18 +132,7 @@ impl Operands {
                 },
                 lanes: s.lanes,
             };
-            let buffers = DecodeBuffers {
-                output: buffer(&self.output)?,
-                query: buffer(self.query.as_ref())?,
-                cache: kv_cache(
-                    (&self.keys, &self.values),
-                    s.kv_heads,
-                    s.dim,
-                    [KEY_SCALE, VALUE_SCALE],
-                )?,
-                metadata: buffer(self.metadata.as_ref())?,
-                table: buffer(self.table.as_ref())?,
-            };
+            let buffers = decode()?;
             choice
                 .query_tile()
                 .map_or_else(
@@ -215,7 +192,7 @@ impl Captured {
         choice: Choice,
         oxide: Option<AttentionOxideSupport>,
     ) -> Result<Self> {
-        let mut mma = if let Choice::Mma { variant } = choice {
+        let mma = if let Choice::Mma { variant } = choice {
             let mut support = Support::load(
                 device,
                 fixture.capacity,
@@ -227,7 +204,7 @@ impl Captured {
         } else {
             None
         };
-        let mut operands = Operands::new(device, fixture, choice)?;
+        let operands = Operands::new(device, fixture, choice)?;
         let contract = device.kernels();
         let graph = Graph::scope(&device.stream, |scope| {
             operands.record(
@@ -236,7 +213,7 @@ impl Captured {
                 fixture,
                 choice,
                 oxide.as_ref(),
-                mma.as_mut(),
+                mma.as_ref(),
             )
         })
         .map_err(device_error)?;
@@ -257,7 +234,7 @@ impl Captured {
     }
     #[cfg(test)]
     pub fn graph_variant(
-        &mut self,
+        &self,
         device: &CudaDevice,
         f: &Fixture,
         support: &AttentionOxideSupport,

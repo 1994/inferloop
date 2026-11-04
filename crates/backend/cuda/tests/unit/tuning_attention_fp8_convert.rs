@@ -118,7 +118,7 @@ fn fp8_hardware_complete_pipeline_cost() -> Result<()> {
         };
         for index in [0, 1] {
             let fixture = Fixture::new(shape, index)?;
-            let mut baseline = Captured::new(&device, &fixture, Choice::RustSimt)?;
+            let baseline = Captured::new(&device, &fixture, Choice::RustSimt)?;
             let support = Support::load_test_ptx(&device, &ptx)?;
             let candidate = baseline.graph_variant(&device, &fixture, &support)?;
             baseline.verify_variant(&device, &fixture, &candidate)?;

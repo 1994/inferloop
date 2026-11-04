@@ -1,84 +1,53 @@
-//! The SIMT graph must retain inputs and honor cross-stream output exclusivity.
+//! The SIMT graph must keep its owned operands alive after the caller drops them.
 use super::*;
-use crate::device::device_error;
 use cuda_core::f8e4m3fn;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::contract::{KvBuffers, KvCache};
 
-fn upload<T: DType>(device: &CudaDevice, data: Vec<T>, shape: &[usize]) -> Result<Tensor<T>> {
-    api::copy_host_vec_to_device(&Arc::new(data))
-        .sync_on(&device.stream)
-        .map_err(device_error)?
-        .reshape(shape)
-        .map_err(device_error)
-}
+/// Positions of the fixture's cache.
+const CAPACITY: usize = 128;
+/// Graph replays after every operand was dropped.
+const REPLAYS: usize = 3;
+
 fn resource_contract(device: &CudaDevice, support: &Support, lanes: usize) -> Result<()> {
-    let query = upload(
-        device,
-        vec![0.0; lanes * HEADS * DIM],
-        &[lanes, HEADS * DIM],
-    )?;
-    let mut keys = upload(
-        device,
-        vec![f8e4m3fn(0); KV_HEADS * 128 * DIM],
-        &[KV_HEADS, 128, DIM],
-    )?;
-    let values = upload(
-        device,
-        vec![f8e4m3fn(0); KV_HEADS * 128 * DIM],
-        &[KV_HEADS, 128, DIM],
-    )?;
-    let metadata = upload(device, vec![0, 1, 0, 0], &[4])?;
-    let table = upload(device, vec![0, 1, 2, 3], &[4])?;
-    let mut output = upload(
-        device,
-        vec![0.0; lanes * HEADS * DIM],
-        &[lanes * HEADS, DIM],
-    )?;
-    let graph = Graph::scope(&device.stream, |scope| {
-        support.record(
-            scope,
-            Bindings {
-                output: &mut output,
-                query: &query,
-                keys: &keys,
-                values: &values,
-                metadata: &metadata,
-                table: &table,
-            },
-            (HEADS, KV_HEADS, DIM, lanes, 128),
-            0,
-            [0.5, 2.0],
-        )?;
-        Ok(())
-    })
-    .map_err(device_error)?;
-    let other = ExecutionContext::new(device.stream.device().new_stream().map_err(device_error)?);
-    KernelOutputStored::retain(&(&mut keys).partition([1, 128, DIM]), &other)
-        .map_err(device_error)?;
-    assert!(
-        graph.launch().sync_on(&device.stream).is_err(),
-        "input write on another stream must block graph reads"
-    );
-    drop(other);
-    graph
-        .launch()
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let other = ExecutionContext::new(device.stream.device().new_stream().map_err(device_error)?);
-    KernelInputStored::retain(&&output, &other).map_err(device_error)?;
-    assert!(
-        graph.launch().sync_on(&device.stream).is_err(),
-        "output read on another stream must block graph writes"
-    );
-    drop(other);
+    let runtime = device.runtime();
+    let query = runtime.upload(vec![0.0f32; lanes * HEADS * DIM])?;
+    let keys = runtime.upload(vec![f8e4m3fn(0); KV_HEADS * CAPACITY * DIM])?;
+    let values = runtime.upload(vec![f8e4m3fn(0); KV_HEADS * CAPACITY * DIM])?;
+    let metadata = runtime.upload(vec![0i32, 1, 0, 0])?;
+    let table = runtime.upload(vec![0i32, 1, 2, 3])?;
+    let output = runtime.upload(vec![0.0f32; lanes * HEADS * DIM])?;
+    let graph = runtime.capture(|recording| {
+        support
+            .record(
+                recording,
+                DecodeBuffers {
+                    output: output.buffer(),
+                    query: query.buffer(),
+                    cache: KvCache {
+                        buffers: KvBuffers::Fp8 {
+                            keys: keys.operand(),
+                            values: values.operand(),
+                        },
+                        groups: KV_HEADS,
+                        dim: DIM,
+                        scales: [0.5, 2.0],
+                    },
+                    metadata: metadata.buffer(),
+                    table: table.buffer(),
+                },
+                (HEADS, KV_HEADS, DIM, lanes, CAPACITY),
+                0,
+            )
+            .map_err(device_error)
+    })?;
     drop((query, keys, values, metadata, table));
     // These allocations may be reclaimed only after the graph releases its resources.
-    for _ in 0..3 {
+    for _ in 0..REPLAYS {
         graph
             .launch()
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        let result = device.read_borrowed(&output)?;
+        let result = runtime.read(&output)?;
         assert!(
             result.iter().all(|value| value.to_bits() == 0),
             "retained zero fixture changed"
@@ -86,23 +55,23 @@ fn resource_contract(device: &CudaDevice, support: &Support, lanes: usize) -> Re
     }
     println!(
         "{}",
-        serde_json::json!({"oxide_graph_resources":true,"input_exclusive_access":true,
-        "output_exclusive_access":true,"operands_dropped_before_replay":true,"replays":3})
+        serde_json::json!({"oxide_graph_resources":true,
+        "operands_dropped_before_replay":true,"replays":REPLAYS})
     );
     Ok(())
 }
 
 #[test]
-#[ignore = "requires CUDA/safe-run; graph operand lifetime and cross-stream access contract"]
-fn rust_attention_graph_retains_operands_and_write_lease() -> Result<()> {
+#[ignore = "requires CUDA/safe-run; graph operand lifetime"]
+fn rust_attention_graph_retains_operands() -> Result<()> {
     let device = CudaDevice::new(0)?;
     let support =
         Support::load(&device)?.ok_or_else(|| infer_core::Error::invalid("SM120 required"))?;
     resource_contract(&device, &support, 64)
 }
 #[test]
-#[ignore = "requires CUDA/safe-run; shared KV graph operand lifetime and exclusive access"]
-fn shared_attention_graph_retains_operands_and_write_lease() -> Result<()> {
+#[ignore = "requires CUDA/safe-run; shared KV graph operand lifetime"]
+fn shared_attention_graph_retains_operands() -> Result<()> {
     let device = CudaDevice::new(0)?;
     let support = Support::load_shared(&device)?
         .ok_or_else(|| infer_core::Error::invalid("SM120 required"))?;
@@ -112,8 +81,8 @@ fn shared_attention_graph_retains_operands_and_write_lease() -> Result<()> {
 }
 
 #[test]
-#[ignore = "requires CUDA/safe-run; vector KV graph ownership and exclusive access"]
-fn vector_attention_graph_retains_operands_and_write_lease() -> Result<()> {
+#[ignore = "requires CUDA/safe-run; vector KV graph operand lifetime"]
+fn vector_attention_graph_retains_operands() -> Result<()> {
     let device = CudaDevice::new(0)?;
     let support = Support::load_vector(&device)?
         .ok_or_else(|| infer_core::Error::invalid("SM120 required"))?;
@@ -122,8 +91,8 @@ fn vector_attention_graph_retains_operands_and_write_lease() -> Result<()> {
 }
 
 #[test]
-#[ignore = "requires CUDA/safe-run; combined KV graph ownership and exclusive access"]
-fn combined_attention_graph_retains_operands_and_write_lease() -> Result<()> {
+#[ignore = "requires CUDA/safe-run; combined KV graph operand lifetime"]
+fn combined_attention_graph_retains_operands() -> Result<()> {
     let device = CudaDevice::new(0)?;
     let support = Support::load_combined(&device)?
         .ok_or_else(|| infer_core::Error::invalid("SM120 required"))?;

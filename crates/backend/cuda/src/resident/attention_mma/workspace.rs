@@ -1,17 +1,18 @@
 //! One reusable 16-bit staging allocation per program, shared across layers and widths.
 use super::{Arithmetic, Support, catalog};
-use crate::{
-    AttentionProfile,
-    device::{CudaDevice, device_error},
-};
+use crate::{AttentionProfile, device::CudaDevice};
 use cuda_core::sys::CUdeviceptr;
 use cutile::{
     half::{bf16, f16},
     prelude::*,
 };
 use infer_core::Result;
+use infer_cuda_kernels::contract::Owner;
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorOp};
-use std::result::Result as StdResult;
+
+/// The query and key lengths the bridge writes for the AOT kernel.
+const USED_WORDS: usize = 2;
 
 pub struct Workspace {
     pub support: Support,
@@ -19,53 +20,48 @@ pub struct Workspace {
 /// 16-bit Q/K/V/O staging plus the two GPU metadata words. BF16 and FP16 use separate typed
 /// allocations so the bridge conversion, AOT kernel and readout all share one dtype.
 pub(super) struct Buffers<T: DType> {
-    pub query: Tensor<T>,
-    pub keys: Tensor<T>,
-    pub values: Tensor<T>,
-    pub output: Tensor<T>,
-    pub used: Tensor<i32>,
+    pub query: Allocation<T>,
+    pub keys: Allocation<T>,
+    pub values: Allocation<T>,
+    pub output: Allocation<T>,
+    pub used: Allocation<i32>,
 }
 impl<T: DType> Buffers<T> {
     fn new(device: &CudaDevice, capacity: usize, lanes: usize) -> Result<Self> {
         let q = lanes * catalog::HEADS * catalog::DIM;
         let kv = capacity * catalog::KV_HEADS * catalog::DIM;
-        let alloc = |n| {
-            api::zeros::<T>(&[n])
-                .sync_on(&device.stream)
-                .map_err(device_error)
-        };
+        let runtime = device.runtime();
         Ok(Self {
-            query: alloc(q)?,
-            keys: alloc(kv)?,
-            values: alloc(kv)?,
-            output: alloc(q)?,
-            used: api::zeros::<i32>(&[2])
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
+            query: runtime.zeros(q)?,
+            keys: runtime.zeros(kv)?,
+            values: runtime.zeros(kv)?,
+            output: runtime.zeros(q)?,
+            used: runtime.zeros(USED_WORDS)?,
         })
     }
     fn pointers(&self) -> [CUdeviceptr; catalog::OPERANDS] {
-        let used = self.used.device_pointer().cu_deviceptr();
+        let used = self.used.buffer().address();
         [
-            self.query.device_pointer().cu_deviceptr(),
-            self.keys.device_pointer().cu_deviceptr(),
-            self.values.device_pointer().cu_deviceptr(),
-            self.output.device_pointer().cu_deviceptr(),
+            self.query.buffer().address(),
+            self.keys.buffer().address(),
+            self.values.buffer().address(),
+            self.output.buffer().address(),
             used,
             used + size_of::<i32>() as u64,
         ]
     }
-    fn retain(&mut self, ctx: &ExecutionContext) -> StdResult<(), DeviceError> {
-        for tensor in [
-            &mut self.query,
-            &mut self.keys,
-            &mut self.values,
-            &mut self.output,
-        ] {
-            KernelOutputStored::retain(&tensor.partition([1]), ctx)?;
-        }
-        KernelOutputStored::retain(&(&mut self.used).partition([1]), ctx)?;
-        Ok(())
+    fn owners(&self) -> Vec<Owner> {
+        [
+            self.query.buffer().owner(),
+            self.keys.buffer().owner(),
+            self.values.buffer().owner(),
+            self.output.buffer().owner(),
+            self.used.buffer().owner(),
+        ]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect()
     }
 }
 pub(super) enum Scratch {
@@ -90,10 +86,11 @@ impl Scratch {
             Self::F16(buffers) => buffers.pointers(),
         }
     }
-    pub(super) fn retain(&mut self, ctx: &ExecutionContext) -> StdResult<(), DeviceError> {
+    /// What a graph recording over this scratch must keep alive.
+    pub(super) fn owners(&self) -> Vec<Owner> {
         match self {
-            Self::Bf16(buffers) => buffers.retain(ctx),
-            Self::F16(buffers) => buffers.retain(ctx),
+            Self::Bf16(buffers) => buffers.owners(),
+            Self::F16(buffers) => buffers.owners(),
         }
     }
 }

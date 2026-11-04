@@ -188,6 +188,9 @@ def check_exceptions():
                         # Pinned readback: both ranges are checked and the launch retains the
                         # source allocation and pinned destination until it completes.
                         TILE_KERNELS / "runtime/readback.rs",
+                        # PTX launches: the constructor states the signature contract, the driver
+                        # copies the by-value parameters, and the module stays loaded throughout.
+                        TILE_KERNELS / "runtime/launch.rs",
                         TILE_KERNELS / "norm/contract.rs",
                         TILE_KERNELS / "mlp/contract.rs",
                         TILE_KERNELS / "moe/contract.rs",
@@ -200,14 +203,13 @@ def check_exceptions():
                         ROOT
                         / "crates/backend/cuda/src/resident/nvfp4_gemm/workspace/vendor_fp4.rs",
                         ROOT / "crates/backend/cuda/src/resident/profile.rs",
-                        # Explicit PTX launch boundaries: checked extents, owning device stream,
-                        # Function/Module retention and input/output resource leases.
+                        # Explicit PTX launch boundaries: checked buffer extents, owning device
+                        # stream, and graph retention of owned buffers and modules.
                         ROOT / "crates/backend/cuda/src/resident/attention_oxide.rs",
-                        # AOT boundary: embedded hash-verified ABI, checked tensor extents,
+                        # AOT boundary: embedded hash-verified ABI, checked buffer extents,
                         # exact owning stream and retained libraries/modules/scratch.
                         ROOT / "crates/backend/cuda/src/resident/attention_mma/host.rs",
                         ROOT / "crates/backend/cuda/src/resident/attention_mma/mod.rs",
-                        ROOT / "crates/backend/cuda/src/resident/attention_mma/recorded.rs",
                         TILE_KERNELS / "recurrent/simt.rs",
                         # Conversion measurement: fixed buffers and access leases;
                         # synchronize on the owning stream before releasing storage.

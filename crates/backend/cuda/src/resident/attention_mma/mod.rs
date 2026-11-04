@@ -5,14 +5,15 @@ pub mod f16;
 mod host;
 mod recorded;
 mod workspace;
-pub use super::attention_oxide::Bindings;
+use super::attention_oxide::{Geometry, owners};
 use crate::constants::KV_BLOCK_TOKENS;
-use crate::constants::KV_CACHE_RANK;
 use crate::device::{CudaDevice, device_error};
 use catalog::{DIM, HEADS, KV_HEADS, Variant};
-use cuda_core::{Function, LaunchConfig};
-use cutile::{cuda_async::launch::AsyncKernelLaunch, prelude::*};
+use cuda_core::Function;
+use cutile::prelude::*;
 use infer_core::Result;
+use infer_cuda_kernels::contract::{DecodeBuffers, KvBuffers, Owner, Recording};
+use infer_cuda_kernels::tile::runtime::{Argument, KernelLaunch};
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;
 pub use workspace::{Workspace, eligible};
@@ -135,13 +136,13 @@ impl Support {
             .insert(variant, host::Api::load(variant, ordinal)?);
         Ok(())
     }
-    fn operands_valid<E: DType>(
+    fn operands_valid(
         &self,
-        b: &Bindings<'_, E>,
-        (heads, kv_heads, dim, lanes, capacity): (usize, usize, usize, usize, usize),
+        b: &DecodeBuffers<'_>,
+        (heads, kv_heads, dim, lanes, capacity): Geometry,
         window: i32,
-    ) -> StdResult<bool, DeviceError> {
-        Ok(catalog::geometry(
+    ) -> bool {
+        catalog::geometry(
             heads,
             kv_heads,
             dim,
@@ -149,62 +150,51 @@ impl Support {
             usize::try_from(window).unwrap_or(usize::MAX),
         ) && lanes <= self.lanes
             && capacity == self.capacity
-            && b.query.is_contiguous()
-            && b.query.size() == lanes * HEADS * DIM
-            && b.keys.is_contiguous()
-            && b.values.is_contiguous()
+            && b.query.len() == lanes * HEADS * DIM
+            && (b.cache.groups, b.cache.dim) == (KV_HEADS, DIM)
             // A paged pool's cache holds more physical rows than one sequence's capacity; the
             // table maps the sequence's positions into them.
-            && b.keys.shape().len() == KV_CACHE_RANK
-            && b.keys.shape()[0] == i32::try_from(KV_HEADS).map_err(super::capture::error)?
-            && b.keys.shape()[1] >= i32::try_from(capacity).map_err(super::capture::error)?
-            && b.keys.shape()[2] == i32::try_from(DIM).map_err(super::capture::error)?
-            && b.values.shape() == b.keys.shape()
-            && b.output.is_contiguous()
-            && b.output.size() == lanes * HEADS * DIM
-            && b.metadata.is_contiguous()
-            && b.metadata.size() >= catalog::METADATA_FIELDS
-            && b.table.is_contiguous()
-            && b.table.size() >= capacity / KV_BLOCK_TOKENS)
+            && b.cache.rows().is_some_and(|rows| rows >= capacity)
+            && b.output.len() == lanes * HEADS * DIM
+            && b.metadata.len() >= catalog::METADATA_FIELDS
+            && b.table.len() >= capacity / KV_BLOCK_TOKENS
     }
-    pub fn accepts<E: DType>(
-        &self,
-        b: &Bindings<'_, E>,
-        shape: (usize, usize, usize, usize, usize),
-        window: i32,
-        scales: [f32; 2],
-    ) -> StdResult<bool, DeviceError> {
-        let bridge = match self.arithmetic {
-            Arithmetic::Bf16 => {
-                (E::DTYPE == cuda_core::f8e4m3fn::DTYPE && size_of::<E>() == 1)
-                    || (E::DTYPE == f32::DTYPE
-                        && size_of::<E>() == size_of::<f32>()
-                        && self.prepare_f32.is_some()
-                        && scales.iter().all(|v| v.to_bits() == 1.0f32.to_bits()))
+    #[must_use]
+    pub fn accepts(&self, b: &DecodeBuffers<'_>, shape: Geometry, window: i32) -> bool {
+        let scales = b.cache.scales;
+        let bridge = match (self.arithmetic, b.cache.buffers) {
+            (_, KvBuffers::Fp8 { .. }) => true,
+            (Arithmetic::Bf16, KvBuffers::F32 { .. }) => {
+                self.prepare_f32.is_some() && scales.iter().all(|v| v.to_bits() == 1.0f32.to_bits())
             }
-            Arithmetic::F16 => E::DTYPE == cuda_core::f8e4m3fn::DTYPE && size_of::<E>() == 1,
+            (Arithmetic::F16, KvBuffers::F32 { .. }) => false,
         };
-        Ok(bridge
+        bridge
             && scales.iter().all(|v| v.is_finite() && *v > 0.0)
-            && self.operands_valid(b, shape, window)?)
+            && self.operands_valid(b, shape, window)
     }
+    /// Record conversion, the variant's AOT attention and readout over `b`; the graph keeps
+    /// every owned buffer, the scratch, both modules and the AOT library alive.
+    /// # Errors
+    /// Rejects operands [`Self::accepts`] refuses or an unprepared variant, or returns a capture
+    /// failure.
     #[expect(
         unsafe_code,
-        reason = "checked contiguous graph-owned operands are marshalled into the embedded bridge; recorded execution retains all owners"
+        reason = "checked operand addresses and the program's scratch are marshalled into the embedded bridges; the graph keeps every owner"
     )]
-    pub fn record<E: DType>(
-        &mut self,
-        scope: &Scope,
-        b: Bindings<'_, E>,
-        shape: (usize, usize, usize, usize, usize),
+    pub fn record(
+        &self,
+        recording: &Recording<'_>,
+        b: DecodeBuffers<'_>,
+        shape: Geometry,
         window: i32,
-        scales: [f32; 2],
         variant: Variant,
     ) -> StdResult<(), DeviceError> {
         let (_, _, _, lanes, capacity) = shape;
-        if !self.accepts(&b, shape, window, scales)? {
+        if !self.accepts(&b, shape, window) {
             return Err(rejected());
         }
+        let rows = b.cache.rows().ok_or_else(rejected)?;
         let api = match self.arithmetic {
             Arithmetic::Bf16 => self
                 .apis
@@ -223,64 +213,57 @@ impl Support {
             used_q_pointer,
             _,
         ] = pointers;
-        let prepare_function = if self.arithmetic == Arithmetic::F16 {
-            &self.prepare
-        } else if E::DTYPE == f32::DTYPE {
-            self.prepare_f32
+        let prepare_function = match (self.arithmetic, b.cache.buffers) {
+            (Arithmetic::Bf16, KvBuffers::F32 { .. }) => self
+                .prepare_f32
                 .as_ref()
-                .ok_or_else(|| super::capture::error("F32 cache preparation missing"))?
-        } else {
-            &self.prepare
+                .ok_or_else(|| super::capture::error("F32 cache preparation missing"))?,
+            _ => &self.prepare,
         };
-        let mut prepare = AsyncKernelLaunch::new(Arc::clone(prepare_function));
-        for pointer in [
-            b.query.device_pointer().cu_deviceptr(),
-            b.keys.device_pointer().cu_deviceptr(),
-            b.values.device_pointer().cu_deviceptr(),
-            b.metadata.device_pointer().cu_deviceptr(),
-            b.table.device_pointer().cu_deviceptr(),
-            q_pointer,
-            k_pointer,
-            v_pointer,
-            used_q_pointer,
-        ] {
-            // SAFETY: the checked operands and scratch are retained by Recorded.
-            unsafe {
-                prepare.push_device_ptr(pointer);
-            }
-        }
-        // Physical rows, not logical capacity: the bridge's head stride; lengths bound it.
-        prepare.push_arg(u32::try_from(b.keys.shape()[1]).map_err(super::capture::error)?);
-        prepare.push_arg(u32::try_from(lanes).map_err(super::capture::error)?);
-        prepare.push_arg(scales[0]);
-        prepare.push_arg(scales[1]);
-        prepare.set_launch_config(LaunchConfig {
-            grid_dim: (self.grid, 1, 1),
-            block_dim: (THREADS, 1, 1),
-            shared_mem_bytes: 0,
-        });
-        let mut finish = AsyncKernelLaunch::new(Arc::clone(&self.finish));
-        for pointer in [
-            o_pointer,
-            b.output.device_pointer().cu_deviceptr(),
-            b.metadata.device_pointer().cu_deviceptr(),
-        ] {
-            // SAFETY: these are the same retained, checked outputs and metadata.
-            unsafe {
-                finish.push_device_ptr(pointer);
-            }
-        }
-        finish.push_arg(u32::try_from(lanes).map_err(super::capture::error)?);
-        finish.set_launch_config(LaunchConfig {
-            grid_dim: (
-                u32::try_from((lanes * HEADS * DIM).div_ceil(THREADS as usize))
-                    .map_err(super::capture::error)?,
-                1,
-                1,
-            ),
-            block_dim: (THREADS, 1, 1),
-            shared_mem_bytes: 0,
-        });
+        let [keys, values] = b.cache.buffers.addresses();
+        let [key_scale, value_scale] = b.cache.scales;
+        let u32_of = |value: usize| u32::try_from(value).map_err(super::capture::error);
+        // SAFETY: the bridge's parameters in order. `accepts` checked every operand extent and the
+        // scratch was sized for this capacity and lane count; the graph keeps both alive. Physical
+        // rows, not logical capacity, are the bridge's head stride; lengths bound it.
+        let prepare = unsafe {
+            KernelLaunch::new(
+                Arc::clone(prepare_function),
+                self.stream,
+                self.grid,
+                THREADS,
+                vec![
+                    Argument::buffer(b.query),
+                    Argument::Address(keys),
+                    Argument::Address(values),
+                    Argument::buffer(b.metadata),
+                    Argument::buffer(b.table),
+                    Argument::Address(q_pointer),
+                    Argument::Address(k_pointer),
+                    Argument::Address(v_pointer),
+                    Argument::Address(used_q_pointer),
+                    Argument::U32(u32_of(rows)?),
+                    Argument::U32(u32_of(lanes)?),
+                    Argument::F32(key_scale),
+                    Argument::F32(value_scale),
+                ],
+            )
+        };
+        // SAFETY: the readout's parameters in order, over the same checked output and metadata.
+        let finish = unsafe {
+            KernelLaunch::new(
+                Arc::clone(&self.finish),
+                self.stream,
+                u32_of((lanes * HEADS * DIM).div_ceil(THREADS as usize))?,
+                THREADS,
+                vec![
+                    Argument::Address(o_pointer),
+                    Argument::buffer(b.output),
+                    Argument::buffer(b.metadata),
+                    Argument::U32(u32_of(lanes)?),
+                ],
+            )
+        };
         if self.arithmetic == Arithmetic::F16 {
             tracing::info!(
                 target: "infer::attention",
@@ -292,18 +275,22 @@ impl Support {
                 "MMA F16 attention recorded"
             );
         }
-        scope.record(recorded::Recorded {
-            prepare,
-            finish,
-            api: Arc::clone(api),
-            pointers,
-            stream: self.stream,
-            lanes,
-            capacity,
-            bindings: b,
-            scratch: &mut self.scratch,
-        })?;
-        Ok(())
+        let mut keep = owners(&b);
+        keep.extend(self.scratch.owners());
+        keep.extend([prepare.owner(), finish.owner(), Arc::clone(api) as Owner]);
+        recording
+            .foreign(
+                recorded::Recorded {
+                    prepare,
+                    finish,
+                    api: Arc::clone(api),
+                    pointers,
+                    lanes,
+                    capacity,
+                },
+                keep,
+            )
+            .map_err(super::capture::error)
     }
 }
 pub fn artifact_identity() -> String {
