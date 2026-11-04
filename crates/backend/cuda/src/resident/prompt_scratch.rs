@@ -6,11 +6,73 @@
 //! the device stream and read nothing from this scratch after their own replay, so one
 //! allocation per prompt width serves every admitted sequence instead of one per sequence.
 use super::ActivationArena;
-use crate::device::CudaDevice;
+use crate::constants::PREFILL_SPLIT_K;
+use crate::device::{CudaDevice, device_error};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::Buffer;
+use infer_cuda_kernels::tile::runtime::Allocation;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+
+/// NVFP4 split-K partials the prompt GEMMs accumulate into: one `[PREFILL_SPLIT_K * lanes, rows]`
+/// window per projection output width. A narrower prompt rung shares a wider rung's memory and
+/// addresses only its leading windows.
+#[derive(Clone, Default)]
+pub(super) struct Partials {
+    memory: BTreeMap<usize, Allocation<f32>>,
+    lanes: usize,
+}
+
+impl Partials {
+    /// Zeroed partials of `lanes` prompt lanes for every output width in `widths`.
+    /// # Errors
+    /// Rejects overflowing sizes and failed allocation.
+    pub(super) fn allocate(
+        device: &CudaDevice,
+        widths: impl IntoIterator<Item = usize>,
+        lanes: usize,
+    ) -> Result<Self> {
+        let mut memory = BTreeMap::new();
+        for rows in widths {
+            let len = PREFILL_SPLIT_K
+                .checked_mul(lanes)
+                .and_then(|split| split.checked_mul(rows))
+                .ok_or_else(|| Error::invalid("prefill split partials overflow"))?;
+            let zeros = api::zeros::<f32>(&[len])
+                .sync_on(&device.stream)
+                .map_err(device_error)?;
+            memory.insert(rows, Allocation::adopt(Arc::new(zeros))?);
+        }
+        Ok(Self { memory, lanes })
+    }
+
+    /// The leading windows of `lanes` prompt lanes; the memory is shared.
+    /// # Errors
+    /// Rejects more lanes than these partials hold.
+    pub(super) fn narrowed(&self, lanes: usize) -> Result<Self> {
+        if lanes > self.lanes {
+            return Err(Error::invalid("narrowed prefill split partials"));
+        }
+        Ok(Self {
+            memory: self.memory.clone(),
+            lanes,
+        })
+    }
+
+    /// The partials for an output `rows` wide.
+    /// # Errors
+    /// Rejects a width the graph has no split projection for.
+    pub(super) fn buffer(&self, rows: usize) -> Result<Buffer<'_, f32>> {
+        let memory = self
+            .memory
+            .get(&rows)
+            .ok_or_else(|| Error::invalid("prefill split partials"))?;
+        memory
+            .buffer()
+            .slice(0..PREFILL_SPLIT_K * self.lanes * rows)
+    }
+}
 
 /// The scratch one prompt width's graphs capture against.
 pub(super) struct PromptScratch {
@@ -19,7 +81,7 @@ pub(super) struct PromptScratch {
     /// Final prompt row the one-row logits projection reads, when the vocabulary projection
     /// supports it.
     pub(super) row: Option<Tensor<f32>>,
-    pub(super) partials: BTreeMap<usize, Tensor<f32>>,
+    pub(super) partials: Partials,
     pub(super) recurrent: super::recurrent_prefill::Workspace,
     pub(super) fusion: Option<super::fusion_batch::Workspace>,
     /// The wider scratch whose storage this one's arena, partials and fusion rows view; kept
@@ -31,7 +93,7 @@ impl PromptScratch {
     pub(super) const fn new(
         arena: ActivationArena,
         row: Option<Tensor<f32>>,
-        partials: BTreeMap<usize, Tensor<f32>>,
+        partials: Partials,
         recurrent: super::recurrent_prefill::Workspace,
         fusion: Option<super::fusion_batch::Workspace>,
     ) -> Self {
@@ -48,11 +110,7 @@ impl PromptScratch {
     /// Scratch for a narrower prompt rung whose arena, partials and fusion rows view `wider`'s
     /// storage; holding `wider` keeps that storage alive for as long as the views exist.
     pub(super) fn viewing(
-        (arena, row, partials): (
-            ActivationArena,
-            Option<Tensor<f32>>,
-            BTreeMap<usize, Tensor<f32>>,
-        ),
+        (arena, row, partials): (ActivationArena, Option<Tensor<f32>>, Partials),
         recurrent: super::recurrent_prefill::Workspace,
         fusion: Option<super::fusion_batch::Workspace>,
         wider: Arc<Mutex<Self>>,

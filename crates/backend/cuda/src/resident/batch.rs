@@ -1,16 +1,14 @@
 //! Node-major verification: consecutive projections reuse weights in cache.
 //! Recurrent checkpoints stay on the device; KV rollback is a logical prefix.
 //! Prefill width 32 keeps one batched arena: auxiliaries record once per node.
-use super::arena::prefix_view;
 use super::buffers::{buffer, kv_cache};
-use super::fusion_batch::Workspace as FusionRows;
 use super::prefill_projection::{DensePlan, record_narrow};
 use super::{
     ActivationArena, ProgramWeights,
     capture::{Capture, CaptureMode, error},
     fp8_cache::Fp8Caches,
     profile,
-    prompt_scratch::PromptScratch,
+    prompt_scratch::{Partials, PromptScratch},
 };
 use crate::attention_profile::precise_prefix_positions;
 use crate::constants::ATTENTION_SPLIT_THRESHOLD;
@@ -26,7 +24,6 @@ use crate::constants::METADATA_FIELDS;
 use crate::constants::MID_PREFILL_LANES;
 use crate::constants::MTP_KV_OFFSET;
 use crate::constants::PREFILL_LANES;
-use crate::constants::PREFILL_SPLIT_K;
 use crate::constants::WIDE_PREFILL_LANES;
 use crate::constants::WIDER_PREFILL_LANES;
 use crate::constants::WIDEST_PREFILL_LANES;
@@ -41,7 +38,7 @@ use infer_cuda_kernels::contract::{EmbeddingBatchPlan, LastRowsKind, LastRowsPla
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use infer_ir::{DataflowGraph, StateKind, TensorNode, TensorOp, TensorStorage};
 use infer_models::mrope::ROTARY_AXES;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::mem::take;
 use std::result::Result as StdResult;
@@ -126,7 +123,7 @@ pub(super) struct BatchGraph {
     _projections: Option<super::batch_projection::Workspace>,
     /// Split-K partial windows the captured fp4 prompt GEMMs accumulate into;
     /// declared after the graphs so their executables drop first.
-    _partials: BTreeMap<usize, Tensor<f32>>,
+    _partials: Partials,
     /// Final prompt row the one-row logits projection reads; captured by the prompt graphs.
     prompt_row: Option<Tensor<f32>>,
     _recurrent: super::recurrent_prefill::Workspace,
@@ -634,7 +631,7 @@ impl BatchBuilder<'_> {
             #[cfg(test)]
             state_prefill: None,
             restore,
-            _partials: BTreeMap::new(),
+            _partials: Partials::default(),
             prompt_row: None,
             _recurrent: super::recurrent_prefill::Workspace::default(),
             _fusion: None,
@@ -676,10 +673,6 @@ impl BatchBuilder<'_> {
     /// recurrent workspace and logits row but no second arena. Sharing is sound for the reason
     /// one width's scratch serves every sequence: prompt replays are serialized on the device
     /// stream and nothing reads the scratch after its replay.
-    #[expect(
-        unsafe_code,
-        reason = "Audited scratch alias: the narrower scratch holds its wider owner, and prompt replays through either are serialized on the device stream"
-    )]
     fn narrowed_scratch(
         &self,
         wider: &Arc<Mutex<PromptScratch>>,
@@ -699,28 +692,9 @@ impl BatchBuilder<'_> {
             None
         };
         let arena = owner.arena.narrowed(self.graph, width, single)?;
-        let mut partials = BTreeMap::new();
-        for (rows, tensor) in &owner.partials {
-            let kept = PREFILL_SPLIT_K * width;
-            // SAFETY: the returned scratch holds `wider`, which owns every viewed tensor, and
-            // prompt replays through either scratch are serialized on the device stream; the
-            // split rows of `width` lanes lie inside the wider tensor.
-            let view =
-                unsafe { prefix_view(tensor, PREFILL_SPLIT_K * wide, kept, &[kept, *rows])? };
-            partials.insert(*rows, view);
-        }
+        let partials = owner.partials.narrowed(width)?;
         let fusion = match owner.fusion.as_ref() {
-            Some(fusion) => {
-                let (input, gathered) = fusion
-                    .rows()
-                    .ok_or_else(|| Error::invariant("fusion workspace rows are taken"))?;
-                let (columns, hidden) = FusionRows::columns();
-                // SAFETY: as above; the leading `width` rows lie inside the wider rows.
-                let input = unsafe { prefix_view(input, wide, width, &[width, columns])? };
-                // SAFETY: as above.
-                let gathered = unsafe { prefix_view(gathered, wide, width, &[width, hidden])? };
-                Some(FusionRows::from_rows(input, gathered))
-            }
+            Some(fusion) => Some(fusion.narrowed(width)?),
             None => None,
         };
         drop(owner);
@@ -806,7 +780,7 @@ impl BatchBuilder<'_> {
             state_prefill: captures.regular.state_prefill,
             restore: Vec::new(),
             _projections: None,
-            _partials: BTreeMap::new(),
+            _partials: Partials::default(),
             prompt_row,
             _recurrent: super::recurrent_prefill::Workspace::default(),
             _fusion: None,
@@ -954,8 +928,8 @@ impl BatchBuilder<'_> {
         ))
     }
 
-    fn allocate_prompt_partials(&self) -> Result<BTreeMap<usize, Tensor<f32>>> {
-        let mut partials = BTreeMap::new();
+    fn allocate_prompt_partials(&self) -> Result<Partials> {
+        let mut widths = BTreeSet::new();
         for node in &self.graph.nodes {
             if node.op != TensorOp::Linear
                 || self.weights.input_scales.contains_key(&node.inputs[1])
@@ -973,17 +947,9 @@ impl BatchBuilder<'_> {
                 .find(|tensor| tensor.id == node.outputs[0])
                 .ok_or_else(|| Error::invalid("prefill linear output"))?
                 .elements()?;
-            if partials.contains_key(&rows) {
-                continue;
-            }
-            partials.insert(
-                rows,
-                api::zeros::<f32>(&[PREFILL_SPLIT_K * self.width, rows])
-                    .sync_on(&self.device.stream)
-                    .map_err(device_error)?,
-            );
+            widths.insert(rows);
         }
-        Ok(partials)
+        Partials::allocate(self.device, widths, self.width)
     }
 
     /// Record a verification node once over the batched arena the lanes alias: projections read
@@ -1366,7 +1332,7 @@ impl BatchBuilder<'_> {
         &mut self,
         arena: &mut ActivationArena,
         metadata: PromptMetadata<'_>,
-        partials: &BTreeMap<usize, Tensor<f32>>,
+        partials: &Partials,
         prompt_row: &mut Tensor<f32>,
         profile: &mut Option<profile::PrefillProfile>,
     ) -> Result<Graph> {
@@ -1386,7 +1352,7 @@ impl BatchBuilder<'_> {
         profile::PrefillProfile::from_env(device)
     }
 
-    pub(super) fn burst_partials(&self) -> Result<BTreeMap<usize, Tensor<f32>>> {
+    pub(super) fn burst_partials(&self) -> Result<Partials> {
         self.allocate_prompt_partials()
     }
 
@@ -1401,7 +1367,7 @@ impl BatchBuilder<'_> {
         readout: PromptReadout,
         profile: Option<&mut profile::PrefillProfile>,
         workspaces: (
-            &BTreeMap<usize, Tensor<f32>>,
+            &Partials,
             &mut super::recurrent_prefill::Workspace,
             &mut Option<super::fusion_batch::Workspace>,
         ),
@@ -1561,7 +1527,7 @@ impl BatchBuilder<'_> {
         arena: &mut ActivationArena,
         metadata: PromptMetadata<'_>,
         workspaces: (
-            &BTreeMap<usize, Tensor<f32>>,
+            &Partials,
             &mut super::recurrent_prefill::Workspace,
             &mut Option<super::fusion_batch::Workspace>,
         ),
@@ -1603,7 +1569,7 @@ impl BatchBuilder<'_> {
         node: &TensorNode,
         arena: &mut ActivationArena,
         metadata: &[Tensor<i32>],
-        partials: &BTreeMap<usize, Tensor<f32>>,
+        partials: &Partials,
     ) -> StdResult<(), DeviceError> {
         let mut no_fusion = None;
         match dispatch32(node, self.weights) {

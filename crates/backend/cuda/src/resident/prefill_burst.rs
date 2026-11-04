@@ -7,16 +7,15 @@
 use super::arena::prefix_view;
 use super::batch::{BatchBuilder, States};
 use super::fp8_cache::Fp8Caches;
-use super::prompt_scratch::PromptScratch;
+use super::prompt_scratch::{Partials, PromptScratch};
 use super::{ActivationArena, ProgramWeights};
-use crate::constants::{METADATA_FIELDS, PREFILL_SPLIT_K};
+use crate::constants::METADATA_FIELDS;
 use crate::device::{CudaDevice, PinnedUpload, ReadbackSource, Readbacks, device_error};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::DataflowGraph;
 use infer_models::mrope::ROTARY_AXES;
-use std::collections::BTreeMap;
 use std::iter::successors;
 use std::slice::from_ref;
 use std::sync::{Arc, Mutex};
@@ -141,7 +140,7 @@ pub struct PromptBurst {
 /// Workspaces the graph addresses and nothing reads through this struct.
 struct Retained {
     _segments: Vec<ActivationArena>,
-    _partials: BTreeMap<usize, Tensor<f32>>,
+    _partials: Partials,
     _recurrent: super::recurrent_prefill::Workspace,
     _attention: super::attention_decode::Workspace,
     _placeholder_states: States,
@@ -181,7 +180,7 @@ struct Storage {
     lane_external: Vec<Tensor<f32>>,
     lane_fusion: Vec<Option<super::program::FusionWorkspace>>,
     /// Split rows viewing the prompt worker's, when its scratch covers these rows.
-    scratch_partials: Option<BTreeMap<usize, Tensor<f32>>>,
+    scratch_partials: Option<Partials>,
     /// Retains the storage the views alias.
     scratch: Option<Arc<Mutex<PromptScratch>>>,
 }
@@ -271,17 +270,7 @@ impl Storage {
             let owner = shared
                 .lock()
                 .map_err(|_| Error::invariant("prompt scratch poisoned"))?;
-            let wide = owner.arena.lanes();
-            let mut partials = BTreeMap::new();
-            for (columns, tensor) in &owner.partials {
-                let kept = PREFILL_SPLIT_K * rows;
-                // SAFETY: forwarded from this function's contract; `scratch` retains the owner.
-                let view = unsafe {
-                    prefix_view(tensor, PREFILL_SPLIT_K * wide, kept, &[kept, *columns])?
-                };
-                partials.insert(*columns, view);
-            }
-            scratch_partials = Some(partials);
+            scratch_partials = Some(owner.partials.narrowed(rows)?);
             // Prompt replays are serialized on the device stream.
             let arena = owner.arena.narrowed(graph, rows, graph.logits)?;
             drop(owner);

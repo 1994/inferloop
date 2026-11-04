@@ -1,5 +1,6 @@
 mod dense;
 use super::buffers::{RowMajor, buffer, tensor_rows};
+use super::prompt_scratch::Partials;
 use super::{ProgramWeights, capture::error};
 use crate::constants::PREFILL_GEMM_TILE_K;
 use crate::constants::PREFILL_GEMM_TILE_N;
@@ -430,7 +431,7 @@ pub(super) fn record(
     node: &TensorNode,
     arena: &super::ActivationArena,
     weights: &ProgramWeights,
-    partials: &BTreeMap<usize, Tensor<f32>>,
+    partials: &Partials,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
     delegated: Option<&mut Support>,
 ) -> Result<(), DeviceError> {
@@ -665,16 +666,14 @@ fn record_legacy_fp4(
     weight: &ProjectionWeight,
     input: Buffer<'_, f32>,
     output: &Tensor<f32>,
-    partials: &BTreeMap<usize, Tensor<f32>>,
+    partials: &Partials,
     (width, columns): (usize, usize),
 ) -> Result<(), DeviceError> {
     if width != PREFILL_LANES {
         return Err(error("legacy FP4 split prefill requires width 32"));
     }
     let rows = output.size() / width;
-    let partial = partials
-        .get(&rows)
-        .ok_or_else(|| error("prefill split partials"))?;
+    let partial = partials.buffer(rows).map_err(error)?;
     let windows = columns.div_ceil(PREFILL_GEMM_TILE_K);
     let k_tiles = i32::try_from(windows.div_ceil(PREFILL_SPLIT_K))
         .map_err(|_| error("prefill split window"))?;
@@ -693,7 +692,7 @@ fn record_legacy_fp4(
                 splits: i32::try_from(PREFILL_SPLIT_K).map_err(|_| error("prefill split count"))?,
             },
             buffer(output)?,
-            buffer(partial)?,
+            partial,
             input,
             weight.weight_ref()?,
         )
