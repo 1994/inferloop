@@ -1846,7 +1846,7 @@ fn warm_delegated(delegated: &mut Support, weights: &ProgramWeights, geometry: P
         };
         let [rows, columns] = dense.shape();
         for width in geometry.widths() {
-            let _ = delegated.warm(width, dense.tensor(), rows, columns);
+            let _ = delegated.warm(width, dense, rows, columns);
         }
     }
 }

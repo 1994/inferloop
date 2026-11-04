@@ -9,15 +9,20 @@
 //! `out[m, n] = activations[m, k] * weights[n, k]^T`, so `A` is the activation with `OP_T`
 //! (`lda = k`), `B` is the weight with `OP_N` (`ldb = k`), and `C` is the output with `ldc = m`.
 use crate::device::CudaDevice;
+use crate::mlp::Matrix;
 use crate::resident::tensor_buffer;
 use crate::tuning::prefill::delegate_dense;
-use cuda_core::sys::CUstream;
+use cuda_core::sys::{CUdeviceptr, CUstream};
 use cutile::cuda_async::error::DeviceError;
 use cutile::{half::bf16, prelude::*};
 use infer_core::ErrorCode;
-use infer_cuda_kernels::contract::{Foreign, Kernels, NARROW_GRANULE, Recording};
+use infer_cuda_kernels::contract::{
+    Bf16, Buffer, Foreign, Kernels, NARROW_GRANULE, Owner, Recording,
+};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::fmt::Display;
 use std::ptr::null_mut;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -31,6 +36,8 @@ const DATATYPE_BF16: i32 = 14;
 const DATATYPE_F32: i32 = 0;
 const POINTER_MODE_DEVICE: i32 = 1;
 const GEMM_DEFAULT: i32 = -1;
+/// Extents of one GEMM, `[m, n, k]`, and its three device operands.
+const GEMM_OPERANDS: usize = 3;
 
 type CreateHandle = unsafe extern "C" fn(*mut Handle) -> i32;
 type DestroyHandle = unsafe extern "C" fn(Handle) -> i32;
@@ -128,8 +135,8 @@ pub struct Context {
     ordinal: usize,
     stream: CudaStream,
     handle: Handle,
-    alpha: Tensor<f32>,
-    beta: Tensor<f32>,
+    alpha: Allocation<f32>,
+    beta: Allocation<f32>,
 }
 
 #[expect(
@@ -204,14 +211,8 @@ fn build(device: &CudaDevice) -> Option<Context> {
         destroy(api, handle);
         return None;
     }
-    let scalar = |value: f32| -> Option<Tensor<f32>> {
-        let mut tensor = api::zeros::<f32>(&[1]).sync_on(&device.stream).ok()?;
-        let host = device.upload(vec![value], &[1]).ok()?;
-        api::memcpy(&mut tensor, &host)
-            .sync_on(&device.stream)
-            .ok()?;
-        Some(tensor)
-    };
+    let runtime = device.runtime();
+    let scalar = |value: f32| runtime.upload(vec![value]).ok();
     let (Some(alpha), Some(beta)) = (scalar(1.0), scalar(0.0)) else {
         destroy(api, handle);
         return None;
@@ -229,23 +230,23 @@ fn build(device: &CudaDevice) -> Option<Context> {
     unsafe_code,
     reason = "Audited launch: the operands are live device tensors whose extents the caller checked against each other"
 )]
-unsafe fn launch(
-    context: &Context,
-    m: i32,
-    n: i32,
-    k: i32,
-    activations: *const c_void,
-    weights: *const c_void,
-    out: *mut c_void,
-) -> Result<(), i32> {
+unsafe fn launch(context: &Context, product: &Product) -> Result<(), i32> {
     let Some(api) = api() else {
         return Err(-1);
     };
+    let Product {
+        m,
+        n,
+        k,
+        pointers: [activations, weights, out],
+    } = *product;
+    let (activations, weights) = (activations as *const c_void, weights as *const c_void);
+    let out = out as *mut c_void;
     // SAFETY: `alpha` and `beta` are device scalars owned by the context, the operands are the
-    // caller's live tensors, and the handle's stream belongs to the same device.
+    // caller's live buffers, and the handle's stream belongs to the same device.
     unsafe {
-        let alpha = context.alpha.device_pointer().cu_deviceptr() as *const c_void;
-        let beta = context.beta.device_pointer().cu_deviceptr() as *const c_void;
+        let alpha = context.alpha.buffer().address() as *const c_void;
+        let beta = context.beta.buffer().address() as *const c_void;
         // `out` is row-major `[m, n]`, which is column-major `[n, m]` with `ld = n`, so cuBLAS
         // computes the transposed product: `op(A) = weights`, `op(B) = activations`.
         let status = (api.gemm)(
@@ -273,46 +274,65 @@ unsafe fn launch(
     }
 }
 
-/// Run `out[m, n] = activations[m, k] * weights[n, k]^T` in bf16 with f32 accumulation.
+/// `out[m, n] = activations[m, k] * weights[n, k]^T`, with extents checked against the buffers.
+///
+/// The extents are explicit rather than read from ranks so a flat activation buffer works: the
+/// cast that produces it writes flat tiles.
+#[derive(Clone, Copy)]
+struct Product {
+    m: i32,
+    n: i32,
+    k: i32,
+    pointers: [CUdeviceptr; GEMM_OPERANDS],
+}
+
+impl Product {
+    fn new(
+        [m, n, k]: [usize; GEMM_OPERANDS],
+        activations: Buffer<'_, Bf16>,
+        weights: Buffer<'_, Bf16>,
+        out: Buffer<'_, f32>,
+    ) -> infer_core::Result<Self> {
+        let extent = |value: usize| {
+            i32::try_from(value).map_err(|_| infer_core::Error::invalid("cuBLAS extent"))
+        };
+        let elements = |rows: usize, columns: usize| rows.checked_mul(columns);
+        if Some(activations.len()) != elements(m, k)
+            || Some(weights.len()) != elements(n, k)
+            || Some(out.len()) != elements(m, n)
+        {
+            return Err(infer_core::Error::invalid("cuBLAS operand shape"));
+        }
+        Ok(Self {
+            m: extent(m)?,
+            n: extent(n)?,
+            k: extent(k)?,
+            pointers: [activations.address(), weights.address(), out.address()],
+        })
+    }
+}
+
+/// Run `out[m, n] = activations[m, k] * weights[n, k]^T` in bf16 with f32 accumulation, with
+/// `extents` `[m, n, k]`.
 ///
 /// # Errors
 /// Rejects operands whose extents disagree, or reports the driver's status.
 #[expect(
     unsafe_code,
-    reason = "Audited launch: the three tensors outlive the call and their extents are checked against each other"
+    reason = "Audited launch: the three buffers outlive the call and their extents are checked against each other"
 )]
 pub fn gemm_bf16(
     device: &CudaDevice,
-    activations: &Tensor<bf16>,
-    weights: &Tensor<bf16>,
-    out: &Tensor<f32>,
+    extents: [usize; GEMM_OPERANDS],
+    activations: Buffer<'_, Bf16>,
+    weights: Buffer<'_, Bf16>,
+    out: Buffer<'_, f32>,
 ) -> infer_core::Result<()> {
     let context = context_for(device)
         .ok_or_else(|| infer_core::Error::invalid("cuBLAS handle unavailable for this device"))?;
-    let [m, k] = activations.shape()[..] else {
-        return Err(infer_core::Error::invalid("cuBLAS activation rank"));
-    };
-    let [n, weight_k] = weights.shape()[..] else {
-        return Err(infer_core::Error::invalid("cuBLAS weight rank"));
-    };
-    let [out_m, out_n] = out.shape()[..] else {
-        return Err(infer_core::Error::invalid("cuBLAS output rank"));
-    };
-    if k != weight_k || m != out_m || n != out_n {
-        return Err(infer_core::Error::invalid("cuBLAS operand shape"));
-    }
-    // SAFETY: the three tensors are live for the call and their extents were just checked.
-    let status = unsafe {
-        launch(
-            &context,
-            m,
-            n,
-            k,
-            activations.device_pointer().cu_deviceptr() as *const c_void,
-            weights.device_pointer().cu_deviceptr() as *const c_void,
-            out.device_pointer().cu_deviceptr() as *mut c_void,
-        )
-    };
+    let product = Product::new(extents, activations, weights, out)?;
+    // SAFETY: the three buffers are live for the call and their extents were just checked.
+    let status = unsafe { launch(&context, &product) };
     status.map_err(|code| {
         infer_core::Error::new(ErrorCode::Backend, format!("cublasGemmEx status {code}"))
     })
@@ -325,7 +345,7 @@ pub fn gemm_bf16(
 pub struct Support {
     device: CudaDevice,
     context: Option<Arc<Context>>,
-    activations: HashMap<usize, Tensor<bf16>>,
+    activations: HashMap<usize, Allocation<bf16>>,
 }
 
 impl Support {
@@ -368,7 +388,7 @@ impl Support {
     pub fn warm(
         &mut self,
         m: usize,
-        weight: &Tensor<bf16>,
+        weight: &Matrix<bf16>,
         n: usize,
         k: usize,
     ) -> Result<(), DeviceError> {
@@ -378,34 +398,23 @@ impl Support {
         if !delegate_dense(m, n, k) {
             return Ok(());
         }
-        let (Ok(m_i), Ok(n_i), Ok(k_i)) = (i32::try_from(m), i32::try_from(n), i32::try_from(k))
-        else {
+        let scratch = self.scratch(m.saturating_mul(k))?;
+        let out = self
+            .device
+            .runtime()
+            .zeros::<f32>(m.saturating_mul(n))
+            .map_err(internal)?;
+        let Ok(product) = Product::new(
+            [m, n, k],
+            scratch.operand(),
+            tensor_buffer(weight)?,
+            out.operand(),
+        ) else {
             return Ok(());
         };
-        let activation_elements = m * k;
-        if !self.activations.contains_key(&activation_elements) {
-            let scratch =
-                api::zeros::<bf16>(&[activation_elements]).sync_on(&self.device.stream)?;
-            self.activations.insert(activation_elements, scratch);
-        }
-        let scratch = self
-            .activations
-            .get(&activation_elements)
-            .ok_or_else(|| DeviceError::Internal("cuBLAS scratch".to_string()))?;
-        let out = api::zeros::<f32>(&[m * n]).sync_on(&self.device.stream)?;
-        // SAFETY: both operands are live device tensors allocated just above with the extents the
-        // launch is told about, and the stream belongs to this device.
-        let status = unsafe {
-            launch(
-                &context,
-                m_i,
-                n_i,
-                k_i,
-                scratch.device_pointer().cu_deviceptr() as *const c_void,
-                weight.device_pointer().cu_deviceptr() as *const c_void,
-                out.device_pointer().cu_deviceptr() as *mut c_void,
-            )
-        };
+        // SAFETY: the operands are live allocations whose extents were checked, and the stream
+        // belongs to this device.
+        let status = unsafe { launch(&context, &product) };
         status
             .map_err(|code| DeviceError::Internal(format!("cublasGemmEx warmup status {code}")))?;
         self.device
@@ -422,9 +431,9 @@ impl Support {
     pub fn record_dense(
         &mut self,
         (kernels, scope): (&Kernels, &Scope),
-        input: &Tensor<f32>,
-        weight: &Tensor<bf16>,
-        out: &Tensor<f32>,
+        input: Buffer<'_, f32>,
+        weight: &Matrix<bf16>,
+        out: Buffer<'_, f32>,
         (m, n, k): (usize, usize, usize),
     ) -> Result<bool, DeviceError> {
         let Some(context) = self.context.clone() else {
@@ -433,101 +442,85 @@ impl Support {
         let activation_elements = m.saturating_mul(k);
         if !delegate_dense(m, n, k)
             || !activation_elements.is_multiple_of(NARROW_GRANULE)
-            || input.size() != activation_elements
+            || input.len() != activation_elements
         {
             return Ok(false);
         }
-        let (Ok(m), Ok(n), Ok(k)) = (i32::try_from(m), i32::try_from(n), i32::try_from(k)) else {
-            return Ok(false);
-        };
-        if !self.activations.contains_key(&activation_elements) {
-            let scratch =
-                api::zeros::<bf16>(&[activation_elements]).sync_on(&self.device.stream)?;
-            self.activations.insert(activation_elements, scratch);
-        }
-        let scratch = self
-            .activations
-            .get(&activation_elements)
-            .ok_or_else(|| DeviceError::Internal("cuBLAS scratch".to_string()))?;
+        let scratch = self.scratch(activation_elements)?;
+        let recording = Recording::scope(scope);
         kernels
             .projection
-            .narrow_bf16(
-                &Recording::scope(scope),
-                tensor_buffer(scratch)?,
-                tensor_buffer(input)?,
-            )
+            .narrow_bf16(&recording, scratch.operand(), input)
             .map_err(|error| DeviceError::Launch(error.to_string()))?;
-        let op = GemmBf16::new(context, m, n, k, scratch, weight, out)
-            .map_err(|error| DeviceError::Internal(error.to_string()))?;
-        Recording::scope(scope)
-            .foreign(op, Vec::new())
+        let weight = tensor_buffer(weight)?;
+        let op =
+            GemmBf16::new(context, [m, n, k], scratch.operand(), weight, out).map_err(internal)?;
+        // The cuBLAS node is consumed during capture, so the graph holds what it reads instead.
+        let keep = [Some(scratch.operand()), Some(weight)]
+            .into_iter()
+            .flatten()
+            .filter_map(Buffer::owner)
+            .chain(out.owner())
+            .cloned()
+            .collect::<Vec<Owner>>();
+        recording
+            .foreign(op, keep)
             .map_err(|error| DeviceError::Launch(error.to_string()))?;
         Ok(true)
     }
+
+    /// The BF16 activation scratch of `elements`, allocated the first time a shape needs it.
+    fn scratch(&mut self, elements: usize) -> Result<Allocation<bf16>, DeviceError> {
+        if let Some(scratch) = self.activations.get(&elements) {
+            return Ok(scratch.clone());
+        }
+        let scratch = self
+            .device
+            .runtime()
+            .zeros::<bf16>(elements)
+            .map_err(internal)?;
+        self.activations.insert(elements, scratch.clone());
+        Ok(scratch)
+    }
 }
 
-/// A bf16 projection that can be recorded into a captured graph./// A bf16 projection that can be recorded into a captured graph.
+fn internal(error: impl Display) -> DeviceError {
+    DeviceError::Internal(error.to_string())
+}
+
+/// A bf16 projection that can be recorded into a captured graph.
 ///
-/// `DeviceOp::execute` runs during capture, which is why the launch takes `alpha` and `beta` from
-/// device memory: anything read from the host at that point would be frozen into the graph.
-pub struct GemmBf16<'a> {
+/// The launch takes `alpha` and `beta` from device memory: anything read from the host while the
+/// stream captures would be frozen into the graph.
+pub struct GemmBf16 {
     context: Arc<Context>,
-    m: i32,
-    n: i32,
-    k: i32,
-    activations: &'a Tensor<bf16>,
-    weights: &'a Tensor<bf16>,
-    out: &'a Tensor<f32>,
+    product: Product,
 }
 
-impl<'a> GemmBf16<'a> {
-    /// Describe `out[m, n] = activations[m, k] * weights[n, k]^T`.
-    ///
-    /// The extents are explicit rather than read from the tensor ranks so a flat activation buffer
-    /// works: the cast that produces it writes flat tiles.
+impl GemmBf16 {
+    /// Describe `out[m, n] = activations[m, k] * weights[n, k]^T` for `extents` `[m, n, k]`.
     ///
     /// # Errors
     /// Rejects operands whose element counts disagree with the extents.
     pub fn new(
         context: Arc<Context>,
-        m: i32,
-        n: i32,
-        k: i32,
-        activations: &'a Tensor<bf16>,
-        weights: &'a Tensor<bf16>,
-        out: &'a Tensor<f32>,
+        extents: [usize; GEMM_OPERANDS],
+        activations: Buffer<'_, Bf16>,
+        weights: Buffer<'_, Bf16>,
+        out: Buffer<'_, f32>,
     ) -> infer_core::Result<Self> {
-        let expected = |a: i32, b: i32| usize::try_from(a).ok().zip(usize::try_from(b).ok());
-        let sizes = expected(m, k)
-            .map(|(m, k)| m * k)
-            .zip(expected(n, k).map(|(n, k)| n * k))
-            .zip(expected(m, n).map(|(m, n)| m * n));
-        let Some(((activation_size, weight_size), out_size)) = sizes else {
-            return Err(infer_core::Error::invalid("cuBLAS extent"));
-        };
-        if activations.size() != activation_size
-            || weights.size() != weight_size
-            || out.size() != out_size
-        {
-            return Err(infer_core::Error::invalid("cuBLAS operand shape"));
-        }
         Ok(Self {
             context,
-            m,
-            n,
-            k,
-            activations,
-            weights,
-            out,
+            product: Product::new(extents, activations, weights, out)?,
         })
     }
 }
 
 #[expect(
     unsafe_code,
-    reason = "Audited in-graph launch: the operands are borrowed for the whole capture and the stream is the one the handle was bound to"
+    reason = "Audited in-graph launch: the recording keeps the operands alive and the stream is the one the handle was bound to"
 )]
-impl Foreign for GemmBf16<'_> {
+impl Foreign for GemmBf16 {
     fn enqueue(self, stream: *mut c_void) -> infer_core::Result<()> {
         // A handle belongs to the device it was created on and launches on the stream it was bound
         // to. Recording it into a graph on another stream would place the GEMM outside that graph's
@@ -538,19 +531,9 @@ impl Foreign for GemmBf16<'_> {
                 self.context.ordinal
             )));
         }
-        // SAFETY: the operands are live device tensors whose extents were checked in `new`, and the
-        // stream matches the one the handle was created for.
-        let status = unsafe {
-            launch(
-                &self.context,
-                self.m,
-                self.n,
-                self.k,
-                self.activations.device_pointer().cu_deviceptr() as *const c_void,
-                self.weights.device_pointer().cu_deviceptr() as *const c_void,
-                self.out.device_pointer().cu_deviceptr() as *mut c_void,
-            )
-        };
+        // SAFETY: the operand extents were checked in `new`, the recording keeps them alive, and
+        // the stream matches the one the handle was created for.
+        let status = unsafe { launch(&self.context, &self.product) };
         status.map_err(|code| {
             infer_core::Error::new(ErrorCode::Backend, format!("cublasGemmEx status {code}"))
         })

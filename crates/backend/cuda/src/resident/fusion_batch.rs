@@ -391,13 +391,16 @@ fn record_wide(
     let output = arena.buffers[slot]
         .take()
         .ok_or_else(|| error("fusion batch output"))?;
-    let recorded = delegated.record_dense(
-        (&builder.weights.kernels, scope),
-        &input,
-        weight.tensor(),
-        &output,
-        (lanes, HIDDEN, COLUMNS),
-    );
+    // The slot is restored below whatever the outcome, so no early return happens here.
+    let recorded = buffer(&input).and_then(|flat| {
+        delegated.record_dense(
+            (&builder.weights.kernels, scope),
+            flat,
+            weight,
+            buffer(&output)?,
+            (lanes, HIDDEN, COLUMNS),
+        )
+    });
     workspace.input = Some(input.reshape(&[lanes, COLUMNS])?);
     arena.buffers[slot] = Some(output);
     if recorded? {

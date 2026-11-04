@@ -1,5 +1,6 @@
 use super::*;
 use crate::device::{CudaDevice, device_error};
+use crate::resident::tensor_buffer;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 use std::time::Instant;
@@ -43,12 +44,24 @@ fn gemm_bf16_matches_reference() -> Result<(), Box<dyn Error>> {
         let out = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
         // The first launch pays cuBLAS initialisation and its internal algorithm search, so
         // warm the shape and then time repeats.
-        gemm_bf16(&device, &a, &b, &out)?;
+        gemm_bf16(
+            &device,
+            [m, n, k],
+            tensor_buffer(&a)?,
+            tensor_buffer(&b)?,
+            tensor_buffer(&out)?,
+        )?;
         device.reclaim_barrier()?;
         let repeats = 50;
         let started = Instant::now();
         for _ in 0..repeats {
-            gemm_bf16(&device, &a, &b, &out)?;
+            gemm_bf16(
+                &device,
+                [m, n, k],
+                tensor_buffer(&a)?,
+                tensor_buffer(&b)?,
+                tensor_buffer(&out)?,
+            )?;
         }
         device.reclaim_barrier()?;
         let elapsed = started.elapsed() / repeats;
@@ -74,11 +87,6 @@ fn gemm_bf16_matches_reference() -> Result<(), Box<dyn Error>> {
 /// its scalars living on the device rather than frozen into the graph.
 #[test]
 #[ignore = "requires CUDA hardware; run inside safe-run"]
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "test extents are small literals, so the narrowing to the kernel's i32 is exact"
-)]
 fn gemm_bf16_replays_inside_a_captured_graph() -> Result<(), Box<dyn Error>> {
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
@@ -99,17 +107,21 @@ fn gemm_bf16_replays_inside_a_captured_graph() -> Result<(), Box<dyn Error>> {
     let context = context_for(&device).ok_or("no cuBLAS context")?;
     // cuBLAS does host-side work on the first use of a configuration (workspace and algorithm
     // selection), which a capturing stream rejects; run the shape once before recording it.
-    gemm_bf16(&device, &a, &b, &out)?;
+    gemm_bf16(
+        &device,
+        [rows, columns, contraction],
+        tensor_buffer(&a)?,
+        tensor_buffer(&b)?,
+        tensor_buffer(&out)?,
+    )?;
     device.reclaim_barrier()?;
     let graph = Graph::scope(&device.stream, |scope| {
         let op = GemmBf16::new(
             context,
-            rows as i32,
-            columns as i32,
-            contraction as i32,
-            &a,
-            &b,
-            &out,
+            [rows, columns, contraction],
+            tensor_buffer(&a)?,
+            tensor_buffer(&b)?,
+            tensor_buffer(&out)?,
         )
         .map_err(|error| DeviceError::Internal(error.to_string()))?;
         Recording::scope(scope)
@@ -124,7 +136,13 @@ fn gemm_bf16_replays_inside_a_captured_graph() -> Result<(), Box<dyn Error>> {
     device.reclaim_barrier()?;
     let captured = out.to_host_vec().sync_on(&device.stream)?;
     let direct = api::zeros::<f32>(&[rows, columns]).sync_on(&device.stream)?;
-    gemm_bf16(&device, &a, &b, &direct)?;
+    gemm_bf16(
+        &device,
+        [rows, columns, contraction],
+        tensor_buffer(&a)?,
+        tensor_buffer(&b)?,
+        tensor_buffer(&direct)?,
+    )?;
     device.reclaim_barrier()?;
     let reference = direct.to_host_vec().sync_on(&device.stream)?;
     let gap = captured

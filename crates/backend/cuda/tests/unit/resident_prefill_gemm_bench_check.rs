@@ -6,6 +6,7 @@
 use super::gemm;
 use crate::device::cublaslt::{GemmBf16, Support, available};
 use crate::device::{CudaDevice, device_error};
+use crate::mlp::Matrix;
 use crate::resident::tensor_buffer;
 use cutile::half::bf16;
 use cutile::prelude::*;
@@ -31,11 +32,6 @@ fn sample(seed: u64, index: usize) -> f32 {
 
 #[test]
 #[ignore = "requires CUDA hardware; run inside safe-run"]
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "benchmark extents are small literals, so the narrowing to the kernel's i32 is exact"
-)]
 fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>> {
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
@@ -53,12 +49,12 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
         let inputs: Vec<f32> = (0..m * k).map(|i| sample(5, i) * 0.1).collect();
         let weights: Vec<bf16> = (0..n * k).map(|i| bf16::from_f32(sample(6, i))).collect();
         let input = device.upload(inputs, &[m, k])?;
-        let weight = device.upload(weights, &[n, k])?;
+        let weight = Matrix::upload(&device, weights, &[n, k])?;
         let mut native = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
         // Our prompt kernel tiles the output 32x64 and the K loop by 64.
         let kernel_graph = Graph::scope(&device.stream, |scope| {
             scope.record(
-                gemm::dense((&mut native).partition([32, 64]), &input, &weight)
+                gemm::dense((&mut native).partition([32, 64]), &input, weight.tensor())
                     .generics(vec![k.to_string()]),
             )?;
             Ok(())
@@ -90,12 +86,10 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
                         .context()
                         .ok_or_else(|| DeviceError::Internal("no cuBLAS context".to_string()))?,
                 ),
-                m as i32,
-                n as i32,
-                k as i32,
-                &narrowed,
-                &weight,
-                &delegated,
+                [m, n, k],
+                tensor_buffer(&narrowed)?,
+                tensor_buffer(&weight)?,
+                tensor_buffer(&delegated)?,
             )
             .map_err(|error| DeviceError::Internal(error.to_string()))?;
             Recording::scope(scope)
