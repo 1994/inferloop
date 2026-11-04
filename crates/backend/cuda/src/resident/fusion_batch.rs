@@ -336,7 +336,7 @@ fn record_wide(
     let Some(external) = builder.lane_external_owner else {
         return Ok(false);
     };
-    if external.size() < lanes * HIDDEN {
+    if external.len() < lanes * HIDDEN {
         return Err(error("fusion batch external rows"));
     }
     // The owner holds the widest prompt's rows; a narrower rung's grid reads its leading lanes.

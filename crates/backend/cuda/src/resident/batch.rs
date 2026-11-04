@@ -170,10 +170,10 @@ pub(super) struct BatchBuilder<'a> {
     pub attention: &'a mut super::attention_decode::Workspace,
     pub states: &'a mut States,
     pub fp8_states: &'a mut Fp8Caches,
-    pub external: &'a Tensor<f32>,
-    pub lane_external: &'a mut Vec<Tensor<f32>>,
+    pub external: &'a Allocation<f32>,
+    pub lane_external: &'a mut Vec<Allocation<f32>>,
     /// Contiguous storage behind `lane_external`, one external hidden row per prompt lane.
-    pub lane_external_owner: Option<&'a Tensor<f32>>,
+    pub lane_external_owner: Option<&'a Allocation<f32>>,
     pub lane_fusion: &'a mut Vec<Option<super::program::FusionWorkspace>>,
     /// One block table per lane, indexed exactly like `lane_external`; batched and prefill
     /// captures use entry 0 because their operators do not resolve KV positions.
@@ -712,7 +712,7 @@ impl BatchBuilder<'_> {
         if !super::prompt_logits::supported(self.graph, self.weights) {
             return Ok(None);
         }
-        let row = api::zeros::<f32>(&[self.external.size()])
+        let row = api::zeros::<f32>(&[self.external.len()])
             .sync_on(&self.device.stream)
             .map_err(device_error)?;
         Allocation::adopt(Arc::new(row)).map(Some)
@@ -1490,7 +1490,7 @@ impl BatchBuilder<'_> {
         let dimension = size / lanes;
         if size != lanes * dimension
             || !dimension.is_multiple_of(AUX_KERNEL_TILE)
-            || external.size() < size
+            || external.len() < size
             || metadata_batch.len() < lanes * METADATA_FIELDS
         {
             return Ok(false);

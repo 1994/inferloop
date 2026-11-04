@@ -41,7 +41,7 @@ impl SlotPool {
             .lane_external
             .get(slot)
             .ok_or_else(|| Error::invalid("external hidden slot"))?;
-        if values.len() != row.size() {
+        if values.len() != row.len() {
             return Err(Error::invalid("external hidden shape"));
         }
         let row = buffer(row).map_err(device_error)?;

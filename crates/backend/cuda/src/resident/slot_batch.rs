@@ -177,13 +177,13 @@ fn build_verify_graphs(
 const EXTERNAL_UPLOAD_RING: usize = MAX_VERIFICATION_WIDTH + 1;
 
 /// Per-lane external hidden rows and their pinned upload rings.
-type ExternalLanes = (Vec<Tensor<f32>>, Vec<Option<Staging<f32>>>);
+type ExternalLanes = (Vec<Allocation<f32>>, Vec<Option<Staging<f32>>>);
 
 /// One pool's per-slot recurrent states, KV caches and KV position tables.
 /// The pool's external row, lane rows, pinned staging and fusion workspaces.
 type LaneInputs = (
-    Tensor<f32>,
-    Vec<Tensor<f32>>,
+    Allocation<f32>,
+    Vec<Allocation<f32>>,
     Vec<Option<Staging<f32>>>,
     Vec<Option<super::program::FusionWorkspace>>,
 );
@@ -274,13 +274,13 @@ fn gather_kv<T: DType + Element>(
     {
         return Err(Error::invariant("slot export beyond the slot's KV"));
     }
-    let mut dst = api::zeros::<T>(&[heads, rows, dim])
+    let dst = api::zeros::<T>(&[heads, rows, dim])
         .sync_on(&device.stream)
         .map_err(device_error)?;
     for head in 0..heads {
         match blocks {
             None => device.copy_d2d_at(
-                &mut dst,
+                &dst,
                 src,
                 head * rows * dim,
                 head * physical * dim,
@@ -296,7 +296,7 @@ fn gather_kv<T: DType + Element>(
                     let count = KV_BLOCK_TOKENS.min(rows - start);
                     let block = usize::try_from(block).map_err(device_error)?;
                     device.copy_d2d_at(
-                        &mut dst,
+                        &dst,
                         src,
                         (head * rows + start) * dim,
                         (head * physical + block * KV_BLOCK_TOKENS) * dim,
@@ -440,10 +440,10 @@ pub struct SlotPool {
     vocabulary: usize,
     // The captured graph bakes these buffers' device pointers; declared last so the
     // graph drops before anything it references.
-    _external: Tensor<f32>,
+    _external: Allocation<f32>,
     _nvfp4: super::nvfp4_gemm::Workspace,
     _attention: super::attention_decode::Workspace,
-    lane_external: Vec<Tensor<f32>>,
+    lane_external: Vec<Allocation<f32>>,
     /// Whether a lane's external hidden row was uploaded at least once.
     external_uploaded: Vec<bool>,
     /// Pinned staging feeding `lane_external`, present when decode takes external rows. It is as
@@ -652,9 +652,7 @@ impl SlotPool {
         lanes: usize,
         hidden: usize,
     ) -> Result<LaneInputs> {
-        let external = api::zeros::<f32>(&[hidden])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        let external = device.runtime().zeros(hidden)?;
         let (lane_external, pinned_external) = Self::external_lanes(device, fused, lanes, hidden)?;
         let lane_fusion = (0..lanes)
             .map(|_| super::program::FusionWorkspace::allocate(device, hidden, fused))
@@ -731,15 +729,10 @@ impl SlotPool {
         lanes: usize,
         hidden: usize,
     ) -> Result<ExternalLanes> {
-        let mut lane_external = Vec::with_capacity(lanes);
-        for _ in 0..lanes {
-            lane_external.push(
-                api::zeros::<f32>(&[hidden])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-            );
-        }
         let runtime = device.runtime();
+        let lane_external = (0..lanes)
+            .map(|_| runtime.zeros(hidden))
+            .collect::<Result<Vec<_>>>()?;
         let pinned_external = (0..lanes)
             .map(|_| {
                 external_hidden
@@ -1487,7 +1480,7 @@ impl SlotPool {
     /// token prefix moves per head block with each side's own stride. Anything but that
     /// exact layout is an invariant violation, never a silent partial copy.
     fn copy_kv_tensor<T: DType + Element>(
-        dst: &mut Tensor<T>,
+        dst: &Tensor<T>,
         src: &Tensor<T>,
         rows: usize,
         slot_capacity: usize,

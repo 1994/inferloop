@@ -155,9 +155,9 @@ struct Keep {
     _info_rows: Vec<Allocation<i32>>,
     _rotary_rows: Vec<Allocation<i32>>,
     _prompt_row: Tensor<f32>,
-    _external_row: Tensor<f32>,
-    _external: Tensor<f32>,
-    _lane_external: Vec<Tensor<f32>>,
+    _external_row: Allocation<f32>,
+    _external: Allocation<f32>,
+    _lane_external: Vec<Allocation<f32>>,
     _lane_fusion: Vec<Option<super::program::FusionWorkspace>>,
     _last_rows: Arc<Tensor<f32>>,
     /// Declared last so the views above drop first.
@@ -177,9 +177,9 @@ struct Storage {
     logits: Tensor<f32>,
     logits_memory: Allocation<f32>,
     prompt_row: Tensor<f32>,
-    external_row: Tensor<f32>,
-    external: Tensor<f32>,
-    lane_external: Vec<Tensor<f32>>,
+    external_row: Allocation<f32>,
+    external: Allocation<f32>,
+    lane_external: Vec<Allocation<f32>>,
     lane_fusion: Vec<Option<super::program::FusionWorkspace>>,
     /// Split rows viewing the prompt worker's, when its scratch covers these rows.
     scratch_partials: Option<Partials>,
@@ -299,10 +299,8 @@ impl Storage {
         } else {
             memory::<f32>(device, rows * hidden)?
         };
-        let external = external_memory.view(0..rows * hidden, &[rows * hidden])?;
-        let lane_external = (0..rows)
-            .map(|lane| external_memory.view(lane * hidden..(lane + 1) * hidden, &[hidden]))
-            .collect::<Result<Vec<_>>>()?;
+        let external = external_memory.slice(0..rows * hidden)?;
+        let lane_external = external.rows(rows)?;
         // Every rung lives with the worker, and replays share one stream.
         let logits_memory = match wider {
             Some(wider) => wider.logits_memory.clone(),
@@ -321,7 +319,7 @@ impl Storage {
             logits,
             logits_memory,
             prompt_row: zeros(device, &[1, hidden])?,
-            external_row: zeros(device, &[hidden])?,
+            external_row: memory(device, hidden)?,
             external,
             lane_external,
             lane_fusion: (0..rows).map(|_| None).collect(),
