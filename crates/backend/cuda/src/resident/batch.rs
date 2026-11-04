@@ -38,7 +38,7 @@ use cutile::prelude::*;
 use infer_core::{Error, ErrorCode, Result, TensorId};
 use infer_cuda_kernels::contract::{DecodePlan, VerifyDecodeBuffers};
 use infer_cuda_kernels::contract::{EmbeddingBatchPlan, LastRowsKind, LastRowsPlan, Recording};
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use infer_ir::{DataflowGraph, StateKind, TensorNode, TensorOp, TensorStorage};
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::BTreeMap;
@@ -2696,13 +2696,8 @@ impl SlotDecodeGraph {
     }
 }
 
-/// One allocation for every prompt lane's metadata, with a non-owning row view per lane.
-/// The batched embedding gather reads token ids from this contiguous owner.
-#[expect(
-    unsafe_code,
-    reason = "Audited metadata lane views: the owner is returned and stored with the rows, \
-              each view addresses a disjoint lane, and graphs retain the owner"
-)]
+/// One allocation for every prompt lane's metadata, as one whole view and a row view per lane;
+/// each view holds the allocation. The batched embedding gather reads token ids from the whole.
 pub(super) fn batched_metadata(
     device: &CudaDevice,
     width: usize,
@@ -2711,16 +2706,15 @@ pub(super) fn batched_metadata(
     let elements = width
         .checked_mul(fields)
         .ok_or_else(|| Error::invalid("metadata size overflow"))?;
-    let owner = api::zeros::<i32>(&[elements])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let mut rows = Vec::with_capacity(width);
-    for lane in 0..width {
-        // SAFETY: `owner` is returned to the caller and stored beside `rows` for the
-        // whole graph lifetime; each view addresses one disjoint metadata row.
-        rows.push(unsafe { super::arena::row_view(&owner, width, lane)? });
-    }
-    Ok((owner, rows))
+    let memory = Allocation::adopt(Arc::new(
+        api::zeros::<i32>(&[elements])
+            .sync_on(&device.stream)
+            .map_err(device_error)?,
+    ))?;
+    Ok((
+        super::arena::whole(&memory, &[elements])?,
+        super::arena::rows(&memory, width)?,
+    ))
 }
 
 /// Views of the shared prompt arena and logits row for one program's prompt graphs.

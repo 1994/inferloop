@@ -427,60 +427,12 @@ impl Slot {
     }
 }
 
-/// A slot range as cuTile sees it; holding the allocation keeps the range valid.
-struct SlotMemory {
-    memory: Allocation<f32>,
-    pointer: CUdeviceptr,
-    bytes: usize,
-}
-
-#[expect(
-    unsafe_code,
-    reason = "Audited slot range: `memory` keeps the allocation alive and `slot_tensor` checks \
-              the range against it"
-)]
-// SAFETY: the getters are constant, and `pointer`/`bytes` lie inside `memory`, which this value
-// keeps alive, as `slot_tensor` checked when it made them.
-unsafe impl DeviceAllocation for SlotMemory {
-    fn device_ptr(&self) -> CUdeviceptr {
-        self.pointer
-    }
-
-    fn len_bytes(&self) -> usize {
-        self.bytes
-    }
-
-    fn device_id(&self) -> usize {
-        self.memory.device()
-    }
-}
-
 /// A 1-D tensor over elements `offset..offset + len` of `memory`, owning a share of it.
-#[expect(
-    unsafe_code,
-    reason = "Audited slot view: the foreign allocation owns the memory and its range is checked"
-)]
 fn slot_tensor(memory: &Allocation<f32>, offset: usize, len: usize) -> Result<Tensor<f32>> {
     let end = offset
         .checked_add(len)
         .ok_or_else(|| Error::invalid("activation slot range"))?;
-    let range = memory.buffer().slice(offset..end)?;
-    let allocation = SlotMemory {
-        memory: memory.clone(),
-        pointer: range.address(),
-        bytes: len
-            .checked_mul(F32_BYTES)
-            .ok_or_else(|| Error::invalid("activation slot extent"))?,
-    };
-    // SAFETY: `allocation` owns the memory, so it outlives the tensor, and the range was cut by
-    // `Buffer::slice`, which rejects one outside the allocation. The tensor is contiguous.
-    Ok(unsafe {
-        Tensor::from_foreign(
-            Arc::new(allocation),
-            vec![i32::try_from(len).map_err(device_error)?],
-            vec![1],
-        )
-    })
+    memory.view(offset..end, &[len])
 }
 
 /// `DeviceAllocation` view of one row inside a batched slot. Carries no owner:
@@ -609,86 +561,29 @@ pub(super) unsafe fn prefix_view<T: DType>(
     Ok(unsafe { Tensor::from_foreign(Arc::new(allocation), dims, strides) })
 }
 
-/// `DeviceAllocation` view of one batched lane that also owns the slot storage.
-///
-/// Unlike [`RowAllocation`], this row carries a shared handle to the whole slot, so it
-/// stays valid after the caller drops or replaces its own tensor handle.
-struct OwnedRowAllocation<T: DType> {
-    storage: Arc<Tensor<T>>,
-    pointer: CUdeviceptr,
-    bytes: usize,
-}
-
-#[expect(
-    unsafe_code,
-    reason = "Audited owned row alias: `storage` keeps the slot allocation alive, the lane \
-              is extent-checked against it, and only one stream orders row accesses"
-)]
-// SAFETY: getters are stable for the token's lifetime; `pointer`/`bytes` describe a
-// row range verified against the slot's own extent at construction in `batch_rows`.
-unsafe impl<T: DType> DeviceAllocation for OwnedRowAllocation<T> {
-    fn device_ptr(&self) -> CUdeviceptr {
-        self.pointer
-    }
-
-    fn len_bytes(&self) -> usize {
-        self.bytes
-    }
-
-    fn device_id(&self) -> usize {
-        self.storage.device_id()
-    }
-}
-
-/// Own every disjoint lane of a batched tensor as a row view.
-///
-/// Each returned row holds a shared handle to the slot's storage, so dropping the caller's
-/// tensor handle does not invalidate the row. Lanes are non-overlapping and remain exclusive
-/// outputs; one device stream serializes uploads and graph replays that reference them.
+/// Every row of `memory` taken as `lanes` concatenated rows, each holding a share of it, so a
+/// row stays valid whatever happens to any other handle. Rows are disjoint, so each can be a
+/// launch's output.
 ///
 /// # Errors
-/// Rejects malformed batched slots, zero lanes and offset overflows.
-#[expect(
-    unsafe_code,
-    reason = "Audited batched ownership: every row holds the slot's storage and is bounded by \
-              the slot extent; lanes are disjoint and one stream serializes access"
-)]
-pub(super) fn batch_rows<T: DType>(owner: &Tensor<T>, lanes: usize) -> Result<Vec<Tensor<T>>> {
-    if lanes == 0 {
-        return Err(Error::invalid("batched activation lanes"));
-    }
-    if !owner.size().is_multiple_of(lanes) {
+/// Rejects zero lanes and memory that does not divide into `lanes` rows.
+pub(super) fn rows<T: DType>(memory: &Allocation<T>, lanes: usize) -> Result<Vec<Tensor<T>>> {
+    if lanes == 0 || !memory.len().is_multiple_of(lanes) {
         return Err(Error::invalid("activation slot is not batched"));
     }
-    let size = owner.size() / lanes;
-    let bytes = size
-        .checked_mul(size_of::<T>())
-        .ok_or_else(|| Error::invalid("activation row extent"))?;
-    // SAFETY: the shared alias is kept by every row, so the slot storage outlives all of
-    // them; `batch_rows` never writes through the alias and row uses stay on one stream.
-    let storage = unsafe { owner.into_shared_alias() };
+    let size = memory.len() / lanes;
     (0..lanes)
-        .map(|lane| {
-            let offset = lane
-                .checked_mul(bytes)
-                .ok_or_else(|| Error::invalid("activation row offset overflow"))?;
-            let allocation = OwnedRowAllocation {
-                storage: Arc::clone(&storage),
-                pointer: owner.device_pointer().cu_deviceptr()
-                    + u64::try_from(offset).map_err(device_error)?,
-                bytes,
-            };
-            // SAFETY: `allocation` owns the slot storage, and this lane lies fully inside
-            // the slot by construction. Disjoint row writes are serialized on one stream.
-            Ok(unsafe {
-                Tensor::from_foreign(
-                    Arc::new(allocation),
-                    vec![i32::try_from(size).map_err(device_error)?],
-                    vec![1],
-                )
-            })
-        })
+        .map(|lane| memory.view(lane * size..(lane + 1) * size, &[size]))
         .collect()
+}
+
+/// All of `memory` shaped `shape`, as the one tensor a kernel may write it through; its storage
+/// is its own, so cuTile can partition it mutably.
+///
+/// # Errors
+/// Rejects a shape that does not cover the memory.
+pub(super) fn whole<T: DType>(memory: &Allocation<T>, shape: &[usize]) -> Result<Tensor<T>> {
+    memory.view(0..memory.len(), shape)
 }
 
 /// Owned tensor covering row `lane` of a taken batched slot; dropping it frees

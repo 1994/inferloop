@@ -27,9 +27,11 @@ use crate::{
 use cutile::{half::bf16, prelude::*};
 pub use geometry::ProgramGeometry;
 use infer_core::{Error, Result, TensorId};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_cuda_kernels::tile::state::load_rotary;
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 type SlotState = (
     super::batch::States,
@@ -363,10 +365,13 @@ fn allocate_lane_fusion(
     let elements = width
         .checked_mul(hidden)
         .ok_or_else(|| Error::invalid("external hidden size overflow"))?;
-    let owner = api::zeros::<f32>(&[elements])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
-    let external = super::arena::batch_rows(&owner, width)?;
+    let memory = Allocation::adopt(Arc::new(
+        api::zeros::<f32>(&[elements])
+            .sync_on(&device.stream)
+            .map_err(device_error)?,
+    ))?;
+    let owner = super::arena::whole(&memory, &[elements])?;
+    let external = super::arena::rows(&memory, width)?;
     let fused = fused_lanes(device, weights)?;
     let mut fusion = Vec::with_capacity(width);
     for lane in 0..width {

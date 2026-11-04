@@ -21,12 +21,14 @@ use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::Owner;
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_cuda_kernels::tile::runtime::{Element, Staging};
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
 use infer_state::blocks::{BlockLease, BlockPool};
 #[cfg(test)]
 use std::cell::Cell;
 use std::iter::successors;
+use std::sync::Arc;
 
 /// Widest plain-decode rung; above it the full-width graph's batched state kernels win.
 const MAX_NARROW_DECODE_SLOTS: usize = 4;
@@ -725,10 +727,6 @@ impl SlotPool {
 
     /// Allocate each slot's recurrent states and KV cache, checking the running total against
     /// the device budget before the pool captures any graph.
-    #[expect(
-        unsafe_code,
-        reason = "Audited table rows: the pool stores their owner beside them"
-    )]
     fn allocate_slots(
         device: &CudaDevice,
         graph: &DataflowGraph,
@@ -770,11 +768,11 @@ impl SlotPool {
         }
         // Step 1 of the KV refactor: a per-slot identity mapping over that slot's own cache.
         // A paged pool fills the table from its shared blocks when the slot is assigned.
-        let root = super::metadata::identity_tables(device, capacity, width)?;
-        for slot in 0..width {
-            // SAFETY: the pool stores `root` beside these views; the rows are disjoint.
-            tables.push(unsafe { super::arena::row_view(&root, width, slot)? });
-        }
+        let memory = Allocation::adopt(Arc::new(super::metadata::identity_tables(
+            device, capacity, width,
+        )?))?;
+        tables.extend(super::arena::rows(&memory, width)?);
+        let root = super::arena::whole(&memory, &[width, memory.len() / width])?;
         Ok((states, fp8, tables, root))
     }
 
