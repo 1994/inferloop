@@ -2,15 +2,11 @@
 //! The generated PTX is embedded so host builds keep their stable toolchain.
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::{CudaDevice, device_error};
-use cuda_core::{Function, LaunchConfig};
-use cutile::{
-    cuda_async::{
-        device_context::with_default_device_policy, device_future::DeviceFuture,
-        launch::AsyncKernelLaunch,
-    },
-    prelude::*,
-};
+use cuda_core::Function;
+use cutile::prelude::*;
 use infer_core::Result;
+use infer_cuda_kernels::contract::{DecodeBuffers, KvBuffers, Owner, Recording};
+use infer_cuda_kernels::tile::runtime::{Argument, KernelLaunch};
 use infer_ir::{DataflowGraph, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
@@ -35,13 +31,25 @@ pub struct Support {
     lanes: &'static [usize],
 }
 
-pub struct Bindings<'a, E: DType> {
-    pub output: &'a mut Tensor<f32>,
-    pub query: &'a Tensor<f32>,
-    pub keys: &'a Tensor<E>,
-    pub values: &'a Tensor<E>,
-    pub metadata: &'a Tensor<i32>,
-    pub table: &'a Tensor<i32>,
+/// Geometry of one prefill attention launch: query heads, KV heads, head dimension, lanes and
+/// the sequence capacity the table covers.
+pub type Geometry = (usize, usize, usize, usize, usize);
+
+/// What a graph replaying an attention launch over `buffers` must keep alive.
+pub(super) fn owners(buffers: &DecodeBuffers<'_>) -> Vec<Owner> {
+    let [keys, values] = buffers.cache.buffers.owners();
+    [
+        buffers.output.owner(),
+        buffers.query.owner(),
+        keys,
+        values,
+        buffers.metadata.owner(),
+        buffers.table.owner(),
+    ]
+    .into_iter()
+    .flatten()
+    .cloned()
+    .collect()
 }
 
 impl Support {
@@ -115,135 +123,82 @@ impl Support {
     }
     /// Whether this kernel's fixed layout fits these operands. A pool whose shared pages outnumber
     /// a slot's capacity does not, so the caller takes its next path.
-    pub fn accepts<E: DType>(
+    #[must_use]
+    pub fn accepts(
         &self,
-        bindings: &Bindings<'_, E>,
-        (heads, kv_heads, dim, lanes, capacity): (usize, usize, usize, usize, usize),
-        scales: [f32; 2],
-    ) -> StdResult<bool, DeviceError> {
-        Ok(!((heads, kv_heads, dim) != (HEADS, KV_HEADS, DIM)
-            || !self.lanes.contains(&lanes)
-            || E::DTYPE != cuda_core::f8e4m3fn::DTYPE
-            || size_of::<E>() != 1
-            || capacity == 0
-            || !capacity.is_multiple_of(KV_BLOCK_TOKENS)
-            || !scales.iter().all(|x| x.is_finite() && *x > 0.0)
-            || bindings.query.size() != lanes * HEADS * DIM
-            || !bindings.query.is_contiguous()
-            || bindings.keys.shape()
-                != [
-                    i32::try_from(KV_HEADS).map_err(super::capture::error)?,
-                    i32::try_from(capacity).map_err(super::capture::error)?,
-                    i32::try_from(DIM).map_err(super::capture::error)?,
-                ]
-            || bindings.values.shape() != bindings.keys.shape()
-            || bindings.output.size() != lanes * HEADS * DIM
-            || !bindings.output.is_contiguous()
-            || !bindings.keys.is_contiguous()
-            || !bindings.values.is_contiguous()
-            || !bindings.metadata.is_contiguous()
-            || bindings.metadata.size() < REQUIRED_METADATA_FIELDS
-            || !bindings.table.is_contiguous()
-            || bindings.table.size() == 0))
+        buffers: &DecodeBuffers<'_>,
+        (heads, kv_heads, dim, lanes, capacity): Geometry,
+    ) -> bool {
+        let cache = &buffers.cache;
+        (heads, kv_heads, dim) == (HEADS, KV_HEADS, DIM)
+            && self.lanes.contains(&lanes)
+            && matches!(cache.buffers, KvBuffers::Fp8 { .. })
+            && (cache.groups, cache.dim) == (KV_HEADS, DIM)
+            && capacity != 0
+            && capacity.is_multiple_of(KV_BLOCK_TOKENS)
+            && cache.scales.iter().all(|x| x.is_finite() && *x > 0.0)
+            && cache.rows() == Some(capacity)
+            && buffers.query.len() == lanes * HEADS * DIM
+            && buffers.output.len() == lanes * HEADS * DIM
+            && buffers.metadata.len() >= REQUIRED_METADATA_FIELDS
+            && !buffers.table.is_empty()
     }
 
+    /// Record the kernel over `buffers`; the graph keeps every owned buffer and the module alive.
+    /// # Errors
+    /// Rejects operands [`Self::accepts`] refuses, or returns a capture failure.
     #[expect(
         unsafe_code,
-        reason = "graph-owned tensors with checked contiguous extents are marshalled into the pinned Rust kernel"
+        reason = "checked operand addresses are marshalled into the pinned Rust kernel; the graph keeps every owner"
     )]
-    pub fn record<E: DType>(
+    pub fn record(
         &self,
-        scope: &Scope,
-        bindings: Bindings<'_, E>,
-        (heads, kv_heads, dim, lanes, capacity): (usize, usize, usize, usize, usize),
+        recording: &Recording<'_>,
+        buffers: DecodeBuffers<'_>,
+        geometry: Geometry,
         window: i32,
-        scales: [f32; 2],
     ) -> StdResult<(), DeviceError> {
-        if !self.accepts(&bindings, (heads, kv_heads, dim, lanes, capacity), scales)? {
+        if !self.accepts(&buffers, geometry) {
             return Err(super::capture::error(
                 "selected SIMT attention cannot record these operands",
             ));
         }
-        let mut launch = AsyncKernelLaunch::new(Arc::clone(&self.function));
-        for pointer in [
-            bindings.query.device_pointer().cu_deviceptr(),
-            bindings.keys.device_pointer().cu_deviceptr(),
-            bindings.values.device_pointer().cu_deviceptr(),
-            bindings.metadata.device_pointer().cu_deviceptr(),
-            bindings.table.device_pointer().cu_deviceptr(),
-            bindings.output.device_pointer().cu_deviceptr(),
-        ] {
-            // SAFETY: the program owns all six buffers until its captured graphs are destroyed.
-            // The resident allocator validates logical positions and every physical table entry.
-            unsafe {
-                launch.push_device_ptr(pointer);
-            }
-        }
-        launch.push_arg(u32::try_from(capacity).map_err(super::capture::error)?);
-        launch.push_arg(window);
-        launch.push_arg(scales[0]);
-        launch.push_arg(scales[1]);
-        launch.set_launch_config(LaunchConfig {
-            grid_dim: (
-                u32::try_from((lanes * HEADS).div_ceil(self.rows_per_cta))
-                    .map_err(super::capture::error)?,
-                1,
-                1,
-            ),
-            block_dim: (self.threads, 1, 1),
-            shared_mem_bytes: 0,
-        });
-        scope.record(Recorded {
-            launch,
-            stream: self.stream,
-            bindings,
-        })?;
+        let (_, _, _, lanes, capacity) = geometry;
+        let [keys, values] = buffers.cache.buffers.addresses();
+        let [key_scale, value_scale] = buffers.cache.scales;
+        let grid = u32::try_from((lanes * HEADS).div_ceil(self.rows_per_cta))
+            .map_err(super::capture::error)?;
+        // SAFETY: these are `attention_fp8_256`'s parameters in order. `accepts` checked every
+        // extent the kernel reads; the resident allocator validates logical positions and every
+        // physical table entry, and the graph keeps the owned buffers alive.
+        let launch = unsafe {
+            KernelLaunch::new(
+                Arc::clone(&self.function),
+                self.stream,
+                grid,
+                self.threads,
+                vec![
+                    Argument::buffer(buffers.query),
+                    Argument::Address(keys),
+                    Argument::Address(values),
+                    Argument::buffer(buffers.metadata),
+                    Argument::buffer(buffers.table),
+                    Argument::buffer(buffers.output),
+                    Argument::U32(u32::try_from(capacity).map_err(super::capture::error)?),
+                    Argument::I32(window),
+                    Argument::F32(key_scale),
+                    Argument::F32(value_scale),
+                ],
+            )
+        };
+        let mut keep = owners(&buffers);
+        keep.push(launch.owner());
+        recording
+            .foreign(launch, keep)
+            .map_err(super::capture::error)?;
         #[cfg(test)]
         CAPTURES.set(CAPTURES.get() + 1);
         Ok(())
-    }
-}
-
-struct Recorded<'a, E: DType> {
-    launch: AsyncKernelLaunch,
-    stream: usize,
-    bindings: Bindings<'a, E>,
-}
-impl<E: DType> GraphNode for Recorded<'_, E> {}
-#[expect(
-    unsafe_code,
-    reason = "audited graph launch on the prepared device stream with live borrowed operands"
-)]
-impl<E: DType> DeviceOp for Recorded<'_, E> {
-    type Output = ();
-    unsafe fn execute(self, ctx: &ExecutionContext) -> StdResult<(), DeviceError> {
-        if ctx.get_cuda_stream().cu_stream() as usize != self.stream {
-            return Err(DeviceError::Internal(
-                "Rust attention stream mismatch".into(),
-            ));
-        }
-        KernelInputStored::retain(&self.bindings.query, ctx)?;
-        KernelInputStored::retain(&self.bindings.keys, ctx)?;
-        KernelInputStored::retain(&self.bindings.values, ctx)?;
-        KernelInputStored::retain(&self.bindings.metadata, ctx)?;
-        KernelInputStored::retain(&self.bindings.table, ctx)?;
-        KernelOutputStored::retain(&(&mut *self.bindings.output).partition([1, DIM]), ctx)?;
-        ctx.retain(Arc::clone(&self.launch.func))?;
-        // SAFETY: the stream was checked, all buffers remain owned by the program and the module is retained.
-        unsafe { self.launch.execute(ctx) }
-    }
-}
-impl<E: DType> IntoFuture for Recorded<'_, E> {
-    type Output = StdResult<(), DeviceError>;
-    type IntoFuture = DeviceFuture<(), Self>;
-    fn into_future(self) -> Self::IntoFuture {
-        match with_default_device_policy(|policy| {
-            let stream = policy.next_stream()?;
-            Ok(DeviceFuture::scheduled(self, ExecutionContext::new(stream)))
-        }) {
-            Ok(Ok(future)) => future,
-            Ok(Err(error)) | Err(error) => DeviceFuture::failed(error),
-        }
     }
 }
 

@@ -423,9 +423,10 @@ impl SlotMemory {
         self.memory.device()
     }
 
-    /// The memory shaped `shape`, for kernels still launched through cuTile.
+    /// The memory shaped `shape`, for the test-only taps and kernels still launched through cuTile.
     /// # Errors
     /// Rejects a shape that does not cover the memory.
+    #[cfg(test)]
     pub(crate) fn tensor(&self, shape: &[usize]) -> Result<Tensor<f32>> {
         self.memory.view(self.offset..self.offset + self.len, shape)
     }

@@ -3,7 +3,7 @@
 //! A family method takes one launch's buffers and a plan, so a kernel's rank, grid and generics
 //! stay beside its source. Launches that only make sense together, a split decode's partial and
 //! merge, are one method.
-use super::buffer::{Buffer, Fp8};
+use super::buffer::{Buffer, Fp8, Owner};
 use super::recording::Recording;
 use infer_core::Result;
 
@@ -35,6 +35,35 @@ pub enum KvBuffers<'a> {
     },
 }
 
+impl<'a> KvBuffers<'a> {
+    /// Elements of the key and the value buffer.
+    #[must_use]
+    pub const fn lens(&self) -> [usize; 2] {
+        match self {
+            Self::F32 { keys, values } => [keys.len(), values.len()],
+            Self::Fp8 { keys, values } => [keys.len(), values.len()],
+        }
+    }
+
+    /// Device addresses of the key and the value buffer.
+    #[must_use]
+    pub const fn addresses(&self) -> [u64; 2] {
+        match self {
+            Self::F32 { keys, values } => [keys.address(), values.address()],
+            Self::Fp8 { keys, values } => [keys.address(), values.address()],
+        }
+    }
+
+    /// What keeps the key and the value memory alive, when the buffers know.
+    #[must_use]
+    pub const fn owners(&self) -> [Option<&'a Owner>; 2] {
+        match self {
+            Self::F32 { keys, values } => [keys.owner(), values.owner()],
+            Self::Fp8 { keys, values } => [keys.owner(), values.owner()],
+        }
+    }
+}
+
 /// Element types an attention cache can hold.
 pub trait KvElement: Sized {
     /// Name a typed key and value pair.
@@ -60,6 +89,16 @@ pub struct KvCache<'a> {
     pub groups: usize,
     pub dim: usize,
     pub scales: [f32; 2],
+}
+
+impl KvCache<'_> {
+    /// Rows of the `[groups, rows, dim]` layout, when keys and values both hold whole rows of it.
+    #[must_use]
+    pub fn rows(&self) -> Option<usize> {
+        let row = self.groups.checked_mul(self.dim).filter(|&row| row > 0)?;
+        let [keys, values] = self.buffers.lens();
+        (keys == values && keys.is_multiple_of(row)).then_some(keys / row)
+    }
 }
 
 /// One launch's cache writes.

@@ -58,12 +58,12 @@ impl Operands {
         })
     }
     fn record(
-        &mut self,
+        &self,
         contract: &Kernels,
         scope: &Scope,
         f: &Fixture,
         choice: Choice,
-        support: Option<&mut attention_mma::Support>,
+        support: Option<&attention_mma::Support>,
     ) -> StdResult<(), DeviceError> {
         let s = f.shape;
         let recording = Recording::scope(scope);
@@ -89,18 +89,16 @@ impl Operands {
             support
                 .ok_or_else(|| DeviceError::Internal("F32 MMA module missing".into()))?
                 .record(
-                    scope,
-                    attention_mma::Bindings {
-                        output: &mut self.output,
-                        query: &self.query,
-                        keys: &self.keys,
-                        values: &self.values,
-                        metadata: &self.metadata,
-                        table: &self.table,
+                    &recording,
+                    DecodeBuffers {
+                        output: buffer(&self.output)?,
+                        query: buffer(self.query.as_ref())?,
+                        cache: kv_cache((&self.keys, &self.values), s.kv_heads, s.dim, [1.0, 1.0])?,
+                        metadata: buffer(self.metadata.as_ref())?,
+                        table: buffer(self.table.as_ref())?,
                     },
                     (s.heads, s.kv_heads, s.dim, s.lanes, f.capacity),
                     0,
-                    [1.0, 1.0],
                     variant,
                 )?;
         } else {
@@ -145,7 +143,7 @@ pub(super) struct Proof {
 }
 impl Captured {
     pub fn new(device: &CudaDevice, f: &Fixture, choice: Choice) -> Result<Self> {
-        let mut support = if let Choice::Mma { variant } = choice {
+        let support = if let Choice::Mma { variant } = choice {
             let mut module = attention_mma::Support::load(
                 device,
                 f.capacity,
@@ -158,10 +156,10 @@ impl Captured {
         } else {
             None
         };
-        let mut operands = Operands::new(device, f)?;
+        let operands = Operands::new(device, f)?;
         let contract = device.kernels();
         let graph = Graph::scope(&device.stream, |scope| {
-            operands.record(&contract, scope, f, choice, support.as_mut())
+            operands.record(&contract, scope, f, choice, support.as_ref())
         })
         .map_err(device_error)?;
         Ok(Self {

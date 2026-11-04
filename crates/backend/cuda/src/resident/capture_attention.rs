@@ -193,45 +193,28 @@ impl Capture<'_> {
             return Err(error("expected attention"));
         };
         let lanes = self.arena.lanes();
-        // The tuned prefill kernels still launch through cuTile, so they get a tensor of the slot.
-        let mut tensor = output
-            .tensor(&[lanes * query_heads, head_dim])
-            .map_err(error)?;
-        let query = if let Some(value) = self.weights.constants.get(&node.inputs[0]) {
-            &**value.tensor()
-        } else {
-            self.arena.get(node.inputs[0]).map_err(error)?
-        };
         // The choice was measured for a slot's layout; a pool's operands may not fit it. That is
         // decided here, in the open, and a selected kernel then records or fails the capture.
         let geometry = (query_heads, kv_heads, head_dim, lanes, self.capacity);
         let window = i32::try_from(window.unwrap_or(0)).map_err(error)?;
+        let buffers = DecodeBuffers {
+            output: buffer(output)?,
+            query: self.input_buffer(node.inputs[0])?,
+            cache: kv_cache((&keys, &values), kv_heads, head_dim, scales)?,
+            metadata: buffer(self.metadata)?,
+            table: buffer(self.table)?,
+        };
+        let recording = Recording::scope(self.scope);
         if let Some((mma, variant)) = self.attention.prefill_mma(node.outputs[0], lanes) {
-            let bindings = super::attention_mma::Bindings {
-                output: &mut tensor,
-                query,
-                keys: &keys,
-                values: &values,
-                metadata: self.metadata,
-                table: self.table,
-            };
-            if mma.accepts(&bindings, geometry, window, scales)? {
-                mma.record(self.scope, bindings, geometry, window, scales, variant)?;
+            if mma.accepts(&buffers, geometry, window) {
+                mma.record(&recording, buffers, geometry, window, variant)?;
                 return Ok((keys, values));
             }
             tracing::info!(target: "infer::capture", lanes, "selected MMA does not fit this pool");
         }
         if let Some(oxide) = self.attention.prefill_oxide(node.outputs[0], lanes) {
-            let bindings = super::attention_oxide::Bindings {
-                output: &mut tensor,
-                query,
-                keys: &keys,
-                values: &values,
-                metadata: self.metadata,
-                table: self.table,
-            };
-            if oxide.accepts(&bindings, geometry, scales)? {
-                oxide.record(self.scope, bindings, geometry, window, scales)?;
+            if oxide.accepts(&buffers, geometry) {
+                oxide.record(&recording, buffers, geometry, window)?;
                 return Ok((keys, values));
             }
             tracing::info!(target: "infer::capture", lanes, "selected SIMT does not fit this pool");
