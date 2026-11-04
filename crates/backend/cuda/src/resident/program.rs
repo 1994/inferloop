@@ -643,7 +643,14 @@ impl DeviceProgram {
                 .fp8_states
                 .get(id)
                 .ok_or_else(|| Error::invariant("program state copy source"))?;
-            if state.layout != from.layout || state.layout.rows != self.capacity {
+            if state.layout != from.layout {
+                return Err(Error::invariant("program state copy shape"));
+            }
+            // Two views of one shared paged cache: nothing to move, whatever its physical rows.
+            if state.same_memory(from) {
+                continue;
+            }
+            if state.layout.rows != self.capacity {
                 return Err(Error::invariant("program KV copy layout"));
             }
             state.copy_prefix_from(device, from, rows)?;
