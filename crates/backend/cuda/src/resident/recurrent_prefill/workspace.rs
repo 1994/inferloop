@@ -1,4 +1,5 @@
 //! Shared head-major scratch for token-chunk recurrent prefill.
+use super::super::shaped::Shaped;
 use super::super::{buffers::buffer, capture::error};
 use super::{
     ORDERED_BLOCK, ORDERED_DIM, ORDERED_WIDTHS,
@@ -161,8 +162,8 @@ impl Workspace {
             return Ok(false);
         }
         let state = states
-            .get_mut(&node.states[0])
-            .and_then(|s| s.first_mut())
+            .get(&node.states[0])
+            .and_then(|s| s.first())
             .ok_or_else(|| error("chunk delta state"))?;
         let scratch = self
             .buffers
@@ -228,8 +229,8 @@ fn record_delta(
     node: &TensorNode,
     arena: &ActivationArena,
     weights: &ProgramWeights,
-    state: &mut Tensor<f32>,
-    scratch: &mut Tensor<f32>,
+    state: &Shaped<f32>,
+    scratch: &Tensor<f32>,
     prepared: Option<&prepared::Inputs>,
     metadata: &Allocation<i32>,
     [key_heads, value_heads, key_dim, lanes, block]: [usize; DELTA_GEOMETRY_RANK],
@@ -261,7 +262,7 @@ fn record_delta(
                     decay.tensor(),
                     bias.tensor(),
                 ],
-                [state, scratch],
+                (state, scratch),
                 metadata,
                 (key_heads, value_heads, key_dim, lanes, block),
             )?;
@@ -284,8 +285,8 @@ fn record_delta(
                 },
                 block,
                 DeltaBuffers {
-                    state: buffer(&*state)?,
-                    output: buffer(&*scratch)?,
+                    state: buffer(state)?,
+                    output: buffer(scratch)?,
                     qkv: buffer(arena.get(node.inputs[0]).map_err(error)?)?,
                     beta: buffer(arena.get(node.inputs[1]).map_err(error)?)?,
                     alpha: buffer(arena.get(node.inputs[2]).map_err(error)?)?,

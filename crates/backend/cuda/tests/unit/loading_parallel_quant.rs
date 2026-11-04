@@ -25,8 +25,8 @@ fn states(loaded: &LoadedModel, a: &DeviceProgram, b: &DeviceProgram, label: &st
     for (id, parts) in a.states() {
         assert_eq!(parts.len(), b.states()[id].len());
         for (x, y) in parts.iter().zip(&b.states()[id]) {
-            let x = loaded.device().read_borrowed(x)?;
-            let y = loaded.device().read_borrowed(y)?;
+            let x = loaded.device().runtime().read(x.memory())?;
+            let y = loaded.device().runtime().read(y.memory())?;
             equal(&x, &y, "full F32 state");
             float_elements += x.len();
         }

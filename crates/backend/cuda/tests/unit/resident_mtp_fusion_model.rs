@@ -2,13 +2,13 @@
 //! Both target timelines compare complete hidden, vocabulary and actual F32/FP8 state bits.
 use super::prefix_state::{DraftSnapshot, ProgramSnapshot};
 use crate::resident::fp8_cache::{KvLayout, KvState};
+use crate::resident::shaped::Shaped;
 use crate::tuning::table_path as tuning_table_path;
 use crate::{
     device::{CudaDevice, device_error},
     loading::{LoadOptions, LoadedModel},
     resident::{DeviceProgram, fusion_batch, narrow_dense_captures, with_dense_reference},
 };
-use cutile::prelude::{DType, Tensor};
 use infer_core::{Error, ModelId, Result, TensorId};
 use infer_ir::{DataflowGraph, OutputReadout, StateKind, TensorStorage};
 use sha2::{Digest, Sha256};
@@ -189,8 +189,8 @@ fn layout(program: &DeviceProgram, graph: &DataflowGraph) {
     for tensors in program.states().values() {
         assert!(!tensors.is_empty(), "F32 state tensor set is empty");
         for tensor in tensors {
-            assert!(tensor.size() > 0, "F32 state tensor is empty");
-            assert!(tensor.shape().iter().all(|&dimension| dimension > 0));
+            assert!(!tensor.is_empty(), "F32 state tensor is empty");
+            assert!(tensor.dims().iter().all(|&dimension| dimension > 0));
         }
     }
     for KvState { keys, values, .. } in program.fp8_states().values() {
@@ -227,12 +227,12 @@ fn compare_programs(
         let reference = &expected.states()[id];
         assert_eq!(tensors.len(), reference.len());
         for (a, b) in tensors.iter().zip(reference) {
-            assert_eq!(a.shape(), b.shape(), "complete F32 state shape");
-            assert_eq!(a.size(), b.size(), "complete F32 state size");
-            let elements = a.size();
+            assert_eq!(a.dims(), b.dims(), "complete F32 state shape");
+            assert_eq!(a.len(), b.len(), "complete F32 state size");
+            let elements = a.len();
             assert!(elements > 0, "complete F32 state is empty");
-            let a = loaded.device().read_borrowed(a)?;
-            let b = loaded.device().read_borrowed(b)?;
+            let a = loaded.device().runtime().read(a.memory())?;
+            let b = loaded.device().runtime().read(b.memory())?;
             bits(&a, &b, elements, "complete independent F32 state");
             dense_count += elements;
         }
@@ -524,8 +524,8 @@ fn verify_commit(
     Ok(rows[commit - 1].1.clone())
 }
 
-fn live_ranges<T: DType>(
-    tensor: &Tensor<T>,
+fn live_ranges(
+    tensor: &Shaped<f32>,
     graph: &DataflowGraph,
     id: TensorId,
     covered: usize,
@@ -542,13 +542,11 @@ fn live_ranges<T: DType>(
             ..
         }
     ) {
-        return Ok(once(0..tensor.size()).collect());
+        return Ok(once(0..tensor.len()).collect());
     }
-    let shape = tensor.shape();
-    assert_eq!(shape.len(), 3, "head-major KV shape");
-    let heads = usize::try_from(shape[0]).map_err(device_error)?;
-    let capacity = usize::try_from(shape[1]).map_err(device_error)?;
-    let columns = usize::try_from(shape[2]).map_err(device_error)?;
+    let &[heads, capacity, columns] = tensor.dims() else {
+        panic!("head-major KV shape");
+    };
     assert!(covered <= capacity);
     Ok((0..heads)
         .map(|head| {
@@ -581,8 +579,8 @@ fn state_digest(
     for (id, tensors) in program.states() {
         let mut hashes = Vec::new();
         for tensor in tensors {
-            let values = loaded.device().read_borrowed(tensor)?;
-            finite(&values, tensor.size(), "prefix F32 state");
+            let values = loaded.device().runtime().read(tensor.memory())?;
+            finite(&values, tensor.len(), "prefix F32 state");
             let mut hash = Sha256::new();
             for range in live_ranges(tensor, graph, *id, program.position())? {
                 for value in &values[range] {

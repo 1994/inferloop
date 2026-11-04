@@ -49,8 +49,8 @@ fn check_states(loaded: &LoadedModel, lane: &Lane, pool: &SlotPool, slot: usize)
     let mut diff = 0;
     for (id, parts) in lane.teacher.states() {
         for (left, right) in parts.iter().zip(&states[id]) {
-            let a = loaded.device().read_borrowed(left)?;
-            let b = loaded.device().read_borrowed(right)?;
+            let a = loaded.device().runtime().read(left.memory())?;
+            let b = loaded.device().runtime().read(right.memory())?;
             diff += differences(&agreement(&a, &b, "whole F32 state"));
         }
     }

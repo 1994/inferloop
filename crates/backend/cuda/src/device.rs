@@ -1,5 +1,4 @@
 //! Safe CUDA memory and kernel launch boundary.
-use crate::constants::KV_CACHE_RANK;
 use crate::constants::MATVEC_TILE_COLUMNS;
 use crate::constants::MATVEC_TILE_ROWS;
 use crate::resident::buffers::{Operand, buffer};
@@ -21,9 +20,7 @@ use infer_cuda_kernels::contract::target::Arch;
 use infer_cuda_kernels::contract::{Buffer, Kernels, Width};
 use infer_cuda_kernels::tile::kernels;
 use infer_cuda_kernels::tile::projection::matvec::{MatvecGeometry, dense_matvec};
-use infer_cuda_kernels::tile::runtime::{
-    Allocation, Device as Runtime, Element, HeadMajor, Transfers,
-};
+use infer_cuda_kernels::tile::runtime::{Allocation, Device as Runtime, Element, Transfers};
 use serde::Serialize;
 use std::fmt::Display;
 use std::sync::{Arc, OnceLock};
@@ -415,25 +412,6 @@ fn query_target(device: &Device) -> Result<Arch> {
     Ok(Arch::from_sm_name(&name).unwrap_or(Arch::Other { major: 0, minor: 0 }))
 }
 
-fn head_copy_shape<T: DType>(tensor: &Tensor<T>) -> Result<[usize; KV_CACHE_RANK]> {
-    let [heads, capacity, dim] = tensor.shape() else {
-        return Err(InferError::invalid("head copy requires rank-three tensors"));
-    };
-    let [heads, capacity, dim] =
-        [*heads, *capacity, *dim].map(|n| usize::try_from(n).map_err(device_error));
-    let shape = [heads?, capacity?, dim?];
-    let size = shape
-        .iter()
-        .try_fold(1usize, |count, &n| count.checked_mul(n))
-        .ok_or_else(|| InferError::invalid("head copy shape overflow"))?;
-    if size != tensor.size() {
-        return Err(InferError::invalid("head copy tensor extent"));
-    }
-    size.checked_mul(size_of::<T>())
-        .ok_or_else(|| InferError::invalid("head copy byte overflow"))?;
-    Ok(shape)
-}
-
 fn dimensions<T: DType>(x: &Tensor<f32>, w: &Tensor<T>) -> Result<(usize, usize)> {
     if w.shape().len() != 2 || x.shape().len() != 1 || x.shape()[0] != w.shape()[1] {
         return Err(InferError::invalid("CUDA matrix-vector dimensions"));
@@ -519,30 +497,6 @@ impl CudaDevice {
         elements: usize,
     ) -> Result<()> {
         self.copy_d2d_at(dst, src, 0, 0, elements)
-    }
-
-    /// Copy the first `rows` positions of head-major `[heads, capacity, dim]` tensors, whose
-    /// capacities may differ, in one driver submission that leaves the tails untouched.
-    /// Owners retain both tensors through the next stream fence.
-    /// # Errors
-    /// Rejects incompatible layouts, ranges or devices, and a copy the driver does not enqueue.
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "The driver writes dst; the exclusive borrow keeps src or a shared view from aliasing it"
-    )]
-    pub(crate) fn copy_head_prefix<T: DType + Element>(
-        &self,
-        dst: &mut Tensor<T>,
-        src: &Tensor<T>,
-        rows: usize,
-    ) -> Result<()> {
-        if src.device_id() != self.ordinal || dst.device_id() != self.ordinal {
-            return Err(InferError::invalid("head prefix copy layout or range"));
-        }
-        let dst = HeadMajor::new(buffer(&*dst).map_err(device_error)?, head_copy_shape(dst)?)?;
-        let src = HeadMajor::new(buffer(src).map_err(device_error)?, head_copy_shape(src)?)?;
-        self.runtime
-            .enqueue(|transfers| transfers.copy_heads(dst, src, rows))
     }
 
     /// Copy `elements` values from `src_offset` of `src` to `dst_offset` of `dst` on this

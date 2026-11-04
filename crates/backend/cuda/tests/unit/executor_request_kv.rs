@@ -68,7 +68,8 @@ fn committed_state(backend: &CudaExecutor, state: StateId) -> Result<Vec<Vec<u32
             backend
                 .loaded
                 .device()
-                .read_borrowed(part)
+                .runtime()
+                .read(part.memory())
                 .map(|values| values.into_iter().map(f32::to_bits).collect())
         })
         .collect()

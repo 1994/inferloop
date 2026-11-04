@@ -25,7 +25,6 @@ use infer_cuda_kernels::contract::{
     NormBuffers, NormLayout, NormPlan, Recording, SplitPlan, UnaryOp,
 };
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
-use std::collections::BTreeMap;
 use std::fmt::Display;
 
 /// How activation slots are bound for one captured node.
@@ -55,7 +54,7 @@ pub(super) struct Capture<'a> {
     pub nvfp4: &'a mut super::nvfp4_gemm::Workspace,
     pub attention: &'a mut super::attention_decode::Workspace,
     pub fp8_states: &'a mut super::fp8_cache::Fp8Caches,
-    pub states: &'a mut BTreeMap<TensorId, Vec<Tensor<f32>>>,
+    pub states: &'a mut super::batch::States,
     pub metadata: Buffer<'a, i32>,
     /// Logical-to-physical KV block ids for the sequence this capture belongs to. Step 1 of the
     /// KV refactor keeps it an identity mapping over the sequence's own cache, so kernels resolve

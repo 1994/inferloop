@@ -1,4 +1,5 @@
 //! Contiguous pool state families with the same per-slot views used by homes and fallback graphs.
+use super::shaped::Shaped;
 use super::slot_recurrent::{LANES, ValueDevice, covers, fused_block, value_split};
 use super::{ActivationArena, buffers::buffer, capture::error};
 use super::{batch::States, program::ProgramWeights};
@@ -87,18 +88,18 @@ impl SlotStates {
                         .sync_on(&device.stream)
                         .map_err(device_error)?,
                 ))?;
-                let rows = super::arena::rows(&memory, width)?;
+                let rows = memory.rows(width)?;
                 for (row, lane) in rows.into_iter().zip(result.lanes.iter_mut()) {
                     lane.entry(id)
                         .or_default()
-                        .push(row.reshape(&shape).map_err(device_error)?);
+                        .push(Shaped::new(row, shape.clone())?);
                 }
                 let root_shape = if shape.len() == RECURRENT_STATE_RANK {
                     vec![width, shape[0] * shape[1], shape[2]]
                 } else {
                     vec![width, size]
                 };
-                owners.push(super::arena::whole(&memory, &root_shape)?);
+                owners.push(Shaped::new(memory.clone(), root_shape.clone())?);
                 families.push(Family {
                     memory,
                     lane: shape,
@@ -128,11 +129,10 @@ impl SlotStates {
             for family in families {
                 let mut shape = family.root.clone();
                 shape[0] = slots;
-                views.push(
-                    family
-                        .memory
-                        .view(0..slots * family.lane_elements(), &shape)?,
-                );
+                views.push(Shaped::new(
+                    family.memory.slice(0..slots * family.lane_elements())?,
+                    shape,
+                )?);
             }
             roots.insert(*id, views);
         }
@@ -151,11 +151,10 @@ impl SlotStates {
             let mut views = Vec::with_capacity(families.len());
             for family in families {
                 let size = family.lane_elements();
-                views.push(
-                    family
-                        .memory
-                        .view(slot * size..(slot + 1) * size, &family.lane)?,
-                );
+                views.push(Shaped::new(
+                    family.memory.slice(slot * size..(slot + 1) * size)?,
+                    family.lane.clone(),
+                )?);
             }
             lane.insert(*id, views);
         }

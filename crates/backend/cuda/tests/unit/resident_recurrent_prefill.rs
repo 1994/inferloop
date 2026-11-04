@@ -801,7 +801,7 @@ fn check_ordered_fixture(
     let src = device.upload(initial, &[vh, dim, dim])?;
     let mut state = api::zeros::<f32>(&[vh, dim, dim]).sync_on(&device.stream)?;
     api::memcpy(&mut state, &src).sync_on(&device.stream)?;
-    let mut output = api::zeros::<f32>(&[vh, lanes, dim]).sync_on(&device.stream)?;
+    let output = api::zeros::<f32>(&[vh, lanes, dim]).sync_on(&device.stream)?;
     let metadata = device
         .runtime()
         .upload(vec![0, i32::try_from(count)?, offset, 0])?;
@@ -811,7 +811,7 @@ fn check_ordered_fixture(
             scope,
             contract_kernels(0).recurrent.as_ref(),
             [&qkv_c, &beta_c, &alpha_c, &a_log, &bias],
-            [&mut state, &mut output],
+            (&state, &output),
             &metadata,
             (kh, vh, dim, lanes, block),
         )?;

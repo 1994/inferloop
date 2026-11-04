@@ -2,10 +2,9 @@
 use super::buffers::buffer;
 use crate::device::{CudaDevice, device_error};
 use cutile::prelude::*;
-use infer_core::{Result, TensorId};
+use infer_core::Result;
 use infer_cuda_kernels::contract::Recording;
 use infer_cuda_kernels::tile::runtime::Graph;
-use std::collections::BTreeMap;
 
 #[cfg(test)]
 #[path = "../../tests/unit/resident_reset.rs"]
@@ -15,10 +14,7 @@ mod tests;
 ///
 /// # Errors
 /// Reports a state the device cannot address or a rejected capture.
-pub(super) fn capture(
-    device: &CudaDevice,
-    states: &BTreeMap<TensorId, Vec<Tensor<f32>>>,
-) -> Result<Graph> {
+pub(super) fn capture(device: &CudaDevice, states: &super::batch::States) -> Result<Graph> {
     let kernels = device.kernels();
     Graph::scope(&device.stream, |scope| {
         let recording = Recording::scope(scope);

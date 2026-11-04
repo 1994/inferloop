@@ -182,16 +182,16 @@ fn compare_states(
             .ok_or_else(|| Error::invariant("state spec"))?;
         for (part, (actual, expected)) in actual.iter().zip(expected).enumerate() {
             assert_eq!(
-                actual.shape(),
-                expected.shape(),
+                actual.dims(),
+                expected.dims(),
                 "{stage}: {id:?} state shape"
             );
             let field = format!("{id:?} {:?} part={part}", spec.storage);
             agreement.compare(
                 stage,
                 &field,
-                &loaded.device().read_borrowed(actual)?,
-                &loaded.device().read_borrowed(expected)?,
+                &loaded.device().runtime().read(actual.memory())?,
+                &loaded.device().runtime().read(expected.memory())?,
             );
         }
     }

@@ -1,3 +1,4 @@
+use super::shaped::Shaped;
 use super::{
     arena::SlotMemory,
     buffers::{buffer, kv_cache},
@@ -51,7 +52,7 @@ impl Capture<'_> {
         &self,
         node: &TensorNode,
         output: &SlotMemory,
-        state: &[Tensor<f32>],
+        state: &[Shaped<f32>],
         channels: usize,
     ) -> Result<(), DeviceError> {
         let [h0, h1, h2] = state else {
@@ -150,9 +151,15 @@ impl Capture<'_> {
                     return Err(error("attention state layout"));
                 }
                 // Unscaled KV is still a shaped tensor whose copies read the head-major shape.
-                let rows = state[0].size() / (kv_heads * head_dim).max(1);
-                let keys = state.remove(0).reshape(&[kv_heads, rows, head_dim])?;
-                let values = state.remove(0).reshape(&[kv_heads, rows, head_dim])?;
+                let rows = state[0].len() / (kv_heads * head_dim).max(1);
+                let keys = state
+                    .remove(0)
+                    .reshaped(vec![kv_heads, rows, head_dim])
+                    .map_err(error)?;
+                let values = state
+                    .remove(0)
+                    .reshaped(vec![kv_heads, rows, head_dim])
+                    .map_err(error)?;
                 self.record_attention(
                     node,
                     output,

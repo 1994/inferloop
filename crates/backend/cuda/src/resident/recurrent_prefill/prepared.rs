@@ -1,4 +1,5 @@
 //! Per-token/head F32 normalization and gating shared across independent state columns.
+use super::super::buffers::Operand;
 use super::super::{buffers::buffer, capture::error};
 use super::{ORDERED_DIM, ORDERED_WIDTHS, chunk, oxide};
 use crate::constants::F32_BYTES;
@@ -132,12 +133,12 @@ impl Inputs {
         })
     }
 
-    pub(super) fn record(
+    pub(super) fn record<S: Operand<Marker = f32>, O: Operand<Marker = f32>>(
         &self,
         scope: &Scope,
         recurrent: &dyn Recurrent,
         [qkv_storage, beta, alpha, a_log, bias]: [&Tensor<f32>; INPUT_BINDINGS],
-        [state, output]: [&mut Tensor<f32>; 2],
+        (state, output): (&S, &O),
         metadata: &Allocation<i32>,
         (kh, vh, dim, lanes, block): (usize, usize, usize, usize, usize),
     ) -> StdResult<(), DeviceError> {
@@ -182,8 +183,8 @@ impl Inputs {
                     buffer(qkv_storage)?,
                     buffer(&self.betas)?,
                     buffer(&self.decays)?,
-                    buffer(&*state)?,
-                    buffer(&*output)?,
+                    buffer(state)?,
+                    buffer(output)?,
                 ],
                 buffer(metadata)?,
             );

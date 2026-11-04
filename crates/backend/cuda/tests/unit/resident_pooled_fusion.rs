@@ -168,7 +168,10 @@ fn compare_states(device: &CudaDevice, a: &SlotPool, b: &SlotPool, width: usize)
             let expected = &b[id];
             assert_eq!(actual.len(), expected.len());
             for (a, b) in actual.iter().zip(expected) {
-                bits(&device.read_borrowed(a)?, &device.read_borrowed(b)?);
+                bits(
+                    &device.runtime().read(a.memory())?,
+                    &device.runtime().read(b.memory())?,
+                );
             }
         }
     }

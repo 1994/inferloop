@@ -1,4 +1,5 @@
 //! State writes and their rollback snapshots share the original per-lane launch geometry.
+use super::shaped::Shaped;
 use super::{
     arena::SlotMemory,
     buffers::buffer,
@@ -19,7 +20,7 @@ impl Capture<'_> {
         &self,
         node: &TensorNode,
         lane: usize,
-        snapshot: &[Tensor<f32>],
+        snapshot: &[Shaped<f32>],
     ) -> Result<(), DeviceError> {
         if self.mode != CaptureMode::Row(lane) || node.outputs.len() != 1 || node.states.len() != 1
         {
@@ -35,7 +36,7 @@ impl Capture<'_> {
     pub(super) fn record_flat_checkpoint(
         &self,
         node: &TensorNode,
-        snapshot: &[Tensor<f32>],
+        snapshot: &[Shaped<f32>],
     ) -> Result<(), DeviceError> {
         if self.mode != CaptureMode::Flat || node.outputs.len() != 1 || node.states.len() != 1 {
             return Err(error("checkpoint flat capture bindings"));
@@ -49,7 +50,7 @@ impl Capture<'_> {
         &self,
         node: &TensorNode,
         output: &SlotMemory,
-        snapshot: &[Tensor<f32>],
+        snapshot: &[Shaped<f32>],
     ) -> Result<(), DeviceError> {
         let id = node.states[0];
         let state = self
@@ -81,8 +82,8 @@ impl Capture<'_> {
         &self,
         node: &TensorNode,
         output: &SlotMemory,
-        state: &[Tensor<f32>],
-        snapshot: &[Tensor<f32>],
+        state: &[Shaped<f32>],
+        snapshot: &[Shaped<f32>],
         channels: usize,
     ) -> Result<(), DeviceError> {
         let [h0, h1, h2] = state else {
@@ -113,8 +114,8 @@ impl Capture<'_> {
         &self,
         node: &TensorNode,
         output: &SlotMemory,
-        state: &[Tensor<f32>],
-        snapshot: &[Tensor<f32>],
+        state: &[Shaped<f32>],
+        snapshot: &[Shaped<f32>],
         (key_heads, value_heads, key_dim, value_dim): (usize, usize, usize, usize),
     ) -> Result<(), DeviceError> {
         if key_dim != value_dim
