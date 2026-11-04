@@ -365,13 +365,10 @@ impl Workspace {
                 if rows == 0 || self.buffers.contains_key(&(rows, columns)) {
                     continue;
                 }
+                let runtime = device.runtime();
                 let buffers: Quantized = (
-                    api::zeros::<f4e2m1fnx2>(&[rows, columns / 2])
-                        .sync_on(&device.stream)
-                        .map_err(device_error)?,
-                    api::zeros::<f8e4m3fn>(&[rows, columns / NVFP4_GROUP_SIZE])
-                        .sync_on(&device.stream)
-                        .map_err(device_error)?,
+                    runtime.zeros::<f4e2m1fnx2>(rows * (columns / 2))?,
+                    runtime.zeros::<f8e4m3fn>(rows * (columns / NVFP4_GROUP_SIZE))?,
                 );
                 self.buffers.insert((rows, columns), buffers);
             }
@@ -431,12 +428,8 @@ impl Workspace {
                 self.fp8.insert(
                     (rows, columns, scale_columns),
                     (
-                        api::zeros::<f8e4m3fn>(&[rows, columns])
-                            .sync_on(&device.stream)
-                            .map_err(device_error)?,
-                        api::zeros::<f32>(&[rows, scale_columns])
-                            .sync_on(&device.stream)
-                            .map_err(device_error)?,
+                        device.runtime().zeros::<f8e4m3fn>(rows * columns)?,
+                        device.runtime().zeros::<f32>(rows * scale_columns)?,
                     ),
                 );
             }

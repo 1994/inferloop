@@ -17,8 +17,8 @@ use cuda_core::{DeviceCopy, PinnedHostBuffer};
 use cutile::jit_cache::enable_default;
 use cutile::prelude::*;
 use infer_core::{Error as InferError, ErrorCode, Result};
-use infer_cuda_kernels::contract::Kernels;
 use infer_cuda_kernels::contract::target::Arch;
+use infer_cuda_kernels::contract::{Buffer, Kernels};
 use infer_cuda_kernels::tile::kernels;
 use infer_cuda_kernels::tile::projection::matvec::{MatvecGeometry, dense_matvec};
 use infer_cuda_kernels::tile::runtime::{
@@ -367,26 +367,37 @@ impl CudaDevice {
     ///
     /// # Errors
     /// Returns a backend error when the device is unbound or the copy fails.
+    pub fn read_borrowed<T: DType>(&self, tensor: &Tensor<T>) -> Result<Vec<T>> {
+        self.read_address(tensor.device_pointer().cu_deviceptr(), tensor.size())
+    }
+
+    /// Copy the memory of `buffer` back once all queued work has finished.
+    ///
+    /// # Errors
+    /// Returns a backend error when the device is unbound or the copy fails.
+    pub(crate) fn read_buffer<T: DType + Element>(
+        &self,
+        buffer: Buffer<'_, T::Marker>,
+    ) -> Result<Vec<T>> {
+        self.read_address(buffer.address(), buffer.len())
+    }
+
+    /// Copy `len` elements of `T` from device address `address` into a new host vector.
     #[expect(
         unsafe_code,
-        reason = "Audited device-to-host copy from a live tensor of known length into a live host slice"
+        reason = "Audited device-to-host copy from live device memory of known length into a live host slice"
     )]
-    pub fn read_borrowed<T: DType>(&self, tensor: &Tensor<T>) -> Result<Vec<T>> {
+    fn read_address<T: DType>(&self, address: u64, len: usize) -> Result<Vec<T>> {
         self.reclaim_barrier()?;
-        let mut host = vec![T::zero(); tensor.size()];
-        let bytes = tensor
-            .size()
+        let mut host = vec![T::zero(); len];
+        let bytes = len
             .checked_mul(size_of::<T>())
             .ok_or_else(|| device_error("readback size overflow"))?;
-        // SAFETY: the device context is current, the tensor owns `size()` T elements and the
-        // destination is a live host slice of the same length.
-        let status = unsafe {
-            cuMemcpyDtoH_v2(
-                host.as_mut_ptr().cast(),
-                tensor.device_pointer().cu_deviceptr(),
-                bytes,
-            )
-        };
+        // SAFETY: the device context is current; both callers pass memory holding `len` live
+        // elements of `T` (a tensor's own storage, or a buffer whose contract promises it, with
+        // `Element` tying the marker's width to `T`), and the destination is a live host slice of
+        // the same length.
+        let status = unsafe { cuMemcpyDtoH_v2(host.as_mut_ptr().cast(), address, bytes) };
         driver_status(status)?;
         Ok(host)
     }

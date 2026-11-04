@@ -1,23 +1,25 @@
 //! Zero-workspace FP4 Lt candidates for sole-consumer fused-down scratch.
 //! Shape decisions and full-output exact proofs are made before graph capture.
 use super::{
-    ALIGNMENT, COMPUTE_F32, Context, Descriptors, MATRIX_LAYOUTS, OP_N, OP_T, Prepared, Shape,
-    TRANSA, TRANSB, TYPE_F32, error, heuristic_candidates, same_context, set, status,
+    ALIGNMENT, COMPUTE_F32, Context, Descriptors, GEMM_RANK, MATRIX_LAYOUTS, OP_N, OP_T, Prepared,
+    Shape, TRANSA, TRANSB, TYPE_F32, error, heuristic_candidates, owners, same_context, set,
+    status,
 };
 use super::{LibraryIdentity, algorithm_config};
 use crate::constants::NVFP4_GROUP_SIZE;
 use crate::mlp::ProjectionWeight;
-use crate::resident::buffers::tensor_rows;
-use crate::resident::tensor_buffer;
+use crate::resident::buffers::RowMajor;
 use crate::tuning::projection_budget::ProjectionKind;
 use crate::tuning::resident_gemm::{self, GemmConfig, ResidentTuningSession};
 use crate::tuning::{nvfp4_lt as cache, table_path};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
 use infer_core::ErrorCode;
-use infer_cuda_kernels::contract::{Foreign, Fp4ScalePlan, Kernels, Owner, Recording};
+use infer_cuda_kernels::contract::{
+    Buffer, Foreign, Fp4Pair, Fp4ScalePlan, Fp8, Kernels, Owner, Recording,
+};
 use infer_cuda_kernels::tile::identity;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 #[cfg(test)]
 use std::{
     cell::Cell,
@@ -45,123 +47,99 @@ const CODES_PER_BYTE: usize = 2;
 pub const SCALE_ROWS: usize = 128;
 /// K groups within one SDK scale block.
 const SCALE_GROUPS: usize = 4;
+/// Device operands of one FP4 GEMM: activation codes and scales, weight codes and scales,
+/// output and scratch.
+const FP4_OPERANDS: usize = 6;
 type PlanKey = (Shape, u64);
 type ProofKey = (PlanKey, u64, u64, u32, u32);
-type WeightOwners = (Arc<Tensor<f4e2m1fnx2>>, Arc<Tensor<f8e4m3fn>>);
+type WeightOwners = (Allocation<f4e2m1fnx2>, Allocation<f8e4m3fn>);
 
 pub struct Operands<'a> {
     pub(crate) weight: &'a ProjectionWeight,
     pub(crate) scale: f32,
-    pub(crate) q: &'a Tensor<f4e2m1fnx2>,
-    pub(crate) qs: &'a Tensor<f8e4m3fn>,
-    /// Byte view of the unused F32 product; no allocation is owned by this view.
-    pub(crate) scratch: &'a mut Tensor<f8e4m3fn>,
-    pub(crate) output: &'a mut Tensor<f32>,
+    pub(crate) q: Buffer<'a, Fp4Pair>,
+    pub(crate) qs: Buffer<'a, Fp8>,
+    /// Bytes of the unused F32 product, which the scale swizzle overwrites.
+    pub(crate) scratch: Buffer<'a, Fp8>,
+    pub(crate) output: Buffer<'a, f32>,
+    /// `[m, n, k]`, with `k` counting FP4 codes.
+    pub(crate) extents: [usize; GEMM_RANK],
 }
-impl Operands<'_> {
-    fn shape(&self) -> Result<Option<Shape>, DeviceError> {
+impl<'a> Operands<'a> {
+    /// The weight codes and scales with the weight's global scale; `None` for other encodings.
+    fn weights(&self) -> Option<(Buffer<'a, Fp4Pair>, Buffer<'a, Fp8>, f32)> {
         let ProjectionWeight::Fp4(w, s, global) = self.weight else {
+            return None;
+        };
+        Some((w.allocation().operand(), s.allocation().operand(), *global))
+    }
+    fn shape(&self) -> Result<Option<Shape>, DeviceError> {
+        let Some((weight, scales, global)) = self.weights() else {
             return Ok(None);
         };
-        let ([m, half], [n, whalf], [om, on]) =
-            (self.q.shape(), w.tensor().shape(), self.output.shape())
-        else {
-            return Ok(None);
-        };
-        if m != om || n != on || half != whalf || *m <= 0 || *n <= 0 || *half <= 0 {
+        let [m, n, k] = self.extents;
+        if m == 0
+            || n == 0
+            || !m.is_multiple_of(SCALE_ROWS)
+            || !n.is_multiple_of(SCALE_ROWS)
+            || k == 0
+            || !k.is_multiple_of(NVFP4_GROUP_SIZE * SCALE_GROUPS)
+        {
             return Ok(None);
         }
-        let shape = Shape {
-            m: usize::try_from(*m).map_err(|e| error(e.to_string()))?,
-            n: usize::try_from(*n).map_err(|e| error(e.to_string()))?,
-            k: usize::try_from(*half)
-                .map_err(|e| error(e.to_string()))?
-                .checked_mul(CODES_PER_BYTE)
-                .ok_or_else(|| error("FP4 K overflow"))?,
+        let elements = |rows: usize, columns: usize| {
+            rows.checked_mul(columns)
+                .ok_or_else(|| error("FP4 extent overflow"))
         };
-        let groups = shape.k / NVFP4_GROUP_SIZE;
-        let scales = shape
-            .m
-            .checked_add(shape.n)
-            .and_then(|v| v.checked_mul(groups));
-        if !shape.m.is_multiple_of(SCALE_ROWS)
-            || !shape.n.is_multiple_of(SCALE_ROWS)
-            || !shape.k.is_multiple_of(NVFP4_GROUP_SIZE * SCALE_GROUPS)
-            || scales.is_none_or(|v| v > self.scratch.size())
-            || self.qs.shape() != [*m, i32::try_from(groups).map_err(|e| error(e.to_string()))?]
-            || s.tensor().shape() != [*n, i32::try_from(groups).map_err(|e| error(e.to_string()))?]
+        let (half, groups) = (k / CODES_PER_BYTE, k / NVFP4_GROUP_SIZE);
+        // Both operands' swizzled scales fill the head of the product's bytes.
+        let packed = elements(m + n, groups)?;
+        if self.q.len() != elements(m, half)?
+            || self.qs.len() != elements(m, groups)?
+            || weight.len() != elements(n, half)?
+            || scales.len() != elements(n, groups)?
+            || self.output.len() != elements(m, n)?
+            || self.scratch.len() != elements(m / CODES_PER_BYTE, groups * SCALE_ROWS)?
+            || packed > self.scratch.len()
             || !self.scale.is_finite()
             || self.scale <= 0.0
             || !global.is_finite()
-            || *global <= 0.0
+            || global <= 0.0
             || !(1.0 / (self.scale * global)).is_finite()
         {
             return Ok(None);
         }
-        let expected = [shape.m / CODES_PER_BYTE, groups * SCALE_ROWS];
-        if self
-            .scratch
-            .shape()
-            .iter()
-            .zip(expected)
-            .any(|(&a, b)| usize::try_from(a) != Ok(b))
-            || self.scratch.shape().len() != expected.len()
-        {
-            return Ok(None);
-        }
-        if !self.q.is_contiguous()
-            || !self.qs.is_contiguous()
-            || !w.tensor().is_contiguous()
-            || !s.tensor().is_contiguous()
-            || !self.output.is_contiguous()
-            || !self.scratch.is_contiguous()
-        {
-            return Ok(None);
-        }
-        let scratch = self.scratch.device_pointer().cu_deviceptr();
-        let end = scratch
-            .checked_add(u64::try_from(self.scratch.num_bytes()).map_err(|e| error(e.to_string()))?)
-            .ok_or_else(|| error("FP4 scratch overflow"))?;
-        for (pointer, bytes) in [
-            (self.q.device_pointer().cu_deviceptr(), self.q.num_bytes()),
-            (self.qs.device_pointer().cu_deviceptr(), self.qs.num_bytes()),
-            (
-                w.tensor().device_pointer().cu_deviceptr(),
-                w.tensor().num_bytes(),
-            ),
-            (
-                s.tensor().device_pointer().cu_deviceptr(),
-                s.tensor().num_bytes(),
-            ),
-            (
-                self.output.device_pointer().cu_deviceptr(),
-                self.output.num_bytes(),
-            ),
-        ] {
-            let other_end = pointer
-                .checked_add(u64::try_from(bytes).map_err(|e| error(e.to_string()))?)
-                .ok_or_else(|| error("FP4 operand overflow"))?;
-            if scratch < other_end && pointer < end || !pointer.is_multiple_of(u64::from(ALIGNMENT))
-            {
-                return Ok(None);
-            }
-        }
-        if !scratch.is_multiple_of(u64::from(ALIGNMENT)) {
-            return Ok(None);
-        }
-        Ok(Some(shape))
+        let disjoint = self.scratch.disjoint(self.q)
+            && self.scratch.disjoint(self.qs)
+            && self.scratch.disjoint(weight)
+            && self.scratch.disjoint(scales)
+            && self.scratch.disjoint(self.output);
+        let aligned = self
+            .addresses()
+            .into_iter()
+            .flatten()
+            .all(|pointer| pointer.is_multiple_of(u64::from(ALIGNMENT)));
+        Ok((disjoint && aligned).then_some(Shape { m, n, k }))
+    }
+    /// Device addresses of every operand: activation codes and scales, weight codes and scales,
+    /// output and scratch.
+    fn addresses(&self) -> Option<[u64; FP4_OPERANDS]> {
+        let (weight, scales, _) = self.weights()?;
+        Some([
+            self.q.address(),
+            self.qs.address(),
+            weight.address(),
+            scales.address(),
+            self.output.address(),
+            self.scratch.address(),
+        ])
     }
     fn proof(&self, shape: Shape) -> ProofKey {
-        let (pointer, scales, global) = match self.weight {
-            ProjectionWeight::Fp4(w, s, g) => (
-                w.tensor().device_pointer().cu_deviceptr(),
-                s.tensor().device_pointer().cu_deviceptr(),
-                g.to_bits(),
-            ),
-            _ => (0, 0, 0),
-        };
+        let (pointer, scales, global) = self.weights().map_or((0, 0, 0), |(w, s, g)| {
+            (w.address(), s.address(), g.to_bits())
+        });
         (
-            (shape, self.scratch.device_pointer().cu_deviceptr()),
+            (shape, self.scratch.address()),
             pointer,
             scales,
             global,
@@ -265,17 +243,10 @@ impl Support {
             .device
             .reclaim_barrier()
             .map_err(|e| error(e.to_string()))?;
-        let ProjectionWeight::Fp4(w, s, _) = op.weight else {
+        let Some(addresses) = op.addresses() else {
             return Ok(None);
         };
-        for pointer in [
-            op.q.device_pointer().cu_deviceptr(),
-            op.qs.device_pointer().cu_deviceptr(),
-            w.tensor().device_pointer().cu_deviceptr(),
-            s.tensor().device_pointer().cu_deviceptr(),
-            op.scratch.device_pointer().cu_deviceptr(),
-            op.output.device_pointer().cu_deviceptr(),
-        ] {
+        for pointer in addresses {
             same_context(&context, pointer)?;
         }
         let planned = self.plans.get(&proof.0).cloned().flatten();
@@ -448,7 +419,7 @@ impl Support {
         self.proofs.insert(proof, true);
         self.weights
             .entry((proof.1, proof.2))
-            .or_insert_with(|| (Arc::clone(w.tensor()), Arc::clone(s.tensor())));
+            .or_insert_with(|| (w.allocation().clone(), s.allocation().clone()));
         tracing::info!(target:"infer::tuning",?shape,cached_proof=numerical.is_some(),
             "vendor FP4 complete exact proof accepted");
         Ok(true)
@@ -468,17 +439,10 @@ impl Support {
         let Some(Some(prepared)) = self.plans.get(&proof.0) else {
             return Ok(false);
         };
-        let ProjectionWeight::Fp4(w, s, _) = op.weight else {
+        let Some(addresses) = op.addresses() else {
             return Ok(false);
         };
-        for pointer in [
-            op.q.device_pointer().cu_deviceptr(),
-            op.qs.device_pointer().cu_deviceptr(),
-            w.tensor().device_pointer().cu_deviceptr(),
-            s.tensor().device_pointer().cu_deviceptr(),
-            op.output.device_pointer().cu_deviceptr(),
-            op.scratch.device_pointer().cu_deviceptr(),
-        ] {
+        for pointer in addresses {
             same_context(context, pointer)?;
         }
         append((&self.kernels, scope), context, prepared, op, shape)?;
@@ -508,12 +472,9 @@ fn disk_key(
     if !matches!(op.weight, ProjectionWeight::Fp4(..)) {
         return Err(error("FP4 weight identity"));
     }
-    let pack_fingerprint = identity::fp4_scale_swizzle(
-        &context.device.stream,
-        &scale_plan(shape),
-        op.scratch.size(),
-    )
-    .map_err(|e| error(e.to_string()))?;
+    let pack_fingerprint =
+        identity::fp4_scale_swizzle(&context.device.stream, &scale_plan(shape), op.scratch.len())
+            .map_err(|e| error(e.to_string()))?;
     Ok(cache::Key {
         native: resident_gemm::cache_key(&context.device, [shape.m, shape.n, shape.k])
             .map_err(|e| error(e.to_string()))?,
@@ -529,17 +490,17 @@ fn exact(
     context: &Context,
     baseline: &Graph,
     candidate: &Graph,
-    out: &Tensor<f32>,
+    out: Buffer<'_, f32>,
 ) -> Result<bool, DeviceError> {
     baseline.launch().sync_on(&context.device.stream)?;
     let expected = context
         .device
-        .read_borrowed(out)
+        .read_buffer::<f32>(out)
         .map_err(|e| error(e.to_string()))?;
     candidate.launch().sync_on(&context.device.stream)?;
     let actual = context
         .device
-        .read_borrowed(out)
+        .read_buffer::<f32>(out)
         .map_err(|e| error(e.to_string()))?;
     Ok(expected.len() == actual.len()
         && expected
@@ -562,8 +523,8 @@ fn capture(
                 native.record(
                     (&kernels, scope),
                     (op.weight, op.scale),
-                    (tensor_buffer(op.q)?, tensor_buffer(op.qs)?),
-                    tensor_rows(&*op.output)?,
+                    (op.q, op.qs),
+                    RowMajor::new(op.output, shape.m, shape.n)?,
                     shape.k,
                 )
             },
@@ -578,7 +539,7 @@ fn append(
     op: &Operands<'_>,
     shape: Shape,
 ) -> Result<(), DeviceError> {
-    let ProjectionWeight::Fp4(w, s, g) = op.weight else {
+    let Some((weight, scales, global)) = op.weights() else {
         return Err(error("FP4 weight"));
     };
     kernels
@@ -586,22 +547,32 @@ fn append(
         .swizzle_fp4_scales(
             &Recording::scope(scope),
             &scale_plan(shape),
-            tensor_buffer(&*op.scratch)?,
-            tensor_buffer(s)?,
-            tensor_buffer(op.qs)?,
+            op.scratch,
+            scales,
+            op.qs,
         )
         .map_err(|e| error(e.to_string()))?;
-    let keep: Vec<Owner> = vec![context.clone(), prepared.clone()];
+    // The Lt node is consumed during capture, so the graph holds what it reads instead.
+    let mut keep = owners([
+        op.q.owner(),
+        op.qs.owner(),
+        weight.owner(),
+        scales.owner(),
+        op.output.owner(),
+        op.scratch.owner(),
+    ]);
+    let handles: [Owner; 2] = [context.clone(), prepared.clone()];
+    keep.extend(handles);
     Recording::scope(scope)
         .foreign(
             Fp4Node {
                 context: context.clone(),
                 prepared: prepared.clone(),
                 input: op.q,
-                weight: w.tensor(),
+                weight,
                 output: op.output,
                 scratch: op.scratch,
-                alpha: 1.0 / (g * op.scale),
+                alpha: 1.0 / (global * op.scale),
             },
             keep,
         )
@@ -616,7 +587,7 @@ fn append(
 fn make_candidate(
     context: &Context,
     shape: Shape,
-    scratch: &Tensor<f8e4m3fn>,
+    scratch: Buffer<'_, Fp8>,
 ) -> Result<Option<Arc<Prepared>>, DeviceError> {
     let api = context.api;
     let _guard = context
@@ -642,7 +613,7 @@ fn make_candidate(
         .n
         .checked_mul(shape.k / NVFP4_GROUP_SIZE)
         .ok_or_else(|| error("FP4 SF offset"))?;
-    let weight_pointer = scratch.device_pointer().cu_deviceptr();
+    let weight_pointer = scratch.address();
     let input_pointer = weight_pointer
         .checked_add(u64::try_from(input_offset).map_err(|e| error(e.to_string()))?)
         .ok_or_else(|| error("FP4 SF pointer overflow"))?;
@@ -691,10 +662,10 @@ fn make_candidate(
 struct Fp4Node<'a> {
     context: Arc<Context>,
     prepared: Arc<Prepared>,
-    input: &'a Tensor<f4e2m1fnx2>,
-    weight: &'a Tensor<f4e2m1fnx2>,
-    output: &'a Tensor<f32>,
-    scratch: &'a Tensor<f8e4m3fn>,
+    input: Buffer<'a, Fp4Pair>,
+    weight: Buffer<'a, Fp4Pair>,
+    output: Buffer<'a, f32>,
+    scratch: Buffer<'a, Fp8>,
     alpha: f32,
 }
 impl Foreign for Fp4Node<'_> {
@@ -712,29 +683,30 @@ impl Fp4Node<'_> {
         if stream != self.context.stream.cast() {
             return Err(error("vendor FP4 stream mismatch"));
         }
-        same_context(&self.context, self.scratch.device_pointer().cu_deviceptr())?;
+        same_context(&self.context, self.scratch.address())?;
         let _guard = self
             .context
             .calls
             .lock()
             .map_err(|_| error("vendor FP4 handle mutex"))?;
         let beta = 0.0_f32;
-        // SAFETY: prepare checks context, shape, exact output and zero workspace; operands and scratch
-        // are retained by the program/arena beyond every replay. Lt copies these host scalars into capture.
+        // SAFETY: prepare checks context, shape, exact output and zero workspace; operands and
+        // scratch outlive every replay, held by the graph's owners or by the program and arena.
+        // Lt copies these host scalars into capture.
         status(
             unsafe {
                 (self.context.api.matmul)(
                     self.context.handle,
                     self.prepared.desc,
                     (&raw const self.alpha).cast(),
-                    self.weight.device_pointer().cu_deviceptr() as *const c_void,
+                    self.weight.address() as *const c_void,
                     self.prepared.layouts[0],
-                    self.input.device_pointer().cu_deviceptr() as *const c_void,
+                    self.input.address() as *const c_void,
                     self.prepared.layouts[1],
                     (&raw const beta).cast(),
-                    self.output.device_pointer().cu_deviceptr() as *const c_void,
+                    self.output.address() as *const c_void,
                     self.prepared.layouts[2],
-                    self.output.device_pointer().cu_deviceptr() as *mut c_void,
+                    self.output.address() as *mut c_void,
                     self.prepared.layouts[3],
                     &raw const self.prepared.algo,
                     null_mut(),

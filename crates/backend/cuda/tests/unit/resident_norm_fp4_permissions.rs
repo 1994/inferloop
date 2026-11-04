@@ -70,8 +70,8 @@ fn run_case(device: &CudaDevice, action: &str) -> TestResult<(Vec<u8>, Vec<u8>)>
         workspace.buffers.insert(
             (rows, columns),
             (
-                api::zeros::<f4e2m1fnx2>(&[rows, columns / 2]).sync_on(&device.stream)?,
-                api::zeros::<f8e4m3fn>(&[rows, columns / 16]).sync_on(&device.stream)?,
+                device.runtime().zeros::<f4e2m1fnx2>(rows * columns / 2)?,
+                device.runtime().zeros::<f8e4m3fn>(rows * columns / 16)?,
             ),
         );
     }

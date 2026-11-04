@@ -7,7 +7,6 @@ use super::evidence::{candidates, compatible};
 use crate::constants::{NVFP4_GROUP_SIZE, NVFP4_QUANT_CODES_TILE, NVFP4_QUANT_SCALES_TILE};
 use crate::device::{CudaDevice, device_error};
 use crate::mlp::ProjectionWeight;
-use crate::resident::tensor_buffer as buffer;
 use crate::tuning::preparation::driver_build;
 use crate::tuning::projection_budget::ProjectionShape;
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
@@ -16,13 +15,13 @@ use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
-    Fp4QuantKind, Fp4QuantPlan, GemmLoop, GemmPlan, Kernels, Recording,
+    Buffer, Fp4Pair, Fp4QuantKind, Fp4QuantPlan, Fp8, GemmLoop, GemmPlan, Kernels, Recording,
 };
 use infer_cuda_kernels::tile::identity;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 /// Changes to fused arithmetic, quantization or confirmation invalidate prior measurements.
 const SCHEMA: &str = "cutile0.4-swiglu-v1:ab-search:ba-confirm:k256:f32:block16:full-codes-scales";
@@ -30,25 +29,25 @@ const SCHEMA: &str = "cutile0.4-swiglu-v1:ab-search:ba-confirm:k256:f32:block16:
 const MAX_FINITE_SCALE: u8 = 0x7e;
 /// Separate arithmetic family from standalone W4A4 projections.
 const MODE: &str = "nvfp4-w4a4-swiglu-block16";
-type Operands<'a> = (&'a Tensor<f4e2m1fnx2>, &'a Tensor<f8e4m3fn>);
-type Outputs<'a> = (&'a mut Tensor<f4e2m1fnx2>, &'a mut Tensor<f8e4m3fn>);
+type Operands<'a> = (Buffer<'a, Fp4Pair>, Buffer<'a, Fp8>);
 
+/// Record the fused gate/up GEMM that writes the down projection's codes and scales from the
+/// quantized input; `extents` is `[rows, hidden, columns]`.
+/// # Errors
+/// Rejects non-FP4 weights and a rejected launch.
 pub fn record(
     (contract, scope): (&Kernels, &Scope),
     config: GemmConfig,
     (gate, up): (&ProjectionWeight, &ProjectionWeight),
     (input_scale, down_scale): (f32, f32),
-    (q, qs): Operands<'_>,
-    (codes, scales): Outputs<'_>,
-    columns: usize,
+    quantized: Operands<'_>,
+    outputs: Operands<'_>,
+    [rows, hidden, columns]: ProjectionShape,
 ) -> StdResult<(), DeviceError> {
     let (ProjectionWeight::Fp4(_, _, gate_global), ProjectionWeight::Fp4(_, _, up_global)) =
         (gate, up)
     else {
         return Err(DeviceError::Internal("fused SwiGLU weights".into()));
-    };
-    let shape = |axis: usize| {
-        usize::try_from(codes.shape()[axis]).map_err(|e| DeviceError::Internal(e.to_string()))
     };
     contract
         .projection
@@ -56,13 +55,13 @@ pub fn record(
             &Recording::scope(scope),
             &GemmPlan {
                 main_loop: GemmLoop::Plain,
-                rows: shape(0)?,
-                outputs: shape(1)? * 2,
+                rows,
+                outputs: hidden * 2,
                 columns,
                 tile: config.tile(),
             },
-            (buffer(&*codes)?, buffer(&*scales)?),
-            (buffer(q)?, buffer(qs)?),
+            outputs,
+            quantized,
             (gate.weight_ref()?, up.weight_ref()?),
             (
                 1.0 / (gate_global * input_scale),
@@ -75,11 +74,8 @@ pub fn record(
 
 pub(super) struct Captured {
     pub(super) graph: Graph,
-    codes: Tensor<f4e2m1fnx2>,
-    scales: Tensor<f8e4m3fn>,
-    _input: Arc<Tensor<f32>>,
-    _q: Tensor<f4e2m1fnx2>,
-    _qs: Tensor<f8e4m3fn>,
+    codes: Allocation<f4e2m1fnx2>,
+    scales: Allocation<f8e4m3fn>,
 }
 impl Captured {
     pub(super) fn new(
@@ -112,19 +108,13 @@ impl Captured {
                     / SAMPLE_DIVISOR
             })
             .collect();
-        let input = device.upload(values, &[m, k])?;
-        let q = api::zeros::<f4e2m1fnx2>(&[m, k / 2])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
-        let qs = api::zeros::<f8e4m3fn>(&[m, k / NVFP4_GROUP_SIZE])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
-        let mut codes = api::zeros::<f4e2m1fnx2>(&[m, n / 2])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
-        let mut out_scales = api::zeros::<f8e4m3fn>(&[m, n / NVFP4_GROUP_SIZE])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        // The graph retains every allocation it records, so only the outputs stay here.
+        let runtime = device.runtime();
+        let input = runtime.upload::<f32>(values)?;
+        let q = runtime.zeros::<f4e2m1fnx2>(m * (k / 2))?;
+        let qs = runtime.zeros::<f8e4m3fn>(m * (k / NVFP4_GROUP_SIZE))?;
+        let codes = runtime.zeros::<f4e2m1fnx2>(m * (n / 2))?;
+        let out_scales = runtime.zeros::<f8e4m3fn>(m * (n / NVFP4_GROUP_SIZE))?;
         let contract = device.kernels();
         let graph = Graph::scope(&device.stream, |scope| {
             contract
@@ -140,9 +130,9 @@ impl Captured {
                         codes_tile: [QUANTIZATION_ROWS, NVFP4_QUANT_CODES_TILE[1]],
                         scales_tile: [QUANTIZATION_ROWS, NVFP4_QUANT_SCALES_TILE[1]],
                     },
-                    buffer(&q)?,
-                    buffer(&qs)?,
-                    buffer(input.as_ref())?,
+                    q.operand(),
+                    qs.operand(),
+                    input.operand(),
                     scales.0,
                 )
                 .map_err(|e| DeviceError::Internal(e.to_string()))?;
@@ -151,9 +141,9 @@ impl Captured {
                 config,
                 weights,
                 scales,
-                (&q, &qs),
-                (&mut codes, &mut out_scales),
-                k,
+                (q.operand(), qs.operand()),
+                (codes.operand(), out_scales.operand()),
+                [m, n, k],
             )
         })
         .map_err(device_error)?;
@@ -161,9 +151,6 @@ impl Captured {
             graph,
             codes,
             scales: out_scales,
-            _input: input,
-            _q: q,
-            _qs: qs,
         })
     }
     pub(super) fn run(&self, device: &CudaDevice) -> Result<()> {
@@ -174,13 +161,14 @@ impl Captured {
         Ok(())
     }
     pub(super) fn bytes(&self, device: &CudaDevice) -> Result<(Vec<u8>, Vec<u8>)> {
-        let codes = device
-            .read_borrowed(&self.codes)?
+        let runtime = device.runtime();
+        let codes = runtime
+            .read(&self.codes)?
             .into_iter()
             .map(f4e2m1fnx2::to_bits)
             .collect();
-        let scales: Vec<_> = device
-            .read_borrowed(&self.scales)?
+        let scales: Vec<_> = runtime
+            .read(&self.scales)?
             .into_iter()
             .map(|v| v.0)
             .collect();
