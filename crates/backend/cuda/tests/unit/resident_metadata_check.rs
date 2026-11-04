@@ -1,5 +1,6 @@
 use super::update;
 use crate::device::{CudaDevice, device_error};
+use crate::resident::buffers::buffer;
 use cutile::prelude::*;
 use infer_core::Result;
 use infer_cuda_kernels::tile::runtime::Graph;
@@ -29,7 +30,7 @@ fn metadata_ordering_and_overhead() -> Result<()> {
         [61, 18, 61, 0],
         [i32::MIN, i32::MAX, 0x7fa0_0001, -1],
     ] {
-        update(&graph, &mut input, values)?;
+        update(&graph, buffer(&input).map_err(device_error)?, values)?;
         let actual = graph
             .launch()
             .then(|()| (&output).to_host_vec())
@@ -52,7 +53,7 @@ fn metadata_ordering_and_overhead() -> Result<()> {
                         .update(api::memcpy(&mut input, &uploaded))
                         .map_err(device_error)?;
                 } else {
-                    update(&graph, &mut input, values)?;
+                    update(&graph, buffer(&input).map_err(device_error)?, values)?;
                 }
                 graph
                     .launch()
@@ -88,7 +89,7 @@ fn metadata_ordering_and_overhead() -> Result<()> {
 fn rotary_metadata_preserves_independent_axes() -> Result<()> {
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
-    let mut input = api::zeros::<i32>(&[8])
+    let input = api::zeros::<i32>(&[8])
         .sync_on(&device.stream)
         .map_err(device_error)?;
     let mut output = api::zeros::<i32>(&[8])
@@ -104,7 +105,12 @@ fn rotary_metadata_preserves_independent_axes() -> Result<()> {
         ([4, 17, 81, 1], [4, 9, 14]),
         ([29, 151_645, 95, 0], [29, 29, 29]),
     ] {
-        super::update_rotary(&graph, &mut input, control, coordinates)?;
+        super::update_rotary(
+            &graph,
+            buffer(&input).map_err(device_error)?,
+            control,
+            coordinates,
+        )?;
         let actual = graph
             .launch()
             .then(|()| (&output).to_host_vec())

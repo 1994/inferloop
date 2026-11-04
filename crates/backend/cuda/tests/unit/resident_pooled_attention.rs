@@ -117,7 +117,7 @@ fn upload<T: DType>(device: &CudaDevice, values: Vec<T>, shape: &[usize]) -> Tes
 struct Fixture {
     slots: usize,
     capacity: usize,
-    tables: Vec<Tensor<i32>>,
+    tables: Vec<Allocation<i32>>,
     queries: Arc<Tensor<f32>>,
     inputs: [Arc<Tensor<f32>>; 2],
     original: [Tensor<f8e4m3fn>; 2],
@@ -142,6 +142,7 @@ impl Fixture {
                         .collect(),
                     &[blocks],
                 )
+                .and_then(|table| Ok(Allocation::adopt(Arc::new(table))?))
             })
             .collect::<TestResult<Vec<_>>>()?;
         let queries = device.upload(
@@ -202,7 +203,7 @@ impl Fixture {
                 [p + 17, 0, if active { p } else { -1 }, 0]
             })
             .collect();
-        let metadata = device.upload(words.clone(), &[words.len()])?;
+        let metadata = device.runtime().upload(words.clone())?;
         let lane_metadata = words
             .as_chunks::<METADATA_FIELDS>()
             .0
@@ -322,7 +323,7 @@ impl Fixture {
                         &self.inputs[0].slice(from_ref(&range))?.view(&[KV, DIM])?,
                         &self.inputs[1].slice(from_ref(&range))?.view(&[KV, DIM])?,
                         metadata.as_ref(),
-                        &self.tables[lane / VERIFY_LANES],
+                        self.tables[lane / VERIFY_LANES].tensor(),
                         SCALES[0],
                         SCALES[1],
                     )
@@ -355,7 +356,7 @@ impl Fixture {
                         &lane_metadata[base + 2],
                         &*keys,
                         &*values,
-                        &self.tables[slot],
+                        self.tables[slot].tensor(),
                         window,
                         SCALES[0],
                         SCALES[1],

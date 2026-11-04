@@ -14,6 +14,7 @@ use crate::{
 use cutile::prelude::*;
 use infer_core::{Result, TensorId};
 use infer_cuda_kernels::contract::{DeltaBuffers, DeltaKernel, Recording, RecurrentShape};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;
@@ -116,7 +117,7 @@ impl Workspace {
         arena: &ActivationArena,
         weights: &ProgramWeights,
         states: &mut super::super::batch::States,
-        metadata: &Tensor<i32>,
+        metadata: &Allocation<i32>,
     ) -> StdResult<bool, DeviceError> {
         #[cfg(test)]
         if super::LEGACY_CAPTURE.get() {
@@ -230,7 +231,7 @@ fn record_delta(
     state: &mut Tensor<f32>,
     scratch: &mut Tensor<f32>,
     prepared: Option<&prepared::Inputs>,
-    metadata: &Tensor<i32>,
+    metadata: &Allocation<i32>,
     [key_heads, value_heads, key_dim, lanes, block]: [usize; DELTA_GEOMETRY_RANK],
     wy: bool,
 ) -> StdResult<(), DeviceError> {

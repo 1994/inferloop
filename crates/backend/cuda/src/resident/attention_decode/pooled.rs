@@ -273,8 +273,8 @@ pub struct Append<'a> {
     pub keys: &'a Tensor<f8e4m3fn>,
     pub values: &'a Tensor<f8e4m3fn>,
     pub inputs: [&'a Tensor<f32>; 2],
-    pub metadata: &'a Tensor<i32>,
-    pub tables: &'a [Tensor<i32>],
+    pub metadata: &'a Allocation<i32>,
+    pub tables: &'a [Allocation<i32>],
 }
 
 pub struct Attend<'a> {
@@ -345,7 +345,7 @@ impl Workspace {
         let size = product(&[l.slots, VERIFY_LANES, g.kv_heads, g.dim]).map_err(error)?;
         if inputs.iter().any(|input| input.size() != size)
             || tables.len() != l.slots
-            || metadata.size() != l.slots * VERIFY_LANES * METADATA_FIELDS
+            || metadata.len() != l.slots * VERIFY_LANES * METADATA_FIELDS
         {
             return Err(error("pooled attention append dimensions"));
         }

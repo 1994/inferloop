@@ -138,7 +138,7 @@ impl Inputs {
         recurrent: &dyn Recurrent,
         [qkv_storage, beta, alpha, a_log, bias]: [&Tensor<f32>; INPUT_BINDINGS],
         [state, output]: [&mut Tensor<f32>; 2],
-        metadata: &Tensor<i32>,
+        metadata: &Allocation<i32>,
         (kh, vh, dim, lanes, block): (usize, usize, usize, usize, usize),
     ) -> StdResult<(), DeviceError> {
         let recording = Recording::scope(scope);

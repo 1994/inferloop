@@ -1,13 +1,10 @@
 use super::{PromptOverrides, prompt_rotary_values, stage_metadata_batch};
-use crate::resident::arena::rows as batch_rows;
 use crate::{
     constants::{METADATA_FIELDS, PREFILL_LANES},
     device::{CudaDevice, PinnedUpload, device_error},
 };
-use cutile::prelude::*;
 use infer_core::Result;
 use infer_cuda_kernels::tile::runtime::Allocation;
-use std::sync::Arc;
 
 const CAPACITY: usize = 4096;
 const STATE_OFFSET: i32 = -1;
@@ -31,15 +28,13 @@ fn text_rotary_coordinates_use_the_chunk_position_and_validate_bounds() -> Resul
     Ok(())
 }
 
-fn allocate_owner(device: &CudaDevice) -> Result<Tensor<i32>> {
-    api::zeros::<i32>(&[PREFILL_LANES * METADATA_FIELDS])
-        .sync_on(&device.stream)
-        .map_err(device_error)
+fn allocate_owner(device: &CudaDevice) -> Result<Allocation<i32>> {
+    device.runtime().zeros(PREFILL_LANES * METADATA_FIELDS)
 }
 
 fn stage(
     device: &CudaDevice,
-    owner: &Tensor<i32>,
+    owner: &Allocation<i32>,
     upload: &mut (Vec<i32>, PinnedUpload<i32>),
     tokens: &[u32],
     position: usize,
@@ -102,7 +97,7 @@ fn metadata_batch_full_tail_and_media_flags_round_trip() -> Result<()> {
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
     let owner = allocate_owner(&device)?;
-    let mut upload = (Vec::new(), PinnedUpload::chain(&device, owner.size())?);
+    let mut upload = (Vec::new(), PinnedUpload::chain(&device, owner.len())?);
 
     // Full media chunk: sparse external-embedding lanes and every metadata field distinct.
     let media_tokens: Vec<u32> = (1000..1032).collect();
@@ -118,7 +113,7 @@ fn metadata_batch_full_tail_and_media_flags_round_trip() -> Result<()> {
         &media_flags,
     )?;
     assert_metadata_rows(
-        &device.read_borrowed(&owner)?,
+        &device.runtime().read(&owner)?,
         100,
         &media_tokens,
         &media_flags,
@@ -129,16 +124,23 @@ fn metadata_batch_full_tail_and_media_flags_round_trip() -> Result<()> {
     let full_tokens: Vec<u32> = (2000..2032).collect();
     let no_flags = vec![false; PREFILL_LANES];
     stage(&device, &owner, &mut upload, &full_tokens, 132, &no_flags)?;
-    let mut first = allocate_owner(&device)?;
-    device.copy_d2d(&mut first, &owner, owner.size())?;
+    let first = allocate_owner(&device)?;
+    device
+        .runtime()
+        .enqueue(|transfers| transfers.copy(first.buffer(), owner.buffer()))?;
     let tail_tokens: Vec<u32> = (3000..3005).collect();
     let mut tail_flags = vec![false; PREFILL_LANES];
     tail_flags[2] = true;
     tail_flags[4] = true;
     stage(&device, &owner, &mut upload, &tail_tokens, 164, &tail_flags)?;
-    assert_metadata_rows(&device.read_borrowed(&first)?, 132, &full_tokens, &no_flags)?;
     assert_metadata_rows(
-        &device.read_borrowed(&owner)?,
+        &device.runtime().read(&first)?,
+        132,
+        &full_tokens,
+        &no_flags,
+    )?;
+    assert_metadata_rows(
+        &device.runtime().read(&owner)?,
         164,
         &tail_tokens,
         &tail_flags,
@@ -151,17 +153,13 @@ fn metadata_batch_full_tail_and_media_flags_round_trip() -> Result<()> {
 #[ignore = "requires an NVIDIA GPU; run under tools/bench/safe-run.sh"]
 fn batch_rows_outlive_the_owner_handle() -> Result<()> {
     let device = CudaDevice::new(0)?;
-    let owner = Allocation::adopt(Arc::new(
-        api::zeros::<i32>(&[8])
-            .sync_on(&device.stream)
-            .map_err(device_error)?,
-    ))?;
-    let mut rows = batch_rows(&owner, 2)?;
+    let owner = device.runtime().zeros::<i32>(8)?;
+    let rows = owner.rows(2)?;
     drop(owner);
 
-    device.copy_host_slice(&mut rows[1], &[7, 8, 9, 10])?;
-    assert_eq!(device.read_borrowed(&rows[1])?, vec![7, 8, 9, 10]);
-    assert_eq!(device.read_borrowed(&rows[0])?, vec![0; 4]);
+    PinnedUpload::single(&device, 4)?.copy(&device, &rows[1], &[7, 8, 9, 10])?;
+    assert_eq!(device.runtime().read(&rows[1])?, vec![7, 8, 9, 10]);
+    assert_eq!(device.runtime().read(&rows[0])?, vec![0; 4]);
     Ok(())
 }
 
@@ -170,8 +168,8 @@ fn batch_rows_outlive_the_owner_handle() -> Result<()> {
 #[ignore = "requires an NVIDIA GPU; run under tools/bench/safe-run.sh"]
 fn batch_rows_rejects_zero_lanes() -> Result<()> {
     let device = CudaDevice::new(0)?;
-    let owner = Allocation::adopt(Arc::new(allocate_owner(&device)?))?;
-    let rows = batch_rows(&owner, 0);
+    let owner = allocate_owner(&device)?;
+    let rows = owner.rows(0);
     assert!(rows.is_err(), "zero-lane batch must be rejected");
     Ok(())
 }

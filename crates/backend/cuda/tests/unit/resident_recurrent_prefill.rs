@@ -802,7 +802,9 @@ fn check_ordered_fixture(
     let mut state = api::zeros::<f32>(&[vh, dim, dim]).sync_on(&device.stream)?;
     api::memcpy(&mut state, &src).sync_on(&device.stream)?;
     let mut output = api::zeros::<f32>(&[vh, lanes, dim]).sync_on(&device.stream)?;
-    let metadata = device.upload(vec![0, i32::try_from(count)?, offset, 0], &[4])?;
+    let metadata = device
+        .runtime()
+        .upload(vec![0, i32::try_from(count)?, offset, 0])?;
     let prepared = super::prepared::Inputs::new(device, (kh, vh, dim), lanes)?;
     let graph = Graph::scope(&device.stream, |scope| {
         prepared.record(

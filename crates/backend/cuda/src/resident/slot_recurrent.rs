@@ -31,7 +31,7 @@ pub(super) const LANES: usize = 3;
 /// One slot's verification lanes in the batched arena and their per-lane metadata.
 pub(super) struct SlotLanes<'a> {
     pub lanes: [usize; LANES],
-    pub metadata: [&'a Tensor<i32>; LANES],
+    pub metadata: [&'a Allocation<i32>; LANES],
 }
 
 /// One node input's candidate rows for a slot.

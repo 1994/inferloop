@@ -1,9 +1,8 @@
 //! Scalar launch arguments update resident metadata without temporary device allocations.
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::CudaDevice;
-use crate::device::device_error;
-use cutile::prelude::*;
 use infer_core::Result;
+use infer_cuda_kernels::tile::runtime::Allocation;
 
 #[cfg(test)]
 #[path = "../../tests/unit/resident_metadata_check.rs"]
@@ -19,25 +18,22 @@ pub(super) fn identity_tables(
     device: &CudaDevice,
     capacity: usize,
     lanes: usize,
-) -> Result<Tensor<i32>> {
+) -> Result<Allocation<i32>> {
     let blocks = capacity.div_ceil(KV_BLOCK_TOKENS).max(1);
     let values: Vec<i32> = (0..lanes)
         .flat_map(|_| 0..blocks)
         .map(|block| i32::try_from(block).unwrap_or(i32::MAX))
         .collect();
-    let tables = device
-        .upload(values, &[lanes, blocks])
-        .map_err(device_error)?;
-    Arc::try_unwrap(tables).map_err(|_| infer_core::Error::invariant("unique block tables"))
+    device.runtime().upload(values)
 }
 
-pub(super) fn identity_table(device: &CudaDevice, capacity: usize) -> Result<Tensor<i32>> {
+pub(super) fn identity_table(device: &CudaDevice, capacity: usize) -> Result<Allocation<i32>> {
     let blocks = capacity.div_ceil(KV_BLOCK_TOKENS);
     let values: Vec<i32> = (0..blocks)
         .map(|block| i32::try_from(block).unwrap_or(i32::MAX))
         .collect();
-    let table = device
-        .upload(values, &[blocks.max(1)])
-        .map_err(device_error)?;
-    Arc::try_unwrap(table).map_err(|_| infer_core::Error::invariant("unique block table"))
+    if values.is_empty() {
+        return Err(infer_core::Error::invalid("a block table needs capacity"));
+    }
+    device.runtime().upload(values)
 }

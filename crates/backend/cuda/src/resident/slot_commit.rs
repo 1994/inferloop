@@ -15,12 +15,13 @@ use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, Kernels, PoolConvPlan, PoolDeltaBuffers, PoolDeltaPlan, Recording,
 };
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::{TensorNode, TensorOp};
 
 pub(super) struct CapturedCommit {
     graph: Graph,
-    counts: Tensor<i32>,
+    counts: Allocation<i32>,
     upload: Vec<i32>,
     staging: PinnedUpload<i32>,
 }
@@ -29,8 +30,8 @@ struct Inputs<'a> {
     kernels: &'a Kernels,
     staging: &'a Staging,
     parameters: &'a RecurrentParameters,
-    metadata: &'a Tensor<i32>,
-    counts: &'a Tensor<i32>,
+    metadata: &'a Allocation<i32>,
+    counts: &'a Allocation<i32>,
     slots: usize,
     lanes: usize,
     hardware: ValueDevice,
@@ -73,12 +74,10 @@ impl CapturedCommit {
         kernels: &Kernels,
         nodes: &[TensorNode],
         roots: &mut States,
-        (staging, parameters, metadata): (&Staging, &RecurrentParameters, &Tensor<i32>),
+        (staging, parameters, metadata): (&Staging, &RecurrentParameters, &Allocation<i32>),
         (slots, lanes): (usize, usize),
     ) -> Result<Self> {
-        let counts = api::zeros::<i32>(&[slots])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        let counts = device.runtime().zeros(slots)?;
         let inputs = Inputs {
             kernels,
             staging,

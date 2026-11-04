@@ -5,6 +5,7 @@ use super::buffers::{buffer, kv_cache};
 use super::prefill_projection::{DensePlan, record_narrow};
 use super::{
     ActivationArena, ProgramWeights,
+    buffers::RowMajor,
     capture::{Capture, CaptureMode, error},
     fp8_cache::Fp8Caches,
     profile,
@@ -68,15 +69,15 @@ pub(super) struct PromptOverrides<'a> {
 
 /// Per-lane metadata plus the batched owner, the shared prompt sidecar and rotary table.
 type PromptMetadata<'a> = (
-    &'a [Tensor<i32>],
-    &'a Tensor<i32>,
-    &'a Tensor<i32>,
-    Option<&'a Tensor<i32>>,
+    &'a [Allocation<i32>],
+    &'a Allocation<i32>,
+    &'a Allocation<i32>,
+    Option<&'a Allocation<i32>>,
 );
 
 pub(super) struct Lane {
     pub arena: ActivationArena,
-    metadata: Tensor<i32>,
+    metadata: Allocation<i32>,
     checkpoints: States,
 }
 
@@ -130,16 +131,16 @@ pub(super) struct BatchGraph {
     _fusion: Option<super::fusion_batch::Workspace>,
     /// Shared prompt scratch the prompt graphs captured against.
     _prompt_scratch: Option<Arc<Mutex<PromptScratch>>>,
-    metadata: Vec<Tensor<i32>>,
+    metadata: Vec<Allocation<i32>>,
     /// Owner of the batched metadata rows when the prompt graph uses one allocation.
-    metadata_owner: Option<Tensor<i32>>,
+    metadata_owner: Option<Allocation<i32>>,
     /// Prompt replay is awaited before either pinned staging owner is reused.
     metadata_upload: Vec<i32>,
     metadata_staging: PinnedUpload<i32>,
     rotary_staging: PinnedUpload<i32>,
-    prefill_info: Option<Tensor<i32>>,
+    prefill_info: Option<Allocation<i32>>,
     /// Per-lane `(t, h, w)` rotary coordinates for prompt chunks; absent below prefill width 32.
-    prefill_rotary: Option<Tensor<i32>>,
+    prefill_rotary: Option<Allocation<i32>>,
     hidden: Vec<Arc<Tensor<f32>>>,
     logits: Vec<Arc<Tensor<f32>>>,
     /// Prompt lanes' draft features, when the target graph carries them.
@@ -176,11 +177,11 @@ pub(super) struct BatchBuilder<'a> {
     pub lane_fusion: &'a mut Vec<Option<super::program::FusionWorkspace>>,
     /// One block table per lane, indexed exactly like `lane_external`; batched and prefill
     /// captures use entry 0 because their operators do not resolve KV positions.
-    pub tables: &'a [Tensor<i32>],
+    pub tables: &'a [Allocation<i32>],
     pub capacity: usize,
     pub width: usize,
     /// Every lane's block table in one tensor, set while capturing the full-width decode graph.
-    pub table_root: Option<&'a Tensor<i32>>,
+    pub table_root: Option<RowMajor<'a, i32>>,
     /// Scratch of that graph's lane-batched attention.
     pub lanes_attention: Option<&'a mut super::attention_lanes::Workspace>,
     /// Set while capturing a multi-sequence prompt graph.
@@ -197,7 +198,7 @@ pub(super) struct SlotDecodeGraph {
     state_only: Option<Graph>,
     readbacks: Readbacks,
     token_readout: Option<super::token_readout::TokenReadout>,
-    metadata_owner: Tensor<i32>,
+    metadata_owner: Allocation<i32>,
     metadata_upload: Vec<i32>,
     metadata_staging: PinnedUpload<i32>,
     // Batched hidden rows stay allocated for the graph's writes but are never read back.
@@ -343,7 +344,7 @@ impl BatchBuilder<'_> {
         node: &TensorNode,
         arena: &mut ActivationArena,
         caches: &mut [Fp8Caches],
-        metadata: &Tensor<i32>,
+        metadata: &Allocation<i32>,
     ) -> StdResult<bool, DeviceError> {
         if self.record_lanes_attention(scope, node, arena, caches, metadata)? {
             return Ok(true);
@@ -374,7 +375,7 @@ impl BatchBuilder<'_> {
         scope: &Scope,
         node: &TensorNode,
         arena: &mut ActivationArena,
-        metadata: &Tensor<i32>,
+        metadata: &Allocation<i32>,
     ) -> StdResult<(), DeviceError> {
         let mut no_fusion = None;
         Capture {
@@ -400,8 +401,8 @@ impl BatchBuilder<'_> {
         &mut self,
         arena: &mut ActivationArena,
         metadata: (
-            &[Tensor<i32>],
-            &Tensor<i32>,
+            &[Allocation<i32>],
+            &Allocation<i32>,
             &mut Option<super::fusion_batch::Workspace>,
         ),
         states: (&mut [States], &mut [Fp8Caches]),
@@ -504,7 +505,7 @@ impl BatchBuilder<'_> {
         &mut self,
         geometry: super::program::ProgramGeometry,
         arena: &mut ActivationArena,
-        metadata: &Tensor<i32>,
+        metadata: &Allocation<i32>,
         fusion: &mut Option<super::program::FusionWorkspace>,
         forward_captured: bool,
     ) -> Result<ProgramCaptures> {
@@ -530,7 +531,7 @@ impl BatchBuilder<'_> {
     pub(super) fn capture_single(
         &mut self,
         arena: &mut ActivationArena,
-        metadata: &Tensor<i32>,
+        metadata: &Allocation<i32>,
         fusion: &mut Option<super::program::FusionWorkspace>,
         skip_logits: bool,
     ) -> Result<Graph> {
@@ -737,9 +738,7 @@ impl BatchBuilder<'_> {
             .map_err(|_| Error::invariant("prompt scratch poisoned"))?;
         let (mut arena, mut prompt_row) = shared_prompt_views(&shared)?;
         let (metadata_owner, metadata) = batched_metadata(self.device, self.width)?;
-        let prefill_info = api::zeros::<i32>(&[METADATA_FIELDS])
-            .sync_on(&self.device.stream)
-            .map_err(device_error)?;
+        let prefill_info = self.device.runtime().zeros(METADATA_FIELDS)?;
         let prefill_rotary = self.prompt_rotary()?;
         let mut profile = profile::PrefillProfile::from_env(self.device);
         let mut precise_profile =
@@ -892,15 +891,14 @@ impl BatchBuilder<'_> {
 
     /// Only three-axis models need the per-lane table; text-only prompts keep the cheaper
     /// `prefill_info` path and avoid an upload per chunk.
-    fn prompt_rotary(&self) -> Result<Option<Tensor<i32>>> {
+    fn prompt_rotary(&self) -> Result<Option<Allocation<i32>>> {
         if !self.weights.mrope {
             return Ok(None);
         }
-        Ok(Some(
-            api::zeros::<i32>(&[self.width * ROTARY_AXES])
-                .sync_on(&self.device.stream)
-                .map_err(device_error)?,
-        ))
+        self.device
+            .runtime()
+            .zeros(self.width * ROTARY_AXES)
+            .map(Some)
     }
 
     /// Prompt scratch for this width, allocated once per program and shared by its sequences.
@@ -960,7 +958,7 @@ impl BatchBuilder<'_> {
         scope: &Scope,
         node: &TensorNode,
         arena: &mut ActivationArena,
-        metadata: &Tensor<i32>,
+        metadata: &Allocation<i32>,
     ) -> StdResult<bool, DeviceError> {
         match dispatch32(node, self.weights) {
             Dispatch32::Linear if !self.weights.constants.contains_key(&node.inputs[0]) => {
@@ -1259,7 +1257,7 @@ impl BatchBuilder<'_> {
         node: &TensorNode,
         arena: &ActivationArena,
         row: &mut Tensor<f32>,
-        prefill_info: &Tensor<i32>,
+        prefill_info: &Allocation<i32>,
     ) -> StdResult<(), DeviceError> {
         if self.burst.is_some() {
             return self.record_burst_logits(scope, node, arena);
@@ -1476,7 +1474,7 @@ impl BatchBuilder<'_> {
         scope: &Scope,
         node: &TensorNode,
         arena: &ActivationArena,
-        metadata_batch: &Tensor<i32>,
+        metadata_batch: &Allocation<i32>,
     ) -> StdResult<bool, DeviceError> {
         let lanes = arena.lanes();
         let (TensorOp::Embedding, None, Some(external)) =
@@ -1493,7 +1491,7 @@ impl BatchBuilder<'_> {
         if size != lanes * dimension
             || !dimension.is_multiple_of(AUX_KERNEL_TILE)
             || external.size() < size
-            || metadata_batch.size() < lanes * METADATA_FIELDS
+            || metadata_batch.len() < lanes * METADATA_FIELDS
         {
             return Ok(false);
         }
@@ -1568,7 +1566,7 @@ impl BatchBuilder<'_> {
         scope: &Scope,
         node: &TensorNode,
         arena: &mut ActivationArena,
-        metadata: &[Tensor<i32>],
+        metadata: &[Allocation<i32>],
         partials: &Partials,
     ) -> StdResult<(), DeviceError> {
         let mut no_fusion = None;
@@ -1636,8 +1634,8 @@ impl BatchBuilder<'_> {
         scope: &Scope,
         node: &TensorNode,
         arena: &mut ActivationArena,
-        prefill_info: &Tensor<i32>,
-        prefill_rotary: Option<&Tensor<i32>>,
+        prefill_info: &Allocation<i32>,
+        prefill_rotary: Option<&Allocation<i32>>,
     ) -> StdResult<bool, DeviceError> {
         let dynamic = !node
             .inputs
@@ -1674,7 +1672,7 @@ impl BatchBuilder<'_> {
         scope: &Scope,
         node: &TensorNode,
         arena: &mut ActivationArena,
-        metadata: &Tensor<i32>,
+        metadata: &Allocation<i32>,
         mode: CaptureMode,
     ) -> StdResult<(), DeviceError> {
         let mut no_fusion = None;
@@ -1760,9 +1758,7 @@ impl BatchBuilder<'_> {
             };
             lanes.push(Lane {
                 arena,
-                metadata: api::zeros::<i32>(&[METADATA_FIELDS])
-                    .sync_on(&self.device.stream)
-                    .map_err(device_error)?,
+                metadata: self.device.runtime().zeros(METADATA_FIELDS)?,
                 checkpoints,
             });
         }
@@ -1887,10 +1883,10 @@ impl BatchGraph {
             // silently placed KV rows outside the chunk and, with a block table, out of the arena.
             // A verification-only graph has no sidecar: it reads the per-lane metadata above.
             Self::validate_prefill_state(tokens.len(), position, self.state_offset, self.capacity)?;
-            if let Some(info) = self.prefill_info.as_mut() {
+            if let Some(info) = self.prefill_info.as_ref() {
                 super::metadata::update(
                     graph,
-                    info,
+                    info.buffer(),
                     [
                         i32::try_from(position).map_err(device_error)?,
                         i32::try_from(tokens.len()).map_err(device_error)?,
@@ -2021,7 +2017,7 @@ impl BatchGraph {
     )]
     fn update_metadata(
         graph: &Graph,
-        metadata: &mut [Tensor<i32>],
+        metadata: &mut [Allocation<i32>],
         width: usize,
         capacity: usize,
         tokens: &[u32],
@@ -2031,7 +2027,7 @@ impl BatchGraph {
     ) -> Result<()> {
         let rows = Self::metadata_rows(width, capacity, tokens, position, state_offset, overrides)?;
         for (metadata, values) in metadata.iter_mut().take(width).zip(rows) {
-            super::metadata::update(graph, metadata, values)?;
+            super::metadata::update(graph, metadata.buffer(), values)?;
         }
         Ok(())
     }
@@ -2157,8 +2153,9 @@ impl BatchGraph {
         super::metadata::update(
             graph,
             self.prefill_info
-                .as_mut()
-                .ok_or_else(|| Error::invariant("prefill metadata"))?,
+                .as_ref()
+                .ok_or_else(|| Error::invariant("prefill metadata"))?
+                .buffer(),
             [
                 i32::try_from(position).map_err(device_error)?,
                 i32::try_from(tokens.len()).map_err(device_error)?,
@@ -2309,7 +2306,7 @@ impl BatchGraph {
         if rows == 0 || rows > self.width || self.hidden.len() != 1 {
             return Err(Error::invalid("test retained prompt rows"));
         }
-        let info = device.read_borrowed(
+        let info = device.runtime().read(
             self.prefill_info
                 .as_ref()
                 .ok_or_else(|| Error::invariant("test retained prompt metadata"))?,
@@ -2391,7 +2388,7 @@ fn prompt_rotary_values(
 )]
 fn stage_metadata_batch(
     device: &CudaDevice,
-    owner: &Tensor<i32>,
+    owner: &Allocation<i32>,
     (upload, staging): (&mut Vec<i32>, &mut PinnedUpload<i32>),
     width: usize,
     capacity: usize,
@@ -2667,20 +2664,14 @@ impl SlotDecodeGraph {
 pub(super) fn batched_metadata(
     device: &CudaDevice,
     width: usize,
-) -> Result<(Tensor<i32>, Vec<Tensor<i32>>)> {
+) -> Result<(Allocation<i32>, Vec<Allocation<i32>>)> {
     let fields = METADATA_FIELDS;
     let elements = width
         .checked_mul(fields)
         .ok_or_else(|| Error::invalid("metadata size overflow"))?;
-    let memory = Allocation::adopt(Arc::new(
-        api::zeros::<i32>(&[elements])
-            .sync_on(&device.stream)
-            .map_err(device_error)?,
-    ))?;
-    Ok((
-        super::arena::whole(&memory, &[elements])?,
-        super::arena::rows(&memory, width)?,
-    ))
+    let memory = device.runtime().zeros(elements)?;
+    let rows = memory.rows(width)?;
+    Ok((memory, rows))
 }
 
 /// Views of the shared prompt arena and logits row for one program's prompt graphs. Sequences
