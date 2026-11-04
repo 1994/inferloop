@@ -180,7 +180,7 @@ pub(super) fn prepare_parameters(
 pub(super) fn record_batch(
     scope: &Scope,
     node: &TensorNode,
-    arena: &mut ActivationArena,
+    arena: &ActivationArena,
     batch: &VerifyBatch<'_>,
     hardware: ValueDevice,
 ) -> StdResult<bool, DeviceError> {
@@ -208,40 +208,40 @@ pub(super) fn record_batch(
     let split = value_split(hardware, value_heads, value_dim, slots).map_err(error)?;
     let block = fused_block(value_dim, split);
     let index = arena.slot(node.outputs[0]).map_err(error)?;
-    let output = arena.buffers[index]
-        .take()
-        .ok_or_else(|| error("pooled delta output"))?;
-    let output_size = output.size();
-    let output = output.reshape(&[slots, lanes, value_heads * value_dim])?;
-    let recorded = (|| {
-        batch
-            .kernels
-            .recurrent_pool
-            .delta_verify_pool(
-                &Recording::scope(scope),
-                &PoolDeltaPlan {
-                    key_heads,
-                    value_heads,
-                    dim: key_dim,
-                    block,
-                    slots,
-                    lanes,
-                    fields: METADATA_FIELDS,
-                    fused: lanes == LANES,
-                },
-                buffer(&output)?,
-                PoolDeltaBuffers {
-                    state: buffer(state)?,
-                    qkv: buffer(arena.get(node.inputs[0]).map_err(error)?)?,
-                    beta: buffer(arena.get(node.inputs[1]).map_err(error)?)?,
-                    alpha: buffer(arena.get(node.inputs[2]).map_err(error)?)?,
-                    parameters: buffer(parameters)?,
-                    metadata: buffer(batch.metadata)?,
-                },
+    let output = arena
+        .buffer(index)
+        .and_then(|output| {
+            output.require(
+                "pooled delta output",
+                slots * lanes * value_heads * value_dim,
             )
-            .map_err(error)?;
-        Ok(true)
-    })();
-    arena.buffers[index] = Some(output.reshape(&[output_size])?);
-    recorded
+        })
+        .map_err(error)?;
+    batch
+        .kernels
+        .recurrent_pool
+        .delta_verify_pool(
+            &Recording::scope(scope),
+            &PoolDeltaPlan {
+                key_heads,
+                value_heads,
+                dim: key_dim,
+                block,
+                slots,
+                lanes,
+                fields: METADATA_FIELDS,
+                fused: lanes == LANES,
+            },
+            output,
+            PoolDeltaBuffers {
+                state: buffer(state)?,
+                qkv: buffer(arena.get(node.inputs[0]).map_err(error)?)?,
+                beta: buffer(arena.get(node.inputs[1]).map_err(error)?)?,
+                alpha: buffer(arena.get(node.inputs[2]).map_err(error)?)?,
+                parameters: buffer(parameters)?,
+                metadata: buffer(batch.metadata)?,
+            },
+        )
+        .map_err(error)?;
+    Ok(true)
 }

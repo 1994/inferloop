@@ -77,15 +77,10 @@ impl Fixture {
         );
         graph.hidden = Some(id(3));
         graph.logits = Some(id(5));
-        let mut arena = ActivationArena::new_batched(device, &graph, lanes, 16 * 1024 * 1024)?;
+        let arena = ActivationArena::new_batched(device, &graph, lanes, 16 * 1024 * 1024)?;
         let input = values(lanes * columns, 17);
         let input_slot = arena.slot(id(1))?;
-        device.copy_host_slice(
-            arena.buffers[input_slot]
-                .as_mut()
-                .ok_or("missing fixture input")?,
-            &input,
-        )?;
+        device.copy_host_slice(&mut arena.output(input_slot)?, &input)?;
         let original_weights = [7, 13].map(|salt| {
             values(rows * columns, salt)
                 .into_iter()
@@ -143,13 +138,13 @@ impl Fixture {
         })
     }
 
-    fn original(&mut self, device: &CudaDevice) -> TestResult<Graph> {
+    fn original(&self, device: &CudaDevice) -> TestResult<Graph> {
         Ok(Graph::scope(&device.stream, |scope| {
             for index in [1, 2] {
                 let node = &self.graph.nodes[index];
                 let output_slot = self.arena.slot(node.outputs[0]).map_err(capture_error)?;
                 let [lanes, rows, columns] = self.shape;
-                let output = self.arena.buffers[output_slot].take().unwrap();
+                let output = self.arena.output(output_slot).map_err(capture_error)?;
                 let mut output = output.reshape(&[lanes, rows])?;
                 let input = self
                     .arena
@@ -164,13 +159,12 @@ impl Fixture {
                     gemm::dense((&mut output).partition([32, 64]), &input, weight.tensor())
                         .generics(vec![columns.to_string()]),
                 )?;
-                self.arena.buffers[output_slot] = Some(output.reshape(&[lanes * rows])?);
             }
             Ok(())
         })?)
     }
 
-    fn candidate(&mut self, device: &CudaDevice) -> TestResult<Graph> {
+    fn candidate(&self, device: &CudaDevice) -> TestResult<Graph> {
         let plan = DensePlan::new(&self.graph, None);
         assert_eq!(plan.pair(1), Some(2));
         Ok(Graph::scope(&device.stream, |scope| {
@@ -179,7 +173,7 @@ impl Fixture {
                 scope,
                 &self.graph.nodes[1],
                 &self.graph.nodes[2],
-                &mut self.arena,
+                &self.arena,
                 (&self.weights, profile),
             )? {
                 for index in [1, 2] {
@@ -188,7 +182,7 @@ impl Fixture {
                         prefill_projection::record_narrow(
                             scope,
                             &self.graph.nodes[index],
-                            &mut self.arena,
+                            &self.arena,
                             (&self.weights, profile)
                         )?,
                         "selected graph control must use narrow recorder"
@@ -305,7 +299,7 @@ fn performance(
 }
 
 fn case(device: &CudaDevice, shape: [usize; 3]) -> TestResult {
-    let mut fixture = Fixture::new(device, shape)?;
+    let fixture = Fixture::new(device, shape)?;
     let original = fixture.original(device)?;
     let before_captures = prefill_projection::narrow_dense_captures();
     let candidate = fixture.candidate(device)?;

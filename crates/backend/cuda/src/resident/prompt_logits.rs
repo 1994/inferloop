@@ -53,7 +53,7 @@ pub fn required_bytes(
 pub(super) fn record(
     scope: &Scope,
     node: &TensorNode,
-    arena: &mut ActivationArena,
+    arena: &ActivationArena,
     weights: &ProgramWeights,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
     (row, metadata): (&mut Tensor<f32>, &Tensor<i32>),
@@ -86,9 +86,7 @@ pub(super) fn record(
             .map_err(error)?;
     }
     let slot = arena.slot(node.outputs[0]).map_err(error)?;
-    let output = arena.buffers[slot]
-        .take()
-        .ok_or_else(|| error("prompt logits output"))?;
+    let output = arena.output(slot).map_err(error)?;
     let vocabulary = output.size();
     let matrix = output.reshape(&[1, vocabulary])?;
     let recorded = super::nvfp4_gemm::record_certified(
@@ -100,7 +98,6 @@ pub(super) fn record(
         &matrix,
         hidden,
     )?;
-    arena.buffers[slot] = Some(matrix.reshape(&[vocabulary])?);
     if recorded {
         Ok(())
     } else {

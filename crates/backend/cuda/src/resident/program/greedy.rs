@@ -23,7 +23,7 @@ pub(super) struct ProgramReadouts {
 impl ProgramReadouts {
     pub(super) fn new(
         device: &CudaDevice,
-        arena: &mut ActivationArena,
+        arena: &ActivationArena,
         graph: &infer_ir::DataflowGraph,
         weights: &ProgramWeights,
         vocabulary: usize,

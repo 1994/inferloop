@@ -292,93 +292,86 @@ fn rows(
 pub(super) fn record_verify(
     scope: &Scope,
     node: &TensorNode,
-    arena: &mut ActivationArena,
+    arena: &ActivationArena,
     states: &States,
     slot: &SlotLanes<'_>,
     weights: &ProgramWeights,
     hardware: ValueDevice,
 ) -> Result<(), DeviceError> {
     let index = arena.slot(node.outputs[0]).map_err(error)?;
-    let output = arena.buffers[index]
-        .take()
-        .ok_or_else(|| error("missing slot verify output"))?;
     let lanes = arena.lanes();
-    let recorded = (|| {
-        let state = states
-            .get(&node.states[0])
-            .ok_or_else(|| error("slot verify state"))?;
-        let [first, second, third] = slot.lanes;
-        let all = buffer(&output)?;
-        let outputs = [
-            row_buffer(all, lanes, first)?,
-            row_buffer(all, lanes, second)?,
-            row_buffer(all, lanes, third)?,
-        ];
-        let metadata = lane_metadata(slot)?;
-        let recording = Recording::scope(scope);
-        match node.op {
-            TensorOp::Conv { channels, .. } => {
-                let [h0, h1, h2] = state.as_slice() else {
-                    return Err(error("convolution state layout"));
-                };
-                weights
-                    .kernels
-                    .recurrent_pool
-                    .conv_verify_fused(
-                        &recording,
-                        channels,
-                        outputs,
-                        FusedConvBuffers {
-                            history: [buffer(h0)?, buffer(h1)?, buffer(h2)?],
-                            inputs: rows(weights, arena, node.inputs[0], slot)?,
-                            weight: lane_input(weights, arena, node.inputs[1], first)?,
-                            metadata,
-                        },
-                    )
-                    .map_err(error)?;
-            }
-            TensorOp::Delta {
-                key_heads,
-                value_heads,
-                key_dim,
-                value_dim,
-            } => {
-                let [state] = state.as_slice() else {
-                    return Err(error("delta state layout"));
-                };
-                let split =
-                    value_split(hardware, value_heads, value_dim, lanes / LANES).map_err(error)?;
-                weights
-                    .kernels
-                    .recurrent_pool
-                    .delta_verify_fused(
-                        &recording,
-                        &DeltaStepPlan {
-                            key_heads,
-                            value_heads,
-                            dim: key_dim,
-                            block: fused_block(value_dim, split),
-                            lanes: None,
-                        },
-                        outputs,
-                        FusedDeltaBuffers {
-                            state: buffer(state)?,
-                            qkv: rows(weights, arena, node.inputs[0], slot)?,
-                            beta: rows(weights, arena, node.inputs[1], slot)?,
-                            alpha: rows(weights, arena, node.inputs[2], slot)?,
-                            decay: lane_input(weights, arena, node.inputs[3], first)?,
-                            bias: lane_input(weights, arena, node.inputs[4], first)?,
-                            metadata,
-                        },
-                    )
-                    .map_err(error)?;
-            }
-            _ => return Err(error("slot verify recurrent node")),
+    let state = states
+        .get(&node.states[0])
+        .ok_or_else(|| error("slot verify state"))?;
+    let [first, second, third] = slot.lanes;
+    let all = arena.buffer(index).map_err(error)?;
+    let outputs = [
+        row_buffer(all, lanes, first)?,
+        row_buffer(all, lanes, second)?,
+        row_buffer(all, lanes, third)?,
+    ];
+    let metadata = lane_metadata(slot)?;
+    let recording = Recording::scope(scope);
+    match node.op {
+        TensorOp::Conv { channels, .. } => {
+            let [h0, h1, h2] = state.as_slice() else {
+                return Err(error("convolution state layout"));
+            };
+            weights
+                .kernels
+                .recurrent_pool
+                .conv_verify_fused(
+                    &recording,
+                    channels,
+                    outputs,
+                    FusedConvBuffers {
+                        history: [buffer(h0)?, buffer(h1)?, buffer(h2)?],
+                        inputs: rows(weights, arena, node.inputs[0], slot)?,
+                        weight: lane_input(weights, arena, node.inputs[1], first)?,
+                        metadata,
+                    },
+                )
+                .map_err(error)?;
         }
-        Ok(())
-    })();
-    arena.buffers[index] = Some(output);
-    recorded
+        TensorOp::Delta {
+            key_heads,
+            value_heads,
+            key_dim,
+            value_dim,
+        } => {
+            let [state] = state.as_slice() else {
+                return Err(error("delta state layout"));
+            };
+            let split =
+                value_split(hardware, value_heads, value_dim, lanes / LANES).map_err(error)?;
+            weights
+                .kernels
+                .recurrent_pool
+                .delta_verify_fused(
+                    &recording,
+                    &DeltaStepPlan {
+                        key_heads,
+                        value_heads,
+                        dim: key_dim,
+                        block: fused_block(value_dim, split),
+                        lanes: None,
+                    },
+                    outputs,
+                    FusedDeltaBuffers {
+                        state: buffer(state)?,
+                        qkv: rows(weights, arena, node.inputs[0], slot)?,
+                        beta: rows(weights, arena, node.inputs[1], slot)?,
+                        alpha: rows(weights, arena, node.inputs[2], slot)?,
+                        decay: lane_input(weights, arena, node.inputs[3], first)?,
+                        bias: lane_input(weights, arena, node.inputs[4], first)?,
+                        metadata,
+                    },
+                )
+                .map_err(error)?;
+        }
+        _ => return Err(error("slot verify recurrent node")),
+    }
+    Ok(())
 }
 
 fn staged_buffers(row: &StagedRow) -> Result<LaneBuffers<'_, f32>, DeviceError> {

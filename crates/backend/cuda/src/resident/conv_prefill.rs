@@ -11,7 +11,7 @@ use infer_ir::{TensorNode, TensorOp};
 pub(super) fn record(
     scope: &Scope,
     node: &TensorNode,
-    arena: &mut ActivationArena,
+    arena: &ActivationArena,
     weights: &ProgramWeights,
     states: &mut States,
     metadata: &Tensor<i32>,
@@ -38,15 +38,10 @@ pub(super) fn record(
         return Err(error("prefill convolution layout"));
     };
     let slot = arena.slot(node.outputs[0]).map_err(error)?;
-    let output = arena.buffers[slot]
-        .take()
-        .ok_or_else(|| error("prefill convolution output"))?;
-    let original: Vec<usize> = output
-        .shape()
-        .iter()
-        .map(|&n| usize::try_from(n).map_err(error))
-        .collect::<Result<_, _>>()?;
-    let output = output.reshape(&[lanes, channels])?;
+    let output = arena
+        .buffer(slot)
+        .and_then(|output| output.require("prefill convolution output", lanes * channels))
+        .map_err(error)?;
     weights
         .kernels
         .recurrent
@@ -55,7 +50,7 @@ pub(super) fn record(
             ConvKernel::Prefill { lanes },
             channels,
             ConvBuffers {
-                output: buffer(&output)?,
+                output,
                 history: [buffer(&*h0)?, buffer(&*h1)?, buffer(&*h2)?],
                 input: buffer(arena.get(node.inputs[0]).map_err(error)?)?,
                 weight: buffer(
@@ -69,7 +64,6 @@ pub(super) fn record(
             },
         )
         .map_err(error)?;
-    arena.buffers[slot] = Some(output.reshape(&original)?);
     Ok(true)
 }
 

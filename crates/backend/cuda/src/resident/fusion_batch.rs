@@ -227,15 +227,10 @@ pub(super) fn record(
     if metadata.len() < rows || builder.lane_fusion.len() < rows {
         return Err(error("fusion batch lanes"));
     }
-    let output = arena.buffers[slot]
-        .take()
-        .ok_or_else(|| error("fusion batch output"))?;
-    let restore = output
-        .shape()
-        .iter()
-        .map(|&dim| usize::try_from(dim).map_err(error))
-        .collect::<StdResult<Vec<_>, _>>()?;
-    let output = output.reshape(&[rows, HIDDEN])?;
+    let output = arena
+        .output(slot)
+        .map_err(error)?
+        .reshape(&[rows, HIDDEN])?;
     let Some(super::program::FusionWeights {
         projection: ProjectionWeight::Dense(weight),
         ..
@@ -306,7 +301,6 @@ pub(super) fn record(
             buffer(weight)?,
         )
         .map_err(error)?;
-    arena.buffers[slot] = Some(output.reshape(&restore)?);
     #[cfg(test)]
     CAPTURES.set(CAPTURES.get() + 1);
     Ok(true)
@@ -318,7 +312,7 @@ fn record_wide(
     builder: &mut BatchBuilder<'_>,
     scope: &Scope,
     node: &TensorNode,
-    arena: &mut ActivationArena,
+    arena: &ActivationArena,
     metadata_batch: &Tensor<i32>,
     workspace: &mut Workspace,
 ) -> StdResult<bool, DeviceError> {
@@ -388,21 +382,18 @@ fn record_wide(
         .map_err(error)?;
     workspace.gathered = Some(gathered);
     let input = rows.reshape(&[lanes * COLUMNS])?;
-    let output = arena.buffers[slot]
-        .take()
-        .ok_or_else(|| error("fusion batch output"))?;
-    // The slot is restored below whatever the outcome, so no early return happens here.
+    let output = arena.buffer(slot).map_err(error)?;
+    // `workspace.input` is restored below whatever the outcome, so no early return happens here.
     let recorded = buffer(&input).and_then(|flat| {
         delegated.record_dense(
             (&builder.weights.kernels, scope),
             flat,
             weight,
-            buffer(&output)?,
+            output,
             (lanes, HIDDEN, COLUMNS),
         )
     });
     workspace.input = Some(input.reshape(&[lanes, COLUMNS])?);
-    arena.buffers[slot] = Some(output);
     if recorded? {
         Ok(true)
     } else {

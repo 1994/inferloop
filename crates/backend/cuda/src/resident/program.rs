@@ -824,14 +824,8 @@ impl DeviceProgram {
         let reset_graph = super::reset::capture(device, &states)?;
         let reclaimable_bytes =
             Self::program_retained_bytes(graph, &states, &fp8_states, activation_bytes, &captures);
-        let readouts = ProgramReadouts::new(
-            device,
-            &mut arena,
-            graph,
-            weights,
-            vocabulary,
-            forward_captured,
-        )?;
+        let readouts =
+            ProgramReadouts::new(device, &arena, graph, weights, vocabulary, forward_captured)?;
         Ok(Self {
             _weights: weights.owners(),
             forward_captured,
