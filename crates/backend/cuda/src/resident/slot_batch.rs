@@ -148,11 +148,6 @@ fn build_pool_decode<'a>(
 
 /// The pool-wide verify graph and one narrower graph per `narrow` slot count, with the root
 /// views each narrow graph reads.
-#[expect(
-    unsafe_code,
-    reason = "Audited narrow verify roots: prefix views of `states`, which the pool owns \
-              and drops after its graphs"
-)]
 fn build_verify_graphs(
     builder: &mut super::batch::BatchBuilder<'_>,
     (states, fp8): (&mut SlotStates, &mut [Fp8Caches]),
@@ -163,9 +158,7 @@ fn build_verify_graphs(
     let mut graphs = Vec::with_capacity(narrow.len());
     let mut roots = Vec::with_capacity(narrow.len());
     for &slots in narrow {
-        // SAFETY: the pool keeps `states` alive behind `_narrow_roots` and drops its graphs
-        // first; every graph replays on the pool's one stream.
-        let mut prefix = unsafe { prefix_roots(states, slots)? };
+        let mut prefix = prefix_roots(states, slots)?;
         graphs.push(builder.build_slot_verify_parts(
             (&mut states.parts().0[..slots], &mut prefix),
             &mut fp8[..slots],
@@ -177,16 +170,9 @@ fn build_verify_graphs(
 }
 
 /// Views of the first `slots` rows of every pooled root family, for a verify graph narrower
-/// than the pool.
-///
-/// # Safety
-/// The returned roots alias `states`: the pool must keep it alive for every graph captured
-/// through them and replay them on its single stream.
-#[expect(
-    unsafe_code,
-    reason = "Audited prefix alias: the pool owns the roots and drops its graphs first"
-)]
-unsafe fn prefix_roots(states: &SlotStates, slots: usize) -> Result<States> {
+/// than the pool. The views share the roots' memory, and every graph replays on the pool's one
+/// stream.
+fn prefix_roots(states: &SlotStates, slots: usize) -> Result<States> {
     let width = states.len();
     if slots == 0 || slots > width {
         return Err(Error::invalid("pooled state prefix"));
@@ -195,14 +181,9 @@ unsafe fn prefix_roots(states: &SlotStates, slots: usize) -> Result<States> {
     for (id, owners) in states.roots() {
         let mut views = Vec::with_capacity(owners.len());
         for owner in owners {
-            let mut shape = owner
-                .shape()
-                .iter()
-                .map(|&dim| usize::try_from(dim).map_err(device_error))
-                .collect::<Result<Vec<_>>>()?;
+            let mut shape = dims(owner)?;
             shape[0] = slots;
-            // SAFETY: forwarded from this function's contract.
-            views.push(unsafe { super::arena::prefix_view(owner, width, slots, &shape)? });
+            views.push(super::arena::prefix(owner, width, slots, &shape)?);
         }
         roots.insert(*id, views);
     }
@@ -258,21 +239,11 @@ fn copy_plan(graph: &DataflowGraph, weights: &ProgramWeights) -> Result<Vec<(Ten
     Ok(plan)
 }
 
-/// Whole-tensor aliases of every cache in `caches`.
-/// # Safety
-/// The caches must outlive the aliases; see [`SlotPool::slot_views`].
-#[expect(
-    unsafe_code,
-    reason = "Audited cache alias: forwarded from the pool's view contracts"
-)]
-unsafe fn alias_caches(caches: &Fp8Caches) -> Result<Fp8Caches> {
+/// Whole-tensor aliases of every cache in `caches`, sharing their memory.
+fn alias_caches(caches: &Fp8Caches) -> Result<Fp8Caches> {
     let mut views = Fp8Caches::new();
     for (id, (keys, values)) in caches {
-        // SAFETY: forwarded from this function's contract.
-        let keys = unsafe { alias(keys)? };
-        // SAFETY: forwarded from this function's contract.
-        let values = unsafe { alias(values)? };
-        views.insert(*id, (keys, values));
+        views.insert(*id, (alias(keys)?, alias(values)?));
     }
     Ok(views)
 }
@@ -345,22 +316,9 @@ fn gather_kv<T: DType + Element>(
     Ok(dst)
 }
 
-/// A whole-tensor alias with the source's shape.
-/// # Safety
-/// The source must outlive the alias; see [`SlotPool::slot_views`].
-#[expect(
-    unsafe_code,
-    reason = "Audited slot alias: forwarded from SlotPool::slot_views"
-)]
-unsafe fn alias<T: DType>(tensor: &Tensor<T>) -> Result<Tensor<T>> {
-    let shape = tensor
-        .shape()
-        .iter()
-        .map(|&dim| usize::try_from(dim).map_err(device_error))
-        .collect::<Result<Vec<_>>>()?;
-    // SAFETY: forwarded from this function's contract; one lane spans the whole tensor.
-    let view = unsafe { super::arena::row_view(tensor, 1, 0)? };
-    view.reshape(&shape).map_err(device_error)
+/// A whole-tensor alias with the source's shape, sharing its memory.
+fn alias<T: DType>(tensor: &Tensor<T>) -> Result<Tensor<T>> {
+    super::arena::alias(tensor, &dims(tensor)?)
 }
 
 /// Device bytes one slot's state tensors occupy: f32 states plus fp8 KV caches.
@@ -431,14 +389,8 @@ struct Paging {
 
 impl Paging {
     /// A slot's view of the shared caches; the slot's table selects its blocks.
-    #[expect(
-        unsafe_code,
-        reason = "Audited pool alias: the pool owns the shared caches and drops its graphs and \
-                  slot views first"
-    )]
     fn slot_caches(&self) -> Result<Fp8Caches> {
-        // SAFETY: see the expectation above.
-        unsafe { alias_caches(&self.shared) }
+        alias_caches(&self.shared)
     }
 
     /// Return a slot's pages to the ledger.
@@ -725,10 +677,6 @@ impl SlotPool {
 
     /// Allocate each slot's recurrent states and KV cache, checking the running total against
     /// the device budget before the pool captures any graph.
-    #[expect(
-        unsafe_code,
-        reason = "Audited table rows: the pool stores their owner beside them"
-    )]
     fn allocate_slots(
         device: &CudaDevice,
         graph: &DataflowGraph,
@@ -771,10 +719,7 @@ impl SlotPool {
         // Step 1 of the KV refactor: a per-slot identity mapping over that slot's own cache.
         // A paged pool fills the table from its shared blocks when the slot is assigned.
         let root = super::metadata::identity_tables(device, capacity, width)?;
-        for slot in 0..width {
-            // SAFETY: the pool stores `root` beside these views; the rows are disjoint.
-            tables.push(unsafe { super::arena::row_view(&root, width, slot)? });
-        }
+        tables.extend(super::arena::rows(&root, width)?);
         Ok((states, fp8, tables, root))
     }
 
@@ -938,13 +883,13 @@ impl SlotPool {
     /// Views of one slot's recurrent states and KV caches, for a program that prefills
     /// straight into the slot ([`super::program::DeviceProgram::new_on_slot`]).
     /// # Safety
-    /// The pool must outlive the views and every graph captured through them, and only the
-    /// slot's current owner may replay those graphs, serialized on the device stream.
+    /// Only the slot's current owner may replay graphs captured through the views, serialized on
+    /// the device stream. The views share the slot's memory, so they outlive nothing.
     /// # Errors
     /// Rejects an unknown slot.
     #[expect(
         unsafe_code,
-        reason = "Audited slot alias: the views share the slot's storage under the caller's contract"
+        reason = "Audited slot alias: the caller serializes replays through the views with the slot's owner"
     )]
     pub(crate) unsafe fn slot_views(
         &self,
@@ -962,28 +907,16 @@ impl SlotPool {
         for (id, tensors) in states {
             let mut views = Vec::with_capacity(tensors.len());
             for tensor in tensors {
-                // SAFETY: forwarded from this function's contract.
-                views.push(unsafe { alias(tensor)? });
+                views.push(alias(tensor)?);
             }
             state_views.insert(*id, views);
         }
-        // SAFETY: forwarded from this function's contract.
-        let table = unsafe {
-            alias(
-                self.tables
-                    .get(slot)
-                    .ok_or_else(|| Error::invalid("slot view index"))?,
-            )?
-        };
-        let mut fp8_views = Fp8Caches::new();
-        for (id, (keys, values)) in fp8 {
-            // SAFETY: forwarded from this function's contract.
-            let keys = unsafe { alias(keys)? };
-            // SAFETY: forwarded from this function's contract.
-            let values = unsafe { alias(values)? };
-            fp8_views.insert(*id, (keys, values));
-        }
-        Ok((state_views, fp8_views, table))
+        let table = alias(
+            self.tables
+                .get(slot)
+                .ok_or_else(|| Error::invalid("slot view index"))?,
+        )?;
+        Ok((state_views, alias_caches(fp8)?, table))
     }
 
     /// Return a slot to the free set; the next bind overwrites its state prefix.
@@ -1034,19 +967,13 @@ impl SlotPool {
     }
 
     /// Views of the shared paged KV caches, for the prompt worker; `None` when unpaged.
-    /// # Safety
-    /// The pool must outlive the views and every graph captured through them.
+    /// The views share the caches' memory, so they stay valid on their own.
     /// # Errors
     /// Propagates view failures.
-    #[expect(
-        unsafe_code,
-        reason = "Audited pool alias: the views share the paged caches under the caller's contract"
-    )]
-    pub(crate) unsafe fn kv_views(&self) -> Result<Option<Fp8Caches>> {
+    pub(crate) fn kv_views(&self) -> Result<Option<Fp8Caches>> {
         self.paging
             .as_ref()
-            // SAFETY: forwarded from this function's contract.
-            .map(|paging| unsafe { alias_caches(&paging.shared) })
+            .map(|paging| alias_caches(&paging.shared))
             .transpose()
     }
 

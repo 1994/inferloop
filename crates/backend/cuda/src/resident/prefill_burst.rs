@@ -4,7 +4,7 @@
 //! `segments * SEGMENT_ROWS` rows. Sequential nodes (convolution, gated delta, attention, `RoPE`)
 //! record once per segment, against that segment's rows and the resident slot's own state, so no
 //! state moves through a worker. A segment with a zero token count writes nothing.
-use super::arena::prefix_view;
+use super::arena::prefix;
 use super::batch::{BatchBuilder, States};
 use super::fp8_cache::Fp8Caches;
 use super::prompt_scratch::PromptScratch;
@@ -250,13 +250,8 @@ fn zeros<T: DType>(device: &CudaDevice, shape: &[usize]) -> Result<Tensor<T>> {
 }
 
 impl Storage {
-    /// # Safety
-    /// Row views alias the returned owners, which must outlive every graph captured from them.
-    #[expect(
-        unsafe_code,
-        reason = "Audited row aliases of owners retained beside the graph"
-    )]
-    unsafe fn allocate(
+    /// Row views share the memory of the owners they view, wider rungs' included.
+    fn allocate(
         device: &CudaDevice,
         graph: &DataflowGraph,
         weights: &ProgramWeights,
@@ -275,10 +270,7 @@ impl Storage {
             let mut partials = BTreeMap::new();
             for (columns, tensor) in &owner.partials {
                 let kept = PREFILL_SPLIT_K * rows;
-                // SAFETY: forwarded from this function's contract; `scratch` retains the owner.
-                let view = unsafe {
-                    prefix_view(tensor, PREFILL_SPLIT_K * wide, kept, &[kept, *columns])?
-                };
+                let view = prefix(tensor, PREFILL_SPLIT_K * wide, kept, &[kept, *columns])?;
                 partials.insert(*columns, view);
             }
             scratch_partials = Some(partials);
@@ -299,42 +291,29 @@ impl Storage {
         } else {
             None
         };
-        let mut rotary_rows = Vec::new();
-        if let Some(owner) = rotary.as_ref() {
-            for segment in 0..segments {
-                // SAFETY: forwarded from this function's contract; the rows are disjoint.
-                rotary_rows.push(unsafe { super::arena::row_view(owner, segments, segment)? });
-            }
-        }
+        let rotary_rows = match rotary.as_ref() {
+            Some(owner) => super::arena::rows(owner, segments)?,
+            None => Vec::new(),
+        };
         // A worker at least this wide lends its external rows: replays share one stream.
         let external = if worker_external.size() >= rows * hidden {
-            // SAFETY: forwarded from this function's contract; the worker outlives its graphs.
-            unsafe {
-                prefix_view(
-                    worker_external,
-                    worker_external.size() / hidden,
-                    rows,
-                    &[rows * hidden],
-                )?
-            }
+            prefix(
+                worker_external,
+                worker_external.size() / hidden,
+                rows,
+                &[rows * hidden],
+            )?
         } else {
             zeros::<f32>(device, &[rows * hidden])?
         };
-        let mut lane_external = Vec::with_capacity(rows);
-        for lane in 0..rows {
-            // SAFETY: as above.
-            lane_external.push(unsafe { super::arena::row_view(&external, rows, lane)? });
-        }
+        let lane_external = super::arena::rows(&external, rows)?;
         let logits = match wider {
-            // SAFETY: forwarded from this function's contract; every rung lives with the worker.
-            Some(wider) => unsafe {
-                prefix_view(
-                    &wider.logits,
-                    wider.segments,
-                    segments,
-                    &[segments, vocabulary],
-                )?
-            },
+            Some(wider) => prefix(
+                &wider.logits,
+                wider.segments,
+                segments,
+                &[segments, vocabulary],
+            )?,
             None => zeros(device, &[segments, vocabulary])?,
         };
         Ok(Self {
@@ -381,8 +360,7 @@ impl PromptBurst {
     /// Rejects geometries the multi-sequence graph does not cover, and CUDA capture failures.
     #[expect(
         unsafe_code,
-        reason = "Audited segment aliases: the burst retains the wide arena and metadata owner \
-                  beside the graph, and the caller keeps the slot pool alive"
+        reason = "Audited segment aliases: the caller keeps the slot pool alive"
     )]
     pub unsafe fn new(
         device: &CudaDevice,
@@ -400,16 +378,13 @@ impl PromptBurst {
         let segments = programs.len();
         let rows = segments * SEGMENT_ROWS;
         check_covered(segments, weights, hidden)?;
-        // SAFETY: forwarded from this function's contract.
-        let mut storage = unsafe {
-            Storage::allocate(
-                device,
-                graph,
-                weights,
-                (segments, rows, hidden, vocabulary),
-                (wider, worker_external),
-            )?
-        };
+        let mut storage = Storage::allocate(
+            device,
+            graph,
+            weights,
+            (segments, rows, hidden, vocabulary),
+            (wider, worker_external),
+        )?;
         // The worker's workspace already holds its quantization rows; graphs share one stream.
         nvfp4.ensure_width(device, graph, weights, rows)?;
         nvfp4.ensure_width(device, graph, weights, segments)?;

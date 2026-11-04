@@ -64,13 +64,11 @@ impl SlotStates {
             let mut owners = Vec::new();
             for shape in shapes {
                 let size = shape.iter().product::<usize>();
-                let mut root = api::zeros::<f32>(&[width * size])
+                let root = api::zeros::<f32>(&[width * size])
                     .sync_on(&device.stream)
                     .map_err(device_error)?;
-                for (slot, lane) in result.lanes.iter_mut().enumerate() {
-                    let (row, owner) = super::arena::row_tensor(root, width, slot)?;
-                    root = Arc::try_unwrap(owner)
-                        .map_err(|_| Error::invariant("unique pooled state owner"))?;
+                let rows = super::arena::rows(&root, width)?;
+                for (row, lane) in rows.into_iter().zip(result.lanes.iter_mut()) {
                     lane.entry(id)
                         .or_default()
                         .push(row.reshape(&shape).map_err(device_error)?);

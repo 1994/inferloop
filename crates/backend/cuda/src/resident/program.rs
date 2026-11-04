@@ -366,7 +366,7 @@ fn allocate_lane_fusion(
     let owner = api::zeros::<f32>(&[elements])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let external = super::arena::batch_rows(&owner, width)?;
+    let external = super::arena::rows(&owner, width)?;
     let fused = fused_lanes(device, weights)?;
     let mut fusion = Vec::with_capacity(width);
     for lane in 0..width {

@@ -1,5 +1,5 @@
 use super::{PromptOverrides, prompt_rotary_values, stage_metadata_batch};
-use crate::resident::arena::batch_rows;
+use crate::resident::arena::rows as batch_rows;
 use crate::{
     constants::{METADATA_FIELDS, PREFILL_LANES},
     device::{CudaDevice, PinnedUpload, device_error},

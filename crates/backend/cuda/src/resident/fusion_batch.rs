@@ -148,20 +148,18 @@ impl Workspace {
     }
 
     fn copy_row(
-        &mut self,
+        &self,
         scope: &Scope,
         lane: usize,
         normalized: &Tensor<f32>,
     ) -> StdResult<(), DeviceError> {
         let matrix = self
             .input
-            .take()
+            .as_ref()
             .ok_or_else(|| error("fusion batch input"))?;
         let rows = usize::try_from(matrix.shape()[0]).map_err(error)?;
-        let (mut row, owner) = super::arena::row_tensor(matrix, rows, lane).map_err(error)?;
+        let mut row = super::arena::row(matrix, rows, lane).map_err(error)?;
         scope.record(api::memcpy(&mut row, normalized))?;
-        self.input =
-            Some(Arc::try_unwrap(owner).map_err(|_| error("fusion batch input still aliased"))?);
         Ok(())
     }
 }
@@ -238,21 +236,19 @@ pub(super) fn record(
     else {
         return Err(error("fusion batch dense capability"));
     };
-    let mut gathered = workspace
+    let gathered = workspace
         .gathered
-        .take()
+        .as_ref()
         .ok_or_else(|| error("fusion batch gather"))?;
     gather(
         builder,
         scope,
         node,
-        buffer(&gathered)?,
+        buffer(gathered)?,
         buffer(metadata_batch)?,
     )?;
-    for (lane, meta) in metadata.iter().enumerate().take(rows) {
-        // The owned row tensor keeps the gather allocation anchored until it is put back;
-        // `row_tensor` bounds the lane inside the slot and the return re-anchors ownership.
-        let (embedding, owner) = super::arena::row_tensor(gathered, rows, lane).map_err(error)?;
+    let embeddings = super::arena::rows(gathered, rows).map_err(error)?;
+    for ((lane, meta), embedding) in metadata.iter().enumerate().take(rows).zip(embeddings) {
         let normalized = Capture {
             scope,
             arena: &mut *arena,
@@ -269,15 +265,12 @@ pub(super) fn record(
             mode: CaptureMode::Row(lane),
         }
         .fusion_norm(HIDDEN, &embedding)?;
-        gathered =
-            Arc::try_unwrap(owner).map_err(|_| error("fusion batch gather still aliased"))?;
         workspace.copy_row(scope, lane, &normalized)?;
         builder.lane_fusion[lane]
             .as_mut()
             .ok_or_else(|| error("fusion row owner"))?
             .normalized = Some(normalized);
     }
-    workspace.gathered = Some(gathered);
     builder
         .weights
         .kernels

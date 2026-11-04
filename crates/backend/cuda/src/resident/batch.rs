@@ -1,7 +1,7 @@
 //! Node-major verification: consecutive projections reuse weights in cache.
 //! Recurrent checkpoints stay on the device; KV rollback is a logical prefix.
 //! Prefill width 32 keeps one batched arena: auxiliaries record once per node.
-use super::arena::prefix_view;
+use super::arena::prefix;
 use super::buffers::{buffer, kv_cache};
 use super::fusion_batch::Workspace as FusionRows;
 use super::prefill_projection::{DensePlan, record_narrow};
@@ -676,10 +676,6 @@ impl BatchBuilder<'_> {
     /// recurrent workspace and logits row but no second arena. Sharing is sound for the reason
     /// one width's scratch serves every sequence: prompt replays are serialized on the device
     /// stream and nothing reads the scratch after its replay.
-    #[expect(
-        unsafe_code,
-        reason = "Audited scratch alias: the narrower scratch holds its wider owner, and prompt replays through either are serialized on the device stream"
-    )]
     fn narrowed_scratch(
         &self,
         wider: &Arc<Mutex<PromptScratch>>,
@@ -702,11 +698,7 @@ impl BatchBuilder<'_> {
         let mut partials = BTreeMap::new();
         for (rows, tensor) in &owner.partials {
             let kept = PREFILL_SPLIT_K * width;
-            // SAFETY: the returned scratch holds `wider`, which owns every viewed tensor, and
-            // prompt replays through either scratch are serialized on the device stream; the
-            // split rows of `width` lanes lie inside the wider tensor.
-            let view =
-                unsafe { prefix_view(tensor, PREFILL_SPLIT_K * wide, kept, &[kept, *rows])? };
+            let view = prefix(tensor, PREFILL_SPLIT_K * wide, kept, &[kept, *rows])?;
             partials.insert(*rows, view);
         }
         let fusion = match owner.fusion.as_ref() {
@@ -715,10 +707,8 @@ impl BatchBuilder<'_> {
                     .rows()
                     .ok_or_else(|| Error::invariant("fusion workspace rows are taken"))?;
                 let (columns, hidden) = FusionRows::columns();
-                // SAFETY: as above; the leading `width` rows lie inside the wider rows.
-                let input = unsafe { prefix_view(input, wide, width, &[width, columns])? };
-                // SAFETY: as above.
-                let gathered = unsafe { prefix_view(gathered, wide, width, &[width, hidden])? };
+                let input = prefix(input, wide, width, &[width, columns])?;
+                let gathered = prefix(gathered, wide, width, &[width, hidden])?;
                 Some(FusionRows::from_rows(input, gathered))
             }
             None => None,
@@ -2696,13 +2686,8 @@ impl SlotDecodeGraph {
     }
 }
 
-/// One allocation for every prompt lane's metadata, with a non-owning row view per lane.
+/// One allocation for every prompt lane's metadata, with a row view per lane that shares it.
 /// The batched embedding gather reads token ids from this contiguous owner.
-#[expect(
-    unsafe_code,
-    reason = "Audited metadata lane views: the owner is returned and stored with the rows, \
-              each view addresses a disjoint lane, and graphs retain the owner"
-)]
 pub(super) fn batched_metadata(
     device: &CudaDevice,
     width: usize,
@@ -2714,28 +2699,17 @@ pub(super) fn batched_metadata(
     let owner = api::zeros::<i32>(&[elements])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let mut rows = Vec::with_capacity(width);
-    for lane in 0..width {
-        // SAFETY: `owner` is returned to the caller and stored beside `rows` for the
-        // whole graph lifetime; each view addresses one disjoint metadata row.
-        rows.push(unsafe { super::arena::row_view(&owner, width, lane)? });
-    }
+    let rows = super::arena::rows(&owner, width)?;
     Ok((owner, rows))
 }
 
-/// Views of the shared prompt arena and logits row for one program's prompt graphs.
-#[expect(
-    unsafe_code,
-    reason = "Audited prompt alias: graphs retain the shared scratch, and sequences replay prompt graphs one at a time on the device stream, reading their outputs before another starts"
-)]
+/// Views of the shared prompt arena and logits row for one program's prompt graphs. Sharing is
+/// sound because sequences replay prompt graphs one at a time on the device stream, reading their
+/// outputs before another starts.
 fn shared_prompt_views(shared: &PromptScratch) -> Result<(ActivationArena, Option<Tensor<f32>>)> {
     let arena = shared.arena.shared_view()?;
     let row = match &shared.row {
-        Some(row) => {
-            // SAFETY: see the expectation above; one lane spans the whole row.
-            let view = unsafe { super::arena::row_view(row, 1, 0)? };
-            Some(view.reshape(&[1, row.size()]).map_err(device_error)?)
-        }
+        Some(row) => Some(super::arena::alias(row, &[1, row.size()])?),
         None => None,
     };
     Ok((arena, row))

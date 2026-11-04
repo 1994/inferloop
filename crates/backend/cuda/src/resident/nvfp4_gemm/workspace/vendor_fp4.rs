@@ -11,10 +11,6 @@ use cutile::prelude::*;
 use infer_cuda_kernels::tile::projection::fp4_probe::{self, ProbeGeometry};
 
 impl Workspace {
-    #[expect(
-        unsafe_code,
-        reason = "The exclusive, locked prompt arena outlives captures; synchronous preparation completes all alias use"
-    )]
     pub(crate) fn prepare_vendor_down(
         &mut self,
         device: &CudaDevice,
@@ -31,15 +27,11 @@ impl Workspace {
         if !outputs.is_multiple_of(nvfp4::SCALE_ROWS) || !self.vendor_fp4.enabled() {
             return Ok(());
         }
-        // SAFETY: The fused plan never materializes this product; the locked arena retains it
-        // beyond all captures, and all probe/pack accesses are ordered on its owning stream.
-        let Some(mut scratch) = unsafe { Fp4Scratch::new(input, rows, columns) }.map_err(error)?
-        else {
+        // The fused plan never materializes this product, so its memory is free scratch.
+        let Some(mut scratch) = Fp4Scratch::new(input, rows, columns).map_err(error)? else {
             return Ok(());
         };
-        // SAFETY: Preparation keeps the exclusive output owner live until all temporary graphs
-        // complete and are destroyed before this function returns.
-        let mut output = unsafe { Fp4Output::new(output, rows, outputs) }.map_err(error)?;
+        let mut output = Fp4Output::new(output, rows, outputs).map_err(error)?;
         let native = self
             .strategies
             .get(&(
@@ -100,10 +92,6 @@ impl Workspace {
         Ok(())
     }
 
-    #[expect(
-        unsafe_code,
-        reason = "The fused plan proves a sole-consumer product; its source arena outlives every same-stream replay"
-    )]
     pub(crate) fn record_vendor_down(
         &self,
         scope: &Scope,
@@ -117,10 +105,8 @@ impl Workspace {
             return Ok(false);
         }
         let rows = usize::try_from(output.shape()[0]).map_err(error)?;
-        // SAFETY: The fused plan never materializes this product; the locked arena retains it
-        // beyond all captures, and all probe/pack accesses are ordered on its owning stream.
-        let Some(mut scratch) = unsafe { Fp4Scratch::new(input, rows, columns) }.map_err(error)?
-        else {
+        // The fused plan never materializes this product, so its memory is free scratch.
+        let Some(mut scratch) = Fp4Scratch::new(input, rows, columns).map_err(error)? else {
             return Ok(false);
         };
         let (q, qs) = self

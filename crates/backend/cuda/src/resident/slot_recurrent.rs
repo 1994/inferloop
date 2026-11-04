@@ -22,7 +22,6 @@ use infer_cuda_kernels::contract::{
 };
 use infer_ir::{TensorNode, TensorOp};
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 /// Candidate lanes of one slot that the fused kernels cover.
 pub(super) const LANES: usize = 3;
@@ -107,38 +106,20 @@ pub(super) fn allocate_staging(
     let mut staging = Staging::new();
     for (index, node) in nodes.iter().enumerate().filter(|(_, node)| covers(node)) {
         for (input, &id) in commit_inputs(node).iter().enumerate() {
-            let mut root = api::zeros::<f32>(&[arena.get(id)?.size()])
+            let root = api::zeros::<f32>(&[arena.get(id)?.size()])
                 .sync_on(&device.stream)
                 .map_err(device_error)?;
             // Per-slot rows feed the three-lane commit graphs; wider pools commit in one batch.
             for slot in (0..slots).filter(|_| verify == LANES) {
                 let base = slot * LANES;
-                let (first, owner) = staging_row(root, lanes, base)?;
-                let (second, owner) = staging_row(owner, lanes, base + 1)?;
-                let (third, owner) = staging_row(owner, lanes, base + 2)?;
-                root = owner;
-                staging
-                    .entries
-                    .entry((slot, index))
-                    .or_default()
-                    .push([first, second, third]);
+                let row = |lane| super::arena::row(&root, lanes, lane);
+                let rows = [row(base)?, row(base + 1)?, row(base + 2)?];
+                staging.entries.entry((slot, index)).or_default().push(rows);
             }
             staging.roots.insert((index, input), root);
         }
     }
     Ok(staging)
-}
-
-/// Borrow a row while returning the unique parent for its persistent staging anchor.
-fn staging_row(
-    root: Tensor<f32>,
-    lanes: usize,
-    lane: usize,
-) -> infer_core::Result<(Tensor<f32>, Tensor<f32>)> {
-    let (row, owner) = super::arena::row_tensor(root, lanes, lane)?;
-    let root =
-        Arc::try_unwrap(owner).map_err(|_| Error::invariant("unique recurrent staging owner"))?;
-    Ok((row, root))
 }
 
 /// Value-dimension block of the fused kernels: one CTA per value head per split. Every

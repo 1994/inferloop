@@ -5,9 +5,10 @@
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner, Width};
 use crate::contract::recording::{Foreign, Recording};
 use crate::tile::backend_error;
-use cuda_core::sys::{cuMemsetD8Async, cudaError_enum_CUDA_SUCCESS};
+use cuda_core::sys::{CUdeviceptr, cuMemsetD8Async, cudaError_enum_CUDA_SUCCESS};
 use cuda_core::{DType, DeviceCopy, Stream, f4e2m1fnx2, f8e4m3fn};
 use cutile::cuda_async::cuda_graph::GraphLaunch;
+use cutile::cuda_async::device_buffer::DeviceAllocation;
 use cutile::cuda_async::device_context::with_default_device_policy;
 use cutile::cuda_async::device_future::DeviceFuture;
 use cutile::cuda_async::device_operation::{ExecutionContext, value};
@@ -16,6 +17,7 @@ use cutile::prelude::*;
 use cutile::tensor::KernelOutputStored;
 use infer_core::{Error, ErrorCode, Result};
 use std::cell::RefCell;
+use std::ops::Range;
 use std::result::Result as StdResult;
 use std::sync::{Arc, Mutex};
 use transfer::Inflight;
@@ -109,10 +111,106 @@ impl<T: DType> Allocation<T> {
         unsafe { Buffer::owned(address, self.len(), &self.owner) }
     }
 
+    /// Share the memory of a tensor the host still holds, while it migrates away from cuTile
+    /// types. Writes through either side reach the other, as with a clone of an allocation.
+    /// # Errors
+    /// Rejects storage that is not contiguous, which a buffer cannot describe.
+    #[expect(
+        unsafe_code,
+        reason = "The alias is an allocation, which leaves aliasing between operands to the caller"
+    )]
+    pub fn share(tensor: &Tensor<T>) -> Result<Self> {
+        // SAFETY: the alias holds the tensor's storage. Avoiding a launch that writes one side
+        // while it reads or writes the other is the obligation every allocation already states.
+        Self::adopt(unsafe { tensor.into_shared_alias() })
+    }
+
     /// The tensor behind this allocation, for code that has not migrated yet.
     #[must_use]
     pub const fn tensor(&self) -> &Arc<Tensor<T>> {
         &self.tensor
+    }
+
+    /// Elements `range` as a contiguous tensor of `shape`, holding a share of this memory, so the
+    /// view stays valid whatever happens to the allocation it came from. Transitional, for
+    /// recordings that still take cuTile tensors.
+    /// # Errors
+    /// Rejects a range outside the allocation, and a shape that does not cover the range.
+    #[expect(
+        unsafe_code,
+        reason = "The view owns the memory it addresses, and its range is checked against it"
+    )]
+    pub fn view(&self, range: Range<usize>, shape: &[usize]) -> Result<Tensor<T>> {
+        let len = range
+            .end
+            .checked_sub(range.start)
+            .filter(|_| range.end <= self.len())
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "view {range:?} of an allocation of {} elements",
+                    self.len()
+                ))
+            })?;
+        if shape
+            .iter()
+            .try_fold(1usize, |all, &dim| all.checked_mul(dim))
+            != Some(len)
+        {
+            return Err(Error::invalid(format!(
+                "view shape {shape:?} does not cover {len} elements"
+            )));
+        }
+        let width = size_of::<T>();
+        let offset = range
+            .start
+            .checked_mul(width)
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or_else(|| Error::invalid("view offset overflows"))?;
+        let dims = shape
+            .iter()
+            .map(|&dim| i32::try_from(dim).map_err(|_| Error::invalid("view dimension")))
+            .collect::<Result<Vec<_>>>()?;
+        let mut strides = vec![1i32; dims.len()];
+        for axis in (0..dims.len().saturating_sub(1)).rev() {
+            strides[axis] = strides[axis + 1]
+                .checked_mul(dims[axis + 1])
+                .ok_or_else(|| Error::invalid("view strides"))?;
+        }
+        let memory = View {
+            pointer: self.tensor.device_pointer().cu_deviceptr() + offset,
+            bytes: len * width,
+            memory: self.clone(),
+        };
+        // SAFETY: `memory` owns the allocation, so it outlives the tensor, and its bytes lie
+        // inside the allocation, as checked above. The strides are contiguous over `shape`.
+        Ok(unsafe { Tensor::from_foreign(Arc::new(memory), dims, strides) })
+    }
+}
+
+/// A range of an allocation as cuTile sees it; holding the allocation keeps the range valid.
+struct View<T: DType> {
+    memory: Allocation<T>,
+    pointer: CUdeviceptr,
+    bytes: usize,
+}
+
+#[expect(
+    unsafe_code,
+    reason = "`memory` keeps the allocation alive and `Allocation::view` checks the range"
+)]
+// SAFETY: the getters are constant, and `pointer`/`bytes` lie inside `memory`, which this value
+// keeps alive, as `Allocation::view` checked when it made them.
+unsafe impl<T: DType> DeviceAllocation for View<T> {
+    fn device_ptr(&self) -> CUdeviceptr {
+        self.pointer
+    }
+
+    fn len_bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn device_id(&self) -> usize {
+        self.memory.device()
     }
 }
 
