@@ -146,11 +146,12 @@ impl Fixture {
                 let [lanes, rows, columns] = self.shape;
                 let output = self.arena.output(output_slot).map_err(capture_error)?;
                 let mut output = output.reshape(&[lanes, rows])?;
+                let input_slot = self.arena.slot(id(1)).map_err(capture_error)?;
                 let input = self
                     .arena
-                    .view(id(1))
+                    .output(input_slot)
                     .map_err(capture_error)?
-                    .view(&[lanes, columns])?;
+                    .reshape(&[lanes, columns])?;
                 let ProjectionWeight::Dense(weight) = &self.weights.projections[&node.inputs[1]]
                 else {
                     unreachable!()
@@ -196,7 +197,7 @@ impl Fixture {
     fn outputs(&self, device: &CudaDevice) -> TestResult<Vec<Vec<f32>>> {
         [3, 5]
             .into_iter()
-            .map(|output| Ok(device.read_borrowed(self.arena.view(id(output))?)?))
+            .map(|output| Ok(device.read_buffer(self.arena.activation(id(output))?)?))
             .collect()
     }
 
@@ -323,7 +324,7 @@ fn case(device: &CudaDevice, shape: [usize; 3]) -> TestResult {
         }
     }
     assert_eq!(
-        device.read_borrowed(fixture.arena.view(id(1))?)?,
+        device.read_buffer::<f32>(fixture.arena.activation(id(1))?)?,
         fixture.input
     );
     println!(

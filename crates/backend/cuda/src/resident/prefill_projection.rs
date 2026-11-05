@@ -1,5 +1,5 @@
 mod dense;
-use super::buffers::{RowMajor, buffer, tensor_rows};
+use super::buffers::{RowMajor, buffer};
 use super::prompt_scratch::Partials;
 use super::{ProgramWeights, capture::error};
 use crate::constants::PREFILL_GEMM_TILE_K;
@@ -319,9 +319,8 @@ fn record_fused_mlp(
             .ok_or_else(|| error("fused SwiGLU projection"))
     };
     let width = arena.lanes();
-    let input = arena.view(gate.inputs[0]).map_err(error)?;
-    let columns = input.size() / width;
-    let input = buffer(input)?;
+    let input = arena.activation(gate.inputs[0]).map_err(error)?;
+    let columns = input.len() / width;
     let hidden = arena.get(gate.outputs[0]).map_err(error)?.len() / width;
     nvfp4.record_gate_up_swiglu(
         (&weights.kernels, scope),
@@ -397,9 +396,8 @@ fn record_swiglu(
     let width = arena.lanes();
     let output = arena.activation(node.outputs[0]).map_err(error)?;
     let output = RowMajor::new(output, width, output.len() / width)?;
-    let gate = arena.view(gate).map_err(error)?;
-    let columns = gate.size() / width;
-    let gate = buffer(gate)?;
+    let gate = arena.activation(gate).map_err(error)?;
+    let columns = gate.len() / width;
     let up = arena.activation(up).map_err(error)?;
     nvfp4.record_swiglu_input(
         (&weights.kernels, scope),
@@ -430,12 +428,11 @@ pub(super) fn record(
         return Err(error("prefill32 constant linear input"));
     }
     let width = arena.lanes();
-    let slot = arena.slot(node.outputs[0]).map_err(error)?;
-    let output = arena.output(slot).map_err(error)?;
-    let flat = output.size();
-    let output = output.reshape(&[width, flat / width])?;
-    let flat_input = arena.view(node.inputs[0]).map_err(error)?;
-    let columns = flat_input.size() / width;
+    let output = arena.activation(node.outputs[0]).map_err(error)?;
+    let flat = output.len();
+    let output = RowMajor::new(output, width, flat / width)?;
+    let flat_input = arena.activation(node.inputs[0]).map_err(error)?;
+    let columns = flat_input.len() / width;
     let weight = weights
         .projections
         .get(&node.inputs[1])
@@ -445,8 +442,8 @@ pub(super) fn record(
         nvfp4,
         weight,
         weights.activation_quantization(node.inputs[1]),
-        buffer(flat_input)?,
-        tensor_rows(&output)?,
+        flat_input,
+        output,
         columns,
     )? {
         return Ok(());
@@ -460,7 +457,7 @@ pub(super) fn record(
                 scope,
                 weights,
                 (flat_input, w),
-                &output,
+                output,
                 (width, flat / width, columns),
                 (nvfp4, delegated),
             )?;
@@ -477,8 +474,8 @@ pub(super) fn record(
                         columns,
                         tile: [PREFILL_LANES, PREFILL_GEMM_TILE_N],
                     },
-                    buffer(&output)?,
-                    buffer(flat_input)?,
+                    output.buffer,
+                    flat_input,
                     weight.weight_ref()?,
                 )
                 .map_err(error)?;
@@ -487,8 +484,8 @@ pub(super) fn record(
             record_legacy_fp4(
                 (&weights.kernels, scope),
                 weight,
-                buffer(flat_input)?,
-                &output,
+                flat_input,
+                output.buffer,
                 partials,
                 (width, columns),
             )?;
@@ -538,15 +535,15 @@ fn pair_slots(
 fn record_prompt_dense(
     scope: &Scope,
     weights: &ProgramWeights,
-    (input, w): (&Tensor<f32>, &Matrix<bf16>),
-    output: &Tensor<f32>,
+    (input, w): (Buffer<'_, f32>, &Matrix<bf16>),
+    output: RowMajor<'_, f32>,
     (width, rows, columns): (usize, usize, usize),
     (nvfp4, delegated): (&super::nvfp4_gemm::Workspace, Option<&mut Support>),
 ) -> Result<(), DeviceError> {
     if records_precise_sparse(
         (&weights.kernels, scope),
         weights,
-        (buffer(output)?, buffer(input)?, buffer(w)?),
+        (output.buffer, input, buffer(w)?),
         columns,
     )? {
         return Ok(());
@@ -558,7 +555,7 @@ fn record_prompt_dense(
         delegated,
         input,
         w,
-        output,
+        output.buffer,
         (width, rows, columns),
     )? {
         return Ok(());
@@ -568,8 +565,8 @@ fn record_prompt_dense(
         return choice.record(
             (&weights.kernels, scope),
             w,
-            buffer(input)?,
-            tensor_rows(output)?,
+            input,
+            output,
             columns,
             LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS).map_err(error)?,
         );
@@ -587,8 +584,8 @@ fn record_prompt_dense(
                 outputs: rows,
                 columns,
             },
-            buffer(output)?,
-            buffer(input)?,
+            output.buffer,
+            input,
             buffer(w)?,
         )
         .map_err(error)
@@ -656,14 +653,14 @@ fn record_legacy_fp4(
     (contract, scope): (&Kernels, &Scope),
     weight: &ProjectionWeight,
     input: Buffer<'_, f32>,
-    output: &Tensor<f32>,
+    output: Buffer<'_, f32>,
     partials: &Partials,
     (width, columns): (usize, usize),
 ) -> Result<(), DeviceError> {
     if width != PREFILL_LANES {
         return Err(error("legacy FP4 split prefill requires width 32"));
     }
-    let rows = output.size() / width;
+    let rows = output.len() / width;
     let partial = partials.buffer(rows).map_err(error)?;
     let windows = columns.div_ceil(PREFILL_GEMM_TILE_K);
     let k_tiles = i32::try_from(windows.div_ceil(PREFILL_SPLIT_K))
@@ -682,7 +679,7 @@ fn record_legacy_fp4(
                 k_tiles,
                 splits: i32::try_from(PREFILL_SPLIT_K).map_err(|_| error("prefill split count"))?,
             },
-            buffer(output)?,
+            output,
             partial,
             input,
             weight.weight_ref()?,
@@ -694,21 +691,15 @@ fn record_legacy_fp4(
 fn records_vendor_gemm(
     target: (&Kernels, &Scope),
     delegated: Option<&mut Support>,
-    input: &Tensor<f32>,
+    input: Buffer<'_, f32>,
     weight: &Matrix<bf16>,
-    output: &Tensor<f32>,
+    output: Buffer<'_, f32>,
     (width, rows, columns): (usize, usize, usize),
 ) -> Result<bool, DeviceError> {
     let Some(delegated) = delegated else {
         return Ok(false);
     };
-    delegated.record_dense(
-        target,
-        buffer(input)?,
-        weight,
-        buffer(output)?,
-        (width, rows, columns),
-    )
+    delegated.record_dense(target, input, weight, output, (width, rows, columns))
 }
 
 // Preserve F32 router inputs through a high BF16 term and a low residual term.

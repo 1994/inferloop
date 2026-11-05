@@ -1,7 +1,7 @@
 //! cuTile implementation of the projection family.
 use super::{
-    BLOCK_BYTES, entries, fp8_gemm, fp8_quant_reduction, linear, linear_batch, nvfp4_gemm,
-    pool_gemv, prefill_gemm, prompt_logits, small_gemm, swizzle, vendor_fp8,
+    BLOCK_BYTES, compensated_gemm, entries, fp8_gemm, fp8_quant_reduction, linear, linear_batch,
+    nvfp4_gemm, pool_gemv, prefill_gemm, prompt_logits, small_gemm, swizzle, vendor_fp8,
 };
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::kernels::{Projection, WeightRef};
@@ -273,6 +273,12 @@ impl Projection for TileProjection {
                 .record(
                     prefill_gemm::dense_n16((&mut out).partition(tile), &x, &w)
                         .generics(vec![columns.to_string()]),
+                )
+                .map(drop),
+            DenseKernel::Compensated => scope
+                .record(
+                    compensated_gemm::dense((&mut out).partition(SMALL_TILE), &x, &w)
+                        .generics(vec![element(), columns.to_string()]),
                 )
                 .map(drop),
         }

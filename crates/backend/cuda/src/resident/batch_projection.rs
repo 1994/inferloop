@@ -1,4 +1,6 @@
-use super::buffers::{buffer, region, tensor_rows};
+use super::buffers::RowMajor;
+#[cfg(test)]
+use super::buffers::buffer;
 use super::{ProgramWeights, batch::Lane, capture::error};
 #[cfg(test)]
 use crate::constants::CB_DECODE_SLOTS;
@@ -8,8 +10,6 @@ use crate::constants::F32_BYTES;
 use crate::constants::FUSED_VERIFY_LANES;
 use crate::constants::GEMV_WIDE_OUTPUT_RATIO;
 use crate::constants::NVFP4_GROUP_SIZE;
-#[cfg(test)]
-use crate::constants::SMALL_GEMM_TILE;
 use crate::constants::SMALL_GEMV_MAX_ROWS;
 use crate::strategy::LinearTiling;
 use crate::tuning::pool_dense;
@@ -17,13 +17,12 @@ use crate::{
     device::{CudaDevice, device_error},
     mlp::ProjectionWeight,
 };
-#[cfg(test)]
-use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, OpId, Result};
-#[cfg(test)]
-use infer_cuda_kernels::contract::LinearRowsPlan;
 use infer_cuda_kernels::contract::{Buffer, Kernels, Recording, RowsKernel, RowsPlan};
+#[cfg(test)]
+use infer_cuda_kernels::contract::{DenseKernel, DenseRowsPlan, LinearRowsPlan};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;
@@ -46,7 +45,7 @@ const VERIFY_OUTPUT_TILE: [usize; 2] = [VERIFY_TILE_ROWS, VERIFY_TILE_COLUMNS];
 
 pub(super) struct Workspace {
     nodes: BTreeMap<OpId, (usize, usize)>,
-    buffers: BTreeMap<(usize, usize), (Tensor<f32>, Tensor<f32>)>,
+    buffers: BTreeMap<(usize, usize), (Allocation<f32>, Allocation<f32>)>,
 }
 
 pub(super) fn allocate(
@@ -89,12 +88,8 @@ pub(super) fn allocate(
         buffers.buffers.insert(
             key,
             (
-                api::zeros::<f32>(&[width, columns])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-                api::zeros::<f32>(&[width, rows])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
+                device.runtime().zeros(width * columns)?,
+                device.runtime().zeros(width * rows)?,
             ),
         );
     }
@@ -106,7 +101,7 @@ pub(super) fn record(
     node: &TensorNode,
     lanes: &[Lane],
     weights: &ProgramWeights,
-    buffers: &mut Workspace,
+    buffers: &Workspace,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
 ) -> StdResult<(), DeviceError> {
     let key = buffers
@@ -115,10 +110,10 @@ pub(super) fn record(
         .ok_or_else(|| error("batch workspace key"))?;
     let (input, output) = buffers
         .buffers
-        .get_mut(key)
+        .get(key)
         .ok_or_else(|| error("batch projection workspace"))?;
     let width = lanes.len();
-    let columns = input.size() / width;
+    let columns = input.len() / width;
     let kernels = &weights.kernels.projection;
     let recording = Recording::scope(scope);
     if width == FUSED_VERIFY_LANES {
@@ -126,7 +121,7 @@ pub(super) fn record(
             .pack_three(
                 &recording,
                 columns,
-                buffer(&*input)?,
+                input.operand(),
                 [
                     lane_input(weights, node, &lanes[0])?,
                     lane_input(weights, node, &lanes[1])?,
@@ -140,7 +135,7 @@ pub(super) fn record(
                 .pack_row(
                     &recording,
                     (width, columns),
-                    buffer(&*input)?,
+                    input.operand(),
                     lane_input(weights, node, lane)?,
                     row,
                 )
@@ -151,16 +146,14 @@ pub(super) fn record(
         .projections
         .get(&node.inputs[1])
         .ok_or_else(|| error("batch projection weight"))?;
-    let packed = input.view(&[width, columns]).map_err(error)?;
-    record_projection(
+    record_rows(
         (&weights.kernels, scope),
         nvfp4,
         weight,
         weights.activation_quantization(node.inputs[1]),
-        &packed,
-        input.device_pointer().cu_deviceptr(),
-        output,
-        (columns, width),
+        RowMajor::new(input.operand(), width, columns)?,
+        RowMajor::new(output.operand(), width, output.len() / width)?,
+        width,
     )?;
     let outputs = lanes
         .iter()
@@ -169,14 +162,14 @@ pub(super) fn record(
             lane.arena.buffer(slot).map_err(error)
         })
         .collect::<StdResult<Vec<_>, _>>()?;
-    let packed_columns = output.size() / width;
+    let packed_columns = output.len() / width;
     if let &[first, second, third] = outputs.as_slice() {
         kernels
             .unpack_three(
                 &recording,
                 packed_columns,
                 [first, second, third],
-                buffer(&*output)?,
+                output.operand(),
             )
             .map_err(error)?;
     } else {
@@ -186,7 +179,7 @@ pub(super) fn record(
                     &recording,
                     (width, packed_columns),
                     target,
-                    buffer(&*output)?,
+                    output.operand(),
                     row,
                 )
                 .map_err(error)?;
@@ -210,14 +203,12 @@ pub(super) fn record_slots(
         return Err(error("slot decode constant linear input"));
     }
     let lanes = arena.lanes();
-    let slot = arena.slot(node.outputs[0]).map_err(error)?;
-    let output = arena.output(slot).map_err(error)?;
-    let input = arena.view(node.inputs[0]).map_err(error)?;
-    let input_pointer = input.device_pointer().cu_deviceptr();
-    let columns = input.size() / lanes;
-    let input = input.view(&[lanes, columns]).map_err(error)?;
-    let flat = output.size();
-    let mut output = output.reshape(&[lanes, flat / lanes]).map_err(error)?;
+    let output = arena.activation(node.outputs[0]).map_err(error)?;
+    let flat = output.len();
+    let output = RowMajor::new(output, lanes, flat / lanes)?;
+    let input = arena.activation(node.inputs[0]).map_err(error)?;
+    let columns = input.len() / lanes;
+    let input = RowMajor::new(input, lanes, columns)?;
     let weight = weights
         .projections
         .get(&node.inputs[1])
@@ -228,8 +219,8 @@ pub(super) fn record_slots(
         node,
         weights,
         weight,
-        region(input_pointer, lanes * columns),
-        &output,
+        input.buffer,
+        output.buffer,
         columns,
     )? {
         return Ok(());
@@ -246,8 +237,8 @@ pub(super) fn record_slots(
         if super::pool_gemv::record(
             (&weights.kernels, scope),
             weight,
-            region(input_pointer, lanes * columns),
-            tensor_rows(&output)?,
+            input.buffer,
+            output,
             columns,
             tile,
             choice,
@@ -261,88 +252,49 @@ pub(super) fn record_slots(
         nvfp4,
         weight,
         weights.activation_quantization(node.inputs[1]),
-        region(input_pointer, lanes * columns),
-        tensor_rows(&output)?,
+        input.buffer,
+        output,
         columns,
     )? {
-        record_projection(
+        record_rows(
             (&weights.kernels, scope),
             nvfp4,
             weight,
             weights.activation_quantization(node.inputs[1]),
-            &input,
-            input_pointer,
-            &mut output,
-            (columns, arithmetic_rows.unwrap_or(lanes)),
+            input,
+            output,
+            arithmetic_rows.unwrap_or(lanes),
         )?;
     }
     Ok(())
 }
 
-/// Project an already gathered `[rows, columns]` matrix.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "The view does not expose its address, so it is passed alongside"
-)]
+/// Project an already gathered `[rows, columns]` matrix into `output`; `arithmetic_rows` is
+/// the row count the kernel choice prices.
 pub(super) fn record_rows(
     (kernels, scope): (&Kernels, &Scope),
     nvfp4: &mut super::nvfp4_gemm::Workspace,
     weight: &ProjectionWeight,
     input_scale: Option<super::program::ActivationQuantization>,
-    input: &TensorView<'_, f32>,
-    input_pointer: u64,
-    output: &mut Tensor<f32>,
-    geometry: (usize, usize),
+    input: RowMajor<'_, f32>,
+    output: RowMajor<'_, f32>,
+    arithmetic_rows: usize,
 ) -> StdResult<(), DeviceError> {
-    record_projection(
-        (kernels, scope),
-        nvfp4,
-        weight,
-        input_scale,
-        input,
-        input_pointer,
-        output,
-        geometry,
-    )
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "The view does not expose its address, so it is passed alongside"
-)]
-#[cfg_attr(
-    not(test),
-    expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "Only the test-only precise candidate partitions the output in place"
-    )
-)]
-fn record_projection(
-    (kernels, scope): (&Kernels, &Scope),
-    nvfp4: &mut super::nvfp4_gemm::Workspace,
-    weight: &ProjectionWeight,
-    input_scale: Option<super::program::ActivationQuantization>,
-    x: &TensorView<'_, f32>,
-    x_pointer: u64,
-    output: &mut Tensor<f32>,
-    (columns, arithmetic_rows): (usize, usize),
-) -> StdResult<(), DeviceError> {
-    let rows = usize::try_from(x.shape()[0]).map_err(error)?;
-    let input = region(x_pointer, rows * columns);
+    let (rows, columns) = (input.rows, input.columns);
     if super::nvfp4_gemm::record(
         (kernels, scope),
         nvfp4,
         weight,
         input_scale,
-        input,
-        tensor_rows(output)?,
+        input.buffer,
+        output,
         columns,
     )? {
         return Ok(());
     }
     // Tensor cores amortize weights across candidate rows. Keep the measured
     // GEMV path for narrow batches with a very wide output (e.g. a vocabulary head).
-    let outputs = output.size() / rows;
+    let outputs = output.columns;
     let small = arithmetic_rows > SMALL_GEMV_MAX_ROWS
         || outputs <= columns.saturating_mul(GEMV_WIDE_OUTPUT_RATIO);
     #[cfg(test)]
@@ -354,15 +306,21 @@ fn record_projection(
         let ProjectionWeight::Dense(w) = weight else {
             return Err(error("precise dense weight"));
         };
-        scope.record(
-            super::small_gemm::precise_kernels::dense(
-                output.partition(SMALL_GEMM_TILE),
-                x,
-                w.tensor(),
+        return kernels
+            .projection
+            .dense(
+                &Recording::scope(scope),
+                &DenseRowsPlan {
+                    kernel: DenseKernel::Compensated,
+                    rows,
+                    outputs,
+                    columns,
+                },
+                output.buffer,
+                input.buffer,
+                buffer(w)?,
             )
-            .generics(vec![bf16::DTYPE.as_str().into(), columns.to_string()]),
-        )?;
-        return Ok(());
+            .map_err(error);
     }
     let kernel = if small
         && matches!(
@@ -388,8 +346,8 @@ fn record_projection(
                 outputs,
                 columns,
             },
-            buffer(&*output)?,
-            region(x_pointer, rows * columns),
+            output.buffer,
+            input.buffer,
             weight.weight_ref()?,
         )
         .map_err(error)
@@ -400,10 +358,10 @@ fn lane_input<'a>(
     node: &TensorNode,
     lane: &'a Lane,
 ) -> StdResult<Buffer<'a, f32>, DeviceError> {
-    match weights.constants.get(&node.inputs[0]) {
-        Some(value) => Ok(value.buffer()),
-        None => buffer(lane.arena.view(node.inputs[0]).map_err(error)?),
-    }
+    weights.constants.get(&node.inputs[0]).map_or_else(
+        || lane.arena.activation(node.inputs[0]).map_err(error),
+        |value| Ok(value.buffer()),
+    )
 }
 
 /// The four-row kernel consumes the existing slot matrix without additional copies.
@@ -415,7 +373,7 @@ fn record_pool_small_f32(
     weights: &ProgramWeights,
     weight: &ProjectionWeight,
     input: Buffer<'_, f32>,
-    output: &Tensor<f32>,
+    output: Buffer<'_, f32>,
     columns: usize,
 ) -> StdResult<bool, DeviceError> {
     let rows = input.len() / columns.max(1);
@@ -423,7 +381,7 @@ fn record_pool_small_f32(
         || !super::small_gemm::pool_f32_enabled()
         || weights.activation_quantization(node.inputs[1]).is_some()
         || columns == 0
-        || output.size() / rows > columns.saturating_mul(GEMV_WIDE_OUTPUT_RATIO)
+        || output.len() / rows > columns.saturating_mul(GEMV_WIDE_OUTPUT_RATIO)
     {
         return Ok(false);
     }
@@ -447,7 +405,7 @@ fn record_pool_small_f32(
                 depth: tile.columns(),
                 columns,
             },
-            buffer(output)?,
+            output,
             input,
             buffer(weight)?,
         )

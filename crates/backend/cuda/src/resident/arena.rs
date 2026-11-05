@@ -338,20 +338,6 @@ impl ActivationArena {
         self.memory(self.slot(id)?)
     }
 
-    /// Activation `id` as a tensor, for kernels still launched through cuTile.
-    /// # Errors
-    /// Rejects tensors which are not graph activations.
-    pub(crate) fn view(&self, id: TensorId) -> Result<&Tensor<f32>> {
-        self.tensor(self.slot(id)?)
-    }
-
-    /// Slot `index` as a tensor, for kernels still launched through cuTile.
-    /// # Errors
-    /// Rejects an index outside the arena.
-    pub(crate) fn tensor(&self, index: usize) -> Result<&Tensor<f32>> {
-        self.at(index).map(|slot| &slot.view)
-    }
-
     /// Activation `id` as a kernel operand, kept alive by any recording that retains it.
     /// # Errors
     /// Rejects tensors which are not graph activations.
@@ -441,14 +427,6 @@ impl SlotMemory {
     pub(crate) fn allocation(&self) -> Result<Allocation<f32>> {
         self.memory.slice(self.offset..self.offset + self.len)
     }
-
-    /// The memory shaped `shape`, for the test-only taps and kernels still launched through cuTile.
-    /// # Errors
-    /// Rejects a shape that does not cover the memory.
-    #[cfg(test)]
-    pub(crate) fn tensor(&self, shape: &[usize]) -> Result<Tensor<f32>> {
-        self.memory.view(self.offset..self.offset + self.len, shape)
-    }
 }
 
 /// Elements `offset..offset + len` of an allocation that every view of the slot shares.
@@ -456,18 +434,17 @@ struct Slot {
     memory: Allocation<f32>,
     offset: usize,
     len: usize,
-    /// The range as a tensor, for kernels still launched through cuTile.
-    view: Tensor<f32>,
 }
 
 impl Slot {
     fn new(memory: Allocation<f32>, offset: usize, len: usize) -> Result<Self> {
-        let view = slot_tensor(&memory, offset, len)?;
+        if offset.checked_add(len).is_none_or(|end| end > memory.len()) {
+            return Err(Error::invalid("activation slot range"));
+        }
         Ok(Self {
             memory,
             offset,
             len,
-            view,
         })
     }
 

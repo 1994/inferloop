@@ -302,6 +302,9 @@ pub enum DenseKernel {
     Prompt { tile: [usize; 2] },
     /// The prompt GEMM over a tile of sixteen outputs.
     PromptNarrow { tile: [usize; 2] },
+    /// The small-matrix tile over a three-term BF16 split of the input with compensated
+    /// accumulation: an arithmetic diagnostic, not a production choice.
+    Compensated,
 }
 
 /// Token embedding lookup, or the external input when `external` and the metadata asks for it.

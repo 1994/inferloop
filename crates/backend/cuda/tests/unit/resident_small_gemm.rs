@@ -3,6 +3,7 @@ use crate::device::CudaDevice;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::{half::bf16, prelude::*};
+use infer_cuda_kernels::tile::projection::compensated_gemm;
 use infer_cuda_kernels::tile::projection::linear::dense;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::env::var;
@@ -251,7 +252,7 @@ fn checkpoint_small_outputs(
     let matrix = device.upload(input.to_vec(), &[4, columns])?;
     let single = device.upload(input[..columns].to_vec(), &[1, columns])?;
     let vector = device.upload(input[..columns].to_vec(), &[columns])?;
-    let multi = super::precise_kernels::dense(
+    let multi = compensated_gemm::dense(
         api::zeros::<f32>(&[4, outputs]).partition([16, 32]),
         &matrix,
         weight,
@@ -260,7 +261,7 @@ fn checkpoint_small_outputs(
     .first()
     .unpartition()
     .sync_on(&device.stream)?;
-    let one = super::precise_kernels::dense(
+    let one = compensated_gemm::dense(
         api::zeros::<f32>(&[1, outputs]).partition([16, 32]),
         &single,
         weight,

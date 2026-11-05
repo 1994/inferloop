@@ -1,4 +1,5 @@
 //! Dense, batched, quantized and vendor projections.
+mod compensated_gemm_kernels;
 mod contract;
 pub mod fp4_probe;
 mod fp8_gemm_kernels;
@@ -14,6 +15,7 @@ mod prompt_logits_kernels;
 mod small_gemm_kernels;
 mod vendor_fp8_kernels;
 
+pub use compensated_gemm_kernels::kernels as compensated_gemm;
 pub use contract::TileProjection;
 pub(in crate::tile) use contract::{retyped_bf16, retyped_fp8};
 pub use fp8_gemm_kernels::kernels as fp8_gemm;
