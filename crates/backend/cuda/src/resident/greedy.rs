@@ -139,7 +139,7 @@ impl Greedy {
 
     pub(crate) async fn read_async(&mut self, device: &CudaDevice) -> Result<Vec<u32>> {
         let values = device
-            .read_async(self.tokens.tensor(), &mut self.readbacks)
+            .read_allocation(&self.tokens, &mut self.readbacks)
             .await?;
         self.decode_values(&values)
     }

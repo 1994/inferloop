@@ -269,27 +269,18 @@ impl ProjectionWeight {
     /// # Errors
     /// Rejects incompatible projection dimensions or failed CUDA execution.
     pub fn apply(&self, device: &CudaDevice, input: &[f32]) -> Result<Vec<f32>> {
-        let vector = device.upload(input.to_vec(), &[input.len()])?;
+        let vector = device.runtime().upload(input.to_vec())?;
         let tile = LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS)?;
         let output = match self {
-            Self::Dense(weights) => device.matvec_tiled(vector, weights.tensor().clone(), tile)?,
-            Self::Fp8(weights, scales) => device.fp8_matvec(
-                vector,
-                weights.tensor().clone(),
-                scales.tensor().clone(),
-                tile,
-            )?,
+            Self::Dense(weights) => device.matvec_tiled(&vector, weights, tile)?,
+            Self::Fp8(weights, scales) => device.fp8_matvec(&vector, weights, scales, tile)?,
             Self::Fp8Block(..) => {
                 return Err(Error::unsupported("block FP8 has no host matvec fallback"));
             }
-            Self::Fp4(weights, scales, global) => device.nvfp4_matvec(
-                vector,
-                weights.tensor().clone(),
-                scales.tensor().clone(),
-                *global,
-                tile,
-            )?,
+            Self::Fp4(weights, scales, global) => {
+                device.nvfp4_matvec(&vector, weights, scales, *global, tile)?
+            }
         };
-        device.read(&output)
+        device.runtime().read(&output)
     }
 }

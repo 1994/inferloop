@@ -8,7 +8,7 @@ use std::error::Error as StdError;
 #[cfg(cuda_backend)]
 fn main() -> Result<(), Box<dyn StdError>> {
     use cutile::half::bf16;
-    use infer_backend_cuda::{device::CudaDevice, strategy::LinearTiling};
+    use infer_backend_cuda::{device::CudaDevice, mlp::Matrix, strategy::LinearTiling};
     use infer_core::{Error, ModelId};
     use infer_models::{QuantizedPackage, WeightEncoding, convert_float_bytes};
     let root = args()
@@ -50,13 +50,17 @@ fn main() -> Result<(), Box<dyn StdError>> {
     let input = (0..*columns)
         .map(|i| u16::try_from(i % 251).map(|v| (f32::from(v) * 0.17).sin() * 0.2))
         .collect::<Result<Vec<_>, _>>()?;
-    let matrix = device.upload(
+    let matrix = Matrix::upload(
+        &device,
         converted.iter().copied().map(bf16::from_bits).collect(),
         &weight.shape,
     )?;
-    let vector = device.upload(input.clone(), &[*columns])?;
-    let actual =
-        device.read(&device.matvec_tiled(vector, matrix, LinearTiling::new(16, 256)?)?)?;
+    let vector = device.runtime().upload(input.clone())?;
+    let actual = device.runtime().read(&device.matvec_tiled(
+        &vector,
+        &matrix,
+        LinearTiling::new(16, 256)?,
+    )?)?;
     let error = compare(&converted, &input, &actual)?;
     println!(
         "{}",
