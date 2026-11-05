@@ -57,7 +57,7 @@ pub(super) fn record(
     arena: &ActivationArena,
     weights: &ProgramWeights,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
-    (row, metadata): (&mut Tensor<f32>, &Allocation<i32>),
+    (row, metadata): (&Allocation<f32>, &Allocation<i32>),
 ) -> Result<(), DeviceError> {
     let quantization = weights
         .activation_quantization(node.inputs[1])
@@ -67,7 +67,7 @@ pub(super) fn record(
         .get(&node.inputs[1])
         .ok_or_else(|| error("prompt logits projection"))?;
     let width = arena.lanes();
-    let hidden = row.size();
+    let hidden = row.len();
     {
         let input = arena.get(node.inputs[0]).map_err(error)?;
         weights
@@ -80,7 +80,7 @@ pub(super) fn record(
                     lanes: width,
                     hidden,
                 },
-                buffer(&*row)?,
+                row.operand(),
                 buffer(&input)?,
                 buffer(metadata)?,
             )
@@ -93,7 +93,7 @@ pub(super) fn record(
         nvfp4,
         weight,
         Some(quantization),
-        buffer(&*row)?,
+        row.operand(),
         RowMajor::new(output, 1, output.len())?,
         hidden,
     )?;

@@ -495,31 +495,6 @@ fn slot_tensor(memory: &Allocation<f32>, offset: usize, len: usize) -> Result<Te
     memory.view(offset..end, &[len])
 }
 
-/// Every row of `memory` taken as `lanes` concatenated rows, each holding a share of it, so a
-/// row stays valid whatever happens to any other handle. Rows are disjoint, so each can be a
-/// launch's output.
-///
-/// # Errors
-/// Rejects zero lanes and memory that does not divide into `lanes` rows.
-pub(super) fn rows<T: DType>(memory: &Allocation<T>, lanes: usize) -> Result<Vec<Tensor<T>>> {
-    if lanes == 0 || !memory.len().is_multiple_of(lanes) {
-        return Err(Error::invalid("activation slot is not batched"));
-    }
-    let size = memory.len() / lanes;
-    (0..lanes)
-        .map(|lane| memory.view(lane * size..(lane + 1) * size, &[size]))
-        .collect()
-}
-
-/// All of `memory` shaped `shape`, as the one tensor a kernel may write it through; its storage
-/// is its own, so cuTile can partition it mutably.
-///
-/// # Errors
-/// Rejects a shape that does not cover the memory.
-pub(super) fn whole<T: DType>(memory: &Allocation<T>, shape: &[usize]) -> Result<Tensor<T>> {
-    memory.view(0..memory.len(), shape)
-}
-
 /// Float and byte views of an unused fused FP4 product, both holding the arena's memory: the
 /// probe writes the floats, then scale packing reuses the bytes, ordered on the owning stream.
 pub(super) struct Fp4Scratch {
