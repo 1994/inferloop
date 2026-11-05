@@ -288,15 +288,10 @@ fn gather_kv_into<M: Width, D: Operand<Marker = M> + ?Sized, S: Operand<Marker =
     {
         return Err(Error::invariant("slot export beyond the slot's KV"));
     }
+    let mut runs = Vec::new();
     for head in 0..heads {
         match blocks {
-            None => device.copy_d2d_at(
-                dst,
-                src,
-                head * rows * dim,
-                head * physical * dim,
-                rows * dim,
-            )?,
+            None => runs.push((head * rows * dim, head * physical * dim, rows * dim)),
             Some(blocks) => {
                 for (index, &block) in blocks
                     .iter()
@@ -306,18 +301,16 @@ fn gather_kv_into<M: Width, D: Operand<Marker = M> + ?Sized, S: Operand<Marker =
                     let start = index * KV_BLOCK_TOKENS;
                     let count = KV_BLOCK_TOKENS.min(rows - start);
                     let block = usize::try_from(block).map_err(device_error)?;
-                    device.copy_d2d_at(
-                        dst,
-                        src,
+                    runs.push((
                         (head * rows + start) * dim,
                         (head * physical + block * KV_BLOCK_TOKENS) * dim,
                         count * dim,
-                    )?;
+                    ));
                 }
             }
         }
     }
-    Ok(())
+    device.copy_d2d_runs(dst, src, runs)
 }
 
 /// Device bytes one slot's state tensors occupy: f32 states plus fp8 KV caches.
@@ -1416,22 +1409,20 @@ impl SlotPool {
             return Err(Error::invariant("slot bind paged KV layout"));
         }
         let dim = target.dim;
-        for (dst, src) in [(&to.keys, &from.keys), (&to.values, &from.values)] {
-            for head in 0..target.heads {
-                for (index, &physical) in blocks.iter().enumerate().take(rows.div_ceil(block)) {
-                    let count = block.min(rows - index * block);
-                    let physical = usize::try_from(physical).map_err(device_error)?;
-                    device.copy_d2d_at(
-                        dst,
-                        src,
-                        (head * target.rows + physical * block) * dim,
-                        (head * source.rows + index * block) * dim,
-                        count * dim,
-                    )?;
-                }
+        let mut runs = Vec::new();
+        for head in 0..target.heads {
+            for (index, &physical) in blocks.iter().enumerate().take(rows.div_ceil(block)) {
+                let count = block.min(rows - index * block);
+                let physical = usize::try_from(physical).map_err(device_error)?;
+                runs.push((
+                    (head * target.rows + physical * block) * dim,
+                    (head * source.rows + index * block) * dim,
+                    count * dim,
+                ));
             }
         }
-        Ok(())
+        device.copy_d2d_runs(&to.keys, &from.keys, runs.iter().copied())?;
+        device.copy_d2d_runs(&to.values, &from.values, runs)
     }
 
     /// fp8 twin of [`Self::copy_kv_states`].
@@ -1499,18 +1490,17 @@ impl SlotPool {
         let elements = rows
             .checked_mul(head_dim)
             .ok_or_else(|| Error::invalid("slot bind copy overflow"))?;
-        for head in 0..heads {
-            device.copy_d2d_at(
-                dst,
-                src,
-                head.checked_mul(dst_stride)
-                    .ok_or_else(|| Error::invalid("slot bind copy overflow"))?,
-                head.checked_mul(src_stride)
-                    .ok_or_else(|| Error::invalid("slot bind copy overflow"))?,
-                elements,
-            )?;
-        }
-        Ok(())
+        let runs = (0..heads)
+            .map(|head| {
+                let overflow = || Error::invalid("slot bind copy overflow");
+                Ok((
+                    head.checked_mul(dst_stride).ok_or_else(overflow)?,
+                    head.checked_mul(src_stride).ok_or_else(overflow)?,
+                    elements,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        device.copy_d2d_runs(dst, src, runs)
     }
 
     /// Copy one conv/delta state family whole; both sides share one capacity-free layout.

@@ -516,22 +516,46 @@ impl CudaDevice {
         src_offset: usize,
         elements: usize,
     ) -> Result<()> {
+        self.copy_d2d_runs(dst, src, [(dst_offset, src_offset, elements)])
+    }
+
+    /// Copy every `(dst_offset, src_offset, elements)` run of `src` into `dst` as one batch on
+    /// this device's stream: owners are retained once for the batch, so a block-by-block KV
+    /// copy costs one completion event rather than one per block.
+    /// # Errors
+    /// Rejects a run outside either operand or a copy the driver does not enqueue.
+    pub fn copy_d2d_runs<
+        M: Width,
+        D: Operand<Marker = M> + ?Sized,
+        S: Operand<Marker = M> + ?Sized,
+    >(
+        &self,
+        dst: &D,
+        src: &S,
+        runs: impl IntoIterator<Item = (usize, usize, usize)>,
+    ) -> Result<()> {
         let outside = || InferError::invalid("device copy range outside tensor");
-        let range = |offset: usize| {
+        let range = |offset: usize, elements: usize| {
             offset
                 .checked_add(elements)
                 .map(|end| offset..end)
                 .ok_or_else(outside)
         };
-        let dst = buffer(dst)
-            .map_err(device_error)?
-            .slice(range(dst_offset)?)
-            .map_err(|_| outside())?;
-        let src = buffer(src)
-            .map_err(device_error)?
-            .slice(range(src_offset)?)
-            .map_err(|_| outside())?;
-        self.runtime.enqueue(|transfers| transfers.copy(dst, src))
+        let (dst, src) = (
+            buffer(dst).map_err(device_error)?,
+            buffer(src).map_err(device_error)?,
+        );
+        self.runtime.enqueue(|transfers| {
+            for (dst_offset, src_offset, elements) in runs {
+                transfers.copy(
+                    dst.slice(range(dst_offset, elements)?)
+                        .map_err(|_| outside())?,
+                    src.slice(range(src_offset, elements)?)
+                        .map_err(|_| outside())?,
+                )?;
+            }
+            Ok(())
+        })
     }
 
     /// Image preprocessing stages through its own pinned pool inside a device op and is the last
