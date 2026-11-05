@@ -69,12 +69,12 @@ struct Chunk {
 impl Chunk {
     fn read(device: &CudaDevice, tap: &taps::Entry) -> Result<Self> {
         Ok(Self {
-            query: device.read_borrowed(&tap.query)?,
-            keys: device.read_borrowed(&tap.keys)?,
-            values: device.read_borrowed(&tap.values)?,
-            output: device.read_borrowed(&tap.output)?,
-            metadata: device.read_borrowed(&tap.metadata)?,
-            table: device.read_borrowed(&tap.table)?,
+            query: device.runtime().read(&tap.query)?,
+            keys: device.runtime().read(&tap.keys)?,
+            values: device.runtime().read(&tap.values)?,
+            output: device.runtime().read(&tap.output)?,
+            metadata: device.runtime().read(&tap.metadata)?,
+            table: device.runtime().read(&tap.table)?,
         })
     }
     fn position(&self, lane: usize) -> Result<Option<usize>> {

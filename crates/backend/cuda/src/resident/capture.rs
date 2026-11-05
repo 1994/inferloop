@@ -10,13 +10,9 @@ use crate::constants::DEFAULT_TILE_ROWS;
 #[cfg(test)]
 use crate::constants::GEMV_WIDE_OUTPUT_RATIO;
 #[cfg(test)]
-use crate::constants::SMALL_GEMM_TILE;
-#[cfg(test)]
 use crate::mlp::ProjectionWeight;
 use crate::strategy::LinearTiling;
 use crate::tuning::gated_norm::options as gated_norm_options;
-#[cfg(test)]
-use cutile::half::bf16;
 use cutile::prelude::*;
 use cutile::tile_kernel::CompileOptions;
 use infer_core::TensorId;
@@ -24,6 +20,8 @@ use infer_cuda_kernels::contract::{
     Bf16, BinaryOp, Buffer, EmbeddingPlan, FusionNormBuffers, FusionNormPlan, FusionShape, Kernels,
     NormBuffers, NormLayout, NormPlan, Recording, SplitPlan, UnaryOp,
 };
+#[cfg(test)]
+use infer_cuda_kernels::contract::{DenseKernel, DenseRowsPlan};
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::fmt::Display;
 
@@ -142,12 +140,12 @@ impl Capture<'_> {
         if let Some(value) = self.weights.constants.get(&id) {
             return Ok(region(value.buffer().address(), value.len()));
         }
-        let tensor = self.arena.view(id).map_err(error)?;
-        let base = tensor.device_pointer().cu_deviceptr();
+        let slot = self.arena.activation(id).map_err(error)?;
+        let base = slot.address();
         let CaptureMode::Row(lane) = self.mode else {
-            return Ok(region(base, tensor.size()));
+            return Ok(region(base, slot.len()));
         };
-        let row = tensor.size() / self.arena.lanes();
+        let row = slot.len() / self.arena.lanes();
         let offset = u64::try_from(lane * row * size_of::<f32>()).map_err(error)?;
         Ok(region(base + offset, row))
     }
@@ -160,8 +158,8 @@ impl Capture<'_> {
             if self.mode == CaptureMode::Prefill && matches!(node.op, TensorOp::Attention { .. }) {
                 let input = |id| {
                     self.weights.constants.get(&id).map_or_else(
-                        || self.arena.view(id).map_err(error),
-                        |constant| Ok(&**constant.tensor()),
+                        || self.arena.activation(id).map_err(error),
+                        |constant| Ok(constant.buffer()),
                     )
                 };
                 self.attention.taps.inputs(
@@ -342,8 +340,8 @@ impl Capture<'_> {
     /// Prefill width 32 linear nodes never reach here; see `prefill_projection`.
     fn linear(&mut self, node: &TensorNode, output: &SlotMemory) -> Result<(), DeviceError> {
         let input = self.weights.constants.get(&node.inputs[0]).map_or_else(
-            || self.arena.view(node.inputs[0]).map_err(error),
-            |value| Ok(&**value.tensor()),
+            || self.arena.activation(node.inputs[0]).map_err(error),
+            |value| Ok(value.buffer()),
         )?;
         let weights = self
             .weights
@@ -356,9 +354,9 @@ impl Capture<'_> {
                 self.nvfp4,
                 weights,
                 Some(scale),
-                buffer(input)?,
+                input,
                 RowMajor::new(buffer(output)?, 1, output.len())?,
-                input.size(),
+                input.len(),
             )? {
                 return Err(error(
                     "activation quantization and weight encoding disagree",
@@ -369,27 +367,33 @@ impl Capture<'_> {
         #[cfg(test)]
         if self.mode == CaptureMode::Flat
             && super::small_gemm::precise_dense_enabled()
-            && output.len() <= input.size().saturating_mul(GEMV_WIDE_OUTPUT_RATIO)
+            && output.len() <= input.len().saturating_mul(GEMV_WIDE_OUTPUT_RATIO)
             && let ProjectionWeight::Dense(weight) = weights
         {
-            let columns = input.size();
-            let mut matrix = output.tensor(&[1, output.len()]).map_err(error)?;
-            self.scope.record(
-                super::small_gemm::precise_kernels::dense(
-                    (&mut matrix).partition(SMALL_GEMM_TILE),
-                    &input.view(&[1, columns]).map_err(error)?,
-                    weight.tensor(),
+            return self
+                .weights
+                .kernels
+                .projection
+                .dense(
+                    &Recording::scope(self.scope),
+                    &DenseRowsPlan {
+                        kernel: DenseKernel::Compensated,
+                        rows: 1,
+                        outputs: output.len(),
+                        columns: input.len(),
+                    },
+                    buffer(output)?,
+                    input,
+                    buffer(weight)?,
                 )
-                .generics(vec![bf16::DTYPE.as_str().into(), columns.to_string()]),
-            )?;
-            return Ok(());
+                .map_err(error);
         }
         weights.record(
             &self.weights.kernels,
             self.scope,
             buffer(output)?,
-            buffer(input)?,
-            input.size(),
+            input,
+            input.len(),
             self.weights.tiling.get(&node.inputs[1]).copied().unwrap_or(
                 LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS).map_err(error)?,
             ),

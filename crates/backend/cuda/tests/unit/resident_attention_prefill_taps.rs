@@ -1,12 +1,11 @@
 //! Test-only copies around the unchanged attention kernels; allocations precede capture.
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::METADATA_FIELDS;
-use crate::device::device_error;
-use crate::resident::buffers::buffer;
 use crate::{device::CudaDevice, resident::ProgramWeights, tuning::attention::Choice};
-use cutile::prelude::*;
+use cutile::prelude::{DeviceError, Scope};
 use infer_core::{Result, TensorId};
 use infer_cuda_kernels::contract::{Buffer, Recording};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorOp};
 use std::result::Result as StdResult;
 use std::{cell::Cell, collections::BTreeMap};
@@ -34,12 +33,12 @@ pub struct Entry {
     pub capacity: usize,
     pub window: usize,
     pub scales: [f32; 2],
-    pub query: Tensor<f32>,
-    pub keys: Tensor<f32>,
-    pub values: Tensor<f32>,
-    pub output: Tensor<f32>,
-    pub metadata: Tensor<i32>,
-    pub table: Tensor<i32>,
+    pub query: Allocation<f32>,
+    pub keys: Allocation<f32>,
+    pub values: Allocation<f32>,
+    pub output: Allocation<f32>,
+    pub metadata: Allocation<i32>,
+    pub table: Allocation<i32>,
 }
 #[derive(Default)]
 pub struct Taps {
@@ -73,11 +72,7 @@ impl Taps {
             let Some(&scales) = weights.kv_scales.get(&state) else {
                 continue;
             };
-            let allocate = |size| {
-                api::zeros::<f32>(&[size])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)
-            };
+            let allocate = |size| device.runtime().zeros(size);
             let entry = Entry {
                 state,
                 heads: query_heads,
@@ -90,40 +85,36 @@ impl Taps {
                 keys: allocate(lanes * kv_heads * head_dim)?,
                 values: allocate(lanes * kv_heads * head_dim)?,
                 output: allocate(lanes * query_heads * head_dim)?,
-                metadata: api::zeros::<i32>(&[METADATA_FIELDS])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-                table: api::zeros::<i32>(&[capacity / KV_BLOCK_TOKENS])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
+                metadata: device.runtime().zeros(METADATA_FIELDS)?,
+                table: device.runtime().zeros(capacity / KV_BLOCK_TOKENS)?,
             };
             self.buffers.insert((node.outputs[0], lanes), entry);
         }
         Ok(())
     }
     pub fn inputs(
-        &mut self,
+        &self,
         scope: &Scope,
         key: (TensorId, usize),
-        input: [&Tensor<f32>; 3],
+        [query, keys, values]: [Buffer<'_, f32>; 3],
         (metadata, table): (Buffer<'_, i32>, Buffer<'_, i32>),
     ) -> StdResult<(), DeviceError> {
-        if let Some(tap) = self.buffers.get_mut(&key) {
-            for (out, input) in [
-                (&mut tap.query, input[0]),
-                (&mut tap.keys, input[1]),
-                (&mut tap.values, input[2]),
-            ] {
-                scope.record(api::memcpy(out, input))?;
-            }
+        if let Some(tap) = self.buffers.get(&key) {
             let recording = Recording::scope(scope);
-            let copy = |tap: &Tensor<i32>, source| {
-                recording
-                    .copy(buffer(tap)?, source)
-                    .map_err(|error| DeviceError::Internal(error.to_string()))
-            };
-            copy(&tap.metadata, metadata)?;
-            copy(&tap.table, table)?;
+            let internal = |error: infer_core::Error| DeviceError::Internal(error.to_string());
+            for (out, input) in [
+                (&tap.query, query),
+                (&tap.keys, keys),
+                (&tap.values, values),
+            ] {
+                recording.copy(out.operand(), input).map_err(internal)?;
+            }
+            recording
+                .copy(tap.metadata.operand(), metadata)
+                .map_err(internal)?;
+            recording
+                .copy(tap.table.operand(), table)
+                .map_err(internal)?;
         }
         Ok(())
     }
@@ -135,7 +126,7 @@ impl Taps {
     ) -> StdResult<(), DeviceError> {
         if let Some(tap) = self.buffers.get(&key) {
             Recording::scope(scope)
-                .copy(buffer(&tap.output)?, output)
+                .copy(tap.output.operand(), output)
                 .map_err(|error| DeviceError::Internal(error.to_string()))?;
         }
         Ok(())

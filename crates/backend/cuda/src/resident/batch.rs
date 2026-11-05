@@ -1,7 +1,7 @@
 //! Node-major verification: consecutive projections reuse weights in cache.
 //! Recurrent checkpoints stay on the device; KV rollback is a logical prefix.
 //! Prefill width 32 keeps one batched arena: auxiliaries record once per node.
-use super::buffers::buffer;
+use super::buffers::{buffer, tensor_rows};
 use super::prefill_projection::{DensePlan, record_narrow};
 use super::shaped::Shaped;
 use super::{
@@ -588,10 +588,10 @@ impl BatchBuilder<'_> {
             usize::try_from(self.device.profile()?.arena_budget_bytes()).map_err(device_error)?,
         )?);
         let mut lanes = self.allocate_lanes(width, shared.as_ref())?;
-        let mut projections = super::batch_projection::allocate(self.device, self.graph, width)?;
-        let graph = Some(self.capture(&mut lanes, &mut projections, None, shared.as_mut())?);
-        let prefill = self.capture(&mut lanes, &mut projections, Some(false), None)?;
-        let prefill_last = self.capture(&mut lanes, &mut projections, Some(true), None)?;
+        let projections = super::batch_projection::allocate(self.device, self.graph, width)?;
+        let graph = Some(self.capture(&mut lanes, &projections, None, shared.as_mut())?);
+        let prefill = self.capture(&mut lanes, &projections, Some(false), None)?;
+        let prefill_last = self.capture(&mut lanes, &projections, Some(true), None)?;
         let mut restore = Vec::new();
         let (mut metadata, mut checkpoints) = (Vec::new(), Vec::new());
         let mut hidden = Vec::new();
@@ -1089,7 +1089,7 @@ impl BatchBuilder<'_> {
     fn capture(
         &mut self,
         lanes: &mut [Lane],
-        projections: &mut super::batch_projection::Workspace,
+        projections: &super::batch_projection::Workspace,
         prefill: Option<bool>,
         mut shared: Option<&mut ActivationArena>,
     ) -> Result<Graph> {
@@ -1317,19 +1317,17 @@ impl BatchBuilder<'_> {
             .projections
             .get(&node.inputs[1])
             .ok_or_else(|| error("prompt burst vocabulary weight"))?;
-        let last = binding
-            .last_rows
-            .view(&[segments, columns])
+        let last = buffer(&*binding.last_rows)?
+            .slice(0..segments * columns)
             .map_err(error)?;
         super::batch_projection::record_rows(
             (&self.weights.kernels, scope),
             self.nvfp4,
             weight,
             self.weights.activation_quantization(node.inputs[1]),
-            &last,
-            binding.last_rows.device_pointer().cu_deviceptr(),
-            binding.logits,
-            (columns, segments),
+            RowMajor::new(last, segments, columns)?,
+            tensor_rows(binding.logits)?,
+            segments,
         )
     }
 
