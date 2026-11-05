@@ -130,7 +130,7 @@ pub struct PromptBurst {
     rotary: Option<Allocation<i32>>,
     rotary_upload: Vec<i32>,
     rotary_staging: PinnedUpload<i32>,
-    logits: Arc<Tensor<f32>>,
+    logits: Allocation<f32>,
     /// The allocation `logits` views, which narrower rungs view too.
     logits_memory: Allocation<f32>,
     readbacks: Readbacks,
@@ -159,7 +159,7 @@ struct Keep {
     _external: Allocation<f32>,
     _lane_external: Vec<Allocation<f32>>,
     _lane_fusion: Vec<Option<super::program::FusionWorkspace>>,
-    _last_rows: Arc<Tensor<f32>>,
+    _last_rows: Allocation<f32>,
     /// Declared last so the views above drop first.
     _scratch: Option<Arc<Mutex<PromptScratch>>>,
 }
@@ -470,8 +470,8 @@ impl PromptBurst {
         state_offset: i32,
         retained: Retained,
     ) -> Result<Self> {
-        let last_rows = Arc::new(storage.last_rows);
-        let logits = Arc::new(storage.logits);
+        let last_rows = Allocation::adopt(Arc::new(storage.last_rows))?;
+        let logits = Allocation::adopt(Arc::new(storage.logits))?;
         let readbacks = Readbacks::pairs(device, from_ref(&last_rows), from_ref(&logits))?;
         Ok(Self {
             graph,
@@ -526,11 +526,11 @@ impl PromptBurst {
         self.stage(device, lanes)?;
         let sources = [
             None,
-            Some(ReadbackSource::tensor(
+            Some(ReadbackSource::slice(
                 &self.logits,
                 0,
                 self.segments * self.vocabulary,
-            )?),
+            )),
         ];
         let mut rows = self
             .readbacks

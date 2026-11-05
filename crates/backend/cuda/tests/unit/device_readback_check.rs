@@ -1,4 +1,5 @@
 use super::*;
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::hint::black_box;
 use std::thread::yield_now;
@@ -56,7 +57,12 @@ fn large_logit_geometry_preserves_hidden_only_readback() -> Result<()> {
             .sync_on(&device.stream)
             .map_err(device_error)?,
     );
-    let mut readbacks = Readbacks::contiguous(&device, &hidden, &logits, 2)?;
+    let mut readbacks = Readbacks::contiguous(
+        &device,
+        &Allocation::adopt(Arc::clone(&hidden))?,
+        &Allocation::adopt(Arc::clone(&logits))?,
+        2,
+    )?;
     let mut destination = api::zeros::<f32>(&[2])
         .sync_on(&device.stream)
         .map_err(device_error)?;

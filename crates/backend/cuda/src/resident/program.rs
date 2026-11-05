@@ -252,8 +252,8 @@ pub struct DeviceProgram {
     _fusion: Option<FusionWorkspace>,
     _arena: ActivationArena,
     reset_graph: Graph,
-    hidden: Arc<Tensor<f32>>,
-    logits: Arc<Tensor<f32>>,
+    hidden: Allocation<f32>,
+    logits: Allocation<f32>,
     device: CudaDevice,
     capacity: usize,
     vocabulary: usize,
@@ -267,13 +267,13 @@ pub struct DeviceProgram {
 
 enum ExternalInput<'a> {
     Host(&'a [f32]),
-    Device(&'a Tensor<f32>),
+    Device(&'a Allocation<f32>),
 }
 impl ExternalInput<'_> {
     fn len(&self) -> usize {
         match self {
             Self::Host(values) => values.len(),
-            Self::Device(tensor) => tensor.size(),
+            Self::Device(tensor) => tensor.len(),
         }
     }
     fn update(
@@ -292,10 +292,10 @@ impl ExternalInput<'_> {
                 staging.copy(device, destination, values)
             }
             Self::Device(tensor) => {
-                if tensor.device_id() != device.stream.device().ordinal() {
+                if tensor.device() != device.stream.device().ordinal() {
                     return Err(Error::invalid("external hidden device mismatch"));
                 }
-                device.copy_d2d_at(destination, tensor, 0, 0, tensor.size())
+                device.copy_d2d_at(destination, tensor, 0, 0, tensor.len())
             }
         }
     }
@@ -950,12 +950,7 @@ impl DeviceProgram {
         }
         self.prepare_step_async(token, [position; ROTARY_AXES], position, None, true)
             .await?;
-        let sources = [
-            read_hidden
-                .then(|| ReadbackSource::whole_tensor(&self.hidden))
-                .transpose()?,
-            None,
-        ];
+        let sources = [read_hidden.then(|| ReadbackSource::all(&self.hidden)), None];
         let (rows, tokens) = self
             .token_readout
             .as_mut()
@@ -1030,12 +1025,8 @@ impl DeviceProgram {
                 &self.device,
                 graph,
                 &[
-                    read_hidden
-                        .then(|| ReadbackSource::whole_tensor(&self.hidden))
-                        .transpose()?,
-                    read_logits
-                        .then(|| ReadbackSource::whole_tensor(&self.logits))
-                        .transpose()?,
+                    read_hidden.then(|| ReadbackSource::all(&self.hidden)),
+                    read_logits.then(|| ReadbackSource::all(&self.logits)),
                 ],
             )
             .await?
@@ -1323,12 +1314,12 @@ impl DeviceProgram {
 
     /// Device hidden rows written by the prompt graph that runs a `lanes`-token chunk.
     /// Device draft features of the prompt graph a `lanes`-row chunk replays.
-    pub(crate) fn prompt_features(&self, lanes: usize) -> Option<Arc<Tensor<f32>>> {
+    pub(crate) fn prompt_features(&self, lanes: usize) -> Option<Allocation<f32>> {
         self.prompt_for(lanes)
             .and_then(super::batch::BatchGraph::feature_rows)
     }
 
-    pub(crate) fn prompt_hidden(&self, lanes: usize) -> Option<Arc<Tensor<f32>>> {
+    pub(crate) fn prompt_hidden(&self, lanes: usize) -> Option<Allocation<f32>> {
         self.prompt_for(lanes)
             .map(super::batch::BatchGraph::hidden_rows)
     }
@@ -1345,12 +1336,12 @@ impl DeviceProgram {
         &mut self,
         tokens: &[u32],
         position: usize,
-        rows: &Tensor<f32>,
+        rows: &Allocation<f32>,
         previous: Option<&[f32]>,
     ) -> Result<()> {
         let hidden = self.external.len();
         if tokens.is_empty()
-            || rows.size() < tokens.len() * hidden
+            || rows.len() < tokens.len() * hidden
             || previous.is_some_and(|row| row.len() != hidden)
         {
             return Err(Error::invalid("draft priming rows"));
@@ -1565,7 +1556,7 @@ impl DeviceProgram {
         &mut self,
         tokens: &[u32],
         position: usize,
-        media: &Tensor<f32>,
+        media: &Allocation<f32>,
         rows: &[(usize, usize)],
         hidden: usize,
         rotary: Option<&[[usize; ROTARY_AXES]]>,
@@ -1590,7 +1581,7 @@ impl DeviceProgram {
         &mut self,
         tokens: &[u32],
         position: usize,
-        media: &Tensor<f32>,
+        media: &Allocation<f32>,
         rows: &[(usize, usize)],
         hidden: usize,
         rotary: Option<&[[usize; ROTARY_AXES]]>,

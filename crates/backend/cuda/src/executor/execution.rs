@@ -1928,7 +1928,7 @@ impl Sequence {
         tracing::debug!(target: "infer::executor", rows, bases = ?bases,
             spans = ?layout.spans, positions = layout.positions.as_ref().map(Vec::len),
             "prepared CUDA media embeddings");
-        let tensor = loaded.device().upload(data, &[rows, hidden])?;
+        let tensor = loaded.device().runtime().upload(data)?;
         self.media = Some(CachedMedia {
             tensor,
             layout,

@@ -9,6 +9,7 @@ use crate::resident::token_readout::TokenReadout;
 use crate::tuning::greedy::select;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_models::mrope::ROTARY_AXES;
 #[cfg(test)]
@@ -17,8 +18,8 @@ use std::env::var;
 pub(super) struct ProgramReadouts {
     pub greedy: Option<DeviceGreedy>,
     pub token_readout: Option<TokenReadout>,
-    pub hidden: Arc<Tensor<f32>>,
-    pub logits: Arc<Tensor<f32>>,
+    pub hidden: Allocation<f32>,
+    pub logits: Allocation<f32>,
 }
 impl ProgramReadouts {
     pub(super) fn new(
@@ -40,7 +41,7 @@ impl ProgramReadouts {
         let hidden = take_result(arena, graph.hidden)?;
         let logits = take_result(arena, graph.logits)?;
         let greedy = DeviceGreedy::new(device, &logits, vocabulary, weights)?;
-        let token_readout = if logits.size() == vocabulary {
+        let token_readout = if logits.len() == vocabulary {
             TokenReadout::contiguous(device, &logits, 1, weights)?
         } else {
             None
@@ -61,11 +62,11 @@ pub(super) struct DeviceGreedy {
 impl DeviceGreedy {
     pub(super) fn new(
         device: &CudaDevice,
-        logits: &Tensor<f32>,
+        logits: &Allocation<f32>,
         vocabulary: usize,
         weights: &ProgramWeights,
     ) -> Result<Option<Self>> {
-        if weights.fusion.is_none() || logits.size() != vocabulary {
+        if weights.fusion.is_none() || logits.len() != vocabulary {
             return Ok(None);
         }
         // Internal diagnostics may compare readout paths in one test executable.
@@ -81,8 +82,10 @@ impl DeviceGreedy {
             &weights.resident_tuning,
         );
         let selector = Greedy::new(device, 1, vocabulary, tile)?;
-        let graph = Graph::scope(&device.stream, |scope| selector.record(scope, logits))
-            .map_err(device_error)?;
+        let graph = Graph::scope(&device.stream, |scope| {
+            selector.record(scope, logits.tensor())
+        })
+        .map_err(device_error)?;
         tracing::info!(target:"infer::capture", device_greedy=true, rows=1, vocabulary, tile, "draft GPU token readout captured");
         Ok(Some(Self { graph, selector }))
     }
@@ -113,7 +116,7 @@ impl DeviceProgram {
         if self.greedy.is_none() {
             return Err(Error::unsupported("device greedy readout unavailable"));
         }
-        let previous = Arc::clone(&self.hidden);
+        let previous = self.hidden.clone();
         let external =
             external.map_or_else(|| ExternalInput::Device(&previous), ExternalInput::Host);
         self.prepare_step_async(

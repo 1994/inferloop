@@ -1,5 +1,6 @@
 use super::private_funding;
 use infer_core::ErrorCode;
+use infer_cuda_kernels::tile::runtime::Allocation;
 
 #[test]
 fn private_request_cannot_be_admitted_without_its_shared_workspace() {
@@ -88,7 +89,7 @@ fn repeated_media_reservations_do_not_accumulate_transient_bytes() -> infer_core
             .get_mut(&state)
             .ok_or_else(|| Error::invariant("missing media state"))?
             .media = Some(CachedMedia {
-            tensor,
+            tensor: Allocation::adopt(tensor)?,
             layout: MediaLayout {
                 spans: Vec::new(),
                 next_rotary: 0,

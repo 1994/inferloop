@@ -9,6 +9,7 @@ use infer_core::OpId;
 use infer_cuda_kernels::tile::kernels as tile_kernels;
 use infer_ir::{DType, TensorNode, TensorOp, TensorSpec};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
     let mut graph = DataflowGraph::default();

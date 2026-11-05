@@ -40,6 +40,22 @@ impl<T: DType + DeviceCopy> ReadbackSource<T> {
         }
     }
 
+    /// `[skip, skip + len)` of `source`.
+    #[must_use]
+    pub fn slice(source: &Allocation<T>, skip: usize, len: usize) -> Self {
+        Self {
+            source: source.clone(),
+            skip,
+            len,
+        }
+    }
+
+    /// All of `source`.
+    #[must_use]
+    pub fn all(source: &Allocation<T>) -> Self {
+        Self::whole(source.clone())
+    }
+
     /// `[skip, skip + len)` of a tensor a resident program still holds as one.
     /// # Errors
     /// Rejects a tensor that is not contiguous.
@@ -336,48 +352,48 @@ impl Readbacks {
 
     pub(crate) fn pair(
         device: &CudaDevice,
-        hidden: &Arc<Tensor<f32>>,
-        logits: &Arc<Tensor<f32>>,
+        hidden: &Allocation<f32>,
+        logits: &Allocation<f32>,
     ) -> Result<Self> {
         Self::prepared_rows(
             device,
             &[
-                Some(ReadbackSource::whole_tensor(hidden)?),
-                Some(ReadbackSource::whole_tensor(logits)?),
+                Some(ReadbackSource::all(hidden)),
+                Some(ReadbackSource::all(logits)),
             ],
         )
     }
     pub(crate) fn pairs(
         device: &CudaDevice,
-        hidden: &[Arc<Tensor<f32>>],
-        logits: &[Arc<Tensor<f32>>],
+        hidden: &[Allocation<f32>],
+        logits: &[Allocation<f32>],
     ) -> Result<Self> {
         let mut sources = Vec::with_capacity(2 * hidden.len());
         for (hidden, logits) in hidden.iter().zip(logits) {
-            sources.push(Some(ReadbackSource::whole_tensor(hidden)?));
-            sources.push(Some(ReadbackSource::whole_tensor(logits)?));
+            sources.push(Some(ReadbackSource::all(hidden)));
+            sources.push(Some(ReadbackSource::all(logits)));
         }
         Self::prepared_rows(device, &sources)
     }
     pub(crate) fn contiguous(
         device: &CudaDevice,
-        hidden: &Arc<Tensor<f32>>,
-        logits: &Arc<Tensor<f32>>,
+        hidden: &Allocation<f32>,
+        logits: &Allocation<f32>,
         rows: usize,
     ) -> Result<Self> {
         let mut sources = Vec::with_capacity(2 * rows);
         for row in 0..rows {
-            let (hidden_len, logits_len) = (hidden.size() / rows, logits.size() / rows);
-            sources.push(Some(ReadbackSource::tensor(
+            let (hidden_len, logits_len) = (hidden.len() / rows, logits.len() / rows);
+            sources.push(Some(ReadbackSource::slice(
                 hidden,
                 row * hidden_len,
                 hidden_len,
-            )?));
-            sources.push(Some(ReadbackSource::tensor(
+            )));
+            sources.push(Some(ReadbackSource::slice(
                 logits,
                 row * logits_len,
                 logits_len,
-            )?));
+            )));
         }
         Self::prepared_rows(device, &sources)
     }
