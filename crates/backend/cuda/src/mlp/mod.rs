@@ -5,7 +5,7 @@ use crate::{
     device::{CudaDevice, device_error},
     strategy::LinearTiling,
 };
-use cutile::prelude::{DeviceError, Scope};
+use cutile::prelude::{DeviceError, DeviceOp, Scope};
 use cutile::tile_kernel::validate_programmatic_dependent_launch;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{DownPlan, Kernels, ProductBuffers, Recording, RowNormPlan};
