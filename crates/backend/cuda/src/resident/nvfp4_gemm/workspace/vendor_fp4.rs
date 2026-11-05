@@ -13,9 +13,6 @@ use cutile::prelude::*;
 use infer_cuda_kernels::contract::Buffer;
 use infer_cuda_kernels::tile::projection::fp4_probe::{self, ProbeGeometry};
 
-/// Packed FP4 codes per stored element.
-const FP4_PER_ELEMENT: usize = 2;
-
 impl Workspace {
     /// Screen and warm the vendor FP4 down projection that reads arena slot `input`, an F32
     /// product the fused plan never materializes, into the `[rows, outputs]` `output`.
@@ -36,7 +33,7 @@ impl Workspace {
             return Ok(());
         }
         // Probe and pack accesses to the unused product are ordered on its owning stream.
-        let Some(mut scratch) = Fp4Scratch::new(arena, input, rows, columns).map_err(error)? else {
+        let Some(scratch) = Fp4Scratch::new(arena, input, rows, columns).map_err(error)? else {
             return Ok(());
         };
         let native = self
@@ -60,7 +57,7 @@ impl Workspace {
                 scale,
                 q: q.operand(),
                 qs: qs.operand(),
-                scratch: scratch.bytes()?,
+                scratch: scratch.bytes(),
                 output,
                 extents,
             };
@@ -73,16 +70,10 @@ impl Workspace {
             return Ok(());
         };
         if candidate.needs_probe() {
-            let half = columns / FP4_PER_ELEMENT;
             fp4_probe::initialize(
-                &device.stream,
+                &device.runtime(),
                 scratch.floats(),
-                (
-                    &mut q.view(0..q.len(), &[rows, half]).map_err(error)?,
-                    &mut qs
-                        .view(0..qs.len(), &[rows, qs.len() / rows])
-                        .map_err(error)?,
-                ),
+                (q.buffer(), qs.buffer()),
                 scale,
                 ProbeGeometry {
                     rows: QUANTIZATION_ROWS,
@@ -99,7 +90,7 @@ impl Workspace {
                 scale,
                 q: q.operand(),
                 qs: qs.operand(),
-                scratch: scratch.bytes()?,
+                scratch: scratch.bytes(),
                 output,
                 extents,
             },
@@ -139,7 +130,7 @@ impl Workspace {
                 scale,
                 q: q.operand(),
                 qs: qs.operand(),
-                scratch: scratch.bytes()?,
+                scratch: scratch.bytes(),
                 output: output.buffer,
                 extents: [rows, output.columns, columns],
             },

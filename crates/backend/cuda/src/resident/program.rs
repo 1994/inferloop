@@ -70,8 +70,8 @@ impl FusionWeights {
 }
 
 pub(super) struct FusionWorkspace {
-    pub embedding: Tensor<f32>,
-    pub normalized: Option<Tensor<f32>>,
+    pub embedding: Allocation<f32>,
+    pub normalized: Allocation<f32>,
 }
 
 impl FusionWorkspace {
@@ -82,14 +82,8 @@ impl FusionWorkspace {
     ) -> Result<Option<Self>> {
         let fusion = if enabled {
             Some(Self {
-                embedding: api::zeros::<f32>(&[hidden])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-                normalized: Some(
-                    api::zeros::<f32>(&[2 * hidden])
-                        .sync_on(&device.stream)
-                        .map_err(device_error)?,
-                ),
+                embedding: device.runtime().zeros(hidden)?,
+                normalized: device.runtime().zeros(2 * hidden)?,
             })
         } else {
             None

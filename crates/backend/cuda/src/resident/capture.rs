@@ -401,27 +401,27 @@ impl Capture<'_> {
         Ok(())
     }
 
-    fn embedding(&mut self, node: &TensorNode, output: &SlotMemory) -> Result<(), DeviceError> {
+    fn embedding(&self, node: &TensorNode, output: &SlotMemory) -> Result<(), DeviceError> {
         let dimension = output.len();
         if self.weights.fusion.is_some() {
-            let normalized = self.fusion_input(node, dimension)?;
+            self.fusion_input(node, dimension)?;
             let fusion = self
                 .weights
                 .fusion
                 .as_ref()
                 .ok_or_else(|| error("missing fusion weights"))?;
+            let work = self
+                .fusion
+                .as_ref()
+                .ok_or_else(|| error("missing fusion workspace"))?;
             fusion.projection.record(
                 &self.weights.kernels,
                 self.scope,
                 buffer(output)?,
-                buffer(&normalized)?,
+                work.normalized.operand(),
                 2 * dimension,
                 fusion.tiling,
             )?;
-            self.fusion
-                .as_mut()
-                .ok_or_else(|| error("missing fusion workspace"))?
-                .normalized = Some(normalized);
         } else {
             let weight = self
                 .weights
@@ -442,12 +442,13 @@ impl Capture<'_> {
         Ok(())
     }
 
-    /// Original row embedding and fusion normalization, before its projection.
+    /// Original row embedding and fusion normalization into the fusion workspace, before its
+    /// projection.
     pub(super) fn fusion_input(
-        &mut self,
+        &self,
         node: &TensorNode,
         dimension: usize,
-    ) -> Result<Tensor<f32>, DeviceError> {
+    ) -> Result<(), DeviceError> {
         let weight = self
             .weights
             .embeddings
@@ -460,7 +461,7 @@ impl Capture<'_> {
             .ok_or_else(|| error("missing fusion weights"))?;
         let work = self
             .fusion
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| error("missing fusion workspace"))?;
         record_embedding(
             self.scope,
@@ -469,35 +470,29 @@ impl Capture<'_> {
                 dimension,
                 external: false,
             },
-            (buffer(&work.embedding)?, buffer(weight)?),
+            (work.embedding.operand(), buffer(weight)?),
             (self.external, self.metadata),
         )?;
-        let normalized = work
-            .normalized
-            .take()
-            .ok_or_else(|| error("fusion buffer"))?
-            .reshape(&[2, dimension])?;
         record_fusion_norm(
             self.scope,
             &self.weights.kernels,
             fusion,
             dimension,
             (
-                buffer(&work.embedding)?,
+                work.embedding.operand(),
                 self.external,
-                buffer(&normalized)?,
+                work.normalized.operand(),
             ),
-        )?;
-        Ok(normalized.reshape(&[2 * dimension])?)
+        )
     }
 
-    /// Fusion normalization alone, reading an already gathered embedding row.
-    /// The arithmetic and reduction width are identical to `fusion_input`.
+    /// Fusion normalization alone into the fusion workspace, reading an already gathered
+    /// embedding row. The arithmetic and reduction width are identical to `fusion_input`.
     pub(super) fn fusion_norm(
-        &mut self,
+        &self,
         dimension: usize,
-        embedding: &Tensor<f32>,
-    ) -> Result<Tensor<f32>, DeviceError> {
+        embedding: Buffer<'_, f32>,
+    ) -> Result<(), DeviceError> {
         let fusion = self
             .weights
             .fusion
@@ -505,21 +500,15 @@ impl Capture<'_> {
             .ok_or_else(|| error("missing fusion weights"))?;
         let work = self
             .fusion
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| error("missing fusion workspace"))?;
-        let normalized = work
-            .normalized
-            .take()
-            .ok_or_else(|| error("fusion buffer"))?
-            .reshape(&[2, dimension])?;
         record_fusion_norm(
             self.scope,
             &self.weights.kernels,
             fusion,
             dimension,
-            (buffer(embedding)?, self.external, buffer(&normalized)?),
-        )?;
-        Ok(normalized.reshape(&[2 * dimension])?)
+            (embedding, self.external, work.normalized.operand()),
+        )
     }
 
     fn norm(

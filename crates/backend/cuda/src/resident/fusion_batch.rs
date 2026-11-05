@@ -145,36 +145,28 @@ impl Workspace {
         self.rows * (COLUMNS + HIDDEN) * size_of::<f32>()
     }
 
-    /// Projection input rows `lanes`, shaped `shape`.
-    fn input_rows(
-        &self,
-        lanes: Range<usize>,
-        shape: &[usize],
-    ) -> StdResult<Tensor<f32>, DeviceError> {
-        self.rows_of(&self.input, COLUMNS, lanes, shape)
+    /// Projection input rows `lanes`.
+    fn input_rows(&self, lanes: Range<usize>) -> StdResult<Buffer<'_, f32>, DeviceError> {
+        self.rows_of(&self.input, COLUMNS, lanes)
     }
 
-    /// Gathered embedding rows `lanes`, shaped `shape`.
-    fn gathered_rows(
-        &self,
-        lanes: Range<usize>,
-        shape: &[usize],
-    ) -> StdResult<Tensor<f32>, DeviceError> {
-        self.rows_of(&self.gathered, HIDDEN, lanes, shape)
+    /// Gathered embedding rows `lanes`.
+    fn gathered_rows(&self, lanes: Range<usize>) -> StdResult<Buffer<'_, f32>, DeviceError> {
+        self.rows_of(&self.gathered, HIDDEN, lanes)
     }
 
-    fn rows_of(
+    fn rows_of<'a>(
         &self,
-        memory: &Allocation<f32>,
+        memory: &'a Allocation<f32>,
         columns: usize,
         lanes: Range<usize>,
-        shape: &[usize],
-    ) -> StdResult<Tensor<f32>, DeviceError> {
+    ) -> StdResult<Buffer<'a, f32>, DeviceError> {
         if lanes.end > self.rows {
             return Err(error("fusion batch rows"));
         }
         memory
-            .view(lanes.start * columns..lanes.end * columns, shape)
+            .operand()
+            .slice(lanes.start * columns..lanes.end * columns)
             .map_err(error)
     }
 
@@ -182,11 +174,11 @@ impl Workspace {
         &self,
         scope: &Scope,
         lane: usize,
-        normalized: &Tensor<f32>,
+        normalized: Buffer<'_, f32>,
     ) -> StdResult<(), DeviceError> {
-        let mut row = self.input_rows(lane..lane + 1, &[COLUMNS])?;
-        scope.record(api::memcpy(&mut row, normalized))?;
-        Ok(())
+        Recording::scope(scope)
+            .copy(self.input_rows(lane..lane + 1)?, normalized)
+            .map_err(error)
     }
 }
 
@@ -251,10 +243,6 @@ pub(super) fn record(
     if metadata.len() < rows || builder.lane_fusion.len() < rows {
         return Err(error("fusion batch lanes"));
     }
-    let output = arena
-        .output(slot)
-        .map_err(error)?
-        .reshape(&[rows, HIDDEN])?;
     let Some(super::program::FusionWeights {
         projection: ProjectionWeight::Dense(weight),
         ..
@@ -262,18 +250,12 @@ pub(super) fn record(
     else {
         return Err(error("fusion batch dense capability"));
     };
-    let gathered = workspace.gathered_rows(0..rows, &[rows, HIDDEN])?;
-    gather(
-        builder,
-        scope,
-        node,
-        buffer(&gathered)?,
-        buffer(metadata_batch)?,
-    )?;
-    let input = workspace.input_rows(0..rows, &[rows, COLUMNS])?;
+    let gathered = workspace.gathered_rows(0..rows)?;
+    gather(builder, scope, node, gathered, buffer(metadata_batch)?)?;
+    let input = workspace.input_rows(0..rows)?;
     for (lane, meta) in metadata.iter().enumerate().take(rows) {
-        let embedding = workspace.gathered_rows(lane..lane + 1, &[HIDDEN])?;
-        let normalized = Capture {
+        let embedding = workspace.gathered_rows(lane..lane + 1)?;
+        Capture {
             scope,
             arena: &mut *arena,
             weights: builder.weights,
@@ -288,13 +270,15 @@ pub(super) fn record(
             fusion: &mut builder.lane_fusion[lane],
             mode: CaptureMode::Row(lane),
         }
-        .fusion_norm(HIDDEN, &embedding)?;
-        workspace.copy_row(scope, lane, &normalized)?;
-        builder.lane_fusion[lane]
-            .as_mut()
+        .fusion_norm(HIDDEN, embedding)?;
+        let normalized = builder.lane_fusion[lane]
+            .as_ref()
             .ok_or_else(|| error("fusion row owner"))?
-            .normalized = Some(normalized);
+            .normalized
+            .operand();
+        workspace.copy_row(scope, lane, normalized)?;
     }
+    let output = arena.buffer(slot).map_err(error)?;
     builder
         .weights
         .kernels
@@ -308,8 +292,8 @@ pub(super) fn record(
                 depth: DEPTH,
                 columns: COLUMNS,
             },
-            buffer(&output)?,
-            buffer(&input)?,
+            output,
+            input,
             buffer(weight)?,
         )
         .map_err(error)?;
@@ -353,19 +337,13 @@ fn record_wide(
     if builder.delegated.is_none() {
         return Ok(false);
     }
-    let gathered = workspace.gathered_rows(0..lanes, &[lanes, HIDDEN])?;
-    gather(
-        builder,
-        scope,
-        node,
-        buffer(&gathered)?,
-        buffer(metadata_batch)?,
-    )?;
+    let gathered = workspace.gathered_rows(0..lanes)?;
+    gather(builder, scope, node, gathered, buffer(metadata_batch)?)?;
     let Some(delegated) = builder.delegated.as_deref_mut() else {
         return Ok(false);
     };
     // Each lane's `COLUMNS` input row is its normalized embedding then its normalized hidden row.
-    let rows = workspace.input_rows(0..lanes, &[2 * lanes, HIDDEN])?;
+    let rows = workspace.input_rows(0..lanes)?;
     builder
         .weights
         .kernels
@@ -379,8 +357,8 @@ fn record_wide(
                 offset: *offset,
             },
             FusionNormBuffers {
-                out: buffer(&rows)?,
-                embedding: buffer(&gathered)?,
+                out: rows,
+                embedding: gathered,
                 hidden: buffer(external)?,
                 norms: buffer(norms)?,
             },
@@ -389,7 +367,7 @@ fn record_wide(
     let output = arena.buffer(slot).map_err(error)?;
     let recorded = delegated.record_dense(
         (&builder.weights.kernels, scope),
-        buffer(&rows)?,
+        rows,
         weight,
         output,
         (lanes, HIDDEN, COLUMNS),
