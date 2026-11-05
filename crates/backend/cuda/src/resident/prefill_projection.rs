@@ -117,7 +117,7 @@ impl MlpPlan {
                 .projections
                 .get(&node.inputs[1])
                 .ok_or_else(|| error("fused down vendor weight"))?;
-            let columns = arena.get(node.inputs[0]).map_err(error)?.size() / rows;
+            let columns = arena.get(node.inputs[0]).map_err(error)?.len() / rows;
             let Some((input, output)) = down_operands(arena, node)? else {
                 continue;
             };
@@ -319,10 +319,10 @@ fn record_fused_mlp(
             .ok_or_else(|| error("fused SwiGLU projection"))
     };
     let width = arena.lanes();
-    let input = arena.get(gate.inputs[0]).map_err(error)?;
+    let input = arena.view(gate.inputs[0]).map_err(error)?;
     let columns = input.size() / width;
     let input = buffer(input)?;
-    let hidden = arena.get(gate.outputs[0]).map_err(error)?.size() / width;
+    let hidden = arena.get(gate.outputs[0]).map_err(error)?.len() / width;
     nvfp4.record_gate_up_swiglu(
         (&weights.kernels, scope),
         (weight(gate)?, weight(up)?),
@@ -350,7 +350,7 @@ fn record_fused_down(
         .get(&node.inputs[1])
         .ok_or_else(|| error("prefill projection"))?;
     let width = arena.lanes();
-    let columns = arena.get(node.inputs[0]).map_err(error)?.size() / width;
+    let columns = arena.get(node.inputs[0]).map_err(error)?.len() / width;
     if let Some((input, output)) = down_operands(arena, node)? {
         let output = arena.buffer(output).map_err(error)?;
         let output = RowMajor::new(output, width, output.len() / width)?;
@@ -397,10 +397,10 @@ fn record_swiglu(
     let width = arena.lanes();
     let output = arena.activation(node.outputs[0]).map_err(error)?;
     let output = RowMajor::new(output, width, output.len() / width)?;
-    let gate = arena.get(gate).map_err(error)?;
+    let gate = arena.view(gate).map_err(error)?;
     let columns = gate.size() / width;
     let gate = buffer(gate)?;
-    let up = buffer(arena.get(up).map_err(error)?)?;
+    let up = buffer(arena.view(up).map_err(error)?)?;
     nvfp4.record_swiglu_input(
         (&weights.kernels, scope),
         weight,
@@ -434,7 +434,7 @@ pub(super) fn record(
     let output = arena.output(slot).map_err(error)?;
     let flat = output.size();
     let output = output.reshape(&[width, flat / width])?;
-    let flat_input = arena.get(node.inputs[0]).map_err(error)?;
+    let flat_input = arena.view(node.inputs[0]).map_err(error)?;
     let columns = flat_input.size() / width;
     let weight = weights
         .projections
@@ -521,8 +521,8 @@ fn pair_slots(
     let input_elements = arena.buffer(input_slot).map_err(error)?.len();
     if input_elements.checked_div(width) != Some(columns)
         || !input_elements.is_multiple_of(width)
-        || arena.get(first.outputs[0]).map_err(error)?.size() != expected
-        || arena.get(second.outputs[0]).map_err(error)?.size() != expected
+        || arena.get(first.outputs[0]).map_err(error)?.len() != expected
+        || arena.get(second.outputs[0]).map_err(error)?.len() != expected
     {
         return Ok(None);
     }
@@ -768,11 +768,11 @@ pub(super) fn record_narrow(
     let Some(expected) = width.checked_mul(rows) else {
         return Err(error("control projection extent overflow"));
     };
-    if arena.get(node.inputs[0]).map_err(error)?.size()
+    if arena.get(node.inputs[0]).map_err(error)?.len()
         != width
             .checked_mul(columns)
             .ok_or_else(|| error("control input extent overflow"))?
-        || arena.get(node.outputs[0]).map_err(error)?.size() != expected
+        || arena.get(node.outputs[0]).map_err(error)?.len() != expected
     {
         return Ok(false);
     }

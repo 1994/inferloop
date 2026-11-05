@@ -1059,7 +1059,7 @@ impl BatchBuilder<'_> {
             .fp8_states
             .get(&id)
             .ok_or_else(|| error("verification FP8 state"))?;
-        let arena = |lane: usize, id| lanes[lane].arena.get(id).map_err(error).and_then(buffer);
+        let arena = |lane: usize, id| lanes[lane].arena.activation(id).map_err(error);
         let (query, output) = (node.inputs[0], node.outputs[0]);
         self.attention.record_verify(
             &*self.weights.kernels.attention,
@@ -1293,7 +1293,7 @@ impl BatchBuilder<'_> {
             .as_mut()
             .ok_or_else(|| error("prompt burst binding"))?;
         let input = arena.get(node.inputs[0]).map_err(error)?;
-        let columns = input.size() / arena.lanes();
+        let columns = input.len() / arena.lanes();
         self.weights
             .kernels
             .projection
@@ -1307,7 +1307,7 @@ impl BatchBuilder<'_> {
                     hidden: columns,
                 },
                 buffer(&*binding.last_rows)?,
-                buffer(input)?,
+                buffer(&input)?,
                 buffer(binding.info_batch)?,
             )
             .map_err(error)?;
@@ -1494,7 +1494,7 @@ impl BatchBuilder<'_> {
             return Ok(false);
         };
         let slot = arena.slot(node.outputs[0]).map_err(error)?;
-        let size = arena.get(node.outputs[0]).map_err(error)?.size();
+        let size = arena.get(node.outputs[0]).map_err(error)?.len();
         let dimension = size / lanes;
         if size != lanes * dimension
             || !dimension.is_multiple_of(AUX_KERNEL_TILE)

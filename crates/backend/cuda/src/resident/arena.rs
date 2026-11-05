@@ -330,7 +330,18 @@ impl ActivationArena {
             .ok_or_else(|| Error::invalid("unknown device activation"))
     }
 
-    pub(crate) fn get(&self, id: TensorId) -> Result<&Tensor<f32>> {
+    /// Activation `id` as its slot memory: a kernel operand of known length that holds a share
+    /// of the arena.
+    /// # Errors
+    /// Rejects tensors which are not graph activations.
+    pub(crate) fn get(&self, id: TensorId) -> Result<SlotMemory> {
+        self.memory(self.slot(id)?)
+    }
+
+    /// Activation `id` as a tensor, for kernels still launched through cuTile.
+    /// # Errors
+    /// Rejects tensors which are not graph activations.
+    pub(crate) fn view(&self, id: TensorId) -> Result<&Tensor<f32>> {
         self.tensor(self.slot(id)?)
     }
 

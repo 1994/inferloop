@@ -212,7 +212,7 @@ pub(super) fn record_slots(
     let lanes = arena.lanes();
     let slot = arena.slot(node.outputs[0]).map_err(error)?;
     let output = arena.output(slot).map_err(error)?;
-    let input = arena.get(node.inputs[0]).map_err(error)?;
+    let input = arena.view(node.inputs[0]).map_err(error)?;
     let input_pointer = input.device_pointer().cu_deviceptr();
     let columns = input.size() / lanes;
     let input = input.view(&[lanes, columns]).map_err(error)?;
@@ -402,7 +402,7 @@ fn lane_input<'a>(
 ) -> StdResult<Buffer<'a, f32>, DeviceError> {
     match weights.constants.get(&node.inputs[0]) {
         Some(value) => Ok(value.buffer()),
-        None => buffer(lane.arena.get(node.inputs[0]).map_err(error)?),
+        None => buffer(lane.arena.view(node.inputs[0]).map_err(error)?),
     }
 }
 

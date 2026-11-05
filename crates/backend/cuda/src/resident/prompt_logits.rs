@@ -81,7 +81,7 @@ pub(super) fn record(
                     hidden,
                 },
                 buffer(&*row)?,
-                buffer(input)?,
+                buffer(&input)?,
                 buffer(metadata)?,
             )
             .map_err(error)?;
