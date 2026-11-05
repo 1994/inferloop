@@ -400,7 +400,7 @@ fn record_swiglu(
     let gate = arena.view(gate).map_err(error)?;
     let columns = gate.size() / width;
     let gate = buffer(gate)?;
-    let up = buffer(arena.view(up).map_err(error)?)?;
+    let up = arena.activation(up).map_err(error)?;
     nvfp4.record_swiglu_input(
         (&weights.kernels, scope),
         weight,

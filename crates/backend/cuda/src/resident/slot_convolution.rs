@@ -64,7 +64,7 @@ pub(super) fn record(
             ConvBuffers {
                 output,
                 history: [buffer(oldest)?, buffer(middle)?, buffer(newest)?],
-                input: buffer(arena.view(node.inputs[0]).map_err(error)?)?,
+                input: arena.activation(node.inputs[0]).map_err(error)?,
                 weight: buffer(weight)?,
                 metadata: buffer(batch.metadata)?,
             },

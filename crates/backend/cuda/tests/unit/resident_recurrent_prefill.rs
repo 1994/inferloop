@@ -1,5 +1,6 @@
 use super::kernels;
 use crate::device::CudaDevice;
+use crate::resident::buffers::buffer as operand;
 use crate::resident::recurrent::recurrent::delta as recurrent_delta;
 use cutile::prelude::*;
 use infer_cuda_kernels::tile::kernels as contract_kernels;
@@ -810,7 +811,13 @@ fn check_ordered_fixture(
         prepared.record(
             scope,
             contract_kernels(0).recurrent.as_ref(),
-            [&qkv_c, &beta_c, &alpha_c, &a_log, &bias],
+            [
+                operand(&qkv_c)?,
+                operand(&beta_c)?,
+                operand(&alpha_c)?,
+                operand(&a_log)?,
+                operand(&bias)?,
+            ],
             (&state, &output),
             &metadata,
             (kh, vh, dim, lanes, block),

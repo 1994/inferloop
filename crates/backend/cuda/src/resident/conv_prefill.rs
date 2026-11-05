@@ -53,7 +53,7 @@ pub(super) fn record(
             ConvBuffers {
                 output,
                 history: [buffer(&*h0)?, buffer(&*h1)?, buffer(&*h2)?],
-                input: buffer(arena.view(node.inputs[0]).map_err(error)?)?,
+                input: arena.activation(node.inputs[0]).map_err(error)?,
                 weight: buffer(
                     weights
                         .constants

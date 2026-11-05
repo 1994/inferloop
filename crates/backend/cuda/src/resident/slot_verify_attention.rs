@@ -60,8 +60,8 @@ impl BatchBuilder<'_> {
         )?;
         let attention = &*self.weights.kernels.attention;
         let recording = Recording::scope(scope);
-        let output = arena.view(node.outputs[0]).map_err(error)?;
-        let queries = arena.view(node.inputs[0]).map_err(error)?;
+        let output = arena.activation(node.outputs[0]).map_err(error)?;
+        let queries = arena.activation(node.inputs[0]).map_err(error)?;
         if prefix > 0 {
             let shared = &caches[0][&state];
             self.attention.record_pooled_attention(
@@ -77,8 +77,7 @@ impl BatchBuilder<'_> {
             )?;
         }
         let lanes = metadata.len();
-        let outputs = buffer(output)?;
-        let queries = buffer(queries)?;
+        let outputs = output;
         for (index, cache) in caches.iter().enumerate().skip(prefix) {
             let base = index * VERIFY_LANES;
             let slot_cache = &cache[&state];
@@ -140,8 +139,8 @@ impl BatchBuilder<'_> {
                     keys: &shared.keys,
                     values: &shared.values,
                     inputs: [
-                        arena.view(node.inputs[1]).map_err(error)?,
-                        arena.view(node.inputs[2]).map_err(error)?,
+                        arena.activation(node.inputs[1]).map_err(error)?,
+                        arena.activation(node.inputs[2]).map_err(error)?,
                     ],
                     metadata: metadata_owner,
                     tables: self.tables,
