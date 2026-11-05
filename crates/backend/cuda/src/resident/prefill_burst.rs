@@ -101,8 +101,8 @@ pub(super) struct Binding<'a> {
     pub segments: Vec<Segment<'a>>,
     pub recurrent: super::recurrent_prefill::Workspace,
     pub info_batch: &'a Allocation<i32>,
-    pub last_rows: &'a mut Tensor<f32>,
-    pub logits: &'a mut Tensor<f32>,
+    pub last_rows: &'a Allocation<f32>,
+    pub logits: &'a Allocation<f32>,
     pub segment_rows: usize,
 }
 
@@ -154,7 +154,7 @@ struct Keep {
     _metadata_rows: Vec<Allocation<i32>>,
     _info_rows: Vec<Allocation<i32>>,
     _rotary_rows: Vec<Allocation<i32>>,
-    _prompt_row: Tensor<f32>,
+    _prompt_row: Allocation<f32>,
     _external_row: Allocation<f32>,
     _external: Allocation<f32>,
     _lane_external: Vec<Allocation<f32>>,
@@ -173,10 +173,10 @@ struct Storage {
     info_rows: Vec<Allocation<i32>>,
     rotary: Option<Allocation<i32>>,
     rotary_rows: Vec<Allocation<i32>>,
-    last_rows: Tensor<f32>,
-    logits: Tensor<f32>,
+    last_rows: Allocation<f32>,
+    logits: Allocation<f32>,
     logits_memory: Allocation<f32>,
-    prompt_row: Tensor<f32>,
+    prompt_row: Allocation<f32>,
     external_row: Allocation<f32>,
     external: Allocation<f32>,
     lane_external: Vec<Allocation<f32>>,
@@ -244,15 +244,9 @@ fn workspaces(
     Ok((attention, recurrent))
 }
 
-fn zeros<T: DType>(device: &CudaDevice, shape: &[usize]) -> Result<Tensor<T>> {
-    api::zeros::<T>(shape)
-        .sync_on(&device.stream)
-        .map_err(device_error)
-}
-
 /// `len` zeroed elements the host owns, for views that hold their memory.
 fn memory<T: DType>(device: &CudaDevice, len: usize) -> Result<Allocation<T>> {
-    Allocation::adopt(Arc::new(zeros::<T>(device, &[len])?))
+    device.runtime().zeros(len)
 }
 
 impl Storage {
@@ -306,7 +300,7 @@ impl Storage {
             Some(wider) => wider.logits_memory.clone(),
             None => memory::<f32>(device, segments * vocabulary)?,
         };
-        let logits = logits_memory.view(0..segments * vocabulary, &[segments, vocabulary])?;
+        let logits = logits_memory.slice(0..segments * vocabulary)?;
         Ok(Self {
             arena,
             metadata,
@@ -315,10 +309,10 @@ impl Storage {
             info_rows,
             rotary,
             rotary_rows,
-            last_rows: zeros(device, &[segments, hidden])?,
+            last_rows: memory(device, segments * hidden)?,
             logits,
             logits_memory,
-            prompt_row: zeros(device, &[1, hidden])?,
+            prompt_row: memory(device, hidden)?,
             external_row: memory(device, hidden)?,
             external,
             lane_external,
@@ -392,8 +386,8 @@ impl PromptBurst {
             segments: bound,
             recurrent,
             info_batch: &storage.info,
-            last_rows: &mut storage.last_rows,
-            logits: &mut storage.logits,
+            last_rows: &storage.last_rows,
+            logits: &storage.logits,
             segment_rows: SEGMENT_ROWS,
         };
         let mut builder = BatchBuilder {
@@ -431,7 +425,7 @@ impl PromptBurst {
                 None,
             ),
             &partials,
-            &mut storage.prompt_row,
+            &storage.prompt_row,
             &mut profile,
         )?;
         let Binding {
@@ -470,8 +464,7 @@ impl PromptBurst {
         state_offset: i32,
         retained: Retained,
     ) -> Result<Self> {
-        let last_rows = Allocation::adopt(Arc::new(storage.last_rows))?;
-        let logits = Allocation::adopt(Arc::new(storage.logits))?;
+        let (last_rows, logits) = (storage.last_rows, storage.logits);
         let readbacks = Readbacks::pairs(device, from_ref(&last_rows), from_ref(&logits))?;
         Ok(Self {
             graph,

@@ -1,7 +1,7 @@
 //! Node-major verification: consecutive projections reuse weights in cache.
 //! Recurrent checkpoints stay on the device; KV rollback is a logical prefix.
 //! Prefill width 32 keeps one batched arena: auxiliaries record once per node.
-use super::buffers::{buffer, tensor_rows};
+use super::buffers::buffer;
 use super::prefill_projection::{DensePlan, record_narrow};
 use super::shaped::Shaped;
 use super::{
@@ -130,7 +130,7 @@ pub(super) struct BatchGraph {
     /// declared after the graphs so their executables drop first.
     _partials: Partials,
     /// Final prompt row the one-row logits projection reads; captured by the prompt graphs.
-    prompt_row: Option<Tensor<f32>>,
+    prompt_row: Option<Allocation<f32>>,
     _recurrent: super::recurrent_prefill::Workspace,
     _fusion: Option<super::fusion_batch::Workspace>,
     /// Shared prompt scratch the prompt graphs captured against.
@@ -721,10 +721,7 @@ impl BatchBuilder<'_> {
         if !super::prompt_logits::supported(self.graph, self.weights) {
             return Ok(None);
         }
-        let row = api::zeros::<f32>(&[self.external.len()])
-            .sync_on(&self.device.stream)
-            .map_err(device_error)?;
-        Allocation::adopt(Arc::new(row)).map(Some)
+        self.device.runtime().zeros(self.external.len()).map(Some)
     }
 
     fn build32(&mut self) -> Result<BatchGraph> {
@@ -745,7 +742,7 @@ impl BatchBuilder<'_> {
         let mut shared = scratch
             .lock()
             .map_err(|_| Error::invariant("prompt scratch poisoned"))?;
-        let (mut arena, mut prompt_row) = shared_prompt_views(&shared)?;
+        let (mut arena, prompt_row) = shared_prompt_views(&shared)?;
         let (metadata_owner, metadata) = batched_metadata(self.device, self.width)?;
         let prefill_info = self.device.runtime().zeros(METADATA_FIELDS)?;
         let prefill_rotary = self.prompt_rotary()?;
@@ -766,7 +763,7 @@ impl BatchBuilder<'_> {
             ),
             (&mut profile, &mut precise_profile),
             &mut shared,
-            prompt_row.as_mut(),
+            prompt_row.as_ref(),
         )?;
         drop(shared);
         let hidden = vec![take_result(&arena, self.graph.hidden)?];
@@ -821,16 +818,10 @@ impl BatchBuilder<'_> {
             &mut Option<profile::PrefillProfile>,
         ),
         scratch: &mut PromptScratch,
-        mut prompt_row: Option<&mut Tensor<f32>>,
+        prompt_row: Option<&Allocation<f32>>,
     ) -> Result<PromptCaptures> {
         let (profile, precise_profile) = profiles;
-        let regular = self.capture_prompt_graphs(
-            arena,
-            metadata,
-            profile,
-            scratch,
-            prompt_row.as_deref_mut(),
-        )?;
+        let regular = self.capture_prompt_graphs(arena, metadata, profile, scratch, prompt_row)?;
         // Both variants retain the same arenas, state and metadata. A configured canonical
         // prefix needs its own graphs; without one the variant is never replayed.
         let precise = if self.weights.fusion.is_none()
@@ -854,7 +845,7 @@ impl BatchBuilder<'_> {
         metadata: PromptMetadata<'_>,
         profile: &mut Option<profile::PrefillProfile>,
         scratch: &mut PromptScratch,
-        mut prompt_row: Option<&mut Tensor<f32>>,
+        prompt_row: Option<&Allocation<f32>>,
     ) -> Result<PromptGraphs> {
         let PromptScratch {
             partials,
@@ -868,7 +859,7 @@ impl BatchBuilder<'_> {
             PromptReadout::Hidden,
             profile.as_mut(),
             (partials, recurrent, fusion),
-            prompt_row.as_deref_mut(),
+            prompt_row,
         )?;
         #[cfg(test)]
         let state_prefill = if super::prefill_demand::enabled() {
@@ -878,7 +869,7 @@ impl BatchBuilder<'_> {
                 PromptReadout::StateOnly,
                 None,
                 (partials, recurrent, fusion),
-                prompt_row.as_deref_mut(),
+                prompt_row,
             )?)
         } else {
             None
@@ -1264,7 +1255,7 @@ impl BatchBuilder<'_> {
         scope: &Scope,
         node: &TensorNode,
         arena: &ActivationArena,
-        row: &mut Tensor<f32>,
+        row: &Allocation<f32>,
         prefill_info: &Allocation<i32>,
     ) -> StdResult<(), DeviceError> {
         if self.burst.is_some() {
@@ -1306,7 +1297,7 @@ impl BatchBuilder<'_> {
                     lanes: arena.lanes(),
                     hidden: columns,
                 },
-                buffer(&*binding.last_rows)?,
+                binding.last_rows.operand(),
                 buffer(&input)?,
                 buffer(binding.info_batch)?,
             )
@@ -1317,7 +1308,9 @@ impl BatchBuilder<'_> {
             .projections
             .get(&node.inputs[1])
             .ok_or_else(|| error("prompt burst vocabulary weight"))?;
-        let last = buffer(&*binding.last_rows)?
+        let last = binding
+            .last_rows
+            .operand()
             .slice(0..segments * columns)
             .map_err(error)?;
         super::batch_projection::record_rows(
@@ -1326,7 +1319,11 @@ impl BatchBuilder<'_> {
             weight,
             self.weights.activation_quantization(node.inputs[1]),
             RowMajor::new(last, segments, columns)?,
-            tensor_rows(binding.logits)?,
+            RowMajor::new(
+                binding.logits.operand(),
+                segments,
+                binding.logits.len() / segments,
+            )?,
             segments,
         )
     }
@@ -1337,7 +1334,7 @@ impl BatchBuilder<'_> {
         arena: &mut ActivationArena,
         metadata: PromptMetadata<'_>,
         partials: &Partials,
-        prompt_row: &mut Tensor<f32>,
+        prompt_row: &Allocation<f32>,
         profile: &mut Option<profile::PrefillProfile>,
     ) -> Result<Graph> {
         let mut recurrent = super::recurrent_prefill::Workspace::default();
@@ -1375,7 +1372,7 @@ impl BatchBuilder<'_> {
             &mut super::recurrent_prefill::Workspace,
             &mut Option<super::fusion_batch::Workspace>,
         ),
-        mut prompt_row: Option<&mut Tensor<f32>>,
+        prompt_row: Option<&Allocation<f32>>,
     ) -> Result<Graph> {
         let (metadata, metadata_batch, prefill_info, prefill_rotary) = metadata;
         let (partials, recurrent, fusion) = workspaces;
@@ -1384,7 +1381,7 @@ impl BatchBuilder<'_> {
         let demand = (readout == PromptReadout::StateOnly)
             .then(|| super::prefill_demand::StateDemand::new(self.graph));
         let quant_plan = super::nvfp4_gemm::QuantPairPlan::new(self.graph, self.weights);
-        let dense = DensePlan::new(self.graph, prompt_row.as_ref().and(self.graph.logits));
+        let dense = DensePlan::new(self.graph, prompt_row.and(self.graph.logits));
         let mlp = super::prefill_projection::MlpPlan::new(
             self.graph,
             self.weights,
@@ -1442,7 +1439,7 @@ impl BatchBuilder<'_> {
                 if !skip && dense.narrow(index) && self.record_prompt_narrow(scope, node, arena)? {
                     continue;
                 }
-                if logits && let Some(row) = prompt_row.as_deref_mut() {
+                if logits && let Some(row) = prompt_row {
                     self.record_prompt_row(scope, node, arena, row, prefill_info)?;
                     continue;
                 }
@@ -2658,14 +2655,10 @@ pub(super) fn batched_metadata(
 /// Views of the shared prompt arena and logits row for one program's prompt graphs. Sequences
 /// replay prompt graphs one at a time on the device stream, reading their outputs before
 /// another starts.
-fn shared_prompt_views(shared: &PromptScratch) -> Result<(ActivationArena, Option<Tensor<f32>>)> {
-    let arena = shared.arena.shared_view()?;
-    let row = shared
-        .row
-        .as_ref()
-        .map(|row| super::arena::whole(row, &[1, row.len()]))
-        .transpose()?;
-    Ok((arena, row))
+fn shared_prompt_views(
+    shared: &PromptScratch,
+) -> Result<(ActivationArena, Option<Allocation<f32>>)> {
+    Ok((shared.arena.shared_view()?, shared.row.clone()))
 }
 
 fn slot_arena(device: &CudaDevice, graph: &DataflowGraph, width: usize) -> Result<ActivationArena> {

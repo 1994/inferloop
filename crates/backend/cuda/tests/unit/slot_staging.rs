@@ -1,4 +1,5 @@
 use super::*;
+use crate::device::device_error;
 use crate::test_support::fixture_graph;
 use infer_core::OpId;
 use infer_cuda_kernels::tile::runtime::Graph;
@@ -112,9 +113,7 @@ fn contiguous_staging_preserves_rows_after_arena_reuse() -> infer_core::Result<(
             for (candidate, row) in candidates.into_iter().enumerate() {
                 let begin = (slot * LANES + candidate) * width;
                 assert_eq!(
-                    row.to_host_vec()
-                        .sync_on(&device.stream)
-                        .map_err(device_error)?,
+                    device.runtime().read(&row)?,
                     expected[&id][begin..begin + width],
                     "slot={slot} node={index} input={input} candidate={candidate}"
                 );

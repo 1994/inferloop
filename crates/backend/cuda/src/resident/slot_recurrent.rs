@@ -14,7 +14,7 @@ use super::{
     capture::error,
 };
 use crate::constants::{CONV_KERNEL_SIZE, GDN_PROJECTED_INPUTS};
-use crate::device::{CudaDevice, device_error};
+use crate::device::CudaDevice;
 use cutile::prelude::*;
 use infer_core::{Error, TensorId};
 use infer_cuda_kernels::contract::{
@@ -23,7 +23,6 @@ use infer_cuda_kernels::contract::{
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{TensorNode, TensorOp};
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 /// Candidate lanes of one slot that the fused kernels cover.
 pub(super) const LANES: usize = 3;
@@ -35,7 +34,7 @@ pub(super) struct SlotLanes<'a> {
 }
 
 /// One node input's candidate rows for a slot.
-type StagedRow = [Tensor<f32>; LANES];
+type StagedRow = [Allocation<f32>; LANES];
 type StagedInputs = Vec<StagedRow>;
 
 /// Commit views precede their owning batched buffers in drop order. Verification copies
@@ -43,7 +42,7 @@ type StagedInputs = Vec<StagedRow>;
 #[derive(Default)]
 pub(super) struct Staging {
     entries: BTreeMap<(usize, usize), StagedInputs>,
-    roots: BTreeMap<(usize, usize), Tensor<f32>>,
+    roots: BTreeMap<(usize, usize), Allocation<f32>>,
 }
 
 impl Staging {
@@ -51,7 +50,7 @@ impl Staging {
         Self::default()
     }
 
-    pub(super) fn root(&self, index: usize, input: usize) -> Option<&Tensor<f32>> {
+    pub(super) fn root(&self, index: usize, input: usize) -> Option<&Allocation<f32>> {
         self.roots.get(&(index, input))
     }
 
@@ -73,12 +72,12 @@ impl Staging {
                 .roots
                 .get(&(index, input))
                 .ok_or_else(|| error("batched recurrent staging input"))?;
-            if source.len() != target.size() {
+            if source.len() != target.len() {
                 return Err(error("batched recurrent staging geometry"));
             }
             // The staging and the arena both live beside the captured graphs.
             Recording::scope(scope)
-                .copy(buffer(target)?, source)
+                .copy(target.operand(), source)
                 .map_err(error)?;
         }
         Ok(())
@@ -111,14 +110,10 @@ pub(super) fn allocate_staging(
     let mut staging = Staging::new();
     for (index, node) in nodes.iter().enumerate().filter(|(_, node)| covers(node)) {
         for (input, &id) in commit_inputs(node).iter().enumerate() {
-            let memory = Allocation::adopt(Arc::new(
-                api::zeros::<f32>(&[arena.get(id)?.len()])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-            ))?;
+            let memory = device.runtime().zeros(arena.get(id)?.len())?;
             // Per-slot rows feed the three-lane commit graphs; wider pools commit in one batch.
             if verify == LANES {
-                let mut rows = super::arena::rows(&memory, lanes)?.into_iter();
+                let mut rows = memory.rows(lanes)?.into_iter();
                 let mut next = || {
                     rows.next()
                         .ok_or_else(|| Error::invariant("recurrent staging rows"))
@@ -132,8 +127,7 @@ pub(super) fn allocate_staging(
                         .push(lane_rows);
                 }
             }
-            let root = super::arena::whole(&memory, &[memory.len()])?;
-            staging.roots.insert((index, input), root);
+            staging.roots.insert((index, input), memory);
         }
     }
     Ok(staging)
@@ -367,8 +361,8 @@ pub(super) fn record_verify(
     Ok(())
 }
 
-fn staged_buffers(row: &StagedRow) -> Result<LaneBuffers<'_, f32>, DeviceError> {
-    Ok([buffer(&row[0])?, buffer(&row[1])?, buffer(&row[2])?])
+fn staged_buffers(row: &StagedRow) -> LaneBuffers<'_, f32> {
+    [row[0].operand(), row[1].operand(), row[2].operand()]
 }
 
 fn lane_metadata<'a>(slot: &SlotLanes<'a>) -> Result<LaneBuffers<'a, i32>, DeviceError> {
@@ -389,7 +383,7 @@ pub(super) fn record_commit(
     slot: &SlotLanes<'_>,
     weights: &ProgramWeights,
     hardware: ValueDevice,
-    (staged, count): (&[[Tensor<f32>; LANES]], usize),
+    (staged, count): (&[StagedRow], usize),
 ) -> Result<(), DeviceError> {
     let count = i32::try_from(count).map_err(error)?;
     let state = states
@@ -412,7 +406,7 @@ pub(super) fn record_commit(
                     &recording,
                     count,
                     [buffer(h0)?, buffer(h1)?, buffer(h2)?],
-                    staged_buffers(x)?,
+                    staged_buffers(x),
                     metadata,
                 )
                 .map_err(error)?;
@@ -446,9 +440,9 @@ pub(super) fn record_commit(
                     count,
                     FusedDeltaBuffers {
                         state: buffer(state)?,
-                        qkv: staged_buffers(qkv)?,
-                        beta: staged_buffers(beta)?,
-                        alpha: staged_buffers(alpha)?,
+                        qkv: staged_buffers(qkv),
+                        beta: staged_buffers(beta),
+                        alpha: staged_buffers(alpha),
                         decay: lane_input(weights, arena, node.inputs[3], slot.lanes[0])?,
                         bias: lane_input(weights, arena, node.inputs[4], slot.lanes[0])?,
                         metadata,
