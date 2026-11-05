@@ -150,12 +150,12 @@ impl Readbacks<f32> {
         device: &CudaDevice,
         graph: &Graph,
         sources: &[Option<ReadbackSource>],
-        tail: (&Graph, &mut Readbacks<i32>, Arc<Tensor<i32>>),
+        tail: (&Graph, &mut Readbacks<i32>, Allocation<i32>),
     ) -> Result<()> {
         let (selector, tokens, tensor) = tail;
         self.validate_submit(device, graph)?;
         tokens.validate_submit(device, selector)?;
-        let token_sources = [Some(ReadbackSource::whole_tensor(&tensor)?)];
+        let token_sources = [Some(ReadbackSource::all(&tensor))];
         let bytes = self
             .staging_bytes(device, sources)?
             .checked_add(tokens.staging_bytes(device, &token_sources)?)
@@ -256,7 +256,7 @@ impl Readbacks<f32> {
         device: &CudaDevice,
         graph: &Graph,
         sources: &[Option<ReadbackSource>],
-        tail: (&Graph, &mut Readbacks<i32>, Arc<Tensor<i32>>),
+        tail: (&Graph, &mut Readbacks<i32>, Allocation<i32>),
     ) -> Result<(Rows<f32>, Rows<i32>)> {
         let (selector, tokens, tensor) = tail;
         self.submit_with_tokens(device, graph, sources, (selector, tokens, tensor))?;
