@@ -9,7 +9,6 @@ use crate::{
     device::CudaDevice,
     resident::{DeviceProgram, slot_batch::SlotPool},
 };
-use cutile::prelude::Tensor;
 use infer_core::{Error, Result, TensorId};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -57,8 +56,8 @@ pub(super) fn state_census_slot(
             .ok_or_else(|| Error::invariant("state spec"))?;
         for (part, (left, right)) in tensors.iter().zip(reference).enumerate() {
             let count = agreement(
-                &loaded.device().read_borrowed(left)?,
-                &loaded.device().read_borrowed(right)?,
+                &loaded.device().runtime().read(left.memory())?,
+                &loaded.device().runtime().read(right.memory())?,
                 &format!("{id:?} {:?} part={part}", spec.storage),
             );
             changed += differences(&count);
@@ -102,9 +101,8 @@ pub(super) fn seed_prefix(
             .get_mut(id)
             .ok_or_else(|| Error::invariant("control state"))?;
         assert_eq!(target.len(), source.len());
-        for (target, source) in target.iter_mut().zip(source) {
-            assert_eq!(target.size(), source.size());
-            loaded.device().copy_d2d(target, source, source.size())?;
+        for (target, source) in target.iter().zip(source) {
+            target.copy_from(loaded.device(), source)?;
         }
     }
     for (id, KvState { keys, values, .. }) in aligned.fp8_states() {
@@ -124,8 +122,9 @@ pub(super) fn seed_prefix(
     Ok(())
 }
 
-pub(super) type States = BTreeMap<TensorId, Vec<Tensor<f32>>>;
+pub(super) type States = BTreeMap<TensorId, Vec<Shaped<f32>>>;
 pub(super) use crate::resident::fp8_cache::Fp8Caches;
+use crate::resident::shaped::Shaped;
 
 pub(super) fn states(
     device: &CudaDevice,
@@ -141,8 +140,8 @@ pub(super) fn states(
         assert_eq!(tensors.len(), reference.len());
         for (a, b) in tensors.iter().zip(reference) {
             bits(
-                &device.read_borrowed(a)?,
-                &device.read_borrowed(b)?,
+                &device.runtime().read(a.memory())?,
+                &device.runtime().read(b.memory())?,
                 "F32 state",
             );
         }

@@ -5,6 +5,7 @@ use crate::resident::BatchOutput;
 use crate::resident::PromptScratchRegistry;
 use crate::resident::batch::BatchReadout;
 use crate::resident::metadata::identity_table;
+use crate::resident::shaped::Shaped;
 use crate::strategy::default_tiling;
 use crate::test_support::fixture_graph;
 use crate::tuning::resident_gemm::ResidentTuningSession;
@@ -96,31 +97,26 @@ fn worker_copy_moves_committed_kv_rows_and_whole_recurrent_state() -> Result<()>
     let data: Vec<_> = (0..elements)
         .map(|i| f32::from(i16::try_from(i).unwrap()))
         .collect();
-    let source_kv = api::copy_host_vec_to_device(&Arc::new(data.clone()))
-        .sync_on(&device.stream)
-        .map_err(device_error)?
-        .reshape(&[heads, capacity, dim])
-        .map_err(device_error)?;
+    let source_kv = Shaped::new(
+        device.runtime().upload(data.clone())?,
+        vec![heads, capacity, dim],
+    )?;
     source.states.insert(kv, vec![source_kv]);
     source.states.insert(
         recurrent,
-        vec![
-            api::copy_host_vec_to_device(&Arc::new(vec![5.0_f32; 6]))
-                .sync_on(&device.stream)
-                .map_err(device_error)?
-                .reshape(&[2, 3])
-                .map_err(device_error)?,
-        ],
+        vec![Shaped::new(
+            device.runtime().upload(vec![5.0_f32; 6])?,
+            vec![2, 3],
+        )?],
     );
     for covered in [0, 17, capacity] {
-        let destination = api::copy_host_vec_to_device(&Arc::new(vec![-1.0_f32; elements]))
-            .sync_on(&device.stream)
-            .map_err(device_error)?
-            .reshape(&[heads, capacity, dim])
-            .map_err(device_error)?;
+        let destination = Shaped::new(
+            device.runtime().upload(vec![-1.0_f32; elements])?,
+            vec![heads, capacity, dim],
+        )?;
         target.states.insert(kv, vec![destination]);
         target.copy_state_from(&source, covered)?;
-        let actual = device.read_borrowed(&target.states[&kv][0])?;
+        let actual = device.runtime().read(target.states[&kv][0].memory())?;
         for head in 0..heads {
             for row in 0..capacity {
                 for column in 0..dim {
@@ -133,7 +129,9 @@ fn worker_copy_moves_committed_kv_rows_and_whole_recurrent_state() -> Result<()>
             }
         }
         assert_eq!(
-            device.read_borrowed(&target.states[&recurrent][0])?,
+            device
+                .runtime()
+                .read(target.states[&recurrent][0].memory())?,
             vec![5.0; 6]
         );
         assert_eq!(target.position(), covered);

@@ -4,10 +4,11 @@
 //! through a single graph replay per step.
 use super::{
     batch::{BatchOutput, SlotDecodeGraph, SlotLane, States},
-    buffers::Operand,
     buffers::RowMajor,
+    buffers::{Operand, buffer},
     fp8_cache::{self, Fp8Caches, KvLayout, KvState},
     program::ProgramWeights,
+    shaped::Shaped,
     slot_states::SlotStates,
     slot_verify::{SlotVerifyGraph, SlotVerifyLane},
 };
@@ -18,13 +19,14 @@ use crate::constants::MAX_VERIFICATION_WIDTH;
 use crate::device::PinnedUpload;
 #[cfg(test)]
 use crate::device::asynchronous::block_on;
+use crate::device::copy_runs;
 use crate::device::{CudaDevice, DeviceProfile, device_error};
 use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::{Owner, Width};
 use infer_cuda_kernels::tile::runtime::Allocation;
-use infer_cuda_kernels::tile::runtime::{Element, Staging};
+use infer_cuda_kernels::tile::runtime::{Staging, Transfers};
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
 use infer_state::blocks::{BlockLease, BlockPool};
 #[cfg(test)]
@@ -242,37 +244,19 @@ fn copy_plan(graph: &DataflowGraph, weights: &ProgramWeights) -> Result<Vec<(Ten
     Ok(plan)
 }
 
-/// Whether two tensors start at the same device address: a slot-resident program's view and the
-/// slot it aliases.
-fn same_storage<T: DType>(left: &Tensor<T>, right: &Tensor<T>) -> bool {
-    left.device_pointer().cu_deviceptr() == right.device_pointer().cu_deviceptr()
-}
-
-/// A tensor's dimensions as host sizes.
-fn dims<T: DType>(tensor: &Tensor<T>) -> Result<Vec<usize>> {
-    tensor
-        .shape()
-        .iter()
-        .map(|&dim| usize::try_from(dim).map_err(device_error))
-        .collect()
-}
-
 /// Gather the first `rows` positions of a head-major `[kv_heads, rows, head_dim]` KV state into
 /// a new contiguous tensor: block by block through `blocks` when the state is paged, otherwise
 /// one run per head.
-fn gather_kv<T: DType + Element>(
-    src: &Tensor<T>,
+fn gather_kv(
+    src: &Shaped<f32>,
     rows: usize,
     blocks: Option<&[i32]>,
     device: &CudaDevice,
-) -> Result<Tensor<T>> {
-    let shape = dims(src)?;
-    let [heads, physical, dim] = shape[..] else {
+) -> Result<Shaped<f32>> {
+    let &[heads, physical, dim] = src.dims() else {
         return Err(Error::invariant("slot export KV layout"));
     };
-    let dst = api::zeros::<T>(&[heads, rows, dim])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    let dst = Shaped::zeros(device, vec![heads, rows, dim])?;
     gather_kv_into(&dst, src, [heads, physical, dim], (rows, blocks), device)?;
     Ok(dst)
 }
@@ -335,7 +319,7 @@ fn state_bytes(states: &States, fp8: &Fp8Caches) -> u64 {
     let float_elements: u64 = states
         .values()
         .flatten()
-        .map(|tensor| tensor.size() as u64)
+        .map(|tensor| tensor.len() as u64)
         .sum();
     float_elements.saturating_mul(F32_BYTES as u64) + fp8_cache::bytes(fp8)
 }
@@ -1030,46 +1014,58 @@ impl SlotPool {
         {
             return Err(Error::invariant("slot block table shape"));
         }
-        for (id, copy) in &self.plan {
-            match *copy {
-                SlotCopy::Kv => Self::copy_kv_states(
-                    self.states
-                        .get_mut(slot)
-                        .ok_or_else(|| Error::invariant("slot states"))?,
-                    source,
-                    *id,
-                    rows,
-                    self.capacity,
-                    device,
-                )?,
-                SlotCopy::KvFp8 => {
-                    let dst = self
-                        .fp8
-                        .get_mut(slot)
-                        .ok_or_else(|| Error::invariant("slot fp8 caches"))?;
-                    match self.paging.as_ref() {
-                        Some(paging) => Self::scatter_kv_fp8(
-                            dst,
-                            source_fp8,
-                            *id,
-                            (rows, &paging.owned[slot]),
-                            device,
-                        )?,
-                        None => {
-                            Self::copy_kv_fp8(dst, source_fp8, *id, rows, self.capacity, device)?;
+        // One transfer batch: the copies retain their owners together behind one event, however
+        // many blocks and state tensors the slot holds.
+        device.runtime().enqueue(|transfers| {
+            for (id, copy) in &self.plan {
+                match *copy {
+                    SlotCopy::Kv => Self::copy_kv_states(
+                        self.states
+                            .get_mut(slot)
+                            .ok_or_else(|| Error::invariant("slot states"))?,
+                        source,
+                        *id,
+                        rows,
+                        self.capacity,
+                        transfers,
+                    )?,
+                    SlotCopy::KvFp8 => {
+                        let dst = self
+                            .fp8
+                            .get_mut(slot)
+                            .ok_or_else(|| Error::invariant("slot fp8 caches"))?;
+                        match self.paging.as_ref() {
+                            Some(paging) => Self::scatter_kv_fp8(
+                                dst,
+                                source_fp8,
+                                *id,
+                                (rows, &paging.owned[slot]),
+                                transfers,
+                            )?,
+                            None => {
+                                Self::copy_kv_fp8(
+                                    dst,
+                                    source_fp8,
+                                    *id,
+                                    rows,
+                                    self.capacity,
+                                    transfers,
+                                )?;
+                            }
                         }
                     }
+                    SlotCopy::Whole => Self::copy_whole(
+                        self.states
+                            .get_mut(slot)
+                            .ok_or_else(|| Error::invariant("slot states"))?,
+                        source,
+                        *id,
+                        transfers,
+                    )?,
                 }
-                SlotCopy::Whole => Self::copy_whole(
-                    self.states
-                        .get_mut(slot)
-                        .ok_or_else(|| Error::invariant("slot states"))?,
-                    source,
-                    *id,
-                    device,
-                )?,
             }
-        }
+            Ok(())
+        })?;
         match (&mut self.decode, &mut self.verify) {
             (Some(graph), _) => {
                 graph.set_cursor(slot, rows)?;
@@ -1160,10 +1156,8 @@ impl SlotPool {
                         .ok_or_else(|| Error::invariant("slot export state"))?;
                     let mut copies = Vec::with_capacity(tensors.len());
                     for tensor in tensors {
-                        let mut copy = api::zeros::<f32>(&dims(tensor)?)
-                            .sync_on(&device.stream)
-                            .map_err(device_error)?;
-                        device.copy_d2d(&mut copy, tensor, tensor.size())?;
+                        let copy = Shaped::zeros(device, tensor.dims().to_vec())?;
+                        copy.copy_from(device, tensor)?;
                         copies.push(copy);
                     }
                     out.insert(*id, copies);
@@ -1383,7 +1377,7 @@ impl SlotPool {
         id: TensorId,
         rows: usize,
         slot_capacity: usize,
-        device: &CudaDevice,
+        transfers: &Transfers<'_>,
     ) -> Result<()> {
         let src_tensors = src
             .get(&id)
@@ -1394,8 +1388,8 @@ impl SlotPool {
         if src_tensors.len() != dst_tensors.len() {
             return Err(Error::invariant("slot bind state tensors"));
         }
-        for (dst, src) in dst_tensors.iter_mut().zip(src_tensors) {
-            Self::copy_kv_tensor(dst, src, rows, slot_capacity, device)?;
+        for (dst, src) in dst_tensors.iter().zip(src_tensors) {
+            Self::copy_kv_tensor(dst, src, rows, slot_capacity, transfers)?;
         }
         Ok(())
     }
@@ -1408,7 +1402,7 @@ impl SlotPool {
         src: &Fp8Caches,
         id: TensorId,
         (rows, blocks): (usize, &[i32]),
-        device: &CudaDevice,
+        transfers: &Transfers<'_>,
     ) -> Result<()> {
         let from = src
             .get(&id)
@@ -1440,8 +1434,19 @@ impl SlotPool {
                 ));
             }
         }
-        device.copy_d2d_runs(&to.keys, &from.keys, runs.iter().copied())?;
-        device.copy_d2d_runs(&to.values, &from.values, runs)
+        let operand = |memory| buffer(memory).map_err(device_error);
+        copy_runs(
+            transfers,
+            operand(&to.keys)?,
+            operand(&from.keys)?,
+            runs.iter().copied(),
+        )?;
+        copy_runs(
+            transfers,
+            operand(&to.values)?,
+            operand(&from.values)?,
+            runs,
+        )
     }
 
     /// fp8 twin of [`Self::copy_kv_states`].
@@ -1451,7 +1456,7 @@ impl SlotPool {
         id: TensorId,
         rows: usize,
         slot_capacity: usize,
-        device: &CudaDevice,
+        transfers: &Transfers<'_>,
     ) -> Result<()> {
         let from = src
             .get(&id)
@@ -1459,45 +1464,36 @@ impl SlotPool {
         let to = dst
             .get(&id)
             .ok_or_else(|| Error::invariant("slot bind target fp8 cache"))?;
-        // A slot-resident programs views are the slots own storage: nothing to move.
+        // A slot-resident program's views are the slot's own storage: nothing to move.
         if to.same_memory(from) {
             return Ok(());
         }
         if to.layout.rows != slot_capacity {
             return Err(Error::invariant("slot bind KV layout"));
         }
-        to.copy_prefix_from(device, from, rows)
+        to.copy_prefix_in(transfers, from, rows)
     }
 
     /// One KV tensor's covered rows. Captured KV state is head-major
     /// `[kv_heads, capacity, head_dim]` and the two sides differ in capacity, so the
     /// token prefix moves per head block with each side's own stride. Anything but that
     /// exact layout is an invariant violation, never a silent partial copy.
-    fn copy_kv_tensor<T: DType + Element>(
-        dst: &Tensor<T>,
-        src: &Tensor<T>,
+    fn copy_kv_tensor(
+        dst: &Shaped<f32>,
+        src: &Shaped<f32>,
         rows: usize,
         slot_capacity: usize,
-        device: &CudaDevice,
+        transfers: &Transfers<'_>,
     ) -> Result<()> {
         // A slot-resident program's views are the slot's own storage: nothing to move.
-        if same_storage(dst, src) {
+        if dst.same_memory(src) {
             return Ok(());
         }
-        let dims = |tensor: &Tensor<T>| {
-            tensor
-                .shape()
-                .iter()
-                .map(|&dim| usize::try_from(dim).map_err(device_error))
-                .collect::<Result<Vec<_>>>()
-        };
         // Pool caches are stored flat, so the head axis comes from the program side of the copy.
-        let dst_dims = dims(dst)?;
-        let src_dims = dims(src)?;
-        let shaped = if dst_dims.len() == KV_STATE_DIMS {
-            &dst_dims
+        let shaped = if dst.dims().len() == KV_STATE_DIMS {
+            dst.dims()
         } else {
-            &src_dims
+            src.dims()
         };
         if shaped.len() != KV_STATE_DIMS {
             return Err(Error::invariant("slot bind KV layout"));
@@ -1505,16 +1501,16 @@ impl SlotPool {
         let (heads, head_dim) = (shaped[0], shaped[2]);
         let row_elements = heads * head_dim;
         if row_elements == 0
-            || dst.size() != row_elements * slot_capacity
-            || src.size() < row_elements * rows
-            || !src.size().is_multiple_of(row_elements)
+            || dst.len() != row_elements * slot_capacity
+            || src.len() < row_elements * rows
+            || !src.len().is_multiple_of(row_elements)
         {
             return Err(Error::invariant("slot bind KV layout"));
         }
         let dst_stride = slot_capacity
             .checked_mul(head_dim)
             .ok_or_else(|| Error::invalid("slot bind copy overflow"))?;
-        let src_stride = src.size() / heads;
+        let src_stride = src.len() / heads;
         let elements = rows
             .checked_mul(head_dim)
             .ok_or_else(|| Error::invalid("slot bind copy overflow"))?;
@@ -1528,11 +1524,21 @@ impl SlotPool {
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
-        device.copy_d2d_runs(dst, src, runs)
+        copy_runs(
+            transfers,
+            buffer(dst).map_err(device_error)?,
+            buffer(src).map_err(device_error)?,
+            runs,
+        )
     }
 
     /// Copy one conv/delta state family whole; both sides share one capacity-free layout.
-    fn copy_whole(dst: &mut States, src: &States, id: TensorId, device: &CudaDevice) -> Result<()> {
+    fn copy_whole(
+        dst: &mut States,
+        src: &States,
+        id: TensorId,
+        transfers: &Transfers<'_>,
+    ) -> Result<()> {
         let src_tensors = src
             .get(&id)
             .ok_or_else(|| Error::invariant("slot bind source state"))?;
@@ -1542,12 +1548,15 @@ impl SlotPool {
         if src_tensors.len() != dst_tensors.len() {
             return Err(Error::invariant("slot bind state tensors"));
         }
-        for (dst, src) in dst_tensors.iter_mut().zip(src_tensors) {
-            if src.size() != dst.size() {
+        for (dst, src) in dst_tensors.iter().zip(src_tensors) {
+            if src.len() != dst.len() {
                 return Err(Error::invariant("slot bind tensor size"));
             }
-            if !same_storage(dst, src) {
-                device.copy_d2d(dst, src, src.size())?;
+            if !dst.same_memory(src) {
+                transfers.copy(
+                    buffer(dst).map_err(device_error)?,
+                    buffer(src).map_err(device_error)?,
+                )?;
             }
         }
         Ok(())

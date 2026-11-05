@@ -1,4 +1,5 @@
 use super::ActivationArena;
+use super::shaped::Shaped;
 use crate::device::ReadbackSource;
 use crate::device::asynchronous::block_on;
 use crate::device::cublaslt::Support;
@@ -8,7 +9,7 @@ use crate::tuning::resident_gemm::ResidentTuningSession;
 use greedy::ProgramReadouts;
 use infer_cuda_kernels::contract::Kernels;
 use infer_cuda_kernels::contract::Owner;
-use infer_cuda_kernels::tile::runtime::{Element, Graph};
+use infer_cuda_kernels::tile::runtime::Graph;
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -318,7 +319,7 @@ fn retained_tensor_bytes(
     let state_bytes = states
         .values()
         .flatten()
-        .map(|t| t.size() as u64 * F32_BYTES as u64)
+        .map(|t| t.len() as u64 * F32_BYTES as u64)
         .sum::<u64>();
     let packed_bytes = super::fp8_cache::bytes(fp8);
     let recurrent = graph
@@ -335,7 +336,7 @@ fn retained_tensor_bytes(
         })
         .filter_map(|t| states.get(&t.id))
         .flatten()
-        .map(|t| t.size() as u64 * F32_BYTES as u64)
+        .map(|t| t.len() as u64 * F32_BYTES as u64)
         .sum::<u64>();
     activations + state_bytes + packed_bytes + recurrent * verify as u64
 }
@@ -400,26 +401,26 @@ fn arena_budget(device: &CudaDevice) -> Result<usize> {
 /// Copy one state tensor between programs of equal capacity: with `kv = (rows, capacity)` a
 /// head-major `[kv_heads, capacity, head_dim]` cache moves its first `rows` positions per head,
 /// otherwise the tensor moves whole.
-fn copy_prefix<T: DType + Element>(
+fn copy_prefix(
     device: &CudaDevice,
-    dst: &mut Tensor<T>,
-    src: &Tensor<T>,
+    dst: &Shaped<f32>,
+    src: &Shaped<f32>,
     kv: Option<(usize, usize)>,
 ) -> Result<()> {
-    if dst.shape() != src.shape() {
+    if dst.dims() != src.dims() {
         return Err(Error::invariant("program state copy shape"));
     }
-    if dst.device_pointer().cu_deviceptr() == src.device_pointer().cu_deviceptr() {
+    // Two views of one slot pool state, as a slot-resident program and its worker hold.
+    if dst.same_memory(src) {
         return Ok(());
     }
-    let shape = src.shape();
     if let Some((rows, capacity)) = kv {
-        if shape.len() != KV_CACHE_RANK || usize::try_from(shape[1]).ok() != Some(capacity) {
+        if src.dims().len() != KV_CACHE_RANK || src.dims()[1] != capacity {
             return Err(Error::invariant("program KV copy layout"));
         }
-        return device.copy_head_prefix(dst, src, rows);
+        return dst.copy_head_prefix(device, src, rows);
     }
-    device.copy_d2d(dst, src, src.size())
+    dst.copy_from(device, src)
 }
 
 fn program_capacity(
@@ -467,7 +468,7 @@ impl DeviceProgram {
             .states
             .values()
             .flatten()
-            .map(|t| t.size() as u64 * F32_BYTES as u64)
+            .map(|t| t.len() as u64 * F32_BYTES as u64)
             .sum::<u64>();
         let packed_bytes = super::fp8_cache::bytes(&self.fp8_states);
         let prompt = retained_prompt_lanes(&self.prompts);
@@ -637,7 +638,7 @@ impl DeviceProgram {
             // StateKind supplies the layout contract for unscaled KV as well as FP8.
             // Recurrent state moves whole; untouched KV tails are never read by attention.
             let kv = self.kv_states.contains(id).then_some((rows, self.capacity));
-            for (dst, src) in tensors.iter_mut().zip(from) {
+            for (dst, src) in tensors.iter().zip(from) {
                 copy_prefix(device, dst, src, kv)?;
             }
         }
@@ -1771,7 +1772,7 @@ pub fn allocate_states(
     graph: &DataflowGraph,
     capacity: usize,
     weights: &ProgramWeights,
-) -> Result<BTreeMap<TensorId, Vec<Tensor<f32>>>> {
+) -> Result<super::batch::States> {
     let plan = state_shapes(graph, capacity, weights)?;
     let mut total = 0usize;
     let budget = device
@@ -1802,12 +1803,8 @@ pub fn allocate_states(
     let mut states = BTreeMap::new();
     for (id, shapes) in plan {
         let tensors = shapes
-            .iter()
-            .map(|shape| {
-                api::zeros::<f32>(shape)
-                    .sync_on(&device.stream)
-                    .map_err(device_error)
-            })
+            .into_iter()
+            .map(|shape| Shaped::zeros(device, shape))
             .collect::<Result<Vec<_>>>()?;
         states.insert(id, tensors);
     }

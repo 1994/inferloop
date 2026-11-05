@@ -46,8 +46,8 @@ fn compare_states(
         assert_eq!(actual.len(), expected.len());
         for (actual, expected) in actual.iter().zip(expected) {
             assert_bits(
-                &loaded.device().read_borrowed(actual)?,
-                &loaded.device().read_borrowed(expected)?,
+                &loaded.device().runtime().read(actual.memory())?,
+                &loaded.device().runtime().read(expected.memory())?,
                 "state",
             );
         }

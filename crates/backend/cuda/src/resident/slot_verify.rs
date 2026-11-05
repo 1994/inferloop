@@ -1,4 +1,5 @@
 //! Cross-sequence target verification with per-slot recurrent rollback.
+use super::shaped::Shaped;
 use super::slot_recurrent::ValueDevice;
 use super::{
     ActivationArena,
@@ -20,6 +21,7 @@ use crate::device::Readbacks;
 use crate::device::{CudaDevice, ReadbackSource, device_error};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::Recording;
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::{StateKind, TensorNode, TensorOp, TensorStorage};
@@ -66,6 +68,9 @@ pub(super) struct SlotVerifyGraph {
     profile: Option<profile::SlotProfile>,
     /// Commit inputs the verify graph copies out and the commit graphs read.
     _recurrent: RecurrentCapture,
+    /// Rollback snapshots the verify graph writes and the restore graphs read; graphs address
+    /// contract buffers without holding them, so these outlive both.
+    _checkpoints: Vec<Vec<States>>,
     // The shared batched arena anchors the graph's activations; declared last so the graph
     // and the restore graphs drop before it.
     _arena: ActivationArena,
@@ -221,14 +226,17 @@ impl BatchBuilder<'_> {
             for snapshot in per_slot {
                 graphs.push(
                     Graph::scope(&self.device.stream, |scope| {
+                        let recording = Recording::scope(scope);
                         for (id, tensors) in snapshot {
                             for (output, input) in states
-                                .get_mut(id)
+                                .get(id)
                                 .ok_or_else(|| error("slot verify restore state"))?
-                                .iter_mut()
+                                .iter()
                                 .zip(tensors)
                             {
-                                scope.record(api::memcpy(output, input))?;
+                                recording
+                                    .copy(buffer(output)?, buffer(input)?)
+                                    .map_err(error)?;
                             }
                         }
                         Ok(())
@@ -266,7 +274,7 @@ impl BatchBuilder<'_> {
                         .ok_or_else(|| Error::invariant("slot verify checkpoint source"))?
                     {
                         bytes = source
-                            .size()
+                            .len()
                             .checked_mul(F32_BYTES)
                             .and_then(|n| bytes.checked_add(n))
                             .ok_or_else(|| Error::invalid("slot verify checkpoint overflow"))?;
@@ -283,16 +291,7 @@ impl BatchBuilder<'_> {
                                 ),
                             ));
                         }
-                        let shape = source
-                            .shape()
-                            .iter()
-                            .map(|v| usize::try_from(*v).map_err(device_error))
-                            .collect::<Result<Vec<_>>>()?;
-                        copies.push(
-                            api::zeros::<f32>(&shape)
-                                .sync_on(&self.device.stream)
-                                .map_err(device_error)?,
-                        );
+                        copies.push(Shaped::zeros(self.device, source.dims().to_vec())?);
                     }
                     snapshot.insert(spec.id, copies);
                 }
@@ -605,6 +604,7 @@ impl BatchBuilder<'_> {
             pending: vec![0; slots],
             profile,
             _recurrent: recurrent,
+            _checkpoints: checkpoints,
             _arena: arena,
         })
     }

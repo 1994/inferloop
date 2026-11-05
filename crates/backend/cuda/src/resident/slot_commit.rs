@@ -1,4 +1,5 @@
 //! A single recurrent commit graph with independently uploaded acceptance counts.
+use super::shaped::Shaped;
 use super::{
     batch::States,
     buffers::buffer,
@@ -187,7 +188,7 @@ fn record_node(
 /// Shift each slot's convolution window by its accepted prefix.
 fn record_conv(
     scope: &Scope,
-    state: &[Tensor<f32>],
+    state: &[Shaped<f32>],
     rows: Buffer<'_, f32>,
     channels: usize,
     inputs: &Inputs<'_>,
@@ -214,11 +215,6 @@ fn record_conv(
     )
 }
 
-fn has_shape(tensor: &Tensor<f32>, expected: &[usize]) -> bool {
-    tensor.shape().len() == expected.len()
-        && tensor
-            .shape()
-            .iter()
-            .zip(expected)
-            .all(|(&actual, &wanted)| usize::try_from(actual).ok() == Some(wanted))
+fn has_shape(state: &Shaped<f32>, expected: &[usize]) -> bool {
+    state.dims() == expected
 }

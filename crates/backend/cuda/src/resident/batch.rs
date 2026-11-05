@@ -3,6 +3,7 @@
 //! Prefill width 32 keeps one batched arena: auxiliaries record once per node.
 use super::buffers::buffer;
 use super::prefill_projection::{DensePlan, record_narrow};
+use super::shaped::Shaped;
 use super::{
     ActivationArena, ProgramWeights,
     buffers::RowMajor,
@@ -45,7 +46,7 @@ use std::mem::take;
 use std::result::Result as StdResult;
 use std::sync::Mutex;
 
-pub type States = BTreeMap<TensorId, Vec<Tensor<f32>>>;
+pub type States = BTreeMap<TensorId, Vec<Shaped<f32>>>;
 pub type BatchOutput = Vec<(Vec<f32>, Vec<f32>)>;
 
 pub struct BatchReadout {
@@ -120,6 +121,9 @@ pub(super) struct BatchGraph {
     #[cfg(test)]
     state_prefill: Option<Graph>,
     restore: Vec<Graph>,
+    /// Snapshots the verification graph writes and the restore graphs read; graphs address
+    /// contract buffers without holding them, so these outlive both.
+    _checkpoints: Vec<States>,
     /// Pack and unpack matrices the verification graphs address; none on other paths.
     _projections: Option<super::batch_projection::Workspace>,
     /// Split-K partial windows the captured fp4 prompt GEMMs accumulate into;
@@ -589,21 +593,24 @@ impl BatchBuilder<'_> {
         let prefill = self.capture(&mut lanes, &mut projections, Some(false), None)?;
         let prefill_last = self.capture(&mut lanes, &mut projections, Some(true), None)?;
         let mut restore = Vec::new();
-        let mut metadata = Vec::new();
+        let (mut metadata, mut checkpoints) = (Vec::new(), Vec::new());
         let mut hidden = Vec::new();
         let mut logits = Vec::new();
         for lane in lanes {
             restore.push(
                 Graph::scope(&self.device.stream, |scope| {
+                    let recording = Recording::scope(scope);
                     for (id, tensors) in &lane.checkpoints {
                         for (output, input) in self
                             .states
-                            .get_mut(id)
+                            .get(id)
                             .ok_or_else(|| error("checkpoint state"))?
-                            .iter_mut()
+                            .iter()
                             .zip(tensors)
                         {
-                            scope.record(api::memcpy(output, input))?;
+                            recording
+                                .copy(buffer(output)?, buffer(input)?)
+                                .map_err(error)?;
                         }
                     }
                     Ok(())
@@ -613,6 +620,7 @@ impl BatchBuilder<'_> {
             hidden.push(take_result(&lane.arena, self.graph.hidden)?);
             logits.push(take_result(&lane.arena, self.graph.logits)?);
             metadata.push(lane.metadata);
+            checkpoints.push(lane.checkpoints);
         }
         let token_readout = super::token_readout::TokenReadout::new(
             self.device,
@@ -632,6 +640,7 @@ impl BatchBuilder<'_> {
             #[cfg(test)]
             state_prefill: None,
             restore,
+            _checkpoints: checkpoints,
             _partials: Partials::default(),
             prompt_row: None,
             _recurrent: super::recurrent_prefill::Workspace::default(),
@@ -778,6 +787,7 @@ impl BatchBuilder<'_> {
             #[cfg(test)]
             state_prefill: captures.regular.state_prefill,
             restore: Vec::new(),
+            _checkpoints: Vec::new(),
             _projections: None,
             _partials: Partials::default(),
             prompt_row,
@@ -1141,10 +1151,13 @@ impl BatchBuilder<'_> {
                             capture.record_flat_checkpoint(node, snapshot)?;
                         } else {
                             capture.record(node)?;
+                            let recording = Recording::scope(scope);
                             for (output, input) in
-                                snapshot.iter_mut().zip(&capture.states[&node.states[0]])
+                                snapshot.iter().zip(&capture.states[&node.states[0]])
                             {
-                                scope.record(api::memcpy(output, input))?;
+                                recording
+                                    .copy(buffer(output)?, buffer(input)?)
+                                    .map_err(error)?;
                             }
                         }
                     } else {
@@ -1718,7 +1731,7 @@ impl BatchBuilder<'_> {
                 let mut copies = Vec::new();
                 for source in &self.states[&spec.id] {
                     bytes = source
-                        .size()
+                        .len()
                         .checked_mul(F32_BYTES)
                         .and_then(|n| bytes.checked_add(n))
                         .ok_or_else(|| Error::invalid("checkpoint overflow"))?;
@@ -1727,16 +1740,7 @@ impl BatchBuilder<'_> {
                     {
                         return Err(Error::invalid("verification checkpoints exceed budget"));
                     }
-                    let shape = source
-                        .shape()
-                        .iter()
-                        .map(|v| usize::try_from(*v).map_err(device_error))
-                        .collect::<Result<Vec<_>>>()?;
-                    copies.push(
-                        api::zeros::<f32>(&shape)
-                            .sync_on(&self.device.stream)
-                            .map_err(device_error)?,
-                    );
+                    copies.push(Shaped::zeros(self.device, source.dims().to_vec())?);
                 }
                 checkpoints.insert(spec.id, copies);
             }

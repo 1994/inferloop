@@ -4,7 +4,7 @@ use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::{KvCache, KvElement, Width};
-use infer_cuda_kernels::tile::runtime::{Allocation, Element, HeadMajor};
+use infer_cuda_kernels::tile::runtime::{Allocation, Element, HeadMajor, Transfers};
 use infer_ir::{DataflowGraph, StateKind, TensorOp, TensorStorage};
 use std::collections::BTreeMap;
 
@@ -78,6 +78,23 @@ impl<T: DType + Element<Marker: KvElement>> KvState<T> {
     where
         T::Marker: Width,
     {
+        device
+            .runtime()
+            .enqueue(|transfers| self.copy_prefix_in(transfers, source, rows))
+    }
+
+    /// [`Self::copy_prefix_from`] as part of a larger transfer batch.
+    /// # Errors
+    /// As [`Self::copy_prefix_from`].
+    pub fn copy_prefix_in(
+        &self,
+        transfers: &Transfers<'_>,
+        source: &Self,
+        rows: usize,
+    ) -> Result<()>
+    where
+        T::Marker: Width,
+    {
         let (to, from) = (self.layout, source.layout);
         if (to.heads, to.dim) != (from.heads, from.dim) || rows > to.rows || rows > from.rows {
             return Err(Error::invariant("KV prefix copy layout"));
@@ -88,9 +105,7 @@ impl<T: DType + Element<Marker: KvElement>> KvState<T> {
         for (dst, src) in [(&self.keys, &source.keys), (&self.values, &source.values)] {
             let dst = HeadMajor::new(dst.operand(), to.dims())?;
             let src = HeadMajor::new(src.operand(), from.dims())?;
-            device
-                .runtime()
-                .enqueue(|transfers| transfers.copy_heads(dst, src, rows))?;
+            transfers.copy_heads(dst, src, rows)?;
         }
         Ok(())
     }

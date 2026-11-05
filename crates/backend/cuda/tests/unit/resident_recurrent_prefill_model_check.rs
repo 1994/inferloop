@@ -189,7 +189,8 @@ fn finite_states(loaded: &LoadedModel, program: &DeviceProgram, label: &str) {
         for tensor in tensors {
             let values = loaded
                 .device()
-                .read_borrowed(tensor)
+                .runtime()
+                .read(tensor.memory())
                 .expect("state download");
             finite(&values, label);
         }

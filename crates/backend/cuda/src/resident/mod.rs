@@ -37,6 +37,7 @@ pub(crate) mod prompt_scratch;
 mod recurrent;
 mod recurrent_checkpoint;
 pub(crate) mod recurrent_prefill;
+pub(crate) mod shaped;
 pub(crate) mod slot_batch;
 mod slot_commit;
 mod slot_convolution;

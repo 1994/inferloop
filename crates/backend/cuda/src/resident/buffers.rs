@@ -106,14 +106,14 @@ pub fn tensor_rows<E: DType + Element>(
 }
 
 /// A KV pair as a launch addresses it, in `groups` of `[rows, dim]`.
-pub fn kv_cache<'a, E: DType + Element<Marker: KvElement>>(
-    (keys, values): (&'a Tensor<E>, &'a Tensor<E>),
+pub fn kv_cache<'a, O: Operand<Marker: KvElement> + ?Sized>(
+    (keys, values): (&'a O, &'a O),
     groups: usize,
     dim: usize,
     scales: [f32; 2],
 ) -> Result<KvCache<'a>, DeviceError> {
     Ok(KvCache {
-        buffers: E::Marker::kv(buffer(keys)?, buffer(values)?),
+        buffers: O::Marker::kv(buffer(keys)?, buffer(values)?),
         groups,
         dim,
         scales,

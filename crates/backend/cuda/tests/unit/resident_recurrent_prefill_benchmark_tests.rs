@@ -114,7 +114,7 @@ fn bench_case(
                 scope,
                 contract_kernels(0).recurrent.as_ref(),
                 [&qkv, &beta, &alpha, &a_log, &bias],
-                [&mut state, &mut scratch],
+                (&state, &scratch),
                 &metadata,
                 (kh, vh, dim, lanes, block),
             )?;
