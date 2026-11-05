@@ -126,7 +126,7 @@ struct VerifiedIngest {
     graph: Graph,
     work: Ingest,
     uploads: PinnedUpload<i32>,
-    _features: Arc<Tensor<f32>>,
+    _features: Allocation<f32>,
 }
 
 /// Activations of one block proposal for `slots` slots.
@@ -273,12 +273,12 @@ impl Engine {
     pub fn attach_pool(
         &mut self,
         device: &CudaDevice,
-        graphs: &[(usize, Arc<Tensor<f32>>)],
+        graphs: &[(usize, Allocation<f32>)],
     ) -> Result<()> {
         self.detach_pool();
         let mut pooled = Vec::with_capacity(graphs.len());
         for (slots, features) in graphs {
-            pooled.push(self.capture_pooled(device, *slots, Arc::clone(features))?);
+            pooled.push(self.capture_pooled(device, *slots, features.clone())?);
         }
         pooled.sort_by_key(|graphs| graphs.slots);
         self.pooled = pooled;
@@ -289,11 +289,11 @@ impl Engine {
         &self,
         device: &CudaDevice,
         slots: usize,
-        features: Arc<Tensor<f32>>,
+        features: Allocation<f32>,
     ) -> Result<Pooled> {
         let geometry = self.weights.geometry;
         let rows = slots * geometry.block;
-        if features.size() != rows * geometry.hidden {
+        if features.len() != rows * geometry.hidden {
             return Err(Error::invalid("verify features do not match the pool"));
         }
         let work = Ingest::new(device, &geometry, rows)?;
@@ -304,7 +304,7 @@ impl Engine {
             .runtime()
             .capture(|recording| {
                 let recorder = Recorder::new(draft, recording);
-                buffer(features.as_ref())
+                buffer(&features)
                     .and_then(|features| record_ingest(&recorder, weights, rings, &work, features))
                     .map_err(device_error)
             })
@@ -358,13 +358,13 @@ impl Engine {
     pub async fn ingest_prompt(
         &mut self,
         device: &CudaDevice,
-        features: &Tensor<f32>,
+        features: &Allocation<f32>,
         rows: usize,
         cursor: &mut Cursor,
         position: usize,
     ) -> Result<()> {
         let hidden = self.weights.geometry.hidden;
-        if features.size() < rows * hidden || cursor.ring >= self.rings.count {
+        if features.len() < rows * hidden || cursor.ring >= self.rings.count {
             return Err(Error::invalid("DFlash2 prompt ingestion rows"));
         }
         let mut upload = vec![0i32; 2 * PROMPT_ROWS];

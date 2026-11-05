@@ -2,6 +2,7 @@ use super::{SlotPool, candidate_pool_capacity, pool_retry_budget, pooled_envelop
 use crate::constants::CB_SLOT_TOKENS;
 use crate::executor::CudaExecutor;
 use infer_core::{RequestId, StateId};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{ExecutionInput, ExecutionTask, OutputReadout, TaskOutput, TokenBuffer};
 use std::{env::var, error::Error};
 
@@ -405,7 +406,7 @@ fn failed_media_chunk_retains_its_device_source_until_the_fence() -> Result<(), 
         .get_mut(&states[0])
         .ok_or("missing sequence")?;
     sequence.media = Some(super::CachedMedia {
-        tensor: Arc::clone(&owner),
+        tensor: Allocation::adopt(Arc::clone(&owner))?,
         layout: MediaLayout {
             spans: Vec::new(),
             next_rotary: 0,
@@ -419,7 +420,7 @@ fn failed_media_chunk_retains_its_device_source_until_the_fence() -> Result<(), 
     let retained = sequence
         .media
         .as_ref()
-        .is_some_and(|media| Arc::ptr_eq(&media.tensor, &owner));
+        .is_some_and(|media| Arc::ptr_eq(media.tensor.tensor(), &owner));
     block_on(device.fence())?;
     let error = result.err().ok_or("short media tensor should fail")?;
     assert_eq!(error.message, "device copy range outside tensor");

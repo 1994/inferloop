@@ -22,7 +22,6 @@ use crate::device::asynchronous::block_on;
 use crate::device::copy_runs;
 use crate::device::{CudaDevice, DeviceProfile, device_error};
 use cuda_core::f8e4m3fn;
-use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::{Owner, Width};
 use infer_cuda_kernels::tile::runtime::Allocation;
@@ -32,7 +31,6 @@ use infer_state::blocks::{BlockLease, BlockPool};
 #[cfg(test)]
 use std::cell::Cell;
 use std::iter::successors;
-use std::sync::Arc;
 
 /// Widest plain-decode rung; above it the full-width graph's batched state kernels win.
 const MAX_NARROW_DECODE_SLOTS: usize = 4;
@@ -798,7 +796,7 @@ impl SlotPool {
 
     /// Device draft features of every verify graph, narrowest first, with its slot count;
     /// see [`SlotVerifyGraph::features`].
-    pub(crate) fn verify_features(&self) -> Option<Vec<(usize, Arc<Tensor<f32>>)>> {
+    pub(crate) fn verify_features(&self) -> Option<Vec<(usize, Allocation<f32>)>> {
         self.narrow
             .iter()
             .chain(self.verify.as_ref())

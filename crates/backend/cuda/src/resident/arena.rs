@@ -423,6 +423,14 @@ impl SlotMemory {
         self.memory.device()
     }
 
+    /// The slot as an allocation of its own, holding a share of the arena memory, for an owner
+    /// that outlives this handle, such as a graph's readout rows.
+    /// # Errors
+    /// As [`Allocation::slice`], which cannot fail for a range the arena checked.
+    pub(crate) fn allocation(&self) -> Result<Allocation<f32>> {
+        self.memory.slice(self.offset..self.offset + self.len)
+    }
+
     /// The memory shaped `shape`, for the test-only taps and kernels still launched through cuTile.
     /// # Errors
     /// Rejects a shape that does not cover the memory.

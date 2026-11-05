@@ -182,8 +182,7 @@ fn prefill_chunked(
     let media = if data.is_empty() {
         None
     } else {
-        let rows = data.len() / hidden;
-        Some(program.device().upload(data, &[rows, hidden])?)
+        Some(program.device().runtime().upload(data)?)
     };
     let mut logits = Vec::new();
     let mut offset = 0;

@@ -145,10 +145,10 @@ pub(super) struct BatchGraph {
     prefill_info: Option<Allocation<i32>>,
     /// Per-lane `(t, h, w)` rotary coordinates for prompt chunks; absent below prefill width 32.
     prefill_rotary: Option<Allocation<i32>>,
-    hidden: Vec<Arc<Tensor<f32>>>,
-    logits: Vec<Arc<Tensor<f32>>>,
+    hidden: Vec<Allocation<f32>>,
+    logits: Vec<Allocation<f32>>,
     /// Prompt lanes' draft features, when the target graph carries them.
-    features: Option<Arc<Tensor<f32>>>,
+    features: Option<Allocation<f32>>,
     pub width: usize,
     /// Token capacity of the KV arena this graph's kernels address. Positions are rows in it,
     /// so a chunk that would write past the end is an internal inconsistency, not a request
@@ -206,9 +206,9 @@ pub(super) struct SlotDecodeGraph {
     metadata_upload: Vec<i32>,
     metadata_staging: PinnedUpload<i32>,
     // Batched hidden rows stay allocated for the graph's writes but are never read back.
-    hidden: Arc<Tensor<f32>>,
+    hidden: Allocation<f32>,
     pub(super) external_hidden: bool,
-    logits: Arc<Tensor<f32>>,
+    logits: Allocation<f32>,
     pub width: usize,
     /// Host-side state position each slot's next replay must continue at.
     cursors: Vec<usize>,
@@ -626,7 +626,7 @@ impl BatchBuilder<'_> {
             self.device,
             &logits,
             width,
-            logits[0].size(),
+            logits[0].len(),
             self.weights,
         )?;
         Ok(BatchGraph {
@@ -1798,20 +1798,20 @@ pub(super) fn dispatch32(node: &TensorNode, weights: &ProgramWeights) -> Dispatc
 pub(super) fn take_result(
     arena: &ActivationArena,
     id: Option<TensorId>,
-) -> Result<Arc<Tensor<f32>>> {
+) -> Result<Allocation<f32>> {
     let slot = arena.slot(id.ok_or_else(|| Error::invalid("batch result binding"))?)?;
-    Ok(Arc::new(arena.output(slot)?))
+    arena.memory(slot)?.allocation()
 }
 
 impl BatchGraph {
     /// Device hidden rows of this graph's prompt lanes, valid after a replay.
-    pub(crate) fn hidden_rows(&self) -> Arc<Tensor<f32>> {
-        Arc::clone(&self.hidden[0])
+    pub(crate) fn hidden_rows(&self) -> Allocation<f32> {
+        self.hidden[0].clone()
     }
 
     /// Device draft features of this graph's prompt lanes, valid after a replay.
-    pub(crate) fn feature_rows(&self) -> Option<Arc<Tensor<f32>>> {
-        self.features.as_ref().map(Arc::clone)
+    pub(crate) fn feature_rows(&self) -> Option<Allocation<f32>> {
+        self.features.clone()
     }
 
     pub(crate) async fn run_async(
@@ -1899,16 +1899,8 @@ impl BatchGraph {
         for lane in 0..tokens.len() {
             let logits = !device_tokens
                 && (prefill.is_none() || prefill == Some(true) && lane + 1 == tokens.len());
-            sources.push(
-                read_hidden
-                    .then(|| ReadbackSource::whole_tensor(&self.hidden[lane]))
-                    .transpose()?,
-            );
-            sources.push(
-                logits
-                    .then(|| ReadbackSource::whole_tensor(&self.logits[lane]))
-                    .transpose()?,
-            );
+            sources.push(read_hidden.then(|| ReadbackSource::all(&self.hidden[lane])));
+            sources.push(logits.then(|| ReadbackSource::all(&self.logits[lane])));
         }
         if device_tokens {
             let active: Vec<_> = (0..tokens.len()).collect();
@@ -2162,27 +2154,24 @@ impl BatchGraph {
                 0,
             ],
         )?;
-        let hidden_dim = self.hidden[0].size() / self.width;
+        let hidden_dim = self.hidden[0].len() / self.width;
         // A one-row logits slot already holds the final lane.
         let single_logits = self.prompt_row.is_some();
-        let vocabulary = self.logits[0].size() / if single_logits { 1 } else { self.width };
+        let vocabulary = self.logits[0].len() / if single_logits { 1 } else { self.width };
         let sources = [
             read_hidden
-                .then(|| ReadbackSource::tensor(&self.hidden[0], 0, tokens.len() * hidden_dim))
-                .transpose()?,
-            (prefill == Some(true))
-                .then(|| {
-                    ReadbackSource::tensor(
-                        &self.logits[0],
-                        if single_logits {
-                            0
-                        } else {
-                            (tokens.len() - 1) * vocabulary
-                        },
-                        vocabulary,
-                    )
-                })
-                .transpose()?,
+                .then(|| ReadbackSource::slice(&self.hidden[0], 0, tokens.len() * hidden_dim)),
+            (prefill == Some(true)).then(|| {
+                ReadbackSource::slice(
+                    &self.logits[0],
+                    if single_logits {
+                        0
+                    } else {
+                        (tokens.len() - 1) * vocabulary
+                    },
+                    vocabulary,
+                )
+            }),
         ];
         let profile = if precise {
             &self.precise_profile
@@ -2319,7 +2308,7 @@ impl BatchGraph {
                 "test retained prompt is not the requested replay",
             ));
         }
-        let values = device.read_borrowed(&self.hidden[0])?;
+        let values = device.runtime().read(&self.hidden[0])?;
         let columns = values.len() / self.width;
         if columns == 0 || values.len() % self.width != 0 {
             return Err(Error::invariant("test retained prompt hidden shape"));
@@ -2414,7 +2403,7 @@ impl SlotDecodeGraph {
         if slot >= self.width {
             return Err(Error::invalid("test hidden slot"));
         }
-        let values = device.read_borrowed(&self.hidden)?;
+        let values = device.runtime().read(&self.hidden)?;
         let columns = values.len() / self.width;
         Ok(values[slot * columns..(slot + 1) * columns].to_vec())
     }
@@ -2519,24 +2508,19 @@ impl SlotDecodeGraph {
         )?;
         self.metadata_staging
             .copy(device, &self.metadata_owner, &self.metadata_upload)?;
-        let vocabulary = self.logits.size() / self.width;
+        let vocabulary = self.logits.len() / self.width;
         let mut sources = Vec::with_capacity(2 * lanes.len());
         for &(slot, ..) in lanes {
-            sources.push(
-                (read_logits && self.external_hidden)
-                    .then(|| {
-                        ReadbackSource::tensor(
-                            &self.hidden,
-                            slot * (self.hidden.size() / self.width),
-                            self.hidden.size() / self.width,
-                        )
-                    })
-                    .transpose()?,
-            );
+            sources.push((read_logits && self.external_hidden).then(|| {
+                ReadbackSource::slice(
+                    &self.hidden,
+                    slot * (self.hidden.len() / self.width),
+                    self.hidden.len() / self.width,
+                )
+            }));
             sources.push(
                 (read_logits && !device_tokens)
-                    .then(|| ReadbackSource::tensor(&self.logits, slot * vocabulary, vocabulary))
-                    .transpose()?,
+                    .then(|| ReadbackSource::slice(&self.logits, slot * vocabulary, vocabulary)),
             );
         }
         let (output, tokens) = if device_tokens {

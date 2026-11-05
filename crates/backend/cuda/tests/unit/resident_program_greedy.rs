@@ -167,8 +167,8 @@ fn draft_device_hidden_reuse_matches_host_roundtrips_bitwise() -> Result<()> {
             (position == 0).then_some(first.as_slice()),
         )?;
         assert_eq!(actual, expected, "position={position}");
-        let actual_hidden = device.read(&resident.hidden)?;
-        let actual_logits = device.read(&resident.logits)?;
+        let actual_hidden = device.runtime().read(&resident.hidden)?;
+        let actual_logits = device.runtime().read(&resident.logits)?;
         assert_eq!(
             actual_hidden
                 .iter()
@@ -413,8 +413,8 @@ fn slot_program_external_rows_follow_captured_geometry() -> Result<()> {
     let expected = reference.step_greedy(7, 0, 0, Some(&previous))?;
     let actual = home.step_greedy(7, 0, 0, Some(&previous))?;
     assert_eq!(actual, expected);
-    let expected = device.read(&reference.logits)?;
-    let actual = device.read(&home.logits)?;
+    let expected = device.runtime().read(&reference.logits)?;
+    let actual = device.runtime().read(&home.logits)?;
     assert_eq!(
         actual.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
         expected.iter().map(|x| x.to_bits()).collect::<Vec<_>>()

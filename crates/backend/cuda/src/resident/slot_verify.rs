@@ -52,10 +52,10 @@ pub(super) struct SlotVerifyGraph {
     metadata_owner: Allocation<i32>,
     metadata_upload: Vec<i32>,
     metadata_staging: PinnedUpload<i32>,
-    hidden: Arc<Tensor<f32>>,
-    logits: Arc<Tensor<f32>>,
+    hidden: Allocation<f32>,
+    logits: Allocation<f32>,
     /// Per-lane draft features `[lanes, hidden]`, when the target graph carries them.
-    features: Option<Arc<Tensor<f32>>>,
+    features: Option<Allocation<f32>>,
     /// Slot state sets the graph interleaves.
     pub slots: usize,
     /// Candidate lanes each slot runs per replay (submitted token plus draft proposals).
@@ -582,7 +582,7 @@ impl BatchBuilder<'_> {
             self.device,
             from_ref(&logits),
             slots * verify,
-            logits.size() / (slots * verify),
+            logits.len() / (slots * verify),
             self.weights,
         )?;
         Ok(SlotVerifyGraph {
@@ -646,20 +646,18 @@ impl SlotVerifyGraph {
         }
         self.metadata_staging
             .copy(device, &self.metadata_owner, &self.metadata_upload)?;
-        let hidden_size = self.hidden.size() / total;
-        let vocabulary = self.logits.size() / total;
+        let hidden_size = self.hidden.len() / total;
+        let vocabulary = self.logits.len() / total;
         let mut sources = Vec::with_capacity(2 * total);
         for (lane, entry) in per_lane.iter().enumerate() {
             let active = entry.is_some();
             sources.push(
                 active
-                    .then(|| ReadbackSource::tensor(&self.hidden, lane * hidden_size, hidden_size))
-                    .transpose()?,
+                    .then(|| ReadbackSource::slice(&self.hidden, lane * hidden_size, hidden_size)),
             );
             sources.push(
                 (active && !device_tokens)
-                    .then(|| ReadbackSource::tensor(&self.logits, lane * vocabulary, vocabulary))
-                    .transpose()?,
+                    .then(|| ReadbackSource::slice(&self.logits, lane * vocabulary, vocabulary)),
             );
         }
         let (output, tokens) = if device_tokens {
@@ -784,8 +782,8 @@ impl SlotVerifyGraph {
 
     /// Device draft features of every lane, valid after a replay; lane `slot * verify + i`
     /// holds the feature of the slot's `i`-th verified token.
-    pub(crate) fn features(&self) -> Option<Arc<Tensor<f32>>> {
-        self.features.as_ref().map(Arc::clone)
+    pub(crate) fn features(&self) -> Option<Allocation<f32>> {
+        self.features.clone()
     }
 
     /// Drain the capture stream: the pool's teardown barrier for detached restores.

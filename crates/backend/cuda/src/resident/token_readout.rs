@@ -4,6 +4,7 @@ use crate::device::{CudaDevice, ReadbackSource, Readbacks, device_error};
 use crate::tuning::greedy::select;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_cuda_kernels::tile::runtime::Graph;
 #[cfg(test)]
 use std::env::var;
@@ -20,25 +21,19 @@ pub(super) struct TokenReadout {
 impl TokenReadout {
     pub(super) fn contiguous(
         device: &CudaDevice,
-        logits: &Arc<Tensor<f32>>,
+        logits: &Allocation<f32>,
         rows: usize,
         weights: &ProgramWeights,
     ) -> Result<Option<Self>> {
         if rows == 0 {
             return Err(Error::invalid("token readout row count"));
         }
-        Self::new(
-            device,
-            from_ref(logits),
-            rows,
-            logits.size() / rows,
-            weights,
-        )
+        Self::new(device, from_ref(logits), rows, logits.len() / rows, weights)
     }
 
     pub(super) fn new(
         device: &CudaDevice,
-        logits: &[Arc<Tensor<f32>>],
+        logits: &[Allocation<f32>],
         rows: usize,
         vocabulary: usize,
         weights: &ProgramWeights,
@@ -54,7 +49,7 @@ impl TokenReadout {
         if logits.len() * per_input != rows
             || logits
                 .iter()
-                .any(|input| input.size() != per_input * vocabulary)
+                .any(|input| input.len() != per_input * vocabulary)
         {
             return Err(Error::invalid("token readout logits layout"));
         }
@@ -74,7 +69,7 @@ impl TokenReadout {
             .map_err(device_error)?;
         let graph = Graph::scope(&device.stream, |scope| {
             for (index, (selector, input)) in selectors.iter_mut().zip(logits).enumerate() {
-                selector.record_into(scope, input, &tokens, index * per_input)?;
+                selector.record_into(scope, input.tensor(), &tokens, index * per_input)?;
             }
             Ok(())
         })

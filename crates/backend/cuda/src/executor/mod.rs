@@ -9,6 +9,7 @@ mod execution;
 mod owner;
 mod submission;
 use crate::device::step_clock::StepClock;
+use infer_cuda_kernels::tile::runtime::Allocation;
 pub use owner::CudaBackend;
 mod pool;
 pub mod prefix;
@@ -27,7 +28,6 @@ use crate::{
     resident::DeviceProgram,
     resident::slot_batch::SlotPool,
 };
-use cutile::prelude::Tensor;
 use infer_core::{Error, Result, StateId};
 use infer_ir::{DeviceCapabilities, ExecutionProgram, ModelOutput, OutputReadout};
 use infer_models::MediaLayout;
@@ -150,7 +150,7 @@ impl DraftState {
 }
 /// Device-resident encoded media for one prompt, reused across every prefill chunk.
 pub(super) struct CachedMedia {
-    pub tensor: Arc<Tensor<f32>>,
+    pub tensor: Allocation<f32>,
     pub layout: MediaLayout,
     pub bases: Vec<usize>,
 }
