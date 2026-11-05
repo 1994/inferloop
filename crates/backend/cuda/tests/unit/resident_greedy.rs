@@ -97,9 +97,7 @@ fn greedy_scattered_rows_preserve_offsets_and_invalid_inactive_rows() -> Result<
         let mut selectors = (0..3)
             .map(|_| Greedy::new(&device, 1, vocabulary, tile))
             .collect::<Result<Vec<_>>>()?;
-        let output = api::zeros::<i32>(&[7, 2])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        let output = device.runtime().zeros::<i32>(7 * 2)?;
         let graph = Graph::scope(&device.stream, |scope| {
             for (index, (selector, input)) in selectors.iter_mut().zip(&logits).enumerate() {
                 selector.record_into(scope, input, &output, index * 3)?;
@@ -111,7 +109,7 @@ fn greedy_scattered_rows_preserve_offsets_and_invalid_inactive_rows() -> Result<
             .launch()
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        let pairs = device.read_borrowed(&output).map_err(device_error)?;
+        let pairs = device.runtime().read(&output)?;
         for (index, expected) in [17_u32, 129, 256].into_iter().enumerate() {
             let row = index * 3;
             assert_eq!(
@@ -141,9 +139,7 @@ fn greedy_scattered_rows_preserve_offsets_and_invalid_inactive_rows() -> Result<
         .launch()
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let pairs = device
-        .read_borrowed(&selector.tokens)
-        .map_err(device_error)?;
+    let pairs = device.runtime().read(&selector.tokens)?;
     assert_eq!(Greedy::decode(&pairs[..2], vocabulary)?, 17);
     assert!(Greedy::decode(&pairs[2..4], vocabulary).is_err());
     assert_eq!(Greedy::decode(&pairs[4..6], vocabulary)?, 256);

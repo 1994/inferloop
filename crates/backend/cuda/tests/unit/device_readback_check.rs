@@ -72,9 +72,17 @@ fn large_logit_geometry_preserves_hidden_only_readback() -> Result<()> {
     })
     .map_err(device_error)?;
     let sources = [
-        Some(ReadbackSource::tensor(&hidden, 0, 1)?),
+        Some(ReadbackSource::slice(
+            &Allocation::adopt(Arc::clone(&hidden))?,
+            0,
+            1,
+        )),
         None,
-        Some(ReadbackSource::tensor(&hidden, 1, 1)?),
+        Some(ReadbackSource::slice(
+            &Allocation::adopt(Arc::clone(&hidden))?,
+            1,
+            1,
+        )),
         None,
     ];
     let rows = readbacks.run(&device, &graph, &sources)?;
@@ -82,7 +90,11 @@ fn large_logit_geometry_preserves_hidden_only_readback() -> Result<()> {
     let arena = readbacks.arena.clone().unwrap();
     for lane in [1, 3, 1, 3] {
         let mut selected = sources.clone();
-        selected[lane] = Some(ReadbackSource::tensor(&logits, 0, count / 2)?);
+        selected[lane] = Some(ReadbackSource::slice(
+            &Allocation::adopt(Arc::clone(&logits))?,
+            0,
+            count / 2,
+        ));
         let rows = readbacks.run(&device, &graph, &selected)?;
         assert_eq!(rows[lane].len(), count / 2);
         assert!(rows[lane].iter().all(|&value| value == 0.0));
@@ -95,7 +107,9 @@ fn large_logit_geometry_preserves_hidden_only_readback() -> Result<()> {
                 &device,
                 &[
                     sources[0].clone(),
-                    Some(ReadbackSource::whole_tensor(&logits)?),
+                    Some(ReadbackSource::all(&Allocation::adopt(Arc::clone(
+                        &logits
+                    ))?)),
                 ]
             )
             .err()
@@ -136,7 +150,11 @@ fn pinned_readbacks_ordering_and_overhead() -> Result<()> {
     let outputs: Vec<_> = outputs.into_iter().map(Arc::new).collect();
     let sources = outputs
         .iter()
-        .map(|output| ReadbackSource::whole_tensor(output).map(Some))
+        .map(|output| {
+            Ok(Some(ReadbackSource::all(&Allocation::adopt(Arc::clone(
+                output,
+            ))?)))
+        })
         .collect::<Result<Vec<_>>>()?;
     let mut readbacks = Readbacks::default();
     for token in 0..8_u16 {
@@ -208,7 +226,11 @@ fn pinned_readbacks_ordering_and_overhead() -> Result<()> {
 /// A mid-tensor range copies exactly those elements; out-of-bounds is rejected.
 fn partial_readback(device: &CudaDevice, graph: &Graph, readbacks: &mut Readbacks) -> Result<()> {
     let ramp = device.upload((0..8192_u16).map(f32::from).collect::<Vec<f32>>(), &[8192])?;
-    let partial = [Some(ReadbackSource::tensor(&ramp, 999, 2345)?)];
+    let partial = [Some(ReadbackSource::slice(
+        &Allocation::adopt(Arc::clone(&ramp))?,
+        999,
+        2345,
+    ))];
     let rows = readbacks.run(device, graph, &partial)?;
     let expected: Vec<f32> = (999..3344_u16).map(f32::from).collect();
     assert_eq!(rows.len(), 1);
@@ -218,7 +240,11 @@ fn partial_readback(device: &CudaDevice, graph: &Graph, readbacks: &mut Readback
             .zip(&expected)
             .all(|(a, b)| a.to_bits() == b.to_bits())
     );
-    let overflow = [Some(ReadbackSource::tensor(&ramp, 8000, 193)?)];
+    let overflow = [Some(ReadbackSource::slice(
+        &Allocation::adopt(Arc::clone(&ramp))?,
+        8000,
+        193,
+    ))];
     assert!(readbacks.run(device, graph, &overflow).is_err());
     Ok(())
 }
@@ -297,17 +323,15 @@ fn pinned_float_and_integer_graphs_complete_in_order_and_reuse_buffers() -> Resu
         Ok(())
     })
     .map_err(device_error)?;
-    let floats = [
-        Some(ReadbackSource::whole_tensor(&Arc::new(float_output))?),
-        None,
-    ];
-    let integer_output = Arc::new(integer_output);
+    let float_output = Allocation::adopt(Arc::new(float_output))?;
+    let floats = [Some(ReadbackSource::all(&float_output)), None];
+    let integer_output = Allocation::adopt(Arc::new(integer_output))?;
     let mut float_reads = Readbacks::default();
     let mut token_reads = Readbacks::<i32>::default();
     for round in 0..8 {
         if round == 4 {
             float_reads =
-                Readbacks::bounded_arena(&device, integer_output.size() * size_of::<i32>())?;
+                Readbacks::bounded_arena(&device, integer_output.len() * size_of::<i32>())?;
         }
         let expected = vec![round, 0, i32::MAX - round, 1, -round, 0];
         let input = device.upload(expected.clone(), &[6])?;
@@ -318,7 +342,7 @@ fn pinned_float_and_integer_graphs_complete_in_order_and_reuse_buffers() -> Resu
             &device,
             &graph,
             &floats,
-            (&tail, &mut token_reads, Arc::clone(&integer_output)),
+            (&tail, &mut token_reads, integer_output.clone()),
         )?;
         assert_eq!(rows, vec![vec![3.5; 5], Vec::new()]);
         assert_eq!(tokens, vec![expected.clone()]);
@@ -326,7 +350,7 @@ fn pinned_float_and_integer_graphs_complete_in_order_and_reuse_buffers() -> Resu
             &device,
             &graph,
             &floats,
-            (&tail, &mut token_reads, Arc::clone(&integer_output)),
+            (&tail, &mut token_reads, integer_output.clone()),
         )?;
         let (rows, tokens) = poll_pair(&mut float_reads, &mut token_reads)?;
         assert_eq!(rows, vec![vec![3.5; 5], Vec::new()]);
@@ -341,7 +365,7 @@ fn pinned_float_and_integer_graphs_complete_in_order_and_reuse_buffers() -> Resu
         &device,
         &graph,
         &floats,
-        (&tail, &mut token_reads, Arc::clone(&integer_output)),
+        (&tail, &mut token_reads, integer_output.clone()),
     )?;
     assert!(Arc::ptr_eq(
         &retained,
@@ -356,7 +380,7 @@ fn pinned_float_and_integer_graphs_complete_in_order_and_reuse_buffers() -> Resu
                 &other,
                 &graph,
                 &floats,
-                (&tail, &mut token_reads, Arc::clone(&integer_output)),
+                (&tail, &mut token_reads, integer_output.clone()),
             )
             .is_err()
     );
@@ -391,7 +415,10 @@ fn split_readback_is_pending_until_stream_completion_and_rejects_reuse() -> Resu
         Ok(())
     })
     .map_err(device_error)?;
-    let sources = [Some(ReadbackSource::whole_tensor(&Arc::new(output))?), None];
+    let sources = [
+        Some(ReadbackSource::all(&Allocation::adopt(Arc::new(output))?)),
+        None,
+    ];
     let mut reads = Readbacks::default();
     // Allocate before gating: pinned allocation is allowed to synchronize at startup.
     reads.prepare(&device, &sources)?;

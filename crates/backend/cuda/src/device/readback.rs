@@ -55,24 +55,6 @@ impl<T: DType + DeviceCopy> ReadbackSource<T> {
     pub fn all(source: &Allocation<T>) -> Self {
         Self::whole(source.clone())
     }
-
-    /// `[skip, skip + len)` of a tensor a resident program still holds as one.
-    /// # Errors
-    /// Rejects a tensor that is not contiguous.
-    pub fn tensor(tensor: &Arc<Tensor<T>>, skip: usize, len: usize) -> Result<Self> {
-        Ok(Self {
-            source: Allocation::adopt(Arc::clone(tensor))?,
-            skip,
-            len,
-        })
-    }
-
-    /// All of such a tensor.
-    /// # Errors
-    /// Rejects a tensor that is not contiguous.
-    pub fn whole_tensor(tensor: &Arc<Tensor<T>>) -> Result<Self> {
-        Self::tensor(tensor, 0, tensor.size())
-    }
 }
 
 pub struct Readbacks<T: DType + DeviceCopy = f32> {
@@ -276,7 +258,7 @@ impl Readbacks<f32> {
         device: &CudaDevice,
         graph: &Graph,
         sources: &[Option<ReadbackSource>],
-        tail: (&Graph, &mut Readbacks<i32>, Arc<Tensor<i32>>),
+        tail: (&Graph, &mut Readbacks<i32>, Allocation<i32>),
     ) -> Result<(Rows<f32>, Rows<i32>)> {
         super::asynchronous::block_on(self.run_with_tokens_async(device, graph, sources, tail))
     }

@@ -2,7 +2,6 @@
 use super::{ProgramWeights, greedy::Greedy};
 use crate::device::{CudaDevice, ReadbackSource, Readbacks, device_error};
 use crate::tuning::greedy::select;
-use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_cuda_kernels::tile::runtime::Graph;
@@ -13,7 +12,7 @@ use std::slice::from_ref;
 pub(super) struct TokenReadout {
     // The graph is destroyed before every buffer it references.
     graph: Graph,
-    tokens: Arc<Tensor<i32>>,
+    tokens: Allocation<i32>,
     readbacks: Readbacks<i32>,
     _selectors: Vec<Greedy>,
     vocabulary: usize,
@@ -64,12 +63,10 @@ impl TokenReadout {
             .iter()
             .map(|_| Greedy::new(device, per_input, vocabulary, tile))
             .collect::<Result<Vec<_>>>()?;
-        let tokens = api::zeros::<i32>(&[rows, 2])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        let tokens = device.runtime().zeros(rows * 2)?;
         let graph = Graph::scope(&device.stream, |scope| {
             for (index, (selector, input)) in selectors.iter_mut().zip(logits).enumerate() {
-                selector.record_into(scope, input.tensor(), &tokens, index * per_input)?;
+                selector.record_into(scope, input, &tokens, index * per_input)?;
             }
             Ok(())
         })
@@ -78,7 +75,7 @@ impl TokenReadout {
             rows, vocabulary, tile, "GPU token readout captured");
         Ok(Some(Self {
             graph,
-            tokens: Arc::new(tokens),
+            tokens,
             readbacks: Readbacks::allocated(device, rows * 2)?,
             _selectors: selectors,
             vocabulary,
@@ -93,7 +90,7 @@ impl TokenReadout {
         sources: &[Option<ReadbackSource>],
         active: &[usize],
     ) -> Result<(super::batch::BatchOutput, Vec<u32>)> {
-        if active.iter().any(|&row| row >= self.tokens.size() / 2) {
+        if active.iter().any(|&row| row >= self.tokens.len() / 2) {
             return Err(Error::invalid("token readout active row"));
         }
         let (rows, pairs) = readbacks
@@ -101,7 +98,7 @@ impl TokenReadout {
                 device,
                 graph,
                 sources,
-                (&self.graph, &mut self.readbacks, Arc::clone(&self.tokens)),
+                (&self.graph, &mut self.readbacks, self.tokens.clone()),
             )
             .await?;
         self.decode(rows, &pairs, active, sources.len() / 2)

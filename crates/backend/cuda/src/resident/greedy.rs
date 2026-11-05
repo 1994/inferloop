@@ -1,5 +1,5 @@
 //! Exact finite F32 greedy selection; only token IDs and validation flags leave the GPU.
-use super::buffers::buffer;
+use super::buffers::{Operand, buffer};
 use super::capture::error;
 use crate::device::Readbacks;
 use crate::device::{CudaDevice, device_error};
@@ -8,7 +8,11 @@ use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Buffer, GreedyPartials, GreedyPlan, Kernels, Recording};
 use infer_cuda_kernels::tile::identity;
+use infer_cuda_kernels::tile::runtime::Allocation;
 use std::result::Result as StdResult;
+
+/// Values each selected row writes: the token and its validation flag.
+const TOKEN_FIELDS: usize = 2;
 
 /// Candidates to measure per device and row/vocabulary geometry before production selection.
 pub const TILE_SEARCH: [usize; 4] = [256, 512, 1024, 2048];
@@ -18,10 +22,10 @@ pub struct Greedy {
     vocabulary: usize,
     tile: usize,
     blocks: usize,
-    keys: Tensor<u32>,
-    indices: Tensor<i32>,
-    invalid: Tensor<i32>,
-    pub tokens: Tensor<i32>,
+    keys: Allocation<u32>,
+    indices: Allocation<i32>,
+    invalid: Allocation<i32>,
+    pub tokens: Allocation<i32>,
     readbacks: Readbacks<i32>,
     kernels: Arc<Kernels>,
 }
@@ -33,6 +37,7 @@ impl Greedy {
         i32::try_from(vocabulary).map_err(device_error)?;
         let blocks = vocabulary.div_ceil(tile);
         i32::try_from(blocks.next_power_of_two()).map_err(device_error)?;
+        let runtime = device.runtime();
         Ok(Self {
             kernels: device.kernels(),
             readbacks: Readbacks::allocated(device, rows * 2)?,
@@ -40,36 +45,32 @@ impl Greedy {
             vocabulary,
             tile,
             blocks,
-            keys: api::zeros::<u32>(&[rows, blocks])
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
-            indices: api::zeros::<i32>(&[rows, blocks])
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
-            invalid: api::zeros::<i32>(&[rows, blocks])
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
-            tokens: api::zeros::<i32>(&[rows, 2])
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
+            keys: runtime.zeros(rows * blocks)?,
+            indices: runtime.zeros(rows * blocks)?,
+            invalid: runtime.zeros(rows * blocks)?,
+            tokens: runtime.zeros(rows * TOKEN_FIELDS)?,
         })
     }
-    pub fn record(&self, scope: &Scope, logits: &Tensor<f32>) -> StdResult<(), DeviceError> {
+    pub fn record<L: Operand<Marker = f32> + ?Sized>(
+        &self,
+        scope: &Scope,
+        logits: &L,
+    ) -> StdResult<(), DeviceError> {
         self.record_partials(scope, logits)?;
         self.record_finish(scope, buffer(&self.tokens)?, 0)
     }
 
-    pub(crate) fn record_into(
+    pub(crate) fn record_into<L: Operand<Marker = f32> + ?Sized>(
         &self,
         scope: &Scope,
-        logits: &Tensor<f32>,
-        output: &Tensor<i32>,
+        logits: &L,
+        output: &Allocation<i32>,
         offset: usize,
     ) -> StdResult<(), DeviceError> {
-        if !output.size().is_multiple_of(2)
+        if !output.len().is_multiple_of(TOKEN_FIELDS)
             || offset
                 .checked_add(self.rows)
-                .is_none_or(|end| end > output.size() / 2)
+                .is_none_or(|end| end > output.len() / TOKEN_FIELDS)
         {
             return Err(tensor_error("greedy output row range").into());
         }
@@ -112,7 +113,11 @@ impl Greedy {
             .map_err(error)
     }
 
-    fn record_partials(&self, scope: &Scope, logits: &Tensor<f32>) -> StdResult<(), DeviceError> {
+    fn record_partials<L: Operand<Marker = f32> + ?Sized>(
+        &self,
+        scope: &Scope,
+        logits: &L,
+    ) -> StdResult<(), DeviceError> {
         self.kernels
             .sampling
             .greedy_partials(
@@ -129,11 +134,13 @@ impl Greedy {
     }
 
     pub fn read(&self, device: &CudaDevice) -> Result<Vec<u32>> {
-        self.decode_values(&device.read_borrowed(&self.tokens)?)
+        self.decode_values(&device.runtime().read(&self.tokens)?)
     }
 
     pub(crate) async fn read_async(&mut self, device: &CudaDevice) -> Result<Vec<u32>> {
-        let values = device.read_async(&self.tokens, &mut self.readbacks).await?;
+        let values = device
+            .read_async(self.tokens.tensor(), &mut self.readbacks)
+            .await?;
         self.decode_values(&values)
     }
 
