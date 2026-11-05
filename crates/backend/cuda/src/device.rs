@@ -400,6 +400,34 @@ impl CudaDevice {
     }
 }
 
+/// Copy every `(dst_offset, src_offset, elements)` run of `src` into `dst` within one transfer
+/// batch, which retains both owners once and records one completion event.
+/// # Errors
+/// Rejects a run outside either buffer or a copy the driver does not enqueue.
+pub(crate) fn copy_runs<M: Width>(
+    transfers: &Transfers<'_>,
+    dst: Buffer<'_, M>,
+    src: Buffer<'_, M>,
+    runs: impl IntoIterator<Item = (usize, usize, usize)>,
+) -> Result<()> {
+    let outside = || InferError::invalid("device copy range outside tensor");
+    let range = |offset: usize, elements: usize| {
+        offset
+            .checked_add(elements)
+            .map(|end| offset..end)
+            .ok_or_else(outside)
+    };
+    for (dst_offset, src_offset, elements) in runs {
+        transfers.copy(
+            dst.slice(range(dst_offset, elements)?)
+                .map_err(|_| outside())?,
+            src.slice(range(src_offset, elements)?)
+                .map_err(|_| outside())?,
+        )?;
+    }
+    Ok(())
+}
+
 #[expect(
     unsafe_code,
     reason = "Audited read-only CUDA attribute query; the live owned Device supplies a valid driver handle"
@@ -534,28 +562,12 @@ impl CudaDevice {
         src: &S,
         runs: impl IntoIterator<Item = (usize, usize, usize)>,
     ) -> Result<()> {
-        let outside = || InferError::invalid("device copy range outside tensor");
-        let range = |offset: usize, elements: usize| {
-            offset
-                .checked_add(elements)
-                .map(|end| offset..end)
-                .ok_or_else(outside)
-        };
         let (dst, src) = (
             buffer(dst).map_err(device_error)?,
             buffer(src).map_err(device_error)?,
         );
-        self.runtime.enqueue(|transfers| {
-            for (dst_offset, src_offset, elements) in runs {
-                transfers.copy(
-                    dst.slice(range(dst_offset, elements)?)
-                        .map_err(|_| outside())?,
-                    src.slice(range(src_offset, elements)?)
-                        .map_err(|_| outside())?,
-                )?;
-            }
-            Ok(())
-        })
+        self.runtime
+            .enqueue(|transfers| copy_runs(transfers, dst, src, runs))
     }
 
     /// Image preprocessing stages through its own pinned pool inside a device op and is the last

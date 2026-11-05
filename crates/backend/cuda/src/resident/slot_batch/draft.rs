@@ -177,31 +177,34 @@ impl SlotPool {
             .get(slot)
             .ok_or_else(|| Error::invalid("export slot"))?;
         let capacity = target.external_attention_capacity(rows)?;
-        for (id, copy) in &self.plan {
-            match copy {
-                SlotCopy::Kv => Self::copy_kv_states(
-                    target.states_mut(),
-                    &self.states[slot],
-                    *id,
-                    rows,
-                    capacity,
-                    device,
-                )?,
-                SlotCopy::KvFp8 => Self::copy_kv_fp8(
-                    target.fp8_states_mut(),
-                    &self.fp8[slot],
-                    *id,
-                    rows,
-                    capacity,
-                    device,
-                )?,
-                SlotCopy::Whole => {
-                    return Err(Error::unsupported(
-                        "recurrent slot export requires checkpoints",
-                    ));
+        device.runtime().enqueue(|transfers| {
+            for (id, copy) in &self.plan {
+                match copy {
+                    SlotCopy::Kv => Self::copy_kv_states(
+                        target.states_mut(),
+                        &self.states[slot],
+                        *id,
+                        rows,
+                        capacity,
+                        transfers,
+                    )?,
+                    SlotCopy::KvFp8 => Self::copy_kv_fp8(
+                        target.fp8_states_mut(),
+                        &self.fp8[slot],
+                        *id,
+                        rows,
+                        capacity,
+                        transfers,
+                    )?,
+                    SlotCopy::Whole => {
+                        return Err(Error::unsupported(
+                            "recurrent slot export requires checkpoints",
+                        ));
+                    }
                 }
             }
-        }
+            Ok(())
+        })?;
         target.adopt_attention_prefix(rows)
     }
 }
