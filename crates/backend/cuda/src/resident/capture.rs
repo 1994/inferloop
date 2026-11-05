@@ -142,7 +142,7 @@ impl Capture<'_> {
         if let Some(value) = self.weights.constants.get(&id) {
             return Ok(region(value.buffer().address(), value.len()));
         }
-        let tensor = self.arena.get(id).map_err(error)?;
+        let tensor = self.arena.view(id).map_err(error)?;
         let base = tensor.device_pointer().cu_deviceptr();
         let CaptureMode::Row(lane) = self.mode else {
             return Ok(region(base, tensor.size()));
@@ -160,7 +160,7 @@ impl Capture<'_> {
             if self.mode == CaptureMode::Prefill && matches!(node.op, TensorOp::Attention { .. }) {
                 let input = |id| {
                     self.weights.constants.get(&id).map_or_else(
-                        || self.arena.get(id).map_err(error),
+                        || self.arena.view(id).map_err(error),
                         |constant| Ok(&**constant.tensor()),
                     )
                 };
@@ -342,7 +342,7 @@ impl Capture<'_> {
     /// Prefill width 32 linear nodes never reach here; see `prefill_projection`.
     fn linear(&mut self, node: &TensorNode, output: &SlotMemory) -> Result<(), DeviceError> {
         let input = self.weights.constants.get(&node.inputs[0]).map_or_else(
-            || self.arena.get(node.inputs[0]).map_err(error),
+            || self.arena.view(node.inputs[0]).map_err(error),
             |value| Ok(&**value.tensor()),
         )?;
         let weights = self

@@ -68,7 +68,7 @@ impl Staging {
         index: usize,
     ) -> Result<(), DeviceError> {
         for (input, &id) in commit_inputs(node).iter().enumerate() {
-            let source = arena.get(id).map_err(error)?;
+            let source = arena.view(id).map_err(error)?;
             let target = self
                 .roots
                 .get_mut(&(index, input))
@@ -109,7 +109,7 @@ pub(super) fn allocate_staging(
     for (index, node) in nodes.iter().enumerate().filter(|(_, node)| covers(node)) {
         for (input, &id) in commit_inputs(node).iter().enumerate() {
             let memory = Allocation::adopt(Arc::new(
-                api::zeros::<f32>(&[arena.get(id)?.size()])
+                api::zeros::<f32>(&[arena.get(id)?.len()])
                     .sync_on(&device.stream)
                     .map_err(device_error)?,
             ))?;
@@ -258,7 +258,7 @@ fn lane_input(
     lane: usize,
 ) -> Result<Buffer<'static, f32>, DeviceError> {
     weights.constants.get(&id).map_or_else(
-        || row_buffer(buffer(arena.get(id).map_err(error)?)?, arena.lanes(), lane),
+        || row_buffer(buffer(arena.view(id).map_err(error)?)?, arena.lanes(), lane),
         |constant| Ok(region(constant.buffer().address(), constant.len())),
     )
 }

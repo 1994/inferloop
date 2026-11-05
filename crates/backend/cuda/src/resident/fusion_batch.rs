@@ -245,7 +245,7 @@ pub(super) fn record(
         return Ok(false);
     }
     let slot = arena.slot(node.outputs[0]).map_err(error)?;
-    if arena.get(node.outputs[0]).map_err(error)?.size() != rows * HIDDEN {
+    if arena.get(node.outputs[0]).map_err(error)?.len() != rows * HIDDEN {
         return Ok(false);
     }
     if metadata.len() < rows || builder.lane_fusion.len() < rows {
@@ -330,7 +330,7 @@ fn record_wide(
 ) -> StdResult<bool, DeviceError> {
     let lanes = arena.lanes();
     let slot = arena.slot(node.outputs[0]).map_err(error)?;
-    if arena.get(node.outputs[0]).map_err(error)?.size() != lanes * HIDDEN {
+    if arena.get(node.outputs[0]).map_err(error)?.len() != lanes * HIDDEN {
         return Ok(false);
     }
     let Some(external) = builder.lane_external_owner else {

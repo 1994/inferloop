@@ -58,7 +58,7 @@ pub(super) fn record(
             &plan,
             RopeBuffers {
                 out: output,
-                x: buffer(input)?,
+                x: buffer(&input)?,
                 frequencies: buffer(frequencies)?,
                 axes: None,
                 metadata: buffer(metadata)?,
