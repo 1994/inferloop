@@ -1,5 +1,6 @@
 //! Same-weight checkpoint model gate for serial state-writer snapshot fusion.
 use super::LEGACY_FLAT_CAPTURE;
+use crate::resident::fp8_cache::KvState;
 use crate::{
     device::CudaDevice,
     loading::{LoadOptions, LoadedModel},
@@ -52,14 +53,26 @@ fn compare_states(
         }
     }
     assert_eq!(candidate.fp8_states().len(), legacy.fp8_states().len());
-    for (id, (actual_keys, actual_values)) in candidate.fp8_states() {
-        let (expected_keys, expected_values) = &legacy.fp8_states()[id];
+    for (
+        id,
+        KvState {
+            keys: actual_keys,
+            values: actual_values,
+            ..
+        },
+    ) in candidate.fp8_states()
+    {
+        let KvState {
+            keys: expected_keys,
+            values: expected_values,
+            ..
+        } = &legacy.fp8_states()[id];
         for (actual, expected) in [
             (actual_keys, expected_keys),
             (actual_values, expected_values),
         ] {
-            let actual = loaded.device().read_borrowed(actual)?;
-            let expected = loaded.device().read_borrowed(expected)?;
+            let actual = loaded.device().runtime().read(actual)?;
+            let expected = loaded.device().runtime().read(expected)?;
             assert_eq!(actual.len(), expected.len());
             assert!(
                 actual.iter().zip(expected).all(|(a, b)| a.0 == b.0),

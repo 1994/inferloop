@@ -1,6 +1,6 @@
 use super::{
     arena::SlotMemory,
-    buffers::buffer,
+    buffers::{buffer, kv_cache},
     capture::{Capture, error},
 };
 use crate::constants::CONV_KERNEL_SIZE;
@@ -96,11 +96,9 @@ impl Capture<'_> {
                 _ => {}
             }
         }
-        if let Some((keys, values)) = self.fp8_states.remove(&id) {
-            let (keys, values) =
-                self.record_attention(node, output, keys, values, self.weights.kv_scales[&id])?;
-            self.fp8_states.insert(id, (keys, values));
-            return Ok(());
+        if let Some(state) = self.fp8_states.get(&id).cloned() {
+            let cache = state.cache(self.weights.kv_scales[&id]);
+            return self.record_attention(node, output, cache);
         }
         let mut state = self
             .states
@@ -145,11 +143,21 @@ impl Capture<'_> {
                     buffer(&state[0])?,
                 )?;
             }
-            TensorOp::Attention { .. } => {
-                let keys = state.remove(0);
-                let values = state.remove(0);
-                let (keys, values) =
-                    self.record_attention(node, output, keys, values, [1.0, 1.0])?;
+            TensorOp::Attention {
+                kv_heads, head_dim, ..
+            } => {
+                if state.len() != 2 {
+                    return Err(error("attention state layout"));
+                }
+                // Unscaled KV is still a shaped tensor whose copies read the head-major shape.
+                let rows = state[0].size() / (kv_heads * head_dim).max(1);
+                let keys = state.remove(0).reshape(&[kv_heads, rows, head_dim])?;
+                let values = state.remove(0).reshape(&[kv_heads, rows, head_dim])?;
+                self.record_attention(
+                    node,
+                    output,
+                    kv_cache((&keys, &values), kv_heads, head_dim, [1.0, 1.0])?,
+                )?;
                 state.push(keys);
                 state.push(values);
             }

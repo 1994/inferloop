@@ -6,7 +6,7 @@ use super::{
         pooled::{Append, Attend},
     },
     batch::{BatchBuilder, States},
-    buffers::{buffer, kv_cache},
+    buffers::buffer,
     capture::{Capture, CaptureMode, error},
     fp8_cache::Fp8Caches,
     slot_recurrent::row_buffer,
@@ -63,7 +63,7 @@ impl BatchBuilder<'_> {
         let output = arena.get(node.outputs[0]).map_err(error)?;
         let queries = arena.get(node.inputs[0]).map_err(error)?;
         if prefix > 0 {
-            let (keys, values) = &caches[0][&state];
+            let shared = &caches[0][&state];
             self.attention.record_pooled_attention(
                 attention,
                 &recording,
@@ -71,8 +71,8 @@ impl BatchBuilder<'_> {
                     node: node.id,
                     output,
                     queries,
-                    keys,
-                    values,
+                    keys: &shared.keys,
+                    values: &shared.values,
                 },
             )?;
         }
@@ -81,7 +81,7 @@ impl BatchBuilder<'_> {
         let queries = buffer(queries)?;
         for (index, cache) in caches.iter().enumerate().skip(prefix) {
             let base = index * VERIFY_LANES;
-            let (keys, values) = &cache[&state];
+            let slot_cache = &cache[&state];
             let row = |lane: usize| row_buffer(queries, lanes, base + lane);
             let out = |lane: usize| row_buffer(outputs, lanes, base + lane);
             self.attention.record_verify(
@@ -102,12 +102,7 @@ impl BatchBuilder<'_> {
                         buffer(&metadata[base + 1])?,
                         buffer(&metadata[base + 2])?,
                     ],
-                    cache: kv_cache(
-                        (keys, values),
-                        kv_heads,
-                        head_dim,
-                        self.weights.kv_scales[&state],
-                    )?,
+                    cache: slot_cache.cache(self.weights.kv_scales[&state]),
                     table: buffer(&self.tables[index])?,
                 },
             )?;
@@ -120,18 +115,14 @@ impl BatchBuilder<'_> {
         scope: &Scope,
         node: &TensorNode,
         arena: &ActivationArena,
-        caches: &mut [Fp8Caches],
+        caches: &[Fp8Caches],
         metadata_owner: &Allocation<i32>,
         state: infer_core::TensorId,
     ) -> StdResult<usize, DeviceError> {
         let shared = caches.first().is_some_and(|first| {
-            let (keys, values) = &first[&state];
+            let shared = &first[&state];
             caches.iter().all(|cache| {
-                let (k, v) = &cache[&state];
-                k.shape() == keys.shape()
-                    && v.shape() == values.shape()
-                    && k.device_pointer().cu_deviceptr() == keys.device_pointer().cu_deviceptr()
-                    && v.device_pointer().cu_deviceptr() == values.device_pointer().cu_deviceptr()
+                cache[&state].same_memory(shared) && cache[&state].layout == shared.layout
             })
         });
         let prefix = if shared {
@@ -140,33 +131,14 @@ impl BatchBuilder<'_> {
             0
         };
         if prefix > 0 {
-            let TensorOp::Attention {
-                kv_heads, head_dim, ..
-            } = node.op
-            else {
-                return Err(error("pooled append operation"));
-            };
-            // The original append capture leaves every slot's cache head-major. Homes and
-            // prompt workers discover their copy geometry from these tensor shapes.
-            for cache in caches.iter_mut() {
-                let (keys, values) = cache.remove(&state).ok_or_else(|| error("pooled cache"))?;
-                let rows = keys.size() / (kv_heads * head_dim);
-                cache.insert(
-                    state,
-                    (
-                        keys.reshape(&[kv_heads, rows, head_dim])?,
-                        values.reshape(&[kv_heads, rows, head_dim])?,
-                    ),
-                );
-            }
-            let (keys, values) = caches[0].get(&state).ok_or_else(|| error("pooled cache"))?;
+            let shared = caches[0].get(&state).ok_or_else(|| error("pooled cache"))?;
             self.attention.record_pooled_append(
                 &*self.weights.kernels.attention,
                 &Recording::scope(scope),
                 &Append {
                     node: node.id,
-                    keys,
-                    values,
+                    keys: &shared.keys,
+                    values: &shared.values,
                     inputs: [
                         arena.get(node.inputs[1]).map_err(error)?,
                         arena.get(node.inputs[2]).map_err(error)?,

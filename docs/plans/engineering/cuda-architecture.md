@@ -123,6 +123,11 @@ runtime                  submit / poll，不重建拓扑
 - **做什么：** 未迁移的模块（vision、dflash2 等）在模块边界用 `Option` 能力隔离并返回 `Unsupported`，调用路径上不加 `cfg`。tuning 支持 AOT 候选，AOT 下候选是已有制品或运行时参数。
 - **范围：** 逐算子族迁完整个 host，不一次性替换。
 - **验收：** `--features cuda-aot` 无工具链可构建 host；13.x 行为不变。
+- **进展（2026-11-04）：** 宿主 `Tensor<` 从 670（#153）降到 270（#172），`cuda_core` 从 73 降到 68。
+  - 已迁移：投影权重、cuBLASLt 与 FP4 节点、arena slot 与 capture 输出、本地 owner、不可变权重；
+  - MMA / SIMT prefill attention 改为在合约 `DecodeBuffers` 上记录 `Foreign`（#168），capture 的 metadata、table、external 改为 `Buffer`（#169）；
+  - metadata、block table 与 external 行的 owner 改为 `Allocation`（#170、#171）；FP8 KV 改为带布局的 `KvState`（#172）。
+  - 剩余：`States`（递推状态与未量化 KV）、arena slot 视图与 hidden / logits readout、vision / dflash2 / tuning 中直接的 cuTile launch 与 fixture、sampling 输出。
 
 ### M7 第二模型家族验收
 

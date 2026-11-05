@@ -4,11 +4,11 @@
 //! here once. `pub(super)` matches the existing `quant_reuse_model_tests::bits` sharing convention.
 use super::LoadedModel;
 use super::quant_reuse_model_tests::bits;
+use crate::resident::fp8_cache::KvState;
 use crate::{
     device::CudaDevice,
     resident::{DeviceProgram, slot_batch::SlotPool},
 };
-use cuda_core::f8e4m3fn;
 use cutile::prelude::Tensor;
 use infer_core::{Error, Result, TensorId};
 use serde_json::{Value, json};
@@ -68,11 +68,15 @@ pub(super) fn state_census_slot(
         }
     }
     assert_eq!(program.fp8_states().len(), fp8.len());
-    for (id, (keys, values)) in program.fp8_states() {
-        let (rkeys, rvalues) = &fp8[id];
+    for (id, KvState { keys, values, .. }) in program.fp8_states() {
+        let KvState {
+            keys: rkeys,
+            values: rvalues,
+            ..
+        } = &fp8[id];
         for (field, left, right) in [("keys", keys, rkeys), ("values", values, rvalues)] {
-            let a = loaded.device().read_borrowed(left)?;
-            let b = loaded.device().read_borrowed(right)?;
+            let a = loaded.device().runtime().read(left)?;
+            let b = loaded.device().runtime().read(right)?;
             assert_eq!(a.len(), b.len());
             assert!(a.iter().chain(&b).all(|x| x.0 & 127 != 127));
             let different = a.iter().zip(&b).filter(|(a, b)| a.0 != b.0).count();
@@ -103,14 +107,16 @@ pub(super) fn seed_prefix(
             loaded.device().copy_d2d(target, source, source.size())?;
         }
     }
-    for (id, (keys, values)) in aligned.fp8_states() {
-        let (target_keys, target_values) = original
-            .fp8_states_mut()
-            .get_mut(id)
+    for (id, KvState { keys, values, .. }) in aligned.fp8_states() {
+        let target = original
+            .fp8_states()
+            .get(id)
             .ok_or_else(|| Error::invariant("control FP8 cache"))?;
-        for (target, source) in [(target_keys, keys), (target_values, values)] {
-            assert_eq!(target.size(), source.size());
-            loaded.device().copy_d2d(target, source, source.size())?;
+        for (target, source) in [(&target.keys, keys), (&target.values, values)] {
+            assert_eq!(target.len(), source.len());
+            loaded
+                .device()
+                .copy_d2d_at(target, source, 0, 0, source.len())?;
         }
     }
     loaded.device().drain()?;
@@ -119,7 +125,7 @@ pub(super) fn seed_prefix(
 }
 
 pub(super) type States = BTreeMap<TensorId, Vec<Tensor<f32>>>;
-pub(super) type Fp8Caches = BTreeMap<TensorId, (Tensor<f8e4m3fn>, Tensor<f8e4m3fn>)>;
+pub(super) use crate::resident::fp8_cache::Fp8Caches;
 
 pub(super) fn states(
     device: &CudaDevice,
@@ -143,11 +149,15 @@ pub(super) fn states(
     }
     assert_eq!(actual_fp8.len(), expected_fp8.len());
     assert!(!actual_fp8.is_empty());
-    for (id, (keys, values)) in actual_fp8 {
-        let (ref_keys, ref_values) = &expected_fp8[id];
+    for (id, KvState { keys, values, .. }) in actual_fp8 {
+        let KvState {
+            keys: ref_keys,
+            values: ref_values,
+            ..
+        } = &expected_fp8[id];
         for (a, b) in [(keys, ref_keys), (values, ref_values)] {
-            let a = device.read_borrowed(a)?;
-            let b = device.read_borrowed(b)?;
+            let a = device.runtime().read(a)?;
+            let b = device.runtime().read(b)?;
             assert_eq!(a.len(), b.len());
             assert!(a.iter().zip(&b).all(|(a, b)| a.0 == b.0), "FP8 KV");
         }

@@ -1,7 +1,7 @@
 //! Node-major verification: consecutive projections reuse weights in cache.
 //! Recurrent checkpoints stay on the device; KV rollback is a logical prefix.
 //! Prefill width 32 keeps one batched arena: auxiliaries record once per node.
-use super::buffers::{buffer, kv_cache};
+use super::buffers::buffer;
 use super::prefill_projection::{DensePlan, record_narrow};
 use super::{
     ActivationArena, ProgramWeights,
@@ -343,7 +343,7 @@ impl BatchBuilder<'_> {
         scope: &Scope,
         node: &TensorNode,
         arena: &mut ActivationArena,
-        caches: &mut [Fp8Caches],
+        caches: &[Fp8Caches],
         metadata: &Allocation<i32>,
     ) -> StdResult<bool, DeviceError> {
         if self.record_lanes_attention(scope, node, arena, caches, metadata)? {
@@ -1045,7 +1045,7 @@ impl BatchBuilder<'_> {
             }
             .record_attention_append(node)?;
         }
-        let (keys, values) = self
+        let state = self
             .fp8_states
             .get(&id)
             .ok_or_else(|| error("verification FP8 state"))?;
@@ -1069,12 +1069,7 @@ impl BatchBuilder<'_> {
                     buffer(&lanes[1].metadata)?,
                     buffer(&lanes[2].metadata)?,
                 ],
-                cache: kv_cache(
-                    (keys, values),
-                    kv_heads,
-                    head_dim,
-                    self.weights.kv_scales[&id],
-                )?,
+                cache: state.cache(self.weights.kv_scales[&id]),
                 table: buffer(&self.tables[0])?,
             },
         )?;

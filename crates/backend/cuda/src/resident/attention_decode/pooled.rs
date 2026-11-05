@@ -270,8 +270,8 @@ pub(super) struct Workspace {
 
 pub struct Append<'a> {
     pub node: OpId,
-    pub keys: &'a Tensor<f8e4m3fn>,
-    pub values: &'a Tensor<f8e4m3fn>,
+    pub keys: &'a Allocation<f8e4m3fn>,
+    pub values: &'a Allocation<f8e4m3fn>,
     pub inputs: [&'a Tensor<f32>; 2],
     pub metadata: &'a Allocation<i32>,
     pub tables: &'a [Allocation<i32>],
@@ -281,8 +281,8 @@ pub struct Attend<'a> {
     pub node: OpId,
     pub output: &'a Tensor<f32>,
     pub queries: &'a Tensor<f32>,
-    pub keys: &'a Tensor<f8e4m3fn>,
-    pub values: &'a Tensor<f8e4m3fn>,
+    pub keys: &'a Allocation<f8e4m3fn>,
+    pub values: &'a Allocation<f8e4m3fn>,
 }
 
 impl Workspace {

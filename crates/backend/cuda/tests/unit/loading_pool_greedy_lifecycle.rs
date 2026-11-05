@@ -55,18 +55,18 @@ fn check_states(loaded: &LoadedModel, lane: &Lane, pool: &SlotPool, slot: usize)
         }
     }
     let rows = lane.teacher.position();
-    for (id, (k, v)) in lane.teacher.fp8_states() {
-        let (pk, pv) = &fp8[id];
-        for (left, right) in [(k, pk), (v, pv)] {
-            let a = loaded.device().read_borrowed(left)?;
-            let b = loaded.device().read_borrowed(right)?;
-            let heads =
-                usize::try_from(left.shape()[0]).map_err(|e| Error::invalid(e.to_string()))?;
-            let src_cap =
-                usize::try_from(left.shape()[1]).map_err(|e| Error::invalid(e.to_string()))?;
-            let dst_cap =
-                usize::try_from(right.shape()[1]).map_err(|e| Error::invalid(e.to_string()))?;
-            let d = usize::try_from(left.shape()[2]).map_err(|e| Error::invalid(e.to_string()))?;
+    for (id, teacher) in lane.teacher.fp8_states() {
+        let pooled = &fp8[id];
+        for (left, right) in [
+            (&teacher.keys, &pooled.keys),
+            (&teacher.values, &pooled.values),
+        ] {
+            let a = loaded.device().runtime().read(left)?;
+            let b = loaded.device().runtime().read(right)?;
+            let heads = teacher.layout.heads;
+            let src_cap = teacher.layout.rows;
+            let dst_cap = pooled.layout.rows;
+            let d = teacher.layout.dim;
             for head in 0..heads {
                 let a = &a[head * src_cap * d..head * src_cap * d + rows * d];
                 let b = &b[head * dst_cap * d..head * dst_cap * d + rows * d];
