@@ -174,7 +174,7 @@ impl DerefMut for SlotStates {
     }
 }
 
-pub(super) type RecurrentParameters = BTreeMap<OpId, Tensor<f32>>;
+pub(super) type RecurrentParameters = BTreeMap<OpId, Allocation<f32>>;
 
 /// Full owners used only while constructing the shared verification launch.
 pub(super) struct VerifyBatch<'a> {
@@ -233,14 +233,12 @@ pub(super) fn prepare_parameters(
         if rate.len() != value_heads || bias.len() != value_heads {
             return Err(Error::invalid("pooled delta parameter geometry"));
         }
-        let mut parameters = api::zeros::<f32>(&[2, value_heads])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        let parameters = device.runtime().zeros(2 * value_heads)?;
         pack_parameters(
-            &device.stream,
-            &mut parameters,
-            rate.tensor(),
-            bias.tensor(),
+            &device.runtime(),
+            parameters.operand(),
+            rate.operand(),
+            bias.operand(),
         )?;
         result.insert(node.id, parameters);
     }

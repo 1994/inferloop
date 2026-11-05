@@ -1,4 +1,3 @@
-use super::buffers::buffer;
 use crate::constants::F32_BYTES;
 use crate::constants::NVFP4_GROUP_SIZE;
 use crate::device::vendor_fp8::nvfp4::SCALE_ROWS;
@@ -10,7 +9,6 @@ use infer_cuda_kernels::contract::{Buffer, Fp8};
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::DataflowGraph;
 use std::collections::BTreeMap;
-use std::result::Result as StdResult;
 use std::sync::Arc;
 
 /// Slot layout of one graph: `last_node` and element count per reused slot.
@@ -352,21 +350,15 @@ impl ActivationArena {
         self.at(index)?.buffer()
     }
 
-    /// A tensor over slot `index` for a kernel to write; it holds the slot's memory, so it
-    /// needs no returning, and it aliases every other view of the slot.
+    /// Slot `index` as a tensor holding a share of its memory, for tests that fill it from the
+    /// host or launch reference kernels directly.
     /// # Errors
     /// Rejects an index outside the arena.
+    #[cfg(test)]
     pub(crate) fn output(&self, index: usize) -> Result<Tensor<f32>> {
-        self.at(index)?.tensor()
-    }
-
-    /// Slot `index` read as `U`s of `shape`, as [`Self::output`] gives it as floats.
-    /// # Errors
-    /// Rejects an index outside the arena and a shape that does not cover the slot's bytes.
-    pub(crate) fn output_as<U: DType>(&self, index: usize, shape: &[usize]) -> Result<Tensor<U>> {
         let slot = self.at(index)?;
         slot.memory
-            .view_as(slot.offset..slot.offset + slot.len, shape)
+            .view(slot.offset..slot.offset + slot.len, &[slot.len])
     }
 
     /// Slot `index` as memory a kernel writes, held apart from the arena: it shares the slot's
@@ -481,37 +473,24 @@ impl Slot {
             len: self.len,
         }
     }
-
-    fn tensor(&self) -> Result<Tensor<f32>> {
-        slot_tensor(&self.memory, self.offset, self.len)
-    }
-}
-
-/// A 1-D tensor over elements `offset..offset + len` of `memory`, owning a share of it.
-fn slot_tensor(memory: &Allocation<f32>, offset: usize, len: usize) -> Result<Tensor<f32>> {
-    let end = offset
-        .checked_add(len)
-        .ok_or_else(|| Error::invalid("activation slot range"))?;
-    memory.view(offset..end, &[len])
 }
 
 /// Float and byte views of an unused fused FP4 product, both holding the arena's memory: the
 /// probe writes the floats, then scale packing reuses the bytes, ordered on the owning stream.
 pub(super) struct Fp4Scratch {
-    floats: Tensor<f32>,
-    bytes: Tensor<f8e4m3fn>,
+    floats: Allocation<f32>,
+    bytes: Allocation<f8e4m3fn>,
 }
 
 impl Fp4Scratch {
-    pub(super) const fn floats(&mut self) -> &mut Tensor<f32> {
-        &mut self.floats
+    /// The product as `[rows, columns]` floats.
+    pub(super) fn floats(&self) -> Buffer<'_, f32> {
+        self.floats.operand()
     }
 
-    /// The product's bytes as `[rows / 2, groups * 128]` rows of the FP4 scale layout.
-    /// # Errors
-    /// As [`buffer`].
-    pub(super) fn bytes(&self) -> StdResult<Buffer<'_, Fp8>, DeviceError> {
-        buffer(&self.bytes)
+    /// The product's bytes, `[rows / 2, groups * 128]` rows of the FP4 scale layout.
+    pub(super) fn bytes(&self) -> Buffer<'_, Fp8> {
+        self.bytes.operand()
     }
 
     /// Views of arena slot `slot` as a `[rows, columns]` product; `None` when the product's
@@ -535,13 +514,8 @@ impl Fp4Scratch {
         {
             return Ok(None);
         }
-        let scale_row = columns / NVFP4_GROUP_SIZE * SCALE_ROWS;
-        Ok(Some(Self {
-            floats: arena
-                .output(slot)?
-                .reshape(&[rows, columns])
-                .map_err(device_error)?,
-            bytes: arena.output_as(slot, &[elements * F32_BYTES / scale_row, scale_row])?,
-        }))
+        let floats = arena.memory(slot)?.allocation()?;
+        let bytes = floats.reinterpret()?;
+        Ok(Some(Self { floats, bytes }))
     }
 }

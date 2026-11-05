@@ -147,12 +147,14 @@ fn run_case(device: &CudaDevice, action: &str) -> TestResult<(Vec<u8>, Vec<u8>)>
     let (codes, scales) = workspace.quantized_fp4(rows, hidden).unwrap();
     Ok((
         device
-            .read_borrowed(codes)?
+            .runtime()
+            .read(codes)?
             .into_iter()
             .map(f4e2m1fnx2::to_bits)
             .collect(),
         device
-            .read_borrowed(scales)?
+            .runtime()
+            .read(scales)?
             .into_iter()
             .map(|v| v.0)
             .collect(),

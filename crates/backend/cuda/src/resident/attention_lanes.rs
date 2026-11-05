@@ -27,9 +27,9 @@ const PARTIAL_ROW_SCALARS: usize = 2;
 /// Scratch of one geometry's lane-batched splits.
 pub struct Buffers {
     parts: usize,
-    numerator: Tensor<f32>,
-    maxima: Tensor<f32>,
-    sums: Tensor<f32>,
+    numerator: Allocation<f32>,
+    maxima: Allocation<f32>,
+    sums: Allocation<f32>,
 }
 
 /// Lane-batched scratch per `(heads, dim)`.
@@ -83,11 +83,8 @@ impl Workspace {
     pub fn new(device: &CudaDevice, graph: &DataflowGraph, lanes: usize) -> Result<Self> {
         let multiprocessors =
             usize::try_from(device.profile()?.multiprocessors).map_err(device_error)?;
-        let zeros = |shape: &[usize]| {
-            api::zeros::<f32>(shape)
-                .sync_on(&device.stream)
-                .map_err(device_error)
-        };
+        let runtime = device.runtime();
+        let zeros = |shape: &[usize]| runtime.zeros::<f32>(shape.iter().product());
         let mut buffers = BTreeMap::new();
         for ((heads, dim), (kv_heads, parts)) in geometries(graph, lanes, multiprocessors) {
             let blocks = lanes

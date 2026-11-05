@@ -123,20 +123,20 @@ impl Workspace {
         &self,
         rows: usize,
         columns: usize,
-    ) -> Option<(&Tensor<f8e4m3fn>, &Tensor<f32>)> {
+    ) -> Option<(&Allocation<f8e4m3fn>, &Allocation<f32>)> {
         self.fp8
             .get(&(rows, columns, 1))
-            .map(|(codes, scales)| (&**codes.tensor(), &**scales.tensor()))
+            .map(|(codes, scales)| (codes, scales))
     }
     #[cfg(test)]
     pub(crate) fn quantized_fp4(
         &self,
         rows: usize,
         columns: usize,
-    ) -> Option<(&Tensor<f4e2m1fnx2>, &Tensor<f8e4m3fn>)> {
+    ) -> Option<(&Allocation<f4e2m1fnx2>, &Allocation<f8e4m3fn>)> {
         self.buffers
             .get(&(rows, columns))
-            .map(|(codes, scales)| (&**codes.tensor(), &**scales.tensor()))
+            .map(|(codes, scales)| (codes, scales))
     }
 
     /// Test evidence for prepared strategies, grouped by shape/config; this is not a replay trace.

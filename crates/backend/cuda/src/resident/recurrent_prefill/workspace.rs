@@ -22,7 +22,7 @@ use std::result::Result as StdResult;
 
 #[derive(Default)]
 pub struct Workspace {
-    buffers: BTreeMap<(usize, usize), Tensor<f32>>,
+    buffers: BTreeMap<(usize, usize), Allocation<f32>>,
     lanes: usize,
     prepared: prepared::Buffers,
     wy_blocks: BTreeMap<TensorId, usize>,
@@ -97,9 +97,7 @@ impl Workspace {
             {
                 buffers.insert(
                     (value_heads, value_dim),
-                    api::zeros::<f32>(&[value_heads, lanes, value_dim])
-                        .sync_on(&device.stream)
-                        .map_err(device_error)?,
+                    device.runtime().zeros(value_heads * lanes * value_dim)?,
                 );
             }
         }
@@ -230,7 +228,7 @@ fn record_delta(
     arena: &ActivationArena,
     weights: &ProgramWeights,
     state: &Shaped<f32>,
-    scratch: &Tensor<f32>,
+    scratch: &Allocation<f32>,
     prepared: Option<&prepared::Inputs>,
     metadata: &Allocation<i32>,
     [key_heads, value_heads, key_dim, lanes, block]: [usize; DELTA_GEOMETRY_RANK],

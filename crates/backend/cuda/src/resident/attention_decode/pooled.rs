@@ -216,7 +216,7 @@ struct Buffers {
     maxima: Allocation<f32>,
     sums: Allocation<f32>,
     controls: Vec<Allocation<i32>>,
-    parameters: BTreeMap<OpId, Arc<Tensor<i32>>>,
+    parameters: BTreeMap<OpId, Allocation<i32>>,
 }
 
 impl Buffers {
@@ -236,11 +236,7 @@ impl Buffers {
             parameters: plan
                 .parameters
                 .into_iter()
-                .map(|(id, values)| {
-                    device
-                        .upload(values.to_vec(), &[CONTROL_TILE])
-                        .map(|tensor| (id, tensor))
-                })
+                .map(|(id, values)| runtime.upload(values.to_vec()).map(|memory| (id, memory)))
                 .collect::<Result<_>>()?,
         })
     }
@@ -364,7 +360,7 @@ impl Workspace {
                     PooledAppendBuffers {
                         control: buffer(control)?,
                         tables: [table(0)?, table(1)?, table(2)?, table(MAX_BATCH - 1)?],
-                        header: buffer(header.as_ref())?,
+                        header: header.operand(),
                         metadata: buffer(metadata)?,
                         keys: buffer(keys)?,
                         values: buffer(values)?,

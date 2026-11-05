@@ -6,11 +6,11 @@ use crate::contract::kernels::{
 };
 use crate::contract::plan::{DeltaStepPlan, PoolConvPlan, PoolDeltaPlan};
 use crate::contract::recording::Recording;
+use crate::tile::runtime::Device;
 use crate::tile::{backend_error, borrowed, capture_scope};
-use cuda_core::{DType, Stream};
+use cuda_core::DType;
 use cutile::prelude::*;
 use infer_core::Result;
-use std::sync::Arc;
 
 /// Elements of a channel axis in one convolution tile.
 const CONV_TILE: usize = 128;
@@ -473,15 +473,21 @@ impl RecurrentPool for TileRecurrentPool {
 /// # Errors
 /// Reports a rejected launch.
 pub fn pack_parameters(
-    stream: &Arc<Stream>,
-    parameters: &mut Tensor<f32>,
-    rate: &Tensor<f32>,
-    bias: &Tensor<f32>,
+    device: &Device,
+    parameters: Buffer<'_, f32>,
+    rate: Buffer<'_, f32>,
+    bias: Buffer<'_, f32>,
 ) -> Result<()> {
-    let value_heads = rate.size();
-    fused::pack_parameters(parameters.partition([2, 1]), rate, bias)
+    let value_heads = rate.len();
+    let ordinal = device.ordinal();
+    let parameters = parameters.require("packed delta parameters", 2 * value_heads)?;
+    let bias = bias.require("delta bias", value_heads)?;
+    let mut parameters = borrowed(parameters, ordinal, &[2, value_heads])?;
+    let rate = borrowed(rate, ordinal, &[value_heads])?;
+    let bias = borrowed(bias, ordinal, &[value_heads])?;
+    fused::pack_parameters((&mut parameters).partition([2, 1]), &rate, &bias)
         .generics(vec![value_heads.to_string()])
-        .sync_on(stream)
+        .sync_on(device.stream())
         .map(drop)
         .map_err(backend_error)
 }

@@ -288,9 +288,9 @@ impl Case {
         }
         let snapshot_pointers =
             if let Some((codes, scales)) = workspace.quantized_fp4(rows, pair.columns) {
-                [pointer(codes), pointer(scales)]
+                [codes.buffer().address(), scales.buffer().address()]
             } else if let Some((codes, scales)) = workspace.quantized_fp8(rows, pair.columns) {
-                [pointer(codes), pointer(scales)]
+                [codes.buffer().address(), scales.buffer().address()]
             } else {
                 return Err("quantization buffer missing".into());
             };
@@ -328,12 +328,14 @@ impl Case {
         {
             (
                 device
-                    .read_borrowed(codes)?
+                    .runtime()
+                    .read(codes)?
                     .into_iter()
                     .map(cuda_core::f4e2m1fnx2::to_bits)
                     .collect(),
                 device
-                    .read_borrowed(scales)?
+                    .runtime()
+                    .read(scales)?
                     .into_iter()
                     .map(|x| u32::from(x.0))
                     .collect(),
@@ -343,12 +345,14 @@ impl Case {
         {
             (
                 device
-                    .read_borrowed(codes)?
+                    .runtime()
+                    .read(codes)?
                     .into_iter()
                     .map(|x| x.0)
                     .collect(),
                 device
-                    .read_borrowed(scales)?
+                    .runtime()
+                    .read(scales)?
                     .into_iter()
                     .map(f32::to_bits)
                     .collect(),

@@ -146,6 +146,22 @@ impl<T: DType> Allocation<T> {
             .collect()
     }
 
+    /// All of this memory read as `U`s, as [`Self::view_as`] reads it, as an allocation of its own
+    /// holding a share of the memory: an unused F32 product doubles as FP8 byte scratch.
+    /// # Errors
+    /// Rejects memory whose bytes do not divide into `U`s, and what [`Self::view_as`] rejects.
+    pub fn reinterpret<U: DType>(&self) -> Result<Allocation<U>> {
+        let bytes = self.len() * size_of::<T>();
+        if !bytes.is_multiple_of(size_of::<U>()) {
+            return Err(Error::invalid(format!(
+                "{bytes} bytes do not divide into elements of {} bytes",
+                size_of::<U>()
+            )));
+        }
+        let view = self.view_as::<U>(0..self.len(), &[bytes / size_of::<U>()])?;
+        Allocation::adopt(Arc::new(view))
+    }
+
     /// Elements `range` as a contiguous tensor of `shape`, holding a share of this memory, so the
     /// view stays valid whatever happens to the allocation it came from. Transitional, for
     /// recordings that still take cuTile tensors.
@@ -297,6 +313,11 @@ impl Device {
     #[must_use]
     pub const fn ordinal(&self) -> usize {
         self.ordinal
+    }
+
+    /// The stream every launch and transfer of this device is ordered on.
+    pub(crate) const fn stream(&self) -> &Arc<Stream> {
+        &self.stream
     }
 
     /// `len` zeroed elements, complete when this returns.
