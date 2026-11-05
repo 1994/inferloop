@@ -1405,7 +1405,7 @@ impl DeviceProgram {
         &mut self,
     ) -> impl Future<Output = Result<Vec<f32>>> + Send + '_ {
         self.device
-            .read_async(self.prime_previous.tensor(), &mut self.uploads.prime)
+            .read_allocation(&self.prime_previous, &mut self.uploads.prime)
     }
 
     /// Ingest a prompt chunk with one external hidden per lane, as a fused draft needs.

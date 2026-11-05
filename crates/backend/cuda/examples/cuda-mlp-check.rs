@@ -47,7 +47,7 @@ fn main() -> infer_core::Result<()> {
             })
         };
         let weights = MlpWeights {
-            norm: device.upload(vec![0.0; d], &[d])?,
+            norm: device.runtime().upload(vec![0.0; d])?,
             gate: matrix(n, d)?,
             up: matrix(n, d)?,
             down: matrix(d, n)?,

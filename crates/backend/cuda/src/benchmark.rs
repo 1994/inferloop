@@ -1,19 +1,18 @@
 //! Reproducible paired measurements of the synchronous dense launch path.
+use crate::mlp::Matrix;
 use crate::{
     device::{CudaDevice, device_error},
     strategy::{LinearStrategy, LinearTiling},
 };
+use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::error::Error as CutileError;
 use cutile::error::tensor_error;
 use cutile::half::bf16;
-use cutile::{
-    bench::{BenchOptions, do_bench_paired},
-    prelude::*,
-};
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use serde::Serialize;
 use std::result::Result as StdResult;
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 /// Synthetic matrices stay below this many elements.
 const MAX_BASELINE_ELEMENTS: usize = 150_000_000;
@@ -97,8 +96,8 @@ pub fn dense_baseline(
         .chunks_exact(columns)
         .map(|row| row.iter().zip(&vector).map(|(w, x)| w.to_f32() * x).sum())
         .collect();
-    let x = device.upload(vector, &[columns])?;
-    let w = device.upload(values, &[rows, columns])?;
+    let x = device.runtime().upload(vector)?;
+    let w = Matrix::upload(device, values, &[rows, columns])?;
     let baseline = LinearTiling::new(BASELINE_TILE_ROWS, BASELINE_TILE_COLUMNS)?;
     let candidates = strategy.candidates(columns);
     if candidates.is_empty() {
@@ -154,25 +153,25 @@ fn sample(i: usize, multiplier: usize) -> f32 {
 
 fn launch(
     device: &CudaDevice,
-    x: &Arc<Tensor<f32>>,
-    w: &Arc<Tensor<bf16>>,
+    x: &Allocation<f32>,
+    w: &Matrix<bf16>,
     tiling: LinearTiling,
 ) -> StdResult<(), CutileError> {
     device
-        .matvec_tiled(x.clone(), w.clone(), tiling)
+        .matvec_tiled(x, w, tiling)
         .map(|_| ())
         .map_err(|error| tensor_error(&error.to_string()))
 }
 
 fn verify(
     device: &CudaDevice,
-    x: &Arc<Tensor<f32>>,
-    w: &Arc<Tensor<bf16>>,
+    x: &Allocation<f32>,
+    w: &Matrix<bf16>,
     tiling: LinearTiling,
     expected: &[f32],
 ) -> Result<()> {
-    let out = device.matvec_tiled(x.clone(), w.clone(), tiling)?;
-    let actual = device.read(&out)?;
+    let out = device.matvec_tiled(x, w, tiling)?;
+    let actual = device.runtime().read(&out)?;
     if actual.len() != expected.len()
         || actual.iter().zip(expected).any(|(a, e)| {
             !a.is_finite() || (a - e).abs() > e.abs().mul_add(VERIFY_TOLERANCE, VERIFY_TOLERANCE)

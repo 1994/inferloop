@@ -1,6 +1,7 @@
 //! Safe CUDA memory and kernel launch boundary.
 use crate::constants::MATVEC_TILE_COLUMNS;
 use crate::constants::MATVEC_TILE_ROWS;
+use crate::mlp::Matrix;
 use crate::resident::buffers::{Operand, buffer};
 use crate::strategy::LinearTiling;
 use crate::tuning::memory::arena_budget;
@@ -253,11 +254,7 @@ impl CudaDevice {
 
     /// # Errors
     /// Returns a shape or device error for an invalid matrix-vector product.
-    pub fn matvec<T: DType>(
-        &self,
-        x: Arc<Tensor<f32>>,
-        w: Arc<Tensor<T>>,
-    ) -> Result<Arc<Tensor<f32>>> {
+    pub fn matvec<T: DType>(&self, x: &Allocation<f32>, w: &Matrix<T>) -> Result<Allocation<f32>> {
         self.matvec_tiled(
             x,
             w,
@@ -269,15 +266,21 @@ impl CudaDevice {
     /// Returns a shape or device error for an invalid projection.
     pub fn matvec_tiled<T: DType>(
         &self,
-        x: Arc<Tensor<f32>>,
-        w: Arc<Tensor<T>>,
+        x: &Allocation<f32>,
+        w: &Matrix<T>,
         tiling: LinearTiling,
-    ) -> Result<Arc<Tensor<f32>>> {
-        let (rows, columns) = dimensions(&x, &w)?;
+    ) -> Result<Allocation<f32>> {
+        let (rows, columns) = (w.rows(), w.columns());
+        if rows == 0 || columns == 0 {
+            return Err(InferError::invalid("empty CUDA matrix"));
+        }
+        if x.len() != columns {
+            return Err(InferError::invalid("CUDA matrix-vector dimensions"));
+        }
         dense_matvec(
-            &self.stream,
-            x,
-            w,
+            &self.runtime,
+            x.buffer(),
+            w.allocation().buffer(),
             MatvecGeometry {
                 rows,
                 columns,
@@ -294,21 +297,6 @@ impl CudaDevice {
             .to_host_vec()
             .sync_on(&self.stream)
             .map_err(device_error)
-    }
-
-    #[expect(
-        unsafe_code,
-        reason = "Read-only shared storage alias held across the device future; the immutable source borrow excludes host mutation"
-    )]
-    pub(crate) async fn read_async<T: DType + DeviceCopy>(
-        &self,
-        tensor: &Tensor<T>,
-        readbacks: &mut Readbacks<T>,
-    ) -> Result<Vec<T>> {
-        // SAFETY: the immutable borrow lasts through the read; the alias owns shared storage,
-        // registered device leases retain it until the future fences the ordered D2H.
-        let source = unsafe { tensor.into_shared_alias() };
-        readbacks.read_async(self, Allocation::adopt(source)?).await
     }
 
     /// Read all of `source` back through `readbacks`, after the work already on this stream.
@@ -440,18 +428,6 @@ fn query_target(device: &Device) -> Result<Arch> {
     Ok(Arch::from_sm_name(&name).unwrap_or(Arch::Other { major: 0, minor: 0 }))
 }
 
-fn dimensions<T: DType>(x: &Tensor<f32>, w: &Tensor<T>) -> Result<(usize, usize)> {
-    if w.shape().len() != 2 || x.shape().len() != 1 || x.shape()[0] != w.shape()[1] {
-        return Err(InferError::invalid("CUDA matrix-vector dimensions"));
-    }
-    let rows = usize::try_from(w.shape()[0]).map_err(|_| InferError::invalid("CUDA rows"))?;
-    let columns = usize::try_from(w.shape()[1]).map_err(|_| InferError::invalid("CUDA columns"))?;
-    if rows == 0 || columns == 0 {
-        return Err(InferError::invalid("empty CUDA matrix"));
-    }
-    Ok((rows, columns))
-}
-
 #[expect(
     unsafe_code,
     reason = "Audited driver queries and stream drain with an owned device and a bound context"
@@ -513,18 +489,6 @@ impl CudaDevice {
             memory_bus_width_bits: self.attribute(BUS)?,
             l2_cache_bytes: self.attribute(L2)?,
         })
-    }
-
-    /// Copy all of `src` into `dst`, on this device's stream; see [`Self::copy_d2d_at`].
-    /// # Errors
-    /// Rejects a range outside either tensor or a copy the driver does not enqueue.
-    pub fn copy_d2d<T: DType + Element>(
-        &self,
-        dst: &mut Tensor<T>,
-        src: &Tensor<T>,
-        elements: usize,
-    ) -> Result<()> {
-        self.copy_d2d_at(dst, src, 0, 0, elements)
     }
 
     /// Copy `elements` values from `src_offset` of `src` to `dst_offset` of `dst` on this

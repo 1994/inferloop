@@ -16,8 +16,8 @@ fn tensor_readback_poll_does_not_wait_for_prior_stream_work() -> Result<()> {
     use std::task::Poll;
 
     let device = CudaDevice::new(0)?;
-    let source = device.upload(vec![1.0_f32, 2.0], &[2])?;
-    let mut readbacks = Readbacks::allocated(&device, source.size())?;
+    let source = device.runtime().upload(vec![1.0_f32, 2.0])?;
+    let mut readbacks = Readbacks::allocated(&device, source.len())?;
     let released = Arc::new(AtomicBool::new(false));
     let timed_out = Arc::new(AtomicBool::new(false));
     let (gate, expired) = (released.clone(), timed_out.clone());
@@ -31,7 +31,7 @@ fn tensor_readback_poll_does_not_wait_for_prior_stream_work() -> Result<()> {
             yield_now();
         }
     })?;
-    let mut future = pin!(device.read_async(&source, &mut readbacks));
+    let mut future = pin!(device.read_allocation(&source, &mut readbacks));
     let first = super::super::asynchronous::block_on(poll_fn(|context| {
         Poll::Ready(future.as_mut().poll(context))
     }));

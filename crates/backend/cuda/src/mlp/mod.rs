@@ -1,16 +1,15 @@
 //! Allocation-free MLP graph replay with resident intermediate activations.
 mod projection;
 use crate::constants::MAX_HIDDEN_SIZE;
-use crate::resident::tensor_buffer as buffer;
 use crate::{
     device::{CudaDevice, device_error},
     strategy::LinearTiling,
 };
-use cutile::prelude::*;
+use cutile::prelude::{DeviceError, DeviceOp, Scope};
 use cutile::tile_kernel::validate_programmatic_dependent_launch;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{DownPlan, Kernels, ProductBuffers, Recording, RowNormPlan};
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 pub use projection::{Matrix, ProjectionWeight};
 use std::fmt::Display;
 use std::result::Result as StdResult;
@@ -32,7 +31,7 @@ pub struct MlpConfig {
 
 #[derive(Clone)]
 pub struct MlpWeights {
-    pub norm: Arc<Tensor<f32>>,
+    pub norm: Allocation<f32>,
     pub gate: ProjectionWeight,
     pub up: ProjectionWeight,
     pub down: ProjectionWeight,
@@ -41,12 +40,12 @@ pub struct MlpWeights {
 /// Owns stable input/output buffers; the graph retains all intermediate storage.
 pub struct MlpGraph {
     /// Activations the graph addresses by device pointer; it does not hold them itself.
-    _storage: [Tensor<f32>; ACTIVATIONS],
+    _storage: [Allocation<f32>; ACTIVATIONS],
     /// Weights the graph addresses by device pointer.
     _weights: MlpWeights,
     graph: Graph,
-    input: Tensor<f32>,
-    output: Arc<Tensor<f32>>,
+    input: Allocation<f32>,
+    output: Allocation<f32>,
     device: CudaDevice,
     hidden: usize,
 }
@@ -68,7 +67,7 @@ impl MlpGraph {
             || !config.epsilon.is_finite()
             || config.epsilon <= 0.0
             || !config.norm_offset.is_finite()
-            || weights.norm.shape() != [i32::try_from(d).map_err(device_error)?]
+            || weights.norm.len() != d
         {
             return Err(Error::invalid("MLP configuration"));
         }
@@ -80,11 +79,8 @@ impl MlpGraph {
                 device.target().require_native_nvfp4()?;
             }
         }
-        let allocate = |size| {
-            api::zeros::<f32>(&[size])
-                .sync_on(&device.stream)
-                .map_err(device_error)
-        };
+        let runtime = device.runtime();
+        let allocate = |size| runtime.zeros::<f32>(size);
         let input = allocate(d)?;
         let normalized = allocate(d)?;
         let gate = allocate(n)?;
@@ -104,24 +100,24 @@ impl MlpGraph {
                         epsilon: config.epsilon,
                         offset: config.norm_offset,
                     },
-                    buffer(&normalized)?,
-                    buffer(&input)?,
-                    buffer(weights.norm.as_ref())?,
+                    normalized.operand(),
+                    input.operand(),
+                    weights.norm.operand(),
                 )
                 .map_err(failed)?;
             weights.gate.record(
                 &kernels,
                 scope,
-                buffer(&gate)?,
-                buffer(&normalized)?,
+                gate.operand(),
+                normalized.operand(),
                 d,
                 config.tiling,
             )?;
             weights.up.record(
                 &kernels,
                 scope,
-                buffer(&up)?,
-                buffer(&normalized)?,
+                up.operand(),
+                normalized.operand(),
                 d,
                 config.tiling,
             )?;
@@ -135,9 +131,9 @@ impl MlpGraph {
                 .mlp
                 .residual(
                     &recording,
-                    buffer(&output)?,
-                    buffer(&down)?,
-                    buffer(&input)?,
+                    output.operand(),
+                    down.operand(),
+                    input.operand(),
                 )
                 .map_err(failed)?;
             Ok(())
@@ -146,7 +142,7 @@ impl MlpGraph {
         Ok(Self {
             graph,
             input,
-            output: Arc::new(output),
+            output,
             device: device.clone(),
             hidden: d,
             _storage: [normalized, gate, up, activated, down],
@@ -157,13 +153,12 @@ impl MlpGraph {
     /// Replays all six kernels with no device allocation or intermediate host copies.
     /// # Errors
     /// Rejects invalid input dimensions or CUDA execution failures.
-    pub fn replay(&mut self, input: &Tensor<f32>) -> Result<()> {
-        if input.shape() != self.input.shape() {
+    pub fn replay(&mut self, input: &Allocation<f32>) -> Result<()> {
+        if input.len() != self.input.len() {
             return Err(Error::invalid("MLP input dimensions"));
         }
-        self.graph
-            .update(api::memcpy(&mut self.input, input))
-            .map_err(device_error)?;
+        self.device
+            .enqueue(|transfers| transfers.copy(self.input.operand(), input.operand()))?;
         self.graph
             .launch()
             .sync_on(&self.device.stream)
@@ -177,12 +172,9 @@ impl MlpGraph {
         if input.len() != self.hidden {
             return Err(Error::invalid("MLP input length"));
         }
-        let uploaded = self.device.upload(input.to_vec(), &[self.hidden])?;
+        let uploaded = self.device.runtime().upload(input.to_vec())?;
         self.replay(&uploaded)?;
-        (&self.output)
-            .to_host_vec()
-            .sync_on(&self.device.stream)
-            .map_err(device_error)
+        self.device.runtime().read(&self.output)
     }
 }
 
@@ -192,9 +184,9 @@ fn failed(error: impl Display) -> DeviceError {
 
 /// The activation product's operands.
 struct Activation<'a> {
-    gate: &'a Tensor<f32>,
-    up: &'a Tensor<f32>,
-    activated: &'a Tensor<f32>,
+    gate: &'a Allocation<f32>,
+    up: &'a Allocation<f32>,
+    activated: &'a Allocation<f32>,
 }
 
 /// The activation product and the down projection it feeds, waiting on it under PDL.
@@ -204,14 +196,14 @@ fn record_down(
     weights: &MlpWeights,
     config: &MlpConfig,
     parts: &Activation<'_>,
-    down: &Tensor<f32>,
+    down: &Allocation<f32>,
     columns: usize,
 ) -> StdResult<(), DeviceError> {
     let recording = Recording::scope(scope);
     let product = ProductBuffers {
-        out: buffer(parts.activated)?,
-        gate: buffer(parts.gate)?,
-        up: buffer(parts.up)?,
+        out: parts.activated.operand(),
+        gate: parts.gate.operand(),
+        up: parts.up.operand(),
     };
     if config.pdl {
         kernels
@@ -227,8 +219,8 @@ fn record_down(
                     tile_columns: config.tiling.columns(),
                     columns,
                 },
-                buffer(down)?,
-                buffer(parts.activated)?,
+                down.operand(),
+                parts.activated.operand(),
                 weights.down.weight_ref()?,
             )
             .map_err(failed);
@@ -237,8 +229,8 @@ fn record_down(
     weights.down.record(
         kernels,
         scope,
-        buffer(down)?,
-        buffer(parts.activated)?,
+        down.operand(),
+        parts.activated.operand(),
         columns,
         config.tiling,
     )
