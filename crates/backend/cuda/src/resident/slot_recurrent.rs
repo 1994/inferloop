@@ -61,22 +61,25 @@ impl Staging {
 
     /// Preserve every slot's commit input before the arena reuses its allocation.
     pub(super) fn record_node(
-        &mut self,
+        &self,
         scope: &Scope,
         node: &TensorNode,
         arena: &ActivationArena,
         index: usize,
     ) -> Result<(), DeviceError> {
         for (input, &id) in commit_inputs(node).iter().enumerate() {
-            let source = arena.view(id).map_err(error)?;
+            let source = arena.activation(id).map_err(error)?;
             let target = self
                 .roots
-                .get_mut(&(index, input))
+                .get(&(index, input))
                 .ok_or_else(|| error("batched recurrent staging input"))?;
-            if source.size() != target.size() {
+            if source.len() != target.size() {
                 return Err(error("batched recurrent staging geometry"));
             }
-            scope.record(api::memcpy(target, source))?;
+            // The staging and the arena both live beside the captured graphs.
+            Recording::scope(scope)
+                .copy(buffer(target)?, source)
+                .map_err(error)?;
         }
         Ok(())
     }
@@ -258,7 +261,7 @@ fn lane_input(
     lane: usize,
 ) -> Result<Buffer<'static, f32>, DeviceError> {
     weights.constants.get(&id).map_or_else(
-        || row_buffer(buffer(arena.view(id).map_err(error)?)?, arena.lanes(), lane),
+        || row_buffer(arena.activation(id).map_err(error)?, arena.lanes(), lane),
         |constant| Ok(region(constant.buffer().address(), constant.len())),
     )
 }

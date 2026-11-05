@@ -8,7 +8,7 @@ use crate::{device::CudaDevice, resident::ProgramWeights};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
-    GateBuffers, PreparedDeltaBuffers, Recording, Recurrent, RecurrentShape,
+    Buffer, GateBuffers, PreparedDeltaBuffers, Recording, Recurrent, RecurrentShape,
 };
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorOp};
@@ -137,7 +137,7 @@ impl Inputs {
         &self,
         scope: &Scope,
         recurrent: &dyn Recurrent,
-        [qkv_storage, beta, alpha, a_log, bias]: [&Tensor<f32>; INPUT_BINDINGS],
+        [qkv_storage, beta, alpha, a_log, bias]: [Buffer<'_, f32>; INPUT_BINDINGS],
         (state, output): (&S, &O),
         metadata: &Allocation<i32>,
         (kh, vh, dim, lanes, block): (usize, usize, usize, usize, usize),
@@ -151,12 +151,7 @@ impl Inputs {
         };
         if self.chunk.is_none() {
             recurrent
-                .normalize(
-                    &recording,
-                    shape,
-                    buffer(&self.normalized)?,
-                    buffer(qkv_storage)?,
-                )
+                .normalize(&recording, shape, buffer(&self.normalized)?, qkv_storage)
                 .map_err(error)?;
         }
         recurrent
@@ -166,10 +161,10 @@ impl Inputs {
                 GateBuffers {
                     betas: buffer(&self.betas)?,
                     decays: buffer(&self.decays)?,
-                    beta: buffer(beta)?,
-                    alpha: buffer(alpha)?,
-                    decay: buffer(a_log)?,
-                    bias: buffer(bias)?,
+                    beta,
+                    alpha,
+                    decay: a_log,
+                    bias,
                 },
             )
             .map_err(error)?;
@@ -180,7 +175,7 @@ impl Inputs {
                 scratch,
                 shape,
                 [
-                    buffer(qkv_storage)?,
+                    qkv_storage,
                     buffer(&self.betas)?,
                     buffer(&self.decays)?,
                     buffer(state)?,
@@ -199,7 +194,7 @@ impl Inputs {
                     PreparedDeltaBuffers {
                         state: buffer(state)?,
                         output: buffer(output)?,
-                        qkv: buffer(qkv_storage)?,
+                        qkv: qkv_storage,
                         normalized: buffer(&self.normalized)?,
                         betas: buffer(&self.betas)?,
                         decays: buffer(&self.decays)?,
@@ -216,7 +211,7 @@ impl Inputs {
                 PreparedDeltaBuffers {
                     state: buffer(state)?,
                     output: buffer(output)?,
-                    qkv: buffer(qkv_storage)?,
+                    qkv: qkv_storage,
                     normalized: buffer(&self.normalized)?,
                     betas: buffer(&self.betas)?,
                     decays: buffer(&self.decays)?,

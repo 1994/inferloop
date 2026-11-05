@@ -9,7 +9,7 @@ use cuda_core::f8e4m3fn;
 use cutile::prelude::*;
 use infer_core::{Error, OpId, Result};
 use infer_cuda_kernels::contract::{
-    Attention, Partials, PooledAppendBuffers, PooledDecodeBuffers, PooledPlan, Recording,
+    Attention, Buffer, Partials, PooledAppendBuffers, PooledDecodeBuffers, PooledPlan, Recording,
 };
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorOp};
@@ -272,15 +272,15 @@ pub struct Append<'a> {
     pub node: OpId,
     pub keys: &'a Allocation<f8e4m3fn>,
     pub values: &'a Allocation<f8e4m3fn>,
-    pub inputs: [&'a Tensor<f32>; 2],
+    pub inputs: [Buffer<'a, f32>; 2],
     pub metadata: &'a Allocation<i32>,
     pub tables: &'a [Allocation<i32>],
 }
 
 pub struct Attend<'a> {
     pub node: OpId,
-    pub output: &'a Tensor<f32>,
-    pub queries: &'a Tensor<f32>,
+    pub output: Buffer<'a, f32>,
+    pub queries: Buffer<'a, f32>,
     pub keys: &'a Allocation<f8e4m3fn>,
     pub values: &'a Allocation<f8e4m3fn>,
 }
@@ -343,7 +343,7 @@ impl Workspace {
         let l = work.layout;
         let g = l.geometry;
         let size = product(&[l.slots, VERIFY_LANES, g.kv_heads, g.dim]).map_err(error)?;
-        if inputs.iter().any(|input| input.size() != size)
+        if inputs.iter().any(|input| input.len() != size)
             || tables.len() != l.slots
             || metadata.len() != l.slots * VERIFY_LANES * METADATA_FIELDS
         {
@@ -368,8 +368,8 @@ impl Workspace {
                         metadata: buffer(metadata)?,
                         keys: buffer(keys)?,
                         values: buffer(values)?,
-                        key_rows: buffer(inputs[0])?,
-                        value_rows: buffer(inputs[1])?,
+                        key_rows: inputs[0],
+                        value_rows: inputs[1],
                     },
                 )
                 .map_err(error)?;
@@ -394,7 +394,7 @@ impl Workspace {
         let l = work.layout;
         let g = l.geometry;
         let size = product(&[l.slots, VERIFY_LANES, g.heads, g.dim]).map_err(error)?;
-        if queries.size() != size || output.size() != size {
+        if queries.len() != size || output.len() != size {
             return Err(error("pooled attention query dimensions"));
         }
         for (group, control) in work.controls.iter().enumerate() {
@@ -405,13 +405,13 @@ impl Workspace {
                     recording,
                     work.plan(first, batch),
                     PooledDecodeBuffers {
-                        output: buffer(output)?,
+                        output,
                         partials: Partials {
                             numerator: buffer(&work.numerator)?,
                             maxima: buffer(&work.maxima)?,
                             sums: buffer(&work.sums)?,
                         },
-                        queries: buffer(queries)?,
+                        queries,
                         keys: buffer(keys)?,
                         values: buffer(values)?,
                         control: buffer(control)?,

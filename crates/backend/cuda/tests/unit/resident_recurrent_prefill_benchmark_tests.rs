@@ -1,5 +1,6 @@
 use super::kernels;
 use crate::device::CudaDevice;
+use crate::resident::buffers::buffer as operand;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::{
@@ -98,13 +99,9 @@ fn bench_case(
     let mut scratch = api::zeros::<f32>(&[vh, lanes, dim]).sync_on(&device.stream)?;
     let mut output = api::zeros::<f32>(&[lanes, vh, dim]).sync_on(&device.stream)?;
     let block = production_block(dim, lanes);
-    let generics = vec![
-        kh.to_string(),
-        vh.to_string(),
-        dim.to_string(),
-        lanes.to_string(),
-        block.to_string(),
-    ];
+    let generics = [kh, vh, dim, lanes, block]
+        .map(|value| value.to_string())
+        .to_vec();
     let prepared = (dim == super::ORDERED_DIM)
         .then(|| super::prepared::Inputs::new(device, (kh, vh, dim), lanes))
         .transpose()?;
@@ -113,7 +110,13 @@ fn bench_case(
             prepared.as_ref().expect("ordered preparation").record(
                 scope,
                 contract_kernels(0).recurrent.as_ref(),
-                [&qkv, &beta, &alpha, &a_log, &bias],
+                [
+                    operand(&qkv)?,
+                    operand(&beta)?,
+                    operand(&alpha)?,
+                    operand(&a_log)?,
+                    operand(&bias)?,
+                ],
                 (&state, &scratch),
                 &metadata,
                 (kh, vh, dim, lanes, block),

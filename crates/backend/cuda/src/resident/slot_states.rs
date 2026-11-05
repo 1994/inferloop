@@ -306,9 +306,9 @@ pub(super) fn record_batch(
             output,
             PoolDeltaBuffers {
                 state: buffer(state)?,
-                qkv: buffer(arena.view(node.inputs[0]).map_err(error)?)?,
-                beta: buffer(arena.view(node.inputs[1]).map_err(error)?)?,
-                alpha: buffer(arena.view(node.inputs[2]).map_err(error)?)?,
+                qkv: arena.activation(node.inputs[0]).map_err(error)?,
+                beta: arena.activation(node.inputs[1]).map_err(error)?,
+                alpha: arena.activation(node.inputs[2]).map_err(error)?,
                 parameters: buffer(parameters)?,
                 metadata: buffer(batch.metadata)?,
             },

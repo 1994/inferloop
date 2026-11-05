@@ -229,8 +229,8 @@ impl BatchBuilder<'_> {
                 },
                 AppendBuffers {
                     cache,
-                    keys: buffer(arena.view(node.inputs[1]).map_err(error)?)?,
-                    values: buffer(arena.view(node.inputs[2]).map_err(error)?)?,
+                    keys: arena.activation(node.inputs[1]).map_err(error)?,
+                    values: arena.activation(node.inputs[2]).map_err(error)?,
                     metadata: buffer(metadata)?,
                     table: table.buffer,
                 },
@@ -258,8 +258,8 @@ impl BatchBuilder<'_> {
                     sums: buffer(&work.sums)?,
                 },
                 DecodeBuffers {
-                    output: buffer(arena.view(node.outputs[0]).map_err(error)?)?,
-                    query: buffer(arena.view(node.inputs[0]).map_err(error)?)?,
+                    output: arena.activation(node.outputs[0]).map_err(error)?,
+                    query: arena.activation(node.inputs[0]).map_err(error)?,
                     cache,
                     metadata: buffer(metadata)?,
                     table: table.buffer,

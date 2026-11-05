@@ -1,5 +1,6 @@
 use super::*;
 use crate::resident::attention::attention;
+use crate::resident::buffers::buffer as operand;
 use cutile::cutile_compiler::compile_api::KernelCompiler;
 use infer_cuda_kernels::tile::attention::{
     TileAttention, grouped_options, pooled_device as kernels,
@@ -250,7 +251,10 @@ impl Fixture {
                     node,
                     keys,
                     values,
-                    inputs: [&self.inputs[0], &self.inputs[1]],
+                    inputs: [
+                        operand(self.inputs[0].as_ref())?,
+                        operand(self.inputs[1].as_ref())?,
+                    ],
                     metadata: &metadata,
                     tables: &self.tables,
                 },
@@ -260,8 +264,8 @@ impl Fixture {
                 &recording,
                 &Attend {
                     node,
-                    output: &actual,
-                    queries: &self.queries,
+                    output: operand(&actual)?,
+                    queries: operand(self.queries.as_ref())?,
                     keys,
                     values,
                 },
