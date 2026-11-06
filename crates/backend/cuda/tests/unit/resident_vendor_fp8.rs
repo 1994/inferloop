@@ -203,7 +203,7 @@ impl<'a> Inputs<'a> {
                 kernels::matmul(
                     output.partition(tile),
                     &self.codes,
-                    self.weight.device_codes.tensor(),
+                    &self.weight.device_codes.tensor()?,
                     &self.scales,
                     self.weight.device_scales.tensor(),
                 )
@@ -659,15 +659,16 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
     );
     let held = |weight: &Weight| {
         [
-            Arc::strong_count(weight.device_codes.tensor()),
+            Arc::strong_count(weight.device_codes.allocation().tensor()),
             Arc::strong_count(weight.device_scales.tensor()),
         ]
     };
-    let before = held(&weight);
     let native_graph = Graph::scope(&device.stream, |scope| {
         inputs.quantize(scope)?;
         inputs.matmul(scope, &mut native, false)
     })?;
+    // Counted after the native graph, whose reference kernel holds its own view of the weight.
+    let before = held(&weight);
     let restored_graph = Graph::scope(&device.stream, |scope| {
         inputs.quantize(scope)?;
         if !restored.record_config(

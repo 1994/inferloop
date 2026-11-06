@@ -54,7 +54,7 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
         // Our prompt kernel tiles the output 32x64 and the K loop by 64.
         let kernel_graph = Graph::scope(&device.stream, |scope| {
             scope.record(
-                gemm::dense((&mut native).partition([32, 64]), &input, weight.tensor())
+                gemm::dense((&mut native).partition([32, 64]), &input, &weight.tensor()?)
                     .generics(vec![k.to_string()]),
             )?;
             Ok(())

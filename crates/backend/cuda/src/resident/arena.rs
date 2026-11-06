@@ -350,17 +350,6 @@ impl ActivationArena {
         self.at(index)?.buffer()
     }
 
-    /// Slot `index` as a tensor holding a share of its memory, for tests that fill it from the
-    /// host or launch reference kernels directly.
-    /// # Errors
-    /// Rejects an index outside the arena.
-    #[cfg(test)]
-    pub(crate) fn output(&self, index: usize) -> Result<Tensor<f32>> {
-        let slot = self.at(index)?;
-        slot.memory
-            .view(slot.offset..slot.offset + slot.len, &[slot.len])
-    }
-
     /// Slot `index` as memory a kernel writes, held apart from the arena: it shares the slot's
     /// allocation, so a capture can write it while it borrows the arena elsewhere.
     /// # Errors
@@ -519,3 +508,7 @@ impl Fp4Scratch {
         Ok(Some(Self { floats, bytes }))
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/arena_tensors.rs"]
+mod tensors;

@@ -109,7 +109,7 @@ impl Case {
                 dense(
                     output.partition([self.tile.rows()]),
                     input,
-                    self.weight.tensor(),
+                    &self.weight.tensor()?,
                 )
                 .generics(vec![
                     bf16::DTYPE.as_str().into(),
@@ -126,7 +126,7 @@ impl Case {
             small_gemm_kernels::dense(
                 (&mut self.original).partition(SMALL_GEMM_TILE),
                 &self.joined,
-                self.weight.tensor(),
+                &self.weight.tensor()?,
             )
             .generics(vec![bf16::DTYPE.as_str().into(), self.k.to_string()]),
         )?;
@@ -138,7 +138,7 @@ impl Case {
             batched::dense(
                 (&mut self.candidate).partition([4, self.tile.rows()]),
                 &self.joined,
-                self.weight.tensor(),
+                &self.weight.tensor()?,
             )
             .generics(vec![
                 bf16::DTYPE.as_str().into(),
@@ -154,7 +154,7 @@ impl Case {
             pool_gemv::kernels::dense(
                 (&mut self.candidate).partition([1, self.tile.rows()]),
                 &self.joined,
-                self.weight.tensor(),
+                &self.weight.tensor()?,
             )
             .generics(vec![
                 bf16::DTYPE.as_str().into(),
@@ -167,7 +167,7 @@ impl Case {
     }
     fn scalar_reference(&self, device: &CudaDevice) -> TestResult {
         let input = device.read(&self.joined)?;
-        let weights = device.read(self.weight.tensor())?;
+        let weights = device.read(&self.weight.tensor()?)?;
         let actual = device.read_borrowed(&self.candidate)?;
         assert_eq!(actual.len(), self.rows.len() * self.n);
         for (row, input) in input.chunks_exact(self.k).enumerate() {
