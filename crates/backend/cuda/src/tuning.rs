@@ -21,11 +21,8 @@ use crate::{
     mlp::ProjectionWeight,
     strategy::LinearTiling,
 };
+use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::error::tensor_error;
-use cutile::{
-    bench::{BenchOptions, do_bench_paired},
-    prelude::*,
-};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use serde::{Deserialize, Serialize};
@@ -157,10 +154,7 @@ pub fn tune(device: &CudaDevice, weight: &ProjectionWeight) -> Result<Projection
     let (key, rows, columns) = projection_key(weight)?;
     let baseline = default_tiling()?;
     let base = capture(device, weight, rows, columns, baseline)?;
-    base.graph
-        .launch()
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    device.tile().sync(base.graph.launch())?;
     let expected = device.runtime().read(&base.output)?;
     let options = BenchOptions {
         warmup: Duration::from_millis(WARMUP_MS),
@@ -176,11 +170,7 @@ pub fn tune(device: &CudaDevice, weight: &ProjectionWeight) -> Result<Projection
         for tile_columns in TILE_COLUMN_SEARCH {
             let tiling = LinearTiling::new(tile_rows, tile_columns)?;
             let candidate = capture(device, weight, rows, columns, tiling)?;
-            candidate
-                .graph
-                .launch()
-                .sync_on(&device.stream)
-                .map_err(device_error)?;
+            device.tile().sync(candidate.graph.launch())?;
             verify(&device.runtime().read(&candidate.output)?, &expected)?;
             let trial = measure(device, &options, &base.graph, &candidate.graph, tiling)?;
             if trial.speedup > best {
@@ -262,9 +252,9 @@ fn measure(
     tiling: LinearTiling,
 ) -> Result<Trial> {
     let run = |graph: &Graph| {
-        graph
-            .launch()
-            .sync_on(&device.stream)
+        device
+            .tile()
+            .sync(graph.launch())
             .map_err(|e| tensor_error(&e.to_string()))
     };
     let (a, b) = do_bench_paired(&device.stream, options, |_| run(base), |_| run(candidate))

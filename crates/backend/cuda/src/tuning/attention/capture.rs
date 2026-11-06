@@ -13,7 +13,6 @@ use crate::resident::attention_oxide::artifact_identity;
 use crate::resident::buffers::kv_cache;
 use crate::resident::tensor_buffer as buffer;
 use cuda_core::f8e4m3fn;
-use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     AppendBuffers, DecodeBuffers, DecodePlan, Kernels, PrefillAppendPlan, PrefillDecodePlan,
@@ -253,15 +252,8 @@ impl Captured {
         Ok(actual.len())
     }
     pub fn exact_match(&self, device: &CudaDevice, baseline: &Self) -> Result<usize> {
-        baseline
-            .graph
-            .launch()
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
-        self.graph
-            .launch()
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        device.tile().sync(baseline.graph.launch())?;
+        device.tile().sync(self.graph.launch())?;
         let actual = device.runtime().read(&self.operands.output)?;
         let expected = device.runtime().read(&baseline.operands.output)?;
         if actual.len() != expected.len()
@@ -286,10 +278,7 @@ impl Captured {
         self.verify_graph_limit(device, f, &self.graph, super::mma::MAX_ERROR)
     }
     pub fn verify_mma_history(&self, device: &CudaDevice, f: &Fixture) -> Result<()> {
-        self.graph
-            .launch()
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        device.tile().sync(self.graph.launch())?;
         let output = device.runtime().read(&self.operands.output)?;
         for (index, &value) in output.iter().enumerate() {
             let row = index / (f.shape.heads * f.shape.dim);
@@ -308,10 +297,7 @@ impl Captured {
         graph: &Graph,
         limit: f64,
     ) -> Result<f64> {
-        graph
-            .launch()
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        device.tile().sync(graph.launch())?;
         for (tensor, expected) in [
             (&self.operands.keys, &f.expected_keys),
             (&self.operands.values, &f.expected_values),

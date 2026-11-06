@@ -9,7 +9,6 @@ use crate::tuning::resident_gemm::{MeasurementOrder, PairedTimes};
 use crate::tuning::{MAX_REPS, MIN_CONFIRM_SPEEDUP, MIN_REPS, REP_MS, WARMUP_MS, median};
 use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::error::tensor_error;
-use cutile::prelude::*;
 use infer_core::Result;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::time::Duration;
@@ -100,15 +99,15 @@ fn measure(
         &device.stream,
         options,
         |_| {
-            first
-                .launch()
-                .sync_on(&device.stream)
+            device
+                .tile()
+                .sync(first.launch())
                 .map_err(|e| tensor_error(&e.to_string()))
         },
         |_| {
-            second
-                .launch()
-                .sync_on(&device.stream)
+            device
+                .tile()
+                .sync(second.launch())
                 .map_err(|e| tensor_error(&e.to_string()))
         },
     )

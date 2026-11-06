@@ -9,10 +9,7 @@ use crate::device::{CudaDevice, device_error};
 use crate::resident::attention_mma;
 use crate::resident::buffers::kv_cache;
 use crate::resident::tensor_buffer as buffer;
-use cutile::{
-    cutile_compiler::{cuda_tile_runtime_utils as compiler, hints::CompileOptions},
-    prelude::*,
-};
+use cutile::cutile_compiler::{cuda_tile_runtime_utils as compiler, hints::CompileOptions};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     AppendBuffers, DecodeBuffers, DecodePlan, Kernels, PrefillAppendPlan, PrefillDecodePlan,
@@ -158,10 +155,7 @@ impl Captured {
         })
     }
     pub fn verify(&self, device: &CudaDevice, f: &Fixture, complete: bool) -> Result<Proof> {
-        self.graph
-            .launch()
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        device.tile().sync(self.graph.launch())?;
         for (tensor, expected) in [
             (&self.operands.keys, &f.expected_keys),
             (&self.operands.values, &f.expected_values),

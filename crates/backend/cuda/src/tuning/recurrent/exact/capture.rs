@@ -2,7 +2,6 @@
 use super::super::reference::{Fixture, maximum_error};
 use crate::device::{CudaDevice, device_error};
 use crate::resident::tensor_buffer as buffer;
-use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{GateBuffers, PreparedDeltaBuffers, RecurrentShape};
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
@@ -124,10 +123,7 @@ impl Captured {
         .map_err(device_error)
     }
     pub fn run(&self, device: &CudaDevice, graph: &Graph) -> Result<[Vec<f32>; 2]> {
-        graph
-            .launch()
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        device.tile().sync(graph.launch())?;
         Ok([
             device.runtime().read(&self.state)?,
             device.runtime().read(&self.output)?,

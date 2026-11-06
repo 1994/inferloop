@@ -21,12 +21,9 @@ use crate::{
     mlp::{Matrix, ProjectionWeight},
 };
 use cuda_core::f8e4m3fn;
+use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
-use cutile::{
-    bench::{BenchOptions, do_bench_paired},
-    prelude::*,
-};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, Fp8, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, Kernels, Recording, WeightRef,
@@ -530,10 +527,7 @@ impl Captured {
         })
     }
     fn run(&self, device: &CudaDevice) -> Result<()> {
-        self.graph
-            .launch()
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        device.tile().sync(self.graph.launch())?;
         Ok(())
     }
 }
@@ -601,10 +595,9 @@ fn measure(
         clear_l2,
     };
     let run = |capture: &Captured| {
-        capture
-            .graph
-            .launch()
-            .sync_on(&device.stream)
+        device
+            .tile()
+            .sync(capture.graph.launch())
             .map_err(|e| tensor_error(&e.to_string()))
     };
     // Confirmation flips both warm and cold execution order, then maps samples back to their roles.

@@ -12,7 +12,6 @@ use crate::device::vision_position::DeviceTaps;
 use crate::device::{CudaDevice, device_error};
 use crate::resident::buffers::buffer;
 use cutile::half::bf16;
-use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     DenseBuffers, DensePlan, Gelu, Pack, VisionDense, VisionNorm, VisionRope,
@@ -278,10 +277,7 @@ fn patch_embed_with_positions(
         }
         Ok(())
     })?;
-    graph
-        .launch()
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    device.tile().sync(graph.launch())?;
 
     let values = match output {
         Some(output) => device.runtime().read(&output)?,
@@ -385,10 +381,7 @@ pub fn project_with(
         })?;
         Ok(())
     })?;
-    graph
-        .launch()
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    device.tile().sync(graph.launch())?;
     projection_output(device.runtime().read(&output)?, rows, out_features)
 }
 
@@ -476,10 +469,7 @@ fn elementwise(
         }
         Ok(())
     })?;
-    graph
-        .launch()
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    device.tile().sync(graph.launch())?;
     let values = device.runtime().read(&output)?;
     Ok(values[..rows * columns].to_vec())
 }
@@ -507,10 +497,7 @@ fn elementwise_sum(
         launches.add(columns, buffer(&output)?, buffer(&first)?, buffer(&second)?)?;
         Ok(())
     })?;
-    graph
-        .launch()
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    device.tile().sync(graph.launch())?;
     let values = device.runtime().read(&output)?;
     Ok(values[..rows * columns].to_vec())
 }
@@ -554,10 +541,7 @@ pub fn layernorm(
         })?;
         Ok(())
     })?;
-    graph
-        .launch()
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    device.tile().sync(graph.launch())?;
     let padded = device.runtime().read(&output)?;
     let mut result = Vec::with_capacity(rows * hidden);
     for row in 0..rows {
@@ -768,10 +752,7 @@ pub fn attention_with(
         })?;
         Ok(())
     })?;
-    graph
-        .launch()
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    device.tile().sync(graph.launch())?;
     let values = device.runtime().read(&output)?;
     Ok(values[..input.len()].to_vec())
 }
@@ -959,10 +940,7 @@ fn compact_attention_launch(
         })?;
         Ok(())
     })?;
-    graph
-        .launch()
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    device.tile().sync(graph.launch())?;
     let values = device.runtime().read(&output)?;
     Ok(values)
 }
@@ -1213,10 +1191,7 @@ pub fn attention_kernel(
         }
         Ok(())
     })?;
-    graph
-        .launch()
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    device.tile().sync(graph.launch())?;
     if profile {
         measure(device, &graph, tokens, heads, real_width, tiles)?;
     }
@@ -1328,10 +1303,7 @@ pub fn rope_compact_kernel(
         })?;
         Ok(())
     })?;
-    graph
-        .launch()
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    device.tile().sync(graph.launch())?;
     let values = device.runtime().read(&output)?;
     Ok(values[..query.len()].to_vec())
 }
@@ -1454,10 +1426,7 @@ pub fn compact_attention(
         )?;
         Ok(())
     })?;
-    graph
-        .launch()
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    device.tile().sync(graph.launch())?;
     let values = device.runtime().read(&compact_out)?;
     Ok(values[..query.len()].to_vec())
 }

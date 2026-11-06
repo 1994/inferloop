@@ -15,6 +15,7 @@ use infer_core::TensorId;
 use infer_cuda_kernels::tile::kernels as tile_kernels;
 use infer_ir::{DType, Sampling, StateKind, TensorSpec, TensorStorage};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 fn fixture_weights(device: &CudaDevice, width: usize) -> Result<ProgramWeights> {
     let embedding = TensorId::ONE;

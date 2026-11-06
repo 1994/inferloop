@@ -1,8 +1,5 @@
 //! Explicit stream futures for execution; synchronous adapters are diagnostic compatibility.
-use super::{CudaDevice, device_error};
-use cutile::cuda_async::device_future::DeviceFuture;
-use cutile::cuda_async::device_operation::value;
-use cutile::prelude::*;
+use super::CudaDevice;
 use infer_core::Result;
 use std::{
     future::Future,
@@ -13,16 +10,11 @@ use std::{
 };
 
 impl CudaDevice {
-    pub(crate) async fn run_op<O: DeviceOp>(
-        &self,
-        operation: O,
-    ) -> Result<<O as DeviceOp>::Output> {
-        DeviceFuture::scheduled(operation, ExecutionContext::new(Arc::clone(&self.stream)))
-            .await
-            .map_err(device_error)
-    }
+    /// Wait for everything queued on this device's stream.
+    /// # Errors
+    /// Returns device failures.
     pub(crate) async fn fence(&self) -> Result<()> {
-        self.run_op(value(())).await
+        self.runtime.fence().await
     }
 }
 

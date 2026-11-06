@@ -2169,7 +2169,7 @@ impl BatchGraph {
             &self.profile
         };
         if sources.iter().all(Option::is_none) && profile.is_none() {
-            device.run_op(graph.launch()).await?;
+            device.tile().run(graph.launch()).await?;
             return Ok(vec![(Vec::new(), Vec::new()); tokens.len()]);
         }
         let rows = self.readbacks.run_async(device, graph, &sources).await;
@@ -2320,7 +2320,7 @@ impl BatchGraph {
             .get(count - 1)
             .map(Graph::launch)
             .ok_or_else(|| Error::invalid("batch commit count"));
-        async move { device.run_op(launch?).await }
+        async move { device.tile().run(launch?).await }
     }
 }
 

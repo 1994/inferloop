@@ -436,6 +436,28 @@ impl Device {
             .map_err(|error| Error::new(ErrorCode::Backend, error.to_string()))
     }
 
+    /// Run a launch on this stream and wait until the device has finished it.
+    /// # Errors
+    /// Returns device failures.
+    #[inline]
+    pub fn sync<O: DeviceOp>(&self, launch: Launch<O>) -> Result<<O as DeviceOp>::Output> {
+        launch.0.sync_on(&self.stream).map_err(backend_error)
+    }
+
+    /// `len` zeroed elements, allocated in order on this stream; the future resolves once the
+    /// device has written them, without blocking the host on the stream.
+    /// # Errors
+    /// Reports a failed allocation.
+    pub async fn zeroed<T: DType>(&self, len: usize) -> Result<Allocation<T>> {
+        let tensor = DeviceFuture::scheduled(
+            api::zeros::<T>(&[len]),
+            ExecutionContext::new(Arc::clone(&self.stream)),
+        )
+        .await
+        .map_err(backend_error)?;
+        Allocation::adopt(Arc::new(tensor))
+    }
+
     /// Wait for everything queued on this stream.
     /// # Errors
     /// Returns device failures.

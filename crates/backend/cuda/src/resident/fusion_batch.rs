@@ -10,11 +10,11 @@ use crate::constants::CB_DECODE_SLOTS;
 use crate::constants::METADATA_FIELDS;
 use crate::tuning::prefill::fused_draft;
 use crate::{
-    device::{CudaDevice, DeviceProfile, device_error},
+    device::{CudaDevice, DeviceProfile},
     mlp::ProjectionWeight,
     strategy::LinearTiling,
 };
-use cutile::{half::bf16, prelude::*};
+use cutile::half::bf16;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, EmbeddingBatchPlan, FusionNormBuffers, FusionNormPlan, FusionShape, LinearRowsPlan,
@@ -25,7 +25,6 @@ use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
 use std::ops::Range;
-use std::sync::Arc;
 
 const ROWS: usize = 128;
 const HIDDEN: usize = 5120;
@@ -112,11 +111,7 @@ impl Workspace {
             return Ok(None);
         }
         let zeros = |columns: usize| -> Result<Allocation<f32>> {
-            Allocation::adopt(Arc::new(
-                api::zeros::<f32>(&[width * columns])
-                    .sync_on(&device.stream)
-                    .map_err(device_error)?,
-            ))
+            device.tile().zeros::<f32>(width * columns)
         };
         Ok(Some(Self {
             input: zeros(COLUMNS)?,

@@ -4,11 +4,7 @@ use super::slot_recurrent::{LANES, ValueDevice, covers, fused_block, value_split
 use super::{ActivationArena, buffers::buffer, capture::error};
 use super::{batch::States, program::ProgramWeights};
 use crate::constants::METADATA_FIELDS;
-use crate::{
-    constants::F32_BYTES,
-    device::{CudaDevice, device_error},
-};
-use cutile::prelude::*;
+use crate::{constants::F32_BYTES, device::CudaDevice};
 use infer_core::{Error, OpId, Result, TensorId};
 use infer_cuda_kernels::contract::{Kernels, PoolDeltaBuffers, PoolDeltaPlan, Recording};
 use infer_cuda_kernels::tile::recurrent::pack_parameters;
@@ -16,7 +12,6 @@ use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
 
 const RECURRENT_STATE_RANK: usize = 3;
 
@@ -82,11 +77,7 @@ impl SlotStates {
             let mut families = Vec::new();
             for shape in shapes {
                 let size = shape.iter().product::<usize>();
-                let memory = Allocation::adopt(Arc::new(
-                    api::zeros::<f32>(&[width * size])
-                        .sync_on(&device.stream)
-                        .map_err(device_error)?,
-                ))?;
+                let memory = device.tile().zeros::<f32>(width * size)?;
                 let rows = memory.rows(width)?;
                 for (row, lane) in rows.into_iter().zip(result.lanes.iter_mut()) {
                     lane.entry(id)

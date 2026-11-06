@@ -4,11 +4,8 @@ use super::{
 };
 use crate::device::{CudaDevice, device_error};
 use crate::tuning::preparation::driver_build;
+use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::error::tensor_error;
-use cutile::{
-    bench::{BenchOptions, do_bench_paired},
-    prelude::*,
-};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{NormBuffers, NormLayout, NormPlan};
 use infer_cuda_kernels::tile::identity;
@@ -115,10 +112,7 @@ impl Buffers {
         })
     }
     pub fn read(&self, device: &CudaDevice, graph: &Graph) -> Result<Vec<f32>> {
-        graph
-            .launch()
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        device.tile().sync(graph.launch())?;
         device.runtime().read(&self.output)
     }
 }
@@ -157,8 +151,9 @@ pub fn measure(
             clear_l2: cold,
         };
         let run = |g: &Graph| {
-            g.launch()
-                .sync_on(&device.stream)
+            device
+                .tile()
+                .sync(g.launch())
                 .map_err(|e| tensor_error(&e.to_string()))
         };
         let (a, b) = do_bench_paired(&device.stream, &opts, |_| run(left), |_| run(right))

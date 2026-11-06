@@ -19,12 +19,9 @@ use crate::{
     tuning::resident_gemm::ResidentTuningSession,
 };
 use capture::{Captured, Proof};
+use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
-use cutile::{
-    bench::{BenchOptions, do_bench_paired},
-    prelude::*,
-};
 use infer_core::{Error, Result};
 use reference::Fixture;
 use serde::{Deserialize, Serialize};
@@ -226,9 +223,9 @@ fn measure(
         (base, candidate)
     };
     let run = |c: &Captured| {
-        c.graph
-            .launch()
-            .sync_on(&device.stream)
+        device
+            .tile()
+            .sync(c.graph.launch())
             .map_err(|e| tensor_error(&e.to_string()))
     };
     let (a, b) = do_bench_paired(&device.stream, &options, |_| run(left), |_| run(right))

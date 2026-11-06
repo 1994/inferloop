@@ -11,14 +11,11 @@ use crate::{
     },
 };
 use cuda_core::f8e4m3fn;
-use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
-use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::DataflowGraph;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::mem::forget;
-use std::sync::Arc;
 
 /// Unquantized state by id, as a program holds it.
 type States = BTreeMap<TensorId, Vec<Shaped<f32>>>;
@@ -71,8 +68,8 @@ impl ProgramSnapshot {
                         shape[1] = covered;
                     }
                     let len = shape.iter().product::<usize>();
-                    let memory = device.run_op(api::zeros::<f32>(&[len])).await?;
-                    let copy = Shaped::new(Allocation::adopt(Arc::new(memory))?, shape)?;
+                    let memory = device.tile().zeroed::<f32>(len).await?;
+                    let copy = Shaped::new(memory, shape)?;
                     bytes = bytes
                         .checked_add((copy.len() * size_of::<f32>()) as u64)
                         .ok_or_else(|| Error::invalid("prefix byte overflow"))?;
@@ -89,12 +86,7 @@ impl ProgramSnapshot {
                     rows: covered,
                     ..source.layout
                 };
-                let allocate = async || -> Result<Allocation<f8e4m3fn>> {
-                    let zeros = device
-                        .run_op(api::zeros::<f8e4m3fn>(&[layout.len()]))
-                        .await?;
-                    Allocation::adopt(Arc::new(zeros))
-                };
+                let allocate = async || device.tile().zeroed::<f8e4m3fn>(layout.len()).await;
                 let keys = allocate().await?;
                 let values = allocate().await?;
                 bytes = bytes

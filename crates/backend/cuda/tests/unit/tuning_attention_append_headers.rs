@@ -1,5 +1,6 @@
 use super::*;
 use cutile::cutile_compiler::compile_api::KernelCompiler;
+use cutile::prelude::DType;
 use infer_cuda_kernels::tile::attention::resident_attention_prefill as kernels;
 use std::error::Error as StdError;
 use std::result::Result as StdResult;
