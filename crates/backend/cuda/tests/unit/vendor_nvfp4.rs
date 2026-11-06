@@ -48,7 +48,7 @@ fn capture(
 ) -> TestResult<Graph> {
     let (q, qs) = quantized;
     let families = device.kernels();
-    Ok(Graph::scope(&device.stream, |scope| {
+    Ok(device.tile().capture(|scope| {
         for (layer, out) in layers.iter().zip(outputs) {
             cutile(scope)?.record(
                 kernels::quantize_rows(

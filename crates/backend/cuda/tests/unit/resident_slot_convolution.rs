@@ -5,7 +5,6 @@ use crate::resident::buffers::cutile;
 use crate::{device::CudaDevice, resident::slot_recurrent::fused};
 use cutile::cutile_compiler::compile_api::KernelCompiler;
 use cutile::prelude::*;
-use infer_cuda_kernels::tile::runtime::Graph;
 use std::result::Result as StdResult;
 use std::{error::Error, slice::from_ref};
 
@@ -133,7 +132,7 @@ impl Fixture {
         let mut outputs = (0..self.slots * LANES)
             .map(|_| api::zeros::<f32>(&[channels]).sync_on(&device.stream))
             .collect::<StdResult<Vec<_>, _>>()?;
-        let reference = Graph::scope(&device.stream, |scope| {
+        let reference = device.tile().capture(|scope| {
             for (slot, [first, second, third]) in
                 outputs.as_chunks_mut::<LANES>().0.iter_mut().enumerate()
             {

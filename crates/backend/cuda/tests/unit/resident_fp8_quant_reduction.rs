@@ -35,7 +35,7 @@ impl Case {
     }
     fn graphs(&mut self, device: &CudaDevice, count: usize) -> TestResult<(Graph, Graph)> {
         let pad = self.k.next_power_of_two();
-        let old = Graph::scope(&device.stream, |scope| {
+        let old = device.tile().capture(|scope| {
             for _ in 0..count {
                 cutile(scope)?.record(
                     fp8_gemm::kernels::quantize(
@@ -48,7 +48,7 @@ impl Case {
             }
             Ok(())
         })?;
-        let new = Graph::scope(&device.stream, |scope| {
+        let new = device.tile().capture(|scope| {
             for _ in 0..count {
                 cutile(scope)?.record(
                     kernels::maximum((&mut self.new_scale).partition([1, 1]), &self.input)

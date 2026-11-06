@@ -196,7 +196,7 @@ impl Captured {
         };
         let operands = Operands::new(device, fixture, choice)?;
         let contract = device.kernels();
-        let graph = Graph::scope(&device.stream, |scope| {
+        let graph = device.tile().capture(|scope| {
             operands.record(
                 &contract,
                 scope,
@@ -205,8 +205,7 @@ impl Captured {
                 oxide.as_ref(),
                 mma.as_ref(),
             )
-        })
-        .map_err(device_error)?;
+        })?;
         Ok(Self {
             graph,
             operands,
@@ -230,11 +229,10 @@ impl Captured {
         support: &AttentionOxideSupport,
     ) -> Result<Graph> {
         let contract = device.kernels();
-        Graph::scope(&device.stream, |scope| {
+        device.tile().capture(|scope| {
             self.operands
                 .record(&contract, scope, f, Choice::RustSimt, Some(support), None)
         })
-        .map_err(device_error)
     }
     #[cfg(test)]
     pub fn verify_variant(&self, device: &CudaDevice, f: &Fixture, graph: &Graph) -> Result<usize> {

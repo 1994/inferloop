@@ -7,6 +7,7 @@ use crate::{
 };
 use cutile::half::bf16;
 use cutile::jit_cache::enable_default;
+use cutile::prelude::*;
 use infer_core::{OpId, TensorId};
 use infer_cuda_kernels::tile::kernels as tile_kernels;
 use infer_ir::{DType, DataflowGraph, TensorNode, TensorSpec};

@@ -66,7 +66,7 @@ fn capture_verify(
     slots: usize,
     block: usize,
 ) -> TestResult<Graph> {
-    Ok(Graph::scope(&device.stream, |scope| {
+    Ok(device.tile().capture(|scope| {
         cutile(scope)?.record(
             fused::delta_verify_batch(
                 (&mut fixture.candidate).partition([1, 3, block]),
@@ -116,7 +116,7 @@ fn check_commits(
         let mut results = Vec::new();
         for selected in [32, block] {
             let mut state = upload(device, initial.clone(), &[slots, VH * D, D])?;
-            let graph = Graph::scope(&device.stream, |scope| {
+            let graph = device.tile().capture(|scope| {
                 cutile(scope)?.record(
                     fused::delta_commit_batch(
                         (&mut state).partition([1, D, selected]),

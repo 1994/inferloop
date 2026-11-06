@@ -8,7 +8,6 @@ use cutile::prelude::*;
 use infer_cuda_kernels::tile::attention::{
     TileAttention, grouped_options, pooled_device as kernels,
 };
-use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 use std::result::Result as StdResult;
 use std::slice::from_ref;
@@ -246,7 +245,7 @@ impl Fixture {
         self.reference(device, &lane_metadata, window, &mut expected)?;
         let [keys, values] = &self.candidate;
         let family = TileAttention::new(device.ordinal());
-        let candidate = Graph::scope(&device.stream, |scope| {
+        let candidate = device.tile().capture(|scope| {
             let recording = scope;
             work.append(
                 &family,
@@ -324,7 +323,7 @@ impl Fixture {
         let mut sums = api::zeros::<f32>(&[KV * PARTS, STACKED_ROWS]).sync_on(&device.stream)?;
         let [keys, values] = &mut self.original;
         let physical = self.slots * self.capacity;
-        let reference = Graph::scope(&device.stream, |scope| {
+        let reference = device.tile().capture(|scope| {
             for (lane, metadata) in lane_metadata.iter().enumerate() {
                 let range = lane * KV * DIM..(lane + 1) * KV * DIM;
                 cutile(scope)?.record(

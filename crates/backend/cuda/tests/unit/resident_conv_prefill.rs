@@ -4,7 +4,6 @@ use crate::resident::buffers::cutile;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
-use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 
 fn values(count: usize, salt: usize) -> Vec<f32> {
@@ -115,7 +114,7 @@ fn parallel_conv_performance() -> Result<(), Box<dyn Error>> {
         let mut h2 = api::zeros::<f32>(&[channels]).sync_on(&device.stream)?;
         let metadata = device.upload(vec![0, i32::try_from(lanes)?, 0, 0], &[4])?;
         let row_meta = device.upload(vec![0, 0, 1, 0], &[4])?;
-        let candidate = Graph::scope(&device.stream, |scope| {
+        let candidate = device.tile().capture(|scope| {
             cutile(scope)?.record(kernels::forward(
                 (&mut out).partition([1, 128]),
                 &h0,
@@ -142,7 +141,7 @@ fn parallel_conv_performance() -> Result<(), Box<dyn Error>> {
         let mut outputs = (0..lanes)
             .map(|_| api::zeros::<f32>(&[channels]).sync_on(&device.stream))
             .collect::<Result<Vec<_>, _>>()?;
-        let baseline = Graph::scope(&device.stream, |scope| {
+        let baseline = device.tile().capture(|scope| {
             for (output, input) in outputs.iter_mut().zip(&inputs) {
                 cutile(scope)?.record(super::super::recurrent::recurrent::conv4(
                     output.partition([128]),

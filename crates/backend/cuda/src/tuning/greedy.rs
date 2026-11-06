@@ -234,8 +234,7 @@ impl Captured {
         tile: usize,
     ) -> Result<Self> {
         let greedy = Greedy::new(device, shape[0], shape[1], tile)?;
-        let graph = Graph::scope(&device.stream, |scope| greedy.record(scope, input))
-            .map_err(device_error)?;
+        let graph = device.tile().capture(|scope| greedy.record(scope, input))?;
         Ok(Self { graph, greedy })
     }
     fn verify(&self, device: &CudaDevice, expected: &[u32]) -> Result<()> {

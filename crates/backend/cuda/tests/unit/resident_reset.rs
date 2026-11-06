@@ -2,7 +2,6 @@
 use super::buffer;
 use crate::device::{CudaDevice, device_error};
 use cutile::prelude::*;
-use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 
 #[test]
@@ -14,7 +13,7 @@ fn captured_reset_clears_every_state_shape() -> Result<(), Box<dyn Error>> {
         let elements = shape.iter().product();
         let mut tensor = api::zeros::<f32>(&shape).sync_on(&device.stream)?;
         let source = device.upload(vec![7.25f32; elements], &shape)?;
-        let reset = Graph::scope(&device.stream, |scope| {
+        let reset = device.tile().capture(|scope| {
             kernels
                 .state
                 .clear(scope, buffer(&tensor)?)

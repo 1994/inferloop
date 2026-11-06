@@ -487,7 +487,7 @@ impl Captured {
             None
         };
         let contract = device.kernels();
-        let graph = Graph::scope(&device.stream, |scope| {
+        let graph = device.tile().capture(|scope| {
             contract
                 .projection
                 .quantize_fp8(
@@ -514,8 +514,7 @@ impl Captured {
             } else {
                 choice.record((&contract, recording), support, gemm, scales)
             }
-        })
-        .map_err(device_error)?;
+        })?;
         Ok(Self {
             graph,
             output,

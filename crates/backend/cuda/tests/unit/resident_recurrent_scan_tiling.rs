@@ -64,7 +64,7 @@ fn capture(
 ) -> TestResult<Graph> {
     let [kh, vh, lanes] = input.shape;
     let qkv = input.qkv.view(&[lanes, 2 * kh + vh, DIM])?;
-    let graph = Graph::scope(&device.stream, |scope| {
+    let graph = device.tile().capture(|scope| {
         cutile(scope)?.record(baseline::reset(
             (&mut *state).partition([1, DIM, 32]),
             &input.initial,

@@ -425,7 +425,7 @@ fn capture_pair(
     let input_view = input.view(&[usize::try_from(input.shape()[0])?, pair.columns])?;
     let input_pointer = pointer(input);
     workspace.begin_quant_capture();
-    let graph = Graph::scope(&device.stream, |scope| {
+    let graph = device.tile().capture(|scope| {
         for (index, output) in [(0, &mut *gate), (1, &mut *up)] {
             workspace.enter_quant_node(index, plan.role(index));
             let id = pair.graph.nodes[index].inputs[1];

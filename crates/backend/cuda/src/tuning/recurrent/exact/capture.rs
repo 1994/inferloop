@@ -61,7 +61,7 @@ impl Captured {
         if simt && !contract.recurrent.prepare_simt_delta(shape)? {
             return Err(Error::invalid("no SIMT recurrence build covers this shape"));
         }
-        Graph::scope(&device.stream, |scope| {
+        device.tile().capture(|scope| {
             let recording = scope;
             recording
                 .copy(self.state.operand(), buffer(&self.initial)?)
@@ -120,7 +120,6 @@ impl Captured {
                 )
                 .map_err(|error| device_error(error.to_string()))
         })
-        .map_err(device_error)
     }
     pub fn run(&self, device: &CudaDevice, graph: &Graph) -> Result<[Vec<f32>; 2]> {
         device.tile().sync(graph.launch())?;

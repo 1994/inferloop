@@ -252,19 +252,19 @@ fn limited_cases(loaded: &LoadedModel, rows: usize, limit: usize) -> TestResult<
 fn run_group(loaded: &LoadedModel, rows: usize) -> TestResult {
     let device = loaded.device();
     let mut cases = cases(loaded, rows)?;
-    let reference = Graph::scope(&device.stream, |scope| {
+    let reference = device.tile().capture(|scope| {
         for case in &mut cases {
             case.reference(scope)?;
         }
         Ok(())
     })?;
-    let old = Graph::scope(&device.stream, |scope| {
+    let old = device.tile().capture(|scope| {
         for case in &mut cases {
             case.original(scope)?;
         }
         Ok(())
     })?;
-    let new = Graph::scope(&device.stream, |scope| {
+    let new = device.tile().capture(|scope| {
         for case in &mut cases {
             case.candidate(scope)?;
         }
@@ -362,25 +362,25 @@ fn probe_rows(loaded: &LoadedModel, rows: usize) -> TestResult {
     let device = loaded.device();
     let mut cases = limited_cases(loaded, rows, 2)?;
     assert_eq!(cases.len(), 2);
-    let reference = Graph::scope(&device.stream, |scope| {
+    let reference = device.tile().capture(|scope| {
         for case in &mut cases {
             case.reference(scope)?;
         }
         Ok(())
     })?;
-    let gemv = Graph::scope(&device.stream, |scope| {
+    let gemv = device.tile().capture(|scope| {
         for case in &mut cases {
             case.candidate(scope)?;
         }
         Ok(())
     })?;
-    let shared = Graph::scope(&device.stream, |scope| {
+    let shared = device.tile().capture(|scope| {
         for case in &mut cases {
             case.shared(scope)?;
         }
         Ok(())
     })?;
-    let native = Graph::scope(&device.stream, |scope| {
+    let native = device.tile().capture(|scope| {
         for case in &mut cases {
             case.original(scope)?;
         }
@@ -492,8 +492,11 @@ fn checkpoint_selector_measures_and_reuses_complete_choices() -> TestResult {
             .ok_or("complete crossover evidence absent")?;
         assert!(entry.valid());
         assert_eq!(entry.selected, selected);
-        let reference = Graph::scope(&loaded.device().stream, |scope| case.reference(scope))?;
-        let graph = Graph::scope(&loaded.device().stream, |scope| {
+        let reference = loaded
+            .device()
+            .tile()
+            .capture(|scope| case.reference(scope))?;
+        let graph = loaded.device().tile().capture(|scope| {
             selected.record(
                 (&loaded.weights.kernels, scope),
                 &case.weight,

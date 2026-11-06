@@ -1,5 +1,4 @@
 use super::*;
-use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::Sampling;
 
 #[test]
@@ -41,8 +40,9 @@ fn greedy_matches_host_total_order_across_tiles_and_padding() -> Result<()> {
         let logits = device.upload(inputs, &[6, vocabulary])?;
         for tile in TILE_SEARCH {
             let greedy = Greedy::new(&device, 6, vocabulary, tile)?;
-            let graph = Graph::scope(&device.stream, |scope| greedy.record(scope, &logits))
-                .map_err(device_error)?;
+            let graph = device
+                .tile()
+                .capture(|scope| greedy.record(scope, &logits))?;
             graph
                 .launch()
                 .sync_on(&device.stream)
@@ -68,8 +68,9 @@ fn greedy_rejects_nonfinite_values_outside_the_winning_block() -> Result<()> {
         let logits = device.upload(values, &[1, 4097])?;
         for tile in TILE_SEARCH {
             let greedy = Greedy::new(&device, 1, 4097, tile)?;
-            let graph = Graph::scope(&device.stream, |scope| greedy.record(scope, &logits))
-                .map_err(device_error)?;
+            let graph = device
+                .tile()
+                .capture(|scope| greedy.record(scope, &logits))?;
             graph
                 .launch()
                 .sync_on(&device.stream)
@@ -98,13 +99,12 @@ fn greedy_scattered_rows_preserve_offsets_and_invalid_inactive_rows() -> Result<
             .map(|_| Greedy::new(&device, 1, vocabulary, tile))
             .collect::<Result<Vec<_>>>()?;
         let output = device.runtime().zeros::<i32>(7 * 2)?;
-        let graph = Graph::scope(&device.stream, |scope| {
+        let graph = device.tile().capture(|scope| {
             for (index, (selector, input)) in selectors.iter_mut().zip(&logits).enumerate() {
                 selector.record_into(scope, input, &output, index * 3)?;
             }
             Ok(())
-        })
-        .map_err(device_error)?;
+        })?;
         graph
             .launch()
             .sync_on(&device.stream)
@@ -121,10 +121,10 @@ fn greedy_scattered_rows_preserve_offsets_and_invalid_inactive_rows() -> Result<
             assert_eq!(&pairs[row * 2..row * 2 + 2], &[0, 0]);
         }
         assert!(
-            Graph::scope(&device.stream, |scope| {
-                selectors[0].record_into(scope, &logits[0], &output, 7)
-            })
-            .is_err()
+            device
+                .tile()
+                .capture(|scope| { selectors[0].record_into(scope, &logits[0], &output, 7) })
+                .is_err()
         );
     }
     let mut values = vec![-1.0; 3 * vocabulary];
@@ -133,8 +133,9 @@ fn greedy_scattered_rows_preserve_offsets_and_invalid_inactive_rows() -> Result<
     values[2 * vocabulary + 256] = 10.0;
     let logits = device.upload(values, &[3, vocabulary])?;
     let selector = Greedy::new(&device, 3, vocabulary, 256)?;
-    let graph = Graph::scope(&device.stream, |scope| selector.record(scope, &logits))
-        .map_err(device_error)?;
+    let graph = device
+        .tile()
+        .capture(|scope| selector.record(scope, &logits))?;
     graph
         .launch()
         .sync_on(&device.stream)

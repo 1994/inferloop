@@ -144,10 +144,9 @@ impl Captured {
         };
         let operands = Operands::new(device, f)?;
         let contract = device.kernels();
-        let graph = Graph::scope(&device.stream, |scope| {
-            operands.record(&contract, scope, f, choice, support.as_ref())
-        })
-        .map_err(device_error)?;
+        let graph = device
+            .tile()
+            .capture(|scope| operands.record(&contract, scope, f, choice, support.as_ref()))?;
         Ok(Self {
             graph,
             operands,

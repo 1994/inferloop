@@ -226,7 +226,7 @@ fn capture(
     let input = runtime.upload(values)?;
     let output = runtime.zeros(rows)?;
     let kernels = device.kernels();
-    let graph = Graph::scope(&device.stream, |scope| {
+    let graph = device.tile().capture(|scope| {
         weight.record(
             &kernels,
             scope,
@@ -235,8 +235,7 @@ fn capture(
             columns,
             tile,
         )
-    })
-    .map_err(device_error)?;
+    })?;
     Ok(Probe {
         graph,
         output,

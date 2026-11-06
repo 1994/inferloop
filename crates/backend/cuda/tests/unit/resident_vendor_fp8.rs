@@ -376,19 +376,19 @@ fn compare_case(
         weight.k
     );
 
-    let quantizer = Graph::scope(&device.stream, |scope| inputs.quantize(scope))?;
+    let quantizer = device.tile().capture(|scope| inputs.quantize(scope))?;
     quantizer.launch().sync_on(&device.stream)?;
-    let native_raw = Graph::scope(&device.stream, |scope| {
-        inputs.matmul(scope, &mut native, false)
-    })?;
-    let vendor_raw = Graph::scope(&device.stream, |scope| {
-        inputs.matmul(scope, &mut vendor, true)
-    })?;
-    let native_total = Graph::scope(&device.stream, |scope| {
+    let native_raw = device
+        .tile()
+        .capture(|scope| inputs.matmul(scope, &mut native, false))?;
+    let vendor_raw = device
+        .tile()
+        .capture(|scope| inputs.matmul(scope, &mut vendor, true))?;
+    let native_total = device.tile().capture(|scope| {
         inputs.quantize(scope)?;
         inputs.matmul(scope, &mut native, false)
     })?;
-    let vendor_total = Graph::scope(&device.stream, |scope| {
+    let vendor_total = device.tile().capture(|scope| {
         inputs.quantize(scope)?;
         inputs.matmul(scope, &mut vendor, true)
     })?;
@@ -589,7 +589,7 @@ fn vendor_fp8_verified_chooser_checkpoint_comparison() -> TestResult {
             );
             let baseline = api::zeros::<f32>(&[rows, weight.n]).sync_on(&device.stream)?;
             let output = api::zeros::<f32>(&[rows, weight.n]).sync_on(&device.stream)?;
-            let base = Graph::scope(&device.stream, |scope| {
+            let base = device.tile().capture(|scope| {
                 inputs.quantize(scope)?;
                 Choice::baseline(rows).record(
                     (&device.kernels(), scope),
@@ -598,7 +598,7 @@ fn vendor_fp8_verified_chooser_checkpoint_comparison() -> TestResult {
                     inputs.factors()?,
                 )
             })?;
-            let candidate = Graph::scope(&device.stream, |scope| {
+            let candidate = device.tile().capture(|scope| {
                 inputs.quantize(scope)?;
                 choice.record(
                     (&device.kernels(), scope),
@@ -632,7 +632,7 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
     let mut inputs = Inputs::new(&device, &weight, 128)?;
     let mut native = api::zeros::<f32>(&[128, 128]).sync_on(&device.stream)?;
     let restored_output = api::zeros::<f32>(&[128, 128]).sync_on(&device.stream)?;
-    let quantizer = Graph::scope(&device.stream, |scope| inputs.quantize(scope))?;
+    let quantizer = device.tile().capture(|scope| inputs.quantize(scope))?;
     quantizer.launch().sync_on(&device.stream)?;
     let configs =
         inputs
@@ -662,13 +662,13 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
             Arc::strong_count(weight.device_scales.tensor()),
         ]
     };
-    let native_graph = Graph::scope(&device.stream, |scope| {
+    let native_graph = device.tile().capture(|scope| {
         inputs.quantize(scope)?;
         inputs.matmul(scope, &mut native, false)
     })?;
     // Counted after the native graph, whose reference kernel holds its own view of the weight.
     let before = held(&weight);
-    let restored_graph = Graph::scope(&device.stream, |scope| {
+    let restored_graph = device.tile().capture(|scope| {
         inputs.quantize(scope)?;
         if !restored.record_config(
             scope,

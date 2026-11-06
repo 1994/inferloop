@@ -4,7 +4,6 @@ use crate::resident::buffers::buffer;
 use crate::resident::buffers::cutile;
 use cutile::prelude::*;
 use infer_core::Result;
-use infer_cuda_kernels::tile::runtime::Graph;
 use std::time::Instant;
 
 #[test]
@@ -18,11 +17,10 @@ fn metadata_ordering_and_overhead() -> Result<()> {
     let mut output = api::zeros::<i32>(&[4])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let graph = Graph::scope(&device.stream, |scope| {
+    let graph = device.tile().capture(|scope| {
         cutile(scope)?.record(api::memcpy(&mut output, &input))?;
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     let output = Arc::new(output);
     // Alternating fields check stale updates, negative inactive lanes and MTP flags.
     for values in [
@@ -96,11 +94,10 @@ fn rotary_metadata_preserves_independent_axes() -> Result<()> {
     let mut output = api::zeros::<i32>(&[8])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let graph = Graph::scope(&device.stream, |scope| {
+    let graph = device.tile().capture(|scope| {
         cutile(scope)?.record(api::memcpy(&mut output, &input))?;
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     let output = Arc::new(output);
     for (control, coordinates) in [
         ([4, 17, 81, 1], [4, 9, 14]),

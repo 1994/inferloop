@@ -141,7 +141,7 @@ impl Fixture {
     }
 
     fn original(&self, device: &CudaDevice) -> TestResult<Graph> {
-        Ok(Graph::scope(&device.stream, |scope| {
+        Ok(device.tile().capture(|scope| {
             for index in [1, 2] {
                 let node = &self.graph.nodes[index];
                 let output_slot = self.arena.slot(node.outputs[0]).map_err(capture_error)?;
@@ -172,7 +172,7 @@ impl Fixture {
     fn candidate(&self, device: &CudaDevice) -> TestResult<Graph> {
         let plan = DensePlan::new(&self.graph, None);
         assert_eq!(plan.pair(1), Some(2));
-        Ok(Graph::scope(&device.stream, |scope| {
+        Ok(device.tile().capture(|scope| {
             let profile = device.profile().map_err(capture_error)?;
             if !prefill_projection::record_pair(
                 scope,

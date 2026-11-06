@@ -2,7 +2,6 @@ use super::*;
 use crate::device::{CudaDevice, device_error};
 use crate::resident::tensor_buffer;
 use cutile::prelude::*;
-use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 use std::result::Result;
 use std::time::Instant;
@@ -117,7 +116,7 @@ fn gemm_bf16_replays_inside_a_captured_graph() -> Result<(), Box<dyn Error>> {
         tensor_buffer(&out)?,
     )?;
     device.reclaim_barrier()?;
-    let graph = Graph::scope(&device.stream, |scope| {
+    let graph = device.tile().capture(|scope| {
         let op = GemmBf16::new(
             context,
             [rows, columns, contraction],
@@ -129,8 +128,7 @@ fn gemm_bf16_replays_inside_a_captured_graph() -> Result<(), Box<dyn Error>> {
         scope
             .foreign(op, Vec::new())
             .map_err(|error| device_error(error.to_string()))
-    })
-    .map_err(device_error)?;
+    })?;
     graph
         .launch()
         .sync_on(&device.stream)
