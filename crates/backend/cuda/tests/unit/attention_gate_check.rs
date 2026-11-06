@@ -5,7 +5,7 @@ use crate::resident::buffers::buffer;
 use crate::vision::program::{AttentionMode, attention_kernel, attention_tiles};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::contract::{DenseBuffers, Recording};
+use infer_cuda_kernels::contract::DenseBuffers;
 use infer_cuda_kernels::tile::attention::TileAttention;
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_kernel_api::attention::{AttentionDescriptor, AttentionMask};
@@ -157,7 +157,7 @@ fn dense(device: &CudaDevice, case: &Case, q: &[f32], k: &[f32], v: &[f32]) -> R
         .map_err(device_error)?;
     let family = TileAttention::new(device.ordinal());
     let graph = Graph::scope(&device.stream, |scope| {
-        let recording = Recording::scope(scope);
+        let recording = scope;
         let buffers = DenseBuffers {
             out: buffer(&out)?,
             query: buffer(q.as_ref())?,
@@ -165,7 +165,7 @@ fn dense(device: &CudaDevice, case: &Case, q: &[f32], k: &[f32], v: &[f32]) -> R
             value: buffer(v.as_ref())?,
         };
         for _ in 0..super::benchmark::REPEATS {
-            plan.record(&family, &recording, buffers)?;
+            plan.record(&family, recording, buffers)?;
         }
         Ok(())
     })

@@ -3,7 +3,7 @@ use crate::device::{CudaDevice, device_error};
 use crate::resident::buffers::buffer;
 use cutile::prelude::*;
 use infer_core::Result;
-use infer_cuda_kernels::contract::{DenseBuffers, Recording};
+use infer_cuda_kernels::contract::DenseBuffers;
 use infer_cuda_kernels::tile::attention::TileAttention;
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_kernel_api::attention::{AttentionDescriptor, AttentionMask};
@@ -74,14 +74,14 @@ fn dense_attention_supports_distinct_qk_and_value_dimensions() -> Result<()> {
         .map_err(device_error)?;
     let family = TileAttention::new(device.ordinal());
     let graph = Graph::scope(&device.stream, |scope| {
-        let recording = Recording::scope(scope);
+        let recording = scope;
         let buffers = DenseBuffers {
             out: buffer(&out)?,
             query: buffer(q.as_ref())?,
             key: buffer(k.as_ref())?,
             value: buffer(v.as_ref())?,
         };
-        plan.record(&family, &recording, buffers)
+        plan.record(&family, recording, buffers)
     })
     .map_err(device_error)?;
     graph

@@ -1,5 +1,6 @@
 use super::kernels;
 use crate::device::CudaDevice;
+use crate::resident::buffers::cutile;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
@@ -115,7 +116,7 @@ fn parallel_conv_performance() -> Result<(), Box<dyn Error>> {
         let metadata = device.upload(vec![0, i32::try_from(lanes)?, 0, 0], &[4])?;
         let row_meta = device.upload(vec![0, 0, 1, 0], &[4])?;
         let candidate = Graph::scope(&device.stream, |scope| {
-            scope.record(kernels::forward(
+            cutile(scope)?.record(kernels::forward(
                 (&mut out).partition([1, 128]),
                 &h0,
                 &h1,
@@ -124,7 +125,7 @@ fn parallel_conv_performance() -> Result<(), Box<dyn Error>> {
                 &w,
                 &metadata,
             ))?;
-            scope.record(kernels::commit(
+            cutile(scope)?.record(kernels::commit(
                 (&mut h0).partition([128]),
                 (&mut h1).partition([128]),
                 (&mut h2).partition([128]),
@@ -143,7 +144,7 @@ fn parallel_conv_performance() -> Result<(), Box<dyn Error>> {
             .collect::<Result<Vec<_>, _>>()?;
         let baseline = Graph::scope(&device.stream, |scope| {
             for (output, input) in outputs.iter_mut().zip(&inputs) {
-                scope.record(super::super::recurrent::recurrent::conv4(
+                cutile(scope)?.record(super::super::recurrent::recurrent::conv4(
                     output.partition([128]),
                     (&mut h0).partition([128]),
                     (&mut h1).partition([128]),

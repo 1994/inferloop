@@ -97,7 +97,7 @@ pub(super) fn allocate(
 }
 
 pub(super) fn record(
-    scope: &Scope,
+    scope: &Recording<'_>,
     node: &TensorNode,
     lanes: &[Lane],
     weights: &ProgramWeights,
@@ -115,11 +115,11 @@ pub(super) fn record(
     let width = lanes.len();
     let columns = input.len() / width;
     let kernels = &weights.kernels.projection;
-    let recording = Recording::scope(scope);
+    let recording = scope;
     if width == FUSED_VERIFY_LANES {
         kernels
             .pack_three(
-                &recording,
+                recording,
                 columns,
                 input.operand(),
                 [
@@ -133,7 +133,7 @@ pub(super) fn record(
         for (row, lane) in lanes.iter().enumerate() {
             kernels
                 .pack_row(
-                    &recording,
+                    recording,
                     (width, columns),
                     input.operand(),
                     lane_input(weights, node, lane)?,
@@ -166,7 +166,7 @@ pub(super) fn record(
     if let &[first, second, third] = outputs.as_slice() {
         kernels
             .unpack_three(
-                &recording,
+                recording,
                 packed_columns,
                 [first, second, third],
                 output.operand(),
@@ -176,7 +176,7 @@ pub(super) fn record(
         for (row, &target) in outputs.iter().enumerate() {
             kernels
                 .unpack_row(
-                    &recording,
+                    recording,
                     (width, packed_columns),
                     target,
                     output.operand(),
@@ -192,7 +192,7 @@ pub(super) fn record(
 /// lane, so the fused GEMV reads the `[lanes, K]` slot in place and stores straight into
 /// the reshaped `[lanes, N]` output slot — the pack and unpack copies disappear.
 pub(super) fn record_slots(
-    scope: &Scope,
+    scope: &Recording<'_>,
     node: &TensorNode,
     arena: &super::ActivationArena,
     weights: &ProgramWeights,
@@ -272,7 +272,7 @@ pub(super) fn record_slots(
 /// Project an already gathered `[rows, columns]` matrix into `output`; `arithmetic_rows` is
 /// the row count the kernel choice prices.
 pub(super) fn record_rows(
-    (kernels, scope): (&Kernels, &Scope),
+    (kernels, scope): (&Kernels, &Recording<'_>),
     nvfp4: &mut super::nvfp4_gemm::Workspace,
     weight: &ProjectionWeight,
     input_scale: Option<super::program::ActivationQuantization>,
@@ -309,7 +309,7 @@ pub(super) fn record_rows(
         return kernels
             .projection
             .dense(
-                &Recording::scope(scope),
+                scope,
                 &DenseRowsPlan {
                     kernel: DenseKernel::Compensated,
                     rows,
@@ -339,7 +339,7 @@ pub(super) fn record_rows(
     kernels
         .projection
         .rows(
-            &Recording::scope(scope),
+            scope,
             &RowsPlan {
                 kernel,
                 rows,
@@ -368,7 +368,7 @@ fn lane_input<'a>(
 /// Reuse the private GEMV tile to keep its F32 accumulation and reduction order.
 #[cfg(test)]
 fn record_pool_small_f32(
-    scope: &Scope,
+    scope: &Recording<'_>,
     node: &TensorNode,
     weights: &ProgramWeights,
     weight: &ProjectionWeight,
@@ -397,7 +397,7 @@ fn record_pool_small_f32(
         .kernels
         .projection
         .linear_rows(
-            &Recording::scope(scope),
+            scope,
             &LinearRowsPlan {
                 rows,
                 row_tile: CB_DECODE_SLOTS,

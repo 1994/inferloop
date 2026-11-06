@@ -1,5 +1,6 @@
 use super::{kernels, tests::reference_fixture};
 use crate::device::{CudaDevice, device_error};
+use crate::resident::buffers::cutile;
 use crate::resident::tensor_buffer;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
@@ -142,7 +143,7 @@ fn check(
     let graph = Graph::scope(&device.stream, |scope| {
         record_simt(
             function,
-            &Recording::scope(scope),
+            scope,
             shape,
             [
                 &rust_state,
@@ -254,12 +255,12 @@ impl Cost {
         let width = self.width;
         let shape = rust.map(|kernels| simt(kernels, width)).transpose()?;
         Graph::scope(&device.stream, |scope| {
-            scope.record(api::memcpy(&mut self.state, &self.initial))?;
-            scope.record(
+            cutile(scope)?.record(api::memcpy(&mut self.state, &self.initial))?;
+            cutile(scope)?.record(
                 kernels::normalize_shared((&mut self.normalized).partition([1, 1, DIM]), &self.qkv)
                     .generics(vec![KH.to_string(), DIM.to_string()]),
             )?;
-            scope.record(kernels::gates_shared(
+            cutile(scope)?.record(kernels::gates_shared(
                 (&mut self.betas).partition([1, 1]),
                 (&mut self.decays).partition([1, 1]),
                 &self.beta,
@@ -270,7 +271,7 @@ impl Cost {
             if let (Some(kernels), Some(shape)) = (rust, shape) {
                 record_simt(
                     kernels,
-                    &Recording::scope(scope),
+                    scope,
                     shape,
                     [
                         &self.state,
@@ -283,7 +284,7 @@ impl Cost {
                     &self.metadata,
                 )?;
             } else {
-                scope.record(
+                cutile(scope)?.record(
                     kernels::delta_precomputed(
                         (&mut self.state).partition([1, DIM, 16]),
                         (&mut self.scratch).partition([1, width, 16]),
@@ -302,7 +303,7 @@ impl Cost {
                     ]),
                 )?;
             }
-            scope.record(
+            cutile(scope)?.record(
                 kernels::transpose((&mut self.output).partition([1, 1, DIM]), &self.scratch)
                     .generics(vec![DIM.to_string()]),
             )?;

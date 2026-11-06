@@ -425,7 +425,11 @@ impl Support {
         Ok(true)
     }
     /// False records nothing. Errors after append abort the containing capture.
-    pub(crate) fn record(&self, scope: &Scope, op: &Operands<'_>) -> Result<bool, DeviceError> {
+    pub(crate) fn record(
+        &self,
+        scope: &Recording<'_>,
+        op: &Operands<'_>,
+    ) -> Result<bool, DeviceError> {
         let Some(context) = &self.context else {
             return Ok(false);
         };
@@ -533,7 +537,7 @@ fn capture(
     })
 }
 fn append(
-    (kernels, scope): (&Kernels, &Scope),
+    (kernels, scope): (&Kernels, &Recording<'_>),
     context: &Arc<Context>,
     prepared: &Arc<Prepared>,
     op: &Operands<'_>,
@@ -544,13 +548,7 @@ fn append(
     };
     kernels
         .projection
-        .swizzle_fp4_scales(
-            &Recording::scope(scope),
-            &scale_plan(shape),
-            op.scratch,
-            scales,
-            op.qs,
-        )
+        .swizzle_fp4_scales(scope, &scale_plan(shape), op.scratch, scales, op.qs)
         .map_err(|e| error(e.to_string()))?;
     // The Lt node is consumed during capture, so the graph holds what it reads instead.
     let mut keep = owners([
@@ -563,7 +561,7 @@ fn append(
     ]);
     let handles: [Owner; 2] = [context.clone(), prepared.clone()];
     keep.extend(handles);
-    Recording::scope(scope)
+    scope
         .foreign(
             Fp4Node {
                 context: context.clone(),

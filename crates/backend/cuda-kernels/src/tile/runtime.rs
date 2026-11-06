@@ -453,11 +453,22 @@ pub struct Graph {
 }
 
 impl Graph {
-    /// Capture a graph whose recording still uses cuTile directly. Transitional, until recordings
-    /// move behind the kernel families and [`Device::capture`].
+    /// Capture a graph whose caller keeps every buffer it records alive, as resident programs do.
+    /// Transitional, until those recordings move to [`Device::capture`], whose graph holds them.
     /// # Errors
     /// Returns what `record` returns, or a capture failure.
     pub fn scope(
+        stream: &Arc<Stream>,
+        record: impl FnOnce(&Recording<'_>) -> StdResult<(), DeviceError>,
+    ) -> StdResult<Self, DeviceError> {
+        Ok(Self {
+            inner: CudaGraph::scope(stream, |scope| record(&Recording::scope(scope)))?,
+            _owners: Vec::new(),
+        })
+    }
+
+    /// Capture cuTile launches recorded inside this crate, whose caller keeps the memory alive.
+    pub(crate) fn cutile(
         stream: &Arc<Stream>,
         record: impl FnOnce(&Scope) -> StdResult<(), DeviceError>,
     ) -> StdResult<Self, DeviceError> {

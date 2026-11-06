@@ -403,8 +403,10 @@ fn check_tiled_decode(
 }
 
 // Actual Qwen attention geometry, rather than the smaller F32-only fixture above.
+use crate::resident::buffers::cutile;
 use cuda_core::f8e4m3fn;
 use cutile::bench::{BenchOptions, do_bench_paired};
+use infer_cuda_kernels::contract::Recording;
 use std::time::Duration;
 
 type NumericResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -601,11 +603,11 @@ impl ChunkFixture {
 
     fn record_append(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         keys: &mut Tensor<f8e4m3fn>,
         values: &mut Tensor<f8e4m3fn>,
     ) -> Result<(), DeviceError> {
-        scope.record(
+        cutile(scope)?.record(
             kernels::append(
                 keys.partition([1, MODEL_CAPACITY, MODEL_DIM]),
                 values.partition([1, MODEL_CAPACITY, MODEL_DIM]),
@@ -630,7 +632,7 @@ impl ChunkFixture {
 
     fn record_compute(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         output: &mut Tensor<f32>,
         cache: (&Tensor<f8e4m3fn>, &Tensor<f8e4m3fn>),
         variant: AttentionVariant,
@@ -643,7 +645,7 @@ impl ChunkFixture {
                 let query = self
                     .query
                     .view(&[self.case.lanes * MODEL_HEADS, MODEL_DIM])?;
-                scope.record(
+                cutile(scope)?.record(
                     kernels::decode(
                         output.partition([1, MODEL_DIM]),
                         &query,
@@ -666,7 +668,7 @@ impl ChunkFixture {
             }
             AttentionVariant::Tiled { qt, bound } => {
                 let scale = 1.0 / f32::from(u16::try_from(MODEL_DIM).unwrap()).sqrt();
-                scope.record(
+                cutile(scope)?.record(
                     kernels::decode_tiled(
                         output.partition([qt, MODEL_DIM]),
                         &self.query,

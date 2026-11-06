@@ -9,7 +9,7 @@ use crate::constants::WIDE_PREFILL_LANES;
 use cutile::prelude::*;
 use infer_cuda_kernels::contract::{
     AppendBuffers, Buffer, DecodeBuffers, DecodePlan, KvBuffers, KvCache, PrefillAppendPlan,
-    PrefillDecodePlan, Recording,
+    PrefillDecodePlan,
 };
 use infer_ir::{TensorNode, TensorOp};
 
@@ -69,17 +69,17 @@ impl Capture<'_> {
             metadata: self.metadata,
             table: self.table,
         };
-        let recording = Recording::scope(self.scope);
+        let recording = self.scope;
         if self.attention.supports(query_heads, head_dim)
             && window.is_none_or(|w| w >= ATTENTION_SPLIT_THRESHOLD)
         {
             self.attention
-                .record(&*self.weights.kernels.attention, &recording, plan, buffers)?;
+                .record(&*self.weights.kernels.attention, recording, plan, buffers)?;
         } else {
             self.weights
                 .kernels
                 .attention
-                .decode(&recording, plan, buffers)
+                .decode(recording, plan, buffers)
                 .map_err(error)?;
         }
         Ok(())
@@ -91,7 +91,7 @@ impl Capture<'_> {
             .kernels
             .attention
             .append(
-                &Recording::scope(self.scope),
+                self.scope,
                 AppendBuffers {
                     cache,
                     keys: self.input_buffer(node.inputs[1])?,
@@ -126,7 +126,7 @@ impl Capture<'_> {
             .kernels
             .attention
             .append_prefill(
-                &Recording::scope(self.scope),
+                self.scope,
                 PrefillAppendPlan {
                     lanes,
                     rows: append_rows,
@@ -171,17 +171,17 @@ impl Capture<'_> {
             metadata: self.metadata,
             table: self.table,
         };
-        let recording = Recording::scope(self.scope);
+        let recording = self.scope;
         if let Some((mma, variant)) = self.attention.prefill_mma(node.outputs[0], lanes) {
             if mma.accepts(&buffers, geometry, window) {
-                mma.record(&recording, buffers, geometry, window, variant)?;
+                mma.record(recording, buffers, geometry, window, variant)?;
                 return Ok(());
             }
             tracing::info!(target: "infer::capture", lanes, "selected MMA does not fit this pool");
         }
         if let Some(oxide) = self.attention.prefill_oxide(node.outputs[0], lanes) {
             if oxide.accepts(&buffers, geometry) {
-                oxide.record(&recording, buffers, geometry, window)?;
+                oxide.record(recording, buffers, geometry, window)?;
                 return Ok(());
             }
             tracing::info!(target: "infer::capture", lanes, "selected SIMT does not fit this pool");
@@ -222,15 +222,15 @@ impl Capture<'_> {
             table: self.table,
         };
         let fp8 = matches!(cache.buffers, KvBuffers::Fp8 { .. });
-        let recording = Recording::scope(self.scope);
+        let recording = self.scope;
         let attention = &self.weights.kernels.attention;
         // Query/head axes remain separate so each CTA addresses its own KV head.
         // Selection was measured and independently checked before graph capture.
         self.attention
             .prefill_query_tile(node.outputs[0], lanes, fp8)
             .map_or_else(
-                || attention.decode_prefill(&recording, plan, buffers),
-                |tile| attention.decode_prefill_tiled(&recording, plan, tile, buffers),
+                || attention.decode_prefill(recording, plan, buffers),
+                |tile| attention.decode_prefill_tiled(recording, plan, tile, buffers),
             )
             .map_err(error)?;
         Ok(())

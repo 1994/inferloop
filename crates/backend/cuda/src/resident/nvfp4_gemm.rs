@@ -6,7 +6,7 @@ mod workspace;
 use crate::mlp::ProjectionWeight as MlpProjectionWeight;
 use crate::resident::buffers::RowMajor;
 use cutile::prelude::DeviceError;
-use cutile::prelude::Scope;
+use infer_cuda_kernels::contract::Recording;
 use infer_cuda_kernels::contract::{Buffer, Kernels};
 pub use quant_reuse::QuantPairPlan;
 #[cfg(test)]
@@ -15,7 +15,7 @@ pub use workspace::Workspace;
 
 /// Record only when the checkpoint declares an activation scale for packed FP4 weights.
 pub(super) fn record(
-    target: (&Kernels, &Scope),
+    target: (&Kernels, &Recording<'_>),
     workspace: &mut Workspace,
     weight: &MlpProjectionWeight,
     input_scale: Option<super::program::ActivationQuantization>,
@@ -38,7 +38,7 @@ pub(super) fn record(
 
 /// [`record`] for a whole matrix, whose quantized activations a sibling projection may reuse.
 pub(super) fn record_certified(
-    target: (&Kernels, &Scope),
+    target: (&Kernels, &Recording<'_>),
     workspace: &mut Workspace,
     weight: &MlpProjectionWeight,
     input_scale: Option<super::program::ActivationQuantization>,
@@ -63,7 +63,7 @@ pub(super) fn record_certified(
     reason = "One dispatcher preserves both certified and legacy projection contracts"
 )]
 fn record_input(
-    target: (&Kernels, &Scope),
+    target: (&Kernels, &Recording<'_>),
     workspace: &mut Workspace,
     weight: &MlpProjectionWeight,
     input_scale: Option<super::program::ActivationQuantization>,

@@ -1,5 +1,6 @@
 use super::kernels;
 use crate::device::CudaDevice;
+use crate::resident::buffers::cutile;
 use cuda_core::f8e4m3fn;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
@@ -278,7 +279,7 @@ fn fp8_small_m_split_k_preserves_values_and_measures_better() -> Result<(), Box<
         let windows = k.div_ceil(128);
         let k_tiles = i32::try_from(windows.div_ceil(splits)).unwrap();
         let baseline = Graph::scope(&device.stream, |scope| {
-            scope.record(
+            cutile(scope)?.record(
                 kernels::matmul(
                     (&mut output).partition([16, 64]),
                     &input,
@@ -291,7 +292,7 @@ fn fp8_small_m_split_k_preserves_values_and_measures_better() -> Result<(), Box<
             Ok(())
         })?;
         let candidate = Graph::scope(&device.stream, |scope| {
-            scope.record(
+            cutile(scope)?.record(
                 kernels::matmul_split(
                     (&mut partials).partition([1, 16, 64]),
                     &input,
@@ -300,7 +301,7 @@ fn fp8_small_m_split_k_preserves_values_and_measures_better() -> Result<(), Box<
                 )
                 .generics(vec![k.to_string()]),
             )?;
-            scope.record(kernels::reduce_split(
+            cutile(scope)?.record(kernels::reduce_split(
                 (&mut split_out).partition([16, 64]),
                 &partials,
                 &input_scale,

@@ -11,6 +11,7 @@ use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use crate::tuning::resident_gemm::{GemmConfig, WeightKey};
 use cutile::prelude::*;
 use infer_cuda_kernels::contract::Buffer;
+use infer_cuda_kernels::contract::Recording;
 use infer_cuda_kernels::tile::projection::fp4_probe::{self, ProbeGeometry};
 
 impl Workspace {
@@ -104,7 +105,7 @@ impl Workspace {
     /// vendor plan covers it.
     pub(crate) fn record_vendor_down(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         weight: &ProjectionWeight,
         scale: f32,
         (arena, input): (&ActivationArena, usize),

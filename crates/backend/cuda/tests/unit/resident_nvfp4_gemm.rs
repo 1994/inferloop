@@ -1,6 +1,7 @@
 use super::kernels;
 use crate::device::CudaDevice;
 use crate::mlp::Matrix;
+use crate::resident::buffers::cutile;
 use crate::resident::tensor_buffer as buffer;
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::bench::BenchOptions as CutileBenchOptions;
@@ -326,7 +327,7 @@ fn nvfp4_quantization_split_performance() -> Result<(), Box<dyn StdError>> {
             let mut input_scales = api::zeros::<f8e4m3fn>(&[m, k / 16]).sync_on(&device.stream)?;
             let mut output = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
             let fused = Graph::scope(&device.stream, |scope| {
-                scope.record(
+                cutile(scope)?.record(
                     kernels::matmul(
                         (&mut output).partition([16, 64]),
                         &input,
@@ -340,7 +341,7 @@ fn nvfp4_quantization_split_performance() -> Result<(), Box<dyn StdError>> {
                 Ok(())
             })?;
             let separated = Graph::scope(&device.stream, |scope| {
-                scope.record(
+                cutile(scope)?.record(
                     kernels::quantize(
                         (&mut quantized).partition([1, 256]),
                         (&mut input_scales).partition([1, 32]),
@@ -349,7 +350,7 @@ fn nvfp4_quantization_split_performance() -> Result<(), Box<dyn StdError>> {
                     )
                     .generics(vec![k.to_string()]),
                 )?;
-                scope.record(
+                cutile(scope)?.record(
                     kernels::packed(
                         (&mut output).partition([16, 64]),
                         &quantized,
@@ -459,7 +460,7 @@ fn sweep_shape(
     let mut output = api::zeros::<f32>(&[SWEEP_PAD_ROWS, n]).sync_on(&device.stream)?;
     let mut tile_graph = |rows: usize, columns: usize| -> Result<Graph, Error> {
         Ok(Graph::scope(&device.stream, |scope| {
-            scope.record(
+            cutile(scope)?.record(
                 kernels::packed(
                     (&mut output).partition([rows, columns]),
                     &input,
@@ -526,12 +527,12 @@ fn separated_swiglu_graph(
     let (_, columns, hidden) = SWIGLU_PERF_SHAPE;
     Ok(Graph::scope(&device.stream, |scope| {
         for (out, (w, s)) in [(&mut buffers.gate, gate), (&mut buffers.up, up)] {
-            scope.record(
+            cutile(scope)?.record(
                 kernels::packed_prefill(out.partition([128, 128]), q, qs, w, s, 1.0e-6)
                     .generics(vec![columns.to_string(), "128".into(), "128".into()]),
             )?;
         }
-        scope.record(
+        cutile(scope)?.record(
             kernels::swiglu_quantize(
                 (&mut buffers.codes).partition([16, 256]),
                 (&mut buffers.scales).partition([16, 32]),
@@ -554,7 +555,7 @@ fn fused_swiglu_graph(
 ) -> Result<Graph, Box<dyn StdError>> {
     let (_, columns, _) = SWIGLU_PERF_SHAPE;
     Ok(Graph::scope(&device.stream, |scope| {
-        scope.record(
+        cutile(scope)?.record(
             kernels::packed_swiglu(
                 (&mut buffers.codes).partition([tile_rows, tile_columns / 2]),
                 (&mut buffers.scales).partition([tile_rows, tile_columns / 16]),

@@ -52,7 +52,7 @@ pub fn required_bytes(
 
 /// Record the final-lane vocabulary projection of a prompt graph into the one-row logits slot.
 pub(super) fn record(
-    scope: &Scope,
+    scope: &Recording<'_>,
     node: &TensorNode,
     arena: &ActivationArena,
     weights: &ProgramWeights,
@@ -74,7 +74,7 @@ pub(super) fn record(
             .kernels
             .projection
             .last_rows(
-                &Recording::scope(scope),
+                scope,
                 &LastRowsPlan {
                     kind: LastRowsKind::One,
                     lanes: width,

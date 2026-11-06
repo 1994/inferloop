@@ -11,7 +11,7 @@ use infer_cuda_kernels::contract::{Buffer, Kernels, PoolGemvPlan, Recording};
 #[cfg(test)]
 use std::cell::Cell;
 pub(super) fn record(
-    (kernels, scope): (&Kernels, &Scope),
+    (kernels, scope): (&Kernels, &Recording<'_>),
     weight: &ProjectionWeight,
     input: Buffer<'_, f32>,
     output: RowMajor<'_, f32>,
@@ -36,7 +36,7 @@ pub(super) fn record(
         kernels
             .projection
             .pool_gemv_bf16(
-                &Recording::scope(scope),
+                scope,
                 &PoolGemvPlan {
                     rows,
                     outputs,

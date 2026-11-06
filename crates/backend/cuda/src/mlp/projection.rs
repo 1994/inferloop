@@ -188,7 +188,7 @@ impl ProjectionWeight {
     pub(crate) fn record(
         &self,
         kernels: &Kernels,
-        scope: &Scope,
+        scope: &Recording<'_>,
         out: Buffer<'_, f32>,
         input: Buffer<'_, f32>,
         columns: usize,
@@ -197,7 +197,7 @@ impl ProjectionWeight {
         kernels
             .projection
             .row(
-                &Recording::scope(scope),
+                scope,
                 &DownPlan {
                     tile_rows: tile.rows(),
                     tile_columns: tile.columns(),

@@ -53,7 +53,7 @@ pub fn initialize(
     }
     let mut qs = borrowed(qs, ordinal, &[code_rows, qs.len() / code_rows])?;
     let stream = device.stream();
-    let graph = Graph::scope(stream, |scope| {
+    let graph = Graph::cutile(stream, |scope| {
         scope.record(
             probe_input((&mut input).partition([rows, code_tile * FP4_PER_ELEMENT]))
                 .generics(vec![columns.to_string()]),

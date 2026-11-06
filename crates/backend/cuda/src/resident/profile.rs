@@ -20,6 +20,7 @@ use cutile::cuda_async::device_context::with_default_device_policy;
 use cutile::cuda_async::device_future::DeviceFuture;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::Recording;
 use infer_ir::{TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::env::var;
@@ -63,7 +64,7 @@ impl GraphProfile {
     /// Record a timing event marking the start of `node`'s kernels in the captured graph.
     pub(super) fn boundary(
         &mut self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: usize,
         op: &TensorNode,
     ) -> StdResult<(), DeviceError> {
@@ -85,17 +86,20 @@ impl GraphProfile {
     }
 
     /// Record the closing event after the last node.
-    pub(super) fn finish(&mut self, scope: &Scope) -> StdResult<(), DeviceError> {
+    pub(super) fn finish(&mut self, scope: &Recording<'_>) -> StdResult<(), DeviceError> {
         self.mark(scope)
     }
 
-    fn mark(&mut self, scope: &Scope) -> StdResult<(), DeviceError> {
+    fn mark(&mut self, scope: &Recording<'_>) -> StdResult<(), DeviceError> {
         let event = Arc::new(
             self.context
                 .new_event(Some(CUevent_flags_enum_CU_EVENT_DEFAULT))
                 .map_err(DeviceError::Driver)?,
         );
-        scope.record(RecordEvent(Arc::clone(&event)))?;
+        scope
+            .cutile_scope()
+            .ok_or_else(|| DeviceError::Internal("profile events need a cuTile capture".into()))?
+            .record(RecordEvent(Arc::clone(&event)))?;
         self.events.push(event);
         Ok(())
     }

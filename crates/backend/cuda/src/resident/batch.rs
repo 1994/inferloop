@@ -344,7 +344,7 @@ impl BatchBuilder<'_> {
     /// One launch for every lane of a sequential node, where this graph covers it.
     fn record_lanes_node(
         &mut self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &mut ActivationArena,
         caches: &[Fp8Caches],
@@ -376,7 +376,7 @@ impl BatchBuilder<'_> {
     /// Record one state node over the pooled roots, addressed through the whole metadata tensor.
     fn record_pooled_state(
         &mut self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &mut ActivationArena,
         metadata: &Allocation<i32>,
@@ -599,7 +599,7 @@ impl BatchBuilder<'_> {
         for lane in lanes {
             restore.push(
                 Graph::scope(&self.device.stream, |scope| {
-                    let recording = Recording::scope(scope);
+                    let recording = scope;
                     for (id, tensors) in &lane.checkpoints {
                         for (output, input) in self
                             .states
@@ -956,7 +956,7 @@ impl BatchBuilder<'_> {
     /// False leaves the node to the per-lane path.
     fn record_shared(
         &mut self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &mut ActivationArena,
         metadata: &Allocation<i32>,
@@ -1000,7 +1000,7 @@ impl BatchBuilder<'_> {
     /// KV block once for all three lanes. False when this node keeps the per-lane path.
     fn record_verify_attention(
         &mut self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         lanes: &mut [Lane],
         prefill: Option<bool>,
@@ -1054,7 +1054,7 @@ impl BatchBuilder<'_> {
         let (query, output) = (node.inputs[0], node.outputs[0]);
         self.attention.record_verify(
             &*self.weights.kernels.attention,
-            &Recording::scope(scope),
+            scope,
             DecodePlan {
                 heads: query_heads,
                 kv_heads,
@@ -1142,7 +1142,7 @@ impl BatchBuilder<'_> {
                             capture.record_flat_checkpoint(node, snapshot)?;
                         } else {
                             capture.record(node)?;
-                            let recording = Recording::scope(scope);
+                            let recording = scope;
                             for (output, input) in
                                 snapshot.iter().zip(&capture.states[&node.states[0]])
                             {
@@ -1166,7 +1166,7 @@ impl BatchBuilder<'_> {
     /// shape-agnostic auxiliaries record once, state/metadata kernels stay per-lane.
     fn record_prompt_pair(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         first: &TensorNode,
         second: &TensorNode,
         arena: &ActivationArena,
@@ -1177,7 +1177,7 @@ impl BatchBuilder<'_> {
 
     fn record_prompt_narrow(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &ActivationArena,
     ) -> StdResult<bool, DeviceError> {
@@ -1189,7 +1189,7 @@ impl BatchBuilder<'_> {
     /// that segment's rows, slot state and block table. Row-independent nodes never come here.
     fn record_burst_state(
         &mut self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
     ) -> StdResult<bool, DeviceError> {
         let dynamic = !node
@@ -1252,7 +1252,7 @@ impl BatchBuilder<'_> {
 
     fn record_prompt_row(
         &mut self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &ActivationArena,
         row: &Allocation<f32>,
@@ -1275,7 +1275,7 @@ impl BatchBuilder<'_> {
     /// Project only each segment's last row onto the vocabulary, one weight read for all.
     fn record_burst_logits(
         &mut self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &ActivationArena,
     ) -> StdResult<(), DeviceError> {
@@ -1289,7 +1289,7 @@ impl BatchBuilder<'_> {
             .kernels
             .projection
             .last_rows(
-                &Recording::scope(scope),
+                scope,
                 &LastRowsPlan {
                     kind: LastRowsKind::Segments {
                         segment_rows: binding.segment_rows,
@@ -1474,7 +1474,7 @@ impl BatchBuilder<'_> {
     /// per-lane kernel.
     fn record_prompt_embedding(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &ActivationArena,
         metadata_batch: &Allocation<i32>,
@@ -1506,7 +1506,7 @@ impl BatchBuilder<'_> {
             .kernels
             .projection
             .embedding_batch(
-                &Recording::scope(scope),
+                scope,
                 &EmbeddingBatchPlan {
                     dimension,
                     fields: METADATA_FIELDS,
@@ -1523,7 +1523,7 @@ impl BatchBuilder<'_> {
 
     fn record_prompt_node(
         &mut self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &mut ActivationArena,
         metadata: PromptMetadata<'_>,
@@ -1566,7 +1566,7 @@ impl BatchBuilder<'_> {
     /// Record the width-32 dispatch for a node whose special prefill cases did not apply.
     fn record_prompt_dispatch(
         &mut self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &mut ActivationArena,
         metadata: &[Allocation<i32>],
@@ -1634,7 +1634,7 @@ impl BatchBuilder<'_> {
     /// Record a prompt-wide sequence kernel for dynamic `RoPE` or attention nodes.
     fn record_prompt_dynamic(
         &mut self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &mut ActivationArena,
         prefill_info: &Allocation<i32>,
@@ -1672,7 +1672,7 @@ impl BatchBuilder<'_> {
     /// Record one prompt-wide sequence kernel against a chosen metadata binding.
     fn record_prompt_sequence(
         &mut self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &mut ActivationArena,
         metadata: &Allocation<i32>,

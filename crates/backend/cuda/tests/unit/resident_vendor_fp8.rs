@@ -4,6 +4,7 @@ use super::super::fp8_gemm::kernels;
 use crate::device::CudaDevice;
 use crate::device::vendor_fp8::{Gemm, Support};
 use crate::mlp::Matrix;
+use crate::resident::buffers::cutile;
 use crate::resident::tensor_buffer as buffer;
 use crate::tuning::fp8_gemm::Choice as Fp8GemmChoice;
 use crate::tuning::resident_gemm::native_tile;
@@ -162,9 +163,9 @@ impl<'a> Inputs<'a> {
             vendor: Support::new_with(device, true),
         })
     }
-    fn quantize(&mut self, scope: &Scope) -> Result<(), DeviceError> {
+    fn quantize(&mut self, scope: &Recording<'_>) -> Result<(), DeviceError> {
         let k = self.weight.k;
-        scope.record(
+        cutile(scope)?.record(
             kernels::quantize(
                 (&mut self.codes).partition([1, k.next_power_of_two()]),
                 (&mut self.scales).partition([1, 1]),
@@ -183,23 +184,22 @@ impl<'a> Inputs<'a> {
     }
     fn matmul(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         output: &mut Tensor<f32>,
         vendor: bool,
     ) -> Result<(), DeviceError> {
         if vendor {
-            if !self.vendor.record(
-                &Recording::scope(scope),
-                self.gemm(output)?,
-                self.factors()?,
-            )? {
+            if !self
+                .vendor
+                .record(scope, self.gemm(output)?, self.factors()?)?
+            {
                 return Err(DeviceError::Internal(
                     "requested vendor shape was not warmed".into(),
                 ));
             }
         } else {
             let tile = native_tile(self.rows);
-            scope.record(
+            cutile(scope)?.record(
                 kernels::matmul(
                     output.partition(tile),
                     &self.codes,
@@ -593,7 +593,7 @@ fn vendor_fp8_verified_chooser_checkpoint_comparison() -> TestResult {
             let base = Graph::scope(&device.stream, |scope| {
                 inputs.quantize(scope)?;
                 Choice::baseline(rows).record(
-                    (&device.kernels(), &Recording::scope(scope)),
+                    (&device.kernels(), scope),
                     &inputs.vendor,
                     inputs.gemm(&baseline)?,
                     inputs.factors()?,
@@ -602,7 +602,7 @@ fn vendor_fp8_verified_chooser_checkpoint_comparison() -> TestResult {
             let candidate = Graph::scope(&device.stream, |scope| {
                 inputs.quantize(scope)?;
                 choice.record(
-                    (&device.kernels(), &Recording::scope(scope)),
+                    (&device.kernels(), scope),
                     &inputs.vendor,
                     inputs.gemm(&output)?,
                     inputs.factors()?,
@@ -672,7 +672,7 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
     let restored_graph = Graph::scope(&device.stream, |scope| {
         inputs.quantize(scope)?;
         if !restored.record_config(
-            &Recording::scope(scope),
+            scope,
             config,
             inputs.gemm(&restored_output)?,
             inputs.factors()?,

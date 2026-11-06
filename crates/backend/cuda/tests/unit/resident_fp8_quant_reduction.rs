@@ -1,4 +1,5 @@
 use super::kernels;
+use crate::resident::buffers::cutile;
 use crate::{device::CudaDevice, resident::fp8_gemm};
 use cuda_core::f8e4m3fn;
 use cutile::error::tensor_error;
@@ -36,7 +37,7 @@ impl Case {
         let pad = self.k.next_power_of_two();
         let old = Graph::scope(&device.stream, |scope| {
             for _ in 0..count {
-                scope.record(
+                cutile(scope)?.record(
                     fp8_gemm::kernels::quantize(
                         (&mut self.old).partition([1, pad]),
                         (&mut self.old_scale).partition([1, 1]),
@@ -49,11 +50,11 @@ impl Case {
         })?;
         let new = Graph::scope(&device.stream, |scope| {
             for _ in 0..count {
-                scope.record(
+                cutile(scope)?.record(
                     kernels::maximum((&mut self.new_scale).partition([1, 1]), &self.input)
                         .generics(vec![self.k.to_string(), pad.to_string()]),
                 )?;
-                scope.record(
+                cutile(scope)?.record(
                     kernels::quantize(
                         (&mut self.new).partition([1, 512]),
                         &self.new_scale,

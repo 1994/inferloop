@@ -36,7 +36,7 @@ type Operands<'a> = (Buffer<'a, Fp4Pair>, Buffer<'a, Fp8>);
 /// # Errors
 /// Rejects non-FP4 weights and a rejected launch.
 pub fn record(
-    (contract, scope): (&Kernels, &Scope),
+    (contract, scope): (&Kernels, &Recording<'_>),
     config: GemmConfig,
     (gate, up): (&ProjectionWeight, &ProjectionWeight),
     (input_scale, down_scale): (f32, f32),
@@ -52,7 +52,7 @@ pub fn record(
     contract
         .projection
         .gemm_swiglu(
-            &Recording::scope(scope),
+            scope,
             &GemmPlan {
                 main_loop: GemmLoop::Plain,
                 rows,
@@ -120,7 +120,7 @@ impl Captured {
             contract
                 .projection
                 .quantize_fp4(
-                    &Recording::scope(scope),
+                    scope,
                     &Fp4QuantPlan {
                         kind: Fp4QuantKind::RowGroups {
                             rows: QUANTIZATION_ROWS,

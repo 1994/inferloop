@@ -94,7 +94,7 @@ impl Choice {
     }
     pub(crate) fn record(
         self,
-        (contract, scope): (&Kernels, &Scope),
+        (contract, scope): (&Kernels, &Recording<'_>),
         weight: &Matrix<bf16>,
         input: Buffer<'_, f32>,
         output: RowMajor<'_, f32>,
@@ -129,7 +129,7 @@ impl Choice {
         contract
             .projection
             .dense(
-                &Recording::scope(scope),
+                scope,
                 &DenseRowsPlan {
                     kernel,
                     rows: output.rows,

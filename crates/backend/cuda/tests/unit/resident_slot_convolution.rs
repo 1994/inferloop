@@ -1,5 +1,6 @@
 use super::*;
 use crate::constants::{CONV_KERNEL_SIZE, CONV_KERNEL_TILE};
+use crate::resident::buffers::cutile;
 use crate::{device::CudaDevice, resident::slot_recurrent::fused};
 use cutile::cutile_compiler::compile_api::KernelCompiler;
 use infer_cuda_kernels::tile::runtime::Graph;
@@ -144,7 +145,7 @@ impl Fixture {
                 };
                 let state = slot * channels..(slot + 1) * channels;
                 let lane = slot * LANES;
-                scope.record(fused::conv_verify3(
+                cutile(scope)?.record(fused::conv_verify3(
                     first.partition([CONV_KERNEL_TILE]),
                     second.partition([CONV_KERNEL_TILE]),
                     third.partition([CONV_KERNEL_TILE]),

@@ -22,7 +22,7 @@ impl BatchBuilder<'_> {
     /// Append all candidates before attending; per-lane metadata still enforces causality.
     pub(super) fn record_slot_verify_attention(
         &mut self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &mut ActivationArena,
         (states, caches): (&mut [States], &mut [Fp8Caches]),
@@ -59,14 +59,14 @@ impl BatchBuilder<'_> {
             prefix * VERIFY_LANES,
         )?;
         let attention = &*self.weights.kernels.attention;
-        let recording = Recording::scope(scope);
+        let recording = scope;
         let output = arena.activation(node.outputs[0]).map_err(error)?;
         let queries = arena.activation(node.inputs[0]).map_err(error)?;
         if prefix > 0 {
             let shared = &caches[0][&state];
             self.attention.record_pooled_attention(
                 attention,
-                &recording,
+                recording,
                 &Attend {
                     node: node.id,
                     output,
@@ -85,7 +85,7 @@ impl BatchBuilder<'_> {
             let out = |lane: usize| row_buffer(outputs, lanes, base + lane);
             self.attention.record_verify(
                 attention,
-                &recording,
+                recording,
                 DecodePlan {
                     heads: query_heads,
                     kv_heads,
@@ -111,7 +111,7 @@ impl BatchBuilder<'_> {
 
     fn append_pooled(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &ActivationArena,
         caches: &[Fp8Caches],
@@ -133,7 +133,7 @@ impl BatchBuilder<'_> {
             let shared = caches[0].get(&state).ok_or_else(|| error("pooled cache"))?;
             self.attention.record_pooled_append(
                 &*self.weights.kernels.attention,
-                &Recording::scope(scope),
+                scope,
                 &Append {
                     node: node.id,
                     keys: &shared.keys,
@@ -152,7 +152,7 @@ impl BatchBuilder<'_> {
 
     fn append_slot_candidates(
         &mut self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &mut ActivationArena,
         (states, caches): (&mut [States], &mut [Fp8Caches]),

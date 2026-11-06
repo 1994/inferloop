@@ -111,7 +111,7 @@ impl Workspace {
     }
     pub(crate) fn record(
         &mut self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &ActivationArena,
         weights: &ProgramWeights,
@@ -201,7 +201,7 @@ impl Workspace {
             .kernels
             .recurrent
             .transpose(
-                &Recording::scope(scope),
+                scope,
                 RecurrentShape {
                     key_heads,
                     value_heads,
@@ -223,7 +223,7 @@ const DELTA_GEOMETRY_RANK: usize = 5;
     reason = "Explicit graph state, IR inputs and capture geometry"
 )]
 fn record_delta(
-    scope: &Scope,
+    scope: &Recording<'_>,
     node: &TensorNode,
     arena: &ActivationArena,
     weights: &ProgramWeights,
@@ -269,7 +269,7 @@ fn record_delta(
             .kernels
             .recurrent
             .delta(
-                &Recording::scope(scope),
+                scope,
                 if wy {
                     DeltaKernel::Wy
                 } else {

@@ -247,7 +247,7 @@ pub(super) fn prepare_parameters(
 
 /// Use the slot axis when its immutable constants and contiguous state family are available.
 pub(super) fn record_batch(
-    scope: &Scope,
+    scope: &Recording<'_>,
     node: &TensorNode,
     arena: &ActivationArena,
     batch: &VerifyBatch<'_>,
@@ -290,7 +290,7 @@ pub(super) fn record_batch(
         .kernels
         .recurrent_pool
         .delta_verify_pool(
-            &Recording::scope(scope),
+            scope,
             &PoolDeltaPlan {
                 key_heads,
                 value_heads,

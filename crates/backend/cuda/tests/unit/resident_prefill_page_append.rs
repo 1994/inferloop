@@ -1,4 +1,5 @@
 use super::kernels;
+use crate::resident::buffers::cutile;
 use crate::{constants::KV_BLOCK_TOKENS, device::CudaDevice};
 use cuda_core::f8e4m3fn;
 use cutile::{cutile_compiler::compile_api::KernelCompiler, prelude::*};
@@ -127,7 +128,7 @@ impl Fixture {
             &mut self.reference
         };
         Ok(Graph::scope(&device.stream, |scope| {
-            scope.record(
+            cutile(scope)?.record(
                 kernels::append(
                     keys.partition([1, rows, self.dimension]),
                     values.partition([1, rows, self.dimension]),

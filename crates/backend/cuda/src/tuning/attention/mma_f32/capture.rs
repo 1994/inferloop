@@ -50,17 +50,17 @@ impl Operands {
     fn record(
         &self,
         contract: &Kernels,
-        scope: &Scope,
+        scope: &Recording<'_>,
         f: &Fixture,
         choice: Choice,
         support: Option<&attention_mma::Support>,
     ) -> StdResult<(), DeviceError> {
         let s = f.shape;
-        let recording = Recording::scope(scope);
+        let recording = scope;
         contract
             .attention
             .append_prefill(
-                &recording,
+                recording,
                 PrefillAppendPlan {
                     lanes: s.lanes,
                     rows: f.capacity,
@@ -79,7 +79,7 @@ impl Operands {
             support
                 .ok_or_else(|| DeviceError::Internal("F32 MMA module missing".into()))?
                 .record(
-                    &recording,
+                    recording,
                     DecodeBuffers {
                         output: buffer(&self.output)?,
                         query: buffer(&self.query)?,
@@ -95,7 +95,7 @@ impl Operands {
             contract
                 .attention
                 .decode_prefill(
-                    &recording,
+                    recording,
                     PrefillDecodePlan {
                         decode: DecodePlan {
                             heads: s.heads,

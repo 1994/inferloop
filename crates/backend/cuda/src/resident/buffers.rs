@@ -123,4 +123,4 @@ mod runtime_tests;
 #[path = "../../tests/unit/buffer_tensors.rs"]
 mod tensors;
 #[cfg(test)]
-pub use tensors::tensor_rows;
+pub use tensors::{cutile, tensor_rows};

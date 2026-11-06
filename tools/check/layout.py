@@ -32,6 +32,8 @@ CUDA_HOST_TOKENS = {
     ".generics(": 0,
     "cuda_core": 67,
     "CudaGraph": 0,
+    # Every remaining mention of cuTile; M6 ends when the host builds without it.
+    "cutile": 174,
 }
 # Artifact catalogs name the architectures they ship; everything else asks `Arch` what it can do.
 ARCHITECTURE_CATALOGS = ("resident/attention_mma/",)

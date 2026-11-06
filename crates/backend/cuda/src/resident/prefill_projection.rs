@@ -178,7 +178,7 @@ impl MlpPlan {
     /// Fuse normalization only when this plan actually records the following FP4 consumer.
     pub(super) fn record_norm(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         (index, nodes): (usize, &[TensorNode]),
         arena: &super::ActivationArena,
         weights: &ProgramWeights,
@@ -195,7 +195,7 @@ impl MlpPlan {
     /// Record node `index` when the plan owns it. False leaves it to the ordinary dispatch.
     pub(super) fn record(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         (index, nodes): (usize, &[TensorNode]),
         arena: &super::ActivationArena,
         weights: &ProgramWeights,
@@ -302,7 +302,7 @@ fn fused_mlp_plan(
 
 /// Record a [`fused_mlp_plan`] gate/up pass into the down projection's activation codes.
 fn record_fused_mlp(
-    scope: &Scope,
+    scope: &Recording<'_>,
     (gate, up, down): (&TensorNode, &TensorNode, &TensorNode),
     arena: &super::ActivationArena,
     weights: &ProgramWeights,
@@ -333,7 +333,7 @@ fn record_fused_mlp(
 
 /// Record the down projection of a [`fused_mlp_plan`] entry from its prepared codes.
 fn record_fused_down(
-    scope: &Scope,
+    scope: &Recording<'_>,
     node: &TensorNode,
     arena: &super::ActivationArena,
     weights: &ProgramWeights,
@@ -377,7 +377,7 @@ fn record_fused_down(
 
 /// Record a [`swiglu_plan`] down projection. False leaves nothing recorded.
 fn record_swiglu(
-    scope: &Scope,
+    scope: &Recording<'_>,
     node: &TensorNode,
     (gate, up): (infer_core::TensorId, infer_core::TensorId),
     arena: &super::ActivationArena,
@@ -416,7 +416,7 @@ fn record_swiglu(
 /// Fp4 weights split the K loop across `PREFILL_SPLIT_K` CTAs per output tile:
 /// the prompt GEMM is latency-bound at one wave, so wider grids hide DRAM latency.
 pub(super) fn record(
-    scope: &Scope,
+    scope: &Recording<'_>,
     node: &TensorNode,
     arena: &super::ActivationArena,
     weights: &ProgramWeights,
@@ -467,7 +467,7 @@ pub(super) fn record(
                 .kernels
                 .projection
                 .prompt_fp8(
-                    &Recording::scope(scope),
+                    scope,
                     &PromptPlan {
                         rows: width,
                         outputs: flat / width,
@@ -533,7 +533,7 @@ fn pair_slots(
 
 /// One dense prompt projection: the sparse router path, a vendor GEMM, or the measured tile.
 fn record_prompt_dense(
-    scope: &Scope,
+    scope: &Recording<'_>,
     weights: &ProgramWeights,
     (input, w): (Buffer<'_, f32>, &Matrix<bf16>),
     output: RowMajor<'_, f32>,
@@ -575,7 +575,7 @@ fn record_prompt_dense(
         .kernels
         .projection
         .dense(
-            &Recording::scope(scope),
+            scope,
             &DenseRowsPlan {
                 kernel: DenseKernel::Prompt {
                     tile: [PREFILL_LANES, PREFILL_GEMM_TILE_N],
@@ -594,7 +594,7 @@ fn record_prompt_dense(
 /// Record two graph-identified sibling projections in one launch, retaining each K accumulation chain.
 /// Dense weight/layout checks keep sparse, vendor and narrow-layout projections on their own paths.
 pub(super) fn record_pair(
-    scope: &Scope,
+    scope: &Recording<'_>,
     first: &TensorNode,
     second: &TensorNode,
     arena: &super::ActivationArena,
@@ -633,7 +633,7 @@ pub(super) fn record_pair(
         .kernels
         .projection
         .dense_pair(
-            &Recording::scope(scope),
+            scope,
             &PromptPlan {
                 rows: width,
                 outputs: rows,
@@ -650,7 +650,7 @@ pub(super) fn record_pair(
 
 /// Record the established split-K projection with its existing operands and reduction.
 fn record_legacy_fp4(
-    (contract, scope): (&Kernels, &Scope),
+    (contract, scope): (&Kernels, &Recording<'_>),
     weight: &ProjectionWeight,
     input: Buffer<'_, f32>,
     output: Buffer<'_, f32>,
@@ -668,7 +668,7 @@ fn record_legacy_fp4(
     contract
         .projection
         .prompt_fp4_split(
-            &Recording::scope(scope),
+            scope,
             &SplitGemmPlan {
                 prompt: PromptPlan {
                     rows: width,
@@ -689,7 +689,7 @@ fn record_legacy_fp4(
 
 /// Whether the vendor GEMM recorded this projection instead of the tile kernel.
 fn records_vendor_gemm(
-    target: (&Kernels, &Scope),
+    target: (&Kernels, &Recording<'_>),
     delegated: Option<&mut Support>,
     input: Buffer<'_, f32>,
     weight: &Matrix<bf16>,
@@ -704,7 +704,7 @@ fn records_vendor_gemm(
 
 // Preserve F32 router inputs through a high BF16 term and a low residual term.
 fn records_precise_sparse(
-    (contract, scope): (&Kernels, &Scope),
+    (contract, scope): (&Kernels, &Recording<'_>),
     weights: &ProgramWeights,
     (out, input, weight): (Buffer<'_, f32>, Buffer<'_, f32>, Buffer<'_, Bf16>),
     columns: usize,
@@ -716,7 +716,7 @@ fn records_precise_sparse(
     contract
         .projection
         .dense(
-            &Recording::scope(scope),
+            scope,
             &DenseRowsPlan {
                 kernel: DenseKernel::Native,
                 rows,
@@ -733,7 +733,7 @@ fn records_precise_sparse(
 
 /// Record a graph-identified small dense projection on the qualified narrow prompt rung.
 pub(super) fn record_narrow(
-    scope: &Scope,
+    scope: &Recording<'_>,
     node: &TensorNode,
     arena: &super::ActivationArena,
     (weights, profile): (&ProgramWeights, &DeviceProfile),
@@ -780,7 +780,7 @@ pub(super) fn record_narrow(
 }
 
 fn records_narrow_dense(
-    (contract, scope): (&Kernels, &Scope),
+    (contract, scope): (&Kernels, &Recording<'_>),
     profile: &DeviceProfile,
     (out, input, weight): (Buffer<'_, f32>, Buffer<'_, f32>, Buffer<'_, Bf16>),
     shape: (usize, usize, usize),
@@ -795,7 +795,7 @@ fn records_narrow_dense(
     contract
         .projection
         .dense(
-            &Recording::scope(scope),
+            scope,
             &DenseRowsPlan {
                 kernel: DenseKernel::PromptNarrow {
                     tile: NARROW_DENSE_TILE,

@@ -1,5 +1,6 @@
 use super::kernels;
 use crate::device::CudaDevice;
+use crate::resident::buffers::cutile;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::{half::bf16, prelude::*};
@@ -75,7 +76,7 @@ fn small_mma_performance() -> Result<(), Box<dyn Error>> {
             let input = device.upload(vec![0.253_f32; m * k], &[m, k])?;
             let mut output = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
             let old = Graph::scope(&device.stream, |scope| {
-                scope.record(
+                cutile(scope)?.record(
                     super::super::linear_batch::batched::dense(
                         (&mut output).partition([4, 16]),
                         &input,
@@ -91,7 +92,7 @@ fn small_mma_performance() -> Result<(), Box<dyn Error>> {
                 Ok(())
             })?;
             let new = Graph::scope(&device.stream, |scope| {
-                scope.record(
+                cutile(scope)?.record(
                     kernels::dense((&mut output).partition([16, 32]), &input, &weights)
                         .generics(vec![bf16::DTYPE.as_str().into(), k.to_string()]),
                 )?;
@@ -508,7 +509,7 @@ fn checkpoint_pool_outputs(
     let packed = device.upload(input.to_vec(), &[4, columns])?;
     let mut result = api::zeros::<f32>(&[4, outputs]).sync_on(&device.stream)?;
     let graph = Graph::scope(&device.stream, |scope| {
-        scope.record(
+        cutile(scope)?.record(
             super::super::linear_batch::batched::dense(
                 (&mut result).partition([4, 16]),
                 &packed,
@@ -651,7 +652,7 @@ fn checkpoint_pool_small_f32_projection_cost() -> Result<(), Box<dyn Error>> {
     let mut output = api::zeros::<f32>(&[4, first.outputs]).sync_on(&device.stream)?;
     let baseline = Graph::scope(&device.stream, |scope| {
         for weight in &weights {
-            scope.record(
+            cutile(scope)?.record(
                 kernels::dense((&mut output).partition([16, 32]), &input, &weight.device).generics(
                     vec![bf16::DTYPE.as_str().into(), weight.columns.to_string()],
                 ),
@@ -661,7 +662,7 @@ fn checkpoint_pool_small_f32_projection_cost() -> Result<(), Box<dyn Error>> {
     })?;
     let candidate = Graph::scope(&device.stream, |scope| {
         for weight in &weights {
-            scope.record(
+            cutile(scope)?.record(
                 super::super::linear_batch::batched::dense(
                     (&mut output).partition([4, 16]),
                     &input,

@@ -1,6 +1,7 @@
 //! Wave-selected fused launches against the independent scalar recurrence.
 use super::super::{BenchOptions, Duration, assert_close, upload, wave_perf_pair};
 use super::{D, Fixture, KH, QKV, TestResult, VH};
+use crate::resident::buffers::cutile;
 use crate::{
     device::CudaDevice,
     resident::slot_recurrent::{ValueDevice, fused, value_split},
@@ -65,7 +66,7 @@ fn capture_verify(
     block: usize,
 ) -> TestResult<Graph> {
     Ok(Graph::scope(&device.stream, |scope| {
-        scope.record(
+        cutile(scope)?.record(
             fused::delta_verify_batch(
                 (&mut fixture.candidate).partition([1, 3, block]),
                 &fixture.state.view(&[slots * VH, D, D])?,
@@ -112,7 +113,7 @@ fn check_commits(
         for selected in [32, block] {
             let mut state = upload(device, initial.clone(), &[slots, VH * D, D])?;
             let graph = Graph::scope(&device.stream, |scope| {
-                scope.record(
+                cutile(scope)?.record(
                     fused::delta_commit_batch(
                         (&mut state).partition([1, D, selected]),
                         &fixture.qkv,

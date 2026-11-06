@@ -11,7 +11,6 @@ use crate::{
     constants::{CONV_STATE_TENSORS, METADATA_FIELDS},
     device::{CudaDevice, PinnedUpload, device_error},
 };
-use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, Kernels, PoolConvPlan, PoolDeltaBuffers, PoolDeltaPlan, Recording,
@@ -122,7 +121,7 @@ impl CapturedCommit {
 }
 
 fn record_node(
-    scope: &Scope,
+    scope: &Recording<'_>,
     node: &TensorNode,
     index: usize,
     roots: &mut States,
@@ -158,7 +157,7 @@ fn record_node(
             let split = value_split(inputs.hardware, value_heads, value_dim, inputs.slots)?;
             let block = fused_block(value_dim, split);
             inputs.kernels.recurrent_pool.delta_commit_pool(
-                &Recording::scope(scope),
+                scope,
                 &PoolDeltaPlan {
                     key_heads,
                     value_heads,
@@ -187,7 +186,7 @@ fn record_node(
 
 /// Shift each slot's convolution window by its accepted prefix.
 fn record_conv(
-    scope: &Scope,
+    scope: &Recording<'_>,
     state: &[Shaped<f32>],
     rows: Buffer<'_, f32>,
     channels: usize,
@@ -197,7 +196,7 @@ fn record_conv(
         return Err(Error::invariant("commit convolution state"));
     };
     inputs.kernels.recurrent_pool.conv_commit_pool(
-        &Recording::scope(scope),
+        scope,
         &PoolConvPlan {
             channels,
             lanes: inputs.lanes,
