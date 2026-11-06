@@ -7,7 +7,7 @@ use super::{
     capture_state::value_block,
 };
 use crate::constants::CONV_KERNEL_SIZE;
-use cutile::prelude::*;
+use infer_core::Result;
 use infer_cuda_kernels::contract::{ConvBuffers, DeltaBuffers, DeltaStepPlan};
 use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
@@ -21,7 +21,7 @@ impl Capture<'_> {
         node: &TensorNode,
         lane: usize,
         snapshot: &[Shaped<f32>],
-    ) -> Result<(), DeviceError> {
+    ) -> Result<()> {
         if self.mode != CaptureMode::Row(lane) || node.outputs.len() != 1 || node.states.len() != 1
         {
             return Err(error("checkpoint row capture bindings"));
@@ -37,7 +37,7 @@ impl Capture<'_> {
         &self,
         node: &TensorNode,
         snapshot: &[Shaped<f32>],
-    ) -> Result<(), DeviceError> {
+    ) -> Result<()> {
         if self.mode != CaptureMode::Flat || node.outputs.len() != 1 || node.states.len() != 1 {
             return Err(error("checkpoint flat capture bindings"));
         }
@@ -51,7 +51,7 @@ impl Capture<'_> {
         node: &TensorNode,
         output: &SlotMemory,
         snapshot: &[Shaped<f32>],
-    ) -> Result<(), DeviceError> {
+    ) -> Result<()> {
         let id = node.states[0];
         let state = self
             .states
@@ -85,7 +85,7 @@ impl Capture<'_> {
         state: &[Shaped<f32>],
         snapshot: &[Shaped<f32>],
         channels: usize,
-    ) -> Result<(), DeviceError> {
+    ) -> Result<()> {
         let [h0, h1, h2] = state else {
             return Err(error("checkpoint convolution state layout"));
         };
@@ -117,7 +117,7 @@ impl Capture<'_> {
         state: &[Shaped<f32>],
         snapshot: &[Shaped<f32>],
         (key_heads, value_heads, key_dim, value_dim): (usize, usize, usize, usize),
-    ) -> Result<(), DeviceError> {
+    ) -> Result<()> {
         if key_dim != value_dim
             || !key_dim.is_power_of_two()
             || key_heads == 0

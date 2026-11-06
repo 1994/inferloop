@@ -1,6 +1,7 @@
 //! Wave-selected fused launches against the independent scalar recurrence.
 use super::super::{BenchOptions, Duration, assert_close, upload, wave_perf_pair};
 use super::{D, Fixture, KH, QKV, TestResult, VH};
+use crate::device::device_error;
 use crate::resident::buffers::cutile;
 use crate::{
     device::CudaDevice,
@@ -69,11 +70,14 @@ fn capture_verify(
         cutile(scope)?.record(
             fused::delta_verify_batch(
                 (&mut fixture.candidate).partition([1, 3, block]),
-                &fixture.state.view(&[slots * VH, D, D])?,
+                &fixture
+                    .state
+                    .view(&[slots * VH, D, D])
+                    .map_err(device_error)?,
                 &fixture.qkv,
                 &fixture.beta,
                 &fixture.alpha,
-                &fixture.parameters.view(&[2 * VH])?,
+                &fixture.parameters.view(&[2 * VH]).map_err(device_error)?,
                 &fixture.metadata,
             )
             .generics(
@@ -119,7 +123,7 @@ fn check_commits(
                         &fixture.qkv,
                         &fixture.beta,
                         &fixture.alpha,
-                        &fixture.parameters.view(&[2 * VH])?,
+                        &fixture.parameters.view(&[2 * VH]).map_err(device_error)?,
                         &fixture.metadata,
                         &counts,
                     )

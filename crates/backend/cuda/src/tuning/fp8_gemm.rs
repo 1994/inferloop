@@ -39,7 +39,6 @@ use std::env::var;
 use std::env::var_os;
 use std::fmt::Display;
 use std::iter::once;
-use std::result::Result as StdResult;
 use std::{
     collections::BTreeMap,
     sync::{Mutex, OnceLock},
@@ -115,7 +114,7 @@ impl Choice {
         support: &vendor_fp8::Support,
         gemm: Gemm<'_>,
         scales: [Buffer<'_, f32>; 2],
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let [rows, outputs, columns] = gemm.extents;
         let native = match self {
             Self::Native(config) => config,
@@ -151,8 +150,8 @@ impl Choice {
         Ok(())
     }
 }
-fn fp8_launch(error: impl Display) -> DeviceError {
-    DeviceError::Internal(error.to_string())
+fn fp8_launch(error: impl Display) -> Error {
+    device_error(error.to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -510,8 +509,8 @@ impl Captured {
             let scales = [buffer(&xs)?, buffer(ws)?];
             if let Choice::Lt(config) = choice {
                 if !support.record_config(recording, config, gemm, scales)? {
-                    return Err(DeviceError::Internal(
-                        "FP8 Lt candidate did not record its algorithm".into(),
+                    return Err(device_error(
+                        "FP8 Lt candidate did not record its algorithm",
                     ));
                 }
                 Ok(())

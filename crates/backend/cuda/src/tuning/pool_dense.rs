@@ -6,6 +6,7 @@ use crate::constants::{
     SMALL_GEMV_MAX_ROWS,
 };
 use crate::device::CudaDevice;
+use crate::device::device_error;
 use crate::mlp::Matrix;
 use crate::resident::buffers::RowMajor;
 use crate::resident::tensor_buffer as buffer;
@@ -17,7 +18,7 @@ use crate::tuning::resident_gemm::{
 use crate::tuning::{resolve_table, table_path, update_table};
 use capture::{Captured, key, verify};
 use cutile::cutile_compiler::hints::CompileOptions;
-use cutile::{half::bf16, prelude::*};
+use cutile::half::bf16;
 pub use evidence::{Entry, Trial};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Buffer, DenseKernel, DenseRowsPlan, Kernels, Recording};
@@ -26,7 +27,6 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::result::Result as StdResult;
 use std::sync::{Mutex, OnceLock};
 
 /// ABI of the existing row-tiled private-reduction kernel.
@@ -100,7 +100,7 @@ impl Choice {
         output: RowMajor<'_, f32>,
         columns: usize,
         tile: LinearTiling,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let (tile_rows, tile_columns) = (tile.rows(), tile.columns());
         let kernel = match self {
             Self::Gemv => DenseKernel::Gemv {
@@ -140,7 +140,7 @@ impl Choice {
                 input,
                 buffer(weight)?,
             )
-            .map_err(|error| DeviceError::Internal(error.to_string()))
+            .map_err(|error| device_error(error.to_string()))
     }
 }
 /// Only the unmeasured/disabled path retains the previously admitted selection.

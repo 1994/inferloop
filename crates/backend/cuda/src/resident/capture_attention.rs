@@ -6,7 +6,7 @@ use super::{
 use crate::constants::ATTENTION_SPLIT_THRESHOLD;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::WIDE_PREFILL_LANES;
-use cutile::prelude::*;
+use infer_core::Result;
 use infer_cuda_kernels::contract::{
     AppendBuffers, Buffer, DecodeBuffers, DecodePlan, KvBuffers, KvCache, PrefillAppendPlan,
     PrefillDecodePlan,
@@ -16,7 +16,7 @@ use infer_ir::{TensorNode, TensorOp};
 impl Capture<'_> {
     /// Append this lane's key and value row to the shared FP8 cache without attending; a
     /// verification step then attends all its lanes in one grouped launch.
-    pub fn record_attention_append(&self, node: &TensorNode) -> Result<(), DeviceError> {
+    pub fn record_attention_append(&self, node: &TensorNode) -> Result<()> {
         let id = *node
             .states
             .first()
@@ -35,7 +35,7 @@ impl Capture<'_> {
         node: &TensorNode,
         output: &SlotMemory,
         cache: KvCache<'_>,
-    ) -> Result<(), DeviceError> {
+    ) -> Result<()> {
         let TensorOp::Attention {
             query_heads,
             kv_heads,
@@ -86,7 +86,7 @@ impl Capture<'_> {
     }
 
     /// Append one lane's key and value row.
-    fn record_append(&self, node: &TensorNode, cache: KvCache<'_>) -> Result<(), DeviceError> {
+    fn record_append(&self, node: &TensorNode, cache: KvCache<'_>) -> Result<()> {
         self.weights
             .kernels
             .attention
@@ -108,7 +108,7 @@ impl Capture<'_> {
         node: &TensorNode,
         output: &SlotMemory,
         cache: KvCache<'_>,
-    ) -> Result<(), DeviceError> {
+    ) -> Result<()> {
         let lanes = self.arena.lanes();
         let rows = cache
             .rows()
@@ -149,7 +149,7 @@ impl Capture<'_> {
         node: &TensorNode,
         output: &SlotMemory,
         cache: KvCache<'_>,
-    ) -> Result<(), DeviceError> {
+    ) -> Result<()> {
         let TensorOp::Attention {
             query_heads,
             kv_heads,
@@ -193,7 +193,7 @@ impl Capture<'_> {
         node: &TensorNode,
         output: Buffer<'_, f32>,
         cache: KvCache<'_>,
-    ) -> Result<(), DeviceError> {
+    ) -> Result<()> {
         let TensorOp::Attention {
             query_heads,
             kv_heads,

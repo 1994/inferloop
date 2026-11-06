@@ -8,7 +8,6 @@ use super::{
 use crate::constants::{ATTENTION_SPLIT_THRESHOLD, KV_BLOCK_TOKENS};
 use crate::device::{CudaDevice, DeviceProfile, device_error};
 use crate::tuning::attention::decode::{GROUPED_ROWS, grouped_parts_for, partitions};
-use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     AppendBuffers, DecodeBuffers, DecodePlan, KvCache, LanesAppendPlan, LanesDecodePlan, Partials,
@@ -19,7 +18,6 @@ use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::result::Result as StdResult;
 
 /// Elements of one split's `numerator`, `maxima` and `sums` rows beyond the head dimension.
 const PARTIAL_ROW_SCALARS: usize = 2;
@@ -123,7 +121,7 @@ impl BatchBuilder<'_> {
         arena: &ActivationArena,
         caches: &[super::fp8_cache::Fp8Caches],
         metadata: &Allocation<i32>,
-    ) -> StdResult<bool, DeviceError> {
+    ) -> Result<bool> {
         let TensorOp::Attention {
             query_heads,
             kv_heads,
@@ -190,7 +188,7 @@ impl BatchBuilder<'_> {
         arena: &ActivationArena,
         (cache, per_lane): (KvCache<'_>, bool),
         metadata: &Allocation<i32>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let TensorOp::Attention {
             query_heads,
             kv_heads,

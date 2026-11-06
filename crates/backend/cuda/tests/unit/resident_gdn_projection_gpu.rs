@@ -1,6 +1,7 @@
 //! Actual graph-role recorders compared with original Dense MMA and an independent scalar dot.
 use super::{fixture, id};
 use crate::AttentionProfile;
+use crate::device::device_error;
 use crate::mlp::Matrix;
 use crate::resident::buffers::cutile;
 use crate::resident::capture::error as capture_error;
@@ -146,13 +147,14 @@ impl Fixture {
                 let output_slot = self.arena.slot(node.outputs[0]).map_err(capture_error)?;
                 let [lanes, rows, columns] = self.shape;
                 let output = self.arena.output(output_slot).map_err(capture_error)?;
-                let mut output = output.reshape(&[lanes, rows])?;
+                let mut output = output.reshape(&[lanes, rows]).map_err(device_error)?;
                 let input_slot = self.arena.slot(id(1)).map_err(capture_error)?;
                 let input = self
                     .arena
                     .output(input_slot)
                     .map_err(capture_error)?
-                    .reshape(&[lanes, columns])?;
+                    .reshape(&[lanes, columns])
+                    .map_err(device_error)?;
                 let ProjectionWeight::Dense(weight) = &self.weights.projections[&node.inputs[1]]
                 else {
                     unreachable!()

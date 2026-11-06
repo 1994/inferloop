@@ -3,12 +3,14 @@
 pub(super) const SEARCH_TRIALS: usize = 2;
 use super::Shape;
 use crate::device::CudaDevice;
+use crate::device::device_error;
 use crate::tuning::nvfp4_lt::Trial;
 use crate::tuning::resident_gemm::{MeasurementOrder, PairedTimes};
 use crate::tuning::{MAX_REPS, MIN_CONFIRM_SPEEDUP, MIN_REPS, REP_MS, WARMUP_MS, median};
 use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::error::tensor_error;
 use cutile::prelude::*;
+use infer_core::Result;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::time::Duration;
 /// Stop gross losers before the normal sample count.
@@ -20,7 +22,7 @@ pub(super) fn confirm(
     fresh_a: &Graph,
     fresh_b: &Graph,
     shape: Shape,
-) -> Result<Option<Vec<Trial>>, DeviceError> {
+) -> Result<Option<Vec<Trial>>> {
     #[cfg(test)]
     super::CONFIRMATIONS.fetch_add(1, super::Ordering::Relaxed);
     let canary = BenchOptions {
@@ -65,7 +67,7 @@ fn one(
     shape: Shape,
     clear_l2: bool,
     reverse: bool,
-) -> Result<PairedTimes, DeviceError> {
+) -> Result<PairedTimes> {
     let options = BenchOptions {
         warmup: Duration::from_millis(WARMUP_MS),
         rep: Duration::from_millis(REP_MS),
@@ -92,7 +94,7 @@ fn measure(
     b: &Graph,
     options: &BenchOptions,
     reverse: bool,
-) -> Result<PairedTimes, DeviceError> {
+) -> Result<PairedTimes> {
     let (first, second) = if reverse { (b, a) } else { (a, b) };
     let (x, y) = do_bench_paired(
         &device.stream,
@@ -109,7 +111,8 @@ fn measure(
                 .sync_on(&device.stream)
                 .map_err(|e| tensor_error(&e.to_string()))
         },
-    )?;
+    )
+    .map_err(device_error)?;
     let (a, b) = if reverse { (y, x) } else { (x, y) };
     let baseline_median_ms = a.median_ms();
     let candidate_median_ms = b.median_ms();

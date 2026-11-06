@@ -4,16 +4,12 @@ use super::{
     capture::{Capture, CaptureMode, error},
 };
 use crate::constants::METADATA_FIELDS;
-use cutile::prelude::*;
+use infer_core::Result;
 use infer_cuda_kernels::contract::{RopeBuffers, RopeMode, RopePlan};
 use infer_ir::{TensorNode, TensorOp};
 
 impl Capture<'_> {
-    pub(super) fn record_rope(
-        &self,
-        node: &TensorNode,
-        output: &SlotMemory,
-    ) -> Result<(), DeviceError> {
+    pub(super) fn record_rope(&self, node: &TensorNode, output: &SlotMemory) -> Result<()> {
         let TensorOp::Rope {
             heads,
             head_dim,

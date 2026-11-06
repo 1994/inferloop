@@ -1,7 +1,6 @@
 //! Clearing every recurrent and rank-1 state in place, as one replayable graph.
 use super::buffers::buffer;
 use crate::device::{CudaDevice, device_error};
-use cutile::prelude::*;
 use infer_core::Result;
 use infer_cuda_kernels::tile::runtime::Graph;
 
@@ -21,7 +20,7 @@ pub(super) fn capture(device: &CudaDevice, states: &super::batch::States) -> Res
             kernels
                 .state
                 .clear(recording, buffer(tensor)?)
-                .map_err(|error| DeviceError::Launch(error.to_string()))?;
+                .map_err(|error| device_error(error.to_string()))?;
         }
         Ok(())
     })

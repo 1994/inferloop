@@ -1,14 +1,13 @@
 use super::*;
 use crate::device::device_error;
 use crate::test_support::fixture_graph;
+use cutile::prelude::DeviceOp;
 use infer_core::OpId;
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::{DType, DataflowGraph, TensorSpec, TensorStorage};
 use std::mem::take;
 
-fn staging_fixture(
-    width: usize,
-) -> infer_core::Result<(DataflowGraph, [TensorId; 3], Vec<TensorNode>)> {
+fn staging_fixture(width: usize) -> Result<(DataflowGraph, [TensorId; 3], Vec<TensorNode>)> {
     let mut graph = fixture_graph(width)?;
     let first = graph
         .hidden
@@ -65,7 +64,7 @@ fn staging_fixture(
 /// Batched copies must preserve every candidate's commit input after producer storage is reused.
 #[test]
 #[ignore = "requires CUDA hardware; run under safe-run"]
-fn contiguous_staging_preserves_rows_after_arena_reuse() -> infer_core::Result<()> {
+fn contiguous_staging_preserves_rows_after_arena_reuse() -> Result<()> {
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
     let width = 48;
@@ -81,7 +80,7 @@ fn contiguous_staging_preserves_rows_after_arena_reuse() -> infer_core::Result<(
                     .map(f32::from)
                     .map_err(|e| Error::invalid(e.to_string()))
             })
-            .collect::<infer_core::Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>()?;
         let slot = arena.slot(id)?;
         let mut target = arena.output(slot)?;
         device.copy_host_slice(&mut target, &data)?;

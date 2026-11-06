@@ -2,6 +2,7 @@ use super::*;
 use cutile::cutile_compiler::compile_api::KernelCompiler;
 use infer_cuda_kernels::tile::attention::resident_attention_prefill as kernels;
 use std::error::Error as StdError;
+use std::result::Result as StdResult;
 
 fn append_generics(s: Shape, capacity: usize) -> Vec<String> {
     vec![

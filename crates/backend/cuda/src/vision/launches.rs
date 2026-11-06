@@ -1,6 +1,5 @@
 //! Where one vision capture's launches go.
 use crate::device::{CudaDevice, device_error};
-use cutile::prelude::*;
 use infer_core::Result;
 use infer_cuda_kernels::contract::{
     Attention, Buffer, DenseBuffers, DensePlan, Gelu, Pack, PositionTaps, Recording, Vision,
@@ -8,7 +7,6 @@ use infer_cuda_kernels::contract::{
 };
 use infer_cuda_kernels::tile::kernels;
 use infer_cuda_kernels::tile::runtime::Graph;
-use std::result::Result as StdResult;
 
 /// Capture one vision graph; it keeps every allocation it records alive.
 ///
@@ -16,7 +14,7 @@ use std::result::Result as StdResult;
 /// Reports what `record` reports, or a failed capture.
 pub(super) fn capture(
     device: &CudaDevice,
-    record: impl FnOnce(&Launches<'_>) -> StdResult<(), DeviceError>,
+    record: impl FnOnce(&Launches<'_>) -> Result<()>,
 ) -> Result<Graph> {
     let families = kernels(device.ordinal());
     device.runtime().capture(|recording| {
@@ -36,12 +34,12 @@ pub(super) struct Launches<'a> {
     recording: &'a Recording<'a>,
 }
 
-fn launched(result: Result<()>) -> StdResult<(), DeviceError> {
-    result.map_err(|error| DeviceError::Launch(error.to_string()))
+fn launched(result: Result<()>) -> Result<()> {
+    result.map_err(|error| device_error(error.to_string()))
 }
 
 impl Launches<'_> {
-    pub(super) fn dense_bias(&self, dense: VisionDense<'_>) -> StdResult<(), DeviceError> {
+    pub(super) fn dense_bias(&self, dense: VisionDense<'_>) -> Result<()> {
         launched(self.vision.dense_bias(self.recording, dense))
     }
 
@@ -51,7 +49,7 @@ impl Launches<'_> {
         out: Buffer<'_, f32>,
         left: Buffer<'_, f32>,
         right: Buffer<'_, f32>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         launched(self.vision.add(self.recording, columns, out, left, right))
     }
 
@@ -61,15 +59,15 @@ impl Launches<'_> {
         columns: usize,
         out: Buffer<'_, f32>,
         input: Buffer<'_, f32>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         launched(self.vision.gelu(self.recording, form, columns, out, input))
     }
 
-    pub(super) fn layernorm(&self, norm: VisionNorm<'_>) -> StdResult<(), DeviceError> {
+    pub(super) fn layernorm(&self, norm: VisionNorm<'_>) -> Result<()> {
         launched(self.vision.layernorm(self.recording, norm))
     }
 
-    pub(super) fn rope(&self, rope: VisionRope<'_>) -> StdResult<(), DeviceError> {
+    pub(super) fn rope(&self, rope: VisionRope<'_>) -> Result<()> {
         launched(self.vision.rope(self.recording, rope))
     }
 
@@ -79,7 +77,7 @@ impl Launches<'_> {
         rows: usize,
         out: Buffer<'_, f32>,
         input: Buffer<'_, f32>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         launched(
             self.vision
                 .pack(self.recording, direction, rows, out, input),
@@ -91,18 +89,14 @@ impl Launches<'_> {
         out: Buffer<'_, f32>,
         embedded: Buffer<'_, f32>,
         taps: PositionTaps<'_>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         launched(
             self.vision
                 .add_positions(self.recording, out, embedded, taps),
         )
     }
 
-    pub(super) fn dense(
-        &self,
-        plan: DensePlan,
-        buffers: DenseBuffers<'_>,
-    ) -> StdResult<(), DeviceError> {
+    pub(super) fn dense(&self, plan: DensePlan, buffers: DenseBuffers<'_>) -> Result<()> {
         launched(self.attention.dense(self.recording, plan, buffers))
     }
 }

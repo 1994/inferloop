@@ -5,7 +5,7 @@ use super::{
     capture::{Capture, error},
 };
 use crate::constants::CONV_KERNEL_SIZE;
-use cutile::prelude::*;
+use infer_core::Result;
 use infer_cuda_kernels::contract::{Buffer, ConvBuffers, ConvKernel, DeltaBuffers, DeltaStepPlan};
 use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
@@ -37,7 +37,7 @@ pub(super) fn value_split_override() -> bool {
 }
 
 /// Width of one value-dimension block, rejecting a split that does not divide the dimension.
-pub(super) fn value_block(value_dim: usize) -> Result<usize, DeviceError> {
+pub(super) fn value_block(value_dim: usize) -> Result<usize> {
     let split = value_split();
     if split == 0 || !value_dim.is_multiple_of(split) {
         return Err(error("recurrent value split"));
@@ -52,7 +52,7 @@ impl Capture<'_> {
         output: &SlotMemory,
         state: &[Shaped<f32>],
         channels: usize,
-    ) -> Result<(), DeviceError> {
+    ) -> Result<()> {
         let [h0, h1, h2] = state else {
             return Err(error("convolution state layout"));
         };
@@ -75,11 +75,7 @@ impl Capture<'_> {
         Ok(())
     }
 
-    pub fn record_state(
-        &mut self,
-        node: &TensorNode,
-        output: &SlotMemory,
-    ) -> Result<(), DeviceError> {
+    pub fn record_state(&mut self, node: &TensorNode, output: &SlotMemory) -> Result<()> {
         let id = *node
             .states
             .first()
@@ -178,7 +174,7 @@ impl Capture<'_> {
         plan: &DeltaStepPlan,
         output: Buffer<'_, f32>,
         state: Buffer<'_, f32>,
-    ) -> Result<(), DeviceError> {
+    ) -> Result<()> {
         self.weights
             .kernels
             .recurrent
@@ -205,7 +201,7 @@ impl Capture<'_> {
         node: &TensorNode,
         output: &SlotMemory,
         channels: usize,
-    ) -> Result<(), DeviceError> {
+    ) -> Result<()> {
         let id = *node
             .states
             .first()
@@ -239,11 +235,7 @@ impl Capture<'_> {
     /// Lane-batched delta decode: one kernel over `[lanes * value_heads]` blocks. The state
     /// root is lane-major, so flattening its head and lane axes addresses every lane's
     /// `[value_heads, key, value]` state without copying.
-    fn record_delta_lanes(
-        &self,
-        node: &TensorNode,
-        output: &SlotMemory,
-    ) -> Result<(), DeviceError> {
+    fn record_delta_lanes(&self, node: &TensorNode, output: &SlotMemory) -> Result<()> {
         let TensorOp::Delta {
             key_heads,
             value_heads,

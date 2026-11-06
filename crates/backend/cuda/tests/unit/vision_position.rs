@@ -1,7 +1,6 @@
 use super::{DeviceTaps, TOKEN_TILE};
 use crate::device::{CudaDevice, device_error};
 use crate::resident::tensor_buffer;
-use cutile::cuda_async::error::DeviceError;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::Result;
@@ -97,7 +96,7 @@ fn device_positions_match_scalar_interpolation_and_padding() -> Result<()> {
                     tensor_buffer(&uploaded)?,
                     staged.taps(),
                 )
-                .map_err(|error| DeviceError::Launch(error.to_string()))
+                .map_err(|error| device_error(error.to_string()))
         })
         .map_err(device_error)?;
         graph

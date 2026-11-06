@@ -9,13 +9,14 @@
 //! `out[m, n] = activations[m, k] * weights[n, k]^T`, so `A` is the activation with `OP_T`
 //! (`lda = k`), `B` is the weight with `OP_N` (`ldb = k`), and `C` is the output with `ldc = m`.
 use crate::device::CudaDevice;
+use crate::device::device_error;
 use crate::mlp::Matrix;
 use crate::resident::tensor_buffer;
 use crate::tuning::prefill::delegate_dense;
 use cuda_core::sys::{CUdeviceptr, CUstream};
-use cutile::cuda_async::error::DeviceError;
 use cutile::half::bf16;
-use infer_core::ErrorCode;
+use infer_core::Result;
+use infer_core::{Error, ErrorCode};
 use infer_cuda_kernels::contract::{
     Bf16, Buffer, Foreign, Kernels, NARROW_GRANULE, Owner, Recording,
 };
@@ -24,6 +25,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt::Display;
 use std::ptr::null_mut;
+use std::result::Result as StdResult;
 use std::sync::{Arc, Mutex, OnceLock};
 
 type Handle = *mut c_void;
@@ -230,7 +232,7 @@ fn build(device: &CudaDevice) -> Option<Context> {
     unsafe_code,
     reason = "Audited launch: the operands are live device tensors whose extents the caller checked against each other"
 )]
-unsafe fn launch(context: &Context, product: &Product) -> Result<(), i32> {
+unsafe fn launch(context: &Context, product: &Product) -> StdResult<(), i32> {
     let Some(api) = api() else {
         return Err(-1);
     };
@@ -292,16 +294,15 @@ impl Product {
         activations: Buffer<'_, Bf16>,
         weights: Buffer<'_, Bf16>,
         out: Buffer<'_, f32>,
-    ) -> infer_core::Result<Self> {
-        let extent = |value: usize| {
-            i32::try_from(value).map_err(|_| infer_core::Error::invalid("cuBLAS extent"))
-        };
+    ) -> Result<Self> {
+        let extent =
+            |value: usize| i32::try_from(value).map_err(|_| Error::invalid("cuBLAS extent"));
         let elements = |rows: usize, columns: usize| rows.checked_mul(columns);
         if Some(activations.len()) != elements(m, k)
             || Some(weights.len()) != elements(n, k)
             || Some(out.len()) != elements(m, n)
         {
-            return Err(infer_core::Error::invalid("cuBLAS operand shape"));
+            return Err(Error::invalid("cuBLAS operand shape"));
         }
         Ok(Self {
             m: extent(m)?,
@@ -327,15 +328,13 @@ pub fn gemm_bf16(
     activations: Buffer<'_, Bf16>,
     weights: Buffer<'_, Bf16>,
     out: Buffer<'_, f32>,
-) -> infer_core::Result<()> {
+) -> Result<()> {
     let context = context_for(device)
-        .ok_or_else(|| infer_core::Error::invalid("cuBLAS handle unavailable for this device"))?;
+        .ok_or_else(|| Error::invalid("cuBLAS handle unavailable for this device"))?;
     let product = Product::new(extents, activations, weights, out)?;
     // SAFETY: the three buffers are live for the call and their extents were just checked.
     let status = unsafe { launch(&context, &product) };
-    status.map_err(|code| {
-        infer_core::Error::new(ErrorCode::Backend, format!("cublasGemmEx status {code}"))
-    })
+    status.map_err(|code| Error::new(ErrorCode::Backend, format!("cublasGemmEx status {code}")))
 }
 
 /// Vendor GEMM support for one program: the handle and the BF16 activation scratches.
@@ -385,13 +384,7 @@ impl Support {
         unsafe_code,
         reason = "Audited warmup launch: both operands are allocated here with the extents the launch is told about"
     )]
-    pub fn warm(
-        &mut self,
-        m: usize,
-        weight: &Matrix<bf16>,
-        n: usize,
-        k: usize,
-    ) -> Result<(), DeviceError> {
+    pub fn warm(&mut self, m: usize, weight: &Matrix<bf16>, n: usize, k: usize) -> Result<()> {
         let Some(context) = self.context.clone() else {
             return Ok(());
         };
@@ -415,11 +408,10 @@ impl Support {
         // SAFETY: the operands are live allocations whose extents were checked, and the stream
         // belongs to this device.
         let status = unsafe { launch(&context, &product) };
-        status
-            .map_err(|code| DeviceError::Internal(format!("cublasGemmEx warmup status {code}")))?;
+        status.map_err(|code| device_error(format!("cublasGemmEx warmup status {code}")))?;
         self.device
             .reclaim_barrier()
-            .map_err(|error| DeviceError::Internal(error.to_string()))?;
+            .map_err(|error| device_error(error.to_string()))?;
         Ok(())
     }
 
@@ -435,7 +427,7 @@ impl Support {
         weight: &Matrix<bf16>,
         out: Buffer<'_, f32>,
         (m, n, k): (usize, usize, usize),
-    ) -> Result<bool, DeviceError> {
+    ) -> Result<bool> {
         let Some(context) = self.context.clone() else {
             return Ok(false);
         };
@@ -451,7 +443,7 @@ impl Support {
         kernels
             .projection
             .narrow_bf16(recording, scratch.operand(), input)
-            .map_err(|error| DeviceError::Launch(error.to_string()))?;
+            .map_err(|error| device_error(error.to_string()))?;
         let weight = tensor_buffer(weight)?;
         let op =
             GemmBf16::new(context, [m, n, k], scratch.operand(), weight, out).map_err(internal)?;
@@ -465,12 +457,12 @@ impl Support {
             .collect::<Vec<Owner>>();
         recording
             .foreign(op, keep)
-            .map_err(|error| DeviceError::Launch(error.to_string()))?;
+            .map_err(|error| device_error(error.to_string()))?;
         Ok(true)
     }
 
     /// The BF16 activation scratch of `elements`, allocated the first time a shape needs it.
-    fn scratch(&mut self, elements: usize) -> Result<Allocation<bf16>, DeviceError> {
+    fn scratch(&mut self, elements: usize) -> Result<Allocation<bf16>> {
         if let Some(scratch) = self.activations.get(&elements) {
             return Ok(scratch.clone());
         }
@@ -484,8 +476,8 @@ impl Support {
     }
 }
 
-fn internal(error: impl Display) -> DeviceError {
-    DeviceError::Internal(error.to_string())
+fn internal(error: impl Display) -> Error {
+    device_error(error.to_string())
 }
 
 /// A bf16 projection that can be recorded into a captured graph.
@@ -508,7 +500,7 @@ impl GemmBf16 {
         activations: Buffer<'_, Bf16>,
         weights: Buffer<'_, Bf16>,
         out: Buffer<'_, f32>,
-    ) -> infer_core::Result<Self> {
+    ) -> Result<Self> {
         Ok(Self {
             context,
             product: Product::new(extents, activations, weights, out)?,
@@ -521,12 +513,12 @@ impl GemmBf16 {
     reason = "Audited in-graph launch: the recording keeps the operands alive and the stream is the one the handle was bound to"
 )]
 impl Foreign for GemmBf16 {
-    fn enqueue(self, stream: *mut c_void) -> infer_core::Result<()> {
+    fn enqueue(self, stream: *mut c_void) -> Result<()> {
         // A handle belongs to the device it was created on and launches on the stream it was bound
         // to. Recording it into a graph on another stream would place the GEMM outside that graph's
         // dependencies, so refuse rather than launch into the wrong stream.
         if stream != self.context.stream.cast() {
-            return Err(infer_core::Error::invalid(format!(
+            return Err(Error::invalid(format!(
                 "cuBLAS projection for device {} was built for a different stream than this context",
                 self.context.ordinal
             )));
@@ -534,9 +526,7 @@ impl Foreign for GemmBf16 {
         // SAFETY: the operand extents were checked in `new`, the recording keeps them alive, and
         // the stream matches the one the handle was created for.
         let status = unsafe { launch(&self.context, &self.product) };
-        status.map_err(|code| {
-            infer_core::Error::new(ErrorCode::Backend, format!("cublasGemmEx status {code}"))
-        })
+        status.map_err(|code| Error::new(ErrorCode::Backend, format!("cublasGemmEx status {code}")))
     }
 }
 

@@ -1,13 +1,12 @@
 //! Test-only copies around the unchanged attention kernels; allocations precede capture.
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::METADATA_FIELDS;
+use crate::device::device_error;
 use crate::{device::CudaDevice, resident::ProgramWeights, tuning::attention::Choice};
-use cutile::prelude::DeviceError;
 use infer_core::{Result, TensorId};
 use infer_cuda_kernels::contract::{Buffer, Recording};
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorOp};
-use std::result::Result as StdResult;
 use std::{cell::Cell, collections::BTreeMap};
 thread_local! {
     static FORCED: Cell<Option<Choice>> = const { Cell::new(None) };
@@ -98,10 +97,10 @@ impl Taps {
         key: (TensorId, usize),
         [query, keys, values]: [Buffer<'_, f32>; 3],
         (metadata, table): (Buffer<'_, i32>, Buffer<'_, i32>),
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         if let Some(tap) = self.buffers.get(&key) {
             let recording = scope;
-            let internal = |error: infer_core::Error| DeviceError::Internal(error.to_string());
+            let internal = |error: infer_core::Error| device_error(error.to_string());
             for (out, input) in [
                 (&tap.query, query),
                 (&tap.keys, keys),
@@ -123,11 +122,11 @@ impl Taps {
         scope: &Recording<'_>,
         key: (TensorId, usize),
         output: Buffer<'_, f32>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         if let Some(tap) = self.buffers.get(&key) {
             scope
                 .copy(tap.output.operand(), output)
-                .map_err(|error| DeviceError::Internal(error.to_string()))?;
+                .map_err(|error| device_error(error.to_string()))?;
         }
         Ok(())
     }

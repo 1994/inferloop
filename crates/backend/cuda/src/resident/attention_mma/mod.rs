@@ -11,11 +11,10 @@ use crate::device::{CudaDevice, device_error};
 use catalog::{DIM, HEADS, KV_HEADS, Variant};
 use cuda_core::Function;
 use cutile::prelude::*;
-use infer_core::Result;
+use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{DecodeBuffers, KvBuffers, Owner, Recording};
 use infer_cuda_kernels::tile::runtime::{Argument, KernelLaunch};
 use std::collections::BTreeMap;
-use std::result::Result as StdResult;
 pub use workspace::{Workspace, eligible};
 #[cfg(test)]
 pub use workspace::{eligible_with_role, node_eligible};
@@ -48,7 +47,7 @@ pub struct Support {
     capacity: usize,
     lanes: usize,
 }
-fn rejected() -> DeviceError {
+fn rejected() -> Error {
     super::capture::error("selected MMA cannot record these operands")
 }
 
@@ -64,10 +63,10 @@ impl Support {
             || i32::try_from(capacity).is_err()
             || i32::try_from(lanes).is_err()
         {
-            return Err(infer_core::Error::invalid("MMA scratch dimensions"));
+            return Err(Error::invalid("MMA scratch dimensions"));
         }
         if arithmetic == Arithmetic::F16 && device.profile()?.architecture != f16::ARCHITECTURE {
-            return Err(infer_core::Error::invalid(
+            return Err(Error::invalid(
                 "FP16 target attention artifact is only validated for SM120",
             ));
         }
@@ -98,7 +97,7 @@ impl Support {
     }
     pub fn prepare_float_cache(&mut self, device: &CudaDevice) -> Result<()> {
         if self.arithmetic != Arithmetic::Bf16 {
-            return Err(infer_core::Error::invalid(
+            return Err(Error::invalid(
                 "FP16 target attention has no F32-cache bridge",
             ));
         }
@@ -120,7 +119,7 @@ impl Support {
         let ordinal = i32::try_from(device.stream.device().ordinal()).map_err(device_error)?;
         if self.arithmetic == Arithmetic::F16 {
             if variant != Variant::Sm120 || device.profile()?.architecture != f16::ARCHITECTURE {
-                return Err(infer_core::Error::invalid(
+                return Err(Error::invalid(
                     "FP16 attention variant architecture mismatch",
                 ));
             }
@@ -128,9 +127,7 @@ impl Support {
             return Ok(());
         }
         if !Variant::candidates(&device.profile()?.architecture).contains(&variant) {
-            return Err(infer_core::Error::invalid(
-                "MMA variant architecture mismatch",
-            ));
+            return Err(Error::invalid("MMA variant architecture mismatch"));
         }
         self.apis
             .insert(variant, host::Api::load(variant, ordinal)?);
@@ -189,7 +186,7 @@ impl Support {
         shape: Geometry,
         window: i32,
         variant: Variant,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let (_, _, _, lanes, capacity) = shape;
         if !self.accepts(&b, shape, window) {
             return Err(rejected());

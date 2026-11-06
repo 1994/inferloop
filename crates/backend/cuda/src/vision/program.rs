@@ -11,7 +11,6 @@ use crate::attention::tile_rows;
 use crate::device::vision_position::DeviceTaps;
 use crate::device::{CudaDevice, device_error};
 use crate::resident::buffers::buffer;
-use cutile::cuda_async::error::DeviceError;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
@@ -28,7 +27,6 @@ use infer_models::vision::rope_frequencies;
 use infer_models::vision::row_tile;
 use infer_spi::ModalityEncoder;
 use std::env::var;
-use std::result::Result as StdResult;
 
 #[cfg(test)]
 #[path = "../../tests/unit/vision_projection_output.rs"]
@@ -207,7 +205,7 @@ impl StagedPositions {
         embedded: &Allocation<f32>,
         output: &Allocation<f32>,
         hidden: usize,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         if let Some(positions) = &self.host {
             launches.add(
                 hidden,

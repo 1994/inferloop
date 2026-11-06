@@ -6,7 +6,6 @@ use crate::resident::buffers::buffer;
 use crate::resident::{ProgramWeights, capture::error};
 use crate::tuning::attention::decode::{grouped_parts_for, partitions};
 use cuda_core::f8e4m3fn;
-use cutile::prelude::*;
 use infer_core::{Error, OpId, Result};
 use infer_cuda_kernels::contract::{
     Attention, Buffer, Partials, PooledAppendBuffers, PooledDecodeBuffers, PooledPlan, Recording,
@@ -16,7 +15,6 @@ use infer_ir::{DataflowGraph, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::result::Result as StdResult;
 
 const MAX_BATCH: usize = 4;
 const ATTENTION_INPUTS: usize = 3;
@@ -310,7 +308,7 @@ impl Workspace {
             .map_or(0, |work| work.layout.prefix())
     }
 
-    fn buffer(&self, node: OpId) -> StdResult<&Buffers, DeviceError> {
+    fn buffer(&self, node: OpId) -> Result<&Buffers> {
         let key = self
             .nodes
             .get(&node)
@@ -326,7 +324,7 @@ impl Workspace {
         attention: &dyn Attention,
         recording: &Recording<'_>,
         args: &Append<'_>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let Append {
             node,
             keys,
@@ -378,7 +376,7 @@ impl Workspace {
         attention: &dyn Attention,
         recording: &Recording<'_>,
         args: &Attend<'_>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let Attend {
             node,
             output,
@@ -461,7 +459,7 @@ impl super::workspace::Workspace {
         attention: &dyn Attention,
         recording: &Recording<'_>,
         args: &Append<'_>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         self.pooled
             .as_ref()
             .ok_or_else(|| error("pooled attention absent"))?
@@ -473,7 +471,7 @@ impl super::workspace::Workspace {
         attention: &dyn Attention,
         recording: &Recording<'_>,
         args: &Attend<'_>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         self.pooled
             .as_ref()
             .ok_or_else(|| error("pooled attention absent"))?

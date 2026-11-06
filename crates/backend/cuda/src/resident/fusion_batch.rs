@@ -25,7 +25,6 @@ use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
 use std::ops::Range;
-use std::result::Result as StdResult;
 use std::sync::Arc;
 
 const ROWS: usize = 128;
@@ -146,12 +145,12 @@ impl Workspace {
     }
 
     /// Projection input rows `lanes`.
-    fn input_rows(&self, lanes: Range<usize>) -> StdResult<Buffer<'_, f32>, DeviceError> {
+    fn input_rows(&self, lanes: Range<usize>) -> Result<Buffer<'_, f32>> {
         self.rows_of(&self.input, COLUMNS, lanes)
     }
 
     /// Gathered embedding rows `lanes`.
-    fn gathered_rows(&self, lanes: Range<usize>) -> StdResult<Buffer<'_, f32>, DeviceError> {
+    fn gathered_rows(&self, lanes: Range<usize>) -> Result<Buffer<'_, f32>> {
         self.rows_of(&self.gathered, HIDDEN, lanes)
     }
 
@@ -160,7 +159,7 @@ impl Workspace {
         memory: &'a Allocation<f32>,
         columns: usize,
         lanes: Range<usize>,
-    ) -> StdResult<Buffer<'a, f32>, DeviceError> {
+    ) -> Result<Buffer<'a, f32>> {
         if lanes.end > self.rows {
             return Err(error("fusion batch rows"));
         }
@@ -175,7 +174,7 @@ impl Workspace {
         scope: &Recording<'_>,
         lane: usize,
         normalized: Buffer<'_, f32>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         scope
             .copy(self.input_rows(lane..lane + 1)?, normalized)
             .map_err(error)
@@ -190,7 +189,7 @@ fn gather(
     node: &TensorNode,
     gathered: Buffer<'_, f32>,
     metadata_batch: Buffer<'_, i32>,
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     let weight = builder
         .weights
         .embeddings
@@ -223,7 +222,7 @@ pub(super) fn record(
     metadata: &[Allocation<i32>],
     metadata_batch: &Allocation<i32>,
     workspace: &Workspace,
-) -> StdResult<bool, DeviceError> {
+) -> Result<bool> {
     #[cfg(test)]
     if DISABLED.get() {
         return Ok(false);
@@ -311,7 +310,7 @@ fn record_wide(
     arena: &ActivationArena,
     metadata_batch: &Allocation<i32>,
     workspace: &Workspace,
-) -> StdResult<bool, DeviceError> {
+) -> Result<bool> {
     let lanes = arena.lanes();
     let slot = arena.slot(node.outputs[0]).map_err(error)?;
     if arena.get(node.outputs[0]).map_err(error)?.len() != lanes * HIDDEN {

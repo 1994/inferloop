@@ -32,7 +32,6 @@ use cutile::{half::bf16, prelude::*};
 use infer_core::{Error, Result};
 use std::collections::BTreeMap;
 use std::ops::Range;
-use std::result::Result as StdResult;
 use std::sync::Arc;
 use weights::Geometry;
 
@@ -648,7 +647,7 @@ impl<'a> Recorder<'a> {
 }
 
 /// A weight in the forms a draft projection supports.
-fn draft_weight(weight: &ProjectionWeight) -> StdResult<DraftWeight<'_>, DeviceError> {
+fn draft_weight(weight: &ProjectionWeight) -> Result<DraftWeight<'_>> {
     match weight {
         ProjectionWeight::Dense(w) => Ok(DraftWeight::Dense(buffer(w)?)),
         ProjectionWeight::Fp8(w, s) => Ok(DraftWeight::Fp8 {
@@ -660,17 +659,14 @@ fn draft_weight(weight: &ProjectionWeight) -> StdResult<DraftWeight<'_>, DeviceE
             scales: buffer(s)?,
             scale_columns: s.columns(),
         }),
-        ProjectionWeight::Fp4(..) => Err(DeviceError::Launch(
-            "DFlash2 draft projections do not support NVFP4".into(),
+        ProjectionWeight::Fp4(..) => Err(device_error(
+            "DFlash2 draft projections do not support NVFP4",
         )),
     }
 }
 
 /// One field of the metadata buffer.
-fn meta_field(
-    meta: &Allocation<i32>,
-    field: Range<usize>,
-) -> StdResult<Buffer<'_, i32>, DeviceError> {
+fn meta_field(meta: &Allocation<i32>, field: Range<usize>) -> Result<Buffer<'_, i32>> {
     buffer(meta)?.slice(field).map_err(error)
 }
 
@@ -681,7 +677,7 @@ fn record_gemm(
     input: Buffer<'_, f32>,
     out: Buffer<'_, f32>,
     (rows, columns): (usize, usize),
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     r.draft
         .project(
             r.recording,
@@ -716,7 +712,7 @@ fn record_projection(
     input: Buffer<'_, f32>,
     out: Buffer<'_, f32>,
     (rows, k, partials): (usize, usize, &Partials),
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     let n = out.len() / rows;
     let (ProjectionWeight::Fp8(codes, scales), Some((partial, splits, k_tiles))) =
         (weight, partials.get(&(n, k)))
@@ -749,7 +745,7 @@ fn record_head_norm(
     input: Buffer<'_, f32>,
     weight: Buffer<'_, f32>,
     geometry: &Geometry,
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     r.draft
         .norm(
             r.recording,
@@ -788,7 +784,7 @@ fn record_rope(
     weights: &DraftWeights,
     positions: Buffer<'_, i32>,
     heads: usize,
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     r.draft
         .rope(
             r.recording,
@@ -811,7 +807,7 @@ fn record_ring_stores(
     (keys, values): (Buffer<'_, f32>, Buffer<'_, f32>),
     (ring_ids, positions): (Buffer<'_, i32>, Buffer<'_, i32>),
     (rows, geometry): (usize, &Geometry),
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     for (ring, input) in [(&rings.keys[index], keys), (&rings.values[index], values)] {
         r.draft
             .ring_store(
@@ -840,7 +836,7 @@ fn record_ingest(
     rings: &Rings,
     work: &Ingest,
     features: Buffer<'_, f32>,
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     let geometry = weights.geometry;
     let rows = work.rows;
     let hidden = geometry.hidden;
@@ -884,7 +880,7 @@ fn record_conv(
     base: Buffer<'_, f32>,
     (rows, side): (usize, i32),
     geometry: &Geometry,
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     r.draft
         .conv(
             r.recording,
@@ -911,7 +907,7 @@ fn record_propose(
     weights: &DraftWeights,
     rings: &Rings,
     w: &ProposeBuffers,
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     let g = weights.geometry;
     let first = buffer(&w.stream[0])?;
     r.draft
@@ -952,7 +948,7 @@ fn record_attention_inputs(
     rings: &Rings,
     w: &ProposeBuffers,
     index: usize,
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     let g = weights.geometry;
     let (rows, slots, hidden) = (w.rows, w.slots, g.hidden);
     let layer = &weights.layers[index];
@@ -987,10 +983,7 @@ fn record_attention_inputs(
 }
 
 /// The stream holding the residual and the one the update writes.
-fn streams(
-    w: &ProposeBuffers,
-    current: usize,
-) -> StdResult<(Buffer<'_, f32>, Buffer<'_, f32>), DeviceError> {
+fn streams(w: &ProposeBuffers, current: usize) -> Result<(Buffer<'_, f32>, Buffer<'_, f32>)> {
     let [first, second] = &w.stream;
     let (first, second) = (buffer(first)?, buffer(second)?);
     Ok(if current == 0 {
@@ -1008,7 +1001,7 @@ fn record_attention_block(
     rings: &Rings,
     w: &ProposeBuffers,
     (index, current): (usize, usize),
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     let g = weights.geometry;
     let (rows, slots) = (w.rows, w.slots);
     let query = g.heads * g.head_dim;
@@ -1072,7 +1065,7 @@ fn record_mlp_block(
     weights: &DraftWeights,
     w: &ProposeBuffers,
     (index, current): (usize, usize),
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     let g = weights.geometry;
     let (rows, hidden) = (w.rows, g.hidden);
     let layer = &weights.layers[index];
@@ -1117,11 +1110,7 @@ fn record_mlp_block(
 }
 
 /// Top candidates of every row from the target head, then the selector walk over them.
-fn record_candidates(
-    r: &Recorder<'_>,
-    weights: &DraftWeights,
-    w: &ProposeBuffers,
-) -> StdResult<(), DeviceError> {
+fn record_candidates(r: &Recorder<'_>, weights: &DraftWeights, w: &ProposeBuffers) -> Result<()> {
     let g = weights.geometry;
     let (rows, slots, hidden) = (w.rows, w.slots, g.hidden);
     let normed = buffer(&w.normed)?;

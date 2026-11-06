@@ -6,7 +6,7 @@ use super::buffers::{RowMajor, buffer};
 use super::capture::error;
 use crate::tuning::pool_dense::{self, Choice};
 use crate::{mlp::ProjectionWeight, strategy::LinearTiling};
-use cutile::prelude::*;
+use infer_core::Result;
 use infer_cuda_kernels::contract::{Buffer, Kernels, PoolGemvPlan, Recording};
 #[cfg(test)]
 use std::cell::Cell;
@@ -18,7 +18,7 @@ pub(super) fn record(
     columns: usize,
     tile: LinearTiling,
     choice: Choice,
-) -> Result<bool, DeviceError> {
+) -> Result<bool> {
     let rows = input.len() / columns.max(1);
     let outputs = output.columns;
     if !pool_dense::searchable([rows, outputs, columns]) || !enabled() {

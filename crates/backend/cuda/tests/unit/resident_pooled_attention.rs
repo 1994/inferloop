@@ -1,13 +1,16 @@
 use super::*;
+use crate::device::device_error;
 use crate::resident::attention::attention;
 use crate::resident::buffers::buffer as operand;
 use crate::resident::buffers::cutile;
 use cutile::cutile_compiler::compile_api::KernelCompiler;
+use cutile::prelude::*;
 use infer_cuda_kernels::tile::attention::{
     TileAttention, grouped_options, pooled_device as kernels,
 };
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
+use std::result::Result as StdResult;
 use std::slice::from_ref;
 
 type TestResult<T = ()> = StdResult<T, Box<dyn Error>>;
@@ -328,8 +331,16 @@ impl Fixture {
                     attention::append(
                         (&mut *keys).partition([1, physical, DIM]),
                         (&mut *values).partition([1, physical, DIM]),
-                        &self.inputs[0].slice(from_ref(&range))?.view(&[KV, DIM])?,
-                        &self.inputs[1].slice(from_ref(&range))?.view(&[KV, DIM])?,
+                        &self.inputs[0]
+                            .slice(from_ref(&range))
+                            .map_err(device_error)?
+                            .view(&[KV, DIM])
+                            .map_err(device_error)?,
+                        &self.inputs[1]
+                            .slice(from_ref(&range))
+                            .map_err(device_error)?
+                            .view(&[KV, DIM])
+                            .map_err(device_error)?,
                         metadata.as_ref(),
                         self.tables[lane / VERIFY_LANES].tensor(),
                         SCALES[0],
@@ -350,15 +361,22 @@ impl Fixture {
                         self.queries
                             .slice(from_ref(&(lane * HEADS * DIM..(lane + 1) * HEADS * DIM)))
                     })
-                    .collect::<StdResult<Vec<_>, _>>()?;
+                    .collect::<StdResult<Vec<_>, _>>()
+                    .map_err(device_error)?;
                 cutile(scope)?.record(
                     super::super::kernels::partial_gqa3(
                         (&mut numerator).partition([1, STACKED_ROWS, DIM]),
                         (&mut maxima).partition([1, STACKED_ROWS]),
                         (&mut sums).partition([1, STACKED_ROWS]),
-                        &queries[0].view(&[KV, HEADS / KV, DIM])?,
-                        &queries[1].view(&[KV, HEADS / KV, DIM])?,
-                        &queries[2].view(&[KV, HEADS / KV, DIM])?,
+                        &queries[0]
+                            .view(&[KV, HEADS / KV, DIM])
+                            .map_err(device_error)?,
+                        &queries[1]
+                            .view(&[KV, HEADS / KV, DIM])
+                            .map_err(device_error)?,
+                        &queries[2]
+                            .view(&[KV, HEADS / KV, DIM])
+                            .map_err(device_error)?,
                         &lane_metadata[base],
                         &lane_metadata[base + 1],
                         &lane_metadata[base + 2],
@@ -381,9 +399,9 @@ impl Fixture {
                     cutile(scope)?.record(
                         super::super::kernels::merge_gqa(
                             output.partition([1, DIM]),
-                            &numerator.view(&[KV, PARTS, STACKED_ROWS, DIM])?,
-                            &maxima.view(&[KV, PARTS, STACKED_ROWS])?,
-                            &sums.view(&[KV, PARTS, STACKED_ROWS])?,
+                            &shaped(&numerator, &[KV, PARTS, STACKED_ROWS, DIM])?,
+                            &shaped(&maxima, &[KV, PARTS, STACKED_ROWS])?,
+                            &shaped(&sums, &[KV, PARTS, STACKED_ROWS])?,
                             i32::try_from(lane * STACKED_LANE_ROWS).map_err(error)?,
                         )
                         .generics(
@@ -414,4 +432,9 @@ fn extended_concurrency_preserves_attention_outputs_and_pages() -> TestResult {
         }
     }
     Ok(())
+}
+
+/// `tensor` viewed as `shape`, failing as the project's errors do inside a capture.
+fn shaped<'a>(tensor: &'a Tensor<f32>, shape: &[usize]) -> Result<TensorView<'a, f32>> {
+    tensor.view(shape).map_err(device_error)
 }

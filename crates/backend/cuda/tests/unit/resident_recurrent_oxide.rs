@@ -7,7 +7,6 @@ use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Kernels, PreparedDeltaBuffers, Recording, RecurrentShape};
 use infer_cuda_kernels::tile::runtime::Graph;
-use std::result::Result as StdResult;
 const KH: usize = 16;
 const VH: usize = 48;
 const DIM: usize = 128;
@@ -34,7 +33,7 @@ fn record_simt(
     shape: RecurrentShape,
     [state, output, qkv, normalized, betas, decays]: [&Tensor<f32>; 6],
     metadata: &Tensor<i32>,
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     kernels
         .recurrent
         .delta_prepared_simt(
@@ -50,7 +49,7 @@ fn record_simt(
                 metadata: tensor_buffer(metadata)?,
             },
         )
-        .map_err(|error| DeviceError::Launch(error.to_string()))
+        .map_err(|error| device_error(error.to_string()))
 }
 #[test]
 #[ignore = "requires CUDA/safe-run; full original F32 state/output and independent F64"]

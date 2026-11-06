@@ -13,11 +13,10 @@
 use super::super::buffers::buffer;
 use super::super::capture::error;
 use crate::device::CudaDevice;
-use cutile::{half::bf16, prelude::*};
+use cutile::half::bf16;
 use infer_core::Result;
 use infer_cuda_kernels::contract::{Buffer, ChunkBuffers, Recording, Recurrent, RecurrentShape};
 use infer_cuda_kernels::tile::runtime::Allocation;
-use std::result::Result as StdResult;
 
 /// Tokens per chunk.
 pub(super) const CHUNK: usize = 64;
@@ -75,7 +74,7 @@ pub(super) fn record(
     shape: RecurrentShape,
     [qkv, betas, decays, state, output]: [Buffer<'_, f32>; CHUNK_OPERANDS],
     metadata: Buffer<'_, i32>,
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     recurrent
         .chunk(
             scope,

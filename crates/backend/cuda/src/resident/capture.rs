@@ -9,12 +9,14 @@ use crate::constants::DEFAULT_TILE_COLUMNS;
 use crate::constants::DEFAULT_TILE_ROWS;
 #[cfg(test)]
 use crate::constants::GEMV_WIDE_OUTPUT_RATIO;
+use crate::device::device_error;
 #[cfg(test)]
 use crate::mlp::ProjectionWeight;
 use crate::strategy::LinearTiling;
 use crate::tuning::gated_norm::options as gated_norm_options;
-use cutile::prelude::*;
 use cutile::tile_kernel::CompileOptions;
+use infer_core::Error;
+use infer_core::Result;
 use infer_core::TensorId;
 use infer_cuda_kernels::contract::{
     Bf16, BinaryOp, Buffer, EmbeddingPlan, FusionNormBuffers, FusionNormPlan, FusionShape, Kernels,
@@ -65,8 +67,8 @@ pub(super) struct Capture<'a> {
     pub mode: CaptureMode,
 }
 
-pub(super) fn error(message: impl Display) -> DeviceError {
-    DeviceError::Launch(message.to_string())
+pub(super) fn error(message: impl Display) -> Error {
+    device_error(message)
 }
 
 /// A draft's embedding and hidden rows through their fusion norm; the reduction width follows
@@ -77,7 +79,7 @@ fn record_embedding(
     plan: &EmbeddingPlan,
     (output, weight): (Buffer<'_, f32>, Buffer<'_, Bf16>),
     (external, metadata): (Buffer<'_, f32>, Buffer<'_, i32>),
-) -> Result<(), DeviceError> {
+) -> Result<()> {
     kernels
         .projection
         .embedding(scope, plan, output, weight, external, metadata)
@@ -90,7 +92,7 @@ fn record_fusion_norm(
     fusion: &FusionWeights,
     dimension: usize,
     (embedding, hidden, out): (Buffer<'_, f32>, Buffer<'_, f32>, Buffer<'_, f32>),
-) -> Result<(), DeviceError> {
+) -> Result<()> {
     kernels
         .norm
         .fusion(
@@ -112,7 +114,7 @@ fn record_fusion_norm(
 }
 
 /// One part of a split, which must sit on a multiple of its power-of-two width.
-fn split_plan(widths: &[usize], part: usize, elements: usize) -> Result<SplitPlan, DeviceError> {
+fn split_plan(widths: &[usize], part: usize, elements: usize) -> Result<SplitPlan> {
     let width = widths[part];
     let offset: usize = widths[..part].iter().sum();
     if !width.is_power_of_two() || !offset.is_multiple_of(width) {
@@ -129,7 +131,7 @@ fn split_plan(widths: &[usize], part: usize, elements: usize) -> Result<SplitPla
 impl Capture<'_> {
     /// An activation or weight constant as a kernel operand: a lane's row sits inside its batched
     /// slot.
-    pub(super) fn input_buffer(&self, id: TensorId) -> Result<Buffer<'static, f32>, DeviceError> {
+    pub(super) fn input_buffer(&self, id: TensorId) -> Result<Buffer<'static, f32>> {
         if let Some(value) = self.weights.constants.get(&id) {
             return Ok(region(value.buffer().address(), value.len()));
         }
@@ -143,7 +145,7 @@ impl Capture<'_> {
         Ok(region(base + offset, row))
     }
 
-    pub fn record(&mut self, node: &TensorNode) -> Result<(), DeviceError> {
+    pub fn record(&mut self, node: &TensorNode) -> Result<()> {
         for (part, id) in node.outputs.iter().enumerate() {
             let index = self.arena.slot(*id).map_err(error)?;
             let output = self.arena.memory(index).map_err(error)?;
@@ -181,11 +183,7 @@ impl Capture<'_> {
 
     /// Record every node of a program graph, optionally skipping the logits-producing
     /// node (a prefill graph leaves the logits readout to its `_last` twin).
-    pub fn record_program(
-        &mut self,
-        graph: &DataflowGraph,
-        skip_logits: bool,
-    ) -> Result<(), DeviceError> {
+    pub fn record_program(&mut self, graph: &DataflowGraph, skip_logits: bool) -> Result<()> {
         let quant_plan = (self.mode == CaptureMode::Flat)
             .then(|| super::nvfp4_gemm::QuantPairPlan::new(graph, self.weights));
         self.nvfp4.begin_quant_capture();
@@ -209,7 +207,7 @@ impl Capture<'_> {
 
     /// Row-mode twin of [`Self::record`]: kernels write one lane of each batched slot
     /// through a view of that row.
-    pub fn record_row(&mut self, node: &TensorNode, lane: usize) -> Result<(), DeviceError> {
+    pub fn record_row(&mut self, node: &TensorNode, lane: usize) -> Result<()> {
         if self.mode != CaptureMode::Row(lane) {
             return Err(error("row capture mode mismatch"));
         }
@@ -222,12 +220,7 @@ impl Capture<'_> {
     }
 
     /// Record `node`'s part `part` into the slot `output`.
-    fn operation(
-        &mut self,
-        node: &TensorNode,
-        output: &SlotMemory,
-        part: usize,
-    ) -> Result<(), DeviceError> {
+    fn operation(&mut self, node: &TensorNode, output: &SlotMemory, part: usize) -> Result<()> {
         match &node.op {
             TensorOp::MoeRoute { .. }
             | TensorOp::ExpertLinear { .. }
@@ -316,7 +309,7 @@ impl Capture<'_> {
         node: &TensorNode,
         out: Buffer<'_, f32>,
         plan: &SplitPlan,
-    ) -> Result<(), DeviceError> {
+    ) -> Result<()> {
         self.weights
             .kernels
             .state
@@ -326,7 +319,7 @@ impl Capture<'_> {
 
     /// Width-1 and verification-width projection: per-lane input tensor.
     /// Prefill width 32 linear nodes never reach here; see `prefill_projection`.
-    fn linear(&mut self, node: &TensorNode, output: &SlotMemory) -> Result<(), DeviceError> {
+    fn linear(&mut self, node: &TensorNode, output: &SlotMemory) -> Result<()> {
         let input = self.weights.constants.get(&node.inputs[0]).map_or_else(
             || self.arena.activation(node.inputs[0]).map_err(error),
             |value| Ok(value.buffer()),
@@ -389,7 +382,7 @@ impl Capture<'_> {
         Ok(())
     }
 
-    fn embedding(&self, node: &TensorNode, output: &SlotMemory) -> Result<(), DeviceError> {
+    fn embedding(&self, node: &TensorNode, output: &SlotMemory) -> Result<()> {
         let dimension = output.len();
         if self.weights.fusion.is_some() {
             self.fusion_input(node, dimension)?;
@@ -432,11 +425,7 @@ impl Capture<'_> {
 
     /// Original row embedding and fusion normalization into the fusion workspace, before its
     /// projection.
-    pub(super) fn fusion_input(
-        &self,
-        node: &TensorNode,
-        dimension: usize,
-    ) -> Result<(), DeviceError> {
+    pub(super) fn fusion_input(&self, node: &TensorNode, dimension: usize) -> Result<()> {
         let weight = self
             .weights
             .embeddings
@@ -476,11 +465,7 @@ impl Capture<'_> {
 
     /// Fusion normalization alone into the fusion workspace, reading an already gathered
     /// embedding row. The arithmetic and reduction width are identical to `fusion_input`.
-    pub(super) fn fusion_norm(
-        &self,
-        dimension: usize,
-        embedding: Buffer<'_, f32>,
-    ) -> Result<(), DeviceError> {
+    pub(super) fn fusion_norm(&self, dimension: usize, embedding: Buffer<'_, f32>) -> Result<()> {
         let fusion = self
             .weights
             .fusion
@@ -507,7 +492,7 @@ impl Capture<'_> {
         epsilon: f32,
         offset: f32,
         gated: bool,
-    ) -> Result<(), DeviceError> {
+    ) -> Result<()> {
         if dimension == 0 || !output.len().is_multiple_of(dimension) {
             return Err(error("norm dimensions"));
         }
@@ -558,7 +543,7 @@ impl Capture<'_> {
     }
 
     /// Kernel selection follows logical serving rows, independently of candidate padding.
-    fn normalization_heads(&self, heads: usize) -> Result<usize, DeviceError> {
+    fn normalization_heads(&self, heads: usize) -> Result<usize> {
         let bf16_pool = self.weights.fusion.is_none() && self.weights.attention_profile.is_bf16();
         let reference_slots = match self.mode {
             CaptureMode::Verification { slots } => {

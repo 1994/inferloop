@@ -15,7 +15,6 @@ use crate::strategy::LinearTiling;
 use crate::tuning::pool_dense::Choice as PromptChoice;
 use crate::{device::DeviceProfile, mlp::ProjectionWeight};
 use cutile::half::bf16;
-use cutile::prelude::*;
 pub(super) use dense::DensePlan;
 use infer_cuda_kernels::contract::{
     Bf16, Buffer, DenseKernel, DenseRowsPlan, Kernels, PromptPlan, Recording, SplitGemmPlan,
@@ -26,6 +25,7 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::tuning::prefill::{delegate_dense, narrow_dense_layout};
+use infer_core::Result;
 const NARROW_DENSE_TILE: [usize; 2] = [PREFILL_LANES, 16];
 
 /// Down projection absorbing `silu(gate) * up`: node indices of the `SiLU` and multiply it
@@ -101,7 +101,7 @@ impl MlpPlan {
         weights: &ProgramWeights,
         arena: &super::ActivationArena,
         nvfp4: &mut super::nvfp4_gemm::Workspace,
-    ) -> Result<(), DeviceError> {
+    ) -> Result<()> {
         if weights.fusion.is_some() || !weights.attention_profile.is_bf16() {
             return Ok(());
         }
@@ -183,7 +183,7 @@ impl MlpPlan {
         arena: &super::ActivationArena,
         weights: &ProgramWeights,
         nvfp4: &mut super::nvfp4_gemm::Workspace,
-    ) -> Result<bool, DeviceError> {
+    ) -> Result<bool> {
         if self.fused.contains_key(&(index + 1))
             && super::norm_fp4::record(scope, (index, nodes), arena, weights, nvfp4)?
         {
@@ -200,7 +200,7 @@ impl MlpPlan {
         arena: &super::ActivationArena,
         weights: &ProgramWeights,
         nvfp4: &mut super::nvfp4_gemm::Workspace,
-    ) -> Result<bool, DeviceError> {
+    ) -> Result<bool> {
         if let Some(&(gate, up, down)) = self.fused.get(&index) {
             let projections = (&nodes[gate], &nodes[up], &nodes[down]);
             record_fused_mlp(scope, projections, arena, weights, nvfp4)?;
@@ -307,7 +307,7 @@ fn record_fused_mlp(
     arena: &super::ActivationArena,
     weights: &ProgramWeights,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
-) -> Result<(), DeviceError> {
+) -> Result<()> {
     let scale = |node: &TensorNode| match weights.activation_quantization(node.inputs[1]) {
         Some(super::program::ActivationQuantization::Fp4(scale)) => Ok(scale),
         _ => Err(error("fused SwiGLU activation scale")),
@@ -338,7 +338,7 @@ fn record_fused_down(
     arena: &super::ActivationArena,
     weights: &ProgramWeights,
     nvfp4: &super::nvfp4_gemm::Workspace,
-) -> Result<(), DeviceError> {
+) -> Result<()> {
     let Some(super::program::ActivationQuantization::Fp4(scale)) =
         weights.activation_quantization(node.inputs[1])
     else {
@@ -383,7 +383,7 @@ fn record_swiglu(
     arena: &super::ActivationArena,
     weights: &ProgramWeights,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
-) -> Result<bool, DeviceError> {
+) -> Result<bool> {
     let Some(super::program::ActivationQuantization::Fp4(scale)) =
         weights.activation_quantization(node.inputs[1])
     else {
@@ -423,7 +423,7 @@ pub(super) fn record(
     partials: &Partials,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
     delegated: Option<&mut Support>,
-) -> Result<(), DeviceError> {
+) -> Result<()> {
     if weights.constants.contains_key(&node.inputs[0]) {
         return Err(error("prefill32 constant linear input"));
     }
@@ -510,7 +510,7 @@ fn pair_slots(
     arena: &super::ActivationArena,
     width: usize,
     (rows, columns): (usize, usize),
-) -> Result<Option<(usize, usize, usize)>, DeviceError> {
+) -> Result<Option<(usize, usize, usize)>> {
     let expected = rows
         .checked_mul(width)
         .ok_or_else(|| error("paired projection extent overflow"))?;
@@ -539,7 +539,7 @@ fn record_prompt_dense(
     output: RowMajor<'_, f32>,
     (width, rows, columns): (usize, usize, usize),
     (nvfp4, delegated): (&super::nvfp4_gemm::Workspace, Option<&mut Support>),
-) -> Result<(), DeviceError> {
+) -> Result<()> {
     if records_precise_sparse(
         (&weights.kernels, scope),
         weights,
@@ -599,7 +599,7 @@ pub(super) fn record_pair(
     second: &TensorNode,
     arena: &super::ActivationArena,
     (weights, profile): (&ProgramWeights, &DeviceProfile),
-) -> Result<bool, DeviceError> {
+) -> Result<bool> {
     if !pairable(first, second) || !weights.expert_banks.is_empty() {
         return Ok(false);
     }
@@ -656,7 +656,7 @@ fn record_legacy_fp4(
     output: Buffer<'_, f32>,
     partials: &Partials,
     (width, columns): (usize, usize),
-) -> Result<(), DeviceError> {
+) -> Result<()> {
     if width != PREFILL_LANES {
         return Err(error("legacy FP4 split prefill requires width 32"));
     }
@@ -695,7 +695,7 @@ fn records_vendor_gemm(
     weight: &Matrix<bf16>,
     output: Buffer<'_, f32>,
     (width, rows, columns): (usize, usize, usize),
-) -> Result<bool, DeviceError> {
+) -> Result<bool> {
     let Some(delegated) = delegated else {
         return Ok(false);
     };
@@ -708,7 +708,7 @@ fn records_precise_sparse(
     weights: &ProgramWeights,
     (out, input, weight): (Buffer<'_, f32>, Buffer<'_, f32>, Buffer<'_, Bf16>),
     columns: usize,
-) -> Result<bool, DeviceError> {
+) -> Result<bool> {
     if weights.expert_banks.is_empty() {
         return Ok(false);
     }
@@ -737,7 +737,7 @@ pub(super) fn record_narrow(
     node: &TensorNode,
     arena: &super::ActivationArena,
     (weights, profile): (&ProgramWeights, &DeviceProfile),
-) -> Result<bool, DeviceError> {
+) -> Result<bool> {
     let Some(ProjectionWeight::Dense(weight)) = weights.projections.get(&node.inputs[1]) else {
         return Ok(false);
     };
@@ -784,7 +784,7 @@ fn records_narrow_dense(
     profile: &DeviceProfile,
     (out, input, weight): (Buffer<'_, f32>, Buffer<'_, f32>, Buffer<'_, Bf16>),
     shape: (usize, usize, usize),
-) -> Result<bool, DeviceError> {
+) -> Result<bool> {
     #[cfg(test)]
     if DENSE_REFERENCE.get() {
         return Ok(false);
@@ -849,7 +849,7 @@ mod tests;
 fn down_operands(
     arena: &super::ActivationArena,
     node: &TensorNode,
-) -> Result<Option<(usize, usize)>, DeviceError> {
+) -> Result<Option<(usize, usize)>> {
     let input = arena.slot(node.inputs[0]).map_err(error)?;
     let output = arena.slot(node.outputs[0]).map_err(error)?;
     Ok((input != output).then_some((input, output)))

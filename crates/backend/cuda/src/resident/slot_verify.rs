@@ -25,7 +25,6 @@ use infer_cuda_kernels::contract::Recording;
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::{StateKind, TensorNode, TensorOp, TensorStorage};
-use std::result::Result as StdResult;
 use std::slice::from_ref;
 
 /// Pooled speculation graph: `slots` state sets × `verify` contiguous candidate lanes each,
@@ -122,7 +121,7 @@ pub(super) type SlotVerifyLane = (usize, usize, u32, usize, usize);
 fn slot_lanes(
     slot: usize,
     metadata: &[Allocation<i32>],
-) -> StdResult<super::slot_recurrent::SlotLanes<'_>, DeviceError> {
+) -> Result<super::slot_recurrent::SlotLanes<'_>> {
     let base = slot * super::slot_recurrent::LANES;
     let [first, second, third] = [base, base + 1, base + 2];
     let lane = |index: usize| {
@@ -315,7 +314,7 @@ impl BatchBuilder<'_> {
             ValueDevice,
             &super::slot_states::VerifyBatch<'_>,
         ),
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         staging.record_node(scope, node, arena, index)?;
         if super::slot_convolution::record(scope, node, arena, batch, self.weights)?
             || super::slot_states::record_batch(scope, node, arena, batch, hardware)?

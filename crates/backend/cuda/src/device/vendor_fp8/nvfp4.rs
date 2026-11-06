@@ -7,6 +7,7 @@ use super::{
 };
 use super::{LibraryIdentity, algorithm_config};
 use crate::constants::NVFP4_GROUP_SIZE;
+use crate::device::device_error;
 use crate::mlp::ProjectionWeight;
 use crate::resident::buffers::RowMajor;
 use crate::tuning::projection_budget::ProjectionKind;
@@ -15,6 +16,7 @@ use crate::tuning::{nvfp4_lt as cache, table_path};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
 use infer_core::ErrorCode;
+use infer_core::Result;
 use infer_cuda_kernels::contract::{
     Buffer, Foreign, Fp4Pair, Fp4ScalePlan, Fp8, Kernels, Owner, Recording,
 };
@@ -73,7 +75,7 @@ impl<'a> Operands<'a> {
         };
         Some((w.allocation().operand(), s.allocation().operand(), *global))
     }
-    fn shape(&self) -> Result<Option<Shape>, DeviceError> {
+    fn shape(&self) -> Result<Option<Shape>> {
         let Some((weight, scales, global)) = self.weights() else {
             return Ok(None);
         };
@@ -208,7 +210,7 @@ impl Support {
     pub(crate) const fn enabled(&self) -> bool {
         self.context.is_some()
     }
-    pub(crate) fn known(&self, op: &Operands<'_>) -> Result<Option<bool>, DeviceError> {
+    pub(crate) fn known(&self, op: &Operands<'_>) -> Result<Option<bool>> {
         if self.context.is_none() {
             return Ok(Some(false));
         }
@@ -228,7 +230,7 @@ impl Support {
         &mut self,
         op: &Operands<'_>,
         native: GemmConfig,
-    ) -> Result<Option<Candidate>, DeviceError> {
+    ) -> Result<Option<Candidate>> {
         let Some(context) = self.context.clone() else {
             return Ok(None);
         };
@@ -338,11 +340,7 @@ impl Support {
             }
         }
     }
-    pub(crate) fn prepare(
-        &mut self,
-        op: &Operands<'_>,
-        candidate: Candidate,
-    ) -> Result<bool, DeviceError> {
+    pub(crate) fn prepare(&mut self, op: &Operands<'_>, candidate: Candidate) -> Result<bool> {
         let Candidate {
             context,
             prepared,
@@ -407,7 +405,10 @@ impl Support {
             }
             self.model.save_numerical(key, op, true)?;
         } else if let Some(graph) = &graph {
-            graph.launch().sync_on(&context.device.stream)?;
+            graph
+                .launch()
+                .sync_on(&context.device.stream)
+                .map_err(device_error)?;
         }
         let ProjectionWeight::Fp4(w, s, _) = op.weight else {
             return Ok(false);
@@ -425,11 +426,7 @@ impl Support {
         Ok(true)
     }
     /// False records nothing. Errors after append abort the containing capture.
-    pub(crate) fn record(
-        &self,
-        scope: &Recording<'_>,
-        op: &Operands<'_>,
-    ) -> Result<bool, DeviceError> {
+    pub(crate) fn record(&self, scope: &Recording<'_>, op: &Operands<'_>) -> Result<bool> {
         let Some(context) = &self.context else {
             return Ok(false);
         };
@@ -472,7 +469,7 @@ fn disk_key(
     shape: Shape,
     native: GemmConfig,
     library: LibraryIdentity,
-) -> Result<cache::Key, DeviceError> {
+) -> Result<cache::Key> {
     if !matches!(op.weight, ProjectionWeight::Fp4(..)) {
         return Err(error("FP4 weight identity"));
     }
@@ -495,13 +492,19 @@ fn exact(
     baseline: &Graph,
     candidate: &Graph,
     out: Buffer<'_, f32>,
-) -> Result<bool, DeviceError> {
-    baseline.launch().sync_on(&context.device.stream)?;
+) -> Result<bool> {
+    baseline
+        .launch()
+        .sync_on(&context.device.stream)
+        .map_err(device_error)?;
     let expected = context
         .device
         .read_buffer::<f32>(out)
         .map_err(|e| error(e.to_string()))?;
-    candidate.launch().sync_on(&context.device.stream)?;
+    candidate
+        .launch()
+        .sync_on(&context.device.stream)
+        .map_err(device_error)?;
     let actual = context
         .device
         .read_buffer::<f32>(out)
@@ -519,7 +522,7 @@ fn capture(
     native: GemmConfig,
     prepared: Option<&Arc<Prepared>>,
     shape: Shape,
-) -> Result<Graph, DeviceError> {
+) -> Result<Graph> {
     let kernels = context.device.kernels();
     Graph::scope(&context.device.stream, |scope| {
         prepared.map_or_else(
@@ -542,7 +545,7 @@ fn append(
     prepared: &Arc<Prepared>,
     op: &Operands<'_>,
     shape: Shape,
-) -> Result<(), DeviceError> {
+) -> Result<()> {
     let Some((weight, scales, global)) = op.weights() else {
         return Err(error("FP4 weight"));
     };
@@ -586,7 +589,7 @@ fn make_candidate(
     context: &Context,
     shape: Shape,
     scratch: Buffer<'_, Fp8>,
-) -> Result<Option<Arc<Prepared>>, DeviceError> {
+) -> Result<Option<Arc<Prepared>>> {
     let api = context.api;
     let _guard = context
         .calls
@@ -667,7 +670,7 @@ struct Fp4Node<'a> {
     alpha: f32,
 }
 impl Foreign for Fp4Node<'_> {
-    fn enqueue(self, stream: *mut c_void) -> infer_core::Result<()> {
+    fn enqueue(self, stream: *mut c_void) -> Result<()> {
         self.matmul(stream)
             .map_err(|error| infer_core::Error::new(ErrorCode::Backend, error.to_string()))
     }
@@ -677,7 +680,7 @@ impl Foreign for Fp4Node<'_> {
     reason = "Validated live FP4/F32 operands, owned immutable descriptors and serialized zero-workspace Lt capture"
 )]
 impl Fp4Node<'_> {
-    fn matmul(&self, stream: *mut c_void) -> Result<(), DeviceError> {
+    fn matmul(&self, stream: *mut c_void) -> Result<()> {
         if stream != self.context.stream.cast() {
             return Err(error("vendor FP4 stream mismatch"));
         }

@@ -1,5 +1,6 @@
 use super::kernels;
 use crate::device::CudaDevice;
+use crate::device::device_error;
 use crate::resident::buffers::buffer as operand;
 use crate::resident::buffers::cutile;
 use cutile::cutile_compiler::hints::CompileOptions;
@@ -66,34 +67,14 @@ fn bench_case(
         );
         metadata.push(device.upload(vec![i32::try_from(lane)?, 0, i32::try_from(lane)?, 0], &[4])?);
     }
-    let baseline = Graph::scope(&device.stream, |scope| {
-        for (lane, output) in old_outputs.iter_mut().enumerate() {
-            cutile(scope)?.record(
-                super::super::recurrent::recurrent::delta(
-                    output.partition([1, 1, dim]),
-                    (&mut state).partition([1, dim, dim]),
-                    &qkv.view(&[lanes * cols])?
-                        .slice(from_ref(&(lane * cols..(lane + 1) * cols)))?,
-                    &beta
-                        .view(&[lanes * vh])?
-                        .slice(from_ref(&(lane * vh..(lane + 1) * vh)))?,
-                    &alpha
-                        .view(&[lanes * vh])?
-                        .slice(from_ref(&(lane * vh..(lane + 1) * vh)))?,
-                    &a_log,
-                    &bias,
-                    &metadata[lane],
-                )
-                .generics(vec![
-                    kh.to_string(),
-                    vh.to_string(),
-                    dim.to_string(),
-                    dim.to_string(),
-                ]),
-            )?;
-        }
-        Ok(())
-    })?;
+    let baseline = per_lane_baseline(
+        device,
+        geometry,
+        [&qkv, &beta, &alpha, &a_log, &bias],
+        &mut state,
+        &mut old_outputs,
+        &metadata,
+    )?;
     let metadata = device
         .runtime()
         .upload(vec![0, i32::try_from(lanes)?, 0, 0])?;
@@ -144,6 +125,52 @@ fn bench_case(
         Ok(())
     })?;
     compare_graphs(device, &baseline, &candidate, geometry)
+}
+
+/// The per-lane reference recurrence the batched kernel must match.
+fn per_lane_baseline(
+    device: &CudaDevice,
+    (kh, vh, dim, lanes): (usize, usize, usize, usize),
+    [qkv, beta, alpha, a_log, bias]: [&Arc<Tensor<f32>>; 5],
+    state: &mut Tensor<f32>,
+    old_outputs: &mut [Tensor<f32>],
+    metadata: &[Arc<Tensor<i32>>],
+) -> infer_core::Result<Graph> {
+    let cols = (2 * kh + vh) * dim;
+    Graph::scope(&device.stream, |scope| {
+        for (lane, output) in old_outputs.iter_mut().enumerate() {
+            cutile(scope)?.record(
+                super::super::recurrent::recurrent::delta(
+                    output.partition([1, 1, dim]),
+                    state.partition([1, dim, dim]),
+                    &qkv.view(&[lanes * cols])
+                        .map_err(device_error)?
+                        .slice(from_ref(&(lane * cols..(lane + 1) * cols)))
+                        .map_err(device_error)?,
+                    &beta
+                        .view(&[lanes * vh])
+                        .map_err(device_error)?
+                        .slice(from_ref(&(lane * vh..(lane + 1) * vh)))
+                        .map_err(device_error)?,
+                    &alpha
+                        .view(&[lanes * vh])
+                        .map_err(device_error)?
+                        .slice(from_ref(&(lane * vh..(lane + 1) * vh)))
+                        .map_err(device_error)?,
+                    a_log,
+                    bias,
+                    &metadata[lane],
+                )
+                .generics(vec![
+                    kh.to_string(),
+                    vh.to_string(),
+                    dim.to_string(),
+                    dim.to_string(),
+                ]),
+            )?;
+        }
+        Ok(())
+    })
 }
 
 fn compare_graphs(

@@ -17,7 +17,6 @@ use crate::{
     device::{CudaDevice, device_error},
     mlp::ProjectionWeight,
 };
-use cutile::prelude::*;
 use infer_core::{Error, OpId, Result};
 use infer_cuda_kernels::contract::{Buffer, Kernels, Recording, RowsKernel, RowsPlan};
 #[cfg(test)]
@@ -103,7 +102,7 @@ pub(super) fn record(
     weights: &ProgramWeights,
     buffers: &Workspace,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     let key = buffers
         .nodes
         .get(&node.id)
@@ -198,7 +197,7 @@ pub(super) fn record_slots(
     weights: &ProgramWeights,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
     arithmetic_rows: Option<usize>,
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     if weights.constants.contains_key(&node.inputs[0]) {
         return Err(error("slot decode constant linear input"));
     }
@@ -279,7 +278,7 @@ pub(super) fn record_rows(
     input: RowMajor<'_, f32>,
     output: RowMajor<'_, f32>,
     arithmetic_rows: usize,
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     let (rows, columns) = (input.rows, input.columns);
     if super::nvfp4_gemm::record(
         (kernels, scope),
@@ -357,7 +356,7 @@ fn lane_input<'a>(
     weights: &'a ProgramWeights,
     node: &TensorNode,
     lane: &'a Lane,
-) -> StdResult<Buffer<'a, f32>, DeviceError> {
+) -> Result<Buffer<'a, f32>> {
     weights.constants.get(&node.inputs[0]).map_or_else(
         || lane.arena.activation(node.inputs[0]).map_err(error),
         |value| Ok(value.buffer()),
@@ -375,7 +374,7 @@ fn record_pool_small_f32(
     input: Buffer<'_, f32>,
     output: Buffer<'_, f32>,
     columns: usize,
-) -> StdResult<bool, DeviceError> {
+) -> Result<bool> {
     let rows = input.len() / columns.max(1);
     if rows != CB_DECODE_SLOTS
         || !super::small_gemm::pool_f32_enabled()

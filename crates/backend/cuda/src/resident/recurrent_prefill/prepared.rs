@@ -5,7 +5,6 @@ use super::{ORDERED_DIM, ORDERED_WIDTHS, chunk, oxide};
 use crate::constants::F32_BYTES;
 use crate::constants::GDN_PROJECTED_INPUTS;
 use crate::{device::CudaDevice, resident::ProgramWeights};
-use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, GateBuffers, PreparedDeltaBuffers, Recording, Recurrent, RecurrentShape,
@@ -13,7 +12,6 @@ use infer_cuda_kernels::contract::{
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorOp};
 use std::collections::{BTreeMap, BTreeSet};
-use std::result::Result as StdResult;
 
 const INPUT_BINDINGS: usize = 5;
 type Geometry = (usize, usize, usize);
@@ -141,7 +139,7 @@ impl Inputs {
         (state, output): (&S, &O),
         metadata: &Allocation<i32>,
         (kh, vh, dim, lanes, block): (usize, usize, usize, usize, usize),
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let recording = scope;
         let shape = RecurrentShape {
             key_heads: kh,

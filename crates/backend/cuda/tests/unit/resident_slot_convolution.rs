@@ -1,9 +1,12 @@
 use super::*;
 use crate::constants::{CONV_KERNEL_SIZE, CONV_KERNEL_TILE};
+use crate::device::device_error;
 use crate::resident::buffers::cutile;
 use crate::{device::CudaDevice, resident::slot_recurrent::fused};
 use cutile::cutile_compiler::compile_api::KernelCompiler;
+use cutile::prelude::*;
 use infer_cuda_kernels::tile::runtime::Graph;
+use std::result::Result as StdResult;
 use std::{error::Error, slice::from_ref};
 
 type TestResult<T = ()> = StdResult<T, Box<dyn Error>>;
@@ -149,16 +152,22 @@ impl Fixture {
                     first.partition([CONV_KERNEL_TILE]),
                     second.partition([CONV_KERNEL_TILE]),
                     third.partition([CONV_KERNEL_TILE]),
-                    &self.history[0].slice(from_ref(&state))?,
-                    &self.history[1].slice(from_ref(&state))?,
-                    &self.history[2].slice(from_ref(&state))?,
-                    &input(lane)?,
-                    &input(lane + 1)?,
-                    &input(lane + 2)?,
+                    &self.history[0]
+                        .slice(from_ref(&state))
+                        .map_err(device_error)?,
+                    &self.history[1]
+                        .slice(from_ref(&state))
+                        .map_err(device_error)?,
+                    &self.history[2]
+                        .slice(from_ref(&state))
+                        .map_err(device_error)?,
+                    &input(lane).map_err(device_error)?,
+                    &input(lane + 1).map_err(device_error)?,
+                    &input(lane + 2).map_err(device_error)?,
                     &self.weight,
-                    &metadata(lane)?,
-                    &metadata(lane + 1)?,
-                    &metadata(lane + 2)?,
+                    &metadata(lane).map_err(device_error)?,
+                    &metadata(lane + 1).map_err(device_error)?,
+                    &metadata(lane + 2).map_err(device_error)?,
                 ))?;
             }
             Ok(())

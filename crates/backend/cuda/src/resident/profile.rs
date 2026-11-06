@@ -67,7 +67,7 @@ impl GraphProfile {
         scope: &Recording<'_>,
         node: usize,
         op: &TensorNode,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         self.node_count += 1;
         if self.graph_only && !self.segments.is_empty() {
             return Ok(());
@@ -86,20 +86,21 @@ impl GraphProfile {
     }
 
     /// Record the closing event after the last node.
-    pub(super) fn finish(&mut self, scope: &Recording<'_>) -> StdResult<(), DeviceError> {
+    pub(super) fn finish(&mut self, scope: &Recording<'_>) -> Result<()> {
         self.mark(scope)
     }
 
-    fn mark(&mut self, scope: &Recording<'_>) -> StdResult<(), DeviceError> {
+    fn mark(&mut self, scope: &Recording<'_>) -> Result<()> {
         let event = Arc::new(
             self.context
                 .new_event(Some(CUevent_flags_enum_CU_EVENT_DEFAULT))
-                .map_err(DeviceError::Driver)?,
+                .map_err(device_error)?,
         );
         scope
             .cutile_scope()
-            .ok_or_else(|| DeviceError::Internal("profile events need a cuTile capture".into()))?
-            .record(RecordEvent(Arc::clone(&event)))?;
+            .ok_or_else(|| device_error("profile events need a cuTile capture"))?
+            .record(RecordEvent(Arc::clone(&event)))
+            .map_err(device_error)?;
         self.events.push(event);
         Ok(())
     }
@@ -278,7 +279,7 @@ impl DeviceOp for RecordEvent {
             )
         };
         if status != cudaError_enum_CUDA_SUCCESS {
-            return Err(DeviceError::Internal(format!(
+            return Err(DeviceError::Launch(format!(
                 "profile event record CUDA status {status}"
             )));
         }

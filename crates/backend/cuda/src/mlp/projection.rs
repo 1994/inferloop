@@ -2,6 +2,7 @@
 use crate::constants::FP8_BLOCK_COLUMNS;
 use crate::constants::NVFP4_GROUP_SIZE;
 use crate::device::CudaDevice;
+use crate::device::device_error;
 use crate::resident::buffers::Operand;
 use crate::resident::tensor_buffer as buffer;
 use crate::strategy::LinearTiling;
@@ -10,7 +11,6 @@ use cutile::{half::bf16, prelude::*};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Buffer, DownPlan, Kernels, Owner, Recording, WeightRef};
 use infer_cuda_kernels::tile::runtime::{Allocation, Element, Watch};
-use std::result::Result as StdResult;
 use std::sync::Arc;
 
 /// A row-major `[rows, columns]` matrix in device memory; a graph that records it keeps it alive.
@@ -96,7 +96,7 @@ impl<T: DType> Matrix<T> {
 impl<T: DType + Element> Operand for Matrix<T> {
     type Marker = T::Marker;
 
-    fn operand(&self) -> StdResult<Buffer<'_, T::Marker>, DeviceError> {
+    fn operand(&self) -> Result<Buffer<'_, T::Marker>> {
         Ok(self.memory.operand())
     }
 }
@@ -167,14 +167,14 @@ impl ProjectionWeight {
     }
 
     /// The weight in the form the projection contract takes.
-    pub(crate) fn weight_ref(&self) -> StdResult<WeightRef<'_>, DeviceError> {
+    pub(crate) fn weight_ref(&self) -> Result<WeightRef<'_>> {
         match self {
             Self::Dense(w) => Ok(WeightRef::Dense(buffer(w)?)),
             Self::Fp8(w, s) => Ok(WeightRef::Fp8 {
                 weight: buffer(w)?,
                 scales: buffer(s)?,
             }),
-            Self::Fp8Block(..) => Err(DeviceError::Launch(
+            Self::Fp8Block(..) => Err(device_error(
                 "block FP8 requires the resident FP8 GEMM".to_string(),
             )),
             Self::Fp4(w, s, global) => Ok(WeightRef::Fp4 {
@@ -193,7 +193,7 @@ impl ProjectionWeight {
         input: Buffer<'_, f32>,
         columns: usize,
         tile: LinearTiling,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         kernels
             .projection
             .row(
@@ -207,7 +207,7 @@ impl ProjectionWeight {
                 input,
                 self.weight_ref()?,
             )
-            .map_err(|error| DeviceError::Internal(error.to_string()))?;
+            .map_err(|error| device_error(error.to_string()))?;
         Ok(())
     }
 }

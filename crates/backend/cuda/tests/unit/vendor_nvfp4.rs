@@ -31,6 +31,7 @@ type Quantized = (Tensor<f4e2m1fnx2>, Tensor<f8e4m3fn>);
 
 use super::super::context;
 use super::{Context, Operands, Prepared, Shape, append, make_candidate};
+use crate::device::device_error;
 use crate::loading::nvfp4_fixture::{Layer, layers};
 use crate::resident::buffers::cutile;
 struct Packed {
@@ -59,7 +60,7 @@ fn capture(
                 .generics(vec![COLUMNS.to_string()]),
             )?;
             let ProjectionWeight::Fp4(w, s, g) = &layer.weight else {
-                return Err(DeviceError::Launch("FP4 required".into()));
+                return Err(device_error("FP4 required"));
             };
             if let Some((context, prepared)) = vendor {
                 let shape = Shape {

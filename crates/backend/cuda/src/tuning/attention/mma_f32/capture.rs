@@ -21,7 +21,6 @@ use infer_cuda_kernels::contract::{
 use infer_cuda_kernels::tile::identity::{AttentionShape, attention_candidates};
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use std::env::var_os;
-use std::result::Result as StdResult;
 struct Operands {
     query: Allocation<f32>,
     append_keys: Allocation<f32>,
@@ -54,7 +53,7 @@ impl Operands {
         f: &Fixture,
         choice: Choice,
         support: Option<&attention_mma::Support>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let s = f.shape;
         let recording = scope;
         contract
@@ -74,10 +73,10 @@ impl Operands {
                     table: buffer(&self.table)?,
                 },
             )
-            .map_err(|error| DeviceError::Internal(error.to_string()))?;
+            .map_err(|error| device_error(error.to_string()))?;
         if let Choice::Mma { variant } = choice {
             support
-                .ok_or_else(|| DeviceError::Internal("F32 MMA module missing".into()))?
+                .ok_or_else(|| device_error("F32 MMA module missing"))?
                 .record(
                     recording,
                     DecodeBuffers {
@@ -114,7 +113,7 @@ impl Operands {
                         table: buffer(&self.table)?,
                     },
                 )
-                .map_err(|error| DeviceError::Internal(error.to_string()))?;
+                .map_err(|error| device_error(error.to_string()))?;
         }
         Ok(())
     }

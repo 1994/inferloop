@@ -3,6 +3,7 @@
 //! Descriptors and zero-workspace algorithms are warmed before graph capture. Native kernels
 //! remain the fallback for an absent library, unsupported shape or failed exact tuning gate.
 use super::CudaDevice;
+use crate::device::device_error;
 use cuda_core::sys::CUcontext;
 use cuda_core::sys::CUdeviceptr;
 use cuda_core::sys::CUmemoryPool;
@@ -18,8 +19,9 @@ use cuda_core::sys::cuCtxGetCurrent;
 use cuda_core::sys::cuPointerGetAttribute;
 use cuda_core::sys::cuStreamGetCtx;
 use cuda_core::sys::cudaError_enum_CUDA_SUCCESS;
-use cutile::cuda_async::error::DeviceError;
+use infer_core::Error;
 use infer_core::ErrorCode;
+use infer_core::Result;
 use infer_cuda_kernels::contract::{Buffer, Foreign, Fp8, Kernels, Owner, Recording};
 use serde::{Deserialize, Serialize};
 use std::ops::Deref;
@@ -218,10 +220,10 @@ fn api() -> Option<&'static Api> {
     static API: OnceLock<Option<Api>> = OnceLock::new();
     API.get_or_init(load).as_ref()
 }
-fn error(message: impl Into<String>) -> DeviceError {
-    DeviceError::Internal(message.into())
+fn error(message: impl Into<String>) -> Error {
+    device_error(message.into())
 }
-fn status(code: i32, operation: &str) -> Result<(), DeviceError> {
+fn status(code: i32, operation: &str) -> Result<()> {
     if code == SUCCESS {
         Ok(())
     } else {
@@ -246,7 +248,7 @@ pub struct Gemm<'a> {
     pub extents: [usize; GEMM_RANK],
 }
 impl Gemm<'_> {
-    fn shape(&self) -> Result<Shape, DeviceError> {
+    fn shape(&self) -> Result<Shape> {
         let [m, n, k] = self.extents;
         if m == 0 || n == 0 || k == 0 {
             return Err(error("vendor FP8 zero extent"));
@@ -359,7 +361,7 @@ fn context(device: &CudaDevice) -> Option<Arc<Context>> {
     unsafe_code,
     reason = "Audited metadata query rejects operands allocated in a foreign CUDA context before the Lt launch"
 )]
-fn same_context(context: &Context, pointer: CUdeviceptr) -> Result<(), DeviceError> {
+fn same_context(context: &Context, pointer: CUdeviceptr) -> Result<()> {
     let mut owner: CUcontext = null_mut();
     // SAFETY: The SDK call uses live lifetime-owned handles and pointers with the declared header ABI.
     let code = unsafe {
@@ -543,8 +545,8 @@ impl Deref for Prepared {
     unsafe_code,
     reason = "SDK typed algorithm getters copy scalar attributes into ABI-matching live stack slots"
 )]
-fn algorithm_config(api: &Api, algo: &Algo) -> Result<AlgorithmConfig, DeviceError> {
-    fn get<T: Default>(api: &Api, algo: &Algo, attribute: i32) -> Result<T, DeviceError> {
+fn algorithm_config(api: &Api, algo: &Algo) -> Result<AlgorithmConfig> {
+    fn get<T: Default>(api: &Api, algo: &Algo, attribute: i32) -> Result<T> {
         let mut value = T::default();
         let mut written = 0;
         // SAFETY: Attribute callers provide the exact cublasLt.h scalar type and length.
@@ -582,13 +584,8 @@ fn algorithm_config(api: &Api, algo: &Algo) -> Result<AlgorithmConfig, DeviceErr
     unsafe_code,
     reason = "SDK typed algorithm init/set reconstructs a config only for the current device and library"
 )]
-fn restore_algorithm(context: &Context, config: AlgorithmConfig) -> Result<Algo, DeviceError> {
-    fn set<T: Copy>(
-        api: &Api,
-        algo: &mut Algo,
-        attribute: i32,
-        value: T,
-    ) -> Result<(), DeviceError> {
+fn restore_algorithm(context: &Context, config: AlgorithmConfig) -> Result<Algo> {
+    fn set<T: Copy>(api: &Api, algo: &mut Algo, attribute: i32, value: T) -> Result<()> {
         // SAFETY: Values use the SDK scalar type and are copied synchronously.
         status(
             // SAFETY: This single SDK call uses live lifetime-owned handles and pointers with the declared CUDA header ABI.
@@ -630,7 +627,7 @@ fn restore_algorithm(context: &Context, config: AlgorithmConfig) -> Result<Algo,
     unsafe_code,
     reason = "Audited scalar attribute values match cublasLt.h and are copied synchronously by the API"
 )]
-fn set<T: Copy>(api: &Api, desc: Handle, attr: i32, value: T) -> Result<(), DeviceError> {
+fn set<T: Copy>(api: &Api, desc: Handle, attr: i32, value: T) -> Result<()> {
     status(
         // SAFETY: The SDK call uses live lifetime-owned handles and pointers with the declared header ABI.
         unsafe { (api.desc_set)(desc, attr, (&raw const value).cast(), size_of::<T>()) },
@@ -645,7 +642,7 @@ fn launch(
     context: &Context,
     prepared: &Prepared,
     [input, weight, output]: [CUdeviceptr; GEMM_OPERANDS],
-) -> Result<(), DeviceError> {
+) -> Result<()> {
     let _guard = context
         .calls
         .lock()
@@ -684,7 +681,7 @@ fn launch(
     unsafe_code,
     reason = "Audited SDK descriptors match the documented FP8 T/N layouts and exact F32 accumulation contract"
 )]
-fn make_descriptors(context: &Context, shape: Shape) -> Result<Arc<Descriptors>, DeviceError> {
+fn make_descriptors(context: &Context, shape: Shape) -> Result<Arc<Descriptors>> {
     let api = context.api;
     let mut result = Descriptors {
         api,
@@ -730,10 +727,7 @@ fn make_descriptors(context: &Context, shape: Shape) -> Result<Arc<Descriptors>,
     unsafe_code,
     reason = "Audited SDK preference and heuristic query use typed alignment and workspace attributes"
 )]
-fn heuristic_candidates(
-    context: &Context,
-    descriptors: &Descriptors,
-) -> Result<Vec<Heuristic>, DeviceError> {
+fn heuristic_candidates(context: &Context, descriptors: &Descriptors) -> Result<Vec<Heuristic>> {
     let api = context.api;
     let mut preference = null_mut();
     status(
@@ -843,7 +837,7 @@ impl Support {
 
     /// Select and execute a zero-workspace algorithm before any Scope starts capture.
     /// Metadata is cached by full M/N/K, independently of checkpoint weight identity.
-    pub(crate) fn prepare(&mut self, gemm: Gemm<'_>) -> Result<bool, DeviceError> {
+    pub(crate) fn prepare(&mut self, gemm: Gemm<'_>) -> Result<bool> {
         let configs = self.prepare_candidates(gemm)?;
         let Some(config) = configs.first() else {
             return Ok(false);
@@ -892,7 +886,7 @@ impl Support {
         &mut self,
         gemm: Gemm<'_>,
         config: AlgorithmConfig,
-    ) -> Result<bool, DeviceError> {
+    ) -> Result<bool> {
         if !gemm.aligned() || self.context.is_none() {
             return Ok(false);
         }
@@ -938,10 +932,7 @@ impl Support {
         Ok(true)
     }
 
-    pub(crate) fn prepare_candidates(
-        &mut self,
-        gemm: Gemm<'_>,
-    ) -> Result<Vec<AlgorithmConfig>, DeviceError> {
+    pub(crate) fn prepare_candidates(&mut self, gemm: Gemm<'_>) -> Result<Vec<AlgorithmConfig>> {
         let Some(context) = self.context.clone() else {
             return Ok(Vec::new());
         };
@@ -1005,7 +996,7 @@ impl Support {
         recording: &Recording<'_>,
         gemm: Gemm<'_>,
         scales: [Buffer<'_, f32>; 2],
-    ) -> Result<bool, DeviceError> {
+    ) -> Result<bool> {
         let Some(prepared) = self.prepared.get(&gemm.shape()?) else {
             return Ok(false);
         };
@@ -1019,7 +1010,7 @@ impl Support {
         config: AlgorithmConfig,
         gemm: Gemm<'_>,
         scales: [Buffer<'_, f32>; 2],
-    ) -> Result<bool, DeviceError> {
+    ) -> Result<bool> {
         let Some(prepared) = self.algorithms.get(&(gemm.shape()?, config)) else {
             return Ok(false);
         };
@@ -1032,7 +1023,7 @@ impl Support {
         prepared: &Arc<Prepared>,
         gemm: Gemm<'_>,
         [xs, ws]: [Buffer<'_, f32>; 2],
-    ) -> Result<bool, DeviceError> {
+    ) -> Result<bool> {
         let Some(context) = self.context.as_ref() else {
             return Ok(false);
         };
@@ -1067,11 +1058,11 @@ impl Support {
                 },
                 keep,
             )
-            .map_err(|error| DeviceError::Launch(error.to_string()))?;
+            .map_err(|error| device_error(error.to_string()))?;
         self.kernels
             .projection
             .channel_scale(recording, shape.n, gemm.output, xs, ws)
-            .map_err(|error| DeviceError::Launch(error.to_string()))?;
+            .map_err(|error| device_error(error.to_string()))?;
         Ok(true)
     }
 }
@@ -1081,15 +1072,15 @@ struct GemmFp8 {
     pointers: [CUdeviceptr; GEMM_OPERANDS],
 }
 impl Foreign for GemmFp8 {
-    fn enqueue(self, stream: *mut c_void) -> infer_core::Result<()> {
+    fn enqueue(self, stream: *mut c_void) -> Result<()> {
         if stream != self.context.stream.cast() {
-            return Err(infer_core::Error::invalid(format!(
+            return Err(Error::invalid(format!(
                 "vendor FP8 device {} stream mismatch",
                 self.context.ordinal
             )));
         }
         launch(&self.context, &self.prepared, self.pointers)
-            .map_err(|error| infer_core::Error::new(ErrorCode::Backend, error.to_string()))
+            .map_err(|error| Error::new(ErrorCode::Backend, error.to_string()))
     }
 }
 pub mod nvfp4;

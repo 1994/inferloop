@@ -10,7 +10,6 @@ use infer_cuda_kernels::tile::runtime::{Argument, KernelLaunch};
 use infer_ir::{DataflowGraph, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
-use std::result::Result as StdResult;
 use std::sync::OnceLock;
 mod shared;
 mod vector;
@@ -157,7 +156,7 @@ impl Support {
         buffers: DecodeBuffers<'_>,
         geometry: Geometry,
         window: i32,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         if !self.accepts(&buffers, geometry) {
             return Err(super::capture::error(
                 "selected SIMT attention cannot record these operands",

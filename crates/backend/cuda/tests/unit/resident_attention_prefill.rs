@@ -403,6 +403,7 @@ fn check_tiled_decode(
 }
 
 // Actual Qwen attention geometry, rather than the smaller F32-only fixture above.
+use crate::device::device_error;
 use crate::resident::buffers::cutile;
 use cuda_core::f8e4m3fn;
 use cutile::bench::{BenchOptions, do_bench_paired};
@@ -606,7 +607,7 @@ impl ChunkFixture {
         scope: &Recording<'_>,
         keys: &mut Tensor<f8e4m3fn>,
         values: &mut Tensor<f8e4m3fn>,
-    ) -> Result<(), DeviceError> {
+    ) -> infer_core::Result<()> {
         cutile(scope)?.record(
             kernels::append(
                 keys.partition([1, MODEL_CAPACITY, MODEL_DIM]),
@@ -636,15 +637,18 @@ impl ChunkFixture {
         output: &mut Tensor<f32>,
         cache: (&Tensor<f8e4m3fn>, &Tensor<f8e4m3fn>),
         variant: AttentionVariant,
-    ) -> Result<(), DeviceError> {
+    ) -> infer_core::Result<()> {
         let group = MODEL_HEADS / MODEL_KV_HEADS;
         let block = KV_BLOCK_TOKENS;
-        let window = i32::try_from(self.case.window).map_err(|e| tensor_error(&e.to_string()))?;
+        let window = i32::try_from(self.case.window)
+            .map_err(|e| tensor_error(&e.to_string()))
+            .map_err(device_error)?;
         match variant {
             AttentionVariant::Simt => {
                 let query = self
                     .query
-                    .view(&[self.case.lanes * MODEL_HEADS, MODEL_DIM])?;
+                    .view(&[self.case.lanes * MODEL_HEADS, MODEL_DIM])
+                    .map_err(device_error)?;
                 cutile(scope)?.record(
                     kernels::decode(
                         output.partition([1, MODEL_DIM]),
