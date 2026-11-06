@@ -1,9 +1,7 @@
 //! Reusable pinned uploads returned to their pool only after device completion.
 use crate::device::device_error;
 use cuda_core::{CudaContext, DType, DeviceCopy, PinnedHostBuffer};
-use cutile::prelude::DeviceError;
 use infer_core::{Error, Result};
-use std::result::Result as StdResult;
 use std::sync::{Arc, Mutex};
 
 type Available<T> = Arc<Mutex<Vec<PinnedHostBuffer<T>>>>;
@@ -67,10 +65,10 @@ pub(super) struct Staged<T: DType + DeviceCopy> {
 }
 
 impl<T: DType + DeviceCopy> Staged<T> {
-    pub fn buffer(&self) -> StdResult<&PinnedHostBuffer<T>, DeviceError> {
+    pub fn buffer(&self) -> Result<&PinnedHostBuffer<T>> {
         self.buffer
             .as_ref()
-            .ok_or_else(|| DeviceError::Internal("image upload buffer missing".into()))
+            .ok_or_else(|| Error::invariant("image upload buffer missing"))
     }
 
     pub const fn len(&self) -> usize {

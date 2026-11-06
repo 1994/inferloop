@@ -5,15 +5,16 @@ use crate::mlp::Matrix;
 use crate::resident::buffers::{Operand, buffer};
 use crate::strategy::LinearTiling;
 use crate::tuning::memory::arena_budget;
+use cuda_core::DeviceCopy;
 use cuda_core::sys::CUdevice_attribute;
 use cuda_core::sys::CUresult;
 use cuda_core::sys::cuDeviceGetAttribute;
 use cuda_core::sys::cuDriverGetVersion;
 use cuda_core::sys::cuMemGetInfo_v2;
 use cuda_core::sys::cuMemcpyDtoH_v2;
+#[cfg(test)]
 use cuda_core::sys::cuMemcpyHtoDAsync_v2;
 use cuda_core::sys::cudaError_enum_CUDA_SUCCESS;
-use cuda_core::{DeviceCopy, PinnedHostBuffer};
 use cutile::jit_cache::enable_default;
 use cutile::prelude::*;
 use infer_core::{Error as InferError, ErrorCode, Result};
@@ -532,41 +533,6 @@ impl CudaDevice {
         );
         self.runtime
             .enqueue(|transfers| copy_runs(transfers, dst, src, runs))
-    }
-
-    /// Image preprocessing stages through its own pinned pool inside a device op and is the last
-    /// user of this; it moves onto [`Runtime::staging`] together with that op.
-    ///
-    /// Async H2D copy out of a pinned staging buffer, enqueued on the device stream and
-    /// never synchronized here: the caller keeps the pinned bytes untouched until a later
-    /// stream barrier (a readback or the owning pool's drop barrier) establishes completion.
-    /// # Errors
-    /// Rejects copies outside either buffer or a driver failure when the copy cannot be enqueued.
-    pub(super) fn copy_h2d_pinned<T: DType + DeviceCopy>(
-        &self,
-        dst: &mut Tensor<T>,
-        src: &PinnedHostBuffer<T>,
-        elements: usize,
-    ) -> Result<()> {
-        if elements > dst.size() || elements > src.len() {
-            return Err(InferError::invalid("pinned upload range outside buffer"));
-        }
-        let bytes = elements
-            .checked_mul(size_of::<T>())
-            .ok_or_else(|| InferError::invalid("pinned upload size overflow"))?;
-        let stream = self.stream.cu_stream();
-        // SAFETY: the checked lengths keep both ends inside live allocations, the pinned
-        // source is not rewritten until the caller's next stream barrier, and the stream
-        // belongs to this device.
-        let status = unsafe {
-            cuMemcpyHtoDAsync_v2(
-                dst.device_pointer().cu_deviceptr(),
-                src.as_ptr().cast(),
-                bytes,
-                stream,
-            )
-        };
-        driver_status(status)
     }
 
     /// Enqueue `work` on this device's stream; see [`Runtime::enqueue`].

@@ -151,6 +151,9 @@ def check_exceptions():
                         ROOT / "crates/backend/cuda/src/device/image_preprocess/launch.rs",
                         # The no-resize PTX boundary retains its input and output until the fence.
                         ROOT / "crates/backend/cuda/src/device/image_preprocess/direct.rs",
+                        # The RGB source uploads from a pinned buffer the operation retains, which
+                        # its pool refills only after the submission completes.
+                        ROOT / "crates/backend/cuda/src/device/image_preprocess/source.rs",
                         # nvJPEG's optional FFI retains decoder state and stream inputs to the
                         # completion fence and binds every handle to its owning device context.
                         ROOT / "crates/backend/cuda/src/device/image_preprocess/nvjpeg.rs",
@@ -191,6 +194,9 @@ def check_exceptions():
                         # PTX launches: the constructor states the signature contract, the driver
                         # copies the by-value parameters, and the module stays loaded throughout.
                         TILE_KERNELS / "runtime/launch.rs",
+                        # Async operations: allocations are written before any read and retained,
+                        # with every owner and pinned source, until the submission completes.
+                        TILE_KERNELS / "runtime/operation.rs",
                         TILE_KERNELS / "norm/contract.rs",
                         TILE_KERNELS / "mlp/contract.rs",
                         TILE_KERNELS / "moe/contract.rs",

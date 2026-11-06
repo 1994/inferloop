@@ -1,7 +1,7 @@
 use super::{ImageBatch, PORTABLE_PTX, Processor};
+use crate::device::CudaDevice;
 use crate::device::asynchronous::block_on;
 use crate::device::queue_test_gate;
-use crate::device::{CudaDevice, device_error};
 use infer_core::{Error, ErrorCode, Result};
 use infer_ir::{EncodedImageInfo, EncodedImageInput, ImageEncoding};
 use infer_models::{ImageProcessor, RgbImage};
@@ -108,7 +108,7 @@ fn hardware_jpeg_preprocessing_matches_independent_rgb_reference() -> Result<()>
             let expected = reference.preprocess(&image)?.pixels;
             let encoded = EncodedImageInput::new(transform, info.clone(), bytes.clone())?;
             let output = block_on(processor.process_encoded(&device, &encoded))?;
-            let actual = device.read(&output)?;
+            let actual = device.runtime().read(&output)?;
             assert_eq!(
                 actual[..expected.len()]
                     .iter()
@@ -199,7 +199,7 @@ fn jpeg_preprocessing_poll_does_not_wait_for_busy_stream() -> Result<()> {
     );
     assert!(first.is_pending());
     let output = block_on(future)?;
-    assert_eq!(device.read(&output)?.len(), output.size());
+    assert_eq!(device.runtime().read(&output)?.len(), output.len());
     Ok(())
 }
 
@@ -286,7 +286,7 @@ fn simultaneous_jpeg_submissions_keep_distinct_decoder_state_until_completion() 
         .into_iter()
         .zip(expected)
     {
-        let actual = device.read(&result)?;
+        let actual = device.runtime().read(&result)?;
         assert_eq!(&actual[..expected.len()], expected.as_slice());
         assert!(actual[expected.len()..].iter().all(|value| *value == 0.0));
     }
@@ -371,7 +371,7 @@ fn check_busy_stream(device: &CudaDevice, processor: &Processor, side: usize) ->
     );
     assert!(first.is_pending());
     let output = block_on(future)?;
-    assert_eq!(device.read(&output)?.len(), output.size());
+    assert_eq!(device.runtime().read(&output)?.len(), output.len());
     Ok(())
 }
 
@@ -429,7 +429,7 @@ fn simultaneous_image_uploads_keep_distinct_staging_until_completion() -> Result
         (block_on(first)?, &images[0]),
         (block_on(second)?, &images[1]),
     ] {
-        let actual = device.read(&output)?;
+        let actual = device.runtime().read(&output)?;
         let expected = reference.preprocess(image)?.pixels;
         assert_eq!(&actual[..expected.len()], expected.as_slice());
         assert!(actual[expected.len()..].iter().all(|value| *value == 0.0));
@@ -444,21 +444,15 @@ fn image_upload_staging_reuses_capacity_without_reusing_inflight_data() -> Resul
     let processor = Processor::load(&device)?
         .ok_or_else(|| Error::unsupported("CUDA image kernel is not qualified on this device"))?;
     let first = processor.pixels.stage(&[7; 33])?;
-    let first_pointer = first.buffer().map_err(device_error)?.as_ptr();
+    let first_pointer = first.buffer()?.as_ptr();
     let concurrent = processor.pixels.stage(&[11; 33])?;
-    assert_ne!(
-        first_pointer,
-        concurrent.buffer().map_err(device_error)?.as_ptr()
-    );
+    assert_ne!(first_pointer, concurrent.buffer()?.as_ptr());
     drop(first);
     let reused = processor.pixels.stage(&[19; 50])?;
-    let buffer = reused.buffer().map_err(device_error)?;
+    let buffer = reused.buffer()?;
     assert_eq!(first_pointer, buffer.as_ptr());
     assert_eq!(&buffer.as_slice()[..50], &[19; 50]);
-    assert_eq!(
-        &concurrent.buffer().map_err(device_error)?.as_slice()[..33],
-        &[11; 33]
-    );
+    assert_eq!(&concurrent.buffer()?.as_slice()[..33], &[11; 33]);
     Ok(())
 }
 
@@ -497,7 +491,7 @@ fn check_batch(
     assert_eq!(transform.target(), <[usize; 2]>::from(target));
     let images = ImageBatch::new(Arc::new(inputs), batch, transform)?;
     let result = block_on(processor.process(device, &images))?;
-    let values = device.read(&result)?;
+    let values = device.runtime().read(&result)?;
     let stride = values.len() / batch;
     for (index, reference) in expected.iter().enumerate() {
         let actual = &values[index * stride..(index + 1) * stride];
