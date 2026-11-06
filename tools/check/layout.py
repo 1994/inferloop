@@ -27,10 +27,10 @@ BACKENDS = {
 # baseline too.
 CUDA_HOST = "crates/backend/cuda/src"
 CUDA_HOST_TOKENS = {
-    "Tensor<": 9,
+    "Tensor<": 1,
     ".partition(": 0,
     ".generics(": 0,
-    "cuda_core": 68,
+    "cuda_core": 67,
     "CudaGraph": 0,
 }
 # Artifact catalogs name the architectures they ship; everything else asks `Arch` what it can do.

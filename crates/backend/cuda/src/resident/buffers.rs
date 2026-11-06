@@ -21,10 +21,12 @@ pub trait Operand {
     fn operand(&self) -> Result<Buffer<'_, Self::Marker>, DeviceError>;
 }
 
-/// Unlike a tensor recorded directly, a buffer over a tensor does not make the graph hold its
-/// memory. Every caller must own the tensor for as long as the graph lives, as a resident program
-/// does, which is what [`Buffer::new`] requires. Code without such an owner uses an
-/// [`Allocation`], whose buffer the recording graph retains.
+/// For tests that launch over cuTile tensors; production memory is an [`Allocation`], whose
+/// buffer the recording graph retains. A buffer over a tensor does not make the graph hold its
+/// memory, so the test must own the tensor for as long as the graph lives, which is what
+/// [`Buffer::new`] requires. It stays here rather than in the test support modules because the
+/// policy keeps `unsafe` out of test files.
+#[cfg(test)]
 impl<T: DType + Element> Operand for Tensor<T> {
     type Marker = T::Marker;
 
@@ -92,20 +94,6 @@ impl<'a, T> RowMajor<'a, T> {
     }
 }
 
-/// A rank-2 tensor as the [`RowMajor`] it holds, while launches still receive tensors.
-/// # Errors
-/// Rejects tensors that are not contiguous matrices.
-#[cfg(test)]
-pub fn tensor_rows<E: DType + Element>(
-    tensor: &Tensor<E>,
-) -> Result<RowMajor<'_, E::Marker>, DeviceError> {
-    let [rows, columns] = tensor.shape() else {
-        return Err(error("operand is not a matrix"));
-    };
-    let dimension = |value: &i32| usize::try_from(*value).map_err(error);
-    RowMajor::new(buffer(tensor)?, dimension(rows)?, dimension(columns)?)
-}
-
 /// A KV pair as a launch addresses it, in `groups` of `[rows, dim]`.
 pub fn kv_cache<'a, O: Operand<Marker: KvElement> + ?Sized>(
     (keys, values): (&'a O, &'a O),
@@ -130,3 +118,9 @@ pub(super) const fn region<T>(address: u64, len: usize) -> Buffer<'static, T> {
 #[cfg(test)]
 #[path = "../../tests/unit/resident_runtime_replay.rs"]
 mod runtime_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/buffer_tensors.rs"]
+mod tensors;
+#[cfg(test)]
+pub use tensors::tensor_rows;

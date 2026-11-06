@@ -36,23 +36,14 @@ impl<T: DType> Matrix<T> {
     /// Rejects a `shape` that is not a matrix covering `values`, or a failed allocation or
     /// transfer.
     pub fn upload(device: &CudaDevice, values: Vec<T>, shape: &[usize]) -> Result<Self> {
-        // The tensor keeps its rank-2 shape for consumers still reading it through `tensor`.
-        Self::adopt(device.upload(values, shape)?)
-    }
-
-    /// Adopt a rank-2 tensor from code that still produces them.
-    /// # Errors
-    /// Rejects tensors that are not contiguous matrices.
-    pub fn adopt(tensor: Arc<Tensor<T>>) -> Result<Self> {
-        let [rows, columns] = tensor.shape() else {
+        let &[rows, columns] = shape else {
             return Err(Error::invalid("weight matrix rank"));
         };
-        let dimension = |value: &i32| {
-            usize::try_from(*value).map_err(|_| Error::invalid("weight matrix shape"))
-        };
-        let (rows, columns) = (dimension(rows)?, dimension(columns)?);
+        if rows.checked_mul(columns) != Some(values.len()) {
+            return Err(Error::invalid("weight matrix shape"));
+        }
         Ok(Self {
-            memory: Allocation::adopt(tensor)?,
+            memory: device.runtime().upload(values)?,
             rows,
             columns,
         })
@@ -99,12 +90,6 @@ impl<T: DType> Matrix<T> {
     #[must_use]
     pub fn watch(&self) -> Watch {
         self.memory.watch()
-    }
-
-    /// The tensor behind this matrix, for code that has not migrated yet.
-    #[must_use]
-    pub const fn tensor(&self) -> &Arc<Tensor<T>> {
-        self.memory.tensor()
     }
 }
 
@@ -226,3 +211,7 @@ impl ProjectionWeight {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/projection_tensors.rs"]
+mod tensors;

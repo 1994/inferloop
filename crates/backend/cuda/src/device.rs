@@ -12,8 +12,6 @@ use cuda_core::sys::cuDeviceGetAttribute;
 use cuda_core::sys::cuDriverGetVersion;
 use cuda_core::sys::cuMemGetInfo_v2;
 use cuda_core::sys::cuMemcpyDtoH_v2;
-#[cfg(test)]
-use cuda_core::sys::cuMemcpyHtoDAsync_v2;
 use cuda_core::sys::cudaError_enum_CUDA_SUCCESS;
 use cutile::jit_cache::enable_default;
 use cutile::prelude::*;
@@ -243,17 +241,6 @@ impl CudaDevice {
     }
 
     /// # Errors
-    /// Returns a CUDA error if upload or reshape fails.
-    pub fn upload<T: DType>(&self, values: Vec<T>, shape: &[usize]) -> Result<Arc<Tensor<T>>> {
-        api::copy_host_vec_to_device(&Arc::new(values))
-            .sync_on(&self.stream)
-            .map_err(device_error)?
-            .reshape(shape)
-            .map(Arc::new)
-            .map_err(device_error)
-    }
-
-    /// # Errors
     /// Returns a shape or device error for an invalid matrix-vector product.
     pub fn matvec<T: DType>(&self, x: &Allocation<f32>, w: &Matrix<T>) -> Result<Allocation<f32>> {
         self.matvec_tiled(
@@ -291,15 +278,6 @@ impl CudaDevice {
         )
     }
 
-    /// # Errors
-    /// Returns a CUDA transfer error.
-    pub fn read<T: DType>(&self, tensor: &Arc<Tensor<T>>) -> Result<Vec<T>> {
-        tensor
-            .to_host_vec()
-            .sync_on(&self.stream)
-            .map_err(device_error)
-    }
-
     /// Read all of `source` back through `readbacks`, after the work already on this stream.
     /// # Errors
     /// Returns a busy or poisoned owner, or a failed transfer.
@@ -309,52 +287,6 @@ impl CudaDevice {
         readbacks: &mut Readbacks<T>,
     ) -> Result<Vec<T>> {
         readbacks.read_async(self, source.clone()).await
-    }
-
-    /// Enqueue a host slice into an existing device tensor on the device stream.
-    ///
-    /// The driver stages pageable host memory before returning, so the caller may drop `values`
-    /// immediately; the device-side write stays ordered before later work on the same stream.
-    ///
-    /// # Errors
-    /// Rejects a slice longer than the tensor or a driver failure when the copy cannot be enqueued.
-    #[expect(
-        unsafe_code,
-        reason = "Audited host-to-device copy from a live slice into a live tensor of known length"
-    )]
-    #[cfg(test)]
-    pub(crate) fn copy_host_slice<T: DType>(
-        &self,
-        dst: &mut Tensor<T>,
-        values: &[T],
-    ) -> Result<()> {
-        if values.len() > dst.size() {
-            return Err(InferError::invalid("host copy range outside tensor"));
-        }
-        let bytes = values
-            .len()
-            .checked_mul(size_of::<T>())
-            .ok_or_else(|| InferError::invalid("host copy size overflow"))?;
-        let stream = self.stream.cu_stream();
-        // SAFETY: the checked length keeps the write inside the tensor, the source slice is live
-        // for the duration of the call, and the stream belongs to this device.
-        let status = unsafe {
-            cuMemcpyHtoDAsync_v2(
-                dst.device_pointer().cu_deviceptr(),
-                values.as_ptr().cast(),
-                bytes,
-                stream,
-            )
-        };
-        driver_status(status)
-    }
-
-    /// Copy a resident tensor back without taking ownership, so a borrowed snapshot can be inspected.
-    ///
-    /// # Errors
-    /// Returns a backend error when the device is unbound or the copy fails.
-    pub fn read_borrowed<T: DType>(&self, tensor: &Tensor<T>) -> Result<Vec<T>> {
-        self.read_address(tensor.device_pointer().cu_deviceptr(), tensor.size())
     }
 
     /// Copy the memory of `buffer` back once all queued work has finished.
@@ -635,6 +567,10 @@ fn driver_status(status: CUresult) -> Result<()> {
         Err(device_error(format!("CUDA driver status {status}")))
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/device_tensors.rs"]
+mod tensors;
 
 #[cfg(test)]
 #[path = "../tests/unit/device.rs"]

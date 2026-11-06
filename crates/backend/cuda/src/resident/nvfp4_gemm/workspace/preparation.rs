@@ -16,7 +16,6 @@ use crate::tuning::{
     resident_gemm::{self, swiglu},
 };
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
-use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 
@@ -490,9 +489,7 @@ impl Workspace {
                         .get(&(rows, columns, 1))
                         .ok_or_else(|| Error::invariant("FP8 diagnostic activation"))?
                         .0;
-                    let out = api::zeros::<f32>(&[rows, outputs])
-                        .sync_on(&device.stream)
-                        .map_err(device_error)?;
+                    let out = device.runtime().zeros::<f32>(rows * outputs)?;
                     let gemm = Gemm {
                         input: buffer(q).map_err(device_error)?,
                         weight: buffer(codes).map_err(device_error)?,

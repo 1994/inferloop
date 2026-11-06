@@ -31,7 +31,7 @@ use std::sync::Arc;
 const ROWS: usize = 128;
 const HIDDEN: usize = 5120;
 const COLUMNS: usize = HIDDEN * 2;
-const WEIGHT_SHAPE: [i32; 2] = [5120, 10240];
+const WEIGHT_SHAPE: [usize; 2] = [5120, 10240];
 const TILE: [usize; 2] = [4, 16];
 const DEPTH: usize = 256;
 #[cfg(test)]
@@ -53,10 +53,10 @@ const fn wide(width: usize) -> bool {
 fn layout_bytes(
     architecture: &str,
     width: usize,
-    shape: Option<&[i32]>,
+    shape: Option<[usize; 2]>,
     tiling: LinearTiling,
 ) -> u64 {
-    if !fused_draft(architecture) || shape != Some(WEIGHT_SHAPE.as_slice()) {
+    if !fused_draft(architecture) || shape != Some(WEIGHT_SHAPE) {
         return 0;
     }
     if (width == ROWS || pooled(width)) && tiling.rows() == TILE[1] && tiling.columns() == DEPTH {
@@ -90,7 +90,7 @@ pub fn required_bytes(weights: &ProgramWeights, width: usize, profile: &DevicePr
     layout_bytes(
         &profile.architecture,
         width,
-        Some(weight.tensor().shape()),
+        Some(weight.shape()),
         fusion.tiling,
     )
 }
