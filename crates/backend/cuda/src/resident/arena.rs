@@ -1,15 +1,13 @@
 use crate::constants::F32_BYTES;
 use crate::constants::NVFP4_GROUP_SIZE;
+use crate::device::CudaDevice;
 use crate::device::vendor_fp8::nvfp4::SCALE_ROWS;
-use crate::device::{CudaDevice, device_error};
 use cuda_core::f8e4m3fn;
-use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::{Buffer, Fp8};
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::DataflowGraph;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 /// Slot layout of one graph: `last_node` and element count per reused slot.
 type ArenaLayout = (Vec<(usize, usize)>, BTreeMap<TensorId, usize>);
@@ -294,10 +292,7 @@ impl ActivationArena {
         }
         let mut slots = Vec::with_capacity(sizes.len());
         for size in sizes {
-            let memory = api::zeros::<f32>(&[size])
-                .sync_on(&device.stream)
-                .map_err(device_error)?;
-            slots.push(Slot::new(Allocation::adopt(Arc::new(memory))?, 0, size)?);
+            slots.push(Slot::new(device.tile().zeros::<f32>(size)?, 0, size)?);
         }
         Ok(Self {
             indices,

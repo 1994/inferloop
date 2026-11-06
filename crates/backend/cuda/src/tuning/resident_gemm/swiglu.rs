@@ -16,7 +16,6 @@ use capture::{Captured, key, verify};
 use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
-use cutile::prelude::*;
 pub use evidence::Entry;
 use evidence::candidates;
 pub use evidence::{baseline, compatible};
@@ -230,10 +229,9 @@ fn measure(
         }
     };
     let run = |graph: &Captured| {
-        graph
-            .graph
-            .launch()
-            .sync_on(&device.stream)
+        device
+            .tile()
+            .sync(graph.graph.launch())
             .map_err(|error| tensor_error(&error.to_string()))
     };
     let (a, b) = do_bench_paired(&device.stream, &options, |_| run(first), |_| run(second))

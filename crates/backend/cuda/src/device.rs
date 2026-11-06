@@ -223,6 +223,12 @@ impl CudaDevice {
         self.stream.device().name().map_err(device_error)
     }
 
+    /// This device's stream as the kernel contract sees it, borrowed for the hot path.
+    #[must_use]
+    pub const fn tile(&self) -> &Runtime {
+        &self.runtime
+    }
+
     /// This device's stream as the kernel contract sees it.
     #[must_use]
     pub fn runtime(&self) -> Runtime {

@@ -6,12 +6,9 @@ use crate::{
     device::{CudaDevice, device_error},
     resident::greedy::{Greedy, TILE_SEARCH},
 };
+use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
-use cutile::{
-    bench::{BenchOptions, do_bench_paired},
-    prelude::*,
-};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use serde::{Deserialize, Serialize};
@@ -242,10 +239,7 @@ impl Captured {
         Ok(Self { graph, greedy })
     }
     fn verify(&self, device: &CudaDevice, expected: &[u32]) -> Result<()> {
-        self.graph
-            .launch()
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        device.tile().sync(self.graph.launch())?;
         if self.greedy.read(device)? != expected {
             return Err(Error::invalid("greedy candidate changed token decisions"));
         }
@@ -267,10 +261,9 @@ fn measure(
         clear_l2,
     };
     let run = |graph: &Captured| {
-        graph
-            .graph
-            .launch()
-            .sync_on(&device.stream)
+        device
+            .tile()
+            .sync(graph.graph.launch())
             .map_err(|e| tensor_error(&e.to_string()))
     };
     let (first, second) = if candidate_first {

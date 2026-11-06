@@ -15,10 +15,7 @@ pub fn measure(
     tiles: [usize; 3],
 ) -> Result<()> {
     for _ in 0..100 {
-        graph
-            .launch()
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        device.tile().sync(graph.launch())?;
     }
     let mut samples = Vec::new();
     for _ in 0..60 {

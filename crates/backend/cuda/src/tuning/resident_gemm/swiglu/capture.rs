@@ -12,7 +12,6 @@ use crate::tuning::projection_budget::ProjectionShape;
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::cutile_compiler::hints::CompileOptions;
-use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, Fp4Pair, Fp4QuantKind, Fp4QuantPlan, Fp8, GemmLoop, GemmPlan, Kernels, Recording,
@@ -153,10 +152,7 @@ impl Captured {
         })
     }
     pub(super) fn run(&self, device: &CudaDevice) -> Result<()> {
-        self.graph
-            .launch()
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        device.tile().sync(self.graph.launch())?;
         Ok(())
     }
     pub(super) fn bytes(&self, device: &CudaDevice) -> Result<(Vec<u8>, Vec<u8>)> {

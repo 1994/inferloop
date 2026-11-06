@@ -7,14 +7,12 @@ use super::{
 };
 use super::{LibraryIdentity, algorithm_config};
 use crate::constants::NVFP4_GROUP_SIZE;
-use crate::device::device_error;
 use crate::mlp::ProjectionWeight;
 use crate::resident::buffers::RowMajor;
 use crate::tuning::projection_budget::ProjectionKind;
 use crate::tuning::resident_gemm::{self, GemmConfig, ResidentTuningSession};
 use crate::tuning::{nvfp4_lt as cache, table_path};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
-use cutile::prelude::*;
 use infer_core::ErrorCode;
 use infer_core::Result;
 use infer_cuda_kernels::contract::{
@@ -405,10 +403,7 @@ impl Support {
             }
             self.model.save_numerical(key, op, true)?;
         } else if let Some(graph) = &graph {
-            graph
-                .launch()
-                .sync_on(&context.device.stream)
-                .map_err(device_error)?;
+            context.device.tile().sync(graph.launch())?;
         }
         let ProjectionWeight::Fp4(w, s, _) = op.weight else {
             return Ok(false);
@@ -493,18 +488,12 @@ fn exact(
     candidate: &Graph,
     out: Buffer<'_, f32>,
 ) -> Result<bool> {
-    baseline
-        .launch()
-        .sync_on(&context.device.stream)
-        .map_err(device_error)?;
+    context.device.tile().sync(baseline.launch())?;
     let expected = context
         .device
         .read_buffer::<f32>(out)
         .map_err(|e| error(e.to_string()))?;
-    candidate
-        .launch()
-        .sync_on(&context.device.stream)
-        .map_err(device_error)?;
+    context.device.tile().sync(candidate.launch())?;
     let actual = context
         .device
         .read_buffer::<f32>(out)

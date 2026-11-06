@@ -2,9 +2,8 @@
 use super::launches::capture;
 use super::program::{COLUMN_TILE, TOKEN_TILE, activation, projection_output};
 use super::weights::MlpLayer;
-use crate::device::{CudaDevice, device_error};
+use crate::device::CudaDevice;
 use crate::resident::buffers::buffer;
-use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Gelu, VisionDense};
 use infer_cuda_kernels::tile::runtime::Allocation;
@@ -66,10 +65,7 @@ pub(super) fn run(
         launches.add(hidden, buffer(&output)?, buffer(&residual)?, buffer(&fc2)?)?;
         Ok(())
     })?;
-    graph
-        .launch()
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    device.tile().sync(graph.launch())?;
     projection_output(device.runtime().read(&output)?, rows, hidden)
 }
 

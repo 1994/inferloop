@@ -1709,7 +1709,7 @@ impl DeviceProgram {
         block_on(self.reset_async())
     }
     pub(crate) async fn reset_async(&mut self) -> Result<()> {
-        self.device.run_op(self.reset_graph.launch()).await?;
+        self.device.tile().run(self.reset_graph.launch()).await?;
         self.next_position = 0;
         self.last_batch = None;
         Ok(())

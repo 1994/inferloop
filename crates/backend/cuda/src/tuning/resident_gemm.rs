@@ -19,12 +19,9 @@ use crate::{
     mlp::ProjectionWeight,
 };
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
+use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
-use cutile::{
-    bench::{BenchOptions, do_bench_paired},
-    prelude::*,
-};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, Fp4Pair, Fp4QuantKind, Fp4QuantPlan, Fp8, GemmLoop, GemmPlan, Kernels, Recording,
@@ -941,10 +938,7 @@ impl Captured {
         })
     }
     fn run(&self, device: &CudaDevice) -> Result<()> {
-        self.graph
-            .launch()
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        device.tile().sync(self.graph.launch())?;
         Ok(())
     }
 }
@@ -1004,9 +998,9 @@ pub(super) fn measure_graphs(
         clear_l2,
     };
     let run = |graph: &Graph| {
-        graph
-            .launch()
-            .sync_on(&device.stream)
+        device
+            .tile()
+            .sync(graph.launch())
             .map_err(|e| tensor_error(&e.to_string()))
     };
     let (first, second) = match order {

@@ -7,8 +7,7 @@
 //! allocation per prompt width serves every admitted sequence instead of one per sequence.
 use super::ActivationArena;
 use crate::constants::PREFILL_SPLIT_K;
-use crate::device::{CudaDevice, device_error};
-use cutile::prelude::*;
+use crate::device::CudaDevice;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::Buffer;
 use infer_cuda_kernels::tile::runtime::Allocation;
@@ -39,10 +38,7 @@ impl Partials {
                 .checked_mul(lanes)
                 .and_then(|split| split.checked_mul(rows))
                 .ok_or_else(|| Error::invalid("prefill split partials overflow"))?;
-            let zeros = api::zeros::<f32>(&[len])
-                .sync_on(&device.stream)
-                .map_err(device_error)?;
-            memory.insert(rows, Allocation::adopt(Arc::new(zeros))?);
+            memory.insert(rows, device.tile().zeros::<f32>(len)?);
         }
         Ok(Self { memory, lanes })
     }

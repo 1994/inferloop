@@ -9,7 +9,7 @@ use crate::tuning::preparation::driver_build;
 use crate::tuning::projection_budget::ProjectionShape;
 use crate::tuning::resident_gemm::{ResidentGemmKey, kernel_environment};
 use cutile::cutile_compiler::hints::CompileOptions;
-use cutile::{half::bf16, prelude::*};
+use cutile::half::bf16;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
@@ -83,10 +83,7 @@ impl Captured {
         })
     }
     pub(super) fn run(&self, device: &CudaDevice) -> Result<()> {
-        self.graph
-            .launch()
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        device.tile().sync(self.graph.launch())?;
         Ok(())
     }
     pub(super) fn output(&self, device: &CudaDevice) -> Result<Vec<f32>> {

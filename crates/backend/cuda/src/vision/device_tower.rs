@@ -8,7 +8,6 @@ use super::weights::{AttentionLayer, MlpLayer, VisionWeights, half_tile};
 use crate::device::{CudaDevice, device_error};
 use crate::resident::buffers::buffer;
 use cutile::half::bf16;
-use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{DenseBuffers, Gelu, VisionDense, VisionNorm, VisionRope};
 use infer_cuda_kernels::tile::runtime::Allocation;
@@ -331,10 +330,7 @@ pub(super) fn run(
         }
         Ok(())
     })?;
-    graph
-        .launch()
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    device.tile().sync(graph.launch())?;
     projection_output(
         device.runtime().read(&buffers.state)?,
         tokens,

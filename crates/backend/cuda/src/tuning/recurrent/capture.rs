@@ -10,7 +10,6 @@ use std::env::var_os;
 
 const FINGERPRINT_SPLITS: [usize; 3] = [1, 2, 4];
 use crate::device::{CudaDevice, device_error};
-use cutile::prelude::*;
 use infer_core::{Error, Result};
 
 /// The graph retains every operand; only what a check reads or resets is named here.
@@ -74,10 +73,7 @@ impl Captured {
         let runtime = device.runtime();
         runtime
             .enqueue(|transfers| transfers.copy(self.state.operand(), self.initial.operand()))?;
-        self.graph
-            .launch()
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        device.tile().sync(self.graph.launch())?;
         let state = maximum_error(&runtime.read(&self.state)?, &fixture.state)?;
         let out = maximum_error(&runtime.read(&self.output)?, &fixture.output)?;
         Ok(state.max(out))

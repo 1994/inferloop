@@ -17,12 +17,9 @@ use crate::device::{CudaDevice, device_error};
 use crate::resident::attention_mma::catalog::Variant;
 use crate::tuning::preparation::driver_build;
 use capture::Captured;
+use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
-use cutile::{
-    bench::{BenchOptions, do_bench_paired},
-    prelude::*,
-};
 use infer_core::{Error, Result};
 use reference::Fixture;
 use serde::{Deserialize, Serialize};
@@ -299,9 +296,9 @@ fn measure(
         (base, candidate)
     };
     let run = |c: &Captured| {
-        c.graph
-            .launch()
-            .sync_on(&device.stream)
+        device
+            .tile()
+            .sync(c.graph.launch())
             .map_err(|e| tensor_error(&e.to_string()))
     };
     let (a, b) = do_bench_paired(&device.stream, &options, |_| run(left), |_| run(right))

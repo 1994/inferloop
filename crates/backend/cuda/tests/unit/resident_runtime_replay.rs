@@ -4,6 +4,8 @@ use crate::resident::pool_gemv::{
     cell_tests::acceptance::{Case, OUTPUTS, ROWS},
     kernels as pool_gemv,
 };
+use cutile::cuda_async::device_future::DeviceFuture;
+use cutile::cuda_async::device_operation::ExecutionContext;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
@@ -118,7 +120,13 @@ fn wrapped_replay_costs_what_raw_replay_costs() -> Result<()> {
         for _ in 0..BLOCKS {
             let start = Instant::now();
             for _ in 0..LAUNCHES {
-                device.run_op(raw.launch()).await?;
+                // The raw side is what the wrapper forwards to: a cuTile future on the stream.
+                DeviceFuture::scheduled(
+                    raw.launch(),
+                    ExecutionContext::new(Arc::clone(&device.stream)),
+                )
+                .await
+                .map_err(device_error)?;
             }
             raw_times.push(start.elapsed().as_secs_f64());
             let start = Instant::now();

@@ -5,7 +5,6 @@ use crate::{
     device::{CudaDevice, device_error},
     strategy::LinearTiling,
 };
-use cutile::prelude::DeviceOp;
 use cutile::tile_kernel::validate_programmatic_dependent_launch;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{DownPlan, Kernels, ProductBuffers, Recording, RowNormPlan};
@@ -153,10 +152,7 @@ impl MlpGraph {
         }
         self.device
             .enqueue(|transfers| transfers.copy(self.input.operand(), input.operand()))?;
-        self.graph
-            .launch()
-            .sync_on(&self.device.stream)
-            .map_err(device_error)
+        self.device.tile().sync(self.graph.launch())
     }
 
     /// Diagnostic host boundary; production callers should keep activations on device.

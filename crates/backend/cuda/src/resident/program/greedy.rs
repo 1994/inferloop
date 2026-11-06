@@ -7,7 +7,6 @@ use crate::resident::batch::take_result;
 use crate::resident::greedy::Greedy;
 use crate::resident::token_readout::TokenReadout;
 use crate::tuning::greedy::select;
-use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_cuda_kernels::tile::runtime::Graph;
@@ -130,7 +129,8 @@ impl DeviceProgram {
             .as_mut()
             .ok_or_else(|| Error::invariant("device greedy readout"))?;
         self.device
-            .run_op(self.graph.launch().then(|()| greedy.graph.launch()))
+            .tile()
+            .run(self.graph.launch().followed_by(|| greedy.graph.launch()))
             .await?;
         let tokens = greedy.selector.read_async(&self.device).await?;
         let token = *tokens
