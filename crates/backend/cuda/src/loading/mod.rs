@@ -45,8 +45,8 @@ use crate::{
     resident::{DeviceProgram, ProgramWeights},
     tuning::TuningReport,
 };
-use cutile::prelude::Tensor;
 use infer_core::{Error, ModelId, Result};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{DataflowGraph, EncodedImageInput, ImageInput, ImageTransform, ModelIr};
 use infer_models::QuantizedPackage;
 use infer_spi::ImagePreprocessing;
@@ -334,7 +334,7 @@ impl LoadedVision {
         device: &CudaDevice,
         grid: (usize, usize, usize),
         patches: usize,
-        input: &Arc<Tensor<f32>>,
+        input: &Allocation<f32>,
     ) -> Result<Vec<f32>> {
         let taps = position_taps(grid, &self.encoder)?;
         let embedded =

@@ -1,45 +1,38 @@
 //! Submit device-library host work without blocking the CUDA owner thread.
-use crate::device::{CudaDevice, device_error};
-use cutile::cuda_async::device_future::DeviceFuture;
-use cutile::prelude::{DeviceError, DeviceOp, ExecutionContext, Tensor};
 use futures_channel::oneshot;
 use infer_core::{Error, ErrorCode, Result};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_spi::DeviceHostExecutor;
 use std::future::Future;
 use std::pin::Pin;
-use std::result::Result as StdResult;
-use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
-type Pending = Pin<Box<dyn Future<Output = StdResult<Tensor<f32>, DeviceError>> + Send>>;
+type Pending = Pin<Box<dyn Future<Output = Result<Allocation<f32>>> + Send>>;
 
 pub(super) enum Submission {
-    Ready(Tensor<f32>),
+    Ready(Allocation<f32>),
     Pending(Pending),
 }
 
 impl Submission {
-    pub async fn finish(self) -> Result<Tensor<f32>> {
+    pub async fn finish(self) -> Result<Allocation<f32>> {
         match self {
             Self::Ready(output) => Ok(output),
-            Self::Pending(future) => future.await.map_err(device_error),
+            Self::Pending(future) => future.await,
         }
     }
 }
 
 /// Poll once on a worker: any library-side initialization or reallocation stays off the owner.
-pub(super) fn kickoff<O: DeviceOp<Output = Tensor<f32>> + 'static>(
-    device: &CudaDevice,
-    operation: O,
+pub(super) fn kickoff(
+    operation: impl Future<Output = Result<Allocation<f32>>> + Send + 'static,
 ) -> Result<Submission> {
-    let context = ExecutionContext::new(Arc::clone(&device.stream));
-    let mut future = Box::pin(DeviceFuture::scheduled(operation, context));
+    let mut future = Box::pin(operation);
     match future
         .as_mut()
         .poll(&mut Context::from_waker(Waker::noop()))
     {
-        Poll::Ready(Ok(output)) => Ok(Submission::Ready(output)),
-        Poll::Ready(Err(error)) => Err(device_error(error)),
+        Poll::Ready(output) => output.map(Submission::Ready),
         Poll::Pending => Ok(Submission::Pending(future)),
     }
 }

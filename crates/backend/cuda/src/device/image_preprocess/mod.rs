@@ -19,9 +19,9 @@ use self::staging::UploadPool;
 use self::tables::TableCache;
 use crate::device::{CudaDevice, device_error};
 use cuda_core::{CudaContext, Function};
-use cutile::prelude::*;
 use infer_core::{Error, ErrorCode, Result};
 use infer_cuda_kernels::contract::target::ImageKernel;
+use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{EncodedImageInput, ImageTransform};
 use infer_spi::ImagePreprocessing;
 use std::sync::Arc;
@@ -144,7 +144,7 @@ impl Processor {
     ///
     /// Every source, table, intermediate, output and kernel module is retained by the device
     /// operation until its completion fence. The future resolves without a host readback.
-    /// The output has shape `[count × padded_patches, 1536]`; padded rows are zero.
+    /// The output holds `[count × padded_patches, 1536]` row-major; padded rows are zero.
     /// The input owner is retained through the device fence. The caller must keep the result
     /// alive until all later device consumers finish and invoke this on the device-owner thread.
     /// # Errors
@@ -153,7 +153,7 @@ impl Processor {
         &self,
         device: &CudaDevice,
         batch: &ImageBatch,
-    ) -> Result<Arc<Tensor<f32>>> {
+    ) -> Result<Allocation<f32>> {
         let source = Source::Rgb(self.pixels.stage(&batch.pixels)?);
         self.process_source(device, batch.geometry, source).await
     }
@@ -167,7 +167,7 @@ impl Processor {
         &self,
         device: &CudaDevice,
         image: &EncodedImageInput,
-    ) -> Result<Arc<Tensor<f32>>> {
+    ) -> Result<Allocation<f32>> {
         let transform = image.transform();
         if !Capability.supports(&transform) {
             return Err(Error::unsupported(
@@ -188,7 +188,7 @@ impl Processor {
         let bytes = image.shared_bytes();
         let info = image.info().clone();
         let width = transform.source()[1];
-        let device = device.clone();
+        let runtime = device.runtime();
         let stream = self.stream;
         let direct = Arc::clone(&self.direct);
         let horizontal = Arc::clone(&self.horizontal);
@@ -203,32 +203,25 @@ impl Processor {
                 width,
             };
             if geometry.is_identity() {
-                worker::kickoff(
-                    &device,
-                    Direct {
-                        device: device.clone(),
-                        source,
-                        geometry,
-                        kernel: direct,
-                        stream,
-                    },
-                )
+                let direct = Direct {
+                    source,
+                    geometry,
+                    kernel: direct,
+                    stream,
+                };
+                worker::kickoff(runtime.operation(move |operation| direct.enqueue(operation)))
             } else {
                 let tables = tables.get(&geometry)?;
-                let coefficients = coefficients.stage(&tables.values)?;
-                worker::kickoff(
-                    &device,
-                    Kernels {
-                        device: device.clone(),
-                        source,
-                        coefficients,
-                        geometry,
-                        tables,
-                        horizontal,
-                        vertical,
-                        stream,
-                    },
-                )
+                let kernels = Kernels {
+                    source,
+                    coefficients: coefficients.stage(&tables.values)?,
+                    geometry,
+                    tables,
+                    horizontal,
+                    vertical,
+                    stream,
+                };
+                worker::kickoff(runtime.operation(move |operation| kernels.enqueue(operation)))
             }
         })
         .await?;
@@ -240,25 +233,26 @@ impl Processor {
         device: &CudaDevice,
         geometry: Geometry,
         source: Source,
-    ) -> Result<Arc<Tensor<f32>>> {
+    ) -> Result<Allocation<f32>> {
         if self.stream != device.stream.cu_stream() as usize {
             return Err(Error::invalid(
                 "image processor belongs to a different CUDA stream",
             ));
         }
+        let runtime = device.runtime();
         let output = if geometry.is_identity() {
-            let operation = Direct {
-                device: device.clone(),
+            let direct = Direct {
                 source,
                 geometry,
                 kernel: Arc::clone(&self.direct),
                 stream: self.stream,
             };
-            device.run_op(operation).await?
+            runtime
+                .operation(move |operation| direct.enqueue(operation))
+                .await?
         } else {
             let tables = self.tables.get(&geometry)?;
-            let operation = Kernels {
-                device: device.clone(),
+            let kernels = Kernels {
                 source,
                 coefficients: self.coefficients.stage(&tables.values)?,
                 geometry,
@@ -267,20 +261,24 @@ impl Processor {
                 vertical: Arc::clone(&self.vertical),
                 stream: self.stream,
             };
-            device.run_op(operation).await?
+            runtime
+                .operation(move |operation| kernels.enqueue(operation))
+                .await?
         };
         Self::finish_output(geometry, output)
     }
 
-    fn finish_output(geometry: Geometry, output: Tensor<f32>) -> Result<Arc<Tensor<f32>>> {
-        let rows = usize::try_from(geometry.batch)
+    /// The output holds `[count × padded_patches, PATCH_WIDTH]` patch rows.
+    fn finish_output(geometry: Geometry, output: Allocation<f32>) -> Result<Allocation<f32>> {
+        let elements = usize::try_from(geometry.batch)
             .ok()
             .and_then(|count| count.checked_mul(usize::try_from(geometry.padded_patches).ok()?))
+            .and_then(|rows| rows.checked_mul(PATCH_WIDTH))
             .ok_or_else(|| Error::invalid("image patch rows overflow"))?;
-        output
-            .reshape(&[rows, PATCH_WIDTH])
-            .map(Arc::new)
-            .map_err(device_error)
+        if output.len() != elements {
+            return Err(Error::invariant("image patch output extent"));
+        }
+        Ok(output)
     }
 }
 

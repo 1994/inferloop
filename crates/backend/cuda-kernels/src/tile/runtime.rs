@@ -24,11 +24,13 @@ use std::sync::{Arc, Mutex, Weak};
 use transfer::Inflight;
 
 mod launch;
+mod operation;
 mod readback;
 mod staging;
 mod transfer;
 
 pub use launch::{Argument, KernelLaunch};
+pub use operation::{Operation, Pending};
 pub use readback::{Pinned, Readback};
 pub use staging::Staging;
 pub use transfer::{HeadMajor, Transfers};

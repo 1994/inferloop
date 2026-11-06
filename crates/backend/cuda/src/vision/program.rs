@@ -29,7 +29,6 @@ use infer_models::vision::row_tile;
 use infer_spi::ModalityEncoder;
 use std::env::var;
 use std::result::Result as StdResult;
-use std::sync::Arc;
 
 #[cfg(test)]
 #[path = "../../tests/unit/vision_projection_output.rs"]
@@ -118,7 +117,7 @@ pub fn patch_embed_device_pixels(
     device: &CudaDevice,
     encoder: &ModalityEncoder,
     weights: &VisionWeights,
-    patches: &Arc<Tensor<f32>>,
+    patches: &Allocation<f32>,
     positions: &PositionTaps,
     patch_count: usize,
 ) -> Result<Vec<f32>> {
@@ -135,7 +134,7 @@ pub fn patch_embed_device_pixels(
 #[derive(Clone, Copy)]
 enum PatchInput<'a> {
     Host(&'a [f32]),
-    Device(&'a Arc<Tensor<f32>>),
+    Device(&'a Allocation<f32>),
 }
 
 #[derive(Clone, Copy)]
@@ -304,11 +303,7 @@ fn validate_patch_input(
             Err(Error::invalid("patch input shape"))
         }
         PatchInput::Device(values) => {
-            let shape = [
-                i32::try_from(rows).map_err(device_error)?,
-                i32::try_from(width).map_err(device_error)?,
-            ];
-            if values.shape() != shape || !values.is_contiguous() {
+            if rows.checked_mul(width) != Some(values.len()) {
                 return Err(Error::invalid("device patch input shape"));
             }
             Ok(())
@@ -328,7 +323,7 @@ fn stage_patches(
             values[..patches.len()].copy_from_slice(patches);
             device.runtime().upload(values)
         }
-        PatchInput::Device(patches) => Allocation::adopt(Arc::clone(patches)),
+        PatchInput::Device(patches) => Ok(patches.clone()),
     }
 }
 
