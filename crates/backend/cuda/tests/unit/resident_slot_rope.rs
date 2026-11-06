@@ -1,6 +1,7 @@
 use super::kernels;
 use crate::constants::METADATA_FIELDS;
 use crate::device::CudaDevice;
+use crate::device::device_error;
 use crate::resident::buffers::cutile;
 use crate::resident::kernels::aux;
 use cutile::prelude::*;
@@ -90,9 +91,15 @@ fn check_geometry(
             cutile(scope)?.record(
                 aux::rope(
                     out.partition([1, half]),
-                    &input.slice(from_ref(&input_range))?.view(&[heads, dim])?,
+                    &input
+                        .slice(from_ref(&input_range))
+                        .map_err(device_error)?
+                        .view(&[heads, dim])
+                        .map_err(device_error)?,
                     &frequencies,
-                    &metadata.slice(from_ref(&metadata_range))?,
+                    &metadata
+                        .slice(from_ref(&metadata_range))
+                        .map_err(device_error)?,
                 )
                 .generics([dim, half].iter().map(ToString::to_string).collect()),
             )?;

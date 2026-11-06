@@ -5,7 +5,7 @@
 //! wide prompt arena (2 GB at 2048 lanes for a 248K vocabulary).
 use super::buffers::{RowMajor, buffer};
 use super::{ActivationArena, ProgramWeights, capture::error};
-use cutile::prelude::*;
+use infer_core::Result;
 use infer_cuda_kernels::contract::{LastRowsKind, LastRowsPlan, Recording};
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::TensorNode;
@@ -42,7 +42,7 @@ pub fn required_bytes(
     graph: &infer_ir::DataflowGraph,
     weights: &ProgramWeights,
     lanes: usize,
-) -> infer_core::Result<usize> {
+) -> Result<usize> {
     if supported(graph, weights) {
         ActivationArena::required_prompt_bytes(graph, lanes)
     } else {
@@ -58,7 +58,7 @@ pub(super) fn record(
     weights: &ProgramWeights,
     nvfp4: &mut super::nvfp4_gemm::Workspace,
     (row, metadata): (&Allocation<f32>, &Allocation<i32>),
-) -> Result<(), DeviceError> {
+) -> Result<()> {
     let quantization = weights
         .activation_quantization(node.inputs[1])
         .ok_or_else(|| error("prompt logits quantization"))?;

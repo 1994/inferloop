@@ -1,4 +1,5 @@
 use super::*;
+use crate::device::device_error;
 use crate::resident::buffers::cutile;
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_cuda_kernels::tile::runtime::Graph;

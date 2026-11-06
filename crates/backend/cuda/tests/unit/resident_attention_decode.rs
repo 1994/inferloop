@@ -1,6 +1,7 @@
 use super::kernels;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::CudaDevice;
+use crate::device::device_error;
 use crate::resident::buffers::cutile;
 use cuda_core::f8e4m3fn;
 use cutile::bench::BenchOptions as CutileBenchOptions;
@@ -375,9 +376,9 @@ fn bench_case(
                 cutile(scope)?.record(
                     kernels::merge(
                         (&mut output).partition([1, dim]),
-                        &numerator.view(&[heads, parts, dim])?,
-                        &maxima.view(&[heads, parts])?,
-                        &sums.view(&[heads, parts])?,
+                        &numerator.view(&[heads, parts, dim]).map_err(device_error)?,
+                        &maxima.view(&[heads, parts]).map_err(device_error)?,
+                        &sums.view(&[heads, parts]).map_err(device_error)?,
                     )
                     .generics(vec![dim.to_string(), parts.to_string()]),
                 )?;

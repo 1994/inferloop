@@ -16,7 +16,6 @@ use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
-use std::result::Result as StdResult;
 use std::sync::Arc;
 
 const RECURRENT_STATE_RANK: usize = 3;
@@ -252,7 +251,7 @@ pub(super) fn record_batch(
     arena: &ActivationArena,
     batch: &VerifyBatch<'_>,
     hardware: ValueDevice,
-) -> StdResult<bool, DeviceError> {
+) -> Result<bool> {
     let TensorOp::Delta {
         key_heads,
         value_heads,

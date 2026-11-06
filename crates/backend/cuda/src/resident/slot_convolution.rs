@@ -7,12 +7,11 @@ use super::{
     slot_states::VerifyBatch,
 };
 use crate::constants::METADATA_FIELDS;
-use cutile::prelude::*;
+use infer_core::Result;
 use infer_cuda_kernels::contract::{ConvBuffers, ConvKernel, Recording};
 use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
-use std::result::Result as StdResult;
 
 /// Preserve the original four-tap expression and leave accepted-prefix mutation to commit.
 pub(super) fn record(
@@ -21,7 +20,7 @@ pub(super) fn record(
     arena: &ActivationArena,
     batch: &VerifyBatch<'_>,
     weights: &ProgramWeights,
-) -> StdResult<bool, DeviceError> {
+) -> Result<bool> {
     #[cfg(test)]
     if DISABLED.get() {
         return Ok(false);

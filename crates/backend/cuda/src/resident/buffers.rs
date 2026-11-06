@@ -6,6 +6,7 @@
 use super::arena::SlotMemory;
 use super::capture::error;
 use cutile::prelude::*;
+use infer_core::Result;
 use infer_cuda_kernels::contract::{Buffer, KvCache, KvElement};
 use infer_cuda_kernels::tile::runtime::{Allocation, Element};
 use std::sync::Arc;
@@ -18,7 +19,7 @@ pub trait Operand {
     /// The memory as a contract buffer.
     /// # Errors
     /// Rejects storage a buffer cannot describe.
-    fn operand(&self) -> Result<Buffer<'_, Self::Marker>, DeviceError>;
+    fn operand(&self) -> Result<Buffer<'_, Self::Marker>>;
 }
 
 /// For tests that launch over cuTile tensors; production memory is an [`Allocation`], whose
@@ -30,7 +31,7 @@ pub trait Operand {
 impl<T: DType + Element> Operand for Tensor<T> {
     type Marker = T::Marker;
 
-    fn operand(&self) -> Result<Buffer<'_, T::Marker>, DeviceError> {
+    fn operand(&self) -> Result<Buffer<'_, T::Marker>> {
         if !self.is_contiguous() {
             return Err(error("kernel operand must be contiguous"));
         }
@@ -42,7 +43,7 @@ impl<T: DType + Element> Operand for Tensor<T> {
 impl<T: DType + Element> Operand for Allocation<T> {
     type Marker = T::Marker;
 
-    fn operand(&self) -> Result<Buffer<'_, T::Marker>, DeviceError> {
+    fn operand(&self) -> Result<Buffer<'_, T::Marker>> {
         Ok(Self::operand(self))
     }
 }
@@ -50,7 +51,7 @@ impl<T: DType + Element> Operand for Allocation<T> {
 impl Operand for SlotMemory {
     type Marker = f32;
 
-    fn operand(&self) -> Result<Buffer<'_, f32>, DeviceError> {
+    fn operand(&self) -> Result<Buffer<'_, f32>> {
         self.buffer().map_err(error)
     }
 }
@@ -58,7 +59,7 @@ impl Operand for SlotMemory {
 impl<O: Operand> Operand for Arc<O> {
     type Marker = O::Marker;
 
-    fn operand(&self) -> Result<Buffer<'_, O::Marker>, DeviceError> {
+    fn operand(&self) -> Result<Buffer<'_, O::Marker>> {
         O::operand(self)
     }
 }
@@ -66,7 +67,7 @@ impl<O: Operand> Operand for Arc<O> {
 /// A buffer over `memory`; see [`Operand`] for who keeps it alive.
 /// # Errors
 /// Rejects storage a buffer cannot describe.
-pub fn buffer<O: Operand + ?Sized>(memory: &O) -> Result<Buffer<'_, O::Marker>, DeviceError> {
+pub fn buffer<O: Operand + ?Sized>(memory: &O) -> Result<Buffer<'_, O::Marker>> {
     memory.operand()
 }
 
@@ -82,7 +83,7 @@ impl<'a, T> RowMajor<'a, T> {
     /// `buffer` read as `rows` rows of `columns`.
     /// # Errors
     /// Rejects a shape that does not cover the buffer exactly.
-    pub fn new(buffer: Buffer<'a, T>, rows: usize, columns: usize) -> Result<Self, DeviceError> {
+    pub fn new(buffer: Buffer<'a, T>, rows: usize, columns: usize) -> Result<Self> {
         if rows.checked_mul(columns) != Some(buffer.len()) {
             return Err(error("operand rows do not cover the buffer"));
         }
@@ -100,7 +101,7 @@ pub fn kv_cache<'a, O: Operand<Marker: KvElement> + ?Sized>(
     groups: usize,
     dim: usize,
     scales: [f32; 2],
-) -> Result<KvCache<'a>, DeviceError> {
+) -> Result<KvCache<'a>> {
     Ok(KvCache {
         buffers: O::Marker::kv(buffer(keys)?, buffer(values)?),
         groups,

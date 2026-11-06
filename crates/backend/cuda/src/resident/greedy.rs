@@ -3,13 +3,11 @@ use super::buffers::{Operand, buffer};
 use super::capture::error;
 use crate::device::Readbacks;
 use crate::device::{CudaDevice, device_error};
-use cutile::error::tensor_error;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Buffer, GreedyPartials, GreedyPlan, Kernels, Recording};
 use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::runtime::Allocation;
-use std::result::Result as StdResult;
 
 /// Values each selected row writes: the token and its validation flag.
 const TOKEN_FIELDS: usize = 2;
@@ -55,7 +53,7 @@ impl Greedy {
         &self,
         scope: &Recording<'_>,
         logits: &L,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         self.record_partials(scope, logits)?;
         self.record_finish(scope, buffer(&self.tokens)?, 0)
     }
@@ -66,13 +64,13 @@ impl Greedy {
         logits: &L,
         output: &Allocation<i32>,
         offset: usize,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         if !output.len().is_multiple_of(TOKEN_FIELDS)
             || offset
                 .checked_add(self.rows)
                 .is_none_or(|end| end > output.len() / TOKEN_FIELDS)
         {
-            return Err(tensor_error("greedy output row range").into());
+            return Err(device_error("greedy output row range"));
         }
         self.record_partials(scope, logits)?;
         self.record_finish(scope, buffer(output)?, offset)
@@ -87,7 +85,7 @@ impl Greedy {
         }
     }
 
-    fn partials(&self) -> StdResult<GreedyPartials<'_>, DeviceError> {
+    fn partials(&self) -> Result<GreedyPartials<'_>> {
         Ok(GreedyPartials {
             keys: buffer(&self.keys)?,
             indices: buffer(&self.indices)?,
@@ -100,7 +98,7 @@ impl Greedy {
         scope: &Recording<'_>,
         output: Buffer<'_, i32>,
         offset: usize,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         self.kernels
             .sampling
             .greedy_finish(scope, &self.plan(), offset, output, self.partials()?)
@@ -111,7 +109,7 @@ impl Greedy {
         &self,
         scope: &Recording<'_>,
         logits: &L,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         self.kernels
             .sampling
             .greedy_partials(scope, &self.plan(), self.partials()?, buffer(logits)?)

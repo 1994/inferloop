@@ -66,7 +66,7 @@ impl Captured {
             let recording = scope;
             recording
                 .copy(self.state.operand(), buffer(&self.initial)?)
-                .map_err(|error| DeviceError::Internal(error.to_string()))?;
+                .map_err(|error| device_error(error.to_string()))?;
             contract
                 .recurrent
                 .normalize(
@@ -75,7 +75,7 @@ impl Captured {
                     buffer(&self.normalized)?,
                     buffer(&self.qkv)?,
                 )
-                .map_err(|error| DeviceError::Internal(error.to_string()))?;
+                .map_err(|error| device_error(error.to_string()))?;
             contract
                 .recurrent
                 .gates(
@@ -90,7 +90,7 @@ impl Captured {
                         bias: buffer(&self.bias)?,
                     },
                 )
-                .map_err(|error| DeviceError::Internal(error.to_string()))?;
+                .map_err(|error| device_error(error.to_string()))?;
             let buffers = PreparedDeltaBuffers {
                 state: buffer(&self.state)?,
                 output: buffer(&self.scratch)?,
@@ -104,12 +104,12 @@ impl Captured {
                 contract
                     .recurrent
                     .delta_prepared_simt(recording, shape, buffers)
-                    .map_err(|error| DeviceError::Internal(error.to_string()))?;
+                    .map_err(|error| device_error(error.to_string()))?;
             } else {
                 contract
                     .recurrent
                     .delta_prepared(recording, shape, NATIVE_VALUE_COLUMNS, buffers)
-                    .map_err(|error| DeviceError::Internal(error.to_string()))?;
+                    .map_err(|error| device_error(error.to_string()))?;
             }
             contract
                 .recurrent
@@ -119,7 +119,7 @@ impl Captured {
                     buffer(&self.output)?,
                     buffer(&self.scratch)?,
                 )
-                .map_err(|error| DeviceError::Internal(error.to_string()))
+                .map_err(|error| device_error(error.to_string()))
         })
         .map_err(device_error)
     }

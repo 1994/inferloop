@@ -18,7 +18,7 @@ fn captured_reset_clears_every_state_shape() -> Result<(), Box<dyn Error>> {
             kernels
                 .state
                 .clear(scope, buffer(&tensor)?)
-                .map_err(|error| DeviceError::Launch(error.to_string()))
+                .map_err(|error| device_error(error.to_string()))
         })?;
         for _ in 0..2 {
             reset.update(api::memcpy(&mut tensor, &source))?;

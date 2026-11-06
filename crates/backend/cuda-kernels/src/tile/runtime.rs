@@ -459,10 +459,15 @@ impl Graph {
     /// Returns what `record` returns, or a capture failure.
     pub fn scope(
         stream: &Arc<Stream>,
-        record: impl FnOnce(&Recording<'_>) -> StdResult<(), DeviceError>,
-    ) -> StdResult<Self, DeviceError> {
+        record: impl FnOnce(&Recording<'_>) -> Result<()>,
+    ) -> Result<Self> {
+        let inner = CudaGraph::scope(stream, |scope| {
+            record(&Recording::scope(scope))
+                .map_err(|error| DeviceError::Internal(error.to_string()))
+        })
+        .map_err(backend_error)?;
         Ok(Self {
-            inner: CudaGraph::scope(stream, |scope| record(&Recording::scope(scope)))?,
+            inner,
             _owners: Vec::new(),
         })
     }

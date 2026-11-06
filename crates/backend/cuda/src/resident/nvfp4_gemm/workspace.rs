@@ -36,15 +36,12 @@ use crate::{
     resident::ProgramWeights,
 };
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
-use cutile::prelude::*;
 use infer_core::Result;
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::DataflowGraph;
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::env::var;
-
-use std::result::Result as StdResult;
 
 /// FP4 activation codes and their per-group scales.
 type Quantized = (Allocation<f4e2m1fnx2>, Allocation<f8e4m3fn>);
@@ -282,7 +279,7 @@ impl Workspace {
         output: RowMajor<'_, f32>,
         columns: usize,
         certified: bool,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let ProjectionWeight::Fp4(..) = weight else {
             return Err(super::super::capture::error("FP4 workspace weight"));
         };
@@ -339,7 +336,7 @@ impl Workspace {
         up: Buffer<'_, f32>,
         output: RowMajor<'_, f32>,
         columns: usize,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let ProjectionWeight::Fp4(..) = weight else {
             return Err(super::super::capture::error("FP4 workspace weight"));
         };
@@ -394,7 +391,7 @@ impl Workspace {
         (input_scale, down_scale): (f32, f32),
         input: Buffer<'_, f32>,
         (rows, columns, hidden): (usize, usize, usize),
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let pointer = input.address();
         let pending = self.norm_fp4.take();
         let (ProjectionWeight::Fp4(..), ProjectionWeight::Fp4(..)) = (gate, up) else {
@@ -467,7 +464,7 @@ impl Workspace {
         scale: f32,
         output: RowMajor<'_, f32>,
         columns: usize,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let rows = output.rows;
         let (q, qs) = self
             .buffers
@@ -492,7 +489,7 @@ impl Workspace {
         quantized: (Buffer<'_, Fp4Pair>, Buffer<'_, Fp8>),
         output: RowMajor<'_, f32>,
         (rows, columns): (usize, usize),
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         {
             let outputs = output.columns;
             let config = strategies
@@ -524,7 +521,7 @@ impl Workspace {
         weight: Buffer<'_, f32>,
         output: RowMajor<'_, f32>,
         (epsilon, offset, scale): (f32, f32, f32),
-    ) -> StdResult<bool, DeviceError> {
+    ) -> Result<bool> {
         self.norm_fp4 = None;
         let rows = output.rows;
         let columns = output.columns;
@@ -572,7 +569,7 @@ impl Workspace {
         weight: Buffer<'_, f32>,
         output: RowMajor<'_, f32>,
         (epsilon, offset): (f32, f32),
-    ) -> StdResult<bool, DeviceError> {
+    ) -> Result<bool> {
         let rows = output.rows;
         let columns = output.columns;
         let Some((_, scales)) = self.fp8.get(&(rows, columns, 1)) else {
@@ -614,7 +611,7 @@ impl Workspace {
         output: RowMajor<'_, f32>,
         columns: usize,
         certified: bool,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         use super::super::capture::error;
         if !matches!(
             weight,
@@ -717,7 +714,7 @@ fn record_fp8_block(
     (q, qs): (Buffer<'_, Fp8>, Buffer<'_, f32>),
     (output, outputs): (Buffer<'_, f32>, usize),
     (rows, columns): (usize, usize),
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     contract
         .projection
         .quantize_fp8(

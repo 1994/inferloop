@@ -15,7 +15,6 @@ use crate::tuning::attention::select as attention_select;
 use crate::tuning::attention::shared::select as shared_select;
 use crate::tuning::attention::vector::select as vector_select;
 use crate::tuning::attention::vector_combined::select as vector_combined_select;
-use cutile::prelude::*;
 use infer_core::{Result, TensorId};
 use infer_cuda_kernels::contract::{
     Attention, DecodeBuffers, DecodePlan, Partials as ContractPartials, Recording, SplitDecodePlan,
@@ -26,7 +25,6 @@ use infer_ir::{DataflowGraph, TensorOp};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::mem::swap;
-use std::result::Result as StdResult;
 
 #[cfg(test)]
 #[path = "../../../tests/unit/resident_attention_prefill_taps.rs"]
@@ -567,7 +565,7 @@ impl Workspace {
         recording: &Recording<'_>,
         decode: DecodePlan,
         buffers: &VerifyDecodeBuffers<'_>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let work = self
             .buffers
             .get(&(decode.heads, decode.dim))
@@ -596,7 +594,7 @@ impl Workspace {
         recording: &Recording<'_>,
         decode: DecodePlan,
         buffers: DecodeBuffers<'_>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let work = self
             .buffers
             .get(&(decode.heads, decode.dim))
@@ -620,7 +618,7 @@ impl Workspace {
     }
 }
 
-fn partials(work: &Partials) -> StdResult<ContractPartials<'_>, DeviceError> {
+fn partials(work: &Partials) -> Result<ContractPartials<'_>> {
     Ok(ContractPartials {
         numerator: buffer(&work.numerator)?,
         maxima: buffer(&work.maxima)?,

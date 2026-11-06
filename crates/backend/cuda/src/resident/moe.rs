@@ -4,12 +4,10 @@ use super::buffers::buffer;
 use super::capture::{Capture, error};
 use crate::constants::FP8_BLOCK_COLUMNS;
 use crate::mlp::ProjectionWeight;
-use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{ExpertPlan, ExpertWeight, RoutePlan};
 use infer_ir::{TensorNode, TensorOp};
 use std::collections::BTreeMap;
-use std::result::Result as StdResult;
 
 /// Existing supported routing reduction extent; this is a shape legality bound.
 const MAX_ROUTING_EXPERTS: usize = 4096;
@@ -39,11 +37,7 @@ impl ExpertBank {
 }
 
 impl Capture<'_> {
-    pub(super) fn record_moe(
-        &self,
-        node: &TensorNode,
-        output: &SlotMemory,
-    ) -> StdResult<(), DeviceError> {
+    pub(super) fn record_moe(&self, node: &TensorNode, output: &SlotMemory) -> Result<()> {
         match node.op {
             TensorOp::MoeRoute {
                 experts,
@@ -94,7 +88,7 @@ impl Capture<'_> {
         input: usize,
         rows: usize,
         routed_input: bool,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let bank = self
             .weights
             .expert_banks

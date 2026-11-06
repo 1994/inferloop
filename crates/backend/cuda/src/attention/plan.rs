@@ -1,10 +1,9 @@
 //! Dense SDPA graph recording with caller-owned buffers and stream.
-use cutile::prelude::*;
+use crate::device::device_error;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Attention, DenseBuffers, DensePlan, Recording};
 use infer_ir::DType as Precision;
 use infer_kernel_api::attention::{AttentionDescriptor, AttentionMask};
-use std::result::Result as StdResult;
 
 /// Default query/key tile, independent of GPU model and model architecture.
 const TILE: usize = 32;
@@ -118,16 +117,14 @@ impl DenseAttentionPlan {
         attention: &dyn Attention,
         recording: &Recording<'_>,
         buffers: DenseBuffers<'_>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let operands = [buffers.query, buffers.key, buffers.value, buffers.out];
         if operands
             .iter()
             .zip(self.shapes)
             .any(|(buffer, [rows, columns])| buffer.len() != rows * columns)
         {
-            return Err(DeviceError::Launch(
-                "attention buffer shape mismatch".into(),
-            ));
+            return Err(device_error("attention buffer shape mismatch"));
         }
         let plan = DensePlan {
             head_width: self.width,
@@ -151,7 +148,7 @@ impl DenseAttentionPlan {
         } else {
             attention.dense(recording, plan, buffers)
         }
-        .map_err(|error| DeviceError::Launch(error.to_string()))
+        .map_err(|error| device_error(error.to_string()))
     }
 }
 

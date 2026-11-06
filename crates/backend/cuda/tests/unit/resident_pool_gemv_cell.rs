@@ -6,6 +6,7 @@ use super::*;
 use crate::device::{CudaDevice, device_error};
 use acceptance::{Case, OUTPUTS, ROWS};
 use cutile::half::bf16;
+use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::sync::Arc;

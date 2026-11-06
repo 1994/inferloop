@@ -15,7 +15,7 @@ use super::{
 };
 use crate::constants::{CONV_KERNEL_SIZE, GDN_PROJECTED_INPUTS};
 use crate::device::CudaDevice;
-use cutile::prelude::*;
+use infer_core::Result;
 use infer_core::{Error, TensorId};
 use infer_cuda_kernels::contract::{
     Buffer, DeltaStepPlan, FusedConvBuffers, FusedDeltaBuffers, LaneBuffers, Recording,
@@ -65,7 +65,7 @@ impl Staging {
         node: &TensorNode,
         arena: &ActivationArena,
         index: usize,
-    ) -> Result<(), DeviceError> {
+    ) -> Result<()> {
         for (input, &id) in commit_inputs(node).iter().enumerate() {
             let source = arena.activation(id).map_err(error)?;
             let target = self
@@ -98,7 +98,7 @@ pub(super) fn allocate_staging(
     nodes: &[TensorNode],
     arena: &ActivationArena,
     (slots, verify): (usize, usize),
-) -> infer_core::Result<Staging> {
+) -> Result<Staging> {
     let lanes = slots
         .checked_mul(verify)
         .ok_or_else(|| Error::invalid("batched recurrent staging overflow"))?;
@@ -148,7 +148,7 @@ pub(super) struct ValueDevice {
     warp_size: u32,
 }
 impl ValueDevice {
-    pub(super) fn new(device: &CudaDevice) -> infer_core::Result<Self> {
+    pub(super) fn new(device: &CudaDevice) -> Result<Self> {
         use cuda_core::sys::CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_WARP_SIZE as WARP;
         Ok(Self {
             multiprocessors: device.profile()?.multiprocessors,
@@ -169,7 +169,7 @@ pub(super) fn value_split(
     value_heads: usize,
     value_dim: usize,
     slots: usize,
-) -> infer_core::Result<usize> {
+) -> Result<usize> {
     if hardware.multiprocessors == 0
         || !hardware.warp_size.is_power_of_two()
         || value_heads == 0
@@ -236,7 +236,7 @@ pub(super) fn row_buffer(
     slot: Buffer<'_, f32>,
     lanes: usize,
     lane: usize,
-) -> Result<Buffer<'static, f32>, DeviceError> {
+) -> Result<Buffer<'static, f32>> {
     let row = slot.len() / lanes;
     if lane >= lanes {
         return Err(error("activation lane out of bounds"));
@@ -251,7 +251,7 @@ fn lane_input(
     arena: &ActivationArena,
     id: TensorId,
     lane: usize,
-) -> Result<Buffer<'static, f32>, DeviceError> {
+) -> Result<Buffer<'static, f32>> {
     weights.constants.get(&id).map_or_else(
         || row_buffer(arena.activation(id).map_err(error)?, arena.lanes(), lane),
         |constant| Ok(region(constant.buffer().address(), constant.len())),
@@ -263,7 +263,7 @@ fn rows(
     arena: &ActivationArena,
     id: TensorId,
     slot: &SlotLanes<'_>,
-) -> Result<LaneBuffers<'static, f32>, DeviceError> {
+) -> Result<LaneBuffers<'static, f32>> {
     let [first, second, third] = slot.lanes;
     Ok([
         lane_input(weights, arena, id, first)?,
@@ -282,7 +282,7 @@ pub(super) fn record_verify(
     slot: &SlotLanes<'_>,
     weights: &ProgramWeights,
     hardware: ValueDevice,
-) -> Result<(), DeviceError> {
+) -> Result<()> {
     let index = arena.slot(node.outputs[0]).map_err(error)?;
     let lanes = arena.lanes();
     let state = states
@@ -363,7 +363,7 @@ fn staged_buffers(row: &StagedRow) -> LaneBuffers<'_, f32> {
     [row[0].operand(), row[1].operand(), row[2].operand()]
 }
 
-fn lane_metadata<'a>(slot: &SlotLanes<'a>) -> Result<LaneBuffers<'a, i32>, DeviceError> {
+fn lane_metadata<'a>(slot: &SlotLanes<'a>) -> Result<LaneBuffers<'a, i32>> {
     let [m0, m1, m2] = slot.metadata;
     Ok([buffer(m0)?, buffer(m1)?, buffer(m2)?])
 }
@@ -382,7 +382,7 @@ pub(super) fn record_commit(
     weights: &ProgramWeights,
     hardware: ValueDevice,
     (staged, count): (&[StagedRow], usize),
-) -> Result<(), DeviceError> {
+) -> Result<()> {
     let count = i32::try_from(count).map_err(error)?;
     let state = states
         .get(&node.states[0])

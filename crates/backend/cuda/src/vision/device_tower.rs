@@ -7,7 +7,6 @@ use super::program::{
 use super::weights::{AttentionLayer, MlpLayer, VisionWeights, half_tile};
 use crate::device::{CudaDevice, device_error};
 use crate::resident::buffers::buffer;
-use cutile::cuda_async::error::DeviceError;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
@@ -16,7 +15,6 @@ use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_models::vision::row_tile;
 use infer_spi::ModalityEncoder;
 use std::mem::swap;
-use std::result::Result as StdResult;
 
 /// Compact head packing and padded norm rows use the separately qualified block path.
 const COMPACT_HALF: usize = 48;
@@ -159,7 +157,7 @@ impl Buffers {
         geometry: &Geometry,
         cosines: &Allocation<f32>,
         sines: &Allocation<f32>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         record_norm(
             launches,
             &self.state,
@@ -195,7 +193,7 @@ impl Buffers {
         geometry: &Geometry,
         cosines: &Allocation<f32>,
         sines: &Allocation<f32>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let norm = &self.norm;
         for (weight, bias, target) in [
             (&layer.attention.q.0, &layer.attention.q.1, &mut self.q),
@@ -253,7 +251,7 @@ impl Buffers {
         launches: &Launches<'_>,
         layer: &Layer<'_>,
         geometry: &Geometry,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let norm = &self.norm;
         launches.dense_bias(VisionDense {
             out: buffer(&self.fc1)?,
@@ -292,7 +290,7 @@ fn record_norm(
     weight: &Allocation<bf16>,
     bias: &Allocation<bf16>,
     geometry: &Geometry,
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     launches.layernorm(VisionNorm {
         out: buffer(output)?,
         input: buffer(input)?,

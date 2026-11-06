@@ -4,7 +4,7 @@ pub use infer_cuda_kernels::tile::recurrent::conv_prefill as kernels;
 
 use super::{ActivationArena, ProgramWeights, batch::States, buffers::buffer, capture::error};
 use crate::constants::CONV_KERNEL_SIZE;
-use cutile::prelude::*;
+use infer_core::Result;
 use infer_cuda_kernels::contract::{ConvBuffers, ConvKernel, Recording};
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{TensorNode, TensorOp};
@@ -17,7 +17,7 @@ pub(super) fn record(
     states: &mut States,
     metadata: &Allocation<i32>,
     lanes: usize,
-) -> Result<bool, DeviceError> {
+) -> Result<bool> {
     #[cfg(test)]
     if super::recurrent_prefill::LEGACY_CAPTURE.get() {
         return Ok(false);

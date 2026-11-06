@@ -458,8 +458,8 @@ fn sweep_shape(
     let weight = device.upload(vec![f4e2m1fnx2::from_bits(0x21); n * k / 2], &[n, k / 2])?;
     let scales = device.upload(vec![f8e4m3fn(48); n * k / 16], &[n, k / 16])?;
     let mut output = api::zeros::<f32>(&[SWEEP_PAD_ROWS, n]).sync_on(&device.stream)?;
-    let mut tile_graph = |rows: usize, columns: usize| -> Result<Graph, Error> {
-        Ok(Graph::scope(&device.stream, |scope| {
+    let mut tile_graph = |rows: usize, columns: usize| -> infer_core::Result<Graph> {
+        Graph::scope(&device.stream, |scope| {
             cutile(scope)?.record(
                 kernels::packed(
                     (&mut output).partition([rows, columns]),
@@ -476,7 +476,7 @@ fn sweep_shape(
                 ]),
             )?;
             Ok(())
-        })?)
+        })
     };
     let baseline = tile_graph(QUANT_TILE_ROWS, QUANT_TILE_COLUMNS)?;
     for (rows, columns) in SWEEP_TILES {

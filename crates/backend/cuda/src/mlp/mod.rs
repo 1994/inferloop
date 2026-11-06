@@ -5,14 +5,13 @@ use crate::{
     device::{CudaDevice, device_error},
     strategy::LinearTiling,
 };
-use cutile::prelude::{DeviceError, DeviceOp};
+use cutile::prelude::DeviceOp;
 use cutile::tile_kernel::validate_programmatic_dependent_launch;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{DownPlan, Kernels, ProductBuffers, Recording, RowNormPlan};
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 pub use projection::{Matrix, ProjectionWeight};
 use std::fmt::Display;
-use std::result::Result as StdResult;
 
 /// Normalized, gate, up, activated and down rows.
 const ACTIVATIONS: usize = 5;
@@ -173,8 +172,8 @@ impl MlpGraph {
     }
 }
 
-fn failed(error: impl Display) -> DeviceError {
-    DeviceError::Internal(error.to_string())
+fn failed(error: impl Display) -> Error {
+    device_error(error.to_string())
 }
 
 /// The activation product's operands.
@@ -193,7 +192,7 @@ fn record_down(
     parts: &Activation<'_>,
     down: &Allocation<f32>,
     columns: usize,
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     let recording = scope;
     let product = ProductBuffers {
         out: parts.activated.operand(),

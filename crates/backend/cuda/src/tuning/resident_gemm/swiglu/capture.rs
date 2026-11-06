@@ -20,7 +20,6 @@ use infer_cuda_kernels::contract::{
 use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use std::collections::BTreeMap;
-use std::result::Result as StdResult;
 use std::sync::{Mutex, OnceLock};
 
 /// Changes to fused arithmetic, quantization or confirmation invalidate prior measurements.
@@ -43,11 +42,11 @@ pub fn record(
     quantized: Operands<'_>,
     outputs: Operands<'_>,
     [rows, hidden, columns]: ProjectionShape,
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     let (ProjectionWeight::Fp4(_, _, gate_global), ProjectionWeight::Fp4(_, _, up_global)) =
         (gate, up)
     else {
-        return Err(DeviceError::Internal("fused SwiGLU weights".into()));
+        return Err(device_error("fused SwiGLU weights"));
     };
     contract
         .projection
@@ -69,7 +68,7 @@ pub fn record(
                 down_scale,
             ),
         )
-        .map_err(|e| DeviceError::Internal(e.to_string()))
+        .map_err(|e| device_error(e.to_string()))
 }
 
 pub(super) struct Captured {
@@ -135,7 +134,7 @@ impl Captured {
                     input.operand(),
                     scales.0,
                 )
-                .map_err(|e| DeviceError::Internal(e.to_string()))?;
+                .map_err(|e| device_error(e.to_string()))?;
             record(
                 (&contract, scope),
                 config,

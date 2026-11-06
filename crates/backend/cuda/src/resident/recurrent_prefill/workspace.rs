@@ -12,13 +12,11 @@ use crate::{
     device::{CudaDevice, device_error},
     resident::{ActivationArena, ProgramWeights},
 };
-use cutile::prelude::*;
 use infer_core::{Result, TensorId};
 use infer_cuda_kernels::contract::{DeltaBuffers, DeltaKernel, Recording, RecurrentShape};
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::collections::BTreeMap;
-use std::result::Result as StdResult;
 
 #[derive(Default)]
 pub struct Workspace {
@@ -117,7 +115,7 @@ impl Workspace {
         weights: &ProgramWeights,
         states: &mut super::super::batch::States,
         metadata: &Allocation<i32>,
-    ) -> StdResult<bool, DeviceError> {
+    ) -> Result<bool> {
         #[cfg(test)]
         if super::LEGACY_CAPTURE.get() {
             return Ok(false);
@@ -233,7 +231,7 @@ fn record_delta(
     metadata: &Allocation<i32>,
     [key_heads, value_heads, key_dim, lanes, block]: [usize; DELTA_GEOMETRY_RANK],
     wy: bool,
-) -> StdResult<(), DeviceError> {
+) -> Result<()> {
     let decay = weights
         .constants
         .get(&node.inputs[3])

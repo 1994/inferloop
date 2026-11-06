@@ -2,6 +2,7 @@
 //! These ignored tests execute CUDA only when the serial safe-run owner invokes them.
 use super::super::fp8_gemm::kernels;
 use crate::device::CudaDevice;
+use crate::device::device_error;
 use crate::device::vendor_fp8::{Gemm, Support};
 use crate::mlp::Matrix;
 use crate::resident::buffers::cutile;
@@ -123,7 +124,7 @@ fn gemm<'b>(
     codes: &'b Tensor<f8e4m3fn>,
     weight: &'b Weight,
     output: &'b Tensor<f32>,
-) -> Result<Gemm<'b>, DeviceError> {
+) -> infer_core::Result<Gemm<'b>> {
     Ok(Gemm {
         input: buffer(codes)?,
         weight: buffer(&weight.device_codes)?,
@@ -163,7 +164,7 @@ impl<'a> Inputs<'a> {
             vendor: Support::new_with(device, true),
         })
     }
-    fn quantize(&mut self, scope: &Recording<'_>) -> Result<(), DeviceError> {
+    fn quantize(&mut self, scope: &Recording<'_>) -> infer_core::Result<()> {
         let k = self.weight.k;
         cutile(scope)?.record(
             kernels::quantize(
@@ -175,11 +176,11 @@ impl<'a> Inputs<'a> {
         )?;
         Ok(())
     }
-    fn gemm<'b>(&'b self, output: &'b Tensor<f32>) -> Result<Gemm<'b>, DeviceError> {
+    fn gemm<'b>(&'b self, output: &'b Tensor<f32>) -> infer_core::Result<Gemm<'b>> {
         gemm(&self.codes, self.weight, output)
     }
     /// The per-token and per-channel factors.
-    fn factors(&self) -> Result<[Buffer<'_, f32>; 2], DeviceError> {
+    fn factors(&self) -> infer_core::Result<[Buffer<'_, f32>; 2]> {
         Ok([buffer(&self.scales)?, buffer(&self.weight.device_scales)?])
     }
     fn matmul(
@@ -187,15 +188,13 @@ impl<'a> Inputs<'a> {
         scope: &Recording<'_>,
         output: &mut Tensor<f32>,
         vendor: bool,
-    ) -> Result<(), DeviceError> {
+    ) -> infer_core::Result<()> {
         if vendor {
             if !self
                 .vendor
                 .record(scope, self.gemm(output)?, self.factors()?)?
             {
-                return Err(DeviceError::Internal(
-                    "requested vendor shape was not warmed".into(),
-                ));
+                return Err(device_error("requested vendor shape was not warmed"));
             }
         } else {
             let tile = native_tile(self.rows);
@@ -677,9 +676,7 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
             inputs.gemm(&restored_output)?,
             inputs.factors()?,
         )? {
-            return Err(DeviceError::Internal(
-                "typed FP8 algorithm was not captured".into(),
-            ));
+            return Err(device_error("typed FP8 algorithm was not captured"));
         }
         Ok(())
     })?;

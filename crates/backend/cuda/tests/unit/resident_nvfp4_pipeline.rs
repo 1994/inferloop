@@ -55,7 +55,7 @@ impl Inputs {
         output: &mut Tensor<f32>,
         tile: [usize; 2],
         optimized: bool,
-    ) -> Result<(), DeviceError> {
+    ) -> infer_core::Result<()> {
         let [rows, _, columns] = self.shape;
         cutile(scope)?.record(
             kernels::quantize(

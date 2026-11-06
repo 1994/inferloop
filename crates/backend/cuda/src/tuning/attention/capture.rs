@@ -22,7 +22,6 @@ use infer_cuda_kernels::contract::{
 use infer_cuda_kernels::tile::identity::{AttentionShape, attention_candidates};
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use std::env::var_os;
-use std::result::Result as StdResult;
 struct Operands {
     query: Allocation<f32>,
     append_keys: Allocation<f32>,
@@ -64,7 +63,7 @@ impl Operands {
         choice: Choice,
         oxide: Option<&AttentionOxideSupport>,
         mma: Option<&Support>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let s = f.shape;
         let recording = scope;
         contract
@@ -89,10 +88,10 @@ impl Operands {
                     table: buffer(&self.table)?,
                 },
             )
-            .map_err(|error| DeviceError::Internal(error.to_string()))?;
-        let window = i32::try_from(f.window).map_err(|e| DeviceError::Internal(e.to_string()))?;
+            .map_err(|error| device_error(error.to_string()))?;
+        let window = i32::try_from(f.window).map_err(|e| device_error(e.to_string()))?;
         let geometry = (s.heads, s.kv_heads, s.dim, s.lanes, f.capacity);
-        let decode = || -> StdResult<DecodeBuffers<'_>, DeviceError> {
+        let decode = || -> Result<DecodeBuffers<'_>> {
             Ok(DecodeBuffers {
                 output: buffer(&self.output)?,
                 query: buffer(&self.query)?,
@@ -107,11 +106,11 @@ impl Operands {
             })
         };
         if let Choice::Mma { variant } = choice {
-            mma.ok_or_else(|| DeviceError::Internal("MMA attention missing".into()))?
+            mma.ok_or_else(|| device_error("MMA attention missing"))?
                 .record(recording, decode()?, geometry, window, variant)?;
         } else if choice.uses_oxide() {
             oxide
-                .ok_or_else(|| DeviceError::Internal("Rust attention module missing".into()))?
+                .ok_or_else(|| device_error("Rust attention module missing"))?
                 .record(recording, decode()?, geometry, window)?;
         } else {
             let plan = PrefillDecodePlan {
@@ -135,7 +134,7 @@ impl Operands {
                             .decode_prefill_tiled(recording, plan, tile, buffers)
                     },
                 )
-                .map_err(|error| DeviceError::Internal(error.to_string()))?;
+                .map_err(|error| device_error(error.to_string()))?;
         }
         Ok(())
     }

@@ -4,6 +4,7 @@ use crate::resident::tensor_buffer;
 use cutile::prelude::*;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
+use std::result::Result;
 use std::time::Instant;
 
 #[expect(
@@ -124,10 +125,10 @@ fn gemm_bf16_replays_inside_a_captured_graph() -> Result<(), Box<dyn Error>> {
             tensor_buffer(&b)?,
             tensor_buffer(&out)?,
         )
-        .map_err(|error| DeviceError::Internal(error.to_string()))?;
+        .map_err(|error| device_error(error.to_string()))?;
         scope
             .foreign(op, Vec::new())
-            .map_err(|error| DeviceError::Launch(error.to_string()))
+            .map_err(|error| device_error(error.to_string()))
     })
     .map_err(device_error)?;
     graph

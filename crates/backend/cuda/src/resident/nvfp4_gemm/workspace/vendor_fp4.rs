@@ -9,7 +9,7 @@ use crate::resident::buffers::RowMajor;
 use crate::resident::capture::error;
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use crate::tuning::resident_gemm::{GemmConfig, WeightKey};
-use cutile::prelude::*;
+use infer_core::Result;
 use infer_cuda_kernels::contract::Buffer;
 use infer_cuda_kernels::contract::Recording;
 use infer_cuda_kernels::tile::projection::fp4_probe::{self, ProbeGeometry};
@@ -25,7 +25,7 @@ impl Workspace {
         (arena, input): (&ActivationArena, usize),
         output: Buffer<'_, f32>,
         (rows, columns): (usize, usize),
-    ) -> Result<(), DeviceError> {
+    ) -> Result<()> {
         let ProjectionWeight::Fp4(w, _, _) = weight else {
             return Ok(());
         };
@@ -111,7 +111,7 @@ impl Workspace {
         (arena, input): (&ActivationArena, usize),
         output: RowMajor<'_, f32>,
         columns: usize,
-    ) -> Result<bool, DeviceError> {
+    ) -> Result<bool> {
         if !self.vendor_fp4.enabled() {
             return Ok(false);
         }

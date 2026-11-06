@@ -1,7 +1,6 @@
 //! One rotary launch across verification rows, using each row's original position.
 use super::{ActivationArena, buffers::buffer, capture::error, program::ProgramWeights};
 use crate::constants::METADATA_FIELDS;
-use cutile::prelude::*;
 use infer_cuda_kernels::contract::{Recording, RopeBuffers, RopeMode, RopePlan};
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{TensorNode, TensorOp};
@@ -12,7 +11,7 @@ pub(super) fn record(
     arena: &ActivationArena,
     weights: &ProgramWeights,
     metadata: &Allocation<i32>,
-) -> Result<bool, DeviceError> {
+) -> Result<bool> {
     let TensorOp::Rope {
         heads,
         head_dim,
@@ -68,6 +67,7 @@ pub(super) fn record(
     Ok(true)
 }
 
+use infer_core::Result;
 #[cfg(test)]
 use infer_cuda_kernels::tile::rope::slot_rope as kernels;
 

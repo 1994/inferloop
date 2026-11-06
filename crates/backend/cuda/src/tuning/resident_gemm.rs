@@ -35,7 +35,6 @@ use serde::{Deserialize, Serialize};
 use std::env::var_os;
 use std::fmt::Display;
 use std::path::Path;
-use std::result::Result as StdResult;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, OnceLock},
@@ -335,11 +334,9 @@ impl GemmConfig {
         q: (Buffer<'_, Fp4Pair>, Buffer<'_, Fp8>),
         out: RowMajor<'_, f32>,
         columns: usize,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let ProjectionWeight::Fp4(_, _, global) = weight else {
-            return Err(DeviceError::Launch(
-                "resident tuning requires FP4 weights".into(),
-            ));
+            return Err(device_error("resident tuning requires FP4 weights"));
         };
         contract
             .projection
@@ -364,8 +361,8 @@ impl GemmConfig {
     }
 }
 
-fn device_launch(error: impl Display) -> DeviceError {
-    DeviceError::Internal(error.to_string())
+fn device_launch(error: impl Display) -> Error {
+    device_error(error.to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

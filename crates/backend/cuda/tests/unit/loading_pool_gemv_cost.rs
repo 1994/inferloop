@@ -105,7 +105,7 @@ impl Case {
         }
         Ok(())
     }
-    fn reference(&mut self, scope: &Recording<'_>) -> StdResult<(), DeviceError> {
+    fn reference(&mut self, scope: &Recording<'_>) -> Result<()> {
         for (input, output) in self.rows.iter().zip(&mut self.reference) {
             cutile(scope)?.record(
                 dense(
@@ -123,7 +123,7 @@ impl Case {
         }
         Ok(())
     }
-    fn original(&mut self, scope: &Recording<'_>) -> StdResult<(), DeviceError> {
+    fn original(&mut self, scope: &Recording<'_>) -> Result<()> {
         cutile(scope)?.record(
             small_gemm_kernels::dense(
                 (&mut self.original).partition(SMALL_GEMM_TILE),
@@ -134,7 +134,7 @@ impl Case {
         )?;
         Ok(())
     }
-    fn shared(&mut self, scope: &Recording<'_>) -> StdResult<(), DeviceError> {
+    fn shared(&mut self, scope: &Recording<'_>) -> Result<()> {
         use crate::resident::linear_batch::batched;
         cutile(scope)?.record(
             batched::dense(
@@ -151,7 +151,7 @@ impl Case {
         )?;
         Ok(())
     }
-    fn candidate(&mut self, scope: &Recording<'_>) -> StdResult<(), DeviceError> {
+    fn candidate(&mut self, scope: &Recording<'_>) -> Result<()> {
         cutile(scope)?.record(
             pool_gemv::kernels::dense(
                 (&mut self.candidate).partition([1, self.tile.rows()]),

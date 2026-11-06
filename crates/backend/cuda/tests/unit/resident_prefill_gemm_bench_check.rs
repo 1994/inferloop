@@ -68,7 +68,7 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
             kernels
                 .projection
                 .narrow_bf16(scope, tensor_buffer(&narrowed)?, tensor_buffer(&input)?)
-                .map_err(|error| DeviceError::Launch(error.to_string()))
+                .map_err(|error| device_error(error.to_string()))
         })
         .map_err(device_error)?;
         // cuBLAS does host-side work the first time it sees a configuration and a capturing
@@ -80,17 +80,17 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
                 Arc::clone(
                     support
                         .context()
-                        .ok_or_else(|| DeviceError::Internal("no cuBLAS context".to_string()))?,
+                        .ok_or_else(|| device_error("no cuBLAS context"))?,
                 ),
                 [m, n, k],
                 tensor_buffer(&narrowed)?,
                 tensor_buffer(&weight)?,
                 tensor_buffer(&delegated)?,
             )
-            .map_err(|error| DeviceError::Internal(error.to_string()))?;
+            .map_err(|error| device_error(error.to_string()))?;
             scope
                 .foreign(op, Vec::new())
-                .map_err(|error| DeviceError::Launch(error.to_string()))
+                .map_err(|error| device_error(error.to_string()))
         })
         .map_err(device_error)?;
         // Warm the native and cast paths before timing; the vendor one was warmed above.

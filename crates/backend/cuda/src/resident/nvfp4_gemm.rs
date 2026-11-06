@@ -5,7 +5,7 @@ mod quant_reuse;
 mod workspace;
 use crate::mlp::ProjectionWeight as MlpProjectionWeight;
 use crate::resident::buffers::RowMajor;
-use cutile::prelude::DeviceError;
+use infer_core::Result;
 use infer_cuda_kernels::contract::Recording;
 use infer_cuda_kernels::contract::{Buffer, Kernels};
 pub use quant_reuse::QuantPairPlan;
@@ -22,7 +22,7 @@ pub(super) fn record(
     input: Buffer<'_, f32>,
     output: RowMajor<'_, f32>,
     columns: usize,
-) -> Result<bool, DeviceError> {
+) -> Result<bool> {
     workspace.clear_quant_reuse();
     record_input(
         target,
@@ -45,7 +45,7 @@ pub(super) fn record_certified(
     input: Buffer<'_, f32>,
     output: RowMajor<'_, f32>,
     columns: usize,
-) -> Result<bool, DeviceError> {
+) -> Result<bool> {
     record_input(
         target,
         workspace,
@@ -71,7 +71,7 @@ fn record_input(
     output: RowMajor<'_, f32>,
     columns: usize,
     certified: bool,
-) -> Result<bool, DeviceError> {
+) -> Result<bool> {
     use super::program::ActivationQuantization;
     use crate::mlp::ProjectionWeight;
     match (weight, input_scale) {

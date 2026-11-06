@@ -3,7 +3,7 @@ use super::super::ALGO_WORDS;
 use super::{Context, Operands, Prepared, Shape, WeightOwners, error};
 use crate::mlp::ProjectionWeight;
 use crate::tuning::resident_gemm::GemmConfig;
-use cutile::prelude::DeviceError;
+use infer_core::Result;
 use std::{
     collections::BTreeMap,
     sync::{Mutex, MutexGuard},
@@ -41,7 +41,7 @@ fn numerical_key(key: DecisionKey, op: &Operands<'_>) -> NumericalKey {
     (key, proof.1, proof.2, proof.3, proof.4)
 }
 impl ModelCache {
-    fn lock(&self) -> Result<MutexGuard<'_, Entries>, DeviceError> {
+    fn lock(&self) -> Result<MutexGuard<'_, Entries>> {
         self.entries
             .lock()
             .map_err(|_| error("vendor FP4 model qualification mutex"))
@@ -50,7 +50,7 @@ impl ModelCache {
         &self,
         key: DecisionKey,
         op: &Operands<'_>,
-    ) -> Result<(Option<bool>, Option<bool>), DeviceError> {
+    ) -> Result<(Option<bool>, Option<bool>)> {
         let entries = self.lock()?;
         let result = (
             entries.timing.get(&key).copied(),
@@ -59,11 +59,7 @@ impl ModelCache {
         drop(entries);
         Ok(result)
     }
-    pub(super) fn save_timing(
-        &self,
-        key: DecisionKey,
-        accepted: bool,
-    ) -> Result<bool, DeviceError> {
+    pub(super) fn save_timing(&self, key: DecisionKey, accepted: bool) -> Result<bool> {
         Ok(*self.lock()?.timing.entry(key).or_insert(accepted))
     }
     pub(super) fn save_numerical(
@@ -71,7 +67,7 @@ impl ModelCache {
         key: DecisionKey,
         op: &Operands<'_>,
         accepted: bool,
-    ) -> Result<(), DeviceError> {
+    ) -> Result<()> {
         let proof = numerical_key(key, op);
         let mut entries = self.lock()?;
         if let ProjectionWeight::Fp4(w, s, _) = op.weight {

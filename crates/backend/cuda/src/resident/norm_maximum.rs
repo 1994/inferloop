@@ -2,7 +2,7 @@
 use super::{ActivationArena, ProgramWeights, capture::error, nvfp4_gemm::Workspace};
 use crate::mlp::ProjectionWeight;
 use crate::resident::buffers::RowMajor;
-use cutile::prelude::*;
+use infer_core::Result;
 use infer_cuda_kernels::contract::Recording;
 use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
@@ -28,7 +28,7 @@ pub(super) fn record(
     arena: &ActivationArena,
     weights: &ProgramWeights,
     workspace: &mut Workspace,
-) -> Result<bool, DeviceError> {
+) -> Result<bool> {
     #[cfg(test)]
     if DISABLED.get() {
         return Ok(false);

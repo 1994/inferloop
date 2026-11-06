@@ -43,7 +43,6 @@ use infer_models::mrope::ROTARY_AXES;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::mem::take;
-use std::result::Result as StdResult;
 use std::sync::Mutex;
 
 pub type States = BTreeMap<TensorId, Vec<Shaped<f32>>>;
@@ -349,7 +348,7 @@ impl BatchBuilder<'_> {
         arena: &mut ActivationArena,
         caches: &[Fp8Caches],
         metadata: &Allocation<i32>,
-    ) -> StdResult<bool, DeviceError> {
+    ) -> Result<bool> {
         if self.record_lanes_attention(scope, node, arena, caches, metadata)? {
             return Ok(true);
         }
@@ -380,7 +379,7 @@ impl BatchBuilder<'_> {
         node: &TensorNode,
         arena: &mut ActivationArena,
         metadata: &Allocation<i32>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let mut no_fusion = None;
         Capture {
             scope,
@@ -960,7 +959,7 @@ impl BatchBuilder<'_> {
         node: &TensorNode,
         arena: &mut ActivationArena,
         metadata: &Allocation<i32>,
-    ) -> StdResult<bool, DeviceError> {
+    ) -> Result<bool> {
         match dispatch32(node, self.weights) {
             Dispatch32::Linear if !self.weights.constants.contains_key(&node.inputs[0]) => {
                 super::batch_projection::record_slots(
@@ -1004,7 +1003,7 @@ impl BatchBuilder<'_> {
         node: &TensorNode,
         lanes: &mut [Lane],
         prefill: Option<bool>,
-    ) -> StdResult<bool, DeviceError> {
+    ) -> Result<bool> {
         let width = lanes.len();
         let TensorOp::Attention {
             query_heads,
@@ -1170,7 +1169,7 @@ impl BatchBuilder<'_> {
         first: &TensorNode,
         second: &TensorNode,
         arena: &ActivationArena,
-    ) -> StdResult<bool, DeviceError> {
+    ) -> Result<bool> {
         let profile = self.device.profile().map_err(error)?;
         super::prefill_projection::record_pair(scope, first, second, arena, (self.weights, profile))
     }
@@ -1180,18 +1179,14 @@ impl BatchBuilder<'_> {
         scope: &Recording<'_>,
         node: &TensorNode,
         arena: &ActivationArena,
-    ) -> StdResult<bool, DeviceError> {
+    ) -> Result<bool> {
         let profile = self.device.profile().map_err(error)?;
         record_narrow(scope, node, arena, (self.weights, profile))
     }
 
     /// A sequential node of a multi-sequence prompt graph records once per segment, against
     /// that segment's rows, slot state and block table. Row-independent nodes never come here.
-    fn record_burst_state(
-        &mut self,
-        scope: &Recording<'_>,
-        node: &TensorNode,
-    ) -> StdResult<bool, DeviceError> {
+    fn record_burst_state(&mut self, scope: &Recording<'_>, node: &TensorNode) -> Result<bool> {
         let dynamic = !node
             .inputs
             .iter()
@@ -1257,7 +1252,7 @@ impl BatchBuilder<'_> {
         arena: &ActivationArena,
         row: &Allocation<f32>,
         prefill_info: &Allocation<i32>,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         if self.burst.is_some() {
             return self.record_burst_logits(scope, node, arena);
         }
@@ -1278,7 +1273,7 @@ impl BatchBuilder<'_> {
         scope: &Recording<'_>,
         node: &TensorNode,
         arena: &ActivationArena,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let binding = self
             .burst
             .as_mut()
@@ -1478,7 +1473,7 @@ impl BatchBuilder<'_> {
         node: &TensorNode,
         arena: &ActivationArena,
         metadata_batch: &Allocation<i32>,
-    ) -> StdResult<bool, DeviceError> {
+    ) -> Result<bool> {
         let lanes = arena.lanes();
         let (TensorOp::Embedding, None, Some(external)) =
             (&node.op, &self.weights.fusion, self.lane_external_owner)
@@ -1532,7 +1527,7 @@ impl BatchBuilder<'_> {
             &mut super::recurrent_prefill::Workspace,
             &mut Option<super::fusion_batch::Workspace>,
         ),
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let (metadata, metadata_batch, prefill_info, prefill_rotary) = metadata;
         let (partials, recurrent, fusion) = workspaces;
         if self.burst.is_some() && self.record_burst_state(scope, node)? {
@@ -1571,7 +1566,7 @@ impl BatchBuilder<'_> {
         arena: &mut ActivationArena,
         metadata: &[Allocation<i32>],
         partials: &Partials,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let mut no_fusion = None;
         match dispatch32(node, self.weights) {
             Dispatch32::Linear => {
@@ -1639,7 +1634,7 @@ impl BatchBuilder<'_> {
         arena: &mut ActivationArena,
         prefill_info: &Allocation<i32>,
         prefill_rotary: Option<&Allocation<i32>>,
-    ) -> StdResult<bool, DeviceError> {
+    ) -> Result<bool> {
         let dynamic = !node
             .inputs
             .iter()
@@ -1677,7 +1672,7 @@ impl BatchBuilder<'_> {
         arena: &mut ActivationArena,
         metadata: &Allocation<i32>,
         mode: CaptureMode,
-    ) -> StdResult<(), DeviceError> {
+    ) -> Result<()> {
         let mut no_fusion = None;
         Capture {
             scope,

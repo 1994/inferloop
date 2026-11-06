@@ -3,6 +3,7 @@ use super::{upload, values};
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+use crate::device::device_error;
 use crate::resident::buffers::cutile;
 use crate::{
     device::CudaDevice,
@@ -68,7 +69,7 @@ impl Fixture {
         })
     }
 
-    fn record_original(&mut self, scope: &Recording<'_>) -> Result<(), DeviceError> {
+    fn record_original(&mut self, scope: &Recording<'_>) -> infer_core::Result<()> {
         for (slot, output) in self.original.as_chunks_mut::<3>().0.iter_mut().enumerate() {
             let [o0, o1, o2] = output;
             let qkv = lane_rows(&self.qkv, slot, QKV)?;
@@ -76,13 +77,16 @@ impl Fixture {
             let alpha = lane_rows(&self.alpha, slot, VH)?;
             let metadata = lane_rows(&self.metadata, slot, 4)?;
             let state_range = slot * VH * D * D..(slot + 1) * VH * D * D;
-            let state = self.state.slice(from_ref(&state_range))?;
+            let state = self
+                .state
+                .slice(from_ref(&state_range))
+                .map_err(device_error)?;
             cutile(scope)?.record(
                 fused::delta_verify3(
                     o0.partition([1, 1, self.block]),
                     o1.partition([1, 1, self.block]),
                     o2.partition([1, 1, self.block]),
-                    &state.view(&[VH, D, D])?,
+                    &state.view(&[VH, D, D]).map_err(device_error)?,
                     &qkv[0],
                     &qkv[1],
                     &qkv[2],
@@ -130,11 +134,11 @@ impl Fixture {
             cutile(scope)?.record(
                 fused::delta_verify_batch(
                     (&mut self.candidate).partition([1, 3, self.block]),
-                    &self.state.view(&[slots * VH, D, D])?,
+                    &self.state.view(&[slots * VH, D, D]).map_err(device_error)?,
                     &self.qkv,
                     &self.beta,
                     &self.alpha,
-                    &self.parameters.view(&[2 * VH])?,
+                    &self.parameters.view(&[2 * VH]).map_err(device_error)?,
                     &self.metadata,
                 )
                 .generics(
@@ -177,7 +181,7 @@ impl Fixture {
         scope: &Recording<'_>,
         states: &mut [Tensor<f32>],
         counts: &[i32],
-    ) -> Result<(), DeviceError> {
+    ) -> infer_core::Result<()> {
         for (slot, state) in states.iter_mut().enumerate() {
             let qkv = lane_rows(&self.qkv, slot, QKV)?;
             let beta = lane_rows(&self.beta, slot, VH)?;
@@ -243,7 +247,7 @@ impl Fixture {
                         &self.qkv,
                         &self.beta,
                         &self.alpha,
-                        &self.parameters.view(&[2 * VH])?,
+                        &self.parameters.view(&[2 * VH]).map_err(device_error)?,
                         &self.metadata,
                         &counts,
                     )
@@ -282,14 +286,18 @@ fn lane_rows<T: DType>(
     tensor: &Tensor<T>,
     slot: usize,
     width: usize,
-) -> Result<[TensorView<'_, T>; 3], DeviceError> {
+) -> infer_core::Result<[TensorView<'_, T>; 3]> {
     let row = |offset| {
         let begin = (slot * 3 + offset) * width;
         tensor
             .slice(from_ref(&(begin..begin + width)))
             .map_err(DeviceError::from)
     };
-    Ok([row(0)?, row(1)?, row(2)?])
+    Ok([
+        row(0).map_err(device_error)?,
+        row(1).map_err(device_error)?,
+        row(2).map_err(device_error)?,
+    ])
 }
 
 #[test]
