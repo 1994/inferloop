@@ -19,42 +19,32 @@ use infer_cuda_kernels::contract::{
     Recording,
 };
 use infer_cuda_kernels::tile::identity::{AttentionShape, attention_candidates};
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use std::env::var_os;
 use std::result::Result as StdResult;
 struct Operands {
-    query: Arc<Tensor<f32>>,
-    append_keys: Arc<Tensor<f32>>,
-    append_values: Arc<Tensor<f32>>,
-    metadata: Arc<Tensor<i32>>,
-    table: Arc<Tensor<i32>>,
-    keys: Tensor<f32>,
-    values: Tensor<f32>,
-    output: Tensor<f32>,
+    query: Allocation<f32>,
+    append_keys: Allocation<f32>,
+    append_values: Allocation<f32>,
+    metadata: Allocation<i32>,
+    table: Allocation<i32>,
+    keys: Allocation<f32>,
+    values: Allocation<f32>,
+    output: Allocation<f32>,
 }
 impl Operands {
     fn new(device: &CudaDevice, f: &Fixture) -> Result<Self> {
         let s = f.shape;
-        let copy = |v: Vec<f32>| {
-            api::copy_host_vec_to_device(&Arc::new(v))
-                .sync_on(&device.stream)
-                .map_err(device_error)
-        };
+        let runtime = device.runtime();
         Ok(Self {
-            query: device.upload(f.query.clone(), &[s.lanes, s.heads * s.dim])?,
-            append_keys: device.upload(f.append_keys.clone(), &[s.lanes, s.kv_heads, s.dim])?,
-            append_values: device.upload(f.append_values.clone(), &[s.lanes, s.kv_heads, s.dim])?,
-            metadata: device.upload(f.metadata.clone(), &[METADATA_FIELDS])?,
-            table: device.upload(f.table.clone(), &[f.table.len()])?,
-            keys: copy(f.keys.clone())?
-                .reshape(&[s.kv_heads, f.capacity, s.dim])
-                .map_err(device_error)?,
-            values: copy(f.values.clone())?
-                .reshape(&[s.kv_heads, f.capacity, s.dim])
-                .map_err(device_error)?,
-            output: api::zeros::<f32>(&[s.lanes * s.heads, s.dim])
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
+            query: device.runtime().upload(f.query.clone())?,
+            append_keys: device.runtime().upload(f.append_keys.clone())?,
+            append_values: device.runtime().upload(f.append_values.clone())?,
+            metadata: device.runtime().upload(f.metadata.clone())?,
+            table: device.runtime().upload(f.table.clone())?,
+            keys: runtime.upload(f.keys.clone())?,
+            values: runtime.upload(f.values.clone())?,
+            output: runtime.zeros(s.lanes * s.heads * s.dim)?,
         })
     }
     fn record(
@@ -78,10 +68,10 @@ impl Operands {
                 },
                 AppendBuffers {
                     cache: kv_cache((&self.keys, &self.values), s.kv_heads, s.dim, [1.0, 1.0])?,
-                    keys: buffer(self.append_keys.as_ref())?,
-                    values: buffer(self.append_values.as_ref())?,
-                    metadata: buffer(self.metadata.as_ref())?,
-                    table: buffer(self.table.as_ref())?,
+                    keys: buffer(&self.append_keys)?,
+                    values: buffer(&self.append_values)?,
+                    metadata: buffer(&self.metadata)?,
+                    table: buffer(&self.table)?,
                 },
             )
             .map_err(|error| DeviceError::Internal(error.to_string()))?;
@@ -92,10 +82,10 @@ impl Operands {
                     &recording,
                     DecodeBuffers {
                         output: buffer(&self.output)?,
-                        query: buffer(self.query.as_ref())?,
+                        query: buffer(&self.query)?,
                         cache: kv_cache((&self.keys, &self.values), s.kv_heads, s.dim, [1.0, 1.0])?,
-                        metadata: buffer(self.metadata.as_ref())?,
-                        table: buffer(self.table.as_ref())?,
+                        metadata: buffer(&self.metadata)?,
+                        table: buffer(&self.table)?,
                     },
                     (s.heads, s.kv_heads, s.dim, s.lanes, f.capacity),
                     0,
@@ -118,10 +108,10 @@ impl Operands {
                     },
                     DecodeBuffers {
                         output: buffer(&self.output)?,
-                        query: buffer(self.query.as_ref())?,
+                        query: buffer(&self.query)?,
                         cache: kv_cache((&self.keys, &self.values), s.kv_heads, s.dim, [1.0, 1.0])?,
-                        metadata: buffer(self.metadata.as_ref())?,
-                        table: buffer(self.table.as_ref())?,
+                        metadata: buffer(&self.metadata)?,
+                        table: buffer(&self.table)?,
                     },
                 )
                 .map_err(|error| DeviceError::Internal(error.to_string()))?;
@@ -177,7 +167,7 @@ impl Captured {
             (&self.operands.keys, &f.expected_keys),
             (&self.operands.values, &f.expected_values),
         ] {
-            let actual = device.read_borrowed(tensor)?;
+            let actual = device.runtime().read(tensor)?;
             if actual.len() != expected.len()
                 || actual
                     .iter()
@@ -187,7 +177,7 @@ impl Captured {
                 return Err(Error::invalid("F32 append cache bits differ"));
             }
         }
-        let actual = device.read_borrowed(&self.operands.output)?;
+        let actual = device.runtime().read(&self.operands.output)?;
         if actual.iter().any(|a| !a.is_finite()) {
             return Err(Error::invalid("F32 MMA nonfinite output"));
         }

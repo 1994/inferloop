@@ -27,8 +27,7 @@ use cutile::{
     prelude::*,
 };
 use infer_core::{Error, Result};
-use infer_cuda_kernels::contract::Owner;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use serde::{Deserialize, Serialize};
 use std::env::var_os;
 use std::fs::OpenOptions;
@@ -162,7 +161,7 @@ pub fn tune(device: &CudaDevice, weight: &ProjectionWeight) -> Result<Projection
         .launch()
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let expected = device.read(&base.output)?;
+    let expected = device.runtime().read(&base.output)?;
     let options = BenchOptions {
         warmup: Duration::from_millis(WARMUP_MS),
         rep: Duration::from_millis(REP_MS),
@@ -182,7 +181,7 @@ pub fn tune(device: &CudaDevice, weight: &ProjectionWeight) -> Result<Projection
                 .launch()
                 .sync_on(&device.stream)
                 .map_err(device_error)?;
-            verify(&device.read(&candidate.output)?, &expected)?;
+            verify(&device.runtime().read(&candidate.output)?, &expected)?;
             let trial = measure(device, &options, &base.graph, &candidate.graph, tiling)?;
             if trial.speedup > best {
                 best = trial.speedup;
@@ -215,8 +214,8 @@ pub fn tune(device: &CudaDevice, weight: &ProjectionWeight) -> Result<Projection
 /// the input and output alive through every replay; the caller keeps the weight alive.
 struct Probe {
     graph: Graph,
-    output: Arc<Tensor<f32>>,
-    _input: Owner,
+    output: Allocation<f32>,
+    _input: Allocation<f32>,
 }
 
 fn capture(
@@ -233,10 +232,9 @@ fn capture(
                 / SAMPLE_SCALE
         })
         .collect();
-    let input = device.upload(values, &[columns])?;
-    let output = api::zeros::<f32>(&[rows])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    let runtime = device.runtime();
+    let input = runtime.upload(values)?;
+    let output = runtime.zeros(rows)?;
     let kernels = device.kernels();
     let graph = Graph::scope(&device.stream, |scope| {
         weight.record(
@@ -251,8 +249,8 @@ fn capture(
     .map_err(device_error)?;
     Ok(Probe {
         graph,
-        output: Arc::new(output),
-        _input: input as Owner,
+        output,
+        _input: input,
     })
 }
 

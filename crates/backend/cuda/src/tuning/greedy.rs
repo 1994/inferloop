@@ -13,7 +13,7 @@ use cutile::{
     prelude::*,
 };
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use serde::{Deserialize, Serialize};
 use std::iter::once;
 use std::{
@@ -232,7 +232,7 @@ struct Captured {
 impl Captured {
     fn new(
         device: &CudaDevice,
-        input: &Tensor<f32>,
+        input: &Allocation<f32>,
         shape: [usize; 2],
         tile: usize,
     ) -> Result<Self> {
@@ -298,7 +298,7 @@ fn measure(
 }
 struct Search<'a> {
     device: &'a CudaDevice,
-    input: &'a Tensor<f32>,
+    input: &'a Allocation<f32>,
     shape: [usize; 2],
     base: &'a Captured,
     expected: &'a [u32],
@@ -342,7 +342,7 @@ fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Resul
     }
     let (values, expected) = fixture(key.rows, key.vocabulary)?;
     let shape = [key.rows, key.vocabulary];
-    let input = device.upload(values, &shape)?;
+    let input = device.runtime().upload(values)?;
     let base = Captured::new(device, &input, shape, BASELINE_TILE)?;
     base.verify(device, &expected)?;
     let search = Search {

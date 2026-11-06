@@ -20,18 +20,18 @@ use infer_cuda_kernels::contract::{
     Recording,
 };
 use infer_cuda_kernels::tile::identity::{AttentionShape, attention_candidates};
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use std::env::var_os;
 use std::result::Result as StdResult;
 struct Operands {
-    query: Arc<Tensor<f32>>,
-    append_keys: Arc<Tensor<f32>>,
-    append_values: Arc<Tensor<f32>>,
-    metadata: Arc<Tensor<i32>>,
-    table: Arc<Tensor<i32>>,
-    keys: Tensor<f8e4m3fn>,
-    values: Tensor<f8e4m3fn>,
-    output: Tensor<f32>,
+    query: Allocation<f32>,
+    append_keys: Allocation<f32>,
+    append_values: Allocation<f32>,
+    metadata: Allocation<i32>,
+    table: Allocation<i32>,
+    keys: Allocation<f8e4m3fn>,
+    values: Allocation<f8e4m3fn>,
+    output: Allocation<f32>,
 }
 const fn output_shape(s: Shape, choice: Choice) -> [usize; 2] {
     if choice.query_tile().is_none() {
@@ -44,24 +44,16 @@ impl Operands {
     fn new(device: &CudaDevice, f: &Fixture, choice: Choice) -> Result<Self> {
         let s = f.shape;
         Ok(Self {
-            query: device.upload(f.query.clone(), &[s.lanes, s.heads * s.dim])?,
-            append_keys: device.upload(f.append_keys.clone(), &[s.lanes, s.kv_heads, s.dim])?,
-            append_values: device.upload(f.append_values.clone(), &[s.lanes, s.kv_heads, s.dim])?,
-            metadata: device.upload(f.metadata.clone(), &[METADATA_FIELDS])?,
-            table: device.upload(f.table.clone(), &[f.table.len()])?,
-            keys: api::copy_host_vec_to_device(&Arc::new(f.keys.clone()))
-                .sync_on(&device.stream)
-                .map_err(device_error)?
-                .reshape(&[s.kv_heads, f.capacity, s.dim])
-                .map_err(device_error)?,
-            values: api::copy_host_vec_to_device(&Arc::new(f.values.clone()))
-                .sync_on(&device.stream)
-                .map_err(device_error)?
-                .reshape(&[s.kv_heads, f.capacity, s.dim])
-                .map_err(device_error)?,
-            output: api::zeros::<f32>(&output_shape(s, choice))
-                .sync_on(&device.stream)
-                .map_err(device_error)?,
+            query: device.runtime().upload(f.query.clone())?,
+            append_keys: device.runtime().upload(f.append_keys.clone())?,
+            append_values: device.runtime().upload(f.append_values.clone())?,
+            metadata: device.runtime().upload(f.metadata.clone())?,
+            table: device.runtime().upload(f.table.clone())?,
+            keys: device.runtime().upload(f.keys.clone())?,
+            values: device.runtime().upload(f.values.clone())?,
+            output: device
+                .runtime()
+                .zeros(output_shape(s, choice).iter().product())?,
         })
     }
     fn record(
@@ -91,10 +83,10 @@ impl Operands {
                         s.dim,
                         [KEY_SCALE, VALUE_SCALE],
                     )?,
-                    keys: buffer(self.append_keys.as_ref())?,
-                    values: buffer(self.append_values.as_ref())?,
-                    metadata: buffer(self.metadata.as_ref())?,
-                    table: buffer(self.table.as_ref())?,
+                    keys: buffer(&self.append_keys)?,
+                    values: buffer(&self.append_values)?,
+                    metadata: buffer(&self.metadata)?,
+                    table: buffer(&self.table)?,
                 },
             )
             .map_err(|error| DeviceError::Internal(error.to_string()))?;
@@ -103,15 +95,15 @@ impl Operands {
         let decode = || -> StdResult<DecodeBuffers<'_>, DeviceError> {
             Ok(DecodeBuffers {
                 output: buffer(&self.output)?,
-                query: buffer(self.query.as_ref())?,
+                query: buffer(&self.query)?,
                 cache: kv_cache(
                     (&self.keys, &self.values),
                     s.kv_heads,
                     s.dim,
                     [KEY_SCALE, VALUE_SCALE],
                 )?,
-                metadata: buffer(self.metadata.as_ref())?,
-                table: buffer(self.table.as_ref())?,
+                metadata: buffer(&self.metadata)?,
+                table: buffer(&self.table)?,
             })
         };
         if let Choice::Mma { variant } = choice {
@@ -249,9 +241,9 @@ impl Captured {
     #[cfg(test)]
     pub fn verify_variant(&self, device: &CudaDevice, f: &Fixture, graph: &Graph) -> Result<usize> {
         self.verify(device, f)?;
-        let expected = device.read_borrowed(&self.operands.output)?;
+        let expected = device.runtime().read(&self.operands.output)?;
         self.verify_graph(device, f, graph)?;
-        let actual = device.read_borrowed(&self.operands.output)?;
+        let actual = device.runtime().read(&self.operands.output)?;
         if !actual
             .iter()
             .zip(&expected)
@@ -271,8 +263,8 @@ impl Captured {
             .launch()
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        let actual = device.read_borrowed(&self.operands.output)?;
-        let expected = device.read_borrowed(&baseline.operands.output)?;
+        let actual = device.runtime().read(&self.operands.output)?;
+        let expected = device.runtime().read(&baseline.operands.output)?;
         if actual.len() != expected.len()
             || actual
                 .iter()
@@ -299,7 +291,7 @@ impl Captured {
             .launch()
             .sync_on(&device.stream)
             .map_err(device_error)?;
-        let output = device.read_borrowed(&self.operands.output)?;
+        let output = device.runtime().read(&self.operands.output)?;
         for (index, &value) in output.iter().enumerate() {
             let row = index / (f.shape.heads * f.shape.dim);
             let inactive = row >= usize::try_from(f.metadata[1]).map_err(device_error)?
@@ -325,14 +317,14 @@ impl Captured {
             (&self.operands.keys, &f.expected_keys),
             (&self.operands.values, &f.expected_values),
         ] {
-            let actual = device.read_borrowed(tensor)?;
+            let actual = device.runtime().read(tensor)?;
             if actual.len() != expected.len()
                 || actual.iter().zip(expected).any(|(a, b)| a.0 != b.0)
             {
                 return Err(Error::invariant("attention appended FP8 cache mismatch"));
             }
         }
-        let actual = device.read_borrowed(&self.operands.output)?;
+        let actual = device.runtime().read(&self.operands.output)?;
         if actual.len() != f.expected.len() {
             return Err(Error::invariant("attention output size"));
         }

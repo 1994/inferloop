@@ -21,12 +21,13 @@ use cutile::{half::bf16, prelude::*};
 pub use evidence::{Entry, Trial};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Buffer, DenseKernel, DenseRowsPlan, Kernels, Recording};
+use infer_cuda_kernels::tile::runtime::Watch;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Mutex, OnceLock};
 
 /// ABI of the existing row-tiled private-reduction kernel.
 pub(crate) const SHARED_ROWS: usize = 4;
@@ -186,7 +187,7 @@ pub(crate) struct Binding {
 impl Binding {
     pub(crate) fn new(weight: &Matrix<bf16>, shape: ProjectionShape, tile: LinearTiling) -> Self {
         Self {
-            weight: Arc::as_ptr(weight.tensor()) as usize,
+            weight: weight.identity(),
             shape,
             tile: [tile.rows(), tile.columns()],
         }
@@ -264,7 +265,7 @@ fn memo() -> &'static Memo {
     MEMO.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 struct Proof {
-    weight: Weak<Tensor<bf16>>,
+    weight: Watch,
     accepted: bool,
 }
 type Proofs = Mutex<BTreeMap<(Key, usize), Proof>>;
@@ -282,12 +283,12 @@ fn verified(
     if choice != Choice::Shared {
         return Ok(choice);
     }
-    let binding = (key.clone(), Arc::as_ptr(weight.tensor()) as usize);
+    let binding = (key.clone(), weight.identity());
     let accepted = proofs()
         .lock()
         .map_err(|_| Error::invariant("pooled dense proof cache poisoned"))?
         .get(&binding)
-        .filter(|p| p.weight.strong_count() > 0)
+        .filter(|p| p.weight.watches(weight.allocation()))
         .map(|p| p.accepted);
     if let Some(accepted) = accepted {
         return Ok(if accepted { choice } else { key.baseline });
@@ -306,11 +307,11 @@ fn verified(
     let mut proofs = proofs()
         .lock()
         .map_err(|_| Error::invariant("pooled dense proof cache poisoned"))?;
-    proofs.retain(|_, proof| proof.weight.strong_count() > 0);
+    proofs.retain(|_, proof| proof.weight.is_live());
     proofs.insert(
         binding,
         Proof {
-            weight: Arc::downgrade(weight.tensor()),
+            weight: weight.watch(),
             accepted,
         },
     );

@@ -3,8 +3,8 @@
 use crate::constants::F32_BYTES;
 use crate::constants::MIB;
 use crate::device::{CudaDevice, device_error};
-use cutile::prelude::*;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Allocation;
 use std::{cell::RefCell, collections::BTreeMap, marker::PhantomData, rc::Rc, sync::Arc};
 
 /// Bound temporary sharing independently of the number of model weights.
@@ -12,7 +12,7 @@ const MAX_BYTES: usize = 128 * MIB;
 type Key = (usize, usize, usize);
 struct Cache {
     stream: Arc<cuda_core::Stream>,
-    inputs: BTreeMap<Key, Arc<Tensor<f32>>>,
+    inputs: BTreeMap<Key, Allocation<f32>>,
     bytes: usize,
     limit: usize,
 }
@@ -53,7 +53,7 @@ pub(super) fn upload(
     shape: [usize; 2],
     fixture: usize,
     values: impl FnOnce() -> Result<Vec<f32>>,
-) -> Result<Arc<Tensor<f32>>> {
+) -> Result<Allocation<f32>> {
     let [rows, columns] = shape;
     let key = (rows, columns, fixture);
     let remembered = INPUTS.with(|inputs| {
@@ -70,7 +70,7 @@ pub(super) fn upload(
         .checked_mul(columns)
         .and_then(|elements| elements.checked_mul(F32_BYTES))
         .ok_or_else(|| Error::invalid("FP8 probe input byte overflow"))?;
-    let input = device.upload(values()?, &shape)?;
+    let input = device.runtime().upload(values()?)?;
     INPUTS.with(|inputs| {
         if let Some(cache) = inputs.borrow_mut().as_mut()
             && Arc::ptr_eq(&cache.stream, &device.stream)
@@ -80,7 +80,7 @@ pub(super) fn upload(
                 .is_some_and(|total| total <= cache.limit)
         {
             cache.bytes += bytes;
-            cache.inputs.insert(key, Arc::clone(&input));
+            cache.inputs.insert(key, input.clone());
         }
     });
     Ok(input)

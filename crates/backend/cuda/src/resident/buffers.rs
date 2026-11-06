@@ -95,6 +95,7 @@ impl<'a, T> RowMajor<'a, T> {
 /// A rank-2 tensor as the [`RowMajor`] it holds, while launches still receive tensors.
 /// # Errors
 /// Rejects tensors that are not contiguous matrices.
+#[cfg(test)]
 pub fn tensor_rows<E: DType + Element>(
     tensor: &Tensor<E>,
 ) -> Result<RowMajor<'_, E::Marker>, DeviceError> {

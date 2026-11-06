@@ -9,7 +9,7 @@ use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::{half::bf16, prelude::*};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Buffer, DownPlan, Kernels, Owner, Recording, WeightRef};
-use infer_cuda_kernels::tile::runtime::{Allocation, Element};
+use infer_cuda_kernels::tile::runtime::{Allocation, Element, Watch};
 use std::result::Result as StdResult;
 use std::sync::Arc;
 
@@ -87,6 +87,18 @@ impl<T: DType> Matrix<T> {
     #[must_use]
     pub const fn allocation(&self) -> &Allocation<T> {
         &self.memory
+    }
+
+    /// Identifies the weight's memory while it lives; see [`Allocation::identity`].
+    #[must_use]
+    pub fn identity(&self) -> usize {
+        self.memory.identity()
+    }
+
+    /// A handle on the weight's memory that does not keep it alive.
+    #[must_use]
+    pub fn watch(&self) -> Watch {
+        self.memory.watch()
     }
 
     /// The tensor behind this matrix, for code that has not migrated yet.

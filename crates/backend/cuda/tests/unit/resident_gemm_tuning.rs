@@ -342,7 +342,7 @@ fn resident_gemm_candidates_preserve_quantization_and_output_bits_on_tails() -> 
         );
         let base = Captured::new(&device, &weight, 1.25, shape, GemmConfig::baseline(m))?;
         base.run(&device)?;
-        let expected = device.read(&base.output)?;
+        let expected = device.runtime().read(&base.output)?;
         for tile_m in TILE_M_SEARCH {
             for tile_n in TILE_N_SEARCH {
                 for main_loop in LOOP_SEARCH {
@@ -353,7 +353,7 @@ fn resident_gemm_candidates_preserve_quantization_and_output_bits_on_tails() -> 
                     };
                     let candidate = Captured::new(&device, &weight, 1.25, shape, config)?;
                     candidate.run(&device)?;
-                    verify_bitwise(&device.read(&candidate.output)?, &expected)?;
+                    verify_bitwise(&device.runtime().read(&candidate.output)?, &expected)?;
                 }
             }
         }

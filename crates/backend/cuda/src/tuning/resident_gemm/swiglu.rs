@@ -24,7 +24,7 @@ use infer_core::{Error, Result};
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 /// Exact immutable operands and scalar values bound to one prompt geometry.
@@ -72,15 +72,15 @@ fn proofs() -> &'static Proofs {
 fn alive(proof: &[Verification; 2]) -> bool {
     proof
         .iter()
-        .all(|p| p.codes.strong_count() > 0 && p.scales.strong_count() > 0)
+        .all(|p| p.codes.is_live() && p.scales.is_live())
 }
 fn weak(weight: &ProjectionWeight, accepted: bool) -> Result<Verification> {
     let ProjectionWeight::Fp4(codes, scales, _) = weight else {
         return Err(Error::invalid("SwiGLU verification weight"));
     };
     Ok(Verification {
-        codes: Arc::downgrade(codes.tensor()),
-        scales: Arc::downgrade(scales.tensor()),
+        codes: codes.watch(),
+        scales: scales.watch(),
         accepted,
     })
 }
