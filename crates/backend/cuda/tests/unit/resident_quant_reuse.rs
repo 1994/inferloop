@@ -1,7 +1,7 @@
 //! Exact activation-quantization CSE on real checkpoint gate/up pairs.
 //! No observer kernels enter either arm; snapshots and input updates stay outside replay.
 use super::{QuantPairPlan, Workspace, record_certified};
-use crate::resident::buffers::{region, tensor_rows};
+use crate::resident::buffers::{Operand, buffer, region, tensor_rows};
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use crate::{
     device::CudaDevice,
@@ -15,6 +15,7 @@ use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
 use infer_core::{ModelId, OpId, TensorId};
+use infer_cuda_kernels::contract::Buffer;
 use infer_cuda_kernels::tile::kernels as tile_kernels;
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::{DType as IrDType, DataflowGraph, TensorNode, TensorOp, TensorSpec, TensorStorage};
@@ -452,8 +453,8 @@ fn capture_pair(
     Ok(graph?)
 }
 
-fn pointer<T: DType>(tensor: &Tensor<T>) -> u64 {
-    tensor.device_pointer().cu_deviceptr()
+fn pointer<O: Operand>(memory: &O) -> u64 {
+    buffer(memory).map_or(0, Buffer::address)
 }
 
 fn projection_pointers(weights: &ProgramWeights) -> serde_json::Value {
@@ -463,16 +464,10 @@ fn projection_pointers(weights: &ProgramWeights) -> serde_json::Value {
             .iter()
             .map(|(id, weight)| {
                 let allocations = match weight {
-                    ProjectionWeight::Fp4(codes, scales, _) => {
-                        [pointer(codes.tensor()), pointer(scales.tensor())]
-                    }
-                    ProjectionWeight::Fp8(codes, scales) => {
-                        [pointer(codes.tensor()), pointer(scales.tensor())]
-                    }
-                    ProjectionWeight::Fp8Block(codes, scales) => {
-                        [pointer(codes.tensor()), pointer(scales.tensor())]
-                    }
-                    ProjectionWeight::Dense(codes) => [pointer(codes.tensor()), 0],
+                    ProjectionWeight::Fp4(codes, scales, _) => [pointer(codes), pointer(scales)],
+                    ProjectionWeight::Fp8(codes, scales) => [pointer(codes), pointer(scales)],
+                    ProjectionWeight::Fp8Block(codes, scales) => [pointer(codes), pointer(scales)],
+                    ProjectionWeight::Dense(codes) => [pointer(codes), 0],
                 };
                 serde_json::json!({"id":id,"allocations":allocations})
             })

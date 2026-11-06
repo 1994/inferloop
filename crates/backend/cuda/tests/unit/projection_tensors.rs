@@ -3,6 +3,7 @@ use super::Matrix;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::tile::runtime::Allocation;
+use std::result::Result as StdResult;
 use std::sync::Arc;
 
 impl<T: DType> Matrix<T> {
@@ -24,17 +25,13 @@ impl<T: DType> Matrix<T> {
         })
     }
 
-    /// The tensor behind this matrix, which shares its memory.
-    #[must_use]
-    pub const fn tensor(&self) -> &Arc<Tensor<T>> {
-        self.memory.tensor()
-    }
-
-    /// The matrix as a `[rows, columns]` tensor sharing its memory.
+    /// The matrix as a `[rows, columns]` tensor sharing its memory, as reference kernels take it.
     /// # Errors
     /// Rejects a shape cuTile cannot describe.
-    pub fn shaped(&self) -> Result<Tensor<T>> {
+    pub fn tensor(&self) -> StdResult<Arc<Tensor<T>>, DeviceError> {
         self.memory
             .view(0..self.memory.len(), &[self.rows, self.columns])
+            .map(Arc::new)
+            .map_err(|error| DeviceError::Internal(error.to_string()))
     }
 }

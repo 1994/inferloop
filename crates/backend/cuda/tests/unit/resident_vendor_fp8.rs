@@ -203,7 +203,7 @@ impl<'a> Inputs<'a> {
                 kernels::matmul(
                     output.partition(tile),
                     &self.codes,
-                    self.weight.device_codes.tensor(),
+                    &self.weight.device_codes.tensor()?,
                     &self.scales,
                     self.weight.device_scales.tensor(),
                 )
@@ -659,7 +659,7 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
     );
     let held = |weight: &Weight| {
         [
-            Arc::strong_count(weight.device_codes.tensor()),
+            Arc::strong_count(weight.device_codes.allocation().tensor()),
             Arc::strong_count(weight.device_scales.tensor()),
         ]
     };

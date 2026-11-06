@@ -156,7 +156,7 @@ impl Fixture {
                 else {
                     unreachable!()
                 };
-                let weight = weight.shaped().map_err(capture_error)?;
+                let weight = weight.tensor().map_err(capture_error)?;
                 scope.record(
                     gemm::dense((&mut output).partition([32, 64]), &input, &weight)
                         .generics(vec![columns.to_string()]),

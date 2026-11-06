@@ -83,8 +83,8 @@ fn capture(
                         out.partition([128, 128]),
                         &*q,
                         &*qs,
-                        w.tensor(),
-                        s.tensor(),
+                        &w.tensor()?,
+                        &s.tensor()?,
                         1.0 / (g * layer.scale),
                     )
                     .generics(
