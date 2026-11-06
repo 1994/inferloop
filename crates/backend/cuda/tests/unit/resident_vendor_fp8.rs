@@ -663,11 +663,12 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
             Arc::strong_count(weight.device_scales.tensor()),
         ]
     };
-    let before = held(&weight);
     let native_graph = Graph::scope(&device.stream, |scope| {
         inputs.quantize(scope)?;
         inputs.matmul(scope, &mut native, false)
     })?;
+    // Counted after the native graph, whose reference kernel holds its own view of the weight.
+    let before = held(&weight);
     let restored_graph = Graph::scope(&device.stream, |scope| {
         inputs.quantize(scope)?;
         if !restored.record_config(
