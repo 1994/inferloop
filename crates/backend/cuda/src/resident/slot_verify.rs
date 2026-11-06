@@ -226,7 +226,7 @@ impl BatchBuilder<'_> {
             for snapshot in per_slot {
                 graphs.push(
                     Graph::scope(&self.device.stream, |scope| {
-                        let recording = Recording::scope(scope);
+                        let recording = scope;
                         for (id, tensors) in snapshot {
                             for (output, input) in states
                                 .get(id)
@@ -305,7 +305,7 @@ impl BatchBuilder<'_> {
     /// Bind one recurrent node to each slot's independent state and commit staging.
     fn record_slot_recurrent(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &ActivationArena,
         (states, metadata): (&[States], &[Allocation<i32>]),

@@ -4,7 +4,7 @@ use crate::device::{CudaDevice, device_error};
 use crate::resident::tensor_buffer as buffer;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::contract::{GateBuffers, PreparedDeltaBuffers, Recording, RecurrentShape};
+use infer_cuda_kernels::contract::{GateBuffers, PreparedDeltaBuffers, RecurrentShape};
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 pub(super) const KH: usize = 16;
 pub(super) const VH: usize = 48;
@@ -63,14 +63,14 @@ impl Captured {
             return Err(Error::invalid("no SIMT recurrence build covers this shape"));
         }
         Graph::scope(&device.stream, |scope| {
-            let recording = Recording::scope(scope);
+            let recording = scope;
             recording
                 .copy(self.state.operand(), buffer(&self.initial)?)
                 .map_err(|error| DeviceError::Internal(error.to_string()))?;
             contract
                 .recurrent
                 .normalize(
-                    &recording,
+                    recording,
                     shape,
                     buffer(&self.normalized)?,
                     buffer(&self.qkv)?,
@@ -79,7 +79,7 @@ impl Captured {
             contract
                 .recurrent
                 .gates(
-                    &recording,
+                    recording,
                     shape,
                     GateBuffers {
                         betas: buffer(&self.betas)?,
@@ -103,18 +103,18 @@ impl Captured {
             if simt {
                 contract
                     .recurrent
-                    .delta_prepared_simt(&recording, shape, buffers)
+                    .delta_prepared_simt(recording, shape, buffers)
                     .map_err(|error| DeviceError::Internal(error.to_string()))?;
             } else {
                 contract
                     .recurrent
-                    .delta_prepared(&recording, shape, NATIVE_VALUE_COLUMNS, buffers)
+                    .delta_prepared(recording, shape, NATIVE_VALUE_COLUMNS, buffers)
                     .map_err(|error| DeviceError::Internal(error.to_string()))?;
             }
             contract
                 .recurrent
                 .transpose(
-                    &recording,
+                    recording,
                     shape,
                     buffer(&self.output)?,
                     buffer(&self.scratch)?,

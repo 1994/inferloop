@@ -275,7 +275,7 @@ impl Workspace {
     )]
     pub(super) fn record_input(
         &mut self,
-        (contract, scope): (&Kernels, &Scope),
+        (contract, scope): (&Kernels, &Recording<'_>),
         weight: &ProjectionWeight,
         scale: f32,
         input: Buffer<'_, f32>,
@@ -306,14 +306,7 @@ impl Workspace {
             if !reuse {
                 contract
                     .projection
-                    .quantize_fp4(
-                        &Recording::scope(scope),
-                        &fp4_quant_plan(rows, columns),
-                        q,
-                        qs,
-                        input,
-                        scale,
-                    )
+                    .quantize_fp4(scope, &fp4_quant_plan(rows, columns), q, qs, input, scale)
                     .map_err(capture_error)?;
             }
             Self::record_quantized_gemm(
@@ -339,7 +332,7 @@ impl Workspace {
     )]
     pub(crate) fn record_swiglu_input(
         &mut self,
-        (contract, scope): (&Kernels, &Scope),
+        (contract, scope): (&Kernels, &Recording<'_>),
         weight: &ProjectionWeight,
         scale: f32,
         gate: Buffer<'_, f32>,
@@ -364,7 +357,7 @@ impl Workspace {
         contract
             .projection
             .quantize_swiglu(
-                &Recording::scope(scope),
+                scope,
                 &fp4_quant_plan(rows, columns),
                 q,
                 qs,
@@ -396,7 +389,7 @@ impl Workspace {
     /// projection's buffer for [`Self::record_prequantized`]. Neither F32 projection is written.
     pub(crate) fn record_gate_up_swiglu(
         &mut self,
-        (contract, scope): (&Kernels, &Scope),
+        (contract, scope): (&Kernels, &Recording<'_>),
         (gate, up): (&ProjectionWeight, &ProjectionWeight),
         (input_scale, down_scale): (f32, f32),
         input: Buffer<'_, f32>,
@@ -446,7 +439,7 @@ impl Workspace {
             contract
                 .projection
                 .quantize_fp4(
-                    &Recording::scope(scope),
+                    scope,
                     &fp4_quant_plan(rows, columns),
                     q,
                     qs,
@@ -469,7 +462,7 @@ impl Workspace {
     /// Down projection whose activation codes [`Self::record_gate_up_swiglu`] already wrote.
     pub(crate) fn record_prequantized(
         &self,
-        (contract, scope): (&Kernels, &Scope),
+        (contract, scope): (&Kernels, &Recording<'_>),
         weight: &ProjectionWeight,
         scale: f32,
         output: RowMajor<'_, f32>,
@@ -493,7 +486,7 @@ impl Workspace {
 
     fn record_quantized_gemm(
         strategies: &BTreeMap<StrategyKey, GemmConfig>,
-        (contract, scope): (&Kernels, &Scope),
+        (contract, scope): (&Kernels, &Recording<'_>),
         weight: &ProjectionWeight,
         scale: f32,
         quantized: (Buffer<'_, Fp4Pair>, Buffer<'_, Fp8>),
@@ -525,7 +518,7 @@ impl Workspace {
     /// Write existing dense and FP4 buffers in one RMS pass; permission is capture-local.
     pub(crate) fn record_norm_fp4(
         &mut self,
-        (kernels, scope): (&Kernels, &Scope),
+        (kernels, scope): (&Kernels, &Recording<'_>),
         next: usize,
         input: Buffer<'_, f32>,
         weight: Buffer<'_, f32>,
@@ -549,7 +542,7 @@ impl Workspace {
         kernels
             .norm
             .fp4(
-                &Recording::scope(scope),
+                scope,
                 &QuantNormPlan {
                     rows,
                     dimension: columns,
@@ -573,7 +566,7 @@ impl Workspace {
     /// Keep the existing scale allocation; its permission lasts exactly one graph node.
     pub(crate) fn record_norm_maximum(
         &mut self,
-        (kernels, scope): (&Kernels, &Scope),
+        (kernels, scope): (&Kernels, &Recording<'_>),
         next: usize,
         input: Buffer<'_, f32>,
         weight: Buffer<'_, f32>,
@@ -589,7 +582,7 @@ impl Workspace {
         kernels
             .norm
             .maximum(
-                &Recording::scope(scope),
+                scope,
                 &QuantNormPlan {
                     rows,
                     dimension: columns,
@@ -615,7 +608,7 @@ impl Workspace {
 
     pub(super) fn record_fp8_input(
         &mut self,
-        (contract, scope): (&Kernels, &Scope),
+        (contract, scope): (&Kernels, &Recording<'_>),
         weight: &ProjectionWeight,
         input: Buffer<'_, f32>,
         output: RowMajor<'_, f32>,
@@ -646,11 +639,11 @@ impl Workspace {
             kind.and_then(|kind| quant_key(certified, input, output, rows, columns, kind, (q, qs)));
         let (reuse, ticket) = self.quant_reuse.prepare(key);
         let record = || {
-            let recording = Recording::scope(scope);
+            let recording = scope;
             match weight {
                 ProjectionWeight::Fp8Block(w, block_scale) => {
                     record_fp8_block(
-                        (contract, &recording),
+                        (contract, recording),
                         WeightRef::Fp8 {
                             weight: buffer(w)?,
                             scales: buffer(block_scale)?,
@@ -666,7 +659,7 @@ impl Workspace {
                         contract
                             .projection
                             .quantize_fp8(
-                                &recording,
+                                recording,
                                 &Fp8QuantPlan {
                                     kind: super::super::fp8_quant_reduction::kind(
                                         columns,
@@ -691,7 +684,7 @@ impl Workspace {
                         extents: [rows, outputs, columns],
                     };
                     let scales = [qs, buffer(channel_scale)?];
-                    if self.vendor_diagnostic && self.vendor_fp8.record(&recording, gemm, scales)? {
+                    if self.vendor_diagnostic && self.vendor_fp8.record(recording, gemm, scales)? {
                         return Ok(());
                     }
                     let choice = self
@@ -704,7 +697,7 @@ impl Workspace {
                         ))
                         .copied()
                         .unwrap_or_else(|| Choice::baseline(rows));
-                    choice.record((contract, &recording), &self.vendor_fp8, gemm, scales)?;
+                    choice.record((contract, recording), &self.vendor_fp8, gemm, scales)?;
                 }
                 _ => return Err(error("FP8 workspace weight")),
             }

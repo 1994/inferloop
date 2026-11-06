@@ -5,7 +5,7 @@ use super::{
 };
 use crate::constants::METADATA_FIELDS;
 use cutile::prelude::*;
-use infer_cuda_kernels::contract::{Recording, RopeBuffers, RopeMode, RopePlan};
+use infer_cuda_kernels::contract::{RopeBuffers, RopeMode, RopePlan};
 use infer_ir::{TensorNode, TensorOp};
 
 impl Capture<'_> {
@@ -60,7 +60,7 @@ impl Capture<'_> {
             .kernels
             .rope
             .rope(
-                &Recording::scope(self.scope),
+                self.scope,
                 &plan,
                 RopeBuffers {
                     out: buffer(output)?,

@@ -14,7 +14,7 @@ use crate::resident::tensor_buffer;
 use crate::tuning::prefill::delegate_dense;
 use cuda_core::sys::{CUdeviceptr, CUstream};
 use cutile::cuda_async::error::DeviceError;
-use cutile::{half::bf16, prelude::*};
+use cutile::half::bf16;
 use infer_core::ErrorCode;
 use infer_cuda_kernels::contract::{
     Bf16, Buffer, Foreign, Kernels, NARROW_GRANULE, Owner, Recording,
@@ -430,7 +430,7 @@ impl Support {
     /// Propagates launch failures; a shape that is not worth delegating is not an error.
     pub fn record_dense(
         &mut self,
-        (kernels, scope): (&Kernels, &Scope),
+        (kernels, scope): (&Kernels, &Recording<'_>),
         input: Buffer<'_, f32>,
         weight: &Matrix<bf16>,
         out: Buffer<'_, f32>,
@@ -447,10 +447,10 @@ impl Support {
             return Ok(false);
         }
         let scratch = self.scratch(activation_elements)?;
-        let recording = Recording::scope(scope);
+        let recording = scope;
         kernels
             .projection
-            .narrow_bf16(&recording, scratch.operand(), input)
+            .narrow_bf16(recording, scratch.operand(), input)
             .map_err(|error| DeviceError::Launch(error.to_string()))?;
         let weight = tensor_buffer(weight)?;
         let op =

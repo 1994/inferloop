@@ -172,11 +172,11 @@ impl Workspace {
 
     fn copy_row(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         lane: usize,
         normalized: Buffer<'_, f32>,
     ) -> StdResult<(), DeviceError> {
-        Recording::scope(scope)
+        scope
             .copy(self.input_rows(lane..lane + 1)?, normalized)
             .map_err(error)
     }
@@ -186,7 +186,7 @@ impl Workspace {
 /// Gather every lane's embedding row in one launch.
 fn gather(
     builder: &BatchBuilder<'_>,
-    scope: &Scope,
+    scope: &Recording<'_>,
     node: &TensorNode,
     gathered: Buffer<'_, f32>,
     metadata_batch: Buffer<'_, i32>,
@@ -201,7 +201,7 @@ fn gather(
         .kernels
         .projection
         .embedding_batch(
-            &Recording::scope(scope),
+            scope,
             &EmbeddingBatchPlan {
                 dimension: HIDDEN,
                 fields: METADATA_FIELDS,
@@ -217,7 +217,7 @@ fn gather(
 
 pub(super) fn record(
     builder: &mut BatchBuilder<'_>,
-    scope: &Scope,
+    scope: &Recording<'_>,
     node: &TensorNode,
     arena: &mut ActivationArena,
     metadata: &[Allocation<i32>],
@@ -284,7 +284,7 @@ pub(super) fn record(
         .kernels
         .projection
         .linear_rows(
-            &Recording::scope(scope),
+            scope,
             &LinearRowsPlan {
                 rows,
                 row_tile: TILE[0],
@@ -306,7 +306,7 @@ pub(super) fn record(
 /// row in one launch, then project the `[lanes, 2 * hidden]` input with one vendor GEMM.
 fn record_wide(
     builder: &mut BatchBuilder<'_>,
-    scope: &Scope,
+    scope: &Recording<'_>,
     node: &TensorNode,
     arena: &ActivationArena,
     metadata_batch: &Allocation<i32>,
@@ -349,7 +349,7 @@ fn record_wide(
         .kernels
         .norm
         .fusion(
-            &Recording::scope(scope),
+            scope,
             &FusionNormPlan {
                 shape: FusionShape::Lanes { lanes },
                 dimension: HIDDEN,

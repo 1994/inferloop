@@ -3,11 +3,13 @@ use super::{upload, values};
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+use crate::resident::buffers::cutile;
 use crate::{
     device::CudaDevice,
     resident::slot_recurrent::{ValueDevice, fused, value_split},
 };
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::Recording;
 use std::slice::from_ref;
 
 const KH: usize = 16;
@@ -66,7 +68,7 @@ impl Fixture {
         })
     }
 
-    fn record_original(&mut self, scope: &Scope) -> Result<(), DeviceError> {
+    fn record_original(&mut self, scope: &Recording<'_>) -> Result<(), DeviceError> {
         for (slot, output) in self.original.as_chunks_mut::<3>().0.iter_mut().enumerate() {
             let [o0, o1, o2] = output;
             let qkv = lane_rows(&self.qkv, slot, QKV)?;
@@ -75,7 +77,7 @@ impl Fixture {
             let metadata = lane_rows(&self.metadata, slot, 4)?;
             let state_range = slot * VH * D * D..(slot + 1) * VH * D * D;
             let state = self.state.slice(from_ref(&state_range))?;
-            scope.record(
+            cutile(scope)?.record(
                 fused::delta_verify3(
                     o0.partition([1, 1, self.block]),
                     o1.partition([1, 1, self.block]),
@@ -125,7 +127,7 @@ impl Fixture {
         self.prepare_parameters(device)?;
         let original = Graph::scope(&device.stream, |scope| self.record_original(scope))?;
         let candidate = Graph::scope(&device.stream, |scope| {
-            scope.record(
+            cutile(scope)?.record(
                 fused::delta_verify_batch(
                     (&mut self.candidate).partition([1, 3, self.block]),
                     &self.state.view(&[slots * VH, D, D])?,
@@ -172,7 +174,7 @@ impl Fixture {
 
     fn record_original_commit(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         states: &mut [Tensor<f32>],
         counts: &[i32],
     ) -> Result<(), DeviceError> {
@@ -181,7 +183,7 @@ impl Fixture {
             let beta = lane_rows(&self.beta, slot, VH)?;
             let alpha = lane_rows(&self.alpha, slot, VH)?;
             let metadata = lane_rows(&self.metadata, slot, 4)?;
-            scope.record(
+            cutile(scope)?.record(
                 fused::delta_commit3(
                     state.partition([1, D, self.block]),
                     &qkv[0],
@@ -235,7 +237,7 @@ impl Fixture {
                 self.record_original_commit(scope, &mut original, &accepted)
             })?;
             let candidate_graph = Graph::scope(&device.stream, |scope| {
-                scope.record(
+                cutile(scope)?.record(
                     fused::delta_commit_batch(
                         (&mut candidate).partition([1, D, self.block]),
                         &self.qkv,

@@ -46,7 +46,7 @@ pub(super) enum CaptureMode {
 }
 
 pub(super) struct Capture<'a> {
-    pub scope: &'a Scope,
+    pub scope: &'a Recording<'a>,
     pub arena: &'a mut ActivationArena,
     pub weights: &'a ProgramWeights,
     pub nvfp4: &'a mut super::nvfp4_gemm::Workspace,
@@ -72,7 +72,7 @@ pub(super) fn error(message: impl Display) -> DeviceError {
 /// A draft's embedding and hidden rows through their fusion norm; the reduction width follows
 /// the dimension alone.
 fn record_embedding(
-    scope: &Scope,
+    scope: &Recording<'_>,
     kernels: &Kernels,
     plan: &EmbeddingPlan,
     (output, weight): (Buffer<'_, f32>, Buffer<'_, Bf16>),
@@ -80,19 +80,12 @@ fn record_embedding(
 ) -> Result<(), DeviceError> {
     kernels
         .projection
-        .embedding(
-            &Recording::scope(scope),
-            plan,
-            output,
-            weight,
-            external,
-            metadata,
-        )
+        .embedding(scope, plan, output, weight, external, metadata)
         .map_err(error)
 }
 
 fn record_fusion_norm(
-    scope: &Scope,
+    scope: &Recording<'_>,
     kernels: &Kernels,
     fusion: &FusionWeights,
     dimension: usize,
@@ -101,7 +94,7 @@ fn record_fusion_norm(
     kernels
         .norm
         .fusion(
-            &Recording::scope(scope),
+            scope,
             &FusionNormPlan {
                 shape: FusionShape::Single,
                 dimension,
@@ -246,7 +239,7 @@ impl Capture<'_> {
                     .kernels
                     .state
                     .scale(
-                        &Recording::scope(self.scope),
+                        self.scope,
                         buffer(output)?,
                         self.input_buffer(node.inputs[0])?,
                         self.input_buffer(node.inputs[1])?,
@@ -269,7 +262,7 @@ impl Capture<'_> {
                     .kernels
                     .state
                     .unary(
-                        &Recording::scope(self.scope),
+                        self.scope,
                         op,
                         buffer(output)?,
                         self.input_buffer(node.inputs[0])?,
@@ -286,7 +279,7 @@ impl Capture<'_> {
                     .kernels
                     .state
                     .binary(
-                        &Recording::scope(self.scope),
+                        self.scope,
                         op,
                         buffer(output)?,
                         self.input_buffer(node.inputs[0])?,
@@ -327,12 +320,7 @@ impl Capture<'_> {
         self.weights
             .kernels
             .state
-            .split(
-                &Recording::scope(self.scope),
-                plan,
-                out,
-                self.input_buffer(node.inputs[0])?,
-            )
+            .split(self.scope, plan, out, self.input_buffer(node.inputs[0])?)
             .map_err(error)
     }
 
@@ -375,7 +363,7 @@ impl Capture<'_> {
                 .kernels
                 .projection
                 .dense(
-                    &Recording::scope(self.scope),
+                    self.scope,
                     &DenseRowsPlan {
                         kernel: DenseKernel::Compensated,
                         rows: 1,
@@ -548,7 +536,7 @@ impl Capture<'_> {
             .kernels
             .norm
             .norm(
-                &Recording::scope(self.scope),
+                self.scope,
                 &NormPlan {
                     layout,
                     rows: heads,

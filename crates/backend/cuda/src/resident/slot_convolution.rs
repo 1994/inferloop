@@ -16,7 +16,7 @@ use std::result::Result as StdResult;
 
 /// Preserve the original four-tap expression and leave accepted-prefix mutation to commit.
 pub(super) fn record(
-    scope: &Scope,
+    scope: &Recording<'_>,
     node: &TensorNode,
     arena: &ActivationArena,
     batch: &VerifyBatch<'_>,
@@ -53,7 +53,7 @@ pub(super) fn record(
         .kernels
         .recurrent
         .conv(
-            &Recording::scope(scope),
+            scope,
             ConvKernel::Verify {
                 slots,
                 lanes,

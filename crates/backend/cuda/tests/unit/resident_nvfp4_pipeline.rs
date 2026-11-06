@@ -2,6 +2,7 @@
 use super::kernels;
 use crate::constants::QUANT_GEMM_TILE;
 use crate::device::CudaDevice;
+use crate::resident::buffers::cutile;
 use crate::tuning::resident_gemm::native_tile;
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::bench::BenchOptions;
@@ -9,6 +10,7 @@ use cutile::bench::do_bench_paired;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::Recording;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 use std::time::Duration;
@@ -49,13 +51,13 @@ impl Inputs {
 
     fn record(
         &mut self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         output: &mut Tensor<f32>,
         tile: [usize; 2],
         optimized: bool,
     ) -> Result<(), DeviceError> {
         let [rows, _, columns] = self.shape;
-        scope.record(
+        cutile(scope)?.record(
             kernels::quantize(
                 (&mut self.packed).partition([1, 256]),
                 (&mut self.activation_scales).partition([1, 32]),
@@ -70,7 +72,7 @@ impl Inputs {
             tile[1].to_string(),
         ];
         if optimized && rows > QUANT_GEMM_TILE[0] && tile[1] > QUANT_GEMM_TILE[1] {
-            scope.record(
+            cutile(scope)?.record(
                 kernels::packed_prefill(
                     output.partition(tile),
                     &self.packed,
@@ -82,7 +84,7 @@ impl Inputs {
                 .generics(generics),
             )?;
         } else {
-            scope.record(
+            cutile(scope)?.record(
                 baseline::packed(
                     output.partition(tile),
                     &self.packed,

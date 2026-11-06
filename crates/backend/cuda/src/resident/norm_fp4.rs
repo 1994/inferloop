@@ -4,6 +4,7 @@ use super::{ActivationArena, ProgramWeights, capture::error, nvfp4_gemm::Workspa
 use crate::resident::buffers::RowMajor;
 use crate::{constants::NVFP4_QUANT_CODES_TILE, mlp::ProjectionWeight};
 use cutile::prelude::*;
+use infer_cuda_kernels::contract::Recording;
 use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
@@ -37,7 +38,7 @@ pub(super) struct Pending {
 }
 
 pub(super) fn record(
-    scope: &Scope,
+    scope: &Recording<'_>,
     (index, nodes): (usize, &[TensorNode]),
     arena: &ActivationArena,
     weights: &ProgramWeights,

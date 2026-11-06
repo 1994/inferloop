@@ -53,7 +53,7 @@ impl Greedy {
     }
     pub fn record<L: Operand<Marker = f32> + ?Sized>(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         logits: &L,
     ) -> StdResult<(), DeviceError> {
         self.record_partials(scope, logits)?;
@@ -62,7 +62,7 @@ impl Greedy {
 
     pub(crate) fn record_into<L: Operand<Marker = f32> + ?Sized>(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         logits: &L,
         output: &Allocation<i32>,
         offset: usize,
@@ -97,35 +97,24 @@ impl Greedy {
 
     fn record_finish(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         output: Buffer<'_, i32>,
         offset: usize,
     ) -> StdResult<(), DeviceError> {
         self.kernels
             .sampling
-            .greedy_finish(
-                &Recording::scope(scope),
-                &self.plan(),
-                offset,
-                output,
-                self.partials()?,
-            )
+            .greedy_finish(scope, &self.plan(), offset, output, self.partials()?)
             .map_err(error)
     }
 
     fn record_partials<L: Operand<Marker = f32> + ?Sized>(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         logits: &L,
     ) -> StdResult<(), DeviceError> {
         self.kernels
             .sampling
-            .greedy_partials(
-                &Recording::scope(scope),
-                &self.plan(),
-                self.partials()?,
-                buffer(logits)?,
-            )
+            .greedy_partials(scope, &self.plan(), self.partials()?, buffer(logits)?)
             .map_err(error)
     }
     /// Canonical frontend identities include both reductions and their exact geometry.

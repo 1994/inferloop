@@ -2,7 +2,6 @@
 use super::buffer;
 use crate::device::{CudaDevice, device_error};
 use cutile::prelude::*;
-use infer_cuda_kernels::contract::Recording;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 
@@ -18,7 +17,7 @@ fn captured_reset_clears_every_state_shape() -> Result<(), Box<dyn Error>> {
         let reset = Graph::scope(&device.stream, |scope| {
             kernels
                 .state
-                .clear(&Recording::scope(scope), buffer(&tensor)?)
+                .clear(scope, buffer(&tensor)?)
                 .map_err(|error| DeviceError::Launch(error.to_string()))
         })?;
         for _ in 0..2 {

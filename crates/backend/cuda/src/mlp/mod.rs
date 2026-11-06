@@ -5,7 +5,7 @@ use crate::{
     device::{CudaDevice, device_error},
     strategy::LinearTiling,
 };
-use cutile::prelude::{DeviceError, DeviceOp, Scope};
+use cutile::prelude::{DeviceError, DeviceOp};
 use cutile::tile_kernel::validate_programmatic_dependent_launch;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{DownPlan, Kernels, ProductBuffers, Recording, RowNormPlan};
@@ -90,11 +90,11 @@ impl MlpGraph {
         let output = allocate(d)?;
         let kernels = device.kernels();
         let graph = Graph::scope(&device.stream, |scope| {
-            let recording = Recording::scope(scope);
+            let recording = scope;
             kernels
                 .mlp
                 .row_norm(
-                    &recording,
+                    recording,
                     &RowNormPlan {
                         dimension: d,
                         epsilon: config.epsilon,
@@ -129,12 +129,7 @@ impl MlpGraph {
             record_down(&kernels, scope, weights, config, &parts, &down, n)?;
             kernels
                 .mlp
-                .residual(
-                    &recording,
-                    output.operand(),
-                    down.operand(),
-                    input.operand(),
-                )
+                .residual(recording, output.operand(), down.operand(), input.operand())
                 .map_err(failed)?;
             Ok(())
         })
@@ -192,14 +187,14 @@ struct Activation<'a> {
 /// The activation product and the down projection it feeds, waiting on it under PDL.
 fn record_down(
     kernels: &Kernels,
-    scope: &Scope,
+    scope: &Recording<'_>,
     weights: &MlpWeights,
     config: &MlpConfig,
     parts: &Activation<'_>,
     down: &Allocation<f32>,
     columns: usize,
 ) -> StdResult<(), DeviceError> {
-    let recording = Recording::scope(scope);
+    let recording = scope;
     let product = ProductBuffers {
         out: parts.activated.operand(),
         gate: parts.gate.operand(),
@@ -208,12 +203,12 @@ fn record_down(
     if config.pdl {
         kernels
             .mlp
-            .signalling_product(&recording, product)
+            .signalling_product(recording, product)
             .map_err(failed)?;
         return kernels
             .mlp
             .down_after_product(
-                &recording,
+                recording,
                 &DownPlan {
                     tile_rows: config.tiling.rows(),
                     tile_columns: config.tiling.columns(),
@@ -225,7 +220,7 @@ fn record_down(
             )
             .map_err(failed);
     }
-    kernels.mlp.product(&recording, product).map_err(failed)?;
+    kernels.mlp.product(recording, product).map_err(failed)?;
     weights.down.record(
         kernels,
         scope,

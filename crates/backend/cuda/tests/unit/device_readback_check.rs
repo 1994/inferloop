@@ -1,4 +1,5 @@
 use super::*;
+use crate::resident::buffers::cutile;
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::hint::black_box;
@@ -67,7 +68,7 @@ fn large_logit_geometry_preserves_hidden_only_readback() -> Result<()> {
         .sync_on(&device.stream)
         .map_err(device_error)?;
     let graph = Graph::scope(&device.stream, |scope| {
-        scope.record(api::memcpy(&mut destination, &hidden))?;
+        cutile(scope)?.record(api::memcpy(&mut destination, &hidden))?;
         Ok(())
     })
     .map_err(device_error)?;
@@ -142,7 +143,7 @@ fn pinned_readbacks_ordering_and_overhead() -> Result<()> {
     let (mut inputs, mut outputs) = fixtures(&device)?;
     let graph = Graph::scope(&device.stream, |scope| {
         for (output, input) in outputs.iter_mut().zip(&inputs) {
-            scope.record(api::memcpy(output, input))?;
+            cutile(scope)?.record(api::memcpy(output, input))?;
         }
         Ok(())
     })
@@ -313,13 +314,13 @@ fn pinned_float_and_integer_graphs_complete_in_order_and_reuse_buffers() -> Resu
         .sync_on(&device.stream)
         .map_err(device_error)?;
     let graph = Graph::scope(&device.stream, |scope| {
-        scope.record(api::memcpy(&mut float_output, &float_input))?;
-        scope.record(api::memcpy(&mut middle, &integer_input))?;
+        cutile(scope)?.record(api::memcpy(&mut float_output, &float_input))?;
+        cutile(scope)?.record(api::memcpy(&mut middle, &integer_input))?;
         Ok(())
     })
     .map_err(device_error)?;
     let tail = Graph::scope(&device.stream, |scope| {
-        scope.record(api::memcpy(&mut integer_output, &middle))?;
+        cutile(scope)?.record(api::memcpy(&mut integer_output, &middle))?;
         Ok(())
     })
     .map_err(device_error)?;
@@ -411,7 +412,7 @@ fn split_readback_is_pending_until_stream_completion_and_rejects_reuse() -> Resu
         .sync_on(&device.stream)
         .map_err(device_error)?;
     let graph = Graph::scope(&device.stream, |scope| {
-        scope.record(api::memcpy(&mut output, &input))?;
+        cutile(scope)?.record(api::memcpy(&mut output, &input))?;
         Ok(())
     })
     .map_err(device_error)?;

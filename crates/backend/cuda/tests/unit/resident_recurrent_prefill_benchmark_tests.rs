@@ -1,6 +1,7 @@
 use super::kernels;
 use crate::device::CudaDevice;
 use crate::resident::buffers::buffer as operand;
+use crate::resident::buffers::cutile;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::{
@@ -67,7 +68,7 @@ fn bench_case(
     }
     let baseline = Graph::scope(&device.stream, |scope| {
         for (lane, output) in old_outputs.iter_mut().enumerate() {
-            scope.record(
+            cutile(scope)?.record(
                 super::super::recurrent::recurrent::delta(
                     output.partition([1, 1, dim]),
                     (&mut state).partition([1, dim, dim]),
@@ -122,7 +123,7 @@ fn bench_case(
                 (kh, vh, dim, lanes, block),
             )?;
         } else {
-            scope.record(
+            cutile(scope)?.record(
                 kernels::delta(
                     (&mut state).partition([1, dim, dim]),
                     (&mut scratch).partition([1, lanes, dim]),
@@ -136,7 +137,7 @@ fn bench_case(
                 .generics(generics),
             )?;
         }
-        scope.record(
+        cutile(scope)?.record(
             kernels::transpose((&mut output).partition([1, 1, dim]), &scratch)
                 .generics(vec![dim.to_string()]),
         )?;

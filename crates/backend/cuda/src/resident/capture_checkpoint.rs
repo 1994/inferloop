@@ -8,7 +8,7 @@ use super::{
 };
 use crate::constants::CONV_KERNEL_SIZE;
 use cutile::prelude::*;
-use infer_cuda_kernels::contract::{ConvBuffers, DeltaBuffers, DeltaStepPlan, Recording};
+use infer_cuda_kernels::contract::{ConvBuffers, DeltaBuffers, DeltaStepPlan};
 use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
@@ -96,7 +96,7 @@ impl Capture<'_> {
             .kernels
             .recurrent
             .conv_checkpoint(
-                &Recording::scope(self.scope),
+                self.scope,
                 channels,
                 [buffer(c0)?, buffer(c1)?, buffer(c2)?],
                 ConvBuffers {
@@ -136,7 +136,7 @@ impl Capture<'_> {
             .kernels
             .recurrent
             .delta_checkpoint(
-                &Recording::scope(self.scope),
+                self.scope,
                 &DeltaStepPlan {
                     key_heads,
                     value_heads,

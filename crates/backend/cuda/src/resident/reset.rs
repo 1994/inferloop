@@ -3,7 +3,6 @@ use super::buffers::buffer;
 use crate::device::{CudaDevice, device_error};
 use cutile::prelude::*;
 use infer_core::Result;
-use infer_cuda_kernels::contract::Recording;
 use infer_cuda_kernels::tile::runtime::Graph;
 
 #[cfg(test)]
@@ -17,11 +16,11 @@ mod tests;
 pub(super) fn capture(device: &CudaDevice, states: &super::batch::States) -> Result<Graph> {
     let kernels = device.kernels();
     Graph::scope(&device.stream, |scope| {
-        let recording = Recording::scope(scope);
+        let recording = scope;
         for tensor in states.values().flatten() {
             kernels
                 .state
-                .clear(&recording, buffer(tensor)?)
+                .clear(recording, buffer(tensor)?)
                 .map_err(|error| DeviceError::Launch(error.to_string()))?;
         }
         Ok(())

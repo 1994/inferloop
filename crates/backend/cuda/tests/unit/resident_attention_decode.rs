@@ -1,6 +1,7 @@
 use super::kernels;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::CudaDevice;
+use crate::resident::buffers::cutile;
 use cuda_core::f8e4m3fn;
 use cutile::bench::BenchOptions as CutileBenchOptions;
 use cutile::cutile_compiler::hints::CompileOptions;
@@ -323,7 +324,7 @@ fn bench_case(
         let mut output = api::zeros::<f32>(&[heads, dim]).sync_on(&device.stream)?;
         let table = block_table(device, capacity)?;
         let baseline = Graph::scope(&device.stream, |scope| {
-            scope.record(
+            cutile(scope)?.record(
                 super::super::attention::attention::decode(
                     (&mut output).partition([1, dim]),
                     &q,
@@ -349,7 +350,7 @@ fn bench_case(
             let mut maxima = api::zeros::<f32>(&[heads * parts, 1]).sync_on(&device.stream)?;
             let mut sums = api::zeros::<f32>(&[heads * parts, 1]).sync_on(&device.stream)?;
             let candidate = Graph::scope(&device.stream, |scope| {
-                scope.record(
+                cutile(scope)?.record(
                     kernels::partial(
                         (&mut numerator).partition([1, dim]),
                         (&mut maxima).partition([1, 1]),
@@ -371,7 +372,7 @@ fn bench_case(
                         KV_BLOCK_TOKENS.to_string(),
                     ]),
                 )?;
-                scope.record(
+                cutile(scope)?.record(
                     kernels::merge(
                         (&mut output).partition([1, dim]),
                         &numerator.view(&[heads, parts, dim])?,

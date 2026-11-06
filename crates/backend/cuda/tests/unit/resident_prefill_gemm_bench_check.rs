@@ -7,10 +7,10 @@ use super::gemm;
 use crate::device::cublaslt::{GemmBf16, Support, available};
 use crate::device::{CudaDevice, device_error};
 use crate::mlp::Matrix;
+use crate::resident::buffers::cutile;
 use crate::resident::tensor_buffer;
 use cutile::half::bf16;
 use cutile::prelude::*;
-use infer_cuda_kernels::contract::Recording;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 use std::sync::Arc;
@@ -53,7 +53,7 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
         let mut native = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
         // Our prompt kernel tiles the output 32x64 and the K loop by 64.
         let kernel_graph = Graph::scope(&device.stream, |scope| {
-            scope.record(
+            cutile(scope)?.record(
                 gemm::dense((&mut native).partition([32, 64]), &input, &weight.tensor()?)
                     .generics(vec![k.to_string()]),
             )?;
@@ -67,11 +67,7 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
         let cast_graph = Graph::scope(&device.stream, |scope| {
             kernels
                 .projection
-                .narrow_bf16(
-                    &Recording::scope(scope),
-                    tensor_buffer(&narrowed)?,
-                    tensor_buffer(&input)?,
-                )
+                .narrow_bf16(scope, tensor_buffer(&narrowed)?, tensor_buffer(&input)?)
                 .map_err(|error| DeviceError::Launch(error.to_string()))
         })
         .map_err(device_error)?;
@@ -92,7 +88,7 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
                 tensor_buffer(&delegated)?,
             )
             .map_err(|error| DeviceError::Internal(error.to_string()))?;
-            Recording::scope(scope)
+            scope
                 .foreign(op, Vec::new())
                 .map_err(|error| DeviceError::Launch(error.to_string()))
         })

@@ -1,5 +1,6 @@
 //! Same-address gated-norm compiler occupancy discovery; no production policy.
 use crate::device::{CudaDevice, device_error};
+use crate::resident::buffers::cutile;
 use crate::resident::kernels::aux::norm;
 use cutile::bench::BenchOptions;
 use cutile::bench::do_bench_paired;
@@ -83,7 +84,7 @@ fn capture(
     let xv = x.view(&[x.size() / 128, 128]).map_err(device_error)?;
     let zv = z.view(&[z.size() / 128, 128]).map_err(device_error)?;
     Graph::scope(&device.stream, |scope| {
-        scope.record(
+        cutile(scope)?.record(
             norm(out.partition([1, 128]), &xv, w, &zv, 1e-6f32, 0.0f32)
                 .generics(vec!["128".into(), "128".into(), "1".into()])
                 .compile_options(options),

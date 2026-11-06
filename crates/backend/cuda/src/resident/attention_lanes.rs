@@ -118,7 +118,7 @@ impl BatchBuilder<'_> {
     /// False leaves the node to one launch per lane.
     pub(super) fn record_lanes_attention(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &ActivationArena,
         caches: &[super::fp8_cache::Fp8Caches],
@@ -185,7 +185,7 @@ impl BatchBuilder<'_> {
     /// one row per lane of a pooled root rather than pages every lane shares.
     fn record_lanes(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &ActivationArena,
         (cache, per_lane): (KvCache<'_>, bool),
@@ -213,11 +213,11 @@ impl BatchBuilder<'_> {
             .and_then(|work| work.0.get(&(query_heads, head_dim)))
             .ok_or_else(|| error("pooled attention scratch"))?;
         let attention = &self.weights.kernels.attention;
-        let recording = Recording::scope(scope);
+        let recording = scope;
         let table_rows = table.rows;
         attention
             .append_lanes(
-                &recording,
+                recording,
                 LanesAppendPlan {
                     kv_heads,
                     lanes,
@@ -235,7 +235,7 @@ impl BatchBuilder<'_> {
             .map_err(error)?;
         attention
             .decode_lanes(
-                &recording,
+                recording,
                 LanesDecodePlan {
                     decode: DecodePlan {
                         heads: query_heads,

@@ -7,7 +7,7 @@ use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_ir::{TensorNode, TensorOp};
 
 pub(super) fn record(
-    scope: &Scope,
+    scope: &Recording<'_>,
     node: &TensorNode,
     arena: &ActivationArena,
     weights: &ProgramWeights,
@@ -54,7 +54,7 @@ pub(super) fn record(
         .kernels
         .rope
         .rope(
-            &Recording::scope(scope),
+            scope,
             &plan,
             RopeBuffers {
                 out: output,

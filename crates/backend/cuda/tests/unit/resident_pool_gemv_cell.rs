@@ -42,7 +42,7 @@ fn check(device: &CudaDevice, case: Case) -> Result<()> {
         kernels
             .projection
             .pool_gemv_bf16(
-                &Recording::scope(scope),
+                scope,
                 &PoolGemvPlan {
                     rows: ROWS,
                     outputs: OUTPUTS,

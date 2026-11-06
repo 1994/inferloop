@@ -495,7 +495,7 @@ impl Captured {
             contract
                 .projection
                 .quantize_fp8(
-                    &Recording::scope(scope),
+                    scope,
                     &Fp8QuantPlan {
                         kind: Fp8QuantKind::Whole,
                         rows,
@@ -506,17 +506,17 @@ impl Captured {
                     buffer(&input)?,
                 )
                 .map_err(fp8_launch)?;
-            let recording = Recording::scope(scope);
+            let recording = scope;
             let scales = [buffer(&xs)?, buffer(ws)?];
             if let Choice::Lt(config) = choice {
-                if !support.record_config(&recording, config, gemm, scales)? {
+                if !support.record_config(recording, config, gemm, scales)? {
                     return Err(DeviceError::Internal(
                         "FP8 Lt candidate did not record its algorithm".into(),
                     ));
                 }
                 Ok(())
             } else {
-                choice.record((&contract, &recording), support, gemm, scales)
+                choice.record((&contract, recording), support, gemm, scales)
             }
         })
         .map_err(device_error)?;

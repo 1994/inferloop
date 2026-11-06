@@ -32,6 +32,7 @@ type Quantized = (Tensor<f4e2m1fnx2>, Tensor<f8e4m3fn>);
 use super::super::context;
 use super::{Context, Operands, Prepared, Shape, append, make_candidate};
 use crate::loading::nvfp4_fixture::{Layer, layers};
+use crate::resident::buffers::cutile;
 struct Packed {
     scratch: Tensor<f8e4m3fn>,
 }
@@ -48,7 +49,7 @@ fn capture(
     let families = device.kernels();
     Ok(Graph::scope(&device.stream, |scope| {
         for (layer, out) in layers.iter().zip(outputs) {
-            scope.record(
+            cutile(scope)?.record(
                 kernels::quantize_rows(
                     (&mut *q).partition([16, 256]),
                     (&mut *qs).partition([16, 32]),
@@ -78,7 +79,7 @@ fn capture(
                 assert_eq!(op.shape()?, Some(shape));
                 append((&families, scope), context, prepared, &op, shape)?;
             } else {
-                scope.record(
+                cutile(scope)?.record(
                     kernels::packed_prefill(
                         out.partition([128, 128]),
                         &*q,

@@ -191,6 +191,7 @@ fn snapshot_free_recurrent_kernels_compile_without_a_device() -> Result<(), Box<
     Ok(())
 }
 
+use crate::resident::buffers::cutile;
 use crate::{device::CudaDevice, resident::recurrent::recurrent};
 use cutile::prelude::*;
 
@@ -420,7 +421,7 @@ impl DeltaFixture {
         let block = self.block;
         let [o0, o1, o2] = outs else { unreachable!() };
         Ok(Graph::scope(&device.stream, |scope| {
-            scope.record(
+            cutile(scope)?.record(
                 fused::delta_verify3(
                     o0.partition([1, 1, block]),
                     o1.partition([1, 1, block]),

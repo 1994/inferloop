@@ -330,7 +330,7 @@ impl GemmConfig {
     /// Record over the quantized activation codes and scales `q`, into `out`.
     pub(crate) fn record(
         self,
-        (contract, scope): (&Kernels, &Scope),
+        (contract, scope): (&Kernels, &Recording<'_>),
         (weight, scale): (&ProjectionWeight, f32),
         q: (Buffer<'_, Fp4Pair>, Buffer<'_, Fp8>),
         out: RowMajor<'_, f32>,
@@ -344,7 +344,7 @@ impl GemmConfig {
         contract
             .projection
             .gemm_fp4(
-                &Recording::scope(scope),
+                scope,
                 &GemmPlan {
                     main_loop: match self.main_loop {
                         MainLoop::Plain => GemmLoop::Plain,
@@ -912,7 +912,7 @@ impl Captured {
             contract
                 .projection
                 .quantize_fp4(
-                    &Recording::scope(scope),
+                    scope,
                     &Fp4QuantPlan {
                         kind: Fp4QuantKind::Whole,
                         rows: m,

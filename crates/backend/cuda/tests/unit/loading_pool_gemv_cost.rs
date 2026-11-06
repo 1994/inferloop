@@ -1,6 +1,7 @@
 use super::{LoadOptions, LoadedModel};
 use crate::constants::SMALL_GEMM_TILE;
 use crate::mlp::Matrix;
+use crate::resident::buffers::cutile;
 use crate::resident::buffers::tensor_rows;
 use crate::resident::tensor_buffer;
 use crate::strategy::LinearTiling;
@@ -16,6 +17,7 @@ use cutile::{
     prelude::*,
 };
 use infer_core::{Error, ModelId, Result};
+use infer_cuda_kernels::contract::Recording;
 use infer_cuda_kernels::tile::projection::linear::dense;
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::TensorStorage;
@@ -103,9 +105,9 @@ impl Case {
         }
         Ok(())
     }
-    fn reference(&mut self, scope: &Scope) -> StdResult<(), DeviceError> {
+    fn reference(&mut self, scope: &Recording<'_>) -> StdResult<(), DeviceError> {
         for (input, output) in self.rows.iter().zip(&mut self.reference) {
-            scope.record(
+            cutile(scope)?.record(
                 dense(
                     output.partition([self.tile.rows()]),
                     input,
@@ -121,8 +123,8 @@ impl Case {
         }
         Ok(())
     }
-    fn original(&mut self, scope: &Scope) -> StdResult<(), DeviceError> {
-        scope.record(
+    fn original(&mut self, scope: &Recording<'_>) -> StdResult<(), DeviceError> {
+        cutile(scope)?.record(
             small_gemm_kernels::dense(
                 (&mut self.original).partition(SMALL_GEMM_TILE),
                 &self.joined,
@@ -132,9 +134,9 @@ impl Case {
         )?;
         Ok(())
     }
-    fn shared(&mut self, scope: &Scope) -> StdResult<(), DeviceError> {
+    fn shared(&mut self, scope: &Recording<'_>) -> StdResult<(), DeviceError> {
         use crate::resident::linear_batch::batched;
-        scope.record(
+        cutile(scope)?.record(
             batched::dense(
                 (&mut self.candidate).partition([4, self.tile.rows()]),
                 &self.joined,
@@ -149,8 +151,8 @@ impl Case {
         )?;
         Ok(())
     }
-    fn candidate(&mut self, scope: &Scope) -> StdResult<(), DeviceError> {
-        scope.record(
+    fn candidate(&mut self, scope: &Recording<'_>) -> StdResult<(), DeviceError> {
+        cutile(scope)?.record(
             pool_gemv::kernels::dense(
                 (&mut self.candidate).partition([1, self.tile.rows()]),
                 &self.joined,

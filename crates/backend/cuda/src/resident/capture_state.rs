@@ -6,9 +6,7 @@ use super::{
 };
 use crate::constants::CONV_KERNEL_SIZE;
 use cutile::prelude::*;
-use infer_cuda_kernels::contract::{
-    Buffer, ConvBuffers, ConvKernel, DeltaBuffers, DeltaStepPlan, Recording,
-};
+use infer_cuda_kernels::contract::{Buffer, ConvBuffers, ConvKernel, DeltaBuffers, DeltaStepPlan};
 use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
 use std::env::{var, var_os};
@@ -62,7 +60,7 @@ impl Capture<'_> {
             .kernels
             .recurrent
             .conv(
-                &Recording::scope(self.scope),
+                self.scope,
                 ConvKernel::Step,
                 channels,
                 ConvBuffers {
@@ -185,7 +183,7 @@ impl Capture<'_> {
             .kernels
             .recurrent
             .delta_step(
-                &Recording::scope(self.scope),
+                self.scope,
                 plan,
                 DeltaBuffers {
                     state,
@@ -224,7 +222,7 @@ impl Capture<'_> {
             .kernels
             .recurrent
             .conv(
-                &Recording::scope(self.scope),
+                self.scope,
                 ConvKernel::Lanes { lanes },
                 channels,
                 ConvBuffers {

@@ -2,7 +2,7 @@
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::METADATA_FIELDS;
 use crate::{device::CudaDevice, resident::ProgramWeights, tuning::attention::Choice};
-use cutile::prelude::{DeviceError, Scope};
+use cutile::prelude::DeviceError;
 use infer_core::{Result, TensorId};
 use infer_cuda_kernels::contract::{Buffer, Recording};
 use infer_cuda_kernels::tile::runtime::Allocation;
@@ -94,13 +94,13 @@ impl Taps {
     }
     pub fn inputs(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         key: (TensorId, usize),
         [query, keys, values]: [Buffer<'_, f32>; 3],
         (metadata, table): (Buffer<'_, i32>, Buffer<'_, i32>),
     ) -> StdResult<(), DeviceError> {
         if let Some(tap) = self.buffers.get(&key) {
-            let recording = Recording::scope(scope);
+            let recording = scope;
             let internal = |error: infer_core::Error| DeviceError::Internal(error.to_string());
             for (out, input) in [
                 (&tap.query, query),
@@ -120,12 +120,12 @@ impl Taps {
     }
     pub fn output(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         key: (TensorId, usize),
         output: Buffer<'_, f32>,
     ) -> StdResult<(), DeviceError> {
         if let Some(tap) = self.buffers.get(&key) {
-            Recording::scope(scope)
+            scope
                 .copy(tap.output.operand(), output)
                 .map_err(|error| DeviceError::Internal(error.to_string()))?;
         }

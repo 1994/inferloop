@@ -1,6 +1,7 @@
 use super::update;
 use crate::device::{CudaDevice, device_error};
 use crate::resident::buffers::buffer;
+use crate::resident::buffers::cutile;
 use cutile::prelude::*;
 use infer_core::Result;
 use infer_cuda_kernels::tile::runtime::Graph;
@@ -18,7 +19,7 @@ fn metadata_ordering_and_overhead() -> Result<()> {
         .sync_on(&device.stream)
         .map_err(device_error)?;
     let graph = Graph::scope(&device.stream, |scope| {
-        scope.record(api::memcpy(&mut output, &input))?;
+        cutile(scope)?.record(api::memcpy(&mut output, &input))?;
         Ok(())
     })
     .map_err(device_error)?;
@@ -96,7 +97,7 @@ fn rotary_metadata_preserves_independent_axes() -> Result<()> {
         .sync_on(&device.stream)
         .map_err(device_error)?;
     let graph = Graph::scope(&device.stream, |scope| {
-        scope.record(api::memcpy(&mut output, &input))?;
+        cutile(scope)?.record(api::memcpy(&mut output, &input))?;
         Ok(())
     })
     .map_err(device_error)?;

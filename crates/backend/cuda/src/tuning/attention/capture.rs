@@ -59,18 +59,18 @@ impl Operands {
     fn record(
         &self,
         contract: &Kernels,
-        scope: &Scope,
+        scope: &Recording<'_>,
         f: &Fixture,
         choice: Choice,
         oxide: Option<&AttentionOxideSupport>,
         mma: Option<&Support>,
     ) -> StdResult<(), DeviceError> {
         let s = f.shape;
-        let recording = Recording::scope(scope);
+        let recording = scope;
         contract
             .attention
             .append_prefill(
-                &recording,
+                recording,
                 PrefillAppendPlan {
                     lanes: s.lanes,
                     rows: f.capacity,
@@ -108,11 +108,11 @@ impl Operands {
         };
         if let Choice::Mma { variant } = choice {
             mma.ok_or_else(|| DeviceError::Internal("MMA attention missing".into()))?
-                .record(&recording, decode()?, geometry, window, variant)?;
+                .record(recording, decode()?, geometry, window, variant)?;
         } else if choice.uses_oxide() {
             oxide
                 .ok_or_else(|| DeviceError::Internal("Rust attention module missing".into()))?
-                .record(&recording, decode()?, geometry, window)?;
+                .record(recording, decode()?, geometry, window)?;
         } else {
             let plan = PrefillDecodePlan {
                 decode: DecodePlan {
@@ -128,11 +128,11 @@ impl Operands {
             choice
                 .query_tile()
                 .map_or_else(
-                    || contract.attention.decode_prefill(&recording, plan, buffers),
+                    || contract.attention.decode_prefill(recording, plan, buffers),
                     |tile| {
                         contract
                             .attention
-                            .decode_prefill_tiled(&recording, plan, tile, buffers)
+                            .decode_prefill_tiled(recording, plan, tile, buffers)
                     },
                 )
                 .map_err(|error| DeviceError::Internal(error.to_string()))?;

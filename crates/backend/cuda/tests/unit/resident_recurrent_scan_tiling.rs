@@ -2,6 +2,7 @@
 use super::{Scratch, kernels, record};
 use crate::device::CudaDevice;
 use crate::resident::buffers::buffer;
+use crate::resident::buffers::cutile;
 use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::error::tensor_error;
 use cutile::half::bf16;
@@ -64,7 +65,7 @@ fn capture(
     let [kh, vh, lanes] = input.shape;
     let qkv = input.qkv.view(&[lanes, 2 * kh + vh, DIM])?;
     let graph = Graph::scope(&device.stream, |scope| {
-        scope.record(baseline::reset(
+        cutile(scope)?.record(baseline::reset(
             (&mut *state).partition([1, DIM, 32]),
             &input.initial,
         ))?;
@@ -89,7 +90,7 @@ fn capture(
                 buffer(&input.metadata)?,
             );
         }
-        scope.record(
+        cutile(scope)?.record(
             kernels::chunk_normalize(
                 (&mut baseline.queries).partition([1, 64, DIM]),
                 (&mut baseline.keys).partition([1, 64, DIM]),
@@ -98,7 +99,7 @@ fn capture(
             )
             .generics(vec![kh.to_string(), DIM.to_string()]),
         )?;
-        scope.record(
+        cutile(scope)?.record(
             kernels::chunk_prepare(
                 (&mut baseline.u).partition([1, 64, DIM]),
                 (&mut baseline.w).partition([1, 64, DIM]),
@@ -113,7 +114,7 @@ fn capture(
             )
             .generics(vec![kh.to_string(), vh.to_string(), DIM.to_string()]),
         )?;
-        scope.record(
+        cutile(scope)?.record(
             baseline::legacy_scan32(
                 state.partition([1, DIM, 32]),
                 output.partition([1, lanes, 32]),

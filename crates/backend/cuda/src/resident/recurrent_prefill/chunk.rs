@@ -69,7 +69,7 @@ pub(super) const CHUNK_OPERANDS: usize = 5;
 
 /// Record the chunked recurrence; `betas` and `decays` come from the shared gate kernel.
 pub(super) fn record(
-    scope: &Scope,
+    scope: &Recording<'_>,
     recurrent: &dyn Recurrent,
     scratch: &Scratch,
     shape: RecurrentShape,
@@ -78,7 +78,7 @@ pub(super) fn record(
 ) -> StdResult<(), DeviceError> {
     recurrent
         .chunk(
-            &Recording::scope(scope),
+            scope,
             shape,
             CHUNK,
             ChunkBuffers {

@@ -61,7 +61,7 @@ impl Staging {
     /// Preserve every slot's commit input before the arena reuses its allocation.
     pub(super) fn record_node(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         node: &TensorNode,
         arena: &ActivationArena,
         index: usize,
@@ -76,9 +76,7 @@ impl Staging {
                 return Err(error("batched recurrent staging geometry"));
             }
             // The staging and the arena both live beside the captured graphs.
-            Recording::scope(scope)
-                .copy(target.operand(), source)
-                .map_err(error)?;
+            scope.copy(target.operand(), source).map_err(error)?;
         }
         Ok(())
     }
@@ -277,7 +275,7 @@ fn rows(
 /// Record the outputs of one slot's verification lanes for a covered recurrent node, reading
 /// but never writing the slot's state.
 pub(super) fn record_verify(
-    scope: &Scope,
+    scope: &Recording<'_>,
     node: &TensorNode,
     arena: &ActivationArena,
     states: &States,
@@ -298,7 +296,7 @@ pub(super) fn record_verify(
         row_buffer(all, lanes, third)?,
     ];
     let metadata = lane_metadata(slot)?;
-    let recording = Recording::scope(scope);
+    let recording = scope;
     match node.op {
         TensorOp::Conv { channels, .. } => {
             let [h0, h1, h2] = state.as_slice() else {
@@ -308,7 +306,7 @@ pub(super) fn record_verify(
                 .kernels
                 .recurrent_pool
                 .conv_verify_fused(
-                    &recording,
+                    recording,
                     channels,
                     outputs,
                     FusedConvBuffers {
@@ -335,7 +333,7 @@ pub(super) fn record_verify(
                 .kernels
                 .recurrent_pool
                 .delta_verify_fused(
-                    &recording,
+                    recording,
                     &DeltaStepPlan {
                         key_heads,
                         value_heads,
@@ -376,7 +374,7 @@ fn lane_metadata<'a>(slot: &SlotLanes<'a>) -> Result<LaneBuffers<'a, i32>, Devic
     reason = "The captured commit node binds scope, geometry, state, lanes and staging explicitly"
 )]
 pub(super) fn record_commit(
-    scope: &Scope,
+    scope: &Recording<'_>,
     node: &TensorNode,
     arena: &ActivationArena,
     states: &States,
@@ -390,7 +388,7 @@ pub(super) fn record_commit(
         .get(&node.states[0])
         .ok_or_else(|| error("slot commit state"))?;
     let metadata = lane_metadata(slot)?;
-    let recording = Recording::scope(scope);
+    let recording = scope;
     match node.op {
         TensorOp::Conv { .. } => {
             let [h0, h1, h2] = state.as_slice() else {
@@ -403,7 +401,7 @@ pub(super) fn record_commit(
                 .kernels
                 .recurrent_pool
                 .conv_commit_fused(
-                    &recording,
+                    recording,
                     count,
                     [buffer(h0)?, buffer(h1)?, buffer(h2)?],
                     staged_buffers(x),
@@ -429,7 +427,7 @@ pub(super) fn record_commit(
                 .kernels
                 .recurrent_pool
                 .delta_commit_fused(
-                    &recording,
+                    recording,
                     &DeltaStepPlan {
                         key_heads,
                         value_heads,

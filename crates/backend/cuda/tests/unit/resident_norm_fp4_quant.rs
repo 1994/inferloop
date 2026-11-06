@@ -2,6 +2,7 @@
 use crate::device::CudaDevice;
 use crate::loading::{LoadOptions, LoadedModel};
 use crate::mlp::ProjectionWeight;
+use crate::resident::buffers::cutile;
 use crate::resident::kernels::aux::norm;
 use crate::resident::nvfp4_gemm::kernels::quantize_rows;
 use crate::resident::{norm_fp4_columns, norm_fp4_kernel_entry as norm_fp4};
@@ -84,7 +85,7 @@ fn capture(
     Ok(Graph::scope(&device.stream, |scope| {
         for (layer, (codes, scales)) in layers.iter().zip(outputs) {
             if fused {
-                scope.record(
+                cutile(scope)?.record(
                     norm_fp4(
                         (&mut *temporary).partition([1, B]),
                         codes.partition([1, B / 2]),
@@ -103,7 +104,7 @@ fn capture(
                     ),
                 )?;
             } else {
-                scope.record(
+                cutile(scope)?.record(
                     norm(
                         (&mut *temporary).partition([1, B]),
                         input,
@@ -114,7 +115,7 @@ fn capture(
                     )
                     .generics([D, B, 0].iter().map(ToString::to_string).collect()),
                 )?;
-                scope.record(
+                cutile(scope)?.record(
                     quantize_rows(
                         codes.partition([16, 256]),
                         scales.partition([16, 32]),
@@ -325,7 +326,7 @@ fn shape_graph(
     let fused = fused && norm_fp4_columns(columns);
     Ok(Graph::scope(&device.stream, |scope| {
         if fused {
-            scope.record(
+            cutile(scope)?.record(
                 norm_fp4(
                     dense.partition([1, block]),
                     codes.partition([1, block / 2]),
@@ -344,7 +345,7 @@ fn shape_graph(
                 ),
             )?;
         } else {
-            scope.record(
+            cutile(scope)?.record(
                 norm(
                     dense.partition([1, block]),
                     input,
@@ -360,7 +361,7 @@ fn shape_graph(
                         .collect(),
                 ),
             )?;
-            scope.record(
+            cutile(scope)?.record(
                 quantize_rows(
                     codes.partition([16, 256]),
                     scales.partition([16, 32]),

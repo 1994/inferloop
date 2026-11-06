@@ -1,6 +1,7 @@
 use super::*;
 use crate::resident::attention::attention;
 use crate::resident::buffers::buffer as operand;
+use crate::resident::buffers::cutile;
 use cutile::cutile_compiler::compile_api::KernelCompiler;
 use infer_cuda_kernels::tile::attention::{
     TileAttention, grouped_options, pooled_device as kernels,
@@ -243,10 +244,10 @@ impl Fixture {
         let [keys, values] = &self.candidate;
         let family = TileAttention::new(device.ordinal());
         let candidate = Graph::scope(&device.stream, |scope| {
-            let recording = Recording::scope(scope);
+            let recording = scope;
             work.append(
                 &family,
-                &recording,
+                recording,
                 &Append {
                     node,
                     keys,
@@ -261,7 +262,7 @@ impl Fixture {
             )?;
             work.attend(
                 &family,
-                &recording,
+                recording,
                 &Attend {
                     node,
                     output: operand(&actual)?,
@@ -323,7 +324,7 @@ impl Fixture {
         let reference = Graph::scope(&device.stream, |scope| {
             for (lane, metadata) in lane_metadata.iter().enumerate() {
                 let range = lane * KV * DIM..(lane + 1) * KV * DIM;
-                scope.record(
+                cutile(scope)?.record(
                     attention::append(
                         (&mut *keys).partition([1, physical, DIM]),
                         (&mut *values).partition([1, physical, DIM]),
@@ -350,7 +351,7 @@ impl Fixture {
                             .slice(from_ref(&(lane * HEADS * DIM..(lane + 1) * HEADS * DIM)))
                     })
                     .collect::<StdResult<Vec<_>, _>>()?;
-                scope.record(
+                cutile(scope)?.record(
                     super::super::kernels::partial_gqa3(
                         (&mut numerator).partition([1, STACKED_ROWS, DIM]),
                         (&mut maxima).partition([1, STACKED_ROWS]),
@@ -377,7 +378,7 @@ impl Fixture {
                     .compile_options(grouped_options()),
                 )?;
                 for (lane, output) in expected[base..base + VERIFY_LANES].iter_mut().enumerate() {
-                    scope.record(
+                    cutile(scope)?.record(
                         super::super::kernels::merge_gqa(
                             output.partition([1, DIM]),
                             &numerator.view(&[KV, PARTS, STACKED_ROWS, DIM])?,

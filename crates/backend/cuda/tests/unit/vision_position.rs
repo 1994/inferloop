@@ -5,7 +5,6 @@ use cutile::cuda_async::error::DeviceError;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::Result;
-use infer_cuda_kernels::contract::Recording;
 use infer_cuda_kernels::tile::kernels;
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_models::vision::PositionTaps;
@@ -93,7 +92,7 @@ fn device_positions_match_scalar_interpolation_and_padding() -> Result<()> {
         let graph = Graph::scope(&device.stream, |scope| {
             vision
                 .add_positions(
-                    &Recording::scope(scope),
+                    scope,
                     tensor_buffer(&result)?,
                     tensor_buffer(&uploaded)?,
                     staged.taps(),

@@ -135,14 +135,14 @@ impl Inputs {
 
     pub(super) fn record<S: Operand<Marker = f32>, O: Operand<Marker = f32>>(
         &self,
-        scope: &Scope,
+        scope: &Recording<'_>,
         recurrent: &dyn Recurrent,
         [qkv_storage, beta, alpha, a_log, bias]: [Buffer<'_, f32>; INPUT_BINDINGS],
         (state, output): (&S, &O),
         metadata: &Allocation<i32>,
         (kh, vh, dim, lanes, block): (usize, usize, usize, usize, usize),
     ) -> StdResult<(), DeviceError> {
-        let recording = Recording::scope(scope);
+        let recording = scope;
         let shape = RecurrentShape {
             key_heads: kh,
             value_heads: vh,
@@ -151,12 +151,12 @@ impl Inputs {
         };
         if self.chunk.is_none() {
             recurrent
-                .normalize(&recording, shape, buffer(&self.normalized)?, qkv_storage)
+                .normalize(recording, shape, buffer(&self.normalized)?, qkv_storage)
                 .map_err(error)?;
         }
         recurrent
             .gates(
-                &recording,
+                recording,
                 shape,
                 GateBuffers {
                     betas: buffer(&self.betas)?,
@@ -189,7 +189,7 @@ impl Inputs {
             oxide::recorded();
             return recurrent
                 .delta_prepared_simt(
-                    &recording,
+                    recording,
                     shape,
                     PreparedDeltaBuffers {
                         state: buffer(state)?,
@@ -205,7 +205,7 @@ impl Inputs {
         }
         recurrent
             .delta_prepared(
-                &recording,
+                recording,
                 shape,
                 block,
                 PreparedDeltaBuffers {

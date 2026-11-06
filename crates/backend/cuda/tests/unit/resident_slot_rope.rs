@@ -1,6 +1,7 @@
 use super::kernels;
 use crate::constants::METADATA_FIELDS;
 use crate::device::CudaDevice;
+use crate::resident::buffers::cutile;
 use crate::resident::kernels::aux;
 use cutile::prelude::*;
 use infer_cuda_kernels::tile::runtime::Graph;
@@ -86,7 +87,7 @@ fn check_geometry(
         for (lane, out) in original.iter_mut().enumerate() {
             let input_range = lane * heads..(lane + 1) * heads;
             let metadata_range = lane * METADATA_FIELDS..(lane + 1) * METADATA_FIELDS;
-            scope.record(
+            cutile(scope)?.record(
                 aux::rope(
                     out.partition([1, half]),
                     &input.slice(from_ref(&input_range))?.view(&[heads, dim])?,
@@ -99,7 +100,7 @@ fn check_geometry(
         Ok(())
     })?;
     let batched = Graph::scope(&device.stream, |scope| {
-        scope.record(
+        cutile(scope)?.record(
             kernels::rope(
                 (&mut candidate).partition([1, half]),
                 &input,

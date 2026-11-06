@@ -2,6 +2,7 @@
 use super::{fixture, id};
 use crate::AttentionProfile;
 use crate::mlp::Matrix;
+use crate::resident::buffers::cutile;
 use crate::resident::capture::error as capture_error;
 use crate::resident::prefill_projection::DensePlan;
 use crate::{
@@ -157,7 +158,7 @@ impl Fixture {
                     unreachable!()
                 };
                 let weight = weight.tensor().map_err(capture_error)?;
-                scope.record(
+                cutile(scope)?.record(
                     gemm::dense((&mut output).partition([32, 64]), &input, &weight)
                         .generics(vec![columns.to_string()]),
                 )?;

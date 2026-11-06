@@ -6,7 +6,7 @@ use crate::constants::FP8_BLOCK_COLUMNS;
 use crate::mlp::ProjectionWeight;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::contract::{ExpertPlan, ExpertWeight, Recording, RoutePlan};
+use infer_cuda_kernels::contract::{ExpertPlan, ExpertWeight, RoutePlan};
 use infer_ir::{TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;
@@ -54,7 +54,7 @@ impl Capture<'_> {
                 .kernels
                 .moe
                 .route(
-                    &Recording::scope(self.scope),
+                    self.scope,
                     &RoutePlan {
                         experts,
                         active,
@@ -69,7 +69,7 @@ impl Capture<'_> {
                 .kernels
                 .moe
                 .combine(
-                    &Recording::scope(self.scope),
+                    self.scope,
                     (active, hidden),
                     buffer(output)?,
                     self.input_buffer(node.inputs[0])?,
@@ -123,7 +123,7 @@ impl Capture<'_> {
             .kernels
             .moe
             .experts(
-                &Recording::scope(self.scope),
+                self.scope,
                 &ExpertPlan {
                     experts: bank.experts,
                     active,
