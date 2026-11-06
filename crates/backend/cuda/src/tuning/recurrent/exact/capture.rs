@@ -1,6 +1,5 @@
 //! Complete prepared recurrence captures, including original transpose and state reset.
 use super::super::reference::{Fixture, maximum_error};
-use crate::constants::METADATA_FIELDS;
 use crate::device::{CudaDevice, device_error};
 use crate::resident::tensor_buffer as buffer;
 use cutile::prelude::*;
@@ -15,13 +14,13 @@ fn zeros(device: &CudaDevice, shape: &[usize]) -> Result<Allocation<f32>> {
     device.runtime().zeros(shape.iter().product())
 }
 pub(super) struct Captured {
-    qkv: Arc<Tensor<f32>>,
-    beta: Arc<Tensor<f32>>,
-    alpha: Arc<Tensor<f32>>,
-    a_log: Arc<Tensor<f32>>,
-    bias: Arc<Tensor<f32>>,
-    metadata: Arc<Tensor<i32>>,
-    initial: Arc<Tensor<f32>>,
+    qkv: Allocation<f32>,
+    beta: Allocation<f32>,
+    alpha: Allocation<f32>,
+    a_log: Allocation<f32>,
+    bias: Allocation<f32>,
+    metadata: Allocation<i32>,
+    initial: Allocation<f32>,
     normalized: Allocation<f32>,
     betas: Allocation<f32>,
     decays: Allocation<f32>,
@@ -34,13 +33,13 @@ impl Captured {
     pub fn new(device: &CudaDevice, f: &Fixture) -> Result<Self> {
         let width = f.shape[3];
         Ok(Self {
-            qkv: device.upload(f.qkv.clone(), &[width, 2 * KH + VH, DIM])?,
-            beta: device.upload(f.beta.clone(), &[width, VH])?,
-            alpha: device.upload(f.alpha.clone(), &[width, VH])?,
-            a_log: device.upload(f.a_log.clone(), &[VH])?,
-            bias: device.upload(f.bias.clone(), &[VH])?,
-            metadata: device.upload(f.metadata.to_vec(), &[METADATA_FIELDS])?,
-            initial: device.upload(f.initial.clone(), &[VH, DIM, DIM])?,
+            qkv: device.runtime().upload(f.qkv.clone())?,
+            beta: device.runtime().upload(f.beta.clone())?,
+            alpha: device.runtime().upload(f.alpha.clone())?,
+            a_log: device.runtime().upload(f.a_log.clone())?,
+            bias: device.runtime().upload(f.bias.clone())?,
+            metadata: device.runtime().upload(f.metadata.to_vec())?,
+            initial: device.runtime().upload(f.initial.clone())?,
             normalized: zeros(device, &[width, 2 * KH, DIM])?,
             betas: zeros(device, &[width, VH])?,
             decays: zeros(device, &[width, VH])?,
@@ -66,7 +65,7 @@ impl Captured {
         Graph::scope(&device.stream, |scope| {
             let recording = Recording::scope(scope);
             recording
-                .copy(self.state.operand(), buffer(self.initial.as_ref())?)
+                .copy(self.state.operand(), buffer(&self.initial)?)
                 .map_err(|error| DeviceError::Internal(error.to_string()))?;
             contract
                 .recurrent
@@ -74,7 +73,7 @@ impl Captured {
                     &recording,
                     shape,
                     buffer(&self.normalized)?,
-                    buffer(self.qkv.as_ref())?,
+                    buffer(&self.qkv)?,
                 )
                 .map_err(|error| DeviceError::Internal(error.to_string()))?;
             contract
@@ -85,21 +84,21 @@ impl Captured {
                     GateBuffers {
                         betas: buffer(&self.betas)?,
                         decays: buffer(&self.decays)?,
-                        beta: buffer(self.beta.as_ref())?,
-                        alpha: buffer(self.alpha.as_ref())?,
-                        decay: buffer(self.a_log.as_ref())?,
-                        bias: buffer(self.bias.as_ref())?,
+                        beta: buffer(&self.beta)?,
+                        alpha: buffer(&self.alpha)?,
+                        decay: buffer(&self.a_log)?,
+                        bias: buffer(&self.bias)?,
                     },
                 )
                 .map_err(|error| DeviceError::Internal(error.to_string()))?;
             let buffers = PreparedDeltaBuffers {
                 state: buffer(&self.state)?,
                 output: buffer(&self.scratch)?,
-                qkv: buffer(self.qkv.as_ref())?,
+                qkv: buffer(&self.qkv)?,
                 normalized: buffer(&self.normalized)?,
                 betas: buffer(&self.betas)?,
                 decays: buffer(&self.decays)?,
-                metadata: buffer(self.metadata.as_ref())?,
+                metadata: buffer(&self.metadata)?,
             };
             if simt {
                 contract

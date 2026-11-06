@@ -32,7 +32,7 @@ use infer_cuda_kernels::contract::{
     Buffer, Fp8, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, Kernels, Recording, WeightRef,
 };
 use infer_cuda_kernels::tile::identity;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::{Allocation, Graph, Watch};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::env::var;
@@ -42,7 +42,7 @@ use std::iter::once;
 use std::result::Result as StdResult;
 use std::{
     collections::BTreeMap,
-    sync::{Mutex, OnceLock, Weak},
+    sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -190,8 +190,8 @@ impl WeightKey {
             return Err(Error::invalid("FP8 channel tuning weight"));
         };
         Ok(Self {
-            codes: Arc::as_ptr(codes.tensor()) as usize,
-            scales: Arc::as_ptr(scales.tensor()) as usize,
+            codes: codes.identity(),
+            scales: scales.identity(),
         })
     }
 }
@@ -284,8 +284,8 @@ struct ProofKey {
     choice: Choice,
 }
 struct Proof {
-    codes: Weak<Tensor<f8e4m3fn>>,
-    scales: Weak<Tensor<f32>>,
+    codes: Watch,
+    scales: Watch,
     accepted: bool,
 }
 type Proofs = Mutex<BTreeMap<ProofKey, Proof>>;
@@ -307,16 +307,7 @@ fn remembered(weight: &ProjectionWeight, key: &Key, choice: Choice) -> Result<Op
         .map_err(|_| Error::invariant("FP8 proof cache poisoned"))?;
     Ok(cache
         .get(&proof_key)
-        .filter(|proof| {
-            proof
-                .codes
-                .upgrade()
-                .is_some_and(|owner| Arc::ptr_eq(&owner, codes.tensor()))
-                && proof
-                    .scales
-                    .upgrade()
-                    .is_some_and(|owner| Arc::ptr_eq(&owner, scales.tensor()))
-        })
+        .filter(|proof| proof.codes.watches(codes.allocation()) && proof.scales.watches(scales))
         .map(|proof| proof.accepted))
 }
 fn remember(weight: &ProjectionWeight, key: &Key, choice: Choice, accepted: bool) -> Result<()> {
@@ -326,7 +317,7 @@ fn remember(weight: &ProjectionWeight, key: &Key, choice: Choice, accepted: bool
     let mut cache = proofs()
         .lock()
         .map_err(|_| Error::invariant("FP8 proof cache poisoned"))?;
-    cache.retain(|_, proof| proof.codes.strong_count() > 0 && proof.scales.strong_count() > 0);
+    cache.retain(|_, proof| proof.codes.is_live() && proof.scales.is_live());
     cache.insert(
         ProofKey {
             geometry: key.clone(),
@@ -334,8 +325,8 @@ fn remember(weight: &ProjectionWeight, key: &Key, choice: Choice, accepted: bool
             choice,
         },
         Proof {
-            codes: Arc::downgrade(codes.tensor()),
-            scales: Arc::downgrade(scales.tensor()),
+            codes: codes.watch(),
+            scales: scales.watch(),
             accepted,
         },
     );
@@ -394,11 +385,11 @@ fn memo() -> &'static Memo {
 
 struct Captured {
     graph: Graph,
-    output: Tensor<f32>,
+    output: Allocation<f32>,
     _vendor: Option<vendor_fp8::CaptureOwner>,
-    _input: Arc<Tensor<f32>>,
-    codes: Tensor<f8e4m3fn>,
-    _xs: Tensor<f32>,
+    _input: Allocation<f32>,
+    codes: Allocation<f8e4m3fn>,
+    _xs: Allocation<f32>,
     _weight: ProjectionWeight,
 }
 fn inputs(m: usize, k: usize, fixture: usize) -> Result<Vec<f32>> {
@@ -477,15 +468,10 @@ impl Captured {
         let input = probe_inputs::upload(device, [rows, columns], fixture, || {
             inputs(rows, columns, fixture)
         })?;
-        let codes = api::zeros::<f8e4m3fn>(&[rows, columns])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
-        let xs = api::zeros::<f32>(&[rows, 1])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
-        let output = api::zeros::<f32>(&[rows, outputs])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        let runtime = device.runtime();
+        let codes = runtime.zeros::<f8e4m3fn>(rows * columns)?;
+        let xs = runtime.zeros::<f32>(rows)?;
+        let output = runtime.zeros::<f32>(rows * outputs)?;
         let gemm = Gemm {
             input: buffer(&codes).map_err(device_error)?,
             weight: buffer(weight_codes).map_err(device_error)?,
@@ -512,12 +498,12 @@ impl Captured {
                     &Recording::scope(scope),
                     &Fp8QuantPlan {
                         kind: Fp8QuantKind::Whole,
-                        rows: usize::try_from(codes.shape()[0]).map_err(fp8_launch)?,
+                        rows,
                         columns,
                     },
                     buffer(&codes)?,
                     buffer(&xs)?,
-                    buffer(input.as_ref())?,
+                    buffer(&input)?,
                 )
                 .map_err(fp8_launch)?;
             let recording = Recording::scope(scope);
@@ -592,8 +578,8 @@ fn verify(
         base.run(device)?;
         candidate.run(device)?;
         if let Err(error) = bitwise(
-            &device.read_borrowed(&candidate.output)?,
-            &device.read_borrowed(&base.output)?,
+            &device.runtime().read(&candidate.output)?,
+            &device.runtime().read(&base.output)?,
         ) {
             tracing::info!(target:"infer::tuning", ?shape, ?choice, fixture, %error, "FP8 candidate rejected by exact numerical gate");
             return Ok(Some(false));
@@ -680,12 +666,9 @@ fn cached_gate(
             let ProjectionWeight::Fp8(w, _) = weight else {
                 return Err(Error::invalid("FP8 cached channel weight"));
             };
-            let q = api::zeros::<f8e4m3fn>(&[key.m, key.k])
-                .sync_on(&device.stream)
-                .map_err(device_error)?;
-            let out = api::zeros::<f32>(&[key.m, key.n])
-                .sync_on(&device.stream)
-                .map_err(device_error)?;
+            let runtime = device.runtime();
+            let q = runtime.zeros::<f8e4m3fn>(key.m * key.k)?;
+            let out = runtime.zeros::<f32>(key.m * key.n)?;
             let gemm = Gemm {
                 input: buffer(&q).map_err(device_error)?,
                 weight: buffer(w).map_err(device_error)?,
@@ -733,7 +716,7 @@ fn finite_baseline_fixtures(
             fixture,
         )?;
         finite.run(device)?;
-        let values = device.read_borrowed(&finite.output)?;
+        let values = device.runtime().read(&finite.output)?;
         bitwise(&values, &values)?;
     }
     Ok(true)
@@ -807,13 +790,13 @@ fn confirm_best(
             let candidate = Captured::new(device, support, weight, shape, choice, 0)?;
             candidate.run(device)?;
             bitwise(
-                &device.read_borrowed(&candidate.output)?,
-                &device.read_borrowed(&base.output)?,
+                &device.runtime().read(&candidate.output)?,
+                &device.runtime().read(&base.output)?,
             )?;
             let measured = trial(device, base, &candidate, choice, true)?;
             bitwise(
-                &device.read_borrowed(&candidate.output)?,
-                &device.read_borrowed(&base.output)?,
+                &device.runtime().read(&candidate.output)?,
+                &device.runtime().read(&base.output)?,
             )?;
             Ok::<Trial, Error>(measured)
         })();
@@ -888,7 +871,7 @@ fn measure_verified_trial(
             return Ok(SearchTrial::Rejected);
         }
     };
-    if let Err(error) = bitwise(&device.read_borrowed(&candidate.output)?, expected) {
+    if let Err(error) = bitwise(&device.runtime().read(&candidate.output)?, expected) {
         remember(weight, key, choice, false)?;
         tracing::warn!(target:"infer::tuning",?shape,?choice,%error,"FP8 candidate changed bits after measurement; remaining candidates continue");
         return Ok(SearchTrial::Rejected);
@@ -927,7 +910,7 @@ fn tune(
     let baseline = Choice::baseline(key.m);
     let base = Captured::new(device, support, weight, shape, baseline, 0)?;
     base.run(device)?;
-    let expected = device.read_borrowed(&base.output)?;
+    let expected = device.runtime().read(&base.output)?;
     bitwise(&expected, &expected)?;
     if !finite_baseline_fixtures(device, support, weight, shape, session)? {
         return Ok(None);
@@ -1083,9 +1066,7 @@ pub(crate) fn prefill_choice(
     if rows < WIDE_PREFILL_LANES {
         return Ok(None);
     }
-    let out = api::zeros::<f32>(&[rows, outputs])
-        .sync_on(&device.stream)
-        .map_err(device_error)?;
+    let out = device.runtime().zeros::<f32>(rows * outputs)?;
     let gemm = Gemm {
         input,
         weight: buffer(weight).map_err(device_error)?,

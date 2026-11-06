@@ -268,14 +268,14 @@ fn fp8_native_candidates_and_lt_exact_gate_cover_tails_and_weight_owners() -> Re
                 fixture,
             )?;
             base.run(&device)?;
-            let expected = device.read_borrowed(&base.output)?;
+            let expected = device.runtime().read(&base.output)?;
             for tile_m in ROW_TILES {
                 for tile_n in COLUMN_TILES {
                     let choice = Choice::Native(NativeConfig { tile_m, tile_n });
                     let candidate =
                         Captured::new(&device, &mut support, &weight, shape, choice, fixture)?;
                     candidate.run(&device)?;
-                    bitwise(&device.read_borrowed(&candidate.output)?, &expected)?;
+                    bitwise(&device.runtime().read(&candidate.output)?, &expected)?;
                 }
             }
         }

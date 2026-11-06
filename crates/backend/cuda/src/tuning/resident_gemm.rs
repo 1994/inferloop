@@ -11,7 +11,7 @@ use crate::constants::PROMPT_GEMM_TILE_ROWS;
 use crate::constants::QUANT_GEMM_TILE;
 use crate::constants::WIDE_PROMPT_GEMM_TILE_ROWS;
 use crate::device::vendor_fp8::nvfp4::ModelCache;
-use crate::resident::buffers::{RowMajor, tensor_rows};
+use crate::resident::buffers::RowMajor;
 use crate::resident::tensor_buffer as buffer;
 use crate::tuning::preparation::driver_build;
 use crate::{
@@ -30,7 +30,7 @@ use infer_cuda_kernels::contract::{
     Buffer, Fp4Pair, Fp4QuantKind, Fp4QuantPlan, Fp8, GemmLoop, GemmPlan, Kernels, Recording,
 };
 use infer_cuda_kernels::tile::identity;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::{Allocation, Graph, Watch};
 use serde::{Deserialize, Serialize};
 use std::env::var_os;
 use std::fmt::Display;
@@ -38,7 +38,7 @@ use std::path::Path;
 use std::result::Result as StdResult;
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 pub use swiglu::Entry as SwigluEntry;
@@ -529,8 +529,8 @@ impl WeightKey {
             return Err(Error::invalid("resident GEMM requires FP4 weights"));
         };
         Ok(Self {
-            codes: Arc::as_ptr(codes.tensor()) as usize,
-            scales: Arc::as_ptr(scales.tensor()) as usize,
+            codes: codes.identity(),
+            scales: scales.identity(),
             global: global.to_bits(),
             activation: scale.to_bits(),
         })
@@ -545,8 +545,8 @@ struct VerificationKey {
 }
 
 struct Verification {
-    codes: Weak<Tensor<f4e2m1fnx2>>,
-    scales: Weak<Tensor<f8e4m3fn>>,
+    codes: Watch,
+    scales: Watch,
     accepted: bool,
 }
 
@@ -627,14 +627,8 @@ fn verified_config(
         .lock()
         .map_err(|_| Error::invariant("weight verification cache poisoned"))?
         .get(&verification_key)
-        && previous
-            .codes
-            .upgrade()
-            .is_some_and(|owner| Arc::ptr_eq(&owner, codes.tensor()))
-        && previous
-            .scales
-            .upgrade()
-            .is_some_and(|owner| Arc::ptr_eq(&owner, scales.tensor()))
+        && previous.codes.watches(codes.allocation())
+        && previous.scales.watches(scales.allocation())
     {
         return Ok(if previous.accepted {
             selected
@@ -652,8 +646,8 @@ fn verified_config(
         base.run(device)?;
         candidate.run(device)?;
         verify_bitwise(
-            &device.read(&candidate.output)?,
-            &device.read(&base.output)?,
+            &device.runtime().read(&candidate.output)?,
+            &device.runtime().read(&base.output)?,
         )
     };
     let result = validate();
@@ -680,12 +674,12 @@ fn remember_verification(
     let mut verified = verifications()
         .lock()
         .map_err(|_| Error::invariant("weight verification cache poisoned"))?;
-    verified.retain(|_, entry| entry.codes.strong_count() > 0 && entry.scales.strong_count() > 0);
+    verified.retain(|_, entry| entry.codes.is_live() && entry.scales.is_live());
     verified.insert(
         verification_key,
         Verification {
-            codes: Arc::downgrade(codes.tensor()),
-            scales: Arc::downgrade(scales.tensor()),
+            codes: codes.watch(),
+            scales: scales.watch(),
             accepted,
         },
     );
@@ -877,10 +871,10 @@ fn measured_config(
 
 struct Captured {
     graph: Graph,
-    output: Arc<Tensor<f32>>,
-    _input: Arc<Tensor<f32>>,
-    _packed: Tensor<f4e2m1fnx2>,
-    _scales: Tensor<f8e4m3fn>,
+    output: Allocation<f32>,
+    _input: Allocation<f32>,
+    _packed: Allocation<f4e2m1fnx2>,
+    _scales: Allocation<f8e4m3fn>,
 }
 
 impl Captured {
@@ -908,16 +902,11 @@ impl Captured {
                     / SAMPLE_DIVISOR
             })
             .collect();
-        let input = device.upload(values, &[m, k])?;
-        let packed = api::zeros::<f4e2m1fnx2>(&[m, k / 2])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
-        let scales = api::zeros::<f8e4m3fn>(&[m, k / NVFP4_GROUP_SIZE])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
-        let output = api::zeros::<f32>(&[m, n])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        let runtime = device.runtime();
+        let input = runtime.upload(values)?;
+        let packed = runtime.zeros::<f4e2m1fnx2>(m * (k / 2))?;
+        let scales = runtime.zeros::<f8e4m3fn>(m * (k / NVFP4_GROUP_SIZE))?;
+        let output = runtime.zeros::<f32>(m * n)?;
         let contract = device.kernels();
         let graph = Graph::scope(&device.stream, |scope| {
             contract
@@ -933,7 +922,7 @@ impl Captured {
                     },
                     buffer(&packed)?,
                     buffer(&scales)?,
-                    buffer(input.as_ref())?,
+                    buffer(&input)?,
                     scale,
                 )
                 .map_err(device_launch)?;
@@ -941,14 +930,14 @@ impl Captured {
                 (&contract, scope),
                 (weight, scale),
                 (buffer(&packed)?, buffer(&scales)?),
-                tensor_rows(&output)?,
+                RowMajor::new(buffer(&output)?, m, n)?,
                 k,
             )
         })
         .map_err(device_error)?;
         Ok(Self {
             graph,
-            output: Arc::new(output),
+            output,
             _input: input,
             _packed: packed,
             _scales: scales,
@@ -1066,15 +1055,24 @@ impl CandidateSearch<'_> {
     fn trial(&self, config: GemmConfig, order: MeasurementOrder) -> Result<GemmTrial> {
         let candidate = Captured::new(self.device, self.weight, self.scale, self.shape, config)?;
         candidate.run(self.device)?;
-        verify_bitwise(&self.device.read(&candidate.output)?, self.expected)?;
+        verify_bitwise(
+            &self.device.runtime().read(&candidate.output)?,
+            self.expected,
+        )?;
         let measured = trial(self.device, self.base, &candidate, config, order)?;
-        verify_bitwise(&self.device.read(&candidate.output)?, self.expected)?;
+        verify_bitwise(
+            &self.device.runtime().read(&candidate.output)?,
+            self.expected,
+        )?;
         Ok(measured)
     }
 
     fn verify_baseline(&self) -> Result<()> {
         self.base.run(self.device)?;
-        verify_bitwise(&self.device.read(&self.base.output)?, self.expected)
+        verify_bitwise(
+            &self.device.runtime().read(&self.base.output)?,
+            self.expected,
+        )
     }
 }
 
@@ -1103,7 +1101,7 @@ fn tune(
     let baseline = GemmConfig::baseline(key.m);
     let base = Captured::new(device, weight, scale, shape, baseline)?;
     base.run(device)?;
-    let expected = device.read(&base.output)?;
+    let expected = device.runtime().read(&base.output)?;
     verify_bitwise(&expected, &expected)?;
     let search = CandidateSearch {
         device,

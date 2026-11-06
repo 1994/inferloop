@@ -16,10 +16,11 @@ use cutile::half::bf16;
 use cutile::prelude::*;
 use cutile::tensor::KernelOutputStored;
 use infer_core::{Error, ErrorCode, Result};
+use std::any::Any;
 use std::cell::RefCell;
 use std::ops::Range;
 use std::result::Result as StdResult;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use transfer::Inflight;
 
 mod launch;
@@ -117,6 +118,20 @@ impl<T: DType> Allocation<T> {
     #[must_use]
     pub const fn tensor(&self) -> &Arc<Tensor<T>> {
         &self.tensor
+    }
+
+    /// A handle on this allocation's memory that does not keep it alive, for caches keyed by
+    /// which weight they measured.
+    #[must_use]
+    pub fn watch(&self) -> Watch {
+        Watch(Arc::downgrade(&self.owner))
+    }
+
+    /// Identifies this allocation's memory while any share of it lives; distinct allocations
+    /// that are alive at the same time never share an identity.
+    #[must_use]
+    pub fn identity(&self) -> usize {
+        Arc::as_ptr(&self.owner).cast::<()>() as usize
     }
 
     /// Elements `range` as an allocation of their own, holding a share of this memory, so it stays
@@ -261,6 +276,26 @@ unsafe impl<T: DType> DeviceAllocation for View<T> {
 
     fn device_id(&self) -> usize {
         self.memory.device()
+    }
+}
+
+/// A weak handle on an allocation's memory; see [`Allocation::watch`].
+#[derive(Clone, Debug)]
+pub struct Watch(Weak<dyn Any + Send + Sync>);
+
+impl Watch {
+    /// Whether the watched memory is still held by anyone.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        self.0.strong_count() > 0
+    }
+
+    /// Whether `memory` is the allocation this watches, and it is still alive.
+    #[must_use]
+    pub fn watches<T: DType>(&self, memory: &Allocation<T>) -> bool {
+        self.0
+            .upgrade()
+            .is_some_and(|owner| Arc::ptr_eq(&owner, &memory.owner))
     }
 }
 

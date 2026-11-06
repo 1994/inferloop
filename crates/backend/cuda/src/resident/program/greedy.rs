@@ -82,10 +82,8 @@ impl DeviceGreedy {
             &weights.resident_tuning,
         );
         let selector = Greedy::new(device, 1, vocabulary, tile)?;
-        let graph = Graph::scope(&device.stream, |scope| {
-            selector.record(scope, logits.tensor())
-        })
-        .map_err(device_error)?;
+        let graph = Graph::scope(&device.stream, |scope| selector.record(scope, logits))
+            .map_err(device_error)?;
         tracing::info!(target:"infer::capture", device_greedy=true, rows=1, vocabulary, tile, "draft GPU token readout captured");
         Ok(Some(Self { graph, selector }))
     }

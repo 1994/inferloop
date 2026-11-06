@@ -3,8 +3,7 @@ use super::{Choice, Key};
 use crate::constants::SMALL_GEMM_TILE;
 use crate::device::{CudaDevice, device_error};
 use crate::mlp::Matrix;
-use crate::resident::buffers::tensor_rows;
-use crate::resident::tensor_buffer;
+use crate::resident::buffers::RowMajor;
 use crate::strategy::LinearTiling;
 use crate::tuning::preparation::driver_build;
 use crate::tuning::projection_budget::ProjectionShape;
@@ -13,9 +12,9 @@ use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::{half::bf16, prelude::*};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::tile::identity;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 /// Identity covers the original and exact row-tiled reduction kernels and paired protocol.
 const SCHEMA: &str =
@@ -33,8 +32,8 @@ const DIVISOR: f32 = 37.0;
 
 pub(super) struct Captured {
     pub(super) graph: Graph,
-    output: Tensor<f32>,
-    _input: Arc<Tensor<f32>>,
+    output: Allocation<f32>,
+    _input: Allocation<f32>,
     _weight: Matrix<bf16>,
 }
 impl Captured {
@@ -61,17 +60,16 @@ impl Captured {
                     / DIVISOR
             })
             .collect();
-        let input = device.upload(values, &[m, k])?;
-        let output = api::zeros::<f32>(&[m, n])
-            .sync_on(&device.stream)
-            .map_err(device_error)?;
+        let runtime = device.runtime();
+        let input = runtime.upload(values)?;
+        let output = runtime.zeros(m * n)?;
         let kernels = device.kernels();
         let graph = Graph::scope(&device.stream, |scope| {
             choice.record(
                 (&kernels, scope),
                 weight,
-                tensor_buffer(input.as_ref())?,
-                tensor_rows(&output)?,
+                input.operand(),
+                RowMajor::new(output.operand(), m, n)?,
                 k,
                 tile,
             )
@@ -92,7 +90,7 @@ impl Captured {
         Ok(())
     }
     pub(super) fn output(&self, device: &CudaDevice) -> Result<Vec<f32>> {
-        let values = device.read_borrowed(&self.output)?;
+        let values = device.runtime().read(&self.output)?;
         if values.is_empty() || values.iter().any(|v| !v.is_finite()) {
             return Err(Error::invariant(
                 "pooled dense produced nonfinite or empty output",
