@@ -10,6 +10,8 @@
 )]
 use super::driver;
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner, Width};
+#[cfg(not(all(feature = "tile", target_os = "linux")))]
+use crate::contract::recording::Foreign;
 use crate::contract::recording::Recording;
 use crate::contract::target::Arch;
 use infer_core::{Error, Result};
@@ -171,18 +173,30 @@ impl<T: DType> Allocation<T> {
     }
 
     #[must_use]
-    pub const fn len(&self) -> usize {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "Not const in the cuTile build, so host callers compile under either source"
+    )]
+    pub fn len(&self) -> usize {
         self.len
     }
 
     /// Ordinal of the device holding the memory.
     #[must_use]
-    pub const fn device(&self) -> usize {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "Not const in the cuTile build, so host callers compile under either source"
+    )]
+    pub fn device(&self) -> usize {
         self.device
     }
 
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "Not const in the cuTile build, so host callers compile under either source"
+    )]
+    pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
@@ -509,7 +523,11 @@ impl Device {
     /// Release what finished transfers retained; transfers here complete before they return.
     /// # Errors
     /// Never fails; the signature matches the cuTile build's.
-    pub const fn reap(&self) -> Result<()> {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "Not const in the cuTile build, so host callers compile under either source"
+    )]
+    pub fn reap(&self) -> Result<()> {
         Ok(())
     }
 
@@ -531,7 +549,11 @@ impl Device {
     /// from the driver directly.
     /// # Errors
     /// Never fails; the signature matches the cuTile build's.
-    pub const fn pool_reclaimable_bytes(&self) -> Result<u64> {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "Not const in the cuTile build, so host callers compile under either source"
+    )]
+    pub fn pool_reclaimable_bytes(&self) -> Result<u64> {
         Ok(0)
     }
 
@@ -578,7 +600,11 @@ impl Device {
     /// `cuMemAlloc` in this device's context, so any address it hands out belongs here.
     /// # Errors
     /// Never fails; the signature matches the cuTile build's.
-    pub const fn check_operand(&self, _address: u64) -> StdResult<(), String> {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "Not const in the cuTile build, so host callers compile under either source"
+    )]
+    pub fn check_operand(&self, _address: u64) -> StdResult<(), String> {
         Ok(())
     }
 }
@@ -686,19 +712,9 @@ impl Transfers<'_> {
     /// Rejects buffers of different lengths or partly overlapping memory, and a copy the driver
     /// does not enqueue.
     pub fn copy<T: Width>(&self, dst: Buffer<'_, T>, src: Buffer<'_, T>) -> Result<()> {
-        if dst.len() != src.len() {
-            return Err(Error::invalid("device copy lengths differ"));
-        }
-        let bytes = src
-            .len()
-            .checked_mul(T::BYTES)
-            .ok_or_else(|| Error::invalid("device copy size overflow"))?;
-        if dst.address() == src.address() || bytes == 0 {
+        let Some(bytes) = copy_bytes(dst, src)? else {
             return Ok(());
-        }
-        if overlaps((dst.address(), bytes), (src.address(), bytes)) {
-            return Err(Error::invalid("device copy ranges overlap"));
-        }
+        };
         // SAFETY: both buffers' contracts guarantee `bytes` live bytes, disjoint as checked above.
         unsafe { self.device.driver.copy(dst.address(), src.address(), bytes) }
     }
@@ -773,6 +789,68 @@ impl<'a, T> HeadMajor<'a, T> {
             dim,
         })
     }
+}
+
+/// The cuTile build records copies through its own transfer module; this one serves AOT-only
+/// builds.
+#[cfg(not(all(feature = "tile", target_os = "linux")))]
+impl Recording<'_> {
+    /// Copy `src` into `dst` in order with the kernels around it; a graph keeps owned buffers
+    /// alive as it does for a kernel. Copying a buffer onto itself records nothing.
+    /// # Errors
+    /// Rejects buffers of different lengths or partly overlapping memory, and a copy the driver
+    /// does not enqueue.
+    pub fn copy<T: Width>(&self, dst: Buffer<'_, T>, src: Buffer<'_, T>) -> Result<()> {
+        let Some(bytes) = copy_bytes(dst, src)? else {
+            return Ok(());
+        };
+        self.retain(dst);
+        self.retain(src);
+        self.foreign(
+            Memcpy {
+                dst: dst.address(),
+                src: src.address(),
+                bytes,
+            },
+            Vec::new(),
+        )
+    }
+}
+
+/// One checked device-to-device copy, as a recorded node.
+#[cfg(not(all(feature = "tile", target_os = "linux")))]
+struct Memcpy {
+    dst: u64,
+    src: u64,
+    bytes: usize,
+}
+
+#[cfg(not(all(feature = "tile", target_os = "linux")))]
+impl Foreign for Memcpy {
+    fn enqueue(self, stream: *mut c_void) -> Result<()> {
+        // SAFETY: `copy_bytes` checked both ranges for length and overlap; the recording retains
+        // owned buffers, `Buffer::new` obliges the creator of any other to keep it alive, and a
+        // recording hands its calls a live stream whose context is current.
+        unsafe { driver::copy_on(stream, self.dst, self.src, self.bytes) }
+    }
+}
+
+/// The bytes a copy of `src` into `dst` moves, or `None` when it moves nothing.
+fn copy_bytes<T: Width>(dst: Buffer<'_, T>, src: Buffer<'_, T>) -> Result<Option<usize>> {
+    if dst.len() != src.len() {
+        return Err(Error::invalid("device copy lengths differ"));
+    }
+    let bytes = src
+        .len()
+        .checked_mul(T::BYTES)
+        .ok_or_else(|| Error::invalid("device copy size overflow"))?;
+    if dst.address() == src.address() || bytes == 0 {
+        return Ok(None);
+    }
+    if overlaps((dst.address(), bytes), (src.address(), bytes)) {
+        return Err(Error::invalid("device copy ranges overlap"));
+    }
+    Ok(Some(bytes))
 }
 
 /// Whether two `(address, bytes)` ranges share a byte.

@@ -4,7 +4,7 @@ use super::capture::{DIM, KH, NATIVE_VALUE_COLUMNS, VH};
 use crate::constants::METADATA_FIELDS;
 use crate::device::CudaDevice;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::identity::exact_recurrence;
+use infer_cuda_kernels::identity::exact_recurrence;
 use sha2::{Digest, Sha256};
 use std::env::var_os;
 use std::{

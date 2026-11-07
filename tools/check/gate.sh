@@ -136,6 +136,9 @@ cuda_device_checks() {
 # enough; this is the check that keeps the no-toolkit property from regressing.
 cuda_aot_checks() {
     cargo clippy --locked -p infer-cuda-kernels --features aot --all-targets -- -D warnings
+    # The host over the AOT source alone, with no cuTile, cuda-core or toolkit. Host tests drive
+    # cuTile kernels directly, so only the library is checked here.
+    cargo clippy --locked -p infer-backend-cuda --no-default-features --features cuda-aot --         -D warnings
     python3 tools/check/test-report.py --entry cuda-aot -- \
         cargo test --locked -p infer-cuda-kernels --features aot
 }

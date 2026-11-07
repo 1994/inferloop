@@ -6,20 +6,32 @@ use std::fmt;
 
 /// The fixed identity of precompiled kernels, where the cuTile build reports its compiler.
 #[must_use]
-pub const fn compiler() -> &'static str {
+#[expect(
+    clippy::missing_const_for_fn,
+    reason = "Not const in the cuTile build, so host callers compile under either source"
+)]
+pub fn compiler() -> &'static str {
     "aot"
 }
 
 /// No bytecode replaces precompiled kernels.
 #[must_use]
-pub const fn bytecode_override() -> Option<OsString> {
+#[expect(
+    clippy::missing_const_for_fn,
+    reason = "Not const in the cuTile build, so host callers compile under either source"
+)]
+pub fn bytecode_override() -> Option<OsString> {
     None
 }
 
 /// Nothing compiles at runtime, so there is no kernel cache to enable.
 /// # Errors
 /// Never fails; the signature matches the cuTile build's.
-pub const fn enable_cache() -> Result<()> {
+#[expect(
+    clippy::missing_const_for_fn,
+    reason = "Not const in the cuTile build, so host callers compile under either source"
+)]
+pub fn enable_cache() -> Result<()> {
     Ok(())
 }
 
@@ -41,7 +53,11 @@ pub struct JitOptions {
 impl JitOptions {
     /// Options recording an occupancy hint.
     #[must_use]
-    pub const fn occupancy(occupancy: i32) -> Self {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "Not const in the cuTile build, so host callers compile under either source"
+    )]
+    pub fn occupancy(occupancy: i32) -> Self {
         Self {
             occupancy: Some(occupancy),
         }

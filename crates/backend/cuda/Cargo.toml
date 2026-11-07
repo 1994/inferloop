@@ -14,6 +14,7 @@ workspace = true
 
 [features]
 default = []
+# The cuTile build, for CUDA 13.x toolchains.
 cuda = [
     "dep:cutile",
     "dep:cuda-core",
@@ -23,6 +24,15 @@ cuda = [
     "dep:futures-channel",
     "dep:infer-cuda-kernels",
     "infer-cuda-kernels/tile",
+]
+# The host over precompiled kernels alone: no cuTile and no CUDA toolkit at build time.
+cuda-aot = [
+    "dep:sha2",
+    "dep:infer-state",
+    "dep:infer-scheduler",
+    "dep:futures-channel",
+    "dep:infer-cuda-kernels",
+    "infer-cuda-kernels/aot",
 ]
 
 [dependencies]

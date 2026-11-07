@@ -1,21 +1,13 @@
 //! Fill a vendor FP4 probe's activation and its packed codes with real values before measuring.
 use super::entries::probe_input;
 use super::nvfp4_gemm;
+pub use crate::contract::ProbeGeometry;
 use crate::contract::buffer::Buffer;
 use crate::tile::runtime::{Device, Graph};
 use crate::tile::{backend_error, borrowed};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
-
-/// Rows and tile widths of the probe.
-#[derive(Clone, Copy, Debug)]
-pub struct ProbeGeometry {
-    pub rows: usize,
-    pub columns: usize,
-    pub code_tile: usize,
-    pub scale_tile: usize,
-}
 
 /// Packed FP4 values per stored element.
 const FP4_PER_ELEMENT: usize = 2;

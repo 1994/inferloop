@@ -27,10 +27,10 @@ use crate::{
 };
 pub use geometry::ProgramGeometry;
 use infer_core::{Error, Result, TensorId};
+use infer_cuda_kernels::ops::load_rotary;
 use infer_cuda_kernels::runtime::Allocation;
 use infer_cuda_kernels::runtime::DType;
 use infer_cuda_kernels::runtime::bf16;
-use infer_cuda_kernels::tile::state::load_rotary;
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
 use std::collections::BTreeMap;
 use std::sync::Arc;

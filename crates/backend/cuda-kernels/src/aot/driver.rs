@@ -18,8 +18,12 @@ use std::ffi::{CStr, c_char, c_void};
 use std::marker::PhantomData;
 use std::mem::size_of_val;
 use std::ptr;
+#[cfg(not(all(feature = "tile", target_os = "linux")))]
+use std::result::Result as StdResult;
 use std::slice;
 use std::sync::Arc;
+#[cfg(not(all(feature = "tile", target_os = "linux")))]
+use std::sync::OnceLock;
 
 /// `CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR`.
 const ATTRIBUTE_SM_MAJOR: i32 = 75;
@@ -955,6 +959,36 @@ unsafe impl Sync for Event {}
 unsafe impl Send for Pinned {}
 // SAFETY: as for `Send`; shared access hands out only shared views.
 unsafe impl Sync for Pinned {}
+
+/// The driver every foreign call shares: a recording hands such a call only a stream, and the
+/// entry points do not depend on which session loaded them.
+#[cfg(not(all(feature = "tile", target_os = "linux")))]
+static SHARED: OnceLock<StdResult<Driver, String>> = OnceLock::new();
+
+#[cfg(not(all(feature = "tile", target_os = "linux")))]
+fn shared() -> Result<&'static Driver> {
+    SHARED
+        .get_or_init(|| Driver::load().map_err(|error| error.to_string()))
+        .as_ref()
+        .map_err(|message| backend(message.clone()))
+}
+
+/// Copy `bytes` bytes device to device on `stream`, captured when it is capturing.
+/// # Safety
+/// `stream` must be a live stream whose context is current, and both ranges live device memory of
+/// that context that do not overlap, until the copy or every replay of its graph has run.
+#[cfg(not(all(feature = "tile", target_os = "linux")))]
+pub unsafe fn copy_on(
+    stream: *mut c_void,
+    destination: u64,
+    source: u64,
+    bytes: usize,
+) -> Result<()> {
+    let driver = shared()?;
+    // SAFETY: the caller guarantees the stream and both ranges.
+    let status = unsafe { (driver.memcpy_dtod)(destination, source, bytes, stream) };
+    driver.check(status)
+}
 
 /// The installed driver's CUDA API version, without opening a device.
 /// # Errors

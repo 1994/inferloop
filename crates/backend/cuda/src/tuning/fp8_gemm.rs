@@ -24,11 +24,11 @@ use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, Fp8, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, Kernels, Recording, WeightRef,
 };
+use infer_cuda_kernels::identity;
 use infer_cuda_kernels::jit::JitOptions;
 use infer_cuda_kernels::runtime::Timing;
 use infer_cuda_kernels::runtime::f8e4m3fn;
 use infer_cuda_kernels::runtime::{Allocation, Graph, Watch};
-use infer_cuda_kernels::tile::identity;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::env::var;

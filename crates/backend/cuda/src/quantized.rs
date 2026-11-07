@@ -3,9 +3,10 @@ use crate::constants::NVFP4_GROUP_SIZE;
 use crate::mlp::Matrix;
 use crate::{device::CudaDevice, strategy::LinearTiling};
 use infer_core::{Error, Result};
+use infer_cuda_kernels::contract::MatvecGeometry;
+use infer_cuda_kernels::ops;
 use infer_cuda_kernels::runtime::Allocation;
 use infer_cuda_kernels::runtime::{DType, f4e2m1fnx2, f8e4m3fn};
-use infer_cuda_kernels::tile::projection::matvec::{self, MatvecGeometry};
 
 impl CudaDevice {
     /// FP8 channel-scaled weights with F32 activations and accumulation.
@@ -22,7 +23,7 @@ impl CudaDevice {
         if scales.len() != rows {
             return Err(Error::invalid("FP8 channel scales shape"));
         }
-        matvec::fp8_matvec(
+        ops::fp8_matvec(
             &self.runtime(),
             x.buffer(),
             (w.allocation().buffer(), scales.buffer()),
@@ -53,7 +54,7 @@ impl CudaDevice {
         {
             return Err(Error::invalid("invalid NVFP4 scales or alignment"));
         }
-        matvec::nvfp4_matvec(
+        ops::nvfp4_matvec(
             &self.runtime(),
             x.buffer(),
             (w.allocation().buffer(), scales.allocation().buffer()),

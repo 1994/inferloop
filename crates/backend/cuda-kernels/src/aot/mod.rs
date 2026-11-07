@@ -5,8 +5,10 @@
 //! loaded as cubins and launched through the driver.
 pub mod artifact;
 mod driver;
+pub mod identity;
 pub mod jit;
 mod kernels;
+pub mod ops;
 mod projection;
 pub mod runtime;
 

@@ -1,5 +1,6 @@
 //! Eager host-validated projections: weight self-checks and reference paths, not captured graphs.
 use super::linear::{dense, fp8, nvfp4};
+pub use crate::contract::MatvecGeometry;
 use crate::contract::buffer::Buffer;
 use crate::tile::runtime::{Allocation, Device};
 use crate::tile::{backend_error, borrowed};
@@ -10,14 +11,6 @@ use std::sync::Arc;
 
 /// Packed FP4 values per stored element.
 const FP4_PER_ELEMENT: usize = 2;
-/// Tile geometry of one eager projection.
-#[derive(Clone, Copy, Debug)]
-pub struct MatvecGeometry {
-    pub rows: usize,
-    pub columns: usize,
-    pub tile_rows: usize,
-    pub tile_columns: usize,
-}
 
 /// `w · x` for a row-major `[rows, columns]` weight, complete when this returns; the output is
 /// a fresh allocation, zeroed in the same launch sequence.

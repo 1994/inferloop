@@ -4,6 +4,7 @@
 pub mod attention;
 pub mod buffer;
 pub mod draft;
+pub mod geometry;
 pub mod kernels;
 pub mod plan;
 pub mod recording;
@@ -20,6 +21,10 @@ pub use buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner, Width};
 pub use draft::{
     DRAFT_KEY_TILE, DRAFT_ROW_TILE, Draft, DraftAddNorm, DraftAttention, DraftConv, DraftNorm,
     DraftProjection, DraftRingStore, DraftRope, DraftSplit, DraftTop, DraftWalk, DraftWeight,
+};
+pub use geometry::{
+    AttentionShape, DenseSearch, Fp4Search, GEMM_RANK, MatvecGeometry, ProbeGeometry,
+    RECURRENT_RANK, SwigluSearch,
 };
 pub use kernels::{
     CONV_HISTORY, ChunkBuffers, ConvBuffers, DeltaBuffers, ExpertWeight, FUSED_LANES,

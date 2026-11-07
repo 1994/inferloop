@@ -5,8 +5,8 @@ use crate::device::Readbacks;
 use crate::device::{CudaDevice, device_error};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Buffer, GreedyPartials, GreedyPlan, Kernels, Recording};
+use infer_cuda_kernels::identity;
 use infer_cuda_kernels::runtime::Allocation;
-use infer_cuda_kernels::tile::identity;
 use std::sync::Arc;
 
 /// Values each selected row writes: the token and its validation flag.
