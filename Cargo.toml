@@ -64,6 +64,7 @@ infer-backend-cuda = { version = "=0.1.0", path = "crates/backend/cuda" }
 infer-cuda-kernels = { version = "=0.1.0", path = "crates/backend/cuda-kernels" }
 infer-media-input = { version = "=0.1.0", path = "crates/service/media" }
 libc = "0.2"
+half = "2.7.1"
 libloading = "0.8"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"

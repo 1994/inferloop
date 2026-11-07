@@ -8,10 +8,12 @@
     reason = "Every driver entry point is a raw FFI call whose validity is the caller's contract"
 )]
 
+use crate::contract::buffer::Owner;
 use crate::contract::recording::Recording;
 use crate::contract::target::Arch;
 use infer_core::{Error, ErrorCode, Result};
 use libloading::Library;
+use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_void};
 use std::marker::PhantomData;
 use std::mem::size_of_val;
@@ -23,6 +25,8 @@ use std::sync::Arc;
 const ATTRIBUTE_SM_MAJOR: i32 = 75;
 /// `CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR`.
 const ATTRIBUTE_SM_MINOR: i32 = 76;
+/// Bytes a device name query may write, NUL included.
+const NAME_BYTES: usize = 256;
 /// `CU_STREAM_CAPTURE_MODE_GLOBAL`.
 const CAPTURE_MODE_GLOBAL: u32 = 0;
 
@@ -72,6 +76,11 @@ type GraphLaunch = unsafe extern "C" fn(CuGraphExec, CuStream) -> CuResult;
 type GraphExecDestroy = unsafe extern "C" fn(CuGraphExec) -> CuResult;
 type GraphDestroy = unsafe extern "C" fn(CuGraph) -> CuResult;
 type GetErrorName = unsafe extern "C" fn(CuResult, *mut *const c_char) -> CuResult;
+type MemsetD8 = unsafe extern "C" fn(CuDeviceptr, u8, usize, CuStream) -> CuResult;
+type MemcpyDtoD = unsafe extern "C" fn(CuDeviceptr, CuDeviceptr, usize, CuStream) -> CuResult;
+type MemGetInfo = unsafe extern "C" fn(*mut usize, *mut usize) -> CuResult;
+type DeviceGetName = unsafe extern "C" fn(*mut c_char, i32, CuDevice) -> CuResult;
+type DriverGetVersion = unsafe extern "C" fn(*mut i32) -> CuResult;
 
 struct Driver {
     _library: Library,
@@ -99,6 +108,11 @@ struct Driver {
     graph_exec_destroy: GraphExecDestroy,
     graph_destroy: GraphDestroy,
     get_error_name: GetErrorName,
+    memset_d8: MemsetD8,
+    memcpy_dtod: MemcpyDtoD,
+    mem_get_info: MemGetInfo,
+    device_get_name: DeviceGetName,
+    version: DriverGetVersion,
 }
 
 impl Driver {
@@ -132,6 +146,11 @@ impl Driver {
             graph_exec_destroy: symbol(&library, b"cuGraphExecDestroy\0")?,
             graph_destroy: symbol(&library, b"cuGraphDestroy\0")?,
             get_error_name: symbol(&library, b"cuGetErrorName\0")?,
+            memset_d8: symbol(&library, b"cuMemsetD8Async\0")?,
+            memcpy_dtod: symbol(&library, b"cuMemcpyDtoDAsync_v2\0")?,
+            mem_get_info: symbol(&library, b"cuMemGetInfo_v2\0")?,
+            device_get_name: symbol(&library, b"cuDeviceGetName\0")?,
+            version: symbol(&library, b"cuDriverGetVersion\0")?,
             _library: library,
         })
     }
@@ -253,7 +272,7 @@ impl Device {
         Ok(Arch::from_sm(major, minor))
     }
 
-    fn attribute(&self, attribute: i32) -> Result<u32> {
+    pub(crate) fn attribute(&self, attribute: i32) -> Result<u32> {
         let session = &self.session;
         session.bind()?;
         let mut value = 0;
@@ -274,8 +293,10 @@ impl Device {
         // SAFETY: the stream belongs to this session and its context is current.
         let status = unsafe { (session.driver.begin_capture)(session.stream, CAPTURE_MODE_GLOBAL) };
         session.driver.check(status)?;
+        let owners = RefCell::new(Vec::new());
         let recorded = record(&Recording::Stream {
             handle: session.stream,
+            owners: Some(&owners),
             stream: PhantomData,
         });
         let mut graph = ptr::null_mut();
@@ -286,6 +307,7 @@ impl Device {
             session: Arc::clone(session),
             captured: graph,
             exec: ptr::null_mut(),
+            _owners: owners.into_inner(),
         };
         recorded?;
         session.driver.check(status)?;
@@ -381,6 +403,132 @@ impl Device {
         self.session.synchronize()
     }
 
+    /// Zero `bytes` bytes at `address`, ordered on the stream; the caller waits when it must.
+    /// # Safety
+    /// `address` must start `bytes` writable bytes of this context's device memory.
+    pub(crate) unsafe fn zero(&self, address: u64, bytes: usize) -> Result<()> {
+        self.session.bind()?;
+        // SAFETY: the caller guarantees the range; the stream belongs to this session.
+        let status =
+            unsafe { (self.session.driver.memset_d8)(address, 0, bytes, self.session.stream) };
+        self.session.driver.check(status)
+    }
+
+    /// Copy `bytes` bytes device to device, ordered on the stream.
+    /// # Safety
+    /// Both ranges must be live device memory of this context that do not overlap.
+    pub(crate) unsafe fn copy(&self, destination: u64, source: u64, bytes: usize) -> Result<()> {
+        self.session.bind()?;
+        // SAFETY: the caller guarantees both ranges; the stream belongs to this session.
+        let status = unsafe {
+            (self.session.driver.memcpy_dtod)(destination, source, bytes, self.session.stream)
+        };
+        self.session.driver.check(status)
+    }
+
+    /// Copy `source` into device memory at `address` and wait, so `source` can be released.
+    /// # Safety
+    /// `address` must start `source.len()` writable bytes of this context's device memory.
+    pub(crate) unsafe fn write(&self, address: u64, source: &[u8]) -> Result<()> {
+        self.session.bind()?;
+        // SAFETY: the caller guarantees the destination; `source` stays borrowed until the stream
+        // synchronizes below.
+        let status = unsafe {
+            (self.session.driver.memcpy_htod)(
+                address,
+                source.as_ptr().cast(),
+                source.len(),
+                self.session.stream,
+            )
+        };
+        self.session.driver.check(status)?;
+        self.session.synchronize()
+    }
+
+    /// Copy device memory at `address` into `destination` and wait, after earlier work.
+    /// # Safety
+    /// `address` must start `destination.len()` readable bytes of this context's device memory.
+    pub(crate) unsafe fn read_into(&self, address: u64, destination: &mut [u8]) -> Result<()> {
+        self.session.bind()?;
+        // SAFETY: the caller guarantees the source; `destination` stays borrowed until the stream
+        // synchronizes below.
+        let status = unsafe {
+            (self.session.driver.memcpy_dtoh)(
+                destination.as_mut_ptr().cast(),
+                address,
+                destination.len(),
+                self.session.stream,
+            )
+        };
+        self.session.driver.check(status)?;
+        self.session.synchronize()
+    }
+
+    /// Free and total device memory, in bytes.
+    /// # Errors
+    /// Fails when the driver cannot report them.
+    pub fn memory_info(&self) -> Result<(u64, u64)> {
+        self.session.bind()?;
+        let (mut free, mut total) = (0usize, 0usize);
+        // SAFETY: both outputs are live and the context is current.
+        let status = unsafe { (self.session.driver.mem_get_info)(&raw mut free, &raw mut total) };
+        self.session.driver.check(status)?;
+        Ok((free as u64, total as u64))
+    }
+
+    /// The device's marketing name.
+    /// # Errors
+    /// Fails when the driver cannot report it.
+    pub fn name(&self) -> Result<String> {
+        let mut name = [0 as c_char; NAME_BYTES];
+        let length = i32::try_from(name.len()).map_err(|_| backend("name buffer".to_owned()))?;
+        // SAFETY: `name` holds `length` writable bytes and the handle belongs to this session.
+        let status = unsafe {
+            (self.session.driver.device_get_name)(name.as_mut_ptr(), length, self.session.handle)
+        };
+        self.session.driver.check(status)?;
+        // SAFETY: the driver writes a NUL-terminated string into the buffer.
+        Ok(unsafe { CStr::from_ptr(name.as_ptr()) }
+            .to_string_lossy()
+            .into_owned())
+    }
+
+    /// The installed driver's CUDA API version.
+    /// # Errors
+    /// Fails when the driver cannot report it.
+    pub fn driver_version(&self) -> Result<u32> {
+        let mut version = 0;
+        // SAFETY: `version` is a live output; the query needs no context.
+        let status = unsafe { (self.session.driver.version)(&raw mut version) };
+        self.session.driver.check(status)?;
+        u32::try_from(version).map_err(|_| backend("negative driver version".to_owned()))
+    }
+
+    /// Make this device's context current on the calling thread.
+    /// # Errors
+    /// Fails when the driver cannot bind it.
+    pub fn bind(&self) -> Result<()> {
+        self.session.bind()
+    }
+
+    /// The stream this device enqueues on.
+    #[must_use]
+    pub fn stream(&self) -> *mut c_void {
+        self.session.stream
+    }
+
+    /// The context this device's stream belongs to, as an opaque identity.
+    #[must_use]
+    pub fn context(&self) -> usize {
+        self.session.context as usize
+    }
+
+    /// Whether `other` enqueues on the same stream.
+    #[must_use]
+    pub fn shares_session(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.session, &other.session)
+    }
+
     /// Wait for every operation enqueued on this device's stream.
     /// # Errors
     /// Fails when the driver reports a stream error.
@@ -412,9 +560,24 @@ pub struct Graph {
     session: Arc<Session>,
     captured: CuGraph,
     exec: CuGraphExec,
+    /// What the recorded launches address; kept until the graph is destroyed.
+    _owners: Vec<Owner>,
 }
 
 impl Graph {
+    /// Wait until this graph's stream has finished everything queued so far.
+    /// # Errors
+    /// Fails when the driver reports a stream error.
+    pub fn synchronize(&self) -> Result<()> {
+        self.session.synchronize()
+    }
+
+    /// Whether this graph replays on `device`'s stream.
+    #[must_use]
+    pub fn runs_on(&self, device: &Device) -> bool {
+        Arc::ptr_eq(&self.session, &device.session)
+    }
+
     /// Enqueue one replay; [`Device::synchronize`] waits for it.
     /// # Errors
     /// Fails when the driver rejects the launch.
@@ -578,6 +741,18 @@ unsafe impl Sync for Graph {}
 unsafe impl Send for Function {}
 // SAFETY: as for `Send`.
 unsafe impl Sync for Function {}
+
+/// The installed driver's CUDA API version, without opening a device.
+/// # Errors
+/// Fails when the driver is missing or cannot report it.
+pub fn driver_version() -> Result<u32> {
+    let driver = Driver::load()?;
+    let mut version = 0;
+    // SAFETY: `version` is a live output; the query needs no context.
+    let status = unsafe { (driver.version)(&raw mut version) };
+    driver.check(status)?;
+    u32::try_from(version).map_err(|_| backend("negative driver version".to_owned()))
+}
 
 fn symbol<T: Copy>(library: &Library, name: &[u8]) -> Result<T> {
     // SAFETY: the caller names a driver entry point with the ABI signature of `T`; the library

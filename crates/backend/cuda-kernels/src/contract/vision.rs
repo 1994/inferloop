@@ -127,7 +127,10 @@ pub trait Vision: Send + Sync {
     /// Project rows with a bias.
     /// # Errors
     /// See the trait.
-    fn dense_bias(&self, recording: &Recording<'_>, dense: VisionDense<'_>) -> Result<()>;
+    fn dense_bias(&self, recording: &Recording<'_>, dense: VisionDense<'_>) -> Result<()> {
+        let _ = (recording, dense);
+        Err(unsupported("Vision::dense_bias"))
+    }
 
     /// `out = left + right` over rows of `columns`.
     /// # Errors
@@ -139,7 +142,10 @@ pub trait Vision: Send + Sync {
         out: Buffer<'_, f32>,
         left: Buffer<'_, f32>,
         right: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, columns, out, left, right);
+        Err(unsupported("Vision::add"))
+    }
 
     /// Activate rows of `columns`.
     /// # Errors
@@ -151,17 +157,26 @@ pub trait Vision: Send + Sync {
         columns: usize,
         out: Buffer<'_, f32>,
         input: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, form, columns, out, input);
+        Err(unsupported("Vision::gelu"))
+    }
 
     /// Normalize rows into a flat output.
     /// # Errors
     /// See the trait.
-    fn layernorm(&self, recording: &Recording<'_>, norm: VisionNorm<'_>) -> Result<()>;
+    fn layernorm(&self, recording: &Recording<'_>, norm: VisionNorm<'_>) -> Result<()> {
+        let _ = (recording, norm);
+        Err(unsupported("Vision::layernorm"))
+    }
 
     /// Rotate head rows through their tables.
     /// # Errors
     /// See the trait.
-    fn rope(&self, recording: &Recording<'_>, rope: VisionRope<'_>) -> Result<()>;
+    fn rope(&self, recording: &Recording<'_>, rope: VisionRope<'_>) -> Result<()> {
+        let _ = (recording, rope);
+        Err(unsupported("Vision::rope"))
+    }
 
     /// Pack `rows` rows between compact and power-of-two heads.
     /// # Errors
@@ -173,7 +188,10 @@ pub trait Vision: Send + Sync {
         rows: usize,
         out: Buffer<'_, f32>,
         input: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, direction, rows, out, input);
+        Err(unsupported("Vision::pack"))
+    }
 
     /// `out = embedded + Σ weight · table[index]` over the four taps of each row.
     /// # Errors
@@ -184,5 +202,13 @@ pub trait Vision: Send + Sync {
         out: Buffer<'_, f32>,
         embedded: Buffer<'_, f32>,
         taps: PositionTaps<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, out, embedded, taps);
+        Err(unsupported("Vision::add_positions"))
+    }
+}
+
+/// What a family method a kernel source does not provide returns.
+fn unsupported(method: &str) -> infer_core::Error {
+    infer_core::Error::unsupported(format!("{method} is not provided by this kernel source"))
 }

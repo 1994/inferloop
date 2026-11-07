@@ -3,7 +3,6 @@
 //! The resident graph captures launches once and replays them, so a family method records and never
 //! waits. The forms differ only in how an implementation reaches the capture: cuTile records
 //! through its scope, a driver launch goes to a stream in capture mode.
-#[cfg(all(feature = "tile", target_os = "linux"))]
 use crate::contract::buffer::Buffer;
 use crate::contract::buffer::Owner;
 #[cfg(all(feature = "tile", target_os = "linux"))]
@@ -11,11 +10,9 @@ use crate::tile::Scope;
 #[cfg(all(feature = "tile", target_os = "linux"))]
 use crate::tile::runtime::record_foreign;
 use infer_core::Result;
-#[cfg(all(feature = "tile", target_os = "linux"))]
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::marker::PhantomData;
-#[cfg(all(feature = "tile", target_os = "linux"))]
 use std::sync::Arc;
 
 /// Destination of one kernel launch.
@@ -32,6 +29,8 @@ pub enum Recording<'a> {
     Stream {
         /// Stream handle owned by the caller.
         handle: *mut c_void,
+        /// Filled with what a captured graph must keep alive; `None` when the caller owns it.
+        owners: Option<&'a RefCell<Vec<Owner>>>,
         /// Ties the handle to the caller's borrow of its stream.
         stream: PhantomData<&'a ()>,
     },
@@ -54,20 +53,6 @@ impl<'a> Recording<'a> {
         Self::Scope {
             scope,
             owners: Some(owners),
-        }
-    }
-
-    /// Keep this operand's memory alive for as long as the graph lives. Capture time only.
-    pub fn retain<T>(&self, buffer: Buffer<'_, T>) {
-        if let (
-            Self::Scope {
-                owners: Some(owners),
-                ..
-            },
-            Some(owner),
-        ) = (self, buffer.owner())
-        {
-            owners.borrow_mut().push(Arc::clone(owner));
         }
     }
 
@@ -94,6 +79,22 @@ pub trait Foreign: Send {
 }
 
 impl Recording<'_> {
+    /// Keep this operand's memory alive for as long as the graph lives. Capture time only.
+    pub fn retain<T>(&self, buffer: Buffer<'_, T>) {
+        if let (Some(owners), Some(owner)) = (self.owners(), buffer.owner()) {
+            owners.borrow_mut().push(Arc::clone(owner));
+        }
+    }
+
+    /// Where a capturing graph collects what it must keep alive, when it does.
+    const fn owners(&self) -> Option<&RefCell<Vec<Owner>>> {
+        match self {
+            Self::Stream { owners, .. } => *owners,
+            #[cfg(all(feature = "tile", target_os = "linux"))]
+            Self::Scope { owners, .. } => *owners,
+        }
+    }
+
     /// Record `call` in order with the kernels around it; in a capture its work becomes nodes of
     /// the graph, which holds `keep` for as long as it lives. On a plain stream the caller holds
     /// what the call uses.
@@ -101,9 +102,11 @@ impl Recording<'_> {
     /// Returns what `call` returns, or a capture failure.
     pub fn foreign(&self, call: impl Foreign, keep: Vec<Owner>) -> Result<()> {
         match self {
-            Self::Stream { handle, .. } => {
+            Self::Stream { handle, owners, .. } => {
                 let enqueued = call.enqueue(*handle);
-                drop(keep);
+                if let Some(owners) = owners {
+                    owners.borrow_mut().extend(keep);
+                }
                 enqueued
             }
             #[cfg(all(feature = "tile", target_os = "linux"))]

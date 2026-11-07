@@ -170,22 +170,34 @@ pub trait Draft: Send + Sync {
         recording: &Recording<'_>,
         weight: DraftWeight<'_>,
         projection: DraftProjection<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, weight, projection);
+        Err(unsupported("Draft::project"))
+    }
 
     /// Project narrow outputs across idle multiprocessors.
     /// # Errors
     /// See the trait.
-    fn project_split(&self, recording: &Recording<'_>, split: DraftSplit<'_>) -> Result<()>;
+    fn project_split(&self, recording: &Recording<'_>, split: DraftSplit<'_>) -> Result<()> {
+        let _ = (recording, split);
+        Err(unsupported("Draft::project_split"))
+    }
 
     /// Normalize rows.
     /// # Errors
     /// See the trait.
-    fn norm(&self, recording: &Recording<'_>, norm: DraftNorm<'_>) -> Result<()>;
+    fn norm(&self, recording: &Recording<'_>, norm: DraftNorm<'_>) -> Result<()> {
+        let _ = (recording, norm);
+        Err(unsupported("Draft::norm"))
+    }
 
     /// Add a residual and normalize the sum.
     /// # Errors
     /// See the trait.
-    fn add_norm(&self, recording: &Recording<'_>, add: DraftAddNorm<'_>) -> Result<()>;
+    fn add_norm(&self, recording: &Recording<'_>, add: DraftAddNorm<'_>) -> Result<()> {
+        let _ = (recording, add);
+        Err(unsupported("Draft::add_norm"))
+    }
 
     /// Embed tokens from a table of `shape[0]` columns, in tiles of `shape[1]` channels.
     /// # Errors
@@ -197,27 +209,42 @@ pub trait Draft: Send + Sync {
         out: Buffer<'_, f32>,
         table: Buffer<'_, Bf16>,
         tokens: Buffer<'_, i32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, shape, out, table, tokens);
+        Err(unsupported("Draft::embed"))
+    }
 
     /// One side of a dynamic convolution.
     /// # Errors
     /// See the trait.
-    fn conv(&self, recording: &Recording<'_>, conv: DraftConv<'_>) -> Result<()>;
+    fn conv(&self, recording: &Recording<'_>, conv: DraftConv<'_>) -> Result<()> {
+        let _ = (recording, conv);
+        Err(unsupported("Draft::conv"))
+    }
 
     /// Rotate head rows by their positions.
     /// # Errors
     /// See the trait.
-    fn rope(&self, recording: &Recording<'_>, rope: DraftRope<'_>) -> Result<()>;
+    fn rope(&self, recording: &Recording<'_>, rope: DraftRope<'_>) -> Result<()> {
+        let _ = (recording, rope);
+        Err(unsupported("Draft::rope"))
+    }
 
     /// Store rows into a ring set.
     /// # Errors
     /// See the trait.
-    fn ring_store(&self, recording: &Recording<'_>, store: DraftRingStore<'_>) -> Result<()>;
+    fn ring_store(&self, recording: &Recording<'_>, store: DraftRingStore<'_>) -> Result<()> {
+        let _ = (recording, store);
+        Err(unsupported("Draft::ring_store"))
+    }
 
     /// Attend each block over its ring.
     /// # Errors
     /// See the trait.
-    fn attend(&self, recording: &Recording<'_>, attention: DraftAttention<'_>) -> Result<()>;
+    fn attend(&self, recording: &Recording<'_>, attention: DraftAttention<'_>) -> Result<()> {
+        let _ = (recording, attention);
+        Err(unsupported("Draft::attend"))
+    }
 
     /// `out = silu(gate) * up` over flat rows.
     /// # Errors
@@ -228,15 +255,29 @@ pub trait Draft: Send + Sync {
         out: Buffer<'_, f32>,
         gate: Buffer<'_, f32>,
         up: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, out, gate, up);
+        Err(unsupported("Draft::gated_product"))
+    }
 
     /// Rank each row's logits in blocks, then merge to its top candidates.
     /// # Errors
     /// See the trait.
-    fn top_candidates(&self, recording: &Recording<'_>, top: DraftTop<'_>) -> Result<()>;
+    fn top_candidates(&self, recording: &Recording<'_>, top: DraftTop<'_>) -> Result<()> {
+        let _ = (recording, top);
+        Err(unsupported("Draft::top_candidates"))
+    }
 
     /// Choose each block's tokens among the candidates.
     /// # Errors
     /// See the trait.
-    fn walk(&self, recording: &Recording<'_>, walk: DraftWalk<'_>) -> Result<()>;
+    fn walk(&self, recording: &Recording<'_>, walk: DraftWalk<'_>) -> Result<()> {
+        let _ = (recording, walk);
+        Err(unsupported("Draft::walk"))
+    }
+}
+
+/// What a family method a kernel source does not provide returns.
+fn unsupported(method: &str) -> infer_core::Error {
+    infer_core::Error::unsupported(format!("{method} is not provided by this kernel source"))
 }
