@@ -1,7 +1,6 @@
 //! AOT launch code owns TMA descriptors and cluster launches; serving never imports Python.
 use super::catalog::Variant;
 use crate::device::device_error;
-use cuda_core::sys::CUstream;
 use infer_core::{Error, Result};
 use sha2::{Digest, Sha256};
 use std::env::temp_dir;
@@ -17,6 +16,9 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
 };
+
+/// The driver's opaque stream handle, as the library ABI takes it.
+type CUstream = *mut c_void;
 
 const SCALE: f32 = 0.0625;
 type Initialize = unsafe extern "C" fn(i32) -> i32;

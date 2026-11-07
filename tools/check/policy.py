@@ -203,6 +203,8 @@ def check_exceptions():
                         # Timing events retained by their graphs; D2H reads over buffers whose
                         # contract guarantees the extent.
                         TILE_KERNELS / "runtime/events.rs",
+                        # Pointer queries into live slots of each attribute's cuda.h type.
+                        TILE_KERNELS / "runtime/pointer.rs",
                         TILE_KERNELS / "norm/contract.rs",
                         TILE_KERNELS / "mlp/contract.rs",
                         TILE_KERNELS / "moe/contract.rs",
