@@ -75,15 +75,15 @@ fn fp8_token_mma_matches_independent_quantization() -> Result<(), Box<dyn Error>
         let x = device.upload(input.clone(), &[m, k])?;
         let w = device.upload(codes.iter().copied().map(f8e4m3fn).collect(), &[n, k])?;
         let ws = device.upload(scales.clone(), &[n])?;
-        let mut q = api::zeros::<f8e4m3fn>(&[m, k]).sync_on(&device.stream)?;
-        let mut qs = api::zeros::<f32>(&[m, 1]).sync_on(&device.stream)?;
+        let mut q = api::zeros::<f8e4m3fn>(&[m, k]).sync_on(device.stream())?;
+        let mut qs = api::zeros::<f32>(&[m, 1]).sync_on(device.stream())?;
         kernels::quantize(
             (&mut q).partition([1, k.next_power_of_two()]),
             (&mut qs).partition([1, 1]),
             &x,
         )
         .generics(vec![k.to_string(), k.next_power_of_two().to_string()])
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         let output = kernels::matmul(
             api::zeros::<f32>(&[m, n]).partition([16, 64]),
             &q,
@@ -94,9 +94,9 @@ fn fp8_token_mma_matches_independent_quantization() -> Result<(), Box<dyn Error>
         .generics(tile_generics(k))
         .first()
         .unpartition()
-        .sync_on(&device.stream)?;
-        let actual = output.to_host_vec().sync_on(&device.stream)?;
-        let encoded = q.to_host_vec().sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
+        let actual = output.to_host_vec().sync_on(device.stream())?;
+        let encoded = q.to_host_vec().sync_on(device.stream())?;
         for row in 0..m {
             let scale = (input[row * k..(row + 1) * k]
                 .iter()
@@ -166,15 +166,15 @@ fn fp8_block_mma_matches_independent_block_quantization() -> Result<(), Box<dyn 
         let x = device.upload(input.clone(), &[m, k])?;
         let w = device.upload(codes.iter().copied().map(f8e4m3fn).collect(), &[n, k])?;
         let ws = device.upload(expanded, &[n, blocks_k])?;
-        let mut q = api::zeros::<f8e4m3fn>(&[m, k]).sync_on(&device.stream)?;
-        let mut qs = api::zeros::<f32>(&[m, blocks_k]).sync_on(&device.stream)?;
+        let mut q = api::zeros::<f8e4m3fn>(&[m, k]).sync_on(device.stream())?;
+        let mut qs = api::zeros::<f32>(&[m, blocks_k]).sync_on(device.stream())?;
         kernels::quantize_block(
             (&mut q).partition([1, BLOCK]),
             (&mut qs).partition([1, 1]),
             &x,
         )
         .generics(vec![k.to_string(), BLOCK.to_string()])
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         let output = kernels::matmul_block(
             api::zeros::<f32>(&[m, n]).partition([QUANT_TILE_ROWS, QUANT_TILE_COLUMNS]),
             &q,
@@ -185,10 +185,10 @@ fn fp8_block_mma_matches_independent_block_quantization() -> Result<(), Box<dyn 
         .generics(tile_generics(k))
         .first()
         .unpartition()
-        .sync_on(&device.stream)?;
-        let actual = output.to_host_vec().sync_on(&device.stream)?;
-        let encoded = q.to_host_vec().sync_on(&device.stream)?;
-        let scales = qs.to_host_vec().sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
+        let actual = output.to_host_vec().sync_on(device.stream())?;
+        let encoded = q.to_host_vec().sync_on(device.stream())?;
+        let scales = qs.to_host_vec().sync_on(device.stream())?;
         for row in 0..m {
             for block in 0..blocks_k {
                 let span = &input[row * k + block * BLOCK..row * k + (block + 1) * BLOCK];
@@ -271,10 +271,10 @@ fn fp8_small_m_split_k_preserves_values_and_measures_better() -> Result<(), Box<
         let weight = device.upload(weight_codes, &[n, k])?;
         let input_scale = device.upload(vec![0.5_f32; 16], &[16, 1])?;
         let weight_scale = device.upload(vec![0.25_f32; n], &[n])?;
-        let mut output = api::zeros::<f32>(&[16, n]).sync_on(&device.stream)?;
-        let mut split_out = api::zeros::<f32>(&[16, n]).sync_on(&device.stream)?;
+        let mut output = api::zeros::<f32>(&[16, n]).sync_on(device.stream())?;
+        let mut split_out = api::zeros::<f32>(&[16, n]).sync_on(device.stream())?;
         let splits = usize::try_from(SPLITS).unwrap();
-        let mut partials = api::zeros::<f32>(&[splits, 16, n]).sync_on(&device.stream)?;
+        let mut partials = api::zeros::<f32>(&[splits, 16, n]).sync_on(device.stream())?;
         let windows = k.div_ceil(128);
         let k_tiles = i32::try_from(windows.div_ceil(splits)).unwrap();
         let baseline = device.tile().capture(|scope| {
@@ -309,24 +309,24 @@ fn fp8_small_m_split_k_preserves_values_and_measures_better() -> Result<(), Box<
             ))?;
             Ok(())
         })?;
-        baseline.launch().sync_on(&device.stream)?;
-        candidate.launch().sync_on(&device.stream)?;
-        let direct = output.to_host_vec().sync_on(&device.stream)?;
-        let split = split_out.to_host_vec().sync_on(&device.stream)?;
+        baseline.launch().sync_on(device.stream())?;
+        candidate.launch().sync_on(device.stream())?;
+        let direct = output.to_host_vec().sync_on(device.stream())?;
+        let split = split_out.to_host_vec().sync_on(device.stream())?;
         let worst = relative_gap(&direct[..12 * n], &split[..12 * n]);
         let (slow, fast) = do_bench_paired(
-            &device.stream,
+            device.stream(),
             &options,
             |_| {
                 baseline
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|e| tensor_error(&e.to_string()))
             },
             |_| {
                 candidate
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|e| tensor_error(&e.to_string()))
             },
         )?;

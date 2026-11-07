@@ -63,7 +63,7 @@ fn run_case(device: &CudaDevice, action: &str) -> TestResult<(Vec<u8>, Vec<u8>)>
     let (rows, columns, hidden) = (64, 512, 64);
     let input = device.upload(vec![0.5f32; rows * columns], &[rows, columns])?;
     let weight = device.upload(vec![1.0f32; columns], &[columns])?;
-    let dense = api::zeros::<f32>(&[rows, columns]).sync_on(&device.stream)?;
+    let dense = api::zeros::<f32>(&[rows, columns]).sync_on(device.stream())?;
     let mut workspace = workspace(device);
     for columns in [columns, hidden] {
         workspace.buffers.insert(
@@ -142,7 +142,7 @@ fn run_case(device: &CudaDevice, action: &str) -> TestResult<(Vec<u8>, Vec<u8>)>
         Ok(())
     })?;
     workspace.end_quant_capture();
-    graph.launch().sync_on(&device.stream)?;
+    graph.launch().sync_on(device.stream())?;
     let (codes, scales) = workspace.quantized_fp4(rows, hidden).unwrap();
     Ok((
         device

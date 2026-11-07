@@ -238,9 +238,9 @@ impl Fixture {
             buffers: BTreeMap::from([(geometry, buffer)]),
             nodes: BTreeMap::from([(node, geometry)]),
         };
-        let actual = api::zeros::<f32>(&[lanes * HEADS, DIM]).sync_on(&device.stream)?;
+        let actual = api::zeros::<f32>(&[lanes * HEADS, DIM]).sync_on(device.stream())?;
         let mut expected = (0..lanes)
-            .map(|_| api::zeros::<f32>(&[HEADS, DIM]).sync_on(&device.stream))
+            .map(|_| api::zeros::<f32>(&[HEADS, DIM]).sync_on(device.stream()))
             .collect::<StdResult<Vec<_>, _>>()?;
         self.reference(device, &lane_metadata, window, &mut expected)?;
         let [keys, values] = &self.candidate;
@@ -275,7 +275,7 @@ impl Fixture {
             )?;
             Ok(())
         })?;
-        candidate.launch().sync_on(&device.stream)?;
+        candidate.launch().sync_on(device.stream())?;
         let actual = device.read_borrowed(&actual)?;
         for (lane, expected) in expected.iter().enumerate() {
             let expected = device.read_borrowed(expected)?;
@@ -318,9 +318,9 @@ impl Fixture {
         expected: &mut [Tensor<f32>],
     ) -> TestResult {
         let mut numerator =
-            api::zeros::<f32>(&[KV * PARTS, STACKED_ROWS, DIM]).sync_on(&device.stream)?;
-        let mut maxima = api::zeros::<f32>(&[KV * PARTS, STACKED_ROWS]).sync_on(&device.stream)?;
-        let mut sums = api::zeros::<f32>(&[KV * PARTS, STACKED_ROWS]).sync_on(&device.stream)?;
+            api::zeros::<f32>(&[KV * PARTS, STACKED_ROWS, DIM]).sync_on(device.stream())?;
+        let mut maxima = api::zeros::<f32>(&[KV * PARTS, STACKED_ROWS]).sync_on(device.stream())?;
+        let mut sums = api::zeros::<f32>(&[KV * PARTS, STACKED_ROWS]).sync_on(device.stream())?;
         let [keys, values] = &mut self.original;
         let physical = self.slots * self.capacity;
         let reference = device.tile().capture(|scope| {
@@ -414,7 +414,7 @@ impl Fixture {
             }
             Ok(())
         })?;
-        reference.launch().sync_on(&device.stream)?;
+        reference.launch().sync_on(device.stream())?;
         Ok(())
     }
 }

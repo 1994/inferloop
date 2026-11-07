@@ -75,18 +75,10 @@ impl Support {
         if !device.target().has_simt_artifacts() {
             return Ok(None);
         }
-        let module = device
-            .stream
-            .device()
-            .load_module_from_ptx_src(PTX)
-            .map_err(device_error)?;
+        let module = device.tile().load_ptx(PTX).map_err(device_error)?;
         Ok(Some(Self {
-            function: Arc::new(
-                module
-                    .load_function("attention_fp8_256")
-                    .map_err(device_error)?,
-            ),
-            stream: device.stream.cu_stream() as usize,
+            function: Arc::new(module.function("attention_fp8_256").map_err(device_error)?),
+            stream: device.tile().stream_id(),
             threads: THREADS,
             rows_per_cta: 1,
             lanes: &SUPPORTED_LANES,
@@ -103,18 +95,10 @@ impl Support {
 
     #[cfg(test)]
     pub(crate) fn load_test_ptx(device: &CudaDevice, ptx: &str) -> Result<Self> {
-        let module = device
-            .stream
-            .device()
-            .load_module_from_ptx_src(ptx)
-            .map_err(device_error)?;
+        let module = device.tile().load_ptx(ptx).map_err(device_error)?;
         Ok(Self {
-            function: Arc::new(
-                module
-                    .load_function("attention_fp8_256")
-                    .map_err(device_error)?,
-            ),
-            stream: device.stream.cu_stream() as usize,
+            function: Arc::new(module.function("attention_fp8_256").map_err(device_error)?),
+            stream: device.tile().stream_id(),
             threads: THREADS,
             rows_per_cta: 1,
             lanes: &SUPPORTED_LANES,

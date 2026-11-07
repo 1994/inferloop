@@ -159,8 +159,8 @@ impl<'a> Inputs<'a> {
             rows,
             input: device.upload(values.clone(), &[rows, weight.k])?,
             values,
-            codes: api::zeros::<f8e4m3fn>(&[rows, weight.k]).sync_on(&device.stream)?,
-            scales: api::zeros::<f32>(&[rows, 1]).sync_on(&device.stream)?,
+            codes: api::zeros::<f8e4m3fn>(&[rows, weight.k]).sync_on(device.stream())?,
+            scales: api::zeros::<f32>(&[rows, 1]).sync_on(device.stream())?,
             vendor: Support::new_with(device, true),
         })
     }
@@ -361,8 +361,8 @@ fn compare_case(
     independent: bool,
 ) -> TestResult {
     let mut inputs = Inputs::new(device, weight, rows)?;
-    let mut native = api::zeros::<f32>(&[rows, weight.n]).sync_on(&device.stream)?;
-    let mut vendor = api::zeros::<f32>(&[rows, weight.n]).sync_on(&device.stream)?;
+    let mut native = api::zeros::<f32>(&[rows, weight.n]).sync_on(device.stream())?;
+    let mut vendor = api::zeros::<f32>(&[rows, weight.n]).sync_on(device.stream())?;
     assert!(
         inputs.vendor.is_enabled(),
         "FP8 Lt scalar/F32 API unavailable"
@@ -377,7 +377,7 @@ fn compare_case(
     );
 
     let quantizer = device.tile().capture(|scope| inputs.quantize(scope))?;
-    quantizer.launch().sync_on(&device.stream)?;
+    quantizer.launch().sync_on(device.stream())?;
     let native_raw = device
         .tile()
         .capture(|scope| inputs.matmul(scope, &mut native, false))?;
@@ -393,21 +393,21 @@ fn compare_case(
         inputs.matmul(scope, &mut vendor, true)
     })?;
     // The inputs own the context, descriptors, codes and scales until all graphs below are dropped.
-    native_raw.launch().sync_on(&device.stream)?;
-    vendor_raw.launch().sync_on(&device.stream)?;
+    native_raw.launch().sync_on(device.stream())?;
+    vendor_raw.launch().sync_on(device.stream())?;
     let native = Arc::new(native);
     let vendor = Arc::new(vendor);
-    let native_values = (&native).to_host_vec().sync_on(&device.stream)?;
-    let vendor_values = (&vendor).to_host_vec().sync_on(&device.stream)?;
+    let native_values = (&native).to_host_vec().sync_on(device.stream())?;
+    let vendor_values = (&vendor).to_host_vec().sync_on(device.stream())?;
     let same_quantized = compare_outputs(&native_values, &vendor_values)?;
     // Snapshot FP8 codes outside timed scopes; the original owned tensor remains live
     // for subsequent graph replays. F32 scale readback borrows its owner directly.
     let encoded = inputs
         .codes
         .dup()
-        .sync_on(&device.stream)?
+        .sync_on(device.stream())?
         .to_host_vec()
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
     let scales = device.read_borrowed(&inputs.scales)?;
     validate_quantizer(&inputs, &encoded, &scales, independent);
     let cpu = oracle(
@@ -418,10 +418,10 @@ fn compare_case(
         &vendor_values,
         independent,
     );
-    native_total.launch().sync_on(&device.stream)?;
-    vendor_total.launch().sync_on(&device.stream)?;
-    let native_full = (&native).to_host_vec().sync_on(&device.stream)?;
-    let vendor_full = (&vendor).to_host_vec().sync_on(&device.stream)?;
+    native_total.launch().sync_on(device.stream())?;
+    vendor_total.launch().sync_on(device.stream())?;
+    let native_full = (&native).to_host_vec().sync_on(device.stream())?;
+    let vendor_full = (&vendor).to_host_vec().sync_on(device.stream())?;
     let full_quantization = compare_outputs(&native_full, &vendor_full)?;
     let native_quantizer_stable = native_values
         .iter()
@@ -587,8 +587,8 @@ fn vendor_fp8_verified_chooser_checkpoint_comparison() -> TestResult {
                 true,
                 &session,
             );
-            let baseline = api::zeros::<f32>(&[rows, weight.n]).sync_on(&device.stream)?;
-            let output = api::zeros::<f32>(&[rows, weight.n]).sync_on(&device.stream)?;
+            let baseline = api::zeros::<f32>(&[rows, weight.n]).sync_on(device.stream())?;
+            let output = api::zeros::<f32>(&[rows, weight.n]).sync_on(device.stream())?;
             let base = device.tile().capture(|scope| {
                 inputs.quantize(scope)?;
                 Choice::baseline(rows).record(
@@ -607,8 +607,8 @@ fn vendor_fp8_verified_chooser_checkpoint_comparison() -> TestResult {
                     inputs.factors()?,
                 )
             })?;
-            base.launch().sync_on(&device.stream)?;
-            candidate.launch().sync_on(&device.stream)?;
+            base.launch().sync_on(device.stream())?;
+            candidate.launch().sync_on(device.stream())?;
             let expected = device.read_borrowed(&baseline)?;
             let actual = device.read_borrowed(&output)?;
             assert!(
@@ -630,10 +630,10 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
     let device = device(true)?;
     let weight = Weight::synthetic(&device, 128, 512)?;
     let mut inputs = Inputs::new(&device, &weight, 128)?;
-    let mut native = api::zeros::<f32>(&[128, 128]).sync_on(&device.stream)?;
-    let restored_output = api::zeros::<f32>(&[128, 128]).sync_on(&device.stream)?;
+    let mut native = api::zeros::<f32>(&[128, 128]).sync_on(device.stream())?;
+    let restored_output = api::zeros::<f32>(&[128, 128]).sync_on(device.stream())?;
     let quantizer = device.tile().capture(|scope| inputs.quantize(scope))?;
-    quantizer.launch().sync_on(&device.stream)?;
+    quantizer.launch().sync_on(device.stream())?;
     let configs =
         inputs
             .vendor
@@ -692,8 +692,8 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
          {before:?} -> {after:?}"
     );
     // Both graphs are declared after the lifetime owners and are destroyed before them.
-    native_graph.launch().sync_on(&device.stream)?;
-    restored_graph.launch().sync_on(&device.stream)?;
+    native_graph.launch().sync_on(device.stream())?;
+    restored_graph.launch().sync_on(device.stream())?;
     let native_values = device.read_borrowed(&native)?;
     let restored_values = device.read_borrowed(&restored_output)?;
     let comparison = compare_outputs(&native_values, &restored_values)?;
@@ -702,9 +702,9 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
     let codes = inputs
         .codes
         .dup()
-        .sync_on(&device.stream)?
+        .sync_on(device.stream())?
         .to_host_vec()
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
     let scales = device.read_borrowed(&inputs.scales)?;
     validate_quantizer(&inputs, &codes, &scales, true);
     let cpu = oracle(
@@ -751,17 +751,17 @@ fn measure_graphs(
             };
             for (scope, left, right) in graphs {
                 let (base, candidate) = do_bench_paired(
-                    &device.stream,
+                    device.stream(),
                     &options,
                     |_| {
                         left.launch()
-                            .sync_on(&device.stream)
+                            .sync_on(device.stream())
                             .map_err(|e| tensor_error(&e.to_string()))
                     },
                     |_| {
                         right
                             .launch()
-                            .sync_on(&device.stream)
+                            .sync_on(device.stream())
                             .map_err(|e| tensor_error(&e.to_string()))
                     },
                 )?;
@@ -801,17 +801,17 @@ fn measure_choice(
             clear_l2,
         };
         let (a, b) = do_bench_paired(
-            &device.stream,
+            device.stream(),
             &options,
             |_| {
                 base.launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|error| tensor_error(&error.to_string()))
             },
             |_| {
                 candidate
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|error| tensor_error(&error.to_string()))
             },
         )?;

@@ -159,9 +159,9 @@ fn stacked_verification_matches_split_reference() -> Result<(), Box<dyn Error>> 
             .map(|&p| device.upload(vec![p, 0, p, 0], &[4]))
             .collect::<Result<Vec<_>, _>>()?;
         let blocks = kv_heads * parts;
-        let mut numerator = api::zeros::<f32>(&[blocks, 32, dim]).sync_on(&device.stream)?;
-        let mut maxima = api::zeros::<f32>(&[blocks, 32]).sync_on(&device.stream)?;
-        let mut sums = api::zeros::<f32>(&[blocks, 32]).sync_on(&device.stream)?;
+        let mut numerator = api::zeros::<f32>(&[blocks, 32, dim]).sync_on(device.stream())?;
+        let mut maxima = api::zeros::<f32>(&[blocks, 32]).sync_on(device.stream())?;
+        let mut sums = api::zeros::<f32>(&[blocks, 32]).sync_on(device.stream())?;
         let views = queries
             .iter()
             .map(|q| q.view(&[kv_heads, heads / kv_heads, dim]))
@@ -189,7 +189,7 @@ fn stacked_verification_matches_split_reference() -> Result<(), Box<dyn Error>> 
             parts.to_string(),
             KV_BLOCK_TOKENS.to_string(),
         ])
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         for (lane, q) in queries.iter().enumerate() {
             let actual = kernels::merge_gqa(
                 api::zeros::<f32>(&[heads, dim]).partition([1, dim]),
@@ -206,9 +206,9 @@ fn stacked_verification_matches_split_reference() -> Result<(), Box<dyn Error>> 
             ])
             .first()
             .unpartition()
-            .sync_on(&device.stream)?
+            .sync_on(device.stream())?
             .to_host_vec()
-            .sync_on(&device.stream)?;
+            .sync_on(device.stream())?;
             let expected = run(&device, q, &k8, &v8, positions[lane], window, 1)?;
             for (index, (a, b)) in actual.iter().zip(&expected).enumerate() {
                 // BF16 query and probability products against the F32 per-head reference.
@@ -235,9 +235,9 @@ fn run<E: DType>(
     let dim = usize::try_from(q.shape()[1])?;
     let kv_heads = usize::try_from(k.shape()[0])?;
     let meta = device.upload(vec![position, 0, position, 0], &[4])?;
-    let mut numerator = api::zeros::<f32>(&[heads * parts, dim]).sync_on(&device.stream)?;
-    let mut maxima = api::zeros::<f32>(&[heads * parts, 1]).sync_on(&device.stream)?;
-    let mut sums = api::zeros::<f32>(&[heads * parts, 1]).sync_on(&device.stream)?;
+    let mut numerator = api::zeros::<f32>(&[heads * parts, dim]).sync_on(device.stream())?;
+    let mut maxima = api::zeros::<f32>(&[heads * parts, 1]).sync_on(device.stream())?;
+    let mut sums = api::zeros::<f32>(&[heads * parts, 1]).sync_on(device.stream())?;
     // Step 1 of the KV refactor: every KV read resolves its block through this table.
     let table = block_table(device, usize::try_from(k.shape()[1])?)?;
     kernels::partial(
@@ -260,7 +260,7 @@ fn run<E: DType>(
         parts.to_string(),
         KV_BLOCK_TOKENS.to_string(),
     ])
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     let output = kernels::merge(
         api::zeros::<f32>(&[heads, dim]).partition([1, dim]),
         &numerator.view(&[heads, parts, dim])?,
@@ -270,8 +270,8 @@ fn run<E: DType>(
     .generics(vec![dim.to_string(), parts.to_string()])
     .first()
     .unpartition()
-    .sync_on(&device.stream)?;
-    Ok(output.to_host_vec().sync_on(&device.stream)?)
+    .sync_on(device.stream())?;
+    Ok(output.to_host_vec().sync_on(device.stream())?)
 }
 
 #[test]
@@ -321,7 +321,7 @@ fn bench_case(
         )?;
         let position = i32::try_from(capacity - 1)?;
         let meta = device.upload(vec![position, 0, position, 0], &[4])?;
-        let mut output = api::zeros::<f32>(&[heads, dim]).sync_on(&device.stream)?;
+        let mut output = zeros(device, &[heads, dim])?;
         let table = block_table(device, capacity)?;
         let baseline = device.tile().capture(|scope| {
             cutile(scope)?.record(
@@ -346,9 +346,9 @@ fn bench_case(
             Ok(())
         })?;
         for parts in [2, 8, 16] {
-            let mut numerator = api::zeros::<f32>(&[heads * parts, dim]).sync_on(&device.stream)?;
-            let mut maxima = api::zeros::<f32>(&[heads * parts, 1]).sync_on(&device.stream)?;
-            let mut sums = api::zeros::<f32>(&[heads * parts, 1]).sync_on(&device.stream)?;
+            let mut numerator = zeros(device, &[heads * parts, dim])?;
+            let mut maxima = zeros(device, &[heads * parts, 1])?;
+            let mut sums = zeros(device, &[heads * parts, 1])?;
             let candidate = device.tile().capture(|scope| {
                 cutile(scope)?.record(
                     kernels::partial(
@@ -384,18 +384,18 @@ fn bench_case(
                 Ok(())
             })?;
             let (old, new) = do_bench_paired(
-                &device.stream,
+                device.stream(),
                 options,
                 |_| {
                     baseline
                         .launch()
-                        .sync_on(&device.stream)
+                        .sync_on(device.stream())
                         .map_err(|e| tensor_error(&e.to_string()))
                 },
                 |_| {
                     candidate
                         .launch()
-                        .sync_on(&device.stream)
+                        .sync_on(device.stream())
                         .map_err(|e| tensor_error(&e.to_string()))
                 },
             )?;
@@ -466,4 +466,9 @@ fn grouped_decode_helpers_compile_without_a_device() -> Result<(), Box<dyn Error
             .compile()?;
     }
     Ok(())
+}
+
+/// A zeroed F32 tensor of `shape`, ready on the device's stream.
+fn zeros(device: &CudaDevice, shape: &[usize]) -> Result<Tensor<f32>, Box<dyn Error>> {
+    Ok(api::zeros::<f32>(shape).sync_on(device.stream())?)
 }

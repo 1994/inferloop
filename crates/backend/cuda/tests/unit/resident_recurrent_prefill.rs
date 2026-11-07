@@ -142,10 +142,10 @@ fn check_case(
     let mut single: Option<(Vec<f32>, Vec<f32>)> = None;
     for split in [1_usize, 4] {
         let block = dim / split;
-        let mut state = api::zeros::<f32>(&[vh, dim, dim]).sync_on(&device.stream)?;
+        let mut state = api::zeros::<f32>(&[vh, dim, dim]).sync_on(device.stream())?;
         let src = device.upload(initial.clone(), &[vh, dim, dim])?;
-        api::memcpy(&mut state, &src).sync_on(&device.stream)?;
-        let mut output = api::zeros::<f32>(&[vh, lanes, dim]).sync_on(&device.stream)?;
+        api::memcpy(&mut state, &src).sync_on(device.stream())?;
+        let mut output = api::zeros::<f32>(&[vh, lanes, dim]).sync_on(device.stream())?;
         kernels::delta(
             (&mut state).partition([1, dim, block]),
             (&mut output).partition([1, lanes, block]),
@@ -163,9 +163,9 @@ fn check_case(
             lanes.to_string(),
             block.to_string(),
         ])
-        .sync_on(&device.stream)?;
-        let actual_state = state.to_host_vec().sync_on(&device.stream)?;
-        let actual_out = output.to_host_vec().sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
+        let actual_state = state.to_host_vec().sync_on(device.stream())?;
+        let actual_out = output.to_host_vec().sync_on(device.stream())?;
         for (actual, reference) in [(&actual_state, &expected), (&actual_out, &outputs)] {
             for (a, b) in actual.iter().zip(reference) {
                 assert!(
@@ -229,10 +229,10 @@ fn per_lane_delta_matches_independent_recurrence_at_model_geometry() -> Result<(
     // blocks. Both must agree with the reference, and the split must not move the answer.
     for split in [1_usize, 4] {
         let block = dim / split;
-        let mut state = api::zeros::<f32>(&[vh, dim, dim]).sync_on(&device.stream)?;
+        let mut state = api::zeros::<f32>(&[vh, dim, dim]).sync_on(device.stream())?;
         let src = device.upload(initial.clone(), &[vh, dim, dim])?;
-        api::memcpy(&mut state, &src).sync_on(&device.stream)?;
-        let output = api::zeros::<f32>(&[vh, dim]).sync_on(&device.stream)?;
+        api::memcpy(&mut state, &src).sync_on(device.stream())?;
+        let output = api::zeros::<f32>(&[vh, dim]).sync_on(device.stream())?;
         let mut output = output.reshape(&[vh, 1, dim])?;
         recurrent_delta(
             (&mut output).partition([1, 1, block]),
@@ -250,9 +250,9 @@ fn per_lane_delta_matches_independent_recurrence_at_model_geometry() -> Result<(
             dim.to_string(),
             block.to_string(),
         ])
-        .sync_on(&device.stream)?;
-        let actual_state = state.to_host_vec().sync_on(&device.stream)?;
-        let actual_out = output.to_host_vec().sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
+        let actual_state = state.to_host_vec().sync_on(device.stream())?;
+        let actual_out = output.to_host_vec().sync_on(device.stream())?;
         let mut worst_state = 0.0_f64;
         for (a, b) in actual_state.iter().zip(&expected) {
             worst_state = worst_state.max((f64::from(*a) - b).abs());
@@ -316,11 +316,11 @@ fn chunk_delta_transpose_permutes_head_and_lane() -> Result<(), Box<dyn Error>> 
         }
     }
     let input = device.upload(scratch, &[value_heads, lanes, dim])?;
-    let mut output = api::zeros::<f32>(&[lanes, value_heads, dim]).sync_on(&device.stream)?;
+    let mut output = api::zeros::<f32>(&[lanes, value_heads, dim]).sync_on(device.stream())?;
     kernels::transpose((&mut output).partition([1, 1, dim]), &input)
         .generics(vec![dim.to_string()])
-        .sync_on(&device.stream)?;
-    let actual = output.to_host_vec().sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
+    let actual = output.to_host_vec().sync_on(device.stream())?;
     for lane in 0..lanes {
         for head in 0..value_heads {
             for d in 0..dim {
@@ -354,10 +354,10 @@ fn recurrence_gap(
     let bias = values(vh, 5);
     let initial = values(vh * dim * dim, 23);
 
-    let mut state_c = api::zeros::<f32>(&[vh, dim, dim]).sync_on(&device.stream)?;
+    let mut state_c = api::zeros::<f32>(&[vh, dim, dim]).sync_on(device.stream())?;
     let src = device.upload(initial, &[vh, dim, dim])?;
-    api::memcpy(&mut state_c, &src).sync_on(&device.stream)?;
-    let mut out_c = api::zeros::<f32>(&[vh, lanes, dim]).sync_on(&device.stream)?;
+    api::memcpy(&mut state_c, &src).sync_on(device.stream())?;
+    let mut out_c = api::zeros::<f32>(&[vh, lanes, dim]).sync_on(device.stream())?;
     let qkv_c = device.upload(qkv.clone(), &[lanes, heads, dim])?;
     let beta_c = device.upload(beta.clone(), &[lanes, vh])?;
     let alpha_c = device.upload(alpha.clone(), &[lanes, vh])?;
@@ -381,10 +381,10 @@ fn recurrence_gap(
         lanes.to_string(),
         dim.to_string(),
     ])
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
 
-    let mut state_l = api::zeros::<f32>(&[vh, dim, dim]).sync_on(&device.stream)?;
-    api::memcpy(&mut state_l, &src).sync_on(&device.stream)?;
+    let mut state_l = api::zeros::<f32>(&[vh, dim, dim]).sync_on(device.stream())?;
+    api::memcpy(&mut state_l, &src).sync_on(device.stream())?;
     let mut expected_out = vec![0.0_f32; vh * lanes * dim];
     let lane_metadata = device.upload(vec![0, 0, 0, 0], &[4])?;
     for lane in 0..count {
@@ -392,7 +392,7 @@ fn recurrence_gap(
         let qkv_one = device.upload(row.to_vec(), &[heads * dim])?;
         let beta_one = device.upload(beta[lane * vh..(lane + 1) * vh].to_vec(), &[vh])?;
         let alpha_one = device.upload(alpha[lane * vh..(lane + 1) * vh].to_vec(), &[vh])?;
-        let out_one = api::zeros::<f32>(&[vh, dim]).sync_on(&device.stream)?;
+        let out_one = api::zeros::<f32>(&[vh, dim]).sync_on(device.stream())?;
         let mut out_one = out_one.reshape(&[vh, 1, dim])?;
         recurrent_delta(
             (&mut out_one).partition([1, 1, dim]),
@@ -410,22 +410,22 @@ fn recurrence_gap(
             dim.to_string(),
             dim.to_string(),
         ])
-        .sync_on(&device.stream)?;
-        let lane_out = out_one.to_host_vec().sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
+        let lane_out = out_one.to_host_vec().sync_on(device.stream())?;
         for head in 0..vh {
             for d in 0..dim {
                 expected_out[(head * lanes + lane) * dim + d] = lane_out[head * dim + d];
             }
         }
     }
-    let chunk_out = out_c.to_host_vec().sync_on(&device.stream)?;
+    let chunk_out = out_c.to_host_vec().sync_on(device.stream())?;
     let out_gap = chunk_out
         .iter()
         .zip(&expected_out)
         .map(|(a, b)| (a - b).abs())
         .fold(0.0_f32, f32::max);
-    let chunk_state = state_c.to_host_vec().sync_on(&device.stream)?;
-    let lane_state = state_l.to_host_vec().sync_on(&device.stream)?;
+    let chunk_state = state_c.to_host_vec().sync_on(device.stream())?;
+    let lane_state = state_l.to_host_vec().sync_on(device.stream())?;
     let state_gap = chunk_state
         .iter()
         .zip(&lane_state)
@@ -586,10 +586,10 @@ fn check_wy_fixture(
     let mut single: Option<(Vec<f32>, Vec<f32>)> = None;
     for split in [1_usize, 4] {
         let block = dim / split;
-        let mut state = api::zeros::<f32>(&[vh, dim, dim]).sync_on(&device.stream)?;
+        let mut state = api::zeros::<f32>(&[vh, dim, dim]).sync_on(device.stream())?;
         let src = device.upload(initial.clone(), &[vh, dim, dim])?;
-        api::memcpy(&mut state, &src).sync_on(&device.stream)?;
-        let mut output = api::zeros::<f32>(&[vh, lanes, dim]).sync_on(&device.stream)?;
+        api::memcpy(&mut state, &src).sync_on(device.stream())?;
+        let mut output = api::zeros::<f32>(&[vh, lanes, dim]).sync_on(device.stream())?;
         kernels::delta_wy(
             (&mut state).partition([1, dim, block]),
             (&mut output).partition([1, lanes, block]),
@@ -607,9 +607,9 @@ fn check_wy_fixture(
             lanes.to_string(),
             block.to_string(),
         ])
-        .sync_on(&device.stream)?;
-        let actual_state = state.to_host_vec().sync_on(&device.stream)?;
-        let actual_out = output.to_host_vec().sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
+        let actual_state = state.to_host_vec().sync_on(device.stream())?;
+        let actual_out = output.to_host_vec().sync_on(device.stream())?;
         for (label, actual, reference) in [
             ("state", &actual_state, &expected),
             ("output", &actual_out, &outputs),
@@ -799,9 +799,9 @@ fn check_ordered_fixture(
     let a_log = device.upload(a_log, &[vh])?;
     let bias = device.upload(bias, &[vh])?;
     let src = device.upload(initial, &[vh, dim, dim])?;
-    let mut state = api::zeros::<f32>(&[vh, dim, dim]).sync_on(&device.stream)?;
-    api::memcpy(&mut state, &src).sync_on(&device.stream)?;
-    let output = api::zeros::<f32>(&[vh, lanes, dim]).sync_on(&device.stream)?;
+    let mut state = api::zeros::<f32>(&[vh, dim, dim]).sync_on(device.stream())?;
+    api::memcpy(&mut state, &src).sync_on(device.stream())?;
+    let output = api::zeros::<f32>(&[vh, lanes, dim]).sync_on(device.stream())?;
     let metadata = device
         .runtime()
         .upload(vec![0, i32::try_from(count)?, offset, 0])?;
@@ -823,13 +823,13 @@ fn check_ordered_fixture(
         )?;
         Ok(())
     })?;
-    graph.launch().sync_on(&device.stream)?;
-    let actual_state = state.to_host_vec().sync_on(&device.stream)?;
-    let actual_output = output.to_host_vec().sync_on(&device.stream)?;
+    graph.launch().sync_on(device.stream())?;
+    let actual_state = state.to_host_vec().sync_on(device.stream())?;
+    let actual_output = output.to_host_vec().sync_on(device.stream())?;
     compare_ordered_f64("state", &actual_state, &expected, geometry, count, offset);
     compare_ordered_f64("output", &actual_output, &outputs, geometry, count, offset);
-    let mut scalar_state = api::zeros::<f32>(&[vh, dim, dim]).sync_on(&device.stream)?;
-    api::memcpy(&mut scalar_state, &src).sync_on(&device.stream)?;
+    let mut scalar_state = api::zeros::<f32>(&[vh, dim, dim]).sync_on(device.stream())?;
+    api::memcpy(&mut scalar_state, &src).sync_on(device.stream())?;
     let mut scalar_output = vec![0.0_f32; vh * lanes * dim];
     let cols = (2 * kh + vh) * dim;
     for lane in 0..count {
@@ -838,7 +838,7 @@ fn check_ordered_fixture(
         let alpha_one = device.upload(alpha[lane * vh..(lane + 1) * vh].to_vec(), &[vh])?;
         let metadata = device.upload(vec![0, 0, i32::try_from(lane)? + offset, 0], &[4])?;
         let mut output = api::zeros::<f32>(&[vh, dim])
-            .sync_on(&device.stream)?
+            .sync_on(device.stream())?
             .reshape(&[vh, 1, dim])?;
         recurrent_delta(
             (&mut output).partition([1, 1, dim]),
@@ -856,14 +856,14 @@ fn check_ordered_fixture(
             dim.to_string(),
             dim.to_string(),
         ])
-        .sync_on(&device.stream)?;
-        let row = output.to_host_vec().sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
+        let row = output.to_host_vec().sync_on(device.stream())?;
         for head in 0..vh {
             scalar_output[(head * lanes + lane) * dim..][..dim]
                 .copy_from_slice(&row[head * dim..][..dim]);
         }
     }
-    let scalar_state = scalar_state.to_host_vec().sync_on(&device.stream)?;
+    let scalar_state = scalar_state.to_host_vec().sync_on(device.stream())?;
     for (label, actual, reference) in [
         ("state", &actual_state, &scalar_state),
         ("output", &actual_output, &scalar_output),

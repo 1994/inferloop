@@ -3,7 +3,7 @@ use super::{
     CudaExecutor,
     profiling::{PhaseScope, StepProfile},
 };
-use crate::device::{CudaDevice, device_error};
+use crate::device::CudaDevice;
 use infer_core::Result;
 use infer_ir::{ExecutionTask, TaskOutput};
 use std::{
@@ -81,11 +81,7 @@ impl Submission {
         }
     }
     pub(super) fn poll(&mut self, waker: &Waker) -> Result<Option<Completed>> {
-        self.device
-            .stream
-            .device()
-            .bind_to_thread()
-            .map_err(device_error)?;
+        self.device.tile().bind_to_thread()?;
         let _phases = PhaseScope::bind(self.phases.clone());
         match self.future.as_mut().poll(&mut Context::from_waker(waker)) {
             Poll::Ready(completed) => Ok(Some(completed)),

@@ -166,7 +166,7 @@ unsafe impl Sync for Context {}
 pub fn context_for(device: &CudaDevice) -> Option<Arc<Context>> {
     type Cache = Mutex<HashMap<(usize, usize), Arc<Context>>>;
     static CONTEXTS: OnceLock<Cache> = OnceLock::new();
-    let key = (device.ordinal(), device.stream.cu_stream() as usize);
+    let key = (device.ordinal(), device.tile().stream_id());
     let cache = CONTEXTS.get_or_init(|| Mutex::new(HashMap::new()));
     let existing = cache.lock().ok()?.get(&key).cloned();
     if let Some(existing) = existing {
@@ -196,7 +196,7 @@ fn destroy(api: &Api, handle: Handle) {
 fn build(device: &CudaDevice) -> Option<Context> {
     let api = api()?;
     // cuBLAS creates its handle on the device current for this thread, so bind before creating it.
-    device.stream.device().bind_to_thread().ok()?;
+    device.tile().bind_to_thread().ok()?;
     let mut handle: Handle = null_mut();
     // SAFETY: the handle is created here and owned by the returned context.
     let created = unsafe { (api.create)(&raw mut handle) };
@@ -210,7 +210,7 @@ fn build(device: &CudaDevice) -> Option<Context> {
         return None;
     }
     // SAFETY: the handle is live and the stream belongs to this device.
-    let bound = unsafe { (api.set_stream)(handle, device.stream.cu_stream().cast()) };
+    let bound = unsafe { (api.set_stream)(handle, device.tile().raw_stream()) };
     if bound != 0 {
         destroy(api, handle);
         return None;
@@ -223,7 +223,7 @@ fn build(device: &CudaDevice) -> Option<Context> {
     };
     Some(Context {
         ordinal: device.ordinal(),
-        stream: device.stream.cu_stream().cast(),
+        stream: device.tile().raw_stream(),
         handle,
         alpha,
         beta,

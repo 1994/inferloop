@@ -12,10 +12,10 @@ fn metadata_ordering_and_overhead() -> Result<()> {
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
     let mut input = api::zeros::<i32>(&[4])
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     let mut output = api::zeros::<i32>(&[4])
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     let graph = device.tile().capture(|scope| {
         cutile(scope)?.record(api::memcpy(&mut output, &input))?;
@@ -33,7 +33,7 @@ fn metadata_ordering_and_overhead() -> Result<()> {
         let actual = graph
             .launch()
             .then(|()| (&output).to_host_vec())
-            .sync_on(&device.stream)
+            .sync_on(device.stream())
             .map_err(device_error)?;
         assert_eq!(actual, values);
     }
@@ -56,7 +56,7 @@ fn metadata_ordering_and_overhead() -> Result<()> {
                 }
                 graph
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(device_error)?;
             }
             let elapsed = start.elapsed().as_secs_f64() * 1e6 / 200.0;
@@ -67,7 +67,7 @@ fn metadata_ordering_and_overhead() -> Result<()> {
             }
             let actual = (&output)
                 .to_host_vec()
-                .sync_on(&device.stream)
+                .sync_on(device.stream())
                 .map_err(device_error)?;
             assert_eq!(actual, [199, 200, 199, 1]);
         }
@@ -89,10 +89,10 @@ fn rotary_metadata_preserves_independent_axes() -> Result<()> {
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
     let input = api::zeros::<i32>(&[8])
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     let mut output = api::zeros::<i32>(&[8])
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     let graph = device.tile().capture(|scope| {
         cutile(scope)?.record(api::memcpy(&mut output, &input))?;
@@ -112,7 +112,7 @@ fn rotary_metadata_preserves_independent_axes() -> Result<()> {
         let actual = graph
             .launch()
             .then(|()| (&output).to_host_vec())
-            .sync_on(&device.stream)
+            .sync_on(device.stream())
             .map_err(device_error)?;
         assert_eq!(&actual[..4], &control);
         assert_eq!(actual[4], control[0]);

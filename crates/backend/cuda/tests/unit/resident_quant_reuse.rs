@@ -256,9 +256,9 @@ struct Case {
 impl Case {
     fn new(device: &CudaDevice, pair: Arc<Pair>, rows: usize) -> TestResult<Self> {
         let mut workspace = Workspace::new(device, &pair.graph, &pair.weights, &[rows])?;
-        let input = api::zeros::<f32>(&[rows, pair.columns]).sync_on(&device.stream)?;
-        let mut gate = api::zeros::<f32>(&[rows, pair.outputs]).sync_on(&device.stream)?;
-        let mut up = api::zeros::<f32>(&[rows, pair.outputs]).sync_on(&device.stream)?;
+        let input = api::zeros::<f32>(&[rows, pair.columns]).sync_on(device.stream())?;
+        let mut gate = api::zeros::<f32>(&[rows, pair.outputs]).sync_on(device.stream())?;
+        let mut up = api::zeros::<f32>(&[rows, pair.outputs]).sync_on(device.stream())?;
         let plan = QuantPairPlan::new(&pair.graph, &pair.weights);
         workspace.set_quant_reuse_enabled(false);
         let separate = capture_pair(
@@ -320,7 +320,7 @@ impl Case {
     fn update_input(&mut self, device: &CudaDevice, fixture: &str) -> TestResult<Vec<f32>> {
         let values = fixture_values(self.rows, self.pair.columns, fixture)?;
         let uploaded = device.upload(values.clone(), &[self.rows, self.pair.columns])?;
-        api::memcpy(&mut self.input, &uploaded).sync_on(&device.stream)?;
+        api::memcpy(&mut self.input, &uploaded).sync_on(device.stream())?;
         Ok(values)
     }
 
@@ -380,10 +380,10 @@ impl Case {
                 } else {
                     (&self.separate, &self.shared)
                 };
-                first.launch().sync_on(&device.stream)?;
+                first.launch().sync_on(device.stream())?;
                 let expected = self.snapshot(device)?;
                 check_quantization(&expected, &reference)?;
-                second.launch().sync_on(&device.stream)?;
+                second.launch().sync_on(device.stream())?;
                 let actual = self.snapshot(device)?;
                 check_quantization(&actual, &reference)?;
                 check_outputs(&expected.gate, &actual.gate, "gate")?;
@@ -694,18 +694,18 @@ fn measure_case(
         (&case.separate, &case.shared)
     };
     let (a, b) = do_bench_paired(
-        &device.stream,
+        device.stream(),
         &options,
         |_| {
             first
                 .launch()
-                .sync_on(&device.stream)
+                .sync_on(device.stream())
                 .map_err(|e| tensor_error(&e.to_string()))
         },
         |_| {
             second
                 .launch()
-                .sync_on(&device.stream)
+                .sync_on(device.stream())
                 .map_err(|e| tensor_error(&e.to_string()))
         },
     )?;

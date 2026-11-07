@@ -35,10 +35,10 @@ fn gated_norm_occupancy_bits_and_cost() -> Result<()> {
         let z = device.upload(z, &[rows, 128])?;
         let w = device.upload(w, &[128])?;
         let mut out = api::zeros::<f32>(&[rows, 128])
-            .sync_on(&device.stream)
+            .sync_on(device.stream())
             .map_err(device_error)?;
         let baseline = capture(&device, &x, &z, &w, &mut out, CompileOptions::default())?;
-        let run = |g: &Graph| g.launch().sync_on(&device.stream).map_err(device_error);
+        let run = |g: &Graph| g.launch().sync_on(device.stream()).map_err(device_error);
         run(&baseline)?;
         let expected = device.read_borrowed(&out)?;
         assert!(expected.iter().all(|v| v.is_finite()));
@@ -117,10 +117,10 @@ fn cost(
             };
             let run = |g: &Graph| {
                 g.launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|e| tensor_error(&e.to_string()))
             };
-            let (a, b) = do_bench_paired(&device.stream, &options, |_| run(a), |_| run(b))
+            let (a, b) = do_bench_paired(device.stream(), &options, |_| run(a), |_| run(b))
                 .map_err(device_error)?;
             let (a, b) = if reverse { (b, a) } else { (a, b) };
             println!(

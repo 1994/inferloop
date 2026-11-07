@@ -119,7 +119,7 @@ impl Fixture {
             &self.bias,
         )
         .generics(vec![VH.to_string()])
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         let mut expected_parameters = values(VH, 3);
         expected_parameters.extend(values(VH, 5));
         assert_eq!(device.read_borrowed(&self.parameters)?, expected_parameters);
@@ -149,8 +149,8 @@ impl Fixture {
             )?;
             Ok(())
         })?;
-        original.launch().sync_on(&device.stream)?;
-        candidate.launch().sync_on(&device.stream)?;
+        original.launch().sync_on(device.stream())?;
+        candidate.launch().sync_on(device.stream())?;
         let actual = device.read_borrowed(&self.candidate)?;
         for (lane, reference) in self.original.iter().enumerate() {
             let expected = device.read_borrowed(reference)?;
@@ -230,7 +230,7 @@ impl Fixture {
             })
             .collect::<infer_core::Result<Vec<_>>>()?;
         let mut candidate = upload(device, initial, &[slots, VH * D, D])?;
-        let mut counts = api::zeros::<i32>(&[slots]).sync_on(&device.stream)?;
+        let mut counts = api::zeros::<i32>(&[slots]).sync_on(device.stream())?;
         for shift in 0..4 {
             let accepted = (0..slots)
                 .map(|slot| i32::try_from((slot + shift) % 4).unwrap())
@@ -259,8 +259,8 @@ impl Fixture {
                 )?;
                 Ok(())
             })?;
-            original_graph.launch().sync_on(&device.stream)?;
-            candidate_graph.launch().sync_on(&device.stream)?;
+            original_graph.launch().sync_on(device.stream())?;
+            candidate_graph.launch().sync_on(device.stream())?;
             let actual = device.read_borrowed(&candidate)?;
             for (slot, state) in original.iter().enumerate() {
                 let expected = device.read_borrowed(state)?;

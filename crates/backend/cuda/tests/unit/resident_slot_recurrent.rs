@@ -256,7 +256,7 @@ fn conv_reference(
             w,
             &metadata[lane],
         )
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         expected_out.push(device.read_borrowed(&out)?);
         if lane + 1 == count {
             expected_state = Some(
@@ -305,7 +305,7 @@ fn delta_reference(
             &metadata[lane],
         )
         .generics(generics.clone())
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         expected_out.push(device.read_borrowed(&out)?);
         if lane + 1 == count {
             expected_state = Some(device.read_borrowed(&state)?);
@@ -361,7 +361,7 @@ fn conv_verify_and_commit_match_sequential_lanes() -> TestResult {
                     &metadata[1],
                     &metadata[2],
                 )
-                .sync_on(&device.stream)?;
+                .sync_on(device.stream())?;
             }
             for (lane, out) in outs.iter().enumerate() {
                 assert_close(
@@ -386,7 +386,7 @@ fn conv_verify_and_commit_match_sequential_lanes() -> TestResult {
                     &metadata[2],
                     i32::try_from(count)?,
                 )
-                .sync_on(&device.stream)?;
+                .sync_on(device.stream())?;
             }
             for (h, expected) in fused_state.iter().zip(&expected_state) {
                 assert_close(
@@ -479,7 +479,7 @@ impl DeltaFixture {
             &metadata[2],
         )
         .generics(self.generics.clone())
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         Ok(())
     }
 
@@ -511,7 +511,7 @@ impl DeltaFixture {
             i32::try_from(count)?,
         )
         .generics(self.generics.clone())
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         Ok(())
     }
 }
@@ -779,11 +779,11 @@ fn wave_perf_pair(
     let launch = |graph: &Graph| {
         graph
             .launch()
-            .sync_on(&device.stream)
+            .sync_on(device.stream())
             .map_err(|e| tensor_error(&e.to_string()))
     };
     let (a, b) = if reverse { (b, a) } else { (a, b) };
-    let (first, second) = do_bench_paired(&device.stream, options, |_| launch(a), |_| launch(b))?;
+    let (first, second) = do_bench_paired(device.stream(), options, |_| launch(a), |_| launch(b))?;
     let pair = (first.times_ms().to_vec(), second.times_ms().to_vec());
     Ok(if reverse { (pair.1, pair.0) } else { pair })
 }
@@ -821,7 +821,7 @@ fn wave_perf_case(
         &metadata,
         &CompileOptions::default(),
     )?;
-    a.launch().sync_on(&device.stream)?;
+    a.launch().sync_on(device.stream())?;
     let expected = output
         .iter()
         .map(|t| device.read_borrowed(t))
@@ -829,7 +829,7 @@ fn wave_perf_case(
     fixture.block = block;
     fixture.generics[3] = block.to_string();
     let b = fixture.graph(device, &state, &mut output, &metadata, compile)?;
-    b.launch().sync_on(&device.stream)?;
+    b.launch().sync_on(device.stream())?;
     for (actual, expected) in output.iter().zip(&expected) {
         assert_close(
             "derived launch performance preflight",

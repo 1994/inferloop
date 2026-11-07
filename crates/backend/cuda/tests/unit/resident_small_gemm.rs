@@ -27,8 +27,8 @@ fn small_mma_matches_f64_oracle() -> Result<(), Box<dyn Error>> {
             .generics(vec![bf16::DTYPE.as_str().into(), k.to_string()])
             .first()
             .unpartition()
-            .sync_on(&device.stream)?;
-        let actual = output.to_host_vec().sync_on(&device.stream)?;
+            .sync_on(device.stream())?;
+        let actual = output.to_host_vec().sync_on(device.stream())?;
         for row in 0..m {
             for col in 0..n {
                 let expected: f64 = (0..k)
@@ -73,7 +73,7 @@ fn small_mma_performance() -> Result<(), Box<dyn Error>> {
         let weights = device.upload(vec![bf16::from_f32(0.25); n * k], &[n, k])?;
         for m in [2, 4, 12] {
             let input = device.upload(vec![0.253_f32; m * k], &[m, k])?;
-            let mut output = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
+            let mut output = api::zeros::<f32>(&[m, n]).sync_on(device.stream())?;
             let old = device.tile().capture(|scope| {
                 cutile(scope)?.record(
                     super::super::linear_batch::batched::dense(
@@ -98,16 +98,16 @@ fn small_mma_performance() -> Result<(), Box<dyn Error>> {
                 Ok(())
             })?;
             let (baseline, candidate) = do_bench_paired(
-                &device.stream,
+                device.stream(),
                 &options,
                 |_| {
                     old.launch()
-                        .sync_on(&device.stream)
+                        .sync_on(device.stream())
                         .map_err(|e| tensor_error(&e.to_string()))
                 },
                 |_| {
                     new.launch()
-                        .sync_on(&device.stream)
+                        .sync_on(device.stream())
                         .map_err(|e| tensor_error(&e.to_string()))
                 },
             )?;
@@ -159,8 +159,8 @@ fn small_scaled_mma_matches_f64_oracle() -> Result<(), Box<dyn Error>> {
         .generics(vec![f8e4m3fn::DTYPE.as_str().into(), k.to_string()])
         .first()
         .unpartition()
-        .sync_on(&device.stream)?;
-        let actual = output.to_host_vec().sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
+        let actual = output.to_host_vec().sync_on(device.stream())?;
         for row in 0..m {
             for col in 0..n {
                 let expected: f64 = (0..k)
@@ -260,7 +260,7 @@ fn checkpoint_small_outputs(
     .generics(vec![bf16::DTYPE.as_str().into(), columns.to_string()])
     .first()
     .unpartition()
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     let one = compensated_gemm::dense(
         api::zeros::<f32>(&[1, outputs]).partition([16, 32]),
         &single,
@@ -269,7 +269,7 @@ fn checkpoint_small_outputs(
     .generics(vec![bf16::DTYPE.as_str().into(), columns.to_string()])
     .first()
     .unpartition()
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     let gemv = dense(
         api::zeros::<f32>(&[outputs]).partition([16]),
         &vector,
@@ -283,7 +283,7 @@ fn checkpoint_small_outputs(
     ])
     .first()
     .unpartition()
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     let multi = device.read_borrowed(&multi)?;
     let single = device.read_borrowed(&one)?;
     let gemv = device.read_borrowed(&gemv)?;
@@ -317,7 +317,7 @@ fn checkpoint_small_outputs_f32(
     ])
     .first()
     .unpartition()
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     let one = super::super::linear_batch::batched::dense(
         api::zeros::<f32>(&[1, outputs]).partition([4, 16]),
         &single,
@@ -331,7 +331,7 @@ fn checkpoint_small_outputs_f32(
     ])
     .first()
     .unpartition()
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     let gemv = dense(
         api::zeros::<f32>(&[outputs]).partition([16]),
         &vector,
@@ -345,7 +345,7 @@ fn checkpoint_small_outputs_f32(
     ])
     .first()
     .unpartition()
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     let multi = device.read_borrowed(&multi)?;
     let single = device.read_borrowed(&one)?;
     let gemv = device.read_borrowed(&gemv)?;
@@ -506,7 +506,7 @@ fn checkpoint_pool_outputs(
         .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(vectors.len(), 4);
     let packed = device.upload(input.to_vec(), &[4, columns])?;
-    let mut result = api::zeros::<f32>(&[4, outputs]).sync_on(&device.stream)?;
+    let mut result = api::zeros::<f32>(&[4, outputs]).sync_on(device.stream())?;
     let graph = device.tile().capture(|scope| {
         cutile(scope)?.record(
             super::super::linear_batch::batched::dense(
@@ -523,7 +523,7 @@ fn checkpoint_pool_outputs(
         )?;
         Ok(())
     })?;
-    graph.launch().sync_on(&device.stream)?;
+    graph.launch().sync_on(device.stream())?;
     let fused = device.read_borrowed(&result)?;
     let mut private = Vec::new();
     for vector in &vectors {
@@ -540,7 +540,7 @@ fn checkpoint_pool_outputs(
         ])
         .first()
         .unpartition()
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         private.extend(device.read_borrowed(&reference)?);
     }
     Ok((fused, private))
@@ -648,7 +648,7 @@ fn checkpoint_pool_small_f32_projection_cost() -> Result<(), Box<dyn Error>> {
         checkpoint_small_input(first.columns, "ordinary"),
         &[4, first.columns],
     )?;
-    let mut output = api::zeros::<f32>(&[4, first.outputs]).sync_on(&device.stream)?;
+    let mut output = api::zeros::<f32>(&[4, first.outputs]).sync_on(device.stream())?;
     let baseline = device.tile().capture(|scope| {
         for weight in &weights {
             cutile(scope)?.record(
@@ -686,18 +686,18 @@ fn checkpoint_pool_small_f32_projection_cost() -> Result<(), Box<dyn Error>> {
             clear_l2: cold,
         };
         let (old, new) = do_bench_paired(
-            &device.stream,
+            device.stream(),
             &options,
             |_| {
                 baseline
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|error| tensor_error(&error.to_string()))
             },
             |_| {
                 candidate
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|error| tensor_error(&error.to_string()))
             },
         )?;

@@ -26,17 +26,17 @@ use std::time::Duration;
 fn conversion_gate(device: &CudaDevice, ptx: &str) -> Result<()> {
     let input = device.upload((u8::MIN..=u8::MAX).collect(), &[256])?;
     let mut output = api::zeros::<f32>(&[256])
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     let module = device
-        .stream
+        .stream()
         .device()
         .load_module_from_ptx_src(ptx)
         .map_err(device_error)?;
     let function = module
         .load_function("fp8_conversion_all_codes")
         .map_err(device_error)?;
-    let ctx = ExecutionContext::new(device.stream.clone());
+    let ctx = ExecutionContext::new(device.stream().clone());
     KernelInputStored::retain(&&*input, &ctx).map_err(device_error)?;
     KernelOutputStored::retain(&(&mut output).partition([256]), &ctx).map_err(device_error)?;
     let mut a = input.device_pointer().cu_deviceptr();
@@ -51,13 +51,13 @@ fn conversion_gate(device: &CudaDevice, ptx: &str) -> Result<()> {
             (1, 1, 1),
             (256, 1, 1),
             0,
-            device.stream.cu_stream(),
+            device.stream().cu_stream(),
             &mut args,
         )
     }
     .map_err(device_error)?;
     // SAFETY: retained allocations/module stay live until completion on their owning stream.
-    unsafe { device.stream.synchronize() }.map_err(device_error)?;
+    unsafe { device.stream().synchronize() }.map_err(device_error)?;
     drop(ctx);
     let actual = device.read_borrowed(&output)?;
     for (i, value) in actual.iter().enumerate() {
@@ -139,11 +139,11 @@ fn fp8_hardware_complete_pipeline_cost() -> Result<()> {
                     let run = |graph: &Graph| {
                         graph
                             .launch()
-                            .sync_on(&device.stream)
+                            .sync_on(device.stream())
                             .map_err(|e| tensor_error(&e.to_string()))
                     };
                     let (a, b) =
-                        do_bench_paired(&device.stream, &options, |_| run(left), |_| run(right))
+                        do_bench_paired(device.stream(), &options, |_| run(left), |_| run(right))
                             .map_err(device_error)?;
                     let (a, b) = if reverse { (b, a) } else { (a, b) };
                     println!(

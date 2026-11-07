@@ -77,8 +77,8 @@ fn nvfp4_mma_matches_independent_block_quantization() -> Result<(), Box<dyn StdE
         let x = device.upload(input.clone(), &[m, k])?;
         let w = device.upload(packed, &[n, k / 2])?;
         let s = device.upload(scales, &[n, k / 16])?;
-        let mut quantized_input = api::zeros::<f4e2m1fnx2>(&[m, k / 2]).sync_on(&device.stream)?;
-        let mut input_scales = api::zeros::<f8e4m3fn>(&[m, k / 16]).sync_on(&device.stream)?;
+        let mut quantized_input = api::zeros::<f4e2m1fnx2>(&[m, k / 2]).sync_on(device.stream())?;
+        let mut input_scales = api::zeros::<f8e4m3fn>(&[m, k / 16]).sync_on(device.stream())?;
         kernels::quantize(
             (&mut quantized_input).partition([1, 256]),
             (&mut input_scales).partition([1, 32]),
@@ -86,7 +86,7 @@ fn nvfp4_mma_matches_independent_block_quantization() -> Result<(), Box<dyn StdE
             global,
         )
         .generics(vec![k.to_string()])
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         let mut quantized = input.clone();
         for values in quantized.as_chunks_mut::<16>().0 {
             let maximum = values.iter().copied().map(f32::abs).fold(0.0, f32::max);
@@ -116,7 +116,7 @@ fn nvfp4_mma_matches_independent_block_quantization() -> Result<(), Box<dyn StdE
                 .generics(generics)
                 .first()
                 .unpartition()
-                .sync_on(&device.stream)?
+                .sync_on(device.stream())?
             } else {
                 kernels::packed_prefill(
                     api::zeros::<f32>(&[m, n]).partition(tile),
@@ -129,9 +129,9 @@ fn nvfp4_mma_matches_independent_block_quantization() -> Result<(), Box<dyn StdE
                 .generics(generics)
                 .first()
                 .unpartition()
-                .sync_on(&device.stream)?
+                .sync_on(device.stream())?
             };
-            let output = output.to_host_vec().sync_on(&device.stream)?;
+            let output = output.to_host_vec().sync_on(device.stream())?;
             check_product((m, n, k), &codes, &scale_codes, &quantized, &output);
         }
     }
@@ -185,12 +185,12 @@ fn separate_swiglu(
         .generics(vec![columns.to_string(), "128".into(), "128".into()])
         .first()
         .unpartition()
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
     };
     let gate = project(gate, gate_global)?;
     let up = project(up, up_global)?;
-    let mut codes = api::zeros::<f4e2m1fnx2>(&[rows, hidden / 2]).sync_on(&device.stream)?;
-    let mut scales = api::zeros::<f8e4m3fn>(&[rows, hidden / 16]).sync_on(&device.stream)?;
+    let mut codes = api::zeros::<f4e2m1fnx2>(&[rows, hidden / 2]).sync_on(device.stream())?;
+    let mut scales = api::zeros::<f8e4m3fn>(&[rows, hidden / 16]).sync_on(device.stream())?;
     kernels::swiglu_quantize(
         (&mut codes).partition([16, 256]),
         (&mut scales).partition([16, 32]),
@@ -199,7 +199,7 @@ fn separate_swiglu(
         down_global,
     )
     .generics(vec![hidden.to_string()])
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     Ok((codes, scales))
 }
 
@@ -207,8 +207,8 @@ fn operand_bytes(
     device: &CudaDevice,
     (codes, scales): Fp4Operand,
 ) -> Result<(Vec<u8>, Vec<u8>), Box<dyn StdError>> {
-    let codes = codes.to_host_vec().sync_on(&device.stream)?;
-    let scales = scales.to_host_vec().sync_on(&device.stream)?;
+    let codes = codes.to_host_vec().sync_on(device.stream())?;
+    let scales = scales.to_host_vec().sync_on(device.stream())?;
     Ok((
         codes.into_iter().map(f4e2m1fnx2::to_bits).collect(),
         scales.into_iter().map(|code| code.0).collect(),
@@ -228,8 +228,8 @@ fn fused_gate_up_swiglu_matches_separate_projections() -> Result<(), Box<dyn Std
     let gate = swiglu_weight(&device, 1)?;
     let up = swiglu_weight(&device, 5)?;
     let x = device.upload(input, &[rows, columns])?;
-    let mut q = api::zeros::<f4e2m1fnx2>(&[rows, columns / 2]).sync_on(&device.stream)?;
-    let mut qs = api::zeros::<f8e4m3fn>(&[rows, columns / 16]).sync_on(&device.stream)?;
+    let mut q = api::zeros::<f4e2m1fnx2>(&[rows, columns / 2]).sync_on(device.stream())?;
+    let mut qs = api::zeros::<f8e4m3fn>(&[rows, columns / 16]).sync_on(device.stream())?;
     kernels::quantize_rows(
         (&mut q).partition([16, 256]),
         (&mut qs).partition([16, 32]),
@@ -237,10 +237,10 @@ fn fused_gate_up_swiglu_matches_separate_projections() -> Result<(), Box<dyn Std
         input_global,
     )
     .generics(vec![columns.to_string()])
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     let expected = operand_bytes(&device, separate_swiglu(&device, (&q, &qs), &gate, &up)?)?;
-    let mut codes = api::zeros::<f4e2m1fnx2>(&[rows, hidden / 2]).sync_on(&device.stream)?;
-    let mut scales = api::zeros::<f8e4m3fn>(&[rows, hidden / 16]).sync_on(&device.stream)?;
+    let mut codes = api::zeros::<f4e2m1fnx2>(&[rows, hidden / 2]).sync_on(device.stream())?;
+    let mut scales = api::zeros::<f8e4m3fn>(&[rows, hidden / 16]).sync_on(device.stream())?;
     kernels::packed_swiglu(
         (&mut codes).partition([tile_rows, 32]),
         (&mut scales).partition([tile_rows, 4]),
@@ -260,7 +260,7 @@ fn fused_gate_up_swiglu_matches_separate_projections() -> Result<(), Box<dyn Std
             .map(ToString::to_string)
             .collect(),
     )
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     assert!(
         expected.0.iter().any(|&code| code != 0),
         "fixture must produce nonzero codes"
@@ -323,9 +323,9 @@ fn nvfp4_quantization_split_performance() -> Result<(), Box<dyn StdError>> {
         let scales = device.upload(vec![f8e4m3fn(56); n * k / 16], &[n, k / 16])?;
         for m in [1, 3, 32] {
             let input = device.upload(vec![0.25_f32; m * k], &[m, k])?;
-            let mut quantized = api::zeros::<f4e2m1fnx2>(&[m, k / 2]).sync_on(&device.stream)?;
-            let mut input_scales = api::zeros::<f8e4m3fn>(&[m, k / 16]).sync_on(&device.stream)?;
-            let mut output = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
+            let mut quantized = api::zeros::<f4e2m1fnx2>(&[m, k / 2]).sync_on(device.stream())?;
+            let mut input_scales = api::zeros::<f8e4m3fn>(&[m, k / 16]).sync_on(device.stream())?;
+            let mut output = api::zeros::<f32>(&[m, n]).sync_on(device.stream())?;
             let fused = device.tile().capture(|scope| {
                 cutile(scope)?.record(
                     kernels::matmul(
@@ -368,18 +368,18 @@ fn nvfp4_quantization_split_performance() -> Result<(), Box<dyn StdError>> {
                 Ok(())
             })?;
             let (baseline, candidate) = do_bench_paired(
-                &device.stream,
+                device.stream(),
                 &options,
                 |_| {
                     fused
                         .launch()
-                        .sync_on(&device.stream)
+                        .sync_on(device.stream())
                         .map_err(|e| tensor_error(&e.to_string()))
                 },
                 |_| {
                     separated
                         .launch()
-                        .sync_on(&device.stream)
+                        .sync_on(device.stream())
                         .map_err(|e| tensor_error(&e.to_string()))
                 },
             )?;
@@ -457,7 +457,7 @@ fn sweep_shape(
     )?;
     let weight = device.upload(vec![f4e2m1fnx2::from_bits(0x21); n * k / 2], &[n, k / 2])?;
     let scales = device.upload(vec![f8e4m3fn(48); n * k / 16], &[n, k / 16])?;
-    let mut output = api::zeros::<f32>(&[SWEEP_PAD_ROWS, n]).sync_on(&device.stream)?;
+    let mut output = api::zeros::<f32>(&[SWEEP_PAD_ROWS, n]).sync_on(device.stream())?;
     let mut tile_graph = |rows: usize, columns: usize| -> infer_core::Result<Graph> {
         device.tile().capture(|scope| {
             cutile(scope)?.record(
@@ -482,18 +482,18 @@ fn sweep_shape(
     for (rows, columns) in SWEEP_TILES {
         let candidate = tile_graph(rows, columns)?;
         let (base, cand) = do_bench_paired(
-            &device.stream,
+            device.stream(),
             options,
             |_| {
                 baseline
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|e| tensor_error(&e.to_string()))
             },
             |_| {
                 candidate
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|e| tensor_error(&e.to_string()))
             },
         )?;
@@ -626,10 +626,10 @@ fn fused_gate_up_swiglu_performance() -> Result<(), Box<dyn StdError>> {
         &[rows, columns / 16],
     )?;
     let mut buffers = SwigluBuffers {
-        gate: api::zeros::<f32>(&[rows, hidden]).sync_on(&device.stream)?,
-        up: api::zeros::<f32>(&[rows, hidden]).sync_on(&device.stream)?,
-        codes: api::zeros::<f4e2m1fnx2>(&[rows, hidden / 2]).sync_on(&device.stream)?,
-        scales: api::zeros::<f8e4m3fn>(&[rows, hidden / 16]).sync_on(&device.stream)?,
+        gate: api::zeros::<f32>(&[rows, hidden]).sync_on(device.stream())?,
+        up: api::zeros::<f32>(&[rows, hidden]).sync_on(device.stream())?,
+        codes: api::zeros::<f4e2m1fnx2>(&[rows, hidden / 2]).sync_on(device.stream())?,
+        scales: api::zeros::<f8e4m3fn>(&[rows, hidden / 16]).sync_on(device.stream())?,
     };
     let inputs = (&*q, &*qs);
     let separated =
@@ -643,18 +643,18 @@ fn fused_gate_up_swiglu_performance() -> Result<(), Box<dyn StdError>> {
             tile,
         )?;
         let (fused_time, separated_time) = do_bench_paired(
-            &device.stream,
+            device.stream(),
             &options,
             |_| {
                 fused
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|e| tensor_error(&e.to_string()))
             },
             |_| {
                 separated
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|e| tensor_error(&e.to_string()))
             },
         )?;
@@ -721,8 +721,8 @@ fn fused_swiglu_tuner_preserves_complete_quantized_outputs() -> Result<(), Box<d
             .map(|i| (f32::from(u16::try_from(i % 131).expect("bounded")) - 65.0) / 37.0)
             .collect();
         let input = device.upload(input, &[rows, columns])?;
-        let mut q = api::zeros::<f4e2m1fnx2>(&[rows, columns / 2]).sync_on(&device.stream)?;
-        let mut qs = api::zeros::<f8e4m3fn>(&[rows, columns / 16]).sync_on(&device.stream)?;
+        let mut q = api::zeros::<f4e2m1fnx2>(&[rows, columns / 2]).sync_on(device.stream())?;
+        let mut qs = api::zeros::<f8e4m3fn>(&[rows, columns / 16]).sync_on(device.stream())?;
         kernels::quantize_rows(
             (&mut q).partition([16, 256]),
             (&mut qs).partition([16, 32]),
@@ -730,10 +730,10 @@ fn fused_swiglu_tuner_preserves_complete_quantized_outputs() -> Result<(), Box<d
             xs,
         )
         .generics(vec![columns.to_string()])
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         let expected = operand_bytes(&device, separate_swiglu(&device, (&q, &qs), &gate, &up)?)?;
-        let codes = api::zeros::<f4e2m1fnx2>(&[rows, hidden / 2]).sync_on(&device.stream)?;
-        let scales = api::zeros::<f8e4m3fn>(&[rows, hidden / 16]).sync_on(&device.stream)?;
+        let codes = api::zeros::<f4e2m1fnx2>(&[rows, hidden / 2]).sync_on(device.stream())?;
+        let scales = api::zeros::<f8e4m3fn>(&[rows, hidden / 16]).sync_on(device.stream())?;
         let graph = device.tile().capture(|scope| {
             swiglu::record(
                 (&device.kernels(), scope),
@@ -745,7 +745,7 @@ fn fused_swiglu_tuner_preserves_complete_quantized_outputs() -> Result<(), Box<d
                 [rows, hidden, columns],
             )
         })?;
-        graph.launch().sync_on(&device.stream)?;
+        graph.launch().sync_on(device.stream())?;
         drop(graph);
         assert_eq!(operand_bytes(&device, (codes, scales))?, expected);
         println!("{}", serde_json::to_string(entry)?);

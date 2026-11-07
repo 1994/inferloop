@@ -84,7 +84,7 @@ fn device_positions_match_scalar_interpolation_and_padding() -> Result<()> {
             padded,
         )?;
         let result = api::zeros::<f32>(&[padded, HIDDEN])
-            .sync_on(&device.stream)
+            .sync_on(device.stream())
             .map_err(device_error)?;
         let vision = kernels(device.ordinal()).vision;
         let graph = device.tile().capture(|scope| {
@@ -99,7 +99,7 @@ fn device_positions_match_scalar_interpolation_and_padding() -> Result<()> {
         })?;
         graph
             .launch()
-            .sync_on(&device.stream)
+            .sync_on(device.stream())
             .map_err(device_error)?;
         let actual = device.read(&Arc::new(result))?;
         for patch in 0..tokens {

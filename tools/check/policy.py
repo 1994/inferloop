@@ -205,6 +205,8 @@ def check_exceptions():
                         TILE_KERNELS / "runtime/events.rs",
                         # Pointer queries into live slots of each attribute's cuda.h type.
                         TILE_KERNELS / "runtime/pointer.rs",
+                        # Draining the device's own live stream.
+                        TILE_KERNELS / "runtime/handles.rs",
                         TILE_KERNELS / "norm/contract.rs",
                         TILE_KERNELS / "mlp/contract.rs",
                         TILE_KERNELS / "moe/contract.rs",

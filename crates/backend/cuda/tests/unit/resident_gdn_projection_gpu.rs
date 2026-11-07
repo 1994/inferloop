@@ -234,7 +234,7 @@ fn pair(
     let launch = |graph: &Graph| {
         graph
             .launch()
-            .sync_on(&device.stream)
+            .sync_on(device.stream())
             .map_err(|error| tensor_error(&error.to_string()))
     };
     let (first, second) = if reverse {
@@ -243,7 +243,7 @@ fn pair(
         (baseline, candidate)
     };
     let (before, after) = do_bench_paired(
-        &device.stream,
+        device.stream(),
         options,
         |_| launch(first),
         |_| launch(second),
@@ -314,9 +314,9 @@ fn case(device: &CudaDevice, shape: [usize; 3]) -> TestResult {
     } else {
         assert_eq!(narrow, 0);
     }
-    original.launch().sync_on(&device.stream)?;
+    original.launch().sync_on(device.stream())?;
     let expected = fixture.outputs(device)?;
-    candidate.launch().sync_on(&device.stream)?;
+    candidate.launch().sync_on(device.stream())?;
     let actual = fixture.outputs(device)?;
     for (output, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
         let scalar = fixture.scalar(output);

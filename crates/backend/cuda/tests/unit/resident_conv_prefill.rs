@@ -20,12 +20,12 @@ fn parallel_conv_matches_causal_reference_and_partial_state() -> Result<(), Box<
         let weights = values(channels * 4, 3);
         let w = device.upload(weights.clone(), &[channels, 4])?;
         let mut expected: Vec<_> = (0..3).map(|i| values(channels, i)).collect();
-        let mut h0 = api::zeros::<f32>(&[channels]).sync_on(&device.stream)?;
-        let mut h1 = api::zeros::<f32>(&[channels]).sync_on(&device.stream)?;
-        let mut h2 = api::zeros::<f32>(&[channels]).sync_on(&device.stream)?;
+        let mut h0 = api::zeros::<f32>(&[channels]).sync_on(device.stream())?;
+        let mut h1 = api::zeros::<f32>(&[channels]).sync_on(device.stream())?;
+        let mut h2 = api::zeros::<f32>(&[channels]).sync_on(device.stream())?;
         for (target, initial) in [&mut h0, &mut h1, &mut h2].into_iter().zip(&expected) {
             let uploaded = device.upload(initial.clone(), &[channels])?;
-            api::memcpy(target, &uploaded).sync_on(&device.stream)?;
+            api::memcpy(target, &uploaded).sync_on(device.stream())?;
         }
         for (base, count, offset) in [
             (0, 0, 0),
@@ -40,9 +40,9 @@ fn parallel_conv_matches_causal_reference_and_partial_state() -> Result<(), Box<
             let input = values(lanes * channels, count + 19);
             let x = device.upload(input.clone(), &[lanes, channels])?;
             let meta = device.upload(vec![base, i32::try_from(count)?, offset, 0], &[4])?;
-            let mut out = api::zeros::<f32>(&[lanes, channels]).sync_on(&device.stream)?;
+            let mut out = api::zeros::<f32>(&[lanes, channels]).sync_on(device.stream())?;
             kernels::forward((&mut out).partition([1, 128]), &h0, &h1, &h2, &x, &w, &meta)
-                .sync_on(&device.stream)?;
+                .sync_on(device.stream())?;
             kernels::commit(
                 (&mut h0).partition([128]),
                 (&mut h1).partition([128]),
@@ -50,7 +50,7 @@ fn parallel_conv_matches_causal_reference_and_partial_state() -> Result<(), Box<
                 &x,
                 &meta,
             )
-            .sync_on(&device.stream)?;
+            .sync_on(device.stream())?;
             let mut expected_output = vec![0.0_f64; lanes * channels];
             for row in 0..count {
                 if base + i32::try_from(row)? + offset < 0 {
@@ -70,16 +70,16 @@ fn parallel_conv_matches_causal_reference_and_partial_state() -> Result<(), Box<
             }
             for (a, b) in out
                 .to_host_vec()
-                .sync_on(&device.stream)?
+                .sync_on(device.stream())?
                 .iter()
                 .zip(expected_output)
             {
                 assert!((f64::from(*a) - b).abs() < 0.000_002, "{a} != {b}");
             }
             for (actual, expected) in [&h0, &h1, &h2].into_iter().zip(&expected) {
-                let mut snapshot = api::zeros::<f32>(&[channels]).sync_on(&device.stream)?;
-                api::memcpy(&mut snapshot, actual).sync_on(&device.stream)?;
-                assert_eq!(&snapshot.to_host_vec().sync_on(&device.stream)?, expected);
+                let mut snapshot = api::zeros::<f32>(&[channels]).sync_on(device.stream())?;
+                api::memcpy(&mut snapshot, actual).sync_on(device.stream())?;
+                assert_eq!(&snapshot.to_host_vec().sync_on(device.stream())?, expected);
             }
         }
     }
@@ -108,10 +108,10 @@ fn parallel_conv_performance() -> Result<(), Box<dyn Error>> {
     for (lanes, channels) in [(32, 128), (32, 10240), (128, 10240)] {
         let x = device.upload(values(lanes * channels, 0), &[lanes, channels])?;
         let w = device.upload(values(channels * 4, 3), &[channels, 4])?;
-        let mut out = api::zeros::<f32>(&[lanes, channels]).sync_on(&device.stream)?;
-        let mut h0 = api::zeros::<f32>(&[channels]).sync_on(&device.stream)?;
-        let mut h1 = api::zeros::<f32>(&[channels]).sync_on(&device.stream)?;
-        let mut h2 = api::zeros::<f32>(&[channels]).sync_on(&device.stream)?;
+        let mut out = api::zeros::<f32>(&[lanes, channels]).sync_on(device.stream())?;
+        let mut h0 = api::zeros::<f32>(&[channels]).sync_on(device.stream())?;
+        let mut h1 = api::zeros::<f32>(&[channels]).sync_on(device.stream())?;
+        let mut h2 = api::zeros::<f32>(&[channels]).sync_on(device.stream())?;
         let metadata = device.upload(vec![0, i32::try_from(lanes)?, 0, 0], &[4])?;
         let row_meta = device.upload(vec![0, 0, 1, 0], &[4])?;
         let candidate = device.tile().capture(|scope| {
@@ -139,7 +139,7 @@ fn parallel_conv_performance() -> Result<(), Box<dyn Error>> {
             .map(|row| device.upload(row.to_vec(), &[channels]))
             .collect::<infer_core::Result<Vec<_>>>()?;
         let mut outputs = (0..lanes)
-            .map(|_| api::zeros::<f32>(&[channels]).sync_on(&device.stream))
+            .map(|_| api::zeros::<f32>(&[channels]).sync_on(device.stream()))
             .collect::<Result<Vec<_>, _>>()?;
         let baseline = device.tile().capture(|scope| {
             for (output, input) in outputs.iter_mut().zip(&inputs) {
@@ -156,18 +156,18 @@ fn parallel_conv_performance() -> Result<(), Box<dyn Error>> {
             Ok(())
         })?;
         let (a, b) = do_bench_paired(
-            &device.stream,
+            device.stream(),
             &options,
             |_| {
                 baseline
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|e| tensor_error(&e.to_string()))
             },
             |_| {
                 candidate
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|e| tensor_error(&e.to_string()))
             },
         )?;

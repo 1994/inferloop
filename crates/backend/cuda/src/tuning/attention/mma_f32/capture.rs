@@ -231,7 +231,7 @@ impl Captured {
 pub(super) fn fingerprint(device: &CudaDevice, s: Shape) -> Result<String> {
     use sha2::{Digest, Sha256};
     let [append, compute]: [String; 2] = attention_candidates::<f32>(
-        &device.stream,
+        device.tile(),
         &AttentionShape {
             heads: s.heads,
             kv_heads: s.kv_heads,

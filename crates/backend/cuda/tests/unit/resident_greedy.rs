@@ -46,7 +46,7 @@ fn greedy_matches_host_total_order_across_tiles_and_padding() -> Result<()> {
                 .capture(|scope| greedy.record(scope, &logits))?;
             graph
                 .launch()
-                .sync_on(&device.stream)
+                .sync_on(device.stream())
                 .map_err(device_error)?;
             assert_eq!(
                 greedy.read(&device)?,
@@ -74,7 +74,7 @@ fn greedy_rejects_nonfinite_values_outside_the_winning_block() -> Result<()> {
                 .capture(|scope| greedy.record(scope, &logits))?;
             graph
                 .launch()
-                .sync_on(&device.stream)
+                .sync_on(device.stream())
                 .map_err(device_error)?;
             assert!(greedy.read(&device).is_err());
         }
@@ -108,7 +108,7 @@ fn greedy_scattered_rows_preserve_offsets_and_invalid_inactive_rows() -> Result<
         })?;
         graph
             .launch()
-            .sync_on(&device.stream)
+            .sync_on(device.stream())
             .map_err(device_error)?;
         let pairs = device.runtime().read(&output)?;
         for (index, expected) in [17_u32, 129, 256].into_iter().enumerate() {
@@ -139,7 +139,7 @@ fn greedy_scattered_rows_preserve_offsets_and_invalid_inactive_rows() -> Result<
         .capture(|scope| selector.record(scope, &logits))?;
     graph
         .launch()
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     let pairs = device.runtime().read(&selector.tokens)?;
     assert_eq!(Greedy::decode(&pairs[..2], vocabulary)?, 17);

@@ -1,6 +1,7 @@
 //! Device time of one execution step, reported to the engine's cost model.
 use super::CudaDevice;
-use infer_cuda_kernels::runtime::{DriverError, Event};
+use infer_core::Error;
+use infer_cuda_kernels::runtime::Event;
 use std::time::Duration;
 
 /// Milliseconds per second, the unit conversion for `cuEventElapsedTime`.
@@ -21,10 +22,9 @@ impl StepClock {
     /// does not depend on timing.
     pub fn new(device: &CudaDevice) -> Option<Self> {
         let created = (|| {
-            let driver = device.stream.device();
-            Ok::<_, DriverError>(Self {
-                start: driver.new_event()?,
-                end: driver.new_event()?,
+            Ok::<_, Error>(Self {
+                start: device.tile().event()?,
+                end: device.tile().event()?,
             })
         })();
         created
@@ -34,14 +34,14 @@ impl StepClock {
             .ok()
     }
     pub fn start(&self, device: &CudaDevice) -> bool {
-        self.start.record(&device.stream).is_ok()
+        self.start.record(device.tile()).is_ok()
     }
     pub fn stop(&self, device: &CudaDevice) -> bool {
-        self.end.record(&device.stream).is_ok()
+        self.end.record(device.tile()).is_ok()
     }
     /// Device microseconds between both edges. The caller has fenced the stream.
     pub fn elapsed_us(&self) -> Option<u64> {
-        millis_to_micros(self.start.elapsed_time(&self.end).ok()?)
+        millis_to_micros(self.start.elapsed_ms(&self.end).ok()?)
     }
 }
 

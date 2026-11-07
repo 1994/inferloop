@@ -97,7 +97,7 @@ fn check(
     let mut decays = zeros(device, &[lanes, VH])?;
     kernels::normalize_shared((&mut normalized).partition([1, 1, DIM]), &qkv)
         .generics(vec![KH.to_string(), DIM.to_string()])
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     kernels::gates_shared(
         (&mut betas).partition([1, 1]),
@@ -107,16 +107,16 @@ fn check(
         &a_log,
         &bias,
     )
-    .sync_on(&device.stream)
+    .sync_on(device.stream())
     .map_err(device_error)?;
     let initial = device.upload(f.initial, &[VH, DIM, DIM])?;
     let mut native_state = zeros(device, &[VH, DIM, DIM])?;
     let mut rust_state = zeros(device, &[VH, DIM, DIM])?;
     api::memcpy(&mut native_state, &initial)
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     api::memcpy(&mut rust_state, &initial)
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     let mut native_output = zeros(device, &[VH, lanes, DIM])?;
     let rust_output = zeros(device, &[VH, lanes, DIM])?;
@@ -136,7 +136,7 @@ fn check(
         lanes.to_string(),
         "16".into(),
     ])
-    .sync_on(&device.stream)
+    .sync_on(device.stream())
     .map_err(device_error)?;
     let shape = simt(function, lanes)?;
     let graph = device.tile().capture(|scope| {
@@ -157,7 +157,7 @@ fn check(
     })?;
     graph
         .launch()
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     compare(
         device,
@@ -205,7 +205,7 @@ fn compare(
 
 fn zeros(device: &CudaDevice, shape: &[usize]) -> Result<Tensor<f32>> {
     api::zeros::<f32>(shape)
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)
 }
 
@@ -311,14 +311,14 @@ impl Cost {
     fn verify(&self, device: &CudaDevice, native: &Graph, rust: &Graph) -> Result<()> {
         native
             .launch()
-            .sync_on(&device.stream)
+            .sync_on(device.stream())
             .map_err(device_error)?;
         let expected = [
             device.read_borrowed(&self.state)?,
             device.read_borrowed(&self.output)?,
         ];
         rust.launch()
-            .sync_on(&device.stream)
+            .sync_on(device.stream())
             .map_err(device_error)?;
         let actual = [
             device.read_borrowed(&self.state)?,
@@ -370,11 +370,11 @@ fn rust_gdn_complete_pipeline_cost() -> Result<()> {
                 let run = |graph: &Graph| {
                     graph
                         .launch()
-                        .sync_on(&device.stream)
+                        .sync_on(device.stream())
                         .map_err(|e| tensor_error(&e.to_string()))
                 };
                 let (a, b) =
-                    do_bench_paired(&device.stream, &options, |_| run(left), |_| run(right))
+                    do_bench_paired(device.stream(), &options, |_| run(left), |_| run(right))
                         .map_err(device_error)?;
                 let (baseline, candidate) = if reverse {
                     (b.times_ms(), a.times_ms())

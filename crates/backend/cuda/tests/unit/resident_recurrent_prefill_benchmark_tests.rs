@@ -56,13 +56,13 @@ fn bench_case(
     let alpha = device.upload(vec![-0.1_f32; lanes * vh], &[lanes, vh])?;
     let a_log = device.upload(vec![-1.0_f32; vh], &[vh])?;
     let bias = device.upload(vec![0.1_f32; vh], &[vh])?;
-    let mut state = api::zeros::<f32>(&[vh, dim, dim]).sync_on(&device.stream)?;
+    let mut state = api::zeros::<f32>(&[vh, dim, dim]).sync_on(device.stream())?;
     let mut old_outputs = Vec::new();
     let mut metadata = Vec::new();
     for lane in 0..lanes {
         old_outputs.push(
             api::zeros::<f32>(&[vh, dim])
-                .sync_on(&device.stream)?
+                .sync_on(device.stream())?
                 .reshape(&[vh, 1, dim])?,
         );
         metadata.push(device.upload(vec![i32::try_from(lane)?, 0, i32::try_from(lane)?, 0], &[4])?);
@@ -78,8 +78,8 @@ fn bench_case(
     let metadata = device
         .runtime()
         .upload(vec![0, i32::try_from(lanes)?, 0, 0])?;
-    let mut scratch = api::zeros::<f32>(&[vh, lanes, dim]).sync_on(&device.stream)?;
-    let mut output = api::zeros::<f32>(&[lanes, vh, dim]).sync_on(&device.stream)?;
+    let mut scratch = api::zeros::<f32>(&[vh, lanes, dim]).sync_on(device.stream())?;
+    let mut output = api::zeros::<f32>(&[lanes, vh, dim]).sync_on(device.stream())?;
     let block = production_block(dim, lanes);
     let generics = [kh, vh, dim, lanes, block]
         .map(|value| value.to_string())
@@ -187,18 +187,18 @@ fn compare_graphs(
         clear_l2: true,
     };
     let (old, new) = do_bench_paired(
-        &device.stream,
+        device.stream(),
         &options,
         |_| {
             baseline
                 .launch()
-                .sync_on(&device.stream)
+                .sync_on(device.stream())
                 .map_err(|e| tensor_error(&e.to_string()))
         },
         |_| {
             candidate
                 .launch()
-                .sync_on(&device.stream)
+                .sync_on(device.stream())
                 .map_err(|e| tensor_error(&e.to_string()))
         },
     )?;

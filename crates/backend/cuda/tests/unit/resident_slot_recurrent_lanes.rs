@@ -112,7 +112,7 @@ fn wide_delta_lanes_match_three_lane_reference() -> TestResult {
         &wide.3,
     )
     .generics(generics(&[KH, VH, D, block, FIELDS, WIDE]))
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     fused::delta_verify_batch(
         (&mut narrow_out).partition([1, NARROW, block]),
         &states,
@@ -123,7 +123,7 @@ fn wide_delta_lanes_match_three_lane_reference() -> TestResult {
         &narrow.3,
     )
     .generics(generics(&[KH, VH, D, block, FIELDS]))
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     let row = VH * D;
     assert_close(
         "delta verify",
@@ -144,7 +144,7 @@ fn wide_delta_lanes_match_three_lane_reference() -> TestResult {
             &counts,
         )
         .generics(generics(&[KH, VH, D, block, FIELDS, WIDE]))
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         fused::delta_commit_batch(
             (&mut narrow_state).partition([1, D, block]),
             &narrow.0,
@@ -155,7 +155,7 @@ fn wide_delta_lanes_match_three_lane_reference() -> TestResult {
             &counts,
         )
         .generics(generics(&[KH, VH, D, block, FIELDS]))
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         assert_close(
             "delta commit",
             &device.read_borrowed(&wide_state)?,
@@ -208,7 +208,7 @@ fn wide_convolution_lanes_match_three_lane_bits() -> TestResult {
         &wide_meta,
     )
     .generics(generics(&[CHANNELS, FIELDS, WIDE]))
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     convolution::verify(
         (&mut narrow_out).partition([1, NARROW, CONV_KERNEL_TILE]),
         &narrow_input,
@@ -219,7 +219,7 @@ fn wide_convolution_lanes_match_three_lane_bits() -> TestResult {
         &narrow_meta,
     )
     .generics(generics(&[CHANNELS, FIELDS]))
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     assert_bits(
         "convolution verify",
         &narrow_rows(&device.read_borrowed(&wide_out)?, CHANNELS),
@@ -262,7 +262,7 @@ fn convolution_commits_match(
             &counts,
         )
         .generics(generics(&[FIELDS, WIDE]))
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         let [n0, n1, n2] = narrow_h.as_mut_slice() else {
             unreachable!()
         };
@@ -275,7 +275,7 @@ fn convolution_commits_match(
             &counts,
         )
         .generics(generics(&[FIELDS]))
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         for (wide, narrow) in wide_h.iter().zip(&narrow_h) {
             assert_bits(
                 "convolution commit",
