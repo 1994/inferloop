@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 pub use workspace::{Workspace, eligible};
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 pub use workspace::{eligible_with_role, node_eligible};
 
 const PTX: &str = include_str!("../../../kernels/fa4-attention/bridge.ptx");

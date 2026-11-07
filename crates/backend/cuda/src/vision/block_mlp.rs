@@ -9,6 +9,7 @@ use infer_cuda_kernels::contract::{Gelu, VisionDense};
 use infer_cuda_kernels::runtime::Allocation;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/vision_block_mlp.rs"]
 mod tests;
 

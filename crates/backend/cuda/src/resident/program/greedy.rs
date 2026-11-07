@@ -1,6 +1,7 @@
 //! Draft readout and external-hidden reuse on the program's owned CUDA stream.
 use super::{CudaDevice, DeviceProgram, ExternalInput, ProgramWeights};
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 use crate::device::asynchronous::block_on;
 use crate::resident::ActivationArena;
 use crate::resident::batch::take_result;
@@ -94,6 +95,7 @@ impl DeviceProgram {
     }
     /// The first draft consumes a target hidden row; later drafts reuse their own resident output.
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub(crate) fn step_greedy(
         &mut self,
         token: u32,
@@ -144,5 +146,6 @@ impl DeviceProgram {
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../../tests/unit/resident_program_greedy.rs"]
 mod tests;

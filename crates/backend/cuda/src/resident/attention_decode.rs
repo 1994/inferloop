@@ -1,8 +1,10 @@
 //! Split long KV reductions across independent CTAs before stable softmax merging.
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 pub use infer_cuda_kernels::tile::attention::resident_attention_decode as kernels;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_attention_decode.rs"]
 mod tests;
 
@@ -12,4 +14,5 @@ pub use workspace::VERIFY_LANES;
 pub use workspace::Workspace;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 pub use workspace::taps;

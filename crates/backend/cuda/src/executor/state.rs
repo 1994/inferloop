@@ -659,5 +659,6 @@ fn private_funding(
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/executor_state.rs"]
 mod tests;

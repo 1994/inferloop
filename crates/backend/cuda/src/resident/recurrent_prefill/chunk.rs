@@ -21,6 +21,7 @@ use infer_cuda_kernels::runtime::bf16;
 /// Tokens per chunk.
 pub(super) const CHUNK: usize = 64;
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 use infer_cuda_kernels::tile::recurrent::recurrent_chunk as kernels;
 
 /// Scratch for one prompt width.
@@ -99,5 +100,6 @@ pub(super) fn record(
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../../tests/unit/resident_recurrent_scan_tiling.rs"]
 mod scan_tiling_tests;

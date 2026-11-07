@@ -2,6 +2,7 @@
 //! Every candidate uses the original quantizer and passes full-output finite/bitwise gates.
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 use super::TilingTable;
 use super::projection_budget::{GEMM_RANK, ProjectionKind};
 use super::resident_gemm::{PairedTimes, ResidentTuningSession};
@@ -1083,5 +1084,6 @@ pub(crate) fn select(
     }
 }
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/fp8_gemm_tuning.rs"]
 mod tests;

@@ -102,10 +102,12 @@ impl Workspace {
         self.quant_reuse.clear();
     }
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub(crate) const fn set_quant_reuse_enabled(&mut self, enabled: bool) {
         self.quant_reuse.set_enabled(enabled);
     }
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub(crate) const fn quant_reuse_stats(&self) -> (usize, usize) {
         let stats = self.quant_reuse.stats();
         (stats.recorded, stats.reused)
@@ -116,6 +118,7 @@ impl Workspace {
         (stats.recorded, stats.reused)
     }
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub(crate) fn quantized_fp8(
         &self,
         rows: usize,
@@ -126,6 +129,7 @@ impl Workspace {
             .map(|(codes, scales)| (codes, scales))
     }
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub(crate) fn quantized_fp4(
         &self,
         rows: usize,
@@ -830,5 +834,6 @@ fn vendor_diagnostic_enabled() -> bool {
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../../tests/unit/resident_norm_fp4_permissions.rs"]
 mod norm_fp4_permission_tests;

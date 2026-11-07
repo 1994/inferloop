@@ -1,5 +1,6 @@
 //! Model-declared W4A4 projection with block-16 E4M3 activation scales.
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 pub use infer_cuda_kernels::tile::projection::nvfp4_gemm as kernels;
 mod quant_reuse;
 mod workspace;
@@ -93,17 +94,21 @@ fn record_input(
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_nvfp4_gemm.rs"]
 mod tests;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_nvfp4_pipeline.rs"]
 mod pipeline_tests;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_vendor_fp8.rs"]
 mod vendor_tests;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_quant_reuse.rs"]
 mod quant_reuse_tests;

@@ -16,6 +16,7 @@ use infer_spi::ModalityEncoder;
 use std::collections::BTreeMap;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/vision_device_tower.rs"]
 mod device_tower_tests;
 

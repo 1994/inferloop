@@ -155,11 +155,12 @@ pub(crate) mod step_clock;
 mod upload;
 pub(crate) mod vision_position;
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 pub(crate) use readback::queue_test_gate;
 pub(crate) use upload::PinnedUpload;
 // Exercised by its own device test today; the projection path adopts it in a following change.
 #[cfg_attr(
-    not(test),
+    not(all(test, feature = "cuda")),
     expect(
         dead_code,
         reason = "adopted by the projection path in a following change"
@@ -481,6 +482,7 @@ impl CudaDevice {
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../tests/unit/device_tensors.rs"]
 mod tensors;
 
@@ -489,5 +491,6 @@ mod tensors;
 mod tests;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../tests/unit/device_transfers.rs"]
 mod transfer_tests;

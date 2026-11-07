@@ -1,5 +1,6 @@
 //! Exact token FP8 quantization with parallel conversion for large aligned rows.
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 pub use infer_cuda_kernels::tile::projection::fp8_quant_reduction as kernels;
 
 use infer_cuda_kernels::contract::Fp8QuantKind;
@@ -65,5 +66,6 @@ pub fn with_parallel_conversion<T>(enabled: bool, run: impl FnOnce() -> T) -> T 
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_fp8_quant_reduction.rs"]
 mod tests;

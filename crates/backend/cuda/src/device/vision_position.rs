@@ -10,6 +10,7 @@ use infer_cuda_kernels::runtime::Allocation;
 use infer_cuda_kernels::runtime::bf16;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/vision_position.rs"]
 mod tests;
 

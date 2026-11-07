@@ -732,10 +732,12 @@ pub fn with_native<T>(run: impl FnOnce() -> T) -> T {
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../../tests/unit/vendor_nvfp4_numerics.rs"]
 mod tests;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../../tests/unit/vendor_nvfp4.rs"]
 mod rotation_tests;
 

@@ -248,5 +248,6 @@ fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Resul
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/tuning_gated_norm.rs"]
 mod tests;

@@ -4,6 +4,7 @@ use crate::constants::MIB;
 use infer_core::{Error, ErrorCode, Result};
 use infer_cuda_kernels::runtime::Copies;
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 use infer_cuda_kernels::runtime::Graph;
 use infer_cuda_kernels::runtime::{Allocation, Pinned, Readback};
 use infer_cuda_kernels::runtime::{DType, DeviceCopy};
@@ -13,6 +14,7 @@ use std::sync::{Arc, Mutex};
 const MAX_READBACK_STAGING_BYTES: usize = 64 * MIB;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/device_readback_check.rs"]
 mod check;
 
@@ -96,6 +98,7 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
     }
 
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub(crate) fn run(
         &mut self,
         device: &CudaDevice,
@@ -239,6 +242,7 @@ impl Readbacks<f32> {
     /// Execute the model and token selector on one stream, then expose both readouts
     /// after one completion fence. Either owner stays poisoned on submission failure.
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub(crate) fn run_with_tokens(
         &mut self,
         device: &CudaDevice,
@@ -252,6 +256,7 @@ impl Readbacks<f32> {
 
 /// Queue a bounded host gate for device-completion tests.
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[expect(
     unsafe_code,
     reason = "Test-only stream callback: closure owns its data, is bounded and calls no CUDA APIs"

@@ -5,6 +5,7 @@ use infer_core::Result;
 use infer_cuda_kernels::runtime::Graph;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_reset.rs"]
 mod tests;
 

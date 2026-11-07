@@ -755,6 +755,7 @@ impl SlotPool {
     }
 
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub(crate) fn test_batched_commit(&self) -> bool {
         self.verify
             .as_ref()
@@ -1280,6 +1281,7 @@ impl SlotPool {
     }
 
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub(crate) fn run_verify_readout(
         &mut self,
         device: &CudaDevice,
@@ -1574,5 +1576,6 @@ impl Drop for SlotPool {
 mod draft;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_slot_batch_draft_tests.rs"]
 mod draft_tests;

@@ -94,6 +94,7 @@ impl Support {
     }
 
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub(crate) fn load_test_ptx(device: &CudaDevice, ptx: &str) -> Result<Self> {
         let module = device.tile().load_ptx(ptx).map_err(device_error)?;
         Ok(Self {
@@ -228,6 +229,7 @@ pub fn artifact_identity() -> &'static str {
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_attention_oxide_resources.rs"]
 mod resources_tests;
 

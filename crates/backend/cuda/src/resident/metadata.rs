@@ -5,6 +5,7 @@ use infer_core::Result;
 use infer_cuda_kernels::runtime::Allocation;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_metadata_check.rs"]
 mod check;
 

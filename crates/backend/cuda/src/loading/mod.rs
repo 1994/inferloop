@@ -972,6 +972,7 @@ mod support;
 mod shape_ab_tests;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/loading_prefill_width.rs"]
 mod prefill_width_tests;
 
@@ -980,6 +981,7 @@ mod prefill_width_tests;
 mod quant_reuse_model_tests;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_attention_prefill_model.rs"]
 mod attention_prefill_model_tests;
 
@@ -988,6 +990,7 @@ mod attention_prefill_model_tests;
 mod decode_path_tests;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_prefill_demand_model.rs"]
 mod prefill_demand_model_tests;
 
@@ -1000,6 +1003,7 @@ mod parallel_quant_tests;
 mod parallel_quant_pool_tests;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/loading_pool_gemv_cost.rs"]
 mod pool_gemv_cost_tests;
 
@@ -1020,6 +1024,7 @@ mod oxide_attention_tests;
 mod oxide_gdn_tests;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/loading_gated_norm_model.rs"]
 mod gated_norm_model_tests;
 
@@ -1032,6 +1037,7 @@ mod prompt_width_bucket_tests;
 mod norm_maximum_model_tests;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_norm_fp4_quant.rs"]
 mod norm_fp4_quant_tests;
 
@@ -1040,6 +1046,7 @@ mod norm_fp4_quant_tests;
 mod norm_fp4_model_tests;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/vendor_nvfp4_fixture.rs"]
 pub(crate) mod nvfp4_fixture;
 

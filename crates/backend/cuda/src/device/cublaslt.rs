@@ -533,5 +533,6 @@ impl Foreign for GemmBf16 {
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/device_cublaslt.rs"]
 mod tests;

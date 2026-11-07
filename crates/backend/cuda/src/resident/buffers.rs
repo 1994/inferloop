@@ -6,6 +6,7 @@
 use super::arena::SlotMemory;
 use super::capture::error;
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 use cutile::prelude::Tensor;
 use infer_core::Result;
 use infer_cuda_kernels::contract::{Buffer, KvCache, KvElement};
@@ -30,6 +31,7 @@ pub trait Operand {
 /// [`Buffer::new`] requires. It stays here rather than in the test support modules because the
 /// policy keeps `unsafe` out of test files.
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 impl<T: DType + Element> Operand for Tensor<T> {
     type Marker = T::Marker;
 
@@ -119,11 +121,14 @@ pub(super) const fn region<T>(address: u64, len: usize) -> Buffer<'static, T> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_runtime_replay.rs"]
 mod runtime_tests;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/buffer_tensors.rs"]
 mod tensors;
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 pub use tensors::{cutile, tensor_rows};

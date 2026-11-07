@@ -75,6 +75,7 @@ pub(super) fn record(
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 pub use infer_cuda_kernels::tile::recurrent::slot_convolution as kernels;
 
 #[cfg(test)]
@@ -104,5 +105,6 @@ pub fn with_row_reference<T>(run: impl FnOnce() -> T) -> T {
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_slot_convolution.rs"]
 mod tests;
