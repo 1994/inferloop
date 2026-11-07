@@ -4,7 +4,7 @@ use crate::device::device_error;
 use cutile::prelude::*;
 use infer_core::Result;
 use infer_cuda_kernels::contract::Recording;
-use infer_cuda_kernels::tile::runtime::Element;
+use infer_cuda_kernels::runtime::Element;
 
 /// A rank-2 tensor as the [`RowMajor`] it holds.
 /// # Errors

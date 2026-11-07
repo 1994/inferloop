@@ -18,8 +18,8 @@ use crate::resident::attention_mma::catalog::Variant;
 use crate::tuning::preparation::driver_build;
 use capture::Captured;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::jit::JitOptions;
-use infer_cuda_kernels::tile::runtime::Timing;
+use infer_cuda_kernels::jit::JitOptions;
+use infer_cuda_kernels::runtime::Timing;
 use reference::Fixture;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]

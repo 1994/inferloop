@@ -6,7 +6,7 @@ use crate::mlp::ProjectionWeight;
 use crate::tuning::pool_dense;
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::target::TensorRates;
-use infer_cuda_kernels::tile::runtime::Attribute;
+use infer_cuda_kernels::runtime::Attribute;
 use infer_ir::TensorOp;
 use std::collections::BTreeMap;
 

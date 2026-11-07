@@ -13,7 +13,7 @@ use infer_cuda_kernels::contract::{
     AppendBuffers, DecodeBuffers, DecodePlan, KvCache, LanesAppendPlan, LanesDecodePlan, Partials,
     Recording,
 };
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;

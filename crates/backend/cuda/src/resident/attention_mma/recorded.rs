@@ -2,7 +2,7 @@
 use super::host;
 use infer_core::Result;
 use infer_cuda_kernels::contract::Foreign;
-use infer_cuda_kernels::tile::runtime::KernelLaunch;
+use infer_cuda_kernels::runtime::KernelLaunch;
 use std::ffi::c_void;
 use std::sync::Arc;
 

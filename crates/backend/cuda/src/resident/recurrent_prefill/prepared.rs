@@ -9,7 +9,7 @@ use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, GateBuffers, PreparedDeltaBuffers, Recording, Recurrent, RecurrentShape,
 };
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorOp};
 use std::collections::{BTreeMap, BTreeSet};
 

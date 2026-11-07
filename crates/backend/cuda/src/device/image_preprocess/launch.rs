@@ -6,8 +6,8 @@ use super::{
     tables::Tables,
 };
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::runtime::Function;
-use infer_cuda_kernels::tile::runtime::{Allocation, Argument, KernelLaunch, Operation};
+use infer_cuda_kernels::runtime::Function;
+use infer_cuda_kernels::runtime::{Allocation, Argument, KernelLaunch, Operation};
 use std::sync::Arc;
 
 /// Threads per one-dimensional image kernel block.

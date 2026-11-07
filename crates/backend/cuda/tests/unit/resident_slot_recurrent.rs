@@ -4,7 +4,7 @@ use crate::tuning::median;
 use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::runtime::Graph;
 use infer_workloads::DeltaGeometry;
 use std::error::Error;
 use std::time::Duration;

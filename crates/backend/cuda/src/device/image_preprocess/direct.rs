@@ -5,8 +5,8 @@ use super::{
     source::Source,
 };
 use infer_core::Result;
-use infer_cuda_kernels::tile::runtime::Function;
-use infer_cuda_kernels::tile::runtime::{Allocation, Argument, KernelLaunch, Operation};
+use infer_cuda_kernels::runtime::Function;
+use infer_cuda_kernels::runtime::{Allocation, Argument, KernelLaunch, Operation};
 use std::sync::Arc;
 
 /// Mean and standard deviation in the supported symmetric normalization.

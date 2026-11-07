@@ -22,11 +22,11 @@ use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, Fp4Pair, Fp4QuantKind, Fp4QuantPlan, Fp8, GemmLoop, GemmPlan, Kernels, Recording,
 };
+use infer_cuda_kernels::jit::JitOptions;
+use infer_cuda_kernels::runtime::Timing;
+use infer_cuda_kernels::runtime::{Allocation, Graph, Watch};
+use infer_cuda_kernels::runtime::{f4e2m1fnx2, f8e4m3fn};
 use infer_cuda_kernels::tile::identity;
-use infer_cuda_kernels::tile::jit::JitOptions;
-use infer_cuda_kernels::tile::runtime::Timing;
-use infer_cuda_kernels::tile::runtime::{Allocation, Graph, Watch};
-use infer_cuda_kernels::tile::runtime::{f4e2m1fnx2, f8e4m3fn};
 use serde::{Deserialize, Serialize};
 use std::env::var_os;
 use std::fmt::Display;
@@ -552,7 +552,7 @@ fn verifications() -> &'static Verifications {
 
 /// Frontend-only identities: no cubin compilation or kernel execution is requested here.
 pub(super) fn kernel_environment(device: &CudaDevice) -> Result<String> {
-    use infer_cuda_kernels::tile::jit as compiler;
+    use infer_cuda_kernels::jit as compiler;
     let compile = JitOptions::default();
     Ok(format!(
         "{}:{}:{:?}:{:?}:{:?}:{:?}",

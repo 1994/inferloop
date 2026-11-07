@@ -23,9 +23,9 @@ use crate::device::copy_runs;
 use crate::device::{CudaDevice, DeviceProfile, device_error};
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::{Owner, Width};
-use infer_cuda_kernels::tile::runtime::Allocation;
-use infer_cuda_kernels::tile::runtime::f8e4m3fn;
-use infer_cuda_kernels::tile::runtime::{Staging, Transfers};
+use infer_cuda_kernels::runtime::Allocation;
+use infer_cuda_kernels::runtime::f8e4m3fn;
+use infer_cuda_kernels::runtime::{Staging, Transfers};
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
 use infer_state::blocks::{BlockLease, BlockPool};
 #[cfg(test)]

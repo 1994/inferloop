@@ -9,7 +9,7 @@ mod execution;
 mod owner;
 mod submission;
 use crate::device::step_clock::StepClock;
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 pub use owner::CudaBackend;
 mod pool;
 pub mod prefix;

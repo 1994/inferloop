@@ -18,8 +18,8 @@ use cutile::{
 };
 use infer_core::{Error, ModelId, Result};
 use infer_cuda_kernels::contract::Recording;
+use infer_cuda_kernels::runtime::Graph;
 use infer_cuda_kernels::tile::projection::linear::dense;
-use infer_cuda_kernels::tile::runtime::Graph;
 use infer_ir::TensorStorage;
 use std::env::var;
 use std::error::Error as StdError;

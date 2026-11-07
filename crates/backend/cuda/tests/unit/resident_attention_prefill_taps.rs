@@ -5,7 +5,7 @@ use crate::device::device_error;
 use crate::{device::CudaDevice, resident::ProgramWeights, tuning::attention::Choice};
 use infer_core::{Result, TensorId};
 use infer_cuda_kernels::contract::{Buffer, Recording};
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorOp};
 use std::{cell::Cell, collections::BTreeMap};
 thread_local! {

@@ -3,7 +3,7 @@ use super::super::Shape;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::device_error;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::runtime::bf16;
+use infer_cuda_kernels::runtime::bf16;
 const SEED_STEP: u64 = 0x9e37_79b9_7f4a_7c15;
 const MIX_FIRST: u64 = 0xbf58_476d_1ce4_e5b9;
 const MIX_SECOND: u64 = 0x94d0_49bb_1331_11eb;

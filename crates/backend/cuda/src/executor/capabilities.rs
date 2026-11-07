@@ -1,6 +1,6 @@
 use crate::device::CudaDevice;
 use infer_core::{DeviceId, Result};
-use infer_cuda_kernels::tile::runtime::Attribute;
+use infer_cuda_kernels::runtime::Attribute;
 use infer_ir::{
     DeviceBackend, DeviceCapabilities, NvidiaArchitecture, NvidiaCapabilities,
     SpeculationCapability,

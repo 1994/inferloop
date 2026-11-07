@@ -15,8 +15,8 @@ use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, Kernels, PoolConvPlan, PoolDeltaBuffers, PoolDeltaPlan, Recording,
 };
-use infer_cuda_kernels::tile::runtime::Allocation;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::runtime::Allocation;
+use infer_cuda_kernels::runtime::Graph;
 use infer_ir::{TensorNode, TensorOp};
 
 pub(super) struct CapturedCommit {

@@ -5,8 +5,8 @@ use infer_cuda_kernels::contract::{
     Attention, Buffer, DenseBuffers, DensePlan, Gelu, Pack, PositionTaps, Recording, Vision,
     VisionDense, VisionNorm, VisionRope,
 };
-use infer_cuda_kernels::tile::kernels;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::kernels;
+use infer_cuda_kernels::runtime::Graph;
 
 /// Capture one vision graph; it keeps every allocation it records alive.
 ///

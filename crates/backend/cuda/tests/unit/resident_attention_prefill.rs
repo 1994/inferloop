@@ -6,7 +6,7 @@ use crate::resident::kernels::aux::prefill_rope;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::runtime::Graph;
 use std::error::Error;
 
 const HEADS: usize = 4;

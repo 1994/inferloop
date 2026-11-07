@@ -19,8 +19,8 @@ use infer_cuda_kernels::contract::{
     Buffer, EmbeddingBatchPlan, FusionNormBuffers, FusionNormPlan, FusionShape, LinearRowsPlan,
     Recording,
 };
-use infer_cuda_kernels::tile::runtime::Allocation;
-use infer_cuda_kernels::tile::runtime::bf16;
+use infer_cuda_kernels::runtime::Allocation;
+use infer_cuda_kernels::runtime::bf16;
 use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;

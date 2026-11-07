@@ -3,7 +3,7 @@ use crate::device::CudaDevice;
 use crate::resident::buffers::buffer as operand;
 use crate::resident::recurrent::recurrent::delta as recurrent_delta;
 use cutile::prelude::*;
-use infer_cuda_kernels::tile::kernels as contract_kernels;
+use infer_cuda_kernels::kernels as contract_kernels;
 use std::env::var_os;
 use std::error::Error;
 

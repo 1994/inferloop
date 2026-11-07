@@ -3,8 +3,8 @@ use super::buffers::Operand;
 use crate::device::CudaDevice;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Buffer, Width};
-use infer_cuda_kernels::tile::runtime::DType;
-use infer_cuda_kernels::tile::runtime::{Allocation, Element, HeadMajor};
+use infer_cuda_kernels::runtime::DType;
+use infer_cuda_kernels::runtime::{Allocation, Element, HeadMajor};
 
 /// An allocation and its logical dimensions. State copies and checks read the dimensions; kernels
 /// see only the buffer. A clone shares the memory, and so does a reshape.

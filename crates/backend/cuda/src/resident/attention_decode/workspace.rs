@@ -20,7 +20,7 @@ use infer_cuda_kernels::contract::{
     Attention, DecodeBuffers, DecodePlan, Partials as ContractPartials, Recording, SplitDecodePlan,
     VerifyDecodeBuffers,
 };
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorOp};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;

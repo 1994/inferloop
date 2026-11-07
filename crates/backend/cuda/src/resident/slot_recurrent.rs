@@ -20,8 +20,8 @@ use infer_core::{Error, TensorId};
 use infer_cuda_kernels::contract::{
     Buffer, DeltaStepPlan, FusedConvBuffers, FusedDeltaBuffers, LaneBuffers, Recording,
 };
-use infer_cuda_kernels::tile::runtime::Allocation;
-use infer_cuda_kernels::tile::runtime::Attribute;
+use infer_cuda_kernels::runtime::Allocation;
+use infer_cuda_kernels::runtime::Attribute;
 use infer_ir::{TensorNode, TensorOp};
 use std::collections::BTreeMap;
 

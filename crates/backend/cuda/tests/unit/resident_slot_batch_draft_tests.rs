@@ -6,7 +6,7 @@ use crate::strategy::default_tiling;
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use cutile::half::bf16;
 use infer_core::OpId;
-use infer_cuda_kernels::tile::kernels as tile_kernels;
+use infer_cuda_kernels::kernels as tile_kernels;
 use infer_ir::{DType, TensorNode, TensorOp, TensorSpec};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

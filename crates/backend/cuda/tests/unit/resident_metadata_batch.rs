@@ -4,7 +4,7 @@ use crate::{
     device::{CudaDevice, PinnedUpload, device_error},
 };
 use infer_core::Result;
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 
 const CAPACITY: usize = 4096;
 const STATE_OFFSET: i32 = -1;

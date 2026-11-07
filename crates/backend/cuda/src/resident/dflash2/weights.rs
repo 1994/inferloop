@@ -3,13 +3,13 @@ use crate::device::CudaDevice;
 use crate::loading::floats;
 use crate::mlp::ProjectionWeight;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::runtime::Allocation;
-use infer_cuda_kernels::tile::runtime::bf16;
+use infer_cuda_kernels::runtime::Allocation;
+use infer_cuda_kernels::runtime::bf16;
 use infer_ir::{DataflowGraph, TensorOp};
 use infer_models::{DFlash2Package, DeviceWeight, QuantizedPackage, TensorDtype};
 
 use super::super::ProgramWeights;
-use infer_cuda_kernels::tile::runtime::DType;
+use infer_cuda_kernels::runtime::DType;
 
 /// Read budget for one BF16 selector codebook.
 const CODEBOOK_READ_BYTES: u64 = 1 << 30;

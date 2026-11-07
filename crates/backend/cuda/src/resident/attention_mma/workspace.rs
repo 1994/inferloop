@@ -3,8 +3,8 @@ use super::{Arithmetic, Support, catalog};
 use crate::{AttentionProfile, device::CudaDevice};
 use infer_core::Result;
 use infer_cuda_kernels::contract::Owner;
-use infer_cuda_kernels::tile::runtime::Allocation;
-use infer_cuda_kernels::tile::runtime::{DType, bf16, f16};
+use infer_cuda_kernels::runtime::Allocation;
+use infer_cuda_kernels::runtime::{DType, bf16, f16};
 use infer_ir::{DataflowGraph, TensorOp};
 
 /// The query and key lengths the bridge writes for the AOT kernel.

@@ -1,7 +1,7 @@
 //! Device input operations retained through their submission fence.
 use super::{nvjpeg::Lease, staging::Staged};
 use infer_core::Result;
-use infer_cuda_kernels::tile::runtime::{Allocation, Operation};
+use infer_cuda_kernels::runtime::{Allocation, Operation};
 use std::sync::Arc;
 
 pub(super) enum Source {

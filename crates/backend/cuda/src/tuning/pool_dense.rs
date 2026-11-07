@@ -20,9 +20,9 @@ use capture::{Captured, key, verify};
 pub use evidence::{Entry, Trial};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Buffer, DenseKernel, DenseRowsPlan, Kernels, Recording};
-use infer_cuda_kernels::tile::jit::JitOptions;
-use infer_cuda_kernels::tile::runtime::Watch;
-use infer_cuda_kernels::tile::runtime::bf16;
+use infer_cuda_kernels::jit::JitOptions;
+use infer_cuda_kernels::runtime::Watch;
+use infer_cuda_kernels::runtime::bf16;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::cell::Cell;

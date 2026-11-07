@@ -8,7 +8,7 @@ use crate::{
     resident::slot_recurrent::{ValueDevice, fused, value_split},
 };
 use cutile::prelude::*;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::runtime::Graph;
 use infer_workloads::DeltaGeometry;
 
 struct Reference {

@@ -46,7 +46,7 @@ use crate::{
     tuning::TuningReport,
 };
 use infer_core::{Error, ModelId, Result};
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 use infer_ir::{DataflowGraph, EncodedImageInput, ImageInput, ImageTransform, ModelIr};
 use infer_models::QuantizedPackage;
 use infer_spi::ImagePreprocessing;

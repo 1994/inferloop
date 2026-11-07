@@ -2,7 +2,7 @@
 use crate::device::{CudaDevice, device_error};
 use cutile::prelude::*;
 use infer_core::Result;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::runtime::Graph;
 
 pub const REPEATS: usize = 8;
 

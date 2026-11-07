@@ -11,7 +11,7 @@ use crate::resident::buffers::cutile;
 use crate::resident::tensor_buffer;
 use cutile::half::bf16;
 use cutile::prelude::*;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::runtime::Graph;
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Instant;

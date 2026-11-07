@@ -10,7 +10,7 @@ use crate::constants::PREFILL_LANES;
 use crate::{device::CudaDevice, resident::ProgramWeights};
 pub use evidence::Entry as NormEntry;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::jit::JitOptions;
+use infer_cuda_kernels::jit::JitOptions;
 use infer_ir::{DataflowGraph, TensorOp};
 use std::{
     collections::{BTreeMap, BTreeSet},

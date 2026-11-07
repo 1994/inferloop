@@ -36,7 +36,7 @@ use crate::mlp::ProjectionWeight;
 use infer_core::{Error, ErrorCode, Result, TensorId};
 use infer_cuda_kernels::contract::{DecodePlan, VerifyDecodeBuffers};
 use infer_cuda_kernels::contract::{EmbeddingBatchPlan, LastRowsKind, LastRowsPlan, Recording};
-use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
+use infer_cuda_kernels::runtime::{Allocation, Graph};
 use infer_ir::{DataflowGraph, StateKind, TensorNode, TensorOp, TensorStorage};
 use infer_models::mrope::ROTARY_AXES;
 use std::collections::{BTreeMap, BTreeSet};

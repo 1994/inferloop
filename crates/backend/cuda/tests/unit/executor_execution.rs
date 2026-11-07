@@ -2,7 +2,7 @@ use super::{SlotPool, candidate_pool_capacity, pool_retry_budget, pooled_envelop
 use crate::constants::CB_SLOT_TOKENS;
 use crate::executor::CudaExecutor;
 use infer_core::{RequestId, StateId};
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 use infer_ir::{ExecutionInput, ExecutionTask, OutputReadout, TaskOutput, TokenBuffer};
 use std::{env::var, error::Error};
 

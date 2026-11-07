@@ -4,7 +4,7 @@ use crate::device::{CudaDevice, device_error};
 use crate::resident::tensor_buffer as buffer;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{GateBuffers, PreparedDeltaBuffers, RecurrentShape};
-use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
+use infer_cuda_kernels::runtime::{Allocation, Graph};
 pub(super) const KH: usize = 16;
 pub(super) const VH: usize = 48;
 pub(super) const DIM: usize = 128;

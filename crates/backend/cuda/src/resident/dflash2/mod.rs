@@ -19,8 +19,8 @@ use infer_cuda_kernels::contract::{
     DraftAttention, DraftConv, DraftNorm, DraftProjection, DraftRingStore, DraftRope, DraftSplit,
     DraftTop, DraftWalk, DraftWeight, Recording,
 };
-use infer_cuda_kernels::tile::kernels as tile_kernels;
-use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
+use infer_cuda_kernels::kernels as tile_kernels;
+use infer_cuda_kernels::runtime::{Allocation, Graph};
 pub use weights::DraftWeights;
 
 use super::buffers::buffer;
@@ -29,8 +29,8 @@ use crate::constants::WIDEST_PREFILL_LANES;
 use crate::device::{CudaDevice, PinnedUpload, Readbacks, device_error};
 use crate::mlp::ProjectionWeight;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::runtime::DType;
-use infer_cuda_kernels::tile::runtime::bf16;
+use infer_cuda_kernels::runtime::DType;
+use infer_cuda_kernels::runtime::bf16;
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::Arc;

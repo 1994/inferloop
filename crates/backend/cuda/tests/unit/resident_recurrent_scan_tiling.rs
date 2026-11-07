@@ -8,9 +8,9 @@ use cutile::error::tensor_error;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_cuda_kernels::contract::RecurrentShape;
-use infer_cuda_kernels::tile::kernels as contract_kernels;
+use infer_cuda_kernels::kernels as contract_kernels;
+use infer_cuda_kernels::runtime::Graph;
 use infer_cuda_kernels::tile::recurrent::{SCAN_COLUMNS, WIDE_SCAN_COLUMNS, WIDE_SCAN_VALUE_HEADS};
-use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error as StdError;
 use std::time::Duration;
 

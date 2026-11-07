@@ -6,9 +6,9 @@ use crate::device::{CudaDevice, device_error};
 use crate::tuning::preparation::driver_build;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{NormBuffers, NormLayout, NormPlan};
+use infer_cuda_kernels::runtime::Timing;
+use infer_cuda_kernels::runtime::{Allocation, Graph};
 use infer_cuda_kernels::tile::identity;
-use infer_cuda_kernels::tile::runtime::Timing;
-use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use std::iter::once;
 use std::time::Duration;
 pub(super) const JIT_OPT_LEVEL: u8 = 3;
@@ -60,7 +60,7 @@ impl Buffers {
         })
     }
     pub fn key(device: &CudaDevice, shape: Shape) -> Result<Key> {
-        use infer_cuda_kernels::tile::jit as compiler;
+        use infer_cuda_kernels::jit as compiler;
         let occupancies: Vec<_> = once(0)
             .chain(CANDIDATES)
             .map(|occupancy| compile_options(occupancy).occupancy_hint())

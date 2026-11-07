@@ -10,7 +10,7 @@ use cutile::error::tensor_error;
 use cutile::prelude::*;
 use cutile::tile_kernel::CompileOptions;
 use infer_core::ModelId;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::runtime::Graph;
 use std::env::var;
 use std::error::Error as StdError;
 use std::time::Duration;

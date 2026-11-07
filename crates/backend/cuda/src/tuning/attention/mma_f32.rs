@@ -20,8 +20,8 @@ use crate::{
 };
 use capture::{Captured, Proof};
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::jit::JitOptions;
-use infer_cuda_kernels::tile::runtime::Timing;
+use infer_cuda_kernels::jit::JitOptions;
+use infer_cuda_kernels::runtime::Timing;
 use reference::Fixture;
 use serde::{Deserialize, Serialize};
 use std::{

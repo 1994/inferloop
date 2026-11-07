@@ -2,8 +2,8 @@
 use super::{ReadbackSource, Readbacks, Rows, device_error};
 use crate::device::CudaDevice;
 use infer_core::{Error, ErrorCode, Result};
-use infer_cuda_kernels::tile::runtime::{Allocation, Flight as Completion, Graph};
-use infer_cuda_kernels::tile::runtime::{DType, DeviceCopy};
+use infer_cuda_kernels::runtime::{Allocation, Flight as Completion, Graph};
+use infer_cuda_kernels::runtime::{DType, DeviceCopy};
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
 use std::sync::Arc;

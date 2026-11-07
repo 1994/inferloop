@@ -6,8 +6,8 @@
 use crate::device::{CudaDevice, device_error};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::PositionTaps;
-use infer_cuda_kernels::tile::runtime::Allocation;
-use infer_cuda_kernels::tile::runtime::bf16;
+use infer_cuda_kernels::runtime::Allocation;
+use infer_cuda_kernels::runtime::bf16;
 
 #[cfg(test)]
 #[path = "../../tests/unit/vision_position.rs"]

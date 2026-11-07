@@ -1,8 +1,8 @@
 //! Reusable pinned uploads returned to their pool only after device completion.
 use crate::device::device_error;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::runtime::{CudaContext, PinnedHostBuffer};
-use infer_cuda_kernels::tile::runtime::{DType, DeviceCopy};
+use infer_cuda_kernels::runtime::{CudaContext, PinnedHostBuffer};
+use infer_cuda_kernels::runtime::{DType, DeviceCopy};
 use std::sync::{Arc, Mutex};
 
 type Available<T> = Arc<Mutex<Vec<PinnedHostBuffer<T>>>>;

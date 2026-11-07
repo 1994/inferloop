@@ -23,7 +23,7 @@ use infer_cuda_kernels::contract::{
 };
 #[cfg(test)]
 use infer_cuda_kernels::contract::{DenseKernel, DenseRowsPlan};
-use infer_cuda_kernels::tile::jit::JitOptions;
+use infer_cuda_kernels::jit::JitOptions;
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::fmt::Display;
 
