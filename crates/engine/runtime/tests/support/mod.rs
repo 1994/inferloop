@@ -140,6 +140,7 @@ struct State {
 pub struct ProtocolBackend {
     profile: Option<infer_ir::ExecutionProfileInspection>,
     host_sampling_draft_depth: usize,
+    media_prefill: bool,
     multimodal: bool,
     media_tasks: Arc<AtomicUsize>,
     /// Sequence lengths at which a submitted chunk asked the backend to keep its prefix.
@@ -226,6 +227,7 @@ impl ProtocolBackend {
         Ok(Self {
             profile: None,
             host_sampling_draft_depth: 0,
+            media_prefill: true,
             multimodal: false,
             media_tasks: Arc::new(AtomicUsize::new(0)),
             published_prefixes: Arc::new(Mutex::new(Vec::new())),
@@ -254,6 +256,12 @@ impl ProtocolBackend {
     #[must_use]
     pub const fn multimodal(mut self) -> Self {
         self.multimodal = true;
+        self
+    }
+    /// Declare whether media prefill runs while a loaded draft is active.
+    #[must_use]
+    pub const fn media_prefill_with_draft(mut self, supported: bool) -> Self {
+        self.media_prefill = supported;
         self
     }
     /// Number of submitted tasks that carried a prepared media plan.
@@ -301,6 +309,13 @@ impl BackendProvider for ProtocolBackend {
     type Ticket = Option<Vec<TaskOutput>>;
     fn identity(&self) -> &str {
         &self.identity
+    }
+    fn speculation_capability(&self) -> infer_ir::SpeculationCapability {
+        infer_ir::SpeculationCapability {
+            draft_depth: self.host_sampling_draft_depth,
+            greedy_only: self.host_sampling_draft_depth > 0,
+            media_prefill: self.media_prefill,
+        }
     }
     fn supports_multimodal(&self) -> bool {
         self.multimodal
@@ -372,6 +387,7 @@ impl BackendProvider for ProtocolBackend {
             speculation: infer_ir::SpeculationCapability {
                 draft_depth: self.host_sampling_draft_depth,
                 greedy_only: self.host_sampling_draft_depth > 0,
+                media_prefill: self.media_prefill,
             },
         }
     }

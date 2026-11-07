@@ -274,6 +274,9 @@ impl CudaExecutor {
         capabilities.speculation = infer_ir::SpeculationCapability {
             draft_depth: loaded.draft_depth(),
             greedy_only: true,
+            // `run_media` rejects a media plan while a draft is bound: admission has to refuse
+            // that request before it is submitted instead of quarantining the engine.
+            media_prefill: false,
         };
         // Rings are sequence state the engine owns outright: fund them before admission.
         let (dflash, state_budget) = match loaded.dflash2() {

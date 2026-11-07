@@ -56,6 +56,22 @@ pub struct SpeculationCapability {
     pub draft_depth: usize,
     /// Whether only greedy sampling is supported, because rejection needs residual sampling.
     pub greedy_only: bool,
+    /// Whether a media prompt can be prefilled while draft proposals are enabled.
+    ///
+    /// Drafts are verified against target rows the media executor cannot produce, so a backend
+    /// that binds both declares the combination here instead of failing a submitted request.
+    #[serde(default)]
+    pub media_prefill: bool,
+}
+impl SpeculationCapability {
+    /// Whether one request may combine media input with speculative draft proposals.
+    ///
+    /// Without a loaded draft no proposal is verified, so media prefill runs on its own and the
+    /// combination is trivially supported.
+    #[must_use]
+    pub const fn allows_media_prefill(&self) -> bool {
+        self.draft_depth == 0 || self.media_prefill
+    }
 }
 impl DeviceCapabilities {
     #[must_use]
