@@ -1,21 +1,23 @@
 use super::{
-    MediaRequest, MediaService, SourcePolicy, TempPath, check_video_frame_limit, image_digest,
-    load_image, load_image_with, load_video_with, parse_rate, read_url, run_bounded, source_digest,
+    MediaRequest, MediaService, ResolvedMedia, SourcePolicy, TempPath, image_digest, load_image,
+    load_image_with, load_video_with, parse_rate, read_url, run_bounded, source_digest,
 };
 use crate::cpu::{CpuConfig, CpuPool, cancelled_context};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use infer_ir::{EncodedImageInfo, ImageEncoding, ImageTransform, MediaPixels, Modality};
-use infer_models::{ImageProcessor, MediaLimits, MultimodalAssets, TextAssets};
+use infer_models::{ImageProcessor, MediaLimits, MultimodalAssets, TextAssets, VideoProcessor};
 use std::env::{temp_dir, var};
-use std::fs::{remove_file, write};
-use std::io::{Cursor, Write};
+use std::fs::{read, remove_file, write};
+use std::io::{self, Cursor, Write};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::id;
 use std::slice::from_ref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::task::JoinHandle;
 
 const ONE_PIXEL_PNG: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -80,22 +82,34 @@ async fn image_decoder_auto_retains_supported_jpeg_and_cpu_override_decodes_it()
                 &assets,
                 prompt,
                 from_ref(&request),
-                &[None],
+                vec![ResolvedMedia::Image(None)],
                 None,
                 context,
             )?;
-            let cpu_jpeg =
-                cpu.prepare_resolved(&assets, prompt, from_ref(&request), &[None], None, context)?;
+            let cpu_jpeg = cpu.prepare_resolved(
+                &assets,
+                prompt,
+                from_ref(&request),
+                vec![ResolvedMedia::Image(None)],
+                None,
+                context,
+            )?;
             let automatic_png = automatic.prepare_resolved(
                 &assets,
                 prompt,
                 from_ref(&png),
-                &[None],
+                vec![ResolvedMedia::Image(None)],
                 None,
                 context,
             )?;
-            let cpu_png =
-                cpu.prepare_resolved(&assets, prompt, from_ref(&png), &[None], None, context)?;
+            let cpu_png = cpu.prepare_resolved(
+                &assets,
+                prompt,
+                from_ref(&png),
+                vec![ResolvedMedia::Image(None)],
+                None,
+                context,
+            )?;
             Ok((automatic_jpeg, cpu_jpeg, automatic_png, cpu_png))
         })
         .await
@@ -143,10 +157,22 @@ async fn image_preparation_follows_backend_capability() {
     let (gpu, host) = pool
         .run(0, move |context| {
             let prompt = "<|vision_start|><|image_pad|><|vision_end|>describe";
-            let gpu =
-                gpu.prepare_resolved(&assets, prompt, from_ref(&request), &[None], None, context)?;
-            let host =
-                host.prepare_resolved(&assets, prompt, from_ref(&request), &[None], None, context)?;
+            let gpu = gpu.prepare_resolved(
+                &assets,
+                prompt,
+                from_ref(&request),
+                vec![ResolvedMedia::Image(None)],
+                None,
+                context,
+            )?;
+            let host = host.prepare_resolved(
+                &assets,
+                prompt,
+                from_ref(&request),
+                vec![ResolvedMedia::Image(None)],
+                None,
+                context,
+            )?;
             Ok((gpu, host))
         })
         .await
@@ -188,7 +214,7 @@ async fn default_image_limit_accepts_multiple_images_in_one_prompt() {
                 &assets,
                 &prompt,
                 &requests,
-                &[None, None, None],
+                (0..3).map(|_| ResolvedMedia::Image(None)).collect(),
                 None,
                 context,
             )
@@ -241,7 +267,7 @@ async fn image_options_match_between_deferred_and_host_processing() {
                 &assets,
                 prompt,
                 from_ref(&request),
-                &[None],
+                vec![ResolvedMedia::Image(None)],
                 Some(&options),
                 context,
             )?;
@@ -249,12 +275,18 @@ async fn image_options_match_between_deferred_and_host_processing() {
                 &assets,
                 prompt,
                 from_ref(&request),
-                &[None],
+                vec![ResolvedMedia::Image(None)],
                 Some(&options),
                 context,
             )?;
-            let resized =
-                gpu.prepare_resolved(&assets, prompt, from_ref(&request), &[None], None, context)?;
+            let resized = gpu.prepare_resolved(
+                &assets,
+                prompt,
+                from_ref(&request),
+                vec![ResolvedMedia::Image(None)],
+                None,
+                context,
+            )?;
             Ok((gpu_result, host_result, resized))
         })
         .await
@@ -305,6 +337,23 @@ fn identity_processor() -> ImageProcessor {
         std: [0.5; 3],
         rescale: 1.0 / 255.0,
     }
+}
+
+async fn video_fixture_server(encoded: Vec<u8>) -> (SocketAddr, JoinHandle<io::Result<()>>) {
+    use axum::{Router, routing::get};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = Router::new().route(
+        "/clip",
+        get(move || {
+            let encoded = encoded.clone();
+            async move { encoded }
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    (address, server)
 }
 
 #[test]
@@ -433,7 +482,7 @@ async fn prepared_images_preserve_order_and_source_identity() {
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
     let mut remote_requests = requests.clone();
     remote_requests[1].url = format!("http://{address}/image");
-    let downloads = service.resolve(&remote_requests, &pool).await.unwrap();
+    let (remote_requests, downloads) = service.resolve(remote_requests, &pool).await.unwrap();
     let (tokens, media, direct, direct_media) = pool
         .run(0, move |context| {
             let prompt = "<|vision_start|><|image_pad|><|vision_end|><|vision_start|><|image_pad|><|vision_end|>describe";
@@ -442,7 +491,7 @@ async fn prepared_images_preserve_order_and_source_identity() {
                 &assets,
                 prompt,
                 &remote_requests,
-                &downloads,
+                downloads,
                 None,
                 context,
             )?;
@@ -468,6 +517,71 @@ async fn prepared_images_preserve_order_and_source_identity() {
         media[0].item.as_ref().unwrap().pixels,
         media[1].item.as_ref().unwrap().pixels
     );
+}
+
+#[tokio::test]
+#[ignore = "requires a real Qwen3-VL package in INFER_VISION_PACKAGE"]
+async fn prepared_video_groups_match_the_complete_clip() {
+    use std::process::Command;
+    use std::time::Duration;
+
+    let (clip, file) = TempPath::create("video-prompt", "mkv").unwrap();
+    drop(file);
+    let mut encode = Command::new("ffmpeg");
+    encode.args([
+        "-v",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=red:s=320x240:r=1:d=2",
+        "-frames:v",
+        "2",
+        "-c:v",
+        "ffv1",
+        &clip.path.to_string_lossy(),
+    ]);
+    let output = run_bounded(&mut encode, 1 << 20, 1 << 20, Duration::from_secs(10), None)
+        .expect("ffmpeg encode");
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let request = MediaRequest {
+        modality: Modality::Video,
+        url: format!(
+            "data:video/x-matroska;base64,{}",
+            STANDARD.encode(read(&clip.path).unwrap())
+        ),
+    };
+    let package = PathBuf::from(var("INFER_VISION_PACKAGE").unwrap());
+    let assets = TextAssets::open(&package, 4096).unwrap();
+    let multimodal = MultimodalAssets::open(&package).unwrap().unwrap();
+    let service = MediaService::new(multimodal, MediaLimits::default());
+    let pool = CpuPool::new(CpuConfig {
+        workers: 2,
+        max_jobs: 4,
+        ..CpuConfig::default()
+    })
+    .unwrap();
+    let (requests, groups) = service.resolve(vec![request.clone()], &pool).await.unwrap();
+    let (tokens, media, direct, direct_media) = pool
+        .run(0, move |context| {
+            let prompt = "<|vision_start|><|video_pad|><|vision_end|>describe";
+            let (direct, direct_media) = service.prepare(&assets, prompt, &[request], context)?;
+            let (tokens, media) =
+                service.prepare_resolved(&assets, prompt, &requests, groups, None, context)?;
+            Ok((tokens, media, direct, direct_media))
+        })
+        .await
+        .unwrap();
+    assert_eq!(tokens, direct.tokens);
+    assert_eq!(media.len(), direct_media.len());
+    for (actual, expected) in media.iter().zip(&direct_media) {
+        assert_eq!(actual.content_digest, expected.content_digest);
+        assert_eq!(
+            actual.item.as_ref().unwrap().pixels,
+            expected.item.as_ref().unwrap().pixels
+        );
+    }
 }
 
 #[test]
@@ -721,14 +835,6 @@ fn temp_path_is_exclusive_and_removed_on_drop() {
     assert!(!path.exists());
 }
 
-#[test]
-fn video_frame_limit_is_explicit_and_not_silently_truncated() {
-    assert!(check_video_frame_limit(Some(768)).is_ok());
-    let error = check_video_frame_limit(Some(769)).expect_err("over-limit clip");
-    assert_eq!(error.code, infer_core::ErrorCode::Capacity);
-    assert!(check_video_frame_limit(None).is_ok());
-}
-
 #[cfg(unix)]
 #[test]
 fn lossless_video_roundtrip_preserves_frames_and_fps() {
@@ -796,6 +902,105 @@ fn lossless_video_roundtrip_preserves_frames_and_fps() {
         assert_eq!(loaded.width, width as usize);
         assert_eq!(loaded.height, height as usize);
         assert_eq!(&loaded.pixels, expected);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn short_video_at_standard_resolution_is_not_rejected_by_a_raw_byte_budget() {
+    use std::process::Command;
+    use std::time::Duration;
+
+    let (clip, file) = TempPath::create("short-video", "mkv").unwrap();
+    drop(file);
+    let mut encode = Command::new("ffmpeg");
+    encode.args([
+        "-v",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=red:s=320x240:r=1:d=2",
+        "-frames:v",
+        "2",
+        "-c:v",
+        "ffv1",
+        &clip.path.to_string_lossy(),
+    ]);
+    let output = run_bounded(&mut encode, 1 << 20, 1 << 20, Duration::from_secs(10), None)
+        .expect("ffmpeg encode");
+    assert!(output.status.success(), "{:?}", output.stderr);
+    let video = load_video_with(
+        &clip.path.to_string_lossy(),
+        SourcePolicy::TrustedLocal,
+        None,
+    )
+    .expect("small video must be accepted");
+    assert_eq!(video.frames.len(), 2);
+    assert_eq!((video.frames[0].width, video.frames[0].height), (320, 240));
+    let image = identity_processor();
+    let processor = VideoProcessor {
+        patch_size: image.patch_size,
+        temporal_patch_size: image.temporal_patch_size,
+        merge_size: image.merge_size,
+        min_pixels: image.min_pixels,
+        max_pixels: image.max_pixels,
+        mean: image.mean,
+        std: image.std,
+        rescale: image.rescale,
+        fps: 2.0,
+        min_frames: 1,
+        max_frames: 4,
+    };
+    let reference = processor.preprocess(&video).unwrap();
+    let encoded = read(&clip.path).unwrap();
+    let inline = format!("data:video/x-matroska;base64,{}", STANDARD.encode(&encoded));
+    let (address, server) = video_fixture_server(encoded).await;
+    let pool = CpuPool::new(CpuConfig {
+        workers: 1,
+        max_jobs: 1,
+        ..CpuConfig::default()
+    })
+    .unwrap();
+    let source = clip.path.to_string_lossy().into_owned();
+    let (first, second, third) = tokio::join!(
+        super::video::resolve(
+            source,
+            SourcePolicy::TrustedLocal,
+            processor.clone(),
+            pool.clone(),
+        ),
+        super::video::resolve(
+            inline,
+            SourcePolicy::Public,
+            processor.clone(),
+            pool.clone()
+        ),
+        super::video::resolve(
+            format!("http://{address}/clip"),
+            SourcePolicy::Public,
+            processor,
+            pool,
+        ),
+    );
+    server.abort();
+    for parts in [first.unwrap(), second.unwrap(), third.unwrap()] {
+        assert_eq!(parts.len(), reference.image.grid.0);
+        assert_eq!(
+            parts
+                .iter()
+                .flat_map(|part| part.image.pixels.iter().copied())
+                .collect::<Vec<_>>(),
+            reference.image.pixels
+        );
+        assert_eq!(
+            parts
+                .iter()
+                .flat_map(|part| part.timestamps.iter().copied())
+                .collect::<Vec<_>>(),
+            reference.timestamps
+        );
     }
 }
 

@@ -1,28 +1,31 @@
 //! URL/data/media preparation for the `OpenAI` adapter.
 //!
 //! Decoding and network access stay in this input layer; the engine receives prepared patches or
-//! RGB8 payloads accepted by its image processor, plus prompt spans. Video reads and commands retain their
-//! time/frame bounds. Malformed inputs are explicit errors, never text-only fallbacks.
+//! RGB8 payloads accepted by its image processor, plus prompt spans. Malformed inputs are explicit
+//! errors, never text-only fallbacks.
 mod images;
 mod options;
 mod source;
+mod video;
 
 use self::images::{Downloads, LoadedImage};
 use self::options::{ResizeMode, ResolvedOptions};
 
 use crate::cpu::{CpuContext, CpuPool};
+use futures_util::future::try_join_all;
 use infer_core::{Error, ErrorCode, MediaId, Result};
 use infer_ir::{MediaInput, MediaItem, MediaPixels, Modality};
 use infer_media_input::{decode_data_uri, decode_rgb8};
 use infer_models::{
-    ImageProcessor, MediaLimits, MultimodalAssets, PreparedPrompt, RawImage, RawVideo, RgbImage,
-    SharedPreparedPrompt, TextAssets, prepare_image_geometry,
+    ImageProcessor, MediaLimits, MultimodalAssets, PreparedPrompt, PreprocessedVideo, RawImage,
+    RawVideo, RgbImage, SharedPreparedPrompt, TextAssets, prepare_image_geometry,
 };
 use infer_spi::ImagePreprocessing;
 use sha2::{Digest, Sha256};
 use std::env::temp_dir;
 use std::fs::{File, OpenOptions, metadata, read, remove_file};
 use std::io::{self, Read, Write};
+use std::mem::{size_of, take};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
@@ -37,12 +40,6 @@ use tokio::time::sleep as async_sleep;
 
 pub use options::ImageProcessingOptions;
 
-/// Largest accepted raw video-frame pixel count.
-const MAX_VIDEO_PIXELS: usize = 16 * 1024 * 1024;
-/// Largest accepted video download/decoded raw output.
-const MAX_VIDEO_BYTES: usize = 24 * 1024 * 1024;
-/// Largest accepted frame count decoded from one clip.
-const MAX_VIDEO_FRAMES: usize = 768;
 /// Chunk size for bounded decoder output draining.
 const READ_CHUNK_BYTES: usize = 64 * 1024;
 /// Check cancellation between source-hash chunks, including for large input files.
@@ -59,8 +56,6 @@ const GRID_AXES: usize = 3;
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 /// FNV-1a 64-bit prime for the content digest.
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-/// Highest accepted source frame rate; lower rates such as 0.5 are preserved.
-const MAX_SOURCE_FPS: f64 = 1000.0;
 /// Bound for one subprocess stream that is not already media-sized.
 const SUBPROCESS_STREAM_BYTES: usize = 1 << 20;
 /// Wall-clock bound for one ffprobe invocation.
@@ -108,6 +103,31 @@ enum FrameKind {
 pub struct MediaRequest {
     pub modality: Modality,
     pub url: String,
+}
+
+/// A media source resolved ahead of bounded CPU preparation.
+pub enum ResolvedMedia {
+    /// Compressed image bytes, or `None` when the inline source is decoded on a worker.
+    Image(Option<Vec<u8>>),
+    /// Independently preprocessed temporal groups of one video clip, in timestamp order.
+    Video(Vec<PreprocessedVideo>),
+}
+
+impl ResolvedMedia {
+    pub(crate) fn retained_bytes(&self) -> Result<usize> {
+        match self {
+            Self::Image(bytes) => Ok(bytes.as_ref().map_or(0, Vec::len)),
+            Self::Video(groups) => groups.iter().try_fold(0usize, |total, group| {
+                group
+                    .image
+                    .pixels
+                    .len()
+                    .checked_mul(size_of::<f32>())
+                    .and_then(|bytes| total.checked_add(bytes))
+                    .ok_or_else(|| Error::invalid("processed video size overflow"))
+            }),
+        }
+    }
 }
 
 /// Decoded-media service shared by the HTTP handlers.
@@ -168,25 +188,55 @@ impl MediaService {
         requests: &[MediaRequest],
         context: &CpuContext,
     ) -> Result<(PreparedPrompt, Vec<MediaInput>)> {
-        self.prepare_inner(assets, prompt, requests, None, context)
+        self.prepare_inner(assets, prompt, requests, context)
     }
 
-    /// Resolve remote media concurrently, preserving one slot per request.
+    /// Resolve remote and video media concurrently, preserving one slot per request.
     ///
-    /// Inline sources leave an empty slot and are decoded later on a CPU worker.
+    /// Image sources download off the CPU workers; video sources spool to a temporary file and
+    /// decode only the model-selected frames. Requests are returned with consumed video URLs.
     /// # Errors
-    /// Returns a transport, cancellation or source-policy error.
+    /// Returns a transport, cancellation, source-policy or video preparation error.
     pub async fn resolve(
         &self,
-        requests: &[MediaRequest],
+        requests: Vec<MediaRequest>,
         pool: &CpuPool,
-    ) -> Result<Vec<Option<Vec<u8>>>> {
-        source::resolve(requests, pool).await
+    ) -> Result<(Vec<MediaRequest>, Vec<ResolvedMedia>)> {
+        let downloads = source::resolve(&requests, pool).await?;
+        let resolved = try_join_all(requests.into_iter().zip(downloads).map(
+            |(mut request, bytes)| {
+                let pool = pool.clone();
+                async move {
+                    let value = if request.modality == Modality::Video {
+                        let processor = self
+                            .assets
+                            .video
+                            .as_ref()
+                            .ok_or_else(|| {
+                                Error::unsupported("package declares no video processor")
+                            })?
+                            .clone();
+                        let url = take(&mut request.url);
+                        if bytes.is_some() {
+                            return Err(Error::invariant("video source was already buffered"));
+                        }
+                        ResolvedMedia::Video(
+                            video::resolve(url, self.source, processor, pool).await?,
+                        )
+                    } else {
+                        ResolvedMedia::Image(bytes)
+                    };
+                    Ok::<_, Error>((request, value))
+                }
+            },
+        ))
+        .await?;
+        Ok(resolved.into_iter().unzip())
     }
 
     /// Prepare resolved media for the selected backend and expand prompt placeholders.
     ///
-    /// `downloads` must have one slot per request and contain bytes for every HTTP URL.
+    /// `downloads` must have one slot per request and hold the resolved source for it.
     /// Call on a CPU worker with its cancellation context; the returned inputs retain their data.
     /// # Errors
     /// Returns errors for unmatched sources, invalid options, media or prompt geometry.
@@ -195,41 +245,62 @@ impl MediaService {
         assets: &TextAssets,
         prompt: &str,
         requests: &[MediaRequest],
-        downloads: &[Option<Vec<u8>>],
+        downloads: Vec<ResolvedMedia>,
         options: Option<&ImageProcessingOptions>,
         context: &CpuContext,
     ) -> Result<(Vec<u32>, Vec<MediaInput>)> {
-        self.prepare_resolved_from(
-            assets,
-            prompt,
-            requests,
-            Downloads::Borrowed(downloads),
-            options,
-            context,
-        )
+        if downloads.len() != requests.len()
+            || requests.iter().zip(&downloads).any(|(request, value)| {
+                match (request.modality.clone(), value) {
+                    (Modality::Image, ResolvedMedia::Image(bytes)) => {
+                        (request.url.starts_with("http://") || request.url.starts_with("https://"))
+                            && bytes.is_none()
+                    }
+                    (Modality::Video, ResolvedMedia::Video(_)) => false,
+                    _ => true,
+                }
+            })
+        {
+            return Err(Error::invariant("remote media sources were not resolved"));
+        }
+        if self.validate_requests(requests)? == Modality::Image {
+            let bytes = downloads
+                .into_iter()
+                .map(|value| match value {
+                    ResolvedMedia::Image(bytes) => Ok(bytes),
+                    ResolvedMedia::Video(_) => {
+                        Err(Error::invariant("image source modality changed"))
+                    }
+                })
+                .collect::<Result<Vec<_>>>()?;
+            return self.prepare_images_from(
+                assets,
+                prompt,
+                requests,
+                Downloads::Owned(bytes),
+                options,
+                context,
+            );
+        }
+        if options.is_some() {
+            return Err(Error::unsupported(
+                "image processor options require image inputs",
+            ));
+        }
+        let videos = downloads
+            .into_iter()
+            .map(|value| match value {
+                ResolvedMedia::Video(groups) => Ok(groups),
+                ResolvedMedia::Image(_) => Err(Error::invariant("video source modality changed")),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let prepared = self
+            .assets
+            .prepare_preprocessed_video(assets, prompt, videos)?;
+        Self::preprocessed_video_inputs(prepared)
     }
 
-    /// Consume resolved HTTP bytes so compressed data can move directly into a media request.
-    pub(crate) fn prepare_resolved_owned(
-        &self,
-        assets: &TextAssets,
-        prompt: &str,
-        requests: &[MediaRequest],
-        downloads: Vec<Option<Vec<u8>>>,
-        options: Option<&ImageProcessingOptions>,
-        context: &CpuContext,
-    ) -> Result<(Vec<u32>, Vec<MediaInput>)> {
-        self.prepare_resolved_from(
-            assets,
-            prompt,
-            requests,
-            Downloads::Owned(downloads),
-            options,
-            context,
-        )
-    }
-
-    fn prepare_resolved_from(
+    fn prepare_images_from(
         &self,
         assets: &TextAssets,
         prompt: &str,
@@ -238,62 +309,68 @@ impl MediaService {
         options: Option<&ImageProcessingOptions>,
         context: &CpuContext,
     ) -> Result<(Vec<u32>, Vec<MediaInput>)> {
-        if downloads.as_slice().len() != requests.len()
-            || requests
+        let (images, sources) =
+            self.load_images(requests, &mut downloads, context, self.image_decoder)?;
+        let selected = self
+            .image_options
+            .resolve(options, self.assets.image_processor())?;
+        if let Some(capability) = &self.image_preprocessing {
+            let transforms = images
                 .iter()
-                .zip(downloads.as_slice())
-                .any(|(request, bytes)| {
-                    (request.url.starts_with("http://") || request.url.starts_with("https://"))
-                        && bytes.is_none()
+                .map(|image| {
+                    let [height, width] = image.source();
+                    selected.transform(height, width)
                 })
-        {
-            return Err(Error::invariant("remote media sources were not resolved"));
-        }
-        if self.validate_requests(requests)? == Modality::Image {
-            let (images, sources) =
-                self.load_images(requests, &mut downloads, context, self.image_decoder)?;
-            let selected = self
-                .image_options
-                .resolve(options, self.assets.image_processor())?;
-            if let Some(capability) = &self.image_preprocessing {
-                let transforms = images
-                    .iter()
-                    .map(|image| {
-                        let [height, width] = image.source();
-                        selected.transform(height, width)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                if transforms
-                    .iter()
-                    .all(|transform| capability.supports(transform))
-                {
-                    return self.deferred_image_inputs(
-                        assets, prompt, images, transforms, sources, &selected,
-                    );
-                }
-            }
-            let images = images
-                .into_iter()
-                .map(|image| image.into_raw(context))
                 .collect::<Result<Vec<_>>>()?;
-            let prepared =
-                selected.prepare_shared(assets, &self.assets.imported, prompt, images)?;
-            Self::shared_image_inputs(prepared, sources, &selected)
-        } else {
-            if options.is_some() {
-                return Err(Error::unsupported(
-                    "image processor options require image inputs",
-                ));
+            if transforms
+                .iter()
+                .all(|transform| capability.supports(transform))
+            {
+                return self
+                    .deferred_image_inputs(assets, prompt, images, transforms, sources, &selected);
             }
-            let (prepared, media) = self.prepare_inner(
-                assets,
-                prompt,
-                requests,
-                Some(downloads.as_slice()),
-                context,
-            )?;
-            Ok((prepared.tokens, media))
         }
+        let images = images
+            .into_iter()
+            .map(|image| image.into_raw(context))
+            .collect::<Result<Vec<_>>>()?;
+        let prepared = selected.prepare_shared(assets, &self.assets.imported, prompt, images)?;
+        Self::shared_image_inputs(prepared, sources, &selected)
+    }
+
+    fn preprocessed_video_inputs(prepared: PreparedPrompt) -> Result<(Vec<u32>, Vec<MediaInput>)> {
+        let PreparedPrompt {
+            tokens,
+            images,
+            spans,
+        } = prepared;
+        if images.is_empty() || images.len() != spans.len() {
+            return Err(Error::invalid(
+                "prepared media is empty or has inconsistent spans",
+            ));
+        }
+        tracing::debug!(target: "infer::media", prompt_tokens = tokens.len(), tokens = ?tokens,
+            spans = ?spans, grids = ?images.iter().map(|image| image.grid).collect::<Vec<_>>(),
+            "prepared HTTP media");
+        let mut media = Vec::with_capacity(images.len());
+        for (index, (image, span)) in images.into_iter().zip(spans).enumerate() {
+            let id = u64::try_from(index)
+                .ok()
+                .and_then(|value| value.checked_add(1))
+                .ok_or_else(|| Error::invalid("media identity overflow"))?;
+            media.push(MediaInput {
+                id: MediaId::new(id)?,
+                modality: Modality::Video,
+                content_digest: digest(&image.pixels, image.grid),
+                item: Some(MediaItem {
+                    modality: Modality::Video,
+                    pixels: image.pixels.into(),
+                    grid: image.grid,
+                    span,
+                }),
+            });
+        }
+        Ok((tokens, media))
     }
 
     fn deferred_image_inputs(
@@ -441,7 +518,6 @@ impl MediaService {
         assets: &TextAssets,
         prompt: &str,
         requests: &[MediaRequest],
-        downloads: Option<&[Option<Vec<u8>>]>,
         context: &CpuContext,
     ) -> Result<(PreparedPrompt, Vec<MediaInput>)> {
         let modality = self.validate_requests(requests)?;
@@ -455,7 +531,7 @@ impl MediaService {
         };
         let (prepared, image_sources) = match modality {
             Modality::Image => {
-                let mut sources = Downloads::Borrowed(downloads.unwrap_or(&[]));
+                let mut sources = Downloads::Borrowed(&[]);
                 let (images, sources) =
                     self.load_images(requests, &mut sources, context, ImageDecoder::Cpu)?;
                 let images = images
@@ -473,14 +549,7 @@ impl MediaService {
             Modality::Video => {
                 let videos = requests
                     .iter()
-                    .enumerate()
-                    .map(|(index, request)| {
-                        let bytes = downloads.and_then(|values| values[index].as_deref());
-                        bytes.map_or_else(
-                            || load_video_with(&request.url, self.source, Some(context)),
-                            |bytes| load_video_bytes(bytes, Some(context)),
-                        )
-                    })
+                    .map(|request| load_video_with(&request.url, self.source, Some(context)))
                     .collect::<Result<Vec<_>>>()?;
                 (
                     self.assets.prepare_video(assets, prompt, &videos)?,
@@ -494,12 +563,23 @@ impl MediaService {
         tracing::debug!(target: "infer::media", prompt_tokens = prepared.tokens.len(), tokens = ?prepared.tokens,
             spans = ?prepared.spans, grids = ?prepared.images.iter().map(|image| image.grid).collect::<Vec<_>>(),
             "prepared HTTP media");
+        let media =
+            Self::media_inputs(&prepared, &modality, image_options.as_ref(), image_sources)?;
+        Ok((prepared, media))
+    }
+
+    fn media_inputs(
+        prepared: &PreparedPrompt,
+        modality: &Modality,
+        image_options: Option<&ResolvedOptions>,
+        image_sources: Vec<SourceDigest>,
+    ) -> Result<Vec<MediaInput>> {
         if prepared.images.is_empty() || prepared.images.len() != prepared.spans.len() {
             return Err(Error::invalid(
                 "prepared media is empty or has inconsistent spans",
             ));
         }
-        if modality == Modality::Image && image_sources.len() != prepared.images.len() {
+        if *modality == Modality::Image && image_sources.len() != prepared.images.len() {
             return Err(Error::invariant(
                 "image source identities do not match prepared images",
             ));
@@ -519,8 +599,8 @@ impl MediaService {
             };
             media.push(MediaInput {
                 id: MediaId::new(id)?,
-                modality: modality.clone(),
-                content_digest: if modality == Modality::Image {
+                modality: (*modality).clone(),
+                content_digest: if *modality == Modality::Image {
                     let source = sources
                         .next()
                         .ok_or_else(|| Error::invariant("missing image source identity"))?;
@@ -534,7 +614,7 @@ impl MediaService {
                 item: Some(item),
             });
         }
-        Ok((prepared, media))
+        Ok(media)
     }
 }
 
@@ -673,31 +753,24 @@ fn load_image_bytes(
 
 /// Decode one video URL/data URI into source-rate RGB frames.
 /// # Errors
-/// Rejects unsupported schemes, over-limit payloads/geometry, missing ffmpeg and decode failures.
+/// Rejects unsupported schemes, unrepresentable geometry, missing ffmpeg and decode failures.
 fn load_video_with(
     url: &str,
     source: SourcePolicy,
     context: Option<&CpuContext>,
 ) -> Result<RawVideo> {
-    let bytes = read_url(url, Some(MAX_VIDEO_BYTES), source, context)?;
+    let bytes = read_url(url, None, source, context)?;
     load_video_bytes(&bytes, context)
 }
 
 fn load_video_bytes(bytes: &[u8], context: Option<&CpuContext>) -> Result<RawVideo> {
     let temp = materialize(bytes, "video")?;
     let probe = probe(&temp.path, context)?;
-    if u64::from(probe.width) * u64::from(probe.height) > MAX_VIDEO_PIXELS as u64 {
-        return Err(Error::new(
-            ErrorCode::Capacity,
-            "video frame dimensions exceed the bounded limit",
-        ));
-    }
-    check_video_frame_limit(probe.total_frames)?;
     let frames = decode_frames(
         &temp.path,
         probe.width,
         probe.height,
-        MAX_VIDEO_FRAMES,
+        0,
         context,
         FrameKind::Video,
     )?;
@@ -829,9 +902,26 @@ fn run_bounded(
     timeout: Duration,
     context: Option<&CpuContext>,
 ) -> Result<BoundedOutput> {
+    run_process(command, stdout_limit, stderr_limit, Some(timeout), context)
+}
+
+fn run_process(
+    command: &mut Command,
+    stdout_limit: usize,
+    stderr_limit: usize,
+    timeout: Option<Duration>,
+    context: Option<&CpuContext>,
+) -> Result<BoundedOutput> {
     if let Some(context) = context {
         context.check()?;
     }
+    let deadline = timeout
+        .map(|timeout| {
+            Instant::now()
+                .checked_add(timeout)
+                .ok_or_else(|| Error::invalid("media subprocess deadline overflow"))
+        })
+        .transpose()?;
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -851,7 +941,6 @@ fn run_bounded(
         .ok_or_else(|| Error::invariant("media subprocess stderr missing"))?;
     let out_reader = read_capped(stdout, stdout_limit);
     let err_reader = read_capped(stderr, stderr_limit);
-    let deadline = Instant::now() + timeout;
     let status = loop {
         if let Some(context) = context
             && let Err(error) = context.check()
@@ -865,7 +954,7 @@ fn run_bounded(
         }
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() >= deadline => {
+            Ok(None) if deadline.is_some_and(|deadline| Instant::now() >= deadline) => {
                 kill_group(child.id());
                 let _ = child.kill();
                 let _ = child.wait();
@@ -922,6 +1011,7 @@ fn read_capped(
             if bytes.len().saturating_add(read) > limit {
                 overflow = true;
             } else {
+                bytes.try_reserve(read).map_err(io::Error::other)?;
                 bytes.extend_from_slice(&chunk[..read]);
             }
         }
@@ -972,7 +1062,6 @@ struct Probe {
     width: u32,
     height: u32,
     fps: f64,
-    total_frames: Option<usize>,
 }
 
 fn probe(path: &Path, context: Option<&CpuContext>) -> Result<Probe> {
@@ -983,7 +1072,7 @@ fn probe(path: &Path, context: Option<&CpuContext>) -> Result<Probe> {
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=width,height,avg_frame_rate,nb_frames,duration",
+        "stream=width,height,avg_frame_rate",
         "-of",
         "json",
         &path.to_string_lossy(),
@@ -1023,48 +1112,7 @@ fn probe(path: &Path, context: Option<&CpuContext>) -> Result<Probe> {
         .and_then(serde_json::Value::as_str)
         .unwrap_or("30/1");
     let fps = parse_rate(rate)?;
-    let total_frames = stream
-        .get("nb_frames")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|value| value.parse::<usize>().ok())
-        .or_else(|| {
-            let duration = stream
-                .get("duration")
-                .and_then(serde_json::Value::as_str)
-                .and_then(|value| value.parse::<f64>().ok())?;
-            let estimate = (duration * fps).ceil();
-            (estimate.is_finite() && estimate >= 0.0).then(|| usize_from_frames(estimate))
-        });
-    Ok(Probe {
-        width,
-        height,
-        fps,
-        total_frames,
-    })
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
-    reason = "The estimate is finite, nonnegative and bounded by the frame limit check"
-)]
-fn usize_from_frames(value: f64) -> usize {
-    if value > usize::MAX as f64 {
-        usize::MAX
-    } else {
-        value as usize
-    }
-}
-
-fn check_video_frame_limit(total_frames: Option<usize>) -> Result<()> {
-    if total_frames.is_some_and(|frames| frames > MAX_VIDEO_FRAMES) {
-        return Err(Error::new(
-            ErrorCode::Capacity,
-            "video frame count exceeds the bounded decoder limit",
-        ));
-    }
-    Ok(())
+    Ok(Probe { width, height, fps })
 }
 
 fn parse_rate(rate: &str) -> Result<f64> {
@@ -1079,7 +1127,7 @@ fn parse_rate(rate: &str) -> Result<f64> {
         return Err(Error::invalid("media frame rate must be positive"));
     }
     let fps = num / den;
-    if !fps.is_finite() || fps <= 0.0 || fps > MAX_SOURCE_FPS {
+    if !fps.is_finite() || fps <= 0.0 {
         return Err(Error::invalid(
             "media frame rate is outside the supported range",
         ));
@@ -1087,7 +1135,7 @@ fn parse_rate(rate: &str) -> Result<f64> {
     Ok(fps)
 }
 
-/// Decode bounded RGB24 frames through ffmpeg.
+/// Decode RGB24 through ffmpeg for the synchronous compatibility path.
 fn decode_frames(
     path: &Path,
     width: u32,
@@ -1101,16 +1149,19 @@ fn decode_frames(
         .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)))
         .and_then(|n| n.checked_mul(RGB_CHANNELS))
         .ok_or_else(|| Error::invalid("media frame size overflow"))?;
-    let total_bytes = frame_bytes
-        .checked_mul(frames)
-        .ok_or_else(|| Error::invalid("decoded media size overflow"))?;
-    if frame_bytes == 0 || (kind == FrameKind::Video && total_bytes > MAX_VIDEO_BYTES) {
+    if frame_bytes == 0 {
         return Err(Error::new(
             ErrorCode::Capacity,
             "decoded media exceeds the bounded limit",
         ));
     }
-    let requested = frames.saturating_add(1);
+    let total_bytes = if kind == FrameKind::Image {
+        frame_bytes
+            .checked_mul(frames)
+            .ok_or_else(|| Error::invalid("decoded media size overflow"))?
+    } else {
+        usize::MAX
+    };
     let mut command = Command::new("ffmpeg");
     command.args([
         "-v",
@@ -1123,23 +1174,16 @@ fn decode_frames(
         "-an",
         "-fps_mode",
         "passthrough",
-        "-frames:v",
-        &requested.to_string(),
-        "-f",
-        "rawvideo",
-        "-pix_fmt",
-        "rgb24",
-        "pipe:1",
     ]);
-    let output = run_bounded(
+    if kind == FrameKind::Image {
+        command.args(["-frames:v", &frames.saturating_add(1).to_string()]);
+    }
+    command.args(["-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]);
+    let output = run_process(
         &mut command,
-        if kind == FrameKind::Image {
-            total_bytes
-        } else {
-            MAX_VIDEO_BYTES
-        },
+        total_bytes,
         SUBPROCESS_STREAM_BYTES,
-        Duration::from_secs(DECODE_TIMEOUT_SECONDS),
+        (kind == FrameKind::Image).then_some(Duration::from_secs(DECODE_TIMEOUT_SECONDS)),
         context,
     )?;
     if !output.status.success() {
@@ -1152,7 +1196,7 @@ fn decode_frames(
         return Err(Error::invalid("decoded media byte count is inconsistent"));
     }
     let count = output.stdout.len() / frame_bytes;
-    if count > frames {
+    if kind == FrameKind::Image && count > frames {
         return Err(Error::new(
             ErrorCode::Capacity,
             "video exceeds the bounded decoder frame limit",

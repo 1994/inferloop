@@ -14,6 +14,20 @@ pub struct DecodedImage {
 }
 
 impl DecodedImage {
+    pub(crate) fn from_rgb8(width: u32, height: u32, pixels: Vec<u8>) -> Result<Self> {
+        let expected = usize::try_from(width)
+            .ok()
+            .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)))
+            .and_then(|pixels| pixels.checked_mul(CHANNELS));
+        if width == 0 || height == 0 || expected != Some(pixels.len()) {
+            return Err(Error::invalid("decoded RGB frame dimensions"));
+        }
+        Ok(Self {
+            width,
+            height,
+            pixels,
+        })
+    }
     /// Consume the image and return its width, height and RGB8 bytes.
     #[must_use]
     pub fn into_parts(self) -> (u32, u32, Vec<u8>) {

@@ -1,7 +1,9 @@
 //! Decoding of inline media sources.
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use base64::read::DecoderReader;
 use infer_core::{Error, ErrorCode, Result};
+use std::io::Read;
 
 /// Encoded characters per three decoded bytes, before padding.
 const BASE64_EXPANSION_NUMERATOR: usize = 4;
@@ -29,15 +31,7 @@ pub fn decode_data_uri(url: &str, limit: Option<usize>) -> Result<Vec<u8>> {
             "media data URI text exceeds the bounded limit",
         ));
     }
-    let (header, payload) = url
-        .split_once(',')
-        .ok_or_else(|| Error::invalid("malformed data URI"))?;
-    if !header.starts_with("data:") {
-        return Err(Error::invalid("malformed data URI"));
-    }
-    if !header.ends_with(";base64") {
-        return Err(Error::unsupported("only base64 data URIs are supported"));
-    }
+    let payload = data_uri_payload(url)?;
     let bytes = STANDARD
         .decode(payload)
         .map_err(|error| Error::invalid(format!("data URI base64: {error}")))?;
@@ -48,4 +42,29 @@ pub fn decode_data_uri(url: &str, limit: Option<usize>) -> Result<Vec<u8>> {
         ));
     }
     Ok(bytes)
+}
+
+/// Read decoded bytes from a base64 data URI without allocating a second full input buffer.
+///
+/// Reading is CPU-bound and must run on a bounded worker. Invalid base64 is reported by the
+/// reader as an I/O error; the URI must remain alive until reading finishes.
+///
+/// # Errors
+/// Rejects malformed or non-base64 data URI headers.
+pub fn data_uri_reader(url: &str) -> Result<impl Read + Send + '_> {
+    let payload = data_uri_payload(url)?;
+    Ok(DecoderReader::new(payload.as_bytes(), &STANDARD))
+}
+
+fn data_uri_payload(url: &str) -> Result<&str> {
+    let (header, payload) = url
+        .split_once(',')
+        .ok_or_else(|| Error::invalid("malformed data URI"))?;
+    if !header.starts_with("data:") {
+        return Err(Error::invalid("malformed data URI"));
+    }
+    if !header.ends_with(";base64") {
+        return Err(Error::unsupported("only base64 data URIs are supported"));
+    }
+    Ok(payload)
 }
