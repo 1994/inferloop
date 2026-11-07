@@ -1114,6 +1114,7 @@ impl DeviceProgram {
     }
 
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub(crate) fn step_batch_readout(
         &mut self,
         tokens: &[u32],
@@ -1232,6 +1233,7 @@ impl DeviceProgram {
     }
 
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub(crate) const fn attention_taps(&self) -> &super::attention_decode::taps::Taps {
         &self.attention.taps
     }
@@ -1478,6 +1480,7 @@ impl DeviceProgram {
     }
 
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub(crate) fn prefill_batch_readout(
         &mut self,
         tokens: &[u32],

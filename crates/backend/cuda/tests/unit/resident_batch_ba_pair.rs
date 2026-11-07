@@ -204,5 +204,6 @@ fn single_row_logits_keep_their_separate_readout_path() {
     assert_eq!(last_row.pair(0), None);
 }
 
+#[cfg(feature = "cuda")]
 #[path = "resident_gdn_projection_gpu.rs"]
 mod gpu;

@@ -236,6 +236,7 @@ impl CudaExecutor {
     /// # Errors
     /// Rejects an empty state limit/budget or unavailable device attributes.
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub fn new(loaded: LoadedModel, state_budget: u64, maximum_states: usize) -> Result<Self> {
         let mut backend = Self::with_roofline(loaded, state_budget, maximum_states, None)?;
         backend.pool_quote = None;

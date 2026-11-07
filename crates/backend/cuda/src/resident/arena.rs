@@ -505,5 +505,6 @@ impl Fp4Scratch {
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/arena_tensors.rs"]
 mod tensors;

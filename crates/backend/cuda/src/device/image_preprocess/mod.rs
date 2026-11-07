@@ -279,5 +279,6 @@ impl Processor {
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../../tests/unit/vision_image_preprocess.rs"]
 mod tests;

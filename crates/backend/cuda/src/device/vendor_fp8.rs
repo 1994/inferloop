@@ -691,6 +691,7 @@ impl Support {
 
     /// Test-only evidence that typed restoration never consults a heuristic shortlist.
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub(crate) fn heuristic_query_count(&self) -> usize {
         self.context.as_ref().map_or(0, |context| {
             context.heuristic_queries.load(Ordering::Relaxed)

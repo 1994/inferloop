@@ -5,6 +5,7 @@
 //! accepted prefix. Rolling back therefore needs no per-lane state snapshot, which was two full
 //! recurrent state copies (about 300 MB on the 27B) per slot.
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 pub use infer_cuda_kernels::tile::recurrent::slot_recurrent as fused;
 
 use super::{
@@ -454,9 +455,11 @@ pub(super) fn record_commit(
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_slot_recurrent.rs"]
 mod tests;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/slot_staging.rs"]
 mod staging_tests;

@@ -14,6 +14,8 @@ thread_local! {
 pub fn forced_choice() -> Option<Choice> {
     FORCED.get()
 }
+/// Forces a choice for the cuTile attention checks, which build under `cuda` only.
+#[cfg(feature = "cuda")]
 pub fn with_choice<T>(choice: Choice, run: impl FnOnce() -> T) -> T {
     struct Restore(Option<Choice>);
     impl Drop for Restore {
@@ -24,6 +26,13 @@ pub fn with_choice<T>(choice: Choice, run: impl FnOnce() -> T) -> T {
     let _restore = Restore(FORCED.replace(Some(choice)));
     run()
 }
+#[cfg_attr(
+    not(feature = "cuda"),
+    expect(
+        dead_code,
+        reason = "Read by the cuTile attention checks, which build under cuda only"
+    )
+)]
 pub struct Entry {
     pub state: TensorId,
     pub heads: usize,

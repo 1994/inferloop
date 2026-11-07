@@ -263,5 +263,6 @@ pub(super) fn fingerprint(device: &CudaDevice, s: Shape) -> Result<String> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../../../tests/unit/tuning_attention_f32_append_headers.rs"]
 mod append_header_tests;

@@ -69,8 +69,10 @@ pub(super) fn record(
 
 use infer_core::Result;
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 use infer_cuda_kernels::tile::rope::slot_rope as kernels;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_slot_rope.rs"]
 mod tests;

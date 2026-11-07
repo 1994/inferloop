@@ -4,8 +4,10 @@ use super::device_tower;
 use super::launches::{Launches, capture};
 use super::{VisionWeights, weights::AttentionLayer, weights::half_tile};
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 use crate::attention::benchmark::REPEATS;
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 use crate::attention::benchmark::measure;
 use crate::attention::tile_rows;
 use crate::device::vision_position::DeviceTaps;
@@ -38,6 +40,7 @@ pub(super) const COLUMN_TILE: usize = 64;
 
 /// Column tile of every vision projection; test-only audit hook.
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[must_use]
 pub(super) const fn column_tile() -> usize {
     COLUMN_TILE
@@ -1098,6 +1101,7 @@ pub fn merger(
 /// # Errors
 /// Rejects shapes that do not tile by the kernel's block sizes or failed CUDA execution.
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[expect(
     clippy::too_many_arguments,
     reason = "The regression test supplies every kernel operand explicitly"
@@ -1251,6 +1255,7 @@ pub const fn attention_tiles(tokens: usize) -> [usize; ATTENTION_CONFIG_FIELDS] 
 /// # Errors
 /// Rejects invalid half-width/row geometry or failed CUDA execution.
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 pub fn rope_compact_kernel(
     device: &CudaDevice,
     query: &[f32],
@@ -1318,7 +1323,7 @@ pub fn rope_compact_kernel(
 /// # Errors
 /// Rejects invalid fixture geometry or failed CUDA execution.
 #[cfg_attr(
-    not(test),
+    not(all(test, feature = "cuda")),
     expect(
         dead_code,
         reason = "The compact attention block is staged until the full compact encoder selects it"

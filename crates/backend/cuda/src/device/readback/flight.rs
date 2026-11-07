@@ -173,6 +173,7 @@ impl Readbacks<f32> {
     }
 
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub(crate) fn poll_with_tokens(
         &mut self,
         tokens: &mut Readbacks<i32>,

@@ -1,7 +1,9 @@
 //! Prompt GEMM: quantized weights are decoded in tiles, BF16 MMA accumulates in F32.
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_prefill_gemm_bench_check.rs"]
 mod bench_check;
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 pub use infer_cuda_kernels::tile::projection::prefill_gemm as gemm;

@@ -746,6 +746,7 @@ impl SlotVerifyGraph {
     }
 
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub(super) const fn has_batched_commit(&self) -> bool {
         self.batched_commit.is_some()
     }
@@ -838,5 +839,6 @@ fn verify_lanes(
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_slot_verify.rs"]
 mod tests;

@@ -214,6 +214,7 @@ impl Captured {
         })
     }
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub fn candidate(
         device: &CudaDevice,
         fixture: &Fixture,
@@ -222,6 +223,7 @@ impl Captured {
         Self::new_with_support(device, fixture, Choice::RustSimt, Some(support))
     }
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub fn graph_variant(
         &self,
         device: &CudaDevice,
@@ -235,6 +237,7 @@ impl Captured {
         })
     }
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub fn verify_variant(&self, device: &CudaDevice, f: &Fixture, graph: &Graph) -> Result<usize> {
         self.verify(device, f)?;
         let expected = device.runtime().read(&self.operands.output)?;
@@ -428,5 +431,6 @@ pub(super) fn native_fingerprint(device: &CudaDevice, shape: Shape) -> Result<St
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../../tests/unit/tuning_attention_append_headers.rs"]
 mod append_header_tests;

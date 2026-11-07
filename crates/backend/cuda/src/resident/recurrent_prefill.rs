@@ -1,8 +1,10 @@
 //! Token-chunk recurrent execution: keep the state in registers across prompt rows.
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 pub use infer_cuda_kernels::tile::recurrent::recurrent_prefill as kernels;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_recurrent_prefill.rs"]
 mod tests;
 
@@ -24,10 +26,12 @@ use std::cell::Cell;
 pub use workspace::Workspace;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_recurrent_prefill_integration_tests.rs"]
 mod integration;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_recurrent_prefill_benchmark_tests.rs"]
 mod benchmark;
 
@@ -44,5 +48,6 @@ thread_local! {
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_recurrent_oxide.rs"]
 mod oxide_tests;

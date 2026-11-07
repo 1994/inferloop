@@ -1,5 +1,6 @@
 //! Parallel causal convolution across a prompt chunk, followed by one state commit.
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 pub use infer_cuda_kernels::tile::recurrent::conv_prefill as kernels;
 
 use super::{ActivationArena, ProgramWeights, batch::States, buffers::buffer, capture::error};
@@ -68,5 +69,6 @@ pub(super) fn record(
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_conv_prefill.rs"]
 mod tests;

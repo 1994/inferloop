@@ -78,6 +78,7 @@ fn one(
         baseline_ms=times.baseline_median_ms,candidate_ms=times.candidate_median_ms,
         "vendor FP4 paired confirmation");
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     super::tests::evidence(
         &serde_json::json!({"phase":"vendor_fp4_confirm","m":shape.m,
         "n":shape.n,"k":shape.k,"clear_l2":clear_l2,"reverse":reverse,

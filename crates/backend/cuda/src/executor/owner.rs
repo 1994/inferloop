@@ -194,5 +194,6 @@ impl CudaBackend {
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/executor_owner.rs"]
 mod tests;

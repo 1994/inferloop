@@ -65,6 +65,7 @@ pub(crate) mod greedy;
 mod token_readout;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 pub(crate) use attention_decode::taps as attention_prefill_taps;
 
 #[cfg(test)]
@@ -75,9 +76,11 @@ pub(crate) mod fp8_quant_reduction;
 pub(crate) mod pool_gemv;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 pub(crate) use small_gemm::kernels as small_gemm_kernels;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_gated_norm_discovery.rs"]
 pub(crate) mod gated_norm_discovery;
 
@@ -97,6 +100,7 @@ pub(crate) use norm_maximum::{
 
 mod norm_fp4;
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 mod norm_fp4_kernel;
 
 #[cfg(test)]
@@ -106,8 +110,9 @@ pub(crate) use norm_fp4::{
 };
 
 #[cfg(test)]
-#[cfg(test)]
+#[cfg(feature = "cuda")]
 pub(crate) use norm_fp4_kernel::kernels::norm_fp4 as norm_fp4_kernel_entry;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 pub(crate) use norm_fp4::eligible_columns as norm_fp4_columns;

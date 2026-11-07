@@ -12,6 +12,7 @@ pub mod budget;
 #[path = "../../../tests/unit/resident_dflash2_budget.rs"]
 mod budget_tests;
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 mod kernels;
 mod weights;
 use infer_cuda_kernels::contract::{

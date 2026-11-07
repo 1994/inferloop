@@ -1,5 +1,6 @@
 //! Row-independent F32 GEMV with the original private accumulation and reduction tree.
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 pub use infer_cuda_kernels::tile::projection::pool_gemv as kernels;
 
 use super::buffers::{RowMajor, buffer};
@@ -87,5 +88,6 @@ pub fn with_pool_gemv<T>(enabled: bool, run: impl FnOnce() -> T) -> T {
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/resident_pool_gemv_cell.rs"]
 pub(super) mod cell_tests;

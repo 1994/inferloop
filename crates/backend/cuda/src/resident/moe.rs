@@ -194,8 +194,10 @@ pub(super) fn validate_node(
 }
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 use infer_cuda_kernels::tile::moe::moe as kernels;
 
 #[cfg(test)]
+#[cfg(feature = "cuda")]
 #[path = "../../tests/unit/moe.rs"]
 mod tests;

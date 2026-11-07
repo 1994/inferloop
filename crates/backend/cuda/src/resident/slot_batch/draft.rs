@@ -74,6 +74,7 @@ impl SlotPool {
     /// Supply one external hidden row per active lane, retaining upload owners for every
     /// graph update (including inactive slots on later replays).
     #[cfg(test)]
+    #[cfg(feature = "cuda")]
     pub(crate) fn run_external(
         &mut self,
         device: &CudaDevice,
