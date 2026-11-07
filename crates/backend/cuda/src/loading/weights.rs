@@ -5,9 +5,9 @@ use crate::constants::GIB;
 use crate::mlp::{Matrix, ProjectionWeight};
 use crate::nvfp4::to_bf16;
 use crate::{device::CudaDevice, strategy::LinearTiling};
-use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::tile::runtime::bf16;
+use infer_cuda_kernels::tile::runtime::{f4e2m1fnx2, f8e4m3fn};
 use infer_ir::DType;
 use infer_models::{
     DeviceWeight, QuantizedPackage, WeightEncoding, WeightSource, WeightView, convert_float_bytes,

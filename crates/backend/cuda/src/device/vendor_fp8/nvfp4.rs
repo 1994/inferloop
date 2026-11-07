@@ -12,7 +12,6 @@ use crate::resident::buffers::RowMajor;
 use crate::tuning::projection_budget::ProjectionKind;
 use crate::tuning::resident_gemm::{self, GemmConfig, ResidentTuningSession};
 use crate::tuning::{nvfp4_lt as cache, table_path};
-use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use infer_core::ErrorCode;
 use infer_core::Result;
 use infer_cuda_kernels::contract::{
@@ -20,6 +19,7 @@ use infer_cuda_kernels::contract::{
 };
 use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
+use infer_cuda_kernels::tile::runtime::{f4e2m1fnx2, f8e4m3fn};
 #[cfg(test)]
 use std::{
     cell::Cell,
@@ -469,7 +469,7 @@ fn disk_key(
         return Err(error("FP4 weight identity"));
     }
     let pack_fingerprint =
-        identity::fp4_scale_swizzle(&context.device.stream, &scale_plan(shape), op.scratch.len())
+        identity::fp4_scale_swizzle(context.device.tile(), &scale_plan(shape), op.scratch.len())
             .map_err(|e| error(e.to_string()))?;
     Ok(cache::Key {
         native: resident_gemm::cache_key(&context.device, [shape.m, shape.n, shape.k])

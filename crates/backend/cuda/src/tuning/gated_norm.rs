@@ -37,8 +37,8 @@ fn memo() -> &'static Memo {
     static MEMO: OnceLock<Memo> = OnceLock::new();
     MEMO.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
-fn process_key(device: &CudaDevice, shape: Shape) -> ProcessKey {
-    (device.stream.device().ordinal(), shape)
+const fn process_key(device: &CudaDevice, shape: Shape) -> ProcessKey {
+    (device.ordinal(), shape)
 }
 pub(crate) fn compile_options(occupancy: i32) -> JitOptions {
     if occupancy == BASELINE {

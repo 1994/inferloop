@@ -1,12 +1,13 @@
 //! Owned pinned destinations; host slices are exposed only after submission completion.
 use super::{CudaDevice, device_error};
 use crate::constants::MIB;
-use cuda_core::{CudaContext, DType, DeviceCopy, PinnedHostBuffer};
 use infer_core::{Error, ErrorCode, Result};
 use infer_cuda_kernels::tile::runtime::Copies;
 #[cfg(test)]
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_cuda_kernels::tile::runtime::{Allocation, Pinned, Readback};
+use infer_cuda_kernels::tile::runtime::{CudaContext, PinnedHostBuffer};
+use infer_cuda_kernels::tile::runtime::{DType, DeviceCopy};
 use std::sync::{Arc, Mutex};
 
 /// Total pinned bytes admitted across one batch of readback copies.
@@ -90,7 +91,7 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
                 "pinned readbacks exceed 64 MiB",
             ));
         }
-        let context = CudaContext::new(device.stream.device().ordinal()).map_err(device_error)?;
+        let context = CudaContext::new(device.ordinal()).map_err(device_error)?;
         let buffer = PinnedHostBuffer::zeroed(&context, len).map_err(device_error)?;
         Ok(Self {
             context: Some(context),
@@ -234,8 +235,7 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
                 continue;
             }
             if self.context.is_none() {
-                self.context =
-                    Some(CudaContext::new(device.stream.device().ordinal()).map_err(device_error)?);
+                self.context = Some(CudaContext::new(device.ordinal()).map_err(device_error)?);
             }
             let context = self
                 .context
@@ -280,7 +280,7 @@ fn source_bytes<T: DType + DeviceCopy>(
     device: &CudaDevice,
     source: &ReadbackSource<T>,
 ) -> Result<usize> {
-    if source.source.device() != device.stream.device().ordinal() {
+    if source.source.device() != device.ordinal() {
         return Err(Error::invalid("pinned readback device mismatch"));
     }
     if source

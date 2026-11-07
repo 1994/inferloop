@@ -12,6 +12,7 @@ use super::recurrent::recurrent_prefill;
 use super::sampling::greedy;
 use super::state::aux;
 use crate::contract::{Fp4ScalePlan, GreedyPlan};
+use crate::tile::runtime::Device;
 use cuda_core::{DType, Stream, f4e2m1fnx2, f8e4m3fn};
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::half::bf16;
@@ -30,10 +31,11 @@ const GEMM_RANK: usize = 3;
 /// # Errors
 /// Reports a failed lowering.
 pub fn recurrent_wy(
-    stream: &Arc<Stream>,
+    device: &Device,
     shape: [usize; RECURRENT_RANK],
     splits: &[usize],
 ) -> Result<Vec<String>> {
+    let stream = device.stream();
     let [kh, vh, dim, lanes] = shape;
     let qkv = api::meta::<f32>(&[lanes, 2 * kh + vh, dim])
         .sync_on(stream)
@@ -103,12 +105,13 @@ pub fn recurrent_wy(
 /// # Errors
 /// Reports a failed lowering.
 pub fn fp8_candidates(
-    stream: &Arc<Stream>,
+    device: &Device,
     shape: [usize; GEMM_RANK],
     row_tiles: &[usize],
     column_tiles: &[usize],
     aux_tile: usize,
 ) -> Result<Vec<String>> {
+    let stream = device.stream();
     let [rows, outputs, columns] = shape;
     let input = api::meta::<f32>(&[rows, columns])
         .sync_on(stream)
@@ -183,10 +186,11 @@ pub struct Fp4Search<'a> {
 /// # Errors
 /// Reports a failed lowering.
 pub fn fp4_candidates(
-    stream: &Arc<Stream>,
+    device: &Device,
     shape: [usize; GEMM_RANK],
     search: Fp4Search<'_>,
 ) -> Result<Vec<String>> {
+    let stream = device.stream();
     let [m, n, k] = shape;
     let input = api::meta::<f32>(&[m, k])
         .sync_on(stream)
@@ -257,10 +261,11 @@ pub fn fp4_candidates(
 /// # Errors
 /// Reports a failed lowering.
 pub fn dense_prompt_candidates(
-    stream: &Arc<Stream>,
+    device: &Device,
     shape: [usize; GEMM_RANK],
     tiles: &[[usize; 2]],
 ) -> Result<Vec<String>> {
+    let stream = device.stream();
     let [m, n, k] = shape;
     let input = api::meta::<f32>(&[m, k])
         .sync_on(stream)
@@ -299,10 +304,11 @@ pub struct DenseSearch<'a> {
 /// # Errors
 /// Reports a failed lowering.
 pub fn dense_candidates(
-    stream: &Arc<Stream>,
+    device: &Device,
     shape: [usize; GEMM_RANK],
     search: DenseSearch<'_>,
 ) -> Result<Vec<String>> {
+    let stream = device.stream();
     let [m, n, k] = shape;
     let input = api::meta::<f32>(&[m, k])
         .sync_on(stream)
@@ -375,10 +381,11 @@ pub struct SwigluSearch<'a> {
 /// # Errors
 /// Reports a failed lowering.
 pub fn swiglu_candidates(
-    stream: &Arc<Stream>,
+    device: &Device,
     shape: [usize; GEMM_RANK],
     search: SwigluSearch<'_>,
 ) -> Result<Vec<String>> {
+    let stream = device.stream();
     let [m, n, k] = shape;
     let group = search.group;
     let mut q = api::meta::<f4e2m1fnx2>(&[m, k / 2])
@@ -445,11 +452,12 @@ pub fn swiglu_candidates(
 /// # Errors
 /// Reports a failed lowering.
 pub fn gated_norm_candidates(
-    stream: &Arc<Stream>,
+    device: &Device,
     [rows, dimension]: [usize; 2],
     epsilon: f32,
     occupancies: &[Option<i32>],
 ) -> Result<Vec<String>> {
+    let stream = device.stream();
     let meta = || {
         api::meta::<f32>(&[rows, dimension])
             .sync_on(stream)
@@ -491,11 +499,12 @@ pub fn gated_norm_candidates(
 /// # Errors
 /// Reports a failed lowering or an empty identity.
 pub fn exact_recurrence(
-    stream: &Arc<Stream>,
+    device: &Device,
     shape: [usize; RECURRENT_RANK],
     value_columns: usize,
     metadata_fields: usize,
 ) -> Result<Vec<String>> {
+    let stream = device.stream();
     let [kh, vh, dim, width] = shape;
     let meta = |extent: &[usize]| {
         api::meta::<f32>(extent)
@@ -729,7 +738,8 @@ fn attention_compute<E: DType>(
 /// Both greedy reductions at their exact geometry.
 /// # Errors
 /// Reports a failed lowering.
-pub fn greedy_reductions(stream: &Arc<Stream>, plan: &GreedyPlan) -> Result<String> {
+pub fn greedy_reductions(device: &Device, plan: &GreedyPlan) -> Result<String> {
+    let stream = device.stream();
     let GreedyPlan {
         rows,
         vocabulary,
@@ -775,11 +785,8 @@ pub fn greedy_reductions(stream: &Arc<Stream>, plan: &GreedyPlan) -> Result<Stri
 /// The FP4 scale swizzle a vendor FP4 GEMM consumes, into an `out_len`-byte destination.
 /// # Errors
 /// Reports a plan that does not tile, or a failed lowering.
-pub fn fp4_scale_swizzle(
-    stream: &Arc<Stream>,
-    plan: &Fp4ScalePlan,
-    out_len: usize,
-) -> Result<String> {
+pub fn fp4_scale_swizzle(device: &Device, plan: &Fp4ScalePlan, out_len: usize) -> Result<String> {
+    let stream = device.stream();
     let launch = swizzle(plan)?;
     let mut out = api::meta::<f8e4m3fn>(&[out_len / launch.row, launch.row])
         .sync_on(stream)

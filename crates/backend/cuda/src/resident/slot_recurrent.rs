@@ -21,6 +21,7 @@ use infer_cuda_kernels::contract::{
     Buffer, DeltaStepPlan, FusedConvBuffers, FusedDeltaBuffers, LaneBuffers, Recording,
 };
 use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::tile::runtime::Attribute;
 use infer_ir::{TensorNode, TensorOp};
 use std::collections::BTreeMap;
 
@@ -149,10 +150,9 @@ pub(super) struct ValueDevice {
 }
 impl ValueDevice {
     pub(super) fn new(device: &CudaDevice) -> Result<Self> {
-        use cuda_core::sys::CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_WARP_SIZE as WARP;
         Ok(Self {
             multiprocessors: device.profile()?.multiprocessors,
-            warp_size: device.attribute(WARP)?,
+            warp_size: device.attribute(Attribute::WarpSize)?,
         })
     }
 }

@@ -18,7 +18,6 @@ use crate::{
     device::{CudaDevice, DeviceProfile, device_error},
     mlp::ProjectionWeight,
 };
-use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, Fp4Pair, Fp4QuantKind, Fp4QuantPlan, Fp8, GemmLoop, GemmPlan, Kernels, Recording,
@@ -27,6 +26,7 @@ use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::jit::JitOptions;
 use infer_cuda_kernels::tile::runtime::Timing;
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph, Watch};
+use infer_cuda_kernels::tile::runtime::{f4e2m1fnx2, f8e4m3fn};
 use serde::{Deserialize, Serialize};
 use std::env::var_os;
 use std::fmt::Display;
@@ -579,7 +579,7 @@ fn kernel_fingerprint(device: &CudaDevice, shape: [usize; GEMM_RANK]) -> Result<
         return Ok(value);
     }
     let identities = identity::fp4_candidates(
-        &device.stream,
+        device.tile(),
         shape,
         identity::Fp4Search {
             group: NVFP4_GROUP_SIZE,

@@ -9,9 +9,9 @@ use super::attention_oxide::{Geometry, owners};
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::{CudaDevice, device_error};
 use catalog::{DIM, HEADS, KV_HEADS, Variant};
-use cuda_core::Function;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{DecodeBuffers, KvBuffers, Owner, Recording};
+use infer_cuda_kernels::tile::runtime::Function;
 use infer_cuda_kernels::tile::runtime::{Argument, KernelLaunch};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -116,7 +116,7 @@ impl Support {
         Ok(())
     }
     pub fn prepare_variant(&mut self, device: &CudaDevice, variant: Variant) -> Result<()> {
-        let ordinal = i32::try_from(device.stream.device().ordinal()).map_err(device_error)?;
+        let ordinal = i32::try_from(device.ordinal()).map_err(device_error)?;
         if self.arithmetic == Arithmetic::F16 {
             if variant != Variant::Sm120 || device.profile()?.architecture != f16::ARCHITECTURE {
                 return Err(Error::invalid(

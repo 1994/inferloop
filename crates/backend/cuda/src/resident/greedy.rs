@@ -117,7 +117,7 @@ impl Greedy {
     }
     /// Canonical frontend identities include both reductions and their exact geometry.
     pub fn fingerprint(&self, device: &CudaDevice) -> Result<String> {
-        identity::greedy_reductions(&device.stream, &self.plan())
+        identity::greedy_reductions(device.tile(), &self.plan())
     }
 
     pub fn read(&self, device: &CudaDevice) -> Result<Vec<u32>> {

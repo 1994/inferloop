@@ -5,21 +5,16 @@ use crate::mlp::Matrix;
 use crate::resident::buffers::{Operand, buffer};
 use crate::strategy::LinearTiling;
 use crate::tuning::memory::arena_budget;
-use cuda_core::sys::CUdevice_attribute;
-use cuda_core::sys::CUresult;
-use cuda_core::sys::cuDeviceGetAttribute;
-use cuda_core::sys::cuDriverGetVersion;
-use cuda_core::sys::cuMemGetInfo_v2;
-use cuda_core::sys::cuMemcpyDtoH_v2;
-use cuda_core::sys::cudaError_enum_CUDA_SUCCESS;
-use cuda_core::{Device, DeviceCopy};
 use infer_core::{Error as InferError, ErrorCode, Result};
 use infer_cuda_kernels::contract::target::Arch;
 use infer_cuda_kernels::contract::{Buffer, Kernels, Width};
 use infer_cuda_kernels::tile::jit;
 use infer_cuda_kernels::tile::kernels;
 use infer_cuda_kernels::tile::projection::matvec::{MatvecGeometry, dense_matvec};
+use infer_cuda_kernels::tile::runtime::DeviceCopy;
+use infer_cuda_kernels::tile::runtime::Stream;
 use infer_cuda_kernels::tile::runtime::{Allocation, DType, Device as Runtime, Element, Transfers};
+use infer_cuda_kernels::tile::runtime::{Attribute, driver_version};
 use serde::Serialize;
 use std::fmt::Display;
 use std::sync::{Arc, OnceLock};
@@ -176,7 +171,7 @@ pub(crate) use readback::{ReadbackSource, Readbacks};
 
 #[derive(Clone)]
 pub struct CudaDevice {
-    pub(crate) stream: Arc<cuda_core::Stream>,
+    pub(crate) stream: Arc<Stream>,
     /// The contract's view of `stream`, made once so every clone shares its pending transfers.
     runtime: Runtime,
     target: Arch,
@@ -198,11 +193,10 @@ impl CudaDevice {
     /// # Errors
     /// Fails when the requested CUDA device or stream is unavailable.
     pub fn new(ordinal: usize) -> Result<Self> {
-        let device = Device::new(ordinal).map_err(device_error)?;
-        let target = query_target(&device)?;
-        let stream = device.new_stream().map_err(device_error)?;
+        let (runtime, target) = Runtime::open(ordinal)?;
+        let stream = Arc::clone(runtime.stream_handle());
         Ok(Self {
-            runtime: Runtime::new(Arc::clone(&stream), ordinal),
+            runtime,
             stream,
             target,
             profile: Arc::new(OnceLock::new()),
@@ -219,7 +213,7 @@ impl CudaDevice {
     /// # Errors
     /// Returns a CUDA error when the device name cannot be queried.
     pub fn name(&self) -> Result<String> {
-        self.stream.device().name().map_err(device_error)
+        self.runtime.name()
     }
 
     /// This device's stream as the kernel contract sees it, borrowed for the hot path.
@@ -302,27 +296,8 @@ impl CudaDevice {
         &self,
         buffer: Buffer<'_, T::Marker>,
     ) -> Result<Vec<T>> {
-        self.read_address(buffer.address(), buffer.len())
-    }
-
-    /// Copy `len` elements of `T` from device address `address` into a new host vector.
-    #[expect(
-        unsafe_code,
-        reason = "Audited device-to-host copy from live device memory of known length into a live host slice"
-    )]
-    fn read_address<T: DType>(&self, address: u64, len: usize) -> Result<Vec<T>> {
         self.reclaim_barrier()?;
-        let mut host = vec![T::zero(); len];
-        let bytes = len
-            .checked_mul(size_of::<T>())
-            .ok_or_else(|| device_error("readback size overflow"))?;
-        // SAFETY: the device context is current; both callers pass memory holding `len` live
-        // elements of `T` (a tensor's own storage, or a buffer whose contract promises it, with
-        // `Element` tying the marker's width to `T`), and the destination is a live host slice of
-        // the same length.
-        let status = unsafe { cuMemcpyDtoH_v2(host.as_mut_ptr().cast(), address, bytes) };
-        driver_status(status)?;
-        Ok(host)
+        self.runtime.read_buffer(buffer)
     }
 }
 
@@ -356,40 +331,18 @@ pub(crate) fn copy_runs<M: Width>(
 
 #[expect(
     unsafe_code,
-    reason = "Audited read-only CUDA attribute query; the live owned Device supplies a valid driver handle"
-)]
-fn query_target(device: &Device) -> Result<Arch> {
-    // SAFETY: Device::new initialized CUDA and owns this live device handle.
-    let name =
-        unsafe { cuda_core::get_device_sm_name(device.cu_device()) }.map_err(device_error)?;
-    // An unreadable name is an unknown architecture: general paths only, nothing specialized.
-    Ok(Arch::from_sm_name(&name).unwrap_or(Arch::Other { major: 0, minor: 0 }))
-}
-
-#[expect(
-    unsafe_code,
     reason = "Audited driver queries and stream drain with an owned device and a bound context"
 )]
 impl CudaDevice {
-    pub(crate) fn attribute(&self, attribute: CUdevice_attribute) -> Result<u32> {
-        let mut value = 0;
-        // SAFETY: the owned stream retains this device; value is a live output pointer.
-        let status = unsafe {
-            cuDeviceGetAttribute(&raw mut value, attribute, self.stream.device().cu_device())
-        };
-        driver_status(status)?;
-        u32::try_from(value).map_err(device_error)
+    pub(crate) fn attribute(&self, attribute: Attribute) -> Result<u32> {
+        self.runtime.attribute(attribute)
     }
 
     /// CUDA driver API version, used to invalidate measured kernel decisions.
     /// # Errors
     /// Returns a driver error when the installed driver cannot report its version.
     pub(crate) fn driver_version() -> Result<u32> {
-        let mut version = 0;
-        // SAFETY: version is a live output pointer; this query requires no current context.
-        let status = unsafe { cuDriverGetVersion(&raw mut version) };
-        driver_status(status)?;
-        u32::try_from(version).map_err(device_error)
+        driver_version()
     }
 
     /// Cached hardware facts and derived policy for this device.
@@ -410,22 +363,18 @@ impl CudaDevice {
     /// # Errors
     /// Returns a driver error if any device attribute or memory size cannot be queried.
     fn query_profile(&self) -> Result<DeviceProfile> {
-        use cuda_core::sys::{
-            CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR as MAJOR,
-            CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR as MINOR,
-            CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_GLOBAL_MEMORY_BUS_WIDTH as BUS,
-            CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_L2_CACHE_SIZE as L2,
-            CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_MEMORY_CLOCK_RATE as MEMORY_CLOCK,
-            CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT as SMS,
-        };
         Ok(DeviceProfile {
             name: self.name()?,
-            architecture: Arch::from_sm(self.attribute(MAJOR)?, self.attribute(MINOR)?).name(),
-            multiprocessors: self.attribute(SMS)?,
+            architecture: Arch::from_sm(
+                self.attribute(Attribute::ComputeMajor)?,
+                self.attribute(Attribute::ComputeMinor)?,
+            )
+            .name(),
+            multiprocessors: self.attribute(Attribute::Multiprocessors)?,
             total_memory_bytes: self.memory_info()?.1,
-            memory_clock_khz: self.attribute(MEMORY_CLOCK)?,
-            memory_bus_width_bits: self.attribute(BUS)?,
-            l2_cache_bytes: self.attribute(L2)?,
+            memory_clock_khz: self.attribute(Attribute::MemoryClockKhz)?,
+            memory_bus_width_bits: self.attribute(Attribute::MemoryBusWidthBits)?,
+            l2_cache_bytes: self.attribute(Attribute::L2CacheBytes)?,
         })
     }
 
@@ -482,15 +431,7 @@ impl CudaDevice {
     /// # Errors
     /// Returns a driver error if available device memory cannot be queried.
     pub fn memory_info(&self) -> Result<(u64, u64)> {
-        self.stream
-            .device()
-            .bind_to_thread()
-            .map_err(device_error)?;
-        let (mut free, mut total) = (0, 0);
-        // SAFETY: the owned device's context is current and both outputs are live.
-        let status = unsafe { cuMemGetInfo_v2(&raw mut free, &raw mut total) };
-        driver_status(status)?;
-        Ok((free as u64, total as u64))
+        self.runtime.memory_info()
     }
 
     /// Bytes available to this backend, including unused blocks in its CUDA allocation pool.
@@ -538,7 +479,7 @@ impl CudaDevice {
         // back in time, so a failed slot-pool attempt is only visible through
         // `pool_reclaimable_bytes`; nothing here pretends to make the query honest.
         // SAFETY: the owned device's context is current; this only waits for its work.
-        unsafe { self.stream.device().synchronize() }.map_err(device_error)?;
+        self.runtime.synchronize()?;
         // Memory finished transfers retained returns to the pool before the next query.
         self.runtime.reap()
     }
@@ -562,14 +503,6 @@ impl CudaDevice {
         // SAFETY: the owned stream remains live and its parent context is current.
         unsafe { self.stream.synchronize() }.map_err(device_error)?;
         self.runtime.reap()
-    }
-}
-
-fn driver_status(status: CUresult) -> Result<()> {
-    if status == cudaError_enum_CUDA_SUCCESS {
-        Ok(())
-    } else {
-        Err(device_error(format!("CUDA driver status {status}")))
     }
 }
 

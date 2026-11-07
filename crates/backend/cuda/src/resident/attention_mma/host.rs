@@ -1,7 +1,7 @@
 //! AOT launch code owns TMA descriptors and cluster launches; serving never imports Python.
 use super::catalog::Variant;
 use crate::device::device_error;
-use cuda_core::sys::{CUdeviceptr, CUstream};
+use cuda_core::sys::CUstream;
 use infer_core::{Error, Result};
 use sha2::{Digest, Sha256};
 use std::env::temp_dir;
@@ -154,7 +154,7 @@ impl Api {
     )]
     pub fn launch(
         &self,
-        pointers: [CUdeviceptr; super::catalog::OPERANDS],
+        pointers: [u64; super::catalog::OPERANDS],
         lanes: usize,
         capacity: usize,
         stream: CUstream,

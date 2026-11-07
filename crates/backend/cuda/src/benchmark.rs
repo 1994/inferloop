@@ -131,7 +131,7 @@ pub fn dense_baseline(
     Ok(Baseline {
         schema_version: 2,
         debug_assertions: cfg!(debug_assertions),
-        gpu: device.stream.device().name().map_err(device_error)?,
+        gpu: device.tile().name()?,
         target: device.target().name(),
         measurement: "CUDA events: synchronous launch including allocation and zeroing; synthetic weights",
         dtype: "BF16 weights, F32 input and accumulation",

@@ -5,12 +5,12 @@ use crate::device::{CudaDevice, DeviceProfile, device_error};
 use crate::resident::buffers::buffer;
 use crate::resident::{ProgramWeights, capture::error};
 use crate::tuning::attention::decode::{grouped_parts_for, partitions};
-use cuda_core::f8e4m3fn;
 use infer_core::{Error, OpId, Result};
 use infer_cuda_kernels::contract::{
     Attention, Buffer, Partials, PooledAppendBuffers, PooledDecodeBuffers, PooledPlan, Recording,
 };
 use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::tile::runtime::f8e4m3fn;
 use infer_ir::{DataflowGraph, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;

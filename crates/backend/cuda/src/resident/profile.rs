@@ -11,18 +11,14 @@
 //! reducing instrumentation overhead when separating host time from device time.
 
 use crate::device::{CudaDevice, device_error};
-use cuda_core::sys::CUevent_flags_enum_CU_EVENT_DEFAULT;
-use cuda_core::sys::CUevent_record_flags_enum_CU_EVENT_RECORD_EXTERNAL;
-use cuda_core::sys::cuEventRecordWithFlags;
-use cuda_core::sys::cudaError_enum_CUDA_SUCCESS;
-use cuda_core::{CudaContext, CudaEvent};
 use infer_core::{Error, Result};
-use infer_cuda_kernels::contract::{Foreign, Owner, Recording};
+use infer_cuda_kernels::contract::Recording;
+use infer_cuda_kernels::tile::runtime::{CudaContext, CudaEvent};
+use infer_cuda_kernels::tile::runtime::{record_event, timing_event};
 use infer_ir::{TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::env::var;
 use std::env::var_os;
-use std::ffi::c_void;
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
@@ -88,15 +84,8 @@ impl GraphProfile {
     }
 
     fn mark(&mut self, scope: &Recording<'_>) -> Result<()> {
-        let event = Arc::new(
-            self.context
-                .new_event(Some(CUevent_flags_enum_CU_EVENT_DEFAULT))
-                .map_err(device_error)?,
-        );
-        scope.foreign(
-            RecordEvent(Arc::clone(&event)),
-            vec![Arc::clone(&event) as Owner],
-        )?;
+        let event = timing_event(&self.context)?;
+        record_event(scope, &event)?;
         self.events.push(event);
         Ok(())
     }
@@ -147,7 +136,7 @@ impl PrefillProfile {
     #[must_use]
     pub(super) fn from_env(device: &CudaDevice) -> Option<Self> {
         let path = var_os(PROFILE_ENV).filter(|value| !value.is_empty())?;
-        let context = CudaContext::new(device.stream.device().ordinal()).ok()?;
+        let context = CudaContext::new(device.ordinal()).ok()?;
         Some(Self {
             path: PathBuf::from(path),
             prefill: GraphProfile::new(Arc::clone(&context)),
@@ -192,7 +181,7 @@ impl SlotProfile {
     /// Enabled when `INFER_CUDA_PREFILL_PROFILE` names a writable output path.
     pub(super) fn from_env(device: &CudaDevice) -> Option<Self> {
         let path = var_os(PROFILE_ENV).filter(|value| !value.is_empty())?;
-        let context = CudaContext::new(device.stream.device().ordinal()).ok()?;
+        let context = CudaContext::new(device.ordinal()).ok()?;
         Some(Self {
             path: PathBuf::from(path),
             graph: GraphProfile::new(context),
@@ -248,35 +237,6 @@ const fn category(op: &TensorOp) -> &'static str {
         TensorOp::ExpertLinear { .. } => "expert_linear",
         TensorOp::MoeCombine { .. } => "moe_combine",
         TensorOp::Add => "add",
-    }
-}
-
-/// Records an external timing event on the stream it is handed, as one node of a capture.
-struct RecordEvent(Arc<CudaEvent>);
-
-impl Foreign for RecordEvent {
-    #[expect(
-        unsafe_code,
-        reason = "Audited event record: the event belongs to the stream's context and the graph \
-                  keeps it alive; CU_EVENT_RECORD_EXTERNAL keeps replayed records queryable"
-    )]
-    fn enqueue(self, stream: *mut c_void) -> Result<()> {
-        // SAFETY: the event is a live RAII wrapper on the device that owns `stream`, and the
-        // recording keeps it alive with the graph; the external flag is the documented way to
-        // keep capture-time event records observable from the host.
-        let status = unsafe {
-            cuEventRecordWithFlags(
-                self.0.cu_event(),
-                stream.cast(),
-                CUevent_record_flags_enum_CU_EVENT_RECORD_EXTERNAL,
-            )
-        };
-        if status != cudaError_enum_CUDA_SUCCESS {
-            return Err(device_error(format!(
-                "profile event record CUDA status {status}"
-            )));
-        }
-        Ok(())
     }
 }
 

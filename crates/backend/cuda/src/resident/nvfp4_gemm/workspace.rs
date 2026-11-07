@@ -35,9 +35,9 @@ use crate::{
     mlp::ProjectionWeight,
     resident::ProgramWeights,
 };
-use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use infer_core::Result;
 use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::tile::runtime::{f4e2m1fnx2, f8e4m3fn};
 use infer_ir::DataflowGraph;
 use std::collections::BTreeMap;
 #[cfg(test)]

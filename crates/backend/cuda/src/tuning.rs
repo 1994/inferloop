@@ -189,7 +189,7 @@ pub fn tune(device: &CudaDevice, weight: &ProjectionWeight) -> Result<Projection
         key,
         rows,
         columns,
-        gpu: device.stream.device().name().map_err(device_error)?,
+        gpu: device.tile().name()?,
         target: device.target().name(),
         baseline,
         selected,

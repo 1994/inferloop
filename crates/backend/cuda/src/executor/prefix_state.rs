@@ -10,8 +10,8 @@ use crate::{
         slot_batch::SlotPool,
     },
 };
-use cuda_core::f8e4m3fn;
 use infer_core::{Error, Result, TensorId};
+use infer_cuda_kernels::tile::runtime::f8e4m3fn;
 use infer_ir::DataflowGraph;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;

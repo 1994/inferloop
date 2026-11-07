@@ -13,7 +13,7 @@ use crate::device::device_error;
 use crate::mlp::Matrix;
 use crate::resident::tensor_buffer;
 use crate::tuning::prefill::delegate_dense;
-use cuda_core::sys::{CUdeviceptr, CUstream};
+use cuda_core::sys::CUstream;
 use infer_core::Result;
 use infer_core::{Error, ErrorCode};
 use infer_cuda_kernels::contract::{
@@ -285,7 +285,7 @@ struct Product {
     m: i32,
     n: i32,
     k: i32,
-    pointers: [CUdeviceptr; GEMM_OPERANDS],
+    pointers: [u64; GEMM_OPERANDS],
 }
 
 impl Product {

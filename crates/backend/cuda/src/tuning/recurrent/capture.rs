@@ -80,7 +80,7 @@ impl Captured {
     }
 }
 fn kernel_identities(device: &CudaDevice, shape: [usize; SHAPE_RANK]) -> Result<Vec<String>> {
-    identity::recurrent_wy(&device.stream, shape, &FINGERPRINT_SPLITS)
+    identity::recurrent_wy(device.tile(), shape, &FINGERPRINT_SPLITS)
 }
 
 pub(super) fn fingerprint(device: &CudaDevice, shape: [usize; SHAPE_RANK]) -> Result<String> {

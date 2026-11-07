@@ -2,10 +2,10 @@
 use crate::constants::NVFP4_GROUP_SIZE;
 use crate::mlp::Matrix;
 use crate::{device::CudaDevice, strategy::LinearTiling};
-use cuda_core::{DType, f4e2m1fnx2, f8e4m3fn};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::tile::projection::matvec::{self, MatvecGeometry};
 use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::tile::runtime::{DType, f4e2m1fnx2, f8e4m3fn};
 
 impl CudaDevice {
     /// FP8 channel-scaled weights with F32 activations and accumulation.

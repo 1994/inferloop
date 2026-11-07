@@ -2,9 +2,9 @@
 //! The generated PTX is embedded so host builds keep their stable toolchain.
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::{CudaDevice, device_error};
-use cuda_core::Function;
 use infer_core::Result;
 use infer_cuda_kernels::contract::{DecodeBuffers, KvBuffers, Owner, Recording};
+use infer_cuda_kernels::tile::runtime::Function;
 use infer_cuda_kernels::tile::runtime::{Argument, KernelLaunch};
 use infer_ir::{DataflowGraph, TensorOp};
 #[cfg(test)]
