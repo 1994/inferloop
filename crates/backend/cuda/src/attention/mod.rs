@@ -9,7 +9,7 @@ pub(crate) use plan::tile_rows;
 mod gate;
 
 #[cfg(test)]
-#[path = "benchmark_check.rs"]
+#[path = "../../tests/unit/attention_benchmark_check.rs"]
 pub(crate) mod benchmark;
 #[cfg(test)]
 #[path = "../../tests/unit/attention.rs"]

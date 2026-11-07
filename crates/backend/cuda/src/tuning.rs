@@ -21,9 +21,8 @@ use crate::{
     mlp::ProjectionWeight,
     strategy::LinearTiling,
 };
-use cutile::bench::{BenchOptions, do_bench_paired};
-use cutile::error::tensor_error;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Timing;
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use serde::{Deserialize, Serialize};
 use std::env::var_os;
@@ -156,7 +155,7 @@ pub fn tune(device: &CudaDevice, weight: &ProjectionWeight) -> Result<Projection
     let base = capture(device, weight, rows, columns, baseline)?;
     device.tile().sync(base.graph.launch())?;
     let expected = device.runtime().read(&base.output)?;
-    let options = BenchOptions {
+    let options = Timing {
         warmup: Duration::from_millis(WARMUP_MS),
         rep: Duration::from_millis(REP_MS),
         min_reps: MIN_REPS,
@@ -245,18 +244,15 @@ fn capture(
 
 fn measure(
     device: &CudaDevice,
-    options: &BenchOptions,
+    options: &Timing,
     base: &Graph,
     candidate: &Graph,
     tiling: LinearTiling,
 ) -> Result<Trial> {
-    let run = |graph: &Graph| {
-        device
-            .tile()
-            .sync(graph.launch())
-            .map_err(|e| tensor_error(&e.to_string()))
-    };
-    let (a, b) = do_bench_paired(&device.stream, options, |_| run(base), |_| run(candidate))
+    let run = |graph: &Graph| device.tile().sync(graph.launch());
+    let (a, b) = device
+        .tile()
+        .time_paired(options, || run(base), || run(candidate))
         .map_err(device_error)?;
     Ok(Trial {
         tiling,

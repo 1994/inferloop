@@ -21,14 +21,13 @@ use crate::{
     mlp::{Matrix, ProjectionWeight},
 };
 use cuda_core::f8e4m3fn;
-use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::cutile_compiler::hints::CompileOptions;
-use cutile::error::tensor_error;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, Fp8, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, Kernels, Recording, WeightRef,
 };
 use infer_cuda_kernels::tile::identity;
+use infer_cuda_kernels::tile::runtime::Timing;
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph, Watch};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -586,28 +585,24 @@ fn measure(
     clear_l2: bool,
     reverse: bool,
 ) -> Result<PairedTimes> {
-    let options = BenchOptions {
+    let options = Timing {
         warmup: Duration::from_millis(WARMUP_MS),
         rep: Duration::from_millis(REP_MS),
         min_reps: MIN_REPS,
         max_reps: MAX_REPS,
         clear_l2,
     };
-    let run = |capture: &Captured| {
-        device
-            .tile()
-            .sync(capture.graph.launch())
-            .map_err(|e| tensor_error(&e.to_string()))
-    };
+    let run = |capture: &Captured| device.tile().sync(capture.graph.launch());
     // Confirmation flips both warm and cold execution order, then maps samples back to their roles.
     let (first, second) = if reverse {
         (candidate, baseline)
     } else {
         (baseline, candidate)
     };
-    let (first, second) =
-        do_bench_paired(&device.stream, &options, |_| run(first), |_| run(second))
-            .map_err(device_error)?;
+    let (first, second) = device
+        .tile()
+        .time_paired(&options, || run(first), || run(second))
+        .map_err(device_error)?;
     let (a, b) = if reverse {
         (second, first)
     } else {
