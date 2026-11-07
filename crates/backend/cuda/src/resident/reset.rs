@@ -14,7 +14,7 @@ mod tests;
 /// Reports a state the device cannot address or a rejected capture.
 pub(super) fn capture(device: &CudaDevice, states: &super::batch::States) -> Result<Graph> {
     let kernels = device.kernels();
-    Graph::scope(&device.stream, |scope| {
+    device.tile().capture(|scope| {
         let recording = scope;
         for tensor in states.values().flatten() {
             kernels
@@ -24,5 +24,4 @@ pub(super) fn capture(device: &CudaDevice, states: &super::batch::States) -> Res
         }
         Ok(())
     })
-    .map_err(device_error)
 }

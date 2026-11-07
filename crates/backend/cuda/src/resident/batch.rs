@@ -417,7 +417,7 @@ impl BatchBuilder<'_> {
         let width = lane_states.len();
         let quant_plan = super::nvfp4_gemm::QuantPairPlan::new(self.graph, self.weights);
         self.nvfp4.begin_quant_capture();
-        let result = Graph::scope(&self.device.stream, |scope| {
+        let result = self.device.tile().capture(|scope| {
             let mut no_fusion = None;
             for (index, node) in self.graph.nodes.iter().enumerate() {
                 self.nvfp4.enter_quant_node(index, quant_plan.role(index));
@@ -516,12 +516,12 @@ impl BatchBuilder<'_> {
         let forward = if forward_captured {
             self.capture_single(arena, metadata, fusion, false)?
         } else {
-            Graph::scope(&self.device.stream, |_| Ok(())).map_err(device_error)?
+            self.device.tile().capture(|_| Ok(()))?
         };
         let prefill = if forward_captured {
             self.capture_single(arena, metadata, fusion, true)?
         } else {
-            Graph::scope(&self.device.stream, |_| Ok(())).map_err(device_error)?
+            self.device.tile().capture(|_| Ok(()))?
         };
         Ok(ProgramCaptures {
             batch,
@@ -538,7 +538,7 @@ impl BatchBuilder<'_> {
         fusion: &mut Option<super::program::FusionWorkspace>,
         skip_logits: bool,
     ) -> Result<Graph> {
-        Graph::scope(&self.device.stream, |scope| {
+        self.device.tile().capture(|scope| {
             Capture {
                 scope,
                 arena,
@@ -556,7 +556,6 @@ impl BatchBuilder<'_> {
             }
             .record_program(self.graph, skip_logits)
         })
-        .map_err(device_error)
     }
 
     pub fn build(&mut self) -> Result<BatchGraph> {
@@ -596,26 +595,23 @@ impl BatchBuilder<'_> {
         let mut hidden = Vec::new();
         let mut logits = Vec::new();
         for lane in lanes {
-            restore.push(
-                Graph::scope(&self.device.stream, |scope| {
-                    let recording = scope;
-                    for (id, tensors) in &lane.checkpoints {
-                        for (output, input) in self
-                            .states
-                            .get(id)
-                            .ok_or_else(|| error("checkpoint state"))?
-                            .iter()
-                            .zip(tensors)
-                        {
-                            recording
-                                .copy(buffer(output)?, buffer(input)?)
-                                .map_err(error)?;
-                        }
+            restore.push(self.device.tile().capture(|scope| {
+                let recording = scope;
+                for (id, tensors) in &lane.checkpoints {
+                    for (output, input) in self
+                        .states
+                        .get(id)
+                        .ok_or_else(|| error("checkpoint state"))?
+                        .iter()
+                        .zip(tensors)
+                    {
+                        recording
+                            .copy(buffer(output)?, buffer(input)?)
+                            .map_err(error)?;
                     }
-                    Ok(())
-                })
-                .map_err(device_error)?,
-            );
+                }
+                Ok(())
+            })?);
             hidden.push(take_result(&lane.arena, self.graph.hidden)?);
             logits.push(take_result(&lane.arena, self.graph.logits)?);
             metadata.push(lane.metadata);
@@ -1086,7 +1082,7 @@ impl BatchBuilder<'_> {
         let width = lanes.len();
         let device = self.device;
         self.nvfp4.end_quant_capture();
-        let result = Graph::scope(&device.stream, |scope| {
+        let result = device.tile().capture(|scope| {
             for node in &self.graph.nodes {
                 let logits = node.outputs.iter().any(|id| Some(*id) == self.graph.logits);
                 if logits && prefill == Some(false) {
@@ -1385,7 +1381,7 @@ impl BatchBuilder<'_> {
         mlp.prepare_vendor(self.device, self.graph, self.weights, arena, self.nvfp4)
             .map_err(device_error)?;
         self.nvfp4.begin_quant_capture();
-        let result = Graph::scope(&self.device.stream, |scope| {
+        let result = self.device.tile().capture(|scope| {
             let mut boundaries = profile.map(|profile| profile.graph(last));
             let mut fused_second = None;
             for (index, node) in self.graph.nodes.iter().enumerate() {
@@ -2563,11 +2559,6 @@ impl SlotDecodeGraph {
     /// # Errors
     /// Rejects the same lane/position errors as [`Self::run_lanes`], a missing state-only
     /// graph, and CUDA launch failures detected at enqueue time.
-    #[expect(
-        unsafe_code,
-        reason = "Audited detached replay: single-stream ordering after staged metadata, \
-                  pool-owned buffers, drained by the owning pool's drop barrier"
-    )]
     pub fn replay_detached(
         &mut self,
         device: &CudaDevice,
@@ -2590,10 +2581,7 @@ impl SlotDecodeGraph {
         )?;
         self.metadata_staging
             .copy(device, &self.metadata_owner, &self.metadata_upload)?;
-        // SAFETY: the engine is single-stream, so this replay is ordered after the staged
-        // metadata and uploads and before any later replay; every buffer it touches is
-        // pool-owned, and the pool's drop barrier drains the stream before anything frees.
-        unsafe { graph.launch().async_on(&device.stream) }.map_err(device_error)?;
+        device.tile().submit(graph)?;
         for &(slot, ..) in lanes {
             self.cursors[slot] += 1;
         }
@@ -2603,14 +2591,8 @@ impl SlotDecodeGraph {
     /// Drain the capture stream: the pool's teardown barrier for detached replays.
     /// # Errors
     /// Returns the driver error when the stream cannot be synchronized.
-    #[expect(
-        unsafe_code,
-        reason = "Audited stream drain at teardown: no work is enqueued after the owning \
-                  pool starts dropping"
-    )]
     pub(super) fn barrier(&self) -> Result<()> {
-        // SAFETY: teardown only; no work is enqueued after the owning pool starts dropping.
-        unsafe { self.graph.stream().synchronize() }.map_err(device_error)
+        self.graph.drain()
     }
 
     /// Host-side state cursors of every slot.

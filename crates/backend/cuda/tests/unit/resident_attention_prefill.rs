@@ -728,7 +728,7 @@ impl AttentionGraph {
             [fixture.case.lanes, MODEL_HEADS * MODEL_DIM]
         };
         let mut output = api::zeros::<f32>(&shape).sync_on(&device.stream)?;
-        let graph = Graph::scope(&device.stream, |scope| {
+        let graph = device.tile().capture(|scope| {
             fixture.record_append(scope, &mut keys, &mut values)?;
             fixture.record_compute(scope, &mut output, (&keys, &values), variant)?;
             Ok(())
@@ -833,7 +833,7 @@ impl SharedAttentionGraphs {
                 [fixture.case.lanes, MODEL_HEADS * MODEL_DIM]
             };
             output = output.reshape(&shape)?;
-            let graph = Graph::scope(&device.stream, |scope| {
+            let graph = device.tile().capture(|scope| {
                 fixture.record_append(scope, &mut keys, &mut values)?;
                 fixture.record_compute(scope, &mut output, (&keys, &values), variant)?;
                 Ok(())

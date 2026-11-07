@@ -349,11 +349,6 @@ impl Engine {
     /// Ingest `rows` prompt features starting at `position` into one ring.
     /// # Errors
     /// Rejects a short feature tensor or ring and reports CUDA failures.
-    #[expect(
-        unsafe_code,
-        reason = "Audited replay: single-stream ordering after the staged copies, \
-                  engine-owned buffers, drained before the engine drops"
-    )]
     pub async fn ingest_prompt(
         &mut self,
         device: &CudaDevice,
@@ -386,9 +381,7 @@ impl Engine {
             self.prompt
                 .uploads
                 .copy(device, &self.prompt.work.meta, &upload)?;
-            // SAFETY: ordered on the engine stream after the copies above; every buffer the
-            // graph touches is engine-owned and the engine drains the stream before dropping.
-            unsafe { self.prompt.graph.launch().async_on(&device.stream) }.map_err(device_error)?;
+            device.tile().submit(&self.prompt.graph)?;
             start += count;
         }
         // The pinned ring above holds one chunk; fence it before the next chunk reuses it.
@@ -402,11 +395,6 @@ impl Engine {
     /// Ingest verified rows from the pooled verify graph's feature lanes.
     /// # Errors
     /// Rejects an unattached pool or out-of-range rows and reports CUDA failures.
-    #[expect(
-        unsafe_code,
-        reason = "Audited replay: single-stream ordering after the verify graph and the staged \
-                  metadata, engine-owned buffers, drained before the engine drops"
-    )]
     pub fn ingest_verified(
         &mut self,
         device: &CudaDevice,
@@ -435,9 +423,7 @@ impl Engine {
         verified
             .uploads
             .copy(device, &verified.work.meta, &upload)?;
-        // SAFETY: ordered after the verify replay and the metadata copy on the engine stream;
-        // the graph reads pool-owned features retained by `_features` and engine buffers.
-        unsafe { verified.graph.launch().async_on(&device.stream) }.map_err(device_error)?;
+        device.tile().submit(&verified.graph)?;
         self.record_acceptance(runs);
         Ok(())
     }
@@ -466,11 +452,6 @@ impl Engine {
     /// request order.
     /// # Errors
     /// Rejects an unattached pool, duplicate or out-of-range slots and reports CUDA failures.
-    #[expect(
-        unsafe_code,
-        reason = "Audited replay: single-stream ordering after the staged metadata, \
-                  engine-owned buffers, fenced by the token readback"
-    )]
     pub async fn propose(
         &mut self,
         device: &CudaDevice,
@@ -525,9 +506,7 @@ impl Engine {
         propose
             .uploads
             .copy(device, &propose.buffers.meta, upload)?;
-        // SAFETY: ordered after the metadata copy on the engine stream; the readback below
-        // fences the replay before any of its buffers is reused.
-        unsafe { propose.graph.launch().async_on(&device.stream) }.map_err(device_error)?;
+        device.tile().submit(&propose.graph)?;
         let tokens = device
             .read_allocation(&propose.buffers.tokens, &mut propose.readbacks)
             .await?;

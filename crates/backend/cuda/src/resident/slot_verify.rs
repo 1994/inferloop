@@ -19,7 +19,6 @@ use crate::constants::MIB;
 use crate::device::PinnedUpload;
 use crate::device::Readbacks;
 use crate::device::{CudaDevice, ReadbackSource, device_error};
-use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::Recording;
 use infer_cuda_kernels::tile::runtime::Allocation;
@@ -184,29 +183,26 @@ impl BatchBuilder<'_> {
             let lanes = slot_lanes(slot, metadata).map_err(device_error)?;
             let mut graphs = Vec::with_capacity(verify);
             for count in 1..=verify {
-                graphs.push(
-                    Graph::scope(&self.device.stream, |scope| {
-                        for (index, node) in self.graph.nodes.iter().enumerate() {
-                            if super::slot_recurrent::covers(node) {
-                                let staged = staging
-                                    .get(&(slot, index))
-                                    .ok_or_else(|| error("slot commit staging"))?;
-                                super::slot_recurrent::record_commit(
-                                    scope,
-                                    node,
-                                    arena,
-                                    states,
-                                    &lanes,
-                                    self.weights,
-                                    hardware,
-                                    (staged, count),
-                                )?;
-                            }
+                graphs.push(self.device.tile().capture(|scope| {
+                    for (index, node) in self.graph.nodes.iter().enumerate() {
+                        if super::slot_recurrent::covers(node) {
+                            let staged = staging
+                                .get(&(slot, index))
+                                .ok_or_else(|| error("slot commit staging"))?;
+                            super::slot_recurrent::record_commit(
+                                scope,
+                                node,
+                                arena,
+                                states,
+                                &lanes,
+                                self.weights,
+                                hardware,
+                                (staged, count),
+                            )?;
                         }
-                        Ok(())
-                    })
-                    .map_err(device_error)?,
-                );
+                    }
+                    Ok(())
+                })?);
             }
             commits.push(graphs);
         }
@@ -223,25 +219,22 @@ impl BatchBuilder<'_> {
         for (states, per_slot) in lane_states.iter_mut().zip(checkpoints) {
             let mut graphs = Vec::with_capacity(per_slot.len());
             for snapshot in per_slot {
-                graphs.push(
-                    Graph::scope(&self.device.stream, |scope| {
-                        let recording = scope;
-                        for (id, tensors) in snapshot {
-                            for (output, input) in states
-                                .get(id)
-                                .ok_or_else(|| error("slot verify restore state"))?
-                                .iter()
-                                .zip(tensors)
-                            {
-                                recording
-                                    .copy(buffer(output)?, buffer(input)?)
-                                    .map_err(error)?;
-                            }
+                graphs.push(self.device.tile().capture(|scope| {
+                    let recording = scope;
+                    for (id, tensors) in snapshot {
+                        for (output, input) in states
+                            .get(id)
+                            .ok_or_else(|| error("slot verify restore state"))?
+                            .iter()
+                            .zip(tensors)
+                        {
+                            recording
+                                .copy(buffer(output)?, buffer(input)?)
+                                .map_err(error)?;
                         }
-                        Ok(())
-                    })
-                    .map_err(device_error)?,
-                );
+                    }
+                    Ok(())
+                })?);
             }
             restore.push(graphs);
         }
@@ -366,7 +359,7 @@ impl BatchBuilder<'_> {
         let fused = fused_recurrent(self.graph, verify);
         let hardware = ValueDevice::new(self.device)?;
         let mode = self.verification_mode();
-        Graph::scope(&self.device.stream, |scope| {
+        self.device.tile().capture(|scope| {
             let mut no_fusion = None;
             for (index, node) in self.graph.nodes.iter().enumerate() {
                 if let Some(profile) = profile.as_mut() {
@@ -467,7 +460,6 @@ impl BatchBuilder<'_> {
             }
             Ok(())
         })
-        .map_err(device_error)
     }
 
     /// Capture the pooled speculation graph over per-slot state sets. Lane rows of the
@@ -724,11 +716,6 @@ impl SlotVerifyGraph {
     /// Apply independently accepted prefixes together, after validating the complete batch.
     /// # Errors
     /// Rejects unknown, duplicate or non-pending slots, invalid counts and CUDA failures.
-    #[expect(
-        unsafe_code,
-        reason = "Audited detached restore: single-stream ordering before any later replay, \
-                  graph-owned tensors, drained by the owning pool's drop barrier"
-    )]
     pub fn commit_many(&mut self, device: &CudaDevice, commits: &[(usize, usize)]) -> Result<()> {
         validate_commits(&self.pending, commits)?;
         if commits.is_empty() {
@@ -738,8 +725,7 @@ impl SlotVerifyGraph {
         let batched = commits.len() > 1 || self.restore.is_empty();
         if let Some(batch) = self.batched_commit.as_mut().filter(|_| batched) {
             batch.update(device, commits)?;
-            // SAFETY: same capture stream, retained state/count owners and the pool's drop barrier.
-            unsafe { batch.graph().launch().async_on(&device.stream) }.map_err(device_error)?;
+            device.tile().submit(batch.graph())?;
         } else {
             for &(slot, accepted) in commits {
                 if let Some(restore) = self
@@ -748,8 +734,7 @@ impl SlotVerifyGraph {
                     .and_then(|per_slot| per_slot.get(accepted))
                     .filter(|_| self.fused || accepted + 1 < self.verify)
                 {
-                    // SAFETY: ordered on the same stream; the pool's teardown drains all captures.
-                    unsafe { restore.launch().async_on(&device.stream) }.map_err(device_error)?;
+                    device.tile().submit(restore)?;
                 }
             }
         }
@@ -788,14 +773,8 @@ impl SlotVerifyGraph {
     /// Drain the capture stream: the pool's teardown barrier for detached restores.
     /// # Errors
     /// Returns the driver error when the stream cannot be synchronized.
-    #[expect(
-        unsafe_code,
-        reason = "Audited stream drain at teardown: no work is enqueued after the owning \
-                  pool starts dropping"
-    )]
     pub(super) fn barrier(&self) -> Result<()> {
-        // SAFETY: teardown only; no work is enqueued after the owning pool starts dropping.
-        unsafe { self.graph.stream().synchronize() }.map_err(device_error)
+        self.graph.drain()
     }
 
     /// Forget a failed replay when the owning sequence releases its lease.

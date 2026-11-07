@@ -326,7 +326,7 @@ fn nvfp4_quantization_split_performance() -> Result<(), Box<dyn StdError>> {
             let mut quantized = api::zeros::<f4e2m1fnx2>(&[m, k / 2]).sync_on(&device.stream)?;
             let mut input_scales = api::zeros::<f8e4m3fn>(&[m, k / 16]).sync_on(&device.stream)?;
             let mut output = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
-            let fused = Graph::scope(&device.stream, |scope| {
+            let fused = device.tile().capture(|scope| {
                 cutile(scope)?.record(
                     kernels::matmul(
                         (&mut output).partition([16, 64]),
@@ -340,7 +340,7 @@ fn nvfp4_quantization_split_performance() -> Result<(), Box<dyn StdError>> {
                 )?;
                 Ok(())
             })?;
-            let separated = Graph::scope(&device.stream, |scope| {
+            let separated = device.tile().capture(|scope| {
                 cutile(scope)?.record(
                     kernels::quantize(
                         (&mut quantized).partition([1, 256]),
@@ -459,7 +459,7 @@ fn sweep_shape(
     let scales = device.upload(vec![f8e4m3fn(48); n * k / 16], &[n, k / 16])?;
     let mut output = api::zeros::<f32>(&[SWEEP_PAD_ROWS, n]).sync_on(&device.stream)?;
     let mut tile_graph = |rows: usize, columns: usize| -> infer_core::Result<Graph> {
-        Graph::scope(&device.stream, |scope| {
+        device.tile().capture(|scope| {
             cutile(scope)?.record(
                 kernels::packed(
                     (&mut output).partition([rows, columns]),
@@ -525,7 +525,7 @@ fn separated_swiglu_graph(
     buffers: &mut SwigluBuffers,
 ) -> Result<Graph, Box<dyn StdError>> {
     let (_, columns, hidden) = SWIGLU_PERF_SHAPE;
-    Ok(Graph::scope(&device.stream, |scope| {
+    Ok(device.tile().capture(|scope| {
         for (out, (w, s)) in [(&mut buffers.gate, gate), (&mut buffers.up, up)] {
             cutile(scope)?.record(
                 kernels::packed_prefill(out.partition([128, 128]), q, qs, w, s, 1.0e-6)
@@ -554,7 +554,7 @@ fn fused_swiglu_graph(
     [tile_rows, tile_columns]: [usize; 2],
 ) -> Result<Graph, Box<dyn StdError>> {
     let (_, columns, _) = SWIGLU_PERF_SHAPE;
-    Ok(Graph::scope(&device.stream, |scope| {
+    Ok(device.tile().capture(|scope| {
         cutile(scope)?.record(
             kernels::packed_swiglu(
                 (&mut buffers.codes).partition([tile_rows, tile_columns / 2]),
@@ -734,7 +734,7 @@ fn fused_swiglu_tuner_preserves_complete_quantized_outputs() -> Result<(), Box<d
         let expected = operand_bytes(&device, separate_swiglu(&device, (&q, &qs), &gate, &up)?)?;
         let codes = api::zeros::<f4e2m1fnx2>(&[rows, hidden / 2]).sync_on(&device.stream)?;
         let scales = api::zeros::<f8e4m3fn>(&[rows, hidden / 16]).sync_on(&device.stream)?;
-        let graph = Graph::scope(&device.stream, |scope| {
+        let graph = device.tile().capture(|scope| {
             swiglu::record(
                 (&device.kernels(), scope),
                 selected,

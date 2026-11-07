@@ -127,7 +127,7 @@ impl Fixture {
         } else {
             &mut self.reference
         };
-        Ok(Graph::scope(&device.stream, |scope| {
+        Ok(device.tile().capture(|scope| {
             cutile(scope)?.record(
                 kernels::append(
                     keys.partition([1, rows, self.dimension]),

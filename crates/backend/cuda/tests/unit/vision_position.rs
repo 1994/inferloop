@@ -5,7 +5,6 @@ use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::Result;
 use infer_cuda_kernels::tile::kernels;
-use infer_cuda_kernels::tile::runtime::Graph;
 use infer_models::vision::PositionTaps;
 use std::sync::Arc;
 
@@ -88,7 +87,7 @@ fn device_positions_match_scalar_interpolation_and_padding() -> Result<()> {
             .sync_on(&device.stream)
             .map_err(device_error)?;
         let vision = kernels(device.ordinal()).vision;
-        let graph = Graph::scope(&device.stream, |scope| {
+        let graph = device.tile().capture(|scope| {
             vision
                 .add_positions(
                     scope,
@@ -97,8 +96,7 @@ fn device_positions_match_scalar_interpolation_and_padding() -> Result<()> {
                     staged.taps(),
                 )
                 .map_err(|error| device_error(error.to_string()))
-        })
-        .map_err(device_error)?;
+        })?;
         graph
             .launch()
             .sync_on(&device.stream)

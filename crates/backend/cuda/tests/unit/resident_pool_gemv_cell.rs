@@ -8,7 +8,6 @@ use acceptance::{Case, OUTPUTS, ROWS};
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::runtime::Graph;
 use std::sync::Arc;
 
 /// Reduction lengths the cuTile kernel tiles evenly.
@@ -39,7 +38,7 @@ fn check(device: &CudaDevice, case: Case) -> Result<()> {
     let tile = LinearTiling::new(TILE.0, TILE.1)?;
     let kernels = device.kernels();
     let weight = Arc::new(weight);
-    let graph = Graph::scope(&device.stream, |scope| {
+    let graph = device.tile().capture(|scope| {
         kernels
             .projection
             .pool_gemv_bf16(
@@ -56,8 +55,7 @@ fn check(device: &CudaDevice, case: Case) -> Result<()> {
                 buffer(weight.as_ref())?,
             )
             .map_err(error)
-    })
-    .map_err(device_error)?;
+    })?;
     graph
         .launch()
         .sync_on(&device.stream)

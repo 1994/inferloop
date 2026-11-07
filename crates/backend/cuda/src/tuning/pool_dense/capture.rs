@@ -64,7 +64,7 @@ impl Captured {
         let input = runtime.upload(values)?;
         let output = runtime.zeros(m * n)?;
         let kernels = device.kernels();
-        let graph = Graph::scope(&device.stream, |scope| {
+        let graph = device.tile().capture(|scope| {
             choice.record(
                 (&kernels, scope),
                 weight,
@@ -73,8 +73,7 @@ impl Captured {
                 k,
                 tile,
             )
-        })
-        .map_err(device_error)?;
+        })?;
         Ok(Self {
             graph,
             output,

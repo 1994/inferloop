@@ -513,7 +513,7 @@ fn capture(
     shape: Shape,
 ) -> Result<Graph> {
     let kernels = context.device.kernels();
-    Graph::scope(&context.device.stream, |scope| {
+    context.device.tile().capture(|scope| {
         prepared.map_or_else(
             || {
                 native.record(

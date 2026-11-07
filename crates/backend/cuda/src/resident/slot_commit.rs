@@ -88,13 +88,12 @@ impl CapturedCommit {
             lanes,
             hardware: ValueDevice::new(device)?,
         };
-        let graph = Graph::scope(&device.stream, |scope| {
+        let graph = device.tile().capture(|scope| {
             for (index, node) in nodes.iter().enumerate().filter(|(_, node)| covers(node)) {
                 record_node(scope, node, index, roots, &inputs).map_err(error)?;
             }
             Ok(())
-        })
-        .map_err(device_error)?;
+        })?;
         Ok(Self {
             graph,
             counts,

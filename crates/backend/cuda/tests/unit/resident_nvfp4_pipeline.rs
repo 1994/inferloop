@@ -11,7 +11,6 @@ use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
 use infer_cuda_kernels::contract::Recording;
-use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 use std::time::Duration;
 
@@ -151,12 +150,12 @@ fn compare_case(
     let original_tile = native_tile(rows);
     // Sweep the supported wider-column candidate; production choice requires measured proof.
     let optimized_tile = [original_tile[0], original_tile[1] * 2];
-    let original = Graph::scope(&device.stream, |scope| {
-        inputs.record(scope, &mut original_output, original_tile, false)
-    })?;
-    let optimized = Graph::scope(&device.stream, |scope| {
-        inputs.record(scope, &mut optimized_output, optimized_tile, true)
-    })?;
+    let original = device
+        .tile()
+        .capture(|scope| inputs.record(scope, &mut original_output, original_tile, false))?;
+    let optimized = device
+        .tile()
+        .capture(|scope| inputs.record(scope, &mut optimized_output, optimized_tile, true))?;
     original.launch().sync_on(&device.stream)?;
     optimized.launch().sync_on(&device.stream)?;
     device.reclaim_barrier()?;

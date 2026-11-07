@@ -6,7 +6,6 @@ use cutile::error::tensor_error;
 use cutile::{half::bf16, prelude::*};
 use infer_cuda_kernels::tile::projection::compensated_gemm;
 use infer_cuda_kernels::tile::projection::linear::dense;
-use infer_cuda_kernels::tile::runtime::Graph;
 use std::env::var;
 use std::error::Error;
 
@@ -75,7 +74,7 @@ fn small_mma_performance() -> Result<(), Box<dyn Error>> {
         for m in [2, 4, 12] {
             let input = device.upload(vec![0.253_f32; m * k], &[m, k])?;
             let mut output = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
-            let old = Graph::scope(&device.stream, |scope| {
+            let old = device.tile().capture(|scope| {
                 cutile(scope)?.record(
                     super::super::linear_batch::batched::dense(
                         (&mut output).partition([4, 16]),
@@ -91,7 +90,7 @@ fn small_mma_performance() -> Result<(), Box<dyn Error>> {
                 )?;
                 Ok(())
             })?;
-            let new = Graph::scope(&device.stream, |scope| {
+            let new = device.tile().capture(|scope| {
                 cutile(scope)?.record(
                     kernels::dense((&mut output).partition([16, 32]), &input, &weights)
                         .generics(vec![bf16::DTYPE.as_str().into(), k.to_string()]),
@@ -508,7 +507,7 @@ fn checkpoint_pool_outputs(
     assert_eq!(vectors.len(), 4);
     let packed = device.upload(input.to_vec(), &[4, columns])?;
     let mut result = api::zeros::<f32>(&[4, outputs]).sync_on(&device.stream)?;
-    let graph = Graph::scope(&device.stream, |scope| {
+    let graph = device.tile().capture(|scope| {
         cutile(scope)?.record(
             super::super::linear_batch::batched::dense(
                 (&mut result).partition([4, 16]),
@@ -650,7 +649,7 @@ fn checkpoint_pool_small_f32_projection_cost() -> Result<(), Box<dyn Error>> {
         &[4, first.columns],
     )?;
     let mut output = api::zeros::<f32>(&[4, first.outputs]).sync_on(&device.stream)?;
-    let baseline = Graph::scope(&device.stream, |scope| {
+    let baseline = device.tile().capture(|scope| {
         for weight in &weights {
             cutile(scope)?.record(
                 kernels::dense((&mut output).partition([16, 32]), &input, &weight.device).generics(
@@ -660,7 +659,7 @@ fn checkpoint_pool_small_f32_projection_cost() -> Result<(), Box<dyn Error>> {
         }
         Ok(())
     })?;
-    let candidate = Graph::scope(&device.stream, |scope| {
+    let candidate = device.tile().capture(|scope| {
         for weight in &weights {
             cutile(scope)?.record(
                 super::super::linear_batch::batched::dense(

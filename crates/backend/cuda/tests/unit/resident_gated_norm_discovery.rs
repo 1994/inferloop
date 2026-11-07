@@ -83,7 +83,7 @@ fn capture(
 ) -> Result<Graph> {
     let xv = x.view(&[x.size() / 128, 128]).map_err(device_error)?;
     let zv = z.view(&[z.size() / 128, 128]).map_err(device_error)?;
-    Graph::scope(&device.stream, |scope| {
+    device.tile().capture(|scope| {
         cutile(scope)?.record(
             norm(out.partition([1, 128]), &xv, w, &zv, 1e-6f32, 0.0f32)
                 .generics(vec!["128".into(), "128".into(), "1".into()])
@@ -91,7 +91,6 @@ fn capture(
         )?;
         Ok(())
     })
-    .map_err(device_error)
 }
 
 fn cost(

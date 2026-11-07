@@ -420,7 +420,7 @@ impl DeltaFixture {
     ) -> TestResult<Graph> {
         let block = self.block;
         let [o0, o1, o2] = outs else { unreachable!() };
-        Ok(Graph::scope(&device.stream, |scope| {
+        Ok(device.tile().capture(|scope| {
             cutile(scope)?.record(
                 fused::delta_verify3(
                     o0.partition([1, 1, block]),

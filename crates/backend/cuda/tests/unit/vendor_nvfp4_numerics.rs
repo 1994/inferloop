@@ -7,7 +7,6 @@ use crate::resident::tensor_buffer as buffer;
 use crate::tuning::resident_gemm::{GemmConfig, ResidentTuningSession};
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::prelude::*;
-use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -96,9 +95,9 @@ fn vendor_fp4_matches_independent_full_scalar_output() -> TestResult {
         extents: [m, n, k],
     };
     assert!(op.shape()?.is_some());
-    let graph = Graph::scope(&device.stream, |scope| {
-        append((&device.kernels(), scope), &context, &prepared, &op, shape)
-    })?;
+    let graph = device
+        .tile()
+        .capture(|scope| append((&device.kernels(), scope), &context, &prepared, &op, shape))?;
     graph.launch().sync_on(&device.stream)?;
     let actual = device.read_borrowed(&output)?;
     let mut max_scaled = 0.0_f64;
@@ -169,7 +168,7 @@ fn vendor_fp4_rejects_overlap_and_unprepared_operands() -> TestResult {
             "no-autotune must not measure a new candidate"
         );
     }
-    let graph = Graph::scope(&device.stream, |scope| {
+    let graph = device.tile().capture(|scope| {
         let op = Operands {
             weight: &weight,
             scale: 1.0,

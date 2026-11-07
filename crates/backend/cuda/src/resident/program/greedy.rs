@@ -1,5 +1,5 @@
 //! Draft readout and external-hidden reuse on the program's owned CUDA stream.
-use super::{CudaDevice, DeviceProgram, ExternalInput, ProgramWeights, device_error};
+use super::{CudaDevice, DeviceProgram, ExternalInput, ProgramWeights};
 #[cfg(test)]
 use crate::device::asynchronous::block_on;
 use crate::resident::ActivationArena;
@@ -81,8 +81,9 @@ impl DeviceGreedy {
             &weights.resident_tuning,
         );
         let selector = Greedy::new(device, 1, vocabulary, tile)?;
-        let graph = Graph::scope(&device.stream, |scope| selector.record(scope, logits))
-            .map_err(device_error)?;
+        let graph = device
+            .tile()
+            .capture(|scope| selector.record(scope, logits))?;
         tracing::info!(target:"infer::capture", device_greedy=true, rows=1, vocabulary, tile, "draft GPU token readout captured");
         Ok(Some(Self { graph, selector }))
     }

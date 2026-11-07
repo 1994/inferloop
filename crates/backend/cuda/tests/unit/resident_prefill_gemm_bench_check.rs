@@ -52,30 +52,28 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
         let weight = Matrix::upload(&device, weights, &[n, k])?;
         let mut native = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
         // Our prompt kernel tiles the output 32x64 and the K loop by 64.
-        let kernel_graph = Graph::scope(&device.stream, |scope| {
+        let kernel_graph = device.tile().capture(|scope| {
             cutile(scope)?.record(
                 gemm::dense((&mut native).partition([32, 64]), &input, &weight.tensor()?)
                     .generics(vec![k.to_string()]),
             )?;
             Ok(())
-        })
-        .map_err(device_error)?;
+        })?;
 
         let narrowed = api::zeros::<bf16>(&[m * k]).sync_on(&device.stream)?;
         let kernels = device.kernels();
         let delegated = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
-        let cast_graph = Graph::scope(&device.stream, |scope| {
+        let cast_graph = device.tile().capture(|scope| {
             kernels
                 .projection
                 .narrow_bf16(scope, tensor_buffer(&narrowed)?, tensor_buffer(&input)?)
                 .map_err(|error| device_error(error.to_string()))
-        })
-        .map_err(device_error)?;
+        })?;
         // cuBLAS does host-side work the first time it sees a configuration and a capturing
         // stream rejects it, so every shape is warmed here, outside the graph, exactly as the
         // production path does it. Warming after the capture would not have helped.
         support.warm(m, &weight, n, k)?;
-        let gemm_graph = Graph::scope(&device.stream, |scope| {
+        let gemm_graph = device.tile().capture(|scope| {
             let op = GemmBf16::new(
                 Arc::clone(
                     support
@@ -91,8 +89,7 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
             scope
                 .foreign(op, Vec::new())
                 .map_err(|error| device_error(error.to_string()))
-        })
-        .map_err(device_error)?;
+        })?;
         // Warm the native and cast paths before timing; the vendor one was warmed above.
         kernel_graph
             .launch()

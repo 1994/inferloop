@@ -68,11 +68,10 @@ fn large_logit_geometry_preserves_hidden_only_readback() -> Result<()> {
     let mut destination = api::zeros::<f32>(&[2])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let graph = Graph::scope(&device.stream, |scope| {
+    let graph = device.tile().capture(|scope| {
         cutile(scope)?.record(api::memcpy(&mut destination, &hidden))?;
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     let sources = [
         Some(ReadbackSource::slice(
             &Allocation::adopt(Arc::clone(&hidden))?,
@@ -142,13 +141,12 @@ fn fixtures(device: &CudaDevice) -> Result<(Tensors, Tensors)> {
 fn pinned_readbacks_ordering_and_overhead() -> Result<()> {
     let device = CudaDevice::new(0)?;
     let (mut inputs, mut outputs) = fixtures(&device)?;
-    let graph = Graph::scope(&device.stream, |scope| {
+    let graph = device.tile().capture(|scope| {
         for (output, input) in outputs.iter_mut().zip(&inputs) {
             cutile(scope)?.record(api::memcpy(output, input))?;
         }
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     let outputs: Vec<_> = outputs.into_iter().map(Arc::new).collect();
     let sources = outputs
         .iter()
@@ -314,17 +312,15 @@ fn pinned_float_and_integer_graphs_complete_in_order_and_reuse_buffers() -> Resu
     let mut float_output = api::zeros::<f32>(&[5])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let graph = Graph::scope(&device.stream, |scope| {
+    let graph = device.tile().capture(|scope| {
         cutile(scope)?.record(api::memcpy(&mut float_output, &float_input))?;
         cutile(scope)?.record(api::memcpy(&mut middle, &integer_input))?;
         Ok(())
-    })
-    .map_err(device_error)?;
-    let tail = Graph::scope(&device.stream, |scope| {
+    })?;
+    let tail = device.tile().capture(|scope| {
         cutile(scope)?.record(api::memcpy(&mut integer_output, &middle))?;
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     let float_output = Allocation::adopt(Arc::new(float_output))?;
     let floats = [Some(ReadbackSource::all(&float_output)), None];
     let integer_output = Allocation::adopt(Arc::new(integer_output))?;
@@ -412,11 +408,10 @@ fn split_readback_is_pending_until_stream_completion_and_rejects_reuse() -> Resu
     let mut output = api::zeros::<f32>(&[4])
         .sync_on(&device.stream)
         .map_err(device_error)?;
-    let graph = Graph::scope(&device.stream, |scope| {
+    let graph = device.tile().capture(|scope| {
         cutile(scope)?.record(api::memcpy(&mut output, &input))?;
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     let sources = [
         Some(ReadbackSource::all(&Allocation::adopt(Arc::new(output))?)),
         None,

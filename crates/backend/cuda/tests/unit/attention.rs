@@ -5,7 +5,6 @@ use cutile::prelude::*;
 use infer_core::Result;
 use infer_cuda_kernels::contract::DenseBuffers;
 use infer_cuda_kernels::tile::attention::TileAttention;
-use infer_cuda_kernels::tile::runtime::Graph;
 use infer_kernel_api::attention::{AttentionDescriptor, AttentionMask};
 
 fn descriptor() -> AttentionDescriptor {
@@ -73,7 +72,7 @@ fn dense_attention_supports_distinct_qk_and_value_dimensions() -> Result<()> {
         .sync_on(&device.stream)
         .map_err(device_error)?;
     let family = TileAttention::new(device.ordinal());
-    let graph = Graph::scope(&device.stream, |scope| {
+    let graph = device.tile().capture(|scope| {
         let recording = scope;
         let buffers = DenseBuffers {
             out: buffer(&out)?,
@@ -82,8 +81,7 @@ fn dense_attention_supports_distinct_qk_and_value_dimensions() -> Result<()> {
             value: buffer(v.as_ref())?,
         };
         plan.record(&family, recording, buffers)
-    })
-    .map_err(device_error)?;
+    })?;
     graph
         .launch()
         .sync_on(&device.stream)

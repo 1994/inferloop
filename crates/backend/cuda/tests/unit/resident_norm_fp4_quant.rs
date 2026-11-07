@@ -82,7 +82,7 @@ fn capture(
     outputs: &mut [Quantized],
     fused: bool,
 ) -> TestResult<Graph> {
-    Ok(Graph::scope(&device.stream, |scope| {
+    Ok(device.tile().capture(|scope| {
         for (layer, (codes, scales)) in layers.iter().zip(outputs) {
             if fused {
                 cutile(scope)?.record(
@@ -324,7 +324,7 @@ fn shape_graph(
 ) -> TestResult<Graph> {
     let block = columns.next_power_of_two();
     let fused = fused && norm_fp4_columns(columns);
-    Ok(Graph::scope(&device.stream, |scope| {
+    Ok(device.tile().capture(|scope| {
         if fused {
             cutile(scope)?.record(
                 norm_fp4(

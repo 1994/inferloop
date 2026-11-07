@@ -114,7 +114,7 @@ impl Captured {
         let codes = runtime.zeros::<f4e2m1fnx2>(m * (n / 2))?;
         let out_scales = runtime.zeros::<f8e4m3fn>(m * (n / NVFP4_GROUP_SIZE))?;
         let contract = device.kernels();
-        let graph = Graph::scope(&device.stream, |scope| {
+        let graph = device.tile().capture(|scope| {
             contract
                 .projection
                 .quantize_fp4(
@@ -143,8 +143,7 @@ impl Captured {
                 (codes.operand(), out_scales.operand()),
                 [m, n, k],
             )
-        })
-        .map_err(device_error)?;
+        })?;
         Ok(Self {
             graph,
             codes,

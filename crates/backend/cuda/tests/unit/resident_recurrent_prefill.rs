@@ -4,7 +4,6 @@ use crate::resident::buffers::buffer as operand;
 use crate::resident::recurrent::recurrent::delta as recurrent_delta;
 use cutile::prelude::*;
 use infer_cuda_kernels::tile::kernels as contract_kernels;
-use infer_cuda_kernels::tile::runtime::Graph;
 use std::env::var_os;
 use std::error::Error;
 
@@ -807,7 +806,7 @@ fn check_ordered_fixture(
         .runtime()
         .upload(vec![0, i32::try_from(count)?, offset, 0])?;
     let prepared = super::prepared::Inputs::new(device, (kh, vh, dim), lanes)?;
-    let graph = Graph::scope(&device.stream, |scope| {
+    let graph = device.tile().capture(|scope| {
         prepared.record(
             scope,
             contract_kernels(0).recurrent.as_ref(),

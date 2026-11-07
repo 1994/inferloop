@@ -1,6 +1,6 @@
 //! Exact plain-greedy output for contiguous or separately allocated resident logits.
 use super::{ProgramWeights, greedy::Greedy};
-use crate::device::{CudaDevice, ReadbackSource, Readbacks, device_error};
+use crate::device::{CudaDevice, ReadbackSource, Readbacks};
 use crate::tuning::greedy::select;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::tile::runtime::Allocation;
@@ -64,13 +64,12 @@ impl TokenReadout {
             .map(|_| Greedy::new(device, per_input, vocabulary, tile))
             .collect::<Result<Vec<_>>>()?;
         let tokens = device.runtime().zeros(rows * 2)?;
-        let graph = Graph::scope(&device.stream, |scope| {
+        let graph = device.tile().capture(|scope| {
             for (index, (selector, input)) in selectors.iter_mut().zip(logits).enumerate() {
                 selector.record_into(scope, input, &tokens, index * per_input)?;
             }
             Ok(())
-        })
-        .map_err(device_error)?;
+        })?;
         tracing::info!(target: "infer::capture", device_token_readout=true,
             rows, vocabulary, tile, "GPU token readout captured");
         Ok(Some(Self {

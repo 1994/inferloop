@@ -7,7 +7,6 @@ use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::DenseBuffers;
 use infer_cuda_kernels::tile::attention::TileAttention;
-use infer_cuda_kernels::tile::runtime::Graph;
 use infer_kernel_api::attention::{AttentionDescriptor, AttentionMask};
 use serde::Deserialize;
 use std::env::var;
@@ -156,7 +155,7 @@ fn dense(device: &CudaDevice, case: &Case, q: &[f32], k: &[f32], v: &[f32]) -> R
         .sync_on(&device.stream)
         .map_err(device_error)?;
     let family = TileAttention::new(device.ordinal());
-    let graph = Graph::scope(&device.stream, |scope| {
+    let graph = device.tile().capture(|scope| {
         let recording = scope;
         let buffers = DenseBuffers {
             out: buffer(&out)?,
@@ -168,8 +167,7 @@ fn dense(device: &CudaDevice, case: &Case, q: &[f32], k: &[f32], v: &[f32]) -> R
             plan.record(&family, recording, buffers)?;
         }
         Ok(())
-    })
-    .map_err(device_error)?;
+    })?;
     graph
         .launch()
         .sync_on(&device.stream)

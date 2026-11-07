@@ -139,7 +139,7 @@ fn check(
     .sync_on(&device.stream)
     .map_err(device_error)?;
     let shape = simt(function, lanes)?;
-    let graph = Graph::scope(&device.stream, |scope| {
+    let graph = device.tile().capture(|scope| {
         record_simt(
             function,
             scope,
@@ -154,8 +154,7 @@ fn check(
             ],
             &metadata,
         )
-    })
-    .map_err(device_error)?;
+    })?;
     graph
         .launch()
         .sync_on(&device.stream)
@@ -253,7 +252,7 @@ impl Cost {
     fn graph(&mut self, device: &CudaDevice, rust: Option<&Kernels>) -> Result<Graph> {
         let width = self.width;
         let shape = rust.map(|kernels| simt(kernels, width)).transpose()?;
-        Graph::scope(&device.stream, |scope| {
+        device.tile().capture(|scope| {
             cutile(scope)?.record(api::memcpy(&mut self.state, &self.initial))?;
             cutile(scope)?.record(
                 kernels::normalize_shared((&mut self.normalized).partition([1, 1, DIM]), &self.qkv)
@@ -308,7 +307,6 @@ impl Cost {
             )?;
             Ok(())
         })
-        .map_err(device_error)
     }
     fn verify(&self, device: &CudaDevice, native: &Graph, rust: &Graph) -> Result<()> {
         native

@@ -87,7 +87,7 @@ fn bench_case(
     let prepared = (dim == super::ORDERED_DIM)
         .then(|| super::prepared::Inputs::new(device, (kh, vh, dim), lanes))
         .transpose()?;
-    let candidate = Graph::scope(&device.stream, |scope| {
+    let candidate = device.tile().capture(|scope| {
         if dim == 128 {
             prepared.as_ref().expect("ordered preparation").record(
                 scope,
@@ -137,7 +137,7 @@ fn per_lane_baseline(
     metadata: &[Arc<Tensor<i32>>],
 ) -> infer_core::Result<Graph> {
     let cols = (2 * kh + vh) * dim;
-    Graph::scope(&device.stream, |scope| {
+    device.tile().capture(|scope| {
         for (lane, output) in old_outputs.iter_mut().enumerate() {
             cutile(scope)?.record(
                 super::super::recurrent::recurrent::delta(

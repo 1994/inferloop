@@ -8,7 +8,6 @@ use cutile::bench::BenchOptions as CutileBenchOptions;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
-use infer_cuda_kernels::tile::runtime::Graph;
 use std::error::Error;
 
 /// Identity block table for a KV arena of `capacity` tokens.
@@ -324,7 +323,7 @@ fn bench_case(
         let meta = device.upload(vec![position, 0, position, 0], &[4])?;
         let mut output = api::zeros::<f32>(&[heads, dim]).sync_on(&device.stream)?;
         let table = block_table(device, capacity)?;
-        let baseline = Graph::scope(&device.stream, |scope| {
+        let baseline = device.tile().capture(|scope| {
             cutile(scope)?.record(
                 super::super::attention::attention::decode(
                     (&mut output).partition([1, dim]),
@@ -350,7 +349,7 @@ fn bench_case(
             let mut numerator = api::zeros::<f32>(&[heads * parts, dim]).sync_on(&device.stream)?;
             let mut maxima = api::zeros::<f32>(&[heads * parts, 1]).sync_on(&device.stream)?;
             let mut sums = api::zeros::<f32>(&[heads * parts, 1]).sync_on(&device.stream)?;
-            let candidate = Graph::scope(&device.stream, |scope| {
+            let candidate = device.tile().capture(|scope| {
                 cutile(scope)?.record(
                     kernels::partial(
                         (&mut numerator).partition([1, dim]),

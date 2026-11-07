@@ -87,7 +87,7 @@ impl MlpGraph {
         let down = allocate(d)?;
         let output = allocate(d)?;
         let kernels = device.kernels();
-        let graph = Graph::scope(&device.stream, |scope| {
+        let graph = device.tile().capture(|scope| {
             let recording = scope;
             kernels
                 .mlp
@@ -130,8 +130,7 @@ impl MlpGraph {
                 .residual(recording, output.operand(), down.operand(), input.operand())
                 .map_err(failed)?;
             Ok(())
-        })
-        .map_err(device_error)?;
+        })?;
         Ok(Self {
             graph,
             input,

@@ -18,8 +18,10 @@ use cutile::tensor::KernelOutputStored;
 use infer_core::{Error, ErrorCode, Result};
 use std::any::Any;
 use std::cell::RefCell;
+use std::mem::{ManuallyDrop, take};
 use std::ops::Range;
 use std::result::Result as StdResult;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use transfer::Inflight;
 
@@ -397,9 +399,14 @@ impl Device {
                 .map_err(|error| DeviceError::Internal(error.to_string()))
         })
         .map_err(backend_error)?;
+        // A recording retains an owner per launch; one share of each keeps the memory alive.
+        let mut owners = owners.into_inner();
+        owners.sort_by_key(|owner| Arc::as_ptr(owner).cast::<()>() as usize);
+        owners.dedup_by(|left, right| Arc::ptr_eq(left, right));
         Ok(Graph {
             inner,
-            _owners: owners.into_inner(),
+            owners,
+            submitted: AtomicBool::new(false),
         })
     }
 
@@ -434,6 +441,28 @@ impl Device {
         DeviceFuture::scheduled(launch.0, ExecutionContext::new(Arc::clone(&self.stream)))
             .await
             .map_err(|error| Error::new(ErrorCode::Backend, error.to_string()))
+    }
+
+    /// Enqueue a replay of `graph` and return without waiting. Work enqueued later on this stream
+    /// runs after it; the graph keeps what it recorded alive, and dropping it waits for the
+    /// stream once it has been submitted.
+    /// # Errors
+    /// Rejects a graph captured on another stream, or returns the driver's refusal.
+    #[expect(
+        unsafe_code,
+        reason = "The graph holds every recorded owner and its drop waits for the stream after a submission"
+    )]
+    #[inline]
+    pub fn submit(&self, graph: &Graph) -> Result<()> {
+        if !Arc::ptr_eq(graph.inner.stream(), &self.stream) {
+            return Err(Error::invalid("graph replay on another stream"));
+        }
+        graph.submitted.store(true, Ordering::Relaxed);
+        // SAFETY: the replay runs on the graph's own stream; the graph retains the owner of every
+        // buffer it recorded and, once submitted, its drop waits for the stream, so neither the
+        // executable nor that memory is freed while the replay can still run. Host reads go
+        // through stream-ordered transfers.
+        unsafe { graph.inner.launch().async_on(&self.stream) }.map_err(backend_error)
     }
 
     /// Run a launch on this stream and wait until the device has finished it.
@@ -471,29 +500,30 @@ impl Device {
 pub struct Graph {
     inner: CudaGraph<()>,
     /// Kept for the memory the graph addresses; replay never touches them.
-    _owners: Vec<Owner>,
+    owners: Vec<Owner>,
+    /// Set once [`Device::submit`] enqueued a replay nobody waited for.
+    submitted: AtomicBool,
+}
+
+#[expect(
+    unsafe_code,
+    reason = "Waiting on the graph's own live stream before its executable and owners go"
+)]
+impl Drop for Graph {
+    fn drop(&mut self) {
+        if !*self.submitted.get_mut() {
+            return;
+        }
+        // A replay may still run: the executable and the memory it addresses outlive it, and only
+        // a failed device, which never completes the stream, leaks them instead.
+        // SAFETY: the stream is live and owned by its device; this only waits for its work.
+        if unsafe { self.inner.stream().synchronize() }.is_err() {
+            let _leaked = ManuallyDrop::new(take(&mut self.owners));
+        }
+    }
 }
 
 impl Graph {
-    /// Capture a graph whose caller keeps every buffer it records alive, as resident programs do.
-    /// Transitional, until those recordings move to [`Device::capture`], whose graph holds them.
-    /// # Errors
-    /// Returns what `record` returns, or a capture failure.
-    pub fn scope(
-        stream: &Arc<Stream>,
-        record: impl FnOnce(&Recording<'_>) -> Result<()>,
-    ) -> Result<Self> {
-        let inner = CudaGraph::scope(stream, |scope| {
-            record(&Recording::scope(scope))
-                .map_err(|error| DeviceError::Internal(error.to_string()))
-        })
-        .map_err(backend_error)?;
-        Ok(Self {
-            inner,
-            _owners: Vec::new(),
-        })
-    }
-
     /// Capture cuTile launches recorded inside this crate, whose caller keeps the memory alive.
     pub(crate) fn cutile(
         stream: &Arc<Stream>,
@@ -501,8 +531,18 @@ impl Graph {
     ) -> StdResult<Self, DeviceError> {
         Ok(Self {
             inner: CudaGraph::scope(stream, record)?,
-            _owners: Vec::new(),
+            owners: Vec::new(),
+            submitted: AtomicBool::new(false),
         })
+    }
+
+    /// Wait until the stream this graph replays on has finished everything queued so far.
+    /// # Errors
+    /// Returns the driver's failure to synchronize.
+    #[expect(unsafe_code, reason = "Waiting on the graph's own live stream")]
+    pub fn drain(&self) -> Result<()> {
+        // SAFETY: the stream is live and owned by its device; this only waits for its work.
+        unsafe { self.inner.stream().synchronize() }.map_err(backend_error)
     }
 
     #[inline]
