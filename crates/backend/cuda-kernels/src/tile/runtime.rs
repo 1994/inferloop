@@ -28,6 +28,7 @@ mod events;
 mod info;
 mod launch;
 mod operation;
+mod pointer;
 mod readback;
 mod staging;
 mod timing;

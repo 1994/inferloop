@@ -30,7 +30,7 @@ CUDA_HOST_TOKENS = {
     "Tensor<": 1,
     ".partition(": 0,
     ".generics(": 0,
-    "cuda_core": 16,
+    "cuda_core": 0,
     "CudaGraph": 0,
     # Every remaining mention of cuTile; M6 ends when the host builds without it.
     "cutile": 5,

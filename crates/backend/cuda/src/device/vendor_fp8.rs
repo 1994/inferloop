@@ -4,20 +4,6 @@
 //! remain the fallback for an absent library, unsupported shape or failed exact tuning gate.
 use super::CudaDevice;
 use crate::device::device_error;
-use cuda_core::sys::CUcontext;
-use cuda_core::sys::CUmemoryPool;
-use cuda_core::sys::CUmemorytype;
-use cuda_core::sys::CUmemorytype_enum_CU_MEMORYTYPE_DEVICE;
-use cuda_core::sys::CUpointer_attribute_enum_CU_POINTER_ATTRIBUTE_CONTEXT;
-use cuda_core::sys::CUpointer_attribute_enum_CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL;
-use cuda_core::sys::CUpointer_attribute_enum_CU_POINTER_ATTRIBUTE_DEVICE_POINTER;
-use cuda_core::sys::CUpointer_attribute_enum_CU_POINTER_ATTRIBUTE_MEMORY_TYPE;
-use cuda_core::sys::CUpointer_attribute_enum_CU_POINTER_ATTRIBUTE_MEMPOOL_HANDLE;
-use cuda_core::sys::CUstream;
-use cuda_core::sys::cuCtxGetCurrent;
-use cuda_core::sys::cuPointerGetAttribute;
-use cuda_core::sys::cuStreamGetCtx;
-use cuda_core::sys::cudaError_enum_CUDA_SUCCESS;
 use infer_core::Error;
 use infer_core::ErrorCode;
 use infer_core::Result;
@@ -34,7 +20,8 @@ use std::{
 };
 
 type Handle = *mut c_void;
-type Stream = CUstream;
+/// The driver's opaque stream handle, as the Lt ABI takes it.
+type Stream = *mut c_void;
 const SUCCESS: i32 = 0;
 const OP_N: i32 = 0;
 const OP_T: i32 = 1;
@@ -333,12 +320,8 @@ fn context(device: &CudaDevice) -> Option<Arc<Context>> {
     }
     let api = api()?;
     device.stream.device().bind_to_thread().ok()?;
-    let stream = device.stream.cu_stream();
-    let mut primary = null_mut();
-    // SAFETY: The SDK call uses live lifetime-owned handles and pointers with the declared header ABI.
-    if unsafe { cuStreamGetCtx(stream, &raw mut primary) } != cudaError_enum_CUDA_SUCCESS {
-        return None;
-    }
+    let stream = device.stream.cu_stream().cast();
+    let primary = device.tile().context_identity().ok()?;
     let mut handle = null_mut();
     // SAFETY: The SDK call uses live lifetime-owned handles and pointers with the declared header ABI.
     if unsafe { (api.create)(&raw mut handle) } != SUCCESS {
@@ -350,140 +333,24 @@ fn context(device: &CudaDevice) -> Option<Arc<Context>> {
         handle,
         ordinal: device.ordinal(),
         stream,
-        primary: primary as usize,
+        primary,
         calls: Mutex::new(()),
         #[cfg(test)]
         heuristic_queries: AtomicUsize::new(0),
     }))
 }
-#[expect(
-    unsafe_code,
-    reason = "Audited metadata query rejects operands allocated in a foreign CUDA context before the Lt launch"
-)]
+/// Reject operands allocated outside this device's context before the Lt launch.
 fn same_context(context: &Context, pointer: u64) -> Result<()> {
-    let mut owner: CUcontext = null_mut();
-    // SAFETY: The SDK call uses live lifetime-owned handles and pointers with the declared header ABI.
-    let code = unsafe {
-        cuPointerGetAttribute(
-            (&raw mut owner).cast::<c_void>(),
-            CUpointer_attribute_enum_CU_POINTER_ATTRIBUTE_CONTEXT,
-            pointer,
-        )
-    };
-    if code == cudaError_enum_CUDA_SUCCESS
-        && (owner as usize == context.primary
-            || (owner.is_null() && same_device_pool(context, pointer)))
-    {
-        return Ok(());
-    }
-    Err(error(format!(
-        "vendor FP8 operand is outside device {} context: context_status={code}, owner={owner:p}, expected=0x{:x}, {}",
-        context.ordinal,
-        context.primary,
-        pointer_diagnostics(context, pointer)
-    )))
-}
-/// CUDA Programming Guide 4.3.5.4 specifies that stream-ordered pool allocations have a
-/// successful CONTEXT query with a null owner. Admit that documented allocation kind only
-/// after proving a device allocation on this ordinal, visible through the current stream's
-/// owning context, and associated with a real pool. A null owner alone never grants access.
-/// <https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/stream-ordered-memory-allocation.html#pointer-attributes>
-#[expect(
-    unsafe_code,
-    reason = "Audited CUDA header attribute-specific types prove same-device pool allocation accessibility before Lt use"
-)]
-fn same_device_pool(context: &Context, pointer: u64) -> bool {
-    let mut current: CUcontext = null_mut();
-    // SAFETY: Each output is a live stack slot with its cuda.h attribute-specific type.
-    if unsafe { cuCtxGetCurrent(&raw mut current) } != cudaError_enum_CUDA_SUCCESS
-        || current as usize != context.primary
-    {
-        return false;
-    }
-    let mut ordinal = -1_i32;
-    let mut memory_type: CUmemorytype = 0;
-    let mut accessible: u64 = 0;
-    let mut pool: CUmemoryPool = null_mut();
-    for (attribute, destination) in [
-        (
-            CUpointer_attribute_enum_CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL,
-            (&raw mut ordinal).cast::<c_void>(),
-        ),
-        (
-            CUpointer_attribute_enum_CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
-            (&raw mut memory_type).cast::<c_void>(),
-        ),
-        (
-            CUpointer_attribute_enum_CU_POINTER_ATTRIBUTE_DEVICE_POINTER,
-            (&raw mut accessible).cast::<c_void>(),
-        ),
-        (
-            CUpointer_attribute_enum_CU_POINTER_ATTRIBUTE_MEMPOOL_HANDLE,
-            (&raw mut pool).cast::<c_void>(),
-        ),
-    ] {
-        // SAFETY: Destinations match the exact signed-int, enum, u64 and pool ABI.
-        if unsafe { cuPointerGetAttribute(destination, attribute, pointer) }
-            != cudaError_enum_CUDA_SUCCESS
-        {
-            return false;
-        }
-    }
-    usize::try_from(ordinal).is_ok_and(|ordinal| ordinal == context.ordinal)
-        && memory_type == CUmemorytype_enum_CU_MEMORYTYPE_DEVICE
-        && accessible == pointer
-        && !pool.is_null()
-}
-/// Failure-only metadata: do not infer allocation ownership from a null context.
-#[expect(
-    unsafe_code,
-    reason = "Audited failure diagnostics use CUDA header attribute-specific output types; these queries neither allocate nor launch GPU work"
-)]
-fn pointer_diagnostics(context: &Context, pointer: u64) -> String {
-    let mut current: CUcontext = null_mut();
-    // SAFETY: current points to one live CUcontext-sized stack slot.
-    let current_status = unsafe { cuCtxGetCurrent(&raw mut current) };
-    let mut ordinal = -1_i32;
-    // SAFETY: DEVICE_ORDINAL writes one signed int as specified by cuda.h.
-    let ordinal_status = unsafe {
-        cuPointerGetAttribute(
-            (&raw mut ordinal).cast::<c_void>(),
-            CUpointer_attribute_enum_CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL,
-            pointer,
-        )
-    };
-    let mut memory_type: CUmemorytype = 0;
-    // SAFETY: MEMORY_TYPE writes one CUmemorytype/unsigned-int enum as specified by cuda.h.
-    let memory_status = unsafe {
-        cuPointerGetAttribute(
-            (&raw mut memory_type).cast::<c_void>(),
-            CUpointer_attribute_enum_CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
-            pointer,
-        )
-    };
-    let mut accessible: u64 = 0;
-    // SAFETY: DEVICE_POINTER writes one u64, valid for the current CUDA context.
-    let accessible_status = unsafe {
-        cuPointerGetAttribute(
-            (&raw mut accessible).cast::<c_void>(),
-            CUpointer_attribute_enum_CU_POINTER_ATTRIBUTE_DEVICE_POINTER,
-            pointer,
-        )
-    };
-    let mut pool: CUmemoryPool = null_mut();
-    // SAFETY: MEMPOOL_HANDLE writes one CUmemoryPool opaque pointer as specified by cuda.h.
-    let pool_status = unsafe {
-        cuPointerGetAttribute(
-            (&raw mut pool).cast::<c_void>(),
-            CUpointer_attribute_enum_CU_POINTER_ATTRIBUTE_MEMPOOL_HANDLE,
-            pointer,
-        )
-    };
-    format!(
-        "pointer=0x{pointer:x}, stream={:p}, device_context={:p}, current_status={current_status}, current={current:p}, ordinal_status={ordinal_status}, ordinal={ordinal}, memory_status={memory_status}, memory_type={memory_type}, accessible_status={accessible_status}, accessible=0x{accessible:x}, pool_status={pool_status}, pool={pool:p}",
-        context.stream,
-        context.device.stream.device().cu_ctx()
-    )
+    context
+        .device
+        .tile()
+        .check_operand(pointer)
+        .map_err(|report| {
+            error(format!(
+                "vendor FP8 operand is outside device {} context: {report}",
+                context.ordinal
+            ))
+        })
 }
 struct Descriptors {
     api: &'static Api,

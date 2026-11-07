@@ -13,7 +13,6 @@ use crate::device::device_error;
 use crate::mlp::Matrix;
 use crate::resident::tensor_buffer;
 use crate::tuning::prefill::delegate_dense;
-use cuda_core::sys::CUstream;
 use infer_core::Result;
 use infer_core::{Error, ErrorCode};
 use infer_cuda_kernels::contract::{
@@ -27,6 +26,9 @@ use std::fmt::Display;
 use std::ptr::null_mut;
 use std::result::Result as StdResult;
 use std::sync::{Arc, Mutex, OnceLock};
+
+/// The driver's opaque stream handle, as the library ABI takes it.
+type CUstream = *mut c_void;
 
 type Handle = *mut c_void;
 type CudaStream = CUstream;
@@ -208,7 +210,7 @@ fn build(device: &CudaDevice) -> Option<Context> {
         return None;
     }
     // SAFETY: the handle is live and the stream belongs to this device.
-    let bound = unsafe { (api.set_stream)(handle, device.stream.cu_stream()) };
+    let bound = unsafe { (api.set_stream)(handle, device.stream.cu_stream().cast()) };
     if bound != 0 {
         destroy(api, handle);
         return None;
@@ -221,7 +223,7 @@ fn build(device: &CudaDevice) -> Option<Context> {
     };
     Some(Context {
         ordinal: device.ordinal(),
-        stream: device.stream.cu_stream(),
+        stream: device.stream.cu_stream().cast(),
         handle,
         alpha,
         beta,
