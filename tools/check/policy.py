@@ -197,7 +197,8 @@ def check_exceptions():
                         # Async operations: allocations are written before any read and retained,
                         # with every owner and pinned source, until the submission completes.
                         TILE_KERNELS / "runtime/operation.rs",
-                        # Driver queries: read-only, live outputs, on a device the stream keeps alive.
+                        # Driver queries: read-only with live outputs, on a device its stream
+                        # keeps alive.
                         TILE_KERNELS / "runtime/info.rs",
                         # Timing events retained by their graphs; D2H reads over buffers whose
                         # contract guarantees the extent.
