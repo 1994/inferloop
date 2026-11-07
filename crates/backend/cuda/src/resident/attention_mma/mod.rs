@@ -75,21 +75,17 @@ impl Support {
             Arithmetic::Bf16 => (PTX, "prepare_fa4", "finish_fa4"),
             Arithmetic::F16 => (f16::PTX, "prepare_fa4_f16", "finish_fa4_f16"),
         };
-        let module = device
-            .stream
-            .device()
-            .load_module_from_ptx_src(ptx)
-            .map_err(device_error)?;
+        let module = device.tile().load_ptx(ptx).map_err(device_error)?;
         let sms = device.profile()?.multiprocessors;
         Ok(Self {
             arithmetic,
-            prepare: Arc::new(module.load_function(prepare_name).map_err(device_error)?),
+            prepare: Arc::new(module.function(prepare_name).map_err(device_error)?),
             prepare_f32: None,
-            finish: Arc::new(module.load_function(finish_name).map_err(device_error)?),
+            finish: Arc::new(module.function(finish_name).map_err(device_error)?),
             apis: BTreeMap::new(),
             f16_api: None,
             scratch: workspace::Scratch::new(device, capacity, lanes, arithmetic)?,
-            stream: device.stream.cu_stream() as usize,
+            stream: device.tile().stream_id(),
             grid: sms.saturating_mul(RESIDENT_BLOCKS_PER_SM).max(1),
             capacity,
             lanes,
@@ -102,15 +98,9 @@ impl Support {
             ));
         }
         if self.prepare_f32.is_none() {
-            let module = device
-                .stream
-                .device()
-                .load_module_from_ptx_src(F32_PTX)
-                .map_err(device_error)?;
+            let module = device.tile().load_ptx(F32_PTX).map_err(device_error)?;
             self.prepare_f32 = Some(Arc::new(
-                module
-                    .load_function("prepare_fa4_f32")
-                    .map_err(device_error)?,
+                module.function("prepare_fa4_f32").map_err(device_error)?,
             ));
         }
         Ok(())

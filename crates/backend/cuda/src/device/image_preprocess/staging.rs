@@ -1,21 +1,20 @@
 //! Reusable pinned uploads returned to their pool only after device completion.
-use crate::device::device_error;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::runtime::{CudaContext, PinnedHostBuffer};
 use infer_cuda_kernels::runtime::{DType, DeviceCopy};
+use infer_cuda_kernels::runtime::{Device as Runtime, PinnedHostBuffer};
 use std::sync::{Arc, Mutex};
 
 type Available<T> = Arc<Mutex<Vec<PinnedHostBuffer<T>>>>;
 
 pub(super) struct UploadPool<T: DType + DeviceCopy> {
-    context: Arc<CudaContext>,
+    device: Runtime,
     available: Available<T>,
 }
 
 impl<T: DType + DeviceCopy> UploadPool<T> {
-    pub fn new(context: Arc<CudaContext>) -> Self {
+    pub fn new(device: Runtime) -> Self {
         Self {
-            context,
+            device,
             available: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -46,8 +45,7 @@ impl<T: DType + DeviceCopy> UploadPool<T> {
                 .len()
                 .checked_next_power_of_two()
                 .ok_or_else(|| Error::invalid("image upload capacity overflow"))?;
-            let mut buffer =
-                PinnedHostBuffer::zeroed(&self.context, capacity).map_err(device_error)?;
+            let mut buffer = self.device.pinned(capacity)?;
             buffer.as_mut_slice()[..values.len()].copy_from_slice(values);
             buffer
         };

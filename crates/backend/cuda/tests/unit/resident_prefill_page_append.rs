@@ -99,7 +99,7 @@ impl Fixture {
                 .map(|i| f8e4m3fn(u8::try_from(i % 120).unwrap()))
                 .collect();
             Ok(api::copy_host_vec_to_device(&Arc::new(values))
-                .sync_on(&device.stream)?
+                .sync_on(device.stream())?
                 .reshape(&[4, capacity, dimension])?)
         };
         Ok(Self {
@@ -108,8 +108,8 @@ impl Fixture {
             lanes,
             key: device.upload(data(7), &[lanes, 4, dimension])?,
             value: device.upload(data(19), &[lanes, 4, dimension])?,
-            metadata: api::zeros::<i32>(&[4]).sync_on(&device.stream)?,
-            table: api::zeros::<i32>(&[capacity / KV_BLOCK_TOKENS]).sync_on(&device.stream)?,
+            metadata: api::zeros::<i32>(&[4]).sync_on(device.stream())?,
+            table: api::zeros::<i32>(&[capacity / KV_BLOCK_TOKENS]).sync_on(device.stream())?,
             reference: [cache()?, cache()?],
             candidate: [cache()?, cache()?],
         })
@@ -172,8 +172,8 @@ impl Fixture {
             let padding = assignment[0];
             assignment[used..].fill(padding);
             device.copy_host_slice(&mut self.table, &assignment)?;
-            reference.launch().sync_on(&device.stream)?;
-            candidate.launch().sync_on(&device.stream)?;
+            reference.launch().sync_on(device.stream())?;
+            candidate.launch().sync_on(device.stream())?;
             for (expected, actual) in self.reference.iter().zip(&self.candidate) {
                 let expected = device.read_borrowed(expected)?;
                 let actual = device.read_borrowed(actual)?;
@@ -227,12 +227,12 @@ fn physical_page_append_paired_identity_and_fragmented_cost() -> TestResult {
                 let run = |graph: &Graph| {
                     graph
                         .launch()
-                        .sync_on(&device.stream)
+                        .sync_on(device.stream())
                         .map_err(|e| tensor_error(&e.to_string()))
                 };
                 let (a, b) = if reverse {
                     let (b, a) = do_bench_paired(
-                        &device.stream,
+                        device.stream(),
                         &options,
                         |_| run(&candidate),
                         |_| run(&baseline),
@@ -240,7 +240,7 @@ fn physical_page_append_paired_identity_and_fragmented_cost() -> TestResult {
                     (a, b)
                 } else {
                     do_bench_paired(
-                        &device.stream,
+                        device.stream(),
                         &options,
                         |_| run(&baseline),
                         |_| run(&candidate),

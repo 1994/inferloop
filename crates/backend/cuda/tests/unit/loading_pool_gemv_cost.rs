@@ -59,10 +59,10 @@ impl Case {
                 .map(|_| device.upload(vec![0.0; k], &[k]))
                 .collect::<Result<_>>()?,
             reference: (0..rows)
-                .map(|_| api::zeros::<f32>(&[n]).sync_on(&device.stream))
+                .map(|_| api::zeros::<f32>(&[n]).sync_on(device.stream()))
                 .collect::<StdResult<_, _>>()?,
-            original: api::zeros::<f32>(&[rows, n]).sync_on(&device.stream)?,
-            candidate: api::zeros::<f32>(&[rows, n]).sync_on(&device.stream)?,
+            original: api::zeros::<f32>(&[rows, n]).sync_on(device.stream())?,
+            candidate: api::zeros::<f32>(&[rows, n]).sync_on(device.stream())?,
         })
     }
     fn set(&mut self, device: &CudaDevice, fixture: usize) -> TestResult {
@@ -97,11 +97,11 @@ impl Case {
             .collect();
         let upload = device.upload(data.clone(), &[rows, k])?;
         let joined = Arc::get_mut(&mut self.joined).ok_or("joined alias during upload")?;
-        api::memcpy(joined, &upload).sync_on(&device.stream)?;
+        api::memcpy(joined, &upload).sync_on(device.stream())?;
         for (row, input) in self.rows.iter_mut().enumerate() {
             let upload = device.upload(data[row * k..(row + 1) * k].to_vec(), &[k])?;
             let input = Arc::get_mut(input).ok_or("row alias during upload")?;
-            api::memcpy(input, &upload).sync_on(&device.stream)?;
+            api::memcpy(input, &upload).sync_on(device.stream())?;
         }
         Ok(())
     }
@@ -274,8 +274,8 @@ fn run_group(loaded: &LoadedModel, rows: usize) -> TestResult {
         for case in &mut cases {
             case.set(device, fixture)?;
         }
-        reference.launch().sync_on(&device.stream)?;
-        new.launch().sync_on(&device.stream)?;
+        reference.launch().sync_on(device.stream())?;
+        new.launch().sync_on(device.stream())?;
         for case in &cases {
             case.equal(device)?;
         }
@@ -299,11 +299,11 @@ fn run_group(loaded: &LoadedModel, rows: usize) -> TestResult {
             };
             let run = |g: &Graph| {
                 g.launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|e| tensor_error(&e.to_string()))
             };
             let (first, second) = if reverse { (&new, &old) } else { (&old, &new) };
-            let (a, b) = do_bench_paired(&device.stream, &opts, |_| run(first), |_| run(second))?;
+            let (a, b) = do_bench_paired(device.stream(), &opts, |_| run(first), |_| run(second))?;
             let (a, b) = if reverse { (b, a) } else { (a, b) };
             println!(
                 "{}",
@@ -390,13 +390,13 @@ fn probe_rows(loaded: &LoadedModel, rows: usize) -> TestResult {
         for case in &mut cases {
             case.set(device, fixture)?;
         }
-        reference.launch().sync_on(&device.stream)?;
-        gemv.launch().sync_on(&device.stream)?;
+        reference.launch().sync_on(device.stream())?;
+        gemv.launch().sync_on(device.stream())?;
         for case in &cases {
             case.equal(device)?;
             case.scalar_reference(device)?;
         }
-        shared.launch().sync_on(&device.stream)?;
+        shared.launch().sync_on(device.stream())?;
         for case in &cases {
             case.equal(device)?;
             case.scalar_reference(device)?;
@@ -419,7 +419,7 @@ fn probe_rows(loaded: &LoadedModel, rows: usize) -> TestResult {
                 let run = |graph: &Graph| {
                     graph
                         .launch()
-                        .sync_on(&device.stream)
+                        .sync_on(device.stream())
                         .map_err(|e| tensor_error(&e.to_string()))
                 };
                 let (first, second) = if reverse {
@@ -428,7 +428,7 @@ fn probe_rows(loaded: &LoadedModel, rows: usize) -> TestResult {
                     (baseline, candidate)
                 };
                 let (a, b) =
-                    do_bench_paired(&device.stream, &options, |_| run(first), |_| run(second))?;
+                    do_bench_paired(device.stream(), &options, |_| run(first), |_| run(second))?;
                 let (a, b) = if reverse { (b, a) } else { (a, b) };
                 println!(
                     "{}",
@@ -506,8 +506,8 @@ fn checkpoint_selector_measures_and_reuses_complete_choices() -> TestResult {
                 case.tile,
             )
         })?;
-        reference.launch().sync_on(&loaded.device().stream)?;
-        graph.launch().sync_on(&loaded.device().stream)?;
+        reference.launch().sync_on(loaded.device().stream())?;
+        graph.launch().sync_on(loaded.device().stream())?;
         if selected != pool_dense::Choice::Native {
             case.equal(loaded.device())?;
         }

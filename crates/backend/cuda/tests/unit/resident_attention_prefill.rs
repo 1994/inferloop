@@ -93,10 +93,10 @@ fn check_case(device: &CudaDevice, case: (i32, i32, i32, i32)) -> Result<(), Box
     let mut expected_keys = data(KV_HEADS * CAPACITY * DIM, 13);
     let mut expected_values = data(KV_HEADS * CAPACITY * DIM, 17);
     let mut keys = api::copy_host_vec_to_device(&Arc::new(expected_keys.clone()))
-        .sync_on(&device.stream)?
+        .sync_on(device.stream())?
         .reshape(&[KV_HEADS, CAPACITY, DIM])?;
     let mut values = api::copy_host_vec_to_device(&Arc::new(expected_values.clone()))
-        .sync_on(&device.stream)?
+        .sync_on(device.stream())?
         .reshape(&[KV_HEADS, CAPACITY, DIM])?;
     let query_device = device.upload(query.clone(), &[lanes * HEADS, DIM])?;
     let key_device = device.upload(key.clone(), &[lanes, KV_HEADS, DIM])?;
@@ -125,7 +125,7 @@ fn check_case(device: &CudaDevice, case: (i32, i32, i32, i32)) -> Result<(), Box
         KV_BLOCK_TOKENS.to_string(),
         "1".into(),
     ])
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     // A permuted table must move the appended rows with it, which is what proves the kernel
     // resolves positions through the table instead of assuming identity.
     let swapped: Vec<i32> = (0..blocks)
@@ -140,7 +140,7 @@ fn check_case(device: &CudaDevice, case: (i32, i32, i32, i32)) -> Result<(), Box
         &swapped,
         case,
     )?;
-    let mut output = api::zeros::<f32>(&[lanes * HEADS, DIM]).sync_on(&device.stream)?;
+    let mut output = api::zeros::<f32>(&[lanes * HEADS, DIM]).sync_on(device.stream())?;
     kernels::decode(
         (&mut output).partition([1, DIM]),
         &query_device,
@@ -159,7 +159,7 @@ fn check_case(device: &CudaDevice, case: (i32, i32, i32, i32)) -> Result<(), Box
         HEADS.to_string(),
         KV_BLOCK_TOKENS.to_string(),
     ])
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     for lane in 0..usize::try_from(count)? {
         let position = start + i32::try_from(lane)? + offset;
         if position < 0 {
@@ -209,7 +209,7 @@ fn chunk_rotary_uses_each_token_position_and_preserves_unrotated_tail() -> Resul
     let input_device = device.upload(input.clone(), &[LANES * HEADS, WIDTH])?;
     let frequency_device = device.upload(frequencies.clone(), &[HALF])?;
     let metadata = device.upload(vec![37_i32, 17, 0, 0], &[4])?;
-    let mut output = api::zeros::<f32>(&[LANES * HEADS, WIDTH]).sync_on(&device.stream)?;
+    let mut output = api::zeros::<f32>(&[LANES * HEADS, WIDTH]).sync_on(device.stream())?;
     prefill_rope(
         (&mut output).partition([1, HALF]),
         &input_device,
@@ -217,7 +217,7 @@ fn chunk_rotary_uses_each_token_position_and_preserves_unrotated_tail() -> Resul
         &metadata,
     )
     .generics(vec![WIDTH.to_string(), HALF.to_string(), HEADS.to_string()])
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     let actual = device.read_borrowed(&output)?;
     for row in 0..LANES * HEADS {
         let position = f32::from(u16::try_from(37 + row / HEADS)?);
@@ -256,11 +256,11 @@ fn check_permuted_append(
     let swapped_table = device.upload(swapped.to_vec(), &[blocks])?;
     let mut moved_keys =
         api::copy_host_vec_to_device(&Arc::new(data(KV_HEADS * CAPACITY * DIM, 13)))
-            .sync_on(&device.stream)?
+            .sync_on(device.stream())?
             .reshape(&[KV_HEADS, CAPACITY, DIM])?;
     let mut moved_values =
         api::copy_host_vec_to_device(&Arc::new(data(KV_HEADS * CAPACITY * DIM, 17)))
-            .sync_on(&device.stream)?
+            .sync_on(device.stream())?
             .reshape(&[KV_HEADS, CAPACITY, DIM])?;
     kernels::append(
         (&mut moved_keys).partition([1, CAPACITY, DIM]),
@@ -280,7 +280,7 @@ fn check_permuted_append(
         KV_BLOCK_TOKENS.to_string(),
         "1".into(),
     ])
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     let mut expected_moved = data(KV_HEADS * CAPACITY * DIM, 13);
     for lane in 0..usize::try_from(count)? {
         let position = start + i32::try_from(lane)? + offset;
@@ -298,7 +298,7 @@ fn check_permuted_append(
         }
     }
     assert_eq!(
-        moved_keys.to_host_vec().sync_on(&device.stream)?,
+        moved_keys.to_host_vec().sync_on(device.stream())?,
         expected_moved,
         "append ignored the block table"
     );
@@ -346,7 +346,7 @@ fn check_tiled_decode(
         (&permuted_keys, &permuted_values, swapped_table),
     ] {
         for qt in [16_usize, 32] {
-            let mut tiled = api::zeros::<f32>(&[lanes, HEADS * DIM]).sync_on(&device.stream)?;
+            let mut tiled = api::zeros::<f32>(&[lanes, HEADS * DIM]).sync_on(device.stream())?;
             let query_tiled = query_device.view(&[lanes, HEADS * DIM])?;
             let scale = 1.0 / f32::from(u16::try_from(DIM).expect("dim fits in u16")).sqrt();
             kernels::decode_tiled(
@@ -370,8 +370,8 @@ fn check_tiled_decode(
                 KV_BLOCK_TOKENS.to_string(),
                 super::CausalBlockBound::FullChunk.generic(),
             ])
-            .sync_on(&device.stream)?;
-            let tiled_actual = tiled.to_host_vec().sync_on(&device.stream)?;
+            .sync_on(device.stream())?;
+            let tiled_actual = tiled.to_host_vec().sync_on(device.stream())?;
             for lane in 0..lanes {
                 let position = start + i32::try_from(lane)? + offset;
                 for head in 0..HEADS {
@@ -717,17 +717,17 @@ impl AttentionGraph {
         variant: AttentionVariant,
     ) -> NumericResult<Self> {
         let mut keys = api::copy_host_vec_to_device(&Arc::new(fixture.initial_keys.clone()))
-            .sync_on(&device.stream)?
+            .sync_on(device.stream())?
             .reshape(&[MODEL_KV_HEADS, MODEL_CAPACITY, MODEL_DIM])?;
         let mut values = api::copy_host_vec_to_device(&Arc::new(fixture.initial_values.clone()))
-            .sync_on(&device.stream)?
+            .sync_on(device.stream())?
             .reshape(&[MODEL_KV_HEADS, MODEL_CAPACITY, MODEL_DIM])?;
         let shape = if matches!(variant, AttentionVariant::Simt) {
             [fixture.case.lanes * MODEL_HEADS, MODEL_DIM]
         } else {
             [fixture.case.lanes, MODEL_HEADS * MODEL_DIM]
         };
-        let mut output = api::zeros::<f32>(&shape).sync_on(&device.stream)?;
+        let mut output = api::zeros::<f32>(&shape).sync_on(device.stream())?;
         let graph = device.tile().capture(|scope| {
             fixture.record_append(scope, &mut keys, &mut values)?;
             fixture.record_compute(scope, &mut output, (&keys, &values), variant)?;
@@ -765,7 +765,7 @@ fn check_complete_graph(
     variant: AttentionVariant,
     expected: &[f64],
 ) -> NumericResult<Vec<f32>> {
-    graph.launch().sync_on(&device.stream)?;
+    graph.launch().sync_on(device.stream())?;
     let keys = device.read_borrowed(cache.0)?;
     let values = device.read_borrowed(cache.1)?;
     assert_eq!(keys, fixture.expected_keys, "complete FP8 key append");
@@ -809,13 +809,13 @@ struct SharedAttentionGraphs {
 impl SharedAttentionGraphs {
     fn new(device: &CudaDevice, fixture: &Arc<ChunkFixture>) -> NumericResult<Self> {
         let mut keys = api::copy_host_vec_to_device(&Arc::new(fixture.initial_keys.clone()))
-            .sync_on(&device.stream)?
+            .sync_on(device.stream())?
             .reshape(&[MODEL_KV_HEADS, MODEL_CAPACITY, MODEL_DIM])?;
         let mut values = api::copy_host_vec_to_device(&Arc::new(fixture.initial_values.clone()))
-            .sync_on(&device.stream)?
+            .sync_on(device.stream())?
             .reshape(&[MODEL_KV_HEADS, MODEL_CAPACITY, MODEL_DIM])?;
         let mut output = api::zeros::<f32>(&[fixture.case.lanes, MODEL_HEADS * MODEL_DIM])
-            .sync_on(&device.stream)?;
+            .sync_on(device.stream())?;
         let mut graphs = Vec::new();
         let mut variants = vec![AttentionVariant::Simt];
         for qt in [16, 32] {
@@ -1249,7 +1249,7 @@ fn measure_attention_pair(
     let run = |capture: &Graph| {
         capture
             .launch()
-            .sync_on(&device.stream)
+            .sync_on(device.stream())
             .map_err(|e| tensor_error(&e.to_string()))
     };
     let (first, second) = if reverse {
@@ -1257,7 +1257,7 @@ fn measure_attention_pair(
     } else {
         (&baseline.1, &candidate.1)
     };
-    let (a, b) = do_bench_paired(&device.stream, &options, |_| run(first), |_| run(second))?;
+    let (a, b) = do_bench_paired(device.stream(), &options, |_| run(first), |_| run(second))?;
     let (a, b) = if reverse { (b, a) } else { (a, b) };
     assert!(
         a.times_ms()

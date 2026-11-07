@@ -96,7 +96,7 @@ fn wrapped_replay_costs_what_raw_replay_costs() -> Result<()> {
     let weight = device.upload(bits, &[OUTPUTS, COLUMNS])?;
     let mut output = device.upload(vec![0.0f32; ROWS * OUTPUTS], &[ROWS, OUTPUTS])?;
     let output = Arc::get_mut(&mut output).ok_or_else(|| Error::invariant("shared output"))?;
-    let raw = CudaGraph::scope(&device.stream, |scope| {
+    let raw = CudaGraph::scope(device.stream(), |scope| {
         scope
             .record(
                 pool_gemv::dense(
@@ -123,7 +123,7 @@ fn wrapped_replay_costs_what_raw_replay_costs() -> Result<()> {
                 // The raw side is what the wrapper forwards to: a cuTile future on the stream.
                 DeviceFuture::scheduled(
                     raw.launch(),
-                    ExecutionContext::new(Arc::clone(&device.stream)),
+                    ExecutionContext::new(Arc::clone(device.stream())),
                 )
                 .await
                 .map_err(device_error)?;

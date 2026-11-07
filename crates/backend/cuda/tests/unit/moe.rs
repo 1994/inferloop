@@ -45,7 +45,7 @@ fn routing_matches_independent_reference() -> Result<(), Box<dyn Error>> {
                 ])
                 .first()
                 .unpartition()
-                .sync_on(&device.stream)?;
+                .sync_on(device.stream())?;
                 let actual = device.read_borrowed(&output)?;
                 let expected = infer_reference_ops::reference_operation(
                     &TensorOp::MoeRoute {
@@ -104,7 +104,7 @@ fn selected_dense_experts_match_reference() -> Result<(), Box<dyn Error>> {
         ])
         .first()
         .unpartition()
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         let mut inputs: Vec<&[f32]> = vec![&input, &routes];
         inputs.extend(values.chunks_exact(rows * columns));
         let expected = infer_reference_ops::reference_operation(
@@ -190,7 +190,7 @@ fn selected_fp8_experts_match_pytorch() -> Result<(), Box<dyn Error>> {
         ])
         .first()
         .unpartition()
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         let actual = device.read_borrowed(&out)?;
         for (a, b) in actual.iter().zip(case.expected) {
             assert!(

@@ -136,7 +136,7 @@ fn check_commits(
                 )?;
                 Ok(())
             })?;
-            graph.launch().sync_on(&device.stream)?;
+            graph.launch().sync_on(device.stream())?;
             let actual = device.read_borrowed(&state)?;
             for slot in 0..slots {
                 assert_close(
@@ -228,9 +228,9 @@ fn case(device: &CudaDevice, slots: usize, timing: bool) -> TestResult {
         let expected = reference(&fixture, device, slots, padded)?;
         let baseline = capture_verify(&mut fixture, device, slots, 32)?;
         let candidate = capture_verify(&mut fixture, device, slots, block)?;
-        baseline.launch().sync_on(&device.stream)?;
+        baseline.launch().sync_on(device.stream())?;
         let before = device.read_borrowed(&fixture.candidate)?;
-        candidate.launch().sync_on(&device.stream)?;
+        candidate.launch().sync_on(device.stream())?;
         let after = device.read_borrowed(&fixture.candidate)?;
         assert_close("scalar reference before", &before, &expected.output);
         assert_close("scalar reference after", &after, &expected.output);

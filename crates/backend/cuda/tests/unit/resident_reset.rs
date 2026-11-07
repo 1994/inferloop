@@ -11,7 +11,7 @@ fn captured_reset_clears_every_state_shape() -> Result<(), Box<dyn Error>> {
     let kernels = device.kernels();
     for shape in [vec![257], vec![2, 128, 128], vec![1, 64, 128]] {
         let elements = shape.iter().product();
-        let mut tensor = api::zeros::<f32>(&shape).sync_on(&device.stream)?;
+        let mut tensor = api::zeros::<f32>(&shape).sync_on(device.stream())?;
         let source = device.upload(vec![7.25f32; elements], &shape)?;
         let reset = device.tile().capture(|scope| {
             kernels
@@ -21,7 +21,7 @@ fn captured_reset_clears_every_state_shape() -> Result<(), Box<dyn Error>> {
         })?;
         for _ in 0..2 {
             reset.update(api::memcpy(&mut tensor, &source))?;
-            reset.launch().sync_on(&device.stream)?;
+            reset.launch().sync_on(device.stream())?;
             let values = device.read_borrowed(&tensor).map_err(device_error)?;
             assert_eq!(values.len(), elements);
             assert!(values.iter().all(|value| value.to_bits() == 0));

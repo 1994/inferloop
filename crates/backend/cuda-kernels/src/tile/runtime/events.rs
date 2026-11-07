@@ -17,11 +17,12 @@ use infer_core::{Error, Result};
 use std::ffi::c_void;
 use std::sync::Arc;
 
-/// A timing event on `context`'s device, for [`record_event`].
+/// A timing event on `device`, for [`record_event`].
 /// # Errors
 /// Returns the driver's failure to create it.
-pub fn timing_event(context: &Arc<CudaContext>) -> Result<Arc<CudaEvent>> {
-    context
+pub fn timing_event(device: &Device) -> Result<Arc<CudaEvent>> {
+    CudaContext::new(device.ordinal())
+        .map_err(backend_error)?
         .new_event(Some(CUevent_flags_enum_CU_EVENT_DEFAULT))
         .map(Arc::new)
         .map_err(backend_error)

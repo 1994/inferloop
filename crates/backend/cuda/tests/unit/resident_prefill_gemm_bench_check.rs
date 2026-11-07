@@ -50,7 +50,7 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
         let weights: Vec<bf16> = (0..n * k).map(|i| bf16::from_f32(sample(6, i))).collect();
         let input = device.upload(inputs, &[m, k])?;
         let weight = Matrix::upload(&device, weights, &[n, k])?;
-        let mut native = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
+        let mut native = api::zeros::<f32>(&[m, n]).sync_on(device.stream())?;
         // Our prompt kernel tiles the output 32x64 and the K loop by 64.
         let kernel_graph = device.tile().capture(|scope| {
             cutile(scope)?.record(
@@ -60,9 +60,9 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
             Ok(())
         })?;
 
-        let narrowed = api::zeros::<bf16>(&[m * k]).sync_on(&device.stream)?;
+        let narrowed = api::zeros::<bf16>(&[m * k]).sync_on(device.stream())?;
         let kernels = device.kernels();
-        let delegated = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
+        let delegated = api::zeros::<f32>(&[m, n]).sync_on(device.stream())?;
         let cast_graph = device.tile().capture(|scope| {
             kernels
                 .projection
@@ -93,11 +93,11 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
         // Warm the native and cast paths before timing; the vendor one was warmed above.
         kernel_graph
             .launch()
-            .sync_on(&device.stream)
+            .sync_on(device.stream())
             .map_err(device_error)?;
         cast_graph
             .launch()
-            .sync_on(&device.stream)
+            .sync_on(device.stream())
             .map_err(device_error)?;
         device.reclaim_barrier()?;
         let repeats = 30;
@@ -106,7 +106,7 @@ fn cublas_versus_the_prompt_gemm_on_model_shapes() -> Result<(), Box<dyn Error>>
             for _ in 0..repeats {
                 graph
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(device_error)?;
             }
             device.reclaim_barrier()?;

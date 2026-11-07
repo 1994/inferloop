@@ -303,7 +303,7 @@ impl Drop for Context {
         reason = "Audited teardown destroys the uniquely owned Lt handle after captured program use ends"
     )]
     fn drop(&mut self) {
-        let _ = self.device.stream.device().bind_to_thread();
+        let _ = self.device.tile().bind_to_thread();
         // SAFETY: The SDK call uses live lifetime-owned handles and pointers with the declared header ABI.
         unsafe {
             (self.api.destroy)(self.handle);
@@ -319,8 +319,8 @@ fn context(device: &CudaDevice) -> Option<Arc<Context>> {
         return None;
     }
     let api = api()?;
-    device.stream.device().bind_to_thread().ok()?;
-    let stream = device.stream.cu_stream().cast();
+    device.tile().bind_to_thread().ok()?;
+    let stream = device.tile().raw_stream();
     let primary = device.tile().context_identity().ok()?;
     let mut handle = null_mut();
     // SAFETY: The SDK call uses live lifetime-owned handles and pointers with the declared header ABI.

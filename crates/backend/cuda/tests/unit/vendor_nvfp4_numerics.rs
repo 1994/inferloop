@@ -71,7 +71,7 @@ fn vendor_fp4_matches_independent_full_scalar_output() -> TestResult {
         )?,
         1.0,
     );
-    let floats = Arc::new(api::zeros::<f32>(&[m * k]).sync_on(&device.stream)?);
+    let floats = Arc::new(api::zeros::<f32>(&[m * k]).sync_on(device.stream())?);
     let scratch = floats.reinterpret::<f8e4m3fn>(&[m / 2, k / 16 * 128])?;
     assert_eq!(
         scratch.device_pointer().cu_deviceptr(),
@@ -79,7 +79,7 @@ fn vendor_fp4_matches_independent_full_scalar_output() -> TestResult {
     );
     drop(floats);
     let scratch = Arc::try_unwrap(scratch).map_err(|_| "exclusive scratch")?;
-    let output = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
+    let output = api::zeros::<f32>(&[m, n]).sync_on(device.stream())?;
     let shared = vendor_fp8::Support::new_with(&device, true);
     let context = shared.context.ok_or("Lt unavailable")?;
     let shape = Shape { m, n, k };
@@ -98,7 +98,7 @@ fn vendor_fp4_matches_independent_full_scalar_output() -> TestResult {
     let graph = device
         .tile()
         .capture(|scope| append((&device.kernels(), scope), &context, &prepared, &op, shape))?;
-    graph.launch().sync_on(&device.stream)?;
+    graph.launch().sync_on(device.stream())?;
     let actual = device.read_borrowed(&output)?;
     let mut max_scaled = 0.0_f64;
     for row in 0..m {
@@ -127,8 +127,8 @@ fn vendor_fp4_matches_independent_full_scalar_output() -> TestResult {
 fn vendor_fp4_rejects_overlap_and_unprepared_operands() -> TestResult {
     let device = CudaDevice::new(0)?;
     let (m, n, k) = (128usize, 128usize, 128usize);
-    let q = api::zeros::<f4e2m1fnx2>(&[m, k / 2]).sync_on(&device.stream)?;
-    let qs = api::zeros::<f8e4m3fn>(&[m, k / 16]).sync_on(&device.stream)?;
+    let q = api::zeros::<f4e2m1fnx2>(&[m, k / 2]).sync_on(device.stream())?;
+    let qs = api::zeros::<f8e4m3fn>(&[m, k / 16]).sync_on(device.stream())?;
     let weight = ProjectionWeight::Fp4(
         Matrix::upload(
             &device,
@@ -138,13 +138,13 @@ fn vendor_fp4_rejects_overlap_and_unprepared_operands() -> TestResult {
         Matrix::upload(&device, vec![f8e4m3fn(56); n * k / 16], &[n, k / 16])?,
         1.0,
     );
-    let source = Arc::new(api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?);
+    let source = Arc::new(api::zeros::<f32>(&[m, n]).sync_on(device.stream())?);
     let bytes = source.reinterpret::<f8e4m3fn>(&[m / 2, k / 16 * 128])?;
     let output = source.reinterpret::<f32>(&[m, n])?;
     drop(source);
     let scratch = Arc::try_unwrap(bytes).map_err(|_| "scratch metadata")?;
     let output = Arc::try_unwrap(output).map_err(|_| "output metadata")?;
-    let fresh = api::zeros::<f8e4m3fn>(&[m / 2, k / 16 * 128]).sync_on(&device.stream)?;
+    let fresh = api::zeros::<f8e4m3fn>(&[m / 2, k / 16 * 128]).sync_on(device.stream())?;
     let mut support = super::Support::new(
         &vendor_fp8::Support::new_with(&device, true),
         &Arc::new(ResidentTuningSession::default()),
@@ -206,7 +206,7 @@ fn vendor_fp4_rejects_overlap_and_unprepared_operands() -> TestResult {
         }
         Ok(())
     })?;
-    graph.launch().sync_on(&device.stream)?;
+    graph.launch().sync_on(device.stream())?;
     assert!(
         device
             .read_borrowed(&output)?

@@ -62,7 +62,7 @@ fn block_attention_reads_every_tile_of_its_window() -> TestResult {
             .map(ToString::to_string)
             .collect(),
     )
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     let actual = device.read_borrowed(&out)?;
     // The kernel scales the F32 query by `rsqrt(D)` before rounding it to BF16.
     #[expect(clippy::cast_precision_loss, reason = "a small head dimension")]

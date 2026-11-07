@@ -132,15 +132,15 @@ fn capture(
 fn compare(device: &CudaDevice, a: &[Owners], b: &[Owners]) -> TestResult<usize> {
     let mut elements = 0;
     for (layer, ((ac, asf), (bc, bsf))) in a.iter().zip(b).enumerate() {
-        let ac = ac.to_host_vec().sync_on(&device.stream)?;
-        let bc = bc.to_host_vec().sync_on(&device.stream)?;
+        let ac = ac.to_host_vec().sync_on(device.stream())?;
+        let bc = bc.to_host_vec().sync_on(device.stream())?;
         assert_eq!(ac.len(), ROWS * D / 2);
         assert_eq!(ac.len(), bc.len());
         for (index, (x, y)) in ac.iter().zip(&bc).enumerate() {
             assert_eq!(x.to_bits(), y.to_bits(), "code layer {layer} at {index}");
         }
-        let asf = asf.to_host_vec().sync_on(&device.stream)?;
-        let bsf = bsf.to_host_vec().sync_on(&device.stream)?;
+        let asf = asf.to_host_vec().sync_on(device.stream())?;
+        let bsf = bsf.to_host_vec().sync_on(device.stream())?;
         assert_eq!(asf.len(), ROWS * D / 16);
         assert_eq!(asf.len(), bsf.len());
         for (index, (x, y)) in asf.iter().zip(&bsf).enumerate() {
@@ -162,8 +162,8 @@ fn compare_dense(
     temporary: &mut Tensor<f32>,
 ) -> TestResult<usize> {
     let mut scratch = vec![(
-        api::zeros::<f4e2m1fnx2>(&[ROWS, D / 2]).sync_on(&device.stream)?,
-        api::zeros::<f8e4m3fn>(&[ROWS, D / 16]).sync_on(&device.stream)?,
+        api::zeros::<f4e2m1fnx2>(&[ROWS, D / 2]).sync_on(device.stream())?,
+        api::zeros::<f8e4m3fn>(&[ROWS, D / 16]).sync_on(device.stream())?,
     )];
     let mut elements = 0;
     for (layer_index, layer) in layers.iter().enumerate() {
@@ -183,9 +183,9 @@ fn compare_dense(
             &mut scratch,
             true,
         )?;
-        base.launch().sync_on(&device.stream)?;
+        base.launch().sync_on(device.stream())?;
         let expected = device.read_borrowed(temporary)?;
-        candidate.launch().sync_on(&device.stream)?;
+        candidate.launch().sync_on(device.stream())?;
         let actual = device.read_borrowed(temporary)?;
         assert_eq!(expected.len(), ROWS * D);
         assert_eq!(actual.len(), expected.len());
@@ -217,18 +217,18 @@ fn measure(device: &CudaDevice, a: &Graph, b: &Graph) -> TestResult {
                 clear_l2: cold,
             };
             let (x, y) = do_bench_paired(
-                &device.stream,
+                device.stream(),
                 &options,
                 |_| {
                     first
                         .launch()
-                        .sync_on(&device.stream)
+                        .sync_on(device.stream())
                         .map_err(|e| tensor_error(&e.to_string()))
                 },
                 |_| {
                     second
                         .launch()
-                        .sync_on(&device.stream)
+                        .sync_on(device.stream())
                         .map_err(|e| tensor_error(&e.to_string()))
                 },
             )?;
@@ -273,21 +273,21 @@ fn actual_norm_fp4_quant_screen() -> TestResult {
             .collect::<Vec<_>>(),
         &[ROWS, D],
     )?;
-    let mut temporary = api::zeros::<f32>(&[ROWS, D]).sync_on(&device.stream)?;
+    let mut temporary = api::zeros::<f32>(&[ROWS, D]).sync_on(device.stream())?;
     let mut a = Vec::new();
     let mut b = Vec::new();
     for _ in &layers {
         for outputs in [&mut a, &mut b] {
             outputs.push((
-                api::zeros::<f4e2m1fnx2>(&[ROWS, D / 2]).sync_on(&device.stream)?,
-                api::zeros::<f8e4m3fn>(&[ROWS, D / 16]).sync_on(&device.stream)?,
+                api::zeros::<f4e2m1fnx2>(&[ROWS, D / 2]).sync_on(device.stream())?,
+                api::zeros::<f8e4m3fn>(&[ROWS, D / 16]).sync_on(device.stream())?,
             ));
         }
     }
     let ga = capture(&device, &layers, &input, &mut temporary, &mut a, false)?;
     let gb = capture(&device, &layers, &input, &mut temporary, &mut b, true)?;
-    ga.launch().sync_on(&device.stream)?;
-    gb.launch().sync_on(&device.stream)?;
+    ga.launch().sync_on(device.stream())?;
+    gb.launch().sync_on(device.stream())?;
     let a: Vec<_> = a
         .into_iter()
         .map(|(c, s)| (Arc::new(c), Arc::new(s)))
@@ -416,10 +416,10 @@ fn shape_case(
     let input = device.upload(values.clone(), &[rows, columns])?;
     let weight = device.upload(weights.clone(), &[columns])?;
     let mut output = (
-        api::zeros::<f32>(&[rows, columns]).sync_on(&device.stream)?,
+        api::zeros::<f32>(&[rows, columns]).sync_on(device.stream())?,
         (
-            api::zeros::<f4e2m1fnx2>(&[rows, columns / 2]).sync_on(&device.stream)?,
-            api::zeros::<f8e4m3fn>(&[rows, columns / 16]).sync_on(&device.stream)?,
+            api::zeros::<f4e2m1fnx2>(&[rows, columns / 2]).sync_on(device.stream())?,
+            api::zeros::<f8e4m3fn>(&[rows, columns / 16]).sync_on(device.stream())?,
         ),
     );
     let baseline = shape_graph(
@@ -438,11 +438,11 @@ fn shape_case(
         (columns, offset, scale),
         true,
     )?;
-    baseline.launch().sync_on(&device.stream)?;
+    baseline.launch().sync_on(device.stream())?;
     let expected_dense = device.read_borrowed(&output.0)?;
     let expected_codes = device.read_borrowed(&output.1.0)?;
     let expected_scales = device.read_borrowed(&output.1.1)?;
-    fused.launch().sync_on(&device.stream)?;
+    fused.launch().sync_on(device.stream())?;
     let dense = device.read_borrowed(&output.0)?;
     let codes = device.read_borrowed(&output.1.0)?;
     let scales = device.read_borrowed(&output.1.1)?;
@@ -506,18 +506,18 @@ fn shape_latency(
             (baseline, fused)
         };
         let (a, b) = do_bench_paired(
-            &device.stream,
+            device.stream(),
             &options,
             |_| {
                 first
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|e| tensor_error(&e.to_string()))
             },
             |_| {
                 second
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|e| tensor_error(&e.to_string()))
             },
         )?;

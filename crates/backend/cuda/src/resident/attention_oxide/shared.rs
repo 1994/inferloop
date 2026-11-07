@@ -12,18 +12,10 @@ pub(super) fn load(device: &CudaDevice) -> Result<Option<Support>> {
     if !device.target().has_simt_artifacts() {
         return Ok(None);
     }
-    let module = device
-        .stream
-        .device()
-        .load_module_from_ptx_src(PTX)
-        .map_err(device_error)?;
+    let module = device.tile().load_ptx(PTX).map_err(device_error)?;
     Ok(Some(Support {
-        function: Arc::new(
-            module
-                .load_function("attention_fp8_256")
-                .map_err(device_error)?,
-        ),
-        stream: device.stream.cu_stream() as usize,
+        function: Arc::new(module.function("attention_fp8_256").map_err(device_error)?),
+        stream: device.tile().stream_id(),
         threads: THREADS,
         rows_per_cta: ROWS_PER_CTA,
         lanes: &LANES,

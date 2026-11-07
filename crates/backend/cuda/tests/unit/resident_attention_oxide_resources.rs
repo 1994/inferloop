@@ -46,7 +46,7 @@ fn resource_contract(device: &CudaDevice, support: &Support, lanes: usize) -> Re
     for _ in 0..REPLAYS {
         graph
             .launch()
-            .sync_on(&device.stream)
+            .sync_on(device.stream())
             .map_err(device_error)?;
         let result = runtime.read(&output)?;
         assert!(

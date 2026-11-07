@@ -13,7 +13,7 @@
 use crate::device::{CudaDevice, device_error};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::Recording;
-use infer_cuda_kernels::runtime::{CudaContext, CudaEvent};
+use infer_cuda_kernels::runtime::{CudaEvent, Device as Runtime};
 use infer_cuda_kernels::runtime::{record_event, timing_event};
 use infer_ir::{TensorNode, TensorOp};
 use std::collections::BTreeMap;
@@ -36,7 +36,7 @@ struct Segment {
 
 /// Boundary events recorded into one captured graph: one per node plus a closing event.
 pub(super) struct GraphProfile {
-    context: Arc<CudaContext>,
+    device: Runtime,
     segments: Vec<Segment>,
     events: Vec<Arc<CudaEvent>>,
     graph_only: bool,
@@ -44,9 +44,9 @@ pub(super) struct GraphProfile {
 }
 
 impl GraphProfile {
-    fn new(context: Arc<CudaContext>) -> Self {
+    fn new(device: Runtime) -> Self {
         Self {
-            context,
+            device,
             segments: Vec::new(),
             events: Vec::new(),
             graph_only: var("INFER_CUDA_PROFILE_GRAPH_ONLY").is_ok_and(|v| v == "1"),
@@ -84,7 +84,7 @@ impl GraphProfile {
     }
 
     fn mark(&mut self, scope: &Recording<'_>) -> Result<()> {
-        let event = timing_event(&self.context)?;
+        let event = timing_event(&self.device)?;
         record_event(scope, &event)?;
         self.events.push(event);
         Ok(())
@@ -136,10 +136,10 @@ impl PrefillProfile {
     #[must_use]
     pub(super) fn from_env(device: &CudaDevice) -> Option<Self> {
         let path = var_os(PROFILE_ENV).filter(|value| !value.is_empty())?;
-        let context = CudaContext::new(device.ordinal()).ok()?;
+        let context = device.runtime();
         Some(Self {
             path: PathBuf::from(path),
-            prefill: GraphProfile::new(Arc::clone(&context)),
+            prefill: GraphProfile::new(context.clone()),
             prefill_last: GraphProfile::new(context),
         })
     }
@@ -181,7 +181,7 @@ impl SlotProfile {
     /// Enabled when `INFER_CUDA_PREFILL_PROFILE` names a writable output path.
     pub(super) fn from_env(device: &CudaDevice) -> Option<Self> {
         let path = var_os(PROFILE_ENV).filter(|value| !value.is_empty())?;
-        let context = CudaContext::new(device.ordinal()).ok()?;
+        let context = device.runtime();
         Some(Self {
             path: PathBuf::from(path),
             graph: GraphProfile::new(context),

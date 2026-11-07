@@ -21,7 +21,7 @@ use crate::device::{CudaDevice, device_error};
 use infer_core::{Error, ErrorCode, Result};
 use infer_cuda_kernels::contract::target::ImageKernel;
 use infer_cuda_kernels::runtime::Allocation;
-use infer_cuda_kernels::runtime::{CudaContext, Function};
+use infer_cuda_kernels::runtime::Function;
 use infer_ir::{EncodedImageInput, ImageTransform};
 use infer_spi::ImagePreprocessing;
 use std::sync::Arc;
@@ -99,40 +99,36 @@ impl Processor {
     }
 
     fn load_kernel(device: &CudaDevice, ptx: &str) -> Result<Self> {
-        let module = device
-            .stream
-            .device()
-            .load_module_from_ptx_src(ptx)
-            .map_err(|error| {
-                Error::new(
-                    ErrorCode::Backend,
-                    format!(
-                        "failed to load CUDA image preprocessing on {:?}: {error}",
-                        device.target()
-                    ),
-                )
-            })?;
-        let context = CudaContext::new(device.ordinal()).map_err(device_error)?;
-        let decoder = Arc::new(LazyDecoder::new(Arc::clone(&context), device.target()));
+        let module = device.tile().load_ptx(ptx).map_err(|error| {
+            Error::new(
+                ErrorCode::Backend,
+                format!(
+                    "failed to load CUDA image preprocessing on {:?}: {error}",
+                    device.target()
+                ),
+            )
+        })?;
+        let context = device.runtime();
+        let decoder = Arc::new(LazyDecoder::new(context.clone(), device.target()));
         let capability = Arc::new(capability::DeviceCapability::new(Arc::clone(&decoder)));
         Ok(Self {
             horizontal: Arc::new(
                 module
-                    .load_function("mm_horizontal_batch")
+                    .function("mm_horizontal_batch")
                     .map_err(device_error)?,
             ),
             vertical: Arc::new(
                 module
-                    .load_function("mm_vertical_patch_batch")
+                    .function("mm_vertical_patch_batch")
                     .map_err(device_error)?,
             ),
             direct: Arc::new(
                 module
-                    .load_function("mm_direct_patch_batch")
+                    .function("mm_direct_patch_batch")
                     .map_err(device_error)?,
             ),
-            stream: device.stream.cu_stream() as usize,
-            pixels: UploadPool::new(Arc::clone(&context)),
+            stream: device.tile().stream_id(),
+            pixels: UploadPool::new(context.clone()),
             coefficients: Arc::new(UploadPool::new(context)),
             tables: Arc::new(TableCache::default()),
             decoder,
@@ -178,7 +174,7 @@ impl Processor {
             .decoder
             .get()?
             .ok_or_else(|| Error::unsupported("nvJPEG hardware decoder is unavailable"))?;
-        if self.stream != device.stream.cu_stream() as usize {
+        if self.stream != device.tile().stream_id() {
             return Err(Error::invalid(
                 "image processor belongs to a different CUDA stream",
             ));
@@ -234,7 +230,7 @@ impl Processor {
         geometry: Geometry,
         source: Source,
     ) -> Result<Allocation<f32>> {
-        if self.stream != device.stream.cu_stream() as usize {
+        if self.stream != device.tile().stream_id() {
             return Err(Error::invalid(
                 "image processor belongs to a different CUDA stream",
             ));

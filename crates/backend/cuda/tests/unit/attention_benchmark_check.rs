@@ -19,13 +19,13 @@ pub fn measure(
     }
     let mut samples = Vec::new();
     for _ in 0..60 {
-        let start = device.stream.device().new_event().map_err(device_error)?;
-        let end = device.stream.device().new_event().map_err(device_error)?;
-        start.record(&device.stream).map_err(device_error)?;
+        let start = device.stream().device().new_event().map_err(device_error)?;
+        let end = device.stream().device().new_event().map_err(device_error)?;
+        start.record(device.stream()).map_err(device_error)?;
         graph
             .launch()
-            .map(|()| end.record(&device.stream))
-            .sync_on(&device.stream)
+            .map(|()| end.record(device.stream()))
+            .sync_on(device.stream())
             .map_err(device_error)?
             .map_err(device_error)?;
         samples.push(start.elapsed_time(&end).map_err(device_error)? / 8.0);

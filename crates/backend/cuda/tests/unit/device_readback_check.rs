@@ -58,7 +58,7 @@ fn large_logit_geometry_preserves_hidden_only_readback() -> Result<()> {
     let count = MAX_READBACK_STAGING_BYTES / size_of::<f32>();
     let logits = Arc::new(
         api::zeros::<f32>(&[count])
-            .sync_on(&device.stream)
+            .sync_on(device.stream())
             .map_err(device_error)?,
     );
     let mut readbacks = Readbacks::contiguous(
@@ -68,7 +68,7 @@ fn large_logit_geometry_preserves_hidden_only_readback() -> Result<()> {
         2,
     )?;
     let mut destination = api::zeros::<f32>(&[2])
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     let graph = device.tile().capture(|scope| {
         cutile(scope)?.record(api::memcpy(&mut destination, &hidden))?;
@@ -131,7 +131,7 @@ fn fixtures(device: &CudaDevice) -> Result<(Tensors, Tensors)> {
         inputs.push(Arc::try_unwrap(input).map_err(|_| Error::invariant("fixture ownership"))?);
         outputs.push(
             api::zeros::<f32>(&[size])
-                .sync_on(&device.stream)
+                .sync_on(device.stream())
                 .map_err(device_error)?,
         );
     }
@@ -272,7 +272,7 @@ fn measure(
                     graph
                         .launch()
                         .then(move |()| reads)
-                        .sync_on(&device.stream)
+                        .sync_on(device.stream())
                         .map_err(device_error)?
                 } else {
                     readbacks.run(device, graph, sources)?
@@ -306,13 +306,13 @@ fn pinned_float_and_integer_graphs_complete_in_order_and_reuse_buffers() -> Resu
     let mut integer_input = Arc::try_unwrap(device.upload(vec![0_i32; 6], &[6])?)
         .map_err(|_| Error::invariant("integer fixture ownership"))?;
     let mut middle = api::zeros::<i32>(&[6])
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     let mut integer_output = api::zeros::<i32>(&[6])
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     let mut float_output = api::zeros::<f32>(&[5])
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     let graph = device.tile().capture(|scope| {
         cutile(scope)?.record(api::memcpy(&mut float_output, &float_input))?;
@@ -408,7 +408,7 @@ fn split_readback_is_pending_until_stream_completion_and_rejects_reuse() -> Resu
     let device = CudaDevice::new(0)?;
     let input = device.upload(vec![1.0_f32, 2.0, 3.0, 4.0], &[4])?;
     let mut output = api::zeros::<f32>(&[4])
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     let graph = device.tile().capture(|scope| {
         cutile(scope)?.record(api::memcpy(&mut output, &input))?;

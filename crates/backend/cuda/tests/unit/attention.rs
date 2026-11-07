@@ -69,7 +69,7 @@ fn dense_attention_supports_distinct_qk_and_value_dimensions() -> Result<()> {
     }
     let v = device.upload(values, &shapes[2])?;
     let out = api::zeros::<f32>(&shapes[3])
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     let family = TileAttention::new(device.ordinal());
     let graph = device.tile().capture(|scope| {
@@ -84,7 +84,7 @@ fn dense_attention_supports_distinct_qk_and_value_dimensions() -> Result<()> {
     })?;
     graph
         .launch()
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     let actual = device.read(&Arc::new(out))?;
     for token in 0..shapes[3][0] {

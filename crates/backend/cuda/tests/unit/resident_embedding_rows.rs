@@ -42,9 +42,9 @@ fn batched_prompt_embedding_matches_per_lane_rows() -> Result<(), Box<dyn StdErr
     .generics(vec![dimension.to_string(), METADATA_FIELDS.to_string()])
     .first()
     .unpartition()
-    .sync_on(&device.stream)?
+    .sync_on(device.stream())?
     .to_host_vec()
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     for lane in 0..lanes {
         let row = &external[lane * dimension..(lane + 1) * dimension];
         let fields = &metadata[lane * METADATA_FIELDS..(lane + 1) * METADATA_FIELDS];
@@ -57,9 +57,9 @@ fn batched_prompt_embedding_matches_per_lane_rows() -> Result<(), Box<dyn StdErr
         .generics(vec![dimension.to_string(), "1".into()])
         .first()
         .unpartition()
-        .sync_on(&device.stream)?
+        .sync_on(device.stream())?
         .to_host_vec()
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         let actual = &batched[lane * dimension..(lane + 1) * dimension];
         let bits = |values: &[f32]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
         assert_eq!(bits(actual), bits(&expected), "lane {lane}");

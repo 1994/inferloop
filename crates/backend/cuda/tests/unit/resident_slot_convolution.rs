@@ -91,7 +91,7 @@ impl Fixture {
         let expected = self.reference(device)?;
         let channels = self.channels;
         let mut actual =
-            api::zeros::<f32>(&[self.slots, LANES, channels]).sync_on(&device.stream)?;
+            api::zeros::<f32>(&[self.slots, LANES, channels]).sync_on(device.stream())?;
         kernels::verify(
             (&mut actual).partition([1, LANES, CONV_KERNEL_TILE]),
             &self.input.view(&[self.slots, LANES, channels])?,
@@ -107,7 +107,7 @@ impl Fixture {
                 .map(ToString::to_string)
                 .collect(),
         )
-        .sync_on(&device.stream)?;
+        .sync_on(device.stream())?;
         let actual = device.read_borrowed(&actual)?;
         for (lane, expected) in expected.iter().enumerate() {
             let expected = device.read_borrowed(expected)?;
@@ -130,7 +130,7 @@ impl Fixture {
     fn reference(&self, device: &CudaDevice) -> TestResult<Vec<Tensor<f32>>> {
         let channels = self.channels;
         let mut outputs = (0..self.slots * LANES)
-            .map(|_| api::zeros::<f32>(&[channels]).sync_on(&device.stream))
+            .map(|_| api::zeros::<f32>(&[channels]).sync_on(device.stream()))
             .collect::<StdResult<Vec<_>, _>>()?;
         let reference = device.tile().capture(|scope| {
             for (slot, [first, second, third]) in
@@ -171,7 +171,7 @@ impl Fixture {
             }
             Ok(())
         })?;
-        reference.launch().sync_on(&device.stream)?;
+        reference.launch().sync_on(device.stream())?;
         Ok(outputs)
     }
 }

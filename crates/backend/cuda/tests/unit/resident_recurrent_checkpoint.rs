@@ -63,7 +63,7 @@ fn run_conv(
         weights,
         metadata,
     )
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     let [h0, h1, h2] = buffers.candidate.as_mut_slice() else {
         return Err("candidate convolution fixture layout".into());
     };
@@ -82,7 +82,7 @@ fn run_conv(
         weights,
         metadata,
     )
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     Ok(())
 }
 
@@ -180,7 +180,7 @@ fn run_delta(
         &inputs.metadata,
     )
     .generics(generics.clone())
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     checkpoint::delta_checkpoint(
         (&mut buffers.candidate_output).partition([1, 1, block]),
         (&mut buffers.candidate_state).partition([1, dim, block]),
@@ -193,7 +193,7 @@ fn run_delta(
         &inputs.metadata,
     )
     .generics(generics)
-    .sync_on(&device.stream)?;
+    .sync_on(device.stream())?;
     Ok(())
 }
 

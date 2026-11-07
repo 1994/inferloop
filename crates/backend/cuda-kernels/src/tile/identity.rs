@@ -584,10 +584,11 @@ pub struct AttentionShape {
 /// # Errors
 /// Reports a failed lowering.
 pub fn attention_candidates<E: DType>(
-    stream: &Arc<Stream>,
+    device: &Device,
     shape: &AttentionShape,
     query_tile: Option<usize>,
 ) -> Result<Vec<String>> {
+    let stream = device.stream();
     let AttentionShape {
         heads,
         kv_heads,

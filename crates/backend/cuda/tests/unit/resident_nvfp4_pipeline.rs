@@ -42,9 +42,9 @@ impl Inputs {
             activation: device.upload(activation, &[rows, columns])?,
             weight: device.upload(weight, &[outputs, columns / 2])?,
             weight_scales: device.upload(scales, &[outputs, columns / 16])?,
-            packed: api::zeros::<f4e2m1fnx2>(&[rows, columns / 2]).sync_on(&device.stream)?,
+            packed: api::zeros::<f4e2m1fnx2>(&[rows, columns / 2]).sync_on(device.stream())?,
             activation_scales: api::zeros::<f8e4m3fn>(&[rows, columns / 16])
-                .sync_on(&device.stream)?,
+                .sync_on(device.stream())?,
         })
     }
 
@@ -145,8 +145,8 @@ fn compare_case(
 ) -> TestResult {
     let [rows, outputs, _] = shape;
     let mut inputs = Inputs::new(device, shape)?;
-    let mut original_output = api::zeros::<f32>(&[rows, outputs]).sync_on(&device.stream)?;
-    let mut optimized_output = api::zeros::<f32>(&[rows, outputs]).sync_on(&device.stream)?;
+    let mut original_output = api::zeros::<f32>(&[rows, outputs]).sync_on(device.stream())?;
+    let mut optimized_output = api::zeros::<f32>(&[rows, outputs]).sync_on(device.stream())?;
     let original_tile = native_tile(rows);
     // Sweep the supported wider-column candidate; production choice requires measured proof.
     let optimized_tile = [original_tile[0], original_tile[1] * 2];
@@ -156,14 +156,14 @@ fn compare_case(
     let optimized = device
         .tile()
         .capture(|scope| inputs.record(scope, &mut optimized_output, optimized_tile, true))?;
-    original.launch().sync_on(&device.stream)?;
-    optimized.launch().sync_on(&device.stream)?;
+    original.launch().sync_on(device.stream())?;
+    optimized.launch().sync_on(device.stream())?;
     device.reclaim_barrier()?;
     // Downloads borrow these owners; graph replays continue writing the same live allocations.
     let original_output = Arc::new(original_output);
     let optimized_output = Arc::new(optimized_output);
-    let expected = (&original_output).to_host_vec().sync_on(&device.stream)?;
-    let actual = (&optimized_output).to_host_vec().sync_on(&device.stream)?;
+    let expected = (&original_output).to_host_vec().sync_on(device.stream())?;
+    let actual = (&optimized_output).to_host_vec().sync_on(device.stream())?;
     for (index, (&value, &reference)) in actual.iter().zip(&expected).enumerate() {
         assert!(
             value.is_finite() && (value - reference).abs() <= 5e-4 * reference.abs().max(1.0),
@@ -180,18 +180,18 @@ fn compare_case(
         .zip(&expected)
         .all(|(value, reference)| value.to_bits() == reference.to_bits());
     let (base, candidate) = do_bench_paired(
-        &device.stream,
+        device.stream(),
         options,
         |_| {
             original
                 .launch()
-                .sync_on(&device.stream)
+                .sync_on(device.stream())
                 .map_err(|e| tensor_error(&e.to_string()))
         },
         |_| {
             optimized
                 .launch()
-                .sync_on(&device.stream)
+                .sync_on(device.stream())
                 .map_err(|e| tensor_error(&e.to_string()))
         },
     )?;

@@ -4,15 +4,22 @@ use crate::resident::buffers::buffer;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::runtime::Element;
+use infer_cuda_kernels::runtime::Stream;
 use std::sync::Arc;
 
 impl CudaDevice {
+    /// The device's stream, for tests that drive cuTile operations on it directly.
+    #[must_use]
+    pub fn stream(&self) -> &Arc<Stream> {
+        self.runtime.stream_handle()
+    }
+
     /// A copy of `values` as a tensor of `shape`, complete when this returns.
     /// # Errors
     /// Returns a CUDA error if upload or reshape fails.
     pub fn upload<T: DType>(&self, values: Vec<T>, shape: &[usize]) -> Result<Arc<Tensor<T>>> {
         api::copy_host_vec_to_device(&Arc::new(values))
-            .sync_on(&self.stream)
+            .sync_on(self.stream())
             .map_err(device_error)?
             .reshape(shape)
             .map(Arc::new)
@@ -24,7 +31,7 @@ impl CudaDevice {
     pub fn read<T: DType>(&self, tensor: &Arc<Tensor<T>>) -> Result<Vec<T>> {
         tensor
             .to_host_vec()
-            .sync_on(&self.stream)
+            .sync_on(self.stream())
             .map_err(device_error)
     }
 

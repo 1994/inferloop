@@ -120,7 +120,7 @@ fn key(device: &CudaDevice, rows: usize, vocabulary: usize) -> Result<Key> {
     let keys = KEYS.get_or_init(|| Mutex::new(BTreeMap::new()));
     let identity = (
         device.ordinal(),
-        device.stream.cu_stream() as usize,
+        device.tile().stream_id(),
         rows,
         vocabulary,
     );

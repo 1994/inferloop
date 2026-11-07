@@ -38,14 +38,14 @@ struct Baseline {
 
 impl Baseline {
     fn new(device: &CudaDevice, [kh, vh, lanes]: [usize; 3]) -> TestResult<Self> {
-        let halves = |shape: &[usize]| api::zeros::<bf16>(shape).sync_on(&device.stream);
+        let halves = |shape: &[usize]| api::zeros::<bf16>(shape).sync_on(device.stream());
         Ok(Self {
             u: halves(&[vh, lanes, DIM])?,
             queries: halves(&[kh, lanes, DIM])?,
             keys: halves(&[kh, lanes, DIM])?,
             w: halves(&[vh, lanes, DIM])?,
             p: halves(&[vh, lanes, 64])?,
-            cumulative: api::zeros::<f32>(&[vh, lanes]).sync_on(&device.stream)?,
+            cumulative: api::zeros::<f32>(&[vh, lanes]).sync_on(device.stream())?,
         })
     }
 }
@@ -135,8 +135,8 @@ fn capture(
 
 fn equal(device: &CudaDevice, a: Tensor<f32>, b: Tensor<f32>) -> TestResult<[Arc<Tensor<f32>>; 2]> {
     let (a, b) = (Arc::new(a), Arc::new(b));
-    let x = (&a).to_host_vec().sync_on(&device.stream)?;
-    let y = (&b).to_host_vec().sync_on(&device.stream)?;
+    let x = (&a).to_host_vec().sync_on(device.stream())?;
+    let y = (&b).to_host_vec().sync_on(device.stream())?;
     assert_eq!(x.len(), y.len());
     for (i, (&x, &y)) in x.iter().zip(&y).enumerate() {
         assert!(x.is_finite() && y.is_finite(), "nonfinite at {i}");
@@ -163,10 +163,10 @@ fn compare_case(device: &CudaDevice, shape: [usize; 3]) -> TestResult {
         initial: device.upload(values(vh * DIM * DIM, 13), &[vh, DIM, DIM])?,
     };
     let scratch = Scratch::new(device, (kh, vh, DIM), lanes)?;
-    let mut a = api::zeros::<f32>(&[vh, lanes, DIM]).sync_on(&device.stream)?;
-    let mut b = api::zeros::<f32>(&[vh, lanes, DIM]).sync_on(&device.stream)?;
-    let mut sa = api::zeros::<f32>(&[vh, DIM, DIM]).sync_on(&device.stream)?;
-    let mut sb = api::zeros::<f32>(&[vh, DIM, DIM]).sync_on(&device.stream)?;
+    let mut a = api::zeros::<f32>(&[vh, lanes, DIM]).sync_on(device.stream())?;
+    let mut b = api::zeros::<f32>(&[vh, lanes, DIM]).sync_on(device.stream())?;
+    let mut sa = api::zeros::<f32>(&[vh, DIM, DIM]).sync_on(device.stream())?;
+    let mut sb = api::zeros::<f32>(&[vh, DIM, DIM]).sync_on(device.stream())?;
     let mut baseline = Baseline::new(device, input.shape)?;
     let ga = capture(
         device,
@@ -182,8 +182,8 @@ fn compare_case(device: &CudaDevice, shape: [usize; 3]) -> TestResult {
         (&mut sb, &mut b),
         true,
     )?;
-    ga.launch().sync_on(&device.stream)?;
-    gb.launch().sync_on(&device.stream)?;
+    ga.launch().sync_on(device.stream())?;
+    gb.launch().sync_on(device.stream())?;
     let _outputs = equal(device, a, b)?;
     let _states = equal(device, sa, sb)?;
     println!(
@@ -203,18 +203,18 @@ fn compare_case(device: &CudaDevice, shape: [usize; 3]) -> TestResult {
             clear_l2: true,
         };
         let (x, y) = do_bench_paired(
-            &device.stream,
+            device.stream(),
             &options,
             |_| {
                 first
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|e| tensor_error(&e.to_string()))
             },
             |_| {
                 second
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|e| tensor_error(&e.to_string()))
             },
         )?;

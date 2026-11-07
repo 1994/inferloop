@@ -17,7 +17,7 @@ const TILE: (usize, usize) = (16, 64);
 
 fn upload<T: DType>(device: &CudaDevice, data: Vec<T>, shape: &[usize]) -> Result<Tensor<T>> {
     api::copy_host_vec_to_device(&Arc::new(data))
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?
         .reshape(shape)
         .map_err(device_error)
@@ -58,7 +58,7 @@ fn check(device: &CudaDevice, case: Case) -> Result<()> {
     })?;
     graph
         .launch()
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     case.check(&device.read_borrowed(&output)?)
         .map_err(Error::invariant)

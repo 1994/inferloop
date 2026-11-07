@@ -152,7 +152,7 @@ fn dense(device: &CudaDevice, case: &Case, q: &[f32], k: &[f32], v: &[f32]) -> R
     let k = upload(k, shapes[1])?;
     let v = upload(v, shapes[2])?;
     let out = api::zeros::<f32>(&shapes[3])
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     let family = TileAttention::new(device.ordinal());
     let graph = device.tile().capture(|scope| {
@@ -170,7 +170,7 @@ fn dense(device: &CudaDevice, case: &Case, q: &[f32], k: &[f32], v: &[f32]) -> R
     })?;
     graph
         .launch()
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     super::benchmark::measure(
         device,

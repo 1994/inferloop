@@ -157,7 +157,7 @@ fn recorded_copy_replays_from_a_source_only_the_graph_holds() -> Result<()> {
     drop(source);
     graph
         .launch()
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     assert_eq!(runtime.read(&target)?, values);
     Ok(())

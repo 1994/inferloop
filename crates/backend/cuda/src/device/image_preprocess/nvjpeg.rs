@@ -2,7 +2,7 @@
 use crate::device::device_error;
 use infer_core::{Error, ErrorCode, Result};
 use infer_cuda_kernels::contract::target::Arch;
-use infer_cuda_kernels::runtime::CudaContext;
+use infer_cuda_kernels::runtime::Device as Runtime;
 use infer_ir::{EncodedImageInfo, ImageEncoding};
 use infer_spi::DeviceHostExecutor;
 use std::collections::HashMap;
@@ -140,7 +140,7 @@ enum SessionKind {
 
 struct Session {
     api: &'static Api,
-    context: Arc<CudaContext>,
+    context: Runtime,
     handle: Option<NonNull<c_void>>,
     state: Option<NonNull<c_void>>,
     jpeg: Option<NonNull<c_void>>,
@@ -165,11 +165,7 @@ impl Session {
         unsafe_code,
         reason = "The nvJPEG handles are created and validated within their retained primary CUDA context"
     )]
-    fn create(
-        context: Arc<CudaContext>,
-        api: &'static Api,
-        kind: SessionKind,
-    ) -> Result<Option<Self>> {
+    fn create(context: Runtime, api: &'static Api, kind: SessionKind) -> Result<Option<Self>> {
         context.bind_to_thread().map_err(device_error)?;
         let mut session = Self {
             api,
@@ -379,7 +375,7 @@ impl Drop for Session {
 }
 
 struct Pool {
-    context: Arc<CudaContext>,
+    context: Runtime,
     api: &'static Api,
     kind: SessionKind,
     available: Mutex<HashMap<ThreadId, Vec<Session>>>,
@@ -393,14 +389,14 @@ pub(super) struct Decoder {
 
 /// Keeps CPU-only deployments independent of nvJPEG initialization.
 pub(super) struct LazyDecoder {
-    context: Arc<CudaContext>,
+    context: Runtime,
     target: Arch,
     decoder: OnceLock<Result<Option<Arc<Decoder>>>>,
     executor: OnceLock<Arc<dyn DeviceHostExecutor>>,
 }
 
 impl LazyDecoder {
-    pub const fn new(context: Arc<CudaContext>, target: Arch) -> Self {
+    pub const fn new(context: Runtime, target: Arch) -> Self {
         Self {
             context,
             target,
@@ -411,7 +407,7 @@ impl LazyDecoder {
 
     pub fn get(&self) -> Result<Option<Arc<Decoder>>> {
         self.decoder
-            .get_or_init(|| Decoder::load(self.target, Arc::clone(&self.context)))
+            .get_or_init(|| Decoder::load(self.target, self.context.clone()))
             .clone()
     }
 
@@ -442,9 +438,9 @@ impl Decoder {
         unsafe_code,
         reason = "Version properties are read into valid host integers from a loaded nvJPEG library"
     )]
-    fn load(target: Arch, context: Arc<CudaContext>) -> Result<Option<Arc<Self>>> {
+    fn load(target: Arch, context: Runtime) -> Result<Option<Arc<Self>>> {
         let Some(api) = api() else { return Ok(None) };
-        let Some(session) = Session::create(Arc::clone(&context), api, SessionKind::Probe)? else {
+        let Some(session) = Session::create(context.clone(), api, SessionKind::Probe)? else {
             return Ok(None);
         };
         let mut version = [0; VERSION_COMPONENTS];
@@ -461,7 +457,7 @@ impl Decoder {
         );
         Ok(Some(Arc::new(Self {
             probes: Arc::new(Pool {
-                context: Arc::clone(&context),
+                context: context.clone(),
                 api,
                 kind: SessionKind::Probe,
                 available: Mutex::new(HashMap::from([(session.owner, vec![session])])),
@@ -488,7 +484,7 @@ impl Decoder {
         };
         let session = match session {
             Some(session) => session,
-            None => Session::create(Arc::clone(&pool.context), pool.api, pool.kind)?
+            None => Session::create(pool.context.clone(), pool.api, pool.kind)?
                 .ok_or_else(|| Error::unsupported("nvJPEG hardware decoder became unavailable"))?,
         };
         Ok(Arc::new(Lease {

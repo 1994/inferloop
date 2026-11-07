@@ -150,16 +150,16 @@ fn measure(device: &CudaDevice, a: &Graph, b: &Graph, algorithm: usize) -> TestR
         clear_l2: false,
     };
     let (base, candidate) = do_bench_paired(
-        &device.stream,
+        device.stream(),
         &canary,
         |_| {
             a.launch()
-                .sync_on(&device.stream)
+                .sync_on(device.stream())
                 .map_err(|e| tensor_error(&e.to_string()))
         },
         |_| {
             b.launch()
-                .sync_on(&device.stream)
+                .sync_on(device.stream())
                 .map_err(|e| tensor_error(&e.to_string()))
         },
     )?;
@@ -181,18 +181,18 @@ fn measure(device: &CudaDevice, a: &Graph, b: &Graph, algorithm: usize) -> TestR
             clear_l2: false,
         };
         let (x, y) = do_bench_paired(
-            &device.stream,
+            device.stream(),
             &options,
             |_| {
                 first
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|e| tensor_error(&e.to_string()))
             },
             |_| {
                 second
                     .launch()
-                    .sync_on(&device.stream)
+                    .sync_on(device.stream())
                     .map_err(|e| tensor_error(&e.to_string()))
             },
         )?;
@@ -241,18 +241,18 @@ fn actual_down_cublas_fp4_screen() -> TestResult {
         &[rows, COLUMNS],
     )?;
     let mut quantized = (
-        api::zeros::<f4e2m1fnx2>(&[rows, COLUMNS / 2]).sync_on(&device.stream)?,
-        api::zeros::<f8e4m3fn>(&[rows, COLUMNS / 16]).sync_on(&device.stream)?,
+        api::zeros::<f4e2m1fnx2>(&[rows, COLUMNS / 2]).sync_on(device.stream())?,
+        api::zeros::<f8e4m3fn>(&[rows, COLUMNS / 16]).sync_on(device.stream())?,
     );
     let mut a = Vec::new();
     let mut b = Vec::new();
     for _ in &layers {
-        a.push(api::zeros::<f32>(&[rows, OUTPUTS]).sync_on(&device.stream)?);
-        b.push(api::zeros::<f32>(&[rows, OUTPUTS]).sync_on(&device.stream)?);
+        a.push(api::zeros::<f32>(&[rows, OUTPUTS]).sync_on(device.stream())?);
+        b.push(api::zeros::<f32>(&[rows, OUTPUTS]).sync_on(device.stream())?);
     }
 
     // Reuse storage initially allocated as F32, without byte assembly or a second allocation.
-    let floats = Arc::new(api::zeros::<f32>(&[rows * COLUMNS]).sync_on(&device.stream)?);
+    let floats = Arc::new(api::zeros::<f32>(&[rows * COLUMNS]).sync_on(device.stream())?);
     let float_pointer = floats.device_pointer().cu_deviceptr();
     let bytes = floats.reinterpret::<f8e4m3fn>(&[rows / 2, COLUMNS / 16 * 128])?;
     assert_eq!(float_pointer, bytes.device_pointer().cu_deviceptr());
@@ -288,7 +288,7 @@ fn actual_down_cublas_fp4_screen() -> TestResult {
         &packed,
         None,
     )?;
-    ga.launch().sync_on(&device.stream)?;
+    ga.launch().sync_on(device.stream())?;
     for (algorithm, prepared) in candidates.iter().take(1).enumerate() {
         let gb = capture(
             &device,
@@ -299,7 +299,7 @@ fn actual_down_cublas_fp4_screen() -> TestResult {
             &packed,
             Some((&context, prepared)),
         )?;
-        gb.launch().sync_on(&device.stream)?;
+        gb.launch().sync_on(device.stream())?;
         compare(&device, &a, &b, algorithm)?;
         measure(&device, &ga, &gb, algorithm)?;
     }

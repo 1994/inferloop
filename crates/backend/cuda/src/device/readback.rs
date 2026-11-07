@@ -6,7 +6,6 @@ use infer_cuda_kernels::runtime::Copies;
 #[cfg(test)]
 use infer_cuda_kernels::runtime::Graph;
 use infer_cuda_kernels::runtime::{Allocation, Pinned, Readback};
-use infer_cuda_kernels::runtime::{CudaContext, PinnedHostBuffer};
 use infer_cuda_kernels::runtime::{DType, DeviceCopy};
 use std::sync::{Arc, Mutex};
 
@@ -59,7 +58,6 @@ impl<T: DType + DeviceCopy> ReadbackSource<T> {
 }
 
 pub struct Readbacks<T: DType + DeviceCopy = f32> {
-    context: Option<Arc<CudaContext>>,
     buffers: Vec<Option<Buffer<T>>>,
     arena: Option<Buffer<T>>,
     poisoned: bool,
@@ -70,7 +68,6 @@ pub struct Readbacks<T: DType + DeviceCopy = f32> {
 impl<T: DType + DeviceCopy> Default for Readbacks<T> {
     fn default() -> Self {
         Self {
-            context: None,
             buffers: Vec::new(),
             arena: None,
             poisoned: false,
@@ -91,10 +88,8 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
                 "pinned readbacks exceed 64 MiB",
             ));
         }
-        let context = CudaContext::new(device.ordinal()).map_err(device_error)?;
-        let buffer = PinnedHostBuffer::zeroed(&context, len).map_err(device_error)?;
+        let buffer = device.tile().pinned(len)?;
         Ok(Self {
-            context: Some(context),
             buffers: vec![Some(Arc::new(Mutex::new(buffer)))],
             ..Self::default()
         })
@@ -234,16 +229,7 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
             {
                 continue;
             }
-            if self.context.is_none() {
-                self.context = Some(CudaContext::new(device.ordinal()).map_err(device_error)?);
-            }
-            let context = self
-                .context
-                .as_ref()
-                .ok_or_else(|| Error::invariant("pinned context"))?;
-            *slot = Some(Arc::new(Mutex::new(
-                PinnedHostBuffer::zeroed(context, source.len).map_err(device_error)?,
-            )));
+            *slot = Some(Arc::new(Mutex::new(device.tile().pinned(source.len)?)));
         }
         Ok(bytes)
     }
@@ -273,7 +259,7 @@ impl Readbacks<f32> {
 pub fn queue_test_gate(device: &CudaDevice, gate: impl FnOnce() + Send + 'static) -> Result<()> {
     // SAFETY: callers supply a bounded, CUDA-free closure with owned state; the stream
     // and every captured resource remain alive through the test's completion drain.
-    unsafe { device.stream.launch_host_function(gate) }.map_err(device_error)
+    unsafe { device.stream().launch_host_function(gate) }.map_err(device_error)
 }
 
 fn source_bytes<T: DType + DeviceCopy>(

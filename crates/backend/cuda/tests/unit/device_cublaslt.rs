@@ -42,7 +42,7 @@ fn gemm_bf16_matches_reference() -> Result<(), Box<dyn Error>> {
         let host_weights: Vec<f32> = weights.iter().map(|v| v.to_f32()).collect();
         let a = device.upload(activations, &[m, k])?;
         let b = device.upload(weights, &[n, k])?;
-        let out = api::zeros::<f32>(&[m, n]).sync_on(&device.stream)?;
+        let out = api::zeros::<f32>(&[m, n]).sync_on(device.stream())?;
         // The first launch pays cuBLAS initialisation and its internal algorithm search, so
         // warm the shape and then time repeats.
         gemm_bf16(
@@ -104,7 +104,7 @@ fn gemm_bf16_replays_inside_a_captured_graph() -> Result<(), Box<dyn Error>> {
         .collect();
     let a = device.upload(activations, &[rows, contraction])?;
     let b = device.upload(weights, &[columns, contraction])?;
-    let out = api::zeros::<f32>(&[rows, columns]).sync_on(&device.stream)?;
+    let out = api::zeros::<f32>(&[rows, columns]).sync_on(device.stream())?;
     let context = context_for(&device).ok_or("no cuBLAS context")?;
     // cuBLAS does host-side work on the first use of a configuration (workspace and algorithm
     // selection), which a capturing stream rejects; run the shape once before recording it.
@@ -131,11 +131,11 @@ fn gemm_bf16_replays_inside_a_captured_graph() -> Result<(), Box<dyn Error>> {
     })?;
     graph
         .launch()
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     device.reclaim_barrier()?;
-    let captured = out.to_host_vec().sync_on(&device.stream)?;
-    let direct = api::zeros::<f32>(&[rows, columns]).sync_on(&device.stream)?;
+    let captured = out.to_host_vec().sync_on(device.stream())?;
+    let direct = api::zeros::<f32>(&[rows, columns]).sync_on(device.stream())?;
     gemm_bf16(
         &device,
         [rows, columns, contraction],
@@ -144,7 +144,7 @@ fn gemm_bf16_replays_inside_a_captured_graph() -> Result<(), Box<dyn Error>> {
         tensor_buffer(&direct)?,
     )?;
     device.reclaim_barrier()?;
-    let reference = direct.to_host_vec().sync_on(&device.stream)?;
+    let reference = direct.to_host_vec().sync_on(device.stream())?;
     let gap = captured
         .iter()
         .zip(&reference)

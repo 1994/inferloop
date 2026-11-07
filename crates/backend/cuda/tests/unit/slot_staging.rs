@@ -95,7 +95,7 @@ fn contiguous_staging_preserves_rows_after_arena_reuse() -> Result<()> {
         Ok(())
     })?;
     copy.launch()
-        .sync_on(&device.stream)
+        .sync_on(device.stream())
         .map_err(device_error)?;
     for id in sources {
         let slot = arena.slot(id)?;

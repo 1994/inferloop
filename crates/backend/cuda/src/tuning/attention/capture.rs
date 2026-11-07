@@ -140,7 +140,7 @@ impl Operands {
 }
 fn identities(device: &CudaDevice, s: Shape, choice: Choice) -> Result<Vec<String>> {
     attention_candidates::<f8e4m3fn>(
-        &device.stream,
+        device.tile(),
         &AttentionShape {
             heads: s.heads,
             kv_heads: s.kv_heads,

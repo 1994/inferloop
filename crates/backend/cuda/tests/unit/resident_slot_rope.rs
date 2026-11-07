@@ -80,9 +80,9 @@ fn check_geometry(
         &[lanes * METADATA_FIELDS],
     )?;
     let mut original = (0..lanes)
-        .map(|_| api::zeros::<f32>(&[heads, dim]).sync_on(&device.stream))
+        .map(|_| api::zeros::<f32>(&[heads, dim]).sync_on(device.stream()))
         .collect::<Result<Vec<_>, _>>()?;
-    let mut candidate = api::zeros::<f32>(&[lanes * heads, dim]).sync_on(&device.stream)?;
+    let mut candidate = api::zeros::<f32>(&[lanes * heads, dim]).sync_on(device.stream())?;
     let reference = device.tile().capture(|scope| {
         for (lane, out) in original.iter_mut().enumerate() {
             let input_range = lane * heads..(lane + 1) * heads;
@@ -122,8 +122,8 @@ fn check_geometry(
         )?;
         Ok(())
     })?;
-    reference.launch().sync_on(&device.stream)?;
-    batched.launch().sync_on(&device.stream)?;
+    reference.launch().sync_on(device.stream())?;
+    batched.launch().sync_on(device.stream())?;
     let actual = device.read_borrowed(&candidate)?;
     for (lane, out) in original.iter().enumerate() {
         let expected = device.read_borrowed(out)?;

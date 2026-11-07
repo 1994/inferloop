@@ -25,6 +25,7 @@ use std::sync::{Arc, Mutex, Weak};
 use transfer::Inflight;
 
 mod events;
+mod handles;
 mod info;
 mod launch;
 mod operation;
@@ -36,11 +37,12 @@ mod transfer;
 
 /// Element types the host names, re-exported so it does not reach into cuTile for them.
 pub use cuda_core::{
-    CudaContext, CudaEvent, DType, DeviceCopy, DriverError, Event, Function, PinnedHostBuffer,
-    Stream, f4e2m1fnx2, f8e4m3fn,
+    CudaContext, CudaEvent, DType, DeviceCopy, DriverError, Function, PinnedHostBuffer, Stream,
+    f4e2m1fnx2, f8e4m3fn,
 };
 pub use cutile::half::{bf16, f16};
 pub use events::{record_event, timing_event};
+pub use handles::{Event, Module};
 pub use info::{Attribute, driver_version};
 pub use launch::{Argument, KernelLaunch};
 pub use operation::{Operation, Pending};

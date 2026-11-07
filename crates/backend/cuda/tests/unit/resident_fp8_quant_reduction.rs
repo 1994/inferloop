@@ -26,11 +26,11 @@ impl Case {
         Ok(Self {
             rows,
             k,
-            input: api::zeros::<f32>(&[rows, k]).sync_on(&device.stream)?,
-            old: api::zeros::<f8e4m3fn>(&[rows, k]).sync_on(&device.stream)?,
-            new: api::zeros::<f8e4m3fn>(&[rows, k]).sync_on(&device.stream)?,
-            old_scale: api::zeros::<f32>(&[rows, 1]).sync_on(&device.stream)?,
-            new_scale: api::zeros::<f32>(&[rows, 1]).sync_on(&device.stream)?,
+            input: api::zeros::<f32>(&[rows, k]).sync_on(device.stream())?,
+            old: api::zeros::<f8e4m3fn>(&[rows, k]).sync_on(device.stream())?,
+            new: api::zeros::<f8e4m3fn>(&[rows, k]).sync_on(device.stream())?,
+            old_scale: api::zeros::<f32>(&[rows, 1]).sync_on(device.stream())?,
+            new_scale: api::zeros::<f32>(&[rows, 1]).sync_on(device.stream())?,
         })
     }
     fn graphs(&mut self, device: &CudaDevice, count: usize) -> TestResult<(Graph, Graph)> {
@@ -110,7 +110,7 @@ impl Case {
             })
             .collect();
         let uploaded = device.upload(input, &[self.rows, self.k])?;
-        api::memcpy(&mut self.input, &uploaded).sync_on(&device.stream)?;
+        api::memcpy(&mut self.input, &uploaded).sync_on(device.stream())?;
         Ok(())
     }
     fn equal(&self, device: &CudaDevice) -> TestResult {
@@ -139,8 +139,8 @@ fn bits_and_cost() -> TestResult {
             let (old, new) = case.graphs(&device, 1)?;
             for fixture in 0..10 {
                 case.input(&device, fixture)?;
-                old.launch().sync_on(&device.stream)?;
-                new.launch().sync_on(&device.stream)?;
+                old.launch().sync_on(device.stream())?;
+                new.launch().sync_on(device.stream())?;
                 case.equal(&device)?;
             }
             println!(
@@ -161,12 +161,16 @@ fn bits_and_cost() -> TestResult {
                     };
                     let run = |g: &Graph| {
                         g.launch()
-                            .sync_on(&device.stream)
+                            .sync_on(device.stream())
                             .map_err(|e| tensor_error(&e.to_string()))
                     };
                     let (first, second) = if reverse { (&new, &old) } else { (&old, &new) };
-                    let (a, b) =
-                        do_bench_paired(&device.stream, &options, |_| run(first), |_| run(second))?;
+                    let (a, b) = do_bench_paired(
+                        device.stream(),
+                        &options,
+                        |_| run(first),
+                        |_| run(second),
+                    )?;
                     let (a, b) = if reverse { (b, a) } else { (a, b) };
                     println!(
                         "{}",
