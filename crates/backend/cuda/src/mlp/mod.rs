@@ -5,9 +5,9 @@ use crate::{
     device::{CudaDevice, device_error},
     strategy::LinearTiling,
 };
-use cutile::tile_kernel::validate_programmatic_dependent_launch;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{DownPlan, Kernels, ProductBuffers, Recording, RowNormPlan};
+use infer_cuda_kernels::tile::jit::validate_dependent_launch;
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 pub use projection::{Matrix, ProjectionWeight};
 use std::fmt::Display;
@@ -54,8 +54,7 @@ impl MlpGraph {
     pub fn new(device: &CudaDevice, config: &MlpConfig, weights: &MlpWeights) -> Result<Self> {
         let d = config.hidden;
         if config.pdl {
-            validate_programmatic_dependent_launch(device.stream.device().ordinal())
-                .map_err(device_error)?;
+            validate_dependent_launch(device.stream.device().ordinal())?;
         }
         let n = config.intermediate;
         if d == 0

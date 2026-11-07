@@ -3,18 +3,23 @@
     unsafe_code,
     reason = "Asynchronous D2H between ranges checked here; the launch retains the source allocation and the pinned destination until it completes"
 )]
-use super::Allocation;
+use super::{Allocation, Device, Graph};
+use crate::tile::backend_error;
 use cuda_core::sys::{cuMemcpyDtoHAsync_v2, cudaError_enum_CUDA_SUCCESS};
 use cuda_core::{DType, DeviceCopy, PinnedHostBuffer};
 use cutile::cuda_async::device_context::with_default_device_policy;
 use cutile::cuda_async::device_future::DeviceFuture;
 use cutile::cuda_async::device_operation::ExecutionContext;
+use cutile::cuda_async::device_operation::{BoxedDeviceOp, DeviceOpVec};
 use cutile::prelude::*;
 use cutile::tensor::KernelInputStored;
 use infer_core::{Error, Result};
+use std::future::Future;
 use std::ops::Range;
+use std::pin::Pin;
 use std::result::Result as StdResult;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
 /// Pinned host memory a readback writes; the host reads it only after the readback completes.
 pub type Pinned<T> = Arc<Mutex<PinnedHostBuffer<T>>>;
@@ -109,5 +114,78 @@ impl<T: DType + DeviceCopy> IntoFuture for Readback<T> {
             Ok(Ok(stream)) => Self::IntoFuture::scheduled(self, ExecutionContext::new(stream)),
             Ok(Err(error)) | Err(error) => Self::IntoFuture::failed(error),
         }
+    }
+}
+
+/// Pinned readbacks submitted together, in order, as one stream operation.
+pub struct Copies(DeviceOpVec<()>);
+
+impl Copies {
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self(DeviceOpVec::with_capacity(capacity))
+    }
+
+    /// Append `copy`, which runs after every copy pushed before it.
+    pub fn push<T: DType + DeviceCopy>(&mut self, copy: Readback<T>) {
+        self.0.push(copy);
+    }
+}
+
+/// Work submitted by [`Device::read_back`] or a replay variant; it resolves once the device has
+/// finished it, and it retains every source and pinned destination until then.
+///
+/// The first poll enqueues the work, so a caller polls once without waiting to submit it.
+pub struct Flight(DeviceFuture<Vec<()>, BoxedDeviceOp<Vec<()>>>);
+
+impl Future for Flight {
+    type Output = Result<()>;
+
+    #[inline]
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Result<()>> {
+        Pin::new(&mut self.0)
+            .poll(context)
+            .map(|result| result.map(drop).map_err(backend_error))
+    }
+}
+
+impl Device {
+    /// Copy `copies` back once the work already on this stream is done.
+    #[must_use]
+    pub fn read_back(&self, copies: Copies) -> Flight {
+        self.flight(copies.0.boxed())
+    }
+
+    /// Replay `graph`, then copy `copies` back, in one submission.
+    #[must_use]
+    pub fn replay_and_read_back(&self, graph: &Graph, copies: Copies) -> Flight {
+        self.flight(graph.launch().then(move |()| copies.0).boxed())
+    }
+
+    /// Replay `graph` and then `selector`, then copy `copies` and `tokens` back, in one
+    /// submission: a step's hidden rows and the tokens chosen from them.
+    #[must_use]
+    pub fn replay_pair_and_read_back(
+        &self,
+        (graph, selector): (&Graph, &Graph),
+        copies: Copies,
+        tokens: Copies,
+    ) -> Flight {
+        let selector = selector.launch();
+        self.flight(
+            graph
+                .launch()
+                .then(move |()| selector)
+                .then(move |()| copies.0)
+                .then(move |_| tokens.0)
+                .boxed(),
+        )
+    }
+
+    fn flight(&self, operation: BoxedDeviceOp<Vec<()>>) -> Flight {
+        Flight(DeviceFuture::scheduled(
+            operation,
+            ExecutionContext::new(Arc::clone(self.stream())),
+        ))
     }
 }

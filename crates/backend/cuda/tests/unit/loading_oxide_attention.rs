@@ -4,7 +4,7 @@ use crate::resident::fp8_cache::{KvLayout, KvState, kv_geometry};
 use crate::{
     device::CudaDevice,
     resident::{
-        attention_oxide::{captures, with_cutile},
+        attention_oxide::{captures, without_oxide},
         fp8_cache::Fp8Caches,
     },
 };
@@ -35,7 +35,7 @@ fn rust_attention_preserves_checkpoint_model_bits() -> Result<()> {
         },
     )?;
     let before = captures();
-    let mut control = with_cutile(|| loaded.sequence(1024))?;
+    let mut control = without_oxide(|| loaded.sequence(1024))?;
     assert_eq!(captures(), before, "reference must use cuTile");
     let mut candidate = loaded.sequence(1024)?;
     let actual_captures = captures() - before;
@@ -173,7 +173,7 @@ fn checkpoint_bits(pooled: bool, width: usize) -> Result<()> {
         }
     };
     let before = captures();
-    let mut control = with_cutile(build)?;
+    let mut control = without_oxide(build)?;
     assert_eq!(captures(), before);
     let mut candidate = build()?;
     assert!(

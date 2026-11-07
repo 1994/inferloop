@@ -2,8 +2,12 @@
 //!
 //! Tuning keys embed these values in their own formats, so each is exposed as the compiler reports
 //! it: changing a formatting here would invalidate every cached entry.
+use crate::tile::backend_error;
 use cutile::cutile_compiler::cuda_tile_runtime_utils as compiler;
 use cutile::cutile_compiler::hints::CompileOptions;
+use cutile::jit_cache::enable_default;
+use cutile::tile_kernel::validate_programmatic_dependent_launch;
+use infer_core::Result;
 use std::ffi::OsString;
 use std::fmt;
 
@@ -17,6 +21,20 @@ pub fn compiler() -> &'static str {
 #[must_use]
 pub fn bytecode_override() -> Option<OsString> {
     compiler::bytecode_override()
+}
+
+/// Keep compiled kernels in the default on-disk cache, so later processes skip the compile.
+/// # Errors
+/// Returns the cache's failure to initialize.
+pub fn enable_cache() -> Result<()> {
+    enable_default().map_err(backend_error)
+}
+
+/// Check that the device with `ordinal` can launch kernels with programmatic dependent launch.
+/// # Errors
+/// Rejects a device or driver without it.
+pub fn validate_dependent_launch(ordinal: usize) -> Result<()> {
+    validate_programmatic_dependent_launch(ordinal).map_err(backend_error)
 }
 
 /// Compiler options for one kernel; `Debug` prints exactly what the compiler's options print.

@@ -33,10 +33,10 @@ mod transfer;
 
 /// Element types the host names, re-exported so it does not reach into cuTile for them.
 pub use cuda_core::DType;
-pub use cutile::half::bf16;
+pub use cutile::half::{bf16, f16};
 pub use launch::{Argument, KernelLaunch};
 pub use operation::{Operation, Pending};
-pub use readback::{Pinned, Readback};
+pub use readback::{Copies, Flight, Pinned, Readback};
 pub use staging::Staging;
 pub use timing::{Samples, Timing};
 pub use transfer::{HeadMajor, Transfers};
