@@ -17,13 +17,29 @@ use std::any::Any;
 use std::ffi::c_void;
 use std::future::{Future, ready};
 use std::marker::PhantomData;
-use std::mem::size_of;
+use std::mem::{size_of, size_of_val};
 use std::ops::Range;
 use std::result::Result as StdResult;
 use std::slice;
 use std::sync::{Arc, Weak};
 
+mod events;
+mod handles;
+mod launch;
+mod operation;
+mod readback;
+mod staging;
+mod timing;
+
+pub use super::driver::Function;
+pub use events::{record_event, timing_event};
 pub use half::{bf16, f16};
+pub use handles::{CudaEvent, Event, Module, PinnedHostBuffer};
+pub use launch::{Argument, KernelLaunch};
+pub use operation::{Operation, Pending};
+pub use readback::{Copies, Flight, Pinned, Readback};
+pub use staging::Staging;
+pub use timing::{Samples, Timing};
 
 /// An element type device memory holds.
 ///
@@ -336,6 +352,34 @@ impl Device {
         }
         self.driver.synchronize()?;
         Ok(allocation)
+    }
+
+    /// Zero `allocation` on the stream, without waiting.
+    fn zero<T: DType>(&self, allocation: &Allocation<T>) -> Result<()> {
+        // SAFETY: the range is exactly the allocation's, which it keeps alive.
+        unsafe {
+            self.driver
+                .zero(allocation.address(), allocation.len() * size_of::<T>())
+        }
+    }
+
+    /// Copy `values` into `dst` after the work already on the stream, and wait.
+    fn write<T: DType, M: Width>(&self, dst: Buffer<'_, M>, values: &[T]) -> Result<()> {
+        let bytes = size_of_val(values);
+        if dst.len().checked_mul(M::BYTES) != Some(bytes) {
+            return Err(Error::invalid("host write extent"));
+        }
+        // SAFETY: `DType` promises plain bytes, so the values read as their bytes.
+        let source = unsafe { slice::from_raw_parts(values.as_ptr().cast::<u8>(), bytes) };
+        // SAFETY: the buffer's contract guarantees `bytes` live bytes at its address, as checked.
+        unsafe { self.driver.write(dst.address(), source) }
+    }
+
+    /// A staging ring of `depth` slots of `elements` values each, for [`Transfers::upload`].
+    /// # Errors
+    /// Rejects an empty ring.
+    pub fn staging<T: DeviceCopy>(&self, elements: usize, depth: usize) -> Result<Staging<T>> {
+        Staging::new(elements, depth)
     }
 
     /// `len` zeroed elements; the future resolves once the device has written them.

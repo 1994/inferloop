@@ -175,6 +175,18 @@ def check_exceptions():
                         # AOT runtime: typed views of driver memory for element types that promise
                         # every bit pattern is valid, inside ranges the allocation owns.
                         ROOT / "crates/backend/cuda-kernels/src/aot/runtime.rs",
+                        # AOT PTX launches: the constructor states the signature contract and
+                        # the function keeps its module loaded.
+                        ROOT / "crates/backend/cuda-kernels/src/aot/runtime/launch.rs",
+                        # AOT pinned memory: typed views of page-locked bytes the buffer owns.
+                        ROOT / "crates/backend/cuda-kernels/src/aot/runtime/handles.rs",
+                        # AOT event records on the live stream a recording hands its calls.
+                        ROOT / "crates/backend/cuda-kernels/src/aot/runtime/events.rs",
+                        # AOT operations: pinned sources retained until the stream has passed.
+                        ROOT / "crates/backend/cuda-kernels/src/aot/runtime/operation.rs",
+                        # AOT readback: checked ranges into pinned memory locked until the copy
+                        # has completed.
+                        ROOT / "crates/backend/cuda-kernels/src/aot/runtime/readback.rs",
                         # Contract buffers: the constructor holds the only obligation, so family
                         # methods are safe; the host makes buffers in one file, over tensors a
                         # resident program owns until its graphs are destroyed.

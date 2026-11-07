@@ -29,6 +29,12 @@ const ATTRIBUTE_SM_MINOR: i32 = 76;
 const NAME_BYTES: usize = 256;
 /// `CU_STREAM_CAPTURE_MODE_GLOBAL`.
 const CAPTURE_MODE_GLOBAL: u32 = 0;
+/// `CU_EVENT_DEFAULT`: an event that records timing.
+const EVENT_DEFAULT: u32 = 0;
+/// `CU_EVENT_RECORD_DEFAULT`.
+const RECORD_DEFAULT: u32 = 0;
+/// `CU_EVENT_RECORD_EXTERNAL`: a record inside a capture stays observable from the host.
+const RECORD_EXTERNAL: u32 = 1;
 
 type CuResult = i32;
 type CuDevice = i32;
@@ -39,6 +45,7 @@ type CuModule = *mut c_void;
 type CuFunction = *mut c_void;
 type CuGraph = *mut c_void;
 type CuGraphExec = *mut c_void;
+type CuEvent = *mut c_void;
 
 type Init = unsafe extern "C" fn(u32) -> CuResult;
 type DeviceGet = unsafe extern "C" fn(*mut CuDevice, i32) -> CuResult;
@@ -81,6 +88,12 @@ type MemcpyDtoD = unsafe extern "C" fn(CuDeviceptr, CuDeviceptr, usize, CuStream
 type MemGetInfo = unsafe extern "C" fn(*mut usize, *mut usize) -> CuResult;
 type DeviceGetName = unsafe extern "C" fn(*mut c_char, i32, CuDevice) -> CuResult;
 type DriverGetVersion = unsafe extern "C" fn(*mut i32) -> CuResult;
+type EventCreate = unsafe extern "C" fn(*mut CuEvent, u32) -> CuResult;
+type EventDestroy = unsafe extern "C" fn(CuEvent) -> CuResult;
+type EventRecord = unsafe extern "C" fn(CuEvent, CuStream, u32) -> CuResult;
+type EventElapsed = unsafe extern "C" fn(*mut f32, CuEvent, CuEvent) -> CuResult;
+type MemAllocHost = unsafe extern "C" fn(*mut *mut c_void, usize) -> CuResult;
+type MemFreeHost = unsafe extern "C" fn(*mut c_void) -> CuResult;
 
 struct Driver {
     _library: Library,
@@ -113,6 +126,12 @@ struct Driver {
     mem_get_info: MemGetInfo,
     device_get_name: DeviceGetName,
     version: DriverGetVersion,
+    event_create: EventCreate,
+    event_destroy: EventDestroy,
+    event_record: EventRecord,
+    event_elapsed: EventElapsed,
+    mem_alloc_host: MemAllocHost,
+    mem_free_host: MemFreeHost,
 }
 
 impl Driver {
@@ -151,6 +170,12 @@ impl Driver {
             mem_get_info: symbol(&library, b"cuMemGetInfo_v2\0")?,
             device_get_name: symbol(&library, b"cuDeviceGetName\0")?,
             version: symbol(&library, b"cuDriverGetVersion\0")?,
+            event_create: symbol(&library, b"cuEventCreate\0")?,
+            event_destroy: symbol(&library, b"cuEventDestroy_v2\0")?,
+            event_record: symbol(&library, b"cuEventRecordWithFlags\0")?,
+            event_elapsed: symbol(&library, b"cuEventElapsedTime\0")?,
+            mem_alloc_host: symbol(&library, b"cuMemAllocHost_v2\0")?,
+            mem_free_host: symbol(&library, b"cuMemFreeHost\0")?,
             _library: library,
         })
     }
@@ -464,6 +489,81 @@ impl Device {
         self.session.synchronize()
     }
 
+    /// Copy `bytes` host bytes at `source` to device memory at `address`, ordered on the stream
+    /// without waiting.
+    /// # Safety
+    /// `address` must start `bytes` writable bytes of this context's device memory, and `source`
+    /// `bytes` readable host bytes that stay unchanged and allocated until the stream has passed
+    /// the copy.
+    pub(crate) unsafe fn enqueue_write(
+        &self,
+        address: u64,
+        source: *const c_void,
+        bytes: usize,
+    ) -> Result<()> {
+        self.session.bind()?;
+        // SAFETY: the caller guarantees both ranges until the stream passes the copy.
+        let status = unsafe {
+            (self.session.driver.memcpy_htod)(address, source, bytes, self.session.stream)
+        };
+        self.session.driver.check(status)
+    }
+
+    /// Copy `bytes` device bytes at `address` to host memory at `destination`, ordered on the
+    /// stream without waiting.
+    /// # Safety
+    /// `address` must start `bytes` readable bytes of this context's device memory, and
+    /// `destination` `bytes` writable host bytes that nothing else touches until the stream has
+    /// passed the copy.
+    pub(crate) unsafe fn enqueue_read(
+        &self,
+        destination: *mut c_void,
+        address: u64,
+        bytes: usize,
+    ) -> Result<()> {
+        self.session.bind()?;
+        // SAFETY: the caller guarantees both ranges until the stream passes the copy.
+        let status = unsafe {
+            (self.session.driver.memcpy_dtoh)(destination, address, bytes, self.session.stream)
+        };
+        self.session.driver.check(status)
+    }
+
+    /// A timing event in this device's context.
+    /// # Errors
+    /// Fails when the driver cannot create it.
+    pub fn event(&self) -> Result<Event> {
+        self.session.bind()?;
+        let mut event = ptr::null_mut();
+        // SAFETY: `event` is writable and the context is current; ownership moves into `Event`.
+        let status = unsafe { (self.session.driver.event_create)(&raw mut event, EVENT_DEFAULT) };
+        self.session.driver.check(status)?;
+        Ok(Event {
+            session: Arc::clone(&self.session),
+            event,
+        })
+    }
+
+    /// `bytes` zeroed bytes of page-locked host memory in this device's context.
+    /// # Errors
+    /// Fails when the driver cannot allocate them.
+    pub fn pinned(&self, bytes: usize) -> Result<Pinned> {
+        self.session.bind()?;
+        let mut pointer = ptr::null_mut();
+        // A zero-length request still names an address, so the slice views stay well defined.
+        let bytes = bytes.max(1);
+        // SAFETY: `pointer` is writable and the context is current; ownership moves into `Pinned`.
+        let status = unsafe { (self.session.driver.mem_alloc_host)(&raw mut pointer, bytes) };
+        self.session.driver.check(status)?;
+        // SAFETY: the driver just allocated `bytes` writable host bytes at `pointer`.
+        unsafe { ptr::write_bytes(pointer.cast::<u8>(), 0, bytes) };
+        Ok(Pinned {
+            session: Arc::clone(&self.session),
+            pointer,
+            bytes,
+        })
+    }
+
     /// Free and total device memory, in bytes.
     /// # Errors
     /// Fails when the driver cannot report them.
@@ -701,10 +801,28 @@ impl Function {
         let Some(stream) = recording.stream() else {
             return Err(Error::unsupported("AOT launches record on a driver stream"));
         };
+        // SAFETY: the caller upholds the parameter contract and the recording borrows a live
+        // stream of this context.
+        unsafe { self.launch_on(stream, grid, block, parameters) }
+    }
+
+    /// Launch on `stream`, captured when it is capturing.
+    ///
+    /// # Safety
+    /// As for [`Self::launch`], and `stream` must be a live stream of this function's context.
+    /// # Errors
+    /// Fails when the driver rejects the launch.
+    pub unsafe fn launch_on(
+        &self,
+        stream: *mut c_void,
+        grid: (u32, u32, u32),
+        block: (u32, u32, u32),
+        parameters: &mut [*mut c_void],
+    ) -> Result<()> {
         let session = &self.module.session;
         session.bind()?;
-        // SAFETY: the caller upholds the parameter contract; `self.module` keeps the function
-        // loaded and the recording borrows a live stream of this context.
+        // SAFETY: the caller upholds the parameter contract and names a live stream of this
+        // context; `self.module` keeps the function loaded.
         let status = unsafe {
             (session.driver.launch)(
                 self.function,
@@ -721,6 +839,93 @@ impl Function {
             )
         };
         session.driver.check(status)
+    }
+}
+
+/// A driver event for device timing; dropping it destroys it.
+pub struct Event {
+    session: Arc<Session>,
+    event: CuEvent,
+}
+
+impl Event {
+    /// Record this event at the current end of `device`'s stream.
+    /// # Errors
+    /// Rejects a device of another context, or returns the driver's refusal.
+    pub fn record(&self, device: &Device) -> Result<()> {
+        if self.session.context != device.session.context {
+            return Err(Error::invalid("event recorded on another context"));
+        }
+        // SAFETY: the stream belongs to `device`, whose context this event was created in.
+        unsafe { self.record_on(device.session.stream, false) }
+    }
+
+    /// Record this event on `stream`, external when a host must observe a record inside a
+    /// capture.
+    /// # Safety
+    /// `stream` must be a live stream of this event's context.
+    pub(crate) unsafe fn record_on(&self, stream: *mut c_void, external: bool) -> Result<()> {
+        self.session.bind()?;
+        let flags = if external {
+            RECORD_EXTERNAL
+        } else {
+            RECORD_DEFAULT
+        };
+        // SAFETY: the event is live and the caller guarantees the stream.
+        let status = unsafe { (self.session.driver.event_record)(self.event, stream, flags) };
+        self.session.driver.check(status)
+    }
+
+    /// Milliseconds of device time from this event to `end`, both recorded and complete.
+    /// # Errors
+    /// Returns the driver's failure, for example while either event is pending.
+    pub fn elapsed_ms(&self, end: &Self) -> Result<f32> {
+        self.session.bind()?;
+        let mut ms = 0f32;
+        // SAFETY: both events are live and `ms` is writable.
+        let status =
+            unsafe { (self.session.driver.event_elapsed)(&raw mut ms, self.event, end.event) };
+        self.session.driver.check(status)?;
+        Ok(ms)
+    }
+}
+
+impl Drop for Event {
+    fn drop(&mut self) {
+        let _ = self.session.bind();
+        // SAFETY: the event was created by this object and is destroyed once; the driver defers
+        // the release past any record still pending.
+        let _ = unsafe { (self.session.driver.event_destroy)(self.event) };
+    }
+}
+
+/// Page-locked host memory; dropping it waits for queued work before freeing.
+pub struct Pinned {
+    session: Arc<Session>,
+    pointer: *mut c_void,
+    bytes: usize,
+}
+
+impl Pinned {
+    /// Host address of the memory.
+    #[must_use]
+    pub const fn pointer(&self) -> *mut c_void {
+        self.pointer
+    }
+
+    /// Length in bytes, at least one.
+    #[must_use]
+    pub const fn len_bytes(&self) -> usize {
+        self.bytes
+    }
+}
+
+impl Drop for Pinned {
+    fn drop(&mut self) {
+        // A queued copy may still use this memory, so drain before freeing.
+        let _ = self.session.synchronize();
+        // SAFETY: the memory was allocated by this object and is freed once.
+        let _ = unsafe { (self.session.driver.mem_free_host)(self.pointer) };
     }
 }
 
@@ -741,6 +946,15 @@ unsafe impl Sync for Graph {}
 unsafe impl Send for Function {}
 // SAFETY: as for `Send`.
 unsafe impl Sync for Function {}
+// SAFETY: the event handle is only passed back to the driver, which synchronizes its records.
+unsafe impl Send for Event {}
+// SAFETY: as for `Send`.
+unsafe impl Sync for Event {}
+// SAFETY: the memory is owned by this object; Rust reaches it only through `PinnedHostBuffer`'s
+// borrows, which follow the aliasing rules.
+unsafe impl Send for Pinned {}
+// SAFETY: as for `Send`; shared access hands out only shared views.
+unsafe impl Sync for Pinned {}
 
 /// The installed driver's CUDA API version, without opening a device.
 /// # Errors
