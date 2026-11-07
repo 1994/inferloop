@@ -26,7 +26,7 @@ use crate::tuning::pool_dense::{self, Binding as PoolDenseBinding, Choice as Poo
 use crate::tuning::projection_budget::ProjectionShape;
 use crate::tuning::resident_gemm::GemmConfig;
 use crate::tuning::resident_gemm::swiglu::{self, Binding as SwigluBinding};
-use cutile::half::bf16;
+use infer_cuda_kernels::tile::runtime::bf16;
 
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use crate::tuning::resident_gemm::WeightKey as ResidentGemmWeightKey;

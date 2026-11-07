@@ -5,9 +5,11 @@
 )]
 use super::arena::SlotMemory;
 use super::capture::error;
-use cutile::prelude::*;
+#[cfg(test)]
+use cutile::prelude::Tensor;
 use infer_core::Result;
 use infer_cuda_kernels::contract::{Buffer, KvCache, KvElement};
+use infer_cuda_kernels::tile::runtime::DType;
 use infer_cuda_kernels::tile::runtime::{Allocation, Element};
 use std::sync::Arc;
 

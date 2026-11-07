@@ -13,10 +13,10 @@
 use super::super::buffers::buffer;
 use super::super::capture::error;
 use crate::device::CudaDevice;
-use cutile::half::bf16;
 use infer_core::Result;
 use infer_cuda_kernels::contract::{Buffer, ChunkBuffers, Recording, Recurrent, RecurrentShape};
 use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::tile::runtime::bf16;
 
 /// Tokens per chunk.
 pub(super) const CHUNK: usize = 64;

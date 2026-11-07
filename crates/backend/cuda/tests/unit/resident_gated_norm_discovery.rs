@@ -7,6 +7,7 @@ use cutile::bench::do_bench_paired;
 use cutile::error::tensor_error;
 use cutile::{prelude::*, tile_kernel::CompileOptions};
 use infer_core::Result;
+use infer_cuda_kernels::tile::jit::JitOptions;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::cell::Cell;
 use std::time::Duration;
@@ -141,12 +142,16 @@ pub fn model_options(
     dimension: usize,
     gated: bool,
     rows: usize,
-    prepared: CompileOptions,
-) -> CompileOptions {
+    prepared: JitOptions,
+) -> JitOptions {
     if MODEL_BASELINE.with(Cell::get) {
-        return CompileOptions::default();
+        return JitOptions::default();
     }
-    if dimension == 128 && gated && [3072, 12288].contains(&rows) && prepared.occupancy.is_some() {
+    if dimension == 128
+        && gated
+        && [3072, 12288].contains(&rows)
+        && prepared.occupancy_hint().is_some()
+    {
         MODEL_SITES.with(|n| n.set(n.get() + 1));
     }
     prepared

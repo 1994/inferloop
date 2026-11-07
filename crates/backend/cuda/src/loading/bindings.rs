@@ -11,8 +11,8 @@ use crate::{
     device::CudaDevice,
     resident::{FusionWeights, ProgramWeights, PromptScratchRegistry},
 };
-use cutile::half::bf16;
 use infer_core::{Error, Result, TensorId};
+use infer_cuda_kernels::tile::runtime::bf16;
 use infer_ir::{DataflowGraph, TensorOp, TensorStorage};
 use infer_models::mrope::axes as mrope_axes;
 use infer_models::{QuantizedPackage, TensorDtype};

@@ -14,13 +14,13 @@ use crate::mlp::Matrix;
 use crate::resident::tensor_buffer;
 use crate::tuning::prefill::delegate_dense;
 use cuda_core::sys::{CUdeviceptr, CUstream};
-use cutile::half::bf16;
 use infer_core::Result;
 use infer_core::{Error, ErrorCode};
 use infer_cuda_kernels::contract::{
     Bf16, Buffer, Foreign, Kernels, NARROW_GRANULE, Owner, Recording,
 };
 use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::tile::runtime::bf16;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt::Display;

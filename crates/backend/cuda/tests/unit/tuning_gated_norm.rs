@@ -16,7 +16,7 @@ fn gated_norm_profile_preserves_all_other_entries() -> Result<()> {
         let shape = Shape::new(rows, 128, 1e-6f32).ok_or_else(|| Error::invalid("norm fixture"))?;
         resolve(&device, shape, false, &session)?;
         assert_eq!(
-            options(device.stream.device().ordinal(), 128, rows, 1e-6).occupancy,
+            options(device.stream.device().ordinal(), 128, rows, 1e-6).occupancy_hint(),
             Some(UNMEASURED)
         );
         resolve(&device, shape, true, &session)?;

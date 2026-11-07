@@ -17,8 +17,8 @@ use crate::{
     tuning::resident_gemm::ResidentTuningSession,
 };
 use capture::Captured;
-use cutile::cutile_compiler::hints::CompileOptions;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::jit::JitOptions;
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_cuda_kernels::tile::runtime::Timing;
 use serde::{Deserialize, Serialize};
@@ -273,10 +273,10 @@ fn cases(
     Ok(Some(cases))
 }
 fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Result<Option<Entry>> {
-    let compile = CompileOptions::default();
+    let compile = JitOptions::default();
     if cfg!(debug_assertions)
-        || compile.device_debug
-        || compile.opt_level.is_some_and(|x| x != CUDA_OPT_LEVEL)
+        || compile.device_debug()
+        || compile.opt_level().is_some_and(|x| x != CUDA_OPT_LEVEL)
     {
         return Err(Error::invalid(
             "exact GDN tuning requires release and CUDA O3",

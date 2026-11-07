@@ -19,12 +19,12 @@ use crate::{
     mlp::ProjectionWeight,
 };
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
-use cutile::cutile_compiler::hints::CompileOptions;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, Fp4Pair, Fp4QuantKind, Fp4QuantPlan, Fp8, GemmLoop, GemmPlan, Kernels, Recording,
 };
 use infer_cuda_kernels::tile::identity;
+use infer_cuda_kernels::tile::jit::JitOptions;
 use infer_cuda_kernels::tile::runtime::Timing;
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph, Watch};
 use serde::{Deserialize, Serialize};
@@ -268,7 +268,7 @@ impl ResidentGemmKey {
         kernel_fingerprint: String,
     ) -> Result<Self> {
         let [m, n, k] = shape;
-        let compile = CompileOptions::default();
+        let compile = JitOptions::default();
         Ok(Self {
             hardware: serde_json::to_string(profile).map_err(device_error)?,
             driver_version,
@@ -276,7 +276,8 @@ impl ResidentGemmKey {
             kernel_fingerprint,
             kernel_schema: format!(
                 "{KERNEL_SCHEMA}:jit-opt{:?}:debug{}",
-                compile.opt_level, compile.device_debug
+                compile.opt_level(),
+                compile.device_debug()
             ),
             activation_mode: ACTIVATION_MODE.into(),
             m,
@@ -551,12 +552,12 @@ fn verifications() -> &'static Verifications {
 
 /// Frontend-only identities: no cubin compilation or kernel execution is requested here.
 pub(super) fn kernel_environment(device: &CudaDevice) -> Result<String> {
-    use cutile::cutile_compiler::cuda_tile_runtime_utils as compiler;
-    let compile = CompileOptions::default();
+    use infer_cuda_kernels::tile::jit as compiler;
+    let compile = JitOptions::default();
     Ok(format!(
         "{}:{}:{:?}:{:?}:{:?}:{:?}",
         device.profile()?.architecture,
-        compiler::tileiras_fingerprint(),
+        compiler::compiler(),
         compiler::bytecode_override(),
         compile,
         var_os("CUTILE_DISABLE_CHECK_HOISTING"),
@@ -1069,10 +1070,10 @@ fn tune(
     key: ResidentGemmKey,
     session: &ResidentTuningSession,
 ) -> Result<Option<ResidentGemmEntry>> {
-    let compile = CompileOptions::default();
+    let compile = JitOptions::default();
     if cfg!(debug_assertions)
-        || compile.device_debug
-        || compile.opt_level.is_some_and(|opt| opt != JIT_OPT_LEVEL)
+        || compile.device_debug()
+        || compile.opt_level().is_some_and(|opt| opt != JIT_OPT_LEVEL)
     {
         return Err(Error::invalid(
             "resident tuning requires release and CUDA JIT O3",

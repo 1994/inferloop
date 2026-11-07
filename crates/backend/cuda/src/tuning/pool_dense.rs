@@ -17,12 +17,12 @@ use crate::tuning::resident_gemm::{
 };
 use crate::tuning::{resolve_table, table_path, update_table};
 use capture::{Captured, key, verify};
-use cutile::cutile_compiler::hints::CompileOptions;
-use cutile::half::bf16;
 pub use evidence::{Entry, Trial};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Buffer, DenseKernel, DenseRowsPlan, Kernels, Recording};
+use infer_cuda_kernels::tile::jit::JitOptions;
 use infer_cuda_kernels::tile::runtime::Watch;
+use infer_cuda_kernels::tile::runtime::bf16;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::cell::Cell;
@@ -466,10 +466,10 @@ fn tune(
     key: Key,
     session: &ResidentTuningSession,
 ) -> Result<Option<Entry>> {
-    let compile = CompileOptions::default();
+    let compile = JitOptions::default();
     if cfg!(debug_assertions)
-        || compile.device_debug
-        || compile.opt_level.is_some_and(|opt| opt != JIT_OPT_LEVEL)
+        || compile.device_debug()
+        || compile.opt_level().is_some_and(|opt| opt != JIT_OPT_LEVEL)
     {
         return Err(Error::invalid(
             "pooled dense tuning requires release and CUDA JIT O3",

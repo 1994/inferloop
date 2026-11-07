@@ -8,9 +8,9 @@ use self::{
 use super::resident_gemm::ResidentTuningSession;
 use crate::constants::PREFILL_LANES;
 use crate::{device::CudaDevice, resident::ProgramWeights};
-use cutile::tile_kernel::CompileOptions;
 pub use evidence::Entry as NormEntry;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::jit::JitOptions;
 use infer_ir::{DataflowGraph, TensorOp};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -40,22 +40,17 @@ fn memo() -> &'static Memo {
 fn process_key(device: &CudaDevice, shape: Shape) -> ProcessKey {
     (device.stream.device().ordinal(), shape)
 }
-pub(crate) fn compile_options(occupancy: i32) -> CompileOptions {
+pub(crate) fn compile_options(occupancy: i32) -> JitOptions {
     if occupancy == BASELINE {
-        CompileOptions::default()
+        JitOptions::default()
     } else {
-        CompileOptions::default().occupancy(occupancy)
+        JitOptions::occupancy(occupancy)
     }
 }
 /// Capture only consults already-prepared process state; it never measures or reads files.
-pub(crate) fn options(
-    device_id: usize,
-    dimension: usize,
-    rows: usize,
-    epsilon: f32,
-) -> CompileOptions {
+pub(crate) fn options(device_id: usize, dimension: usize, rows: usize, epsilon: f32) -> JitOptions {
     let Some(shape) = Shape::new(rows, dimension, epsilon) else {
-        return CompileOptions::default();
+        return JitOptions::default();
     };
     let occupancy = memo()
         .lock()
@@ -182,11 +177,11 @@ fn resolve(
     Ok(())
 }
 fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Result<Option<Entry>> {
-    let compile = CompileOptions::default();
+    let compile = JitOptions::default();
     if cfg!(debug_assertions)
-        || compile.device_debug
+        || compile.device_debug()
         || compile
-            .opt_level
+            .opt_level()
             .is_some_and(|n| n != capture::JIT_OPT_LEVEL)
     {
         return Err(Error::invalid(

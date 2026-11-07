@@ -60,10 +60,10 @@ impl Buffers {
         })
     }
     pub fn key(device: &CudaDevice, shape: Shape) -> Result<Key> {
-        use cutile::cutile_compiler::cuda_tile_runtime_utils as compiler;
+        use infer_cuda_kernels::tile::jit as compiler;
         let occupancies: Vec<_> = once(0)
             .chain(CANDIDATES)
-            .map(|occupancy| compile_options(occupancy).occupancy)
+            .map(|occupancy| compile_options(occupancy).occupancy_hint())
             .collect();
         let ids = identity::gated_norm_candidates(
             &device.stream,
@@ -78,7 +78,7 @@ impl Buffers {
             shape,
             kernel_fingerprint: format!(
                 "{SCHEMA}:{}:{:?}:{:?}:{}",
-                compiler::tileiras_fingerprint(),
+                compiler::compiler(),
                 compiler::bytecode_override(),
                 compile_options(0),
                 serde_json::to_string(&ids).map_err(device_error)?
@@ -95,7 +95,7 @@ impl Buffers {
             gated: true,
             epsilon: f32::from_bits(s.epsilon_bits),
             offset: 0.0,
-            occupancy: compile_options(occupancy).occupancy,
+            occupancy: compile_options(occupancy).occupancy_hint(),
         };
         device.runtime().capture(|recording| {
             kernels.norm.norm(

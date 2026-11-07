@@ -10,11 +10,11 @@ use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::{CudaDevice, device_error};
 use catalog::{DIM, HEADS, KV_HEADS, Variant};
 use cuda_core::Function;
-use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{DecodeBuffers, KvBuffers, Owner, Recording};
 use infer_cuda_kernels::tile::runtime::{Argument, KernelLaunch};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 pub use workspace::{Workspace, eligible};
 #[cfg(test)]
 pub use workspace::{eligible_with_role, node_eligible};

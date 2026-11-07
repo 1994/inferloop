@@ -8,10 +8,10 @@ use crate::strategy::LinearTiling;
 use crate::tuning::preparation::driver_build;
 use crate::tuning::projection_budget::ProjectionShape;
 use crate::tuning::resident_gemm::{ResidentGemmKey, kernel_environment};
-use cutile::cutile_compiler::hints::CompileOptions;
-use cutile::half::bf16;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::tile::identity;
+use infer_cuda_kernels::tile::jit::JitOptions;
+use infer_cuda_kernels::tile::runtime::bf16;
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
@@ -151,10 +151,11 @@ pub(super) fn key(
         driver_build(),
         fingerprint,
     )?;
-    let compile = CompileOptions::default();
+    let compile = JitOptions::default();
     native.kernel_schema = format!(
         "{SCHEMA}:jit-opt{:?}:debug{}",
-        compile.opt_level, compile.device_debug
+        compile.opt_level(),
+        compile.device_debug()
     );
     native.activation_mode = MODE.into();
     Ok(Key {

@@ -28,8 +28,8 @@ use crate::{
     device::DeviceProfile,
     resident::{ProgramGeometry, ProgramWeights},
 };
-use cutile::half::bf16;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::bf16;
 use infer_ir::TensorSpec;
 use infer_ir::{DataflowGraph, OutputReadout, StateKind, TensorOp, TensorStorage};
 use std::array::from_fn;

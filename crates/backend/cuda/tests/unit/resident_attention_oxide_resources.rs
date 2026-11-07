@@ -1,6 +1,7 @@
 //! The SIMT graph must keep its owned operands alive after the caller drops them.
 use super::*;
 use cuda_core::f8e4m3fn;
+use cutile::prelude::DeviceOp;
 use infer_cuda_kernels::contract::{KvBuffers, KvCache};
 
 /// Positions of the fixture's cache.

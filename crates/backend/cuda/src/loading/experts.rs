@@ -9,8 +9,8 @@ use crate::{
     resident::moe::ExpertBank,
 };
 use cuda_core::f8e4m3fn;
-use cutile::half::bf16;
 use infer_core::{Error, ErrorCode, Result, TensorId};
+use infer_cuda_kernels::tile::runtime::bf16;
 use infer_ir::{TensorOp, TensorStorage};
 use infer_models::{DeviceWeight, QuantizedPackage, WeightEncoding};
 use std::collections::{BTreeMap, BTreeSet};

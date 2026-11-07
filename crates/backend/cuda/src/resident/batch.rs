@@ -33,7 +33,6 @@ use crate::device::cublaslt::Support;
 use crate::device::{CudaDevice, ReadbackSource, device_error};
 use crate::device::{PinnedUpload, Readbacks};
 use crate::mlp::ProjectionWeight;
-use cutile::prelude::*;
 use infer_core::{Error, ErrorCode, Result, TensorId};
 use infer_cuda_kernels::contract::{DecodePlan, VerifyDecodeBuffers};
 use infer_cuda_kernels::contract::{EmbeddingBatchPlan, LastRowsKind, LastRowsPlan, Recording};
@@ -43,6 +42,7 @@ use infer_models::mrope::ROTARY_AXES;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::mem::take;
+use std::sync::Arc;
 use std::sync::Mutex;
 
 pub type States = BTreeMap<TensorId, Vec<Shaped<f32>>>;

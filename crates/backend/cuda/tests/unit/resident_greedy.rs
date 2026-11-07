@@ -1,4 +1,5 @@
 use super::*;
+use cutile::prelude::DeviceOp;
 use infer_ir::Sampling;
 
 #[test]
