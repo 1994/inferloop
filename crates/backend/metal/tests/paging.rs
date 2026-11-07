@@ -9,61 +9,109 @@ use infer_spi::BackendProvider;
 use std::thread::sleep;
 use std::{path::Path, path::PathBuf, time::Duration, time::Instant};
 
+#[cfg(test)]
+mod fixtures {
+    use super::*;
+
+    pub fn load(config: MetalConfig, runtime: RuntimeConfig) -> Engine<MetalBackend> {
+        let mut p = ModelPackage::open(root(), ModelId::new(1).unwrap()).unwrap();
+        let b = MetalBackend::from_package(&mut p, config).unwrap();
+        let m = b.model().clone();
+        let mut r = KernelRegistry::default();
+        r.register(&MetalKernels).unwrap();
+        Engine::new(b, m, PrecisionPlan::f32(), &r, runtime).unwrap()
+    }
+
+    pub fn request(id: u64, tokens: &[u32]) -> CanonicalRequest {
+        serde_json::from_value(
+            serde_json::json!({"id":id,"model":1,"input":{"Sequence":{"tokens":tokens}},
+            "workload":{"Generate":{"max_new_tokens":5}}}),
+        )
+        .unwrap()
+    }
+
+    pub fn finish(e: &mut Engine<MetalBackend>) {
+        let limit = Instant::now() + Duration::from_secs(15);
+        while !e.is_idle() {
+            assert!(
+                Instant::now() < limit,
+                "page-pressure scheduler stalled: {:?}",
+                e.inspect()
+            );
+            e.tick(e.now_us() + 1).unwrap();
+            sleep(Duration::from_micros(100));
+        }
+    }
+
+    pub fn quiesce(e: &mut Engine<MetalBackend>) {
+        let limit = Instant::now() + Duration::from_secs(10);
+        loop {
+            assert!(Instant::now() < limit);
+            if e.quiesce(e.now_us() + 1).unwrap().1.is_some() {
+                break;
+            }
+            sleep(Duration::from_micros(100));
+        }
+    }
+
+    pub fn execute(
+        b: &mut MetalBackend,
+        p: &ExecutionProgram,
+        id: u64,
+        state: u64,
+        tokens: Vec<u32>,
+        added: usize,
+    ) -> ModelOutput {
+        let rid = RequestId::new(id).unwrap();
+        let sid = StateId::new(state).unwrap();
+        let step_id = StepId::new(id).unwrap();
+        let step = StepPlan {
+            id: step_id,
+            decision: DecisionId::new(id).unwrap(),
+            program: p.id,
+            role: ExecutionRole::Prefill,
+            work: vec![PlannedWork {
+                request: rid,
+                state: sid,
+                token_count: added,
+                role: ExecutionRole::Prefill,
+            }],
+            cost: CostEstimate::default(),
+            graph: None,
+            quantum_overrun: false,
+        };
+        let mut t = b
+            .submit(
+                p,
+                &step,
+                vec![ExecutionTask {
+                    plain_greedy: false,
+                    publish_prefix: false,
+                    request: rid,
+                    state: sid,
+                    tokens: tokens.into(),
+
+                    sampling: None,
+
+                    media: None,
+                }],
+            )
+            .unwrap();
+        let limit = Instant::now() + Duration::from_secs(10);
+        loop {
+            assert!(Instant::now() < limit);
+            if let Some(mut o) = b.poll(&mut t).unwrap() {
+                return o.remove(0).output;
+            }
+            sleep(Duration::from_micros(100));
+        }
+    }
+}
+
+use fixtures::*;
+
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples/qwen-hybrid-tiny")
-}
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn load(config: MetalConfig, runtime: RuntimeConfig) -> Engine<MetalBackend> {
-    let mut p = ModelPackage::open(root(), ModelId::new(1).unwrap()).unwrap();
-    let b = MetalBackend::from_package(&mut p, config).unwrap();
-    let m = b.model().clone();
-    let mut r = KernelRegistry::default();
-    r.register(&MetalKernels).unwrap();
-    Engine::new(b, m, PrecisionPlan::f32(), &r, runtime).unwrap()
-}
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn request(id: u64, tokens: &[u32]) -> CanonicalRequest {
-    serde_json::from_value(
-        serde_json::json!({"id":id,"model":1,"input":{"Sequence":{"tokens":tokens}},
-        "workload":{"Generate":{"max_new_tokens":5}}}),
-    )
-    .unwrap()
-}
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn finish(e: &mut Engine<MetalBackend>) {
-    let limit = Instant::now() + Duration::from_secs(15);
-    while !e.is_idle() {
-        assert!(
-            Instant::now() < limit,
-            "page-pressure scheduler stalled: {:?}",
-            e.inspect()
-        );
-        e.tick(e.now_us() + 1).unwrap();
-        sleep(Duration::from_micros(100));
-    }
-}
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn quiesce(e: &mut Engine<MetalBackend>) {
-    let limit = Instant::now() + Duration::from_secs(10);
-    loop {
-        assert!(Instant::now() < limit);
-        if e.quiesce(e.now_us() + 1).unwrap().1.is_some() {
-            break;
-        }
-        sleep(Duration::from_micros(100));
-    }
 }
 #[test]
 fn real_metal_pages_grow_share_cached_blocks_and_preserve_hybrid_trajectory() {
@@ -215,62 +263,6 @@ fn bounded_pool_reclaims_cache_and_preempts_recomputably_without_losing_tokens()
         finish(&mut cached);
     }
     assert!(cached.backend().inspect().kv_cache.unwrap().cache_evictions > 0);
-}
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn execute(
-    b: &mut MetalBackend,
-    p: &ExecutionProgram,
-    id: u64,
-    state: u64,
-    tokens: Vec<u32>,
-    added: usize,
-) -> ModelOutput {
-    let rid = RequestId::new(id).unwrap();
-    let sid = StateId::new(state).unwrap();
-    let step_id = StepId::new(id).unwrap();
-    let step = StepPlan {
-        id: step_id,
-        decision: DecisionId::new(id).unwrap(),
-        program: p.id,
-        role: ExecutionRole::Prefill,
-        work: vec![PlannedWork {
-            request: rid,
-            state: sid,
-            token_count: added,
-            role: ExecutionRole::Prefill,
-        }],
-        cost: CostEstimate::default(),
-        graph: None,
-        quantum_overrun: false,
-    };
-    let mut t = b
-        .submit(
-            p,
-            &step,
-            vec![ExecutionTask {
-                plain_greedy: false,
-                publish_prefix: false,
-                request: rid,
-                state: sid,
-                tokens: tokens.into(),
-
-                sampling: None,
-
-                media: None,
-            }],
-        )
-        .unwrap();
-    let limit = Instant::now() + Duration::from_secs(10);
-    loop {
-        assert!(Instant::now() < limit);
-        if let Some(mut o) = b.poll(&mut t).unwrap() {
-            return o.remove(0).output;
-        }
-        sleep(Duration::from_micros(100));
-    }
 }
 #[test]
 fn device_copy_on_write_preserves_a_forked_partial_tail_and_recurrent_state() {

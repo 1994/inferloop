@@ -1,19 +1,24 @@
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn metal_device() -> DeviceCapabilities {
-    DeviceCapabilities {
-        backend: DeviceBackend::Metal(MetalCapabilities { simd_width: 32 }),
-        device: infer_core::DeviceId::new(1).unwrap(),
-        compute_dtypes: vec![DType::F32],
-        memory_bytes: 1024,
-        unified_memory: true,
-        profiling: true,
-        speculation: SpeculationCapability::default(),
+use infer_ir::*;
+
+#[cfg(test)]
+mod fixtures {
+    use super::*;
+
+    pub fn metal_device() -> DeviceCapabilities {
+        DeviceCapabilities {
+            backend: DeviceBackend::Metal(MetalCapabilities { simd_width: 32 }),
+            device: infer_core::DeviceId::new(1).unwrap(),
+            compute_dtypes: vec![DType::F32],
+            memory_bytes: 1024,
+            unified_memory: true,
+            profiling: true,
+            speculation: SpeculationCapability::default(),
+        }
     }
 }
-use infer_ir::*;
+
+use fixtures::*;
+
 #[test]
 fn backend_discriminator_owns_its_specific_capabilities() {
     let mut metal = metal_device();

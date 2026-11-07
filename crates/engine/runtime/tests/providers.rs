@@ -8,6 +8,41 @@ mod support;
 
 use infer_core::*;
 use infer_ir::*;
+
+#[cfg(test)]
+mod fixtures {
+    use super::*;
+
+    pub fn providers() -> WorkloadRegistry {
+        let mut registry = WorkloadRegistry::default();
+        registry
+            .register(
+                ProviderMetadata {
+                    id: ProviderId::new(2).unwrap(),
+                    name: "custom".into(),
+                    spi_version: SPI_VERSION,
+                },
+                10,
+                CustomEmbedding,
+            )
+            .unwrap();
+        registry
+            .register(
+                ProviderMetadata {
+                    id: ProviderId::new(1).unwrap(),
+                    name: "native".into(),
+                    spi_version: SPI_VERSION,
+                },
+                0,
+                NativeWorkloads,
+            )
+            .unwrap();
+        registry
+    }
+}
+
+use fixtures::*;
+
 struct CustomEmbedding;
 impl WorkloadProvider for CustomEmbedding {
     fn identity(&self) -> &'static str {
@@ -23,36 +58,6 @@ impl WorkloadProvider for CustomEmbedding {
         assert_ne!(o[0].hidden, [] as [Vec<f32>; 0]);
         Ok(WorkloadOutput::Embedding(vec![42.0].into()))
     }
-}
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn providers() -> WorkloadRegistry {
-    let mut registry = WorkloadRegistry::default();
-    registry
-        .register(
-            ProviderMetadata {
-                id: ProviderId::new(2).unwrap(),
-                name: "custom".into(),
-                spi_version: SPI_VERSION,
-            },
-            10,
-            CustomEmbedding,
-        )
-        .unwrap();
-    registry
-        .register(
-            ProviderMetadata {
-                id: ProviderId::new(1).unwrap(),
-                name: "native".into(),
-                spi_version: SPI_VERSION,
-            },
-            0,
-            NativeWorkloads,
-        )
-        .unwrap();
-    registry
 }
 #[test]
 fn registered_provider_runs_through_core_and_checkpoint_requires_same_registry() {

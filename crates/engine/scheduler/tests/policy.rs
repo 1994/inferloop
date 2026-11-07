@@ -4,34 +4,50 @@ use infer_scheduler::*;
 use infer_spi::{CostModelProvider, SchedulingPolicy};
 use std::collections::BTreeSet;
 
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn work(id: u64, role: ExecutionRole, tokens: usize) -> ReadyWork {
-    let program = ProgramId::new(1).unwrap();
-    let unit = CostEstimate {
-        gpu_us: 1,
-        ..Default::default()
-    };
-    ReadyWork {
-        request: RequestId::new(id).unwrap(),
-        state: StateId::new(id).unwrap(),
-        program,
-        role,
-        remaining_tokens: tokens,
-        tenant: format!("t{id}"),
-        weight: 1,
-        deadline_us: None,
-        virtual_finish: 0,
-        cost_per_token: unit,
-        cost_query: CostQuery::from_unit(program, BackendKind::Metal, role, 1, 1, unit),
-        latency_deadline_us: None,
-        remaining_latency_us: tokens as u64,
-        remaining_completion_us: tokens as u64,
-        last_service_us: 0,
+#[cfg(test)]
+mod fixtures {
+    use super::*;
+
+    pub fn work(id: u64, role: ExecutionRole, tokens: usize) -> ReadyWork {
+        let program = ProgramId::new(1).unwrap();
+        let unit = CostEstimate {
+            gpu_us: 1,
+            ..Default::default()
+        };
+        ReadyWork {
+            request: RequestId::new(id).unwrap(),
+            state: StateId::new(id).unwrap(),
+            program,
+            role,
+            remaining_tokens: tokens,
+            tenant: format!("t{id}"),
+            weight: 1,
+            deadline_us: None,
+            virtual_finish: 0,
+            cost_per_token: unit,
+            cost_query: CostQuery::from_unit(program, BackendKind::Metal, role, 1, 1, unit),
+            latency_deadline_us: None,
+            remaining_latency_us: tokens as u64,
+            remaining_completion_us: tokens as u64,
+            last_service_us: 0,
+        }
+    }
+
+    pub fn plan(items: &[ReadyWork], r: &ResourceSnapshot, now: u64) -> SchedulingDecision {
+        CostAwarePolicy
+            .plan(
+                items,
+                r,
+                now,
+                DecisionId::new(1).unwrap(),
+                StepId::new(2).unwrap(),
+            )
+            .unwrap()
     }
 }
+
+use fixtures::*;
+
 fn resources() -> ResourceSnapshot {
     ResourceSnapshot {
         max_num_seqs: 8,
@@ -49,21 +65,6 @@ fn resources() -> ResourceSnapshot {
             ..Default::default()
         },
     }
-}
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn plan(items: &[ReadyWork], r: &ResourceSnapshot, now: u64) -> SchedulingDecision {
-    CostAwarePolicy
-        .plan(
-            items,
-            r,
-            now,
-            DecisionId::new(1).unwrap(),
-            StepId::new(2).unwrap(),
-        )
-        .unwrap()
 }
 #[test]
 fn slack_uses_remaining_service_instead_of_only_absolute_deadline() {

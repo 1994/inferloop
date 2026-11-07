@@ -11,55 +11,52 @@ use std::fs::read;
 use std::thread::sleep;
 use std::{path::Path, path::PathBuf, time::Duration, time::Instant};
 
+#[cfg(test)]
+mod fixtures {
+    use super::*;
+
+    pub fn load(
+        config: MetalConfig,
+        runtime: RuntimeConfig,
+    ) -> (Engine<MetalBackend>, KernelRegistry) {
+        let mut p = ModelPackage::open(root(), ModelId::new(1).unwrap()).unwrap();
+        let backend = MetalBackend::from_package(&mut p, config).unwrap();
+        let model = backend.model().clone();
+        let mut kernels = KernelRegistry::default();
+        kernels.register(&MetalKernels).unwrap();
+        (
+            Engine::new(backend, model, PrecisionPlan::f32(), &kernels, runtime).unwrap(),
+            kernels,
+        )
+    }
+
+    pub fn generate(id: u64) -> CanonicalRequest {
+        serde_json::from_value(
+            serde_json::json!({"id":id,"model":1,"input":{"Sequence":{"tokens":[1,2,3,5,8,13]}},
+            "workload":{"Generate":{"max_new_tokens":5}}}),
+        )
+        .unwrap()
+    }
+
+    pub fn drain(engine: &mut Engine<MetalBackend>, start: u64) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        for now in start..start + 100_000 {
+            if engine.is_idle() {
+                return;
+            }
+            engine.tick(now).unwrap();
+            engine.drain_events();
+            assert!(Instant::now() < deadline, "Metal runtime progress timeout");
+            sleep(Duration::from_micros(100));
+        }
+        panic!("Metal tick limit");
+    }
+}
+
+use fixtures::*;
+
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples/qwen-hybrid-tiny")
-}
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn load(config: MetalConfig, runtime: RuntimeConfig) -> (Engine<MetalBackend>, KernelRegistry) {
-    let mut p = ModelPackage::open(root(), ModelId::new(1).unwrap()).unwrap();
-    let backend = MetalBackend::from_package(&mut p, config).unwrap();
-    let model = backend.model().clone();
-    let mut kernels = KernelRegistry::default();
-    kernels.register(&MetalKernels).unwrap();
-    (
-        Engine::new(backend, model, PrecisionPlan::f32(), &kernels, runtime).unwrap(),
-        kernels,
-    )
-}
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn generate(id: u64) -> CanonicalRequest {
-    serde_json::from_value(
-        serde_json::json!({"id":id,"model":1,"input":{"Sequence":{"tokens":[1,2,3,5,8,13]}},
-        "workload":{"Generate":{"max_new_tokens":5}}}),
-    )
-    .unwrap()
-}
-#[expect(
-    clippy::panic,
-    reason = "This test helper rejects unexpected output variants so an incorrect fixture cannot pass silently"
-)]
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn drain(engine: &mut Engine<MetalBackend>, start: u64) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    for now in start..start + 100_000 {
-        if engine.is_idle() {
-            return;
-        }
-        engine.tick(now).unwrap();
-        engine.drain_events();
-        assert!(Instant::now() < deadline, "Metal runtime progress timeout");
-        sleep(Duration::from_micros(100));
-    }
-    panic!("Metal tick limit");
 }
 #[test]
 fn metal_generation_prefix_and_physical_checkpoint_preserve_official_trajectory() {

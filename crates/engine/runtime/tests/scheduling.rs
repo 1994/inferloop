@@ -11,69 +11,108 @@ use infer_core::*;
 use infer_ir::*;
 use infer_runtime::*;
 
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn registry() -> KernelRegistry {
-    let mut r = KernelRegistry::default();
-    r.register(&support::DeclaredKernels).unwrap();
-    r
-}
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn backend() -> ProtocolBackend {
-    ProtocolBackend::tagged("scheduling-weights", 16, 8, &support::model(ModelId::ONE)).unwrap()
-}
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn engine(config: RuntimeConfig) -> Engine<ProtocolBackend> {
-    let b = backend();
-    let m = support::model(ModelId::ONE);
-    Engine::new(b, m, PrecisionPlan::f32(), &registry(), config).unwrap()
-}
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn request(id: u64, input: usize) -> CanonicalRequest {
-    CanonicalRequest {
-        id: RequestId::new(id).unwrap(),
-        model: ModelId::ONE,
-        session: None,
-        input: RequestInput::Sequence {
-            tokens: vec![3; input].into(),
-            media: vec![],
-        },
-        workload: Workload::Generate { max_new_tokens: 8 },
-        qos: Qos::default(),
-        sampling: Sampling::default(),
-        prefix_boundary: None,
-        extensions: BTreeMap::new(),
+#[cfg(test)]
+mod fixtures {
+    use super::*;
+
+    pub fn registry() -> KernelRegistry {
+        let mut r = KernelRegistry::default();
+        r.register(&support::DeclaredKernels).unwrap();
+        r
     }
-}
-#[expect(
-    clippy::panic,
-    reason = "This test helper rejects unexpected output variants so an incorrect fixture cannot pass silently"
-)]
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn finish<B: BackendProvider, P: SchedulingPolicy>(e: &mut Engine<B, P>, start: u64) {
-    for tick in start..start + 1000 {
-        e.tick(tick).unwrap();
-        e.check_invariants().unwrap();
-        if e.is_idle() {
-            return;
+
+    pub fn backend() -> ProtocolBackend {
+        ProtocolBackend::tagged("scheduling-weights", 16, 8, &support::model(ModelId::ONE)).unwrap()
+    }
+
+    pub fn engine(config: RuntimeConfig) -> Engine<ProtocolBackend> {
+        let b = backend();
+        let m = support::model(ModelId::ONE);
+        Engine::new(b, m, PrecisionPlan::f32(), &registry(), config).unwrap()
+    }
+
+    pub fn request(id: u64, input: usize) -> CanonicalRequest {
+        CanonicalRequest {
+            id: RequestId::new(id).unwrap(),
+            model: ModelId::ONE,
+            session: None,
+            input: RequestInput::Sequence {
+                tokens: vec![3; input].into(),
+                media: vec![],
+            },
+            workload: Workload::Generate { max_new_tokens: 8 },
+            qos: Qos::default(),
+            sampling: Sampling::default(),
+            prefix_boundary: None,
+            extensions: BTreeMap::new(),
         }
     }
-    panic!("scheduler did not finish");
+
+    pub fn finish<B: BackendProvider, P: SchedulingPolicy>(e: &mut Engine<B, P>, start: u64) {
+        for tick in start..start + 1000 {
+            e.tick(tick).unwrap();
+            e.check_invariants().unwrap();
+            if e.is_idle() {
+                return;
+            }
+        }
+        panic!("scheduler did not finish");
+    }
+
+    pub fn timed_engine(config: RuntimeConfig, elapsed: u64) -> Engine<TimedBackend> {
+        let b = backend();
+        let m = support::model(ModelId::ONE);
+        Engine::new(
+            TimedBackend {
+                inner: b,
+                elapsed,
+                held: false,
+            },
+            m,
+            PrecisionPlan::f32(),
+            &registry(),
+            config,
+        )
+        .unwrap()
+    }
+
+    pub struct ForgedPolicy {
+        pub reject: bool,
+    }
+
+    impl SchedulingPolicy for ForgedPolicy {
+        type Workspace = ();
+        fn plan(
+            &self,
+            ready: &[ReadyWork],
+            resources: &ResourceSnapshot,
+            now: u64,
+            decision: DecisionId,
+            step: StepId,
+        ) -> Result<SchedulingDecision> {
+            if self.reject {
+                return Ok(SchedulingDecision {
+                    window: None,
+                    id: decision,
+                    step: None,
+                    deferred: vec![DeferredWork {
+                        request: ready[0].request,
+                        reason: DeferReason::AtomicCostLimit,
+                        required: u64::MAX,
+                        available: 1,
+                    }],
+                    selected: vec![],
+                });
+            }
+            let mut d =
+                infer_scheduler::CostAwarePolicy.plan(ready, resources, now, decision, step)?;
+            d.step.as_mut().unwrap().cost.gpu_us = 0;
+            Ok(d)
+        }
+    }
 }
+
+use fixtures::*;
 
 #[test]
 fn admission_quota_is_transactional_and_running_cancel_holds_reservation() {
@@ -344,42 +383,6 @@ fn logical_page_pressure_recomputes_and_replays_without_losing_generated_tokens(
     assert!(e.snapshot().is_ok());
 }
 
-struct ForgedPolicy {
-    reject: bool,
-}
-impl SchedulingPolicy for ForgedPolicy {
-    type Workspace = ();
-    #[expect(
-        clippy::unwrap_used,
-        reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-    )]
-    fn plan(
-        &self,
-        ready: &[ReadyWork],
-        resources: &ResourceSnapshot,
-        now: u64,
-        decision: DecisionId,
-        step: StepId,
-    ) -> Result<SchedulingDecision> {
-        if self.reject {
-            return Ok(SchedulingDecision {
-                window: None,
-                id: decision,
-                step: None,
-                deferred: vec![DeferredWork {
-                    request: ready[0].request,
-                    reason: DeferReason::AtomicCostLimit,
-                    required: u64::MAX,
-                    available: 1,
-                }],
-                selected: vec![],
-            });
-        }
-        let mut d = infer_scheduler::CostAwarePolicy.plan(ready, resources, now, decision, step)?;
-        d.step.as_mut().unwrap().cost.gpu_us = 0;
-        Ok(d)
-    }
-}
 #[test]
 fn provider_cannot_underreport_cost_or_forge_permanent_rejection() {
     for reject in [false, true] {
@@ -491,26 +494,6 @@ impl BackendProvider for TimedBackend {
             source: TimingSource::CudaGpu,
         })
     }
-}
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn timed_engine(config: RuntimeConfig, elapsed: u64) -> Engine<TimedBackend> {
-    let b = backend();
-    let m = support::model(ModelId::ONE);
-    Engine::new(
-        TimedBackend {
-            inner: b,
-            elapsed,
-            held: false,
-        },
-        m,
-        PrecisionPlan::f32(),
-        &registry(),
-        config,
-    )
-    .unwrap()
 }
 #[test]
 fn a_measured_completion_keeps_the_batch_prepared_for_it() {

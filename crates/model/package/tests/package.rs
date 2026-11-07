@@ -18,33 +18,55 @@ use std::{
     sync::atomic::Ordering,
 };
 
-static NEXT: AtomicU64 = AtomicU64::new(0);
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn temp() -> PathBuf {
-    let p = temp_dir().join(format!(
-        "infer-tensor-{}-{}",
-        id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    create_dir_all(&p).unwrap();
-    p
+#[cfg(test)]
+mod fixtures {
+    use super::*;
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    pub fn temp() -> PathBuf {
+        let p = temp_dir().join(format!(
+            "infer-tensor-{}-{}",
+            id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        create_dir_all(&p).unwrap();
+        p
+    }
+
+    pub fn raw(header: &str, data: &[u8]) -> PathBuf {
+        let root = temp();
+        let p = root.join("model.safetensors");
+        let mut b = (header.len() as u64).to_le_bytes().to_vec();
+        b.extend(header.as_bytes());
+        b.extend(data);
+        write(&p, b).unwrap();
+        p
+    }
+
+    /// Write a copy of the fixture tokenizer with a byte-level decoder, which is what the served
+    /// packages use and the only decoder that decomposes per token.
+    pub fn byte_level_fixture() -> PathBuf {
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../examples/qwen-hybrid-tiny");
+        let mut tokenizer: serde_json::Value =
+            serde_json::from_slice(&read(root.join("tokenizer.json")).unwrap()).unwrap();
+        let byte_level = serde_json::json!({
+            "type": "ByteLevel", "add_prefix_space": false, "trim_offsets": true, "use_regex": true
+        });
+        tokenizer["decoder"] = byte_level.clone();
+        tokenizer["pre_tokenizer"] = byte_level;
+        let package = temp();
+        write(
+            package.join("tokenizer.json"),
+            serde_json::to_vec(&tokenizer).unwrap(),
+        )
+        .unwrap();
+        package
+    }
 }
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn raw(header: &str, data: &[u8]) -> PathBuf {
-    let root = temp();
-    let p = root.join("model.safetensors");
-    let mut b = (header.len() as u64).to_le_bytes().to_vec();
-    b.extend(header.as_bytes());
-    b.extend(data);
-    write(&p, b).unwrap();
-    p
-}
+
+use fixtures::*;
+
 #[test]
 fn safetensors_float_conversion_and_row_read_are_exact() {
     let bf16 = raw(
@@ -299,30 +321,6 @@ fn check_chat_eos_edge_cases(package: &Path) -> StdResult<(), Box<dyn StdError>>
         [31]
     );
     Ok(())
-}
-
-#[expect(
-    clippy::unwrap_used,
-    reason = "Test fixtures fail the test immediately on unexpected setup or runtime output"
-)]
-/// Write a copy of the fixture tokenizer with a byte-level decoder, which is what the served
-/// packages use and the only decoder that decomposes per token.
-fn byte_level_fixture() -> PathBuf {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../examples/qwen-hybrid-tiny");
-    let mut tokenizer: serde_json::Value =
-        serde_json::from_slice(&read(root.join("tokenizer.json")).unwrap()).unwrap();
-    let byte_level = serde_json::json!({
-        "type": "ByteLevel", "add_prefix_space": false, "trim_offsets": true, "use_regex": true
-    });
-    tokenizer["decoder"] = byte_level.clone();
-    tokenizer["pre_tokenizer"] = byte_level;
-    let package = temp();
-    write(
-        package.join("tokenizer.json"),
-        serde_json::to_vec(&tokenizer).unwrap(),
-    )
-    .unwrap();
-    package
 }
 
 #[test]
