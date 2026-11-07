@@ -4,7 +4,11 @@ use std::error::Error;
 use std::fs::{create_dir, remove_dir_all, write};
 use std::path::PathBuf;
 use std::process::{Command, id};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Distinguishes fixtures created by tests that run concurrently in one process.
+static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture(PathBuf);
 type ClipFixture = (Fixture, Vec<Vec<u8>>);
@@ -17,8 +21,9 @@ impl Drop for Fixture {
 }
 
 fn lossless_clip(count: usize) -> TestResult<ClipFixture> {
+    let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
     let path = temp_dir().join(format!(
-        "infer-video-test-{}-{}",
+        "infer-video-test-{}-{}-{sequence}",
         id(),
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
