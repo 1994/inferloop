@@ -4,37 +4,38 @@ use infer_scheduler::*;
 use infer_spi::{AdmissionPolicy, CostModelProvider};
 use std::collections::BTreeMap;
 
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn query(tokens: usize) -> CostQuery {
-    CostQuery::from_unit(
-        ProgramId::new(1).unwrap(),
-        BackendKind::Metal,
-        ExecutionRole::Prefill,
-        tokens,
-        16,
-        CostEstimate {
-            gpu_us: 1,
-            ..Default::default()
-        },
-    )
-}
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn observation(id: u64, tokens: usize, us: u64) -> CostObservation {
-    CostObservation {
-        step: StepId::new(id).unwrap(),
-        work: vec![query(tokens)].into(),
-        timing: ExecutionTiming {
-            elapsed_us: us,
-            source: TimingSource::MetalGpu,
-        },
+#[cfg(test)]
+mod fixtures {
+    use super::*;
+
+    pub fn query(tokens: usize) -> CostQuery {
+        CostQuery::from_unit(
+            ProgramId::new(1).unwrap(),
+            BackendKind::Metal,
+            ExecutionRole::Prefill,
+            tokens,
+            16,
+            CostEstimate {
+                gpu_us: 1,
+                ..Default::default()
+            },
+        )
+    }
+
+    pub fn observation(id: u64, tokens: usize, us: u64) -> CostObservation {
+        CostObservation {
+            step: StepId::new(id).unwrap(),
+            work: vec![query(tokens)].into(),
+            timing: ExecutionTiming {
+                elapsed_us: us,
+                source: TimingSource::MetalGpu,
+            },
+        }
     }
 }
+
+use fixtures::*;
+
 #[test]
 fn timing_samples_change_batch_estimates_and_checkpoint_restores_exactly() {
     let mut costs =

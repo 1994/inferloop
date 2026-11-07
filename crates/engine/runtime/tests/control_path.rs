@@ -11,56 +11,63 @@ use infer_core::*;
 use infer_ir::*;
 use infer_runtime::*;
 
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn registry() -> KernelRegistry {
-    let mut r = KernelRegistry::default();
-    r.register(&support::DeclaredKernels).unwrap();
-    r
-}
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn backend() -> ProtocolBackend {
-    ProtocolBackend::tagged("control-path-weights", 16, 8, &support::model(ModelId::ONE)).unwrap()
-}
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn engine(config: RuntimeConfig) -> Engine<ProtocolBackend> {
-    let b = backend();
-    let m = support::model(ModelId::ONE);
-    Engine::new(b, m, PrecisionPlan::f32(), &registry(), config).unwrap()
-}
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn request(id: u64, workload: Workload) -> CanonicalRequest {
-    CanonicalRequest {
-        id: RequestId::new(id).unwrap(),
-        model: ModelId::ONE,
-        session: None,
-        input: RequestInput::Sequence {
-            tokens: vec![1, 2, 3, 4, 5].into(),
-            media: vec![],
-        },
-        workload,
-        qos: Qos::default(),
-        sampling: Sampling {
-            temperature: 0.7,
-            top_k: Some(8),
-            seed: 13,
-            ..Default::default()
-        },
-        prefix_boundary: None,
-        extensions: BTreeMap::new(),
+#[cfg(test)]
+mod fixtures {
+    use super::*;
+
+    pub fn registry() -> KernelRegistry {
+        let mut r = KernelRegistry::default();
+        r.register(&support::DeclaredKernels).unwrap();
+        r
+    }
+
+    pub fn backend() -> ProtocolBackend {
+        ProtocolBackend::tagged("control-path-weights", 16, 8, &support::model(ModelId::ONE))
+            .unwrap()
+    }
+
+    pub fn engine(config: RuntimeConfig) -> Engine<ProtocolBackend> {
+        let b = backend();
+        let m = support::model(ModelId::ONE);
+        Engine::new(b, m, PrecisionPlan::f32(), &registry(), config).unwrap()
+    }
+
+    pub fn request(id: u64, workload: Workload) -> CanonicalRequest {
+        CanonicalRequest {
+            id: RequestId::new(id).unwrap(),
+            model: ModelId::ONE,
+            session: None,
+            input: RequestInput::Sequence {
+                tokens: vec![1, 2, 3, 4, 5].into(),
+                media: vec![],
+            },
+            workload,
+            qos: Qos::default(),
+            sampling: Sampling {
+                temperature: 0.7,
+                top_k: Some(8),
+                seed: 13,
+                ..Default::default()
+            },
+            prefix_boundary: None,
+            extensions: BTreeMap::new(),
+        }
+    }
+
+    pub fn finish<B: BackendProvider, P: SchedulingPolicy>(e: &mut Engine<B, P>, start: u64) {
+        for tick in start..start + 1000 {
+            e.tick(tick * 100).unwrap();
+            e.check_invariants().unwrap();
+            if e.is_idle() {
+                return;
+            }
+        }
+        panic!("runtime did not finish");
     }
 }
+
+use fixtures::*;
+
 fn workloads() -> Vec<CanonicalRequest> {
     let mut rerank = request(3, Workload::Rerank { top_k: 2 });
     rerank.input = RequestInput::Pairs {
@@ -105,24 +112,6 @@ fn workloads() -> Vec<CanonicalRequest> {
             }),
         ),
     ]
-}
-#[expect(
-    clippy::panic,
-    reason = "This test helper rejects unexpected output variants so an incorrect fixture cannot pass silently"
-)]
-#[expect(
-    clippy::unwrap_used,
-    reason = "Integration fixture helpers intentionally fail the test immediately on invalid setup or unexpected runtime output"
-)]
-fn finish<B: BackendProvider, P: SchedulingPolicy>(e: &mut Engine<B, P>, start: u64) {
-    for tick in start..start + 1000 {
-        e.tick(tick * 100).unwrap();
-        e.check_invariants().unwrap();
-        if e.is_idle() {
-            return;
-        }
-    }
-    panic!("runtime did not finish");
 }
 #[test]
 fn all_workloads_are_batch_and_chunk_invariant_and_release_state() {
