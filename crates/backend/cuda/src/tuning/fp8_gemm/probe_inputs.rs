@@ -4,14 +4,14 @@ use crate::constants::F32_BYTES;
 use crate::constants::MIB;
 use crate::device::{CudaDevice, device_error};
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::runtime::Allocation;
-use std::{cell::RefCell, collections::BTreeMap, marker::PhantomData, rc::Rc, sync::Arc};
+use infer_cuda_kernels::tile::runtime::{Allocation, Device as Runtime};
+use std::{cell::RefCell, collections::BTreeMap, marker::PhantomData, rc::Rc};
 
 /// Bound temporary sharing independently of the number of model weights.
 const MAX_BYTES: usize = 128 * MIB;
 type Key = (usize, usize, usize);
 struct Cache {
-    stream: Arc<cuda_core::Stream>,
+    device: Runtime,
     inputs: BTreeMap<Key, Allocation<f32>>,
     bytes: usize,
     limit: usize,
@@ -32,7 +32,7 @@ impl Scope {
             .map_err(device_error)?
             .min(MAX_BYTES);
         let cache = Cache {
-            stream: Arc::clone(&device.stream),
+            device: device.runtime(),
             inputs: BTreeMap::new(),
             bytes: 0,
             limit,
@@ -60,7 +60,7 @@ pub(super) fn upload(
         inputs
             .borrow()
             .as_ref()
-            .filter(|cache| Arc::ptr_eq(&cache.stream, &device.stream))
+            .filter(|cache| cache.device.shares_stream(device.tile()))
             .and_then(|cache| cache.inputs.get(&key).cloned())
     });
     if let Some(input) = remembered {
@@ -73,7 +73,7 @@ pub(super) fn upload(
     let input = device.runtime().upload(values()?)?;
     INPUTS.with(|inputs| {
         if let Some(cache) = inputs.borrow_mut().as_mut()
-            && Arc::ptr_eq(&cache.stream, &device.stream)
+            && cache.device.shares_stream(device.tile())
             && cache
                 .bytes
                 .checked_add(bytes)

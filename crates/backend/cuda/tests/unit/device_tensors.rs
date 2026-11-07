@@ -51,7 +51,9 @@ impl CudaDevice {
     /// Copy a tensor back without taking ownership, so a borrowed snapshot can be inspected.
     /// # Errors
     /// Returns a backend error when the device is unbound or the copy fails.
-    pub fn read_borrowed<T: DType>(&self, tensor: &Tensor<T>) -> Result<Vec<T>> {
-        self.read_address(tensor.device_pointer().cu_deviceptr(), tensor.size())
+    pub fn read_borrowed<T: DType + Element>(&self, tensor: &Tensor<T>) -> Result<Vec<T>> {
+        self.reclaim_barrier()?;
+        self.runtime
+            .read_buffer(buffer(tensor).map_err(device_error)?)
     }
 }

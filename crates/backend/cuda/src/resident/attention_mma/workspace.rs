@@ -1,7 +1,6 @@
 //! One reusable 16-bit staging allocation per program, shared across layers and widths.
 use super::{Arithmetic, Support, catalog};
 use crate::{AttentionProfile, device::CudaDevice};
-use cuda_core::sys::CUdeviceptr;
 use infer_core::Result;
 use infer_cuda_kernels::contract::Owner;
 use infer_cuda_kernels::tile::runtime::Allocation;
@@ -36,7 +35,7 @@ impl<T: DType> Buffers<T> {
             used: runtime.zeros(USED_WORDS)?,
         })
     }
-    fn pointers(&self) -> [CUdeviceptr; catalog::OPERANDS] {
+    fn pointers(&self) -> [u64; catalog::OPERANDS] {
         let used = self.used.buffer().address();
         [
             self.query.buffer().address(),
@@ -77,7 +76,7 @@ impl Scratch {
             Arithmetic::F16 => Self::F16(Buffers::new(device, capacity, lanes)?),
         })
     }
-    pub(super) fn pointers(&self) -> [CUdeviceptr; catalog::OPERANDS] {
+    pub(super) fn pointers(&self) -> [u64; catalog::OPERANDS] {
         match self {
             Self::Bf16(buffers) => buffers.pointers(),
             Self::F16(buffers) => buffers.pointers(),

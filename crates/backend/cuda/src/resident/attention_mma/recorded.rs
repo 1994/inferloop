@@ -1,6 +1,5 @@
 //! One captured MMA attention: conversion, AOT attention and readout, in order on one stream.
 use super::host;
-use cuda_core::sys::CUdeviceptr;
 use infer_core::Result;
 use infer_cuda_kernels::contract::Foreign;
 use infer_cuda_kernels::tile::runtime::KernelLaunch;
@@ -11,7 +10,7 @@ pub(super) struct Recorded {
     pub prepare: KernelLaunch,
     pub finish: KernelLaunch,
     pub api: Arc<host::Api>,
-    pub pointers: [CUdeviceptr; super::catalog::OPERANDS],
+    pub pointers: [u64; super::catalog::OPERANDS],
     pub lanes: usize,
     pub capacity: usize,
 }

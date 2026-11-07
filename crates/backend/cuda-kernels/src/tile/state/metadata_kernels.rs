@@ -1,11 +1,10 @@
 //! Scalar launch arguments update resident metadata without temporary device allocations.
 use crate::contract::buffer::Buffer;
+use crate::tile::runtime::Device;
 use crate::tile::runtime::{Graph, GraphUpdate};
 use crate::tile::{backend_error, borrowed};
-use cuda_core::Stream;
 use cutile::prelude::*;
 use infer_core::Result;
-use std::sync::Arc;
 
 /// Fields of one program's control metadata.
 const METADATA_FIELDS: usize = 4;
@@ -151,7 +150,8 @@ pub mod kernels {
 ///
 /// # Errors
 /// Reports the driver's launch failure.
-pub fn load_rotary(stream: &Arc<Stream>, output: Buffer<'_, i32>) -> Result<()> {
+pub fn load_rotary(device: &Device, output: Buffer<'_, i32>) -> Result<()> {
+    let stream = device.stream();
     let fields = output.len();
     let mut output = borrowed(output, stream.device().ordinal(), &[fields])?;
     kernels::write_rotary(

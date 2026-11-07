@@ -1,9 +1,9 @@
 //! Split submission and completion. The future retains all DMA and graph owners.
 use super::{ReadbackSource, Readbacks, Rows, device_error};
 use crate::device::CudaDevice;
-use cuda_core::{DType, DeviceCopy};
 use infer_core::{Error, ErrorCode, Result};
 use infer_cuda_kernels::tile::runtime::{Allocation, Flight as Completion, Graph};
+use infer_cuda_kernels::tile::runtime::{DType, DeviceCopy};
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -54,7 +54,7 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
     }
 
     fn validate_submit(&self, device: &CudaDevice, graph: &Graph) -> Result<()> {
-        if self.poisoned || self.flight.is_some() || !Arc::ptr_eq(graph.stream(), &device.stream) {
+        if self.poisoned || self.flight.is_some() || !graph.runs_on(device.tile()) {
             return Err(Error::invalid(
                 "busy/poisoned readback or mismatched CUDA graph stream",
             ));

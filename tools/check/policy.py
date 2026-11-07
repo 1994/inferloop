@@ -197,6 +197,11 @@ def check_exceptions():
                         # Async operations: allocations are written before any read and retained,
                         # with every owner and pinned source, until the submission completes.
                         TILE_KERNELS / "runtime/operation.rs",
+                        # Driver queries: read-only, live outputs, on a device the stream keeps alive.
+                        TILE_KERNELS / "runtime/info.rs",
+                        # Timing events retained by their graphs; D2H reads over buffers whose
+                        # contract guarantees the extent.
+                        TILE_KERNELS / "runtime/events.rs",
                         TILE_KERNELS / "norm/contract.rs",
                         TILE_KERNELS / "mlp/contract.rs",
                         TILE_KERNELS / "moe/contract.rs",
@@ -208,7 +213,6 @@ def check_exceptions():
                         # product, exclusive arena lease, completion and same-stream replay.
                         ROOT
                         / "crates/backend/cuda/src/resident/nvfp4_gemm/workspace/vendor_fp4.rs",
-                        ROOT / "crates/backend/cuda/src/resident/profile.rs",
                         # Explicit PTX launch boundaries: checked buffer extents, owning device
                         # stream, and graph retention of owned buffers and modules.
                         ROOT / "crates/backend/cuda/src/resident/attention_oxide.rs",

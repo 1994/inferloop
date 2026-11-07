@@ -5,8 +5,8 @@
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner, Width};
 use crate::contract::recording::{Foreign, Recording};
 use crate::tile::backend_error;
+use cuda_core::DTypeId;
 use cuda_core::sys::{CUdeviceptr, cuMemsetD8Async, cudaError_enum_CUDA_SUCCESS};
-use cuda_core::{DTypeId, DeviceCopy, Stream, f4e2m1fnx2, f8e4m3fn};
 use cutile::cuda_async::cuda_graph::GraphLaunch;
 use cutile::cuda_async::device_buffer::DeviceAllocation;
 use cutile::cuda_async::device_context::with_default_device_policy;
@@ -24,6 +24,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use transfer::Inflight;
 
+mod events;
+mod info;
 mod launch;
 mod operation;
 mod readback;
@@ -32,8 +34,13 @@ mod timing;
 mod transfer;
 
 /// Element types the host names, re-exported so it does not reach into cuTile for them.
-pub use cuda_core::DType;
+pub use cuda_core::{
+    CudaContext, CudaEvent, DType, DeviceCopy, DriverError, Event, Function, PinnedHostBuffer,
+    Stream, f4e2m1fnx2, f8e4m3fn,
+};
 pub use cutile::half::{bf16, f16};
+pub use events::{record_event, timing_event};
+pub use info::{Attribute, driver_version};
 pub use launch::{Argument, KernelLaunch};
 pub use operation::{Operation, Pending};
 pub use readback::{Copies, Flight, Pinned, Readback};
@@ -538,6 +545,12 @@ impl Graph {
             owners: Vec::new(),
             submitted: AtomicBool::new(false),
         })
+    }
+
+    /// Whether this graph replays on `device`'s stream.
+    #[must_use]
+    pub fn runs_on(&self, device: &Device) -> bool {
+        Arc::ptr_eq(self.inner.stream(), device.stream())
     }
 
     /// Wait until the stream this graph replays on has finished everything queued so far.

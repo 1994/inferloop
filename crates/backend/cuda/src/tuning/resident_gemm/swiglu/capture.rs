@@ -10,7 +10,6 @@ use crate::mlp::ProjectionWeight;
 use crate::tuning::preparation::driver_build;
 use crate::tuning::projection_budget::ProjectionShape;
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
-use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, Fp4Pair, Fp4QuantKind, Fp4QuantPlan, Fp8, GemmLoop, GemmPlan, Kernels, Recording,
@@ -18,6 +17,7 @@ use infer_cuda_kernels::contract::{
 use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::jit::JitOptions;
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
+use infer_cuda_kernels::tile::runtime::{f4e2m1fnx2, f8e4m3fn};
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -214,7 +214,7 @@ fn fingerprint(device: &CudaDevice, shape: ProjectionShape) -> Result<String> {
     }
     let tiles: Vec<_> = candidates(shape).map(GemmConfig::tile).collect();
     let identities = identity::swiglu_candidates(
-        &device.stream,
+        device.tile(),
         shape,
         identity::SwigluSearch {
             group: NVFP4_GROUP_SIZE,

@@ -6,6 +6,7 @@ use crate::mlp::ProjectionWeight;
 use crate::tuning::pool_dense;
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::target::TensorRates;
+use infer_cuda_kernels::tile::runtime::Attribute;
 use infer_ir::TensorOp;
 use std::collections::BTreeMap;
 
@@ -118,7 +119,6 @@ impl LoadedModel {
         }
     }
     pub(crate) fn concurrency_roofline(&self) -> Result<Option<usize>> {
-        use cuda_core::sys::CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_CLOCK_RATE as CLOCK_RATE;
         if self.graph.nodes.iter().any(|node| {
             matches!(
                 node.op,
@@ -135,7 +135,7 @@ impl LoadedModel {
                 "compute roofline unavailable; concurrency uses memory and protocol bounds");
             return Ok(None);
         };
-        let clock = u128::from(self.device.attribute(CLOCK_RATE)?);
+        let clock = u128::from(self.device.attribute(Attribute::ClockKhz)?);
         let chip_peak = mul(
             mul(u128::from(self.profile.multiprocessors), clock)?,
             mul(HZ_PER_KHZ, rates.0.normalization)?,

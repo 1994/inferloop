@@ -5,7 +5,6 @@
 use super::CudaDevice;
 use crate::device::device_error;
 use cuda_core::sys::CUcontext;
-use cuda_core::sys::CUdeviceptr;
 use cuda_core::sys::CUmemoryPool;
 use cuda_core::sys::CUmemorytype;
 use cuda_core::sys::CUmemorytype_enum_CU_MEMORYTYPE_DEVICE;
@@ -266,7 +265,7 @@ impl Gemm<'_> {
         Ok(Shape { m, n, k })
     }
 
-    const fn pointers(&self) -> [CUdeviceptr; GEMM_OPERANDS] {
+    const fn pointers(&self) -> [u64; GEMM_OPERANDS] {
         [
             self.input.address(),
             self.weight.address(),
@@ -361,7 +360,7 @@ fn context(device: &CudaDevice) -> Option<Arc<Context>> {
     unsafe_code,
     reason = "Audited metadata query rejects operands allocated in a foreign CUDA context before the Lt launch"
 )]
-fn same_context(context: &Context, pointer: CUdeviceptr) -> Result<()> {
+fn same_context(context: &Context, pointer: u64) -> Result<()> {
     let mut owner: CUcontext = null_mut();
     // SAFETY: The SDK call uses live lifetime-owned handles and pointers with the declared header ABI.
     let code = unsafe {
@@ -393,7 +392,7 @@ fn same_context(context: &Context, pointer: CUdeviceptr) -> Result<()> {
     unsafe_code,
     reason = "Audited CUDA header attribute-specific types prove same-device pool allocation accessibility before Lt use"
 )]
-fn same_device_pool(context: &Context, pointer: CUdeviceptr) -> bool {
+fn same_device_pool(context: &Context, pointer: u64) -> bool {
     let mut current: CUcontext = null_mut();
     // SAFETY: Each output is a live stack slot with its cuda.h attribute-specific type.
     if unsafe { cuCtxGetCurrent(&raw mut current) } != cudaError_enum_CUDA_SUCCESS
@@ -403,7 +402,7 @@ fn same_device_pool(context: &Context, pointer: CUdeviceptr) -> bool {
     }
     let mut ordinal = -1_i32;
     let mut memory_type: CUmemorytype = 0;
-    let mut accessible: CUdeviceptr = 0;
+    let mut accessible: u64 = 0;
     let mut pool: CUmemoryPool = null_mut();
     for (attribute, destination) in [
         (
@@ -423,7 +422,7 @@ fn same_device_pool(context: &Context, pointer: CUdeviceptr) -> bool {
             (&raw mut pool).cast::<c_void>(),
         ),
     ] {
-        // SAFETY: Destinations match the exact signed-int, enum, CUdeviceptr and pool ABI.
+        // SAFETY: Destinations match the exact signed-int, enum, u64 and pool ABI.
         if unsafe { cuPointerGetAttribute(destination, attribute, pointer) }
             != cudaError_enum_CUDA_SUCCESS
         {
@@ -440,7 +439,7 @@ fn same_device_pool(context: &Context, pointer: CUdeviceptr) -> bool {
     unsafe_code,
     reason = "Audited failure diagnostics use CUDA header attribute-specific output types; these queries neither allocate nor launch GPU work"
 )]
-fn pointer_diagnostics(context: &Context, pointer: CUdeviceptr) -> String {
+fn pointer_diagnostics(context: &Context, pointer: u64) -> String {
     let mut current: CUcontext = null_mut();
     // SAFETY: current points to one live CUcontext-sized stack slot.
     let current_status = unsafe { cuCtxGetCurrent(&raw mut current) };
@@ -462,8 +461,8 @@ fn pointer_diagnostics(context: &Context, pointer: CUdeviceptr) -> String {
             pointer,
         )
     };
-    let mut accessible: CUdeviceptr = 0;
-    // SAFETY: DEVICE_POINTER writes one CUdeviceptr, valid for the current CUDA context.
+    let mut accessible: u64 = 0;
+    // SAFETY: DEVICE_POINTER writes one u64, valid for the current CUDA context.
     let accessible_status = unsafe {
         cuPointerGetAttribute(
             (&raw mut accessible).cast::<c_void>(),
@@ -641,7 +640,7 @@ fn set<T: Copy>(api: &Api, desc: Handle, attr: i32, value: T) -> Result<()> {
 fn launch(
     context: &Context,
     prepared: &Prepared,
-    [input, weight, output]: [CUdeviceptr; GEMM_OPERANDS],
+    [input, weight, output]: [u64; GEMM_OPERANDS],
 ) -> Result<()> {
     let _guard = context
         .calls
@@ -1069,7 +1068,7 @@ impl Support {
 struct GemmFp8 {
     context: Arc<Context>,
     prepared: Arc<Prepared>,
-    pointers: [CUdeviceptr; GEMM_OPERANDS],
+    pointers: [u64; GEMM_OPERANDS],
 }
 impl Foreign for GemmFp8 {
     fn enqueue(self, stream: *mut c_void) -> Result<()> {

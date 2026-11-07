@@ -172,7 +172,7 @@ fn prompt_fingerprint(device: &CudaDevice, shape: ProjectionShape) -> Result<Str
         Choice::PromptM128N64,
     ]
     .map(Choice::prompt_tile);
-    let identities = identity::dense_prompt_candidates(&device.stream, shape, &tiles)?;
+    let identities = identity::dense_prompt_candidates(device.tile(), shape, &tiles)?;
     serde_json::to_string(&identities).map_err(device_error)
 }
 fn fingerprint(device: &CudaDevice, shape: ProjectionShape, tile: LinearTiling) -> Result<String> {
@@ -182,7 +182,7 @@ fn fingerprint(device: &CudaDevice, shape: ProjectionShape, tile: LinearTiling) 
         &[super::NATIVE_WIDE_64, super::NATIVE_WIDE_128]
     };
     let identities = identity::dense_candidates(
-        &device.stream,
+        device.tile(),
         shape,
         identity::DenseSearch {
             tile_rows: tile.rows(),

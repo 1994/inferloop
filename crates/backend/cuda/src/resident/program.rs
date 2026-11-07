@@ -287,7 +287,7 @@ impl ExternalInput<'_> {
                 staging.copy(device, destination, values)
             }
             Self::Device(tensor) => {
-                if tensor.device() != device.stream.device().ordinal() {
+                if tensor.device() != device.ordinal() {
                     return Err(Error::invalid("external hidden device mismatch"));
                 }
                 device.copy_d2d_at(destination, tensor, 0, 0, tensor.len())
@@ -708,7 +708,7 @@ impl DeviceProgram {
         capacity: usize,
     ) -> Result<(Allocation<i32>, Allocation<f32>, Allocation<i32>)> {
         let metadata = device.runtime().zeros(METADATA_FIELDS * 2)?;
-        load_rotary(&device.stream, metadata.buffer())?;
+        load_rotary(device.tile(), metadata.buffer())?;
         let external = Self::zero_row(device, hidden)?;
         // Step 1 of the KV refactor: an identity mapping over this program's own cache.
         let table = super::metadata::identity_table(device, capacity)?;

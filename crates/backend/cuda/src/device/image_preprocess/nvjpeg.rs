@@ -1,8 +1,8 @@
 //! Optional nvJPEG hardware decoder. All capability detection and FFI stay in this module.
 use crate::device::device_error;
-use cuda_core::CudaContext;
 use infer_core::{Error, ErrorCode, Result};
 use infer_cuda_kernels::contract::target::Arch;
+use infer_cuda_kernels::tile::runtime::CudaContext;
 use infer_ir::{EncodedImageInfo, ImageEncoding};
 use infer_spi::DeviceHostExecutor;
 use std::collections::HashMap;

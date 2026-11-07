@@ -35,7 +35,7 @@ pub(super) fn fingerprint(device: &CudaDevice, shape: [usize; SHAPE_RANK]) -> Re
         return Ok(value);
     }
     let identities = exact_recurrence(
-        &device.stream,
+        device.tile(),
         [KH, VH, DIM, shape[3]],
         NATIVE_VALUE_COLUMNS,
         METADATA_FIELDS,

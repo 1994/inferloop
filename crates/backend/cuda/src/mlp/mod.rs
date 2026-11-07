@@ -54,7 +54,7 @@ impl MlpGraph {
     pub fn new(device: &CudaDevice, config: &MlpConfig, weights: &MlpWeights) -> Result<Self> {
         let d = config.hidden;
         if config.pdl {
-            validate_dependent_launch(device.stream.device().ordinal())?;
+            validate_dependent_launch(device.ordinal())?;
         }
         let n = config.intermediate;
         if d == 0

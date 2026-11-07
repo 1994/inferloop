@@ -12,13 +12,13 @@ use crate::resident::attention_oxide::Support as AttentionOxideSupport;
 use crate::resident::attention_oxide::artifact_identity;
 use crate::resident::buffers::kv_cache;
 use crate::resident::tensor_buffer as buffer;
-use cuda_core::f8e4m3fn;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     AppendBuffers, DecodeBuffers, DecodePlan, Kernels, PrefillAppendPlan, PrefillDecodePlan,
     Recording,
 };
 use infer_cuda_kernels::tile::identity::{AttentionShape, attention_candidates};
+use infer_cuda_kernels::tile::runtime::f8e4m3fn;
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use std::env::var_os;
 struct Operands {

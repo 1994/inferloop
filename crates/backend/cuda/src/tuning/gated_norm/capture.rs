@@ -66,7 +66,7 @@ impl Buffers {
             .map(|occupancy| compile_options(occupancy).occupancy_hint())
             .collect();
         let ids = identity::gated_norm_candidates(
-            &device.stream,
+            device.tile(),
             [shape.rows, shape.dimension],
             f32::from_bits(shape.epsilon_bits),
             &occupancies,

@@ -1,6 +1,6 @@
 //! Device time of one execution step, reported to the engine's cost model.
 use super::CudaDevice;
-use cuda_core::{DriverError, Event};
+use infer_cuda_kernels::tile::runtime::{DriverError, Event};
 use std::time::Duration;
 
 /// Milliseconds per second, the unit conversion for `cuEventElapsedTime`.

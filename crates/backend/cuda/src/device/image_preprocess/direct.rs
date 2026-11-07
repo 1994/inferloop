@@ -4,8 +4,8 @@ use super::{
     launch::{THREADS, blocks},
     source::Source,
 };
-use cuda_core::Function;
 use infer_core::Result;
+use infer_cuda_kernels::tile::runtime::Function;
 use infer_cuda_kernels::tile::runtime::{Allocation, Argument, KernelLaunch, Operation};
 use std::sync::Arc;
 

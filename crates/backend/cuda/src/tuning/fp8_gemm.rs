@@ -20,7 +20,6 @@ use crate::{
     device::{CudaDevice, device_error, vendor_fp8},
     mlp::{Matrix, ProjectionWeight},
 };
-use cuda_core::f8e4m3fn;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, Fp8, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, Kernels, Recording, WeightRef,
@@ -28,6 +27,7 @@ use infer_cuda_kernels::contract::{
 use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::jit::JitOptions;
 use infer_cuda_kernels::tile::runtime::Timing;
+use infer_cuda_kernels::tile::runtime::f8e4m3fn;
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph, Watch};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -359,7 +359,7 @@ fn fingerprint(device: &CudaDevice, shape: [usize; GEMM_RANK]) -> Result<String>
         return Ok(value);
     }
     let ids = identity::fp8_candidates(
-        &device.stream,
+        device.tile(),
         shape,
         &ROW_TILES,
         &COLUMN_TILES,
