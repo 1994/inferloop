@@ -4,11 +4,10 @@ use super::{
 };
 use crate::device::{CudaDevice, device_error};
 use crate::tuning::preparation::driver_build;
-use cutile::bench::{BenchOptions, do_bench_paired};
-use cutile::error::tensor_error;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{NormBuffers, NormLayout, NormPlan};
 use infer_cuda_kernels::tile::identity;
+use infer_cuda_kernels::tile::runtime::Timing;
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use std::iter::once;
 use std::time::Duration;
@@ -143,20 +142,17 @@ pub fn measure(
         (baseline, candidate)
     };
     let measure = |cold| -> Result<Times> {
-        let opts = BenchOptions {
+        let opts = Timing {
             warmup: Duration::from_millis(super::super::WARMUP_MS),
             rep: Duration::from_millis(super::super::REP_MS),
             min_reps: super::super::MIN_REPS,
             max_reps: super::super::MAX_REPS,
             clear_l2: cold,
         };
-        let run = |g: &Graph| {
-            device
-                .tile()
-                .sync(g.launch())
-                .map_err(|e| tensor_error(&e.to_string()))
-        };
-        let (a, b) = do_bench_paired(&device.stream, &opts, |_| run(left), |_| run(right))
+        let run = |g: &Graph| device.tile().sync(g.launch());
+        let (a, b) = device
+            .tile()
+            .time_paired(&opts, || run(left), || run(right))
             .map_err(device_error)?;
         let (a, b) = if reverse { (b, a) } else { (a, b) };
         Ok(Times {

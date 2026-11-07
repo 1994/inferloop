@@ -19,14 +19,13 @@ use crate::{
     mlp::ProjectionWeight,
 };
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
-use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::cutile_compiler::hints::CompileOptions;
-use cutile::error::tensor_error;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, Fp4Pair, Fp4QuantKind, Fp4QuantPlan, Fp8, GemmLoop, GemmPlan, Kernels, Recording,
 };
 use infer_cuda_kernels::tile::identity;
+use infer_cuda_kernels::tile::runtime::Timing;
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph, Watch};
 use serde::{Deserialize, Serialize};
 use std::env::var_os;
@@ -989,19 +988,14 @@ pub(super) fn measure_graphs(
     clear_l2: bool,
     order: MeasurementOrder,
 ) -> Result<PairedTimes> {
-    let options = BenchOptions {
+    let options = Timing {
         warmup: Duration::from_millis(WARMUP_MS),
         rep: Duration::from_millis(REP_MS),
         min_reps: MIN_REPS,
         max_reps: MAX_REPS,
         clear_l2,
     };
-    let run = |graph: &Graph| {
-        device
-            .tile()
-            .sync(graph.launch())
-            .map_err(|e| tensor_error(&e.to_string()))
-    };
+    let run = |graph: &Graph| device.tile().sync(graph.launch());
     let (first, second) = match order {
         MeasurementOrder::BaselineFirst => (baseline, candidate),
         MeasurementOrder::CandidateFirst => (candidate, baseline),
@@ -1011,7 +1005,9 @@ pub(super) fn measure_graphs(
             ));
         }
     };
-    let (a, b) = do_bench_paired(&device.stream, &options, |_| run(first), |_| run(second))
+    let (a, b) = device
+        .tile()
+        .time_paired(&options, || run(first), || run(second))
         .map_err(device_error)?;
     ordered_times(a.times_ms(), b.times_ms(), order)
 }

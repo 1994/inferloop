@@ -13,13 +13,12 @@ use crate::tuning::{
 };
 pub use capture::record;
 use capture::{Captured, key, verify};
-use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::cutile_compiler::hints::CompileOptions;
-use cutile::error::tensor_error;
 pub use evidence::Entry;
 use evidence::candidates;
 pub use evidence::{baseline, compatible};
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Timing;
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -214,7 +213,7 @@ fn measure(
     cold: bool,
     order: MeasurementOrder,
 ) -> Result<PairedTimes> {
-    let options = BenchOptions {
+    let options = Timing {
         warmup: Duration::from_millis(WARMUP_MS),
         rep: Duration::from_millis(REP_MS),
         min_reps: MIN_REPS,
@@ -228,13 +227,10 @@ fn measure(
             return Err(Error::invalid("SwiGLU measurement arm order"));
         }
     };
-    let run = |graph: &Captured| {
-        device
-            .tile()
-            .sync(graph.graph.launch())
-            .map_err(|error| tensor_error(&error.to_string()))
-    };
-    let (a, b) = do_bench_paired(&device.stream, &options, |_| run(first), |_| run(second))
+    let run = |graph: &Captured| device.tile().sync(graph.graph.launch());
+    let (a, b) = device
+        .tile()
+        .time_paired(&options, || run(first), || run(second))
         .map_err(device_error)?;
     ordered_times(a.times_ms(), b.times_ms(), order)
 }

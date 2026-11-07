@@ -4,14 +4,11 @@ use crate::{
     device::{CudaDevice, device_error},
     strategy::{LinearStrategy, LinearTiling},
 };
-use cutile::bench::{BenchOptions, do_bench_paired};
-use cutile::error::Error as CutileError;
-use cutile::error::tensor_error;
 use cutile::half::bf16;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::tile::runtime::Timing;
 use serde::Serialize;
-use std::result::Result as StdResult;
 use std::time::Duration;
 
 /// Synthetic matrices stay below this many elements.
@@ -103,7 +100,7 @@ pub fn dense_baseline(
     if candidates.is_empty() {
         return Err(Error::invalid("empty tuning search"));
     }
-    let options = BenchOptions {
+    let options = Timing {
         warmup: Duration::from_millis(WARMUP_MS),
         rep: Duration::from_millis(REP_MS),
         min_reps: MIN_REPS,
@@ -114,13 +111,14 @@ pub fn dense_baseline(
     let mut trials = Vec::new();
     for candidate in candidates {
         verify(device, &x, &w, candidate, &expected)?;
-        let (a, b) = do_bench_paired(
-            &device.stream,
-            &options,
-            |_| launch(device, &x, &w, baseline),
-            |_| launch(device, &x, &w, candidate),
-        )
-        .map_err(device_error)?;
+        let (a, b) = device
+            .tile()
+            .time_paired(
+                &options,
+                || launch(device, &x, &w, baseline),
+                || launch(device, &x, &w, candidate),
+            )
+            .map_err(device_error)?;
         trials.push(Trial {
             tiling: candidate,
             baseline_ms: a.times_ms().to_vec(),
@@ -156,11 +154,8 @@ fn launch(
     x: &Allocation<f32>,
     w: &Matrix<bf16>,
     tiling: LinearTiling,
-) -> StdResult<(), CutileError> {
-    device
-        .matvec_tiled(x, w, tiling)
-        .map(|_| ())
-        .map_err(|error| tensor_error(&error.to_string()))
+) -> Result<()> {
+    device.matvec_tiled(x, w, tiling).map(|_| ())
 }
 
 fn verify(

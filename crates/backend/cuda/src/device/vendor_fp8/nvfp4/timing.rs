@@ -7,10 +7,9 @@ use crate::device::device_error;
 use crate::tuning::nvfp4_lt::Trial;
 use crate::tuning::resident_gemm::{MeasurementOrder, PairedTimes};
 use crate::tuning::{MAX_REPS, MIN_CONFIRM_SPEEDUP, MIN_REPS, REP_MS, WARMUP_MS, median};
-use cutile::bench::{BenchOptions, do_bench_paired};
-use cutile::error::tensor_error;
 use infer_core::Result;
 use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::tile::runtime::Timing;
 use std::time::Duration;
 /// Stop gross losers before the normal sample count.
 const CANARY_MAX_RATIO: f32 = 1.10;
@@ -24,7 +23,7 @@ pub(super) fn confirm(
 ) -> Result<Option<Vec<Trial>>> {
     #[cfg(test)]
     super::CONFIRMATIONS.fetch_add(1, super::Ordering::Relaxed);
-    let canary = BenchOptions {
+    let canary = Timing {
         warmup: Duration::ZERO,
         rep: Duration::ZERO,
         min_reps: 1,
@@ -67,7 +66,7 @@ fn one(
     clear_l2: bool,
     reverse: bool,
 ) -> Result<PairedTimes> {
-    let options = BenchOptions {
+    let options = Timing {
         warmup: Duration::from_millis(WARMUP_MS),
         rep: Duration::from_millis(REP_MS),
         min_reps: MIN_REPS,
@@ -91,27 +90,18 @@ fn measure(
     device: &CudaDevice,
     a: &Graph,
     b: &Graph,
-    options: &BenchOptions,
+    options: &Timing,
     reverse: bool,
 ) -> Result<PairedTimes> {
     let (first, second) = if reverse { (b, a) } else { (a, b) };
-    let (x, y) = do_bench_paired(
-        &device.stream,
-        options,
-        |_| {
-            device
-                .tile()
-                .sync(first.launch())
-                .map_err(|e| tensor_error(&e.to_string()))
-        },
-        |_| {
-            device
-                .tile()
-                .sync(second.launch())
-                .map_err(|e| tensor_error(&e.to_string()))
-        },
-    )
-    .map_err(device_error)?;
+    let (x, y) = device
+        .tile()
+        .time_paired(
+            options,
+            || device.tile().sync(first.launch()),
+            || device.tile().sync(second.launch()),
+        )
+        .map_err(device_error)?;
     let (a, b) = if reverse { (y, x) } else { (x, y) };
     let baseline_median_ms = a.median_ms();
     let candidate_median_ms = b.median_ms();

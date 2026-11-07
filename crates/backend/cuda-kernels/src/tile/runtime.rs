@@ -29,12 +29,14 @@ mod launch;
 mod operation;
 mod readback;
 mod staging;
+mod timing;
 mod transfer;
 
 pub use launch::{Argument, KernelLaunch};
 pub use operation::{Operation, Pending};
 pub use readback::{Pinned, Readback};
 pub use staging::Staging;
+pub use timing::{Samples, Timing};
 pub use transfer::{HeadMajor, Transfers};
 
 /// The contract's marker for a cuTile element type.

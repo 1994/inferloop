@@ -9,10 +9,9 @@ use super::{
 use crate::device::{CudaDevice, device_error};
 use crate::tuning::preparation::driver_build;
 use capture::{Captured, fingerprint};
-use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::cutile_compiler::hints::CompileOptions;
-use cutile::error::tensor_error;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Timing;
 use reference::Fixture;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -215,7 +214,7 @@ fn measure(
     cold: bool,
     candidate_first: bool,
 ) -> Result<Times> {
-    let options = BenchOptions {
+    let options = Timing {
         warmup: Duration::from_millis(WARMUP_MS),
         rep: Duration::from_millis(REP_MS),
         min_reps: MIN_REPS,
@@ -227,13 +226,10 @@ fn measure(
     } else {
         (base, candidate)
     };
-    let run = |x: &Captured| {
-        device
-            .tile()
-            .sync(x.graph.launch())
-            .map_err(|e| tensor_error(&e.to_string()))
-    };
-    let (a, b) = do_bench_paired(&device.stream, &options, |_| run(left), |_| run(right))
+    let run = |x: &Captured| device.tile().sync(x.graph.launch());
+    let (a, b) = device
+        .tile()
+        .time_paired(&options, || run(left), || run(right))
         .map_err(device_error)?;
     let times = if candidate_first {
         Times {

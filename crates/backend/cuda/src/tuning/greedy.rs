@@ -6,10 +6,9 @@ use crate::{
     device::{CudaDevice, device_error},
     resident::greedy::{Greedy, TILE_SEARCH},
 };
-use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::cutile_compiler::hints::CompileOptions;
-use cutile::error::tensor_error;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::runtime::Timing;
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use serde::{Deserialize, Serialize};
 use std::iter::once;
@@ -252,25 +251,22 @@ fn measure(
     clear_l2: bool,
     candidate_first: bool,
 ) -> Result<Times> {
-    let options = BenchOptions {
+    let options = Timing {
         warmup: Duration::from_millis(WARMUP_MS),
         rep: Duration::from_millis(REP_MS),
         min_reps: MIN_REPS,
         max_reps: MAX_REPS,
         clear_l2,
     };
-    let run = |graph: &Captured| {
-        device
-            .tile()
-            .sync(graph.graph.launch())
-            .map_err(|e| tensor_error(&e.to_string()))
-    };
+    let run = |graph: &Captured| device.tile().sync(graph.graph.launch());
     let (first, second) = if candidate_first {
         (candidate, base)
     } else {
         (base, candidate)
     };
-    let (a, b) = do_bench_paired(&device.stream, &options, |_| run(first), |_| run(second))
+    let (a, b) = device
+        .tile()
+        .time_paired(&options, || run(first), || run(second))
         .map_err(device_error)?;
     let times = if candidate_first {
         Times {
