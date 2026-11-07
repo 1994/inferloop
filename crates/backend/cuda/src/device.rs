@@ -5,7 +5,6 @@ use crate::mlp::Matrix;
 use crate::resident::buffers::{Operand, buffer};
 use crate::strategy::LinearTiling;
 use crate::tuning::memory::arena_budget;
-use cuda_core::DeviceCopy;
 use cuda_core::sys::CUdevice_attribute;
 use cuda_core::sys::CUresult;
 use cuda_core::sys::cuDeviceGetAttribute;
@@ -13,14 +12,14 @@ use cuda_core::sys::cuDriverGetVersion;
 use cuda_core::sys::cuMemGetInfo_v2;
 use cuda_core::sys::cuMemcpyDtoH_v2;
 use cuda_core::sys::cudaError_enum_CUDA_SUCCESS;
-use cutile::jit_cache::enable_default;
-use cutile::prelude::*;
+use cuda_core::{Device, DeviceCopy};
 use infer_core::{Error as InferError, ErrorCode, Result};
 use infer_cuda_kernels::contract::target::Arch;
 use infer_cuda_kernels::contract::{Buffer, Kernels, Width};
+use infer_cuda_kernels::tile::jit;
 use infer_cuda_kernels::tile::kernels;
 use infer_cuda_kernels::tile::projection::matvec::{MatvecGeometry, dense_matvec};
-use infer_cuda_kernels::tile::runtime::{Allocation, Device as Runtime, Element, Transfers};
+use infer_cuda_kernels::tile::runtime::{Allocation, DType, Device as Runtime, Element, Transfers};
 use serde::Serialize;
 use std::fmt::Display;
 use std::sync::{Arc, OnceLock};
@@ -194,7 +193,7 @@ impl CudaDevice {
     /// # Errors
     /// Returns cache initialization errors.
     pub fn enable_kernel_cache() -> Result<()> {
-        enable_default().map_err(device_error)
+        jit::enable_cache()
     }
     /// # Errors
     /// Fails when the requested CUDA device or stream is unavailable.

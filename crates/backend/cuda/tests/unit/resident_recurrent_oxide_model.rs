@@ -2,7 +2,7 @@
 use super::{LoadOptions, LoadedModel, quant_reuse_model_tests as reference};
 use crate::{
     device::CudaDevice,
-    resident::recurrent_prefill::oxide::{captures, with_cutile},
+    resident::recurrent_prefill::oxide::{captures, without_oxide},
 };
 use infer_core::{Error, ModelId, Result};
 use std::env::var;
@@ -31,7 +31,7 @@ fn rust_gdn_preserves_checkpoint_model_bits() -> Result<()> {
         },
     )?;
     let before = captures();
-    let mut control = with_cutile(|| loaded.sequence(1024))?;
+    let mut control = without_oxide(|| loaded.sequence(1024))?;
     assert_eq!(captures(), before, "reference must use cuTile");
     let mut candidate = loaded.sequence(1024)?;
     let actual_captures = captures() - before;

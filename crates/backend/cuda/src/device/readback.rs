@@ -2,8 +2,8 @@
 use super::{CudaDevice, device_error};
 use crate::constants::MIB;
 use cuda_core::{CudaContext, DType, DeviceCopy, PinnedHostBuffer};
-use cutile::prelude::*;
 use infer_core::{Error, ErrorCode, Result};
+use infer_cuda_kernels::tile::runtime::Copies;
 #[cfg(test)]
 use infer_cuda_kernels::tile::runtime::Graph;
 use infer_cuda_kernels::tile::runtime::{Allocation, Pinned, Readback};
@@ -109,8 +109,8 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
         super::asynchronous::block_on(self.run_async(device, graph, sources))
     }
 
-    fn copies(&self, sources: &[Option<ReadbackSource<T>>]) -> Result<DeviceOpVec<()>> {
-        let mut copies = DeviceOpVec::with_capacity(sources.len());
+    fn copies(&self, sources: &[Option<ReadbackSource<T>>]) -> Result<Copies> {
+        let mut copies = Copies::with_capacity(sources.len());
         let mut offset = 0;
         for (index, source) in sources.iter().enumerate() {
             if let Some(source) = source {

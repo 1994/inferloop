@@ -1,6 +1,8 @@
 use super::*;
 use crate::device::device_error;
 use crate::resident::buffers::cutile;
+use cutile::prelude::*;
+use infer_core::Error;
 use infer_cuda_kernels::tile::runtime::Allocation;
 use infer_cuda_kernels::tile::runtime::Graph;
 use std::hint::black_box;

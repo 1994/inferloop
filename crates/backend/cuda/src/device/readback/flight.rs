@@ -2,16 +2,12 @@
 use super::{ReadbackSource, Readbacks, Rows, device_error};
 use crate::device::CudaDevice;
 use cuda_core::{DType, DeviceCopy};
-use cutile::cuda_async::device_future::DeviceFuture;
-use cutile::cuda_async::device_operation::BoxedDeviceOp;
-use cutile::prelude::*;
 use infer_core::{Error, ErrorCode, Result};
-use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
+use infer_cuda_kernels::tile::runtime::{Allocation, Flight as Completion, Graph};
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
-
-type Completion = DeviceFuture<Vec<()>, BoxedDeviceOp<Vec<()>>>;
 
 pub(super) struct Flight<T: DType + DeviceCopy> {
     completion: Completion,
@@ -33,7 +29,7 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
         let sources = [Some(ReadbackSource::whole(source))];
         self.prepare(device, &sources)?;
         let copies = self.copies(&sources)?;
-        self.start(device, copies.boxed(), &sources)?;
+        self.start(device.tile().read_back(copies), &sources)?;
         let mut rows = poll_fn(|context| match self.poll_with(context) {
             Ok(Some(rows)) => Poll::Ready(Ok(rows)),
             Ok(None) => Poll::Pending,
@@ -54,11 +50,7 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
         self.validate_submit(device, graph)?;
         self.prepare(device, sources)?;
         let copies = self.copies(sources)?;
-        self.start(
-            device,
-            graph.launch().then(move |()| copies).boxed(),
-            sources,
-        )
+        self.start(device.tile().replay_and_read_back(graph, copies), sources)
     }
 
     fn validate_submit(&self, device: &CudaDevice, graph: &Graph) -> Result<()> {
@@ -72,13 +64,10 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
 
     fn start(
         &mut self,
-        device: &CudaDevice,
-        op: BoxedDeviceOp<Vec<()>>,
+        completion: Completion,
         sources: &[Option<ReadbackSource<T>>],
     ) -> Result<()> {
         self.poisoned = true;
-        let completion =
-            DeviceFuture::scheduled(op, ExecutionContext::new(Arc::clone(&device.stream)));
         self.flight = Some(Flight {
             completion,
             ready: false,
@@ -108,7 +97,6 @@ impl<T: DType + DeviceCopy> Readbacks<T> {
                 Poll::Pending => return Ok(false),
                 Poll::Ready(result) => {
                     if let Err(error) = result {
-                        let error = device_error(error);
                         flight.error = Some(error.clone());
                         return Err(error);
                     }
@@ -170,16 +158,11 @@ impl Readbacks<f32> {
         tokens.prepare(device, &token_sources)?;
         let copies = self.copies(sources)?;
         let token_copies = tokens.copies(&token_sources)?;
-        let selector = selector.launch();
         tokens.poisoned = true;
         self.start(
-            device,
-            graph
-                .launch()
-                .then(move |()| selector)
-                .then(move |()| copies)
-                .then(move |_| token_copies)
-                .boxed(),
+            device
+                .tile()
+                .replay_pair_and_read_back((graph, selector), copies, token_copies),
             sources,
         )?;
         self.flight

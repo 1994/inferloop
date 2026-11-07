@@ -215,7 +215,7 @@ pub fn captures() -> usize {
     CAPTURES.get()
 }
 #[cfg(test)]
-pub fn with_cutile<T>(f: impl FnOnce() -> T) -> T {
+pub fn without_oxide<T>(f: impl FnOnce() -> T) -> T {
     struct Reset(bool);
     impl Drop for Reset {
         fn drop(&mut self) {

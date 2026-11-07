@@ -16,19 +16,16 @@ use cuda_core::sys::CUevent_record_flags_enum_CU_EVENT_RECORD_EXTERNAL;
 use cuda_core::sys::cuEventRecordWithFlags;
 use cuda_core::sys::cudaError_enum_CUDA_SUCCESS;
 use cuda_core::{CudaContext, CudaEvent};
-use cutile::cuda_async::device_context::with_default_device_policy;
-use cutile::cuda_async::device_future::DeviceFuture;
-use cutile::prelude::*;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::contract::Recording;
+use infer_cuda_kernels::contract::{Foreign, Owner, Recording};
 use infer_ir::{TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::env::var;
 use std::env::var_os;
+use std::ffi::c_void;
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
-use std::result::Result as StdResult;
 use std::sync::Arc;
 
 /// Environment variable enabling in-graph prefill profiling; the value is the JSONL output path.
@@ -96,11 +93,10 @@ impl GraphProfile {
                 .new_event(Some(CUevent_flags_enum_CU_EVENT_DEFAULT))
                 .map_err(device_error)?,
         );
-        scope
-            .cutile_scope()
-            .ok_or_else(|| device_error("profile events need a cuTile capture"))?
-            .record(RecordEvent(Arc::clone(&event)))
-            .map_err(device_error)?;
+        scope.foreign(
+            RecordEvent(Arc::clone(&event)),
+            vec![Arc::clone(&event) as Owner],
+        )?;
         self.events.push(event);
         Ok(())
     }
@@ -255,49 +251,32 @@ const fn category(op: &TensorOp) -> &'static str {
     }
 }
 
-/// Graph node that records an external timing event into the captured stream.
+/// Records an external timing event on the stream it is handed, as one node of a capture.
 struct RecordEvent(Arc<CudaEvent>);
 
-#[expect(
-    unsafe_code,
-    reason = "Audited event record: the event is retained by the submission, the \
-              execution-context stream belongs to the context the event was created in, \
-              and CU_EVENT_RECORD_EXTERNAL keeps replayed records queryable from the host"
-)]
-impl DeviceOp for RecordEvent {
-    type Output = ();
-
-    unsafe fn execute(self, context: &ExecutionContext) -> StdResult<(), DeviceError> {
-        context.retain(Arc::clone(&self.0))?;
-        // SAFETY: both handles are live RAII wrappers on the same device; the external
-        // flag is the documented way to keep capture-time event records observable.
+impl Foreign for RecordEvent {
+    #[expect(
+        unsafe_code,
+        reason = "Audited event record: the event belongs to the stream's context and the graph \
+                  keeps it alive; CU_EVENT_RECORD_EXTERNAL keeps replayed records queryable"
+    )]
+    fn enqueue(self, stream: *mut c_void) -> Result<()> {
+        // SAFETY: the event is a live RAII wrapper on the device that owns `stream`, and the
+        // recording keeps it alive with the graph; the external flag is the documented way to
+        // keep capture-time event records observable from the host.
         let status = unsafe {
             cuEventRecordWithFlags(
                 self.0.cu_event(),
-                context.get_cuda_stream().cu_stream(),
+                stream.cast(),
                 CUevent_record_flags_enum_CU_EVENT_RECORD_EXTERNAL,
             )
         };
         if status != cudaError_enum_CUDA_SUCCESS {
-            return Err(DeviceError::Launch(format!(
+            return Err(device_error(format!(
                 "profile event record CUDA status {status}"
             )));
         }
         Ok(())
-    }
-}
-
-impl GraphNode for RecordEvent {}
-
-impl IntoFuture for RecordEvent {
-    type Output = StdResult<(), DeviceError>;
-    type IntoFuture = DeviceFuture<(), Self>;
-
-    fn into_future(self) -> Self::IntoFuture {
-        match with_default_device_policy(|policy| policy.next_stream()) {
-            Ok(Ok(stream)) => Self::IntoFuture::scheduled(self, ExecutionContext::new(stream)),
-            Ok(Err(error)) | Err(error) => Self::IntoFuture::failed(error),
-        }
     }
 }
 
