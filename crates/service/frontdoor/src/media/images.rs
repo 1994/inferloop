@@ -14,13 +14,6 @@ pub(super) enum Downloads<'a> {
 }
 
 impl<'a> Downloads<'a> {
-    pub fn as_slice(&self) -> &[Option<Vec<u8>>] {
-        match self {
-            Self::Borrowed(bytes) => bytes,
-            Self::Owned(bytes) => bytes,
-        }
-    }
-
     pub fn take(&mut self, index: usize) -> Option<Cow<'a, [u8]>> {
         match self {
             Self::Borrowed(bytes) => bytes.get(index)?.as_deref().map(Cow::Borrowed),
