@@ -128,6 +128,11 @@ runtime                  submit / poll，不重建拓扑
   - MMA / SIMT prefill attention 改为在合约 `DecodeBuffers` 上记录 `Foreign`（#168），capture 的 metadata、table、external 改为 `Buffer`（#169）；
   - metadata、block table 与 external 行的 owner 改为 `Allocation`（#170、#171）；FP8 KV 改为带布局的 `KvState`（#172）。
   - 剩余：`States`（递推状态与未量化 KV）、arena slot 视图与 hidden / logits readout、vision / dflash2 / tuning 中直接的 cuTile launch 与 fixture、sampling 输出。
+- **进展（2026-11-07）：** host 生产代码不再出现 cuTile 类型，`Tensor<` 只剩一处测试桥接，`cuda_core` 为 0。
+  - kernel crate 根导出 `runtime`、`jit`、`kernels`、`identity`、`ops`，host 只用这些名字（#194–#198）；
+  - `aot` 来源在同样的名字下提供驱动 runtime（内存、拷贝、捕获、回放、PTX、pinned、事件、计时），异步操作返回前即完成；
+  - 算子族、tuning 身份和 `ops` 在 AOT 下返回 `Unsupported`，等对应制品落地；
+  - `--features cuda-aot` 构建 host lib，依赖图里没有 cutile 和 cuda-core，`gate.sh cuda-aot` 以 `-D warnings` 检查它。host 测试仍直接驱动 cuTile kernel，只在 `cuda` 下编译。
 
 ### M7 第二模型家族验收
 
@@ -308,7 +313,7 @@ L20 不在手边，所以用另一种办法检验架构：按操作手册的步�
 
 | 步骤 | 今天 | 问题 |
 |---|---|---|
-| 无工具链构建 | `cuda` feature 强制带上 cutile、cuda-core、`infer-cuda-kernels/tile` | host 没有 `cuda-aot`（M6） |
+| 无工具链构建 | `cuda-aot` 构建 host lib，不带 cutile、cuda-core（2026-11-07） | host 测试只在 `cuda` 下编译 |
 | kernel | `AotProjection` 已在 sm_120 上通过捕获与回放；只有一个 entry | 其他算子族都要写（10.1 清单） |
 | 图录制 | host 用 cuTile `Scope`（54 个文件涉及 capture 或 Scope） | `Recording` 已有两种形式，但捕获的发起方还在 host |
 | 执行 | `run_op`、`fence` 基于 `cutile::cuda_async`（19 个文件） | **方案原来没有点名** |

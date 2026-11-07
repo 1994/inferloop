@@ -4,8 +4,8 @@ use super::{
     reference::{Fixture, maximum_error},
 };
 use infer_cuda_kernels::contract::{DeltaBuffers, DeltaKernel, RecurrentShape};
+use infer_cuda_kernels::identity;
 use infer_cuda_kernels::runtime::{Allocation, Graph};
-use infer_cuda_kernels::tile::identity;
 use std::env::var_os;
 
 const FINGERPRINT_SPLITS: [usize; 3] = [1, 2, 4];

@@ -11,8 +11,9 @@ use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use crate::tuning::resident_gemm::{GemmConfig, WeightKey};
 use infer_core::Result;
 use infer_cuda_kernels::contract::Buffer;
+use infer_cuda_kernels::contract::ProbeGeometry;
 use infer_cuda_kernels::contract::Recording;
-use infer_cuda_kernels::tile::projection::fp4_probe::{self, ProbeGeometry};
+use infer_cuda_kernels::ops::initialize_fp4_probe;
 
 impl Workspace {
     /// Screen and warm the vendor FP4 down projection that reads arena slot `input`, an F32
@@ -71,7 +72,7 @@ impl Workspace {
             return Ok(());
         };
         if candidate.needs_probe() {
-            fp4_probe::initialize(
+            initialize_fp4_probe(
                 &device.runtime(),
                 scratch.floats(),
                 (q.buffer(), qs.buffer()),

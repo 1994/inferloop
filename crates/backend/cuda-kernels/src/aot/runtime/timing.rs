@@ -46,7 +46,11 @@ impl Samples {
 
     /// The median rep, in milliseconds.
     #[must_use]
-    pub const fn median_ms(&self) -> f32 {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "Not const in the cuTile build, so host callers compile under either source"
+    )]
+    pub fn median_ms(&self) -> f32 {
         self.median
     }
 }

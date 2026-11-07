@@ -27,6 +27,7 @@ pub mod jit;
 pub mod mlp;
 pub mod moe;
 pub mod norm;
+pub mod ops;
 pub mod projection;
 pub mod recurrent;
 pub mod rope;

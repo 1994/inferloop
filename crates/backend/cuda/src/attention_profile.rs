@@ -3,7 +3,7 @@
 //! The profile is resolved once when the model loads and is immutable for every sequence the
 //! loaded model creates. It never changes weights, KV storage or the draft proposal path.
 use serde::Serialize;
-#[cfg(all(target_os = "linux", feature = "cuda", test))]
+#[cfg(test)]
 use std::{env::var, sync::OnceLock};
 
 /// Initial context kept on F32 before the target BF16 bulk path, by default none.
@@ -13,14 +13,14 @@ use std::{env::var, sync::OnceLock};
 pub const PRECISE_PREFIX_POSITIONS: usize = 0;
 
 /// Qualified production prefix; experiments are confined to internal CUDA tests.
-#[cfg(all(target_os = "linux", feature = "cuda", not(test)))]
+#[cfg(not(test))]
 #[must_use]
 pub const fn precise_prefix_positions() -> usize {
     PRECISE_PREFIX_POSITIONS
 }
 
 /// Internal diagnostics resolve their prefix once per test process.
-#[cfg(all(target_os = "linux", feature = "cuda", test))]
+#[cfg(test)]
 #[must_use]
 pub fn precise_prefix_positions() -> usize {
     static POSITIONS: OnceLock<usize> = OnceLock::new();
@@ -35,7 +35,7 @@ pub fn precise_prefix_positions() -> usize {
 }
 
 /// Internal diagnostics keep the default for unset or unparsable values.
-#[cfg(all(target_os = "linux", feature = "cuda", test))]
+#[cfg(test)]
 fn precise_prefix_from(value: Option<&str>) -> usize {
     value
         .and_then(|value| value.trim().parse().ok())

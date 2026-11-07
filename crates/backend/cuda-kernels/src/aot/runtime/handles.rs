@@ -60,33 +60,59 @@ pub struct PinnedHostBuffer<T: DeviceCopy> {
 
 impl<T: DeviceCopy> PinnedHostBuffer<T> {
     #[must_use]
-    pub const fn len(&self) -> usize {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "Not const in the cuTile build, so host callers compile under either source"
+    )]
+    pub fn len(&self) -> usize {
         self.len
     }
 
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "Not const in the cuTile build, so host callers compile under either source"
+    )]
+    pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    /// Bytes the values occupy.
     #[must_use]
-    pub const fn as_ptr(&self) -> *const T {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "Not const in the cuTile build, so host callers compile under either source"
+    )]
+    pub fn num_bytes(&self) -> usize {
+        self.len * size_of::<T>()
+    }
+
+    #[must_use]
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "Not const in the cuTile build, so host callers compile under either source"
+    )]
+    pub fn as_ptr(&self) -> *const T {
         self.memory.pointer().cast_const().cast()
     }
 
     #[must_use]
-    pub const fn as_mut_ptr(&mut self) -> *mut T {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "Not const in the cuTile build, so host callers compile under either source"
+    )]
+    pub fn as_mut_ptr(&mut self) -> *mut T {
         self.memory.pointer().cast()
     }
 
     #[must_use]
-    pub const fn as_slice(&self) -> &[T] {
+    pub fn as_slice(&self) -> &[T] {
         // SAFETY: the memory holds `len` values, zeroed when made and written only as `T`, and
         // `DType` makes every bit pattern a valid `T`; the borrow of `self` bounds the view.
         unsafe { slice::from_raw_parts(self.as_ptr(), self.len) }
     }
 
-    pub const fn as_mut_slice(&mut self) -> &mut [T] {
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
         // SAFETY: as for `as_slice`, and the exclusive borrow of `self` makes the view unique.
         unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
     }

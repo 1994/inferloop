@@ -11,7 +11,8 @@ use super::projection::{
 use super::recurrent::recurrent_prefill;
 use super::sampling::greedy;
 use super::state::aux;
-use crate::contract::{Fp4ScalePlan, GreedyPlan};
+pub use crate::contract::{AttentionShape, DenseSearch, Fp4Search, SwigluSearch};
+use crate::contract::{Fp4ScalePlan, GEMM_RANK, GreedyPlan, RECURRENT_RANK};
 use crate::tile::runtime::Device;
 use cuda_core::{DType, Stream, f4e2m1fnx2, f8e4m3fn};
 use cutile::cutile_compiler::hints::CompileOptions;
@@ -22,10 +23,6 @@ use std::sync::Arc;
 
 /// Elements of a recurrent candidate's metadata.
 const METADATA_LEN: usize = 4;
-/// Key axes a recurrent identity covers: key heads, value heads, channels and lanes.
-const RECURRENT_RANK: usize = 4;
-/// Axes of a projection shape: rows, outputs and columns.
-const GEMM_RANK: usize = 3;
 
 /// The prompt recurrence and its transpose at each block split.
 /// # Errors
@@ -172,16 +169,6 @@ pub fn fp8_candidates(
     Ok(ids)
 }
 
-/// Tiles an FP4 product identity covers.
-#[derive(Clone, Copy, Debug)]
-pub struct Fp4Search<'a> {
-    pub group: usize,
-    pub codes_tile: [usize; 2],
-    pub scales_tile: [usize; 2],
-    pub tile_m: &'a [usize],
-    pub tile_n: &'a [usize],
-}
-
 /// The FP4 quantizer and every candidate tile and main loop of its product.
 /// # Errors
 /// Reports a failed lowering.
@@ -288,18 +275,6 @@ pub fn dense_prompt_candidates(
     Ok(identities)
 }
 
-/// Tiles a pooled dense identity covers.
-#[derive(Clone, Copy, Debug)]
-pub struct DenseSearch<'a> {
-    pub tile_rows: usize,
-    pub tile_columns: usize,
-    pub shared_rows: usize,
-    pub native_tile: [usize; 2],
-    pub wide_rows: usize,
-    /// Wider native tiles; the qualified family lists none, so its identity stays frozen.
-    pub wide: &'a [usize],
-}
-
 /// The pooled dense candidates of a projection.
 /// # Errors
 /// Reports a failed lowering.
@@ -366,15 +341,6 @@ pub fn dense_candidates(
         }
     }
     Ok(identities)
-}
-
-/// Tiles a fused `SwiGLU` identity covers.
-#[derive(Clone, Copy, Debug)]
-pub struct SwigluSearch<'a> {
-    pub group: usize,
-    pub codes_tile: [usize; 2],
-    pub scales_tile: [usize; 2],
-    pub tiles: &'a [[usize; 2]],
 }
 
 /// The row-grouped quantizer and every candidate tile of the fused `SwiGLU` product.
@@ -564,20 +530,6 @@ pub fn exact_recurrence(
         return Err(backend_error("incomplete exact recurrence identity"));
     }
     Ok(identities)
-}
-
-/// Geometry and arithmetic an attention identity covers.
-#[derive(Clone, Copy, Debug)]
-pub struct AttentionShape {
-    pub heads: usize,
-    pub kv_heads: usize,
-    pub dim: usize,
-    pub lanes: usize,
-    pub capacity: usize,
-    pub block: usize,
-    pub window: usize,
-    pub scales: [f32; 2],
-    pub metadata_fields: usize,
 }
 
 /// The prompt append and compute of KV element `E`; a query tile selects the tiled compute.

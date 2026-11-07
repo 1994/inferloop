@@ -35,7 +35,7 @@ CUDA_HOST_TOKENS = {
     # Every remaining mention of cuTile; M6 ends when the host builds without it.
     "cutile": 5,
     # Host reach into the cuTile implementation rather than the shared runtime facade.
-    "cuda_kernels::tile": 41,
+    "cuda_kernels::tile": 24,
 }
 # Artifact catalogs name the architectures they ship; everything else asks `Arch` what it can do.
 ARCHITECTURE_CATALOGS = ("resident/attention_mma/",)

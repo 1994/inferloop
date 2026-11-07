@@ -20,9 +20,9 @@ pub mod aot;
 pub mod tile;
 
 #[cfg(all(feature = "aot", not(all(feature = "tile", target_os = "linux"))))]
-pub use aot::{jit, kernels, runtime};
+pub use aot::{identity, jit, kernels, ops, runtime};
 /// What the host programs against, whichever implementation provides it: device memory, recording,
 /// execution and the kernel families. The cuTile build provides it today; the AOT build will
 /// provide the same names, so the host never names an implementation.
 #[cfg(all(feature = "tile", target_os = "linux"))]
-pub use tile::{jit, kernels, runtime};
+pub use tile::{identity, jit, kernels, ops, runtime};

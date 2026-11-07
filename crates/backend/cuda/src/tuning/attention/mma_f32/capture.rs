@@ -14,9 +14,9 @@ use infer_cuda_kernels::contract::{
     AppendBuffers, DecodeBuffers, DecodePlan, Kernels, PrefillAppendPlan, PrefillDecodePlan,
     Recording,
 };
+use infer_cuda_kernels::identity::{AttentionShape, attention_candidates};
 use infer_cuda_kernels::jit::{self as compiler, JitOptions};
 use infer_cuda_kernels::runtime::{Allocation, Graph};
-use infer_cuda_kernels::tile::identity::{AttentionShape, attention_candidates};
 use std::env::var_os;
 struct Operands {
     query: Allocation<f32>,

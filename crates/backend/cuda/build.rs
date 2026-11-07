@@ -7,9 +7,11 @@ use std::env::{self, VarError};
 fn main() -> Result<(), VarError> {
     println!("cargo:rerun-if-changed=../../../tools/build/backend_cfg.rs");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_CUDA");
-    backend_cfg::emit(
-        &env::var("CARGO_CFG_TARGET_OS")?,
-        env::var_os("CARGO_FEATURE_CUDA").is_some(),
-    );
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_CUDA_AOT");
+    // Either kernel source makes the backend available; the host code is the same for both.
+    let cuda = ["CARGO_FEATURE_CUDA", "CARGO_FEATURE_CUDA_AOT"]
+        .iter()
+        .any(|feature| env::var_os(feature).is_some());
+    backend_cfg::emit(&env::var("CARGO_CFG_TARGET_OS")?, cuda);
     Ok(())
 }
