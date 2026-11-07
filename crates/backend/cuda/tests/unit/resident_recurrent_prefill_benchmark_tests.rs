@@ -9,8 +9,8 @@ use cutile::{
     bench::{BenchOptions, do_bench_paired},
     prelude::*,
 };
-use infer_cuda_kernels::tile::kernels as contract_kernels;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::kernels as contract_kernels;
+use infer_cuda_kernels::runtime::Graph;
 use std::error::Error;
 use std::slice::from_ref;
 use std::time::Duration;

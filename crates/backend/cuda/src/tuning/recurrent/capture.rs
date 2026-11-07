@@ -4,8 +4,8 @@ use super::{
     reference::{Fixture, maximum_error},
 };
 use infer_cuda_kernels::contract::{DeltaBuffers, DeltaKernel, RecurrentShape};
+use infer_cuda_kernels::runtime::{Allocation, Graph};
 use infer_cuda_kernels::tile::identity;
-use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use std::env::var_os;
 
 const FINGERPRINT_SPLITS: [usize; 3] = [1, 2, 4];
@@ -84,7 +84,7 @@ fn kernel_identities(device: &CudaDevice, shape: [usize; SHAPE_RANK]) -> Result<
 }
 
 pub(super) fn fingerprint(device: &CudaDevice, shape: [usize; SHAPE_RANK]) -> Result<String> {
-    use infer_cuda_kernels::tile::jit::{self as compiler, JitOptions};
+    use infer_cuda_kernels::jit::{self as compiler, JitOptions};
     use std::{
         collections::BTreeMap,
         sync::{Mutex, OnceLock},

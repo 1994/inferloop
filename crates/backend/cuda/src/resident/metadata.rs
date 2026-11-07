@@ -2,7 +2,7 @@
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::CudaDevice;
 use infer_core::Result;
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 
 #[cfg(test)]
 #[path = "../../tests/unit/resident_metadata_check.rs"]

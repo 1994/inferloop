@@ -16,7 +16,7 @@ use crate::tuning::{
     resident_gemm::{self, swiglu},
 };
 use infer_core::{Error, Result, TensorId};
-use infer_cuda_kernels::tile::runtime::{f4e2m1fnx2, f8e4m3fn};
+use infer_cuda_kernels::runtime::{f4e2m1fnx2, f8e4m3fn};
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 
 struct SwigluProjection {

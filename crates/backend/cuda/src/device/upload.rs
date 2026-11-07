@@ -3,8 +3,8 @@ use super::{CudaDevice, device_error};
 use crate::constants::MAX_VERIFICATION_WIDTH;
 use crate::resident::buffers::{Operand, buffer};
 use infer_core::Result;
-use infer_cuda_kernels::tile::runtime::{DType, DeviceCopy};
-use infer_cuda_kernels::tile::runtime::{Element, Staging};
+use infer_cuda_kernels::runtime::{DType, DeviceCopy};
+use infer_cuda_kernels::runtime::{Element, Staging};
 
 pub struct PinnedUpload<T: DeviceCopy> {
     staging: Staging<T>,

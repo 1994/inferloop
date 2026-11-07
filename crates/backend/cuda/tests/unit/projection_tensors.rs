@@ -3,7 +3,7 @@ use super::Matrix;
 use crate::device::device_error;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 use std::sync::Arc;
 
 impl<T: DType> Matrix<T> {

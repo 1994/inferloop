@@ -68,6 +68,7 @@ class HostBoundaryTests(unittest.TestCase):
         "cuda_core": 0,
         "CudaGraph": 0,
         "cutile": 0,
+        "cuda_kernels::tile": 0,
     }
 
     def tree(self, source):

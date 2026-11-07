@@ -22,8 +22,8 @@ use crate::{
     strategy::LinearTiling,
 };
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::runtime::Timing;
-use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
+use infer_cuda_kernels::runtime::Timing;
+use infer_cuda_kernels::runtime::{Allocation, Graph};
 use serde::{Deserialize, Serialize};
 use std::env::var_os;
 use std::fs::OpenOptions;

@@ -29,7 +29,7 @@ use crate::{
     resident::{ProgramGeometry, ProgramWeights},
 };
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::runtime::bf16;
+use infer_cuda_kernels::runtime::bf16;
 use infer_ir::TensorSpec;
 use infer_ir::{DataflowGraph, OutputReadout, StateKind, TensorOp, TensorStorage};
 use std::array::from_fn;

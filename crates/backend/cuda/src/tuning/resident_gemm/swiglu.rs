@@ -17,8 +17,8 @@ pub use evidence::Entry;
 use evidence::candidates;
 pub use evidence::{baseline, compatible};
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::jit::JitOptions;
-use infer_cuda_kernels::tile::runtime::Timing;
+use infer_cuda_kernels::jit::JitOptions;
+use infer_cuda_kernels::runtime::Timing;
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::BTreeMap;

@@ -4,8 +4,8 @@ use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::{CudaDevice, device_error};
 use infer_core::Result;
 use infer_cuda_kernels::contract::{DecodeBuffers, KvBuffers, Owner, Recording};
-use infer_cuda_kernels::tile::runtime::Function;
-use infer_cuda_kernels::tile::runtime::{Argument, KernelLaunch};
+use infer_cuda_kernels::runtime::Function;
+use infer_cuda_kernels::runtime::{Argument, KernelLaunch};
 use infer_ir::{DataflowGraph, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;

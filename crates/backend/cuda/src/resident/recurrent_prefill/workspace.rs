@@ -14,7 +14,7 @@ use crate::{
 };
 use infer_core::{Result, TensorId};
 use infer_cuda_kernels::contract::{DeltaBuffers, DeltaKernel, Recording, RecurrentShape};
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::collections::BTreeMap;
 

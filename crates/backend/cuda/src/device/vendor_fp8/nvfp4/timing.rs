@@ -8,8 +8,8 @@ use crate::tuning::nvfp4_lt::Trial;
 use crate::tuning::resident_gemm::{MeasurementOrder, PairedTimes};
 use crate::tuning::{MAX_REPS, MIN_CONFIRM_SPEEDUP, MIN_REPS, REP_MS, WARMUP_MS, median};
 use infer_core::Result;
-use infer_cuda_kernels::tile::runtime::Graph;
-use infer_cuda_kernels::tile::runtime::Timing;
+use infer_cuda_kernels::runtime::Graph;
+use infer_cuda_kernels::runtime::Timing;
 use std::time::Duration;
 /// Stop gross losers before the normal sample count.
 const CANARY_MAX_RATIO: f32 = 1.10;

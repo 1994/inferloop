@@ -13,8 +13,8 @@
 use crate::device::{CudaDevice, device_error};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::Recording;
-use infer_cuda_kernels::tile::runtime::{CudaContext, CudaEvent};
-use infer_cuda_kernels::tile::runtime::{record_event, timing_event};
+use infer_cuda_kernels::runtime::{CudaContext, CudaEvent};
+use infer_cuda_kernels::runtime::{record_event, timing_event};
 use infer_ir::{TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::env::var;

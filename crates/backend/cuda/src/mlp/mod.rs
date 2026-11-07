@@ -7,8 +7,8 @@ use crate::{
 };
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{DownPlan, Kernels, ProductBuffers, Recording, RowNormPlan};
-use infer_cuda_kernels::tile::jit::validate_dependent_launch;
-use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
+use infer_cuda_kernels::jit::validate_dependent_launch;
+use infer_cuda_kernels::runtime::{Allocation, Graph};
 pub use projection::{Matrix, ProjectionWeight};
 use std::fmt::Display;
 

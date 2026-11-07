@@ -9,8 +9,8 @@ use infer_core::{Error, OpId, Result};
 use infer_cuda_kernels::contract::{
     Attention, Buffer, Partials, PooledAppendBuffers, PooledDecodeBuffers, PooledPlan, Recording,
 };
-use infer_cuda_kernels::tile::runtime::Allocation;
-use infer_cuda_kernels::tile::runtime::f8e4m3fn;
+use infer_cuda_kernels::runtime::Allocation;
+use infer_cuda_kernels::runtime::f8e4m3fn;
 use infer_ir::{DataflowGraph, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;

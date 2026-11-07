@@ -26,7 +26,7 @@ use crate::tuning::pool_dense::{self, Binding as PoolDenseBinding, Choice as Poo
 use crate::tuning::projection_budget::ProjectionShape;
 use crate::tuning::resident_gemm::GemmConfig;
 use crate::tuning::resident_gemm::swiglu::{self, Binding as SwigluBinding};
-use infer_cuda_kernels::tile::runtime::bf16;
+use infer_cuda_kernels::runtime::bf16;
 
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use crate::tuning::resident_gemm::WeightKey as ResidentGemmWeightKey;
@@ -36,8 +36,8 @@ use crate::{
     resident::ProgramWeights,
 };
 use infer_core::Result;
-use infer_cuda_kernels::tile::runtime::Allocation;
-use infer_cuda_kernels::tile::runtime::{f4e2m1fnx2, f8e4m3fn};
+use infer_cuda_kernels::runtime::Allocation;
+use infer_cuda_kernels::runtime::{f4e2m1fnx2, f8e4m3fn};
 use infer_ir::DataflowGraph;
 use std::collections::BTreeMap;
 #[cfg(test)]

@@ -5,9 +5,9 @@ use crate::{
     strategy::{LinearStrategy, LinearTiling},
 };
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::runtime::Allocation;
-use infer_cuda_kernels::tile::runtime::Timing;
-use infer_cuda_kernels::tile::runtime::bf16;
+use infer_cuda_kernels::runtime::Allocation;
+use infer_cuda_kernels::runtime::Timing;
+use infer_cuda_kernels::runtime::bf16;
 use serde::Serialize;
 use std::time::Duration;
 

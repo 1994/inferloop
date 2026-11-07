@@ -3,7 +3,7 @@
 use super::{CudaDevice, device_error};
 use cutile::prelude::*;
 use infer_core::Result;
-use infer_cuda_kernels::tile::runtime::{Allocation, HeadMajor};
+use infer_cuda_kernels::runtime::{Allocation, HeadMajor};
 use std::sync::Arc;
 
 /// Large enough that the copy is still running when the host drops its source.

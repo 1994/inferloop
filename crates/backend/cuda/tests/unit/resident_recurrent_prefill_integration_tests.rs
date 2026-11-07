@@ -7,7 +7,7 @@ use crate::{
 };
 use cutile::half::bf16;
 use infer_core::{OpId, Result, TensorId};
-use infer_cuda_kernels::tile::kernels as tile_kernels;
+use infer_cuda_kernels::kernels as tile_kernels;
 use infer_ir::{DType, DataflowGraph, StateKind, TensorNode, TensorOp, TensorSpec, TensorStorage};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

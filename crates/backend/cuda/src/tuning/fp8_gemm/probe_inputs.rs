@@ -4,7 +4,7 @@ use crate::constants::F32_BYTES;
 use crate::constants::MIB;
 use crate::device::{CudaDevice, device_error};
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::runtime::{Allocation, Device as Runtime};
+use infer_cuda_kernels::runtime::{Allocation, Device as Runtime};
 use std::{cell::RefCell, collections::BTreeMap, marker::PhantomData, rc::Rc};
 
 /// Bound temporary sharing independently of the number of model weights.

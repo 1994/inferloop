@@ -2,7 +2,7 @@
 use super::{ActivationArena, buffers::buffer, capture::error, program::ProgramWeights};
 use crate::constants::METADATA_FIELDS;
 use infer_cuda_kernels::contract::{Recording, RopeBuffers, RopeMode, RopePlan};
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 use infer_ir::{TensorNode, TensorOp};
 
 pub(super) fn record(

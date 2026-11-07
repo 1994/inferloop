@@ -5,8 +5,8 @@
 //! bound encoder. Vision tensors are BF16 in this family, so no quantized path is involved.
 use crate::device::CudaDevice;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::runtime::Allocation;
-use infer_cuda_kernels::tile::runtime::bf16;
+use infer_cuda_kernels::runtime::Allocation;
+use infer_cuda_kernels::runtime::bf16;
 use infer_models::vision::head_dim;
 use infer_models::vision::merged_width;
 use infer_models::vision::row_tile;

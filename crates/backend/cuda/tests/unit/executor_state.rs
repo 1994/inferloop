@@ -1,6 +1,6 @@
 use super::private_funding;
 use infer_core::ErrorCode;
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 
 #[test]
 fn private_request_cannot_be_admitted_without_its_shared_workspace() {

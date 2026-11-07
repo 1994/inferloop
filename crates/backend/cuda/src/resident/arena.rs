@@ -4,8 +4,8 @@ use crate::device::CudaDevice;
 use crate::device::vendor_fp8::nvfp4::SCALE_ROWS;
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::{Buffer, Fp8};
-use infer_cuda_kernels::tile::runtime::Allocation;
-use infer_cuda_kernels::tile::runtime::f8e4m3fn;
+use infer_cuda_kernels::runtime::Allocation;
+use infer_cuda_kernels::runtime::f8e4m3fn;
 use infer_ir::DataflowGraph;
 use std::collections::BTreeMap;
 

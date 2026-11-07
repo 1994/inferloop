@@ -8,8 +8,8 @@ use crate::resident::greedy::Greedy;
 use crate::resident::token_readout::TokenReadout;
 use crate::tuning::greedy::select;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::runtime::Allocation;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::runtime::Allocation;
+use infer_cuda_kernels::runtime::Graph;
 use infer_models::mrope::ROTARY_AXES;
 #[cfg(test)]
 use std::env::var;

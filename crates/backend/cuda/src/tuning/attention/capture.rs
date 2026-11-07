@@ -17,9 +17,9 @@ use infer_cuda_kernels::contract::{
     AppendBuffers, DecodeBuffers, DecodePlan, Kernels, PrefillAppendPlan, PrefillDecodePlan,
     Recording,
 };
+use infer_cuda_kernels::runtime::f8e4m3fn;
+use infer_cuda_kernels::runtime::{Allocation, Graph};
 use infer_cuda_kernels::tile::identity::{AttentionShape, attention_candidates};
-use infer_cuda_kernels::tile::runtime::f8e4m3fn;
-use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use std::env::var_os;
 struct Operands {
     query: Allocation<f32>,
@@ -327,7 +327,7 @@ impl Captured {
     }
 }
 pub(super) fn fingerprint(device: &CudaDevice, shape: Shape) -> Result<String> {
-    use infer_cuda_kernels::tile::jit::{self as compiler, JitOptions};
+    use infer_cuda_kernels::jit::{self as compiler, JitOptions};
     use std::{
         collections::BTreeMap,
         sync::{Mutex, OnceLock},
@@ -377,7 +377,7 @@ pub(super) fn fingerprint(device: &CudaDevice, shape: Shape) -> Result<String> {
 }
 
 pub(super) fn native_fingerprint(device: &CudaDevice, shape: Shape) -> Result<String> {
-    use infer_cuda_kernels::tile::jit::{self as compiler, JitOptions};
+    use infer_cuda_kernels::jit::{self as compiler, JitOptions};
     use sha2::{Digest, Sha256};
     use std::{
         collections::BTreeMap,

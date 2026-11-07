@@ -7,7 +7,7 @@ use cutile::{
     bench::{BenchOptions, do_bench_paired},
     prelude::*,
 };
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::runtime::Graph;
 use std::error::Error;
 use std::time::Duration;
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;

@@ -10,7 +10,7 @@ use crate::constants::PREFILL_SPLIT_K;
 use crate::device::CudaDevice;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::Buffer;
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 

@@ -9,7 +9,7 @@ use infer_backend_cuda::strategy::default_tiling;
 use infer_backend_cuda::tuning::projection_key;
 use infer_backend_cuda::tuning::resident_gemm::ResidentTuningSession;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 use infer_ir::TensorOp;
 use infer_models::TensorDtype;
 use std::collections::BTreeMap;

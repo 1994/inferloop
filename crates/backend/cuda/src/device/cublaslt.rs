@@ -18,8 +18,8 @@ use infer_core::{Error, ErrorCode};
 use infer_cuda_kernels::contract::{
     Bf16, Buffer, Foreign, Kernels, NARROW_GRANULE, Owner, Recording,
 };
-use infer_cuda_kernels::tile::runtime::Allocation;
-use infer_cuda_kernels::tile::runtime::bf16;
+use infer_cuda_kernels::runtime::Allocation;
+use infer_cuda_kernels::runtime::bf16;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt::Display;

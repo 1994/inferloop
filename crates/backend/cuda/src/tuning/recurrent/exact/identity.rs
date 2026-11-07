@@ -13,7 +13,7 @@ use std::{
 };
 type IdentityCache = Mutex<BTreeMap<([usize; SHAPE_RANK], String), String>>;
 pub(super) fn fingerprint(device: &CudaDevice, shape: [usize; SHAPE_RANK]) -> Result<String> {
-    use infer_cuda_kernels::tile::jit::{self as compiler, JitOptions};
+    use infer_cuda_kernels::jit::{self as compiler, JitOptions};
     static CACHE: OnceLock<IdentityCache> = OnceLock::new();
     let context = format!(
         "{}:{}:{:?}:{:?}:{:?}:{:?}",

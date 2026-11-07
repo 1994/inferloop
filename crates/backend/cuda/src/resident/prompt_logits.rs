@@ -7,7 +7,7 @@ use super::buffers::{RowMajor, buffer};
 use super::{ActivationArena, ProgramWeights, capture::error};
 use infer_core::Result;
 use infer_cuda_kernels::contract::{LastRowsKind, LastRowsPlan, Recording};
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 use infer_ir::TensorNode;
 
 /// Columns one `last_row` block copies.

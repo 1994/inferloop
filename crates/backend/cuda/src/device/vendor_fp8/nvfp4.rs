@@ -17,9 +17,9 @@ use infer_core::Result;
 use infer_cuda_kernels::contract::{
     Buffer, Foreign, Fp4Pair, Fp4ScalePlan, Fp8, Kernels, Owner, Recording,
 };
+use infer_cuda_kernels::runtime::{Allocation, Graph};
+use infer_cuda_kernels::runtime::{f4e2m1fnx2, f8e4m3fn};
 use infer_cuda_kernels::tile::identity;
-use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
-use infer_cuda_kernels::tile::runtime::{f4e2m1fnx2, f8e4m3fn};
 #[cfg(test)]
 use std::{
     cell::Cell,

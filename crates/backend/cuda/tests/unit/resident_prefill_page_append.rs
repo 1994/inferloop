@@ -3,7 +3,7 @@ use crate::resident::buffers::cutile;
 use crate::{constants::KV_BLOCK_TOKENS, device::CudaDevice};
 use cuda_core::f8e4m3fn;
 use cutile::{cutile_compiler::compile_api::KernelCompiler, prelude::*};
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::runtime::Graph;
 use std::{collections::BTreeSet, error::Error};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;

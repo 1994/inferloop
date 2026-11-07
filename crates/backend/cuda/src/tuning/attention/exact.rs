@@ -13,7 +13,7 @@ use crate::tuning::shipped_table;
 use crate::tuning::table_path;
 use crate::tuning::update_table;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::jit::JitOptions;
+use infer_cuda_kernels::jit::JitOptions;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,

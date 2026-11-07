@@ -1,7 +1,7 @@
 //! Submit device-library host work without blocking the CUDA owner thread.
 use futures_channel::oneshot;
 use infer_core::{Error, ErrorCode, Result};
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 use infer_spi::DeviceHostExecutor;
 use std::future::Future;
 use std::pin::Pin;

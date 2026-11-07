@@ -8,7 +8,7 @@ use cutile::bench::BenchOptions as CutileBenchOptions;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::runtime::Graph;
 use std::error::Error as StdError;
 use std::sync::Arc;
 

@@ -3,7 +3,7 @@ use super::{CudaDevice, device_error};
 use crate::resident::buffers::buffer;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::tile::runtime::Element;
+use infer_cuda_kernels::runtime::Element;
 use std::sync::Arc;
 
 impl CudaDevice {

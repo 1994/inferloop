@@ -21,8 +21,8 @@ use crate::device::Readbacks;
 use crate::device::{CudaDevice, ReadbackSource, device_error};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::Recording;
-use infer_cuda_kernels::tile::runtime::Allocation;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::runtime::Allocation;
+use infer_cuda_kernels::runtime::Graph;
 use infer_ir::{StateKind, TensorNode, TensorOp, TensorStorage};
 use std::slice::from_ref;
 

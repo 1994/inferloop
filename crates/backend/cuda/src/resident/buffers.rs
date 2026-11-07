@@ -9,8 +9,8 @@ use super::capture::error;
 use cutile::prelude::Tensor;
 use infer_core::Result;
 use infer_cuda_kernels::contract::{Buffer, KvCache, KvElement};
-use infer_cuda_kernels::tile::runtime::DType;
-use infer_cuda_kernels::tile::runtime::{Allocation, Element};
+use infer_cuda_kernels::runtime::DType;
+use infer_cuda_kernels::runtime::{Allocation, Element};
 use std::sync::Arc;
 
 /// Device memory a launch can take as an operand, while the host still holds two kinds of it.

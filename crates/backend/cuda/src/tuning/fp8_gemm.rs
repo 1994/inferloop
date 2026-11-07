@@ -24,11 +24,11 @@ use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, Fp8, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, Kernels, Recording, WeightRef,
 };
+use infer_cuda_kernels::jit::JitOptions;
+use infer_cuda_kernels::runtime::Timing;
+use infer_cuda_kernels::runtime::f8e4m3fn;
+use infer_cuda_kernels::runtime::{Allocation, Graph, Watch};
 use infer_cuda_kernels::tile::identity;
-use infer_cuda_kernels::tile::jit::JitOptions;
-use infer_cuda_kernels::tile::runtime::Timing;
-use infer_cuda_kernels::tile::runtime::f8e4m3fn;
-use infer_cuda_kernels::tile::runtime::{Allocation, Graph, Watch};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::env::var;
@@ -338,7 +338,7 @@ fn permits(session: &ResidentTuningSession, shape: [usize; GEMM_RANK]) -> bool {
 }
 type Identities = Mutex<BTreeMap<(String, [usize; GEMM_RANK]), String>>;
 fn fingerprint(device: &CudaDevice, shape: [usize; GEMM_RANK]) -> Result<String> {
-    use infer_cuda_kernels::tile::jit as compiler;
+    use infer_cuda_kernels::jit as compiler;
     static IDENTITIES: OnceLock<Identities> = OnceLock::new();
     let environment = format!(
         "{}:{}:{:?}:{:?}:{:?}:{:?}",

@@ -14,7 +14,7 @@ use super::{
 use crate::constants::{ATTENTION_SPLIT_THRESHOLD, KV_BLOCK_TOKENS};
 use infer_core::Result;
 use infer_cuda_kernels::contract::{DecodePlan, Recording, VerifyDecodeBuffers};
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 use infer_ir::{TensorNode, TensorOp};
 
 impl BatchBuilder<'_> {

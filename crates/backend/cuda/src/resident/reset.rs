@@ -2,7 +2,7 @@
 use super::buffers::buffer;
 use crate::device::{CudaDevice, device_error};
 use infer_core::Result;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::runtime::Graph;
 
 #[cfg(test)]
 #[path = "../../tests/unit/resident_reset.rs"]

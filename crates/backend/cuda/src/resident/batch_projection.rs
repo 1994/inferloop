@@ -21,7 +21,7 @@ use infer_core::{Error, OpId, Result};
 use infer_cuda_kernels::contract::{Buffer, Kernels, Recording, RowsKernel, RowsPlan};
 #[cfg(test)]
 use infer_cuda_kernels::contract::{DenseKernel, DenseRowsPlan, LinearRowsPlan};
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;

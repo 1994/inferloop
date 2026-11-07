@@ -4,7 +4,7 @@ use crate::resident::tensor_buffer;
 use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::Result;
-use infer_cuda_kernels::tile::kernels;
+use infer_cuda_kernels::kernels;
 use infer_models::vision::PositionTaps;
 use std::sync::Arc;
 

@@ -6,7 +6,7 @@ use cutile::error::tensor_error;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Kernels, PreparedDeltaBuffers, Recording, RecurrentShape};
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::runtime::Graph;
 const KH: usize = 16;
 const VH: usize = 48;
 const DIM: usize = 128;

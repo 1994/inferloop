@@ -2,12 +2,12 @@
 use super::{CudaDevice, device_error};
 use crate::constants::MIB;
 use infer_core::{Error, ErrorCode, Result};
-use infer_cuda_kernels::tile::runtime::Copies;
+use infer_cuda_kernels::runtime::Copies;
 #[cfg(test)]
-use infer_cuda_kernels::tile::runtime::Graph;
-use infer_cuda_kernels::tile::runtime::{Allocation, Pinned, Readback};
-use infer_cuda_kernels::tile::runtime::{CudaContext, PinnedHostBuffer};
-use infer_cuda_kernels::tile::runtime::{DType, DeviceCopy};
+use infer_cuda_kernels::runtime::Graph;
+use infer_cuda_kernels::runtime::{Allocation, Pinned, Readback};
+use infer_cuda_kernels::runtime::{CudaContext, PinnedHostBuffer};
+use infer_cuda_kernels::runtime::{DType, DeviceCopy};
 use std::sync::{Arc, Mutex};
 
 /// Total pinned bytes admitted across one batch of readback copies.

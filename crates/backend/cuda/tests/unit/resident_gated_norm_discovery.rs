@@ -7,8 +7,8 @@ use cutile::bench::do_bench_paired;
 use cutile::error::tensor_error;
 use cutile::{prelude::*, tile_kernel::CompileOptions};
 use infer_core::Result;
-use infer_cuda_kernels::tile::jit::JitOptions;
-use infer_cuda_kernels::tile::runtime::Graph;
+use infer_cuda_kernels::jit::JitOptions;
+use infer_cuda_kernels::runtime::Graph;
 use std::cell::Cell;
 use std::time::Duration;
 

@@ -10,7 +10,7 @@ use cutile::half::bf16;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::PoolGemvPlan;
-use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
+use infer_cuda_kernels::runtime::{Allocation, Graph};
 use std::sync::Arc;
 use std::time::Instant;
 

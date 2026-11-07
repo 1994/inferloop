@@ -6,7 +6,7 @@ use crate::device::CudaDevice;
 use crate::resident::buffers::buffer;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Gelu, VisionDense};
-use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::runtime::Allocation;
 
 #[cfg(test)]
 #[path = "../../tests/unit/vision_block_mlp.rs"]
