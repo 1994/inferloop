@@ -3,13 +3,13 @@
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::{CudaDevice, device_error};
 use cuda_core::Function;
-use cutile::prelude::*;
 use infer_core::Result;
 use infer_cuda_kernels::contract::{DecodeBuffers, KvBuffers, Owner, Recording};
 use infer_cuda_kernels::tile::runtime::{Argument, KernelLaunch};
 use infer_ir::{DataflowGraph, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
+use std::sync::Arc;
 use std::sync::OnceLock;
 mod shared;
 mod vector;

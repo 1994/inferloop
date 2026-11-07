@@ -25,10 +25,11 @@ use crate::{
     mlp::ProjectionWeight,
     strategy::LinearTiling,
 };
-use cutile::{half::bf16, prelude::*};
 pub use geometry::ProgramGeometry;
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::tile::runtime::DType;
+use infer_cuda_kernels::tile::runtime::bf16;
 use infer_cuda_kernels::tile::state::load_rotary;
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
 use std::collections::BTreeMap;

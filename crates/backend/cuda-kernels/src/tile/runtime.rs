@@ -6,13 +6,12 @@ use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8, Owner, Width};
 use crate::contract::recording::{Foreign, Recording};
 use crate::tile::backend_error;
 use cuda_core::sys::{CUdeviceptr, cuMemsetD8Async, cudaError_enum_CUDA_SUCCESS};
-use cuda_core::{DType, DTypeId, DeviceCopy, Stream, f4e2m1fnx2, f8e4m3fn};
+use cuda_core::{DTypeId, DeviceCopy, Stream, f4e2m1fnx2, f8e4m3fn};
 use cutile::cuda_async::cuda_graph::GraphLaunch;
 use cutile::cuda_async::device_buffer::DeviceAllocation;
 use cutile::cuda_async::device_context::with_default_device_policy;
 use cutile::cuda_async::device_future::DeviceFuture;
 use cutile::cuda_async::device_operation::{ExecutionContext, value};
-use cutile::half::bf16;
 use cutile::prelude::*;
 use cutile::tensor::KernelOutputStored;
 use infer_core::{Error, ErrorCode, Result};
@@ -32,6 +31,9 @@ mod staging;
 mod timing;
 mod transfer;
 
+/// Element types the host names, re-exported so it does not reach into cuTile for them.
+pub use cuda_core::DType;
+pub use cutile::half::bf16;
 pub use launch::{Argument, KernelLaunch};
 pub use operation::{Operation, Pending};
 pub use readback::{Pinned, Readback};

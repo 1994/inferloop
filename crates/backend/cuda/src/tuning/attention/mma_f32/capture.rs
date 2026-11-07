@@ -9,13 +9,13 @@ use crate::device::{CudaDevice, device_error};
 use crate::resident::attention_mma;
 use crate::resident::buffers::kv_cache;
 use crate::resident::tensor_buffer as buffer;
-use cutile::cutile_compiler::{cuda_tile_runtime_utils as compiler, hints::CompileOptions};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     AppendBuffers, DecodeBuffers, DecodePlan, Kernels, PrefillAppendPlan, PrefillDecodePlan,
     Recording,
 };
 use infer_cuda_kernels::tile::identity::{AttentionShape, attention_candidates};
+use infer_cuda_kernels::tile::jit::{self as compiler, JitOptions};
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use std::env::var_os;
 struct Operands {
@@ -252,9 +252,9 @@ pub(super) fn fingerprint(device: &CudaDevice, s: Shape) -> Result<String> {
         compute,
         attention_mma::f32_artifact_identity(),
         &device.profile()?.architecture,
-        compiler::tileiras_fingerprint(),
+        compiler::compiler(),
         compiler::bytecode_override(),
-        format!("{:?}", CompileOptions::default()),
+        format!("{:?}", JitOptions::default()),
         var_os("CUTILE_DISABLE_CHECK_HOISTING"),
         var_os("CUTILE_FORCE_DEVICE_CHECKS"),
     ))

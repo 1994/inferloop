@@ -23,6 +23,7 @@ use vision::TileVision;
 
 pub mod attention;
 pub mod identity;
+pub mod jit;
 pub mod mlp;
 pub mod moe;
 pub mod norm;

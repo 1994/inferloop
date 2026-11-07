@@ -21,12 +21,12 @@ use crate::{
     mlp::{Matrix, ProjectionWeight},
 };
 use cuda_core::f8e4m3fn;
-use cutile::cutile_compiler::hints::CompileOptions;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, Fp8, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, Kernels, Recording, WeightRef,
 };
 use infer_cuda_kernels::tile::identity;
+use infer_cuda_kernels::tile::jit::JitOptions;
 use infer_cuda_kernels::tile::runtime::Timing;
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph, Watch};
 use serde::{Deserialize, Serialize};
@@ -338,14 +338,14 @@ fn permits(session: &ResidentTuningSession, shape: [usize; GEMM_RANK]) -> bool {
 }
 type Identities = Mutex<BTreeMap<(String, [usize; GEMM_RANK]), String>>;
 fn fingerprint(device: &CudaDevice, shape: [usize; GEMM_RANK]) -> Result<String> {
-    use cutile::cutile_compiler::cuda_tile_runtime_utils as compiler;
+    use infer_cuda_kernels::tile::jit as compiler;
     static IDENTITIES: OnceLock<Identities> = OnceLock::new();
     let environment = format!(
         "{}:{}:{:?}:{:?}:{:?}:{:?}",
         device.profile()?.architecture,
-        compiler::tileiras_fingerprint(),
+        compiler::compiler(),
         compiler::bytecode_override(),
-        CompileOptions::default(),
+        JitOptions::default(),
         var_os("CUTILE_DISABLE_CHECK_HOISTING"),
         var_os("CUTILE_FORCE_DEVICE_CHECKS")
     );
@@ -884,11 +884,11 @@ fn tune(
     if !permits(session, shape) {
         return Ok(None);
     }
-    let compile = CompileOptions::default();
+    let compile = JitOptions::default();
     if cfg!(debug_assertions)
-        || compile.device_debug
+        || compile.device_debug()
         || compile
-            .opt_level
+            .opt_level()
             .is_some_and(|level| level != JIT_OPT_LEVEL)
     {
         return Err(Error::invalid("FP8 tuning requires release/CUDA JIT O3"));

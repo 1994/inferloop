@@ -3,11 +3,11 @@ use super::buffers::{Operand, buffer};
 use super::capture::error;
 use crate::device::Readbacks;
 use crate::device::{CudaDevice, device_error};
-use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Buffer, GreedyPartials, GreedyPlan, Kernels, Recording};
 use infer_cuda_kernels::tile::identity;
 use infer_cuda_kernels::tile::runtime::Allocation;
+use std::sync::Arc;
 
 /// Values each selected row writes: the token and its validation flag.
 const TOKEN_FIELDS: usize = 2;

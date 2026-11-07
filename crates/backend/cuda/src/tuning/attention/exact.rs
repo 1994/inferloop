@@ -12,8 +12,8 @@ use crate::tuning::resolve_table;
 use crate::tuning::shipped_table;
 use crate::tuning::table_path;
 use crate::tuning::update_table;
-use cutile::cutile_compiler::hints::CompileOptions;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::jit::JitOptions;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -216,11 +216,11 @@ fn cases(
     Ok(Some(cases))
 }
 fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Result<Option<Entry>> {
-    let options = CompileOptions::default();
+    let options = JitOptions::default();
     if cfg!(debug_assertions)
-        || options.device_debug
+        || options.device_debug()
         || options
-            .opt_level
+            .opt_level()
             .is_some_and(|level| level != super::CUDA_OPT_LEVEL)
     {
         return Err(Error::invalid(

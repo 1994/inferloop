@@ -1,9 +1,9 @@
 //! Device memory with the dimensions host code reads it as.
 use super::buffers::Operand;
 use crate::device::CudaDevice;
-use cutile::prelude::*;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Buffer, Width};
+use infer_cuda_kernels::tile::runtime::DType;
 use infer_cuda_kernels::tile::runtime::{Allocation, Element, HeadMajor};
 
 /// An allocation and its logical dimensions. State copies and checks read the dimensions; kernels

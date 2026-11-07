@@ -14,7 +14,6 @@ use crate::device::device_error;
 use crate::mlp::ProjectionWeight;
 use crate::strategy::LinearTiling;
 use crate::tuning::gated_norm::options as gated_norm_options;
-use cutile::tile_kernel::CompileOptions;
 use infer_core::Error;
 use infer_core::Result;
 use infer_core::TensorId;
@@ -24,6 +23,7 @@ use infer_cuda_kernels::contract::{
 };
 #[cfg(test)]
 use infer_cuda_kernels::contract::{DenseKernel, DenseRowsPlan};
+use infer_cuda_kernels::tile::jit::JitOptions;
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::fmt::Display;
 
@@ -500,7 +500,7 @@ impl Capture<'_> {
         let options = if gated {
             gated_norm_options(output.device(), dimension, heads, epsilon)
         } else {
-            CompileOptions::default()
+            JitOptions::default()
         };
         #[cfg(test)]
         let options = super::gated_norm_discovery::model_options(dimension, gated, heads, options);
@@ -529,7 +529,7 @@ impl Capture<'_> {
                     gated,
                     epsilon,
                     offset,
-                    occupancy: options.occupancy,
+                    occupancy: options.occupancy_hint(),
                 },
                 NormBuffers {
                     out: buffer(output)?,

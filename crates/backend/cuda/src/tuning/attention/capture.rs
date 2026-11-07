@@ -327,7 +327,7 @@ impl Captured {
     }
 }
 pub(super) fn fingerprint(device: &CudaDevice, shape: Shape) -> Result<String> {
-    use cutile::cutile_compiler::{cuda_tile_runtime_utils as compiler, hints::CompileOptions};
+    use infer_cuda_kernels::tile::jit::{self as compiler, JitOptions};
     use std::{
         collections::BTreeMap,
         sync::{Mutex, OnceLock},
@@ -337,9 +337,9 @@ pub(super) fn fingerprint(device: &CudaDevice, shape: Shape) -> Result<String> {
     let context = format!(
         "{}:{}:{:?}:{:?}:{:?}:{:?}",
         device.profile()?.architecture,
-        compiler::tileiras_fingerprint(),
+        compiler::compiler(),
         compiler::bytecode_override(),
-        CompileOptions::default(),
+        JitOptions::default(),
         var_os("CUTILE_DISABLE_CHECK_HOISTING"),
         var_os("CUTILE_FORCE_DEVICE_CHECKS")
     );
@@ -377,7 +377,7 @@ pub(super) fn fingerprint(device: &CudaDevice, shape: Shape) -> Result<String> {
 }
 
 pub(super) fn native_fingerprint(device: &CudaDevice, shape: Shape) -> Result<String> {
-    use cutile::cutile_compiler::{cuda_tile_runtime_utils as compiler, hints::CompileOptions};
+    use infer_cuda_kernels::tile::jit::{self as compiler, JitOptions};
     use sha2::{Digest, Sha256};
     use std::{
         collections::BTreeMap,
@@ -387,9 +387,9 @@ pub(super) fn native_fingerprint(device: &CudaDevice, shape: Shape) -> Result<St
     static CACHE: OnceLock<Cache> = OnceLock::new();
     let context = serde_json::to_string(&(
         device.profile()?.architecture.as_str(),
-        compiler::tileiras_fingerprint(),
+        compiler::compiler(),
         compiler::bytecode_override(),
-        format!("{:?}", CompileOptions::default()),
+        format!("{:?}", JitOptions::default()),
         var_os("CUTILE_DISABLE_CHECK_HOISTING"),
         var_os("CUTILE_FORCE_DEVICE_CHECKS"),
         artifact_identity(),
@@ -411,9 +411,9 @@ pub(super) fn native_fingerprint(device: &CudaDevice, shape: Shape) -> Result<St
     let payload = serde_json::to_vec(&(
         identities,
         device.profile()?.architecture.as_str(),
-        compiler::tileiras_fingerprint(),
+        compiler::compiler(),
         compiler::bytecode_override(),
-        format!("{:?}", CompileOptions::default()),
+        format!("{:?}", JitOptions::default()),
         var_os("CUTILE_DISABLE_CHECK_HOISTING"),
         var_os("CUTILE_FORCE_DEVICE_CHECKS"),
         artifact_identity(),

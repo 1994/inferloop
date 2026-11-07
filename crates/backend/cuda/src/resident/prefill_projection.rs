@@ -14,11 +14,11 @@ use crate::mlp::Matrix;
 use crate::strategy::LinearTiling;
 use crate::tuning::pool_dense::Choice as PromptChoice;
 use crate::{device::DeviceProfile, mlp::ProjectionWeight};
-use cutile::half::bf16;
 pub(super) use dense::DensePlan;
 use infer_cuda_kernels::contract::{
     Bf16, Buffer, DenseKernel, DenseRowsPlan, Kernels, PromptPlan, Recording, SplitGemmPlan,
 };
+use infer_cuda_kernels::tile::runtime::bf16;
 use infer_ir::TensorNode;
 #[cfg(test)]
 use std::cell::Cell;

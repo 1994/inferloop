@@ -7,10 +7,10 @@ use super::program::{
 use super::weights::{AttentionLayer, MlpLayer, VisionWeights, half_tile};
 use crate::device::{CudaDevice, device_error};
 use crate::resident::buffers::buffer;
-use cutile::half::bf16;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{DenseBuffers, Gelu, VisionDense, VisionNorm, VisionRope};
 use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::tile::runtime::bf16;
 use infer_models::vision::row_tile;
 use infer_spi::ModalityEncoder;
 use std::mem::swap;

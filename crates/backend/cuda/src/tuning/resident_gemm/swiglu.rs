@@ -13,11 +13,11 @@ use crate::tuning::{
 };
 pub use capture::record;
 use capture::{Captured, key, verify};
-use cutile::cutile_compiler::hints::CompileOptions;
 pub use evidence::Entry;
 use evidence::candidates;
 pub use evidence::{baseline, compatible};
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::jit::JitOptions;
 use infer_cuda_kernels::tile::runtime::Timing;
 #[cfg(test)]
 use std::cell::Cell;
@@ -269,10 +269,10 @@ fn tune(
     key: ResidentGemmKey,
     session: &ResidentTuningSession,
 ) -> Result<Option<Entry>> {
-    let compile = CompileOptions::default();
+    let compile = JitOptions::default();
     if cfg!(debug_assertions)
-        || compile.device_debug
-        || compile.opt_level.is_some_and(|opt| opt != JIT_OPT_LEVEL)
+        || compile.device_debug()
+        || compile.opt_level().is_some_and(|opt| opt != JIT_OPT_LEVEL)
     {
         return Err(Error::invalid(
             "SwiGLU tuning requires release and CUDA JIT O3",

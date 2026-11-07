@@ -11,12 +11,12 @@ use crate::tuning::preparation::driver_build;
 use crate::tuning::projection_budget::ProjectionShape;
 use crate::tuning::resident_gemm::QUANTIZATION_ROWS;
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
-use cutile::cutile_compiler::hints::CompileOptions;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     Buffer, Fp4Pair, Fp4QuantKind, Fp4QuantPlan, Fp8, GemmLoop, GemmPlan, Kernels, Recording,
 };
 use infer_cuda_kernels::tile::identity;
+use infer_cuda_kernels::tile::jit::JitOptions;
 use infer_cuda_kernels::tile::runtime::{Allocation, Graph};
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
@@ -190,10 +190,11 @@ pub(super) fn key(device: &CudaDevice, shape: ProjectionShape) -> Result<Residen
         driver_build(),
         fingerprint(device, shape)?,
     )?;
-    let compile = CompileOptions::default();
+    let compile = JitOptions::default();
     key.kernel_schema = format!(
         "{SCHEMA}:jit-opt{:?}:debug{}",
-        compile.opt_level, compile.device_debug
+        compile.opt_level(),
+        compile.device_debug()
     );
     key.activation_mode = MODE.into();
     Ok(key)

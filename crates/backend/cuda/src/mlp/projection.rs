@@ -7,9 +7,10 @@ use crate::resident::buffers::Operand;
 use crate::resident::tensor_buffer as buffer;
 use crate::strategy::LinearTiling;
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
-use cutile::{half::bf16, prelude::*};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Buffer, DownPlan, Kernels, Owner, Recording, WeightRef};
+use infer_cuda_kernels::tile::runtime::DType;
+use infer_cuda_kernels::tile::runtime::bf16;
 use infer_cuda_kernels::tile::runtime::{Allocation, Element, Watch};
 use std::sync::Arc;
 

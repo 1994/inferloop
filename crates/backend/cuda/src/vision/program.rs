@@ -11,12 +11,12 @@ use crate::attention::tile_rows;
 use crate::device::vision_position::DeviceTaps;
 use crate::device::{CudaDevice, device_error};
 use crate::resident::buffers::buffer;
-use cutile::half::bf16;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
     DenseBuffers, DensePlan, Gelu, Pack, VisionDense, VisionNorm, VisionRope,
 };
 use infer_cuda_kernels::tile::runtime::Allocation;
+use infer_cuda_kernels::tile::runtime::bf16;
 use infer_models::vision::PositionTaps;
 use infer_models::vision::head_dim;
 use infer_models::vision::merge_unit;

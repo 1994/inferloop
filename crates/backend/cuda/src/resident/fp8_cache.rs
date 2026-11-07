@@ -1,9 +1,9 @@
 use crate::constants::KV_CACHE_RANK;
 use crate::device::CudaDevice;
 use cuda_core::f8e4m3fn;
-use cutile::prelude::*;
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::{KvCache, KvElement, Width};
+use infer_cuda_kernels::tile::runtime::DType;
 use infer_cuda_kernels::tile::runtime::{Allocation, Element, HeadMajor, Transfers};
 use infer_ir::{DataflowGraph, StateKind, TensorOp, TensorStorage};
 use std::collections::BTreeMap;

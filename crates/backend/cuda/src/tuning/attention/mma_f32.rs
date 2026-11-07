@@ -19,8 +19,8 @@ use crate::{
     tuning::resident_gemm::ResidentTuningSession,
 };
 use capture::{Captured, Proof};
-use cutile::cutile_compiler::hints::CompileOptions;
 use infer_core::{Error, Result};
+use infer_cuda_kernels::tile::jit::JitOptions;
 use infer_cuda_kernels::tile::runtime::Timing;
 use reference::Fixture;
 use serde::{Deserialize, Serialize};
@@ -270,10 +270,10 @@ fn cases(
     Ok(Some((result, proof)))
 }
 fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Result<Option<Entry>> {
-    let options = CompileOptions::default();
+    let options = JitOptions::default();
     if cfg!(debug_assertions)
-        || options.device_debug
-        || options.opt_level.is_some_and(|l| l != CUDA_OPT_LEVEL)
+        || options.device_debug()
+        || options.opt_level().is_some_and(|l| l != CUDA_OPT_LEVEL)
     {
         return Err(Error::invalid("F32 KV MMA tuning requires release CUDA O3"));
     }
