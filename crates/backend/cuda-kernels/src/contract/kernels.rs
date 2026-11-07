@@ -32,7 +32,10 @@ pub trait Projection: Send + Sync {
         out: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
         weight: WeightRef<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, x, weight);
+        Err(unsupported("Projection::rows"))
+    }
 
     /// Project one flat row by the tiles of `plan`.
     /// # Errors
@@ -44,7 +47,10 @@ pub trait Projection: Send + Sync {
         out: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
         weight: WeightRef<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, x, weight);
+        Err(unsupported("Projection::row"))
+    }
 
     /// Copy flat `input` into row `row` of `out`, whose shape is `[rows, columns]`.
     /// # Errors
@@ -56,7 +62,10 @@ pub trait Projection: Send + Sync {
         out: Buffer<'_, f32>,
         input: Buffer<'_, f32>,
         row: usize,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, shape, out, input, row);
+        Err(unsupported("Projection::pack_row"))
+    }
 
     /// Copy row `row` of `input`, whose shape is `[rows, columns]`, into flat `out`.
     /// # Errors
@@ -68,7 +77,10 @@ pub trait Projection: Send + Sync {
         out: Buffer<'_, f32>,
         input: Buffer<'_, f32>,
         row: usize,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, shape, out, input, row);
+        Err(unsupported("Projection::unpack_row"))
+    }
 
     /// [`Self::pack_row`] of exactly three rows in one launch.
     /// # Errors
@@ -79,7 +91,10 @@ pub trait Projection: Send + Sync {
         columns: usize,
         out: Buffer<'_, f32>,
         inputs: [Buffer<'_, f32>; THREE_ROWS],
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, columns, out, inputs);
+        Err(unsupported("Projection::pack_three"))
+    }
 
     /// [`Self::unpack_row`] of exactly three rows in one launch.
     /// # Errors
@@ -90,7 +105,10 @@ pub trait Projection: Send + Sync {
         columns: usize,
         outs: [Buffer<'_, f32>; THREE_ROWS],
         input: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, columns, outs, input);
+        Err(unsupported("Projection::unpack_three"))
+    }
 
     /// Narrow F32 `input` to the BF16 a vendor GEMM consumes, element for element.
     /// # Errors
@@ -101,7 +119,10 @@ pub trait Projection: Send + Sync {
         recording: &Recording<'_>,
         out: Buffer<'_, Bf16>,
         input: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, out, input);
+        Err(unsupported("Projection::narrow_bf16"))
+    }
 
     /// Scale `[rows, columns]` `out` in place by `row[r] * column[c]`, the per-token and
     /// per-channel factors a vendor FP8 GEMM leaves unapplied. Any `columns` is accepted;
@@ -115,7 +136,10 @@ pub trait Projection: Send + Sync {
         out: Buffer<'_, f32>,
         row: Buffer<'_, f32>,
         column: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, columns, out, row, column);
+        Err(unsupported("Projection::channel_scale"))
+    }
 
     /// Swizzle the weight then input block scales of `plan` into `out`, rows of
     /// `columns / 16 * 128` bytes, in the vendor's block layout.
@@ -129,7 +153,10 @@ pub trait Projection: Send + Sync {
         out: Buffer<'_, Fp8>,
         weight: Buffer<'_, Fp8>,
         input: Buffer<'_, Fp8>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, weight, input);
+        Err(unsupported("Projection::swizzle_fp4_scales"))
+    }
 
     /// BF16 projection by the kernel the plan names.
     /// # Errors
@@ -141,7 +168,10 @@ pub trait Projection: Send + Sync {
         out: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
         w: Buffer<'_, Bf16>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, x, w);
+        Err(unsupported("Projection::dense"))
+    }
 
     /// One token's embedding row, or the external input the plan allows.
     /// # Errors
@@ -154,7 +184,10 @@ pub trait Projection: Send + Sync {
         weight: Buffer<'_, Bf16>,
         external: Buffer<'_, f32>,
         metadata: Buffer<'_, i32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, weight, external, metadata);
+        Err(unsupported("Projection::embedding"))
+    }
 
     /// Embedding rows of a whole metadata batch, taken from `external` where a row allows it.
     /// # Errors
@@ -167,7 +200,10 @@ pub trait Projection: Send + Sync {
         weight: Buffer<'_, Bf16>,
         external: Option<Buffer<'_, f32>>,
         metadata: Buffer<'_, i32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, weight, external, metadata);
+        Err(unsupported("Projection::embedding_batch"))
+    }
 
     /// BF16 projection of a pool's rows over an explicit output and depth tile.
     /// # Errors
@@ -179,7 +215,10 @@ pub trait Projection: Send + Sync {
         out: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
         w: Buffer<'_, Bf16>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, x, w);
+        Err(unsupported("Projection::linear_rows"))
+    }
 
     /// Two prompt BF16 projections of one input in one launch.
     /// # Errors
@@ -191,7 +230,10 @@ pub trait Projection: Send + Sync {
         outs: (Buffer<'_, f32>, Buffer<'_, f32>),
         x: Buffer<'_, f32>,
         weights: (Buffer<'_, Bf16>, Buffer<'_, Bf16>),
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, outs, x, weights);
+        Err(unsupported("Projection::dense_pair"))
+    }
 
     /// Prompt FP8 projection of unquantized activations.
     /// # Errors
@@ -204,7 +246,10 @@ pub trait Projection: Send + Sync {
         out: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
         weight: WeightRef<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, x, weight);
+        Err(unsupported("Projection::prompt_fp8"))
+    }
 
     /// Split-K FP4 prompt projection accumulating into `partial`, then reducing into `out`.
     /// # Errors
@@ -218,7 +263,10 @@ pub trait Projection: Send + Sync {
         partial: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
         weight: WeightRef<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, partial, x, weight);
+        Err(unsupported("Projection::prompt_fp4_split"))
+    }
 
     /// Quantize `[rows, columns]` activations into FP4 codes and block scales.
     /// # Errors
@@ -231,7 +279,10 @@ pub trait Projection: Send + Sync {
         scales: Buffer<'_, Fp8>,
         input: Buffer<'_, f32>,
         scale: f32,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, codes, scales, input, scale);
+        Err(unsupported("Projection::quantize_fp4"))
+    }
 
     /// [`Self::quantize_fp4`] of `silu(gate) * up`, row groups only.
     /// # Errors
@@ -244,7 +295,10 @@ pub trait Projection: Send + Sync {
         scales: Buffer<'_, Fp8>,
         inputs: (Buffer<'_, f32>, Buffer<'_, f32>),
         scale: f32,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, codes, scales, inputs, scale);
+        Err(unsupported("Projection::quantize_swiglu"))
+    }
 
     /// W4A4 GEMM over prepared activation codes.
     /// # Errors
@@ -258,7 +312,10 @@ pub trait Projection: Send + Sync {
         codes: (Buffer<'_, Fp4Pair>, Buffer<'_, Fp8>),
         weight: WeightRef<'_>,
         inverse_scale: f32,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, codes, weight, inverse_scale);
+        Err(unsupported("Projection::gemm_fp4"))
+    }
 
     /// Gate and up GEMMs of a gated MLP, writing `silu(gate) * up` straight into FP4 codes.
     /// # Errors
@@ -272,7 +329,10 @@ pub trait Projection: Send + Sync {
         codes: (Buffer<'_, Fp4Pair>, Buffer<'_, Fp8>),
         weights: (WeightRef<'_>, WeightRef<'_>),
         scales: (f32, f32, f32),
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, codes, weights, scales);
+        Err(unsupported("Projection::gemm_swiglu"))
+    }
 
     /// Quantize `[rows, columns]` activations into FP8 codes and scales.
     /// # Errors
@@ -284,7 +344,10 @@ pub trait Projection: Send + Sync {
         codes: Buffer<'_, Fp8>,
         scales: Buffer<'_, f32>,
         input: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, codes, scales, input);
+        Err(unsupported("Projection::quantize_fp8"))
+    }
 
     /// FP8 GEMM over prepared activation codes. Without `block`, `codes.1` holds one scale per row
     /// and the weight's scales one per output; with it, both hold one per `block` columns.
@@ -299,7 +362,10 @@ pub trait Projection: Send + Sync {
         codes: (Buffer<'_, Fp8>, Buffer<'_, f32>),
         weight: WeightRef<'_>,
         block: Option<usize>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, codes, weight, block);
+        Err(unsupported("Projection::gemm_fp8"))
+    }
 
     /// Copy each lane's last active row into `out`.
     /// # Errors
@@ -311,7 +377,10 @@ pub trait Projection: Send + Sync {
         out: Buffer<'_, f32>,
         rows: Buffer<'_, f32>,
         metadata: Buffer<'_, i32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, rows, metadata);
+        Err(unsupported("Projection::last_rows"))
+    }
 
     /// Record one BF16 row-independent projection; no work completes before the graph runs.
     ///
@@ -327,7 +396,10 @@ pub trait Projection: Send + Sync {
         out: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
         w: Buffer<'_, Bf16>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, x, w);
+        Err(unsupported("Projection::pool_gemv_bf16"))
+    }
 }
 
 /// Operands of one rotary launch.
@@ -356,7 +428,10 @@ pub trait Rope: Send + Sync {
         recording: &Recording<'_>,
         plan: &RopePlan,
         buffers: RopeBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, buffers);
+        Err(unsupported("Rope::rope"))
+    }
 }
 
 /// Operands of one normalization launch.
@@ -420,7 +495,10 @@ pub trait Norm: Send + Sync {
         recording: &Recording<'_>,
         plan: &NormPlan,
         buffers: NormBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, buffers);
+        Err(unsupported("Norm::norm"))
+    }
 
     /// # Errors
     /// Fails when a buffer disagrees with the plan, or the launch is rejected.
@@ -429,7 +507,10 @@ pub trait Norm: Send + Sync {
         recording: &Recording<'_>,
         plan: &FusionNormPlan,
         buffers: FusionNormBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, buffers);
+        Err(unsupported("Norm::fusion"))
+    }
 
     /// # Errors
     /// Fails when a buffer disagrees with the plan, or the launch is rejected.
@@ -438,7 +519,10 @@ pub trait Norm: Send + Sync {
         recording: &Recording<'_>,
         plan: &QuantNormPlan,
         buffers: NormMaximumBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, buffers);
+        Err(unsupported("Norm::maximum"))
+    }
 
     /// `input_global` is the activation's global FP4 scale.
     /// # Errors
@@ -449,7 +533,10 @@ pub trait Norm: Send + Sync {
         plan: &QuantNormPlan,
         input_global: f32,
         buffers: NormFp4Buffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, input_global, buffers);
+        Err(unsupported("Norm::fp4"))
+    }
 }
 
 /// A projection's weight, in the storage its checkpoint uses.
@@ -490,11 +577,17 @@ pub trait Mlp: Send + Sync {
         out: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
         weight: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, x, weight);
+        Err(unsupported("Mlp::row_norm"))
+    }
 
     /// # Errors
     /// Fails when the launch is rejected.
-    fn product(&self, recording: &Recording<'_>, buffers: ProductBuffers<'_>) -> Result<()>;
+    fn product(&self, recording: &Recording<'_>, buffers: ProductBuffers<'_>) -> Result<()> {
+        let _ = (recording, buffers);
+        Err(unsupported("Mlp::product"))
+    }
 
     /// `out = down + x`.
     /// # Errors
@@ -505,7 +598,10 @@ pub trait Mlp: Send + Sync {
         out: Buffer<'_, f32>,
         down: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, out, down, x);
+        Err(unsupported("Mlp::residual"))
+    }
 
     /// [`Self::product`] that signals [`Self::down_after_product`] as rows become ready.
     /// # Errors
@@ -514,7 +610,10 @@ pub trait Mlp: Send + Sync {
         &self,
         recording: &Recording<'_>,
         buffers: ProductBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, buffers);
+        Err(unsupported("Mlp::signalling_product"))
+    }
 
     /// A down projection that starts before its input is complete, waiting on the producer.
     /// # Errors
@@ -526,7 +625,10 @@ pub trait Mlp: Send + Sync {
         out: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
         weight: WeightRef<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, x, weight);
+        Err(unsupported("Mlp::down_after_product"))
+    }
 }
 
 /// Element-wise and slicing kernels on activations. Every method records and never waits.
@@ -539,7 +641,10 @@ pub trait State: Send + Sync {
         op: UnaryOp,
         out: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, op, out, x);
+        Err(unsupported("State::unary"))
+    }
 
     /// # Errors
     /// Fails when the launch is rejected.
@@ -550,7 +655,10 @@ pub trait State: Send + Sync {
         out: Buffer<'_, f32>,
         a: Buffer<'_, f32>,
         b: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, op, out, a, b);
+        Err(unsupported("State::binary"))
+    }
 
     /// `out = x * scalar`, with `scalar` holding one element.
     /// # Errors
@@ -561,7 +669,10 @@ pub trait State: Send + Sync {
         out: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
         scalar: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, out, x, scalar);
+        Err(unsupported("State::scale"))
+    }
 
     /// # Errors
     /// Fails when a buffer disagrees with the plan, or the launch is rejected.
@@ -571,12 +682,18 @@ pub trait State: Send + Sync {
         plan: &SplitPlan,
         out: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, x);
+        Err(unsupported("State::split"))
+    }
 
     /// Zero every byte of `out`, a partial tile included.
     /// # Errors
     /// Fails when the clear is rejected.
-    fn clear(&self, recording: &Recording<'_>, out: Buffer<'_, f32>) -> Result<()>;
+    fn clear(&self, recording: &Recording<'_>, out: Buffer<'_, f32>) -> Result<()> {
+        let _ = (recording, out);
+        Err(unsupported("State::clear"))
+    }
 }
 
 /// An expert bank's weight, in the storage its checkpoint uses.
@@ -609,7 +726,10 @@ pub trait Moe: Send + Sync {
         plan: &RoutePlan,
         out: Buffer<'_, f32>,
         scores: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, scores);
+        Err(unsupported("Moe::route"))
+    }
 
     /// `x` is `[active, hidden]`, the two values of `geometry`.
     /// # Errors
@@ -621,7 +741,10 @@ pub trait Moe: Send + Sync {
         out: Buffer<'_, f32>,
         x: Buffer<'_, f32>,
         routes: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, geometry, out, x, routes);
+        Err(unsupported("Moe::combine"))
+    }
 
     /// `out` is `[active, rows]`.
     /// # Errors
@@ -634,7 +757,10 @@ pub trait Moe: Send + Sync {
         x: Buffer<'_, f32>,
         routes: Buffer<'_, f32>,
         weight: ExpertWeight<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, out, x, routes, weight);
+        Err(unsupported("Moe::experts"))
+    }
 }
 
 /// Reduction state between the two greedy kernels, each `[rows, blocks]`.
@@ -656,7 +782,10 @@ pub trait Sampling: Send + Sync {
         plan: &GreedyPlan,
         partials: GreedyPartials<'_>,
         logits: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, partials, logits);
+        Err(unsupported("Sampling::greedy_partials"))
+    }
 
     /// Finish into `output` rows of two elements, starting at row `offset`.
     /// # Errors
@@ -668,7 +797,10 @@ pub trait Sampling: Send + Sync {
         offset: usize,
         output: Buffer<'_, i32>,
         partials: GreedyPartials<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, offset, output, partials);
+        Err(unsupported("Sampling::greedy_finish"))
+    }
 }
 
 /// History rows a convolution keeps.
@@ -786,7 +918,10 @@ pub trait RecurrentPool: Send + Sync {
         channels: usize,
         outputs: LaneBuffers<'_, f32>,
         buffers: FusedConvBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, channels, outputs, buffers);
+        Err(unsupported("RecurrentPool::conv_verify_fused"))
+    }
 
     /// Commit the first `count` fused candidates into one slot's convolution history.
     /// # Errors
@@ -798,7 +933,10 @@ pub trait RecurrentPool: Send + Sync {
         history: [Buffer<'_, f32>; CONV_HISTORY],
         inputs: LaneBuffers<'_, f32>,
         metadata: LaneBuffers<'_, i32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, count, history, inputs, metadata);
+        Err(unsupported("RecurrentPool::conv_commit_fused"))
+    }
 
     /// Read-only three-candidate recurrence of one slot.
     /// # Errors
@@ -809,7 +947,10 @@ pub trait RecurrentPool: Send + Sync {
         plan: &DeltaStepPlan,
         outputs: LaneBuffers<'_, f32>,
         buffers: FusedDeltaBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, outputs, buffers);
+        Err(unsupported("RecurrentPool::delta_verify_fused"))
+    }
 
     /// Commit the first `count` fused candidates into one slot's recurrence state.
     /// # Errors
@@ -820,7 +961,10 @@ pub trait RecurrentPool: Send + Sync {
         plan: &DeltaStepPlan,
         count: i32,
         buffers: FusedDeltaBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, count, buffers);
+        Err(unsupported("RecurrentPool::delta_commit_fused"))
+    }
 
     /// Read-only verification across the slot axis.
     /// # Errors
@@ -831,7 +975,10 @@ pub trait RecurrentPool: Send + Sync {
         plan: &PoolDeltaPlan,
         output: Buffer<'_, f32>,
         buffers: PoolDeltaBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, output, buffers);
+        Err(unsupported("RecurrentPool::delta_verify_pool"))
+    }
 
     /// Commit each slot's accepted prefix across the slot axis.
     /// # Errors
@@ -842,7 +989,10 @@ pub trait RecurrentPool: Send + Sync {
         plan: &PoolDeltaPlan,
         counts: Buffer<'_, i32>,
         buffers: PoolDeltaBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, counts, buffers);
+        Err(unsupported("RecurrentPool::delta_commit_pool"))
+    }
 
     /// Shift each slot's convolution window by its accepted prefix.
     /// # Errors
@@ -855,7 +1005,10 @@ pub trait RecurrentPool: Send + Sync {
         rows: Buffer<'_, f32>,
         metadata: Buffer<'_, i32>,
         counts: Buffer<'_, i32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, history, rows, metadata, counts);
+        Err(unsupported("RecurrentPool::conv_commit_pool"))
+    }
 }
 
 /// Gated delta recurrence and its convolution.
@@ -868,7 +1021,10 @@ pub trait Recurrent: Send + Sync {
         recording: &Recording<'_>,
         plan: &DeltaStepPlan,
         buffers: DeltaBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, buffers);
+        Err(unsupported("Recurrent::delta_step"))
+    }
 
     /// One token's recurrence, keeping the prior state in `snapshot`.
     /// # Errors
@@ -879,7 +1035,10 @@ pub trait Recurrent: Send + Sync {
         plan: &DeltaStepPlan,
         snapshot: Buffer<'_, f32>,
         buffers: DeltaBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, snapshot, buffers);
+        Err(unsupported("Recurrent::delta_checkpoint"))
+    }
 
     /// One token's convolution, keeping the prior history in `snapshot`.
     /// # Errors
@@ -890,7 +1049,10 @@ pub trait Recurrent: Send + Sync {
         channels: usize,
         snapshot: [Buffer<'_, f32>; CONV_HISTORY],
         buffers: ConvBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, channels, snapshot, buffers);
+        Err(unsupported("Recurrent::conv_checkpoint"))
+    }
 
     /// A convolution of `channels`.
     /// # Errors
@@ -901,7 +1063,10 @@ pub trait Recurrent: Send + Sync {
         kernel: ConvKernel,
         channels: usize,
         buffers: ConvBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, kernel, channels, buffers);
+        Err(unsupported("Recurrent::conv"))
+    }
 
     /// The chunked BF16 prompt rule.
     /// # Errors
@@ -912,7 +1077,10 @@ pub trait Recurrent: Send + Sync {
         shape: RecurrentShape,
         chunk: usize,
         buffers: ChunkBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, shape, chunk, buffers);
+        Err(unsupported("Recurrent::chunk"))
+    }
 
     /// Normalize every query and key per head and token.
     /// # Errors
@@ -923,7 +1091,10 @@ pub trait Recurrent: Send + Sync {
         shape: RecurrentShape,
         normalized: Buffer<'_, f32>,
         qkv: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, shape, normalized, qkv);
+        Err(unsupported("Recurrent::normalize"))
+    }
 
     /// Evaluate beta and decay once per head and token.
     /// # Errors
@@ -933,7 +1104,10 @@ pub trait Recurrent: Send + Sync {
         recording: &Recording<'_>,
         shape: RecurrentShape,
         buffers: GateBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, shape, buffers);
+        Err(unsupported("Recurrent::gates"))
+    }
 
     /// The ordered recurrence over [`Recurrent::normalize`] and [`Recurrent::gates`].
     /// # Errors
@@ -944,13 +1118,19 @@ pub trait Recurrent: Send + Sync {
         shape: RecurrentShape,
         block: usize,
         buffers: PreparedDeltaBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, shape, block, buffers);
+        Err(unsupported("Recurrent::delta_prepared"))
+    }
 
     /// Load the pinned SIMT build of [`Recurrent::delta_prepared`] for `shape`; `false` when no
     /// build covers it. Call outside capture: loading a module is not a stream operation.
     /// # Errors
     /// Fails when the build does not load on this device.
-    fn prepare_simt_delta(&self, shape: RecurrentShape) -> Result<bool>;
+    fn prepare_simt_delta(&self, shape: RecurrentShape) -> Result<bool> {
+        let _ = shape;
+        Err(unsupported("Recurrent::prepare_simt_delta"))
+    }
 
     /// [`Recurrent::delta_prepared`] by the SIMT build [`Recurrent::prepare_simt_delta`] loaded.
     /// The exact recurrence tuning admits it only where the two agree bit for bit.
@@ -962,7 +1142,10 @@ pub trait Recurrent: Send + Sync {
         recording: &Recording<'_>,
         shape: RecurrentShape,
         buffers: PreparedDeltaBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, shape, buffers);
+        Err(unsupported("Recurrent::delta_prepared_simt"))
+    }
 
     /// A recurrence that derives its gates per token.
     /// # Errors
@@ -974,7 +1157,10 @@ pub trait Recurrent: Send + Sync {
         shape: RecurrentShape,
         block: usize,
         buffers: DeltaBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, kernel, shape, block, buffers);
+        Err(unsupported("Recurrent::delta"))
+    }
 
     /// Reorder head-major scratch into lane-major output.
     /// # Errors
@@ -985,7 +1171,10 @@ pub trait Recurrent: Send + Sync {
         shape: RecurrentShape,
         output: Buffer<'_, f32>,
         scratch: Buffer<'_, f32>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, shape, output, scratch);
+        Err(unsupported("Recurrent::transpose"))
+    }
 }
 
 /// One device's kernels, selected once when a model loads; no call path chooses a source.
@@ -1002,4 +1191,9 @@ pub struct Kernels {
     pub sampling: Box<dyn Sampling>,
     pub recurrent: Box<dyn Recurrent>,
     pub recurrent_pool: Box<dyn RecurrentPool>,
+}
+
+/// What a family method a kernel source does not provide returns.
+fn unsupported(method: &str) -> infer_core::Error {
+    infer_core::Error::unsupported(format!("{method} is not provided by this kernel source"))
 }

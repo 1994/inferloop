@@ -5,8 +5,12 @@
 //! loaded as cubins and launched through the driver.
 pub mod artifact;
 mod driver;
+pub mod jit;
+mod kernels;
 mod projection;
+pub mod runtime;
 
 pub use artifact::{Entry, Manifest};
 pub use driver::{Buffer, Device, Function, Graph, Module};
+pub use kernels::kernels;
 pub use projection::AotProjection;

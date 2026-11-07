@@ -285,7 +285,10 @@ pub trait Attention: Send + Sync {
     /// Append one lane's row.
     /// # Errors
     /// See the trait.
-    fn append(&self, recording: &Recording<'_>, buffers: AppendBuffers<'_>) -> Result<()>;
+    fn append(&self, recording: &Recording<'_>, buffers: AppendBuffers<'_>) -> Result<()> {
+        let _ = (recording, buffers);
+        Err(unsupported("Attention::append"))
+    }
 
     /// Append a prompt chunk's rows.
     /// # Errors
@@ -295,7 +298,10 @@ pub trait Attention: Send + Sync {
         recording: &Recording<'_>,
         plan: PrefillAppendPlan,
         buffers: AppendBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, buffers);
+        Err(unsupported("Attention::append_prefill"))
+    }
 
     /// Append every lane of a pool in one launch.
     /// # Errors
@@ -305,7 +311,10 @@ pub trait Attention: Send + Sync {
         recording: &Recording<'_>,
         plan: LanesAppendPlan,
         buffers: AppendBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, buffers);
+        Err(unsupported("Attention::append_lanes"))
+    }
 
     /// Dense attention over every query.
     /// # Errors
@@ -315,7 +324,10 @@ pub trait Attention: Send + Sync {
         recording: &Recording<'_>,
         plan: DensePlan,
         buffers: DenseBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, buffers);
+        Err(unsupported("Attention::dense"))
+    }
 
     /// Dense attention of one query row.
     /// # Errors
@@ -325,7 +337,10 @@ pub trait Attention: Send + Sync {
         recording: &Recording<'_>,
         plan: DensePlan,
         buffers: DenseBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, buffers);
+        Err(unsupported("Attention::dense_decode"))
+    }
 
     /// Decode one lane with one launch.
     /// # Errors
@@ -335,7 +350,10 @@ pub trait Attention: Send + Sync {
         recording: &Recording<'_>,
         plan: DecodePlan,
         buffers: DecodeBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, buffers);
+        Err(unsupported("Attention::decode"))
+    }
 
     /// Decode a prompt chunk's lanes block by block.
     /// # Errors
@@ -345,7 +363,10 @@ pub trait Attention: Send + Sync {
         recording: &Recording<'_>,
         plan: PrefillDecodePlan,
         buffers: DecodeBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, buffers);
+        Err(unsupported("Attention::decode_prefill"))
+    }
 
     /// Decode a prompt chunk's lanes in query tiles of `query_tile` rows.
     /// # Errors
@@ -356,7 +377,10 @@ pub trait Attention: Send + Sync {
         plan: PrefillDecodePlan,
         query_tile: usize,
         buffers: DecodeBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, query_tile, buffers);
+        Err(unsupported("Attention::decode_prefill_tiled"))
+    }
 
     /// Decode through a split's partials, then merge them.
     /// # Errors
@@ -367,7 +391,10 @@ pub trait Attention: Send + Sync {
         plan: SplitDecodePlan,
         partials: Partials<'_>,
         buffers: DecodeBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, partials, buffers);
+        Err(unsupported("Attention::decode_split"))
+    }
 
     /// One grouped launch for three candidates, then a merge for each.
     /// # Errors
@@ -378,7 +405,10 @@ pub trait Attention: Send + Sync {
         plan: SplitDecodePlan,
         partials: Partials<'_>,
         buffers: VerifyDecodeBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, partials, buffers);
+        Err(unsupported("Attention::decode_verify"))
+    }
 
     /// One grouped launch and merge across a pool's lanes.
     /// # Errors
@@ -389,7 +419,10 @@ pub trait Attention: Send + Sync {
         plan: LanesDecodePlan,
         partials: Partials<'_>,
         buffers: DecodeBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, partials, buffers);
+        Err(unsupported("Attention::decode_lanes"))
+    }
 
     /// Pack one group's control block and write its pages.
     /// # Errors
@@ -399,7 +432,10 @@ pub trait Attention: Send + Sync {
         recording: &Recording<'_>,
         plan: PooledPlan,
         buffers: PooledAppendBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, buffers);
+        Err(unsupported("Attention::append_pooled"))
+    }
 
     /// Decode one group's slots and merge into their rows.
     /// # Errors
@@ -409,5 +445,13 @@ pub trait Attention: Send + Sync {
         recording: &Recording<'_>,
         plan: PooledPlan,
         buffers: PooledDecodeBuffers<'_>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        let _ = (recording, plan, buffers);
+        Err(unsupported("Attention::decode_pooled"))
+    }
+}
+
+/// What a family method a kernel source does not provide returns.
+fn unsupported(method: &str) -> infer_core::Error {
+    infer_core::Error::unsupported(format!("{method} is not provided by this kernel source"))
 }

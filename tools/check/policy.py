@@ -172,6 +172,9 @@ def check_exceptions():
                         # AOT driver boundary: every FFI call is checked, handles are owned and
                         # buffers are freed exactly once.
                         ROOT / "crates/backend/cuda-kernels/src/aot/driver.rs",
+                        # AOT runtime: typed views of driver memory for element types that promise
+                        # every bit pattern is valid, inside ranges the allocation owns.
+                        ROOT / "crates/backend/cuda-kernels/src/aot/runtime.rs",
                         # Contract buffers: the constructor holds the only obligation, so family
                         # methods are safe; the host makes buffers in one file, over tensors a
                         # resident program owns until its graphs are destroyed.
