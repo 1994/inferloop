@@ -680,10 +680,16 @@ fn vendor_fp8_typed_algorithm_restore_roundtrip() -> TestResult {
         }
         Ok(())
     })?;
-    assert_eq!(
-        held(&weight),
-        before.map(|count| count + 1),
-        "the recorded Lt node must hold the weight and channel scales it reads"
+    // The capture retains what it records and the Lt node keeps what it reads, so a buffer may be
+    // held more than once; what matters is that the graph holds both.
+    let after = held(&weight);
+    assert!(
+        after
+            .iter()
+            .zip(before)
+            .all(|(&after, before)| after > before),
+        "the recorded graph must hold the weight and channel scales the Lt node reads: \
+         {before:?} -> {after:?}"
     );
     // Both graphs are declared after the lifetime owners and are destroyed before them.
     native_graph.launch().sync_on(&device.stream)?;
