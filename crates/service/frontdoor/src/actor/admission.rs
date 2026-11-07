@@ -112,8 +112,15 @@ impl<B: BackendProvider> RuntimeActor<B> {
                 .filter(|(_, s)| s.terminal.is_none() && (self.stopping || s.channel.is_closed()))
                 .map(|(id, _)| *id),
         );
+        // A drained runtime and a requester that stopped reading are different incidents: the log
+        // line has to say which one closed the stream.
+        let source = if self.stopping {
+            infer_core::CancelSource::Shutdown
+        } else {
+            infer_core::CancelSource::ClientDisconnected
+        };
         for id in &scratch {
-            if let Ok(events) = self.engine.cancel(*id) {
+            if let Ok(events) = self.engine.cancel_from(*id, source) {
                 generated.extend(events);
             }
         }

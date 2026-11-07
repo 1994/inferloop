@@ -1,8 +1,8 @@
 //! Cancellation and terminal ownership converge through one finish operation.
 use crate::{CompletedRequest, Engine, EngineOutput};
 use infer_core::{
-    Error, ErrorCode, FinishReason, RequestId, RequestStatus, Result, event::EventKind,
-    event::ObjectKind,
+    CancelSource, Error, ErrorCode, FinishReason, RequestId, RequestStatus, Result,
+    event::EventKind, event::ObjectKind,
 };
 use infer_ir::WorkloadOutput;
 use infer_observe::DiagnosticCode;
@@ -14,18 +14,44 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
     /// # Errors
     /// Returns a not-found error for an unknown request or a backend/state error if cancellation cleanup fails.
     pub fn cancel(&mut self, id: RequestId) -> Result<Vec<EngineOutput>> {
+        self.cancel_from(id, CancelSource::Requested)
+    }
+    /// Cancel one request and record who stopped wanting it.
+    ///
+    /// The source is diagnostic only: it reaches the request's finish log so an operator can tell
+    /// a disconnected client from a drained runtime without turning on debug logging.
+    /// # Errors
+    /// Returns a not-found error for an unknown request or a backend/state error if cancellation cleanup fails.
+    pub fn cancel_from(
+        &mut self,
+        id: RequestId,
+        source: CancelSource,
+    ) -> Result<Vec<EngineOutput>> {
         let mut emitted = Vec::new();
-        self.cancel_into(id, &mut emitted)?;
+        self.cancel_into(id, source, &mut emitted)?;
         Ok(emitted)
     }
     /// Reuse delivery storage during ordinary cancellation; state remains leased until all fences settle.
     /// # Errors
     /// Returns missing request or ownership/backend errors.
-    pub fn cancel_into(&mut self, id: RequestId, emitted: &mut Vec<EngineOutput>) -> Result<()> {
-        let record = self.request(id)?;
-        if record.status.terminal() || record.pending_finish.is_some() {
-            return Ok(());
+    pub fn cancel_into(
+        &mut self,
+        id: RequestId,
+        source: CancelSource,
+        emitted: &mut Vec<EngineOutput>,
+    ) -> Result<()> {
+        {
+            let record = self.request(id)?;
+            if record.status.terminal() || record.pending_finish.is_some() {
+                return Ok(());
+            }
         }
+        let record = self
+            .host
+            .requests
+            .get_mut(id)
+            .ok_or_else(|| Error::invariant("known request"))?;
+        record.cancel_source = Some(source);
         self.host.queues.cancel(id)?;
         self.record_action(crate::ReplayAction::Cancel(id));
         self.event(EventKind::Cancelled, ObjectKind::Request, id.get(), 0, 0, 0);
@@ -208,7 +234,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 cached_tokens: r.cached_tokens,
             },
         };
-        log_finish(&completed);
+        log_finish(&completed, r.cancel_source);
         r.completed = Some(completed.clone());
         self.resources_changed()?;
         if self.preemption_focus == Some(id) {
@@ -297,8 +323,9 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
 }
 
 /// Report a finished request with the measurement an operator reads: how many tokens were
-/// produced and how long the request took end to end.
-fn log_finish(completed: &CompletedRequest) {
+/// produced, how long the request took, and — for a request that failed — how far it got and who
+/// stopped it. A cancelled request without a source is not diagnosable from the log alone.
+fn log_finish(completed: &CompletedRequest, cancel: Option<CancelSource>) {
     let measurement = &completed.measurement;
     if measurement.successful {
         tracing::info!(
@@ -315,7 +342,11 @@ fn log_finish(completed: &CompletedRequest) {
             target: "infer::request",
             request = completed.request.get(),
             reason = ?completed.reason,
+            cancel = cancel.map_or("none", CancelSource::as_str),
             output_tokens = measurement.output_tokens,
+            ttft_us = measurement.ttft_us,
+            max_tpot_us = measurement.max_tpot_us,
+            cached_tokens = measurement.cached_tokens,
             e2e_us = measurement.e2e_us,
             "request finished unsuccessfully"
         );

@@ -18,6 +18,30 @@ pub enum FinishReason {
     Deadline,
     Failed(String),
 }
+/// Who stopped a request before it finished.
+///
+/// `FinishReason::Cancelled` records that a request stopped early; this records why an operator
+/// should be able to tell a requester walking away from a runtime shutdown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CancelSource {
+    /// The requester stopped reading its response, so its output stream closed.
+    ClientDisconnected,
+    /// The runtime is shutting down and drained in-flight work.
+    Shutdown,
+    /// The requester called an explicit cancel endpoint.
+    Requested,
+}
+impl CancelSource {
+    /// Stable field value for structured logs and inspection.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ClientDisconnected => "client_disconnected",
+            Self::Shutdown => "shutdown",
+            Self::Requested => "requested",
+        }
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RequestStatus {
     Runnable,
