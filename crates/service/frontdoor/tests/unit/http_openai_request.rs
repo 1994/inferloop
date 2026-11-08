@@ -253,6 +253,42 @@ fn nullable_tool_calls_from_sdk_history_are_accepted() {
 }
 
 #[test]
+fn replayed_reasoning_content_is_accepted_and_skipped() {
+    // A client that replays the assistant message this API published sends `reasoning_content`
+    // back with it. It must deserialize, and it must not reach the template.
+    let mut request = chat(
+        &json!([
+            {"role":"user", "content":"hello"},
+            {"role":"assistant", "content":"hi", "reasoning_content":"weigh the options"},
+            {"role":"user", "content":"again"}
+        ]),
+        &json!({}),
+    );
+    request.validate(true).unwrap();
+    let messages = request.chat_messages().unwrap().0;
+    assert_eq!(messages[1].role, "assistant");
+    assert_eq!(messages[1].content, "hi");
+    assert!(!messages[1].content.contains("weigh"));
+
+    // `null` is what a client echoes when a turn produced no reasoning.
+    let mut absent = chat(
+        &json!([{"role":"assistant", "content":"hi", "reasoning_content":null}]),
+        &json!({}),
+    );
+    assert!(absent.chat_messages().is_ok());
+
+    // Our own responses only attach reasoning to assistant messages.
+    let mut misplaced = chat(
+        &json!([{"role":"user", "content":"hi", "reasoning_content":"why"}]),
+        &json!({}),
+    );
+    assert_eq!(
+        misplaced.chat_messages().unwrap_err().code,
+        infer_core::ErrorCode::InvalidInput
+    );
+}
+
+#[test]
 fn invalid_function_names_and_choices_are_parameter_errors() {
     for name in [
         "with space",

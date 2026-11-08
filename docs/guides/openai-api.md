@@ -56,6 +56,8 @@
 
 assistant 消息可以带 `tool_calls`（`null` 按空列表处理），每项为 `{"id":..., "type":"function", "function":{"name":..., "arguments":...}}`，`arguments` 是该调用收到或产生的原始 JSON 文本。`tool` 消息必须带 `tool_call_id`，并关联到同一段历史中更早的一次 assistant 调用。id 重复、关联不存在的历史、或把 `tool_calls` / `tool_call_id` 放错 role 都返回 400。历史可以包含本次未声明的工具调用，本次声明集合只约束新产生的调用。
 
+assistant 消息可以回传此前响应中的 `reasoning_content`（`null` 按缺省处理）；它不会进入 prompt，模板没有 reasoning 历史槽位，下一轮思考由模型重新生成。把该字段放在其他 role 上返回 400。
+
 ### 严格工具调用
 
 遵循 [OpenAI 工具选择语义](https://developers.openai.com/api/docs/guides/function-calling)：required 至少一次调用，指定 function 恰好一次指定调用；parallel=false 至多一次。

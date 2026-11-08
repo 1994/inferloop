@@ -299,6 +299,26 @@ async fn chat_matches_native_template_and_ids_survive_router_rebuilds() {
 }
 
 #[tokio::test]
+async fn chat_accepts_a_replayed_assistant_message_with_reasoning_content() {
+    let (handle, assets) = fixture();
+    let app = router_with_text(handle.clone(), assets);
+    // Second turn of a thinking conversation: the client echoes the assistant message it got
+    // back, including the reasoning text this service published.
+    let payload = json!({
+        "model": "1",
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi", "reasoning_content": "weigh the options"},
+            {"role": "user", "content": "again"}
+        ],
+        "max_tokens": 2
+    });
+    let (status, body) = call(app, "/v1/chat/completions", Some(payload)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn invalid_and_unsupported_requests_return_errors_without_admission() {
     let (handle, assets) = fixture();
     let app = router_with_text(handle.clone(), assets);
