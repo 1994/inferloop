@@ -267,6 +267,10 @@ impl OutputStreamParser {
                 "tool call exceeds its byte budget",
             ));
         }
+        if end.is_some() {
+            // `</tool_call>` also ends a function whose `</function>` never arrived.
+            self.scanner.close();
+        }
         if self.emission == Emission::Arguments {
             self.publish_arguments(events)?;
         }

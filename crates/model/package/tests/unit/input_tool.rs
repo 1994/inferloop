@@ -179,26 +179,43 @@ fn a_function_block_without_parameters_is_an_empty_object() {
 }
 
 #[test]
-fn malformed_function_blocks_are_left_as_text() {
-    for body in [
-        // No function header at all.
-        "<parameter=city>\nParis\n</parameter>",
+fn a_function_block_keeps_only_the_parameters_that_completed() {
+    // The model closes the call even when a later parameter is broken. Publishing what
+    // completed keeps the arguments valid JSON, and the client's schema check reports the
+    // missing field instead of the whole response failing after its prefix was streamed.
+    for (body, calls) in [
+        // No function header at all: not a call.
+        ("<parameter=city>\nParis\n</parameter>", 0),
         // An empty function name.
-        "<function=>\n<parameter=city>\nParis\n</parameter>",
-        // A parameter that never closes.
-        "<function=f>\n<parameter=city>\nParis",
-        // A duplicate parameter would drop one value.
-        "<function=f>\n<parameter=k>\n1\n</parameter>\n<parameter=k>\n2\n</parameter>",
-        // A parameter without a name.
-        "<function=f>\n<parameter=>\n1\n</parameter>",
+        ("<function=>\n<parameter=city>\nParis\n</parameter>", 0),
+        // A parameter that never closes: its value is dropped, the block still closes.
+        ("<function=f>\n<parameter=city>\nParis", 1),
+        // A duplicate parameter keeps the first value.
+        (
+            "<function=f>\n<parameter=k>\n1\n</parameter>\n<parameter=k>\n2\n</parameter>",
+            1,
+        ),
+        // A parameter without a name still closes the named function.
+        ("<function=f>\n<parameter=>\n1\n</parameter>", 1),
     ] {
         let text = format!("{TOOL_CALL_OPEN}{body}{TOOL_CALL_CLOSE}");
-        let parsed = parse_with(&text, ToolDialect::FunctionParameters, None).unwrap();
-        assert_eq!(parsed.calls.len(), 0, "{body}");
-        assert!(
-            parsed.content.contains(FUNCTION_MARKER) || parsed.content.contains(PARAMETER_MARKER)
-        );
+        for chunk in [1, 3, 17, 4096] {
+            let (events, truncated) =
+                streaming_events(&text, ToolDialect::FunctionParameters, chunk);
+            let parsed = assemble(events, truncated);
+            assert_eq!(parsed.calls.len(), calls, "{body} at chunk {chunk}");
+            if calls == 1 {
+                let arguments: serde_json::Value =
+                    serde_json::from_str(&parsed.calls[0].arguments).expect("valid argument JSON");
+                assert!(arguments.is_object(), "{body}");
+            }
+        }
     }
+    // A response that ends inside a call, with no `</tool_call>`, stays truncated.
+    let text = format!("{TOOL_CALL_OPEN}<function=f>\n<parameter=city>\nParis");
+    let parsed = parse_with(&text, ToolDialect::FunctionParameters, None).unwrap();
+    assert_eq!(parsed.calls.len(), 0);
+    assert!(parsed.truncated);
 }
 
 #[test]
@@ -462,21 +479,26 @@ fn a_utf8_character_split_across_chunks_is_reassembled_in_the_call() {
 }
 
 #[test]
-fn a_function_requires_its_closer_and_only_its_declared_parameters() {
-    for body in [
-        "<function=f><parameter=x>1</parameter>",
-        "noise<function=f></function>",
-        "<function=f></function>noise",
-        "<function=f></function><function=g></function>",
-        "<function=f>garbage</function>",
+fn a_function_block_closes_at_the_call_boundary() {
+    // The model sometimes stops after the last parameter and closes only the call. What
+    // completed is published; the missing `</function>` adds no information.
+    for (body, arguments) in [
+        ("<function=f><parameter=x>1</parameter>", r#"{"x":1}"#),
+        ("<function=f></function>noise", "{}"),
+        ("<function=f></function><function=g></function>", "{}"),
+        ("<function=f>garbage</function>", "{}"),
     ] {
         let text = format!("{TOOL_CALL_OPEN}{body}{TOOL_CALL_CLOSE}");
         for chunk in [1, 3, 17, 4096] {
             let parsed = feed_all(&text, ToolDialect::FunctionParameters, chunk);
-            assert!(parsed.calls.is_empty(), "{text}");
-            assert!(parsed.content.contains(body));
+            assert_eq!(parsed.calls.len(), 1, "{text} at chunk {chunk}");
+            assert_eq!(parsed.calls[0].arguments, arguments, "{text}");
         }
     }
+    // A block that never names a function stays text.
+    let text = format!("{TOOL_CALL_OPEN}noise<function=f></function>{TOOL_CALL_CLOSE}");
+    let parsed = parse_with(&text, ToolDialect::FunctionParameters, None).unwrap();
+    assert_eq!(parsed.calls.len(), 0);
 }
 
 #[test]
@@ -574,6 +596,39 @@ fn function_parameters_publish_at_parameter_boundaries() {
             .iter()
             .any(|e| matches!(e, StreamEvent::CallEnd { index: 0 }))
     );
+}
+
+#[test]
+fn repeated_and_wrapping_tags_do_not_become_parameters() {
+    // Observed from the served Qwen3.8: the function header is repeated, or an extra tag wraps
+    // the parameters. Neither names a parameter, so the real one is still parsed.
+    for body in [
+        "<function=f>\n<function=f>\n<parameter=x>1</parameter>\n</function>",
+        "<function=f>\n<TODO>\n<parameter=x>1</parameter>\n</function>",
+        "<function=f>\n<function=f>\n<parameter=x>1</parameter>",
+    ] {
+        let text = format!("{TOOL_CALL_OPEN}{body}{TOOL_CALL_CLOSE}");
+        for chunk in [1, 2, 5, 17, 4096] {
+            let (events, truncated) =
+                streaming_events(&text, ToolDialect::FunctionParameters, chunk);
+            let parsed = assemble(events, truncated);
+            assert_eq!(parsed.calls.len(), 1, "{body} at chunk {chunk}: {parsed:?}");
+            assert_eq!(parsed.calls[0].arguments, r#"{"x":1}"#, "{body}");
+        }
+    }
+}
+
+#[test]
+fn an_aborted_call_publishes_an_empty_argument_object() {
+    // The model started a call and closed it before any parameter: the client sees a call with
+    // no arguments and can report the missing field instead of the turn failing.
+    let text = format!("{TOOL_CALL_OPEN}<function=f>{TOOL_CALL_CLOSE}");
+    for chunk in [1, 3, 17, 4096] {
+        let (events, truncated) = streaming_events(&text, ToolDialect::FunctionParameters, chunk);
+        let parsed = assemble(events, truncated);
+        assert_eq!(parsed.calls.len(), 1, "chunk {chunk}");
+        assert_eq!(parsed.calls[0].arguments, "{}");
+    }
 }
 
 #[test]

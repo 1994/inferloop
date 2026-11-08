@@ -26,6 +26,8 @@ pub(super) struct FunctionScanner {
     quoted: bool,
     escaped: bool,
     abandoned_close: Option<usize>,
+    /// The block ended at `</tool_call>` rather than at the end of the response.
+    block_closed: bool,
 }
 impl FunctionScanner {
     pub(super) const fn new() -> Self {
@@ -41,6 +43,7 @@ impl FunctionScanner {
             quoted: false,
             escaped: false,
             abandoned_close: None,
+            block_closed: false,
         }
     }
     pub(super) fn scan(&mut self, body: &str, flush: bool) -> Option<usize> {
@@ -49,6 +52,7 @@ impl FunctionScanner {
             if byte == b'<' && self.phase != Phase::Value {
                 let tail = &body[self.cursor..];
                 if tail.starts_with(TOOL_CALL_CLOSE) {
+                    self.block_closed = true;
                     return Some(self.cursor);
                 }
                 if TOOL_CALL_CLOSE.starts_with(tail) {
@@ -70,7 +74,15 @@ impl FunctionScanner {
                 Phase::Invalid => self.cursor += 1,
             }
         }
-        if flush { self.abandoned_close } else { None }
+        if flush {
+            // A closer that ended inside an unterminated value still ended the block.
+            if self.abandoned_close.is_some() {
+                self.block_closed = true;
+            }
+            self.abandoned_close
+        } else {
+            None
+        }
     }
     fn boundary(&mut self, body: &str) -> bool {
         let tail = &body[self.cursor..];
@@ -100,18 +112,22 @@ impl FunctionScanner {
             }
             Phase::Between if FUNCTION_CLOSE.starts_with(tail) => false,
             Phase::Between => self.parameter(tail),
+            // Only the boundary phases reach here; bytes after `</function>` carry no
+            // structure and are skipped.
             _ => {
-                self.phase = Phase::Invalid;
+                self.cursor += 1;
                 true
             }
         }
     }
     /// Open one parameter inside `<function=...>`.
     ///
-    /// The shipped `Qwen3.8` template asks for `<parameter=name>`, but the model sometimes
-    /// drops or swaps the marker and writes `<name>` or `<function=name>`. Both are
-    /// unambiguous here: the tag sits between parameters, and its value still ends at
-    /// `</parameter>`. A tag that cannot name a parameter keeps the block invalid.
+    /// The canonical form is `<parameter=name>`. The child tag itself names a parameter, so the
+    /// `parameter=` marker may be absent (`<name>`), and a `function=` prefix on the tag —
+    /// the root marker left on a child — is dropped as well. A tag that only wraps another
+    /// opener belongs to no parameter and is skipped, as is a repeated root header
+    /// `<function=F>` inside `<function=F>`. A tag that cannot name a parameter keeps the
+    /// block invalid.
     fn parameter(&mut self, tail: &str) -> bool {
         if tail.starts_with(PARAMETER_MARKER) {
             self.cursor += PARAMETER_MARKER.len();
@@ -131,7 +147,22 @@ impl FunctionScanner {
             return true;
         }
         let tag = tail[1..close].trim();
+        // A repeated root header inside the root carries no parameter.
+        if tag.strip_prefix("function=") == self.name.as_deref() {
+            self.cursor += close + 1;
+            return true;
+        }
         let name = tag.strip_prefix("function=").unwrap_or(tag);
+        match next_is_opener(&tail[close + 1..]) {
+            // A bare tag right before another opener wraps it.
+            Some(true) => {
+                self.cursor += close + 1;
+                return true;
+            }
+            // The tag may still turn out to be a wrapper once more bytes arrive.
+            None => return false,
+            Some(false) => {}
+        }
         if !names_a_parameter(name) || !self.keys.insert(name.to_string()) {
             self.phase = Phase::Invalid;
             return true;
@@ -228,6 +259,20 @@ impl FunctionScanner {
             self.arguments.push_str(&value);
         }
     }
+    /// Finish the function at `</tool_call>` when `</function>` is missing.
+    ///
+    /// The call boundary closes the envelope: only a block that reached `</tool_call>` is
+    /// completed this way, while a response that simply ends inside a call stays truncated.
+    /// An argument whose `</parameter>` never arrived is dropped, so the published text stays
+    /// valid JSON and the client's schema check reports it, instead of the whole response
+    /// failing after its prefix was published.
+    pub(super) fn close(&mut self) {
+        if !self.block_closed || self.name.is_none() || self.phase == Phase::Closed {
+            return;
+        }
+        self.arguments.push('}');
+        self.phase = Phase::Closed;
+    }
     pub(super) fn name(&self) -> Option<&str> {
         self.name.as_deref()
     }
@@ -243,6 +288,30 @@ impl FunctionScanner {
             arguments: self.arguments.clone(),
         })
     }
+}
+
+/// Whether the element after a tag opens a structured block.
+///
+/// `None` means the next bytes are still a prefix of an opener, so the answer has to wait for
+/// the next chunk.
+fn next_is_opener(rest: &str) -> Option<bool> {
+    let rest = rest.trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+    let markers = [
+        PARAMETER_MARKER,
+        FUNCTION_MARKER,
+        FUNCTION_CLOSE,
+        TOOL_CALL_CLOSE,
+    ];
+    if markers.iter().any(|marker| rest.starts_with(marker)) {
+        return Some(true);
+    }
+    if markers.iter().any(|marker| marker.starts_with(rest)) {
+        return None;
+    }
+    Some(false)
 }
 
 /// Whether a tolerant opener tag (`<name>` or `<function=name>`) names exactly one parameter.
