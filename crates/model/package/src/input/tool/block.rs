@@ -34,6 +34,12 @@ impl BlockScanner {
             Self::Function(scan) => scan.arguments(),
         }
     }
+    /// Finish a block at `</tool_call>`; the JSON dialect parses its own envelope.
+    pub(super) fn close(&mut self) {
+        if let Self::Function(scan) = self {
+            scan.close();
+        }
+    }
     pub(super) fn complete(&self, body: &str) -> Option<ParsedToolCall> {
         match self {
             Self::Json(_) => super::json::complete(body),
