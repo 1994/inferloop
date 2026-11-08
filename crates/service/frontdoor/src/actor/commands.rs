@@ -1,5 +1,8 @@
 //! Commands responsibilities.
-use super::{Command, DEFERRED_QUEUE_CAPACITY, RuntimeActor, STOP_WAITER_CAPACITY};
+use super::{
+    Command, DEFERRED_QUEUE_CAPACITY, Quote, Quoting, RuntimeActor, STATE_BUDGET_WAIT_US,
+    STOP_WAITER_CAPACITY,
+};
 use infer_core::{Error, ErrorCode};
 use infer_runtime::EngineOutput;
 use infer_spi::BackendProvider;
@@ -67,16 +70,17 @@ impl<B: BackendProvider> RuntimeActor<B> {
                     self.engine.try_admission_quote(&request)
                 });
                 match result {
-                    Ok(ticket) => self.quoting.push_back((
-                        Command::Submit {
-                            request,
-                            pending,
-                            trace,
-                            output,
-                            reply,
-                        },
+                    Ok(ticket) => self.quoting.push_back(Quoting {
+                        request,
+                        pending,
+                        trace,
+                        output,
+                        reply,
                         ticket,
-                    )),
+                        quote: Quote::Pending,
+                        retry_at_us: 0,
+                        deadline_us: self.now_us().saturating_add(STATE_BUDGET_WAIT_US),
+                    }),
                     Err(error) => {
                         self.engine.record_admission_rejection(request.id(), &error);
                         let _ = reply.send(Err(error));

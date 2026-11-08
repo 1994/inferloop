@@ -92,8 +92,17 @@ impl AdmissionPolicy for ResourceAdmission {
             (i.required_bytes, i.state_capacity_bytes.or(i.free_bytes))
             && required > available
         {
+            // Above the stable budget the request can never be admitted; below it the
+            // shortfall is momentary and the caller waits instead of failing the turn.
+            let busy = i
+                .state_budget_bytes
+                .is_some_and(|budget| required <= budget);
             reject(
-                AdmissionReason::StateBytes,
+                if busy {
+                    AdmissionReason::StateBytesBusy
+                } else {
+                    AdmissionReason::StateBytes
+                },
                 u128::from(required),
                 u128::from(available),
             );

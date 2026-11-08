@@ -163,6 +163,16 @@ pub trait BackendProvider {
     fn state_capacity_bytes(&self) -> Result<Option<u64>> {
         Ok(None)
     }
+    /// Stable ceiling on the state bytes one request may reserve, independent of live leases.
+    ///
+    /// Admission rejects a request above this ceiling outright and lets a request below it wait
+    /// for momentary capacity to drain. Returning `None` keeps every state-byte rejection
+    /// immediate.
+    /// # Errors
+    /// Returns backend errors while reading the configured state budget.
+    fn state_budget_bytes(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
     fn kv_cache(&self) -> Option<KvCacheInspection> {
         None
     }

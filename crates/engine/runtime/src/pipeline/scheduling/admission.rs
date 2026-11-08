@@ -55,6 +55,28 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         plan: &WorkloadPlan,
         bytes: Option<u64>,
     ) -> Result<AdmissionDecision> {
+        let decision = self.admission_decision(request, plan, bytes)?;
+        if let Some(reason) = decision.rejection {
+            return Err(Error::new(
+                if reason == AdmissionReason::TenantWeight {
+                    ErrorCode::InvalidInput
+                } else {
+                    ErrorCode::Capacity
+                },
+                format!(
+                    "admission {reason:?}: required={}, available={}",
+                    decision.required, decision.available
+                ),
+            ));
+        }
+        Ok(decision)
+    }
+    pub(crate) fn admission_decision(
+        &self,
+        request: &CanonicalRequest,
+        plan: &WorkloadPlan,
+        bytes: Option<u64>,
+    ) -> Result<AdmissionDecision> {
         let generate = matches!(request.workload, Workload::Generate { .. });
         let peak_tokens = plan.reserved_tokens.saturating_sub(usize::from(generate));
         if peak_tokens.div_ceil(self.config.block_size) > self.config.num_gpu_blocks
@@ -118,7 +140,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             }
             RequestInput::Sequence { .. } | RequestInput::Pairs { .. } => true,
         };
-        let decision = self.admission_policy.check(&AdmissionInput {
+        self.admission_policy.check(&AdmissionInput {
             tenant: &request.qos.tenant,
             weight: request.qos.weight,
             reserved_tokens: plan.reserved_tokens,
@@ -135,27 +157,28 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             } else {
                 None
             },
+            state_budget_bytes: self.backend.state_budget_bytes()?,
             now_us: self.now_us,
             target_us: target.map(|t| t.0),
             predicted_latency_us: target.map_or(complete, |t| t.1),
             minimum_execution_us: minimum,
             max_atomic_us: self.config.scheduler.max_singleton_gpu_us,
             resources_ready,
-        })?;
-        if let Some(reason) = decision.rejection {
-            return Err(Error::new(
-                if reason == AdmissionReason::TenantWeight {
-                    ErrorCode::InvalidInput
-                } else {
-                    ErrorCode::Capacity
-                },
-                format!(
-                    "admission {reason:?}: required={}, available={}",
-                    decision.required, decision.available
-                ),
-            ));
-        }
-        Ok(decision)
+        })
+    }
+    /// Whether admission is only waiting for state bytes held by other leases.
+    ///
+    /// The request fits the stable budget, so waiting for the capacity to drain can admit it;
+    /// anything rejected for another reason will fail the same way after the wait.
+    /// # Errors
+    /// Rejects a request whose plan or media could not be priced.
+    pub fn admission_awaits_state(
+        &self,
+        prepared: &crate::PreparedRequest,
+        bytes: Option<u64>,
+    ) -> Result<bool> {
+        let decision = self.admission_decision(&prepared.request, &prepared.plan, bytes)?;
+        Ok(decision.rejection == Some(AdmissionReason::StateBytesBusy))
     }
     pub(crate) fn tenant_usage(&self, tenant: &str) -> (usize, usize, usize) {
         self.tenants
