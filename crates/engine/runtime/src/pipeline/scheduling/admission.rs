@@ -109,6 +109,11 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                         "backend has no bound multimodal encoder for media input",
                     ));
                 }
+                if !self.backend.speculation_capability().allows_media_prefill() {
+                    return Err(Error::unsupported(
+                        "media prefill is unsupported while speculative decoding is enabled",
+                    ));
+                }
                 true
             }
             RequestInput::Sequence { .. } | RequestInput::Pairs { .. } => true,

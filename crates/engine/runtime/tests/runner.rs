@@ -9,7 +9,7 @@ mod queue_deadline;
 #[path = "unit/runner_reservation.rs"]
 mod reservation;
 mod support;
-use infer_core::{Error, FinishReason, ModelId, Result, StateId};
+use infer_core::{Error, ErrorCode, FinishReason, ModelId, Result, StateId};
 use infer_ir::{
     CanonicalRequest, DeviceCapabilities, ExecutionProgram, ExecutionTask, ModelIr, ModelOutput,
     OutputReadout, PrecisionPlan, StepPlan, TaskOutput,
@@ -51,6 +51,7 @@ impl BackendProvider for ReserveGate {
         infer_ir::SpeculationCapability {
             draft_depth: self.draft_depth,
             greedy_only: true,
+            media_prefill: self.inner.speculation_capability().media_prefill,
         }
     }
     fn capabilities(&self) -> DeviceCapabilities {
@@ -72,10 +73,7 @@ impl BackendProvider for ReserveGate {
         // keeping the gate on `reserve_state` alone would bypass it.
         self.reservation_attempts.fetch_add(1, Ordering::AcqRel);
         if self.owned.load(Ordering::Acquire) >= self.reservation_limit.load(Ordering::Acquire) {
-            return Err(Error::new(
-                infer_core::ErrorCode::Capacity,
-                "resident budget busy",
-            ));
+            return Err(Error::new(ErrorCode::Capacity, "resident budget busy"));
         }
         self.inner.reserve_state_for(state, capacity, readout)?;
         self.owned.fetch_add(1, Ordering::AcqRel);
@@ -478,7 +476,7 @@ fn a_full_control_lane_reports_quote_backpressure_until_the_owner_drains() -> Re
             .admission_quote(&prepared)
             .err()
             .map(|e| e.code),
-        Some(infer_core::ErrorCode::Capacity)
+        Some(ErrorCode::Capacity)
     );
     fixture
         .release
@@ -670,7 +668,7 @@ fn dropped_compute_ticket_waits_for_fence_then_allows_next_submission() -> Resul
             .submit_shared_borrowed(&program, step.clone(), &tasks)
             .err()
             .map(|e| e.code),
-        Some(infer_core::ErrorCode::Conflict)
+        Some(ErrorCode::Conflict)
     );
     fixture.poll_gate.store(true, Ordering::Release);
     let mut next = loop {
@@ -680,12 +678,7 @@ fn dropped_compute_ticket_waits_for_fence_then_allows_next_submission() -> Resul
             .submit_shared_borrowed(&program, step.clone(), &tasks)
         {
             Ok(ticket) => break ticket,
-            Err(error)
-                if matches!(
-                    error.code,
-                    infer_core::ErrorCode::Capacity | infer_core::ErrorCode::Conflict
-                ) =>
-            {
+            Err(error) if matches!(error.code, ErrorCode::Capacity | ErrorCode::Conflict) => {
                 deadline(limit)?;
             }
             Err(error) => return Err(error),
@@ -891,10 +884,7 @@ impl BackendProvider for InlineReservationIntent {
         _readout: OutputReadout,
     ) -> Result<()> {
         self.attempts.fetch_add(1, Ordering::AcqRel);
-        Err(Error::new(
-            infer_core::ErrorCode::Capacity,
-            "resident budget busy",
-        ))
+        Err(Error::new(ErrorCode::Capacity, "resident budget busy"))
     }
     fn release_state(&mut self, _state: StateId) -> Result<()> {
         // The rejected reservation never created backend state.
@@ -993,10 +983,7 @@ impl DelayedBusyReservation {
         self.held
             .take()
             .ok_or_else(|| Error::invariant("no held capacity rejection"))?
-            .send(Err(Error::new(
-                infer_core::ErrorCode::Capacity,
-                "resident budget busy",
-            )))
+            .send(Err(Error::new(ErrorCode::Capacity, "resident budget busy")))
             .map_err(|_| Error::invariant("capacity rejection receiver disappeared"))?;
         Ok(())
     }
@@ -1039,10 +1026,7 @@ impl BackendProvider for DelayedBusyReservation {
         readout: OutputReadout,
     ) -> Result<()> {
         if self.owned > 0 {
-            return Err(Error::new(
-                infer_core::ErrorCode::Capacity,
-                "resident budget busy",
-            ));
+            return Err(Error::new(ErrorCode::Capacity, "resident budget busy"));
         }
         self.inner.reserve_state_for(state, capacity, readout)?;
         self.states.insert(state);
@@ -1173,7 +1157,87 @@ fn media_request_requires_a_multimodal_backend() -> Result<()> {
         extensions: BTreeMap::new(),
     };
     let error = engine.submit(request).unwrap_err();
-    assert_eq!(error.code, infer_core::ErrorCode::Unsupported);
+    assert_eq!(error.code, ErrorCode::Unsupported);
+    Ok(())
+}
+
+/// A media request a loaded draft cannot serve is refused by admission, not by the executor.
+///
+/// The executor's refusal would arrive after the request was submitted, isolate the engine and
+/// turn every later request into a 503; admission must answer `Unsupported` and stay ready.
+#[test]
+fn media_request_under_speculation_is_rejected_and_leaves_the_engine_ready() -> Result<()> {
+    use infer_ir::{MediaInput, MediaItem, Modality};
+    use std::sync::Arc;
+
+    let ir = support::model(ModelId::ONE);
+    let mut kernels = KernelRegistry::default();
+    kernels.register(&support::DeclaredKernels)?;
+    let backend = ProtocolBackend::new(16, 8, &ir)?
+        .multimodal()
+        .requiring_engine_sampling(2)
+        .media_prefill_with_draft(false);
+    let mut engine = Engine::new(
+        backend,
+        ir,
+        PrecisionPlan::f32(),
+        &kernels,
+        RuntimeConfig::default(),
+    )?;
+    let media = MediaInput {
+        id: infer_core::MediaId::ONE,
+        modality: Modality::Image,
+        content_digest: "fixture".into(),
+        item: Some(MediaItem {
+            modality: Modality::Image,
+            pixels: Arc::<[f32]>::from([0.0f32, 1.0, 2.0, 3.0]).into(),
+            grid: (1, 1, 1),
+            span: 0..1,
+        }),
+    };
+    let image_request = CanonicalRequest {
+        id: infer_core::RequestId::new(9)?,
+        model: ModelId::ONE,
+        session: None,
+        input: infer_ir::RequestInput::Sequence {
+            tokens: vec![1, 2].into(),
+            media: vec![media],
+        },
+        workload: infer_ir::Workload::Generate { max_new_tokens: 1 },
+        qos: infer_ir::Qos::default(),
+        sampling: infer_ir::Sampling::default(),
+        prefix_boundary: None,
+        extensions: BTreeMap::new(),
+    };
+    let error = engine.submit(image_request).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unsupported);
+    let inspection = engine.inspect();
+    assert!(inspection.ready);
+    assert!(inspection.fault.is_none());
+
+    // The rejected request must not leave the engine unusable for the next one.
+    let text_request = CanonicalRequest {
+        id: infer_core::RequestId::new(10)?,
+        model: ModelId::ONE,
+        session: None,
+        input: infer_ir::RequestInput::Sequence {
+            tokens: vec![1, 2].into(),
+            media: Vec::new(),
+        },
+        workload: infer_ir::Workload::Generate { max_new_tokens: 1 },
+        qos: infer_ir::Qos::default(),
+        sampling: infer_ir::Sampling::default(),
+        prefix_boundary: None,
+        extensions: BTreeMap::new(),
+    };
+    engine.submit(text_request)?;
+    for now in 0..64 {
+        if engine.is_idle() {
+            break;
+        }
+        engine.tick(now)?;
+    }
+    assert!(engine.is_idle());
     Ok(())
 }
 

@@ -94,3 +94,20 @@ fn production_architectures_reject_cpu_and_test_targets() {
         );
     }
 }
+
+/// Media prefill needs an explicit declaration before admission lets it run under a draft.
+#[test]
+fn media_prefill_requires_explicit_speculation_support() {
+    assert!(SpeculationCapability::default().allows_media_prefill());
+    let drafting = SpeculationCapability {
+        draft_depth: 2,
+        greedy_only: true,
+        media_prefill: false,
+    };
+    assert!(!drafting.allows_media_prefill());
+    let combined = SpeculationCapability {
+        media_prefill: true,
+        ..drafting
+    };
+    assert!(combined.allows_media_prefill());
+}
