@@ -577,6 +577,31 @@ fn function_parameters_publish_at_parameter_boundaries() {
 }
 
 #[test]
+fn dropped_or_swapped_parameter_markers_keep_the_parameter_meaning() {
+    // The shipped Qwen3.8 template asks for `<parameter=name>`, but the model sometimes
+    // writes the bare name or the function marker instead. The value still closes with
+    // `</parameter>`, so the call is recoverable rather than invalid after publication.
+    for opener in ["<command>", "<function=command>"] {
+        let text = format!(
+            "{TOOL_CALL_OPEN}\n<function=bash>\n{opener}\nls -la\n</parameter>\n</function>\n{TOOL_CALL_CLOSE}"
+        );
+        for chunk in [1usize, 2, 5, 17, 4096] {
+            let (events, truncated) =
+                streaming_events(&text, ToolDialect::FunctionParameters, chunk);
+            let parsed = assemble(events, truncated);
+            assert_eq!(
+                parsed.calls.len(),
+                1,
+                "{opener} at chunk {chunk}: {parsed:?}"
+            );
+            assert_eq!(parsed.calls[0].name, "bash");
+            assert_eq!(parsed.calls[0].arguments, r#"{"command":"ls -la"}"#);
+            assert!(!parsed.truncated);
+        }
+    }
+}
+
+#[test]
 fn invalid_generated_suffix_after_publication_cannot_become_plain_text() {
     for text in [
         r#"<tool_call>{"name":"f","arguments":{"x":1},"name":"g"}</tool_call>"#,
