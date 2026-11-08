@@ -40,6 +40,7 @@ tokio.workspace = true
 futures-util.workspace = true
 mime.workspace = true
 sha2.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 base64.workspace = true

@@ -227,7 +227,7 @@ const fn usage_body(usage: &Usage) -> ResponseUsageBody {
     }
 }
 
-/// The response identifier derived from the request identity, stable across streamed events.
+/// Fallback response identifier for a spec that admission did not name.
 pub(super) fn response_id(request: RequestId) -> String {
     format!("resp_{}", request.get())
 }

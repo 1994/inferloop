@@ -6,13 +6,14 @@
 //! delta is ever rewritten.
 use super::error::ApiError;
 use super::execution::{completion_reason, finish_reason, prepare};
+use super::ids;
 use super::{ApiResult, GenerationRequest, TextState};
 use crate::cpu::CpuPool;
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::stream::unfold;
-use infer_core::{Error, ErrorCode, RequestId};
+use infer_core::{Error, ErrorCode};
 use infer_models::{OutputStreamParser, StreamEvent, TextStreamDecoder};
 use infer_runtime::EngineOutput;
 use serde::Serialize;
@@ -39,7 +40,6 @@ enum Phase {
 
 /// One streamed generation in progress.
 struct Stream {
-    request: RequestId,
     receiver: mpsc::Receiver<infer_core::Result<EngineOutput>>,
     delivery: CpuPool,
     /// The decoder and parser leave this owner for the duration of a CPU job and come back.
@@ -228,7 +228,7 @@ impl Stream {
                     ChatDelta {
                         tool_calls: Some(vec![ToolCallDelta {
                             index,
-                            id: Some(format!("call_{}_{}", self.request.get(), index)),
+                            id: Some(ids::tool_call()),
                             kind: Some("function"),
                             function: ToolFunctionDelta {
                                 name: Some(name),
@@ -266,7 +266,7 @@ impl Stream {
                     ChatDelta {
                         tool_calls: Some(vec![ToolCallDelta {
                             index: self.call_index,
-                            id: Some(format!("call_{}_{}", self.request.get(), self.call_index)),
+                            id: Some(ids::tool_call()),
                             kind: Some("function"),
                             function: ToolFunctionDelta {
                                 name: Some(call.name),
@@ -438,7 +438,6 @@ pub(super) async fn stream(
     };
     let events = unfold(
         Stream {
-            request: prepared.request,
             receiver: prepared.receiver,
             delivery: state.delivery.clone(),
             decoder: Some(state.assets.stream_decoder()),

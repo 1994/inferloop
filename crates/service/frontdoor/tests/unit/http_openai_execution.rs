@@ -21,7 +21,6 @@ fn value(choice: ChatChoice) -> Value {
 fn choice(text: &str, policy: &ToolPolicy, reason: &'static str) -> Value {
     value(
         chat_choice(
-            RequestId::new(7).unwrap(),
             text,
             ToolDialect::FunctionParameters,
             policy,
@@ -56,7 +55,7 @@ fn a_declared_call_becomes_a_structured_choice_with_a_stable_id() {
     assert_eq!(choice["finish_reason"], "tool_calls");
     assert_eq!(choice["message"]["content"], "Sure.");
     let call = &choice["message"]["tool_calls"][0];
-    assert_eq!(call["id"], "call_7_0");
+    assert!(call["id"].as_str().unwrap().starts_with("call_"), "{call}");
     assert_eq!(call["type"], "function");
     assert_eq!(call["function"]["name"], "get_weather");
     let arguments: Value =
@@ -129,7 +128,6 @@ fn thinking_is_split_out_and_reasoning_is_published_separately() {
         infer_models::parse_model_output_with(text, ToolDialect::FunctionParameters, None).unwrap();
     let choice = value(
         chat_choice(
-            RequestId::new(7).unwrap(),
             text,
             ToolDialect::FunctionParameters,
             &ToolPolicy::Disabled,
@@ -149,7 +147,6 @@ fn an_unterminated_generated_call_is_an_error_unless_length_capped() {
     let text = "<tool_call><function=ping>";
     assert!(
         chat_choice(
-            RequestId::ONE,
             text,
             ToolDialect::FunctionParameters,
             &policy(&["ping"]),
@@ -161,7 +158,6 @@ fn an_unterminated_generated_call_is_an_error_unless_length_capped() {
     );
     let choice = value(
         chat_choice(
-            RequestId::ONE,
             text,
             ToolDialect::FunctionParameters,
             &policy(&["ping"]),
@@ -179,7 +175,6 @@ fn thinking_with_tool_choice_none_preserves_tool_like_text() {
     let text = "<think>why</think><tool_call><function=ping></function></tool_call>";
     let choice = value(
         chat_choice(
-            RequestId::ONE,
             text,
             ToolDialect::FunctionParameters,
             &ToolPolicy::Disabled,
@@ -202,7 +197,6 @@ fn thinking_with_tool_choice_none_preserves_tool_like_text() {
 fn a_prompt_opened_reasoning_region_is_not_assistant_content() {
     let choice = value(
         chat_choice(
-            RequestId::ONE,
             "weigh the options</think>\n\nThe answer is 17.",
             ToolDialect::FunctionParameters,
             &ToolPolicy::Disabled,

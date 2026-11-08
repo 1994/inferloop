@@ -1,3 +1,4 @@
+use super::ids;
 use super::request::OpaqueJson;
 use super::{ApiResult, GenerationRequest, TextState, ToolPolicy};
 use crate::constants::TOKEN_STAGING_BYTES;
@@ -511,7 +512,6 @@ async fn response(
     };
     if chat {
         let choice = chat_choice(
-            result.request,
             &text,
             state.assets.tool_dialect(),
             policy,
@@ -577,7 +577,6 @@ pub(super) fn parse_reply(
 /// Returns an invalid-input error when the response must be parsed but its generated region does
 /// not decode in the package dialect.
 fn chat_choice(
-    request: RequestId,
     text: &str,
     dialect: infer_models::ToolDialect,
     policy: &ToolPolicy,
@@ -596,10 +595,9 @@ fn chat_choice(
     let tool_calls: Vec<ChatToolCall> = if policy.parses() {
         calls
             .iter()
-            .enumerate()
-            .map(|(index, call)| ChatToolCall {
-                // Stable and unique per response, so a later `tool` result can name it.
-                id: format!("call_{}_{}", request.get(), index),
+            .map(|call| ChatToolCall {
+                // Unique per call, so a later `tool` result can name it across restarts.
+                id: ids::tool_call(),
                 kind: "function",
                 function: ChatFunctionCall {
                     name: call.name.clone(),

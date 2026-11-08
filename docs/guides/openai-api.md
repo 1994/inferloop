@@ -134,14 +134,14 @@ message 的 part 支持 `input_text`、`output_text`、`text` 与 `input_image`�
 
 ### 响应
 
-成功响应是 `object: "response"` 的单个对象，包含 `id`（无 store 时 `resp_<request>`，写入 store 时带实例前缀）、`status`（前台 `completed`/`incomplete`；后台还可能是 `in_progress`/`failed`/`cancelled`）、`created_at`、`completed_at`、`output`、`usage`、`instructions`、`tools`、`tool_choice`、`temperature`、`top_p`、`text`、`reasoning`、`metadata`、`store`、`background`、`previous_response_id`。`max_output_tokens` 回显请求值，省略时为 `null`（实际预算仍是默认 16 与服务 cap 的较小值）。output item 的 id 分别为 `rs_…`、`msg_…`、`fc_…`；函数调用另带 `call_id`（`call_<namespace>_<index>`；无 store 时 namespace 为 request，写入 store 时包含响应实例，避免持久后端重启后复用）。
+成功响应是 `object: "response"` 的单个对象，包含 `id`（`resp_<uuid>`，每次响应生成一个 UUIDv7，重启或换实例都不会复用）、`status`（前台 `completed`/`incomplete`；后台还可能是 `in_progress`/`failed`/`cancelled`）、`created_at`、`completed_at`、`output`、`usage`、`instructions`、`tools`、`tool_choice`、`temperature`、`top_p`、`text`、`reasoning`、`metadata`、`store`、`background`、`previous_response_id`。`max_output_tokens` 回显请求值，省略时为 `null`（实际预算仍是默认 16 与服务 cap 的较小值）。output item 的 id 分别为 `rs_<响应 id 的 namespace>_<index>`、`msg_…`、`fc_…`；函数调用另带 `call_id`（`call_<namespace>_<index>`）。namespace 就是响应 id（`resp_<uuid>`），因此客户端跨重启重放历史时不会撞上上一进程的 id。
 
 `output` 按 reasoning、message、function_call 的顺序发布。文本 item 形如：
 
 ```json
 {
   "type": "message",
-  "id": "msg_7_1",
+  "id": "msg_resp_0190f3c28a2b7c4d9e5f6a7b8c9d0e1f_1",
   "status": "completed",
   "role": "assistant",
   "content": [{"type":"output_text","text":"hello","annotations":[],"logprobs":[]}]
@@ -153,9 +153,9 @@ message 的 part 支持 `input_text`、`output_text`、`text` 与 `input_image`�
 ```json
 {
   "type": "function_call",
-  "id": "fc_7_0",
+  "id": "fc_resp_0190f3c28a2b7c4d9e5f6a7b8c9d0e1f_0",
   "status": "completed",
-  "call_id": "call_7_0",
+  "call_id": "call_resp_0190f3c28a2b7c4d9e5f6a7b8c9d0e1f_0",
   "name": "get_weather",
   "arguments": "{\"city\":\"Paris\"}"
 }
@@ -248,7 +248,7 @@ reasoning 使用 `response.reasoning_text.delta` 与 `response.reasoning_text.do
     "content": null,
     "tool_calls": [
       {
-        "id": "call_1_0",
+        "id": "call_0190f3c28a2b7c4d9e5f6a7b8c9d0e1f",
         "type": "function",
         "function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}
       }
@@ -259,7 +259,7 @@ reasoning 使用 `response.reasoning_text.delta` 与 `response.reasoning_text.do
 }
 ```
 
-调用 id 由请求 ID 与序号组成，流式与完整返回一致。开启 thinking 时 reasoning 文本单独放在 `reasoning_content`，不计入 `content`；模板已在生成前缀打开思考区时，parser 从该状态开始处理新 token。引擎因长度上限停止时 `finish_reason` 仍为 `length`，即使停止前已产生完整调用；调用方应按终末原因决定是否执行。
+调用 id 是每次调用生成的一个 UUIDv7（`call_<uuid>`），流式与完整返回一致；它不依赖进程内请求号，所以客户端跨重启重放的历史不会撞上服务重启前发出的 id（重复 id 会被 400 拒绝）。开启 thinking 时 reasoning 文本单独放在 `reasoning_content`，不计入 `content`；模板已在生成前缀打开思考区时，parser 从该状态开始处理新 token。引擎因长度上限停止时 `finish_reason` 仍为 `length`，即使停止前已产生完整调用；调用方应按终末原因决定是否执行。
 
 ```json
 {
