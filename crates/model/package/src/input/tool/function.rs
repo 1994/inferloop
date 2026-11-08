@@ -78,35 +78,71 @@ impl FunctionScanner {
             self.cursor += 1;
             return true;
         }
-        let marker = match self.phase {
-            Phase::Start => FUNCTION_MARKER,
+        match self.phase {
+            Phase::Start => {
+                if FUNCTION_MARKER.starts_with(tail) {
+                    return false;
+                }
+                if tail.starts_with(FUNCTION_MARKER) {
+                    self.cursor += FUNCTION_MARKER.len();
+                    self.start = self.cursor;
+                    self.phase = Phase::Name;
+                } else {
+                    self.phase = Phase::Invalid;
+                }
+                true
+            }
             Phase::Between if tail.starts_with(FUNCTION_CLOSE) => {
                 self.arguments.push('}');
                 self.phase = Phase::Closed;
                 self.cursor += FUNCTION_CLOSE.len();
-                return true;
+                true
             }
-            Phase::Between if FUNCTION_CLOSE.starts_with(tail) => return false,
-            Phase::Between => PARAMETER_MARKER,
+            Phase::Between if FUNCTION_CLOSE.starts_with(tail) => false,
+            Phase::Between => self.parameter(tail),
             _ => {
                 self.phase = Phase::Invalid;
-                return true;
+                true
             }
-        };
-        if marker.starts_with(tail) {
+        }
+    }
+    /// Open one parameter inside `<function=...>`.
+    ///
+    /// The shipped `Qwen3.8` template asks for `<parameter=name>`, but the model sometimes
+    /// drops or swaps the marker and writes `<name>` or `<function=name>`. Both are
+    /// unambiguous here: the tag sits between parameters, and its value still ends at
+    /// `</parameter>`. A tag that cannot name a parameter keeps the block invalid.
+    fn parameter(&mut self, tail: &str) -> bool {
+        if tail.starts_with(PARAMETER_MARKER) {
+            self.cursor += PARAMETER_MARKER.len();
+            self.start = self.cursor;
+            self.phase = Phase::Key;
+            return true;
+        }
+        if PARAMETER_MARKER.starts_with(tail) {
             return false;
         }
-        if tail.starts_with(marker) {
-            self.cursor += marker.len();
-            self.start = self.cursor;
-            self.phase = if self.phase == Phase::Start {
-                Phase::Name
-            } else {
-                Phase::Key
-            };
-        } else {
+        let Some(close) = tail.find('>') else {
+            // The opener may still complete in a later chunk.
+            return false;
+        };
+        if close == 0 || !tail.starts_with('<') {
             self.phase = Phase::Invalid;
+            return true;
         }
+        let tag = tail[1..close].trim();
+        let name = tag.strip_prefix("function=").unwrap_or(tag);
+        if !names_a_parameter(name) || !self.keys.insert(name.to_string()) {
+            self.phase = Phase::Invalid;
+            return true;
+        }
+        self.key = name.to_string();
+        self.json_value = None;
+        self.quoted = false;
+        self.escaped = false;
+        self.phase = Phase::Value;
+        self.cursor += close + 1;
+        self.start = self.cursor;
         true
     }
     fn header(&mut self, body: &str, byte: u8) {
@@ -207,4 +243,17 @@ impl FunctionScanner {
             arguments: self.arguments.clone(),
         })
     }
+}
+
+/// Whether a tolerant opener tag (`<name>` or `<function=name>`) names exactly one parameter.
+///
+/// The marker words themselves are rejected: `<parameter>` without a name is a broken opener,
+/// not a parameter called `parameter`.
+fn names_a_parameter(name: &str) -> bool {
+    !name.is_empty()
+        && name != "parameter"
+        && name != "function"
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }

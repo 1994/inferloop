@@ -236,7 +236,7 @@ reasoning 使用 `response.reasoning_text.delta` 与 `response.reasoning_text.do
 
 成功响应包含单个 choice、创建时间和 `usage`。prompt token 数包含实际聊天模板，completion token 数来自完成结果，`finish_reason` 为 `length`、`stop` 或 `tool_calls`。
 
-模型输出按包内模板绑定的方言解析：`Qwen3-VL` 使用 `<tool_call>{"name":...,"arguments":{...}}</tool_call>`，`Qwen3.8-27B` 使用 `<tool_call><function=F><parameter=K>v</parameter></function></tool_call>`。模板未声明受支持方言时，带工具的 `auto` 请求在准入前返回 501。JSON 参数保留原始字节；function 方言在每个参数闭合时转换为 JSON，完整的 function 闭合标签不可省略。
+模型输出按包内模板绑定的方言解析：`Qwen3-VL` 使用 `<tool_call>{"name":...,"arguments":{...}}</tool_call>`，`Qwen3.8-27B` 使用 `<tool_call><function=F><parameter=K>v</parameter></function></tool_call>`。模板未声明受支持方言时，带工具的 `auto` 请求在准入前返回 501。JSON 参数保留原始字节；function 方言在每个参数闭合时转换为 JSON，完整的 function 闭合标签不可省略。参数开头接受模板变体：`<parameter=K>`，以及该模型偶尔写出的裸名 `<K>` 或 `<function=K>`，三者都解析为参数 `K`，因为值仍由 `</parameter>` 闭合。
 
 解析不修补模型输出：未闭合的块被扣留，未能解码或未声明的名称在发布调用之前留在 `content` 中作为文本。参数已经流出后才发现格式错误，则终止流并发布错误，不撤回或改写前缀。正常停止时仍有未闭合的结构区域，完整返回报 503，SSE 发布错误；引擎报告长度上限时保留 `length`。声明了工具且模型确实调用时，choice 形如：
 
