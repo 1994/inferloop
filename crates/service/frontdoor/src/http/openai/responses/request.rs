@@ -515,6 +515,7 @@ fn message(role: &str, content: Value) -> WireMessage {
         content: Some(content),
         tool_calls: Vec::new(),
         tool_call_id: None,
+        reasoning_content: None,
     }
 }
 

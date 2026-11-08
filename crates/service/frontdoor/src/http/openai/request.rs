@@ -282,6 +282,11 @@ impl GenerationRequest {
             }
             media_requests.extend(media);
             let mut history = ChatMessage::new(message.role.as_str(), text);
+            if message.reasoning_content.is_some() && message.role != "assistant" {
+                return Err(Error::invalid(
+                    "only an assistant message may carry reasoning_content",
+                ));
+            }
             if !message.tool_calls.is_empty() && message.role != "assistant" {
                 return Err(Error::invalid(
                     "only an assistant message may carry tool_calls",
@@ -368,6 +373,12 @@ pub(super) struct WireMessage {
     pub tool_calls: Vec<WireToolCall>,
     #[serde(default)]
     pub tool_call_id: Option<String>,
+    /// Reasoning text this service published for an earlier assistant turn.
+    ///
+    /// Clients replay it with the assistant message. Templates have no reasoning-history slot,
+    /// so it is accepted for a full output round trip and skipped.
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
 }
 
 /// SDK message serialization can include `tool_calls: null`.
