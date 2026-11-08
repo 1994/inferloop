@@ -135,6 +135,7 @@ const fn admission() -> AdmissionInput<'static> {
         free_pages: 4,
         free_bytes: Some(4096),
         state_capacity_bytes: None,
+        state_budget_bytes: None,
         now_us: 10,
         target_us: Some(100),
         predicted_latency_us: 20,
@@ -178,6 +179,30 @@ fn admission_checks_tenant_physical_capacity_readiness_and_predicted_slo() {
     assert_eq!(
         policy.check(&input).unwrap().rejection,
         Some(AdmissionReason::SloInfeasible)
+    );
+}
+#[test]
+fn a_state_byte_shortfall_waits_when_the_request_fits_the_budget() {
+    let policy = ResourceAdmission::new(AdmissionConfig::default()).unwrap();
+    let mut input = admission();
+    input.required_bytes = Some(2048);
+    input.state_capacity_bytes = Some(1024);
+    input.state_budget_bytes = Some(8192);
+    assert_eq!(
+        policy.check(&input).unwrap().rejection,
+        Some(AdmissionReason::StateBytesBusy)
+    );
+    // Above the budget the request can never fit, so it is refused outright.
+    input.state_budget_bytes = Some(1024);
+    assert_eq!(
+        policy.check(&input).unwrap().rejection,
+        Some(AdmissionReason::StateBytes)
+    );
+    // Without a reported budget there is nothing to wait for.
+    input.state_budget_bytes = None;
+    assert_eq!(
+        policy.check(&input).unwrap().rejection,
+        Some(AdmissionReason::StateBytes)
     );
 }
 #[test]

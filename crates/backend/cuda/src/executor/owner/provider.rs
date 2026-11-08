@@ -90,6 +90,9 @@ impl BackendProvider for CudaBackend {
         self.idle()?
             .state_reservation_bytes_for_media(capacity, readout, media)
     }
+    fn state_budget_bytes(&self) -> Result<Option<u64>> {
+        Ok(Some(self.idle()?.state_budget_bytes()))
+    }
     fn state_capacity_bytes(&self) -> Result<Option<u64>> {
         Ok(self.view.capacity)
     }

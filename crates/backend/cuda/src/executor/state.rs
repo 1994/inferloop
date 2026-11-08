@@ -10,6 +10,10 @@ impl CudaExecutor {
         self.state_funding().map(|(free, _)| free)
     }
 
+    /// Stable ceiling the state budget can fund, before any live lease is priced.
+    pub(super) const fn state_budget_bytes(&self) -> u64 {
+        self.budget
+    }
     pub(super) fn capacity_budget(&self) -> Result<u64> {
         if self.slots.is_some() {
             return Ok(self.budget);

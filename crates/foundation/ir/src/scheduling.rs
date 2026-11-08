@@ -251,6 +251,10 @@ pub struct AdmissionInput<'a> {
     /// Single-reservation byte budget when an adapter owns queued reservation intent.
     /// Physical allocation still uses current free bytes after earlier leases finish.
     pub state_capacity_bytes: Option<u64>,
+    /// Stable ceiling the state budget can ever fund for one request.
+    /// A request above it is rejected outright; one that only exceeds the momentary
+    /// capacity waits for other leases to drain instead.
+    pub state_budget_bytes: Option<u64>,
     pub now_us: u64,
     pub target_us: Option<u64>,
     pub predicted_latency_us: u64,
@@ -266,6 +270,8 @@ pub enum AdmissionReason {
     TenantPages,
     TenantWeight,
     StateBytes,
+    /// The request fits the state budget but not the capacity available right now.
+    StateBytesBusy,
     MediaNotReady,
     SloInfeasible,
     AtomicExecution,

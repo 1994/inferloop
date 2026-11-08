@@ -30,6 +30,10 @@ type OutputChannel = async_mpsc::Sender<Result<EngineOutput>>;
 const DEFERRED_QUEUE_CAPACITY: usize = 256;
 /// Pre-allocated capacity of the pending admission-quote queue.
 const QUOTING_QUEUE_CAPACITY: usize = 256;
+/// Longest a submission waits for momentary state capacity before it is refused.
+const STATE_BUDGET_WAIT_US: u64 = 60_000_000;
+/// Interval between admission retries while state capacity drains.
+const STATE_BUDGET_RETRY_US: u64 = 100_000;
 /// Maximum pending shutdown waiters the actor keeps before rejecting further stops.
 const STOP_WAITER_CAPACITY: usize = 256;
 /// Extra observed events charged beyond the configured history capacity.
@@ -65,6 +69,28 @@ enum Command {
         reply: oneshot::Sender<Result<()>>,
     },
 }
+/// Sizing state of one queued submission.
+enum Quote {
+    /// The device owner has not priced the reservation yet.
+    Pending,
+    /// Priced reservation bytes; `None` means the backend priced no byte bound.
+    Priced(Option<u64>),
+}
+/// One submission waiting for its sizing quote or for state capacity to drain.
+struct Quoting {
+    request: Box<infer_runtime::PreparedRequest>,
+    pending: Arc<Pending>,
+    trace: Option<TraceContext>,
+    output: OutputChannel,
+    reply: oneshot::Sender<Result<()>>,
+    /// Quote ticket while the device owner is still pricing the reservation.
+    ticket: Option<infer_spi::ResourceTicket>,
+    quote: Quote,
+    /// Earliest actor time this entry may be polled again.
+    retry_at_us: u64,
+    /// Give up waiting for momentary state capacity at this time.
+    deadline_us: u64,
+}
 struct Subscriber {
     channel: OutputChannel,
     terminal: Option<Result<EngineOutput>>,
@@ -93,9 +119,8 @@ struct RuntimeActor<B: BackendProvider> {
     control: mpsc::Receiver<Command>,
     stop: Arc<AtomicBool>,
     deferred: VecDeque<Command>,
-    /// Submissions awaiting their sizing quote. `None` waits for room in the device owner's
-    /// command lane; the quote is issued again on a later pass instead of refusing the request.
-    quoting: VecDeque<(Command, Option<infer_spi::ResourceTicket>)>,
+    /// Submissions awaiting their sizing quote or for state capacity to drain.
+    quoting: VecDeque<Quoting>,
     subscribers: BTreeMap<RequestId, Subscriber>,
     start: Instant,
     clock_origin_us: u64,
