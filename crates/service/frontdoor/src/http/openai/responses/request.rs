@@ -108,7 +108,7 @@ pub(super) struct ResponsesTool {
 /// The Responses-specific values a generated response echoes and prices.
 #[derive(Clone)]
 pub(super) struct Spec {
-    /// Store-scoped response id; `None` keeps the process-local `resp_<request>` form.
+    /// Response id; admission sets `resp_<instance>_<request>` before the first event.
     pub(super) response_id: Option<String>,
     pub(super) store: bool,
     pub(super) background: bool,

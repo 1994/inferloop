@@ -15,6 +15,7 @@ mod stream;
 mod tests;
 
 use super::execution;
+use super::ids;
 use super::request::GenerationRequest;
 use super::{ApiResult, TextState, parse_json_body};
 use axum::{
@@ -59,13 +60,9 @@ pub(super) async fn create(
     }
 
     let generation = execution::prepare(&state, &headers, generation, true).await?;
-    if spec.store {
-        spec.response_id = Some(format!(
-            "resp_{}_{}",
-            state.response_instance,
-            generation.request.get()
-        ));
-    }
+    // A fresh UUID per response: a client that resumes a conversation across a restart
+    // replays distinct ids instead of colliding with the previous life's `resp_<request>`.
+    spec.response_id = Some(ids::response());
     let mut lease = match store {
         Some(store) if spec.store => Some(StoreLease::new(StoreSink::new(
             store,
@@ -126,13 +123,7 @@ async fn start_background(
             )
         })?;
     let generation = execution::prepare(&state, &headers, generation, true).await?;
-    if spec.store {
-        spec.response_id = Some(format!(
-            "resp_{}_{}",
-            state.response_instance,
-            generation.request.get()
-        ));
-    }
+    spec.response_id = Some(ids::response());
     let mut lease = StoreLease::new(StoreSink::new(store, &generation, &spec, request_input)?);
     let initial = match lease.start().await {
         Ok(value) => value,

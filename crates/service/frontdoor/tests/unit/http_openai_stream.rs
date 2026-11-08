@@ -1,6 +1,7 @@
 use super::*;
 use crate::cpu::CpuConfig;
 use crate::cpu::CpuPool;
+use infer_core::RequestId;
 use infer_models::{ParsedToolCall, TextAssets};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -86,7 +87,6 @@ fn stream() -> Stream {
     let (sender, receiver) = mpsc::channel(1);
     drop(sender);
     Stream {
-        request: RequestId::new(7).unwrap(),
         receiver,
         delivery: CpuPool::new(CpuConfig::default()).unwrap(),
         decoder: None,
@@ -131,15 +131,19 @@ fn a_tool_call_delta_carries_the_complete_reply_identifier() {
     let chunks = chunks(&stream);
     let first = &chunks[0]["choices"][0]["delta"]["tool_calls"][0];
     assert_eq!(first["index"], 0);
-    assert_eq!(first["id"], "call_7_0");
+    assert!(
+        first["id"].as_str().unwrap().starts_with("call_"),
+        "{first}"
+    );
     assert_eq!(first["type"], "function");
     assert_eq!(first["function"]["name"], "get_weather");
     assert_eq!(first["function"]["arguments"], "{\"city\":\"Paris\"}");
-    // A second call is appendable and keeps its own index and identifier.
-    assert_eq!(
-        chunks[1]["choices"][0]["delta"]["tool_calls"][0]["id"],
-        "call_7_1"
-    );
+    // A second call is appendable, keeps its own index, and gets its own identifier.
+    let second_id = chunks[1]["choices"][0]["delta"]["tool_calls"][0]["id"]
+        .as_str()
+        .unwrap();
+    assert!(second_id.starts_with("call_"), "{second_id}");
+    assert_ne!(second_id, first["id"].as_str().unwrap());
     assert_eq!(chunks[2]["choices"][0]["finish_reason"], "tool_calls");
     assert_eq!(stream.queue.back().unwrap(), DONE);
     assert_eq!(stream.phase, Phase::Done);
@@ -197,7 +201,7 @@ async fn streamed_tool_calls_are_decoded_parsed_and_published() {
     for (index, token) in tokens.iter().enumerate() {
         stream
             .advance(EngineOutput::Token {
-                request: stream.request,
+                request: RequestId::new(7).unwrap(),
                 token: *token,
                 index,
             })
@@ -219,7 +223,7 @@ async fn streamed_tool_calls_are_decoded_parsed_and_published() {
         .cloned()
         .expect("one call");
     let call = &call;
-    assert_eq!(call["id"], "call_7_0");
+    assert!(call["id"].as_str().unwrap().starts_with("call_"), "{call}");
     assert_eq!(call["function"]["name"], "get_weather");
     // The arguments are the model's own bytes, not a re-serialized object.
     let arguments: String = chunks
@@ -252,7 +256,7 @@ async fn a_streamed_call_that_is_not_declared_stays_in_the_content() {
     for (index, token) in tokens.iter().enumerate() {
         stream
             .advance(EngineOutput::Token {
-                request: stream.request,
+                request: RequestId::new(7).unwrap(),
                 token: *token,
                 index,
             })
@@ -281,7 +285,7 @@ async fn utf8_and_nonpublishing_tokens_still_count_as_completion_tokens() {
     for (index, token) in tokens.iter().enumerate() {
         stream
             .advance(EngineOutput::Token {
-                request: stream.request,
+                request: RequestId::new(7).unwrap(),
                 token: *token,
                 index,
             })
@@ -310,7 +314,7 @@ async fn prompt_opened_reasoning_is_initialized_once_before_streaming_tokens() {
     for (index, token) in tokens.iter().enumerate() {
         stream
             .advance(EngineOutput::Token {
-                request: stream.request,
+                request: RequestId::new(7).unwrap(),
                 token: *token,
                 index,
             })

@@ -48,7 +48,7 @@
      "2.0.21"
     ]
    },
-   "edges": 949,
+   "edges": 950,
    "features": [
     "cuda"
    ],
@@ -57,7 +57,7 @@
   },
   {
    "backend": "metal",
-   "crates": 258,
+   "crates": 259,
    "duplicates": {
     "base64": [
      "0.13.1",
@@ -74,19 +74,20 @@
     ],
     "getrandom": [
      "0.2.17",
-     "0.3.4"
+     "0.3.4",
+     "0.4.3"
     ],
     "syn": [
      "2.0.119",
      "3.0.6"
     ]
    },
-   "edges": 692,
+   "edges": 696,
    "features": [],
    "name": "macos-metal",
    "target": "aarch64-apple-darwin"
   }
  ],
- "lockfile_sha256": "779779708160f7f32df446e9163978fcdeb554995ae23b071b4e8c12c1d86967",
+ "lockfile_sha256": "b24e48b2949b2e783f40b12b87cfcbac9d687b3e58ac84c4bfb66f2018e2cf88",
  "schema": 1
 }
