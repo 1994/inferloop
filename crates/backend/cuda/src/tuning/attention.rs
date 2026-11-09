@@ -8,10 +8,9 @@ mod reference;
 pub mod shared;
 pub mod vector;
 pub mod vector_combined;
-use super::{
-    MAX_REPS, MIN_CONFIRM_SPEEDUP, MIN_REPS, REP_MS, WARMUP_MS, median,
-    resident_gemm::ResidentTuningSession,
-};
+use super::resident_gemm::{MeasurementOrder, PairedTimes, ResidentTuningSession, paired_times};
+use super::search::{self, Evidence, FormerTrial, Protocol, Record};
+use super::{MAX_REPS, MIN_REPS, REP_MS, WARMUP_MS, median};
 use crate::constants::PREFILL_LANES;
 use crate::device::{CudaDevice, device_error};
 use crate::resident::attention_mma::catalog::Variant;
@@ -22,6 +21,8 @@ use infer_cuda_kernels::jit::JitOptions;
 use infer_cuda_kernels::runtime::Timing;
 use reference::Fixture;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::cell::Cell;
 #[cfg(test)]
 use std::env::var;
 use std::{
@@ -121,58 +122,82 @@ impl Times {
         median(&self.baseline_ms) / median(&self.candidate_ms)
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Trial {
-    pub choice: Choice,
-    pub candidate_first: bool,
-    pub max_f64_error: f64,
-    pub cold: Times,
-    pub warm: Times,
-}
-impl Trial {
-    fn valid(&self) -> bool {
-        self.choice.valid()
-            && self.cold.valid()
-            && self.warm.valid()
-            && self.max_f64_error.is_finite()
-            && (0.0..MAX_ERROR).contains(&self.max_f64_error)
+/// The family's records in the shared table section.
+pub const FAMILY: &str = "attention";
+/// A query tile measured against SIMT prefill.
+pub type Trial = search::Trial<Choice>;
+pub type Entry = Record<Key, Choice>;
+/// Every query tile against SIMT prefill.
+fn protocol() -> Protocol<Choice> {
+    Protocol {
+        baseline: Choice::Simt,
+        candidates: QUERY_TILES
+            .map(|query_tile| Choice::Tiled { query_tile })
+            .to_vec(),
     }
-    fn confirmed(&self) -> bool {
-        self.cold.speedup() >= MIN_CONFIRM_SPEEDUP && self.warm.speedup() >= MIN_CONFIRM_SPEEDUP
-    }
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Entry {
-    pub key: Key,
-    pub selected: Choice,
-    pub search: Vec<Trial>,
-    pub confirmation: Trial,
-    pub fixtures: usize,
 }
 impl Entry {
     fn valid(&self) -> bool {
-        self.fixtures == reference::FIXTURES
-            && self.key.shape.supported()
+        self.key.shape.supported()
             && self.key.schema == SCHEMA
             && !self.key.hardware.is_empty()
             && !self.key.fingerprint.is_empty()
             && self.key.driver_build.as_ref().is_none_or(|s| !s.is_empty())
-            && self.search.len() == QUERY_TILES.len()
-            && self.search.iter().zip(QUERY_TILES).all(|(trial, q)| {
-                trial.valid()
-                    && !trial.candidate_first
-                    && trial.choice == Choice::Tiled { query_tile: q }
-            })
-            && self.confirmation.valid()
-            && self.confirmation.candidate_first
-            && self.confirmation.choice == self.selected
-            && (self.selected == Choice::Simt
-                || self.confirmation.confirmed()
-                    && self
-                        .search
-                        .iter()
-                        .any(|t| t.choice == self.selected && t.confirmed()))
+            && self.evidence.sampled(MIN_REPS)
+            && self.evidence.within(MAX_ERROR)
+            && self.evidence.valid(&protocol(), Choice::valid)
     }
+}
+
+#[derive(Deserialize)]
+struct LegacyTrial {
+    choice: Choice,
+    max_f64_error: f64,
+    #[serde(flatten)]
+    trial: FormerTrial,
+}
+#[derive(Deserialize)]
+struct LegacyEntry {
+    key: Key,
+    selected: Choice,
+    search: Vec<LegacyTrial>,
+    confirmation: LegacyTrial,
+    fixtures: usize,
+}
+
+/// A record from the family's former table section in the shared form; one that does not
+/// convert stays as stored. A failed trial ended the former search, so a stored one is
+/// complete; it verified every candidate when it covered every fixture, and its deviation is
+/// the largest of its trials'.
+pub(super) fn legacy(stored: Value) -> Value {
+    convert(&stored).unwrap_or(stored)
+}
+
+fn convert(stored: &Value) -> Option<Value> {
+    let legacy = LegacyEntry::deserialize(stored).ok()?;
+    let max_error = legacy
+        .search
+        .iter()
+        .chain([&legacy.confirmation])
+        .map(|trial| trial.max_f64_error)
+        .reduce(f64::max);
+    let trial = |legacy: LegacyTrial| legacy.trial.into_trial(legacy.choice);
+    let entry = Entry {
+        key: legacy.key,
+        evidence: Evidence {
+            selected: legacy.selected,
+            exact_candidates_verified: legacy.fixtures == reference::FIXTURES,
+            trials: legacy
+                .search
+                .into_iter()
+                .map(trial)
+                .collect::<Option<_>>()?,
+            rejected: Some(Vec::new()),
+            confirmation: trial(legacy.confirmation)?,
+            max_error,
+        },
+    };
+    serde_json::to_value(entry).ok()
 }
 type Memo = Mutex<BTreeMap<Key, Entry>>;
 fn memo() -> &'static Memo {
@@ -228,9 +253,9 @@ fn resolve(
         .lock()
         .map_err(|_| Error::invariant("attention memo poisoned"))?
         .get(&key)
-        .cloned();
-    if let Some(entry) = cached {
-        return Ok(entry.selected);
+        .map(|entry| entry.evidence.selected);
+    if let Some(selected) = cached {
+        return Ok(selected);
     }
     let path = super::table_path();
     let table = if key.driver_build.is_some() {
@@ -240,19 +265,20 @@ fn resolve(
     };
     if let Some(entry) = table
         .as_ref()
-        .and_then(|t| t.resident_attention.iter().find(|e| e.key == key))
+        .and_then(|table| search::lookup(table, FAMILY, &key, |_| true))
     {
         if !entry.valid() {
             return Err(Error::invalid(
                 "invalid attention numerical/paired evidence",
             ));
         }
+        let selected = entry.evidence.selected;
         memo()
             .lock()
             .map_err(|_| Error::invariant("attention memo poisoned"))?
-            .insert(key, entry.clone());
-        tracing::info!(target:"infer::tuning",?shape,?entry.selected,source="table-cache","prefill attention selected");
-        return Ok(entry.selected);
+            .insert(key, entry);
+        tracing::info!(target:"infer::tuning",?shape,?selected,source="table-cache","prefill attention selected");
+        return Ok(selected);
     }
     if !autotune || !session.permits_attention_search() {
         return Ok(Choice::Simt);
@@ -260,21 +286,19 @@ fn resolve(
     let Some(entry) = tune(device, key.clone(), session)? else {
         return Ok(Choice::Simt);
     };
-    let cached = key.driver_build.is_some()
-        && super::update_table(path.as_deref(), |table| {
-            table.resident_attention.retain(|e| e.key != key);
-            table.resident_attention.push(entry.clone());
-        });
-    tracing::info!(target:"infer::tuning",?shape,?entry.selected,cached,
-        cold_speedup=entry.confirmation.cold.speedup(),warm_speedup=entry.confirmation.warm.speedup(),
-        max_f64_error=entry.confirmation.max_f64_error,"prefill attention hardware choice");
-    let choice = entry.selected;
+    let cached = key.driver_build.is_some() && search::store(path.as_deref(), FAMILY, &entry);
+    let evidence = &entry.evidence;
+    tracing::info!(target:"infer::tuning",?shape,selected=?evidence.selected,cached,
+        cold_speedup=evidence.confirmation.cold.speedup,warm_speedup=evidence.confirmation.warm.speedup,
+        max_f64_error=evidence.max_error,"prefill attention hardware choice");
+    let choice = evidence.selected;
     memo()
         .lock()
         .map_err(|_| Error::invariant("attention memo poisoned"))?
         .insert(key, entry);
     Ok(choice)
 }
+/// Unpaired samples for the qualification families, which keep their own record shapes.
 fn measure(
     device: &CudaDevice,
     base: &Captured,
@@ -282,6 +306,28 @@ fn measure(
     cold: bool,
     reverse: bool,
 ) -> Result<Times> {
+    let order = if reverse {
+        MeasurementOrder::CandidateFirst
+    } else {
+        MeasurementOrder::BaselineFirst
+    };
+    let times = paired(device, base, candidate, cold, order)?;
+    let times = Times {
+        baseline_ms: times.baseline_ms,
+        candidate_ms: times.candidate_ms,
+    };
+    if !times.valid() {
+        return Err(Error::invalid("attention paired timing samples"));
+    }
+    Ok(times)
+}
+fn paired(
+    device: &CudaDevice,
+    base: &Captured,
+    candidate: &Captured,
+    cold: bool,
+    order: MeasurementOrder,
+) -> Result<PairedTimes> {
     let options = Timing {
         warmup: Duration::from_millis(WARMUP_MS),
         rep: Duration::from_millis(REP_MS),
@@ -289,6 +335,7 @@ fn measure(
         max_reps: MAX_REPS,
         clear_l2: cold,
     };
+    let reverse = order == MeasurementOrder::CandidateFirst;
     let (left, right) = if reverse {
         (candidate, base)
     } else {
@@ -299,28 +346,20 @@ fn measure(
         .tile()
         .time_paired(&options, || run(left), || run(right))
         .map_err(device_error)?;
-    let times = if reverse {
-        Times {
-            baseline_ms: b.times_ms().to_vec(),
-            candidate_ms: a.times_ms().to_vec(),
-        }
-    } else {
-        Times {
-            baseline_ms: a.times_ms().to_vec(),
-            candidate_ms: b.times_ms().to_vec(),
-        }
-    };
-    if !times.valid() {
-        return Err(Error::invalid("attention paired timing samples"));
-    }
-    Ok(times)
+    let (baseline, candidate) = if reverse { (b, a) } else { (a, b) };
+    paired_times(baseline.times_ms(), candidate.times_ms())
+        .filter(|times| times.baseline_ms.len() >= MIN_REPS)
+        .ok_or_else(|| Error::invalid("attention paired timing samples"))
 }
+/// Measure `choice` in `order`, failing when its deviation from the F64 reference on any
+/// fixture, before or after timing, reaches the family's tolerance; `error` keeps the largest
+/// accepted deviation.
 fn trial(
     device: &CudaDevice,
-    base: &Captured,
-    fixtures: &[Fixture],
+    (base, fixtures): (&Captured, &[Fixture]),
     choice: Choice,
-    reverse: bool,
+    order: MeasurementOrder,
+    error: &Cell<f64>,
 ) -> Result<Trial> {
     let candidate = Captured::new(device, &fixtures[0], choice)?;
     let mut max_error = candidate.verify(device, &fixtures[0])?;
@@ -328,13 +367,18 @@ fn trial(
         let check = Captured::new(device, fixture, choice)?;
         max_error = max_error.max(check.verify(device, fixture)?);
     }
-    let cold = measure(device, base, &candidate, true, reverse)?;
-    let warm = measure(device, base, &candidate, false, reverse)?;
+    let cold = paired(device, base, &candidate, true, order)?;
+    let warm = paired(device, base, &candidate, false, order)?;
     max_error = max_error.max(candidate.verify(device, &fixtures[0])?);
+    if !(max_error.is_finite() && (0.0..MAX_ERROR).contains(&max_error)) {
+        return Err(Error::invalid(format!(
+            "attention F64 deviation {max_error} beyond {MAX_ERROR}"
+        )));
+    }
+    error.set(error.get().max(max_error));
     Ok(Trial {
         choice,
-        candidate_first: reverse,
-        max_f64_error: max_error,
+        order,
         cold,
         warm,
     })
@@ -356,40 +400,22 @@ fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Resul
     for fixture in &fixtures {
         Captured::new(device, fixture, Choice::Simt)?.verify(device, fixture)?;
     }
-    let mut search = Vec::new();
-    let mut selected = Choice::Simt;
-    let mut best = 1.0;
-    for query_tile in QUERY_TILES {
-        if !session.permits_attention_search() {
-            return Ok(None);
-        }
-        let choice = Choice::Tiled { query_tile };
-        let measured = trial(device, &base, &fixtures, choice, false)?;
-        let speedup = measured.cold.speedup().min(measured.warm.speedup());
-        if measured.confirmed() && speedup > best {
-            selected = choice;
-            best = speedup;
-        }
-        search.push(measured);
-    }
-    if !session.permits_attention_search() {
+    let error = Cell::new(0.0);
+    let shape = key.shape;
+    let Some(mut evidence) = search::run(
+        &protocol(),
+        || session.permits_attention_search(),
+        |choice, order| trial(device, (&base, &fixtures), choice, order, &error),
+        |choice, error| {
+            tracing::warn!(target:"infer::tuning",?shape,?choice,%error,"prefill attention candidate rejected");
+            Ok(())
+        },
+    )?
+    else {
         return Ok(None);
-    }
-    let mut confirmation = trial(device, &base, &fixtures, selected, true)?;
-    if selected != Choice::Simt && !confirmation.confirmed() {
-        if !session.permits_attention_search() {
-            return Ok(None);
-        }
-        selected = Choice::Simt;
-        confirmation = trial(device, &base, &fixtures, selected, true)?;
-    }
-    let entry = Entry {
-        key,
-        selected,
-        search,
-        confirmation,
-        fixtures: reference::FIXTURES,
     };
+    evidence.max_error = Some(error.get());
+    let entry = Entry { key, evidence };
     if !entry.valid() {
         return Err(Error::invariant("incomplete attention tuning evidence"));
     }

@@ -9,23 +9,19 @@ fn shape() -> Shape {
         window: 0,
     }
 }
+fn times() -> PairedTimes {
+    times_at(1.0)
+}
+fn times_at(candidate: f32) -> PairedTimes {
+    paired_times(&[2.0; MIN_REPS], &[candidate; MIN_REPS]).unwrap()
+}
 fn entry() -> Entry {
-    let trial = |query_tile| Trial {
+    let trial = |query_tile, order| Trial {
         choice: Choice::Tiled { query_tile },
-        candidate_first: false,
-        max_f64_error: 1e-7,
-        cold: Times {
-            baseline_ms: vec![2.0; MIN_REPS],
-            candidate_ms: vec![1.0; MIN_REPS],
-        },
-        warm: Times {
-            baseline_ms: vec![2.0; MIN_REPS],
-            candidate_ms: vec![1.0; MIN_REPS],
-        },
+        order,
+        cold: times(),
+        warm: times(),
     };
-    let search = vec![trial(16), trial(32)];
-    let mut confirmation = search[0].clone();
-    confirmation.candidate_first = true;
     Entry {
         key: Key {
             hardware: "test-device".into(),
@@ -35,10 +31,16 @@ fn entry() -> Entry {
             schema: SCHEMA.into(),
             shape: shape(),
         },
-        selected: confirmation.choice,
-        search,
-        confirmation,
-        fixtures: reference::FIXTURES,
+        evidence: Evidence {
+            selected: Choice::Tiled { query_tile: 16 },
+            exact_candidates_verified: true,
+            trials: QUERY_TILES
+                .map(|tile| trial(tile, MeasurementOrder::BaselineFirst))
+                .to_vec(),
+            rejected: Some(Vec::new()),
+            confirmation: trial(16, MeasurementOrder::CandidateFirst),
+            max_error: Some(1e-7),
+        },
     }
 }
 #[test]
@@ -47,20 +49,25 @@ fn cache_requires_numerical_proof_all_candidates_and_reverse_confirmation() {
     assert!(good.valid());
     for variant in 0..12 {
         let mut bad = good.clone();
+        let evidence = &mut bad.evidence;
         match variant {
             0 => bad.key.schema = "stale-bound".into(),
             1 => bad.key.fingerprint.clear(),
             2 => bad.key.hardware.clear(),
-            3 => bad.fixtures -= 1,
-            4 => bad.search.pop().map_or((), |_| ()),
-            5 => bad.search[1] = bad.search[0].clone(),
-            6 => bad.confirmation.candidate_first = false,
-            7 => bad.confirmation.max_f64_error = MAX_ERROR,
-            8 => bad.search[0].max_f64_error = f64::NAN,
-            9 => bad.confirmation.cold.candidate_ms = vec![2.0; MIN_REPS],
-            10 => bad.confirmation.warm.baseline_ms.pop().map_or((), |_| ()),
-            11 => bad.selected = Choice::Tiled { query_tile: 64 },
-            _ => unreachable!(),
+            3 => evidence.exact_candidates_verified = false,
+            4 => evidence.trials.pop().map_or((), |_| ()),
+            5 => evidence.trials[1] = evidence.trials[0].clone(),
+            6 => evidence.confirmation.order = MeasurementOrder::BaselineFirst,
+            7 => evidence.max_error = Some(MAX_ERROR),
+            8 => evidence.max_error = Some(f64::NAN),
+            9 => evidence.confirmation.cold = times_at(2.0),
+            10 => evidence
+                .confirmation
+                .warm
+                .baseline_ms
+                .pop()
+                .map_or((), |_| ()),
+            _ => evidence.selected = Choice::Tiled { query_tile: 64 },
         }
         assert!(!bad.valid(), "variant {variant}");
     }
@@ -68,13 +75,39 @@ fn cache_requires_numerical_proof_all_candidates_and_reverse_confirmation() {
 #[test]
 fn fallback_can_have_complete_evidence_without_a_speedup() {
     let mut value = entry();
-    value.selected = Choice::Simt;
-    value.confirmation.choice = Choice::Simt;
-    value.confirmation.cold.candidate_ms = value.confirmation.cold.baseline_ms.clone();
-    value.confirmation.warm.candidate_ms = value.confirmation.warm.baseline_ms.clone();
+    let evidence = &mut value.evidence;
+    evidence.selected = Choice::Simt;
+    evidence.confirmation.choice = Choice::Simt;
+    evidence.confirmation.cold = times_at(2.0);
+    evidence.confirmation.warm = evidence.confirmation.cold.clone();
     assert!(value.valid());
-    value.search.clear();
+    value.evidence.trials.clear();
     assert!(!value.valid());
+}
+#[test]
+fn former_attention_records_keep_their_choice_and_deviation() -> Result<()> {
+    let times = serde_json::json!({ "baseline_ms": vec![2.0_f32; MIN_REPS],
+        "candidate_ms": vec![1.0_f32; MIN_REPS] });
+    let trial = |query_tile: usize, candidate_first: bool, error: f64| {
+        serde_json::json!({ "choice": Choice::Tiled { query_tile },
+            "candidate_first": candidate_first, "max_f64_error": error,
+            "cold": times, "warm": times })
+    };
+    let good = entry();
+    let former = |fixtures: usize| {
+        serde_json::json!({
+            "key": good.key, "selected": Choice::Tiled { query_tile: 16 },
+            "search": [trial(16, false, 1e-7), trial(32, false, 2e-7)],
+            "confirmation": trial(16, true, 3e-7), "fixtures": fixtures,
+        })
+    };
+    let decode = |stored| serde_json::from_value::<Entry>(legacy(stored)).map_err(device_error);
+    let migrated = decode(former(reference::FIXTURES))?;
+    assert_eq!(migrated.evidence.selected, Choice::Tiled { query_tile: 16 });
+    assert_eq!(migrated.evidence.max_error, Some(3e-7));
+    assert!(migrated.valid());
+    assert!(!decode(former(reference::FIXTURES - 1))?.valid());
+    Ok(())
 }
 #[test]
 fn unsupported_geometry_never_selects_a_tensor_core_configuration() {
@@ -127,16 +160,15 @@ fn independent_reference_preserves_inactive_rows_and_quantized_append() -> Resul
 }
 #[test]
 fn attention_cache_round_trip_preserves_hardware_scope_and_old_tables() -> Result<()> {
-    let table = super::super::TilingTable {
-        resident_attention: vec![entry()],
-        ..Default::default()
-    };
+    let mut table = super::super::TilingTable::default();
+    let stored = serde_json::to_value(entry()).map_err(device_error)?;
+    table.records.entry(FAMILY.into()).or_default().push(stored);
     let json = serde_json::to_string(&table).map_err(device_error)?;
     let decoded: super::super::TilingTable = serde_json::from_str(&json).map_err(device_error)?;
-    assert_eq!(decoded.resident_attention.len(), 1);
-    assert!(decoded.resident_attention[0].valid());
+    let found = search::lookup(&decoded, FAMILY, &entry().key, Entry::valid);
+    assert!(found.is_some());
     let legacy: super::super::TilingTable = serde_json::from_str("{}").map_err(device_error)?;
-    assert!(legacy.resident_attention.is_empty());
+    assert!(legacy.records.is_empty());
     Ok(())
 }
 #[test]
@@ -156,7 +188,7 @@ fn hardware_query_sharing_search_and_cached_reuse() -> Result<()> {
             .cloned()
             .ok_or_else(|| Error::invalid("attention hardware proof did not complete"))?;
         assert!(entry.valid());
-        assert_eq!(entry.selected, selected);
+        assert_eq!(entry.evidence.selected, selected);
         let start = Instant::now();
         for _ in 0..16 {
             assert_eq!(select(&device, shape, false, &session), selected);

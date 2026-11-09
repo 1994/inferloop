@@ -55,6 +55,7 @@ fn entry() -> Entry {
             trials,
             rejected: Some(vec![]),
             confirmation: trial(MeasurementOrder::CandidateFirst),
+            max_error: None,
         },
     }
 }

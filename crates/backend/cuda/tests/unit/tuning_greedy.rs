@@ -30,6 +30,7 @@ fn entry(hardware: &str, tile: usize) -> Entry {
             trials: vec![trial(MeasurementOrder::BaselineFirst)],
             rejected: Some(rejected),
             confirmation: trial(MeasurementOrder::CandidateFirst),
+            max_error: None,
         },
     }
 }

@@ -96,6 +96,7 @@ fn convert(stored: &Value) -> Option<Value> {
                 .collect::<Option<_>>()?,
             rejected: None,
             confirmation: trial(legacy.confirmation)?,
+            max_error: None,
         },
     };
     serde_json::to_value(entry).ok()

@@ -2,10 +2,9 @@
 mod capture;
 pub mod exact;
 mod reference;
-use super::{
-    MAX_REPS, MIN_CONFIRM_SPEEDUP, MIN_REPS, REP_MS, WARMUP_MS, median,
-    resident_gemm::ResidentTuningSession,
-};
+use super::resident_gemm::{MeasurementOrder, PairedTimes, ResidentTuningSession, paired_times};
+use super::search::{self, Evidence, FormerTrial, Protocol, Record};
+use super::{MAX_REPS, MIN_REPS, REP_MS, WARMUP_MS, median};
 use crate::device::{CudaDevice, device_error};
 use crate::tuning::preparation::driver_build;
 use capture::{Captured, fingerprint};
@@ -14,6 +13,8 @@ use infer_cuda_kernels::jit::JitOptions;
 use infer_cuda_kernels::runtime::Timing;
 use reference::Fixture;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::cell::Cell;
 use std::{
     collections::BTreeMap,
     sync::{Mutex, OnceLock},
@@ -38,6 +39,7 @@ pub struct Key {
     pub schema: String,
     pub shape: [usize; SHAPE_RANK],
 }
+/// Unpaired samples of the exact-recurrence qualification, which keeps its own record shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Times {
     pub baseline_ms: Vec<f32>,
@@ -58,59 +60,81 @@ impl Times {
         median(&self.baseline_ms) / median(&self.candidate_ms)
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Trial {
-    pub value_block: usize,
-    pub candidate_first: bool,
-    pub max_f64_error: f64,
-    pub cold: Times,
-    pub warm: Times,
-}
-impl Trial {
-    fn valid(&self, dim: usize) -> bool {
-        [dim, dim / 2].contains(&self.value_block)
-            && self.cold.valid()
-            && self.warm.valid()
-            && self.max_f64_error.is_finite()
-            && (0.0..MAX_F64_ERROR).contains(&self.max_f64_error)
+/// The family's records in the shared table section.
+pub const FAMILY: &str = "recurrent";
+/// A value block measured against the full-width columns.
+pub type Trial = search::Trial<usize>;
+pub type Entry = Record<Key, usize>;
+/// Half-width columns against full-width ones; quarter columns stay diagnostic-only.
+fn protocol(dim: usize) -> Protocol<usize> {
+    Protocol {
+        baseline: dim,
+        candidates: vec![dim / 2],
     }
-    fn confirmed(&self) -> bool {
-        self.cold.speedup() >= MIN_CONFIRM_SPEEDUP && self.warm.speedup() >= MIN_CONFIRM_SPEEDUP
-    }
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Entry {
-    pub key: Key,
-    pub selected: usize,
-    pub search: Vec<Trial>,
-    pub confirmation: Trial,
 }
 impl Entry {
     fn valid(&self) -> bool {
+        let dim = self.key.shape[2];
         supported(self.key.shape)
             && self.key.schema == SCHEMA
             && !self.key.kernel_fingerprint.is_empty()
             && self.key.driver_build.as_ref().is_none_or(|x| !x.is_empty())
             && !self.key.hardware.is_empty()
-            && self.search.len() == 1
+            && self.evidence.sampled(MIN_REPS)
+            && self.evidence.within(MAX_F64_ERROR)
             && self
-                .search
-                .first()
-                .is_some_and(|trial| trial.value_block == self.key.shape[2] / 2)
-            && self.confirmation.valid(self.key.shape[2])
-            && self.confirmation.candidate_first
-            && self.confirmation.value_block == self.selected
-            && self
-                .search
-                .iter()
-                .all(|x| !x.candidate_first && x.valid(self.key.shape[2]))
-            && (self.selected == self.key.shape[2]
-                || self.confirmation.confirmed()
-                    && self
-                        .search
-                        .iter()
-                        .any(|x| x.value_block == self.selected && x.confirmed()))
+                .evidence
+                .valid(&protocol(dim), |block| [dim, dim / 2].contains(&block))
     }
+}
+
+#[derive(Deserialize)]
+struct LegacyTrial {
+    value_block: usize,
+    max_f64_error: f64,
+    #[serde(flatten)]
+    trial: FormerTrial,
+}
+#[derive(Deserialize)]
+struct LegacyEntry {
+    key: Key,
+    selected: usize,
+    search: Vec<LegacyTrial>,
+    confirmation: LegacyTrial,
+}
+
+/// A record from the family's former table section in the shared form; one that does not
+/// convert stays as stored. A failed trial ended the former search, so a stored one is
+/// complete; its deviation is the largest of its trials'.
+pub(super) fn legacy(stored: Value) -> Value {
+    convert(&stored).unwrap_or(stored)
+}
+
+fn convert(stored: &Value) -> Option<Value> {
+    let legacy = LegacyEntry::deserialize(stored).ok()?;
+    let max_error = legacy
+        .search
+        .iter()
+        .chain([&legacy.confirmation])
+        .map(|trial| trial.max_f64_error)
+        .reduce(f64::max);
+    let trial = |legacy: LegacyTrial| legacy.trial.into_trial(legacy.value_block);
+    let entry = Entry {
+        key: legacy.key,
+        evidence: Evidence {
+            selected: legacy.selected,
+            exact_candidates_verified: true,
+            trials: legacy
+                .search
+                .into_iter()
+                .map(trial)
+                .collect::<Option<_>>()?,
+            rejected: Some(Vec::new()),
+            confirmation: trial(legacy.confirmation)?,
+            max_error,
+        },
+    };
+    serde_json::to_value(entry).ok()
 }
 fn supported([kh, vh, dim, lanes]: [usize; SHAPE_RANK]) -> bool {
     kh > 0
@@ -163,9 +187,9 @@ fn resolve(
         .map_err(|_| Error::invariant("WY tuning cache poisoned"))?
         .get(&key)
         .filter(|x| x.valid())
-        .cloned();
-    if let Some(entry) = cached {
-        return Ok(entry.selected);
+        .map(|entry| entry.evidence.selected);
+    if let Some(selected) = cached {
+        return Ok(selected);
     }
     let path = super::table_path();
     let table = if key.driver_build.is_some() {
@@ -175,17 +199,18 @@ fn resolve(
     };
     if let Some(entry) = table
         .as_ref()
-        .and_then(|t| t.resident_recurrent.iter().find(|x| x.key == key))
+        .and_then(|table| search::lookup(table, FAMILY, &key, |_| true))
     {
         if !entry.valid() {
             return Err(Error::invalid("invalid WY paired/numerical cache evidence"));
         }
+        let selected = entry.evidence.selected;
         memo()
             .lock()
             .map_err(|_| Error::invariant("WY tuning cache poisoned"))?
-            .insert(key, entry.clone());
-        tracing::info!(target:"infer::tuning",?shape,value_block=entry.selected,source="table-cache","WY selected");
-        return Ok(entry.selected);
+            .insert(key, entry);
+        tracing::info!(target:"infer::tuning",?shape,value_block=selected,source="table-cache","WY selected");
+        return Ok(selected);
     }
     if !autotune || !session.permits_recurrent_search() {
         return Ok(shape[2]);
@@ -193,27 +218,25 @@ fn resolve(
     let Some(entry) = tune(device, key.clone(), session)? else {
         return Ok(shape[2]);
     };
-    let cached = key.driver_build.is_some()
-        && super::update_table(path.as_deref(), |t| {
-            t.resident_recurrent.retain(|x| x.key != key);
-            t.resident_recurrent.push(entry.clone());
-        });
-    tracing::info!(target:"infer::tuning",?shape,value_block=entry.selected,cached,
-        cold_speedup=entry.confirmation.cold.speedup(),warm_speedup=entry.confirmation.warm.speedup(),
-        max_f64_error=entry.confirmation.max_f64_error,"WY hardware partition selected");
+    let cached = key.driver_build.is_some() && search::store(path.as_deref(), FAMILY, &entry);
+    let evidence = &entry.evidence;
+    tracing::info!(target:"infer::tuning",?shape,value_block=evidence.selected,cached,
+        cold_speedup=evidence.confirmation.cold.speedup,warm_speedup=evidence.confirmation.warm.speedup,
+        max_f64_error=evidence.max_error,"WY hardware partition selected");
+    let selected = evidence.selected;
     memo()
         .lock()
         .map_err(|_| Error::invariant("WY tuning cache poisoned"))?
-        .insert(key, entry.clone());
-    Ok(entry.selected)
+        .insert(key, entry);
+    Ok(selected)
 }
 fn measure(
     device: &CudaDevice,
     base: &Captured,
     candidate: &Captured,
     cold: bool,
-    candidate_first: bool,
-) -> Result<Times> {
+    order: MeasurementOrder,
+) -> Result<PairedTimes> {
     let options = Timing {
         warmup: Duration::from_millis(WARMUP_MS),
         rep: Duration::from_millis(REP_MS),
@@ -221,6 +244,7 @@ fn measure(
         max_reps: MAX_REPS,
         clear_l2: cold,
     };
+    let candidate_first = order == MeasurementOrder::CandidateFirst;
     let (left, right) = if candidate_first {
         (candidate, base)
     } else {
@@ -231,42 +255,38 @@ fn measure(
         .tile()
         .time_paired(&options, || run(left), || run(right))
         .map_err(device_error)?;
-    let times = if candidate_first {
-        Times {
-            baseline_ms: b.times_ms().to_vec(),
-            candidate_ms: a.times_ms().to_vec(),
-        }
-    } else {
-        Times {
-            baseline_ms: a.times_ms().to_vec(),
-            candidate_ms: b.times_ms().to_vec(),
-        }
-    };
-    if !times.valid() {
-        return Err(Error::invalid("WY paired timing sample evidence"));
-    }
-    Ok(times)
+    let (baseline, candidate) = if candidate_first { (b, a) } else { (a, b) };
+    paired_times(baseline.times_ms(), candidate.times_ms())
+        .filter(|times| times.baseline_ms.len() >= MIN_REPS)
+        .ok_or_else(|| Error::invalid("WY paired timing sample evidence"))
 }
+/// Measure `block` in `order`, failing when its deviation from the F64 reference on either
+/// fixture, before or after timing, reaches the family's tolerance; `error` keeps the largest
+/// accepted deviation.
 fn trial(
     device: &CudaDevice,
-    base: &Captured,
-    fixture: &Fixture,
-    correlated: &Fixture,
+    (base, fixture, correlated): (&Captured, &Fixture, &Fixture),
     block: usize,
-    candidate_first: bool,
+    order: MeasurementOrder,
+    error: &Cell<f64>,
 ) -> Result<Trial> {
     let candidate = Captured::new(device, fixture, block)?;
     let mut max_f64_error = candidate.verify(device, fixture)?;
     let adversarial = Captured::new(device, correlated, block)?;
     max_f64_error = max_f64_error.max(adversarial.verify(device, correlated)?);
     drop(adversarial);
-    let cold = measure(device, base, &candidate, true, candidate_first)?;
-    let warm = measure(device, base, &candidate, false, candidate_first)?;
+    let cold = measure(device, base, &candidate, true, order)?;
+    let warm = measure(device, base, &candidate, false, order)?;
     max_f64_error = max_f64_error.max(candidate.verify(device, fixture)?);
+    if !(max_f64_error.is_finite() && (0.0..MAX_F64_ERROR).contains(&max_f64_error)) {
+        return Err(Error::invalid(format!(
+            "WY F64 deviation {max_f64_error} beyond {MAX_F64_ERROR}"
+        )));
+    }
+    error.set(error.get().max(max_f64_error));
     Ok(Trial {
-        value_block: block,
-        candidate_first,
-        max_f64_error,
+        choice: block,
+        order,
         cold,
         warm,
     })
@@ -284,34 +304,22 @@ fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Resul
     let baseline = key.shape[2];
     let base = Captured::new(device, &fixture, baseline)?;
     base.verify(device, &fixture)?;
-    let mut selected = baseline;
-    let mut search = Vec::new();
-    let block = baseline / 2;
-    if !session.permits_recurrent_search() {
+    let error = Cell::new(0.0);
+    let shape = key.shape;
+    let Some(mut evidence) = search::run(
+        &protocol(baseline),
+        || session.permits_recurrent_search(),
+        |block, order| trial(device, (&base, &fixture, &correlated), block, order, &error),
+        |block, error| {
+            tracing::warn!(target:"infer::tuning",?shape,block,%error,"WY candidate rejected");
+            Ok(())
+        },
+    )?
+    else {
         return Ok(None);
-    }
-    let measured = trial(device, &base, &fixture, &correlated, block, false)?;
-    if measured.confirmed() {
-        selected = block;
-    }
-    search.push(measured);
-    if !session.permits_recurrent_search() {
-        return Ok(None);
-    }
-    let mut confirmation = trial(device, &base, &fixture, &correlated, selected, true)?;
-    if selected != baseline && !confirmation.confirmed() {
-        if !session.permits_recurrent_search() {
-            return Ok(None);
-        }
-        selected = baseline;
-        confirmation = trial(device, &base, &fixture, &correlated, baseline, true)?;
-    }
-    let entry = Entry {
-        key,
-        selected,
-        search,
-        confirmation,
     };
+    evidence.max_error = Some(error.get());
+    let entry = Entry { key, evidence };
     if !entry.valid() {
         return Err(Error::invariant("incomplete WY tuning entry"));
     }

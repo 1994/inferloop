@@ -46,6 +46,7 @@ fn entry() -> Entry {
             ],
             rejected: Some(vec![]),
             confirmation: trial(Choice::Gemv, MeasurementOrder::CandidateFirst),
+            max_error: None,
         },
     }
 }
