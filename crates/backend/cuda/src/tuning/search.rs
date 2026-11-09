@@ -1,7 +1,8 @@
 //! One search protocol, record shape and table section for every tuning family.
 //!
 //! What runs unmeasured is the baseline. Each candidate is measured against it baseline-first,
-//! the winner is confirmed candidate-first, and the record keeps the complete evidence.
+//! the winners are confirmed candidate-first in rank order until one holds, and the record keeps
+//! the complete evidence.
 //!
 //! A family supplies its key, its choices and how one trial is measured. How the search runs,
 //! what makes its evidence complete and where records live are the same for every family, so a
@@ -117,18 +118,18 @@ impl<C: Copy + PartialEq> Evidence<C> {
 /// be built or does not match its reference; `reject` handles such a failure before the search
 /// moves on, for example by rechecking the baseline. `None` when `permits` stops the search.
 ///
-/// The best candidate confirmed in both cache states wins; it is then measured again
-/// candidate-first, and one that does not confirm there falls back to the baseline.
+/// Candidates confirmed in both cache states are ranked by their worse speedup, ties in
+/// candidate order. Each is measured again candidate-first until one confirms there; when none
+/// does, the baseline is. A candidate failing its confirmation is passed to `reject` and the
+/// next one continues, so a noisy winner costs its runner-up nothing.
 /// # Errors
-/// Propagates a failed confirmation trial and whatever `reject` returns.
+/// Propagates a failed baseline confirmation and whatever `reject` returns.
 pub(crate) fn run<C: Copy + PartialEq>(
     protocol: &Protocol<C>,
     permits: impl Fn() -> bool,
     mut trial: impl FnMut(C, MeasurementOrder) -> Result<Trial<C>>,
     mut reject: impl FnMut(C, &Error) -> Result<()>,
 ) -> Result<Option<Evidence<C>>> {
-    let mut selected = protocol.baseline;
-    let mut best = 1.0_f32;
     let mut trials = Vec::new();
     let mut rejected = Vec::new();
     for &choice in &protocol.candidates {
@@ -136,33 +137,37 @@ pub(crate) fn run<C: Copy + PartialEq>(
             return Ok(None);
         }
         match trial(choice, MeasurementOrder::BaselineFirst) {
-            Ok(measured) => {
-                let score = measured.score();
-                if measured.confirmed() && score > best {
-                    best = score;
-                    selected = choice;
-                }
-                trials.push(measured);
-            }
+            Ok(measured) => trials.push(measured),
             Err(error) => {
                 reject(choice, &error)?;
                 rejected.push((choice, error.to_string()));
             }
         }
     }
-    if !permits() {
-        return Ok(None);
-    }
-    let mut confirmation = trial(selected, MeasurementOrder::CandidateFirst)?;
-    if selected != protocol.baseline && !confirmation.confirmed() {
+    let mut ranked: Vec<&Trial<C>> = trials.iter().filter(|trial| trial.confirmed()).collect();
+    ranked.sort_by(|a, b| b.score().total_cmp(&a.score()));
+    let ranked: Vec<C> = ranked.into_iter().map(|trial| trial.choice).collect();
+    let mut confirmation = None;
+    for choice in ranked {
         if !permits() {
             return Ok(None);
         }
-        selected = protocol.baseline;
-        confirmation = trial(selected, MeasurementOrder::CandidateFirst)?;
+        match trial(choice, MeasurementOrder::CandidateFirst) {
+            Ok(measured) if measured.confirmed() => {
+                confirmation = Some(measured);
+                break;
+            }
+            Ok(_) => {}
+            Err(error) => reject(choice, &error)?,
+        }
     }
+    let confirmation = match confirmation {
+        Some(confirmation) => confirmation,
+        None if permits() => trial(protocol.baseline, MeasurementOrder::CandidateFirst)?,
+        None => return Ok(None),
+    };
     Ok(Some(Evidence {
-        selected,
+        selected: confirmation.choice,
         exact_candidates_verified: true,
         trials,
         rejected: Some(rejected),

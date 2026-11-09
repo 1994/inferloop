@@ -88,6 +88,26 @@ fn a_winner_that_does_not_confirm_falls_back_to_the_baseline() {
 }
 
 #[test]
+fn a_winner_that_does_not_confirm_yields_to_the_next_ranked_candidate() {
+    let (evidence, rejects) = search(&[(1, 1.2), (2, 1.5), (3, 1.3)], &[(2, 1.0), (3, 1.25)]);
+    let evidence = evidence.unwrap();
+    assert_eq!(evidence.selected, 3);
+    assert_eq!(evidence.confirmation.choice, 3);
+    assert_eq!(rejects, Vec::<u8>::new());
+    assert!(evidence.valid(&protocol(), |_| true));
+}
+
+#[test]
+fn a_confirmation_that_fails_is_rejected_and_the_search_continues() {
+    let (evidence, rejects) = search(&[(1, 1.2), (2, 1.5), (3, 1.0)], &[(1, 1.2)]);
+    let evidence = evidence.unwrap();
+    assert_eq!(rejects, [2]);
+    assert_eq!(evidence.selected, 1);
+    assert_eq!(evidence.rejected, Some(Vec::new()));
+    assert!(evidence.valid(&protocol(), |_| true));
+}
+
+#[test]
 fn rejected_candidates_are_handled_and_recorded_once() {
     let (evidence, rejects) = search(&[(1, 1.2), (3, 1.0)], &[(1, 1.2)]);
     let evidence = evidence.unwrap();
