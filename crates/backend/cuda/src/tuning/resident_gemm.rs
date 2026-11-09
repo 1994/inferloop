@@ -387,11 +387,6 @@ pub enum MeasurementOrder {
 pub type GemmTrial = search::Trial<GemmConfig>;
 pub type ResidentGemmEntry = Record<ResidentGemmKey, GemmConfig>;
 
-/// A trial of a legal configuration whose measurements are complete.
-pub(super) fn trial_valid(trial: &GemmTrial) -> bool {
-    trial.choice.valid() && trial.valid()
-}
-
 /// Every configuration a search measures against the baseline for `rows` rows.
 fn protocol(rows: usize) -> Protocol<GemmConfig> {
     let baseline = GemmConfig::baseline(rows);
@@ -471,10 +466,6 @@ pub(crate) fn times_valid(times: &PairedTimes) -> bool {
         && times.speedup > 0.0
         && times.speedup.to_bits()
             == (times.baseline_median_ms / times.candidate_median_ms).to_bits()
-}
-
-fn confirmed(trial: &GemmTrial) -> bool {
-    trial.choice.valid() && trial.confirmed()
 }
 
 /// The stored record for `key`, valid or not.

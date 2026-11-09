@@ -305,9 +305,6 @@ pub struct TuningEntry {
 pub struct TilingTable {
     /// Measured entries per `DeviceProfile::identity`; one cache can retain several GPUs.
     pub devices: BTreeMap<String, Vec<TuningEntry>>,
-    /// Fused FP4 gate/up/quantizer decisions with complete-code and reverse timing evidence.
-    #[serde(default)]
-    pub resident_swiglu: Vec<resident_gemm::SwigluEntry>,
     /// Records of every family on the shared search protocol, by family name; see
     /// [`search`]. Records stay as stored, so ones this build cannot decode survive a rewrite.
     #[serde(default)]
@@ -363,8 +360,9 @@ struct StoredTilingTable {
     /// Multirow W4A4 records from before the shared protocol; they load without rejections.
     #[serde(default)]
     resident_gemm: Vec<serde_json::Value>,
+    /// Fused `SwiGLU` records from before the shared protocol; their fields are unchanged.
     #[serde(default)]
-    resident_swiglu: Vec<resident_gemm::SwigluEntry>,
+    resident_swiglu: Vec<serde_json::Value>,
     #[serde(default)]
     records: BTreeMap<String, Vec<serde_json::Value>>,
     /// Pooled dense records from before the shared protocol; their fields are unchanged.
@@ -419,6 +417,7 @@ impl From<StoredTilingTable> for TilingTable {
         for (family, legacy) in [
             (pool_dense::FAMILY, stored.resident_pool_dense),
             (resident_gemm::FAMILY, stored.resident_gemm),
+            (resident_gemm::swiglu::FAMILY, stored.resident_swiglu),
         ] {
             if !legacy.is_empty() {
                 records.entry(family.to_owned()).or_default().extend(legacy);
@@ -427,7 +426,6 @@ impl From<StoredTilingTable> for TilingTable {
         Self {
             devices,
             records,
-            resident_swiglu: stored.resident_swiglu,
             resident_fp8_gemm: stored.resident_fp8_gemm,
             resident_fp4_lt: stored.resident_fp4_lt,
             greedy: stored.greedy,

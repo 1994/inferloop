@@ -1,4 +1,5 @@
 use super::*;
+use crate::tuning::search::{self, Evidence};
 use crate::tuning::{MIN_REPS, TilingTable};
 
 fn config() -> GemmConfig {
@@ -26,6 +27,16 @@ fn trial(order: MeasurementOrder) -> GemmTrial {
     }
 }
 fn entry() -> Entry {
+    let shape = [128, 256, 768];
+    // A search measures every compatible tile; this one selected `config()`.
+    let trials = protocol(shape)
+        .candidates
+        .into_iter()
+        .map(|choice| GemmTrial {
+            choice,
+            ..trial(MeasurementOrder::BaselineFirst)
+        })
+        .collect();
     Entry {
         key: ResidentGemmKey {
             hardware: "synthetic-profile".into(),
@@ -38,11 +49,13 @@ fn entry() -> Entry {
             n: 256,
             k: 768,
         },
-        selected: config(),
-        bitwise_verified: true,
-        trials: vec![trial(MeasurementOrder::BaselineFirst)],
-        rejected: vec![],
-        confirmation: trial(MeasurementOrder::CandidateFirst),
+        evidence: Evidence {
+            selected: config(),
+            exact_candidates_verified: true,
+            trials,
+            rejected: Some(vec![]),
+            confirmation: trial(MeasurementOrder::CandidateFirst),
+        },
     }
 }
 #[test]
@@ -68,44 +81,56 @@ fn candidates_respect_each_runtime_geometry() {
 }
 #[test]
 fn cache_requires_numeric_and_both_measurement_orders() {
-    let valid = entry();
-    assert!(valid.valid());
-    let mut missing = valid.clone();
-    missing.bitwise_verified = false;
-    assert!(!missing.valid());
-    let mut missing = valid.clone();
-    missing.confirmation.order = MeasurementOrder::Unspecified;
-    assert!(!missing.valid());
-    let mut missing = valid;
-    missing.trials.clear();
-    assert!(!missing.valid());
+    let complete = entry();
+    assert!(valid(&complete));
+    let mut missing = complete.clone();
+    missing.evidence.exact_candidates_verified = false;
+    assert!(!valid(&missing));
+    let mut missing = complete.clone();
+    missing.evidence.confirmation.order = MeasurementOrder::Unspecified;
+    assert!(!valid(&missing));
+    let mut missing = complete;
+    missing.evidence.trials.clear();
+    assert!(!valid(&missing));
 }
 #[test]
 fn cache_rejects_tampered_samples_and_unsupported_kernel_variants() {
     let mut changed = entry();
-    changed.confirmation.cold.candidate_median_ms = 0.6;
-    assert!(!changed.valid());
+    changed.evidence.confirmation.cold.candidate_median_ms = 0.6;
+    assert!(!valid(&changed));
     let mut changed = entry();
-    changed.confirmation.warm.speedup = 2.0;
-    assert!(!changed.valid());
+    changed.evidence.confirmation.warm.speedup = 2.0;
+    assert!(!valid(&changed));
     let mut changed = entry();
-    changed.selected.main_loop = super::super::MainLoop::Prefetch8;
-    assert!(!changed.valid());
+    changed.evidence.selected.main_loop = super::super::MainLoop::Prefetch8;
+    assert!(!valid(&changed));
     let mut changed = entry();
-    changed.rejected.push((config(), String::new()));
-    assert!(!changed.valid());
+    changed
+        .evidence
+        .rejected
+        .get_or_insert_default()
+        .push((config(), String::new()));
+    assert!(!valid(&changed));
 }
 #[test]
 fn old_cache_migrates_and_fused_evidence_round_trips() {
     let old: TilingTable = serde_json::from_str(r#"{"device":"legacy","entries":[]}"#).unwrap();
-    assert!(old.resident_swiglu.is_empty());
-    let mut current = old;
-    current.resident_swiglu.push(entry());
-    let encoded = serde_json::to_string(&current).unwrap();
+    assert!(search::records::<ResidentGemmKey, GemmConfig>(&old, FAMILY).is_empty());
+    // The former section stored the same fields, spelling the trial's choice `config`.
+    let mut former = serde_json::to_value(entry()).unwrap();
+    for trial in former["trials"].as_array_mut().unwrap() {
+        let choice = trial.as_object_mut().unwrap().remove("choice").unwrap();
+        trial["config"] = choice;
+    }
+    let migrated: TilingTable =
+        serde_json::from_value(serde_json::json!({ "resident_swiglu": [former] })).unwrap();
+    let encoded = serde_json::to_string(&migrated).unwrap();
     let restored: TilingTable = serde_json::from_str(&encoded).unwrap();
-    assert_eq!(restored.resident_swiglu.len(), 1);
-    assert!(restored.resident_swiglu[0].valid());
-    assert_eq!(restored.resident_swiglu[0].selected, config());
+    let found = search::lookup(&restored, FAMILY, &entry().key, valid).unwrap();
+    assert_eq!(found.evidence.selected, config());
+    let mut incomplete = entry();
+    incomplete.evidence.trials.pop();
+    assert!(!valid(&incomplete));
 }
 #[test]
 fn fused_search_budget_is_distinct_and_not_renewed_by_repeated_layers() {
