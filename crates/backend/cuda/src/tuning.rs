@@ -11,6 +11,7 @@ pub mod preparation;
 pub(crate) mod projection_budget;
 pub mod recurrent;
 pub mod resident_gemm;
+pub mod search;
 
 use crate::device::DeviceProfile;
 use crate::resident::tensor_buffer as buffer;
@@ -310,9 +311,10 @@ pub struct TilingTable {
     /// Fused FP4 gate/up/quantizer decisions with complete-code and reverse timing evidence.
     #[serde(default)]
     pub resident_swiglu: Vec<resident_gemm::SwigluEntry>,
-    /// Measured pooled F32 projection crossover decisions.
+    /// Records of every family on the shared search protocol, by family name; see
+    /// [`search`]. Records stay as stored, so ones this build cannot decode survive a rewrite.
     #[serde(default)]
-    pub resident_pool_dense: Vec<pool_dense::Entry>,
+    pub records: BTreeMap<String, Vec<serde_json::Value>>,
     #[serde(default)]
     pub resident_fp8_gemm: Vec<fp8_gemm::Entry>,
     /// Qualified zero-workspace FP4 library projections.
@@ -366,7 +368,10 @@ struct StoredTilingTable {
     #[serde(default)]
     resident_swiglu: Vec<resident_gemm::SwigluEntry>,
     #[serde(default)]
-    resident_pool_dense: Vec<pool_dense::Entry>,
+    records: BTreeMap<String, Vec<serde_json::Value>>,
+    /// Pooled dense records from before the shared protocol; their fields are unchanged.
+    #[serde(default)]
+    resident_pool_dense: Vec<serde_json::Value>,
     #[serde(default)]
     resident_fp8_gemm: Vec<fp8_gemm::Entry>,
     #[serde(default)]
@@ -412,11 +417,18 @@ impl From<StoredTilingTable> for TilingTable {
                 }
             }
         }
+        let mut records = stored.records;
+        if !stored.resident_pool_dense.is_empty() {
+            records
+                .entry(pool_dense::FAMILY.to_owned())
+                .or_default()
+                .extend(stored.resident_pool_dense);
+        }
         Self {
             devices,
+            records,
             resident_gemm: stored.resident_gemm,
             resident_swiglu: stored.resident_swiglu,
-            resident_pool_dense: stored.resident_pool_dense,
             resident_fp8_gemm: stored.resident_fp8_gemm,
             resident_fp4_lt: stored.resident_fp4_lt,
             greedy: stored.greedy,

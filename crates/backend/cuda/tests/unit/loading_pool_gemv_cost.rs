@@ -447,7 +447,7 @@ fn probe_rows(loaded: &LoadedModel, rows: usize) -> TestResult {
 #[ignore = "requires CUDA/checkpoint/private tuning cache; actual geometry selection and complete outputs"]
 fn checkpoint_selector_measures_and_reuses_complete_choices() -> TestResult {
     use crate::tuning::{
-        pool_dense, resident_gemm::ResidentTuningSession, resolve_table, table_path,
+        pool_dense, resident_gemm::ResidentTuningSession, resolve_table, search, table_path,
     };
     CudaDevice::enable_kernel_cache()?;
     let loaded = LoadedModel::open(
@@ -482,16 +482,16 @@ fn checkpoint_selector_measures_and_reuses_complete_choices() -> TestResult {
             &session,
         );
         let table = resolve_table(table_path().as_deref())?.ok_or("private tuning table absent")?;
-        let entry = table
-            .resident_pool_dense
-            .iter()
-            .find(|entry| {
-                [entry.key.native.m, entry.key.native.n, entry.key.native.k] == shape
-                    && entry.key.tile == [case.tile.rows(), case.tile.columns()]
-            })
-            .ok_or("complete crossover evidence absent")?;
+        let entry =
+            search::records::<pool_dense::Key, pool_dense::Choice>(&table, pool_dense::FAMILY)
+                .into_iter()
+                .find(|entry| {
+                    [entry.key.native.m, entry.key.native.n, entry.key.native.k] == shape
+                        && entry.key.tile == [case.tile.rows(), case.tile.columns()]
+                })
+                .ok_or("complete crossover evidence absent")?;
         assert!(entry.valid());
-        assert_eq!(entry.selected, selected);
+        assert_eq!(entry.evidence.selected, selected);
         let reference = loaded
             .device()
             .tile()
@@ -526,8 +526,8 @@ fn checkpoint_selector_measures_and_reuses_complete_choices() -> TestResult {
         println!(
             "{}",
             serde_json::json!({"pool_dense_selection":shape, "tile":entry.key.tile,
-            "selected":selected,"cold_speedup":entry.confirmation.cold.speedup,
-            "warm_speedup":entry.confirmation.warm.speedup,"complete_output_verified":true})
+            "selected":selected,"cold_speedup":entry.evidence.confirmation.cold.speedup,
+            "warm_speedup":entry.evidence.confirmation.warm.speedup,"complete_output_verified":true})
         );
     }
     Ok(())
