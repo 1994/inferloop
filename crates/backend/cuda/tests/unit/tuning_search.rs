@@ -161,3 +161,21 @@ fn stored_records_replace_their_key_and_keep_what_this_build_cannot_read() {
     assert!(lookup::<String, u8>(&table, "family", &"shape-b".into(), |_| true).is_none());
     assert!(lookup::<String, u8>(&table, "family", &record.key, |_| false).is_none());
 }
+
+#[test]
+fn the_report_lists_every_record_with_its_confirmation() {
+    let (evidence, _) = search(&[(1, 1.1), (2, 1.3), (3, 1.01)], &[(2, 1.25)]);
+    let record = Record {
+        key: serde_json::json!({ "native": { "m": 4, "n": 64, "k": 4096 }, "tile": [4, 256] }),
+        evidence: evidence.unwrap(),
+    };
+    let mut table = TilingTable::default();
+    let records = table.records.entry("family".into()).or_default();
+    records.push(serde_json::to_value(&record).unwrap());
+    records.push(serde_json::json!({ "written": "by a newer build" }));
+    let report = report(&table);
+    let lines: Vec<_> = report.lines().collect();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[1], "family\t4x64x4096\t2\t1.250\t1.250\t3\t0");
+    assert_eq!(lines[2], "family\t?x?x?\t?\t?\t?\tunknown\tunknown");
+}

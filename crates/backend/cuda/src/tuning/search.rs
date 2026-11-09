@@ -227,6 +227,58 @@ where
     })
 }
 
+/// A paired report with one line per record of every family on the shared protocol.
+///
+/// Each line names the shape a record decided, what it selected, and the paired confirmation
+/// behind the choice. Records are read as stored, so a family needs nothing of its own to appear.
+#[must_use]
+pub fn report(table: &TilingTable) -> String {
+    let mut lines = vec!["family\tshape\tselected\tcold\twarm\tmeasured\trejected".to_owned()];
+    for (family, records) in &table.records {
+        for record in records {
+            lines.push(report_line(family, record));
+        }
+    }
+    lines.join("\n")
+}
+
+fn report_line(family: &str, record: &Value) -> String {
+    let key = record.get("key");
+    // Families key the geometry directly or through the projection key they extend.
+    let geometry = key
+        .and_then(|key| key.get("native").filter(|native| native.get("m").is_some()))
+        .or(key);
+    let shape = ["m", "n", "k"]
+        .map(|axis| {
+            geometry
+                .and_then(|geometry| geometry.get(axis))
+                .map_or_else(|| "?".to_owned(), Value::to_string)
+        })
+        .join("x");
+    let speedup = |state: &str| {
+        record
+            .pointer(&format!("/confirmation/{state}/speedup"))
+            .and_then(Value::as_f64)
+            .map_or_else(|| "?".to_owned(), |speedup| format!("{speedup:.3}"))
+    };
+    let count = |field: &str| {
+        record
+            .get(field)
+            .and_then(Value::as_array)
+            .map_or_else(|| "unknown".to_owned(), |items| items.len().to_string())
+    };
+    let selected = record
+        .get("selected")
+        .map_or_else(|| "?".to_owned(), Value::to_string);
+    format!(
+        "{family}\t{shape}\t{selected}\t{}\t{}\t{}\t{}",
+        speedup("cold"),
+        speedup("warm"),
+        count("trials"),
+        count("rejected")
+    )
+}
+
 /// The key of a stored record, when this build can decode it.
 fn key_of<K: DeserializeOwned>(stored: &Value) -> Option<K> {
     stored.get("key").and_then(|key| K::deserialize(key).ok())
