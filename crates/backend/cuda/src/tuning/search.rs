@@ -101,9 +101,20 @@ pub struct Evidence<C> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rejected: Option<Vec<(C, String)>>,
     pub confirmation: Trial<C>,
+    /// The largest deviation from an independent reference over every accepted measurement,
+    /// for families whose numerical gate is a tolerance rather than exact bits. A trial beyond
+    /// the family's tolerance is rejected when measured, so one bound covers the record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_error: Option<f64>,
 }
 
 impl<C> Evidence<C> {
+    /// The record's reference deviation is known and below `tolerance`.
+    pub(crate) fn within(&self, tolerance: f64) -> bool {
+        self.max_error
+            .is_some_and(|error| error.is_finite() && (0.0..tolerance).contains(&error))
+    }
+
     /// Every trial holds at least `pairs` paired samples in both cache states.
     pub(crate) fn sampled(&self, pairs: usize) -> bool {
         self.trials.iter().chain([&self.confirmation]).all(|trial| {
@@ -219,6 +230,7 @@ pub(crate) fn run<C: Copy + PartialEq>(
         trials,
         rejected: Some(rejected),
         confirmation,
+        max_error: None,
     }))
 }
 

@@ -59,6 +59,7 @@ fn entry() -> Entry {
                 cold: times(1.03),
                 warm: times(1.03),
             },
+            max_error: None,
         },
     }
 }

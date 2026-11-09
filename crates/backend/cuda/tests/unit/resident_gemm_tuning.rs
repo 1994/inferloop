@@ -68,6 +68,7 @@ fn entry(key: ResidentGemmKey) -> ResidentGemmEntry {
                 cold: times(1.03),
                 warm: times(1.03),
             },
+            max_error: None,
         },
     }
 }
