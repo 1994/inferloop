@@ -43,20 +43,22 @@ fn entry() -> Entry {
     });
     Entry {
         key: key(),
-        selected,
-        finite_bitwise: true,
-        fixtures: FIXTURES,
-        trials: vec![Trial {
-            reverse: false,
-            choice: selected,
-            cold: times(1.03),
-            warm: times(1.03),
-        }],
-        confirmation: Trial {
-            reverse: true,
-            choice: selected,
-            cold: times(1.03),
-            warm: times(1.03),
+        evidence: search::Evidence {
+            selected,
+            exact_candidates_verified: true,
+            trials: vec![Trial {
+                choice: selected,
+                order: MeasurementOrder::BaselineFirst,
+                cold: times(1.03),
+                warm: times(1.03),
+            }],
+            rejected: None,
+            confirmation: Trial {
+                choice: selected,
+                order: MeasurementOrder::CandidateFirst,
+                cold: times(1.03),
+                warm: times(1.03),
+            },
         },
     }
 }
@@ -118,34 +120,31 @@ fn fp8_typed_keys_isolate_library_driver_compiler_contract_and_geometry() -> Res
 fn fp8_confirmation_requires_exact_complete_finite_and_two_percent_both_modes() {
     let mut valid = entry();
     assert!(valid.valid());
-    valid.confirmation.reverse = false;
+    valid.evidence.confirmation.order = MeasurementOrder::BaselineFirst;
     assert!(!valid.valid());
-    valid.confirmation.reverse = true;
-    valid.trials[0].reverse = true;
+    valid.evidence.confirmation.order = MeasurementOrder::CandidateFirst;
+    valid.evidence.trials[0].order = MeasurementOrder::CandidateFirst;
     assert!(!valid.valid());
-    valid.trials[0].reverse = false;
-    valid.trials[0].warm = times(1.019);
+    valid.evidence.trials[0].order = MeasurementOrder::BaselineFirst;
+    valid.evidence.trials[0].warm = times(1.019);
     assert!(!valid.valid());
-    valid.trials[0].warm = times(1.03);
-    valid.finite_bitwise = false;
+    valid.evidence.trials[0].warm = times(1.03);
+    valid.evidence.exact_candidates_verified = false;
     assert!(!valid.valid());
-    valid.finite_bitwise = true;
-    valid.fixtures = 1;
+    valid.evidence.exact_candidates_verified = true;
+    valid.evidence.confirmation.warm = times(1.019);
     assert!(!valid.valid());
-    valid.fixtures = FIXTURES;
-    valid.confirmation.warm = times(1.019);
+    valid.evidence.confirmation.warm = times(1.03);
+    valid.evidence.confirmation.cold.baseline_ms[0] = f32::NAN;
     assert!(!valid.valid());
-    valid.confirmation.warm = times(1.03);
-    valid.confirmation.cold.baseline_ms[0] = f32::NAN;
+    valid.evidence.confirmation.cold = times(1.03);
+    valid.evidence.confirmation.cold.candidate_ms.pop();
     assert!(!valid.valid());
-    valid.confirmation.cold = times(1.03);
-    valid.confirmation.cold.candidate_ms.pop();
+    valid.evidence.confirmation.cold = times(1.03);
+    valid.evidence.confirmation.cold.speedup = 1.04;
     assert!(!valid.valid());
-    valid.confirmation.cold = times(1.03);
-    valid.confirmation.cold.speedup = 1.04;
-    assert!(!valid.valid());
-    valid.confirmation.cold = times(1.03);
-    valid.selected = Choice::Native(NativeConfig {
+    valid.evidence.confirmation.cold = times(1.03);
+    valid.evidence.selected = Choice::Native(NativeConfig {
         tile_m: 32,
         tile_n: 128,
     });
@@ -172,6 +171,42 @@ fn fp8_confirmation_requires_exact_complete_finite_and_two_percent_both_modes() 
         serde_json::from_str::<AlgorithmConfig>(&encoded).unwrap(),
         config
     );
+}
+#[test]
+fn fp8_records_from_the_former_section_keep_their_choice_and_rules() -> Result<()> {
+    let current = entry();
+    let mut stored = serde_json::to_value(&current).map_err(device_error)?;
+    let record = stored
+        .as_object_mut()
+        .ok_or_else(|| Error::invariant("record object"))?;
+    record.remove("exact_candidates_verified");
+    record.insert("finite_bitwise".into(), true.into());
+    record.insert("fixtures".into(), FIXTURES.into());
+    let reverse = |trial: &mut Value| {
+        if let Some(trial) = trial.as_object_mut() {
+            let reverse = trial.remove("order") == Some("CandidateFirst".into());
+            trial.insert("reverse".into(), reverse.into());
+        }
+    };
+    record["trials"]
+        .as_array_mut()
+        .into_iter()
+        .flatten()
+        .for_each(reverse);
+    reverse(&mut record["confirmation"]);
+    let mut short = stored.clone();
+    short["fixtures"] = 1.into();
+    let decode = |stored| serde_json::from_value::<Entry>(legacy(stored)).map_err(device_error);
+    let migrated = decode(stored)?;
+    assert_eq!(migrated.evidence.selected, current.evidence.selected);
+    assert_eq!(migrated.evidence.rejected, None);
+    assert_eq!(
+        migrated.evidence.confirmation.order,
+        MeasurementOrder::CandidateFirst
+    );
+    assert!(migrated.valid());
+    assert!(!decode(short)?.valid());
+    Ok(())
 }
 #[test]
 fn fp8_exact_gate_detects_single_bit_signed_zero_and_nonfinite_outputs() -> Result<()> {
@@ -217,15 +252,16 @@ fn fp8_table_atomic_updates_preserve_scalar_and_nvfp4_sections() -> Result<()> {
     .map_err(device_error)?;
     assert!(super::super::update_table(Some(&path), |table| {
         table.devices.insert("old-device".into(), vec![]);
-        table.resident_fp8_gemm.push(entry());
+        let stored = serde_json::to_value(entry()).unwrap_or_default();
+        table.records.entry(FAMILY.into()).or_default().push(stored);
     }));
     assert!(super::super::update_table(Some(&path), |table| {
         table.devices.insert("new-device".into(), vec![]);
     }));
     let loaded = TilingTable::load(&path)?;
     assert_eq!(loaded.devices.len(), 2);
-    assert_eq!(loaded.resident_fp8_gemm.len(), 1);
-    assert!(loaded.resident_fp8_gemm[0].valid());
+    let stored = search::lookup::<Key, Choice>(&loaded, FAMILY, &key(), |_| true);
+    assert!(stored.is_some_and(|entry| entry.valid()));
     remove_file(path).map_err(device_error)?;
     Ok(())
 }

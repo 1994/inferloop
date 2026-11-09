@@ -5,8 +5,9 @@
 #[cfg(feature = "cuda")]
 use super::TilingTable;
 use super::projection_budget::{GEMM_RANK, ProjectionKind};
-use super::resident_gemm::{PairedTimes, ResidentTuningSession};
-use super::{MAX_REPS, MIN_CONFIRM_SPEEDUP, MIN_REPS, REP_MS, WARMUP_MS};
+use super::resident_gemm::{MeasurementOrder, PairedTimes, ResidentTuningSession};
+use super::search::{self, Protocol, Record};
+use super::{MAX_REPS, MIN_REPS, REP_MS, WARMUP_MS};
 use crate::constants::AUX_KERNEL_TILE;
 use crate::constants::PROMPT_GEMM_TILE_ROWS;
 use crate::constants::QUANT_GEMM_TILE;
@@ -31,11 +32,11 @@ use infer_cuda_kernels::runtime::Timing;
 use infer_cuda_kernels::runtime::f8e4m3fn;
 use infer_cuda_kernels::runtime::{Allocation, Graph, Watch};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 #[cfg(test)]
 use std::env::var;
 use std::env::var_os;
 use std::fmt::Display;
-use std::iter::once;
 use std::{
     collections::BTreeMap,
     sync::{Mutex, OnceLock},
@@ -66,7 +67,6 @@ const RANDOM_SEED: u64 = 0xd1b5_4a32_d192_ed03;
 const RANDOM_SHIFT: u32 = 29;
 const EXPONENT_PERIOD: usize = 17;
 const EXPONENT_OFFSET: i32 = 12;
-const MEDIAN_INTERPOLATION: f32 = 0.5;
 const JIT_OPT_LEVEL: u8 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -191,86 +191,93 @@ impl WeightKey {
         })
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Trial {
-    /// False records search baseline/candidate; true records independent candidate/baseline.
-    pub reverse: bool,
-    pub choice: Choice,
-    pub cold: PairedTimes,
-    pub warm: PairedTimes,
+/// The family's records in the shared table section.
+pub const FAMILY: &str = "fp8_gemm";
+pub type Trial = search::Trial<Choice>;
+pub type Entry = Record<Key, Choice>;
+
+/// The native tiles searched for `rows`, in search order, without the baseline.
+fn native_candidates(rows: usize) -> impl Iterator<Item = Choice> {
+    let baseline = Choice::baseline(rows);
+    ROW_TILES
+        .into_iter()
+        .flat_map(|tile_m| {
+            COLUMN_TILES.map(|tile_n| Choice::Native(NativeConfig { tile_m, tile_n }))
+        })
+        .filter(move |choice| *choice != baseline)
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Entry {
-    pub key: Key,
-    pub selected: Choice,
-    pub finite_bitwise: bool,
-    pub fixtures: usize,
-    pub trials: Vec<Trial>,
-    pub confirmation: Trial,
-}
-fn median(values: &[f32]) -> Option<f32> {
-    if values.is_empty()
-        || values
-            .iter()
-            .any(|value| !value.is_finite() || *value <= 0.0)
-    {
-        return None;
-    }
-    let mut ordered = values.to_vec();
-    ordered.sort_by(f32::total_cmp);
-    let lo = ordered.len().saturating_sub(1) / 2;
-    let hi = ordered.len() / 2;
-    Some(if lo == hi {
-        ordered[lo]
-    } else {
-        // Keep the benchmark library's separately rounded multiply/multiply/add median bits.
-        let lower = ordered[lo] * MEDIAN_INTERPOLATION;
-        let upper = ordered[hi] * MEDIAN_INTERPOLATION;
-        lower + upper
-    })
-}
-fn times_valid(times: &PairedTimes) -> bool {
-    !times.baseline_ms.is_empty()
-        && times.baseline_ms.len() == times.candidate_ms.len()
-        && median(&times.baseline_ms)
-            .is_some_and(|value| value.to_bits() == times.baseline_median_ms.to_bits())
-        && median(&times.candidate_ms)
-            .is_some_and(|value| value.to_bits() == times.candidate_median_ms.to_bits())
-        && times.speedup.is_finite()
-        && times.speedup > 0.0
-        && times.speedup.to_bits()
-            == (times.baseline_median_ms / times.candidate_median_ms).to_bits()
-}
-fn confirmed(trial: &Trial) -> bool {
-    times_valid(&trial.cold)
-        && times_valid(&trial.warm)
-        && trial.cold.speedup >= MIN_CONFIRM_SPEEDUP
-        && trial.warm.speedup >= MIN_CONFIRM_SPEEDUP
-}
+
 impl Entry {
+    /// Complete evidence under this contract. Library candidates come from the installed
+    /// library at search time, so the record's own list of them is what coverage checks.
     fn valid(&self) -> bool {
-        self.finite_bitwise
-            && self.fixtures == FIXTURES
-            && self.selected.valid()
-            && (!matches!(self.selected, Choice::Lt(_)) || self.key.vendor_candidates)
-            && !self.key.kernel_fingerprint.is_empty()
-            && self.key.contract == CONTRACT
-            && self.confirmation.reverse
-            && self.confirmation.choice == self.selected
-            && times_valid(&self.confirmation.cold)
-            && times_valid(&self.confirmation.warm)
-            && self.trials.iter().all(|trial| {
-                !trial.reverse
-                    && trial.choice.valid()
-                    && times_valid(&trial.cold)
-                    && times_valid(&trial.warm)
+        let key = &self.key;
+        let evidence = &self.evidence;
+        let library = evidence
+            .trials
+            .iter()
+            .map(|trial| trial.choice)
+            .chain(
+                evidence
+                    .rejected
+                    .iter()
+                    .flatten()
+                    .map(|(choice, _)| *choice),
+            )
+            .filter(|choice| matches!(choice, Choice::Lt(_)));
+        let protocol = Protocol {
+            baseline: Choice::baseline(key.m),
+            candidates: native_candidates(key.m).chain(library).collect(),
+        };
+        !key.kernel_fingerprint.is_empty()
+            && key.contract == CONTRACT
+            && evidence.valid(&protocol, |choice| {
+                choice.valid() && (!matches!(choice, Choice::Lt(_)) || key.vendor_candidates)
             })
-            && (self.selected == Choice::baseline(self.key.m)
-                || (confirmed(&self.confirmation)
-                    && self
-                        .trials
-                        .iter()
-                        .any(|trial| trial.choice == self.selected && confirmed(trial))))
+    }
+}
+
+/// A record from the family's own former table section, in the shared form: arm orders were a
+/// `reverse` flag, and complete verification was a finite flag plus a fixture count.
+pub(super) fn legacy(mut stored: Value) -> Value {
+    let Some(record) = stored.as_object_mut() else {
+        return stored;
+    };
+    let fixtures = record
+        .remove("fixtures")
+        .and_then(|fixtures| fixtures.as_u64());
+    if let Some(finite) = record.remove("finite_bitwise") {
+        let complete = finite.as_bool() == Some(true)
+            && fixtures.and_then(|fixtures| usize::try_from(fixtures).ok()) == Some(FIXTURES);
+        record.insert("exact_candidates_verified".into(), Value::Bool(complete));
+    }
+    let trials = record
+        .get_mut("trials")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten();
+    for trial in trials {
+        legacy_order(trial);
+    }
+    if let Some(confirmation) = record.get_mut("confirmation") {
+        legacy_order(confirmation);
+    }
+    stored
+}
+
+fn legacy_order(trial: &mut Value) {
+    let Some(trial) = trial.as_object_mut() else {
+        return;
+    };
+    if let Some(reverse) = trial.remove("reverse") {
+        let order = if reverse.as_bool() == Some(true) {
+            MeasurementOrder::CandidateFirst
+        } else {
+            MeasurementOrder::BaselineFirst
+        };
+        if let Ok(order) = serde_json::to_value(order) {
+            trial.insert("order".into(), order);
+        }
     }
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -623,14 +630,19 @@ fn trial(
     baseline: &Captured,
     candidate: &Captured,
     choice: Choice,
-    reverse: bool,
+    order: MeasurementOrder,
 ) -> Result<Trial> {
-    Ok(Trial {
-        reverse,
+    let reverse = order == MeasurementOrder::CandidateFirst;
+    let measured = Trial {
         choice,
+        order,
         cold: measure(device, baseline, candidate, true, reverse)?,
         warm: measure(device, baseline, candidate, false, reverse)?,
-    })
+    };
+    if !measured.valid() {
+        return Err(Error::invalid("FP8 paired timing samples"));
+    }
+    Ok(measured)
 }
 fn cached_gate(
     device: &CudaDevice,
@@ -747,129 +759,38 @@ fn candidates(
     Some(choices)
 }
 
-fn confirm_best(
+/// Measure `choice` against the baseline in `order`, failing when it does not reproduce the
+/// baseline's bits before and after timing. A search trial first proves every fixture; a
+/// confirmation recaptures an already proven choice. A choice that fails is no longer trusted
+/// for this weight.
+fn paired_trial(
     device: &CudaDevice,
     support: &mut vendor_fp8::Support,
-    weight: &ProjectionWeight,
-    key: &Key,
-    session: &ResidentTuningSession,
-    base: &Captured,
-    trials: &[Trial],
-) -> Result<Option<Trial>> {
-    let shape = [key.m, key.n, key.k];
-    let mut ranked: Vec<&Trial> = trials.iter().filter(|trial| confirmed(trial)).collect();
-    ranked.sort_by(|a, b| {
-        b.cold
-            .speedup
-            .min(b.warm.speedup)
-            .total_cmp(&a.cold.speedup.min(a.warm.speedup))
-    });
-    let baseline = Choice::baseline(key.m);
-    for choice in ranked
-        .into_iter()
-        .map(|trial| trial.choice)
-        .chain(once(baseline))
-    {
-        if !permits(session, shape) {
-            return Ok(None);
-        }
-        let measured = (|| {
-            let candidate = Captured::new(device, support, weight, shape, choice, 0)?;
-            candidate.run(device)?;
-            bitwise(
-                &device.runtime().read(&candidate.output)?,
-                &device.runtime().read(&base.output)?,
-            )?;
-            let measured = trial(device, base, &candidate, choice, true)?;
-            bitwise(
-                &device.runtime().read(&candidate.output)?,
-                &device.runtime().read(&base.output)?,
-            )?;
-            Ok::<Trial, Error>(measured)
-        })();
-        match measured {
-            Ok(measured) if choice == baseline || confirmed(&measured) => {
-                return Ok(Some(measured));
-            }
-            Ok(_) => {
-                tracing::info!(target:"infer::tuning",?shape,?choice,"FP8 reverse-order confirmation did not meet cold/warm threshold");
-            }
-            Err(error) => {
-                remember(weight, key, choice, false)?;
-                tracing::warn!(target:"infer::tuning",?shape,?choice,%error,"FP8 reverse-order confirmation rejected; next ranked candidate continues");
-            }
-        }
-    }
-    Ok(None)
-}
-
-enum SearchTrial {
-    BudgetExhausted,
-    Rejected,
-    Measured(Trial),
-}
-
-fn search_trial(
-    device: &CudaDevice,
-    support: &mut vendor_fp8::Support,
-    weight: &ProjectionWeight,
-    key: &Key,
-    choice: Choice,
-    session: &ResidentTuningSession,
+    (weight, key, session): (&ProjectionWeight, &Key, &ResidentTuningSession),
     (base, expected): (&Captured, &[f32]),
-) -> Result<SearchTrial> {
-    let shape = [key.m, key.n, key.k];
-    let valid = match verify(device, support, weight, shape, choice, Some(session)) {
-        Ok(Some(valid)) => valid,
-        Ok(None) => return Ok(SearchTrial::BudgetExhausted),
-        Err(error) => {
-            tracing::warn!(target:"infer::tuning",?shape,?choice,%error,"FP8 candidate rejected before measurement");
-            false
-        }
-    };
-    if !valid {
-        return Ok(SearchTrial::Rejected);
-    }
-    remember(weight, key, choice, true)?;
-    measure_verified_trial(device, support, weight, key, choice, base, expected)
-}
-
-fn measure_verified_trial(
-    device: &CudaDevice,
-    support: &mut vendor_fp8::Support,
-    weight: &ProjectionWeight,
-    key: &Key,
     choice: Choice,
-    base: &Captured,
-    expected: &[f32],
-) -> Result<SearchTrial> {
+    order: MeasurementOrder,
+) -> Result<Trial> {
     let shape = [key.m, key.n, key.k];
-    let candidate = match Captured::new(device, support, weight, shape, choice, 0) {
-        Ok(candidate) => candidate,
-        Err(error) => {
-            tracing::warn!(target:"infer::tuning",?shape,?choice,%error,"FP8 candidate capture rejected");
-            return Ok(SearchTrial::Rejected);
+    if order == MeasurementOrder::BaselineFirst {
+        match verify(device, support, weight, shape, choice, Some(session))? {
+            Some(true) => remember(weight, key, choice, true)?,
+            Some(false) => return Err(Error::invalid("FP8 candidate failed the exact gate")),
+            None => return Err(Error::invalid("FP8 search budget exhausted")),
         }
-    };
-    let measured = match trial(device, base, &candidate, choice, false) {
-        Ok(measured) => measured,
-        Err(error) => {
-            tracing::warn!(target:"infer::tuning",?shape,?choice,%error,"FP8 candidate measurement rejected; remaining candidates continue");
-            return Ok(SearchTrial::Rejected);
-        }
-    };
-    if let Err(error) = bitwise(&device.runtime().read(&candidate.output)?, expected) {
-        remember(weight, key, choice, false)?;
-        tracing::warn!(target:"infer::tuning",?shape,?choice,%error,"FP8 candidate changed bits after measurement; remaining candidates continue");
-        return Ok(SearchTrial::Rejected);
     }
-    Ok(
-        if times_valid(&measured.cold) && times_valid(&measured.warm) {
-            SearchTrial::Measured(measured)
-        } else {
-            SearchTrial::Rejected
-        },
-    )
+    let measured = (|| {
+        let candidate = Captured::new(device, support, weight, shape, choice, 0)?;
+        candidate.run(device)?;
+        bitwise(&device.runtime().read(&candidate.output)?, expected)?;
+        let measured = trial(device, base, &candidate, choice, order)?;
+        bitwise(&device.runtime().read(&candidate.output)?, expected)?;
+        Ok(measured)
+    })();
+    if measured.is_err() {
+        remember(weight, key, choice, false)?;
+    }
+    measured
 }
 
 fn tune(
@@ -913,45 +834,40 @@ fn tune(
         return Ok(None);
     };
     session.plan_projection(ProjectionKind::Fp8, shape, choices.len() * 2 - 1)?;
-    let mut trials = Vec::new();
-    for choice in choices {
-        if choice == baseline {
-            continue;
-        }
-        if !permits(session, shape) {
-            return Ok(None);
-        }
-        match search_trial(
-            device,
-            support,
-            weight,
-            &key,
-            choice,
-            session,
-            (&base, &expected),
-        )? {
-            SearchTrial::BudgetExhausted => return Ok(None),
-            SearchTrial::Rejected => {}
-            SearchTrial::Measured(measured) => trials.push(measured),
-        }
-    }
-    let Some(confirmation) = confirm_best(device, support, weight, &key, session, &base, &trials)?
+    let protocol = Protocol {
+        baseline,
+        candidates: choices
+            .into_iter()
+            .filter(|choice| *choice != baseline)
+            .collect(),
+    };
+    let Some(evidence) = search::run(
+        &protocol,
+        || permits(session, shape),
+        |choice, order| {
+            paired_trial(
+                device,
+                support,
+                (weight, &key, session),
+                (&base, &expected),
+                choice,
+                order,
+            )
+        },
+        |choice, error| {
+            tracing::warn!(target:"infer::tuning",?shape,?choice,%error,
+                "FP8 candidate rejected; remaining candidates continue");
+            Ok(())
+        },
+    )?
     else {
         return Ok(None);
     };
-    let selected = confirmation.choice;
-    let entry = Entry {
-        key,
-        selected,
-        finite_bitwise: true,
-        fixtures: FIXTURES,
-        trials,
-        confirmation,
-    };
+    let entry = Entry { key, evidence };
     if !entry.valid() {
         return Err(Error::invalid("FP8 invalid confirmation evidence"));
     }
-    remember(weight, &entry.key, selected, true)?;
+    remember(weight, &entry.key, entry.evidence.selected, true)?;
     Ok(Some(entry))
 }
 fn resolve(
@@ -992,18 +908,16 @@ fn resolve(
     } else {
         None
     };
-    let cached = table.as_ref().and_then(|table| {
-        table
-            .resident_fp8_gemm
-            .iter()
-            .find(|entry| entry.key == key)
-    });
+    let cached = table
+        .as_ref()
+        .and_then(|table| search::lookup::<Key, Choice>(table, FAMILY, &key, |_| true));
     let choice = if let Some(entry) = cached {
         if !entry.valid() {
             return Err(Error::invalid("FP8 invalid persistent evidence"));
         }
-        tracing::info!(target:"infer::tuning",?key,?entry.selected,source="table-cache","FP8 GEMM choice");
-        entry.selected
+        let selected = entry.evidence.selected;
+        tracing::info!(target:"infer::tuning",?key,?selected,source="table-cache","FP8 GEMM choice");
+        selected
     } else {
         if !autotune {
             return Ok(baseline);
@@ -1011,15 +925,13 @@ fn resolve(
         let Some(entry) = tune(device, support, weight, key.clone(), session)? else {
             return Ok(baseline);
         };
-        let cached = key.persistent()
-            && super::update_table(path.as_deref(), |table| {
-                table.resident_fp8_gemm.retain(|old| old.key != entry.key);
-                table.resident_fp8_gemm.push(entry.clone());
-            });
-        tracing::info!(target:"infer::tuning",?key,?entry.selected,cached,cold_speedup=entry.confirmation.cold.speedup,
-            warm_speedup=entry.confirmation.warm.speedup,source="measured","FP8 quantization-inclusive paired A/B GEMM choice");
+        let cached = key.persistent() && search::store(path.as_deref(), FAMILY, &entry);
+        let evidence = &entry.evidence;
+        tracing::info!(target:"infer::tuning",?key,selected=?evidence.selected,cached,
+            cold_speedup=evidence.confirmation.cold.speedup,warm_speedup=evidence.confirmation.warm.speedup,
+            source="measured","FP8 quantization-inclusive paired A/B GEMM choice");
         tracing::debug!(target:"infer::tuning",evidence=%serde_json::to_string(&entry).map_err(device_error)?,"FP8 GEMM tuning evidence");
-        entry.selected
+        evidence.selected
     };
     memo()
         .lock()
