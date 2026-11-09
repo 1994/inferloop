@@ -330,7 +330,8 @@ fn graph_derived_dense_preserves_short_checkpoint_bits() -> Result<()> {
 #[test]
 #[ignore = "requires CUDA, checkpoint and frozen1025 tokens; bounded fused SwiGLU model regression"]
 fn tuned_swiglu_preserves_short_checkpoint_bits() -> Result<()> {
-    use crate::tuning::{TilingTable, resident_gemm::swiglu};
+    use crate::tuning::resident_gemm::{GemmConfig, ResidentGemmKey};
+    use crate::tuning::{TilingTable, resident_gemm::swiglu, search};
     let (loaded, tokens) = loaded_model(AttentionProfile::Bf16, 1024, 64)?;
     let before = swiglu::capture_counts();
     let mut candidate = loaded.sequence(2048)?;
@@ -356,11 +357,13 @@ fn tuned_swiglu_preserves_short_checkpoint_bits() -> Result<()> {
     for config in configs.iter().filter(|row| row["mode"] == "nvfp4-swiglu") {
         let shape = ["m", "n", "k"].map(|key| config[key].as_u64().expect("geometry"));
         assert!(
-            table.resident_swiglu.iter().any(|entry| {
-                [entry.key.m as u64, entry.key.n as u64, entry.key.k as u64] == shape
-                    && entry.bitwise_verified
-                    && !entry.trials.is_empty()
-            }),
+            search::records::<ResidentGemmKey, GemmConfig>(&table, swiglu::FAMILY)
+                .iter()
+                .any(|entry| {
+                    [entry.key.m as u64, entry.key.n as u64, entry.key.k as u64] == shape
+                        && entry.evidence.exact_candidates_verified
+                        && !entry.evidence.trials.is_empty()
+                }),
             "normal model budget must retain complete fused search evidence"
         );
     }

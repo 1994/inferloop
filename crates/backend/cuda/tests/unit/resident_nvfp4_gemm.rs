@@ -675,7 +675,8 @@ fn fused_swiglu_tuner_preserves_complete_quantized_outputs() -> Result<(), Box<d
     use crate::mlp::ProjectionWeight;
     use crate::tuning::{
         TilingTable,
-        resident_gemm::{ResidentTuningSession, swiglu},
+        resident_gemm::{GemmConfig, ResidentGemmKey, ResidentTuningSession, swiglu},
+        search,
     };
     use std::{env, fs};
     let path = env::var("INFER_CUDA_TUNING_TABLE")?;
@@ -709,14 +710,13 @@ fn fused_swiglu_tuner_preserves_complete_quantized_outputs() -> Result<(), Box<d
             &session,
         );
         let table: TilingTable = serde_json::from_slice(&fs::read(&path)?)?;
-        let entry = table
-            .resident_swiglu
-            .iter()
+        let entry = search::records::<ResidentGemmKey, GemmConfig>(&table, swiglu::FAMILY)
+            .into_iter()
             .find(|entry| [entry.key.m, entry.key.n, entry.key.k] == shape)
             .ok_or("fused search did not retain complete measurement evidence")?;
-        assert_eq!(entry.selected, selected);
-        assert!(entry.bitwise_verified);
-        assert!(!entry.trials.is_empty());
+        assert_eq!(entry.evidence.selected, selected);
+        assert!(entry.evidence.exact_candidates_verified);
+        assert!(!entry.evidence.trials.is_empty());
         let input: Vec<_> = (0..rows * columns)
             .map(|i| (f32::from(u16::try_from(i % 131).expect("bounded")) - 65.0) / 37.0)
             .collect();
@@ -748,7 +748,7 @@ fn fused_swiglu_tuner_preserves_complete_quantized_outputs() -> Result<(), Box<d
         graph.launch().sync_on(device.stream())?;
         drop(graph);
         assert_eq!(operand_bytes(&device, (codes, scales))?, expected);
-        println!("{}", serde_json::to_string(entry)?);
+        println!("{}", serde_json::to_string(&entry)?);
     }
     Ok(())
 }
