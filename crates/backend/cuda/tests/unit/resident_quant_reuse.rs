@@ -3,6 +3,7 @@
 use super::{QuantPairPlan, Workspace, record_certified};
 use crate::device::device_error;
 use crate::resident::buffers::{Operand, buffer, region, tensor_rows};
+use crate::resident::projection_lowering::{Format, quantized};
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use crate::{
     device::CudaDevice,
@@ -434,17 +435,18 @@ fn capture_pair(
                 .projections
                 .get(&id)
                 .ok_or_else(|| device_error("pair weight missing"))?;
-            if !record_certified(
+            let weight_format = Format::of(weight);
+            let quantized = quantized(weight_format, pair.weights.activation_quantization(id))
+                .ok_or_else(|| device_error("quantized pair path not recorded"))?;
+            record_certified(
                 (&pair.weights.kernels, scope),
                 workspace,
                 weight,
-                pair.weights.activation_quantization(id),
+                quantized,
                 region(input_pointer, input_view.size()),
                 tensor_rows(output)?,
                 pair.columns,
-            )? {
-                return Err(device_error("quantized pair path not recorded"));
-            }
+            )?;
         }
         Ok(())
     });

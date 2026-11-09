@@ -4,6 +4,7 @@
 //! [`super::ActivationArena::new_prompt`]) instead of `lanes x vocabulary`, which is most of a
 //! wide prompt arena (2 GB at 2048 lanes for a 248K vocabulary).
 use super::buffers::{RowMajor, buffer};
+use super::projection_lowering::{Format, Lowering, Mode, lower};
 use super::{ActivationArena, ProgramWeights, capture::error};
 use infer_core::Result;
 use infer_cuda_kernels::contract::{LastRowsKind, LastRowsPlan, Recording};
@@ -88,18 +89,19 @@ pub(super) fn record(
     }
     let slot = arena.slot(node.outputs[0]).map_err(error)?;
     let output = arena.buffer(slot).map_err(error)?;
-    let recorded = super::nvfp4_gemm::record_certified(
+    let shape = [1, output.len(), hidden];
+    let Lowering::Quantized(quantized) =
+        lower(Format::of(weight), Some(quantization), Mode::Logits, shape)?
+    else {
+        return Err(error("prompt logits quantized projection"));
+    };
+    super::nvfp4_gemm::record_certified(
         (&weights.kernels, scope),
         nvfp4,
         weight,
-        Some(quantization),
+        quantized,
         row.operand(),
         RowMajor::new(output, 1, output.len())?,
         hidden,
-    )?;
-    if recorded {
-        Ok(())
-    } else {
-        Err(error("prompt logits quantized projection"))
-    }
+    )
 }

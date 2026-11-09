@@ -1,3 +1,4 @@
+use super::projection_lowering::{Format, Lowering, Mode, lower};
 use super::{
     ActivationArena, ProgramWeights,
     arena::SlotMemory,
@@ -329,21 +330,20 @@ impl Capture<'_> {
             .projections
             .get(&node.inputs[1])
             .ok_or_else(|| error("missing projection"))?;
-        if let Some(scale) = self.weights.activation_quantization(node.inputs[1]) {
-            if !super::nvfp4_gemm::record_certified(
+        let activation = self.weights.activation_quantization(node.inputs[1]);
+        let shape = [1, output.len(), input.len()];
+        if let Lowering::Quantized(quantized) =
+            lower(Format::of(weights), activation, Mode::Single, shape)?
+        {
+            return super::nvfp4_gemm::record_certified(
                 (&self.weights.kernels, self.scope),
                 self.nvfp4,
                 weights,
-                Some(scale),
+                quantized,
                 input,
                 RowMajor::new(buffer(output)?, 1, output.len())?,
                 input.len(),
-            )? {
-                return Err(error(
-                    "activation quantization and weight encoding disagree",
-                ));
-            }
-            return Ok(());
+            );
         }
         #[cfg(test)]
         if self.mode == CaptureMode::Flat
