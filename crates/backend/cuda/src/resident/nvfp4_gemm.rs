@@ -4,6 +4,7 @@
 pub use infer_cuda_kernels::tile::projection::nvfp4_gemm as kernels;
 mod quant_reuse;
 mod workspace;
+use super::projection_lowering::Quantized;
 use crate::mlp::ProjectionWeight as MlpProjectionWeight;
 use crate::resident::buffers::RowMajor;
 use infer_core::Result;
@@ -14,25 +15,24 @@ pub use quant_reuse::QuantPairPlan;
 pub use quant_reuse::with_quant_reuse_disabled;
 pub use workspace::Workspace;
 
-/// Record only when the checkpoint declares an activation scale for packed FP4 weights.
+/// Quantize the activations and record the matching low-precision GEMM. A sibling projection
+/// cannot reuse the activations.
 pub(super) fn record(
     target: (&Kernels, &Recording<'_>),
     workspace: &mut Workspace,
     weight: &MlpProjectionWeight,
-    input_scale: Option<super::program::ActivationQuantization>,
+    quantized: Quantized,
     input: Buffer<'_, f32>,
     output: RowMajor<'_, f32>,
     columns: usize,
-) -> Result<bool> {
+) -> Result<()> {
     workspace.clear_quant_reuse();
     record_input(
         target,
         workspace,
         weight,
-        input_scale,
-        input,
-        output,
-        columns,
+        quantized,
+        (input, output, columns),
         false,
     )
 }
@@ -42,55 +42,37 @@ pub(super) fn record_certified(
     target: (&Kernels, &Recording<'_>),
     workspace: &mut Workspace,
     weight: &MlpProjectionWeight,
-    input_scale: Option<super::program::ActivationQuantization>,
+    quantized: Quantized,
     input: Buffer<'_, f32>,
     output: RowMajor<'_, f32>,
     columns: usize,
-) -> Result<bool> {
+) -> Result<()> {
     record_input(
         target,
         workspace,
         weight,
-        input_scale,
-        input,
-        output,
-        columns,
+        quantized,
+        (input, output, columns),
         true,
     )
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "One dispatcher preserves both certified and legacy projection contracts"
-)]
 fn record_input(
     target: (&Kernels, &Recording<'_>),
     workspace: &mut Workspace,
     weight: &MlpProjectionWeight,
-    input_scale: Option<super::program::ActivationQuantization>,
-    input: Buffer<'_, f32>,
-    output: RowMajor<'_, f32>,
-    columns: usize,
+    quantized: Quantized,
+    (input, output, columns): (Buffer<'_, f32>, RowMajor<'_, f32>, usize),
     certified: bool,
-) -> Result<bool> {
-    use super::program::ActivationQuantization;
-    use crate::mlp::ProjectionWeight;
-    match (weight, input_scale) {
-        (ProjectionWeight::Fp4(..), Some(ActivationQuantization::Fp4(scale))) => {
-            workspace.record_input(target, weight, scale, input, output, columns, certified)?;
+) -> Result<()> {
+    match quantized {
+        Quantized::Fp4(scale) => {
+            workspace.record_input(target, weight, scale, input, output, columns, certified)
         }
-        (
-            ProjectionWeight::Fp8(..) | ProjectionWeight::Fp8Block(..),
-            Some(ActivationQuantization::Fp8Token),
-        ) => {
-            workspace.record_fp8_input(target, weight, input, output, columns, certified)?;
-        }
-        _ => {
-            workspace.clear_quant_reuse();
-            return Ok(false);
+        Quantized::Fp8Token => {
+            workspace.record_fp8_input(target, weight, input, output, columns, certified)
         }
     }
-    Ok(true)
 }
 
 #[cfg(test)]

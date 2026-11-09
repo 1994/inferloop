@@ -32,6 +32,7 @@ pub(crate) mod prefill_gemm;
 mod prefill_projection;
 mod profile;
 mod program;
+mod projection_lowering;
 pub(crate) mod prompt_logits;
 pub(crate) mod prompt_scratch;
 mod recurrent;

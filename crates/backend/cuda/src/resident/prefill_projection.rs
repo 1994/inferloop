@@ -1,5 +1,6 @@
 mod dense;
 use super::buffers::{RowMajor, buffer};
+use super::projection_lowering::{Format, Lowering, Mode, lower};
 use super::prompt_scratch::Partials;
 use super::{ProgramWeights, capture::error};
 use crate::constants::PREFILL_GEMM_TILE_K;
@@ -437,22 +438,23 @@ pub(super) fn record(
         .projections
         .get(&node.inputs[1])
         .ok_or_else(|| error("prefill projection"))?;
-    if super::nvfp4_gemm::record_certified(
-        (&weights.kernels, scope),
-        nvfp4,
-        weight,
-        weights.activation_quantization(node.inputs[1]),
-        flat_input,
-        output,
-        columns,
-    )? {
-        return Ok(());
+    let activation = weights.activation_quantization(node.inputs[1]);
+    let shape = [width, flat / width, columns];
+    let lowering = lower(Format::of(weight), activation, Mode::Prompt, shape)?;
+    if let Lowering::Quantized(quantized) = lowering {
+        return super::nvfp4_gemm::record_certified(
+            (&weights.kernels, scope),
+            nvfp4,
+            weight,
+            quantized,
+            flat_input,
+            output,
+            columns,
+        );
     }
-    match weight {
-        ProjectionWeight::Fp8Block(..) => {
-            return Err(error("block FP8 requires the resident FP8 GEMM"));
-        }
-        ProjectionWeight::Dense(w) => {
+    nvfp4.clear_quant_reuse();
+    match (lowering, weight) {
+        (Lowering::PromptDense, ProjectionWeight::Dense(w)) => {
             record_prompt_dense(
                 scope,
                 weights,
@@ -462,7 +464,7 @@ pub(super) fn record(
                 (nvfp4, delegated),
             )?;
         }
-        ProjectionWeight::Fp8(..) => {
+        (Lowering::PromptFp8, _) => {
             weights
                 .kernels
                 .projection
@@ -480,7 +482,7 @@ pub(super) fn record(
                 )
                 .map_err(error)?;
         }
-        ProjectionWeight::Fp4(..) => {
+        (Lowering::PromptFp4, _) => {
             record_legacy_fp4(
                 (&weights.kernels, scope),
                 weight,
@@ -490,6 +492,7 @@ pub(super) fn record(
                 (width, columns),
             )?;
         }
+        (other, _) => return Err(error(format!("prompt projection lowered to {other:?}"))),
     }
     Ok(())
 }

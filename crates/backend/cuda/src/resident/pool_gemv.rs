@@ -5,12 +5,25 @@ pub use infer_cuda_kernels::tile::projection::pool_gemv as kernels;
 
 use super::buffers::{RowMajor, buffer};
 use super::capture::error;
+use super::projection_lowering::Format;
 use crate::tuning::pool_dense::{self, Choice};
 use crate::{mlp::ProjectionWeight, strategy::LinearTiling};
 use infer_core::Result;
 use infer_cuda_kernels::contract::{Buffer, Kernels, PoolGemvPlan, Recording};
 #[cfg(test)]
 use std::cell::Cell;
+/// The pooled dense choice that records for a `shape` projection of `weight`, or `None` when
+/// the native path records instead.
+pub(super) fn lowered(weight: Format, shape: [usize; 3], choice: Choice) -> Option<Choice> {
+    if !pool_dense::searchable(shape) || !enabled() {
+        return None;
+    }
+    #[cfg(test)]
+    let choice = pool_dense::recorded_choice(choice);
+    (choice != Choice::Native && weight == Format::Dense).then_some(choice)
+}
+
+/// Record a choice [`lowered`] returned.
 pub(super) fn record(
     (kernels, scope): (&Kernels, &Recording<'_>),
     weight: &ProjectionWeight,
@@ -19,19 +32,11 @@ pub(super) fn record(
     columns: usize,
     tile: LinearTiling,
     choice: Choice,
-) -> Result<bool> {
+) -> Result<()> {
     let rows = input.len() / columns.max(1);
     let outputs = output.columns;
-    if !pool_dense::searchable([rows, outputs, columns]) || !enabled() {
-        return Ok(false);
-    }
-    #[cfg(test)]
-    let choice = pool_dense::recorded_choice(choice);
-    if choice == Choice::Native {
-        return Ok(false);
-    }
     let ProjectionWeight::Dense(weight) = weight else {
-        return Ok(false);
+        return Err(error("pooled dense weight"));
     };
     if choice == Choice::Gemv {
         kernels
@@ -55,7 +60,7 @@ pub(super) fn record(
     }
     #[cfg(test)]
     CAPTURES.with(|n| n.set(n.get() + 1));
-    Ok(true)
+    Ok(())
 }
 
 #[cfg(not(test))]

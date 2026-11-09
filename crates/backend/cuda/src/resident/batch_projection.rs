@@ -1,6 +1,7 @@
 use super::buffers::RowMajor;
 #[cfg(test)]
 use super::buffers::buffer;
+use super::projection_lowering::{Format, Lowering, Mode, lower};
 use super::{ProgramWeights, batch::Lane, capture::error};
 #[cfg(test)]
 use crate::constants::CB_DECODE_SLOTS;
@@ -8,39 +9,21 @@ use crate::constants::DEFAULT_TILE_COLUMNS;
 use crate::constants::DEFAULT_TILE_ROWS;
 use crate::constants::F32_BYTES;
 use crate::constants::FUSED_VERIFY_LANES;
+#[cfg(test)]
 use crate::constants::GEMV_WIDE_OUTPUT_RATIO;
-use crate::constants::NVFP4_GROUP_SIZE;
-use crate::constants::SMALL_GEMV_MAX_ROWS;
 use crate::strategy::LinearTiling;
-use crate::tuning::pool_dense;
 use crate::{
     device::{CudaDevice, device_error},
     mlp::ProjectionWeight,
 };
 use infer_core::{Error, OpId, Result};
-use infer_cuda_kernels::contract::{Buffer, Kernels, Recording, RowsKernel, RowsPlan};
+use infer_cuda_kernels::contract::{Buffer, Kernels, Recording, RowsPlan};
 #[cfg(test)]
 use infer_cuda_kernels::contract::{DenseKernel, DenseRowsPlan, LinearRowsPlan};
 use infer_cuda_kernels::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorNode, TensorOp};
 use std::collections::BTreeMap;
 use std::result::Result as StdResult;
-
-/// Rows of one verify tile: one row group of the fused GEMV. The kernel walks row groups
-/// on grid dim 0, so any row count works; a partial group is predicated out.
-const VERIFY_TILE_ROWS: usize = FUSED_VERIFY_LANES + 1;
-/// Output columns per block. Measured on the slot decode hot path (3 lanes, n3 sweep):
-/// 8 → 39.3 ms/step of linear, 16 → 28.6 ms; 32 crosses the register spill cliff of the
-/// `[rows, BN, depth]` accumulator (16k f32 entries) and collapses to 88.9 ms.
-const VERIFY_TILE_COLUMNS: usize = 16;
-/// Inner depth of the verify GEMV k-loop.
-const VERIFY_TILE_DEPTH: usize = 256;
-/// Packed FP4 bytes per inner step: two nibble values share one byte.
-const VERIFY_PACKED_DEPTH: usize = VERIFY_TILE_DEPTH / 2;
-/// Scale groups per inner step: one E4M3 scale per NVFP4 group of 16 values.
-const VERIFY_SCALE_DEPTH: usize = VERIFY_TILE_DEPTH / NVFP4_GROUP_SIZE;
-/// Output tile of the batched verification GEMV.
-const VERIFY_OUTPUT_TILE: [usize; 2] = [VERIFY_TILE_ROWS, VERIFY_TILE_COLUMNS];
 
 pub(super) struct Workspace {
     nodes: BTreeMap<OpId, (usize, usize)>,
@@ -225,45 +208,50 @@ pub(super) fn record_slots(
         return Ok(());
     }
     // Verify graphs pin their tensor-core arithmetic through `arithmetic_rows`.
-    if weights.activation_quantization(node.inputs[1]).is_none()
-        && (arithmetic_rows.is_none() || pool_dense::supported([lanes, flat / lanes, columns]))
-    {
-        let tile =
-            weights.tiling.get(&node.inputs[1]).copied().unwrap_or(
-                LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS).map_err(error)?,
-            );
-        let choice = nvfp4.pool_dense_choice(weight, [lanes, flat / lanes, columns], tile);
-        if super::pool_gemv::record(
-            (&weights.kernels, scope),
-            weight,
-            input.buffer,
-            output,
-            columns,
-            tile,
-            choice,
-        )? {
+    let shape = [lanes, flat / lanes, columns];
+    let tile = weights
+        .tiling
+        .get(&node.inputs[1])
+        .copied()
+        .unwrap_or(LinearTiling::new(DEFAULT_TILE_ROWS, DEFAULT_TILE_COLUMNS).map_err(error)?);
+    let activation = weights.activation_quantization(node.inputs[1]);
+    let priced_rows = arithmetic_rows.unwrap_or(lanes);
+    let mode = Mode::Slots {
+        arithmetic_rows: priced_rows,
+        priced: arithmetic_rows.is_some(),
+        pool: nvfp4.pool_dense_choice(weight, shape, tile),
+    };
+    match lower(Format::of(weight), activation, mode, shape)? {
+        Lowering::PoolDense(choice) => {
+            super::pool_gemv::record(
+                (&weights.kernels, scope),
+                weight,
+                input.buffer,
+                output,
+                columns,
+                tile,
+                choice,
+            )?;
             nvfp4.clear_quant_reuse();
-            return Ok(());
         }
-    }
-    if !super::nvfp4_gemm::record_certified(
-        (&weights.kernels, scope),
-        nvfp4,
-        weight,
-        weights.activation_quantization(node.inputs[1]),
-        input.buffer,
-        output,
-        columns,
-    )? {
-        record_rows(
+        Lowering::Quantized(quantized) => super::nvfp4_gemm::record_certified(
             (&weights.kernels, scope),
             nvfp4,
             weight,
-            weights.activation_quantization(node.inputs[1]),
+            quantized,
+            input.buffer,
+            output,
+            columns,
+        )?,
+        _ => record_rows(
+            (&weights.kernels, scope),
+            nvfp4,
+            weight,
+            activation,
             input,
             output,
-            arithmetic_rows.unwrap_or(lanes),
-        )?;
+            priced_rows,
+        )?,
     }
     Ok(())
 }
@@ -280,61 +268,51 @@ pub(super) fn record_rows(
     arithmetic_rows: usize,
 ) -> Result<()> {
     let (rows, columns) = (input.rows, input.columns);
-    if super::nvfp4_gemm::record(
-        (kernels, scope),
-        nvfp4,
-        weight,
-        input_scale,
-        input.buffer,
-        output,
-        columns,
-    )? {
-        return Ok(());
-    }
-    // Tensor cores amortize weights across candidate rows. Keep the measured
-    // GEMV path for narrow batches with a very wide output (e.g. a vocabulary head).
     let outputs = output.columns;
-    let small = arithmetic_rows > SMALL_GEMV_MAX_ROWS
-        || outputs <= columns.saturating_mul(GEMV_WIDE_OUTPUT_RATIO);
-    #[cfg(test)]
-    if small
-        && matches!(weight, ProjectionWeight::Dense(_))
-        && super::small_gemm::precise_dense_enabled()
-        && outputs <= columns.saturating_mul(GEMV_WIDE_OUTPUT_RATIO)
-    {
-        let ProjectionWeight::Dense(w) = weight else {
-            return Err(error("precise dense weight"));
-        };
-        return kernels
-            .projection
-            .dense(
-                scope,
-                &DenseRowsPlan {
-                    kernel: DenseKernel::Compensated,
-                    rows,
-                    outputs,
-                    columns,
-                },
-                output.buffer,
+    let lowering = lower(
+        Format::of(weight),
+        input_scale,
+        Mode::Rows { arithmetic_rows },
+        [rows, outputs, columns],
+    )?;
+    let kernel = match lowering {
+        Lowering::Quantized(quantized) => {
+            return super::nvfp4_gemm::record(
+                (kernels, scope),
+                nvfp4,
+                weight,
+                quantized,
                 input.buffer,
-                buffer(w)?,
-            )
-            .map_err(error);
-    }
-    let kernel = if small
-        && matches!(
-            weight,
-            ProjectionWeight::Dense(_) | ProjectionWeight::Fp8(..)
-        ) {
-        RowsKernel::Small
-    } else {
-        RowsKernel::Tiled {
-            output_tile: VERIFY_OUTPUT_TILE,
-            tile_output: VERIFY_TILE_COLUMNS,
-            tile_columns: VERIFY_TILE_DEPTH,
-            fp4_depths: [VERIFY_PACKED_DEPTH, VERIFY_SCALE_DEPTH],
+                output,
+                columns,
+            );
         }
+        Lowering::Rows(kernel) => kernel,
+        #[cfg(test)]
+        Lowering::Compensated => {
+            nvfp4.clear_quant_reuse();
+            let ProjectionWeight::Dense(w) = weight else {
+                return Err(error("precise dense weight"));
+            };
+            return kernels
+                .projection
+                .dense(
+                    scope,
+                    &DenseRowsPlan {
+                        kernel: DenseKernel::Compensated,
+                        rows,
+                        outputs,
+                        columns,
+                    },
+                    output.buffer,
+                    input.buffer,
+                    buffer(w)?,
+                )
+                .map_err(error);
+        }
+        other => return Err(error(format!("gathered rows lowered to {other:?}"))),
     };
+    nvfp4.clear_quant_reuse();
     kernels
         .projection
         .rows(
