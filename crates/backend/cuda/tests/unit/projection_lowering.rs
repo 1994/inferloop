@@ -107,3 +107,13 @@ fn only_slot_rows_without_quantized_activations_take_the_pooled_dense_kernel() {
         Lowering::Quantized(Quantized::Fp4(SCALE))
     );
 }
+
+#[test]
+fn draft_projections_split_only_channel_fp8_with_a_partial_buffer() {
+    let draft = |split, weight| rows(Mode::Draft { split }, weight);
+    assert_eq!(draft(true, Format::Fp8), Lowering::DraftSplit);
+    assert_eq!(draft(false, Format::Fp8), Lowering::Draft);
+    for weight in [Format::Dense, Format::Fp8Block, Format::Fp4] {
+        assert_eq!(draft(true, weight), Lowering::Draft);
+    }
+}

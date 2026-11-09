@@ -48,6 +48,9 @@ pub(super) enum Mode {
     Prompt,
     /// The single prompt-logits row, which only a quantized head reaches.
     Logits,
+    /// A `DFlash2` draft projection over F32 activations; `split` says whether the proposal owns
+    /// a split-K partial buffer for this output width.
+    Draft { split: bool },
 }
 
 /// The encoding of a projection weight, which is all the lowering reads of it.
@@ -100,6 +103,11 @@ pub(super) enum Lowering {
     PromptFp8,
     /// The split-K prompt GEMM of a packed FP4 weight without activation scales.
     PromptFp4,
+    /// The draft GEMM over the weight's format.
+    Draft,
+    /// The draft GEMM split across K for a narrow channel FP8 output, which would otherwise
+    /// leave most multiprocessors idle.
+    DraftSplit,
 }
 
 /// The quantized path `weight` takes under `activation`, when the two agree.
@@ -172,6 +180,11 @@ pub(super) fn lower(
             }
             Ok(quantized.map_or_else(|| unquantized(arithmetic_rows), Lowering::Quantized))
         }
+        Mode::Draft { split } => Ok(if split && weight == Format::Fp8 {
+            Lowering::DraftSplit
+        } else {
+            Lowering::Draft
+        }),
         Mode::Rows { arithmetic_rows } => {
             Ok(quantized.map_or_else(|| unquantized(arithmetic_rows), Lowering::Quantized))
         }

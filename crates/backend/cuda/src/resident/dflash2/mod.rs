@@ -26,6 +26,7 @@ pub use weights::DraftWeights;
 
 use super::buffers::buffer;
 use super::capture::error;
+use super::projection_lowering::{Format, Lowering, Mode, lower};
 use crate::constants::WIDEST_PREFILL_LANES;
 use crate::device::{CudaDevice, PinnedUpload, Readbacks, device_error};
 use crate::mlp::ProjectionWeight;
@@ -695,10 +696,19 @@ fn record_projection(
     (rows, k, partials): (usize, usize, &Partials),
 ) -> Result<()> {
     let n = out.len() / rows;
-    let (ProjectionWeight::Fp8(codes, scales), Some((partial, splits, k_tiles))) =
-        (weight, partials.get(&(n, k)))
-    else {
+    let partial = partials.get(&(n, k));
+    let mode = Mode::Draft {
+        split: partial.is_some(),
+    };
+    if lower(Format::of(weight), None, mode, [rows, n, k])? != Lowering::DraftSplit {
         return record_gemm(r, weight, input, out, (rows, k));
+    }
+    let (ProjectionWeight::Fp8(codes, scales), Some((partial, splits, k_tiles))) =
+        (weight, partial)
+    else {
+        return Err(error(
+            "draft split projection lowered without its weight or partials",
+        ));
     };
     r.draft
         .project_split(
