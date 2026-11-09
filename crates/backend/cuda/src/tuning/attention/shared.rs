@@ -1,19 +1,19 @@
 //! Lossless shared KV is selected automatically after exact output and history-aware cost gates.
 use super::{
-    Choice, Key, Shape, Times,
+    Choice, Key, Shape,
     capture::Captured,
     reference::{self, Fixture},
 };
 use crate::resident::attention_oxide::shared_identity;
 use crate::tuning::MIN_CONFIRM_SPEEDUP;
+use crate::tuning::qualify::{Case, Qualification};
 use crate::tuning::resolve_table;
+use crate::tuning::search;
 use crate::tuning::shipped_table;
 use crate::tuning::table_path;
-use crate::tuning::update_table;
 use crate::{device::CudaDevice, tuning::resident_gemm::ResidentTuningSession};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::jit::JitOptions;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -37,62 +37,40 @@ fn supported(shape: Shape) -> bool {
         && LANES.contains(&shape.lanes)
         && i32::try_from(shape.window).is_ok()
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Case {
-    pub history: usize,
-    pub cold: Times,
-    pub warm: Times,
+/// The case confirms the candidate, or regresses by at most the short-history allowance.
+fn accepted(case: &Case) -> bool {
+    let minimum = if case.case == 0 {
+        1.0 / MAX_SHORT_REGRESSION
+    } else {
+        MIN_CONFIRM_SPEEDUP
+    };
+    case.cold.speedup() >= minimum && case.warm.speedup() >= minimum
 }
-impl Case {
-    fn accepted(&self) -> bool {
-        let minimum = if self.history == 0 {
-            1.0 / MAX_SHORT_REGRESSION
-        } else {
-            MIN_CONFIRM_SPEEDUP
-        };
-        self.cold.speedup() >= minimum && self.warm.speedup() >= minimum
+/// The family's records in the shared table section.
+pub const FAMILY: &str = "shared_attention";
+pub type Entry = Qualification<Key, Choice>;
+fn valid(entry: &Entry) -> bool {
+    if !supported(entry.key.shape) {
+        return false;
     }
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Entry {
-    pub key: Key,
-    pub selected: Choice,
-    pub verified_fixtures: usize,
-    pub verified_elements: usize,
-    pub history_verified_elements: usize,
-    pub max_f64_error: f64,
-    pub forward: Vec<Case>,
-    pub reverse: Vec<Case>,
-}
-impl Entry {
-    fn valid(&self) -> bool {
-        if !supported(self.key.shape) {
-            return false;
-        }
-        let elements = self.key.shape.lanes * self.key.shape.heads * self.key.shape.dim;
-        self.key.schema == SCHEMA
-            && !self.key.hardware.is_empty()
-            && self.key.fingerprint.len() == SHA256_HEX_LEN
-            && self.key.fingerprint.bytes().all(|x| x.is_ascii_hexdigit())
-            && self.key.driver_build.as_ref().is_none_or(|x| !x.is_empty())
-            && self.verified_fixtures == reference::FIXTURES
-            && self.verified_elements == reference::FIXTURES * elements
-            && self.history_verified_elements == HISTORY_CASES * elements
-            && self.max_f64_error.is_finite()
-            && (0.0..super::MAX_ERROR).contains(&self.max_f64_error)
-            && [&self.forward, &self.reverse].iter().all(|cases| {
-                cases.len() == HISTORY_CASES
-                    && cases
-                        .iter()
-                        .zip(histories(self.key.shape))
-                        .all(|(case, history)| {
-                            case.history == history && case.cold.valid() && case.warm.valid()
-                        })
-            })
-            && (self.selected == Choice::RustSimt
-                || self.selected == Choice::SharedKv
-                    && self.forward.iter().chain(&self.reverse).all(Case::accepted))
-    }
+    let elements = entry.key.shape.lanes * entry.key.shape.heads * entry.key.shape.dim;
+    entry.key.schema == SCHEMA
+        && !entry.key.hardware.is_empty()
+        && entry.key.fingerprint.len() == SHA256_HEX_LEN
+        && entry.key.fingerprint.bytes().all(|x| x.is_ascii_hexdigit())
+        && entry
+            .key
+            .driver_build
+            .as_ref()
+            .is_none_or(|x| !x.is_empty())
+        && entry.verified_fixtures == reference::FIXTURES
+        && entry.verified_elements == reference::FIXTURES * elements
+        && entry.history_verified_elements == HISTORY_CASES * elements
+        && entry.within(super::MAX_ERROR)
+        && entry.timed(&histories(entry.key.shape))
+        && (entry.selected == Choice::RustSimt
+            || entry.selected == Choice::SharedKv
+                && entry.forward.iter().chain(&entry.reverse).all(accepted))
 }
 type Memo = Mutex<BTreeMap<Key, Entry>>;
 fn memo() -> &'static Memo {
@@ -153,12 +131,13 @@ fn resolve(
         .into_iter()
         .flatten()
     {
-        if let Some(entry) = table
-            .resident_shared_attention
-            .iter()
-            .find(|entry| key.driver_build.is_some() && entry.key == key)
+        if let Some(entry) = key
+            .driver_build
+            .is_some()
+            .then(|| search::find::<Key, Entry>(table, FAMILY, &key, |_| true))
+            .flatten()
         {
-            if !entry.valid() {
+            if !valid(&entry) {
                 return Err(Error::invalid("incomplete shared KV cache evidence"));
             }
             memo()
@@ -176,11 +155,7 @@ fn resolve(
     let Some(entry) = tune(device, key.clone(), session)? else {
         return Ok(Choice::RustSimt);
     };
-    let cached = key.driver_build.is_some()
-        && update_table(path.as_deref(), |table| {
-            table.resident_shared_attention.retain(|old| old.key != key);
-            table.resident_shared_attention.push(entry.clone());
-        });
+    let cached = key.driver_build.is_some() && search::put(path.as_deref(), FAMILY, &key, &entry);
     tracing::info!(target:"infer::tuning",?shape,?entry.selected,cached,
         verified_elements=entry.verified_elements,history_verified_elements=entry.history_verified_elements,
         max_f64_error=entry.max_f64_error,"shared KV hardware choice");
@@ -207,7 +182,7 @@ fn cases(
         let shared = Captured::new(device, fixture, Choice::SharedKv)?;
         shared.exact_match(device, &base)?;
         result.push(Case {
-            history,
+            case: history,
             cold: super::measure(device, &base, &shared, true, reverse)?,
             warm: super::measure(device, &base, &shared, false, reverse)?,
         });
@@ -254,7 +229,7 @@ fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Resul
     let Some(reverse) = cases(device, key.shape, &fixtures, true, session)? else {
         return Ok(None);
     };
-    let selected = if forward.iter().chain(&reverse).all(Case::accepted) {
+    let selected = if forward.iter().chain(&reverse).all(accepted) {
         Choice::SharedKv
     } else {
         Choice::RustSimt
@@ -271,7 +246,7 @@ fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Resul
         forward,
         reverse,
     };
-    if !entry.valid() {
+    if !valid(&entry) {
         return Err(Error::invariant("incomplete shared KV proof"));
     }
     Ok(Some(entry))

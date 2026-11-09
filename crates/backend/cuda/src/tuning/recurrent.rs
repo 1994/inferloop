@@ -4,7 +4,7 @@ pub mod exact;
 mod reference;
 use super::resident_gemm::{MeasurementOrder, PairedTimes, ResidentTuningSession, paired_times};
 use super::search::{self, Evidence, FormerTrial, Protocol, Record};
-use super::{MAX_REPS, MIN_REPS, REP_MS, WARMUP_MS, median};
+use super::{MAX_REPS, MIN_REPS, REP_MS, WARMUP_MS};
 use crate::device::{CudaDevice, device_error};
 use crate::tuning::preparation::driver_build;
 use capture::{Captured, fingerprint};
@@ -38,27 +38,6 @@ pub struct Key {
     pub kernel_fingerprint: String,
     pub schema: String,
     pub shape: [usize; SHAPE_RANK],
-}
-/// Unpaired samples of the exact-recurrence qualification, which keeps its own record shape.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Times {
-    pub baseline_ms: Vec<f32>,
-    pub candidate_ms: Vec<f32>,
-}
-impl Times {
-    fn valid(&self) -> bool {
-        self.baseline_ms.len() >= MIN_REPS
-            && self.baseline_ms.len() <= MAX_REPS
-            && self.baseline_ms.len() == self.candidate_ms.len()
-            && self
-                .baseline_ms
-                .iter()
-                .chain(&self.candidate_ms)
-                .all(|x| x.is_finite() && *x > 0.0)
-    }
-    fn speedup(&self) -> f32 {
-        median(&self.baseline_ms) / median(&self.candidate_ms)
-    }
 }
 /// The family's records in the shared table section.
 pub const FAMILY: &str = "recurrent";

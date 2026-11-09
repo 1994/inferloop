@@ -9,6 +9,7 @@ pub mod pool_dense;
 pub(crate) mod prefill;
 pub mod preparation;
 pub(crate) mod projection_budget;
+pub mod qualify;
 pub mod recurrent;
 pub mod resident_gemm;
 pub mod search;
@@ -312,26 +313,12 @@ pub struct TilingTable {
     /// Qualified zero-workspace FP4 library projections.
     #[serde(default)]
     pub resident_fp4_lt: Vec<nvfp4_lt::Entry>,
-    /// Exact Rust SIMT alternatives with hardware and artifact scoped evidence.
-    #[serde(default)]
-    pub resident_exact_attention: Vec<attention::exact::Entry>,
-    /// Exact F32 shared KV with short-history regression and long-history paired evidence.
-    #[serde(default)]
-    pub resident_shared_attention: Vec<attention::shared::Entry>,
-    /// Exact vectorized shared-key refinement of the qualified shared kernel.
-    #[serde(default)]
-    pub resident_vector_shared_attention: Vec<attention::vector::Entry>,
-    /// Bit-exact combined vector key/consumer refinement of the qualified vector kernel.
-    #[serde(default)]
-    pub resident_vector_combined_attention: Vec<attention::vector_combined::Entry>,
     /// FA4 BF16 profile, artifact and architecture scoped cluster search evidence.
     #[serde(default)]
     pub resident_mma_attention: Vec<attention::mma::Entry>,
     /// F32-cache FA4 profile with full short-output and long-row F64 checks.
     #[serde(default)]
     pub resident_mma_f32_attention: Vec<attention::mma_f32::Entry>,
-    #[serde(default)]
-    pub resident_exact_recurrent: Vec<recurrent::exact::Entry>,
 }
 
 /// Read both the current per-device table and the former top-level `device`/`entries` format.
@@ -372,19 +359,19 @@ struct StoredTilingTable {
     #[serde(default)]
     resident_attention: Vec<serde_json::Value>,
     #[serde(default)]
-    resident_exact_attention: Vec<attention::exact::Entry>,
+    resident_exact_attention: Vec<serde_json::Value>,
     #[serde(default)]
-    resident_shared_attention: Vec<attention::shared::Entry>,
+    resident_shared_attention: Vec<serde_json::Value>,
     #[serde(default)]
-    resident_vector_shared_attention: Vec<attention::vector::Entry>,
+    resident_vector_shared_attention: Vec<serde_json::Value>,
     #[serde(default)]
-    resident_vector_combined_attention: Vec<attention::vector_combined::Entry>,
+    resident_vector_combined_attention: Vec<serde_json::Value>,
     #[serde(default)]
     resident_mma_attention: Vec<attention::mma::Entry>,
     #[serde(default)]
     resident_mma_f32_attention: Vec<attention::mma_f32::Entry>,
     #[serde(default)]
-    resident_exact_recurrent: Vec<recurrent::exact::Entry>,
+    resident_exact_recurrent: Vec<serde_json::Value>,
 }
 
 impl From<StoredTilingTable> for TilingTable {
@@ -407,6 +394,17 @@ impl From<StoredTilingTable> for TilingTable {
         let mut records = stored.records;
         for (family, legacy) in [
             (pool_dense::FAMILY, stored.resident_pool_dense),
+            (attention::exact::FAMILY, stored.resident_exact_attention),
+            (attention::shared::FAMILY, stored.resident_shared_attention),
+            (
+                attention::vector::FAMILY,
+                stored.resident_vector_shared_attention,
+            ),
+            (
+                attention::vector_combined::FAMILY,
+                stored.resident_vector_combined_attention,
+            ),
+            (recurrent::exact::FAMILY, stored.resident_exact_recurrent),
             (resident_gemm::FAMILY, stored.resident_gemm),
             (resident_gemm::swiglu::FAMILY, stored.resident_swiglu),
             (
@@ -454,13 +452,8 @@ impl From<StoredTilingTable> for TilingTable {
             devices,
             records,
             resident_fp4_lt: stored.resident_fp4_lt,
-            resident_exact_attention: stored.resident_exact_attention,
-            resident_shared_attention: stored.resident_shared_attention,
-            resident_vector_shared_attention: stored.resident_vector_shared_attention,
-            resident_vector_combined_attention: stored.resident_vector_combined_attention,
             resident_mma_attention: stored.resident_mma_attention,
             resident_mma_f32_attention: stored.resident_mma_f32_attention,
-            resident_exact_recurrent: stored.resident_exact_recurrent,
         }
     }
 }

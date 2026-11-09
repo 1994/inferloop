@@ -271,13 +271,28 @@ where
     K: DeserializeOwned + PartialEq,
     C: DeserializeOwned,
 {
+    find(table, family, key, valid)
+}
+
+/// The record of `family` for `key`, of any record type, that satisfies `valid`.
+#[must_use]
+pub(crate) fn find<K, T>(
+    table: &TilingTable,
+    family: &str,
+    key: &K,
+    valid: impl Fn(&T) -> bool,
+) -> Option<T>
+where
+    K: DeserializeOwned + PartialEq,
+    T: DeserializeOwned,
+{
     table
         .records
         .get(family)
         .into_iter()
         .flatten()
         .filter(|stored| key_of::<K>(stored).is_some_and(|stored| stored == *key))
-        .filter_map(|stored| Record::deserialize(stored).ok())
+        .filter_map(|stored| T::deserialize(stored).ok())
         .find(|record| valid(record))
 }
 
@@ -288,12 +303,21 @@ where
     K: Serialize + DeserializeOwned + PartialEq,
     C: Serialize,
 {
+    put(path, family, &record.key, record)
+}
+
+/// Store `record`, of any record type, under `key` in `family` at `path`.
+pub(crate) fn put<K, T>(path: Option<&Path>, family: &str, key: &K, record: &T) -> bool
+where
+    K: DeserializeOwned + PartialEq,
+    T: Serialize,
+{
     let Ok(value) = serde_json::to_value(record) else {
         return false;
     };
     update_table(path, |table| {
         let stored = table.records.entry(family.to_owned()).or_default();
-        stored.retain(|old| key_of::<K>(old).is_none_or(|key| key != record.key));
+        stored.retain(|old| key_of::<K>(old).is_none_or(|old| old != *key));
         stored.push(value);
     })
 }

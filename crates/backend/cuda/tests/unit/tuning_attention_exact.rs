@@ -1,6 +1,7 @@
 use super::*;
 use crate::tuning::MIN_REPS;
 use crate::tuning::TilingTable;
+use crate::tuning::qualify::Times;
 fn shape() -> Shape {
     Shape {
         heads: 24,
@@ -14,8 +15,8 @@ fn entry() -> Entry {
     let cases = || {
         TIMED_FIXTURES
             .into_iter()
-            .map(|fixture| Case {
-                fixture,
+            .map(|case| Case {
+                case,
                 cold: Times {
                     baseline_ms: vec![2.0; MIN_REPS],
                     candidate_ms: vec![1.0; MIN_REPS],
@@ -42,19 +43,20 @@ fn entry() -> Entry {
         max_f64_error: 1e-7,
         forward: cases(),
         reverse: cases(),
+        history_verified_elements: 0,
     }
 }
 #[test]
 fn cache_rejects_missing_bit_proof_history_and_reverse_confirmation() {
     let good = entry();
-    assert!(good.valid());
+    assert!(valid(&good));
     for index in 0..10 {
         let mut bad = good.clone();
         match index {
             0 => bad.verified_elements -= 1,
             1 => bad.verified_fixtures -= 1,
             2 => bad.reverse.clear(),
-            3 => bad.forward[1].fixture = 0,
+            3 => bad.forward[1].case = 0,
             4 => bad.reverse[1].cold.candidate_ms = vec![2.0; MIN_REPS],
             5 => bad.forward[0].warm.candidate_ms = vec![f32::NAN; MIN_REPS],
             6 => bad.max_f64_error = super::super::MAX_ERROR,
@@ -63,24 +65,26 @@ fn cache_rejects_missing_bit_proof_history_and_reverse_confirmation() {
             9 => bad.selected = Choice::Tiled { query_tile: 16 },
             _ => unreachable!(),
         }
-        assert!(!bad.valid(), "variant {index}");
+        assert!(!valid(&bad), "variant {index}");
     }
 }
 #[test]
 fn legacy_tables_and_exact_fallback_evidence_round_trip() -> Result<()> {
     let old: TilingTable = serde_json::from_str("{}").map_err(device_error)?;
-    assert!(old.resident_exact_attention.is_empty());
+    assert!(old.records.is_empty());
     let mut fallback = entry();
     fallback.selected = Choice::Simt;
     fallback.reverse[0].cold.candidate_ms = vec![2.0; MIN_REPS];
-    assert!(fallback.valid());
-    let table = TilingTable {
-        resident_exact_attention: vec![fallback],
-        ..Default::default()
-    };
+    assert!(valid(&fallback));
+    let stored = fallback.clone();
+    let table: TilingTable =
+        serde_json::from_value(serde_json::json!({ "resident_exact_attention": [fallback] }))
+            .map_err(device_error)?;
     let text = serde_json::to_string(&table).map_err(device_error)?;
     let restored: TilingTable = serde_json::from_str(&text).map_err(device_error)?;
-    assert!(restored.resident_exact_attention[0].valid());
+    assert!(valid(
+        &search::find::<Key, Entry>(&restored, FAMILY, &stored.key, |_| true).unwrap()
+    ));
     Ok(())
 }
 #[test]
@@ -122,7 +126,7 @@ fn hardware_exact_search_and_cache_reuse() -> Result<()> {
             .find(|entry| entry.key.shape == shape)
             .cloned()
             .ok_or_else(|| Error::invalid("exact attention tuning did not complete"))?;
-        assert!(entry.valid());
+        assert!(valid(&entry));
         assert_eq!(selected, Choice::RustSimt);
         assert_eq!(select(&device, shape, false, &session), selected);
         println!(

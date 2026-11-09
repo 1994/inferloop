@@ -1,17 +1,17 @@
 //! Exact Rust SIMT prepared recurrence selected by measured hardware/shape evidence.
 mod capture;
 mod identity;
-use super::{CUDA_OPT_LEVEL, Key, SHAPE_RANK, Times, reference::Fixture};
+use super::{CUDA_OPT_LEVEL, Key, SHAPE_RANK, reference::Fixture};
 use crate::tuning::MAX_REPS;
-use crate::tuning::MIN_CONFIRM_SPEEDUP;
 use crate::tuning::MIN_REPS;
 use crate::tuning::REP_MS;
 use crate::tuning::WARMUP_MS;
 use crate::tuning::preparation::driver_build;
+use crate::tuning::qualify::{Case, Qualification, Times};
 use crate::tuning::resolve_table;
+use crate::tuning::search;
 use crate::tuning::shipped_table;
 use crate::tuning::table_path;
-use crate::tuning::update_table;
 use crate::{
     device::{CudaDevice, device_error},
     tuning::resident_gemm::ResidentTuningSession,
@@ -21,7 +21,6 @@ use infer_core::{Error, Result};
 use infer_cuda_kernels::jit::JitOptions;
 use infer_cuda_kernels::runtime::Graph;
 use infer_cuda_kernels::runtime::Timing;
-use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     sync::{Mutex, OnceLock},
@@ -41,61 +40,30 @@ const NEGATIVE_OFFSET: i32 = -18;
 const LATE_BASE: i32 = 128;
 const FIXTURES: usize = 9;
 const TIMED: [usize; 3] = [2, 3, 7];
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Case {
-    pub fixture: usize,
-    pub cold: Times,
-    pub warm: Times,
-}
-impl Case {
-    fn valid(&self) -> bool {
-        self.cold.valid() && self.warm.valid()
-    }
-    fn confirmed(&self) -> bool {
-        self.cold.speedup() >= MIN_CONFIRM_SPEEDUP && self.warm.speedup() >= MIN_CONFIRM_SPEEDUP
-    }
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Entry {
-    pub key: Key,
-    pub rust_simt: bool,
-    pub verified_fixtures: usize,
-    pub verified_elements: usize,
-    pub max_f64_error: f64,
-    pub forward: Vec<Case>,
-    pub reverse: Vec<Case>,
-}
-impl Entry {
-    fn valid(&self) -> bool {
-        supported(self.key.shape)
-            && self.key.schema == SCHEMA
-            && !self.key.hardware.is_empty()
-            && self.key.kernel_fingerprint.len() == SHA256_HEX_LEN
-            && self
-                .key
-                .kernel_fingerprint
-                .bytes()
-                .all(|c| c.is_ascii_hexdigit())
-            && self.key.driver_build.as_ref().is_none_or(|s| !s.is_empty())
-            && self.verified_fixtures == FIXTURES
-            && self.verified_elements
-                == FIXTURES * (VALUE_HEADS * DIM * DIM + self.key.shape[3] * VALUE_HEADS * DIM)
-            && self.max_f64_error.is_finite()
-            && (0.0..super::MAX_F64_ERROR).contains(&self.max_f64_error)
-            && [&self.forward, &self.reverse].iter().all(|cases| {
-                cases.len() == TIMED.len()
-                    && cases
-                        .iter()
-                        .zip(TIMED)
-                        .all(|(case, index)| case.fixture == index && case.valid())
-            })
-            && (!self.rust_simt
-                || self
-                    .forward
-                    .iter()
-                    .chain(&self.reverse)
-                    .all(Case::confirmed))
-    }
+/// The family's records in the shared table section.
+pub const FAMILY: &str = "exact_recurrent";
+pub type Entry = Qualification<Key, bool>;
+fn valid(entry: &Entry) -> bool {
+    supported(entry.key.shape)
+        && entry.key.schema == SCHEMA
+        && !entry.key.hardware.is_empty()
+        && entry.key.kernel_fingerprint.len() == SHA256_HEX_LEN
+        && entry
+            .key
+            .kernel_fingerprint
+            .bytes()
+            .all(|c| c.is_ascii_hexdigit())
+        && entry
+            .key
+            .driver_build
+            .as_ref()
+            .is_none_or(|s| !s.is_empty())
+        && entry.verified_fixtures == FIXTURES
+        && entry.verified_elements
+            == FIXTURES * (VALUE_HEADS * DIM * DIM + entry.key.shape[3] * VALUE_HEADS * DIM)
+        && entry.within(super::MAX_F64_ERROR)
+        && entry.timed(&TIMED)
+        && (!entry.selected || entry.confirmed())
 }
 fn supported(shape: [usize; SHAPE_RANK]) -> bool {
     shape[..GEOMETRY_RANK] == [KEY_HEADS, VALUE_HEADS, DIM] && SUPPORTED_LANES.contains(&shape[3])
@@ -145,7 +113,7 @@ fn resolve(
         .map_err(|_| Error::invariant("exact GDN memo poisoned"))?
         .get(&key)
     {
-        return Ok(entry.rust_simt);
+        return Ok(entry.selected);
     }
     let path = table_path();
     let local = if key.driver_build.is_some() {
@@ -157,20 +125,21 @@ fn resolve(
         .into_iter()
         .flatten()
     {
-        if let Some(entry) = table
-            .resident_exact_recurrent
-            .iter()
-            .find(|entry| key.driver_build.is_some() && entry.key == key)
+        if let Some(entry) = key
+            .driver_build
+            .is_some()
+            .then(|| search::find::<Key, Entry>(table, FAMILY, &key, |_| true))
+            .flatten()
         {
-            if !entry.valid() {
+            if !valid(&entry) {
                 return Err(Error::invalid("incomplete exact GDN cache evidence"));
             }
             memo()
                 .lock()
                 .map_err(|_| Error::invariant("exact GDN memo poisoned"))?
                 .insert(key, entry.clone());
-            tracing::info!(target:"infer::tuning",?shape,rust_simt=entry.rust_simt,source="table-cache","exact GDN selected");
-            return Ok(entry.rust_simt);
+            tracing::info!(target:"infer::tuning",?shape,selected=entry.selected,source="table-cache","exact GDN selected");
+            return Ok(entry.selected);
         }
     }
     // The Rust SIMT kernel won every measured width; an unmeasured width takes it rather than
@@ -181,15 +150,9 @@ fn resolve(
     let Some(entry) = tune(device, key.clone(), session)? else {
         return Ok(true);
     };
-    let cached = key.driver_build.is_some()
-        && update_table(path.as_deref(), |table| {
-            table
-                .resident_exact_recurrent
-                .retain(|entry| entry.key != key);
-            table.resident_exact_recurrent.push(entry.clone());
-        });
-    tracing::info!(target:"infer::tuning",?shape,rust_simt=entry.rust_simt,cached,verified_elements=entry.verified_elements,max_f64_error=entry.max_f64_error,"exact GDN hardware choice");
-    let selected = entry.rust_simt;
+    let cached = key.driver_build.is_some() && search::put(path.as_deref(), FAMILY, &key, &entry);
+    tracing::info!(target:"infer::tuning",?shape,selected=entry.selected,cached,verified_elements=entry.verified_elements,max_f64_error=entry.max_f64_error,"exact GDN hardware choice");
+    let selected = entry.selected;
     memo()
         .lock()
         .map_err(|_| Error::invariant("exact GDN memo poisoned"))?
@@ -264,7 +227,7 @@ fn cases(
         let candidate = data.graph(device, true)?;
         data.verify(device, &native, &candidate, &fixtures[index])?;
         cases.push(Case {
-            fixture: index,
+            case: index,
             cold: measure(device, &native, &candidate, true, reverse)?,
             warm: measure(device, &native, &candidate, false, reverse)?,
         });
@@ -302,13 +265,14 @@ fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Resul
     let entry = Entry {
         verified_fixtures: FIXTURES,
         verified_elements: FIXTURES * (VALUE_HEADS * DIM * DIM + key.shape[3] * VALUE_HEADS * DIM),
-        rust_simt: forward.iter().chain(&reverse).all(Case::confirmed),
+        selected: forward.iter().chain(&reverse).all(Case::confirmed),
         key,
         max_f64_error,
         forward,
         reverse,
+        history_verified_elements: 0,
     };
-    if !entry.valid() {
+    if !valid(&entry) {
         return Err(Error::invariant("incomplete exact GDN tuning entry"));
     }
     Ok(Some(entry))

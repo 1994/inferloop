@@ -1,20 +1,19 @@
 //! Exact Rust SIMT alternatives use the same device-scoped pre-capture tuning contract.
 use super::{
-    Choice, Key, Shape, Times,
+    Choice, Key, Shape,
     capture::Captured,
     reference::{self, Fixture},
 };
 use crate::device::{CudaDevice, device_error};
-use crate::tuning::MIN_CONFIRM_SPEEDUP;
 use crate::tuning::preparation::driver_build;
+use crate::tuning::qualify::{Case, Qualification};
 use crate::tuning::resident_gemm::ResidentTuningSession;
 use crate::tuning::resolve_table;
+use crate::tuning::search;
 use crate::tuning::shipped_table;
 use crate::tuning::table_path;
-use crate::tuning::update_table;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::jit::JitOptions;
-use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     sync::{Mutex, OnceLock},
@@ -31,61 +30,30 @@ fn supported(s: Shape) -> bool {
         && SUPPORTED_LANES.contains(&s.lanes)
         && i32::try_from(s.window).is_ok()
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Case {
-    pub fixture: usize,
-    pub cold: Times,
-    pub warm: Times,
-}
-impl Case {
-    fn valid(&self) -> bool {
-        self.cold.valid() && self.warm.valid()
-    }
-    fn confirmed(&self) -> bool {
-        self.cold.speedup() >= MIN_CONFIRM_SPEEDUP && self.warm.speedup() >= MIN_CONFIRM_SPEEDUP
-    }
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Entry {
-    pub key: Key,
-    pub selected: Choice,
-    pub verified_fixtures: usize,
-    pub verified_elements: usize,
-    pub max_f64_error: f64,
-    pub forward: Vec<Case>,
-    pub reverse: Vec<Case>,
-}
-impl Entry {
-    fn valid(&self) -> bool {
-        supported(self.key.shape)
-            && self.key.schema == SCHEMA
-            && !self.key.hardware.is_empty()
-            && self.key.fingerprint.len() == SHA256_HEX_LEN
-            && self.key.fingerprint.bytes().all(|c| c.is_ascii_hexdigit())
-            && self.key.driver_build.as_ref().is_none_or(|s| !s.is_empty())
-            && self.verified_fixtures == reference::FIXTURES
-            && self.verified_elements
-                == reference::FIXTURES
-                    * self.key.shape.lanes
-                    * self.key.shape.heads
-                    * self.key.shape.dim
-            && self.max_f64_error.is_finite()
-            && (0.0..super::MAX_ERROR).contains(&self.max_f64_error)
-            && [&self.forward, &self.reverse].iter().all(|cases| {
-                cases.len() == TIMED_FIXTURES.len()
-                    && cases
-                        .iter()
-                        .zip(TIMED_FIXTURES)
-                        .all(|(case, index)| case.fixture == index && case.valid())
-            })
-            && (self.selected == Choice::Simt
-                || self.selected == Choice::RustSimt
-                    && self
-                        .forward
-                        .iter()
-                        .chain(&self.reverse)
-                        .all(Case::confirmed))
-    }
+/// The family's records in the shared table section.
+pub const FAMILY: &str = "exact_attention";
+pub type Entry = Qualification<Key, Choice>;
+fn valid(entry: &Entry) -> bool {
+    supported(entry.key.shape)
+        && entry.key.schema == SCHEMA
+        && !entry.key.hardware.is_empty()
+        && entry.key.fingerprint.len() == SHA256_HEX_LEN
+        && entry.key.fingerprint.bytes().all(|c| c.is_ascii_hexdigit())
+        && entry
+            .key
+            .driver_build
+            .as_ref()
+            .is_none_or(|s| !s.is_empty())
+        && entry.verified_fixtures == reference::FIXTURES
+        && entry.verified_elements
+            == reference::FIXTURES
+                * entry.key.shape.lanes
+                * entry.key.shape.heads
+                * entry.key.shape.dim
+        && entry.within(super::MAX_ERROR)
+        && entry.timed(&TIMED_FIXTURES)
+        && (entry.selected == Choice::Simt
+            || entry.selected == Choice::RustSimt && entry.confirmed())
 }
 type Memo = Mutex<BTreeMap<Key, Entry>>;
 fn memo() -> &'static Memo {
@@ -147,12 +115,13 @@ fn resolve(
         .into_iter()
         .flatten()
     {
-        if let Some(entry) = table
-            .resident_exact_attention
-            .iter()
-            .find(|entry| key.driver_build.is_some() && entry.key == key)
+        if let Some(entry) = key
+            .driver_build
+            .is_some()
+            .then(|| search::find::<Key, Entry>(table, FAMILY, &key, |_| true))
+            .flatten()
         {
-            if !entry.valid() {
+            if !valid(&entry) {
                 return Err(Error::invalid("incomplete exact attention cache evidence"));
             }
             memo()
@@ -170,13 +139,7 @@ fn resolve(
     let Some(entry) = tune(device, key.clone(), session)? else {
         return Ok(Choice::Simt);
     };
-    let cached = key.driver_build.is_some()
-        && update_table(path.as_deref(), |table| {
-            table
-                .resident_exact_attention
-                .retain(|entry| entry.key != key);
-            table.resident_exact_attention.push(entry.clone());
-        });
+    let cached = key.driver_build.is_some() && search::put(path.as_deref(), FAMILY, &key, &entry);
     tracing::info!(target:"infer::tuning",?shape,?entry.selected,cached,
         verified_elements=entry.verified_elements,max_f64_error=entry.max_f64_error,"exact attention hardware choice");
     let choice = entry.selected;
@@ -202,7 +165,7 @@ fn cases(
         let rust = Captured::new(device, &fixtures[index], Choice::RustSimt)?;
         rust.exact_match(device, &native)?;
         cases.push(Case {
-            fixture: index,
+            case: index,
             cold: super::measure(device, &native, &rust, true, reverse)?,
             warm: super::measure(device, &native, &rust, false, reverse)?,
         });
@@ -262,8 +225,9 @@ fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Resul
         max_f64_error: max_error,
         forward,
         reverse,
+        history_verified_elements: 0,
     };
-    if !entry.valid() {
+    if !valid(&entry) {
         return Err(Error::invariant("incomplete exact attention proof"));
     }
     Ok(Some(entry))
@@ -286,12 +250,7 @@ pub(crate) fn validate_and_cache(
     let key = key(device, shape)?;
     let entry = tune(device, key.clone(), session)?
         .ok_or_else(|| Error::invalid("offline exact attention proof budget expired"))?;
-    if !entry.valid()
-        || !update_table(table_path().as_deref(), |table| {
-            table.resident_exact_attention.retain(|e| e.key != key);
-            table.resident_exact_attention.push(entry.clone());
-        })
-    {
+    if !valid(&entry) || !search::put(table_path().as_deref(), FAMILY, &key, &entry) {
         return Err(Error::invalid(
             "offline exact attention proof could not be cached",
         ));

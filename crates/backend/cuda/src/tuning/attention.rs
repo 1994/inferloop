@@ -8,9 +8,10 @@ mod reference;
 pub mod shared;
 pub mod vector;
 pub mod vector_combined;
+use super::qualify::Times;
 use super::resident_gemm::{MeasurementOrder, PairedTimes, ResidentTuningSession, paired_times};
 use super::search::{self, Evidence, FormerTrial, Protocol, Record};
-use super::{MAX_REPS, MIN_REPS, REP_MS, WARMUP_MS, median};
+use super::{MAX_REPS, MIN_REPS, REP_MS, WARMUP_MS};
 use crate::constants::PREFILL_LANES;
 use crate::device::{CudaDevice, device_error};
 use crate::resident::attention_mma::catalog::Variant;
@@ -102,25 +103,6 @@ pub struct Key {
     pub fingerprint: String,
     pub schema: String,
     pub shape: Shape,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Times {
-    pub baseline_ms: Vec<f32>,
-    pub candidate_ms: Vec<f32>,
-}
-impl Times {
-    fn valid(&self) -> bool {
-        (MIN_REPS..=MAX_REPS).contains(&self.baseline_ms.len())
-            && self.baseline_ms.len() == self.candidate_ms.len()
-            && self
-                .baseline_ms
-                .iter()
-                .chain(&self.candidate_ms)
-                .all(|x| x.is_finite() && *x > 0.0)
-    }
-    fn speedup(&self) -> f32 {
-        median(&self.baseline_ms) / median(&self.candidate_ms)
-    }
 }
 /// The family's records in the shared table section.
 pub const FAMILY: &str = "attention";

@@ -18,19 +18,19 @@ fn exact_gdn_hardware_selection() -> Result<()> {
             .find(|entry| entry.key.shape == [16, 48, 128, width])
             .cloned()
             .ok_or_else(|| Error::invariant("exact GDN evidence missing"))?;
-        assert!(entry.valid());
+        assert!(valid(&entry));
         let mut missing = entry.clone();
         missing.reverse.pop();
-        assert!(!missing.valid());
+        assert!(!valid(&missing));
         let mut stale = entry.clone();
         stale.key.kernel_fingerprint.clear();
-        assert!(!stale.valid());
+        assert!(!valid(&stale));
         let mut unsafe_numeric = entry.clone();
         unsafe_numeric.max_f64_error = super::super::MAX_F64_ERROR;
-        assert!(!unsafe_numeric.valid());
+        assert!(!valid(&unsafe_numeric));
         let mut slow = entry;
         slow.forward[0].warm.candidate_ms.fill(1e3);
-        assert!(!slow.valid());
+        assert!(!valid(&slow));
     }
     Ok(())
 }
