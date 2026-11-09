@@ -526,8 +526,8 @@ fn checkpoint_selector_measures_and_reuses_complete_choices() -> TestResult {
         println!(
             "{}",
             serde_json::json!({"pool_dense_selection":shape, "tile":entry.key.tile,
-            "selected":selected,"cold_speedup":entry.confirmation.cold.speedup,
-            "warm_speedup":entry.confirmation.warm.speedup,"complete_output_verified":true})
+            "selected":selected,"cold_speedup":entry.evidence.confirmation.cold.speedup,
+            "warm_speedup":entry.evidence.confirmation.warm.speedup,"complete_output_verified":true})
         );
     }
     Ok(())
