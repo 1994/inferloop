@@ -11,8 +11,8 @@ use crate::tuning::REP_MS;
 use crate::tuning::WARMUP_MS;
 use crate::tuning::preparation::driver_build;
 use crate::tuning::resolve_table;
+use crate::tuning::search;
 use crate::tuning::table_path;
-use crate::tuning::update_table;
 use crate::{
     device::{CudaDevice, device_error},
     resident::attention_mma::catalog::{self, Variant},
@@ -38,6 +38,8 @@ const HISTORY_HEADS: usize = 2;
 const ORDERINGS: usize = 2;
 const VERIFY_STAGES: usize = 2;
 const CUDA_OPT_LEVEL: u8 = 3;
+/// The family's records in the shared table section.
+pub const FAMILY: &str = "mma_f32_attention";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
     pub key: Key,
@@ -156,11 +158,7 @@ fn resolve(
     } else {
         None
     };
-    if let Some(e) = table.and_then(|t| {
-        t.resident_mma_f32_attention
-            .into_iter()
-            .find(|e| e.key == key)
-    }) {
+    if let Some(e) = table.and_then(|table| search::find(&table, FAMILY, &key, |_: &Entry| true)) {
         if !e.valid() {
             return Err(Error::invalid(
                 "incomplete F32 KV numerical/cluster evidence",
@@ -189,11 +187,7 @@ fn resolve(
     let Some(e) = tune(device, key.clone(), session)? else {
         return Ok(untuned());
     };
-    let cached = key.driver_build.is_some()
-        && update_table(path.as_deref(), |table| {
-            table.resident_mma_f32_attention.retain(|e| e.key != key);
-            table.resident_mma_f32_attention.push(e.clone());
-        });
+    let cached = key.driver_build.is_some() && search::put(path.as_deref(), FAMILY, &key, &e);
     let choice = e.selected;
     tracing::info!(target:"infer::tuning",?shape,?choice,cached,profile=PROFILE,max_relative_l2=e.max_relative_l2,history_f64_rows=e.history_f64_rows,"F32 KV MMA hardware choice");
     memo()

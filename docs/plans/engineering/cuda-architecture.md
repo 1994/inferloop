@@ -108,7 +108,13 @@ runtime                  submit / poll，不重建拓扑
   - 调优表新增按族名分区的 `records` 段，新增一族不再加表字段，本构建解不了的记录重写时保留；
   - `pool_dense`、resident GEMM、fused SwiGLU 已迁移。旧段原样读入：字段名用 serde alias 兼容，没有拒绝列表的旧记录按写入时的规则验收，缓存选择不变；
   - `cuda-tuning-report` example 一条命令打印每条记录的形状、选择、冷热加速比和候选数。
-  - **余下：** fp8 GEMM 与 greedy 在确认失败时按排名试下一个候选，而不是直接退回 baseline，计时格式也不同（不存中位数，中位数舍入也不同）；attention 各族与 recurrent 还带 fixture 和 F64 误差等额外证据。迁移前要定：共用协议是否改成按排名确认（会多出确认次数，须和搜索预算一起在 GPU 上实测），以及 `Record` 加额外证据的类型参数。
+- **第三步（2026-11-09，#213–#219）：** 所有调优族迁到共用记录，调优表只剩按设备的 dense tiling 和 `records` 段：
+  - 共用协议改为按排名确认：第一名在候选先测时没确认，依次试下一个已确认的候选，最后才是 baseline；确认 trial 出错只拒绝该候选。各族搜索预算公式不变，额外确认从全模型共用的时间额度里出。
+  - fp8 GEMM、gated norm、greedy、prefill query tile、recurrent 列分块走 `search::run`。旧段读入时转换：补上共用中位数，arm 标志转成 `order`，fixture 与元素计数转成 `exact_candidates_verified`。
+  - 容差类数值门（F64 误差）不给 `Record` 加类型参数，而是在 `Evidence` 里加 `max_error`：所有被接受的测量的最大偏差。超出容差的 trial 在测量时就被拒绝，所以一个上界覆盖整条记录。
+  - exact、shared、vector、combined attention 与 exact recurrence 是“一个候选、多个计时 case”的资格判定，共用 `tuning::qualify::Qualification`；MMA、F32 MMA 与 FP4 Lt 记录原样移入 `records`。
+  - 45 上 warm cache 的 4 组配置 hash 与 main 一致，measured=0，每族都从表中命中，没有 fallback。
+  - **余下：** MMA 各 variant 的 trial 也是资格判定，可以改用 `Qualification` 的 case 类型；`cuda-tuning-report` 目前只为搜索类记录打印冷热加速比。
 
 ### M4 单一 lowering（风险最高）
 
