@@ -184,6 +184,7 @@ pub struct Record<K, C> {
 }
 
 /// Every record of `family` this build can decode; others stay in the table untouched.
+#[cfg(test)]
 #[must_use]
 pub(crate) fn records<K: DeserializeOwned, C: DeserializeOwned>(
     table: &TilingTable,
@@ -198,7 +199,8 @@ pub(crate) fn records<K: DeserializeOwned, C: DeserializeOwned>(
         .collect()
 }
 
-/// The record of `family` for `key` that satisfies `valid`.
+/// The record of `family` for `key` that satisfies `valid`. Only records with that key are
+/// decoded whole, so a lookup per shape stays cheap in a table of many records.
 #[must_use]
 pub(crate) fn lookup<K, C>(
     table: &TilingTable,
@@ -210,9 +212,14 @@ where
     K: DeserializeOwned + PartialEq,
     C: DeserializeOwned,
 {
-    records(table, family)
+    table
+        .records
+        .get(family)
         .into_iter()
-        .find(|record| record.key == *key && valid(record))
+        .flatten()
+        .filter(|stored| key_of::<K>(stored).is_some_and(|stored| stored == *key))
+        .filter_map(|stored| Record::deserialize(stored).ok())
+        .find(|record| valid(record))
 }
 
 /// Store `record` in `family` at `path`, replacing any record with its key. False when nothing

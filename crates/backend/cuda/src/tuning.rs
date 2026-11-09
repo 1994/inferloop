@@ -309,8 +309,6 @@ pub struct TilingTable {
     /// [`search`]. Records stay as stored, so ones this build cannot decode survive a rewrite.
     #[serde(default)]
     pub records: BTreeMap<String, Vec<serde_json::Value>>,
-    #[serde(default)]
-    pub resident_fp8_gemm: Vec<fp8_gemm::Entry>,
     /// Qualified zero-workspace FP4 library projections.
     #[serde(default)]
     pub resident_fp4_lt: Vec<nvfp4_lt::Entry>,
@@ -368,8 +366,9 @@ struct StoredTilingTable {
     /// Pooled dense records from before the shared protocol; their fields are unchanged.
     #[serde(default)]
     resident_pool_dense: Vec<serde_json::Value>,
+    /// FP8 channel records from before the shared protocol, converted to its form on read.
     #[serde(default)]
-    resident_fp8_gemm: Vec<fp8_gemm::Entry>,
+    resident_fp8_gemm: Vec<serde_json::Value>,
     #[serde(default)]
     resident_fp4_lt: Vec<nvfp4_lt::Entry>,
     #[serde(default)]
@@ -418,6 +417,14 @@ impl From<StoredTilingTable> for TilingTable {
             (pool_dense::FAMILY, stored.resident_pool_dense),
             (resident_gemm::FAMILY, stored.resident_gemm),
             (resident_gemm::swiglu::FAMILY, stored.resident_swiglu),
+            (
+                fp8_gemm::FAMILY,
+                stored
+                    .resident_fp8_gemm
+                    .into_iter()
+                    .map(fp8_gemm::legacy)
+                    .collect(),
+            ),
         ] {
             if !legacy.is_empty() {
                 records.entry(family.to_owned()).or_default().extend(legacy);
@@ -426,7 +433,6 @@ impl From<StoredTilingTable> for TilingTable {
         Self {
             devices,
             records,
-            resident_fp8_gemm: stored.resident_fp8_gemm,
             resident_fp4_lt: stored.resident_fp4_lt,
             greedy: stored.greedy,
             resident_gated_norm: stored.resident_gated_norm,

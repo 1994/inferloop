@@ -470,9 +470,7 @@ pub(crate) fn times_valid(times: &PairedTimes) -> bool {
 
 /// The stored record for `key`, valid or not.
 fn cached(table: &TilingTable, key: &ResidentGemmKey) -> Option<ResidentGemmEntry> {
-    search::records::<ResidentGemmKey, GemmConfig>(table, FAMILY)
-        .into_iter()
-        .find(|entry| entry.key == *key)
+    search::lookup(table, FAMILY, key, |_| true)
 }
 
 #[derive(Debug, PartialEq, Eq)]
