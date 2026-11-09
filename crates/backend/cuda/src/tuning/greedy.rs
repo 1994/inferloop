@@ -1,6 +1,7 @@
 //! Exact integer greedy reductions: per-device geometry search with independent confirmation.
-use super::resident_gemm::ResidentTuningSession;
-use super::{MAX_REPS, MIN_CONFIRM_SPEEDUP, MIN_REPS, REP_MS, WARMUP_MS};
+use super::resident_gemm::{MeasurementOrder, PairedTimes, ResidentTuningSession, paired_times};
+use super::search::{self, Evidence, FormerTrial, Protocol, Record};
+use super::{MAX_REPS, MIN_REPS, REP_MS, WARMUP_MS};
 use crate::tuning::preparation::driver_build;
 use crate::{
     device::{CudaDevice, device_error},
@@ -11,7 +12,7 @@ use infer_cuda_kernels::jit::JitOptions;
 use infer_cuda_kernels::runtime::Timing;
 use infer_cuda_kernels::runtime::{Allocation, Graph};
 use serde::{Deserialize, Serialize};
-use std::iter::once;
+use serde_json::Value;
 use std::{
     collections::BTreeMap,
     sync::{Mutex, OnceLock},
@@ -22,7 +23,6 @@ const BASELINE_TILE: usize = TILE_SEARCH[0];
 const SCHEMA: &str = "f32-total-cmp:lowest-index:all-finite:two-stage-u32-bounded-offset-v3";
 const SAMPLE_PERIOD: usize = 257;
 const SAMPLE_CENTER: i16 = 128;
-const MEDIAN_WEIGHT: f32 = 0.5;
 const JIT_OPT_LEVEL: u8 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -34,63 +34,24 @@ pub struct Key {
     pub rows: usize,
     pub vocabulary: usize,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Times {
-    pub baseline_ms: Vec<f32>,
-    pub candidate_ms: Vec<f32>,
-}
-impl Times {
-    fn valid(&self) -> bool {
-        self.baseline_ms.len() >= MIN_REPS
-            && self.baseline_ms.len() == self.candidate_ms.len()
-            && self
-                .baseline_ms
-                .iter()
-                .chain(&self.candidate_ms)
-                .all(|v| v.is_finite() && *v > 0.0)
+/// The family's records in the shared table section.
+pub const FAMILY: &str = "greedy";
+/// A reduction tile measured against the baseline tile.
+pub type Trial = search::Trial<usize>;
+pub type Entry = Record<Key, usize>;
+/// Every searched tile against the first.
+fn protocol() -> Protocol<usize> {
+    Protocol {
+        baseline: BASELINE_TILE,
+        candidates: TILE_SEARCH[1..].to_vec(),
     }
-    fn speedup(&self) -> f32 {
-        median(&self.baseline_ms) / median(&self.candidate_ms)
-    }
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Trial {
-    pub tile: usize,
-    pub candidate_first: bool,
-    pub cold: Times,
-    pub warm: Times,
-}
-impl Trial {
-    fn valid(&self) -> bool {
-        TILE_SEARCH.contains(&self.tile) && self.cold.valid() && self.warm.valid()
-    }
-    fn confirmed(&self) -> bool {
-        self.valid()
-            && self.cold.speedup() >= MIN_CONFIRM_SPEEDUP
-            && self.warm.speedup() >= MIN_CONFIRM_SPEEDUP
-    }
-    fn score(&self) -> f32 {
-        self.cold.speedup().min(self.warm.speedup())
-    }
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Entry {
-    pub key: Key,
-    pub selected: usize,
-    pub search: Vec<Trial>,
-    pub confirmation: Trial,
 }
 impl Entry {
     fn valid(&self) -> bool {
-        self.confirmation.valid()
-            && self.confirmation.candidate_first
-            && self.selected == self.confirmation.tile
-            && (self.selected == BASELINE_TILE
-                || self.confirmation.confirmed()
-                    && self
-                        .search
-                        .iter()
-                        .any(|t| !t.candidate_first && t.tile == self.selected && t.confirmed()))
+        self.evidence.sampled(MIN_REPS)
+            && self
+                .evidence
+                .valid(&protocol(), |tile| TILE_SEARCH.contains(&tile))
     }
 }
 type Memo = Mutex<BTreeMap<Key, Entry>>;
@@ -98,18 +59,46 @@ fn memo() -> &'static Memo {
     static MEMO: OnceLock<Memo> = OnceLock::new();
     MEMO.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
-fn median(values: &[f32]) -> f32 {
-    let mut values = values.to_vec();
-    values.sort_by(f32::total_cmp);
-    let middle = values.len() / 2;
-    if values.is_empty() {
-        return f32::NAN;
-    }
-    if values.len().is_multiple_of(2) {
-        (values[middle - 1] + values[middle]) * MEDIAN_WEIGHT
-    } else {
-        values[middle]
-    }
+
+#[derive(Deserialize)]
+struct LegacyTrial {
+    tile: usize,
+    #[serde(flatten)]
+    trial: FormerTrial,
+}
+#[derive(Deserialize)]
+struct LegacyEntry {
+    key: Key,
+    selected: usize,
+    search: Vec<LegacyTrial>,
+    confirmation: LegacyTrial,
+}
+
+/// A record from the family's former table section in the shared form; one that does not
+/// convert stays as stored. Every former trial matched the reference tokens, and its search
+/// kept no rejections.
+pub(super) fn legacy(stored: Value) -> Value {
+    convert(&stored).unwrap_or(stored)
+}
+
+fn convert(stored: &Value) -> Option<Value> {
+    let legacy = LegacyEntry::deserialize(stored).ok()?;
+    let trial = |legacy: LegacyTrial| legacy.trial.into_trial(legacy.tile);
+    let entry = Entry {
+        key: legacy.key,
+        evidence: Evidence {
+            selected: legacy.selected,
+            exact_candidates_verified: true,
+            trials: legacy
+                .search
+                .into_iter()
+                .map(trial)
+                .collect::<Option<_>>()?,
+            rejected: None,
+            confirmation: trial(legacy.confirmation)?,
+        },
+    };
+    serde_json::to_value(entry).ok()
 }
 /// Kernel code, compiler options and driver identity are immutable in a live context.
 /// Keep the full identity; only its repeated construction is memoized, not validation.
@@ -183,9 +172,9 @@ fn resolve(
         .map_err(|_| Error::invariant("greedy tuning cache poisoned"))?
         .get(&key)
         .filter(|entry| entry.valid())
-        .cloned();
-    if let Some(entry) = cached {
-        return Ok(entry.selected);
+        .map(|entry| entry.evidence.selected);
+    if let Some(selected) = cached {
+        return Ok(selected);
     }
     let path = super::table_path();
     let table = if key.driver_build.is_some() {
@@ -193,12 +182,16 @@ fn resolve(
     } else {
         None
     };
-    if let Some(entry) = table.as_ref().and_then(|t| cached_entry(&t.greedy, &key)) {
+    if let Some(entry) = table
+        .as_ref()
+        .and_then(|table| search::lookup(table, FAMILY, &key, Entry::valid))
+    {
+        let selected = entry.evidence.selected;
         memo()
             .lock()
             .map_err(|_| Error::invariant("greedy tuning cache poisoned"))?
-            .insert(key, entry.clone());
-        return Ok(entry.selected);
+            .insert(key, entry);
+        return Ok(selected);
     }
     if !autotune || !session.permits_greedy_search() {
         return Ok(BASELINE_TILE);
@@ -206,19 +199,17 @@ fn resolve(
     let Some(entry) = tune(device, key.clone(), session)? else {
         return Ok(BASELINE_TILE);
     };
-    let cached = key.driver_build.is_some()
-        && super::update_table(path.as_deref(), |table| {
-            table.greedy.retain(|old| old.key != key);
-            table.greedy.push(entry.clone());
-        });
-    tracing::info!(target:"infer::tuning", ?key, tile=entry.selected, cached,
-        cold_speedup=entry.confirmation.cold.speedup(), warm_speedup=entry.confirmation.warm.speedup(),
+    let cached = key.driver_build.is_some() && search::store(path.as_deref(), FAMILY, &entry);
+    let evidence = &entry.evidence;
+    tracing::info!(target:"infer::tuning", ?key, tile=evidence.selected, cached,
+        cold_speedup=evidence.confirmation.cold.speedup, warm_speedup=evidence.confirmation.warm.speedup,
         "greedy reduction selected");
+    let selected = evidence.selected;
     memo()
         .lock()
         .map_err(|_| Error::invariant("greedy tuning cache poisoned"))?
-        .insert(key, entry.clone());
-    Ok(entry.selected)
+        .insert(key, entry);
+    Ok(selected)
 }
 
 struct Captured {
@@ -249,8 +240,8 @@ fn measure(
     base: &Captured,
     candidate: &Captured,
     clear_l2: bool,
-    candidate_first: bool,
-) -> Result<Times> {
+    order: MeasurementOrder,
+) -> Result<PairedTimes> {
     let options = Timing {
         warmup: Duration::from_millis(WARMUP_MS),
         rep: Duration::from_millis(REP_MS),
@@ -259,6 +250,7 @@ fn measure(
         clear_l2,
     };
     let run = |graph: &Captured| device.tile().sync(graph.graph.launch());
+    let candidate_first = order == MeasurementOrder::CandidateFirst;
     let (first, second) = if candidate_first {
         (candidate, base)
     } else {
@@ -268,21 +260,10 @@ fn measure(
         .tile()
         .time_paired(&options, || run(first), || run(second))
         .map_err(device_error)?;
-    let times = if candidate_first {
-        Times {
-            baseline_ms: b.times_ms().to_vec(),
-            candidate_ms: a.times_ms().to_vec(),
-        }
-    } else {
-        Times {
-            baseline_ms: a.times_ms().to_vec(),
-            candidate_ms: b.times_ms().to_vec(),
-        }
-    };
-    if !times.valid() {
-        return Err(Error::invalid("greedy paired timing samples"));
-    }
-    Ok(times)
+    let (baseline, candidate) = if candidate_first { (b, a) } else { (a, b) };
+    paired_times(baseline.times_ms(), candidate.times_ms())
+        .filter(|times| times.baseline_ms.len() >= MIN_REPS)
+        .ok_or_else(|| Error::invalid("greedy paired timing samples"))
 }
 struct Search<'a> {
     device: &'a CudaDevice,
@@ -292,14 +273,14 @@ struct Search<'a> {
     expected: &'a [u32],
 }
 impl Search<'_> {
-    fn trial(&self, tile: usize, candidate_first: bool) -> Result<Trial> {
+    fn trial(&self, tile: usize, order: MeasurementOrder) -> Result<Trial> {
         let candidate = Captured::new(self.device, self.input, self.shape, tile)?;
         candidate.verify(self.device, self.expected)?;
         let trial = Trial {
-            tile,
-            candidate_first,
-            cold: measure(self.device, self.base, &candidate, true, candidate_first)?,
-            warm: measure(self.device, self.base, &candidate, false, candidate_first)?,
+            choice: tile,
+            order,
+            cold: measure(self.device, self.base, &candidate, true, order)?,
+            warm: measure(self.device, self.base, &candidate, false, order)?,
         };
         candidate.verify(self.device, self.expected)?;
         Ok(trial)
@@ -340,53 +321,16 @@ fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Resul
         base: &base,
         expected: &expected,
     };
-    let mut trials = Vec::new();
-    for tile in TILE_SEARCH {
-        if !session.permits_greedy_search() {
-            return Ok(None);
-        }
-        match search.trial(tile, false) {
-            Ok(trial) => trials.push(trial),
-            Err(error) => {
-                tracing::warn!(target:"infer::tuning", tile, %error, "greedy candidate rejected");
-            }
-        }
-    }
-    let mut ranked: Vec<_> = trials
-        .iter()
-        .filter(|t| t.tile != BASELINE_TILE && t.confirmed())
-        .collect();
-    ranked.sort_by(|a, b| b.score().total_cmp(&a.score()));
-    for tile in ranked
-        .into_iter()
-        .map(|t| t.tile)
-        .chain(once(BASELINE_TILE))
-    {
-        if !session.permits_greedy_search() {
-            return Ok(None);
-        }
-        match search.trial(tile, true) {
-            Ok(confirmation) if tile == BASELINE_TILE || confirmation.confirmed() => {
-                return Ok(Some(Entry {
-                    key,
-                    selected: tile,
-                    search: trials,
-                    confirmation,
-                }));
-            }
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!(target:"infer::tuning", tile, %error, "greedy confirmation rejected");
-            }
-        }
-    }
-    Ok(None)
-}
-
-fn cached_entry<'a>(entries: &'a [Entry], key: &Key) -> Option<&'a Entry> {
-    entries
-        .iter()
-        .find(|entry| entry.key == *key && entry.valid())
+    let evidence = search::run(
+        &protocol(),
+        || session.permits_greedy_search(),
+        |tile, order| search.trial(tile, order),
+        |tile, error| {
+            tracing::warn!(target:"infer::tuning", tile, %error, "greedy candidate rejected");
+            Ok(())
+        },
+    )?;
+    Ok(evidence.map(|evidence| Entry { key, evidence }))
 }
 
 #[cfg(test)]

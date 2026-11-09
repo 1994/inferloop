@@ -53,16 +53,7 @@ impl Entry {
         self.key.shape.valid()
             && !self.key.kernel_fingerprint.is_empty()
             && !self.key.hardware.is_empty()
-            && self
-                .evidence
-                .trials
-                .iter()
-                .chain([&self.evidence.confirmation])
-                .all(|trial| {
-                    [&trial.cold, &trial.warm]
-                        .iter()
-                        .all(|t| t.baseline_ms.len() >= MIN_REPS)
-                })
+            && self.evidence.sampled(MIN_REPS)
             && self.evidence.valid(&protocol(), |occupancy| {
                 occupancy == BASELINE || CANDIDATES.contains(&occupancy)
             })

@@ -103,6 +103,15 @@ pub struct Evidence<C> {
     pub confirmation: Trial<C>,
 }
 
+impl<C> Evidence<C> {
+    /// Every trial holds at least `pairs` paired samples in both cache states.
+    pub(crate) fn sampled(&self, pairs: usize) -> bool {
+        self.trials.iter().chain([&self.confirmation]).all(|trial| {
+            trial.cold.baseline_ms.len() >= pairs && trial.warm.baseline_ms.len() >= pairs
+        })
+    }
+}
+
 /// The choices one search covers: what runs unmeasured, and what is measured against it.
 pub(crate) struct Protocol<C> {
     pub(crate) baseline: C,
