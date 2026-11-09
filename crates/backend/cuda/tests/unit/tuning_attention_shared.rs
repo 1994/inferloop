@@ -2,6 +2,7 @@ use super::*;
 use crate::device::device_error;
 use crate::tuning::MIN_REPS;
 use crate::tuning::TilingTable;
+use crate::tuning::qualify::Times;
 fn shape() -> Shape {
     Shape {
         heads: 24,
@@ -20,7 +21,7 @@ fn entry() -> Entry {
         histories(shape())
             .into_iter()
             .map(|history| Case {
-                history,
+                case: history,
                 cold: times(),
                 warm: times(),
             })
@@ -47,14 +48,14 @@ fn entry() -> Entry {
 #[test]
 fn cache_requires_full_bits_and_both_history_orders() {
     let good = entry();
-    assert!(good.valid());
+    assert!(valid(&good));
     for index in 0..12 {
         let mut bad = good.clone();
         match index {
             0 => bad.verified_elements -= 1,
             1 => bad.history_verified_elements -= 1,
             2 => bad.reverse.clear(),
-            3 => bad.forward[1].history = 0,
+            3 => bad.forward[1].case = 0,
             4 => bad.reverse[2].cold.candidate_ms = vec![2.0; MIN_REPS],
             5 => bad.forward[0].warm.candidate_ms = vec![2.2; MIN_REPS],
             6 => bad.max_f64_error = super::super::MAX_ERROR,
@@ -65,13 +66,13 @@ fn cache_requires_full_bits_and_both_history_orders() {
             11 => bad.forward[1].cold.candidate_ms = vec![f32::NAN; MIN_REPS],
             _ => unreachable!(),
         }
-        assert!(!bad.valid(), "variant {index}");
+        assert!(!valid(&bad), "variant {index}");
     }
 }
 #[test]
 fn legacy_cache_and_rejected_shared_candidate_remain_exact() -> Result<()> {
     let old: TilingTable = serde_json::from_str("{}").map_err(device_error)?;
-    assert!(old.resident_shared_attention.is_empty());
+    assert!(old.records.is_empty());
     assert!(!supported(Shape {
         lanes: 64,
         ..shape()
@@ -79,15 +80,17 @@ fn legacy_cache_and_rejected_shared_candidate_remain_exact() -> Result<()> {
     let mut rejected = entry();
     rejected.selected = Choice::RustSimt;
     rejected.reverse[1].cold.candidate_ms = vec![3.0; MIN_REPS];
-    assert!(rejected.valid());
-    let table = TilingTable {
-        resident_shared_attention: vec![rejected],
-        ..Default::default()
-    };
+    assert!(valid(&rejected));
+    let stored = rejected.clone();
+    let table: TilingTable =
+        serde_json::from_value(serde_json::json!({ "resident_shared_attention": [rejected] }))
+            .map_err(device_error)?;
     let restored: TilingTable =
         serde_json::from_str(&serde_json::to_string(&table).map_err(device_error)?)
             .map_err(device_error)?;
-    assert!(restored.resident_shared_attention[0].valid());
+    assert!(valid(
+        &search::find::<Key, Entry>(&restored, FAMILY, &stored.key, |_| true).unwrap()
+    ));
     Ok(())
 }
 #[test]
@@ -104,7 +107,7 @@ fn hardware_shared_search_and_cache_reuse() -> Result<()> {
         .find(|e| e.key.shape == shape())
         .cloned()
         .ok_or_else(|| Error::invalid("shared KV hardware proof did not complete"))?;
-    assert!(entry.valid());
+    assert!(valid(&entry));
     assert_eq!(selected, Choice::SharedKv);
     assert_eq!(
         select(&device, shape(), false, &session, Choice::RustSimt),
@@ -125,13 +128,13 @@ fn wide_shared_evidence_requires_the_complete_width_and_tail_history() {
     wide.history_verified_elements = HISTORY_CASES * 2048 * 24 * 256;
     for cases in [&mut wide.forward, &mut wide.reverse] {
         for (case, history) in cases.iter_mut().zip(histories(wide.key.shape)) {
-            case.history = history;
+            case.case = history;
         }
     }
-    assert!(wide.valid());
-    wide.reverse[2].history = 32512;
+    assert!(valid(&wide));
+    wide.reverse[2].case = 32512;
     assert!(
-        !wide.valid(),
+        !valid(&wide),
         "256-row history proof must not qualify 2048 rows"
     );
 }
@@ -153,12 +156,9 @@ fn hardware_wide_shared_search_and_cache_reuse() -> Result<()> {
         let key = key(&device, shape)?;
         let entry = tune(&device, key.clone(), &session)?
             .ok_or_else(|| Error::invalid("wide shared KV offline proof budget expired"))?;
-        assert!(entry.valid());
+        assert!(valid(&entry));
         assert_eq!(entry.selected, Choice::SharedKv);
-        assert!(update_table(table_path().as_deref(), |table| {
-            table.resident_shared_attention.retain(|e| e.key != key);
-            table.resident_shared_attention.push(entry.clone());
-        }));
+        assert!(search::put(table_path().as_deref(), FAMILY, &key, &entry));
         assert_eq!(
             select(&device, shape, false, &session, baseline),
             entry.selected

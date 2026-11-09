@@ -2,6 +2,7 @@ use super::*;
 use crate::device::device_error;
 use crate::tuning::MIN_REPS;
 use crate::tuning::TilingTable;
+use crate::tuning::qualify::Times;
 fn shape() -> Shape {
     Shape {
         heads: 24,
@@ -20,7 +21,7 @@ fn entry() -> Entry {
         HISTORIES
             .into_iter()
             .map(|history| Case {
-                history,
+                case: history,
                 cold: times(),
                 warm: times(),
             })
@@ -47,14 +48,14 @@ fn entry() -> Entry {
 #[test]
 fn cache_requires_full_bits_and_both_history_orders() {
     let good = entry();
-    assert!(good.valid());
+    assert!(valid(&good));
     for index in 0..12 {
         let mut bad = good.clone();
         match index {
             0 => bad.verified_elements -= 1,
             1 => bad.history_verified_elements -= 1,
             2 => bad.reverse.clear(),
-            3 => bad.forward[1].history = 0,
+            3 => bad.forward[1].case = 0,
             4 => bad.reverse[2].cold.candidate_ms = vec![2.0; MIN_REPS],
             5 => bad.forward[0].warm.candidate_ms = vec![2.2; MIN_REPS],
             6 => bad.max_f64_error = super::super::MAX_ERROR,
@@ -65,13 +66,13 @@ fn cache_requires_full_bits_and_both_history_orders() {
             11 => bad.forward[1].cold.candidate_ms = vec![f32::NAN; MIN_REPS],
             _ => unreachable!(),
         }
-        assert!(!bad.valid(), "variant {index}");
+        assert!(!valid(&bad), "variant {index}");
     }
 }
 #[test]
 fn legacy_cache_and_rejected_shared_candidate_remain_exact() -> Result<()> {
     let old: TilingTable = serde_json::from_str("{}").map_err(device_error)?;
-    assert!(old.resident_vector_shared_attention.is_empty());
+    assert!(old.records.is_empty());
     assert!(!supported(Shape {
         lanes: 64,
         ..shape()
@@ -79,15 +80,18 @@ fn legacy_cache_and_rejected_shared_candidate_remain_exact() -> Result<()> {
     let mut rejected = entry();
     rejected.selected = Choice::SharedKv;
     rejected.reverse[1].cold.candidate_ms = vec![3.0; MIN_REPS];
-    assert!(rejected.valid());
-    let table = TilingTable {
-        resident_vector_shared_attention: vec![rejected],
-        ..Default::default()
-    };
+    assert!(valid(&rejected));
+    let stored = rejected.clone();
+    let table: TilingTable = serde_json::from_value(
+        serde_json::json!({ "resident_vector_shared_attention": [rejected] }),
+    )
+    .map_err(device_error)?;
     let restored: TilingTable =
         serde_json::from_str(&serde_json::to_string(&table).map_err(device_error)?)
             .map_err(device_error)?;
-    assert!(restored.resident_vector_shared_attention[0].valid());
+    assert!(valid(
+        &search::find::<Key, Entry>(&restored, FAMILY, &stored.key, |_| true).unwrap()
+    ));
     Ok(())
 }
 #[test]
@@ -104,7 +108,7 @@ fn hardware_vector_search_and_cache_reuse() -> Result<()> {
         .find(|e| e.key.shape == shape())
         .cloned()
         .ok_or_else(|| Error::invalid("vector shared KV hardware proof did not complete"))?;
-    assert!(entry.valid());
+    assert!(valid(&entry));
     assert_eq!(selected, Choice::VectorSharedKv);
     assert_eq!(
         select(&device, shape(), false, &session, Choice::SharedKv),

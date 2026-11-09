@@ -4,6 +4,7 @@ use crate::resident::attention_oxide::shared_identity;
 use crate::resident::attention_oxide::vector_identity;
 use crate::tuning::MIN_REPS;
 use crate::tuning::TilingTable;
+use crate::tuning::qualify::Times;
 use sha2::{Digest, Sha256};
 fn shape() -> Shape {
     Shape {
@@ -23,7 +24,7 @@ fn entry() -> Entry {
         HISTORIES
             .into_iter()
             .map(|history| Case {
-                history,
+                case: history,
                 cold: times(),
                 warm: times(),
             })
@@ -50,14 +51,14 @@ fn entry() -> Entry {
 #[test]
 fn combined_cache_requires_full_bits_and_both_history_orders() {
     let good = entry();
-    assert!(good.valid());
+    assert!(valid(&good));
     for index in 0..12 {
         let mut bad = good.clone();
         match index {
             0 => bad.verified_elements -= 1,
             1 => bad.history_verified_elements -= 1,
             2 => bad.reverse.clear(),
-            3 => bad.forward[1].history = 0,
+            3 => bad.forward[1].case = 0,
             4 => bad.reverse[2].cold.candidate_ms = vec![2.0; MIN_REPS],
             5 => bad.forward[0].warm.candidate_ms = vec![2.2; MIN_REPS],
             6 => bad.max_f64_error = super::super::MAX_ERROR,
@@ -68,14 +69,14 @@ fn combined_cache_requires_full_bits_and_both_history_orders() {
             11 => bad.forward[1].cold.candidate_ms = vec![f32::NAN; MIN_REPS],
             _ => unreachable!(),
         }
-        assert!(!bad.valid(), "variant {index}");
+        assert!(!valid(&bad), "variant {index}");
     }
 }
 #[test]
 fn empty_evidence_keeps_the_qualified_vector_baseline() -> Result<()> {
     let empty: TilingTable = serde_json::from_str("{}").map_err(device_error)?;
-    assert!(empty.resident_vector_combined_attention.is_empty());
-    assert!(empty.resident_vector_shared_attention.is_empty());
+    assert!(empty.records.is_empty());
+    assert!(empty.records.is_empty());
     assert_eq!(
         decide(Choice::VectorSharedKv, None)?,
         Choice::VectorSharedKv
@@ -88,19 +89,22 @@ fn rejected_combined_candidate_and_legacy_cache_remain_exact() -> Result<()> {
     let mut rejected = entry();
     rejected.selected = Choice::VectorSharedKv;
     rejected.reverse[1].cold.candidate_ms = vec![3.0; MIN_REPS];
-    assert!(rejected.valid());
-    let table = TilingTable {
-        resident_vector_combined_attention: vec![rejected],
-        ..Default::default()
-    };
+    assert!(valid(&rejected));
+    let stored = rejected.clone();
+    let table: TilingTable = serde_json::from_value(
+        serde_json::json!({ "resident_vector_combined_attention": [rejected] }),
+    )
+    .map_err(device_error)?;
     let restored: TilingTable =
         serde_json::from_str(&serde_json::to_string(&table).map_err(device_error)?)
             .map_err(device_error)?;
-    assert!(restored.resident_vector_combined_attention[0].valid());
+    assert!(valid(
+        &search::find::<Key, Entry>(&restored, FAMILY, &stored.key, |_| true).unwrap()
+    ));
     assert_eq!(
         decide(
             Choice::VectorSharedKv,
-            Some(&restored.resident_vector_combined_attention[0])
+            Some(&search::find::<Key, Entry>(&restored, FAMILY, &stored.key, |_| true).unwrap())
         )?,
         Choice::VectorSharedKv
     );
