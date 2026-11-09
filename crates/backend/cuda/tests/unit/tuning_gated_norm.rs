@@ -105,7 +105,7 @@ fn former_norm_records_keep_their_choice_and_incomplete_ones_are_rejected() {
     let mut short = migrated.clone();
     short.evidence.confirmation.cold.baseline_ms.pop();
     assert!(!short.valid());
-    let mut slow = migrated.clone();
+    let mut slow = migrated;
     slow.evidence.confirmation.warm.candidate_ms[0] = 0.0;
     assert!(!slow.valid());
     let mut partial = former(4);
