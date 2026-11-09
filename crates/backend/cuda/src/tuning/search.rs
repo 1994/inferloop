@@ -17,7 +17,11 @@ use std::path::Path;
 /// One candidate measured against the baseline, cold and warm, in a recorded arm order.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Trial<C> {
+    #[serde(alias = "config")]
     pub choice: C,
+    /// Entries from before arm orders were recorded load as unspecified, which no protocol
+    /// accepts.
+    #[serde(default)]
     pub order: MeasurementOrder,
     pub cold: PairedTimes,
     pub warm: PairedTimes,
@@ -44,13 +48,19 @@ impl<C> Trial<C> {
 
 /// What one search measured and chose.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(bound(deserialize = "C: Deserialize<'de>"))]
 pub struct Evidence<C> {
     pub selected: C,
     /// Every measured candidate reproduced its complete reference output.
+    #[serde(alias = "bitwise_verified")]
     pub exact_candidates_verified: bool,
     pub trials: Vec<Trial<C>>,
-    /// Candidates that failed to build or to match their reference, with the reason.
-    pub rejected: Vec<(C, String)>,
+    /// Candidates that failed to build or to match their reference, with the reason. `None` only
+    /// in records written before a family kept them, which therefore cannot show the search
+    /// covered every candidate; such a record is held to the rules it was written under, and the
+    /// next measurement of its key writes the complete form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejected: Option<Vec<(C, String)>>,
     pub confirmation: Trial<C>,
 }
 
@@ -64,24 +74,27 @@ impl<C: Copy + PartialEq> Evidence<C> {
     /// Whether this is a complete run of `protocol` whose every choice passes `allowed`: each
     /// candidate measured or rejected exactly once, measurements baseline-first, a candidate-first
     /// confirmation of the selection, and a selection other than the baseline confirmed twice.
+    /// A record without its rejections is checked for everything but coverage.
     pub(crate) fn valid(&self, protocol: &Protocol<C>, allowed: impl Fn(C) -> bool) -> bool {
-        let covered = |choice: C| {
-            self.trials
-                .iter()
-                .filter(|trial| trial.choice == choice)
-                .count()
-                + self
-                    .rejected
+        let covered = |rejected: &[(C, String)]| {
+            let count = |choice: C| {
+                self.trials
                     .iter()
-                    .filter(|(rejected, _)| *rejected == choice)
+                    .filter(|trial| trial.choice == choice)
                     .count()
+                    + rejected
+                        .iter()
+                        .filter(|(rejected, _)| *rejected == choice)
+                        .count()
+            };
+            protocol.candidates.iter().all(|&choice| count(choice) == 1)
+                && self.trials.len() + rejected.len() == protocol.candidates.len()
+                && rejected
+                    .iter()
+                    .all(|(choice, reason)| allowed(*choice) && !reason.is_empty())
         };
         self.exact_candidates_verified
-            && protocol
-                .candidates
-                .iter()
-                .all(|&choice| covered(choice) == 1)
-            && self.trials.len() + self.rejected.len() == protocol.candidates.len()
+            && self.rejected.as_deref().is_none_or(covered)
             && allowed(self.selected)
             && self.confirmation.choice == self.selected
             && self.confirmation.order == MeasurementOrder::CandidateFirst
@@ -91,10 +104,6 @@ impl<C: Copy + PartialEq> Evidence<C> {
                     && allowed(trial.choice)
                     && trial.valid()
             })
-            && self
-                .rejected
-                .iter()
-                .all(|(choice, reason)| allowed(*choice) && !reason.is_empty())
             && (self.selected == protocol.baseline
                 || self.confirmation.confirmed()
                     && self
@@ -156,7 +165,7 @@ pub(crate) fn run<C: Copy + PartialEq>(
         selected,
         exact_candidates_verified: true,
         trials,
-        rejected,
+        rejected: Some(rejected),
         confirmation,
     }))
 }

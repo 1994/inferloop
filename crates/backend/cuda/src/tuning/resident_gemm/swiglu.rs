@@ -248,7 +248,7 @@ impl Search<'_> {
         candidate.run(self.device)?;
         verify(&candidate.bytes(self.device)?, self.expected)?;
         let measured = GemmTrial {
-            config,
+            choice: config,
             order,
             cold: measure(self.device, self.base, &candidate, true, order)?,
             warm: measure(self.device, self.base, &candidate, false, order)?,

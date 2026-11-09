@@ -19,7 +19,7 @@ fn times() -> PairedTimes {
 }
 fn trial(order: MeasurementOrder) -> GemmTrial {
     GemmTrial {
-        config: config(),
+        choice: config(),
         order,
         cold: times(),
         warm: times(),

@@ -1,5 +1,7 @@
 //! Shape and evidence policy for the existing fused FP4 kernel.
-use super::super::{GemmConfig, GemmTrial, MainLoop, MeasurementOrder, ResidentGemmKey, confirmed};
+use super::super::{
+    GemmConfig, GemmTrial, MainLoop, MeasurementOrder, ResidentGemmKey, confirmed, trial_valid,
+};
 use super::super::{TILE_M_SEARCH, TILE_N_SEARCH};
 use crate::constants::{NVFP4_GROUP_SIZE, PROMPT_GEMM_TILE_ROWS, QUANT_GEMM_TILE};
 use crate::tuning::projection_budget::ProjectionShape;
@@ -47,7 +49,7 @@ pub struct Entry {
 impl Entry {
     pub(super) fn valid(&self) -> bool {
         let shape = [self.key.m, self.key.n, self.key.k];
-        let valid = |trial: &GemmTrial| trial.valid() && compatible(trial.config, shape);
+        let valid = |trial: &GemmTrial| trial_valid(trial) && compatible(trial.choice, shape);
         self.bitwise_verified
             && !self.key.kernel_fingerprint.is_empty()
             && self
@@ -57,7 +59,7 @@ impl Entry {
                 .is_none_or(|value| !value.is_empty())
             && compatible(self.selected, shape)
             && compatible(baseline(), shape)
-            && self.confirmation.config == self.selected
+            && self.confirmation.choice == self.selected
             && self.confirmation.order == MeasurementOrder::CandidateFirst
             && valid(&self.confirmation)
             && self
@@ -73,6 +75,6 @@ impl Entry {
                     && self
                         .trials
                         .iter()
-                        .any(|trial| trial.config == self.selected && confirmed(trial)))
+                        .any(|trial| trial.choice == self.selected && confirmed(trial)))
     }
 }

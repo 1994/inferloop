@@ -93,7 +93,7 @@ fn rejected_candidates_are_handled_and_recorded_once() {
     let evidence = evidence.unwrap();
     assert_eq!(rejects, [2]);
     let reason = Error::invalid("output mismatch").to_string();
-    assert_eq!(evidence.rejected, [(2, reason)]);
+    assert_eq!(evidence.rejected, Some(vec![(2, reason)]));
     assert_eq!(evidence.selected, 1);
     assert!(evidence.valid(&protocol(), |_| true));
 }
@@ -125,6 +125,10 @@ fn incomplete_or_disallowed_evidence_is_invalid() {
     let mut unordered = complete.clone();
     unordered.trials[0].order = MeasurementOrder::CandidateFirst;
     assert!(!unordered.valid(&protocol(), |_| true));
+    let mut legacy = complete.clone();
+    legacy.rejected = None;
+    legacy.trials.pop();
+    assert!(legacy.valid(&protocol(), |_| true));
     let mut unconfirmed = complete;
     unconfirmed.confirmation = measured(2, MeasurementOrder::CandidateFirst, 1.0);
     assert!(!unconfirmed.valid(&protocol(), |_| true));

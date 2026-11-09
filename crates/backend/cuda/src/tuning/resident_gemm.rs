@@ -3,7 +3,8 @@ pub(crate) mod swiglu;
 use super::projection_budget::{
     GEMM_RANK, ProjectionKind, ProjectionShape, SearchBudget, SearchScope,
 };
-use super::{MAX_REPS, MIN_CONFIRM_SPEEDUP, MIN_REPS, REP_MS, TilingTable, WARMUP_MS};
+use super::search::{self, Protocol, Record};
+use super::{MAX_REPS, MIN_REPS, REP_MS, TilingTable, WARMUP_MS};
 use crate::constants::NVFP4_GROUP_SIZE;
 use crate::constants::NVFP4_QUANT_CODES_TILE;
 use crate::constants::NVFP4_QUANT_SCALES_TILE;
@@ -39,6 +40,8 @@ use std::{
 pub use swiglu::Entry as SwigluEntry;
 
 /// Bump when quantization, arithmetic or the paired measurement protocol changes.
+/// Name of this family's records in the tuning table.
+pub(crate) const FAMILY: &str = "resident_gemm";
 const KERNEL_SCHEMA: &str = "cutile0.4-nvfp4-v3:search-ab:confirm-ba:block16-e4m3:quant512:mma-k256:f32:full-output:alpha1/(wg*xs):tile-m128";
 const ACTIVATION_MODE: &str = "nvfp4-w4a4-block16";
 /// Linear interpolation weight of both central samples for an even-sized median.
@@ -381,53 +384,47 @@ pub enum MeasurementOrder {
     CandidateFirst,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GemmTrial {
-    pub config: GemmConfig,
-    #[serde(default)]
-    pub order: MeasurementOrder,
-    pub cold: PairedTimes,
-    pub warm: PairedTimes,
+pub type GemmTrial = search::Trial<GemmConfig>;
+pub type ResidentGemmEntry = Record<ResidentGemmKey, GemmConfig>;
+
+/// A trial of a legal configuration whose measurements are complete.
+pub(super) fn trial_valid(trial: &GemmTrial) -> bool {
+    trial.choice.valid() && trial.valid()
 }
 
-impl GemmTrial {
-    fn valid(&self) -> bool {
-        self.config.valid() && times_valid(&self.cold) && times_valid(&self.warm)
+/// Every configuration a search measures against the baseline for `rows` rows.
+fn protocol(rows: usize) -> Protocol<GemmConfig> {
+    let baseline = GemmConfig::baseline(rows);
+    let candidates = TILE_M_SEARCH
+        .into_iter()
+        .flat_map(|tile_m| {
+            TILE_N_SEARCH.into_iter().flat_map(move |tile_n| {
+                LOOP_SEARCH.into_iter().map(move |main_loop| GemmConfig {
+                    tile_m,
+                    tile_n,
+                    main_loop,
+                })
+            })
+        })
+        .filter(|config| *config != baseline)
+        .collect();
+    Protocol {
+        baseline,
+        candidates,
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResidentGemmEntry {
-    pub key: ResidentGemmKey,
-    pub selected: GemmConfig,
-    pub bitwise_verified: bool,
-    pub trials: Vec<GemmTrial>,
-    pub confirmation: GemmTrial,
 }
 
 impl ResidentGemmEntry {
     fn valid(&self) -> bool {
-        self.bitwise_verified
-            && !self.key.kernel_fingerprint.is_empty()
+        !self.key.kernel_fingerprint.is_empty()
             && self
                 .key
                 .driver_build
                 .as_ref()
                 .is_none_or(|build| !build.is_empty())
-            && self.selected.valid()
-            && self.confirmation.config == self.selected
-            && self.confirmation.order == MeasurementOrder::CandidateFirst
-            && self.confirmation.valid()
             && self
-                .trials
-                .iter()
-                .all(|trial| trial.order == MeasurementOrder::BaselineFirst && trial.valid())
-            && (self.selected == GemmConfig::baseline(self.key.m)
-                || (confirmed(&self.confirmation)
-                    && self
-                        .trials
-                        .iter()
-                        .any(|trial| trial.config == self.selected && confirmed(trial))))
+                .evidence
+                .valid(&protocol(self.key.m), GemmConfig::valid)
     }
 }
 
@@ -477,9 +474,14 @@ pub(crate) fn times_valid(times: &PairedTimes) -> bool {
 }
 
 fn confirmed(trial: &GemmTrial) -> bool {
-    trial.valid()
-        && trial.cold.speedup >= MIN_CONFIRM_SPEEDUP
-        && trial.warm.speedup >= MIN_CONFIRM_SPEEDUP
+    trial.choice.valid() && trial.confirmed()
+}
+
+/// The stored record for `key`, valid or not.
+fn cached(table: &TilingTable, key: &ResidentGemmKey) -> Option<ResidentGemmEntry> {
+    search::records::<ResidentGemmKey, GemmConfig>(table, FAMILY)
+        .into_iter()
+        .find(|entry| entry.key == *key)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -494,12 +496,11 @@ fn decision(
     key: &ResidentGemmKey,
     autotune: bool,
 ) -> Result<Decision> {
-    if let Some(entry) = table.and_then(|t| t.resident_gemm.iter().find(|entry| entry.key == *key))
-    {
+    if let Some(entry) = table.and_then(|table| cached(table, key)) {
         if !entry.valid() {
             return Err(Error::invalid("invalid resident GEMM tuning evidence"));
         }
-        return Ok(Decision::Cached(entry.selected));
+        return Ok(Decision::Cached(entry.evidence.selected));
     }
     Ok(if autotune {
         Decision::Measure
@@ -785,14 +786,13 @@ fn selected_config(
 ) -> Result<Option<(GemmConfig, &'static str)>> {
     let selected = match decision(table, key, autotune)? {
         Decision::Cached(config) => {
-            if let Some(entry) =
-                table.and_then(|table| table.resident_gemm.iter().find(|entry| entry.key == *key))
-            {
+            if let Some(entry) = table.and_then(|table| cached(table, key)) {
+                let confirmation = &entry.evidence.confirmation;
                 tracing::info!(target: "infer::tuning", ?key, ?config, source="table-cache",
-                    cold_baseline_ms=entry.confirmation.cold.baseline_median_ms,
-                    cold_candidate_ms=entry.confirmation.cold.candidate_median_ms,
-                    warm_baseline_ms=entry.confirmation.warm.baseline_median_ms,
-                    warm_candidate_ms=entry.confirmation.warm.candidate_median_ms,
+                    cold_baseline_ms=confirmation.cold.baseline_median_ms,
+                    cold_candidate_ms=confirmation.cold.candidate_median_ms,
+                    warm_baseline_ms=confirmation.warm.baseline_median_ms,
+                    warm_candidate_ms=confirmation.warm.candidate_median_ms,
                     "resident GEMM cached timings");
             }
             (config, "table-cache")
@@ -834,7 +834,7 @@ fn measured_config(
             return Ok(None);
         }
     };
-    let config = entry.selected;
+    let config = entry.evidence.selected;
     // Search and independent confirmation already proved this exact weight and scale.
     if config != baseline {
         remember_verification(
@@ -847,17 +847,14 @@ fn measured_config(
             true,
         )?;
     }
-    let cached = key.driver_build.is_some()
-        && super::update_table(path, |table| {
-            table.resident_gemm.retain(|old| old.key != entry.key);
-            table.resident_gemm.push(entry.clone());
-        });
+    let cached = key.driver_build.is_some() && search::store(path, FAMILY, &entry);
+    let confirmation = &entry.evidence.confirmation;
     tracing::info!(target: "infer::tuning", ?key, ?config, cached,
-        cold_speedup=entry.confirmation.cold.speedup, warm_speedup=entry.confirmation.warm.speedup,
-        cold_baseline_ms=entry.confirmation.cold.baseline_median_ms,
-        cold_candidate_ms=entry.confirmation.cold.candidate_median_ms,
-        warm_baseline_ms=entry.confirmation.warm.baseline_median_ms,
-        warm_candidate_ms=entry.confirmation.warm.candidate_median_ms,
+        cold_speedup=confirmation.cold.speedup, warm_speedup=confirmation.warm.speedup,
+        cold_baseline_ms=confirmation.cold.baseline_median_ms,
+        cold_candidate_ms=confirmation.cold.candidate_median_ms,
+        warm_baseline_ms=confirmation.warm.baseline_median_ms,
+        warm_candidate_ms=confirmation.warm.candidate_median_ms,
         source="measured", "resident GEMM selected");
     tracing::debug!(target: "infer::tuning", evidence=%serde_json::to_string(&entry).map_err(device_error)?, "resident GEMM paired timings");
     Ok(Some(config))
@@ -1021,7 +1018,7 @@ fn trial(
     order: MeasurementOrder,
 ) -> Result<GemmTrial> {
     Ok(GemmTrial {
-        config,
+        choice: config,
         order,
         cold: measure_graphs(device, &base.graph, &candidate.graph, true, order)?,
         warm: measure_graphs(device, &base.graph, &candidate.graph, false, order)?,
@@ -1098,61 +1095,21 @@ fn tune(
         base: &base,
         expected: &expected,
     };
-    let mut selected = baseline;
-    let mut best = 1.0_f32;
-    let mut trials = Vec::new();
-    for tile_m in TILE_M_SEARCH {
-        for tile_n in TILE_N_SEARCH {
-            for main_loop in LOOP_SEARCH {
-                let config = GemmConfig {
-                    tile_m,
-                    tile_n,
-                    main_loop,
-                };
-                if config == baseline {
-                    continue;
-                }
-                if session.exhausted(&key) {
-                    return Ok(None);
-                }
-                match search.trial(config, MeasurementOrder::BaselineFirst) {
-                    Ok(measured) => {
-                        let score = measured.cold.speedup.min(measured.warm.speedup);
-                        if confirmed(&measured) && score > best {
-                            best = score;
-                            selected = config;
-                        }
-                        trials.push(measured);
-                    }
-                    Err(error) => {
-                        tracing::warn!(target: "infer::tuning", ?key, ?config, %error,
-                            "resident GEMM candidate rejected; no evidence retained");
-                        // A baseline/device failure still aborts the search; no recovery is assumed.
-                        search.verify_baseline()?;
-                    }
-                }
-            }
-        }
-    }
-    // A new capture measures candidate first to confirm both cache states in reverse order.
-    if session.exhausted(&key) {
+    let Some(evidence) = search::run(
+        &protocol(key.m),
+        || !session.exhausted(&key),
+        |config, order| search.trial(config, order),
+        |config, error| {
+            tracing::warn!(target: "infer::tuning", ?key, ?config, %error,
+                "resident GEMM candidate rejected");
+            // A baseline/device failure still aborts the search; no recovery is assumed.
+            search.verify_baseline()
+        },
+    )?
+    else {
         return Ok(None);
-    }
-    let mut confirmation = search.trial(selected, MeasurementOrder::CandidateFirst)?;
-    if selected != baseline && !confirmed(&confirmation) {
-        if session.exhausted(&key) {
-            return Ok(None);
-        }
-        selected = baseline;
-        confirmation = search.trial(baseline, MeasurementOrder::CandidateFirst)?;
-    }
-    let entry = ResidentGemmEntry {
-        key,
-        selected,
-        bitwise_verified: true,
-        trials,
-        confirmation,
     };
+    let entry = Record { key, evidence };
     if !entry.valid() {
         return Err(Error::invalid("invalid resident GEMM confirmation timings"));
     }

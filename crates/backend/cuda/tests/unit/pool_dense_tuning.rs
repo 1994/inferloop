@@ -44,7 +44,7 @@ fn entry() -> Entry {
                 trial(Choice::Gemv, MeasurementOrder::BaselineFirst),
                 trial(Choice::Shared, MeasurementOrder::BaselineFirst),
             ],
-            rejected: vec![],
+            rejected: Some(vec![]),
             confirmation: trial(Choice::Gemv, MeasurementOrder::CandidateFirst),
         },
     }
@@ -109,14 +109,16 @@ fn rejected_candidates_are_complete_and_cannot_also_count_as_measured() {
     rejected
         .evidence
         .rejected
+        .get_or_insert_default()
         .push((Choice::Shared, "complete output mismatch".into()));
     assert!(rejected.valid());
-    rejected.evidence.rejected[0].1.clear();
+    rejected.evidence.rejected.as_mut().unwrap()[0].1.clear();
     assert!(!rejected.valid());
     let mut duplicate = entry();
     duplicate
         .evidence
         .rejected
+        .get_or_insert_default()
         .push((Choice::Shared, "duplicate proof".into()));
     assert!(!duplicate.valid());
 }

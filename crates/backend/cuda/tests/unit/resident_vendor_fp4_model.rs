@@ -260,7 +260,8 @@ fn extra_consumer_retains_standalone(loaded: &LoadedModel) -> Result<()> {
 #[ignore = "requires CUDA, checkpoint and private seed missing both live down geometries; safe-run"]
 fn live_budget_completes_uncached_down_shapes() -> Result<()> {
     use crate::resident::nvfp4_gemm::Workspace;
-    use crate::tuning::{resolve_table, table_path};
+    use crate::tuning::resident_gemm::{FAMILY, GemmConfig, ResidentGemmKey};
+    use crate::tuning::{resolve_table, search, table_path};
     let (mut loaded, _) = loaded_model(AttentionProfile::Bf16, 1024, 64)?;
     loaded.weights.autotune = true;
     let path = table_path().ok_or_else(|| Error::invalid("private tuning table required"))?;
@@ -268,8 +269,7 @@ fn live_budget_completes_uncached_down_shapes() -> Result<()> {
         resolve_table(Some(&path))?.ok_or_else(|| Error::invalid("private seed required"))?;
     for m in [64, 1024] {
         assert!(
-            !before
-                .resident_gemm
+            !search::records::<ResidentGemmKey, GemmConfig>(&before, FAMILY)
                 .iter()
                 .any(|e| e.key.m == m && e.key.n == 5120 && e.key.k == 17408),
             "fixture must really remove the live down shape before this fresh process"
@@ -279,18 +279,17 @@ fn live_budget_completes_uncached_down_shapes() -> Result<()> {
     let table =
         resolve_table(Some(&path))?.ok_or_else(|| Error::invalid("measured table required"))?;
     for m in [64, 1024] {
-        let entry = table
-            .resident_gemm
-            .iter()
+        let entry = search::records::<ResidentGemmKey, GemmConfig>(&table, FAMILY)
+            .into_iter()
             .find(|e| e.key.m == m && e.key.n == 5120 && e.key.k == 17408)
             .ok_or_else(|| {
                 Error::invalid(format!("missing completed actual-weight search at M={m}"))
             })?;
-        assert!(entry.bitwise_verified);
-        assert!(!entry.trials.is_empty());
+        assert!(entry.evidence.exact_candidates_verified);
+        assert!(!entry.evidence.trials.is_empty());
         println!(
             "completed uncached down search: M={m}, selected={:?}",
-            entry.selected
+            entry.evidence.selected
         );
     }
     println!(
