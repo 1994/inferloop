@@ -310,15 +310,6 @@ pub struct TilingTable {
     /// [`search`]. Records stay as stored, so ones this build cannot decode survive a rewrite.
     #[serde(default)]
     pub records: BTreeMap<String, Vec<serde_json::Value>>,
-    /// Qualified zero-workspace FP4 library projections.
-    #[serde(default)]
-    pub resident_fp4_lt: Vec<nvfp4_lt::Entry>,
-    /// FA4 BF16 profile, artifact and architecture scoped cluster search evidence.
-    #[serde(default)]
-    pub resident_mma_attention: Vec<attention::mma::Entry>,
-    /// F32-cache FA4 profile with full short-output and long-row F64 checks.
-    #[serde(default)]
-    pub resident_mma_f32_attention: Vec<attention::mma_f32::Entry>,
 }
 
 /// Read both the current per-device table and the former top-level `device`/`entries` format.
@@ -345,7 +336,7 @@ struct StoredTilingTable {
     #[serde(default)]
     resident_fp8_gemm: Vec<serde_json::Value>,
     #[serde(default)]
-    resident_fp4_lt: Vec<nvfp4_lt::Entry>,
+    resident_fp4_lt: Vec<serde_json::Value>,
     /// Greedy reduction records from before the shared protocol, converted to its form on read.
     #[serde(default)]
     greedy: Vec<serde_json::Value>,
@@ -367,9 +358,9 @@ struct StoredTilingTable {
     #[serde(default)]
     resident_vector_combined_attention: Vec<serde_json::Value>,
     #[serde(default)]
-    resident_mma_attention: Vec<attention::mma::Entry>,
+    resident_mma_attention: Vec<serde_json::Value>,
     #[serde(default)]
-    resident_mma_f32_attention: Vec<attention::mma_f32::Entry>,
+    resident_mma_f32_attention: Vec<serde_json::Value>,
     #[serde(default)]
     resident_exact_recurrent: Vec<serde_json::Value>,
 }
@@ -394,6 +385,12 @@ impl From<StoredTilingTable> for TilingTable {
         let mut records = stored.records;
         for (family, legacy) in [
             (pool_dense::FAMILY, stored.resident_pool_dense),
+            (nvfp4_lt::FAMILY, stored.resident_fp4_lt),
+            (
+                attention::mma_f32::FAMILY,
+                stored.resident_mma_f32_attention,
+            ),
+            (attention::mma::FAMILY, stored.resident_mma_attention),
             (attention::exact::FAMILY, stored.resident_exact_attention),
             (attention::shared::FAMILY, stored.resident_shared_attention),
             (
@@ -448,13 +445,7 @@ impl From<StoredTilingTable> for TilingTable {
                 records.entry(family.to_owned()).or_default().extend(legacy);
             }
         }
-        Self {
-            devices,
-            records,
-            resident_fp4_lt: stored.resident_fp4_lt,
-            resident_mma_attention: stored.resident_mma_attention,
-            resident_mma_f32_attention: stored.resident_mma_f32_attention,
-        }
+        Self { devices, records }
     }
 }
 

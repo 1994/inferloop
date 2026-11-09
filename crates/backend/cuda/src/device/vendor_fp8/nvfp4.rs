@@ -397,7 +397,7 @@ impl Support {
                 }
                 if let Some(key) = disk {
                     let path = table_path();
-                    let saved = cache::save(path.as_deref(), cache::Entry { key, trials });
+                    let saved = cache::save(path.as_deref(), &cache::Entry { key, trials });
                     tracing::info!(target:"infer::tuning",?shape,saved,"vendor FP4 qualification recorded");
                 }
             }

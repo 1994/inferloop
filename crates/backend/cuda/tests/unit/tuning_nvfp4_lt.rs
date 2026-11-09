@@ -96,7 +96,7 @@ fn qualification_roundtrip_preserves_other_sections_and_identity() -> TestResult
     table.devices.insert("keep".into(), Vec::new());
     fs::write(&path, serde_json::to_vec(&table)?)?;
     let e = entry();
-    assert!(save(Some(&path), e.clone()));
+    assert!(save(Some(&path), &e));
     assert!(cached(Some(&path), &e.key)?);
     assert!(TilingTable::load(&path)?.devices.contains_key("keep"));
     for field in [
@@ -157,26 +157,22 @@ fn partial_forged_or_duplicate_qualifications_are_not_reused() -> TestResult {
             _ => bad.key.native.driver_build = None,
         }
         assert!(!bad.valid(), "{damage}");
-        assert!(!save(Some(&path), bad.clone()));
-        let mut table = TilingTable::default();
-        table.resident_fp4_lt.push(bad);
-        fs::write(&path, serde_json::to_vec(&table)?)?;
+        assert!(!save(Some(&path), &bad));
+        let former = serde_json::json!({ "resident_fp4_lt": [bad] });
+        fs::write(&path, serde_json::to_vec(&former)?)?;
         if damage != "driver" {
             assert!(cached(Some(&path), &e.key).is_err(), "{damage}");
         }
     }
-    let table = TilingTable {
-        resident_fp4_lt: vec![e.clone(), e.clone()],
-        ..TilingTable::default()
-    };
-    fs::write(&path, serde_json::to_vec(&table)?)?;
+    let former = serde_json::json!({ "resident_fp4_lt": [e.clone(), e] });
+    fs::write(&path, serde_json::to_vec(&former)?)?;
     assert!(cached(Some(&path), &e.key).is_err());
     Ok(())
 }
 #[test]
 fn legacy_tables_have_no_implicit_fp4_qualification() -> TestResult {
     let table: TilingTable = serde_json::from_str(r#"{"devices":{}}"#)?;
-    assert!(table.resident_fp4_lt.is_empty());
+    assert!(table.records.is_empty());
     assert!(!cached(None, &entry().key)?);
     Ok(())
 }

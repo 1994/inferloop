@@ -286,14 +286,26 @@ where
     K: DeserializeOwned + PartialEq,
     T: DeserializeOwned,
 {
+    matching(table, family, key).find(|record| valid(record))
+}
+
+/// Every record of `family` for `key` that decodes as `T`; only those are decoded whole.
+pub(crate) fn matching<'a, K, T>(
+    table: &'a TilingTable,
+    family: &str,
+    key: &'a K,
+) -> impl Iterator<Item = T> + 'a
+where
+    K: DeserializeOwned + PartialEq,
+    T: DeserializeOwned,
+{
     table
         .records
         .get(family)
         .into_iter()
         .flatten()
-        .filter(|stored| key_of::<K>(stored).is_some_and(|stored| stored == *key))
+        .filter(move |stored| key_of::<K>(stored).is_some_and(|stored| stored == *key))
         .filter_map(|stored| T::deserialize(stored).ok())
-        .find(|record| valid(record))
 }
 
 /// Store `record` in `family` at `path`, replacing any record with its key. False when nothing

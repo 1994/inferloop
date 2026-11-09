@@ -11,8 +11,8 @@ use crate::resident::attention_oxide::shared_identity;
 use crate::resident::attention_oxide::vector_identity;
 use crate::tuning::MIN_CONFIRM_SPEEDUP;
 use crate::tuning::resolve_table;
+use crate::tuning::search;
 use crate::tuning::table_path;
-use crate::tuning::update_table;
 use crate::{
     device::CudaDevice,
     resident::attention_mma::{
@@ -92,6 +92,8 @@ impl Trial {
             })
     }
 }
+/// The family's records in the shared table section.
+pub const FAMILY: &str = "mma_attention";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
     pub key: Key,
@@ -338,11 +340,9 @@ fn resolve(
     } else {
         None
     };
-    if let Some(entry) = table.and_then(|t| {
-        t.resident_mma_attention
-            .into_iter()
-            .find(|e| e.key == key && e.baseline == baseline)
-    }) {
+    if let Some(entry) = table
+        .and_then(|table| search::find(&table, FAMILY, &key, |e: &Entry| e.baseline == baseline))
+    {
         if !entry.valid() {
             return Err(Error::invalid("incomplete MMA profile/cluster evidence"));
         }
@@ -370,11 +370,7 @@ fn resolve(
     let Some(entry) = tune(device, key.clone(), session, baseline)? else {
         return Ok(untuned());
     };
-    let cached = key.driver_build.is_some()
-        && update_table(path.as_deref(), |table| {
-            table.resident_mma_attention.retain(|e| e.key != key);
-            table.resident_mma_attention.push(entry.clone());
-        });
+    let cached = key.driver_build.is_some() && search::put(path.as_deref(), FAMILY, &key, &entry);
     let choice = entry.selected;
     tracing::info!(target:"infer::tuning",?shape,?choice,cached,profile=catalog::PROFILE,"MMA attention hardware choice");
     memo()

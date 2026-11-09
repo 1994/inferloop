@@ -2,7 +2,8 @@
 use super::resident_gemm::{
     GemmConfig, MeasurementOrder, PairedTimes, ResidentGemmKey, times_valid,
 };
-use super::{MIN_CONFIRM_SPEEDUP, TilingTable, resolve_table, update_table};
+use super::search;
+use super::{MIN_CONFIRM_SPEEDUP, resolve_table};
 use crate::device::vendor_fp8::{AlgorithmConfig, LibraryIdentity};
 use infer_core::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,8 @@ pub struct Trial {
     pub warm: PairedTimes,
 }
 /// A search and independent reversed confirmation; no opaque algorithm bytes or weight pointers.
+/// The family's records in the shared table section.
+pub const FAMILY: &str = "fp4_lt";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
     pub key: Key,
@@ -62,24 +65,17 @@ pub(crate) fn cached(path: Option<&Path>, key: &Key) -> Result<bool> {
     let Some(table) = resolve_table(path)? else {
         return Ok(false);
     };
-    let matching: Vec<_> = table
-        .resident_fp4_lt
-        .iter()
-        .filter(|entry| entry.key == *key)
-        .collect();
+    let matching: Vec<Entry> = search::matching(&table, FAMILY, key).collect();
     if matching.len() > 1 || matching.iter().any(|entry| !entry.valid()) {
         return Err(Error::invalid("invalid or duplicate FP4 Lt qualification"));
     }
     Ok(!matching.is_empty())
 }
-pub(crate) fn save(path: Option<&Path>, entry: Entry) -> bool {
+pub(crate) fn save(path: Option<&Path>, entry: &Entry) -> bool {
     if !entry.valid() {
         return false;
     }
-    update_table(path, |table: &mut TilingTable| {
-        table.resident_fp4_lt.retain(|old| old.key != entry.key);
-        table.resident_fp4_lt.push(entry);
-    })
+    search::put(path, FAMILY, &entry.key, entry)
 }
 
 #[cfg(test)]
