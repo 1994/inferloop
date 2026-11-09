@@ -127,3 +127,6 @@ required-features = ["cuda"]
 [[example]]
 name = "cuda-resident-memory-components"
 required-features = ["cuda"]
+
+[[example]]
+name = "cuda-tuning-report"

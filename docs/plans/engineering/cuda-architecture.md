@@ -103,6 +103,12 @@ runtime                  submit / poll，不重建拓扑
 - **参考：** PR #89 对 GEMV 缓存身份和可推导参数的审查，直接相关，开工前先读。
 - **验收：** 新增候选不需要新 key 结构或新缓存字段；一条命令产出配对报告；迁移后默认选择不变，或变化有证据。
 - **第一步（2026-11-04）：** oxide vector/combined 和 FA4 F32 的 attention 调优身份原来哈希宿主 `.rs` 源码，改动或搬移这些文件就让 27B 的缓存条目失效，挡住了 M6 迁移它们的 `Bindings`。现在制品身份哈希 PTX、源码、provenance 和 launch 合同（launch 常量加 `HOST_CONTRACT` 版本，同一制品的 launch 行为变了才升版本），tuning 侧的方法由 key 的 `SCHEMA` 表达，不再哈希 tuning 源码。这一次有意让三族条目失效一次，在 5090 上重测。
+- **第二步（2026-11-09）：** 共用协议落在 `tuning::search`（#209–#212）：
+  - `Trial`、`Evidence`、`Record`、完整性规则（每个候选恰好测量或拒绝一次，baseline 先测，候选先测确认）和搜索驱动 `run` 只写一次；
+  - 调优表新增按族名分区的 `records` 段，新增一族不再加表字段，本构建解不了的记录重写时保留；
+  - `pool_dense`、resident GEMM、fused SwiGLU 已迁移。旧段原样读入：字段名用 serde alias 兼容，没有拒绝列表的旧记录按写入时的规则验收，缓存选择不变；
+  - `cuda-tuning-report` example 一条命令打印每条记录的形状、选择、冷热加速比和候选数。
+  - **余下：** fp8 GEMM 与 greedy 在确认失败时按排名试下一个候选，而不是直接退回 baseline，计时格式也不同（不存中位数，中位数舍入也不同）；attention 各族与 recurrent 还带 fixture 和 F64 误差等额外证据。迁移前要定：共用协议是否改成按排名确认（会多出确认次数，须和搜索预算一起在 GPU 上实测），以及 `Record` 加额外证据的类型参数。
 
 ### M4 单一 lowering（风险最高）
 
@@ -177,7 +183,7 @@ runtime                  submit / poll，不重建拓扑
 
 - **第一批已归还：** `infer-workloads` 现在持有提议预算 `draft_budget`、提议条件 `draft_may_propose`、接受前缀 `accepted_prefix`，MTP 和 DFlash2 共用。27B 上 MTP 与 main 逐位一致。提议和回滚的物理执行留在 CUDA；`execution.rs` 里按 `dflash`、`speculation` 的分支还在，新增 draft 仍要碰 executor，所以本项未完成。
 - **前置：** M4 之后、O3 之后。回滚语义依赖页所有权，lowering 收口后迁移成本更低。
-- **做什么：** 先拆开两个 `SpeculationPlan`（可立即做）。先把 MTP 和已合入的 DFlash2 都对照一遍公共契约，再按 [SPI 方案](../speculation/spi.md)步骤③把提议、接受、池宽和能力策略搬到 `infer-workloads`。此前冻结 DFlash2 的新接线。
+- **做什么：** 两个 `SpeculationPlan` 已拆开（模型侧是 `infer_spi::DraftHead`）。先把 MTP 和已合入的 DFlash2 都对照一遍公共契约，再按 [SPI 方案](../speculation/spi.md)步骤③把提议、接受、池宽和能力策略搬到 `infer-workloads`。此前冻结 DFlash2 的新接线。
 - **验收：** MTP token、状态、资源行为与迁移前一致；新增 draft 不需要改 executor 的策略分支。
 
 ### O5 不立项的部分
@@ -241,7 +247,7 @@ Workload 边界目前是干净的：CUDA 和 runtime 中查不到 `WorkloadKind`
 
 ## 8. 接手入口
 
-**已落地（PR #130）：** M0 棘轮和 `WorkloadKind` 拦截；O1 设备时间上报；G1–G3 目标身份统一；M2 的 `pool_gemv` 模板；M4 的 attention 回退链；M7 探测和 `model-probe.py`；P1 测量；O2 的建池决策 `decide_pool`；O3 第一步（slot pool 用 `BlockPool`）；O4 的提议预算、提议条件和接受前缀；C1M 的池显存分项日志。host 级 `cuda-aot` lane 随 M6 落地，现在加只是一条必失败的 lane。
+**已落地（PR #130）：** M0 棘轮和 `WorkloadKind` 拦截；O1 设备时间上报；G1–G3 目标身份统一；M2 的 `pool_gemv` 模板；M4 的 attention 回退链；M7 探测和 `model-probe.py`；P1 测量；O2 的建池决策 `decide_pool`；O3 第一步（slot pool 用 `BlockPool`）；O4 的提议预算、提议条件和接受前缀；C1M 的池显存分项日志。M6 已完成（#184–#199）：host 不含 cuTile 类型，`--features cuda-aot` 无工具链构建并运行 CPU 侧测试。
 
 **未完成，从这里接手。** 以下依赖链要改 868 处 `Tensor<` 和热路径，按方案逐项单独开 PR：
 
