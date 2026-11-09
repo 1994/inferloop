@@ -315,9 +315,6 @@ pub struct TilingTable {
     /// Device/driver/kernel/geometry scoped exact greedy reduction decisions.
     #[serde(default)]
     pub greedy: Vec<greedy::Entry>,
-    /// Native gated norm compiler occupancy with full-output bitwise evidence.
-    #[serde(default)]
-    pub resident_gated_norm: Vec<gated_norm::NormEntry>,
     /// F32-state recurrent column decisions with independent F64 and paired evidence.
     #[serde(default)]
     pub resident_recurrent: Vec<recurrent::Entry>,
@@ -373,8 +370,9 @@ struct StoredTilingTable {
     resident_fp4_lt: Vec<nvfp4_lt::Entry>,
     #[serde(default)]
     greedy: Vec<greedy::Entry>,
+    /// Gated norm records from before the shared protocol, converted to its form on read.
     #[serde(default)]
-    resident_gated_norm: Vec<gated_norm::NormEntry>,
+    resident_gated_norm: Vec<serde_json::Value>,
     #[serde(default)]
     resident_recurrent: Vec<recurrent::Entry>,
     #[serde(default)]
@@ -425,6 +423,14 @@ impl From<StoredTilingTable> for TilingTable {
                     .map(fp8_gemm::legacy)
                     .collect(),
             ),
+            (
+                gated_norm::NORM_FAMILY,
+                stored
+                    .resident_gated_norm
+                    .into_iter()
+                    .map(gated_norm::legacy)
+                    .collect(),
+            ),
         ] {
             if !legacy.is_empty() {
                 records.entry(family.to_owned()).or_default().extend(legacy);
@@ -435,7 +441,6 @@ impl From<StoredTilingTable> for TilingTable {
             records,
             resident_fp4_lt: stored.resident_fp4_lt,
             greedy: stored.greedy,
-            resident_gated_norm: stored.resident_gated_norm,
             resident_recurrent: stored.resident_recurrent,
             resident_attention: stored.resident_attention,
             resident_exact_attention: stored.resident_exact_attention,

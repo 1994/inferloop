@@ -1,9 +1,10 @@
 use super::{
     CANDIDATES, SCHEMA, compile_options,
-    evidence::{Key, Shape, Times, Trial},
+    evidence::{Key, Shape, Trial},
 };
 use crate::device::{CudaDevice, device_error};
 use crate::tuning::preparation::driver_build;
+use crate::tuning::resident_gemm::{MeasurementOrder, PairedTimes, paired_times};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{NormBuffers, NormLayout, NormPlan};
 use infer_cuda_kernels::identity;
@@ -128,20 +129,21 @@ pub fn bits(actual: &[f32], expected: &[f32]) -> Result<()> {
     }
     Ok(())
 }
+/// Time `candidate` against `baseline` cold and warm, in `order`.
 pub fn measure(
     device: &CudaDevice,
     baseline: &Graph,
     candidate: &Graph,
     occupancy: i32,
-    reverse: bool,
-    elements: usize,
+    order: MeasurementOrder,
 ) -> Result<Trial> {
+    let reverse = order == MeasurementOrder::CandidateFirst;
     let (left, right) = if reverse {
         (candidate, baseline)
     } else {
         (baseline, candidate)
     };
-    let measure = |cold| -> Result<Times> {
+    let measure = |cold| -> Result<PairedTimes> {
         let opts = Timing {
             warmup: Duration::from_millis(super::super::WARMUP_MS),
             rep: Duration::from_millis(super::super::REP_MS),
@@ -155,15 +157,12 @@ pub fn measure(
             .time_paired(&opts, || run(left), || run(right))
             .map_err(device_error)?;
         let (a, b) = if reverse { (b, a) } else { (a, b) };
-        Ok(Times {
-            baseline_ms: a.times_ms().to_vec(),
-            candidate_ms: b.times_ms().to_vec(),
-        })
+        paired_times(a.times_ms(), b.times_ms())
+            .ok_or_else(|| Error::invalid("gated norm paired timing samples"))
     };
     Ok(Trial {
-        occupancy,
-        candidate_first: reverse,
-        verified_elements: elements,
+        choice: occupancy,
+        order,
         cold: measure(true)?,
         warm: measure(false)?,
     })

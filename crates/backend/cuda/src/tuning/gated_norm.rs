@@ -3,12 +3,13 @@ mod capture;
 mod evidence;
 use self::{
     capture::Buffers,
-    evidence::{Entry, Key, Shape},
+    evidence::{Entry, FAMILY, Key, Shape, protocol},
 };
 use super::resident_gemm::ResidentTuningSession;
+use super::search;
 use crate::constants::PREFILL_LANES;
 use crate::{device::CudaDevice, resident::ProgramWeights};
-pub use evidence::Entry as NormEntry;
+pub(super) use evidence::{FAMILY as NORM_FAMILY, legacy};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::jit::JitOptions;
 use infer_ir::{DataflowGraph, TensorOp};
@@ -134,12 +135,8 @@ fn resolve(
     };
     let cached = table
         .as_ref()
-        .and_then(|t| {
-            t.resident_gated_norm
-                .iter()
-                .find(|e| e.key == key && e.valid())
-        })
-        .cloned();
+        .and_then(|table| search::lookup(table, FAMILY, &key, Entry::valid));
+    let from_table = cached.is_some();
     let entry = if cached.is_some() {
         cached
     } else if autotune && session.permits_norm_search() {
@@ -147,21 +144,14 @@ fn resolve(
     } else {
         None
     };
-    let selected = entry.as_ref().map_or(UNMEASURED, |e| e.selected);
+    let selected = entry.as_ref().map_or(UNMEASURED, |e| e.evidence.selected);
     if let Some(entry) = &entry {
-        let from_table = table.as_ref().is_some_and(|t| {
-            t.resident_gated_norm
-                .iter()
-                .any(|e| e.key == key && e.valid())
-        });
         if !from_table && key.driver_build.is_some() {
-            super::update_table(path.as_deref(), |table| {
-                table.resident_gated_norm.retain(|old| old.key != key);
-                table.resident_gated_norm.push(entry.clone());
-            });
+            search::store(path.as_deref(), FAMILY, entry);
         }
+        let confirmation = &entry.evidence.confirmation;
         tracing::info!(target:"infer::tuning",?shape,occupancy=selected,from_table,
-            cold_speedup=entry.confirmation.cold.speedup(),warm_speedup=entry.confirmation.warm.speedup(),
+            cold_speedup=confirmation.cold.speedup,warm_speedup=confirmation.warm.speedup,
             "gated norm compiler selected");
     }
     memo()
@@ -192,55 +182,27 @@ fn tune(device: &CudaDevice, key: Key, session: &ResidentTuningSession) -> Resul
     let baseline = buffers.capture(device, BASELINE)?;
     let expected = buffers.read(device, &baseline)?;
     capture::bits(&expected, &expected)?;
-    let mut search = Vec::new();
-    let mut selected = BASELINE;
-    let mut best = 1.0f32;
-    for occupancy in CANDIDATES {
-        if !session.permits_norm_search() {
-            return Ok(None);
-        }
-        let candidate = buffers.capture(device, occupancy)?;
-        capture::bits(&buffers.read(device, &candidate)?, &expected)?;
-        let trial = capture::measure(
-            device,
-            &baseline,
-            &candidate,
-            occupancy,
-            false,
-            expected.len(),
-        )?;
-        capture::bits(&buffers.read(device, &candidate)?, &expected)?;
-        if trial.confirmed() && trial.score() > best {
-            selected = occupancy;
-            best = trial.score();
-        }
-        search.push(trial);
-    }
-    if !session.permits_norm_search() {
+    let shape = key.shape;
+    let Some(evidence) = search::run(
+        &protocol(),
+        || session.permits_norm_search(),
+        |occupancy, order| {
+            let candidate = buffers.capture(device, occupancy)?;
+            capture::bits(&buffers.read(device, &candidate)?, &expected)?;
+            let trial = capture::measure(device, &baseline, &candidate, occupancy, order)?;
+            capture::bits(&buffers.read(device, &candidate)?, &expected)?;
+            Ok(trial)
+        },
+        |occupancy, error| {
+            tracing::warn!(target:"infer::tuning",?shape,occupancy,%error,
+                "gated norm occupancy rejected");
+            Ok(())
+        },
+    )?
+    else {
         return Ok(None);
-    }
-    let candidate = buffers.capture(device, selected)?;
-    capture::bits(&buffers.read(device, &candidate)?, &expected)?;
-    let mut confirmation = capture::measure(
-        device,
-        &baseline,
-        &candidate,
-        selected,
-        true,
-        expected.len(),
-    )?;
-    capture::bits(&buffers.read(device, &candidate)?, &expected)?;
-    if selected != BASELINE && !confirmation.confirmed() {
-        selected = BASELINE;
-        confirmation =
-            capture::measure(device, &baseline, &baseline, BASELINE, true, expected.len())?;
-    }
-    let entry = Entry {
-        key,
-        selected,
-        search,
-        confirmation,
     };
+    let entry = Entry { key, evidence };
     if !entry.valid() {
         return Err(Error::invariant("incomplete gated norm evidence"));
     }

@@ -7,7 +7,7 @@
 //! A family supplies its key, its choices and how one trial is measured. How the search runs,
 //! what makes its evidence complete and where records live are the same for every family, so a
 //! new candidate or family needs no new key structure and no new table field.
-use super::resident_gemm::{MeasurementOrder, PairedTimes, times_valid};
+use super::resident_gemm::{MeasurementOrder, PairedTimes, paired_times, times_valid};
 use super::{MIN_CONFIRM_SPEEDUP, TilingTable, update_table};
 use infer_core::{Error, Result};
 use serde::de::DeserializeOwned;
@@ -44,6 +44,44 @@ impl<C> Trial<C> {
     /// The speedup a candidate is ranked by: its worse cache state.
     const fn score(&self) -> f32 {
         self.cold.speedup.min(self.warm.speedup)
+    }
+}
+
+/// Samples as the first families stored them, without medians.
+#[derive(Deserialize)]
+struct FormerTimes {
+    baseline_ms: Vec<f32>,
+    candidate_ms: Vec<f32>,
+}
+
+impl FormerTimes {
+    fn paired(&self) -> Option<PairedTimes> {
+        paired_times(&self.baseline_ms, &self.candidate_ms)
+    }
+}
+
+/// A trial as the first families stored it: the arm order a flag, the samples without medians.
+/// A family flattens it beside its own choice field to read its former records.
+#[derive(Deserialize)]
+pub(super) struct FormerTrial {
+    candidate_first: bool,
+    cold: FormerTimes,
+    warm: FormerTimes,
+}
+
+impl FormerTrial {
+    /// The trial of `choice` in the shared form; `None` when its samples are incomplete.
+    pub(super) fn into_trial<C>(self, choice: C) -> Option<Trial<C>> {
+        Some(Trial {
+            choice,
+            order: if self.candidate_first {
+                MeasurementOrder::CandidateFirst
+            } else {
+                MeasurementOrder::BaselineFirst
+            },
+            cold: self.cold.paired()?,
+            warm: self.warm.paired()?,
+        })
     }
 }
 
