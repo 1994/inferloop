@@ -92,7 +92,8 @@ fn rejected_candidates_are_handled_and_recorded_once() {
     let (evidence, rejects) = search(&[(1, 1.2), (3, 1.0)], &[(1, 1.2)]);
     let evidence = evidence.unwrap();
     assert_eq!(rejects, [2]);
-    assert_eq!(evidence.rejected, [(2, "output mismatch".to_owned())]);
+    let reason = Error::invalid("output mismatch").to_string();
+    assert_eq!(evidence.rejected, [(2, reason)]);
     assert_eq!(evidence.selected, 1);
     assert!(evidence.valid(&protocol(), |_| true));
 }
