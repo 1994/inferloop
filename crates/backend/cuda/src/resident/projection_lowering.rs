@@ -9,6 +9,7 @@ use crate::constants::{
 };
 use crate::mlp::ProjectionWeight;
 use crate::tuning::pool_dense::{self, Choice as PoolDense};
+use crate::tuning::projection_budget::ProjectionShape;
 use infer_core::Result;
 use infer_cuda_kernels::contract::RowsKernel;
 
@@ -123,7 +124,7 @@ pub(super) fn lower(
     weight: Format,
     activation: Option<ActivationQuantization>,
     mode: Mode,
-    [rows, outputs, columns]: [usize; 3],
+    [rows, outputs, columns]: ProjectionShape,
 ) -> Result<Lowering> {
     let quantized = quantized(weight, activation);
     let unquantized = |arithmetic_rows: usize| {

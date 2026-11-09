@@ -7,6 +7,7 @@ use super::buffers::{RowMajor, buffer};
 use super::capture::error;
 use super::projection_lowering::Format;
 use crate::tuning::pool_dense::{self, Choice};
+use crate::tuning::projection_budget::ProjectionShape;
 use crate::{mlp::ProjectionWeight, strategy::LinearTiling};
 use infer_core::Result;
 use infer_cuda_kernels::contract::{Buffer, Kernels, PoolGemvPlan, Recording};
@@ -14,7 +15,7 @@ use infer_cuda_kernels::contract::{Buffer, Kernels, PoolGemvPlan, Recording};
 use std::cell::Cell;
 /// The pooled dense choice that records for a `shape` projection of `weight`, or `None` when
 /// the native path records instead.
-pub(super) fn lowered(weight: Format, shape: [usize; 3], choice: Choice) -> Option<Choice> {
+pub(super) fn lowered(weight: Format, shape: ProjectionShape, choice: Choice) -> Option<Choice> {
     if !pool_dense::searchable(shape) || !enabled() {
         return None;
     }
