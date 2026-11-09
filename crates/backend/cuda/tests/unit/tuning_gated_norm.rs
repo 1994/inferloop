@@ -1,6 +1,7 @@
 //! Cache integrity and actual automatic profiling of native gated norms.
 use super::*;
 use crate::device::device_error;
+use crate::tuning::resident_gemm::MeasurementOrder;
 use std::fs::read;
 #[test]
 #[ignore = "requires CUDA/safe-run and a private frozen tuning table; seeds measured profile"]
@@ -33,8 +34,7 @@ fn gated_norm_profile_preserves_all_other_entries() -> Result<()> {
     }
     let table = super::super::TilingTable::load(&path)?;
     // A private table may already hold other geometries; these two must be among them.
-    let measured: Vec<_> = table
-        .resident_gated_norm
+    let measured: Vec<_> = search::records::<Key, i32>(&table, FAMILY)
         .into_iter()
         .filter(|entry| {
             [3072, 12288].contains(&entry.key.shape.rows) && entry.key.shape.dimension == 128
@@ -44,61 +44,76 @@ fn gated_norm_profile_preserves_all_other_entries() -> Result<()> {
     for entry in measured {
         assert!(entry.valid());
         assert_ne!(
-            entry.selected, BASELINE,
+            entry.evidence.selected, BASELINE,
             "known profiled prefill should improve"
         );
         let mut bad = entry.clone();
-        bad.confirmation.verified_elements = 0;
+        bad.evidence.exact_candidates_verified = false;
         assert!(!bad.valid());
         let mut bad = entry.clone();
-        bad.confirmation.candidate_first = false;
+        bad.evidence.confirmation.order = MeasurementOrder::BaselineFirst;
         assert!(!bad.valid());
         let mut bad = entry.clone();
         bad.key.shape.rows = usize::MAX;
         assert!(!bad.valid());
         let mut bad = entry.clone();
-        bad.search.pop();
+        bad.evidence.trials.pop();
         assert!(!bad.valid());
         let mut bad = entry.clone();
-        bad.confirmation.warm.candidate_ms[0] = f32::NAN;
+        bad.evidence.confirmation.warm.candidate_ms[0] = f32::NAN;
         assert!(!bad.valid());
         println!(
             "{}",
             serde_json::json!({"norm_profile":true,"shape":entry.key.shape,
-            "selected_occupancy":entry.selected,"complete_evidence":true,
+            "selected_occupancy":entry.evidence.selected,"complete_evidence":true,
             "other_tuning_fields_unchanged":true})
         );
     }
     Ok(())
 }
 #[test]
-fn malformed_norm_shapes_and_partial_trials_are_rejected() {
+fn malformed_norm_shapes_are_rejected() {
     assert!(Shape::new(0, 128, 1e-6).is_none());
     assert!(Shape::new(3072, 256, 1e-6).is_none());
     assert!(Shape::new(usize::MAX, 128, 1e-6).is_none());
     assert!(Shape::new(3072, 128, f32::NAN).is_none());
     assert!(Shape::new(3072, 128, 0.0).is_none());
-    let trial = evidence::Trial {
-        occupancy: 4,
-        candidate_first: true,
-        verified_elements: 3072 * 128,
-        cold: evidence::Times {
-            baseline_ms: vec![2.0; 10],
-            candidate_ms: vec![1.0; 10],
-        },
-        warm: evidence::Times {
-            baseline_ms: vec![2.0; 10],
-            candidate_ms: vec![1.0; 10],
-        },
+}
+/// A record in the former section's shape, selecting occupancy 4 over every candidate.
+fn former(selected: i32) -> serde_json::Value {
+    let times =
+        serde_json::json!({ "baseline_ms": vec![2.0_f32; 10], "candidate_ms": vec![1.0_f32; 10] });
+    let trial = |occupancy: i32, candidate_first: bool| {
+        serde_json::json!({ "occupancy": occupancy, "candidate_first": candidate_first,
+            "verified_elements": 3072 * 128, "cold": times, "warm": times })
     };
-    assert!(trial.confirmed());
-    let mut bad = trial.clone();
-    bad.cold.baseline_ms.pop();
-    assert!(!bad.confirmed());
-    let mut bad = trial.clone();
-    bad.warm.candidate_ms[0] = 0.0;
-    assert!(!bad.confirmed());
-    let mut bad = trial;
-    bad.occupancy = 32;
-    assert!(!bad.confirmed());
+    serde_json::json!({
+        "key": { "hardware": "device", "driver_version": 13000, "driver_build": "build",
+            "kernel_fingerprint": "kernels",
+            "shape": Shape::new(3072, 128, 1e-6) },
+        "selected": selected,
+        "search": CANDIDATES.map(|occupancy| trial(occupancy, false)),
+        "confirmation": trial(selected, true),
+    })
+}
+#[test]
+fn former_norm_records_keep_their_choice_and_incomplete_ones_are_rejected() {
+    let decode = |stored| serde_json::from_value::<Entry>(legacy(stored)).ok();
+    let migrated = decode(former(4)).unwrap();
+    assert_eq!(migrated.evidence.selected, 4);
+    assert!(migrated.valid());
+    let mut short = migrated.clone();
+    short.evidence.confirmation.cold.baseline_ms.pop();
+    assert!(!short.valid());
+    let mut slow = migrated;
+    slow.evidence.confirmation.warm.candidate_ms[0] = 0.0;
+    assert!(!slow.valid());
+    let mut partial = former(4);
+    partial["confirmation"]["verified_elements"] = 1.into();
+    assert!(!decode(partial).unwrap().valid());
+    let unknown = former(32);
+    assert!(!decode(unknown).unwrap().valid());
+    let mut unreadable = former(4);
+    unreadable["search"] = "lost".into();
+    assert_eq!(legacy(unreadable.clone()), unreadable);
 }

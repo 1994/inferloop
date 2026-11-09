@@ -1,6 +1,8 @@
 use super::{BASELINE, CANDIDATES, SUPPORTED_DIMENSION};
+use crate::tuning::MIN_REPS;
+use crate::tuning::search::{self, Evidence, FormerTrial, Protocol, Record};
 use serde::{Deserialize, Serialize};
-const MEDIAN_WEIGHT: f32 = 0.5;
+use serde_json::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Shape {
     pub rows: usize,
@@ -33,66 +35,17 @@ pub struct Key {
     pub kernel_fingerprint: String,
     pub shape: Shape,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Times {
-    pub baseline_ms: Vec<f32>,
-    pub candidate_ms: Vec<f32>,
-}
-impl Times {
-    fn valid(&self) -> bool {
-        self.baseline_ms.len() >= super::super::MIN_REPS
-            && self.baseline_ms.len() == self.candidate_ms.len()
-            && self
-                .baseline_ms
-                .iter()
-                .chain(&self.candidate_ms)
-                .all(|v| v.is_finite() && *v > 0.0)
+/// The family's records in the shared table section.
+pub const FAMILY: &str = "gated_norm";
+/// An occupancy measured against the compiler policy.
+pub type Trial = search::Trial<i32>;
+pub type Entry = Record<Key, i32>;
+/// Every occupancy hint against the compiler policy.
+pub fn protocol() -> Protocol<i32> {
+    Protocol {
+        baseline: BASELINE,
+        candidates: CANDIDATES.to_vec(),
     }
-    pub fn speedup(&self) -> f32 {
-        median(&self.baseline_ms) / median(&self.candidate_ms)
-    }
-}
-fn median(xs: &[f32]) -> f32 {
-    let mut xs = xs.to_vec();
-    xs.sort_by(f32::total_cmp);
-    let n = xs.len();
-    if n == 0 {
-        return f32::NAN;
-    }
-    if n.is_multiple_of(2) {
-        (xs[n / 2 - 1] + xs[n / 2]) * MEDIAN_WEIGHT
-    } else {
-        xs[n / 2]
-    }
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Trial {
-    pub occupancy: i32,
-    pub candidate_first: bool,
-    pub verified_elements: usize,
-    pub cold: Times,
-    pub warm: Times,
-}
-impl Trial {
-    fn valid(&self) -> bool {
-        (self.occupancy == BASELINE || CANDIDATES.contains(&self.occupancy))
-            && self.verified_elements > 0
-            && self.cold.valid()
-            && self.warm.valid()
-    }
-    pub fn confirmed(&self) -> bool {
-        self.valid() && self.score() >= super::super::MIN_CONFIRM_SPEEDUP
-    }
-    pub fn score(&self) -> f32 {
-        self.cold.speedup().min(self.warm.speedup())
-    }
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Entry {
-    pub key: Key,
-    pub selected: i32,
-    pub search: Vec<Trial>,
-    pub confirmation: Trial,
 }
 impl Entry {
     #[must_use]
@@ -100,24 +53,71 @@ impl Entry {
         self.key.shape.valid()
             && !self.key.kernel_fingerprint.is_empty()
             && !self.key.hardware.is_empty()
-            && self.confirmation.valid()
-            && self.confirmation.candidate_first
-            && self.confirmation.verified_elements == self.key.shape.rows * self.key.shape.dimension
-            && self.selected == self.confirmation.occupancy
-            && self.search.len() == CANDIDATES.len()
-            && CANDIDATES.iter().all(|o| {
-                self.search.iter().any(|t| {
-                    t.occupancy == *o
-                        && !t.candidate_first
-                        && t.valid()
-                        && t.verified_elements == self.confirmation.verified_elements
-                })
-            })
-            && (self.selected == BASELINE
-                || self.confirmation.confirmed()
-                    && self
-                        .search
+            && self
+                .evidence
+                .trials
+                .iter()
+                .chain([&self.evidence.confirmation])
+                .all(|trial| {
+                    [&trial.cold, &trial.warm]
                         .iter()
-                        .any(|t| t.occupancy == self.selected && t.confirmed()))
+                        .all(|t| t.baseline_ms.len() >= MIN_REPS)
+                })
+            && self.evidence.valid(&protocol(), |occupancy| {
+                occupancy == BASELINE || CANDIDATES.contains(&occupancy)
+            })
     }
+}
+
+#[derive(Deserialize)]
+struct LegacyTrial {
+    occupancy: i32,
+    verified_elements: usize,
+    #[serde(flatten)]
+    trial: FormerTrial,
+}
+#[derive(Deserialize)]
+struct LegacyEntry {
+    key: Key,
+    selected: i32,
+    search: Vec<LegacyTrial>,
+    confirmation: LegacyTrial,
+}
+
+/// A record from the family's former table section in the shared form. One that does not
+/// decode or has incomplete samples stays as stored, so a rewrite keeps it. Every trial of the
+/// former search compared the full output, which the verified element counts record; every
+/// candidate was measured, since a failed one ended the search.
+pub(in crate::tuning) fn legacy(stored: Value) -> Value {
+    convert(&stored).unwrap_or(stored)
+}
+
+fn convert(stored: &Value) -> Option<Value> {
+    let legacy = LegacyEntry::deserialize(stored).ok()?;
+    let elements = legacy
+        .key
+        .shape
+        .rows
+        .checked_mul(legacy.key.shape.dimension)?;
+    let exact_candidates_verified = legacy
+        .search
+        .iter()
+        .chain([&legacy.confirmation])
+        .all(|trial| trial.verified_elements == elements);
+    let trial = |legacy: LegacyTrial| legacy.trial.into_trial(legacy.occupancy);
+    let entry = Entry {
+        key: legacy.key,
+        evidence: Evidence {
+            selected: legacy.selected,
+            exact_candidates_verified,
+            trials: legacy
+                .search
+                .into_iter()
+                .map(trial)
+                .collect::<Option<_>>()?,
+            rejected: Some(Vec::new()),
+            confirmation: trial(legacy.confirmation)?,
+        },
+    };
+    serde_json::to_value(entry).ok()
 }

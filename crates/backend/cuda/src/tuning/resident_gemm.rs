@@ -951,10 +951,14 @@ fn ordered_times(first: &[f32], second: &[f32], order: MeasurementOrder) -> Resu
             ));
         }
     };
-    let baseline_median_ms = sample_median(baseline)
-        .ok_or_else(|| Error::invalid("resident GEMM baseline timing samples"))?;
-    let candidate_median_ms = sample_median(candidate)
-        .ok_or_else(|| Error::invalid("resident GEMM candidate timing samples"))?;
+    paired_times(baseline, candidate)
+        .ok_or_else(|| Error::invalid("resident GEMM paired timing samples"))
+}
+
+/// Paired samples with their medians and speedup; `None` unless they pass [`times_valid`].
+pub(crate) fn paired_times(baseline: &[f32], candidate: &[f32]) -> Option<PairedTimes> {
+    let baseline_median_ms = sample_median(baseline)?;
+    let candidate_median_ms = sample_median(candidate)?;
     let times = PairedTimes {
         baseline_ms: baseline.to_vec(),
         candidate_ms: candidate.to_vec(),
@@ -962,10 +966,7 @@ fn ordered_times(first: &[f32], second: &[f32], order: MeasurementOrder) -> Resu
         candidate_median_ms,
         speedup: baseline_median_ms / candidate_median_ms,
     };
-    if !times_valid(&times) {
-        return Err(Error::invalid("resident GEMM paired timing samples"));
-    }
-    Ok(times)
+    times_valid(&times).then_some(times)
 }
 
 pub(super) fn measure_graphs(
