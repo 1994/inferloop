@@ -15,8 +15,10 @@ use crate::tuning::projection_budget::{ProjectionKind, ProjectionShape};
 use crate::tuning::resident_gemm::{
     MeasurementOrder, ResidentGemmKey, ResidentTuningSession, measure_graphs,
 };
-use crate::tuning::{resolve_table, table_path, update_table};
+use crate::tuning::search::{self, Record};
+use crate::tuning::{resolve_table, table_path};
 use capture::{Captured, key, verify};
+use evidence::protocol;
 pub use evidence::{Entry, Trial};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{Buffer, DenseKernel, DenseRowsPlan, Kernels, Recording};
@@ -29,6 +31,8 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 
+/// Name of this family's records in the tuning table.
+pub(crate) const FAMILY: &str = "pool_dense";
 /// ABI of the existing row-tiled private-reduction kernel.
 pub(crate) const SHARED_ROWS: usize = 4;
 /// Existing qualified small-output family, independent of the row crossover.
@@ -378,30 +382,21 @@ fn resolve(
     };
     let cached = table
         .as_ref()
-        .and_then(|table| {
-            table
-                .resident_pool_dense
-                .iter()
-                .find(|entry| entry.key == key && entry.valid())
-        })
-        .cloned();
+        .and_then(|table| search::lookup(table, FAMILY, &key, Entry::valid));
     let (choice, source) = if let Some(entry) = cached {
-        (entry.selected, "table-cache")
+        (entry.evidence.selected, "table-cache")
     } else if !autotune {
         return Ok(key.baseline);
     } else {
         let Some(entry) = tune(device, weight, key.clone(), session)? else {
             return Ok(key.baseline);
         };
-        let choice = entry.selected;
-        let cached = key.native.driver_build.is_some()
-            && update_table(path.as_deref(), |table| {
-                table.resident_pool_dense.retain(|old| old.key != entry.key);
-                table.resident_pool_dense.push(entry.clone());
-            });
+        let choice = entry.evidence.selected;
+        let cached =
+            key.native.driver_build.is_some() && search::store(path.as_deref(), FAMILY, &entry);
         tracing::info!(target:"infer::tuning",?shape,?choice,cached,
-            cold_speedup=entry.confirmation.cold.speedup,
-            warm_speedup=entry.confirmation.warm.speedup,"pooled dense measured crossover");
+            cold_speedup=entry.evidence.confirmation.cold.speedup,
+            warm_speedup=entry.evidence.confirmation.warm.speedup,"pooled dense measured crossover");
         (choice, "measured")
     };
     memo()
@@ -502,50 +497,20 @@ fn tune(
         legacy_expected: &legacy_expected,
         private_expected: &private_expected,
     };
-    let mut selected = key.baseline;
-    let mut best = 1.0_f32;
-    let mut trials = Vec::new();
-    let mut rejected = Vec::new();
-    for choice in candidates_for(key.baseline, shape) {
-        if !session.permits_search() {
-            return Ok(None);
-        }
-        match search.trial(choice, MeasurementOrder::BaselineFirst) {
-            Ok(trial) => {
-                let score = trial.cold.speedup.min(trial.warm.speedup);
-                if trial.confirmed() && score > best {
-                    best = score;
-                    selected = choice;
-                }
-                trials.push(trial);
-            }
-            Err(error) => {
-                tracing::warn!(target:"infer::tuning",?shape,?choice,%error,
-                    "pooled dense candidate rejected; baseline rechecked");
-                rejected.push((choice, error.to_string()));
-                search.check_baseline()?;
-            }
-        }
-    }
-    if !session.permits_search() {
+    let Some(evidence) = search::run(
+        &protocol(&key),
+        || session.permits_search(),
+        |choice, order| search.trial(choice, order),
+        |choice, error| {
+            tracing::warn!(target:"infer::tuning",?shape,?choice,%error,
+                "pooled dense candidate rejected; baseline rechecked");
+            search.check_baseline()
+        },
+    )?
+    else {
         return Ok(None);
-    }
-    let mut confirmation = search.trial(selected, MeasurementOrder::CandidateFirst)?;
-    if selected != key.baseline && !confirmation.confirmed() {
-        if !session.permits_search() {
-            return Ok(None);
-        }
-        selected = key.baseline;
-        confirmation = search.trial(selected, MeasurementOrder::CandidateFirst)?;
-    }
-    let entry = Entry {
-        selected,
-        key,
-        exact_candidates_verified: true,
-        trials,
-        rejected,
-        confirmation,
     };
+    let entry = Record { key, evidence };
     if !entry.valid() {
         return Err(Error::invariant("invalid pooled dense confirmation"));
     }

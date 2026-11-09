@@ -1,4 +1,5 @@
 use super::*;
+use crate::tuning::search::Evidence;
 use crate::tuning::{MIN_REPS, TilingTable, projection_budget::SearchBudget};
 
 fn times() -> resident_gemm::PairedTimes {
@@ -36,42 +37,44 @@ fn entry() -> Entry {
             tile: [4, 256],
             baseline: Choice::Native,
         },
-        selected: Choice::Gemv,
-        exact_candidates_verified: true,
-        trials: vec![
-            trial(Choice::Gemv, MeasurementOrder::BaselineFirst),
-            trial(Choice::Shared, MeasurementOrder::BaselineFirst),
-        ],
-        rejected: vec![],
-        confirmation: trial(Choice::Gemv, MeasurementOrder::CandidateFirst),
+        evidence: Evidence {
+            selected: Choice::Gemv,
+            exact_candidates_verified: true,
+            trials: vec![
+                trial(Choice::Gemv, MeasurementOrder::BaselineFirst),
+                trial(Choice::Shared, MeasurementOrder::BaselineFirst),
+            ],
+            rejected: vec![],
+            confirmation: trial(Choice::Gemv, MeasurementOrder::CandidateFirst),
+        },
     }
 }
 #[test]
 fn cache_requires_full_numeric_and_bidirectional_evidence() {
     assert!(entry().valid());
     let mut missing = entry();
-    missing.exact_candidates_verified = false;
+    missing.evidence.exact_candidates_verified = false;
     assert!(!missing.valid());
     let mut missing = entry();
-    missing.confirmation.order = MeasurementOrder::Unspecified;
+    missing.evidence.confirmation.order = MeasurementOrder::Unspecified;
     assert!(!missing.valid());
     let mut missing = entry();
-    missing.trials.pop();
+    missing.evidence.trials.pop();
     assert!(!missing.valid());
     let mut repeated = entry();
-    repeated.trials[1] = repeated.trials[0].clone();
+    repeated.evidence.trials[1] = repeated.evidence.trials[0].clone();
     assert!(!repeated.valid());
 }
 #[test]
 fn cache_rejects_timing_tampering_and_single_cache_state_winners() {
     let mut changed = entry();
-    changed.confirmation.cold.candidate_median_ms = 0.6;
+    changed.evidence.confirmation.cold.candidate_median_ms = 0.6;
     assert!(!changed.valid());
     let mut changed = entry();
-    changed.confirmation.warm.speedup = 2.0;
+    changed.evidence.confirmation.warm.speedup = 2.0;
     assert!(!changed.valid());
     let mut changed = entry();
-    changed.confirmation.warm = resident_gemm::PairedTimes {
+    changed.evidence.confirmation.warm = resident_gemm::PairedTimes {
         baseline_ms: vec![1.0; MIN_REPS],
         candidate_ms: vec![1.1; MIN_REPS],
         baseline_median_ms: 1.0,
@@ -85,16 +88,16 @@ fn legacy_fallback_never_newly_promotes_tensor_core_arithmetic() {
     let mut small = entry();
     small.key.native.m = 4;
     small.key.baseline = Choice::Gemv;
-    small.selected = Choice::Shared;
-    small.trials.remove(0);
-    small.confirmation.choice = Choice::Shared;
+    small.evidence.selected = Choice::Shared;
+    small.evidence.trials.remove(0);
+    small.evidence.confirmation.choice = Choice::Shared;
     assert!(small.valid());
-    small.selected = Choice::Native;
-    small.confirmation.choice = Choice::Native;
+    small.evidence.selected = Choice::Native;
+    small.evidence.confirmation.choice = Choice::Native;
     assert!(!small.valid());
     let mut fallback = entry();
-    fallback.selected = Choice::Native;
-    fallback.confirmation.choice = Choice::Native;
+    fallback.evidence.selected = Choice::Native;
+    fallback.evidence.confirmation.choice = Choice::Native;
     assert!(fallback.valid());
     fallback.key.tile[0] = 3;
     assert!(!fallback.valid());
@@ -102,15 +105,17 @@ fn legacy_fallback_never_newly_promotes_tensor_core_arithmetic() {
 #[test]
 fn rejected_candidates_are_complete_and_cannot_also_count_as_measured() {
     let mut rejected = entry();
-    rejected.trials.pop();
+    rejected.evidence.trials.pop();
     rejected
+        .evidence
         .rejected
         .push((Choice::Shared, "complete output mismatch".into()));
     assert!(rejected.valid());
-    rejected.rejected[0].1.clear();
+    rejected.evidence.rejected[0].1.clear();
     assert!(!rejected.valid());
     let mut duplicate = entry();
     duplicate
+        .evidence
         .rejected
         .push((Choice::Shared, "duplicate proof".into()));
     assert!(!duplicate.valid());
@@ -119,12 +124,27 @@ fn rejected_candidates_are_complete_and_cannot_also_count_as_measured() {
 fn old_cache_migrates_and_crossover_evidence_round_trips() {
     let mut table: TilingTable =
         serde_json::from_str(r#"{"device":"legacy","entries":[]}"#).unwrap();
-    assert!(table.resident_pool_dense.is_empty());
-    table.resident_pool_dense.push(entry());
+    assert!(search::records::<Key, Choice>(&table, FAMILY).is_empty());
+    table
+        .records
+        .entry(FAMILY.into())
+        .or_default()
+        .push(serde_json::to_value(entry()).unwrap());
     let restored: TilingTable =
         serde_json::from_str(&serde_json::to_string(&table).unwrap()).unwrap();
-    assert!(restored.resident_pool_dense[0].valid());
-    assert_eq!(restored.resident_pool_dense[0].selected, Choice::Gemv);
+    let found = search::lookup(&restored, FAMILY, &entry().key, Entry::valid).unwrap();
+    assert_eq!(found.evidence.selected, Choice::Gemv);
+}
+#[test]
+fn records_from_before_the_shared_protocol_keep_their_selection() {
+    // The former section stored the same fields, so its entries load as records unchanged.
+    let legacy = serde_json::json!({ "resident_pool_dense": [entry()] });
+    let table: TilingTable = serde_json::from_value(legacy).unwrap();
+    let found = search::lookup(&table, FAMILY, &entry().key, Entry::valid).unwrap();
+    assert_eq!(found.evidence.selected, Choice::Gemv);
+    let rewritten = serde_json::to_value(&table).unwrap();
+    assert!(rewritten.get("resident_pool_dense").is_none());
+    assert_eq!(rewritten["records"][FAMILY][0]["selected"], "Gemv");
 }
 #[test]
 fn budget_counts_actual_tile_geometries_once_and_tracks_completion() {
