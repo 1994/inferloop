@@ -3,6 +3,7 @@ use crate::constants::QUANT_GEMM_TILE;
 use crate::mlp::Matrix;
 use crate::resident::ProgramGeometry;
 use crate::strategy::LinearTiling;
+use crate::tuning::search::Evidence;
 use std::env::temp_dir;
 use std::fs::remove_file;
 use std::fs::write;
@@ -48,23 +49,41 @@ fn entry(key: ResidentGemmKey) -> ResidentGemmEntry {
         tile_n: 128,
         main_loop: MainLoop::Prefetch8,
     };
+    // Written before rejections were kept, so its coverage of the candidates is unknown.
     ResidentGemmEntry {
         key,
-        selected: config,
-        bitwise_verified: true,
-        trials: vec![GemmTrial {
-            config,
-            order: MeasurementOrder::BaselineFirst,
-            cold: times(1.03),
-            warm: times(1.03),
-        }],
-        confirmation: GemmTrial {
-            config,
-            order: MeasurementOrder::CandidateFirst,
-            cold: times(1.03),
-            warm: times(1.03),
+        evidence: Evidence {
+            selected: config,
+            exact_candidates_verified: true,
+            trials: vec![GemmTrial {
+                choice: config,
+                order: MeasurementOrder::BaselineFirst,
+                cold: times(1.03),
+                warm: times(1.03),
+            }],
+            rejected: None,
+            confirmation: GemmTrial {
+                choice: config,
+                order: MeasurementOrder::CandidateFirst,
+                cold: times(1.03),
+                warm: times(1.03),
+            },
         },
     }
+}
+
+/// Store `entry` in `table` as the record section holds it.
+fn push(table: &mut TilingTable, entry: &ResidentGemmEntry) -> Result<()> {
+    table
+        .records
+        .entry(FAMILY.into())
+        .or_default()
+        .push(serde_json::to_value(entry).map_err(device_error)?);
+    Ok(())
+}
+
+fn stored(table: &TilingTable) -> Vec<ResidentGemmEntry> {
+    search::records(table, FAMILY)
 }
 
 #[test]
@@ -72,7 +91,7 @@ fn resident_keys_isolate_full_geometry_hardware_and_numeric_contract() -> Result
     let original = key()?;
     assert!(original.kernel_schema.contains("search-ab:confirm-ba"));
     let mut table = TilingTable::default();
-    table.resident_gemm.push(entry(original.clone()));
+    push(&mut table, &entry(original.clone()))?;
     assert!(matches!(
         decision(Some(&table), &original, false)?,
         Decision::Cached(_)
@@ -142,12 +161,15 @@ fn autotune_disabled_never_requests_measurement_but_keeps_valid_cached_choices()
     assert_eq!(decision(None, &key, false)?, Decision::Baseline);
     assert_eq!(decision(None, &key, true)?, Decision::Measure);
     let mut table = TilingTable::default();
-    table.resident_gemm.push(entry(key.clone()));
+    push(&mut table, &entry(key.clone()))?;
     assert!(matches!(
         decision(Some(&table), &key, false)?,
         Decision::Cached(_)
     ));
-    table.resident_gemm[0].bitwise_verified = false;
+    let mut unverified = entry(key.clone());
+    unverified.evidence.exact_candidates_verified = false;
+    let mut table = TilingTable::default();
+    push(&mut table, &unverified)?;
     assert!(decision(Some(&table), &key, true).is_err());
     let expired = ResidentTuningSession::without_search_budget();
     let fresh = ResidentTuningSession::default();
@@ -184,46 +206,46 @@ fn autotune_disabled_never_requests_measurement_but_keeps_valid_cached_choices()
 fn resident_cache_rejects_incomplete_noisy_or_illegal_evidence() -> Result<()> {
     let mut valid = entry(key()?);
     assert!(valid.valid());
-    valid.confirmation.warm.speedup = 1.019;
+    valid.evidence.confirmation.warm.speedup = 1.019;
     assert!(!valid.valid());
-    valid.confirmation.warm.speedup = 1.03;
-    valid.confirmation.cold.candidate_ms = vec![];
+    valid.evidence.confirmation.warm.speedup = 1.03;
+    valid.evidence.confirmation.cold.candidate_ms = vec![];
     assert!(!valid.valid());
-    valid.confirmation.cold = times(1.03);
-    valid.selected.tile_n = 256;
+    valid.evidence.confirmation.cold = times(1.03);
+    valid.evidence.selected.tile_n = 256;
     assert!(!valid.valid());
-    valid.selected.tile_n = 128;
-    valid.confirmation.cold.baseline_ms[0] = f32::NAN;
+    valid.evidence.selected.tile_n = 128;
+    valid.evidence.confirmation.cold.baseline_ms[0] = f32::NAN;
     assert!(!valid.valid());
-    valid.confirmation.cold = times(1.03);
-    valid.confirmation.cold.speedup = 1.04;
+    valid.evidence.confirmation.cold = times(1.03);
+    valid.evidence.confirmation.cold.speedup = 1.04;
     assert!(!valid.valid());
-    valid.confirmation.cold = times(1.03);
-    valid.confirmation.cold.baseline_ms.fill(1.04);
+    valid.evidence.confirmation.cold = times(1.03);
+    valid.evidence.confirmation.cold.baseline_ms.fill(1.04);
     assert!(!valid.valid());
-    valid.confirmation.cold = times(1.03);
-    valid.confirmation.cold.candidate_ms.pop();
+    valid.evidence.confirmation.cold = times(1.03);
+    valid.evidence.confirmation.cold.candidate_ms.pop();
     assert!(!valid.valid());
-    valid.confirmation.cold = times(1.03);
-    valid.confirmation.cold.baseline_ms = vec![1.04, 1.03, 1.03, 1.02];
-    valid.confirmation.cold.candidate_ms = vec![1.0; 4];
+    valid.evidence.confirmation.cold = times(1.03);
+    valid.evidence.confirmation.cold.baseline_ms = vec![1.04, 1.03, 1.03, 1.02];
+    valid.evidence.confirmation.cold.candidate_ms = vec![1.0; 4];
     assert!(valid.valid());
     let complete = entry(key()?);
     for (cold, warm) in [(1.019, 1.03), (1.03, 1.019)] {
         let mut search_failure = complete.clone();
-        search_failure.trials[0].cold = times(cold);
-        search_failure.trials[0].warm = times(warm);
+        search_failure.evidence.trials[0].cold = times(cold);
+        search_failure.evidence.trials[0].warm = times(warm);
         assert!(!search_failure.valid());
         let mut confirmation_failure = complete.clone();
-        confirmation_failure.confirmation.cold = times(cold);
-        confirmation_failure.confirmation.warm = times(warm);
+        confirmation_failure.evidence.confirmation.cold = times(cold);
+        confirmation_failure.evidence.confirmation.warm = times(warm);
         assert!(!confirmation_failure.valid());
     }
     let mut same_order = complete.clone();
-    same_order.confirmation.order = MeasurementOrder::BaselineFirst;
+    same_order.evidence.confirmation.order = MeasurementOrder::BaselineFirst;
     assert!(!same_order.valid());
     let mut missing_search = complete.clone();
-    missing_search.trials.clear();
+    missing_search.evidence.trials.clear();
     assert!(!missing_search.valid());
     let mut legacy = serde_json::to_value(&complete).map_err(device_error)?;
     legacy["confirmation"]
@@ -244,6 +266,53 @@ fn resident_cache_rejects_incomplete_noisy_or_illegal_evidence() -> Result<()> {
         assert!(times_valid(&evidence));
     }
     assert!(ordered_times(&[1.0], &[2.0], MeasurementOrder::Unspecified).is_err());
+    Ok(())
+}
+
+#[test]
+fn complete_searches_cover_every_candidate_and_former_entries_keep_their_choice() -> Result<()> {
+    let complete = entry(key()?);
+    // A complete search covers every candidate, measured or rejected, exactly once.
+    let mut covering = complete.clone();
+    covering.evidence.rejected = Some(
+        protocol(covering.key.m)
+            .candidates
+            .into_iter()
+            .filter(|config| *config != covering.evidence.selected)
+            .map(|config| (config, "capture failed".to_owned()))
+            .collect(),
+    );
+    assert!(covering.valid());
+    covering
+        .evidence
+        .rejected
+        .as_mut()
+        .ok_or_else(|| Error::invariant("rejections"))?
+        .pop();
+    assert!(!covering.valid());
+    // The former section spells the trial's choice `config` and the proof `bitwise_verified`.
+    let former = serde_json::json!({ "resident_gemm": [{
+        "key": complete.key,
+        "selected": complete.evidence.selected,
+        "bitwise_verified": true,
+        "trials": [{
+            "config": complete.evidence.selected,
+            "order": "BaselineFirst",
+            "cold": times(1.03),
+            "warm": times(1.03),
+        }],
+        "confirmation": {
+            "config": complete.evidence.selected,
+            "order": "CandidateFirst",
+            "cold": times(1.03),
+            "warm": times(1.03),
+        },
+    }]});
+    let former: TilingTable = serde_json::from_value(former).map_err(device_error)?;
+    assert!(matches!(
+        decision(Some(&former), &complete.key, false)?,
+        Decision::Cached(config) if config == complete.evidence.selected
+    ));
     Ok(())
 }
 
@@ -290,22 +359,21 @@ fn scalar_and_resident_sections_round_trip_and_share_atomic_updates() -> Result<
     let encoded = serde_json::to_string(&scalar).map_err(device_error)?;
     write(&path, encoded).map_err(device_error)?;
     let resident = entry(key()?);
-    assert!(super::super::update_table(Some(&path), |table| table
-        .resident_gemm
-        .push(resident.clone())));
+    assert!(search::store(Some(&path), FAMILY, &resident));
     let loaded = TilingTable::load(&path)?;
     assert_eq!(loaded.devices.len(), 1);
-    assert_eq!(loaded.resident_gemm.len(), 1);
-    assert_eq!(loaded.resident_gemm[0].key, resident.key);
-    assert_eq!(loaded.resident_gemm[0].selected, resident.selected);
-    assert!(loaded.resident_gemm[0].valid());
+    let records = stored(&loaded);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].key, resident.key);
+    assert_eq!(records[0].evidence.selected, resident.evidence.selected);
+    assert!(records[0].valid());
     // A scalar update must retain the resident section, using the very same writer lock.
     assert!(super::super::update_table(Some(&path), |table| {
         table.devices.insert("second-scalar-device".into(), vec![]);
     }));
     let loaded = TilingTable::load(&path)?;
     assert_eq!(loaded.devices.len(), 2);
-    assert_eq!(loaded.resident_gemm.len(), 1);
+    assert_eq!(stored(&loaded).len(), 1);
     assert_eq!(
         loaded.tiling_for("scalar-device", "nvfp4", 67, 272)?,
         Some(LinearTiling::new(4, 128)?)

@@ -305,9 +305,6 @@ pub struct TuningEntry {
 pub struct TilingTable {
     /// Measured entries per `DeviceProfile::identity`; one cache can retain several GPUs.
     pub devices: BTreeMap<String, Vec<TuningEntry>>,
-    /// Multirow W4A4 decisions are independent of scalar GEMV entries.
-    #[serde(default)]
-    pub resident_gemm: Vec<resident_gemm::ResidentGemmEntry>,
     /// Fused FP4 gate/up/quantizer decisions with complete-code and reverse timing evidence.
     #[serde(default)]
     pub resident_swiglu: Vec<resident_gemm::SwigluEntry>,
@@ -363,8 +360,9 @@ struct StoredTilingTable {
     entries: Vec<TuningEntry>,
     #[serde(default)]
     devices: BTreeMap<String, Vec<TuningEntry>>,
+    /// Multirow W4A4 records from before the shared protocol; they load without rejections.
     #[serde(default)]
-    resident_gemm: Vec<resident_gemm::ResidentGemmEntry>,
+    resident_gemm: Vec<serde_json::Value>,
     #[serde(default)]
     resident_swiglu: Vec<resident_gemm::SwigluEntry>,
     #[serde(default)]
@@ -418,16 +416,17 @@ impl From<StoredTilingTable> for TilingTable {
             }
         }
         let mut records = stored.records;
-        if !stored.resident_pool_dense.is_empty() {
-            records
-                .entry(pool_dense::FAMILY.to_owned())
-                .or_default()
-                .extend(stored.resident_pool_dense);
+        for (family, legacy) in [
+            (pool_dense::FAMILY, stored.resident_pool_dense),
+            (resident_gemm::FAMILY, stored.resident_gemm),
+        ] {
+            if !legacy.is_empty() {
+                records.entry(family.to_owned()).or_default().extend(legacy);
+            }
         }
         Self {
             devices,
             records,
-            resident_gemm: stored.resident_gemm,
             resident_swiglu: stored.resident_swiglu,
             resident_fp8_gemm: stored.resident_fp8_gemm,
             resident_fp4_lt: stored.resident_fp4_lt,

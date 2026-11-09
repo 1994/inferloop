@@ -1,6 +1,7 @@
 use super::*;
+use crate::tuning::resident_gemm::{FAMILY, GemmConfig, ResidentGemmKey};
 use crate::tuning::resident_gemm::{ResidentTuningSession, select};
-use crate::tuning::resolve_table;
+use crate::tuning::{resolve_table, search};
 use infer_ir::TensorOp;
 use std::env::var;
 use std::error::Error as StdError;
@@ -54,17 +55,16 @@ fn prefill_projection_shape_ab() -> StdResult<(), Box<dyn StdError>> {
         let selected = select(loaded.device(), weight, scale, shape, true, &session);
         let table_data = resolve_table(Some(&table))?
             .ok_or_else(|| Error::invariant("missing projection tuning table"))?;
-        let entry = table_data
-            .resident_gemm
-            .iter()
+        let entry = search::records::<ResidentGemmKey, GemmConfig>(&table_data, FAMILY)
+            .into_iter()
             .find(|entry| {
                 entry.key.m == shape[0] && entry.key.n == shape[1] && entry.key.k == shape[2]
             })
             .ok_or_else(|| Error::invariant("missing projection tuning entry"))?;
-        assert_eq!(entry.selected, selected);
-        assert!(entry.bitwise_verified);
-        assert!(!entry.trials.is_empty());
-        println!("{}", serde_json::to_string(entry)?);
+        assert_eq!(entry.evidence.selected, selected);
+        assert!(entry.evidence.exact_candidates_verified);
+        assert!(!entry.evidence.trials.is_empty());
+        println!("{}", serde_json::to_string(&entry)?);
     }
     Ok(())
 }
