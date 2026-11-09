@@ -748,7 +748,7 @@ fn fused_swiglu_tuner_preserves_complete_quantized_outputs() -> Result<(), Box<d
         graph.launch().sync_on(device.stream())?;
         drop(graph);
         assert_eq!(operand_bytes(&device, (codes, scales))?, expected);
-        println!("{}", serde_json::to_string(entry)?);
+        println!("{}", serde_json::to_string(&entry)?);
     }
     Ok(())
 }
