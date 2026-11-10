@@ -72,6 +72,18 @@ impl Recurrence {
     }
 }
 
+/// The per-row recurrence internal tests compare a chunk against.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Pinned {
+    /// The measured lowering.
+    #[default]
+    No,
+    /// Every recurrence records per row.
+    Rows,
+    /// The delta records per row; the convolution keeps its chunked kernel.
+    RowsDelta,
+}
+
 /// What the prompt workspace prepared for one recurrent node of a `lanes`-row chunk.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Chunk {
@@ -84,10 +96,8 @@ pub(super) struct Chunk {
     pub prefer_wy: bool,
     /// The tuned or ordered value block of this delta, if any.
     pub wy_block: Option<usize>,
-    /// Internal tests compare against the per-row recurrence.
-    pub rows_only: bool,
-    /// Internal tests compare against the per-row delta with the chunked convolution.
-    pub rows_delta: bool,
+    /// Internal tests pin the per-row recurrence.
+    pub pinned: Pinned,
 }
 
 /// How a capture mode presents a recurrent node.
@@ -131,10 +141,15 @@ pub(super) fn lower(recurrence: Recurrence, mode: Mode) -> Lowering {
     match (mode, recurrence) {
         (Mode::Lane, _) => Lowering::Step,
         (Mode::Pooled, _) => Lowering::Lanes,
-        (Mode::Prompt(chunk), _) if chunk.rows_only || !chunk.dynamic => Lowering::Rows,
+        (Mode::Prompt(chunk), _) if chunk.pinned == Pinned::Rows || !chunk.dynamic => {
+            Lowering::Rows
+        }
         (Mode::Prompt(_), Recurrence::Conv { .. }) => Lowering::ConvPrefill,
         (Mode::Prompt(chunk), Recurrence::Delta(delta)) => {
-            if chunk.rows_delta || !chunk.scratch || (chunk.prefer_wy && chunk.wy_block.is_none()) {
+            if chunk.pinned == Pinned::RowsDelta
+                || !chunk.scratch
+                || (chunk.prefer_wy && chunk.wy_block.is_none())
+            {
                 return Lowering::Rows;
             }
             // The measured ordered path splits independent value columns without changing sums.

@@ -13,8 +13,7 @@ const CHUNK: Chunk = Chunk {
     scratch: true,
     prefer_wy: false,
     wy_block: None,
-    rows_only: false,
-    rows_delta: false,
+    pinned: Pinned::No,
 };
 
 fn delta_op(delta: Delta) -> TensorOp {
@@ -97,7 +96,7 @@ fn a_prompt_chunk_keeps_state_across_rows_only_for_dynamic_inputs_it_prepared() 
             ..CHUNK
         },
         Chunk {
-            rows_only: true,
+            pinned: Pinned::Rows,
             ..CHUNK
         },
     ] {
@@ -110,7 +109,7 @@ fn a_prompt_chunk_keeps_state_across_rows_only_for_dynamic_inputs_it_prepared() 
             ..CHUNK
         },
         Chunk {
-            rows_delta: true,
+            pinned: Pinned::RowsDelta,
             ..CHUNK
         },
         Chunk {
@@ -121,7 +120,7 @@ fn a_prompt_chunk_keeps_state_across_rows_only_for_dynamic_inputs_it_prepared() 
         assert_eq!(lower(delta, Mode::Prompt(chunk)), Lowering::Rows);
     }
     let rows_delta = Chunk {
-        rows_delta: true,
+        pinned: Pinned::RowsDelta,
         ..CHUNK
     };
     assert_eq!(lower(conv, Mode::Prompt(rows_delta)), Lowering::ConvPrefill);

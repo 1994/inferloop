@@ -15,7 +15,7 @@ use super::{
     buffers::{buffer, region},
     capture::error,
 };
-use crate::constants::{CONV_KERNEL_SIZE, GDN_PROJECTED_INPUTS};
+use crate::constants::GDN_PROJECTED_INPUTS;
 use crate::device::CudaDevice;
 use infer_core::Result;
 use infer_core::{Error, TensorId};

@@ -1,5 +1,7 @@
 //! Shared head-major scratch for token-chunk recurrent prefill.
-use super::super::recurrent_lowering::{Block, Chunk, Delta, Lowering, Mode, Recurrence, lower};
+use super::super::recurrent_lowering::{
+    Block, Chunk, Delta, Lowering, Mode, Pinned, Recurrence, lower,
+};
 use super::super::shaped::Shaped;
 use super::super::{buffers::buffer, capture::error};
 use super::{
@@ -124,12 +126,15 @@ impl Workspace {
             Recurrence::Delta(_) => GDN_PROJECTED_INPUTS,
         };
         #[cfg(test)]
-        let (rows_only, rows_delta) = (
-            super::LEGACY_CAPTURE.get(),
-            super::LEGACY_DELTA_CAPTURE.get(),
-        );
+        let pinned = if super::LEGACY_CAPTURE.get() {
+            Pinned::Rows
+        } else if super::LEGACY_DELTA_CAPTURE.get() {
+            Pinned::RowsDelta
+        } else {
+            Pinned::No
+        };
         #[cfg(not(test))]
-        let (rows_only, rows_delta) = (false, false);
+        let pinned = Pinned::No;
         let chunk = Chunk {
             lanes: self.lanes,
             dynamic: node.inputs[..projected]
@@ -138,8 +143,7 @@ impl Workspace {
             scratch: !self.buffers.is_empty(),
             prefer_wy: self.prefer_wy,
             wy_block: self.wy_blocks.get(&node.outputs[0]).copied(),
-            rows_only,
-            rows_delta,
+            pinned,
         };
         Ok(Some((recurrence, lower(recurrence, Mode::Prompt(chunk)))))
     }
