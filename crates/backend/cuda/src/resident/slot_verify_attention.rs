@@ -5,19 +5,51 @@ use super::{
         VERIFY_LANES,
         pooled::{Append, Attend},
     },
+    attention_lowering::{Lowering, Mode, lower},
     batch::{BatchBuilder, States},
     buffers::buffer,
     capture::{Capture, CaptureMode, error},
     fp8_cache::Fp8Caches,
     slot_recurrent::row_buffer,
 };
-use crate::constants::{ATTENTION_SPLIT_THRESHOLD, KV_BLOCK_TOKENS};
+use crate::constants::KV_BLOCK_TOKENS;
 use infer_core::Result;
 use infer_cuda_kernels::contract::{DecodePlan, Recording, VerifyDecodeBuffers};
 use infer_cuda_kernels::runtime::Allocation;
 use infer_ir::{TensorNode, TensorOp};
 
 impl BatchBuilder<'_> {
+    /// How this attention node lowers across `verify` candidates of each slot.
+    pub(super) fn slot_verify_lowering(
+        &self,
+        node: &TensorNode,
+        caches: &[Fp8Caches],
+        verify: usize,
+    ) -> Option<Lowering> {
+        let TensorOp::Attention {
+            query_heads,
+            head_dim,
+            window,
+            ..
+        } = node.op
+        else {
+            return None;
+        };
+        let state = node.states.first()?;
+        let operands = !self.weights.constants.contains_key(&node.inputs[0])
+            && self.weights.kv_scales.contains_key(state)
+            && caches.iter().all(|cache| cache.contains_key(state));
+        let mode = Mode::Verify {
+            lanes: verify,
+            operands,
+        };
+        Some(lower(
+            mode,
+            window,
+            self.attention.prepared(query_heads, head_dim),
+        ))
+    }
+
     /// Append all candidates before attending; per-lane metadata still enforces causality.
     pub(super) fn record_slot_verify_attention(
         &mut self,
@@ -25,8 +57,8 @@ impl BatchBuilder<'_> {
         node: &TensorNode,
         arena: &mut ActivationArena,
         (states, caches): (&mut [States], &mut [Fp8Caches]),
-        (verify, metadata, metadata_owner): (usize, &[Allocation<i32>], &Allocation<i32>),
-    ) -> Result<bool> {
+        (metadata, metadata_owner): (&[Allocation<i32>], &Allocation<i32>),
+    ) -> Result<()> {
         let TensorOp::Attention {
             query_heads,
             kv_heads,
@@ -34,20 +66,12 @@ impl BatchBuilder<'_> {
             window,
         } = node.op
         else {
-            return Ok(false);
+            return Err(error("expected attention"));
         };
-        let Some(&state) = node.states.first() else {
-            return Ok(false);
-        };
-        if verify != VERIFY_LANES
-            || window.is_some_and(|w| w < ATTENTION_SPLIT_THRESHOLD)
-            || !self.attention.supports_verify(query_heads, head_dim)
-            || self.weights.constants.contains_key(&node.inputs[0])
-            || !self.weights.kv_scales.contains_key(&state)
-            || caches.iter().any(|cache| !cache.contains_key(&state))
-        {
-            return Ok(false);
-        }
+        let state = *node
+            .states
+            .first()
+            .ok_or_else(|| error("missing state binding"))?;
         let prefix = self.append_pooled(scope, node, arena, caches, metadata_owner, state)?;
         self.append_slot_candidates(
             scope,
@@ -105,7 +129,7 @@ impl BatchBuilder<'_> {
                 },
             )?;
         }
-        Ok(true)
+        Ok(())
     }
 
     fn append_pooled(

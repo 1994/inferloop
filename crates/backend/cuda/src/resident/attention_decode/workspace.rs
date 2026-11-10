@@ -2,6 +2,7 @@
 
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::device::CudaDevice;
+use crate::resident::attention_lowering::Prepared;
 use crate::resident::buffers::buffer;
 use crate::resident::capture::error;
 use crate::tuning::attention::Choice;
@@ -533,28 +534,19 @@ impl Workspace {
         }
     }
 
-    pub(crate) fn prefill_query_tile(
-        &self,
-        output: TensorId,
-        lanes: usize,
-        fp8: bool,
-    ) -> Option<usize> {
-        if !fp8 {
-            return None;
-        }
-        self.prefill_choice(output, lanes)
-            .and_then(|choice| choice.query_tile())
-    }
-
-    pub(crate) fn supports(&self, heads: usize, dim: usize) -> bool {
-        self.buffers.contains_key(&(heads, dim))
-    }
-
-    /// Whether three verification lanes of this geometry share one grouped launch.
-    pub(crate) fn supports_verify(&self, heads: usize, dim: usize) -> bool {
+    /// What this workspace prepared at load for the `(heads, dim)` geometry.
+    pub(crate) fn prepared(&self, heads: usize, dim: usize) -> Prepared {
         self.buffers
             .get(&(heads, dim))
-            .is_some_and(|work| work.grouped.is_some() && work.verify.is_some())
+            .map_or_else(Prepared::default, |work| Prepared {
+                split: true,
+                grouped_verify: work.grouped.is_some() && work.verify.is_some(),
+            })
+    }
+
+    /// The tuned prefill choice for `output` at `lanes`.
+    pub(crate) fn selected_prefill(&self, output: TensorId, lanes: usize) -> Option<Choice> {
+        self.prefill_choice(output, lanes).copied()
     }
 
     /// Decode attention of the three lanes of one verification step: one grouped launch reads
