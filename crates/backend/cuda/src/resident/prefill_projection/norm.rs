@@ -9,6 +9,7 @@ use infer_cuda_kernels::contract::{Buffer, Recording};
 use infer_ir::{TensorNode, TensorOp};
 
 /// A norm the prompt plan records fused, with its resolved operands.
+#[derive(Clone, Copy)]
 pub(in crate::resident) struct FusedNorm<'a> {
     fusion: Fusion,
     norm: Norm,
