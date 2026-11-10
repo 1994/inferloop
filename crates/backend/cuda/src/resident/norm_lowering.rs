@@ -84,3 +84,8 @@ pub(super) fn fusion(norm: Norm, consumer: Consumer) -> Option<Fusion> {
 #[cfg(test)]
 #[path = "../../tests/unit/norm_lowering.rs"]
 mod tests;
+
+#[cfg(test)]
+#[cfg(feature = "cuda")]
+#[path = "../../tests/unit/resident_norm_cell.rs"]
+mod cell_tests;
