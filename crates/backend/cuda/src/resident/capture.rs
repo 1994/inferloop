@@ -556,3 +556,8 @@ impl Capture<'_> {
         Ok((heads / rows) * reference_slots)
     }
 }
+
+#[cfg(test)]
+#[cfg(feature = "cuda")]
+#[path = "../../tests/unit/resident_elementwise_cell.rs"]
+mod cell_tests;

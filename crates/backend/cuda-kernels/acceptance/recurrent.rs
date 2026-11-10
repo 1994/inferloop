@@ -199,7 +199,7 @@ impl Delta {
                 .collect::<Vec<_>>()
         };
         let mut output = Vec::with_capacity(self.value_heads * dim);
-        let mut next = state.clone();
+        let mut next = state;
         let group = self.value_heads / self.key_heads;
         for head in 0..self.value_heads {
             let key = head / group;
@@ -225,7 +225,8 @@ impl Delta {
                 let predicted: f64 = (0..dim).map(|row| block[row * dim + column] * k[row]).sum();
                 let difference = (v[column] - predicted) * update;
                 for row in 0..dim {
-                    block[row * dim + column] += k[row] * difference;
+                    let cell = &mut block[row * dim + column];
+                    *cell = k[row].mul_add(difference, *cell);
                 }
                 output.push((0..dim).map(|row| block[row * dim + column] * q[row]).sum());
             }
