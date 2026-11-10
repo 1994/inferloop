@@ -84,7 +84,10 @@ impl Case {
         for (index, (value, reference)) in actual.iter().zip(&expected).enumerate() {
             let error = (f64::from(*value) - reference).abs();
             if !value.is_finite()
-                || error > reference.abs() * RELATIVE_TOLERANCE + ABSOLUTE_TOLERANCE
+                || error
+                    > reference
+                        .abs()
+                        .mul_add(RELATIVE_TOLERANCE, ABSOLUTE_TOLERANCE)
             {
                 return Err(format!("{self:?} [{index}]: {value} vs {reference}"));
             }

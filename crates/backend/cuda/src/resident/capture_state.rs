@@ -271,3 +271,8 @@ impl Capture<'_> {
         )
     }
 }
+
+#[cfg(test)]
+#[cfg(feature = "cuda")]
+#[path = "../../tests/unit/resident_recurrent_cell.rs"]
+mod cell_tests;
