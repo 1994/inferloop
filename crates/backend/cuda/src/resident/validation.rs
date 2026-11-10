@@ -1,4 +1,5 @@
 use super::ProgramWeights;
+use super::recurrent_lowering::Recurrence;
 use crate::constants::MAX_HIDDEN_SIZE;
 use infer_core::{Error, Result};
 use infer_ir::{DataflowGraph, TensorOp, TensorStorage};
@@ -48,6 +49,15 @@ fn check_kernel_geometry(op: &TensorOp) -> Result<()> {
                 "CUDA attention kernels need a power-of-two head_dim and heads divisible by \
                  kv_heads; got head_dim {head_dim}, heads {query_heads}/{kv_heads}"
             )))
+        }
+        TensorOp::Conv { .. } | TensorOp::Delta { .. } => {
+            Recurrence::of(op).map(drop).map_err(|error| {
+                Error::unsupported(format!(
+                    "CUDA recurrent kernels need the resident convolution width and square \
+                     power-of-two delta heads, whole groups per key head; {}",
+                    error.message
+                ))
+            })
         }
         _ => Ok(()),
     }
