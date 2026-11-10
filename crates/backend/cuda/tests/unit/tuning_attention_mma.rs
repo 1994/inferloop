@@ -10,7 +10,7 @@ fn entry() -> Entry {
         window: 0,
     };
     let case = |history| Case {
-        history,
+        case: history,
         cold: Times {
             baseline_ms: vec![1.0; 10],
             candidate_ms: vec![0.5; 10],
@@ -135,5 +135,14 @@ fn hardware_mma_aot_graph_and_tuning() -> Result<()> {
         "MMA_ATTENTION_TUNING {}",
         serde_json::to_string(&entry).map_err(device_error)?
     );
+    Ok(())
+}
+#[test]
+fn stored_history_cases_read_as_shared_cases() -> Result<()> {
+    let times = r#"{"baseline_ms":[1.0,1.0],"candidate_ms":[0.5,0.5]}"#;
+    let stored = format!(r#"{{"history":8192,"cold":{times},"warm":{times}}}"#);
+    let case: Case = serde_json::from_str(&stored).map_err(device_error)?;
+    assert_eq!(case.case, 8192);
+    assert!(accepted(&case));
     Ok(())
 }
