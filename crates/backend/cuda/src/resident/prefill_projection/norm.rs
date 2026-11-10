@@ -49,12 +49,12 @@ impl MlpPlan {
             && linear.inputs.len() == 2
             && linear.outputs.len() == 1
             && linear.inputs[0] == node.outputs[0];
-        let Some(projection) = weights.projections.get(&linear.inputs[1]) else {
-            return Ok(None);
-        };
         if !feeds {
             return Ok(None);
         }
+        let Some(projection) = weights.projections.get(&linear.inputs[1]) else {
+            return Ok(None);
+        };
         let norm = Norm {
             dimension: head_dim,
             epsilon,
