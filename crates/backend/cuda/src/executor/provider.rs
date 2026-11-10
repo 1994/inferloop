@@ -59,32 +59,46 @@ impl CudaExecutor {
     pub(super) fn free_state_bytes(&self) -> Result<Option<u64>> {
         self.available().map(Some)
     }
-    /// Report physically allocated/free pages, not logical slot tails. Total capacity
-    /// retains the private path's isolated context ceiling; its separately funded pages
-    /// never inflate free pooled pages. Prefix snapshots remain separately owned.
+    /// Report physically allocated/free pages, not logical slot tails. A paged pool's pages come
+    /// from the engine's ledger; a pool whose slots own whole-capacity caches reports its slots
+    /// as pages. Total capacity retains the private path's isolated context ceiling; its
+    /// separately funded pages never inflate free pooled pages. Prefix snapshots remain
+    /// separately owned.
     pub(super) fn kv_cache(&self) -> KvCacheInspection {
         let pool = self.slots.as_ref();
         let block = KV_BLOCK_TOKENS;
-        let (pool_blocks, free_blocks) = pool.map_or((0, 0), SlotPool::kv_pages);
         let active_blocks = self
             .states
             .values()
             .filter(|state| state.slot.is_some() || state.home.is_some())
             .map(|state| state.history.len().div_ceil(block))
             .sum();
-        let (allocations, releases) = pool.map_or((0, 0), SlotPool::lease_counters);
         let pending = self
             .pool_quote
             .as_ref()
             .filter(|_| pool.is_none())
             .map(|quote| (quote.width, quote.capacity));
+        let max_sequence = self.loaded.model().max_sequence;
+        let cached_blocks = self.prefix.cached_tokens().div_ceil(block);
+        if let Some(ledger) = pool.and_then(SlotPool::kv_ledger) {
+            return KvCacheInspection {
+                total_blocks: logical_kv_blocks(ledger.total_blocks, pending, max_sequence),
+                active_blocks,
+                cached_blocks,
+                cache_evictions: self.prefix.evictions,
+                reused_tokens: self.prefix.reused_tokens,
+                ..ledger
+            };
+        }
+        let (pool_blocks, free_blocks) = pool.map_or((0, 0), SlotPool::kv_pages);
+        let (allocations, releases) = pool.map_or((0, 0), SlotPool::lease_counters);
         KvCacheInspection {
             pinned_blocks: 0,
             block_size: block,
-            total_blocks: logical_kv_blocks(pool_blocks, pending, self.loaded.model().max_sequence),
+            total_blocks: logical_kv_blocks(pool_blocks, pending, max_sequence),
             free_blocks,
             active_blocks,
-            cached_blocks: self.prefix.cached_tokens().div_ceil(block),
+            cached_blocks,
             shared_blocks: 0,
             available_blocks: free_blocks,
             pool_bytes: u64::try_from(pool_blocks)
