@@ -1,7 +1,7 @@
 //! Automatic architecture and cluster selection for the distinct FA4 BF16 profile.
 //! Operator F64 sanity is not a substitute for the unchanged model task-quality gate.
 use super::{
-    Choice, Key, Shape, Times,
+    Choice, Key, Shape,
     capture::Captured,
     reference::{self, Fixture},
 };

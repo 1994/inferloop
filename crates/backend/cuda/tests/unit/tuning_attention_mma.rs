@@ -1,6 +1,7 @@
 use super::*;
 use crate::device::device_error;
 use crate::tuning::attention::SCHEMA as ATTENTION_SCHEMA;
+use crate::tuning::qualify::Times;
 fn entry() -> Entry {
     let shape = Shape {
         heads: 24,
