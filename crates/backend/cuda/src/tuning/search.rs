@@ -8,7 +8,7 @@
 //! what makes its evidence complete and where records live are the same for every family, so a
 //! new candidate or family needs no new key structure and no new table field.
 use super::resident_gemm::{MeasurementOrder, PairedTimes, paired_times, times_valid};
-use super::{MIN_CONFIRM_SPEEDUP, TilingTable, update_table};
+use super::{MIN_CONFIRM_SPEEDUP, TilingTable, median, update_table};
 use infer_core::{Error, Result};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -349,19 +349,41 @@ pub fn report(table: &TilingTable) -> String {
     lines.join("\n")
 }
 
+/// Report columns after the selection: cold, warm, measured, rejected.
+const EVIDENCE_COLUMNS: usize = 4;
+
 fn report_line(family: &str, record: &Value) -> String {
     let key = record.get("key");
-    // Families key the geometry directly or through the projection key they extend.
+    // Families key the geometry directly or through the projection key they extend; the
+    // qualification families key a named shape.
     let geometry = key
         .and_then(|key| key.get("native").filter(|native| native.get("m").is_some()))
         .or(key);
-    let shape = ["m", "n", "k"]
-        .map(|axis| {
-            geometry
-                .and_then(|geometry| geometry.get(axis))
-                .map_or_else(|| "?".to_owned(), Value::to_string)
-        })
-        .join("x");
+    let shape = if geometry.is_some_and(|geometry| geometry.get("m").is_some()) {
+        ["m", "n", "k"]
+            .map(|axis| {
+                geometry
+                    .and_then(|geometry| geometry.get(axis))
+                    .map_or_else(|| "?".to_owned(), Value::to_string)
+            })
+            .join("x")
+    } else {
+        key.and_then(|key| key.get("shape"))
+            .map_or_else(|| "?".to_owned(), Value::to_string)
+    };
+    let selected = record
+        .get("selected")
+        .map_or_else(|| "?".to_owned(), Value::to_string);
+    let [cold, warm, measured, rejected] = if record.get("forward").is_some() {
+        qualification_columns(record)
+    } else {
+        search_columns(record)
+    };
+    format!("{family}\t{shape}\t{selected}\t{cold}\t{warm}\t{measured}\t{rejected}")
+}
+
+/// Cold and warm speedups of the confirmation, then the trial and rejection counts.
+fn search_columns(record: &Value) -> [String; EVIDENCE_COLUMNS] {
     let speedup = |state: &str| {
         record
             .pointer(&format!("/confirmation/{state}/speedup"))
@@ -374,16 +396,49 @@ fn report_line(family: &str, record: &Value) -> String {
             .and_then(Value::as_array)
             .map_or_else(|| "unknown".to_owned(), |items| items.len().to_string())
     };
-    let selected = record
-        .get("selected")
-        .map_or_else(|| "?".to_owned(), Value::to_string);
-    format!(
-        "{family}\t{shape}\t{selected}\t{}\t{}\t{}\t{}",
+    [
         speedup("cold"),
         speedup("warm"),
         count("trials"),
-        count("rejected")
-    )
+        count("rejected"),
+    ]
+}
+
+/// The worst cold and warm speedup over every case in both orders, then the timed case count.
+/// A qualification has one candidate, so it rejects nothing.
+fn qualification_columns(record: &Value) -> [String; EVIDENCE_COLUMNS] {
+    let cases = || {
+        ["forward", "reverse"]
+            .into_iter()
+            .filter_map(|order| record.get(order).and_then(Value::as_array))
+            .flatten()
+    };
+    let worst = |state: &str| {
+        cases()
+            .map(|case| {
+                let samples = |arm: &str| {
+                    case.pointer(&format!("/{state}/{arm}"))
+                        .and_then(|samples| Vec::<f32>::deserialize(samples).ok())
+                };
+                match (samples("baseline_ms"), samples("candidate_ms")) {
+                    (Some(baseline), Some(candidate))
+                        if !baseline.is_empty() && !candidate.is_empty() =>
+                    {
+                        Some(median(&baseline) / median(&candidate))
+                    }
+                    _ => None,
+                }
+            })
+            .try_fold(f32::INFINITY, |worst, speedup| Some(worst.min(speedup?)))
+            .filter(|worst| worst.is_finite())
+            .map_or_else(|| "?".to_owned(), |worst| format!("{worst:.3}"))
+    };
+    [
+        worst("cold"),
+        worst("warm"),
+        cases().count().to_string(),
+        "-".to_owned(),
+    ]
 }
 
 /// The key of a stored record, when this build can decode it.
