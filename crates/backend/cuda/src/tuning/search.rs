@@ -349,6 +349,9 @@ pub fn report(table: &TilingTable) -> String {
     lines.join("\n")
 }
 
+/// Report columns after the selection: cold, warm, measured, rejected.
+const EVIDENCE_COLUMNS: usize = 4;
+
 fn report_line(family: &str, record: &Value) -> String {
     let key = record.get("key");
     // Families key the geometry directly or through the projection key they extend; the
@@ -380,7 +383,7 @@ fn report_line(family: &str, record: &Value) -> String {
 }
 
 /// Cold and warm speedups of the confirmation, then the trial and rejection counts.
-fn search_columns(record: &Value) -> [String; 4] {
+fn search_columns(record: &Value) -> [String; EVIDENCE_COLUMNS] {
     let speedup = |state: &str| {
         record
             .pointer(&format!("/confirmation/{state}/speedup"))
@@ -403,7 +406,7 @@ fn search_columns(record: &Value) -> [String; 4] {
 
 /// The worst cold and warm speedup over every case in both orders, then the timed case count.
 /// A qualification has one candidate, so it rejects nothing.
-fn qualification_columns(record: &Value) -> [String; 4] {
+fn qualification_columns(record: &Value) -> [String; EVIDENCE_COLUMNS] {
     let cases = || {
         ["forward", "reverse"]
             .into_iter()
