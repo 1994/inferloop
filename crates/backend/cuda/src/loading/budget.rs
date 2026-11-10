@@ -60,17 +60,26 @@ const GREEDY_TOKEN_WORDS: u64 = 4;
 struct SequencePrice {
     fixed: u64,
     per_token: u64,
+    /// KV bytes of one page, in the unit the page ledger and the pool quote use. KV is priced by
+    /// whole pages, as the block tables address it.
+    per_page: u64,
 }
 
 impl SequencePrice {
     fn at(self, capacity: u64) -> Result<u64> {
-        add(self.fixed, mul(self.per_token, capacity)?)
+        let block = u64::try_from(KV_BLOCK_TOKENS).map_err(|_| Error::invalid("KV block size"))?;
+        let pages = capacity.div_ceil(block);
+        add(
+            add(self.fixed, mul(self.per_token, capacity)?)?,
+            mul(self.per_page, pages)?,
+        )
     }
 
     fn combine(self, other: Self) -> Result<Self> {
         Ok(Self {
             fixed: add(self.fixed, other.fixed)?,
             per_token: add(self.per_token, other.per_token)?,
+            per_page: add(self.per_page, other.per_page)?,
         })
     }
 }
@@ -148,6 +157,7 @@ impl LoadedModel {
         let mut price = SequencePrice {
             fixed: profile.graph_headroom_bytes(),
             per_token: F32,
+            per_page: 0,
         };
         price = price.combine(program_price(
             &self.graph,
@@ -751,20 +761,7 @@ fn program_price(
             TensorStorage::State {
                 kind: StateKind::AttentionKv,
                 ..
-            } => {
-                let columns = *spec
-                    .shape
-                    .get(1)
-                    .ok_or_else(|| Error::invalid("KV shape"))?
-                    as u64;
-                let size = if weights.kv_scales.contains_key(&spec.id) {
-                    1
-                } else {
-                    F32
-                };
-                per_token = add(per_token, mul(columns, 2 * size)?)?;
-                0
-            }
+            } => 0,
             TensorStorage::State { .. } => mul(elements, mul(1 + verify, F32)?)?,
         };
         bytes = add(bytes, amount)?;
@@ -784,6 +781,7 @@ fn program_price(
     Ok(SequencePrice {
         fixed: bytes,
         per_token,
+        per_page: kv_block_bytes(graph, weights)?,
     })
 }
 /// Split-KV scratch is shared by sequential attention nodes with the same geometry.
