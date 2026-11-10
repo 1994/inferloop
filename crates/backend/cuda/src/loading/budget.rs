@@ -756,9 +756,11 @@ fn program_price(
     )?;
     for spec in &graph.tensors {
         let elements = spec.elements()? as u64;
+        // KV is priced by pages below; other state is whole per sequence and per verify lane.
         let amount = match spec.storage {
-            TensorStorage::Activation | TensorStorage::Weight { .. } => 0,
-            TensorStorage::State {
+            TensorStorage::Activation
+            | TensorStorage::Weight { .. }
+            | TensorStorage::State {
                 kind: StateKind::AttentionKv,
                 ..
             } => 0,
