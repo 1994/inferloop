@@ -1,4 +1,5 @@
 //! Architecture to provider resolution, so opening a package never names a model family.
+use crate::providers::llama::LlamaProvider;
 use crate::providers::qwen::QwenProvider;
 use infer_core::{Error, Result};
 use infer_spi::{ModelProvider, ProviderMetadata};
@@ -62,6 +63,7 @@ impl ModelRegistry {
         let mut registry = Self::new();
         // The built-in list is fixed at compile time, so it cannot conflict with itself.
         registry.providers.push(Arc::new(QwenProvider));
+        registry.providers.push(Arc::new(LlamaProvider));
         registry
     }
 

@@ -1,4 +1,4 @@
-"""The probe's checkpoints must parse as safetensors and match what the Qwen3 provider binds."""
+"""The probe's checkpoints must parse as safetensors and match what each provider binds."""
 
 import importlib.util
 import json
@@ -21,9 +21,27 @@ class CheckpointTest(unittest.TestCase):
                 shapes = module.tensor_shapes(geometry, 16)
                 query = shapes["model.layers.0.self_attn.q_proj.weight"]
                 self.assertEqual(query, [geometry.heads * geometry.head_dim, geometry.hidden])
-                self.assertEqual(
-                    shapes["model.layers.0.self_attn.k_norm.weight"], [geometry.head_dim]
-                )
+                norm = shapes.get("model.layers.0.self_attn.k_norm.weight")
+                # Only Qwen3 normalizes queries and keys per head.
+                expected = [geometry.head_dim] if geometry.family == "qwen3" else None
+                self.assertEqual(norm, expected)
+                self.assertEqual("lm_head.weight" in shapes, not geometry.tied)
+
+    def test_a_family_names_its_provider_in_the_configuration(self):
+        geometry = module.CASES["llama-untied"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            (source / "config.json").write_text(
+                json.dumps({"vocab_size": 16, "model_type": "qwen3"})
+            )
+            target = root / "target"
+            module.write_checkpoint(target, source, geometry)
+            config = json.loads((target / "config.json").read_text())
+            self.assertEqual(config["model_type"], "llama")
+            self.assertEqual(config["architectures"], ["LlamaForCausalLM"])
+            self.assertFalse(config["tie_word_embeddings"])
 
     def test_written_file_matches_its_header(self):
         geometry = module.Geometry(8, 2, 1, 4, 16, 1, "F32")
