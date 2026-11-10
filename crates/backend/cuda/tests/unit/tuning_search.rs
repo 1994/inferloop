@@ -223,6 +223,6 @@ fn the_report_lists_a_qualification_by_its_worst_case() {
     let report = report(&table);
     assert_eq!(
         report.lines().nth(1),
-        Some("qualified\t{\"dim\":256,\"heads\":24}\t\"RustSimt\"\t1.500\t1.125\t4\t-")
+        Some("qualified\t{\"heads\":24,\"dim\":256}\t\"RustSimt\"\t1.500\t1.125\t4\t-")
     );
 }

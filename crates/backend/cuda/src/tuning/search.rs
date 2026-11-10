@@ -416,12 +416,9 @@ fn qualification_columns(record: &Value) -> [String; EVIDENCE_COLUMNS] {
     let worst = |state: &str| {
         cases()
             .map(|case| {
-                let samples = |arm: &str| -> Option<Vec<f32>> {
-                    case.pointer(&format!("/{state}/{arm}"))?
-                        .as_array()?
-                        .iter()
-                        .map(|sample| sample.as_f64().map(|ms| ms as f32))
-                        .collect()
+                let samples = |arm: &str| {
+                    case.pointer(&format!("/{state}/{arm}"))
+                        .and_then(|samples| Vec::<f32>::deserialize(samples).ok())
                 };
                 match (samples("baseline_ms"), samples("candidate_ms")) {
                     (Some(baseline), Some(candidate))
