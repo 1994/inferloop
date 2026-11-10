@@ -197,5 +197,32 @@ fn the_report_lists_every_record_with_its_confirmation() {
     let lines: Vec<_> = report.lines().collect();
     assert_eq!(lines.len(), 3);
     assert_eq!(lines[1], "family\t4x64x4096\t2\t1.250\t1.250\t3\t0");
-    assert_eq!(lines[2], "family\t?x?x?\t?\t?\t?\tunknown\tunknown");
+    assert_eq!(lines[2], "family\t?\t?\t?\t?\tunknown\tunknown");
+}
+
+#[test]
+fn the_report_lists_a_qualification_by_its_worst_case() {
+    let case = |case, cold: f32, warm: f32| {
+        serde_json::json!({
+            "case": case,
+            "cold": { "baseline_ms": [cold, cold], "candidate_ms": [1.0, 1.0] },
+            "warm": { "baseline_ms": [warm, warm], "candidate_ms": [1.0, 1.0] },
+        })
+    };
+    let mut table = TilingTable::default();
+    table
+        .records
+        .entry("qualified".into())
+        .or_default()
+        .push(serde_json::json!({
+            "key": { "shape": { "heads": 24, "dim": 256 } },
+            "selected": "RustSimt",
+            "forward": [case(0, 1.5, 1.25), case(1, 2.0, 1.5)],
+            "reverse": [case(0, 1.75, 2.0), case(1, 1.5, 1.125)],
+        }));
+    let report = report(&table);
+    assert_eq!(
+        report.lines().nth(1),
+        Some("qualified\t{\"dim\":256,\"heads\":24}\t\"RustSimt\"\t1.500\t1.125\t4\t-")
+    );
 }
