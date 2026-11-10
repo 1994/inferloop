@@ -545,7 +545,7 @@ impl CudaExecutor {
 
     /// How the loaded draft runs beside the slot pool; the pool policy that differs by draft
     /// follows from it.
-    pub(super) fn draft_pooling(&self) -> DraftPooling {
+    pub(super) const fn draft_pooling(&self) -> DraftPooling {
         if self.dflash.is_some() {
             DraftPooling::Pooled
         } else {
