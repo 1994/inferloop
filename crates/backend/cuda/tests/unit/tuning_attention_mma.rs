@@ -1,6 +1,8 @@
 use super::*;
 use crate::device::device_error;
+use crate::tuning::MIN_REPS;
 use crate::tuning::attention::SCHEMA as ATTENTION_SCHEMA;
+use crate::tuning::qualify::Times;
 fn entry() -> Entry {
     let shape = Shape {
         heads: 24,
@@ -10,7 +12,7 @@ fn entry() -> Entry {
         window: 0,
     };
     let case = |history| Case {
-        history,
+        case: history,
         cold: Times {
             baseline_ms: vec![1.0; 10],
             candidate_ms: vec![0.5; 10],
@@ -135,5 +137,15 @@ fn hardware_mma_aot_graph_and_tuning() -> Result<()> {
         "MMA_ATTENTION_TUNING {}",
         serde_json::to_string(&entry).map_err(device_error)?
     );
+    Ok(())
+}
+#[test]
+fn stored_history_cases_read_as_shared_cases() -> Result<()> {
+    let samples = |ms: f32| serde_json::json!(vec![ms; MIN_REPS]);
+    let times = serde_json::json!({ "baseline_ms": samples(1.0), "candidate_ms": samples(0.5) });
+    let stored = serde_json::json!({ "history": 8192, "cold": times, "warm": times }).to_string();
+    let case: Case = serde_json::from_str(&stored).map_err(device_error)?;
+    assert_eq!(case.case, 8192);
+    assert!(accepted(&case));
     Ok(())
 }

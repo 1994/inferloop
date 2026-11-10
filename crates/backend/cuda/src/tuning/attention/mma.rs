@@ -1,7 +1,7 @@
 //! Automatic architecture and cluster selection for the distinct FA4 BF16 profile.
 //! Operator F64 sanity is not a substitute for the unchanged model task-quality gate.
 use super::{
-    Choice, Key, Shape, Times,
+    Choice, Key, Shape,
     capture::Captured,
     reference::{self, Fixture},
 };
@@ -36,24 +36,17 @@ const HISTORY_CASES: usize = 3;
 const HISTORY_DIVISOR: usize = 4;
 const CAPACITY: usize = 32768;
 const MAX_SHORT_REGRESSION: f32 = 1.05;
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Case {
-    pub history: usize,
-    pub cold: Times,
-    pub warm: Times,
-}
-impl Case {
-    pub(super) fn accepted(&self) -> bool {
-        let minimum = if self.history == 0 {
-            1.0 / MAX_SHORT_REGRESSION
-        } else {
-            MIN_CONFIRM_SPEEDUP
-        };
-        self.cold.valid()
-            && self.warm.valid()
-            && self.cold.speedup() >= minimum
-            && self.warm.speedup() >= minimum
-    }
+/// A timed history length; stored records name it `history`, which the shared case reads.
+pub use crate::tuning::qualify::Case;
+/// Each timed history beat the baseline by the confirmation margin cold and warm. The empty
+/// history only has to stay within the short-prompt regression bound.
+pub(super) fn accepted(case: &Case) -> bool {
+    let minimum = if case.case == 0 {
+        1.0 / MAX_SHORT_REGRESSION
+    } else {
+        MIN_CONFIRM_SPEEDUP
+    };
+    case.valid() && case.cold.speedup() >= minimum && case.warm.speedup() >= minimum
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Trial {
@@ -69,12 +62,12 @@ impl Trial {
         self.forward
             .iter()
             .chain(&self.reverse)
-            .filter(|c| c.history > 0)
+            .filter(|c| c.case > 0)
             .map(|c| c.cold.speedup().min(c.warm.speedup()))
             .fold(f32::INFINITY, f32::min)
     }
     pub(super) fn accepted(&self) -> bool {
-        self.forward.iter().chain(&self.reverse).all(Case::accepted)
+        self.forward.iter().chain(&self.reverse).all(accepted)
     }
     pub(super) fn valid(&self, shape: Shape) -> bool {
         let capacity = capacity(shape);
@@ -88,7 +81,7 @@ impl Trial {
                     && cases
                         .iter()
                         .zip(histories)
-                        .all(|(c, h)| c.history == h && c.cold.valid() && c.warm.valid())
+                        .all(|(c, h)| c.case == h && c.valid())
             })
     }
 }
@@ -398,7 +391,7 @@ fn cases(
         let candidate = Captured::new(device, &fixture, Choice::Mma { variant })?;
         candidate.verify_mma_history(device, &fixture)?;
         result.push(Case {
-            history,
+            case: history,
             cold: super::measure(device, &base, &candidate, true, reverse)?,
             warm: super::measure(device, &base, &candidate, false, reverse)?,
         });

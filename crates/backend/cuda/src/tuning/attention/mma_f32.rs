@@ -255,7 +255,7 @@ fn cases(
         let candidate = Captured::new(device, &fixture, Choice::Mma { variant })?;
         merge(&mut proof, &candidate.verify(device, &fixture, false)?);
         result.push(Case {
-            history,
+            case: history,
             cold: measure(device, &base, &candidate, true, reverse)?,
             warm: measure(device, &base, &candidate, false, reverse)?,
         });

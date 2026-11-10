@@ -8,7 +8,7 @@ fn entry() -> Entry {
         window: 0,
     };
     let case = |history| Case {
-        history,
+        case: history,
         cold: Times {
             baseline_ms: vec![1.0; 10],
             candidate_ms: vec![0.5; 10],
