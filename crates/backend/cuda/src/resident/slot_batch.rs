@@ -21,6 +21,7 @@ use crate::device::PinnedUpload;
 use crate::device::asynchronous::block_on;
 use crate::device::copy_runs;
 use crate::device::{CudaDevice, DeviceProfile, device_error};
+use crate::loading::kv_block_bytes;
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::{Owner, Width};
 use infer_cuda_kernels::runtime::Allocation;
@@ -1004,7 +1005,7 @@ impl SlotPool {
             namespace: LEDGER_NAMESPACE.to_vec(),
             block_size: block,
             blocks,
-            bytes_per_block: crate::loading::kv_block_bytes(graph, weights)?,
+            bytes_per_block: kv_block_bytes(graph, weights)?,
             prefix_bytes: 0,
             max_prefixes: 1,
         })?;
