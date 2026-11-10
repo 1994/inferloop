@@ -119,7 +119,7 @@ pub(in crate::resident) fn record(
         weight,
         output,
     } = fused;
-    let kernels = (&weights.kernels, scope);
+    let kernels = (&*weights.kernels, scope);
     match fusion {
         Fusion::Fp4(scale) => {
             workspace.record_norm_fp4(
