@@ -89,3 +89,19 @@ fn selection_sees_the_tokens_accepted_so_far() -> Result<()> {
     assert_eq!(seen, [1, 2]);
     Ok(())
 }
+
+#[test]
+fn only_a_pooled_proposal_runs_a_one_slot_pool_without_the_private_shortcuts() {
+    let (separate, pooled) = (DraftPooling::Separate, DraftPooling::Pooled);
+    assert_eq!(separate.minimum_pool_width(), 2);
+    assert_eq!(pooled.minimum_pool_width(), 1);
+    assert!(!separate.warms_pool(1));
+    assert!(separate.warms_pool(2));
+    assert!(pooled.warms_pool(1));
+    assert!(separate.serial_roofline() && separate.prompt_burst());
+    assert!(!pooled.serial_roofline() && !pooled.prompt_burst());
+    assert!(pooled.requires_pool() && !separate.requires_pool());
+    assert!(separate.private(1, None) && separate.private(4, Some(1)));
+    assert!(!separate.private(4, None) && !separate.private(4, Some(2)));
+    assert!(!pooled.private(1, Some(1)));
+}

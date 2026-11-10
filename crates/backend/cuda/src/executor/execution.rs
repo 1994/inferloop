@@ -17,7 +17,7 @@ use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::{ExecutionInput, ExecutionTask, MediaPixels, MediaPlan, OutputReadout, TaskOutput};
 use infer_models::media_plan_layout;
 use infer_models::mrope::ROTARY_AXES;
-use infer_workloads::{accepted_prefix, draft_budget, draft_may_propose};
+use infer_workloads::{DraftPooling, accepted_prefix, draft_budget, draft_may_propose};
 use std::collections::BTreeMap;
 use std::mem::swap;
 use std::mem::take;
@@ -334,7 +334,7 @@ impl CudaExecutor {
     }
 
     pub(super) fn warm_slot_pool_for(&mut self, capacity: usize, request_tokens: usize) {
-        if self.maximum_states < 2 && self.dflash.is_none() {
+        if !self.draft_pooling().warms_pool(self.maximum_states) {
             return;
         }
         let maximum = self.maximum_states.min(MAX_POOL_SLOTS);
@@ -415,7 +415,7 @@ impl CudaExecutor {
     }
 
     fn serial_roofline(&mut self, capacity: usize, maximum: usize, envelope: u64) -> bool {
-        if self.roofline_bound != Some(1) || self.dflash.is_some() {
+        if self.roofline_bound != Some(1) || !self.draft_pooling().serial_roofline() {
             return false;
         }
         match self.memory_plan(capacity, maximum, envelope, 0) {
@@ -543,6 +543,16 @@ impl CudaExecutor {
         let _ = self.loaded.reclaim_idle_prompt_scratch();
     }
 
+    /// How the loaded draft runs beside the slot pool; the pool policy that differs by draft
+    /// follows from it.
+    pub(super) fn draft_pooling(&self) -> DraftPooling {
+        if self.dflash.is_some() {
+            DraftPooling::Pooled
+        } else {
+            DraftPooling::Separate
+        }
+    }
+
     /// Capture the requested draft's proposal before publishing the serving pool.
     fn attach_dflash(&mut self) -> Result<()> {
         let (Some(engine), Some(pool)) = (self.dflash.as_mut(), self.slots.as_ref()) else {
@@ -569,7 +579,7 @@ impl CudaExecutor {
         };
         let selected = self
             .roofline_bound
-            .filter(|_| self.dflash.is_none())
+            .filter(|_| self.draft_pooling().serial_roofline())
             .unwrap_or(maximum)
             .min(plan.quote.width);
         if selected == plan.quote.width {
@@ -593,7 +603,7 @@ impl CudaExecutor {
         // Preserve wide-prompt throughput: at most one halving, and never cross the
         // established 1024-row worker floor. Deeper shrinking saves memory but adds replays.
         let minimum_prompt = (configured / 2).max(WIDER_PREFILL_LANES).min(configured);
-        let minimum = if self.dflash.is_some() { 1 } else { 2 };
+        let minimum = self.draft_pooling().minimum_pool_width();
         // Funded widths snap to a ladder: free memory differs between the tuning worker and the
         // server, and every distinct width is a distinct set of measured shapes. Below one step
         // and at the requested maximum the exact width is kept.
@@ -684,7 +694,7 @@ impl CudaExecutor {
         if self.worker.is_none()
             || pool.verify().is_some()
             || self.draft_slots.is_some()
-            || self.dflash.is_some()
+            || !self.draft_pooling().prompt_burst()
             || self.homes.iter().any(Option::is_none)
         {
             return;
@@ -853,7 +863,7 @@ impl CudaExecutor {
         maximum: usize,
         kv_tokens: usize,
     ) -> Option<SlotPool> {
-        let minimum = if self.dflash.is_some() { 1 } else { 2 };
+        let minimum = self.draft_pooling().minimum_pool_width();
         for width in (minimum..=maximum).rev() {
             loop {
                 match self.loaded.slot_pool(width, capacity, Some(kv_tokens)) {
