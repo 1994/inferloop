@@ -1,4 +1,5 @@
 //! Cross-sequence target verification with per-slot recurrent rollback.
+use super::attention_lowering::Lowering;
 use super::shaped::Shaped;
 use super::slot_recurrent::ValueDevice;
 use super::{
@@ -381,13 +382,14 @@ impl BatchBuilder<'_> {
                 if super::slot_rope::record(scope, node, arena, self.weights, batch.metadata)? {
                     continue;
                 }
-                if self.record_slot_verify_attention(
-                    scope,
-                    node,
-                    arena,
-                    (lane_states, lane_fp8),
-                    (verify, metadata, batch.metadata),
-                )? {
+                if self.slot_verify_lowering(node, lane_fp8, verify) == Some(Lowering::Grouped) {
+                    self.record_slot_verify_attention(
+                        scope,
+                        node,
+                        arena,
+                        (lane_states, lane_fp8),
+                        (metadata, batch.metadata),
+                    )?;
                     continue;
                 }
                 match dispatch32(node, self.weights) {

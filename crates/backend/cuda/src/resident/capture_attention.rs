@@ -1,11 +1,12 @@
 use super::{
     arena::SlotMemory,
+    attention_lowering::{Lowering, Mode, Prepared, lower},
     buffers::buffer,
     capture::{Capture, CaptureMode, error},
 };
-use crate::constants::ATTENTION_SPLIT_THRESHOLD;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::WIDE_PREFILL_LANES;
+use crate::tuning::attention::Choice;
 use infer_core::Result;
 use infer_cuda_kernels::contract::{
     AppendBuffers, Buffer, DecodeBuffers, DecodePlan, KvBuffers, KvCache, PrefillAppendPlan,
@@ -70,9 +71,8 @@ impl Capture<'_> {
             table: self.table,
         };
         let recording = self.scope;
-        if self.attention.supports(query_heads, head_dim)
-            && window.is_none_or(|w| w >= ATTENTION_SPLIT_THRESHOLD)
-        {
+        let prepared = self.attention.prepared(query_heads, head_dim);
+        if lower(Mode::Decode, window, prepared) == Lowering::Split {
             self.attention
                 .record(&*self.weights.kernels.attention, recording, plan, buffers)?;
         } else {
@@ -171,28 +171,53 @@ impl Capture<'_> {
             metadata: self.metadata,
             table: self.table,
         };
+        let selected = self.attention.selected_prefill(node.outputs[0], lanes);
+        let fits = match selected {
+            Some(Choice::Mma { .. } | Choice::MmaF16) => self
+                .attention
+                .prefill_mma(node.outputs[0], lanes)
+                .is_some_and(|(mma, _)| mma.accepts(&buffers, geometry, window)),
+            Some(choice) if choice.uses_oxide() => self
+                .attention
+                .prefill_oxide(node.outputs[0], lanes)
+                .is_some_and(|oxide| oxide.accepts(&buffers, geometry)),
+            _ => true,
+        };
+        if !fits {
+            tracing::info!(target: "infer::capture", lanes, ?selected, "selected prefill attention does not fit this pool");
+        }
+        let fp8 = matches!(cache.buffers, KvBuffers::Fp8 { .. });
+        let mode = Mode::Prefill {
+            selected,
+            fp8,
+            fits,
+        };
         let recording = self.scope;
-        if let Some((mma, variant)) = self.attention.prefill_mma(node.outputs[0], lanes) {
-            if mma.accepts(&buffers, geometry, window) {
-                mma.record(recording, buffers, geometry, window, variant)?;
-                return Ok(());
+        match lower(mode, None, Prepared::default()) {
+            Lowering::Mma => {
+                let (mma, variant) = self
+                    .attention
+                    .prefill_mma(node.outputs[0], lanes)
+                    .ok_or_else(|| error("selected MMA attention"))?;
+                mma.record(recording, buffers, geometry, window, variant)
             }
-            tracing::info!(target: "infer::capture", lanes, "selected MMA does not fit this pool");
-        }
-        if let Some(oxide) = self.attention.prefill_oxide(node.outputs[0], lanes) {
-            if oxide.accepts(&buffers, geometry) {
-                oxide.record(recording, buffers, geometry, window)?;
-                return Ok(());
+            Lowering::Simt => self
+                .attention
+                .prefill_oxide(node.outputs[0], lanes)
+                .ok_or_else(|| error("selected SIMT attention"))?
+                .record(recording, buffers, geometry, window),
+            Lowering::Tiled(tile) => {
+                self.record_prefill_legacy(node, buffers.output, cache, Some(tile))
             }
-            tracing::info!(target: "infer::capture", lanes, "selected SIMT does not fit this pool");
+            _ => self.record_prefill_legacy(node, buffers.output, cache, None),
         }
-        self.record_prefill_legacy(node, buffer(output)?, cache)
     }
     fn record_prefill_legacy(
         &self,
         node: &TensorNode,
         output: Buffer<'_, f32>,
         cache: KvCache<'_>,
+        tile: Option<usize>,
     ) -> Result<()> {
         let TensorOp::Attention {
             query_heads,
@@ -221,18 +246,15 @@ impl Capture<'_> {
             metadata: self.metadata,
             table: self.table,
         };
-        let fp8 = matches!(cache.buffers, KvBuffers::Fp8 { .. });
         let recording = self.scope;
         let attention = &self.weights.kernels.attention;
         // Query/head axes remain separate so each CTA addresses its own KV head.
         // Selection was measured and independently checked before graph capture.
-        self.attention
-            .prefill_query_tile(node.outputs[0], lanes, fp8)
-            .map_or_else(
-                || attention.decode_prefill(recording, plan, buffers),
-                |tile| attention.decode_prefill_tiled(recording, plan, tile, buffers),
-            )
-            .map_err(error)?;
+        tile.map_or_else(
+            || attention.decode_prefill(recording, plan, buffers),
+            |tile| attention.decode_prefill_tiled(recording, plan, tile, buffers),
+        )
+        .map_err(error)?;
         Ok(())
     }
 }

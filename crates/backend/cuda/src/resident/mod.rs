@@ -11,6 +11,7 @@ pub(crate) mod attention_prefill;
 mod batch_projection;
 pub(crate) mod buffers;
 pub(crate) use buffers::buffer as tensor_buffer;
+mod attention_lowering;
 pub(crate) mod capacity;
 mod capture;
 mod capture_attention;

@@ -1,6 +1,7 @@
 //! Node-major verification: consecutive projections reuse weights in cache.
 //! Recurrent checkpoints stay on the device; KV rollback is a logical prefix.
 //! Prefill width 32 keeps one batched arena: auxiliaries record once per node.
+use super::attention_lowering::{Lowering, Mode, lower};
 use super::buffers::buffer;
 use super::prefill_projection::{DensePlan, record_narrow};
 use super::shaped::Shaped;
@@ -13,7 +14,6 @@ use super::{
     prompt_scratch::{Partials, PromptScratch},
 };
 use crate::attention_profile::precise_prefix_positions;
-use crate::constants::ATTENTION_SPLIT_THRESHOLD;
 use crate::constants::AUX_KERNEL_TILE;
 use crate::constants::EXTRA_WIDE_PREFILL_LANES;
 use crate::constants::F32_BYTES;
@@ -991,16 +991,46 @@ impl BatchBuilder<'_> {
         Ok(true)
     }
 
+    /// How this attention node lowers across the verification lanes.
+    fn verify_lowering(
+        &self,
+        node: &TensorNode,
+        lanes: &[Lane],
+        prefill: Option<bool>,
+    ) -> Option<Lowering> {
+        let TensorOp::Attention {
+            query_heads,
+            head_dim,
+            window,
+            ..
+        } = node.op
+        else {
+            return None;
+        };
+        let &id = node.states.first()?;
+        let operands = prefill.is_none()
+            && !self.weights.constants.contains_key(&node.inputs[0])
+            && self.fp8_states.contains_key(&id)
+            && lanes.iter().all(|lane| !lane.checkpoints.contains_key(&id));
+        let mode = Mode::Verify {
+            lanes: lanes.len(),
+            operands,
+        };
+        Some(lower(
+            mode,
+            window,
+            self.attention.prepared(query_heads, head_dim),
+        ))
+    }
+
     /// Verification lanes append their rows, then attend in one grouped launch that reads each
-    /// KV block once for all three lanes. False when this node keeps the per-lane path.
+    /// KV block once for all three lanes.
     fn record_verify_attention(
         &mut self,
         scope: &Recording<'_>,
         node: &TensorNode,
         lanes: &mut [Lane],
-        prefill: Option<bool>,
-    ) -> Result<bool> {
-        let width = lanes.len();
+    ) -> Result<()> {
         let TensorOp::Attention {
             query_heads,
             kv_heads,
@@ -1008,21 +1038,12 @@ impl BatchBuilder<'_> {
             window,
         } = node.op
         else {
-            return Ok(false);
+            return Err(error("expected attention"));
         };
-        let Some(&id) = node.states.first() else {
-            return Ok(false);
-        };
-        let eligible = prefill.is_none()
-            && width == super::attention_decode::VERIFY_LANES
-            && window.is_none_or(|w| w >= ATTENTION_SPLIT_THRESHOLD)
-            && self.attention.supports_verify(query_heads, head_dim)
-            && !self.weights.constants.contains_key(&node.inputs[0])
-            && self.fp8_states.contains_key(&id)
-            && lanes.iter().all(|lane| !lane.checkpoints.contains_key(&id));
-        if !eligible {
-            return Ok(false);
-        }
+        let id = *node
+            .states
+            .first()
+            .ok_or_else(|| error("missing state binding"))?;
         for (index, lane) in lanes.iter_mut().enumerate() {
             Capture {
                 scope,
@@ -1068,8 +1089,7 @@ impl BatchBuilder<'_> {
                 cache: state.cache(self.weights.kv_scales[&id]),
                 table: buffer(&self.tables[0])?,
             },
-        )?;
-        Ok(true)
+        )
     }
 
     fn capture(
@@ -1104,7 +1124,8 @@ impl BatchBuilder<'_> {
                     )?;
                     continue;
                 }
-                if self.record_verify_attention(scope, node, lanes, prefill)? {
+                if self.verify_lowering(node, lanes, prefill) == Some(Lowering::Grouped) {
+                    self.record_verify_attention(scope, node, lanes)?;
                     continue;
                 }
                 for (index, lane) in lanes.iter_mut().enumerate() {
