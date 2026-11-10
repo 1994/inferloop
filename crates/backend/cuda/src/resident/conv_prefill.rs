@@ -4,11 +4,10 @@
 pub use infer_cuda_kernels::tile::recurrent::conv_prefill as kernels;
 
 use super::{ActivationArena, ProgramWeights, batch::States, buffers::buffer, capture::error};
-use crate::constants::CONV_KERNEL_SIZE;
 use infer_core::Result;
 use infer_cuda_kernels::contract::{ConvBuffers, ConvKernel, Recording};
 use infer_cuda_kernels::runtime::Allocation;
-use infer_ir::{TensorNode, TensorOp};
+use infer_ir::TensorNode;
 
 pub(super) fn record(
     scope: &Recording<'_>,
@@ -17,22 +16,8 @@ pub(super) fn record(
     weights: &ProgramWeights,
     states: &mut States,
     metadata: &Allocation<i32>,
-    lanes: usize,
-) -> Result<bool> {
-    #[cfg(test)]
-    if super::recurrent_prefill::LEGACY_CAPTURE.get() {
-        return Ok(false);
-    }
-    let TensorOp::Conv {
-        channels,
-        kernel: CONV_KERNEL_SIZE,
-    } = node.op
-    else {
-        return Ok(false);
-    };
-    if weights.constants.contains_key(&node.inputs[0]) {
-        return Ok(false);
-    }
+    (lanes, channels): (usize, usize),
+) -> Result<()> {
     let state = states
         .get_mut(&node.states[0])
         .ok_or_else(|| error("prefill convolution state"))?;
@@ -64,8 +49,7 @@ pub(super) fn record(
                 metadata: buffer(metadata)?,
             },
         )
-        .map_err(error)?;
-    Ok(true)
+        .map_err(error)
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 //! Shared head-major scratch for token-chunk recurrent prefill.
+use super::super::recurrent_lowering::{Block, Chunk, Delta, Lowering, Mode, Recurrence, lower};
 use super::super::shaped::Shaped;
 use super::super::{buffers::buffer, capture::error};
 use super::{
@@ -107,7 +108,50 @@ impl Workspace {
             prefer_wy: opted_in || !legacy_shapes,
         })
     }
-    pub(crate) fn record(
+    /// How node `node` of this prompt chunk lowers, or `None` when it is not a recurrence.
+    /// # Errors
+    /// A recurrence no resident kernel addresses.
+    pub(in crate::resident) fn lowering(
+        &self,
+        node: &TensorNode,
+        weights: &ProgramWeights,
+    ) -> Result<Option<(Recurrence, Lowering)>> {
+        let Some(recurrence) = Recurrence::of(&node.op)? else {
+            return Ok(None);
+        };
+        let projected = match recurrence {
+            Recurrence::Conv { .. } => 1,
+            Recurrence::Delta(_) => GDN_PROJECTED_INPUTS,
+        };
+        #[cfg(test)]
+        let (rows_only, rows_delta) = (
+            super::LEGACY_CAPTURE.get(),
+            super::LEGACY_DELTA_CAPTURE.get(),
+        );
+        #[cfg(not(test))]
+        let (rows_only, rows_delta) = (false, false);
+        let chunk = Chunk {
+            lanes: self.lanes,
+            dynamic: node.inputs[..projected]
+                .iter()
+                .all(|id| !weights.constants.contains_key(id)),
+            scratch: !self.buffers.is_empty(),
+            prefer_wy: self.prefer_wy,
+            wy_block: self.wy_blocks.get(&node.outputs[0]).copied(),
+            rows_only,
+            rows_delta,
+        };
+        Ok(Some((recurrence, lower(recurrence, Mode::Prompt(chunk)))))
+    }
+
+    /// Record `node` as `lowering` decided.
+    /// # Errors
+    /// A lowering this workspace does not record, missing scratch or a capture failure.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Explicit graph state, IR inputs and the lowering decision"
+    )]
+    pub(in crate::resident) fn record(
         &mut self,
         scope: &Recording<'_>,
         node: &TensorNode,
@@ -115,48 +159,29 @@ impl Workspace {
         weights: &ProgramWeights,
         states: &mut super::super::batch::States,
         metadata: &Allocation<i32>,
-    ) -> Result<bool> {
-        #[cfg(test)]
-        if super::LEGACY_CAPTURE.get() {
-            return Ok(false);
-        }
-        if super::super::conv_prefill::record(
-            scope, node, arena, weights, states, metadata, self.lanes,
-        )? {
-            return Ok(true);
-        }
-        #[cfg(test)]
-        if super::LEGACY_DELTA_CAPTURE.get() {
-            return Ok(false);
-        }
-        if self.buffers.is_empty() {
-            return Ok(false);
-        }
-        let TensorOp::Delta {
+        (recurrence, lowering): (Recurrence, Lowering),
+    ) -> Result<()> {
+        let (delta, block, wy) = match (recurrence, lowering) {
+            (Recurrence::Conv { channels }, Lowering::ConvPrefill) => {
+                return super::super::conv_prefill::record(
+                    scope,
+                    node,
+                    arena,
+                    weights,
+                    states,
+                    metadata,
+                    (self.lanes, channels),
+                );
+            }
+            (Recurrence::Delta(delta), Lowering::Chunked { block, wy }) => (delta, block, wy),
+            _ => return Err(error("chunk recurrent lowering")),
+        };
+        let Delta {
             key_heads,
             value_heads,
             key_dim,
             value_dim,
-        } = node.op
-        else {
-            return Ok(false);
-        };
-        if self.prefer_wy && !self.wy_blocks.contains_key(&node.outputs[0]) {
-            return Ok(false);
-        }
-        if key_heads == 0
-            || !value_heads.is_multiple_of(key_heads)
-            || key_dim != value_dim
-            || !key_dim.is_power_of_two()
-        {
-            return Err(error("chunk delta dimensions"));
-        }
-        if node.inputs[..GDN_PROJECTED_INPUTS]
-            .iter()
-            .any(|id| weights.constants.contains_key(id))
-        {
-            return Ok(false);
-        }
+        } = delta;
         let state = states
             .get(&node.states[0])
             .and_then(|s| s.first())
@@ -172,16 +197,10 @@ impl Workspace {
                 output.require("chunk delta output", self.lanes * value_heads * value_dim)
             })
             .map_err(error)?;
-        // The measured ordered path splits independent value columns without changing sums.
-        // Other shapes use their existing qualified block policy.
-        let block = if key_dim == ORDERED_DIM && ORDERED_WIDTHS.contains(&self.lanes) {
-            ORDERED_BLOCK
-        } else {
-            self.wy_blocks
-                .get(&node.outputs[0])
-                .copied()
-                .map_or_else(|| super::super::capture_state::value_block(value_dim), Ok)
-                .map_err(|_| error("chunk delta value split"))?
+        let block = match block {
+            Block::Fixed(block) => block,
+            Block::Split => super::super::capture_state::value_block(value_dim)
+                .map_err(|_| error("chunk delta value split"))?,
         };
         record_delta(
             scope,
@@ -193,7 +212,7 @@ impl Workspace {
             self.prepared.get(&(key_heads, value_heads, key_dim)),
             metadata,
             [key_heads, value_heads, key_dim, self.lanes, block],
-            self.wy_blocks.contains_key(&node.outputs[0]),
+            wy,
         )?;
         weights
             .kernels
@@ -209,8 +228,7 @@ impl Workspace {
                 output,
                 buffer(&*scratch)?,
             )
-            .map_err(error)?;
-        Ok(true)
+            .map_err(error)
     }
 }
 
