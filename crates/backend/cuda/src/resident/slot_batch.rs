@@ -376,19 +376,20 @@ struct Paging {
     owned: Vec<Vec<i32>>,
 }
 
-/// Prefix snapshots of a slot pool are separately owned, so its ledger caches none.
+/// Prefix snapshots of a slot pool are separately owned, so its ledger caches none and never
+/// holds one of these.
 #[derive(Clone, Copy, Debug)]
-enum NoPrefix {}
+struct NoPrefix;
 
 impl KvPrefix for NoPrefix {
     fn tokens(&self) -> &[u32] {
-        match *self {}
+        &[]
     }
     fn blocks(&self) -> &[BlockLease] {
-        match *self {}
+        &[]
     }
     fn bytes(&self) -> u64 {
-        match *self {}
+        0
     }
 }
 
