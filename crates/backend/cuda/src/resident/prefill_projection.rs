@@ -1,4 +1,5 @@
 mod dense;
+mod norm;
 use super::buffers::{RowMajor, buffer};
 use super::projection_lowering::{Format, Lowering, Mode, lower};
 use super::prompt_scratch::Partials;
@@ -21,6 +22,7 @@ use infer_cuda_kernels::contract::{
 };
 use infer_cuda_kernels::runtime::bf16;
 use infer_ir::TensorNode;
+pub(super) use norm::record as record_fused_norm;
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -174,23 +176,6 @@ impl MlpPlan {
     /// Nodes another node of the plan records; the capture skips them.
     pub(super) fn absorbs(&self, index: usize) -> bool {
         self.absorbed.contains(&index)
-    }
-
-    /// Fuse normalization only when this plan actually records the following FP4 consumer.
-    pub(super) fn record_norm(
-        &self,
-        scope: &Recording<'_>,
-        (index, nodes): (usize, &[TensorNode]),
-        arena: &super::ActivationArena,
-        weights: &ProgramWeights,
-        nvfp4: &mut super::nvfp4_gemm::Workspace,
-    ) -> Result<bool> {
-        if self.fused.contains_key(&(index + 1))
-            && super::norm_fp4::record(scope, (index, nodes), arena, weights, nvfp4)?
-        {
-            return Ok(true);
-        }
-        super::norm_maximum::record(scope, index, nodes, arena, weights, nvfp4)
     }
 
     /// Record node `index` when the plan owns it. False leaves it to the ordinary dispatch.

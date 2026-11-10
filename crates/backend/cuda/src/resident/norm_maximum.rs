@@ -1,10 +1,4 @@
 //! Prime only the immediately following token-FP8 projection's row maximum.
-use super::{ActivationArena, ProgramWeights, capture::error, nvfp4_gemm::Workspace};
-use crate::mlp::ProjectionWeight;
-use crate::resident::buffers::RowMajor;
-use infer_core::Result;
-use infer_cuda_kernels::contract::Recording;
-use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
 use std::cell::Cell;
 
@@ -21,88 +15,19 @@ impl Pending {
     }
 }
 
-pub(super) fn record(
-    scope: &Recording<'_>,
-    index: usize,
-    nodes: &[TensorNode],
-    arena: &ActivationArena,
-    weights: &ProgramWeights,
-    workspace: &mut Workspace,
-) -> Result<bool> {
-    #[cfg(test)]
-    if DISABLED.get() {
-        return Ok(false);
-    }
-    let Some([norm, linear]) = nodes.get(index..index + 2) else {
-        return Ok(false);
-    };
-    let TensorOp::Norm {
-        head_dim,
-        epsilon,
-        offset,
-    } = norm.op
-    else {
-        return Ok(false);
-    };
-    // Preserve canonical normalization dispatch; fuse only in the resolved BF16 profile.
-    if !weights.attention_profile.is_bf16()
-        || weights.fusion.is_some()
-        || norm.inputs.len() != 2
-        || norm.outputs.len() != 1
-        || !norm.states.is_empty()
-        || !linear.states.is_empty()
-        || linear.op != TensorOp::Linear
-        || linear.inputs.len() != 2
-        || linear.outputs.len() != 1
-        || linear.inputs[0] != norm.outputs[0]
-        || !super::fp8_quant_reduction::parallel_columns(head_dim)
-        || !matches!(
-            weights.projections.get(&linear.inputs[1]),
-            Some(ProjectionWeight::Fp8(..))
-        )
-        || !weights.fp8_inputs.contains(&linear.inputs[1])
-    {
-        return Ok(false);
-    }
-    if weights.constants.contains_key(&norm.inputs[0]) {
-        return Ok(false);
-    }
-    let Some(weight) = weights.constants.get(&norm.inputs[1]) else {
-        return Ok(false);
-    };
-    let input = arena.activation(norm.inputs[0]).map_err(error)?;
-    let output = arena.activation(norm.outputs[0]).map_err(error)?;
-    let rows = arena.lanes();
-    if rows == 0
-        || Some(output.len()) != rows.checked_mul(head_dim)
-        || input.len() != output.len()
-        || weight.len() != head_dim
-        || !input.disjoint(output)
-        || !weight.buffer().disjoint(output)
-    {
-        return Ok(false);
-    }
-    let output = RowMajor::new(output, rows, head_dim)?;
-    let result = workspace.record_norm_maximum(
-        (&weights.kernels, scope),
-        index + 1,
-        input,
-        weight.buffer(),
-        output,
-        (epsilon, offset),
-    );
-    #[cfg(test)]
-    if matches!(result, Ok(true)) {
-        CAPTURES.set(CAPTURES.get() + 1);
-    }
-    result
-}
-
 #[cfg(test)]
 thread_local! {
     static DISABLED: Cell<bool> = const { Cell::new(false) };
     static CAPTURES: Cell<usize> = const { Cell::new(0) };
     static CONSUMPTIONS: Cell<usize> = const { Cell::new(0) };
+}
+#[cfg(test)]
+pub(super) fn separate() -> bool {
+    DISABLED.get()
+}
+#[cfg(test)]
+pub(super) fn record_capture() {
+    CAPTURES.set(CAPTURES.get() + 1);
 }
 #[cfg(test)]
 pub fn captures() -> usize {

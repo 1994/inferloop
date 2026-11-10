@@ -129,7 +129,7 @@ pub struct ProgramWeights {
     pub prompt_scratch: super::prompt_scratch::Registry,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ActivationQuantization {
     Fp4(f32),
     Fp8Token,
