@@ -1,3 +1,4 @@
+use super::norm_lowering::layout;
 use super::projection_lowering::{Format, Lowering, Mode, lower};
 use super::{
     ActivationArena, ProgramWeights,
@@ -20,7 +21,7 @@ use infer_core::Result;
 use infer_core::TensorId;
 use infer_cuda_kernels::contract::{
     Bf16, BinaryOp, Buffer, EmbeddingPlan, FusionNormBuffers, FusionNormPlan, FusionShape, Kernels,
-    NormBuffers, NormLayout, NormPlan, Recording, SplitPlan, UnaryOp,
+    NormBuffers, NormPlan, Recording, SplitPlan, UnaryOp,
 };
 #[cfg(test)]
 use infer_cuda_kernels::contract::{DenseKernel, DenseRowsPlan};
@@ -507,17 +508,8 @@ impl Capture<'_> {
         let options = super::gated_norm_discovery::model_options(dimension, gated, heads, options);
         // Physical funding must not change the automatic target's arithmetic.
         // Match the established full serving pool even when fewer slots fit.
-        // The row kernel masks its final partial tile.
         let normalization_heads = self.normalization_heads(heads)?;
-        let layout = if dimension.is_power_of_two()
-            && dimension <= NORM_ROWS_MAX_DIMENSION
-            && normalization_heads >= NORM_ROWS * NORM_ROWS
-            && normalization_heads.is_multiple_of(NORM_ROWS)
-        {
-            NormLayout::Rows { tile: NORM_ROWS }
-        } else {
-            NormLayout::Block
-        };
+        let layout = layout(dimension, normalization_heads);
         self.weights
             .kernels
             .norm
@@ -564,7 +556,3 @@ impl Capture<'_> {
         Ok((heads / rows) * reference_slots)
     }
 }
-
-/// Rows per block of the batched norm (fixed in its kernel), and the widest row it takes.
-const NORM_ROWS: usize = 16;
-pub(super) const NORM_ROWS_MAX_DIMENSION: usize = 256;

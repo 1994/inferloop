@@ -93,6 +93,7 @@ pub(crate) use prefill_projection::{narrow_dense_captures, with_dense_reference}
 #[path = "../../tests/unit/resident_pooled_verify_model.rs"]
 mod pooled_verify_model_tests;
 
+mod norm_lowering;
 mod norm_maximum;
 #[cfg(test)]
 pub(crate) use norm_maximum::{

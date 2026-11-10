@@ -3,7 +3,7 @@
 //! Prefill width 32 keeps one batched arena: auxiliaries record once per node.
 use super::attention_lowering::{Lowering, Mode, lower};
 use super::buffers::buffer;
-use super::prefill_projection::{DensePlan, record_narrow};
+use super::prefill_projection::{DensePlan, record_fused_norm, record_narrow};
 use super::shaped::Shaped;
 use super::{
     ActivationArena, ProgramWeights,
@@ -1419,13 +1419,10 @@ impl BatchBuilder<'_> {
                 if let Some(boundaries) = boundaries.as_mut() {
                     boundaries.boundary(scope, index, node)?;
                 }
-                if mlp.record_norm(
-                    scope,
-                    (index, &self.graph.nodes),
-                    arena,
-                    self.weights,
-                    self.nvfp4,
-                )? {
+                if let Some(fused) =
+                    mlp.fused_norm((index, &self.graph.nodes), arena, self.weights, self.nvfp4)?
+                {
+                    record_fused_norm(scope, fused, self.weights, self.nvfp4)?;
                     continue;
                 }
                 if !skip && let Some(second) = dense.pair(index) {

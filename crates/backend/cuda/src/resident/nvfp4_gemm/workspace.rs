@@ -516,6 +516,16 @@ impl Workspace {
             Ok(())
         }
     }
+    /// Whether the FP4 quantizer buffers for `rows × columns` exist for a fused norm to fill.
+    pub(crate) fn norm_fp4_ready(&self, rows: usize, columns: usize) -> bool {
+        self.buffers.contains_key(&(rows, columns))
+    }
+
+    /// Whether the token-FP8 row maxima for `rows × columns` exist for a fused norm to fill.
+    pub(crate) fn norm_maximum_ready(&self, rows: usize, columns: usize) -> bool {
+        self.fp8.contains_key(&(rows, columns, 1))
+    }
+
     /// Write existing dense and FP4 buffers in one RMS pass; permission is capture-local.
     pub(crate) fn record_norm_fp4(
         &mut self,
@@ -525,13 +535,14 @@ impl Workspace {
         weight: Buffer<'_, f32>,
         output: RowMajor<'_, f32>,
         (epsilon, offset, scale): (f32, f32, f32),
-    ) -> Result<bool> {
+    ) -> Result<()> {
         self.norm_fp4 = None;
         let rows = output.rows;
         let columns = output.columns;
-        let Some((codes, scales)) = self.buffers.get(&(rows, columns)) else {
-            return Ok(false);
-        };
+        let (codes, scales) = self
+            .buffers
+            .get(&(rows, columns))
+            .ok_or_else(|| capture_error("fused norm FP4 buffers"))?;
         let binding = norm_fp4::Binding {
             pointer: output.buffer.address(),
             rows,
@@ -561,7 +572,7 @@ impl Workspace {
             )
             .map_err(capture_error)?;
         self.norm_fp4 = Some(norm_fp4::Pending { next, binding });
-        Ok(true)
+        Ok(())
     }
 
     /// Keep the existing scale allocation; its permission lasts exactly one graph node.
@@ -573,12 +584,13 @@ impl Workspace {
         weight: Buffer<'_, f32>,
         output: RowMajor<'_, f32>,
         (epsilon, offset): (f32, f32),
-    ) -> Result<bool> {
+    ) -> Result<()> {
         let rows = output.rows;
         let columns = output.columns;
-        let Some((_, scales)) = self.fp8.get(&(rows, columns, 1)) else {
-            return Ok(false);
-        };
+        let (_, scales) = self
+            .fp8
+            .get(&(rows, columns, 1))
+            .ok_or_else(|| capture_error("fused norm FP8 scales"))?;
         let pointer = output.buffer.address();
         kernels
             .norm
@@ -604,7 +616,7 @@ impl Workspace {
             rows,
             columns,
         });
-        Ok(true)
+        Ok(())
     }
 
     pub(super) fn record_fp8_input(
