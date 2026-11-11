@@ -403,7 +403,11 @@ fn copy_prefix(
     kv: Option<(usize, usize)>,
 ) -> Result<()> {
     if dst.dims() != src.dims() {
-        return Err(Error::invariant("program state copy shape"));
+        return Err(Error::invariant(format!(
+            "program state copy shape: {:?} from {:?}",
+            dst.dims(),
+            src.dims()
+        )));
     }
     // Two views of one slot pool state, as a slot-resident program and its worker hold.
     if dst.same_memory(src) {
@@ -643,7 +647,10 @@ impl DeviceProgram {
                 .get(id)
                 .ok_or_else(|| Error::invariant("program state copy source"))?;
             if state.layout != from.layout {
-                return Err(Error::invariant("program state copy shape"));
+                return Err(Error::invariant(format!(
+                    "program KV copy shape: {:?} from {:?}",
+                    state.layout, from.layout
+                )));
             }
             // Two views of one shared paged cache: nothing to move, whatever its physical rows.
             if state.same_memory(from) {
