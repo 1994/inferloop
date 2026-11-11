@@ -6,6 +6,7 @@ use crate::constants::WIDEST_PREFILL_LANES;
 use crate::resident::prefill_burst::{self, PromptBurst};
 use crate::resident::prompt_logits;
 use crate::resident::require_kernel_geometry;
+use head_padding::pad_package;
 use std::path::PathBuf;
 mod concurrency;
 mod kv_scales;
@@ -425,18 +426,7 @@ impl LoadedModel {
         );
         let mut package = QuantizedPackage::open(root, id).map_err(|e| package_phase.fail(&e))?;
         attach_draft(&mut package, &mut options).map_err(|e| package_phase.fail(&e))?;
-        let padding = head_padding::pad_heads(
-            &mut package.graph,
-            &mut package.weights,
-            options.mtp_depth > 0 || package.dflash2.is_some(),
-            !package
-                .imported
-                .model
-                .position
-                .multimodal_sections
-                .is_empty(),
-        )
-        .map_err(|e| package_phase.fail(&e))?;
+        let padding = pad_package(&mut package, &options).map_err(|e| package_phase.fail(&e))?;
         require_kernel_geometry(&package.graph).map_err(|e| package_phase.fail(&e))?;
         package_phase.finish();
         options.fp8_kv =

@@ -86,6 +86,7 @@ fn power_of_two_heads_and_drafts_are_left_alone_or_refused() {
     assert!(
         pad_heads(&mut graph, &mut weights, true, false)
             .unwrap()
+            .weights
             .is_empty()
     );
     let mut narrow = self::graph("");

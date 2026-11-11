@@ -15,9 +15,10 @@
 //!
 //! Full-width rotary pads each half on its own, keeping the rotated pairs together, and its
 //! frequency table carries the real frequencies. Partial rotary pads only the tail.
+use super::LoadOptions;
 use infer_core::{Error, OpId, Result, TensorId};
 use infer_ir::{DataflowGraph, TensorOp, TensorStorage};
-use infer_models::DeviceWeight;
+use infer_models::{DeviceWeight, QuantizedPackage};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -281,9 +282,8 @@ fn widen(
     else {
         return Err(Error::invariant("attention node"));
     };
-    let (query, key, value) = match node.inputs.as_slice() {
-        &[query, key, value] => (query, key, value),
-        _ => return Err(Error::invalid("attention binds query, key and value")),
+    let &[query, key, value] = node.inputs.as_slice() else {
+        return Err(Error::invalid("attention binds query, key and value"));
     };
     let output = node.outputs[0];
     let state = node.states[0];
@@ -507,6 +507,25 @@ fn widen(
         }
     }
     Ok(())
+}
+
+/// [`pad_heads`] over a package's text graph, refusing drafts and multimodal rotary.
+/// # Errors
+/// As [`pad_heads`].
+pub fn pad_package(package: &mut QuantizedPackage, options: &LoadOptions) -> Result<HeadPadding> {
+    let drafted = options.mtp_depth > 0 || package.dflash2.is_some();
+    let multimodal = !package
+        .imported
+        .model
+        .position
+        .multimodal_sections
+        .is_empty();
+    pad_heads(
+        &mut package.graph,
+        &mut package.weights,
+        drafted,
+        multimodal,
+    )
 }
 
 /// Walk from one attention input back to its projection through rotary, norm and split.
