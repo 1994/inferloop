@@ -22,7 +22,7 @@ use crate::device::asynchronous::block_on;
 use crate::device::copy_runs;
 use crate::device::{CudaDevice, DeviceProfile, device_error};
 use crate::loading::kv_block_bytes;
-use infer_core::{Error, Result, TensorId};
+use infer_core::{Error, ErrorCode, Result, TensorId};
 use infer_cuda_kernels::contract::{Owner, Width};
 use infer_cuda_kernels::runtime::Allocation;
 use infer_cuda_kernels::runtime::f8e4m3fn;
@@ -371,30 +371,37 @@ struct Paging {
     /// Allocations of the shared caches; each slot's entry in `SlotPool::fp8` views them.
     shared: Fp8Caches,
     /// The engine's page ledger; this pool only maps its leases to device rows.
-    pages: KvCacheManager<NoPrefix>,
+    pages: KvCacheManager<PagePrefix>,
+    /// Bytes one page occupies, the unit cached prefixes are charged in.
+    page_bytes: u64,
     leases: Vec<Vec<BlockLease>>,
     /// Each slot's leased pages as device table entries.
     owned: Vec<Vec<i32>>,
 }
 
-/// Prefix snapshots of a slot pool are separately owned, so its ledger caches none and never
-/// holds one of these.
-#[derive(Clone, Copy, Debug)]
-struct NoPrefix;
+/// A prompt prefix whose KV stays in the pool's pages: the ledger keeps them referenced under
+/// the prompt tokens, and a sequence that restores the prefix maps the same pages instead of
+/// copying rows. Recurrent state is not paged; the executor's snapshot carries it.
+#[derive(Clone, Debug)]
+struct PagePrefix {
+    tokens: Vec<u32>,
+    blocks: Vec<BlockLease>,
+    bytes: u64,
+}
 
-impl KvPrefix for NoPrefix {
+impl KvPrefix for PagePrefix {
     fn tokens(&self) -> &[u32] {
-        &[]
+        &self.tokens
     }
     fn blocks(&self) -> &[BlockLease] {
-        &[]
+        &self.blocks
     }
     fn bytes(&self) -> u64 {
-        0
+        self.bytes
     }
 }
 
-/// The ledger's namespace; nothing is cached under it.
+/// The ledger's namespace for this pool's page-backed prefixes.
 const LEDGER_NAMESPACE: &[u8] = b"cuda-slot-pool";
 
 impl Paging {
@@ -428,10 +435,12 @@ impl Paging {
         if more == 0 {
             return Ok(true);
         }
-        if self.pages.free_blocks() < more {
-            return Ok(false);
-        }
-        let leases = self.pages.allocate(more)?;
+        // Allocation first reclaims pages only cached prefixes hold.
+        let leases = match self.pages.allocate(more) {
+            Ok(leases) => leases,
+            Err(error) if error.code == ErrorCode::Capacity => return Ok(false),
+            Err(error) => return Err(error),
+        };
         for lease in &leases {
             self.owned[slot].push(i32::try_from(lease.index).map_err(device_error)?);
         }
@@ -1015,6 +1024,74 @@ impl SlotPool {
             .map_or(Ok(()), |paging| paging.release(slot))
     }
 
+    /// Keep a slot's first `tokens.len()` positions as a page-backed prefix: the ledger
+    /// references the slot's whole pages under those tokens until a later allocation reclaims
+    /// them. False when the pool is unpaged or the prefix is not on whole pages it owns.
+    /// # Errors
+    /// Propagates ledger ownership errors.
+    pub(crate) fn publish_pages(&mut self, slot: usize, tokens: &[u32]) -> Result<bool> {
+        let Some(paging) = self.paging.as_mut() else {
+            return Ok(false);
+        };
+        let blocks = tokens.len() / KV_BLOCK_TOKENS;
+        let Some(owned) = paging
+            .leases
+            .get(slot)
+            .and_then(|leases| leases.get(..blocks))
+        else {
+            return Ok(false);
+        };
+        if blocks == 0 || !tokens.len().is_multiple_of(KV_BLOCK_TOKENS) {
+            return Ok(false);
+        }
+        let bytes = paging.page_bytes.saturating_mul(blocks as u64);
+        paging.pages.publish_prefix(PagePrefix {
+            tokens: tokens.to_vec(),
+            blocks: owned.to_vec(),
+            bytes,
+        })
+    }
+
+    /// Whether the ledger still holds exactly this prefix's pages.
+    pub(crate) fn holds_pages(&self, tokens: &[u32]) -> bool {
+        self.paging.as_ref().is_some_and(|paging| {
+            paging
+                .pages
+                .contains_prefix_where(tokens, |prefix| prefix.tokens.len() == tokens.len())
+        })
+    }
+
+    /// Map a published prefix's pages as a slot's first pages, replacing what it owned, and
+    /// point its table at them. False when the ledger has reclaimed them.
+    /// # Errors
+    /// Propagates ledger and table upload failures.
+    pub(crate) fn attach_pages(
+        &mut self,
+        slot: usize,
+        tokens: &[u32],
+        device: &CudaDevice,
+    ) -> Result<bool> {
+        let Some(paging) = self.paging.as_mut() else {
+            return Ok(false);
+        };
+        let Some(prefix) = paging
+            .pages
+            .attach_prefix_where(tokens, tokens.len(), |prefix| {
+                prefix.tokens.len() == tokens.len()
+            })?
+        else {
+            return Ok(false);
+        };
+        paging.release(slot)?;
+        paging.owned[slot] = prefix
+            .blocks
+            .iter()
+            .map(|lease| i32::try_from(lease.index).map_err(device_error))
+            .collect::<Result<_>>()?;
+        paging.leases[slot] = prefix.blocks;
+        self.upload_table(slot, device)
+    }
+
     /// Point a slot's table at the pages it owns.
     fn upload_table(&mut self, slot: usize, device: &CudaDevice) -> Result<bool> {
         let Some(paging) = self.paging.as_ref() else {
@@ -1061,18 +1138,21 @@ impl SlotPool {
         let block = KV_BLOCK_TOKENS;
         let blocks = tokens.div_ceil(block).max(capacity.div_ceil(block));
         let shared = fp8_cache::allocate(device, graph, blocks * block, &weights.kv_scales)?;
+        let bytes_per_block = kv_block_bytes(graph, weights)?;
         // The ledger prices pages in the unit the pool quote uses.
         let pages = KvCacheManager::new(KvCacheConfig {
             namespace: LEDGER_NAMESPACE.to_vec(),
             block_size: block,
             blocks,
-            bytes_per_block: kv_block_bytes(graph, weights)?,
-            prefix_bytes: 0,
-            max_prefixes: 1,
+            bytes_per_block,
+            // Every page may hold a cached prefix; allocation reclaims them before refusing.
+            prefix_bytes: bytes_per_block.saturating_mul(blocks as u64),
+            max_prefixes: blocks,
         })?;
         Ok(Some(Paging {
             shared,
             pages,
+            page_bytes: bytes_per_block,
             leases: vec![Vec::new(); width],
             owned: vec![Vec::new(); width],
         }))
@@ -1098,6 +1178,35 @@ impl SlotPool {
         slot: usize,
         source: &States,
         source_fp8: &Fp8Caches,
+        rows: usize,
+        device: &CudaDevice,
+    ) -> Result<()> {
+        self.bind_with(slot, source, Some(source_fp8), rows, device)
+    }
+
+    /// [`Self::bind`] for a slot whose paged KV already holds the prefix through
+    /// [`Self::attach_pages`]: only unpaged state is copied.
+    /// # Errors
+    /// As [`Self::bind`].
+    pub(crate) fn bind_attached(
+        &mut self,
+        slot: usize,
+        source: &States,
+        rows: usize,
+        device: &CudaDevice,
+    ) -> Result<()> {
+        if self.paging.is_none() {
+            return Err(Error::invariant("attached bind on an unpaged pool"));
+        }
+        self.bind_with(slot, source, None, rows, device)
+    }
+
+    /// `source_fp8` is `None` when the slot's pages already hold the paged KV.
+    fn bind_with(
+        &mut self,
+        slot: usize,
+        source: &States,
+        source_fp8: Option<&Fp8Caches>,
         rows: usize,
         device: &CudaDevice,
     ) -> Result<()> {
@@ -1136,15 +1245,19 @@ impl SlotPool {
                             .fp8
                             .get_mut(slot)
                             .ok_or_else(|| Error::invariant("slot fp8 caches"))?;
-                        match self.paging.as_ref() {
-                            Some(paging) => Self::scatter_kv_fp8(
+                        match (self.paging.as_ref(), source_fp8) {
+                            (Some(_), None) => {}
+                            (Some(paging), Some(source_fp8)) => Self::scatter_kv_fp8(
                                 dst,
                                 source_fp8,
                                 *id,
                                 (rows, &paging.owned[slot]),
                                 transfers,
                             )?,
-                            None => {
+                            (None, None) => {
+                                return Err(Error::invariant("unpaged bind without KV rows"));
+                            }
+                            (None, Some(source_fp8)) => {
                                 Self::copy_kv_fp8(
                                     dst,
                                     source_fp8,
@@ -1197,7 +1310,34 @@ impl SlotPool {
         rows: usize,
         device: &CudaDevice,
     ) -> Result<(States, Fp8Caches)> {
-        let exported = self.export_queued(slot, rows, device);
+        self.export_with(slot, rows, true, device)
+    }
+
+    /// [`Self::export`] without the paged KV, for a prefix whose pages stay published in the
+    /// ledger ([`Self::publish_pages`]).
+    /// # Errors
+    /// As [`Self::export`].
+    pub(crate) fn export_unpaged(
+        &self,
+        slot: usize,
+        rows: usize,
+        device: &CudaDevice,
+    ) -> Result<States> {
+        if self.paging.is_none() {
+            return Err(Error::invariant("unpaged export of an unpaged pool"));
+        }
+        self.export_with(slot, rows, false, device)
+            .map(|(states, _)| states)
+    }
+
+    fn export_with(
+        &self,
+        slot: usize,
+        rows: usize,
+        with_kv: bool,
+        device: &CudaDevice,
+    ) -> Result<(States, Fp8Caches)> {
+        let exported = self.export_queued(slot, rows, with_kv, device);
         // A partial export has queued copies into tensors it is about to drop; settle them first.
         if exported.is_err() {
             device.drain()?;
@@ -1209,6 +1349,7 @@ impl SlotPool {
         &self,
         slot: usize,
         rows: usize,
+        with_kv: bool,
         device: &CudaDevice,
     ) -> Result<(States, Fp8Caches)> {
         if slot >= self.width() || rows == 0 || rows > self.capacity {
@@ -1246,6 +1387,7 @@ impl SlotPool {
                         .collect::<Result<_>>()?;
                     out.insert(*id, copies);
                 }
+                SlotCopy::KvFp8 if !with_kv => {}
                 SlotCopy::KvFp8 => {
                     let cache = caches
                         .get(id)

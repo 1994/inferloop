@@ -91,7 +91,7 @@ async fn cacheable_prefix(
 fn slot_prefix(
     device: &CudaDevice,
     loaded: &LoadedModel,
-    (target_pool, draft_pool): (Option<&SlotPool>, Option<&SlotPool>),
+    (target_pool, draft_pool): (Option<&mut SlotPool>, Option<&SlotPool>),
     state: &Sequence,
     (slot, covered): (usize, usize),
 ) -> Result<Option<prefix::CachedPrefix>> {
@@ -99,9 +99,15 @@ fn slot_prefix(
         let Some(target_pool) = target_pool else {
             return Ok(None);
         };
-        let (states, fp8) = target_pool.export(slot, covered, device)?;
-        let target =
-            ProgramSnapshot::from_parts(states, fp8, loaded.graph(), state.program.position())?;
+        let position = state.program.position();
+        // A paged pool keeps the prefix's KV in its pages; only unpaged state is copied out.
+        let target = if target_pool.publish_pages(slot, &state.history[..covered])? {
+            let states = target_pool.export_unpaged(slot, covered, device)?;
+            ProgramSnapshot::with_pages(states, loaded.graph(), position)?
+        } else {
+            let (states, fp8) = target_pool.export(slot, covered, device)?;
+            ProgramSnapshot::from_parts(states, fp8, loaded.graph(), position)?
+        };
         let draft = match (&state.speculation, draft_pool, loaded.draft_graph()) {
             (Some(spec), Some(draft_pool), Some(draft_graph)) => {
                 let rows = covered.saturating_sub(MTP_KV_OFFSET);
@@ -837,7 +843,7 @@ impl CudaExecutor {
                 && let Some(snapshot) = slot_prefix(
                     self.loaded.device(),
                     &self.loaded,
-                    (self.slots.as_ref(), self.draft_slots.as_ref()),
+                    (self.slots.as_mut(), self.draft_slots.as_ref()),
                     state,
                     (slot, covered),
                 )?
@@ -1092,7 +1098,7 @@ impl CudaExecutor {
             (Some(covered), Some(slot)) => slot_prefix(
                 self.loaded.device(),
                 &self.loaded,
-                (self.slots.as_ref(), self.draft_slots.as_ref()),
+                (self.slots.as_mut(), self.draft_slots.as_ref()),
                 state,
                 (slot, covered),
             )?,
