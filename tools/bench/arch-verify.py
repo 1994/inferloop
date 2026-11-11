@@ -6,6 +6,10 @@ reports, per configuration: the greedy output hash, fixed-work throughput, tunin
 taken while serving, and tuning-table hits grouped by message. A refactor that must not change
 behaviour passes when every hash matches, nothing is measured and the hits agree.
 
+`pressure` sends more concurrent long greedy requests than the KV pool holds at once, from both
+binaries, and requires every request to finish with the same output on both sides: on-demand
+page growth and recompute preemption must not change what a request generates.
+
 `gap` serves one binary under closed-loop load and reports the device-busy share per step, the
 evidence the P2 depth-2 and on-demand growth decisions are made from.
 """
@@ -35,6 +39,7 @@ WARM_TOKENS = 16
 GAP_REQUESTS_PER_LANE = 3
 SEED = 7
 HASH_CHARS = 12
+PRESSURE_METRICS = ("preemptions", "failed_requests", "successful_requests", "deferred_reasons")
 SHUTDOWN_S = 30
 FILLER = "The quick brown fox jumps over the lazy dog. " * 28
 PROMPTS = (
@@ -216,6 +221,46 @@ def pair(args):
     return 1 if failed else 0
 
 
+def pressure_side(binary, cache, model, args, log):
+    with Server(binary, model, cache, log, []) as server:
+        def one(i):
+            body, error = server.complete(f"{i}: {FILLER * args.prompt_repeats}", args.tokens)
+            if error:
+                return {"error": error}
+            message = body["choices"][0]["message"]
+            text = json.dumps([message["content"], message.get("reasoning_content")])
+            return {"sha": hashlib.sha256(text.encode()).hexdigest(),
+                    "tokens": body["usage"]["completion_tokens"]}
+        start = time.perf_counter()
+        with ThreadPoolExecutor(args.requests) as pool:
+            results = list(pool.map(one, range(args.requests)))
+        metrics = server.get("/native/v1/observability")["metrics"]
+    return {"results": results, "wall_s": round(time.perf_counter() - start, 2),
+            "metrics": {key: metrics.get(key) for key in PRESSURE_METRICS}}
+
+
+def pressure(args):
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    sides = {name: pressure_side(binary, args.cache, args.model, args, out / f"{name}.log")
+             for name, binary in (("candidate", args.candidate), ("base", args.base))}
+    (out / "pressure.json").write_text(json.dumps(sides, indent=1))
+    reasons = []
+    for name, side in sides.items():
+        errors = [result["error"] for result in side["results"] if "error" in result]
+        if errors:
+            reasons.append(f"{name}: {len(errors)} failed, first {errors[0]}")
+    pairs = zip(sides["candidate"]["results"], sides["base"]["results"])
+    differ = sum(1 for a, b in pairs if a.get("sha") != b.get("sha"))
+    if differ:
+        reasons.append(f"{differ} outputs differ")
+    for name, side in sides.items():
+        tokens = sum(result.get("tokens", 0) for result in side["results"])
+        print(f"{name}: {tokens} tokens in {side['wall_s']} s {json.dumps(side['metrics'])}")
+    print("OK" if not reasons else "DIFF: " + "; ".join(reasons), flush=True)
+    return 1 if reasons else 0
+
+
 def gap(args):
     with Server(args.binary, args.model, args.cache, Path(args.out), []) as server:
         for lanes in args.levels:
@@ -258,6 +303,16 @@ def main():
     paired.add_argument("--reps", type=int, default=2)
     paired.add_argument("--out", required=True)
     paired.set_defaults(run=pair)
+    loaded = commands.add_parser("pressure", help="KV oversubscription, candidate against base")
+    loaded.add_argument("--candidate", required=True)
+    loaded.add_argument("--base", required=True)
+    loaded.add_argument("--cache", required=True)
+    loaded.add_argument("--model", required=True)
+    loaded.add_argument("--requests", type=int, default=64)
+    loaded.add_argument("--tokens", type=int, default=1024)
+    loaded.add_argument("--prompt-repeats", type=int, default=8)
+    loaded.add_argument("--out", required=True)
+    loaded.set_defaults(run=pressure)
     busy = commands.add_parser("gap", help="device-busy share under closed-loop load")
     busy.add_argument("--binary", required=True)
     busy.add_argument("--model", required=True)
