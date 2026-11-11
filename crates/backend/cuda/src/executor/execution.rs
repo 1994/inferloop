@@ -979,6 +979,16 @@ impl CudaExecutor {
                 (None, None) => unbound.push(index),
             }
         }
+        // Slots lease pages as their sequences reach them, so every bound sequence first grows
+        // to cover this step's rows.
+        let lanes = pool.verify().unwrap_or(1);
+        let device = self.loaded.device();
+        for &(index, slot) in participants.iter().chain(&homed) {
+            let state = &self.states[&tasks[index].state];
+            if !pool.grow(slot, reach(&tasks[index], lanes, state.capacity), device)? {
+                return Err(pages_exhausted());
+            }
+        }
         let mut newly: Vec<(usize, usize)> = Vec::new();
         for &index in &unbound {
             if participants.len() + homed.len() + newly.len() >= pool.width() {
@@ -987,8 +997,12 @@ impl CudaExecutor {
             let Some(slot) = pool.take_free() else {
                 break;
             };
-            let tokens = self.states[&tasks[index].state].capacity;
-            match pool.assign(slot, tokens, self.loaded.device()) {
+            let tokens = reach(
+                &tasks[index],
+                lanes,
+                self.states[&tasks[index].state].capacity,
+            );
+            match pool.assign(slot, tokens, device) {
                 Ok(true) => {}
                 Ok(false) => {
                     pool.release(slot);
@@ -1012,7 +1026,6 @@ impl CudaExecutor {
         newly.extend_from_slice(&homed);
         participants.extend_from_slice(&newly);
         participants.sort_unstable_by_key(|&(index, _)| index);
-        let device = self.loaded.device();
         if let Err(error) = slot_replay(
             (pool, self.draft_slots.as_mut(), self.dflash.as_mut()),
             &mut self.states,
@@ -1062,6 +1075,11 @@ impl CudaExecutor {
                 "slot-leased CUDA sequence cannot run serially",
             ));
         }
+        if let (Some(slot), Some(pool)) = (state.home, self.slots.as_mut())
+            && !pool.grow(slot, reach(task, 1, state.capacity), self.loaded.device())?
+        {
+            return Err(pages_exhausted());
+        }
         // A slot-resident sequence's programs capture no prompt graph: every prompt chunk runs
         // on the worker.
         let wide = state.home.is_some() && !matches!(task.tokens, ExecutionInput::Decode { .. });
@@ -1092,6 +1110,22 @@ impl CudaExecutor {
         });
         Ok(())
     }
+}
+
+/// Positions a task writes through its slot: a decode step's verify lanes, or a prompt
+/// chunk's end, within the sequence's capacity.
+fn reach(task: &ExecutionTask, lanes: usize, capacity: usize) -> usize {
+    match task.tokens {
+        ExecutionInput::Decode { position, .. } => position.saturating_add(lanes),
+        _ => task.tokens.len(),
+    }
+    .min(capacity)
+}
+
+/// The engine schedules a step only when its pages are free, so a slot that cannot grow means
+/// the reported growth and the ledger disagree.
+fn pages_exhausted() -> Error {
+    Error::new(ErrorCode::Capacity, "slot KV pages exhausted")
 }
 
 /// Every rung over the first programs, widest first so narrower rungs view its storage. Any

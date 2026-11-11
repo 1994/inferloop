@@ -413,15 +413,29 @@ impl Paging {
     /// Lease `blocks` pages for a slot. False when the ledger lacks them; the slot then owns none.
     fn assign(&mut self, slot: usize, blocks: usize) -> Result<bool> {
         self.release(slot)?;
-        if self.pages.free_blocks() < blocks {
+        self.extend(slot, blocks)
+    }
+
+    /// Lease pages until a slot owns `blocks`, keeping the ones it has. False when the ledger
+    /// lacks them; the slot then keeps what it owned.
+    fn extend(&mut self, slot: usize, blocks: usize) -> Result<bool> {
+        let owned = self
+            .owned
+            .get(slot)
+            .ok_or_else(|| Error::invalid("slot assignment index"))?
+            .len();
+        let more = blocks.saturating_sub(owned);
+        if more == 0 {
+            return Ok(true);
+        }
+        if self.pages.free_blocks() < more {
             return Ok(false);
         }
-        let leases = self.pages.allocate(blocks)?;
-        self.owned[slot] = leases
-            .iter()
-            .map(|lease| i32::try_from(lease.index).map_err(device_error))
-            .collect::<Result<_>>()?;
-        self.leases[slot] = leases;
+        let leases = self.pages.allocate(more)?;
+        for lease in &leases {
+            self.owned[slot].push(i32::try_from(lease.index).map_err(device_error)?);
+        }
+        self.leases[slot].extend(leases);
         Ok(true)
     }
 }
@@ -958,18 +972,65 @@ impl SlotPool {
         let Some(paging) = self.paging.as_mut() else {
             return Ok(true);
         };
-        let blocks = tokens.div_ceil(KV_BLOCK_TOKENS).max(1);
-        if !paging.assign(slot, blocks)? {
+        if !paging.assign(slot, tokens.div_ceil(KV_BLOCK_TOKENS).max(1))? {
             return Ok(false);
         }
+        self.upload_table(slot, device)
+    }
+
+    /// Grow a leased slot's pages to cover `tokens` positions, keeping those it owns: a
+    /// sequence leases pages as it reaches them instead of for its whole capacity. False when
+    /// the shared pool lacks pages; the slot keeps what it had.
+    /// # Errors
+    /// Rejects growth beyond the slot capacity and table upload failures.
+    pub(crate) fn grow(&mut self, slot: usize, tokens: usize, device: &CudaDevice) -> Result<bool> {
+        if tokens > self.capacity {
+            return Err(Error::invalid("slot growth beyond capacity"));
+        }
+        let Some(paging) = self.paging.as_mut() else {
+            return Ok(true);
+        };
+        let before = paging.owned.get(slot).map_or(0, Vec::len);
+        if !paging.extend(slot, tokens.div_ceil(KV_BLOCK_TOKENS).max(1))? {
+            return Ok(false);
+        }
+        if paging.owned[slot].len() == before {
+            return Ok(true);
+        }
+        self.upload_table(slot, device)
+    }
+
+    /// Pages a slot owns, or `None` when each slot owns its whole-capacity cache.
+    pub(crate) fn slot_pages(&self, slot: usize) -> Option<usize> {
+        self.paging
+            .as_ref()
+            .map(|paging| paging.owned.get(slot).map_or(0, Vec::len))
+    }
+
+    /// Return a slot's pages to the ledger while its lease stays held: a slot-resident
+    /// sequence that resets keeps its slot but nothing it wrote.
+    pub(crate) fn shed_pages(&mut self, slot: usize) -> Result<()> {
+        self.paging
+            .as_mut()
+            .map_or(Ok(()), |paging| paging.release(slot))
+    }
+
+    /// Point a slot's table at the pages it owns.
+    fn upload_table(&mut self, slot: usize, device: &CudaDevice) -> Result<bool> {
+        let Some(paging) = self.paging.as_ref() else {
+            return Ok(true);
+        };
         let owned = &paging.owned[slot];
+        let first = *owned
+            .first()
+            .ok_or_else(|| Error::invariant("slot owns no pages"))?;
         let table = self
             .tables
             .get_mut(slot)
             .ok_or_else(|| Error::invariant("slot block table"))?;
         // Positions past the request's reach never resolve; point them at its first block.
         let mut entries = owned.clone();
-        entries.resize(table.len(), owned[0]);
+        entries.resize(table.len(), first);
         self.table_staging.copy(device, table, &entries)?;
         Ok(true)
     }
