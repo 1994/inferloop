@@ -216,6 +216,7 @@ fn affine_admission_rejects_both_product_and_total_overflow() {
     let price = SequencePrice {
         fixed: 1,
         per_token: u64::MAX / 2,
+        per_page: 0,
     };
     assert_eq!(price.at(2).unwrap(), u64::MAX);
     assert!(price.at(3).is_err());
@@ -224,7 +225,8 @@ fn affine_admission_rejects_both_product_and_total_overflow() {
         price
             .combine(SequencePrice {
                 fixed: 0,
-                per_token: u64::MAX
+                per_token: u64::MAX,
+                per_page: 0,
             })
             .is_err()
     );
@@ -272,17 +274,23 @@ fn affine_admission_counts_fp8_and_f32_kv_and_full_history() -> Result<()> {
                 ProgramGeometry::new(&weights, private),
                 &fixture_profile(),
             )?;
-            // Key and value storage: one FP8 and one F32 state. Full history adds
-            // a device staging copy and a host copy for each 48-element row.
-            let growth = 2 * (128 + 256 * F32)
-                + if readout == OutputReadout::Full {
-                    48 * READBACK_COPIES * F32
-                } else {
-                    0
-                };
+            // Key and value storage: one FP8 and one F32 state, priced by whole pages as the
+            // ledger counts them. Full history adds a device staging copy and a host copy for
+            // each 48-element row.
+            let page = KV_BLOCK_TOKENS as u64;
+            let kv = 2 * (128 + 256 * F32);
+            let history = if readout == OutputReadout::Full {
+                48 * READBACK_COPIES * F32
+            } else {
+                0
+            };
             for power in 0..=15 {
                 let capacity = 1_u64 << power;
-                assert_eq!(price.at(capacity)?, base + growth * capacity);
+                let pages = capacity.div_ceil(page);
+                assert_eq!(
+                    price.at(capacity)?,
+                    base + kv * page * pages + history * capacity
+                );
             }
         }
     }
