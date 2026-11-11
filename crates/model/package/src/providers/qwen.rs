@@ -359,14 +359,6 @@ impl ModelProvider for QwenProvider {
         // Multimodal Qwen nests the text backbone under `model.language_model.`.
         &["model.language_model.", "model.", ""]
     }
-    fn weight_source(&self, slot: &str, prefix: &str) -> String {
-        // The language-model head is stored at the package root, outside the backbone prefix.
-        if slot == "lm_head.weight" {
-            slot.to_owned()
-        } else {
-            format!("{prefix}{slot}")
-        }
-    }
 }
 
 impl TextConfig {

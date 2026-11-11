@@ -86,3 +86,26 @@ fn unmodeled_llama_semantics_are_refused_at_import() {
         assert_eq!(error.code, infer_core::ErrorCode::Unsupported, "{extra}");
     }
 }
+
+#[test]
+fn an_untied_head_is_bound_at_the_package_root() -> Result<()> {
+    let bytes = config(r#","tie_word_embeddings":false"#);
+    let imported = LlamaProvider.import(ModelId::ONE, &bytes)?;
+    let graph = LlamaProvider.graph(&imported.model)?;
+    let sources: Vec<String> = graph
+        .tensors
+        .iter()
+        .filter_map(|spec| match &spec.storage {
+            TensorStorage::Weight { slot } => Some(LlamaProvider.weight_source(slot, "model.")),
+            _ => None,
+        })
+        .collect();
+    assert!(sources.iter().any(|name| name == "lm_head.weight"));
+    assert!(
+        sources
+            .iter()
+            .any(|name| name == "model.embed_tokens.weight")
+    );
+    assert!(!sources.iter().any(|name| name == "model.lm_head.weight"));
+    Ok(())
+}
