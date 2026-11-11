@@ -109,7 +109,8 @@ fn values(count: usize, seed: u64) -> Vec<f32> {
             state ^= state << 13;
             state ^= state >> 7;
             state ^= state << 17;
-            f32::from(u16::try_from(state >> 48).unwrap()) / f32::from(u16::MAX) * 2.0 - 1.0
+            (f32::from(u16::try_from(state >> 48).unwrap()) / f32::from(u16::MAX))
+                .mul_add(2.0, -1.0)
         })
         .collect()
 }
