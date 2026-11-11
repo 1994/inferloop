@@ -84,6 +84,5 @@ class TwinTest(unittest.TestCase):
         self.assertEqual(len(query), geometry.heads * 128 * geometry.hidden)
         self.assertEqual(len(output), geometry.hidden * geometry.heads * 128)
         # Padding lanes 48..63 of head 0 are zero rows.
-        self.assertTrue(all(v == 0.0 for v in query[48 * geometry.hidden:64 * geometry.hidden]))
+        self.assertTrue(all(v == 0.0 for v in query[48 * geometry.hidden : 64 * geometry.hidden]))
         self.assertIsNone(module.twin_values("x.mlp.up_proj.weight", None, geometry, 128, block))
-

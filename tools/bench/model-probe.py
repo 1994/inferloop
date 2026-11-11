@@ -139,8 +139,11 @@ def padded_width(real):
 def lanes(real, stored):
     """Real lane each padded lane of one head reads, None for a zero lane."""
     half, stored_half = real // 2, stored // 2
-    return [lane - stored_half * part + half * part if lane - stored_half * part < half else None
-            for part in (0, 1) for lane in range(stored_half * part, stored_half * (part + 1))]
+    return [
+        lane - stored_half * part + half * part if lane - stored_half * part < half else None
+        for part in (0, 1)
+        for lane in range(stored_half * part, stored_half * (part + 1))
+    ]
 
 
 def bf16_nearest(value):
@@ -154,8 +157,10 @@ def twin_values(name, shape, geometry, stored, block):
     """The padded twin's values for one attention tensor, or None for an unchanged tensor."""
     g = geometry
     width = 2
-    values = [struct.unpack("<f", b"\0\0" + block[i * width:(i + 1) * width])[0]
-              for i in range(len(block) // width)]
+    values = [
+        struct.unpack("<f", b"\0\0" + block[i * width : (i + 1) * width])[0]
+        for i in range(len(block) // width)
+    ]
 
     def real(index):
         return values[index % len(values)]
@@ -176,10 +181,12 @@ def twin_values(name, shape, geometry, stored, block):
         return out
     if name.endswith("o_proj.weight"):
         for row in range(g.hidden):
-            for head in range(g.heads):
-                for lane in lane_map:
-                    out.append(0.0 if lane is None
-                               else real(row * g.heads * g.head_dim + head * g.head_dim + lane))
+            base = row * g.heads * g.head_dim
+            out.extend(
+                0.0 if lane is None else real(base + head * g.head_dim + lane)
+                for head in range(g.heads)
+                for lane in lane_map
+            )
         return out
     return None
 
@@ -304,8 +311,13 @@ def serve(args, name, geometry, port, twin):
     errors = [error for _, error in alone + together if error]
     invariant = [text for text, _ in alone] == [text for text, _ in together]
     passed = not geometry.refused and not errors and invariant
-    return {"served": True, "errors": errors[:2], "batch_invariant": invariant, "passed": passed,
-            "outputs": [text for text, _ in alone]}
+    return {
+        "served": True,
+        "errors": errors[:2],
+        "batch_invariant": invariant,
+        "passed": passed,
+        "outputs": [text for text, _ in alone],
+    }
 
 
 def main():
