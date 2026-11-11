@@ -1335,10 +1335,10 @@ async fn slot_speculate(
         pool,
         states,
         device,
-        tasks,
-        participants,
-        outputs,
         &Verified {
+            tasks,
+            participants,
+            outputs,
             rows,
             width,
             features: &verified,

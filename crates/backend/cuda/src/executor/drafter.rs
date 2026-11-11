@@ -19,8 +19,9 @@ use std::collections::BTreeMap;
 pub(super) enum Drafter {
     None,
     /// Multi-token-prediction layers of the target. Pooled steps batch them in their own slot
-    /// pool, captured with the target pool when the head's graph allows it.
-    Head(Option<SlotPool>),
+    /// pool, captured with the target pool when the head's graph allows it. Boxed like the
+    /// engine, so the enum stays a pointer wide.
+    Head(Option<Box<SlotPool>>),
     /// A separate draft model that owns per-sequence rings and proposes from target features.
     /// Boxed: the engine dwarfs the other variants and is reached once per step.
     Model(Box<Engine>),
@@ -28,6 +29,10 @@ pub(super) enum Drafter {
 
 /// What one pooled verify step leaves for the draft to settle.
 pub(super) struct Verified<'a> {
+    pub(super) tasks: &'a [ExecutionTask],
+    /// Task index and slot of each sequence in the step.
+    pub(super) participants: &'a [(usize, usize)],
+    pub(super) outputs: &'a [Option<TaskOutput>],
     /// Target rows of the step: hidden state and logits per verify lane.
     pub(super) rows: &'a [(Vec<f32>, Vec<f32>)],
     /// Verify lanes per slot.
@@ -69,16 +74,16 @@ impl Drafter {
     }
 
     /// The draft's own slot pool, which homes and prefix snapshots bind beside the target's.
-    pub(super) const fn pool(&self) -> Option<&SlotPool> {
+    pub(super) fn pool(&self) -> Option<&SlotPool> {
         match self {
-            Self::Head(pool) => pool.as_ref(),
+            Self::Head(pool) => pool.as_deref(),
             Self::None | Self::Model(_) => None,
         }
     }
 
-    pub(super) const fn pool_mut(&mut self) -> Option<&mut SlotPool> {
+    pub(super) fn pool_mut(&mut self) -> Option<&mut SlotPool> {
         match self {
-            Self::Head(pool) => pool.as_mut(),
+            Self::Head(pool) => pool.as_deref_mut(),
             Self::None | Self::Model(_) => None,
         }
     }
@@ -108,7 +113,7 @@ impl Drafter {
         match self {
             Self::None => Ok(()),
             Self::Head(pool) => {
-                *pool = head;
+                *pool = head.map(Box::new);
                 Ok(())
             }
             Self::Model(engine) => {
@@ -171,9 +176,6 @@ impl Drafter {
         target: &SlotPool,
         states: &mut BTreeMap<StateId, Sequence>,
         device: &CudaDevice,
-        tasks: &[ExecutionTask],
-        participants: &[(usize, usize)],
-        outputs: &[Option<TaskOutput>],
         verified: &Verified<'_>,
     ) -> Result<()> {
         match self {
@@ -184,9 +186,9 @@ impl Drafter {
                 pool,
                 states,
                 device,
-                tasks,
-                participants,
-                outputs,
+                verified.tasks,
+                verified.participants,
+                verified.outputs,
                 verified.rows,
                 verified.width,
             ),
