@@ -69,11 +69,11 @@ fn a_narrow_head_is_stored_in_the_next_power_of_two() {
     // Full rotary over 96 lanes pads each 48-lane half to 64.
     assert!(padding.rotary.values().all(|&real| real == 96));
     assert_eq!(
-        weights["model.layers.0.self_attn.q_proj.weight"].shape,
+        weights["layers.0.self_attn.q_proj.weight"].shape,
         [4 * 128, 384]
     );
     assert_eq!(
-        weights["model.layers.0.self_attn.o_proj.weight"].shape,
+        weights["layers.0.self_attn.o_proj.weight"].shape,
         [384, 4 * 128]
     );
     crate::resident::require_kernel_geometry(&graph).unwrap();
@@ -167,7 +167,7 @@ fn real_frequencies(real: usize) -> Vec<f64> {
 fn assert_padding_preserves_scores(real: usize, normed: bool, offset: f32) {
     let stored = (real / 2).next_power_of_two() * 2;
     let lanes = layout(real, stored, true);
-    let ratio = real as f32 / stored as f32;
+    let ratio = width_ratio(real, stored);
     let (query, key) = (values(real * HIDDEN, 2), values(real * HIDDEN, 3));
     let (query_gain, key_gain) = (values(real, 4), values(real, 5));
     let rows = |scale| Pad::Rows {

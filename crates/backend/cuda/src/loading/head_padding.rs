@@ -26,7 +26,7 @@ type Layout = Arc<[Option<usize>]>;
 
 /// How one weight's checkpoint values map into its padded storage.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Pad {
+pub enum Pad {
     /// Output rows, `parts` stacked head-wide blocks per head (the query, then its gate).
     Rows {
         heads: usize,
@@ -51,16 +51,10 @@ pub(crate) enum Pad {
 
 /// Weights to pad and rotary tables to fill, for a graph whose heads were widened.
 #[derive(Default, Debug)]
-pub(crate) struct HeadPadding {
-    pub(crate) weights: BTreeMap<TensorId, Pad>,
+pub struct HeadPadding {
+    pub weights: BTreeMap<TensorId, Pad>,
     /// Real rotary width of each widened rotary node, whose frequencies its table carries.
-    pub(crate) rotary: BTreeMap<OpId, usize>,
-}
-
-impl HeadPadding {
-    pub(crate) fn is_empty(&self) -> bool {
-        self.weights.is_empty()
-    }
+    pub rotary: BTreeMap<OpId, usize>,
 }
 
 impl Pad {
@@ -89,7 +83,7 @@ impl Pad {
 
     /// Pad a `[rows, columns]` matrix; `zero` fills the padding, and `scale` applies the
     /// query-row correction to real rows.
-    pub(crate) fn apply<T: Copy>(
+    pub fn apply<T: Copy>(
         &self,
         values: &[T],
         (rows, columns): (usize, usize),
@@ -144,7 +138,7 @@ impl Pad {
     }
 
     /// A norm gain's padded values, scaled so `gain + offset` carries the correction.
-    pub(crate) fn gain(&self, values: &[f32]) -> Result<Vec<f32>> {
+    pub fn gain(&self, values: &[f32]) -> Result<Vec<f32>> {
         let Self::Gain {
             layout,
             scale,
@@ -163,9 +157,14 @@ impl Pad {
     }
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    reason = "Bounded rotary dimensions are intentionally rounded to the F32 device frequency contract"
+)]
 /// Rotary frequencies for a `half`-lane table: the first `real / 2` lanes rotate as a
 /// `real`-wide rotary does, padding lanes do not rotate.
-pub(crate) fn rotary_frequencies(half: usize, real: usize, theta: f64) -> Vec<f32> {
+pub fn rotary_frequencies(half: usize, real: usize, theta: f64) -> Vec<f32> {
     (0..half)
         .map(|lane| {
             if lane < real / 2 {
@@ -175,6 +174,15 @@ pub(crate) fn rotary_frequencies(half: usize, real: usize, theta: f64) -> Vec<f3
             }
         })
         .collect()
+}
+
+/// `D / P` for a head of `real` lanes stored in `stored`.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "head widths are far below the f32 mantissa"
+)]
+fn width_ratio(real: usize, stored: usize) -> f32 {
+    real as f32 / stored as f32
 }
 
 /// Lanes of one head: real lanes in order, each half followed by its padding when `halves`.
@@ -215,7 +223,7 @@ struct Chain {
 /// multimodal rotary and weight encodings without an exact padded form.
 /// # Errors
 /// Returns `Unsupported` for a geometry this load cannot pad, `Invalid` for a malformed chain.
-pub(crate) fn pad_heads(
+pub fn pad_heads(
     graph: &mut DataflowGraph,
     weights: &mut BTreeMap<String, DeviceWeight>,
     drafted: bool,
@@ -315,7 +323,7 @@ fn widen(
         ),
     };
     let lanes = layout(real, stored, halves);
-    let ratio = real as f32 / stored as f32;
+    let ratio = width_ratio(real, stored);
     // The attention output, an output gate, and the projection they reach.
     let consumers = |tensor: TensorId| -> Vec<usize> {
         graph

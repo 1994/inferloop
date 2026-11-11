@@ -485,11 +485,6 @@ fn weight_id(graph: &DataflowGraph, slot: &str) -> Result<TensorId> {
         .ok_or_else(|| Error::invalid("missing MTP target weight"))
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    reason = "Bounded rotary dimensions are intentionally rounded to the F32 device frequency contract"
-)]
 fn add_rope(
     device: &CudaDevice,
     graph: &DataflowGraph,
