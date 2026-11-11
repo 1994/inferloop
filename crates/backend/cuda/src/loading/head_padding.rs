@@ -261,10 +261,17 @@ pub fn pad_heads(
     Ok(padding)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one pass rewrites a head chain's nodes, tensors and weights together"
-)]
+/// How one attention node's heads widen, shared by every node of its chains.
+struct Widening {
+    real: usize,
+    stored: usize,
+    halves: bool,
+    ratio: f32,
+    lanes: Layout,
+    query_norm: bool,
+    gated: bool,
+}
+
 fn widen(
     graph: &mut DataflowGraph,
     weights: &mut BTreeMap<String, DeviceWeight>,
@@ -285,8 +292,7 @@ fn widen(
     let &[query, key, value] = node.inputs.as_slice() else {
         return Err(Error::invalid("attention binds query, key and value"));
     };
-    let output = node.outputs[0];
-    let state = node.states[0];
+    let (output, state) = (node.outputs[0], node.states[0]);
     let queries = chain(graph, producer, query, real)?;
     let keys = chain(graph, producer, key, real)?;
     let values = chain(graph, producer, value, real)?;
@@ -296,55 +302,104 @@ fn widen(
             "padded heads need matching query and key rotary",
         ));
     }
-    let (stored, halves) = match queries.rotary {
-        Some((_, rotary)) if rotary == real => {
+    let (stored, halves) = stored_width(real, width(&queries))?;
+    let (mut tensors, outputs) = output_chain(graph, output)?;
+    let has = |chain: &Chain, matches: fn(&TensorOp) -> bool| {
+        chain
+            .nodes
+            .iter()
+            .any(|&index| matches(&graph.nodes[index].op))
+    };
+    let query_norm = has(&queries, |op| matches!(op, TensorOp::Norm { .. }));
+    if query_norm != has(&keys, |op| matches!(op, TensorOp::Norm { .. })) {
+        return Err(Error::unsupported(
+            "padded heads need norms on both queries and keys or on neither",
+        ));
+    }
+    let widening = Widening {
+        real,
+        stored,
+        halves,
+        ratio: width_ratio(real, stored),
+        lanes: layout(real, stored, halves),
+        query_norm,
+        gated: has(&queries, |op| matches!(op, TensorOp::Split { .. })),
+    };
+    let mut pads: Vec<(TensorId, Pad)> = Vec::new();
+    for (chain, heads, role) in [
+        (&queries, query_heads, Role::Query),
+        (&keys, kv_heads, Role::Key),
+        (&values, kv_heads, Role::Value),
+    ] {
+        let rewritten = rewrite_chain(graph, chain, (heads, role), &widening, padding)?;
+        pads.extend(rewritten.0);
+        tensors.extend(rewritten.1);
+        tensors.extend(chain.tensors.iter().copied());
+    }
+    for index in outputs {
+        pads.push((
+            graph.nodes[index].inputs[1],
+            Pad::Columns {
+                heads: query_heads,
+                real,
+                layout: widening.lanes.clone(),
+            },
+        ));
+    }
+    graph.nodes[attention].op = TensorOp::Attention {
+        query_heads,
+        kv_heads,
+        head_dim: stored,
+        window,
+    };
+    tensors.insert(state);
+    record(graph, weights, &tensors, pads, (real, stored), padding)
+}
+
+/// Stored head width and whether each rotary half pads on its own.
+fn stored_width(real: usize, rotary: Option<usize>) -> Result<(usize, bool)> {
+    let next = |width: usize| {
+        width
+            .checked_next_power_of_two()
+            .ok_or_else(|| Error::invalid("padded head overflow"))
+    };
+    match rotary {
+        Some(rotary) if rotary == real => {
             if !real.is_multiple_of(2) {
                 return Err(Error::unsupported("padded rotary heads must be even"));
             }
-            let half = (real / 2)
-                .checked_next_power_of_two()
-                .ok_or_else(|| Error::invalid("padded head overflow"))?;
-            (half * 2, true)
+            Ok((next(real / 2)? * 2, true))
         }
-        Some((_, rotary)) if (rotary / 2).is_power_of_two() => (
-            real.checked_next_power_of_two()
-                .ok_or_else(|| Error::invalid("padded head overflow"))?,
-            false,
-        ),
-        Some(_) => {
-            return Err(Error::unsupported(
-                "padded heads need full rotary or a power-of-two rotary half",
-            ));
-        }
-        None => (
-            real.checked_next_power_of_two()
-                .ok_or_else(|| Error::invalid("padded head overflow"))?,
-            false,
-        ),
-    };
-    let lanes = layout(real, stored, halves);
-    let ratio = width_ratio(real, stored);
-    // The attention output, an output gate, and the projection they reach.
-    let consumers = |tensor: TensorId| -> Vec<usize> {
-        graph
+        Some(rotary) if (rotary / 2).is_power_of_two() => Ok((next(real)?, false)),
+        Some(_) => Err(Error::unsupported(
+            "padded heads need full rotary or a power-of-two rotary half",
+        )),
+        None => Ok((next(real)?, false)),
+    }
+}
+
+/// The attention output, an output gate and its sigmoid, and the output projections they
+/// reach: the tensors that widen and the projection nodes whose columns pad.
+fn output_chain(
+    graph: &DataflowGraph,
+    output: TensorId,
+) -> Result<(BTreeSet<TensorId>, Vec<usize>)> {
+    let mut tensors: BTreeSet<TensorId> = [output].into();
+    let mut frontier = vec![output];
+    let mut projections = Vec::new();
+    while let Some(tensor) = frontier.pop() {
+        for node in graph
             .nodes
             .iter()
-            .enumerate()
-            .filter(|(_, node)| node.inputs.contains(&tensor))
-            .map(|(index, _)| index)
-            .collect()
-    };
-    let mut tensors: BTreeSet<TensorId> = [output].into();
-    let mut nodes: Vec<usize> = Vec::new();
-    let mut frontier = vec![output];
-    let mut outputs = Vec::new();
-    while let Some(tensor) = frontier.pop() {
-        for index in consumers(tensor) {
-            let node = &graph.nodes[index];
+            .filter(|node| node.inputs.contains(&tensor))
+        {
             match node.op {
-                TensorOp::Linear if node.inputs[0] == tensor => outputs.push(index),
+                TensorOp::Linear if node.inputs[0] == tensor => {
+                    projections.extend(graph.nodes.iter().position(|other| other.id == node.id));
+                }
                 TensorOp::Multiply | TensorOp::Sigmoid => {
-                    nodes.push(index);
+                    // The multiply's other operand is the gate after its sigmoid.
+                    tensors.extend(node.inputs.iter().copied());
                     for &next in &node.outputs {
                         if tensors.insert(next) {
                             frontier.push(next);
@@ -359,119 +414,109 @@ fn widen(
             }
         }
     }
-    // The multiply's other operand is the gate after its sigmoid.
-    for &index in &nodes {
-        tensors.extend(graph.nodes[index].inputs.iter().copied());
-    }
-    let normed = |chain: &Chain| {
-        chain
-            .nodes
-            .iter()
-            .any(|&index| matches!(graph.nodes[index].op, TensorOp::Norm { .. }))
-    };
-    let query_norm = normed(&queries);
-    if query_norm != normed(&keys) {
-        return Err(Error::unsupported(
-            "padded heads need norms on both queries and keys or on neither",
-        ));
-    }
-    let gated = queries
-        .nodes
-        .iter()
-        .any(|&index| matches!(graph.nodes[index].op, TensorOp::Split { .. }));
-    let mut pads: Vec<(TensorId, Pad)> = Vec::new();
-    for (chain, heads, role) in [
-        (&queries, query_heads, Role::Query),
-        (&keys, kv_heads, Role::Key),
-        (&values, kv_heads, Role::Value),
-    ] {
-        for &index in &chain.nodes {
-            let node = &mut graph.nodes[index];
-            let weight = node.inputs.get(1).copied();
-            match &mut node.op {
-                TensorOp::Linear => {
-                    let query = role == Role::Query;
-                    // Without a query norm the query rows carry the score correction.
-                    let scale = if query && !query_norm {
-                        ratio.recip().sqrt()
-                    } else {
-                        1.0
-                    };
-                    pads.push((
-                        weight.ok_or_else(|| Error::invalid("projection weight"))?,
-                        Pad::Rows {
-                            heads,
-                            parts: if query && gated { 2 } else { 1 },
-                            real,
-                            layout: lanes.clone(),
-                            scale,
-                        },
-                    ));
-                }
-                TensorOp::Norm {
-                    epsilon,
-                    offset,
-                    head_dim,
-                } => {
-                    if *head_dim != real {
-                        return Err(Error::unsupported("padded heads reach a non-head norm"));
-                    }
-                    *head_dim = stored;
-                    *epsilon *= ratio;
-                    // Key norms cancel the query's extra `sqrt(P / D)` in every score.
-                    let scale = if role == Role::Key { ratio.sqrt() } else { 1.0 };
-                    pads.push((
-                        weight.ok_or_else(|| Error::invalid("norm weight"))?,
-                        Pad::Gain {
-                            layout: lanes.clone(),
-                            scale,
-                            offset: *offset,
-                        },
-                    ));
-                }
-                TensorOp::Split { widths, .. } => {
-                    if widths.iter().any(|&width| width != real) {
-                        return Err(Error::unsupported("padded heads reach an uneven split"));
-                    }
-                    widths.fill(stored);
-                    // The gate output widens with the query.
-                    tensors.extend(node.outputs.iter().copied());
-                }
-                TensorOp::Rope {
-                    head_dim,
-                    rotary_dim,
-                    ..
-                } => {
-                    if halves {
-                        padding.rotary.insert(node.id, *rotary_dim);
-                        *rotary_dim = stored;
-                    }
-                    *head_dim = stored;
-                }
-                _ => return Err(Error::invariant("padded head chain node")),
+    Ok((tensors, projections))
+}
+
+/// Widen one input chain's projection, norm, split and rotary nodes; returns the weights to
+/// pad and the split outputs that widen with it.
+fn rewrite_chain(
+    graph: &mut DataflowGraph,
+    chain: &Chain,
+    (heads, role): (usize, Role),
+    widening: &Widening,
+    padding: &mut HeadPadding,
+) -> Result<(Vec<(TensorId, Pad)>, Vec<TensorId>)> {
+    let Widening {
+        real,
+        stored,
+        halves,
+        ratio,
+        ref lanes,
+        query_norm,
+        gated,
+    } = *widening;
+    let mut pads = Vec::new();
+    let mut widened = Vec::new();
+    for &index in &chain.nodes {
+        let node = &mut graph.nodes[index];
+        let weight = node.inputs.get(1).copied();
+        match &mut node.op {
+            TensorOp::Linear => {
+                let query = role == Role::Query;
+                // Without a query norm the query rows carry the score correction.
+                let scale = if query && !query_norm {
+                    ratio.recip().sqrt()
+                } else {
+                    1.0
+                };
+                pads.push((
+                    weight.ok_or_else(|| Error::invalid("projection weight"))?,
+                    Pad::Rows {
+                        heads,
+                        parts: if query && gated { 2 } else { 1 },
+                        real,
+                        layout: lanes.clone(),
+                        scale,
+                    },
+                ));
             }
+            TensorOp::Norm {
+                epsilon,
+                offset,
+                head_dim,
+            } => {
+                if *head_dim != real {
+                    return Err(Error::unsupported("padded heads reach a non-head norm"));
+                }
+                *head_dim = stored;
+                *epsilon *= ratio;
+                // Key norms cancel the query's extra `sqrt(P / D)` in every score.
+                let scale = if role == Role::Key { ratio.sqrt() } else { 1.0 };
+                pads.push((
+                    weight.ok_or_else(|| Error::invalid("norm weight"))?,
+                    Pad::Gain {
+                        layout: lanes.clone(),
+                        scale,
+                        offset: *offset,
+                    },
+                ));
+            }
+            TensorOp::Split { widths, .. } => {
+                if widths.iter().any(|&width| width != real) {
+                    return Err(Error::unsupported("padded heads reach an uneven split"));
+                }
+                widths.fill(stored);
+                // The gate output widens with the query.
+                widened.extend(node.outputs.iter().copied());
+            }
+            TensorOp::Rope {
+                head_dim,
+                rotary_dim,
+                ..
+            } => {
+                if halves {
+                    padding.rotary.insert(node.id, *rotary_dim);
+                    *rotary_dim = stored;
+                }
+                *head_dim = stored;
+            }
+            _ => return Err(Error::invariant("padded head chain node")),
         }
-        tensors.extend(chain.tensors.iter().copied());
     }
-    for index in outputs {
-        let weight = graph.nodes[index].inputs[1];
-        pads.push((
-            weight,
-            Pad::Columns {
-                heads: query_heads,
-                real,
-                layout: lanes.clone(),
-            },
-        ));
-    }
-    graph.nodes[attention].op = TensorOp::Attention {
-        query_heads,
-        kv_heads,
-        head_dim: stored,
-        window,
-    };
+    Ok((pads, widened))
+}
+
+/// Record the widened activation shapes and each padded weight's shape and padding.
+fn record(
+    graph: &mut DataflowGraph,
+    weights: &mut BTreeMap<String, DeviceWeight>,
+    tensors: &BTreeSet<TensorId>,
+    pads: Vec<(TensorId, Pad)>,
+    (real, stored): (usize, usize),
+    padding: &mut HeadPadding,
+) -> Result<()> {
     for spec in &mut graph.tensors {
-        if tensors.contains(&spec.id) || spec.id == state {
+        if tensors.contains(&spec.id) {
             let last = spec
                 .shape
                 .last_mut()
