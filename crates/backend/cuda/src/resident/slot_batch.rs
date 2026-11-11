@@ -21,13 +21,16 @@ use crate::device::PinnedUpload;
 use crate::device::asynchronous::block_on;
 use crate::device::copy_runs;
 use crate::device::{CudaDevice, DeviceProfile, device_error};
+use crate::loading::kv_block_bytes;
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::{Owner, Width};
 use infer_cuda_kernels::runtime::Allocation;
 use infer_cuda_kernels::runtime::f8e4m3fn;
 use infer_cuda_kernels::runtime::{Staging, Transfers};
+use infer_ir::KvCacheInspection;
 use infer_ir::{DataflowGraph, StateKind, TensorStorage};
-use infer_state::blocks::{BlockLease, BlockPool};
+use infer_state::blocks::BlockLease;
+use infer_state::kv::{KvCacheConfig, KvCacheManager, KvPrefix};
 #[cfg(test)]
 use std::cell::Cell;
 use std::iter::successors;
@@ -367,12 +370,32 @@ impl SlotLedger {
 struct Paging {
     /// Allocations of the shared caches; each slot's entry in `SlotPool::fp8` views them.
     shared: Fp8Caches,
-    /// The shared page ledger; this pool only maps its leases to device rows.
-    pages: BlockPool,
+    /// The engine's page ledger; this pool only maps its leases to device rows.
+    pages: KvCacheManager<NoPrefix>,
     leases: Vec<Vec<BlockLease>>,
     /// Each slot's leased pages as device table entries.
     owned: Vec<Vec<i32>>,
 }
+
+/// Prefix snapshots of a slot pool are separately owned, so its ledger caches none and never
+/// holds one of these.
+#[derive(Clone, Copy, Debug)]
+struct NoPrefix;
+
+impl KvPrefix for NoPrefix {
+    fn tokens(&self) -> &[u32] {
+        &[]
+    }
+    fn blocks(&self) -> &[BlockLease] {
+        &[]
+    }
+    fn bytes(&self) -> u64 {
+        0
+    }
+}
+
+/// The ledger's namespace; nothing is cached under it.
+const LEDGER_NAMESPACE: &[u8] = b"cuda-slot-pool";
 
 impl Paging {
     /// Return a slot's pages to the ledger.
@@ -830,6 +853,16 @@ impl SlotPool {
         )
     }
 
+    /// The page ledger's view of the shared KV pool, with every slot's leases active; `None`
+    /// when each slot owns its whole-capacity cache.
+    pub(crate) fn kv_ledger(&self) -> Option<KvCacheInspection> {
+        self.paging.as_ref().map(|paging| {
+            paging
+                .pages
+                .inspect(paging.leases.iter().map(Vec::as_slice))
+        })
+    }
+
     /// Lifetime slot leases granted and returned, in slots.
     #[must_use]
     pub(crate) const fn lease_counters(&self) -> (u64, u64) {
@@ -967,9 +1000,18 @@ impl SlotPool {
         let block = KV_BLOCK_TOKENS;
         let blocks = tokens.div_ceil(block).max(capacity.div_ceil(block));
         let shared = fp8_cache::allocate(device, graph, blocks * block, &weights.kv_scales)?;
+        // The ledger prices pages in the unit the pool quote uses.
+        let pages = KvCacheManager::new(KvCacheConfig {
+            namespace: LEDGER_NAMESPACE.to_vec(),
+            block_size: block,
+            blocks,
+            bytes_per_block: kv_block_bytes(graph, weights)?,
+            prefix_bytes: 0,
+            max_prefixes: 1,
+        })?;
         Ok(Some(Paging {
             shared,
-            pages: BlockPool::new(blocks)?,
+            pages,
             leases: vec![Vec::new(); width],
             owned: vec![Vec::new(); width],
         }))

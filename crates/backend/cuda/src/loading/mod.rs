@@ -37,6 +37,7 @@ pub use kv_scales::load as load_kv_scales;
 mod bindings;
 mod budget;
 pub(crate) use budget::PooledServingQuote;
+pub(crate) use budget::kv_block_bytes;
 mod experts;
 mod phase;
 use crate::resident::dflash2::DraftWeights;

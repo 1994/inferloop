@@ -679,7 +679,7 @@ fn worker_storage_bytes(
 
 /// One KV block's bytes over the graph's attention states: `columns` per position, keys and
 /// values, packed to one byte where the checkpoint carries fp8 scales.
-fn kv_block_bytes(graph: &DataflowGraph, weights: &ProgramWeights) -> Result<u64> {
+pub fn kv_block_bytes(graph: &DataflowGraph, weights: &ProgramWeights) -> Result<u64> {
     let block = u64::try_from(KV_BLOCK_TOKENS).map_err(|_| Error::invalid("KV block size"))?;
     let mut bytes = 0;
     for spec in &graph.tensors {
