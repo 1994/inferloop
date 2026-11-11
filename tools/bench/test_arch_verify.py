@@ -51,6 +51,11 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual(len(reasons), 5)
         self.assertIn("greedy output differs", reasons)
 
+    def test_the_reused_token_counter_is_found_wherever_it_nests(self):
+        document = {"metrics": {"kv": [{"block_size": 32}, {"reused_tokens": 4096}]}}
+        self.assertEqual(module.reused_tokens(document), 4096)
+        self.assertIsNone(module.reused_tokens({"metrics": {}}))
+
     def test_a_configuration_names_its_extra_serve_flags(self):
         self.assertEqual(
             module.parse_config("mtp=/m/27B --num-speculative-tokens 2"),

@@ -50,12 +50,32 @@ PROMPTS = (
     "What is a B-tree?",
     "Translate good morning to French.",
 )
+# Long enough to cross the prefix cache's regular snapshot cadence of 4096 positions.
+SHARED_PREFIX = "Reference passage. " + FILLER * 20
+PREFIX_QUESTIONS = ("Summarize the passage in one line.", "How many sentences repeat?")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # A tuning line names its message, then its key fields; the message is what the hit count groups.
 TUNING = re.compile(r"infer::tuning: (.*?)(?: (?:shape|key|rows)=.*)?$")
 HIT = re.compile(r"table-cache|from_table=true")
 BAD = re.compile(r"fallback|invalid|incomplete")
 MEASURED = re.compile(r'source="?measured|searched')
+
+
+def reused_tokens(document):
+    """The prefix cache's reused-token counter wherever the observability document holds it."""
+    if isinstance(document, dict):
+        if isinstance(document.get("reused_tokens"), int):
+            return document["reused_tokens"]
+        values = document.values()
+    elif isinstance(document, list):
+        values = document
+    else:
+        return None
+    for value in values:
+        found = reused_tokens(value)
+        if found is not None:
+            return found
+    return None
 
 
 def tuning_hits(log):
@@ -161,7 +181,15 @@ def serve_pair_side(server, levels, reps):
         body, error = server.complete(prompt, GREEDY_TOKENS)
         message = body["choices"][0]["message"] if body else None
         outputs.append(error or [message["content"], message.get("reasoning_content")])
-    run = {"greedy_sha": hashlib.sha256(json.dumps(outputs).encode()).hexdigest(), "throughput": {}}
+    # The second question reuses the first one's cached prompt prefix.
+    reused = []
+    for question in PREFIX_QUESTIONS:
+        body, error = server.complete(f"{SHARED_PREFIX}\n{question}", WARM_TOKENS)
+        outputs.append(error or body["choices"][0]["message"]["content"])
+        reused.append(reused_tokens(server.get("/native/v1/observability")))
+    run = {"greedy_sha": hashlib.sha256(json.dumps(outputs).encode()).hexdigest(),
+           "reused_tokens": reused[-1] - reused[0] if None not in reused else None,
+           "throughput": {}}
     for lanes in levels:
         rates, errors = [], 0
         # The first repetition warms the pool for this width and is not counted.
@@ -215,7 +243,8 @@ def pair(args):
             f"C{lanes} {candidate['throughput'][lanes]['tok_s']:.1f}/"
             f"{base['throughput'][lanes]['tok_s']:.1f}" for lanes in args.levels)
         print(f"{name}: {candidate['greedy_sha'][:HASH_CHARS]} / {base['greedy_sha'][:HASH_CHARS]}"
-              f" tok/s {rates} measured {candidate['measured']}/{base['measured']} "
+              f" tok/s {rates} measured {candidate['measured']}/{base['measured']}"
+              f" reused {candidate['reused_tokens']}/{base['reused_tokens']} "
               + ("OK" if not reasons else "DIFF: " + "; ".join(reasons)), flush=True)
     (out / "report.json").write_text(json.dumps(report, indent=1))
     return 1 if failed else 0
