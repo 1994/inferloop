@@ -69,3 +69,8 @@ impl Capture<'_> {
             .map_err(error)
     }
 }
+
+#[cfg(test)]
+#[cfg(feature = "cuda")]
+#[path = "../../tests/unit/resident_rope_cell.rs"]
+mod cell_tests;
