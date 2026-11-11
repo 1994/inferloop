@@ -282,7 +282,8 @@ fn widen(
     let queries = chain(graph, producer, query, real)?;
     let keys = chain(graph, producer, key, real)?;
     let values = chain(graph, producer, value, real)?;
-    if values.rotary.is_some() || queries.rotary != keys.rotary {
+    let width = |chain: &Chain| chain.rotary.map(|(_, width)| width);
+    if values.rotary.is_some() || width(&queries) != width(&keys) {
         return Err(Error::unsupported(
             "padded heads need matching query and key rotary",
         ));
