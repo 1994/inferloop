@@ -39,6 +39,7 @@ WARM_TOKENS = 16
 GAP_REQUESTS_PER_LANE = 3
 SEED = 7
 HASH_CHARS = 12
+LOG_MODE = 0o644
 PRESSURE_METRICS = ("preemptions", "failed_requests", "successful_requests", "deferred_reasons")
 SHUTDOWN_S = 30
 FILLER = "The quick brown fox jumps over the lazy dog. " * 28
@@ -111,8 +112,10 @@ def verdict(candidate, base):
         if errors:
             reasons.append(f"{side} had {errors} failed requests")
     if set(candidate["hits"]) != set(base["hits"]):
-        reasons.append("tuning tables hit differ: " + ", ".join(
-            sorted(set(candidate["hits"]) ^ set(base["hits"]))))
+        reasons.append(
+            "tuning tables hit differ: "
+            + ", ".join(sorted(set(candidate["hits"]) ^ set(base["hits"])))
+        )
     return reasons
 
 
@@ -122,7 +125,8 @@ class Server:
     def __init__(self, binary, model, cache, log, extra):
         os.makedirs(cache, exist_ok=True)
         self.url = f"http://127.0.0.1:{PORT}"
-        self.log = open(log, "w")
+        # The log stays open for the server's lifetime and closes with it in `__exit__`.
+        self.log = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, LOG_MODE)
         self.process = subprocess.Popen(
             [binary, "serve", "--package", model, "--listen", f"127.0.0.1:{PORT}", *extra],
             env=dict(os.environ, XDG_CACHE_HOME=str(cache)),
@@ -145,7 +149,7 @@ class Server:
     def __exit__(self, *_):
         self.process.terminate()
         self.process.wait(SHUTDOWN_S)
-        self.log.close()
+        os.close(self.log)
 
     def get(self, path):
         with urllib.request.urlopen(self.url + path, timeout=10) as response:
@@ -187,17 +191,23 @@ def serve_pair_side(server, levels, reps):
         body, error = server.complete(f"{SHARED_PREFIX}\n{question}", WARM_TOKENS)
         outputs.append(error or body["choices"][0]["message"]["content"])
         reused.append(reused_tokens(server.get("/native/v1/diagnostics")))
-    run = {"greedy_sha": hashlib.sha256(json.dumps(outputs).encode()).hexdigest(),
-           "reused_tokens": reused[-1] - reused[0] if None not in reused else None,
-           "throughput": {}}
+    run = {
+        "greedy_sha": hashlib.sha256(json.dumps(outputs).encode()).hexdigest(),
+        "reused_tokens": reused[-1] - reused[0] if None not in reused else None,
+        "throughput": {},
+    }
     for lanes in levels:
         rates, errors = [], 0
         # The first repetition warms the pool for this width and is not counted.
         for rep in range(reps + 1):
             start = time.perf_counter()
             with ThreadPoolExecutor(lanes) as pool:
-                results = list(pool.map(
-                    lambda i: server.complete(f"{i}-{rep}: {FILLER}", LOAD_TOKENS), range(lanes)))
+                results = list(
+                    pool.map(
+                        lambda i, rep=rep: server.complete(f"{i}-{rep}: {FILLER}", LOAD_TOKENS),
+                        range(lanes),
+                    )
+                )
             wall = time.perf_counter() - start
             tokens = sum(body["usage"]["completion_tokens"] for body, _ in results if body)
             errors += sum(1 for _, error in results if error)
@@ -233,46 +243,63 @@ def pair(args):
     out.mkdir(parents=True, exist_ok=True)
     report, failed = {}, False
     for name, model, extra in args.config:
-        candidate = run_side(args, args.candidate, args.cache, f"candidate-{name}", model, extra, out)
-        base = run_side(args, args.base, args.base_cache or args.cache, f"base-{name}", model, extra,
-                        out)
+        candidate = run_side(
+            args, args.candidate, args.cache, f"candidate-{name}", model, extra, out
+        )
+        base = run_side(
+            args, args.base, args.base_cache or args.cache, f"base-{name}", model, extra, out
+        )
         reasons = verdict(candidate, base)
         failed |= bool(reasons)
         report[name] = {"candidate": candidate, "base": base, "differences": reasons}
         rates = " ".join(
             f"C{lanes} {candidate['throughput'][lanes]['tok_s']:.1f}/"
-            f"{base['throughput'][lanes]['tok_s']:.1f}" for lanes in args.levels)
-        print(f"{name}: {candidate['greedy_sha'][:HASH_CHARS]} / {base['greedy_sha'][:HASH_CHARS]}"
-              f" tok/s {rates} measured {candidate['measured']}/{base['measured']}"
-              f" reused {candidate['reused_tokens']}/{base['reused_tokens']} "
-              + ("OK" if not reasons else "DIFF: " + "; ".join(reasons)), flush=True)
+            f"{base['throughput'][lanes]['tok_s']:.1f}"
+            for lanes in args.levels
+        )
+        print(
+            f"{name}: {candidate['greedy_sha'][:HASH_CHARS]} / {base['greedy_sha'][:HASH_CHARS]}"
+            f" tok/s {rates} measured {candidate['measured']}/{base['measured']}"
+            f" reused {candidate['reused_tokens']}/{base['reused_tokens']} "
+            + ("OK" if not reasons else "DIFF: " + "; ".join(reasons)),
+            flush=True,
+        )
     (out / "report.json").write_text(json.dumps(report, indent=1))
     return 1 if failed else 0
 
 
 def pressure_side(binary, cache, model, args, log):
     with Server(binary, model, cache, log, []) as server:
+
         def one(i):
             body, error = server.complete(f"{i}: {FILLER * args.prompt_repeats}", args.tokens)
             if error:
                 return {"error": error}
             message = body["choices"][0]["message"]
             text = json.dumps([message["content"], message.get("reasoning_content")])
-            return {"sha": hashlib.sha256(text.encode()).hexdigest(),
-                    "tokens": body["usage"]["completion_tokens"]}
+            return {
+                "sha": hashlib.sha256(text.encode()).hexdigest(),
+                "tokens": body["usage"]["completion_tokens"],
+            }
+
         start = time.perf_counter()
         with ThreadPoolExecutor(args.requests) as pool:
             results = list(pool.map(one, range(args.requests)))
         metrics = server.get("/native/v1/observability")["metrics"]
-    return {"results": results, "wall_s": round(time.perf_counter() - start, 2),
-            "metrics": {key: metrics.get(key) for key in PRESSURE_METRICS}}
+    return {
+        "results": results,
+        "wall_s": round(time.perf_counter() - start, 2),
+        "metrics": {key: metrics.get(key) for key in PRESSURE_METRICS},
+    }
 
 
 def pressure(args):
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    sides = {name: pressure_side(binary, args.cache, args.model, args, out / f"{name}.log")
-             for name, binary in (("candidate", args.candidate), ("base", args.base))}
+    sides = {
+        name: pressure_side(binary, args.cache, args.model, args, out / f"{name}.log")
+        for name, binary in (("candidate", args.candidate), ("base", args.base))
+    }
     (out / "pressure.json").write_text(json.dumps(sides, indent=1))
     reasons = []
     for name, side in sides.items():
@@ -280,8 +307,11 @@ def pressure(args):
         if errors:
             reasons.append(f"{name}: {len(errors)} failed, first {errors[0]}")
     # A request refused for queue capacity on either side has nothing to compare.
-    both = [(a, b) for a, b in zip(sides["candidate"]["results"], sides["base"]["results"])
-            if "sha" in a and "sha" in b]
+    both = [
+        (a, b)
+        for a, b in zip(sides["candidate"]["results"], sides["base"]["results"], strict=True)
+        if "sha" in a and "sha" in b
+    ]
     differ = sum(1 for a, b in both if a["sha"] != b["sha"])
     if differ:
         reasons.append(f"{differ} of {len(both)} outputs differ")
@@ -296,24 +326,34 @@ def gap(args):
     with Server(args.binary, args.model, args.cache, Path(args.out), []) as server:
         for lanes in args.levels:
             with ThreadPoolExecutor(lanes) as pool:
-                list(pool.map(lambda i: server.complete(f"{i}: {FILLER}", WARM_TOKENS),
-                              range(lanes)))
+                list(
+                    pool.map(lambda i: server.complete(f"{i}: {FILLER}", WARM_TOKENS), range(lanes))
+                )
             before, start = server.device(), time.perf_counter()
             with ThreadPoolExecutor(lanes) as pool:
-                results = list(pool.map(lambda i: server.complete(f"{i}: {FILLER}", GAP_TOKENS),
-                                        range(lanes * GAP_REQUESTS_PER_LANE)))
+                results = list(
+                    pool.map(
+                        lambda i: server.complete(f"{i}: {FILLER}", GAP_TOKENS),
+                        range(lanes * GAP_REQUESTS_PER_LANE),
+                    )
+                )
             wall, after = time.perf_counter() - start, server.device()
             device = (after["sum_us"] - before["sum_us"]) / 1e6
             steps = max(after["count"] - before["count"], 1)
             tokens = sum(body["usage"]["completion_tokens"] for body, _ in results if body)
-            print(json.dumps({
-                "c": lanes,
-                "busy": round(device / wall, 3),
-                "tok_s": round(tokens / wall, 1),
-                "steps": steps,
-                "step_ms": round(1e3 * device / steps, 2),
-                "gap_per_step_ms": round(1e3 * (wall - device) / steps, 3),
-            }), flush=True)
+            print(
+                json.dumps(
+                    {
+                        "c": lanes,
+                        "busy": round(device / wall, 3),
+                        "tok_s": round(tokens / wall, 1),
+                        "steps": steps,
+                        "step_ms": round(1e3 * device / steps, 2),
+                        "gap_per_step_ms": round(1e3 * (wall - device) / steps, 3),
+                    }
+                ),
+                flush=True,
+            )
     return 0
 
 
