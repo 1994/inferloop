@@ -414,7 +414,7 @@ fn cold_dflash2_keeps_its_draft_timeline() -> Result<()> {
     fence?;
     let output = result?;
     assert!(output[0].output.next_token.is_some());
-    assert!(backend.dflash.as_ref().unwrap().attached());
+    assert!(backend.drafter.model().unwrap().attached());
     let draft = backend.states[&state].draft.as_ref().unwrap();
     assert_eq!(draft.cursor.context, backend.states[&state].history.len());
     assert!(
