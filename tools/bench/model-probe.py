@@ -68,6 +68,7 @@ CASES = {
     "llama-64": Geometry(256, 4, 2, 64, 768, 2, family="llama"),
     "llama-untied": Geometry(512, 4, 2, 128, 1536, 2, family="llama", tied=False),
     "llama-96": Geometry(384, 4, 2, 96, 1152, 2, family="llama", twin=True),
+    "hidden-384": Geometry(384, 4, 2, 128, 1152, 2),
 }
 # Configuration each family's provider claims the checkpoint by.
 FAMILIES = {
