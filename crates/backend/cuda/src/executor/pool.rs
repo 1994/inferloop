@@ -2,6 +2,7 @@
 use super::{CudaExecutor, Sequence};
 use infer_core::{Error, Result};
 use infer_ir::OutputReadout;
+use infer_scheduler::{RoomFacts, RoomStep, next_room_step};
 use std::collections::VecDeque;
 
 #[derive(Default)]
@@ -104,54 +105,74 @@ impl CudaExecutor {
                 .ok_or_else(|| Error::invariant("CUDA reservation accounting overflow"))
         })
     }
+    /// Give up retained sequences and prefix snapshots until a reservation fits, in the order
+    /// [`next_room_step`] decides.
     pub(super) fn make_room(&mut self, needed: u64, scratch: u64) -> Result<()> {
-        let physical_needed = needed.saturating_add(scratch);
         let active = self.active_budget()?;
-        while active
-            .checked_add(self.pool.bytes)
-            .and_then(|n| n.checked_add(self.prefix.bytes()))
-            .and_then(|n| n.checked_add(needed))
-            .is_none_or(|n| n > self.budget)
-            || self.states.len() + self.pool.entries.len() >= self.maximum_states
-            || physical_needed > self.physical_available()?
-        {
-            if !self.pool.evict() && self.prefix.evict_oldest().is_none() {
-                let physical_available = self.physical_available()?;
-                let (pool_slots, pool_free_slots) = self
-                    .slots
-                    .as_ref()
-                    .map_or((0, 0), |pool| (pool.width(), pool.free_slots()));
-                tracing::debug!(
-                    target: "infer::cuda_admission",
-                    phase = "memory_after_reclaim",
-                    needed_bytes = needed,
-                    pending_scratch_bytes = scratch,
-                    physical_needed_bytes = physical_needed,
-                    active_bytes = active,
-                    cached_bytes = self.pool.bytes,
-                    prefix_bytes = self.prefix.bytes(),
-                    physical_available_bytes = physical_available,
-                    budget_bytes = self.budget,
-                    active_states = self.states.len(),
-                    maximum_states = self.maximum_states,
-                    pool_slots,
-                    pool_free_slots,
-                    "CUDA resident reservation rejected"
-                );
-                return Err(Error::new(
-                    infer_core::ErrorCode::Capacity,
-                    format!(
-                        "CUDA resident state admission budget exhausted: needed={needed}, scratch={scratch}, physical_needed={physical_needed}, active={active}, cached={}, prefix={}, physical={}, budget={}",
-                        self.pool.bytes,
-                        self.prefix.bytes(),
-                        physical_available,
-                        self.budget
-                    ),
-                ));
+        loop {
+            let facts = RoomFacts {
+                needed,
+                scratch,
+                active,
+                cached: self.pool.bytes,
+                prefix: self.prefix.bytes(),
+                budget: self.budget,
+                physical: self.physical_available()?,
+                sequences: self.states.len() + self.pool.entries.len(),
+                maximum_sequences: self.maximum_states,
+                has_cached: !self.pool.entries.is_empty(),
+                has_prefix: !self.prefix.is_empty(),
+            };
+            match next_room_step(&facts) {
+                RoomStep::Fits => return Ok(()),
+                RoomStep::EvictSequence => {
+                    self.pool.evict();
+                }
+                RoomStep::EvictPrefix => {
+                    self.prefix.evict_oldest();
+                }
+                RoomStep::Refuse => return Err(self.room_refusal(&facts)),
             }
             self.loaded.device().reclaim_barrier()?;
         }
-        Ok(())
+    }
+
+    fn room_refusal(&self, facts: &RoomFacts) -> Error {
+        let physical_needed = facts.needed.saturating_add(facts.scratch);
+        let (pool_slots, pool_free_slots) = self
+            .slots
+            .as_ref()
+            .map_or((0, 0), |pool| (pool.width(), pool.free_slots()));
+        tracing::debug!(
+            target: "infer::cuda_admission",
+            phase = "memory_after_reclaim",
+            needed_bytes = facts.needed,
+            pending_scratch_bytes = facts.scratch,
+            physical_needed_bytes = physical_needed,
+            active_bytes = facts.active,
+            cached_bytes = facts.cached,
+            prefix_bytes = facts.prefix,
+            physical_available_bytes = facts.physical,
+            budget_bytes = facts.budget,
+            active_states = self.states.len(),
+            maximum_states = self.maximum_states,
+            pool_slots,
+            pool_free_slots,
+            "CUDA resident reservation rejected"
+        );
+        Error::new(
+            infer_core::ErrorCode::Capacity,
+            format!(
+                "CUDA resident state admission budget exhausted: needed={}, scratch={}, physical_needed={physical_needed}, active={}, cached={}, prefix={}, physical={}, budget={}",
+                facts.needed,
+                facts.scratch,
+                facts.active,
+                facts.cached,
+                facts.prefix,
+                facts.physical,
+                facts.budget
+            ),
+        )
     }
     /// Release only cached graphs. Live states and completion tickets remain owned.
     /// # Errors
