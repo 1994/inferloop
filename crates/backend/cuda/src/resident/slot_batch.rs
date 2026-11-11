@@ -738,7 +738,7 @@ impl SlotPool {
                 .ok_or_else(|| Error::invalid("slot pool budget overflow"))?;
             if bytes > budget {
                 return Err(Error::new(
-                    infer_core::ErrorCode::Capacity,
+                    ErrorCode::Capacity,
                     "slot decode pool exceeds available device memory minus headroom",
                 ));
             }
