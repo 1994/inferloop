@@ -45,6 +45,9 @@ class Geometry(NamedTuple):
     refused: bool = False
     family: str = "qwen3"
     tied: bool = True
+    # Also serve the same model with its heads padded by hand to the next power of two, and
+    # require identical output: the load-time padding must compute the real heads exactly.
+    twin: bool = False
 
 
 CASES = {
@@ -57,13 +60,14 @@ CASES = {
     "hidden-ne-heads": Geometry(640, 4, 2, 128, 1920, 2),
     "f16": Geometry(512, 4, 2, 128, 1536, 2, "F16"),
     "f32": Geometry(512, 4, 2, 128, 1536, 2, "F32"),
-    "head-48": Geometry(192, 4, 2, 48, 576, 2, refused=True),
-    "head-96": Geometry(384, 4, 2, 96, 1152, 2, refused=True),
-    "head-100": Geometry(400, 4, 2, 100, 1200, 2, refused=True),
+    "head-48": Geometry(192, 4, 2, 48, 576, 2),
+    "head-96": Geometry(384, 4, 2, 96, 1152, 2),
+    "head-100": Geometry(400, 4, 2, 100, 1200, 2),
     # A second family: no query/key norms, through the Llama provider only.
     "llama-control": Geometry(512, 4, 2, 128, 1536, 2, family="llama"),
     "llama-64": Geometry(256, 4, 2, 64, 768, 2, family="llama"),
     "llama-untied": Geometry(512, 4, 2, 128, 1536, 2, family="llama", tied=False),
+    "llama-96": Geometry(384, 4, 2, 96, 1152, 2, family="llama", twin=True),
 }
 # Configuration each family's provider claims the checkpoint by.
 FAMILIES = {
@@ -124,12 +128,71 @@ def value_block(dtype):
     return b"".join(struct.pack("<f", value)[2:] for value in values)
 
 
-def write_checkpoint(path, source, geometry):
+def padded_width(real):
+    """Stored head width for full rotary: each half padded to a power of two."""
+    half = 1
+    while half < real // 2:
+        half *= 2
+    return 2 * half
+
+
+def lanes(real, stored):
+    """Real lane each padded lane of one head reads, None for a zero lane."""
+    half, stored_half = real // 2, stored // 2
+    return [lane - stored_half * part + half * part if lane - stored_half * part < half else None
+            for part in (0, 1) for lane in range(stored_half * part, stored_half * (part + 1))]
+
+
+def bf16_nearest(value):
+    """Round-to-nearest-even BF16 bytes, as the loader converts scaled rows."""
+    bits = struct.unpack("<I", struct.pack("<f", value))[0]
+    bits = (bits + 0x7FFF + ((bits >> 16) & 1)) >> 16
+    return struct.pack("<H", bits)
+
+
+def twin_values(name, shape, geometry, stored, block):
+    """The padded twin's values for one attention tensor, or None for an unchanged tensor."""
+    g = geometry
+    width = 2
+    values = [struct.unpack("<f", b"\0\0" + block[i * width:(i + 1) * width])[0]
+              for i in range(len(block) // width)]
+
+    def real(index):
+        return values[index % len(values)]
+
+    lane_map = lanes(g.head_dim, stored)
+    scale = (stored / g.head_dim) ** 0.5
+    out = []
+    if name.endswith(("q_proj.weight", "k_proj.weight", "v_proj.weight")):
+        heads = g.heads if "q_proj" in name else g.kv_heads
+        factor = scale if "q_proj" in name else 1.0
+        for head in range(heads):
+            for lane in lane_map:
+                for column in range(g.hidden):
+                    if lane is None:
+                        out.append(0.0)
+                    else:
+                        out.append(real((head * g.head_dim + lane) * g.hidden + column) * factor)
+        return out
+    if name.endswith("o_proj.weight"):
+        for row in range(g.hidden):
+            for head in range(g.heads):
+                for lane in lane_map:
+                    out.append(0.0 if lane is None
+                               else real(row * g.heads * g.head_dim + head * g.head_dim + lane))
+        return out
+    return None
+
+
+def write_checkpoint(path, source, geometry, twin=False):
     path.mkdir(parents=True)
     for item in source.iterdir():
         if item.suffix in {".json", ".txt"} and item.name != "config.json":
             shutil.copy(item, path / item.name)
     g = geometry
+    if twin and (g.family != "llama" or g.dtype != "BF16"):
+        raise SystemExit("a padded twin is defined for BF16 Llama heads only")
+    stored = padded_width(g.head_dim) if twin else g.head_dim
     config = json.loads((source / "config.json").read_text())
     config |= {
         "hidden_size": g.hidden,
@@ -145,13 +208,22 @@ def write_checkpoint(path, source, geometry):
     }
     config |= FAMILIES[g.family]
     config.pop("layer_types", None)
+    if twin:
+        # Padded lanes rotate nothing; the real lanes keep their frequencies.
+        theta = config.get("rope_theta", 10000.0)
+        config |= {"head_dim": stored, "rope_theta": theta ** (stored / g.head_dim)}
     (path / "config.json").write_text(json.dumps(config))
-    header, encoded = safetensors_header(tensor_shapes(g, config["vocab_size"]), g.dtype)
+    shapes = tensor_shapes(g._replace(head_dim=stored), config["vocab_size"])
+    header, encoded = safetensors_header(shapes, g.dtype)
     block = value_block(g.dtype)
     with (path / "model.safetensors").open("wb") as output:
         output.write(struct.pack("<Q", len(encoded)))
         output.write(encoded)
-        for entry in header.values():
+        for name, entry in header.items():
+            padded = twin_values(name, entry["shape"], g, stored, block) if twin else None
+            if padded is not None:
+                output.write(b"".join(bf16_nearest(value) for value in padded))
+                continue
             left = entry["data_offsets"][1] - entry["data_offsets"][0]
             while left > 0:
                 chunk = block[:left]
@@ -192,9 +264,19 @@ def wait_ready(server, port):
 
 def probe(args, name, geometry, port):
     """One case's result. `passed` means it served correctly or was refused as declared."""
+    result = serve(args, name, geometry, port, twin=False)
+    if geometry.twin and result["passed"]:
+        twin = serve(args, f"{name}-twin", geometry, port, twin=True)
+        result["twin_matches"] = twin.get("outputs") == result["outputs"]
+        result["passed"] = twin["passed"] and result["twin_matches"]
+    result.pop("outputs", None)
+    return result
+
+
+def serve(args, name, geometry, port, twin):
     with tempfile.TemporaryDirectory(dir=args.work) as directory:
         checkpoint = Path(directory) / name
-        write_checkpoint(checkpoint, args.source, geometry)
+        write_checkpoint(checkpoint, args.source, geometry, twin)
         env = dict(os.environ, XDG_CACHE_HOME=str(args.work / "cache"))
         log = args.work / f"{name}.log"
         with log.open("w") as sink:
@@ -222,7 +304,8 @@ def probe(args, name, geometry, port):
     errors = [error for _, error in alone + together if error]
     invariant = [text for text, _ in alone] == [text for text, _ in together]
     passed = not geometry.refused and not errors and invariant
-    return {"served": True, "errors": errors[:2], "batch_invariant": invariant, "passed": passed}
+    return {"served": True, "errors": errors[:2], "batch_invariant": invariant, "passed": passed,
+            "outputs": [text for text, _ in alone]}
 
 
 def main():

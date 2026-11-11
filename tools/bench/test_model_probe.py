@@ -68,3 +68,22 @@ class CheckpointTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TwinTest(unittest.TestCase):
+    def test_each_rotary_half_keeps_its_lanes_before_its_padding(self):
+        self.assertEqual(module.lanes(6, 8), [0, 1, 2, None, 3, 4, 5, None])
+        self.assertEqual(module.padded_width(96), 128)
+        self.assertEqual(module.padded_width(100), 128)
+
+    def test_a_twin_pads_projection_rows_and_output_columns(self):
+        geometry = module.CASES["llama-96"]
+        block = module.value_block("BF16")
+        query = module.twin_values("x.q_proj.weight", None, geometry, 128, block)
+        output = module.twin_values("x.o_proj.weight", None, geometry, 128, block)
+        self.assertEqual(len(query), geometry.heads * 128 * geometry.hidden)
+        self.assertEqual(len(output), geometry.hidden * geometry.heads * 128)
+        # Padding lanes 48..63 of head 0 are zero rows.
+        self.assertTrue(all(v == 0.0 for v in query[48 * geometry.hidden:64 * geometry.hidden]))
+        self.assertIsNone(module.twin_values("x.mlp.up_proj.weight", None, geometry, 128, block))
+
