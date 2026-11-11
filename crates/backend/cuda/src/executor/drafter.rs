@@ -33,7 +33,7 @@ pub(super) struct Proposal {
 }
 
 impl Drafter {
-    pub(super) const fn new(head_depth: usize, model: Option<Engine>) -> Self {
+    pub(super) fn new(head_depth: usize, model: Option<Engine>) -> Self {
         match model {
             Some(engine) => Self::Model(engine),
             None if head_depth > 0 => Self::Head(None),
