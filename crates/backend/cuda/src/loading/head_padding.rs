@@ -24,6 +24,8 @@ use std::sync::Arc;
 
 /// Where each padded lane of one head reads its real lane, `None` for a zero lane.
 type Layout = Arc<[Option<usize>]>;
+/// Weights a widened head chain pads, with how.
+type PaddedWeights = Vec<(TensorId, Pad)>;
 
 /// How one weight's checkpoint values map into its padded storage.
 #[derive(Clone, Debug, PartialEq)]
@@ -325,7 +327,7 @@ fn widen(
         query_norm,
         gated: has(&queries, |op| matches!(op, TensorOp::Split { .. })),
     };
-    let mut pads: Vec<(TensorId, Pad)> = Vec::new();
+    let mut pads = PaddedWeights::new();
     for (chain, heads, role) in [
         (&queries, query_heads, Role::Query),
         (&keys, kv_heads, Role::Key),
@@ -425,7 +427,7 @@ fn rewrite_chain(
     (heads, role): (usize, Role),
     widening: &Widening,
     padding: &mut HeadPadding,
-) -> Result<(Vec<(TensorId, Pad)>, Vec<TensorId>)> {
+) -> Result<(PaddedWeights, Vec<TensorId>)> {
     let Widening {
         real,
         stored,
@@ -511,7 +513,7 @@ fn record(
     graph: &mut DataflowGraph,
     weights: &mut BTreeMap<String, DeviceWeight>,
     tensors: &BTreeSet<TensorId>,
-    pads: Vec<(TensorId, Pad)>,
+    pads: PaddedWeights,
     (real, stored): (usize, usize),
     padding: &mut HeadPadding,
 ) -> Result<()> {
