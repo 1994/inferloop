@@ -186,7 +186,7 @@ def serve_pair_side(server, levels, reps):
     for question in PREFIX_QUESTIONS:
         body, error = server.complete(f"{SHARED_PREFIX}\n{question}", WARM_TOKENS)
         outputs.append(error or body["choices"][0]["message"]["content"])
-        reused.append(reused_tokens(server.get("/native/v1/observability")))
+        reused.append(reused_tokens(server.get("/native/v1/diagnostics")))
     run = {"greedy_sha": hashlib.sha256(json.dumps(outputs).encode()).hexdigest(),
            "reused_tokens": reused[-1] - reused[0] if None not in reused else None,
            "throughput": {}}
@@ -279,10 +279,12 @@ def pressure(args):
         errors = [result["error"] for result in side["results"] if "error" in result]
         if errors:
             reasons.append(f"{name}: {len(errors)} failed, first {errors[0]}")
-    pairs = zip(sides["candidate"]["results"], sides["base"]["results"])
-    differ = sum(1 for a, b in pairs if a.get("sha") != b.get("sha"))
+    # A request refused for queue capacity on either side has nothing to compare.
+    both = [(a, b) for a, b in zip(sides["candidate"]["results"], sides["base"]["results"])
+            if "sha" in a and "sha" in b]
+    differ = sum(1 for a, b in both if a["sha"] != b["sha"])
     if differ:
-        reasons.append(f"{differ} outputs differ")
+        reasons.append(f"{differ} of {len(both)} outputs differ")
     for name, side in sides.items():
         tokens = sum(result.get("tokens", 0) for result in side["results"])
         print(f"{name}: {tokens} tokens in {side['wall_s']} s {json.dumps(side['metrics'])}")
