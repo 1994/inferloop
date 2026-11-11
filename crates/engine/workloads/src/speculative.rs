@@ -122,6 +122,65 @@ pub fn verify_draft(
     draw_distribution(&residual, correction).map(Verification::Replaced)
 }
 
+/// How a loaded draft runs beside the target's slot pool, which decides the pool policy that
+/// differs by draft. A new draft picks one of these instead of adding executor branches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DraftPooling {
+    /// No draft, or one whose proposals ride inside each sequence's own target timeline.
+    Separate,
+    /// One pooled proposal graph drafts for every slot at once.
+    Pooled,
+}
+
+/// Fewest sequences a slot pool must hold to beat the private single-sequence path.
+const SHARED_POOL_WIDTH: usize = 2;
+
+impl DraftPooling {
+    /// The narrowest slot pool worth capturing. A pooled proposal only runs on a pool, so one
+    /// slot is enough; otherwise a pool must hold two sequences to beat the private path.
+    #[must_use]
+    pub const fn minimum_pool_width(self) -> usize {
+        match self {
+            Self::Separate => SHARED_POOL_WIDTH,
+            Self::Pooled => 1,
+        }
+    }
+
+    /// Whether a slot pool is worth warming when at most `states` sequences may be resident.
+    #[must_use]
+    pub const fn warms_pool(self, states: usize) -> bool {
+        states >= self.minimum_pool_width()
+    }
+
+    /// Whether the private path's single-sequence roofline may stand in for a pool. A pooled
+    /// proposal needs the pool whatever the roofline says.
+    #[must_use]
+    pub const fn serial_roofline(self) -> bool {
+        matches!(self, Self::Separate)
+    }
+
+    /// Whether this draft only runs on a slot pool, so a request it cannot fund fails instead of
+    /// running privately.
+    #[must_use]
+    pub const fn requires_pool(self) -> bool {
+        matches!(self, Self::Pooled)
+    }
+
+    /// Whether sequences run on the private path instead of a slot pool, given how many may be
+    /// resident and the measured single-sequence roofline bound.
+    #[must_use]
+    pub const fn private(self, states: usize, roofline: Option<usize>) -> bool {
+        !self.requires_pool() && (!self.warms_pool(states) || matches!(roofline, Some(1)))
+    }
+
+    /// Whether concurrent prompts may share one multi-sequence prompt graph. A pooled proposal
+    /// follows each prompt through that prompt's own graph and its feature rows.
+    #[must_use]
+    pub const fn prompt_burst(self) -> bool {
+        matches!(self, Self::Separate)
+    }
+}
+
 #[cfg(test)]
 #[path = "../tests/unit/speculative.rs"]
 mod tests;

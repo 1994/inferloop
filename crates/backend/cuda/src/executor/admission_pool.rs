@@ -44,7 +44,10 @@ impl CudaExecutor {
 
     /// A pure quote bounds runtime resources; capture waits for actual request demand.
     pub(super) fn defer_request_pool(&mut self) -> Result<()> {
-        if self.dflash.is_none() && (self.maximum_states < 2 || self.roofline_bound == Some(1)) {
+        if self
+            .draft_pooling()
+            .private(self.maximum_states, self.roofline_bound)
+        {
             self.warm_slot_pool();
             return Ok(());
         }
@@ -75,8 +78,9 @@ impl CudaExecutor {
         let capacity = CB_SLOT_TOKENS.min(self.loaded.model().max_sequence);
         if readout != OutputReadout::Logits
             || tokens > capacity
-            || (self.dflash.is_none()
-                && (self.maximum_states < 2 || self.roofline_bound == Some(1)))
+            || self
+                .draft_pooling()
+                .private(self.maximum_states, self.roofline_bound)
         {
             return Ok(());
         }
@@ -97,7 +101,7 @@ impl CudaExecutor {
         // Actual free memory is measured again after retirement, before any allocation.
         let envelope = self.pool_envelope.max(self.pool_funding()?.0);
         let Some(plan) = self.pooled_plan_for(capacity, maximum, envelope, demand)? else {
-            if self.dflash.is_some() {
+            if self.draft_pooling().requires_pool() {
                 return Err(Error::new(
                     ErrorCode::Capacity,
                     "DFlash2 proposal and verification graphs exceed the serving budget",
@@ -153,7 +157,7 @@ impl CudaExecutor {
             state,
             tokens,
             page_tokens: KV_BLOCK_TOKENS,
-            requires_pool: self.dflash.is_some(),
+            requires_pool: self.draft_pooling().requires_pool(),
             live,
             pool: self.slots.as_ref().map(|pool| PoolFacts {
                 capacity: pool.capacity(),
