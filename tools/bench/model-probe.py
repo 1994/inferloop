@@ -43,6 +43,8 @@ class Geometry(NamedTuple):
     layers: int
     dtype: str = "BF16"
     refused: bool = False
+    family: str = "qwen3"
+    tied: bool = True
 
 
 CASES = {
@@ -58,14 +60,25 @@ CASES = {
     "head-48": Geometry(192, 4, 2, 48, 576, 2, refused=True),
     "head-96": Geometry(384, 4, 2, 96, 1152, 2, refused=True),
     "head-100": Geometry(400, 4, 2, 100, 1200, 2, refused=True),
+    # A second family: no query/key norms, through the Llama provider only.
+    "llama-control": Geometry(512, 4, 2, 128, 1536, 2, family="llama"),
+    "llama-64": Geometry(256, 4, 2, 64, 768, 2, family="llama"),
+    "llama-untied": Geometry(512, 4, 2, 128, 1536, 2, family="llama", tied=False),
+}
+# Configuration each family's provider claims the checkpoint by.
+FAMILIES = {
+    "qwen3": {"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]},
+    "llama": {"model_type": "llama", "architectures": ["LlamaForCausalLM"]},
 }
 
 
 def tensor_shapes(geometry, vocab):
-    """Qwen3 weight names and shapes for one geometry, with tied embeddings."""
+    """Hugging Face weight names and shapes for one geometry; Qwen3 adds query/key norms."""
     g = geometry
     q, kv = g.heads * g.head_dim, g.kv_heads * g.head_dim
     shapes = {"model.embed_tokens.weight": [vocab, g.hidden], "model.norm.weight": [g.hidden]}
+    if not g.tied:
+        shapes["lm_head.weight"] = [vocab, g.hidden]
     for layer in range(g.layers):
         prefix = f"model.layers.{layer}."
         shapes |= {
@@ -74,13 +87,16 @@ def tensor_shapes(geometry, vocab):
             f"{prefix}mlp.down_proj.weight": [g.hidden, g.intermediate],
             f"{prefix}mlp.gate_proj.weight": [g.intermediate, g.hidden],
             f"{prefix}mlp.up_proj.weight": [g.intermediate, g.hidden],
-            f"{prefix}self_attn.k_norm.weight": [g.head_dim],
-            f"{prefix}self_attn.q_norm.weight": [g.head_dim],
             f"{prefix}self_attn.k_proj.weight": [kv, g.hidden],
             f"{prefix}self_attn.v_proj.weight": [kv, g.hidden],
             f"{prefix}self_attn.o_proj.weight": [g.hidden, q],
             f"{prefix}self_attn.q_proj.weight": [q, g.hidden],
         }
+        if g.family == "qwen3":
+            shapes |= {
+                f"{prefix}self_attn.k_norm.weight": [g.head_dim],
+                f"{prefix}self_attn.q_norm.weight": [g.head_dim],
+            }
     return shapes
 
 
@@ -125,7 +141,9 @@ def write_checkpoint(path, source, geometry):
         "max_window_layers": g.layers,
         "max_position_embeddings": MAX_POSITIONS,
         "torch_dtype": DTYPES[g.dtype][0],
+        "tie_word_embeddings": g.tied,
     }
+    config |= FAMILIES[g.family]
     config.pop("layer_types", None)
     (path / "config.json").write_text(json.dumps(config))
     header, encoded = safetensors_header(tensor_shapes(g, config["vocab_size"]), g.dtype)
@@ -211,7 +229,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True)
     parser.add_argument(
-        "--source", required=True, type=Path, help="Qwen3 package for its tokenizer"
+        "--source", required=True, type=Path, help="a Qwen3 package, for its tokenizer"
     )
     parser.add_argument("--work", required=True, type=Path)
     parser.add_argument("--cases", nargs="*", default=list(CASES), choices=list(CASES))

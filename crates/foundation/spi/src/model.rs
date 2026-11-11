@@ -214,7 +214,12 @@ pub trait ModelProvider: Send + Sync {
         "embed_tokens.weight"
     }
     /// Hugging Face tensor name for one canonical weight slot under the resolved prefix.
+    /// The language-model head is stored at the package root, outside the backbone prefix.
     fn weight_source(&self, slot: &str, prefix: &str) -> String {
-        format!("{prefix}{slot}")
+        if slot == "lm_head.weight" {
+            slot.to_owned()
+        } else {
+            format!("{prefix}{slot}")
+        }
     }
 }
