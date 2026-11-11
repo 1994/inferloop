@@ -137,7 +137,16 @@ runtime                  submit / poll，不重建拓扑
 
 - **做什么：** 每个算子族至少一个通用 cell，任意受支持形状可跑但可以慢；其他形状在加载期显式返回 `Unsupported`。AOT kernel 优先用运行时几何参数，`pool_gemv.cu` 是模板，避免“模型 × 架构 × 形状”的制品组合膨胀。注册表 `KernelRegistration` 随之改为真实能力，这需要给 provider 提供设备信息，因为 `CudaKernels` 目前是单元结构体且全部注册 F32 占位。
 - **验收：** 现有非 2 幂形状限制逐条变为通用 cell 支持或加载期错误。
-- **进展（2026-11-10，#230）：** 加载期几何检查原来只覆盖 RoPE 和 attention；卷积宽度和 delta 头几何现在也在加载期按 `Unsupported` 拒绝，规则就是 recurrent lowering 的 `Recurrence::of`。至此已知的形状限制都在加载期报错。**余下：** 非 2 幂形状的通用 cell，以及 `KernelRegistration` 改为真实能力，都要写新 kernel。
+- **进展（2026-11-10，#230）：** 加载期几何检查原来只覆盖 RoPE 和 attention；卷积宽度和 delta 头几何现在也在加载期按 `Unsupported` 拒绝，规则就是 recurrent lowering 的 `Recurrence::of`。至此已知的形状限制都在加载期报错。
+- **非 2 幂注意力头（2026-11-11，#238）：** 不写第二套 kernel，而是在加载时把 head_dim 不是 2 幂的头按下一档 2 幂存储（`loading/head_padding.rs`，vision 塔已有同样的 `half_layout`）。
+  - padding 行与列全为零，所以 padding lane 始终为零。
+  - 只取决于宽度的两处量在加载时修正：per-head norm 的 epsilon 乘 `D/P`，k_norm gain 乘 `√(D/P)`（没有 qk_norm 时 q 行乘 `√(P/D)`），于是 score 仍是 `1/√D`。
+  - 全宽 rotary 两半各自补齐，频率表只给真实 lane。
+  - CPU 上用独立 F64 参考验证 D = 48/96/100 的 score 不变。`model-probe.py` 把 head-48/96/100 改为期望服务，并用手工补齐的 Llama-96 twin 要求输出逐字一致。
+  - 推测 draft、多模态 rotary、NVFP4 / FP8 block 权重在加载期按 `Unsupported` 拒绝。
+  - 探测还发现 main 上 hidden 不等于 heads × head_dim 的模型第一次请求就失败：未缩放的 KV 布局在不同程序间不一致。现在分配时就用 head-major，同一 PR 修复。
+- **注册表：** 每个 operation 的注册指向实际决定录制的 lowering。compiler 目前只接受 F32 precision，所以按设备区分精度的注册暂不加。
+- **M5 完成：** 按验收口径，已知限制都变为通用支持（注意力头）或加载期 `Unsupported`（GDN 的非 2 幂 key/value 维，#230）。GDN 若要按同样方式补齐，还需要 delta kernel 接受真实 key 维的 query 缩放：kernel 内部对 q 做 L2 归一化，会抵消加载期对 q 行的缩放。目前没有这种形状的模型，暂不做。
 
 ### M6 host 去 cuTile
 
@@ -185,7 +194,7 @@ runtime                  submit / poll，不重建拓扑
 - **竞态已不复现：** 现有代码在资源进展后重新计时；2026-10-31 在 27B 5×8000（16 槽）和 0.6B 14×8000（12 槽）上全部成功，后者整轮 48 秒，超过 30 秒超时。下一次复现之前不加预留账。
 - **建池决策（已归还）：** “这次预留要等、复用还是建新池”是 `infer-scheduler` 的纯函数 `decide_pool`，CUDA 只提供事实并执行；报价仍是设备事实，留在 CUDA。
 - **按块计价（2026-11-10，#228）：** 私有路径的 KV 改为按整页计价，每页字节与页账本、池报价同一单位。私有容量已补齐到 2 的幂，16 token 以上报价不变。
-- **余下：** `make_room`（按预算驱逐缓存序列和前缀、报容量错误）仍是 CUDA 内的准入判断，搬到 runtime 要改 SPI。
+- **腾挪决策归还（2026-11-11，#236）：** `make_room` 的判断（放得下吗、先丢空闲序列还是前缀快照、何时拒绝）改为 `infer_scheduler::next_room_step`，与 `decide_pool` 同一模式：CUDA 上报账目并执行，engine 决定。不需要改 SPI。CUDA 里不再有独立的准入判断，O2 完成。
 - **做什么：** 把 `admission_pool.rs` 拆开：CUDA 只报价和上报物理事实，何时要资源、按什么计价归 runtime。完成 KV 方案 P3 的按块计价。第二 flight 的预算以后也从这个入口计入。
 - **验收：** 5×8000 竞态用例不再超时；CUDA 里不再有独立的准入判断；报价分项可读回。
 
@@ -196,7 +205,13 @@ runtime                  submit / poll，不重建拓扑
 - **SPI：** 如需调整，只改现有 `kv_cache`、`state_page_growth`、reservation，不新增第二套容量接口。
 - **注意：** KV 只是显存的一部分；递推状态按序列保存，仍由 CUDA 物理实现，engine 只记其字节数。
 - **验收：** `kv_cache()` 的数据来自公共账本而非 CUDA 自算；CUDA 没有私有 free list 决策；取消和错误路径下页不泄漏、不提前释放。
-- **第一步完成（2026-11-10，#227）：** 分页 slot pool 的页存在 `infer-state` 的 `KvCacheManager`，每块字节用池报价单位；`kv_cache()` 对分页池直接取账本的 inspection，分配与释放计数从 slot 改为页。预付语义不变。**余下：** 前缀按页共享和按需增长（第 5 节），前缀快照仍由 CUDA 单独持有。
+- **第一步完成（2026-11-10，#227）：** 分页 slot pool 的页存在 `infer-state` 的 `KvCacheManager`，每块字节用池报价单位；`kv_cache()` 对分页池直接取账本的 inspection，分配与释放计数从 slot 改为页。预付语义不变。
+- **按需增长与按页前缀（2026-11-11，#237）：**
+  - slot 不再按准入容量预租页：已绑定序列每次回放前增长到本步写入的行，home 起始 1 页。
+  - `state_page_growth` 报告实际持有的页，engine 每步只为新增页计费；CUDA 支持 recompute preemption，reset 会归还页。
+  - slot 常驻序列的前缀整页登记在 ledger（`PagePrefix`），快照只带递推状态；恢复时映射同一批页，不再拷 KV。
+  - 0.6B 上 64 个 1024 token 的并发长请求：main 服务 51 个，本分支 62 个（其余被 engine 队列以 429 拒绝），两边都成功的 50 个里有 1 个输出不同。单独重放时 main 与本分支都给出本分支在压力下的那个输出，所以分歧来自 main 在压力下的路径；main 对 main 同条件下 64/64 一致。
+  - O3 完成。
 
 ### O4 推测账
 
@@ -204,7 +219,8 @@ runtime                  submit / poll，不重建拓扑
 - **前置：** M4 之后、O3 之后。回滚语义依赖页所有权，lowering 收口后迁移成本更低。
 - **做什么：** 两个 `SpeculationPlan` 已拆开（模型侧是 `infer_spi::DraftHead`）。先把 MTP 和已合入的 DFlash2 都对照一遍公共契约，再按 [SPI 方案](../speculation/spi.md)步骤③把提议、接受、池宽和能力策略搬到 `infer-workloads`。此前冻结 DFlash2 的新接线。
 - **验收：** MTP token、状态、资源行为与迁移前一致；新增 draft 不需要改 executor 的策略分支。
-- **池策略归还（2026-11-10，#229）：** executor 里 8 处按“是否加载 DFlash2”的分支（最窄池宽、是否建池、私有路径与 roofline、没有池时是否失败、prompt burst）改由 `infer_workloads::DraftPooling` 决定。新增 draft 只需选 `Separate` 或 `Pooled`。**余下：** 提议与接受的执行（MTP 的 `speculation`、DFlash2 的 chain）仍是两套机制。
+- **池策略归还（2026-11-10，#229）：** executor 里 8 处按“是否加载 DFlash2”的分支（最窄池宽、是否建池、私有路径与 roofline、没有池时是否失败、prompt burst）改由 `infer_workloads::DraftPooling` 决定。新增 draft 只需选 `Separate` 或 `Pooled`。
+- **统一 draft 接口（2026-11-11，#235）：** 池化推测步只调用 `executor::drafter::Drafter` 的 `propose`（候选链）和 `settle`（目标接受后结算）。挂接、卸载、空闲判断也经它。MTP head 与 DFlash2 模型是同一 enum 的两个 variant，静态分发。新增一种 draft 是在 `drafter.rs` 加一个 variant，executor 的推测步不改。每序列状态与串行路径仍各自保留。O4 完成。
 
 ### O5 不立项的部分
 
@@ -283,14 +299,18 @@ Workload 边界目前是干净的：CUDA 和 runtime 中查不到 `WorkloadKind`
 
 **2026-11-10 进度：** M2、M3、M4 完成（#209–#226、#232）；M5 的加载期检查补齐（#230）；M7 第二家族 `LlamaProvider`（#231）；O2 按块计价（#228）；O3 第一步换成 `KvCacheManager`（#227）；O4 的池策略归还 `DraftPooling`（#229）。
 
-**未完成，从这里接手：**
+**2026-11-11 进度：**
 
-1. **O4 其余：** MTP 与 DFlash2 的提议、验证、接受、回滚仍是 executor 里的两套机制。统一成一个 draft 接口后，新推测方案（如自适应块长、树验证）只实现这个接口。
-2. **O3 其余：** 前缀按页共享和按需增长。按 P2 重测，0.6B 已需要按需增长。
-3. **O2 其余：** `make_room` 搬到 runtime，要改 SPI。
-4. **M5 其余：** 非 2 幂形状的通用 cell，以及 `KernelRegistration` 改为真实能力，都要写新 kernel。
-5. **对照工具入库：** 端到端对照脚本（多配置 hash、measured、调优表命中对比、空泡）目前只在 45 上，应收进 `tools/bench`。
-6. **M8、P3：** 等 L20 与多卡设备，没有设备前不算通过。
+- O2、O3、O4 完成（#235–#237）。
+- M5 补上非 2 幂注意力头（#238）。
+- 对照工具入库为 `tools/bench/arch-verify.py`（#234），提供三个子命令：
+  - `pair`：多配置 hash、measured、调优表命中、热前缀复用；
+  - `pressure`：KV 超订下逐请求对照；
+  - `gap`：空泡测量。
+
+**未完成：**
+
+1. **M8、P3：** 等 L20 与多卡设备，没有设备前不算通过。
 
 **27B 显存（2026-10-31，16 槽，容量 8192，报价 5.85 GiB；2026-11-10 重测见 P2）：** target 池 3.40 GiB，其中 KV 只有 0.33 GiB；target worker 0.95 GiB，draft worker 0.64 GiB，draft 池 0.32 GiB。按第 5 节的决策规则，KV 不是大头，**按需增长暂缓，先看 arena 和递推状态**。
 
