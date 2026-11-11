@@ -1,11 +1,11 @@
+use super::recurrent_lowering::{Delta, Lowering, Mode, Recurrence, lower};
 use super::shaped::Shaped;
 use super::{
     arena::SlotMemory,
     buffers::{buffer, kv_cache},
     capture::{Capture, error},
 };
-use crate::constants::CONV_KERNEL_SIZE;
-use infer_core::Result;
+use infer_core::{Result, TensorId};
 use infer_cuda_kernels::contract::{Buffer, ConvBuffers, ConvKernel, DeltaBuffers, DeltaStepPlan};
 use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
@@ -80,92 +80,97 @@ impl Capture<'_> {
             .states
             .first()
             .ok_or_else(|| error("missing state binding"))?;
-        // The pooled graph holds state roots here, not lane views: one replay advances every
-        // busy lane instead of one launch per lane.
-        if self.mode == super::capture::CaptureMode::Pooled && self.states.contains_key(&id) {
-            match node.op {
-                TensorOp::Delta { .. } => return self.record_delta_lanes(node, output),
-                TensorOp::Conv { channels, .. } => {
-                    return self.record_conv_lanes(node, output, channels);
+        if let Some(recurrence) = Recurrence::of(&node.op)? {
+            // The pooled graph holds state roots here, not lane views: one replay advances every
+            // busy lane instead of one launch per lane.
+            let pooled =
+                self.mode == super::capture::CaptureMode::Pooled && self.states.contains_key(&id);
+            let mode = if pooled { Mode::Pooled } else { Mode::Lane };
+            return match (lower(recurrence, mode), recurrence) {
+                (Lowering::Lanes, Recurrence::Conv { channels }) => {
+                    self.record_conv_lanes(node, output, channels)
                 }
-                _ => {}
-            }
+                (Lowering::Lanes, Recurrence::Delta(delta)) => {
+                    self.record_delta_lanes(node, output, delta)
+                }
+                (Lowering::Step, recurrence) => self.record_step(node, output, id, recurrence),
+                _ => Err(error("recurrent decode lowering")),
+            };
         }
         if let Some(state) = self.fp8_states.get(&id).cloned() {
             let cache = state.cache(self.weights.kv_scales[&id]);
             return self.record_attention(node, output, cache);
         }
+        let TensorOp::Attention {
+            kv_heads, head_dim, ..
+        } = node.op
+        else {
+            return Err(error("unsupported resident state operation"));
+        };
         let mut state = self
             .states
             .remove(&id)
             .ok_or_else(|| error("missing state allocation"))?;
-        match node.op {
-            TensorOp::Conv {
-                channels,
-                kernel: CONV_KERNEL_SIZE,
-            } => {
-                self.conv(node, output, &state, channels)?;
-            }
-            TensorOp::Delta {
-                key_heads,
-                value_heads,
-                key_dim,
-                value_dim,
-            } => {
-                if key_dim != value_dim
-                    || !key_dim.is_power_of_two()
-                    || key_heads == 0
-                    || !value_heads.is_multiple_of(key_heads)
-                {
-                    return Err(error("resident delta dimensions"));
-                }
-                // The value dimension may be split so the grid can fill the device: the
-                // established single-block launch is one block per value head, 48 of them on the
-                // 27B against 170 multiprocessors, and each block moves the whole D-by-D state for
-                // every token. Splitting the columns is exact - every reduction is over the key
-                // dimension - and is off by default until the full matrix shows a gain.
-                let block = value_block(value_dim)?;
+        if state.len() != 2 {
+            return Err(error("attention state layout"));
+        }
+        // Unscaled KV is still a shaped tensor whose copies read the head-major shape.
+        let rows = state[0].len() / (kv_heads * head_dim).max(1);
+        let keys = state
+            .remove(0)
+            .reshaped(vec![kv_heads, rows, head_dim])
+            .map_err(error)?;
+        let values = state
+            .remove(0)
+            .reshaped(vec![kv_heads, rows, head_dim])
+            .map_err(error)?;
+        let recorded = self.record_attention(
+            node,
+            output,
+            kv_cache((&keys, &values), kv_heads, head_dim, [1.0, 1.0])?,
+        );
+        state.push(keys);
+        state.push(values);
+        self.states.insert(id, state);
+        recorded
+    }
+
+    /// One lane's convolution or delta step against its own state.
+    fn record_step(
+        &mut self,
+        node: &TensorNode,
+        output: &SlotMemory,
+        id: TensorId,
+        recurrence: Recurrence,
+    ) -> Result<()> {
+        let state = self
+            .states
+            .remove(&id)
+            .ok_or_else(|| error("missing state allocation"))?;
+        let recorded = match recurrence {
+            Recurrence::Conv { channels } => self.conv(node, output, &state, channels),
+            // The value dimension may be split so the grid can fill the device: the established
+            // single-block launch is one block per value head, 48 of them on the 27B against 170
+            // multiprocessors, and each block moves the whole D-by-D state for every token.
+            // Splitting the columns is exact - every reduction is over the key dimension - and is
+            // off by default until the full matrix shows a gain.
+            Recurrence::Delta(delta) => value_block(delta.value_dim).and_then(|block| {
                 self.record_delta_step(
                     node,
                     &DeltaStepPlan {
-                        key_heads,
-                        value_heads,
-                        dim: key_dim,
+                        key_heads: delta.key_heads,
+                        value_heads: delta.value_heads,
+                        dim: delta.key_dim,
                         block,
                         lanes: None,
                     },
                     buffer(output)?,
                     buffer(&state[0])?,
-                )?;
-            }
-            TensorOp::Attention {
-                kv_heads, head_dim, ..
-            } => {
-                if state.len() != 2 {
-                    return Err(error("attention state layout"));
-                }
-                // Unscaled KV is still a shaped tensor whose copies read the head-major shape.
-                let rows = state[0].len() / (kv_heads * head_dim).max(1);
-                let keys = state
-                    .remove(0)
-                    .reshaped(vec![kv_heads, rows, head_dim])
-                    .map_err(error)?;
-                let values = state
-                    .remove(0)
-                    .reshaped(vec![kv_heads, rows, head_dim])
-                    .map_err(error)?;
-                self.record_attention(
-                    node,
-                    output,
-                    kv_cache((&keys, &values), kv_heads, head_dim, [1.0, 1.0])?,
-                )?;
-                state.push(keys);
-                state.push(values);
-            }
-            _ => return Err(error("unsupported resident state operation")),
-        }
+                )
+            }),
+        };
         self.states.insert(id, state);
-        Ok(())
+        recorded
     }
 
     fn record_delta_step(
@@ -235,23 +240,12 @@ impl Capture<'_> {
     /// Lane-batched delta decode: one kernel over `[lanes * value_heads]` blocks. The state
     /// root is lane-major, so flattening its head and lane axes addresses every lane's
     /// `[value_heads, key, value]` state without copying.
-    fn record_delta_lanes(&self, node: &TensorNode, output: &SlotMemory) -> Result<()> {
-        let TensorOp::Delta {
-            key_heads,
-            value_heads,
-            key_dim,
-            value_dim,
-        } = node.op
-        else {
-            return Err(error("expected delta operation"));
-        };
-        if key_dim != value_dim
-            || !key_dim.is_power_of_two()
-            || key_heads == 0
-            || !value_heads.is_multiple_of(key_heads)
-        {
-            return Err(error("resident delta dimensions"));
-        }
+    fn record_delta_lanes(
+        &self,
+        node: &TensorNode,
+        output: &SlotMemory,
+        delta: Delta,
+    ) -> Result<()> {
         let id = *node
             .states
             .first()
@@ -262,13 +256,13 @@ impl Capture<'_> {
             .get(&id)
             .and_then(|state| state.last())
             .ok_or_else(|| error("delta state layout"))?;
-        let block = value_block(value_dim)?;
+        let block = value_block(delta.value_dim)?;
         self.record_delta_step(
             node,
             &DeltaStepPlan {
-                key_heads,
-                value_heads,
-                dim: key_dim,
+                key_heads: delta.key_heads,
+                value_heads: delta.value_heads,
+                dim: delta.key_dim,
                 block,
                 lanes: Some(lanes),
             },

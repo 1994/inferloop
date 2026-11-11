@@ -8,13 +8,14 @@
 #[cfg(feature = "cuda")]
 pub use infer_cuda_kernels::tile::recurrent::slot_recurrent as fused;
 
+use super::recurrent_lowering::Recurrence;
 use super::{
     ActivationArena, ProgramWeights,
     batch::States,
     buffers::{buffer, region},
     capture::error,
 };
-use crate::constants::{CONV_KERNEL_SIZE, GDN_PROJECTED_INPUTS};
+use crate::constants::GDN_PROJECTED_INPUTS;
 use crate::device::CudaDevice;
 use infer_core::Result;
 use infer_core::{Error, TensorId};
@@ -212,24 +213,10 @@ pub(super) fn value_split(
 }
 
 /// Whether `node` is a recurrent state writer the fused verify/commit pair covers.
-pub(super) const fn covers(node: &TensorNode) -> bool {
+pub(super) fn covers(node: &TensorNode) -> bool {
     node.outputs.len() == 1
         && node.states.len() == 1
-        && match node.op {
-            TensorOp::Conv { kernel, .. } => kernel == CONV_KERNEL_SIZE,
-            TensorOp::Delta {
-                key_heads,
-                value_heads,
-                key_dim,
-                value_dim,
-            } => {
-                key_dim == value_dim
-                    && key_dim.is_power_of_two()
-                    && key_heads > 0
-                    && value_heads.is_multiple_of(key_heads)
-            }
-            _ => false,
-        }
+        && matches!(Recurrence::of(&node.op), Ok(Some(_)))
 }
 
 /// One lane's row of a slot the arena hands out by address.

@@ -4,6 +4,7 @@
 use super::attention_lowering::{Lowering, Mode, lower};
 use super::buffers::buffer;
 use super::prefill_projection::{DensePlan, record_fused_norm, record_narrow};
+use super::recurrent_lowering::Lowering as RecurrentLowering;
 use super::shaped::Shaped;
 use super::{
     ActivationArena, ProgramWeights,
@@ -1221,20 +1222,19 @@ impl BatchBuilder<'_> {
             .take()
             .ok_or_else(|| error("prompt burst binding"))?;
         let result = binding.segments.iter_mut().try_for_each(|segment| {
-            if matches!(node.op, TensorOp::Conv { .. } | TensorOp::Delta { .. }) {
-                let recorded = binding.recurrent.record(
+            if let Some(lowered) = binding.recurrent.lowering(node, self.weights)? {
+                if lowered.1 == RecurrentLowering::Rows {
+                    return Err(error("prompt burst needs the chunked recurrent path"));
+                }
+                return binding.recurrent.record(
                     scope,
                     node,
                     &segment.arena,
                     self.weights,
                     segment.states,
                     segment.info,
-                )?;
-                return if recorded {
-                    Ok(())
-                } else {
-                    Err(error("prompt burst needs the chunked recurrent path"))
-                };
+                    lowered,
+                );
             }
             let mut no_fusion = None;
             let (metadata, mode) = match (&node.op, segment.rotary) {
@@ -1563,8 +1563,18 @@ impl BatchBuilder<'_> {
         {
             return Ok(());
         }
-        if recurrent.record(scope, node, arena, self.weights, self.states, prefill_info)? {
-            return Ok(());
+        if let Some(lowered) = recurrent.lowering(node, self.weights)?
+            && lowered.1 != RecurrentLowering::Rows
+        {
+            return recurrent.record(
+                scope,
+                node,
+                arena,
+                self.weights,
+                self.states,
+                prefill_info,
+                lowered,
+            );
         }
         if self.record_prompt_dynamic(scope, node, arena, prefill_info, prefill_rotary)? {
             return Ok(());

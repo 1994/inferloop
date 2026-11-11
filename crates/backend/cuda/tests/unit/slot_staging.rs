@@ -1,4 +1,5 @@
 use super::*;
+use crate::constants::CONV_KERNEL_SIZE;
 use crate::device::device_error;
 use crate::test_support::fixture_graph;
 use cutile::prelude::DeviceOp;
