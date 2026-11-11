@@ -96,6 +96,7 @@ runtime                  submit / poll，不重建拓扑
 - **模板已落地：** `cuda-kernels/acceptance/pool_gemv.rs` 放用例和独立参考，tile（host 的 ignored 用例）和 aot（`aot-pool-gemv` 示例）共用，两者都在 RTX 5090 上通过。其他算子族照此补齐。
 - **做什么：** 每个算子族一套验收，覆盖 CPU 参考对照、容差、有限值、单算子性能；tile 与 aot 共用同一入口。
 - **验收口径：** 同一 cell 的迁移要求逐位一致。跨 profile 只要求参考值加容差，因为归约顺序可以不同（见 `aot/projection/pool_gemv.cu` 头注释）。设备未运行、零用例或全 ignored 不算通过。
+- **补齐（2026-11-10，#232）：** `acceptance/` 下增加 `norm.rs`（Rows 与 Block 布局、门控、offset）、`rope.rs`（单序列、prompt、pooled 三种位置来源）、`recurrent.rs`（卷积 step 与 gated delta step，含 idle lane）、`elementwise.rs`（SiLU、Sigmoid 按容差，加、乘逐位）。每份都有独立的 F64 参考，host 的 ignored 用例经合约录制、回放、对照并打印单算子回放耗时，5 个 cell 在 RTX 5090 上全部通过。attention 的独立参考已经是 `tuning::attention::reference`（每个候选上硬件前都要过它），不再写第二份。aot 源目前只有 pool_gemv，其余族等对应制品落地时接同一份 case。
 
 ### M3 统一调优框架
 
@@ -114,14 +115,21 @@ runtime                  submit / poll，不重建拓扑
   - 容差类数值门（F64 误差）不给 `Record` 加类型参数，而是在 `Evidence` 里加 `max_error`：所有被接受的测量的最大偏差。超出容差的 trial 在测量时就被拒绝，所以一个上界覆盖整条记录。
   - exact、shared、vector、combined attention 与 exact recurrence 是“一个候选、多个计时 case”的资格判定，共用 `tuning::qualify::Qualification`；MMA、F32 MMA 与 FP4 Lt 记录原样移入 `records`。
   - 45 上 warm cache 的 4 组配置 hash 与 main 一致，measured=0，每族都从表中命中，没有 fallback。
-  - **余下：** MMA 各 variant 的 trial 也是资格判定，可以改用 `Qualification` 的 case 类型；`cuda-tuning-report` 目前只为搜索类记录打印冷热加速比。
+  - **收尾（2026-11-10）：** MMA 与 F32 MMA 的 trial 改用 `qualify::Case`，旧记录的 `history` 字段照样读入（#226）；`cuda-tuning-report` 也为资格判定记录打印两个顺序里最差的冷热加速比和计时 case 数（#225）。M3 完成。
 
 ### M4 单一 lowering（风险最高）
 
 - **做什么：** 用一个入口把 `(算子, 模式)` 降低成 Plan，`CaptureMode` 成为 Plan 参数。`Capture`、`batch.rs`、`batch_projection.rs`、`slot_verify*`、`prefill_projection.rs`、`dflash2/mod.rs` 复用该入口。attention 回退链收成加载期选定的 Plan，`record` 不再用 `Ok(false)` 表示回退。优先级应高于只改 capture.rs：自 10-15 起 `batch.rs` 改动 41 次，`program.rs` 27 次，`slot_batch.rs` 26 次，`slot_verify.rs` 24 次，capture.rs 未进前 12。
 - **attention 回退链（已完成）：** `Ok(false)` 已删除。捕获时先用 `accepts` 判断选中的 kernel 是否适合这个池，不适合就记日志走下一条路径；`record` 收到不合格的操作数直接报错。回退本身不能删：DFlash2 的共享页多于单槽容量，SIMT 的固定布局确实放不下。27B、0.6B 输出与 main 一致。
 - **分批：** 先 projection，再 attention（与 C1A 合并推进），再 norm 和 recurrent。
-- **projection 第一步（2026-11-09，#220）：** `resident::projection_lowering::lower(format, activation, mode, shape)` 在录制前决定 projection 录什么：量化 GEMM、pooled dense、matvec、rows kernel 或 prompt GEMM。单 lane、verify rows、slot rows、prompt tile、prompt logits 五种模式只是参数，各自按这个决定录制，不再先问 NVFP4 路径、失败后再各自回退。决定与改动前逐一相同，4 组配置输出逐位一致。lowering 只读权重的 `Format`，是纯函数，有单测覆盖。余下：DFlash2 的 split-K draft projection，以及 attention、norm、recurrent 三批。融合、宽图如果合不进通用入口，保留为显式 Plan 特化，但必须有通用路径可退。
+- **projection 第一步（2026-11-09，#220）：** `resident::projection_lowering::lower(format, activation, mode, shape)` 在录制前决定 projection 录什么：量化 GEMM、pooled dense、matvec、rows kernel 或 prompt GEMM。单 lane、verify rows、slot rows、prompt tile、prompt logits 五种模式只是参数，各自按这个决定录制，不再先问 NVFP4 路径、失败后再各自回退。决定与改动前逐一相同，4 组配置输出逐位一致。lowering 只读权重的 `Format`，是纯函数，有单测覆盖。DFlash2 的 draft projection 随后接入（#221，`Mode::Draft { split }`）。
+- **其余三批（2026-11-10）：**
+  - **attention（#222）：** `attention_lowering::lower(mode, window, prepared)` 决定 decode 走 split 还是单遍、verify 走 grouped 还是逐 lane、prefill 走选中的 MMA / SIMT（已加载且接受池的操作数）还是 tiled / 合约 prefill。两条 verify 路径不再用 `Ok(false)` 表示回退。
+  - **norm（#223）：** 行布局由 `norm_lowering::layout` 决定；prompt norm 是否融合进 FP4 或 token-FP8 量化器由 `fusion` 纯函数决定，融合录制不再用 `Ok(false)` 回退。
+  - **recurrent（#224）：** `Recurrence::of` 是唯一的几何检查，`lower` 决定 lane step、pooled 一次推进所有 lane、chunk 卷积、chunked delta（及其 value 块）或逐行。prompt workspace 不再用 `Ok(false)` 回退。
+  - 每批都在 RTX 5090 上验证：4 组配置 hash 与 main 一致，measured=0，没有 fallback。norm 批的验证抓到一个 panic（读下游节点权重前没检查它是不是两输入 projection），已修。
+- **M4 完成。** 融合（norm 进量化器、pooled verify）仍是 lowering 的显式分支，都有通用路径可退。
+
 - **前置：** PR #127 改动 `batch.rs`、`arena.rs` 和 executor，等它合并或定案后再动这些文件。
 - **验收：** 每批 13.x 逐位一致且性能不回退；`resident/**` 的 `.generics(` 单调下降；未融合时在生效配置里可见。
 
@@ -129,6 +137,7 @@ runtime                  submit / poll，不重建拓扑
 
 - **做什么：** 每个算子族至少一个通用 cell，任意受支持形状可跑但可以慢；其他形状在加载期显式返回 `Unsupported`。AOT kernel 优先用运行时几何参数，`pool_gemv.cu` 是模板，避免“模型 × 架构 × 形状”的制品组合膨胀。注册表 `KernelRegistration` 随之改为真实能力，这需要给 provider 提供设备信息，因为 `CudaKernels` 目前是单元结构体且全部注册 F32 占位。
 - **验收：** 现有非 2 幂形状限制逐条变为通用 cell 支持或加载期错误。
+- **进展（2026-11-10，#230）：** 加载期几何检查原来只覆盖 RoPE 和 attention；卷积宽度和 delta 头几何现在也在加载期按 `Unsupported` 拒绝，规则就是 recurrent lowering 的 `Recurrence::of`。至此已知的形状限制都在加载期报错。**余下：** 非 2 幂形状的通用 cell，以及 `KernelRegistration` 改为真实能力，都要写新 kernel。
 
 ### M6 host 去 cuTile
 
@@ -153,6 +162,7 @@ runtime                  submit / poll，不重建拓扑
 - **做什么：** 选一个普通稠密 attention 解码器（无 Delta/Conv、无 MTP），先用微型 fixture 和独立参考。这是架构验收，不代表扩大正式支持范围。
 - **工具：** `tools/bench/model-probe.py` 一条命令跑完 12 种几何，每种要么能服务且批不变，要么在加载期被明确拒绝。
 - **验收：** 只改 provider；`resident/**` 零 diff；走通用路径能运行；自动调优能接管。做不到时，差距就是下一批 M4/M5 的工作清单。
+- **第二家族（2026-11-10，#231）：** `LlamaProvider` 导入 Llama 与 Mistral 配置：GQA、无 q/k norm、RoPE、SiLU 门控 MLP，可选非绑定 embedding，由共用的 `decoder::lower` 降低；RoPE 缩放、bias、非 SiLU 激活在 import 时拒绝。只改了 provider，CUDA 后端零 diff。`model-probe.py` 增加 Llama 用例（含非绑定权重）。探测发现 SPI 默认把非绑定的 `lm_head.weight` 也加了 backbone 前缀，此前只有 Qwen 自己覆盖了这条规则；改为默认放在包根后 Qwen 不再覆盖。
 
 ### M8 L20 实机验收
 
@@ -174,7 +184,8 @@ runtime                  submit / poll，不重建拓扑
 
 - **竞态已不复现：** 现有代码在资源进展后重新计时；2026-10-31 在 27B 5×8000（16 槽）和 0.6B 14×8000（12 槽）上全部成功，后者整轮 48 秒，超过 30 秒超时。下一次复现之前不加预留账。
 - **建池决策（已归还）：** “这次预留要等、复用还是建新池”是 `infer-scheduler` 的纯函数 `decide_pool`，CUDA 只提供事实并执行；报价仍是设备事实，留在 CUDA。
-- **余下：** 按块计价尚未完成，见下。
+- **按块计价（2026-11-10，#228）：** 私有路径的 KV 改为按整页计价，每页字节与页账本、池报价同一单位。私有容量已补齐到 2 的幂，16 token 以上报价不变。
+- **余下：** `make_room`（按预算驱逐缓存序列和前缀、报容量错误）仍是 CUDA 内的准入判断，搬到 runtime 要改 SPI。
 - **做什么：** 把 `admission_pool.rs` 拆开：CUDA 只报价和上报物理事实，何时要资源、按什么计价归 runtime。完成 KV 方案 P3 的按块计价。第二 flight 的预算以后也从这个入口计入。
 - **验收：** 5×8000 竞态用例不再超时；CUDA 里不再有独立的准入判断；报价分项可读回。
 
@@ -185,6 +196,7 @@ runtime                  submit / poll，不重建拓扑
 - **SPI：** 如需调整，只改现有 `kv_cache`、`state_page_growth`、reservation，不新增第二套容量接口。
 - **注意：** KV 只是显存的一部分；递推状态按序列保存，仍由 CUDA 物理实现，engine 只记其字节数。
 - **验收：** `kv_cache()` 的数据来自公共账本而非 CUDA 自算；CUDA 没有私有 free list 决策；取消和错误路径下页不泄漏、不提前释放。
+- **第一步完成（2026-11-10，#227）：** 分页 slot pool 的页存在 `infer-state` 的 `KvCacheManager`，每块字节用池报价单位；`kv_cache()` 对分页池直接取账本的 inspection，分配与释放计数从 slot 改为页。预付语义不变。**余下：** 前缀按页共享和按需增长（第 5 节），前缀快照仍由 CUDA 单独持有。
 
 ### O4 推测账
 
@@ -192,6 +204,7 @@ runtime                  submit / poll，不重建拓扑
 - **前置：** M4 之后、O3 之后。回滚语义依赖页所有权，lowering 收口后迁移成本更低。
 - **做什么：** 两个 `SpeculationPlan` 已拆开（模型侧是 `infer_spi::DraftHead`）。先把 MTP 和已合入的 DFlash2 都对照一遍公共契约，再按 [SPI 方案](../speculation/spi.md)步骤③把提议、接受、池宽和能力策略搬到 `infer-workloads`。此前冻结 DFlash2 的新接线。
 - **验收：** MTP token、状态、资源行为与迁移前一致；新增 draft 不需要改 executor 的策略分支。
+- **池策略归还（2026-11-10，#229）：** executor 里 8 处按“是否加载 DFlash2”的分支（最窄池宽、是否建池、私有路径与 roofline、没有池时是否失败、prompt burst）改由 `infer_workloads::DraftPooling` 决定。新增 draft 只需选 `Separate` 或 `Pooled`。**余下：** 提议与接受的执行（MTP 的 `speculation`、DFlash2 的 chain）仍是两套机制。
 
 ### O5 不立项的部分
 
@@ -209,6 +222,18 @@ Workload 边界目前是干净的：CUDA 和 runtime 中查不到 `WorkloadKind`
 ### P2 容量与重叠
 
 **当前判定（2026-10-31，27B）：** 空泡潜在收益远低于 5%，按下方规则**暂缓 depth 2**；KV 只占报价的 6% 到 17%（16 槽 0.33 到 1.14 GiB，报价 5.85 到 6.66 GiB），**暂缓按需增长**，容量工作先看 target 池里的递推状态和 worker arena。这个判定只覆盖 27B 和这组负载，换模型或负载要重测。
+
+**重测（2026-11-10，M4 合入后，RTX 5090 release，greedy，C1 到 C16）：**
+
+| 模型 | 并发 | 1 | 4 | 8 | 16 |
+|---|---|---|---|---|---|
+| 27B | 设备忙碌比 | 99.0% | 99.2% | 99.4% | 99.4% |
+| 27B | tok/s | 116 | 310 | 471 | 696 |
+| 0.6B | 设备忙碌比 | 95.4% | 96.8% | 95.9% | 95.6% |
+| 0.6B | tok/s | 456 | 1092 | 2264 | 2890 |
+
+- 每步空泡 27B 为 0.20 到 0.31 ms，0.6B 为 0.10 到 0.18 ms。两者都低于 5%，**depth 2 继续暂缓**；0.6B 已接近门槛，换更小模型或更短 step 时先重测。
+- 27B 的 KV 占 target 池约 12%（0.53 / 4.57 GB），按需增长对 27B 仍暂缓。0.6B 的 KV 占 target 池 99.9%（22.55 / 22.58 GB），**按需增长对 0.6B 成立**，是 O3 余下工作的依据。
 
 
 依赖 O2、O3。默认顺序：
@@ -256,22 +281,24 @@ Workload 边界目前是干净的：CUDA 和 runtime 中查不到 `WorkloadKind`
 
 **已落地（PR #130）：** M0 棘轮和 `WorkloadKind` 拦截；O1 设备时间上报；G1–G3 目标身份统一；M2 的 `pool_gemv` 模板；M4 的 attention 回退链；M7 探测和 `model-probe.py`；P1 测量；O2 的建池决策 `decide_pool`；O3 第一步（slot pool 用 `BlockPool`）；O4 的提议预算、提议条件和接受前缀；C1M 的池显存分项日志。M6 已完成（#184–#199）：host 不含 cuTile 类型，`--features cuda-aot` 无工具链构建并运行 CPU 侧测试。
 
-**未完成，从这里接手。** 以下依赖链要改 868 处 `Tensor<` 和热路径，按方案逐项单独开 PR：
+**2026-11-10 进度：** M2、M3、M4 完成（#209–#226、#232）；M5 的加载期检查补齐（#230）；M7 第二家族 `LlamaProvider`（#231）；O2 按块计价（#228）；O3 第一步换成 `KvCacheManager`（#227）；O4 的池策略归还 `DraftPooling`（#229）。
 
-1. **M1 其余：** 契约的四层已定（`Allocation`、`Graph`、`Device`、`Launch`），回放实测零成本。下一步按 kernel provider 方案第 5.3 节迁移：先把图和执行换类型，再逐算子族。
-2. **M3：** 候选即 Plan，依赖 M1。现有 12 张调优表各有键和证据，要处理 `tuning.json` 的兼容或失效。
-3. **M4 其余、M5、M6：** 依次推进。M5 的已知缺口是非 2 幂形状的通用 cell。
-4. **O2 按块计价、O3 其余（`KvCacheManager` 和前缀）、O4 其余（executor 的 draft 分支）：** 都碰热路径，与上面错开。
-5. **M2 其余算子族：** 照 `cuda-kernels/acceptance/pool_gemv.rs` 补齐，可随时做。
-6. **M8：** 等 L20，没有设备前不算通过。
+**未完成，从这里接手：**
 
-**27B 显存（2026-10-31，16 槽，容量 8192，报价 5.85 GiB）：** target 池 3.40 GiB，其中 KV 只有 0.33 GiB；target worker 0.95 GiB，draft worker 0.64 GiB，draft 池 0.32 GiB。按第 5 节的决策规则，KV 不是大头，**按需增长暂缓，先看 arena 和递推状态**。
+1. **O4 其余：** MTP 与 DFlash2 的提议、验证、接受、回滚仍是 executor 里的两套机制。统一成一个 draft 接口后，新推测方案（如自适应块长、树验证）只实现这个接口。
+2. **O3 其余：** 前缀按页共享和按需增长。按 P2 重测，0.6B 已需要按需增长。
+3. **O2 其余：** `make_room` 搬到 runtime，要改 SPI。
+4. **M5 其余：** 非 2 幂形状的通用 cell，以及 `KernelRegistration` 改为真实能力，都要写新 kernel。
+5. **对照工具入库：** 端到端对照脚本（多配置 hash、measured、调优表命中对比、空泡）目前只在 45 上，应收进 `tools/bench`。
+6. **M8、P3：** 等 L20 与多卡设备，没有设备前不算通过。
+
+**27B 显存（2026-10-31，16 槽，容量 8192，报价 5.85 GiB；2026-11-10 重测见 P2）：** target 池 3.40 GiB，其中 KV 只有 0.33 GiB；target worker 0.95 GiB，draft worker 0.64 GiB，draft 池 0.32 GiB。按第 5 节的决策规则，KV 不是大头，**按需增长暂缓，先看 arena 和递推状态**。
 
 **未知项：**
 
 - O3 是否需要调整 SPI，`SlotPool` 的物理块能否直接镜像 `KvCacheManager`（Metal 布局不同，文档记录为各自保留）。
 - 第二条 flight 是否确实需要第二份 arena，需要多少显存。
-- M4 能合并到什么程度，融合路径可能有多少保留为特化。第一批迁移后更新本节。
+- M4 的结论：融合（norm 进量化器、pooled verify、DFlash2 split-K）保留为 lowering 的显式分支，都有通用路径可退。
 - kernel 指纹改为内容身份后，现有 `tuning.json` 条目如何迁移。
 
 **本方案的证据范围：** 第 1 至 7 节基于代码与文档阅读；O1、O2 的核实和第 8 节的显存数字来自 RTX 5090 release 实测。其余性能数字来自引用文档，未重测。
