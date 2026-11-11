@@ -22,7 +22,20 @@ pub(super) enum Drafter {
     /// pool, captured with the target pool when the head's graph allows it.
     Head(Option<SlotPool>),
     /// A separate draft model that owns per-sequence rings and proposes from target features.
-    Model(Engine),
+    /// Boxed: the engine dwarfs the other variants and is reached once per step.
+    Model(Box<Engine>),
+}
+
+/// What one pooled verify step leaves for the draft to settle.
+pub(super) struct Verified<'a> {
+    /// Target rows of the step: hidden state and logits per verify lane.
+    pub(super) rows: &'a [(Vec<f32>, Vec<f32>)],
+    /// Verify lanes per slot.
+    pub(super) width: usize,
+    /// Committed feature runs a draft model reads as context.
+    pub(super) features: &'a [VerifiedRows],
+    /// The proposal deferred its timeline rebuild to this point.
+    pub(super) settles_after: bool,
 }
 
 /// Candidate chains for one pooled verify step: each starts with the submitted token.
@@ -35,7 +48,7 @@ pub(super) struct Proposal {
 impl Drafter {
     pub(super) fn new(head_depth: usize, model: Option<Engine>) -> Self {
         match model {
-            Some(engine) => Self::Model(engine),
+            Some(engine) => Self::Model(Box::new(engine)),
             None if head_depth > 0 => Self::Head(None),
             None => Self::None,
         }
@@ -71,7 +84,7 @@ impl Drafter {
     }
 
     /// The draft model, which the serial path primes and which leases sequence rings.
-    pub(super) const fn model(&mut self) -> Option<&mut Engine> {
+    pub(super) fn model(&mut self) -> Option<&mut Engine> {
         match self {
             Self::Model(engine) => Some(engine),
             Self::None | Self::Head(_) => None,
@@ -153,10 +166,6 @@ impl Drafter {
 
     /// After the target committed a verify step: the model ingests the verified feature rows,
     /// the head replays accepted tokens when it proposed for the whole step.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the pooled execution transaction"
-    )]
     pub(super) fn settle(
         &mut self,
         target: &SlotPool,
@@ -165,22 +174,21 @@ impl Drafter {
         tasks: &[ExecutionTask],
         participants: &[(usize, usize)],
         outputs: &[Option<TaskOutput>],
-        (rows, width): (&[(Vec<f32>, Vec<f32>)], usize),
-        (verified, settles_after): (&[VerifiedRows], bool),
+        verified: &Verified<'_>,
     ) -> Result<()> {
         match self {
-            Self::Model(engine) if engine.attached() && !verified.is_empty() => {
-                engine.ingest_verified(device, verified, target.verified_slots())
+            Self::Model(engine) if engine.attached() && !verified.features.is_empty() => {
+                engine.ingest_verified(device, verified.features, target.verified_slots())
             }
-            Self::Head(Some(pool)) if settles_after => super::drafting::catch_up(
+            Self::Head(Some(pool)) if verified.settles_after => super::drafting::catch_up(
                 pool,
                 states,
                 device,
                 tasks,
                 participants,
                 outputs,
-                rows,
-                width,
+                verified.rows,
+                verified.width,
             ),
             Self::None | Self::Head(_) | Self::Model(_) => Ok(()),
         }

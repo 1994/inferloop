@@ -1,4 +1,4 @@
-use super::drafter::Drafter;
+use super::drafter::{Drafter, Verified};
 use super::prefix_state::{DraftSnapshot, ProgramSnapshot};
 use super::{CachedMedia, CudaExecutor, ModelOutput, Sequence, SlotLease, Speculation, prefix};
 use crate::constants::CB_SLOT_TOKENS;
@@ -1338,8 +1338,12 @@ async fn slot_speculate(
         tasks,
         participants,
         outputs,
-        (rows, width),
-        (&verified, settles_after),
+        &Verified {
+            rows,
+            width,
+            features: &verified,
+            settles_after,
+        },
     )
 }
 
