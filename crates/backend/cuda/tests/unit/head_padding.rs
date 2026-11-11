@@ -1,4 +1,5 @@
 use super::*;
+use crate::resident::require_kernel_geometry;
 use infer_core::ModelId;
 use infer_models::{TensorDtype, WeightEncoding, WeightSource, default_registry};
 
@@ -76,7 +77,7 @@ fn a_narrow_head_is_stored_in_the_next_power_of_two() {
         weights["layers.0.self_attn.o_proj.weight"].shape,
         [384, 4 * 128]
     );
-    crate::resident::require_kernel_geometry(&graph).unwrap();
+    require_kernel_geometry(&graph).unwrap();
 }
 
 #[test]
@@ -95,7 +96,12 @@ fn power_of_two_heads_and_drafts_are_left_alone_or_refused() {
     assert_eq!(error.code, infer_core::ErrorCode::Unsupported);
 }
 
-/// Deterministic values in [-1, 1).
+/// A small count as an exact float.
+fn exact(count: usize) -> f64 {
+    f64::from(u32::try_from(count).unwrap())
+}
+
+/// Deterministic values in [-1, 1].
 fn values(count: usize, seed: u64) -> Vec<f32> {
     let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
     (0..count)
@@ -103,7 +109,7 @@ fn values(count: usize, seed: u64) -> Vec<f32> {
             state ^= state << 13;
             state ^= state >> 7;
             state ^= state << 17;
-            (state >> 40) as f32 / (1u64 << 23) as f32 - 1.0
+            f32::from(u16::try_from(state >> 48).unwrap()) / f32::from(u16::MAX) * 2.0 - 1.0
         })
         .collect()
 }
@@ -121,7 +127,7 @@ fn project(weight: &[f32], rows: usize, x: &[f32]) -> Vec<f64> {
 }
 
 fn norm(x: &mut [f64], gain: &[f32], epsilon: f64, offset: f64) {
-    let mean = x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64;
+    let mean = x.iter().map(|v| v * v).sum::<f64>() / exact(x.len());
     let inverse = (mean + epsilon).sqrt().recip();
     for (v, &g) in x.iter_mut().zip(gain) {
         *v *= inverse * (f64::from(g) + offset);
@@ -154,12 +160,12 @@ fn score(
     }
     rotate(&mut q, frequencies);
     rotate(&mut k, frequencies);
-    q.iter().zip(&k).map(|(a, b)| a * b).sum::<f64>() / (width as f64).sqrt()
+    q.iter().zip(&k).map(|(a, b)| a * b).sum::<f64>() / exact(width).sqrt()
 }
 
 fn real_frequencies(real: usize) -> Vec<f64> {
     (0..real / 2)
-        .map(|lane| THETA.powf(-((2 * lane) as f64) / real as f64))
+        .map(|lane| THETA.powf(-exact(2 * lane) / exact(real)))
         .collect()
 }
 
@@ -240,7 +246,7 @@ fn output_columns_and_gated_query_rows_keep_their_heads_in_place() {
         real: 6,
         layout: lanes.clone(),
     };
-    let weight: Vec<f32> = (0..12).map(|v| v as f32).collect();
+    let weight: Vec<f32> = (0..12u8).map(f32::from).collect();
     let (padded, shape) = columns.apply(&weight, (1, 12), -1.0, |v, _| v).unwrap();
     assert_eq!(shape, [1, 16]);
     assert_eq!(
