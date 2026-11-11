@@ -39,6 +39,7 @@ mod budget;
 pub(crate) use budget::PooledServingQuote;
 pub(crate) use budget::kv_block_bytes;
 mod experts;
+mod head_padding;
 mod phase;
 use crate::resident::dflash2::DraftWeights;
 use crate::{
@@ -424,6 +425,18 @@ impl LoadedModel {
         );
         let mut package = QuantizedPackage::open(root, id).map_err(|e| package_phase.fail(&e))?;
         attach_draft(&mut package, &mut options).map_err(|e| package_phase.fail(&e))?;
+        let padding = head_padding::pad_heads(
+            &mut package.graph,
+            &mut package.weights,
+            options.mtp_depth > 0 || package.dflash2.is_some(),
+            !package
+                .imported
+                .model
+                .position
+                .multimodal_sections
+                .is_empty(),
+        )
+        .map_err(|e| package_phase.fail(&e))?;
         require_kernel_geometry(&package.graph).map_err(|e| package_phase.fail(&e))?;
         package_phase.finish();
         options.fp8_kv =
@@ -436,7 +449,7 @@ impl LoadedModel {
         }
         let mtp_depth = options.mtp_depth;
         let (mut weights, mut draft, tuning) =
-            bindings::load(&device, &profile, &mut package, &options)?;
+            bindings::load(&device, &profile, &mut package, &options, &padding)?;
         let dflash2 = bind_dflash2(&device, &mut package, &weights)?;
         if automatic_prefill
             && !weights.projections.iter().any(|(id, weight)| {

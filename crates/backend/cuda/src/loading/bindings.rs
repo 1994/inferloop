@@ -1,3 +1,4 @@
+use super::head_padding::{HeadPadding, rotary_frequencies};
 use super::{Draft, LoadOptions, floats, phase};
 use crate::constants::FUSED_VERIFY_LANES;
 use crate::constants::GIB;
@@ -11,7 +12,7 @@ use crate::{
     device::CudaDevice,
     resident::{FusionWeights, ProgramWeights, PromptScratchRegistry},
 };
-use infer_core::{Error, Result, TensorId};
+use infer_core::{Error, OpId, Result, TensorId};
 use infer_cuda_kernels::runtime::bf16;
 use infer_ir::{DataflowGraph, TensorOp, TensorStorage};
 use infer_models::mrope::axes as mrope_axes;
@@ -27,6 +28,7 @@ pub(super) fn load(
     profile: &DeviceProfile,
     package: &mut QuantizedPackage,
     options: &LoadOptions,
+    padding: &HeadPadding,
 ) -> Result<(ProgramWeights, Option<Draft>, TuningReport)> {
     let path = table_path();
     let mut tuning = TuningReport::default();
@@ -57,6 +59,7 @@ pub(super) fn load(
         &tuning_source,
         &mut tuning,
         &mut weights,
+        padding,
     )
     .map_err(|e| weights_phase.fail(&e))?;
     weights_phase.finish();
@@ -65,6 +68,7 @@ pub(super) fn load(
         &package.graph,
         &mut weights,
         &package.imported.model.position,
+        &padding.rotary,
     )?;
     if options.fp8_kv == Some(true) {
         let kv_phase = phase::Phase::start("kv_scales", "uploading KV scales");
@@ -131,6 +135,7 @@ fn bind_tensors(
     tuning_source: &TilingSource<'_>,
     tuning: &mut TuningReport,
     weights: &mut ProgramWeights,
+    padding: &HeadPadding,
 ) -> Result<()> {
     let (banks, bank_ids) = super::experts::load(device, package)?;
     weights.expert_banks = banks;
@@ -167,8 +172,12 @@ fn bind_tensors(
             .get(&slot)
             .ok_or_else(|| Error::invalid("missing graph weight"))?
             .clone();
+        let pad = padding.weights.get(&tensor.id);
         if projections.contains(&tensor.id) {
-            let projection = ProjectionWeight::load(device, package, &source)?;
+            let projection = match pad {
+                Some(pad) => ProjectionWeight::load_padded(device, package, &source, pad)?,
+                None => ProjectionWeight::load(device, package, &source)?,
+            };
             bind_activation(package, &source, weights, tensor.id)?;
             let tiling = select_tiling(device, &projection, profile, tuning_source, tuning)?;
             weights.tiling.insert(tensor.id, tiling);
@@ -201,7 +210,10 @@ fn bind_tensors(
                 .embeddings
                 .insert(tensor.id, device.runtime().upload(values)?);
         } else {
-            let values = floats(package, &source.data)?;
+            let mut values = floats(package, &source.data)?;
+            if let Some(pad) = pad {
+                values = pad.gain(&values)?;
+            }
             weights
                 .constants
                 .insert(tensor.id, device.runtime().upload(values)?);
@@ -247,7 +259,13 @@ fn draft(
     }
     let (block, graph) = package.provider.draft_graph(&package.imported.model)?;
     let mut weights = draft_weights(device, profile, package, target, &graph, source, report)?;
-    add_rope(device, &graph, &mut weights, &block.position)?;
+    add_rope(
+        device,
+        &graph,
+        &mut weights,
+        &block.position,
+        &BTreeMap::new(),
+    )?;
     Ok(Draft { graph, weights })
 }
 
@@ -477,6 +495,7 @@ fn add_rope(
     graph: &DataflowGraph,
     weights: &mut ProgramWeights,
     position: &infer_ir::PositionSpec,
+    padded: &BTreeMap<OpId, usize>,
 ) -> Result<()> {
     weights.mrope = !position.multimodal_sections.is_empty();
     for node in &graph.nodes {
@@ -485,9 +504,8 @@ fn add_rope(
         } = node.op
         {
             let half = rotary_dim / 2;
-            let frequencies = (0..half)
-                .map(|i| theta.powf(-((2 * i) as f64) / rotary_dim as f64) as f32)
-                .collect();
+            let real = padded.get(&node.id).copied().unwrap_or(rotary_dim);
+            let frequencies = rotary_frequencies(half, real, theta);
             let axes = mrope_axes(position, half)?;
             weights
                 .rope_axes

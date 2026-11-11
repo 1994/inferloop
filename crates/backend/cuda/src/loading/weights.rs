@@ -1,3 +1,4 @@
+use super::head_padding::Pad;
 use crate::constants::DEFAULT_TILE_COLUMNS;
 use crate::constants::DEFAULT_TILE_ROWS;
 use crate::constants::F32_BYTES;
@@ -199,6 +200,76 @@ impl ProjectionWeight {
                     Matrix::upload(device, expanded, &[*rows, blocks])?,
                 ))
             }
+        }
+    }
+
+    /// [`Self::load`] into a head-padded layout. Only encodings whose padding is exact load:
+    /// dense values, and FP8 with one scale per output channel.
+    /// # Errors
+    /// Returns `Unsupported` for block-scaled encodings, which padding would misalign.
+    pub(crate) fn load_padded(
+        device: &CudaDevice,
+        package: &mut QuantizedPackage,
+        weight: &DeviceWeight,
+        pad: &Pad,
+    ) -> Result<Self> {
+        // The padded shape is already recorded; recover the checkpoint's from the payload.
+        let checkpoint = |len: usize| -> Result<(usize, usize)> {
+            let &[rows, columns] = weight.shape.as_slice() else {
+                return Err(Error::invalid("padded projection must be a matrix"));
+            };
+            match pad {
+                Pad::Columns { .. } if rows > 0 => Ok((rows, len / rows)),
+                Pad::Rows { .. } if columns > 0 => Ok((len / columns, columns)),
+                _ => Err(Error::invalid("padded projection shape")),
+            }
+        };
+        match weight.encoding {
+            WeightEncoding::Float => {
+                let values = floats(package, &weight.data)?;
+                let (padded, shape) =
+                    pad.apply(&values, checkpoint(values.len())?, 0.0, |value, scale| {
+                        value * scale
+                    })?;
+                let values = padded.into_iter().map(bf16::from_f32).collect();
+                Ok(Self::Dense(Matrix::upload(device, values, &shape)?))
+            }
+            WeightEncoding::Fp8Channel => {
+                let values = codes(package, &weight.data)?;
+                let scaling = floats(
+                    package,
+                    weight
+                        .scale
+                        .as_ref()
+                        .ok_or_else(|| Error::invalid("missing projection scale"))?,
+                )?;
+                // A query row's correction scales its channel scale, not its codes.
+                let (codes, shape) = pad.apply(
+                    &values,
+                    checkpoint(values.len())?,
+                    f8e4m3fn(0),
+                    |code, _| code,
+                )?;
+                let scaling = match pad {
+                    Pad::Rows { .. } => {
+                        pad.apply(&scaling, (scaling.len(), 1), 0.0, |value, scale| {
+                            value * scale
+                        })?
+                        .0
+                    }
+                    _ => scaling,
+                };
+                if shape.first() != Some(&scaling.len()) {
+                    return Err(Error::invalid("FP8 channel scales"));
+                }
+                Ok(Self::Fp8(
+                    Matrix::upload(device, codes, &shape)?,
+                    device.runtime().upload(scaling)?,
+                ))
+            }
+            WeightEncoding::Nvfp4 | WeightEncoding::Fp8Block => Err(Error::unsupported(
+                "padded CUDA attention heads need dense or per-channel FP8 projections",
+            )),
         }
     }
 
