@@ -178,7 +178,7 @@ impl CudaExecutor {
             if !target.grow(slot, maximum, self.loaded.device())? {
                 return Ok(0);
             }
-            Some((target, self.draft_slots.as_mut()))
+            Some((target, self.drafter.pool_mut()))
         } else {
             None
         };

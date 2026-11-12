@@ -1,3 +1,4 @@
+use super::drafter::{Drafter, Verified};
 use super::prefix_state::{DraftSnapshot, ProgramSnapshot};
 use super::{CachedMedia, CudaExecutor, ModelOutput, Sequence, SlotLease, Speculation, prefix};
 use crate::constants::CB_SLOT_TOKENS;
@@ -517,15 +518,19 @@ impl CudaExecutor {
             })?;
         let width = pool.width();
         super::profiling::memory(attempt, "target_pool", width, self.loaded.device());
-        self.draft_slots = self.prepare_draft_pool(width, capacity);
+        let head = if self.drafter.wants_pool() {
+            self.prepare_draft_pool(width, capacity)
+        } else {
+            None
+        };
         super::profiling::memory(attempt, "draft_pool", width, self.loaded.device());
-        self.slots = Some(pool);
-        self.attach_dflash()?;
+        let pool = self.slots.insert(pool);
+        self.drafter.attach(self.loaded.device(), pool, head)?;
         self.build_homes(attempt, prompt_width);
         self.build_burst(baseline, envelope);
         super::profiling::memory(attempt, "homes", width, self.loaded.device());
         if self.worker.is_none()
-            || (self.loaded.mtp_depth() > 0 && self.draft_slots.is_none())
+            || !self.drafter.attached()
             || self.homes.iter().any(Option::is_none)
         {
             return Err(Error::new(
@@ -541,35 +546,13 @@ impl CudaExecutor {
         self.pool_quote = None;
         self.worker = None;
         self.homes.clear();
-        if let Some(engine) = self.dflash.as_mut() {
-            engine.detach_pool();
-        }
-        drop(self.draft_slots.take());
+        self.drafter.detach();
         drop(self.slots.take());
         let _ = self.loaded.reclaim_idle_prompt_scratch();
     }
 
-    /// How the loaded draft runs beside the slot pool; the pool policy that differs by draft
-    /// follows from it.
     pub(super) const fn draft_pooling(&self) -> DraftPooling {
-        if self.dflash.is_some() {
-            DraftPooling::Pooled
-        } else {
-            DraftPooling::Separate
-        }
-    }
-
-    /// Capture the requested draft's proposal before publishing the serving pool.
-    fn attach_dflash(&mut self) -> Result<()> {
-        let (Some(engine), Some(pool)) = (self.dflash.as_mut(), self.slots.as_ref()) else {
-            return Ok(());
-        };
-        pool.verify_features()
-            .ok_or_else(|| Error::invariant("pooled verification carries no draft features"))
-            .and_then(|graphs| engine.attach_pool(self.loaded.device(), &graphs))?;
-        tracing::info!(target: "infer::executor", width = pool.width(),
-            "DFlash2 pooled proposal captured");
-        Ok(())
+        self.drafter.pooling()
     }
 
     /// Quote all resources before capturing; retain the largest prompt rung at a width.
@@ -672,10 +655,7 @@ impl CudaExecutor {
         super::profiling::memory(attempt, "worker", pool.width(), self.loaded.device());
         for slot in 0..pool.width() {
             // SAFETY: see the expectation above.
-            let built = unsafe {
-                self.loaded
-                    .slot_programs(pool, self.draft_slots.as_ref(), slot)
-            };
+            let built = unsafe { self.loaded.slot_programs(pool, self.drafter.pool(), slot) };
             match built {
                 Ok((program, draft)) => self.homes.push(Some(super::Home { program, draft })),
                 Err(error) => {
@@ -699,7 +679,7 @@ impl CudaExecutor {
         };
         if self.worker.is_none()
             || pool.verify().is_some()
-            || self.draft_slots.is_some()
+            || self.drafter.pool().is_some()
             || !self.draft_pooling().prompt_burst()
             || self.homes.iter().any(Option::is_none)
         {
@@ -843,7 +823,7 @@ impl CudaExecutor {
                 && let Some(snapshot) = slot_prefix(
                     self.loaded.device(),
                     &self.loaded,
-                    (self.slots.as_mut(), self.draft_slots.as_ref()),
+                    (self.slots.as_mut(), self.drafter.pool()),
                     state,
                     (slot, covered),
                 )?
@@ -1033,7 +1013,7 @@ impl CudaExecutor {
         participants.extend_from_slice(&newly);
         participants.sort_unstable_by_key(|&(index, _)| index);
         if let Err(error) = slot_replay(
-            (pool, self.draft_slots.as_mut(), self.dflash.as_mut()),
+            (pool, &mut self.drafter),
             &mut self.states,
             device,
             tasks,
@@ -1089,7 +1069,7 @@ impl CudaExecutor {
         // A slot-resident sequence's programs capture no prompt graph: every prompt chunk runs
         // on the worker.
         let wide = state.home.is_some() && !matches!(task.tokens, ExecutionInput::Decode { .. });
-        let draft = self.dflash.as_mut();
+        let draft = self.drafter.model();
         let output = match self.worker.as_mut() {
             Some(worker) if wide => run_on_worker(state, worker, task, &self.loaded, draft).await?,
             _ => state.run(task, &self.loaded, draft).await?,
@@ -1098,7 +1078,7 @@ impl CudaExecutor {
             (Some(covered), Some(slot)) => slot_prefix(
                 self.loaded.device(),
                 &self.loaded,
-                (self.slots.as_mut(), self.draft_slots.as_ref()),
+                (self.slots.as_mut(), self.drafter.pool()),
                 state,
                 (slot, covered),
             )?,
@@ -1223,7 +1203,7 @@ const fn paged_tokens(width: usize, capacity: usize) -> usize {
 }
 
 async fn slot_replay(
-    pools: (&mut SlotPool, Option<&mut SlotPool>, Option<&mut Engine>),
+    (pool, drafter): (&mut SlotPool, &mut Drafter),
     states: &mut BTreeMap<StateId, Sequence>,
     device: &CudaDevice,
     tasks: &[ExecutionTask],
@@ -1231,7 +1211,6 @@ async fn slot_replay(
     newly: &[(usize, usize)],
     outputs: &mut [Option<TaskOutput>],
 ) -> Result<()> {
-    let (pool, draft, dflash) = pools;
     for &(index, slot) in newly {
         let state = states
             .get_mut(&tasks[index].state)
@@ -1264,7 +1243,7 @@ async fn slot_replay(
     }
     if let Some(width) = pool.verify() {
         return slot_speculate(
-            (pool, draft, dflash),
+            (pool, drafter),
             states,
             device,
             tasks,
@@ -1322,7 +1301,7 @@ async fn slot_replay(
 
 /// Batch compatible drafts, then verify all candidate chains in one target replay.
 async fn slot_speculate(
-    pools: (&mut SlotPool, Option<&mut SlotPool>, Option<&mut Engine>),
+    (pool, drafter): (&mut SlotPool, &mut Drafter),
     states: &mut BTreeMap<StateId, Sequence>,
     device: &CudaDevice,
     tasks: &[ExecutionTask],
@@ -1330,31 +1309,16 @@ async fn slot_speculate(
     outputs: &mut [Option<TaskOutput>],
     width: usize,
 ) -> Result<()> {
-    let (pool, mut draft, dflash) = pools;
-    let mut dflash = dflash.filter(|engine| engine.attached());
-    let proposed = match dflash.as_deref_mut() {
-        Some(engine) => Some(
-            super::profiling::phase_async(
-                "draft_propose",
-                dflash_chains(engine, states, device, tasks, participants, width),
-            )
-            .await?,
-        ),
-        None => None,
-    };
-    let batched = match draft.as_deref_mut() {
-        _ if proposed.is_some() => proposed,
-        Some(draft) => {
-            super::profiling::phase_async("draft_propose", async {
-                super::drafting::propose(draft, states, device, tasks, participants, width).await
-            })
-            .await?
-        }
-        None => None,
-    };
-    let defer_draft = batched.is_some() && dflash.is_none();
-    let candidates = match batched {
-        Some(candidates) => candidates,
+    let proposal = super::profiling::phase_async(
+        "draft_propose",
+        drafter.propose(states, device, tasks, participants, width),
+    )
+    .await?;
+    let settles_after = proposal
+        .as_ref()
+        .is_some_and(|proposal| proposal.settles_after);
+    let candidates = match proposal {
+        Some(proposal) => proposal.chains,
         None => serial_candidates(states, tasks, participants, width).await?,
     };
     let mut lanes = Vec::new();
@@ -1391,7 +1355,7 @@ async fn slot_speculate(
                     .tokens
                     .as_ref()
                     .map(|tokens| &tokens[slot * width..][..chain.len()]),
-                defer_draft,
+                settles_after,
             )
             .await?;
         commits.push((slot, output.tokens.len()));
@@ -1407,24 +1371,20 @@ async fn slot_speculate(
         });
     }
     pool.commit_verify_many(device, &commits)?;
-    if let Some(engine) = dflash
-        && !verified.is_empty()
-    {
-        engine.ingest_verified(device, &verified, pool.verified_slots())?;
-    }
-    if defer_draft && draft.is_some() {
-        super::drafting::catch_up(
-            draft.ok_or_else(|| Error::invariant("batched draft pool"))?,
-            states,
-            device,
+    drafter.settle(
+        pool,
+        states,
+        device,
+        &Verified {
             tasks,
             participants,
             outputs,
             rows,
             width,
-        )?;
-    }
-    Ok(())
+            features: &verified,
+            settles_after,
+        },
+    )
 }
 
 /// Each participant's own draft chain, proposed one sequence at a time.
@@ -1444,10 +1404,10 @@ async fn serial_candidates(
     Ok(candidates)
 }
 
-/// One `DFlash2` block per eligible participant: the submitted token followed by the draft's
+/// One draft-model block per eligible participant: the submitted token followed by the draft's
 /// proposals, cut to the sequence's remaining capacity. Other participants verify their
 /// submitted token alone.
-async fn dflash_chains(
+pub(super) async fn model_chains(
     engine: &mut Engine,
     states: &mut BTreeMap<StateId, Sequence>,
     device: &CudaDevice,
@@ -1630,7 +1590,7 @@ impl Sequence {
         chain: &[u32],
         rows: &mut [(Vec<f32>, Vec<f32>)],
         tokens: Option<&[Option<u32>]>,
-        defer_draft: bool,
+        settles_after: bool,
     ) -> Result<ModelOutput> {
         if let Some(sampling) = task.sampling.as_ref() {
             sampling.validate()?;
@@ -1678,7 +1638,7 @@ impl Sequence {
                 };
                 accepted = accept(chain, rows, tokens, &mut sampler, position, &mut generated)?;
             }
-            if !defer_draft {
+            if !settles_after {
                 // Even fully accepted proposals used draft hidden rows during drafting.
                 // Replace their KV with target-conditioned rows before the next proposal.
                 let hidden: Vec<_> = rows[..accepted.len()].iter().map(|r| r.0.clone()).collect();

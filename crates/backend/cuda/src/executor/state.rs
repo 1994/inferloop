@@ -111,10 +111,7 @@ impl CudaExecutor {
         if !self.states.is_empty()
             || (readout == OutputReadout::Logits && capacity <= pool.capacity())
             || pool.free_slots() != pool.width()
-            || self
-                .draft_slots
-                .as_ref()
-                .is_some_and(|draft| draft.free_slots() != draft.width())
+            || !self.drafter.idle()
         {
             return Ok(());
         }
@@ -136,10 +133,7 @@ impl CudaExecutor {
         let before = self.physical_available()?;
         self.worker = None;
         self.homes.clear();
-        if let Some(engine) = self.dflash.as_mut() {
-            engine.detach_pool();
-        }
-        drop(self.draft_slots.take());
+        self.drafter.detach();
         drop(self.slots.take());
         self.pool_quote = None;
         // Subsequent solo requests remain private; actual concurrent retries may
@@ -364,7 +358,7 @@ impl CudaExecutor {
                 .map_or(Ok(()), super::Speculation::reset)
         });
         if let Err(error) = reset {
-            if let (Some(draft), Some(engine)) = (state.draft.take(), self.dflash.as_mut()) {
+            if let (Some(draft), Some(engine)) = (state.draft.take(), self.drafter.model()) {
                 engine.release(&draft.cursor);
             }
             self.pool.retain(state);
@@ -466,7 +460,7 @@ impl CudaExecutor {
         state.media = None;
         state.budget = retained_budget;
         state.media_budget = 0;
-        if let (Some(draft), Some(engine)) = (state.draft.take(), self.dflash.as_mut()) {
+        if let (Some(draft), Some(engine)) = (state.draft.take(), self.drafter.model()) {
             engine.release(&draft.cursor);
         }
         if let Some(lease) = state.slot.take()
@@ -496,7 +490,7 @@ impl CudaExecutor {
     /// Lease a `DFlash2` ring to a speculating sequence; without a free ring it decodes plainly.
     fn lease_draft(&mut self, allow_speculation: bool) -> Option<super::DraftState> {
         allow_speculation
-            .then(|| self.dflash.as_mut().and_then(Engine::acquire))
+            .then(|| self.drafter.model().and_then(Engine::acquire))
             .flatten()
             .map(super::DraftState::new)
     }
