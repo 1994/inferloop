@@ -4,6 +4,7 @@
 //! Tickets publish committed state only after the complete device flight has fenced.
 mod admission_pool;
 mod capabilities;
+mod drafter;
 mod drafting;
 mod execution;
 mod owner;
@@ -34,7 +35,7 @@ use infer_models::MediaLayout;
 use infer_state::cache::SnapshotScan;
 use infer_workloads::SamplingWorkspace;
 use std::collections::BTreeMap;
-use std::mem::{forget, take};
+use std::mem::{forget, replace, take};
 use std::sync::Arc;
 
 pub(super) struct CudaExecutor {
@@ -63,12 +64,11 @@ pub(super) struct CudaExecutor {
     /// sequence holds them. Declared before the pools so they drop first: their states are
     /// views of the slots' storage.
     homes: Vec<Option<Home>>,
-    /// `DFlash2` draft engine: sequence rings and, once a pool exists, its pooled proposal.
-    dflash: Option<Engine>,
+    /// The loaded draft and, once a pool exists, its pooled storage or proposal.
+    drafter: drafter::Drafter,
     /// Continuous-batching decode slots, captured lazily on the first batchable step;
     /// `None` with `slots_disabled` means initialization failed and decode stays serial.
     slots: Option<SlotPool>,
-    draft_slots: Option<SlotPool>,
     /// A rejected concurrent reservation may bootstrap a pool when that same
     /// intent retries after the solo private request drains. A different intent
     /// clears the hint, so cancellation cannot force an unrelated pool capture.
@@ -297,6 +297,7 @@ impl CudaExecutor {
             }
             None => (None, state_budget),
         };
+        let drafter = drafter::Drafter::new(loaded.mtp_depth(), dflash);
         let mut registry = infer_kernel_api::KernelRegistry::default();
         registry.register(&CudaKernels)?;
         let program = infer_compiler::compile(
@@ -340,9 +341,8 @@ impl CudaExecutor {
             kv_block_bytes,
             worker: None,
             homes: Vec::new(),
-            dflash,
+            drafter,
             slots: None,
-            draft_slots: None,
             pool_retry: None,
             slots_disabled: false,
             deferred_pool_plan: None,
@@ -407,11 +407,10 @@ impl Drop for CudaExecutor {
             // homes and sequence programs together if the driver cannot fence them.
             forget((
                 self.slots.take(),
-                self.draft_slots.take(),
+                replace(&mut self.drafter, drafter::Drafter::None),
                 self.worker.take(),
                 take(&mut self.homes),
                 take(&mut self.states),
-                self.dflash.take(),
             ));
         }
     }

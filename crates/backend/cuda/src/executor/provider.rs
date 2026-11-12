@@ -161,7 +161,7 @@ impl CudaExecutor {
             let Some(target) = self.slots.as_mut() else {
                 return Ok(0);
             };
-            Some((target, self.draft_slots.as_mut()))
+            Some((target, self.drafter.pool_mut()))
         } else {
             None
         };

@@ -153,7 +153,7 @@ impl StepProfile {
             "pool_width": backend.slots.as_ref().map(super::SlotPool::width),
             "worker_prompt_width": backend.worker.as_ref().map(|worker| worker.program.prefill_width()),
             "pool_disabled": backend.slots_disabled,
-            "draft_pool_width": backend.draft_slots.as_ref().map(super::SlotPool::width),
+            "draft_pool_width": backend.drafter.pool().map(super::SlotPool::width),
             "successful": outputs.is_some(),
             "accepted_tokens": outputs.map(|rows| rows.iter().map(|row| row.output.tokens.len()).collect::<Vec<_>>()),
         });
