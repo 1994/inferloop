@@ -44,7 +44,14 @@ impl PrefixReuse<Snapshot> for Restore<'_> {
     type Output = usize;
     type Error = Error;
     fn compatible(&self, tokens: &[u32], snapshot: &Snapshot) -> bool {
-        tokens.len() <= self.sequence.capacity
+        // Page-backed KV maps only into a slot of the pool that still holds those pages.
+        let pages = !snapshot.target.pages()
+            || self
+                .pools
+                .as_ref()
+                .is_some_and(|(target, _)| target.holds_pages(tokens));
+        pages
+            && tokens.len() <= self.sequence.capacity
             && self.sequence.speculation.is_some() == snapshot.draft.is_some()
     }
     fn reuse(&mut self, tokens: &[u32], snapshot: &Snapshot) -> Result<usize> {
@@ -57,7 +64,7 @@ impl PrefixReuse<Snapshot> for Restore<'_> {
                         self.device,
                         target,
                         (slot, &mut self.sequence.program),
-                        matched,
+                        (tokens, matched),
                     )?;
                     if let (Some(spec), Some(draft)) =
                         (&mut self.sequence.speculation, &snapshot.draft)
@@ -69,7 +76,7 @@ impl PrefixReuse<Snapshot> for Restore<'_> {
                             self.device,
                             pool,
                             (slot, &mut spec.program),
-                            draft_covered,
+                            (&tokens[..draft_covered], draft_covered),
                         )?;
                     }
                 }

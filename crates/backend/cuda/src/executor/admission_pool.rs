@@ -174,20 +174,14 @@ impl CudaExecutor {
                 .slots
                 .as_ref()
                 .is_none_or(|pool| pool.free_slots() == pool.width())
-            && self
-                .draft_slots
-                .as_ref()
-                .is_none_or(|pool| pool.free_slots() == pool.width())
+            && self.drafter.idle()
     }
 
     fn retire_request_pool(&mut self) -> Result<()> {
         tracing::info!(target: "infer::cuda_admission", "retired idle CUDA request pool");
         self.worker = None;
         self.homes.clear();
-        if let Some(engine) = self.dflash.as_mut() {
-            engine.detach_pool();
-        }
-        drop(self.draft_slots.take());
+        self.drafter.detach();
         drop(self.slots.take());
         self.pool_quote = None;
         while self.pool.evict() {}

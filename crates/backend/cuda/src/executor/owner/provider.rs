@@ -105,6 +105,11 @@ impl BackendProvider for CudaBackend {
     fn state_page_growth(&self, state: StateId) -> Result<Option<PageGrowth>> {
         Ok(self.view.state(state)?.growth)
     }
+    /// Pooled sequences lease KV pages as they grow, so a full pool can only make progress
+    /// by resetting a sequence and prefilling it again later; reset returns its pages.
+    fn supports_recompute_preemption(&self) -> bool {
+        true
+    }
     fn state_prefill_geometry(&self, state: StateId) -> Result<Option<PrefillGeometry>> {
         self.prefill_geometry_for(state).map(Some)
     }

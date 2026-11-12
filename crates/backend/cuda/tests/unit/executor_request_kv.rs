@@ -181,13 +181,11 @@ fn request_length_pool_preserves_live_state_and_restores_after_long_request() ->
     bootstrap_short_pool(&mut backend)?;
     backend.reserve_state_for(short, 384, OutputReadout::Logits)?;
     let short_width = backend.slots.as_ref().unwrap().width();
+    // A home leases one page and grows as its prompt and decode reach more.
     let (physical, free) = backend.slots.as_ref().unwrap().kv_pages();
-    assert_eq!(physical - free, 12);
+    assert_eq!(physical - free, 1);
     assert_eq!(backend.kv_cache().available_blocks, free);
-    assert_eq!(
-        backend.state_page_growth(short)?.unwrap().allocated_pages,
-        12
-    );
+    assert!(backend.state_page_growth(short)?.unwrap().allocated_pages <= 1);
     let prompt = TokenBuffer::from(vec![1, 2]);
     step(
         &mut backend,
@@ -414,7 +412,7 @@ fn cold_dflash2_keeps_its_draft_timeline() -> Result<()> {
     fence?;
     let output = result?;
     assert!(output[0].output.next_token.is_some());
-    assert!(backend.dflash.as_ref().unwrap().attached());
+    assert!(backend.drafter.model().unwrap().attached());
     let draft = backend.states[&state].draft.as_ref().unwrap();
     assert_eq!(draft.cursor.context, backend.states[&state].history.len());
     assert!(
