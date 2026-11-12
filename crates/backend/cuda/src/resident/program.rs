@@ -31,7 +31,7 @@ use infer_cuda_kernels::ops::load_rotary;
 use infer_cuda_kernels::runtime::Allocation;
 use infer_cuda_kernels::runtime::DType;
 use infer_cuda_kernels::runtime::bf16;
-use infer_ir::{DataflowGraph, StateKind, TensorStorage};
+use infer_ir::{DataflowGraph, StateKind, TensorOp, TensorStorage};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -403,7 +403,11 @@ fn copy_prefix(
     kv: Option<(usize, usize)>,
 ) -> Result<()> {
     if dst.dims() != src.dims() {
-        return Err(Error::invariant("program state copy shape"));
+        return Err(Error::invariant(format!(
+            "program state copy shape: {:?} from {:?}",
+            dst.dims(),
+            src.dims()
+        )));
     }
     // Two views of one slot pool state, as a slot-resident program and its worker hold.
     if dst.same_memory(src) {
@@ -643,7 +647,10 @@ impl DeviceProgram {
                 .get(id)
                 .ok_or_else(|| Error::invariant("program state copy source"))?;
             if state.layout != from.layout {
-                return Err(Error::invariant("program state copy shape"));
+                return Err(Error::invariant(format!(
+                    "program KV copy shape: {:?} from {:?}",
+                    state.layout, from.layout
+                )));
             }
             // Two views of one shared paged cache: nothing to move, whatever its physical rows.
             if state.same_memory(from) {
@@ -1739,15 +1746,21 @@ pub(super) fn state_shapes(
                 vec![vec![spec.shape[0]]; CONV_STATE_TENSORS]
             }
             StateKind::LinearAttention => vec![spec.shape.clone()],
+            // Head-major `[kv_heads, capacity, head_dim]` from the start, so every program
+            // holding this state agrees on its layout whichever path recorded its attention.
             StateKind::AttentionKv if spec.shape.len() == 2 => {
-                vec![
-                    vec![
-                        capacity
-                            .checked_mul(spec.shape[1])
-                            .ok_or_else(|| Error::invalid("KV allocation overflow"))?
-                    ];
-                    2
-                ]
+                let (kv_heads, head_dim) = graph
+                    .nodes
+                    .iter()
+                    .find_map(|node| match node.op {
+                        TensorOp::Attention {
+                            kv_heads, head_dim, ..
+                        } if node.states.first() == Some(&spec.id) => Some((kv_heads, head_dim)),
+                        _ => None,
+                    })
+                    .filter(|&(heads, dim)| heads.checked_mul(dim) == Some(spec.shape[1]))
+                    .ok_or_else(|| Error::invalid("KV state without its attention geometry"))?;
+                vec![vec![kv_heads, capacity, head_dim]; 2]
             }
             _ => return Err(Error::unsupported("resident state recipe")),
         };

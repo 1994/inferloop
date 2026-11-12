@@ -1,4 +1,8 @@
 //! Compiler registrations for the resident graph dispatcher; costs are bootstrap placeholders.
+//!
+//! Each registration names the lowering that decides what records for its operation, so a
+//! registration points at the code that runs. Shapes no cell records are refused when the
+//! model loads (`resident::require_kernel_geometry`), after narrow heads are padded.
 use infer_core::KernelId;
 use infer_ir::{BackendKind, CapabilityRequirements, DType, Operation, PrecisionPlan};
 use infer_spi::{KernelProvider, KernelRegistration, SourceLocation};
@@ -46,12 +50,42 @@ impl KernelProvider for CudaKernels {
             workspace_bytes: 0,
             priority: 0,
             estimated_ns: 1,
-            source: SourceLocation {
-                crate_name: "infer-backend-cuda".into(),
-                file: "crates/backend/cuda/src/resident/capture.rs".into(),
-                function: "Capture::record".into(),
+            source: {
+                let (file, function) = lowering(operation);
+                SourceLocation {
+                    crate_name: "infer-backend-cuda".into(),
+                    file: format!("crates/backend/cuda/src/resident/{file}"),
+                    function: function.into(),
+                }
             },
         })
         .collect()
+    }
+}
+
+/// The module and function that lower `operation` into recorded kernels.
+const fn lowering(operation: Operation) -> (&'static str, &'static str) {
+    match operation {
+        Operation::MatMul | Operation::LmHead => {
+            ("projection_lowering.rs", "projection_lowering::lower")
+        }
+        Operation::RmsNorm | Operation::GatedNorm => ("norm_lowering.rs", "norm_lowering::layout"),
+        Operation::Attention => ("attention_lowering.rs", "attention_lowering::lower"),
+        Operation::Convolution | Operation::LinearAttention => {
+            ("recurrent_lowering.rs", "recurrent_lowering::lower")
+        }
+        Operation::Rope => ("capture_rope.rs", "Capture::record_rope"),
+        Operation::MoeRoute | Operation::ExpertMatMul | Operation::MoeCombine => {
+            ("moe.rs", "Capture::record_moe")
+        }
+        Operation::TokenEmbedding => ("capture.rs", "Capture::embedding"),
+        Operation::Split => ("capture.rs", "Capture::record_split"),
+        Operation::Silu
+        | Operation::Sigmoid
+        | Operation::Multiply
+        | Operation::Residual
+        | Operation::Pool
+        | Operation::Rank
+        | Operation::Decision => ("capture.rs", "Capture::operation"),
     }
 }
