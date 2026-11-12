@@ -92,7 +92,7 @@ async fn cacheable_prefix(
 fn slot_prefix(
     device: &CudaDevice,
     loaded: &LoadedModel,
-    (target_pool, draft_pool): (Option<&SlotPool>, Option<&SlotPool>),
+    (target_pool, draft_pool): (Option<&mut SlotPool>, Option<&SlotPool>),
     state: &Sequence,
     (slot, covered): (usize, usize),
 ) -> Result<Option<prefix::CachedPrefix>> {
@@ -100,9 +100,15 @@ fn slot_prefix(
         let Some(target_pool) = target_pool else {
             return Ok(None);
         };
-        let (states, fp8) = target_pool.export(slot, covered, device)?;
-        let target =
-            ProgramSnapshot::from_parts(states, fp8, loaded.graph(), state.program.position())?;
+        let position = state.program.position();
+        // A paged pool keeps the prefix's KV in its pages; only unpaged state is copied out.
+        let target = if target_pool.publish_pages(slot, &state.history[..covered])? {
+            let states = target_pool.export_unpaged(slot, covered, device)?;
+            ProgramSnapshot::with_pages(states, loaded.graph(), position)?
+        } else {
+            let (states, fp8) = target_pool.export(slot, covered, device)?;
+            ProgramSnapshot::from_parts(states, fp8, loaded.graph(), position)?
+        };
         let draft = match (&state.speculation, draft_pool, loaded.draft_graph()) {
             (Some(spec), Some(draft_pool), Some(draft_graph)) => {
                 let rows = covered.saturating_sub(MTP_KV_OFFSET);
@@ -817,7 +823,7 @@ impl CudaExecutor {
                 && let Some(snapshot) = slot_prefix(
                     self.loaded.device(),
                     &self.loaded,
-                    (self.slots.as_ref(), self.drafter.pool()),
+                    (self.slots.as_mut(), self.drafter.pool()),
                     state,
                     (slot, covered),
                 )?
@@ -959,6 +965,16 @@ impl CudaExecutor {
                 (None, None) => unbound.push(index),
             }
         }
+        // Slots lease pages as their sequences reach them, so every bound sequence first grows
+        // to cover this step's rows.
+        let lanes = pool.verify().unwrap_or(1);
+        let device = self.loaded.device();
+        for &(index, slot) in participants.iter().chain(&homed) {
+            let state = &self.states[&tasks[index].state];
+            if !pool.grow(slot, reach(&tasks[index], lanes, state.capacity), device)? {
+                return Err(pages_exhausted());
+            }
+        }
         let mut newly: Vec<(usize, usize)> = Vec::new();
         for &index in &unbound {
             if participants.len() + homed.len() + newly.len() >= pool.width() {
@@ -967,8 +983,12 @@ impl CudaExecutor {
             let Some(slot) = pool.take_free() else {
                 break;
             };
-            let tokens = self.states[&tasks[index].state].capacity;
-            match pool.assign(slot, tokens, self.loaded.device()) {
+            let tokens = reach(
+                &tasks[index],
+                lanes,
+                self.states[&tasks[index].state].capacity,
+            );
+            match pool.assign(slot, tokens, device) {
                 Ok(true) => {}
                 Ok(false) => {
                     pool.release(slot);
@@ -992,7 +1012,6 @@ impl CudaExecutor {
         newly.extend_from_slice(&homed);
         participants.extend_from_slice(&newly);
         participants.sort_unstable_by_key(|&(index, _)| index);
-        let device = self.loaded.device();
         if let Err(error) = slot_replay(
             (pool, &mut self.drafter),
             &mut self.states,
@@ -1042,6 +1061,11 @@ impl CudaExecutor {
                 "slot-leased CUDA sequence cannot run serially",
             ));
         }
+        if let (Some(slot), Some(pool)) = (state.home, self.slots.as_mut())
+            && !pool.grow(slot, reach(task, 1, state.capacity), self.loaded.device())?
+        {
+            return Err(pages_exhausted());
+        }
         // A slot-resident sequence's programs capture no prompt graph: every prompt chunk runs
         // on the worker.
         let wide = state.home.is_some() && !matches!(task.tokens, ExecutionInput::Decode { .. });
@@ -1054,7 +1078,7 @@ impl CudaExecutor {
             (Some(covered), Some(slot)) => slot_prefix(
                 self.loaded.device(),
                 &self.loaded,
-                (self.slots.as_ref(), self.drafter.pool()),
+                (self.slots.as_mut(), self.drafter.pool()),
                 state,
                 (slot, covered),
             )?,
@@ -1072,6 +1096,22 @@ impl CudaExecutor {
         });
         Ok(())
     }
+}
+
+/// Positions a task writes through its slot: a decode step's verify lanes, or a prompt
+/// chunk's end, within the sequence's capacity.
+fn reach(task: &ExecutionTask, lanes: usize, capacity: usize) -> usize {
+    match task.tokens {
+        ExecutionInput::Decode { position, .. } => position.saturating_add(lanes),
+        _ => task.tokens.len(),
+    }
+    .min(capacity)
+}
+
+/// The engine schedules a step only when its pages are free, so a slot that cannot grow means
+/// the reported growth and the ledger disagree.
+fn pages_exhausted() -> Error {
+    Error::new(ErrorCode::Capacity, "slot KV pages exhausted")
 }
 
 /// Every rung over the first programs, widest first so narrower rungs view its storage. Any

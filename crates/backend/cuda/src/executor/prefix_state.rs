@@ -25,6 +25,9 @@ pub struct ProgramSnapshot {
     states: States,
     kv: BTreeSet<TensorId>,
     fp8: Fp8Caches,
+    /// The paged KV stays in the slot pool's pages, published in its ledger under the
+    /// snapshot's tokens; only a slot-resident sequence of that pool can restore it.
+    pages: bool,
     position: usize,
     pub bytes: u64,
 }
@@ -133,6 +136,7 @@ impl ProgramSnapshot {
                 states,
                 kv,
                 fp8,
+                pages: false,
                 position,
                 bytes,
             })
@@ -162,21 +166,47 @@ impl ProgramSnapshot {
             states,
             kv,
             fp8,
+            pages: false,
             position,
             bytes,
         })
     }
 
-    /// Bind the snapshot into a slot-resident program's slot: the slot pool scatters KV into
-    /// the slot's blocks and copies recurrent state, and the program resumes after the prefix.
+    /// A snapshot of a slot's unpaged state whose KV stays published in the pool's pages.
+    pub(super) fn with_pages(
+        states: States,
+        graph: &DataflowGraph,
+        position: usize,
+    ) -> Result<Self> {
+        Ok(Self {
+            pages: true,
+            ..Self::from_parts(states, Fp8Caches::new(), graph, position)?
+        })
+    }
+
+    /// Whether the KV lives in a slot pool's published pages rather than in the snapshot.
+    pub(super) const fn pages(&self) -> bool {
+        self.pages
+    }
+
+    /// Bind the snapshot into a slot-resident program's slot: the slot maps the published
+    /// pages or scatters KV into its blocks, copies recurrent state, and the program resumes
+    /// after the prefix.
     pub(super) fn bind_slot(
         &self,
         device: &CudaDevice,
         pool: &mut SlotPool,
         (slot, program): (usize, &mut DeviceProgram),
-        covered: usize,
+        (tokens, covered): (&[u32], usize),
     ) -> Result<()> {
-        pool.bind(slot, &self.states, &self.fp8, covered, device)?;
+        if self.pages {
+            if !pool.attach_pages(slot, tokens, device)? {
+                return Err(Error::invariant("published prefix pages were reclaimed"));
+            }
+            pool.bind_attached(slot, &self.states, covered, device)?;
+        } else {
+            pool.bind(slot, &self.states, &self.fp8, covered, device)?;
+        }
         device.drain()?;
         program.set_position(self.position);
         Ok(())
@@ -197,6 +227,11 @@ impl ProgramSnapshot {
         program: &mut DeviceProgram,
         covered: usize,
     ) -> Result<()> {
+        if self.pages {
+            return Err(Error::invariant(
+                "paged prefix restored into a private program",
+            ));
+        }
         let live = program.states();
         if live.len() != self.states.len() {
             return Err(Error::invariant("prefix state set mismatch"));

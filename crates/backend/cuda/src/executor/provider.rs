@@ -112,15 +112,28 @@ impl CudaExecutor {
             reused_tokens: self.prefix.reused_tokens,
         }
     }
-    /// Every request reserves pages through its exact admission capacity. Decode grows
-    /// within that reservation, so those already-owned pages are never charged again.
+    /// A sequence on a paged slot owns the pages it has reached and leases more as it grows,
+    /// so the engine charges each step the pages it adds. A private sequence prepaid its whole
+    /// capacity, which is never charged again.
     pub(super) fn state_page_growth(&self, state: StateId) -> Result<Option<PageGrowth>> {
         let sequence = self
             .states
             .get(&state)
             .ok_or_else(|| infer_core::Error::invalid("unknown CUDA state"))?;
         let block = KV_BLOCK_TOKENS;
-        let allocated_pages = sequence.capacity.div_ceil(block);
+        let slot = sequence
+            .slot
+            .as_ref()
+            .map(|lease| lease.slot)
+            .or(sequence.home);
+        let paged = slot.and_then(|slot| {
+            let pool = self.slots.as_ref()?;
+            let pages = pool.slot_pages(slot)?;
+            // A verify step writes its lanes past the token the engine counts; keep one page
+            // of them out of the report so the engine never under-charges a step.
+            Some(pages.saturating_sub(usize::from(pool.verify().is_some_and(|lanes| lanes > 1))))
+        });
+        let allocated_pages = paged.unwrap_or_else(|| sequence.capacity.div_ceil(block));
         Ok(Some(PageGrowth {
             block_size: block,
             allocated_pages,
@@ -157,10 +170,14 @@ impl CudaExecutor {
             return Ok(0);
         }
         let maximum = maximum.min(sequence.capacity);
-        let pools = if sequence.home.is_some() {
+        let pools = if let Some(slot) = sequence.home {
             let Some(target) = self.slots.as_mut() else {
                 return Ok(0);
             };
+            // Restored rows land in the slot's pages; without them the prompt prefills instead.
+            if !target.grow(slot, maximum, self.loaded.device())? {
+                return Ok(0);
+            }
             Some((target, self.drafter.pool_mut()))
         } else {
             None

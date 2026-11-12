@@ -423,6 +423,7 @@ impl CudaExecutor {
         {
             if state.home == Some(lease.slot) {
                 pool.discard(lease.slot);
+                pool.shed_pages(lease.slot)?;
             } else {
                 pool.release(lease.slot);
             }
@@ -556,7 +557,8 @@ impl CudaExecutor {
         if !pool.take_slot(slot) {
             return busy;
         }
-        match pool.assign(slot, capacity, self.loaded.device()) {
+        // A home leases pages as its prompt and decode reach them; one page to start.
+        match pool.assign(slot, 1, self.loaded.device()) {
             Ok(true) => {}
             Ok(false) => {
                 pool.release(slot);
