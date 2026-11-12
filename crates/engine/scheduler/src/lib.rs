@@ -4,6 +4,7 @@ pub(crate) mod constants;
 mod cost;
 mod policy;
 mod pool_demand;
+mod room;
 pub use admission::ResourceAdmission;
 pub use cost::{CalibratedCosts, FallbackCosts, aggregate, update_summary};
 pub use policy::{
@@ -11,6 +12,7 @@ pub use policy::{
     validate_scheduler,
 };
 pub use pool_demand::{LiveStates, PoolAction, PoolDemand, PoolFacts, PoolRetry, decide_pool};
+pub use room::{RoomFacts, RoomStep, next_room_step};
 
 pub mod queue;
 pub use queue::{BlockedOn, QueueInspection, QueueRequest, QueueState, QueueTiming, RequestQueue};
