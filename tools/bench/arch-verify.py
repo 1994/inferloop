@@ -7,8 +7,12 @@ taken while serving, and tuning-table hits grouped by message. A refactor that m
 behaviour passes when every hash matches, nothing is measured and the hits agree.
 
 `pressure` sends more concurrent long greedy requests than the KV pool holds at once, from both
-binaries, and requires every request to finish with the same output on both sides: on-demand
-page growth and recompute preemption must not change what a request generates.
+binaries, and compares every request both sides served. Greedy output depends on the decode
+batch's row count, so two binaries that schedule the same load differently can disagree on a
+request without either being wrong. Each differing request is therefore replayed alone on both
+binaries: when the replays agree the difference came from batch composition and is reported,
+not failed; when they disagree the candidate generates something else and the check fails.
+Requests the engine refuses for queue capacity are counted, not failed.
 
 `gap` serves one binary under closed-loop load and reports the device-busy share per step, the
 evidence the P2 depth-2 and on-demand growth decisions are made from.
@@ -42,6 +46,8 @@ HASH_CHARS = 12
 LOG_MODE = 0o644
 PRESSURE_METRICS = ("preemptions", "failed_requests", "successful_requests", "deferred_reasons")
 SHUTDOWN_S = 30
+# A refusal for queue capacity is the engine's answer to overload, not a failed request.
+REFUSED = "429"
 FILLER = "The quick brown fox jumps over the lazy dog. " * 28
 PROMPTS = (
     "Name three primes.",
@@ -268,29 +274,70 @@ def pair(args):
     return 1 if failed else 0
 
 
+def pressure_request(server, index, args):
+    """Hash one pressure request's greedy output; its index makes every prompt distinct."""
+    body, error = server.complete(f"{index}: {FILLER * args.prompt_repeats}", args.tokens)
+    if error:
+        return {"error": error}
+    message = body["choices"][0]["message"]
+    text = json.dumps([message["content"], message.get("reasoning_content")])
+    return {
+        "sha": hashlib.sha256(text.encode()).hexdigest(),
+        "tokens": body["usage"]["completion_tokens"],
+    }
+
+
 def pressure_side(binary, cache, model, args, log):
     with Server(binary, model, cache, log, []) as server:
-
-        def one(i):
-            body, error = server.complete(f"{i}: {FILLER * args.prompt_repeats}", args.tokens)
-            if error:
-                return {"error": error}
-            message = body["choices"][0]["message"]
-            text = json.dumps([message["content"], message.get("reasoning_content")])
-            return {
-                "sha": hashlib.sha256(text.encode()).hexdigest(),
-                "tokens": body["usage"]["completion_tokens"],
-            }
-
         start = time.perf_counter()
         with ThreadPoolExecutor(args.requests) as pool:
-            results = list(pool.map(one, range(args.requests)))
+            requests = range(args.requests)
+            results = list(pool.map(lambda i: pressure_request(server, i, args), requests))
         metrics = server.get("/native/v1/observability")["metrics"]
     return {
         "results": results,
         "wall_s": round(time.perf_counter() - start, 2),
         "metrics": {key: metrics.get(key) for key in PRESSURE_METRICS},
     }
+
+
+def replay_alone(binary, cache, model, indices, args, log):
+    """Each request's output with nothing else in the batch."""
+    with Server(binary, model, cache, log, []) as server:
+        return {index: pressure_request(server, index, args).get("sha") for index in indices}
+
+
+def differing(sides):
+    """Indices both sides served with different outputs."""
+    pairs = zip(sides["candidate"]["results"], sides["base"]["results"], strict=True)
+    return [
+        index
+        for index, (a, b) in enumerate(pairs)
+        if "sha" in a and "sha" in b and a["sha"] != b["sha"]
+    ]
+
+
+def pressure_verdict(sides, alone):
+    """Return (failures, notes) for a pressure run.
+
+    `alone` maps each differing index to its (candidate, base) output replayed alone.
+    """
+    failures, notes = [], []
+    for name, side in sides.items():
+        errors = [result["error"] for result in side["results"] if "error" in result]
+        refused = [error for error in errors if REFUSED in error]
+        if refused:
+            notes.append(f"{name}: {len(refused)} refused for queue capacity")
+        failed = [error for error in errors if REFUSED not in error]
+        if failed:
+            failures.append(f"{name}: {len(failed)} failed, first {failed[0]}")
+    composed = [index for index, (a, b) in alone.items() if a is not None and a == b]
+    if composed:
+        notes.append(f"requests {composed} differ only by batch composition (agree alone)")
+    regressed = [index for index in alone if index not in composed]
+    if regressed:
+        failures.append(f"requests {regressed} differ when replayed alone")
+    return failures, notes
 
 
 def pressure(args):
@@ -300,26 +347,22 @@ def pressure(args):
         name: pressure_side(binary, args.cache, args.model, args, out / f"{name}.log")
         for name, binary in (("candidate", args.candidate), ("base", args.base))
     }
-    (out / "pressure.json").write_text(json.dumps(sides, indent=1))
-    reasons = []
-    for name, side in sides.items():
-        errors = [result["error"] for result in side["results"] if "error" in result]
-        if errors:
-            reasons.append(f"{name}: {len(errors)} failed, first {errors[0]}")
-    # A request refused for queue capacity on either side has nothing to compare.
-    both = [
-        (a, b)
-        for a, b in zip(sides["candidate"]["results"], sides["base"]["results"], strict=True)
-        if "sha" in a and "sha" in b
-    ]
-    differ = sum(1 for a, b in both if a["sha"] != b["sha"])
-    if differ:
-        reasons.append(f"{differ} of {len(both)} outputs differ")
+    indices = differing(sides)
+    replays = {
+        name: replay_alone(binary, args.cache, args.model, indices, args, out / f"{name}-alone.log")
+        for name, binary in (("candidate", args.candidate), ("base", args.base))
+        if indices
+    }
+    alone = {index: (replays["candidate"][index], replays["base"][index]) for index in indices}
+    (out / "pressure.json").write_text(json.dumps({**sides, "alone": alone}, indent=1))
     for name, side in sides.items():
         tokens = sum(result.get("tokens", 0) for result in side["results"])
         print(f"{name}: {tokens} tokens in {side['wall_s']} s {json.dumps(side['metrics'])}")
-    print("OK" if not reasons else "DIFF: " + "; ".join(reasons), flush=True)
-    return 1 if reasons else 0
+    failures, notes = pressure_verdict(sides, alone)
+    for note in notes:
+        print(f"note: {note}")
+    print("OK" if not failures else "DIFF: " + "; ".join(failures), flush=True)
+    return 1 if failures else 0
 
 
 def gap(args):

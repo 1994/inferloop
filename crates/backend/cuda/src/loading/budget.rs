@@ -100,6 +100,7 @@ pub struct PooledServingQuote {
     pub capacity: usize,
     pub kv_tokens: usize,
     pub prompt_width: usize,
+    pub target_pool: PoolStorage,
     pub target_pool_bytes: u64,
     pub draft_pool_bytes: u64,
     pub target_worker_bytes: u64,
@@ -236,7 +237,7 @@ impl LoadedModel {
         let hidden = self.model.hidden_size;
         let vocabulary = self.model.vocab_size;
         let verify = self.speculation_width().max(1);
-        let target_pool_bytes = pool_storage_bytes(
+        let target_pool = pool_storage(
             &self.graph,
             &self.weights,
             (width, capacity, kv_tokens),
@@ -244,6 +245,7 @@ impl LoadedModel {
             hidden,
             profile,
         )?;
+        let target_pool_bytes = target_pool.total()?;
         let target_homes_bytes = mul(self.target_home_bytes(hidden, profile)?, width as u64)?;
         let target_worker_bytes = worker_storage_bytes(
             &self.graph,
@@ -255,14 +257,15 @@ impl LoadedModel {
         )?;
         let (draft_pool_bytes, draft_homes_bytes, draft_worker_bytes) =
             if let Some(draft) = &self.draft {
-                let pool = pool_storage_bytes(
+                let pool = pool_storage(
                     &draft.graph,
                     &draft.weights,
                     (width, capacity, width * capacity),
                     1,
                     hidden,
                     profile,
-                )?;
+                )?
+                .total()?;
                 let geometry = ProgramGeometry {
                     verification: 0,
                     prompts: [0, 0],
@@ -318,6 +321,7 @@ impl LoadedModel {
             capacity,
             kv_tokens,
             prompt_width,
+            target_pool,
             target_pool_bytes,
             draft_pool_bytes,
             target_worker_bytes,
@@ -523,16 +527,53 @@ fn recurrent_state_bytes(graph: &DataflowGraph) -> Result<u64> {
         })
 }
 
-fn pool_storage_bytes(
+/// A pooled graph's storage by item, so capacity work can name its largest one.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+pub struct PoolStorage {
+    /// Recurrent state of every slot.
+    pub recurrent: u64,
+    /// Attention KV at the funded token count.
+    pub kv: u64,
+    /// Activation arena of the widest graph.
+    pub arena: u64,
+    /// Snapshots verification rolls back to.
+    pub rollback: u64,
+    /// Attention split workspaces.
+    pub attention: u64,
+    /// Arenas and buffers of the narrower captured widths.
+    pub narrow: u64,
+    /// Parameters, projection and quantization workspaces, controls and readout.
+    pub other: u64,
+}
+
+impl PoolStorage {
+    /// # Errors
+    /// Rejects arithmetic overflow.
+    pub fn total(&self) -> Result<u64> {
+        [
+            self.kv,
+            self.arena,
+            self.rollback,
+            self.attention,
+            self.narrow,
+            self.other,
+        ]
+        .into_iter()
+        .try_fold(self.recurrent, add)
+    }
+}
+
+fn pool_storage(
     graph: &DataflowGraph,
     weights: &ProgramWeights,
     (width, capacity, kv_tokens): (usize, usize, usize),
     verify: usize,
     hidden: usize,
     profile: &DeviceProfile,
-) -> Result<u64> {
+) -> Result<PoolStorage> {
     let lanes = width * verify;
-    let mut bytes = mul(recurrent_state_bytes(graph)?, width as u64)?;
+    let recurrent = mul(recurrent_state_bytes(graph)?, width as u64)?;
+    let mut kv = 0;
     for spec in &graph.tensors {
         if !matches!(
             spec.storage,
@@ -552,15 +593,12 @@ fn pool_storage_bytes(
         } else {
             (width * capacity, F32)
         };
-        bytes = add(bytes, mul(columns, mul(tokens as u64, 2 * size)?)?)?;
+        kv = add(kv, mul(columns, mul(tokens as u64, 2 * size)?)?)?;
     }
-    bytes = add(bytes, ActivationArena::required_bytes(graph, lanes)? as u64)?;
-    bytes = add(bytes, SlotPool::rollback_bytes(graph, width, verify)?)?;
-    bytes = add(bytes, SlotPool::parameter_bytes(graph, verify)?)?;
-    bytes = add(
-        bytes,
-        SlotPool::attention_bytes(graph, weights, (width, verify, capacity), profile)?,
-    )?;
+    let arena = ActivationArena::required_bytes(graph, lanes)? as u64;
+    let rollback = SlotPool::rollback_bytes(graph, width, verify)?;
+    let attention = SlotPool::attention_bytes(graph, weights, (width, verify, capacity), profile)?;
+    let mut bytes = SlotPool::parameter_bytes(graph, verify)?;
     // These widths prepare packed projection inputs; pooled verification writes directly
     // into arena rows and needs none of the private graph's pack/unpack buffers.
     bytes = add(
@@ -589,13 +627,22 @@ fn pool_storage_bytes(
     bytes = add(bytes, token_readout_bytes(graph, lanes)?)?;
     // Narrow graphs alias pool state but retain independent arenas, commit staging,
     // parameters, quantization buffers and control tensors at every captured width.
+    let mut narrow = 0;
     for slots in narrow_widths(graph, width, verify) {
-        bytes = add(
-            bytes,
+        narrow = add(
+            narrow,
             narrow_graph_bytes(graph, weights, slots, verify, profile)?,
         )?;
     }
-    Ok(bytes)
+    Ok(PoolStorage {
+        recurrent,
+        kv,
+        arena,
+        rollback,
+        attention,
+        narrow,
+        other: bytes,
+    })
 }
 
 fn narrow_graph_bytes(
@@ -609,7 +656,10 @@ fn narrow_graph_bytes(
         .checked_mul(verify)
         .ok_or_else(|| Error::invalid("narrow graph lanes"))?;
     let mut bytes = ActivationArena::required_bytes(graph, lanes)? as u64;
-    bytes = add(bytes, SlotPool::rollback_bytes(graph, slots, verify)?)?;
+    bytes = add(
+        bytes,
+        SlotPool::narrow_rollback_bytes(graph, slots, verify)?,
+    )?;
     bytes = add(bytes, SlotPool::parameter_bytes(graph, verify)?)?;
     bytes = add(
         bytes,

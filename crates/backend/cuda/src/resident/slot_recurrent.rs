@@ -96,11 +96,16 @@ pub(super) fn commit_inputs(node: &TensorNode) -> &[TensorId] {
 /// Allocate the staging rows of every covered node for `slots` slots.
 /// # Errors
 /// Rejects unbatched activations and failed device allocation.
+///
+/// A narrower graph over the pool's low slots passes the full graph's staging as `shared` and
+/// stages into its leading rows: lanes are slot-major, and only one verification is ever
+/// uncommitted, so the graphs never need their staged rows at the same time.
 pub(super) fn allocate_staging(
     device: &CudaDevice,
     nodes: &[TensorNode],
     arena: &ActivationArena,
     (slots, verify): (usize, usize),
+    shared: Option<&Staging>,
 ) -> Result<Staging> {
     let lanes = slots
         .checked_mul(verify)
@@ -111,7 +116,14 @@ pub(super) fn allocate_staging(
     let mut staging = Staging::new();
     for (index, node) in nodes.iter().enumerate().filter(|(_, node)| covers(node)) {
         for (input, &id) in commit_inputs(node).iter().enumerate() {
-            let memory = device.runtime().zeros(arena.get(id)?.len())?;
+            let len = arena.get(id)?.len();
+            let memory = match shared {
+                Some(full) => full
+                    .root(index, input)
+                    .ok_or_else(|| Error::invariant("shared recurrent staging"))?
+                    .slice(0..len)?,
+                None => device.runtime().zeros(len)?,
+            };
             // Per-slot rows feed the three-lane commit graphs; wider pools commit in one batch.
             if verify == LANES {
                 let mut rows = memory.rows(lanes)?.into_iter();
