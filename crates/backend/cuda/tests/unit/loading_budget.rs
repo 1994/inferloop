@@ -691,16 +691,18 @@ fn real_request_kv_rounding_and_bounds_are_checked() -> Result<()> {
 fn pooled_quote_covers_all_narrow_verification_arenas() -> Result<()> {
     let graph = fixture_graph(48)?;
     let weights = fixture_weights();
-    let bytes = pool_storage_bytes(&graph, &weights, (8, 256, 2048), 8, 48, &fixture_profile())?;
+    let storage = pool_storage(&graph, &weights, (8, 256, 2048), 8, 48, &fixture_profile())?;
     let arenas = [1, 2, 4, 8]
         .into_iter()
         .map(|slots| ActivationArena::required_bytes(&graph, slots * 8))
         .collect::<Result<Vec<_>>>()?
         .into_iter()
         .sum::<usize>() as u64;
+    // The widest arena and the narrow graphs' arenas are reported apart.
+    let captured = storage.arena + storage.narrow;
     assert!(
-        bytes >= arenas,
-        "quote {bytes} omits captured arenas {arenas}"
+        captured >= arenas,
+        "quote {captured} omits captured arenas {arenas}"
     );
     Ok(())
 }
