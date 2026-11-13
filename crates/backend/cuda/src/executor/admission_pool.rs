@@ -22,9 +22,17 @@ impl CudaExecutor {
             return;
         };
         let kv_pages = u64::try_from(pool.kv_pages().0).unwrap_or(u64::MAX);
+        let target = &quote.target_pool;
         tracing::info!(target: "infer::cuda_admission",
             kv_bytes = kv_pages.saturating_mul(self.kv_block_bytes),
             target_pool_bytes = quote.target_pool_bytes,
+            target_recurrent_bytes = target.recurrent,
+            target_kv_quote_bytes = target.kv,
+            target_arena_bytes = target.arena,
+            target_rollback_bytes = target.rollback,
+            target_attention_bytes = target.attention,
+            target_narrow_bytes = target.narrow,
+            target_other_bytes = target.other,
             draft_pool_bytes = quote.draft_pool_bytes,
             target_worker_bytes = quote.target_worker_bytes,
             draft_worker_bytes = quote.draft_worker_bytes,
