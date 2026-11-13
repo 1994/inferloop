@@ -1,6 +1,6 @@
 # CUDA 架构收口方案
 
-状态：实施中，第一批已合入，其余未完成（见第 8 节）。事实基点为 main `c249c0ff`（PR #129），复核日期 2026-10-31；下文的行号与计数都以该提交为准，开工前先复核。
+状态：除 M8（L20 实机）与 P3（多卡）等设备外，其余各项已合入（截至 #239，见第 8 节）；收尾跟进见 #240。方案的事实基点为 main `c249c0ff`（PR #129），复核日期 2026-10-31；下文的行号与计数以该提交为准，各进度条目注明各自日期。
 决策依据见 [ADR-0005](../../adr/0005-cuda-architecture-goals.md)，整体排期见[路线图](../README.md)的 A1。
 
 本文回答一个问题：**怎样让性能调优更方便、kernel 更容易更换、新模型更容易接入、CUDA 版本兼容更容易。** 结论是不新增层，改两件事：**收口 CUDA 内部的算子层**（kernel 选择、lowering、调优框架、host 对 cuTile 的依赖），并**把 CUDA 越权持有的决策交回 engine**（时间、准入、页、前缀、推测）。两件事都是主线，只做前者，CUDA 仍然是“什么都管的后端”。
@@ -215,7 +215,7 @@ runtime                  submit / poll，不重建拓扑
 
 ### O4 推测账
 
-- **第一批已归还：** `infer-workloads` 现在持有提议预算 `draft_budget`、提议条件 `draft_may_propose`、接受前缀 `accepted_prefix`，MTP 和 DFlash2 共用。27B 上 MTP 与 main 逐位一致。提议和回滚的物理执行留在 CUDA；`execution.rs` 里按 `dflash`、`speculation` 的分支还在，新增 draft 仍要碰 executor，所以本项未完成。
+- **第一批已归还：** `infer-workloads` 现在持有提议预算 `draft_budget`、提议条件 `draft_may_propose`、接受前缀 `accepted_prefix`，MTP 和 DFlash2 共用。27B 上 MTP 与 main 逐位一致。提议和回滚的物理执行留在 CUDA；`execution.rs` 里按 `dflash`、`speculation` 的分支还在，新增 draft 仍要碰 executor，所以当时本项未完成；余下部分由 #229、#235 完成，见下文。
 - **前置：** M4 之后、O3 之后。回滚语义依赖页所有权，lowering 收口后迁移成本更低。
 - **做什么：** 两个 `SpeculationPlan` 已拆开（模型侧是 `infer_spi::DraftHead`）。先把 MTP 和已合入的 DFlash2 都对照一遍公共契约，再按 [SPI 方案](../speculation/spi.md)步骤③把提议、接受、池宽和能力策略搬到 `infer-workloads`。此前冻结 DFlash2 的新接线。
 - **验收：** MTP token、状态、资源行为与迁移前一致；新增 draft 不需要改 executor 的策略分支。
@@ -311,6 +311,7 @@ Workload 边界目前是干净的：CUDA 和 runtime 中查不到 `WorkloadKind`
 **未完成：**
 
 1. **M8、P3：** 等 L20 与多卡设备，没有设备前不算通过。
+2. **收尾跟进（#240）：** 压力下输出依赖批组合、27B 的 arena 与递推状态显存、depth 2 的重测条件、GDN 非 2 幂维度，以及下面的未知项。
 
 **27B 显存（2026-10-31，16 槽，容量 8192，报价 5.85 GiB；2026-11-10 重测见 P2）：** target 池 3.40 GiB，其中 KV 只有 0.33 GiB；target worker 0.95 GiB，draft worker 0.64 GiB，draft 池 0.32 GiB。按第 5 节的决策规则，KV 不是大头，**按需增长暂缓，先看 arena 和递推状态**。
 
