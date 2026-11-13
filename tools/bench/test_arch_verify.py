@@ -68,5 +68,38 @@ class VerdictTest(unittest.TestCase):
         )
 
 
+def side(*results):
+    return {"results": list(results)}
+
+
+class PressureTest(unittest.TestCase):
+    def test_only_requests_both_sides_served_are_compared(self):
+        sides = {
+            "candidate": side({"sha": "a"}, {"sha": "b"}, {"error": "HTTP Error 429"}),
+            "base": side({"sha": "a"}, {"sha": "c"}, {"sha": "d"}),
+        }
+        self.assertEqual(module.differing(sides), [1])
+
+    def test_a_difference_that_agrees_alone_is_noted_not_failed(self):
+        sides = {"candidate": side({"sha": "a"}), "base": side({"sha": "b"})}
+        failures, notes = module.pressure_verdict(sides, {0: ("x", "x")})
+        self.assertEqual(failures, [])
+        self.assertIn("batch composition", notes[0])
+
+    def test_a_difference_that_persists_alone_fails(self):
+        sides = {"candidate": side({"sha": "a"}), "base": side({"sha": "b"})}
+        failures, _ = module.pressure_verdict(sides, {0: ("x", "y")})
+        self.assertIn("replayed alone", failures[0])
+
+    def test_queue_refusals_are_counted_and_other_errors_fail(self):
+        sides = {
+            "candidate": side({"error": "<HTTPError 429: 'Too Many Requests'>"}),
+            "base": side({"error": "<URLError timed out>"}),
+        }
+        failures, notes = module.pressure_verdict(sides, {})
+        self.assertEqual(notes, ["candidate: 1 refused for queue capacity"])
+        self.assertEqual(failures, ["base: 1 failed, first <URLError timed out>"])
+
+
 if __name__ == "__main__":
     unittest.main()

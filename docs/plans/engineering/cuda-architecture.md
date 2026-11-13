@@ -169,7 +169,7 @@ runtime                  submit / poll，不重建拓扑
 
 - **时机：** 先做一次探测，不等 M4、M5（理由见第 9.3 节）：探测失败的项就是这两步的工作清单，完成时再验收一次。
 - **做什么：** 选一个普通稠密 attention 解码器（无 Delta/Conv、无 MTP），先用微型 fixture 和独立参考。这是架构验收，不代表扩大正式支持范围。
-- **工具：** `tools/bench/model-probe.py` 一条命令跑完 12 种几何，每种要么能服务且批不变，要么在加载期被明确拒绝。
+- **工具：** `tools/bench/model-probe.py` 一条命令跑完 12 种几何，每种要么能服务且短输出在小并发下批不变，要么在加载期被明确拒绝。长输出随批行数变化，见[基线契约](../performance/baseline.md)的批组合一段。
 - **验收：** 只改 provider；`resident/**` 零 diff；走通用路径能运行；自动调优能接管。做不到时，差距就是下一批 M4/M5 的工作清单。
 - **第二家族（2026-11-10，#231）：** `LlamaProvider` 导入 Llama 与 Mistral 配置：GQA、无 q/k norm、RoPE、SiLU 门控 MLP，可选非绑定 embedding，由共用的 `decoder::lower` 降低；RoPE 缩放、bias、非 SiLU 激活在 import 时拒绝。只改了 provider，CUDA 后端零 diff。`model-probe.py` 增加 Llama 用例（含非绑定权重）。探测发现 SPI 默认把非绑定的 `lm_head.weight` 也加了 backbone 前缀，此前只有 Qwen 自己覆盖了这条规则；改为默认放在包根后 Qwen 不再覆盖。
 
