@@ -66,7 +66,7 @@ pub(super) struct SlotVerifyGraph {
     /// the graph so its executable is destroyed before the events it records.
     profile: Option<profile::SlotProfile>,
     /// Commit inputs the verify graph copies out and the commit graphs read.
-    _recurrent: RecurrentCapture,
+    recurrent: RecurrentCapture,
     /// Rollback snapshots the verify graph writes and the restore graphs read; graphs address
     /// contract buffers without holding them, so these outlive both.
     _checkpoints: Vec<Vec<States>>,
@@ -86,6 +86,7 @@ impl RecurrentCapture {
         arena: &ActivationArena,
         (slots, verify): (usize, usize),
         fused: bool,
+        shared: Option<&super::slot_recurrent::Staging>,
     ) -> Result<Self> {
         let staging = if fused {
             super::slot_recurrent::allocate_staging(
@@ -93,6 +94,7 @@ impl RecurrentCapture {
                 &builder.graph.nodes,
                 arena,
                 (slots, verify),
+                shared,
             )?
         } else {
             super::slot_recurrent::Staging::new()
@@ -478,7 +480,7 @@ impl BatchBuilder<'_> {
         lane_fp8: &mut [Fp8Caches],
         verify: usize,
     ) -> Result<SlotVerifyGraph> {
-        self.build_slot_verify_parts(lane_states.parts(), lane_fp8, verify)
+        self.build_slot_verify_parts(lane_states.parts(), lane_fp8, verify, None)
     }
 
     /// Lanes of a `slots`-slot, `verify`-wide graph, after checking the geometry fits.
@@ -498,7 +500,8 @@ impl BatchBuilder<'_> {
 
     /// [`Self::build_slot_verify`] over the pool's first `lane_states.len()` slots, whose
     /// contiguous state families `roots` cover exactly those slots. A narrower graph over the
-    /// low slots of a pool replays fewer lanes when only those slots are busy.
+    /// low slots of a pool replays fewer lanes when only those slots are busy, and stages its
+    /// commit inputs in `full`'s leading rows when given the pool-wide graph.
     /// # Errors
     /// As [`Self::build_slot_verify`], with one slot allowed.
     pub(super) fn build_slot_verify_parts(
@@ -506,6 +509,7 @@ impl BatchBuilder<'_> {
         (lane_states, roots): (&mut [States], &mut States),
         lane_fp8: &mut [Fp8Caches],
         verify: usize,
+        full: Option<&SlotVerifyGraph>,
     ) -> Result<SlotVerifyGraph> {
         let slots = lane_states.len();
         let lanes = self.verify_lanes(slots, verify, lane_fp8.len())?;
@@ -523,7 +527,8 @@ impl BatchBuilder<'_> {
         )?;
         let (metadata_owner, metadata) = super::batch::batched_metadata(self.device, lanes)?;
         let mut profile = profile::SlotProfile::from_env(self.device);
-        let mut recurrent = RecurrentCapture::new(self, &arena, (slots, verify), fused)?;
+        let shared = full.map(|graph| &graph.recurrent.staging);
+        let mut recurrent = RecurrentCapture::new(self, &arena, (slots, verify), fused, shared)?;
         let batch = super::slot_states::VerifyBatch {
             kernels: &self.weights.kernels,
             roots,
@@ -596,7 +601,7 @@ impl BatchBuilder<'_> {
             cursors: vec![0; slots],
             pending: vec![0; slots],
             profile,
-            _recurrent: recurrent,
+            recurrent,
             _checkpoints: checkpoints,
             _arena: arena,
         })
