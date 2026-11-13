@@ -25,13 +25,13 @@
 | `bench` | [serve-workloads.py](bench/serve-workloads.py)、[serve-cases.py](bench/serve-cases.py) | 生成共同 token 输入与选取局部场景；每个用例声明并发 slot，采集端据此校验完整矩阵 |
 | `bench` | [serve-image-load.py](bench/serve-image-load.py) | 对已有 HTTP 服务采集单图及多图闭环负载，记录失败请求、响应延迟和可选遥测；不启动服务 |
 | `bench` | [experiment-checklist.py](bench/experiment-checklist.py) | 实验清单：`--init` 由 workload 与模型制品生成 profile，`--check` 校验一次运行，`--compare` 输出两边配置对照表 |
-| `bench` | [model-probe.py](bench/model-probe.py) | 用微型随机权重走真实服务路径：每种几何要么能服务且批不变，要么加载期被拒绝；不证明数值正确 |
+| `bench` | [model-probe.py](bench/model-probe.py) | 用微型随机权重走真实服务路径：每种几何要么能服务且短输出在小并发下批不变，要么加载期被拒绝；不证明数值正确，也不证明长输出批不变 |
 | `bench` | [serve-compare.py](bench/serve-compare.py) | 服务采集：记录 release 构建身份、模型制品指纹、生效配置回读、逐请求计时与逐轮 GPU/进程遥测；每次运行用唯一 `--run-id` 且拒绝覆盖。必须在 [safe-run.sh](bench/safe-run.sh) 内运行，否则拒绝采集 |
 | `bench` | [freeze-baseline.py](bench/freeze-baseline.py) | 把已过门禁的配对冻结成不可覆盖的基线目录，可用 `--verify` 复核哈希 |
 | `bench` | [compare-results.py](bench/compare-results.py) | 报告门禁：先校验身份、矩阵、缓存复用与计时可用性，再分别给出性能与数值结论；debug 构建、未生效开关和不完整矩阵判为无效而非通过 |
 | `bench` | [process-pair-gate.py](bench/process-pair-gate.py) | 按 profile 核验固定数量（至少五对）与预声明顺序的 fresh native 进程对，重算主指标改善与守护退化的配对区间 |
 | `bench` | [fixed-work-serving.py](bench/fixed-work-serving.py)、[graph-profile-summary.py](bench/graph-profile-summary.py) | 单进程固定输出量计时（零参数或指定参数启动，记录 token 摘要证明输出一致）与逐节点 GPU 事件汇总，用法见[新硬件与新模型的调优流程](../docs/guides/tuning-new-hardware-and-models.md) |
-| `bench` | [arch-verify.py](bench/arch-verify.py) | 重构配对验收：`pair` 让候选与基线二进制在同一热缓存下逐配置对照 greedy 哈希、吞吐、服务期调优测量次数与调优表命中；`gap` 给出闭环负载下每步设备忙碌比，供 P2 决策 |
+| `bench` | [arch-verify.py](bench/arch-verify.py) | 重构配对验收：`pair` 让候选与基线二进制在同一热缓存下逐配置对照 greedy 哈希、吞吐、服务期调优测量次数与调优表命中；`pressure` 在 KV 超订下逐请求对照，不同的请求单独重放以区分批组合差异与回归；`gap` 给出闭环负载下每步设备忙碌比，供 P2 决策 |
 | `bench` | [hardware-monitor.py](bench/hardware-monitor.py) | 保存 NVIDIA/主机遥测，供独立核查实验环境 |
 | `bench` | [safe-run.sh](bench/safe-run.sh) | GPU 验证任务的内存限额与互斥保护 |
 | `vision` | [图像指南](../docs/guides/vision.md) | 官方参考导出、预处理、视觉塔与端到端 parity |
