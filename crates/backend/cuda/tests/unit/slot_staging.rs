@@ -61,7 +61,8 @@ fn staging_fixture(width: usize) -> Result<(DataflowGraph, [TensorId; 3], Vec<Te
     Ok((graph, sources, nodes))
 }
 
-/// Batched copies must preserve every candidate's commit input after producer storage is reused.
+/// Batched copies must preserve every candidate's commit input after producer storage is reused,
+/// and a narrower graph sharing the staging must read the same rows for its low slots.
 #[test]
 #[ignore = "requires CUDA hardware; run under safe-run"]
 fn contiguous_staging_preserves_rows_after_arena_reuse() -> Result<()> {
@@ -86,9 +87,21 @@ fn contiguous_staging_preserves_rows_after_arena_reuse() -> Result<()> {
         device.copy_host_slice(&mut target, &data)?;
         expected.insert(id, data);
     }
-    let mut staging = allocate_staging(&device, &nodes, &arena, (slots, LANES))?;
+    let mut staging = allocate_staging(&device, &nodes, &arena, (slots, LANES), None)?;
     assert_eq!(staging.roots.len(), 4);
     assert_eq!(staging.entries.len(), slots * nodes.len());
+    // A narrower graph over the low slots stages into the same rows instead of its own.
+    let narrow_slots = 2;
+    let narrow_arena =
+        ActivationArena::new_batched(&device, &graph, narrow_slots * LANES, 8 << 20)?;
+    let mut narrow = allocate_staging(
+        &device,
+        &nodes,
+        &narrow_arena,
+        (narrow_slots, LANES),
+        Some(&staging),
+    )?;
+    drop(narrow_arena);
     let copy = device.tile().capture(|scope| {
         for (index, node) in nodes.iter().enumerate() {
             staging.record_node(scope, node, &arena, index)?;
@@ -105,6 +118,20 @@ fn contiguous_staging_preserves_rows_after_arena_reuse() -> Result<()> {
     }
     drop(copy);
     drop(arena);
+    for ((slot, index), inputs) in take(&mut narrow.entries) {
+        for (input, candidates) in inputs.into_iter().enumerate() {
+            let id = commit_inputs(&nodes[index])[input];
+            for (candidate, row) in candidates.into_iter().enumerate() {
+                let begin = (slot * LANES + candidate) * width;
+                assert_eq!(
+                    device.runtime().read(&row)?,
+                    expected[&id][begin..begin + width],
+                    "narrow slot={slot} node={index} input={input} candidate={candidate}"
+                );
+            }
+        }
+    }
+    drop(narrow);
     for ((slot, index), inputs) in take(&mut staging.entries) {
         for (input, candidates) in inputs.into_iter().enumerate() {
             let id = commit_inputs(&nodes[index])[input];

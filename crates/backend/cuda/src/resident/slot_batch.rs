@@ -170,6 +170,7 @@ fn build_verify_graphs(
             (&mut states.parts().0[..slots], &mut prefix),
             &mut fp8[..slots],
             verify,
+            Some(&full),
         )?);
         roots.push(prefix);
     }
@@ -515,6 +516,22 @@ impl SlotPool {
             return super::attention_lanes::required_bytes(graph, slots, profile);
         }
         super::attention_decode::Workspace::pooled_bytes(graph, weights, geometry, profile)
+    }
+
+    /// Rollback storage a narrower verify graph adds to the pool: none when commits are fused,
+    /// because it stages into the pool-wide graph's rows; its own snapshots otherwise.
+    /// # Errors
+    /// As [`Self::rollback_bytes`].
+    pub(crate) fn narrow_rollback_bytes(
+        graph: &DataflowGraph,
+        slots: usize,
+        verify: usize,
+    ) -> Result<u64> {
+        if super::slot_verify::fused_recurrent(graph, verify) {
+            Ok(0)
+        } else {
+            Self::rollback_bytes(graph, slots, verify)
+        }
     }
 
     /// Device staging or rollback storage used by the same recurrent policy as capture.

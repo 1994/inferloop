@@ -609,7 +609,10 @@ fn narrow_graph_bytes(
         .checked_mul(verify)
         .ok_or_else(|| Error::invalid("narrow graph lanes"))?;
     let mut bytes = ActivationArena::required_bytes(graph, lanes)? as u64;
-    bytes = add(bytes, SlotPool::rollback_bytes(graph, slots, verify)?)?;
+    bytes = add(
+        bytes,
+        SlotPool::narrow_rollback_bytes(graph, slots, verify)?,
+    )?;
     bytes = add(bytes, SlotPool::parameter_bytes(graph, verify)?)?;
     bytes = add(
         bytes,
