@@ -59,6 +59,7 @@ fn fixture_at(
         prefill_width: 1,
         narrow_prefill_width: 0,
         attention_profile: crate::AttentionProfile::Canonical,
+        recurrent_profile: crate::RecurrentProfile::F32,
         fusion: None,
         embeddings,
         projections: BTreeMap::from([(
@@ -219,8 +220,8 @@ fn default_ordered_prefill_matches_legacy_capture_bits() -> Result<()> {
                 let reference = scalar.states().get(id).expect("scalar state id");
                 assert_eq!(states.len(), reference.len());
                 for (a, b) in states.iter().zip(reference) {
-                    let a = device.runtime().read(a.memory())?;
-                    let b = device.runtime().read(b.memory())?;
+                    let a = device.runtime().read(a.f32()?.memory())?;
+                    let b = device.runtime().read(b.f32()?.memory())?;
                     checked += a.len();
                     assert_checkpoint_hidden_bits(&a, &b, "default prefill state");
                 }
@@ -512,8 +513,8 @@ fn assert_serial_states(
         assert_eq!(actual.len(), expected.len());
         for (actual, expected) in actual.iter().zip(expected) {
             assert_checkpoint_hidden_bits(
-                &device.runtime().read(actual.memory())?,
-                &device.runtime().read(expected.memory())?,
+                &device.runtime().read(actual.f32()?.memory())?,
+                &device.runtime().read(expected.f32()?.memory())?,
                 "serial recurrent state",
             );
         }

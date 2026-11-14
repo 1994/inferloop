@@ -2,7 +2,7 @@
 //! Both target timelines compare complete hidden, vocabulary and actual F32/FP8 state bits.
 use super::prefix_state::{DraftSnapshot, ProgramSnapshot};
 use crate::resident::fp8_cache::{KvLayout, KvState};
-use crate::resident::shaped::Shaped;
+use crate::resident::shaped::StateTensor;
 use crate::tuning::table_path as tuning_table_path;
 use crate::{
     device::{CudaDevice, device_error},
@@ -231,8 +231,8 @@ fn compare_programs(
             assert_eq!(a.len(), b.len(), "complete F32 state size");
             let elements = a.len();
             assert!(elements > 0, "complete F32 state is empty");
-            let a = loaded.device().runtime().read(a.memory())?;
-            let b = loaded.device().runtime().read(b.memory())?;
+            let a = loaded.device().runtime().read(a.f32()?.memory())?;
+            let b = loaded.device().runtime().read(b.f32()?.memory())?;
             bits(&a, &b, elements, "complete independent F32 state");
             dense_count += elements;
         }
@@ -525,7 +525,7 @@ fn verify_commit(
 }
 
 fn live_ranges(
-    tensor: &Shaped<f32>,
+    tensor: &StateTensor,
     graph: &DataflowGraph,
     id: TensorId,
     covered: usize,
@@ -579,7 +579,7 @@ fn state_digest(
     for (id, tensors) in program.states() {
         let mut hashes = Vec::new();
         for tensor in tensors {
-            let values = loaded.device().runtime().read(tensor.memory())?;
+            let values = loaded.device().runtime().read(tensor.f32()?.memory())?;
             finite(&values, tensor.len(), "prefix F32 state");
             let mut hash = Sha256::new();
             for range in live_ranges(tensor, graph, *id, program.position())? {

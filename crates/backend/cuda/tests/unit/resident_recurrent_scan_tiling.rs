@@ -84,9 +84,9 @@ fn capture(
                     buffer(input.qkv.as_ref())?,
                     buffer(&input.beta)?,
                     buffer(&input.decay)?,
-                    buffer(&*state)?,
                     buffer(&*output)?,
                 ],
+                buffer(&*state)?.into(),
                 buffer(&input.metadata)?,
             );
         }

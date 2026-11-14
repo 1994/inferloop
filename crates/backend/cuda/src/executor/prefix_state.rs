@@ -6,19 +6,19 @@ use crate::{
     resident::{
         DeviceProgram, attention_states,
         fp8_cache::{Fp8Caches, KvLayout, KvState},
-        shaped::Shaped,
+        shaped::{Shaped, StateTensor},
         slot_batch::SlotPool,
     },
 };
 use infer_core::{Error, Result, TensorId};
-use infer_cuda_kernels::runtime::f8e4m3fn;
+use infer_cuda_kernels::runtime::{bf16, f8e4m3fn};
 use infer_ir::DataflowGraph;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::mem::forget;
 
 /// Unquantized state by id, as a program holds it.
-type States = BTreeMap<TensorId, Vec<Shaped<f32>>>;
+type States = BTreeMap<TensorId, Vec<StateTensor>>;
 
 #[derive(Default)]
 pub struct ProgramSnapshot {
@@ -71,10 +71,17 @@ impl ProgramSnapshot {
                         shape[1] = covered;
                     }
                     let len = shape.iter().product::<usize>();
-                    let memory = device.tile().zeroed::<f32>(len).await?;
-                    let copy = Shaped::new(memory, shape)?;
+                    let copy = match tensor {
+                        StateTensor::F32(_) => {
+                            Shaped::new(device.tile().zeroed::<f32>(len).await?, shape)?.into()
+                        }
+                        StateTensor::Bf16(_) => StateTensor::Bf16(Shaped::new(
+                            device.tile().zeroed::<bf16>(len).await?,
+                            shape,
+                        )?),
+                    };
                     bytes = bytes
-                        .checked_add((copy.len() * size_of::<f32>()) as u64)
+                        .checked_add(copy.bytes())
                         .ok_or_else(|| Error::invalid("prefix byte overflow"))?;
                     copies.push(copy);
                 }
@@ -152,9 +159,10 @@ impl ProgramSnapshot {
         position: usize,
     ) -> Result<Self> {
         let kv = attention_states(graph);
-        let float = states.values().flatten().try_fold(0_u64, |sum, tensor| {
-            sum.checked_add((tensor.len() * size_of::<f32>()) as u64)
-        });
+        let float = states
+            .values()
+            .flatten()
+            .try_fold(0_u64, |sum, tensor| sum.checked_add(tensor.bytes()));
         let packed = fp8.values().try_fold(0_u64, |sum, state| {
             sum.checked_add((state.keys.len() + state.values.len()) as u64)
         });
@@ -265,8 +273,8 @@ impl ProgramSnapshot {
 
 async fn copy_state(
     device: &CudaDevice,
-    dst: &Shaped<f32>,
-    src: &Shaped<f32>,
+    dst: &StateTensor,
+    src: &StateTensor,
     kv: bool,
     covered: usize,
 ) -> Result<()> {
@@ -279,7 +287,7 @@ async fn copy_state(
     if dst.dims().len() != KV_CACHE_RANK || src.dims().len() != KV_CACHE_RANK {
         return Err(Error::invariant("prefix KV stride mismatch"));
     }
-    if let Err(error) = dst.copy_head_prefix(device, src, covered) {
+    if let Err(error) = dst.f32()?.copy_head_prefix(device, src.f32()?, covered) {
         device.fence().await?;
         return Err(error);
     }

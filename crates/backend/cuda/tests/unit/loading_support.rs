@@ -56,8 +56,8 @@ pub(super) fn state_census_slot(
             .ok_or_else(|| Error::invariant("state spec"))?;
         for (part, (left, right)) in tensors.iter().zip(reference).enumerate() {
             let count = agreement(
-                &loaded.device().runtime().read(left.memory())?,
-                &loaded.device().runtime().read(right.memory())?,
+                &loaded.device().runtime().read(left.f32()?.memory())?,
+                &loaded.device().runtime().read(right.f32()?.memory())?,
                 &format!("{id:?} {:?} part={part}", spec.storage),
             );
             changed += differences(&count);
@@ -122,9 +122,23 @@ pub(super) fn seed_prefix(
     Ok(())
 }
 
-pub(super) type States = BTreeMap<TensorId, Vec<Shaped<f32>>>;
+pub(super) type States = BTreeMap<TensorId, Vec<StateTensor>>;
+
+/// A state's values on the host at F32; widening BF16 is exact, so equal bits mean equal storage.
+pub(super) fn widened(device: &CudaDevice, state: &StateTensor) -> Result<Vec<f32>> {
+    match state {
+        StateTensor::F32(tensor) => device.runtime().read(tensor.memory()),
+        StateTensor::Bf16(tensor) => Ok(device
+            .runtime()
+            .read(tensor.memory())?
+            .into_iter()
+            .map(bf16::to_f32)
+            .collect()),
+    }
+}
 pub(super) use crate::resident::fp8_cache::Fp8Caches;
-use crate::resident::shaped::Shaped;
+use crate::resident::shaped::StateTensor;
+use infer_cuda_kernels::runtime::bf16;
 
 pub(super) fn states(
     device: &CudaDevice,
@@ -139,11 +153,8 @@ pub(super) fn states(
         let reference = &expected[id];
         assert_eq!(tensors.len(), reference.len());
         for (a, b) in tensors.iter().zip(reference) {
-            bits(
-                &device.runtime().read(a.memory())?,
-                &device.runtime().read(b.memory())?,
-                "F32 state",
-            );
+            assert_eq!(a.profile(), b.profile(), "state storage");
+            bits(&widened(device, a)?, &widened(device, b)?, "state");
         }
     }
     assert_eq!(actual_fp8.len(), expected_fp8.len());

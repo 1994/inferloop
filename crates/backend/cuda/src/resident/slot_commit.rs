@@ -1,5 +1,5 @@
 //! A single recurrent commit graph with independently uploaded acceptance counts.
-use super::shaped::Shaped;
+use super::shaped::StateTensor;
 use super::{
     batch::States,
     buffers::buffer,
@@ -169,7 +169,7 @@ fn record_node(
                 },
                 buffer(inputs.counts).map_err(device_error)?,
                 PoolDeltaBuffers {
-                    state: buffer(&*state).map_err(device_error)?.into(),
+                    state: state.buffer(),
                     qkv: buffer(input(0)?).map_err(device_error)?,
                     beta: buffer(input(1)?).map_err(device_error)?,
                     alpha: buffer(input(2)?).map_err(device_error)?,
@@ -186,7 +186,7 @@ fn record_node(
 /// Shift each slot's convolution window by its accepted prefix.
 fn record_conv(
     scope: &Recording<'_>,
-    state: &[Shaped<f32>],
+    state: &[StateTensor],
     rows: Buffer<'_, f32>,
     channels: usize,
     inputs: &Inputs<'_>,
@@ -213,6 +213,6 @@ fn record_conv(
     )
 }
 
-fn has_shape(state: &Shaped<f32>, expected: &[usize]) -> bool {
+fn has_shape(state: &StateTensor, expected: &[usize]) -> bool {
     state.dims() == expected
 }

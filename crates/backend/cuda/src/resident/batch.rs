@@ -5,7 +5,7 @@ use super::attention_lowering::{Lowering, Mode, lower};
 use super::buffers::buffer;
 use super::prefill_projection::{DensePlan, record_fused_norm, record_narrow};
 use super::recurrent_lowering::Lowering as RecurrentLowering;
-use super::shaped::Shaped;
+use super::shaped::StateTensor;
 use super::{
     ActivationArena, ProgramWeights,
     buffers::RowMajor,
@@ -17,7 +17,6 @@ use super::{
 use crate::attention_profile::precise_prefix_positions;
 use crate::constants::AUX_KERNEL_TILE;
 use crate::constants::EXTRA_WIDE_PREFILL_LANES;
-use crate::constants::F32_BYTES;
 use crate::constants::INACTIVE_LANE_STATE_POSITION;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::MAX_POOL_SLOTS;
@@ -46,7 +45,7 @@ use std::mem::take;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-pub type States = BTreeMap<TensorId, Vec<Shaped<f32>>>;
+pub type States = BTreeMap<TensorId, Vec<StateTensor>>;
 pub type BatchOutput = Vec<(Vec<f32>, Vec<f32>)>;
 
 pub struct BatchReadout {
@@ -606,9 +605,7 @@ impl BatchBuilder<'_> {
                         .iter()
                         .zip(tensors)
                     {
-                        recording
-                            .copy(buffer(output)?, buffer(input)?)
-                            .map_err(error)?;
+                        output.record_copy(recording, input).map_err(error)?;
                     }
                 }
                 Ok(())
@@ -1163,9 +1160,7 @@ impl BatchBuilder<'_> {
                             for (output, input) in
                                 snapshot.iter().zip(&capture.states[&node.states[0]])
                             {
-                                recording
-                                    .copy(buffer(output)?, buffer(input)?)
-                                    .map_err(error)?;
+                                output.record_copy(recording, input).map_err(error)?;
                             }
                         }
                     } else {
@@ -1729,7 +1724,7 @@ impl BatchBuilder<'_> {
 
     fn allocate_lanes(&self, width: usize, shared: Option<&ActivationArena>) -> Result<Vec<Lane>> {
         let mut lanes = Vec::new();
-        let mut bytes = 0usize;
+        let mut bytes = 0u64;
         for _ in 0..width {
             let mut checkpoints = BTreeMap::new();
             for spec in &self.graph.tensors {
@@ -1744,17 +1739,13 @@ impl BatchBuilder<'_> {
                 }
                 let mut copies = Vec::new();
                 for source in &self.states[&spec.id] {
-                    bytes = source
-                        .len()
-                        .checked_mul(F32_BYTES)
-                        .and_then(|n| bytes.checked_add(n))
+                    bytes = bytes
+                        .checked_add(source.bytes())
                         .ok_or_else(|| Error::invalid("checkpoint overflow"))?;
-                    if u64::try_from(bytes).map_err(device_error)?
-                        > self.device.profile()?.checkpoint_budget_bytes()
-                    {
+                    if bytes > self.device.profile()?.checkpoint_budget_bytes() {
                         return Err(Error::invalid("verification checkpoints exceed budget"));
                     }
-                    copies.push(Shaped::zeros(self.device, source.dims().to_vec())?);
+                    copies.push(source.zeros_like(self.device)?);
                 }
                 checkpoints.insert(spec.id, copies);
             }

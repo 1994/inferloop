@@ -53,7 +53,7 @@ mod small_gemm;
 mod validation;
 pub use arena::ActivationArena;
 pub use program::{DeviceProgram, FusionWeights, ProgramWeights};
-pub(crate) use program::{ProgramGeometry, attention_states};
+pub(crate) use program::{ProgramGeometry, attention_states, spec_state_bytes};
 pub use prompt_scratch::Registry as PromptScratchRegistry;
 pub(crate) use validation::require_kernel_geometry;
 

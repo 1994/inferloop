@@ -8,7 +8,7 @@ use super::{
     buffers::{Operand, buffer},
     fp8_cache::{self, Fp8Caches, KvLayout, KvState},
     program::ProgramWeights,
-    shaped::Shaped,
+    shaped::{Shaped, StateTensor},
     slot_states::SlotStates,
     slot_verify::{SlotVerifyGraph, SlotVerifyLane},
 };
@@ -316,14 +316,11 @@ fn gather_kv_into<M: Width, D: Operand<Marker = M> + ?Sized, S: Operand<Marker =
     device.copy_d2d_runs(dst, src, runs)
 }
 
-/// Device bytes one slot's state tensors occupy: f32 states plus fp8 KV caches.
+/// Device bytes one slot's state tensors occupy: unquantized states at their storage plus fp8
+/// KV caches.
 fn state_bytes(states: &States, fp8: &Fp8Caches) -> u64 {
-    let float_elements: u64 = states
-        .values()
-        .flatten()
-        .map(|tensor| tensor.len() as u64)
-        .sum();
-    float_elements.saturating_mul(F32_BYTES as u64) + fp8_cache::bytes(fp8)
+    let unquantized: u64 = states.values().flatten().map(StateTensor::bytes).sum();
+    unquantized + fp8_cache::bytes(fp8)
 }
 
 /// Free-slot stack and the pool's lifetime lease counters.
@@ -524,23 +521,26 @@ impl SlotPool {
     /// As [`Self::rollback_bytes`].
     pub(crate) fn narrow_rollback_bytes(
         graph: &DataflowGraph,
+        weights: &ProgramWeights,
         slots: usize,
         verify: usize,
     ) -> Result<u64> {
         if super::slot_verify::fused_recurrent(graph, verify) {
             Ok(0)
         } else {
-            Self::rollback_bytes(graph, slots, verify)
+            Self::rollback_bytes(graph, weights, slots, verify)
         }
     }
 
     /// Device staging or rollback storage used by the same recurrent policy as capture.
     pub(crate) fn rollback_bytes(
         graph: &DataflowGraph,
+        weights: &ProgramWeights,
         width: usize,
         verify: usize,
     ) -> Result<u64> {
-        let elements = if super::slot_verify::fused_recurrent(graph, verify) {
+        // Staging holds F32 activation rows; snapshots copy each state at its storage.
+        let bytes = if super::slot_verify::fused_recurrent(graph, verify) {
             let mut elements = 0_u64;
             for node in graph
                 .nodes
@@ -558,9 +558,11 @@ impl SlotPool {
                         .ok_or_else(|| Error::invalid("pooled staging overflow"))?;
                 }
             }
-            elements.checked_mul(verify as u64)
+            elements
+                .checked_mul(verify as u64)
+                .and_then(|n| n.checked_mul(F32_BYTES as u64))
         } else {
-            let elements = graph
+            let bytes = graph
                 .tensors
                 .iter()
                 .filter(|spec| {
@@ -573,15 +575,14 @@ impl SlotPool {
                     )
                 })
                 .try_fold(0_u64, |sum, spec| {
-                    sum.checked_add(spec.elements()? as u64)
+                    sum.checked_add(super::program::spec_state_bytes(spec, weights)?)
                         .ok_or_else(|| Error::invalid("pooled snapshot overflow"))
                 })?;
-            elements.checked_mul(verify.saturating_sub(1) as u64)
+            bytes.checked_mul(verify.saturating_sub(1) as u64)
         }
         .and_then(|n| n.checked_mul(width as u64))
-        .and_then(|n| n.checked_mul(F32_BYTES as u64))
         .ok_or_else(|| Error::invalid("pooled rollback overflow"))?;
-        Ok(elements)
+        Ok(bytes)
     }
 
     /// Allocate `width` slots of `capacity` tokens each and capture the shared graph.
@@ -1400,7 +1401,7 @@ impl SlotPool {
                         .ok_or_else(|| Error::invariant("slot export state"))?;
                     let copies = tensors
                         .iter()
-                        .map(|tensor| gather_kv(tensor, rows, None, device))
+                        .map(|tensor| gather_kv(tensor.f32()?, rows, None, device).map(Into::into))
                         .collect::<Result<_>>()?;
                     out.insert(*id, copies);
                 }
@@ -1417,7 +1418,7 @@ impl SlotPool {
                         .ok_or_else(|| Error::invariant("slot export state"))?;
                     let mut copies = Vec::with_capacity(tensors.len());
                     for tensor in tensors {
-                        let copy = Shaped::zeros(device, tensor.dims().to_vec())?;
+                        let copy = tensor.zeros_like(device)?;
                         copy.copy_from(device, tensor)?;
                         copies.push(copy);
                     }
@@ -1651,7 +1652,7 @@ impl SlotPool {
             return Err(Error::invariant("slot bind state tensors"));
         }
         for (dst, src) in dst_tensors.iter().zip(src_tensors) {
-            Self::copy_kv_tensor(dst, src, rows, slot_capacity, transfers)?;
+            Self::copy_kv_tensor(dst.f32()?, src.f32()?, rows, slot_capacity, transfers)?;
         }
         Ok(())
     }
@@ -1815,10 +1816,7 @@ impl SlotPool {
                 return Err(Error::invariant("slot bind tensor size"));
             }
             if !dst.same_memory(src) {
-                transfers.copy(
-                    buffer(dst).map_err(device_error)?,
-                    buffer(src).map_err(device_error)?,
-                )?;
+                dst.copy_in(transfers, src)?;
             }
         }
         Ok(())

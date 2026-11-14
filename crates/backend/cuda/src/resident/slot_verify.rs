@@ -1,6 +1,5 @@
 //! Cross-sequence target verification with per-slot recurrent rollback.
 use super::attention_lowering::Lowering;
-use super::shaped::Shaped;
 use super::slot_recurrent::ValueDevice;
 use super::{
     ActivationArena,
@@ -11,7 +10,6 @@ use super::{
     profile,
     slot_commit::CapturedCommit,
 };
-use crate::constants::F32_BYTES;
 use crate::constants::INACTIVE_LANE_STATE_POSITION;
 use crate::constants::MAX_POOL_SLOTS;
 use crate::constants::MAX_VERIFICATION_WIDTH;
@@ -231,9 +229,7 @@ impl BatchBuilder<'_> {
                             .iter()
                             .zip(tensors)
                         {
-                            recording
-                                .copy(buffer(output)?, buffer(input)?)
-                                .map_err(error)?;
+                            output.record_copy(recording, input).map_err(error)?;
                         }
                     }
                     Ok(())
@@ -268,9 +264,8 @@ impl BatchBuilder<'_> {
                         .get(&spec.id)
                         .ok_or_else(|| Error::invariant("slot verify checkpoint source"))?
                     {
-                        bytes = source
-                            .len()
-                            .checked_mul(F32_BYTES)
+                        bytes = usize::try_from(source.bytes())
+                            .ok()
                             .and_then(|n| bytes.checked_add(n))
                             .ok_or_else(|| Error::invalid("slot verify checkpoint overflow"))?;
                         if bytes > budget {
@@ -286,7 +281,7 @@ impl BatchBuilder<'_> {
                                 ),
                             ));
                         }
-                        copies.push(Shaped::zeros(self.device, source.dims().to_vec())?);
+                        copies.push(source.zeros_like(self.device)?);
                     }
                     snapshot.insert(spec.id, copies);
                 }

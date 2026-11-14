@@ -100,7 +100,7 @@ fn bench_case(
                     operand(&a_log)?,
                     operand(&bias)?,
                 ],
-                (&state, &scratch),
+                (operand(&state)?.into(), &scratch),
                 &metadata,
                 (kh, vh, dim, lanes, block),
             )?;

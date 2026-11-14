@@ -190,8 +190,8 @@ fn compare_states(device: &CudaDevice, a: &SlotPool, b: &SlotPool, width: usize)
             for (a, b) in actual.iter().zip(expected) {
                 assert_eq!(a.dims(), b.dims(), "slot={slot} state={id:?} state shape");
                 bits(
-                    &device.runtime().read(a.memory())?,
-                    &device.runtime().read(b.memory())?,
+                    &device.runtime().read(a.f32()?.memory())?,
+                    &device.runtime().read(b.f32()?.memory())?,
                 );
             }
         }

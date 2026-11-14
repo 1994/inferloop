@@ -818,7 +818,7 @@ fn check_ordered_fixture(
                 operand(&a_log)?,
                 operand(&bias)?,
             ],
-            (&state, &output),
+            (operand(&state)?.into(), &output),
             &metadata,
             (kh, vh, dim, lanes, block),
         )?;

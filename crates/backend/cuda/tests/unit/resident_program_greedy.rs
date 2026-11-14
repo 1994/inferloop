@@ -36,6 +36,7 @@ fn fixture_weights(device: &CudaDevice, width: usize) -> Result<ProgramWeights> 
         prefill_width: 1,
         narrow_prefill_width: 0,
         attention_profile: crate::AttentionProfile::Canonical,
+        recurrent_profile: crate::RecurrentProfile::F32,
         kv_scales: BTreeMap::new(),
         tiling: BTreeMap::new(),
         fusion: Some(FusionWeights {
@@ -102,22 +103,21 @@ fn worker_copy_moves_committed_kv_rows_and_whole_recurrent_state() -> Result<()>
         device.runtime().upload(data.clone())?,
         vec![heads, capacity, dim],
     )?;
-    source.states.insert(kv, vec![source_kv]);
+    source.states.insert(kv, vec![source_kv.into()]);
     source.states.insert(
         recurrent,
-        vec![Shaped::new(
-            device.runtime().upload(vec![5.0_f32; 6])?,
-            vec![2, 3],
-        )?],
+        vec![Shaped::new(device.runtime().upload(vec![5.0_f32; 6])?, vec![2, 3])?.into()],
     );
     for covered in [0, 17, capacity] {
         let destination = Shaped::new(
             device.runtime().upload(vec![-1.0_f32; elements])?,
             vec![heads, capacity, dim],
         )?;
-        target.states.insert(kv, vec![destination]);
+        target.states.insert(kv, vec![destination.into()]);
         target.copy_state_from(&source, covered)?;
-        let actual = device.runtime().read(target.states[&kv][0].memory())?;
+        let actual = device
+            .runtime()
+            .read(target.states[&kv][0].f32()?.memory())?;
         for head in 0..heads {
             for row in 0..capacity {
                 for column in 0..dim {
@@ -132,7 +132,7 @@ fn worker_copy_moves_committed_kv_rows_and_whole_recurrent_state() -> Result<()>
         assert_eq!(
             device
                 .runtime()
-                .read(target.states[&recurrent][0].memory())?,
+                .read(target.states[&recurrent][0].f32()?.memory())?,
             vec![5.0; 6]
         );
         assert_eq!(target.position(), covered);
