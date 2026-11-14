@@ -1,7 +1,7 @@
 mod backend;
 mod kernels;
 use crate::allocator::{self, Counts};
-use infer_core::{Error, ModelId, RequestId, Result};
+use infer_core::{CancelSource, Error, ModelId, RequestId, Result};
 use infer_ir::{
     BackboneKind, CanonicalRequest, DType, FeedForward, Head, Mixer, Modality, ModelIr,
     PositionSpec, PrecisionPlan, StateKind, StateRequirement,
@@ -158,7 +158,13 @@ fn run_inner(requests: usize, batch: usize, slo: bool) -> Result<Case> {
     for id in 1..=requests {
         add(
             &mut cancellation,
-            measured(|| engine.cancel_into(RequestId::new(id as u64)?, &mut output))?,
+            measured(|| {
+                engine.cancel_into(
+                    RequestId::new(id as u64)?,
+                    CancelSource::Requested,
+                    &mut output,
+                )
+            })?,
         );
     }
     for tick in 10001..11000 {

@@ -87,6 +87,7 @@ impl PreparedAdmission {
             outputs: Vec::new(),
             completed: None,
             pending_finish: None,
+            cancel_source: None,
             accepted_us: now_us,
             first_token_us: None,
             last_token_us: None,

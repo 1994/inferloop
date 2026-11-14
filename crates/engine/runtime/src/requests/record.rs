@@ -39,6 +39,10 @@ pub struct RequestRecord {
     pub outputs: Vec<ModelOutput>,
     pub completed: Option<CompletedRequest>,
     pub pending_finish: Option<FinishReason>,
+    /// Why a cancel was requested. Diagnostic only: it never changes execution or checkpoint
+    /// state, so a snapshot does not carry it.
+    #[serde(skip)]
+    pub cancel_source: Option<infer_core::CancelSource>,
     pub accepted_us: u64,
     pub first_token_us: Option<u64>,
     pub last_token_us: Option<u64>,

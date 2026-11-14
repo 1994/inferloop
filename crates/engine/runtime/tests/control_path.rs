@@ -887,7 +887,59 @@ fn in_flight_cancel_retains_state_until_completion() {
     ));
     e.check_invariants().unwrap();
 }
+
+/// The finish log needs the cancel trigger, and the record is the only place that knows it.
+#[test]
+fn a_closed_output_stream_records_its_cancel_source() {
+    let mut e = engine(RuntimeConfig::default());
+    let id = RequestId::new(1).unwrap();
+    e.submit(request(1, Workload::Generate { max_new_tokens: 6 }))
+        .unwrap();
+    e.tick(0).unwrap();
+    e.cancel_from(id, CancelSource::ClientDisconnected).unwrap();
+    assert_eq!(
+        e.request(id).unwrap().cancel_source,
+        Some(CancelSource::ClientDisconnected)
+    );
+    let mut reason = None;
+    for tick in 1..1000 {
+        for output in e.tick(tick * 100).unwrap() {
+            if let EngineOutput::Finished(completed) = output {
+                reason = Some(completed.reason);
+            }
+        }
+        if e.is_idle() {
+            break;
+        }
+    }
+    assert_eq!(reason, Some(FinishReason::Cancelled));
+    e.check_invariants().unwrap();
+}
+
+/// An explicit cancel is a different incident from a requester walking away.
+#[test]
+fn an_explicit_cancel_records_requested_and_a_clean_finish_records_none() {
+    let mut e = engine(RuntimeConfig::default());
+    let id = RequestId::new(1).unwrap();
+    e.submit(request(1, Workload::Generate { max_new_tokens: 6 }))
+        .unwrap();
+    e.tick(0).unwrap();
+    e.cancel(id).unwrap();
+    assert_eq!(
+        e.request(id).unwrap().cancel_source,
+        Some(CancelSource::Requested)
+    );
+
+    let clean = RequestId::new(2).unwrap();
+    e.submit(request(2, Workload::Generate { max_new_tokens: 2 }))
+        .unwrap();
+    finish(&mut e, 1);
+    assert_eq!(e.request(clean).unwrap().cancel_source, None);
+    e.check_invariants().unwrap();
+}
+
 struct EmptyPolicy;
+
 impl SchedulingPolicy for EmptyPolicy {
     type Workspace = ();
     fn plan(

@@ -15,4 +15,4 @@ pub use id::{
     ModelId, OpId, OwnerId, ProgramId, ProviderId, RequestHandle, RequestId, SessionId, SnapshotId,
     StableId, StateId, StatePageId, StepId, TensorId, WorkloadId, new_owner_id,
 };
-pub use lifecycle::{FinishReason, RequestStatus, WaitReason};
+pub use lifecycle::{CancelSource, FinishReason, RequestStatus, WaitReason};
