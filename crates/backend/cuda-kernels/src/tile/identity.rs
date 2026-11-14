@@ -76,6 +76,7 @@ pub fn recurrent_wy(
                 &metadata,
             )
             .generics(vec![
+                f32::DTYPE.as_str().into(),
                 kh.to_string(),
                 vh.to_string(),
                 dim.to_string(),
@@ -513,6 +514,7 @@ pub fn exact_recurrence(
             &metadata,
         )
         .generics(vec![
+            f32::DTYPE.as_str().into(),
             kh.to_string(),
             vh.to_string(),
             dim.to_string(),

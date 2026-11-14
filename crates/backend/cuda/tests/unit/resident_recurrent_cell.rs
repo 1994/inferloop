@@ -9,8 +9,10 @@ use crate::resident::capture::error;
 use acceptance::{CONV_WIDTH, Conv, Delta};
 use cutile::prelude::*;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::contract::{ConvBuffers, ConvKernel, DeltaBuffers, DeltaStepPlan};
-use infer_cuda_kernels::runtime::Graph;
+use infer_cuda_kernels::contract::{
+    Buffer, ConvBuffers, ConvKernel, DeltaBuffers, DeltaStepPlan, StateBuffer,
+};
+use infer_cuda_kernels::runtime::{DType, Element, Graph, bf16};
 use std::time::Instant;
 
 /// Replays timed per case after the checked one.
@@ -76,11 +78,21 @@ fn check_conv(device: &CudaDevice, case: Conv) -> Result<()> {
     time(device, &graph, &format!("{case:?}"))
 }
 
-fn check_delta(device: &CudaDevice, case: Delta) -> Result<()> {
+/// Advance `state` by one step of `case` and hand the output to `inspect`, then time replays
+/// under `label` when given.
+fn run_delta<T, R>(
+    device: &CudaDevice,
+    (case, state): (Delta, &Tensor<T>),
+    inspect: impl FnOnce(Vec<f32>) -> Result<R>,
+    label: Option<&str>,
+) -> Result<R>
+where
+    T: DType + Element,
+    for<'a> Buffer<'a, T::Marker>: Into<StateBuffer<'a>>,
+{
     let (heads, dim) = (case.value_heads, case.dim);
     let qkv = case.qkv();
     let qkv = device.upload(qkv.clone(), &[qkv.len()])?;
-    let state = device.upload(case.state(), &[heads, dim, dim])?;
     let [beta, alpha, decay, bias] = case.gates().map(|gate| device.upload(gate, &[heads]));
     let (beta, alpha, decay, bias) = (beta?, alpha?, decay?, bias?);
     let metadata = device.upload(case.metadata(), &[acceptance::METADATA_FIELDS])?;
@@ -100,7 +112,7 @@ fn check_delta(device: &CudaDevice, case: Delta) -> Result<()> {
                 scope,
                 &plan,
                 DeltaBuffers {
-                    state: buffer(state.as_ref())?,
+                    state: buffer(state)?.into(),
                     output: buffer(output.as_ref())?,
                     qkv: buffer(qkv.as_ref())?,
                     beta: buffer(beta.as_ref())?,
@@ -113,12 +125,56 @@ fn check_delta(device: &CudaDevice, case: Delta) -> Result<()> {
             .map_err(error)
     })?;
     replay(device, &graph)?;
-    case.check(
-        &device.read_borrowed(&output)?,
-        &device.read_borrowed(&state)?,
+    let inspected = inspect(device.read_borrowed(&output)?)?;
+    if let Some(label) = label {
+        time(device, &graph, label)?;
+    }
+    Ok(inspected)
+}
+
+fn check_delta(device: &CudaDevice, case: Delta) -> Result<()> {
+    let state = device.upload(case.state(), &[case.value_heads, case.dim, case.dim])?;
+    let check = |output: Vec<f32>| {
+        case.check(&output, &device.read_borrowed(&state)?)
+            .map_err(Error::invariant)
+    };
+    run_delta(device, (case, &state), check, Some(&format!("{case:?}")))
+}
+
+/// A BF16 state starts from the case's values, which are exact in BF16, so the step's output
+/// meets the F32 tolerance and the stored state is off the reference by at most one more rounding.
+/// Neither compares bit for bit with the F32 state: the compiler may order the F32 reductions
+/// differently once the state's loads change type.
+fn check_bf16_delta(device: &CudaDevice, case: Delta) -> Result<()> {
+    let initial = case.state();
+    let narrow: Vec<bf16> = initial.iter().copied().map(bf16::from_f32).collect();
+    if narrow
+        .iter()
+        .zip(&initial)
+        .any(|(n, w)| n.to_f32().to_bits() != w.to_bits())
+    {
+        return Err(Error::invariant("the case's state is not exact in BF16"));
+    }
+    let state = device.upload(narrow, &[case.value_heads, case.dim, case.dim])?;
+    let (expected, next) = case.expected();
+    let check = |output: Vec<f32>| {
+        let stored: Vec<f32> = device
+            .read_borrowed(&state)?
+            .into_iter()
+            .map(bf16::to_f32)
+            .collect();
+        acceptance::compare(&format!("{case:?} BF16 output"), &output, &expected)
+            .and_then(|()| {
+                acceptance::compare_bf16(&format!("{case:?} BF16 state"), &stored, &next)
+            })
+            .map_err(Error::invariant)
+    };
+    run_delta(
+        device,
+        (case, &state),
+        check,
+        Some(&format!("{case:?} BF16")),
     )
-    .map_err(Error::invariant)?;
-    time(device, &graph, &format!("{case:?}"))
 }
 
 #[test]
@@ -134,15 +190,14 @@ fn tile_sources_pass_the_shared_cases() -> Result<()> {
                 active,
             },
         )?;
-        check_delta(
-            &device,
-            Delta {
-                key_heads: 2,
-                value_heads: 4,
-                dim: 128,
-                active,
-            },
-        )?;
+        let delta = Delta {
+            key_heads: 2,
+            value_heads: 4,
+            dim: 128,
+            active,
+        };
+        check_delta(&device, delta)?;
+        check_bf16_delta(&device, delta)?;
     }
     Ok(())
 }

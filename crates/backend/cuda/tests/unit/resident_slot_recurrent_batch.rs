@@ -1,5 +1,6 @@
 //! Bitwise comparison against the existing per-slot fused kernel at the checkpoint geometry.
 use super::{upload, values};
+use crate::test_support::f32_state;
 use std::error::Error;
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 use crate::device::device_error;
@@ -101,12 +102,12 @@ impl Fixture {
                     &metadata[1],
                     &metadata[2],
                 )
-                .generics(
+                .generics(f32_state(
                     [KH, VH, D, self.block]
                         .iter()
                         .map(ToString::to_string)
                         .collect(),
-                ),
+                )),
             )?;
         }
         Ok(())
@@ -140,12 +141,12 @@ impl Fixture {
                     &self.parameters.view(&[2 * VH]).map_err(device_error)?,
                     &self.metadata,
                 )
-                .generics(
+                .generics(f32_state(
                     [KH, VH, D, self.block, 4]
                         .iter()
                         .map(ToString::to_string)
                         .collect(),
-                ),
+                )),
             )?;
             Ok(())
         })?;
@@ -205,12 +206,12 @@ impl Fixture {
                     &metadata[2],
                     counts[slot],
                 )
-                .generics(
+                .generics(f32_state(
                     [KH, VH, D, self.block]
                         .iter()
                         .map(ToString::to_string)
                         .collect(),
-                ),
+                )),
             )?;
         }
         Ok(())
@@ -250,12 +251,12 @@ impl Fixture {
                         &self.metadata,
                         &counts,
                     )
-                    .generics(
+                    .generics(f32_state(
                         [KH, VH, D, self.block, 4]
                             .iter()
                             .map(ToString::to_string)
                             .collect(),
-                    ),
+                    )),
                 )?;
                 Ok(())
             })?;

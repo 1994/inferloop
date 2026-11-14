@@ -13,11 +13,11 @@
 #[cutile::module]
 pub mod kernels {
     use cutile::core::{
-        BroadcastScalar, LoadTileLike, Reshape, Shape_0, Shape_1, Shape_2, Shape_3,
-        StoreTileAtCurrentBlock, Tensor_1, Tensor_2, Tensor_3, Tile_1, Tile_2, bf16, constant,
-        convert_scalar, convert_tile, eq_tile, exp, extract, ftz, ge_tile, get_tile_block_id,
-        gt_tile, iota, log, lt_tile, mmaf, reduce_sum, reverse, rsqrt, scan_sum, select, tf32,
-        tile_to_scalar,
+        BroadcastScalar, ElementType, LoadTileLike, Reshape, Shape_0, Shape_1, Shape_2, Shape_3,
+        StoreTileAtCurrentBlock, Tensor_1, Tensor_2, Tensor_3, Tile_1, Tile_2, Tile_3, bf16,
+        constant, convert_scalar, convert_tile, eq_tile, exp, extract, ftz, ge_tile,
+        get_tile_block_id, gt_tile, iota, log, lt_tile, mmaf, reduce_sum, reverse, rsqrt, scan_sum,
+        select, tf32, tile_to_scalar,
     };
 
     /// `left * right + acc` from one TF32 product.
@@ -229,8 +229,8 @@ pub mod kernels {
     /// Carry one 32-column block of the state across the active chunks.
     #[expect(clippy::too_many_arguments, reason = "explicit CUDA tensor bindings")]
     #[cutile::entry()]
-    fn chunk_scan<const KH: i32, const VH: i32, const LANES: i32>(
-        state: &mut Tensor<f32, { [1, 128, 32] }>,
+    fn chunk_scan<E: ElementType, const KH: i32, const VH: i32, const LANES: i32>(
+        state: &mut Tensor<E, { [1, 128, 32] }>,
         out: &mut Tensor<f32, { [1, LANES, 32] }>,
         u: &Tensor<bf16, { [-1, -1, 128] }>,
         w: &Tensor<bf16, { [-1, -1, 128] }>,
@@ -245,7 +245,8 @@ pub mod kernels {
         let key = head / (VH / KH);
         let count: i32 =
             tile_to_scalar(metadata.partition(shape![1]).load([1i32]).reshape(shape![]));
-        let mut old = state.load_like(state).reshape(shape![128, 32]);
+        let mut old: Tile<f32, { [128, 32] }> =
+            convert_tile(state.load_like(state).reshape(shape![128, 32]));
         let zero_block: Tile<f32, { [64, 32] }> = constant(0.0f32, shape![64, 32]);
         let wp = w.partition(shape![1, 64, 128]);
         let qp = queries.partition(shape![1, 64, 128]);
@@ -285,14 +286,15 @@ pub mod kernels {
             let transposed: Tile<f32, { [128, 64] }> = kc.transpose();
             old = bf16_product(transposed, updates, decayed);
         }
-        state.store(old.reshape(shape![1, 128, 32]));
+        let stored: Tile<E, { [1, 128, 32] }> = convert_tile(old.reshape(shape![1, 128, 32]));
+        state.store(stored);
     }
 
     /// Carry one 64-column block of the state across the active chunks.
     #[expect(clippy::too_many_arguments, reason = "explicit CUDA tensor bindings")]
     #[cutile::entry()]
-    fn chunk_scan_wide<const KH: i32, const VH: i32, const LANES: i32>(
-        state: &mut Tensor<f32, { [1, 128, 64] }>,
+    fn chunk_scan_wide<E: ElementType, const KH: i32, const VH: i32, const LANES: i32>(
+        state: &mut Tensor<E, { [1, 128, 64] }>,
         out: &mut Tensor<f32, { [1, LANES, 64] }>,
         u: &Tensor<bf16, { [-1, -1, 128] }>,
         w: &Tensor<bf16, { [-1, -1, 128] }>,
@@ -307,7 +309,8 @@ pub mod kernels {
         let key = head / (VH / KH);
         let count: i32 =
             tile_to_scalar(metadata.partition(shape![1]).load([1i32]).reshape(shape![]));
-        let mut old = state.load_like(state).reshape(shape![128, 64]);
+        let mut old: Tile<f32, { [128, 64] }> =
+            convert_tile(state.load_like(state).reshape(shape![128, 64]));
         let zero_block: Tile<f32, { [64, 64] }> = constant(0.0f32, shape![64, 64]);
         let wp = w.partition(shape![1, 64, 128]);
         let qp = queries.partition(shape![1, 64, 128]);
@@ -347,6 +350,7 @@ pub mod kernels {
             let transposed: Tile<f32, { [128, 64] }> = kc.transpose();
             old = bf16_product(transposed, updates, decayed);
         }
-        state.store(old.reshape(shape![1, 128, 64]));
+        let stored: Tile<E, { [1, 128, 64] }> = convert_tile(old.reshape(shape![1, 128, 64]));
+        state.store(stored);
     }
 }

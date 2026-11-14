@@ -2,7 +2,7 @@
 #[cutile::module]
 pub mod kernels {
     use cutile::core::{
-        BroadcastScalar, LoadTileLike, Reshape, Shape_0, Shape_1, Shape_2, Shape_3,
+        BroadcastScalar, ElementType, LoadTileLike, Reshape, Shape_0, Shape_1, Shape_2, Shape_3,
         StoreTileAtCurrentBlock, Tensor_1, Tensor_2, Tensor_3, Tile_0, Tile_1, Tile_2, Tile_3,
         bf16, cmp_ordering, cmpf, constant, convert_scalar, convert_tile, eq_tile, exp, extract,
         ftz, ge_tile, get_tile_block_id, gt_tile, iota, log, lt_tile, mmaf, num_tiles, predicate,
@@ -14,8 +14,15 @@ pub mod kernels {
         reason = "CUDA state kernel binds explicit tensors and the padding metadata"
     )]
     #[cutile::entry()]
-    fn delta<const KH: i32, const VH: i32, const D: i32, const LANES: i32, const SW: i32>(
-        state: &mut Tensor<f32, { [1, D, SW] }>,
+    fn delta<
+        E: ElementType,
+        const KH: i32,
+        const VH: i32,
+        const D: i32,
+        const LANES: i32,
+        const SW: i32,
+    >(
+        state: &mut Tensor<E, { [1, D, SW] }>,
         out: &mut Tensor<f32, { [1, LANES, SW] }>,
         qkv: &Tensor<f32, { [-1, -1, D] }>,
         beta: &Tensor<f32, { [-1, -1] }>,
@@ -32,7 +39,8 @@ pub mod kernels {
         // One block of the value dimension. The state's columns are mutually independent - every
         // reduction below is over the key dimension - so the grid gains D / SW times more blocks
         // without changing any summation order.
-        let mut old = state.load_like(state).reshape(shape![D, SW]);
+        let mut old: Tile<f32, { [D, SW] }> =
+            convert_tile(state.load_like(state).reshape(shape![D, SW]));
         for lane in 0i32..LANES {
             if lane < count && base + lane + offset >= 0 {
                 let key = pid.0 / (VH / KH);
@@ -91,7 +99,8 @@ pub mod kernels {
                     .store(0.0f32.broadcast(shape![1, 1, SW]), [0i32, lane, 0i32]);
             }
         }
-        state.store(old.reshape(shape![1, D, SW]));
+        let stored: Tile<E, { [1, D, SW] }> = convert_tile(old.reshape(shape![1, D, SW]));
+        state.store(stored);
     }
     // Preserve the original scalar kernel's F32 addition tree: eight terms per stripe,
     // stripes combined as d + (c + (a + b)), then the 2/1 butterfly across key rows.
@@ -283,13 +292,14 @@ pub mod kernels {
     // D = 128 at captured 64/256-token widths. Split columns use explicit scalar trees.
     // Keep the state across tokens while preserving both scalar reduction trees.
     fn delta_grouped<
+        E: ElementType,
         const KH: i32,
         const VH: i32,
         const D: i32,
         const LANES: i32,
         const SW: i32,
     >(
-        state: &mut Tensor<f32, { [1, D, SW] }>,
+        state: &mut Tensor<E, { [1, D, SW] }>,
         out: &mut Tensor<f32, { [1, LANES, SW] }>,
         qkv: &Tensor<f32, { [-1, -1, D] }>,
         beta: &Tensor<f32, { [-1, -1] }>,
@@ -306,7 +316,8 @@ pub mod kernels {
         // One block of the value dimension. The state's columns are mutually independent - every
         // reduction below is over the key dimension - so the grid gains D / SW times more blocks
         // without changing any summation order.
-        let mut old = state.load_like(state).reshape(shape![D, SW]);
+        let mut old: Tile<f32, { [D, SW] }> =
+            convert_tile(state.load_like(state).reshape(shape![D, SW]));
         for lane in 0i32..LANES {
             if lane < count && base + lane + offset >= 0 {
                 let key = pid.0 / (VH / KH);
@@ -378,7 +389,8 @@ pub mod kernels {
                     .store(0.0f32.broadcast(shape![1, 1, SW]), [0i32, lane, 0i32]);
             }
         }
-        state.store(old.reshape(shape![1, D, SW]));
+        let stored: Tile<E, { [1, D, SW] }> = convert_tile(old.reshape(shape![1, D, SW]));
+        state.store(stored);
     }
     // One F32 normalization per Q/K head and token, preserving the scalar norm tree.
     #[cutile::entry()]
@@ -443,13 +455,14 @@ pub mod kernels {
     // D = 128 at captured 64/256-token widths. Split columns use explicit scalar trees.
     // Keep the state across tokens while preserving both scalar reduction trees.
     fn delta_precomputed<
+        E: ElementType,
         const KH: i32,
         const VH: i32,
         const D: i32,
         const LANES: i32,
         const SW: i32,
     >(
-        state: &mut Tensor<f32, { [1, D, SW] }>,
+        state: &mut Tensor<E, { [1, D, SW] }>,
         out: &mut Tensor<f32, { [1, LANES, SW] }>,
         qkv: &Tensor<f32, { [-1, -1, D] }>,
         normalized: &Tensor<f32, { [-1, -1, D] }>,
@@ -483,7 +496,8 @@ pub mod kernels {
         } else {
             0i32
         };
-        let mut old = state.load_like(state).reshape(shape![D, SW]);
+        let mut old: Tile<f32, { [D, SW] }> =
+            convert_tile(state.load_like(state).reshape(shape![D, SW]));
         out.store(0.0f32.broadcast(shape![1, LANES, SW]));
         if first < limit {
             for lane in first..limit {
@@ -511,7 +525,8 @@ pub mod kernels {
                     .store(result.reshape(shape![1, 1, SW]), [0i32, lane, 0i32]);
             }
         }
-        state.store(old.reshape(shape![1, D, SW]));
+        let stored: Tile<E, { [1, D, SW] }> = convert_tile(old.reshape(shape![1, D, SW]));
+        state.store(stored);
     }
     // Experimental WY factorization. Each chunk solves the causal token interaction system
     // before updating the recurrent state with matrix products. F32 operands use six BF16
@@ -604,8 +619,15 @@ pub mod kernels {
         reason = "WY symbols match the validated matrix derivation"
     )]
     #[cutile::entry()]
-    fn delta_wy<const KH: i32, const VH: i32, const D: i32, const LANES: i32, const SW: i32>(
-        state: &mut Tensor<f32, { [1, D, SW] }>,
+    fn delta_wy<
+        E: ElementType,
+        const KH: i32,
+        const VH: i32,
+        const D: i32,
+        const LANES: i32,
+        const SW: i32,
+    >(
+        state: &mut Tensor<E, { [1, D, SW] }>,
         out: &mut Tensor<f32, { [1, LANES, SW] }>,
         qkv: &Tensor<f32, { [-1, -1, D] }>,
         beta: &Tensor<f32, { [-1, -1] }>,
@@ -619,7 +641,8 @@ pub mod kernels {
         let base: i32 = tile_to_scalar(meta.load([0i32]).reshape(shape![]));
         let count: i32 = tile_to_scalar(meta.load([1i32]).reshape(shape![]));
         let offset: i32 = tile_to_scalar(meta.load([2i32]).reshape(shape![]));
-        let mut old = state.load_like(state).reshape(shape![D, SW]);
+        let mut old: Tile<f32, { [D, SW] }> =
+            convert_tile(state.load_like(state).reshape(shape![D, SW]));
         let indices: Tile<i32, { [32] }> = iota(shape![32]);
         let row_indices = indices.reshape(shape![32, 1]).broadcast(shape![32, 32]);
         let col_indices = indices.reshape(shape![1, 32]).broadcast(shape![32, 32]);
@@ -705,7 +728,8 @@ pub mod kernels {
                     updates * weights.reshape(shape![32, 1]).broadcast(shape![32, SW]),
                 );
         }
-        state.store(old.reshape(shape![1, D, SW]));
+        let stored: Tile<E, { [1, D, SW] }> = convert_tile(old.reshape(shape![1, D, SW]));
+        state.store(stored);
     }
     #[cutile::entry()]
     fn transpose<const D: i32>(

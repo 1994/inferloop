@@ -187,7 +187,7 @@ impl Capture<'_> {
                 self.scope,
                 plan,
                 DeltaBuffers {
-                    state,
+                    state: state.into(),
                     output,
                     qkv: self.input_buffer(node.inputs[0])?,
                     beta: self.input_buffer(node.inputs[1])?,

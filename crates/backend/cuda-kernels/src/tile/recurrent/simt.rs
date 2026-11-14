@@ -101,6 +101,9 @@ impl Simt {
             decays,
             metadata,
         } = buffers;
+        let state = state
+            .as_f32()
+            .ok_or_else(|| Error::unsupported("the SIMT recurrence keeps an F32 state"))?;
         if !covers(shape)
             || state.len() != VALUE_HEADS * DIM * DIM
             || output.len() != VALUE_HEADS * lanes * DIM

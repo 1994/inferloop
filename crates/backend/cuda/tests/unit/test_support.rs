@@ -56,3 +56,9 @@ pub fn fixture_graph(width: usize) -> Result<DataflowGraph> {
         ..Default::default()
     })
 }
+
+/// Kernel generics of a recurrence over an F32 state: the state's element type leads its shape.
+pub fn f32_state(mut shape: Vec<String>) -> Vec<String> {
+    shape.insert(0, String::from("f32"));
+    shape
+}

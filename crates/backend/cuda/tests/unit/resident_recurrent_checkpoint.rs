@@ -1,5 +1,6 @@
 use super::checkpoint;
 use crate::constants::CONV_KERNEL_TILE;
+use crate::test_support::f32_state;
 use crate::{device::CudaDevice, resident::recurrent::recurrent};
 use cutile::prelude::*;
 use std::error::Error;
@@ -179,7 +180,7 @@ fn run_delta(
         &inputs.bias,
         &inputs.metadata,
     )
-    .generics(generics.clone())
+    .generics(f32_state(generics.clone()))
     .sync_on(device.stream())?;
     checkpoint::delta_checkpoint(
         (&mut buffers.candidate_output).partition([1, 1, block]),
@@ -192,7 +193,7 @@ fn run_delta(
         &inputs.bias,
         &inputs.metadata,
     )
-    .generics(generics)
+    .generics(f32_state(generics))
     .sync_on(device.stream())?;
     Ok(())
 }

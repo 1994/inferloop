@@ -3,6 +3,7 @@ use super::super::{BenchOptions, Duration, assert_close, upload, wave_perf_pair}
 use super::{D, Fixture, KH, QKV, TestResult, VH};
 use crate::device::device_error;
 use crate::resident::buffers::cutile;
+use crate::test_support::f32_state;
 use crate::{
     device::CudaDevice,
     resident::slot_recurrent::{ValueDevice, fused, value_split},
@@ -80,12 +81,12 @@ fn capture_verify(
                 &fixture.parameters.view(&[2 * VH]).map_err(device_error)?,
                 &fixture.metadata,
             )
-            .generics(
+            .generics(f32_state(
                 [KH, VH, D, block, 4]
                     .iter()
                     .map(ToString::to_string)
                     .collect(),
-            ),
+            )),
         )?;
         Ok(())
     })?)
@@ -127,12 +128,12 @@ fn check_commits(
                         &fixture.metadata,
                         &counts,
                     )
-                    .generics(
+                    .generics(f32_state(
                         [KH, VH, D, selected, 4]
                             .iter()
                             .map(ToString::to_string)
                             .collect(),
-                    ),
+                    )),
                 )?;
                 Ok(())
             })?;

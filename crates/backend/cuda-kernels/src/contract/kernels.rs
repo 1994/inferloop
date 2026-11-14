@@ -803,6 +803,51 @@ pub trait Sampling: Send + Sync {
     }
 }
 
+/// A gated delta state: `[heads, dim, dim]` per slot. Kernels compute in F32 whatever the storage;
+/// a BF16 state is widened on load and rounded to nearest even on store.
+#[derive(Clone, Copy, Debug)]
+pub enum StateBuffer<'a> {
+    F32(Buffer<'a, f32>),
+    Bf16(Buffer<'a, Bf16>),
+}
+
+impl<'a> StateBuffer<'a> {
+    /// Elements of the state.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        match self {
+            Self::F32(buffer) => buffer.len(),
+            Self::Bf16(buffer) => buffer.len(),
+        }
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The F32 buffer, for a kernel that only implements F32 storage.
+    #[must_use]
+    pub const fn as_f32(&self) -> Option<Buffer<'a, f32>> {
+        match self {
+            Self::F32(buffer) => Some(*buffer),
+            Self::Bf16(_) => None,
+        }
+    }
+}
+
+impl<'a> From<Buffer<'a, f32>> for StateBuffer<'a> {
+    fn from(buffer: Buffer<'a, f32>) -> Self {
+        Self::F32(buffer)
+    }
+}
+
+impl<'a> From<Buffer<'a, Bf16>> for StateBuffer<'a> {
+    fn from(buffer: Buffer<'a, Bf16>) -> Self {
+        Self::Bf16(buffer)
+    }
+}
+
 /// History rows a convolution keeps.
 pub const CONV_HISTORY: usize = 3;
 
@@ -818,7 +863,7 @@ pub struct ChunkBuffers<'a> {
     pub qkv: Buffer<'a, f32>,
     pub betas: Buffer<'a, f32>,
     pub decays: Buffer<'a, f32>,
-    pub state: Buffer<'a, f32>,
+    pub state: StateBuffer<'a>,
     pub output: Buffer<'a, f32>,
     pub metadata: Buffer<'a, i32>,
 }
@@ -826,7 +871,7 @@ pub struct ChunkBuffers<'a> {
 /// Operands of a recurrence that derives its gates per token.
 #[derive(Clone, Copy)]
 pub struct DeltaBuffers<'a> {
-    pub state: Buffer<'a, f32>,
+    pub state: StateBuffer<'a>,
     pub output: Buffer<'a, f32>,
     pub qkv: Buffer<'a, f32>,
     pub beta: Buffer<'a, f32>,
@@ -839,7 +884,7 @@ pub struct DeltaBuffers<'a> {
 /// Operands of the recurrence over precomputed normalization and gates.
 #[derive(Clone, Copy)]
 pub struct PreparedDeltaBuffers<'a> {
-    pub state: Buffer<'a, f32>,
+    pub state: StateBuffer<'a>,
     pub output: Buffer<'a, f32>,
     pub qkv: Buffer<'a, f32>,
     pub normalized: Buffer<'a, f32>,
@@ -887,7 +932,7 @@ pub struct FusedConvBuffers<'a> {
 /// Operands of the fused single-slot delta verification and commit.
 #[derive(Clone, Copy)]
 pub struct FusedDeltaBuffers<'a> {
-    pub state: Buffer<'a, f32>,
+    pub state: StateBuffer<'a>,
     pub qkv: LaneBuffers<'a, f32>,
     pub beta: LaneBuffers<'a, f32>,
     pub alpha: LaneBuffers<'a, f32>,
@@ -899,7 +944,7 @@ pub struct FusedDeltaBuffers<'a> {
 /// Operands of pool-wide delta verification or commit.
 #[derive(Clone, Copy)]
 pub struct PoolDeltaBuffers<'a> {
-    pub state: Buffer<'a, f32>,
+    pub state: StateBuffer<'a>,
     pub qkv: Buffer<'a, f32>,
     pub beta: Buffer<'a, f32>,
     pub alpha: Buffer<'a, f32>,
@@ -1033,7 +1078,7 @@ pub trait Recurrent: Send + Sync {
         &self,
         recording: &Recording<'_>,
         plan: &DeltaStepPlan,
-        snapshot: Buffer<'_, f32>,
+        snapshot: StateBuffer<'_>,
         buffers: DeltaBuffers<'_>,
     ) -> Result<()> {
         let _ = (recording, plan, snapshot, buffers);

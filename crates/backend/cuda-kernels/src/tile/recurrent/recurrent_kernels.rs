@@ -1,10 +1,10 @@
 #[cutile::module]
 pub mod recurrent {
     use cutile::core::{
-        BroadcastScalar, LoadTileLike, Reshape, Shape_0, Shape_1, Shape_2, Shape_3,
-        StoreTileAtCurrentBlock, Tensor_1, Tensor_2, Tensor_3, Tile_0, Tile_1, Tile_2,
-        cmp_ordering, cmpf, convert_scalar, exp, ftz, get_tile_block_id, log, predicate,
-        reduce_sum, rsqrt, select, tile_to_scalar,
+        BroadcastScalar, ElementType, LoadTileLike, Reshape, Shape_0, Shape_1, Shape_2, Shape_3,
+        StoreTileAtCurrentBlock, Tensor_1, Tensor_2, Tensor_3, Tile_0, Tile_1, Tile_2, Tile_3,
+        cmp_ordering, cmpf, convert_scalar, convert_tile, exp, ftz, get_tile_block_id, log,
+        predicate, reduce_sum, rsqrt, select, tile_to_scalar,
     };
 
     #[cutile::entry()]
@@ -46,9 +46,9 @@ pub mod recurrent {
         reason = "CUDA state kernel binds explicit tensors and the padding metadata"
     )]
     #[cutile::entry()]
-    fn delta<const KH: i32, const VH: i32, const D: i32, const SW: i32>(
+    fn delta<E: ElementType, const KH: i32, const VH: i32, const D: i32, const SW: i32>(
         out: &mut Tensor<f32, { [1, 1, SW] }>,
-        state: &mut Tensor<f32, { [1, D, SW] }>,
+        state: &mut Tensor<E, { [1, D, SW] }>,
         qkv: &Tensor<f32, { [-1] }>,
         beta: &Tensor<f32, { [-1] }>,
         alpha: &Tensor<f32, { [-1] }>,
@@ -94,7 +94,8 @@ pub mod recurrent {
             );
             let soft = select(large, at, soft);
             let decay = exp(zero - exp(a_log.partition(shape![1]).load([pid.0])) * soft);
-            let old = state.load_like(state).reshape(shape![D, SW]);
+            let old: Tile<f32, { [D, SW] }> =
+                convert_tile(state.load_like(state).reshape(shape![D, SW]));
             let decayed = old * decay.reshape(shape![1, 1]).broadcast(shape![D, SW]);
             let kb = k.reshape(shape![D, 1]).broadcast(shape![D, SW]);
             let predicted: Tile<f32, { [SW] }> = reduce_sum(decayed * kb, 0i32);
@@ -104,7 +105,8 @@ pub mod recurrent {
                 decayed + kb * diff.reshape(shape![1, SW]).broadcast(shape![D, SW]);
             let qb = q.reshape(shape![D, 1]).broadcast(shape![D, SW]);
             let result: Tile<f32, { [SW] }> = reduce_sum(updated * qb, 0i32);
-            state.store(updated.reshape(shape![1, D, SW]));
+            let stored: Tile<E, { [1, D, SW] }> = convert_tile(updated.reshape(shape![1, D, SW]));
+            state.store(stored);
             out.store(result.reshape(shape![1, 1, SW]));
         } else {
             out.store(0.0f32.broadcast(shape![1, 1, SW]));
@@ -118,9 +120,9 @@ pub mod recurrent {
         reason = "CUDA state kernel binds explicit tensors and the padding metadata"
     )]
     #[cutile::entry()]
-    fn delta_lanes<const KH: i32, const VH: i32, const D: i32, const SW: i32>(
+    fn delta_lanes<E: ElementType, const KH: i32, const VH: i32, const D: i32, const SW: i32>(
         out: &mut Tensor<f32, { [1, 1, SW] }>,
-        state: &mut Tensor<f32, { [1, D, SW] }>,
+        state: &mut Tensor<E, { [1, D, SW] }>,
         qkv: &Tensor<f32, { [-1] }>,
         beta: &Tensor<f32, { [-1] }>,
         alpha: &Tensor<f32, { [-1] }>,
@@ -170,7 +172,8 @@ pub mod recurrent {
             );
             let soft = select(large, at, soft);
             let decay = exp(zero - exp(a_log.partition(shape![1]).load([head])) * soft);
-            let old = state.load_like(state).reshape(shape![D, SW]);
+            let old: Tile<f32, { [D, SW] }> =
+                convert_tile(state.load_like(state).reshape(shape![D, SW]));
             let decayed = old * decay.reshape(shape![1, 1]).broadcast(shape![D, SW]);
             let kb = k.reshape(shape![D, 1]).broadcast(shape![D, SW]);
             let predicted: Tile<f32, { [SW] }> = reduce_sum(decayed * kb, 0i32);
@@ -180,7 +183,8 @@ pub mod recurrent {
                 decayed + kb * diff.reshape(shape![1, SW]).broadcast(shape![D, SW]);
             let qb = q.reshape(shape![D, 1]).broadcast(shape![D, SW]);
             let result: Tile<f32, { [SW] }> = reduce_sum(updated * qb, 0i32);
-            state.store(updated.reshape(shape![1, D, SW]));
+            let stored: Tile<E, { [1, D, SW] }> = convert_tile(updated.reshape(shape![1, D, SW]));
+            state.store(stored);
             out.store(result.reshape(shape![1, 1, SW]));
         } else {
             out.store(0.0f32.broadcast(shape![1, 1, SW]));

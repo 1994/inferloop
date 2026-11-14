@@ -343,7 +343,7 @@ pub(super) fn record_verify(
                     },
                     outputs,
                     FusedDeltaBuffers {
-                        state: buffer(state)?,
+                        state: buffer(state)?.into(),
                         qkv: rows(weights, arena, node.inputs[0], slot)?,
                         beta: rows(weights, arena, node.inputs[1], slot)?,
                         alpha: rows(weights, arena, node.inputs[2], slot)?,
@@ -437,7 +437,7 @@ pub(super) fn record_commit(
                     },
                     count,
                     FusedDeltaBuffers {
-                        state: buffer(state)?,
+                        state: buffer(state)?.into(),
                         qkv: staged_buffers(qkv),
                         beta: staged_buffers(beta),
                         alpha: staged_buffers(alpha),

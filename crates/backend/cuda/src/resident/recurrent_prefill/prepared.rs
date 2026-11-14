@@ -190,7 +190,7 @@ impl Inputs {
                     recording,
                     shape,
                     PreparedDeltaBuffers {
-                        state: buffer(state)?,
+                        state: buffer(state)?.into(),
                         output: buffer(output)?,
                         qkv: qkv_storage,
                         normalized: buffer(&self.normalized)?,
@@ -207,7 +207,7 @@ impl Inputs {
                 shape,
                 block,
                 PreparedDeltaBuffers {
-                    state: buffer(state)?,
+                    state: buffer(state)?.into(),
                     output: buffer(output)?,
                     qkv: qkv_storage,
                     normalized: buffer(&self.normalized)?,
