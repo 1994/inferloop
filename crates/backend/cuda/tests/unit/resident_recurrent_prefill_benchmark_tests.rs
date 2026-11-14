@@ -3,6 +3,7 @@ use crate::device::CudaDevice;
 use crate::device::device_error;
 use crate::resident::buffers::buffer as operand;
 use crate::resident::buffers::cutile;
+use crate::test_support::f32_state;
 use cutile::cutile_compiler::hints::CompileOptions;
 use cutile::error::tensor_error;
 use cutile::{
@@ -115,7 +116,7 @@ fn bench_case(
                     &bias,
                     metadata.tensor(),
                 )
-                .generics(generics),
+                .generics(f32_state(generics)),
             )?;
         }
         cutile(scope)?.record(
@@ -161,12 +162,12 @@ fn per_lane_baseline(
                     bias,
                     &metadata[lane],
                 )
-                .generics(vec![
+                .generics(f32_state(vec![
                     kh.to_string(),
                     vh.to_string(),
                     dim.to_string(),
                     dim.to_string(),
-                ]),
+                ])),
             )?;
         }
         Ok(())

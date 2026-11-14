@@ -144,9 +144,9 @@ impl Capture<'_> {
                     block,
                     lanes: None,
                 },
-                buffer(snapshot)?,
+                buffer(snapshot)?.into(),
                 DeltaBuffers {
-                    state: buffer(state)?,
+                    state: buffer(state)?.into(),
                     output: buffer(output)?,
                     qkv: self.input_buffer(node.inputs[0])?,
                     beta: self.input_buffer(node.inputs[1])?,

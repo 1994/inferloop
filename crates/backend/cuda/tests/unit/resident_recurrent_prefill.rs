@@ -2,6 +2,7 @@ use super::kernels;
 use crate::device::CudaDevice;
 use crate::resident::buffers::buffer as operand;
 use crate::resident::recurrent::recurrent::delta as recurrent_delta;
+use crate::test_support::f32_state;
 use cutile::prelude::*;
 use infer_cuda_kernels::kernels as contract_kernels;
 use std::env::var_os;
@@ -156,13 +157,13 @@ fn check_case(
             &bias,
             &metadata,
         )
-        .generics(vec![
+        .generics(f32_state(vec![
             kh.to_string(),
             vh.to_string(),
             dim.to_string(),
             lanes.to_string(),
             block.to_string(),
-        ])
+        ]))
         .sync_on(device.stream())?;
         let actual_state = state.to_host_vec().sync_on(device.stream())?;
         let actual_out = output.to_host_vec().sync_on(device.stream())?;
@@ -244,12 +245,12 @@ fn per_lane_delta_matches_independent_recurrence_at_model_geometry() -> Result<(
             &bias,
             &metadata,
         )
-        .generics(vec![
+        .generics(f32_state(vec![
             kh.to_string(),
             vh.to_string(),
             dim.to_string(),
             block.to_string(),
-        ])
+        ]))
         .sync_on(device.stream())?;
         let actual_state = state.to_host_vec().sync_on(device.stream())?;
         let actual_out = output.to_host_vec().sync_on(device.stream())?;
@@ -374,13 +375,13 @@ fn recurrence_gap(
         &bias_c,
         &metadata,
     )
-    .generics(vec![
+    .generics(f32_state(vec![
         kh.to_string(),
         vh.to_string(),
         dim.to_string(),
         lanes.to_string(),
         dim.to_string(),
-    ])
+    ]))
     .sync_on(device.stream())?;
 
     let mut state_l = api::zeros::<f32>(&[vh, dim, dim]).sync_on(device.stream())?;
@@ -404,12 +405,12 @@ fn recurrence_gap(
             &bias_c,
             &lane_metadata,
         )
-        .generics(vec![
+        .generics(f32_state(vec![
             kh.to_string(),
             vh.to_string(),
             dim.to_string(),
             dim.to_string(),
-        ])
+        ]))
         .sync_on(device.stream())?;
         let lane_out = out_one.to_host_vec().sync_on(device.stream())?;
         for head in 0..vh {
@@ -600,13 +601,13 @@ fn check_wy_fixture(
             &bias,
             &metadata,
         )
-        .generics(vec![
+        .generics(f32_state(vec![
             kh.to_string(),
             vh.to_string(),
             dim.to_string(),
             lanes.to_string(),
             block.to_string(),
-        ])
+        ]))
         .sync_on(device.stream())?;
         let actual_state = state.to_host_vec().sync_on(device.stream())?;
         let actual_out = output.to_host_vec().sync_on(device.stream())?;
@@ -850,12 +851,12 @@ fn check_ordered_fixture(
             &bias,
             &metadata,
         )
-        .generics(vec![
+        .generics(f32_state(vec![
             kh.to_string(),
             vh.to_string(),
             dim.to_string(),
             dim.to_string(),
-        ])
+        ]))
         .sync_on(device.stream())?;
         let row = output.to_host_vec().sync_on(device.stream())?;
         for head in 0..vh {

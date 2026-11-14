@@ -169,7 +169,7 @@ fn record_node(
                 },
                 buffer(inputs.counts).map_err(device_error)?,
                 PoolDeltaBuffers {
-                    state: buffer(&*state).map_err(device_error)?,
+                    state: buffer(&*state).map_err(device_error)?.into(),
                     qkv: buffer(input(0)?).map_err(device_error)?,
                     beta: buffer(input(1)?).map_err(device_error)?,
                     alpha: buffer(input(2)?).map_err(device_error)?,

@@ -303,7 +303,7 @@ fn record_delta(
                 },
                 block,
                 DeltaBuffers {
-                    state: buffer(state)?,
+                    state: buffer(state)?.into(),
                     output: buffer(scratch)?,
                     qkv: arena.activation(node.inputs[0]).map_err(error)?,
                     beta: arena.activation(node.inputs[1]).map_err(error)?,

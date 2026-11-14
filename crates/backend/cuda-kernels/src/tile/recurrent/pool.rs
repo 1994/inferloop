@@ -165,44 +165,50 @@ impl RecurrentPool for TileRecurrentPool {
         let mut o0 = self.shaped(recording, o0, "verify output", &shape)?;
         let mut o1 = self.shaped(recording, o1, "verify output", &shape)?;
         let mut o2 = self.shaped(recording, o2, "verify output", &shape)?;
-        let state = self.shaped(recording, buffers.state, "state", &[value_heads, dim, dim])?;
-        let [q0, q1, q2] = self.lanes(recording, buffers.qkv)?;
-        let [b0, b1, b2] = self.lanes(recording, buffers.beta)?;
-        let [a0, a1, a2] = self.lanes(recording, buffers.alpha)?;
-        let decay = self.flat(recording, buffers.decay)?;
-        let bias = self.flat(recording, buffers.bias)?;
-        let [m0, m1, m2] = self.lanes(recording, buffers.metadata)?;
-        scope
-            .record(
-                fused::delta_verify3(
-                    (&mut o0).partition([1, 1, block]),
-                    (&mut o1).partition([1, 1, block]),
-                    (&mut o2).partition([1, 1, block]),
-                    &state,
-                    &q0,
-                    &q1,
-                    &q2,
-                    &b0,
-                    &b1,
-                    &b2,
-                    &a0,
-                    &a1,
-                    &a2,
-                    &decay,
-                    &bias,
-                    &m0,
-                    &m1,
-                    &m2,
-                )
-                .generics(vec![
-                    key_heads.to_string(),
-                    value_heads.to_string(),
-                    dim.to_string(),
-                    block.to_string(),
-                ]),
-            )
-            .map(drop)
-            .map_err(backend_error)
+        with_state!(
+            buffers.state,
+            |buffer| self.shaped(recording, buffer, "state", &[value_heads, dim, dim]),
+            |state, dtype| {
+                let [q0, q1, q2] = self.lanes(recording, buffers.qkv)?;
+                let [b0, b1, b2] = self.lanes(recording, buffers.beta)?;
+                let [a0, a1, a2] = self.lanes(recording, buffers.alpha)?;
+                let decay = self.flat(recording, buffers.decay)?;
+                let bias = self.flat(recording, buffers.bias)?;
+                let [m0, m1, m2] = self.lanes(recording, buffers.metadata)?;
+                scope
+                    .record(
+                        fused::delta_verify3(
+                            (&mut o0).partition([1, 1, block]),
+                            (&mut o1).partition([1, 1, block]),
+                            (&mut o2).partition([1, 1, block]),
+                            &state,
+                            &q0,
+                            &q1,
+                            &q2,
+                            &b0,
+                            &b1,
+                            &b2,
+                            &a0,
+                            &a1,
+                            &a2,
+                            &decay,
+                            &bias,
+                            &m0,
+                            &m1,
+                            &m2,
+                        )
+                        .generics(vec![
+                            dtype,
+                            key_heads.to_string(),
+                            value_heads.to_string(),
+                            dim.to_string(),
+                            block.to_string(),
+                        ]),
+                    )
+                    .map(drop)
+                    .map_err(backend_error)
+            }
+        )
     }
 
     fn delta_commit_fused(
@@ -220,42 +226,48 @@ impl RecurrentPool for TileRecurrentPool {
             block,
             ..
         } = *plan;
-        let mut state = self.shaped(recording, buffers.state, "state", &[value_heads, dim, dim])?;
-        let [q0, q1, q2] = self.lanes(recording, buffers.qkv)?;
-        let [b0, b1, b2] = self.lanes(recording, buffers.beta)?;
-        let [a0, a1, a2] = self.lanes(recording, buffers.alpha)?;
-        let decay = self.flat(recording, buffers.decay)?;
-        let bias = self.flat(recording, buffers.bias)?;
-        let [m0, m1, m2] = self.lanes(recording, buffers.metadata)?;
-        scope
-            .record(
-                fused::delta_commit3(
-                    (&mut state).partition([1, dim, block]),
-                    &q0,
-                    &q1,
-                    &q2,
-                    &b0,
-                    &b1,
-                    &b2,
-                    &a0,
-                    &a1,
-                    &a2,
-                    &decay,
-                    &bias,
-                    &m0,
-                    &m1,
-                    &m2,
-                    count,
-                )
-                .generics(vec![
-                    key_heads.to_string(),
-                    value_heads.to_string(),
-                    dim.to_string(),
-                    block.to_string(),
-                ]),
-            )
-            .map(drop)
-            .map_err(backend_error)
+        with_state!(
+            buffers.state,
+            |buffer| self.shaped(recording, buffer, "state", &[value_heads, dim, dim]),
+            |mut state, dtype| {
+                let [q0, q1, q2] = self.lanes(recording, buffers.qkv)?;
+                let [b0, b1, b2] = self.lanes(recording, buffers.beta)?;
+                let [a0, a1, a2] = self.lanes(recording, buffers.alpha)?;
+                let decay = self.flat(recording, buffers.decay)?;
+                let bias = self.flat(recording, buffers.bias)?;
+                let [m0, m1, m2] = self.lanes(recording, buffers.metadata)?;
+                scope
+                    .record(
+                        fused::delta_commit3(
+                            (&mut state).partition([1, dim, block]),
+                            &q0,
+                            &q1,
+                            &q2,
+                            &b0,
+                            &b1,
+                            &b2,
+                            &a0,
+                            &a1,
+                            &a2,
+                            &decay,
+                            &bias,
+                            &m0,
+                            &m1,
+                            &m2,
+                            count,
+                        )
+                        .generics(vec![
+                            dtype,
+                            key_heads.to_string(),
+                            value_heads.to_string(),
+                            dim.to_string(),
+                            block.to_string(),
+                        ]),
+                    )
+                    .map(drop)
+                    .map_err(backend_error)
+            }
+        )
     }
 
     fn delta_verify_pool(
@@ -282,58 +294,59 @@ impl RecurrentPool for TileRecurrentPool {
             "verify output",
             &[slots, lanes, value_heads * dim],
         )?;
-        let state = self.shaped(
-            recording,
+        with_state!(
             buffers.state,
-            "state",
-            &[slots * value_heads, dim, dim],
-        )?;
-        let qkv = self.flat(recording, buffers.qkv)?;
-        let beta = self.flat(recording, buffers.beta)?;
-        let alpha = self.flat(recording, buffers.alpha)?;
-        let parameters = self.flat(recording, buffers.parameters)?;
-        let metadata = self.flat(recording, buffers.metadata)?;
-        let mut generics = vec![
-            key_heads.to_string(),
-            value_heads.to_string(),
-            dim.to_string(),
-            block.to_string(),
-            fields.to_string(),
-        ];
-        if specialized {
-            scope
-                .record(
-                    fused::delta_verify_batch(
-                        (&mut output).partition([1, FUSED_CANDIDATES, block]),
-                        &state,
-                        &qkv,
-                        &beta,
-                        &alpha,
-                        &parameters,
-                        &metadata,
-                    )
-                    .generics(generics),
-                )
-                .map(drop)
-                .map_err(backend_error)
-        } else {
-            generics.push(lanes.to_string());
-            scope
-                .record(
-                    fused::delta_verify_lanes(
-                        (&mut output).partition([1, lanes, block]),
-                        &state,
-                        &qkv,
-                        &beta,
-                        &alpha,
-                        &parameters,
-                        &metadata,
-                    )
-                    .generics(generics),
-                )
-                .map(drop)
-                .map_err(backend_error)
-        }
+            |buffer| self.shaped(recording, buffer, "state", &[slots * value_heads, dim, dim]),
+            |state, dtype| {
+                let qkv = self.flat(recording, buffers.qkv)?;
+                let beta = self.flat(recording, buffers.beta)?;
+                let alpha = self.flat(recording, buffers.alpha)?;
+                let parameters = self.flat(recording, buffers.parameters)?;
+                let metadata = self.flat(recording, buffers.metadata)?;
+                let mut generics = vec![
+                    dtype,
+                    key_heads.to_string(),
+                    value_heads.to_string(),
+                    dim.to_string(),
+                    block.to_string(),
+                    fields.to_string(),
+                ];
+                if specialized {
+                    scope
+                        .record(
+                            fused::delta_verify_batch(
+                                (&mut output).partition([1, FUSED_CANDIDATES, block]),
+                                &state,
+                                &qkv,
+                                &beta,
+                                &alpha,
+                                &parameters,
+                                &metadata,
+                            )
+                            .generics(generics),
+                        )
+                        .map(drop)
+                        .map_err(backend_error)
+                } else {
+                    generics.push(lanes.to_string());
+                    scope
+                        .record(
+                            fused::delta_verify_lanes(
+                                (&mut output).partition([1, lanes, block]),
+                                &state,
+                                &qkv,
+                                &beta,
+                                &alpha,
+                                &parameters,
+                                &metadata,
+                            )
+                            .generics(generics),
+                        )
+                        .map(drop)
+                        .map_err(backend_error)
+                }
+            }
+        )
     }
 
     fn delta_commit_pool(
@@ -355,59 +368,60 @@ impl RecurrentPool for TileRecurrentPool {
             fused: specialized,
         } = *plan;
         // The slot axis stays first: a block addresses one slot's one head.
-        let mut state = self.shaped(
-            recording,
+        with_state!(
             buffers.state,
-            "state",
-            &[slots, value_heads * dim, dim],
-        )?;
-        let qkv = self.flat(recording, buffers.qkv)?;
-        let beta = self.flat(recording, buffers.beta)?;
-        let alpha = self.flat(recording, buffers.alpha)?;
-        let parameters = self.flat(recording, buffers.parameters)?;
-        let metadata = self.flat(recording, buffers.metadata)?;
-        let counts = self.flat(recording, counts)?;
-        let mut generics = vec![
-            key_heads.to_string(),
-            value_heads.to_string(),
-            dim.to_string(),
-            block.to_string(),
-            fields.to_string(),
-        ];
-        if specialized {
-            scope
-                .record(
-                    fused::delta_commit_batch(
-                        (&mut state).partition([1, dim, block]),
-                        &qkv,
-                        &beta,
-                        &alpha,
-                        &parameters,
-                        &metadata,
-                        &counts,
-                    )
-                    .generics(generics),
-                )
-                .map(drop)
-                .map_err(backend_error)
-        } else {
-            generics.push(lanes.to_string());
-            scope
-                .record(
-                    fused::delta_commit_lanes(
-                        (&mut state).partition([1, dim, block]),
-                        &qkv,
-                        &beta,
-                        &alpha,
-                        &parameters,
-                        &metadata,
-                        &counts,
-                    )
-                    .generics(generics),
-                )
-                .map(drop)
-                .map_err(backend_error)
-        }
+            |buffer| self.shaped(recording, buffer, "state", &[slots, value_heads * dim, dim]),
+            |mut state, dtype| {
+                let qkv = self.flat(recording, buffers.qkv)?;
+                let beta = self.flat(recording, buffers.beta)?;
+                let alpha = self.flat(recording, buffers.alpha)?;
+                let parameters = self.flat(recording, buffers.parameters)?;
+                let metadata = self.flat(recording, buffers.metadata)?;
+                let counts = self.flat(recording, counts)?;
+                let mut generics = vec![
+                    dtype,
+                    key_heads.to_string(),
+                    value_heads.to_string(),
+                    dim.to_string(),
+                    block.to_string(),
+                    fields.to_string(),
+                ];
+                if specialized {
+                    scope
+                        .record(
+                            fused::delta_commit_batch(
+                                (&mut state).partition([1, dim, block]),
+                                &qkv,
+                                &beta,
+                                &alpha,
+                                &parameters,
+                                &metadata,
+                                &counts,
+                            )
+                            .generics(generics),
+                        )
+                        .map(drop)
+                        .map_err(backend_error)
+                } else {
+                    generics.push(lanes.to_string());
+                    scope
+                        .record(
+                            fused::delta_commit_lanes(
+                                (&mut state).partition([1, dim, block]),
+                                &qkv,
+                                &beta,
+                                &alpha,
+                                &parameters,
+                                &metadata,
+                                &counts,
+                            )
+                            .generics(generics),
+                        )
+                        .map(drop)
+                        .map_err(backend_error)
+                }
+            }
+        )
     }
 
     fn conv_commit_pool(

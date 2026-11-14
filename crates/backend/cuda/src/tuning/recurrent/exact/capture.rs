@@ -91,7 +91,7 @@ impl Captured {
                 )
                 .map_err(|error| device_error(error.to_string()))?;
             let buffers = PreparedDeltaBuffers {
-                state: buffer(&self.state)?,
+                state: buffer(&self.state)?.into(),
                 output: buffer(&self.scratch)?,
                 qkv: buffer(&self.qkv)?,
                 normalized: buffer(&self.normalized)?,

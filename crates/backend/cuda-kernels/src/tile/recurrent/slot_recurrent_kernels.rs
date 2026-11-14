@@ -7,10 +7,10 @@
 #[cutile::module]
 pub mod fused {
     use cutile::core::{
-        BroadcastScalar, LoadTileLike, Reshape, Shape_0, Shape_1, Shape_2, Shape_3,
+        BroadcastScalar, ElementType, LoadTileLike, Reshape, Shape_0, Shape_1, Shape_2, Shape_3,
         StoreTileAtCurrentBlock, Tensor_1, Tensor_2, Tensor_3, Tile_0, Tile_1, Tile_2, Tile_3,
-        cmp_ordering, cmpf, convert_scalar, exp, ftz, ge_tile, get_tile_block_id, log, predicate,
-        reduce_sum, rsqrt, select, tile_to_scalar,
+        cmp_ordering, cmpf, convert_scalar, convert_tile, exp, ftz, ge_tile, get_tile_block_id,
+        log, predicate, reduce_sum, rsqrt, select, tile_to_scalar,
     };
 
     /// Whether a lane's metadata marks a real token rather than padding.
@@ -227,11 +227,11 @@ pub mod fused {
         reason = "CUDA state kernel binds three verification lanes' rows explicitly"
     )]
     #[cutile::entry()]
-    fn delta_verify3<const KH: i32, const VH: i32, const D: i32, const SW: i32>(
+    fn delta_verify3<E: ElementType, const KH: i32, const VH: i32, const D: i32, const SW: i32>(
         out0: &mut Tensor<f32, { [1, 1, SW] }>,
         out1: &mut Tensor<f32, { [1, 1, SW] }>,
         out2: &mut Tensor<f32, { [1, 1, SW] }>,
-        state: &Tensor<f32, { [-1, D, -1] }>,
+        state: &Tensor<E, { [-1, D, -1] }>,
         qkv0: &Tensor<f32, { [-1] }>,
         qkv1: &Tensor<f32, { [-1] }>,
         qkv2: &Tensor<f32, { [-1] }>,
@@ -251,10 +251,12 @@ pub mod fused {
         let key = pid.0 / (VH / KH);
         let head_bias = bias.partition(shape![1]).load([pid.0]);
         let rate = exp(a_log.partition(shape![1]).load([pid.0]));
-        let initial: Tile<f32, { [D, SW] }> = state
-            .partition(shape![1, D, SW])
-            .load([pid.0, 0i32, pid.2])
-            .reshape(shape![D, SW]);
+        let initial: Tile<f32, { [D, SW] }> = convert_tile(
+            state
+                .partition(shape![1, D, SW])
+                .load([pid.0, 0i32, pid.2])
+                .reshape(shape![D, SW]),
+        );
         let active0 = lane_active(metadata0);
         let qp0 = qkv0.partition(shape![D]);
         let k0: Tile<f32, { [D] }> = qp0.load([KH + key]);
@@ -309,6 +311,7 @@ pub mod fused {
     /// The slot axis shares one launch; each CTA retains the original per-head reduction order.
     #[cutile::entry()]
     fn delta_verify_batch<
+        E: ElementType,
         const KH: i32,
         const VH: i32,
         const D: i32,
@@ -316,7 +319,7 @@ pub mod fused {
         const MF: i32,
     >(
         out: &mut Tensor<f32, { [1, 3, SW] }>,
-        state: &Tensor<f32, { [-1, D, D] }>,
+        state: &Tensor<E, { [-1, D, D] }>,
         qkv: &Tensor<f32, { [-1] }>,
         beta: &Tensor<f32, { [-1] }>,
         alpha: &Tensor<f32, { [-1] }>,
@@ -336,10 +339,12 @@ pub mod fused {
         let key = head / (VH / KH);
         let head_bias = parameters.partition(shape![1]).load([VH + head]);
         let rate = exp(parameters.partition(shape![1]).load([head]));
-        let initial: Tile<f32, { [D, SW] }> = state
-            .partition(shape![1, D, SW])
-            .load([slot * VH + head, 0i32, split])
-            .reshape(shape![D, SW]);
+        let initial: Tile<f32, { [D, SW] }> = convert_tile(
+            state
+                .partition(shape![1, D, SW])
+                .load([slot * VH + head, 0i32, split])
+                .reshape(shape![D, SW]),
+        );
         let active0 = batch_active::<MF>(metadata, row0);
         let qp0 = qkv.partition(shape![D]);
         let k0: Tile<f32, { [D] }> = qp0.load([base0 + KH + key]);
@@ -393,8 +398,8 @@ pub mod fused {
         reason = "CUDA state kernel binds three verification lanes' rows explicitly"
     )]
     #[cutile::entry()]
-    fn delta_commit3<const KH: i32, const VH: i32, const D: i32, const SW: i32>(
-        state: &mut Tensor<f32, { [1, D, SW] }>,
+    fn delta_commit3<E: ElementType, const KH: i32, const VH: i32, const D: i32, const SW: i32>(
+        state: &mut Tensor<E, { [1, D, SW] }>,
         qkv0: &Tensor<f32, { [-1] }>,
         qkv1: &Tensor<f32, { [-1] }>,
         qkv2: &Tensor<f32, { [-1] }>,
@@ -415,7 +420,8 @@ pub mod fused {
         let key = pid.0 / (VH / KH);
         let head_bias = bias.partition(shape![1]).load([pid.0]);
         let rate = exp(a_log.partition(shape![1]).load([pid.0]));
-        let initial: Tile<f32, { [D, SW] }> = state.load_like(state).reshape(shape![D, SW]);
+        let initial: Tile<f32, { [D, SW] }> =
+            convert_tile(state.load_like(state).reshape(shape![D, SW]));
         let applied0 =
             lane_active(metadata0) & ge_tile(count.broadcast(shape![1]), 1i32.broadcast(shape![1]));
         let qp0 = qkv0.partition(shape![D]);
@@ -448,19 +454,21 @@ pub mod fused {
         let bt2 = sigmoid(beta2.partition(shape![1]).load([pid.0]));
         let decay2 = delta_decay(alpha2.partition(shape![1]).load([pid.0]) + head_bias, rate);
         let after2 = delta_update(after1, k2, v2, bt2, decay2, applied2);
-        state.store(after2.reshape(shape![1, D, SW]));
+        let stored: Tile<E, { [1, D, SW] }> = convert_tile(after2.reshape(shape![1, D, SW]));
+        state.store(stored);
     }
 
     /// Commit independent per-slot accepted prefixes in a single state-family launch.
     #[cutile::entry()]
     fn delta_commit_batch<
+        E: ElementType,
         const KH: i32,
         const VH: i32,
         const D: i32,
         const SW: i32,
         const MF: i32,
     >(
-        state: &mut Tensor<f32, { [1, D, SW] }>,
+        state: &mut Tensor<E, { [1, D, SW] }>,
         qkv: &Tensor<f32, { [-1] }>,
         beta: &Tensor<f32, { [-1] }>,
         alpha: &Tensor<f32, { [-1] }>,
@@ -484,7 +492,8 @@ pub mod fused {
             let key = head / (VH / KH);
             let head_bias = parameters.partition(shape![1]).load([VH + head]);
             let rate = exp(parameters.partition(shape![1]).load([head]));
-            let initial: Tile<f32, { [D, SW] }> = state.load_like(state).reshape(shape![D, SW]);
+            let initial: Tile<f32, { [D, SW] }> =
+                convert_tile(state.load_like(state).reshape(shape![D, SW]));
             let applied0 =
                 batch_active::<MF>(metadata, row0) & ge_tile(count, 1i32.broadcast(shape![1]));
             let qp0 = qkv.partition(shape![D]);
@@ -526,7 +535,8 @@ pub mod fused {
                 rate,
             );
             let after2 = delta_update(after1, k2, v2, bt2, decay2, applied2);
-            state.store(after2.reshape(shape![1, D, SW]));
+            let stored: Tile<E, { [1, D, SW] }> = convert_tile(after2.reshape(shape![1, D, SW]));
+            state.store(stored);
         }
     }
 
@@ -534,6 +544,7 @@ pub mod fused {
     /// one register-resident state, with the three-lane kernel's per-lane arithmetic.
     #[cutile::entry()]
     fn delta_verify_lanes<
+        E: ElementType,
         const KH: i32,
         const VH: i32,
         const D: i32,
@@ -542,7 +553,7 @@ pub mod fused {
         const L: i32,
     >(
         out: &mut Tensor<f32, { [1, L, SW] }>,
-        state: &Tensor<f32, { [-1, D, D] }>,
+        state: &Tensor<E, { [-1, D, D] }>,
         qkv: &Tensor<f32, { [-1] }>,
         beta: &Tensor<f32, { [-1] }>,
         alpha: &Tensor<f32, { [-1] }>,
@@ -556,10 +567,12 @@ pub mod fused {
         let key = head / (VH / KH);
         let head_bias = parameters.partition(shape![1]).load([VH + head]);
         let rate = exp(parameters.partition(shape![1]).load([head]));
-        let mut current: Tile<f32, { [D, SW] }> = state
-            .partition(shape![1, D, SW])
-            .load([slot * VH + head, 0i32, split])
-            .reshape(shape![D, SW]);
+        let mut current: Tile<f32, { [D, SW] }> = convert_tile(
+            state
+                .partition(shape![1, D, SW])
+                .load([slot * VH + head, 0i32, split])
+                .reshape(shape![D, SW]),
+        );
         let qp = qkv.partition(shape![D]);
         let vp = qkv.partition(shape![SW]);
         for lane in 0i32..L {
@@ -583,6 +596,7 @@ pub mod fused {
     /// [`delta_commit_batch`] for `L` candidate lanes per slot.
     #[cutile::entry()]
     fn delta_commit_lanes<
+        E: ElementType,
         const KH: i32,
         const VH: i32,
         const D: i32,
@@ -590,7 +604,7 @@ pub mod fused {
         const MF: i32,
         const L: i32,
     >(
-        state: &mut Tensor<f32, { [1, D, SW] }>,
+        state: &mut Tensor<E, { [1, D, SW] }>,
         qkv: &Tensor<f32, { [-1] }>,
         beta: &Tensor<f32, { [-1] }>,
         alpha: &Tensor<f32, { [-1] }>,
@@ -608,7 +622,8 @@ pub mod fused {
             let key = head / (VH / KH);
             let head_bias = parameters.partition(shape![1]).load([VH + head]);
             let rate = exp(parameters.partition(shape![1]).load([head]));
-            let mut current: Tile<f32, { [D, SW] }> = state.load_like(state).reshape(shape![D, SW]);
+            let mut current: Tile<f32, { [D, SW] }> =
+                convert_tile(state.load_like(state).reshape(shape![D, SW]));
             let mut applied: Tile<bool, { [1] }> = ge_tile(count, 1i32.broadcast(shape![1]));
             let qp = qkv.partition(shape![D]);
             let vp = qkv.partition(shape![SW]);
@@ -628,7 +643,8 @@ pub mod fused {
                 );
                 current = delta_update(current, k, v, bt, decay, applied);
             }
-            state.store(current.reshape(shape![1, D, SW]));
+            let stored: Tile<E, { [1, D, SW] }> = convert_tile(current.reshape(shape![1, D, SW]));
+            state.store(stored);
         }
     }
 

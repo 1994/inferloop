@@ -2,6 +2,7 @@ use super::{kernels, tests::reference_fixture};
 use crate::device::{CudaDevice, device_error};
 use crate::resident::buffers::cutile;
 use crate::resident::tensor_buffer;
+use crate::test_support::f32_state;
 use cutile::error::tensor_error;
 use cutile::prelude::*;
 use infer_core::{Error, Result};
@@ -40,7 +41,7 @@ fn record_simt(
             recording,
             shape,
             PreparedDeltaBuffers {
-                state: tensor_buffer(state)?,
+                state: tensor_buffer(state)?.into(),
                 output: tensor_buffer(output)?,
                 qkv: tensor_buffer(qkv)?,
                 normalized: tensor_buffer(normalized)?,
@@ -129,13 +130,13 @@ fn check(
         &decays,
         &metadata,
     )
-    .generics(vec![
+    .generics(f32_state(vec![
         KH.to_string(),
         VH.to_string(),
         DIM.to_string(),
         lanes.to_string(),
         "16".into(),
-    ])
+    ]))
     .sync_on(device.stream())
     .map_err(device_error)?;
     let shape = simt(function, lanes)?;
@@ -292,13 +293,13 @@ impl Cost {
                         &self.decays,
                         &self.metadata,
                     )
-                    .generics(vec![
+                    .generics(f32_state(vec![
                         KH.to_string(),
                         VH.to_string(),
                         DIM.to_string(),
                         width.to_string(),
                         "16".into(),
-                    ]),
+                    ])),
                 )?;
             }
             cutile(scope)?.record(

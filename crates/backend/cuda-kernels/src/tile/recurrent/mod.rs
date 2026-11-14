@@ -1,4 +1,26 @@
 //! Gated delta, convolution and their pooled verification.
+
+/// Bind a delta state at its storage type and run `$body` once per type the contract admits, with
+/// `$tensor` the bound tensor and `dtype` the kernel's leading element generic. `$bind` binds the
+/// state buffer `$buffer` and is expanded at each type.
+macro_rules! with_state {
+    ($state:expr, |$buffer:ident| $bind:expr, |$tensor:pat_param, $dtype:ident| $body:block) => {
+        match $state {
+            $crate::contract::kernels::StateBuffer::F32($buffer) => {
+                let $tensor = $bind?;
+                let $dtype = String::from(<f32 as cuda_core::DType>::DTYPE.as_str());
+                $body
+            }
+            $crate::contract::kernels::StateBuffer::Bf16(buffer) => {
+                let $buffer = $crate::tile::projection::retyped_bf16(buffer);
+                let $tensor = $bind?;
+                let $dtype = String::from(<cutile::half::bf16 as cuda_core::DType>::DTYPE.as_str());
+                $body
+            }
+        }
+    };
+}
+
 mod contract;
 mod conv_prefill_kernels;
 mod pool;

@@ -1,5 +1,6 @@
 use super::{ValueDevice, fused};
 use crate::constants::CONV_KERNEL_TILE;
+use crate::test_support::f32_state;
 use crate::tuning::median;
 use cutile::bench::{BenchOptions, do_bench_paired};
 use cutile::cutile_compiler::hints::CompileOptions;
@@ -7,7 +8,11 @@ use cutile::error::tensor_error;
 use infer_cuda_kernels::runtime::Graph;
 use infer_workloads::DeltaGeometry;
 use std::error::Error;
+use std::iter::once;
 use std::time::Duration;
+
+/// State storage types every recurrent kernel lowers for.
+const STATE_ELEMENTS: [&str; 2] = ["f32", "bf16"];
 
 #[test]
 fn wave_split_uses_actual_head_grid_and_value_dimension() -> TestResult {
@@ -141,10 +146,10 @@ fn snapshot_free_recurrent_kernels_compile_without_a_device() -> Result<(), Box<
     ]);
     let mut commit = lanes(&rows);
     commit.push(("state", &[16384, 128, 1][..]));
-    for generics in [
-        vec!["16".into(), "48".into(), "128".into(), "32".into()],
-        vec!["2".into(), "4".into(), "32".into(), "32".into()],
-    ] {
+    for (state, shape) in STATE_ELEMENTS.into_iter().flat_map(|state| {
+        [["16", "48", "128", "32"], ["2", "4", "32", "32"]].map(|shape| (state, shape))
+    }) {
+        let generics: Vec<String> = once(state).chain(shape).map(String::from).collect();
         for (entry, strides) in [("delta_verify3", &verify), ("delta_commit3", &commit)] {
             KernelCompiler::new(fused::__module_ast_self, "fused", entry)
                 .target("sm_120")
@@ -304,7 +309,7 @@ fn delta_reference(
             bias,
             &metadata[lane],
         )
-        .generics(generics.clone())
+        .generics(f32_state(generics.clone()))
         .sync_on(device.stream())?;
         expected_out.push(device.read_borrowed(&out)?);
         if lane + 1 == count {
@@ -442,7 +447,7 @@ impl DeltaFixture {
                     &metadata[1],
                     &metadata[2],
                 )
-                .generics(self.generics.clone())
+                .generics(f32_state(self.generics.clone()))
                 .compile_options(compile.clone()),
             )?;
             Ok(())
@@ -478,7 +483,7 @@ impl DeltaFixture {
             &metadata[1],
             &metadata[2],
         )
-        .generics(self.generics.clone())
+        .generics(f32_state(self.generics.clone()))
         .sync_on(device.stream())?;
         Ok(())
     }
@@ -510,7 +515,7 @@ impl DeltaFixture {
             &metadata[2],
             i32::try_from(count)?,
         )
-        .generics(self.generics.clone())
+        .generics(f32_state(self.generics.clone()))
         .sync_on(device.stream())?;
         Ok(())
     }
@@ -678,16 +683,14 @@ fn batched_recurrent_kernels_compile_without_a_device() -> Result<(), Box<dyn Er
         for name in ["qkv", "beta", "alpha", "parameters", "metadata"] {
             strides.push((name, &[1]));
         }
-        KernelCompiler::new(fused::__module_ast_self, "fused", "delta_verify_batch")
-            .target("sm_120")
-            .generics(
-                [kh, vh, dim, block, 4]
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect(),
-            )
-            .strides(&strides)
-            .compile()?;
+        for state in STATE_ELEMENTS {
+            let shape = [kh, vh, dim, block, 4].map(|extent| extent.to_string());
+            KernelCompiler::new(fused::__module_ast_self, "fused", "delta_verify_batch")
+                .target("sm_120")
+                .generics(once(state.to_owned()).chain(shape).collect())
+                .strides(&strides)
+                .compile()?;
+        }
         KernelCompiler::new(fused::__module_ast_self, "fused", "pack_parameters")
             .target("sm_120")
             .generics(vec![vh.to_string()])
@@ -712,16 +715,14 @@ fn batched_commit_kernels_compile_without_a_device() -> Result<(), Box<dyn Error
         for name in ["qkv", "beta", "alpha", "parameters", "metadata", "counts"] {
             strides.push((name, &[1]));
         }
-        KernelCompiler::new(fused::__module_ast_self, "fused", "delta_commit_batch")
-            .target("sm_120")
-            .generics(
-                [kh, vh, dim, block, 4]
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect(),
-            )
-            .strides(&strides)
-            .compile()?;
+        for state in STATE_ELEMENTS {
+            let shape = [kh, vh, dim, block, 4].map(|extent| extent.to_string());
+            KernelCompiler::new(fused::__module_ast_self, "fused", "delta_commit_batch")
+                .target("sm_120")
+                .generics(once(state.to_owned()).chain(shape).collect())
+                .strides(&strides)
+                .compile()?;
+        }
     }
     for channels in [32, 10240] {
         let row_strides = [channels, 1];

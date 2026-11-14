@@ -48,7 +48,7 @@ impl Captured {
                 shape,
                 block,
                 DeltaBuffers {
-                    state: state.operand(),
+                    state: state.operand().into(),
                     output: scratch.operand(),
                     qkv: qkv.operand(),
                     beta: beta.operand(),

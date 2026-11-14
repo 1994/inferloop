@@ -91,7 +91,7 @@ pub(super) fn record(
                 qkv,
                 betas,
                 decays,
-                state,
+                state: state.into(),
                 output,
                 metadata,
             },

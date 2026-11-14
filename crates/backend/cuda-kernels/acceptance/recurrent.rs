@@ -8,6 +8,9 @@
 const ABSOLUTE_TOLERANCE: f64 = 2.0e-5;
 /// Relative tolerance on larger values.
 const RELATIVE_TOLERANCE: f64 = 1.0e-5;
+/// Half a BF16 step relative to the value (eight significand bits): the most rounding to
+/// nearest moves it.
+const BF16_HALF_STEP: f64 = 1.0 / 256.0;
 /// Metadata fields of one lane, as the resident metadata lays them out.
 pub const METADATA_FIELDS: usize = 4;
 /// The field holding the lane's position; a negative position marks an idle lane.
@@ -54,17 +57,29 @@ pub fn metadata(position: i32) -> Vec<i32> {
 /// # Errors
 /// The first element that is not finite or lies outside the tolerance, or a wrong length.
 pub fn compare(label: &str, actual: &[f32], expected: &[f64]) -> Result<(), String> {
+    compare_relative(label, actual, expected, RELATIVE_TOLERANCE)
+}
+
+/// Compare a state stored in BF16, widened to `actual`, with `expected`: storing rounds each
+/// value once more, by at most half a BF16 step on top of the tolerance.
+/// # Errors
+/// The first element that is not finite or lies outside that bound, or a wrong length.
+pub fn compare_bf16(label: &str, actual: &[f32], expected: &[f64]) -> Result<(), String> {
+    compare_relative(label, actual, expected, RELATIVE_TOLERANCE + BF16_HALF_STEP)
+}
+
+fn compare_relative(
+    label: &str,
+    actual: &[f32],
+    expected: &[f64],
+    relative: f64,
+) -> Result<(), String> {
     if actual.len() != expected.len() {
         return Err(format!("{label}: {} values", actual.len()));
     }
     for (index, (value, reference)) in actual.iter().zip(expected).enumerate() {
         let error = (f64::from(*value) - reference).abs();
-        if !value.is_finite()
-            || error
-                > reference
-                    .abs()
-                    .mul_add(RELATIVE_TOLERANCE, ABSOLUTE_TOLERANCE)
-        {
+        if !value.is_finite() || error > reference.abs().mul_add(relative, ABSOLUTE_TOLERANCE) {
             return Err(format!("{label} [{index}]: {value} vs {reference}"));
         }
     }

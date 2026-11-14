@@ -7,7 +7,7 @@ use super::{
 use crate::contract::buffer::{Bf16, Buffer};
 use crate::contract::kernels::{
     CONV_HISTORY, ChunkBuffers, ConvBuffers, DeltaBuffers, GateBuffers, PreparedDeltaBuffers,
-    Recurrent,
+    Recurrent, StateBuffer,
 };
 use crate::contract::plan::{ConvKernel, DeltaKernel, DeltaStepPlan, RecurrentShape};
 use crate::contract::recording::Recording;
@@ -16,7 +16,7 @@ use crate::tile::{backend_error, borrowed, capture_scope};
 use cuda_core::DType;
 use cutile::half::bf16;
 use cutile::prelude::*;
-use infer_core::Result;
+use infer_core::{Error, Result};
 
 /// Value columns in the general scan tile.
 pub const SCAN_COLUMNS: usize = 32;
@@ -83,6 +83,35 @@ impl TileRecurrent {
         recording.retain(buffer);
         borrowed(buffer, self.ordinal, &[buffer.len()])
     }
+}
+
+/// Storage types of a delta state, so a second state operand binds at the first one's type.
+trait StateStorage: DType {
+    fn select(state: StateBuffer<'_>) -> Option<Buffer<'_, Self>>;
+}
+
+impl StateStorage for f32 {
+    fn select(state: StateBuffer<'_>) -> Option<Buffer<'_, Self>> {
+        state.as_f32()
+    }
+}
+
+impl StateStorage for bf16 {
+    fn select(state: StateBuffer<'_>) -> Option<Buffer<'_, Self>> {
+        match state {
+            StateBuffer::Bf16(buffer) => Some(retyped_bf16(buffer)),
+            StateBuffer::F32(_) => None,
+        }
+    }
+}
+
+/// `other` at the storage type of `state`, which a launch binds both at.
+fn same_storage<'a, T: StateStorage>(
+    _state: &Tensor<T>,
+    other: StateBuffer<'a>,
+) -> Result<Buffer<'a, T>> {
+    T::select(other)
+        .ok_or_else(|| Error::invalid("a state snapshot must share the state's storage"))
 }
 
 type ConvFixed<'t> = (&'t Tensor<f32>, &'t Tensor<i32>);
@@ -255,7 +284,7 @@ impl Recurrent for TileRecurrent {
         &self,
         recording: &Recording<'_>,
         plan: &DeltaStepPlan,
-        snapshot: Buffer<'_, f32>,
+        snapshot: StateBuffer<'_>,
         buffers: DeltaBuffers<'_>,
     ) -> Result<()> {
         let scope = capture_scope(recording)?;
@@ -269,36 +298,43 @@ impl Recurrent for TileRecurrent {
         let shape = [value_heads, dim, dim];
         let mut output =
             self.tensor(recording, buffers.output, "output", &[value_heads, 1, dim])?;
-        let mut state = self.tensor(recording, buffers.state, "state", &shape)?;
-        let mut snapshot = self.tensor(recording, snapshot, "snapshot", &shape)?;
-        let qkv = self.flat(recording, buffers.qkv)?;
-        let beta = self.flat(recording, buffers.beta)?;
-        let alpha = self.flat(recording, buffers.alpha)?;
-        let decay = self.flat(recording, buffers.decay)?;
-        let bias = self.flat(recording, buffers.bias)?;
-        let metadata = self.flat(recording, buffers.metadata)?;
-        scope
-            .record(
-                recurrent_checkpoint::delta_checkpoint(
-                    (&mut output).partition([1, 1, block]),
-                    (&mut state).partition([1, dim, block]),
-                    (&mut snapshot).partition([1, dim, block]),
-                    &qkv,
-                    &beta,
-                    &alpha,
-                    &decay,
-                    &bias,
-                    &metadata,
-                )
-                .generics(vec![
-                    key_heads.to_string(),
-                    value_heads.to_string(),
-                    dim.to_string(),
-                    block.to_string(),
-                ]),
-            )
-            .map(drop)
-            .map_err(backend_error)
+        with_state!(
+            buffers.state,
+            |buffer| self.tensor(recording, buffer, "state", &shape),
+            |mut state, dtype| {
+                let snapshot = same_storage(&state, snapshot)?;
+                let mut snapshot = self.tensor(recording, snapshot, "snapshot", &shape)?;
+                let qkv = self.flat(recording, buffers.qkv)?;
+                let beta = self.flat(recording, buffers.beta)?;
+                let alpha = self.flat(recording, buffers.alpha)?;
+                let decay = self.flat(recording, buffers.decay)?;
+                let bias = self.flat(recording, buffers.bias)?;
+                let metadata = self.flat(recording, buffers.metadata)?;
+                scope
+                    .record(
+                        recurrent_checkpoint::delta_checkpoint(
+                            (&mut output).partition([1, 1, block]),
+                            (&mut state).partition([1, dim, block]),
+                            (&mut snapshot).partition([1, dim, block]),
+                            &qkv,
+                            &beta,
+                            &alpha,
+                            &decay,
+                            &bias,
+                            &metadata,
+                        )
+                        .generics(vec![
+                            dtype,
+                            key_heads.to_string(),
+                            value_heads.to_string(),
+                            dim.to_string(),
+                            block.to_string(),
+                        ]),
+                    )
+                    .map(drop)
+                    .map_err(backend_error)
+            }
+        )
     }
 
     fn conv_checkpoint(
@@ -359,49 +395,55 @@ impl Recurrent for TileRecurrent {
         } = *plan;
         let blocks = lanes.unwrap_or(1) * value_heads;
         let mut output = self.tensor(recording, buffers.output, "output", &[blocks, 1, dim])?;
-        let mut state = self.tensor(recording, buffers.state, "state", &[blocks, dim, dim])?;
-        let qkv = self.flat(recording, buffers.qkv)?;
-        let beta = self.flat(recording, buffers.beta)?;
-        let alpha = self.flat(recording, buffers.alpha)?;
-        let decay = self.flat(recording, buffers.decay)?;
-        let bias = self.flat(recording, buffers.bias)?;
-        let metadata = self.flat(recording, buffers.metadata)?;
-        let generics = vec![
-            key_heads.to_string(),
-            value_heads.to_string(),
-            dim.to_string(),
-            block.to_string(),
-        ];
-        let recorded = if lanes.is_some() {
-            scope.record(
-                recurrent::delta_lanes(
-                    (&mut output).partition([1, 1, block]),
-                    (&mut state).partition([1, dim, block]),
-                    &qkv,
-                    &beta,
-                    &alpha,
-                    &decay,
-                    &bias,
-                    &metadata,
-                )
-                .generics(generics),
-            )
-        } else {
-            scope.record(
-                recurrent::delta(
-                    (&mut output).partition([1, 1, block]),
-                    (&mut state).partition([1, dim, block]),
-                    &qkv,
-                    &beta,
-                    &alpha,
-                    &decay,
-                    &bias,
-                    &metadata,
-                )
-                .generics(generics),
-            )
-        };
-        recorded.map(drop).map_err(backend_error)
+        with_state!(
+            buffers.state,
+            |buffer| self.tensor(recording, buffer, "state", &[blocks, dim, dim]),
+            |mut state, dtype| {
+                let qkv = self.flat(recording, buffers.qkv)?;
+                let beta = self.flat(recording, buffers.beta)?;
+                let alpha = self.flat(recording, buffers.alpha)?;
+                let decay = self.flat(recording, buffers.decay)?;
+                let bias = self.flat(recording, buffers.bias)?;
+                let metadata = self.flat(recording, buffers.metadata)?;
+                let generics = vec![
+                    dtype,
+                    key_heads.to_string(),
+                    value_heads.to_string(),
+                    dim.to_string(),
+                    block.to_string(),
+                ];
+                let recorded = if lanes.is_some() {
+                    scope.record(
+                        recurrent::delta_lanes(
+                            (&mut output).partition([1, 1, block]),
+                            (&mut state).partition([1, dim, block]),
+                            &qkv,
+                            &beta,
+                            &alpha,
+                            &decay,
+                            &bias,
+                            &metadata,
+                        )
+                        .generics(generics),
+                    )
+                } else {
+                    scope.record(
+                        recurrent::delta(
+                            (&mut output).partition([1, 1, block]),
+                            (&mut state).partition([1, dim, block]),
+                            &qkv,
+                            &beta,
+                            &alpha,
+                            &decay,
+                            &bias,
+                            &metadata,
+                        )
+                        .generics(generics),
+                    )
+                };
+                recorded.map(drop).map_err(backend_error)
+            }
+        )
     }
 
     fn conv(
@@ -467,70 +509,80 @@ impl Recurrent for TileRecurrent {
         let qkv = self.tensor(recording, buffers.qkv, "qkv", &[lanes, 2 * kh + vh, dim])?;
         let betas = self.tensor(recording, buffers.betas, "betas", &[lanes, vh])?;
         let decays = self.tensor(recording, buffers.decays, "decays", &[lanes, vh])?;
-        let mut state = self.tensor(recording, buffers.state, "state", &[vh, dim, dim])?;
-        let mut output = self.tensor(recording, buffers.output, "output", &[vh, lanes, dim])?;
-        let metadata = self.flat(recording, buffers.metadata)?;
-        scope
-            .record(
-                recurrent_chunk::chunk_normalize(
-                    (&mut queries).partition([1, chunk, dim]),
-                    (&mut keys).partition([1, chunk, dim]),
-                    &qkv,
-                    &metadata,
-                )
-                .generics(vec![kh.to_string(), dim.to_string()]),
-            )
-            .map_err(backend_error)?;
-        scope
-            .record(
-                recurrent_chunk::chunk_prepare(
-                    (&mut u).partition([1, chunk, dim]),
-                    (&mut w).partition([1, chunk, dim]),
-                    (&mut p).partition([1, chunk, chunk]),
-                    (&mut cumulative).partition([1, chunk]),
-                    &qkv,
-                    &queries,
-                    &keys,
-                    &betas,
-                    &decays,
-                    &metadata,
-                )
-                .generics(vec![kh.to_string(), vh.to_string(), dim.to_string()]),
-            )
-            .map_err(backend_error)?;
-        let generics = vec![kh.to_string(), vh.to_string(), lanes.to_string()];
-        let recorded = if vh == WIDE_SCAN_VALUE_HEADS {
-            scope.record(
-                recurrent_chunk::chunk_scan_wide(
-                    (&mut state).partition([1, dim, WIDE_SCAN_COLUMNS]),
-                    (&mut output).partition([1, lanes, WIDE_SCAN_COLUMNS]),
-                    &u,
-                    &w,
-                    &queries,
-                    &keys,
-                    &p,
-                    &cumulative,
-                    &metadata,
-                )
-                .generics(generics),
-            )
-        } else {
-            scope.record(
-                recurrent_chunk::chunk_scan(
-                    (&mut state).partition([1, dim, SCAN_COLUMNS]),
-                    (&mut output).partition([1, lanes, SCAN_COLUMNS]),
-                    &u,
-                    &w,
-                    &queries,
-                    &keys,
-                    &p,
-                    &cumulative,
-                    &metadata,
-                )
-                .generics(generics),
-            )
-        };
-        recorded.map(drop).map_err(backend_error)
+        with_state!(
+            buffers.state,
+            |buffer| self.tensor(recording, buffer, "state", &[vh, dim, dim]),
+            |mut state, dtype| {
+                let mut output =
+                    self.tensor(recording, buffers.output, "output", &[vh, lanes, dim])?;
+                let metadata = self.flat(recording, buffers.metadata)?;
+                scope
+                    .record(
+                        recurrent_chunk::chunk_normalize(
+                            (&mut queries).partition([1, chunk, dim]),
+                            (&mut keys).partition([1, chunk, dim]),
+                            &qkv,
+                            &metadata,
+                        )
+                        .generics(vec![kh.to_string(), dim.to_string()]),
+                    )
+                    .map_err(backend_error)?;
+                scope
+                    .record(
+                        recurrent_chunk::chunk_prepare(
+                            (&mut u).partition([1, chunk, dim]),
+                            (&mut w).partition([1, chunk, dim]),
+                            (&mut p).partition([1, chunk, chunk]),
+                            (&mut cumulative).partition([1, chunk]),
+                            &qkv,
+                            &queries,
+                            &keys,
+                            &betas,
+                            &decays,
+                            &metadata,
+                        )
+                        .generics(vec![
+                            kh.to_string(),
+                            vh.to_string(),
+                            dim.to_string(),
+                        ]),
+                    )
+                    .map_err(backend_error)?;
+                let generics = vec![dtype, kh.to_string(), vh.to_string(), lanes.to_string()];
+                let recorded = if vh == WIDE_SCAN_VALUE_HEADS {
+                    scope.record(
+                        recurrent_chunk::chunk_scan_wide(
+                            (&mut state).partition([1, dim, WIDE_SCAN_COLUMNS]),
+                            (&mut output).partition([1, lanes, WIDE_SCAN_COLUMNS]),
+                            &u,
+                            &w,
+                            &queries,
+                            &keys,
+                            &p,
+                            &cumulative,
+                            &metadata,
+                        )
+                        .generics(generics),
+                    )
+                } else {
+                    scope.record(
+                        recurrent_chunk::chunk_scan(
+                            (&mut state).partition([1, dim, SCAN_COLUMNS]),
+                            (&mut output).partition([1, lanes, SCAN_COLUMNS]),
+                            &u,
+                            &w,
+                            &queries,
+                            &keys,
+                            &p,
+                            &cumulative,
+                            &metadata,
+                        )
+                        .generics(generics),
+                    )
+                };
+                recorded.map(drop).map_err(backend_error)
+            }
+        )
     }
 
     fn normalize(
@@ -613,39 +665,46 @@ impl Recurrent for TileRecurrent {
             dim,
             lanes,
         } = shape;
-        let mut state = self.tensor(recording, buffers.state, "state", &[vh, dim, dim])?;
-        let mut output = self.tensor(recording, buffers.output, "output", &[vh, lanes, dim])?;
-        let qkv = self.tensor(recording, buffers.qkv, "qkv", &[lanes, 2 * kh + vh, dim])?;
-        let normalized = self.tensor(
-            recording,
-            buffers.normalized,
-            "normalized",
-            &[lanes, 2 * kh, dim],
-        )?;
-        let betas = self.tensor(recording, buffers.betas, "betas", &[lanes, vh])?;
-        let decays = self.tensor(recording, buffers.decays, "decays", &[lanes, vh])?;
-        let metadata = self.flat(recording, buffers.metadata)?;
-        scope
-            .record(
-                recurrent_prefill::delta_precomputed(
-                    (&mut state).partition([1, dim, block]),
-                    (&mut output).partition([1, lanes, block]),
-                    &qkv,
-                    &normalized,
-                    &betas,
-                    &decays,
-                    &metadata,
-                )
-                .generics(vec![
-                    kh.to_string(),
-                    vh.to_string(),
-                    dim.to_string(),
-                    lanes.to_string(),
-                    block.to_string(),
-                ]),
-            )
-            .map(drop)
-            .map_err(backend_error)
+        with_state!(
+            buffers.state,
+            |buffer| self.tensor(recording, buffer, "state", &[vh, dim, dim]),
+            |mut state, dtype| {
+                let mut output =
+                    self.tensor(recording, buffers.output, "output", &[vh, lanes, dim])?;
+                let qkv = self.tensor(recording, buffers.qkv, "qkv", &[lanes, 2 * kh + vh, dim])?;
+                let normalized = self.tensor(
+                    recording,
+                    buffers.normalized,
+                    "normalized",
+                    &[lanes, 2 * kh, dim],
+                )?;
+                let betas = self.tensor(recording, buffers.betas, "betas", &[lanes, vh])?;
+                let decays = self.tensor(recording, buffers.decays, "decays", &[lanes, vh])?;
+                let metadata = self.flat(recording, buffers.metadata)?;
+                scope
+                    .record(
+                        recurrent_prefill::delta_precomputed(
+                            (&mut state).partition([1, dim, block]),
+                            (&mut output).partition([1, lanes, block]),
+                            &qkv,
+                            &normalized,
+                            &betas,
+                            &decays,
+                            &metadata,
+                        )
+                        .generics(vec![
+                            dtype,
+                            kh.to_string(),
+                            vh.to_string(),
+                            dim.to_string(),
+                            lanes.to_string(),
+                            block.to_string(),
+                        ]),
+                    )
+                    .map(drop)
+                    .map_err(backend_error)
+            }
+        )
     }
 
     fn delta(
@@ -663,50 +722,57 @@ impl Recurrent for TileRecurrent {
             dim,
             lanes,
         } = shape;
-        let mut state = self.tensor(recording, buffers.state, "state", &[vh, dim, dim])?;
-        let mut output = self.tensor(recording, buffers.output, "output", &[vh, lanes, dim])?;
-        let qkv = self.tensor(recording, buffers.qkv, "qkv", &[lanes, 2 * kh + vh, dim])?;
-        let beta = self.tensor(recording, buffers.beta, "beta", &[lanes, vh])?;
-        let alpha = self.tensor(recording, buffers.alpha, "alpha", &[lanes, vh])?;
-        let decay = self.tensor(recording, buffers.decay, "decay", &[vh])?;
-        let bias = self.tensor(recording, buffers.bias, "bias", &[vh])?;
-        let metadata = self.flat(recording, buffers.metadata)?;
-        let generics = vec![
-            kh.to_string(),
-            vh.to_string(),
-            dim.to_string(),
-            lanes.to_string(),
-            block.to_string(),
-        ];
-        let recorded = match kernel {
-            DeltaKernel::Scan => scope.record(
-                recurrent_prefill::delta(
-                    (&mut state).partition([1, dim, block]),
-                    (&mut output).partition([1, lanes, block]),
-                    &qkv,
-                    &beta,
-                    &alpha,
-                    &decay,
-                    &bias,
-                    &metadata,
-                )
-                .generics(generics),
-            ),
-            DeltaKernel::Wy => scope.record(
-                recurrent_prefill::delta_wy(
-                    (&mut state).partition([1, dim, block]),
-                    (&mut output).partition([1, lanes, block]),
-                    &qkv,
-                    &beta,
-                    &alpha,
-                    &decay,
-                    &bias,
-                    &metadata,
-                )
-                .generics(generics),
-            ),
-        };
-        recorded.map(drop).map_err(backend_error)
+        with_state!(
+            buffers.state,
+            |buffer| self.tensor(recording, buffer, "state", &[vh, dim, dim]),
+            |mut state, dtype| {
+                let mut output =
+                    self.tensor(recording, buffers.output, "output", &[vh, lanes, dim])?;
+                let qkv = self.tensor(recording, buffers.qkv, "qkv", &[lanes, 2 * kh + vh, dim])?;
+                let beta = self.tensor(recording, buffers.beta, "beta", &[lanes, vh])?;
+                let alpha = self.tensor(recording, buffers.alpha, "alpha", &[lanes, vh])?;
+                let decay = self.tensor(recording, buffers.decay, "decay", &[vh])?;
+                let bias = self.tensor(recording, buffers.bias, "bias", &[vh])?;
+                let metadata = self.flat(recording, buffers.metadata)?;
+                let generics = vec![
+                    dtype,
+                    kh.to_string(),
+                    vh.to_string(),
+                    dim.to_string(),
+                    lanes.to_string(),
+                    block.to_string(),
+                ];
+                let recorded = match kernel {
+                    DeltaKernel::Scan => scope.record(
+                        recurrent_prefill::delta(
+                            (&mut state).partition([1, dim, block]),
+                            (&mut output).partition([1, lanes, block]),
+                            &qkv,
+                            &beta,
+                            &alpha,
+                            &decay,
+                            &bias,
+                            &metadata,
+                        )
+                        .generics(generics),
+                    ),
+                    DeltaKernel::Wy => scope.record(
+                        recurrent_prefill::delta_wy(
+                            (&mut state).partition([1, dim, block]),
+                            (&mut output).partition([1, lanes, block]),
+                            &qkv,
+                            &beta,
+                            &alpha,
+                            &decay,
+                            &bias,
+                            &metadata,
+                        )
+                        .generics(generics),
+                    ),
+                };
+                recorded.map(drop).map_err(backend_error)
+            }
+        )
     }
 
     fn transpose(
