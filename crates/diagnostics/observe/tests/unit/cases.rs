@@ -181,6 +181,67 @@ fn prometheus_histograms_are_cumulative_and_labels_have_bounded_cardinality() {
     assert!(!output.contains("tenant="));
 }
 
+/// The finish event carries its cancel source or error code, so the per-cause counters and their
+/// exposition agree with the terminal log line; an unknown cause is counted nowhere.
+#[test]
+fn finish_causes_count_by_cancel_source_and_error_code() {
+    use infer_core::{CancelSource, ErrorCode, FinishReason};
+    let mut metrics = RuntimeMetrics::default();
+    let finished = |reason: &FinishReason, cancel, error| {
+        let mut record = event(EventKind::Finished, 1, 0, finish_code(reason), 0);
+        record.reserved = finish_cause(reason, cancel, error);
+        record
+    };
+    metrics.record(&finished(
+        &FinishReason::Cancelled,
+        Some(CancelSource::Shutdown),
+        None,
+    ));
+    metrics.record(&finished(
+        &FinishReason::Failed("backend".into()),
+        None,
+        Some(ErrorCode::Backend),
+    ));
+    metrics.record(&finished(&FinishReason::Cancelled, None, None));
+    // A code on a successful finish is not a cause.
+    metrics.record(&finished(
+        &FinishReason::Eos,
+        None,
+        Some(ErrorCode::Backend),
+    ));
+    assert_eq!(metrics.cancelled_by[CancelSource::Shutdown.index()], 1);
+    assert_eq!(metrics.cancelled_by.iter().sum::<u64>(), 1);
+    assert_eq!(metrics.failed_by[ErrorCode::Backend.index()], 1);
+    assert_eq!(metrics.failed_by.iter().sum::<u64>(), 1);
+    let gauges = export::ResourceGauges {
+        backend: "metal".into(),
+        ready: true,
+        active_requests: 0,
+        inflight_steps: 0,
+        resource_waiters: 0,
+        output_waiters: 0,
+        output_batches: 0,
+        logical_pages: 0,
+        free_logical_pages: 0,
+        active_kv_blocks: 0,
+        cached_kv_blocks: 0,
+        available_kv_blocks: 0,
+        kv_pool_bytes: 0,
+        event_ring_dropped: 0,
+        collector_metadata_dropped: 0,
+    };
+    let output = export::prometheus(&metrics, &gauges, &ObservationStore::new(2).unwrap());
+    assert!(
+        output.contains("infer_requests_cancelled_total{backend=\"metal\",cause=\"shutdown\"} 1\n")
+    );
+    assert!(output.contains(
+        "infer_requests_cancelled_total{backend=\"metal\",cause=\"client_disconnected\"} 0\n"
+    ));
+    assert!(
+        output.contains("infer_request_failures_total{backend=\"metal\",code=\"backend\"} 1\n")
+    );
+}
+
 #[test]
 fn shared_window_survives_tail_mutation_and_multiple_page_evictions() -> Result<()> {
     for capacity in [1, 2, 127, 128, 129, 257] {

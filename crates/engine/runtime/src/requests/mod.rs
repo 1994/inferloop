@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::mem::take;
 use std::sync::Arc;
 
-pub use record::{RequestRecord, TokenContext};
+pub use record::{RequestRecord, Termination, TokenContext};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HotStatus {

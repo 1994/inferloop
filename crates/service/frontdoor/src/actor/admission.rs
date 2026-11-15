@@ -1,6 +1,6 @@
 //! Admission responsibilities.
 use super::{OutputChannel, Quote, Quoting, RuntimeActor, STATE_BUDGET_RETRY_US, Subscriber};
-use infer_core::{Error, ErrorCode, Result};
+use infer_core::{CancelSource, Error, ErrorCode, Result};
 use infer_observe::trace::TraceContext;
 use infer_runtime::EngineOutput;
 use infer_spi::BackendProvider;
@@ -113,8 +113,11 @@ impl<B: BackendProvider> RuntimeActor<B> {
         if let Err(error) = &admitted {
             self.engine.record_admission_rejection(id, error);
         }
+        // The submitter stopped waiting for its admission reply: nobody reads the stream.
         if reply.send(admitted).is_err()
-            && let Ok(events) = self.engine.cancel(id)
+            && let Ok(events) = self
+                .engine
+                .cancel_from(id, CancelSource::ClientDisconnected)
         {
             generated.extend(events);
         }
@@ -187,8 +190,15 @@ impl<B: BackendProvider> RuntimeActor<B> {
                 .filter(|(_, s)| s.terminal.is_none() && (self.stopping || s.channel.is_closed()))
                 .map(|(id, _)| *id),
         );
+        // A drained runtime and a requester that stopped reading are different incidents; this is
+        // the last place that knows which one closed the stream.
+        let source = if self.stopping {
+            CancelSource::Shutdown
+        } else {
+            CancelSource::ClientDisconnected
+        };
         for id in &scratch {
-            if let Ok(events) = self.engine.cancel(*id) {
+            if let Ok(events) = self.engine.cancel_from(*id, source) {
                 generated.extend(events);
             }
         }

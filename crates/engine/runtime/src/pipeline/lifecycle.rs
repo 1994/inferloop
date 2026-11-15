@@ -1,8 +1,8 @@
 //! Cancellation and terminal ownership converge through one finish operation.
-use crate::{CompletedRequest, Engine, EngineOutput};
+use crate::{CompletedRequest, Engine, EngineOutput, Termination};
 use infer_core::{
-    Error, ErrorCode, FinishReason, RequestId, RequestStatus, Result, event::EventKind,
-    event::ObjectKind,
+    CancelSource, Error, ErrorCode, FinishReason, RequestId, RequestStage, RequestStatus, Result,
+    event::EventKind, event::ObjectKind, event::SemanticEvent,
 };
 use infer_ir::WorkloadOutput;
 use infer_observe::DiagnosticCode;
@@ -14,17 +14,44 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
     /// # Errors
     /// Returns a not-found error for an unknown request or a backend/state error if cancellation cleanup fails.
     pub fn cancel(&mut self, id: RequestId) -> Result<Vec<EngineOutput>> {
+        self.cancel_from(id, CancelSource::Requested)
+    }
+    /// Cancel one request and record who stopped wanting it.
+    ///
+    /// The source changes nothing about execution; it reaches the request's terminal log line and
+    /// the cancellation metrics, so a disconnected client is distinguishable from a shutdown.
+    /// # Errors
+    /// Returns a not-found error for an unknown request or a backend/state error if cancellation cleanup fails.
+    pub fn cancel_from(
+        &mut self,
+        id: RequestId,
+        source: CancelSource,
+    ) -> Result<Vec<EngineOutput>> {
         let mut emitted = Vec::new();
-        self.cancel_into(id, &mut emitted)?;
+        self.cancel_from_into(id, source, &mut emitted)?;
         Ok(emitted)
     }
     /// Reuse delivery storage during ordinary cancellation; state remains leased until all fences settle.
     /// # Errors
     /// Returns missing request or ownership/backend errors.
     pub fn cancel_into(&mut self, id: RequestId, emitted: &mut Vec<EngineOutput>) -> Result<()> {
+        self.cancel_from_into(id, CancelSource::Requested, emitted)
+    }
+    /// [`Self::cancel_from`] reusing delivery storage.
+    /// # Errors
+    /// Returns missing request or ownership/backend errors.
+    pub fn cancel_from_into(
+        &mut self,
+        id: RequestId,
+        source: CancelSource,
+        emitted: &mut Vec<EngineOutput>,
+    ) -> Result<()> {
         let record = self.request(id)?;
         if record.status.terminal() || record.pending_finish.is_some() {
             return Ok(());
+        }
+        if let Some(record) = self.host.requests.get_mut(id) {
+            record.termination.cancel = Some(source);
         }
         self.host.queues.cancel(id)?;
         self.record_action(crate::ReplayAction::Cancel(id));
@@ -33,11 +60,60 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         Ok(())
     }
 
+    /// A failure ending that keeps its error code for the terminal line; the message stays the
+    /// one `FinishReason::Failed` has always carried. An ending already decided, such as a cancel
+    /// waiting on its fence, keeps its own cause.
+    pub(crate) fn failure(
+        &mut self,
+        id: RequestId,
+        code: ErrorCode,
+        message: impl Into<String>,
+    ) -> FinishReason {
+        if let Some(record) = self.host.requests.get_mut(id)
+            && record.pending_finish.is_none()
+        {
+            record.termination.error.get_or_insert(code);
+        }
+        FinishReason::Failed(message.into())
+    }
+    /// Remember where the request was when its ending was first decided. A deferred ending
+    /// finishes later, after the stage that was running has already handed the request back.
+    fn mark_stage(&mut self, id: RequestId) {
+        let output = self.output_owners.contains_key(&id);
+        if let Some(record) = self.host.requests.get_mut(id)
+            && record.termination.stage.is_none()
+        {
+            record.termination.stage = Some(if output {
+                RequestStage::Output
+            } else if record.termination.first_dispatch_us.is_none() {
+                RequestStage::Queued
+            } else if record.first_token_us.is_none() {
+                RequestStage::Prefill
+            } else {
+                RequestStage::Decode
+            });
+        }
+    }
+
+    /// Remember the stage of a request whose step failed while being handed to the backend.
+    pub(crate) fn mark_dispatching(&mut self, id: RequestId) {
+        if let Some(record) = self.host.requests.get_mut(id)
+            && record.termination.stage.is_none()
+        {
+            record.termination.stage = Some(if record.first_token_us.is_none() {
+                RequestStage::Prefill
+            } else {
+                RequestStage::Decode
+            });
+        }
+    }
+
     pub(crate) fn request_termination(
         &mut self,
         id: RequestId,
         reason: FinishReason,
     ) -> Result<Option<EngineOutput>> {
+        self.mark_stage(id);
         if self
             .resources_pending
             .get(id)
@@ -82,7 +158,11 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             {
                 FinishReason::Deadline
             } else {
-                FinishReason::Failed("scheduler stage queue wait timed out".into())
+                self.failure(
+                    id,
+                    ErrorCode::Capacity,
+                    "scheduler stage queue wait timed out",
+                )
             };
             self.host.queues.cancel(id)?;
             emitted.extend(self.request_termination(id, reason)?);
@@ -96,7 +176,11 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         &mut self,
         emitted: &mut Vec<EngineOutput>,
     ) -> Result<()> {
-        let Some(failure) = self.fault.as_ref().map(|fault| fault.error.to_string()) else {
+        let Some((code, failure)) = self
+            .fault
+            .as_ref()
+            .map(|fault| (fault.error.code, fault.error.to_string()))
+        else {
             return Ok(());
         };
         let active: Vec<_> = self
@@ -114,15 +198,17 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 .map(|flight| flight.step.id);
             if let Some(step) = step {
                 self.host.queues.cancel(id)?;
+                self.mark_stage(id);
+                let reason = self.failure(id, code, failure.clone());
                 let record = self
                     .host
                     .requests
                     .get_mut(id)
                     .ok_or_else(|| Error::invariant("known request"))?;
                 record.status = RequestStatus::Running { step };
-                record.pending_finish = Some(FinishReason::Failed(failure.clone()));
+                record.pending_finish = Some(reason);
             } else {
-                let reason = FinishReason::Failed(failure.clone());
+                let reason = self.failure(id, code, failure.clone());
                 if self.resources_pending.contains_key(id) || self.output_owners.contains_key(&id) {
                     if self.host.queues.state(id).is_some() {
                         self.host.queues.cancel(id)?;
@@ -141,6 +227,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         reason: FinishReason,
         mut output: Option<WorkloadOutput>,
     ) -> Result<EngineOutput> {
+        self.mark_stage(id);
         let r = self
             .host
             .requests
@@ -208,7 +295,15 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 cached_tokens: r.cached_tokens,
             },
         };
-        log_finish(&completed);
+        let termination = r.termination;
+        log_finish(&TerminalLine {
+            completed: &completed,
+            termination,
+            queue_us: termination
+                .first_dispatch_us
+                .map(|t| t.saturating_sub(r.accepted_us)),
+            last_token_age_us: r.last_token_us.map(|t| self.now_us.saturating_sub(t)),
+        });
         r.completed = Some(completed.clone());
         self.resources_changed()?;
         if self.preemption_focus == Some(id) {
@@ -222,24 +317,35 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             0,
             0,
         );
-        self.event(
-            EventKind::Finished,
-            ObjectKind::Request,
-            id.get(),
-            0,
-            infer_observe::finish_code(&completed.reason),
-            completed.measurement.e2e_us,
-        );
+        self.report_finished(&completed, termination);
+        self.progress(id)?;
+        Ok(EngineOutput::Finished(completed))
+    }
+    /// Publish a finished request: its event carries the cancel source or error code so the
+    /// per-cause counters need no second record, and an expired deadline is kept as a diagnostic.
+    fn report_finished(&mut self, completed: &CompletedRequest, termination: Termination) {
+        self.emit_semantic(SemanticEvent {
+            timestamp_us: self.now_us,
+            kind: EventKind::Finished,
+            object_kind: ObjectKind::Request,
+            reserved: infer_observe::finish_cause(
+                &completed.reason,
+                termination.cancel,
+                termination.error,
+            ),
+            object_id: completed.request.get(),
+            correlation_id: 0,
+            arg0: infer_observe::finish_code(&completed.reason),
+            arg1: completed.measurement.e2e_us,
+        });
         if completed.reason == FinishReason::Deadline {
             self.retain_diagnostic(
                 DiagnosticCode::DeadlineExceeded,
                 &Error::new(ErrorCode::Capacity, "request deadline expired"),
-                Some(id),
+                Some(completed.request),
                 None,
             );
         }
-        self.progress(id)?;
-        Ok(EngineOutput::Finished(completed))
     }
     /// Client termination can be delivered before a GPU fence; the record and KV stay owned.
     #[must_use]
@@ -296,27 +402,61 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
     }
 }
 
-/// Report a finished request with the measurement an operator reads: how many tokens were
-/// produced and how long the request took end to end.
-fn log_finish(completed: &CompletedRequest) {
+/// What the one terminal line of a finished request reports.
+struct TerminalLine<'a> {
+    completed: &'a CompletedRequest,
+    termination: Termination,
+    /// Acceptance to first dispatch; absent for a request that never left its queue.
+    queue_us: Option<u64>,
+    /// Last token to the ending: a stalled request and a requester that just left differ here.
+    last_token_age_us: Option<u64>,
+}
+
+/// Report a finished request exactly once, from the one place a request becomes terminal.
+///
+/// Field names are a contract (`docs/guides/serving-stability.md`): `phase`, `cancel`, `stage` and
+/// `error_code` locate how and where it ended; the rest measure how far it got. Every field is a
+/// static string or an integer, so the line adds no allocation to the successful path.
+fn log_finish(line: &TerminalLine<'_>) {
+    let completed = line.completed;
     let measurement = &completed.measurement;
+    let cancel = line.termination.cancel.map_or("none", CancelSource::as_str);
+    let stage = line.termination.stage.map_or("none", RequestStage::as_str);
+    let error_code = line.termination.error.map_or("none", ErrorCode::as_str);
     if measurement.successful {
         tracing::info!(
             target: "infer::request",
             request = completed.request.get(),
+            phase = "finished",
             reason = ?completed.reason,
+            cancel,
+            stage,
+            error_code,
             output_tokens = measurement.output_tokens,
+            cached_tokens = measurement.cached_tokens,
             ttft_us = measurement.ttft_us,
+            max_tpot_us = measurement.max_tpot_us,
             e2e_us = measurement.e2e_us,
+            queue_us = line.queue_us,
+            last_token_age_us = line.last_token_age_us,
             "request finished"
         );
     } else {
         tracing::warn!(
             target: "infer::request",
             request = completed.request.get(),
+            phase = "finished",
             reason = ?completed.reason,
+            cancel,
+            stage,
+            error_code,
             output_tokens = measurement.output_tokens,
+            cached_tokens = measurement.cached_tokens,
+            ttft_us = measurement.ttft_us,
+            max_tpot_us = measurement.max_tpot_us,
             e2e_us = measurement.e2e_us,
+            queue_us = line.queue_us,
+            last_token_age_us = line.last_token_age_us,
             "request finished unsuccessfully"
         );
     }

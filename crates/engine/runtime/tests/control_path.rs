@@ -975,3 +975,196 @@ fn replay_token_budget_evicts_payload_without_releasing_live_request_ownership()
     assert_eq!(engine.inspect().state.sequence_count, 0);
     Ok(())
 }
+
+/// Captured `infer::request` lines, one string per event, for asserting the log contract.
+mod captured {
+    use std::io::{Error as IoError, Result as IoResult, Write};
+    use std::sync::{Arc, Mutex};
+    use tracing::Level;
+    use tracing::subscriber::with_default;
+
+    #[derive(Clone, Default)]
+    pub struct Lines(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Lines {
+        fn write(&mut self, bytes: &[u8]) -> IoResult<usize> {
+            self.0
+                .lock()
+                .map_err(|_| IoError::other("captured log poisoned"))?
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> IoResult<()> {
+            Ok(())
+        }
+    }
+
+    impl Lines {
+        pub fn during<T>(&self, run: impl FnOnce() -> T) -> T {
+            let writer = self.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(move || writer.clone())
+                .with_ansi(false)
+                .with_max_level(Level::INFO)
+                .finish();
+            with_default(subscriber, run)
+        }
+        /// Terminal lines of one request; the acceptance line is not one.
+        pub fn request(&self, id: u64) -> Vec<String> {
+            let text = self
+                .0
+                .lock()
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .unwrap_or_default();
+            let needle = format!(" request={id} ");
+            text.lines()
+                .filter(|line| {
+                    line.contains("infer::request")
+                        && line.contains(&needle)
+                        && !line.contains("phase=\"accepted\"")
+                })
+                .map(str::to_owned)
+                .collect()
+        }
+    }
+}
+
+/// Tick until idle; false if the runtime never got there.
+fn run_to_idle<B: BackendProvider, P: SchedulingPolicy>(e: &mut Engine<B, P>, start: u64) -> bool {
+    (start..start + 1000).any(|tick| e.tick(tick * 100).is_ok_and(|_| e.is_idle()))
+}
+
+/// Each way a requester stops wanting a request is a different incident: the record, the
+/// per-cause counter and the one terminal line all have to say which one it was.
+#[test]
+fn cancel_sources_reach_the_terminal_line_and_the_per_cause_counters() {
+    let lines = captured::Lines::default();
+    let mut e = engine(RuntimeConfig::default());
+    lines.during(|| {
+        for id in 1..=4 {
+            e.submit(request(id, Workload::Generate { max_new_tokens: 64 }))
+                .unwrap();
+        }
+        // Cancelled before any tick: it never left its queue.
+        e.cancel_from(RequestId::new(4).unwrap(), CancelSource::Shutdown)
+            .unwrap();
+        e.tick(0).unwrap();
+        e.cancel_from(RequestId::new(1).unwrap(), CancelSource::ClientDisconnected)
+            .unwrap();
+        e.cancel_from(RequestId::new(2).unwrap(), CancelSource::Backpressure)
+            .unwrap();
+        e.cancel(RequestId::new(3).unwrap()).unwrap();
+        assert!(run_to_idle(&mut e, 1));
+    });
+    for (id, source) in [
+        (1, CancelSource::ClientDisconnected),
+        (2, CancelSource::Backpressure),
+        (3, CancelSource::Requested),
+        (4, CancelSource::Shutdown),
+    ] {
+        let record = e.request(RequestId::new(id).unwrap()).unwrap();
+        assert_eq!(record.termination.cancel, Some(source));
+        assert!(record.termination.stage.is_some());
+        let logged = lines.request(id);
+        assert_eq!(logged.len(), 1, "exactly one terminal line: {logged:?}");
+        assert!(logged[0].contains("phase=\"finished\""), "{}", logged[0]);
+        assert!(
+            logged[0].contains(&format!("cancel=\"{}\"", source.as_str())),
+            "{}",
+            logged[0]
+        );
+    }
+    let queued = e.request(RequestId::new(4).unwrap()).unwrap();
+    assert_eq!(queued.termination.stage, Some(RequestStage::Queued));
+    assert_eq!(queued.termination.first_dispatch_us, None);
+    assert!(lines.request(4)[0].contains("stage=\"queued\""));
+    let counted = e.metrics().cancelled_by;
+    for source in CancelSource::ALL {
+        assert_eq!(counted[source.index()], 1, "{source:?}");
+    }
+    e.check_invariants().unwrap();
+}
+
+/// A clean finish names no cancel source and no error, and still reports its queue time.
+#[test]
+fn a_successful_request_has_one_terminal_line_without_a_cause() {
+    let lines = captured::Lines::default();
+    let mut e = engine(RuntimeConfig::default());
+    lines.during(|| {
+        e.submit(request(1, Workload::Generate { max_new_tokens: 2 }))
+            .unwrap();
+        assert!(run_to_idle(&mut e, 0));
+    });
+    let record = e.request(RequestId::ONE).unwrap();
+    assert_eq!(record.termination.cancel, None);
+    assert_eq!(record.termination.error, None);
+    assert_eq!(record.termination.stage, Some(RequestStage::Decode));
+    assert!(record.termination.first_dispatch_us.is_some());
+    let logged = lines.request(1);
+    assert_eq!(logged.len(), 1, "{logged:?}");
+    for field in ["cancel=\"none\"", "error_code=\"none\"", "queue_us="] {
+        assert!(logged[0].contains(field), "{field} in {}", logged[0]);
+    }
+}
+
+/// A backend failure keeps its error code through the step failure to the record, the line and
+/// the per-code counter, instead of being flattened into the failure text.
+#[test]
+fn a_failed_request_keeps_its_error_code() {
+    let lines = captured::Lines::default();
+    let b = FaultyBackend {
+        inner: backend(),
+        fault: Fault::Submit,
+    };
+    let model = support::model(ModelId::ONE);
+    let mut e = Engine::new(
+        b,
+        model,
+        PrecisionPlan::f32(),
+        &registry(),
+        RuntimeConfig::default(),
+    )
+    .unwrap();
+    lines.during(|| {
+        e.submit(request(1, Workload::Generate { max_new_tokens: 2 }))
+            .unwrap();
+        assert!(run_to_idle(&mut e, 0));
+    });
+    let record = e.request(RequestId::ONE).unwrap();
+    assert!(matches!(
+        record.status,
+        RequestStatus::Finished(FinishReason::Failed(_))
+    ));
+    assert_eq!(record.termination.error, Some(ErrorCode::Backend));
+    assert_eq!(record.termination.stage, Some(RequestStage::Prefill));
+    let logged = lines.request(1);
+    assert_eq!(logged.len(), 1, "{logged:?}");
+    assert!(
+        logged[0].contains("error_code=\"backend\""),
+        "{}",
+        logged[0]
+    );
+    assert_eq!(e.metrics().failed_by[ErrorCode::Backend.index()], 1);
+}
+
+/// A request the engine refuses never gets a record, so the rejection is its terminal line.
+#[test]
+fn an_admission_rejection_is_the_requests_terminal_line() {
+    let lines = captured::Lines::default();
+    let mut e = engine(RuntimeConfig::default());
+    lines.during(|| {
+        e.record_admission_rejection(
+            RequestId::new(9).unwrap(),
+            &Error::new(ErrorCode::Capacity, "full"),
+        );
+    });
+    let logged = lines.request(9);
+    assert_eq!(logged.len(), 1, "{logged:?}");
+    for field in [
+        "phase=\"rejected\"",
+        "stage=\"admission\"",
+        "error_code=\"capacity\"",
+    ] {
+        assert!(logged[0].contains(field), "{field} in {}", logged[0]);
+    }
+}

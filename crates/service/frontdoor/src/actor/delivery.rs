@@ -1,5 +1,6 @@
 //! Delivery responsibilities.
 use super::RuntimeActor;
+use infer_core::CancelSource;
 use infer_runtime::EngineOutput;
 use infer_spi::BackendProvider;
 use std::mem::take;
@@ -24,7 +25,7 @@ impl<B: BackendProvider> RuntimeActor<B> {
             if subscriber.channel.try_send(Ok(event)).is_err() {
                 self.engine.record_backpressure(id);
                 // Retain one terminal record until the bounded queue drains or disconnects.
-                if let Ok(events) = self.engine.cancel(id)
+                if let Ok(events) = self.engine.cancel_from(id, CancelSource::Backpressure)
                     && let Some(done) = events
                         .into_iter()
                         .find(|e| matches!(e, EngineOutput::Finished(_)))

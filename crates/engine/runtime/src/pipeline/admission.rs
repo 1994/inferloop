@@ -11,7 +11,7 @@ use crate::stages::prefill::retained_readout;
 use crate::{Engine, RequestRecord, TenantService};
 use infer_core::credits::CreditLease;
 use infer_core::{
-    Error, ErrorCode, RequestId, RequestStatus, Result, StateId, event::EventKind,
+    Error, ErrorCode, RequestId, RequestStage, RequestStatus, Result, StateId, event::EventKind,
     event::ObjectKind,
 };
 use infer_ir::{AdmissionDecision, CanonicalRequest, RequestInput, StateKind, WorkloadPlan};
@@ -93,6 +93,7 @@ impl PreparedAdmission {
             max_tpot_us: None,
             last_service_us: now_us,
             admission: self.admission,
+            termination: crate::Termination::default(),
         }
     }
 }
@@ -250,6 +251,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 tracing::info!(
                     target: "infer::request",
                     request = id.get(),
+                    phase = "accepted",
                     workload = %workload,
                     "request accepted"
                 );
@@ -269,9 +271,15 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
     }
     /// Retain cold-stage rejection evidence even when no runtime record was admitted.
     pub fn record_admission_rejection(&mut self, id: RequestId, error: &Error) {
+        // The terminal line of a request that never got a record: same target and field names as
+        // a finished request, so one query covers both.
         tracing::warn!(
             target: "infer::request",
             request = id.get(),
+            phase = "rejected",
+            cancel = "none",
+            stage = RequestStage::Admission.as_str(),
+            error_code = error.code.as_str(),
             code = ?error.code,
             "request rejected: {}",
             error.message

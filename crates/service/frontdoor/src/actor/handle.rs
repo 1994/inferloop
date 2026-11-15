@@ -3,13 +3,12 @@ use super::{Command, RuntimeHandle, async_mpsc, mpsc, oneshot, preparation_bytes
 use crate::cpu::CpuContext;
 use crate::cpu::CpuInspection;
 use crate::cpu::CpuPool;
-use crate::ingress::{Abandon, Pending};
-use infer_core::{Error, ErrorCode, RequestId, Result};
+use crate::ingress::Abandon;
+use infer_core::{Error, ErrorCode, RequestId, RequestStage, Result};
 use infer_ir::CanonicalRequest;
 use infer_observe::{ObservationQuery, trace::TraceContext};
 use infer_runtime::{EngineOutput, RuntimeInspection};
 use std::future::Future;
-use std::sync::Arc;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::{time::Duration, time::Instant};
 use tokio::time::timeout;
@@ -167,9 +166,12 @@ impl RuntimeHandle {
         + Send
         + 'static,
     ) -> Result<async_mpsc::Receiver<Result<EngineOutput>>> {
-        let (pending, _abandon) = self.reserve_preparation(id, bytes)?;
-        self.finish_preparation(id, bytes, trace, deadline_us, pending, work)
-            .await
+        let mut abandon = self.reserve_preparation(id, bytes, RequestStage::Preparing)?;
+        let result = self
+            .finish_preparation(id, bytes, trace, deadline_us, &mut abandon, work)
+            .await;
+        abandon.settle(&result);
+        result
     }
 
     /// Resolve asynchronous sources before occupying a CPU worker.
@@ -186,28 +188,39 @@ impl RuntimeHandle {
         + Send
         + 'static,
     ) -> Result<async_mpsc::Receiver<Result<EngineOutput>>> {
-        let (pending, _abandon) = self.reserve_preparation(id, bytes)?;
-        let (resolved, additional) = tokio::select! {
-            result = source => result?,
-            () = pending.cancelled() => return Err(Error::new(ErrorCode::Capacity, "request preparation cancelled")),
-        };
-        pending.check()?;
-        let bytes = bytes
-            .checked_add(additional)
-            .ok_or_else(|| Error::invalid("media source staging size overflow"))?;
-        pending.add_bytes(additional)?;
-        self.finish_preparation(id, bytes, trace, None, pending, move |context| {
-            work(context, resolved)
-        })
-        .await
+        let mut abandon = self.reserve_preparation(id, bytes, RequestStage::Media)?;
+        let result = async {
+            let pending = abandon.pending().clone();
+            let (resolved, additional) = tokio::select! {
+                result = source => result?,
+                () = pending.cancelled() => return Err(Error::new(ErrorCode::Capacity, "request preparation cancelled")),
+            };
+            pending.check()?;
+            let bytes = bytes
+                .checked_add(additional)
+                .ok_or_else(|| Error::invalid("media source staging size overflow"))?;
+            pending.add_bytes(additional)?;
+            abandon.enter(RequestStage::Preparing);
+            self.finish_preparation(id, bytes, trace, None, &mut abandon, move |context| {
+                work(context, resolved)
+            })
+            .await
+        }
+        .await;
+        abandon.settle(&result);
+        result
     }
 
-    fn reserve_preparation(&self, id: RequestId, bytes: usize) -> Result<(Arc<Pending>, Abandon)> {
+    fn reserve_preparation(
+        &self,
+        id: RequestId,
+        bytes: usize,
+        stage: RequestStage,
+    ) -> Result<Abandon> {
         let pending = self.ingress.reserve(id, bytes)?;
         self.request_ids
             .fetch_max(id.get(), AtomicOrdering::Relaxed);
-        let abandon = Abandon(pending.clone());
-        Ok((pending, abandon))
+        Ok(Abandon::new(pending, stage))
     }
 
     async fn finish_preparation(
@@ -216,7 +229,7 @@ impl RuntimeHandle {
         bytes: usize,
         trace: Option<TraceContext>,
         deadline_us: Option<u64>,
-        pending: Arc<Pending>,
+        abandon: &mut Abandon,
         work: impl FnOnce(
             &CpuContext,
         ) -> Result<(CanonicalRequest, Option<infer_spi::ConstraintHandle>)>
@@ -229,6 +242,7 @@ impl RuntimeHandle {
         let deadline = deadline_us.map(|deadline| {
             Instant::now() + Duration::from_micros(deadline.saturating_sub(now_us))
         });
+        let pending = abandon.pending().clone();
         let preparing = pending.clone();
         let preparer = self.preparer.clone();
         let request = self
@@ -253,6 +267,8 @@ impl RuntimeHandle {
             output,
             reply,
         })?;
+        // From here the engine reports the request's ending, whatever happens to this future.
+        abandon.enter(RequestStage::Admission);
         // Admission may wait behind resource capture on the device owner. It uses
         // that existing resource budget; inspection/cancellation keep the control budget.
         let budget = Duration::from_millis(
