@@ -1,12 +1,11 @@
 //! Print a GGUF container's header, metadata and tensor-type histogram.
 use infer_gguf::GgufFile;
 use std::collections::BTreeMap;
+use std::env::args;
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let path = std::env::args()
-        .nth(1)
-        .ok_or("usage: gguf-dump <model.gguf>")?;
+    let path = args().nth(1).ok_or("usage: gguf-dump <model.gguf>")?;
     let file = GgufFile::open(path)?;
     println!(
         "version={} architecture={:?} tensors={} data_start={} file_len={}",
