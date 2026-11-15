@@ -95,6 +95,10 @@ pub struct InFlight<T> {
     pub ticket: T,
     pub submitted_us: u64,
     pub launch_acked: bool,
+    /// When the engine first saw the backend accept the launch. The submission timeout runs from here: until
+    /// then the backend's own worker is still encoding the step (including first-use graph
+    /// capture), which a timeout can neither interrupt nor speed up.
+    pub launched_us: Option<u64>,
     pub cost_queries: infer_ir::SharedOutput<CostQuery>,
     pub(crate) output_credit: Option<OutputCredit>,
 }

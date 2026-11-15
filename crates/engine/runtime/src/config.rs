@@ -25,7 +25,8 @@ const DEFAULT_GPU_BUDGET_US: u64 = 10_000;
 const DEFAULT_WORKSPACE_BYTES: u64 = 1 << 20;
 /// Default number of in-flight program progress records retained.
 const DEFAULT_PROGRESS_LIMIT: usize = 3;
-/// Default submission timeout, in microseconds.
+/// Default bound on a step's device execution after the backend accepts its launch, in
+/// microseconds.
 const DEFAULT_SUBMISSION_TIMEOUT_US: u64 = 30_000_000;
 /// Default backend resource-operation timeout, in microseconds.
 const DEFAULT_RESOURCE_TIMEOUT_US: u64 = 250_000;

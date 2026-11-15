@@ -172,6 +172,9 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                     return Ok(outputs);
                 }
             };
+        // A synchronous backend has already accepted the launch; a worker-backed one accepts
+        // once it has encoded the step, which a later poll observes.
+        let launched_us = self.backend.launch_accepted(&ticket).map(|_| self.now_us);
         // Install the ticket before committing lifecycle changes, preserving ownership
         // even if a later invariant detects corrupted control state.
         self.inflight = Some(InFlight {
@@ -179,6 +182,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             ticket,
             submitted_us: self.now_us,
             launch_acked: false,
+            launched_us,
             cost_queries,
             output_credit,
         });
