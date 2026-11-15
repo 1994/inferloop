@@ -6,6 +6,7 @@ use crate::constants::MIB_U64;
 use infer_core::{Error, ModelId, Result};
 use infer_models::{ModelPackage, SafetensorsIndex, default_registry, memory_estimate};
 use std::fs::read;
+#[cfg(feature = "gguf")]
 use std::path::Path;
 
 /// Conservative expansion factor from native weight storage to F32, applied to the staging
