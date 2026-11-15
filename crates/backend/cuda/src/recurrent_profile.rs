@@ -3,16 +3,16 @@ use serde::Serialize;
 
 /// The element type the target program stores its gated-delta states in.
 ///
-/// Every recurrence computes in F32 whichever is selected; `Bf16` widens the state on load and
-/// rounds it to nearest even on store, halving the largest per-sequence allocation of a hybrid
-/// model. It changes numerics, so it stays the numerical-acceptance profile until the quality
-/// gate passes; convolution, KV and draft states are unaffected.
+/// Every recurrence computes in F32 whichever is selected; `Bf16`, the default, widens the state
+/// on load and rounds it to nearest even on store, halving the largest per-sequence allocation of
+/// a hybrid model. `F32` keeps the earlier storage as the numerical reference. Convolution, KV and
+/// draft states are F32 under both.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum RecurrentProfile {
-    /// F32 states, unchanged.
-    #[default]
+    /// F32 states, the numerical reference.
     F32,
     /// BF16 states computed in F32.
+    #[default]
     Bf16,
 }
 
