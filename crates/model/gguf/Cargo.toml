@@ -1,0 +1,23 @@
+[package]
+name = "infer-gguf"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Test bodies live under `tests/`, mounted as explicit integration targets.
+autotests = false
+
+[[test]]
+name = "container"
+path = "tests/container.rs"
+
+[[test]]
+name = "quant"
+path = "tests/quant.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+infer-core.workspace = true

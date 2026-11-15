@@ -1,6 +1,16 @@
 # GGUF 接入前置改造
 
-状态：**方案，未实施**。源码基点为 `b0abe338`（2026-11-15）。下文的路径、符号和计数都在该提交上核对过，实施前先按同样的方法复核一遍。
+状态：**G1–G3 已实施并合入 #260；GGUF 本体进行中**。方案源码基点为 `b0abe338`（2026-11-15），实施记录见下节。
+
+## 实施状态（2026-11-15）
+
+G1–G3 已实施并合入 #260（merge `4544a479`），方案文档由 #254 合入。
+
+- G1 已落地 `PackageSource` / `TensorFile` / `PackageProbe` / `TensorSet`。可选资产按首次使用读取，避免只加载权重时读取 tokenizer；因此 tokenizer 以字节交给 `TextAssets` 构造，而不是由 source 直接交出构造好的对象。
+- G2 已把 `DeviceWeight` 改为 `Float` / `Fp8Channel` / `Fp8Block` / `Nvfp4`；`Fp8Block` 额外保留 `token_input`，因为现有 checkpoint 允许 block scale 与 token 量化分别声明。
+- G3 已把投影编码行为收进 `ProjectionWeight` 方法；穷举 match 只剩 `projection_lowering.rs` 与编码专属模块。新增编码仍需要改 `loading/weights.rs`（上传）和 `loading/experts.rs`（expert bank），`bindings.rs`/`draft.rs` 的少量特例也可能需要处理，因此“只改四处”的目标并未字面达成。
+- 验收：CI #260 全绿；45 上 CUDA hosted/device 门禁通过；27B NVFP4 的 1536 个 hidden 分量与 64 步贪心 token 与基线逐位一致；release 服务配对在 short/long/batch4 上无回退。`hot_long` 因原生 `/native/v1/stream` 固定 `prefix_boundary: None` 无法产生前缀复用而未纳入配对，完整 `check-release` 仍需单独窗口。
+- GGUF 本体已启动：容器解析与 Q4_K/Q5_K/Q6_K 参考解码进入 `infer-gguf`，随后做 M0 基线与 Q4_K GEMV / int8 MMQ 原型。
 
 本文只做 GGUF 接入前的三项改造。它们不改变现有行为，即使最后不接 GGUF 也值得做。GGUF 本身的接入（容器解析、k-quant kernel、性能目标）另行立项，这里只记录结论，作为改造方向的依据。
 
