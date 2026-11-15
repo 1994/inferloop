@@ -39,6 +39,34 @@ G1–G3 已实施并合入 #260（merge `4544a479`），方案文档由 #254 合
 
 GGUF 立项后的第一步是 1–2 周的原型：在本项目内实现 Q4_K GEMV（M=1/4）和 int8 MMQ tile，直接读取 GGUF block，不依赖 llama.cpp 运行时。数值上用 `infer-gguf` 的参考解码校验；性能上以 5090 的带宽/算力 roofline 和自研 BF16/FP8 路径为门槛，`llama.cpp test-backend-ops` 的 Q4_K MUL_MAT 数据只作为可选的外部参照。若外部参照不可用（模型架构或网络限制），不阻塞原型。本文的改造不依赖这个原型的结论。
 
+## GGUF kernel 原型（自研，不依赖 llama.cpp）
+
+llama.cpp 只用于理解 GGUF block 布局和外部性能参照；生产 kernel、调度和内存布局都由本项目实现。`infer-gguf` 只负责容器、metadata、张量描述和参考解码。
+
+### 数据布局
+
+- 设备上保留 GGUF 原始 super-block，不在加载时反量化。Q4_K 每 256 个值 144 字节（`d`、`dmin`、12 字节 scale/min、128 字节 nibble）；Q5_K 176 字节；Q6_K 210 字节。
+- host 侧按张量做 shape/name 映射和视图切分；kernel 只接受 `[rows, columns]` 的 row-major block 矩阵，`columns` 必须是 block 元素数的整数倍。
+- `GroupedInt` 编码携带块大小、scale/min 布局和 super-block 几何；`ProjectionWeight` 增加对应分支，`projection_lowering.rs` 仍是唯一的 kernel 选择点。
+
+### Q4_K GEMV（decode，M=1/4）
+
+- 一个 CTA 负责一个或多个输出行；每个 K 维 block 由 32 个 nibble 字节覆盖 64 个值，先解出 6-bit scale/min，再按 `d*scale*code - dmin*min` 累加。
+- 目标是把 `d`/`dmin`/scales 的读取和 nibble 解包藏在带宽等待里；M=1 完全受权重带宽限制，M=4 复用同一 block。
+- 先做 F32 累加的简单版本，验证逐位/容差；再考虑把 nibble 解包成 int8 并用 `dp4a`/int8 MMA 降低 ALU 压力。
+
+### int8 MMQ（prefill）
+
+- 按 K 维 tile 把 Q4_K block 反量化到 shared memory 的 int8 tile，scale/min 留在寄存器或 shared；用 int8 MMA 累加 int32，再在每个 block 边界乘 `d*scale`、减去 `dmin*min` 的贡献。
+- 不做“整张权重反量化成 BF16”的中间态；逐 tile 解包，避免带宽和显存峰值回退。
+- 需要覆盖 K 尾块、N 尾块、M<MMA tile 的掩码。
+
+### 验证与门槛
+
+- 正确性：用 `infer-gguf` 的参考解码对同一批真实 Q4_K/Q5_K/Q6_K 张量逐位比较；kernel 先在 F32 路径上做到逐位一致，再对 int8 路径定义明确的累加/舍入契约。
+- 性能：decode 与 5090 带宽 roofline 比较，prefill 与 int8 MMA 峰值比较；同时跑自研 BF16/FP8 路径作为同机基线。`llama.cpp test-backend-ops` 的 Q4_K MUL_MAT 只作可选外部参照，环境不支持时不阻塞。
+- M0 不再以 llama.cpp 能加载某个模型为前提；模型级 pp/tg 在 kernel 原型通过后再补。
+
 ## 为什么先改造
 
 如果直接接 GGUF，会碰到三处和格式、编码强耦合的地方：
