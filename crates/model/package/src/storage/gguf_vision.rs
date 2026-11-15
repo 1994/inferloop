@@ -12,6 +12,14 @@ use std::path::Path;
 
 /// Tensors in one deepstack merger: norm, fc1, fc2.
 const DEEPSTACK_PARTS: usize = 3;
+/// Qwen image processor minimum pixels.
+const MIN_PIXELS: u64 = 65_536;
+/// Qwen image processor maximum pixels.
+const MAX_PIXELS: u64 = 16_777_216;
+/// RGB channels in a preprocessor normalization constant.
+const RGB_CHANNELS: usize = 3;
+/// Reciprocal of the 8-bit pixel range.
+const RESCALE: f64 = 1.0 / 255.0;
 
 /// One vision tensor in the existing HF inventory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,6 +200,42 @@ impl GgufVisionPackage {
             .iter()
             .flat_map(|value| bf16_bits(*value).to_le_bytes())
             .collect())
+    }
+
+    /// Synthesize `preprocessor_config.json` from the mmproj metadata.
+    /// # Errors
+    /// Rejects missing image normalization metadata.
+    pub fn preprocessor_config(&self) -> Result<Vec<u8>> {
+        let mean = self.normalization("clip.vision.image_mean")?;
+        let std = self.normalization("clip.vision.image_std")?;
+        let config = serde_json::json!({
+            "patch_size": self.encoder.patch_size,
+            "temporal_patch_size": self.encoder.temporal_patch_size,
+            "merge_size": self.encoder.spatial_merge_size,
+            "size": {"shortest_edge": MIN_PIXELS, "longest_edge": MAX_PIXELS},
+            "image_mean": mean,
+            "image_std": std,
+            "rescale": RESCALE,
+        });
+        serde_json::to_vec(&config).map_err(|error| Error::invalid(error.to_string()))
+    }
+
+    fn normalization(&self, key: &str) -> Result<[f64; RGB_CHANNELS]> {
+        let values = self
+            .metadata()
+            .get(key)
+            .and_then(infer_format::MetadataValue::as_array)
+            .ok_or_else(|| Error::invalid(format!("missing {key}")))?;
+        let mut out = [0.0f64; RGB_CHANNELS];
+        if values.len() != RGB_CHANNELS {
+            return Err(Error::invalid(format!("{key} width")));
+        }
+        for (slot, value) in out.iter_mut().zip(values) {
+            *slot = value
+                .as_f64()
+                .ok_or_else(|| Error::invalid(format!("{key} value")))?;
+        }
+        Ok(out)
     }
 
     /// Decode one slot to F32.

@@ -1,6 +1,6 @@
 //! Open a native GGUF text package, list slots and repack one Q4_K/Q6_K tensor.
 use infer_core::ModelId;
-use infer_models::{GgufPackage, QuantizedPackage, default_registry};
+use infer_models::{GgufPackage, MultimodalAssets, QuantizedPackage, TextAssets, default_registry};
 use std::env::args;
 use std::error::Error;
 
@@ -76,6 +76,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         "graph weights={} grouped={grouped} vision={}",
         package.weights.len(),
         package.vision_source_count()
+    );
+    let assets = TextAssets::open(&path, 4096)?;
+    println!("assets tokens={:?}", assets.encode("Hello, world!", false)?);
+    println!(
+        "multimodal={}",
+        MultimodalAssets::open(std::path::Path::new(&path))?.is_some()
     );
     Ok(())
 }
