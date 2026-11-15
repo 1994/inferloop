@@ -204,6 +204,7 @@ fn resolve(
  * # Errors
  * Returns an unsupported error when no GPU backend is available.
  */
+#[cfg(feature = "gguf")]
 pub fn formats(choice: BackendChoice) -> Result<infer_ir::BackendFormats> {
     match resolve(choice, cuda_available(), metal_available())? {
         #[cfg(cuda_backend)]
