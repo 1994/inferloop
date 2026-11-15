@@ -60,6 +60,7 @@ futures-channel = { workspace = true, optional = true }
 
 [dev-dependencies]
 infer-format.workspace = true
+infer-models = { workspace = true, features = ["gguf"] }
 infer-runtime.workspace = true
 clap.workspace = true
 infer-reference-ops.workspace = true

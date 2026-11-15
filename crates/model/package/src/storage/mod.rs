@@ -8,4 +8,6 @@ pub mod safetensors;
 #[cfg(test)]
 #[path = "../../tests/unit/storage_shards_tests.rs"]
 pub mod shards_tests;
+#[cfg(feature = "gguf")]
+pub mod grouped_int;
 pub mod source;

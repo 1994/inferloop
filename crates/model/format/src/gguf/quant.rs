@@ -321,6 +321,7 @@ const fn scale_min_k4(index: usize, scales: &[u8]) -> (u8, u8) {
 }
 
 /// IEEE 754 binary16 to binary32, preserving subnormals and infinities.
+#[must_use]
 pub fn half_to_f32(bits: u16) -> f32 {
     let sign = u32::from(bits & F16_SIGN_MASK) << HIGH_HALF_SHIFT;
     let exponent = (bits >> F16_MANTISSA_BITS) & F16_EXPONENT_MASK;

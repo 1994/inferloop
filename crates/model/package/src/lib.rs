@@ -41,6 +41,8 @@ pub use providers::qwen::{HfQwen, QwenFormat, VisionTensor};
 pub use providers::qwen::{QwenProvider, VisionConfig};
 pub use providers::registry::{ModelRegistry, default_registry};
 pub use storage::index::SafetensorsIndex;
+#[cfg(feature = "gguf")]
+pub use storage::grouped_int::{Q4K_TILE_ROWS, Q4KDevice, Q4KTiled};
 pub use storage::loader::{
     LoadOptions, LoadedWeights, TensorLoadPlan, WeightLoadPlan, WeightStorage, WeightTarget,
     load_weights,

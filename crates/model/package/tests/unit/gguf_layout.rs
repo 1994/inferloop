@@ -1,5 +1,6 @@
 use infer_core::ErrorCode;
-use infer_format::{GgufType, Q4KDevice, dequantize};
+use super::Q4KDevice;
+use infer_format::{GgufType, dequantize};
 
 const ONE: [u8; 2] = [0x00, 0x3c];
 const HALF: [u8; 2] = [0x00, 0x38];
