@@ -349,7 +349,7 @@ impl BatchBuilder<'_> {
         caches: &[Fp8Caches],
         metadata: &Allocation<i32>,
     ) -> Result<bool> {
-        if self.record_lanes_attention(scope, node, arena, caches, metadata)? {
+        if self.record_lanes_attention(scope, node, arena, caches, (metadata, 1))? {
             return Ok(true);
         }
         if self.table_root.is_some()

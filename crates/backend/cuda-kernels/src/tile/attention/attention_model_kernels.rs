@@ -230,6 +230,7 @@ pub mod attention {
         const KH: i32,
         const LANES: i32,
         const PER_LANE: i32,
+        const GROUP: i32,
     >(
         keys: &mut Tensor<E, { [1, CAP, D] }>,
         values: &mut Tensor<E, { [1, CAP, D] }>,
@@ -259,7 +260,7 @@ pub mod attention {
                 let physical: i32 = tile_to_scalar(
                     table
                         .partition(shape![1, 1])
-                        .load([lane, position / 32i32])
+                        .load([lane / GROUP, position / 32i32])
                         .reshape(shape![]),
                 );
                 let row = physical * 32i32 + position % 32i32;

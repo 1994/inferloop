@@ -50,6 +50,29 @@ impl BatchBuilder<'_> {
         ))
     }
 
+    /// Record an attention node of a verification graph in one launch over its candidates: the
+    /// grouped kernel for the width it covers, otherwise the lane-batched kernel with each
+    /// sequence's candidates on its page-table row. False leaves the node to one launch per lane.
+    pub(super) fn record_pool_verify_attention(
+        &mut self,
+        (scope, node, arena): (&Recording<'_>, &TensorNode, &mut ActivationArena),
+        (states, caches): (&mut [States], &mut [Fp8Caches]),
+        (metadata, metadata_owner): (&[Allocation<i32>], &Allocation<i32>),
+        verify: usize,
+    ) -> Result<bool> {
+        if self.slot_verify_lowering(node, caches, verify) == Some(Lowering::Grouped) {
+            self.record_slot_verify_attention(
+                scope,
+                node,
+                arena,
+                (states, caches),
+                (metadata, metadata_owner),
+            )?;
+            return Ok(true);
+        }
+        self.record_lanes_attention(scope, node, arena, caches, (metadata_owner, verify))
+    }
+
     /// Append all candidates before attending; per-lane metadata still enforces causality.
     pub(super) fn record_slot_verify_attention(
         &mut self,

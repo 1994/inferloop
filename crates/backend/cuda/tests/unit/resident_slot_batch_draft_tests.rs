@@ -1,6 +1,7 @@
 use super::*;
 use crate::mlp::Matrix;
 use crate::mlp::ProjectionWeight;
+use crate::resident::attention_lanes;
 use crate::resident::{DeviceProgram, FusionWeights, PromptScratchRegistry};
 use crate::strategy::default_tiling;
 use crate::tuning::resident_gemm::ResidentTuningSession;
@@ -433,14 +434,25 @@ fn paged_attention_reuse_fixture(device: &CudaDevice) -> Result<(DataflowGraph, 
     Ok((graph, weights))
 }
 
-/// Three candidates read one paged cache while preserving each candidate's causal prefix.
-#[test]
-#[ignore = "requires CUDA hardware; run under safe-run"]
-fn paged_verify_attention_matches_scalar_causality_and_reuse() -> Result<()> {
+/// Candidate chains of up to `verify` tokens per slot: slot, tokens and accepted count.
+type VerifyRound = Vec<(usize, Vec<u32>, usize)>;
+
+/// Candidates read one paged cache while preserving each candidate's causal prefix, against a
+/// serial decode of the same tokens; then a released slot is reused.
+fn paged_verify_matches_serial(verify: usize, rounds: Vec<VerifyRound>) -> Result<()> {
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
     let (graph, weights) = paged_attention_reuse_fixture(&device)?;
-    let mut pool = SlotPool::new(&device, &graph, &weights, 4, 128, 32, (32, 3), Some(384))?;
+    let mut pool = SlotPool::new(
+        &device,
+        &graph,
+        &weights,
+        4,
+        128,
+        32,
+        (32, verify),
+        Some(384),
+    )?;
     let mut serial = (0..4)
         .map(|_| DeviceProgram::new(&device, &graph, &weights, 128, 32, 32))
         .collect::<Result<Vec<_>>>()?;
@@ -465,23 +477,7 @@ fn paged_verify_attention_matches_scalar_causality_and_reuse() -> Result<()> {
         )?;
     }
     assert_ne!(&device.runtime().read(&pool.tables[1])?[..2], &[0, 1]);
-    for plans in [
-        vec![
-            (3, vec![3, 7, 11], 2),
-            (1, vec![9, 13, 17], 0),
-            (0, vec![1, 5], 1),
-        ],
-        vec![
-            (2, vec![19, 23, 27], 1),
-            (3, vec![4], 0),
-            (1, vec![10, 14], 1),
-        ],
-        vec![
-            (0, vec![6, 12, 18], 0),
-            (2, vec![20], 0),
-            (3, vec![8, 16, 24], 2),
-        ],
-    ] {
+    for plans in rounds {
         let mut lanes = Vec::new();
         let mut expected = Vec::new();
         for (slot, tokens, accepted) in &plans {
@@ -498,7 +494,7 @@ fn paged_verify_attention_matches_scalar_causality_and_reuse() -> Result<()> {
         let actual = pool.run_verify(&device, &lanes)?;
         for ((slot, tokens, accepted), expected) in plans.into_iter().zip(expected) {
             for (row, expected) in expected.iter().enumerate() {
-                close(&actual[slot * 3 + row], expected);
+                close(&actual[slot * verify + row], expected);
             }
             assert_eq!(tokens.len(), expected.len());
             pool.commit_verify(&device, slot, accepted)?;
@@ -512,9 +508,66 @@ fn paged_verify_attention_matches_scalar_causality_and_reuse() -> Result<()> {
     assert!(pool.assign(1, 4, &device)?);
     pool.bind(1, serial[1].states(), serial[1].fp8_states(), 1, &device)?;
     let actual = pool.run_verify(&device, &[(1, 0, 2, 1, 1), (1, 1, 28, 2, 2)])?;
-    close(&actual[3], &serial[1].step(2, 1, 1, None, true)?);
-    close(&actual[4], &serial[1].step(28, 2, 2, None, true)?);
+    close(&actual[verify], &serial[1].step(2, 1, 1, None, true)?);
+    close(&actual[verify + 1], &serial[1].step(28, 2, 2, None, true)?);
     pool.commit_verify(&device, 1, 1)?;
+    Ok(())
+}
+
+/// Three candidates take the grouped verification kernel.
+#[test]
+#[ignore = "requires CUDA hardware; run under safe-run"]
+fn paged_verify_attention_matches_scalar_causality_and_reuse() -> Result<()> {
+    paged_verify_matches_serial(
+        3,
+        vec![
+            vec![
+                (3, vec![3, 7, 11], 2),
+                (1, vec![9, 13, 17], 0),
+                (0, vec![1, 5], 1),
+            ],
+            vec![
+                (2, vec![19, 23, 27], 1),
+                (3, vec![4], 0),
+                (1, vec![10, 14], 1),
+            ],
+            vec![
+                (0, vec![6, 12, 18], 0),
+                (2, vec![20], 0),
+                (3, vec![8, 16, 24], 2),
+            ],
+        ],
+    )
+}
+
+/// A wider block attends every candidate lane in one lane-batched launch, each through its own
+/// slot's page table, in the pool-wide and the narrower verify graphs.
+#[test]
+#[ignore = "requires CUDA hardware; run under safe-run"]
+fn wide_paged_verify_attends_every_lane_in_one_launch() -> Result<()> {
+    let before = attention_lanes::recorded();
+    paged_verify_matches_serial(
+        8,
+        vec![
+            vec![
+                (3, vec![3, 7, 11, 2, 9, 30, 1, 4], 5),
+                (1, vec![9, 13, 17, 21], 0),
+                (0, vec![1, 5], 1),
+                (2, vec![12, 6, 18, 24, 0, 31, 15, 8], 7),
+            ],
+            vec![
+                (2, vec![19, 23, 27], 1),
+                (3, vec![4], 0),
+                (1, vec![10, 14, 26, 22, 3, 5], 3),
+            ],
+            // Two busy slots replay a narrower verify graph.
+            vec![(1, vec![7, 2, 30, 11, 19], 4), (0, vec![13, 25, 6], 2)],
+        ],
+    )?;
+    assert!(
+        attention_lanes::recorded() > before,
+        "the wide verify graph recorded no lane-batched attention"
+    );
     Ok(())
 }
 
