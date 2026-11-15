@@ -6,6 +6,8 @@
 
 ReplaySSM 的输入记录思想可以用于多种 recurrent 模型；具体记录格式、输出计算和状态转移则依赖算子。公共层统一“提交接受前缀”的状态协议，backend 负责选择和执行物理回滚策略。MTP 与 DFlash2 共用 target 回滚能力，算法 provider 只提出验证布局和状态需求。
 
+CUDA gated-delta 的 ReplaySSM 物理策略（缓存修正值 u 与 k、检查点加环形缓冲、chunked 验证）见 [ReplaySSM 设计](../performance/replayssm-gdn.md)。
+
 接口全貌见 [推测解码 SPI 方案](spi.md)，容量、数值与参考性能见 [Infernix 调研](../../research/infernix-performance.md)，CUDA 执行机制见 [性能优化方案](../performance/cuda.md)。性能实验执行 [性能基线方案](../performance/baseline.md)。本文维护分层与通用性边界，不重复性能估算。
 
 ## 已实施：gated-delta 接受前缀参考（E1 删除执行器前保住的数值对照）
