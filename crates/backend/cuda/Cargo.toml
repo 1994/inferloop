@@ -100,6 +100,10 @@ name = "cuda-q4k-mmq-bench"
 required-features = ["cuda"]
 
 [[example]]
+name = "cuda-q4k-n64-check"
+required-features = ["cuda"]
+
+[[example]]
 name = "cuda-q4k-gemv"
 required-features = ["cuda"]
 
