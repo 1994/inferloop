@@ -1436,6 +1436,7 @@ dependencies = [
  "infer-compiler",
  "infer-core",
  "infer-cuda-kernels",
+ "infer-gguf",
  "infer-gpu-api",
  "infer-ir",
  "infer-kernel-api",

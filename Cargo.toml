@@ -109,6 +109,7 @@ tower = { version = "0.5", features = ["util"] }
 
 # Foundation
 infer-core = { version = "=0.1.0", path = "crates/foundation/core" }
+infer-gguf = { version = "=0.1.0", path = "crates/model/gguf" }
 infer-ir = { version = "=0.1.0", path = "crates/foundation/ir" }
 infer-spi = { version = "=0.1.0", path = "crates/foundation/spi" }
 

@@ -78,27 +78,30 @@ impl Q4KDevice {
         let mut device = Self {
             rows,
             columns,
-            codes: Vec::with_capacity(code_len),
-            scales: Vec::with_capacity(scale_len),
-            mins: Vec::with_capacity(scale_len),
-            d: Vec::with_capacity(block_count),
-            dmin: Vec::with_capacity(block_count),
+            codes: vec![0u8; code_len],
+            scales: vec![0u8; scale_len],
+            mins: vec![0u8; scale_len],
+            d: vec![0.0; block_count],
+            dmin: vec![0.0; block_count],
         };
-        for block in blocks.as_chunks::<BLOCK_BYTES>().0 {
-            device
-                .codes
-                .extend_from_slice(&block[CODE_OFFSET..CODE_OFFSET + CODE_BYTES]);
-            device
-                .d
-                .push(half_to_f32(u16::from_le_bytes([block[0], block[1]])));
-            device
-                .dmin
-                .push(half_to_f32(u16::from_le_bytes([block[2], block[3]])));
-            let packed = &block[SCALE_OFFSET..SCALE_OFFSET + SCALE_BYTES];
-            for index in 0..SCALES {
-                let (scale, min) = scale_min(index, packed);
-                device.scales.push(scale);
-                device.mins.push(min);
+        for row in 0..rows {
+            for block_index in 0..blocks_per_row {
+                let offset = (row * blocks_per_row + block_index) * BLOCK_BYTES;
+                let block = &blocks[offset..offset + BLOCK_BYTES];
+                let index = block_index * rows + row;
+                device.d[index] = half_to_f32(u16::from_le_bytes([block[0], block[1]]));
+                device.dmin[index] = half_to_f32(u16::from_le_bytes([block[2], block[3]]));
+                for lane in 0..CODE_BYTES {
+                    let target = (block_index * CODE_BYTES + lane) * rows + row;
+                    device.codes[target] = block[CODE_OFFSET + lane];
+                }
+                let packed = &block[SCALE_OFFSET..SCALE_OFFSET + SCALE_BYTES];
+                for scale in 0..SCALES {
+                    let (value, min) = scale_min(scale, packed);
+                    let target = (block_index * SCALES + scale) * rows + row;
+                    device.scales[target] = value;
+                    device.mins[target] = min;
+                }
             }
         }
         Ok(device)
@@ -116,31 +119,31 @@ impl Q4KDevice {
         self.columns
     }
 
-    /// Expanded per-group scales, `[rows, columns / 32]`.
+    /// Expanded per-group scales, `[columns / 32, rows]` (K-major).
     #[must_use]
     pub fn scales(&self) -> &[u8] {
         &self.scales
     }
 
-    /// Expanded per-group minimum codes, `[rows, columns / 32]`.
+    /// Expanded per-group minimum codes, `[columns / 32, rows]` (K-major).
     #[must_use]
     pub fn mins(&self) -> &[u8] {
         &self.mins
     }
 
-    /// Per-super-block `d`, `[rows, columns / 256]`.
+    /// Per-super-block `d`, `[columns / 256, rows]` (K-major).
     #[must_use]
     pub fn d(&self) -> &[f32] {
         &self.d
     }
 
-    /// Per-super-block `dmin`, `[rows, columns / 256]`.
+    /// Per-super-block `dmin`, `[columns / 256, rows]` (K-major).
     #[must_use]
     pub fn dmin(&self) -> &[f32] {
         &self.dmin
     }
 
-    /// Packed 4-bit codes, `[rows, columns / 2]`, in the GGUF group order.
+    /// Packed 4-bit codes, `[columns / 2, rows]` (K-major), in the GGUF group order.
     #[must_use]
     pub fn codes(&self) -> &[u8] {
         &self.codes
@@ -158,22 +161,21 @@ impl Q4KDevice {
             return Err(Error::invalid("Q4_K GEMV shape"));
         }
         let blocks = self.columns / QK_K;
-        let groups = self.columns / LANES;
         let mut sum = 0.0f32;
         for block in 0..blocks {
-            let d = self.d[row * blocks + block];
-            let dmin = self.dmin[row * blocks + block];
+            let d = self.d[block * self.rows + row];
+            let dmin = self.dmin[block * self.rows + row];
             for group in 0..GROUPS {
                 for half in 0..2 {
                     let scale_index = block * SCALES + group * 2 + half;
-                    let scale = f32::from(self.scales[row * groups + scale_index]);
-                    let min = f32::from(self.mins[row * groups + scale_index]);
+                    let scale = f32::from(self.scales[scale_index * self.rows + row]);
+                    let min = f32::from(self.mins[scale_index * self.rows + row]);
                     let mut code_dot = 0.0f32;
                     let mut x_sum = 0.0f32;
                     for lane in 0..LANES {
                         let column = block * QK_K + group * GROUP_VALUES + half * LANES + lane;
                         let byte = self.codes
-                            [row * self.columns / 2 + block * CODE_BYTES + group * LANES + lane];
+                            [(block * CODE_BYTES + group * LANES + lane) * self.rows + row];
                         let code = if half == 0 {
                             byte & NIBBLE_MASK
                         } else {
@@ -188,6 +190,171 @@ impl Q4KDevice {
             }
         }
         Ok(sum)
+    }
+}
+
+/// Rows a tiled `Q4_K` block covers.
+pub const Q4K_TILE_ROWS: usize = 16;
+/// `Q4_K` matrix packed for a 16-row GEMV tile.
+///
+/// Every 64-value group of one output tile is one contiguous `[32, 16]` run: 32 bytes of nibbles
+/// across 16 rows. Scales, minima and super-block factors use the same tile-major order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q4KTiled {
+    rows: usize,
+    columns: usize,
+    tiles: usize,
+    codes: Vec<u8>,
+    scales: Vec<u8>,
+    mins: Vec<u8>,
+    d: Vec<f32>,
+    dmin: Vec<f32>,
+    factors: Vec<f32>,
+    biases: Vec<f32>,
+}
+
+impl Q4KTiled {
+    /// Repack a row-major matrix for the 16-row device kernel, zero-padding a partial last tile.
+    /// # Errors
+    /// Rejects a matrix that cannot be tiled or whose checked lengths overflow.
+    pub fn from_device(device: &Q4KDevice) -> Result<Self> {
+        let rows = device.rows;
+        let columns = device.columns;
+        let tiles = rows.div_ceil(Q4K_TILE_ROWS);
+        let groups = columns / (LANES * 2);
+        let scale_count = columns / LANES;
+        let blocks = columns / QK_K;
+        let code_tile = LANES * Q4K_TILE_ROWS;
+        let codes_len = tiles
+            .checked_mul(groups)
+            .and_then(|value| value.checked_mul(code_tile))
+            .ok_or_else(|| Error::invalid("Q4_K tiled code size overflow"))?;
+        let scale_len = tiles
+            .checked_mul(scale_count)
+            .and_then(|value| value.checked_mul(Q4K_TILE_ROWS))
+            .ok_or_else(|| Error::invalid("Q4_K tiled scale size overflow"))?;
+        let block_len = tiles
+            .checked_mul(blocks)
+            .and_then(|value| value.checked_mul(Q4K_TILE_ROWS))
+            .ok_or_else(|| Error::invalid("Q4_K tiled block size overflow"))?;
+        let mut packed = Self {
+            rows,
+            columns,
+            tiles,
+            codes: vec![0u8; codes_len],
+            scales: vec![0u8; scale_len],
+            mins: vec![0u8; scale_len],
+            d: vec![0.0; block_len],
+            dmin: vec![0.0; block_len],
+            factors: vec![0.0; scale_len],
+            biases: vec![0.0; scale_len],
+        };
+        for tile in 0..tiles {
+            for group in 0..groups {
+                for lane in 0..LANES {
+                    for row in 0..Q4K_TILE_ROWS {
+                        let source_row = tile * Q4K_TILE_ROWS + row;
+                        if source_row >= rows {
+                            continue;
+                        }
+                        let source = device.codes[(group * LANES + lane) * rows + source_row];
+                        let target =
+                            (tile * groups + group) * code_tile + lane * Q4K_TILE_ROWS + row;
+                        packed.codes[target] = source;
+                    }
+                }
+            }
+            for scale in 0..scale_count {
+                for row in 0..Q4K_TILE_ROWS {
+                    let source_row = tile * Q4K_TILE_ROWS + row;
+                    if source_row >= rows {
+                        continue;
+                    }
+                    packed.scales[(tile * scale_count + scale) * Q4K_TILE_ROWS + row] =
+                        device.scales[scale * rows + source_row];
+                    packed.mins[(tile * scale_count + scale) * Q4K_TILE_ROWS + row] =
+                        device.mins[scale * rows + source_row];
+                }
+            }
+            for block in 0..blocks {
+                for row in 0..Q4K_TILE_ROWS {
+                    let source_row = tile * Q4K_TILE_ROWS + row;
+                    if source_row >= rows {
+                        continue;
+                    }
+                    packed.d[(tile * blocks + block) * Q4K_TILE_ROWS + row] =
+                        device.d[block * rows + source_row];
+                    packed.dmin[(tile * blocks + block) * Q4K_TILE_ROWS + row] =
+                        device.dmin[block * rows + source_row];
+                }
+            }
+            for scale in 0..scale_count {
+                let block = scale / SCALES;
+                for row in 0..Q4K_TILE_ROWS {
+                    let source_row = tile * Q4K_TILE_ROWS + row;
+                    if source_row >= rows {
+                        continue;
+                    }
+                    let index = (tile * scale_count + scale) * Q4K_TILE_ROWS + row;
+                    packed.factors[index] = device.d[block * rows + source_row]
+                        * f32::from(device.scales[scale * rows + source_row]);
+                    packed.biases[index] = device.dmin[block * rows + source_row]
+                        * f32::from(device.mins[scale * rows + source_row]);
+                }
+            }
+        }
+        Ok(packed)
+    }
+
+    /// Matrix rows, including the zero-padded tail of the last tile.
+    #[must_use]
+    pub const fn rows(&self) -> usize {
+        self.rows
+    }
+    /// Matrix columns.
+    #[must_use]
+    pub const fn columns(&self) -> usize {
+        self.columns
+    }
+    /// Number of 16-row tiles.
+    #[must_use]
+    pub const fn tiles(&self) -> usize {
+        self.tiles
+    }
+    /// Tile-major 4-bit codes.
+    #[must_use]
+    pub fn codes(&self) -> &[u8] {
+        &self.codes
+    }
+    /// Tile-major scales.
+    #[must_use]
+    pub fn scales(&self) -> &[u8] {
+        &self.scales
+    }
+    /// Tile-major minima.
+    #[must_use]
+    pub fn mins(&self) -> &[u8] {
+        &self.mins
+    }
+    /// Tile-major `d`.
+    #[must_use]
+    pub fn d(&self) -> &[f32] {
+        &self.d
+    }
+    /// Tile-major `dmin`.
+    #[must_use]
+    pub fn dmin(&self) -> &[f32] {
+        &self.dmin
+    }
+    /// Tile-major per-group `d * scale`.
+    #[must_use]
+    pub fn factors(&self) -> &[f32] {
+        &self.factors
+    }
+    /// Tile-major per-group `dmin * min`.
+    #[must_use]
+    pub fn biases(&self) -> &[f32] {
+        &self.biases
     }
 }
 

@@ -77,8 +77,8 @@ fn multiple_rows_and_blocks_keep_their_offsets() {
     payload.extend_from_slice(&second);
     payload.extend_from_slice(&second);
     let device = Q4KDevice::from_blocks(2, 512, &payload).unwrap();
-    assert_eq!(device.d(), &[1.0, 1.0, 0.5, 0.5]);
-    assert_eq!(device.dmin(), &[0.0, 0.0, 0.25, 0.25]);
+    assert_eq!(device.d(), &[1.0, 0.5, 1.0, 0.5]);
+    assert_eq!(device.dmin(), &[0.0, 0.25, 0.0, 0.25]);
     let x = vec![1.0f32; 512];
     assert_eq!(device.row_dot(0, &x).unwrap(), 768.0);
     // Second row: d=0.5, dmin=0.25, scales 1, mins 1, codes 3 and 4.

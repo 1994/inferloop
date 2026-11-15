@@ -12,6 +12,7 @@ mod nvfp4_kernels;
 mod pool_gemv_kernels;
 mod prefill_gemm_kernels;
 mod prompt_logits_kernels;
+mod q4_k_gemv_kernels;
 mod small_gemm_kernels;
 mod vendor_fp8_kernels;
 
@@ -27,5 +28,6 @@ pub(in crate::tile) use nvfp4_kernels::{BLOCK_BYTES, entries, swizzle};
 pub use pool_gemv_kernels::kernels as pool_gemv;
 pub use prefill_gemm_kernels::gemm as prefill_gemm;
 pub use prompt_logits_kernels::kernels as prompt_logits;
+pub(in crate::tile) use q4_k_gemv_kernels::q4_k;
 pub use small_gemm_kernels::kernels as small_gemm;
 pub(in crate::tile) use vendor_fp8_kernels::kernels as vendor_fp8;

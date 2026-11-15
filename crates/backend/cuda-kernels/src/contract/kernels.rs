@@ -37,6 +37,24 @@ pub trait Projection: Send + Sync {
         Err(unsupported("Projection::rows"))
     }
 
+    /// Project one flat row with 4-bit grouped weights.
+    ///
+    /// `codes` holds `[outputs, columns / 2]` packed nibbles, `scales` and `mins` hold one
+    /// expanded byte per 32-value group, and `d`/`dmin` hold one F32 per 256-value super-block.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan or the launch is rejected.
+    fn q4_k_row(
+        &self,
+        recording: &Recording<'_>,
+        plan: &DownPlan,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        weight: Q4KWeight<'_>,
+    ) -> Result<()> {
+        let _ = (recording, plan, out, x, weight);
+        Err(unsupported("Projection::q4_k_row"))
+    }
+
     /// Project one flat row by the tiles of `plan`.
     /// # Errors
     /// Fails when a buffer disagrees with the plan, or the launch is rejected.
@@ -537,6 +555,17 @@ pub trait Norm: Send + Sync {
         let _ = (recording, plan, input_global, buffers);
         Err(unsupported("Norm::fp4"))
     }
+}
+
+/// A `Q4_K` matrix in the tiled device layout.
+#[derive(Clone, Copy, Debug)]
+pub struct Q4KWeight<'a> {
+    /// Tile-major packed 4-bit codes.
+    pub codes: Buffer<'a, u8>,
+    /// Tile-major per-group `d * scale`.
+    pub factors: Buffer<'a, f32>,
+    /// Tile-major per-group `dmin * min`.
+    pub biases: Buffer<'a, f32>,
 }
 
 /// A projection's weight, in the storage its checkpoint uses.

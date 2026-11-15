@@ -11,7 +11,7 @@ mod quant;
 mod tensor;
 
 pub use container::{GgufFile, GgufLimits, TensorInfo};
-pub use device::Q4KDevice;
+pub use device::{Q4K_TILE_ROWS, Q4KDevice, Q4KTiled};
 pub use metadata::{Metadata, MetadataValue};
 pub use quant::dequantize;
 pub use tensor::GgufType;

@@ -59,10 +59,15 @@ libloading.workspace = true
 futures-channel = { workspace = true, optional = true }
 
 [dev-dependencies]
+infer-gguf.workspace = true
 infer-runtime.workspace = true
 clap.workspace = true
 infer-reference-ops.workspace = true
 infer-state.workspace = true
+
+[[example]]
+name = "cuda-q4k-gemv"
+required-features = ["cuda"]
 
 [[example]]
 name = "cuda-kernels"
