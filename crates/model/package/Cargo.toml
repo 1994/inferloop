@@ -50,3 +50,7 @@ required-features = ["gguf"]
 [[example]]
 name = "gguf-package"
 required-features = ["gguf"]
+
+[[example]]
+name = "gguf-vision"
+required-features = ["gguf"]
