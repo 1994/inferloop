@@ -1179,7 +1179,7 @@ impl Projection for TileProjection {
             .map_err(backend_error)
     }
 
-    fn q4k_int8_two_term_nINT8_N64_TILE(
+    fn q4k_int8_two_term_n64(
         &self,
         recording: &Recording<'_>,
         probe: &Q4kInt8TwoTermProbe<'_>,
@@ -1202,7 +1202,7 @@ impl Projection for TileProjection {
             .ok_or_else(|| Error::unsupported("q4k int8 columns"))?;
         let outputs = out.len() / INT8_PROBE_ROWS;
         if outputs == 0 || !outputs.is_multiple_of(INT8_N64_TILE) {
-            return Err(Error::unsupported("q4k int8 nINT8_N64_TILE outputs"));
+            return Err(Error::unsupported("q4k int8 n64 outputs"));
         }
         let tiles = outputs / INT8_N64_TILE;
         let x = self.matrix(recording, x, "q4k int8 x", (INT8_PROBE_ROWS, columns))?;
@@ -1251,7 +1251,7 @@ impl Projection for TileProjection {
         let mut out = self.matrix(recording, out, "q4k int8 out", (INT8_PROBE_ROWS, outputs))?;
         scope
             .record(
-                q4k_int8_two_nINT8_N64_TILE::probe(
+                q4k_int8_two_n64::probe(
                     (&mut out).partition([INT8_PROBE_ROWS, INT8_N64_TILE]),
                     &x,
                     &residual,

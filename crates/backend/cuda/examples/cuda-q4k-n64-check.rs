@@ -6,7 +6,6 @@ use std::env::args;
 use std::error::Error;
 
 const ROWS: usize = 16;
-const OUT: usize = 64;
 const RESIDUAL_SCALE: f32 = 0.001;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -24,15 +23,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or("missing slot")?
         .clone();
     let columns = slot.shape[1];
+    let outputs = slot.shape[0];
+    if !outputs.is_multiple_of(64) {
+        return Err("outputs must divide by 64".into());
+    }
     let groups = columns / 32;
     let layout = Q4KTiled::from_device(&package.q4k(&slot_name, u64::MAX)?)?;
     let values = package.dense(&slot_name, u64::MAX)?;
     let (main, residual, x, sums) = inputs(columns, groups);
-    let (codes, factors, biases) = packed(&layout, columns, groups);
-    let mut expected = vec![0.0f32; ROWS * OUT];
+    let (codes, factors, biases) = packed(&layout, columns, groups, outputs);
+    let mut expected = vec![0.0f32; ROWS * outputs];
     for row in 0..ROWS {
-        for output in 0..OUT {
-            expected[row * OUT + output] = values[output * columns..][..columns]
+        for output in 0..outputs {
+            expected[row * outputs + output] = values[output * columns..][..columns]
                 .iter()
                 .zip(&x[row * columns..][..columns])
                 .map(|(weight, activation)| weight * activation)
@@ -46,10 +49,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let codes_alloc = runtime.upload(codes)?;
     let factors_alloc = runtime.upload(factors)?;
     let biases_alloc = runtime.upload(biases)?;
-    let scales_alloc = runtime.upload(vec![1.0f32; groups * ROWS])?;
-    let fine_alloc = runtime.upload(vec![RESIDUAL_SCALE; groups * ROWS])?;
-    let sums_alloc = runtime.upload(sums)?;
-    let out_alloc = runtime.zeros::<f32>(ROWS * OUT)?;
+    let tiles = outputs / 64;
+    let scales_alloc = runtime.upload(vec![1.0f32; tiles * groups * ROWS])?;
+    let fine_alloc = runtime.upload(vec![RESIDUAL_SCALE; tiles * groups * ROWS])?;
+    let sums_alloc = runtime.upload(sums.repeat(tiles))?;
+    let out_alloc = runtime.zeros::<f32>(ROWS * outputs)?;
     let kernels = device.kernels();
     let graph = device.tile().capture(|scope| {
         kernels.projection.q4k_int8_two_term_n64(
@@ -74,7 +78,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (actual, expected) in actual.iter().zip(&expected) {
         worst = worst.max((actual - expected).abs());
     }
-    println!("N64 real check max-abs={worst:.3e}");
+    println!("N64 full real check max-abs={worst:.3e}");
     Ok(())
 }
 
@@ -101,30 +105,40 @@ fn inputs(columns: usize, groups: usize) -> (Vec<i8>, Vec<i8>, Vec<f32>, Vec<f32
     (main, residual, x, sums)
 }
 
-fn packed(layout: &Q4KTiled, columns: usize, groups: usize) -> (Vec<i8>, Vec<f32>, Vec<f32>) {
-    let mut codes = vec![0i8; groups * 32 * OUT];
-    let mut factors = vec![0.0f32; groups * OUT];
-    let mut biases = vec![0.0f32; groups * OUT];
+fn packed(
+    layout: &Q4KTiled,
+    columns: usize,
+    groups: usize,
+    outputs: usize,
+) -> (Vec<i8>, Vec<f32>, Vec<f32>) {
+    let blocks = outputs / 64;
     let groups64 = columns / 64;
-    for tile in 0..OUT / 16 {
+    let mut codes = vec![0i8; blocks * groups * 32 * 64];
+    let mut factors = vec![0.0f32; blocks * groups * 64];
+    let mut biases = vec![0.0f32; blocks * groups * 64];
+    for block in 0..blocks {
         for group in 0..groups {
-            for lane in 0..32 {
-                for row in 0..16 {
-                    let packed =
-                        layout.codes()[(tile * groups64 + group / 2) * 512 + lane * 16 + row];
-                    let code = if group.is_multiple_of(2) {
-                        packed & 0x0F
-                    } else {
-                        packed >> 4
-                    };
-                    codes[(group * 32 + lane) * OUT + tile * 16 + row] = code.cast_signed();
+            for tile in 0..4 {
+                let source = block * 4 + tile;
+                for lane in 0..32 {
+                    for row in 0..16 {
+                        let packed =
+                            layout.codes()[(source * groups64 + group / 2) * 512 + lane * 16 + row];
+                        let code = if group.is_multiple_of(2) {
+                            packed & 0x0F
+                        } else {
+                            packed >> 4
+                        };
+                        codes[((block * groups + group) * 32 + lane) * 64 + tile * 16 + row] =
+                            code.cast_signed();
+                    }
                 }
-            }
-            for row in 0..16 {
-                factors[group * OUT + tile * 16 + row] =
-                    layout.factors()[tile * groups * 16 + group * 16 + row];
-                biases[group * OUT + tile * 16 + row] =
-                    layout.biases()[tile * groups * 16 + group * 16 + row];
+                for row in 0..16 {
+                    factors[(block * groups + group) * 64 + tile * 16 + row] =
+                        layout.factors()[source * groups * 16 + group * 16 + row];
+                    biases[(block * groups + group) * 64 + tile * 16 + row] =
+                        layout.biases()[source * groups * 16 + group * 16 + row];
+                }
             }
         }
     }

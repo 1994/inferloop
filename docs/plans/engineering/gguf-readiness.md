@@ -62,7 +62,7 @@ llama.cpp 只用于理解 GGUF block 布局和外部性能参照；生产 kernel
 - 不做“整张权重反量化成 BF16”的中间态；逐 tile 解包，避免带宽和显存峰值回退。
 - 需要覆盖 K 尾块、N 尾块、M<MMA tile 的掩码。
 
-- **当前进展（2026-11-15）**：cuTile `mmai(signed, signed)` 已在 5090 上通过 16×64×16 的逐元素整数参考（exact match）。Q4_K 的 host 量化 + int8 MMA 原型能运行，但与参考解码仍有约 6% 偏差；因子/偏置映射或 32-value 分组修正尚未定位，未合入生产路径。单 group 隔离结果：code、low/high factor、bias、x_scale 都逐项对上（相对误差 <1e-6）；把完整 kernel 限制到 1/2/4/8 个 32-value group 时最大绝对误差分别为 1.8e-3/3.4e-3/6.0e-3/1.2e-2，完整 64 group 时升到 9.5e-2。剩余偏差在多 group 累加/激活量化上。两层 int8（主项 + 残差）的完整 K 探针在真实 `gate_proj` 上把最大绝对误差从 9.5e-2 降到 **4.8e-5**，说明精度可用，下一步接入生产 MMQ。多 output tile 的完整检查：6144 个输出行、2048 列，最大绝对误差 **1.18e-4**；当前 32.4 GB/s，仍是 compute-bound 的小 CTA，需要调 tile/并行度。N=64 宽 tile 在真实张量上最大绝对误差 **4.58e-5**，合成带宽 333 GB/s、0.047 ms/launch。
+- **当前进展（2026-11-15）**：cuTile `mmai(signed, signed)` 已在 5090 上通过 16×64×16 的逐元素整数参考（exact match）。Q4_K 的 host 量化 + int8 MMA 原型能运行，但与参考解码仍有约 6% 偏差；因子/偏置映射或 32-value 分组修正尚未定位，未合入生产路径。单 group 隔离结果：code、low/high factor、bias、x_scale 都逐项对上（相对误差 <1e-6）；把完整 kernel 限制到 1/2/4/8 个 32-value group 时最大绝对误差分别为 1.8e-3/3.4e-3/6.0e-3/1.2e-2，完整 64 group 时升到 9.5e-2。剩余偏差在多 group 累加/激活量化上。两层 int8（主项 + 残差）的完整 K 探针在真实 `gate_proj` 上把最大绝对误差从 9.5e-2 降到 **4.8e-5**，说明精度可用，下一步接入生产 MMQ。多 output tile 的完整检查：6144 个输出行、2048 列，最大绝对误差 **1.18e-4**；当前 32.4 GB/s，仍是 compute-bound 的小 CTA，需要调 tile/并行度。N=64 宽 tile 在真实张量上最大绝对误差 **1.18e-4**（全部 6144 输出），合成带宽 333 GB/s、0.047 ms/launch。
 
 ### 验证与门槛
 

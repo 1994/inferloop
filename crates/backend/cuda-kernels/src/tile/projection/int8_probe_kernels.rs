@@ -112,7 +112,8 @@ pub mod q4k_int8_two_n64 {
         let sp = scales.partition(shape![1, 16]);
         let rsp = residual_scales.partition(shape![1, 16]);
         let up = sums.partition(shape![1, 16]);
-        let pid = get_tile_block_id().1;
+        let block = get_tile_block_id();
+        let pid = block.0 + block.1;
         let mut sum: Tile<f32, { [16, 64] }> = constant(0.0f32, shape![16, 64]);
         for group in 0i32..GROUPS {
             let zero: Tile<i32, { [16, 64] }> = constant(0i32, shape![16, 64]);
