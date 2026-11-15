@@ -331,7 +331,7 @@ pub fn vision_tensor(name: &str, deepstack_layers: &[u64]) -> Option<VisionTenso
     }
     if name.starts_with("v.post_ln.") {
         return Some(VisionTensor::Slot(format!(
-            "model.visual.merger.{}",
+            "model.visual.merger.norm.{}",
             name.trim_start_matches("v.post_ln.")
         )));
     }

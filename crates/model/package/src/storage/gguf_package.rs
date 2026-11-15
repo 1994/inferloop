@@ -8,6 +8,7 @@ use crate::providers::qwen::gguf::text_tensor;
 use crate::providers::qwen::gguf::tokenizer::{tokenizer_config, tokenizer_json};
 use crate::providers::qwen::gguf::validate::{TensorSpec, validate_text};
 use crate::storage::gguf_requirements::encoding_for;
+use crate::storage::gguf_vision::GgufVisionPackage;
 use crate::storage::grouped_int::Q4KDevice;
 use crate::storage::grouped_int6::Q6KTiled;
 use infer_core::{Error, Result};
@@ -45,6 +46,7 @@ pub struct GgufPackage {
     config: Vec<u8>,
     tokenizer: Vec<u8>,
     tokenizer_config: Vec<u8>,
+    vision: Option<GgufVisionPackage>,
 }
 
 impl GgufPackage {
@@ -86,7 +88,27 @@ impl GgufPackage {
             tokenizer_config: tokenizer_config(file.metadata())?,
             file,
             slots,
+            vision: None,
         })
+    }
+
+    /// Open a text package together with a sibling mmproj.
+    /// # Errors
+    /// Rejects either malformed package, or a text and vision metadata pair whose config cannot
+    /// be synthesized.
+    pub fn open_with_vision(path: impl AsRef<Path>, mmproj: impl AsRef<Path>) -> Result<Self> {
+        let mut package = Self::open(path)?;
+        let vision = GgufVisionPackage::open(mmproj)?;
+        package.config =
+            crate::providers::qwen::gguf::config(package.file.metadata(), vision.metadata())?;
+        package.vision = Some(vision);
+        Ok(package)
+    }
+
+    /// Attached mmproj, when this package is multimodal.
+    #[must_use]
+    pub const fn vision(&self) -> Option<&GgufVisionPackage> {
+        self.vision.as_ref()
     }
 
     /// Synthesized `config.json`.

@@ -115,6 +115,12 @@ impl GgufVisionPackage {
         })
     }
 
+    /// Stored metadata of the mmproj.
+    #[must_use]
+    pub const fn metadata(&self) -> &infer_format::Metadata {
+        self.file.metadata()
+    }
+
     /// Existing vision-encoder declaration.
     #[must_use]
     pub const fn encoder(&self) -> &ModalityEncoder {

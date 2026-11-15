@@ -72,6 +72,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             grouped += 1;
         }
     }
-    println!("graph weights={} grouped={grouped}", package.weights.len());
+    println!(
+        "graph weights={} grouped={grouped} vision={}",
+        package.weights.len(),
+        package.vision_source_count()
+    );
     Ok(())
 }

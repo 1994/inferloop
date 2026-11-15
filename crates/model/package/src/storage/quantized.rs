@@ -18,6 +18,12 @@ pub use draft::DFlash2Package;
 
 /// Values sharing one E4M3 block scale in an NVFP4 weight.
 const NVFP4_GROUP_SIZE: usize = 16;
+/// Round-to-nearest-even bias for F32 to BF16 narrowing.
+const BF16_ROUND: u32 = 0x7FFF;
+/// Bits discarded when narrowing to BF16.
+const BF16_SHIFT: u32 = 16;
+/// Low BF16 mantissa bit used for tie breaking.
+const BF16_TIE: u32 = 1;
 /// Bits per weight in channel-wise FP8 quantization.
 const FP8_WEIGHT_BITS: usize = 8;
 /// Bits per weight in NVFP4 quantization.
@@ -238,6 +244,8 @@ pub struct QuantizedPackage {
     gguf: Option<GgufPackage>,
     #[cfg(feature = "gguf")]
     gguf_dense: BTreeMap<String, Vec<u8>>,
+    #[cfg(feature = "gguf")]
+    vision_sources: BTreeMap<String, WeightSource>,
 }
 
 impl QuantizedPackage {
@@ -301,6 +309,8 @@ impl QuantizedPackage {
             gguf: None,
             #[cfg(feature = "gguf")]
             gguf_dense: BTreeMap::new(),
+            #[cfg(feature = "gguf")]
+            vision_sources: BTreeMap::new(),
         };
         package.bind_backbone()?;
         package.bind_mtp()?;
@@ -313,7 +323,10 @@ impl QuantizedPackage {
     /// weight encoding.
     #[cfg(feature = "gguf")]
     pub fn open_gguf(registry: &ModelRegistry, path: &Path, id: ModelId) -> Result<Self> {
-        let package = GgufPackage::open(path)?;
+        let package = match sibling_mmproj(path) {
+            Some(mmproj) => GgufPackage::open_with_vision(path, mmproj)?,
+            None => GgufPackage::open(path)?,
+        };
         let config = package.config();
         let provider = registry.resolve(config)?;
         let imported = provider.import(id, config)?;
@@ -342,8 +355,10 @@ impl QuantizedPackage {
             activation_rules: Vec::new(),
             gguf: Some(package),
             gguf_dense: dense,
+            vision_sources: BTreeMap::new(),
         };
         package.bind_gguf()?;
+        package.bind_gguf_vision()?;
         Ok(package)
     }
 
@@ -412,6 +427,72 @@ impl QuantizedPackage {
         Ok(())
     }
 
+    #[cfg(feature = "gguf")]
+    fn bind_gguf_vision(&mut self) -> Result<()> {
+        let Some(package) = self.gguf.as_ref() else {
+            return Ok(());
+        };
+        let Some(vision) = package.vision() else {
+            return Ok(());
+        };
+        let mut dense = BTreeMap::new();
+        let mut sources = BTreeMap::new();
+        for slot in vision.slots().values() {
+            let values = vision.dense(slot, u64::MAX)?;
+            let bytes: Vec<u8> = values
+                .iter()
+                .flat_map(|value| {
+                    let bits = value.to_bits();
+                    let rounded = bits.wrapping_add(0x7FFF + ((bits >> 16) & 1));
+                    u16::try_from(rounded >> 16)
+                        .unwrap_or(u16::MAX)
+                        .to_le_bytes()
+                })
+                .collect();
+            dense.insert(slot.slot.clone(), bytes.clone());
+            sources.insert(
+                slot.slot.clone(),
+                WeightSource {
+                    name: slot.slot.clone(),
+                    shard: "gguf".to_owned(),
+                    dtype: TensorDtype::BF16,
+                    shape: slot.shape.clone(),
+                    bytes: bytes.len() as u64,
+                    view: None,
+                },
+            );
+        }
+        let patch_name = format!("{}patch_embed.proj.weight", vision.encoder().prefix);
+        if let Some(slice) = vision.patch().iter().flatten().next() {
+            let bytes = vision.patch_bf16(u64::MAX)?;
+            let [hidden, channels, patch, width] = slice.shape.as_slice() else {
+                return Err(Error::invalid("patch slice shape"));
+            };
+            dense.insert(patch_name.clone(), bytes.clone());
+            sources.insert(
+                patch_name.clone(),
+                WeightSource {
+                    name: patch_name,
+                    shard: "gguf".to_owned(),
+                    dtype: TensorDtype::BF16,
+                    shape: vec![*hidden, *channels, 2, *patch, *width],
+                    bytes: bytes.len() as u64,
+                    view: None,
+                },
+            );
+        }
+        self.gguf_dense.extend(dense);
+        self.vision_sources = sources;
+        Ok(())
+    }
+
+    /// Vision tensors bound from an attached mmproj, when multimodal.
+    #[cfg(feature = "gguf")]
+    #[must_use]
+    pub fn vision_source_count(&self) -> usize {
+        self.vision_sources.len()
+    }
+
     /// Decode a GGUF slot to F32 for a consumer that still needs dense values.
     /// # Errors
     /// Returns `None` for non-GGUF packages, or the decode error for a malformed slot.
@@ -428,10 +509,13 @@ impl QuantizedPackage {
     /// Returns errors for a foreign source descriptor, I/O failure, or exceeded budget.
     pub fn read(&mut self, source: &WeightSource, budget: u64) -> Result<Vec<u8>> {
         #[cfg(feature = "gguf")]
-        if source.shard == "gguf"
-            && let Some(package) = &self.gguf
-        {
-            return package.blocks(&source.name, budget);
+        if source.shard == "gguf" {
+            if let Some(bytes) = self.gguf_dense.get(&source.name) {
+                return Ok(bytes.clone());
+            }
+            if let Some(package) = &self.gguf {
+                return package.blocks(&source.name, budget);
+            }
         }
         let Some(view) = source.view.as_ref().filter(|view| view.gathered()) else {
             return Ok(self.read_view(source, budget)?.to_vec());
@@ -594,6 +678,10 @@ impl QuantizedPackage {
     /// # Errors
     /// Rejects names not present in the validated package index.
     pub fn source(&self, name: &str) -> Result<WeightSource> {
+        #[cfg(feature = "gguf")]
+        if let Some(source) = self.vision_sources.get(name) {
+            return Ok(source.clone());
+        }
         let shard = self
             .tensor_map
             .get(name)
@@ -1118,3 +1206,21 @@ fn declared_kv_dtype(scheme: &serde_json::Value) -> Result<Option<TensorDtype>> 
 #[cfg(test)]
 #[path = "../../tests/unit/storage_quantized.rs"]
 mod kv_tests;
+
+#[cfg(feature = "gguf")]
+fn sibling_mmproj(path: &Path) -> Option<std::path::PathBuf> {
+    let parent = path.parent()?;
+    let mut found = None;
+    for entry in parent.read_dir().ok()? {
+        let entry = entry.ok()?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("mmproj") && name.ends_with(".gguf") {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(entry.path());
+        }
+    }
+    found
+}
