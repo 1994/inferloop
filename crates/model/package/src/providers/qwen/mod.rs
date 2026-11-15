@@ -93,6 +93,9 @@ pub struct VisionConfig {
     pub num_position_embeddings: usize,
     #[serde(default)]
     pub hidden_act: Option<String>,
+    /// Absolute vision layers whose intermediate states feed deepstack mergers.
+    #[serde(default)]
+    pub deepstack_visual_indexes: Vec<usize>,
 }
 #[derive(Deserialize)]
 struct HfConfig {
@@ -648,6 +651,7 @@ fn vision_encoder(vision: Option<&VisionConfig>) -> Result<Option<ModalityEncode
         rope_theta: VISION_ROPE_THETA,
         norm_epsilon: VISION_NORM_EPS,
         hidden_activation,
+        deepstack_layers: vision.deepstack_visual_indexes.clone(),
     }))
 }
 

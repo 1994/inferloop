@@ -228,6 +228,11 @@ pub fn encoder(mmproj: &Metadata) -> Result<ModalityEncoder> {
     let position_embeddings = side
         .checked_mul(side)
         .ok_or_else(|| Error::invalid("Qwen3-VL position grid overflow"))?;
+    let deepstack_layers = bool_array(mmproj, "clip.vision.is_deepstack_layers")?
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, enabled)| enabled.then_some(index))
+        .collect();
     Ok(ModalityEncoder {
         prefix: VISION_PREFIX.into(),
         depth: usize::try_from(mmproj.require_u64("clip.vision.block_count")?)
@@ -252,6 +257,7 @@ pub fn encoder(mmproj: &Metadata) -> Result<ModalityEncoder> {
         rope_theta: VISION_ROPE_THETA,
         norm_epsilon: mmproj.require_f64("clip.vision.attention.layer_norm_epsilon")? as f32,
         hidden_activation: HiddenActivation::GeluTanh,
+        deepstack_layers,
     })
 }
 

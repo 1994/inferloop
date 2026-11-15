@@ -145,6 +145,8 @@ pub struct ModalityEncoder {
     pub norm_epsilon: f32,
     /// Activation of the block MLP. The merger uses exact erf GELU regardless.
     pub hidden_activation: HiddenActivation,
+    /// Absolute encoder layers whose intermediate states feed deepstack mergers.
+    pub deepstack_layers: Vec<usize>,
 }
 
 /// Activation functions an encoder may declare.

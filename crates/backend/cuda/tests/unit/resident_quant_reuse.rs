@@ -470,6 +470,9 @@ fn projection_pointers(weights: &ProgramWeights) -> serde_json::Value {
                     ProjectionWeight::Fp8(codes, scales) => [pointer(codes), pointer(scales)],
                     ProjectionWeight::Fp8Block(codes, scales) => [pointer(codes), pointer(scales)],
                     ProjectionWeight::Dense(codes) => [pointer(codes), 0],
+                    ProjectionWeight::GroupedInt { codes, factors, .. } => {
+                        [pointer(codes), pointer(factors)]
+                    }
                 };
                 serde_json::json!({"id":id,"allocations":allocations})
             })
