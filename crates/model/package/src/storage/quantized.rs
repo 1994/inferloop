@@ -160,11 +160,10 @@ impl DeviceWeight {
     #[must_use]
     pub const fn scale(&self) -> Option<&WeightSource> {
         match self {
-            Self::Float { .. } => None,
+            Self::Float { .. } | Self::GroupedInt { .. } => None,
             Self::Fp8Channel { scale, .. }
             | Self::Fp8Block { scale, .. }
             | Self::Nvfp4 { scale, .. } => Some(scale),
-            Self::GroupedInt { .. } => None,
         }
     }
 
