@@ -13,7 +13,8 @@ mod window;
 pub use diagnostic::{Diagnostic, DiagnosticCode, Severity};
 pub use metrics::{LATENCY_BOUNDS_US, LatencyHistogram, RuntimeMetrics};
 pub use store::{
-    EventQuery, ObservationStore, ObservedEvent, diagnostic_for_event, error_code, finish_code,
+    EventQuery, ObservationStore, ObservedEvent, diagnostic_for_event, error_code, finish_cause,
+    finish_code,
 };
 pub use window::ObservationWindow;
 

@@ -2,8 +2,7 @@
 use crate::{Engine, EngineOutput};
 use infer_core::event::CpuStage;
 use infer_core::{
-    Error, FinishReason, RequestStatus, Result, event::EventKind, event::ObjectKind,
-    event::SemanticEvent,
+    Error, RequestStatus, Result, event::EventKind, event::ObjectKind, event::SemanticEvent,
 };
 use infer_ir::{DeferReason, ReadyWork, ResourceSnapshot, SchedulingDecision};
 use infer_observe::DiagnosticCode;
@@ -164,13 +163,12 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
     ) -> Result<()> {
         for rejected in &decision.deferred {
             if rejected.reason == DeferReason::AtomicCostLimit {
-                emitted.push(self.finish(
+                let reason = self.failure(
                     rejected.request,
-                    FinishReason::Failed(
-                        "calibrated minimum execution exceeds atomic dispatch limit".into(),
-                    ),
-                    None,
-                )?);
+                    infer_core::ErrorCode::Capacity,
+                    "calibrated minimum execution exceeds atomic dispatch limit",
+                );
+                emitted.push(self.finish(rejected.request, reason, None)?);
             }
         }
         if decision.step.is_some() {

@@ -13,6 +13,37 @@ pub enum ErrorCode {
     Backend,
 }
 
+impl ErrorCode {
+    /// Every code, in the order metrics count them.
+    pub const ALL: &[Self] = &[
+        Self::InvalidInput,
+        Self::Unsupported,
+        Self::Capacity,
+        Self::NotFound,
+        Self::Conflict,
+        Self::Invariant,
+        Self::Backend,
+    ];
+    /// Stable field and label value for structured logs and metrics.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidInput => "invalid_input",
+            Self::Unsupported => "unsupported",
+            Self::Capacity => "capacity",
+            Self::NotFound => "not_found",
+            Self::Conflict => "conflict",
+            Self::Invariant => "invariant",
+            Self::Backend => "backend",
+        }
+    }
+    /// Position in [`Self::ALL`].
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
 #[error("{code:?}: {message}")]
 pub struct Error {

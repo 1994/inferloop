@@ -1,6 +1,7 @@
 use crate::constants::MICROSECONDS_PER_SECOND;
 use crate::{LATENCY_BOUNDS_US, LatencyHistogram, ObservationStore, RuntimeMetrics};
 use infer_core::event::EventKind;
+use infer_core::{CancelSource, ErrorCode};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,6 +66,22 @@ pub fn prometheus_retention(
         lines.push(format!(
             "infer_deferrals_total{{backend=\"{backend}\",reason=\"{reason}\"}} {}",
             metrics.deferred_reasons[index]
+        ));
+    }
+    lines.push("# TYPE infer_requests_cancelled_total counter".into());
+    for source in CancelSource::ALL {
+        lines.push(format!(
+            "infer_requests_cancelled_total{{backend=\"{backend}\",cause=\"{}\"}} {}",
+            source.as_str(),
+            metrics.cancelled_by[source.index()]
+        ));
+    }
+    lines.push("# TYPE infer_request_failures_total counter".into());
+    for code in ErrorCode::ALL {
+        lines.push(format!(
+            "infer_request_failures_total{{backend=\"{backend}\",code=\"{}\"}} {}",
+            code.as_str(),
+            metrics.failed_by[code.index()]
         ));
     }
     for (name, value) in [

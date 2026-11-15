@@ -197,11 +197,8 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                         Some(work.request),
                         Some(running.step.id),
                     );
-                    emitted.push(self.finish(
-                        work.request,
-                        FinishReason::Failed(error.to_string()),
-                        None,
-                    )?);
+                    let reason = self.failure(work.request, error.code, error.to_string());
+                    emitted.push(self.finish(work.request, reason, None)?);
                     first_error.get_or_insert(error);
                 }
             }
@@ -221,14 +218,14 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         emitted: &mut Vec<EngineOutput>,
     ) -> Result<()> {
         self.retain_diagnostic(code, error, None, Some(step.id));
-        emitted.extend(self.fail_step(step, &error.to_string())?);
+        emitted.extend(self.fail_step(step, error)?);
         self.isolate(code, error);
         Ok(())
     }
     pub(crate) fn fail_step(
         &mut self,
         step: &StepPlan,
-        message: &str,
+        error: &Error,
     ) -> Result<Vec<EngineOutput>> {
         self.event(
             EventKind::Failed,
@@ -238,9 +235,15 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             step.work.len() as u64,
             0,
         );
+        let message = error.to_string();
         step.work
             .iter()
-            .map(|w| self.finish(w.request, FinishReason::Failed(message.into()), None))
+            .map(|w| {
+                // The step was being dispatched, even if the backend never took it.
+                self.mark_dispatching(w.request);
+                let reason = self.failure(w.request, error.code, message.clone());
+                self.finish(w.request, reason, None)
+            })
             .collect()
     }
     pub(crate) fn complete_work(

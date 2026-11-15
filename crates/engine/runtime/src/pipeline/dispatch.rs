@@ -162,7 +162,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                         None,
                         Some(step.id),
                     );
-                    let outputs = self.fail_step(step, &error.to_string())?;
+                    let outputs = self.fail_step(step, &error)?;
                     if matches!(
                         error.code,
                         infer_core::ErrorCode::Backend | infer_core::ErrorCode::Invariant
@@ -191,6 +191,10 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                 .ok_or_else(|| Error::invariant("dispatched request disappeared"))?;
             record.status = RequestStatus::Running { step: step.id };
             record.last_service_us = self.now_us;
+            record
+                .termination
+                .first_dispatch_us
+                .get_or_insert(self.now_us);
         }
         for (index, work) in step.work.iter().enumerate() {
             let record = self

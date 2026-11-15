@@ -24,4 +24,4 @@ pub use observation::ObservationSnapshot;
 pub use persistence::{ReplayAction, RuntimeSnapshot};
 pub use pipeline::scheduling::index::ReadyWindow as ReadyWorkBuffer;
 pub use preparation::{PreparedRequest, RequestPreparer};
-pub use requests::{RequestRecord, TokenContext};
+pub use requests::{RequestRecord, Termination, TokenContext};

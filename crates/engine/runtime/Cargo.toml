@@ -57,4 +57,5 @@ serde_json.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+tracing-subscriber.workspace = true
 infer-model-recipes.workspace = true

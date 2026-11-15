@@ -8,7 +8,7 @@ use crate::{
 };
 use infer_core::event::EventKind;
 use infer_core::event::ObjectKind;
-use infer_core::{Error, ErrorCode, FinishReason, RequestStatus, Result};
+use infer_core::{Error, ErrorCode, RequestStatus, Result};
 use infer_ir::{ExecutionRole, ModelOutput, OutputReadout, PlannedWork, StepPlan, Workload};
 use infer_spi::{BackendProvider, SchedulingPolicy};
 use std::mem::take;
@@ -231,10 +231,12 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                     Some(pending.step.id),
                 );
                 self.host.queues.cancel(work.request)?;
-                self.request_termination(
+                let reason = self.failure(
                     work.request,
-                    FinishReason::Failed("CPU output stage timed out".into()),
-                )?;
+                    ErrorCode::Backend,
+                    "CPU output stage timed out",
+                );
+                self.request_termination(work.request, reason)?;
             }
         }
         Ok(())
@@ -279,11 +281,8 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                     Some(work.request),
                     Some(step.id),
                 );
-                emitted.push(self.finish(
-                    work.request,
-                    FinishReason::Failed(error.to_string()),
-                    None,
-                )?);
+                let reason = self.failure(work.request, error.code, error.to_string());
+                emitted.push(self.finish(work.request, reason, None)?);
                 if error.code == ErrorCode::Invariant {
                     self.isolate(infer_observe::DiagnosticCode::InvalidCompletion, &error);
                 }

@@ -97,3 +97,63 @@ deadline/livelock）、`frontdoor/tests/isolation.rs`（owner 阻塞下控制面
 
 缺口【推断】：无端到端"N 客户端打爆 → 断言 429 比例/TTFT 分布"的过载 soak；无
 quarantine 后编排恢复的演练测试。
+
+## 七、请求终态日志与指标契约
+
+每个请求恰好有一条终态行，目标都是 `infer::request`，并带有 `phase` 字段，所以一条查询就能覆盖所有结局。被引擎接收的请求还会先输出一条 `phase="accepted"` 的接收行，它不算终态行。字段名是稳定契约，可以直接用来 grep 或配置告警。
+
+| 字段 | 取值 | 含义 |
+|---|---|---|
+| `request` | u64 | 请求 ID，同时出现在 `infer::http` 行上 |
+| `phase` | `finished` / `rejected` / `abandoned` | `finished`：引擎里的请求到达终态；`rejected`：请求在准备阶段或准入时被拒，引擎里没有记录；`abandoned`：请求在准备阶段被放弃 |
+| `reason` | `Length` / `Eos` / `Completed` / `Cancelled` / `Deadline` / `Failed(..)` | 仅 `finished` 行有，即 `FinishReason` |
+| `cancel` | `client_disconnected` / `shutdown` / `requested` / `backpressure` / `none` | 谁取消了请求：输出流被关闭 / 运行时关停 / 显式调用 cancel 端点 / 客户端读得太慢导致有界输出队列溢出 |
+| `stage` | `media` / `preparing` / `admission` / `queued` / `prefill` / `decode` / `output` | 结局被决定时请求所处的阶段；延迟到 fence 之后才完成的结局，也按决定时的阶段记 |
+| `error_code` | `invalid_input` / `unsupported` / `capacity` / `not_found` / `conflict` / `invariant` / `backend` / `none` | `Failed` 和拒绝背后的错误码，不再压平成文本 |
+| `output_tokens` / `cached_tokens` | usize | 生成的 token 数 / 复用前缀命中的 token 数 |
+| `ttft_us` / `max_tpot_us` / `e2e_us` | u64 | 来自现有的 measurement |
+| `queue_us` | u64 | 从接收到首次 dispatch 的时间；从未离开队列的请求没有这个字段 |
+| `last_token_age_us` | u64 | 最后一个 token 到终态的时间，可以区分请求是卡住了还是客户端刚走 |
+| `elapsed_us` / `bytes` | u64 / usize | 仅准备阶段的行有：准备耗时，以及仍占用的 ingress 字节数 |
+
+各退出路径对应的终态行：
+
+| 路径 | `phase` | `cancel` | `stage` | `error_code` |
+|---|---|---|---|---|
+| 客户端断开（已准入，流式） | `finished` | `client_disconnected` | 当时的阶段 | `none` |
+| 服务端关停 | `finished` | `shutdown` | 当时的阶段 | `none` |
+| 显式 cancel（已准入） | `finished` | `requested` | 当时的阶段 | `none` |
+| 慢消费者导致有界输出队列溢出 | `finished` | `backpressure` | 当时的阶段 | `none` |
+| 准备阶段客户端断开 | `abandoned` | `client_disconnected` | `media` / `preparing` | `none` |
+| 准备阶段显式 cancel | `abandoned` | `requested` | `media` / `preparing` | `none` |
+| 准备失败（编码、约束构建等） | `rejected` | `none` | `media` / `preparing` | 对应码 |
+| 准入拒绝（quarantine、容量、不支持） | `rejected` | `none` | `admission` | 对应码 |
+| 已提交给引擎、等准入回复时客户端断开 | `finished` | `client_disconnected` | `queued` 等 | `none`（引擎准入后发现回复无人接收，就取消它；若引擎拒绝，则为上面一行） |
+| 队列等待超时 | `finished` | `none` | `queued`（被抢占后重新排队的请求为当时的阶段） | `capacity` |
+| deadline | `finished` | `none` | 当时的阶段 | `none`（`reason=Deadline`，另有 `DeadlineExceeded` 诊断） |
+| 执行期后端错误、提交失败、非法 completion | `finished` | `none` | `prefill` / `decode` | 后端给出的码 |
+| 隔离 drain | `finished` | `none` | 当时的阶段 | 故障本身的码 |
+| 输出 worker 失败或超时、资源准备失败或超时 | `finished` | `none` | `output` 或当时的阶段 | 对应码（超时为 `backend`） |
+
+`infer::http` 行带 `request` 字段（如果该 HTTP 交换预留过请求 ID），另外有 `stream`、`client_gone`、`headers_ms`、`elapsed_ms`。长度已知的响应在响应头就绪时记一条。流式响应（SSE）在 body 结束时记一条：客户端提前离开时以 warn 级别记为 `client_gone=true`，不再像以前那样在响应头时刻就记一个 `200`。
+
+指标从 `Finished` 事件计数，不另做记录：
+
+- `infer_requests_cancelled_total{backend,cause}`：按 `cancel` 取值计数。
+- `infer_request_failures_total{backend,code}`：按 `Failed` 的错误码计数。
+- 现有的 `infer_requests_failed_total{backend}` 保持原义：所有非成功结局，包括取消和 deadline。为了不改变这个已有序列，按错误码拆分的计数另外用了上面的新名字。
+
+排查示例：
+
+```sh
+# 某个请求的接收行、终态行和 HTTP 行
+grep -E 'request=13( |$)' server.log
+# 最近因客户端断开而结束的请求，以及它们停在哪个阶段
+grep 'infer::request' server.log | grep 'cancel="client_disconnected"' | grep -o 'stage="[a-z]*"' | sort | uniq -c
+```
+
+限制：
+
+- 上表的诊断字段只为日志服务，不进入 checkpoint。从 checkpoint 恢复的请求，这些字段从恢复时刻重新开始记录。
+- 预留请求 ID 之前就被拒的请求（ingress 预算已满、请求 ID 重复）没有 `infer::request` 行，只有 `infer::http` 行上的 429/409。
+- 提交命令一旦送达引擎，终态行就由引擎负责写，frontdoor 不再写，以免同一请求出现两条终态行。命令没送达的情况（actor 已停止）按准备失败记，阶段是 `preparing`。

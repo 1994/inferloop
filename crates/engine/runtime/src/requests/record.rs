@@ -1,7 +1,7 @@
 //! Request-owned state and its immutable scheduling projection.
 use crate::CompletedRequest;
 use infer_core::credits::CreditLease;
-use infer_core::{FinishReason, RequestStatus, StateId};
+use infer_core::{CancelSource, ErrorCode, FinishReason, RequestStage, RequestStatus, StateId};
 use infer_ir::{AdmissionDecision, CanonicalRequest, ModelOutput, WorkloadPlan};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -47,6 +47,26 @@ pub struct RequestRecord {
     pub last_service_us: u64,
     #[serde(default)]
     pub admission: AdmissionDecision,
+    /// How the request ended, for its one terminal log line. Diagnostic only: it never changes
+    /// execution, so a checkpoint does not carry it.
+    #[serde(skip)]
+    pub termination: Termination,
+}
+
+/// Diagnostic facts about a request's ending that `FinishReason` does not hold.
+///
+/// Each is written once, where the ending is decided, and read once by the terminal log line and
+/// the finish event; none of them takes part in scheduling or recovery.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Termination {
+    /// Who cancelled the request, when it was cancelled.
+    pub cancel: Option<CancelSource>,
+    /// The error code behind a `FinishReason::Failed`.
+    pub error: Option<ErrorCode>,
+    /// Where the request was when its ending was decided.
+    pub stage: Option<RequestStage>,
+    /// When the request was first dispatched to the backend.
+    pub first_dispatch_us: Option<u64>,
 }
 
 impl RequestRecord {

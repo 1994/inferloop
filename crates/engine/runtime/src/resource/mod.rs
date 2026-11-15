@@ -5,7 +5,7 @@ use crate::{Engine, EngineOutput};
 use infer_core::event::EventKind;
 use infer_core::event::ObjectKind;
 use infer_core::event::SemanticEvent;
-use infer_core::{Error, ErrorCode, FinishReason, RequestId, RequestStatus, Result};
+use infer_core::{Error, ErrorCode, RequestId, RequestStatus, Result};
 use infer_scheduler::BlockedOn;
 use infer_spi::{
     BackendProvider, ResourceCommand, ResourceReply, ResourceTicket, SchedulingPolicy,
@@ -281,10 +281,12 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
                     None,
                 );
                 self.host.queues.cancel(id)?;
-                emitted.extend(self.request_termination(
+                let reason = self.failure(
                     id,
-                    FinishReason::Failed("resource preparation acknowledgement timed out".into()),
-                )?);
+                    ErrorCode::Backend,
+                    "resource preparation acknowledgement timed out",
+                );
+                emitted.extend(self.request_termination(id, reason)?);
             }
             return Ok(());
         }
@@ -312,7 +314,8 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         match result {
             Ok(Some(reply)) => self.complete_resource(id, pending.phase, reply)?,
             Err(error) => {
-                emitted.push(self.finish(id, FinishReason::Failed(error.to_string()), None)?);
+                let reason = self.failure(id, error.code, error.to_string());
+                emitted.push(self.finish(id, reason, None)?);
                 if matches!(error.code, ErrorCode::Backend | ErrorCode::Invariant) {
                     self.isolate(infer_observe::DiagnosticCode::SubmissionFailed, &error);
                 }

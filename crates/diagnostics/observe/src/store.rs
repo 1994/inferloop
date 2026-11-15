@@ -16,11 +16,11 @@ const FINISH_CODE_EOS: u64 = 1;
 /// Wire code reported for a completed request.
 const FINISH_CODE_COMPLETED: u64 = 2;
 /// Wire code reported for a cancelled request.
-const FINISH_CODE_CANCELLED: u64 = 3;
+pub const FINISH_CODE_CANCELLED: u64 = 3;
 /// Wire code reported for a deadline-exceeded request.
 const FINISH_CODE_DEADLINE: u64 = 4;
 /// Wire code reported for a failed request.
-const FINISH_CODE_FAILED: u64 = 5;
+pub const FINISH_CODE_FAILED: u64 = 5;
 /// Wire code reported for an invalid-input error.
 const ERROR_CODE_INVALID_INPUT: u64 = 1;
 /// Wire code reported for an unsupported operation.
@@ -191,6 +191,27 @@ pub const fn finish_code(reason: &infer_core::FinishReason) -> u64 {
         infer_core::FinishReason::Deadline => FINISH_CODE_DEADLINE,
         infer_core::FinishReason::Failed(_) => FINISH_CODE_FAILED,
     }
+}
+
+/// Who or what ended a request, packed into a `Finished` event's spare field.
+///
+/// A cancelled request carries its cancel source and a failed one its error code, each as its
+/// position plus one; zero means the cause is unknown or the reason has none.
+#[must_use]
+pub fn finish_cause(
+    reason: &infer_core::FinishReason,
+    cancel: Option<infer_core::CancelSource>,
+    error: Option<infer_core::ErrorCode>,
+) -> u32 {
+    let index = match reason {
+        infer_core::FinishReason::Cancelled => cancel.map(infer_core::CancelSource::index),
+        infer_core::FinishReason::Failed(_) => error.map(infer_core::ErrorCode::index),
+        _ => None,
+    };
+    index
+        .and_then(|index| index.checked_add(1))
+        .and_then(|cause| u32::try_from(cause).ok())
+        .unwrap_or(0)
 }
 
 #[must_use]

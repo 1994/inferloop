@@ -1,5 +1,6 @@
+use crate::store::{FINISH_CODE_CANCELLED, FINISH_CODE_FAILED};
 use infer_core::event::CpuStage;
-use infer_core::{event::EventKind, event::SemanticEvent};
+use infer_core::{CancelSource, ErrorCode, event::EventKind, event::SemanticEvent};
 use serde::{Deserialize, Serialize};
 
 pub const LATENCY_BOUNDS_US: [u64; 16] = [
@@ -59,6 +60,12 @@ pub struct RuntimeMetrics {
     pub deferred_reasons: [u64; infer_ir::DeferReason::LABELS.len()],
     pub successful_requests: u64,
     pub failed_requests: u64,
+    /// Cancelled requests by [`CancelSource::ALL`] position.
+    #[serde(default)]
+    pub cancelled_by: [u64; CancelSource::ALL.len()],
+    /// Failed requests by [`ErrorCode::ALL`] position.
+    #[serde(default)]
+    pub failed_by: [u64; ErrorCode::ALL.len()],
     pub prefix_tokens_reused: u64,
     pub e2e: LatencyHistogram,
     pub ttft: LatencyHistogram,
@@ -93,6 +100,17 @@ impl RuntimeMetrics {
                     self.successful_requests = self.successful_requests.saturating_add(1);
                 } else {
                     self.failed_requests = self.failed_requests.saturating_add(1);
+                }
+                let cause = (event.reserved as usize).checked_sub(1);
+                let counter = match event.arg0 {
+                    FINISH_CODE_CANCELLED => {
+                        cause.and_then(|index| self.cancelled_by.get_mut(index))
+                    }
+                    FINISH_CODE_FAILED => cause.and_then(|index| self.failed_by.get_mut(index)),
+                    _ => None,
+                };
+                if let Some(count) = counter {
+                    *count = count.saturating_add(1);
                 }
             }
             EventKind::FirstToken => self.ttft.record(event.arg0),
