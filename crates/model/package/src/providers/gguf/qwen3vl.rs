@@ -67,6 +67,18 @@ pub struct Qwen3VlConfig {
     pub vision_config: Qwen3VlVisionConfig,
 }
 
+/// Top-level HF configuration for a text-only package.
+#[derive(Debug, Serialize)]
+pub struct Qwen3VlTextOnlyConfig {
+    pub architectures: [&'static str; 1],
+    pub model_type: &'static str,
+    pub image_token_id: u32,
+    pub video_token_id: u32,
+    pub tie_word_embeddings: bool,
+    pub language_model_only: bool,
+    pub text_config: Qwen3VlTextConfig,
+}
+
 /// One mapped GGUF tensor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VisionTensor {
@@ -158,6 +170,52 @@ pub fn config(text: &Metadata, mmproj: &Metadata) -> Result<Vec<u8>> {
     clippy::cast_possible_truncation,
     reason = "the positive LayerNorm epsilon is well inside the f32 range"
 )]
+/// Synthesize a text-only HF configuration for `infer-cli --package model.gguf`.
+/// # Errors
+/// Rejects missing text geometry or tokenizer markers.
+pub fn config_text(text: &Metadata) -> Result<Vec<u8>> {
+    let tokens = text.require_strings("tokenizer.ggml.tokens")?;
+    let vocab_size = u64::try_from(tokens.len())
+        .map_err(|_| Error::invalid("Qwen3-VL vocabulary exceeds u64"))?;
+    let sections = u64_array(text, "qwen3vl.rope.dimension_sections")?;
+    let sections = sections
+        .into_iter()
+        .rev()
+        .skip_while(|value| *value == 0)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let config = Qwen3VlTextOnlyConfig {
+        architectures: ["Qwen3VLForConditionalGeneration"],
+        model_type: "qwen3_vl",
+        image_token_id: token_id(&tokens, "<|image_pad|>")?,
+        video_token_id: token_id(&tokens, "<|video_pad|>")?,
+        tie_word_embeddings: true,
+        language_model_only: true,
+        text_config: Qwen3VlTextConfig {
+            hidden_size: text.require_u64("qwen3vl.embedding_length")?,
+            vocab_size,
+            num_hidden_layers: text.require_u64("qwen3vl.block_count")?,
+            num_attention_heads: text.require_u64("qwen3vl.attention.head_count")?,
+            num_key_value_heads: text.require_u64("qwen3vl.attention.head_count_kv")?,
+            intermediate_size: text.require_u64("qwen3vl.feed_forward_length")?,
+            max_position_embeddings: text.require_u64("qwen3vl.context_length")?,
+            head_dim: text.require_u64("qwen3vl.attention.key_length")?,
+            rms_norm_eps: text.require_f64("qwen3vl.attention.layer_norm_rms_epsilon")?,
+            rope_theta: text.require_f64("qwen3vl.rope.freq_base")?,
+            rope_scaling: Qwen3VlRopeScaling {
+                mrope_section: sections,
+                mrope_interleaved: true,
+                rope_type: "default",
+            },
+            hidden_act: "silu",
+            tie_word_embeddings: true,
+        },
+    };
+    serde_json::to_vec(&config).map_err(|error| Error::invalid(error.to_string()))
+}
+
 /// Build the existing vision-encoder declaration from mmproj metadata.
 /// # Errors
 /// Rejects malformed geometry, a non-square position grid, or a zero norm epsilon.

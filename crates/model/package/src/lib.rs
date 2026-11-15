@@ -29,7 +29,7 @@ pub use providers::dflash2::{
 };
 #[cfg(feature = "gguf")]
 pub use providers::gguf::qwen3vl::{
-    VisionTensor, config, encoder, text_tensor, vision_slots, vision_tensor,
+    VisionTensor, config, config_text, encoder, text_tensor, vision_slots, vision_tensor,
 };
 #[cfg(feature = "gguf")]
 pub use providers::gguf::validate::{TensorSpec, validate_text, validate_vision};
