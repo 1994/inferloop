@@ -16,7 +16,7 @@ use infer_core::{Error, Result};
 use infer_format::{GgufFile, GgufType, dequantize};
 use infer_ir::WeightEncoding;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One stored tensor, addressed by its canonical HF slot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +103,17 @@ impl GgufPackage {
         package.config = gguf_config(package.file.metadata(), vision.metadata())?;
         package.vision = Some(vision);
         Ok(package)
+    }
+
+    /// Open a text package and attach a sibling `mmproj-*.gguf` when present.
+    /// # Errors
+    /// Rejects a malformed text package or an ambiguous/malformed sibling.
+    pub fn open_auto(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        sibling(path).map_or_else(
+            || Self::open(path),
+            |mmproj| Self::open_with_vision(path, mmproj),
+        )
     }
 
     /// Attached mmproj, when this package is multimodal.
@@ -198,4 +209,21 @@ impl GgufPackage {
         dequantize(header.dtype, &self.blocks(slot, budget)?, &mut values)?;
         Ok(values)
     }
+}
+
+fn sibling(path: &Path) -> Option<PathBuf> {
+    let parent = path.parent()?;
+    let mut found = None;
+    for entry in parent.read_dir().ok()? {
+        let entry = entry.ok()?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("mmproj") && name.ends_with(".gguf") {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(entry.path());
+        }
+    }
+    found
 }

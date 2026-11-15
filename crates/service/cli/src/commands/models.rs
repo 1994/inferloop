@@ -6,6 +6,7 @@ use crate::constants::MIB_U64;
 use infer_core::{Error, ModelId, Result};
 use infer_models::{ModelPackage, SafetensorsIndex, default_registry, memory_estimate};
 use std::fs::read;
+use std::path::Path;
 
 /// Conservative expansion factor from native weight storage to F32, applied to the staging
 /// budget so an expanded weight chunk still fits its staging allocation.
@@ -54,6 +55,14 @@ pub fn inspect_model(options: InspectModelOptions) -> Result<()> {
     Ok(())
 }
 pub fn inspect_package(options: InspectPackageOptions) -> Result<()> {
+    #[cfg(feature = "gguf")]
+    if options
+        .package
+        .extension()
+        .is_some_and(|extension| extension == "gguf")
+    {
+        return inspect_gguf(&options.package);
+    }
     let package = ModelPackage::open(options.package, ModelId::new(1)?)?;
     let budget = options
         .host_memory_mib
@@ -92,6 +101,45 @@ pub fn inspect_package(options: InspectPackageOptions) -> Result<()> {
 
     Ok(())
 }
+#[cfg(feature = "gguf")]
+fn inspect_gguf(path: &Path) -> Result<()> {
+    let package = infer_models::GgufPackage::open_auto(path)?;
+    let mut q4k = 0usize;
+    let mut q6k = 0usize;
+    let mut dense = 0usize;
+    for slot in package.slots().values() {
+        match slot.encoding()? {
+            infer_ir::WeightEncoding::GroupedInt4 => q4k += 1,
+            infer_ir::WeightEncoding::GroupedInt6 => q6k += 1,
+            _ => dense += 1,
+        }
+    }
+    let requirements = infer_models::gguf_requirements(path)?;
+    let vision = package.vision().map_or_else(
+        || serde_json::json!({"attached": false}),
+        |vision| {
+            serde_json::json!({
+                "attached": true,
+                "slots": vision.slots().len(),
+                "patch_slices": vision.patch().iter().flatten().count(),
+                "deepstack": vision.deepstack().len(),
+            })
+        },
+    );
+    print(&serde_json::json!({
+        "checkpoint": "gguf",
+        "text_slots": package.slots().len(),
+        "q4k": q4k,
+        "q6k": q6k,
+        "dense": dense,
+        "encodings": requirements.encodings,
+        "vision": vision,
+        "tokenizer_bytes": package.tokenizer().len(),
+        "config_bytes": package.config().len(),
+    }))?;
+    Ok(())
+}
+
 pub fn tokenize(options: TokenizeOptions) -> Result<()> {
     let TokenizeOptions {
         package,
