@@ -10,11 +10,6 @@ use std::time::Instant;
 const REPLAYS: usize = 50;
 const HBM_GBPS: f64 = 1792.0;
 
-#[expect(
-    clippy::cast_precision_loss,
-    clippy::too_many_lines,
-    reason = "benchmark fixture and bandwidth reporting"
-)]
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = args().skip(1);
     let path = arguments
@@ -35,19 +30,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if !rows.is_multiple_of(16) {
         return Err(format!("rows {rows} is not a multiple of 16").into());
     }
-    let x: Vec<f32> = (0..*columns)
-        .map(|index| ((index as f32) * 0.017).sin())
-        .collect();
+    let x = inputs(*columns);
     let values = package.dense(&slot_name, u64::MAX)?;
-    let expected: Vec<f32> = (0..*rows)
-        .map(|row| {
-            values[row * *columns..][..*columns]
-                .iter()
-                .zip(&x)
-                .map(|(value, activation)| value * activation)
-                .sum()
-        })
-        .collect();
+    let expected = reference(&values, *rows, *columns, &x);
 
     let device = CudaDevice::new(0)?;
     let runtime = device.runtime();
@@ -110,14 +95,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     device.tile().sync(graph.launch())?;
     let actual = runtime.read(&out_alloc)?;
-    let mut max_relative = 0.0f64;
-    for (row, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
-        let relative = f64::from((actual - expected).abs()) / f64::from(expected.abs().max(1.0));
-        max_relative = max_relative.max(relative);
-        if relative > 2e-3 {
-            return Err(format!("row {row}: actual {actual} expected {expected}").into());
-        }
-    }
+    let max_relative = check(&actual, &expected)?;
     println!(
         "native {} {}x{} correctness max relative {max_relative:.3e}",
         slot.dtype.name(),
@@ -128,11 +106,53 @@ fn main() -> Result<(), Box<dyn Error>> {
     for _ in 0..REPLAYS {
         device.tile().sync(graph.launch())?;
     }
-    let elapsed = started.elapsed().as_secs_f64();
-    let bandwidth = bytes as f64 * REPLAYS as f64 / elapsed / 1e9;
+    report(bytes, started.elapsed().as_secs_f64());
+    Ok(())
+}
+
+fn inputs(columns: usize) -> Vec<f32> {
+    let mut values = vec![0.0f32; columns];
+    for (index, value) in values.iter_mut().enumerate() {
+        *value = match index % 4 {
+            0 => 0.5,
+            1 => -0.25,
+            2 => 1.0,
+            _ => -1.0,
+        };
+    }
+    values
+}
+
+fn check(actual: &[f32], expected: &[f32]) -> Result<f64, Box<dyn Error>> {
+    let mut max_relative = 0.0f64;
+    for (row, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        let relative = f64::from((actual - expected).abs()) / f64::from(expected.abs().max(1.0));
+        max_relative = max_relative.max(relative);
+        if relative > 2e-3 {
+            return Err(format!("row {row}: actual {actual} expected {expected}").into());
+        }
+    }
+    Ok(max_relative)
+}
+
+fn report(bytes: usize, elapsed: f64) {
+    let bytes = f64::from(u32::try_from(bytes / 1024).unwrap_or(u32::MAX)) * 1024.0;
+    let replays = f64::from(u32::try_from(REPLAYS).unwrap_or(u32::MAX));
+    let bandwidth = bytes * replays / elapsed / 1e9;
     println!(
         "native GGUF GEMV {bandwidth:.1} GB/s ({:.1}% roofline)",
         bandwidth / HBM_GBPS * 100.0
     );
-    Ok(())
+}
+
+fn reference(values: &[f32], rows: usize, columns: usize, x: &[f32]) -> Vec<f32> {
+    (0..rows)
+        .map(|row| {
+            values[row * columns..][..columns]
+                .iter()
+                .zip(x)
+                .map(|(value, activation)| value * activation)
+                .sum()
+        })
+        .collect()
 }
