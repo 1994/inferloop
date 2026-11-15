@@ -80,6 +80,10 @@ name = "cuda-gguf-vision"
 required-features = ["cuda"]
 
 [[example]]
+name = "cuda-gguf-multimodal"
+required-features = ["cuda"]
+
+[[example]]
 name = "cuda-q4k-gemv"
 required-features = ["cuda"]
 
