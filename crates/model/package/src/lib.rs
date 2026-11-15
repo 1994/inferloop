@@ -28,12 +28,16 @@ pub use providers::dflash2::{
     DraftQuote, check_declared_architecture,
 };
 #[cfg(feature = "gguf")]
-pub use providers::gguf::qwen3vl::{
-    VisionTensor, config, config_text, encoder, text_tensor, vision_slots, vision_tensor,
-};
+pub use providers::qwen::GgufQwen;
 #[cfg(feature = "gguf")]
-pub use providers::gguf::validate::{TensorSpec, validate_text, validate_vision};
-pub use providers::gguf::tokenizer::{tokenizer_config, tokenizer_json};
+pub use providers::qwen::gguf::tokenizer::{tokenizer_config, tokenizer_json};
+#[cfg(feature = "gguf")]
+pub use providers::qwen::gguf::validate::{TensorSpec, validate_text, validate_vision};
+#[cfg(feature = "gguf")]
+pub use providers::qwen::gguf::{
+    config, config_text, encoder, text_tensor, vision_slots, vision_tensor,
+};
+pub use providers::qwen::{HfQwen, QwenFormat, VisionTensor};
 pub use providers::qwen::{QwenProvider, VisionConfig};
 pub use providers::registry::{ModelRegistry, default_registry};
 pub use storage::index::SafetensorsIndex;

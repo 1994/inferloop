@@ -120,9 +120,9 @@ fn u64_array(metadata: &Metadata, key: &str) -> Result<Vec<u64>> {
         .ok_or_else(|| Error::invalid(format!("GGUF metadata {key} is not an array")))?
         .iter()
         .map(|value| {
-            value
-                .as_u64()
-                .ok_or_else(|| Error::invalid(format!("GGUF metadata {key} is not an integer array")))
+            value.as_u64().ok_or_else(|| {
+                Error::invalid(format!("GGUF metadata {key} is not an integer array"))
+            })
         })
         .collect()
 }

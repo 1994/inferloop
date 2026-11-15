@@ -237,3 +237,29 @@ fn validates_text_shapes_and_rejects_mismatches() {
     missing.pop();
     assert!(validate_text(&tiny_text_metadata(), &missing).is_err());
 }
+
+#[test]
+fn formats_are_strategies_under_one_qwen_family() {
+    use crate::{GgufQwen, HfQwen, QwenFormat, VisionTensor};
+    assert_eq!(
+        HfQwen.text_tensor("model.embed_tokens.weight").as_deref(),
+        Some("model.embed_tokens.weight")
+    );
+    assert_eq!(
+        HfQwen.vision_tensor("model.visual.blocks.0.attn.qkv.weight"),
+        Some(VisionTensor::Slot(
+            "model.visual.blocks.0.attn.qkv.weight".into()
+        ))
+    );
+    let format = GgufQwen::new(vec![5, 11, 17]);
+    assert_eq!(
+        format.text_tensor("blk.0.attn_q.weight").as_deref(),
+        Some("model.layers.0.self_attn.q_proj.weight")
+    );
+    assert_eq!(
+        format.vision_tensor("v.deepstack.11.fc1.weight"),
+        Some(VisionTensor::Slot(
+            "model.visual.deepstack_merger_list.1.linear_fc1.weight".into()
+        ))
+    );
+}

@@ -4,6 +4,7 @@ use super::attention::Attention;
 use super::draft::Draft;
 use super::vision::Vision;
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
+use crate::contract::grouped_int::GroupedIntPlan;
 use crate::contract::plan::{
     BinaryOp, DeltaKernel, DenseRowsPlan, DownPlan, EmbeddingBatchPlan, EmbeddingPlan, ExpertPlan,
     Fp4QuantPlan, Fp4ScalePlan, Fp8QuantPlan, FusionNormPlan, GemmPlan, GreedyPlan, LastRowsPlan,
@@ -50,6 +51,22 @@ pub trait Projection: Send + Sync {
     ) -> Result<()> {
         let _ = (recording, plan, out, x, weight);
         Err(unsupported("Projection::row"))
+    }
+
+    /// Project one flat row with grouped integer weights.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, the weight is not grouped integer, or the
+    /// launch is rejected.
+    fn grouped_int_row(
+        &self,
+        recording: &Recording<'_>,
+        plan: &GroupedIntPlan,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        weight: WeightRef<'_>,
+    ) -> Result<()> {
+        let _ = (recording, plan, out, x, weight);
+        Err(unsupported("Projection::grouped_int_row"))
     }
 
     /// Copy flat `input` into row `row` of `out`, whose shape is `[rows, columns]`.
@@ -554,6 +571,12 @@ pub enum WeightRef<'a> {
         weight: Buffer<'a, Fp4Pair>,
         scales: Buffer<'a, Fp8>,
         inverse_global: f32,
+    },
+    /// Grouped 4-bit codes with precomputed per-group factors and biases.
+    GroupedInt {
+        codes: Buffer<'a, u8>,
+        factors: Buffer<'a, f32>,
+        biases: Buffer<'a, f32>,
     },
 }
 

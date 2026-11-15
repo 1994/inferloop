@@ -1,4 +1,8 @@
-//! Qwen3-VL GGUF metadata to the HF configuration shape and tensor names.
+//! Qwen3-VL GGUF configuration and tensor mapping.
+
+pub mod tokenizer;
+pub mod validate;
+
 use crate::vision::{VisionSlot, slots};
 use infer_core::{Error, Result};
 use infer_gguf::{Metadata, MetadataValue};
@@ -79,14 +83,7 @@ pub struct Qwen3VlTextOnlyConfig {
     pub text_config: Qwen3VlTextConfig,
 }
 
-/// One mapped GGUF tensor.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VisionTensor {
-    /// A tensor name in the existing HF vision inventory.
-    Slot(String),
-    /// One temporal slice of the `Conv3D` patch embedding.
-    PatchSlice(usize),
-}
+use super::VisionTensor;
 
 /// Synthesize the HF configuration for a Qwen3-VL text GGUF and its mmproj.
 /// # Errors
@@ -166,10 +163,6 @@ pub fn config(text: &Metadata, mmproj: &Metadata) -> Result<Vec<u8>> {
     serde_json::to_vec(&config).map_err(|error| Error::invalid(error.to_string()))
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the positive LayerNorm epsilon is well inside the f32 range"
-)]
 /// Synthesize a text-only HF configuration for `infer-cli --package model.gguf`.
 /// # Errors
 /// Rejects missing text geometry or tokenizer markers.
@@ -216,6 +209,10 @@ pub fn config_text(text: &Metadata) -> Result<Vec<u8>> {
     serde_json::to_vec(&config).map_err(|error| Error::invalid(error.to_string()))
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the positive LayerNorm epsilon is well inside the f32 range"
+)]
 /// Build the existing vision-encoder declaration from mmproj metadata.
 /// # Errors
 /// Rejects malformed geometry, a non-square position grid, or a zero norm epsilon.
@@ -406,5 +403,5 @@ fn bool_array(metadata: &Metadata, key: &str) -> Result<Vec<bool>> {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/providers_gguf.rs"]
+#[path = "../../../../tests/unit/providers_gguf.rs"]
 mod tests;
