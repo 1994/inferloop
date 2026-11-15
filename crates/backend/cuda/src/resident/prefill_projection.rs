@@ -441,7 +441,9 @@ pub(super) fn record(
     nvfp4.clear_quant_reuse();
     match lowering {
         Lowering::PromptDense => {
-            let dense = weight.dense().ok_or_else(|| error("prompt dense weight"))?;
+            let dense = weight
+                .dense()
+                .ok_or_else(|| error(format!("prompt projection lowered to {lowering:?}")))?;
             record_prompt_dense(
                 scope,
                 weights,

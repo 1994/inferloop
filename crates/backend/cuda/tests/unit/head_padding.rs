@@ -1,7 +1,7 @@
 use super::*;
 use crate::resident::require_kernel_geometry;
 use infer_core::ModelId;
-use infer_models::{TensorDtype, WeightSource, default_registry};
+use infer_models::default_registry;
 
 const HIDDEN: usize = 16;
 const THETA: f64 = 10_000.0;
@@ -21,34 +21,10 @@ fn graph(extra: &str) -> DataflowGraph {
     provider.graph(&model).unwrap()
 }
 
-fn sources(graph: &DataflowGraph) -> BTreeMap<String, DeviceWeight> {
-    graph
-        .tensors
-        .iter()
-        .filter_map(|spec| match &spec.storage {
-            TensorStorage::Weight { slot } => Some((
-                slot.clone(),
-                DeviceWeight::Float {
-                    data: WeightSource {
-                        name: slot.clone(),
-                        shard: String::new(),
-                        dtype: TensorDtype::BF16,
-                        shape: spec.shape.clone(),
-                        bytes: 0,
-                        view: None,
-                    },
-                },
-            )),
-            _ => None,
-        })
-        .collect()
-}
-
 #[test]
 fn a_narrow_head_is_stored_in_the_next_power_of_two() {
     let mut graph = graph("");
-    let mut weights = sources(&graph);
-    let padding = pad_heads(&mut graph, &mut weights, false, false).unwrap();
+    let padding = pad_heads(&mut graph, false, false).unwrap();
     let attention = graph
         .nodes
         .iter()
@@ -62,12 +38,20 @@ fn a_narrow_head_is_stored_in_the_next_power_of_two() {
     assert_eq!(padding.weights.len(), 4);
     // Full rotary over 96 lanes pads each 48-lane half to 64.
     assert!(padding.rotary.values().all(|&real| real == 96));
+    let weight_shape = |slot: &str| {
+        graph
+            .tensors
+            .iter()
+            .find(|spec| matches!(&spec.storage, TensorStorage::Weight { slot: name } if name == slot))
+            .map(|spec| spec.shape.clone())
+            .unwrap()
+    };
     assert_eq!(
-        weights["layers.0.self_attn.q_proj.weight"].shape(),
+        weight_shape("layers.0.self_attn.q_proj.weight"),
         [4 * 128, 384]
     );
     assert_eq!(
-        weights["layers.0.self_attn.o_proj.weight"].shape(),
+        weight_shape("layers.0.self_attn.o_proj.weight"),
         [384, 4 * 128]
     );
     require_kernel_geometry(&graph).unwrap();
@@ -76,16 +60,14 @@ fn a_narrow_head_is_stored_in_the_next_power_of_two() {
 #[test]
 fn power_of_two_heads_and_drafts_are_left_alone_or_refused() {
     let mut graph = graph(r#","head_dim":128"#);
-    let mut weights = sources(&graph);
     assert!(
-        pad_heads(&mut graph, &mut weights, true, false)
+        pad_heads(&mut graph, true, false)
             .unwrap()
             .weights
             .is_empty()
     );
     let mut narrow = self::graph("");
-    let mut weights = sources(&narrow);
-    let error = pad_heads(&mut narrow, &mut weights, true, false).unwrap_err();
+    let error = pad_heads(&mut narrow, true, false).unwrap_err();
     assert_eq!(error.code, infer_core::ErrorCode::Unsupported);
 }
 

@@ -216,18 +216,24 @@ impl ProjectionWeight {
         package: &mut QuantizedPackage,
         weight: &DeviceWeight,
         pad: &Pad,
+        padded_shape: &[usize],
     ) -> Result<Self> {
-        // The padded shape is already recorded; recover the checkpoint's from the payload.
+        // The graph carries the padded shape; recover the checkpoint's from the payload.
         let checkpoint = |len: usize| -> Result<(usize, usize)> {
-            let shape = weight.shape();
-            let &[rows, columns] = shape.as_slice() else {
+            let &[rows, columns] = padded_shape else {
                 return Err(Error::invalid("padded projection must be a matrix"));
             };
-            match pad {
-                Pad::Columns { .. } if rows > 0 => Ok((rows, len / rows)),
-                Pad::Rows { .. } if columns > 0 => Ok((len / columns, columns)),
-                _ => Err(Error::invalid("padded projection shape")),
+            let checkpoint = match pad {
+                Pad::Columns { .. } if rows > 0 => (rows, len / rows),
+                Pad::Rows { .. } if columns > 0 => (len / columns, columns),
+                _ => return Err(Error::invalid("padded projection shape")),
+            };
+            let (rows, columns) = checkpoint;
+            // Padding changes the graph shape, never the stored descriptor the payload keeps.
+            if weight.data().shape != [rows, columns] {
+                return Err(Error::invalid("padded weight source shape"));
             }
+            Ok((rows, columns))
         };
         match weight.encoding() {
             WeightEncoding::Float => {

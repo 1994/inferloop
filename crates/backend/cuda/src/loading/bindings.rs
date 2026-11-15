@@ -176,7 +176,9 @@ fn bind_tensors(
         let pad = padding.weights.get(&tensor.id);
         if projections.contains(&tensor.id) {
             let projection = match pad {
-                Some(pad) => ProjectionWeight::load_padded(device, package, &source, pad)?,
+                Some(pad) => {
+                    ProjectionWeight::load_padded(device, package, &source, pad, &tensor.shape)?
+                }
                 None => ProjectionWeight::load(device, package, &source)?,
             };
             bind_activation(package, &source, weights, tensor.id)?;

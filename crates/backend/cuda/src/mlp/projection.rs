@@ -221,6 +221,7 @@ impl ProjectionWeight {
             )),
         }
     }
+
     /// What keeps this weight's storage alive; the FP4 and FP8 forms also hold their scales.
     pub(crate) fn owner(&self) -> Owner {
         Arc::new(self.clone())

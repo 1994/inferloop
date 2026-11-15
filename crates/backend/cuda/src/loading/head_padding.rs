@@ -18,7 +18,7 @@
 use super::LoadOptions;
 use infer_core::{Error, OpId, Result, TensorId};
 use infer_ir::{DataflowGraph, TensorOp, TensorStorage};
-use infer_models::{DeviceWeight, QuantizedPackage};
+use infer_models::QuantizedPackage;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -228,7 +228,6 @@ struct Chain {
 /// Returns `Unsupported` for a geometry this load cannot pad, `Invalid` for a malformed chain.
 pub fn pad_heads(
     graph: &mut DataflowGraph,
-    weights: &mut BTreeMap<String, DeviceWeight>,
     drafted: bool,
     multimodal_rotary: bool,
 ) -> Result<HeadPadding> {
@@ -257,7 +256,7 @@ pub fn pad_heads(
         .flat_map(|(index, node)| node.outputs.iter().map(move |&id| (id, index)))
         .collect();
     for attention in narrow {
-        widen(graph, weights, &producer, attention, &mut padding)?;
+        widen(graph, &producer, attention, &mut padding)?;
     }
     graph.plan_lifetimes()?;
     Ok(padding)
@@ -276,7 +275,6 @@ struct Widening {
 
 fn widen(
     graph: &mut DataflowGraph,
-    weights: &mut BTreeMap<String, DeviceWeight>,
     producer: &BTreeMap<TensorId, usize>,
     attention: usize,
     padding: &mut HeadPadding,
@@ -355,7 +353,7 @@ fn widen(
         window,
     };
     tensors.insert(state);
-    record(graph, weights, &tensors, pads, (real, stored), padding)
+    record(graph, &tensors, pads, (real, stored), padding)
 }
 
 /// Stored head width and whether each rotary half pads on its own.
@@ -511,7 +509,6 @@ fn rewrite_chain(
 /// Record the widened activation shapes and each padded weight's shape and padding.
 fn record(
     graph: &mut DataflowGraph,
-    weights: &mut BTreeMap<String, DeviceWeight>,
     tensors: &BTreeSet<TensorId>,
     pads: PaddedWeights,
     (real, stored): (usize, usize),
@@ -535,12 +532,9 @@ fn record(
             .iter_mut()
             .find(|spec| spec.id == weight)
             .ok_or_else(|| Error::invalid("padded weight tensor"))?;
-        let TensorStorage::Weight { slot } = &spec.storage else {
+        let TensorStorage::Weight { .. } = &spec.storage else {
             return Err(Error::invalid("padded weight is not a weight"));
         };
-        let source = weights
-            .get_mut(slot)
-            .ok_or_else(|| Error::invalid("padded weight source"))?;
         let shape = match (&pad, spec.shape.as_slice()) {
             (Pad::Rows { .. }, &[rows, columns]) => vec![pad.widen(rows)?, columns],
             (Pad::Columns { .. }, &[rows, columns]) => vec![rows, pad.widen(columns)?],
@@ -548,7 +542,6 @@ fn record(
             _ => return Err(Error::invalid("padded weight shape")),
         };
         spec.shape.clone_from(&shape);
-        source.data_mut().shape = shape;
         if padding.weights.insert(weight, pad).is_some() {
             return Err(Error::unsupported("a weight shared between padded heads"));
         }
@@ -567,12 +560,7 @@ pub fn pad_package(package: &mut QuantizedPackage, options: &LoadOptions) -> Res
         .position
         .multimodal_sections
         .is_empty();
-    pad_heads(
-        &mut package.graph,
-        &mut package.weights,
-        drafted,
-        multimodal,
-    )
+    pad_heads(&mut package.graph, drafted, multimodal)
 }
 
 /// Walk from one attention input back to its projection through rotary, norm and split.

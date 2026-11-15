@@ -93,10 +93,7 @@ impl Capture<'_> {
             .expert_banks
             .get(&node.inputs[2])
             .ok_or_else(|| error("missing expert bank"))?;
-        let weight = bank
-            .projection
-            .expert_weight(bank.quantized_inputs)
-            .map_err(|e| error(e.to_string()))?;
+        let weight = bank.projection.expert_weight(bank.quantized_inputs)?;
         self.weights
             .kernels
             .moe
