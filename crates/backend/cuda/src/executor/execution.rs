@@ -1,5 +1,6 @@
 use super::drafter::{Drafter, Verified};
 use super::prefix_state::{DraftSnapshot, ProgramSnapshot};
+use super::profiling::ExecutionPhase;
 use super::{CachedMedia, CudaExecutor, ModelOutput, Sequence, SlotLease, Speculation, prefix};
 use crate::constants::CB_SLOT_TOKENS;
 use crate::constants::KV_BLOCK_TOKENS;
@@ -808,8 +809,11 @@ impl CudaExecutor {
             .as_mut()
             .and_then(|worker| worker.bursts.get_mut(rung))
             .ok_or_else(|| Error::invariant("prompt burst"))?;
-        let logits =
-            super::profiling::phase_async("prefill_burst", burst.run_async(device, &lanes)).await?;
+        let logits = super::profiling::phase_async(
+            ExecutionPhase::PrefillBurst,
+            burst.run_async(device, &lanes),
+        )
+        .await?;
         for ((&(index, slot), lane), logits) in selected.iter().zip(&lanes).zip(logits) {
             let task = &tasks[index];
             let state = self
@@ -1012,14 +1016,17 @@ impl CudaExecutor {
         newly.extend_from_slice(&homed);
         participants.extend_from_slice(&newly);
         participants.sort_unstable_by_key(|&(index, _)| index);
-        if let Err(error) = slot_replay(
-            (pool, &mut self.drafter),
-            &mut self.states,
-            device,
-            tasks,
-            &participants,
-            &newly,
-            outputs,
+        if let Err(error) = super::profiling::phase_async(
+            ExecutionPhase::SlotDecode,
+            slot_replay(
+                (pool, &mut self.drafter),
+                &mut self.states,
+                device,
+                tasks,
+                &participants,
+                &newly,
+                outputs,
+            ),
         )
         .await
         {
@@ -1165,7 +1172,7 @@ async fn run_on_worker(
     loaded: &LoadedModel,
     draft: Option<&mut Engine>,
 ) -> Result<ModelOutput> {
-    super::profiling::phase("worker_load", || -> Result<()> {
+    super::profiling::phase(ExecutionPhase::WorkerLoad, || -> Result<()> {
         worker
             .program
             .copy_state_from(&state.program, state.program.position())?;
@@ -1178,7 +1185,7 @@ async fn run_on_worker(
     let output = state.run(task, loaded, draft).await;
     swap_worker(state, worker);
     let output = output?;
-    super::profiling::phase("worker_store", || -> Result<()> {
+    super::profiling::phase(ExecutionPhase::WorkerStore, || -> Result<()> {
         state
             .program
             .copy_state_from(&worker.program, worker.program.position())?;
@@ -1310,7 +1317,7 @@ async fn slot_speculate(
     width: usize,
 ) -> Result<()> {
     let proposal = super::profiling::phase_async(
-        "draft_propose",
+        ExecutionPhase::DraftPropose,
         drafter.propose(states, device, tasks, participants, width),
     )
     .await?;
@@ -1333,7 +1340,7 @@ async fn slot_speculate(
     let plain_greedy = participants
         .iter()
         .all(|&(index, _)| tasks[index].plain_greedy);
-    let mut readout = super::profiling::phase_async("verify", async {
+    let mut readout = super::profiling::phase_async(ExecutionPhase::Verify, async {
         pool.run_verify_readout_async(device, &lanes, plain_greedy)
             .await
     })
@@ -1698,7 +1705,7 @@ impl Sequence {
             let device_prime = speculate && self.primes_on_device(count);
             let read_hidden = self.readout == OutputReadout::Full || (speculate && !device_prime);
             let results = if count > 1 || ingest {
-                super::profiling::phase_async("prefill_chunk", async {
+                super::profiling::phase_async(ExecutionPhase::PrefillChunk, async {
                     self.program
                         .prefill_batch_readout_async(
                             &tokens[offset..offset + count],
@@ -1715,22 +1722,13 @@ impl Sequence {
                 && self.readout != OutputReadout::Full
                 && self.media_prompt_len == 0
             {
-                let selected = super::profiling::phase_async("selected_step", async {
-                    self.program
-                        .step_selected_async(tokens[offset], position, read_hidden)
-                        .await
-                })
-                .await?;
-                next_token = selected
-                    .tokens
-                    .as_ref()
-                    .map(|tokens| {
-                        tokens[0].ok_or_else(|| Error::invariant("program selected token"))
-                    })
-                    .transpose()?;
-                selected.rows
+                let (rows, token) = self
+                    .selected_step(tokens[offset], position, read_hidden)
+                    .await?;
+                next_token = token;
+                rows
             } else {
-                super::profiling::phase_async("prefill_step", async {
+                super::profiling::phase_async(ExecutionPhase::PrefillStep, async {
                     self.decode_step(tokens[offset], position, read_logits, read_hidden)
                         .await
                 })
@@ -1761,9 +1759,11 @@ impl Sequence {
             offset += count;
         }
         if device_primed && let Some(spec) = self.speculation.as_mut() {
-            spec.last_hidden =
-                super::profiling::phase_async("prime_readback", spec.program.primed_hidden_async())
-                    .await?;
+            spec.last_hidden = super::profiling::phase_async(
+                ExecutionPhase::PrimeReadback,
+                spec.program.primed_hidden_async(),
+            )
+            .await?;
         }
         if !matches!(task.tokens, ExecutionInput::Decode { .. }) {
             self.prime_draft(&priming).await?;
@@ -1793,7 +1793,7 @@ impl Sequence {
             return Ok(());
         }
         super::profiling::phase_async(
-            "draft_ingest",
+            ExecutionPhase::DraftIngest,
             engine.ingest_prompt(device, &features, count, &mut draft.cursor, position),
         )
         .await
@@ -1947,6 +1947,27 @@ impl Sequence {
         Ok(())
     }
 
+    /// One greedy step whose token the device selects; returns its rows and that token.
+    async fn selected_step(
+        &mut self,
+        token: u32,
+        position: usize,
+        read_hidden: bool,
+    ) -> Result<(Vec<(Vec<f32>, Vec<f32>)>, Option<u32>)> {
+        let selected = super::profiling::phase_async(ExecutionPhase::SelectedStep, async {
+            self.program
+                .step_selected_async(token, position, read_hidden)
+                .await
+        })
+        .await?;
+        let token = selected
+            .tokens
+            .as_ref()
+            .map(|tokens| tokens[0].ok_or_else(|| Error::invariant("program selected token")))
+            .transpose()?;
+        Ok((selected.rows, token))
+    }
+
     async fn decode_step(
         &mut self,
         token: u32,
@@ -2025,7 +2046,7 @@ impl Sequence {
         // A host-held row (from decode or a previous host-primed chunk) seeds the draft once;
         // afterwards the draft keeps the previous row on the device.
         let previous = take(&mut spec.last_hidden);
-        super::profiling::phase_async("prime_draft", async {
+        super::profiling::phase_async(ExecutionPhase::PrimeDraft, async {
             spec.program
                 .prime_from_target_async(
                     tokens,

@@ -24,6 +24,7 @@ fn selected_backend_preserves_compact_generation_reservation() -> Result<()> {
             draft_model: None,
             gpu_memory_utilization: 0.0,
             autotune: false,
+            device_timing: infer_ir::DeviceTimingMode::Off,
             text_only: false,
             media_limits: infer_models::MediaLimits::default(),
             pool_capture: super::super::PoolCapture::OnDemand,

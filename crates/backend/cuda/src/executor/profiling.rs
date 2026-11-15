@@ -2,9 +2,10 @@
 //! No token contents are recorded. These durations are not thread CPU time.
 use super::CudaExecutor;
 use crate::device::CudaDevice;
+use crate::device::device_timer::DeviceTimer;
 use crate::loading::PooledServingQuote;
 use infer_core::StateId;
-use infer_ir::{ExecutionInput, ExecutionTask};
+use infer_ir::{ExecutionInput, ExecutionTask, TimedPhase};
 use std::collections::BTreeMap;
 use std::env::var_os;
 use std::fs::OpenOptions;
@@ -24,22 +25,87 @@ const PROFILE_ENV: &str = "INFER_CUDA_EXECUTION_PROFILE";
 static OUTPUT: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 pub(super) type PhaseRecords = Arc<Mutex<Vec<(&'static str, Duration)>>>;
+
+/// A named stretch of one execution step. Every phase maps to the [`TimedPhase`] its device
+/// time is reported under, so naming a new phase is also deciding where its time goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ExecutionPhase {
+    PrefillBurst,
+    PrefillChunk,
+    /// One private-program token whose greedy choice the device selects.
+    SelectedStep,
+    /// One private-program token read back to the host.
+    PrefillStep,
+    /// One replay of the shared slot decode graph.
+    SlotDecode,
+    DraftPropose,
+    DraftIngest,
+    PrimeDraft,
+    PrimeReadback,
+    Verify,
+    WorkerLoad,
+    WorkerStore,
+}
+
+impl ExecutionPhase {
+    /// Name in the execution profile JSONL.
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::PrefillBurst => "prefill_burst",
+            Self::PrefillChunk => "prefill_chunk",
+            Self::SelectedStep => "selected_step",
+            Self::PrefillStep => "prefill_step",
+            Self::SlotDecode => "slot_decode",
+            Self::DraftPropose => "draft_propose",
+            Self::DraftIngest => "draft_ingest",
+            Self::PrimeDraft => "prime_draft",
+            Self::PrimeReadback => "prime_readback",
+            Self::Verify => "verify",
+            Self::WorkerLoad => "worker_load",
+            Self::WorkerStore => "worker_store",
+        }
+    }
+
+    /// The phase its device time is reported under.
+    pub(super) const fn timed(self) -> TimedPhase {
+        match self {
+            Self::PrefillBurst | Self::PrefillChunk => TimedPhase::Prefill,
+            Self::SelectedStep | Self::PrefillStep | Self::SlotDecode => TimedPhase::Decode,
+            Self::DraftPropose | Self::DraftIngest | Self::PrimeDraft | Self::PrimeReadback => {
+                TimedPhase::Draft
+            }
+            Self::Verify => TimedPhase::Verify,
+            Self::WorkerLoad | Self::WorkerStore => TimedPhase::Commit,
+        }
+    }
+}
+
+/// The executor's device timer and the device whose stream it records on, bound per poll.
+#[derive(Clone)]
+pub(super) struct TimerBinding {
+    pub device: CudaDevice,
+    pub timer: Arc<Mutex<DeviceTimer>>,
+}
+
 thread_local! {
     static PHASES: RefCell<Option<PhaseRecords>> = const { RefCell::new(None) };
+    static TIMER: RefCell<Option<TimerBinding>> = const { RefCell::new(None) };
     /// Previous allocatable byte count within one unpublished pool capture.
     static PREVIOUS_ALLOCATABLE: RefCell<Option<u64>> = const { RefCell::new(None) };
 }
 /// A poll-local binding; no thread-local borrow or lock survives a suspension.
 pub(super) struct PhaseScope {
     previous: Option<PhaseRecords>,
+    previous_timer: Option<TimerBinding>,
 }
 impl PhaseScope {
     pub(super) fn records() -> PhaseRecords {
         Arc::default()
     }
-    pub(super) fn bind(records: Option<PhaseRecords>) -> Self {
+    pub(super) fn bind(records: Option<PhaseRecords>, timer: Option<TimerBinding>) -> Self {
         Self {
             previous: PHASES.with(|slot| slot.replace(records)),
+            previous_timer: TIMER.with(|slot| slot.replace(timer)),
         }
     }
     pub(super) fn take_records(records: Option<PhaseRecords>) -> Vec<(&'static str, Duration)> {
@@ -58,7 +124,28 @@ impl PhaseScope {
 impl Drop for PhaseScope {
     fn drop(&mut self) {
         PHASES.with(|slot| slot.replace(self.previous.take()));
+        TIMER.with(|slot| slot.replace(self.previous_timer.take()));
     }
+}
+
+/// Apply one transition to the bound timer. Timing is diagnostic: a failure is logged and the
+/// step continues unmeasured rather than failing the request.
+fn transition(change: impl FnOnce(&mut DeviceTimer, &CudaDevice) -> infer_core::Result<()>) {
+    TIMER.with(|slot| {
+        let Some(binding) = slot.borrow().clone() else {
+            return;
+        };
+        match binding.timer.lock() {
+            Ok(mut timer) => {
+                if let Err(error) = change(&mut timer, &binding.device) {
+                    tracing::debug!(target: "infer::profile", %error, "device phase timing skipped");
+                }
+            }
+            Err(error) => {
+                tracing::error!(target: "infer::profile", %error, "device timer poisoned");
+            }
+        }
+    });
 }
 fn record(records: Option<PhaseRecords>, name: &'static str, started: Option<Instant>) {
     if let (Some(records), Some(started)) = (records, started) {
@@ -70,18 +157,22 @@ fn record(records: Option<PhaseRecords>, name: &'static str, started: Option<Ins
         }
     }
 }
-pub(super) fn phase<T>(name: &'static str, body: impl FnOnce() -> T) -> T {
+pub(super) fn phase<T>(phase: ExecutionPhase, body: impl FnOnce() -> T) -> T {
     let records = PHASES.with(|slot| slot.borrow().clone());
     let started = records.as_ref().map(|_| Instant::now());
+    transition(|timer, device| timer.enter(device, phase.timed()));
     let result = body();
-    record(records, name, started);
+    transition(DeviceTimer::exit);
+    record(records, phase.label(), started);
     result
 }
-pub(super) async fn phase_async<T>(name: &'static str, body: impl Future<Output = T>) -> T {
+pub(super) async fn phase_async<T>(phase: ExecutionPhase, body: impl Future<Output = T>) -> T {
     let records = PHASES.with(|slot| slot.borrow().clone());
     let started = records.as_ref().map(|_| Instant::now());
+    transition(|timer, device| timer.enter(device, phase.timed()));
     let result = body.await;
-    record(records, name, started);
+    transition(DeviceTimer::exit);
+    record(records, phase.label(), started);
     result
 }
 

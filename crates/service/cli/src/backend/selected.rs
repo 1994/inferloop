@@ -11,8 +11,9 @@ use infer_backend_cuda::{
 use infer_backend_metal::{MetalBackend, MetalKernels, MetalTicket};
 use infer_core::{Error, Result, StateId};
 use infer_ir::{
-    DeviceCapabilities, ExecutionProgram, ExecutionStats, ExecutionTask, ExecutionTiming,
-    KvCacheInspection, LayerProbe, ModelIr, OpTrace, PageGrowth, StepPlan, TaskOutput,
+    DeviceCapabilities, DeviceTimingSample, ExecutionProgram, ExecutionStats, ExecutionTask,
+    ExecutionTiming, KvCacheInspection, LayerProbe, ModelIr, OpTrace, PageGrowth, StepPlan,
+    TaskOutput,
 };
 use infer_kernel_api::KernelRegistry;
 use infer_spi::BackendProvider;
@@ -368,6 +369,17 @@ impl BackendProvider for SelectedBackend {
             #[cfg(cuda_backend)]
             (Self::Cuda(b), SelectedTicket::Cuda(t)) => b.completion_timing(t),
         }
+    }
+    fn device_timing(&self, t: &SelectedTicket) -> Option<DeviceTimingSample> {
+        match (self, t) {
+            #[cfg(metal_backend)]
+            (Self::Metal(b), SelectedTicket::Metal(t)) => b.device_timing(t),
+            #[cfg(cuda_backend)]
+            (Self::Cuda(b), SelectedTicket::Cuda(t)) => b.device_timing(t),
+        }
+    }
+    fn device_timing_variants(&self) -> Vec<String> {
+        forward!(self, device_timing_variants)
     }
     fn supports_control_checkpoint(&self) -> bool {
         forward!(self, supports_control_checkpoint)

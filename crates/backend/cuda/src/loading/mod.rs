@@ -85,6 +85,8 @@ pub struct LoadOptions {
     pub vision: bool,
     /// Separate `DFlash2` draft package to speculate with; excludes an MTP depth.
     pub draft_model: Option<PathBuf>,
+    /// How much device time to measure; fixed here because measurement points are captured.
+    pub device_timing: infer_ir::DeviceTimingConfig,
 }
 impl Default for LoadOptions {
     fn default() -> Self {
@@ -99,6 +101,7 @@ impl Default for LoadOptions {
             recurrent_profile: crate::RecurrentProfile::Bf16,
             vision: true,
             draft_model: None,
+            device_timing: infer_ir::DeviceTimingConfig::default(),
         }
     }
 }
@@ -176,6 +179,7 @@ pub struct LoadedModel {
     tuning: TuningReport,
     requirements: infer_ir::CapabilityRequirements,
     sequence_prices: budget::SequencePrices,
+    device_timing: infer_ir::DeviceTimingConfig,
 }
 
 /// Vision tower bound alongside the text model.
@@ -527,6 +531,7 @@ impl LoadedModel {
             tuning,
             requirements,
             sequence_prices: budget::SequencePrices::default(),
+            device_timing: options.device_timing,
         };
         loaded.prepare_attention()?;
         tracing::info!(
@@ -566,6 +571,11 @@ impl LoadedModel {
     #[must_use]
     pub const fn mtp_depth(&self) -> usize {
         self.mtp_depth
+    }
+    /// Device timing the model loaded with.
+    #[must_use]
+    pub const fn device_timing(&self) -> infer_ir::DeviceTimingConfig {
+        self.device_timing
     }
     /// Automatic tiling decisions from this load: what was measured, and what fell back.
     #[must_use]

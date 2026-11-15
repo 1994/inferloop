@@ -51,6 +51,23 @@ impl FromStr for SpeculativeTokens {
 /// `Canonical` retains F32 attention. The omitted-option resolver pairs `Bf16` with MTP
 /// on supported native-FP4/FP8-KV packages; its initial context remains canonical.
 /// `Fp16` remains an explicit experimental override.
+/// `--device-timing`: how much device time a backend measures.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum DeviceTiming {
+    Off,
+    #[default]
+    Graph,
+    Node,
+}
+impl From<DeviceTiming> for infer_ir::DeviceTimingMode {
+    fn from(timing: DeviceTiming) -> Self {
+        match timing {
+            DeviceTiming::Off => Self::Off,
+            DeviceTiming::Graph => Self::Graph,
+            DeviceTiming::Node => Self::Node,
+        }
+    }
+}
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum CudaAttentionProfile {
     #[default]
@@ -150,6 +167,8 @@ pub struct Selection {
     pub gpu_memory_utilization: f64,
     /// Measure uncovered geometries; both modes reuse validated cached choices.
     pub autotune: bool,
+    /// Device time the backend measures (`--device-timing`).
+    pub device_timing: infer_ir::DeviceTimingMode,
     /// Serve text only (`--limit-mm-per-prompt` with every limit zero): skip the vision tower.
     pub text_only: bool,
     /// Per-prompt media item limits; all-zero limits are equivalent to `text_only`.

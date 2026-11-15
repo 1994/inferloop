@@ -150,6 +150,7 @@ fn resident_states(total_memory_bytes: u64) -> usize {
 pub(crate) mod asynchronous;
 pub(crate) mod image_preprocess;
 pub use image_preprocess::{ImageBatch, Processor as CudaImageProcessor};
+pub(crate) mod device_timer;
 mod readback;
 pub(crate) mod step_clock;
 mod upload;

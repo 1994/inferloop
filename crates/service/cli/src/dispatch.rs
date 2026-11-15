@@ -30,6 +30,7 @@ pub fn run() {
         attention_profile: cli.cuda_attention_profile,
         gpu_memory_utilization: cli.gpu_memory_utilization,
         autotune: !cli.no_autotune,
+        device_timing: cli.device_timing.into(),
         text_only: cli.limit_mm_per_prompt.unwrap_or_default().text_only(),
         media_limits: cli.limit_mm_per_prompt.unwrap_or_default(),
         pool_capture: backend::PoolCapture::OnDemand,

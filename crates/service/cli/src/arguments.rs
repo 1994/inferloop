@@ -60,6 +60,11 @@ pub struct Cli {
     /// Separate `DFlash2` draft package to speculate with (CUDA); replaces the MTP head.
     #[arg(long, global = true, value_name = "PATH")]
     pub(super) draft_model: Option<PathBuf>,
+    /// Device time measured per step and served raw at `/native/v1/device/timelines`: `graph`
+    /// (default) brackets execution phases without touching kernels; `node` also times every
+    /// dataflow node, at the cost of kernel overlap; `off` measures nothing.
+    #[arg(long, global = true, value_enum, default_value = "graph")]
+    pub(super) device_timing: backend::DeviceTiming,
     /// Target prefill attention profile. Omit both execution options for automatic selection;
     /// an explicit override keeps the other option at canonical/depth0.
     #[arg(long, global = true, value_enum)]
