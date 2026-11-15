@@ -1,10 +1,10 @@
 //! cuTile implementation of the projection family.
 use super::{
     BLOCK_BYTES, compensated_gemm, entries, fp8_gemm, fp8_quant_reduction, linear, linear_batch,
-    nvfp4_gemm, pool_gemv, prefill_gemm, prompt_logits, q4_k, small_gemm, swizzle, vendor_fp8,
+    nvfp4_gemm, pool_gemv, prefill_gemm, prompt_logits, small_gemm, swizzle, vendor_fp8,
 };
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
-use crate::contract::kernels::{Projection, Q4KWeight, WeightRef};
+use crate::contract::kernels::{Projection, WeightRef};
 use crate::contract::plan::{
     DenseKernel, DenseRowsPlan, DownPlan, EmbeddingBatchPlan, EmbeddingPlan, Fp4QuantKind,
     Fp4QuantPlan, Fp4ScalePlan, Fp8QuantKind, Fp8QuantPlan, GemmLoop, GemmPlan, LastRowsKind,
@@ -21,14 +21,6 @@ use infer_core::{Error, Result};
 
 /// Columns one channel-scale tile covers.
 const SCALE_COLUMNS: usize = 256;
-/// Rows a tiled `Q4_K` GEMV tile covers.
-const Q4K_TILE_ROWS: usize = 16;
-/// Values in one `Q4_K` group.
-const Q4K_GROUP_VALUES: usize = 64;
-/// Code bytes in one `Q4_K` group.
-const Q4K_GROUP_LANES: usize = 32;
-/// Values in one `Q4_K` super-block.
-const Q4K_BLOCK_VALUES: usize = 256;
 
 /// Elements of an embedding row a tile covers.
 const EMBEDDING_TILE: usize = 256;
@@ -985,51 +977,6 @@ impl Projection for TileProjection {
             }
         }
         .map_err(backend_error)
-    }
-
-    fn q4_k_row(
-        &self,
-        recording: &Recording<'_>,
-        plan: &DownPlan,
-        out: Buffer<'_, f32>,
-        x: Buffer<'_, f32>,
-        weight: Q4KWeight<'_>,
-    ) -> Result<()> {
-        let scope = capture_scope(recording)?;
-        let columns = plan.columns;
-        if columns == 0
-            || !columns.is_multiple_of(Q4K_BLOCK_VALUES)
-            || plan.tile_rows != Q4K_TILE_ROWS
-            || !out.len().is_multiple_of(plan.tile_rows)
-        {
-            return Err(Error::unsupported("Q4_K GEMV shape"));
-        }
-        let outputs = out.len();
-        let mut out = self.flat(recording, out)?;
-        let x = self.flat(recording, x)?;
-        let tiles = outputs / Q4K_TILE_ROWS;
-        let groups = columns / Q4K_GROUP_VALUES;
-        let scale_count = columns / Q4K_GROUP_LANES;
-        let code_len = tiles * groups * Q4K_GROUP_LANES * Q4K_TILE_ROWS;
-        let scale_len = tiles * scale_count * Q4K_TILE_ROWS;
-        if weight.codes.len() != code_len
-            || weight.factors.len() != scale_len
-            || weight.biases.len() != scale_len
-        {
-            return Err(Error::unsupported("Q4_K GEMV layout"));
-        }
-        let codes = self.flat(recording, weight.codes)?;
-        let factors = self.flat(recording, weight.factors)?;
-        let biases = self.flat(recording, weight.biases)?;
-        let tile = (&mut out).partition([plan.tile_rows]);
-        let generics = vec![
-            columns.to_string(),
-            (columns / Q4K_BLOCK_VALUES).to_string(),
-        ];
-        scope
-            .record(q4_k::gemv(tile, &x, &codes, &factors, &biases).generics(generics))
-            .map(drop)
-            .map_err(backend_error)
     }
 
     fn pack_row(

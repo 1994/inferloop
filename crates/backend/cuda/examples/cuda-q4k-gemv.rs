@@ -1,7 +1,8 @@
 //! `Q4_K` GEMV prototype: correctness against the host oracle and 5090 bandwidth.
 
 use infer_backend_cuda::device::CudaDevice;
-use infer_cuda_kernels::contract::{DownPlan, Q4KWeight};
+use infer_cuda_kernels::contract::{Q4KPlan, Q4KWeight};
+use infer_cuda_kernels::tile::ggml::q4_k_row;
 use infer_gguf::{Q4KDevice, Q4KTiled};
 use std::error::Error;
 use std::mem::size_of;
@@ -77,14 +78,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let biases_alloc = runtime.upload(tiled.biases().to_vec())?;
     let out_alloc = runtime.zeros::<f32>(ROWS)?;
 
-    let plan = DownPlan {
+    let plan = Q4KPlan {
         tile_rows: 16,
-        tile_columns: 64,
         columns: COLUMNS,
     };
-    let kernels = device.kernels();
     let graph = device.tile().capture(|scope| {
-        kernels.projection.q4_k_row(
+        q4_k_row(
+            0,
             scope,
             &plan,
             out_alloc.buffer(),
