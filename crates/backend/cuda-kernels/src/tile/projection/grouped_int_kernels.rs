@@ -1,4 +1,4 @@
-//! `Q4_K` GEMV over the 16-row tile-major layout produced by `infer-gguf`.
+//! `Q4_K` GEMV over the 16-row tile-major layout produced by `infer-format`.
 //!
 //! One super-block (256 values) is decoded into a `[256, 16]` tile of dequantized F32 values,
 //! multiplied by the broadcast activation and reduced over K. Low/high nibbles are concatenated

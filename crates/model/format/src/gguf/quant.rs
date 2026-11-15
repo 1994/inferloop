@@ -2,7 +2,7 @@
 //!
 //! These routines define the numerical contract the device kernels must match. They are not the
 //! production weight path: inference keeps the stored blocks and reads them in place.
-use crate::tensor::GgufType;
+use super::tensor::GgufType;
 use infer_core::{Error, Result};
 
 /// Elements in one k-quant super-block.

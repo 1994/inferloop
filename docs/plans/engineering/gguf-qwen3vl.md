@@ -64,7 +64,7 @@ ModelScope `Qwen/Qwen3-VL-2B-Instruct-GGUF`：
 
 ## 验收
 
-- 两个 GGUF 都能被 `infer-gguf` 解析；张量清单与本文表一致。
+- 两个 GGUF 都能被 `infer-format` 解析；张量清单与本文表一致。
 - 文本层与 HF 的 logits 在定义容差内一致；Q4_K 路径用参考解码校验。
 - 视觉塔逐阶段（patch、每层、merger）与参考一致；deepstack 三组特征逐元素一致。
 - 端到端单图 prompt 的 greedy token 与 HF/llama.cpp 对齐；显存和首 token 延迟单独报告。

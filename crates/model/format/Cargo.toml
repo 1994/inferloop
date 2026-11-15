@@ -1,5 +1,5 @@
 [package]
-name = "infer-gguf"
+name = "infer-format"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

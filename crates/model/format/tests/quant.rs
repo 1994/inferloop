@@ -1,5 +1,5 @@
 use infer_core::ErrorCode;
-use infer_gguf::{GgufType, dequantize};
+use infer_format::{GgufType, dequantize};
 
 const ONE_HALF: [u8; 2] = [0x00, 0x3c];
 fn q4_k_block() -> Vec<u8> {

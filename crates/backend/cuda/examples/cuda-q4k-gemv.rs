@@ -2,7 +2,7 @@
 
 use infer_backend_cuda::device::CudaDevice;
 use infer_cuda_kernels::contract::{GroupedIntPlan, WeightRef};
-use infer_gguf::{Q4KDevice, Q4KTiled};
+use infer_format::{Q4KDevice, Q4KTiled};
 use std::error::Error;
 use std::mem::size_of;
 use std::time::Instant;

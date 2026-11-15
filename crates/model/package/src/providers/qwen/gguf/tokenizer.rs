@@ -1,6 +1,6 @@
 //! Build the `tokenizer.json` and `tokenizer_config.json` assets from GGUF metadata.
 use infer_core::{Error, Result};
-use infer_gguf::{Metadata, MetadataValue};
+use infer_format::{Metadata, MetadataValue};
 use serde_json::{Map, Value, json};
 
 /// Qwen2's pre-tokenizer split pattern, as stored by the HF tokenizer.

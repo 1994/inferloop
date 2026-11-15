@@ -1,5 +1,5 @@
 //! Compare the `Q4_K` device-layout GEMV oracle with the reference decode on a real tensor.
-use infer_gguf::{GgufFile, GgufType, Q4KDevice, dequantize};
+use infer_format::{GgufFile, GgufType, Q4KDevice, dequantize};
 use std::env::args;
 use std::error::Error;
 

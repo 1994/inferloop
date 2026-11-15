@@ -1,6 +1,6 @@
 use super::{VisionTensor, config, encoder, text_tensor, vision_slots, vision_tensor};
 use crate::{TensorSpec, validate_text};
-use infer_gguf::{GgufType, Metadata, MetadataValue};
+use infer_format::{GgufType, Metadata, MetadataValue};
 
 fn metadata(entries: Vec<(&str, MetadataValue)>) -> Metadata {
     Metadata::from_entries(

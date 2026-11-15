@@ -1,5 +1,5 @@
 use super::{tokenizer_config, tokenizer_json};
-use infer_gguf::{Metadata, MetadataValue};
+use infer_format::{Metadata, MetadataValue};
 
 fn metadata() -> Metadata {
     Metadata::from_entries(vec![

@@ -1,6 +1,6 @@
 //! Bounded GGUF container parsing.
-use crate::metadata::{Metadata, MetadataValue};
-use crate::tensor::{GgufType, elements, row_major_shape};
+use super::metadata::{Metadata, MetadataValue};
+use super::tensor::{GgufType, elements, row_major_shape};
 use infer_core::{Error, ErrorCode, Result};
 use std::collections::BTreeMap;
 use std::fs::File;

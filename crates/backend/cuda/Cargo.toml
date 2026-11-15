@@ -59,7 +59,7 @@ libloading.workspace = true
 futures-channel = { workspace = true, optional = true }
 
 [dev-dependencies]
-infer-gguf.workspace = true
+infer-format.workspace = true
 infer-runtime.workspace = true
 clap.workspace = true
 infer-reference-ops.workspace = true

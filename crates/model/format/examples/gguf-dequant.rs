@@ -1,5 +1,5 @@
 //! Decode a GGUF tensor with the reference decoder and print its first values as F32 bits.
-use infer_gguf::{GgufFile, dequantize};
+use infer_format::{GgufFile, dequantize};
 use std::env::args;
 use std::error::Error;
 

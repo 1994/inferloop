@@ -4,11 +4,11 @@
 //! kernels. A caller reads typed metadata, tensor geometry and stored bytes, then decides how to
 //! present them (for example as a virtual HF package). Unknown or unsupported tensor types fail
 //! explicitly instead of being silently reinterpreted.
-mod container;
-mod device;
-mod metadata;
-mod quant;
-mod tensor;
+pub mod container;
+pub mod device;
+pub mod metadata;
+pub mod quant;
+pub mod tensor;
 
 pub use container::{GgufFile, GgufLimits, TensorInfo};
 pub use device::{Q4K_TILE_ROWS, Q4KDevice, Q4KTiled};

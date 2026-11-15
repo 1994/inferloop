@@ -5,7 +5,7 @@ pub mod validate;
 
 use crate::vision::{VisionSlot, slots};
 use infer_core::{Error, Result};
-use infer_gguf::{Metadata, MetadataValue};
+use infer_format::{Metadata, MetadataValue};
 use infer_spi::{HiddenActivation, ModalityEncoder};
 use serde::Serialize;
 

@@ -1,6 +1,6 @@
 //! Shape and storage checks for a Qwen3-VL GGUF before a package is opened for weights.
 use infer_core::{Error, Result};
-use infer_gguf::{GgufType, Metadata};
+use infer_format::{GgufType, Metadata};
 use std::collections::BTreeMap;
 
 /// Q, K and V projections packed into one vision tensor.
@@ -363,7 +363,7 @@ fn check(
 fn bool_array(metadata: &Metadata, key: &str) -> Result<Vec<bool>> {
     metadata
         .get(key)
-        .and_then(infer_gguf::MetadataValue::as_array)
+        .and_then(infer_format::MetadataValue::as_array)
         .ok_or_else(|| Error::invalid(format!("GGUF metadata {key} is not an array")))?
         .iter()
         .map(|value| {

@@ -10,7 +10,7 @@ G1–G3 已实施并合入 #260（merge `4544a479`），方案文档由 #254 合
 - G2 已把 `DeviceWeight` 改为 `Float` / `Fp8Channel` / `Fp8Block` / `Nvfp4`；`Fp8Block` 额外保留 `token_input`，因为现有 checkpoint 允许 block scale 与 token 量化分别声明。
 - G3 已把投影编码行为收进 `ProjectionWeight` 方法；穷举 match 只剩 `projection_lowering.rs` 与编码专属模块。新增编码仍需要改 `loading/weights.rs`（上传）和 `loading/experts.rs`（expert bank），`bindings.rs`/`draft.rs` 的少量特例也可能需要处理，因此“只改四处”的目标并未字面达成。
 - 验收：CI #260 全绿；45 上 CUDA hosted/device 门禁通过；27B NVFP4 的 1536 个 hidden 分量与 64 步贪心 token 与基线逐位一致；release 服务配对在 short/long/batch4 上无回退。`hot_long` 因原生 `/native/v1/stream` 固定 `prefix_boundary: None` 无法产生前缀复用而未纳入配对，完整 `check-release` 仍需单独窗口。
-- GGUF 本体已启动：容器解析与 Q4_K/Q5_K/Q6_K 参考解码进入 `infer-gguf`。参考解码只用于验证自研 kernel，生产路径不会在加载时反量化。Q4_K GEMV 已归入 `projection::grouped_int` 精度分支，当前 845.2 GB/s（4096×5120，roofline 47.2%），仍未过性能门槛；Qwen3-VL 2B 制品已下载并盘点，接入方案见 [Qwen3-VL GGUF 接入](gguf-qwen3vl.md)。
+- GGUF 本体已启动：容器解析与 Q4_K/Q5_K/Q6_K 参考解码进入 `infer-format`。参考解码只用于验证自研 kernel，生产路径不会在加载时反量化。Q4_K GEMV 已归入 `projection::grouped_int` 精度分支，当前 845.2 GB/s（4096×5120，roofline 47.2%），仍未过性能门槛；Qwen3-VL 2B 制品已下载并盘点，接入方案见 [Qwen3-VL GGUF 接入](gguf-qwen3vl.md)。
 
 本文只做 GGUF 接入前的三项改造。它们不改变现有行为，即使最后不接 GGUF 也值得做。GGUF 本身的接入（容器解析、k-quant kernel、性能目标）另行立项，这里只记录结论，作为改造方向的依据。
 
@@ -25,7 +25,7 @@ G1–G3 已实施并合入 #260（merge `4544a479`），方案文档由 #254 合
 ### 已确定的方向
 
 - **原生实现 k-quant**，不走"加载时反量化成 BF16"的捷径。后者会丢掉 GGUF 的主要价值：省显存、省带宽。
-- **GGUF 作为独立模块**：新建 `crates/model/gguf`（`infer-gguf`），只依赖 `infer-core` 和 `infer-ir`。cargo feature 只控制入口，也就是 CLI 和 package 是否依赖 `infer-gguf`、是否识别 `.gguf` 路径，不要用 `cfg` 一路包到 IR 和 kernel。原因见下文"不做的事"。feature 是实验期的成熟度闸门：设备验收通过后改成默认开启或直接删除，不保留成长期的用户开关，与"性能收益成为自动默认"的惯例一致。
+- **GGUF 作为独立模块**：新建 `crates/model/format`（`infer-format`），只依赖 `infer-core` 和 `infer-ir`。cargo feature 只控制入口，也就是 CLI 和 package 是否依赖 `infer-format`、是否识别 `.gguf` 路径，不要用 `cfg` 一路包到 IR 和 kernel。原因见下文"不做的事"。feature 是实验期的成熟度闸门：设备验收通过后改成默认开启或直接删除，不保留成长期的用户开关，与"性能收益成为自动默认"的惯例一致。
 - **GGUF 适配层对外表现为一个虚拟 HF 包**：合成 HF 形态的配置，重建 tokenizer，把 tensor 名映射到 HF 名，并在主机端反转转换脚本对权重做的变换。这样 provider、compiler、runtime 都不需要知道 GGUF。
 - **权重编码按量化语义命名**，比如 `Q4K`、`Q6K`、`Q8_0`，不带 gguf 字样。以后 compressed-tensors 的 int4（llm-compressor 产出的 AWQ/GPTQ）可以复用同一套按组整数编码和大部分 decode kernel。旧版 AutoAWQ 格式不在支持范围内。
 
@@ -37,11 +37,11 @@ G1–G3 已实施并合入 #260（merge `4544a479`），方案文档由 #254 合
 - **prefill**：有效算力约 207 TFLOPS，接近 BF16 dense 峰值，说明 llama.cpp 用的是 int8 MMA（MMQ）。"按 tile 反量化到 BF16 再 MMA"从原理上追不上，必须做 int8 路径。cuTile 0.4 提供了 `mmai` 和 `shri`/`andi`/`bitcast`，具备实现条件。
 - llama.cpp 已经有原生 MTP（PR #22673，2026-05）和融合的 GDN kernel，这两项不构成我们的优势。
 
-GGUF 立项后的第一步是 1–2 周的原型：在本项目内实现 Q4_K GEMV（M=1/4）和 int8 MMQ tile，直接读取 GGUF block，不依赖 llama.cpp 运行时。数值上用 `infer-gguf` 的参考解码校验；性能上以 5090 的带宽/算力 roofline 和自研 BF16/FP8 路径为门槛，`llama.cpp test-backend-ops` 的 Q4_K MUL_MAT 数据只作为可选的外部参照。若外部参照不可用（模型架构或网络限制），不阻塞原型。本文的改造不依赖这个原型的结论。
+GGUF 立项后的第一步是 1–2 周的原型：在本项目内实现 Q4_K GEMV（M=1/4）和 int8 MMQ tile，直接读取 GGUF block，不依赖 llama.cpp 运行时。数值上用 `infer-format` 的参考解码校验；性能上以 5090 的带宽/算力 roofline 和自研 BF16/FP8 路径为门槛，`llama.cpp test-backend-ops` 的 Q4_K MUL_MAT 数据只作为可选的外部参照。若外部参照不可用（模型架构或网络限制），不阻塞原型。本文的改造不依赖这个原型的结论。
 
 ## GGUF kernel 原型（自研，不依赖 llama.cpp）
 
-llama.cpp 只用于理解 GGUF block 布局和外部性能参照；生产 kernel、调度和内存布局都由本项目实现。`infer-gguf` 只负责容器、metadata、张量描述和参考解码。
+llama.cpp 只用于理解 GGUF block 布局和外部性能参照；生产 kernel、调度和内存布局都由本项目实现。`infer-format` 只负责容器、metadata、张量描述和参考解码。
 
 ### 数据布局
 
@@ -64,7 +64,7 @@ llama.cpp 只用于理解 GGUF block 布局和外部性能参照；生产 kernel
 
 ### 验证与门槛
 
-- 正确性：用 `infer-gguf` 的参考解码对同一批真实 Q4_K/Q5_K/Q6_K 张量逐位比较；kernel 先在 F32 路径上做到逐位一致，再对 int8 路径定义明确的累加/舍入契约。
+- 正确性：用 `infer-format` 的参考解码对同一批真实 Q4_K/Q5_K/Q6_K 张量逐位比较；kernel 先在 F32 路径上做到逐位一致，再对 int8 路径定义明确的累加/舍入契约。
 - 性能：decode 与 5090 带宽 roofline 比较，prefill 与 int8 MMA 峰值比较；同时跑自研 BF16/FP8 路径作为同机基线。`llama.cpp test-backend-ops` 的 Q4_K MUL_MAT 只作可选外部参照，环境不支持时不阻塞。
 - M0 不再以 llama.cpp 能加载某个模型为前提；模型级 pp/tg 在 kernel 原型通过后再补。
 
@@ -169,7 +169,7 @@ llama.cpp 只用于理解 GGUF block 布局和外部性能参照；生产 kernel
 
 1. **PR-A：G1。** 只改 Mac 上能运行的部分，风险最低，可以先合。
 2. **PR-B：G2 + G3。** 两者都改 CUDA 的消费方，合在一起只需要一次设备验收窗口。如果 diff 太大，G2 可以先单独提一个 PR，但 CUDA 部分要等 G3 一起做设备验收后再合。
-3. 合入后，GGUF 正式立项：先做 M0 基线和原型（1–2 周）。M0 以自研 kernel 的带宽/算力 roofline 与自研 BF16/FP8 路径为门槛，llama.cpp 仅作可选参照；通过门槛后再扩展 `infer-gguf`。
+3. 合入后，GGUF 正式立项：先做 M0 基线和原型（1–2 周）。M0 以自研 kernel 的带宽/算力 roofline 与自研 BF16/FP8 路径为门槛，llama.cpp 仅作可选参照；通过门槛后再扩展 `infer-format`。
 
 G1 和 G2/G3 之间没有代码依赖，可以并行开发。
 

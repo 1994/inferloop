@@ -1,5 +1,5 @@
 //! Print the HF configuration synthesized from a Qwen3-VL text GGUF and its mmproj.
-use infer_gguf::GgufFile;
+use infer_format::GgufFile;
 use infer_models::TensorSpec;
 use std::env::args;
 use std::error::Error;
