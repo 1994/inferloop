@@ -36,5 +36,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         "vision tensors={} unmapped={unmapped:?}",
         mmproj.tensors().len()
     );
+    println!(
+        "vision slots={}",
+        infer_models::vision_slots(mmproj.metadata())?.len()
+    );
     Ok(())
 }

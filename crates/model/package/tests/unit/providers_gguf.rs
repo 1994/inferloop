@@ -1,4 +1,4 @@
-use super::{VisionTensor, config, text_tensor, vision_tensor};
+use super::{VisionTensor, config, encoder, text_tensor, vision_slots, vision_tensor};
 use infer_gguf::{Metadata, MetadataValue};
 
 fn metadata(entries: Vec<(&str, MetadataValue)>) -> Metadata {
@@ -57,6 +57,10 @@ fn mmproj_metadata() -> Metadata {
         ("clip.vision.embedding_length", MetadataValue::U64(1024)),
         ("clip.vision.feed_forward_length", MetadataValue::U64(4096)),
         ("clip.vision.attention.head_count", MetadataValue::U64(16)),
+        (
+            "clip.vision.attention.layer_norm_epsilon",
+            MetadataValue::F32(1e-6),
+        ),
         ("clip.vision.spatial_merge_size", MetadataValue::U64(2)),
         ("clip.vision.projection_dim", MetadataValue::U64(2048)),
         (
@@ -149,4 +153,20 @@ fn maps_deepstack_mergers_by_their_text_layer() {
         ))
     );
     assert!(vision_tensor("v.deepstack.4.fc1.weight", &layers).is_none());
+}
+
+#[test]
+fn declares_the_existing_vision_geometry() {
+    let encoder = encoder(&mmproj_metadata()).unwrap();
+    assert_eq!(encoder.depth, 24);
+    assert_eq!(encoder.hidden_size, 1024);
+    assert_eq!(encoder.heads, 16);
+    assert_eq!(encoder.temporal_patch_size, 2);
+    assert_eq!(encoder.position_embeddings, 2304);
+    assert_eq!(encoder.norm_epsilon, 1e-6);
+    assert_eq!(
+        encoder.hidden_activation,
+        infer_spi::HiddenActivation::GeluTanh
+    );
+    assert_eq!(vision_slots(&mmproj_metadata()).unwrap().len(), 12 * 24 + 9);
 }

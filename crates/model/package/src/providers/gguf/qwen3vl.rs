@@ -1,10 +1,16 @@
 //! Qwen3-VL GGUF metadata to the HF configuration shape and tensor names.
+use crate::vision::{VisionSlot, slots};
 use infer_core::{Error, Result};
 use infer_gguf::{Metadata, MetadataValue};
+use infer_spi::{HiddenActivation, ModalityEncoder};
 use serde::Serialize;
 
 /// RGB channels of the vision patch embedding.
 const IN_CHANNELS: u64 = 3;
+/// Package prefix the existing vision inventory expects.
+const VISION_PREFIX: &str = "model.visual.";
+/// Axial vision `RoPE` theta used by the Qwen3-VL family.
+const VISION_ROPE_THETA: f64 = 10_000.0;
 
 /// HF text-backbone configuration synthesized from `qwen3vl.*` metadata.
 #[derive(Debug, Serialize)]
@@ -146,6 +152,59 @@ pub fn config(text: &Metadata, mmproj: &Metadata) -> Result<Vec<u8>> {
         },
     };
     serde_json::to_vec(&config).map_err(|error| Error::invalid(error.to_string()))
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the positive LayerNorm epsilon is well inside the f32 range"
+)]
+/// Build the existing vision-encoder declaration from mmproj metadata.
+/// # Errors
+/// Rejects malformed geometry, a non-square position grid, or a zero norm epsilon.
+pub fn encoder(mmproj: &Metadata) -> Result<ModalityEncoder> {
+    let image_size = mmproj.require_u64("clip.vision.image_size")?;
+    let patch_size = mmproj.require_u64("clip.vision.patch_size")?;
+    if patch_size == 0 || !image_size.is_multiple_of(patch_size) {
+        return Err(Error::invalid(
+            "Qwen3-VL image size must divide by patch size",
+        ));
+    }
+    let side = image_size / patch_size;
+    let position_embeddings = side
+        .checked_mul(side)
+        .ok_or_else(|| Error::invalid("Qwen3-VL position grid overflow"))?;
+    Ok(ModalityEncoder {
+        prefix: VISION_PREFIX.into(),
+        depth: usize::try_from(mmproj.require_u64("clip.vision.block_count")?)
+            .map_err(|_| Error::invalid("Qwen3-VL depth exceeds usize"))?,
+        hidden_size: usize::try_from(mmproj.require_u64("clip.vision.embedding_length")?)
+            .map_err(|_| Error::invalid("Qwen3-VL hidden size exceeds usize"))?,
+        intermediate_size: usize::try_from(mmproj.require_u64("clip.vision.feed_forward_length")?)
+            .map_err(|_| Error::invalid("Qwen3-VL intermediate size exceeds usize"))?,
+        heads: usize::try_from(mmproj.require_u64("clip.vision.attention.head_count")?)
+            .map_err(|_| Error::invalid("Qwen3-VL head count exceeds usize"))?,
+        in_channels: usize::try_from(IN_CHANNELS)
+            .map_err(|_| Error::invalid("Qwen3-VL channel count exceeds usize"))?,
+        patch_size: usize::try_from(patch_size)
+            .map_err(|_| Error::invalid("Qwen3-VL patch size exceeds usize"))?,
+        temporal_patch_size: 2,
+        spatial_merge_size: usize::try_from(mmproj.require_u64("clip.vision.spatial_merge_size")?)
+            .map_err(|_| Error::invalid("Qwen3-VL merge size exceeds usize"))?,
+        out_hidden_size: usize::try_from(mmproj.require_u64("clip.vision.projection_dim")?)
+            .map_err(|_| Error::invalid("Qwen3-VL projection width exceeds usize"))?,
+        position_embeddings: usize::try_from(position_embeddings)
+            .map_err(|_| Error::invalid("Qwen3-VL position count exceeds usize"))?,
+        rope_theta: VISION_ROPE_THETA,
+        norm_epsilon: mmproj.require_f64("clip.vision.attention.layer_norm_epsilon")? as f32,
+        hidden_activation: HiddenActivation::GeluTanh,
+    })
+}
+
+/// The existing vision-tensor inventory implied by mmproj metadata.
+/// # Errors
+/// Rejects encoder geometry that the inventory cannot describe.
+pub fn vision_slots(mmproj: &Metadata) -> Result<Vec<VisionSlot>> {
+    slots(&encoder(mmproj)?)
 }
 
 /// Map one text GGUF tensor to the HF backbone name.
