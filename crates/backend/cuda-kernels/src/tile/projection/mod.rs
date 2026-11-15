@@ -27,6 +27,7 @@ pub(in crate::tile) use grouped_int_kernels::q4_k as grouped_int;
 pub(in crate::tile) use grouped_int6_kernels::q6_k as grouped_int6;
 pub(in crate::tile) use int8_probe_kernels::int8_probe;
 pub(in crate::tile) use int8_probe_kernels::q4k_int8_two;
+pub(in crate::tile) use int8_probe_kernels::q4k_int8_two_n64;
 pub use linear_batch_kernels::batched as linear_batch;
 pub use linear_kernels::linear;
 pub use nvfp4_gemm_kernels::kernels as nvfp4_gemm;

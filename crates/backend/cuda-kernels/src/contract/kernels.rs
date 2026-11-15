@@ -111,6 +111,18 @@ pub trait Projection: Send + Sync {
         Err(unsupported("Projection::q4k_int8_two_term"))
     }
 
+    /// Probe a two-term `Q4_K` int8 MMQ with a 64-output tile.
+    /// # Errors
+    /// Fails when a buffer disagrees with the probe shape or the launch is rejected.
+    fn q4k_int8_two_term_n64(
+        &self,
+        recording: &Recording<'_>,
+        probe: &Q4kInt8TwoTermProbe<'_>,
+    ) -> Result<()> {
+        let _ = (recording, probe);
+        Err(unsupported("Projection::q4k_int8_two_term_n64"))
+    }
+
     /// Probe the int8 MMA primitive on `[16, 64] x [64, 16]`.
     /// # Errors
     /// Fails when a buffer disagrees with the probe shape or the launch is rejected.

@@ -96,6 +96,10 @@ name = "cuda-q4k-two-term"
 required-features = ["cuda"]
 
 [[example]]
+name = "cuda-q4k-mmq-bench"
+required-features = ["cuda"]
+
+[[example]]
 name = "cuda-q4k-gemv"
 required-features = ["cuda"]
 

@@ -2,7 +2,7 @@
 use super::{
     BLOCK_BYTES, compensated_gemm, entries, fp8_gemm, fp8_quant_reduction, grouped_int,
     grouped_int6, int8_probe, linear, linear_batch, nvfp4_gemm, pool_gemv, prefill_gemm,
-    prompt_logits, q4k_int8_two, small_gemm, swizzle, vendor_fp8,
+    prompt_logits, q4k_int8_two, q4k_int8_two_n64, small_gemm, swizzle, vendor_fp8,
 };
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::grouped_int::GroupedIntPlan;
@@ -1162,6 +1162,85 @@ impl Projection for TileProjection {
             .record(
                 q4k_int8_two::probe(
                     (&mut out).partition([INT8_PROBE_ROWS, INT8_PROBE_ROWS]),
+                    &x,
+                    &residual,
+                    &codes,
+                    &factors,
+                    &biases,
+                    &scales,
+                    &residual_scales,
+                    &sums,
+                )
+                .generics(vec![groups.to_string()]),
+            )
+            .map(drop)
+            .map_err(backend_error)
+    }
+
+    fn q4k_int8_two_term_n64(
+        &self,
+        recording: &Recording<'_>,
+        probe: &Q4kInt8TwoTermProbe<'_>,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let Q4kInt8TwoTermProbe {
+            groups,
+            out,
+            x,
+            residual,
+            codes,
+            factors,
+            biases,
+            scales,
+            residual_scales,
+            sums,
+        } = *probe;
+        let columns = groups
+            .checked_mul(INT8_GROUP_DEPTH)
+            .ok_or_else(|| Error::unsupported("q4k int8 columns"))?;
+        let outputs = out.len() / INT8_PROBE_ROWS;
+        if outputs == 0 || !outputs.is_multiple_of(64) {
+            return Err(Error::unsupported("q4k int8 n64 outputs"));
+        }
+        let tiles = outputs / 64;
+        let x = self.matrix(recording, x, "q4k int8 x", (INT8_PROBE_ROWS, columns))?;
+        let residual = self.matrix(
+            recording,
+            residual,
+            "q4k int8 residual",
+            (INT8_PROBE_ROWS, columns),
+        )?;
+        let codes = self.matrix(
+            recording,
+            codes,
+            "q4k int8 codes",
+            (tiles * groups * INT8_GROUP_DEPTH, 64),
+        )?;
+        let factors = self.matrix(recording, factors, "q4k int8 factors", (tiles * groups, 64))?;
+        let biases = self.matrix(recording, biases, "q4k int8 biases", (tiles * groups, 64))?;
+        let scales = self.matrix(
+            recording,
+            scales,
+            "q4k int8 scales",
+            (tiles * groups, INT8_PROBE_ROWS),
+        )?;
+        let residual_scales = self.matrix(
+            recording,
+            residual_scales,
+            "q4k int8 residual scales",
+            (tiles * groups, INT8_PROBE_ROWS),
+        )?;
+        let sums = self.matrix(
+            recording,
+            sums,
+            "q4k int8 sums",
+            (tiles * groups, INT8_PROBE_ROWS),
+        )?;
+        let mut out = self.matrix(recording, out, "q4k int8 out", (INT8_PROBE_ROWS, outputs))?;
+        scope
+            .record(
+                q4k_int8_two_n64::probe(
+                    (&mut out).partition([INT8_PROBE_ROWS, 64]),
                     &x,
                     &residual,
                     &codes,
