@@ -51,7 +51,15 @@ impl GenerationDefaults {
     /// # Errors
     /// Rejects malformed, oversized or invalid model sampling configuration.
     pub fn open_with(registry: &ModelRegistry, root: impl AsRef<Path>) -> Result<Self> {
-        read::load(root.as_ref(), registry)
+        let source = crate::PackageSource::open(root)?;
+        Self::from_source(registry, &source)
+    }
+
+    /// Resolve defaults from metadata a caller has already read.
+    /// # Errors
+    /// Rejects malformed, oversized or invalid model sampling configuration.
+    pub fn from_source(registry: &ModelRegistry, source: &crate::PackageSource) -> Result<Self> {
+        read::load(registry, source)
     }
 
     /// Resolve package defaults, the recognized model's mode preset, then explicit overrides.

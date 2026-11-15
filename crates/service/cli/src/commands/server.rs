@@ -59,12 +59,11 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
         flush_logs();
         return Ok(());
     }
-    let assets = package
+    let probe = package
         .as_deref()
-        .filter(|p| p.join("tokenizer.json").exists())
-        .map(|p| infer_models::TextAssets::open(p, engine.model().max_sequence))
-        .transpose()?
-        .map(Arc::new);
+        .map(|root| infer_models::PackageProbe::open(root, infer_core::ModelId::ONE))
+        .transpose()?;
+    let assets = text_assets(engine.model().max_sequence, probe.as_ref())?;
     let image_preprocessing = engine.backend().image_preprocessing();
     if !text_only
         && image_decoder == super::ImageDecoder::Auto
@@ -75,9 +74,9 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
     let media = if text_only {
         None
     } else {
-        package
-            .as_deref()
-            .map(infer_models::MultimodalAssets::open)
+        probe
+            .as_ref()
+            .map(|probe| infer_models::MultimodalAssets::from_source(probe.source()))
             .transpose()?
             .flatten()
             .map(|assets| {
@@ -109,4 +108,22 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
         })?;
 
     Ok(())
+}
+
+/// Open the package's text assets only when its detected tokenizer is present.
+fn text_assets(
+    max_sequence: usize,
+    probe: Option<&infer_models::PackageProbe>,
+) -> Result<Option<Arc<infer_models::TextAssets>>> {
+    probe
+        .filter(|probe| probe.has_text_assets())
+        .map(|probe| {
+            infer_models::TextAssets::from_source(
+                infer_models::default_registry(),
+                probe.source(),
+                max_sequence,
+            )
+        })
+        .transpose()
+        .map(|assets| assets.map(Arc::new))
 }

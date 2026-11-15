@@ -5,7 +5,7 @@ use infer_ir::{
     CanonicalRequest, DecisionReadout, DecisionSchema, ModelIr, ModelOutput, Workload,
     WorkloadOutput, WorkloadPlan,
 };
-use infer_models::{HostTensor, SafetensorsFile, package_path};
+use infer_models::{HostTensor, TensorSet};
 use infer_spi::WorkloadProvider;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::Path};
@@ -25,8 +25,29 @@ impl ProjectionWorkloads {
     /// # Errors
     /// Returns an I/O or invalid-input error for missing, malformed, unsupported, or oversized assets.
     pub fn open(root: impl AsRef<Path>, hidden: usize, vocab: usize) -> Result<Self> {
-        let mut file = SafetensorsFile::open(package_path(root.as_ref(), "readouts.safetensors")?)?;
-        let names: Vec<_> = file.tensors.keys().cloned().collect();
+        Self::from_set(
+            TensorSet::open(root.as_ref(), "readouts.safetensors")?,
+            hidden,
+            vocab,
+        )
+    }
+
+    /// Open installed readouts when the package provides them, leaving the engine without a
+    /// projection provider otherwise.
+    /// # Errors
+    /// Returns an I/O or invalid-input error when a present readout file is malformed.
+    pub fn open_optional(
+        root: impl AsRef<Path>,
+        hidden: usize,
+        vocab: usize,
+    ) -> Result<Option<Self>> {
+        TensorSet::open_optional(root.as_ref(), "readouts.safetensors")?
+            .map(|set| Self::from_set(set, hidden, vocab))
+            .transpose()
+    }
+
+    fn from_set(mut set: TensorSet, hidden: usize, vocab: usize) -> Result<Self> {
+        let names: Vec<_> = set.names().map(str::to_owned).collect();
         let mut weights = BTreeMap::new();
         let mut bytes = 0u64;
         for name in names {
@@ -41,7 +62,7 @@ impl ProjectionWorkloads {
             {
                 return Err(Error::invalid("unknown readout tensor"));
             }
-            let tensor = file.read_f32(&name, READOUT_MAX_BYTES)?;
+            let tensor = set.read_f32(&name, READOUT_MAX_BYTES)?;
             let tensor_bytes = (tensor.data.len() as u64)
                 .checked_mul(F32_BYTES_U64)
                 .ok_or_else(|| Error::invalid("readout size overflow"))?;

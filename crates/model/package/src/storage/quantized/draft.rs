@@ -1,9 +1,8 @@
 //! Bind a `DFlash2` draft package against the target package it speculates for.
 use super::{DeviceWeight, QuantizedPackage, WeightEncoding, WeightSource, WeightView};
-use crate::constants::CONFIG_MAX_BYTES;
 use crate::providers::dflash2::DFlash2Config;
-use crate::storage::package::{load_shards, read_bounded};
-use crate::{TensorDtype, package_path};
+use crate::storage::source::TensorFiles;
+use crate::{PackageSource, TensorDtype};
 use infer_core::{Error, Result};
 use infer_model_recipes::features::{attach_tap_projection, tap_projection_slot};
 use std::collections::BTreeMap;
@@ -45,11 +44,11 @@ impl QuantizedPackage {
         if self.dflash2.is_some() {
             return Err(Error::invalid("a DFlash2 draft is already attached"));
         }
-        let root = root.as_ref();
-        let raw = read_bounded(&package_path(root, "config.json")?, CONFIG_MAX_BYTES)?;
-        let config = DFlash2Config::parse(&raw)?;
+        let source = PackageSource::open(root)?;
+        let raw = source.require_config()?;
+        let config = DFlash2Config::parse(raw)?;
         let value: serde_json::Value =
-            serde_json::from_slice(&raw).map_err(|e| Error::invalid(e.to_string()))?;
+            serde_json::from_slice(raw).map_err(|e| Error::invalid(e.to_string()))?;
         config.check_block_semantics()?;
         config.check_special_tokens()?;
         let geometry = config.geometry();
@@ -62,10 +61,10 @@ impl QuantizedPackage {
             )));
         }
         let block = fp8_block(&value["quantization_config"])?;
-        let (shards, tensor_map) = load_shards(root)?;
+        let TensorFiles { shards, tensor_map } = source.tensor_files()?;
         let mut sources = BTreeMap::new();
         for (name, shard) in &tensor_map {
-            let header = &shards[shard].tensors[name];
+            let header = &shards[shard].tensors()[name];
             sources.insert(
                 name.clone(),
                 WeightSource {

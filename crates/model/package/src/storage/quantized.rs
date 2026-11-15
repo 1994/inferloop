@@ -1,9 +1,7 @@
 //! Validated native storage bindings for mixed FP8/NVFP4 packages.
-use crate::constants::CONFIG_MAX_BYTES;
-use crate::storage::package::load_shards;
-use crate::storage::package::read_bounded;
+use crate::storage::source::TensorFiles;
 use crate::{
-    ImportedModel, ModelRegistry, SafetensorsFile, TensorDtype, default_registry, package_path,
+    ImportedModel, ModelRegistry, PackageSource, TensorDtype, TensorFile, default_registry,
 };
 use infer_core::{Error, ErrorCode, ModelId, Result};
 use infer_ir::{DataflowGraph, TensorStorage};
@@ -87,7 +85,7 @@ pub struct QuantizedPackage {
     pub dflash2: Option<DFlash2Package>,
     /// KV storage declared by the checkpoint, separate from weight encoding.
     pub kv_cache_dtype: Option<TensorDtype>,
-    shards: BTreeMap<String, SafetensorsFile>,
+    shards: BTreeMap<String, TensorFile>,
     tensor_map: BTreeMap<String, String>,
     activation_rules: Vec<activations::Rule>,
 }
@@ -109,10 +107,10 @@ impl QuantizedPackage {
         root: impl AsRef<Path>,
         id: ModelId,
     ) -> Result<Self> {
-        let root = root.as_ref();
-        let config = read_bounded(&package_path(root, "config.json")?, CONFIG_MAX_BYTES)?;
+        let source = PackageSource::open(root.as_ref())?;
+        let config = source.require_config()?;
         let mut value: serde_json::Value =
-            serde_json::from_slice(&config).map_err(|e| Error::invalid(e.to_string()))?;
+            serde_json::from_slice(config).map_err(|e| Error::invalid(e.to_string()))?;
         if let Some(quant) = value.get("quantization_config") {
             if quant["quant_method"] == "fp8" {
                 let normalized = normalize_fp8_scheme(quant)?;
@@ -126,10 +124,10 @@ impl QuantizedPackage {
             }
             validate_groups(quant)?;
         }
-        let provider = registry.resolve(&config)?;
-        let imported = provider.import(id, &config)?;
+        let provider = registry.resolve(config)?;
+        let imported = provider.import(id, config)?;
         let graph = provider.graph(&imported.model)?;
-        let (shards, tensor_map) = load_shards(root)?;
+        let TensorFiles { shards, tensor_map } = source.tensor_files()?;
         let mut package = Self {
             provider,
             imported,
@@ -159,7 +157,7 @@ impl QuantizedPackage {
             .get(&source.shard)
             .ok_or_else(|| Error::invalid("unknown weight shard"))?;
         let header = file
-            .tensors
+            .tensors()
             .get(&source.name)
             .ok_or_else(|| Error::invalid("unknown weight tensor"))?;
         let [stored_rows, columns] = header.shape.as_slice() else {
@@ -217,7 +215,7 @@ impl QuantizedPackage {
             .get(&source.shard)
             .ok_or_else(|| Error::invalid("unknown weight shard"))?;
         let header = file
-            .tensors
+            .tensors()
             .get(&source.name)
             .ok_or_else(|| Error::invalid("unknown weight tensor"))?;
         if header.dtype != source.dtype {
@@ -282,7 +280,7 @@ impl QuantizedPackage {
             .get_mut(&source.shard)
             .ok_or_else(|| Error::invalid("unknown embedding shard"))?;
         let header = file
-            .tensors
+            .tensors()
             .get(&source.name)
             .ok_or_else(|| Error::invalid("unknown embedding tensor"))?;
         if header.shape != source.shape
@@ -302,7 +300,7 @@ impl QuantizedPackage {
             .tensor_map
             .get(name)
             .ok_or_else(|| Error::invalid(format!("missing weight {name}")))?;
-        let header = &self.shards[shard].tensors[name];
+        let header = &self.shards[shard].tensors()[name];
         Ok(WeightSource {
             name: name.into(),
             shard: shard.clone(),
