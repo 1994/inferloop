@@ -9,6 +9,9 @@ use infer_spi::ModalityEncoder;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// Tensors in one deepstack merger: norm, fc1, fc2.
+const DEEPSTACK_PARTS: usize = 3;
+
 /// One vision tensor in the existing HF inventory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VisionSlot {
@@ -28,7 +31,7 @@ pub struct GgufVisionPackage {
     encoder: ModalityEncoder,
     slots: BTreeMap<String, VisionSlot>,
     patch: [Option<VisionSlot>; 2],
-    deepstack: BTreeMap<u64, [Option<VisionSlot>; 3]>,
+    deepstack: BTreeMap<u64, [Option<VisionSlot>; DEEPSTACK_PARTS]>,
 }
 
 impl GgufVisionPackage {
@@ -89,7 +92,7 @@ impl GgufVisionPackage {
                     .next()
                     .and_then(|layer| layer.parse::<u64>().ok())
                     .ok_or_else(|| Error::invalid("deepstack layer"))?;
-                let entry = deepstack.entry(layer).or_insert_with(|| [None, None, None]);
+                let entry = deepstack.entry(layer).or_insert([None; DEEPSTACK_PARTS]);
                 let index = if rest.contains(".norm.") {
                     0
                 } else if rest.contains(".fc1.") {
@@ -131,7 +134,7 @@ impl GgufVisionPackage {
 
     /// Deepstack mergers, keyed by their absolute vision layer.
     #[must_use]
-    pub const fn deepstack(&self) -> &BTreeMap<u64, [Option<VisionSlot>; 3]> {
+    pub const fn deepstack(&self) -> &BTreeMap<u64, [Option<VisionSlot>; DEEPSTACK_PARTS]> {
         &self.deepstack
     }
 
