@@ -92,7 +92,9 @@ impl GgufVisionPackage {
                     .next()
                     .and_then(|layer| layer.parse::<u64>().ok())
                     .ok_or_else(|| Error::invalid("deepstack layer"))?;
-                let entry = deepstack.entry(layer).or_insert([None; DEEPSTACK_PARTS]);
+                let entry = deepstack
+                    .entry(layer)
+                    .or_insert(std::array::from_fn(|_| None));
                 let index = if rest.contains(".norm.") {
                     0
                 } else if rest.contains(".fc1.") {
