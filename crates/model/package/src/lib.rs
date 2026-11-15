@@ -33,6 +33,7 @@ pub use providers::gguf::qwen3vl::{
 };
 #[cfg(feature = "gguf")]
 pub use providers::gguf::validate::{TensorSpec, validate_text, validate_vision};
+pub use providers::gguf::tokenizer::{tokenizer_config, tokenizer_json};
 pub use providers::qwen::{QwenProvider, VisionConfig};
 pub use providers::registry::{ModelRegistry, default_registry};
 pub use storage::index::SafetensorsIndex;
