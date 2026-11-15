@@ -31,6 +31,10 @@ const GROUPED_INT_GROUP_LANES: usize = 32;
 const GROUPED_INT_BLOCK_VALUES: usize = 256;
 /// Super-blocks one iteration decodes.
 const GROUPED_INT_SUPER_BLOCKS: usize = 4;
+/// Rows and outputs of the int8 MMA probe.
+const INT8_PROBE_ROWS: usize = 16;
+/// Reduction width of the int8 MMA probe.
+const INT8_PROBE_DEPTH: usize = 64;
 /// 16-value groups in one grouped-int6 super-block.
 const GROUPED_INT6_GROUPS: usize = 16;
 
@@ -1089,14 +1093,29 @@ impl Projection for TileProjection {
         out: Buffer<'_, i32>,
     ) -> Result<()> {
         let scope = capture_scope(recording)?;
-        let lhs = self.matrix(recording, lhs, "int8 lhs", (16, 64))?;
-        let rhs = self.matrix(recording, rhs, "int8 rhs", (64, 16))?;
-        let mut out = self.matrix(recording, out, "int8 out", (16, 16))?;
+        let lhs = self.matrix(
+            recording,
+            lhs,
+            "int8 lhs",
+            (INT8_PROBE_ROWS, INT8_PROBE_DEPTH),
+        )?;
+        let rhs = self.matrix(
+            recording,
+            rhs,
+            "int8 rhs",
+            (INT8_PROBE_DEPTH, INT8_PROBE_ROWS),
+        )?;
+        let mut out = self.matrix(
+            recording,
+            out,
+            "int8 out",
+            (INT8_PROBE_ROWS, INT8_PROBE_ROWS),
+        )?;
         scope
             .record(int8_probe::probe_mma(
                 &lhs,
                 &rhs,
-                (&mut out).partition([16, 16]),
+                (&mut out).partition([INT8_PROBE_ROWS, INT8_PROBE_ROWS]),
             ))
             .map(drop)
             .map_err(backend_error)
