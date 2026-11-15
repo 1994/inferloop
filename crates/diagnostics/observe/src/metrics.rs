@@ -76,9 +76,6 @@ pub struct RuntimeMetrics {
     pub gpu_execution: LatencyHistogram,
     pub cpu_output: LatencyHistogram,
     pub resource_preparation: LatencyHistogram,
-    /// Device time the backend measured, by phase, operator class, layer and implementation.
-    #[serde(default)]
-    pub device: crate::DeviceTimingMetrics,
 }
 impl RuntimeMetrics {
     pub fn record(&mut self, event: &SemanticEvent) {

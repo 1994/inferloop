@@ -208,9 +208,27 @@ impl OpClass {
     }
 }
 
+/// One contiguous stretch of a step's timeline, owned by one phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimedInterval {
+    pub phase: TimedPhase,
+    /// Offset from the step's first measurement point.
+    pub start_ns: u64,
+    pub duration_ns: u64,
+}
+
+impl TimedInterval {
+    /// Offset of the interval's end from the step's first measurement point.
+    #[must_use]
+    pub const fn end_ns(&self) -> u64 {
+        self.start_ns.saturating_add(self.duration_ns)
+    }
+}
+
 /// Device time of one dataflow node, or of backend work between nodes, in one execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimedSegment {
+    pub phase: TimedPhase,
     pub graph: TimedGraph,
     /// Index of the node in its graph; `None` for work no node owns ([`OpClass::Runtime`]).
     pub node: Option<u32>,
@@ -220,32 +238,53 @@ pub struct TimedSegment {
     /// `device_timing_variants`), naming what the node lowered to; `None` when the backend does
     /// not distinguish implementations.
     pub variant: Option<u16>,
-    pub device_ns: u64,
+    /// Offset from the step's first measurement point, on the same clock as its intervals.
+    pub start_ns: u64,
+    pub duration_ns: u64,
 }
 
 impl TimedSegment {
-    /// A segment for `node` at `index` of `graph`, classified by [`OpClass::of`].
+    /// A segment for `node` at `index` of `graph` during `phase`, classified by [`OpClass::of`].
     #[must_use]
-    pub fn of_node(graph: TimedGraph, index: usize, node: &TensorNode, device_ns: u64) -> Self {
+    pub fn of_node(
+        phase: TimedPhase,
+        graph: TimedGraph,
+        (index, node): (usize, &TensorNode),
+        (start_ns, duration_ns): (u64, u64),
+    ) -> Self {
         Self {
+            phase,
             graph,
             node: u32::try_from(index).ok(),
             op: OpClass::of(&node.op),
             layer: node.layer.and_then(|layer| u16::try_from(layer).ok()),
             variant: None,
-            device_ns,
+            start_ns,
+            duration_ns,
         }
     }
 }
 
-/// Device time of one executed graph and, under [`DeviceTimingMode::Node`], of its nodes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The measured timeline of one executed step: enough to aggregate and to draw.
+///
+/// Device intervals are in time order and cover the step from its first to its last
+/// measurement point, so they add up to its device time; node segments fall inside them.
+/// Host intervals, when a backend reports them, use offsets from the step's submission on the
+/// host clock, so a viewer can lay both tracks side by side.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceTimingSample {
-    pub phase: TimedPhase,
-    /// Sequences (or prompt rows) the graph executed for.
+    /// Sequences (or prompt rows) the step executed for.
     pub rows: u32,
-    /// Device time from the first to the last measured point of the graph.
-    pub total_ns: u64,
-    /// Node segments in execution order; empty under [`DeviceTimingMode::Graph`].
+    pub intervals: Vec<TimedInterval>,
+    /// Empty unless [`DeviceTimingMode::Node`] measured the step's graphs.
     pub segments: Vec<TimedSegment>,
+    pub host: Vec<TimedInterval>,
+}
+
+impl DeviceTimingSample {
+    /// Device time from the step's first to its last measurement point.
+    #[must_use]
+    pub fn total_ns(&self) -> u64 {
+        self.intervals.last().map_or(0, TimedInterval::end_ns)
+    }
 }

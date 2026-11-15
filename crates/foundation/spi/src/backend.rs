@@ -228,11 +228,11 @@ pub trait BackendProvider {
     fn completion_timing(&self, _ticket: &Self::Ticket) -> Option<ExecutionTiming> {
         None
     }
-    /// Device time of every graph the completed execution ran, when its device timing
-    /// configuration measured and sampled it; empty otherwise. Attribute segments with
-    /// [`infer_ir::TimedSegment::of_node`] so every model and kernel is classified alike.
-    fn device_timing(&self, _ticket: &Self::Ticket) -> Vec<DeviceTimingSample> {
-        Vec::new()
+    /// The completed execution's measured timeline, when its device timing configuration
+    /// sampled it. Attribute node segments with [`infer_ir::TimedSegment::of_node`] so every
+    /// model and kernel is classified alike.
+    fn device_timing(&self, _ticket: &Self::Ticket) -> Option<DeviceTimingSample> {
+        None
     }
     /// Names of the implementations [`infer_ir::TimedSegment::variant`] indexes, read once
     /// before execution starts; the indices must stay valid for the backend's lifetime.

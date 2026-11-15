@@ -12,8 +12,8 @@ pub mod trace;
 mod window;
 
 pub use device::{
-    DeviceTimingMetrics, DeviceTotal, MAX_TIMED_LAYERS, MAX_TIMED_VARIANTS, OP_CLASS_COUNT,
-    PhaseTiming, TIMED_PHASE_COUNT,
+    DEVICE_TIMELINE_CAPACITY, DeviceTimelineQuery, DeviceTimelines, MAX_DEVICE_TIMELINE_QUERY,
+    StepTimeline,
 };
 pub use diagnostic::{Diagnostic, DiagnosticCode, Severity};
 pub use metrics::{LATENCY_BOUNDS_US, LatencyHistogram, RuntimeMetrics};
@@ -36,4 +36,9 @@ pub enum ObservationQuery {
     Diagnostics,
     Timeline,
     Otlp,
+    /// Raw sampled device timelines after a cursor; see [`DeviceTimelines::query`].
+    DeviceTimelines {
+        after: u64,
+        limit: usize,
+    },
 }

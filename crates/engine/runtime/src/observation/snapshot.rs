@@ -31,6 +31,8 @@ impl WindowSource {
 }
 pub struct ObservationSnapshot {
     pub(super) query: ObservationQuery,
+    /// Taken with the snapshot for a device timeline query; rendered as recorded.
+    pub(super) device: Option<infer_observe::DeviceTimelineQuery>,
     pub(super) metrics: RuntimeMetrics,
     pub(super) resources: ResourceGauges,
     pub(super) fault: Option<EngineFault>,
@@ -87,6 +89,7 @@ impl ObservationSnapshot {
                 self.namespace,
                 self.unix_origin_us,
             ),
+            ObservationQuery::DeviceTimelines { .. } => json!(self.device),
         })
     }
 }

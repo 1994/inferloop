@@ -1,5 +1,6 @@
 use infer_ir::{
-    DeviceTimingConfig, DeviceTimingMode, OpClass, TensorNode, TensorOp, TimedGraph, TimedSegment,
+    DeviceTimingConfig, DeviceTimingMode, DeviceTimingSample, OpClass, TensorNode, TensorOp,
+    TimedGraph, TimedInterval, TimedPhase, TimedSegment,
 };
 
 #[test]
@@ -49,12 +50,46 @@ fn a_node_segment_takes_its_class_and_layer_from_the_graph() {
         outputs: Vec::new(),
         states: Vec::new(),
     };
-    let segment = TimedSegment::of_node(TimedGraph::Target, 41, &node, 5_000);
+    let segment = TimedSegment::of_node(
+        TimedPhase::Verify,
+        TimedGraph::Target,
+        (41, &node),
+        (2_000, 5_000),
+    );
+    assert_eq!(segment.phase, TimedPhase::Verify);
     assert_eq!(segment.node, Some(41));
     assert_eq!(segment.op, OpClass::Attention);
     assert_eq!(segment.layer, Some(12));
     assert_eq!(segment.variant, None);
-    assert_eq!(segment.device_ns, 5_000);
+    assert_eq!((segment.start_ns, segment.duration_ns), (2_000, 5_000));
+}
+
+#[test]
+fn a_sample_spans_its_intervals_and_round_trips() {
+    let sample = DeviceTimingSample {
+        rows: 4,
+        intervals: vec![
+            TimedInterval {
+                phase: TimedPhase::Draft,
+                start_ns: 0,
+                duration_ns: 3_000,
+            },
+            TimedInterval {
+                phase: TimedPhase::Verify,
+                start_ns: 3_000,
+                duration_ns: 9_000,
+            },
+        ],
+        segments: Vec::new(),
+        host: Vec::new(),
+    };
+    assert_eq!(sample.total_ns(), 12_000);
+    assert_eq!(DeviceTimingSample::default().total_ns(), 0);
+    let json = serde_json::to_string(&sample).unwrap();
+    assert_eq!(
+        serde_json::from_str::<DeviceTimingSample>(&json).unwrap(),
+        sample
+    );
 }
 
 #[test]

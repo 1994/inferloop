@@ -1,125 +1,102 @@
-//! Bounded aggregation of backend device timing samples.
-use crate::constants::NANOS_PER_MICROSECOND;
-use crate::metrics::LatencyHistogram;
-use infer_ir::{DeviceTimingSample, OpClass, TimedPhase};
+//! Retention of raw device timelines: the one source every device-time view reads.
+//!
+//! The runtime keeps each sampled step's timeline exactly as the backend reported it, with
+//! the step, program and runtime clock that place it among the other observations. Summaries,
+//! dashboards, trace viewers and exporters are built on top of [`DeviceTimelines::query`] and
+//! stay outside this crate's collection path, so adding one never changes what is collected.
+use infer_core::{Error, Result};
+use infer_ir::DeviceTimingSample;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 
-/// Phases of [`TimedPhase::ALL`].
-pub const TIMED_PHASE_COUNT: usize = TimedPhase::ALL.len();
-/// Operator classes of [`OpClass::ALL`].
-pub const OP_CLASS_COUNT: usize = OpClass::ALL.len();
-/// Layers tracked per phase; deeper layers fold into the last slot rather than grow the table.
-pub const MAX_TIMED_LAYERS: usize = 256;
-/// Implementation variants tracked; a backend declaring more folds the rest into the last slot.
-pub const MAX_TIMED_VARIANTS: usize = 256;
+/// Sampled steps retained; older ones are evicted and counted.
+pub const DEVICE_TIMELINE_CAPACITY: usize = 64;
+/// Records one query returns at most.
+pub const MAX_DEVICE_TIMELINE_QUERY: usize = DEVICE_TIMELINE_CAPACITY;
 
-/// Accumulated device time and the number of segments it came from.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeviceTotal {
-    pub device_ns: u64,
-    pub segments: u64,
-}
-
-impl DeviceTotal {
-    const fn add(&mut self, device_ns: u64) {
-        self.device_ns = self.device_ns.saturating_add(device_ns);
-        self.segments = self.segments.saturating_add(1);
-    }
-}
-
-/// Device time of one phase: whole graphs, and where the node-level samples spent it.
+/// One sampled step's device timeline and where it sits in the runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PhaseTiming {
-    /// Device time of each sampled graph, in microseconds.
-    pub graphs: LatencyHistogram,
-    /// Rows summed over the sampled graphs, to normalise time per sequence.
-    pub rows: u64,
-    /// By [`OpClass::ALL`] position.
-    pub ops: [DeviceTotal; OP_CLASS_COUNT],
-    /// By layer; entries past the model's depth stay zero.
-    pub layers: Vec<DeviceTotal>,
+pub struct StepTimeline {
+    /// Position in retention order; a query cursor.
+    pub sequence: u64,
+    pub step: u64,
+    pub program: u64,
+    /// Runtime logical clock when the step completed, the clock of every other observation.
+    pub completed_us: u64,
+    pub sample: DeviceTimingSample,
 }
 
-impl Default for PhaseTiming {
-    fn default() -> Self {
-        Self {
-            graphs: LatencyHistogram::default(),
-            rows: 0,
-            ops: [DeviceTotal::default(); OP_CLASS_COUNT],
-            layers: vec![DeviceTotal::default(); MAX_TIMED_LAYERS],
-        }
-    }
-}
-
-/// Every device timing sample a deployment read back, in fixed storage: recording a sample never
-/// allocates, so the aggregate can stay on in production.
+/// Records after a cursor, with what a reader needs to interpret them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct DeviceTimingMetrics {
-    /// Samples recorded, whether or not they carried node segments.
-    pub samples: u64,
-    /// By [`TimedPhase::ALL`] position.
-    pub phases: Vec<PhaseTiming>,
-    /// By the backend's variant index.
-    pub variants: Vec<DeviceTotal>,
-    /// The backend's implementation names, which [`Self::variants`] indexes.
-    pub variant_names: Vec<String>,
+pub struct DeviceTimelineQuery {
+    pub records: Vec<StepTimeline>,
+    /// Pass as `after` to continue from the last record returned.
+    pub next: u64,
+    /// Records evicted before any reader saw them since the runtime started.
+    pub evicted: u64,
+    /// The backend's implementation names, which segment variants index.
+    pub variants: Vec<String>,
 }
 
-impl Default for DeviceTimingMetrics {
-    fn default() -> Self {
-        Self {
-            samples: 0,
-            phases: vec![PhaseTiming::default(); TIMED_PHASE_COUNT],
-            variants: vec![DeviceTotal::default(); MAX_TIMED_VARIANTS],
-            variant_names: Vec::new(),
-        }
-    }
+/// The most recent sampled steps, in fixed capacity.
+#[derive(Debug, Clone)]
+pub struct DeviceTimelines {
+    records: VecDeque<StepTimeline>,
+    next: u64,
+    evicted: u64,
+    variants: Vec<String>,
 }
 
-impl DeviceTimingMetrics {
-    /// An aggregate whose variant indices name `variants`, the backend's declared list.
+impl DeviceTimelines {
+    /// An empty retention whose segment variants index `variants`, the backend's declared names.
     #[must_use]
-    pub fn with_variants(variants: Vec<String>) -> Self {
+    pub fn new(variants: Vec<String>) -> Self {
         Self {
-            variant_names: variants,
-            ..Self::default()
+            records: VecDeque::with_capacity(DEVICE_TIMELINE_CAPACITY),
+            next: 0,
+            evicted: 0,
+            variants,
         }
     }
 
-    /// Fold one sample into the aggregate.
-    pub fn record(&mut self, sample: &DeviceTimingSample) {
-        self.samples = self.samples.saturating_add(1);
-        let Some(phase) = self.phases.get_mut(sample.phase.index()) else {
-            return;
-        };
-        phase.graphs.record(sample.total_ns / NANOS_PER_MICROSECOND);
-        phase.rows = phase.rows.saturating_add(u64::from(sample.rows));
-        for segment in &sample.segments {
-            if let Some(total) = phase.ops.get_mut(segment.op.index()) {
-                total.add(segment.device_ns);
-            }
-            if let Some(layer) = segment.layer
-                && let Some(total) = phase
-                    .layers
-                    .get_mut(usize::from(layer).min(MAX_TIMED_LAYERS - 1))
-            {
-                total.add(segment.device_ns);
-            }
-            if let Some(variant) = segment.variant
-                && let Some(total) = self
-                    .variants
-                    .get_mut(usize::from(variant).min(MAX_TIMED_VARIANTS - 1))
-            {
-                total.add(segment.device_ns);
-            }
+    /// Retain one sampled step, evicting the oldest when full.
+    pub fn push(&mut self, step: u64, program: u64, completed_us: u64, sample: DeviceTimingSample) {
+        if self.records.len() == DEVICE_TIMELINE_CAPACITY {
+            self.records.pop_front();
+            self.evicted = self.evicted.saturating_add(1);
         }
+        self.next = self.next.saturating_add(1);
+        self.records.push_back(StepTimeline {
+            sequence: self.next,
+            step,
+            program,
+            completed_us,
+            sample,
+        });
     }
 
-    /// The aggregate of one phase.
-    #[must_use]
-    pub fn phase(&self, phase: TimedPhase) -> Option<&PhaseTiming> {
-        self.phases.get(phase.index())
+    /// Up to `limit` records with a sequence after `after`, oldest first.
+    /// # Errors
+    /// Rejects a limit of zero or above [`MAX_DEVICE_TIMELINE_QUERY`].
+    pub fn query(&self, after: u64, limit: usize) -> Result<DeviceTimelineQuery> {
+        if limit == 0 || limit > MAX_DEVICE_TIMELINE_QUERY {
+            return Err(Error::invalid(
+                "device timeline query limit must be 1 to the retained capacity",
+            ));
+        }
+        let records: Vec<StepTimeline> = self
+            .records
+            .iter()
+            .filter(|record| record.sequence > after)
+            .take(limit)
+            .cloned()
+            .collect();
+        Ok(DeviceTimelineQuery {
+            next: records.last().map_or(after, |record| record.sequence),
+            records,
+            evicted: self.evicted,
+            variants: self.variants.clone(),
+        })
     }
 }
 

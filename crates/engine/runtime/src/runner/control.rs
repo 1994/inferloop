@@ -275,7 +275,7 @@ where
             step: id,
             batch,
             timing: None,
-            device: Vec::new(),
+            device: None,
             done: false,
         })
     }
@@ -315,7 +315,7 @@ where
     fn completion_timing(&self, ticket: &RunnerTicket) -> Option<ExecutionTiming> {
         ticket.timing
     }
-    fn device_timing(&self, ticket: &RunnerTicket) -> Vec<infer_ir::DeviceTimingSample> {
+    fn device_timing(&self, ticket: &RunnerTicket) -> Option<infer_ir::DeviceTimingSample> {
         ticket.device.clone()
     }
     fn device_timing_variants(&self) -> Vec<String> {

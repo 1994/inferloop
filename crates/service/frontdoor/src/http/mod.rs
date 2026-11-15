@@ -6,7 +6,9 @@ mod tests;
 use crate::{RuntimeHandle, cpu};
 use error::HttpResult;
 use native::trace_parent;
-use observability::{diagnostics, events, metrics, observability, otlp, timeline};
+use observability::{
+    device_timelines, diagnostics, events, metrics, observability, otlp, timeline,
+};
 
 mod error;
 mod logging;

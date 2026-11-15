@@ -17,8 +17,8 @@ pub use dataflow::{
     BufferLifetime, DataflowGraph, TensorNode, TensorOp, TensorSpec, TensorStorage,
 };
 pub use device_timing::{
-    DeviceTimingConfig, DeviceTimingMode, DeviceTimingSample, OpClass, TimedGraph, TimedPhase,
-    TimedSegment,
+    DeviceTimingConfig, DeviceTimingMode, DeviceTimingSample, OpClass, TimedGraph, TimedInterval,
+    TimedPhase, TimedSegment,
 };
 pub use diagnostics::{
     ConcurrencyInspection, ExecutionProfileInspection, ExecutionStats, KvCacheInspection,

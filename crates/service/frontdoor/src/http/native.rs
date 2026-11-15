@@ -1,7 +1,7 @@
 //! Native HTTP adapter.
 use super::{
-    HttpError, HttpResult, RuntimeHandle, diagnostics, events, metrics, observability, otlp,
-    timeline,
+    HttpError, HttpResult, RuntimeHandle, device_timelines, diagnostics, events, metrics,
+    observability, otlp, timeline,
 };
 use crate::constants::MAX_REQUEST_BODY_BYTES;
 use axum::extract::rejection::JsonRejection;
@@ -31,6 +31,7 @@ pub fn router(handle: RuntimeHandle) -> Router {
         .route("/native/v1/diagnostics", get(diagnostics))
         .route("/native/v1/timeline", get(timeline))
         .route("/native/v1/traces/otlp", get(otlp))
+        .route("/native/v1/device/timelines", get(device_timelines))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .with_state(handle)
 }

@@ -1,122 +1,88 @@
 use super::*;
-use crate::{ObservationStore, RuntimeMetrics, export};
-use infer_ir::{TimedGraph, TimedSegment};
+use infer_ir::{OpClass, TimedGraph, TimedInterval, TimedPhase, TimedSegment};
 
-fn segment(op: OpClass, layer: Option<u16>, variant: Option<u16>, device_ns: u64) -> TimedSegment {
-    TimedSegment {
-        graph: TimedGraph::Target,
-        node: Some(0),
-        op,
-        layer,
-        variant,
-        device_ns,
-    }
-}
-
-fn sample(phase: TimedPhase, total_ns: u64, segments: Vec<TimedSegment>) -> DeviceTimingSample {
+fn sample(rows: u32) -> DeviceTimingSample {
     DeviceTimingSample {
-        phase,
-        rows: 16,
-        total_ns,
-        segments,
+        rows,
+        intervals: vec![
+            TimedInterval {
+                phase: TimedPhase::Draft,
+                start_ns: 0,
+                duration_ns: 4_000,
+            },
+            TimedInterval {
+                phase: TimedPhase::Verify,
+                start_ns: 4_000,
+                duration_ns: 30_000,
+            },
+        ],
+        segments: vec![TimedSegment {
+            phase: TimedPhase::Verify,
+            graph: TimedGraph::Target,
+            node: Some(9),
+            op: OpClass::Attention,
+            layer: Some(3),
+            variant: Some(0),
+            start_ns: 5_000,
+            duration_ns: 2_000,
+        }],
+        host: Vec::new(),
     }
 }
 
 #[test]
-fn samples_aggregate_by_phase_operator_layer_and_variant() {
-    let mut device = DeviceTimingMetrics::with_variants(vec!["fa4".into(), "nvfp4".into()]);
-    device.record(&sample(
-        TimedPhase::Verify,
-        40_000_000,
-        vec![
-            segment(OpClass::Attention, Some(3), Some(0), 2_000_000),
-            segment(OpClass::Projection, Some(3), Some(1), 30_000_000),
-            segment(OpClass::Runtime, None, None, 1_000_000),
-        ],
-    ));
-    device.record(&sample(TimedPhase::Verify, 38_000_000, Vec::new()));
-    device.record(&sample(TimedPhase::Decode, 9_000_000, Vec::new()));
-
-    assert_eq!(device.samples, 3);
-    let verify = device.phase(TimedPhase::Verify).unwrap();
-    assert_eq!(verify.graphs.count, 2);
-    assert_eq!(verify.graphs.sum_us, 78_000);
-    assert_eq!(verify.rows, 32);
+fn records_keep_the_backend_timeline_and_its_runtime_placement() {
+    let mut timelines = DeviceTimelines::new(vec!["fa4".into()]);
+    timelines.push(7, 1, 1_234, sample(16));
+    let query = timelines.query(0, 4).unwrap();
+    assert_eq!(query.variants, ["fa4"]);
+    assert_eq!(query.evicted, 0);
+    let [record] = query.records.as_slice() else {
+        panic!("one record");
+    };
     assert_eq!(
-        verify.ops[OpClass::Projection.index()],
-        DeviceTotal {
-            device_ns: 30_000_000,
-            segments: 1
-        }
+        (record.step, record.program, record.completed_us),
+        (7, 1, 1_234)
     );
-    assert_eq!(verify.ops[OpClass::Runtime.index()].device_ns, 1_000_000);
-    assert_eq!(verify.layers[3].device_ns, 32_000_000);
-    assert_eq!(device.variants[0].device_ns, 2_000_000);
-    assert_eq!(device.variants[1].device_ns, 30_000_000);
-    assert_eq!(device.phase(TimedPhase::Decode).unwrap().graphs.count, 1);
+    assert_eq!(record.sample, sample(16));
+    assert_eq!(record.sample.total_ns(), 34_000);
+    assert_eq!(query.next, record.sequence);
 }
 
 #[test]
-fn out_of_range_layers_and_variants_fold_into_the_last_slot() {
-    let mut device = DeviceTimingMetrics::default();
-    let layers = device.phases[0].layers.len();
-    let variants = device.variants.len();
-    device.record(&sample(
-        TimedPhase::Prefill,
-        1_000,
-        vec![segment(OpClass::Norm, Some(u16::MAX), Some(u16::MAX), 7)],
-    ));
-    let prefill = device.phase(TimedPhase::Prefill).unwrap();
-    assert_eq!(prefill.layers.len(), layers);
-    assert_eq!(prefill.layers[MAX_TIMED_LAYERS - 1].device_ns, 7);
-    assert_eq!(device.variants.len(), variants);
-    assert_eq!(device.variants[MAX_TIMED_VARIANTS - 1].device_ns, 7);
+fn a_cursor_pages_through_retained_records_without_consuming_them() {
+    let mut timelines = DeviceTimelines::new(Vec::new());
+    for step in 0..5 {
+        timelines.push(step, 1, step * 10, sample(1));
+    }
+    let first = timelines.query(0, 2).unwrap();
+    assert_eq!(
+        first.records.iter().map(|r| r.step).collect::<Vec<_>>(),
+        [0, 1]
+    );
+    let second = timelines.query(first.next, 2).unwrap();
+    assert_eq!(
+        second.records.iter().map(|r| r.step).collect::<Vec<_>>(),
+        [2, 3]
+    );
+    let again = timelines.query(0, 2).unwrap();
+    assert_eq!(again, first);
+    let end = timelines.query(second.next, 4).unwrap();
+    assert_eq!(end.records.len(), 1);
+    assert_eq!(timelines.query(end.next, 4).unwrap().records.len(), 0);
 }
 
 #[test]
-fn prometheus_exports_device_time_with_bounded_labels() {
-    let mut metrics = RuntimeMetrics {
-        device: DeviceTimingMetrics::with_variants(vec!["fa4 \"bf16\"".into()]),
-        ..RuntimeMetrics::default()
-    };
-    metrics.device.record(&sample(
-        TimedPhase::Verify,
-        2_000_000,
-        vec![segment(OpClass::Attention, Some(1), Some(0), 500_000_000)],
-    ));
-    let gauges = export::ResourceGauges {
-        backend: "cuda".into(),
-        ready: true,
-        active_requests: 0,
-        inflight_steps: 0,
-        resource_waiters: 0,
-        output_waiters: 0,
-        output_batches: 0,
-        logical_pages: 0,
-        free_logical_pages: 0,
-        active_kv_blocks: 0,
-        cached_kv_blocks: 0,
-        available_kv_blocks: 0,
-        kv_pool_bytes: 0,
-        event_ring_dropped: 0,
-        collector_metadata_dropped: 0,
-    };
-    let output = export::prometheus(&metrics, &gauges, &ObservationStore::new(2).unwrap());
-    assert!(output.contains("# TYPE infer_device_graph_seconds histogram\n"));
-    assert!(
-        output.contains("infer_device_graph_seconds_count{backend=\"cuda\",phase=\"verify\"} 1\n")
-    );
-    assert!(output.contains(
-        "infer_device_node_seconds_total{backend=\"cuda\",phase=\"verify\",op=\"attention\"} 0.5\n"
-    ));
-    assert!(output.contains(
-        "infer_device_variant_seconds_total{backend=\"cuda\",variant=\"fa4 \\\"bf16\\\"\"} 0.5\n"
-    ));
-    // Unmeasured operator classes add no series, and layers never become labels.
-    assert!(!output.contains("op=\"norm\""));
-    assert!(!output.contains("layer="));
-    assert_eq!(
-        output.matches("# TYPE infer_device_graph_seconds ").count(),
-        1
-    );
+fn retention_is_bounded_and_counts_evictions() {
+    let mut timelines = DeviceTimelines::new(Vec::new());
+    let total = DEVICE_TIMELINE_CAPACITY + 3;
+    for step in 0..total {
+        timelines.push(u64::try_from(step).unwrap(), 1, 0, sample(1));
+    }
+    let query = timelines.query(0, MAX_DEVICE_TIMELINE_QUERY).unwrap();
+    assert_eq!(query.records.len(), DEVICE_TIMELINE_CAPACITY);
+    assert_eq!(query.evicted, 3);
+    assert_eq!(query.records[0].step, 3);
+    assert!(timelines.query(0, 0).is_err());
+    assert!(timelines.query(0, MAX_DEVICE_TIMELINE_QUERY + 1).is_err());
 }
