@@ -19,10 +19,13 @@ pub use draft::DFlash2Package;
 /// Values sharing one E4M3 block scale in an NVFP4 weight.
 const NVFP4_GROUP_SIZE: usize = 16;
 /// Round-to-nearest-even bias for F32 to BF16 narrowing.
+#[cfg(feature = "gguf")]
 const BF16_ROUND: u32 = 0x7FFF;
 /// Bits discarded when narrowing to BF16.
+#[cfg(feature = "gguf")]
 const BF16_SHIFT: u32 = 16;
 /// Low BF16 mantissa bit used for tie breaking.
+#[cfg(feature = "gguf")]
 const BF16_TIE: u32 = 1;
 /// Bits per weight in channel-wise FP8 quantization.
 const FP8_WEIGHT_BITS: usize = 8;
