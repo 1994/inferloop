@@ -8,7 +8,7 @@
 |---|---|
 | 扩展契约 | [crates/foundation/spi/src/model.rs](../../crates/foundation/spi/src/model.rs) |
 | 注册表 | [crates/model/package/src/providers/registry.rs](../../crates/model/package/src/providers/registry.rs) |
-| 参考实现（Qwen） | [crates/model/package/src/providers/qwen.rs](../../crates/model/package/src/providers/qwen.rs) |
+| 参考实现（Qwen） | [crates/model/package/src/providers/qwen/mod.rs](../../crates/model/package/src/providers/qwen/mod.rs) |
 | 包与权重绑定 | [crates/model/package/src/storage/package.rs](../../crates/model/package/src/storage/package.rs) |
 
 ## 1. 契约
