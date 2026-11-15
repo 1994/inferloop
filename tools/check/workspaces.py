@@ -23,10 +23,6 @@ REGISTERED = {
         "device-only Rust SIMT artifact: pins nightly-2026-10-11 and the NVIDIA cuda-oxide "
         "Git SDK; host builds remain stable and consume the verified embedded PTX"
     ),
-    "crates/backend/cuda/kernels/oxide-gdn/Cargo.toml": (
-        "device-only Rust SIMT artifact: pins nightly-2026-10-11 and the NVIDIA cuda-oxide "
-        "Git SDK; host builds remain stable and consume the verified embedded PTX"
-    ),
     "tools/bench/attention/Cargo.toml": (
         "heavy reference framework: the Candle attention comparison pins its own CUDA-enabled "
         "candle crates and must stay out of the production lock and resolution graph"

@@ -11,7 +11,7 @@
 | 设备生命周期、buffer、CUDA Graph、调度 | Rust + CUDA Rust host runtime | 共用 stream、内存和错误处理 |
 | 通用 tile 算子、投影、融合 | cuTile Rust | 新增 tile 算子的首选，沿用现有 Cargo 工具链 |
 | 必须控制 warp、共享内存、向量访存和运算顺序的 SIMT | CUDA C++ / nvcc AOT | 新增手写 SIMT 的默认入口；只生成 PTX，无 C++ host runtime |
-| 已有 Rust SIMT attention/GDN | 固定 cuda-oxide + nightly | 保留已验证实现；有实测收益且工具链可复现时允许扩展 |
+| 已有 Rust SIMT attention | 固定 cuda-oxide + nightly | 保留已验证实现；有实测收益且工具链可复现时允许扩展 |
 | FA4 tensor-core attention | 固定上游 CuTe DSL 离线 AOT | 作为第三方库管理；Python 只用于生成，运行时是固定 C ABI |
 | cuBLASLt 等厂商库 | 已有 Rust adapter | 使用库算法，不复制为新的自研 kernel 系统 |
 
@@ -20,6 +20,7 @@ cuTile 和 cuda-oxide 属于 [NVIDIA CUDA Rust](https://nvidia.github.io/cuda-ru
 编译器后端及 Git SDK。新增 SIMT 默认优先 nvcc，以控制独立编译链的维护成本；存在明确实测收益且可复现时允许 Rust 实现。
 已有 oxide 保留为已验证实现，不能仅因为语言统一就替换其 PTX。
 45 的历史 GDN 对照中，同算法和启动配置的 C++ 流水线比 oxide 慢约 2.2%～5.0%；
+这组 oxide GDN 已删除：chunked 递推（3c1b075c）接管了它覆盖的全部 prompt 宽度，之后它不再被录制。
 它不是所有算子的结论，也没有测量 C++ host FFI 开销。具体证据见
 [技术选型复核](../../../../docs/research/cuda-kernel-engineering-2026-10-23.md#技术选型复核)。
 编译器文件丢失是制品管理问题，不是 Rust 性能或语言能力的证据。
@@ -47,13 +48,13 @@ make check-cuda-artifacts
 python3 tools/cuda/kernels.py verify --kernel oxide-attention
 ```
 
-一个清单登记 8 组制品的生成器、源文件、PTX、目标架构、符号和数值 profile。
+一个清单登记 9 组制品的生成器、源文件、PTX、目标架构、符号和数值 profile。
 新增制品目录或 PTX 未登记会失败。源码和产物 SHA256 继续由原有 provenance/manifest
-持有，避免复制第二套哈希。5 个旧 `verify-artifact.py` 仅兼容转发到统一入口。
+持有，避免复制第二套哈希。6 个 `verify-artifact.py` 仅兼容转发到统一入口。
 
 所有平台检查源文件、PTX、上游依赖身份与 AOT bundle 哈希；Linux 还执行 FA4 的
 架构指令、ELF、C ABI 和动态依赖校验。macOS 明确报告该步骤需要 Linux，不宣称 ABI 已验收。
-两个 oxide 制品在没有生成器、Toolkit 或 GPU 的 CI 上也会接受完整性检查。
+oxide 制品在没有生成器、Toolkit 或 GPU 的 CI 上也会接受完整性检查。
 `make check-rust` 和 `make test-cuda-hosted` 都调用同一入口。
 
 ## 重建

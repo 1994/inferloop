@@ -1,6 +1,5 @@
 //! F32-state WY column partition search; no device name controls a kernel or tile.
 mod capture;
-pub mod exact;
 mod reference;
 use super::resident_gemm::{MeasurementOrder, PairedTimes, ResidentTuningSession, paired_times};
 use super::search::{self, Evidence, FormerTrial, Protocol, Record};

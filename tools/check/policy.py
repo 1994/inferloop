@@ -240,7 +240,6 @@ def check_exceptions():
                         # exact owning stream and retained libraries/modules/scratch.
                         ROOT / "crates/backend/cuda/src/resident/attention_mma/host.rs",
                         ROOT / "crates/backend/cuda/src/resident/attention_mma/mod.rs",
-                        TILE_KERNELS / "recurrent/simt.rs",
                         # Conversion measurement: fixed buffers and access leases;
                         # synchronize on the owning stream before releasing storage.
                         ROOT / "crates/backend/cuda/tests/unit/tuning_attention_fp8_convert.rs",
