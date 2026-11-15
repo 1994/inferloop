@@ -233,7 +233,7 @@ const BF16_TIE: u32 = 1;
 /// Bits discarded when narrowing to BF16.
 const BF16_SHIFT: u32 = 16;
 
-fn bf16_bits(value: f32) -> u16 {
+const fn bf16_bits(value: f32) -> u16 {
     let bits = value.to_bits();
     let rounded = bits.wrapping_add(BF16_ROUND + ((bits >> BF16_SHIFT) & BF16_TIE));
     (rounded >> BF16_SHIFT) as u16
