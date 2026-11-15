@@ -123,6 +123,7 @@ CPU 协议或数学参考的准备可以早于这些验收点；实际设备接�
 |---|---|---|
 | E2 | [构建与依赖](engineering/build-and-dependencies.md) | 命令、目标合同、workspace、依赖与 CI |
 | E1 | [测试组织](engineering/tests.md) | 目录、私有性、收集与设备/性能入口 |
+| 储备 | [GGUF 接入前置改造](engineering/gguf-readiness.md) | package source、编码数据与投影接缝 |
 | E1 | [删除测试后端](engineering/remove-test-backends.md) | 消费者替代、删除范围与断言迁移 |
 | B2、B3 | [基线与 vLLM 对齐](performance/baseline.md) | release、真实配置、矩阵、计时统计、证据和基线更新 |
 | S1、S2；按需约束 | [Agent 工具调用与服务配置](serving/agent-api.md) | 工具闭环、增量 parser、按需生成约束、总上下文与实用配置 |
