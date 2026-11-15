@@ -1,6 +1,6 @@
 # Qwen3-VL GGUF 接入
 
-状态：**配置、张量映射与形状/类型校验已实现**（`infer-models` 的 `gguf` feature）。真实制品 310/310 文本张量、316/316 视觉张量均有映射并通过 shape/type 校验；虚拟包源、vision 执行和 deepstack 尚未实现。
+状态：**配置、张量映射、形状/类型校验和文本功能路径已跑通**。`tools/gguf/convert.py` 把 Qwen3-VL-2B Q4_K_M 转成 HF 包后，`infer-cli inspect-package` 通过，`run --backend cuda` 能生成（8 token，5090 上 TTFT ~1.9s、TPOT ~3.5ms）。这是临时 dequant 路径，虚拟包源、原生 Q4_K 加载、vision 执行和 deepstack 仍未实现。
 
 ## 验证制品
 
