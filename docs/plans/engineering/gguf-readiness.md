@@ -66,7 +66,16 @@ llama.cpp 只用于理解 GGUF block 布局和外部性能参照；生产 kernel
 
 - 正确性：用 `infer-format` 的参考解码对同一批真实 Q4_K/Q5_K/Q6_K 张量逐位比较；kernel 先在 F32 路径上做到逐位一致，再对 int8 路径定义明确的累加/舍入契约。
 - 性能：decode 与 5090 带宽 roofline 比较，prefill 与 int8 MMA 峰值比较；同时跑自研 BF16/FP8 路径作为同机基线。`llama.cpp test-backend-ops` 的 Q4_K MUL_MAT 只作可选外部参照，环境不支持时不阻塞。
-- M0 不再以 llama.cpp 能加载某个模型为前提；模型级 pp/tg 在 kernel 原型通过后再补。
+- **M0 基线（2026-11-15，45 上的 RTX 5090，`~/work/llama.cpp-patched-build/bin/llama-bench`，CUDA，`ngl=99`）**：
+
+  | 测试 | llama.cpp |
+  |---|---:|
+  | pp16 | 2402.03 tok/s |
+  | pp128 | 11432.47 tok/s |
+  | tg16 | 554.37 ± 25.84 tok/s |
+
+  同一制品（Qwen3-VL-2B Q4_K_M）在本项目 native 路径上 16 token 解码 `max_tpot=5.573 ms`，约 **179 tok/s**，decode 差距约 **3.1×**。prefill 目前是逐行 grouped-int GEMV，不能与 llama.cpp 的 int8 MMQ 直接比较；Q4_K 单张量实测 608 GB/s、Q6_K 679 GB/s（kernel 微基准 835/741 GB/s）。
+- M0 由此完成；模型级 pp/tg 的下一步是把 prompt 的逐行 GEMV 换成 int8 MMQ/GEMM。
 
 ## 为什么先改造
 
