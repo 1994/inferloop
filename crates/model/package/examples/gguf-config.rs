@@ -1,5 +1,6 @@
 //! Print the HF configuration synthesized from a Qwen3-VL text GGUF and its mmproj.
 use infer_gguf::GgufFile;
+use infer_models::TensorSpec;
 use std::env::args;
 use std::error::Error;
 
@@ -40,5 +41,27 @@ fn main() -> Result<(), Box<dyn Error>> {
         "vision slots={}",
         infer_models::vision_slots(mmproj.metadata())?.len()
     );
+    let text_specs = specs(&text)?;
+    infer_models::validate_text(text.metadata(), &text_specs)?;
+    let vision_specs = specs(&mmproj)?;
+    infer_models::validate_vision(mmproj.metadata(), &vision_specs)?;
+    println!(
+        "validated text={} vision={}",
+        text_specs.len(),
+        vision_specs.len()
+    );
     Ok(())
+}
+
+fn specs(file: &GgufFile) -> Result<Vec<TensorSpec>, Box<dyn Error>> {
+    file.tensors()
+        .values()
+        .map(|tensor| {
+            Ok(TensorSpec {
+                name: tensor.name().to_owned(),
+                shape: tensor.shape()?,
+                ty: tensor.ty(),
+            })
+        })
+        .collect()
 }

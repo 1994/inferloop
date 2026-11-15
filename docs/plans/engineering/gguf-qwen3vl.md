@@ -1,6 +1,6 @@
 # Qwen3-VL GGUF 接入
 
-状态：**配置与张量映射已实现**（`infer-models` 的 `gguf` feature）。真实制品 310/310 文本张量、316/316 视觉张量均有映射；虚拟包源、vision 执行和 deepstack 尚未实现。
+状态：**配置、张量映射与形状/类型校验已实现**（`infer-models` 的 `gguf` feature）。真实制品 310/310 文本张量、316/316 视觉张量均有映射并通过 shape/type 校验；虚拟包源、vision 执行和 deepstack 尚未实现。
 
 ## 验证制品
 

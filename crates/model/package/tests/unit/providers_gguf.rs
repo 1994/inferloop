@@ -1,5 +1,6 @@
 use super::{VisionTensor, config, encoder, text_tensor, vision_slots, vision_tensor};
-use infer_gguf::{Metadata, MetadataValue};
+use crate::{TensorSpec, validate_text};
+use infer_gguf::{GgufType, Metadata, MetadataValue};
 
 fn metadata(entries: Vec<(&str, MetadataValue)>) -> Metadata {
     Metadata::from_entries(
@@ -169,4 +170,70 @@ fn declares_the_existing_vision_geometry() {
         infer_spi::HiddenActivation::GeluTanh
     );
     assert_eq!(vision_slots(&mmproj_metadata()).unwrap().len(), 12 * 24 + 9);
+}
+
+fn text_specs() -> Vec<TensorSpec> {
+    let mut specs = vec![
+        TensorSpec {
+            name: "token_embd.weight".into(),
+            shape: vec![4, 8],
+            ty: GgufType::Q4K,
+        },
+        TensorSpec {
+            name: "output_norm.weight".into(),
+            shape: vec![8],
+            ty: GgufType::F32,
+        },
+    ];
+    for (suffix, shape) in [
+        ("attn_norm.weight", vec![8]),
+        ("attn_q.weight", vec![8, 8]),
+        ("attn_k.weight", vec![4, 8]),
+        ("attn_v.weight", vec![4, 8]),
+        ("attn_output.weight", vec![8, 8]),
+        ("attn_q_norm.weight", vec![4]),
+        ("attn_k_norm.weight", vec![4]),
+        ("ffn_norm.weight", vec![8]),
+        ("ffn_gate.weight", vec![16, 8]),
+        ("ffn_up.weight", vec![16, 8]),
+        ("ffn_down.weight", vec![8, 16]),
+    ] {
+        specs.push(TensorSpec {
+            name: format!("blk.0.{suffix}"),
+            shape,
+            ty: GgufType::Q4K,
+        });
+    }
+    specs
+}
+
+fn tiny_text_metadata() -> Metadata {
+    metadata(vec![
+        ("qwen3vl.embedding_length", MetadataValue::U64(8)),
+        ("qwen3vl.block_count", MetadataValue::U64(1)),
+        ("qwen3vl.attention.head_count", MetadataValue::U64(2)),
+        ("qwen3vl.attention.head_count_kv", MetadataValue::U64(1)),
+        ("qwen3vl.attention.key_length", MetadataValue::U64(4)),
+        ("qwen3vl.feed_forward_length", MetadataValue::U64(16)),
+        (
+            "tokenizer.ggml.tokens",
+            MetadataValue::Array(vec![
+                MetadataValue::String("a".into()),
+                MetadataValue::String("b".into()),
+                MetadataValue::String("c".into()),
+                MetadataValue::String("d".into()),
+            ]),
+        ),
+    ])
+}
+
+#[test]
+fn validates_text_shapes_and_rejects_mismatches() {
+    assert!(validate_text(&tiny_text_metadata(), &text_specs()).is_ok());
+    let mut broken = text_specs();
+    broken[1].shape = vec![7];
+    assert!(validate_text(&tiny_text_metadata(), &broken).is_err());
+    let mut missing = text_specs();
+    missing.pop();
+    assert!(validate_text(&tiny_text_metadata(), &missing).is_err());
 }
