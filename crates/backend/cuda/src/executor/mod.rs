@@ -9,6 +9,7 @@ mod drafting;
 mod execution;
 mod owner;
 mod submission;
+use crate::device::device_timer::DeviceTimer;
 use crate::device::step_clock::StepClock;
 use infer_cuda_kernels::runtime::Allocation;
 pub use owner::CudaBackend;
@@ -36,10 +37,12 @@ use infer_state::cache::SnapshotScan;
 use infer_workloads::SamplingWorkspace;
 use std::collections::BTreeMap;
 use std::mem::{forget, replace, take};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub(super) struct CudaExecutor {
     clock: Option<StepClock>,
+    /// Phase transitions of sampled steps; shared with the poll that binds it.
+    timer: Arc<Mutex<DeviceTimer>>,
     loaded: LoadedModel,
     capabilities: DeviceCapabilities,
     operations: Vec<infer_ir::CompiledOp>,
@@ -324,6 +327,7 @@ impl CudaExecutor {
         )?;
         let mut backend = Self {
             clock: StepClock::new(loaded.device()),
+            timer: Arc::new(Mutex::new(DeviceTimer::new(loaded.device_timing()))),
             loaded,
             capabilities,
             operations: program.operations,

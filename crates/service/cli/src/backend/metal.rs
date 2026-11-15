@@ -32,6 +32,11 @@ pub fn load(path: &Path, memory_bytes: u64, selection: &Selection) -> Result<Sel
             "MTP draft depth requires the CUDA resident backend",
         ));
     }
+    if selection.device_timing == infer_ir::DeviceTimingMode::Node {
+        return Err(Error::unsupported(
+            "node-level device timing requires the CUDA resident backend",
+        ));
+    }
     if selection.draft_model.is_some() {
         return Err(Error::unsupported(
             "a separate draft model requires the CUDA resident backend",

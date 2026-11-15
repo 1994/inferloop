@@ -210,6 +210,9 @@ impl BackendProvider for CudaBackend {
             source: TimingSource::CudaGpu,
         })
     }
+    fn device_timing(&self, ticket: &CudaTicket) -> Option<infer_ir::DeviceTimingSample> {
+        ticket.device_timing.clone()
+    }
     fn poll(&mut self, ticket: &mut CudaTicket) -> Result<Option<Vec<TaskOutput>>> {
         if !Arc::ptr_eq(&self.owner, &ticket.owner)
             || ticket.generation != self.generation
@@ -228,6 +231,7 @@ impl BackendProvider for CudaBackend {
         };
         ticket.state = TicketState::Consumed;
         ticket.device_us = self.view.device_us.take();
+        ticket.device_timing = self.view.device_timing.take();
         self.busy = false;
         let result = if let Some(executor) = self.ready.as_deref() {
             let refresh = self.view.refresh(executor);

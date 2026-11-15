@@ -156,6 +156,7 @@ impl CudaBackend {
             generation,
             state: TicketState::Pending,
             device_us: None,
+            device_timing: None,
         })
     }
     fn progress(&mut self) -> Result<()> {
@@ -189,6 +190,7 @@ impl CudaBackend {
         executor.busy = false;
         self.view.result = Some(completed.result);
         self.view.device_us = completed.device_us;
+        self.view.device_timing = completed.device_timing;
         Ok(())
     }
 }

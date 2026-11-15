@@ -85,6 +85,10 @@ fn load_once(
             mtp_depth: summary.mtp_depth,
             draft_model: selection.draft_model.clone(),
             autotune: selection.autotune,
+            device_timing: infer_ir::DeviceTimingConfig {
+                mode: selection.device_timing,
+                ..infer_ir::DeviceTimingConfig::default()
+            },
             attention_profile: summary.attention_profile.into(),
             vision: !selection.text_only,
             ..LoadOptions::default()

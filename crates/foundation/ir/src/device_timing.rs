@@ -1,7 +1,7 @@
 //! Backend-neutral device timing of executed graphs, attributed to dataflow nodes.
 //!
-//! A backend measures where device time goes and reports it as [`DeviceTimingSample`]s; the
-//! runtime aggregates them into bounded metrics. Attribution comes from the dataflow graph a
+//! A backend measures where device time goes and reports it as [`DeviceTimingSample`]s, which
+//! the runtime retains raw for every view to read. Attribution comes from the dataflow graph a
 //! backend executes, never from a kernel name, so every model a provider lowers to this IR, and
 //! every kernel a backend lowers a node to, is covered without per-model or per-kernel code:
 //! [`OpClass::of`] is the one place an operator is classified.

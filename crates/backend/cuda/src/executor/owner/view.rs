@@ -34,6 +34,7 @@ pub(super) struct View {
     pub states: BTreeMap<StateId, StateView>,
     pub result: Option<Result<Vec<TaskOutput>>>,
     pub device_us: Option<u64>,
+    pub device_timing: Option<infer_ir::DeviceTimingSample>,
 }
 impl View {
     pub(super) fn new(executor: &CudaExecutor) -> Result<Self> {
@@ -56,6 +57,7 @@ impl View {
             states: BTreeMap::new(),
             result: None,
             device_us: None,
+            device_timing: None,
         };
         view.refresh(executor)?;
         Ok(view)
