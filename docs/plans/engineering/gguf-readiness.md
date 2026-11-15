@@ -10,7 +10,7 @@ G1–G3 已实施并合入 #260（merge `4544a479`），方案文档由 #254 合
 - G2 已把 `DeviceWeight` 改为 `Float` / `Fp8Channel` / `Fp8Block` / `Nvfp4`；`Fp8Block` 额外保留 `token_input`，因为现有 checkpoint 允许 block scale 与 token 量化分别声明。
 - G3 已把投影编码行为收进 `ProjectionWeight` 方法；穷举 match 只剩 `projection_lowering.rs` 与编码专属模块。新增编码仍需要改 `loading/weights.rs`（上传）和 `loading/experts.rs`（expert bank），`bindings.rs`/`draft.rs` 的少量特例也可能需要处理，因此“只改四处”的目标并未字面达成。
 - 验收：CI #260 全绿；45 上 CUDA hosted/device 门禁通过；27B NVFP4 的 1536 个 hidden 分量与 64 步贪心 token 与基线逐位一致；release 服务配对在 short/long/batch4 上无回退。`hot_long` 因原生 `/native/v1/stream` 固定 `prefix_boundary: None` 无法产生前缀复用而未纳入配对，完整 `check-release` 仍需单独窗口。
-- GGUF 本体已启动：容器解析与 Q4_K/Q5_K/Q6_K 参考解码进入 `infer-gguf`。参考解码只用于验证自研 kernel，生产路径不会在加载时反量化。下一步是在本项目内实现 Q4_K GEMV 与 int8 MMQ 原型。
+- GGUF 本体已启动：容器解析与 Q4_K/Q5_K/Q6_K 参考解码进入 `infer-gguf`。参考解码只用于验证自研 kernel，生产路径不会在加载时反量化。Q4_K GEMV 已独立到 `tile::ggml`，当前 800.9 GB/s（4096×5120，roofline 44.7%），仍未过性能门槛；Qwen3-VL 2B 制品已下载并盘点，接入方案见 [Qwen3-VL GGUF 接入](gguf-qwen3vl.md)。
 
 本文只做 GGUF 接入前的三项改造。它们不改变现有行为，即使最后不接 GGUF 也值得做。GGUF 本身的接入（容器解析、k-quant kernel、性能目标）另行立项，这里只记录结论，作为改造方向的依据。
 
