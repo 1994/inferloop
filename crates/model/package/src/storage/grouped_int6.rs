@@ -36,7 +36,7 @@ const NIBBLE_BITS: u32 = 4;
 /// Two high bits per lane.
 const QH_MASK: u8 = 3;
 /// Mask of one 6-bit code.
-const CODE_MASK: u8 = 0x3F;
+const CODE_MASK: i32 = 0x3F;
 /// Shift selecting the fourth code's high bits.
 const HIGH_SHIFT: u32 = 6;
 /// Codes produced by one lane.
