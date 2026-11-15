@@ -195,6 +195,53 @@ const fn retyped_fp4(buffer: Buffer<'_, Fp4Pair>) -> Buffer<'_, f4e2m1fnx2> {
     unsafe { buffer.retyped() }
 }
 
+fn grouped_int_rows(
+    projection: &TileProjection,
+    recording: &Recording<'_>,
+    plan: &RowsPlan,
+    out: Buffer<'_, f32>,
+    x: Buffer<'_, f32>,
+    weight: WeightRef<'_>,
+) -> Result<()> {
+    let RowsPlan {
+        rows,
+        outputs,
+        columns,
+        ..
+    } = *plan;
+    if !outputs.is_multiple_of(GROUPED_INT_TILE_ROWS) {
+        return Err(Error::unsupported("grouped-int rows output width"));
+    }
+    for row in 0..rows {
+        let out_row = out.slice(row * outputs..(row + 1) * outputs)?;
+        let x_row = x.slice(row * columns..(row + 1) * columns)?;
+        if matches!(weight, WeightRef::GroupedInt { .. }) {
+            projection.grouped_int_row(
+                recording,
+                &GroupedIntPlan {
+                    tile_rows: GROUPED_INT_TILE_ROWS,
+                    columns,
+                },
+                out_row,
+                x_row,
+                weight,
+            )?;
+        } else {
+            projection.grouped_int6_row(
+                recording,
+                &GroupedIntPlan {
+                    tile_rows: GROUPED_INT_TILE_ROWS,
+                    columns,
+                },
+                out_row,
+                x_row,
+                weight,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 impl Projection for TileProjection {
     fn dense(
         &self,
@@ -888,43 +935,7 @@ impl Projection for TileProjection {
             weight,
             WeightRef::GroupedInt { .. } | WeightRef::GroupedInt6 { .. }
         ) {
-            let RowsPlan {
-                rows,
-                outputs,
-                columns,
-                ..
-            } = *plan;
-            if !outputs.is_multiple_of(GROUPED_INT_TILE_ROWS) {
-                return Err(Error::unsupported("grouped-int rows output width"));
-            }
-            for row in 0..rows {
-                let out_row = out.slice(row * outputs..(row + 1) * outputs)?;
-                let x_row = x.slice(row * columns..(row + 1) * columns)?;
-                if matches!(weight, WeightRef::GroupedInt { .. }) {
-                    self.grouped_int_row(
-                        recording,
-                        &GroupedIntPlan {
-                            tile_rows: GROUPED_INT_TILE_ROWS,
-                            columns,
-                        },
-                        out_row,
-                        x_row,
-                        weight,
-                    )?;
-                } else {
-                    self.grouped_int6_row(
-                        recording,
-                        &GroupedIntPlan {
-                            tile_rows: GROUPED_INT_TILE_ROWS,
-                            columns,
-                        },
-                        out_row,
-                        x_row,
-                        weight,
-                    )?;
-                }
-            }
-            return Ok(());
+            return grouped_int_rows(self, recording, plan, out, x, weight);
         }
         let scope = capture_scope(recording)?;
         let RowsPlan {

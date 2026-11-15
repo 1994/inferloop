@@ -116,7 +116,7 @@ pub enum ComputeFormat {
     Fp8,
     /// Native FP4 tensor cores, with block-16 scales.
     Fp4,
-    /// Grouped-integer GEMV (Q4_K/Q6_K).
+    /// Grouped-integer GEMV (`Q4_K`/`Q6_K`).
     GroupedInt,
 }
 
@@ -131,7 +131,7 @@ pub enum ProjectionWeight {
     Fp8Block(Matrix<f8e4m3fn>, Matrix<f32>),
     /// Packed code pairs, one E4M3 scale per 16-column group, and the global scale.
     Fp4(Matrix<f4e2m1fnx2>, Matrix<f8e4m3fn>, f32),
-    /// Grouped-int codes with per-group factors; Q4_K also has biases.
+    /// Grouped-int codes with per-group factors; `Q4_K` also has biases.
     GroupedInt {
         codes: Matrix<u8>,
         factors: Allocation<f32>,
