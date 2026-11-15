@@ -3,6 +3,7 @@
 //! The package keeps GGUF blocks in place. `Q4_K`/`Q6_K` tensors are repacked into the host layouts
 //! the grouped-int kernels consume; dense tensors are decoded on demand for reference or small
 //! auxiliary tensors. No intermediate safetensors package is written.
+use crate::providers::qwen::gguf::config as gguf_config;
 use crate::providers::qwen::gguf::config_text;
 use crate::providers::qwen::gguf::text_tensor;
 use crate::providers::qwen::gguf::tokenizer::{tokenizer_config, tokenizer_json};
@@ -99,8 +100,7 @@ impl GgufPackage {
     pub fn open_with_vision(path: impl AsRef<Path>, mmproj: impl AsRef<Path>) -> Result<Self> {
         let mut package = Self::open(path)?;
         let vision = GgufVisionPackage::open(mmproj)?;
-        package.config =
-            crate::providers::qwen::gguf::config(package.file.metadata(), vision.metadata())?;
+        package.config = gguf_config(package.file.metadata(), vision.metadata())?;
         package.vision = Some(vision);
         Ok(package)
     }

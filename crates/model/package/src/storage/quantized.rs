@@ -10,7 +10,11 @@ use infer_core::{Error, ErrorCode, ModelId, Result};
 use infer_ir::{DataflowGraph, TensorStorage};
 use infer_spi::ModelProvider;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::Path, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 mod activations;
 mod draft;
@@ -1211,7 +1215,7 @@ fn declared_kv_dtype(scheme: &serde_json::Value) -> Result<Option<TensorDtype>> 
 mod kv_tests;
 
 #[cfg(feature = "gguf")]
-fn sibling_mmproj(path: &Path) -> Option<std::path::PathBuf> {
+fn sibling_mmproj(path: &Path) -> Option<PathBuf> {
     let parent = path.parent()?;
     let mut found = None;
     for entry in parent.read_dir().ok()? {
