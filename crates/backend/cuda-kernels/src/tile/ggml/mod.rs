@@ -18,6 +18,8 @@ const TILE_ROWS: usize = 16;
 const BLOCK_VALUES: usize = 256;
 /// Code bytes in one `Q4_K` group.
 const GROUP_LANES: usize = 32;
+/// Super-blocks one kernel iteration decodes.
+const SUPER_BLOCKS_PER_CHUNK: usize = 4;
 
 /// Record a `Q4_K` GEMV.
 /// # Errors
@@ -66,7 +68,7 @@ pub fn q4_k_row(
     let tile = (&mut out).partition([TILE_ROWS]);
     let generics = vec![
         columns.to_string(),
-        (columns / (BLOCK_VALUES * 4)).to_string(),
+        (columns / (BLOCK_VALUES * SUPER_BLOCKS_PER_CHUNK)).to_string(),
     ];
     scope
         .record(q4_k::gemv(tile, &x, &codes, &factors, &biases).generics(generics))
