@@ -22,6 +22,7 @@ use crate::resident::prompt_logits;
 use crate::resident::recurrent_prefill::required_bytes as recurrent_prefill_required_bytes;
 use crate::resident::slot_batch::SlotPool;
 use crate::resident::slot_batch::narrow_widths;
+use crate::resident::spec_state_bytes;
 use crate::tuning::attention::decode::GROUPED_ROWS;
 use crate::tuning::attention::decode::MAX_GROUPED_PARTS;
 use crate::{
@@ -282,7 +283,7 @@ impl LoadedModel {
                 // Slot homes alias the pool's recurrent and KV state, but own their workspaces.
                 let home_fixed = home
                     .fixed
-                    .saturating_sub(recurrent_state_bytes(&draft.graph)?);
+                    .saturating_sub(recurrent_state_bytes(&draft.graph, &draft.weights)?);
                 let homes = mul(home_fixed, width as u64)?;
                 let worker = worker_storage_bytes(
                     &draft.graph,
@@ -509,7 +510,8 @@ fn missing_prompt_scratch_bytes(
     Ok(bytes)
 }
 
-fn recurrent_state_bytes(graph: &DataflowGraph) -> Result<u64> {
+/// Bytes of one sequence's convolution and gated-delta states at their storage.
+fn recurrent_state_bytes(graph: &DataflowGraph, weights: &ProgramWeights) -> Result<u64> {
     graph
         .tensors
         .iter()
@@ -523,7 +525,7 @@ fn recurrent_state_bytes(graph: &DataflowGraph) -> Result<u64> {
             )
         })
         .try_fold(0, |bytes, spec| {
-            add(bytes, mul(spec.elements()? as u64, F32)?)
+            add(bytes, spec_state_bytes(spec, weights)?)
         })
 }
 
@@ -572,7 +574,7 @@ fn pool_storage(
     profile: &DeviceProfile,
 ) -> Result<PoolStorage> {
     let lanes = width * verify;
-    let recurrent = mul(recurrent_state_bytes(graph)?, width as u64)?;
+    let recurrent = mul(recurrent_state_bytes(graph, weights)?, width as u64)?;
     let mut kv = 0;
     for spec in &graph.tensors {
         if !matches!(
@@ -596,7 +598,7 @@ fn pool_storage(
         kv = add(kv, mul(columns, mul(tokens as u64, 2 * size)?)?)?;
     }
     let arena = ActivationArena::required_bytes(graph, lanes)? as u64;
-    let rollback = SlotPool::rollback_bytes(graph, width, verify)?;
+    let rollback = SlotPool::rollback_bytes(graph, weights, width, verify)?;
     let attention = SlotPool::attention_bytes(graph, weights, (width, verify, capacity), profile)?;
     let mut bytes = SlotPool::parameter_bytes(graph, verify)?;
     // These widths prepare packed projection inputs; pooled verification writes directly
@@ -658,7 +660,7 @@ fn narrow_graph_bytes(
     let mut bytes = ActivationArena::required_bytes(graph, lanes)? as u64;
     bytes = add(
         bytes,
-        SlotPool::narrow_rollback_bytes(graph, slots, verify)?,
+        SlotPool::narrow_rollback_bytes(graph, weights, slots, verify)?,
     )?;
     bytes = add(bytes, SlotPool::parameter_bytes(graph, verify)?)?;
     bytes = add(
@@ -805,8 +807,8 @@ fn program_price(
         u64::try_from(other_arenas).map_err(|_| Error::invalid("activation budget"))?,
     )?;
     for spec in &graph.tensors {
-        let elements = spec.elements()? as u64;
-        // KV is priced by pages below; other state is whole per sequence and per verify lane.
+        // KV is priced by pages below; other state is whole per sequence and per verify lane,
+        // each copy at the state's storage.
         let amount = match spec.storage {
             TensorStorage::Activation
             | TensorStorage::Weight { .. }
@@ -814,7 +816,7 @@ fn program_price(
                 kind: StateKind::AttentionKv,
                 ..
             } => 0,
-            TensorStorage::State { .. } => mul(elements, mul(1 + verify, F32)?)?,
+            TensorStorage::State { .. } => mul(spec_state_bytes(spec, weights)?, 1 + verify)?,
         };
         bytes = add(bytes, amount)?;
     }

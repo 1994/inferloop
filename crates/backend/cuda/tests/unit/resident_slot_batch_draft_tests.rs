@@ -11,7 +11,8 @@ use infer_ir::{DType, TensorNode, TensorOp, TensorSpec};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
+/// Embedding, one attention layer and a residual add over a 32-wide hidden state.
+fn fixture_graph() -> Result<DataflowGraph> {
     let mut graph = DataflowGraph::default();
     for (id, shape, storage) in [
         (
@@ -73,6 +74,11 @@ fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
     }
     graph.hidden = Some(TensorId::new(3)?);
     graph.logits = Some(TensorId::new(5)?);
+    Ok(graph)
+}
+
+fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
+    let graph = fixture_graph()?;
     let values = |n| {
         (0..n)
             .map(|i| bf16::from_f32(f32::from(u16::try_from(i % 31).unwrap()) / 31.0 - 0.5))
@@ -89,6 +95,7 @@ fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
         prefill_width: 1,
         narrow_prefill_width: 0,
         attention_profile: crate::AttentionProfile::Canonical,
+        recurrent_profile: crate::RecurrentProfile::F32,
         fusion: Some(FusionWeights {
             projection: ProjectionWeight::Dense(Matrix::upload(
                 device,

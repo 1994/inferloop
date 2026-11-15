@@ -74,6 +74,7 @@ fn check_projection(
         prefill_width: 3,
         narrow_prefill_width: 0,
         attention_profile: infer_backend_cuda::AttentionProfile::Canonical,
+        recurrent_profile: infer_backend_cuda::RecurrentProfile::F32,
         kv_scales: BTreeMap::new(),
         tiling: BTreeMap::new(),
         fusion: None,

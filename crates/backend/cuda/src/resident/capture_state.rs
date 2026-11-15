@@ -1,12 +1,14 @@
 use super::recurrent_lowering::{Delta, Lowering, Mode, Recurrence, lower};
-use super::shaped::Shaped;
+use super::shaped::StateTensor;
 use super::{
     arena::SlotMemory,
     buffers::{buffer, kv_cache},
     capture::{Capture, error},
 };
 use infer_core::{Result, TensorId};
-use infer_cuda_kernels::contract::{Buffer, ConvBuffers, ConvKernel, DeltaBuffers, DeltaStepPlan};
+use infer_cuda_kernels::contract::{
+    Buffer, ConvBuffers, ConvKernel, DeltaBuffers, DeltaStepPlan, StateBuffer,
+};
 use infer_ir::{TensorNode, TensorOp};
 #[cfg(test)]
 use std::env::{var, var_os};
@@ -50,7 +52,7 @@ impl Capture<'_> {
         &self,
         node: &TensorNode,
         output: &SlotMemory,
-        state: &[Shaped<f32>],
+        state: &[StateTensor],
         channels: usize,
     ) -> Result<()> {
         let [h0, h1, h2] = state else {
@@ -165,7 +167,7 @@ impl Capture<'_> {
                         lanes: None,
                     },
                     buffer(output)?,
-                    buffer(&state[0])?,
+                    state[0].buffer(),
                 )
             }),
         };
@@ -178,7 +180,7 @@ impl Capture<'_> {
         node: &TensorNode,
         plan: &DeltaStepPlan,
         output: Buffer<'_, f32>,
-        state: Buffer<'_, f32>,
+        state: StateBuffer<'_>,
     ) -> Result<()> {
         self.weights
             .kernels
@@ -187,7 +189,7 @@ impl Capture<'_> {
                 self.scope,
                 plan,
                 DeltaBuffers {
-                    state: state.into(),
+                    state,
                     output,
                     qkv: self.input_buffer(node.inputs[0])?,
                     beta: self.input_buffer(node.inputs[1])?,
@@ -267,7 +269,7 @@ impl Capture<'_> {
                 lanes: Some(lanes),
             },
             buffer(output)?,
-            buffer(root)?,
+            root.buffer(),
         )
     }
 }

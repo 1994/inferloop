@@ -17,10 +17,12 @@ pub(super) fn capture(device: &CudaDevice, states: &super::batch::States) -> Res
     let kernels = device.kernels();
     device.tile().capture(|scope| {
         let recording = scope;
+        // Zero is the same bits at every storage, so a BF16 state clears as F32 words.
         for tensor in states.values().flatten() {
+            let words = tensor.words()?;
             kernels
                 .state
-                .clear(recording, buffer(tensor)?)
+                .clear(recording, buffer(&words)?)
                 .map_err(|error| device_error(error.to_string()))?;
         }
         Ok(())

@@ -78,6 +78,9 @@ pub struct LoadOptions {
     /// path; `Bf16` is the experimental FA4 profile for target FP8-KV prefill only. The profile
     /// is resolved once here and never changes the draft, weights, KV storage or quality gate.
     pub attention_profile: crate::AttentionProfile,
+    /// Storage of the target's gated-delta states; `F32` unless a numerical acceptance run selects
+    /// BF16. Resolved once here like the attention profile.
+    pub recurrent_profile: crate::RecurrentProfile,
     /// Bind the vision tower; false serves text only, as vLLM does with all-zero multimodal
     /// limits, and rejects image inputs.
     pub vision: bool,
@@ -94,6 +97,7 @@ impl Default for LoadOptions {
             autotune: true,
             chunked_recurrent: false,
             attention_profile: crate::AttentionProfile::Canonical,
+            recurrent_profile: crate::RecurrentProfile::F32,
             vision: true,
             draft_model: None,
         }
@@ -529,7 +533,8 @@ impl LoadedModel {
         tracing::info!(
             target: "infer::load",
             attention_profile = loaded.weights.attention_profile.name(),
-            "target attention numerical profile"
+            recurrent_profile = loaded.weights.recurrent_profile.name(),
+            "target attention and recurrent-state numerical profiles"
         );
         Ok(loaded)
     }

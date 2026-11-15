@@ -107,6 +107,7 @@ fn fixture(device: &CudaDevice) -> Result<(DataflowGraph, ProgramWeights)> {
         prefill_width: 3,
         narrow_prefill_width: 0,
         attention_profile: crate::AttentionProfile::Canonical,
+        recurrent_profile: crate::RecurrentProfile::F32,
         fusion: None,
         kv_scales: BTreeMap::new(),
         tiling: BTreeMap::new(),

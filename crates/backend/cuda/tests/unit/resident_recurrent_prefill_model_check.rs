@@ -190,7 +190,7 @@ fn finite_states(loaded: &LoadedModel, program: &DeviceProgram, label: &str) {
             let values = loaded
                 .device()
                 .runtime()
-                .read(tensor.memory())
+                .read(tensor.f32().expect("an F32 state").memory())
                 .expect("state download");
             finite(&values, label);
         }

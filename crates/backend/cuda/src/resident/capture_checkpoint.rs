@@ -1,5 +1,5 @@
 //! State writes and their rollback snapshots share the original per-lane launch geometry.
-use super::shaped::Shaped;
+use super::shaped::StateTensor;
 use super::{
     arena::SlotMemory,
     buffers::buffer,
@@ -20,7 +20,7 @@ impl Capture<'_> {
         &self,
         node: &TensorNode,
         lane: usize,
-        snapshot: &[Shaped<f32>],
+        snapshot: &[StateTensor],
     ) -> Result<()> {
         if self.mode != CaptureMode::Row(lane) || node.outputs.len() != 1 || node.states.len() != 1
         {
@@ -36,7 +36,7 @@ impl Capture<'_> {
     pub(super) fn record_flat_checkpoint(
         &self,
         node: &TensorNode,
-        snapshot: &[Shaped<f32>],
+        snapshot: &[StateTensor],
     ) -> Result<()> {
         if self.mode != CaptureMode::Flat || node.outputs.len() != 1 || node.states.len() != 1 {
             return Err(error("checkpoint flat capture bindings"));
@@ -50,7 +50,7 @@ impl Capture<'_> {
         &self,
         node: &TensorNode,
         output: &SlotMemory,
-        snapshot: &[Shaped<f32>],
+        snapshot: &[StateTensor],
     ) -> Result<()> {
         let id = node.states[0];
         let state = self
@@ -82,8 +82,8 @@ impl Capture<'_> {
         &self,
         node: &TensorNode,
         output: &SlotMemory,
-        state: &[Shaped<f32>],
-        snapshot: &[Shaped<f32>],
+        state: &[StateTensor],
+        snapshot: &[StateTensor],
         channels: usize,
     ) -> Result<()> {
         let [h0, h1, h2] = state else {
@@ -114,8 +114,8 @@ impl Capture<'_> {
         &self,
         node: &TensorNode,
         output: &SlotMemory,
-        state: &[Shaped<f32>],
-        snapshot: &[Shaped<f32>],
+        state: &[StateTensor],
+        snapshot: &[StateTensor],
         (key_heads, value_heads, key_dim, value_dim): (usize, usize, usize, usize),
     ) -> Result<()> {
         if key_dim != value_dim
@@ -144,9 +144,9 @@ impl Capture<'_> {
                     block,
                     lanes: None,
                 },
-                buffer(snapshot)?.into(),
+                snapshot.buffer(),
                 DeltaBuffers {
-                    state: buffer(state)?.into(),
+                    state: state.buffer(),
                     output: buffer(output)?,
                     qkv: self.input_buffer(node.inputs[0])?,
                     beta: self.input_buffer(node.inputs[1])?,

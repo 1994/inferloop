@@ -169,8 +169,8 @@ fn compare_states(device: &CudaDevice, a: &SlotPool, b: &SlotPool, width: usize)
             assert_eq!(actual.len(), expected.len());
             for (a, b) in actual.iter().zip(expected) {
                 bits(
-                    &device.runtime().read(a.memory())?,
-                    &device.runtime().read(b.memory())?,
+                    &device.runtime().read(a.f32()?.memory())?,
+                    &device.runtime().read(b.f32()?.memory())?,
                 );
             }
         }

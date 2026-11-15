@@ -1,5 +1,5 @@
 //! Contiguous pool state families with the same per-slot views used by homes and fallback graphs.
-use super::shaped::Shaped;
+use super::shaped::StateTensor;
 use super::slot_recurrent::{LANES, ValueDevice, covers, fused_block, value_split};
 use super::{ActivationArena, buffers::buffer, capture::error};
 use super::{batch::States, program::ProgramWeights};
@@ -24,7 +24,7 @@ pub(super) struct SlotStates {
 
 /// One pooled state tensor: `width` concatenated lanes of `lane` shape, viewed whole as `root`.
 struct Family {
-    memory: Allocation<f32>,
+    memory: StateTensor,
     lane: Vec<usize>,
     root: Vec<usize>,
 }
@@ -46,7 +46,8 @@ impl SlotStates {
         let (width, capacity) = geometry;
         let plan = super::program::state_shapes(graph, capacity, weights)?;
         let mut bytes = 0_u64;
-        for (_, shapes) in &plan {
+        for (id, shapes) in &plan {
+            let element = super::program::state_profile(graph, *id, weights).element_bytes();
             for shape in shapes {
                 let elements = shape
                     .iter()
@@ -55,7 +56,7 @@ impl SlotStates {
                 bytes = bytes
                     .checked_add(
                         (elements as u64)
-                            .checked_mul(F32_BYTES as u64)
+                            .checked_mul(element as u64)
                             .ok_or_else(|| Error::invalid("pooled state byte overflow"))?,
                     )
                     .ok_or_else(|| Error::invalid("pooled state budget overflow"))?;
@@ -73,23 +74,23 @@ impl SlotStates {
             families: BTreeMap::new(),
         };
         for (id, shapes) in plan {
+            let profile = super::program::state_profile(graph, id, weights);
             let mut owners = Vec::new();
             let mut families = Vec::new();
             for shape in shapes {
                 let size = shape.iter().product::<usize>();
-                let memory = device.tile().zeros::<f32>(width * size)?;
-                let rows = memory.rows(width)?;
-                for (row, lane) in rows.into_iter().zip(result.lanes.iter_mut()) {
+                let memory = StateTensor::zeros(device, vec![width * size], profile)?;
+                for (slot, lane) in result.lanes.iter_mut().enumerate() {
                     lane.entry(id)
                         .or_default()
-                        .push(Shaped::new(row, shape.clone())?);
+                        .push(memory.view(slot * size..(slot + 1) * size, shape.clone())?);
                 }
                 let root_shape = if shape.len() == RECURRENT_STATE_RANK {
                     vec![width, shape[0] * shape[1], shape[2]]
                 } else {
                     vec![width, size]
                 };
-                owners.push(Shaped::new(memory.clone(), root_shape.clone())?);
+                owners.push(memory.reshaped(root_shape.clone())?);
                 families.push(Family {
                     memory,
                     lane: shape,
@@ -119,10 +120,11 @@ impl SlotStates {
             for family in families {
                 let mut shape = family.root.clone();
                 shape[0] = slots;
-                views.push(Shaped::new(
-                    family.memory.slice(0..slots * family.lane_elements())?,
-                    shape,
-                )?);
+                views.push(
+                    family
+                        .memory
+                        .view(0..slots * family.lane_elements(), shape)?,
+                );
             }
             roots.insert(*id, views);
         }
@@ -141,10 +143,11 @@ impl SlotStates {
             let mut views = Vec::with_capacity(families.len());
             for family in families {
                 let size = family.lane_elements();
-                views.push(Shaped::new(
-                    family.memory.slice(slot * size..(slot + 1) * size)?,
-                    family.lane.clone(),
-                )?);
+                views.push(
+                    family
+                        .memory
+                        .view(slot * size..(slot + 1) * size, family.lane.clone())?,
+                );
             }
             lane.insert(*id, views);
         }
@@ -293,7 +296,7 @@ pub(super) fn record_batch(
             },
             output,
             PoolDeltaBuffers {
-                state: buffer(state)?.into(),
+                state: state.buffer(),
                 qkv: arena.activation(node.inputs[0]).map_err(error)?,
                 beta: arena.activation(node.inputs[1]).map_err(error)?,
                 alpha: arena.activation(node.inputs[2]).map_err(error)?,

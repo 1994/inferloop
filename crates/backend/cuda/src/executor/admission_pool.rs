@@ -207,3 +207,7 @@ impl CudaExecutor {
 #[cfg(test)]
 #[path = "../../tests/unit/executor_request_kv.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/executor_recurrent_profile.rs"]
+mod recurrent_profile_tests;

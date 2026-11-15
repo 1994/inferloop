@@ -31,6 +31,7 @@ fn fixture_weights() -> ProgramWeights {
         narrow_prefill_width: 0,
         fusion: None,
         attention_profile: crate::AttentionProfile::Canonical,
+        recurrent_profile: crate::RecurrentProfile::F32,
         projections: BTreeMap::new(),
         fp8_inputs: BTreeSet::new(),
         input_scales: BTreeMap::new(),
@@ -42,6 +43,50 @@ fn fixture_weights() -> ProgramWeights {
         rope_axes: BTreeMap::new(),
         rope_frequencies: BTreeMap::new(),
     }
+}
+
+/// A BF16 recurrent profile stores only the gated-delta states in two bytes: the per-sequence
+/// recurrent charge and the verification snapshots of them halve, convolution stays F32.
+#[test]
+fn bf16_recurrent_profile_halves_only_the_delta_state_charges() -> Result<()> {
+    let (delta, conv) = (TensorId::new(1)?, TensorId::new(2)?);
+    let mut graph = DataflowGraph::default();
+    for (id, shape, kind) in [
+        (delta, vec![4, 128, 128], StateKind::LinearAttention),
+        (conv, vec![96, 4], StateKind::Conv),
+    ] {
+        graph.tensors.push(TensorSpec {
+            id,
+            shape,
+            dtype: DType::F32,
+            storage: TensorStorage::State { layer: 0, kind },
+        });
+    }
+    // A snapshot-taking consumer: verification copies these states instead of fusing them.
+    graph.nodes.push(TensorNode {
+        id: OpId::new(1)?,
+        layer: Some(0),
+        op: TensorOp::Linear,
+        inputs: vec![],
+        outputs: vec![],
+        states: vec![delta, conv],
+    });
+    let (delta_elements, conv_elements) = (4 * 128 * 128, 96 * 4);
+    let (width, verify) = (3, 4);
+    let mut weights = fixture_weights();
+    for (profile, delta_bytes) in [
+        (crate::RecurrentProfile::F32, F32),
+        (crate::RecurrentProfile::Bf16, 2),
+    ] {
+        weights.recurrent_profile = profile;
+        let sequence = delta_elements * delta_bytes + conv_elements * F32;
+        assert_eq!(recurrent_state_bytes(&graph, &weights)?, sequence);
+        assert_eq!(
+            SlotPool::rollback_bytes(&graph, &weights, width, verify)?,
+            sequence * (verify - 1) as u64 * width as u64
+        );
+    }
+    Ok(())
 }
 
 #[test]

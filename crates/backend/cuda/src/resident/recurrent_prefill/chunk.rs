@@ -14,7 +14,9 @@ use super::super::buffers::buffer;
 use super::super::capture::error;
 use crate::device::CudaDevice;
 use infer_core::Result;
-use infer_cuda_kernels::contract::{Buffer, ChunkBuffers, Recording, Recurrent, RecurrentShape};
+use infer_cuda_kernels::contract::{
+    Buffer, ChunkBuffers, Recording, Recurrent, RecurrentShape, StateBuffer,
+};
 use infer_cuda_kernels::runtime::Allocation;
 use infer_cuda_kernels::runtime::bf16;
 
@@ -64,8 +66,8 @@ pub(super) const fn enabled(dim: usize, lanes: usize) -> bool {
     dim == super::ORDERED_DIM && lanes >= CHUNK && lanes.is_multiple_of(CHUNK)
 }
 
-/// F32 operands of [`record`].
-pub(super) const CHUNK_OPERANDS: usize = 5;
+/// F32 operands of [`record`] besides the state.
+pub(super) const CHUNK_OPERANDS: usize = 4;
 
 /// Record the chunked recurrence; `betas` and `decays` come from the shared gate kernel.
 pub(super) fn record(
@@ -73,7 +75,8 @@ pub(super) fn record(
     recurrent: &dyn Recurrent,
     scratch: &Scratch,
     shape: RecurrentShape,
-    [qkv, betas, decays, state, output]: [Buffer<'_, f32>; CHUNK_OPERANDS],
+    [qkv, betas, decays, output]: [Buffer<'_, f32>; CHUNK_OPERANDS],
+    state: StateBuffer<'_>,
     metadata: Buffer<'_, i32>,
 ) -> Result<()> {
     recurrent
@@ -91,7 +94,7 @@ pub(super) fn record(
                 qkv,
                 betas,
                 decays,
-                state: state.into(),
+                state,
                 output,
                 metadata,
             },

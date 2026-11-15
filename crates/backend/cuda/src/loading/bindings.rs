@@ -113,6 +113,7 @@ fn empty_weights(device: &CudaDevice, options: &LoadOptions) -> ProgramWeights {
         tiling: BTreeMap::new(),
         fusion: None,
         attention_profile: options.attention_profile,
+        recurrent_profile: options.recurrent_profile,
         fp8_inputs: BTreeSet::new(),
         chunked_recurrent: options.chunked_recurrent,
         input_scales: BTreeMap::new(),
@@ -351,6 +352,8 @@ fn draft_weights(
         // The proposal program keeps its existing BF16 behavior; the target profile only
         // changes target prefill eligibility.
         attention_profile: target.attention_profile,
+        // The draft keeps F32 states: the profile measures the target's storage alone.
+        recurrent_profile: crate::RecurrentProfile::F32,
         fp8_inputs: BTreeSet::new(),
         // The draft proposes for the same sequence, so it follows the target's recurrence policy.
         chunked_recurrent: target.chunked_recurrent,

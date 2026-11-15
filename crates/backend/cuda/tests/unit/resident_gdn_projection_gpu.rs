@@ -118,6 +118,7 @@ impl Fixture {
             tiling: BTreeMap::new(),
             fusion: None,
             attention_profile: AttentionProfile::Canonical,
+            recurrent_profile: crate::RecurrentProfile::F32,
             projections,
             input_scales: BTreeMap::new(),
             fp8_inputs: BTreeSet::new(),

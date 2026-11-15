@@ -3,6 +3,8 @@
 
 mod attention_profile;
 pub use attention_profile::AttentionProfile;
+mod recurrent_profile;
+pub use recurrent_profile::RecurrentProfile;
 pub mod attention;
 pub mod benchmark;
 pub(crate) mod constants;

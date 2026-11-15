@@ -190,8 +190,8 @@ fn compare_states(
             agreement.compare(
                 stage,
                 &field,
-                &loaded.device().runtime().read(actual.memory())?,
-                &loaded.device().runtime().read(expected.memory())?,
+                &loaded.device().runtime().read(actual.f32()?.memory())?,
+                &loaded.device().runtime().read(expected.f32()?.memory())?,
             );
         }
     }

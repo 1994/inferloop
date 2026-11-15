@@ -1,5 +1,6 @@
 use super::ActivationArena;
-use super::shaped::Shaped;
+use super::shaped::StateTensor;
+use crate::RecurrentProfile;
 use crate::device::ReadbackSource;
 use crate::device::asynchronous::block_on;
 use crate::device::cublaslt::Support;
@@ -18,8 +19,8 @@ mod geometry;
 mod greedy;
 use crate::{
     constants::{
-        CONV_KERNEL_SIZE, CONV_STATE_TENSORS, F32_BYTES, KV_CACHE_RANK, MAX_HIDDEN_SIZE,
-        METADATA_FIELDS, MIB, PREFILL_LANES,
+        CONV_KERNEL_SIZE, CONV_STATE_TENSORS, KV_CACHE_RANK, MAX_HIDDEN_SIZE, METADATA_FIELDS, MIB,
+        PREFILL_LANES,
     },
     device::{CudaDevice, device_error},
     mlp::ProjectionWeight,
@@ -31,7 +32,7 @@ use infer_cuda_kernels::ops::load_rotary;
 use infer_cuda_kernels::runtime::Allocation;
 use infer_cuda_kernels::runtime::DType;
 use infer_cuda_kernels::runtime::bf16;
-use infer_ir::{DataflowGraph, StateKind, TensorOp, TensorStorage};
+use infer_ir::{DataflowGraph, StateKind, TensorOp, TensorSpec, TensorStorage};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -113,6 +114,8 @@ pub struct ProgramWeights {
     /// Target prefill attention numerical profile, resolved once at load. The draft proposal
     /// program keeps its existing BF16 behavior regardless of this selection.
     pub attention_profile: crate::AttentionProfile,
+    /// Storage of this program's gated-delta states, resolved once at load.
+    pub recurrent_profile: RecurrentProfile,
     pub projections: BTreeMap<TensorId, ProjectionWeight>,
     pub input_scales: BTreeMap<TensorId, f32>,
     pub fp8_inputs: BTreeSet<TensorId>,
@@ -314,7 +317,7 @@ fn retained_tensor_bytes(
     let state_bytes = states
         .values()
         .flatten()
-        .map(|t| t.len() as u64 * F32_BYTES as u64)
+        .map(StateTensor::bytes)
         .sum::<u64>();
     let packed_bytes = super::fp8_cache::bytes(fp8);
     let recurrent = graph
@@ -331,7 +334,7 @@ fn retained_tensor_bytes(
         })
         .filter_map(|t| states.get(&t.id))
         .flatten()
-        .map(|t| t.len() as u64 * F32_BYTES as u64)
+        .map(StateTensor::bytes)
         .sum::<u64>();
     activations + state_bytes + packed_bytes + recurrent * verify as u64
 }
@@ -398,8 +401,8 @@ fn arena_budget(device: &CudaDevice) -> Result<usize> {
 /// otherwise the tensor moves whole.
 fn copy_prefix(
     device: &CudaDevice,
-    dst: &Shaped<f32>,
-    src: &Shaped<f32>,
+    dst: &StateTensor,
+    src: &StateTensor,
     kv: Option<(usize, usize)>,
 ) -> Result<()> {
     if dst.dims() != src.dims() {
@@ -417,7 +420,7 @@ fn copy_prefix(
         if src.dims().len() != KV_CACHE_RANK || src.dims()[1] != capacity {
             return Err(Error::invariant("program KV copy layout"));
         }
-        return dst.copy_head_prefix(device, src, rows);
+        return dst.f32()?.copy_head_prefix(device, src.f32()?, rows);
     }
     dst.copy_from(device, src)
 }
@@ -467,7 +470,7 @@ impl DeviceProgram {
             .states
             .values()
             .flatten()
-            .map(|t| t.len() as u64 * F32_BYTES as u64)
+            .map(StateTensor::bytes)
             .sum::<u64>();
         let packed_bytes = super::fp8_cache::bytes(&self.fp8_states);
         let prompt = retained_prompt_lanes(&self.prompts);
@@ -1776,26 +1779,27 @@ pub fn allocate_states(
     weights: &ProgramWeights,
 ) -> Result<super::batch::States> {
     let plan = state_shapes(graph, capacity, weights)?;
-    let mut total = 0usize;
+    let mut total = 0u64;
     let budget = device
         .allocatable_memory_bytes()?
         .saturating_sub(device.profile()?.device_headroom_bytes());
-    for (_, shapes) in &plan {
+    for (id, shapes) in &plan {
+        let profile = state_profile(graph, *id, weights);
         for shape in shapes {
-            let elements = shape.iter().try_fold(1usize, |a, b| {
-                a.checked_mul(*b)
-                    .ok_or_else(|| Error::invalid("state overflow"))
-            })?;
+            let bytes = shape
+                .iter()
+                .try_fold(profile.element_bytes(), |a, b| a.checked_mul(*b))
+                .ok_or_else(|| Error::invalid("state overflow"))?;
             total = total
-                .checked_add(elements)
+                .checked_add(bytes as u64)
                 .ok_or_else(|| Error::invalid("state budget overflow"))?;
-            if total as u64 > budget / F32_BYTES as u64 {
+            if total > budget {
                 return Err(Error::new(
                     infer_core::ErrorCode::Capacity,
                     format!(
-                        "resident F32 state exceeds available device memory minus 1 GiB headroom: \
+                        "resident state exceeds available device memory minus 1 GiB headroom: \
                          need {} MiB, budget {} MiB",
-                        total as u64 * F32_BYTES as u64 / MIB as u64,
+                        total / MIB as u64,
                         budget / MIB as u64
                     ),
                 ));
@@ -1804,13 +1808,48 @@ pub fn allocate_states(
     }
     let mut states = BTreeMap::new();
     for (id, shapes) in plan {
+        let profile = state_profile(graph, id, weights);
         let tensors = shapes
             .into_iter()
-            .map(|shape| Shaped::zeros(device, shape))
+            .map(|shape| StateTensor::zeros(device, shape, profile))
             .collect::<Result<Vec<_>>>()?;
         states.insert(id, tensors);
     }
     Ok(states)
+}
+
+/// The storage of state `id`: the program's recurrent profile for a gated-delta state, F32 for
+/// every other.
+pub(super) fn state_profile(
+    graph: &DataflowGraph,
+    id: TensorId,
+    weights: &ProgramWeights,
+) -> RecurrentProfile {
+    graph
+        .tensors
+        .iter()
+        .find(|spec| spec.id == id)
+        .map_or(RecurrentProfile::F32, |spec| spec_profile(spec, weights))
+}
+
+/// The storage of `spec`'s state, as [`state_profile`] chooses it.
+pub const fn spec_profile(spec: &TensorSpec, weights: &ProgramWeights) -> RecurrentProfile {
+    match spec.storage {
+        TensorStorage::State {
+            kind: StateKind::LinearAttention,
+            ..
+        } => weights.recurrent_profile,
+        _ => RecurrentProfile::F32,
+    }
+}
+
+/// Device bytes of `spec`'s state at its storage.
+/// # Errors
+/// Rejects a shape whose size overflows.
+pub fn spec_state_bytes(spec: &TensorSpec, weights: &ProgramWeights) -> Result<u64> {
+    (spec.elements()? as u64)
+        .checked_mul(spec_profile(spec, weights).element_bytes() as u64)
+        .ok_or_else(|| Error::invalid("state size overflow"))
 }
 
 fn attention_only(graph: &DataflowGraph) -> bool {

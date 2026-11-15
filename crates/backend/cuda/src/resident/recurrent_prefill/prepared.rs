@@ -2,12 +2,13 @@
 use super::super::buffers::Operand;
 use super::super::{buffers::buffer, capture::error};
 use super::{ORDERED_DIM, ORDERED_WIDTHS, chunk, oxide};
+use crate::RecurrentProfile;
 use crate::constants::F32_BYTES;
 use crate::constants::GDN_PROJECTED_INPUTS;
 use crate::{device::CudaDevice, resident::ProgramWeights};
 use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{
-    Buffer, GateBuffers, PreparedDeltaBuffers, Recording, Recurrent, RecurrentShape,
+    Buffer, GateBuffers, PreparedDeltaBuffers, Recording, Recurrent, RecurrentShape, StateBuffer,
 };
 use infer_cuda_kernels::runtime::Allocation;
 use infer_ir::{DataflowGraph, TensorOp};
@@ -63,18 +64,22 @@ pub(super) fn allocate(
         .into_iter()
         .map(|shape| {
             let mut inputs = Inputs::new(device, shape, lanes)?;
-            inputs.simt = oxide::select(
-                device,
-                weights.kernels.recurrent.as_ref(),
-                RecurrentShape {
-                    key_heads: shape.0,
-                    value_heads: shape.1,
-                    dim: shape.2,
-                    lanes,
-                },
-                weights.autotune,
-                &weights.resident_tuning,
-            )?;
+            inputs.simt = match weights.recurrent_profile {
+                // The SIMT recurrence keeps an F32 state, so a BF16 one never measures it.
+                RecurrentProfile::Bf16 => false,
+                RecurrentProfile::F32 => oxide::select(
+                    device,
+                    weights.kernels.recurrent.as_ref(),
+                    RecurrentShape {
+                        key_heads: shape.0,
+                        value_heads: shape.1,
+                        dim: shape.2,
+                        lanes,
+                    },
+                    weights.autotune,
+                    &weights.resident_tuning,
+                )?,
+            };
             Ok((shape, inputs))
         })
         .collect()
@@ -131,12 +136,12 @@ impl Inputs {
         })
     }
 
-    pub(super) fn record<S: Operand<Marker = f32>, O: Operand<Marker = f32>>(
+    pub(super) fn record<O: Operand<Marker = f32>>(
         &self,
         scope: &Recording<'_>,
         recurrent: &dyn Recurrent,
         [qkv_storage, beta, alpha, a_log, bias]: [Buffer<'_, f32>; INPUT_BINDINGS],
-        (state, output): (&S, &O),
+        (state, output): (StateBuffer<'_>, &O),
         metadata: &Allocation<i32>,
         (kh, vh, dim, lanes, block): (usize, usize, usize, usize, usize),
     ) -> Result<()> {
@@ -176,9 +181,9 @@ impl Inputs {
                     qkv_storage,
                     buffer(&self.betas)?,
                     buffer(&self.decays)?,
-                    buffer(state)?,
                     buffer(output)?,
                 ],
+                state,
                 buffer(metadata)?,
             );
         }
@@ -190,7 +195,7 @@ impl Inputs {
                     recording,
                     shape,
                     PreparedDeltaBuffers {
-                        state: buffer(state)?.into(),
+                        state,
                         output: buffer(output)?,
                         qkv: qkv_storage,
                         normalized: buffer(&self.normalized)?,
@@ -207,7 +212,7 @@ impl Inputs {
                 shape,
                 block,
                 PreparedDeltaBuffers {
-                    state: buffer(state)?.into(),
+                    state,
                     output: buffer(output)?,
                     qkv: qkv_storage,
                     normalized: buffer(&self.normalized)?,

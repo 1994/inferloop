@@ -2,7 +2,7 @@
 use super::super::recurrent_lowering::{
     Block, Chunk, Delta, Lowering, Mode, Pinned, Recurrence, lower,
 };
-use super::super::shaped::Shaped;
+use super::super::shaped::StateTensor;
 use super::super::{buffers::buffer, capture::error};
 use super::{
     ORDERED_BLOCK, ORDERED_DIM, ORDERED_WIDTHS,
@@ -247,7 +247,7 @@ fn record_delta(
     node: &TensorNode,
     arena: &ActivationArena,
     weights: &ProgramWeights,
-    state: &Shaped<f32>,
+    state: &StateTensor,
     scratch: &Allocation<f32>,
     prepared: Option<&prepared::Inputs>,
     metadata: &Allocation<i32>,
@@ -280,7 +280,7 @@ fn record_delta(
                     decay.buffer(),
                     bias.buffer(),
                 ],
-                (state, scratch),
+                (state.buffer(), scratch),
                 metadata,
                 (key_heads, value_heads, key_dim, lanes, block),
             )?;
@@ -303,7 +303,7 @@ fn record_delta(
                 },
                 block,
                 DeltaBuffers {
-                    state: buffer(state)?.into(),
+                    state: state.buffer(),
                     output: buffer(scratch)?,
                     qkv: arena.activation(node.inputs[0]).map_err(error)?,
                     beta: arena.activation(node.inputs[1]).map_err(error)?,
