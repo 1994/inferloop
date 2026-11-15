@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
     let matrix = Matrix::upload(
         &device,
         converted.iter().copied().map(bf16::from_bits).collect(),
-        &weight.shape,
+        &weight.shape(),
     )?;
     let vector = device.runtime().upload(input.clone())?;
     let actual = device.runtime().read(&device.matvec_tiled(
@@ -63,7 +63,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
             "passed": true, "device": device.name()?, "target": device.target().name(),
-            "model": root, "projection": name, "shape": weight.shape,
+            "model": root, "projection": name, "shape": weight.shape(),
             "packed_bytes": packed.len(), "converted_bytes": converted.len() * 2,
             "maximum_absolute_error_vs_bf16_f64_reference": error,
             "scope": "actual model weight conversion and BF16 GPU projection; not H200 execution or full model quality"

@@ -9,6 +9,7 @@ use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::{DownPlan, Kernels, ProductBuffers, Recording, RowNormPlan};
 use infer_cuda_kernels::jit::validate_dependent_launch;
 use infer_cuda_kernels::runtime::{Allocation, Graph};
+pub(crate) use projection::ComputeFormat;
 pub use projection::{Matrix, ProjectionWeight};
 use std::fmt::Display;
 
@@ -72,7 +73,7 @@ impl MlpGraph {
         weights.up.validate(n, d)?;
         weights.down.validate(d, n)?;
         for weight in [&weights.gate, &weights.up, &weights.down] {
-            if matches!(weight, ProjectionWeight::Fp4(..)) {
+            if weight.is_nvfp4() {
                 device.target().require_native_nvfp4()?;
             }
         }

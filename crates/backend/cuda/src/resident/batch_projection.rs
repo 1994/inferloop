@@ -291,7 +291,7 @@ pub(super) fn record_rows(
         #[cfg(test)]
         Lowering::Compensated => {
             nvfp4.clear_quant_reuse();
-            let ProjectionWeight::Dense(w) = weight else {
+            let Some(w) = weight.dense() else {
                 return Err(error("precise dense weight"));
             };
             return kernels
@@ -362,7 +362,7 @@ fn record_pool_small_f32(
     {
         return Ok(false);
     }
-    let ProjectionWeight::Dense(weight) = weight else {
+    let Some(weight) = weight.dense() else {
         return Ok(false);
     };
     let tile = weights

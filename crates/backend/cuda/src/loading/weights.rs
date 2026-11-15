@@ -244,8 +244,7 @@ impl ProjectionWeight {
                 let scaling = floats(
                     package,
                     weight
-                        .scale
-                        .as_ref()
+                        .scale()
                         .ok_or_else(|| Error::invalid("missing projection scale"))?,
                 )?;
                 // A query row's correction scales its channel scale, not its codes.

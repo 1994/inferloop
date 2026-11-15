@@ -63,11 +63,11 @@ fn a_narrow_head_is_stored_in_the_next_power_of_two() {
     // Full rotary over 96 lanes pads each 48-lane half to 64.
     assert!(padding.rotary.values().all(|&real| real == 96));
     assert_eq!(
-        weights["layers.0.self_attn.q_proj.weight"].shape,
+        weights["layers.0.self_attn.q_proj.weight"].shape(),
         [4 * 128, 384]
     );
     assert_eq!(
-        weights["layers.0.self_attn.o_proj.weight"].shape,
+        weights["layers.0.self_attn.o_proj.weight"].shape(),
         [384, 4 * 128]
     );
     require_kernel_geometry(&graph).unwrap();

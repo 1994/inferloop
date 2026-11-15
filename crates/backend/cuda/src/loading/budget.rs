@@ -900,10 +900,10 @@ fn prompt_partials_bytes(
     for node in &graph.nodes {
         if node.op != TensorOp::Linear
             || weights.input_scales.contains_key(&node.inputs[1])
-            || !matches!(
-                weights.projections.get(&node.inputs[1]),
-                Some(ProjectionWeight::Fp4(..))
-            )
+            || !weights
+                .projections
+                .get(&node.inputs[1])
+                .is_some_and(ProjectionWeight::is_nvfp4)
         {
             continue;
         }
@@ -1013,10 +1013,10 @@ fn projection_workspace(
         }
         if geometry.prompts.contains(&PREFILL_LANES)
             && !weights.input_scales.contains_key(&node.inputs[1])
-            && matches!(
-                weights.projections.get(&node.inputs[1]),
-                Some(ProjectionWeight::Fp4(..))
-            )
+            && weights
+                .projections
+                .get(&node.inputs[1])
+                .is_some_and(ProjectionWeight::is_nvfp4)
             && partials.insert(rows)
         {
             bytes = add(

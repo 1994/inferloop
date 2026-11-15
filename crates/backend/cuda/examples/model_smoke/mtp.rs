@@ -47,15 +47,15 @@ impl Mtp {
         let embedding_norm = get(&format!("{}{}", plan.prefix, fusion.norms[0]))?;
         let hidden_norm = get(&format!("{}{}", plan.prefix, fusion.norms[1]))?;
         let hidden = package.imported.model.hidden_size;
-        if fc.shape != [hidden, hidden * 2]
-            || embedding_norm.shape != [hidden]
-            || hidden_norm.shape != [hidden]
+        if fc.shape() != [hidden, hidden * 2]
+            || embedding_norm.shape() != [hidden]
+            || hidden_norm.shape() != [hidden]
         {
             return Err(Error::invalid("MTP fusion weight shapes"));
         }
         let fc = ProjectionWeight::load(&target.device, &mut package, &fc)?;
-        let embedding_norm = floats(&mut package, &embedding_norm.data)?;
-        let hidden_norm = floats(&mut package, &hidden_norm.data)?;
+        let embedding_norm = floats(&mut package, embedding_norm.data())?;
+        let hidden_norm = floats(&mut package, hidden_norm.data())?;
         let (_, graph) = package.provider.draft_graph(&package.imported.model)?;
         package.graph = graph;
         let mut bindings = BTreeMap::new();
@@ -67,7 +67,7 @@ impl Mtp {
                     package.mtp.get(&format!("{}{slot}", plan.prefix))
                 }
                 .ok_or_else(|| Error::invalid(format!("missing MTP binding {slot}")))?;
-                if weight.shape != spec.shape {
+                if weight.shape() != spec.shape {
                     return Err(Error::invalid(format!("MTP shape mismatch {slot}")));
                 }
                 bindings.insert(slot.clone(), weight.clone());

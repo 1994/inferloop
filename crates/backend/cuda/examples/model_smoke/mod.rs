@@ -139,7 +139,7 @@ impl Model {
                             eprintln!("loaded {} GPU projections", model.projections.len());
                         }
                     } else if !embedding {
-                        let values = weights::floats(&mut model.package, &weight.data)?;
+                        let values = weights::floats(&mut model.package, weight.data())?;
                         model.constants.insert(spec.id, values);
                     }
                 }

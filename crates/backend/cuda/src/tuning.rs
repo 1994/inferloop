@@ -130,12 +130,7 @@ pub struct TuningReport {
 /// # Errors
 /// Rejects invalid projection rank/dimensions.
 pub fn projection_key(weight: &ProjectionWeight) -> Result<(String, usize, usize)> {
-    let (encoding, packing) = match weight {
-        ProjectionWeight::Dense(_) => ("bf16", 1),
-        ProjectionWeight::Fp8(..) => ("fp8-channel", 1),
-        ProjectionWeight::Fp8Block(..) => ("fp8-block", 1),
-        ProjectionWeight::Fp4(..) => ("nvfp4", 2),
-    };
+    let (encoding, packing) = weight.tuning_format();
     let [rows, stored] = weight.shape();
     let columns = stored
         .checked_mul(packing)

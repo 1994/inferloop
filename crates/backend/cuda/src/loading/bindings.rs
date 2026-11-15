@@ -185,7 +185,7 @@ fn bind_tensors(
             // A tied output projection shares its storage with the input embedding, so the very
             // same weight must also be reachable by the embedding lookup.
             if embeddings.contains(&tensor.id) {
-                let ProjectionWeight::Dense(shared) = &projection else {
+                let Some(shared) = projection.dense() else {
                     return Err(Error::unsupported(
                         "a tied input embedding requires a dense output projection",
                     ));
@@ -457,17 +457,17 @@ fn draft_fusion(
         .cloned()
         .ok_or_else(|| Error::invalid("missing MTP fusion weight"))?;
     let hidden = package.imported.model.hidden_size;
-    if fc.shape != [hidden, hidden * 2]
-        || embedding_norm.shape != [hidden]
-        || hidden_norm.shape != [hidden]
+    if fc.shape() != [hidden, hidden * 2]
+        || embedding_norm.shape() != [hidden]
+        || hidden_norm.shape() != [hidden]
     {
         return Err(Error::invalid("MTP fusion weight shapes"));
     }
     let fc = ProjectionWeight::load(device, package, &fc)?;
     // The fusion projection is tuned exactly like the target's own projections.
     let tiling = select_tiling(device, &fc, profile, tiling_source, report)?;
-    let mut norms = floats(package, &embedding_norm.data)?;
-    norms.extend_from_slice(&floats(package, &hidden_norm.data)?);
+    let mut norms = floats(package, embedding_norm.data())?;
+    norms.extend_from_slice(&floats(package, hidden_norm.data())?);
     Ok(FusionWeights {
         projection: fc,
         tiling,

@@ -2,10 +2,9 @@
 use super::arena::SlotMemory;
 use super::buffers::buffer;
 use super::capture::{Capture, error};
-use crate::constants::FP8_BLOCK_COLUMNS;
 use crate::mlp::ProjectionWeight;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::contract::{ExpertPlan, ExpertWeight, RoutePlan};
+use infer_cuda_kernels::contract::{ExpertPlan, RoutePlan};
 use infer_ir::{TensorNode, TensorOp};
 use std::collections::BTreeMap;
 
@@ -94,25 +93,10 @@ impl Capture<'_> {
             .expert_banks
             .get(&node.inputs[2])
             .ok_or_else(|| error("missing expert bank"))?;
-        let weight = match &bank.projection {
-            ProjectionWeight::Dense(w) => ExpertWeight::Dense(buffer(w)?),
-            ProjectionWeight::Fp8(w, scales) => ExpertWeight::Fp8Channel {
-                weight: buffer(w)?,
-                scales: buffer(scales)?,
-                quantized_inputs: bank.quantized_inputs,
-            },
-            ProjectionWeight::Fp8Block(w, scales) => ExpertWeight::Fp8Block {
-                weight: buffer(w)?,
-                scales: buffer(scales)?,
-                block_columns: FP8_BLOCK_COLUMNS,
-                quantized_inputs: bank.quantized_inputs,
-            },
-            ProjectionWeight::Fp4(..) => {
-                return Err(error(
-                    "NVFP4 expert activation quantization requires an explicit numerical contract",
-                ));
-            }
-        };
+        let weight = bank
+            .projection
+            .expert_weight(bank.quantized_inputs)
+            .map_err(|e| error(e.to_string()))?;
         self.weights
             .kernels
             .moe

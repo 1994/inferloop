@@ -2,7 +2,7 @@
 //! Memory funding remains the complete pooled serving quote, not a weights-only estimate.
 use super::LoadedModel;
 use crate::device::device_error;
-use crate::mlp::ProjectionWeight;
+use crate::mlp::{ComputeFormat, ProjectionWeight};
 use crate::tuning::pool_dense;
 use infer_core::{Error, Result, TensorId};
 use infer_cuda_kernels::contract::target::TensorRates;
@@ -16,9 +16,6 @@ const HZ_PER_KHZ: u128 = 1000;
 const FLOPS_PER_MAC: u128 = 2;
 /// Both supported SM families have 128 scalar F32 lanes, each executing an FMA.
 const SCALAR_F32: u128 = 256;
-/// A global FP4 scale is one F32 word.
-const GLOBAL_SCALE_BYTES: u128 = 4;
-
 /// Tensor core rates of the device, read by this graph's precisions.
 #[derive(Clone, Copy)]
 struct Rates(TensorRates);
@@ -54,15 +51,6 @@ fn mul(a: u128, b: u128) -> Result<u128> {
 fn add(a: u128, b: u128) -> Result<u128> {
     a.checked_add(b)
         .ok_or_else(|| Error::invalid("concurrency roofline overflow"))
-}
-fn bytes(weight: &ProjectionWeight) -> Result<u128> {
-    let stored = extent(weight.bytes())?;
-    match weight {
-        ProjectionWeight::Fp4(..) => add(stored, GLOBAL_SCALE_BYTES),
-        ProjectionWeight::Dense(_) | ProjectionWeight::Fp8(..) | ProjectionWeight::Fp8Block(..) => {
-            Ok(stored)
-        }
-    }
 }
 fn elements(sizes: &BTreeMap<TensorId, usize>, id: TensorId) -> Result<usize> {
     sizes
@@ -105,15 +93,9 @@ impl LoadedModel {
         n: usize,
         k: usize,
     ) -> Compute {
-        match weight {
-            ProjectionWeight::Fp4(..) if self.weights.input_scales.contains_key(&id) => {
-                Compute::Fp4
-            }
-            ProjectionWeight::Fp8(..) | ProjectionWeight::Fp8Block(..)
-                if self.weights.fp8_inputs.contains(&id) =>
-            {
-                Compute::Fp8
-            }
+        match weight.compute_format() {
+            ComputeFormat::Fp4 if self.weights.input_scales.contains_key(&id) => Compute::Fp4,
+            ComputeFormat::Fp8 if self.weights.fp8_inputs.contains(&id) => Compute::Fp8,
             _ if pool_dense::supported([1, n, k]) => Compute::Scalar,
             _ => Compute::Dense,
         }
@@ -160,7 +142,7 @@ impl LoadedModel {
             let n = elements(&sizes, node.outputs[0])?;
             let k = elements(&sizes, node.inputs[0])?;
             let rate = rates.compute(self.roofline_mode(node.inputs[1], weight, n, k))?;
-            memory_bytes = add(memory_bytes, bytes(weight)?)?;
+            memory_bytes = add(memory_bytes, extent(weight.resident_bytes())?)?;
             let flops = mul(mul(extent(n)?, extent(k)?)?, FLOPS_PER_MAC)?;
             normalized_flops = add(normalized_flops, mul(flops, rates.0.normalization / rate)?)?;
         }

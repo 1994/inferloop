@@ -12,8 +12,6 @@ use crate::constants::DEFAULT_TILE_ROWS;
 #[cfg(test)]
 use crate::constants::GEMV_WIDE_OUTPUT_RATIO;
 use crate::device::device_error;
-#[cfg(test)]
-use crate::mlp::ProjectionWeight;
 use crate::strategy::LinearTiling;
 use crate::tuning::gated_norm::options as gated_norm_options;
 use infer_core::Error;
@@ -350,7 +348,7 @@ impl Capture<'_> {
         if self.mode == CaptureMode::Flat
             && super::small_gemm::precise_dense_enabled()
             && output.len() <= input.len().saturating_mul(GEMV_WIDE_OUTPUT_RATIO)
-            && let ProjectionWeight::Dense(weight) = weights
+            && let Some(weight) = weights.dense()
         {
             return self
                 .weights

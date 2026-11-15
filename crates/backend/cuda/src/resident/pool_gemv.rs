@@ -36,7 +36,7 @@ pub(super) fn record(
 ) -> Result<()> {
     let rows = input.len() / columns.max(1);
     let outputs = output.columns;
-    let ProjectionWeight::Dense(weight) = weight else {
+    let Some(weight) = weight.dense() else {
         return Err(error("pooled dense weight"));
     };
     if choice == Choice::Gemv {
