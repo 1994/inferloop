@@ -45,7 +45,8 @@ llama.cpp 只用于理解 GGUF block 布局和外部性能参照；生产 kernel
 
 ### 数据布局
 
-- 设备上保留 GGUF 原始 super-block，不在加载时反量化。Q4_K 每 256 个值 144 字节（`d`、`dmin`、12 字节 scale/min、128 字节 nibble）；Q5_K 176 字节；Q6_K 210 字节。
+- 设备上保留 4-bit code，不在加载时反量化成 BF16。GGUF 的原始 super-block 是 Q4_K 每 256 个值 144 字节（`d`、`dmin`、12 字节 scale/min、128 字节 nibble），Q5_K 176 字节，Q6_K 210 字节；这是加载格式，不强制成为设备布局。
+- 设备布局由本项目定义：加载时可以把 6-bit scale/min 解包成 kernel 友好的 u8/f16 数组，或按 tile 重排 code；仍然只保留量化数据，不产生 BF16 权重。kernel 侧不依赖 llama.cpp 的结构体。
 - host 侧按张量做 shape/name 映射和视图切分；kernel 只接受 `[rows, columns]` 的 row-major block 矩阵，`columns` 必须是 block 元素数的整数倍。
 - `GroupedInt` 编码携带块大小、scale/min 布局和 super-block 几何；`ProjectionWeight` 增加对应分支，`projection_lowering.rs` 仍是唯一的 kernel 选择点。
 
