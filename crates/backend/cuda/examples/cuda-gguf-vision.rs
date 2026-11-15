@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
             .map(|index| phase(index, offset))
             .collect()
     };
-    let first = vision.encode(
+    let (first, features) = vision.encode_with_deepstack(
         loaded.device(),
         &PromptImage {
             pixels: pixels(0.0),
@@ -70,9 +70,11 @@ fn main() -> Result<(), Box<dyn StdError>> {
         return Err(Error::invariant("images produced identical vision output").into());
     }
     println!(
-        "gguf vision passed: merged={} width={} shift={shift:.3e}",
+        "gguf vision passed: merged={} width={} deepstack={} first_deepstack={} shift={shift:.3e}",
         first.len() / encoder.out_hidden_size,
-        encoder.out_hidden_size
+        encoder.out_hidden_size,
+        features.len(),
+        features.first().map_or(0, Vec::len)
     );
     Ok(())
 }

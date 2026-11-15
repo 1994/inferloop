@@ -2,7 +2,10 @@
 use super::block_mlp;
 use super::device_tower;
 use super::launches::{Launches, capture};
-use super::{VisionWeights, weights::AttentionLayer, weights::half_tile};
+use super::{
+    VisionWeights,
+    weights::{AttentionLayer, MergerLayer, half_tile},
+};
 #[cfg(test)]
 #[cfg(feature = "cuda")]
 use crate::attention::benchmark::REPEATS;
@@ -509,18 +512,87 @@ fn elementwise_sum(
 ///
 /// # Errors
 /// Rejects shapes that disagree with the declared weights or failed CUDA capture/launch.
-pub fn layernorm(
+pub fn deepstack_merger(
     device: &CudaDevice,
-    weights: &VisionWeights,
+    layer: &MergerLayer,
     encoder: &ModalityEncoder,
-    weight_slot: &str,
-    bias_slot: &str,
+    hidden_states: &[f32],
+    tokens: usize,
+) -> Result<Vec<f32>> {
+    let hidden = encoder.hidden_size;
+    let unit = merge_unit(encoder)?;
+    if tokens == 0 || !tokens.is_multiple_of(unit) || hidden_states.len() != tokens * hidden {
+        return Err(Error::invalid("deepstack merger input shape"));
+    }
+    let rows = tokens / unit;
+    let merged = hidden
+        .checked_mul(unit)
+        .ok_or_else(|| Error::invalid("deepstack merged width"))?;
+    let mut regrouped = vec![0.0f32; rows * merged];
+    for row in 0..rows {
+        for patch in 0..unit {
+            let source = (row * unit + patch) * hidden;
+            let target = row * merged + patch * hidden;
+            regrouped[target..target + hidden]
+                .copy_from_slice(&hidden_states[source..source + hidden]);
+        }
+    }
+    let tile = merged
+        .checked_next_power_of_two()
+        .ok_or_else(|| Error::invalid("deepstack norm tile"))?;
+    let normed = layernorm_dim(
+        device,
+        &layer.norm.0,
+        &layer.norm.1,
+        &regrouped,
+        rows,
+        merged,
+        tile,
+        encoder.norm_epsilon,
+    )?;
+    let fc1 = project_with(device, &layer.fc1.0, &layer.fc1.1, &normed, rows, merged)?;
+    let activated = gelu(device, true, &fc1, rows, merged)?;
+    project_with(
+        device,
+        &layer.fc2.0,
+        &layer.fc2.1,
+        &activated,
+        rows,
+        encoder.out_hidden_size,
+    )
+}
+
+pub fn layernorm_alloc(
+    device: &CudaDevice,
+    weight: &Allocation<bf16>,
+    bias: &Allocation<bf16>,
+    encoder: &ModalityEncoder,
     input: &[f32],
     rows: usize,
 ) -> Result<Vec<f32>> {
-    let hidden = encoder.hidden_size;
-    let tile = row_tile(encoder)?;
-    if rows == 0 || input.len() != rows * hidden {
+    layernorm_dim(
+        device,
+        weight,
+        bias,
+        input,
+        rows,
+        encoder.hidden_size,
+        row_tile(encoder)?,
+        encoder.norm_epsilon,
+    )
+}
+
+fn layernorm_dim(
+    device: &CudaDevice,
+    weight: &Allocation<bf16>,
+    bias: &Allocation<bf16>,
+    input: &[f32],
+    rows: usize,
+    hidden: usize,
+    tile: usize,
+    epsilon: f32,
+) -> Result<Vec<f32>> {
+    if rows == 0 || hidden == 0 || tile < hidden || input.len() != rows * hidden {
         return Err(Error::invalid("vision layernorm shape"));
     }
     let mut values = vec![0.0f32; rows * tile];
@@ -530,8 +602,6 @@ pub fn layernorm(
     }
     let tensor = device.runtime().upload(values)?;
     let output = device.runtime().zeros::<f32>(rows * tile)?;
-    let weight = weights.get(weight_slot)?;
-    let bias = weights.get(bias_slot)?;
     let graph = capture(device, |launches| {
         launches.layernorm(VisionNorm {
             out: buffer(&output)?,
@@ -540,7 +610,7 @@ pub fn layernorm(
             bias: buffer(bias)?,
             dim: hidden,
             tile,
-            epsilon: encoder.norm_epsilon,
+            epsilon,
         })?;
         Ok(())
     })?;
@@ -551,6 +621,25 @@ pub fn layernorm(
         result.extend_from_slice(&padded[row * tile..row * tile + hidden]);
     }
     Ok(result)
+}
+
+pub fn layernorm(
+    device: &CudaDevice,
+    weights: &VisionWeights,
+    encoder: &ModalityEncoder,
+    weight_slot: &str,
+    bias_slot: &str,
+    input: &[f32],
+    rows: usize,
+) -> Result<Vec<f32>> {
+    layernorm_alloc(
+        device,
+        weights.get(weight_slot)?,
+        weights.get(bias_slot)?,
+        encoder,
+        input,
+        rows,
+    )
 }
 
 /// Attention scaling of the real head width: `head_dim ** -0.5`.
@@ -1056,6 +1145,20 @@ pub fn merger(
     hidden_states: &[f32],
     tokens: usize,
 ) -> Result<Vec<f32>> {
+    merger_with(device, weights.merger()?, encoder, hidden_states, tokens)
+}
+
+/// Apply one explicit merger layer; deepstack entries use the same geometry.
+///
+/// # Errors
+/// Rejects token counts that do not divide by the merge unit or failed CUDA computation.
+pub fn merger_with(
+    device: &CudaDevice,
+    layer_weights: &MergerLayer,
+    encoder: &ModalityEncoder,
+    hidden_states: &[f32],
+    tokens: usize,
+) -> Result<Vec<f32>> {
     let hidden = encoder.hidden_size;
     let merged = merged_width(encoder)?;
     let unit = merge_unit(encoder)?;
@@ -1063,16 +1166,14 @@ pub fn merger(
         return Err(Error::invalid("vision merger input shape"));
     }
     let rows = tokens / unit;
-    let normed = layernorm(
+    let normed = layernorm_alloc(
         device,
-        weights,
+        &layer_weights.norm.0,
+        &layer_weights.norm.1,
         encoder,
-        "merger.norm.weight",
-        "merger.norm.bias",
         hidden_states,
         tokens,
     )?;
-    let layer_weights = weights.merger()?;
     let fc1 = project_with(
         device,
         &layer_weights.fc1.0,
@@ -1090,6 +1191,39 @@ pub fn merger(
         rows,
         encoder.out_hidden_size,
     )
+}
+
+/// Run the tower and return its final state plus each declared deepstack feature.
+///
+/// # Errors
+/// Rejects malformed geometry or failed CUDA computation.
+pub fn tower_with_deepstack(
+    device: &CudaDevice,
+    weights: &VisionWeights,
+    encoder: &ModalityEncoder,
+    input: &[f32],
+    grid: (usize, usize, usize),
+    tokens: usize,
+) -> Result<(Vec<f32>, Vec<Vec<f32>>)> {
+    let mut state = input.to_vec();
+    let mut features = Vec::with_capacity(encoder.deepstack_layers.len());
+    for layer in 0..encoder.depth {
+        state = block(device, weights, encoder, layer, &state, grid, tokens)?;
+        if let Some(ordinal) = encoder
+            .deepstack_layers
+            .iter()
+            .position(|target| *target == layer)
+        {
+            features.push(deepstack_merger(
+                device,
+                weights.deepstack_merger(ordinal)?,
+                encoder,
+                &state,
+                tokens,
+            )?);
+        }
+    }
+    Ok((state, features))
 }
 
 /// Run the attention kernel alone on caller-supplied tensors.

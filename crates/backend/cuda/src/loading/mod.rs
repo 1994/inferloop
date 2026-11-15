@@ -32,6 +32,7 @@ use crate::vision::patch_width;
 use crate::vision::program::patch_embed_device_pixels;
 use crate::vision::program::patch_embed_device_positions;
 use crate::vision::tower;
+use crate::vision::tower_with_deepstack;
 use infer_models::vision::position_taps;
 pub use kv_scales::load as load_kv_scales;
 mod bindings;
@@ -238,6 +239,47 @@ impl LoadedVision {
     #[must_use]
     pub fn inventory_bytes(&self) -> u64 {
         self.weights.inventory_bytes()
+    }
+
+    /// Encode one image and return the final embedding plus declared deepstack features.
+    /// # Errors
+    /// Rejects a patch grid that disagrees with the pixel buffer or failed CUDA execution.
+    pub fn encode_with_deepstack(
+        &self,
+        device: &CudaDevice,
+        image: &infer_models::PromptImage,
+    ) -> Result<(Vec<f32>, Vec<Vec<f32>>)> {
+        let (temporal, height, width) = image.grid;
+        let patches = temporal
+            .checked_mul(height)
+            .and_then(|value| value.checked_mul(width))
+            .ok_or_else(|| Error::invalid("image patch grid overflow"))?;
+        if patches == 0 {
+            return Err(Error::invalid("image patch grid is empty"));
+        }
+        let width = patch_width(&self.encoder)?;
+        if patches.checked_mul(width) != Some(image.pixels.len()) {
+            return Err(Error::invalid("image pixels do not match the patch grid"));
+        }
+        let taps = position_taps(image.grid, &self.encoder)?;
+        let embedded = patch_embed_device_positions(
+            device,
+            &self.encoder,
+            &self.weights,
+            &image.pixels,
+            &taps,
+            patches,
+        )?;
+        let (hidden, features) = tower_with_deepstack(
+            device,
+            &self.weights,
+            &self.encoder,
+            &embedded,
+            image.grid,
+            patches,
+        )?;
+        let merged = merger(device, &self.weights, &self.encoder, &hidden, patches)?;
+        Ok((merged, features))
     }
 
     /// Encode one preprocessed image into `merged_tokens × text_hidden` embeddings.

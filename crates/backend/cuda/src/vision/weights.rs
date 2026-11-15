@@ -8,6 +8,7 @@ use infer_core::{Error, Result};
 use infer_cuda_kernels::runtime::Allocation;
 use infer_cuda_kernels::runtime::bf16;
 use infer_models::vision::head_dim;
+use infer_models::vision::merge_unit;
 use infer_models::vision::merged_width;
 use infer_models::vision::row_tile;
 use infer_models::vision::slots as vision_slots;
@@ -107,6 +108,7 @@ pub struct MlpLayer {
 
 /// Prepared merger projections.
 pub struct MergerLayer {
+    pub norm: Prepared,
     pub fc1: Prepared,
     pub fc2: Prepared,
 }
@@ -117,6 +119,8 @@ pub struct VisionWeights {
     attention: Vec<AttentionLayer>,
     mlp: Vec<MlpLayer>,
     merger: Option<MergerLayer>,
+    /// Deepstack mergers, in encoder declaration order.
+    deepstack: Vec<MergerLayer>,
     /// Host copy of the learned position table, gathered per image without a device round trip.
     positions: Vec<f32>,
 }
@@ -184,12 +188,16 @@ impl VisionWeights {
             attention: Vec::new(),
             mlp: Vec::new(),
             merger: None,
+            deepstack: Vec::new(),
             positions,
         };
         if encoder.heads > 0 && encoder.depth > 0 {
             weights.prepare_attention(device, package, encoder)?;
             weights.prepare_mlp(device, package, encoder)?;
             weights.prepare_merger(device, package, encoder)?;
+        }
+        if !encoder.deepstack_layers.is_empty() {
+            weights.prepare_deepstack(device, package, encoder)?;
         }
         Ok(weights)
     }
@@ -359,6 +367,8 @@ impl VisionWeights {
         let merged = merged_width(encoder)?;
         let out = encoder.out_hidden_size;
         let base = format!("{}merger.", encoder.prefix);
+        let norm_weight = Self::read_values(package, &format!("{base}norm.weight"))?;
+        let norm_bias = Self::read_values(package, &format!("{base}norm.bias"))?;
         let fc1_weight = Self::read_values(package, &format!("{base}linear_fc1.weight"))?;
         let fc1_bias = Self::read_values(package, &format!("{base}linear_fc1.bias"))?;
         let fc2_weight = Self::read_values(package, &format!("{base}linear_fc2.weight"))?;
@@ -372,6 +382,10 @@ impl VisionWeights {
         }
         let _ = hidden;
         self.merger = Some(MergerLayer {
+            norm: (
+                device.runtime().upload(norm_weight)?,
+                device.runtime().upload(norm_bias)?,
+            ),
             fc1: (
                 device.runtime().upload(fc1_weight)?,
                 device.runtime().upload(fc1_bias)?,
@@ -384,7 +398,71 @@ impl VisionWeights {
         Ok(())
     }
 
-    /// Prepared MLP projections of one block.
+    /// Load the declared deepstack mergers.
+    /// # Errors
+    /// Rejects a missing or malformed deepstack merger.
+    pub fn prepare_deepstack(
+        &mut self,
+        device: &CudaDevice,
+        package: &mut QuantizedPackage,
+        encoder: &ModalityEncoder,
+    ) -> Result<()> {
+        let hidden = encoder.hidden_size;
+        let merged = merged_width(encoder)?;
+        let out = encoder.out_hidden_size;
+        for index in 0..encoder.deepstack_layers.len() {
+            let base = format!("{}deepstack_merger_list.{index}.", encoder.prefix);
+            let norm_weight = Self::read_values(package, &format!("{base}norm.weight"))?;
+            let norm_bias = Self::read_values(package, &format!("{base}norm.bias"))?;
+            let fc1_weight = Self::read_values(package, &format!("{base}linear_fc1.weight"))?;
+            let fc1_bias = Self::read_values(package, &format!("{base}linear_fc1.bias"))?;
+            let fc2_weight = Self::read_values(package, &format!("{base}linear_fc2.weight"))?;
+            let fc2_bias = Self::read_values(package, &format!("{base}linear_fc2.bias"))?;
+            let merged_norm = hidden
+                .checked_mul(merge_unit(encoder)?)
+                .ok_or_else(|| Error::invalid("deepstack norm width"))?;
+            if norm_weight.len() != merged_norm || norm_bias.len() != merged_norm {
+                return Err(Error::invalid(format!(
+                    "deepstack norm shape {} {} hidden {hidden}",
+                    norm_weight.len(),
+                    norm_bias.len()
+                )));
+            }
+            if fc1_weight.len() != merged * merged
+                || fc2_weight.len() != out * merged
+                || fc1_bias.len() != merged
+                || fc2_bias.len() != out
+            {
+                return Err(Error::invalid("deepstack merger shape"));
+            }
+            self.deepstack.push(MergerLayer {
+                norm: (
+                    device.runtime().upload(norm_weight)?,
+                    device.runtime().upload(norm_bias)?,
+                ),
+                fc1: (
+                    device.runtime().upload(fc1_weight)?,
+                    device.runtime().upload(fc1_bias)?,
+                ),
+                fc2: (
+                    device.runtime().upload(fc2_weight)?,
+                    device.runtime().upload(fc2_bias)?,
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    /// Deepstack merger `index`, in declaration order.
+    /// # Errors
+    /// Rejects an index outside the declared set.
+    pub fn deepstack_merger(&self, index: usize) -> Result<&MergerLayer> {
+        self.deepstack
+            .get(index)
+            .ok_or_else(|| Error::invalid("deepstack merger index"))
+    }
+
+    /// Prepared MLP projections of one block.    /// Prepared MLP projections of one block.
     /// # Errors
     /// Rejects a block index outside the prepared range.
     pub fn mlp(&self, layer: usize) -> Result<&MlpLayer> {
