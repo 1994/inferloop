@@ -60,21 +60,29 @@ impl Q4KDevice {
             return Err(Error::invalid("Q4_K matrix shape"));
         }
         let blocks_per_row = columns / QK_K;
-        let expected = rows
+        let block_count = rows
             .checked_mul(blocks_per_row)
-            .and_then(|count| count.checked_mul(BLOCK_BYTES))
+            .ok_or_else(|| Error::invalid("Q4_K matrix size overflow"))?;
+        let expected = block_count
+            .checked_mul(BLOCK_BYTES)
             .ok_or_else(|| Error::invalid("Q4_K matrix size overflow"))?;
         if blocks.len() != expected {
             return Err(Error::invalid("Q4_K payload length"));
         }
+        let code_len = block_count
+            .checked_mul(CODE_BYTES)
+            .ok_or_else(|| Error::invalid("Q4_K code size overflow"))?;
+        let scale_len = block_count
+            .checked_mul(SCALES)
+            .ok_or_else(|| Error::invalid("Q4_K scale size overflow"))?;
         let mut device = Self {
             rows,
             columns,
-            codes: Vec::with_capacity(rows * columns / 2),
-            scales: Vec::with_capacity(rows * columns / LANES),
-            mins: Vec::with_capacity(rows * columns / LANES),
-            d: Vec::with_capacity(rows * blocks_per_row),
-            dmin: Vec::with_capacity(rows * blocks_per_row),
+            codes: Vec::with_capacity(code_len),
+            scales: Vec::with_capacity(scale_len),
+            mins: Vec::with_capacity(scale_len),
+            d: Vec::with_capacity(block_count),
+            dmin: Vec::with_capacity(block_count),
         };
         for block in blocks.as_chunks::<BLOCK_BYTES>().0 {
             device
