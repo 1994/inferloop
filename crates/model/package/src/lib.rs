@@ -31,6 +31,7 @@ pub use providers::dflash2::{
 pub use providers::gguf::qwen3vl::{
     VisionTensor, config, encoder, text_tensor, vision_slots, vision_tensor,
 };
+#[cfg(feature = "gguf")]
 pub use providers::gguf::validate::{TensorSpec, validate_text, validate_vision};
 pub use providers::qwen::{QwenProvider, VisionConfig};
 pub use providers::registry::{ModelRegistry, default_registry};
