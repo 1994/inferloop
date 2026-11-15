@@ -237,6 +237,9 @@ pub struct LanesAppendPlan {
     pub per_lane: bool,
     /// Rows of the two-axis page table.
     pub table_rows: usize,
+    /// Consecutive lanes that address one table row: one for independent sequences, the
+    /// verification width for the candidate lanes of one sequence.
+    pub table_group: usize,
 }
 
 /// Decode split across a window's parts.
@@ -256,6 +259,8 @@ pub struct LanesDecodePlan {
     pub lanes: usize,
     pub per_lane: bool,
     pub table_rows: usize,
+    /// Consecutive lanes that address one table row; see [`LanesAppendPlan::table_group`].
+    pub table_group: usize,
 }
 
 /// One group of a pooled launch.

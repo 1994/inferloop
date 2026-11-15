@@ -1,5 +1,4 @@
 //! Cross-sequence target verification with per-slot recurrent rollback.
-use super::attention_lowering::Lowering;
 use super::slot_recurrent::ValueDevice;
 use super::{
     ActivationArena,
@@ -379,14 +378,12 @@ impl BatchBuilder<'_> {
                 if super::slot_rope::record(scope, node, arena, self.weights, batch.metadata)? {
                     continue;
                 }
-                if self.slot_verify_lowering(node, lane_fp8, verify) == Some(Lowering::Grouped) {
-                    self.record_slot_verify_attention(
-                        scope,
-                        node,
-                        arena,
-                        (lane_states, lane_fp8),
-                        (metadata, batch.metadata),
-                    )?;
+                if self.record_pool_verify_attention(
+                    (scope, node, arena),
+                    (lane_states, lane_fp8),
+                    (metadata, batch.metadata),
+                    verify,
+                )? {
                     continue;
                 }
                 match dispatch32(node, self.weights) {

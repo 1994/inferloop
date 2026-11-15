@@ -23,7 +23,7 @@ use crate::device::copy_runs;
 use crate::device::{CudaDevice, DeviceProfile, device_error};
 use crate::loading::kv_block_bytes;
 use infer_core::{Error, ErrorCode, Result, TensorId};
-use infer_cuda_kernels::contract::{Owner, Width};
+use infer_cuda_kernels::contract::{Owner, VERIFY_LANES, Width};
 use infer_cuda_kernels::runtime::Allocation;
 use infer_cuda_kernels::runtime::f8e4m3fn;
 use infer_cuda_kernels::runtime::{Staging, Transfers};
@@ -115,18 +115,27 @@ thread_local! {
     pub static LANES_DISABLED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Lane-batched attention scratch; a pooled verification graph has its own grouped path.
+/// Lanes of the pool's lane-batched attention: every slot of a decode pool, or every candidate
+/// lane of a verification width the grouped kernel does not cover; `None` when it covers it.
+const fn batched_lanes(width: usize, verify: usize) -> Option<usize> {
+    match verify {
+        0 | 1 => Some(width),
+        VERIFY_LANES => None,
+        _ => width.checked_mul(verify),
+    }
+}
+
+/// Lane-batched attention scratch for [`batched_lanes`].
 fn lanes_workspace(
     device: &CudaDevice,
     graph: &DataflowGraph,
     width: usize,
     verify: usize,
 ) -> Result<super::attention_lanes::Workspace> {
-    if verify < 2 {
-        super::attention_lanes::Workspace::new(device, graph, width)
-    } else {
-        Ok(super::attention_lanes::Workspace::default())
-    }
+    batched_lanes(width, verify).map_or_else(
+        || Ok(super::attention_lanes::Workspace::default()),
+        |lanes| super::attention_lanes::Workspace::new(device, graph, lanes),
+    )
 }
 
 /// The full-width decode graph and its narrower rungs.
@@ -144,23 +153,35 @@ fn build_pool_decode<'a>(
     // its builder therefore holds the pooled state roots, not a lane.
     let (lane_states, roots) = states.parts();
     builder.states = roots;
-    #[cfg(test)]
-    let lanes = !LANES_DISABLED.get();
-    #[cfg(not(test))]
-    let lanes = true;
-    builder.table_root = lanes.then_some(table_root);
+    builder.table_root = lanes_enabled().then_some(table_root);
     let decode = builder.build_slots(lane_states, fp8)?;
     Ok((decode, decode_narrow))
 }
 
+/// Whether pools record lane-batched attention; tests compare a pool against per-lane launches.
+#[cfg(test)]
+fn lanes_enabled() -> bool {
+    !LANES_DISABLED.get()
+}
+#[cfg(not(test))]
+const fn lanes_enabled() -> bool {
+    true
+}
+
 /// The pool-wide verify graph and one narrower graph per `narrow` slot count, with the root
-/// views each narrow graph reads.
-fn build_verify_graphs(
-    builder: &mut super::batch::BatchBuilder<'_>,
+/// views each narrow graph reads. `lanes` lets every verify graph batch attention lanes.
+fn build_verify_graphs<'a>(
+    builder: &mut super::batch::BatchBuilder<'a>,
     (states, fp8): (&mut SlotStates, &mut [Fp8Caches]),
-    verify: usize,
-    narrow: &[usize],
+    (verify, narrow): (usize, &[usize]),
+    lanes: Option<(&'a mut super::attention_lanes::Workspace, RowMajor<'a, i32>)>,
 ) -> Result<(SlotVerifyGraph, Vec<SlotVerifyGraph>, Vec<States>)> {
+    if let Some((workspace, table_root)) = lanes {
+        builder.lanes_attention = Some(workspace);
+        builder.table_root = Some(table_root);
+    }
+    // Narrower graphs batch attention lanes too: paged KV is addressed through the same table
+    // rows, and the lane-batched kernels decline unpaged caches whose roots they would offset.
     let full = builder.build_slot_verify(states, fp8, verify)?;
     let mut graphs = Vec::with_capacity(narrow.len());
     let mut roots = Vec::with_capacity(narrow.len());
@@ -509,10 +530,18 @@ impl SlotPool {
         profile: &DeviceProfile,
     ) -> Result<u64> {
         let (slots, verify, _) = geometry;
+        let lanes = batched_lanes(slots, verify)
+            .map(|lanes| super::attention_lanes::required_bytes(graph, lanes, profile))
+            .transpose()?
+            .unwrap_or(0);
         if verify < 2 {
-            return super::attention_lanes::required_bytes(graph, slots, profile);
+            return Ok(lanes);
         }
-        super::attention_decode::Workspace::pooled_bytes(graph, weights, geometry, profile)
+        let pooled =
+            super::attention_decode::Workspace::pooled_bytes(graph, weights, geometry, profile)?;
+        pooled
+            .checked_add(lanes)
+            .ok_or_else(|| Error::invalid("pool attention bytes overflow"))
     }
 
     /// Rollback storage a narrower verify graph adds to the pool: none when commits are fused,
@@ -656,11 +685,12 @@ impl SlotPool {
                 burst: None,
             };
             if verify >= 2 {
+                let lanes = lanes_enabled().then_some((&mut lanes_attention, tables.root()?));
                 let (full, graphs, roots) = build_verify_graphs(
                     &mut builder,
                     (&mut states, &mut fp8),
-                    verify,
-                    &narrow_slots,
+                    (verify, &narrow_slots),
+                    lanes,
                 )?;
                 (None, Some(full), Vec::new(), graphs, roots)
             } else {

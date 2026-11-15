@@ -500,6 +500,7 @@ pub mod kernels {
         const PARTS: i32,
         const KH: i32,
         const PER_LANE: i32,
+        const GROUP: i32,
     >(
         out: &mut Tensor<f32, { [1, 16, D] }>,
         peaks: &mut Tensor<f32, { [1, 16] }>,
@@ -561,7 +562,8 @@ pub mod kernels {
         let blocks = table.partition(shape![1, 1]);
         let offsets: Tile<i32, { [32] }> = iota(shape![32]);
         for block in first..last {
-            let physical: i32 = tile_to_scalar(blocks.load([lane, block]).reshape(shape![]));
+            let physical: i32 =
+                tile_to_scalar(blocks.load([lane / GROUP, block]).reshape(shape![]));
             let key_t: Tile<bf16, { [D, 32] }> = convert_tile(
                 kp.load_pipelined::<4>([cache, 0i32, physical])
                     .reshape(shape![D, 32]),

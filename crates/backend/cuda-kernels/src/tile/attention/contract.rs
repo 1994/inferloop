@@ -16,7 +16,7 @@ use crate::tile::{backend_error, borrowed, capture_scope};
 use cuda_core::DType;
 use cutile::prelude::*;
 use cutile::tile_kernel::CompileOptions;
-use infer_core::Result;
+use infer_core::{Error, Result};
 use std::slice::from_ref;
 
 /// Compiler occupancy hint of the grouped decode kernels. Without it the compiler spends the whole
@@ -226,6 +226,7 @@ impl TileAttention {
         plan: LanesAppendPlan,
         buffers: AppendBuffers<'_>,
     ) -> Result<()> {
+        grouped_tables(plan.lanes, plan.table_rows, plan.table_group)?;
         let scope = capture_scope(recording)?;
         let input = [plan.lanes * plan.kv_heads, kv.dim];
         let keys = self.tensor(recording, buffers.keys, "append keys", &input)?;
@@ -256,6 +257,7 @@ impl TileAttention {
                     plan.kv_heads.to_string(),
                     plan.lanes.to_string(),
                     i32::from(plan.per_lane).to_string(),
+                    plan.table_group.to_string(),
                 ]),
             )
             .map_err(backend_error)?;
@@ -633,6 +635,7 @@ impl TileAttention {
         partials: Partials<'_>,
         buffers: DecodeBuffers<'_>,
     ) -> Result<()> {
+        grouped_tables(plan.lanes, plan.table_rows, plan.table_group)?;
         let scope = capture_scope(recording)?;
         let decode = plan.decode;
         let (dim, group) = (decode.dim, query_group(decode));
@@ -671,6 +674,7 @@ impl TileAttention {
                     plan.parts.to_string(),
                     decode.kv_heads.to_string(),
                     i32::from(plan.per_lane).to_string(),
+                    plan.table_group.to_string(),
                 ])
                 .compile_options(grouped_options()),
             )
@@ -682,6 +686,16 @@ impl TileAttention {
             &partial,
         )
     }
+}
+
+/// Every group of `group` consecutive lanes addresses one of `table_rows` table rows.
+fn grouped_tables(lanes: usize, table_rows: usize, group: usize) -> Result<()> {
+    if group == 0 || !lanes.is_multiple_of(group) || lanes / group > table_rows {
+        return Err(Error::invalid(format!(
+            "{lanes} lanes in groups of {group} exceed {table_rows} page-table rows"
+        )));
+    }
+    Ok(())
 }
 
 impl TileAttention {

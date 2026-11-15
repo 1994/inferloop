@@ -112,15 +112,32 @@ pub fn recorded() -> usize {
     RECORDED.get()
 }
 
+/// The leading partial rows of `work` that `groups` KV-head groups split into its parts: graphs
+/// narrower than the pool share the pool's scratch, since one graph replays at a time.
+fn partials(work: &Buffers, groups: usize, dim: usize) -> Result<Partials<'_>> {
+    let rows = groups
+        .checked_mul(work.parts * GROUPED_ROWS)
+        .ok_or_else(|| Error::invalid("lane attention partial overflow"))?;
+    let elements = rows
+        .checked_mul(dim)
+        .ok_or_else(|| Error::invalid("lane attention partial overflow"))?;
+    Ok(Partials {
+        numerator: buffer(&work.numerator)?.slice(0..elements).map_err(error)?,
+        maxima: buffer(&work.maxima)?.slice(0..rows).map_err(error)?,
+        sums: buffer(&work.sums)?.slice(0..rows).map_err(error)?,
+    })
+}
+
 impl BatchBuilder<'_> {
-    /// False leaves the node to one launch per lane.
+    /// One launch over every lane; `table_group` consecutive lanes read one table row, so a
+    /// sequence's candidate lanes attend its pages. False leaves the node to one launch per lane.
     pub(super) fn record_lanes_attention(
         &self,
         scope: &Recording<'_>,
         node: &TensorNode,
         arena: &ActivationArena,
         caches: &[super::fp8_cache::Fp8Caches],
-        metadata: &Allocation<i32>,
+        (metadata, table_group): (&Allocation<i32>, usize),
     ) -> Result<bool> {
         let TensorOp::Attention {
             query_heads,
@@ -162,8 +179,13 @@ impl BatchBuilder<'_> {
             }) {
                 return Ok(false);
             }
-            self.record_lanes(scope, node, arena, (shared.cache(scales), false), metadata)?;
+            let cache = (shared.cache(scales), false);
+            self.record_lanes(scope, node, arena, cache, (metadata, table_group))?;
             return Ok(true);
+        }
+        // A pooled root holds one row per lane; candidate lanes must share their sequence's cache.
+        if table_group > 1 {
+            return Ok(false);
         }
         let owned = self
             .states
@@ -175,7 +197,7 @@ impl BatchBuilder<'_> {
         // A pooled root holds one row of every head per lane.
         let groups = arena.lanes() * kv_heads;
         let cache = kv_cache((keys, values), groups, head_dim, [1.0, 1.0])?;
-        self.record_lanes(scope, node, arena, (cache, true), metadata)?;
+        self.record_lanes(scope, node, arena, (cache, true), (metadata, table_group))?;
         Ok(true)
     }
 
@@ -187,7 +209,7 @@ impl BatchBuilder<'_> {
         node: &TensorNode,
         arena: &ActivationArena,
         (cache, per_lane): (KvCache<'_>, bool),
-        metadata: &Allocation<i32>,
+        (metadata, table_group): (&Allocation<i32>, usize),
     ) -> Result<()> {
         let TensorOp::Attention {
             query_heads,
@@ -221,6 +243,7 @@ impl BatchBuilder<'_> {
                     lanes,
                     per_lane,
                     table_rows,
+                    table_group,
                 },
                 AppendBuffers {
                     cache,
@@ -246,12 +269,9 @@ impl BatchBuilder<'_> {
                     lanes,
                     per_lane,
                     table_rows,
+                    table_group,
                 },
-                Partials {
-                    numerator: buffer(&work.numerator)?,
-                    maxima: buffer(&work.maxima)?,
-                    sums: buffer(&work.sums)?,
-                },
+                partials(work, lanes * kv_heads, head_dim)?,
                 DecodeBuffers {
                     output: arena.activation(node.outputs[0]).map_err(error)?,
                     query: arena.activation(node.inputs[0]).map_err(error)?,
