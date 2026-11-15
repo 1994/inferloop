@@ -20,7 +20,6 @@ const SOFTPLUS_LINEAR_THRESHOLD: f64 = 20.0;
 
 pub(super) struct Fixture {
     pub shape: [usize; SHAPE_RANK],
-    pub metadata: [i32; METADATA_FIELDS],
     pub qkv: Vec<f32>,
     pub beta: Vec<f32>,
     pub alpha: Vec<f32>,
@@ -40,7 +39,7 @@ fn values(n: usize, salt: usize) -> Vec<f32> {
         })
         .collect()
 }
-/// Widest prompt graph the exact tuner measures; the reference covers every one of its rungs.
+/// Widest prompt graph a recurrent fixture covers; the reference spans every one of its rungs.
 const MAX_REFERENCE_LANES: usize = 2048;
 
 impl Fixture {
@@ -151,7 +150,6 @@ impl Fixture {
         }
         Ok(Self {
             shape,
-            metadata,
             qkv,
             beta,
             alpha,
