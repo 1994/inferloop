@@ -139,6 +139,55 @@ impl GgufVisionPackage {
         &self.deepstack
     }
 
+    /// Fuse the two temporal patch slices into the declared 5D convolution weight.
+    /// # Errors
+    /// Rejects a missing slice, a shape other than `[hidden, channels, 1, patch, patch]`, or an
+    /// exceeded read budget.
+    pub fn patch_weight(&self, budget: u64) -> Result<Vec<f32>> {
+        let [left, right] = self.patch();
+        let (left, right) = (
+            left.as_ref()
+                .ok_or_else(|| Error::invalid("missing patch slice 0"))?,
+            right
+                .as_ref()
+                .ok_or_else(|| Error::invalid("missing patch slice 1"))?,
+        );
+        let [hidden, channels, patch, patch_width] = left.shape.as_slice() else {
+            return Err(Error::invalid("patch slice rank"));
+        };
+        if left.shape != right.shape {
+            return Err(Error::invalid("patch slice shape"));
+        }
+        let values = [self.dense(left, budget)?, self.dense(right, budget)?];
+        let plane = hidden * channels * patch * patch_width;
+        if values.iter().any(|slice| slice.len() != plane) {
+            return Err(Error::invalid("patch slice payload"));
+        }
+        let per_channel = patch * patch_width;
+        let mut fused = vec![0.0f32; plane * 2];
+        for hidden_index in 0..*hidden {
+            for channel in 0..*channels {
+                let base = (hidden_index * channels + channel) * per_channel;
+                let out = (hidden_index * channels + channel) * per_channel * 2;
+                fused[out..out + per_channel].copy_from_slice(&values[0][base..base + per_channel]);
+                fused[out + per_channel..out + per_channel * 2]
+                    .copy_from_slice(&values[1][base..base + per_channel]);
+            }
+        }
+        Ok(fused)
+    }
+
+    /// The fused patch weight as little-endian BF16 bytes for the existing encoder loader.
+    /// # Errors
+    /// Rejects a malformed patch pair or an exceeded budget.
+    pub fn patch_bf16(&self, budget: u64) -> Result<Vec<u8>> {
+        let values = self.patch_weight(budget)?;
+        Ok(values
+            .iter()
+            .flat_map(|value| bf16_bits(*value).to_le_bytes())
+            .collect())
+    }
+
     /// Decode one slot to F32.
     /// # Errors
     /// Rejects an unknown slot, an unsupported dtype, or an exceeded budget.
@@ -175,4 +224,17 @@ fn encoder_deepstack(metadata: &infer_format::Metadata) -> Result<Vec<u64>> {
         .into_iter()
         .map(Ok)
         .collect()
+}
+
+/// Round-to-nearest-even bias for narrowing F32 to BF16.
+const BF16_ROUND: u32 = 0x7FFF;
+/// Low BF16 mantissa bit used for tie breaking.
+const BF16_TIE: u32 = 1;
+/// Bits discarded when narrowing to BF16.
+const BF16_SHIFT: u32 = 16;
+
+fn bf16_bits(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let rounded = bits.wrapping_add(BF16_ROUND + ((bits >> BF16_SHIFT) & BF16_TIE));
+    (rounded >> BF16_SHIFT) as u16
 }

@@ -12,6 +12,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         package.patch().iter().flatten().count(),
         package.deepstack().len()
     );
+    for slice in package.patch().iter().flatten() {
+        println!(
+            "patch_slice={} shape={:?} dtype={:?}",
+            slice.source, slice.shape, slice.dtype
+        );
+    }
+    let patch = package.patch_weight(u64::MAX)?;
+    println!("patch_values={} first={}", patch.len(), patch[0]);
     if let Some(slot) = package.slots().values().next() {
         let values = package.dense(slot, u64::MAX)?;
         println!(
