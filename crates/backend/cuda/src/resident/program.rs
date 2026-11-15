@@ -35,6 +35,7 @@ use infer_cuda_kernels::runtime::bf16;
 use infer_ir::{DataflowGraph, StateKind, TensorOp, TensorSpec, TensorStorage};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 type SlotState = (
     super::batch::States,
@@ -781,7 +782,30 @@ impl DeviceProgram {
         Ok((nvfp4, delegated, attention))
     }
 
+    /// [`Self::construct`], logging how long it took: building a program sits on the request
+    /// path whenever a long sequence needs its own.
     fn new_impl(
+        device: &CudaDevice,
+        graph: &DataflowGraph,
+        weights: &ProgramWeights,
+        dimensions: (usize, usize, usize),
+        geometry: ProgramGeometry,
+        slot: Option<SlotState>,
+    ) -> Result<Self> {
+        let started = Instant::now();
+        let slotted = slot.is_some();
+        let program = Self::construct(device, graph, weights, dimensions, geometry, slot)?;
+        tracing::info!(
+            target: "infer::capture",
+            capacity = dimensions.0,
+            slotted,
+            elapsed_ms = started.elapsed().as_millis(),
+            "device program built"
+        );
+        Ok(program)
+    }
+
+    fn construct(
         device: &CudaDevice,
         graph: &DataflowGraph,
         weights: &ProgramWeights,

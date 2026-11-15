@@ -42,7 +42,7 @@ pub(super) fn load(
     };
     let shipped = shipped_table()?;
     let tuning_source = TilingSource {
-        local: table.as_ref(),
+        local: table.as_deref(),
         shipped: Some(shipped),
         path,
         autotune: options.autotune,
