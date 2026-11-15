@@ -79,6 +79,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             && let Some(accepted) = self.backend.launch_accepted(&running.ticket)
         {
             running.launch_acked = true;
+            running.launched_us.get_or_insert(self.now_us);
             self.event(
                 EventKind::LaunchAcknowledged,
                 ObjectKind::Step,
@@ -91,8 +92,10 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         match self.backend.poll(&mut running.ticket) {
             Ok(Some(outputs)) => self.commit_execution(running, outputs, emitted)?,
             Ok(None) => {
-                let timed_out =
-                    self.now_us - running.submitted_us >= self.config.submission_timeout_us;
+                // Only device execution is timed; encoding has not finished before acceptance.
+                let timed_out = running.launched_us.is_some_and(|launched| {
+                    self.now_us.saturating_sub(launched) >= self.config.submission_timeout_us
+                });
                 // Timeout is not a completion fence: put the ticket back before reporting it.
                 self.inflight = Some(running);
                 if timed_out && self.fault.is_none() {

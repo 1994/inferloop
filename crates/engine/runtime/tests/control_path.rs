@@ -339,6 +339,8 @@ enum Fault {
     InvalidTiming,
     MaintenancePending,
     MaintenanceFenced,
+    /// The backend is still encoding: the launch is not acknowledged and nothing completes.
+    PendingLaunch,
 }
 struct FaultyBackend {
     inner: ProtocolBackend,
@@ -405,7 +407,7 @@ impl BackendProvider for FaultyBackend {
     fn poll(&mut self, t: &mut Self::Ticket) -> Result<Option<Vec<TaskOutput>>> {
         match self.fault {
             Fault::Poll => Err(Error::new(ErrorCode::Backend, "injected poll failure")),
-            Fault::NeverComplete | Fault::MaintenancePending => Ok(None),
+            Fault::NeverComplete | Fault::MaintenancePending | Fault::PendingLaunch => Ok(None),
             Fault::Recover | Fault::InvalidTiming | Fault::MaintenanceFenced => self.inner.poll(t),
             Fault::Malformed => {
                 let mut outputs = self.inner.poll(t)?;
@@ -416,6 +418,9 @@ impl BackendProvider for FaultyBackend {
             }
             Fault::Submit => unreachable!(),
         }
+    }
+    fn launch_accepted(&self, _: &Self::Ticket) -> Option<bool> {
+        (!matches!(self.fault, Fault::PendingLaunch)).then_some(true)
     }
     fn completion_timing(&self, _: &Self::Ticket) -> Option<ExecutionTiming> {
         matches!(self.fault, Fault::InvalidTiming).then_some(ExecutionTiming {
@@ -711,6 +716,40 @@ fn backend_failures_and_invalid_completions_release_all_owned_state() {
         assert_eq!(e.inspect().state.allocated_pages, 0);
     }
 }
+/// Encoding a step, including first-use graph capture, can outlast the timeout on the backend's
+/// own worker; the timeout bounds device execution from launch acceptance instead (#257).
+#[test]
+fn submission_timeout_runs_from_launch_acceptance() -> Result<()> {
+    let b = FaultyBackend {
+        inner: backend(),
+        fault: Fault::PendingLaunch,
+    };
+    let model = support::model(ModelId::ONE);
+    let mut e = Engine::new(
+        b,
+        model,
+        PrecisionPlan::f32(),
+        &registry(),
+        RuntimeConfig {
+            submission_timeout_us: 10,
+            ..RuntimeConfig::default()
+        },
+    )?;
+    e.submit(request(1, Workload::Generate { max_new_tokens: 1 }))?;
+    e.tick(0)?;
+    e.tick(100)?;
+    assert!(e.inspect().fault.is_none());
+    e.backend_mut().fault = Fault::NeverComplete;
+    e.tick(101)?;
+    e.tick(110)?;
+    assert!(e.inspect().fault.is_none());
+    assert_eq!(
+        e.tick(111).err().map(|error| error.code),
+        Some(ErrorCode::Invariant)
+    );
+    e.check_invariants()
+}
+
 #[test]
 fn backend_timeout_is_diagnosed_without_recycling_inflight_state() {
     let b = FaultyBackend {
