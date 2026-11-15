@@ -1,5 +1,5 @@
 //! Bind a `DFlash2` draft package against the target package it speculates for.
-use super::{DeviceWeight, QuantizedPackage, WeightEncoding, WeightSource, WeightView};
+use super::{DeviceWeight, QuantizedPackage, WeightSource, WeightView};
 use crate::providers::dflash2::DFlash2Config;
 use crate::storage::source::TensorFiles;
 use crate::{PackageSource, TensorDtype};
@@ -89,7 +89,7 @@ impl QuantizedPackage {
         }
         let inventory = weights
             .iter()
-            .map(|(name, weight)| (name.clone(), weight.shape.clone()))
+            .map(|(name, weight)| (name.clone(), weight.shape()))
             .collect();
         config.check_weight_inventory(&inventory)?;
         let hidden = config.hidden_size;
@@ -142,21 +142,11 @@ fn bind(
     sources: &BTreeMap<String, WeightSource>,
     block: Option<[usize; 2]>,
 ) -> Result<DeviceWeight> {
-    let mut weight = DeviceWeight {
-        shape: data.shape.clone(),
-        encoding: WeightEncoding::Float,
-        data: data.clone(),
-        scale: None,
-        global_scale: None,
-        input_global_scale: None,
-        weight_block: None,
-        fp8_token_input: false,
-    };
     if data.dtype != TensorDtype::F8E4m3 {
         if !data.dtype.is_host_float() {
             return Err(Error::unsupported(format!("{name}: draft weight dtype")));
         }
-        return Ok(weight);
+        return Ok(DeviceWeight::Float { data: data.clone() });
     }
     let base = name.strip_suffix(".weight").unwrap_or(name);
     let [rows, columns] = data.shape.as_slice() else {
@@ -166,10 +156,16 @@ fn bind(
         if scale.shape != [*rows, 1] || !scale.dtype.is_host_float() {
             return Err(Error::invalid(format!("{base}: per-channel FP8 scale")));
         }
-        weight.encoding = WeightEncoding::Fp8Channel;
-        weight.scale = Some(scale.clone());
-    } else if let Some(scale) = sources.get(&format!("{base}.weight_scale_inv")) {
-        let [block_rows, block_columns] = block.unwrap_or(DEFAULT_FP8_BLOCK);
+        return Ok(DeviceWeight::Fp8Channel {
+            data: data.clone(),
+            scale: scale.clone(),
+            // The draft's projections are dynamically token-quantized in the reference.
+            token_input: true,
+        });
+    }
+    if let Some(scale) = sources.get(&format!("{base}.weight_scale_inv")) {
+        let block = block.unwrap_or(DEFAULT_FP8_BLOCK);
+        let [block_rows, block_columns] = block;
         if !rows.is_multiple_of(block_rows)
             || !columns.is_multiple_of(block_columns)
             || scale.shape != [rows / block_rows, columns / block_columns]
@@ -177,22 +173,21 @@ fn bind(
         {
             return Err(Error::invalid(format!("{base}: block FP8 scale")));
         }
-        weight.encoding = WeightEncoding::Fp8Block;
-        weight.weight_block = Some([block_rows, block_columns]);
-        weight.scale = Some(scale.clone());
-    } else {
-        return Err(Error::invalid(format!(
-            "{base}: FP8 draft weight has no scale"
-        )));
+        return Ok(DeviceWeight::Fp8Block {
+            data: data.clone(),
+            scale: scale.clone(),
+            block,
+            token_input: true,
+        });
     }
-    // The draft's projections are dynamically token-quantized in the reference.
-    weight.fp8_token_input = true;
-    Ok(weight)
+    Err(Error::invalid(format!(
+        "{base}: FP8 draft weight has no scale"
+    )))
 }
 
 /// Split `[hidden, parts * hidden]` into `parts` column blocks of `[hidden, hidden]`.
 fn column_blocks(weight: &DeviceWeight, hidden: usize, parts: usize) -> Result<Vec<DeviceWeight>> {
-    if weight.shape != [hidden, parts * hidden] {
+    if weight.shape() != [hidden, parts * hidden] {
         return Err(Error::invalid("draft fc shape"));
     }
     let view = |source: &WeightSource, first: usize, count: usize| -> Result<WeightSource> {
@@ -216,28 +211,39 @@ fn column_blocks(weight: &DeviceWeight, hidden: usize, parts: usize) -> Result<V
         })
     };
     (0..parts)
-        .map(|part| {
-            let scale = match (weight.encoding, &weight.scale) {
-                (WeightEncoding::Float, _) => None,
-                (WeightEncoding::Fp8Channel, Some(scale)) => Some(scale.clone()),
-                (WeightEncoding::Fp8Block, Some(scale)) => {
-                    let [_, block_columns] = weight
-                        .weight_block
-                        .ok_or_else(|| Error::invalid("draft fc FP8 block"))?;
-                    if !hidden.is_multiple_of(block_columns) {
-                        return Err(Error::invalid("draft fc FP8 block columns"));
-                    }
-                    let blocks = hidden / block_columns;
-                    Some(view(scale, part * blocks, blocks)?)
-                }
-                _ => return Err(Error::unsupported("draft fc encoding")),
-            };
-            Ok(DeviceWeight {
-                shape: vec![hidden, hidden],
-                data: view(&weight.data, part * hidden, hidden)?,
+        .map(|part| match weight {
+            DeviceWeight::Float { data } => Ok(DeviceWeight::Float {
+                data: view(data, part * hidden, hidden)?,
+            }),
+            DeviceWeight::Fp8Channel {
+                data,
                 scale,
-                ..weight.clone()
-            })
+                token_input,
+            } => Ok(DeviceWeight::Fp8Channel {
+                data: view(data, part * hidden, hidden)?,
+                // A per-channel scale has one column, so a column slice leaves it unchanged.
+                scale: scale.clone(),
+                token_input: *token_input,
+            }),
+            DeviceWeight::Fp8Block {
+                data,
+                scale,
+                block,
+                token_input,
+            } => {
+                let [_, block_columns] = *block;
+                if !hidden.is_multiple_of(block_columns) {
+                    return Err(Error::invalid("draft fc FP8 block columns"));
+                }
+                let blocks = hidden / block_columns;
+                Ok(DeviceWeight::Fp8Block {
+                    data: view(data, part * hidden, hidden)?,
+                    scale: view(scale, part * blocks, blocks)?,
+                    block: *block,
+                    token_input: *token_input,
+                })
+            }
+            DeviceWeight::Nvfp4 { .. } => Err(Error::unsupported("draft fc encoding")),
         })
         .collect()
 }

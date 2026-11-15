@@ -57,22 +57,26 @@ pub(super) fn load(
         }
         let first = &parts[0];
         if parts.iter().any(|part| {
-            part.encoding != first.encoding
-                || part.fp8_token_input != first.fp8_token_input
-                || part.shape != [output, input]
+            part.encoding() != first.encoding()
+                || part.token_input() != first.token_input()
+                || part.shape() != [output, input]
         }) {
             return Err(Error::unsupported("mixed expert bank encodings"));
         }
-        let quantized_inputs = first.fp8_token_input;
+        let quantized_inputs = first.token_input();
         let rows = experts
             .checked_mul(output)
             .ok_or_else(|| Error::invalid("expert bank overflow"))?;
-        admit(device, first.encoding, rows, input)?;
-        let projection = match first.encoding {
+        admit(device, first.encoding(), rows, input)?;
+        let projection = match first.encoding() {
             WeightEncoding::Float => {
                 let mut data = Vec::new();
                 for part in &parts {
-                    data.extend(floats(package, &part.data)?.into_iter().map(bf16::from_f32));
+                    data.extend(
+                        floats(package, part.data())?
+                            .into_iter()
+                            .map(bf16::from_f32),
+                    );
                 }
                 ProjectionWeight::Dense(Matrix::upload(device, data, &[rows, input])?)
             }
@@ -139,21 +143,20 @@ fn fp8(
     input: usize,
     output: usize,
 ) -> Result<ProjectionWeight> {
-    let encoding = parts[0].encoding;
+    let encoding = parts[0].encoding();
     let mut data = Vec::new();
     let mut scaling = Vec::new();
     for part in parts {
         data.extend(
             package
-                .read_view(&part.data, 2 * GIB as u64)?
+                .read_view(part.data(), 2 * GIB as u64)?
                 .iter()
                 .copied()
                 .map(f8e4m3fn),
         );
         let scales = floats(
             package,
-            part.scale
-                .as_ref()
+            part.scale()
                 .ok_or_else(|| Error::invalid("expert FP8 scale"))?,
         )?;
         if scales.iter().any(|s| !s.is_finite() || *s <= 0.0) {
@@ -163,7 +166,7 @@ fn fp8(
         }
         if encoding == WeightEncoding::Fp8Block {
             let [block_rows, block_columns] = part
-                .weight_block
+                .block()
                 .ok_or_else(|| Error::invalid("expert block scale"))?;
             if block_columns != FP8_BLOCK_COLUMNS
                 || block_rows == 0

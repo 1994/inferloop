@@ -59,19 +59,138 @@ pub struct WeightSource {
     pub view: Option<WeightView>,
 }
 
+/// A validated weight in the encoding its checkpoint stores.
+///
+/// Each variant owns exactly the sources its encoding needs: a per-channel FP8 weight carries
+/// one scale vector, a block weight also carries its block geometry, and NVFP4 carries both
+/// global scales. There is no state in which an encoding is missing a source it requires.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeviceWeight {
-    pub shape: Vec<usize>,
-    pub encoding: WeightEncoding,
-    pub data: WeightSource,
-    pub scale: Option<WeightSource>,
-    pub global_scale: Option<WeightSource>,
-    pub input_global_scale: Option<WeightSource>,
-    /// `[rows, columns]` of one FP8 block-scale group when the checkpoint declares block scales.
-    #[serde(default)]
-    pub weight_block: Option<[usize; 2]>,
-    #[serde(default)]
-    pub fp8_token_input: bool,
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one entry per package weight in a load-time map; boxing NVFP4's four sources would add an allocation per weight without changing steady-state access"
+)]
+pub enum DeviceWeight {
+    /// Unquantized stored floating-point values.
+    Float { data: WeightSource },
+    /// One FP8 scale per output channel.
+    Fp8Channel {
+        data: WeightSource,
+        scale: WeightSource,
+        /// Activations are dynamically quantized per token before the GEMM.
+        token_input: bool,
+    },
+    /// Block-scaled FP8: `block` is the `[rows, columns]` of one scale group.
+    Fp8Block {
+        data: WeightSource,
+        scale: WeightSource,
+        block: [usize; 2],
+        /// Activations are dynamically quantized per token block before the GEMM.
+        token_input: bool,
+    },
+    /// Packed E2M1 code pairs with one E4M3 scale per 16-column group.
+    Nvfp4 {
+        data: WeightSource,
+        scale: WeightSource,
+        global: WeightSource,
+        input_global: WeightSource,
+    },
+}
+
+impl DeviceWeight {
+    /// The encoding tag this weight carries.
+    #[must_use]
+    pub const fn encoding(&self) -> WeightEncoding {
+        match self {
+            Self::Float { .. } => WeightEncoding::Float,
+            Self::Fp8Channel { .. } => WeightEncoding::Fp8Channel,
+            Self::Fp8Block { .. } => WeightEncoding::Fp8Block,
+            Self::Nvfp4 { .. } => WeightEncoding::Nvfp4,
+        }
+    }
+
+    /// The stored weight payload.
+    #[must_use]
+    pub const fn data(&self) -> &WeightSource {
+        match self {
+            Self::Float { data }
+            | Self::Fp8Channel { data, .. }
+            | Self::Fp8Block { data, .. }
+            | Self::Nvfp4 { data, .. } => data,
+        }
+    }
+
+    /// Mutable access to the stored payload descriptor, for a load-time layout change.
+    pub const fn data_mut(&mut self) -> &mut WeightSource {
+        match self {
+            Self::Float { data }
+            | Self::Fp8Channel { data, .. }
+            | Self::Fp8Block { data, .. }
+            | Self::Nvfp4 { data, .. } => data,
+        }
+    }
+
+    /// The scale source, absent for an unquantized weight.
+    #[must_use]
+    pub const fn scale(&self) -> Option<&WeightSource> {
+        match self {
+            Self::Float { .. } => None,
+            Self::Fp8Channel { scale, .. }
+            | Self::Fp8Block { scale, .. }
+            | Self::Nvfp4 { scale, .. } => Some(scale),
+        }
+    }
+
+    /// The NVFP4 weight-global scale, absent for other encodings.
+    #[must_use]
+    pub const fn global_scale(&self) -> Option<&WeightSource> {
+        match self {
+            Self::Nvfp4 { global, .. } => Some(global),
+            _ => None,
+        }
+    }
+
+    /// The NVFP4 input-global scale, absent for other encodings.
+    #[must_use]
+    pub const fn input_global_scale(&self) -> Option<&WeightSource> {
+        match self {
+            Self::Nvfp4 { input_global, .. } => Some(input_global),
+            _ => None,
+        }
+    }
+
+    /// The FP8 block geometry, absent for other encodings.
+    #[must_use]
+    pub const fn block(&self) -> Option<[usize; 2]> {
+        match self {
+            Self::Fp8Block { block, .. } => Some(*block),
+            _ => None,
+        }
+    }
+
+    /// Whether activations are quantized before this weight's GEMM.
+    #[must_use]
+    pub const fn token_input(&self) -> bool {
+        match self {
+            Self::Fp8Channel { token_input, .. } | Self::Fp8Block { token_input, .. } => {
+                *token_input
+            }
+            Self::Float { .. } | Self::Nvfp4 { .. } => false,
+        }
+    }
+
+    /// The logical `[rows, columns]` shape, with NVFP4's packed columns expanded.
+    #[must_use]
+    pub fn shape(&self) -> Vec<usize> {
+        let mut shape = self.data().shape.clone();
+        if matches!(self, Self::Nvfp4 { .. })
+            && let Some(columns) = shape.last_mut()
+        {
+            // Binding rejects a packed shape whose expanded width overflows the validated graph
+            // shape; saturation keeps a mutated descriptor from panicking.
+            *columns = columns.saturating_mul(2);
+        }
+        shape
+    }
 }
 
 pub struct QuantizedPackage {
@@ -378,53 +497,43 @@ impl QuantizedPackage {
             *rows
         };
         let data = Self::expert_view(source, expert, part * rows, *rows, width, *columns)?;
-        let mut weight = DeviceWeight {
-            shape: shape.to_vec(),
-            encoding: WeightEncoding::Float,
-            data,
-            scale: None,
-            global_scale: None,
-            input_global_scale: None,
-            weight_block: None,
-            fp8_token_input: false,
-        };
-        if weight.data.dtype == TensorDtype::F8E4m3 {
-            let scale_base = base.strip_suffix(".weight").unwrap_or(&base);
-            if let Some([block_rows, block_columns]) =
-                activations::Rule::weight_block_for_module(&self.activation_rules, scale_base)?
-            {
-                if !rows.is_multiple_of(block_rows) || !columns.is_multiple_of(block_columns) {
-                    return Err(Error::invalid("expert FP8 block shape"));
-                }
-                let scale = self.source(&format!("{scale_base}.weight_scale_inv"))?;
-                weight.scale = Some(Self::expert_view(
-                    scale,
-                    expert,
-                    part * rows / block_rows,
-                    rows / block_rows,
-                    width / block_rows,
-                    columns / block_columns,
-                )?);
-                weight.encoding = WeightEncoding::Fp8Block;
-                weight.weight_block = Some([block_rows, block_columns]);
-            } else {
-                let scale = self.source(&format!("{scale_base}.weight_scale"))?;
-                weight.scale = Some(Self::expert_view(
-                    scale,
-                    expert,
-                    part * rows,
-                    *rows,
-                    width,
-                    1,
-                )?);
-                weight.encoding = WeightEncoding::Fp8Channel;
+        if data.dtype != TensorDtype::F8E4m3 {
+            if !data.dtype.is_host_float() {
+                return Err(Error::unsupported("packed expert weight dtype"));
             }
-            weight.fp8_token_input =
-                activations::Rule::for_module(&self.activation_rules, scale_base)?;
-        } else if !weight.data.dtype.is_host_float() {
-            return Err(Error::unsupported("packed expert weight dtype"));
+            return Ok(DeviceWeight::Float { data });
         }
-        Ok(weight)
+        let scale_base = base.strip_suffix(".weight").unwrap_or(&base);
+        let token_input = activations::Rule::for_module(&self.activation_rules, scale_base)?;
+        if let Some([block_rows, block_columns]) =
+            activations::Rule::weight_block_for_module(&self.activation_rules, scale_base)?
+        {
+            if !rows.is_multiple_of(block_rows) || !columns.is_multiple_of(block_columns) {
+                return Err(Error::invalid("expert FP8 block shape"));
+            }
+            let scale = self.source(&format!("{scale_base}.weight_scale_inv"))?;
+            let scale = Self::expert_view(
+                scale,
+                expert,
+                part * rows / block_rows,
+                rows / block_rows,
+                width / block_rows,
+                columns / block_columns,
+            )?;
+            return Ok(DeviceWeight::Fp8Block {
+                data,
+                scale,
+                block: [block_rows, block_columns],
+                token_input,
+            });
+        }
+        let scale = self.source(&format!("{scale_base}.weight_scale"))?;
+        let scale = Self::expert_view(scale, expert, part * rows, *rows, width, 1)?;
+        Ok(DeviceWeight::Fp8Channel {
+            data,
+            scale,
+            token_input,
+        })
     }
 
     fn bind_linear_view(&self, name: &str, shape: &[usize]) -> Result<Option<DeviceWeight>> {
@@ -515,16 +624,7 @@ impl QuantizedPackage {
         });
         data.shape = shape.to_vec();
         data.bytes = bytes;
-        Ok(Some(DeviceWeight {
-            shape: shape.to_vec(),
-            encoding: WeightEncoding::Float,
-            data,
-            scale: None,
-            global_scale: None,
-            input_global_scale: None,
-            weight_block: None,
-            fp8_token_input: false,
-        }))
+        Ok(Some(DeviceWeight::Float { data }))
     }
 
     fn expert_view(
@@ -569,110 +669,86 @@ impl QuantizedPackage {
 
     fn bind(&self, name: &str, shape: &[usize]) -> Result<DeviceWeight> {
         let base = name.strip_suffix(".weight").unwrap_or(name);
-        let packed = format!("{base}.weight_packed");
-        let (data, encoding) = if self.tensor_map.contains_key(&packed) {
-            (self.source(&packed)?, WeightEncoding::Nvfp4)
-        } else {
-            let data = self.source(name)?;
-            let block = activations::Rule::weight_block_for_module(&self.activation_rules, base)?;
-            // Block scales exist only where the checkpoint stores FP8 bytes: a group target
-            // like `Linear` also names embeddings and norms, which stay in their own dtype.
-            let encoding = if data.dtype != TensorDtype::F8E4m3 {
-                WeightEncoding::Float
-            } else if block.is_some() {
-                WeightEncoding::Fp8Block
-            } else {
-                WeightEncoding::Fp8Channel
-            };
-            (data, encoding)
-        };
-        let mut weight = DeviceWeight {
-            shape: shape.into(),
-            encoding,
-            data,
-            scale: None,
-            global_scale: None,
-            input_global_scale: None,
-            weight_block: activations::Rule::weight_block_for_module(&self.activation_rules, base)?,
-            fp8_token_input: matches!(
-                encoding,
-                WeightEncoding::Fp8Channel | WeightEncoding::Fp8Block
-            ) && activations::Rule::for_module(&self.activation_rules, base)?,
-        };
-        match encoding {
-            WeightEncoding::Float => {
-                if !weight.data.dtype.is_host_float() || weight.data.shape != shape {
-                    return Err(Error::invalid(format!(
-                        "{name}: floating weight dtype/shape mismatch"
-                    )));
-                }
-            }
-            WeightEncoding::Fp8Channel | WeightEncoding::Fp8Block | WeightEncoding::Nvfp4 => {
-                self.bind_scales(base, &mut weight)?;
-            }
+        if self
+            .tensor_map
+            .contains_key(&format!("{base}.weight_packed"))
+        {
+            return self.bind_nvfp4(base, shape);
         }
-        Ok(weight)
-    }
-
-    fn bind_scales(&self, base: &str, weight: &mut DeviceWeight) -> Result<()> {
-        let [rows, columns] = weight.shape.as_slice() else {
+        let data = self.source(name)?;
+        // Block scales exist only where the checkpoint stores FP8 bytes: a group target like
+        // `Linear` also names embeddings and norms, which stay in their own dtype.
+        if data.dtype != TensorDtype::F8E4m3 {
+            if !data.dtype.is_host_float() || data.shape != shape {
+                return Err(Error::invalid(format!(
+                    "{name}: floating weight dtype/shape mismatch"
+                )));
+            }
+            return Ok(DeviceWeight::Float { data });
+        }
+        let token_input = activations::Rule::for_module(&self.activation_rules, base)?;
+        if let Some(block) =
+            activations::Rule::weight_block_for_module(&self.activation_rules, base)?
+        {
+            return self.bind_fp8_block(base, data, shape, block, token_input);
+        }
+        let [rows, _columns] = shape else {
             return Err(Error::invalid("quantized weights must be matrices"));
         };
-        if weight.encoding == WeightEncoding::Fp8Block {
-            let [block_rows, block_columns] = weight
-                .weight_block
-                .ok_or_else(|| Error::invalid(format!("{base}: missing FP8 block size")))?;
-            let scale = self.source(&format!("{base}.weight_scale_inv"))?;
-            if weight.data.dtype != TensorDtype::F8E4m3
-                || weight.data.shape != weight.shape
-                || block_rows == 0
-                || block_columns == 0
-                || !rows.is_multiple_of(block_rows)
-                || !columns.is_multiple_of(block_columns)
-                || scale.shape != [rows / block_rows, columns / block_columns]
-                || !scale.dtype.is_host_float()
-            {
-                return Err(Error::invalid(format!(
-                    "{base}: invalid block-scaled FP8 binding"
-                )));
-            }
-            weight.scale = Some(scale);
-            return Ok(());
-        }
         let scale = self.source(&format!("{base}.weight_scale"))?;
-        if weight.encoding == WeightEncoding::Fp8Channel {
-            if weight.data.shape != weight.shape
-                || scale.shape != [*rows, 1]
-                || !scale.dtype.is_host_float()
-            {
-                return Err(Error::invalid(format!(
-                    "{base}: invalid per-channel FP8 binding"
-                )));
-            }
-        } else {
-            if !columns.is_multiple_of(NVFP4_GROUP_SIZE)
-                || weight.data.dtype != TensorDtype::U8
-                || weight.data.shape != [*rows, columns / 2]
-                || scale.dtype != TensorDtype::F8E4m3
-                || scale.shape != [*rows, columns / NVFP4_GROUP_SIZE]
-            {
-                return Err(Error::invalid(format!(
-                    "{base}: invalid NVFP4 block-16 binding"
-                )));
-            }
-            for (suffix, target) in [
-                ("weight_global_scale", &mut weight.global_scale),
-                ("input_global_scale", &mut weight.input_global_scale),
-            ] {
-                let source = self.source(&format!("{base}.{suffix}"))?;
-                if source.dtype != TensorDtype::F32 || source.shape != [1] {
-                    return Err(Error::invalid(format!("{base}: invalid global scale")));
-                }
-                *target = Some(source);
-            }
+        if data.shape != shape || scale.shape != [*rows, 1] || !scale.dtype.is_host_float() {
+            return Err(Error::invalid(format!(
+                "{base}: invalid per-channel FP8 binding"
+            )));
         }
-        weight.scale = Some(scale);
-        Ok(())
+        Ok(DeviceWeight::Fp8Channel {
+            data,
+            scale,
+            token_input,
+        })
+    }
+
+    fn bind_fp8_block(
+        &self,
+        base: &str,
+        data: WeightSource,
+        shape: &[usize],
+        block: [usize; 2],
+        token_input: bool,
+    ) -> Result<DeviceWeight> {
+        let scale = self.source(&format!("{base}.weight_scale_inv"))?;
+        validate_fp8_block(base, shape, block, &data, &scale)?;
+        Ok(DeviceWeight::Fp8Block {
+            data,
+            scale,
+            block,
+            token_input,
+        })
+    }
+
+    fn bind_nvfp4(&self, base: &str, shape: &[usize]) -> Result<DeviceWeight> {
+        if shape.len() != 2 {
+            return Err(Error::invalid("quantized weights must be matrices"));
+        }
+        let data = self.source(&format!("{base}.weight_packed"))?;
+        let scale = self.source(&format!("{base}.weight_scale"))?;
+        validate_nvfp4(base, shape, &data, &scale)?;
+        let global = self.scalar_source(base, "weight_global_scale")?;
+        let input_global = self.scalar_source(base, "input_global_scale")?;
+        Ok(DeviceWeight::Nvfp4 {
+            data,
+            scale,
+            global,
+            input_global,
+        })
+    }
+
+    fn scalar_source(&self, base: &str, suffix: &str) -> Result<WeightSource> {
+        let source = self.source(&format!("{base}.{suffix}"))?;
+        if source.dtype != TensorDtype::F32 || source.shape != [1] {
+            return Err(Error::invalid(format!("{base}: invalid global scale")));
+        }
+        Ok(source)
     }
 
     fn bind_mtp(&mut self) -> Result<()> {
@@ -700,6 +776,56 @@ impl QuantizedPackage {
         }
         Ok(())
     }
+}
+
+/// Check one block-scaled FP8 binding before its sources become a device weight.
+fn validate_fp8_block(
+    base: &str,
+    shape: &[usize],
+    block: [usize; 2],
+    data: &WeightSource,
+    scale: &WeightSource,
+) -> Result<()> {
+    let [rows, columns] = shape else {
+        return Err(Error::invalid("quantized weights must be matrices"));
+    };
+    let [block_rows, block_columns] = block;
+    if data.shape != shape
+        || block_rows == 0
+        || block_columns == 0
+        || !rows.is_multiple_of(block_rows)
+        || !columns.is_multiple_of(block_columns)
+        || scale.shape != [rows / block_rows, columns / block_columns]
+        || !scale.dtype.is_host_float()
+    {
+        return Err(Error::invalid(format!(
+            "{base}: invalid block-scaled FP8 binding"
+        )));
+    }
+    Ok(())
+}
+
+/// Check one NVFP4 binding against its packed payload and block-16 scales.
+fn validate_nvfp4(
+    base: &str,
+    shape: &[usize],
+    data: &WeightSource,
+    scale: &WeightSource,
+) -> Result<()> {
+    let [rows, columns] = shape else {
+        return Err(Error::invalid("quantized weights must be matrices"));
+    };
+    if !columns.is_multiple_of(NVFP4_GROUP_SIZE)
+        || data.dtype != TensorDtype::U8
+        || data.shape != [*rows, columns / 2]
+        || scale.dtype != TensorDtype::F8E4m3
+        || scale.shape != [*rows, columns / NVFP4_GROUP_SIZE]
+    {
+        return Err(Error::invalid(format!(
+            "{base}: invalid NVFP4 block-16 binding"
+        )));
+    }
+    Ok(())
 }
 
 /// Translate vLLM's native `fp8` scheme into the compressed-tensors shape the loader reads.

@@ -353,14 +353,14 @@ fn preflight(
         == infer_ir::DType::Fp4E2M1;
     let mut minimum = 0_u64;
     for weight in package.weights.values() {
-        let bytes = if weight.encoding == WeightEncoding::Nvfp4 && !native_fp4 {
+        let bytes = if weight.encoding() == WeightEncoding::Nvfp4 && !native_fp4 {
             weight
-                .shape
+                .shape()
                 .iter()
                 .try_fold(2_u64, |n, d| n.checked_mul(*d as u64))
                 .ok_or_else(|| Error::invalid("CUDA weight budget overflow"))?
         } else {
-            weight.data.bytes
+            weight.data().bytes
         };
         minimum = minimum
             .checked_add(bytes)

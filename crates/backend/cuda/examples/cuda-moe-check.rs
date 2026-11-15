@@ -171,8 +171,8 @@ fn reference_graph(root: &str, golden: &Golden) -> infer_core::Result<()> {
     let mut package = infer_models::QuantizedPackage::open(root, infer_core::ModelId::ONE)?;
     let mut weights = BTreeMap::new();
     for (slot, source) in package.weights.clone() {
-        let bytes = package.read(&source.data, 1024 * 1024)?;
-        let converted = infer_models::convert_float_bytes(&bytes, source.data.dtype)?;
+        let bytes = package.read(source.data(), 1024 * 1024)?;
+        let converted = infer_models::convert_float_bytes(&bytes, source.data().dtype)?;
         weights.insert(
             slot,
             converted

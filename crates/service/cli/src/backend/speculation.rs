@@ -47,7 +47,7 @@ fn complete_head(package: &QuantizedPackage) -> bool {
         if package
             .mtp
             .get(&format!("{}{slot}", plan.prefix))
-            .is_none_or(|weight| weight.shape != shape)
+            .is_none_or(|weight| weight.shape() != shape)
         {
             return false;
         }
@@ -64,7 +64,7 @@ fn complete_head(package: &QuantizedPackage) -> bool {
         } else {
             package.mtp.get(&format!("{}{slot}", plan.prefix))
         };
-        weight.is_some_and(|weight| weight.shape == tensor.shape)
+        weight.is_some_and(|weight| weight.shape() == tensor.shape)
     })
 }
 

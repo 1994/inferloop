@@ -124,7 +124,7 @@ impl Model {
                     let weight = model.package.weights[slot].clone();
                     let (embedding, projection) = weight_roles(&model.package.graph, spec.id, slot);
                     if embedding {
-                        model.embeddings.insert(spec.id, weight.data.clone());
+                        model.embeddings.insert(spec.id, weight.data().clone());
                     }
                     if projection {
                         let loaded = if (slot == "lm_head.weight" || embedding)

@@ -153,37 +153,41 @@ impl ProjectionWeight {
     ) -> Result<Self> {
         let scale = || {
             weight
-                .scale
-                .as_ref()
+                .scale()
                 .ok_or_else(|| Error::invalid("missing projection scale"))
         };
-        match weight.encoding {
+        match weight.encoding() {
             WeightEncoding::Float => {
-                let values = floats(package, &weight.data)?
+                let values = floats(package, weight.data())?
                     .into_iter()
                     .map(bf16::from_f32)
                     .collect();
-                Ok(Self::Dense(Matrix::upload(device, values, &weight.shape)?))
+                Ok(Self::Dense(Matrix::upload(
+                    device,
+                    values,
+                    &weight.shape(),
+                )?))
             }
             WeightEncoding::Fp8Channel => {
-                let values = codes(package, &weight.data)?;
+                let values = codes(package, weight.data())?;
                 let scaling = floats(package, scale()?)?;
-                if weight.shape.first() != Some(&scaling.len()) {
+                if weight.shape().first() != Some(&scaling.len()) {
                     return Err(Error::invalid("FP8 channel scales"));
                 }
                 Ok(Self::Fp8(
-                    Matrix::upload(device, values, &weight.shape)?,
+                    Matrix::upload(device, values, &weight.shape())?,
                     device.runtime().upload(scaling)?,
                 ))
             }
             WeightEncoding::Nvfp4 => Self::load_nvfp4(device, package, weight),
             WeightEncoding::Fp8Block => {
-                let values = codes(package, &weight.data)?;
-                let [rows, columns] = weight.shape.as_slice() else {
+                let values = codes(package, weight.data())?;
+                let shape = weight.shape();
+                let [rows, columns] = shape.as_slice() else {
                     return Err(Error::invalid("block FP8 weights must be matrices"));
                 };
                 let [block_rows, block_columns] = weight
-                    .weight_block
+                    .block()
                     .ok_or_else(|| Error::invalid("missing FP8 block size"))?;
                 let scaling = floats(package, scale()?)?;
                 let blocks = columns / block_columns;
@@ -196,7 +200,7 @@ impl ProjectionWeight {
                     expanded.extend_from_slice(&scaling[start..start + blocks]);
                 }
                 Ok(Self::Fp8Block(
-                    Matrix::upload(device, values, &weight.shape)?,
+                    Matrix::upload(device, values, &shape)?,
                     Matrix::upload(device, expanded, &[*rows, blocks])?,
                 ))
             }
@@ -215,7 +219,8 @@ impl ProjectionWeight {
     ) -> Result<Self> {
         // The padded shape is already recorded; recover the checkpoint's from the payload.
         let checkpoint = |len: usize| -> Result<(usize, usize)> {
-            let &[rows, columns] = weight.shape.as_slice() else {
+            let shape = weight.shape();
+            let &[rows, columns] = shape.as_slice() else {
                 return Err(Error::invalid("padded projection must be a matrix"));
             };
             match pad {
@@ -224,9 +229,9 @@ impl ProjectionWeight {
                 _ => Err(Error::invalid("padded projection shape")),
             }
         };
-        match weight.encoding {
+        match weight.encoding() {
             WeightEncoding::Float => {
-                let values = floats(package, &weight.data)?;
+                let values = floats(package, weight.data())?;
                 let (padded, shape) =
                     pad.apply(&values, checkpoint(values.len())?, 0.0, |value, scale| {
                         value * scale
@@ -235,7 +240,7 @@ impl ProjectionWeight {
                 Ok(Self::Dense(Matrix::upload(device, values, &shape)?))
             }
             WeightEncoding::Fp8Channel => {
-                let values = codes(package, &weight.data)?;
+                let values = codes(package, weight.data())?;
                 let scaling = floats(
                     package,
                     weight
@@ -287,12 +292,10 @@ impl ProjectionWeight {
             .storage
             == DType::Fp4E2M1;
         let scale = weight
-            .scale
-            .as_ref()
+            .scale()
             .ok_or_else(|| Error::invalid("missing NVFP4 block scale"))?;
         let global = weight
-            .global_scale
-            .as_ref()
+            .global_scale()
             .ok_or_else(|| Error::invalid("missing NVFP4 global scale"))?;
         let global = floats(package, global)?;
         let [global] = global.as_slice() else {
@@ -301,14 +304,14 @@ impl ProjectionWeight {
         if !global.is_finite() || *global <= 0.0 {
             return Err(Error::invalid("invalid NVFP4 global scale"));
         }
-        let values = package.read_view(&weight.data, STAGING)?;
+        let values = package.read_view(weight.data(), STAGING)?;
         let scaling = package.read_view(scale, STAGING)?;
         if native {
             Ok(Self::Fp4(
                 Matrix::upload(
                     device,
                     values.iter().copied().map(f4e2m1fnx2::from_bits).collect(),
-                    &weight.data.shape,
+                    &weight.data().shape,
                 )?,
                 Matrix::upload(
                     device,
@@ -318,7 +321,8 @@ impl ProjectionWeight {
                 *global,
             ))
         } else {
-            let [rows, columns] = weight.shape.as_slice() else {
+            let shape = weight.shape();
+            let [rows, columns] = shape.as_slice() else {
                 return Err(Error::invalid("NVFP4 projection must be a matrix"));
             };
             let decoded = to_bf16(
@@ -332,7 +336,7 @@ impl ProjectionWeight {
             Ok(Self::Dense(Matrix::upload(
                 device,
                 decoded.into_iter().map(bf16::from_bits).collect(),
-                &weight.shape,
+                &shape,
             )?))
         }
     }

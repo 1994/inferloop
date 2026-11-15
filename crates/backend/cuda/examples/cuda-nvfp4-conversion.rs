@@ -18,22 +18,19 @@ fn main() -> Result<(), Box<dyn StdError>> {
     let (name, weight) = package
         .weights
         .iter()
-        .filter(|(_, w)| w.encoding == WeightEncoding::Nvfp4)
-        .max_by_key(|(_, w)| w.data.bytes)
+        .filter(|(_, w)| w.encoding() == WeightEncoding::Nvfp4)
+        .max_by_key(|(_, w)| w.data().bytes)
         .map(|(name, w)| (name.clone(), w.clone()))
         .ok_or_else(|| Error::invalid("model has no NVFP4 projection"))?;
-    let [rows, columns] = weight.shape.as_slice() else {
+    let shape = weight.shape();
+    let [rows, columns] = shape.as_slice() else {
         return Err(Error::invalid("matrix shape").into());
     };
-    let source = weight
-        .scale
-        .as_ref()
-        .ok_or_else(|| Error::invalid("scale"))?;
+    let source = weight.scale().ok_or_else(|| Error::invalid("scale"))?;
     let global_source = weight
-        .global_scale
-        .as_ref()
+        .global_scale()
         .ok_or_else(|| Error::invalid("global scale"))?;
-    let packed = package.read(&weight.data, 1024 * 1024 * 1024)?;
+    let packed = package.read(weight.data(), 1024 * 1024 * 1024)?;
     let scales = package.read(source, 1024 * 1024 * 1024)?;
     let global = package.read(global_source, 16)?;
     let global = convert_float_bytes(&global, global_source.dtype)?;

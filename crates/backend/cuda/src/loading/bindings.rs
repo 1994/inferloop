@@ -196,10 +196,10 @@ fn bind_tensors(
             }
             weights.projections.insert(tensor.id, projection);
         } else if embeddings.contains(&tensor.id) {
-            if source.data.dtype != TensorDtype::BF16 {
+            if source.data().dtype != TensorDtype::BF16 {
                 return Err(Error::unsupported("CUDA embedding requires BF16"));
             }
-            let bytes = package.read(&source.data, MAX_EMBEDDING_READ_BYTES)?;
+            let bytes = package.read(source.data(), MAX_EMBEDDING_READ_BYTES)?;
             let values = bytes
                 .as_chunks::<2>()
                 .0
@@ -211,7 +211,7 @@ fn bind_tensors(
                 .embeddings
                 .insert(tensor.id, device.runtime().upload(values)?);
         } else {
-            let mut values = floats(package, &source.data)?;
+            let mut values = floats(package, source.data())?;
             if let Some(pad) = pad {
                 values = pad.gain(&values)?;
             }
@@ -224,8 +224,8 @@ fn bind_tensors(
             target: "infer::load",
             done,
             total,
-            bytes = source.data.bytes,
-            item = source.data.name.as_str(),
+            bytes = source.data().bytes,
+            item = source.data().name.as_str(),
             "weight bound"
         );
     }
@@ -280,10 +280,10 @@ fn draft_projection(
     weights: &mut ProgramWeights,
     id: TensorId,
 ) -> Result<ProjectionWeight> {
-    let projection = if source.encoding == infer_models::WeightEncoding::Float {
+    let projection = if source.encoding() == infer_models::WeightEncoding::Float {
         weights.fp8_inputs.insert(id);
-        let values = floats(package, &source.data)?;
-        ProjectionWeight::quantize_fp8(device, &values, &source.shape)?
+        let values = floats(package, source.data())?;
+        ProjectionWeight::quantize_fp8(device, &values, &source.shape())?
     } else {
         ProjectionWeight::load(device, package, source)?
     };
@@ -408,7 +408,7 @@ fn draft_weights(
             .get(&format!("{}{slot}", plan.prefix))
             .cloned()
             .ok_or_else(|| Error::invalid("missing MTP binding"))?;
-        if source.shape != tensor.shape {
+        if source.shape() != tensor.shape {
             return Err(Error::invalid("MTP weight shapes"));
         }
         if linear_inputs.contains(&tensor.id) {
@@ -419,7 +419,7 @@ fn draft_weights(
             );
             weights.projections.insert(tensor.id, projection);
         } else {
-            let values = floats(package, &source.data)?;
+            let values = floats(package, source.data())?;
             weights
                 .constants
                 .insert(tensor.id, device.runtime().upload(values)?);
@@ -523,11 +523,11 @@ fn bind_activation(
     weights: &mut ProgramWeights,
     id: TensorId,
 ) -> Result<()> {
-    if source.fp8_token_input {
+    if source.token_input() {
         weights.fp8_inputs.insert(id);
     }
-    if source.encoding == infer_models::WeightEncoding::Nvfp4
-        && let Some(scale) = source.input_global_scale.as_ref()
+    if source.encoding() == infer_models::WeightEncoding::Nvfp4
+        && let Some(scale) = source.input_global_scale()
     {
         let values = floats(package, scale)?;
         let [value] = values.as_slice() else {

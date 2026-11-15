@@ -1,7 +1,7 @@
 use super::*;
 use crate::resident::require_kernel_geometry;
 use infer_core::ModelId;
-use infer_models::{TensorDtype, WeightEncoding, WeightSource, default_registry};
+use infer_models::{TensorDtype, WeightSource, default_registry};
 
 const HIDDEN: usize = 16;
 const THETA: f64 = 10_000.0;
@@ -28,9 +28,7 @@ fn sources(graph: &DataflowGraph) -> BTreeMap<String, DeviceWeight> {
         .filter_map(|spec| match &spec.storage {
             TensorStorage::Weight { slot } => Some((
                 slot.clone(),
-                DeviceWeight {
-                    shape: spec.shape.clone(),
-                    encoding: WeightEncoding::Float,
+                DeviceWeight::Float {
                     data: WeightSource {
                         name: slot.clone(),
                         shard: String::new(),
@@ -39,11 +37,6 @@ fn sources(graph: &DataflowGraph) -> BTreeMap<String, DeviceWeight> {
                         bytes: 0,
                         view: None,
                     },
-                    scale: None,
-                    global_scale: None,
-                    input_global_scale: None,
-                    weight_block: None,
-                    fp8_token_input: false,
                 },
             )),
             _ => None,

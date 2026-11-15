@@ -216,7 +216,7 @@ impl Source<'_> {
     }
 
     fn vector(&mut self, name: &str) -> Result<Allocation<f32>> {
-        let source = self.weight(name)?.data.clone();
+        let source = self.weight(name)?.data().clone();
         let values = floats(self.package, &source)?;
         self.device.runtime().upload(values)
     }
@@ -228,12 +228,12 @@ impl Source<'_> {
 
     fn codebook(&mut self, name: &str) -> Result<Allocation<bf16>> {
         let weight = self.weight(name)?.clone();
-        if weight.data.dtype != TensorDtype::BF16 {
+        if weight.data().dtype != TensorDtype::BF16 {
             return Err(Error::unsupported(
                 "DFlash2 selector codebooks must be BF16",
             ));
         }
-        let bytes = self.package.read(&weight.data, CODEBOOK_READ_BYTES)?;
+        let bytes = self.package.read(weight.data(), CODEBOOK_READ_BYTES)?;
         let values = bytes
             .as_chunks::<2>()
             .0

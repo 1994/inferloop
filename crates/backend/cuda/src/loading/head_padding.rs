@@ -548,7 +548,7 @@ fn record(
             _ => return Err(Error::invalid("padded weight shape")),
         };
         spec.shape.clone_from(&shape);
-        source.shape = shape;
+        source.data_mut().shape = shape;
         if padding.weights.insert(weight, pad).is_some() {
             return Err(Error::unsupported("a weight shared between padded heads"));
         }

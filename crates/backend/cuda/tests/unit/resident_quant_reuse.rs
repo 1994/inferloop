@@ -61,21 +61,22 @@ impl Pair {
         name: &str,
         gate: &DeviceWeight,
     ) -> TestResult<Self> {
-        let up_name = gate.data.name.replace("mlp.gate_proj.", "mlp.up_proj.");
+        let up_name = gate.data().name.replace("mlp.gate_proj.", "mlp.up_proj.");
         let (up_key, up) = package
             .weights
             .iter()
-            .find(|(_, value)| value.data.name == up_name)
+            .find(|(_, value)| value.data().name == up_name)
             .map(|(key, value)| (key.clone(), value.clone()))
             .ok_or("checkpoint up projection missing")?;
-        let [outputs, columns] = gate.shape.as_slice() else {
+        let shape = gate.shape();
+        let [outputs, columns] = shape.as_slice() else {
             return Err("checkpoint gate matrix rank".into());
         };
-        if up.shape != gate.shape || up.encoding != gate.encoding {
+        if up.shape() != gate.shape() || up.encoding() != gate.encoding() {
             return Err("checkpoint gate/up quantization or geometry differs".into());
         }
-        if gate.encoding == WeightEncoding::Fp8Channel
-            && (!gate.fp8_token_input || !up.fp8_token_input)
+        if gate.encoding() == WeightEncoding::Fp8Channel
+            && (!gate.token_input() || !up.token_input())
         {
             return Err("checkpoint pair does not declare token FP8 input".into());
         }
@@ -85,12 +86,11 @@ impl Pair {
             let projection = ProjectionWeight::load(device, package, source)?;
             projection.validate(*outputs, *columns)?;
             weights.projections.insert(id, projection);
-            if source.encoding == WeightEncoding::Nvfp4 {
+            if source.encoding() == WeightEncoding::Nvfp4 {
                 let scale = floats(
                     package,
                     source
-                        .input_global_scale
-                        .as_ref()
+                        .input_global_scale()
                         .ok_or("NVFP4 activation scale missing")?,
                 )?;
                 let [scale] = scale.as_slice() else {
@@ -125,13 +125,13 @@ impl Pair {
             serde_json::json!({
                 "kind":"quant_reuse_checkpoint_pair", "gate":name, "up":up_key,
                 "gate_source":gate, "up_source":up, "shape":[outputs, columns],
-                "encoding":format!("{:?}", gate.encoding),
+                "encoding":format!("{:?}", gate.encoding()),
                 "weight_requantized":false, "autotune":false,
             })
         );
         Ok(Self {
             name: name.to_owned(),
-            encoding: gate.encoding,
+            encoding: gate.encoding(),
             columns: *columns,
             outputs: *outputs,
             graph,
@@ -211,11 +211,11 @@ fn checkpoint_pairs(package: &QuantizedPackage) -> TestResult<Vec<(String, Devic
             .weights
             .iter()
             .filter(|(_, weight)| {
-                weight.encoding == encoding && weight.data.name.contains(".mlp.gate_proj.")
+                weight.encoding() == encoding && weight.data().name.contains(".mlp.gate_proj.")
             })
             .map(|(name, weight)| {
                 let layer = weight
-                    .data
+                    .data()
                     .name
                     .split(".layers.")
                     .nth(1)

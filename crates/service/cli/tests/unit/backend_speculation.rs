@@ -25,7 +25,7 @@ fn package_with_head() -> Result<QuantizedPackage> {
             continue;
         }
         let mut weight = template.clone();
-        weight.shape = tensor.shape;
+        weight.data_mut().shape = tensor.shape;
         package.mtp.insert(format!("mtp.{slot}"), weight);
     }
     let hidden = package.imported.model.hidden_size;
@@ -35,7 +35,7 @@ fn package_with_head() -> Result<QuantizedPackage> {
         ("hidden_norm.weight", vec![hidden]),
     ] {
         let mut weight = template.clone();
-        weight.shape = shape;
+        weight.data_mut().shape = shape;
         package.mtp.insert(format!("mtp.{slot}"), weight);
     }
     Ok(package)
@@ -54,7 +54,7 @@ fn automatic_mtp_requires_complete_supported_provider_bindings() -> Result<()> {
     let original = package.mtp.remove("mtp.fc.weight").unwrap();
     assert_eq!(resolve(SpeculativeTokens::Auto, None, &package), 0);
     let mut wrong = original.clone();
-    wrong.shape[0] += 1;
+    wrong.data_mut().shape[0] += 1;
     package.mtp.insert("mtp.fc.weight".into(), wrong);
     assert_eq!(resolve(SpeculativeTokens::Auto, None, &package), 0);
     package.mtp.insert("mtp.fc.weight".into(), original);
