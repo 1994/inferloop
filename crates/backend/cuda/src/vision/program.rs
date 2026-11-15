@@ -546,9 +546,11 @@ pub fn deepstack_merger(
         &layer.norm.1,
         &regrouped,
         rows,
-        merged,
-        tile,
-        encoder.norm_epsilon,
+        NormShape {
+            dim: merged,
+            tile,
+            epsilon: encoder.norm_epsilon,
+        },
     )?;
     let fc1 = project_with(device, &layer.fc1.0, &layer.fc1.1, &normed, rows, merged)?;
     let activated = gelu(device, true, &fc1, rows, merged)?;
@@ -560,6 +562,13 @@ pub fn deepstack_merger(
         rows,
         encoder.out_hidden_size,
     )
+}
+
+#[derive(Clone, Copy)]
+struct NormShape {
+    dim: usize,
+    tile: usize,
+    epsilon: f32,
 }
 
 pub fn layernorm_alloc(
@@ -576,9 +585,11 @@ pub fn layernorm_alloc(
         bias,
         input,
         rows,
-        encoder.hidden_size,
-        row_tile(encoder)?,
-        encoder.norm_epsilon,
+        NormShape {
+            dim: encoder.hidden_size,
+            tile: row_tile(encoder)?,
+            epsilon: encoder.norm_epsilon,
+        },
     )
 }
 
@@ -588,10 +599,13 @@ fn layernorm_dim(
     bias: &Allocation<bf16>,
     input: &[f32],
     rows: usize,
-    hidden: usize,
-    tile: usize,
-    epsilon: f32,
+    shape: NormShape,
 ) -> Result<Vec<f32>> {
+    let NormShape {
+        dim: hidden,
+        tile,
+        epsilon,
+    } = shape;
     if rows == 0 || hidden == 0 || tile < hidden || input.len() != rows * hidden {
         return Err(Error::invalid("vision layernorm shape"));
     }
@@ -623,6 +637,10 @@ fn layernorm_dim(
     Ok(result)
 }
 
+/// Apply the main merger normalization.
+///
+/// # Errors
+/// Rejects malformed shapes or failed CUDA execution.
 pub fn layernorm(
     device: &CudaDevice,
     weights: &VisionWeights,

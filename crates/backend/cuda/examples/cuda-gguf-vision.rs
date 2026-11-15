@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
             grid,
         },
     )?;
-    let second = vision.encode(
+    let (second, second_features) = vision.encode_with_deepstack(
         loaded.device(),
         &PromptImage {
             pixels: pixels(0.7),
@@ -69,8 +69,32 @@ fn main() -> Result<(), Box<dyn StdError>> {
     if shift <= 1e-3 {
         return Err(Error::invariant("images produced identical vision output").into());
     }
+    if features.len() != encoder.deepstack_layers.len() || second_features.len() != features.len() {
+        return Err(Error::invariant("deepstack feature count").into());
+    }
+    let expected = patches
+        .checked_div(4)
+        .and_then(|tokens| tokens.checked_mul(encoder.out_hidden_size))
+        .ok_or_else(|| Error::invalid("deepstack feature width"))?;
+    let mut deepstack_shift = 0.0f32;
+    for (left, right) in features.iter().zip(&second_features) {
+        if left.len() != expected || right.len() != expected {
+            return Err(Error::invariant("deepstack feature width").into());
+        }
+        if !left.iter().chain(right).all(|value| value.is_finite()) {
+            return Err(Error::invariant("non-finite deepstack feature").into());
+        }
+        deepstack_shift = left
+            .iter()
+            .zip(right)
+            .map(|(left, right)| (left - right).abs())
+            .fold(deepstack_shift, f32::max);
+    }
+    if deepstack_shift <= 1e-3 {
+        return Err(Error::invariant("deepstack features ignore the image").into());
+    }
     println!(
-        "gguf vision passed: merged={} width={} deepstack={} first_deepstack={} shift={shift:.3e}",
+        "gguf vision passed: merged={} width={} deepstack={} first_deepstack={} shift={shift:.3e} deepstack_shift={deepstack_shift:.3e}",
         first.len() / encoder.out_hidden_size,
         encoder.out_hidden_size,
         features.len(),
