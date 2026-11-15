@@ -1,5 +1,6 @@
 //! Fixed-storage recording and bounded cold-path semantic observation/export.
 mod constants;
+mod device;
 mod diagnostic;
 pub mod export;
 mod metrics;
@@ -10,6 +11,10 @@ mod tests;
 pub mod trace;
 mod window;
 
+pub use device::{
+    DeviceTimingMetrics, DeviceTotal, MAX_TIMED_LAYERS, MAX_TIMED_VARIANTS, OP_CLASS_COUNT,
+    PhaseTiming, TIMED_PHASE_COUNT,
+};
 pub use diagnostic::{Diagnostic, DiagnosticCode, Severity};
 pub use metrics::{LATENCY_BOUNDS_US, LatencyHistogram, RuntimeMetrics};
 pub use store::{

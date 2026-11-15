@@ -118,6 +118,9 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
     }
 
     fn record_execution_completion(&mut self, running: &InFlight<B::Ticket>) -> Result<()> {
+        for sample in self.backend.device_timing(&running.ticket) {
+            self.observations.metrics.device.record(&sample);
+        }
         if let Some(timing) = self.backend.completion_timing(&running.ticket) {
             self.event(
                 EventKind::ExecutionTiming,

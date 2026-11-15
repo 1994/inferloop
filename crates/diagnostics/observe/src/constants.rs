@@ -4,6 +4,8 @@
 pub const NANOS_PER_MICROSECOND: u64 = 1000;
 /// Microseconds in one second, for Prometheus second-valued samples.
 pub const MICROSECONDS_PER_SECOND: f64 = 1e6;
+/// Nanoseconds per second, for duration counters exported in seconds.
+pub const NANOSECONDS_PER_SECOND: f64 = 1e9;
 /// Dash-separated fields of a W3C version-00 traceparent header.
 pub const TRACEPARENT_FIELDS: usize = 4;
 /// Hex characters of a W3C trace identifier.

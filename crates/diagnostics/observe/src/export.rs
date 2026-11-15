@@ -1,7 +1,10 @@
-use crate::constants::MICROSECONDS_PER_SECOND;
-use crate::{LATENCY_BOUNDS_US, LatencyHistogram, ObservationStore, RuntimeMetrics};
+use crate::constants::{MICROSECONDS_PER_SECOND, NANOSECONDS_PER_SECOND};
+use crate::{
+    DeviceTimingMetrics, LATENCY_BOUNDS_US, LatencyHistogram, ObservationStore, RuntimeMetrics,
+};
 use infer_core::event::EventKind;
 use infer_core::{CancelSource, ErrorCode};
+use infer_ir::{OpClass, TimedPhase};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -123,10 +126,62 @@ pub fn prometheus_retention(
             &metrics.resource_preparation,
         ),
     ] {
-        histogram_lines(&mut lines, name, &backend, histogram);
+        lines.push(format!("# TYPE {name} histogram"));
+        histogram_lines(
+            &mut lines,
+            name,
+            &format!("backend=\"{backend}\""),
+            histogram,
+        );
     }
+    device_lines(&mut lines, &backend, &metrics.device);
     lines.push(String::new());
     lines.join("\n")
+}
+
+/// Device time by phase, operator class and implementation. Labels come from fixed enums and the
+/// backend's declared variant list, so cardinality stays bounded; layers are JSON-only.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Prometheus duration counters are conventionally floating-point seconds"
+)]
+fn device_lines(lines: &mut Vec<String>, backend: &str, device: &DeviceTimingMetrics) {
+    let name = "infer_device_graph_seconds";
+    lines.push(format!("# TYPE {name} histogram"));
+    for (phase, timing) in TimedPhase::ALL.iter().zip(&device.phases) {
+        let labels = format!("backend=\"{backend}\",phase=\"{}\"", phase.label());
+        histogram_lines(lines, name, &labels, &timing.graphs);
+    }
+    let name = "infer_device_node_seconds_total";
+    lines.push(format!("# TYPE {name} counter"));
+    for (phase, timing) in TimedPhase::ALL.iter().zip(&device.phases) {
+        for (op, total) in OpClass::ALL.iter().zip(&timing.ops) {
+            if total.segments == 0 {
+                continue;
+            }
+            lines.push(format!(
+                "{name}{{backend=\"{backend}\",phase=\"{}\",op=\"{}\"}} {}",
+                phase.label(),
+                op.label(),
+                total.device_ns as f64 / NANOSECONDS_PER_SECOND
+            ));
+        }
+    }
+    let name = "infer_device_variant_seconds_total";
+    lines.push(format!("# TYPE {name} counter"));
+    for (variant, total) in device.variant_names.iter().zip(&device.variants) {
+        if total.segments == 0 {
+            continue;
+        }
+        let variant = variant
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n");
+        lines.push(format!(
+            "{name}{{backend=\"{backend}\",variant=\"{variant}\"}} {}",
+            total.device_ns as f64 / NANOSECONDS_PER_SECOND
+        ));
+    }
 }
 
 fn gauge_lines(lines: &mut Vec<String>, backend: &str, gauges: &ResourceGauges) {
@@ -183,31 +238,28 @@ fn gauge_lines(lines: &mut Vec<String>, backend: &str, gauges: &ResourceGauges) 
     clippy::cast_precision_loss,
     reason = "Prometheus histogram boundaries and cumulative duration sums are conventionally represented as floating-point seconds"
 )]
+/// One histogram's series under `labels`; the caller writes the `# TYPE` line once per name.
 fn histogram_lines(
     lines: &mut Vec<String>,
     name: &str,
-    backend: &str,
+    labels: &str,
     histogram: &LatencyHistogram,
 ) {
-    lines.push(format!("# TYPE {name} histogram"));
     let mut cumulative = 0_u64;
     for (index, bound) in LATENCY_BOUNDS_US.iter().enumerate() {
         cumulative = cumulative.saturating_add(histogram.buckets[index]);
         lines.push(format!(
-            "{name}_bucket{{backend=\"{backend}\",le=\"{}\"}} {cumulative}",
+            "{name}_bucket{{{labels},le=\"{}\"}} {cumulative}",
             *bound as f64 / MICROSECONDS_PER_SECOND
         ));
     }
     lines.push(format!(
-        "{name}_bucket{{backend=\"{backend}\",le=\"+Inf\"}} {}",
+        "{name}_bucket{{{labels},le=\"+Inf\"}} {}",
         histogram.count
     ));
     lines.push(format!(
-        "{name}_sum{{backend=\"{backend}\"}} {}",
+        "{name}_sum{{{labels}}} {}",
         histogram.sum_us as f64 / MICROSECONDS_PER_SECOND
     ));
-    lines.push(format!(
-        "{name}_count{{backend=\"{backend}\"}} {}",
-        histogram.count
-    ));
+    lines.push(format!("{name}_count{{{labels}}} {}", histogram.count));
 }

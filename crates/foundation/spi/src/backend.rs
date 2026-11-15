@@ -2,8 +2,8 @@
 use super::{ResourceCommand, ResourceTicket, execute_resource};
 use infer_core::{Error, Result, StateId};
 use infer_ir::{
-    DeviceCapabilities, ExecutionProgram, ExecutionTask, ExecutionTiming, KvCacheInspection,
-    ModelIr, PageGrowth, StepPlan, TaskOutput,
+    DeviceCapabilities, DeviceTimingSample, ExecutionProgram, ExecutionTask, ExecutionTiming,
+    KvCacheInspection, ModelIr, PageGrowth, StepPlan, TaskOutput,
 };
 use std::sync::Arc;
 
@@ -227,6 +227,17 @@ pub trait BackendProvider {
     /// Only actual completed execution timing; caller logical clocks are not samples.
     fn completion_timing(&self, _ticket: &Self::Ticket) -> Option<ExecutionTiming> {
         None
+    }
+    /// Device time of every graph the completed execution ran, when its device timing
+    /// configuration measured and sampled it; empty otherwise. Attribute segments with
+    /// [`infer_ir::TimedSegment::of_node`] so every model and kernel is classified alike.
+    fn device_timing(&self, _ticket: &Self::Ticket) -> Vec<DeviceTimingSample> {
+        Vec::new()
+    }
+    /// Names of the implementations [`infer_ir::TimedSegment::variant`] indexes, read once
+    /// before execution starts; the indices must stay valid for the backend's lifetime.
+    fn device_timing_variants(&self) -> Vec<String> {
+        Vec::new()
     }
     /// # Errors
     /// Returns an unsupported or invalid-input error for incompatible backend, model, precision, kernels, or memory requirements.
