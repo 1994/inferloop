@@ -1,6 +1,6 @@
 # Qwen3-VL GGUF 接入
 
-状态：**配置、张量映射与形状/类型校验已实现**（`infer-models` 的 `qwen::gguf` 策略）。真实制品 310/310 文本张量、316/316 视觉张量均有映射并通过校验。**不走离线转换**：下一步直接接原生 GGUF 包源、Q4_K/Q6_K 块加载和 GGML kernel；vision 执行与 deepstack 仍未实现。
+状态：**配置、张量映射与形状/类型校验已实现**（`infer-models` 的 `qwen::gguf` 策略）。真实制品 310/310 文本张量、316/316 视觉张量均有映射并通过校验。**不走离线转换**：`GgufPackage` 已能直接打开真实 GGUF 并 pack Q4_K/Q6_K；用真实 `gate_proj`/`down_proj` 张量跑 projection kernel，相对误差 6.4e-6/7.9e-6，带宽 596/679 GB/s。下一步接 ModelPackage/loader，vision 与 deepstack 仍未实现。
 
 ## 验证制品
 
