@@ -60,6 +60,7 @@ pub(super) enum Format {
     Fp8,
     Fp8Block,
     Fp4,
+    GroupedInt,
 }
 
 impl Format {
@@ -69,6 +70,7 @@ impl Format {
             ProjectionWeight::Fp8(..) => Self::Fp8,
             ProjectionWeight::Fp8Block(..) => Self::Fp8Block,
             ProjectionWeight::Fp4(..) => Self::Fp4,
+            ProjectionWeight::GroupedInt { .. } => Self::GroupedInt,
         }
     }
 }
@@ -103,6 +105,8 @@ pub(super) enum Lowering {
     PromptFp8,
     /// The split-K prompt GEMM of a packed FP4 weight without activation scales.
     PromptFp4,
+    /// Row-at-a-time grouped-integer GEMV for prompt or gathered rows.
+    PromptGrouped,
     /// The draft GEMM over the weight's format.
     Draft,
     /// The draft GEMM split across K for a narrow channel FP8 output, which would otherwise
@@ -145,6 +149,13 @@ pub(super) fn lower(
         }
         rows_lowering(weight, [outputs, columns], arithmetic_rows)
     };
+    if weight == Format::GroupedInt {
+        return Ok(match mode {
+            Mode::Single | Mode::Logits => Lowering::Matvec,
+            Mode::Prompt | Mode::Rows { .. } | Mode::Slots { .. } => Lowering::PromptGrouped,
+            Mode::Draft { .. } => return Err(error("grouped-int draft projection")),
+        });
+    }
     match mode {
         Mode::Single => {
             if activation.is_some() {
@@ -165,6 +176,7 @@ pub(super) fn lower(
             (None, Format::Dense) => Lowering::PromptDense,
             (None, Format::Fp8) => Lowering::PromptFp8,
             (None, Format::Fp4) => Lowering::PromptFp4,
+            (None, Format::GroupedInt) => Lowering::PromptGrouped,
         }),
         Mode::Slots {
             arithmetic_rows,

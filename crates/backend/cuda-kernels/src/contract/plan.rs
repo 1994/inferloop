@@ -164,6 +164,8 @@ pub struct GreedyPlan {
 pub enum RowsKernel {
     /// Scalar row reductions, for few rows against a wide output.
     Small,
+    /// Row-at-a-time grouped-integer GEMV.
+    GroupedInt,
     /// Tensor-core products over tiles of the output and reduction.
     Tiled {
         output_tile: [usize; 2],

@@ -58,7 +58,8 @@ pub use storage::package::{
     ModelPackage, PackageManifest, QwenPackage, WeightBinding, package_path,
 };
 pub use storage::quantized::{
-    DFlash2Package, DeviceWeight, QuantizedPackage, WeightEncoding, WeightSource, WeightView,
+    DFlash2Package, DeviceWeight, GroupedIntKind, QuantizedPackage, WeightEncoding, WeightSource,
+    WeightView,
 };
 pub use storage::safetensors::{
     HostTensor, SafetensorsFile, TensorDtype, TensorHeader, convert_float_bytes, write_safetensors,

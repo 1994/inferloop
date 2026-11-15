@@ -24,6 +24,7 @@ cuda = [
     "dep:futures-channel",
     "dep:infer-cuda-kernels",
     "infer-cuda-kernels/tile",
+    "infer-models/gguf",
 ]
 # The host over precompiled kernels alone: no cuTile and no CUDA toolkit at build time.
 cuda-aot = [

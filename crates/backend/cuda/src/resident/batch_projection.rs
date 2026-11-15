@@ -17,7 +17,7 @@ use crate::{
     mlp::ProjectionWeight,
 };
 use infer_core::{Error, OpId, Result};
-use infer_cuda_kernels::contract::{Buffer, Kernels, Recording, RowsPlan};
+use infer_cuda_kernels::contract::{Buffer, Kernels, Recording, RowsKernel, RowsPlan};
 #[cfg(test)]
 use infer_cuda_kernels::contract::{DenseKernel, DenseRowsPlan, LinearRowsPlan};
 use infer_cuda_kernels::runtime::Allocation;
@@ -288,6 +288,7 @@ pub(super) fn record_rows(
             );
         }
         Lowering::Rows(kernel) => kernel,
+        Lowering::PromptGrouped => RowsKernel::GroupedInt,
         #[cfg(test)]
         Lowering::Compensated => {
             nvfp4.clear_quant_reuse();

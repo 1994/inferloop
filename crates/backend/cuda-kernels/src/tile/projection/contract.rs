@@ -884,6 +884,48 @@ impl Projection for TileProjection {
         x: Buffer<'_, f32>,
         weight: WeightRef<'_>,
     ) -> Result<()> {
+        if matches!(
+            weight,
+            WeightRef::GroupedInt { .. } | WeightRef::GroupedInt6 { .. }
+        ) {
+            let RowsPlan {
+                rows,
+                outputs,
+                columns,
+                ..
+            } = *plan;
+            if !outputs.is_multiple_of(GROUPED_INT_TILE_ROWS) {
+                return Err(Error::unsupported("grouped-int rows output width"));
+            }
+            for row in 0..rows {
+                let out_row = out.slice(row * outputs..(row + 1) * outputs)?;
+                let x_row = x.slice(row * columns..(row + 1) * columns)?;
+                if matches!(weight, WeightRef::GroupedInt { .. }) {
+                    self.grouped_int_row(
+                        recording,
+                        &GroupedIntPlan {
+                            tile_rows: GROUPED_INT_TILE_ROWS,
+                            columns,
+                        },
+                        out_row,
+                        x_row,
+                        weight,
+                    )?;
+                } else {
+                    self.grouped_int6_row(
+                        recording,
+                        &GroupedIntPlan {
+                            tile_rows: GROUPED_INT_TILE_ROWS,
+                            columns,
+                        },
+                        out_row,
+                        x_row,
+                        weight,
+                    )?;
+                }
+            }
+            return Ok(());
+        }
         let scope = capture_scope(recording)?;
         let RowsPlan {
             kernel,
@@ -895,6 +937,11 @@ impl Projection for TileProjection {
         let x = self.matrix(recording, x, "projection input", (rows, columns))?;
         let weight = self.weight(recording, weight, (outputs, columns))?;
         match kernel {
+            RowsKernel::GroupedInt => {
+                return Err(Error::unsupported(
+                    "grouped-int rows reached the dense path",
+                ));
+            }
             RowsKernel::Small => {
                 let tile = (&mut out).partition(SMALL_TILE);
                 match &weight {
@@ -961,6 +1008,33 @@ impl Projection for TileProjection {
         x: Buffer<'_, f32>,
         weight: WeightRef<'_>,
     ) -> Result<()> {
+        match weight {
+            WeightRef::GroupedInt { .. } => {
+                return self.grouped_int_row(
+                    recording,
+                    &GroupedIntPlan {
+                        tile_rows: GROUPED_INT_TILE_ROWS,
+                        columns: plan.columns,
+                    },
+                    out,
+                    x,
+                    weight,
+                );
+            }
+            WeightRef::GroupedInt6 { .. } => {
+                return self.grouped_int6_row(
+                    recording,
+                    &GroupedIntPlan {
+                        tile_rows: GROUPED_INT_TILE_ROWS,
+                        columns: plan.columns,
+                    },
+                    out,
+                    x,
+                    weight,
+                );
+            }
+            _ => {}
+        }
         let scope = capture_scope(recording)?;
         let columns = plan.columns;
         let outputs = out.len();

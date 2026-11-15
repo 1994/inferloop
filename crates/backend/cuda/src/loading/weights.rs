@@ -11,7 +11,8 @@ use infer_cuda_kernels::runtime::bf16;
 use infer_cuda_kernels::runtime::{f4e2m1fnx2, f8e4m3fn};
 use infer_ir::DType;
 use infer_models::{
-    DeviceWeight, QuantizedPackage, WeightEncoding, WeightSource, WeightView, convert_float_bytes,
+    DeviceWeight, GroupedIntKind, Q4KDevice, Q4KTiled, Q6KTiled, QuantizedPackage, WeightEncoding,
+    WeightSource, WeightView, convert_float_bytes,
 };
 use std::cmp::Ordering;
 
@@ -180,9 +181,9 @@ impl ProjectionWeight {
                 ))
             }
             WeightEncoding::Nvfp4 => Self::load_nvfp4(device, package, weight),
-            WeightEncoding::GroupedInt4 | WeightEncoding::GroupedInt6 => Err(Error::unsupported(
-                "grouped-int projection is not bound yet",
-            )),
+            WeightEncoding::GroupedInt4 | WeightEncoding::GroupedInt6 => {
+                Self::load_grouped_int(device, package, weight)
+            }
             WeightEncoding::Fp8Block => {
                 let values = codes(package, weight.data())?;
                 let shape = weight.shape();
@@ -289,6 +290,54 @@ impl ProjectionWeight {
         }
     }
 
+    fn load_grouped_int(
+        device: &CudaDevice,
+        package: &mut QuantizedPackage,
+        weight: &DeviceWeight,
+    ) -> Result<Self> {
+        let DeviceWeight::GroupedInt { data, kind } = weight else {
+            return Err(Error::invalid("grouped-int weight descriptor"));
+        };
+        let shape = weight.shape();
+        let [rows, columns] = shape.as_slice() else {
+            return Err(Error::invalid("grouped-int weight must be a matrix"));
+        };
+        let raw = package.read(data, STAGING)?;
+        match kind {
+            GroupedIntKind::Q4K => {
+                let device_layout = Q4KDevice::from_blocks(*rows, *columns, &raw)?;
+                let layout = Q4KTiled::from_device(&device_layout)?;
+                if layout.rows() != *rows || layout.columns() != *columns {
+                    return Err(Error::invalid("Q4_K layout shape"));
+                }
+                Ok(Self::GroupedInt {
+                    codes: Matrix::upload(device, layout.codes().to_vec(), &[*rows, *columns / 2])
+                        .map_err(|error| {
+                            Error::invalid(format!("{} Q4_K codes: {error}", data.name))
+                        })?,
+                    factors: device.runtime().upload(layout.factors().to_vec())?,
+                    biases: Some(device.runtime().upload(layout.biases().to_vec())?),
+                    kind: GroupedIntKind::Q4K,
+                })
+            }
+            GroupedIntKind::Q6K => {
+                let layout = Q6KTiled::from_blocks(*rows, *columns, &raw)?;
+                if layout.rows() != *rows || layout.columns() != *columns {
+                    return Err(Error::invalid("Q6_K layout shape"));
+                }
+                Ok(Self::GroupedInt {
+                    codes: Matrix::upload(device, layout.codes().to_vec(), &[*rows, *columns])
+                        .map_err(|error| {
+                            Error::invalid(format!("{} Q4_K codes: {error}", data.name))
+                        })?,
+                    factors: device.runtime().upload(layout.factors().to_vec())?,
+                    biases: None,
+                    kind: GroupedIntKind::Q6K,
+                })
+            }
+        }
+    }
+
     fn load_nvfp4(
         device: &CudaDevice,
         package: &mut QuantizedPackage,
@@ -365,6 +414,9 @@ impl ProjectionWeight {
             }
             Self::Fp4(weights, scales, global) => {
                 device.nvfp4_matvec(&vector, weights, scales, *global, tile)?
+            }
+            Self::GroupedInt { .. } => {
+                return Err(Error::unsupported("grouped-int host matvec"));
             }
         };
         device.runtime().read(&output)

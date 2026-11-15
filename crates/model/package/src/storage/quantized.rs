@@ -378,10 +378,16 @@ impl QuantizedPackage {
                     count.checked_mul(*dimension as u64)
                 })
                 .ok_or_else(|| Error::invalid("GGUF weight shape overflow"))?;
+            let dtype = match source.dtype {
+                infer_format::GgufType::F32 => TensorDtype::F32,
+                infer_format::GgufType::F16 => TensorDtype::F16,
+                infer_format::GgufType::Bf16 => TensorDtype::BF16,
+                _ => TensorDtype::U8,
+            };
             let data = WeightSource {
                 name: source_name,
                 shard: "gguf".to_owned(),
-                dtype: TensorDtype::U8,
+                dtype,
                 shape: source.shape.clone(),
                 bytes: source
                     .dtype
@@ -404,6 +410,17 @@ impl QuantizedPackage {
         }
         self.weights = weights;
         Ok(())
+    }
+
+    /// Decode a GGUF slot to F32 for a consumer that still needs dense values.
+    /// # Errors
+    /// Returns `None` for non-GGUF packages, or the decode error for a malformed slot.
+    #[cfg(feature = "gguf")]
+    pub fn decoded(&self, slot: &str) -> Result<Option<Vec<f32>>> {
+        self.gguf
+            .as_ref()
+            .map(|package| package.dense(slot, u64::MAX))
+            .transpose()
     }
 
     /// Read one stored tensor under an explicit staging budget.

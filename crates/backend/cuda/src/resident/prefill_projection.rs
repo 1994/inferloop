@@ -18,7 +18,8 @@ use crate::tuning::pool_dense::Choice as PromptChoice;
 use crate::{device::DeviceProfile, mlp::ProjectionWeight};
 pub(super) use dense::DensePlan;
 use infer_cuda_kernels::contract::{
-    Bf16, Buffer, DenseKernel, DenseRowsPlan, Kernels, PromptPlan, Recording, SplitGemmPlan,
+    Bf16, Buffer, DenseKernel, DenseRowsPlan, Kernels, PromptPlan, Recording, RowsKernel, RowsPlan,
+    SplitGemmPlan,
 };
 use infer_cuda_kernels::runtime::bf16;
 use infer_ir::TensorNode;
@@ -464,6 +465,24 @@ pub(super) fn record(
                         outputs: flat / width,
                         columns,
                         tile: [PREFILL_LANES, PREFILL_GEMM_TILE_N],
+                    },
+                    output.buffer,
+                    flat_input,
+                    weight.weight_ref()?,
+                )
+                .map_err(error)?;
+        }
+        Lowering::PromptGrouped => {
+            weights
+                .kernels
+                .projection
+                .rows(
+                    scope,
+                    &RowsPlan {
+                        kernel: RowsKernel::GroupedInt,
+                        rows: width,
+                        outputs: flat / width,
+                        columns,
                     },
                     output.buffer,
                     flat_input,
