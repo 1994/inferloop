@@ -1,6 +1,6 @@
 # Qwen3-VL GGUF 接入
 
-状态：**配置、张量映射与形状/类型校验已实现**（`infer-models` 的 `qwen::gguf` 策略）。真实制品 310/310 文本张量、316/316 视觉张量均有映射并通过校验。**不走离线转换**：`GgufPackage` 已能直接打开真实 GGUF 并 pack Q4_K/Q6_K；用真实 `gate_proj`/`down_proj` 张量跑 projection kernel，相对误差 6.4e-6/7.9e-6，带宽 596/679 GB/s。**native 文本路径已跑通**：CLI 直接打开 `.gguf`，Qwen3-VL-2B Q4_K_M 在 5090 上生成 8 token，TTFT 1.99s、TPOT 5.43ms，token ids 与临时转换路径一致。**native multimodal 已跑通**：真实 GGUF + mmproj 生成 95 token prompt（77 media），两张图片得到不同描述，logit shift 5.03。deepstack 仍未注入。
+状态：**配置、张量映射与形状/类型校验已实现**（`infer-models` 的 `qwen::gguf` 策略）。真实制品 310/310 文本张量、316/316 视觉张量均有映射并通过校验。**不走离线转换**：`GgufPackage` 已能直接打开真实 GGUF 并 pack Q4_K/Q6_K；用真实 `gate_proj`/`down_proj` 张量跑 projection kernel，相对误差 6.4e-6/7.9e-6，带宽 596/679 GB/s。**native 文本路径已跑通**：CLI 直接打开 `.gguf`，Qwen3-VL-2B Q4_K_M 在 5090 上生成 8 token，TTFT 1.99s、TPOT 5.43ms，token ids 与临时转换路径一致。**native multimodal 已跑通**：真实 GGUF + mmproj 生成 95 token prompt（77 media），两张图片得到不同描述，logit shift 5.03。deepstack 仍未注入。**OpenAI serve 路径也已验证**：同一 GGUF 包通过 `/v1/chat/completions` 接收红色/蓝色图片，分别回答 `red`/`blue`，prompt 83 token。
 
 ## 验证制品
 
