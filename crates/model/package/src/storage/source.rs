@@ -7,6 +7,8 @@
 use crate::constants::{CONFIG_MAX_BYTES, MIB_U64};
 #[cfg(feature = "gguf")]
 use crate::storage::gguf_package::GgufPackage;
+#[cfg(feature = "gguf")]
+use crate::storage::gguf_vision::GgufVisionPackage;
 use crate::storage::package::read_bounded;
 use crate::{HostTensor, ModelRegistry, default_registry, package_path};
 use crate::{SafetensorsFile, SafetensorsIndex, TensorHeader};
@@ -281,7 +283,7 @@ impl PackageSource {
             };
             let preprocessor = package
                 .vision()
-                .map(|vision| vision.preprocessor_config())
+                .map(GgufVisionPackage::preprocessor_config)
                 .transpose()?;
             let config = Some(package.config().to_vec());
             let video_preprocessor = preprocessor.clone();
