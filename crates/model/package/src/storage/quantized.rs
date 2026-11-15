@@ -1,5 +1,7 @@
 //! Validated native storage bindings for mixed FP8/NVFP4 packages.
 use crate::constants::CONFIG_MAX_BYTES;
+#[cfg(feature = "gguf")]
+use crate::storage::gguf_package::GgufPackage;
 use crate::storage::source::TensorFiles;
 use crate::{
     ImportedModel, ModelRegistry, PackageSource, TensorDtype, TensorFile, default_registry,
@@ -29,6 +31,19 @@ pub enum WeightEncoding {
     /// Block-scaled FP8 (`weight_scale_inv`, one scale per 128x128 block).
     Fp8Block,
     Nvfp4,
+    /// GGML `Q4_K` grouped integers.
+    GroupedInt4,
+    /// GGML `Q6_K` grouped integers.
+    GroupedInt6,
+}
+
+/// Grouped-integer block family carried by a weight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GroupedIntKind {
+    /// `Q4_K`.
+    Q4K,
+    /// `Q6_K`.
+    Q6K,
 }
 
 /// Contiguous view into an immutable validated stored tensor.
@@ -95,6 +110,11 @@ pub enum DeviceWeight {
         global: WeightSource,
         input_global: WeightSource,
     },
+    /// Raw grouped-integer super-blocks.
+    GroupedInt {
+        data: WeightSource,
+        kind: GroupedIntKind,
+    },
 }
 
 impl DeviceWeight {
@@ -106,6 +126,10 @@ impl DeviceWeight {
             Self::Fp8Channel { .. } => WeightEncoding::Fp8Channel,
             Self::Fp8Block { .. } => WeightEncoding::Fp8Block,
             Self::Nvfp4 { .. } => WeightEncoding::Nvfp4,
+            Self::GroupedInt { kind, .. } => match kind {
+                GroupedIntKind::Q4K => WeightEncoding::GroupedInt4,
+                GroupedIntKind::Q6K => WeightEncoding::GroupedInt6,
+            },
         }
     }
 
@@ -116,7 +140,8 @@ impl DeviceWeight {
             Self::Float { data }
             | Self::Fp8Channel { data, .. }
             | Self::Fp8Block { data, .. }
-            | Self::Nvfp4 { data, .. } => data,
+            | Self::Nvfp4 { data, .. }
+            | Self::GroupedInt { data, .. } => data,
         }
     }
 
@@ -126,7 +151,8 @@ impl DeviceWeight {
             Self::Float { data }
             | Self::Fp8Channel { data, .. }
             | Self::Fp8Block { data, .. }
-            | Self::Nvfp4 { data, .. } => data,
+            | Self::Nvfp4 { data, .. }
+            | Self::GroupedInt { data, .. } => data,
         }
     }
 
@@ -138,6 +164,7 @@ impl DeviceWeight {
             Self::Fp8Channel { scale, .. }
             | Self::Fp8Block { scale, .. }
             | Self::Nvfp4 { scale, .. } => Some(scale),
+            Self::GroupedInt { .. } => None,
         }
     }
 
@@ -175,7 +202,7 @@ impl DeviceWeight {
             Self::Fp8Channel { token_input, .. } | Self::Fp8Block { token_input, .. } => {
                 *token_input
             }
-            Self::Float { .. } | Self::Nvfp4 { .. } => false,
+            Self::Float { .. } | Self::Nvfp4 { .. } | Self::GroupedInt { .. } => false,
         }
     }
 
@@ -208,6 +235,10 @@ pub struct QuantizedPackage {
     shards: BTreeMap<String, TensorFile>,
     tensor_map: BTreeMap<String, String>,
     activation_rules: Vec<activations::Rule>,
+    #[cfg(feature = "gguf")]
+    gguf: Option<GgufPackage>,
+    #[cfg(feature = "gguf")]
+    gguf_dense: BTreeMap<String, Vec<u8>>,
 }
 
 impl QuantizedPackage {
@@ -227,6 +258,14 @@ impl QuantizedPackage {
         root: impl AsRef<Path>,
         id: ModelId,
     ) -> Result<Self> {
+        #[cfg(feature = "gguf")]
+        if root
+            .as_ref()
+            .extension()
+            .is_some_and(|extension| extension == "gguf")
+        {
+            return Self::open_gguf(registry, root.as_ref(), id);
+        }
         let source = PackageSource::open(root.as_ref())?;
         let config = source.require_config_bounded(CONFIG_MAX_BYTES)?;
         let mut value: serde_json::Value =
@@ -259,16 +298,125 @@ impl QuantizedPackage {
             shards,
             tensor_map,
             activation_rules: activations::Rule::parse(&value["quantization_config"])?,
+            #[cfg(feature = "gguf")]
+            gguf: None,
+            #[cfg(feature = "gguf")]
+            gguf_dense: BTreeMap::new(),
         };
         package.bind_backbone()?;
         package.bind_mtp()?;
         Ok(package)
     }
 
+    /// Open a native GGUF text package.
+    /// # Errors
+    /// Rejects invalid metadata, a provider that cannot import the config, or an unsupported
+    /// weight encoding.
+    #[cfg(feature = "gguf")]
+    pub fn open_gguf(registry: &ModelRegistry, path: &Path, id: ModelId) -> Result<Self> {
+        let package = GgufPackage::open(path)?;
+        let config = package.config();
+        let provider = registry.resolve(config)?;
+        let imported = provider.import(id, config)?;
+        let graph = provider.graph(&imported.model)?;
+        let mut dense = BTreeMap::new();
+        for slot in package.slots().values() {
+            if matches!(
+                slot.dtype,
+                infer_format::GgufType::F32
+                    | infer_format::GgufType::F16
+                    | infer_format::GgufType::Bf16
+            ) {
+                dense.insert(slot.slot.clone(), package.blocks(&slot.slot, u64::MAX)?);
+            }
+        }
+        let mut package = Self {
+            provider,
+            imported,
+            graph,
+            weights: BTreeMap::new(),
+            mtp: BTreeMap::new(),
+            dflash2: None,
+            kv_cache_dtype: None,
+            shards: BTreeMap::new(),
+            tensor_map: BTreeMap::new(),
+            activation_rules: Vec::new(),
+            gguf: Some(package),
+            gguf_dense: dense,
+        };
+        package.bind_gguf()?;
+        Ok(package)
+    }
+
+    #[cfg(feature = "gguf")]
+    fn bind_gguf(&mut self) -> Result<()> {
+        let package = self
+            .gguf
+            .as_ref()
+            .ok_or_else(|| Error::invariant("GGUF package"))?;
+        let anchor = self.provider.anchor_slot();
+        let prefix = self
+            .provider
+            .weight_prefixes()
+            .iter()
+            .copied()
+            .find(|prefix| package.slots().contains_key(&format!("{prefix}{anchor}")))
+            .ok_or_else(|| Error::invalid(format!("missing GGUF anchor {anchor}")))?;
+        let mut weights = BTreeMap::new();
+        for spec in &self.graph.tensors {
+            let TensorStorage::Weight { slot } = &spec.storage else {
+                continue;
+            };
+            let source_name = self.provider.weight_source(slot, prefix);
+            let source = package
+                .slots()
+                .get(&source_name)
+                .ok_or_else(|| Error::invalid(format!("missing GGUF slot {source_name}")))?;
+            let elements = source
+                .shape
+                .iter()
+                .try_fold(1u64, |count, dimension| {
+                    count.checked_mul(*dimension as u64)
+                })
+                .ok_or_else(|| Error::invalid("GGUF weight shape overflow"))?;
+            let data = WeightSource {
+                name: source_name,
+                shard: "gguf".to_owned(),
+                dtype: TensorDtype::U8,
+                shape: source.shape.clone(),
+                bytes: source
+                    .dtype
+                    .byte_len(elements)
+                    .map_err(|_| Error::unsupported("GGUF weight byte length"))?,
+                view: None,
+            };
+            let weight = match source.dtype {
+                infer_format::GgufType::Q4K => DeviceWeight::GroupedInt {
+                    data,
+                    kind: GroupedIntKind::Q4K,
+                },
+                infer_format::GgufType::Q6K => DeviceWeight::GroupedInt {
+                    data,
+                    kind: GroupedIntKind::Q6K,
+                },
+                _ => DeviceWeight::Float { data },
+            };
+            weights.insert(slot.clone(), weight);
+        }
+        self.weights = weights;
+        Ok(())
+    }
+
     /// Read one stored tensor under an explicit staging budget.
     /// # Errors
     /// Returns errors for a foreign source descriptor, I/O failure, or exceeded budget.
     pub fn read(&mut self, source: &WeightSource, budget: u64) -> Result<Vec<u8>> {
+        #[cfg(feature = "gguf")]
+        if source.shard == "gguf"
+            && let Some(package) = &self.gguf
+        {
+            return package.blocks(&source.name, budget);
+        }
         let Some(view) = source.view.as_ref().filter(|view| view.gathered()) else {
             return Ok(self.read_view(source, budget)?.to_vec());
         };
@@ -330,6 +478,20 @@ impl QuantizedPackage {
     /// # Errors
     /// Rejects foreign source descriptors, invalid bounds or an exceeded budget.
     pub fn read_view(&self, source: &WeightSource, budget: u64) -> Result<&[u8]> {
+        #[cfg(feature = "gguf")]
+        if source.shard == "gguf" {
+            let bytes = self
+                .gguf_dense
+                .get(&source.name)
+                .ok_or_else(|| Error::unsupported("GGUF dense tensor is not cached"))?;
+            if bytes.len() as u64 > budget {
+                return Err(Error::new(
+                    ErrorCode::Capacity,
+                    "GGUF tensor exceeds staging budget",
+                ));
+            }
+            return Ok(bytes);
+        }
         let file = self
             .shards
             .get(&source.shard)

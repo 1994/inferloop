@@ -83,6 +83,9 @@ pub(super) fn load(
             WeightEncoding::Fp8Channel | WeightEncoding::Fp8Block => {
                 fp8(device, package, &parts, rows, input, output)?
             }
+            WeightEncoding::GroupedInt4 | WeightEncoding::GroupedInt6 => {
+                return Err(Error::unsupported("grouped-int expert weight"));
+            }
             WeightEncoding::Nvfp4 => {
                 return Err(Error::unsupported(
                     "NVFP4 expert activation quantization requires an explicit numerical profile",

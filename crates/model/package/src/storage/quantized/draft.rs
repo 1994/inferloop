@@ -244,6 +244,7 @@ fn column_blocks(weight: &DeviceWeight, hidden: usize, parts: usize) -> Result<V
                 })
             }
             DeviceWeight::Nvfp4 { .. } => Err(Error::unsupported("draft fc encoding")),
+            DeviceWeight::GroupedInt { .. } => Err(Error::unsupported("grouped-int draft weight")),
         })
         .collect()
 }

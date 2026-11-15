@@ -180,6 +180,9 @@ impl ProjectionWeight {
                 ))
             }
             WeightEncoding::Nvfp4 => Self::load_nvfp4(device, package, weight),
+            WeightEncoding::GroupedInt4 | WeightEncoding::GroupedInt6 => Err(Error::unsupported(
+                "grouped-int projection is not bound yet",
+            )),
             WeightEncoding::Fp8Block => {
                 let values = codes(package, weight.data())?;
                 let shape = weight.shape();
@@ -277,7 +280,10 @@ impl ProjectionWeight {
                     device.runtime().upload(scaling)?,
                 ))
             }
-            WeightEncoding::Nvfp4 | WeightEncoding::Fp8Block => Err(Error::unsupported(
+            WeightEncoding::Nvfp4
+            | WeightEncoding::Fp8Block
+            | WeightEncoding::GroupedInt4
+            | WeightEncoding::GroupedInt6 => Err(Error::unsupported(
                 "padded CUDA attention heads need dense or per-channel FP8 projections",
             )),
         }
