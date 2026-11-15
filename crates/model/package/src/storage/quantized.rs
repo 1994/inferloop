@@ -10,11 +10,9 @@ use infer_core::{Error, ErrorCode, ModelId, Result};
 use infer_ir::{DataflowGraph, TensorStorage};
 use infer_spi::ModelProvider;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+#[cfg(feature = "gguf")]
+use std::path::PathBuf;
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 mod activations;
 mod draft;
