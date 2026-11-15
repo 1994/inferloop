@@ -27,6 +27,8 @@ pub use providers::dflash2::{
     ARCHITECTURE as DFLASH2_ARCHITECTURE, DFlash2Config, DFlash2DraftConfig, DraftGeometry,
     DraftQuote, check_declared_architecture,
 };
+#[cfg(feature = "gguf")]
+pub use providers::gguf::qwen3vl::{VisionTensor, config, text_tensor, vision_tensor};
 pub use providers::qwen::{QwenProvider, VisionConfig};
 pub use providers::registry::{ModelRegistry, default_registry};
 pub use storage::index::SafetensorsIndex;

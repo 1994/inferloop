@@ -20,12 +20,16 @@ path = "tests/package.rs"
 [lints]
 workspace = true
 
+[features]
+gguf = ["dep:infer-gguf"]
+
 [dependencies]
 fast_image_resize.workspace = true
 llguidance.workspace = true
 infer-core.workspace = true
 infer-ir.workspace = true
 infer-spi.workspace = true
+infer-gguf = { workspace = true, optional = true }
 infer-model-recipes.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
@@ -38,3 +42,7 @@ regex.workspace = true
 
 [dev-dependencies]
 infer-compiler.workspace = true
+
+[[example]]
+name = "gguf-config"
+required-features = ["gguf"]

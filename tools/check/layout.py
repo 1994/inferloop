@@ -77,7 +77,7 @@ def check_ownership(member, dependencies):
         )
     if member == "crates/model/package":
         require(
-            not internal - foundation - {"infer-model-recipes"},
+            not internal - foundation - {"infer-model-recipes", "infer-gguf"},
             f"{member}: model providers must not depend on compilation or execution",
         )
     if member == "crates/engine/workloads":

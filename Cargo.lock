@@ -1651,6 +1651,7 @@ dependencies = [
  "fast_image_resize",
  "infer-compiler",
  "infer-core",
+ "infer-gguf",
  "infer-ir",
  "infer-model-recipes",
  "infer-spi",

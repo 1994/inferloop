@@ -69,6 +69,16 @@ impl MetadataValue {
             _ => None,
         }
     }
+
+    /// The value as `f64`, when it is a float.
+    #[must_use]
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Self::F32(value) => Some(f64::from(*value)),
+            Self::F64(value) => Some(*value),
+            _ => None,
+        }
+    }
 }
 
 /// The metadata key/value map of one GGUF file.
@@ -78,6 +88,13 @@ pub struct Metadata(BTreeMap<String, MetadataValue>);
 impl Metadata {
     pub(crate) const fn from_map(map: BTreeMap<String, MetadataValue>) -> Self {
         Self(map)
+    }
+
+    /// Build metadata from typed entries, for providers that synthesize a configuration.
+    /// Later duplicate keys replace earlier ones.
+    #[must_use]
+    pub fn from_entries(entries: impl IntoIterator<Item = (String, MetadataValue)>) -> Self {
+        Self(entries.into_iter().collect())
     }
 
     /// One raw metadata value.
@@ -119,6 +136,15 @@ impl Metadata {
                 .map(Some)
                 .ok_or_else(|| Error::invalid(format!("GGUF metadata {key} is not an integer")))
         })
+    }
+
+    /// One required floating-point value.
+    /// # Errors
+    /// Returns an invalid-input error for a missing or non-numeric value.
+    pub fn require_f64(&self, key: &str) -> Result<f64> {
+        self.get(key)
+            .and_then(MetadataValue::as_f64)
+            .ok_or_else(|| Error::invalid(format!("GGUF metadata {key} is missing or not numeric")))
     }
 
     /// One required string value.
