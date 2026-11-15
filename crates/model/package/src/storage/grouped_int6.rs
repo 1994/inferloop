@@ -130,10 +130,7 @@ impl Q6KTiled {
                                     + position * Q6K_TILE_ROWS
                                     + row] = code;
                                 let scale_index = scale + SCALE_OFFSETS[index];
-                                let factor = d * f32::from(
-                                    i8::try_from(scales[scale_index])
-                                        .map_err(|_| Error::invalid("Q6_K scale"))?,
-                                );
+                                let factor = d * f32::from(scales[scale_index].cast_signed());
                                 packed.factors[(tile * blocks_per_row + block_index)
                                     * GROUPS
                                     * Q6K_TILE_ROWS

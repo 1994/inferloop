@@ -46,3 +46,7 @@ infer-compiler.workspace = true
 [[example]]
 name = "gguf-config"
 required-features = ["gguf"]
+
+[[example]]
+name = "gguf-package"
+required-features = ["gguf"]
