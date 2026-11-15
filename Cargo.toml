@@ -182,3 +182,10 @@ cognitive_complexity = "deny"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# cuTile's build script turns Cargo's DEBUG into device debug for every JIT kernel, and device
+# debug (tileiras -O0) builds TMA descriptors on the device. In prompt graph replay that write
+# hits an unmapped driver workspace (CUDA 700, #249), so dev and test builds keep the optimized
+# kernels release ships. Host code keeps its debug info.
+[profile.dev.package.cutile-compiler]
+debug = false
