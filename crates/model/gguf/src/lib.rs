@@ -5,11 +5,13 @@
 //! present them (for example as a virtual HF package). Unknown or unsupported tensor types fail
 //! explicitly instead of being silently reinterpreted.
 mod container;
+mod device;
 mod metadata;
 mod quant;
 mod tensor;
 
 pub use container::{GgufFile, GgufLimits, TensorInfo};
+pub use device::Q4KDevice;
 pub use metadata::{Metadata, MetadataValue};
 pub use quant::dequantize;
 pub use tensor::GgufType;
