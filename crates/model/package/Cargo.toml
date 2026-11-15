@@ -54,3 +54,7 @@ required-features = ["gguf"]
 [[example]]
 name = "gguf-vision"
 required-features = ["gguf"]
+
+[[example]]
+name = "gguf-graph"
+required-features = ["gguf"]
