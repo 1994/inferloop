@@ -4,6 +4,6 @@
 pub mod gguf;
 
 pub use gguf::{
-    GgufFile, GgufLimits, GgufType, Metadata, MetadataValue, Q4KDevice, Q4KTiled, Q4K_TILE_ROWS,
+    GgufFile, GgufLimits, GgufType, Metadata, MetadataValue, Q4K_TILE_ROWS, Q4KDevice, Q4KTiled,
     TensorInfo, dequantize,
 };
