@@ -69,6 +69,22 @@ pub trait Projection: Send + Sync {
         Err(unsupported("Projection::grouped_int_row"))
     }
 
+    /// Project one flat row with grouped 6-bit weights.
+    /// # Errors
+    /// Fails when a buffer disagrees with the plan, the weight is not grouped 6-bit, or the
+    /// launch is rejected.
+    fn grouped_int6_row(
+        &self,
+        recording: &Recording<'_>,
+        plan: &GroupedIntPlan,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        weight: WeightRef<'_>,
+    ) -> Result<()> {
+        let _ = (recording, plan, out, x, weight);
+        Err(unsupported("Projection::grouped_int6_row"))
+    }
+
     /// Copy flat `input` into row `row` of `out`, whose shape is `[rows, columns]`.
     /// # Errors
     /// Fails when the launch is rejected.
@@ -577,6 +593,11 @@ pub enum WeightRef<'a> {
         codes: Buffer<'a, u8>,
         factors: Buffer<'a, f32>,
         biases: Buffer<'a, f32>,
+    },
+    /// Grouped 6-bit codes with precomputed per-group factors.
+    GroupedInt6 {
+        codes: Buffer<'a, u8>,
+        factors: Buffer<'a, f32>,
     },
 }
 

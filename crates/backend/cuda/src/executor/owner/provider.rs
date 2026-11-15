@@ -20,6 +20,7 @@ impl CudaBackend {
             infer_ir::WeightEncoding::Fp8,
             infer_ir::WeightEncoding::Nvfp4,
             infer_ir::WeightEncoding::GroupedInt4,
+            infer_ir::WeightEncoding::GroupedInt6,
         ],
     };
 }

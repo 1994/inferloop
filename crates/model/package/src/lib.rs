@@ -44,6 +44,8 @@ pub use providers::registry::{ModelRegistry, default_registry};
 pub use storage::gguf_requirements::{PackageRequirements, gguf_requirements};
 #[cfg(feature = "gguf")]
 pub use storage::grouped_int::{Q4K_TILE_ROWS, Q4KDevice, Q4KTiled};
+#[cfg(feature = "gguf")]
+pub use storage::grouped_int6::{Q6K_TILE_ROWS, Q6KTiled};
 pub use storage::index::SafetensorsIndex;
 pub use storage::loader::{
     LoadOptions, LoadedWeights, TensorLoadPlan, WeightLoadPlan, WeightStorage, WeightTarget,
