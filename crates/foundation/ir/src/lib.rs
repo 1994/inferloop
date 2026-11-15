@@ -1,5 +1,6 @@
 //! Protocol-independent, serializable planning and execution representations.
 pub mod dataflow;
+pub mod device_timing;
 pub mod diagnostics;
 pub mod execution;
 pub mod hardware;
@@ -14,6 +15,10 @@ pub mod tokens;
 pub mod workload;
 pub use dataflow::{
     BufferLifetime, DataflowGraph, TensorNode, TensorOp, TensorSpec, TensorStorage,
+};
+pub use device_timing::{
+    DeviceTimingConfig, DeviceTimingMode, DeviceTimingSample, OpClass, TimedGraph, TimedInterval,
+    TimedPhase, TimedSegment,
 };
 pub use diagnostics::{
     ConcurrencyInspection, ExecutionProfileInspection, ExecutionStats, KvCacheInspection,

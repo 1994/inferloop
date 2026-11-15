@@ -1,5 +1,6 @@
 //! Fixed-storage recording and bounded cold-path semantic observation/export.
 mod constants;
+mod device;
 mod diagnostic;
 pub mod export;
 mod metrics;
@@ -10,6 +11,10 @@ mod tests;
 pub mod trace;
 mod window;
 
+pub use device::{
+    DEVICE_TIMELINE_CAPACITY, DeviceTimelineQuery, DeviceTimelines, MAX_DEVICE_TIMELINE_QUERY,
+    StepTimeline,
+};
 pub use diagnostic::{Diagnostic, DiagnosticCode, Severity};
 pub use metrics::{LATENCY_BOUNDS_US, LatencyHistogram, RuntimeMetrics};
 pub use store::{
@@ -31,4 +36,9 @@ pub enum ObservationQuery {
     Diagnostics,
     Timeline,
     Otlp,
+    /// Raw sampled device timelines after a cursor; see [`DeviceTimelines::query`].
+    DeviceTimelines {
+        after: u64,
+        limit: usize,
+    },
 }

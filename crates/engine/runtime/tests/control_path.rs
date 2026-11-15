@@ -341,6 +341,8 @@ enum Fault {
     MaintenanceFenced,
     /// The backend is still encoding: the launch is not acknowledged and nothing completes.
     PendingLaunch,
+    /// Completes normally and reports one device timing sample per execution.
+    Timed,
 }
 struct FaultyBackend {
     inner: ProtocolBackend,
@@ -408,7 +410,9 @@ impl BackendProvider for FaultyBackend {
         match self.fault {
             Fault::Poll => Err(Error::new(ErrorCode::Backend, "injected poll failure")),
             Fault::NeverComplete | Fault::MaintenancePending | Fault::PendingLaunch => Ok(None),
-            Fault::Recover | Fault::InvalidTiming | Fault::MaintenanceFenced => self.inner.poll(t),
+            Fault::Recover | Fault::InvalidTiming | Fault::MaintenanceFenced | Fault::Timed => {
+                self.inner.poll(t)
+            }
             Fault::Malformed => {
                 let mut outputs = self.inner.poll(t)?;
                 if let Some(outputs) = &mut outputs {
@@ -417,6 +421,34 @@ impl BackendProvider for FaultyBackend {
                 Ok(outputs)
             }
             Fault::Submit => unreachable!(),
+        }
+    }
+    fn device_timing(&self, _: &Self::Ticket) -> Option<DeviceTimingSample> {
+        matches!(self.fault, Fault::Timed).then(|| DeviceTimingSample {
+            rows: 1,
+            intervals: vec![TimedInterval {
+                phase: TimedPhase::Decode,
+                start_ns: 0,
+                duration_ns: 3_000,
+            }],
+            segments: vec![TimedSegment {
+                phase: TimedPhase::Decode,
+                graph: TimedGraph::Target,
+                node: Some(0),
+                op: OpClass::Projection,
+                layer: Some(0),
+                variant: Some(0),
+                start_ns: 500,
+                duration_ns: 2_000,
+            }],
+            host: Vec::new(),
+        })
+    }
+    fn device_timing_variants(&self) -> Vec<String> {
+        if matches!(self.fault, Fault::Timed) {
+            vec!["test-gemm".into()]
+        } else {
+            Vec::new()
         }
     }
     fn launch_accepted(&self, _: &Self::Ticket) -> Option<bool> {
@@ -716,6 +748,44 @@ fn backend_failures_and_invalid_completions_release_all_owned_state() {
         assert_eq!(e.inspect().state.allocated_pages, 0);
     }
 }
+/// A backend's sampled timelines are retained as reported, each with the step it measured, and
+/// read back with the variant names the backend declared before execution started.
+#[test]
+fn backend_device_timing_is_retained_raw_with_its_step() -> Result<()> {
+    let b = FaultyBackend {
+        inner: backend(),
+        fault: Fault::Timed,
+    };
+    let model = support::model(ModelId::ONE);
+    let mut e = Engine::new(
+        b,
+        model,
+        PrecisionPlan::f32(),
+        &registry(),
+        RuntimeConfig::default(),
+    )?;
+    e.submit(request(1, Workload::Generate { max_new_tokens: 2 }))?;
+    assert!(run_to_idle(&mut e, 0));
+    let timelines = e.device_timelines(0, 8)?;
+    assert_eq!(timelines.variants, ["test-gemm"]);
+    assert!(
+        timelines.records.len() >= 2,
+        "one timeline per executed step"
+    );
+    let steps: Vec<u64> = timelines.records.iter().map(|record| record.step).collect();
+    let mut ordered = steps.clone();
+    ordered.sort_unstable();
+    ordered.dedup();
+    assert_eq!(steps, ordered, "one record per step, in completion order");
+    for record in &timelines.records {
+        assert_eq!(record.sample.total_ns(), 3_000);
+        assert_eq!(record.sample.segments[0].op, OpClass::Projection);
+    }
+    let rest = e.device_timelines(timelines.next, 8)?;
+    assert_eq!(rest.records.len(), 0);
+    Ok(())
+}
+
 /// Encoding a step, including first-use graph capture, can outlast the timeout on the backend's
 /// own worker; the timeout bounds device execution from launch acceptance instead (#257).
 #[test]

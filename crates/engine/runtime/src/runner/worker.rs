@@ -376,9 +376,14 @@ impl<B: BackendProvider> Worker<B> {
             result => {
                 self.refresh();
                 let timing = self.backend.completion_timing(&flight.ticket);
+                let device = self.backend.device_timing(&flight.ticket);
                 let result = result.and_then(|outputs| {
                     outputs
-                        .map(|outputs| Completion { outputs, timing })
+                        .map(|outputs| Completion {
+                            outputs,
+                            timing,
+                            device,
+                        })
                         .ok_or_else(|| Error::invariant("completion disappeared"))
                 });
                 self.shared.encoding.store(false, Ordering::Release);

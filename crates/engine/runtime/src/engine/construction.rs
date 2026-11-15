@@ -86,7 +86,8 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
             config.cost_model.clone(),
         )?;
         let admission_policy = ResourceAdmission::new(config.admission.clone())?;
-        let observations = Observations::new(config.history_capacity)?;
+        let mut observations = Observations::new(config.history_capacity)?;
+        observations.device = infer_observe::DeviceTimelines::new(backend.device_timing_variants());
         let host = HostStorage::new(&config, program.id, program.backend, model.vocab_size)?;
         let mut planning_workspace = P::Workspace::default();
         policy.reserve_workspace(

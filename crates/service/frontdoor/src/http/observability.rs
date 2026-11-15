@@ -7,6 +7,39 @@ use infer_observe::ObservationQuery;
 
 /// Default semantic-event count returned when an event query omits `limit`.
 const DEFAULT_EVENT_LIMIT: usize = 256;
+/// Default device timeline count returned when a query omits `limit`.
+const DEFAULT_DEVICE_TIMELINE_LIMIT: usize = 8;
+
+#[derive(serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct DeviceTimelineParams {
+    after: u64,
+    limit: usize,
+}
+impl Default for DeviceTimelineParams {
+    fn default() -> Self {
+        Self {
+            after: 0,
+            limit: DEFAULT_DEVICE_TIMELINE_LIMIT,
+        }
+    }
+}
+
+/// Raw sampled device timelines; every device-time view is built from these records.
+pub(super) async fn device_timelines(
+    State(handle): State<RuntimeHandle>,
+    query: Result<Query<DeviceTimelineParams>, QueryRejection>,
+) -> HttpResult<Json<serde_json::Value>> {
+    let Query(query) = query.map_err(|error| Error::invalid(error.body_text()))?;
+    Ok(Json(
+        handle
+            .observe(ObservationQuery::DeviceTimelines {
+                after: query.after,
+                limit: query.limit,
+            })
+            .await?,
+    ))
+}
 
 #[derive(serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]

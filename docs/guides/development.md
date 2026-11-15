@@ -92,10 +92,13 @@ target/release/infer --backend metal agent --package examples/qwen-hybrid-tiny \
 | `GET /native/v1/diagnostics` | 故障与准入证据 |
 | `GET /native/v1/timeline` | Chrome Trace / Perfetto JSON |
 | `GET /native/v1/traces/otlp` | OTLP JSON |
+| `GET /native/v1/device/timelines` | 按 after/limit cursor 读取采样 step 的原始设备时间线：阶段区间、节点段（算子类别、层、实现变体）与主机区间 |
 | `POST /native/v1/requests` | CanonicalRequest → 完成结果 |
 | `POST /native/v1/stream` | `token` / `finished` / `error` SSE |
 | `POST /native/v1/text` | prompt / messages 与多工作负载 |
 | `DELETE /native/v1/requests/{id}` | 取消请求 |
+
+设备时间线是所有设备时间视图的唯一数据源：后端按 dataflow 节点上报，运行时只保留最近的采样 step 原样记录（固定容量，被挤掉的条数单独计数），不内置任何特定监控系统的格式。看板、Perfetto 时间线、OTLP 或自定义分析，都在这些原始记录之上各自转换。
 
 请求体上限 2 MiB，准备与输出队列有界。断连或输出背压会取消对应请求，在途资源按 reader / fence 生命周期回收。
 

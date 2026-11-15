@@ -44,6 +44,9 @@ fn next_namespace(clock: u64) -> Result<u64> {
 pub struct Observations {
     pub metrics: RuntimeMetrics,
     pub store: ObservationStore,
+    /// Raw sampled device timelines, retained apart from metrics so snapshots never copy them
+    /// unless asked.
+    pub device: infer_observe::DeviceTimelines,
     pub collector: Option<collector::Collector>,
     pub parents: BTreeMap<u64, TraceContext>,
     pub parents_dirty: bool,
@@ -61,6 +64,7 @@ impl Observations {
         Ok(Self {
             metrics: RuntimeMetrics::default(),
             store: ObservationStore::new(capacity)?,
+            device: infer_observe::DeviceTimelines::new(Vec::new()),
             collector: None,
             parents: BTreeMap::new(),
             parents_dirty: false,
@@ -88,6 +92,12 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         {
             return Err(Error::invalid("event query limit must be 1 to 4096"));
         }
+        let device = match query {
+            ObservationQuery::DeviceTimelines { after, limit } => {
+                Some(self.observations.device.query(after, limit)?)
+            }
+            _ => None,
+        };
         self.collect_observations();
         let include_events = !matches!(
             query,
@@ -102,6 +112,7 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
         let include_parents = matches!(query, ObservationQuery::Otlp);
         Ok(ObservationSnapshot {
             query,
+            device,
             metrics: self.observations.metrics.clone(),
             resources: self.resource_gauges(),
             fault: self.fault.clone(),
@@ -143,6 +154,16 @@ impl<B: BackendProvider, P: SchedulingPolicy> Engine<B, P> {
     }
     pub const fn metrics(&self) -> &RuntimeMetrics {
         &self.observations.metrics
+    }
+    /// Raw sampled device timelines after `after`, oldest first.
+    /// # Errors
+    /// Rejects a limit of zero or above the retained capacity.
+    pub fn device_timelines(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<infer_observe::DeviceTimelineQuery> {
+        self.observations.device.query(after, limit)
     }
     /// # Errors
     /// Returns invalid input for event limits outside 1 to 4096.

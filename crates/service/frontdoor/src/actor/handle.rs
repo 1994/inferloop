@@ -23,6 +23,9 @@ const DIAGNOSTICS_RESPONSE_BUDGET_BYTES: usize = 2 << 20;
 const EVENT_RESPONSE_BYTES: usize = 1024;
 /// Fixed staging bytes reserved for an event query in addition to its per-event budget.
 const EVENTS_RESPONSE_BASE_BYTES: usize = 256 << 10;
+/// Staging bytes reserved per requested device timeline; a node-level step holds one segment
+/// per dataflow node, so this covers a few thousand.
+const DEVICE_TIMELINE_RESPONSE_BYTES: usize = 512 << 10;
 /// Seconds to wait for the actor to acknowledge shutdown.
 const SHUTDOWN_ACK_TIMEOUT_SECS: u64 = 5;
 
@@ -310,6 +313,9 @@ impl RuntimeHandle {
             ObservationQuery::Events { limit, .. } => limit
                 .checked_mul(EVENT_RESPONSE_BYTES)
                 .and_then(|bytes| bytes.checked_add(EVENTS_RESPONSE_BASE_BYTES))
+                .ok_or_else(|| Error::invalid("observation response budget overflow"))?,
+            ObservationQuery::DeviceTimelines { limit, .. } => limit
+                .checked_mul(DEVICE_TIMELINE_RESPONSE_BYTES)
                 .ok_or_else(|| Error::invalid("observation response budget overflow"))?,
             _ => self.observation_bytes,
         };

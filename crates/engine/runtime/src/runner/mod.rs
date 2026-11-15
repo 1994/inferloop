@@ -171,6 +171,7 @@ enum Recycled {
 struct Completion {
     outputs: Vec<TaskOutput>,
     timing: Option<ExecutionTiming>,
+    device: Option<infer_ir::DeviceTimingSample>,
 }
 /// A pending launch and GPU completion share one ticket; timeout never destroys driver ownership.
 pub struct RunnerTicket {
@@ -178,6 +179,7 @@ pub struct RunnerTicket {
     step: StepId,
     batch: infer_gpu_api::BatchLease,
     timing: Option<ExecutionTiming>,
+    device: Option<infer_ir::DeviceTimingSample>,
     done: bool,
 }
 /// The service uses this adapter; direct CLI/quality execution can retain a synchronous backend.
@@ -201,6 +203,7 @@ pub struct ThreadedBackend<B: BackendProvider> {
     resources: infer_spi::ResourcePool,
     marker: PhantomData<B>,
     identity: String,
+    timing_variants: Vec<String>,
     capabilities: DeviceCapabilities,
     speculation: infer_ir::SpeculationCapability,
     model: ModelIr,
@@ -346,6 +349,7 @@ where
             )?,
             marker: PhantomData,
             identity: backend.identity().into(),
+            timing_variants: backend.device_timing_variants(),
             capabilities: backend.capabilities(),
             speculation: backend.speculation_capability(),
             weight_backed: backend.weight_backed_dataflow(),

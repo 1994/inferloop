@@ -12,6 +12,10 @@ autotests = false
 # `tests/` holds both unit case bodies (mounted from their module) and platform integration
 # tests, so the integration targets are named explicitly while `autotests` stays off.
 [[test]]
+name = "device_timing"
+path = "tests/device_timing.rs"
+
+[[test]]
 name = "hardware"
 path = "tests/hardware.rs"
 

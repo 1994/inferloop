@@ -423,6 +423,43 @@ async fn timed_out_actor_retains_device_ownership_and_serves_diagnostics_until_c
     b.unwrap();
 }
 
+/// The raw device timeline route pages records by cursor and rejects unbounded queries; a
+/// backend that measures nothing serves an empty, well-formed page.
+#[tokio::test]
+async fn device_timelines_serve_raw_records_within_bounded_pages() {
+    let handle = handle();
+    let app = router(handle.clone());
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/native/v1/device/timelines?after=0&limit=4")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    let page: infer_observe::DeviceTimelineQuery = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(page.records.len(), 0);
+    assert_eq!((page.next, page.evicted), (0, 0));
+    for limit in [0, infer_observe::MAX_DEVICE_TIMELINE_QUERY + 1] {
+        let rejected = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/native/v1/device/timelines?limit={limit}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST, "limit {limit}");
+    }
+    handle.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn invalid_observation_query_has_a_structured_error() {
     let handle = handle();
