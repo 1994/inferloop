@@ -58,6 +58,9 @@ pub trait Element {
 impl Element for u8 {
     type Marker = Self;
 }
+impl Element for i8 {
+    type Marker = Self;
+}
 impl Element for f32 {
     type Marker = Self;
 }

@@ -85,6 +85,20 @@ pub trait Projection: Send + Sync {
         Err(unsupported("Projection::grouped_int6_row"))
     }
 
+    /// Probe the int8 MMA primitive on `[16, 64] x [64, 16]`.
+    /// # Errors
+    /// Fails when a buffer disagrees with the probe shape or the launch is rejected.
+    fn int8_probe(
+        &self,
+        recording: &Recording<'_>,
+        lhs: Buffer<'_, i8>,
+        rhs: Buffer<'_, i8>,
+        out: Buffer<'_, i32>,
+    ) -> Result<()> {
+        let _ = (recording, lhs, rhs, out);
+        Err(unsupported("Projection::int8_probe"))
+    }
+
     /// Copy flat `input` into row `row` of `out`, whose shape is `[rows, columns]`.
     /// # Errors
     /// Fails when the launch is rejected.

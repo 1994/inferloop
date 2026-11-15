@@ -52,6 +52,9 @@ impl Width for Fp8 {
 impl Width for u8 {
     const BYTES: usize = 1;
 }
+impl Width for i8 {
+    const BYTES: usize = 1;
+}
 impl Width for Fp4Pair {
     const BYTES: usize = 1;
 }

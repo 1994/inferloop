@@ -1,8 +1,8 @@
 //! cuTile implementation of the projection family.
 use super::{
     BLOCK_BYTES, compensated_gemm, entries, fp8_gemm, fp8_quant_reduction, grouped_int,
-    grouped_int6, linear, linear_batch, nvfp4_gemm, pool_gemv, prefill_gemm, prompt_logits,
-    small_gemm, swizzle, vendor_fp8,
+    grouped_int6, int8_probe, linear, linear_batch, nvfp4_gemm, pool_gemv, prefill_gemm,
+    prompt_logits, small_gemm, swizzle, vendor_fp8,
 };
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::grouped_int::GroupedIntPlan;
@@ -1079,6 +1079,27 @@ impl Projection for TileProjection {
             }
         }
         .map_err(backend_error)
+    }
+
+    fn int8_probe(
+        &self,
+        recording: &Recording<'_>,
+        lhs: Buffer<'_, i8>,
+        rhs: Buffer<'_, i8>,
+        out: Buffer<'_, i32>,
+    ) -> Result<()> {
+        let scope = capture_scope(recording)?;
+        let lhs = self.matrix(recording, lhs, "int8 lhs", (16, 64))?;
+        let rhs = self.matrix(recording, rhs, "int8 rhs", (64, 16))?;
+        let mut out = self.matrix(recording, out, "int8 out", (16, 16))?;
+        scope
+            .record(int8_probe::probe_mma(
+                &lhs,
+                &rhs,
+                (&mut out).partition([16, 16]),
+            ))
+            .map(drop)
+            .map_err(backend_error)
     }
 
     fn grouped_int6_row(
