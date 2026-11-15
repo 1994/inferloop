@@ -1,12 +1,13 @@
 //! Native GGUF text package: synthesized assets plus raw tensor blocks.
 //!
-//! The package keeps GGUF blocks in place. Q4_K/Q6_K tensors are repacked into the host layouts
+//! The package keeps GGUF blocks in place. `Q4_K`/`Q6_K` tensors are repacked into the host layouts
 //! the grouped-int kernels consume; dense tensors are decoded on demand for reference or small
 //! auxiliary tensors. No intermediate safetensors package is written.
 use crate::providers::qwen::gguf::config_text;
 use crate::providers::qwen::gguf::text_tensor;
 use crate::providers::qwen::gguf::tokenizer::{tokenizer_config, tokenizer_json};
 use crate::providers::qwen::gguf::validate::{TensorSpec, validate_text};
+use crate::storage::gguf_requirements::encoding_for;
 use crate::storage::grouped_int::Q4KDevice;
 use crate::storage::grouped_int6::Q6KTiled;
 use infer_core::{Error, Result};
@@ -33,7 +34,7 @@ impl GgufSlot {
     /// # Errors
     /// Rejects a type the capability model does not name.
     pub fn encoding(&self) -> Result<WeightEncoding> {
-        crate::storage::gguf_requirements::encoding_for(self.dtype)
+        encoding_for(self.dtype)
     }
 }
 
