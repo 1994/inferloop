@@ -31,6 +31,19 @@ impl BackendProvider for MetalBackend {
     fn supports_control_checkpoint(&self) -> bool {
         true
     }
+    fn formats(&self) -> infer_ir::BackendFormats {
+        infer_ir::BackendFormats {
+            checkpoints: &[
+                infer_ir::CheckpointFormat::Safetensors,
+                infer_ir::CheckpointFormat::Gguf,
+                infer_ir::CheckpointFormat::Mlx,
+            ],
+            encodings: &[
+                infer_ir::WeightEncoding::Dense,
+                infer_ir::WeightEncoding::MlxAffine,
+            ],
+        }
+    }
     fn capabilities(&self) -> DeviceCapabilities {
         DeviceCapabilities {
             backend: DeviceBackend::Metal(MetalCapabilities {

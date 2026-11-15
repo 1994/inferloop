@@ -25,6 +25,20 @@ impl BackendProvider for CudaBackend {
     fn capabilities(&self) -> DeviceCapabilities {
         self.view.capabilities.clone()
     }
+    fn formats(&self) -> infer_ir::BackendFormats {
+        infer_ir::BackendFormats {
+            checkpoints: &[
+                infer_ir::CheckpointFormat::Safetensors,
+                infer_ir::CheckpointFormat::Gguf,
+            ],
+            encodings: &[
+                infer_ir::WeightEncoding::Dense,
+                infer_ir::WeightEncoding::Fp8,
+                infer_ir::WeightEncoding::Nvfp4,
+                infer_ir::WeightEncoding::GroupedInt4,
+            ],
+        }
+    }
     fn speculation_capability(&self) -> infer_ir::SpeculationCapability {
         self.view.capabilities.speculation
     }

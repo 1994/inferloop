@@ -111,3 +111,20 @@ fn media_prefill_requires_explicit_speculation_support() {
     };
     assert!(combined.allows_media_prefill());
 }
+
+#[test]
+fn backend_formats_cover_containers_and_encodings() {
+    let formats = BackendFormats {
+        checkpoints: &[
+            CheckpointFormat::Safetensors,
+            CheckpointFormat::Gguf,
+            CheckpointFormat::Mlx,
+        ],
+        encodings: &[WeightEncoding::Dense, WeightEncoding::MlxAffine],
+    };
+    assert!(formats.supports_format(CheckpointFormat::Gguf));
+    assert!(formats.supports_format(CheckpointFormat::Mlx));
+    assert!(formats.supports_encoding(WeightEncoding::MlxAffine));
+    assert!(!formats.supports_encoding(WeightEncoding::Nvfp4));
+    assert!(formats.supports_format(CheckpointFormat::Safetensors));
+}
