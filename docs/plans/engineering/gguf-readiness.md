@@ -62,7 +62,7 @@ llama.cpp 只用于理解 GGUF block 布局和外部性能参照；生产 kernel
 - 不做“整张权重反量化成 BF16”的中间态；逐 tile 解包，避免带宽和显存峰值回退。
 - 需要覆盖 K 尾块、N 尾块、M<MMA tile 的掩码。
 
-- **当前进展（2026-11-15）**：cuTile `mmai(signed, signed)` 已在 5090 上通过 16×64×16 的逐元素整数参考（exact match）。Q4_K 的 host 量化 + int8 MMA 原型能运行，但与参考解码仍有约 6% 偏差；因子/偏置映射或 32-value 分组修正尚未定位，未合入生产路径。下一步先用单 group 隔离出 code/factor/scale 三项，再恢复完整 K。
+- **当前进展（2026-11-15）**：cuTile `mmai(signed, signed)` 已在 5090 上通过 16×64×16 的逐元素整数参考（exact match）。Q4_K 的 host 量化 + int8 MMA 原型能运行，但与参考解码仍有约 6% 偏差；因子/偏置映射或 32-value 分组修正尚未定位，未合入生产路径。单 group 隔离结果：code、low/high factor、bias、x_scale 都逐项对上（相对误差 <1e-6）；把完整 kernel 限制到 1/2/4/8 个 32-value group 时最大绝对误差分别为 1.8e-3/3.4e-3/6.0e-3/1.2e-2，完整 64 group 时升到 9.5e-2。剩余偏差在多 group 累加/激活量化上，尚未定位。
 
 ### 验证与门槛
 
