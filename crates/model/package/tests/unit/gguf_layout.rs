@@ -1,5 +1,5 @@
-use infer_core::ErrorCode;
 use super::Q4KDevice;
+use infer_core::ErrorCode;
 use infer_format::{GgufType, dequantize};
 
 const ONE: [u8; 2] = [0x00, 0x3c];

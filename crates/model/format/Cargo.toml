@@ -21,7 +21,3 @@ workspace = true
 
 [dependencies]
 infer-core.workspace = true
-
-[[example]]
-name = "gguf-q4k-gemv"
-path = "examples/gguf-q4k-gemv.rs"

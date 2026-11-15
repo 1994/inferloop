@@ -4,8 +4,8 @@
 //! expands the 6-bit scale/min table into one byte per 32-value group and stores `d`/`dmin` as
 //! F32, so a kernel can index them without unpacking bits. The host oracle computes the same
 //! grouped accumulation the device kernel must reproduce.
-use infer_format::half_to_f32;
 use infer_core::{Error, Result};
+use infer_format::half_to_f32;
 
 /// Values in one `Q4_K` super-block.
 const QK_K: usize = 256;

@@ -4,6 +4,5 @@
 pub mod gguf;
 
 pub use gguf::{
-    GgufFile, GgufLimits, GgufType, Metadata, MetadataValue,
-    TensorInfo, dequantize, half_to_f32,
+    GgufFile, GgufLimits, GgufType, Metadata, MetadataValue, TensorInfo, dequantize, half_to_f32,
 };
