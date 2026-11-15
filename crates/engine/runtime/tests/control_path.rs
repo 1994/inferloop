@@ -1020,6 +1020,7 @@ mod captured {
     use std::io::{Error as IoError, Result as IoResult, Write};
     use std::sync::{Arc, Mutex};
     use tracing::Level;
+    use tracing::callsite::rebuild_interest_cache;
     use tracing::subscriber::with_default;
 
     #[derive(Clone, Default)]
@@ -1046,7 +1047,12 @@ mod captured {
                 .with_ansi(false)
                 .with_max_level(Level::INFO)
                 .finish();
-            with_default(subscriber, run)
+            with_default(subscriber, || {
+                // Callsite interest is cached process-wide: a test that logged first on a thread
+                // without a subscriber leaves the shared callsites disabled for this one.
+                rebuild_interest_cache();
+                run()
+            })
         }
         /// Terminal lines of one request; the acceptance line is not one.
         pub fn request(&self, id: u64) -> Vec<String> {
