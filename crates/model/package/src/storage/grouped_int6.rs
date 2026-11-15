@@ -35,10 +35,16 @@ const NIBBLE_MASK: u8 = 0xF;
 const NIBBLE_BITS: u32 = 4;
 /// Two high bits per lane.
 const QH_MASK: u8 = 3;
+/// Mask of one 6-bit code.
+const CODE_MASK: u8 = 0x3F;
+/// Shift selecting the fourth code's high bits.
+const HIGH_SHIFT: u32 = 6;
+/// Codes produced by one lane.
+const CODES_PER_LANE: usize = 4;
 /// Output offsets for the four codes of one lane.
-const OUTPUT_OFFSETS: [usize; 4] = [0, LANES, 64, 96];
+const OUTPUT_OFFSETS: [usize; CODES_PER_LANE] = [0, LANES, 64, 96];
 /// Scale offsets for the four codes of one lane.
-const SCALE_OFFSETS: [usize; 4] = [0, 2, 4, 6];
+const SCALE_OFFSETS: [usize; CODES_PER_LANE] = [0, 2, 4, 6];
 
 /// One `Q6_K` matrix in the tiled device layout.
 #[derive(Debug, Clone, PartialEq)]
@@ -101,7 +107,7 @@ impl Q6KTiled {
                             &data[SCALES_OFFSET + half * SCALE_BYTES / 2..][..SCALE_BYTES / 2];
                         let base = half * HALF_VALUES;
                         for lane in 0..LANES {
-                            let q = [
+                            let q: [i32; CODES_PER_LANE] = [
                                 i32::from(ql[lane] & NIBBLE_MASK)
                                     | (i32::from(qh[lane] & QH_MASK) << NIBBLE_BITS),
                                 i32::from(ql[lane + LANES] & NIBBLE_MASK)
@@ -110,12 +116,13 @@ impl Q6KTiled {
                                     | (i32::from((qh[lane] >> NIBBLE_BITS) & QH_MASK)
                                         << NIBBLE_BITS),
                                 i32::from(ql[lane + LANES] >> NIBBLE_BITS)
-                                    | (i32::from((qh[lane] >> 6) & QH_MASK) << NIBBLE_BITS),
+                                    | (i32::from((qh[lane] >> HIGH_SHIFT) & QH_MASK)
+                                        << NIBBLE_BITS),
                             ];
                             let scale = lane / GROUP_VALUES;
-                            for index in 0..4 {
+                            for index in 0..CODES_PER_LANE {
                                 let position = base + lane + OUTPUT_OFFSETS[index];
-                                let code = u8::try_from(q[index] & 0x3F)
+                                let code = u8::try_from(q[index] & CODE_MASK)
                                     .map_err(|_| Error::invalid("Q6_K code exceeds u8"))?;
                                 tiled.codes[(tile * blocks_per_row + block_index)
                                     * QK_K

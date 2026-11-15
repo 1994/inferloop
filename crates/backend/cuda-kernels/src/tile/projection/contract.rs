@@ -31,6 +31,8 @@ const GROUPED_INT_GROUP_LANES: usize = 32;
 const GROUPED_INT_BLOCK_VALUES: usize = 256;
 /// Super-blocks one iteration decodes.
 const GROUPED_INT_SUPER_BLOCKS: usize = 4;
+/// 16-value groups in one grouped-int6 super-block.
+const GROUPED_INT6_GROUPS: usize = 16;
 
 /// Elements of an embedding row a tile covers.
 const EMBEDDING_TILE: usize = 256;
@@ -1024,7 +1026,7 @@ impl Projection for TileProjection {
             .ok_or_else(|| Error::unsupported("grouped-int6 code length overflow"))?;
         let factor_len = tiles
             .checked_mul(blocks)
-            .and_then(|value| value.checked_mul(16 * GROUPED_INT_TILE_ROWS))
+            .and_then(|value| value.checked_mul(GROUPED_INT6_GROUPS * GROUPED_INT_TILE_ROWS))
             .ok_or_else(|| Error::unsupported("grouped-int6 factor length overflow"))?;
         if codes.len() != code_len || factors.len() != factor_len {
             return Err(Error::unsupported("grouped-int6 GEMV layout"));
