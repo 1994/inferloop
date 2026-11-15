@@ -20,23 +20,6 @@
       ]
     },
     {
-      "name": "oxide-gdn",
-      "builder": "oxide",
-      "source": "src/main.rs",
-      "ptx": "gdn-sm120.ptx",
-      "target": "sm_120",
-      "symbols": [
-        "gdn_f32_128"
-      ],
-      "profile": "canonical-f32",
-      "rebuild_scope": "complete-ptx",
-      "shared_bytes": [
-        1024,
-        32,
-        512
-      ]
-    },
-    {
       "name": "shared-attention",
       "builder": "nvcc",
       "source": "attention-sm120.cu",

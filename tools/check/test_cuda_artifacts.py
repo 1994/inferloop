@@ -41,10 +41,10 @@ class ArtifactTests(unittest.TestCase):
                 kernels.verify(entry, generated)
 
     def test_changed_shared_allocation_rejected(self):
-        entry = self.entries["oxide-gdn"]
+        entry = self.entries["oxide-attention"]
         text = (kernels.ROOT / entry["name"] / entry["ptx"]).read_text()
         with self.assertRaisesRegex(ValueError, "allocation"):
-            kernels.normalize(text.replace("[1024]", "[2048]"), entry)
+            kernels.normalize(text.replace("[16]", "[32]"), entry)
 
     def test_nvcc_output_must_be_byte_identical(self):
         entry = self.entries["vector-attention"]
@@ -122,13 +122,13 @@ class ArtifactTests(unittest.TestCase):
             out = Path(tmp) / "build"
             args = type("Args", (), {"output": out, "oxide_backend": None})()
             with self.assertRaisesRegex(ValueError, "oxide-backend"):
-                kernels.rebuild(self.entries["oxide-gdn"], args, "13.4.92")
+                kernels.rebuild(self.entries["oxide-attention"], args, "13.4.92")
             result = json.loads((out / "result.json").read_text())
             self.assertFalse(result["completed"])
             self.assertFalse(result["GPU_execution"])
             self.assertIn("oxide-backend", result["error"])
             with self.assertRaises(FileExistsError):
-                kernels.rebuild(self.entries["oxide-gdn"], args, "13.4.92")
+                kernels.rebuild(self.entries["oxide-attention"], args, "13.4.92")
 
 
 if __name__ == "__main__":

@@ -14,7 +14,6 @@ TOOL_MEMBERS = {"tools/bench/cpu"}
 # They are reviewed by workspaces.py and never enter the stable host resolution graph.
 DEVICE_BUILD_MEMBERS = {
     "crates/backend/cuda/kernels/oxide-attention",
-    "crates/backend/cuda/kernels/oxide-gdn",
 }
 SERVICE = {"infer-frontdoor", "infer-media-input", "infer-agent", "infer-cli"}
 BACKENDS = {

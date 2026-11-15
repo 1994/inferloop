@@ -17,7 +17,6 @@ pub(super) const ORDERED_WIDTHS: [usize; 5] = [64, 256, 512, 1024, 2048];
 
 mod budget;
 mod chunk;
-pub mod oxide;
 mod prepared;
 mod workspace;
 pub use budget::required_bytes;
@@ -46,8 +45,3 @@ thread_local! {
     // Keep convolution identical when comparing only the Delta capture policy.
     pub(super) static LEGACY_DELTA_CAPTURE: Cell<bool> = const { Cell::new(false) };
 }
-
-#[cfg(test)]
-#[cfg(feature = "cuda")]
-#[path = "../../tests/unit/resident_recurrent_oxide.rs"]
-mod oxide_tests;

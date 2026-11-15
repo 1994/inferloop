@@ -1,8 +1,7 @@
 //! Per-token/head F32 normalization and gating shared across independent state columns.
 use super::super::buffers::Operand;
 use super::super::{buffers::buffer, capture::error};
-use super::{ORDERED_DIM, ORDERED_WIDTHS, chunk, oxide};
-use crate::RecurrentProfile;
+use super::{ORDERED_DIM, ORDERED_WIDTHS, chunk};
 use crate::constants::F32_BYTES;
 use crate::constants::GDN_PROJECTED_INPUTS;
 use crate::{device::CudaDevice, resident::ProgramWeights};
@@ -22,8 +21,6 @@ pub(super) struct Inputs {
     normalized: Allocation<f32>,
     betas: Allocation<f32>,
     decays: Allocation<f32>,
-    /// The pinned SIMT build records the recurrence; prepared on the program's families.
-    simt: bool,
     chunk: Option<chunk::Scratch>,
 }
 
@@ -62,26 +59,7 @@ pub(super) fn allocate(
 ) -> Result<Buffers> {
     geometries(graph, weights, lanes)
         .into_iter()
-        .map(|shape| {
-            let mut inputs = Inputs::new(device, shape, lanes)?;
-            inputs.simt = match weights.recurrent_profile {
-                // The SIMT recurrence keeps an F32 state, so a BF16 one never measures it.
-                RecurrentProfile::Bf16 => false,
-                RecurrentProfile::F32 => oxide::select(
-                    device,
-                    weights.kernels.recurrent.as_ref(),
-                    RecurrentShape {
-                        key_heads: shape.0,
-                        value_heads: shape.1,
-                        dim: shape.2,
-                        lanes,
-                    },
-                    weights.autotune,
-                    &weights.resident_tuning,
-                )?,
-            };
-            Ok((shape, inputs))
-        })
+        .map(|shape| Ok((shape, Inputs::new(device, shape, lanes)?)))
         .collect()
 }
 
@@ -126,7 +104,6 @@ impl Inputs {
         let normalized_rows = if chunked { 1 } else { lanes };
         let runtime = device.runtime();
         Ok(Self {
-            simt: false,
             chunk: chunked
                 .then(|| chunk::Scratch::new(device, (kh, vh, dim), lanes))
                 .transpose()?,
@@ -186,25 +163,6 @@ impl Inputs {
                 state,
                 buffer(metadata)?,
             );
-        }
-        if self.simt {
-            #[cfg(test)]
-            oxide::recorded();
-            return recurrent
-                .delta_prepared_simt(
-                    recording,
-                    shape,
-                    PreparedDeltaBuffers {
-                        state,
-                        output: buffer(output)?,
-                        qkv: qkv_storage,
-                        normalized: buffer(&self.normalized)?,
-                        betas: buffer(&self.betas)?,
-                        decays: buffer(&self.decays)?,
-                        metadata: buffer(metadata)?,
-                    },
-                )
-                .map_err(error);
         }
         recurrent
             .delta_prepared(

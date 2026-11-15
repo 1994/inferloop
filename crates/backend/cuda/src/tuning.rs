@@ -361,8 +361,6 @@ struct StoredTilingTable {
     resident_mma_attention: Vec<serde_json::Value>,
     #[serde(default)]
     resident_mma_f32_attention: Vec<serde_json::Value>,
-    #[serde(default)]
-    resident_exact_recurrent: Vec<serde_json::Value>,
 }
 
 impl From<StoredTilingTable> for TilingTable {
@@ -401,7 +399,6 @@ impl From<StoredTilingTable> for TilingTable {
                 attention::vector_combined::FAMILY,
                 stored.resident_vector_combined_attention,
             ),
-            (recurrent::exact::FAMILY, stored.resident_exact_recurrent),
             (resident_gemm::FAMILY, stored.resident_gemm),
             (resident_gemm::swiglu::FAMILY, stored.resident_swiglu),
             (
