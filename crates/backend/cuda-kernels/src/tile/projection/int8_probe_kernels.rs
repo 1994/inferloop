@@ -19,3 +19,66 @@ pub mod int8_probe {
         out.store(acc);
     }
 }
+
+/// Q4_K two-term int8 MMQ: one int8 main term plus one int8 residual term.
+#[cutile::module]
+pub mod q4k_int8_two {
+    use cutile::core::{
+        Shape_2, StoreTileAtCurrentBlock, Tensor_2, Tile_2, constant, convert_tile, mmai,
+        signedness,
+    };
+
+    #[cutile::entry()]
+    fn probe<const GROUPS: i32>(
+        out: &mut Tensor<f32, { [16, 16] }>,
+        x: &Tensor<i8, { [16, -1] }>,
+        residual: &Tensor<i8, { [16, -1] }>,
+        codes: &Tensor<i8, { [-1, 16] }>,
+        factors: &Tensor<f32, { [-1, 16] }>,
+        biases: &Tensor<f32, { [-1, 16] }>,
+        scales: &Tensor<f32, { [-1, 16] }>,
+        residual_scales: &Tensor<f32, { [-1, 16] }>,
+        sums: &Tensor<f32, { [-1, 16] }>,
+    ) {
+        let xp = x.partition(shape![16, 32]);
+        let rp = residual.partition(shape![16, 32]);
+        let cp = codes.partition(shape![32, 16]);
+        let fp = factors.partition(shape![1, 16]);
+        let bp = biases.partition(shape![1, 16]);
+        let sp = scales.partition(shape![1, 16]);
+        let rsp = residual_scales.partition(shape![1, 16]);
+        let up = sums.partition(shape![1, 16]);
+        let mut sum: Tile<f32, { [16, 16] }> = constant(0.0f32, shape![16, 16]);
+        for group in 0i32..GROUPS {
+            let zero: Tile<i32, { [16, 16] }> = constant(0i32, shape![16, 16]);
+            let main: Tile<i32, { [16, 16] }> = mmai(
+                xp.load([0, group]),
+                cp.load([group, 0]),
+                zero,
+                signedness::Signed,
+                signedness::Signed,
+            );
+            let fine: Tile<i32, { [16, 16] }> = mmai(
+                rp.load([0, group]),
+                cp.load([group, 0]),
+                zero,
+                signedness::Signed,
+                signedness::Signed,
+            );
+            let main: Tile<f32, { [16, 16] }> = convert_tile(main);
+            let fine: Tile<f32, { [16, 16] }> = convert_tile(fine);
+            let factor: Tile<f32, { [1, 16] }> = fp.load([group, 0]);
+            let bias: Tile<f32, { [1, 16] }> = bp.load([group, 0]);
+            let scale: Tile<f32, { [1, 16] }> = sp.load([group, 0]);
+            let fine_scale: Tile<f32, { [1, 16] }> = rsp.load([group, 0]);
+            let x_sum: Tile<f32, { [1, 16] }> = up.load([group, 0]);
+            let products = main * scale.transpose().broadcast(shape![16, 16])
+                + fine * fine_scale.transpose().broadcast(shape![16, 16]);
+            let weighted = products * factor.broadcast(shape![16, 16]);
+            let correction =
+                bias.broadcast(shape![16, 16]) * x_sum.transpose().broadcast(shape![16, 16]);
+            sum = sum + weighted - correction;
+        }
+        out.store(sum);
+    }
+}
