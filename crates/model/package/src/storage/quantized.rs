@@ -10,8 +10,6 @@ use infer_core::{Error, ErrorCode, ModelId, Result};
 use infer_ir::{DataflowGraph, TensorStorage};
 use infer_spi::ModelProvider;
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "gguf")]
-use std::path::PathBuf;
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 mod activations;
@@ -328,10 +326,7 @@ impl QuantizedPackage {
     /// weight encoding.
     #[cfg(feature = "gguf")]
     pub fn open_gguf(registry: &ModelRegistry, path: &Path, id: ModelId) -> Result<Self> {
-        let package = match sibling_mmproj(path) {
-            Some(mmproj) => GgufPackage::open_with_vision(path, mmproj)?,
-            None => GgufPackage::open(path)?,
-        };
+        let package = GgufPackage::open_auto(path)?;
         let config = package.config();
         let provider = registry.resolve(config)?;
         let imported = provider.import(id, config)?;
@@ -1211,21 +1206,3 @@ fn declared_kv_dtype(scheme: &serde_json::Value) -> Result<Option<TensorDtype>> 
 #[cfg(test)]
 #[path = "../../tests/unit/storage_quantized.rs"]
 mod kv_tests;
-
-#[cfg(feature = "gguf")]
-fn sibling_mmproj(path: &Path) -> Option<PathBuf> {
-    let parent = path.parent()?;
-    let mut found = None;
-    for entry in parent.read_dir().ok()? {
-        let entry = entry.ok()?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with("mmproj") && name.ends_with(".gguf") {
-            if found.is_some() {
-                return None;
-            }
-            found = Some(entry.path());
-        }
-    }
-    found
-}

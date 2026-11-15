@@ -277,10 +277,7 @@ impl PackageSource {
             .extension()
             .is_some_and(|extension| extension == "gguf")
         {
-            let package = match sibling_mmproj(&root) {
-                Some(mmproj) => GgufPackage::open_with_vision(&root, mmproj)?,
-                None => GgufPackage::open(&root)?,
-            };
+            let package = GgufPackage::open_auto(&root)?;
             let preprocessor = package
                 .vision()
                 .map(GgufVisionPackage::preprocessor_config)
@@ -627,21 +624,3 @@ impl PackageProbe {
 #[cfg(test)]
 #[path = "../../tests/unit/source.rs"]
 mod tests;
-
-#[cfg(feature = "gguf")]
-fn sibling_mmproj(path: &Path) -> Option<PathBuf> {
-    let parent = path.parent()?;
-    let mut found = None;
-    for entry in parent.read_dir().ok()? {
-        let entry = entry.ok()?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with("mmproj") && name.ends_with(".gguf") {
-            if found.is_some() {
-                return None;
-            }
-            found = Some(entry.path());
-        }
-    }
-    found
-}
