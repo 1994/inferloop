@@ -97,7 +97,7 @@ impl Default for LoadOptions {
             autotune: true,
             chunked_recurrent: false,
             attention_profile: crate::AttentionProfile::Canonical,
-            recurrent_profile: crate::RecurrentProfile::F32,
+            recurrent_profile: crate::RecurrentProfile::Bf16,
             vision: true,
             draft_model: None,
         }
