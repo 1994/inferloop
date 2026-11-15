@@ -1,3 +1,4 @@
+use crate::constants::CONFIG_MAX_BYTES;
 use crate::constants::F32_BYTES_U64;
 use crate::storage::source::TensorFiles;
 #[cfg(test)]
@@ -147,7 +148,7 @@ impl ModelPackage {
         id: ModelId,
     ) -> Result<Self> {
         let source = PackageSource::open(root)?;
-        let config = source.require_config()?;
+        let config = source.require_config_bounded(CONFIG_MAX_BYTES)?;
         let provider = registry.resolve(config)?;
         let imported = provider.import(id, config)?;
         let graph = provider.graph(&imported.model)?;

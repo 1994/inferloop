@@ -169,6 +169,9 @@ impl TextAssets {
         root: impl AsRef<Path>,
         max_tokens: usize,
     ) -> Result<Self> {
+        if max_tokens == 0 {
+            return Err(Error::invalid("empty text token budget"));
+        }
         let source = PackageSource::open(root)?;
         Self::from_source(registry, &source, max_tokens)
     }
@@ -187,7 +190,7 @@ impl TextAssets {
         let mut hash = Sha256::new();
         let mut special = BTreeMap::new();
         let Some(bytes) = source.tokenizer_json()? else {
-            return Err(Error::invalid("package has no tokenizer.json"));
+            return Err(source.missing_asset_error("tokenizer.json"));
         };
         hash.update(bytes);
         let mut tokenizer =

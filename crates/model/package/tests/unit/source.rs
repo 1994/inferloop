@@ -1,4 +1,4 @@
-use crate::constants::CONFIG_MAX_BYTES;
+use crate::constants::{CONFIG_MAX_BYTES, MIB_U64};
 use crate::{PackageProbe, PackageSource, TensorSet, TextAssets, default_registry};
 use infer_core::{ErrorCode, ModelId};
 use std::env::temp_dir;
@@ -54,10 +54,52 @@ fn missing_assets_keep_their_error_kind_and_oversized_metadata_is_rejected() {
         vec![b' '; usize::try_from(CONFIG_MAX_BYTES).unwrap() + 1],
     )
     .unwrap();
+    let source = PackageSource::open(&root).unwrap();
+    assert_eq!(
+        source
+            .require_config_bounded(CONFIG_MAX_BYTES)
+            .unwrap_err()
+            .code,
+        ErrorCode::Capacity
+    );
+    write(
+        root.join("config.json"),
+        vec![b' '; usize::try_from(16 * MIB_U64).unwrap() + 1],
+    )
+    .unwrap();
     assert_eq!(
         PackageSource::open(&root).unwrap_err().code,
         ErrorCode::Capacity
     );
+    remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn probe_rejects_missing_config_and_unregistered_architectures() {
+    let root = temp();
+    assert!(matches!(
+        PackageProbe::open(&root, ModelId::ONE),
+        Err(error) if error.code == ErrorCode::InvalidInput
+    ));
+    write(
+        root.join("config.json"),
+        r#"{"model_type":"not-a-registered-model"}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        PackageProbe::open(&root, ModelId::ONE),
+        Err(error) if error.code == ErrorCode::Unsupported
+    ));
+    remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn an_empty_text_budget_is_rejected_before_any_asset_read() {
+    let root = temp();
+    assert!(matches!(
+        TextAssets::open(&root, 0),
+        Err(error) if error.code == ErrorCode::InvalidInput
+    ));
     remove_dir_all(root).unwrap();
 }
 

@@ -1,4 +1,5 @@
 //! Validated native storage bindings for mixed FP8/NVFP4 packages.
+use crate::constants::CONFIG_MAX_BYTES;
 use crate::storage::source::TensorFiles;
 use crate::{
     ImportedModel, ModelRegistry, PackageSource, TensorDtype, TensorFile, default_registry,
@@ -227,7 +228,7 @@ impl QuantizedPackage {
         id: ModelId,
     ) -> Result<Self> {
         let source = PackageSource::open(root.as_ref())?;
-        let config = source.require_config()?;
+        let config = source.require_config_bounded(CONFIG_MAX_BYTES)?;
         let mut value: serde_json::Value =
             serde_json::from_slice(config).map_err(|e| Error::invalid(e.to_string()))?;
         if let Some(quant) = value.get("quantization_config") {

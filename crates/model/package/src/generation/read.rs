@@ -1,4 +1,5 @@
 use super::{GenerationDefaults, apply_preset};
+use crate::constants::CONFIG_MAX_BYTES;
 use crate::{ModelRegistry, PackageSource};
 use infer_core::{Error, ErrorCode, Result};
 use infer_ir::Sampling;
@@ -114,8 +115,14 @@ fn generation_policy(
 
 /// Parse the package configuration, treating absence as an empty object.
 fn config(source: &PackageSource) -> Result<serde_json::Value> {
-    source.config().map_or_else(
-        || Ok(serde_json::json!({})),
-        |bytes| serde_json::from_slice(bytes).map_err(|e| Error::invalid(e.to_string())),
-    )
+    let Some(bytes) = source.config() else {
+        return Ok(serde_json::json!({}));
+    };
+    if bytes.len() as u64 > CONFIG_MAX_BYTES {
+        return Err(Error::new(
+            ErrorCode::Capacity,
+            "package metadata exceeds budget",
+        ));
+    }
+    serde_json::from_slice(bytes).map_err(|e| Error::invalid(e.to_string()))
 }

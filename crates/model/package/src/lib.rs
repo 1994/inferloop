@@ -44,7 +44,7 @@ pub use storage::quantized::{
 pub use storage::safetensors::{
     HostTensor, SafetensorsFile, TensorDtype, TensorHeader, convert_float_bytes, write_safetensors,
 };
-pub use storage::source::{PackageProbe, PackageSource, TensorFile, TensorSet};
+pub use storage::source::{PackageProbe, PackageSource, TensorFile, TensorFiles, TensorSet};
 pub use workload::{ProjectionCatalog, ProjectionWorkload};
 
 mod generation;

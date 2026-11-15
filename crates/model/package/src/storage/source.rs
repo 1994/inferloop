@@ -8,9 +8,10 @@ use crate::constants::{CONFIG_MAX_BYTES, MIB_U64};
 use crate::storage::package::read_bounded;
 use crate::{HostTensor, ModelRegistry, default_registry, package_path};
 use crate::{SafetensorsFile, SafetensorsIndex, TensorHeader};
-use infer_core::{Error, ModelId, Result};
+use infer_core::{Error, ErrorCode, ModelId, Result};
 use infer_spi::{ImportedModel, ModelProvider};
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::result::Result as StdResult;
 use std::str;
@@ -32,8 +33,8 @@ const INDEX_MAX_BYTES: u64 = 16 * MIB_U64;
 /// Read an optional package asset within its size bound.
 ///
 /// Absence is reported as `None`; an inaccessible or oversized file is still an error. The
-/// canonicalized root makes the later [`package_path`] check cheap while keeping symlink escape
-/// rejection identical to a required asset.
+/// canonicalized root is rechecked by [`package_path`], so symlink escape rejection is identical
+/// to a required asset.
 fn read_optional(root: &Path, name: &str, max: u64) -> Result<Option<Vec<u8>>> {
     if !root.join(name).exists() {
         return Ok(None);
@@ -226,7 +227,6 @@ type Asset = StdResult<Option<Vec<u8>>, Error>;
 /// load a tokenizer or model card. The first accessor call reads its asset once and every later
 /// call reuses that result; an absent asset is `None`, while an inaccessible or oversized one is
 /// the recorded error.
-#[derive(Debug)]
 pub struct PackageSource {
     root: PathBuf,
     config: Option<Vec<u8>>,
@@ -237,6 +237,15 @@ pub struct PackageSource {
     tokenizer_json: OnceLock<Asset>,
     tokenizer_config: OnceLock<Asset>,
     chat_template_jinja: OnceLock<Asset>,
+}
+
+impl fmt::Debug for PackageSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PackageSource")
+            .field("root", &self.root)
+            .field("has_config", &self.config.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl PackageSource {
@@ -254,7 +263,7 @@ impl PackageSource {
             .canonicalize()
             .map_err(|e| Error::invalid(e.to_string()))?;
         Ok(Self {
-            config: read_optional(&root, "config.json", CONFIG_MAX_BYTES)?,
+            config: read_optional(&root, "config.json", PREPROCESSOR_MAX_BYTES)?,
             generation_config: OnceLock::new(),
             readme: OnceLock::new(),
             preprocessor_config: OnceLock::new(),
@@ -270,6 +279,14 @@ impl PackageSource {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The path-resolution error a missing required asset reported before this seam existed.
+    pub(crate) fn missing_asset_error(&self, name: &str) -> Error {
+        match package_path(&self.root, name) {
+            Err(error) => error,
+            Ok(_) => Error::invalid(format!("{name}: missing")),
+        }
     }
 
     /// Resolve an optional asset once, returning a borrow valid for the source's lifetime.
@@ -299,6 +316,23 @@ impl PackageSource {
         self.config
             .as_deref()
             .ok_or_else(|| Error::invalid("package has no config.json"))
+    }
+
+    /// `config.json` bytes within a caller's tighter budget.
+    ///
+    /// Readers that historically capped the configuration at the package metadata budget
+    /// keep that limit even though the source accepts the larger multimodal ceiling.
+    /// # Errors
+    /// Returns an invalid-input error when absent, or a capacity error above `max`.
+    pub fn require_config_bounded(&self, max: u64) -> Result<&[u8]> {
+        let config = self.require_config()?;
+        if config.len() as u64 > max {
+            return Err(Error::new(
+                ErrorCode::Capacity,
+                "package metadata exceeds budget",
+            ));
+        }
+        Ok(config)
     }
 
     /// Parsed optional `generation_config.json`; absent means an empty object.
@@ -334,7 +368,7 @@ impl PackageSource {
             "preprocessor_config.json",
             PREPROCESSOR_MAX_BYTES,
         )?
-        .ok_or_else(|| Error::invalid("package has no preprocessor_config.json"))
+        .ok_or_else(|| self.missing_asset_error("preprocessor_config.json"))
     }
 
     /// Required `video_preprocessor_config.json` bytes.
@@ -346,7 +380,7 @@ impl PackageSource {
             "video_preprocessor_config.json",
             PREPROCESSOR_MAX_BYTES,
         )?
-        .ok_or_else(|| Error::invalid("package has no video_preprocessor_config.json"))
+        .ok_or_else(|| self.missing_asset_error("video_preprocessor_config.json"))
     }
 
     /// Raw `tokenizer.json` bytes, when the package has a tokenizer.

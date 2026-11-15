@@ -106,8 +106,9 @@ fn fp8_block_binding_rejects_non_dividing_blocks_and_scale_shapes() {
     let data = packed_source(TensorDtype::F8E4m3, vec![4, 8]);
     let scale = packed_source(TensorDtype::F32, vec![2, 4]);
     assert!(validate_fp8_block("w", &[4, 8], [2, 2], &data, &scale).is_ok());
+    // A block that does not divide the shape fails for divisibility, not for the payload.
     assert_eq!(
-        validate_fp8_block("w", &[3, 8], [2, 2], &data, &scale)
+        validate_fp8_block("w", &[4, 8], [3, 2], &data, &scale)
             .unwrap_err()
             .code,
         ErrorCode::InvalidInput
@@ -133,7 +134,16 @@ fn nvfp4_binding_rejects_packed_and_group_mismatches() {
         )
         .is_err()
     );
-    assert!(validate_nvfp4("w", &[4, 30], &data, &scale).is_err());
+    // A width that is not a whole number of groups fails for grouping; the payload matches.
+    assert!(
+        validate_nvfp4(
+            "w",
+            &[4, 30],
+            &packed_source(TensorDtype::U8, vec![4, 15]),
+            &packed_source(TensorDtype::F8E4m3, vec![4, 1])
+        )
+        .is_err()
+    );
     assert!(
         validate_nvfp4(
             "w",
@@ -152,4 +162,23 @@ fn nvfp4_binding_rejects_packed_and_group_mismatches() {
     assert_eq!(weight.shape(), [4, 32]);
     assert_eq!(weight.encoding(), WeightEncoding::Nvfp4);
     assert_eq!(weight.data().shape, [4, 16]);
+}
+
+#[test]
+fn each_encoding_carries_its_own_token_input_flag() {
+    let source = || packed_source(TensorDtype::F8E4m3, vec![4, 8]);
+    let channel = DeviceWeight::Fp8Channel {
+        data: source(),
+        scale: packed_source(TensorDtype::F32, vec![4, 1]),
+        token_input: true,
+    };
+    assert!(channel.token_input());
+    let block = DeviceWeight::Fp8Block {
+        data: source(),
+        scale: packed_source(TensorDtype::F32, vec![2, 4]),
+        block: [2, 2],
+        token_input: false,
+    };
+    assert!(!block.token_input());
+    assert!(!DeviceWeight::Float { data: source() }.token_input());
 }
