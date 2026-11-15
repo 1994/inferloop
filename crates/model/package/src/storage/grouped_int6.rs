@@ -83,7 +83,7 @@ impl Q6KTiled {
             .checked_mul(blocks_per_row)
             .and_then(|value| value.checked_mul(GROUPS * Q6K_TILE_ROWS))
             .ok_or_else(|| Error::invalid("Q6_K factor size overflow"))?;
-        let mut tiled = Self {
+        let mut packed = Self {
             rows,
             columns,
             codes: vec![0; code_len],
@@ -124,7 +124,7 @@ impl Q6KTiled {
                                 let position = base + lane + OUTPUT_OFFSETS[index];
                                 let code = u8::try_from(q[index] & CODE_MASK)
                                     .map_err(|_| Error::invalid("Q6_K code exceeds u8"))?;
-                                tiled.codes[(tile * blocks_per_row + block_index)
+                                packed.codes[(tile * blocks_per_row + block_index)
                                     * QK_K
                                     * Q6K_TILE_ROWS
                                     + position * Q6K_TILE_ROWS
@@ -134,7 +134,7 @@ impl Q6KTiled {
                                     i8::try_from(scales[scale_index])
                                         .map_err(|_| Error::invalid("Q6_K scale"))?,
                                 );
-                                tiled.factors[(tile * blocks_per_row + block_index)
+                                packed.factors[(tile * blocks_per_row + block_index)
                                     * GROUPS
                                     * Q6K_TILE_ROWS
                                     + (position / GROUP_VALUES) * Q6K_TILE_ROWS
@@ -145,7 +145,7 @@ impl Q6KTiled {
                 }
             }
         }
-        Ok(tiled)
+        Ok(packed)
     }
 
     /// Matrix rows.
