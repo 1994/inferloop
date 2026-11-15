@@ -1109,6 +1109,11 @@ impl Projection for TileProjection {
         let columns = groups
             .checked_mul(INT8_GROUP_DEPTH)
             .ok_or_else(|| Error::unsupported("q4k int8 columns"))?;
+        let outputs = out.len() / INT8_PROBE_ROWS;
+        if outputs == 0 || !outputs.is_multiple_of(INT8_PROBE_ROWS) {
+            return Err(Error::unsupported("q4k int8 outputs"));
+        }
+        let tiles = outputs / INT8_PROBE_ROWS;
         let x = self.matrix(recording, x, "q4k int8 x", (INT8_PROBE_ROWS, columns))?;
         let residual = self.matrix(
             recording,
@@ -1120,39 +1125,39 @@ impl Projection for TileProjection {
             recording,
             codes,
             "q4k int8 codes",
-            (groups * INT8_GROUP_DEPTH, INT8_PROBE_ROWS),
+            (tiles * groups * INT8_GROUP_DEPTH, INT8_PROBE_ROWS),
         )?;
         let factors = self.matrix(
             recording,
             factors,
             "q4k int8 factors",
-            (groups, INT8_PROBE_ROWS),
+            (tiles * groups, INT8_PROBE_ROWS),
         )?;
         let biases = self.matrix(
             recording,
             biases,
             "q4k int8 biases",
-            (groups, INT8_PROBE_ROWS),
+            (tiles * groups, INT8_PROBE_ROWS),
         )?;
         let scales = self.matrix(
             recording,
             scales,
             "q4k int8 scales",
-            (groups, INT8_PROBE_ROWS),
+            (tiles * groups, INT8_PROBE_ROWS),
         )?;
         let residual_scales = self.matrix(
             recording,
             residual_scales,
             "q4k int8 residual scales",
-            (groups, INT8_PROBE_ROWS),
+            (tiles * groups, INT8_PROBE_ROWS),
         )?;
-        let sums = self.matrix(recording, sums, "q4k int8 sums", (groups, INT8_PROBE_ROWS))?;
-        let mut out = self.matrix(
+        let sums = self.matrix(
             recording,
-            out,
-            "q4k int8 out",
-            (INT8_PROBE_ROWS, INT8_PROBE_ROWS),
+            sums,
+            "q4k int8 sums",
+            (tiles * groups, INT8_PROBE_ROWS),
         )?;
+        let mut out = self.matrix(recording, out, "q4k int8 out", (INT8_PROBE_ROWS, outputs))?;
         scope
             .record(
                 q4k_int8_two::probe(

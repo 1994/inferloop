@@ -24,8 +24,8 @@ pub mod int8_probe {
 #[cutile::module]
 pub mod q4k_int8_two {
     use cutile::core::{
-        Shape_2, StoreTileAtCurrentBlock, Tensor_2, Tile_2, constant, convert_tile, mmai,
-        signedness,
+        Shape_2, StoreTileAtCurrentBlock, Tensor_2, Tile_2, constant, convert_tile,
+        get_tile_block_id, mmai, signedness,
     };
 
     #[cutile::entry()]
@@ -48,30 +48,31 @@ pub mod q4k_int8_two {
         let sp = scales.partition(shape![1, 16]);
         let rsp = residual_scales.partition(shape![1, 16]);
         let up = sums.partition(shape![1, 16]);
+        let pid = get_tile_block_id().1;
         let mut sum: Tile<f32, { [16, 16] }> = constant(0.0f32, shape![16, 16]);
         for group in 0i32..GROUPS {
             let zero: Tile<i32, { [16, 16] }> = constant(0i32, shape![16, 16]);
             let main: Tile<i32, { [16, 16] }> = mmai(
                 xp.load([0, group]),
-                cp.load([group, 0]),
+                cp.load([pid * GROUPS + group, 0]),
                 zero,
                 signedness::Signed,
                 signedness::Signed,
             );
             let fine: Tile<i32, { [16, 16] }> = mmai(
                 rp.load([0, group]),
-                cp.load([group, 0]),
+                cp.load([pid * GROUPS + group, 0]),
                 zero,
                 signedness::Signed,
                 signedness::Signed,
             );
             let main: Tile<f32, { [16, 16] }> = convert_tile(main);
             let fine: Tile<f32, { [16, 16] }> = convert_tile(fine);
-            let factor: Tile<f32, { [1, 16] }> = fp.load([group, 0]);
-            let bias: Tile<f32, { [1, 16] }> = bp.load([group, 0]);
-            let scale: Tile<f32, { [1, 16] }> = sp.load([group, 0]);
-            let fine_scale: Tile<f32, { [1, 16] }> = rsp.load([group, 0]);
-            let x_sum: Tile<f32, { [1, 16] }> = up.load([group, 0]);
+            let factor: Tile<f32, { [1, 16] }> = fp.load([pid * GROUPS + group, 0]);
+            let bias: Tile<f32, { [1, 16] }> = bp.load([pid * GROUPS + group, 0]);
+            let scale: Tile<f32, { [1, 16] }> = sp.load([pid * GROUPS + group, 0]);
+            let fine_scale: Tile<f32, { [1, 16] }> = rsp.load([pid * GROUPS + group, 0]);
+            let x_sum: Tile<f32, { [1, 16] }> = up.load([pid * GROUPS + group, 0]);
             let products = main * scale.transpose().broadcast(shape![16, 16])
                 + fine * fine_scale.transpose().broadcast(shape![16, 16]);
             let weighted = products * factor.broadcast(shape![16, 16]);
