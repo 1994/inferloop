@@ -21,18 +21,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     for lane in 0..32 {
         for row in 0..COLS {
             let packed = layout.codes()[lane * 16 + row];
-            codes[lane * COLS + row] = (packed & 0x0F).cast_signed();
+            codes[lane * COLS + row] = 0;
             codes[(lane + 32) * COLS + row] = (packed >> 4).cast_signed();
         }
     }
-    let x: Vec<i8> = (0..ROWS * 64)
+    let mut x: Vec<i8> = (0..ROWS * 64)
         .map(|index| i8::try_from(index % 19).unwrap_or(0) - 9)
         .collect();
-    let x_f32: Vec<f32> = x.iter().map(|value| f32::from(*value)).collect();
-    let scales = [1.0f32; ROWS];
+    for row in 0..ROWS {
+        for value in 0..32 {
+            x[row * 64 + value] = 0;
+        }
+    }
+    let scales: [f32; ROWS] =
+        std::array::from_fn(|row| 0.01 + f32::from(u16::try_from(row).unwrap_or(0)) * 0.001);
+    let x_f32: Vec<f32> = x
+        .iter()
+        .enumerate()
+        .map(|(index, value)| f32::from(*value) * scales[index / 64])
+        .collect();
     let mut sums = [0.0f32; ROWS];
     for row in 0..ROWS {
-        sums[row] = x_f32[row * 64..(row + 1) * 64].iter().sum();
+        sums[row] = x_f32[row * 64 + 32..row * 64 + 64].iter().sum();
     }
     let values = package.dense(&slot_name, u64::MAX)?;
     let mut expected = vec![0i32; ROWS * COLS];
@@ -70,8 +80,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut reference = vec![0.0f32; ROWS * COLS];
     for row in 0..ROWS {
         for output in 0..COLS {
-            let factor = layout.factors()[output];
-            let bias = layout.biases()[output];
+            let factor = layout.factors()[COLS + output];
+            let bias = layout.biases()[COLS + output];
             contribution[row * COLS + output] = {
                 let product = f32::from(i16::try_from(actual[row * COLS + output]).unwrap_or(0));
                 factor.mul_add(product * scales[row], -bias * sums[row])
