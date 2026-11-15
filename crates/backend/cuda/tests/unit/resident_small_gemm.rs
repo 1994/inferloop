@@ -381,13 +381,14 @@ impl CheckpointDenseWeight {
         source: &infer_models::DeviceWeight,
     ) -> Result<Self, Box<dyn Error>> {
         use infer_models::{TensorDtype, WeightEncoding};
-        assert_eq!(source.encoding, WeightEncoding::Float);
-        assert_eq!(source.data.dtype, TensorDtype::BF16);
-        let [outputs, columns] = source.shape.as_slice() else {
+        assert_eq!(source.encoding(), WeightEncoding::Float);
+        assert_eq!(source.data().dtype, TensorDtype::BF16);
+        let shape = source.shape();
+        let [outputs, columns] = shape.as_slice() else {
             return Err("small checkpoint rank".into());
         };
         let (outputs, columns) = (*outputs, *columns);
-        let bytes = package.read_view(&source.data, 2 * 1024 * 1024 * 1024)?;
+        let bytes = package.read_view(source.data(), 2 * 1024 * 1024 * 1024)?;
         assert_eq!(bytes.len(), outputs * columns * 2);
         let (chunks, tail) = bytes.as_chunks::<2>();
         assert_eq!(tail.len(), 0);
@@ -422,8 +423,8 @@ fn checkpoint_small_reference(native: bool) -> Result<(), Box<dyn Error>> {
         .weights
         .values()
         .filter(|source| {
-            source.data.name.contains(".linear_attn.in_proj_a.weight")
-                || source.data.name.contains(".linear_attn.in_proj_b.weight")
+            source.data().name.contains(".linear_attn.in_proj_a.weight")
+                || source.data().name.contains(".linear_attn.in_proj_b.weight")
         })
         .collect();
     assert_eq!(selected.len(), 96, "all checkpoint small GDN projections");
@@ -463,7 +464,7 @@ fn checkpoint_small_reference(native: bool) -> Result<(), Box<dyn Error>> {
                     .count();
                 println!(
                     "{}",
-                    serde_json::json!({"small_f32_original_private_bit_census":true,"weight":source.data.name,"fixture":fixture,"different":original_bits,"elements":outputs})
+                    serde_json::json!({"small_f32_original_private_bit_census":true,"weight":source.data().name,"fixture":fixture,"different":original_bits,"elements":outputs})
                 );
             }
             let changed = multi[..outputs]
@@ -480,7 +481,7 @@ fn checkpoint_small_reference(native: bool) -> Result<(), Box<dyn Error>> {
             total_outputs += 6 * outputs;
             println!(
                 "{}",
-                serde_json::json!({"small_dense_checkpoint_reference":true,"weight":source.data.name,"shape":[outputs,columns],"fixture":fixture,"multi":multi_reference,"single":one_reference,"original_gemv":gemv_reference,"row_bit_differences":changed,"outputs":6*outputs,"oracle":"raw checkpoint BF16 bits shifted to F32, independent F64 dot","original_gate":"abs(expected)*2e-5+5e-4"})
+                serde_json::json!({"small_dense_checkpoint_reference":true,"weight":source.data().name,"shape":[outputs,columns],"fixture":fixture,"multi":multi_reference,"single":one_reference,"original_gemv":gemv_reference,"row_bit_differences":changed,"outputs":6*outputs,"oracle":"raw checkpoint BF16 bits shifted to F32, independent F64 dot","original_gate":"abs(expected)*2e-5+5e-4"})
             );
         }
     }
@@ -557,8 +558,8 @@ fn checkpoint_pool_four_dense_full_f64_and_private_bits() -> Result<(), Box<dyn 
         .weights
         .values()
         .filter(|source| {
-            source.data.name.contains(".linear_attn.in_proj_a.weight")
-                || source.data.name.contains(".linear_attn.in_proj_b.weight")
+            source.data().name.contains(".linear_attn.in_proj_a.weight")
+                || source.data().name.contains(".linear_attn.in_proj_b.weight")
         })
         .collect();
     assert_eq!(selected.len(), 96);
@@ -596,7 +597,7 @@ fn checkpoint_pool_four_dense_full_f64_and_private_bits() -> Result<(), Box<dyn 
             maximum = maximum.max(census.1);
             println!(
                 "{}",
-                serde_json::json!({"pool_four_reference":true,"weight":source.data.name,"fixture":fixture,"shape":[4,weight.outputs,weight.columns],"full_F64":census,"original_private_bit_differences":bits,"outputs":fused.len()})
+                serde_json::json!({"pool_four_reference":true,"weight":source.data().name,"fixture":fixture,"shape":[4,weight.outputs,weight.columns],"full_F64":census,"original_private_bit_differences":bits,"outputs":fused.len()})
             );
         }
     }
@@ -632,8 +633,8 @@ fn checkpoint_pool_small_f32_projection_cost() -> Result<(), Box<dyn Error>> {
         .weights
         .values()
         .filter(|source| {
-            source.data.name.contains(".linear_attn.in_proj_a.weight")
-                || source.data.name.contains(".linear_attn.in_proj_b.weight")
+            source.data().name.contains(".linear_attn.in_proj_a.weight")
+                || source.data().name.contains(".linear_attn.in_proj_b.weight")
         })
         .map(|source| CheckpointDenseWeight::load(&device, &package, source))
         .collect::<Result<Vec<_>, _>>()?;

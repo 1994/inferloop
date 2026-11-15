@@ -1,25 +1,19 @@
 use super::constraint::GrammarCache;
 use crate::constants::MIB;
-use crate::constants::MIB_U64;
 use crate::input::tool::MAX_TOOL_CALLS;
 use crate::input::tool::ToolCall;
 use crate::input::tool::ToolDialect;
-use crate::package_path;
+use crate::{ModelRegistry, PackageSource};
 use infer_core::{Error, ErrorCode, Result};
 use minijinja_contrib::pycompat::unknown_method_callback;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs::File;
 use std::mem::take;
 use std::result::Result as StdResult;
 use std::sync::{Arc, Mutex};
 use std::{collections::BTreeMap, path::Path};
 use tokenizers::Tokenizer;
 
-/// Maximum accepted `tokenizer.json` asset size.
-const TOKENIZER_JSON_MAX_BYTES: u64 = 64 * MIB_U64;
-/// Maximum accepted tokenizer-config or chat-template asset size.
-const TEXT_ASSET_MAX_BYTES: u64 = 2 * MIB_U64;
 /// Maximum accepted chat or input text size.
 const TEXT_MAX_BYTES: usize = 2 * MIB;
 /// Maximum chat messages accepted by the template renderer.
@@ -118,32 +112,6 @@ pub struct TextAssets {
     streaming_decode: bool,
     tool_supported: bool,
 }
-fn read(path: &Path, budget: u64) -> Result<Vec<u8>> {
-    use std::io::Read;
-    let file = File::open(path).map_err(|e| Error::invalid(e.to_string()))?;
-    if file
-        .metadata()
-        .map_err(|e| Error::invalid(e.to_string()))?
-        .len()
-        > budget
-    {
-        return Err(Error::new(
-            ErrorCode::Capacity,
-            "tokenizer/template asset exceeds budget",
-        ));
-    }
-    let mut bytes = vec![];
-    file.take(budget + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| Error::invalid(e.to_string()))?;
-    if bytes.len() as u64 > budget {
-        return Err(Error::new(
-            ErrorCode::Capacity,
-            "tokenizer asset grew beyond budget",
-        ));
-    }
-    Ok(bytes)
-}
 impl TextAssets {
     /// Resolve chat generation settings, including the tokenizer's end-of-message token.
     /// Explicit EOS overrides replace the defaults, including the tokenizer token.
@@ -197,69 +165,54 @@ impl TextAssets {
     /// # Errors
     /// Returns an I/O or invalid-input error for missing, malformed, unsupported, or oversized assets.
     pub fn open_with(
-        registry: &crate::ModelRegistry,
+        registry: &ModelRegistry,
         root: impl AsRef<Path>,
         max_tokens: usize,
     ) -> Result<Self> {
         if max_tokens == 0 {
             return Err(Error::invalid("empty text token budget"));
         }
-        let root = root.as_ref();
-        let bytes = read(
-            &package_path(root, "tokenizer.json")?,
-            TOKENIZER_JSON_MAX_BYTES,
-        )?;
+        let source = PackageSource::open(root)?;
+        Self::from_source(registry, &source, max_tokens)
+    }
+
+    /// Build text assets from a package source that already read the metadata.
+    /// # Errors
+    /// Returns an I/O or invalid-input error for missing, malformed, unsupported, or oversized assets.
+    pub fn from_source(
+        registry: &ModelRegistry,
+        source: &PackageSource,
+        max_tokens: usize,
+    ) -> Result<Self> {
+        if max_tokens == 0 {
+            return Err(Error::invalid("empty text token budget"));
+        }
+        let mut hash = Sha256::new();
+        let mut special = BTreeMap::new();
+        let Some(bytes) = source.tokenizer_json()? else {
+            return Err(source.missing_asset_error("tokenizer.json"));
+        };
+        hash.update(bytes);
         let mut tokenizer =
-            Tokenizer::from_bytes(&bytes).map_err(|e| Error::invalid(e.to_string()))?;
+            Tokenizer::from_bytes(bytes).map_err(|e| Error::invalid(e.to_string()))?;
         tokenizer
             .with_truncation(None)
             .map_err(|e| Error::invalid(e.to_string()))?;
         tokenizer.with_padding(None);
-        let mut hash = Sha256::new();
-        hash.update(&bytes);
-        let mut special = BTreeMap::new();
-        let mut template = None;
-        if root.join("tokenizer_config.json").exists() {
-            let config_bytes = read(
-                &package_path(root, "tokenizer_config.json")?,
-                TEXT_ASSET_MAX_BYTES,
-            )?;
-            hash.update(&config_bytes);
+        if let Some(config_bytes) = source.tokenizer_config()? {
+            hash.update(config_bytes);
             let value: serde_json::Value =
-                serde_json::from_slice(&config_bytes).map_err(|e| Error::invalid(e.to_string()))?;
+                serde_json::from_slice(config_bytes).map_err(|e| Error::invalid(e.to_string()))?;
             for key in ["bos_token", "eos_token", "pad_token", "unk_token"] {
                 if let Some(v) = value.get(key) {
                     special.insert(key.into(), v.get("content").unwrap_or(v).clone());
                 }
             }
-            if let Some(v) = value.get("chat_template") {
-                if let Some(s) = v.as_str() {
-                    template = Some(s.to_owned());
-                } else if let Some(list) = v.as_array() {
-                    template = list
-                        .iter()
-                        .find(|v| v.get("name").and_then(|v| v.as_str()) == Some("default"))
-                        .and_then(|v| v.get("template"))
-                        .and_then(|v| v.as_str())
-                        .map(str::to_owned);
-                    if template.is_none() {
-                        return Err(Error::unsupported(
-                            "named chat templates require a default template",
-                        ));
-                    }
-                } else if !v.is_null() {
-                    return Err(Error::invalid("invalid chat template asset"));
-                }
-            }
         }
-        if root.join("chat_template.jinja").exists() {
-            let bytes = read(
-                &package_path(root, "chat_template.jinja")?,
-                TEXT_ASSET_MAX_BYTES,
-            )?;
-            hash.update(&bytes);
-            template = Some(String::from_utf8(bytes).map_err(|e| Error::invalid(e.to_string()))?);
+        if let Some(bytes) = source.chat_template_jinja()? {
+            hash.update(bytes);
         }
+        let template = source.chat_template()?;
         let tool_supported = template
             .as_deref()
             .is_some_and(|template| ToolDialect::from_template(template).is_some());
@@ -268,10 +221,10 @@ impl TextAssets {
             .map_or(ToolDialect::JsonBlock, ToolDialect::detect);
         // Word-piece style decoders insert a separator between consecutive tokens, so decoding
         // pieces independently loses it. Only byte-level concatenation is decomposable.
-        let streaming_decode = byte_level_decoder(&bytes);
+        let streaming_decode = byte_level_decoder(bytes);
         Ok(Self {
             constraint_cache: Mutex::new(GrammarCache::default()),
-            generation: crate::GenerationDefaults::open_with(registry, root)?,
+            generation: crate::GenerationDefaults::from_source(registry, source)?,
             tokenizer: Arc::new(tokenizer),
             template,
             special,

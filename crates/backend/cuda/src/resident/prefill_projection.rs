@@ -53,10 +53,10 @@ fn swiglu_plan(
     };
     for (index, node) in graph.nodes.iter().enumerate() {
         if node.op != TensorOp::Linear
-            || !matches!(
-                weights.projections.get(&node.inputs[1]),
-                Some(ProjectionWeight::Fp4(..))
-            )
+            || !weights
+                .projections
+                .get(&node.inputs[1])
+                .is_some_and(ProjectionWeight::is_nvfp4)
             || !matches!(
                 weights.activation_quantization(node.inputs[1]),
                 Some(super::program::ActivationQuantization::Fp4(_))
@@ -245,10 +245,11 @@ fn fused_mlp_plan(
         weights.projections.get(&node.inputs[1]),
         weights.activation_quantization(node.inputs[1]),
     ) {
-        (
-            Some(ProjectionWeight::Fp4(..)),
-            Some(super::program::ActivationQuantization::Fp4(scale)),
-        ) => Some(scale.to_bits()),
+        (Some(weight), Some(super::program::ActivationQuantization::Fp4(scale)))
+            if weight.is_nvfp4() =>
+        {
+            Some(scale.to_bits())
+        }
         _ => None,
     };
     let sizes: BTreeMap<_, _> = graph
@@ -438,18 +439,21 @@ pub(super) fn record(
         );
     }
     nvfp4.clear_quant_reuse();
-    match (lowering, weight) {
-        (Lowering::PromptDense, ProjectionWeight::Dense(w)) => {
+    match lowering {
+        Lowering::PromptDense => {
+            let dense = weight
+                .dense()
+                .ok_or_else(|| error(format!("prompt projection lowered to {lowering:?}")))?;
             record_prompt_dense(
                 scope,
                 weights,
-                (flat_input, w),
+                (flat_input, dense),
                 output,
                 (width, flat / width, columns),
                 (nvfp4, delegated),
             )?;
         }
-        (Lowering::PromptFp8, _) => {
+        Lowering::PromptFp8 => {
             weights
                 .kernels
                 .projection
@@ -467,7 +471,7 @@ pub(super) fn record(
                 )
                 .map_err(error)?;
         }
-        (Lowering::PromptFp4, _) => {
+        Lowering::PromptFp4 => {
             record_legacy_fp4(
                 (&weights.kernels, scope),
                 weight,
@@ -477,7 +481,7 @@ pub(super) fn record(
                 (width, columns),
             )?;
         }
-        (other, _) => return Err(error(format!("prompt projection lowered to {other:?}"))),
+        other => return Err(error(format!("prompt projection lowered to {other:?}"))),
     }
     Ok(())
 }
@@ -591,10 +595,13 @@ pub(super) fn record_pair(
     if !pairable(first, second) || !weights.expert_banks.is_empty() {
         return Ok(false);
     }
-    let (Some(ProjectionWeight::Dense(weight_b)), Some(ProjectionWeight::Dense(weight_a))) = (
+    let (Some(weight_b), Some(weight_a)) = (
         weights.projections.get(&first.inputs[1]),
         weights.projections.get(&second.inputs[1]),
     ) else {
+        return Ok(false);
+    };
+    let (Some(weight_b), Some(weight_a)) = (weight_b.dense(), weight_a.dense()) else {
         return Ok(false);
     };
     let [rows, columns] = weight_b.shape();
@@ -726,7 +733,11 @@ pub(super) fn record_narrow(
     arena: &super::ActivationArena,
     (weights, profile): (&ProgramWeights, &DeviceProfile),
 ) -> Result<bool> {
-    let Some(ProjectionWeight::Dense(weight)) = weights.projections.get(&node.inputs[1]) else {
+    let Some(weight) = weights
+        .projections
+        .get(&node.inputs[1])
+        .and_then(ProjectionWeight::dense)
+    else {
         return Ok(false);
     };
     let [rows, columns] = weight.shape();

@@ -1899,7 +1899,7 @@ fn warm_delegated(delegated: &mut Support, weights: &ProgramWeights, geometry: P
     // The fused draft projection is bound outside `projections` but prompt chunks record it too.
     let fusion = weights.fusion.as_ref().map(|fusion| &fusion.projection);
     for weight in weights.projections.values().chain(fusion) {
-        let ProjectionWeight::Dense(dense) = weight else {
+        let Some(dense) = weight.dense() else {
             continue;
         };
         let [rows, columns] = dense.shape();

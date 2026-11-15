@@ -124,7 +124,7 @@ impl Model {
                     let weight = model.package.weights[slot].clone();
                     let (embedding, projection) = weight_roles(&model.package.graph, spec.id, slot);
                     if embedding {
-                        model.embeddings.insert(spec.id, weight.data.clone());
+                        model.embeddings.insert(spec.id, weight.data().clone());
                     }
                     if projection {
                         let loaded = if (slot == "lm_head.weight" || embedding)
@@ -139,7 +139,7 @@ impl Model {
                             eprintln!("loaded {} GPU projections", model.projections.len());
                         }
                     } else if !embedding {
-                        let values = weights::floats(&mut model.package, &weight.data)?;
+                        let values = weights::floats(&mut model.package, weight.data())?;
                         model.constants.insert(spec.id, values);
                     }
                 }

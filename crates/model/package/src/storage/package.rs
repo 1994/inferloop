@@ -1,9 +1,9 @@
 use crate::constants::CONFIG_MAX_BYTES;
 use crate::constants::F32_BYTES_U64;
-use crate::constants::MIB_U64;
-use crate::{
-    HostTensor, ModelRegistry, SafetensorsFile, SafetensorsIndex, TensorDtype, default_registry,
-};
+use crate::storage::source::TensorFiles;
+#[cfg(test)]
+use crate::storage::source::load_tensor_files;
+use crate::{HostTensor, ModelRegistry, PackageSource, TensorDtype, TensorFile, default_registry};
 use infer_core::{Error, ErrorCode, ModelId, Result};
 use infer_ir::{DataflowGraph, TensorStorage};
 use infer_spi::{ImportedModel, ModelProvider};
@@ -17,9 +17,6 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-
-/// Maximum accepted `model.safetensors.index.json` size.
-const INDEX_MAX_BYTES: u64 = 16 * MIB_U64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeightBinding {
@@ -49,7 +46,7 @@ pub struct ModelPackage {
     pub imported: ImportedModel,
     pub graph: DataflowGraph,
     pub manifest: PackageManifest,
-    pub(crate) shards: BTreeMap<String, SafetensorsFile>,
+    pub(crate) shards: BTreeMap<String, TensorFile>,
 }
 /// Former name of [`ModelPackage`], kept while backends migrate to the provider-neutral type.
 pub type QwenPackage = ModelPackage;
@@ -115,7 +112,7 @@ impl ModelPackage {
             .shards
             .iter()
             .flat_map(|(shard, file)| {
-                file.tensors
+                file.tensors()
                     .keys()
                     .map(move |name| (name.clone(), shard.clone()))
             })
@@ -150,20 +147,18 @@ impl ModelPackage {
         root: impl AsRef<Path>,
         id: ModelId,
     ) -> Result<Self> {
-        let root = root
-            .as_ref()
-            .canonicalize()
-            .map_err(|e| Error::invalid(e.to_string()))?;
-        let config = read_bounded(&package_path(&root, "config.json")?, CONFIG_MAX_BYTES)?;
-        let provider = registry.resolve(&config)?;
-        let imported = provider.import(id, &config)?;
+        let source = PackageSource::open(root)?;
+        let config = source.require_config_bounded(CONFIG_MAX_BYTES)?;
+        let provider = registry.resolve(config)?;
+        let imported = provider.import(id, config)?;
         let graph = provider.graph(&imported.model)?;
-        let (shards, tensor_map) = load_shards(&root)?;
+        let TensorFiles { shards, tensor_map } = source.tensor_files()?;
+        let root = source.root().to_owned();
         let manifest = bind_weights(
             &*provider,
             &imported.model,
             &graph,
-            &config,
+            config,
             &shards,
             &tensor_map,
         )?;
@@ -215,63 +210,15 @@ impl ModelPackage {
     }
 }
 
-type Shards = BTreeMap<String, SafetensorsFile>;
+pub type Shards = BTreeMap<String, TensorFile>;
 type TensorShards = BTreeMap<String, String>;
+/// Open every shard named by the HF index, or the single default shard.
+/// # Errors
+/// Returns an I/O or invalid-input error for malformed or inconsistent shards.
+#[cfg(test)]
 pub fn load_shards(root: &Path) -> Result<(Shards, TensorShards)> {
-    let index_path = root.join("model.safetensors.index.json");
-    let index = if index_path.exists() {
-        Some(SafetensorsIndex::parse(&read_bounded(
-            &package_path(root, "model.safetensors.index.json")?,
-            INDEX_MAX_BYTES,
-        )?)?)
-    } else {
-        None
-    };
-    let names = index.as_ref().map_or_else(
-        || vec!["model.safetensors".into()],
-        SafetensorsIndex::shards,
-    );
-    let mut shards = BTreeMap::new();
-    let mut tensor_map = BTreeMap::new();
-    for name in names {
-        let file = SafetensorsFile::open(package_path(root, &name)?)?;
-        for tensor in file.tensors.keys() {
-            if tensor_map.insert(tensor.clone(), name.clone()).is_some() {
-                return Err(Error::invalid(format!(
-                    "tensor {tensor} duplicated across shards"
-                )));
-            }
-        }
-        shards.insert(name, file);
-    }
-    if let Some(index) = &index {
-        if index.weight_map != tensor_map {
-            return Err(Error::invalid(
-                "shard contents disagree with HF weight index",
-            ));
-        }
-        let bytes = shards
-            .values()
-            .flat_map(|s| s.tensors.values())
-            .try_fold(0u64, |sum, h| sum.checked_add(h.byte_len()))
-            .ok_or_else(|| Error::invalid("package size overflow"))?;
-        // Some compressed-tensors exporters include safetensors headers in
-        // total_size. Accept either exact convention; tensor maps, offsets and
-        // complete payload coverage have already been independently validated.
-        let file_bytes = shards
-            .values()
-            .try_fold(bytes, |sum, shard| sum.checked_add(shard.header_bytes()))
-            .ok_or_else(|| Error::invalid("package file size overflow"))?;
-        if let Some(declared) = index.declared_weight_bytes()?
-            && bytes != declared
-            && file_bytes != declared
-        {
-            return Err(Error::invalid(
-                "HF index total_size disagrees with shard payload",
-            ));
-        }
-    }
-    Ok((shards, tensor_map))
+    let files = load_tensor_files(root)?;
+    Ok((files.shards, files.tensor_map))
 }
 fn bind_weights(
     provider: &dyn ModelProvider,
@@ -300,7 +247,7 @@ fn bind_weights(
         let shard = tensor_map
             .get(&source)
             .ok_or_else(|| Error::invalid(format!("unbound required weight {source}")))?;
-        let header = &shards[shard].tensors[&source];
+        let header = &shards[shard].tensors()[&source];
         if header.shape != spec.shape {
             return Err(Error::invalid(format!(
                 "{source}: expected {:?}, found {:?}",

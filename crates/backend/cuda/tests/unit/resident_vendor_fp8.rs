@@ -88,17 +88,15 @@ impl Weight {
         name: &str,
         source: &DeviceWeight,
     ) -> TestResult<Self> {
-        if source.encoding != WeightEncoding::Fp8Channel || !source.fp8_token_input {
+        if source.encoding() != WeightEncoding::Fp8Channel || !source.token_input() {
             return Err(format!("{name}: not checkpoint-declared FP8 token/channel").into());
         }
-        let [n, k] = source.shape.as_slice() else {
+        let shape = source.shape();
+        let [n, k] = shape.as_slice() else {
             return Err("FP8 checkpoint matrix rank".into());
         };
-        let codes = package.read_view(&source.data, STAGING)?.to_vec();
-        let scale = source
-            .scale
-            .as_ref()
-            .ok_or("FP8 checkpoint scale missing")?;
+        let codes = package.read_view(source.data(), STAGING)?.to_vec();
+        let scale = source.scale().ok_or("FP8 checkpoint scale missing")?;
         let converted = convert_float_bytes(package.read_view(scale, STAGING)?, scale.dtype)?;
         let scales = converted
             .as_chunks::<4>()
@@ -110,7 +108,7 @@ impl Weight {
             "{}",
             serde_json::json!({
                 "kind": "checkpoint_source", "weight": name, "shape": [n, k],
-                "encoded_source": source.data, "scale_source": scale,
+                "encoded_source": source.data(), "scale_source": scale,
                 "arithmetic": "original E4M3 bytes + unchanged quantizer + raw F32 GEMM * xs * ws",
                 "requantized_weight": false, "vendor_workspace_bytes": 0, "fast_accum": false,
             })
@@ -529,9 +527,9 @@ fn vendor_fp8_checkpoint_comparison() -> TestResult {
                 .weights
                 .iter()
                 .find(|(_, source)| {
-                    source.encoding == WeightEncoding::Fp8Channel
-                        && source.fp8_token_input
-                        && source.data.name.contains(family)
+                    source.encoding() == WeightEncoding::Fp8Channel
+                        && source.token_input()
+                        && source.data().name.contains(family)
                 })
                 .ok_or_else(|| {
                     format!("no checkpoint FP8 token/channel projection matching {family}")
@@ -568,9 +566,9 @@ fn vendor_fp8_verified_chooser_checkpoint_comparison() -> TestResult {
             .weights
             .iter()
             .find(|(_, source)| {
-                source.encoding == WeightEncoding::Fp8Channel
-                    && source.fp8_token_input
-                    && source.data.name.contains(family)
+                source.encoding() == WeightEncoding::Fp8Channel
+                    && source.token_input()
+                    && source.data().name.contains(family)
             })
             .ok_or_else(|| format!("no FP8 channel checkpoint family {family}"))?;
         let weight = Weight::checkpoint(&device, &package, name, source)?;

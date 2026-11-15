@@ -18,7 +18,7 @@ mod weights;
 use infer_cuda_kernels::contract::{
     Buffer, DRAFT_KEY_TILE as KEY_TILE, DRAFT_ROW_TILE as ROW_TILE, Draft, DraftAddNorm,
     DraftAttention, DraftConv, DraftNorm, DraftProjection, DraftRingStore, DraftRope, DraftSplit,
-    DraftTop, DraftWalk, DraftWeight, Recording,
+    DraftTop, DraftWalk, Recording,
 };
 use infer_cuda_kernels::kernels as tile_kernels;
 use infer_cuda_kernels::runtime::{Allocation, Graph};
@@ -628,25 +628,6 @@ impl<'a> Recorder<'a> {
     }
 }
 
-/// A weight in the forms a draft projection supports.
-fn draft_weight(weight: &ProjectionWeight) -> Result<DraftWeight<'_>> {
-    match weight {
-        ProjectionWeight::Dense(w) => Ok(DraftWeight::Dense(buffer(w)?)),
-        ProjectionWeight::Fp8(w, s) => Ok(DraftWeight::Fp8 {
-            weight: buffer(w)?,
-            scales: buffer(s)?,
-        }),
-        ProjectionWeight::Fp8Block(w, s) => Ok(DraftWeight::Fp8Block {
-            weight: buffer(w)?,
-            scales: buffer(s)?,
-            scale_columns: s.columns(),
-        }),
-        ProjectionWeight::Fp4(..) => Err(device_error(
-            "DFlash2 draft projections do not support NVFP4",
-        )),
-    }
-}
-
 /// One field of the metadata buffer.
 fn meta_field(meta: &Allocation<i32>, field: Range<usize>) -> Result<Buffer<'_, i32>> {
     buffer(meta)?.slice(field).map_err(error)
@@ -663,7 +644,7 @@ fn record_gemm(
     r.draft
         .project(
             r.recording,
-            draft_weight(weight)?,
+            weight.draft_weight()?,
             DraftProjection {
                 out,
                 input,
@@ -703,9 +684,12 @@ fn record_projection(
     if lower(Format::of(weight), None, mode, [rows, n, k])? != Lowering::DraftSplit {
         return record_gemm(r, weight, input, out, (rows, k));
     }
-    let (ProjectionWeight::Fp8(codes, scales), Some((partial, splits, k_tiles))) =
-        (weight, partial)
-    else {
+    let Some((codes, scales)) = weight.fp8() else {
+        return Err(error(
+            "draft split projection lowered without its weight or partials",
+        ));
+    };
+    let Some((partial, splits, k_tiles)) = partial else {
         return Err(error(
             "draft split projection lowered without its weight or partials",
         ));

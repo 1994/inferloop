@@ -99,11 +99,12 @@ pub fn tokenize(options: TokenizeOptions) -> Result<()> {
         messages,
         enable_thinking,
     } = options;
-    let config_bytes =
-        read(package.join("config.json")).map_err(|e| Error::invalid(e.to_string()))?;
-    let provider = default_registry().resolve(&config_bytes)?;
-    let model = provider.import(ModelId::new(1)?, &config_bytes)?;
-    let assets = infer_models::TextAssets::open(package, model.model.max_sequence)?;
+    let probe = infer_models::PackageProbe::open(package, ModelId::new(1)?)?;
+    let assets = infer_models::TextAssets::from_source(
+        default_registry(),
+        probe.source(),
+        probe.imported().model.max_sequence,
+    )?;
     let (rendered, tokens) = if let Some(text) = text {
         (text.clone(), assets.encode(&text, true)?)
     } else {

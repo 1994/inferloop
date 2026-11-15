@@ -59,12 +59,11 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
         flush_logs();
         return Ok(());
     }
-    let assets = package
+    let source = package
         .as_deref()
-        .filter(|p| p.join("tokenizer.json").exists())
-        .map(|p| infer_models::TextAssets::open(p, engine.model().max_sequence))
-        .transpose()?
-        .map(Arc::new);
+        .map(infer_models::PackageSource::open)
+        .transpose()?;
+    let assets = text_assets(engine.model().max_sequence, source.as_ref())?;
     let image_preprocessing = engine.backend().image_preprocessing();
     if !text_only
         && image_decoder == super::ImageDecoder::Auto
@@ -75,9 +74,9 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
     let media = if text_only {
         None
     } else {
-        package
-            .as_deref()
-            .map(infer_models::MultimodalAssets::open)
+        source
+            .as_ref()
+            .map(infer_models::MultimodalAssets::from_source)
             .transpose()?
             .flatten()
             .map(|assets| {
@@ -96,6 +95,9 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
                 Arc::new(media)
             })
     };
+    // The text and media assets no longer borrow the source; release its cached metadata before
+    // the server starts, so a raw tokenizer does not stay resident beside the parsed one.
+    drop(source);
     Runtime::new()
         .map_err(|e| Error::new(ErrorCode::Backend, e.to_string()))?
         .block_on(async move {
@@ -109,4 +111,22 @@ pub fn serve(options: ServeOptions, backend_choice: backend::Selection) -> Resul
         })?;
 
     Ok(())
+}
+
+/// Open the package's text assets only when its detected tokenizer is present.
+fn text_assets(
+    max_sequence: usize,
+    source: Option<&infer_models::PackageSource>,
+) -> Result<Option<Arc<infer_models::TextAssets>>> {
+    source
+        .filter(|source| source.has_text_assets())
+        .map(|source| {
+            infer_models::TextAssets::from_source(
+                infer_models::default_registry(),
+                source,
+                max_sequence,
+            )
+        })
+        .transpose()
+        .map(|assets| assets.map(Arc::new))
 }

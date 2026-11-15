@@ -3,20 +3,17 @@
 //! URL/network/decode work belongs to the service input layer; this module owns only the
 //! provider-declared model geometry and the deterministic preprocessors that turn RGB8 media
 //! into prompt-aligned patches.
+use crate::PackageSource;
 use crate::image::ImageProcessor;
 use crate::input::prompt::{prepare, prepare_preprocessed_video, prepare_shared, prepare_video};
 use crate::input::text::TextAssets;
 use crate::input::video::VideoProcessor;
-use crate::package_path;
 use infer_core::{Error, ModelId, Result};
 use infer_ir::Modality;
 use infer_spi::ImportedModel;
-use std::fs::{metadata, read};
 use std::path::Path;
 use std::sync::Arc;
 
-/// Largest accepted package metadata file.
-const METADATA_MAX_BYTES: u64 = 16 * 1024 * 1024;
 /// Images are unrestricted by default; an explicit per-prompt limit is still honored.
 const DEFAULT_IMAGE_LIMIT: usize = usize::MAX;
 /// Default per-prompt video limit.
@@ -81,26 +78,31 @@ impl MultimodalAssets {
     /// # Errors
     /// Rejects malformed/oversized config or preprocessor files and unsupported modalities.
     pub fn open(root: &Path) -> Result<Option<Arc<Self>>> {
-        let config = read_bounded(&package_path(root, "config.json")?)?;
+        let source = PackageSource::open(root)?;
+        Self::from_source(&source)
+    }
+
+    /// Open the multimodal metadata from an already-read package source.
+    ///
+    /// # Errors
+    /// Rejects malformed/oversized config or preprocessor files and unsupported modalities.
+    pub fn from_source(source: &PackageSource) -> Result<Option<Arc<Self>>> {
+        let config = source.require_config()?;
         let registry = crate::default_registry();
-        let provider = registry.resolve(&config)?;
-        let imported = provider.import(ModelId::ONE, &config)?;
+        let provider = registry.resolve(config)?;
+        let imported = provider.import(ModelId::ONE, config)?;
         if imported.modalities.is_empty() {
             return Ok(None);
         }
-        let images = ImageProcessor::from_json(&read_bounded(&package_path(
-            root,
-            "preprocessor_config.json",
-        )?)?)?;
+        let images = ImageProcessor::from_json(source.preprocessor_config()?)?;
         let video = if imported
             .modalities
             .iter()
             .any(|plan| plan.modality == Modality::Video)
         {
-            Some(VideoProcessor::from_json(&read_bounded(&package_path(
-                root,
-                "video_preprocessor_config.json",
-            )?)?)?)
+            Some(VideoProcessor::from_json(
+                source.video_preprocessor_config()?,
+            )?)
         } else {
             None
         };
@@ -202,15 +204,4 @@ impl MultimodalAssets {
     pub const fn image_processor(&self) -> &ImageProcessor {
         &self.images
     }
-}
-
-fn read_bounded(path: &Path) -> Result<Vec<u8>> {
-    let metadata = metadata(path).map_err(|e| Error::invalid(e.to_string()))?;
-    if metadata.len() > METADATA_MAX_BYTES {
-        return Err(Error::new(
-            infer_core::ErrorCode::Capacity,
-            "multimodal package metadata exceeds budget",
-        ));
-    }
-    read(path).map_err(|e| Error::invalid(e.to_string()))
 }

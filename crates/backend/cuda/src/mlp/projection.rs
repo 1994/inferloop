@@ -7,7 +7,9 @@ use crate::resident::buffers::Operand;
 use crate::resident::tensor_buffer as buffer;
 use crate::strategy::LinearTiling;
 use infer_core::{Error, Result};
-use infer_cuda_kernels::contract::{Buffer, DownPlan, Kernels, Owner, Recording, WeightRef};
+use infer_cuda_kernels::contract::{
+    Buffer, DownPlan, DraftWeight, ExpertWeight, Kernels, Owner, Recording, WeightRef,
+};
 use infer_cuda_kernels::runtime::DType;
 use infer_cuda_kernels::runtime::bf16;
 use infer_cuda_kernels::runtime::{Allocation, Element, Watch};
@@ -102,6 +104,20 @@ impl<T: DType + Element> Operand for Matrix<T> {
     }
 }
 
+/// Device bytes one NVFP4 global scale occupies.
+const GLOBAL_SCALE_BYTES: usize = size_of::<f32>();
+
+/// What a projection's storage asks of the compute path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComputeFormat {
+    /// Dense BF16 tensor cores.
+    Dense,
+    /// FP8 tensor cores, with per-channel or block scales.
+    Fp8,
+    /// Native FP4 tensor cores, with block-16 scales.
+    Fp4,
+}
+
 /// A projection weight in the encoding its checkpoint stores, with the scales it needs.
 #[derive(Clone)]
 pub enum ProjectionWeight {
@@ -116,6 +132,96 @@ pub enum ProjectionWeight {
 }
 
 impl ProjectionWeight {
+    /// The dense matrix, when this weight is stored unquantized.
+    pub(crate) const fn dense(&self) -> Option<&Matrix<bf16>> {
+        match self {
+            Self::Dense(weight) => Some(weight),
+            _ => None,
+        }
+    }
+
+    /// The channel-FP8 matrices, when this weight uses per-channel FP8.
+    pub(crate) const fn fp8(&self) -> Option<(&Matrix<f8e4m3fn>, &Allocation<f32>)> {
+        match self {
+            Self::Fp8(weight, scales) => Some((weight, scales)),
+            _ => None,
+        }
+    }
+
+    /// Whether this weight's codes are packed E2M1 pairs.
+    pub(crate) const fn is_nvfp4(&self) -> bool {
+        matches!(self, Self::Fp4(..))
+    }
+
+    /// The tensor-core format this weight selects.
+    pub(crate) const fn compute_format(&self) -> ComputeFormat {
+        match self {
+            Self::Dense(_) => ComputeFormat::Dense,
+            Self::Fp8(..) | Self::Fp8Block(..) => ComputeFormat::Fp8,
+            Self::Fp4(..) => ComputeFormat::Fp4,
+        }
+    }
+
+    /// Stable tuning dtype name and how many logical columns each stored column holds.
+    pub(crate) const fn tuning_format(&self) -> (&'static str, usize) {
+        match self {
+            Self::Dense(_) => ("bf16", 1),
+            Self::Fp8(..) => ("fp8-channel", 1),
+            Self::Fp8Block(..) => ("fp8-block", 1),
+            Self::Fp4(..) => ("nvfp4", 2),
+        }
+    }
+
+    /// Device bytes the weight and every scale it retains occupy.
+    pub(crate) fn resident_bytes(&self) -> usize {
+        self.bytes()
+            + if self.is_nvfp4() {
+                GLOBAL_SCALE_BYTES
+            } else {
+                0
+            }
+    }
+
+    /// The projection in the form the `MoE` expert kernel takes.
+    pub(crate) fn expert_weight(&self, quantized_inputs: bool) -> Result<ExpertWeight<'_>> {
+        match self {
+            Self::Dense(weight) => Ok(ExpertWeight::Dense(buffer(weight)?)),
+            Self::Fp8(weight, scales) => Ok(ExpertWeight::Fp8Channel {
+                weight: buffer(weight)?,
+                scales: buffer(scales)?,
+                quantized_inputs,
+            }),
+            Self::Fp8Block(weight, scales) => Ok(ExpertWeight::Fp8Block {
+                weight: buffer(weight)?,
+                scales: buffer(scales)?,
+                block_columns: FP8_BLOCK_COLUMNS,
+                quantized_inputs,
+            }),
+            Self::Fp4(..) => Err(device_error(
+                "NVFP4 expert activation quantization requires an explicit numerical contract",
+            )),
+        }
+    }
+
+    /// The projection in the forms the `DFlash2` draft kernel takes.
+    pub(crate) fn draft_weight(&self) -> Result<DraftWeight<'_>> {
+        match self {
+            Self::Dense(weight) => Ok(DraftWeight::Dense(buffer(weight)?)),
+            Self::Fp8(weight, scales) => Ok(DraftWeight::Fp8 {
+                weight: buffer(weight)?,
+                scales: buffer(scales)?,
+            }),
+            Self::Fp8Block(weight, scales) => Ok(DraftWeight::Fp8Block {
+                weight: buffer(weight)?,
+                scales: buffer(scales)?,
+                scale_columns: scales.columns(),
+            }),
+            Self::Fp4(..) => Err(device_error(
+                "DFlash2 draft projections do not support NVFP4",
+            )),
+        }
+    }
+
     /// What keeps this weight's storage alive; the FP4 and FP8 forms also hold their scales.
     pub(crate) fn owner(&self) -> Owner {
         Arc::new(self.clone())

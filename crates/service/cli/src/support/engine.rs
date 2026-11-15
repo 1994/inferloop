@@ -60,12 +60,11 @@ pub fn configured_engine(
             super::serving::derive_config(&mut config, &backend, &ir, &registry)?;
         }
         let mut engine = Engine::new(backend, ir, PrecisionPlan::f32(), &registry, config)?;
-        if package.join("readouts.safetensors").exists() {
-            let provider = infer_workloads::ProjectionWorkloads::open(
-                package,
-                engine.model().hidden_size,
-                engine.model().vocab_size,
-            )?;
+        if let Some(provider) = infer_workloads::ProjectionWorkloads::open_optional(
+            package,
+            engine.model().hidden_size,
+            engine.model().vocab_size,
+        )? {
             engine = engine.with_workloads(provider)?;
         }
         Ok(engine)

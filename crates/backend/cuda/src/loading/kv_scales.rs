@@ -21,7 +21,7 @@ pub fn load(package: &mut QuantizedPackage) -> Result<BTreeMap<infer_core::Tenso
             .get(&format!("layers.{layer}.self_attn.q_proj.weight"))
             .ok_or_else(|| Error::invalid("query binding"))?;
         let prefix = query
-            .data
+            .data()
             .name
             .rsplit_once("q_proj.")
             .ok_or_else(|| Error::invalid("query source name"))?

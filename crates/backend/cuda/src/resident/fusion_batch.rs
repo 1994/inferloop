@@ -82,7 +82,7 @@ pub fn required_bytes(weights: &ProgramWeights, width: usize, profile: &DevicePr
     let Some(fusion) = &weights.fusion else {
         return 0;
     };
-    let ProjectionWeight::Dense(weight) = &fusion.projection else {
+    let Some(weight) = fusion.projection.dense() else {
         return 0;
     };
     layout_bytes(

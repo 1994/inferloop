@@ -24,7 +24,8 @@ impl ProjectionCatalog for QuantizedPackage {
             .map(|(name, weight)| (name, weight, false))
             .chain(self.mtp.iter().map(|(name, weight)| (name, weight, true)))
             .filter_map(|(name, weight, mtp)| {
-                let [rows, columns] = weight.shape.as_slice() else {
+                let shape = weight.shape();
+                let [rows, columns] = shape.as_slice() else {
                     return None;
                 };
                 // Embeddings are indexed reads, not linear projections.
@@ -35,8 +36,8 @@ impl ProjectionCatalog for QuantizedPackage {
                     name: name.clone(),
                     rows: *rows,
                     columns: *columns,
-                    encoding: weight.encoding,
-                    storage_dtype: weight.data.dtype,
+                    encoding: weight.encoding(),
+                    storage_dtype: weight.data().dtype,
                     mtp,
                 })
             })

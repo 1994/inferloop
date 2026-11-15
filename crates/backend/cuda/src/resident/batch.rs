@@ -925,10 +925,11 @@ impl BatchBuilder<'_> {
         for node in &self.graph.nodes {
             if node.op != TensorOp::Linear
                 || self.weights.input_scales.contains_key(&node.inputs[1])
-                || !matches!(
-                    self.weights.projections.get(&node.inputs[1]),
-                    Some(ProjectionWeight::Fp4(..))
-                )
+                || !self
+                    .weights
+                    .projections
+                    .get(&node.inputs[1])
+                    .is_some_and(ProjectionWeight::is_nvfp4)
             {
                 continue;
             }

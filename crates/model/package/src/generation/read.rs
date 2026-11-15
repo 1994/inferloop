@@ -1,19 +1,17 @@
 use super::{GenerationDefaults, apply_preset};
-use crate::ModelRegistry;
 use crate::constants::CONFIG_MAX_BYTES;
-use crate::constants::MIB_U64;
-use crate::{package_path, storage::package::read_bounded};
+use crate::{ModelRegistry, PackageSource};
 use infer_core::{Error, ErrorCode, Result};
 use infer_ir::Sampling;
 use infer_spi::GenerationPolicy;
-use std::{collections::BTreeMap, path::Path};
+use std::collections::BTreeMap;
 
-pub fn load(root: &Path, registry: &ModelRegistry) -> Result<GenerationDefaults> {
-    let config = json(root, "config.json")?;
-    let generation = json(root, "generation_config.json")?;
+pub fn load(registry: &ModelRegistry, source: &PackageSource) -> Result<GenerationDefaults> {
+    let config = config(source)?;
+    let generation = source.generation_config()?;
     let mut base = Sampling::default();
     let mut sources = BTreeMap::new();
-    let policy = generation_policy(root, registry, &config)?;
+    let policy = generation_policy(registry, source, &config)?;
     for key in [
         "temperature",
         "top_p",
@@ -102,28 +100,29 @@ pub fn load(root: &Path, registry: &ModelRegistry) -> Result<GenerationDefaults>
 }
 
 fn generation_policy(
-    root: &Path,
     registry: &ModelRegistry,
+    source: &PackageSource,
     config: &serde_json::Value,
 ) -> Result<GenerationPolicy> {
-    let card = if root.join("README.md").exists() {
-        let bytes = read_bounded(&package_path(root, "README.md")?, 2 * MIB_U64)?;
-        Some(String::from_utf8(bytes).map_err(|e| Error::invalid(e.to_string()))?)
-    } else {
-        None
-    };
-    let config_bytes = serde_json::to_vec(&config).map_err(|e| Error::invalid(e.to_string()))?;
+    let card = source.readme()?;
+    let config_bytes = serde_json::to_vec(config).map_err(|e| Error::invalid(e.to_string()))?;
     match registry.resolve(&config_bytes) {
-        Ok(provider) => provider.generation_policy(&config_bytes, card.as_deref()),
+        Ok(provider) => provider.generation_policy(&config_bytes, card),
         Err(error) if error.code == ErrorCode::Unsupported => Ok(GenerationPolicy::default()),
         Err(error) => Err(error),
     }
 }
 
-fn json(root: &Path, name: &str) -> Result<serde_json::Value> {
-    if !root.join(name).exists() {
+/// Parse the package configuration, treating absence as an empty object.
+fn config(source: &PackageSource) -> Result<serde_json::Value> {
+    let Some(bytes) = source.config() else {
         return Ok(serde_json::json!({}));
+    };
+    if bytes.len() as u64 > CONFIG_MAX_BYTES {
+        return Err(Error::new(
+            ErrorCode::Capacity,
+            "package metadata exceeds budget",
+        ));
     }
-    let bytes = read_bounded(&package_path(root, name)?, CONFIG_MAX_BYTES)?;
-    serde_json::from_slice(&bytes).map_err(|e| Error::invalid(e.to_string()))
+    serde_json::from_slice(bytes).map_err(|e| Error::invalid(e.to_string()))
 }

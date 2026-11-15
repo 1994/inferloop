@@ -19,7 +19,6 @@ use crate::constants::MID_PREFILL_LANES;
 use crate::constants::PREFILL_LANES;
 use crate::constants::WIDE_PREFILL_LANES;
 use crate::device::DeviceProfile;
-use crate::mlp::ProjectionWeight;
 
 use crate::device::image_preprocess::Capability as ImageCapability;
 use crate::device::{CudaImageProcessor as ImageProcessor, ImageBatch};
@@ -446,10 +445,10 @@ impl LoadedModel {
             bindings::load(&device, &profile, &mut package, &options, &padding)?;
         let dflash2 = bind_dflash2(&device, &mut package, &weights)?;
         if automatic_prefill
-            && !weights.projections.iter().any(|(id, weight)| {
-                matches!(weight, ProjectionWeight::Fp4(..))
-                    && !weights.input_scales.contains_key(id)
-            })
+            && !weights
+                .projections
+                .iter()
+                .any(|(id, weight)| weight.is_nvfp4() && !weights.input_scales.contains_key(id))
         {
             let geometry_phase =
                 phase::Phase::start("geometry", "resolving the prompt graph width");
