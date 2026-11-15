@@ -20,6 +20,7 @@ workspace = true
 [features]
 default = []
 cuda = ["dep:infer-backend-cuda", "infer-backend-cuda/cuda"]
+gguf = ["infer-models/gguf"]
 
 [dependencies]
 infer-backend-cuda = { workspace = true, optional = true }

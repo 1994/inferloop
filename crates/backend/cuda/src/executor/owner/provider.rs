@@ -8,6 +8,22 @@ use infer_ir::{
 use infer_spi::BackendProvider;
 use std::collections::BTreeSet;
 use std::{mem::take, sync::Arc};
+impl CudaBackend {
+    /// Checkpoint formats and weight encodings this backend executes.
+    pub const FORMATS: infer_ir::BackendFormats = infer_ir::BackendFormats {
+        checkpoints: &[
+            infer_ir::CheckpointFormat::Safetensors,
+            infer_ir::CheckpointFormat::Gguf,
+        ],
+        encodings: &[
+            infer_ir::WeightEncoding::Dense,
+            infer_ir::WeightEncoding::Fp8,
+            infer_ir::WeightEncoding::Nvfp4,
+            infer_ir::WeightEncoding::GroupedInt4,
+        ],
+    };
+}
+
 impl BackendProvider for CudaBackend {
     type Ticket = CudaTicket;
     fn identity(&self) -> &str {
@@ -26,18 +42,7 @@ impl BackendProvider for CudaBackend {
         self.view.capabilities.clone()
     }
     fn formats(&self) -> infer_ir::BackendFormats {
-        infer_ir::BackendFormats {
-            checkpoints: &[
-                infer_ir::CheckpointFormat::Safetensors,
-                infer_ir::CheckpointFormat::Gguf,
-            ],
-            encodings: &[
-                infer_ir::WeightEncoding::Dense,
-                infer_ir::WeightEncoding::Fp8,
-                infer_ir::WeightEncoding::Nvfp4,
-                infer_ir::WeightEncoding::GroupedInt4,
-            ],
-        }
+        Self::FORMATS
     }
     fn speculation_capability(&self) -> infer_ir::SpeculationCapability {
         self.view.capabilities.speculation

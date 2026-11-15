@@ -113,6 +113,28 @@ impl BackendFormats {
     pub fn supports_encoding(self, encoding: WeightEncoding) -> bool {
         self.encodings.contains(&encoding)
     }
+
+    /// Require a checkpoint format and every listed encoding.
+    /// # Errors
+    /// Rejects a container or encoding this backend does not declare.
+    pub fn require(self, format: CheckpointFormat, encodings: &[WeightEncoding]) -> Result<()> {
+        if !self.supports_format(format) {
+            return Err(Error::unsupported(format!(
+                "backend does not load {} checkpoints",
+                format.label()
+            )));
+        }
+        if let Some(encoding) = encodings
+            .iter()
+            .find(|encoding| !self.supports_encoding(**encoding))
+        {
+            return Err(Error::unsupported(format!(
+                "backend does not execute {} weights",
+                encoding.label()
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

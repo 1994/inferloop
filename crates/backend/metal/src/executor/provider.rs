@@ -12,6 +12,21 @@ use infer_spi::BackendProvider;
 use metal::MTLCommandBufferStatus;
 use std::sync::Arc;
 
+impl MetalBackend {
+    /// Checkpoint formats and weight encodings this backend executes.
+    pub const FORMATS: infer_ir::BackendFormats = infer_ir::BackendFormats {
+        checkpoints: &[
+            infer_ir::CheckpointFormat::Safetensors,
+            infer_ir::CheckpointFormat::Gguf,
+            infer_ir::CheckpointFormat::Mlx,
+        ],
+        encodings: &[
+            infer_ir::WeightEncoding::Dense,
+            infer_ir::WeightEncoding::MlxAffine,
+        ],
+    };
+}
+
 impl BackendProvider for MetalBackend {
     type Ticket = MetalTicket;
     fn begin_resource(
@@ -32,17 +47,7 @@ impl BackendProvider for MetalBackend {
         true
     }
     fn formats(&self) -> infer_ir::BackendFormats {
-        infer_ir::BackendFormats {
-            checkpoints: &[
-                infer_ir::CheckpointFormat::Safetensors,
-                infer_ir::CheckpointFormat::Gguf,
-                infer_ir::CheckpointFormat::Mlx,
-            ],
-            encodings: &[
-                infer_ir::WeightEncoding::Dense,
-                infer_ir::WeightEncoding::MlxAffine,
-            ],
-        }
+        Self::FORMATS
     }
     fn capabilities(&self) -> DeviceCapabilities {
         DeviceCapabilities {
