@@ -443,8 +443,8 @@ impl QuantizedPackage {
                 .iter()
                 .flat_map(|value| {
                     let bits = value.to_bits();
-                    let rounded = bits.wrapping_add(0x7FFF + ((bits >> 16) & 1));
-                    u16::try_from(rounded >> 16)
+                    let rounded = bits.wrapping_add(BF16_ROUND + ((bits >> BF16_SHIFT) & BF16_TIE));
+                    u16::try_from(rounded >> BF16_SHIFT)
                         .unwrap_or(u16::MAX)
                         .to_le_bytes()
                 })
