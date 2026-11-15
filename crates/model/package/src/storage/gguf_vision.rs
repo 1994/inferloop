@@ -6,6 +6,7 @@ use crate::providers::qwen::gguf::vision_tensor;
 use infer_core::{Error, Result};
 use infer_format::{GgufFile, GgufType, dequantize};
 use infer_spi::ModalityEncoder;
+use std::array::from_fn;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -55,7 +56,7 @@ impl GgufVisionPackage {
         let encoder = encoder(file.metadata())?;
         let deepstack_layers = encoder_deepstack(file.metadata())?;
         let mut slots = BTreeMap::new();
-        let mut patch = [None, None];
+        let mut patch_slices = [None, None];
         let mut deepstack = BTreeMap::new();
         for (source, info) in file.tensors() {
             let Some(mapped) = vision_tensor(source, &deepstack_layers) else {
@@ -78,7 +79,7 @@ impl GgufVisionPackage {
                     );
                 }
                 VisionTensor::PatchSlice(index) => {
-                    if let Some(target) = patch.get_mut(index) {
+                    if let Some(target) = patch_slices.get_mut(index) {
                         *target = Some(VisionSlot {
                             slot: format!("patch.{index}"),
                             ..slot.clone()
@@ -92,9 +93,7 @@ impl GgufVisionPackage {
                     .next()
                     .and_then(|layer| layer.parse::<u64>().ok())
                     .ok_or_else(|| Error::invalid("deepstack layer"))?;
-                let entry = deepstack
-                    .entry(layer)
-                    .or_insert(std::array::from_fn(|_| None));
+                let entry = deepstack.entry(layer).or_insert_with(|| from_fn(|_| None));
                 let index = if rest.contains(".norm.") {
                     0
                 } else if rest.contains(".fc1.") {
@@ -111,7 +110,7 @@ impl GgufVisionPackage {
             file,
             encoder,
             slots,
-            patch,
+            patch: patch_slices,
             deepstack,
         })
     }
