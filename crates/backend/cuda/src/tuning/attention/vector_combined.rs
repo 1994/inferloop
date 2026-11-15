@@ -132,7 +132,7 @@ fn resolve(device: &CudaDevice, shape: Shape, baseline: Choice) -> Result<Choice
     } else {
         None
     };
-    for table in [local.as_ref(), Some(shipped_table()?)]
+    for table in [local.as_deref(), Some(shipped_table()?)]
         .into_iter()
         .flatten()
     {

@@ -41,7 +41,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{
-        Mutex, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -520,14 +520,46 @@ pub fn table_path() -> Option<PathBuf> {
 /// Load the configured tuning table; an absent file simply means "nothing measured yet".
 /// # Errors
 /// Rejects unreadable or malformed tables instead of silently ignoring them.
-pub(crate) fn resolve_table(path: Option<&Path>) -> Result<Option<TilingTable>> {
+/// The machine-local tuning table at `path` (the configured table when `None`).
+///
+/// The file is read once, when model loading first asks for it, and every later lookup shares
+/// that copy: tuning families resolve the table per shape, and one 27B private program asks for
+/// hundreds of shapes the table does not hold, so re-reading the file each time turned building
+/// a long-context program into 40 s of JSON parsing. Writes from this process refresh the copy
+/// ([`update_table`]); edits by another process are seen on the next start.
+pub(crate) fn resolve_table(path: Option<&Path>) -> Result<Option<Arc<TilingTable>>> {
     let Some(path) = path.map(Path::to_path_buf).or_else(table_path) else {
         return Ok(None);
     };
-    if !path.is_file() {
-        return Ok(None);
+    let cached = LOADED_TABLE
+        .lock()
+        .map_err(|_| Error::invariant("CUDA tuning table cache poisoned"))?
+        .as_ref()
+        .filter(|(loaded, _)| *loaded == path)
+        .map(|(_, table)| table.clone());
+    if let Some(table) = cached {
+        return Ok(table);
     }
-    TilingTable::load(&path).map(Some)
+    let table = if path.is_file() {
+        Some(Arc::new(TilingTable::load(&path)?))
+    } else {
+        None
+    };
+    *LOADED_TABLE
+        .lock()
+        .map_err(|_| Error::invariant("CUDA tuning table cache poisoned"))? =
+        Some((path, table.clone()));
+    Ok(table)
+}
+
+/// The table [`resolve_table`] loaded, keyed by its path; `None` records an absent file.
+static LOADED_TABLE: Mutex<Option<(PathBuf, Option<Arc<TilingTable>>)>> = Mutex::new(None);
+
+/// Share `table` as the loaded copy of `path` after this process wrote it.
+fn remember_table(path: &Path, table: TilingTable) {
+    if let Ok(mut loaded) = LOADED_TABLE.lock() {
+        *loaded = Some((path.to_path_buf(), Some(Arc::new(table))));
+    }
 }
 
 /// Baseline measured on known devices and shipped with the backend.
@@ -623,7 +655,11 @@ fn update_table(path: Option<&Path>, update: impl FnOnce(&mut TilingTable)) -> b
     let Ok(text) = serde_json::to_string_pretty(&table) else {
         return false;
     };
-    write_atomic(path, &text).is_ok()
+    if write_atomic(path, &text).is_err() {
+        return false;
+    }
+    remember_table(path, table);
+    true
 }
 
 /// Replace a cache only after its full contents reach a file in the same directory.

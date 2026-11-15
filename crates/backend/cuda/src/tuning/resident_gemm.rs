@@ -747,7 +747,7 @@ fn resolve(
         weight,
         scale,
         &key,
-        table.as_ref(),
+        table.as_deref(),
         session,
         (autotune, path.as_deref()),
     )?

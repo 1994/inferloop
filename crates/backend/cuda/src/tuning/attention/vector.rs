@@ -127,7 +127,7 @@ fn resolve(
     } else {
         None
     };
-    for table in [local.as_ref(), Some(shipped_table()?)]
+    for table in [local.as_deref(), Some(shipped_table()?)]
         .into_iter()
         .flatten()
     {
