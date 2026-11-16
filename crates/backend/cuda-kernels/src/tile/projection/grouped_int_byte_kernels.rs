@@ -79,8 +79,8 @@ pub mod byte {
         for block in 0i32..BLOCKS {
             let index = pid.0 * BLOCKS + block;
             let raw: Tile<u8, { [256, 16] }> = cp.load([index]).reshape(shape![256, 16]);
-            let code: Tile<f32, { [GROUPS, GROUP, 16] }> =
-                convert_tile(raw).reshape(shape![GROUPS, GROUP, 16]);
+            let code: Tile<f32, { [256, 16] }> = convert_tile(raw);
+            let code: Tile<f32, { [GROUPS, GROUP, 16] }> = code.reshape(shape![GROUPS, GROUP, 16]);
             let activation: Tile<f32, { [GROUPS, GROUP, 16] }> = xp
                 .load([block])
                 .reshape(shape![256, 1])

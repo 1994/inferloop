@@ -12,29 +12,6 @@ pub mod nibble {
         convert_tile, get_tile_block_id, reduce_sum, shri,
     };
 
-    /// Sixteen 64-value groups of codes, in value order.
-    fn unpack(packed: Tile<u8, { [16, 32, 16] }>) -> Tile<f32, { [1024, 16] }> {
-        let low: Tile<f32, { [16, 32, 16] }> =
-            convert_tile(andi(packed, (0x0fu8).broadcast(shape![16, 32, 16])));
-        let high: Tile<f32, { [16, 32, 16] }> =
-            convert_tile(shri(packed, (4u8).broadcast(shape![16, 32, 16])));
-        let pair: Tile<f32, { [16, 2, 32, 16] }> = cat(
-            low.reshape(shape![16, 1, 32, 16]),
-            high.reshape(shape![16, 1, 32, 16]),
-            1i32,
-        );
-        pair.reshape(shape![1024, 16])
-    }
-
-    /// One term per 32-value group, broadcast over its values.
-    fn spread(terms: Tile<f32, { [512] }>) -> Tile<f32, { [1024, 16] }> {
-        terms
-            .reshape(shape![16, 2, 16])
-            .reshape(shape![16, 2, 1, 16])
-            .broadcast(shape![16, 2, 32, 16])
-            .reshape(shape![1024, 16])
-    }
-
     /// One output tile of sixteen rows: `factor * code - bias`. `K` is the reduction length.
     #[cutile::entry()]
     fn gemv<const K: i32, const BLOCKS: i32>(
@@ -52,9 +29,29 @@ pub mod nibble {
         let mut sum: Tile<f32, { [16] }> = constant(0.0, shape![16]);
         for block in 0i32..BLOCKS {
             let index = pid.0 * BLOCKS + block;
-            let values = unpack(cp.load([index]).reshape(shape![16, 32, 16]));
-            let factor = spread(fp.load([index]));
-            let bias = spread(bp.load([index]));
+            let packed: Tile<u8, { [16, 32, 16] }> = cp.load([index]).reshape(shape![16, 32, 16]);
+            let low: Tile<f32, { [16, 32, 16] }> =
+                convert_tile(andi(packed, (0x0fu8).broadcast(shape![16, 32, 16])));
+            let high: Tile<f32, { [16, 32, 16] }> =
+                convert_tile(shri(packed, (4u8).broadcast(shape![16, 32, 16])));
+            let pair: Tile<f32, { [16, 2, 32, 16] }> = cat(
+                low.reshape(shape![16, 1, 32, 16]),
+                high.reshape(shape![16, 1, 32, 16]),
+                1i32,
+            );
+            let values: Tile<f32, { [1024, 16] }> = pair.reshape(shape![1024, 16]);
+            let factor: Tile<f32, { [1024, 16] }> = fp
+                .load([index])
+                .reshape(shape![16, 2, 16])
+                .reshape(shape![16, 2, 1, 16])
+                .broadcast(shape![16, 2, 32, 16])
+                .reshape(shape![1024, 16]);
+            let bias: Tile<f32, { [1024, 16] }> = bp
+                .load([index])
+                .reshape(shape![16, 2, 16])
+                .reshape(shape![16, 2, 1, 16])
+                .broadcast(shape![16, 2, 32, 16])
+                .reshape(shape![1024, 16]);
             let activation: Tile<f32, { [1024, 16] }> = xp
                 .load([block])
                 .reshape(shape![1024, 1])
@@ -81,9 +78,24 @@ pub mod nibble {
         let mut sum: Tile<f32, { [16] }> = constant(0.0, shape![16]);
         for block in 0i32..BLOCKS {
             let index = pid.0 * BLOCKS + block;
-            let values = unpack(cp.load([index]).reshape(shape![16, 32, 16]))
-                - zero.broadcast(shape![1024, 16]);
-            let factor = spread(fp.load([index]));
+            let packed: Tile<u8, { [16, 32, 16] }> = cp.load([index]).reshape(shape![16, 32, 16]);
+            let low: Tile<f32, { [16, 32, 16] }> =
+                convert_tile(andi(packed, (0x0fu8).broadcast(shape![16, 32, 16])));
+            let high: Tile<f32, { [16, 32, 16] }> =
+                convert_tile(shri(packed, (4u8).broadcast(shape![16, 32, 16])));
+            let pair: Tile<f32, { [16, 2, 32, 16] }> = cat(
+                low.reshape(shape![16, 1, 32, 16]),
+                high.reshape(shape![16, 1, 32, 16]),
+                1i32,
+            );
+            let values: Tile<f32, { [1024, 16] }> = pair.reshape(shape![1024, 16]);
+            let values = values - zero.broadcast(shape![1024, 16]);
+            let factor: Tile<f32, { [1024, 16] }> = fp
+                .load([index])
+                .reshape(shape![16, 2, 16])
+                .reshape(shape![16, 2, 1, 16])
+                .broadcast(shape![16, 2, 32, 16])
+                .reshape(shape![1024, 16]);
             let activation: Tile<f32, { [1024, 16] }> = xp
                 .load([block])
                 .reshape(shape![1024, 1])
