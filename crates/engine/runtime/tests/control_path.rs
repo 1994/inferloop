@@ -1087,11 +1087,11 @@ fn replay_token_budget_evicts_payload_without_releasing_live_request_ownership()
 
 /// Captured `infer::request` lines, one string per event, for asserting the log contract.
 mod captured {
+    use std::cell::RefCell;
     use std::io::{Error as IoError, Result as IoResult, Write};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, Once};
     use tracing::Level;
-    use tracing::callsite::rebuild_interest_cache;
-    use tracing::subscriber::with_default;
+    use tracing::subscriber::set_global_default;
 
     #[derive(Clone, Default)]
     pub struct Lines(Arc<Mutex<Vec<u8>>>);
@@ -1109,20 +1109,61 @@ mod captured {
         }
     }
 
-    impl Lines {
-        pub fn during<T>(&self, run: impl FnOnce() -> T) -> T {
-            let writer = self.clone();
+    thread_local! {
+        /// The capture of the test running on this thread, if it is capturing.
+        static ACTIVE: RefCell<Option<Lines>> = const { RefCell::new(None) };
+    }
+
+    /// Writes into the calling thread's active capture and drops the line otherwise.
+    struct Current;
+
+    impl Write for Current {
+        fn write(&mut self, bytes: &[u8]) -> IoResult<usize> {
+            ACTIVE.with(|active| {
+                active
+                    .borrow_mut()
+                    .as_mut()
+                    .map_or(Ok(bytes.len()), |lines| lines.write(bytes))
+            })
+        }
+        fn flush(&mut self) -> IoResult<()> {
+            Ok(())
+        }
+    }
+
+    /// Ends this thread's capture even when the captured code panics.
+    struct Capturing;
+
+    impl Drop for Capturing {
+        fn drop(&mut self) {
+            ACTIVE.with(|active| active.borrow_mut().take());
+        }
+    }
+
+    /// One process-wide subscriber for the whole test binary. A scoped subscriber per test
+    /// races the process-wide callsite interest cache with tests logging on other threads, which
+    /// left a capture empty under CI load; a global one keeps every `INFO` callsite enabled.
+    fn install() {
+        static INSTALL: Once = Once::new();
+        INSTALL.call_once(|| {
             let subscriber = tracing_subscriber::fmt()
-                .with_writer(move || writer.clone())
+                .with_writer(|| Current)
                 .with_ansi(false)
                 .with_max_level(Level::INFO)
                 .finish();
-            with_default(subscriber, || {
-                // Callsite interest is cached process-wide: a test that logged first on a thread
-                // without a subscriber leaves the shared callsites disabled for this one.
-                rebuild_interest_cache();
-                run()
-            })
+            assert!(
+                set_global_default(subscriber).is_ok(),
+                "the test binary installs one subscriber"
+            );
+        });
+    }
+
+    impl Lines {
+        pub fn during<T>(&self, run: impl FnOnce() -> T) -> T {
+            install();
+            ACTIVE.with(|active| *active.borrow_mut() = Some(self.clone()));
+            let _capturing = Capturing;
+            run()
         }
         /// Terminal lines of one request; the acceptance line is not one.
         pub fn request(&self, id: u64) -> Vec<String> {
