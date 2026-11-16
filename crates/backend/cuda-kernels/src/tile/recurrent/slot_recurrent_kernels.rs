@@ -216,34 +216,6 @@ pub mod fused {
         acc.reshape(shape![M, N])
     }
 
-    /// The entry of `values` at the one chunk row `at` selects.
-    fn chunk_value(at: Tile<bool, { [16] }>, values: Tile<f32, { [16] }>) -> Tile<f32, { [1] }> {
-        let empty: Tile<f32, { [16] }> = constant(0.0f32, shape![16]);
-        let picked: Tile<f32, { [] }> =
-            reduce_sum(select(at, values.reshape(shape![16]), empty), 0i32);
-        picked.reshape(shape![1])
-    }
-
-    /// `a · b` for an exact BF16 `b` on tensor cores: `a` splits into three BF16 terms.
-    fn split_product<const M: i32, const K: i32, const N: i32>(
-        a: Tile<f32, { [M, K] }>,
-        b: Tile<bf16, { [K, N] }>,
-    ) -> Tile<f32, { [M, N] }> {
-        let a = a.reshape(shape![M, K]);
-        let b = b.reshape(shape![K, N]);
-        let a0: Tile<bf16, { [M, K] }> = convert_tile(a);
-        let a0f: Tile<f32, { [M, K] }> = convert_tile(a0);
-        let ar = a - a0f;
-        let a1: Tile<bf16, { [M, K] }> = convert_tile(ar);
-        let a1f: Tile<f32, { [M, K] }> = convert_tile(a1);
-        let a2: Tile<bf16, { [M, K] }> = convert_tile(ar - a1f);
-        let zero: Tile<f32, { [M, N] }> = constant(0.0f32, shape![M, N]);
-        let mut acc = mmaf(a2, b, zero);
-        acc = mmaf(a1, b, acc);
-        acc = mmaf(a0, b, acc);
-        acc.reshape(shape![M, N])
-    }
-
     /// Whether each of the 16 chunk rows is row `lane`.
     fn chunk_row(rows: Tile<i32, { [16] }>, lane: i32) -> Tile<bool, { [16] }> {
         let at = lane.broadcast(shape![16]);
@@ -674,10 +646,10 @@ pub mod fused {
     /// [`delta_verify_lanes`] in ReplaySSM's chunked form (`docs/plans/performance/replayssm-gdn.md`).
     ///
     /// The slot's state is read once into the candidates' key and query products on tensor
-    /// cores. The delta-rule corrections `u` then follow from a triangular recurrence over
-    /// value vectors only, `u_s = β_s (v_s − e^{c_s} Sᵀk_s − Σ_{j<s} e^{c_s−c_j} (k_j·k_s) u_j)`,
+    /// cores. The delta-rule corrections solve `(I + A) U = R` in one shot, with
+    /// `R_s = β_s (v_s − e^{c_s} Sᵀk_s)` and the strictly lower `A_{s,j} = β_s e^{c_s−c_j} (k_j·k_s)`,
     /// and `y_s = e^{c_s} Sᵀq_s + Σ_{j≤s} e^{c_s−c_j} (k_j·q_s) u_j`, where `c` accumulates the
-    /// log decays: no step rewrites the whole `[D, SW]` state tile. An inactive lane neither
+    /// log decays: every step is a tensor-core product, none rewrites the `[D, SW]` state tile. An inactive lane neither
     /// decays nor writes, and outputs zero, as in the serial form. `L` is at most 16.
     #[cutile::entry()]
     fn delta_verify_chunked<
@@ -805,46 +777,42 @@ pub mod fused {
         }
         let keys_t: Tile<f32, { [D, 16] }> = keys.transpose();
         let key_products: Tile<f32, { [16, 16] }> = exact_product(keys, keys_t);
-        let correction: Tile<f32, { [16, 16] }> = select(strict, ratio * key_products, none);
         let query_products: Tile<f32, { [16, 16] }> = exact_product(queries, keys_t);
-        let attention: Tile<f32, { [16, 16] }> = select(inclusive, ratio * query_products, none);
-        let mut corrections: Tile<f32, { [16, SW] }> = constant(0.0f32, shape![16, SW]);
+        let betas_16: Tile<f32, { [16, 16] }> =
+            betas.reshape(shape![16, 1]).broadcast(shape![16, 16]);
+        // (I + A) U = R with A strictly lower triangular, so (I + A)⁻¹ is the product of the
+        // four doubling factors below: six tensor-core products, no sequential row steps.
+        let lower: Tile<f32, { [16, 16] }> = select(strict, betas_16 * ratio * key_products, none);
+        let identity: Tile<f32, { [16, 16] }> = select(
+            le_tile(columns, current) & le_tile(current, columns),
+            constant(1.0f32, shape![16, 16]),
+            none,
+        );
+        let square: Tile<f32, { [16, 16] }> = exact_product(lower, lower);
+        let fourth: Tile<f32, { [16, 16] }> = exact_product(square, square);
+        let eighth: Tile<f32, { [16, 16] }> = exact_product(fourth, fourth);
+        let first: Tile<f32, { [16, 16] }> = identity - lower;
+        let mut inverse: Tile<f32, { [16, 16] }> = exact_product(first, identity + square);
+        inverse = exact_product(inverse.reshape(shape![16, 16]), identity + fourth);
+        inverse = exact_product(inverse.reshape(shape![16, 16]), identity + eighth);
+        let growth_sw: Tile<f32, { [16, SW] }> =
+            growth.reshape(shape![16, 1]).broadcast(shape![16, SW]);
+        let residuals: Tile<f32, { [16, SW] }> = (values
+            - growth_sw * key_rows.reshape(shape![16, SW]))
+            * betas.reshape(shape![16, 1]).broadcast(shape![16, SW]);
+        let corrections: Tile<f32, { [16, SW] }> =
+            exact_product(inverse.reshape(shape![16, 16]), residuals);
+        let reads: Tile<f32, { [16, 16] }> = select(inclusive, ratio * query_products, none);
+        let recent: Tile<f32, { [16, SW] }> = exact_product(reads, corrections);
+        let outputs: Tile<f32, { [16, SW] }> = (growth_sw * query_rows.reshape(shape![16, SW])
+            + recent.reshape(shape![16, SW]))
+            * live.reshape(shape![16, 1]).broadcast(shape![16, SW]);
         let blank: Tile<f32, { [16, SW] }> = constant(0.0f32, shape![16, SW]);
         for lane in 0i32..L {
             let at: Tile<bool, { [16] }> = chunk_row(rows, lane);
             let at_sw: Tile<bool, { [16, SW] }> =
                 at.reshape(shape![16, 1]).broadcast(shape![16, SW]);
-            let at_16: Tile<bool, { [16, 16] }> =
-                at.reshape(shape![16, 1]).broadcast(shape![16, 16]);
-            let g: Tile<f32, { [1] }> = chunk_value(at, growth);
-            let weights: Tile<f32, { [16] }> = reduce_sum(select(at_16, correction, none), 0i32);
-            let earlier: Tile<f32, { [SW] }> = reduce_sum(
-                weights.reshape(shape![16, 1]).broadcast(shape![16, SW]) * corrections,
-                0i32,
-            );
-            let earlier = earlier.reshape(shape![SW]);
-            let predicted: Tile<f32, { [SW] }> = reduce_sum(select(at_sw, key_rows, blank), 0i32);
-            let predicted = predicted.reshape(shape![SW]);
-            let value: Tile<f32, { [SW] }> = reduce_sum(select(at_sw, values, blank), 0i32);
-            let value = value.reshape(shape![SW]);
-            let written: Tile<f32, { [SW] }> =
-                (value - g.broadcast(shape![SW]) * predicted - earlier)
-                    * chunk_value(at, betas).broadcast(shape![SW]);
-            corrections = select(
-                at_sw,
-                written.reshape(shape![1, SW]).broadcast(shape![16, SW]),
-                corrections,
-            );
-            let reads: Tile<f32, { [16] }> = reduce_sum(select(at_16, attention, none), 0i32);
-            let history: Tile<f32, { [SW] }> = reduce_sum(select(at_sw, query_rows, blank), 0i32);
-            let history = history.reshape(shape![SW]);
-            let recent: Tile<f32, { [SW] }> = reduce_sum(
-                reads.reshape(shape![16, 1]).broadcast(shape![16, SW]) * corrections,
-                0i32,
-            );
-            let recent = recent.reshape(shape![SW]);
-            let output: Tile<f32, { [SW] }> = (g.broadcast(shape![SW]) * history + recent)
-                * chunk_value(at, live).broadcast(shape![SW]);
+            let output: Tile<f32, { [SW] }> = reduce_sum(select(at_sw, outputs, blank), 0i32);
             out.partition_mut(shape![1, 1, SW])
                 .store(output.reshape(shape![1, 1, SW]), [0i32, lane, 0i32]);
         }
