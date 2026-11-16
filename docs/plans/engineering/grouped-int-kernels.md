@@ -2,6 +2,17 @@
 
 状态：**设计 + 第一阶段实现**。目标是在接 Q8_0 / Q5_K / IQ 系列之前，把 grouped-int 的 host 边界、kernel 选择和观测收成一套；新增格式只增加格式描述和特化 kernel，不再改一圈调用点。
 
+## 既有设计基线
+
+这份方案沿用现有分层，不新增平行的 kernel 选择/观测机制：
+
+- [Backend 架构](../../architecture/backends.md)：`ModelIr`/`DataflowGraph` 是共有语义，`KernelRegistration`/`ExecutionProgram` 绑定 backend；公共 trace/probe/stats 留在 IR。文档也明确：GPU profile 是 command-buffer 时间，OpTrace 是 CPU encoding，二者都不是逐 kernel GPU counter。
+- [代码布局](../../architecture/layout.md)：host 调度、平台契约、backend 实现分层；tile layout 和 kernel 属于 backend。
+- [性能基线约定](../../plans/performance/baseline.md)：先测瓶颈、区分算子/模型/服务，不把微基准当成服务证明。
+- 现有 `infer-kernel-api` 的 `KernelRegistry` 已用 `KernelRegistration.estimated_ns` 做静态选择；`tile::runtime::Timing`/`record_event` 已提供成对微基准的设备计时；`phase`/`tracing` 已有加载阶段计时。
+
+真正的缺口是：captured graph 没有把每个 launch 的静态描述和可选设备时间归因到 projection/kernel，而不是缺少一个全新的计时框架。因此下面的 manifest/timing 是对 `KernelRegistration` 和 `profile` 的扩展。
+
 ## 问题
 
 现在的 Q4_K / Q6_K 路径在三个层面重复：
@@ -140,9 +151,9 @@ M >= 16         -> grouped_int_mmq
 
 缺口：captured graph 没有 per-launch GPU 时间，也没有统一的 kernel manifest。设计中分两层：
 
-#### 静态 manifest（默认开启，零设备开销）
+#### 静态 manifest（默认开启，零设备开销；复用 KernelRegistration 描述）
 
-schema 放在 `infer-spi` / `infer-kernel-api`，CUDA 和 Metal 都填同一份；capture 时记录每个 launch 的 `KernelDescriptor`.
+schema 放在 `infer-spi` / `infer-kernel-api`，复用 `KernelRegistration.estimated_ns` 作为静态估算；CUDA 和 Metal 都填同一份 manifest，capture 时记录每个 launch 的 `KernelDescriptor`。
 
 ```rust
 struct KernelDescriptor {
