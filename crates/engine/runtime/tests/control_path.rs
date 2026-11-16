@@ -356,6 +356,9 @@ impl BackendProvider for FaultyBackend {
     fn capabilities(&self) -> DeviceCapabilities {
         self.inner.capabilities()
     }
+    fn formats(&self) -> BackendFormats {
+        self.inner.formats()
+    }
     fn supports_multimodal(&self) -> bool {
         self.inner.supports_multimodal()
     }
@@ -917,6 +920,9 @@ impl BackendProvider for DelayedBackend {
     }
     fn capabilities(&self) -> DeviceCapabilities {
         self.inner.capabilities()
+    }
+    fn formats(&self) -> BackendFormats {
+        self.inner.formats()
     }
     fn reserve_state_for(
         &mut self,

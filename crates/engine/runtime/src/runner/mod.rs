@@ -205,6 +205,7 @@ pub struct ThreadedBackend<B: BackendProvider> {
     identity: String,
     timing_variants: Vec<String>,
     capabilities: DeviceCapabilities,
+    formats: infer_ir::BackendFormats,
     speculation: infer_ir::SpeculationCapability,
     model: ModelIr,
     program: Arc<ExecutionProgram>,
@@ -351,6 +352,7 @@ where
             identity: backend.identity().into(),
             timing_variants: backend.device_timing_variants(),
             capabilities: backend.capabilities(),
+            formats: backend.formats(),
             speculation: backend.speculation_capability(),
             weight_backed: backend.weight_backed_dataflow(),
             multimodal: if backend.supports_multimodal() {

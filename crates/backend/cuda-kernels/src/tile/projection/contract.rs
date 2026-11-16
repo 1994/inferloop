@@ -1,9 +1,11 @@
 //! cuTile implementation of the projection family.
 use super::{
-    BLOCK_BYTES, compensated_gemm, entries, fp8_gemm, fp8_quant_reduction, linear, linear_batch,
-    nvfp4_gemm, pool_gemv, prefill_gemm, prompt_logits, small_gemm, swizzle, vendor_fp8,
+    BLOCK_BYTES, compensated_gemm, entries, fp8_gemm, fp8_quant_reduction, grouped_int,
+    grouped_int6, linear, linear_batch, nvfp4_gemm, pool_gemv, prefill_gemm, prompt_logits,
+    small_gemm, swizzle, vendor_fp8,
 };
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
+use crate::contract::grouped_int::GroupedIntPlan;
 use crate::contract::kernels::{Projection, WeightRef};
 use crate::contract::plan::{
     DenseKernel, DenseRowsPlan, DownPlan, EmbeddingBatchPlan, EmbeddingPlan, Fp4QuantKind,
@@ -21,6 +23,16 @@ use infer_core::{Error, Result};
 
 /// Columns one channel-scale tile covers.
 const SCALE_COLUMNS: usize = 256;
+/// Rows one grouped-int GEMV tile covers.
+const GROUPED_INT_TILE_ROWS: usize = 16;
+/// Code bytes in one grouped-int 64-value group.
+const GROUPED_INT_GROUP_LANES: usize = 32;
+/// Values in one grouped-int super-block.
+const GROUPED_INT_BLOCK_VALUES: usize = 256;
+/// Super-blocks one iteration decodes.
+const GROUPED_INT_SUPER_BLOCKS: usize = 4;
+/// 16-value groups in one grouped-int6 super-block.
+const GROUPED_INT6_GROUPS: usize = 16;
 
 /// Elements of an embedding row a tile covers.
 const EMBEDDING_TILE: usize = 256;
@@ -144,6 +156,11 @@ impl TileProjection {
                 )?,
                 inverse_global,
             ),
+            WeightRef::GroupedInt { .. } | WeightRef::GroupedInt6 { .. } => {
+                return Err(Error::unsupported(
+                    "grouped-int weight in a dense projection",
+                ));
+            }
         })
     }
 }
@@ -176,6 +193,53 @@ pub(in crate::tile) const fn retyped_fp8(buffer: Buffer<'_, Fp8>) -> Buffer<'_, 
 const fn retyped_fp4(buffer: Buffer<'_, Fp4Pair>) -> Buffer<'_, f4e2m1fnx2> {
     // SAFETY: `Fp4Pair` marks `f4e2m1fnx2` memory.
     unsafe { buffer.retyped() }
+}
+
+fn grouped_int_rows(
+    projection: &TileProjection,
+    recording: &Recording<'_>,
+    plan: &RowsPlan,
+    out: Buffer<'_, f32>,
+    x: Buffer<'_, f32>,
+    weight: WeightRef<'_>,
+) -> Result<()> {
+    let RowsPlan {
+        rows,
+        outputs,
+        columns,
+        ..
+    } = *plan;
+    if !outputs.is_multiple_of(GROUPED_INT_TILE_ROWS) {
+        return Err(Error::unsupported("grouped-int rows output width"));
+    }
+    for row in 0..rows {
+        let out_row = out.slice(row * outputs..(row + 1) * outputs)?;
+        let x_row = x.slice(row * columns..(row + 1) * columns)?;
+        if matches!(weight, WeightRef::GroupedInt { .. }) {
+            projection.grouped_int_row(
+                recording,
+                &GroupedIntPlan {
+                    tile_rows: GROUPED_INT_TILE_ROWS,
+                    columns,
+                },
+                out_row,
+                x_row,
+                weight,
+            )?;
+        } else {
+            projection.grouped_int6_row(
+                recording,
+                &GroupedIntPlan {
+                    tile_rows: GROUPED_INT_TILE_ROWS,
+                    columns,
+                },
+                out_row,
+                x_row,
+                weight,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 impl Projection for TileProjection {
@@ -867,6 +931,12 @@ impl Projection for TileProjection {
         x: Buffer<'_, f32>,
         weight: WeightRef<'_>,
     ) -> Result<()> {
+        if matches!(
+            weight,
+            WeightRef::GroupedInt { .. } | WeightRef::GroupedInt6 { .. }
+        ) {
+            return grouped_int_rows(self, recording, plan, out, x, weight);
+        }
         let scope = capture_scope(recording)?;
         let RowsPlan {
             kernel,
@@ -878,6 +948,11 @@ impl Projection for TileProjection {
         let x = self.matrix(recording, x, "projection input", (rows, columns))?;
         let weight = self.weight(recording, weight, (outputs, columns))?;
         match kernel {
+            RowsKernel::GroupedInt => {
+                return Err(Error::unsupported(
+                    "grouped-int rows reached the dense path",
+                ));
+            }
             RowsKernel::Small => {
                 let tile = (&mut out).partition(SMALL_TILE);
                 match &weight {
@@ -944,6 +1019,33 @@ impl Projection for TileProjection {
         x: Buffer<'_, f32>,
         weight: WeightRef<'_>,
     ) -> Result<()> {
+        match weight {
+            WeightRef::GroupedInt { .. } => {
+                return self.grouped_int_row(
+                    recording,
+                    &GroupedIntPlan {
+                        tile_rows: GROUPED_INT_TILE_ROWS,
+                        columns: plan.columns,
+                    },
+                    out,
+                    x,
+                    weight,
+                );
+            }
+            WeightRef::GroupedInt6 { .. } => {
+                return self.grouped_int6_row(
+                    recording,
+                    &GroupedIntPlan {
+                        tile_rows: GROUPED_INT_TILE_ROWS,
+                        columns: plan.columns,
+                    },
+                    out,
+                    x,
+                    weight,
+                );
+            }
+            _ => {}
+        }
         let scope = capture_scope(recording)?;
         let columns = plan.columns;
         let outputs = out.len();
@@ -977,6 +1079,104 @@ impl Projection for TileProjection {
             }
         }
         .map_err(backend_error)
+    }
+
+    fn grouped_int6_row(
+        &self,
+        recording: &Recording<'_>,
+        plan: &GroupedIntPlan,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        weight: WeightRef<'_>,
+    ) -> Result<()> {
+        let WeightRef::GroupedInt6 { codes, factors } = weight else {
+            return Err(Error::unsupported("grouped-int6 weight"));
+        };
+        let scope = capture_scope(recording)?;
+        let columns = plan.columns;
+        let outputs = out.len();
+        if columns == 0
+            || !columns.is_multiple_of(GROUPED_INT_BLOCK_VALUES)
+            || plan.tile_rows != GROUPED_INT_TILE_ROWS
+            || !outputs.is_multiple_of(GROUPED_INT_TILE_ROWS)
+            || x.len() != columns
+        {
+            return Err(Error::unsupported("grouped-int6 GEMV shape"));
+        }
+        let tiles = outputs / GROUPED_INT_TILE_ROWS;
+        let blocks = columns / GROUPED_INT_BLOCK_VALUES;
+        let code_len = tiles
+            .checked_mul(blocks)
+            .and_then(|value| value.checked_mul(GROUPED_INT_BLOCK_VALUES * GROUPED_INT_TILE_ROWS))
+            .ok_or_else(|| Error::unsupported("grouped-int6 code length overflow"))?;
+        let factor_len = tiles
+            .checked_mul(blocks)
+            .and_then(|value| value.checked_mul(GROUPED_INT6_GROUPS * GROUPED_INT_TILE_ROWS))
+            .ok_or_else(|| Error::unsupported("grouped-int6 factor length overflow"))?;
+        if codes.len() != code_len || factors.len() != factor_len {
+            return Err(Error::unsupported("grouped-int6 GEMV layout"));
+        }
+        let mut out = self.flat(recording, out)?;
+        let x = self.flat(recording, x)?;
+        let codes = self.flat(recording, codes)?;
+        let factors = self.flat(recording, factors)?;
+        let tile = (&mut out).partition([GROUPED_INT_TILE_ROWS]);
+        let generics = vec![columns.to_string(), blocks.to_string()];
+        scope
+            .record(grouped_int6::gemv(tile, &x, &codes, &factors).generics(generics))
+            .map(drop)
+            .map_err(backend_error)
+    }
+
+    fn grouped_int_row(
+        &self,
+        recording: &Recording<'_>,
+        plan: &GroupedIntPlan,
+        out: Buffer<'_, f32>,
+        x: Buffer<'_, f32>,
+        weight: WeightRef<'_>,
+    ) -> Result<()> {
+        let WeightRef::GroupedInt {
+            codes,
+            factors,
+            biases,
+        } = weight
+        else {
+            return Err(Error::unsupported("grouped-int weight"));
+        };
+        let scope = capture_scope(recording)?;
+        let columns = plan.columns;
+        let outputs = out.len();
+        if columns == 0
+            || !columns.is_multiple_of(GROUPED_INT_BLOCK_VALUES)
+            || plan.tile_rows != GROUPED_INT_TILE_ROWS
+            || !outputs.is_multiple_of(GROUPED_INT_TILE_ROWS)
+            || x.len() != columns
+        {
+            return Err(Error::unsupported("grouped-int GEMV shape"));
+        }
+        let tiles = outputs / GROUPED_INT_TILE_ROWS;
+        let groups = columns / (GROUPED_INT_GROUP_LANES * 2);
+        let scales = columns / GROUPED_INT_GROUP_LANES;
+        let code_len = tiles * groups * GROUPED_INT_GROUP_LANES * GROUPED_INT_TILE_ROWS;
+        let scale_len = tiles * scales * GROUPED_INT_TILE_ROWS;
+        if codes.len() != code_len || factors.len() != scale_len || biases.len() != scale_len {
+            return Err(Error::unsupported("grouped-int GEMV layout"));
+        }
+        let mut out = self.flat(recording, out)?;
+        let x = self.flat(recording, x)?;
+        let codes = self.flat(recording, codes)?;
+        let factors = self.flat(recording, factors)?;
+        let biases = self.flat(recording, biases)?;
+        let tile = (&mut out).partition([GROUPED_INT_TILE_ROWS]);
+        let generics = vec![
+            columns.to_string(),
+            (columns / (GROUPED_INT_BLOCK_VALUES * GROUPED_INT_SUPER_BLOCKS)).to_string(),
+        ];
+        scope
+            .record(grouped_int::gemv(tile, &x, &codes, &factors, &biases).generics(generics))
+            .map(drop)
+            .map_err(backend_error)
     }
 
     fn pack_row(

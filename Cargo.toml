@@ -10,7 +10,7 @@ members = [
     "crates/backend/metal",
     "crates/backend/cuda",
     "crates/model/package",
-    "crates/model/gguf",
+    "crates/model/format",
     "crates/model/compiler",
     "crates/model/recipes",
     "crates/engine/state",
@@ -37,7 +37,7 @@ default-members = [
     "crates/backend/kernel-api",
     "crates/backend/metal",
     "crates/model/package",
-    "crates/model/gguf",
+    "crates/model/format",
     "crates/model/compiler",
     "crates/model/recipes",
     "crates/engine/state",
@@ -109,6 +109,7 @@ tower = { version = "0.5", features = ["util"] }
 
 # Foundation
 infer-core = { version = "=0.1.0", path = "crates/foundation/core" }
+infer-format = { version = "=0.1.0", path = "crates/model/format" }
 infer-ir = { version = "=0.1.0", path = "crates/foundation/ir" }
 infer-spi = { version = "=0.1.0", path = "crates/foundation/spi" }
 

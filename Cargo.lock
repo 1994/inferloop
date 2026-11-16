@@ -1436,6 +1436,7 @@ dependencies = [
  "infer-compiler",
  "infer-core",
  "infer-cuda-kernels",
+ "infer-format",
  "infer-gpu-api",
  "infer-ir",
  "infer-kernel-api",
@@ -1557,6 +1558,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "infer-format"
+version = "0.1.0"
+dependencies = [
+ "infer-core",
+]
+
+[[package]]
 name = "infer-frontdoor"
 version = "0.1.0"
 dependencies = [
@@ -1584,13 +1592,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "infer-gguf"
-version = "0.1.0"
-dependencies = [
- "infer-core",
 ]
 
 [[package]]
@@ -1650,6 +1651,7 @@ dependencies = [
  "fast_image_resize",
  "infer-compiler",
  "infer-core",
+ "infer-format",
  "infer-ir",
  "infer-model-recipes",
  "infer-spi",

@@ -27,8 +27,29 @@ pub use providers::dflash2::{
     ARCHITECTURE as DFLASH2_ARCHITECTURE, DFlash2Config, DFlash2DraftConfig, DraftGeometry,
     DraftQuote, check_declared_architecture,
 };
+#[cfg(feature = "gguf")]
+pub use providers::qwen::GgufQwen;
+#[cfg(feature = "gguf")]
+pub use providers::qwen::gguf::tokenizer::{tokenizer_config, tokenizer_json};
+#[cfg(feature = "gguf")]
+pub use providers::qwen::gguf::validate::{TensorSpec, validate_text, validate_vision};
+#[cfg(feature = "gguf")]
+pub use providers::qwen::gguf::{
+    config, config_text, encoder, text_tensor, vision_slots, vision_tensor,
+};
+pub use providers::qwen::{HfQwen, QwenFormat, VisionTensor};
 pub use providers::qwen::{QwenProvider, VisionConfig};
 pub use providers::registry::{ModelRegistry, default_registry};
+#[cfg(feature = "gguf")]
+pub use storage::gguf_package::{GgufPackage, GgufSlot};
+#[cfg(feature = "gguf")]
+pub use storage::gguf_requirements::{PackageRequirements, gguf_requirements};
+#[cfg(feature = "gguf")]
+pub use storage::gguf_vision::{GgufVisionPackage, VisionSlot};
+#[cfg(feature = "gguf")]
+pub use storage::grouped_int::{Q4K_TILE_ROWS, Q4KDevice, Q4KTiled};
+#[cfg(feature = "gguf")]
+pub use storage::grouped_int6::{Q6K_TILE_ROWS, Q6KTiled};
 pub use storage::index::SafetensorsIndex;
 pub use storage::loader::{
     LoadOptions, LoadedWeights, TensorLoadPlan, WeightLoadPlan, WeightStorage, WeightTarget,
@@ -39,7 +60,8 @@ pub use storage::package::{
     ModelPackage, PackageManifest, QwenPackage, WeightBinding, package_path,
 };
 pub use storage::quantized::{
-    DFlash2Package, DeviceWeight, QuantizedPackage, WeightEncoding, WeightSource, WeightView,
+    DFlash2Package, DeviceWeight, GroupedIntKind, QuantizedPackage, WeightEncoding, WeightSource,
+    WeightView,
 };
 pub use storage::safetensors::{
     HostTensor, SafetensorsFile, TensorDtype, TensorHeader, convert_float_bytes, write_safetensors,

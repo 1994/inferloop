@@ -24,6 +24,7 @@ cuda = [
     "dep:futures-channel",
     "dep:infer-cuda-kernels",
     "infer-cuda-kernels/tile",
+    "infer-models/gguf",
 ]
 # The host over precompiled kernels alone: no cuTile and no CUDA toolkit at build time.
 cuda-aot = [
@@ -59,10 +60,32 @@ libloading.workspace = true
 futures-channel = { workspace = true, optional = true }
 
 [dev-dependencies]
+infer-format.workspace = true
+infer-models = { workspace = true, features = ["gguf"] }
 infer-runtime.workspace = true
 clap.workspace = true
 infer-reference-ops.workspace = true
 infer-state.workspace = true
+
+[[example]]
+name = "cuda-q6k-gemv"
+required-features = ["cuda"]
+
+[[example]]
+name = "cuda-gguf-gemv"
+required-features = ["cuda"]
+
+[[example]]
+name = "cuda-gguf-vision"
+required-features = ["cuda"]
+
+[[example]]
+name = "cuda-gguf-multimodal"
+required-features = ["cuda"]
+
+[[example]]
+name = "cuda-q4k-gemv"
+required-features = ["cuda"]
 
 [[example]]
 name = "cuda-kernels"

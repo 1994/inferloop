@@ -5,6 +5,10 @@
 //! means adding a [`TensorFile`] variant and constructing a source for it, not editing every
 //! reader.
 use crate::constants::{CONFIG_MAX_BYTES, MIB_U64};
+#[cfg(feature = "gguf")]
+use crate::storage::gguf_package::GgufPackage;
+#[cfg(feature = "gguf")]
+use crate::storage::gguf_vision::GgufVisionPackage;
 use crate::storage::package::read_bounded;
 use crate::{HostTensor, ModelRegistry, default_registry, package_path};
 use crate::{SafetensorsFile, SafetensorsIndex, TensorHeader};
@@ -237,6 +241,12 @@ pub struct PackageSource {
     tokenizer_json: OnceLock<Asset>,
     tokenizer_config: OnceLock<Asset>,
     chat_template_jinja: OnceLock<Asset>,
+    #[cfg(feature = "gguf")]
+    gguf: Option<GgufPackage>,
+    #[cfg(feature = "gguf")]
+    gguf_preprocessor: Option<Vec<u8>>,
+    #[cfg(feature = "gguf")]
+    gguf_video_preprocessor: Option<Vec<u8>>,
 }
 
 impl fmt::Debug for PackageSource {
@@ -262,6 +272,33 @@ impl PackageSource {
             .as_ref()
             .canonicalize()
             .map_err(|e| Error::invalid(e.to_string()))?;
+        #[cfg(feature = "gguf")]
+        if root
+            .extension()
+            .is_some_and(|extension| extension == "gguf")
+        {
+            let package = GgufPackage::open_auto(&root)?;
+            let preprocessor = package
+                .vision()
+                .map(GgufVisionPackage::preprocessor_config)
+                .transpose()?;
+            let config = Some(package.config().to_vec());
+            let video_preprocessor = preprocessor.clone();
+            return Ok(Self {
+                config,
+                generation_config: OnceLock::new(),
+                readme: OnceLock::new(),
+                preprocessor_config: OnceLock::new(),
+                video_preprocessor_config: OnceLock::new(),
+                tokenizer_json: OnceLock::new(),
+                tokenizer_config: OnceLock::new(),
+                chat_template_jinja: OnceLock::new(),
+                gguf: Some(package),
+                gguf_preprocessor: preprocessor,
+                gguf_video_preprocessor: video_preprocessor,
+                root,
+            });
+        }
         Ok(Self {
             config: read_optional(&root, "config.json", PREPROCESSOR_MAX_BYTES)?,
             generation_config: OnceLock::new(),
@@ -271,6 +308,12 @@ impl PackageSource {
             tokenizer_json: OnceLock::new(),
             tokenizer_config: OnceLock::new(),
             chat_template_jinja: OnceLock::new(),
+            #[cfg(feature = "gguf")]
+            gguf: None,
+            #[cfg(feature = "gguf")]
+            gguf_preprocessor: None,
+            #[cfg(feature = "gguf")]
+            gguf_video_preprocessor: None,
             root,
         })
     }
@@ -339,6 +382,10 @@ impl PackageSource {
     /// # Errors
     /// Returns an invalid-input error for malformed JSON.
     pub fn generation_config(&self) -> Result<serde_json::Value> {
+        #[cfg(feature = "gguf")]
+        if self.gguf.is_some() {
+            return Ok(serde_json::Value::Object(serde_json::Map::new()));
+        }
         let bytes = self.asset(
             &self.generation_config,
             "generation_config.json",
@@ -354,6 +401,10 @@ impl PackageSource {
     /// # Errors
     /// Returns an invalid-input error when the card is not UTF-8.
     pub fn readme(&self) -> Result<Option<&str>> {
+        #[cfg(feature = "gguf")]
+        if self.gguf.is_some() {
+            return Ok(None);
+        }
         self.asset(&self.readme, "README.md", TEXT_ASSET_MAX_BYTES)?
             .map(|bytes| str::from_utf8(bytes).map_err(|e| Error::invalid(e.to_string())))
             .transpose()
@@ -363,6 +414,10 @@ impl PackageSource {
     /// # Errors
     /// Returns an invalid-input error when the package has no preprocessor configuration.
     pub fn preprocessor_config(&self) -> Result<&[u8]> {
+        #[cfg(feature = "gguf")]
+        if let Some(bytes) = &self.gguf_preprocessor {
+            return Ok(bytes);
+        }
         self.asset(
             &self.preprocessor_config,
             "preprocessor_config.json",
@@ -375,6 +430,10 @@ impl PackageSource {
     /// # Errors
     /// Returns an invalid-input error when the package has no video preprocessor configuration.
     pub fn video_preprocessor_config(&self) -> Result<&[u8]> {
+        #[cfg(feature = "gguf")]
+        if let Some(bytes) = &self.gguf_video_preprocessor {
+            return Ok(bytes);
+        }
         self.asset(
             &self.video_preprocessor_config,
             "video_preprocessor_config.json",
@@ -387,6 +446,10 @@ impl PackageSource {
     /// # Errors
     /// Returns an I/O, invalid-input, or capacity error for an unreadable or oversized tokenizer.
     pub fn tokenizer_json(&self) -> Result<Option<&[u8]>> {
+        #[cfg(feature = "gguf")]
+        if let Some(package) = &self.gguf {
+            return Ok(Some(package.tokenizer()));
+        }
         self.asset(
             &self.tokenizer_json,
             "tokenizer.json",
@@ -398,6 +461,10 @@ impl PackageSource {
     /// # Errors
     /// Returns an I/O, invalid-input, or capacity error for an unreadable or oversized asset.
     pub fn tokenizer_config(&self) -> Result<Option<&[u8]>> {
+        #[cfg(feature = "gguf")]
+        if let Some(package) = &self.gguf {
+            return Ok(Some(package.tokenizer_config()));
+        }
         self.asset(
             &self.tokenizer_config,
             "tokenizer_config.json",
@@ -409,6 +476,10 @@ impl PackageSource {
     /// # Errors
     /// Returns an I/O, invalid-input, or capacity error for an unreadable or oversized asset.
     pub fn chat_template_jinja(&self) -> Result<Option<&[u8]>> {
+        #[cfg(feature = "gguf")]
+        if self.gguf.is_some() {
+            return Ok(None);
+        }
         self.asset(
             &self.chat_template_jinja,
             "chat_template.jinja",
@@ -421,6 +492,10 @@ impl PackageSource {
     /// This only stats the tokenizer file, so deciding whether to serve text does not read it.
     #[must_use]
     pub fn has_text_assets(&self) -> bool {
+        #[cfg(feature = "gguf")]
+        if self.gguf.is_some() {
+            return true;
+        }
         self.root.join("tokenizer.json").exists()
     }
 
@@ -449,6 +524,12 @@ impl PackageSource {
     /// Returns an I/O or invalid-input error for missing, malformed, duplicate, or inconsistent
     /// shards.
     pub fn tensor_files(&self) -> Result<TensorFiles> {
+        #[cfg(feature = "gguf")]
+        if self.gguf.is_some() {
+            return Err(Error::unsupported(
+                "GGUF tensors are read through GgufPackage",
+            ));
+        }
         load_tensor_files(&self.root)
     }
 }

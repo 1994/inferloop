@@ -5,6 +5,8 @@ pub mod attention;
 pub mod buffer;
 pub mod draft;
 pub mod geometry;
+pub mod grouped_int;
+pub use grouped_int::{GroupedIntPlan, GroupedIntWeight};
 pub mod kernels;
 pub mod plan;
 pub mod recording;

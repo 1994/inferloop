@@ -187,14 +187,19 @@ fn bind_tensors(
             // A tied output projection shares its storage with the input embedding, so the very
             // same weight must also be reachable by the embedding lookup.
             if embeddings.contains(&tensor.id) {
-                let Some(shared) = projection.dense() else {
-                    return Err(Error::unsupported(
-                        "a tied input embedding requires a dense output projection",
-                    ));
-                };
-                weights
-                    .embeddings
-                    .insert(tensor.id, shared.allocation().clone());
+                if let Some(shared) = projection.dense() {
+                    weights
+                        .embeddings
+                        .insert(tensor.id, shared.allocation().clone());
+                } else {
+                    let values = package
+                        .decoded(&source.data().name)?
+                        .ok_or_else(|| Error::unsupported("tied grouped-int embedding"))?;
+                    let values = values.into_iter().map(bf16::from_f32).collect();
+                    weights
+                        .embeddings
+                        .insert(tensor.id, device.runtime().upload(values)?);
+                }
             }
             weights.projections.insert(tensor.id, projection);
         } else if embeddings.contains(&tensor.id) {

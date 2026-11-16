@@ -427,6 +427,9 @@ impl BackendProvider for TimedBackend {
     fn capabilities(&self) -> DeviceCapabilities {
         self.inner.capabilities()
     }
+    fn formats(&self) -> BackendFormats {
+        self.inner.formats()
+    }
     fn supports_control_checkpoint(&self) -> bool {
         true
     }
@@ -759,6 +762,9 @@ impl BackendProvider for PressureBackend {
     }
     fn capabilities(&self) -> DeviceCapabilities {
         self.inner.capabilities()
+    }
+    fn formats(&self) -> BackendFormats {
+        self.inner.formats()
     }
     fn execution_graph(&self, model: &ModelIr) -> Result<DataflowGraph> {
         self.inner.execution_graph(model)

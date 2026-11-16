@@ -314,6 +314,9 @@ impl BackendProvider for HeldBackend {
     fn capabilities(&self) -> DeviceCapabilities {
         self.inner.capabilities()
     }
+    fn formats(&self) -> BackendFormats {
+        self.inner.formats()
+    }
     fn validate_program(&self, model: &ModelIr, program: &ExecutionProgram) -> Result<()> {
         self.inner.validate_program(model, program)
     }

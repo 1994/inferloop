@@ -1,5 +1,6 @@
+use super::Q4KDevice;
 use infer_core::ErrorCode;
-use infer_gguf::{GgufType, Q4KDevice, dequantize};
+use infer_format::{GgufType, dequantize};
 
 const ONE: [u8; 2] = [0x00, 0x3c];
 const HALF: [u8; 2] = [0x00, 0x38];
@@ -77,8 +78,8 @@ fn multiple_rows_and_blocks_keep_their_offsets() {
     payload.extend_from_slice(&second);
     payload.extend_from_slice(&second);
     let device = Q4KDevice::from_blocks(2, 512, &payload).unwrap();
-    assert_eq!(device.d(), &[1.0, 1.0, 0.5, 0.5]);
-    assert_eq!(device.dmin(), &[0.0, 0.0, 0.25, 0.25]);
+    assert_eq!(device.d(), &[1.0, 0.5, 1.0, 0.5]);
+    assert_eq!(device.dmin(), &[0.0, 0.25, 0.0, 0.25]);
     let x = vec![1.0f32; 512];
     assert_eq!(device.row_dot(0, &x).unwrap(), 768.0);
     // Second row: d=0.5, dmin=0.25, scales 1, mins 1, codes 3 and 4.

@@ -11,7 +11,8 @@ use infer_cuda_kernels::runtime::bf16;
 use infer_cuda_kernels::runtime::{f4e2m1fnx2, f8e4m3fn};
 use infer_ir::DType;
 use infer_models::{
-    DeviceWeight, QuantizedPackage, WeightEncoding, WeightSource, WeightView, convert_float_bytes,
+    DeviceWeight, GroupedIntKind, Q4KDevice, Q4KTiled, Q6KTiled, QuantizedPackage, WeightEncoding,
+    WeightSource, WeightView, convert_float_bytes,
 };
 use std::cmp::Ordering;
 
@@ -180,6 +181,9 @@ impl ProjectionWeight {
                 ))
             }
             WeightEncoding::Nvfp4 => Self::load_nvfp4(device, package, weight),
+            WeightEncoding::GroupedInt4 | WeightEncoding::GroupedInt6 => {
+                Self::load_grouped_int(device, package, weight)
+            }
             WeightEncoding::Fp8Block => {
                 let values = codes(package, weight.data())?;
                 let shape = weight.shape();
@@ -277,9 +281,64 @@ impl ProjectionWeight {
                     device.runtime().upload(scaling)?,
                 ))
             }
-            WeightEncoding::Nvfp4 | WeightEncoding::Fp8Block => Err(Error::unsupported(
+            WeightEncoding::Nvfp4
+            | WeightEncoding::Fp8Block
+            | WeightEncoding::GroupedInt4
+            | WeightEncoding::GroupedInt6 => Err(Error::unsupported(
                 "padded CUDA attention heads need dense or per-channel FP8 projections",
             )),
+        }
+    }
+
+    fn load_grouped_int(
+        device: &CudaDevice,
+        package: &mut QuantizedPackage,
+        weight: &DeviceWeight,
+    ) -> Result<Self> {
+        let DeviceWeight::GroupedInt { data, kind } = weight else {
+            return Err(Error::invalid("grouped-int weight descriptor"));
+        };
+        let shape = weight.shape();
+        let [rows, columns] = shape.as_slice() else {
+            return Err(Error::invalid("grouped-int weight must be a matrix"));
+        };
+        let raw = package.read(data, STAGING)?;
+        // Each stage's buffers drop once the next exists, and the tiled layout moves into the
+        // upload, so the host peak holds at most two copies of the weight.
+        match kind {
+            GroupedIntKind::Q4K => {
+                let layout =
+                    Q4KTiled::from_device(&Q4KDevice::from_blocks(*rows, *columns, &raw)?)?;
+                drop(raw);
+                if layout.rows() != *rows || layout.columns() != *columns {
+                    return Err(Error::invalid("Q4_K layout shape"));
+                }
+                let (codes, factors, biases) = layout.into_device_parts();
+                Ok(Self::GroupedInt {
+                    codes: Matrix::upload(device, codes, &[*rows, *columns / 2]).map_err(
+                        |error| Error::invalid(format!("{} Q4_K codes: {error}", data.name)),
+                    )?,
+                    factors: device.runtime().upload(factors)?,
+                    biases: Some(device.runtime().upload(biases)?),
+                    kind: GroupedIntKind::Q4K,
+                })
+            }
+            GroupedIntKind::Q6K => {
+                let layout = Q6KTiled::from_blocks(*rows, *columns, &raw)?;
+                drop(raw);
+                if layout.rows() != *rows || layout.columns() != *columns {
+                    return Err(Error::invalid("Q6_K layout shape"));
+                }
+                let (codes, factors) = layout.into_device_parts();
+                Ok(Self::GroupedInt {
+                    codes: Matrix::upload(device, codes, &[*rows, *columns]).map_err(|error| {
+                        Error::invalid(format!("{} Q6_K codes: {error}", data.name))
+                    })?,
+                    factors: device.runtime().upload(factors)?,
+                    biases: None,
+                    kind: GroupedIntKind::Q6K,
+                })
+            }
         }
     }
 
@@ -359,6 +418,9 @@ impl ProjectionWeight {
             }
             Self::Fp4(weights, scales, global) => {
                 device.nvfp4_matvec(&vector, weights, scales, *global, tile)?
+            }
+            Self::GroupedInt { .. } => {
+                return Err(Error::unsupported("grouped-int host matvec"));
             }
         };
         device.runtime().read(&output)

@@ -87,6 +87,9 @@ where
     fn capabilities(&self) -> DeviceCapabilities {
         self.capabilities.clone()
     }
+    fn formats(&self) -> infer_ir::BackendFormats {
+        self.formats
+    }
     fn speculation_capability(&self) -> infer_ir::SpeculationCapability {
         self.speculation
     }

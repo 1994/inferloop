@@ -5,7 +5,7 @@
 )]
 
 use infer_core::ErrorCode;
-use infer_gguf::{GgufFile, GgufLimits, GgufType, MetadataValue};
+use infer_format::{GgufFile, GgufLimits, GgufType, MetadataValue};
 use std::env::temp_dir;
 use std::fs::{create_dir_all, read, remove_dir_all, write};
 use std::path::PathBuf;
@@ -18,7 +18,7 @@ const ALIGNMENT: u32 = 32;
 
 fn temp() -> PathBuf {
     let path = temp_dir().join(format!(
-        "infer-gguf-{}-{}",
+        "infer-format-{}-{}",
         id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));

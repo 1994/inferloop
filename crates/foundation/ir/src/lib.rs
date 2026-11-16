@@ -31,9 +31,9 @@ pub use execution::{
     TaskOutput,
 };
 pub use hardware::{
-    BackendKind, BackendRequirements, CapabilityRequirements, CudaRequirements, DeviceBackend,
-    DeviceCapabilities, MetalCapabilities, MetalRequirements, NvidiaArchitecture,
-    NvidiaCapabilities, SpeculationCapability,
+    BackendFormats, BackendKind, BackendRequirements, CapabilityRequirements, CheckpointFormat,
+    CudaRequirements, DeviceBackend, DeviceCapabilities, ExecutableEncoding, MetalCapabilities,
+    MetalRequirements, NvidiaArchitecture, NvidiaCapabilities, SpeculationCapability,
 };
 pub use image::{
     EncodedImageInfo, EncodedImageInput, ImageEncoding, ImageInput, ImageNormalization,

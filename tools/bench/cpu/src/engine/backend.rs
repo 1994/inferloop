@@ -42,6 +42,10 @@ impl BackendProvider for Backend {
     fn identity(&self) -> &'static str {
         "persistent-device-contract-double"
     }
+    fn formats(&self) -> infer_ir::BackendFormats {
+        // A device-contract double that loads no checkpoint.
+        infer_ir::BackendFormats::default()
+    }
     fn capabilities(&self) -> DeviceCapabilities {
         // A planning sample, not a claim that a device exists: this backend is a device-contract
         // double that runs no model, and the engine only reads the descriptor to plan.

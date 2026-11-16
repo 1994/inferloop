@@ -25,7 +25,7 @@
 | OpenAI 请求 | [GenerationRequest](../../../crates/service/frontdoor/src/http/openai/request.rs) 支持文本、nullable assistant content、工具历史、none/auto、required/named/strict、parallel=false 与 SSE；未知字段拒绝 | 更完整的 schema 及推测组合 |
 | OpenAI 输出 | [execution](../../../crates/service/frontdoor/src/http/openai/execution.rs) 与 [stream](../../../crates/service/frontdoor/src/http/openai/stream.rs) 共用 parser；支持 reasoning、tool_calls 与参数 deltas | 新方言或约束接入时复用当前事件契约 |
 | 结构化生成 | [IR FeaturePlan](../../../crates/foundation/ir/src/workload.rs) 有 grammar 元数据；Decision workload 用于评分/分类 | 工具约束通过独立 matcher 接入，通用 response_format 尚未开放；不能把 Decision 当作 JSON Schema 生成能力 |
-| 模型上下文 | [Qwen provider](../../../crates/model/package/src/providers/qwen.rs) 导入 `max_sequence`；服务、workload 与 runtime 共用 `P+G<=L` 预算 | 后续扩展上下文能力另行验收 |
+| 模型上下文 | [Qwen provider](../../../crates/model/package/src/providers/qwen/mod.rs) 导入 `max_sequence`；服务、workload 与 runtime 共用 `P+G<=L` 预算 | 后续扩展上下文能力另行验收 |
 | 输入上限 | [RuntimeConfig](../../../crates/engine/runtime/src/config.rs) 将输入 cap 与总上下文分别表达 | 保持各入口共同规则 |
 | 输出上限 | OpenAI 两种输出预算字段互斥，统一为 `max_new_tokens`，受服务输出 cap 与剩余上下文限制 | 后续能力保持来源与冲突规则 |
 | 服务配置 | [CLI](../../../crates/service/cli/src/arguments.rs) 支持总上下文、输出/序列 cap、部署名；有效值和来源可读回 | 需要新覆盖时先确定真实调用场景 |

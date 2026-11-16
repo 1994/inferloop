@@ -23,6 +23,7 @@ fn encoder() -> ModalityEncoder {
         rope_theta: 10_000.0,
         norm_epsilon: 1e-6,
         hidden_activation: HiddenActivation::GeluTanh,
+        deepstack_layers: Vec::new(),
     }
 }
 
@@ -70,6 +71,7 @@ fn weights(device: &CudaDevice, encoder: &ModalityEncoder) -> Result<VisionWeigh
         attention,
         mlp,
         merger: None,
+        deepstack: Vec::new(),
         positions: Vec::new(),
     })
 }

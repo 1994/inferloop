@@ -116,6 +116,8 @@ pub enum ComputeFormat {
     Fp8,
     /// Native FP4 tensor cores, with block-16 scales.
     Fp4,
+    /// Grouped-integer GEMV (`Q4_K`/`Q6_K`).
+    GroupedInt,
 }
 
 /// A projection weight in the encoding its checkpoint stores, with the scales it needs.
@@ -129,6 +131,13 @@ pub enum ProjectionWeight {
     Fp8Block(Matrix<f8e4m3fn>, Matrix<f32>),
     /// Packed code pairs, one E4M3 scale per 16-column group, and the global scale.
     Fp4(Matrix<f4e2m1fnx2>, Matrix<f8e4m3fn>, f32),
+    /// Grouped-int codes with per-group factors; `Q4_K` also has biases.
+    GroupedInt {
+        codes: Matrix<u8>,
+        factors: Allocation<f32>,
+        biases: Option<Allocation<f32>>,
+        kind: infer_models::GroupedIntKind,
+    },
 }
 
 impl ProjectionWeight {
@@ -159,6 +168,7 @@ impl ProjectionWeight {
             Self::Dense(_) => ComputeFormat::Dense,
             Self::Fp8(..) | Self::Fp8Block(..) => ComputeFormat::Fp8,
             Self::Fp4(..) => ComputeFormat::Fp4,
+            Self::GroupedInt { .. } => ComputeFormat::GroupedInt,
         }
     }
 
@@ -169,6 +179,7 @@ impl ProjectionWeight {
             Self::Fp8(..) => ("fp8-channel", 1),
             Self::Fp8Block(..) => ("fp8-block", 1),
             Self::Fp4(..) => ("nvfp4", 2),
+            Self::GroupedInt { .. } => ("grouped-int", 1),
         }
     }
 
@@ -197,7 +208,7 @@ impl ProjectionWeight {
                 block_columns: FP8_BLOCK_COLUMNS,
                 quantized_inputs,
             }),
-            Self::Fp4(..) => Err(device_error(
+            Self::Fp4(..) | Self::GroupedInt { .. } => Err(device_error(
                 "NVFP4 expert activation quantization requires an explicit numerical contract",
             )),
         }
@@ -216,7 +227,7 @@ impl ProjectionWeight {
                 scales: buffer(scales)?,
                 scale_columns: scales.columns(),
             }),
-            Self::Fp4(..) => Err(device_error(
+            Self::Fp4(..) | Self::GroupedInt { .. } => Err(device_error(
                 "DFlash2 draft projections do not support NVFP4",
             )),
         }
@@ -237,6 +248,12 @@ impl ProjectionWeight {
             Self::Fp8(w, s) => bytes(w.allocation()) + bytes(s),
             Self::Fp8Block(w, s) => bytes(w.allocation()) + bytes(s.allocation()),
             Self::Fp4(w, s, _) => bytes(w.allocation()) + bytes(s.allocation()),
+            Self::GroupedInt {
+                codes,
+                factors,
+                biases,
+                ..
+            } => bytes(codes.allocation()) + bytes(factors) + biases.as_ref().map_or(0, bytes),
         }
     }
 
@@ -246,6 +263,10 @@ impl ProjectionWeight {
             Self::Dense(w) => w.shape(),
             Self::Fp8(w, _) | Self::Fp8Block(w, _) => w.shape(),
             Self::Fp4(w, _, _) => w.shape(),
+            Self::GroupedInt { codes, kind, .. } => match kind {
+                infer_models::GroupedIntKind::Q4K => [codes.rows(), codes.columns() * 2],
+                infer_models::GroupedIntKind::Q6K => codes.shape(),
+            },
         }
     }
 
@@ -265,6 +286,10 @@ impl ProjectionWeight {
                     && g.is_finite()
                     && *g > 0.0
             }
+            Self::GroupedInt { codes, kind, .. } => match kind {
+                infer_models::GroupedIntKind::Q4K => codes.shape() == [rows, columns / 2],
+                infer_models::GroupedIntKind::Q6K => codes.shape() == [rows, columns],
+            },
         };
         if valid {
             Ok(())
@@ -289,6 +314,24 @@ impl ProjectionWeight {
                 scales: buffer(s)?,
                 inverse_global: global.recip(),
             }),
+            Self::GroupedInt {
+                codes,
+                factors,
+                biases,
+                kind,
+            } => match kind {
+                infer_models::GroupedIntKind::Q4K => Ok(WeightRef::GroupedInt {
+                    codes: buffer(codes)?,
+                    factors: buffer(factors)?,
+                    biases: buffer(biases.as_ref().ok_or_else(|| {
+                        device_error("Q4_K weight is missing biases".to_string())
+                    })?)?,
+                }),
+                infer_models::GroupedIntKind::Q6K => Ok(WeightRef::GroupedInt6 {
+                    codes: buffer(codes)?,
+                    factors: buffer(factors)?,
+                }),
+            },
         }
     }
 

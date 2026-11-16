@@ -6,6 +6,8 @@ use crate::constants::MIB_U64;
 use infer_core::{Error, ModelId, Result};
 use infer_models::{ModelPackage, SafetensorsIndex, default_registry, memory_estimate};
 use std::fs::read;
+#[cfg(feature = "gguf")]
+use std::path::Path;
 
 /// Conservative expansion factor from native weight storage to F32, applied to the staging
 /// budget so an expanded weight chunk still fits its staging allocation.
@@ -54,6 +56,14 @@ pub fn inspect_model(options: InspectModelOptions) -> Result<()> {
     Ok(())
 }
 pub fn inspect_package(options: InspectPackageOptions) -> Result<()> {
+    #[cfg(feature = "gguf")]
+    if options
+        .package
+        .extension()
+        .is_some_and(|extension| extension == "gguf")
+    {
+        return inspect_gguf(&options.package);
+    }
     let package = ModelPackage::open(options.package, ModelId::new(1)?)?;
     let budget = options
         .host_memory_mib
@@ -92,6 +102,70 @@ pub fn inspect_package(options: InspectPackageOptions) -> Result<()> {
 
     Ok(())
 }
+/// `inspect-package` output for a GGUF checkpoint.
+#[cfg(feature = "gguf")]
+#[derive(serde::Serialize)]
+struct GgufInspection {
+    checkpoint: &'static str,
+    text_slots: usize,
+    q4k: usize,
+    q6k: usize,
+    dense: usize,
+    encodings: Vec<infer_ir::ExecutableEncoding>,
+    vision: GgufVision,
+    tokenizer_bytes: usize,
+    config_bytes: usize,
+}
+
+/// The attached vision projector, if any; counts are absent when none is attached.
+#[cfg(feature = "gguf")]
+#[derive(serde::Serialize, Default)]
+struct GgufVision {
+    attached: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slots: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    patch_slices: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deepstack: Option<usize>,
+}
+
+#[cfg(feature = "gguf")]
+fn inspect_gguf(path: &Path) -> Result<()> {
+    let package = infer_models::GgufPackage::open_auto(path)?;
+    let mut q4k = 0usize;
+    let mut q6k = 0usize;
+    let mut dense = 0usize;
+    for slot in package.slots().values() {
+        match slot.encoding()? {
+            infer_ir::ExecutableEncoding::GroupedInt4 => q4k += 1,
+            infer_ir::ExecutableEncoding::GroupedInt6 => q6k += 1,
+            _ => dense += 1,
+        }
+    }
+    let requirements = infer_models::gguf_requirements(path)?;
+    let vision = package
+        .vision()
+        .map_or_else(GgufVision::default, |vision| GgufVision {
+            attached: true,
+            slots: Some(vision.slots().len()),
+            patch_slices: Some(vision.patch().iter().flatten().count()),
+            deepstack: Some(vision.deepstack().len()),
+        });
+    print(&GgufInspection {
+        checkpoint: "gguf",
+        text_slots: package.slots().len(),
+        q4k,
+        q6k,
+        dense,
+        encodings: requirements.encodings,
+        vision,
+        tokenizer_bytes: package.tokenizer().len(),
+        config_bytes: package.config().len(),
+    })?;
+    Ok(())
+}
+
 pub fn tokenize(options: TokenizeOptions) -> Result<()> {
     let TokenizeOptions {
         package,

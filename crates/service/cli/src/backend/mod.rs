@@ -11,6 +11,8 @@ mod selected;
 mod speculation;
 #[cfg(cuda_backend)]
 use infer_backend_cuda::device::CudaDevice;
+#[cfg(all(cuda_backend, feature = "gguf"))]
+use infer_backend_cuda::executor::CudaBackend;
 #[cfg(any(test, native_backend))]
 use infer_core::{Error, Result};
 use std::path::PathBuf;
@@ -198,6 +200,23 @@ fn resolve(
         "no supported GPU backend available (CUDA or Metal); CPU execution is test-only",
     ))
 }
+/**
+ * Static checkpoint/encoding capabilities of the backend a selection resolves to.
+ *
+ * # Errors
+ * Returns an unsupported error when no GPU backend is available.
+ */
+#[cfg(feature = "gguf")]
+pub fn formats(choice: BackendChoice) -> Result<infer_ir::BackendFormats> {
+    match resolve(choice, cuda_available(), metal_available())? {
+        #[cfg(cuda_backend)]
+        BackendChoice::Cuda => Ok(CudaBackend::FORMATS),
+        #[cfg(metal_backend)]
+        BackendChoice::Metal => Ok(infer_backend_metal::MetalBackend::FORMATS),
+        _ => Err(Error::unsupported("no supported GPU backend available")),
+    }
+}
+
 #[cfg(test)]
 #[path = "../../tests/unit/backend_mod.rs"]
 mod tests;

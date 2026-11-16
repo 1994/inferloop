@@ -35,6 +35,108 @@ impl DeviceBackend {
         }
     }
 }
+/// Checkpoint container a backend can load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckpointFormat {
+    /// Hugging Face Safetensors.
+    Safetensors,
+    /// GGUF container with GGML block layouts.
+    Gguf,
+    /// MLX package.
+    Mlx,
+}
+
+impl CheckpointFormat {
+    /// Stable label used in errors and diagnostics.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Safetensors => "safetensors",
+            Self::Gguf => "gguf",
+            Self::Mlx => "mlx",
+        }
+    }
+}
+
+/// Weight storage/compute encoding a backend can execute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutableEncoding {
+    /// F32/BF16/F16 dense weights.
+    Dense,
+    /// FP8 channel or block scales.
+    Fp8,
+    /// NVFP4 block scales.
+    Nvfp4,
+    /// GGML `Q4_K` grouped integers.
+    GroupedInt4,
+    /// GGML `Q6_K` grouped integers.
+    GroupedInt6,
+    /// MLX affine quantization.
+    MlxAffine,
+}
+
+impl ExecutableEncoding {
+    /// Stable label used in errors and diagnostics.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Dense => "dense",
+            Self::Fp8 => "fp8",
+            Self::Nvfp4 => "nvfp4",
+            Self::GroupedInt4 => "grouped-int4",
+            Self::GroupedInt6 => "grouped-int6",
+            Self::MlxAffine => "mlx-affine",
+        }
+    }
+}
+
+/// Checkpoint containers and weight encodings one backend advertises.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BackendFormats {
+    /// Containers the host loader may present to this backend.
+    pub checkpoints: &'static [CheckpointFormat],
+    /// Encodings the kernels can execute.
+    pub encodings: &'static [ExecutableEncoding],
+}
+
+impl BackendFormats {
+    /// Whether this backend can load `format`.
+    #[must_use]
+    pub fn supports_format(self, format: CheckpointFormat) -> bool {
+        self.checkpoints.contains(&format)
+    }
+
+    /// Whether this backend can execute `encoding`.
+    #[must_use]
+    pub fn supports_encoding(self, encoding: ExecutableEncoding) -> bool {
+        self.encodings.contains(&encoding)
+    }
+
+    /// Require a checkpoint format and every listed encoding.
+    /// # Errors
+    /// Rejects a container or encoding this backend does not declare.
+    pub fn require(self, format: CheckpointFormat, encodings: &[ExecutableEncoding]) -> Result<()> {
+        if !self.supports_format(format) {
+            return Err(Error::unsupported(format!(
+                "backend does not load {} checkpoints",
+                format.label()
+            )));
+        }
+        if let Some(encoding) = encodings
+            .iter()
+            .find(|encoding| !self.supports_encoding(**encoding))
+        {
+            return Err(Error::unsupported(format!(
+                "backend does not execute {} weights",
+                encoding.label()
+            )));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceCapabilities {
@@ -78,6 +180,7 @@ impl DeviceCapabilities {
     pub const fn backend_kind(&self) -> BackendKind {
         self.backend.kind()
     }
+
     /// # Errors
     /// Returns an unsupported error if backend, architecture, features, precision, or memory requirements are unavailable.
     pub fn require(&self, required: &CapabilityRequirements) -> Result<()> {

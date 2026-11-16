@@ -24,6 +24,9 @@ impl BackendProvider for Backpressure {
     fn capabilities(&self) -> DeviceCapabilities {
         self.inner.capabilities()
     }
+    fn formats(&self) -> infer_ir::BackendFormats {
+        self.inner.formats()
+    }
     fn validate_program(&self, m: &ModelIr, p: &ExecutionProgram) -> Result<()> {
         self.inner.validate_program(m, p)
     }

@@ -361,6 +361,9 @@ impl BackendProvider for ProtocolBackend {
         self.media_quotes.fetch_add(1, Ordering::Relaxed);
         self.prepare_state_reservation(capacity, readout)
     }
+    fn formats(&self) -> infer_ir::BackendFormats {
+        infer_ir::BackendFormats::default()
+    }
     fn capabilities(&self) -> DeviceCapabilities {
         DeviceCapabilities {
             backend: infer_ir::DeviceBackend::Cuda(infer_ir::NvidiaCapabilities {

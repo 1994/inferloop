@@ -1,5 +1,5 @@
 [package]
-name = "infer-gguf"
+name = "infer-format"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,16 +16,8 @@ path = "tests/container.rs"
 name = "quant"
 path = "tests/quant.rs"
 
-[[test]]
-name = "q4k_device"
-path = "tests/q4k_device.rs"
-
 [lints]
 workspace = true
 
 [dependencies]
 infer-core.workspace = true
-
-[[example]]
-name = "gguf-q4k-gemv"
-path = "examples/gguf-q4k-gemv.rs"

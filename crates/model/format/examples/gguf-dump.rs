@@ -1,5 +1,5 @@
 //! Print a GGUF container's header, metadata and tensor-type histogram.
-use infer_gguf::GgufFile;
+use infer_format::GgufFile;
 use std::collections::BTreeMap;
 use std::env::args;
 use std::error::Error;
