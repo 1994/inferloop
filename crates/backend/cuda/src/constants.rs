@@ -103,6 +103,13 @@ mod device {
     pub const CB_DECODE_SLOTS: usize = 16;
     /// Shared pools cannot exceed the protocol's completion-cell capacity.
     pub const MAX_POOL_SLOTS: usize = infer_gpu_api::MAX_SUBMISSION_BATCH;
+    /// Longest sequence capacity that joins the slot pool; longer requests run privately.
+    ///
+    /// This is a workload policy, not a device property: KV pages are leased by actual length,
+    /// but a funded pool still reserves one complete context and unpaged draft state per slot
+    /// capacity, so raising it costs pooled width. Removing those capacity-proportional costs
+    /// lets this become the model context; until then the serving quote decides what funds.
+    pub const CB_SLOT_TOKENS: usize = 8192;
     /// Metadata state-position sentinel masking one lane's state writes in a batched replay.
     pub const INACTIVE_LANE_STATE_POSITION: i32 = -1;
 }

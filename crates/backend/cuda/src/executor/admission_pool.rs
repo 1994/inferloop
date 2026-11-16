@@ -1,6 +1,6 @@
 //! Select physical serving resources from real request lengths at idle boundaries.
 use super::CudaExecutor;
-use crate::constants::{KV_BLOCK_TOKENS, MAX_POOL_SLOTS};
+use crate::constants::{CB_SLOT_TOKENS, KV_BLOCK_TOKENS, MAX_POOL_SLOTS};
 use crate::executor::execution::pooled_envelope;
 use infer_core::{Error, ErrorCode, Result, StateId};
 use infer_ir::OutputReadout;
@@ -46,32 +46,8 @@ impl CudaExecutor {
     /// Capture the zero-demand funded pool unless one exists (`CudaBackend::with_pool_captured`).
     pub(super) fn capture_funded_pool(&mut self) {
         if self.slots.is_none() && self.pool_quote.is_some() {
-            self.warm_slot_pool_for(self.slot_capacity, 0);
+            self.warm_slot_pool_for(CB_SLOT_TOKENS.min(self.loaded.model().max_sequence), 0);
         }
-    }
-
-    /// Largest sequence capacity the slot pool serves without narrowing its funded width.
-    ///
-    /// KV pages are leased by actual length, but a pool still funds one complete context, and
-    /// draft state, block tables and the prompt worker grow with capacity. Capacity therefore
-    /// trades against concurrency only through the serving quote: take the largest
-    /// power-of-two capacity, capped by the model context, whose funded width equals the width
-    /// funded at one KV block. When no pool is fundable the quote stays the only gate.
-    ///
-    /// # Errors
-    /// Propagates device memory queries and quote arithmetic failures.
-    pub(super) fn derive_slot_capacity(&self) -> Result<usize> {
-        let ceiling = self.loaded.model().max_sequence;
-        let (envelope, _) = self.pool_funding()?;
-        let maximum = self.maximum_states.min(MAX_POOL_SLOTS);
-        let (capacity, width) = widest_capacity(ceiling, |capacity| {
-            Ok(self
-                .pooled_plan_for(capacity, maximum, envelope, 0)?
-                .map_or(0, |plan| plan.quote.width))
-        })?;
-        tracing::info!(target: "infer::cuda_admission", capacity, width, ceiling,
-            envelope_bytes = envelope, "derived CUDA slot pool capacity");
-        Ok(capacity)
     }
 
     /// A pure quote bounds runtime resources; capture waits for actual request demand.
@@ -83,7 +59,7 @@ impl CudaExecutor {
             self.warm_slot_pool();
             return Ok(());
         }
-        let capacity = self.slot_capacity;
+        let capacity = CB_SLOT_TOKENS.min(self.loaded.model().max_sequence);
         let (envelope, _) = self.pool_funding()?;
         let maximum = self.maximum_states.min(MAX_POOL_SLOTS);
         if let Some(plan) = self.pooled_plan_for(capacity, maximum, envelope, 0)? {
@@ -107,7 +83,7 @@ impl CudaExecutor {
         tokens: usize,
         readout: OutputReadout,
     ) -> Result<()> {
-        let capacity = self.slot_capacity;
+        let capacity = CB_SLOT_TOKENS.min(self.loaded.model().max_sequence);
         if readout != OutputReadout::Logits
             || tokens > capacity
             || self
@@ -176,7 +152,7 @@ impl CudaExecutor {
             (0, _) => LiveStates::Empty,
             (1, Some(solo))
                 if solo.readout == OutputReadout::Logits
-                    && solo.capacity <= self.slot_capacity
+                    && solo.capacity <= CB_SLOT_TOKENS
                     && solo.media.is_none() =>
             {
                 LiveStates::Solo {
@@ -228,42 +204,9 @@ impl CudaExecutor {
     }
 }
 
-/// Largest capacity, a power of two from one KV block or `ceiling` itself, whose funded width
-/// matches the width funded at the smallest candidate; with that width. Returns `ceiling` when
-/// no candidate funds a pool. `width` must not grow with capacity.
-fn widest_capacity(
-    ceiling: usize,
-    mut width: impl FnMut(usize) -> Result<usize>,
-) -> Result<(usize, usize)> {
-    if ceiling == 0 {
-        return Err(Error::invalid("CUDA model context must be positive"));
-    }
-    let candidate = |exponent: u32| (1_usize << exponent).min(ceiling);
-    let mut low = KV_BLOCK_TOKENS.min(ceiling).ilog2();
-    let mut high = ceiling.next_power_of_two().ilog2();
-    let target = width(candidate(low))?;
-    if target == 0 || width(ceiling)? >= target {
-        return Ok((ceiling, target));
-    }
-    // `low` keeps the target width and `high` loses it.
-    while high - low > 1 {
-        let middle = low + (high - low) / 2;
-        if width(candidate(middle))? >= target {
-            low = middle;
-        } else {
-            high = middle;
-        }
-    }
-    Ok((candidate(low), target))
-}
-
 #[cfg(test)]
 #[path = "../../tests/unit/executor_request_kv.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "../../tests/unit/executor_slot_capacity.rs"]
-mod slot_capacity_tests;
 
 #[cfg(test)]
 #[path = "../../tests/unit/executor_recurrent_profile.rs"]

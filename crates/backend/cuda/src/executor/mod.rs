@@ -53,8 +53,6 @@ pub(super) struct CudaExecutor {
     maximum_states: usize,
     roofline_bound: Option<usize>,
     memory_bound: usize,
-    /// Largest sequence capacity the slot pool serves; see `derive_slot_capacity`.
-    slot_capacity: usize,
     /// Pure funded quote before the first request, or the last complete capture quote.
     pool_quote: Option<PooledServingQuote>,
     pool_envelope: u64,
@@ -340,7 +338,6 @@ impl CudaExecutor {
             maximum_states,
             roofline_bound,
             memory_bound: 1,
-            slot_capacity: 0,
             pool_quote: None,
             pool_envelope: 0,
             pool: pool::StatePool::default(),
@@ -357,7 +354,6 @@ impl CudaExecutor {
             busy: false,
             fatal: None,
         };
-        backend.slot_capacity = backend.derive_slot_capacity()?;
         backend.defer_request_pool()?;
         Ok(backend)
     }
