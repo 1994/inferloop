@@ -216,6 +216,26 @@ pub mod fused {
         acc.reshape(shape![M, N])
     }
 
+    /// `a · b` for an exact BF16 `b` on tensor cores: `a` splits into three BF16 terms.
+    fn split_product<const M: i32, const K: i32, const N: i32>(
+        a: Tile<f32, { [M, K] }>,
+        b: Tile<bf16, { [K, N] }>,
+    ) -> Tile<f32, { [M, N] }> {
+        let a = a.reshape(shape![M, K]);
+        let b = b.reshape(shape![K, N]);
+        let a0: Tile<bf16, { [M, K] }> = convert_tile(a);
+        let a0f: Tile<f32, { [M, K] }> = convert_tile(a0);
+        let ar = a - a0f;
+        let a1: Tile<bf16, { [M, K] }> = convert_tile(ar);
+        let a1f: Tile<f32, { [M, K] }> = convert_tile(a1);
+        let a2: Tile<bf16, { [M, K] }> = convert_tile(ar - a1f);
+        let zero: Tile<f32, { [M, N] }> = constant(0.0f32, shape![M, N]);
+        let mut acc = mmaf(a2, b, zero);
+        acc = mmaf(a1, b, acc);
+        acc = mmaf(a0, b, acc);
+        acc.reshape(shape![M, N])
+    }
+
     /// Whether each of the 16 chunk rows is row `lane`.
     fn chunk_row(rows: Tile<i32, { [16] }>, lane: i32) -> Tile<bool, { [16] }> {
         let at = lane.broadcast(shape![16]);
