@@ -17,24 +17,6 @@ use crate::contract::plan::{
 use crate::contract::recording::Recording;
 use infer_core::Result;
 
-/// Row-major projection kernels.
-///
-/// Methods are split by weight dtype instead of a generic parameter so the trait stays
-/// object-safe and unsupported dtypes are rejected before a launch.
-/// One two-term int8 `Q4_K` MMQ probe launch over a single output tile.
-pub struct Q4kInt8TwoTermProbe<'a> {
-    pub groups: usize,
-    pub out: Buffer<'a, f32>,
-    pub x: Buffer<'a, i8>,
-    pub residual: Buffer<'a, i8>,
-    pub codes: Buffer<'a, i8>,
-    pub factors: Buffer<'a, f32>,
-    pub biases: Buffer<'a, f32>,
-    pub scales: Buffer<'a, f32>,
-    pub residual_scales: Buffer<'a, f32>,
-    pub sums: Buffer<'a, f32>,
-}
-
 pub trait Projection: Send + Sync {
     /// Project `[rows, columns]` rows into `[rows, outputs]`, by the kernel the plan names.
     /// # Errors
@@ -97,44 +79,6 @@ pub trait Projection: Send + Sync {
     ) -> Result<()> {
         let _ = (recording, plan, out, x, weight);
         Err(unsupported("Projection::grouped_int6_row"))
-    }
-
-    /// Probe a two-term `Q4_K` int8 MMQ over one output tile.
-    /// # Errors
-    /// Fails when a buffer disagrees with the probe shape or the launch is rejected.
-    fn q4k_int8_two_term(
-        &self,
-        recording: &Recording<'_>,
-        probe: &Q4kInt8TwoTermProbe<'_>,
-    ) -> Result<()> {
-        let _ = (recording, probe);
-        Err(unsupported("Projection::q4k_int8_two_term"))
-    }
-
-    /// Probe a two-term `Q4_K` int8 MMQ with a 64-output tile.
-    /// # Errors
-    /// Fails when a buffer disagrees with the probe shape or the launch is rejected.
-    fn q4k_int8_two_term_n64(
-        &self,
-        recording: &Recording<'_>,
-        probe: &Q4kInt8TwoTermProbe<'_>,
-    ) -> Result<()> {
-        let _ = (recording, probe);
-        Err(unsupported("Projection::q4k_int8_two_term_n64"))
-    }
-
-    /// Probe the int8 MMA primitive on `[16, 64] x [64, 16]`.
-    /// # Errors
-    /// Fails when a buffer disagrees with the probe shape or the launch is rejected.
-    fn int8_probe(
-        &self,
-        recording: &Recording<'_>,
-        lhs: Buffer<'_, i8>,
-        rhs: Buffer<'_, i8>,
-        out: Buffer<'_, i32>,
-    ) -> Result<()> {
-        let _ = (recording, lhs, rhs, out);
-        Err(unsupported("Projection::int8_probe"))
     }
 
     /// Copy flat `input` into row `row` of `out`, whose shape is `[rows, columns]`.

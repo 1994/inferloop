@@ -1,12 +1,11 @@
 //! cuTile implementation of the projection family.
 use super::{
     BLOCK_BYTES, compensated_gemm, entries, fp8_gemm, fp8_quant_reduction, grouped_int,
-    grouped_int6, int8_probe, linear, linear_batch, nvfp4_gemm, pool_gemv, prefill_gemm,
-    prompt_logits, q4k_int8_two, q4k_int8_two_n64, small_gemm, swizzle, vendor_fp8,
+    grouped_int6, linear, linear_batch, nvfp4_gemm, pool_gemv, prefill_gemm, prompt_logits,
+    small_gemm, swizzle, vendor_fp8,
 };
 use crate::contract::buffer::{Bf16, Buffer, Fp4Pair, Fp8};
 use crate::contract::grouped_int::GroupedIntPlan;
-use crate::contract::kernels::Q4kInt8TwoTermProbe;
 use crate::contract::kernels::{Projection, WeightRef};
 use crate::contract::plan::{
     DenseKernel, DenseRowsPlan, DownPlan, EmbeddingBatchPlan, EmbeddingPlan, Fp4QuantKind,
@@ -32,14 +31,6 @@ const GROUPED_INT_GROUP_LANES: usize = 32;
 const GROUPED_INT_BLOCK_VALUES: usize = 256;
 /// Super-blocks one iteration decodes.
 const GROUPED_INT_SUPER_BLOCKS: usize = 4;
-/// Rows and outputs of the int8 MMA probe.
-const INT8_PROBE_ROWS: usize = 16;
-/// Reduction width of the int8 MMA probe.
-const INT8_PROBE_DEPTH: usize = 64;
-/// Values in one `Q4_K` scale group.
-const INT8_GROUP_DEPTH: usize = 32;
-/// Output columns of the wide int8 MMQ probe tile.
-const INT8_N64_TILE: usize = 64;
 /// 16-value groups in one grouped-int6 super-block.
 const GROUPED_INT6_GROUPS: usize = 16;
 
@@ -1088,220 +1079,6 @@ impl Projection for TileProjection {
             }
         }
         .map_err(backend_error)
-    }
-
-    fn q4k_int8_two_term(
-        &self,
-        recording: &Recording<'_>,
-        probe: &Q4kInt8TwoTermProbe<'_>,
-    ) -> Result<()> {
-        let scope = capture_scope(recording)?;
-        let Q4kInt8TwoTermProbe {
-            groups,
-            out,
-            x,
-            residual,
-            codes,
-            factors,
-            biases,
-            scales,
-            residual_scales,
-            sums,
-        } = *probe;
-        let columns = groups
-            .checked_mul(INT8_GROUP_DEPTH)
-            .ok_or_else(|| Error::unsupported("q4k int8 columns"))?;
-        let outputs = out.len() / INT8_PROBE_ROWS;
-        if outputs == 0 || !outputs.is_multiple_of(INT8_PROBE_ROWS) {
-            return Err(Error::unsupported("q4k int8 outputs"));
-        }
-        let tiles = outputs / INT8_PROBE_ROWS;
-        let x = self.matrix(recording, x, "q4k int8 x", (INT8_PROBE_ROWS, columns))?;
-        let residual = self.matrix(
-            recording,
-            residual,
-            "q4k int8 residual",
-            (INT8_PROBE_ROWS, columns),
-        )?;
-        let codes = self.matrix(
-            recording,
-            codes,
-            "q4k int8 codes",
-            (tiles * groups * INT8_GROUP_DEPTH, INT8_PROBE_ROWS),
-        )?;
-        let factors = self.matrix(
-            recording,
-            factors,
-            "q4k int8 factors",
-            (tiles * groups, INT8_PROBE_ROWS),
-        )?;
-        let biases = self.matrix(
-            recording,
-            biases,
-            "q4k int8 biases",
-            (tiles * groups, INT8_PROBE_ROWS),
-        )?;
-        let scales = self.matrix(
-            recording,
-            scales,
-            "q4k int8 scales",
-            (tiles * groups, INT8_PROBE_ROWS),
-        )?;
-        let residual_scales = self.matrix(
-            recording,
-            residual_scales,
-            "q4k int8 residual scales",
-            (tiles * groups, INT8_PROBE_ROWS),
-        )?;
-        let sums = self.matrix(
-            recording,
-            sums,
-            "q4k int8 sums",
-            (tiles * groups, INT8_PROBE_ROWS),
-        )?;
-        let mut out = self.matrix(recording, out, "q4k int8 out", (INT8_PROBE_ROWS, outputs))?;
-        scope
-            .record(
-                q4k_int8_two::probe(
-                    (&mut out).partition([INT8_PROBE_ROWS, INT8_PROBE_ROWS]),
-                    &x,
-                    &residual,
-                    &codes,
-                    &factors,
-                    &biases,
-                    &scales,
-                    &residual_scales,
-                    &sums,
-                )
-                .generics(vec![groups.to_string()]),
-            )
-            .map(drop)
-            .map_err(backend_error)
-    }
-
-    fn q4k_int8_two_term_n64(
-        &self,
-        recording: &Recording<'_>,
-        probe: &Q4kInt8TwoTermProbe<'_>,
-    ) -> Result<()> {
-        let scope = capture_scope(recording)?;
-        let Q4kInt8TwoTermProbe {
-            groups,
-            out,
-            x,
-            residual,
-            codes,
-            factors,
-            biases,
-            scales,
-            residual_scales,
-            sums,
-        } = *probe;
-        let columns = groups
-            .checked_mul(INT8_GROUP_DEPTH)
-            .ok_or_else(|| Error::unsupported("q4k int8 columns"))?;
-        let outputs = out.len() / INT8_PROBE_ROWS;
-        if outputs == 0 || !outputs.is_multiple_of(INT8_N64_TILE) {
-            return Err(Error::unsupported("q4k int8 n64 outputs"));
-        }
-        let tiles = outputs / INT8_N64_TILE;
-        let x = self.matrix(recording, x, "q4k int8 x", (INT8_PROBE_ROWS, columns))?;
-        let residual = self.matrix(
-            recording,
-            residual,
-            "q4k int8 residual",
-            (INT8_PROBE_ROWS, columns),
-        )?;
-        let codes = self.matrix(
-            recording,
-            codes,
-            "q4k int8 codes",
-            (tiles * groups * INT8_GROUP_DEPTH, INT8_N64_TILE),
-        )?;
-        let factors = self.matrix(
-            recording,
-            factors,
-            "q4k int8 factors",
-            (tiles * groups, INT8_N64_TILE),
-        )?;
-        let biases = self.matrix(
-            recording,
-            biases,
-            "q4k int8 biases",
-            (tiles * groups, INT8_N64_TILE),
-        )?;
-        let scales = self.matrix(
-            recording,
-            scales,
-            "q4k int8 scales",
-            (tiles * groups, INT8_PROBE_ROWS),
-        )?;
-        let residual_scales = self.matrix(
-            recording,
-            residual_scales,
-            "q4k int8 residual scales",
-            (tiles * groups, INT8_PROBE_ROWS),
-        )?;
-        let sums = self.matrix(
-            recording,
-            sums,
-            "q4k int8 sums",
-            (tiles * groups, INT8_PROBE_ROWS),
-        )?;
-        let mut out = self.matrix(recording, out, "q4k int8 out", (INT8_PROBE_ROWS, outputs))?;
-        scope
-            .record(
-                q4k_int8_two_n64::probe(
-                    (&mut out).partition([INT8_PROBE_ROWS, INT8_N64_TILE]),
-                    &x,
-                    &residual,
-                    &codes,
-                    &factors,
-                    &biases,
-                    &scales,
-                    &residual_scales,
-                    &sums,
-                )
-                .generics(vec![groups.to_string()]),
-            )
-            .map(drop)
-            .map_err(backend_error)
-    }
-
-    fn int8_probe(
-        &self,
-        recording: &Recording<'_>,
-        lhs: Buffer<'_, i8>,
-        rhs: Buffer<'_, i8>,
-        out: Buffer<'_, i32>,
-    ) -> Result<()> {
-        let scope = capture_scope(recording)?;
-        let lhs = self.matrix(
-            recording,
-            lhs,
-            "int8 lhs",
-            (INT8_PROBE_ROWS, INT8_PROBE_DEPTH),
-        )?;
-        let rhs = self.matrix(
-            recording,
-            rhs,
-            "int8 rhs",
-            (INT8_PROBE_DEPTH, INT8_PROBE_ROWS),
-        )?;
-        let mut out = self.matrix(
-            recording,
-            out,
-            "int8 out",
-            (INT8_PROBE_ROWS, INT8_PROBE_ROWS),
-        )?;
-        scope
-            .record(int8_probe::probe_mma(
-                &lhs,
-                &rhs,
-                (&mut out).partition([INT8_PROBE_ROWS, INT8_PROBE_ROWS]),
-            ))
-            .map(drop)
-            .map_err(backend_error)
     }
 
     fn grouped_int6_row(

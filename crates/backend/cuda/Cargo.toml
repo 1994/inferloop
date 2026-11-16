@@ -84,26 +84,6 @@ name = "cuda-gguf-multimodal"
 required-features = ["cuda"]
 
 [[example]]
-name = "cuda-int8-mma"
-required-features = ["cuda"]
-
-[[example]]
-name = "cuda-q4k-codes"
-required-features = ["cuda"]
-
-[[example]]
-name = "cuda-q4k-two-term"
-required-features = ["cuda"]
-
-[[example]]
-name = "cuda-q4k-mmq-bench"
-required-features = ["cuda"]
-
-[[example]]
-name = "cuda-q4k-n64-check"
-required-features = ["cuda"]
-
-[[example]]
 name = "cuda-q4k-gemv"
 required-features = ["cuda"]
 

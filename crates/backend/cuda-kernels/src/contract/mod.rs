@@ -32,8 +32,8 @@ pub use kernels::{
     CONV_HISTORY, ChunkBuffers, ConvBuffers, DeltaBuffers, ExpertWeight, FUSED_LANES,
     FusedConvBuffers, FusedDeltaBuffers, FusionNormBuffers, GateBuffers, GreedyPartials, Kernels,
     LaneBuffers, Mlp, Moe, Norm, NormBuffers, NormFp4Buffers, NormMaximumBuffers, PoolDeltaBuffers,
-    PreparedDeltaBuffers, ProductBuffers, Projection, Q4kInt8TwoTermProbe, Recurrent,
-    RecurrentPool, Rope, RopeBuffers, Sampling, State, StateBuffer, WeightRef,
+    PreparedDeltaBuffers, ProductBuffers, Projection, Recurrent, RecurrentPool, Rope, RopeBuffers,
+    Sampling, State, StateBuffer, WeightRef,
 };
 pub use plan::{
     BinaryOp, ConvKernel, DeltaKernel, DeltaStepPlan, DenseKernel, DenseRowsPlan, DownPlan,

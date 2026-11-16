@@ -102,6 +102,34 @@ pub fn inspect_package(options: InspectPackageOptions) -> Result<()> {
 
     Ok(())
 }
+/// `inspect-package` output for a GGUF checkpoint.
+#[cfg(feature = "gguf")]
+#[derive(serde::Serialize)]
+struct GgufInspection {
+    checkpoint: &'static str,
+    text_slots: usize,
+    q4k: usize,
+    q6k: usize,
+    dense: usize,
+    encodings: Vec<infer_ir::ExecutableEncoding>,
+    vision: GgufVision,
+    tokenizer_bytes: usize,
+    config_bytes: usize,
+}
+
+/// The attached vision projector, if any; counts are absent when none is attached.
+#[cfg(feature = "gguf")]
+#[derive(serde::Serialize, Default)]
+struct GgufVision {
+    attached: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slots: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    patch_slices: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deepstack: Option<usize>,
+}
+
 #[cfg(feature = "gguf")]
 fn inspect_gguf(path: &Path) -> Result<()> {
     let package = infer_models::GgufPackage::open_auto(path)?;
@@ -116,28 +144,25 @@ fn inspect_gguf(path: &Path) -> Result<()> {
         }
     }
     let requirements = infer_models::gguf_requirements(path)?;
-    let vision = package.vision().map_or_else(
-        || serde_json::json!({"attached": false}),
-        |vision| {
-            serde_json::json!({
-                "attached": true,
-                "slots": vision.slots().len(),
-                "patch_slices": vision.patch().iter().flatten().count(),
-                "deepstack": vision.deepstack().len(),
-            })
-        },
-    );
-    print(&serde_json::json!({
-        "checkpoint": "gguf",
-        "text_slots": package.slots().len(),
-        "q4k": q4k,
-        "q6k": q6k,
-        "dense": dense,
-        "encodings": requirements.encodings,
-        "vision": vision,
-        "tokenizer_bytes": package.tokenizer().len(),
-        "config_bytes": package.config().len(),
-    }))?;
+    let vision = package
+        .vision()
+        .map_or_else(GgufVision::default, |vision| GgufVision {
+            attached: true,
+            slots: Some(vision.slots().len()),
+            patch_slices: Some(vision.patch().iter().flatten().count()),
+            deepstack: Some(vision.deepstack().len()),
+        });
+    print(&GgufInspection {
+        checkpoint: "gguf",
+        text_slots: package.slots().len(),
+        q4k,
+        q6k,
+        dense,
+        encodings: requirements.encodings,
+        vision,
+        tokenizer_bytes: package.tokenizer().len(),
+        config_bytes: package.config().len(),
+    })?;
     Ok(())
 }
 
