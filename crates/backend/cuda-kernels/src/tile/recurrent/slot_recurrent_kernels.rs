@@ -236,6 +236,35 @@ pub mod fused {
         acc.reshape(shape![M, N])
     }
 
+    /// `a · bᵀ` on tensor cores within F32 rounding, as [`exact_product`] for a row-major `b`.
+    fn exact_product_nt<const M: i32, const K: i32, const N: i32>(
+        a: Tile<f32, { [M, K] }>,
+        b: Tile<f32, { [N, K] }>,
+    ) -> Tile<f32, { [M, N] }> {
+        let a = a.reshape(shape![M, K]);
+        let b = b.reshape(shape![N, K]);
+        let a0: Tile<bf16, { [M, K] }> = convert_tile(a);
+        let a0f: Tile<f32, { [M, K] }> = convert_tile(a0);
+        let ar = a - a0f;
+        let a1: Tile<bf16, { [M, K] }> = convert_tile(ar);
+        let a1f: Tile<f32, { [M, K] }> = convert_tile(a1);
+        let a2: Tile<bf16, { [M, K] }> = convert_tile(ar - a1f);
+        let b0: Tile<bf16, { [N, K] }> = convert_tile(b);
+        let b0f: Tile<f32, { [N, K] }> = convert_tile(b0);
+        let br = b - b0f;
+        let b1: Tile<bf16, { [N, K] }> = convert_tile(br);
+        let b1f: Tile<f32, { [N, K] }> = convert_tile(b1);
+        let b2: Tile<bf16, { [N, K] }> = convert_tile(br - b1f);
+        let zero: Tile<f32, { [M, N] }> = constant(0.0f32, shape![M, N]);
+        let mut acc = mmaf(a2, b0.transpose(), zero);
+        acc = mmaf(a0, b2.transpose(), acc);
+        acc = mmaf(a1, b1.transpose(), acc);
+        acc = mmaf(a1, b0.transpose(), acc);
+        acc = mmaf(a0, b1.transpose(), acc);
+        acc = mmaf(a0, b0.transpose(), acc);
+        acc.reshape(shape![M, N])
+    }
+
     /// Whether each of the 16 chunk rows is row `lane`.
     fn chunk_row(rows: Tile<i32, { [16] }>, lane: i32) -> Tile<bool, { [16] }> {
         let at = lane.broadcast(shape![16]);
@@ -681,6 +710,7 @@ pub mod fused {
         const MF: i32,
         const L: i32,
         const T: i32,
+        const KC: i32,
     >(
         out: &mut Tensor<f32, { [1, L, SW] }>,
         state: &Tensor<E, { [-1, D, D] }>,
@@ -697,24 +727,20 @@ pub mod fused {
         let key = head / (VH / KH);
         let head_bias = parameters.partition(shape![1]).load([VH + head]);
         let rate = exp(parameters.partition(shape![1]).load([head]));
-        let raw = state
-            .partition(shape![1, D, SW])
-            .load([slot * VH + head, 0i32, split])
-            .reshape(shape![D, SW]);
-        // A BF16 checkpoint is its own tensor-core operand; an F32 one adds two residual terms.
-        let checkpoint: Tile<bf16, { [D, SW] }> = convert_tile(raw);
         let rows: Tile<i32, { [16] }> = iota(shape![16]);
         let empty16: Tile<f32, { [16] }> = constant(0.0f32, shape![16]);
-        let mut keys: Tile<f32, { [16, D] }> = constant(0.0f32, shape![16, D]);
-        let mut queries: Tile<f32, { [16, D] }> = constant(0.0f32, shape![16, D]);
         let mut values: Tile<f32, { [16, SW] }> = constant(0.0f32, shape![16, SW]);
         let mut betas = empty16;
         let mut logs = empty16;
         let mut live = empty16;
+        let mut key_scales = empty16;
+        let mut query_scales = empty16;
         let d: f32 = convert_scalar(D);
         let scale = rsqrt(d.broadcast(shape![1]), ftz::Disabled);
         let qp = qkv.partition(shape![D]);
         let vp = qkv.partition(shape![SW]);
+        let cp = qkv.partition(shape![KC]);
+        // Per-lane scalars first, so the key and query chunks below need no full-width rows.
         for lane in 0i32..L {
             let row = slot * L + lane;
             let base = row * (2i32 * KH + VH);
@@ -724,22 +750,19 @@ pub mod fused {
                 0.0f32.broadcast(shape![1]),
             );
             let at: Tile<bool, { [16] }> = chunk_row(rows, lane);
-            let k: Tile<f32, { [D] }> = normalize(qp.load([base + KH + key]));
-            let q: Tile<f32, { [D] }> = normalize(qp.load([base + key]));
-            let q: Tile<f32, { [D] }> = q.reshape(shape![D]) * scale.broadcast(shape![D]);
+            let k: Tile<f32, { [D] }> = qp.load([base + KH + key]).reshape(shape![D]);
+            let q: Tile<f32, { [D] }> = qp.load([base + key]).reshape(shape![D]);
+            let k_square: Tile<f32, { [] }> = reduce_sum(k * k, 0i32);
+            let q_square: Tile<f32, { [] }> = reduce_sum(q * q, 0i32);
+            let k_scale: Tile<f32, { [1] }> = rsqrt(
+                k_square.reshape(shape![1]) + 1e-6f32.broadcast(shape![1]),
+                ftz::Disabled,
+            );
+            let q_scale: Tile<f32, { [1] }> = rsqrt(
+                q_square.reshape(shape![1]) + 1e-6f32.broadcast(shape![1]),
+                ftz::Disabled,
+            ) * scale;
             let v: Tile<f32, { [SW] }> = vp.load([(base + 2i32 * KH + head) * (D / SW) + split]);
-            let rows_d: Tile<bool, { [16, D] }> =
-                at.reshape(shape![16, 1]).broadcast(shape![16, D]);
-            keys = select(
-                rows_d,
-                k.reshape(shape![1, D]).broadcast(shape![16, D]),
-                keys,
-            );
-            queries = select(
-                rows_d,
-                q.reshape(shape![1, D]).broadcast(shape![16, D]),
-                queries,
-            );
             values = select(
                 at.reshape(shape![16, 1]).broadcast(shape![16, SW]),
                 v.reshape(shape![1, SW]).broadcast(shape![16, SW]),
@@ -754,6 +777,74 @@ pub mod fused {
             betas = select(at, bt.broadcast(shape![16]), betas);
             logs = select(at, lg.broadcast(shape![16]), logs);
             live = select(at, on.broadcast(shape![16]), live);
+            key_scales = select(at, k_scale.broadcast(shape![16]), key_scales);
+            query_scales = select(at, q_scale.broadcast(shape![16]), query_scales);
+        }
+        // The reduction over the key dimension runs in chunks: each reads its checkpoint rows
+        // once and accumulates the four products, so no full-width tile stays live.
+        let mut key_rows: Tile<f32, { [16, SW] }> = constant(0.0f32, shape![16, SW]);
+        let mut query_rows: Tile<f32, { [16, SW] }> = constant(0.0f32, shape![16, SW]);
+        let mut key_products: Tile<f32, { [16, 16] }> = constant(0.0f32, shape![16, 16]);
+        let mut query_products: Tile<f32, { [16, 16] }> = constant(0.0f32, shape![16, 16]);
+        let sp = state.partition(shape![1, KC, SW]);
+        for chunk in 0i32..(D / KC) {
+            let mut keys: Tile<f32, { [16, KC] }> = constant(0.0f32, shape![16, KC]);
+            let mut queries: Tile<f32, { [16, KC] }> = constant(0.0f32, shape![16, KC]);
+            for lane in 0i32..L {
+                let base = (slot * L + lane) * (2i32 * KH + VH);
+                let at: Tile<bool, { [16] }> = chunk_row(rows, lane);
+                let rows_c: Tile<bool, { [16, KC] }> =
+                    at.reshape(shape![16, 1]).broadcast(shape![16, KC]);
+                let k: Tile<f32, { [KC] }> = cp.load([(base + KH + key) * (D / KC) + chunk]);
+                let q: Tile<f32, { [KC] }> = cp.load([(base + key) * (D / KC) + chunk]);
+                keys = select(
+                    rows_c,
+                    k.reshape(shape![1, KC]).broadcast(shape![16, KC]),
+                    keys,
+                );
+                queries = select(
+                    rows_c,
+                    q.reshape(shape![1, KC]).broadcast(shape![16, KC]),
+                    queries,
+                );
+            }
+            keys = keys.reshape(shape![16, KC])
+                * key_scales.reshape(shape![16, 1]).broadcast(shape![16, KC]);
+            queries = queries.reshape(shape![16, KC])
+                * query_scales
+                    .reshape(shape![16, 1])
+                    .broadcast(shape![16, KC]);
+            let raw = sp
+                .load([slot * VH + head, chunk, split])
+                .reshape(shape![KC, SW]);
+            // A BF16 checkpoint is its own tensor-core operand; an F32 one adds two residuals.
+            let checkpoint: Tile<bf16, { [KC, SW] }> = convert_tile(raw);
+            let key_part: Tile<f32, { [16, SW] }> = split_product(keys, checkpoint);
+            let query_part: Tile<f32, { [16, SW] }> = split_product(queries, checkpoint);
+            key_rows = key_rows.reshape(shape![16, SW]) + key_part.reshape(shape![16, SW]);
+            query_rows = query_rows.reshape(shape![16, SW]) + query_part.reshape(shape![16, SW]);
+            if T == 3i32 {
+                let full: Tile<f32, { [KC, SW] }> = convert_tile(raw);
+                let head_terms: Tile<f32, { [KC, SW] }> = convert_tile(checkpoint);
+                let residual = full - head_terms;
+                let low: Tile<bf16, { [KC, SW] }> = convert_tile(residual);
+                let low_terms: Tile<f32, { [KC, SW] }> = convert_tile(low);
+                let tail: Tile<bf16, { [KC, SW] }> = convert_tile(residual - low_terms);
+                let key_low: Tile<f32, { [16, SW] }> = split_product(keys, low);
+                let key_tail: Tile<f32, { [16, SW] }> = split_product(keys, tail);
+                let query_low: Tile<f32, { [16, SW] }> = split_product(queries, low);
+                let query_tail: Tile<f32, { [16, SW] }> = split_product(queries, tail);
+                key_rows = key_rows.reshape(shape![16, SW])
+                    + key_low.reshape(shape![16, SW])
+                    + key_tail.reshape(shape![16, SW]);
+                query_rows = query_rows.reshape(shape![16, SW])
+                    + query_low.reshape(shape![16, SW])
+                    + query_tail.reshape(shape![16, SW]);
+            }
+            let kk: Tile<f32, { [16, 16] }> = exact_product_nt(keys, keys);
+            let qk: Tile<f32, { [16, 16] }> = exact_product_nt(queries, keys);
+            key_products = key_products.reshape(shape![16, 16]) + kk.reshape(shape![16, 16]);
+            query_products = query_products.reshape(shape![16, 16]) + qk.reshape(shape![16, 16]);
         }
         let columns: Tile<i32, { [16, 16] }> =
             rows.reshape(shape![1, 16]).broadcast(shape![16, 16]);
@@ -795,9 +886,6 @@ pub mod fused {
                 + query_low.reshape(shape![16, SW])
                 + query_tail.reshape(shape![16, SW]);
         }
-        let keys_t: Tile<f32, { [D, 16] }> = keys.transpose();
-        let key_products: Tile<f32, { [16, 16] }> = exact_product(keys, keys_t);
-        let query_products: Tile<f32, { [16, 16] }> = exact_product(queries, keys_t);
         let betas_16: Tile<f32, { [16, 16] }> =
             betas.reshape(shape![16, 1]).broadcast(shape![16, 16]);
         // (I + A) U = R with A strictly lower triangular, so (I + A)⁻¹ is the product of the

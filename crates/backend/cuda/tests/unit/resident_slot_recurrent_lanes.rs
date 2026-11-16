@@ -214,7 +214,7 @@ fn chunked_matches_serial(block: usize, bf16_state: bool) -> TestResult {
     let mut chunked = upload(&device, vec![0.0; SLOTS * WIDE * VH * D], &shape)?;
     let mut serial_generics = f32_state(generics(&[KH, VH, D, block, FIELDS, WIDE]));
     let terms = if bf16_state { 1 } else { 3 };
-    let mut chunked_generics = f32_state(generics(&[KH, VH, D, block, FIELDS, WIDE, terms]));
+    let mut chunked_generics = f32_state(generics(&[KH, VH, D, block, FIELDS, WIDE, terms, 32]));
     if bf16_state {
         serial_generics[0] = String::from("bf16");
         chunked_generics[0] = String::from("bf16");
@@ -444,7 +444,7 @@ fn chunked_occupancy_sweep() -> TestResult {
         vec![0.0; SLOTS * WIDE * VH * D],
         &[SLOTS, WIDE, VH * D],
     )?;
-    let mut g = generics(&[KH, VH, D, block, FIELDS, WIDE, 1]);
+    let mut g = generics(&[KH, VH, D, block, FIELDS, WIDE, 1, 32]);
     g.insert(0, String::from("bf16"));
     for occupancy in [None, Some(1), Some(2), Some(4), Some(8)] {
         let options = occupancy.map_or_else(CompileOptions::default, |o| {

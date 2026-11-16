@@ -16,6 +16,8 @@ use infer_core::{Error, Result};
 const CONV_TILE: usize = 128;
 /// Candidate rows one chunked delta verification holds: its triangular recurrence tile.
 const CHUNK_LANES: usize = 16;
+/// Key-dimension rows each step of the chunked verification reduces: bounds its live tiles.
+const KEY_CHUNK: usize = 32;
 /// BF16 terms that carry an F32 checkpoint on tensor cores within F32 rounding.
 const F32_CHECKPOINT_TERMS: usize = 3;
 
@@ -351,6 +353,7 @@ impl RecurrentPool for TileRecurrentPool {
                         .first()
                         .map_or(F32_CHECKPOINT_TERMS, |dtype| checkpoint_terms(dtype));
                     generics.push(terms.to_string());
+                    generics.push(KEY_CHUNK.to_string());
                     scope
                         .record(
                             fused::delta_verify_chunked(
