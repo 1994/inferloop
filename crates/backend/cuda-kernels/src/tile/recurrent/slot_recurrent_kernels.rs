@@ -866,26 +866,6 @@ pub mod fused {
             exp(cumulative.reshape(shape![16, 1]).broadcast(shape![16, 16])
                 - cumulative.reshape(shape![1, 16]).broadcast(shape![16, 16]));
         let growth: Tile<f32, { [16] }> = exp(cumulative.reshape(shape![16]));
-        let mut key_rows: Tile<f32, { [16, SW] }> = split_product(keys, checkpoint);
-        let mut query_rows: Tile<f32, { [16, SW] }> = split_product(queries, checkpoint);
-        if T == 3i32 {
-            let full: Tile<f32, { [D, SW] }> = convert_tile(raw);
-            let head_terms: Tile<f32, { [D, SW] }> = convert_tile(checkpoint);
-            let residual = full - head_terms;
-            let low: Tile<bf16, { [D, SW] }> = convert_tile(residual);
-            let low_terms: Tile<f32, { [D, SW] }> = convert_tile(low);
-            let tail: Tile<bf16, { [D, SW] }> = convert_tile(residual - low_terms);
-            let key_low: Tile<f32, { [16, SW] }> = split_product(keys, low);
-            let key_tail: Tile<f32, { [16, SW] }> = split_product(keys, tail);
-            let query_low: Tile<f32, { [16, SW] }> = split_product(queries, low);
-            let query_tail: Tile<f32, { [16, SW] }> = split_product(queries, tail);
-            key_rows = key_rows.reshape(shape![16, SW])
-                + key_low.reshape(shape![16, SW])
-                + key_tail.reshape(shape![16, SW]);
-            query_rows = query_rows.reshape(shape![16, SW])
-                + query_low.reshape(shape![16, SW])
-                + query_tail.reshape(shape![16, SW]);
-        }
         let betas_16: Tile<f32, { [16, 16] }> =
             betas.reshape(shape![16, 1]).broadcast(shape![16, 16]);
         // (I + A) U = R with A strictly lower triangular, so (I + A)⁻¹ is the product of the
