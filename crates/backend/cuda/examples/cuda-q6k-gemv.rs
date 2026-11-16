@@ -4,6 +4,7 @@ use infer_cuda_kernels::contract::{GroupedIntPlan, WeightRef};
 use infer_format::{GgufType, dequantize};
 use infer_models::Q6KTiled;
 use std::error::Error;
+use std::mem::size_of_val;
 use std::time::Instant;
 
 /// Output rows and reduction width.
@@ -22,19 +23,21 @@ fn blocks() -> Vec<u8> {
             let mut bytes = vec![0u8; 210];
             bytes[208..210].copy_from_slice(&[0x00, 0x38]); // 0.5
             for scale in &mut bytes[192..208] {
-                *scale = (row as u8).wrapping_add(block as u8) % 15 + 1;
+                *scale = u8::try_from(row % 256)
+                    .unwrap_or(0)
+                    .wrapping_add(u8::try_from(block % 256).unwrap_or(0))
+                    % 15
+                    + 1;
             }
             for (index, quant) in bytes[..128].iter_mut().enumerate() {
-                *quant = (row as u8)
-                    .wrapping_mul(7)
-                    .wrapping_add((block * 128 + index) as u8)
-                    | 0x21;
+                let row = u8::try_from(row % 256).unwrap_or(0);
+                let offset = u8::try_from((block * 128 + index) % 256).unwrap_or(0);
+                *quant = row.wrapping_mul(7).wrapping_add(offset) | 0x21;
             }
             for (index, quant) in bytes[128..192].iter_mut().enumerate() {
-                *quant = (row as u8)
-                    .wrapping_mul(3)
-                    .wrapping_add((block * 64 + index) as u8)
-                    | 0x49;
+                let row = u8::try_from(row % 256).unwrap_or(0);
+                let offset = u8::try_from((block * 64 + index) % 256).unwrap_or(0);
+                *quant = row.wrapping_mul(3).wrapping_add(offset) | 0x49;
             }
             blocks.extend_from_slice(&bytes);
         }
@@ -48,7 +51,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let blocks = blocks();
     let tiled = Q6KTiled::from_blocks(ROWS, COLUMNS, &blocks)?;
     let x: Vec<f32> = (0..COLUMNS)
-        .map(|index| ((index as f32) * 0.011).sin())
+        .map(|index| {
+            f32::from(u16::try_from(index % u16::MAX as usize).unwrap_or(0))
+                .mul_add(0.011, 0.0)
+                .sin()
+        })
         .collect();
     let mut values = vec![0.0f32; ROWS * COLUMNS];
     dequantize(GgufType::Q6K, &blocks, &mut values)?;
@@ -102,8 +109,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         device.tile().sync(graph.launch())?;
     }
     let elapsed = started.elapsed().as_secs_f64();
-    let bytes = (tiled.codes().len() + tiled.factors().len() * size_of::<f32>()) as f64;
-    let bandwidth = bytes * REPLAYS as f64 / elapsed / 1e9;
+    let bytes = tiled.codes().len() + size_of_val(tiled.factors());
+    let bytes = f64::from(u32::try_from(bytes).unwrap_or(u32::MAX));
+    let replays = f64::from(u32::try_from(REPLAYS).unwrap_or(u32::MAX));
+    let bandwidth = bytes * replays / elapsed / 1e9;
     println!(
         "Q6_K GEMV bandwidth {bandwidth:.1} GB/s ({:.1}% of {HBM_GBPS:.0} GB/s roofline)",
         bandwidth / HBM_GBPS * 100.0

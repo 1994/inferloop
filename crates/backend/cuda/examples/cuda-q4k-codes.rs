@@ -1,6 +1,7 @@
 //! Isolate `Q4_K` code unpacking: one 64-value group through the int8 MMA probe.
 use infer_backend_cuda::device::CudaDevice;
 use infer_models::{GgufPackage, Q4KTiled};
+use std::array::from_fn;
 use std::env::args;
 use std::error::Error;
 
@@ -34,7 +35,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     let scales: [f32; ROWS] =
-        std::array::from_fn(|row| 0.01 + f32::from(u16::try_from(row).unwrap_or(0)) * 0.001);
+        from_fn(|row| f32::mul_add(f32::from(u16::try_from(row).unwrap_or(0)), 0.001, 0.01));
     let x_f32: Vec<f32> = x
         .iter()
         .enumerate()

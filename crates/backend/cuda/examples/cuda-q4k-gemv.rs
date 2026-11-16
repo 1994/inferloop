@@ -4,7 +4,7 @@ use infer_backend_cuda::device::CudaDevice;
 use infer_cuda_kernels::contract::{GroupedIntPlan, WeightRef};
 use infer_models::{Q4KDevice, Q4KTiled};
 use std::error::Error;
-use std::mem::size_of;
+use std::mem::size_of_val;
 use std::time::Instant;
 
 /// Output rows and reduction width of the synthetic matrix.
@@ -118,9 +118,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         device.tile().sync(graph.launch())?;
     }
     let elapsed = started.elapsed().as_secs_f64();
-    let bytes = (tiled.codes().len()
-        + (tiled.factors().len() + tiled.biases().len()) * size_of::<f32>()) as f64;
-    let bandwidth = bytes * REPLAYS as f64 / elapsed / 1e9;
+    let bytes = tiled.codes().len() + size_of_val(tiled.factors()) + size_of_val(tiled.biases());
+    let bytes = f64::from(u32::try_from(bytes).unwrap_or(u32::MAX));
+    let replays = f64::from(u32::try_from(REPLAYS).unwrap_or(u32::MAX));
+    let bandwidth = bytes * replays / elapsed / 1e9;
     println!(
         "Q4_K GEMV bandwidth {bandwidth:.1} GB/s ({:.1}% of {HBM_GBPS:.0} GB/s roofline)",
         bandwidth / HBM_GBPS * 100.0

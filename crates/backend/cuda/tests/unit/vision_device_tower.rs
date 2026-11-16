@@ -71,6 +71,7 @@ fn weights(device: &CudaDevice, encoder: &ModalityEncoder) -> Result<VisionWeigh
         attention,
         mlp,
         merger: None,
+        deepstack: Vec::new(),
         positions: Vec::new(),
     })
 }
