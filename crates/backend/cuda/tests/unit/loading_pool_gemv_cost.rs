@@ -1,10 +1,10 @@
 use super::{LoadOptions, LoadedModel};
-use crate::constants::SMALL_GEMM_TILE;
 use crate::mlp::Matrix;
 use crate::resident::buffers::cutile;
 use crate::resident::buffers::tensor_rows;
 use crate::resident::tensor_buffer;
 use crate::strategy::LinearTiling;
+use crate::tuning::tiles::SMALL_GEMM_TILE;
 use crate::{
     device::CudaDevice,
     mlp::ProjectionWeight,

@@ -124,6 +124,8 @@ attention、recurrent、norm、greedy 的独立 allowance 保持原有边界。
 | pooled 稠密投影交叉点（已接入调优） | `tuning/pool_dense` | 对实际 decode/verify 行数比较逐行 GEMV、四行共享权重分块与原小 GEMM | 按设备、驱动、内核、M/N/K 与实际 GEMV tile 缓存冷/暖正反确认结果；新路径保持私有 F32 归约，只有原已使用小 GEMM 的行数允许保留该算法 |
 | resident 投影搜索预算（已推导） | `tuning/projection_budget.rs` | 按实际录图保留的 FP4/FP8 形状、候选数和独立确认轮次估算 | 同一模型跨层和 serving state 去重；耗尽时列出尚未完成的形状，保留 native 路径 |
 | 每槽半容量 KV 保底（已删除） | `loading/budget.rs`、`executor/admission_pool.rs` | 每请求按实际 prompt + 最大输出长度向上取整到页；保留一个完整上下文的隔离能力 | `serve` 启动时按零需求捕获实体池；更长的实际需求按长度重选计划，只在无活动状态且 lease 全归还后调整实体池 |
+| 池槽位容量 `CB_SLOT_TOKENS = 8192` | `constants.rs`、`executor/admission_pool.rs` | 工作负载策略：超过它的请求走私有串行路径。容量通过“一个完整上下文”保底和未分页的 draft KV 占用显存，单纯“宽度优先”推导在 RTX 5090 + 27B NVFP4 上把它压到 2048（宽 40、KV 5,312 token，对比现状宽 32、KV 25,504 token），属回退 | 先消除与容量成正比的成本（draft KV 分页、取消整上下文保底），再令容量等于模型上下文，由报价决定资助 |
+| 投影 tile 基线 | `tuning/tiles.rs` | 加载期实测按 `(设备, 驱动, kernel, M/N/K)` 选择 tile；这些值只是无测量时的保留配置与候选列表 | 新硬件先看 `source=measured`；不要按显卡型号改基线，新增 tile 变体时同步扩充搜索空间 |
 
 CUDA 默认并发按两个界限推导。N_mem 通过现有完整 serving 报价求最大可资助宽度，
 包括 target/draft pool、worker、slot home、workspace、KV 与 driver headroom。

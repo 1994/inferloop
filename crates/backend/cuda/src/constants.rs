@@ -20,36 +20,10 @@ mod device {
     pub const ATTENTION_SPLIT_MAX_PARTS: usize = 16;
     /// External hidden, embedding and two normalized rows used by draft fusion.
     pub const MTP_FUSION_ROWS: u64 = 4;
-    /// MMA output tile used by dense and scaled verification projections.
-    pub const SMALL_GEMM_TILE: [usize; 2] = [16, 32];
     /// Maximum row count before MMA replaces the vocabulary GEMV path.
     pub const SMALL_GEMV_MAX_ROWS: usize = 4;
     /// Vocabulary-like expansion ratio where narrow-batch GEMV remains useful.
     pub const GEMV_WIDE_OUTPUT_RATIO: usize = 4;
-    /// Output tile shared by the native activation-quantized GEMMs on decode-width graphs.
-    pub const QUANT_GEMM_TILE: [usize; 2] = [16, 64];
-    /// Row tile for graphs wider than one decode tile.
-    ///
-    /// **Measured (RTX 5090)**: on the 27B long-prompt graph the 64-row tile cut the replay from
-    /// 46.9 ms to 43.1 ms and the prompt `linear` bucket from 27.3 ms to 23.1 ms (serving A/B,
-    /// identical token sequences). The 16-row tile splits a prompt graph into four row blocks
-    /// that each re-read the same weight tile.
-    ///
-    /// **Also measured**: widening the tile globally to `[64, 128]` wins the isolated
-    /// `nvfp4_packed_tile_sweep` kernel benchmark at every row count but loses end to end
-    /// (27B short wall 1.14x -> 1.30x, batch4 TPOT 1.86x -> 2.05x): a single 40-CTA decode
-    /// GEMM cannot fill the device, and a 64-row CTA on a one-row decode wastes 63 rows of
-    /// tensor-core work. Keep the row-dependent split and re-measure serving, not just the
-    /// kernel, before changing either dimension.
-    pub const PROMPT_GEMM_TILE_ROWS: usize = 64;
-    /// Wide prompt row tile.
-    ///
-    /// **Measured (RTX 5090, 32K C1 BF16 MTP2, table B, A B B A)**: the 128-row prompt tile cut
-    /// TTFT by 0.54 s (paired mean, 12 pairs; median −0.47 s) with identical 64-token greedy
-    /// streams. A 256-row chunk becomes two 128-row CTAs instead of four 64-row CTAs, so each
-    /// weight tile is read fewer times. The tile is only taken once a graph has this many rows:
-    /// shorter prompt tails keep `PROMPT_GEMM_TILE_ROWS`, and decode never takes either.
-    pub const WIDE_PROMPT_GEMM_TILE_ROWS: usize = 128;
     /// Tokens per KV block. Step 1 of the KV refactor uses it only to resolve a position through
     /// the sequence's block table; a real allocator will later hand these blocks out across
     /// sequences. It matches the attention kernels' 32-token KV tile, so a block is one tile.
@@ -95,15 +69,12 @@ mod device {
     pub const PREFILL_GEMM_TILE_N: usize = 64;
     /// K tile of the batched prefill GEMM: columns of input per loop iteration.
     pub const PREFILL_GEMM_TILE_K: usize = 64;
-    /// NVFP4 prompt GEMM output tile. **Measured: 32 is 2.8x worse than 64** (196-token prompt,
-    /// 32-lane chunks: 132.1 vs 46.7 ms per chunk, numerics still correct). A narrower N tile
-    /// shrinks every MMA and doubles the instruction count, so the prompt GEMM is bound by
-    /// tensor-core shape efficiency, not by CTA occupancy. Do not lower this again without
-    /// re-measuring the §5e ladder.
+    /// Output column tile of the fixed split-K NVFP4 prompt kernel, matching its MMA shape;
+    /// narrower tiles shrink every MMA and multiply the instruction count.
     pub const PREFILL_NVFP4_TILE_N: usize = 64;
-    /// K-windows a prefill fp4 GEMM splits across CTAs before the reduction pass.
-    /// **Measured: 4 and 8 tie on TTFT (within noise) but 4 halves partial traffic and
-    /// scratch memory, and wins the in-graph linear bucket (32.3 vs 33.2 ms/chunk).**
+    /// K-windows the fixed NVFP4 prompt kernel splits across CTAs before its reduction pass.
+    /// The split count fixes the F32 accumulation order, so it is part of that path's numeric
+    /// contract rather than a measured tuning choice; it also sizes the partials scratch.
     pub const PREFILL_SPLIT_K: usize = 4;
     /// Candidates verified by the fused shared-weight GEMV.
     pub const FUSED_VERIFY_LANES: usize = 3;
@@ -132,11 +103,12 @@ mod device {
     pub const CB_DECODE_SLOTS: usize = 16;
     /// Shared pools cannot exceed the protocol's completion-cell capacity.
     pub const MAX_POOL_SLOTS: usize = infer_gpu_api::MAX_SUBMISSION_BATCH;
-    /// Token rows in each slot's KV cache. Sequences admitted above this stay on the
-    /// per-sequence serial path. The pool is captured at load time, so this allocation
-    /// (fp8 KV per slot per token) competes with the sequences it must coexist with:
-    /// at 4096 rows the pool plus four pooled sequences exceeded physical memory on the
-    /// 32 GB card and the fourth request starved behind completions; 2048 leaves room.
+    /// Longest sequence capacity that joins the slot pool; longer requests run privately.
+    ///
+    /// This is a workload policy, not a device property: KV pages are leased by actual length,
+    /// but a funded pool still reserves one complete context and unpaged draft state per slot
+    /// capacity, so raising it costs pooled width. Removing those capacity-proportional costs
+    /// lets this become the model context; until then the serving quote decides what funds.
     pub const CB_SLOT_TOKENS: usize = 8192;
     /// Metadata state-position sentinel masking one lane's state writes in a batched replay.
     pub const INACTIVE_LANE_STATE_POSITION: i32 = -1;
