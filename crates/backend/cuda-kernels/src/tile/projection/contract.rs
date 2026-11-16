@@ -1080,8 +1080,7 @@ impl Projection for TileProjection {
             || !columns.is_multiple_of(GROUPED_INT_SPAN * spans_per_step)
             || weight.codes.len() != layout.codes
             || weight.factors.len() != layout.terms
-            || weight.biases.map(|biases| biases.len())
-                != format.has_biases().then_some(layout.terms)
+            || weight.biases.map(Buffer::len) != format.has_biases().then_some(layout.terms)
         {
             return Err(Error::unsupported(format!(
                 "{} GEMV shape or layout",

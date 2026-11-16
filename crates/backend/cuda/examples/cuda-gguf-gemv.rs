@@ -3,6 +3,7 @@
 use infer_backend_cuda::device::CudaDevice;
 use infer_backend_cuda::loading::GroupedIntTiled;
 use infer_cuda_kernels::contract::{GroupedIntPlan, GroupedIntWeight};
+use infer_cuda_kernels::runtime::Allocation;
 use infer_models::GgufPackage;
 use std::env::args;
 use std::error::Error;
@@ -59,7 +60,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let factors = runtime.upload(factors)?;
     let biases = biases.map(|biases| runtime.upload(biases)).transpose()?;
     let bytes = codes.len()
-        + (factors.len() + biases.as_ref().map_or(0, |biases| biases.len())) * size_of::<f32>();
+        + (factors.len() + biases.as_ref().map_or(0, Allocation::len)) * size_of::<f32>();
     let graph = device.tile().capture(|scope| {
         kernels.projection.grouped_int(
             scope,
