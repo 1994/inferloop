@@ -713,7 +713,7 @@ pub mod fused {
             let at: Tile<bool, { [16] }> = chunk_row(rows, lane);
             let k: Tile<f32, { [D] }> = normalize(qp.load([base + KH + key]));
             let q: Tile<f32, { [D] }> = normalize(qp.load([base + key]));
-            let q: Tile<f32, { [D] }> = q * scale.broadcast(shape![D]);
+            let q: Tile<f32, { [D] }> = q.reshape(shape![D]) * scale.broadcast(shape![D]);
             let v: Tile<f32, { [SW] }> = vp.load([(base + 2i32 * KH + head) * (D / SW) + split]);
             let rows_d: Tile<bool, { [16, D] }> =
                 at.reshape(shape![16, 1]).broadcast(shape![16, D]);
