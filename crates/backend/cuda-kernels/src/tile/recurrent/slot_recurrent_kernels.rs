@@ -783,8 +783,11 @@ pub mod fused {
                 weights.reshape(shape![16, 1]).broadcast(shape![16, SW]) * corrections,
                 0i32,
             );
+            let earlier = earlier.reshape(shape![SW]);
             let predicted: Tile<f32, { [SW] }> = reduce_sum(select(at_sw, key_rows, blank), 0i32);
+            let predicted = predicted.reshape(shape![SW]);
             let value: Tile<f32, { [SW] }> = reduce_sum(select(at_sw, values, blank), 0i32);
+            let value = value.reshape(shape![SW]);
             let written: Tile<f32, { [SW] }> =
                 (value - g.broadcast(shape![SW]) * predicted - earlier)
                     * chunk_value(at, betas).broadcast(shape![SW]);
@@ -795,10 +798,12 @@ pub mod fused {
             );
             let reads: Tile<f32, { [16] }> = reduce_sum(select(at_16, attention, none), 0i32);
             let history: Tile<f32, { [SW] }> = reduce_sum(select(at_sw, query_rows, blank), 0i32);
+            let history = history.reshape(shape![SW]);
             let recent: Tile<f32, { [SW] }> = reduce_sum(
                 reads.reshape(shape![16, 1]).broadcast(shape![16, SW]) * corrections,
                 0i32,
             );
+            let recent = recent.reshape(shape![SW]);
             let output: Tile<f32, { [SW] }> = (g.broadcast(shape![SW]) * history + recent)
                 * chunk_value(at, live).broadcast(shape![SW]);
             out.partition_mut(shape![1, 1, SW])
