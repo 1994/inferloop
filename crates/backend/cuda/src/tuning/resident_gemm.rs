@@ -8,13 +8,13 @@ use super::{MAX_REPS, MIN_REPS, REP_MS, TilingTable, WARMUP_MS};
 use crate::constants::NVFP4_GROUP_SIZE;
 use crate::constants::NVFP4_QUANT_CODES_TILE;
 use crate::constants::NVFP4_QUANT_SCALES_TILE;
-use crate::constants::PROMPT_GEMM_TILE_ROWS;
-use crate::constants::QUANT_GEMM_TILE;
-use crate::constants::WIDE_PROMPT_GEMM_TILE_ROWS;
 use crate::device::vendor_fp8::nvfp4::ModelCache;
 use crate::resident::buffers::RowMajor;
 use crate::resident::tensor_buffer as buffer;
 use crate::tuning::preparation::driver_build;
+use crate::tuning::tiles::PROMPT_GEMM_TILE_ROWS;
+use crate::tuning::tiles::QUANT_GEMM_TILE;
+use crate::tuning::tiles::WIDE_PROMPT_GEMM_TILE_ROWS;
 use crate::{
     device::{CudaDevice, DeviceProfile, device_error},
     mlp::ProjectionWeight,

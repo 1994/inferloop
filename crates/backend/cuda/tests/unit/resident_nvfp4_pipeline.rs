@@ -1,9 +1,9 @@
 //! Paired graph replay measurements against the pre-optimization W4A4 main loop.
 use super::kernels;
-use crate::constants::QUANT_GEMM_TILE;
 use crate::device::CudaDevice;
 use crate::resident::buffers::cutile;
 use crate::tuning::resident_gemm::native_tile;
+use crate::tuning::tiles::QUANT_GEMM_TILE;
 use cuda_core::{f4e2m1fnx2, f8e4m3fn};
 use cutile::bench::BenchOptions;
 use cutile::bench::do_bench_paired;
