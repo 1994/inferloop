@@ -2,6 +2,21 @@
 
 状态：**设计评审稿**。本文件先定义 GGUF 模型的 KV cache 策略；实现分阶段落地，避免把 KV 编码塞进 GGUF 权重编码或 CUDA 专属逻辑。
 
+## 既有设计基线
+
+这份设计不另起一套 KV 架构，直接沿用现有约定：
+
+- [KV Manager](../../architecture/kv-manager.md)：块池、引用计数、COW、前缀匹配和统计归平台层；CUDA/Metal 只提供各自的设备快照/页适配；
+- [KV cache 分页方案](../../plans/performance/kv-cache-paged-attention.md)：SPI 已经定义 `kv_cache()`、`state_page_growth()`、`reusable_prefix*()` 和 `KvCacheInspection`；当前缺口是 CUDA 仍走 SPI 默认值、没有实现这套分页契约；
+- [Backend 架构](../../architecture/backends.md)：`KernelRegistration`/`ExecutionProgram` 绑定 backend，公共 trace/probe/stats 留在 IR；GPU profile 是 command buffer 时间，OpTrace 是 CPU encoding，二者都不能当作逐 kernel GPU counter；
+- [GGUF readiness](gguf-readiness.md)：GGUF 是虚拟 HF 包，KV cache 是运行时策略，不是文件里的权重编码。
+
+因此 GGUF KV 的工作必须：
+
+1. 先复用/补齐平台的 KV 分页契约，不能在 CUDA 里再建一套 `SlotPool` 策略；
+2. 只把 GGUF 的几何和默认 KV 策略接进来；
+3. 新增编码时扩展已有 `KvCacheInspection`/能力声明，而不是增加平行 inspection。
+
 ## 先澄清：GGUF 文件里没有 KV cache
 
 GGUF 是权重容器。它包含：
@@ -20,7 +35,8 @@ GGUF 是权重容器。它包含：
 
 - `GgufPackage` / `QuantizedPackage::open_gguf` 从合成文本 config 得到层数、KV heads、head dim、context；
 - `kv_cache_dtype` 对 GGUF 被设为 `None`；
-- CUDA `KvElement` 目前只实现 `f32` 和 `Fp8`；
+- CUDA `KvElement` 目前只实现 `f32` 和 `Fp8`，没有 F16/Q8_0；
+- CUDA 也尚未实现 [分页方案](../../plans/performance/kv-cache-paged-attention.md) 中的 `kv_cache()`/`state_page_growth()` 契约；
 - CLI 只有 `backend` 的 KV 状态展示，没有面向 GGUF 的 KV 编码选项；
 - `inspect-package` 不报告 KV 几何、默认编码或每 block 字节数；
 - 因此 GGUF 默认落到 F32 KV，显存占用远高于 llama.cpp 的 F16/Q8_0。
@@ -28,6 +44,8 @@ GGUF 是权重容器。它包含：
 这是实际缺口，不是 GGUF 解析缺口。
 
 ## 目标
+
+- 不新增平行的 KV 管理层；分页、prefix、预算继续由平台契约拥有；
 
 - GGUF 默认 KV 使用 F16（与 llama.cpp 默认对齐），而不是 F32；
 - 支持运行时选择 F16 / F32 / FP8 / Q8_0 / Q4_0（按 backend 能力）；
