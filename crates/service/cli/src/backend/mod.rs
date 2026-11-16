@@ -11,6 +11,8 @@ mod selected;
 mod speculation;
 #[cfg(cuda_backend)]
 use infer_backend_cuda::device::CudaDevice;
+#[cfg(all(cuda_backend, feature = "gguf"))]
+use infer_backend_cuda::executor::CudaBackend;
 #[cfg(any(test, native_backend))]
 use infer_core::{Error, Result};
 use std::path::PathBuf;
@@ -208,7 +210,7 @@ fn resolve(
 pub fn formats(choice: BackendChoice) -> Result<infer_ir::BackendFormats> {
     match resolve(choice, cuda_available(), metal_available())? {
         #[cfg(cuda_backend)]
-        BackendChoice::Cuda => Ok(infer_backend_cuda::executor::CudaBackend::FORMATS),
+        BackendChoice::Cuda => Ok(CudaBackend::FORMATS),
         #[cfg(metal_backend)]
         BackendChoice::Metal => Ok(infer_backend_metal::MetalBackend::FORMATS),
         _ => Err(Error::unsupported("no supported GPU backend available")),
