@@ -303,34 +303,38 @@ impl ProjectionWeight {
             return Err(Error::invalid("grouped-int weight must be a matrix"));
         };
         let raw = package.read(data, STAGING)?;
+        // Each stage's buffers drop once the next exists, and the tiled layout moves into the
+        // upload, so the host peak holds at most two copies of the weight.
         match kind {
             GroupedIntKind::Q4K => {
-                let device_layout = Q4KDevice::from_blocks(*rows, *columns, &raw)?;
-                let layout = Q4KTiled::from_device(&device_layout)?;
+                let layout =
+                    Q4KTiled::from_device(&Q4KDevice::from_blocks(*rows, *columns, &raw)?)?;
+                drop(raw);
                 if layout.rows() != *rows || layout.columns() != *columns {
                     return Err(Error::invalid("Q4_K layout shape"));
                 }
+                let (codes, factors, biases) = layout.into_device_parts();
                 Ok(Self::GroupedInt {
-                    codes: Matrix::upload(device, layout.codes().to_vec(), &[*rows, *columns / 2])
-                        .map_err(|error| {
-                            Error::invalid(format!("{} Q4_K codes: {error}", data.name))
-                        })?,
-                    factors: device.runtime().upload(layout.factors().to_vec())?,
-                    biases: Some(device.runtime().upload(layout.biases().to_vec())?),
+                    codes: Matrix::upload(device, codes, &[*rows, *columns / 2]).map_err(
+                        |error| Error::invalid(format!("{} Q4_K codes: {error}", data.name)),
+                    )?,
+                    factors: device.runtime().upload(factors)?,
+                    biases: Some(device.runtime().upload(biases)?),
                     kind: GroupedIntKind::Q4K,
                 })
             }
             GroupedIntKind::Q6K => {
                 let layout = Q6KTiled::from_blocks(*rows, *columns, &raw)?;
+                drop(raw);
                 if layout.rows() != *rows || layout.columns() != *columns {
                     return Err(Error::invalid("Q6_K layout shape"));
                 }
+                let (codes, factors) = layout.into_device_parts();
                 Ok(Self::GroupedInt {
-                    codes: Matrix::upload(device, layout.codes().to_vec(), &[*rows, *columns])
-                        .map_err(|error| {
-                            Error::invalid(format!("{} Q4_K codes: {error}", data.name))
-                        })?,
-                    factors: device.runtime().upload(layout.factors().to_vec())?,
+                    codes: Matrix::upload(device, codes, &[*rows, *columns]).map_err(|error| {
+                        Error::invalid(format!("{} Q6_K codes: {error}", data.name))
+                    })?,
+                    factors: device.runtime().upload(factors)?,
                     biases: None,
                     kind: GroupedIntKind::Q6K,
                 })

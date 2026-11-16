@@ -168,6 +168,11 @@ impl Q6KTiled {
     pub fn factors(&self) -> &[f32] {
         &self.factors
     }
+    /// The codes and factors a device upload takes, moved out instead of copied.
+    #[must_use]
+    pub fn into_device_parts(self) -> (Vec<u8>, Vec<f32>) {
+        (self.codes, self.factors)
+    }
 }
 
 #[cfg(test)]

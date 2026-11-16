@@ -10,7 +10,7 @@ use crate::constants::{
 use crate::mlp::ProjectionWeight;
 use crate::tuning::pool_dense::{self, Choice as PoolDense};
 use crate::tuning::projection_budget::ProjectionShape;
-use infer_core::Result;
+use infer_core::{Error, Result};
 use infer_cuda_kernels::contract::RowsKernel;
 
 /// Rows of one verify tile: one row group of the fused GEMV. The kernel walks row groups
@@ -152,7 +152,15 @@ pub(super) fn lower(
     if weight == Format::GroupedInt {
         return Ok(match mode {
             Mode::Single | Mode::Logits => Lowering::Matvec,
-            Mode::Prompt | Mode::Rows { .. } | Mode::Slots { .. } => Lowering::PromptGrouped,
+            // Prompt chunks still project one row at a time, reading the weight once per row;
+            // acceptable for bringing a GGUF model up, not as a serving default.
+            Mode::Prompt => Lowering::PromptGrouped,
+            // Pooled and gathered rows would pay that per-row weight read on every decode step.
+            Mode::Rows { .. } | Mode::Slots { .. } => {
+                return Err(Error::unsupported(
+                    "grouped-int weights have no multi-row kernel for pooled or gathered rows",
+                ));
+            }
             Mode::Draft { .. } => return Err(error("grouped-int draft projection")),
         });
     }

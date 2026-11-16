@@ -356,6 +356,11 @@ impl Q4KTiled {
     pub fn biases(&self) -> &[f32] {
         &self.biases
     }
+    /// The codes, factors and biases a device upload takes, moved out instead of copied.
+    #[must_use]
+    pub fn into_device_parts(self) -> (Vec<u8>, Vec<f32>, Vec<f32>) {
+        (self.codes, self.factors, self.biases)
+    }
 }
 
 /// Decode one 6-bit scale/min pair from the packed table.
