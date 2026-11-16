@@ -10,10 +10,12 @@ use crate::tile::runtime::Device;
 use crate::tile::{backend_error, borrowed, capture_scope};
 use cuda_core::DType;
 use cutile::prelude::*;
-use infer_core::Result;
+use infer_core::{Error, Result};
 
 /// Elements of a channel axis in one convolution tile.
 const CONV_TILE: usize = 128;
+/// Candidate rows one chunked delta verification holds: its triangular recurrence tile.
+const CHUNK_LANES: usize = 16;
 /// Taps of the convolution weight.
 const CONV_TAPS: usize = 4;
 /// Candidates the specialized pool kernels cover.
@@ -328,10 +330,15 @@ impl RecurrentPool for TileRecurrentPool {
                         .map(drop)
                         .map_err(backend_error)
                 } else {
+                    if lanes > CHUNK_LANES {
+                        return Err(Error::invalid(format!(
+                            "chunked delta verification covers at most {CHUNK_LANES} lanes, not {lanes}"
+                        )));
+                    }
                     generics.push(lanes.to_string());
                     scope
                         .record(
-                            fused::delta_verify_lanes(
+                            fused::delta_verify_chunked(
                                 (&mut output).partition([1, lanes, block]),
                                 &state,
                                 &qkv,

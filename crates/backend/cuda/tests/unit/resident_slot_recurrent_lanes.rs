@@ -166,6 +166,61 @@ fn wide_delta_lanes_match_three_lane_reference() -> TestResult {
     Ok(())
 }
 
+/// The chunked delta verification against the serial lanes kernel it replaces: every candidate
+/// output, including a slot whose tail lanes are padding, within the same tolerance.
+#[test]
+#[ignore = "requires CUDA hardware; run inside safe-run"]
+fn chunked_delta_verify_matches_serial_lanes() -> TestResult {
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    let block = D / value_split(ValueDevice::new(&device)?, VH, D, SLOTS)?;
+    let state = values(SLOTS * VH * D * D, 23);
+    let qkv = values(SLOTS * WIDE * QKV, 17);
+    let beta = values(SLOTS * WIDE * VH, 13);
+    let alpha = values(SLOTS * WIDE * VH, 7);
+    let meta = metadata();
+    let mut parameters = values(VH, 3);
+    parameters.extend(values(VH, 5));
+    let parameters = upload(&device, parameters, &[2 * VH])?;
+    let qkv = upload(&device, qkv.clone(), &[qkv.len()])?;
+    let beta = upload(&device, beta.clone(), &[beta.len()])?;
+    let alpha = upload(&device, alpha.clone(), &[alpha.len()])?;
+    let meta = device.upload(meta.clone(), &[meta.len()])?;
+    let states = upload(&device, state, &[SLOTS * VH, D, D])?;
+    let shape = [SLOTS, WIDE, VH * D];
+    let mut serial = upload(&device, vec![0.0; SLOTS * WIDE * VH * D], &shape)?;
+    let mut chunked = upload(&device, vec![0.0; SLOTS * WIDE * VH * D], &shape)?;
+    let generics = f32_state(generics(&[KH, VH, D, block, FIELDS, WIDE]));
+    fused::delta_verify_lanes(
+        (&mut serial).partition([1, WIDE, block]),
+        &states,
+        &qkv,
+        &beta,
+        &alpha,
+        &parameters,
+        &meta,
+    )
+    .generics(generics.clone())
+    .sync_on(device.stream())?;
+    fused::delta_verify_chunked(
+        (&mut chunked).partition([1, WIDE, block]),
+        &states,
+        &qkv,
+        &beta,
+        &alpha,
+        &parameters,
+        &meta,
+    )
+    .generics(generics)
+    .sync_on(device.stream())?;
+    assert_close(
+        "chunked delta verify",
+        &device.read_borrowed(&chunked)?,
+        &device.read_borrowed(&serial)?,
+    );
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires CUDA hardware; run inside safe-run"]
 fn wide_convolution_lanes_match_three_lane_bits() -> TestResult {
