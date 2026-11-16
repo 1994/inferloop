@@ -195,6 +195,23 @@ const fn retyped_fp4(buffer: Buffer<'_, Fp4Pair>) -> Buffer<'_, f4e2m1fnx2> {
     unsafe { buffer.retyped() }
 }
 
+fn record_grouped_int_row(
+    projection: &TileProjection,
+    recording: &Recording<'_>,
+    plan: &GroupedIntPlan,
+    out: Buffer<'_, f32>,
+    x: Buffer<'_, f32>,
+    weight: WeightRef<'_>,
+) -> Result<()> {
+    match weight {
+        WeightRef::GroupedInt { .. } => projection.grouped_int_row(recording, plan, out, x, weight),
+        WeightRef::GroupedInt6 { .. } => {
+            projection.grouped_int6_row(recording, plan, out, x, weight)
+        }
+        _ => Err(Error::unsupported("grouped-int row weight")),
+    }
+}
+
 fn grouped_int_rows(
     projection: &TileProjection,
     recording: &Recording<'_>,
@@ -215,29 +232,17 @@ fn grouped_int_rows(
     for row in 0..rows {
         let out_row = out.slice(row * outputs..(row + 1) * outputs)?;
         let x_row = x.slice(row * columns..(row + 1) * columns)?;
-        if matches!(weight, WeightRef::GroupedInt { .. }) {
-            projection.grouped_int_row(
-                recording,
-                &GroupedIntPlan {
-                    tile_rows: GROUPED_INT_TILE_ROWS,
-                    columns,
-                },
-                out_row,
-                x_row,
-                weight,
-            )?;
-        } else {
-            projection.grouped_int6_row(
-                recording,
-                &GroupedIntPlan {
-                    tile_rows: GROUPED_INT_TILE_ROWS,
-                    columns,
-                },
-                out_row,
-                x_row,
-                weight,
-            )?;
-        }
+        record_grouped_int_row(
+            projection,
+            recording,
+            &GroupedIntPlan {
+                tile_rows: GROUPED_INT_TILE_ROWS,
+                columns,
+            },
+            out_row,
+            x_row,
+            weight,
+        )?;
     }
     Ok(())
 }
@@ -1019,32 +1024,21 @@ impl Projection for TileProjection {
         x: Buffer<'_, f32>,
         weight: WeightRef<'_>,
     ) -> Result<()> {
-        match weight {
-            WeightRef::GroupedInt { .. } => {
-                return self.grouped_int_row(
-                    recording,
-                    &GroupedIntPlan {
-                        tile_rows: GROUPED_INT_TILE_ROWS,
-                        columns: plan.columns,
-                    },
-                    out,
-                    x,
-                    weight,
-                );
-            }
-            WeightRef::GroupedInt6 { .. } => {
-                return self.grouped_int6_row(
-                    recording,
-                    &GroupedIntPlan {
-                        tile_rows: GROUPED_INT_TILE_ROWS,
-                        columns: plan.columns,
-                    },
-                    out,
-                    x,
-                    weight,
-                );
-            }
-            _ => {}
+        if matches!(
+            weight,
+            WeightRef::GroupedInt { .. } | WeightRef::GroupedInt6 { .. }
+        ) {
+            return record_grouped_int_row(
+                self,
+                recording,
+                &GroupedIntPlan {
+                    tile_rows: GROUPED_INT_TILE_ROWS,
+                    columns: plan.columns,
+                },
+                out,
+                x,
+                weight,
+            );
         }
         let scope = capture_scope(recording)?;
         let columns = plan.columns;
