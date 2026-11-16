@@ -1,6 +1,36 @@
 # Grouped-int kernel family and kernel observability
 
-状态：**设计 + 第一阶段实现**。目标是在接 Q8_0 / Q5_K / IQ 系列之前，把 grouped-int 的 host 边界、kernel 选择和观测收成一套；新增格式只增加格式描述和特化 kernel，不再改一圈调用点。
+状态：**格式边界、packer、kernel 家族已实现**（第 1–3、7 步）；Q4_0/Q4_1/Q5_0/Q5_1/Q8_0/Q4_K/Q5_K/Q6_K 走同一条路径。multi-row MMQ prefill、kernel manifest 与可选设备计时（第 4–6 步）尚未实现。
+
+## 已实现的单一来源
+
+| 事实 | 唯一位置 |
+|---|---|
+| 格式标签与几何（code 位宽、group 大小、zero point / bias） | `infer_ir::GroupedIntFormat` |
+| GGML block 的位布局 | `infer_format::gguf::grouped`（`decode_span`），参考 `dequantize` 也走它 |
+| GGUF 类型 → 格式 | `GgufType::grouped_int` |
+| 设备布局（packing、tile、term 下标） | `infer_cuda_kernels::contract::{CodePacking, GroupedIntLayout}` |
+| host 打包 | CUDA `loading::GroupedIntTiled`（按 packing 分支，不按格式） |
+| kernel | `nibble::{gemv, gemv_zero}`、`byte::{gemv, gemv_zero}`；group 与 zero point 是 const generic |
+
+`ExecutableEncoding::GroupedInt(format)` / `WeightEncoding::GroupedInt(format)` / `WeightRef::GroupedInt(GroupedIntWeight)` 各只有一个变体，`Projection::grouped_int` 是唯一入口。新增一个与现有 packing 相容的格式只需：`GroupedIntFormat` 一个变体 + 几何、`decode_span` 一个分支、CUDA provider 声明一行。
+
+### 设备存储代价
+
+所有格式共用 f32 factor（有 min 的格式另加 f32 bias）。5/6/8 bit 码按字节存放：
+
+| 格式 | GGUF bits/值 | 设备 bits/值 |
+|---|---|---|
+| Q4_0 | 4.5 | 5 |
+| Q4_1 | 5 | 6 |
+| Q4_K | 4.5 | 6 |
+| Q5_0 | 5.5 | 9 |
+| Q5_1 | 6 | 10 |
+| Q5_K | 5.5 | 10 |
+| Q6_K | 6.56 | 10 |
+| Q8_0 | 8.5 | 9 |
+
+5-bit 格式的显存/带宽代价最大；需要时给它们加一个 nibble+高位平面的 packing（新 packer 分支 + kernel 变体），不改格式层。Q2_K/Q3_K/IQ 系列尚未接入，加载时显式 `Unsupported`。
 
 ## 既有设计基线
 
@@ -37,36 +67,17 @@
 
 ### 1. 格式描述
 
-`GroupedIntKind` 是唯一格式标签，提供与布局无关的几何：
+`GroupedIntFormat`（`infer-ir`）是唯一格式标签，提供与布局无关的几何：`code_bits`、`group_values`、`span_groups`、`offset()`（`Zero(z)` 或 `Bias`）与参考取值 `value(code, factor, bias)`。每个格式都解码为每值一个无符号 code 加每组一个 factor（和 bias）。
+
+`decode_span`（`infer-format`）把 256 值的存储 span 解成 `GroupedSpan`；这是唯一知道各格式位布局的代码。参考 `dequantize` 与 CUDA packer 都调用它。
+
+`GroupedIntTiled` 是 **CUDA backend 内部**的 host 布局：
 
 ```rust
-block_values()       // 256
-code_shape(rows, cols)
-has_biases()
+struct GroupedIntTiled { format, rows, columns, codes, factors, biases: Option<_> }
 ```
 
-`GroupedIntTiled` 是 **CUDA backend 内部**的 host 布局，不放在 model 或 kernel-api：
-
-```rust
-enum GroupedIntTiled { Q4(Q4KTiled), Q6(Q6KTiled) }
-```
-
-它提供 `rows/columns/codes/factors/biases/code_shape`。CUDA loader 只调用 `from_blocks(kind, ...)` 和这些访问器，不再知道 Q4/Q6 的内部字段。
-
-Metal 不实现这个 enum。平台侧只拥有：
-
-- `GroupedIntKind`；
-- `code_shape` / `has_biases` 等与 backend 无关的几何；
-- raw block 访问；
-- plan / capability / manifest。
-
-新增格式的 host 工作：
-
-```text
-GroupedIntKind::Q8_0
-CUDA: GroupedIntTiled::Q8(...)
-CUDA: from_blocks 增加一个分支
-```
+它按 `CodePacking`（nibble / byte）写 code，按统一下标 `((tile·spans + span)·groups + g)·16 + row` 写 term，与格式名无关。Metal 不实现它。
 
 ### 0. 平台侧与 backend 的边界
 
@@ -78,34 +89,24 @@ CUDA: from_blocks 增加一个分支
 | CUDA | `cuda` / `cuda-kernels` | tile layout、Tiled 类型、kernel、CUDA event |
 | Metal | `metal` | 自己的 layout/kernel/event，只实现平台契约 |
 
-当前过渡状态：`GgufPackage::q4k/q6k` 仍直接返回 CUDA tiled 类型；接 Metal 前必须改成返回 raw `GroupedIntBlocks`（kind、shape、bytes），由 backend 自己 pack。
+`GgufPackage` 只返回 raw block；CUDA 自己 pack。Metal 接入时复用 `decode_span` 与 `GroupedIntFormat`，只写自己的 packer 与 kernel。
 
 ### 2. 投影契约
 
 `Projection` 只保留一个 grouped-int 入口：
 
 ```rust
-fn grouped_int(
-    &self,
-    recording: &Recording<'_>,
-    plan: &GroupedIntPlan,
-    out: Buffer<'_, f32>,
-    x: Buffer<'_, f32>,
-    weight: WeightRef<'_>,
-) -> Result<()>;
-```
+fn grouped_int(&self, recording, plan: &GroupedIntPlan, out, x, weight: GroupedIntWeight<'_>) -> Result<()>;
 
-`GroupedIntPlan` 携带：
-
-```rust
-struct GroupedIntPlan {
-    kernel: GroupedIntKernel, // Gemv | Mmq { tile_outputs }
-    rows: usize,
-    columns: usize,
+struct GroupedIntWeight<'a> {
+    format: GroupedIntFormat,
+    codes: Buffer<'a, u8>,
+    factors: Buffer<'a, f32>,
+    biases: Option<Buffer<'a, f32>>, // 恰在 format.has_biases() 时存在
 }
 ```
 
-实现内部按 `WeightRef` 分派到具体特化；调用方不再按 Q4/Q6 分支。
+实现用 `GroupedIntLayout` 校验长度，再按 `(CodePacking, biases)` 选 4 个 entry 之一；group 大小与 zero point 作为 generic 传入。调用方不按格式分支。MMQ 接入时 `GroupedIntPlan` 再加 `kernel: Gemv | Mmq`。
 
 ### 3. Kernel 家族
 
@@ -205,13 +206,13 @@ replay 后读取，聚合为：
 
 ## 实施顺序
 
-1. `GroupedIntTiled` + loader 收口（本 PR 已开始）；
-2. `Projection::grouped_int` 单入口、rows 单路径；
-3. Q4/Q6 kernel 家族模板化；
+1. `GroupedIntTiled` + loader 收口（已完成）；
+2. `Projection::grouped_int` 单入口、rows 单路径（已完成；rows 仍逐行调用 GEMV）；
+3. kernel 家族按 packing × offset 模板化（已完成）；
 4. multi-row MMQ 接入 prefill，删除 `PromptGrouped` fallback；
 5. `KernelDescriptor` manifest；
 6. 可选 CUDA event 计时；
-7. 再接入 Q8_0/Q5_K 等新格式。
+7. 接入 Q4_0/Q4_1/Q5_0/Q5_1/Q8_0/Q5_K（已完成，llama.cpp 量化的 Qwen3-VL-2B 端到端对照见 PR）。
 
 ## 非目标
 
