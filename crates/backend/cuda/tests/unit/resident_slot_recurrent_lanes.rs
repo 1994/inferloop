@@ -12,8 +12,10 @@ use crate::{
         slot_recurrent::{ValueDevice, fused, value_split},
     },
 };
+use cutile::half::bf16;
 use cutile::prelude::*;
 use std::error::Error;
+use std::time::{Duration, Instant};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -26,6 +28,8 @@ const WIDE: usize = 8;
 const NARROW: usize = 3;
 const SLOTS: usize = 3;
 const FIELDS: usize = 4;
+/// Launches averaged into one kernel timing.
+const TIMED_LAUNCHES: usize = 20;
 
 /// Rows `slot * WIDE + lane` for `lane < NARROW`, packed as `slot * NARROW + lane`.
 fn narrow_rows<T: Clone>(wide: &[T], width: usize) -> Vec<T> {
@@ -167,18 +171,30 @@ fn wide_delta_lanes_match_three_lane_reference() -> TestResult {
 }
 
 /// The chunked delta verification against the serial lanes kernel it replaces: every candidate
-/// output, including a slot whose tail lanes are padding, within the same tolerance.
+/// output, including a slot whose tail lanes are padding, within the same tolerance, for both
+/// checkpoint precisions and the value splits a three-slot and a full 27B pool take.
 #[test]
 #[ignore = "requires CUDA hardware; run inside safe-run"]
 fn chunked_delta_verify_matches_serial_lanes() -> TestResult {
-    // 64 columns is the split three slots take; 32 the split of a full 27B pool.
     for block in [32, 64] {
-        chunked_matches_serial(block)?;
+        for bf16_state in [false, true] {
+            chunked_matches_serial(block, bf16_state)?;
+        }
     }
     Ok(())
 }
 
-fn chunked_matches_serial(block: usize) -> TestResult {
+/// Average device time of `launch` over repeated synchronized launches.
+fn timed(mut launch: impl FnMut() -> TestResult) -> TestResult<Duration> {
+    launch()?;
+    let start = Instant::now();
+    for _ in 0..TIMED_LAUNCHES {
+        launch()?;
+    }
+    Ok(start.elapsed() / u32::try_from(TIMED_LAUNCHES)?)
+}
+
+fn chunked_matches_serial(block: usize, bf16_state: bool) -> TestResult {
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
     let state = values(SLOTS * VH * D * D, 23);
@@ -193,35 +209,80 @@ fn chunked_matches_serial(block: usize) -> TestResult {
     let beta = upload(&device, beta.clone(), &[beta.len()])?;
     let alpha = upload(&device, alpha.clone(), &[alpha.len()])?;
     let meta = device.upload(meta.clone(), &[meta.len()])?;
-    let states = upload(&device, state, &[SLOTS * VH, D, D])?;
     let shape = [SLOTS, WIDE, VH * D];
     let mut serial = upload(&device, vec![0.0; SLOTS * WIDE * VH * D], &shape)?;
     let mut chunked = upload(&device, vec![0.0; SLOTS * WIDE * VH * D], &shape)?;
-    let generics = f32_state(generics(&[KH, VH, D, block, FIELDS, WIDE]));
-    fused::delta_verify_lanes(
-        (&mut serial).partition([1, WIDE, block]),
-        &states,
-        &qkv,
-        &beta,
-        &alpha,
-        &parameters,
-        &meta,
-    )
-    .generics(generics.clone())
-    .sync_on(device.stream())?;
-    fused::delta_verify_chunked(
-        (&mut chunked).partition([1, WIDE, block]),
-        &states,
-        &qkv,
-        &beta,
-        &alpha,
-        &parameters,
-        &meta,
-    )
-    .generics(generics)
-    .sync_on(device.stream())?;
+    let mut serial_generics = f32_state(generics(&[KH, VH, D, block, FIELDS, WIDE]));
+    let terms = if bf16_state { 1 } else { 3 };
+    let mut chunked_generics = f32_state(generics(&[KH, VH, D, block, FIELDS, WIDE, terms]));
+    if bf16_state {
+        serial_generics[0] = String::from("bf16");
+        chunked_generics[0] = String::from("bf16");
+    }
+    let label = format!("chunked delta verify, {block}-column block, bf16 state {bf16_state}");
+    let state_f32 = upload(&device, state.clone(), &[SLOTS * VH, D, D])?;
+    let state_bf16 = device.upload(
+        state
+            .iter()
+            .map(|&value| bf16::from_f32(value))
+            .collect::<Vec<_>>(),
+        &[SLOTS * VH, D, D],
+    )?;
+    macro_rules! run {
+        ($kernel:ident, $out:expr, $generics:expr, $state:expr) => {
+            fused::$kernel(
+                ($out).partition([1, WIDE, block]),
+                $state,
+                &qkv,
+                &beta,
+                &alpha,
+                &parameters,
+                &meta,
+            )
+            .generics($generics.clone())
+            .sync_on(device.stream())
+        };
+    }
+    let (serial_time, chunked_time) = if bf16_state {
+        (
+            timed(|| {
+                Ok(run!(
+                    delta_verify_lanes,
+                    &mut serial,
+                    serial_generics,
+                    &state_bf16
+                )
+                .map(drop)?)
+            })?,
+            timed(|| {
+                Ok(run!(
+                    delta_verify_chunked,
+                    &mut chunked,
+                    chunked_generics,
+                    &state_bf16
+                )
+                .map(drop)?)
+            })?,
+        )
+    } else {
+        (
+            timed(|| {
+                Ok(run!(delta_verify_lanes, &mut serial, serial_generics, &state_f32).map(drop)?)
+            })?,
+            timed(|| {
+                Ok(run!(
+                    delta_verify_chunked,
+                    &mut chunked,
+                    chunked_generics,
+                    &state_f32
+                )
+                .map(drop)?)
+            })?,
+        )
+    };
+    eprintln!("{label}: serial {serial_time:?}, chunked {chunked_time:?}");
     assert_close(
-        &format!("chunked delta verify, {block}-column block"),
+        &label,
         &device.read_borrowed(&chunked)?,
         &device.read_borrowed(&serial)?,
     );

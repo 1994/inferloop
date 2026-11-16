@@ -16,6 +16,17 @@ use infer_core::{Error, Result};
 const CONV_TILE: usize = 128;
 /// Candidate rows one chunked delta verification holds: its triangular recurrence tile.
 const CHUNK_LANES: usize = 16;
+/// BF16 terms that carry an F32 checkpoint on tensor cores within F32 rounding.
+const F32_CHECKPOINT_TERMS: usize = 3;
+
+/// BF16 terms the chunked verification splits a checkpoint of `dtype` into.
+fn checkpoint_terms(dtype: &str) -> usize {
+    if dtype == <cutile::half::bf16 as DType>::DTYPE.as_str() {
+        1
+    } else {
+        F32_CHECKPOINT_TERMS
+    }
+}
 /// Taps of the convolution weight.
 const CONV_TAPS: usize = 4;
 /// Candidates the specialized pool kernels cover.
@@ -336,6 +347,10 @@ impl RecurrentPool for TileRecurrentPool {
                         )));
                     }
                     generics.push(lanes.to_string());
+                    let terms = generics
+                        .first()
+                        .map_or(F32_CHECKPOINT_TERMS, |dtype| checkpoint_terms(dtype));
+                    generics.push(terms.to_string());
                     scope
                         .record(
                             fused::delta_verify_chunked(

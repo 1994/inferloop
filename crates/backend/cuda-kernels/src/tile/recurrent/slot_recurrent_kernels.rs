@@ -224,6 +224,26 @@ pub mod fused {
         picked.reshape(shape![1])
     }
 
+    /// `a · b` for an exact BF16 `b` on tensor cores: `a` splits into three BF16 terms.
+    fn split_product<const M: i32, const K: i32, const N: i32>(
+        a: Tile<f32, { [M, K] }>,
+        b: Tile<bf16, { [K, N] }>,
+    ) -> Tile<f32, { [M, N] }> {
+        let a = a.reshape(shape![M, K]);
+        let b = b.reshape(shape![K, N]);
+        let a0: Tile<bf16, { [M, K] }> = convert_tile(a);
+        let a0f: Tile<f32, { [M, K] }> = convert_tile(a0);
+        let ar = a - a0f;
+        let a1: Tile<bf16, { [M, K] }> = convert_tile(ar);
+        let a1f: Tile<f32, { [M, K] }> = convert_tile(a1);
+        let a2: Tile<bf16, { [M, K] }> = convert_tile(ar - a1f);
+        let zero: Tile<f32, { [M, N] }> = constant(0.0f32, shape![M, N]);
+        let mut acc = mmaf(a2, b, zero);
+        acc = mmaf(a1, b, acc);
+        acc = mmaf(a0, b, acc);
+        acc.reshape(shape![M, N])
+    }
+
     /// Whether each of the 16 chunk rows is row `lane`.
     fn chunk_row(rows: Tile<i32, { [16] }>, lane: i32) -> Tile<bool, { [16] }> {
         let at = lane.broadcast(shape![16]);
@@ -668,6 +688,7 @@ pub mod fused {
         const SW: i32,
         const MF: i32,
         const L: i32,
+        const T: i32,
     >(
         out: &mut Tensor<f32, { [1, L, SW] }>,
         state: &Tensor<E, { [-1, D, D] }>,
@@ -684,12 +705,12 @@ pub mod fused {
         let key = head / (VH / KH);
         let head_bias = parameters.partition(shape![1]).load([VH + head]);
         let rate = exp(parameters.partition(shape![1]).load([head]));
-        let checkpoint: Tile<f32, { [D, SW] }> = convert_tile(
-            state
-                .partition(shape![1, D, SW])
-                .load([slot * VH + head, 0i32, split])
-                .reshape(shape![D, SW]),
-        );
+        let raw = state
+            .partition(shape![1, D, SW])
+            .load([slot * VH + head, 0i32, split])
+            .reshape(shape![D, SW]);
+        // A BF16 checkpoint is its own tensor-core operand; an F32 one adds two residual terms.
+        let checkpoint: Tile<bf16, { [D, SW] }> = convert_tile(raw);
         let rows: Tile<i32, { [16] }> = iota(shape![16]);
         let empty16: Tile<f32, { [16] }> = constant(0.0f32, shape![16]);
         let mut keys: Tile<f32, { [16, D] }> = constant(0.0f32, shape![16, D]);
@@ -762,8 +783,18 @@ pub mod fused {
             exp(cumulative.reshape(shape![16, 1]).broadcast(shape![16, 16])
                 - cumulative.reshape(shape![1, 16]).broadcast(shape![16, 16]));
         let growth: Tile<f32, { [16] }> = exp(cumulative.reshape(shape![16]));
-        let key_rows: Tile<f32, { [16, SW] }> = exact_product(keys, checkpoint);
-        let query_rows: Tile<f32, { [16, SW] }> = exact_product(queries, checkpoint);
+        let mut key_rows: Tile<f32, { [16, SW] }> = split_product(keys, checkpoint);
+        let mut query_rows: Tile<f32, { [16, SW] }> = split_product(queries, checkpoint);
+        if T == 3i32 {
+            let full: Tile<f32, { [D, SW] }> = convert_tile(raw);
+            let head_terms: Tile<f32, { [D, SW] }> = convert_tile(checkpoint);
+            let residual = full - head_terms;
+            let low: Tile<bf16, { [D, SW] }> = convert_tile(residual);
+            let low_terms: Tile<f32, { [D, SW] }> = convert_tile(low);
+            let tail: Tile<bf16, { [D, SW] }> = convert_tile(residual - low_terms);
+            key_rows = key_rows + split_product(keys, low) + split_product(keys, tail);
+            query_rows = query_rows + split_product(queries, low) + split_product(queries, tail);
+        }
         let keys_t: Tile<f32, { [D, 16] }> = keys.transpose();
         let key_products: Tile<f32, { [16, 16] }> = exact_product(keys, keys_t);
         let correction: Tile<f32, { [16, 16] }> = select(strict, ratio * key_products, none);
