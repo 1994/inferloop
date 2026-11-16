@@ -1,3 +1,4 @@
+use super::grouped_int_tiled::GroupedIntTiled;
 use super::head_padding::Pad;
 use crate::constants::DEFAULT_TILE_COLUMNS;
 use crate::constants::DEFAULT_TILE_ROWS;
@@ -11,8 +12,8 @@ use infer_cuda_kernels::runtime::bf16;
 use infer_cuda_kernels::runtime::{f4e2m1fnx2, f8e4m3fn};
 use infer_ir::DType;
 use infer_models::{
-    DeviceWeight, GroupedIntKind, GroupedIntTiled, QuantizedPackage, WeightEncoding, WeightSource,
-    WeightView, convert_float_bytes,
+    DeviceWeight, GroupedIntKind, QuantizedPackage, WeightEncoding, WeightSource, WeightView,
+    convert_float_bytes,
 };
 use std::cmp::Ordering;
 

@@ -3,10 +3,8 @@
 //! Each family keeps its own packing, but callers use this enum for shape, codes, factors and
 //! optional biases, so a new family adds one variant and its constructor instead of another
 //! branch in the loader and projection binding.
-use crate::storage::grouped_int::{Q4KDevice, Q4KTiled};
-use crate::storage::grouped_int6::Q6KTiled;
-use crate::storage::quantized::GroupedIntKind;
 use infer_core::Result;
+use infer_models::{GroupedIntKind, Q4KDevice, Q4KTiled, Q6KTiled};
 
 /// A grouped-int matrix in its kernel-facing host layout.
 #[derive(Debug, Clone, PartialEq)]
@@ -93,22 +91,5 @@ impl GroupedIntTiled {
     #[must_use]
     pub const fn code_shape(&self) -> [usize; 2] {
         self.kind().code_shape(self.rows(), self.columns())
-    }
-}
-
-impl GroupedIntKind {
-    /// Upload shape of the packed codes for a logical matrix.
-    #[must_use]
-    pub const fn code_shape(self, rows: usize, columns: usize) -> [usize; 2] {
-        match self {
-            Self::Q4K => [rows, columns / 2],
-            Self::Q6K => [rows, columns],
-        }
-    }
-
-    /// Whether this family carries a per-group min/bias term.
-    #[must_use]
-    pub const fn has_biases(self) -> bool {
-        matches!(self, Self::Q4K)
     }
 }

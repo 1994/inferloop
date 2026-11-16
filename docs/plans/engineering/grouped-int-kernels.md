@@ -34,21 +34,40 @@ code_shape(rows, cols)
 has_biases()
 ```
 
-`GroupedIntTiled` 是唯一的 host 布局边界：
+`GroupedIntTiled` 是 **CUDA backend 内部**的 host 布局，不放在 model 或 kernel-api：
 
 ```rust
 enum GroupedIntTiled { Q4(Q4KTiled), Q6(Q6KTiled) }
 ```
 
-它提供 `rows/columns/codes/factors/biases/code_shape`。loader 只调用 `from_blocks(kind, ...)` 和这些访问器，不再知道 Q4/Q6 的内部字段。
+它提供 `rows/columns/codes/factors/biases/code_shape`。CUDA loader 只调用 `from_blocks(kind, ...)` 和这些访问器，不再知道 Q4/Q6 的内部字段。
+
+Metal 不实现这个 enum。平台侧只拥有：
+
+- `GroupedIntKind`；
+- `code_shape` / `has_biases` 等与 backend 无关的几何；
+- raw block 访问；
+- plan / capability / manifest。
 
 新增格式的 host 工作：
 
 ```text
 GroupedIntKind::Q8_0
-GroupedIntTiled::Q8(...)
-from_blocks 增加一个分支
+CUDA: GroupedIntTiled::Q8(...)
+CUDA: from_blocks 增加一个分支
 ```
+
+### 0. 平台侧与 backend 的边界
+
+| 层 | 放在哪里 | 内容 |
+|---|---|---|
+| 容器 | `infer-format` | GGUF metadata、block bytes、参考 decode |
+| 模型 | `infer-models` | provider、config、slot 映射、`GroupedIntKind` 几何、raw block |
+| 平台契约 | `infer-spi` / `infer-kernel-api` | kernel registration、capability、plan 语义、manifest/timing schema |
+| CUDA | `cuda` / `cuda-kernels` | tile layout、Tiled 类型、kernel、CUDA event |
+| Metal | `metal` | 自己的 layout/kernel/event，只实现平台契约 |
+
+当前过渡状态：`GgufPackage::q4k/q6k` 仍直接返回 CUDA tiled 类型；接 Metal 前必须改成返回 raw `GroupedIntBlocks`（kind、shape、bytes），由 backend 自己 pack。
 
 ### 2. 投影契约
 
@@ -123,7 +142,7 @@ M >= 16         -> grouped_int_mmq
 
 #### 静态 manifest（默认开启，零设备开销）
 
-capture 时记录每个 launch 的 `KernelDescriptor`：
+schema 放在 `infer-spi` / `infer-kernel-api`，CUDA 和 Metal 都填同一份；capture 时记录每个 launch 的 `KernelDescriptor`.
 
 ```rust
 struct KernelDescriptor {
@@ -143,7 +162,7 @@ struct KernelDescriptor {
 
 #### 可选设备计时
 
-启动参数 `--kernel-timing`（或 feature）时，在每个 launch 前后插入 CUDA event 节点：
+设备计时由 backend 实现（CUDA event / Metal counter），但报告结构和聚合在平台侧。启动参数 `--kernel-timing`（或 feature）时，在每个 launch 前后插入 backend event：
 
 ```text
 event(start) -> kernel -> event(end)

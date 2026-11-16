@@ -9,6 +9,7 @@ use crate::resident::require_kernel_geometry;
 use head_padding::pad_package;
 use std::path::PathBuf;
 mod concurrency;
+mod grouped_int_tiled;
 mod kv_scales;
 mod weights;
 use crate::constants::FUSED_VERIFY_LANES;

@@ -9,8 +9,6 @@ pub mod gguf_vision;
 pub mod grouped_int;
 #[cfg(feature = "gguf")]
 pub mod grouped_int6;
-#[cfg(feature = "gguf")]
-pub mod grouped_int_tiled;
 pub mod index;
 pub mod loader;
 pub mod memory;

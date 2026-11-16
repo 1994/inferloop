@@ -1206,3 +1206,20 @@ fn declared_kv_dtype(scheme: &serde_json::Value) -> Result<Option<TensorDtype>> 
 #[cfg(test)]
 #[path = "../../tests/unit/storage_quantized.rs"]
 mod kv_tests;
+
+impl GroupedIntKind {
+    /// Upload shape of the packed codes for a logical matrix.
+    #[must_use]
+    pub const fn code_shape(self, rows: usize, columns: usize) -> [usize; 2] {
+        match self {
+            Self::Q4K => [rows, columns / 2],
+            Self::Q6K => [rows, columns],
+        }
+    }
+
+    /// Whether this family carries a per-group min/bias term.
+    #[must_use]
+    pub const fn has_biases(self) -> bool {
+        matches!(self, Self::Q4K)
+    }
+}
