@@ -7,15 +7,15 @@
 
 /// Output tile of the activation-quantized GEMMs on decode-width graphs; the first row and
 /// column variant of every resident search.
-pub(crate) const QUANT_GEMM_TILE: [usize; 2] = [16, 64];
+pub const QUANT_GEMM_TILE: [usize; 2] = [16, 64];
 /// Baseline row tile for graphs wider than one decode tile.
 ///
 /// A 16-row tile splits a prompt graph into row blocks that each reread the same weight tile.
 /// A 64-row CTA on a one-row decode wastes most of its tensor-core work, so decode keeps
 /// [`QUANT_GEMM_TILE`].
-pub(crate) const PROMPT_GEMM_TILE_ROWS: usize = 64;
+pub const PROMPT_GEMM_TILE_ROWS: usize = 64;
 /// Baseline row tile once a graph has at least this many rows: fewer CTAs reread each
 /// weight tile. Shorter prompt tails keep [`PROMPT_GEMM_TILE_ROWS`].
-pub(crate) const WIDE_PROMPT_GEMM_TILE_ROWS: usize = 128;
+pub const WIDE_PROMPT_GEMM_TILE_ROWS: usize = 128;
 /// MMA output tile of the dense and scaled pooled verification projections.
-pub(crate) const SMALL_GEMM_TILE: [usize; 2] = [16, 32];
+pub const SMALL_GEMM_TILE: [usize; 2] = [16, 32];
