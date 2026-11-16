@@ -1,7 +1,7 @@
 //! Checkpoint capabilities a GGUF package requires.
 use infer_core::{Error, Result};
 use infer_format::GgufFile;
-use infer_ir::{CheckpointFormat, WeightEncoding};
+use infer_ir::{CheckpointFormat, ExecutableEncoding};
 use std::path::Path;
 
 /// Container and weight encodings a package needs from a backend.
@@ -10,7 +10,7 @@ pub struct PackageRequirements {
     /// Checkpoint container.
     pub checkpoint: CheckpointFormat,
     /// Encodings used by at least one tensor.
-    pub encodings: Vec<WeightEncoding>,
+    pub encodings: Vec<ExecutableEncoding>,
 }
 
 /// Inspect a GGUF file and report the backend capabilities it needs.
@@ -40,13 +40,13 @@ pub fn gguf_requirements(path: impl AsRef<Path>) -> Result<PackageRequirements> 
 /// Capability encoding for one GGUF tensor type.
 /// # Errors
 /// Rejects a type the native kernels do not cover yet.
-pub fn encoding_for(ty: infer_format::GgufType) -> Result<WeightEncoding> {
+pub fn encoding_for(ty: infer_format::GgufType) -> Result<ExecutableEncoding> {
     Ok(match ty {
         infer_format::GgufType::F32
         | infer_format::GgufType::F16
-        | infer_format::GgufType::Bf16 => WeightEncoding::Dense,
-        infer_format::GgufType::Q4K => WeightEncoding::GroupedInt4,
-        infer_format::GgufType::Q6K => WeightEncoding::GroupedInt6,
+        | infer_format::GgufType::Bf16 => ExecutableEncoding::Dense,
+        infer_format::GgufType::Q4K => ExecutableEncoding::GroupedInt4,
+        infer_format::GgufType::Q6K => ExecutableEncoding::GroupedInt6,
         other => return Err(Error::unsupported(other.name())),
     })
 }

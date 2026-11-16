@@ -110,8 +110,8 @@ fn inspect_gguf(path: &Path) -> Result<()> {
     let mut dense = 0usize;
     for slot in package.slots().values() {
         match slot.encoding()? {
-            infer_ir::WeightEncoding::GroupedInt4 => q4k += 1,
-            infer_ir::WeightEncoding::GroupedInt6 => q6k += 1,
+            infer_ir::ExecutableEncoding::GroupedInt4 => q4k += 1,
+            infer_ir::ExecutableEncoding::GroupedInt6 => q6k += 1,
             _ => dense += 1,
         }
     }

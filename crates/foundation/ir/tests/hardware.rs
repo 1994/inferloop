@@ -120,11 +120,11 @@ fn backend_formats_cover_containers_and_encodings() {
             CheckpointFormat::Gguf,
             CheckpointFormat::Mlx,
         ],
-        encodings: &[WeightEncoding::Dense, WeightEncoding::MlxAffine],
+        encodings: &[ExecutableEncoding::Dense, ExecutableEncoding::MlxAffine],
     };
     assert!(formats.supports_format(CheckpointFormat::Gguf));
     assert!(formats.supports_format(CheckpointFormat::Mlx));
-    assert!(formats.supports_encoding(WeightEncoding::MlxAffine));
-    assert!(!formats.supports_encoding(WeightEncoding::Nvfp4));
+    assert!(formats.supports_encoding(ExecutableEncoding::MlxAffine));
+    assert!(!formats.supports_encoding(ExecutableEncoding::Nvfp4));
     assert!(formats.supports_format(CheckpointFormat::Safetensors));
 }

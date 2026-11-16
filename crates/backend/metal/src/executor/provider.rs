@@ -21,8 +21,8 @@ impl MetalBackend {
             infer_ir::CheckpointFormat::Mlx,
         ],
         encodings: &[
-            infer_ir::WeightEncoding::Dense,
-            infer_ir::WeightEncoding::MlxAffine,
+            infer_ir::ExecutableEncoding::Dense,
+            infer_ir::ExecutableEncoding::MlxAffine,
         ],
     };
 }

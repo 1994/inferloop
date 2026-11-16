@@ -254,6 +254,9 @@ impl BackendProvider for SelectedBackend {
     fn capabilities(&self) -> DeviceCapabilities {
         forward!(self, capabilities)
     }
+    fn formats(&self) -> infer_ir::BackendFormats {
+        forward!(self, formats)
+    }
     /// Wrappers must forward every defaulted trait method: the trait's default silently
     /// reports the conservative answer, which once disabled speculative decode unnoticed.
     ///

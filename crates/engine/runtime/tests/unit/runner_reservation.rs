@@ -35,6 +35,9 @@ impl BackendProvider for QuoteBackend {
     fn capabilities(&self) -> DeviceCapabilities {
         self.inner.capabilities()
     }
+    fn formats(&self) -> infer_ir::BackendFormats {
+        self.inner.formats()
+    }
     fn execution_graph(&self, model: &ModelIr) -> Result<infer_ir::DataflowGraph> {
         self.inner.execution_graph(model)
     }

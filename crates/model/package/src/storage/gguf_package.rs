@@ -14,7 +14,7 @@ use crate::storage::grouped_int::Q4KDevice;
 use crate::storage::grouped_int6::Q6KTiled;
 use infer_core::{Error, Result};
 use infer_format::{GgufFile, GgufType, dequantize};
-use infer_ir::WeightEncoding;
+use infer_ir::ExecutableEncoding;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -35,7 +35,7 @@ impl GgufSlot {
     /// Capability encoding this tensor needs.
     /// # Errors
     /// Rejects a type the capability model does not name.
-    pub fn encoding(&self) -> Result<WeightEncoding> {
+    pub fn encoding(&self) -> Result<ExecutableEncoding> {
         encoding_for(self.dtype)
     }
 }

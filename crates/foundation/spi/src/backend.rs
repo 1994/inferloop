@@ -88,10 +88,9 @@ pub trait BackendProvider {
         false
     }
     fn capabilities(&self) -> DeviceCapabilities;
-    /// Checkpoint containers and weight encodings this backend loads and executes.
-    fn formats(&self) -> infer_ir::BackendFormats {
-        infer_ir::BackendFormats::default()
-    }
+    /// Checkpoint containers and weight encodings this backend loads and executes. Required, so a
+    /// wrapping backend cannot silently report none of its inner backend's formats.
+    fn formats(&self) -> infer_ir::BackendFormats;
     /// Speculative decode support, queried on hot paths where cloning capabilities would allocate.
     fn speculation_capability(&self) -> infer_ir::SpeculationCapability {
         infer_ir::SpeculationCapability::default()

@@ -62,7 +62,7 @@ impl CheckpointFormat {
 /// Weight storage/compute encoding a backend can execute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WeightEncoding {
+pub enum ExecutableEncoding {
     /// F32/BF16/F16 dense weights.
     Dense,
     /// FP8 channel or block scales.
@@ -77,7 +77,7 @@ pub enum WeightEncoding {
     MlxAffine,
 }
 
-impl WeightEncoding {
+impl ExecutableEncoding {
     /// Stable label used in errors and diagnostics.
     #[must_use]
     pub const fn label(self) -> &'static str {
@@ -98,7 +98,7 @@ pub struct BackendFormats {
     /// Containers the host loader may present to this backend.
     pub checkpoints: &'static [CheckpointFormat],
     /// Encodings the kernels can execute.
-    pub encodings: &'static [WeightEncoding],
+    pub encodings: &'static [ExecutableEncoding],
 }
 
 impl BackendFormats {
@@ -110,14 +110,14 @@ impl BackendFormats {
 
     /// Whether this backend can execute `encoding`.
     #[must_use]
-    pub fn supports_encoding(self, encoding: WeightEncoding) -> bool {
+    pub fn supports_encoding(self, encoding: ExecutableEncoding) -> bool {
         self.encodings.contains(&encoding)
     }
 
     /// Require a checkpoint format and every listed encoding.
     /// # Errors
     /// Rejects a container or encoding this backend does not declare.
-    pub fn require(self, format: CheckpointFormat, encodings: &[WeightEncoding]) -> Result<()> {
+    pub fn require(self, format: CheckpointFormat, encodings: &[ExecutableEncoding]) -> Result<()> {
         if !self.supports_format(format) {
             return Err(Error::unsupported(format!(
                 "backend does not load {} checkpoints",

@@ -57,6 +57,9 @@ impl BackendProvider for ReserveGate {
     fn capabilities(&self) -> DeviceCapabilities {
         self.inner.capabilities()
     }
+    fn formats(&self) -> infer_ir::BackendFormats {
+        self.inner.formats()
+    }
     fn validate_program(&self, model: &ModelIr, program: &ExecutionProgram) -> Result<()> {
         self.inner.validate_program(model, program)
     }
@@ -865,6 +868,9 @@ impl BackendProvider for InlineReservationIntent {
     fn capabilities(&self) -> DeviceCapabilities {
         self.inner.capabilities()
     }
+    fn formats(&self) -> infer_ir::BackendFormats {
+        self.inner.formats()
+    }
     fn tracks_reservation_intent(&self) -> bool {
         true
     }
@@ -995,6 +1001,9 @@ impl BackendProvider for DelayedBusyReservation {
     }
     fn capabilities(&self) -> DeviceCapabilities {
         self.inner.capabilities()
+    }
+    fn formats(&self) -> infer_ir::BackendFormats {
+        self.inner.formats()
     }
     fn tracks_reservation_intent(&self) -> bool {
         true

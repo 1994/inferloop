@@ -16,11 +16,11 @@ impl CudaBackend {
             infer_ir::CheckpointFormat::Gguf,
         ],
         encodings: &[
-            infer_ir::WeightEncoding::Dense,
-            infer_ir::WeightEncoding::Fp8,
-            infer_ir::WeightEncoding::Nvfp4,
-            infer_ir::WeightEncoding::GroupedInt4,
-            infer_ir::WeightEncoding::GroupedInt6,
+            infer_ir::ExecutableEncoding::Dense,
+            infer_ir::ExecutableEncoding::Fp8,
+            infer_ir::ExecutableEncoding::Nvfp4,
+            infer_ir::ExecutableEncoding::GroupedInt4,
+            infer_ir::ExecutableEncoding::GroupedInt6,
         ],
     };
 }
