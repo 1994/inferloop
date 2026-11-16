@@ -410,3 +410,62 @@ fn convolution_commits_match(
     }
     Ok(())
 }
+
+/// Temporary occupancy sweep of the chunked kernel at the production geometry.
+#[test]
+#[ignore = "requires CUDA hardware; run inside safe-run"]
+fn chunked_occupancy_sweep() -> TestResult {
+    use cutile::tile_kernel::CompileOptions;
+    CudaDevice::enable_kernel_cache()?;
+    let device = CudaDevice::new(0)?;
+    let block = 32;
+    let state = values(SLOTS * VH * D * D, 23);
+    let qkv = upload(
+        &device,
+        values(SLOTS * WIDE * QKV, 17),
+        &[SLOTS * WIDE * QKV],
+    )?;
+    let beta = upload(&device, values(SLOTS * WIDE * VH, 13), &[SLOTS * WIDE * VH])?;
+    let alpha = upload(&device, values(SLOTS * WIDE * VH, 7), &[SLOTS * WIDE * VH])?;
+    let meta = metadata();
+    let meta = device.upload(meta.clone(), &[meta.len()])?;
+    let mut parameters = values(VH, 3);
+    parameters.extend(values(VH, 5));
+    let parameters = upload(&device, parameters, &[2 * VH])?;
+    let state = device.upload(
+        state
+            .iter()
+            .map(|&value| bf16::from_f32(value))
+            .collect::<Vec<_>>(),
+        &[SLOTS * VH, D, D],
+    )?;
+    let mut out = upload(
+        &device,
+        vec![0.0; SLOTS * WIDE * VH * D],
+        &[SLOTS, WIDE, VH * D],
+    )?;
+    let mut g = generics(&[KH, VH, D, block, FIELDS, WIDE, 1]);
+    g.insert(0, String::from("bf16"));
+    for occupancy in [None, Some(1), Some(2), Some(4), Some(8)] {
+        let options = occupancy.map_or_else(CompileOptions::default, |o| {
+            CompileOptions::default().occupancy(o)
+        });
+        let time = timed(|| {
+            fused::delta_verify_chunked(
+                (&mut out).partition([1, WIDE, block]),
+                &state,
+                &qkv,
+                &beta,
+                &alpha,
+                &parameters,
+                &meta,
+            )
+            .generics(g.clone())
+            .compile_options(options.clone())
+            .sync_on(device.stream())?;
+            Ok(())
+        })?;
+        eprintln!("occupancy {occupancy:?}: chunked {time:?}");
+    }
+    Ok(())
+}
