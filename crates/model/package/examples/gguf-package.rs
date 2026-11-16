@@ -1,14 +1,16 @@
 //! Open a native GGUF text package and count its slots per grouped-int format.
 use infer_core::ModelId;
 use infer_models::{GgufPackage, MultimodalAssets, QuantizedPackage, TextAssets, default_registry};
+use std::collections::BTreeMap;
 use std::env::args;
 use std::error::Error;
+use std::path::Path;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let path = args().nth(1).ok_or("usage: gguf-package <model.gguf>")?;
     let package = GgufPackage::open(&path)?;
     println!("slots={}", package.slots().len());
-    let mut formats = std::collections::BTreeMap::<&str, usize>::new();
+    let mut formats = BTreeMap::<&str, usize>::new();
     for slot in package.slots().values() {
         if let Some(format) = slot.dtype.grouped_int() {
             *formats.entry(format.label()).or_default() += 1;
@@ -29,11 +31,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .map_err(|error| format!("encode: {error}"))?
             .get_ids()
     );
-    let package = QuantizedPackage::open_gguf(
-        default_registry(),
-        std::path::Path::new(&path),
-        ModelId::ONE,
-    )?;
+    let package = QuantizedPackage::open_gguf(default_registry(), Path::new(&path), ModelId::ONE)?;
     let mut grouped = 0;
     for weight in package.weights.values() {
         if matches!(
@@ -52,7 +50,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("assets tokens={:?}", assets.encode("Hello, world!", false)?);
     println!(
         "multimodal={}",
-        MultimodalAssets::open(std::path::Path::new(&path))?.is_some()
+        MultimodalAssets::open(Path::new(&path))?.is_some()
     );
     Ok(())
 }

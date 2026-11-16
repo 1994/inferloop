@@ -220,12 +220,9 @@ fn legacy_five(format: GroupedIntFormat, bytes: &[u8], span: &mut GroupedSpan) {
     let stride = header + LEGACY_HIGH_BYTES + LEGACY_NIBBLES;
     for (index, block) in bytes.chunks_exact(stride).enumerate() {
         legacy_header(format, block, span, index);
-        let high = u32::from_le_bytes([
-            block[header],
-            block[header + 1],
-            block[header + 2],
-            block[header + 3],
-        ]);
+        let mut word = [0u8; LEGACY_HIGH_BYTES];
+        word.copy_from_slice(&block[header..header + LEGACY_HIGH_BYTES]);
+        let high = u32::from_le_bytes(word);
         let codes = &mut span.codes[index * LEGACY_VALUES..][..LEGACY_VALUES];
         for (lane, byte) in block[header + LEGACY_HIGH_BYTES..].iter().enumerate() {
             let low_bit = (high >> lane) & 1 != 0;

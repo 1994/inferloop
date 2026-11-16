@@ -43,13 +43,12 @@ pub fn dequantize(ty: GgufType, bytes: &[u8], out: &mut [f32]) -> Result<()> {
             scalar_bf16(bytes, out);
             Ok(())
         }
-        other => match other.grouped_int() {
-            Some(format) => dequantize_grouped(format, bytes, out),
-            None => Err(Error::unsupported(format!(
-                "GGUF {} decoding is not implemented",
-                other.name()
-            ))),
-        },
+        other => {
+            let format = other.grouped_int().ok_or_else(|| {
+                Error::unsupported(format!("GGUF {} decoding is not implemented", other.name()))
+            })?;
+            dequantize_grouped(format, bytes, out)
+        }
     }
 }
 

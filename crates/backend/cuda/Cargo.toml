@@ -34,6 +34,7 @@ cuda-aot = [
     "dep:futures-channel",
     "dep:infer-cuda-kernels",
     "infer-cuda-kernels/aot",
+    "infer-models/gguf",
 ]
 
 [dependencies]
