@@ -171,9 +171,16 @@ fn wide_delta_lanes_match_three_lane_reference() -> TestResult {
 #[test]
 #[ignore = "requires CUDA hardware; run inside safe-run"]
 fn chunked_delta_verify_matches_serial_lanes() -> TestResult {
+    // 64 columns is the split three slots take; 32 the split of a full 27B pool.
+    for block in [32, 64] {
+        chunked_matches_serial(block)?;
+    }
+    Ok(())
+}
+
+fn chunked_matches_serial(block: usize) -> TestResult {
     CudaDevice::enable_kernel_cache()?;
     let device = CudaDevice::new(0)?;
-    let block = D / value_split(ValueDevice::new(&device)?, VH, D, SLOTS)?;
     let state = values(SLOTS * VH * D * D, 23);
     let qkv = values(SLOTS * WIDE * QKV, 17);
     let beta = values(SLOTS * WIDE * VH, 13);
@@ -214,7 +221,7 @@ fn chunked_delta_verify_matches_serial_lanes() -> TestResult {
     .generics(generics)
     .sync_on(device.stream())?;
     assert_close(
-        "chunked delta verify",
+        &format!("chunked delta verify, {block}-column block"),
         &device.read_borrowed(&chunked)?,
         &device.read_borrowed(&serial)?,
     );
