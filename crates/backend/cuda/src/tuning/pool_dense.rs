@@ -2,7 +2,7 @@
 mod capture;
 mod evidence;
 use crate::constants::{
-    CB_DECODE_SLOTS, GEMV_WIDE_OUTPUT_RATIO, PREFILL_GEMM_TILE_N, PREFILL_LANES, SMALL_GEMM_TILE,
+    CB_DECODE_SLOTS, GEMV_WIDE_OUTPUT_RATIO, PREFILL_GEMM_TILE_N, PREFILL_LANES,
     SMALL_GEMV_MAX_ROWS,
 };
 use crate::device::CudaDevice;
@@ -16,6 +16,7 @@ use crate::tuning::resident_gemm::{
     MeasurementOrder, ResidentGemmKey, ResidentTuningSession, measure_graphs,
 };
 use crate::tuning::search::{self, Record};
+use crate::tuning::tiles::SMALL_GEMM_TILE;
 use crate::tuning::{resolve_table, table_path};
 use capture::{Captured, key, verify};
 use evidence::protocol;

@@ -2,7 +2,6 @@ use super::drafter::{Drafter, Verified};
 use super::prefix_state::{DraftSnapshot, ProgramSnapshot};
 use super::profiling::ExecutionPhase;
 use super::{CachedMedia, CudaExecutor, ModelOutput, Sequence, SlotLease, Speculation, prefix};
-use crate::constants::CB_SLOT_TOKENS;
 use crate::constants::KV_BLOCK_TOKENS;
 use crate::constants::MAX_POOL_SLOTS;
 use crate::constants::MIB;
@@ -246,7 +245,7 @@ impl CudaExecutor {
                     <= self
                         .slots
                         .as_ref()
-                        .map_or(CB_SLOT_TOKENS, SlotPool::capacity)
+                        .map_or(self.slot_capacity, SlotPool::capacity)
             },
             |lease| lease.batched && lease.position == state.history.len(),
         )
@@ -264,6 +263,7 @@ impl CudaExecutor {
         // Size shared KV storage from admitted requests, not the maximum context.
         // Long contexts outside this pool retain their private execution graph.
         let Some(capacity) = candidate_pool_capacity(
+            self.slot_capacity,
             self.states
                 .values()
                 .filter(|state| !state.poisoned)
@@ -333,8 +333,7 @@ impl CudaExecutor {
     /// verification graph the pool would discard on its first step.
     /// Failure leaves the lazy first-step path in charge.
     pub(super) fn warm_slot_pool(&mut self) {
-        let capacity = CB_SLOT_TOKENS.min(self.loaded.model().max_sequence);
-        self.warm_slot_pool_at(capacity);
+        self.warm_slot_pool_at(self.slot_capacity);
     }
 
     pub(super) fn warm_slot_pool_at(&mut self, capacity: usize) {
@@ -2258,11 +2257,12 @@ async fn propose(
 }
 
 /// Plan only for requests that fit the pool and request its logits readout.
-fn candidate_pool_capacity(states: impl Iterator<Item = (usize, OutputReadout)>) -> Option<usize> {
+fn candidate_pool_capacity(
+    limit: usize,
+    states: impl Iterator<Item = (usize, OutputReadout)>,
+) -> Option<usize> {
     let (count, capacity) = states
-        .filter(|&(capacity, readout)| {
-            readout == OutputReadout::Logits && capacity <= CB_SLOT_TOKENS
-        })
+        .filter(|&(capacity, readout)| readout == OutputReadout::Logits && capacity <= limit)
         .fold((0, 1), |(count, maximum), (capacity, _)| {
             (count + 1, maximum.max(capacity))
         });

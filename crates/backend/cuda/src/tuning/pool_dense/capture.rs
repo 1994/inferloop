@@ -1,6 +1,5 @@
 //! Own every temporary until the captured graph is destroyed.
 use super::{Choice, Key};
-use crate::constants::SMALL_GEMM_TILE;
 use crate::device::{CudaDevice, device_error};
 use crate::mlp::Matrix;
 use crate::resident::buffers::RowMajor;
@@ -8,6 +7,7 @@ use crate::strategy::LinearTiling;
 use crate::tuning::preparation::driver_build;
 use crate::tuning::projection_budget::ProjectionShape;
 use crate::tuning::resident_gemm::{ResidentGemmKey, kernel_environment};
+use crate::tuning::tiles::SMALL_GEMM_TILE;
 use infer_core::{Error, Result};
 use infer_cuda_kernels::identity;
 use infer_cuda_kernels::jit::JitOptions;

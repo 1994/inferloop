@@ -112,7 +112,7 @@ fn repeated_media_reservations_do_not_accumulate_transient_bytes() -> infer_core
 fn quotes_do_not_recapture_a_retired_pool_and_reservation_restores_it() -> infer_core::Result<()> {
     use crate::{
         AttentionProfile,
-        constants::{CB_DECODE_SLOTS, CB_SLOT_TOKENS},
+        constants::CB_DECODE_SLOTS,
         device::CudaDevice,
         executor::CudaExecutor,
         loading::{LoadOptions, LoadedModel},
@@ -142,7 +142,12 @@ fn quotes_do_not_recapture_a_retired_pool_and_reservation_restores_it() -> infer
         .saturating_sub(loaded.shared_scratch_bytes()?);
     let mut backend = CudaExecutor::new(loaded, budget, CB_DECODE_SLOTS)?;
     assert!(backend.slots.is_some());
-    backend.prepare_state_reservation(CB_SLOT_TOKENS + 1, OutputReadout::Logits)?;
+    let long = backend.slot_capacity + 1;
+    assert!(
+        long <= backend.model().max_sequence,
+        "derived slot capacity leaves no longer private request to test"
+    );
+    backend.prepare_state_reservation(long, OutputReadout::Logits)?;
     assert!(backend.slots.is_none());
     backend.prepare_state_reservation(512, OutputReadout::Logits)?;
     let quoted = backend

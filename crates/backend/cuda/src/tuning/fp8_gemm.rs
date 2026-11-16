@@ -9,14 +9,14 @@ use super::resident_gemm::{MeasurementOrder, PairedTimes, ResidentTuningSession}
 use super::search::{self, Protocol, Record};
 use super::{MAX_REPS, MIN_REPS, REP_MS, WARMUP_MS};
 use crate::constants::AUX_KERNEL_TILE;
-use crate::constants::PROMPT_GEMM_TILE_ROWS;
-use crate::constants::QUANT_GEMM_TILE;
 use crate::constants::WIDE_PREFILL_LANES;
-use crate::constants::WIDE_PROMPT_GEMM_TILE_ROWS;
 pub use crate::device::vendor_fp8::{AlgorithmConfig, LibraryIdentity};
 use crate::resident::tensor_buffer as buffer;
 use crate::tuning::preparation::driver_build;
 use crate::tuning::resident_gemm::prompt_tile_rows;
+use crate::tuning::tiles::PROMPT_GEMM_TILE_ROWS;
+use crate::tuning::tiles::QUANT_GEMM_TILE;
+use crate::tuning::tiles::WIDE_PROMPT_GEMM_TILE_ROWS;
 use crate::{
     device::vendor_fp8::Gemm,
     device::{CudaDevice, device_error, vendor_fp8},

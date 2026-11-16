@@ -141,12 +141,24 @@ fn bootstrap_short_pool(backend: &mut CudaExecutor) -> Result<()> {
     Ok(())
 }
 
+/// A request the model accepts but the derived slot pool does not serve.
+fn beyond_pool(backend: &CudaExecutor) -> Result<usize> {
+    let long = backend.slot_capacity + 1;
+    if long > backend.model().max_sequence {
+        return Err(Error::invariant(
+            "derived slot capacity leaves no longer private request to test",
+        ));
+    }
+    Ok(long)
+}
+
 fn restore_after_private(backend: &mut CudaExecutor) -> Result<usize> {
     let solo = StateId::ONE;
     let waiting = StateId::new(2)?;
-    backend.prepare_state_reservation(CB_SLOT_TOKENS + 1, OutputReadout::Logits)?;
+    let long = beyond_pool(backend)?;
+    backend.prepare_state_reservation(long, OutputReadout::Logits)?;
     assert!(backend.slots.is_none());
-    backend.reserve_state_for(waiting, CB_SLOT_TOKENS + 1, OutputReadout::Logits)?;
+    backend.reserve_state_for(waiting, long, OutputReadout::Logits)?;
     assert!(backend.states[&waiting].home.is_none());
     backend.release_state(waiting)?;
     backend.prepare_state_reservation(384, OutputReadout::Logits)?;
