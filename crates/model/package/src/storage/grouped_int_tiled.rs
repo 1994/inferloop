@@ -3,7 +3,7 @@
 //! Each family keeps its own packing, but callers use this enum for shape, codes, factors and
 //! optional biases, so a new family adds one variant and its constructor instead of another
 //! branch in the loader and projection binding.
-use crate::storage::grouped_int::Q4KTiled;
+use crate::storage::grouped_int::{Q4KDevice, Q4KTiled};
 use crate::storage::grouped_int6::Q6KTiled;
 use crate::storage::quantized::GroupedIntKind;
 use infer_core::Result;
@@ -11,9 +11,9 @@ use infer_core::Result;
 /// A grouped-int matrix in its kernel-facing host layout.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GroupedIntTiled {
-    /// Q4_K.
+    /// `Q4_K`.
     Q4(Q4KTiled),
-    /// Q6_K.
+    /// `Q6_K`.
     Q6(Q6KTiled),
 }
 
@@ -28,9 +28,9 @@ impl GroupedIntTiled {
         blocks: &[u8],
     ) -> Result<Self> {
         Ok(match kind {
-            GroupedIntKind::Q4K => Self::Q4(Q4KTiled::from_device(
-                &crate::storage::grouped_int::Q4KDevice::from_blocks(rows, columns, blocks)?,
-            )?),
+            GroupedIntKind::Q4K => Self::Q4(Q4KTiled::from_device(&Q4KDevice::from_blocks(
+                rows, columns, blocks,
+            )?)?),
             GroupedIntKind::Q6K => Self::Q6(Q6KTiled::from_blocks(rows, columns, blocks)?),
         })
     }
@@ -91,7 +91,7 @@ impl GroupedIntTiled {
 
     /// Upload shape of the code buffer.
     #[must_use]
-    pub fn code_shape(&self) -> [usize; 2] {
+    pub const fn code_shape(&self) -> [usize; 2] {
         self.kind().code_shape(self.rows(), self.columns())
     }
 }
