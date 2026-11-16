@@ -803,11 +803,10 @@ pub mod fused {
         // (I + A) U = R with A strictly lower triangular, so (I + A)⁻¹ is the product of the
         // four doubling factors below: six tensor-core products, no sequential row steps.
         let lower: Tile<f32, { [16, 16] }> = select(strict, betas_16 * ratio * key_products, none);
-        let identity: Tile<f32, { [16, 16] }> = select(
-            le_tile(columns, current) & le_tile(current, columns),
-            constant(1.0f32, shape![16, 16]),
-            none,
-        );
+        let ones: Tile<f32, { [16, 16] }> = constant(1.0f32, shape![16, 16]);
+        let diagonal: Tile<bool, { [16, 16] }> =
+            le_tile(columns, current) & le_tile(current, columns);
+        let identity: Tile<f32, { [16, 16] }> = select(diagonal, ones, none);
         let square: Tile<f32, { [16, 16] }> = exact_product(lower, lower);
         let fourth: Tile<f32, { [16, 16] }> = exact_product(square, square);
         let eighth: Tile<f32, { [16, 16] }> = exact_product(fourth, fourth);
