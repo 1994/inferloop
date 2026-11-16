@@ -1099,19 +1099,26 @@ impl Projection for TileProjection {
             .transpose()?;
         let tile = (&mut out).partition([GROUPED_INT_TILE_ROWS]);
         match (packing, biases) {
-            (CodePacking::Nibble, Some(biases)) => scope.record(
-                grouped_int_nibble::gemv(tile, &x, &codes, &factors, &biases).generics(generics),
-            ),
-            (CodePacking::Nibble, None) => scope.record(
-                grouped_int_nibble::gemv_zero(tile, &x, &codes, &factors).generics(generics),
-            ),
-            (CodePacking::Byte, Some(biases)) => scope.record(
-                grouped_int_byte::gemv(tile, &x, &codes, &factors, &biases).generics(generics),
-            ),
+            (CodePacking::Nibble, Some(biases)) => scope
+                .record(
+                    grouped_int_nibble::gemv(tile, &x, &codes, &factors, &biases)
+                        .generics(generics),
+                )
+                .map(drop),
+            (CodePacking::Nibble, None) => scope
+                .record(
+                    grouped_int_nibble::gemv_zero(tile, &x, &codes, &factors).generics(generics),
+                )
+                .map(drop),
+            (CodePacking::Byte, Some(biases)) => scope
+                .record(
+                    grouped_int_byte::gemv(tile, &x, &codes, &factors, &biases).generics(generics),
+                )
+                .map(drop),
             (CodePacking::Byte, None) => scope
-                .record(grouped_int_byte::gemv_zero(tile, &x, &codes, &factors).generics(generics)),
+                .record(grouped_int_byte::gemv_zero(tile, &x, &codes, &factors).generics(generics))
+                .map(drop),
         }
-        .map(drop)
         .map_err(backend_error)
     }
 

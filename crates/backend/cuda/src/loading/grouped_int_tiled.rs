@@ -90,7 +90,7 @@ impl GroupedIntTiled {
             }
             CodePacking::Nibble => {
                 let base = tile_span * GROUPED_INT_SPAN / 2 * GROUPED_INT_TILE_ROWS;
-                for (group, values) in span.codes.chunks_exact(NIBBLE_GROUP).enumerate() {
+                for (group, values) in span.codes.as_chunks::<NIBBLE_GROUP>().0.iter().enumerate() {
                     let (low, high) = values.split_at(NIBBLE_PAIR_STRIDE);
                     for (lane, (low, high)) in low.iter().zip(high).enumerate() {
                         let byte = (group * NIBBLE_PAIR_STRIDE + lane) * GROUPED_INT_TILE_ROWS;

@@ -2,7 +2,7 @@
  "configurations": [
   {
    "backend": "cuda",
-   "crates": 287,
+   "crates": 286,
    "duplicates": {
     "base64": [
      "0.13.1",
@@ -48,7 +48,7 @@
      "2.0.21"
     ]
    },
-   "edges": 952,
+   "edges": 956,
    "features": [
     "cuda"
    ],
@@ -88,6 +88,6 @@
    "target": "aarch64-apple-darwin"
   }
  ],
- "lockfile_sha256": "6358e20f13179912be04b1098845a871fe5e4fc016c1f028b6f95876eeec5ad2",
+ "lockfile_sha256": "4954221469810643c710f7941fe82ef929c93b9e4d07174c41a9846de1cc3521",
  "schema": 1
 }
